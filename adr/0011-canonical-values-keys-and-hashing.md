@@ -126,6 +126,11 @@ value does not carry precision.
   compatibility change.
 - The Rust SHA-256/HMAC provider requires separate critical-dependency review and
   may not change canonical bytes or framing.
+- The reviewed POC baseline is `sha2` 0.11.0 and `hmac` 0.13.0 with default
+  features disabled. Both are Rust implementations with no native C dependency.
+  `sha2` contains target-specific unsafe CPU intrinsics guarded by feature
+  detection; the human maintainer approved that transitive unsafe surface on
+  2026-07-12. All first-party crates remain `#![forbid(unsafe_code)]`.
 
 ## Compatibility
 
