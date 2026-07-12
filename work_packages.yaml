@@ -1,0 +1,1023 @@
+spec_version: '0.2'
+product: RiffDB
+repository: riffdb
+status: implementation-handoff-draft
+source_spec: SPEC.md
+normative_terms:
+- MUST
+- MUST NOT
+- SHOULD
+- SHOULD NOT
+- MAY
+global_rules:
+- All first-party production code is Rust.
+- All application mutation passes through the shared application service and commit coordinator.
+- No work package may weaken a normative guarantee without an accepted ADR.
+- Every work package must map requirements to automated tests or an explicitly approved manual artifact.
+- Generated sources and fixtures must be reproducible and checked for a clean worktree.
+requirement_coverage:
+  source: SPEC.md
+  excluded_ids:
+  - id: TXN-004
+    reason: Illustrative identifier in the normative-language explanation, not a defined requirement.
+gates:
+- id: P0
+  name: Executable semantics
+  requires:
+  - WP-030
+  - WP-040
+  - WP-060
+  - WP-080
+- id: P1
+  name: Durable standalone
+  requires:
+  - WP-050
+  - WP-070
+  - WP-090
+  - WP-100
+  - WP-110
+  - WP-120
+  - WP-130
+  - WP-150
+- id: P2
+  name: POC exit
+  requires:
+  - WP-140
+  - WP-160
+  - WP-170
+  - WP-180
+  - WP-185
+  - WP-190
+  - WP-200
+work_packages:
+- id: WP-000
+  name: Repository foundation
+  depends_on: []
+  objective: Create the reproducible Rust workspace, quality gates, ADR workflow, and generation checks used by
+    every later package.
+  requirements:
+  - SYS-001
+  - SYS-002
+  - SYS-003
+  - REP-001
+  - POC-010
+  required_adrs: []
+  allowed_paths:
+  - .gitignore
+  - Cargo.toml
+  - Cargo.lock
+  - rust-toolchain.toml
+  - deny.toml
+  - .github/**
+  - scripts/**
+  - adr/**
+  - crates/*/Cargo.toml
+  - crates/*/src/**
+  deliverables:
+  - Workspace crate skeletons
+  - Pinned Rust toolchain
+  - Formatting, Clippy, test, docs, dependency-policy CI
+  - ADR template and PR contract
+  - Deterministic generated-artifact check
+  - Machine-checked normative requirement coverage for work_packages.yaml
+  acceptance_commands:
+  - cargo fmt --all -- --check
+  - cargo clippy --workspace --all-targets --all-features -- -D warnings
+  - cargo test --workspace
+  - cargo deny check
+  - ./scripts/check-requirement-coverage
+  exit_gate: Clean CI on the skeleton workspace from a fresh checkout.
+  human_review_triggers: &id001
+  - A normative transaction, durability, authorization, or MCP guarantee would change.
+  - A durable format, public protocol, or contract IR change is incompatible.
+  - Unsafe Rust, native code, cryptography, or a new critical dependency is required.
+  - Implementation needs files outside allowed_paths or an unmet dependency interface.
+- id: WP-010
+  name: Core types and error taxonomy
+  depends_on:
+  - WP-000
+  objective: Define canonical domain newtypes, values, versions, timestamps, decimals, safe public errors, and internal
+    error layering.
+  requirements:
+  - SYS-003
+  - ID-001
+  - ID-002
+  - ID-003
+  - ID-004
+  - ID-005
+  - VAL-001
+  - VAL-002
+  - STO-002
+  required_adrs:
+  - ADR-0011
+  - ADR-0005
+  allowed_paths:
+  - crates/riffdb-types/**
+  - crates/riffdb-errors/**
+  - crates/riffdb-testkit/src/canonical/**
+  deliverables:
+  - ID and version newtypes
+  - Fixed-scale decimal representation
+  - Canonical value and hashing rules
+  - Timestamp and logical-time types
+  - Public safe error taxonomy
+  acceptance_commands:
+  - cargo test -p riffdb-types -p riffdb-errors
+  - cargo clippy -p riffdb-types -p riffdb-errors --all-targets -- -D warnings
+  exit_gate: Canonicalization, ordering, decimal, and error-redaction property tests pass.
+  human_review_triggers: *id001
+- id: WP-020
+  name: Protobuf and durable envelope
+  depends_on:
+  - WP-010
+  objective: Define versioned public and durable Protobuf schemas and a pure-Rust generation pipeline.
+  requirements:
+  - STO-002
+  - VAL-003
+  - STO-020
+  - STO-021
+  - STO-022
+  - API-001
+  required_adrs:
+  - ADR-0006
+  - ADR-0011
+  allowed_paths:
+  - proto/**
+  - crates/riffdb-proto/**
+  - fixtures/proto/**
+  - scripts/generate-proto*
+  deliverables:
+  - Versioned service and record messages
+  - Protox/Prost/Tonic generation
+  - Size limits and decode validation
+  - Golden compatibility fixtures
+  - Reserved-field policy
+  acceptance_commands:
+  - cargo test -p riffdb-proto
+  - ./scripts/generate-proto --check
+  exit_gate: Golden fixtures decode and generated sources reproduce with a clean worktree.
+  human_review_triggers: *id001
+- id: WP-030
+  name: Contract syntax
+  depends_on:
+  - WP-010
+  objective: Implement the bounded contract language lexer, grammar, source spans, syntax AST, and parser diagnostics.
+  requirements:
+  - CMP-001
+  - DSL-001
+  - DSL-002
+  - DSL-006
+  - DSL-008
+  required_adrs:
+  - ADR-0002
+  - ADR-0011
+  allowed_paths:
+  - crates/riffdb-contract-syntax/**
+  - contracts/parser-fixtures/**
+  - fuzz/Cargo.toml
+  - fuzz/fuzz_targets/contract_*
+  deliverables:
+  - Logos lexer
+  - LALRPOP grammar
+  - Spanned syntax AST
+  - Valid and invalid parser corpus
+  - Parser fuzz target
+  acceptance_commands:
+  - cargo test -p riffdb-contract-syntax
+  - cargo fuzz run contract_parser -- -max_total_time=30
+  exit_gate: Budget source parses; invalid corpus yields bounded, stable span diagnostics; fuzz smoke passes.
+  human_review_triggers: *id001
+- id: WP-040
+  name: Typed IR and compiler
+  depends_on:
+  - WP-010
+  - WP-030
+  objective: Compile parsed contracts into deterministic typed IR, execution plans, compatibility metadata, JSON
+    Schemas, and explain diagnostics.
+  requirements:
+  - CMP-001
+  - CMP-010
+  - CMP-011
+  - CMP-012
+  - CMP-013
+  - CMP-020
+  - CMP-021
+  - CMP-022
+  - DSL-001
+  - DSL-002
+  - DSL-003
+  - DSL-004
+  - DSL-005
+  - DSL-007
+  - DSL-008
+  - DSL-009
+  - DSL-010
+  - DSL-011
+  - DSL-012
+  - MCP-020
+  required_adrs:
+  - ADR-0002
+  - ADR-0003
+  - ADR-0010
+  - ADR-0011
+  allowed_paths:
+  - crates/riffdb-contract-ir/**
+  - crates/riffdb-contract-compiler/**
+  - fixtures/compiler/**
+  - contracts/examples/budget.riff
+  - scripts/generate-contract-fixtures*
+  deliverables:
+  - Name resolution and type checking
+  - Invariant, conflict, read/write, outcome, and event plans
+  - Deterministic bundle hashing
+  - JSON input/output Schema generation
+  - Explain and compatibility reports
+  acceptance_commands:
+  - cargo test -p riffdb-contract-ir -p riffdb-contract-compiler
+  - ./scripts/generate-contract-fixtures --check
+  exit_gate: Budget contract produces stable IR, plan hash, schemas, generated docs, and diagnostic snapshots.
+  human_review_triggers: *id001
+- id: WP-045
+  name: Budget comparison baseline
+  depends_on:
+  - WP-040
+  objective: Establish the long-lived budget workload, normalized observation oracle, and isolated PostgreSQL
+    implementation used for implementation comparison and later benchmarks.
+  requirements:
+  - POC-001
+  required_adrs:
+  - ADR-0002
+  - ADR-0011
+  allowed_paths:
+  - examples/budget-comparison/Cargo.toml
+  - examples/budget-comparison/Cargo.lock
+  - examples/budget-comparison/README.md
+  - examples/budget-comparison/core/**
+  - examples/budget-comparison/fixtures/**
+  - examples/budget-comparison/postgres/**
+  - examples/budget-comparison/tests/postgres_*
+  - .github/workflows/budget-comparison.yml
+  deliverables:
+  - Backend-neutral workload and normalized observation oracle
+  - Explicit semantic guarantee profiles
+  - PostgreSQL schema and adapter in an isolated nested workspace
+  - Golden workload and observation fixtures
+  acceptance_commands:
+  - cargo test --manifest-path examples/budget-comparison/Cargo.toml --workspace
+  exit_gate: The PostgreSQL adapter passes the budget workload oracle and records its exact isolation, durability,
+    and concurrency assumptions.
+  human_review_triggers: *id001
+- id: WP-050
+  name: Contract catalog
+  depends_on:
+  - WP-020
+  - WP-040
+  - WP-060
+  objective: Define immutable bundle persistence and a typed catalog-activation intent for coordinator-owned,
+    optimistic expected-version deployment.
+  requirements:
+  - CMP-001
+  - CMP-020
+  - CMP-021
+  - CMP-022
+  - MCP-032
+  required_adrs:
+  - ADR-0002
+  - ADR-0004
+  - ADR-0005
+  - ADR-0006
+  allowed_paths:
+  - crates/riffdb-catalog/**
+  - crates/riffdb-storage-api/src/catalog*
+  - tests/contract_deploy*
+  deliverables:
+  - Bundle persistence interface
+  - Active-version pointer
+  - Typed expected-version activation intent for the commit coordinator
+  - Compatibility checks
+  - Catalog notifications
+  - Deployment failpoint and redaction-safe telemetry hooks
+  acceptance_commands:
+  - cargo test -p riffdb-catalog
+  - cargo test --test contract_deploy_recovery
+  exit_gate: Deployment crash tests leave exactly the old or new bundle active and retries resolve by version.
+  human_review_triggers: *id001
+- id: WP-060
+  name: Storage semantic API
+  depends_on:
+  - WP-010
+  - WP-020
+  objective: Define the narrow storage contract required by snapshots, atomic command commits, catalog state, scans,
+    and derived workers.
+  requirements:
+  - SYS-004
+  - STO-001
+  - STO-002
+  - STO-010
+  - STO-011
+  - STO-012
+  - STO-020
+  - STO-021
+  - STO-022
+  - LOG-001
+  - ENT-001
+  - ENT-002
+  - ENT-003
+  - TXN-030
+  - TXN-031
+  - EFF-001
+  - EFF-003
+  - REC-003
+  required_adrs:
+  - ADR-0003
+  - ADR-0004
+  - ADR-0005
+  - ADR-0006
+  - ADR-0009
+  - ADR-0010
+  - ADR-0011
+  allowed_paths:
+  - crates/riffdb-storage-api/**
+  - crates/riffdb-storage-memory/**
+  - crates/riffdb-testkit/src/model/**
+  deliverables:
+  - Bounded materialized ReadSnapshot and coordinator-driven atomic commit interfaces
+  - Semantic key/value records
+  - Catalog, capability, outbox, and projection persistence ports
+  - In-memory storage implementation
+  - Ordered commit scan
+  - Integrity-check interface
+  acceptance_commands:
+  - cargo test -p riffdb-storage-api -p riffdb-storage-memory
+  exit_gate: Reference storage satisfies atomicity, ordering, snapshot, and model-state properties.
+  human_review_triggers: *id001
+- id: WP-070
+  name: Redb storage engine
+  depends_on:
+  - WP-020
+  - WP-060
+  objective: Implement the POC durable backend with redb, versioned tables, atomic commits, recovery checks, and
+    offline backup.
+  requirements:
+  - STO-001
+  - STO-002
+  - STO-010
+  - STO-011
+  - STO-012
+  - STO-020
+  - STO-021
+  - STO-022
+  - REC-001
+  - REC-002
+  - REC-003
+  - EFF-001
+  - POC-009
+  required_adrs:
+  - ADR-0003
+  - ADR-0004
+  - ADR-0005
+  - ADR-0006
+  - ADR-0009
+  - ADR-0010
+  - ADR-0011
+  allowed_paths:
+  - crates/riffdb-storage-redb/**
+  - tests/storage_recovery/**
+  - scripts/storage_*
+  deliverables:
+  - Redb table layout
+  - Atomic entity/index/outcome/event/provenance/log commit
+  - Startup integrity validation
+  - Offline backup and restore
+  - Storage benchmarks
+  - Named storage failpoints and redaction-safe telemetry hooks
+  acceptance_commands:
+  - cargo test -p riffdb-storage-redb
+  - cargo test --test storage_recovery_matrix
+  - cargo bench -p riffdb-storage-redb --no-run
+  exit_gate: Storage property suite and process recovery matrix pass with no torn command state.
+  human_review_triggers: *id001
+- id: WP-075
+  name: Fjall semantic comparison
+  depends_on:
+  - WP-060
+  - WP-070
+  objective: Implement the unchanged storage semantic conformance suite and benchmark workload against Fjall in
+    a non-production nested workspace for the POC engine decision.
+  requirements:
+  - STO-001
+  - POC-010
+  required_adrs:
+  - ADR-0004
+  - ADR-0006
+  allowed_paths:
+  - benchmarks/storage-fjall/**
+  deliverables:
+  - Isolated Fjall storage adapter
+  - Unchanged semantic storage conformance results
+  - Recovery and benchmark harness compatible with the redb report
+  - Separate lockfile and dependency inventory
+  acceptance_commands:
+  - cargo test --manifest-path benchmarks/storage-fjall/Cargo.toml --workspace
+  - cargo bench --manifest-path benchmarks/storage-fjall/Cargo.toml --no-run
+  exit_gate: Fjall passes or explicitly fails the unchanged semantic suite, and comparable benchmark artifacts
+    are ready for WP-200 without linking Fjall into riffdbd.
+  human_review_triggers: *id001
+- id: WP-080
+  name: Deterministic command runtime
+  depends_on:
+  - WP-040
+  - WP-060
+  objective: Interpret compiler-produced command plans against a snapshot and produce deterministic typed outcomes
+    and CommitIntents without I/O.
+  requirements:
+  - TXN-002
+  - TXN-010
+  - TXN-011
+  - TXN-012
+  - TXN-013
+  - TXN-030
+  - TXN-031
+  - DSL-004
+  - DSL-005
+  - DSL-006
+  - DSL-007
+  - DSL-008
+  - ENT-004
+  - POC-003
+  required_adrs:
+  - ADR-0002
+  - ADR-0003
+  - ADR-0004
+  - ADR-0012
+  allowed_paths:
+  - crates/riffdb-runtime/**
+  - crates/riffdb-invariant/**
+  - crates/riffdb-testkit/src/histories/**
+  deliverables:
+  - IR evaluator
+  - Durable-reservation-supplied logical time and no command randomness
+  - Read dependency tracking
+  - Invariant and transition evaluation
+  - CommitIntent construction
+  acceptance_commands:
+  - cargo test -p riffdb-runtime -p riffdb-invariant
+  - cargo test -p riffdb-testkit generated_histories
+  exit_gate: Differential generated-history tests match the single-threaded reference model.
+  human_review_triggers: *id001
+- id: WP-090
+  name: Conflict manager
+  depends_on:
+  - WP-010
+  objective: Provide cancellation-safe, canonical, multi-key exclusive logical capabilities and hot-key diagnostics.
+  requirements:
+  - TXN-001
+  - TXN-013
+  - TXN-020
+  - TXN-021
+  - TXN-022
+  - TXN-023
+  required_adrs:
+  - ADR-0003
+  - ADR-0011
+  allowed_paths:
+  - crates/riffdb-conflict/**
+  deliverables:
+  - Canonical key ordering
+  - Sharded lock table
+  - Wait queues, deadlines, cancellation, panic cleanup
+  - Metrics hooks
+  - Redaction-safe telemetry hooks
+  - Loom and Shuttle models
+  acceptance_commands:
+  - cargo test -p riffdb-conflict
+  - cargo test -p riffdb-conflict --features loom
+  - cargo test -p riffdb-conflict --features shuttle
+  exit_gate: Explored schedules find no double grant, leaked capability, deadlock cycle, or lost wakeup.
+  human_review_triggers: *id001
+- id: WP-100
+  name: Commit coordinator and idempotency
+  depends_on:
+  - WP-050
+  - WP-070
+  - WP-080
+  - WP-090
+  - WP-110
+  objective: Orchestrate admission, locking, deterministic evaluation, revalidation, sequence assignment, atomic
+    persistence, and same-key recovery.
+  requirements:
+  - SYS-004
+  - TXN-001
+  - TXN-002
+  - TXN-010
+  - TXN-012
+  - TXN-013
+  - TXN-040
+  - TXN-041
+  - TXN-042
+  - TXN-043
+  - TXN-044
+  - LOG-001
+  - ENT-004
+  - OUT-001
+  - OUT-002
+  - OUT-003
+  - OUT-004
+  - EFF-001
+  - POC-002
+  - POC-004
+  - POC-005
+  required_adrs:
+  - ADR-0002
+  - ADR-0003
+  - ADR-0004
+  - ADR-0005
+  - ADR-0007
+  - ADR-0009
+  - ADR-0012
+  allowed_paths:
+  - crates/riffdb-commit/**
+  - crates/riffdb-idempotency/**
+  - tests/command_semantics/**
+  deliverables:
+  - Commit coordinator actor
+  - Durable pending idempotency reservation with fixed tx.time and canonical input hash
+  - Typed catalog activation and capability create/revoke coordination
+  - Read/predicate revalidation
+  - Persisted typed outcomes
+  - Uncertain-response recovery
+  - Named transaction failpoints and redaction-safe telemetry hooks
+  acceptance_commands:
+  - cargo test -p riffdb-commit -p riffdb-idempotency
+  - cargo test --test command_concurrency
+  - cargo test --test lost_response_replay
+  exit_gate: Concurrent budget and fail-after-commit tests prove one atomic logical execution per idempotency identity.
+  human_review_triggers: *id001
+- id: WP-110
+  name: Authorization and capability service
+  depends_on:
+  - WP-010
+  - WP-070
+  objective: Resolve opaque development capability tokens into deny-by-default policy decisions and redaction obligations.
+  requirements:
+  - ID-005
+  - SEC-001
+  - SEC-002
+  - SEC-003
+  - SEC-004
+  required_adrs:
+  - ADR-0004
+  - ADR-0009
+  - ADR-0011
+  allowed_paths:
+  - crates/riffdb-auth/**
+  - crates/riffdb-policy/**
+  - tests/authorization/**
+  deliverables:
+  - Opaque token creation and keyed-hash storage
+  - Capability records and typed create/revoke intents for the commit coordinator
+  - Policy decision and obligations
+  - Field/tenant filters
+  - Audit hooks
+  - Redaction-safe authorization telemetry hooks
+  acceptance_commands:
+  - cargo test -p riffdb-auth -p riffdb-policy
+  - cargo test --test authorization_non_bypass
+  exit_gate: Revocation, scope, environment, command visibility, and field-redaction tests pass.
+  human_review_triggers: *id001
+- id: WP-120
+  name: API-neutral application service
+  depends_on:
+  - WP-050
+  - WP-100
+  - WP-110
+  objective: Expose transport-independent command, contract, entity, commit, provenance, projection, and health
+    services.
+  requirements:
+  - SYS-004
+  - API-001
+  - POC-008
+  required_adrs:
+  - ADR-0007
+  allowed_paths:
+  - crates/riffdb-service/**
+  - tests/service/**
+  deliverables:
+  - Service traits and implementations
+  - Shared request context
+  - Authorization enforcement
+  - Bounded pagination and waits
+  - In-process integration harness
+  - Redaction-safe service telemetry and health hooks
+  acceptance_commands:
+  - cargo test -p riffdb-service
+  - cargo test --test service_end_to_end
+  exit_gate: All operations pass through shared policy and service code with no transport-specific mutation path.
+  human_review_triggers: *id001
+- id: WP-125
+  name: Service comparison adapter
+  depends_on:
+  - WP-045
+  - WP-120
+  objective: Add the first valid RiffDB budget comparison adapter through the API-neutral service and run the same
+    workload oracle used by PostgreSQL.
+  requirements:
+  - API-001
+  - POC-001
+  - POC-002
+  - POC-003
+  - POC-004
+  - POC-005
+  - POC-008
+  required_adrs:
+  - ADR-0007
+  allowed_paths:
+  - examples/budget-comparison/Cargo.toml
+  - examples/budget-comparison/Cargo.lock
+  - examples/budget-comparison/riffdb-service/**
+  - examples/budget-comparison/tests/service_*
+  deliverables:
+  - RiffDB service adapter with no storage access
+  - Parameterized cross-backend semantic conformance suite
+  - Correctness preflight for comparison workloads
+  acceptance_commands:
+  - cargo test --manifest-path examples/budget-comparison/Cargo.toml --workspace service_comparison
+  exit_gate: The service adapter and PostgreSQL adapter satisfy their declared guarantee profiles under the same
+    workload and normalized observation oracle.
+  human_review_triggers: *id001
+- id: WP-130
+  name: gRPC server and Rust SDK
+  depends_on:
+  - WP-020
+  - WP-120
+  objective: Expose the public application and administration protocol through Tonic and a typed Rust client.
+  requirements:
+  - API-001
+  - POC-001
+  - POC-004
+  required_adrs:
+  - ADR-0006
+  - ADR-0007
+  allowed_paths:
+  - crates/riffdb-api-grpc/**
+  - crates/riffdb-client-rust/**
+  - crates/riffdb-server/**
+  - tests/grpc/**
+  deliverables:
+  - Tonic services and interceptors
+  - Authentication and request limits
+  - Rust transport client
+  - Generated ergonomic command module
+  - Error and retry mapping
+  - Projection protocol mapping against an injected application-service stub
+  - gRPC-path telemetry, limits, and server lifecycle hooks
+  acceptance_commands:
+  - cargo test -p riffdb-api-grpc -p riffdb-client-rust -p riffdb-server
+  - cargo test --test grpc_end_to_end
+  exit_gate: Budget command, outcome recovery, contract deploy, and entity read work through public gRPC; every
+    projection result variant maps correctly against an injected service stub.
+  human_review_triggers: *id001
+- id: WP-135
+  name: Public SDK comparison adapter
+  depends_on:
+  - WP-125
+  - WP-130
+  objective: Make the Rust SDK and public gRPC path the canonical RiffDB adapter for the long-lived comparison
+    workload and benchmark runner.
+  requirements:
+  - API-001
+  - POC-001
+  - POC-002
+  - POC-004
+  - POC-008
+  required_adrs:
+  - ADR-0006
+  - ADR-0007
+  allowed_paths:
+  - examples/budget-comparison/Cargo.toml
+  - examples/budget-comparison/Cargo.lock
+  - examples/budget-comparison/riffdb-grpc/**
+  - examples/budget-comparison/tests/public_*
+  deliverables:
+  - Public Rust SDK and gRPC comparison adapter
+  - Same-key uncertainty-recovery comparison scenario
+  - Process-runner correctness preflight and normalized observations
+  acceptance_commands:
+  - cargo test --manifest-path examples/budget-comparison/Cargo.toml --workspace public_comparison
+  exit_gate: The canonical RiffDB comparison uses only public APIs and passes the same workload oracle before any
+    comparative benchmark can run.
+  human_review_triggers: *id001
+- id: WP-140
+  name: Native MCP interface
+  depends_on:
+  - WP-040
+  - WP-120
+  - WP-130
+  objective: Expose authorized contract commands as dynamic MCP tools and database context as policy-filtered resources
+    through stdio and Streamable HTTP.
+  requirements:
+  - MCP-001
+  - MCP-010
+  - MCP-011
+  - MCP-020
+  - MCP-021
+  - MCP-022
+  - MCP-023
+  - MCP-024
+  - MCP-030
+  - MCP-031
+  - MCP-032
+  - MCP-033
+  - MCP-040
+  - MCP-041
+  - MCP-042
+  - MCP-043
+  - MCP-044
+  - MCP-045
+  - MCP-046
+  - MCP-047
+  - MCP-048
+  - MCP-049
+  - POC-007
+  - POC-008
+  required_adrs:
+  - ADR-0002
+  - ADR-0007
+  - ADR-0008
+  - ADR-0009
+  allowed_paths:
+  - crates/riffdb-api-mcp/**
+  - crates/riffdb-mcp-stdio/**
+  - tests/mcp/**
+  - scripts/mcp-inspector-smoke
+  deliverables:
+  - rmcp adapter boundary
+  - Stdio server and loopback Streamable HTTP
+  - Generated command tools with input/output schemas
+  - Fixed admin/read tools
+  - Resources, subscriptions, list-change notifications
+  - Progress, cancellation, pagination, security limits
+  - Redaction-safe protocol telemetry and server registration hooks
+  acceptance_commands:
+  - cargo test -p riffdb-api-mcp -p riffdb-mcp-stdio
+  - cargo test --test mcp_conformance
+  - ./scripts/mcp-inspector-smoke
+  exit_gate: Authorized dynamic tool catalogs, structured results, resource reads, stale-name denial, progress,
+    cancellation, and both adapter transports pass against the shared service harness.
+  human_review_triggers: *id001
+- id: WP-150
+  name: CLI and local developer flow
+  depends_on:
+  - WP-130
+  objective: Provide an operator and demo CLI that uses public APIs rather than internal storage access.
+  requirements:
+  - API-001
+  - POC-001
+  - POC-010
+  required_adrs:
+  - ADR-0007
+  allowed_paths:
+  - crates/riffdb-cli/**
+  - examples/**
+  - scripts/demo*
+  deliverables:
+  - Contract validate/deploy commands
+  - Command execute and outcome lookup
+  - Entity/commit/projection inspection
+  - Capability administration
+  - JSON and human output
+  acceptance_commands:
+  - cargo test -p riffdb-cli
+  - ./scripts/demo --dry-run
+  exit_gate: Every acceptance-demo operation is available through the CLI and public gRPC.
+  human_review_triggers: *id001
+- id: WP-160
+  name: Durable outbox
+  depends_on:
+  - WP-100
+  - WP-120
+  objective: Deliver atomically committed event intent outside transaction execution with explicit at-least-once
+    behavior.
+  requirements:
+  - EFF-001
+  - EFF-002
+  - EFF-003
+  - POC-005
+  required_adrs:
+  - ADR-0004
+  - ADR-0005
+  - ADR-0006
+  allowed_paths:
+  - crates/riffdb-outbox/**
+  - tests/outbox/**
+  deliverables:
+  - Pending-event scanner
+  - Delivery state and backoff
+  - Deterministic test connector
+  - Optional disabled HTTP webhook connector
+  - Duplicate and crash simulations
+  - Named delivery failpoints and redaction-safe telemetry hooks
+  acceptance_commands:
+  - cargo test -p riffdb-outbox
+  - cargo test --test outbox_crash_and_duplicate
+  exit_gate: No committed event is lost; duplicate dispatch scenarios are visible and policy-controlled.
+  human_review_triggers: *id001
+- id: WP-170
+  name: Projection core
+  depends_on:
+  - WP-100
+  - WP-120
+  objective: Maintain event-derived count and sum projections with a durable monotonic frontier and typed read-after-sequence
+    outcomes.
+  requirements:
+  - PRJ-001
+  - PRJ-002
+  - PRJ-003
+  - PRJ-004
+  - POC-006
+  required_adrs:
+  - ADR-0004
+  - ADR-0006
+  - ADR-0010
+  allowed_paths:
+  - crates/riffdb-projection/**
+  - tests/projection/**
+  deliverables:
+  - Filter/count/sum/group execution
+  - Durable state and frontier
+  - Idempotent commit application
+  - Waiter notification
+  - Rebuild and degraded status
+  - Named state/frontier failpoints and redaction-safe telemetry hooks
+  acceptance_commands:
+  - cargo test -p riffdb-projection
+  - cargo test --test projection_prefix_and_recovery
+  exit_gate: Projection prefix, monotonic frontier, restart, rebuild, and query-after-sequence properties pass.
+  human_review_triggers: *id001
+- id: WP-180
+  name: Observability and diagnostics
+  depends_on:
+  - WP-120
+  objective: Add structured traces, bounded metrics, health, redaction, and explain diagnostics across the public
+    and transaction paths.
+  requirements:
+  - ID-005
+  - POC-010
+  required_adrs:
+  - ADR-0007
+  - ADR-0008
+  - ADR-0009
+  allowed_paths:
+  - crates/riffdb-observability/**
+  - crates/riffdb-diagnostics/**
+  - tests/observability/**
+  deliverables:
+  - Tracing layers and span fields
+  - Metrics registry
+  - Health model
+  - Redaction tests
+  - Explain output and snapshots
+  - Integration over telemetry and health hooks owned by upstream packages
+  acceptance_commands:
+  - cargo test -p riffdb-observability -p riffdb-diagnostics
+  - cargo test --test telemetry_redaction
+  exit_gate: Required telemetry is present, bounded, and free of prohibited raw values.
+  human_review_triggers: *id001
+- id: WP-185
+  name: Server composition
+  depends_on:
+  - WP-130
+  - WP-140
+  - WP-160
+  - WP-170
+  - WP-180
+  objective: Compose the final riffdbd process from the shared service, gRPC, loopback MCP HTTP, outbox, projection,
+    observability, lifecycle, and health components without adding business semantics.
+  requirements:
+  - SYS-001
+  - API-001
+  - MCP-010
+  - MCP-011
+  - POC-001
+  - POC-006
+  - POC-007
+  - POC-008
+  required_adrs:
+  - ADR-0007
+  - ADR-0008
+  - ADR-0009
+  - ADR-0010
+  allowed_paths:
+  - crates/riffdb-server/**
+  - tests/server_composition/**
+  deliverables:
+  - Final riffdbd component graph and bounded lifecycle
+  - gRPC and loopback MCP HTTP endpoint composition
+  - Outbox and projection worker startup and shutdown
+  - Authoritative versus derived health aggregation
+  - Real projection gRPC and MCP end-to-end coverage
+  acceptance_commands:
+  - cargo test -p riffdb-server
+  - cargo test --test server_composition
+  exit_gate: One riffdbd process serves gRPC and loopback MCP HTTP, runs both workers, reports accurate health, and
+    proves real read-after-sequence projection behavior through public APIs.
+  human_review_triggers: *id001
+- id: WP-190
+  name: Integrated crash harness
+  depends_on:
+  - WP-070
+  - WP-100
+  - WP-160
+  - WP-170
+  - WP-185
+  objective: Inject named process-level failures at every authoritative boundary and verify recovery against the
+    reference model.
+  requirements:
+  - TEST-001
+  - REC-001
+  - REC-002
+  - REC-003
+  - POC-009
+  required_adrs:
+  - ADR-0003
+  - ADR-0004
+  - ADR-0005
+  - ADR-0006
+  - ADR-0009
+  - ADR-0010
+  - ADR-0012
+  allowed_paths:
+  - crates/riffdb-testkit/**
+  - tests/recovery/**
+  - scripts/recovery_*
+  deliverables:
+  - Named failpoint API
+  - Child-process controller
+  - Durable state inspector
+  - Recovery matrix and reports
+  - Repeated-open idempotence tests
+  acceptance_commands:
+  - cargo test -p riffdb-testkit
+  - cargo test --test full_recovery_matrix -- --ignored
+  exit_gate: Every failpoint produces exactly the allowed pre-commit or post-commit state and repeated recovery
+    is stable.
+  human_review_triggers: *id001
+- id: WP-200
+  name: POC acceptance and release
+  depends_on:
+  - WP-050
+  - WP-075
+  - WP-130
+  - WP-135
+  - WP-140
+  - WP-150
+  - WP-160
+  - WP-170
+  - WP-180
+  - WP-185
+  - WP-190
+  objective: Assemble the self-verifying budget demonstration, reproducible benchmarks, security notes, and release
+    artifacts that decide POC exit.
+  requirements:
+  - POC-001
+  - POC-002
+  - POC-003
+  - POC-004
+  - POC-005
+  - POC-006
+  - POC-007
+  - POC-008
+  - POC-009
+  - POC-010
+  required_adrs:
+  - ADR-0001
+  - ADR-0002
+  - ADR-0003
+  - ADR-0004
+  - ADR-0005
+  - ADR-0006
+  - ADR-0007
+  - ADR-0008
+  - ADR-0009
+  - ADR-0010
+  - ADR-0011
+  - ADR-0012
+  allowed_paths:
+  - scripts/demo*
+  - scripts/release*
+  - docs/**
+  - examples/**
+  - benchmarks/**
+  - release/**
+  deliverables:
+  - One-command acceptance demo
+  - Machine-readable requirement report
+  - Benchmark report
+  - Threat model and dependency inventory
+  - Release binaries, checksums, SBOM, examples, known limitations
+  acceptance_commands:
+  - ./scripts/ci-all
+  - ./scripts/demo --assert
+  - ./scripts/release-poc --verify
+  exit_gate: POC-001 through POC-010 are signed off and architecture review records the next-stage decision.
+  human_review_triggers: *id001

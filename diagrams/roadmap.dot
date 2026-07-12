@@ -1,0 +1,24 @@
+digraph G {
+  graph [rankdir=TB, bgcolor="white", pad="0.22", nodesep="0.25", ranksep="0.38", fontname="Liberation Sans", fontsize=18, label="Evidence-gated roadmap from semantics to MVP", labelloc="t", labeljust="l"];
+  node [shape=box, style="rounded,filled", fontname="Liberation Sans", fontsize=10, margin="0.16,0.08", color="#28495F", fillcolor="#F7FAFB", fontcolor="#173042"];
+  edge [color="#5E7C90", penwidth=1.45, arrowsize=0.70, fontname="Liberation Sans", fontsize=8.5, fontcolor="#35566D"];
+
+  p0 [label="P0 — Executable semantics\nDSL • typed IR • storage semantics • deterministic runtime", fillcolor="#EEF5F7"];
+  p1 [label="P1 — Durable standalone POC\ncommit • recovery • idempotency • provenance • atomic outbox intent\ngRPC • Rust SDK • CLI", fillcolor="#E4F0F2"];
+  p2 [label="P2 / POC exit — Native agent and derived-system proof\nMCP • outbox dispatch • projection • final server composition • integrated recovery", fillcolor="#CFE6E8", penwidth=2.0];
+  evidence [label="Cross-stage budget comparison evidence\nPostgreSQL baseline → service parity → public SDK runner\nredb/Fjall semantic and benchmark comparison", style="rounded,filled,dashed", fillcolor="#FAFAFA"];
+  a [label="Single-node alpha\nformat migrations • backup/restore • remote auth • generated clients"];
+  b [label="Replicated beta\nRaft • snapshots • failover • unchanged command semantics"];
+  c [label="Partitioned MVP\ntenant-local leaders • placement epochs • movement • agent branches", fillcolor="#FFF1D9", penwidth=2.0];
+  post [label="Post-MVP research\ndistributed transactions • escrow • global indexes • richer analytics • multi-region", style="rounded,filled,dashed", fillcolor="#FAFAFA"];
+
+  p0 -> p1 [label="determinism gate"];
+  p1 -> p2 [label="transaction recovery gate"];
+  p0 -> evidence [style=dashed, label="start after compiler", constraint=false];
+  p1 -> evidence [style=dashed, label="add public adapters", constraint=false];
+  evidence -> p2 [style=dashed, label="correctness + benchmark input", constraint=false];
+  p2 -> a [label="POC evidence"];
+  a -> b [label="operational gate"];
+  b -> c [label="failure gate"];
+  c -> post [style=dashed, label="explicit research tracks"];
+}
