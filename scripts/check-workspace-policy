@@ -1,0 +1,107 @@
+#!/usr/bin/env ruby
+# frozen_string_literal: true
+
+require "json"
+require "open3"
+require "pathname"
+require "set"
+
+ROOT = Pathname.new(File.expand_path("..", __dir__)).realpath
+EXPECTED_PACKAGES = %w[
+  riffdb-api-grpc
+  riffdb-api-mcp
+  riffdb-auth
+  riffdb-catalog
+  riffdb-cli
+  riffdb-client-rust
+  riffdb-commit
+  riffdb-conflict
+  riffdb-contract-compiler
+  riffdb-contract-ir
+  riffdb-contract-syntax
+  riffdb-diagnostics
+  riffdb-errors
+  riffdb-idempotency
+  riffdb-invariant
+  riffdb-mcp-stdio
+  riffdb-observability
+  riffdb-outbox
+  riffdb-policy
+  riffdb-projection
+  riffdb-proto
+  riffdb-runtime
+  riffdb-server
+  riffdb-service
+  riffdb-storage-api
+  riffdb-storage-memory
+  riffdb-storage-redb
+  riffdb-testkit
+  riffdb-types
+].freeze
+EXPECTED_BINS = {
+  "riffdb" => "riffdb-cli",
+  "riffdb-mcp" => "riffdb-mcp-stdio",
+  "riffdbd" => "riffdb-server"
+}.freeze
+
+stdout, stderr, status = Open3.capture3(
+  "cargo", "metadata", "--locked", "--no-deps", "--format-version", "1",
+  chdir: ROOT.to_s
+)
+unless status.success?
+  warn stderr
+  exit status.exitstatus
+end
+
+metadata = JSON.parse(stdout)
+workspace_ids = metadata.fetch("workspace_members").to_set
+packages = metadata.fetch("packages").select { |package| workspace_ids.include?(package.fetch("id")) }
+errors = []
+
+actual_names = packages.map { |package| package.fetch("name") }.sort
+missing = EXPECTED_PACKAGES - actual_names
+unexpected = actual_names - EXPECTED_PACKAGES
+errors << "missing workspace packages: #{missing.join(', ')}" unless missing.empty?
+errors << "unexpected workspace packages: #{unexpected.join(', ')}" unless unexpected.empty?
+
+actual_bins = {}
+packages.each do |package|
+  name = package.fetch("name")
+  manifest_path = Pathname.new(package.fetch("manifest_path")).realpath
+  expected_manifest = ROOT.join("crates", name, "Cargo.toml")
+  errors << "#{name} manifest is outside its owned crate directory" unless manifest_path == expected_manifest
+  errors << "#{name} is not private" unless package.fetch("publish") == []
+  errors << "#{name} has an external source" unless package["source"].nil?
+  errors << "#{name} does not inherit version 0.1.0" unless package.fetch("version") == "0.1.0"
+  errors << "#{name} does not use edition 2024" unless package.fetch("edition") == "2024"
+  errors << "#{name} does not require Rust 1.97.0" unless package.fetch("rust_version") == "1.97.0"
+  errors << "#{name} default features must remain empty" unless package.fetch("features").fetch("default", []) == []
+
+  manifest = File.read(manifest_path, encoding: "UTF-8")
+  unless manifest.match?(/^\[lints\]\s*$\n^workspace\s*=\s*true\s*$/)
+    errors << "#{name} does not inherit workspace lints"
+  end
+
+  lib_targets = package.fetch("targets").select { |target| target.fetch("kind").include?("lib") }
+  errors << "#{name} must expose exactly one library target" unless lib_targets.length == 1
+  package.fetch("targets").each do |target|
+    target.fetch("kind").each do |kind|
+      actual_bins[target.fetch("name")] = name if kind == "bin"
+    end
+    next unless (target.fetch("kind") & %w[lib bin]).any?
+
+    source = Pathname.new(target.fetch("src_path"))
+    contents = File.read(source, encoding: "UTF-8")
+    errors << "#{source.relative_path_from(ROOT)} lacks #![forbid(unsafe_code)]" \
+      unless contents.include?("#![forbid(unsafe_code)]")
+  end
+end
+
+errors << "binary inventory is #{actual_bins.inspect}, expected #{EXPECTED_BINS.inspect}" unless actual_bins == EXPECTED_BINS
+
+unless errors.empty?
+  warn errors.sort.join("\n")
+  exit 1
+end
+
+puts "Workspace policy is valid: #{packages.length} private libraries and #{actual_bins.length} approved binaries."

@@ -1,0 +1,84 @@
+#!/usr/bin/env ruby
+# frozen_string_literal: true
+
+require "set"
+require "yaml"
+
+ROOT = File.expand_path("..", __dir__)
+SPEC_PATH = File.join(ROOT, "SPEC.md")
+MANIFEST_PATH = File.join(ROOT, "work_packages.yaml")
+
+spec = File.read(SPEC_PATH, encoding: "UTF-8")
+manifest = YAML.safe_load(File.read(MANIFEST_PATH, encoding: "UTF-8"), aliases: true)
+errors = []
+
+spec_version = spec[/\*\*Version:\*\*\s+([^\s]+)/, 1]
+errors << "SPEC.md has no document version" unless spec_version
+if manifest["spec_version"].to_s != spec_version.to_s
+  errors << "manifest spec_version #{manifest['spec_version'].inspect} does not match SPEC #{spec_version.inspect}"
+end
+errors << "manifest source_spec must be SPEC.md" unless manifest["source_spec"] == "SPEC.md"
+
+prefixes = spec.scan(/`([A-Z]{2,4})-\*`/).flatten.to_set
+errors << "SPEC.md Appendix E defines no requirement prefixes" if prefixes.empty?
+id_pattern = /\b(?:#{prefixes.to_a.sort.join('|')})-\d{3}\b/
+defined_ids = spec.scan(id_pattern).to_set
+
+packages = manifest.fetch("work_packages", [])
+package_ids = packages.map { |package| package["id"] }
+package_ids.tally.each do |id, count|
+  errors << "duplicate work-package ID #{id}" if count > 1
+end
+known_packages = package_ids.to_set
+
+assigned_ids = Set.new
+packages.each do |package|
+  id = package["id"] || "<missing-id>"
+  requirements = package.fetch("requirements", [])
+  requirements.tally.each do |requirement, count|
+    errors << "#{id} lists requirement #{requirement} #{count} times" if count > 1
+  end
+  assigned_ids.merge(requirements)
+  package.fetch("depends_on", []).each do |dependency|
+    errors << "#{id} has unknown dependency #{dependency}" unless known_packages.include?(dependency)
+  end
+end
+
+exclusions = manifest.dig("requirement_coverage", "excluded_ids") || []
+excluded_ids = Set.new
+exclusions.each do |entry|
+  id = entry["id"]
+  reason = entry["reason"].to_s.strip
+  errors << "duplicate exclusion #{id}" if excluded_ids.include?(id)
+  errors << "exclusion #{id.inspect} has no reason" if reason.empty?
+  excluded_ids << id
+end
+
+(assigned_ids - defined_ids).sort.each do |id|
+  errors << "work packages reference unknown requirement #{id}"
+end
+(excluded_ids - defined_ids).sort.each do |id|
+  errors << "stale exclusion for unknown requirement #{id}"
+end
+(assigned_ids & excluded_ids).sort.each do |id|
+  errors << "requirement #{id} is both assigned and excluded"
+end
+
+active_ids = defined_ids - excluded_ids
+(active_ids - assigned_ids).sort.each do |id|
+  errors << "uncovered normative requirement #{id}"
+end
+
+manifest.fetch("gates", []).each do |gate|
+  gate.fetch("requires", []).each do |work_package|
+    errors << "gate #{gate['id']} references unknown work package #{work_package}" unless known_packages.include?(work_package)
+  end
+end
+
+unless errors.empty?
+  warn errors.sort.join("\n")
+  exit 1
+end
+
+puts "Requirement coverage is complete: #{active_ids.length} active requirements, " \
+     "#{excluded_ids.length} documented exclusion(s), #{packages.length} work packages."

@@ -1,0 +1,37 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+repo_root="$(git rev-parse --show-toplevel)"
+cd "$repo_root"
+
+before="$(mktemp -d)"
+after="$(mktemp -d)"
+trap 'rm -rf "$before" "$after"' EXIT
+
+snapshot() {
+    local destination="$1"
+    git diff --binary --no-ext-diff HEAD -- >"$destination/worktree.diff"
+    git diff --binary --cached --no-ext-diff HEAD -- >"$destination/index.diff"
+    git ls-files --others --exclude-standard -z | LC_ALL=C sort -z >"$destination/untracked.list"
+    while IFS= read -r -d '' path; do
+        printf '%s\0%s\0' "$path" "$(git hash-object --no-filters -- "$path")"
+    done <"$destination/untracked.list" >"$destination/untracked.hashes"
+}
+
+snapshot "$before"
+
+mapfile -d '' generators < <(
+    find scripts -maxdepth 1 -type f -name 'generate-*' -perm -u+x -print0 | LC_ALL=C sort -z
+)
+
+for generator in "${generators[@]}"; do
+    LC_ALL=C TZ=UTC "./$generator" --check
+done
+
+snapshot "$after"
+if ! diff -r -- "$before" "$after"; then
+    echo "generated-artifact check changed the worktree" >&2
+    exit 1
+fi
+
+printf 'Generated artifacts are current (%d generator(s)).\n' "${#generators[@]}"
