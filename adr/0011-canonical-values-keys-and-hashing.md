@@ -1,12 +1,11 @@
 # ADR-0011: Canonical Values, Fixed-Scale Decimals, Keys, and Hashing
 
-- **Status:** Proposed
+- **Status:** Accepted
 - **Direction approved:** 2026-07-12
-- **Exact text accepted:** No
+- **Exact text accepted:** 2026-07-12
 - **Decision deadline:** Before WP-010 semantic types or fixtures merge
 
-The human architecture review approved this direction. This record remains
-Proposed until its exact text is reviewed and accepted.
+The human maintainer accepted this exact text on 2026-07-12.
 
 ## Context
 
@@ -15,27 +14,98 @@ MCP, and SDK boundaries. Rust layout, map iteration, floating point, locale, or
 implicit Unicode normalization would make hashes and durable keys platform- or
 process-dependent.
 
-## Proposed Decision
+## Decision
 
 `riffdb-types` owns one closed canonical value algebra for the POC. Business
-decimals use a checked signed `i128` coefficient with explicitly declared
-precision and scale; money includes an explicit currency identifier and uses no
-floating point. Integer signedness and width, UUID, date, timestamp, boolean,
-bounded text/bytes, bounded list, and record types remain distinct.
+decimal types use precision `P` in `1..=38`, scale `S` in `0..=P`, and a signed
+`i128` coefficient whose absolute value is less than `10^P`. Construction and
+arithmetic are checked. Scale changes are explicit and lossless or fail; there is
+no floating point or negative-zero representation. Money uses the same decimal
+rules plus exactly three uppercase ASCII currency characters. Integer signedness
+and width, UUID, date, timestamp, Boolean, bounded text/bytes, bounded list, and
+record types remain distinct.
 
-Canonical binary encoding uses explicit versioned type tags, fixed endianness,
-length prefixes, and limits. Record fields are ordered by stable field ID; maps
-and sets are sorted by canonical key bytes before encoding. Rust memory layout,
-serde defaults, locale, insertion order, and randomized hashing never determine
-bytes. Text policy is explicit UTF-8 with grammar/field-specific validation; no
-implicit Unicode normalization changes identity.
+### Canonical value encoding v1
 
-Durable keys are purpose-specific encodings built from domain tags and canonical
-components. Hashes use a specified, versioned, domain-separated cryptographic
-hash over canonical bytes. Plan, source, input, event, and identity domains cannot
-collide by construction. Secret/idempotency/capability lookup digests use the
-separately specified keyed construction rather than an unkeyed content hash.
-The custom Protobuf `riffdb.v1.Value` is an exact mapping of this algebra.
+Every encoded value begins with format byte `0x01` and one type tag. The initial
+tag registry is immutable:
+
+| Tag | Value |
+|---|---|
+| `0x00` | null |
+| `0x01` | Boolean |
+| `0x02` | signed 64-bit integer |
+| `0x03` | unsigned 64-bit integer |
+| `0x04` | decimal |
+| `0x05` | money |
+| `0x06` | UTF-8 string |
+| `0x07` | bytes |
+| `0x08` | timestamp |
+| `0x09` | date |
+| `0x0a` | UUID |
+| `0x0b` | enum |
+| `0x0c` | list |
+| `0x0d` | record |
+
+Fixed-width integers use big-endian bytes; signed value payloads use two's
+complement. Boolean payload is exactly `0x00` or `0x01`. Decimal payload is
+precision `u8`, scale `u8`, then the coefficient as 16-byte big-endian two's
+complement. Money payload is three currency bytes followed by the decimal
+payload. String and byte payloads use a `u32` big-endian byte length. Timestamp
+payload is signed `i64` Unix seconds plus `u32` nanoseconds in
+`0..=999_999_999`; date is signed `i32` days since the Unix epoch; UUID is 16
+network-order bytes. Enum payload is stable type ID then stable variant ID, both
+`u32`; display names are not canonical bytes. List payload is `u32` count then
+each canonical value. Record payload is `u32` field count followed by stable
+`FieldId` and canonical value pairs in strictly increasing field-ID order.
+Duplicate record fields and noncanonical ordering are rejected.
+
+All lengths, counts, and nesting are validated before allocation against the
+compiled type and process hard limits. A v1 canonical document, individual
+string, or individual byte value is at most 1 MiB; a list or record has at most
+65,535 entries; nesting depth is at most 32. Optional absence is the null value
+and is legal only under an optional type. Maps, sets, and unbounded collections
+are not v1 transactional value variants. Text is exact UTF-8 with grammar- or
+field-specific validation. No locale rule or implicit Unicode normalization
+changes identity.
+
+Purpose-specific durable key encoders prepend their namespace and format version.
+Unsigned ordered components use fixed-width big-endian bytes. Signed ordered
+components flip the sign bit before big-endian encoding so lexicographic and
+numeric order agree. Variable byte components use a `u32` length followed by
+exact bytes. A v1 durable key is at most 4 KiB. Each key schema fixes its
+component order; Rust memory layout, serde defaults, insertion order, and
+randomized hashing never determine bytes.
+
+### Hash framing and domains
+
+The v1 unkeyed frame is ASCII `RIFFDB-HASH`, byte `0x00`, scheme byte `0x01`,
+domain length as `u16` big endian, the ASCII domain, payload length as `u64` big
+endian, and the payload. Its digest is SHA-256. The v1 keyed frame replaces the
+prefix with ASCII `RIFFDB-HMAC`; its digest is HMAC-SHA-256 under the selected
+versioned key. These are content and lookup digests, not signatures.
+
+The initial central domain registry is:
+
+| Domain | Mode |
+|---|---|
+| `riffdb.canonical-value/v1` | SHA-256 |
+| `riffdb.source/v1` | SHA-256 |
+| `riffdb.contract-bundle/v1` | SHA-256 |
+| `riffdb.plan/v1` | SHA-256 |
+| `riffdb.command-input/v1` | SHA-256 |
+| `riffdb.event/v1` | SHA-256 |
+| `riffdb.entity-key/v1` | SHA-256 |
+| `riffdb.conflict-key/v1` | SHA-256 |
+| `riffdb.schema/v1` | SHA-256 |
+| `riffdb.idempotency-key/v1` | HMAC-SHA-256 |
+
+New domains may be added only with one owning semantic boundary and collision
+tests. Existing labels, framing, tags, or meanings cannot be reused. Secret and
+capability lookup digests require their own accepted ADR before adding another
+keyed domain. The custom Protobuf `riffdb.v1.Value` is an exact checked mapping
+of this algebra; adapters must supply the compiled decimal type where a wire
+value does not carry precision.
 
 ## Options Considered
 
@@ -54,14 +124,14 @@ The custom Protobuf `riffdb.v1.Value` is an exact mapping of this algebra.
 - Conversion adapters must prove exact round trips or reject values.
 - Changing any tag, ordering, bound, hash algorithm, or text rule is a versioned
   compatibility change.
-- The exact hash algorithm and domain registry must be enumerated in the accepted
-  revision before fixtures are generated.
+- The Rust SHA-256/HMAC provider requires separate critical-dependency review and
+  may not change canonical bytes or framing.
 
 ## Compatibility
 
-Value variants, numeric bounds, decimal/money encoding, text policy, field order,
-key domains, canonical bytes, hash algorithm/version, and Protobuf mapping are
-public and durable compatibility boundaries.
+Value variants and tags, numeric bounds, decimal/money encoding, text policy,
+field order, key domains, canonical bytes, hash algorithm/version, and Protobuf
+mapping are public and durable compatibility boundaries.
 
 ## Security
 

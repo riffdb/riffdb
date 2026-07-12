@@ -1,12 +1,11 @@
 # ADR-0005: Idempotency Identity, Terminal Outcomes, and Sequence Semantics
 
-- **Status:** Proposed
+- **Status:** Accepted
 - **Direction approved:** 2026-07-12
-- **Exact text accepted:** No
+- **Exact text accepted:** 2026-07-12
 - **Decision deadline:** Identity before WP-060 durable keys; full record before WP-100
 
-The human architecture review approved this direction. This record remains
-Proposed until its exact text is reviewed and accepted.
+The human maintainer accepted this exact text on 2026-07-12.
 
 ## Context
 
@@ -15,7 +14,7 @@ admission and terminal result without re-executing effects. The specification
 uses both request IDs and caller idempotency keys but does not fully define their
 scope, deployment behavior, or pre-terminal crash state.
 
-## Proposed Decision
+## Decision
 
 `RequestId` identifies an invocation for tracing; it is distinct from the
 caller-provided idempotency key. Durable idempotency identity is:
@@ -31,8 +30,26 @@ database/environment
 
 The contract version is stored with admission and outcome records but excluded
 from lookup identity so a retry survives compatible deployment. Raw caller keys
-are never persisted or logged. Canonical input is hashed with an explicitly
-versioned, domain-separated algorithm.
+are never persisted or logged.
+
+The v1 caller-key digest is HMAC-SHA-256 over the keyed hash frame defined by
+ADR-0011, using domain `riffdb.idempotency-key/v1` and the exact validated UTF-8
+bytes of the caller key as payload. The stored identity contains digest scheme
+version `1`, a `DigestKeyId`, and the 32-byte digest. It does not contain the raw
+key. A new admission uses the current write key. Lookup computes a bounded set of
+candidate digests using the current key and explicitly configured readable
+previous keys, newest first. Exactly one existing identity may match; multiple
+matches fail closed as an integrity error. A key cannot be retired until all
+outcomes that need same-key recovery have expired or been migrated under a
+separately reviewed procedure.
+
+The v1 canonical input hash is SHA-256 over the unkeyed hash frame defined by
+ADR-0011, using domain `riffdb.command-input/v1`. Its payload is the
+schema-validated canonical input record with the contract-declared idempotency-key
+field omitted. The HMAC identity already binds that field; omitting it from the
+unkeyed hash avoids creating a dictionary oracle for low-entropy caller keys.
+Input field order, decimal scale, text bytes, and nested value encoding are
+therefore independent of request serialization and map insertion order.
 
 Before runtime evaluation, the coordinator durably creates or resumes a bounded
 pending admission containing the identity, canonical input hash, request ID,
@@ -40,10 +57,11 @@ contract version, plan hash, and fixed `tx.time`. A pending admission has no
 commit sequence. The capability/lease is not durable. Resume reuses time and plan
 and reacquires current non-durable capabilities.
 
-At terminal commit, sequence, mutations, persisted `CommittedOutcome`, events,
-provenance, and commit record become atomic. Same identity and input returns the
-stored outcome and original sequence without execution. Different input returns
-a safe mismatch error without execution. Declared terminal business rejections,
+At terminal commit, sequence, mutations, terminal idempotency state and pending
+resolution, persisted `CommittedOutcome`, events and outbox intent, provenance,
+and commit record become atomic. Same identity and input returns the stored
+outcome and original sequence without execution. Different input returns a safe
+mismatch error without execution. Declared terminal business rejections,
 including zero-mutation rejections, receive exactly one sequence on first
 terminal commit; replay receives no new sequence.
 
@@ -62,20 +80,25 @@ terminal commit; replay receives no new sequence.
   retention policy.
 - Compatible deployment cannot silently reinterpret an admitted command.
 - Business rejection is data, not a transport failure.
-- Read-only command sequencing, if any are admitted as commands, follows the same
-  terminal-outcome rule unless a later accepted ADR narrows command semantics.
+- Read-only operations are journaled only when idempotency or audit policy
+  requires it and otherwise create no mutation commit record, matching the POC
+  default pending final WP-100 review.
 
 ## Compatibility
 
-Identity bytes, digest key/version, canonical input hashing, pending-record
-version, terminal outcome encoding, and sequence semantics are durable boundaries.
+Identity bytes, digest scheme and key version, canonical input hashing,
+pending-record version, terminal outcome encoding, and sequence semantics are
+durable boundaries. Adding a readable digest key is compatible. Changing the
+HMAC algorithm, framing, identity tuple, or existing domain label requires a new
+version and migration plan.
 
 ## Security
 
 Tenant scope comes from authorization, never caller claims. Keyed digests limit
 offline disclosure of low-entropy caller keys. Safe mismatch errors reveal no
-stored input or key. Digest keys require rotation/version and protected server
-configuration.
+stored input or key. Digest keys require rotation/version, bounded previous-key
+lookup, and protected server configuration. The Rust cryptography provider is a
+separate critical-dependency review; it may not change these bytes.
 
 ## Testing
 
@@ -87,7 +110,7 @@ one sequence, mutation, event set, provenance record, and outcome.
 ## Requirements and Work Packages
 
 - **Requirements:** `TXN-010`, `TXN-040` through `TXN-044`, `ID-004`, `ID-005`,
-  `REC-001` through `REC-003`, `LOG-001`
+  `REC-001` through `REC-003`, `LOG-001`, `OUT-001` through `OUT-004`
 - **Defines or blocks:** `WP-010`, `WP-060`, `WP-070`, `WP-100`, `WP-130`
 - **Final evidence:** `WP-190`, `WP-200`
 
