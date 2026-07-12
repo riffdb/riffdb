@@ -1,0 +1,58 @@
+digraph G {
+  graph [rankdir=TB, bgcolor="white", pad="0.18", nodesep="0.25", ranksep="0.42", fontname="Liberation Sans", fontsize=18, label="POC work-package dependency graph", labelloc="t", labeljust="l"];
+  node [shape=box, style="rounded,filled", fontname="Liberation Sans", fontsize=8.8, margin="0.10,0.06", color="#28495F", fillcolor="#F7FAFB", fontcolor="#173042"];
+  edge [color="#738B9A", penwidth=1.0, arrowsize=0.55];
+
+  wp000 [label="WP-000\nRepository foundation", fillcolor="#DCEFF0"];
+  wp010 [label="WP-010\nCore types"];
+  wp020 [label="WP-020\nProtobuf + envelope"];
+  wp030 [label="WP-030\nContract syntax", fillcolor="#EEF5F7"];
+  wp040 [label="WP-040\nTyped IR + compiler", fillcolor="#EEF5F7"];
+  wp045 [label="WP-045\nPostgreSQL comparison baseline", style="rounded,filled,dashed", fillcolor="#FAFAFA"];
+  wp050 [label="WP-050\nContract catalog", fillcolor="#E4F0F2"];
+  wp060 [label="WP-060\nStorage semantic API", fillcolor="#EEF5F7"];
+  wp070 [label="WP-070\nredb engine", fillcolor="#E4F0F2"];
+  wp075 [label="WP-075\nFjall semantic comparison", style="rounded,filled,dashed", fillcolor="#FAFAFA"];
+  wp080 [label="WP-080\nDeterministic runtime", fillcolor="#EEF5F7"];
+  wp090 [label="WP-090\nConflict manager", fillcolor="#E4F0F2"];
+  wp100 [label="WP-100\nCommit + idempotency", fillcolor="#E4F0F2", penwidth=1.6];
+  wp110 [label="WP-110\nAuthorization", fillcolor="#E4F0F2"];
+  wp120 [label="WP-120\nApplication service", fillcolor="#E4F0F2", penwidth=1.6];
+  wp125 [label="WP-125\nService comparison adapter", style="rounded,filled,dashed", fillcolor="#FAFAFA"];
+  wp130 [label="WP-130\ngRPC + Rust SDK", fillcolor="#E4F0F2"];
+  wp135 [label="WP-135\nSDK/gRPC comparison adapter", style="rounded,filled,dashed", fillcolor="#FAFAFA"];
+  wp140 [label="WP-140\nNative MCP", fillcolor="#CFE6E8"];
+  wp150 [label="WP-150\nCLI", fillcolor="#E4F0F2"];
+  wp160 [label="WP-160\nOutbox dispatch", fillcolor="#CFE6E8"];
+  wp170 [label="WP-170\nProjection core", fillcolor="#CFE6E8"];
+  wp180 [label="WP-180\nObservability", fillcolor="#CFE6E8"];
+  wp185 [label="WP-185\nServer composition", fillcolor="#CFE6E8", penwidth=1.6];
+  wp190 [label="WP-190\nIntegrated crash harness", fillcolor="#CFE6E8"];
+  wp200 [label="WP-200\nAcceptance + release", fillcolor="#DCEFF0", penwidth=1.8];
+
+  key [shape=plain, label="Gate colors: P0  light • P1  medium • P2  green • dashed  non-gating evidence"];
+
+  wp000 -> wp010;
+  wp010 -> {wp020 wp030 wp090};
+  wp030 -> wp040;
+  wp010 -> {wp040 wp060};
+  wp020 -> {wp050 wp060 wp070};
+  wp040 -> {wp045 wp050 wp080};
+  wp060 -> {wp050 wp070 wp075 wp080};
+  wp070 -> wp075;
+  wp010 -> wp110;
+  wp070 -> wp110;
+  {wp050 wp070 wp080 wp090 wp110} -> wp100;
+  {wp050 wp100 wp110} -> wp120;
+  {wp020 wp120} -> wp130;
+  {wp045 wp120} -> wp125;
+  {wp125 wp130} -> wp135;
+  {wp040 wp120 wp130} -> wp140;
+  wp130 -> wp150;
+  {wp100 wp120} -> {wp160 wp170};
+  wp120 -> wp180;
+  {wp130 wp140 wp160 wp170 wp180} -> wp185;
+  {wp070 wp100 wp160 wp170 wp185} -> wp190;
+  {wp050 wp075 wp130 wp135 wp140 wp150 wp160 wp170 wp180 wp185 wp190} -> wp200;
+  wp200 -> key [style=invis];
+}

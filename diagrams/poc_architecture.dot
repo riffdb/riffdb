@@ -1,0 +1,64 @@
+digraph G {
+  graph [rankdir=TB, bgcolor="white", pad="0.22", nodesep="0.28", ranksep="0.42", fontname="Liberation Sans", fontsize=18, label="RiffDB standalone Rust POC — logical architecture", labelloc="t", labeljust="l", newrank=true];
+  node [shape=box, style="rounded,filled", fontname="Liberation Sans", fontsize=10, margin="0.14,0.08", color="#18324A", fillcolor="#F5F8FA", fontcolor="#152536"];
+  edge [color="#45677E", penwidth=1.25, arrowsize=0.68, fontname="Liberation Sans", fontsize=8.5, fontcolor="#35566D"];
+
+  subgraph cluster_clients {
+    label="Clients and agent hosts"; color="#B7C7D3"; style="rounded,dashed"; fontname="Liberation Sans"; fontsize=10;
+    {rank=same; rust [label="Rust SDK"]; cli [label="riffdb"]; host [label="MCP host / coding agent"];}
+  }
+  subgraph cluster_interfaces {
+    label="Public interfaces"; color="#B7C7D3"; style="rounded,dashed"; fontname="Liberation Sans"; fontsize=10;
+    {rank=same; grpc [label="Tonic gRPC API\nHTTP/2 + Protobuf", fillcolor="#EAF3F6"]; mcp [label="Native MCP API\nstdio + Streamable HTTP", fillcolor="#EAF3F6"];}
+  }
+
+  auth [label="Authentication • capability resolution\npolicy • redaction obligations", fillcolor="#DCEFF0"];
+  service [label="API-neutral application service\ncommand • contract • entity • commit • projection", fillcolor="#CFE6E8", penwidth=2.0];
+
+  subgraph cluster_contract {
+    label="Contract control plane"; color="#7BA0A3"; style="rounded"; fontname="Liberation Sans"; fontsize=10;
+    {rank=same; compiler [label="Contract compiler\nDSL → typed IR → schemas → plans"]; catalog [label="Read-only catalog view\nimmutable bundles + active version"]; control [label="Typed authoritative control-plane intents\ncatalog activation • capability create/revoke", fillcolor="#FFF7E8"];}
+  }
+
+  subgraph cluster_txn {
+    label="Transaction semantics owned by RiffDB"; color="#5E8F93"; style="rounded"; penwidth=1.4; fontname="Liberation Sans"; fontsize=10;
+    conflict [label="Logical conflict manager\ncanonical exclusive capabilities"];
+    materialize [label="Bounded snapshot materializer\nowned values + observed dependencies"];
+    runtime [label="Deterministic command runtime\nno I/O • values + plan → CommitIntent"];
+    commit [label="Commit coordinator\nonly authoritative mutator\nreserve • revalidate • sequence • atomically apply", fillcolor="#DCEFF0", penwidth=2.0];
+    conflict -> materialize [label="capabilities"];
+    materialize -> runtime [label="materialized read set"];
+    runtime -> commit [label="CommitIntent"];
+  }
+
+  storage [label="Storage semantic API"];
+  redb [label="redb baseline\nACID key/value storage", fillcolor="#EEF1F5"];
+  log [label="Ordered commit + provenance log\nseparate administrative audit", fillcolor="#FFF7E8"];
+
+  subgraph cluster_derived {
+    label="Derived and asynchronous planes"; color="#B7C7D3"; style="rounded,dashed"; fontname="Liberation Sans"; fontsize=10;
+    {rank=same; outbox [label="Durable outbox worker\nat-least-once dispatch", fillcolor="#FFF7E8"]; proj [label="Projection worker\ncount/sum + durable frontier", fillcolor="#FFF7E8"];}
+  }
+
+  obs [label="Cross-cutting: tracing • metrics • health • failpoints", style="rounded,filled,dashed", fillcolor="#FAFAFA", color="#8899A6"];
+
+  rust -> grpc;
+  cli -> grpc;
+  host -> mcp;
+  grpc -> auth;
+  mcp -> auth;
+  auth -> service;
+  service -> compiler [label="validate / explain"];
+  service -> control [label="authorized admin operation"];
+  control -> commit [label="typed intent"];
+  service -> catalog [label="read active plan"];
+  service -> conflict [label="execute command"];
+  commit -> storage;
+  storage -> materialize [label="bounded snapshot", constraint=false];
+  storage -> redb;
+  redb -> log [label="atomic records"];
+  log -> outbox [label="durable events"];
+  log -> proj [label="contiguous commits"];
+  outbox -> obs [style=dashed, arrowhead=none];
+  proj -> obs [style=dashed, arrowhead=none];
+}

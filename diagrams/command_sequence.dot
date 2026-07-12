@@ -1,0 +1,31 @@
+digraph G {
+  graph [rankdir=TB, bgcolor="white", pad="0.22", nodesep="0.28", ranksep="0.40", fontname="Liberation Sans", fontsize=18, label="Command execution and uncertain-response recovery", labelloc="t", labeljust="l"];
+  node [shape=box, style="rounded,filled", fontname="Liberation Sans", fontsize=10, margin="0.14,0.08", color="#18324A", fillcolor="#F5F8FA", fontcolor="#152536"];
+  edge [color="#45677E", penwidth=1.25, arrowsize=0.68, fontname="Liberation Sans", fontsize=8.5, fontcolor="#35566D"];
+
+  client [label="1  Client / MCP sends typed command\nwith request ID + caller-supplied idempotency key", fillcolor="#EAF3F6"];
+  admit [label="2  Authenticate • authorize • validate schema"];
+  lookup [label="3  Look up idempotency identity", shape=diamond, fillcolor="#F7FAFB"];
+  stored [label="Return persisted typed outcome\nreplayed=true • no duplicate mutation/event", fillcolor="#CFE6E8", penwidth=1.7];
+  mismatch [label="Return IdempotencyKeyReuse\nno evaluation • no sequence", fillcolor="#FFF2DC", color="#A26A21"];
+  reserve [label="4  Coordinator creates or resumes durable Pending reservation\nfixed tx.time • input hash • request ID • contract version • plan hash\nno CommitSequence", fillcolor="#FFF7E8"];
+  lock [label="5  Derive and acquire canonical conflict keys"];
+  snapshot [label="6  Materialize bounded snapshot\nand observed dependencies outside runtime"];
+  run [label="7  Deterministic runtime evaluates owned values\nand exact plan, then produces CommitIntent"];
+  coord [label="8  Commit coordinator rechecks reservation, dependencies,\nand predicates, then assigns CommitSequence"];
+  durable [label="9  Atomic durable terminal commit\nentities • indexes • outcome • events • provenance • log", fillcolor="#DCEFF0", penwidth=2.0];
+  delivered [label="10  Did the response reach the client?", shape=diamond, fillcolor="#FFF2DC", color="#A26A21"];
+  normal [label="Return committed typed outcome\nwith commit sequence", fillcolor="#CFE6E8"];
+  retry [label="11  Client retries the same key\nor calls GetOutcome", fillcolor="#EAF3F6"];
+  projection [label="Projection consumes commit N and\ndurably advances frontier to at least N", fillcolor="#FFF7E8"];
+
+  client -> admit -> lookup;
+  lookup -> stored [label="terminal + equal canonical input"];
+  lookup -> mismatch [label="same identity + different input"];
+  lookup -> reserve [label="new or pending + equal input"];
+  reserve -> lock -> snapshot -> run -> coord -> durable -> delivered;
+  delivered -> normal [label="yes"];
+  delivered -> retry [label="no / unknown"];
+  retry -> lookup [label="same key"];
+  durable -> projection [label="ordered commit log", constraint=false];
+}
