@@ -112,6 +112,7 @@ work_packages:
   - ADR-0011
   - ADR-0005
   allowed_paths:
+  - Cargo.lock
   - crates/riffdb-types/**
   - crates/riffdb-errors/**
   - crates/riffdb-testkit/src/canonical/**
