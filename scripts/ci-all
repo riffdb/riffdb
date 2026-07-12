@@ -1,0 +1,33 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+repo_root="$(git rev-parse --show-toplevel)"
+cd "$repo_root"
+source scripts/tool-versions
+
+require_tool_version() {
+    local label="$1"
+    local expected="$2"
+    shift 2
+    local actual
+    actual="$("$@" --version)"
+    if [[ " $actual " != *" $expected "* ]]; then
+        printf '%s must be version %s, found: %s\n' "$label" "$expected" "$actual" >&2
+        exit 1
+    fi
+}
+
+require_tool_version cargo-deny "$RIFFDB_CARGO_DENY_VERSION" cargo deny
+require_tool_version cargo-audit "$RIFFDB_CARGO_AUDIT_VERSION" cargo audit
+require_tool_version cargo-machete "$RIFFDB_CARGO_MACHETE_VERSION" cargo machete
+
+cargo fmt --all -- --check
+cargo clippy --workspace --all-targets --all-features -- -D warnings
+cargo test --workspace --all-features
+RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps
+cargo deny check
+cargo audit
+cargo machete
+./scripts/check-workspace-policy
+./scripts/check-requirement-coverage
+./scripts/check-generated

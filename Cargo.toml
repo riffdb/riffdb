@@ -1,0 +1,49 @@
+[workspace]
+resolver = "3"
+members = [
+    "crates/riffdb-api-grpc",
+    "crates/riffdb-api-mcp",
+    "crates/riffdb-auth",
+    "crates/riffdb-catalog",
+    "crates/riffdb-cli",
+    "crates/riffdb-client-rust",
+    "crates/riffdb-commit",
+    "crates/riffdb-conflict",
+    "crates/riffdb-contract-compiler",
+    "crates/riffdb-contract-ir",
+    "crates/riffdb-contract-syntax",
+    "crates/riffdb-diagnostics",
+    "crates/riffdb-errors",
+    "crates/riffdb-idempotency",
+    "crates/riffdb-invariant",
+    "crates/riffdb-mcp-stdio",
+    "crates/riffdb-observability",
+    "crates/riffdb-outbox",
+    "crates/riffdb-policy",
+    "crates/riffdb-projection",
+    "crates/riffdb-proto",
+    "crates/riffdb-runtime",
+    "crates/riffdb-server",
+    "crates/riffdb-service",
+    "crates/riffdb-storage-api",
+    "crates/riffdb-storage-memory",
+    "crates/riffdb-storage-redb",
+    "crates/riffdb-testkit",
+    "crates/riffdb-types",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.97.0"
+publish = false
+
+[workspace.lints.rust]
+unsafe_code = "forbid"
+unused_must_use = "deny"
+missing_docs = "warn"
+unreachable_pub = "warn"
+
+[workspace.lints.clippy]
+correctness = { level = "warn", priority = -1 }
+await_holding_lock = "deny"
