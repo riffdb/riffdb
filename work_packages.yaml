@@ -174,10 +174,16 @@ work_packages:
   - ADR-0002
   - ADR-0011
   allowed_paths:
+  - .github/workflows/ci.yml
+  - Cargo.lock
+  - deny.toml
   - crates/riffdb-contract-syntax/**
   - contracts/parser-fixtures/**
   - fuzz/Cargo.toml
+  - fuzz/Cargo.lock
+  - fuzz/.gitignore
   - fuzz/fuzz_targets/contract_*
+  - scripts/tool-versions
   deliverables:
   - Logos lexer
   - LALRPOP grammar
@@ -186,7 +192,7 @@ work_packages:
   - Parser fuzz target
   acceptance_commands:
   - cargo test -p riffdb-contract-syntax
-  - cargo fuzz run contract_parser -- -max_total_time=30
+  - cargo +nightly-2026-07-12 fuzz run contract_parser -- -max_total_time=30
   exit_gate: Budget source parses; invalid corpus yields bounded, stable span diagnostics; fuzz smoke passes.
   human_review_triggers: *id001
 - id: WP-040
@@ -222,6 +228,7 @@ work_packages:
   - ADR-0003
   - ADR-0010
   - ADR-0011
+  - ADR-0013
   allowed_paths:
   - crates/riffdb-contract-ir/**
   - crates/riffdb-contract-compiler/**
