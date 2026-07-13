@@ -4,7 +4,7 @@ use std::error::Error;
 use std::fmt;
 
 use prost::Message;
-use riffdb_types::{ProvenanceId, RequestId};
+use riffdb_types::{CommitSequence, ContractVersion, ProvenanceId, RequestId};
 
 use crate::v1;
 use crate::value::{MAX_PROTOCOL_NAME_BYTES, validate_value};
@@ -44,6 +44,12 @@ pub fn validate_execute_request(
         .try_into()
         .map_err(|_| ExecuteWireError::InvalidRequestId)?;
     RequestId::from_bytes(request_id).map_err(|_| ExecuteWireError::InvalidRequestId)?;
+    if request
+        .expected_contract_version
+        .is_some_and(|version| ContractVersion::new(version).is_none())
+    {
+        return Err(ExecuteWireError::InvalidContractVersion);
+    }
     validate_protocol_name(&request.command_name)?;
     validate_value(
         request
@@ -83,6 +89,9 @@ pub fn validate_execute_response(
             return Err(ExecuteWireError::InvalidCompletionStatus);
         }
     }
+    CommitSequence::new(response.commit_sequence).ok_or(ExecuteWireError::InvalidCommitSequence)?;
+    ContractVersion::new(response.contract_version)
+        .ok_or(ExecuteWireError::InvalidContractVersion)?;
     if response.plan_hash.len() != 32 {
         return Err(ExecuteWireError::InvalidPlanHash);
     }
@@ -175,6 +184,8 @@ pub enum ExecuteWireError {
     PreflightLimitExceeded,
     /// The request identifier is not an exact UUIDv7.
     InvalidRequestId,
+    /// A contract version is the unassigned zero sentinel.
+    InvalidContractVersion,
     /// A command or outcome name is empty or too long.
     InvalidProtocolName,
     /// A required input or outcome value is absent.
@@ -183,6 +194,8 @@ pub enum ExecuteWireError {
     InvalidValue,
     /// The completion status is unspecified or unknown.
     InvalidCompletionStatus,
+    /// A committed response carries the unassigned zero sequence sentinel.
+    InvalidCommitSequence,
     /// The plan hash is not exactly 32 bytes.
     InvalidPlanHash,
     /// The provenance URI is absent, oversized, or not in the RiffDB namespace.
@@ -240,6 +253,24 @@ mod tests {
     }
 
     #[test]
+    fn execute_request_rejects_zero_expected_contract_version() {
+        let request = v1::ExecuteCommandRequest {
+            request_id: request_id(),
+            command_name: "budget.reserve".to_owned(),
+            expected_contract_version: Some(0),
+            input: Some(canonical_value_to_proto(&CanonicalValue::Null).expect("valid value")),
+        };
+        assert_eq!(
+            validate_execute_request(&request),
+            Err(ExecuteWireError::InvalidContractVersion)
+        );
+        assert_eq!(
+            decode_execute_request(&request.encode_to_vec()),
+            Err(ExecuteWireError::InvalidContractVersion)
+        );
+    }
+
+    #[test]
     fn successful_response_requires_all_integrity_fields() {
         let response = v1::ExecuteCommandResponse {
             status: v1::execute_command_response::CompletionStatus::Committed as i32,
@@ -254,6 +285,28 @@ mod tests {
             durability_mode: "sync".to_owned(),
         };
         validate_execute_response(&response).expect("valid response");
+
+        let mut zero_sequence = response.clone();
+        zero_sequence.commit_sequence = 0;
+        assert_eq!(
+            validate_execute_response(&zero_sequence),
+            Err(ExecuteWireError::InvalidCommitSequence)
+        );
+        assert_eq!(
+            decode_execute_response(&zero_sequence.encode_to_vec()),
+            Err(ExecuteWireError::InvalidCommitSequence)
+        );
+
+        let mut zero_version = response.clone();
+        zero_version.contract_version = 0;
+        assert_eq!(
+            validate_execute_response(&zero_version),
+            Err(ExecuteWireError::InvalidContractVersion)
+        );
+        assert_eq!(
+            decode_execute_response(&zero_version.encode_to_vec()),
+            Err(ExecuteWireError::InvalidContractVersion)
+        );
 
         let mut invalid = response;
         invalid.plan_hash.pop();

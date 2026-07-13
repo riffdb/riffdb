@@ -147,8 +147,13 @@ fn exact_value_execute_error_and_envelope_fields_are_frozen() {
                 ("recovery_action", 4),
                 ("validation", 5),
                 ("contract_mismatch", 6),
+                ("execution_failure", 8),
                 ("incident_id", 7),
             ],
+        ),
+        (
+            "riffdb.v1.CommandExecutionFailureDetails",
+            vec![("code", 1)],
         ),
         (
             "riffdb.storage.v1.StoredEnvelope",
@@ -169,7 +174,25 @@ fn exact_value_execute_error_and_envelope_fields_are_frozen() {
     assert!(request.field[2].proto3_optional());
     assert_eq!(request.field[2].r#type(), Type::Uint64);
     let public_error = messages["riffdb.v1.PublicError"];
-    assert!(public_error.field[6].proto3_optional());
+    assert!(public_error.field[7].proto3_optional());
+    let execution_failure = public_error
+        .field
+        .iter()
+        .find(|field| field.name() == "execution_failure")
+        .expect("execution failure detail field");
+    assert_eq!(execution_failure.r#type(), Type::Message);
+    assert_eq!(
+        execution_failure.type_name(),
+        ".riffdb.v1.CommandExecutionFailureDetails"
+    );
+    for detail_name in ["validation", "contract_mismatch"] {
+        let detail = public_error
+            .field
+            .iter()
+            .find(|field| field.name() == detail_name)
+            .expect("existing public error detail field");
+        assert_eq!(detail.oneof_index, execution_failure.oneof_index);
+    }
     let value_field = messages["riffdb.v1.ValueField"];
     assert!(value_field.field[0].proto3_optional());
     let envelope = messages["riffdb.storage.v1.StoredEnvelope"];
@@ -191,6 +214,7 @@ fn exact_closed_enum_registries_are_frozen() {
             ("PUBLIC_ERROR_KIND_STORAGE_UNAVAILABLE", 6),
             ("PUBLIC_ERROR_KIND_OUTCOME_UNKNOWN", 7),
             ("PUBLIC_ERROR_KIND_INTERNAL_DEFECT", 8),
+            ("PUBLIC_ERROR_KIND_COMMAND_EXECUTION_FAILED", 9),
         ]
     );
     assert_eq!(
@@ -217,6 +241,18 @@ fn exact_closed_enum_registries_are_frozen() {
             ("VALIDATION_CODE_TOO_MANY_ITEMS", 6),
             ("VALIDATION_CODE_UNKNOWN_FIELD", 7),
             ("VALIDATION_CODE_DUPLICATE_FIELD", 8),
+        ]
+    );
+    assert_eq!(
+        enum_values(top_level_enum(
+            &descriptors,
+            "riffdb.v1",
+            "ExecutionFailureCode"
+        )),
+        vec![
+            ("EXECUTION_FAILURE_CODE_UNSPECIFIED", 0),
+            ("EXECUTION_FAILURE_CODE_ARITHMETIC_FAULT", 1),
+            ("EXECUTION_FAILURE_CODE_RESOURCE_LIMIT", 2),
         ]
     );
 

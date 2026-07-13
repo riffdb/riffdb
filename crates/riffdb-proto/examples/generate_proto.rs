@@ -27,7 +27,7 @@ use riffdb_proto::{
 };
 use riffdb_types::{
     CanonicalValue, ContractVersion, CurrencyCode, Date, Decimal, DecimalSpec, EnumTypeId,
-    EnumVariantId, FieldId, IncidentId, Money, Timestamp, hash_schema,
+    EnumVariantId, ExecutionFailureCode, FieldId, IncidentId, Money, Timestamp, hash_schema,
 };
 
 const PRODUCTION_SOURCES: &[&str] = &[
@@ -523,8 +523,8 @@ fn wire_vectors() -> Result<String, Box<dyn Error>> {
         (
             "value.enum",
             CanonicalValue::Enum {
-                type_id: EnumTypeId::new(7),
-                variant_id: EnumVariantId::new(11),
+                type_id: EnumTypeId::new(7).expect("fixture enum type ID is nonzero"),
+                variant_id: EnumVariantId::new(11).expect("fixture enum variant ID is nonzero"),
             },
         ),
         (
@@ -534,8 +534,14 @@ fn wire_vectors() -> Result<String, Box<dyn Error>> {
         (
             "value.record",
             CanonicalValue::record(vec![
-                (FieldId::new(9), CanonicalValue::I64(2)),
-                (FieldId::new(3), CanonicalValue::I64(1)),
+                (
+                    FieldId::new(9).expect("fixture field ID is nonzero"),
+                    CanonicalValue::I64(2),
+                ),
+                (
+                    FieldId::new(3).expect("fixture field ID is nonzero"),
+                    CanonicalValue::I64(1),
+                ),
             ])?,
         ),
     ];
@@ -581,7 +587,7 @@ fn wire_vectors() -> Result<String, Box<dyn Error>> {
 
     let incident_id = IncidentId::from_bytes(request_id)?;
     let path = ValidationPath::new(vec![
-        ValidationPathSegment::Field(FieldId::new(3)),
+        ValidationPathSegment::Field(FieldId::new(3).expect("fixture field ID is nonzero")),
         ValidationPathSegment::ListIndex(1),
     ])?;
     let errors = [
@@ -600,7 +606,17 @@ fn wire_vectors() -> Result<String, Box<dyn Error>> {
         ),
         (
             "error.contract",
-            PublicError::contract_mismatch(ContractVersion::new(7)),
+            PublicError::contract_mismatch(
+                ContractVersion::new(7).expect("fixture contract version is nonzero"),
+            ),
+        ),
+        (
+            "error.execution-arithmetic",
+            PublicError::command_execution_failed(ExecutionFailureCode::ArithmeticFault),
+        ),
+        (
+            "error.execution-resource-limit",
+            PublicError::command_execution_failed(ExecutionFailureCode::ResourceLimit),
         ),
         ("error.storage", PublicError::storage_unavailable()),
         ("error.outcome-unknown", PublicError::outcome_unknown()),

@@ -83,7 +83,7 @@ pub struct PublicError {
     pub recovery_action: i32,
     #[prost(bytes = "vec", optional, tag = "7")]
     pub incident_id: ::core::option::Option<::prost::alloc::vec::Vec<u8>>,
-    #[prost(oneof = "public_error::Details", tags = "5, 6")]
+    #[prost(oneof = "public_error::Details", tags = "5, 6, 8")]
     pub details: ::core::option::Option<public_error::Details>,
 }
 /// Nested message and enum types in `PublicError`.
@@ -94,6 +94,8 @@ pub mod public_error {
         Validation(super::ValidationIssues),
         #[prost(message, tag = "6")]
         ContractMismatch(super::ContractMismatchDetails),
+        #[prost(message, tag = "8")]
+        ExecutionFailure(super::CommandExecutionFailureDetails),
     }
 }
 #[derive(Clone, PartialEq, ::prost::Message)]
@@ -128,6 +130,11 @@ pub struct ContractMismatchDetails {
     #[prost(uint64, tag = "1")]
     pub active_contract_version: u64,
 }
+#[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct CommandExecutionFailureDetails {
+    #[prost(enumeration = "ExecutionFailureCode", tag = "1")]
+    pub code: i32,
+}
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, ::prost::Enumeration)]
 #[repr(i32)]
 pub enum PublicErrorKind {
@@ -140,6 +147,7 @@ pub enum PublicErrorKind {
     StorageUnavailable = 6,
     OutcomeUnknown = 7,
     InternalDefect = 8,
+    CommandExecutionFailed = 9,
 }
 impl PublicErrorKind {
     /// String value of the enum field names used in the ProtoBuf definition.
@@ -159,6 +167,7 @@ impl PublicErrorKind {
             Self::StorageUnavailable => "PUBLIC_ERROR_KIND_STORAGE_UNAVAILABLE",
             Self::OutcomeUnknown => "PUBLIC_ERROR_KIND_OUTCOME_UNKNOWN",
             Self::InternalDefect => "PUBLIC_ERROR_KIND_INTERNAL_DEFECT",
+            Self::CommandExecutionFailed => "PUBLIC_ERROR_KIND_COMMAND_EXECUTION_FAILED",
         }
     }
     /// Creates an enum from field names used in the ProtoBuf definition.
@@ -175,6 +184,9 @@ impl PublicErrorKind {
             "PUBLIC_ERROR_KIND_STORAGE_UNAVAILABLE" => Some(Self::StorageUnavailable),
             "PUBLIC_ERROR_KIND_OUTCOME_UNKNOWN" => Some(Self::OutcomeUnknown),
             "PUBLIC_ERROR_KIND_INTERNAL_DEFECT" => Some(Self::InternalDefect),
+            "PUBLIC_ERROR_KIND_COMMAND_EXECUTION_FAILED" => {
+                Some(Self::CommandExecutionFailed)
+            }
             _ => None,
         }
     }
@@ -267,6 +279,35 @@ impl ValidationCode {
             "VALIDATION_CODE_TOO_MANY_ITEMS" => Some(Self::TooManyItems),
             "VALIDATION_CODE_UNKNOWN_FIELD" => Some(Self::UnknownField),
             "VALIDATION_CODE_DUPLICATE_FIELD" => Some(Self::DuplicateField),
+            _ => None,
+        }
+    }
+}
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, ::prost::Enumeration)]
+#[repr(i32)]
+pub enum ExecutionFailureCode {
+    Unspecified = 0,
+    ArithmeticFault = 1,
+    ResourceLimit = 2,
+}
+impl ExecutionFailureCode {
+    /// String value of the enum field names used in the ProtoBuf definition.
+    ///
+    /// The values are not transformed in any way and thus are considered stable
+    /// (if the ProtoBuf definition does not change) and safe for programmatic use.
+    pub fn as_str_name(&self) -> &'static str {
+        match self {
+            Self::Unspecified => "EXECUTION_FAILURE_CODE_UNSPECIFIED",
+            Self::ArithmeticFault => "EXECUTION_FAILURE_CODE_ARITHMETIC_FAULT",
+            Self::ResourceLimit => "EXECUTION_FAILURE_CODE_RESOURCE_LIMIT",
+        }
+    }
+    /// Creates an enum from field names used in the ProtoBuf definition.
+    pub fn from_str_name(value: &str) -> ::core::option::Option<Self> {
+        match value {
+            "EXECUTION_FAILURE_CODE_UNSPECIFIED" => Some(Self::Unspecified),
+            "EXECUTION_FAILURE_CODE_ARITHMETIC_FAULT" => Some(Self::ArithmeticFault),
+            "EXECUTION_FAILURE_CODE_RESOURCE_LIMIT" => Some(Self::ResourceLimit),
             _ => None,
         }
     }

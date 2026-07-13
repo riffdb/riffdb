@@ -328,26 +328,27 @@ mod tests {
     #[test]
     fn key_identity_is_part_of_the_immutable_prefix() {
         assert_eq!(
-            EntityKeyBuilder::new(EntityTypeId::new(0x0102_0304)).as_bytes(),
+            EntityKeyBuilder::new(EntityTypeId::new(0x0102_0304).expect("nonzero")).as_bytes(),
             &[0x45, 0x01, 0x01, 0x02, 0x03, 0x04]
         );
         assert_eq!(
-            ConflictKeyBuilder::new(AggregateTypeId::new(0x0506_0708)).as_bytes(),
+            ConflictKeyBuilder::new(AggregateTypeId::new(0x0506_0708).expect("nonzero")).as_bytes(),
             &[0x43, 0x01, 0x05, 0x06, 0x07, 0x08]
         );
         assert_eq!(
-            PartitionKeyBuilder::new(AggregateTypeId::new(0x090a_0b0c)).as_bytes(),
+            PartitionKeyBuilder::new(AggregateTypeId::new(0x090a_0b0c).expect("nonzero"))
+                .as_bytes(),
             &[0x50, 0x01, 0x09, 0x0a, 0x0b, 0x0c]
         );
         assert_eq!(
-            IndexEntryKeyBuilder::new(IndexId::new(0x0d0e_0f10)).as_bytes(),
+            IndexEntryKeyBuilder::new(IndexId::new(0x0d0e_0f10).expect("nonzero")).as_bytes(),
             &[0x49, 0x01, 0x0d, 0x0e, 0x0f, 0x10]
         );
     }
 
     #[test]
     fn failed_append_does_not_mutate_builder() {
-        let mut builder = EntityKeyBuilder::new(EntityTypeId::new(1));
+        let mut builder = EntityKeyBuilder::new(EntityTypeId::first());
         let before = builder.as_bytes().to_vec();
         assert!(builder.push_bytes(&vec![0; MAX_KEY_BYTES]).is_err());
         assert_eq!(builder.as_bytes(), before);

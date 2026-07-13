@@ -6,9 +6,9 @@ use hmac::{Hmac, KeyInit, Mac};
 use sha2::{Digest, Sha256};
 
 use crate::{
-    CanonicalInputHash, CanonicalValueHash, ConflictKeyHash, ContractBundleHash,
-    ContractPlanRootHash, DigestKey, DigestKeyId, EntityKeyHash, EventHash, PartitionKeyHash,
-    PlanHash, ProjectionPlanHash, SchemaHash, SourceHash,
+    CanonicalInputHash, CanonicalValueHash, CapabilityTokenDigest, ConflictKeyHash,
+    ContractBundleHash, ContractPlanRootHash, DigestKey, DigestKeyId, EntityKeyHash, EventHash,
+    PartitionKeyHash, PlanHash, ProjectionApplyHash, ProjectionPlanHash, SchemaHash, SourceHash,
 };
 
 /// Hash framing and algorithm scheme defined by ADR-0011.
@@ -44,11 +44,13 @@ pub enum HashDomain {
     PartitionKey,
     /// Generated schema content.
     Schema,
+    /// One complete checked projection apply request.
+    ProjectionApply,
 }
 
 impl HashDomain {
     /// Every registered unkeyed domain, for compatibility and collision checks.
-    pub const ALL: [Self; 12] = [
+    pub const ALL: [Self; 13] = [
         Self::CanonicalValue,
         Self::Source,
         Self::ContractBundle,
@@ -61,6 +63,7 @@ impl HashDomain {
         Self::ConflictKey,
         Self::PartitionKey,
         Self::Schema,
+        Self::ProjectionApply,
     ];
 
     /// Returns the immutable ASCII v1 domain label.
@@ -78,6 +81,7 @@ impl HashDomain {
             Self::ConflictKey => "riffdb.conflict-key/v1",
             Self::PartitionKey => "riffdb.partition-key/v1",
             Self::Schema => "riffdb.schema/v1",
+            Self::ProjectionApply => "riffdb.projection-apply/v1",
         }
     }
 }
@@ -87,16 +91,19 @@ impl HashDomain {
 pub enum KeyedHashDomain {
     /// Caller-provided idempotency key lookup.
     IdempotencyKey,
+    /// Decoded opaque capability-token lookup.
+    CapabilityToken,
 }
 
 impl KeyedHashDomain {
     /// Every registered keyed domain, for compatibility and collision checks.
-    pub const ALL: [Self; 1] = [Self::IdempotencyKey];
+    pub const ALL: [Self; 2] = [Self::IdempotencyKey, Self::CapabilityToken];
 
     /// Returns the immutable ASCII v1 domain label.
     pub const fn label(self) -> &'static str {
         match self {
             Self::IdempotencyKey => "riffdb.idempotency-key/v1",
+            Self::CapabilityToken => "riffdb.capability-token/v1",
         }
     }
 }
@@ -186,7 +193,7 @@ impl fmt::Debug for KeyedDigest {
             .debug_struct("KeyedDigest")
             .field("scheme", &self.scheme)
             .field("key_id", &self.key_id)
-            .field("bytes", &HexDigest(&self.bytes))
+            .field("bytes", &"[REDACTED]")
             .finish()
     }
 }
@@ -280,6 +287,15 @@ typed_hash_function!(
     Schema,
     SchemaHash
 );
+typed_hash_function!(
+    /// Hashes the canonical bytes of a complete checked projection apply request.
+    ///
+    /// This primitive performs domain separation only. The storage API owns the
+    /// semantic request validation and canonical preimage construction.
+    hash_projection_apply,
+    ProjectionApply,
+    ProjectionApplyHash
+);
 
 /// Computes a domain-separated v1 HMAC-SHA-256 lookup digest.
 pub fn keyed_hash(
@@ -292,6 +308,18 @@ pub fn keyed_hash(
         .expect("HMAC-SHA-256 accepts keys of every length");
     write_frame(&mut mac, HMAC_PREFIX, domain.label(), payload);
     KeyedDigest::new(key_id, mac.finalize().into_bytes().into())
+}
+
+/// Computes the v1 capability-token lookup digest from exactly 32 decoded raw
+/// token bytes.
+#[must_use]
+pub fn hash_capability_token(
+    key_id: DigestKeyId,
+    key: &DigestKey,
+    raw_token: &[u8; 32],
+) -> CapabilityTokenDigest {
+    let digest = keyed_hash(KeyedHashDomain::CapabilityToken, key_id, key, raw_token);
+    CapabilityTokenDigest::from_hmac_bytes(key_id, *digest.as_bytes())
 }
 
 fn write_frame<T: sha2::digest::Update>(

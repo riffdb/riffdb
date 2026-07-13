@@ -383,6 +383,10 @@ pub(crate) fn public_error(input: &[u8]) -> Result<(), PreflightError> {
                 field.require_wire(2)?;
             }
             7 => check_exact_length(field.require_wire(2)?.bytes, 16)?,
+            8 => {
+                claim_singular(&mut saw_details)?;
+                field.require_wire(2)?;
+            }
             _ => {}
         }
     }
@@ -618,6 +622,18 @@ mod tests {
         let mut error = validation.clone();
         error.extend(validation);
         assert_eq!(public_error(&error), Err(PreflightError::Malformed));
+
+        let execution_failure = length_delimited(8, &[0x08, 0x01]);
+        let mut duplicate_execution = execution_failure.clone();
+        duplicate_execution.extend(execution_failure.clone());
+        assert_eq!(
+            public_error(&duplicate_execution),
+            Err(PreflightError::Malformed)
+        );
+
+        let mut mixed_details = public_validation(1, 0);
+        mixed_details.extend(execution_failure);
+        assert_eq!(public_error(&mixed_details), Err(PreflightError::Malformed));
     }
 
     #[test]

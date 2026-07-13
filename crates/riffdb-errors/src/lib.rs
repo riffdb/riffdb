@@ -10,7 +10,29 @@
 use std::error::Error;
 use std::fmt;
 
-use riffdb_types::{ContractVersion, FieldId, IncidentId};
+use riffdb_types::{ContractVersion, ExecutionFailureCode, FieldId, IncidentId};
+
+/// Consumer-owned source for fresh opaque incident identifiers.
+///
+/// Production providers live at the server composition boundary. Core error
+/// handling receives only this synchronous port and must fail closed when it
+/// cannot obtain an identifier.
+pub trait IncidentIdSource: Send + Sync {
+    /// Returns one fresh checked UUIDv7 incident identifier.
+    fn next_incident_id(&self) -> Result<IncidentId, IncidentIdSourceError>;
+}
+
+/// A bounded, public-safe failure to obtain a fresh incident identifier.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct IncidentIdSourceError;
+
+impl fmt::Display for IncidentIdSourceError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("incident identifier source failed")
+    }
+}
+
+impl Error for IncidentIdSourceError {}
 
 /// The maximum number of validation issues returned for one request.
 pub const MAX_VALIDATION_ISSUES: usize = 16;
@@ -75,6 +97,8 @@ pub enum PublicErrorKind {
     OutcomeUnknown,
     /// An internal defect occurred and details were retained only internally.
     InternalDefect,
+    /// Deterministic evaluation failed before an application commit was formed.
+    CommandExecutionFailed,
 }
 
 impl PublicErrorKind {
@@ -90,6 +114,7 @@ impl PublicErrorKind {
             Self::StorageUnavailable => "storage_unavailable",
             Self::OutcomeUnknown => "outcome_unknown",
             Self::InternalDefect => "internal_defect",
+            Self::CommandExecutionFailed => "command_execution_failed",
         }
     }
 
@@ -105,6 +130,7 @@ impl PublicErrorKind {
             Self::StorageUnavailable => "storage is temporarily unavailable",
             Self::OutcomeUnknown => "command outcome is not yet known",
             Self::InternalDefect => "an internal error occurred",
+            Self::CommandExecutionFailed => "command execution failed",
         }
     }
 
@@ -120,6 +146,7 @@ impl PublicErrorKind {
             Self::StorageUnavailable => ErrorClass::Unavailable,
             Self::OutcomeUnknown => ErrorClass::Uncertain,
             Self::InternalDefect => ErrorClass::Internal,
+            Self::CommandExecutionFailed => ErrorClass::FailedPrecondition,
         }
     }
 
@@ -132,7 +159,7 @@ impl PublicErrorKind {
             Self::ConcurrencyDeadlineExceeded | Self::StorageUnavailable => RecoveryAction::Retry,
             Self::ContractMismatch => RecoveryAction::RefreshContract,
             Self::OutcomeUnknown => RecoveryAction::ResolveWithSameIdempotencyKey,
-            Self::InternalDefect => RecoveryAction::ContactOperator,
+            Self::InternalDefect | Self::CommandExecutionFailed => RecoveryAction::ContactOperator,
         }
     }
 }
@@ -336,6 +363,11 @@ pub enum PublicErrorDetails {
         /// The contract version the caller must refresh to.
         active_contract_version: ContractVersion,
     },
+    /// A closed deterministic evaluation failure code.
+    CommandExecutionFailed {
+        /// The arithmetic or fixed resource-limit failure classification.
+        code: ExecutionFailureCode,
+    },
 }
 
 /// A failure safe to display, serialize, or map at a public transport boundary.
@@ -410,6 +442,16 @@ impl PublicError {
     #[must_use]
     pub const fn outcome_unknown() -> Self {
         Self::contextless(PublicErrorKind::OutcomeUnknown)
+    }
+
+    /// Creates a deterministic command-execution failure.
+    #[must_use]
+    pub const fn command_execution_failed(code: ExecutionFailureCode) -> Self {
+        Self {
+            kind: PublicErrorKind::CommandExecutionFailed,
+            details: PublicErrorDetails::CommandExecutionFailed { code },
+            incident_id: None,
+        }
     }
 
     /// Creates a redacted internal-defect failure with its incident identifier.
@@ -548,7 +590,7 @@ impl From<InternalError> for PublicError {
 mod tests {
     use super::*;
 
-    const KINDS: [PublicErrorKind; 8] = [
+    const KINDS: [PublicErrorKind; 9] = [
         PublicErrorKind::Validation,
         PublicErrorKind::IdempotencyKeyReuse,
         PublicErrorKind::AuthorizationDenied,
@@ -557,6 +599,7 @@ mod tests {
         PublicErrorKind::StorageUnavailable,
         PublicErrorKind::OutcomeUnknown,
         PublicErrorKind::InternalDefect,
+        PublicErrorKind::CommandExecutionFailed,
     ];
 
     const VALIDATION_CODES: [ValidationCode; 8] = [
@@ -592,7 +635,7 @@ mod tests {
         ValidationIssue::new(
             ValidationCode::TypeMismatch,
             ValidationPath::new(vec![
-                ValidationPathSegment::Field(FieldId::new(7)),
+                ValidationPathSegment::Field(FieldId::new(7).expect("field ID is nonzero")),
                 ValidationPathSegment::ListIndex(3),
             ])
             .expect("fixture path is bounded"),
@@ -650,6 +693,12 @@ mod tests {
                 ErrorClass::Internal,
                 RecoveryAction::ContactOperator,
             ),
+            (
+                "command_execution_failed",
+                "command execution failed",
+                ErrorClass::FailedPrecondition,
+                RecoveryAction::ContactOperator,
+            ),
         ];
 
         for (kind, (code, message, class, recovery_action)) in KINDS.into_iter().zip(expected) {
@@ -689,7 +738,10 @@ mod tests {
     #[test]
     fn validation_paths_are_structured_and_bounded() {
         let boundary =
-            vec![ValidationPathSegment::Field(FieldId::new(1)); MAX_VALIDATION_PATH_SEGMENTS];
+            vec![
+                ValidationPathSegment::Field(FieldId::new(1).expect("field ID is nonzero"));
+                MAX_VALIDATION_PATH_SEGMENTS
+            ];
         let path = ValidationPath::new(boundary).expect("boundary is accepted");
         assert_eq!(path.segments().len(), MAX_VALIDATION_PATH_SEGMENTS);
         assert!(ValidationPath::root().segments().is_empty());
@@ -728,7 +780,7 @@ mod tests {
             PublicErrorDetails::Validation(issues) if issues.as_slice().len() == 1
         ));
 
-        let active_version = ContractVersion::new(41);
+        let active_version = ContractVersion::new(41).expect("contract version is nonzero");
         let mismatch = PublicError::contract_mismatch(active_version);
         assert_eq!(mismatch.kind(), PublicErrorKind::ContractMismatch);
         assert_eq!(
@@ -757,6 +809,17 @@ mod tests {
             assert_eq!(error.details(), &PublicErrorDetails::None);
             assert_eq!(error.incident_id(), None);
         }
+
+        let execution =
+            PublicError::command_execution_failed(ExecutionFailureCode::ArithmeticFault);
+        assert_eq!(execution.kind(), PublicErrorKind::CommandExecutionFailed);
+        assert_eq!(
+            execution.details(),
+            &PublicErrorDetails::CommandExecutionFailed {
+                code: ExecutionFailureCode::ArithmeticFault,
+            }
+        );
+        assert_eq!(execution.incident_id(), None);
     }
 
     #[test]
@@ -809,6 +872,35 @@ mod tests {
         assert_eq!(
             error.to_string(),
             "internal_defect: an internal error occurred (incident 42424242-4242-7242-8242-424242424242)"
+        );
+    }
+
+    #[test]
+    fn incident_source_is_synchronous_fallible_and_has_no_fallback() {
+        struct FixedSource(IncidentId);
+
+        impl IncidentIdSource for FixedSource {
+            fn next_incident_id(&self) -> Result<IncidentId, IncidentIdSourceError> {
+                Ok(self.0)
+            }
+        }
+
+        struct FailingSource;
+
+        impl IncidentIdSource for FailingSource {
+            fn next_incident_id(&self) -> Result<IncidentId, IncidentIdSourceError> {
+                Err(IncidentIdSourceError)
+            }
+        }
+
+        assert_eq!(
+            FixedSource(incident_id()).next_incident_id(),
+            Ok(incident_id())
+        );
+        assert_eq!(FailingSource.next_incident_id(), Err(IncidentIdSourceError));
+        assert_eq!(
+            IncidentIdSourceError.to_string(),
+            "incident identifier source failed"
         );
     }
 }

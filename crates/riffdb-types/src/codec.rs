@@ -284,10 +284,16 @@ impl Decoder<'_> {
                 i32::from_be_bytes(self.read_array()?),
             ))),
             TAG_UUID => Ok(CanonicalValue::Uuid(self.read_array()?)),
-            TAG_ENUM => Ok(CanonicalValue::Enum {
-                type_id: EnumTypeId::new(u32::from_be_bytes(self.read_array()?)),
-                variant_id: EnumVariantId::new(u32::from_be_bytes(self.read_array()?)),
-            }),
+            TAG_ENUM => {
+                let type_id = EnumTypeId::new(u32::from_be_bytes(self.read_array()?))
+                    .ok_or(CanonicalCodecError::ZeroEnumTypeId)?;
+                let variant_id = EnumVariantId::new(u32::from_be_bytes(self.read_array()?))
+                    .ok_or(CanonicalCodecError::ZeroEnumVariantId)?;
+                Ok(CanonicalValue::Enum {
+                    type_id,
+                    variant_id,
+                })
+            }
             TAG_LIST => {
                 let count = self.read_collection_count(CollectionKind::List)?;
                 let mut values = Vec::with_capacity(count);
@@ -312,7 +318,9 @@ impl Decoder<'_> {
                         return Err(CanonicalCodecError::NonCanonicalRecordOrder);
                     }
                     previous = Some(raw_field_id);
-                    fields.push((FieldId::new(raw_field_id), self.decode_value(depth + 1)?));
+                    let field_id =
+                        FieldId::new(raw_field_id).ok_or(CanonicalCodecError::ZeroFieldId)?;
+                    fields.push((field_id, self.decode_value(depth + 1)?));
                 }
                 Ok(CanonicalValue::Record(
                     CanonicalRecord::from_canonical_fields(fields),
@@ -475,6 +483,12 @@ pub enum CanonicalCodecError {
     InvalidUtf8,
     /// Record fields are duplicated or not in strictly increasing ID order.
     NonCanonicalRecordOrder,
+    /// An enum payload contains the reserved zero enum-type ID.
+    ZeroEnumTypeId,
+    /// An enum payload contains the reserved zero variant ID.
+    ZeroEnumVariantId,
+    /// A record payload contains the reserved zero field ID.
+    ZeroFieldId,
     /// The document ended before the declared value was complete.
     UnexpectedEnd,
     /// Bytes remain after the first complete value.
@@ -525,6 +539,9 @@ impl fmt::Display for CanonicalCodecError {
             Self::NonCanonicalRecordOrder => {
                 formatter.write_str("record fields are not in canonical order")
             }
+            Self::ZeroEnumTypeId => formatter.write_str("enum type ID must be nonzero"),
+            Self::ZeroEnumVariantId => formatter.write_str("enum variant ID must be nonzero"),
+            Self::ZeroFieldId => formatter.write_str("record field ID must be nonzero"),
             Self::UnexpectedEnd => formatter.write_str("canonical document ended unexpectedly"),
             Self::TrailingBytes { count } => {
                 write!(formatter, "canonical document has {count} trailing bytes")

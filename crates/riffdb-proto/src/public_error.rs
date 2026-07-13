@@ -11,6 +11,7 @@ use riffdb_errors::{
     ValidationIssues as DomainValidationIssues, ValidationPath as DomainValidationPath,
     ValidationPathSegment as DomainPathSegment,
 };
+use riffdb_types::ExecutionFailureCode as DomainExecutionFailureCode;
 use riffdb_types::{ContractVersion, FieldId, IncidentId};
 
 use crate::v1;
@@ -40,6 +41,11 @@ pub fn public_error_to_proto(error: &DomainPublicError) -> v1::PublicError {
                 active_contract_version: active_contract_version.get(),
             },
         )),
+        DomainDetails::CommandExecutionFailed { code } => Some(
+            v1::public_error::Details::ExecutionFailure(v1::CommandExecutionFailureDetails {
+                code: proto_execution_failure_code(*code) as i32,
+            }),
+        ),
     };
 
     v1::PublicError {
@@ -101,9 +107,16 @@ pub fn public_error_from_proto(
         (
             DomainKind::ContractMismatch,
             Some(v1::public_error::Details::ContractMismatch(details)),
-        ) => DomainPublicError::contract_mismatch(ContractVersion::new(
-            details.active_contract_version,
-        )),
+        ) => DomainPublicError::contract_mismatch(
+            ContractVersion::new(details.active_contract_version)
+                .ok_or(PublicErrorWireError::InvalidContractMismatchDetails)?,
+        ),
+        (
+            DomainKind::CommandExecutionFailed,
+            Some(v1::public_error::Details::ExecutionFailure(details)),
+        ) => DomainPublicError::command_execution_failed(domain_execution_failure_code(
+            details.code,
+        )?),
         (DomainKind::IdempotencyKeyReuse, None) => DomainPublicError::idempotency_key_reuse(),
         (DomainKind::AuthorizationDenied, None) => DomainPublicError::authorization_denied(),
         (DomainKind::ConcurrencyDeadlineExceeded, None) => {
@@ -159,7 +172,10 @@ fn validation_issues_from_proto(
                 .iter()
                 .map(|segment| match segment.segment {
                     Some(v1::validation_path_segment::Segment::FieldId(field_id)) => {
-                        Ok(DomainPathSegment::Field(FieldId::new(field_id)))
+                        Ok(DomainPathSegment::Field(
+                            FieldId::new(field_id)
+                                .ok_or(PublicErrorWireError::InvalidValidationDetails)?,
+                        ))
                     }
                     Some(v1::validation_path_segment::Segment::ListIndex(index)) => {
                         Ok(DomainPathSegment::ListIndex(index))
@@ -192,6 +208,7 @@ const fn proto_kind(kind: DomainKind) -> v1::PublicErrorKind {
         DomainKind::StorageUnavailable => v1::PublicErrorKind::StorageUnavailable,
         DomainKind::OutcomeUnknown => v1::PublicErrorKind::OutcomeUnknown,
         DomainKind::InternalDefect => v1::PublicErrorKind::InternalDefect,
+        DomainKind::CommandExecutionFailed => v1::PublicErrorKind::CommandExecutionFailed,
     }
 }
 
@@ -207,6 +224,7 @@ fn domain_kind(value: i32) -> Result<DomainKind, PublicErrorWireError> {
         Ok(v1::PublicErrorKind::StorageUnavailable) => Ok(DomainKind::StorageUnavailable),
         Ok(v1::PublicErrorKind::OutcomeUnknown) => Ok(DomainKind::OutcomeUnknown),
         Ok(v1::PublicErrorKind::InternalDefect) => Ok(DomainKind::InternalDefect),
+        Ok(v1::PublicErrorKind::CommandExecutionFailed) => Ok(DomainKind::CommandExecutionFailed),
         Ok(v1::PublicErrorKind::Unspecified) | Err(_) => Err(PublicErrorWireError::UnknownKind),
     }
 }
@@ -255,6 +273,31 @@ fn domain_validation_code(value: i32) -> Result<DomainValidationCode, PublicErro
     }
 }
 
+const fn proto_execution_failure_code(
+    code: DomainExecutionFailureCode,
+) -> v1::ExecutionFailureCode {
+    match code {
+        DomainExecutionFailureCode::ArithmeticFault => v1::ExecutionFailureCode::ArithmeticFault,
+        DomainExecutionFailureCode::ResourceLimit => v1::ExecutionFailureCode::ResourceLimit,
+    }
+}
+
+fn domain_execution_failure_code(
+    value: i32,
+) -> Result<DomainExecutionFailureCode, PublicErrorWireError> {
+    match v1::ExecutionFailureCode::try_from(value) {
+        Ok(v1::ExecutionFailureCode::ArithmeticFault) => {
+            Ok(DomainExecutionFailureCode::ArithmeticFault)
+        }
+        Ok(v1::ExecutionFailureCode::ResourceLimit) => {
+            Ok(DomainExecutionFailureCode::ResourceLimit)
+        }
+        Ok(v1::ExecutionFailureCode::Unspecified) | Err(_) => {
+            Err(PublicErrorWireError::InvalidExecutionFailureDetails)
+        }
+    }
+}
+
 /// A non-secret failure while decoding the public error wire boundary.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum PublicErrorWireError {
@@ -274,6 +317,10 @@ pub enum PublicErrorWireError {
     MissingInternalIncident,
     /// Validation issues or paths violate their closed bounds.
     InvalidValidationDetails,
+    /// Contract-mismatch detail contains an unassigned contract version.
+    InvalidContractMismatchDetails,
+    /// Command-execution detail omits or contains an unknown closed code.
+    InvalidExecutionFailureDetails,
 }
 
 impl fmt::Display for PublicErrorWireError {
@@ -298,7 +345,7 @@ mod tests {
 
     fn all_errors() -> Vec<DomainPublicError> {
         let path = DomainValidationPath::new(vec![
-            DomainPathSegment::Field(FieldId::new(7)),
+            DomainPathSegment::Field(FieldId::new(7).expect("field ID is nonzero")),
             DomainPathSegment::ListIndex(2),
         ])
         .expect("bounded path");
@@ -310,10 +357,15 @@ mod tests {
             DomainPublicError::idempotency_key_reuse(),
             DomainPublicError::authorization_denied(),
             DomainPublicError::concurrency_deadline_exceeded(),
-            DomainPublicError::contract_mismatch(ContractVersion::new(9)),
+            DomainPublicError::contract_mismatch(
+                ContractVersion::new(9).expect("contract version is nonzero"),
+            ),
             DomainPublicError::storage_unavailable(),
             DomainPublicError::outcome_unknown(),
             DomainPublicError::internal_defect(incident_id()),
+            DomainPublicError::command_execution_failed(
+                DomainExecutionFailureCode::ArithmeticFault,
+            ),
         ]
     }
 
@@ -346,5 +398,100 @@ mod tests {
                     .any(|window| window == secret.as_bytes())
             );
         }
+    }
+
+    #[test]
+    fn execution_failure_requires_the_exact_closed_detail() {
+        let error =
+            DomainPublicError::command_execution_failed(DomainExecutionFailureCode::ResourceLimit);
+        let wire = public_error_to_proto(&error);
+        assert_eq!(public_error_from_proto(&wire), Ok(error));
+
+        let mut missing = wire.clone();
+        missing.details = None;
+        assert_eq!(
+            public_error_from_proto(&missing),
+            Err(PublicErrorWireError::InconsistentBoundary)
+        );
+        assert_eq!(
+            decode_public_error(&missing.encode_to_vec()),
+            Err(PublicErrorWireError::InconsistentBoundary)
+        );
+
+        let mut zero = wire.clone();
+        zero.details = Some(v1::public_error::Details::ExecutionFailure(
+            v1::CommandExecutionFailureDetails { code: 0 },
+        ));
+        assert_eq!(
+            public_error_from_proto(&zero),
+            Err(PublicErrorWireError::InvalidExecutionFailureDetails)
+        );
+        assert_eq!(
+            decode_public_error(&zero.encode_to_vec()),
+            Err(PublicErrorWireError::InvalidExecutionFailureDetails)
+        );
+
+        let mut unknown = wire.clone();
+        unknown.details = Some(v1::public_error::Details::ExecutionFailure(
+            v1::CommandExecutionFailureDetails { code: 3 },
+        ));
+        assert_eq!(
+            public_error_from_proto(&unknown),
+            Err(PublicErrorWireError::InvalidExecutionFailureDetails)
+        );
+        assert_eq!(
+            decode_public_error(&unknown.encode_to_vec()),
+            Err(PublicErrorWireError::InvalidExecutionFailureDetails)
+        );
+
+        let mut wrong = wire;
+        wrong.details = Some(v1::public_error::Details::ContractMismatch(
+            v1::ContractMismatchDetails {
+                active_contract_version: 1,
+            },
+        ));
+        assert_eq!(
+            public_error_from_proto(&wrong),
+            Err(PublicErrorWireError::InconsistentBoundary)
+        );
+        assert_eq!(
+            decode_public_error(&wrong.encode_to_vec()),
+            Err(PublicErrorWireError::InconsistentBoundary)
+        );
+    }
+
+    #[test]
+    fn zero_contract_and_field_ids_are_rejected() {
+        let mut contract = public_error_to_proto(&DomainPublicError::contract_mismatch(
+            ContractVersion::new(1).expect("contract version is nonzero"),
+        ));
+        contract.details = Some(v1::public_error::Details::ContractMismatch(
+            v1::ContractMismatchDetails {
+                active_contract_version: 0,
+            },
+        ));
+        assert_eq!(
+            public_error_from_proto(&contract),
+            Err(PublicErrorWireError::InvalidContractMismatchDetails)
+        );
+        assert_eq!(
+            decode_public_error(&contract.encode_to_vec()),
+            Err(PublicErrorWireError::InvalidContractMismatchDetails)
+        );
+
+        let mut validation = public_error_to_proto(&all_errors().remove(0));
+        let Some(v1::public_error::Details::Validation(details)) = validation.details.as_mut()
+        else {
+            panic!("validation detail fixture");
+        };
+        details.issues[0].path[0].segment = Some(v1::validation_path_segment::Segment::FieldId(0));
+        assert_eq!(
+            public_error_from_proto(&validation),
+            Err(PublicErrorWireError::InvalidValidationDetails)
+        );
+        assert_eq!(
+            decode_public_error(&validation.encode_to_vec()),
+            Err(PublicErrorWireError::InvalidValidationDetails)
+        );
     }
 }
