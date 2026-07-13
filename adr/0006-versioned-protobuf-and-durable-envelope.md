@@ -2,10 +2,11 @@
 
 - **Status:** Accepted
 - **Direction approved:** 2026-07-12
-- **Exact text accepted:** 2026-07-12
+- **Exact text accepted:** 2026-07-12, amended 2026-07-12
 - **Decision deadline:** Before WP-020 schemas or fixtures merge
 
-The human maintainer accepted this exact text on 2026-07-12.
+The human maintainer accepted this exact text, including the dependency
+disclosure amendment, on 2026-07-12.
 
 ## Context
 
@@ -183,13 +184,20 @@ disabled and `derive,std`, plus `crc` 3.4.0 with default features disabled using
 and the already approved Proptest 1.11.0 configuration. The checksum golden is
 ASCII `123456789` to `0xe3069283`.
 
-There is no native C/C++ or Cargo `links` crate in this baseline. Prost and Bytes
-contain upstream unsafe optimizations; generator-only dependencies include
-upstream unsafe in their parsing, temporary-file, OS, and formatting graph. The
-human maintainer approved those transitive unsafe surfaces on 2026-07-12. All
-first-party crates remain `#![forbid(unsafe_code)]`. `libfuzzer-sys` is deferred
-because it introduces native LLVM/libFuzzer code and an additional NCSA license
-decision; malformed-input Proptest coverage is required in WP-020 meanwhile.
+There is no native C/C++, native linker invocation, or native-code build script
+in this baseline. The generator-only `prettyplease` dependency is pure Rust but
+declares a metadata-only `build.rs` and a synthetic Cargo
+`links = "prettyplease02"` key; it emits Rust compiler configuration and its own
+version metadata, not a native library or linker directive. The human maintainer
+reviewed and approved this exception on 2026-07-12.
+
+Prost and Bytes contain upstream unsafe optimizations; generator-only
+dependencies include upstream unsafe in their parsing, temporary-file, OS, and
+formatting graph. The human maintainer approved those transitive unsafe surfaces
+on 2026-07-12. All first-party crates remain `#![forbid(unsafe_code)]`.
+`libfuzzer-sys` is deferred because it introduces native LLVM/libFuzzer code and
+an additional NCSA license decision; malformed-input Proptest coverage is
+required in WP-020 meanwhile.
 
 ## Options Considered
 
