@@ -18,6 +18,9 @@ fuzz_target!(|input: &[u8]| {
                 format!(
                     "contract F version 1 {{ command C {{ {source} return Done {{}} }} }}"
                 ),
+                format!(
+                    "contract F version 1 {{ command C {{ read E(0) as e else Missing {{ value: {source} }} return Done {{}} }} }}"
+                ),
             ] {
                 let _ = parse_contract(&wrapped);
             }

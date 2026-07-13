@@ -4,8 +4,9 @@
 
 This is the complete grammar-version-1 parser source. Normative semantics,
 bounds, contextual-keyword rules, and compatibility policy are defined by
-ADR-0002. Semantic actions below construct only the source-oriented AST; they
-are not typed IR, an executable plan, or a durable encoding.
+ADR-0002 as amended by ADR-0015. Semantic actions below construct only the
+source-oriented AST; they are not typed IR, an executable plan, or a durable
+encoding.
 
 ## Complete Grammar
 
@@ -171,20 +172,18 @@ IdempotencyClause: Spanned<IdempotencyClause> = {
 };
 
 Binding: Spanned<Binding> = {
-    <lo:@L> "read" <entity:Identifier> "(" <arguments:ExpressionList> ")"
-        "as" <binding:Identifier> <hi:@R>
-        => parser::spanned(Binding::Read(EntityBinding { entity, arguments, binding }), lo, hi),
-    <lo:@L> "mutate" <entity:Identifier> "(" <arguments:ExpressionList> ")"
-        "as" <binding:Identifier> <hi:@R>
-        => parser::spanned(Binding::Mutate(EntityBinding { entity, arguments, binding }), lo, hi),
-    <lo:@L> "create" <entity:Identifier> "(" <arguments:ExpressionList> ")"
-        "as" <binding:Identifier> "else" <duplicate:OutcomeExpression> <hi:@R>
-        => parser::spanned(Binding::Create(CreateBinding {
-            entity,
-            arguments,
-            binding,
-            duplicate,
-        }), lo, hi),
+    <lo:@L> "read" <binding:EntityBinding> <hi:@R>
+        => parser::spanned(Binding::Read(binding), lo, hi),
+    <lo:@L> "mutate" <binding:EntityBinding> <hi:@R>
+        => parser::spanned(Binding::Mutate(binding), lo, hi),
+    <lo:@L> "create" <binding:EntityBinding> <hi:@R>
+        => parser::spanned(Binding::Create(binding), lo, hi),
+};
+
+EntityBinding: EntityBinding = {
+    <entity:Identifier> "(" <arguments:ExpressionList> ")"
+        "as" <binding:Identifier> "else" <failure:OutcomeExpression>
+        => EntityBinding { entity, arguments, binding, failure },
 };
 
 Requirement: Spanned<Requirement> = {

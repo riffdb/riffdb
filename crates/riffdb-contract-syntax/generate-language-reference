@@ -15,8 +15,9 @@ trap 'rm -f "$temporary"' EXIT
 
 This is the complete grammar-version-1 parser source. Normative semantics,
 bounds, contextual-keyword rules, and compatibility policy are defined by
-ADR-0002. Semantic actions below construct only the source-oriented AST; they
-are not typed IR, an executable plan, or a durable encoding.
+ADR-0002 as amended by ADR-0015. Semantic actions below construct only the
+source-oriented AST; they are not typed IR, an executable plan, or a durable
+encoding.
 
 ## Complete Grammar
 

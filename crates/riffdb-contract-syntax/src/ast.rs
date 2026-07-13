@@ -225,11 +225,11 @@ pub enum Binding {
     Read(EntityBinding),
     /// A mutable existing-entity binding.
     Mutate(EntityBinding),
-    /// A mutable new-entity binding with a duplicate outcome.
-    Create(CreateBinding),
+    /// A mutable new-entity binding.
+    Create(EntityBinding),
 }
 
-/// The common syntax of `read` and `mutate` bindings.
+/// The common syntax of every entity binding.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct EntityBinding {
     /// The unresolved entity name.
@@ -238,19 +238,8 @@ pub struct EntityBinding {
     pub arguments: Vec<Spanned<Expression>>,
     /// The local binding name.
     pub binding: Spanned<String>,
-}
-
-/// A new-entity binding and its declared duplicate outcome.
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct CreateBinding {
-    /// The unresolved entity name.
-    pub entity: Spanned<String>,
-    /// Key expressions in source order.
-    pub arguments: Vec<Spanned<Expression>>,
-    /// The local mutable binding name.
-    pub binding: Spanned<String>,
-    /// The outcome returned when the entity already exists.
-    pub duplicate: Spanned<OutcomeExpression>,
+    /// The outcome returned when an existing entity is absent or a new entity exists.
+    pub failure: Spanned<OutcomeExpression>,
 }
 
 /// A named business precondition and rejection outcome.

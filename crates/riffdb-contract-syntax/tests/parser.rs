@@ -1,7 +1,9 @@
 //! Parser corpus, AST, diagnostic, and safety-bound tests.
 
 use proptest::prelude::*;
-use riffdb_contract_syntax::ast::{BinaryOperator, Declaration, Effect, Expression, Literal};
+use riffdb_contract_syntax::ast::{
+    BinaryOperator, Binding, Declaration, Effect, Expression, Literal,
+};
 use riffdb_contract_syntax::diagnostic::SyntaxDiagnosticCode;
 use riffdb_contract_syntax::limits::{MAX_EXPECTED_TOKENS, MAX_SYNTAX_DIAGNOSTICS};
 use riffdb_contract_syntax::{parse_contract, parse_contract_bytes};
@@ -10,6 +12,7 @@ use std::fmt::Write as _;
 const LEGAL_SPEND: &str = include_str!("../../../contracts/parser-fixtures/valid/legal_spend.riff");
 const FULL_SURFACE: &str =
     include_str!("../../../contracts/parser-fixtures/valid/full_surface.riff");
+const SPEC: &str = include_str!("../../../SPEC.md");
 
 #[test]
 fn invalid_corpus_matches_golden_diagnostics() {
@@ -33,6 +36,10 @@ fn invalid_corpus_matches_golden_diagnostics() {
         (
             include_str!("../../../contracts/parser-fixtures/invalid/generic_call.riff"),
             include_str!("../../../contracts/parser-fixtures/invalid/generic_call.diag"),
+        ),
+        (
+            include_str!("../../../contracts/parser-fixtures/invalid/missing_binding_else.riff"),
+            include_str!("../../../contracts/parser-fixtures/invalid/missing_binding_else.diag"),
         ),
     ] {
         let diagnostics = parse_contract(source).expect_err("invalid fixture must fail");
@@ -59,15 +66,75 @@ fn parses_the_checked_valid_corpus() {
     let legal_spend = parse_contract(LEGAL_SPEND).expect("LegalSpend must parse");
     assert_eq!(legal_spend.contract.value.name.value, "LegalSpend");
     assert_eq!(legal_spend.contract.value.version.value, "1");
-    assert_eq!(legal_spend.contract.value.declarations.len(), 5);
+    assert_eq!(legal_spend.contract.value.declarations.len(), 6);
 
     let full_surface = parse_contract(FULL_SURFACE).expect("full grammar surface must parse");
     assert_eq!(full_surface.contract.value.name.value, "Inventory");
-    assert_eq!(full_surface.contract.value.declarations.len(), 7);
+    assert_eq!(full_surface.contract.value.declarations.len(), 8);
     assert!(matches!(
         full_surface.contract.value.declarations[0].value,
         Declaration::Enum(_)
     ));
+}
+
+#[test]
+fn checked_legal_spend_matches_both_authoritative_spec_copies() {
+    let blocks = SPEC
+        .match_indices("contract LegalSpend version 1 {")
+        .map(|(start, _)| {
+            let source = &SPEC[start..];
+            let close = source
+                .find("\n}\n```")
+                .expect("LegalSpend code block must have a closing fence");
+            &source[..close + "\n}\n".len()]
+        })
+        .collect::<Vec<_>>();
+
+    assert_eq!(blocks.len(), 2, "SPEC must contain two canonical copies");
+    for block in blocks {
+        assert_eq!(block, LEGAL_SPEND);
+    }
+}
+
+#[test]
+fn every_binding_mode_has_one_explicit_failure_outcome() {
+    let legal_spend = parse_contract(LEGAL_SPEND).expect("LegalSpend must parse");
+    let full_surface = parse_contract(FULL_SURFACE).expect("full surface must parse");
+
+    let mut observed = Vec::new();
+    for document in [&legal_spend, &full_surface] {
+        for declaration in &document.contract.value.declarations {
+            let Declaration::Command(command) = &declaration.value else {
+                continue;
+            };
+            for binding in &command.bindings {
+                let (mode, binding) = match &binding.value {
+                    Binding::Read(binding) => ("read", binding),
+                    Binding::Mutate(binding) => ("mutate", binding),
+                    Binding::Create(binding) => ("create", binding),
+                };
+                observed.push((mode, binding.failure.value.name.value.as_str()));
+            }
+        }
+    }
+
+    assert!(observed.contains(&("read", "ItemNotFound")));
+    assert!(observed.contains(&("mutate", "BudgetNotFound")));
+    assert!(observed.contains(&("create", "BudgetAlreadyExists")));
+    assert!(observed.contains(&("create", "ItemAlreadyExists")));
+}
+
+#[test]
+fn missing_else_is_invalid_for_every_binding_mode() {
+    for mode in ["read", "mutate", "create"] {
+        let source = format!(
+            "contract C version 1 {{ command C {{ {mode} E(id) as record return Done {{}} }} }}"
+        );
+        let diagnostics = parse_contract(&source).expect_err("binding else must be mandatory");
+        let diagnostic = &diagnostics.as_slice()[0];
+        assert_eq!(diagnostic.code(), SyntaxDiagnosticCode::UnexpectedToken);
+        assert_eq!(diagnostic.expected(), &["else"]);
+    }
 }
 
 #[test]
@@ -266,7 +333,7 @@ fn enforces_expression_and_collection_bounds() {
 
     let arguments = (0..=1024).map(|_| "value").collect::<Vec<_>>().join(",");
     let above_list = format!(
-        "contract C version 1 {{ command C {{ read E({arguments}) as e return Done {{}} }} }}"
+        "contract C version 1 {{ command C {{ read E({arguments}) as e else Missing {{}} return Done {{}} }} }}"
     );
     let diagnostics = parse_contract(&above_list).expect_err("large list must fail");
     assert_eq!(
@@ -447,7 +514,9 @@ fn repeated_arguments(count: usize) -> (String, String, String) {
             .map(|index| format!("a{index}"))
             .collect::<Vec<_>>()
             .join(",");
-        format!("contract C version 1 {{ command C {{ read E({values}) as e return Done {{}} }} }}")
+        format!(
+            "contract C version 1 {{ command C {{ read E({values}) as e else Missing {{}} return Done {{}} }} }}"
+        )
     };
     (build(count), build(count + 1), format!("a{count}"))
 }
@@ -503,7 +572,7 @@ fn all_effect_variants_are_represented_in_the_full_fixture() {
         .declarations
         .iter()
         .find_map(|declaration| match &declaration.value {
-            Declaration::Command(command) => Some(command),
+            Declaration::Command(command) if command.name.value == "CreateItem" => Some(command),
             _ => None,
         })
         .expect("fixture contains a command");
