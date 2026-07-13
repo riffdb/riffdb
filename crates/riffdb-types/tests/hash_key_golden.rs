@@ -4,9 +4,11 @@
 
 use proptest::prelude::*;
 use riffdb_types::{
-    AggregateTypeId, CONFLICT_KEY_V1_PREFIX, ConflictKeyBuilder, DIGEST_SCHEME_V1, DigestKey,
-    DigestKeyId, ENTITY_KEY_V1_PREFIX, EntityKeyBuilder, EntityTypeId, HashDomain, KeyedHashDomain,
-    MAX_KEY_BYTES, hash, hash_plan, keyed_hash,
+    AggregateTypeId, CONFLICT_KEY_V1_PREFIX, ConflictKeyBuilder, DIGEST_SCHEME_V1, Date, DigestKey,
+    DigestKeyId, ENTITY_KEY_V1_PREFIX, EntityKeyBuilder, EntityTypeId, EnumVariantId, HashDomain,
+    INDEX_ENTRY_KEY_V1_PREFIX, IndexEntryKeyBuilder, IndexId, KeyedHashDomain, MAX_KEY_BYTES,
+    PARTITION_KEY_V1_PREFIX, PartitionKeyBuilder, Timestamp, hash, hash_contract_plan_root,
+    hash_partition_key, hash_plan, hash_projection_plan, keyed_hash,
 };
 
 fn hex(input: &str) -> Vec<u8> {
@@ -41,6 +43,14 @@ fn hash_v1_domain_vectors_are_stable() {
             "38405dbcdcb4e467b6e9a92f26d7d8e2be8e457057c4bddce6930edefe3fb87c",
         ),
         (
+            HashDomain::ProjectionPlan,
+            "44887bd72c1e081a9c3499ad47f35a2c090e5176552c2a7ad3324902db3705f0",
+        ),
+        (
+            HashDomain::ContractPlanRoot,
+            "c2376efb994722621ff5ba006b7a2090e977e954e906aef61eb4b7d4047f0cbc",
+        ),
+        (
             HashDomain::CommandInput,
             "bf0ca571e3c0022491aaf0c0c1357730ba2075c54309f883f6d53c490d927b3f",
         ),
@@ -55,6 +65,10 @@ fn hash_v1_domain_vectors_are_stable() {
         (
             HashDomain::ConflictKey,
             "4758dc6f251a8e8032180e421c8c39db02c90a79a32b2006cd43e67446788c4a",
+        ),
+        (
+            HashDomain::PartitionKey,
+            "6f1bf670b12c3a846389a18141dc69c6cc7e9a5abfe06b62e38cc2323eb80b8d",
         ),
         (
             HashDomain::Schema,
@@ -76,6 +90,10 @@ fn typed_hash_helpers_preserve_semantic_output_types() {
 
     assert_eq!(typed.as_bytes(), generic.as_bytes());
     assert_eq!(generic.domain(), HashDomain::Plan);
+
+    let _: riffdb_types::ProjectionPlanHash = hash_projection_plan(b"abc");
+    let _: riffdb_types::ContractPlanRootHash = hash_contract_plan_root(b"abc");
+    let _: riffdb_types::PartitionKeyHash = hash_partition_key(b"abc");
 }
 
 #[test]
@@ -120,6 +138,39 @@ fn key_v1_vectors_freeze_namespace_version_and_component_encoding() {
         conflict.as_bytes(),
         hex("430111121314151617187ffffffffffffffe000000026162")
     );
+
+    let mut partition = PartitionKeyBuilder::new(AggregateTypeId::new(0x2122_2324));
+    partition.push_i64(-2).expect("bounded");
+    assert_eq!(PARTITION_KEY_V1_PREFIX, [0x50, 0x01]);
+    assert_eq!(partition.as_bytes(), hex("5001212223247ffffffffffffffe"));
+
+    let entity = entity.finish().expect("bounded entity key");
+    let mut index = IndexEntryKeyBuilder::new(IndexId::new(0x3132_3334));
+    index.push_str("ab").expect("bounded");
+    let index = index.finish(entity).expect("bounded complete index key");
+    assert_eq!(INDEX_ENTRY_KEY_V1_PREFIX, [0x49, 0x01]);
+    assert_eq!(
+        index.as_bytes(),
+        hex("49013132333400000002616200000018450101020304050607087ffffffffffffffe000000026162")
+    );
+}
+
+#[test]
+fn closed_scalar_component_helpers_have_exact_bytes() {
+    let mut key = PartitionKeyBuilder::new(AggregateTypeId::new(1));
+    key.push_bool(true)
+        .expect("bounded")
+        .push_timestamp(Timestamp::new(-2, 3).expect("valid timestamp"))
+        .expect("bounded")
+        .push_date(Date::new(-4))
+        .expect("bounded")
+        .push_enum_variant(EnumVariantId::new(5))
+        .expect("bounded");
+
+    assert_eq!(
+        key.as_bytes(),
+        hex("500100000001017ffffffffffffffe000000037ffffffc00000005")
+    );
 }
 
 #[test]
@@ -160,6 +211,20 @@ proptest! {
     fn aggregate_type_ids_preserve_conflict_key_order(left in any::<u32>(), right in any::<u32>()) {
         let left_key = ConflictKeyBuilder::new(AggregateTypeId::new(left));
         let right_key = ConflictKeyBuilder::new(AggregateTypeId::new(right));
+        prop_assert_eq!(left.cmp(&right), left_key.as_bytes().cmp(right_key.as_bytes()));
+    }
+
+    #[test]
+    fn aggregate_type_ids_preserve_partition_key_order(left in any::<u32>(), right in any::<u32>()) {
+        let left_key = PartitionKeyBuilder::new(AggregateTypeId::new(left));
+        let right_key = PartitionKeyBuilder::new(AggregateTypeId::new(right));
+        prop_assert_eq!(left.cmp(&right), left_key.as_bytes().cmp(right_key.as_bytes()));
+    }
+
+    #[test]
+    fn index_ids_preserve_index_entry_prefix_order(left in any::<u32>(), right in any::<u32>()) {
+        let left_key = IndexEntryKeyBuilder::new(IndexId::new(left));
+        let right_key = IndexEntryKeyBuilder::new(IndexId::new(right));
         prop_assert_eq!(left.cmp(&right), left_key.as_bytes().cmp(right_key.as_bytes()));
     }
 
@@ -211,4 +276,25 @@ fn key_limit_is_exact_and_failed_append_is_atomic() {
             .is_err()
     );
     assert_eq!(too_large.as_bytes(), before);
+
+    let entity = EntityKeyBuilder::new(EntityTypeId::new(1))
+        .finish()
+        .expect("minimal entity key");
+    let mut exact_index = IndexEntryKeyBuilder::new(IndexId::new(1));
+    exact_index
+        .push_bytes(&vec![0; MAX_KEY_BYTES - 6 - 4 - 4 - 6])
+        .expect("index payload leaves room for nested entity framing");
+    let exact_index = exact_index
+        .finish(entity.clone())
+        .expect("complete index key is exactly 4 KiB");
+    assert_eq!(exact_index.as_bytes().len(), MAX_KEY_BYTES);
+
+    let mut too_large_index = IndexEntryKeyBuilder::new(IndexId::new(1));
+    too_large_index
+        .push_bytes(&vec![0; MAX_KEY_BYTES - 6 - 4 - 4 - 6 + 1])
+        .expect("partial index key alone fits");
+    assert!(matches!(
+        too_large_index.finish(entity),
+        Err(riffdb_types::KeyEncodingError::TooLong { .. })
+    ));
 }

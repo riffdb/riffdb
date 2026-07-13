@@ -6,8 +6,9 @@ use hmac::{Hmac, KeyInit, Mac};
 use sha2::{Digest, Sha256};
 
 use crate::{
-    CanonicalInputHash, CanonicalValueHash, ConflictKeyHash, ContractBundleHash, DigestKey,
-    DigestKeyId, EntityKeyHash, EventHash, PlanHash, SchemaHash, SourceHash,
+    CanonicalInputHash, CanonicalValueHash, ConflictKeyHash, ContractBundleHash,
+    ContractPlanRootHash, DigestKey, DigestKeyId, EntityKeyHash, EventHash, PartitionKeyHash,
+    PlanHash, ProjectionPlanHash, SchemaHash, SourceHash,
 };
 
 /// Hash framing and algorithm scheme defined by ADR-0011.
@@ -27,6 +28,10 @@ pub enum HashDomain {
     ContractBundle,
     /// Executable command plan.
     Plan,
+    /// Validated projection plan.
+    ProjectionPlan,
+    /// Ordered semantic plan set for one contract bundle.
+    ContractPlanRoot,
     /// Canonical command input.
     CommandInput,
     /// Durable event content.
@@ -35,21 +40,26 @@ pub enum HashDomain {
     EntityKey,
     /// Canonical conflict key.
     ConflictKey,
+    /// Canonical logical partition key.
+    PartitionKey,
     /// Generated schema content.
     Schema,
 }
 
 impl HashDomain {
     /// Every registered unkeyed domain, for compatibility and collision checks.
-    pub const ALL: [Self; 9] = [
+    pub const ALL: [Self; 12] = [
         Self::CanonicalValue,
         Self::Source,
         Self::ContractBundle,
         Self::Plan,
+        Self::ProjectionPlan,
+        Self::ContractPlanRoot,
         Self::CommandInput,
         Self::Event,
         Self::EntityKey,
         Self::ConflictKey,
+        Self::PartitionKey,
         Self::Schema,
     ];
 
@@ -60,10 +70,13 @@ impl HashDomain {
             Self::Source => "riffdb.source/v1",
             Self::ContractBundle => "riffdb.contract-bundle/v1",
             Self::Plan => "riffdb.plan/v1",
+            Self::ProjectionPlan => "riffdb.projection-plan/v1",
+            Self::ContractPlanRoot => "riffdb.contract-plan-root/v1",
             Self::CommandInput => "riffdb.command-input/v1",
             Self::Event => "riffdb.event/v1",
             Self::EntityKey => "riffdb.entity-key/v1",
             Self::ConflictKey => "riffdb.conflict-key/v1",
+            Self::PartitionKey => "riffdb.partition-key/v1",
             Self::Schema => "riffdb.schema/v1",
         }
     }
@@ -220,6 +233,18 @@ typed_hash_function!(
     PlanHash
 );
 typed_hash_function!(
+    /// Hashes a validated projection plan in its immutable v1 domain.
+    hash_projection_plan,
+    ProjectionPlan,
+    ProjectionPlanHash
+);
+typed_hash_function!(
+    /// Hashes an ordered contract semantic-plan set in its immutable v1 domain.
+    hash_contract_plan_root,
+    ContractPlanRoot,
+    ContractPlanRootHash
+);
+typed_hash_function!(
     /// Hashes canonical command input in its immutable v1 domain.
     hash_command_input,
     CommandInput,
@@ -242,6 +267,12 @@ typed_hash_function!(
     hash_conflict_key,
     ConflictKey,
     ConflictKeyHash
+);
+typed_hash_function!(
+    /// Hashes canonical partition-key bytes in their immutable v1 domain.
+    hash_partition_key,
+    PartitionKey,
+    PartitionKeyHash
 );
 typed_hash_function!(
     /// Hashes generated schema content in its immutable v1 domain.
