@@ -2,8 +2,10 @@
 
 - **Status:** Accepted
 - **Direction approved:** 2026-07-13
-- **Exact text accepted:** 2026-07-13
+- **Exact text accepted:** 2026-07-13, clarified 2026-07-13
 - **Amends:** ADR-0011 typed-key envelope and hash-domain registries
+- **Clarified by:** ADR-0004 for index-prefix epoch buckets and ADR-0017 for the
+  separate projection group/apply/frontier key registry
 - **Decision deadline:** Before WP-040 key schemas or plan fixtures merge
 
 ## Context
@@ -21,9 +23,10 @@ though component boundaries require domain newtypes and authorization,
 provenance, tracing, and later routing all depend on an unambiguous logical
 partition identity.
 
-The human maintainer accepted this exact text on 2026-07-13.
+The human maintainer accepted this exact text and the companion clarifications
+below on 2026-07-13.
 
-## Proposed Decision
+## Decision
 
 ### Typed partition and index identity
 
@@ -174,14 +177,36 @@ include only part of a variable-length payload are invalid. This layout preserve
 exact-component prefix scans while making the following entity-key boundary
 unambiguous from the compiled schema and explicit length.
 
-Projection result storage is not assigned an envelope by this ADR. WP-040
-records typed projection grouping expressions in canonical plan IR; WP-170 must
-accept a separate projection-key durable-format decision before persisting
-derived keys. It must not reuse an entity, partition, or conflict envelope.
+Projection result storage is not assigned an envelope by this ADR. WP-040 records
+typed projection grouping expressions in canonical plan IR. Accepted ADR-0017
+supplies the separate projection key, payload, generation, marker, and frontier
+decision; WP-060 owns semantic DTOs, WP-065 the durable envelope, WP-070
+persistence, and WP-170 worker/query behavior. None may reuse an entity,
+partition, conflict, or index envelope.
+
+### 2026-07-13 companion clarifications
+
+ADR-0004 uses the exact validated transient scan prefixes defined here as
+`IndexRangeEpoch` bucket identities. For an index with `m` components, every
+visible entry belongs to the whole-index six-byte prefix and each of the `m`
+complete leading-component prefixes. A presence or covered-value change advances
+once per command every bucket in the union for the old and new entries. Absent
+epoch state is `BeforeFirst`; the first affected command stores nonzero epoch 1.
+Component-incomplete prefixes reject. This storage capability and its conformance
+tests do not enable a grammar-v1 write-influencing indexed read.
+
+ADR-0017 assigns the projection-specific key formats deliberately left open by
+this record. Projection grouping uses length-framed complete ADR-0011 canonical
+scalar value documents so decimal and money are legal; it does not reuse this
+ADR's ordered entity/partition/conflict/index component payload codec. Projection
+apply, frontier/control, and group state keys use the distinct versioned prefixes
+`0x41 0x01`, `0x46 0x01`, and `0x47 0x01` and include the exact projection
+identity plus generation/sequence/components defined by ADR-0017. They remain
+non-substitutable for the key types defined here.
 
 ## Options Considered
 
-1. **Closed scalar registry plus typed partition envelope:** Proposed. It freezes
+1. **Closed scalar registry plus typed partition envelope:** Selected. It freezes
    equality and ordering while keeping the POC codec small.
 2. **Canonical-value documents as components:** Rejected. Per-value format/type
    tags create a different key format and do not match the accepted key builder.
@@ -236,7 +261,9 @@ keys. Hashes are content identifiers, not authorization proofs.
 
 - **Requirements:** `ID-003`, `ID-004`, `DSL-003`, `DSL-004`, `DSL-012`,
   `TXN-001`, `TXN-022`, `STO-010`
-- **Defines or blocks:** WP-010 interface follow-up; `WP-040`; `WP-060`; `WP-090`
+- **Defines or blocks:** WP-010 interface follow-up; `WP-040`; `WP-060`; formal
+  durable-schema `WP-065`; `WP-070`; `WP-080`; `WP-090`; `WP-100`; `WP-110`;
+  `WP-120`
 - **Final evidence:** `WP-140`, `WP-190`, `WP-200`
 
 ## Decision Deadline

@@ -2,10 +2,13 @@
 
 - **Status:** Accepted
 - **Direction approved:** 2026-07-12
-- **Exact text accepted:** 2026-07-13
+- **Exact text accepted:** 2026-07-13, amended 2026-07-13
+- **Amended by:** ADR-0017 for exact projection identity, generations, group/apply
+  keys, apply-hash equality, frontier position, lifecycle, query, and rebuild
 - **Decision deadline:** Persistence semantics before WP-070; full record before WP-170
 
-The human maintainer accepted this exact text on 2026-07-13.
+The human maintainer accepted this exact text and the companion ADR-0017
+amendment below on 2026-07-13.
 
 ## Context
 
@@ -14,7 +17,7 @@ state are authoritative. Consistency claims require a durable frontier that neve
 gets ahead of applied state, never skips a commit, and survives crashes without
 double application.
 
-## Proposed Decision
+## Decision
 
 Each projection consumes committed records in strictly contiguous increasing
 `CommitSequence` order. Applying all relevant events for sequence `N`, recording
@@ -32,6 +35,42 @@ typed ready, timeout, degraded, or invalid results under bounded deadlines.
 Lifecycle is durable and monotonic only where the specified state transition
 allows it. WP-130 proves protocol mapping with an injected stub; WP-170 provides
 real semantics; WP-185 composes the worker.
+
+### ADR-0017 companion amendment
+
+The projection identity referenced above is exactly contract lineage, nonzero
+`ProjectionId`, and `ProjectionPlanHash`; it excludes contract version and bundle
+hash. Each identity owns nonzero, never-reused `ProjectionGeneration` values and
+an explicit `FrontierPosition::{BeforeFirst, AppliedThrough(nonzero
+CommitSequence)}`. A same-plan rebuild allocates a disjoint generation; a changed
+plan hash creates a disjoint identity. Neither operation lowers an existing
+published frontier.
+
+The earlier illustrative `(projection_id, N)` marker is replaced exactly by
+`(ProjectionIdentity, ProjectionGeneration, CommitSequence)` plus equality of
+the canonical `ProjectionApplyHash`. Every applied sequence, including an
+irrelevant one, has a marker. Row post-images, marker, and the matching frontier
+advance commit atomically. Equal historical retry is a no-op only when the exact
+marker hash matches.
+
+Control owns highest allocated generation, optional published and candidate
+generation/frontier, published apply mode, the closed lifecycle, and optional
+closed failure. Initial build and rebuild write candidate rows in an unpublished
+namespace and publish only in one transaction after reaching the
+transaction-current authoritative head. Replaced generations, including failed
+candidates once explicitly replaced during recovery, are retired and inert: they
+may remain durable but are never queried, resumed, reused, or accepted as apply
+targets. A failed candidate still retained by `Degraded` control is suspended and
+inert but not yet retired.
+
+Queries and status use the closed ADR-0017 lifecycle mapping and
+`FrontierPosition`. A known identity with no control is building at
+`BeforeFirst`; `Rebuilding` exposes no retained published rows. One storage read
+transaction returns control, selected published rows, frontier, and the lower
+continuation. Any identity, generation, prefix, or frontier change invalidates a
+continuation and returns no rows. These rules supersede the earlier shorthand
+that state is simply discarded on rebuild; authoritative state remains
+unchanged, while derived generations follow the reviewed lifecycle.
 
 ## Options Considered
 
@@ -72,8 +111,9 @@ winning-commit visibility.
 ## Requirements and Work Packages
 
 - **Requirements:** `PRJ-001` through `PRJ-004`, `STO-022`, `REC-001`
-- **Defines or blocks:** storage ports in `WP-060`/`WP-070`; `WP-130`, `WP-170`,
-  `WP-185`
+- **Defines or blocks:** projection schema in `WP-040`; storage ports in
+  `WP-060`; durable schema in `WP-065`; `WP-070`, `WP-075`, `WP-120`; public
+  schema in `WP-127`; `WP-130`, `WP-140`, `WP-170`, and `WP-185`
 - **Final evidence:** `WP-190`, `WP-200`
 
 ## Decision Deadline

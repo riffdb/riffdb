@@ -14,7 +14,7 @@ their declared conflict and dependency assumptions still hold. Correctness
 depends on canonical keys, all-or-nothing acquisition, complete evidence, exact
 predicate re-evaluation, and a single owner for commit ordering.
 
-## Proposed Decision
+## Decision
 
 The compiler produces the complete, bounded set or derivation plan of logical
 `ConflictKey` values before mutable capability acquisition. Keys have one
