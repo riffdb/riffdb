@@ -250,6 +250,14 @@ hash_id!(
     PlanHash
 );
 hash_id!(
+    /// The hash of one validated projection plan.
+    ProjectionPlanHash
+);
+hash_id!(
+    /// The hash of a contract bundle's ordered semantic plan set.
+    ContractPlanRootHash
+);
+hash_id!(
     /// The hash of canonical contract source.
     SourceHash
 );
@@ -272,6 +280,10 @@ hash_id!(
 hash_id!(
     /// The hash of a canonical conflict key.
     ConflictKeyHash
+);
+hash_id!(
+    /// The hash of a canonical logical partition key.
+    PartitionKeyHash
 );
 hash_id!(
     /// The hash of a public or durable schema.
@@ -643,7 +655,14 @@ pub const ENTITY_KEY_V1_PREFIX: [u8; 2] = [0x45, 0x01];
 /// Immutable conflict-key namespace and v1 encoding prefix.
 pub const CONFLICT_KEY_V1_PREFIX: [u8; 2] = [0x43, 0x01];
 
+/// Immutable partition-key namespace and v1 encoding prefix.
+pub const PARTITION_KEY_V1_PREFIX: [u8; 2] = [0x50, 0x01];
+
+/// Immutable index-entry-key namespace and v1 encoding prefix.
+pub const INDEX_ENTRY_KEY_V1_PREFIX: [u8; 2] = [0x49, 0x01];
+
 const TYPED_KEY_ENVELOPE_BYTES: usize = 6;
+const INDEX_ENTRY_KEY_MIN_BYTES: usize = TYPED_KEY_ENVELOPE_BYTES + 4 + TYPED_KEY_ENVELOPE_BYTES;
 
 /// A safe validation failure for bounded canonical key bytes.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -705,13 +724,15 @@ impl fmt::Display for KeyBytesError {
 impl Error for KeyBytesError {}
 
 macro_rules! bounded_key {
-    ($(#[$meta:meta])* $name:ident, $type_id:ident, $type_id_method:ident, $prefix:ident) => {
+    ($(#[$meta:meta])* $name:ident, $type_id:ident, $type_id_method:ident, $prefix:ident, $minimum:expr) => {
         $(#[$meta])*
         #[derive(Clone, Eq, Hash, Ord, PartialEq, PartialOrd)]
         pub struct $name(Vec<u8>);
 
         impl $name {
-            /// Validates and creates a key from canonical bytes.
+            /// Validates a key's purpose/version envelope and hard size bounds.
+            ///
+            /// Component-level validation requires the exact compiler-produced schema.
             pub fn new(bytes: Vec<u8>) -> Result<Self, KeyBytesError> {
                 if bytes.len() > MAX_KEY_BYTES {
                     return Err(KeyBytesError::TooLong {
@@ -719,10 +740,10 @@ macro_rules! bounded_key {
                         maximum: MAX_KEY_BYTES,
                     });
                 }
-                if bytes.len() < TYPED_KEY_ENVELOPE_BYTES {
+                if bytes.len() < $minimum {
                     return Err(KeyBytesError::TooShort {
                         actual: bytes.len(),
-                        minimum: TYPED_KEY_ENVELOPE_BYTES,
+                        minimum: $minimum,
                     });
                 }
                 if bytes[0] != $prefix[0] {
@@ -737,7 +758,7 @@ macro_rules! bounded_key {
                 Ok(Self(bytes))
             }
 
-            /// Validates and creates a key from canonical bytes.
+            /// Validates a key's purpose/version envelope and hard size bounds.
             pub fn from_bytes(bytes: Vec<u8>) -> Result<Self, KeyBytesError> {
                 Self::new(bytes)
             }
@@ -751,7 +772,7 @@ macro_rules! bounded_key {
             }
 
             pub(crate) fn from_validated_bytes(bytes: Vec<u8>) -> Self {
-                debug_assert!(bytes.len() >= TYPED_KEY_ENVELOPE_BYTES);
+                debug_assert!(bytes.len() >= $minimum);
                 debug_assert!(bytes.len() <= MAX_KEY_BYTES);
                 debug_assert_eq!(bytes[..2], $prefix);
                 Self(bytes)
@@ -787,14 +808,32 @@ bounded_key!(
     EntityKey,
     EntityTypeId,
     entity_type_id,
-    ENTITY_KEY_V1_PREFIX
+    ENTITY_KEY_V1_PREFIX,
+    TYPED_KEY_ENVELOPE_BYTES
 );
 bounded_key!(
     /// An opaque canonical logical conflict key.
     ConflictKey,
     AggregateTypeId,
     aggregate_type_id,
-    CONFLICT_KEY_V1_PREFIX
+    CONFLICT_KEY_V1_PREFIX,
+    TYPED_KEY_ENVELOPE_BYTES
+);
+bounded_key!(
+    /// An opaque canonical logical partition key.
+    PartitionKey,
+    AggregateTypeId,
+    aggregate_type_id,
+    PARTITION_KEY_V1_PREFIX,
+    TYPED_KEY_ENVELOPE_BYTES
+);
+bounded_key!(
+    /// A complete canonical local-index entry key.
+    IndexEntryKey,
+    IndexId,
+    index_id,
+    INDEX_ENTRY_KEY_V1_PREFIX,
+    INDEX_ENTRY_KEY_MIN_BYTES
 );
 
 /// A 32-byte key used by a reviewed keyed-digest construction.
@@ -930,12 +969,35 @@ mod tests {
             .concat(),
         )
         .expect("valid key");
+        let partition_key = PartitionKey::from_bytes(
+            [
+                PARTITION_KEY_V1_PREFIX.as_slice(),
+                &AggregateTypeId::new(8).to_be_bytes(),
+                b"business-partition",
+            ]
+            .concat(),
+        )
+        .expect("valid partition envelope");
+        let index_key = IndexEntryKey::from_bytes(
+            [
+                INDEX_ENTRY_KEY_V1_PREFIX.as_slice(),
+                &IndexId::new(9).to_be_bytes(),
+                &[0, 0, 0, 6],
+                ENTITY_KEY_V1_PREFIX.as_slice(),
+                &EntityTypeId::new(7).to_be_bytes(),
+            ]
+            .concat(),
+        )
+        .expect("structurally bounded index envelope");
         let digest_key = DigestKey::from_bytes([0x5a; 32]);
 
-        let output = format!("{actor:?} {idempotency:?} {entity_key:?} {digest_key:?}");
+        let output = format!(
+            "{actor:?} {idempotency:?} {entity_key:?} {partition_key:?} {index_key:?} {digest_key:?}"
+        );
         assert!(!output.contains("principal-secret"));
         assert!(!output.contains("caller-secret"));
         assert!(!output.contains("business-key"));
+        assert!(!output.contains("business-partition"));
         assert!(!output.contains("5a"));
     }
 
@@ -987,15 +1049,33 @@ mod tests {
                 actual: 0x43,
             })
         );
+        assert_eq!(
+            IndexEntryKey::from_bytes(vec![0x49, 0x01, 0, 0, 0, 1]),
+            Err(KeyBytesError::TooShort {
+                actual: TYPED_KEY_ENVELOPE_BYTES,
+                minimum: INDEX_ENTRY_KEY_MIN_BYTES,
+            })
+        );
 
         let entity =
             EntityKey::from_bytes(vec![0x45, 0x01, 1, 2, 3, 4]).expect("valid entity envelope");
         let conflict =
             ConflictKey::from_bytes(vec![0x43, 0x01, 5, 6, 7, 8]).expect("valid conflict envelope");
+        let partition = PartitionKey::from_bytes(vec![0x50, 0x01, 9, 10, 11, 12])
+            .expect("valid partition envelope");
+        let index = IndexEntryKey::from_bytes(vec![
+            0x49, 0x01, 13, 14, 15, 16, 0, 0, 0, 6, 0x45, 0x01, 0, 0, 0, 1,
+        ])
+        .expect("structurally bounded index envelope");
         assert_eq!(entity.entity_type_id(), EntityTypeId::new(0x0102_0304));
         assert_eq!(
             conflict.aggregate_type_id(),
             AggregateTypeId::new(0x0506_0708)
         );
+        assert_eq!(
+            partition.aggregate_type_id(),
+            AggregateTypeId::new(0x090a_0b0c)
+        );
+        assert_eq!(index.index_id(), IndexId::new(0x0d0e_0f10));
     }
 }

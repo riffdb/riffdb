@@ -3,13 +3,23 @@
 use std::fmt;
 
 use crate::{
-    AggregateTypeId, ConflictKey, EntityKey, EntityTypeId,
+    AggregateTypeId, ConflictKey, Date, EntityKey, EntityTypeId, EnumVariantId, IndexEntryKey,
+    IndexId, PartitionKey, Timestamp,
     limits::MAX_KEY_BYTES,
-    {CONFLICT_KEY_V1_PREFIX, ENTITY_KEY_V1_PREFIX},
+    {
+        CONFLICT_KEY_V1_PREFIX, ENTITY_KEY_V1_PREFIX, INDEX_ENTRY_KEY_V1_PREFIX,
+        PARTITION_KEY_V1_PREFIX,
+    },
 };
 
 macro_rules! key_component_methods {
     () => {
+        /// Appends a canonical Boolean component.
+        pub fn push_bool(&mut self, value: bool) -> Result<&mut Self, KeyEncodingError> {
+            self.0.push_fixed(&[u8::from(value)])?;
+            Ok(self)
+        }
+
         /// Appends an unsigned 32-bit ordered component.
         pub fn push_u32(&mut self, value: u32) -> Result<&mut Self, KeyEncodingError> {
             self.0.push_fixed(&value.to_be_bytes())?;
@@ -35,6 +45,35 @@ macro_rules! key_component_methods {
             let mut bytes = value.to_be_bytes();
             bytes[0] ^= 0x80;
             self.0.push_fixed(&bytes)?;
+            Ok(self)
+        }
+
+        /// Appends a canonical timestamp component.
+        pub fn push_timestamp(&mut self, value: Timestamp) -> Result<&mut Self, KeyEncodingError> {
+            let mut seconds = value.seconds().to_be_bytes();
+            seconds[0] ^= 0x80;
+            let nanoseconds = value.nanoseconds().to_be_bytes();
+            let mut bytes = [0; 12];
+            bytes[..8].copy_from_slice(&seconds);
+            bytes[8..].copy_from_slice(&nanoseconds);
+            self.0.push_fixed(&bytes)?;
+            Ok(self)
+        }
+
+        /// Appends a canonical date component.
+        pub fn push_date(&mut self, value: Date) -> Result<&mut Self, KeyEncodingError> {
+            let mut bytes = value.days_since_unix_epoch().to_be_bytes();
+            bytes[0] ^= 0x80;
+            self.0.push_fixed(&bytes)?;
+            Ok(self)
+        }
+
+        /// Appends a canonical declared-enum variant component.
+        pub fn push_enum_variant(
+            &mut self,
+            value: EnumVariantId,
+        ) -> Result<&mut Self, KeyEncodingError> {
+            self.0.push_fixed(&value.to_be_bytes())?;
             Ok(self)
         }
 
@@ -119,6 +158,69 @@ impl fmt::Debug for ConflictKeyBuilder {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter
             .debug_struct("ConflictKeyBuilder")
+            .field("bytes", &"[REDACTED]")
+            .field("length", &self.0.bytes.len())
+            .finish()
+    }
+}
+
+/// Builder for a v1 canonical logical partition key.
+#[derive(Clone)]
+pub struct PartitionKeyBuilder(KeyBuilder);
+
+impl PartitionKeyBuilder {
+    /// Starts a partition key with its purpose namespace, version, and aggregate type.
+    pub fn new(aggregate_type: AggregateTypeId) -> Self {
+        Self(KeyBuilder::new(
+            &PARTITION_KEY_V1_PREFIX,
+            aggregate_type.get().to_be_bytes(),
+        ))
+    }
+
+    key_component_methods!();
+
+    /// Finishes the bounded canonical logical partition key.
+    pub fn finish(self) -> Result<PartitionKey, KeyEncodingError> {
+        Ok(PartitionKey::from_validated_bytes(self.0.bytes))
+    }
+}
+
+impl fmt::Debug for PartitionKeyBuilder {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("PartitionKeyBuilder")
+            .field("bytes", &"[REDACTED]")
+            .field("length", &self.0.bytes.len())
+            .finish()
+    }
+}
+
+/// Builder for a complete v1 canonical local-index entry key.
+#[derive(Clone)]
+pub struct IndexEntryKeyBuilder(KeyBuilder);
+
+impl IndexEntryKeyBuilder {
+    /// Starts an index entry key with its purpose namespace, version, and index ID.
+    pub fn new(index: IndexId) -> Self {
+        Self(KeyBuilder::new(
+            &INDEX_ENTRY_KEY_V1_PREFIX,
+            index.get().to_be_bytes(),
+        ))
+    }
+
+    key_component_methods!();
+
+    /// Appends the length-delimited complete entity key and finishes the index key.
+    pub fn finish(mut self, entity_key: EntityKey) -> Result<IndexEntryKey, KeyEncodingError> {
+        self.0.push_bytes(entity_key.as_bytes())?;
+        Ok(IndexEntryKey::from_validated_bytes(self.0.bytes))
+    }
+}
+
+impl fmt::Debug for IndexEntryKeyBuilder {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("IndexEntryKeyBuilder")
             .field("bytes", &"[REDACTED]")
             .field("length", &self.0.bytes.len())
             .finish()
@@ -232,6 +334,14 @@ mod tests {
         assert_eq!(
             ConflictKeyBuilder::new(AggregateTypeId::new(0x0506_0708)).as_bytes(),
             &[0x43, 0x01, 0x05, 0x06, 0x07, 0x08]
+        );
+        assert_eq!(
+            PartitionKeyBuilder::new(AggregateTypeId::new(0x090a_0b0c)).as_bytes(),
+            &[0x50, 0x01, 0x09, 0x0a, 0x0b, 0x0c]
+        );
+        assert_eq!(
+            IndexEntryKeyBuilder::new(IndexId::new(0x0d0e_0f10)).as_bytes(),
+            &[0x49, 0x01, 0x0d, 0x0e, 0x0f, 0x10]
         );
     }
 
