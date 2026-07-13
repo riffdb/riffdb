@@ -1,0 +1,7 @@
+contract MissingBindingElse version 1 {
+  command Missing {
+    input entity_id: uuid
+    mutate Entity(entity_id) as record
+    return Done {}
+  }
+}

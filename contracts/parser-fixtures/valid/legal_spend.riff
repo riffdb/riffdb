@@ -25,6 +25,29 @@ contract LegalSpend version 1 {
     conflict_key (organization_id, fiscal_year)
   }
 
+  command CreateBudget {
+    input idempotency_key: string<128>
+    input organization_id: uuid
+    input fiscal_year: i64
+    input approved_amount: decimal<28,2>
+
+    idempotency_key idempotency_key
+    create Budget(organization_id, fiscal_year) as budget
+      else BudgetAlreadyExists {
+        organization_id: organization_id,
+        fiscal_year: fiscal_year
+      }
+
+    require positive_approval: approved_amount > 0.00
+      else InvalidApprovedAmount { minimum: 0.01 }
+
+    set budget.approved_amount = approved_amount
+    set budget.allocated_amount = 0.00
+    set budget.updated_at = tx.time
+
+    return BudgetCreated { budget: budget }
+  }
+
   command AllocateBudget {
     input idempotency_key: string<128>
     input organization_id: uuid
@@ -34,6 +57,10 @@ contract LegalSpend version 1 {
 
     idempotency_key idempotency_key
     mutate Budget(organization_id, fiscal_year) as budget
+      else BudgetNotFound {
+        organization_id: organization_id,
+        fiscal_year: fiscal_year
+      }
 
     require positive_amount: amount > 0.00
       else InvalidAmount { minimum: 0.01 }

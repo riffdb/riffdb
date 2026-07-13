@@ -31,6 +31,14 @@ contract Inventory version 1 {
     invariant visible_quantity: quantity >= 0
   }
 
+  command GetItem {
+    input tenant_id: uuid
+    input item_id: uuid
+    read Item(tenant_id, item_id) as item
+      else ItemNotFound { item_id: item_id }
+    return Found { item: item }
+  }
+
   command CreateItem {
     input idempotency_key: string<128>
     input tenant_id: uuid

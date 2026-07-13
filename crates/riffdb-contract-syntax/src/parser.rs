@@ -695,15 +695,8 @@ impl NodeCounter {
         for binding in &command.bindings {
             self.add(2, binding.span)?;
             match &binding.value {
-                Binding::Read(entity) | Binding::Mutate(entity) => {
+                Binding::Read(entity) | Binding::Mutate(entity) | Binding::Create(entity) => {
                     self.entity_binding(entity, binding.span)?;
-                }
-                Binding::Create(create) => {
-                    self.add(1, binding.span)?;
-                    self.name(&create.entity)?;
-                    self.expressions(&create.arguments, binding.span)?;
-                    self.name(&create.binding)?;
-                    self.outcome(&create.duplicate)?;
                 }
             }
         }
@@ -766,7 +759,8 @@ impl NodeCounter {
         self.add(1, span)?;
         self.name(&binding.entity)?;
         self.expressions(&binding.arguments, span)?;
-        self.name(&binding.binding)
+        self.name(&binding.binding)?;
+        self.outcome(&binding.failure)
     }
 
     fn outcome(&mut self, outcome: &Spanned<OutcomeExpression>) -> Result<(), SyntaxDiagnostic> {
