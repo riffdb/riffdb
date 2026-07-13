@@ -23,7 +23,7 @@ direction, merged draft, or implementation choice.
 |---|---|---|
 | [0000](0000-template.md) | ADR template | Template |
 | [0001](0001-standalone-database-boundary.md) | Standalone Database Boundary | Proposed |
-| [0002](0002-bounded-typed-dsl-and-versioned-deterministic-ir.md) | Bounded Typed DSL and Versioned Deterministic IR | Proposed |
+| [0002](0002-bounded-typed-dsl-and-versioned-deterministic-ir.md) | Bounded Typed DSL and Deterministic Compilation Boundary | Accepted |
 | [0003](0003-logical-conflict-dependency-validation-and-commit-ordering.md) | Logical Conflict Ownership, Dependency Validation, and Commit Ordering | Proposed |
 | [0004](0004-semantic-storage-api-and-redb-baseline.md) | Semantic Storage API and Redb Baseline | Proposed |
 | [0005](0005-idempotency-identity-terminal-outcomes-and-sequences.md) | Idempotency Identity, Terminal Outcomes, and Sequence Semantics | Accepted |
@@ -34,11 +34,12 @@ direction, merged draft, or implementation choice.
 | [0010](0010-event-derived-projection-and-frontiers.md) | Event-Derived Projection and Frontier Semantics | Proposed |
 | [0011](0011-canonical-values-keys-and-hashing.md) | Canonical Values, Fixed-Scale Decimals, Keys, and Hashing | Accepted |
 | [0012](0012-deterministic-transaction-context.md) | Deterministic Transaction Context | Proposed |
+| [0013](0013-stable-ids-ir-encoding-and-plan-hash.md) | Stable IDs, IR Encoding, and Plan-Hash Framing | Proposed |
 
 The human architecture review on 2026-07-12 approved the direction represented
-by ADR-0001 through ADR-0012. ADR-0005, ADR-0006, and ADR-0011 have since received
-exact-text acceptance; every other record remains Proposed until separately
-reviewed.
+by ADR-0001 through ADR-0012. ADR-0002, ADR-0005, ADR-0006, and ADR-0011 have
+since received exact-text acceptance; every other record remains Proposed until
+separately reviewed.
 
 ## Workflow
 
