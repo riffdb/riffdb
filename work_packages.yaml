@@ -182,6 +182,7 @@ work_packages:
   - fuzz/Cargo.toml
   - fuzz/Cargo.lock
   - fuzz/.gitignore
+  - fuzz/deny.toml
   - fuzz/fuzz_targets/contract_*
   - scripts/tool-versions
   deliverables:
