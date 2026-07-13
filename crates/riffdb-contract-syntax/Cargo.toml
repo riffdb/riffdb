@@ -9,6 +9,14 @@ publish.workspace = true
 default = []
 
 [dependencies]
+lalrpop-util = { version = "0.23.1", default-features = false }
+logos = { version = "0.16.1", default-features = false, features = ["export_derive", "forbid_unsafe", "std"] }
+
+[build-dependencies]
+lalrpop = { version = "0.23.1", default-features = false }
+
+[dev-dependencies]
+proptest = { version = "1.11.0", default-features = false, features = ["std"] }
 
 [lints]
 workspace = true

@@ -1,0 +1,64 @@
+// Grammar-version-1 surface coverage; semantic resolution belongs to WP-040.
+contract Inventory version 1 {
+  enum Status { Open, Closed, }
+
+  entity Item {
+    key (tenant_id: uuid, item_id: uuid,)
+    field status: Status
+    field quantity: i64
+    field note: optional<string<128>>
+    index by_status (tenant_id, status,)
+    invariant non_negative: quantity >= 0
+  }
+
+  entity ItemAudit {
+    key (tenant_id: uuid, item_id: uuid)
+    field observed_at: timestamp
+  }
+
+  event ItemCreated {
+    tenant_id: uuid
+    item_id: uuid
+    quantity: i64
+    status: Status
+  }
+
+  aggregate InventoryItem {
+    root Item
+    child ItemAudit
+    partition_by tenant_id
+    conflict_key (tenant_id, item_id,)
+    invariant visible_quantity: quantity >= 0
+  }
+
+  command CreateItem {
+    input idempotency_key: string<128>
+    input tenant_id: uuid
+    input item_id: uuid
+    input quantity: i64
+    idempotency_key idempotency_key
+    create Item(tenant_id, item_id,) as item
+      else ItemAlreadyExists { item_id: item_id, }
+    require positive_quantity: quantity > 0
+      else InvalidQuantity { minimum: 1 }
+    set item.status = Status.Open
+    set item.quantity = quantity
+    set item.note = "created\nby contract"
+    emit ItemCreated {
+      tenant_id: tenant_id,
+      item_id: item_id,
+      quantity: quantity,
+      status: Status.Open,
+    }
+    return Created { item: item, }
+  }
+
+  projection InventoryTotals {
+    source event ItemCreated
+    where status == Status.Open && quantity > 0
+    key (tenant_id,)
+    measure created = count()
+    measure quantity = sum(quantity)
+    frontier transactionally_ordered
+  }
+}

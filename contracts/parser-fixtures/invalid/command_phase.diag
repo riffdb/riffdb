@@ -1,0 +1,3 @@
+code=RDB-S004
+span=80..85
+expected=["}"]

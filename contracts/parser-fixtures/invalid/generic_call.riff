@@ -1,0 +1,7 @@
+contract InvalidCall version 1 {
+  command CallsFunction {
+    input idempotency_key: string<128>
+    idempotency_key idempotency_key
+    return Done { value: arbitrary(value) }
+  }
+}
