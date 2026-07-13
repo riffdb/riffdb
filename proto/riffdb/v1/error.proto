@@ -12,6 +12,7 @@ enum PublicErrorKind {
   PUBLIC_ERROR_KIND_STORAGE_UNAVAILABLE = 6;
   PUBLIC_ERROR_KIND_OUTCOME_UNKNOWN = 7;
   PUBLIC_ERROR_KIND_INTERNAL_DEFECT = 8;
+  PUBLIC_ERROR_KIND_COMMAND_EXECUTION_FAILED = 9;
 }
 
 enum RecoveryAction {
@@ -36,6 +37,12 @@ enum ValidationCode {
   VALIDATION_CODE_DUPLICATE_FIELD = 8;
 }
 
+enum ExecutionFailureCode {
+  EXECUTION_FAILURE_CODE_UNSPECIFIED = 0;
+  EXECUTION_FAILURE_CODE_ARITHMETIC_FAULT = 1;
+  EXECUTION_FAILURE_CODE_RESOURCE_LIMIT = 2;
+}
+
 message PublicError {
   PublicErrorKind kind = 1;
   string code = 2;
@@ -45,6 +52,7 @@ message PublicError {
   oneof details {
     ValidationIssues validation = 5;
     ContractMismatchDetails contract_mismatch = 6;
+    CommandExecutionFailureDetails execution_failure = 8;
   }
 
   optional bytes incident_id = 7;
@@ -68,4 +76,8 @@ message ValidationPathSegment {
 
 message ContractMismatchDetails {
   uint64 active_contract_version = 1;
+}
+
+message CommandExecutionFailureDetails {
+  ExecutionFailureCode code = 1;
 }

@@ -40,9 +40,9 @@ fn leaf_value() -> BoxedStrategy<CanonicalValue> {
         }),
         any::<i32>().prop_map(|days| CanonicalValue::Date(Date::from_days_since_unix_epoch(days))),
         any::<[u8; 16]>().prop_map(CanonicalValue::Uuid),
-        (any::<u32>(), any::<u32>()).prop_map(|(type_id, variant_id)| CanonicalValue::Enum {
-            type_id: EnumTypeId::new(type_id),
-            variant_id: EnumVariantId::new(variant_id),
+        (1u32..=u32::MAX, 1u32..=u32::MAX).prop_map(|(type_id, variant_id)| CanonicalValue::Enum {
+            type_id: EnumTypeId::new(type_id).expect("generated nonzero enum type ID"),
+            variant_id: EnumVariantId::new(variant_id).expect("generated nonzero enum variant ID"),
         }),
     ]
     .boxed()
@@ -53,12 +53,14 @@ fn canonical_value() -> BoxedStrategy<CanonicalValue> {
     prop_oneof![
         leaf.clone(),
         vec(leaf.clone(), 0..8).prop_map(|values| CanonicalValue::list(values).expect("bounded")),
-        btree_map(0u32..100, leaf, 0..8).prop_map(|fields| {
+        btree_map(1u32..100, leaf, 0..8).prop_map(|fields| {
             CanonicalValue::Record(
                 CanonicalRecord::new(
                     fields
                         .into_iter()
-                        .map(|(id, value)| (FieldId::new(id), value))
+                        .map(|(id, value)| {
+                            (FieldId::new(id).expect("generated nonzero field ID"), value)
+                        })
                         .collect(),
                 )
                 .expect("BTreeMap field IDs are unique"),
@@ -84,10 +86,10 @@ proptest! {
     }
 
     #[test]
-    fn record_constructor_is_permutation_independent(fields in btree_map(0u32..100, leaf_value(), 0..12)) {
+    fn record_constructor_is_permutation_independent(fields in btree_map(1u32..100, leaf_value(), 0..12)) {
         let forward = fields
             .iter()
-            .map(|(id, value)| (FieldId::new(*id), value.clone()))
+            .map(|(id, value)| (FieldId::new(*id).expect("generated nonzero field ID"), value.clone()))
             .collect::<Vec<_>>();
         let reverse = forward.iter().cloned().rev().collect::<Vec<_>>();
         let forward = CanonicalValue::record(forward).expect("unique fields");
@@ -132,6 +134,22 @@ fn decoder_rejects_noncanonical_and_malformed_documents() {
     for case in cases {
         assert!(decode_canonical_value(&case).is_err(), "accepted {case:?}");
     }
+}
+
+#[test]
+fn decoder_rejects_zero_assigned_ids() {
+    assert_eq!(
+        decode_canonical_value(&[0x01, 0x0b, 0, 0, 0, 0, 0, 0, 0, 1]),
+        Err(CanonicalCodecError::ZeroEnumTypeId)
+    );
+    assert_eq!(
+        decode_canonical_value(&[0x01, 0x0b, 0, 0, 0, 1, 0, 0, 0, 0]),
+        Err(CanonicalCodecError::ZeroEnumVariantId)
+    );
+    assert_eq!(
+        decode_canonical_value(&[0x01, 0x0d, 0, 0, 0, 1, 0, 0, 0, 0, 0x01, 0x00]),
+        Err(CanonicalCodecError::ZeroFieldId)
+    );
 }
 
 #[test]
@@ -190,8 +208,11 @@ fn nesting_limit_is_enforced_on_encode_and_decode() {
 #[test]
 fn record_constructor_rejects_duplicate_fields() {
     let duplicate_fields = vec![
-        (FieldId::new(7), CanonicalValue::Null),
-        (FieldId::new(7), CanonicalValue::Bool(true)),
+        (FieldId::new(7).expect("nonzero"), CanonicalValue::Null),
+        (
+            FieldId::new(7).expect("nonzero"),
+            CanonicalValue::Bool(true),
+        ),
     ];
     assert!(CanonicalValue::record(duplicate_fields).is_err());
 }
@@ -201,7 +222,7 @@ fn btree_map_strategy_documents_stable_order() {
     let map = BTreeMap::from([(9, CanonicalValue::Null), (2, CanonicalValue::Bool(true))]);
     let record = CanonicalRecord::new(
         map.into_iter()
-            .map(|(id, value)| (FieldId::new(id), value))
+            .map(|(id, value)| (FieldId::new(id).expect("nonzero"), value))
             .collect(),
     )
     .expect("unique fields");

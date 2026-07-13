@@ -6,9 +6,9 @@ use std::fmt;
 
 use prost::Message;
 use riffdb_types::{
-    CanonicalValue, CurrencyCode, Decimal as CanonicalDecimal, DecimalSpec, MAX_BYTES_VALUE_BYTES,
-    MAX_CANONICAL_DOCUMENT_BYTES, MAX_LIST_ENTRIES, MAX_NESTING_DEPTH, MAX_RECORD_FIELDS,
-    MAX_STRING_BYTES, Money as CanonicalMoney, Timestamp,
+    CanonicalValue, CurrencyCode, Decimal as CanonicalDecimal, DecimalSpec, EnumTypeId,
+    EnumVariantId, FieldId, MAX_BYTES_VALUE_BYTES, MAX_CANONICAL_DOCUMENT_BYTES, MAX_LIST_ENTRIES,
+    MAX_NESTING_DEPTH, MAX_RECORD_FIELDS, MAX_STRING_BYTES, Money as CanonicalMoney, Timestamp,
 };
 
 use crate::v1;
@@ -175,6 +175,12 @@ fn validate_value_at_depth(value: &v1::Value, depth: usize) -> Result<(), ValueV
         Kind::EnumValue(value) if value.name.len() > MAX_PROTOCOL_NAME_BYTES => {
             Err(ValueValidationError::NameTooLong)
         }
+        Kind::EnumValue(value)
+            if EnumTypeId::new(value.type_id).is_none()
+                || EnumVariantId::new(value.variant_id).is_none() =>
+        {
+            Err(ValueValidationError::InvalidEnumIdentity)
+        }
         Kind::EnumValue(_) => Ok(()),
         Kind::ListValue(value) => {
             if value.values.len() > MAX_LIST_ENTRIES {
@@ -224,6 +230,9 @@ fn validate_record(value: &v1::ValueRecord, depth: usize) -> Result<(), ValueVal
         }
         match field.field_id {
             Some(field_id) => {
+                if FieldId::new(field_id).is_none() {
+                    return Err(ValueValidationError::InvalidFieldIdentity);
+                }
                 if saw_name_only || previous_id.is_some_and(|previous| previous >= field_id) {
                     return Err(ValueValidationError::NonCanonicalRecordOrder);
                 }
@@ -330,6 +339,8 @@ pub enum ValueValidationError {
     NameTooLong,
     /// A record field provides neither a stable ID nor a name.
     MissingFieldIdentity,
+    /// A present record field ID is the unassigned zero sentinel.
+    InvalidFieldIdentity,
     /// A record field occurs more than once.
     DuplicateField,
     /// Record fields are not in canonical structural order.
@@ -352,6 +363,8 @@ pub enum ValueValidationError {
     MoneyTypeMismatch,
     /// A UUID is not exactly 16 bytes.
     InvalidUuid,
+    /// An enum type or variant ID is the unassigned zero sentinel.
+    InvalidEnumIdentity,
     /// Timestamp nanoseconds are not canonical.
     InvalidTimestamp,
 }
@@ -432,8 +445,14 @@ mod tests {
     #[test]
     fn canonical_record_output_uses_only_sorted_ids() {
         let value = CanonicalValue::record(vec![
-            (FieldId::new(9), CanonicalValue::I64(2)),
-            (FieldId::new(3), CanonicalValue::I64(1)),
+            (
+                FieldId::new(9).expect("field ID is nonzero"),
+                CanonicalValue::I64(2),
+            ),
+            (
+                FieldId::new(3).expect("field ID is nonzero"),
+                CanonicalValue::I64(1),
+            ),
         ])
         .expect("canonical record");
         let wire = canonical_value_to_proto(&value).expect("outbound value must validate");
@@ -454,8 +473,8 @@ mod tests {
     #[test]
     fn schema_identity_types_remain_exact() {
         let value = CanonicalValue::Enum {
-            type_id: EnumTypeId::new(7),
-            variant_id: EnumVariantId::new(11),
+            type_id: EnumTypeId::new(7).expect("enum type ID is nonzero"),
+            variant_id: EnumVariantId::new(11).expect("enum variant ID is nonzero"),
         };
         let wire = canonical_value_to_proto(&value).expect("valid outbound value");
         let v1::value::Kind::EnumValue(value) = wire.kind.expect("kind") else {
@@ -463,6 +482,61 @@ mod tests {
         };
         assert_eq!((value.type_id, value.variant_id), (7, 11));
         assert!(value.name.is_empty());
+    }
+
+    #[test]
+    fn assigned_schema_id_zero_sentinels_are_rejected() {
+        let enum_value = v1::Value {
+            kind: Some(v1::value::Kind::EnumValue(v1::EnumValue {
+                type_id: 0,
+                variant_id: 1,
+                name: String::new(),
+            })),
+        };
+        assert_eq!(
+            validate_value(&enum_value),
+            Err(ValueValidationError::InvalidEnumIdentity)
+        );
+        assert_eq!(
+            decode_value(&enum_value.encode_to_vec()),
+            Err(ValueValidationError::InvalidEnumIdentity)
+        );
+
+        let enum_variant = v1::Value {
+            kind: Some(v1::value::Kind::EnumValue(v1::EnumValue {
+                type_id: 1,
+                variant_id: 0,
+                name: String::new(),
+            })),
+        };
+        assert_eq!(
+            validate_value(&enum_variant),
+            Err(ValueValidationError::InvalidEnumIdentity)
+        );
+        assert_eq!(
+            decode_value(&enum_variant.encode_to_vec()),
+            Err(ValueValidationError::InvalidEnumIdentity)
+        );
+
+        let record = v1::Value {
+            kind: Some(v1::value::Kind::RecordValue(v1::ValueRecord {
+                fields: vec![v1::ValueField {
+                    field_id: Some(0),
+                    name: String::new(),
+                    value: Some(v1::Value {
+                        kind: Some(v1::value::Kind::NullValue(v1::NullValue::NullValue as i32)),
+                    }),
+                }],
+            })),
+        };
+        assert_eq!(
+            validate_value(&record),
+            Err(ValueValidationError::InvalidFieldIdentity)
+        );
+        assert_eq!(
+            decode_value(&record.encode_to_vec()),
+            Err(ValueValidationError::InvalidFieldIdentity)
+        );
     }
 
     #[test]

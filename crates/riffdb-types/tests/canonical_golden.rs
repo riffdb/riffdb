@@ -30,8 +30,8 @@ fn hex(input: &str) -> Vec<u8> {
 #[test]
 fn canonical_v1_tag_and_payload_vectors_are_stable() {
     let record = CanonicalValue::record(vec![
-        (FieldId::new(9), CanonicalValue::Null),
-        (FieldId::new(2), CanonicalValue::U64(1)),
+        (FieldId::new(9).expect("nonzero"), CanonicalValue::Null),
+        (FieldId::new(2).expect("nonzero"), CanonicalValue::U64(1)),
     ])
     .expect("valid record");
     let values = [
@@ -76,8 +76,8 @@ fn canonical_v1_tag_and_payload_vectors_are_stable() {
         ),
         (
             CanonicalValue::Enum {
-                type_id: EnumTypeId::new(42),
-                variant_id: EnumVariantId::new(7),
+                type_id: EnumTypeId::new(42).expect("nonzero"),
+                variant_id: EnumVariantId::new(7).expect("nonzero"),
             },
             "010b0000002a00000007",
         ),

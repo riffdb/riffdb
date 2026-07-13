@@ -9,6 +9,7 @@ files
 
 messages
   riffdb.storage.v1.StoredEnvelope fields=5
+  riffdb.v1.CommandExecutionFailureDetails fields=1
   riffdb.v1.CommitNotification fields=0 phase-zero-shell
   riffdb.v1.ContractMismatchDetails fields=1
   riffdb.v1.CreateCapabilityRequest fields=0 phase-zero-shell
@@ -33,7 +34,7 @@ messages
   riffdb.v1.HealthRequest fields=0 phase-zero-shell
   riffdb.v1.HealthResponse fields=0 phase-zero-shell
   riffdb.v1.Money fields=2
-  riffdb.v1.PublicError fields=7
+  riffdb.v1.PublicError fields=8
   riffdb.v1.QueryProjectionRequest fields=0 phase-zero-shell
   riffdb.v1.QueryProjectionResponse fields=0 phase-zero-shell
   riffdb.v1.RevokeCapabilityRequest fields=0 phase-zero-shell

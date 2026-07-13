@@ -416,8 +416,11 @@ mod tests {
     #[test]
     fn record_constructor_sorts_and_rejects_duplicates() {
         let record = CanonicalRecord::new(vec![
-            (FieldId::new(9), CanonicalValue::Null),
-            (FieldId::new(2), CanonicalValue::Bool(true)),
+            (FieldId::new(9).expect("nonzero"), CanonicalValue::Null),
+            (
+                FieldId::new(2).expect("nonzero"),
+                CanonicalValue::Bool(true),
+            ),
         ])
         .expect("valid record");
         assert_eq!(
@@ -431,11 +434,11 @@ mod tests {
 
         assert_eq!(
             CanonicalRecord::new(vec![
-                (FieldId::new(2), CanonicalValue::Null),
-                (FieldId::new(2), CanonicalValue::Null),
+                (FieldId::new(2).expect("nonzero"), CanonicalValue::Null),
+                (FieldId::new(2).expect("nonzero"), CanonicalValue::Null),
             ]),
             Err(ValueError::DuplicateRecordField {
-                field_id: FieldId::new(2)
+                field_id: FieldId::new(2).expect("nonzero")
             })
         );
     }

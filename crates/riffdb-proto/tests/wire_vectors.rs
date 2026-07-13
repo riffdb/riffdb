@@ -38,6 +38,8 @@ fn every_checked_in_wire_vector_decodes_through_its_strict_boundary() {
         "error.authorization",
         "error.concurrency",
         "error.contract",
+        "error.execution-arithmetic",
+        "error.execution-resource-limit",
         "error.idempotency",
         "error.internal",
         "error.outcome-unknown",
