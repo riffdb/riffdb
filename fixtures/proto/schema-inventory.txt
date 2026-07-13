@@ -1,0 +1,80 @@
+riffdb-proto-schema-inventory-v1
+
+files
+  riffdb/storage/v1/envelope.proto
+  riffdb/v1/command.proto
+  riffdb/v1/error.proto
+  riffdb/v1/services.proto
+  riffdb/v1/value.proto
+
+messages
+  riffdb.storage.v1.StoredEnvelope fields=5
+  riffdb.v1.CommitNotification fields=0 phase-zero-shell
+  riffdb.v1.ContractMismatchDetails fields=1
+  riffdb.v1.CreateCapabilityRequest fields=0 phase-zero-shell
+  riffdb.v1.CreateCapabilityResponse fields=0 phase-zero-shell
+  riffdb.v1.Date fields=1
+  riffdb.v1.Decimal fields=2
+  riffdb.v1.DeployContractRequest fields=0 phase-zero-shell
+  riffdb.v1.DeployContractResponse fields=0 phase-zero-shell
+  riffdb.v1.EnumValue fields=3
+  riffdb.v1.ExecuteCommandRequest fields=4
+  riffdb.v1.ExecuteCommandResponse fields=8
+  riffdb.v1.ExplainCommandRequest fields=0 phase-zero-shell
+  riffdb.v1.ExplainCommandResponse fields=0 phase-zero-shell
+  riffdb.v1.GetActiveContractRequest fields=0 phase-zero-shell
+  riffdb.v1.GetActiveContractResponse fields=0 phase-zero-shell
+  riffdb.v1.GetCommitRequest fields=0 phase-zero-shell
+  riffdb.v1.GetCommitResponse fields=0 phase-zero-shell
+  riffdb.v1.GetEntityRequest fields=0 phase-zero-shell
+  riffdb.v1.GetEntityResponse fields=0 phase-zero-shell
+  riffdb.v1.GetOutcomeRequest fields=0 phase-zero-shell
+  riffdb.v1.GetOutcomeResponse fields=0 phase-zero-shell
+  riffdb.v1.HealthRequest fields=0 phase-zero-shell
+  riffdb.v1.HealthResponse fields=0 phase-zero-shell
+  riffdb.v1.Money fields=2
+  riffdb.v1.PublicError fields=7
+  riffdb.v1.QueryProjectionRequest fields=0 phase-zero-shell
+  riffdb.v1.QueryProjectionResponse fields=0 phase-zero-shell
+  riffdb.v1.RevokeCapabilityRequest fields=0 phase-zero-shell
+  riffdb.v1.RevokeCapabilityResponse fields=0 phase-zero-shell
+  riffdb.v1.ScanCommitsRequest fields=0 phase-zero-shell
+  riffdb.v1.ScanCommitsResponse fields=0 phase-zero-shell
+  riffdb.v1.ScanIndexRequest fields=0 phase-zero-shell
+  riffdb.v1.ScanIndexResponse fields=0 phase-zero-shell
+  riffdb.v1.StatsRequest fields=0 phase-zero-shell
+  riffdb.v1.StatsResponse fields=0 phase-zero-shell
+  riffdb.v1.SubscribeCommitsRequest fields=0 phase-zero-shell
+  riffdb.v1.Timestamp fields=2
+  riffdb.v1.ValidateContractRequest fields=0 phase-zero-shell
+  riffdb.v1.ValidateContractResponse fields=0 phase-zero-shell
+  riffdb.v1.ValidationIssue fields=2
+  riffdb.v1.ValidationIssues fields=1
+  riffdb.v1.ValidationPathSegment fields=2
+  riffdb.v1.Value fields=14
+  riffdb.v1.ValueField fields=3
+  riffdb.v1.ValueList fields=1
+  riffdb.v1.ValueRecord fields=1
+
+services
+  riffdb.v1.AdminService
+    Health .riffdb.v1.HealthRequest -> .riffdb.v1.HealthResponse (unary)
+    Stats .riffdb.v1.StatsRequest -> .riffdb.v1.StatsResponse (unary)
+    CreateCapability .riffdb.v1.CreateCapabilityRequest -> .riffdb.v1.CreateCapabilityResponse (unary)
+    RevokeCapability .riffdb.v1.RevokeCapabilityRequest -> .riffdb.v1.RevokeCapabilityResponse (unary)
+  riffdb.v1.CommandService
+    Execute .riffdb.v1.ExecuteCommandRequest -> .riffdb.v1.ExecuteCommandResponse (unary)
+    GetOutcome .riffdb.v1.GetOutcomeRequest -> .riffdb.v1.GetOutcomeResponse (unary)
+  riffdb.v1.CommitService
+    GetCommit .riffdb.v1.GetCommitRequest -> .riffdb.v1.GetCommitResponse (unary)
+    ScanCommits .riffdb.v1.ScanCommitsRequest -> .riffdb.v1.ScanCommitsResponse (unary)
+    SubscribeCommits .riffdb.v1.SubscribeCommitsRequest -> .riffdb.v1.CommitNotification (server-streaming)
+  riffdb.v1.ContractService
+    ValidateContract .riffdb.v1.ValidateContractRequest -> .riffdb.v1.ValidateContractResponse (unary)
+    ExplainCommand .riffdb.v1.ExplainCommandRequest -> .riffdb.v1.ExplainCommandResponse (unary)
+    DeployContract .riffdb.v1.DeployContractRequest -> .riffdb.v1.DeployContractResponse (unary)
+    GetActiveContract .riffdb.v1.GetActiveContractRequest -> .riffdb.v1.GetActiveContractResponse (unary)
+  riffdb.v1.QueryService
+    GetEntity .riffdb.v1.GetEntityRequest -> .riffdb.v1.GetEntityResponse (unary)
+    ScanIndex .riffdb.v1.ScanIndexRequest -> .riffdb.v1.ScanIndexResponse (unary)
+    QueryProjection .riffdb.v1.QueryProjectionRequest -> .riffdb.v1.QueryProjectionResponse (unary)

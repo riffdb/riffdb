@@ -1,0 +1,11 @@
+syntax = "proto3";
+
+package riffdb.storage.v1;
+
+message StoredEnvelope {
+  uint32 storage_format_version = 1;
+  string record_type = 2;
+  bytes payload = 3;
+  fixed32 payload_crc32c = 4;
+  bytes schema_hash = 5;
+}

@@ -1,0 +1,66 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+repo_root="$(git rev-parse --show-toplevel)"
+cd "$repo_root"
+
+mode="${1:-}"
+case "$mode" in
+    "")
+        output_root="$repo_root"
+        ;;
+    --check)
+        output_root="$(mktemp -d)"
+        trap 'rm -rf "$output_root"' EXIT
+        ;;
+    *)
+        printf 'usage: %s [--check]\n' "$0" >&2
+        exit 2
+        ;;
+esac
+
+generate() {
+    LC_ALL=C TZ=UTC cargo run --quiet --locked -p riffdb-proto --example generate_proto -- \
+        --output-root "$output_root"
+}
+
+generate
+if [[ "$mode" == "" ]]; then
+    # The checked-in Prost types are inputs to public wire-vector generation.
+    # A second pass reaches a fixed point after a schema edit changes those types.
+    generate
+fi
+
+artifacts=(
+    crates/riffdb-proto/src/generated/riffdb.storage.v1.rs
+    crates/riffdb-proto/src/generated/riffdb.v1.rs
+    fixtures/proto/compatibility-probe-envelope.bin
+    fixtures/proto/compatibility-probe-payload.bin
+    fixtures/proto/descriptors/compatibility-probe-descriptor-set.bin
+    fixtures/proto/descriptors/riffdb-v1-descriptor-set.bin
+    fixtures/proto/schema-inventory.txt
+    fixtures/proto/wire-vectors.txt
+)
+
+expected_generated=$'crates/riffdb-proto/src/generated/riffdb.storage.v1.rs\ncrates/riffdb-proto/src/generated/riffdb.v1.rs'
+actual_generated="$(find crates/riffdb-proto/src/generated -maxdepth 1 -type f -print | LC_ALL=C sort)"
+if [[ "$actual_generated" != "$expected_generated" ]]; then
+    printf 'generated Rust source inventory differs from the accepted package baseline\n' >&2
+    exit 1
+fi
+
+if [[ "$mode" == "--check" ]]; then
+    failed=0
+    for artifact in "${artifacts[@]}"; do
+        if ! cmp --silent -- "$artifact" "$output_root/$artifact"; then
+            printf 'generated artifact is stale or missing: %s\n' "$artifact" >&2
+            failed=1
+        fi
+    done
+    if (( failed != 0 )); then
+        exit 1
+    fi
+    printf 'Protobuf artifacts are current.\n'
+else
+    printf 'Generated %d Protobuf artifacts.\n' "${#artifacts[@]}"
+fi

@@ -1,0 +1,71 @@
+syntax = "proto3";
+
+package riffdb.v1;
+
+enum PublicErrorKind {
+  PUBLIC_ERROR_KIND_UNSPECIFIED = 0;
+  PUBLIC_ERROR_KIND_VALIDATION = 1;
+  PUBLIC_ERROR_KIND_IDEMPOTENCY_KEY_REUSE = 2;
+  PUBLIC_ERROR_KIND_AUTHORIZATION_DENIED = 3;
+  PUBLIC_ERROR_KIND_CONCURRENCY_DEADLINE_EXCEEDED = 4;
+  PUBLIC_ERROR_KIND_CONTRACT_MISMATCH = 5;
+  PUBLIC_ERROR_KIND_STORAGE_UNAVAILABLE = 6;
+  PUBLIC_ERROR_KIND_OUTCOME_UNKNOWN = 7;
+  PUBLIC_ERROR_KIND_INTERNAL_DEFECT = 8;
+}
+
+enum RecoveryAction {
+  RECOVERY_ACTION_UNSPECIFIED = 0;
+  RECOVERY_ACTION_CORRECT_REQUEST = 1;
+  RECOVERY_ACTION_RETRY = 2;
+  RECOVERY_ACTION_RESOLVE_WITH_SAME_IDEMPOTENCY_KEY = 3;
+  RECOVERY_ACTION_OBTAIN_PERMISSION = 4;
+  RECOVERY_ACTION_REFRESH_CONTRACT = 5;
+  RECOVERY_ACTION_CONTACT_OPERATOR = 6;
+}
+
+enum ValidationCode {
+  VALIDATION_CODE_UNSPECIFIED = 0;
+  VALIDATION_CODE_MISSING_REQUIRED_VALUE = 1;
+  VALIDATION_CODE_TYPE_MISMATCH = 2;
+  VALIDATION_CODE_INVALID_VALUE = 3;
+  VALIDATION_CODE_OUT_OF_RANGE = 4;
+  VALIDATION_CODE_TOO_LONG = 5;
+  VALIDATION_CODE_TOO_MANY_ITEMS = 6;
+  VALIDATION_CODE_UNKNOWN_FIELD = 7;
+  VALIDATION_CODE_DUPLICATE_FIELD = 8;
+}
+
+message PublicError {
+  PublicErrorKind kind = 1;
+  string code = 2;
+  string safe_message = 3;
+  RecoveryAction recovery_action = 4;
+
+  oneof details {
+    ValidationIssues validation = 5;
+    ContractMismatchDetails contract_mismatch = 6;
+  }
+
+  optional bytes incident_id = 7;
+}
+
+message ValidationIssues {
+  repeated ValidationIssue issues = 1;
+}
+
+message ValidationIssue {
+  ValidationCode code = 1;
+  repeated ValidationPathSegment path = 2;
+}
+
+message ValidationPathSegment {
+  oneof segment {
+    uint32 field_id = 1;
+    uint32 list_index = 2;
+  }
+}
+
+message ContractMismatchDetails {
+  uint64 active_contract_version = 1;
+}

@@ -1,0 +1,67 @@
+syntax = "proto3";
+
+package riffdb.v1;
+
+// Exact dynamic value used at public transport boundaries.
+message Value {
+  oneof kind {
+    NullValue null_value = 1;
+    bool bool_value = 2;
+    sint64 i64_value = 3;
+    uint64 u64_value = 4;
+    Decimal decimal_value = 5;
+    Money money_value = 6;
+    string string_value = 7;
+    bytes bytes_value = 8;
+    bytes uuid_value = 9;
+    Date date_value = 10;
+    Timestamp timestamp_value = 11;
+    EnumValue enum_value = 12;
+    ValueList list_value = 13;
+    ValueRecord record_value = 14;
+  }
+}
+
+enum NullValue {
+  NULL_VALUE = 0;
+}
+
+message Decimal {
+  // Minimal, big-endian two's-complement coefficient (1 through 16 bytes).
+  bytes coefficient_twos_complement = 1;
+  uint32 scale = 2;
+}
+
+message Money {
+  string currency = 1;
+  Decimal amount = 2;
+}
+
+message Date {
+  sint32 days_since_unix_epoch = 1;
+}
+
+message Timestamp {
+  sint64 seconds = 1;
+  uint32 nanos = 2;
+}
+
+message EnumValue {
+  uint32 type_id = 1;
+  uint32 variant_id = 2;
+  string name = 3;
+}
+
+message ValueList {
+  repeated Value values = 1;
+}
+
+message ValueField {
+  optional uint32 field_id = 1;
+  string name = 2;
+  Value value = 3;
+}
+
+message ValueRecord {
+  repeated ValueField fields = 1;
+}
