@@ -2,10 +2,11 @@
 
 - **Status:** Accepted
 - **Direction approved:** 2026-07-12
-- **Exact text accepted:** 2026-07-12
+- **Exact text accepted:** 2026-07-12, amended 2026-07-12
 - **Decision deadline:** Identity before WP-060 durable keys; full record before WP-100
 
-The human maintainer accepted this exact text on 2026-07-12.
+The human maintainer accepted this exact text, including the identity-component
+amendment, on 2026-07-12.
 
 ## Context
 
@@ -31,6 +32,17 @@ database/environment
 The contract version is stored with admission and outcome records but excluded
 from lookup identity so a retry survives compatible deployment. Raw caller keys
 are never persisted or logged.
+
+The foundational component representations are fixed by ADR-0011. Database
+identity is UUIDv7 network-order bytes. Environment and contract lineage are
+their exact bounded text bytes. Tenant scope is a one-byte tag (`0` for global,
+`1` for a tenant) and, for a tenant, the exact bounded tenant-ID bytes. Variable
+text components are `u32` length-prefixed. Principal identity is the exact
+bounded `ActorId`; command identity is `CommandId` as `u32` big endian. The
+keyed caller digest contributes scheme byte, `DigestKeyId` as `u32` big endian,
+and 32 digest bytes. WP-060 will place these components in a separately
+versioned idempotency storage-key envelope; it may not reorder, omit, normalize,
+or reinterpret them.
 
 The v1 caller-key digest is HMAC-SHA-256 over the keyed hash frame defined by
 ADR-0011, using domain `riffdb.idempotency-key/v1` and the exact validated UTF-8
@@ -86,11 +98,11 @@ terminal commit; replay receives no new sequence.
 
 ## Compatibility
 
-Identity bytes, digest scheme and key version, canonical input hashing,
-pending-record version, terminal outcome encoding, and sequence semantics are
-durable boundaries. Adding a readable digest key is compatible. Changing the
-HMAC algorithm, framing, identity tuple, or existing domain label requires a new
-version and migration plan.
+Identity component bytes and order, digest scheme and key version, canonical
+input hashing, pending-record version, terminal outcome encoding, and sequence
+semantics are durable boundaries. Adding a readable digest key is compatible.
+Changing the HMAC algorithm, framing, identity tuple, component encoding, or
+existing domain label requires a new version and migration plan.
 
 ## Security
 

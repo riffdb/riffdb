@@ -2,10 +2,11 @@
 
 - **Status:** Accepted
 - **Direction approved:** 2026-07-12
-- **Exact text accepted:** 2026-07-12
+- **Exact text accepted:** 2026-07-12, amended 2026-07-12
 - **Decision deadline:** Before WP-010 semantic types or fixtures merge
 
-The human maintainer accepted this exact text on 2026-07-12.
+The human maintainer accepted this exact text, including the foundational
+identifier and key-envelope amendment, on 2026-07-12.
 
 ## Context
 
@@ -69,6 +70,26 @@ are not v1 transactional value variants. Text is exact UTF-8 with grammar- or
 field-specific validation. No locale rule or implicit Unicode normalization
 changes identity.
 
+### Foundational identifiers
+
+Compiler-assigned aggregate and invariant IDs are distinct `u32` newtypes.
+Index epochs and the administration sequence are distinct `u64` newtypes and
+must never be substituted for an application `CommitSequence`.
+
+`DatabaseId`, `CapabilityId`, and `ProvenanceId` are UUIDv7 values in 16-byte
+network order. `EventId` is the deterministic pair of the event's
+`CommitSequence` and zero-based `u32` event ordinal; its canonical bytes are the
+sequence as `u64` big endian followed by the ordinal as `u32` big endian.
+
+Contract lineage is the exact, nonempty UTF-8 contract name bounded to 256 bytes.
+An environment is a nonempty ASCII slug bounded to 64 bytes and containing only
+ASCII letters, digits, `.`, `_`, or `-`. A POC tenant scope is either the global
+scope or one exact, nonempty UTF-8 tenant identifier bounded to 256 bytes. These
+values are not implicitly normalized. Tenant identifiers and scopes use
+redacted default diagnostics.
+
+### Canonical durable keys
+
 Purpose-specific durable key encoders prepend their namespace and format version.
 Unsigned ordered components use fixed-width big-endian bytes. Signed ordered
 components flip the sign bit before big-endian encoding so lexicographic and
@@ -76,6 +97,20 @@ numeric order agree. Variable byte components use a `u32` length followed by
 exact bytes. A v1 durable key is at most 4 KiB. Each key schema fixes its
 component order; Rust memory layout, serde defaults, insertion order, and
 randomized hashing never determine bytes.
+
+The v1 typed-key envelope registry is immutable:
+
+| Key | Prefix | Required identity | Remaining components |
+|---|---|---|---|
+| Entity | `0x45 0x01` | `EntityTypeId` as `u32` big endian | Compiled primary-key schema |
+| Conflict | `0x43 0x01` | `AggregateTypeId` as `u32` big endian | Compiled conflict-key schema |
+
+Typed builders require the identity when they are created. Reconstruction from
+raw bytes validates the purpose byte, version byte, required identity, minimum
+envelope length, and 4 KiB bound before constructing the type. Validation of the
+remaining component count and types requires the exact compiler-produced key
+schema and is performed by that semantic decoder; a key envelope alone must not
+claim that schema validation occurred.
 
 ### Hash framing and domains
 
@@ -134,9 +169,10 @@ value does not carry precision.
 
 ## Compatibility
 
-Value variants and tags, numeric bounds, decimal/money encoding, text policy,
-field order, key domains, canonical bytes, hash algorithm/version, and Protobuf
-mapping are public and durable compatibility boundaries.
+Identifier representations, value variants and tags, numeric bounds,
+decimal/money encoding, text policy, field order, key envelopes and domains,
+canonical bytes, hash algorithm/version, and Protobuf mapping are public and
+durable compatibility boundaries.
 
 ## Security
 
