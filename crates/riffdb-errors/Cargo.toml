@@ -9,6 +9,7 @@ publish.workspace = true
 default = []
 
 [dependencies]
+riffdb-types = { version = "0.1.0", path = "../riffdb-types" }
 
 [lints]
 workspace = true
