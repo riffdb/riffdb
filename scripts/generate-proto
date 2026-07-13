@@ -43,11 +43,23 @@ artifacts=(
 )
 
 expected_generated=$'crates/riffdb-proto/src/generated/riffdb.storage.v1.rs\ncrates/riffdb-proto/src/generated/riffdb.v1.rs'
-actual_generated="$(find crates/riffdb-proto/src/generated -maxdepth 1 -type f -print | LC_ALL=C sort)"
-if [[ "$actual_generated" != "$expected_generated" ]]; then
-    printf 'generated Rust source inventory differs from the accepted package baseline\n' >&2
-    exit 1
-fi
+
+check_generated_inventory() {
+    local root="$1"
+    local actual_generated
+    actual_generated="$(
+        cd "$root"
+        find crates/riffdb-proto/src/generated -maxdepth 1 -type f -print | LC_ALL=C sort
+    )"
+    if [[ "$actual_generated" != "$expected_generated" ]]; then
+        printf 'generated Rust source inventory differs from the accepted package baseline: %s\n' \
+            "$root" >&2
+        return 1
+    fi
+}
+
+check_generated_inventory "$repo_root"
+check_generated_inventory "$output_root"
 
 if [[ "$mode" == "--check" ]]; then
     failed=0

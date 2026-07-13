@@ -12,6 +12,7 @@ use riffdb_types::{
 };
 
 use crate::v1;
+use crate::wire::{self, PreflightError};
 
 /// Maximum byte length of a protocol or schema-resolved display name.
 pub const MAX_PROTOCOL_NAME_BYTES: usize = 256;
@@ -25,6 +26,13 @@ pub fn decode_value(input: &[u8]) -> Result<v1::Value, ValueValidationError> {
     if input.len() > MAX_CANONICAL_DOCUMENT_BYTES {
         return Err(ValueValidationError::DocumentTooLarge);
     }
+    match wire::value(input) {
+        Ok(()) => {}
+        Err(PreflightError::Malformed) => return Err(ValueValidationError::MalformedEncoding),
+        Err(PreflightError::LimitExceeded) => {
+            return Err(ValueValidationError::PreflightLimitExceeded);
+        }
+    }
     let value = v1::Value::decode(input).map_err(|_| ValueValidationError::MalformedEncoding)?;
     validate_value(&value)?;
     Ok(value)
@@ -32,10 +40,11 @@ pub fn decode_value(input: &[u8]) -> Result<v1::Value, ValueValidationError> {
 
 /// Applies schema-independent bounds and canonical representation checks.
 pub fn validate_value(value: &v1::Value) -> Result<(), ValueValidationError> {
+    validate_value_at_depth(value, 0)?;
     if value.encoded_len() > MAX_CANONICAL_DOCUMENT_BYTES {
         return Err(ValueValidationError::DocumentTooLarge);
     }
-    validate_value_at_depth(value, 0)
+    Ok(())
 }
 
 /// Converts a canonical semantic value to its exact public wire form.
@@ -303,6 +312,8 @@ pub enum ValueValidationError {
     DocumentTooLarge,
     /// Protobuf decoding failed.
     MalformedEncoding,
+    /// A nested wire length, item count, or depth exceeds its pre-allocation limit.
+    PreflightLimitExceeded,
     /// The `Value` oneof is absent.
     MissingKind,
     /// The null enum contains an unknown value.

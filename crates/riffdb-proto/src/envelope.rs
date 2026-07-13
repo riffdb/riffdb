@@ -4,9 +4,10 @@ use std::{error::Error, fmt};
 
 use crc::{CRC_32_ISCSI, Crc};
 use prost::Message;
-use riffdb_types::{SchemaHash, hash_schema};
+use riffdb_types::SchemaHash;
 
 use crate::storage::v1::StoredEnvelope;
+use crate::wire::{self, EnvelopePreflightError};
 
 /// The only storage-envelope format version supported by the POC baseline.
 pub const STORAGE_FORMAT_VERSION_V1: u32 = 1;
@@ -49,30 +50,11 @@ impl fmt::Display for PayloadValidationError {
 
 impl Error for PayloadValidationError {}
 
-/// Errors in a statically configured durable-record schema.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum RecordSchemaError {
-    /// The record name is not a fully qualified Protobuf message name.
-    InvalidRecordType,
-    /// The canonical descriptor set exceeds the implementation hard limit.
-    DescriptorSetTooLarge,
-    /// The record-specific payload limit exceeds the absolute envelope limit.
-    InvalidPayloadLimit,
-}
-
-impl fmt::Display for RecordSchemaError {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter.write_str(match self {
-            Self::InvalidRecordType => "durable record type is invalid",
-            Self::DescriptorSetTooLarge => "durable descriptor set is too large",
-            Self::InvalidPayloadLimit => "durable payload limit is invalid",
-        })
-    }
-}
-
-impl Error for RecordSchemaError {}
-
 /// One supported `(version, record type, schema hash)` registry entry.
+///
+/// Construction is crate-sealed. Each accepted production durable record must
+/// expose a record-specific factory backed by its generated descriptor and
+/// schema-hash constant.
 #[derive(Clone, Copy)]
 pub struct RecordSchema<'a> {
     record_type: &'a str,
@@ -81,28 +63,7 @@ pub struct RecordSchema<'a> {
     validate_payload: fn(&[u8]) -> Result<(), PayloadValidationError>,
 }
 
-impl<'a> RecordSchema<'a> {
-    /// Creates a v1 registry entry from a canonical, source-info-stripped
-    /// transitive descriptor set.
-    pub fn new(
-        record_type: &'a str,
-        canonical_descriptor_set: &[u8],
-        max_payload_bytes: usize,
-        validate_payload: fn(&[u8]) -> Result<(), PayloadValidationError>,
-    ) -> Result<Self, RecordSchemaError> {
-        if max_payload_bytes > MAX_STORED_ENVELOPE_BYTES {
-            return Err(RecordSchemaError::InvalidPayloadLimit);
-        }
-
-        let schema_hash = durable_schema_hash(record_type, canonical_descriptor_set)?;
-        Ok(Self {
-            record_type,
-            schema_hash,
-            max_payload_bytes,
-            validate_payload,
-        })
-    }
-
+impl RecordSchema<'_> {
     /// Returns the fully qualified Protobuf record name.
     #[must_use]
     pub const fn record_type(&self) -> &str {
@@ -187,6 +148,19 @@ impl<'a> RecordRegistry<'a> {
         if encoded.len() > MAX_STORED_ENVELOPE_BYTES {
             return Err(EnvelopeError::EnvelopeTooLarge);
         }
+        match wire::stored_envelope(encoded) {
+            Ok(()) => {}
+            Err(EnvelopePreflightError::Malformed) => return Err(EnvelopeError::Malformed),
+            Err(EnvelopePreflightError::InvalidRecordType) => {
+                return Err(EnvelopeError::InvalidRecordType);
+            }
+            Err(EnvelopePreflightError::InvalidSchemaHashLength) => {
+                return Err(EnvelopeError::InvalidSchemaHashLength);
+            }
+            Err(EnvelopePreflightError::NonCanonical) => {
+                return Err(EnvelopeError::NonCanonicalEnvelope);
+            }
+        }
 
         let envelope = StoredEnvelope::decode(encoded).map_err(|_| EnvelopeError::Malformed)?;
 
@@ -194,8 +168,9 @@ impl<'a> RecordRegistry<'a> {
             return Err(EnvelopeError::UnsupportedStorageFormatVersion);
         }
 
-        validate_record_type(&envelope.record_type)
-            .map_err(|_| EnvelopeError::InvalidRecordType)?;
+        if !is_valid_record_type(&envelope.record_type) {
+            return Err(EnvelopeError::InvalidRecordType);
+        }
 
         if !self
             .schemas
@@ -361,35 +336,8 @@ pub fn payload_crc32c(payload: &[u8]) -> u32 {
     CRC_32C.checksum(payload)
 }
 
-/// Computes the accepted schema-domain hash for one durable record descriptor.
-pub fn durable_schema_hash(
-    record_type: &str,
-    canonical_descriptor_set: &[u8],
-) -> Result<SchemaHash, RecordSchemaError> {
-    validate_record_type(record_type)?;
-    if canonical_descriptor_set.len() > MAX_STORED_ENVELOPE_BYTES {
-        return Err(RecordSchemaError::DescriptorSetTooLarge);
-    }
-
-    let record_type_length =
-        u16::try_from(record_type.len()).map_err(|_| RecordSchemaError::InvalidRecordType)?;
-    let descriptor_set_length = u64::try_from(canonical_descriptor_set.len())
-        .map_err(|_| RecordSchemaError::DescriptorSetTooLarge)?;
-    let frame_capacity = 2usize
-        .checked_add(record_type.len())
-        .and_then(|length| length.checked_add(8))
-        .and_then(|length| length.checked_add(canonical_descriptor_set.len()))
-        .ok_or(RecordSchemaError::DescriptorSetTooLarge)?;
-    let mut frame = Vec::with_capacity(frame_capacity);
-    frame.extend_from_slice(&record_type_length.to_be_bytes());
-    frame.extend_from_slice(record_type.as_bytes());
-    frame.extend_from_slice(&descriptor_set_length.to_be_bytes());
-    frame.extend_from_slice(canonical_descriptor_set);
-    Ok(hash_schema(&frame))
-}
-
-fn validate_record_type(record_type: &str) -> Result<(), RecordSchemaError> {
-    if record_type.is_empty()
+fn is_valid_record_type(record_type: &str) -> bool {
+    !(record_type.is_empty()
         || record_type.len() > MAX_RECORD_TYPE_BYTES
         || !record_type.is_ascii()
         || !record_type.contains('.')
@@ -397,9 +345,233 @@ fn validate_record_type(record_type: &str) -> Result<(), RecordSchemaError> {
             let mut bytes = segment.bytes();
             !matches!(bytes.next(), Some(b'a'..=b'z' | b'A'..=b'Z' | b'_'))
                 || bytes.any(|byte| !matches!(byte, b'a'..=b'z' | b'A'..=b'Z' | b'0'..=b'9' | b'_'))
-        })
-    {
-        return Err(RecordSchemaError::InvalidRecordType);
+        }))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use riffdb_types::hash_schema;
+
+    const RECORD_TYPE: &str = "riffdb.testing.v1.CompatibilityProbe";
+    const OTHER_RECORD_TYPE: &str = "riffdb.testing.v1.OtherProbe";
+    const DESCRIPTOR: &[u8] = include_bytes!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../fixtures/proto/descriptors/compatibility-probe-descriptor-set.bin"
+    ));
+    const PROBE_PAYLOAD: &[u8] = include_bytes!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../fixtures/proto/compatibility-probe-payload.bin"
+    ));
+    const PROBE_ENVELOPE: &[u8] = include_bytes!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../fixtures/proto/compatibility-probe-envelope.bin"
+    ));
+    const EXPECTED_SCHEMA_HASH: [u8; 32] = [
+        0xbd, 0x08, 0xb5, 0x3d, 0x75, 0xaa, 0xd9, 0xe6, 0x03, 0xc4, 0xa9, 0x38, 0x2d, 0x0f, 0x1a,
+        0x93, 0xc5, 0x28, 0xc1, 0xd0, 0x5a, 0xde, 0xe2, 0x58, 0x80, 0x4f, 0x74, 0x32, 0xec, 0x24,
+        0x11, 0xd7,
+    ];
+
+    #[derive(Clone, PartialEq, Message)]
+    struct CompatibilityProbe {
+        #[prost(uint64, tag = "1")]
+        value: u64,
+        #[prost(message, optional, tag = "2")]
+        metadata: Option<ProbeMetadata>,
     }
-    Ok(())
+
+    #[derive(Clone, PartialEq, Message)]
+    struct ProbeMetadata {
+        #[prost(message, optional, tag = "1")]
+        source: Option<ProbeSource>,
+    }
+
+    #[derive(Clone, PartialEq, Message)]
+    struct ProbeSource {
+        #[prost(string, tag = "1")]
+        name: String,
+    }
+
+    fn validate_probe(payload: &[u8]) -> Result<(), PayloadValidationError> {
+        let probe =
+            CompatibilityProbe::decode(payload).map_err(|_| PayloadValidationError::Malformed)?;
+        if probe.encode_to_vec() != payload {
+            return Err(PayloadValidationError::NonCanonical);
+        }
+        Ok(())
+    }
+
+    #[derive(Debug, Eq, PartialEq)]
+    enum TestSchemaError {
+        InvalidRecordType,
+        DescriptorSetTooLarge,
+        InvalidPayloadLimit,
+    }
+
+    fn test_schema(
+        record_type: &'static str,
+        descriptor_set: &[u8],
+        max_payload_bytes: usize,
+    ) -> Result<RecordSchema<'static>, TestSchemaError> {
+        if !is_valid_record_type(record_type) {
+            return Err(TestSchemaError::InvalidRecordType);
+        }
+        if descriptor_set.len() > MAX_STORED_ENVELOPE_BYTES {
+            return Err(TestSchemaError::DescriptorSetTooLarge);
+        }
+        if max_payload_bytes > MAX_STORED_ENVELOPE_BYTES {
+            return Err(TestSchemaError::InvalidPayloadLimit);
+        }
+
+        let record_type_length =
+            u16::try_from(record_type.len()).map_err(|_| TestSchemaError::InvalidRecordType)?;
+        let descriptor_set_length = u64::try_from(descriptor_set.len())
+            .map_err(|_| TestSchemaError::DescriptorSetTooLarge)?;
+        let mut frame = Vec::with_capacity(2 + record_type.len() + 8 + descriptor_set.len());
+        frame.extend_from_slice(&record_type_length.to_be_bytes());
+        frame.extend_from_slice(record_type.as_bytes());
+        frame.extend_from_slice(&descriptor_set_length.to_be_bytes());
+        frame.extend_from_slice(descriptor_set);
+
+        Ok(RecordSchema {
+            record_type,
+            schema_hash: hash_schema(&frame),
+            max_payload_bytes,
+            validate_payload: validate_probe,
+        })
+    }
+
+    fn schema() -> RecordSchema<'static> {
+        test_schema(RECORD_TYPE, DESCRIPTOR, 32).expect("generated test descriptor is valid")
+    }
+
+    fn raw_envelope(schema: &RecordSchema<'_>, payload: Vec<u8>) -> StoredEnvelope {
+        StoredEnvelope {
+            storage_format_version: STORAGE_FORMAT_VERSION_V1,
+            record_type: schema.record_type().to_owned(),
+            payload_crc32c: payload_crc32c(&payload),
+            payload,
+            schema_hash: schema.schema_hash().as_bytes().to_vec(),
+        }
+    }
+
+    fn decode_error(encoded: &[u8], expected: EnvelopeError) {
+        let schema = schema();
+        let schemas = [schema];
+        let registry = RecordRegistry::new(&schemas).expect("test registry is valid");
+        assert_eq!(
+            registry.decode(encoded).expect_err("decode must fail"),
+            expected
+        );
+    }
+
+    #[test]
+    fn generated_schema_round_trips_the_golden_envelope() {
+        let schema = schema();
+        assert_eq!(schema.schema_hash().as_bytes(), &EXPECTED_SCHEMA_HASH);
+        let encoded = encode(&schema, PROBE_PAYLOAD).expect("canonical payload encodes");
+        assert_eq!(encoded, PROBE_ENVELOPE);
+
+        let schemas = [schema];
+        let decoded = RecordRegistry::new(&schemas)
+            .expect("test registry is valid")
+            .decode(&encoded)
+            .expect("canonical envelope decodes");
+        assert_eq!(decoded.record_type(), RECORD_TYPE);
+        assert_eq!(decoded.schema_hash(), schema.schema_hash());
+        assert_eq!(decoded.payload(), PROBE_PAYLOAD);
+    }
+
+    #[test]
+    fn version_type_hash_and_checksum_fail_closed() {
+        let schema = schema();
+
+        let mut envelope = raw_envelope(&schema, PROBE_PAYLOAD.to_vec());
+        envelope.storage_format_version = 2;
+        decode_error(
+            &envelope.encode_to_vec(),
+            EnvelopeError::UnsupportedStorageFormatVersion,
+        );
+
+        let mut envelope = raw_envelope(&schema, PROBE_PAYLOAD.to_vec());
+        envelope.record_type = OTHER_RECORD_TYPE.to_owned();
+        decode_error(&envelope.encode_to_vec(), EnvelopeError::UnknownRecordType);
+
+        let mut envelope = raw_envelope(&schema, PROBE_PAYLOAD.to_vec());
+        envelope.schema_hash = vec![0; 31];
+        decode_error(
+            &envelope.encode_to_vec(),
+            EnvelopeError::InvalidSchemaHashLength,
+        );
+
+        let mut envelope = raw_envelope(&schema, PROBE_PAYLOAD.to_vec());
+        envelope.schema_hash = vec![0; 32];
+        decode_error(
+            &envelope.encode_to_vec(),
+            EnvelopeError::UnsupportedSchemaHash,
+        );
+
+        let mut envelope = raw_envelope(&schema, PROBE_PAYLOAD.to_vec());
+        envelope.payload_crc32c ^= 1;
+        decode_error(&envelope.encode_to_vec(), EnvelopeError::ChecksumMismatch);
+    }
+
+    #[test]
+    fn record_specific_limits_and_registry_duplicates_are_rejected() {
+        let schema = schema();
+        let payload = vec![0; 33];
+        decode_error(
+            &raw_envelope(&schema, payload).encode_to_vec(),
+            EnvelopeError::PayloadTooLarge,
+        );
+        assert_eq!(
+            test_schema(RECORD_TYPE, DESCRIPTOR, MAX_STORED_ENVELOPE_BYTES + 1)
+                .expect_err("oversized record limit must fail"),
+            TestSchemaError::InvalidPayloadLimit
+        );
+        assert_eq!(
+            RecordRegistry::new(&[schema, schema]).expect_err("duplicate schema must fail"),
+            RecordRegistryError::DuplicateSchema
+        );
+    }
+
+    #[test]
+    fn alternate_outer_and_payload_encodings_are_rejected() {
+        let schema = schema();
+        let mut encoded = encode(&schema, PROBE_PAYLOAD).expect("canonical payload encodes");
+        encoded.extend_from_slice(&[0x98, 0x06, 0x00]);
+        decode_error(&encoded, EnvelopeError::NonCanonicalEnvelope);
+
+        let noncanonical_payload = vec![0x08, 0x81, 0x00];
+        decode_error(
+            &raw_envelope(&schema, noncanonical_payload).encode_to_vec(),
+            EnvelopeError::InvalidPayload(PayloadValidationError::NonCanonical),
+        );
+    }
+
+    #[test]
+    fn generated_schema_input_validation_is_bounded() {
+        for invalid in [
+            "",
+            ".riffdb.storage.Message",
+            "riffdb..Message",
+            "unqualified",
+            "riffdb.storage.1Message",
+            "riffdb.storage.Message-name",
+            "riffdb.storage.Mes\u{e9}sage",
+        ] {
+            assert_eq!(
+                test_schema(invalid, DESCRIPTOR, 32).expect_err("invalid record type must fail"),
+                TestSchemaError::InvalidRecordType,
+                "{invalid:?}"
+            );
+        }
+
+        let schemas = vec![schema(); MAX_REGISTERED_RECORD_SCHEMAS + 1];
+        assert_eq!(
+            RecordRegistry::new(&schemas).expect_err("oversized registry must fail"),
+            RecordRegistryError::TooManySchemas
+        );
+    }
 }

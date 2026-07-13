@@ -1,0 +1,10 @@
+syntax = "proto3";
+
+package riffdb.testing.v1;
+
+import "riffdb/testing/v1/probe_common.proto";
+
+// Direct test dependency whose own import exercises transitive closure.
+message ProbeMetadata {
+  ProbeSource source = 1;
+}

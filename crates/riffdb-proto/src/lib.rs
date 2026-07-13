@@ -6,6 +6,7 @@ mod command;
 pub mod envelope;
 mod public_error;
 mod value;
+mod wire;
 
 /// Checked-in Prost messages for the `riffdb.v1` public package.
 #[allow(missing_docs)]

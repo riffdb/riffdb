@@ -235,6 +235,29 @@ fn exact_closed_enum_registries_are_frozen() {
 #[test]
 fn service_inventory_and_phase_zero_shells_are_exact() {
     let descriptors = descriptors();
+    let services = descriptors
+        .file
+        .iter()
+        .flat_map(|file| file.service.iter().map(|service| service.name()))
+        .collect::<BTreeSet<_>>();
+    assert_eq!(
+        services,
+        BTreeSet::from([
+            "AdminService",
+            "CommandService",
+            "CommitService",
+            "ContractService",
+            "QueryService",
+        ])
+    );
+    assert_eq!(
+        descriptors
+            .file
+            .iter()
+            .map(|file| file.service.len())
+            .sum::<usize>(),
+        5
+    );
     let mut methods = Vec::new();
     for file in &descriptors.file {
         for service in &file.service {
