@@ -35,6 +35,29 @@ Only the commit coordinator admits terminal execution, assigns a contiguous
 provenance, and commit record. Storage provides atomic mechanics but does not
 choose semantic ordering.
 
+### 2026-07-13 aggregate-root validation amendment
+
+The human maintainer accepted this companion amendment on 2026-07-13 before the
+WP-040 executable IR was frozen.
+
+When a grammar-v1 command mutates a child entity and the owning aggregate has an
+aggregate invariant, the compiler makes the required aggregate-root observation
+explicit. It emits one dense, plan-local `RootValidationReadPlan` unless an exact
+source-declared binding of that root supplies the record. This plan is not a
+source binding, does not acquire an additional conflict domain, and has no
+declared business outcome. Multiple child mutations with byte-identical checked
+root-key derivations share one root-validation read.
+
+The snapshot and commit-validation request carry root-validation observations
+separately from source binding observations. Each produces the existing
+`EntityObservation` dependency, so no new dependency tag or durable record is
+introduced. Storage may coalesce physical reads of an identical entity target,
+but it must return both semantic positions and the coordinator must validate the
+complete plan-declared source/root/range target set. Source binding failures are
+resolved first in ascending `BindingId`. A required internal root that is then
+absent is an `ExecutionFault::Integrity`: it produces no application write or
+sequence and leaves any mutating admission pending for operator intervention.
+
 ## Options Considered
 
 1. **Known-upfront exclusive logical keys plus validation:** Approved POC model.

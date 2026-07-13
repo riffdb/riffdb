@@ -235,10 +235,12 @@ operand index must be lower than the referencing node index. Each node stores it
 validated result type. The v1 expression tags are constant `0x01`, input field
 `0x02`, complete bound record `0x03`, bound-record field `0x04`, schema field
 `0x05`, source-event field `0x06`, `tx.time` `0x07`, `tx.date` `0x08`, unary
-`0x09`, and binary `0x0a`. A schema-field node contains its `EntityTypeId` and
-`FieldId` and occurs only in an entity/aggregate invariant or aggregate key
-template before command-specific instantiation. Unary tags are NOT `0x01` and
-checked negation `0x02`. Binary tags in
+`0x09`, binary `0x0a`, and root-validation field `0x0b`. A schema-field node
+contains its `EntityTypeId` and `FieldId` and occurs only in an entity/aggregate
+invariant or aggregate key template before command-specific instantiation. A
+root-validation-field node contains `RootValidationReadId` and `FieldId` and is
+valid only in an instantiated aggregate commit check. Unary tags are NOT `0x01`
+and checked negation `0x02`. Binary tags in
 source precedence order are multiply `0x01`, divide `0x02`, add `0x03`, subtract
 `0x04`, equal `0x05`, not-equal `0x06`, less `0x07`, less-equal `0x08`, greater
 `0x09`, greater-equal `0x0a`, and `0x0b`, or `0x0c`.
@@ -333,6 +335,26 @@ binding/read and commit-validation expressions; a child mutation that requires
 the aggregate root adds a declared root read template derived from the shared
 key prefix. No invariant evaluation performs an undeclared runtime lookup.
 
+`RootValidationReadId` is a dense zero-based `u32` plan-local identifier. A
+command plan encodes its root-validation-read table immediately after source
+bindings and before locality. Each entry contains its ID, the lowest
+source-declared child `BindingId` that requires it, the root `EntityTypeId`, the
+exact root `KeySchema`, an ordered tuple of input/constant-computable key
+`ExprId`s, and an ordered duplicate-free set of root `FieldId`s accessed by its
+aggregate commit checks. The accessed-field set may be empty for a constant
+aggregate invariant because root presence and invariant application remain
+required. Entries are grouped only when their checked root-key derivations are
+byte-identical. A plan uses no entry when an exact source-declared root binding
+supplies that root record.
+
+Each commit check encodes separately its ordered source `BindingId` application
+subjects and ordered `RootValidationReadId` application subjects. These subjects
+are not inferred from expression field dependencies: a constant invariant still
+has an application subject. The aggregate-root read and the `0x0b` expression
+tag are part of executable IR version 1 because its first public/durable freeze
+has not occurred. They are included in command plan encoding, validation,
+`PlanHash`, bundle compatibility, explain output, and generated `FORMAT.md`.
+
 Expression contexts are validated, not inferred from the presence of a tag.
 Command plans permit input, binding, constant, and `tx.time` expressions but
 never source-event fields or `tx.date`. Command entity-binding key expressions,
@@ -377,8 +399,10 @@ collect observations in any internal order but may not choose a business result.
 Before requirements, the interpreter examines binding observations in ascending
 `BindingId`: absent read/mutate and already-present create observations return
 the first corresponding declared outcome. Only after every binding succeeds are
-requirements evaluated in source order. Storage/integrity failures remain
-execution failures and are not converted into binding outcomes.
+root-validation observations required in ascending `RootValidationReadId`; a
+missing root is `ExecutionFault::Integrity`. Requirements are then evaluated in
+source order. Storage/integrity failures remain execution failures and are not
+converted into binding outcomes.
 
 The v1 forward instruction tags are require `0x01`, set field `0x02`, emit event
 `0x03`, and terminal return `0x04`. `require` either falls through or returns its

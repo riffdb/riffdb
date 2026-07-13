@@ -208,6 +208,13 @@ the complete request against the checked historical plan and retains that fact
 in its private candidate state. Storage neither receives nor interprets the plan
 to repeat that semantic check.
 
+The accepted aggregate-root companion boundary adds root-validation targets in
+ascending dense plan-local `RootValidationReadId` order. They are separate from
+source binding targets because they have no binding mode or business outcome.
+Each target is an `EntityTypeId` plus complete validated `EntityKey`. The
+request constructor applies the same bounded structural checks; the coordinator
+alone proves that each target is the result of the exact checked plan derivation.
+
 The returned snapshot contains:
 
 ```text
@@ -215,6 +222,7 @@ ReadSnapshot
   plan: ExecutablePlanRef
   observed_through: optional CommitSequence
   bindings: binding observations in exact BindingId order
+  root_validations: root observations in exact RootValidationReadId order
   ranges: range observations in canonical target order
   read_dependencies: canonical, duplicate-free dependencies
 ```
@@ -235,6 +243,10 @@ The snapshot materializer never chooses a declared business outcome. Runtime
 applies the accepted binding rules in ascending `BindingId`: absent read/mutate
 and present create observations select the plan's declared first binding
 failure. Storage corruption or failure is never converted into that outcome.
+Only after every source binding succeeds does runtime inspect root-validation
+observations. An absent required root is an integrity fault, not a source binding
+failure or application outcome. An identical source and root target may be read
+once physically, but both ordered semantic observations remain present.
 
 An index-range observation contains the exact `IndexId`, a validated
 component-complete prefix no larger than the durable-key bound, its
@@ -269,6 +281,11 @@ conflicting duplicate observations are an integrity failure. Encodings use
 fixed-width big-endian IDs and `u32` big-endian lengths for variable key/prefix
 bytes. Zero or unknown tags, noncanonical order, duplicate entries, invalid
 keys, or trailing bytes reject.
+
+Every present or absent root-validation observation also produces the existing
+`0x01 EntityObservation` dependency. Identical source/root entity targets
+therefore collapse to one dependency only when their observations agree. This
+does not collapse their distinct semantic positions in `ReadSnapshot`.
 
 #### Exact `IndexRangeEpoch` bucket semantics
 
@@ -322,19 +339,22 @@ exact historical plan. It checks that:
 
 1. binding targets have exactly the plan's count, order, entity types, key
    schemas, and derived keys;
-2. every influential binding/range has exactly one matching canonical read
+2. root-validation targets have exactly the plan's count, order, entity types,
+   key schemas, and derived keys;
+3. every influential binding/root/range has exactly one matching canonical read
    dependency;
-3. mutation, event, outcome, partition, and validation-target shapes are allowed
+4. mutation, event, outcome, partition, and validation-target shapes are allowed
    by that plan; and
-4. no undeclared target, dependency, mutation, event, or predicate is present.
+5. no undeclared target, dependency, mutation, event, or predicate is present.
 
 After this check, the coordinator constructs a storage-owned
 `ValidationReadRequest` containing the plan reference, plan-ordered entity
-targets, and canonical range targets. Its constructor rechecks bounds, canonical
-order, and key structure but does not claim that the targets match a command
-plan. The coordinator retains that semantic match in its private candidate
-state. The request contains no checked plan, executable closure, captured
-predicate result, or public semantic-proof marker.
+source-binding targets, plan-ordered root-validation targets, and canonical
+range targets. Its constructor rechecks bounds, canonical order, and key
+structure but does not claim that the targets match a command plan. The
+coordinator retains that semantic match in its private candidate state. The
+request contains no checked plan, executable closure, captured predicate result,
+or public semantic-proof marker.
 
 Inside the short write transaction, storage returns transaction-current complete
 entity observations and range epochs as `TransactionCurrentState` for all
@@ -804,6 +824,8 @@ may be lower. The v1 storage hard ceilings are:
 | Boundary | Maximum |
 |---|---:|
 | Binding targets/observations in one command | 4,096 |
+| Root-validation targets/observations in one command | 4,096 |
+| Total source-binding, root-validation, and range targets in one command | 4,096 |
 | Total read dependencies or validation targets in one command | 4,096 each |
 | Entity mutations, index deltas, event intents, or outbox intents in one command | 4,096 each |
 | Complete canonical entity field document or one event/outcome value | 1 MiB |

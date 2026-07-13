@@ -115,6 +115,17 @@ child that does not have the exact prefix, an aggregate expression that reads a
 non-key field, a bound entity without one owner, or ambiguous ownership fails
 compilation.
 
+For an aggregate invariant on a mutable child, the same checked prefix supplies
+the compiler-generated root-validation key. The key is not reconstructed from a
+runtime child record: it is the ordered tuple of the child binding's already
+validated input/constant key expressions corresponding exactly to the root's
+complete primary-key prefix. The derived tuple must type-check against the exact
+root `KeySchema`. Multiple child bindings may share one root-validation read only
+when these checked derivations are byte-identical in executable IR; runtime value
+equality cannot merge distinct derivations. An exact source root binding with the
+same checked key derivation supplies the record instead and prevents the internal
+read.
+
 Every command has at least one entity binding, and all of its read, mutate, and
 create bindings belong to one `AggregateTypeId`. Their instantiated partition
 derivations must be structurally identical after name resolution and lowering.

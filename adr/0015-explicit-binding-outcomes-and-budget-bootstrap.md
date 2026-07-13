@@ -42,6 +42,14 @@ outcomes. Binding-failure payload expressions may use validated command inputs
 and deterministic constants only; they cannot reference the missing/new binding,
 another entity, `tx.time`, `tx.date`, or storage state.
 
+The accepted aggregate-root companion boundary does not synthesize another
+source binding or `else` outcome. A compiler-generated
+`RootValidationReadPlan` exists only to evaluate an aggregate invariant for a
+mutable child when no exact source root binding supplies the record. Source
+binding failures retain their ascending-`BindingId` priority. If they all
+succeed but that internal root is absent, execution fails with the closed
+integrity fault and returns no business outcome.
+
 The old read/mutate spelling without `else` is invalid grammar-v1 source after
 this correction. No parser alias or compiler-synthesized outcome is accepted.
 The language reference, AST, parser fixtures, canonical SPEC examples, and parser

@@ -255,6 +255,16 @@ failure, and does not use the terminal execution-failure transition below.
 Panics, allocation failure, storage failure, lock timeout, cancellation, and
 process failure are not converted into `ExecutionFault`.
 
+The accepted aggregate-root companion boundary classifies a missing internal
+`RootValidationReadPlan` observation as `Integrity`. Runtime first resolves all
+source-declared binding failures in ascending `BindingId`; only if they all
+succeed does it require each internal root observation. The fault discards all
+working mutations, events, and provisional outcomes. For a mutating command it
+leaves the durable admission pending, receives no `CommitSequence`, and is not
+terminalized as `ExecutionFailed`. This is distinct from an absent
+source-declared root binding, which uses that binding's declared business
+outcome.
+
 ### Durable execution-failure transition
 
 For a mutating command with a pending admission, `Arithmetic` or `ResourceLimit`
