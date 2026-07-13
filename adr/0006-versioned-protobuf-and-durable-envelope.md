@@ -39,6 +39,22 @@ unsupported versions safely, and the unknown-field retention policy is explicit
 per persisted boundary. Pure-Rust deterministic generation and checked-in golden
 descriptors/records are required.
 
+The approved API-neutral Rust error boundary has exactly these transport-error
+kinds: validation, idempotency-key reuse, authorization denial, concurrency
+deadline, contract mismatch, storage unavailable, outcome unknown, and internal
+defect. Declared business outcomes are never encoded as transport errors.
+Projection `WaitTimedOut` and `Degraded` states remain typed projection query
+results. WP-020 must map this boundary without adding transport-specific core
+semantics.
+
+Validation errors contain one through 16 issues. Each issue has a closed stable
+code and a path of at most 16 structured segments; a segment is a stable
+`FieldId` or a zero-based list index, never caller-controlled diagnostic text.
+Contract mismatch always carries the active `ContractVersion`. Public messages
+are static and safe, internal sources are absent, and an optional UUIDv7 incident
+ID is the only diagnostic correlation value. The exact Protobuf field and enum
+numbers remain Proposed until this ADR is accepted for WP-020.
+
 ## Options Considered
 
 1. **Section 11 plus custom exact `Value` and phased ownership:** Approved model.
@@ -50,6 +66,7 @@ descriptors/records are required.
 ## Consequences
 
 - WP-020 needs a reviewed initial inventory but does not invent later record fields.
+- Public wire errors must preserve the approved kind/detail invariants and bounds.
 - Later schema changes require coordinated interface PRs and compatibility review.
 - Adapters convert between proto values and `riffdb-types`; proto types do not
   become API-neutral service DTOs.
