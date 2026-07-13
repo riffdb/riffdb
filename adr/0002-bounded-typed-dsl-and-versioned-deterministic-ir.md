@@ -3,6 +3,7 @@
 - **Status:** Accepted
 - **Direction approved:** 2026-07-12
 - **Exact text accepted:** 2026-07-12
+- **Contextual-keyword clarification accepted:** 2026-07-12
 - **Decision deadline:** Before WP-030 grammar implementation
 
 The human maintainer accepted this exact grammar, dependency, and compilation
@@ -35,7 +36,11 @@ There are no modules, imports, includes, scalar aliases, multiple-contract
 documents, semicolons, or alternate top-level spellings. Whitespace is
 insignificant. `//` line comments are accepted; block comments are rejected.
 Identifiers are case-sensitive ASCII `[A-Za-z_][A-Za-z0-9_]*`, are at most 256
-bytes, are not normalized, and may not use a lowercase reserved keyword.
+bytes, and are not normalized. Lowercase reserved keywords may not be used as
+identifiers except for the contextual keyword `idempotency_key`, which is an
+identifier in identifier positions and the clause keyword immediately before an
+idempotency expression. This exception is required by the canonical LegalSpend
+source and does not apply to any other reserved keyword.
 
 Unsigned integer literals are base-10 with no sign, exponent, radix prefix, or
 separator. Fixed decimal literals contain decimal digits, one dot, and at least
