@@ -7,8 +7,15 @@ publish.workspace = true
 
 [features]
 default = []
+loom = []
+shuttle = []
 
 [dependencies]
+riffdb-types = { version = "0.1.0", path = "../riffdb-types" }
+
+[dev-dependencies]
+loom = { version = "0.7.2", default-features = false }
+shuttle = { version = "0.9.1", default-features = false }
 
 [lints]
 workspace = true
