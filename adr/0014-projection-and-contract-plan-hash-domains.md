@@ -15,7 +15,7 @@ existing command-plan type documentation.
 
 The human maintainer accepted this exact text on 2026-07-13.
 
-## Proposed Decision
+## Decision
 
 The ADR-0011 unkeyed hash-domain registry is extended, without changing its
 algorithm or outer frame, by exactly these entries:
@@ -37,7 +37,7 @@ different digests in all three plan domains.
 
 ## Options Considered
 
-1. **Separate typed domains:** Proposed. It preserves newtype meaning and explicit
+1. **Separate typed domains:** Selected. It preserves newtype meaning and explicit
    domain separation.
 2. **One `PlanHash` with an internal kind byte:** Avoids two types but permits
    accidental substitution at component boundaries.

@@ -5,15 +5,19 @@ digraph G {
 
   subgraph cluster_clients {
     label="Clients and agent hosts"; color="#B7C7D3"; style="rounded,dashed"; fontname="Liberation Sans"; fontsize=10;
-    {rank=same; rust [label="Rust SDK"]; cli [label="riffdb"]; host [label="MCP host / coding agent"];}
+    {rank=same; rust [label="Rust SDK\nrequest / capability / session ID convenience source"]; cli [label="riffdb"]; host [label="MCP host / coding agent"];}
   }
   subgraph cluster_interfaces {
     label="Public interfaces"; color="#B7C7D3"; style="rounded,dashed"; fontname="Liberation Sans"; fontsize=10;
-    {rank=same; grpc [label="Tonic gRPC API\nHTTP/2 + Protobuf", fillcolor="#EAF3F6"]; mcp [label="Native MCP API\nstdio + Streamable HTTP", fillcolor="#EAF3F6"];}
+    {rank=same; grpc [label="Tonic gRPC API\nHTTP/2 + Protobuf", fillcolor="#EAF3F6"]; mcp_stdio [label="riffdb-mcp stdio bridge\ncanonical gRPC client path", fillcolor="#EAF3F6"]; mcp_http [label="Native MCP API\nStreamable HTTP", fillcolor="#EAF3F6"];}
   }
 
-  auth [label="Authentication • capability resolution\npolicy • redaction obligations", fillcolor="#DCEFF0"];
-  service [label="API-neutral application service\ncommand • contract • entity • commit • projection", fillcolor="#CFE6E8", penwidth=2.0];
+  auth [label="Credential authentication\ncapability lookup • authenticated principal", fillcolor="#DCEFF0"];
+  policy [label="Policy facts • decision • obligations\nauthorization clock • pure current-capability verifier", fillcolor="#FFF7E8"];
+  service [label="API-neutral application service\ninitial + fresh-final authorize • audit • command • reads", fillcolor="#CFE6E8", penwidth=2.0];
+  auth_clocks [label="Server OS authentication + authorization clocks\nseparate consumer ports", style="rounded,filled,dashed", fillcolor="#FAFAFA", color="#8899A6"];
+  commit_sources [label="Server providers for commit-owned ports\nAdmissionClock • AdministrationClock • ProvenanceIdSource", style="rounded,filled,dashed", fillcolor="#FAFAFA", color="#8899A6"];
+  identifier_sources [label="Server UUIDv7 sources\nDatabaseId candidate • hosted RequestId • IncidentId", style="rounded,filled,dashed", fillcolor="#FAFAFA", color="#8899A6"];
 
   subgraph cluster_contract {
     label="Contract control plane"; color="#7BA0A3"; style="rounded"; fontname="Liberation Sans"; fontsize=10;
@@ -24,35 +28,46 @@ digraph G {
     label="Transaction semantics owned by RiffDB"; color="#5E8F93"; style="rounded"; penwidth=1.4; fontname="Liberation Sans"; fontsize=10;
     conflict [label="Logical conflict manager\ncanonical exclusive capabilities"];
     materialize [label="Bounded snapshot materializer\nowned values + observed dependencies"];
-    runtime [label="Deterministic command runtime\nno I/O • values + plan → CommitIntent"];
-    commit [label="Commit coordinator\nonly authoritative mutator\nreserve • revalidate • sequence • atomically apply", fillcolor="#DCEFF0", penwidth=2.0];
+    runtime [label="Deterministic command runtime\nno I/O • values + plan → EvaluatedCommand"];
+    commit [label="Commit coordinator\nStarted • bounded permit • admission • only authoritative mutator\nassemble intent • revalidate • sequence • atomically apply", fillcolor="#DCEFF0", penwidth=2.0];
     conflict -> materialize [label="capabilities"];
     materialize -> runtime [label="materialized read set"];
-    runtime -> commit [label="CommitIntent"];
+    runtime -> commit [label="EvaluatedCommand"];
   }
 
-  storage [label="Storage semantic API"];
+  storage [label="Storage semantic API\nsource-free identity probe • short typed transactions\ncompound bootstrap / audit"];
   redb [label="redb baseline\nACID key/value storage", fillcolor="#EEF1F5"];
-  log [label="Ordered commit + provenance log\nseparate administrative audit", fillcolor="#FFF7E8"];
+  log [label="Ordered commit + provenance log\nseparate administration + service audit", fillcolor="#FFF7E8"];
 
   subgraph cluster_derived {
     label="Derived and asynchronous planes"; color="#B7C7D3"; style="rounded,dashed"; fontname="Liberation Sans"; fontsize=10;
-    {rank=same; outbox [label="Durable outbox worker\nat-least-once dispatch", fillcolor="#FFF7E8"]; proj [label="Projection worker\ncount/sum + durable frontier", fillcolor="#FFF7E8"];}
+    {rank=same; outbox [label="Durable outbox worker\nimplicit initial Pending • normalize Delivering • at-least-once", fillcolor="#FFF7E8"]; proj [label="Projection worker\nrow/marker/frontier atomicity • degrade + new-generation rebuild", fillcolor="#FFF7E8"];}
   }
 
-  obs [label="Cross-cutting: tracing • metrics • health • failpoints", style="rounded,filled,dashed", fillcolor="#FAFAFA", color="#8899A6"];
+  obs [label="Cross-cutting: tracing • metrics • failpoints\nseparate authoritative / derived health", style="rounded,filled,dashed", fillcolor="#FAFAFA", color="#8899A6"];
 
   rust -> grpc;
   cli -> grpc;
-  host -> mcp;
+  host -> mcp_stdio [label="stdio"];
+  host -> mcp_http [label="HTTP"];
+  mcp_stdio -> grpc [label="gRPC parity"];
   grpc -> auth;
-  mcp -> auth;
+  mcp_http -> auth;
   auth -> service;
+  service -> policy [label="operation facts / decision"];
+  auth_clocks -> auth [label="authentication time", style=dashed];
+  auth_clocks -> policy [label="fresh authorization time", style=dashed];
   service -> compiler [label="validate / explain"];
   service -> control [label="authorized admin operation"];
   control -> commit [label="typed intent"];
   service -> catalog [label="read active plan"];
-  service -> conflict [label="execute command"];
+  service -> commit [label="authorized typed command preparation"];
+  commit_sources -> commit [label="injected ports", style=dashed];
+  identifier_sources -> mcp_http [label="hosted RequestId", style=dashed];
+  identifier_sources -> commit [label="candidate only after NeedsInitialization", style=dashed];
+  identifier_sources -> obs [label="IncidentId", style=dashed];
+  commit -> conflict [label="admit / acquire", constraint=false];
+  commit -> policy [label="capability transition: current facts / pure verifier", constraint=false];
   commit -> storage;
   storage -> materialize [label="bounded snapshot", constraint=false];
   storage -> redb;

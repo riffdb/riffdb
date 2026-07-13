@@ -6,8 +6,8 @@
 **Tagline:** *Vibe fast. Commit safely.*  
 **Category:** Contract-first operational database for agent-built applications  
 
-**Version:** 0.3
-**Status:** Architecture-approved implementation handoff draft  
+**Version:** 0.7
+**Status:** Architecture-approved implementation handoff
 **Date:** 13 July 2026
 **Audience:** Coding agents, database engineers, compiler engineers, security reviewers, and technical product leads  
 **Working binaries:** `riffdbd`, `riffdb`, `riffdb-mcp`  
@@ -39,6 +39,10 @@
 | 0.1 | 2026-07-12 | Initial RiffDB implementation handoff specification for a standalone Rust POC and gated path to MVP. |
 | 0.2 | 2026-07-12 | Reconciled the canonical contract grammar and gRPC surface; fixed commit, idempotency, control-plane, capability, MCP, gate, evidence, and work-package ownership decisions approved after the initial planning review. Associated ADRs remain Proposed until separately reviewed and accepted. |
 | 0.3 | 2026-07-13 | Applied accepted ADR-0013 through ADR-0016: explicit binding-failure outcomes and command-only budget seeding, stable IR/hash/key boundaries, typed partition identity, and complete index-entry framing. |
+| 0.4 | 2026-07-13 | Applied accepted ADR-0001, ADR-0004, ADR-0007, ADR-0009, ADR-0012, and ADR-0017: semantic storage and service boundaries, evaluated-command assembly, capability/bootstrap and audit semantics, deterministic execution-failure admission, projection identities/generations/frontiers, nonzero stable IDs, the exact WP-010 execution-failure error-schema carve-out, formal WP-065/WP-127 schema ownership, and the reconciled P1 dependency graph. |
+| 0.5 | 2026-07-13 | Applied the accepted audit-clock/lifecycle, fail-closed recovery/readiness, crash-safe bootstrap-file, implicit-initial-outbox-state, initialization-mode, and ADR-0018 UUIDv7 generation/replay decisions before completing WP-010. |
+| 0.6 | 2026-07-13 | Applied accepted ADR-0019 and ADR-0020: retained exactly the six authoritative POC metadata categories with unconditional startup integrity validation, and froze compiler-owned MCP command tool-name normalization, collision rejection, and catalog revalidation without accepting the remaining ADR-0008 URI or transport decisions. |
+| 0.7 | 2026-07-13 | Applied accepted ADR-0021's exact lineage-scoped service-audit target registry and canonical ordering, and reconciled the canonical `LegalSpend`/`AllocateBudget` source identifiers with ADR-0020's no-word-splitting MCP name. |
 
 ### Normative language
 
@@ -157,7 +161,7 @@ These decisions are binding for the POC unless changed through an ADR reviewed b
 | Custom typed DSL | `CMP-001` Contracts MUST compile from a small declarative language into a versioned executable IR. | Enables precise dependency, outcome, schema, and MCP generation. |
 | Conflict-key locking | `TXN-001` POC mutation authority MUST be enforced with exclusive logical conflict keys acquired before command evaluation. | Gives borrow-like semantics a precise runtime meaning while keeping implementation understandable. |
 | Commit revalidation | `TXN-002` All read versions and commit-time predicates MUST be revalidated in the durable write transaction. | Prevents dependency escape when commands read outside the primary conflict record. |
-| Single commit sequence | `LOG-001` Every terminal admitted command result MUST receive a monotonically increasing `CommitSequence`, including persisted no-op business outcomes. | Unifies idempotency, provenance, change consumption, and projection frontiers. |
+| Single commit sequence | `LOG-001` Every committed declared command outcome MUST receive a monotonically increasing nonzero `CommitSequence`, including persisted no-op business outcomes. ADR-0012 `ExecutionFailed` is a terminal idempotency-admission resolution, not a command outcome or application commit, and receives no sequence. | Unifies committed outcomes, provenance, change consumption, and projection frontiers without misclassifying a proven pre-commit execution failure. |
 | Redb baseline | `STO-001` The first storage implementation MUST use `redb` behind a narrow semantic storage trait. | Provides pure-Rust ACID storage with simple single-writer commit behavior. |
 | Versioned Protobuf records | `STO-002` Durable records and public gRPC messages MUST use explicit versioned Protobuf schemas. | Supports compatibility, generated types, and future replicated-log entries. |
 | Shared service core | `API-001` gRPC, CLI, Rust SDK, and MCP MUST invoke the same application service and authorization layer. | Avoids semantic drift and privileged side paths. |
@@ -178,12 +182,12 @@ These decisions are binding for the POC unless changed through an ADR reviewed b
 | Contract compiler | Name resolution, type checking, invariant classification, dependency analysis, JSON Schema generation, plan generation | Network transport or data mutation |
 | Contract catalog | Bundle lookup, compatibility checks, and validated typed deployment operations; the coordinator persists bundles and active-version changes | Parsing source text during command execution or direct authoritative writes |
 | Authorization and policy | Principal resolution, capability checks, tenant/field constraints, approval requirements | Command semantics |
-| Command application service | API-neutral orchestration, idempotency lookup, plan selection, lock acquisition, runtime invocation, commit submission | Transport-specific response formatting |
-| Deterministic runtime | Evaluate a compiled command plan against a snapshot and produce a `CommitIntent` | I/O, clocks, random OS state, network calls |
+| Command application service | API-neutral semantic validation, exact plan/input preparation, current authorization, security-audit orchestration, invocation of typed command/control-plane executors and bounded read ports, obligation application, and safe result release | Transport formatting, conflict acquisition, runtime evaluation, storage transactions, sequence assignment, or authoritative writes |
+| Deterministic runtime | Evaluate a compiled command plan against an owned snapshot and produce an `EvaluatedCommand` or closed execution fault | I/O, clocks, random OS state, provenance claims, admission persistence, network calls, or `CommitIntent` assembly |
 | Conflict manager | Canonical conflict-key acquisition, wait queues, cancellation, fairness, hot-key metrics | Durable state |
-| Commit coordinator | Serialize durable commands and control-plane operations, assign application or administration sequences, revalidate, and apply records atomically | Contract parsing or external effects |
+| Commit coordinator | After acceptance of an authorized typed preparation, create or resolve admission, acquire logical capabilities, materialize bounded snapshots, invoke deterministic runtime, revalidate, invoke the narrow policy-owned transaction-current capability verifier where required, assign application or administration sequences, atomically apply authoritative records, and notify bounded consumers | Contract parsing, general service/transport policy decisions, duplicated capability-policy predicates, obligations/result redaction, or external effects |
 | Storage engine | Atomic key/value transactions and ordered scans required by the semantic layer | Business rules |
-| Commit log and provenance | Durable ordered record of terminal command attempts and mutations | Projection-specific state |
+| Commit log and provenance | Durable ordered record of committed declared outcomes and mutations | Projection-specific state or ADR-0012 terminal non-commit admission failures |
 | Outbox worker | Deliver durable events with explicit delivery policy | Command transaction execution |
 | Projection worker | Consume contiguous commits and advance a durable frontier | Direct mutation of source entities |
 | gRPC API | Programmatic application and administration protocol | Alternative semantics |
@@ -257,10 +261,14 @@ riffdb/
     crash/
     conformance/
   benchmarks/
+    storage-fjall/           # nested non-production Fjall comparison workspace
   examples/
-    budget-comparison/       # long-lived workload specification and documentation
-    postgres-budget/         # nested non-production PostgreSQL comparison workspace
-    fjall-storage/           # nested non-production Fjall comparison workspace
+    budget-comparison/       # isolated long-lived comparison workspace
+      core/                  # backend-neutral workload and observation oracle
+      fixtures/              # golden workload observations
+      postgres/              # PostgreSQL comparison implementation
+      riffdb-service/        # in-process service adapter added after WP-120
+      riffdb-grpc/           # canonical public SDK/gRPC adapter added after WP-130
   scripts/
   docs/
 ```
@@ -271,30 +279,30 @@ The binary targets are `riffdbd` from `riffdb-server`, `riffdb` from `riffdb-cli
 
 | Crate | Public responsibility | Allowed dependency direction |
 |---|---|---|
-| `riffdb-types` | Stable identifiers, canonical value types, versions, timestamps, decimals, and common value semantics | Foundation crate; no storage or transport dependencies |
-| `riffdb-errors` | Public-safe errors, internal error layering, redaction boundaries, and incident identifiers | Types only; no transport-specific errors in core layers |
-| `riffdb-proto` | Generated Protobuf types, durable envelopes, and conversion helpers | Types plus Prost; no runtime semantics |
+| `riffdb-types` | Stable identifiers, pure checked UUIDv7 assembly, canonical value types, versions, timestamps, decimals, and common value semantics | Foundation crate; no clock, entropy, storage, or transport dependencies |
+| `riffdb-errors` | Public-safe errors, internal error layering, redaction boundaries, incident identifiers, and the consumer-owned `IncidentIdSource` port | Types only; no transport-specific errors, clock, entropy, or concrete incident provider in core layers |
+| `riffdb-proto` | Generated public/durable Protobuf types, envelopes, descriptors, wire validation, and foundational value/error conversion helpers | Types, errors, and Prost only; no storage API, runtime, service, or transport dependency |
 | `riffdb-contract-syntax` | Lexer, parser, source spans, syntax AST, and parser diagnostics | Types and parser tooling only |
-| `riffdb-contract-ir` | Typed HIR, executable IR, plans, schemas, and contract bundle structs | Types; no parser implementation or runtime dependency |
+| `riffdb-contract-ir` | Typed HIR, executable IR, plans, immutable projection group schemas, and contract bundle structs | Types; no parser implementation, storage, compiler implementation, or runtime dependency |
 | `riffdb-contract-compiler` | Name resolution, type checking, invariant classification, locality analysis, plan generation, and JSON Schema output | Syntax and IR; no storage, service, or transport dependency |
 | `riffdb-catalog` | Immutable contract bundle persistence, compatibility checks, active-version changes, and catalog notifications | IR and storage API |
-| `riffdb-storage-api` | Narrow semantic interfaces for snapshots, atomic command commits, scans, catalog state, and derived workers | Types and durable record definitions; no concrete engine |
+| `riffdb-storage-api` | Semantic snapshots, database initialization, evaluated commands, commit intents, durable DTOs, typed transitions/readers, the narrow durable `proto_codec` mapping bridge, and ADR-0017 projection-schema consumers | Types/errors; proto only through `proto_codec`; contract IR only for immutable `ProjectionGroupSchema`/`BoundProjectionGroupSchema` values in the projection-schema module; no clock, entropy, compiler, command-plan interpretation, runtime, commit, service, transport, or concrete-engine dependency |
 | `riffdb-storage-memory` | Deterministic reference storage implementation used by model and semantic tests | Storage API only |
 | `riffdb-storage-redb` | Durable POC implementation, table layout, integrity checks, backup, restore, and engine benchmarks | Storage API and `redb`; no API transports |
 | `riffdb-invariant` | Evaluation of supported predicates, transitions, postconditions, and commit-time invariant checks | Types and IR |
-| `riffdb-runtime` | Deterministic command-plan interpreter that produces typed outcomes and `CommitIntent` values without external I/O | IR, invariant engine, and read-snapshot traits |
+| `riffdb-runtime` | Deterministic command-plan interpreter that consumes owned snapshots and produces `EvaluatedCommand` without external I/O | IR, invariant engine, and storage semantic value/snapshot types; no provenance claims, admission persistence, storage engine, service, or transport dependency |
 | `riffdb-conflict` | Canonical conflict keys, exclusive logical capabilities, wait queues, cancellation, and hot-key diagnostics | Types and synchronization primitives; no storage engine |
 | `riffdb-idempotency` | Canonical command identity, input hashing, persisted outcome lookup, duplicate detection, and uncertain-result recovery | Types and storage API |
-| `riffdb-commit` | Admission orchestration, capability acquisition, dependency revalidation, commit-sequence assignment, atomic persistence, and ordered commit records | Runtime, conflict, idempotency, catalog, and storage API |
-| `riffdb-auth` | Principal authentication, local development capability tokens, expiry, and credential resolution | Types and errors; no command execution |
-| `riffdb-policy` | Deny-by-default authorization, capability scopes, tenant and field filtering, redaction obligations, and approval decisions | Auth and types; transport-neutral |
-| `riffdb-service` | API-neutral command, contract, entity, commit, provenance, projection, and health services | Core semantic crates only; no transport implementation |
-| `riffdb-api-grpc` | Tonic services, interceptors, bounds checks, and wire conversions | Service and proto; no storage implementation |
-| `riffdb-client-rust` | Generic and generated Rust client APIs | Proto and Tonic client only |
-| `riffdb-server` | `riffdbd` process composition, configuration, lifecycle, and hosted gRPC/HTTP endpoints | Service and API crates; no new business semantics |
-| `riffdb-api-mcp` | MCP tool/resource catalogs, schema translation, authorization-aware discovery, Streamable HTTP handling, and protocol adaptation | Service, policy, `rmcp`, and JSON Schema support |
+| `riffdb-commit` | Database-initialization executor, admission, capability acquisition, deterministic evaluation orchestration, final `CommitIntent` assembly, revalidation, sequencing, authoritative commit, typed control-plane operations, ordered audit execution, and consumer-owned `AdmissionClock`, `AdministrationClock`, and `ProvenanceIdSource` ports | Runtime, conflict, idempotency, catalog, storage API, and policy-owned authorized-preparation/provenance/facts values plus only `TransactionCurrentCapabilityVerifier` and `AuthorizationClock`; no service, transport, protocol, general policy authorizer, obligations/redaction engine, policy-owned storage reader, or concrete clock/entropy implementation |
+| `riffdb-auth` | Principal authentication, local development capability tokens, expiry, credential resolution, narrow synchronous authentication clock, and `CredentialAuthenticator` entry point | Types, errors, and storage-owned capability readers; no policy, command execution, service, or transport dependency |
+| `riffdb-policy` | Deny-by-default authorization, capability scopes, obligations, approvals, provenance validation, value-only authorized capability-mutation preparation and transaction-current facts, synchronous authorization clock, and pure transaction-current capability verification | Auth and types/errors only; no storage API, commit, service, transport, protocol, authoritative write handle, or concrete storage dependency |
+| `riffdb-service` | API-neutral command, contract, entity, commit, provenance, projection, discovery, administration, and health services, including capability-administration request/result semantics | Foundational types/errors, contract/compiler/catalog semantics, auth and policy entry points, typed commit executors, and consumer-owned bounded read ports; no transport, general storage engine, or concrete storage implementation |
+| `riffdb-api-grpc` | Tonic services, authentication interceptors, bounds checks, and wire conversions | Service, the auth-owned `CredentialAuthenticator` interface, proto, and Tonic; no policy, catalog, runtime, commit, storage API, or storage implementation |
+| `riffdb-client-rust` | Generic and generated Rust client APIs plus the approved system UUIDv7 request/capability/agent-session convenience source | Proto and Tonic client plus the exact ADR-0018 entropy dependency only; no semantic database implementation |
+| `riffdb-server` | `riffdbd` process composition, configuration, lifecycle, hosted gRPC/HTTP endpoints, and concrete OS clock/UUIDv7 providers implementing the separate consumer ports | Service/API crates and concrete auth, clock/identifier, executor, storage, outbox, projection, and observability implementations solely for composition; no new policy, command, query, redaction, cursor, audit, or identifier semantics |
+| `riffdb-api-mcp` | MCP tool/resource catalogs, schema translation, authorization-aware discovery presentation, Streamable HTTP authentication/handling, and protocol adaptation | Service, the auth-owned `CredentialAuthenticator` interface, `rmcp`, and JSON Schema support; no direct policy, catalog, runtime, commit, storage API, or storage implementation |
 | `riffdb-mcp-stdio` | `riffdb-mcp` local stdio bridge that invokes the shared public service | MCP client/server transport glue only; no storage access |
-| `riffdb-cli` | `riffdb` operator and developer CLI using public APIs | Rust client and bounded local configuration only |
+| `riffdb-cli` | `riffdb` operator and developer CLI using public APIs | Rust client and bounded local configuration; may depend only on the isolated pure `riffdb-auth::bootstrap_secret` module for offline bootstrap credential generation/validation and protected-file loading, never on authentication, policy, storage, or service internals |
 | `riffdb-outbox` | Durable event dispatch state machine, leases, retries, deduplication metadata, and connectors | Storage API and Tokio; outside command execution |
 | `riffdb-projection` | POC event-derived filters, counts, sums, durable frontiers, rebuilds, and read-after-sequence outcomes | Ordered commit scans and storage API |
 | `riffdb-observability` | Structured tracing, metrics, health signals, and safe telemetry helpers | Cross-cutting interfaces without business semantics |
@@ -308,6 +316,9 @@ The binary targets are `riffdbd` from `riffdb-server`, `riffdb` from `riffdb-cli
 - Storage implementations MUST NOT depend on gRPC or MCP.
 - API crates MUST NOT access storage implementations directly.
 - MCP and gRPC MUST share the `riffdb-service` authorization and execution entry points.
+- `riffdb-proto` MUST NOT depend on `riffdb-storage-api`; only the narrowly scoped storage-owned `proto_codec` bridge may map semantic durable DTOs to generated messages.
+- `riffdb-storage-api` MAY consume only the two immutable checked ADR-0017 projection schema values from `riffdb-contract-ir`; it MUST NOT consume `CommandPlan` or compiler/runtime services, and `riffdb-contract-ir` MUST NOT depend on storage.
+- gRPC and MCP HTTP MAY call only the auth-owned `CredentialAuthenticator` before constructing service request context; production MCP stdio, CLI, and SDK use public gRPC.
 - Generated code MUST be checked in only when generation is deterministic and CI verifies it is current.
 
 ## 5.4 Baseline libraries
@@ -321,9 +332,12 @@ Versions are the verified July 2026 starting point, not a promise to track every
 | gRPC | Tonic 0.14.x | Public RPC server and client |
 | Protobuf | Prost 0.14.x | Wire and durable record generation |
 | Pure-Rust proto compiler | Protox 0.9.x | Build without requiring an external `protoc` executable |
-| Embedded storage | redb 4.1.x | POC durable state and atomic commits |
+| Embedded storage | redb 4.1.0, default features disabled, no optional features | POC durable state and atomic commits; direct only in `riffdb-storage-redb` |
 | Storage comparison | Fjall 3.1.x | POC-exit benchmark and possible MVP engine |
 | MCP SDK | rmcp 2.2.x | Native MCP server, stdio, Streamable HTTP |
+| OS entropy | getrandom 0.3.4, default features disabled, no optional features | Capability/bootstrap identifiers and tokens in `riffdb-auth`, request/capability/agent-session convenience IDs in `riffdb-client-rust`, and injected database/provenance/request/incident/cursor IDs in `riffdb-server`; never command runtime |
+| Base64url | base64 0.22.1, default features disabled, `alloc` only | Canonical capability token text in `riffdb-auth` |
+| Secret cleanup | zeroize 1.8.1, default features disabled, `alloc` only | Owned auth secret buffers; no claim about transport-generated copies |
 | Lexer | Logos 0.16.x | Contract tokenization |
 | Parser | LALRPOP 0.23.x | Contract grammar |
 | Diagnostics | Miette | Compiler errors with source spans and stable diagnostic codes |
@@ -342,25 +356,35 @@ Versions are the verified July 2026 starting point, not a promise to track every
 The semantic model MUST use newtypes rather than raw strings or integers at component boundaries.
 
 ```rust
-pub struct ContractVersion(pub u64);
+pub struct ContractVersion(NonZeroU64);
 pub struct PlanHash(pub [u8; 32]);
+pub struct ContractBundleHash(pub [u8; 32]);
 pub struct ProjectionPlanHash(pub [u8; 32]);
 pub struct ContractPlanRootHash(pub [u8; 32]);
-pub struct CommitSequence(pub u64);
-pub struct RequestId(pub uuid::Uuid);
+pub struct CommitSequence(NonZeroU64);
+pub struct AdministrationSequence(NonZeroU64);
+pub struct EntityVersion(NonZeroU64);
+pub struct IndexEpoch(NonZeroU64);
+pub struct RequestId([u8; 16]);
 pub struct ActorId(pub String);
-pub struct AgentSessionId(pub uuid::Uuid);
-pub struct EntityTypeId(pub u32);
-pub struct EventTypeId(pub u32);
-pub struct EnumTypeId(pub u32);
-pub struct EnumVariantId(pub u32);
-pub struct AggregateTypeId(pub u32);
-pub struct FieldId(pub u32);
-pub struct CommandId(pub u32);
-pub struct OutcomeId(pub u32);
-pub struct ProjectionId(pub u32);
-pub struct IndexId(pub u32);
-pub struct InvariantId(pub u32);
+pub struct AgentSessionId([u8; 16]);
+pub struct IncidentId([u8; 16]);
+pub struct DatabaseId([u8; 16]);
+pub struct CapabilityId([u8; 16]);
+pub struct ProvenanceId([u8; 16]);
+pub struct EntityTypeId(NonZeroU32);
+pub struct EventTypeId(NonZeroU32);
+pub struct EnumTypeId(NonZeroU32);
+pub struct EnumVariantId(NonZeroU32);
+pub struct AggregateTypeId(NonZeroU32);
+pub struct FieldId(NonZeroU32);
+pub struct CommandId(NonZeroU32);
+pub struct OutcomeId(NonZeroU32);
+pub struct ProjectionId(NonZeroU32);
+pub struct ProjectionGeneration(NonZeroU64);
+pub struct IndexId(NonZeroU32);
+pub struct InvariantId(NonZeroU32);
+pub struct DigestKeyId(NonZeroU32);
 pub struct EntityKey(pub Vec<u8>);
 pub struct PartitionKey(pub Vec<u8>);
 pub struct ConflictKey(pub Vec<u8>);
@@ -368,16 +392,62 @@ pub struct IndexEntryKey(pub Vec<u8>);
 pub struct PartitionKeyHash(pub [u8; 32]);
 pub struct ConflictKeyHash(pub [u8; 32]);
 pub struct CanonicalInputHash(pub [u8; 32]);
+pub struct ProjectionApplyHash(pub [u8; 32]);
 pub struct IdempotencyKey(pub String);
 ```
 
-`RequestId` identifies one transport submission and is used for tracing. `IdempotencyKey` is a caller-selected command input used to recover an uncertain result. They are distinct values: retrying an uncertain command MAY use a new `RequestId` but MUST reuse the original `IdempotencyKey` and canonical command input.
+`ProjectionIdentity` is the checked value tuple of `ContractLineage`, nonzero
+`ProjectionId`, and `ProjectionPlanHash`. `FrontierPosition` is the closed
+`BeforeFirst | AppliedThrough(CommitSequence)` representation shared by storage,
+projection, and service. Projection group, prefix, frontier, and apply keys are
+purpose-specific opaque newtypes; none is substitutable for an entity,
+partition, conflict, or index key.
+
+`RequestId` identifies one transport submission and is used for tracing. `IdempotencyKey` is a caller-selected command input used to recover an uncertain result. They are distinct values: retrying an uncertain command MUST use a fresh `RequestId` and MUST reuse the original `IdempotencyKey` and canonical command input.
+
+ADR-0018 fixes UUIDv7 as 16 network-order bytes. `riffdb-types` provides only a
+pure checked assembler from an unsigned 48-bit Unix-millisecond value and ten
+random source bytes. Bytes `0..6` are the timestamp in big-endian order; byte 6
+is `0x70 | (random[0] & 0x0f)`; byte 7 is `random[1]`; byte 8 is
+`0x80 | (random[2] & 0x3f)`; and bytes `9..16` are `random[3..10]`. A timestamp
+above `0xffff_ffff_ffff` rejects rather than clamping. The immutable golden for
+timestamp `0x0123456789ab` and random bytes `00..09` is
+`01234567-89ab-7001-8203-040506070809`.
+
+System sources sample UTC once and fill exactly ten bytes through the approved
+OS entropy provider. UUID time is non-authoritative metadata: clock rollback may
+produce a lower identifier, and no UUID supplies transaction time,
+authorization time, expiry, a deadline, idempotency input, or ordering.
+Application and administration sequences remain the only authoritative orders.
+The deterministic runtime, storage engines, and `riffdb-types` receive no clock
+or entropy provider.
+
+One fresh `RequestId` is created for each transport submission. Every retry uses
+a new request ID while a pending admission preserves its original admission
+request ID. Normal capability creation accepts a caller-supplied checked
+`CapabilityId`; bootstrap generates and retains its capability ID and token
+before transmission. A new database atomically installs a checked candidate
+`DatabaseId` only when every initialization predicate proves the store is truly
+uninitialized; reopen preserves the durable ID. The coordinator obtains a new
+`ProvenanceId` only for a new commit attempt after successful evaluation and
+before the authoritative transaction, never for reads, `ExecutionFailed`, or
+terminal replay. Unknown commit status is resolved through idempotency before
+another provenance candidate is generated. Any durable-ID collision fails the
+whole operation without overwrite or sequence assignment.
 
 ### Identifier requirements
 
-- `ID-001` Externally created request and agent-session identifiers MUST be UUIDv7 or another time-sortable 128-bit identifier approved by ADR.
-- `ID-002` `CommitSequence` MUST be a contiguous unsigned 64-bit integer on a single node.
-- `ID-003` Compiler-assigned numeric IDs MUST be stable within a contract lineage and MUST NOT be reused after removal.
+- `ID-001` Request, agent-session, incident, database, capability, and provenance
+  identifiers MUST be checked UUIDv7 values using ADR-0018's exact assembly and
+  provider boundaries. No alternate identifier or monotonic ordering claim is
+  accepted in the POC.
+- `ID-002` `CommitSequence` MUST be a contiguous nonzero unsigned 64-bit integer
+  on a single node, first assigned at 1. Zero is unassigned and exhaustion fails
+  closed without wrap or reuse.
+- `ID-003` `ContractVersion`, `DigestKeyId`, and every compiler-assigned numeric ID
+  MUST be nonzero by construction and reject zero during decoding. Compiler IDs
+  are allocated from 1, MUST be stable within a contract lineage, and MUST NOT be
+  reused after removal; exhaustion fails closed without wrap.
 - `ID-004` Durable keys MUST use canonical byte encodings independent of Rust memory layout.
 - `ID-005` Secrets and raw capability tokens MUST never appear in logs, commit records, or metrics.
 
@@ -414,7 +484,7 @@ A durable entity record is a versioned value owned by a contract entity type.
 pub struct EntityRecord {
     pub entity_type: EntityTypeId,
     pub key: EntityKey,
-    pub entity_version: u64,
+    pub entity_version: EntityVersion,
     pub written_by_contract: ContractVersion,
     pub fields: Vec<FieldValue>, // sorted by FieldId
 }
@@ -656,7 +726,39 @@ The database distinguishes three categories:
 
 For the POC, idempotency identity is the tuple of database identity, environment, authorization-resolved tenant scope, stable principal ID, contract lineage, stable command ID, and a domain-separated keyed digest of the caller-supplied idempotency key. Contract version is stored with the reservation and outcome but excluded from lookup identity so an uncertainty retry survives active-version deployment. The identity never contains a raw capability token or raw idempotency key.
 
-Before evaluation, the commit coordinator durably creates or resolves a pending idempotency reservation containing the identity, canonical input hash, request ID, contract version, plan hash, and fixed `tx.time`. A pending reservation receives no `CommitSequence`. A retry with the same identity and input resumes or waits for that reservation and reuses its `tx.time` and plan; a retry with a different input fails without execution. A terminal declared rejection receives one sequence like any other terminal admitted outcome. Returning a persisted outcome on replay allocates no new sequence.
+Before mutating evaluation, the commit coordinator durably creates or resolves a
+pending idempotency reservation containing the identity, canonical input hash,
+original admission request ID, exact `ExecutablePlanRef` (contract lineage,
+contract version, contract bundle hash, command ID, and command plan hash), fixed
+`tx.time`, admitted actor context, partition, and the separately stored approved
+provenance-claim snapshot. A pending reservation receives no `CommitSequence`.
+A retry with the same identity and input resumes or waits for that reservation and
+reuses every frozen field; a retry with a different input fails without execution.
+A terminal declared rejection receives one sequence like any other committed
+declared outcome. Returning a persisted outcome on replay allocates no new
+sequence.
+
+ADR-0012 adds a closed terminal admission state
+`ExecutionFailed { ArithmeticFault | ResourceLimit }`. It may be persisted only
+after every influential entity absence/version and index-range epoch from the
+evaluation snapshot is equal in transaction-current state. Changed evidence
+causes bounded full reevaluation or leaves the admission pending. This state
+consumes the idempotency identity but creates no declared outcome, application
+commit, `CommitSequence`, event, outbox intent, or command provenance. A proven
+abort leaves the admission pending and maps to storage unavailability; unknown
+commit status fences writes and maps to outcome uncertainty until same-key
+resolution.
+
+An impossible validated-plan/snapshot `Integrity` fault is a redacted internal
+incident, leaves a mutating admission pending for operator intervention, and never
+uses the expected `ExecutionFailed` transition. The POC supplies no online repair
+path; recovery remains fail-closed.
+
+Grammar-v1 read-only commands are unjournaled. They create no pending or terminal
+command-idempotency record, persisted outcome, provenance, application commit, or
+`CommitSequence`. Their optional request-correlation key is transport metadata
+only, and required service audit is a separate outcome-free administration
+record. Durable read-only replay or journaling requires a future accepted ADR.
 
 ## 7.7 Contract compatibility
 
@@ -680,6 +782,7 @@ The compiler MUST assign stable numeric IDs to entities, fields, commands, outco
 - Narrow an invariant without a migration plan.
 - Change outcome payload types in place.
 - Change an event's existing field meaning.
+- Remove an entity, field, command, outcome, event, or projection.
 
 The POC MAY require a stop-the-world contract deployment. The MVP MUST define rolling compatibility between server nodes, SDKs, and active contract versions.
 
@@ -786,11 +889,22 @@ pub struct ContractBundle {
     pub commands: Vec<CommandPlan>,
     pub queries: Vec<QueryPlan>,
     pub projections: Vec<ProjectionPlan>,
+    pub mcp_command_names: McpCommandNameRegistryV1,
     pub compatibility: CompatibilityReport,
     pub compiler_version: String,
     pub ir_format_version: u32,
 }
 ```
+
+`McpCommandNameRegistryV1` is the checked, versioned ADR-0020 registry. It binds
+the exact contract lineage and source contract identifier, and contains one
+entry per executable command with its nonzero `CommandId`, exact source command
+identifier, and complete `McpCommandToolNameV1`. Entries are ordered by
+`CommandId`; missing, duplicate, reordered, misbound, noncanonical,
+over-length, or colliding entries reject. The registry is part of canonical
+bundle serialization and hashing. The exact Rust representation remains owned
+by `riffdb-contract-ir`; this illustrative bundle shape does not authorize an
+adapter-owned string registry or a second normalization path.
 
 `CMP-020` Bundle serialization MUST be deterministic. Compiling identical source with the same compiler version MUST produce byte-identical bundles and the same plan hash. Wall-clock compilation or deployment time MUST NOT appear in a bundle.
 
@@ -824,40 +938,131 @@ Contract deployment and active-version changes are authoritative control-plane m
 
 A mutating command follows this sequence:
 
-1. Decode request and enforce transport limits.
-2. Authenticate the principal and construct `ActorContext`.
-3. Resolve the active contract and command plan.
-4. Validate input against the compiled schema.
-5. Canonicalize the input and calculate its hash.
-6. Derive partition and conflict keys from validated inputs.
-7. Authorize the command, tenant, partition, and fields.
-8. Derive the idempotency identity and ask the commit coordinator to create or resolve its durable pending reservation.
-9. Return a terminal replay immediately, reject mismatched input, or resume the reserved contract version, plan, and `tx.time`.
-10. Acquire all conflict keys in canonical order.
-11. Recheck the reservation after lock acquisition.
-12. Build a bounded materialized snapshot for every declared read and validation dependency.
-13. Evaluate the deterministic command plan without storage I/O.
-14. Construct the `riffdb-storage-api`-owned `CommitIntent` containing dependencies, mutations, events, outcome, and provenance.
-15. Submit the intent to the commit coordinator.
-16. Open a short coordinator-owned durable write transaction.
-17. Recheck idempotency and versions and re-evaluate the exact predicate and invariant validation plan over transaction-current values plus proposed mutations.
-18. Assign a `CommitSequence` and atomically write all terminal state.
-19. Commit the storage transaction and release logical capabilities.
-20. Notify commit subscribers, projection workers, and outbox workers.
-21. Return the typed outcome envelope.
+1. The adapter decodes and bounds the transport request, extracts one opaque
+   credential, calls `CredentialAuthenticator` with trusted database,
+   environment, and audience context, and constructs a checked `RequestContext`.
+2. The service inspects the idempotency state without creating a reservation,
+   selects the active/explicit plan for an absent identity or the exact stored
+   historical plan for an existing identity, loads that checked plan, and only
+   then knows whether a generic execute request is mutating or read-only. An
+   unknown target before this classification is bounded security telemetry, not
+   a fabricated mutating invocation.
+3. The service validates and canonicalizes input under that exact schema,
+   computes its hash, and derives the one `PartitionKey`, all mutation conflict
+   keys, and authorization facts.
+4. The service performs an initial current-policy check over the exact facts and
+   validates only allowed provenance claims. Every explicit authenticated policy
+   denial appends one standalone `denied` record before returning denial.
+5. For an allowed mutation, the service durably appends `started`, then waits for
+   a bounded executor-capacity permit. Failure or cancellation before submission
+   appends the matching terminal phase and admits no command.
+6. With the permit held, the service reloads current policy and samples a fresh
+   authorization time for the same exact facts. A denial appends terminal
+   `denied`; a clock/internal failure appends `failed`. On allow, the service
+   synchronously consumes the permit to submit one privately authorized typed
+   preparation. This final check immediately followed by executor acceptance is
+   the non-retroactive command-authorization boundary. The service never
+   constructs an `EvaluatedCommand` or `CommitIntent` and never receives a
+   storage write handle.
+7. The coordinator rechecks the inspected identity, then atomically creates a
+   pending admission, resumes an equal pending admission, returns an equal
+   terminal replay, or rejects mismatched input. A concurrent change may request
+   at most the ADR-0007 bounded inspect/confirm retry.
+8. For a new admission, the coordinator freezes the original request ID, exact
+   `ExecutablePlanRef`, canonical input hash, logical time, admitted actor,
+   partition, and approved provenance claims. Resume never substitutes current
+   request claims or the active plan.
+9. The coordinator derives, sorts, deduplicates, and acquires every declared
+   mutation `ConflictKey`, then rechecks the pending admission. Dynamic
+   acquisition, upgrade, and cross-partition mutation are forbidden.
+10. A synchronous storage read copies every declared binding and range
+   observation into one owned bounded `ReadSnapshot`, closes the engine read
+   view, and returns canonical read dependencies.
+11. The deterministic runtime evaluates the exact checked plan, snapshot,
+    immutable `TransactionContext`, and fixed `EvaluationBudget`, with no storage
+    transaction, I/O, clock, entropy, provenance claims, or `.await`.
+12. A successful mutating evaluation returns storage-owned `EvaluatedCommand`.
+    For a new commit attempt, the coordinator obtains one `ProvenanceId` from its
+    injected source and combines it with the exact stored admission and plan-
+    derived partition/conflict evidence into the final self-contained
+    `CommitIntent`. Replay and `ExecutionFailed` generate no provenance ID.
+13. An arithmetic or resource fault follows ADR-0012's dependency-validated
+    `Pending -> ExecutionFailed` transition; changed evidence triggers full
+    reevaluation or leaves the admission pending, and no application sequence is
+    assigned.
+14. For a commit-required result, the coordinator opens a short synchronous
+    write transaction and rechecks the exact pending identity, input, admission,
+    and plan reference.
+15. Storage reads all validation targets from transaction-current state. The
+    coordinator compares every absence/version/epoch dependency and evaluates
+    the exact historical commit-check plan over current values plus proposed
+    post-images.
+16. Only after private semantic validation, the coordinator assigns the next
+    nonzero `CommitSequence`, constructs the complete atomic record set, and
+    stages it through the consuming typed storage transaction protocol.
+17. The storage commit atomically makes sequence metadata, entity/index changes,
+    pending resolution and terminal outcome, events/outbox intent, provenance,
+    and commit record durable, or makes none of them durable.
+18. The coordinator releases logical capabilities and publishes bounded
+    post-durability notifications.
+19. The service applies every current disclosure obligation and constructs the
+    fully bounded, filtered, redacted semantic result. A shaping failure is a
+    failure and never produces a false successful audit.
+20. The service appends the matching terminal service-audit record, then releases
+    the already-safe typed result. Failure to persist the required terminal audit
+    withholds the result and uses the accepted uncertainty/unavailable recovery
+    path without rolling back authoritative state.
+
+Grammar-v1 read-only execution uses the same adapter, service validation,
+current authorization, exact checked plan, owned snapshot, and
+deterministic runtime. It uses the runtime `ReadOnly` result and creates no
+pending/terminal command journal, persisted outcome, command provenance, or
+application sequence. Any policy-required service audit remains a separate
+administration record and contains no outcome or execution-fault detail; an
+ordinary allowed standard read without that obligation is unaudited.
 
 ## 9.2 Transaction context
 
 ```rust
 pub struct TransactionContext {
     pub request_id: RequestId,
-    pub admitted_at: Timestamp,
-    pub actor: ActorContext,
-    pub contract_version: ContractVersion,
-    pub plan_hash: PlanHash,
+    pub actor: AdmittedActorContext,
+    pub plan: ExecutablePlanRef,
+    pub tx_time: LogicalTime,
     pub partition_key: PartitionKey,
 }
 ```
+
+For a mutating command, `request_id` is the original admission request ID frozen
+in the pending record; a retry's outer request ID is audit/trace context only.
+For an unjournaled read-only command it is the checked current invocation ID.
+`AdmittedActorContext` contains only stable principal ID, trusted actor kind,
+authorization-resolved tenant scope, and optional admitted agent-session ID.
+Approved source repository, source commit, reason, and approval are stored
+separately as `StoredAdmittedProvenanceClaimsV1` and never enter runtime.
+
+The coordinator reads its injected `AdmissionClock` exactly once before a new
+admission, validates the accepted signed-seconds/nanoseconds timestamp, and
+stores the resulting `LogicalTime`. Resume and replay do not read the clock.
+An unjournaled read-only invocation receives one invocation-local logical time
+with no cross-invocation replay promise. Logical time is not commit order and is
+never clamped or used for authorization expiry, leases, keys, or uniqueness.
+
+`riffdb-commit` owns the synchronous `AdmissionClock` consumer port and the
+separate synchronous `AdministrationClock` used for coordinator-observed
+catalog/bootstrap/service-audit timestamps. `riffdb-server` injects the concrete
+OS provider. Authentication and current-policy authorization retain their own
+auth- and policy-owned clock ports. None is substitutable in a semantic API, and
+none enters deterministic runtime. Clock timestamps need only be canonical;
+sequences, not wall time, determine authoritative order.
+
+Runtime also receives an immutable plan-derived `EvaluationBudget`. The v1
+non-runtime reserve inside the 15 MiB semantic `CommitIntent` ceiling is exactly
+65,536 bytes, so `EvaluatedCommand` semantic content is capped at exactly
+15,663,104 bytes. Admission rejects before evaluation when its fixed fields
+cannot fit the reserve. The budget comes only from accepted IR/storage hard
+limits, is equal for equal plan/format versions, and cannot be raised, lowered,
+or selected by an adapter, request, provenance claim, or process configuration.
 
 - `TXN-010` `tx.time` MUST be fixed before command evaluation and reused for retries of the same admitted idempotency record.
 - `TXN-011` POC commands MUST NOT have access to randomness. Deterministic recorded randomness MAY be introduced by MVP ADR.
@@ -880,7 +1085,16 @@ A conflict key is an opaque canonical byte string with a type prefix and aggrega
 - Wait queues are FIFO per key.
 - A multi-key waiter is granted only when all requested keys can be granted.
 - Cancellation removes the waiter if no commit has begun.
-- Lock timeout returns an execution failure, not a declared business outcome, unless the contract explicitly maps timeout behavior.
+- Lock timeout returns the transient public `ConcurrencyDeadlineExceeded`
+  failure, not a declared business outcome or ADR-0012 `ExecutionFault`. It does
+  not terminalize or consume the idempotency admission.
+
+A grammar-v1 command may observe multiple logical conflict domains only within
+its one statically proven `PartitionKey`. Every domain it may mutate and every
+corresponding conflict key is derived and acquired before evaluation; every
+influential observation outside those mutation domains is represented by
+canonical dependency evidence and revalidated. Cross-partition mutation,
+dynamic acquisition, and capability upgrade are rejected.
 
 ```rust
 pub trait ConflictManager: Send + Sync {
@@ -897,56 +1111,63 @@ pub trait ConflictManager: Send + Sync {
 
 `TXN-021` Lease release MUST be idempotent and guaranteed on normal return, error, panic containment, and task cancellation.
 
-`TXN-022` The runtime MUST emit lock-wait duration and conflict-key hash metrics without exposing raw business keys.
+`TXN-022` The conflict manager MUST emit lock-wait duration and conflict-key hash
+metrics without exposing raw business keys. The deterministic runtime never
+observes lock waits or conflict-manager internals.
 
 `TXN-023` Loom tests MUST cover grant, release, cancellation, timeout, fairness, and multi-key ordering for a reduced lock manager model.
 
 ## 9.4 Read dependencies
 
-```rust
-pub enum ReadDependency {
-    EntityVersion {
-        entity_type: EntityTypeId,
-        key: EntityKey,
-        expected_version: Option<u64>,
-    },
-    IndexRangeVersion {
-        index: IndexId,
-        prefix: Vec<u8>,
-        expected_epoch: u64,
-    },
-    Predicate {
-        invariant: InvariantId,
-        captured_values: Vec<CanonicalValue>,
-    },
-}
+The closed v1 dependency registry is:
+
+```text
+EntityObservation
+  entity type + complete EntityKey
+  expected = Absent | Present(nonzero EntityVersion)
+
+IndexRangeEpoch
+  IndexId + validated component-complete prefix
+  + IndexEpochPosition::{BeforeFirst, Value(nonzero IndexEpoch)}
 ```
 
-POC commands SHOULD use primary-key reads. Bounded index reads are allowed only when the storage layer maintains a range or prefix epoch that can be revalidated. If this mechanism is not implemented in the first vertical slice, index reads that influence writes MUST fail compilation.
+Every binding observation contributes an entity dependency, including observed
+absence. Every influential accepted range contributes one epoch dependency.
+Dependencies are canonically ordered and duplicate-free; conflicting duplicate
+observations are an integrity defect. A range epoch is read from the same
+snapshot as its entries and advances atomically for every affected whole-index
+and complete leading-component prefix bucket when an index entry or covered
+value changes.
+
+Captured predicate booleans or values are not commit proof and are not a v1
+storage dependency. Predicate and invariant correctness uses the exact
+historical `ExecutablePlanRef`, a structurally checked validation request, and a
+coordinator-private semantic match; the exact commit-check plan is re-evaluated
+over transaction-current values and proposed post-images.
+
+Grammar v1 does not enable write-influencing indexed range reads. A future
+bounded indexed command-read IR requires an accepted static-target/epoch policy
+and any required exclusion must use explicit conflict keys known before
+evaluation. The storage epoch capability and conformance tests do not expose a
+hidden runtime scan.
 
 ## 9.5 Commit intent
 
-`riffdb-storage-api` owns the transport-neutral `CommitIntent` type. `riffdb-runtime` constructs an intent from the compiled plan and the bounded materialized snapshot supplied by application orchestration; the runtime does not open snapshots or transactions itself.
+`riffdb-storage-api` owns both `EvaluatedCommand` and the transport-neutral
+`CommitIntent`. Runtime constructs only `EvaluatedCommand`, containing the exact
+plan reference, canonical binding/range targets and dependencies, complete
+mutation post-images with expected observations, ordered pre-commit event
+values, and declared encoded outcome. It contains no admission identity, actor,
+provenance, logical time, sequence, event ID, durable record, or storage handle.
 
-```rust
-pub struct CommitIntent {
-    pub request_id: RequestId,
-    pub idempotency_identity: IdempotencyIdentity,
-    pub input_hash: CanonicalInputHash,
-    pub command_id: CommandId,
-    pub contract_version: ContractVersion,
-    pub plan_hash: PlanHash,
-    pub actor: ActorContext,
-    pub tx_time: Timestamp,
-    pub partition_key: PartitionKey,
-    pub conflict_key_hashes: Vec<ConflictKeyHash>,
-    pub read_dependencies: Vec<ReadDependency>,
-    pub mutations: Vec<EntityMutation>,
-    pub durable_events: Vec<DurableEvent>,
-    pub outcome: EncodedOutcome,
-    pub provenance: ProvenanceInput,
-}
-```
+After evaluation, only `riffdb-commit` may construct `CommitIntent`. Its checked
+constructor combines the unchanged `EvaluatedCommand` with the exact stored
+pending identity, original request ID, canonical input hash, five-field
+`ExecutablePlanRef`, fixed logical time, `AdmittedActorContext`, separate
+`StoredAdmittedProvenanceClaimsV1`, validated partition, and bounded
+partition/conflict hashes. The coordinator cannot edit the evaluated mutations,
+events, or outcome while adding admission metadata. Neither value contains an
+assigned sequence or claims that transaction-current validation has succeeded.
 
 `TXN-030` A `CommitIntent` MUST be fully self-contained and MUST NOT contain references into an API request buffer, parser AST, live storage transaction, or lock-manager internal state.
 
@@ -971,6 +1192,15 @@ The coordinator performs:
 9. Persist outbox entries.
 10. Commit the storage transaction using configured durability.
 11. Publish the committed result to the waiting caller and subscribers.
+
+For an ADR-0012 arithmetic or resource fault, the coordinator instead opens the
+narrow terminalization transaction, rechecks the complete pending admission and
+every influential absence/version/epoch, and atomically records
+`ExecutionFailed` only while all evidence is equal. It assigns no application
+sequence and constructs none of the command atomic record set. A normal
+dependency change writes nothing and follows the bounded full-reevaluation
+policy; malformed or missing evidence is an integrity incident and leaves the
+admission pending.
 
 `TXN-040` The commit queue MUST be bounded and apply backpressure.
 
@@ -997,7 +1227,7 @@ For MCP, a cancelled request may receive no response as required by protocol beh
 ## 9.8 Panic and defect containment
 
 - Runtime and compiler public entry points MUST not panic on user-controlled input.
-- A panic in command evaluation MUST be caught at the service boundary, recorded as an internal failure with a correlation ID, and release capabilities.
+- A containable panic in command evaluation MUST be caught at the executor/service boundary, recorded as an internal failure with a correlation ID, and release capabilities; it is never converted to ADR-0012 `ExecutionFailed`.
 - The commit coordinator process should fail fast on an invariant breach indicating internal corruption rather than continue serving uncertain state.
 - Recovery MUST run storage integrity checks and metadata consistency checks before readiness.
 
@@ -1007,32 +1237,84 @@ For MCP, a cancelled request may receive no response as required by protocol beh
 
 ## 10.1 Storage interface
 
-The storage abstraction is semantic, not a generic database portability layer. It owns `ReadSnapshot`, `ReadDependency`, predicate-dependency representations, `CommitIntent`, committed outcome, durable record, and coordinator transaction types. The commit coordinator owns their orchestration and sequencing.
+The storage abstraction is semantic, not a generic database portability layer.
+`riffdb-storage-api` owns the owned bounded `ReadSnapshot`, canonical dependency
+and observation types, `EvaluatedCommand`, `CommitIntent`, semantic durable DTOs,
+typed transition/read requests and results, and engine-neutral persistence ports.
+It owns only structural constructors; the coordinator retains the private proof
+that targets, dependencies, mutations, events, and outcome match one exact
+checked historical plan.
 
-```rust
-pub trait StorageEngine: Send + Sync + 'static {
-    type Snapshot<'a>: ReadSnapshot
-    where
-        Self: 'a;
-    type WriteTransaction<'a>: CoordinatorWriteTransaction
-    where
-        Self: 'a;
+`ReadSnapshot` is an owned value, not a live engine view or trait object. A
+synchronous storage call privately opens one consistent read view, copies every
+requested complete record and epoch into bounded semantic values, closes all
+engine handles, and only then returns. Runtime cannot retain or extend a storage
+transaction.
 
-    fn snapshot(&self) -> Result<Self::Snapshot<'_>, StorageError>;
-    fn begin_coordinator_write(&self) -> Result<Self::WriteTransaction<'_>, StorageError>;
-    fn get_outcome(&self, key: &IdempotencyLookup) -> Result<Option<StoredOutcome>, StorageError>;
-    fn get_commit(&self, sequence: CommitSequence) -> Result<Option<CommitRecord>, StorageError>;
-    fn scan_commits(
-        &self,
-        after: CommitSequence,
-        limit: usize,
-    ) -> Result<Vec<CommitRecord>, StorageError>;
-}
-```
+All engine operations are synchronous. The async boundary is the bounded
+coordinator queue. Authoritative command writes use ADR-0004's consuming typed
+`EmptyBatch`/`NonEmptyBatch` candidate protocol: an empty batch cannot commit;
+each candidate must progress through admission recheck, transaction-current
+state read, private plan validation, sequence assignment, and complete atomic
+record-set staging; only a nonempty batch can commit. The interface accepts no
+closure, callback, raw key/value batch, caller-selected sequence, engine handle,
+or async method. Runtime evaluation never occurs while a storage transaction is
+open.
 
-`CoordinatorWriteTransaction` is a narrow typed interface for idempotency recheck, dependency reads, application of a coordinator-validated atomic record set, and commit or rollback. It does not assign sequences, interpret a `CommandPlan`, expose engine-native handles, or accept caller-provided closures. The exact method split is frozen by the storage semantic API ADR before WP-060 implementation.
+Storage capabilities are split into narrow entity/commit readers, catalog,
+capability, outbox, projection, administration/audit, integrity, and backup
+ports. Only the coordinator receives authoritative progression or audit-append
+handles; projection and outbox workers receive only their specialized derived
+state transitions. `riffdb-storage-api::proto_codec` is the sole checked bridge
+from semantic durable DTOs to `riffdb-proto` messages. No Prost type appears in
+semantic trait signatures.
 
-The concrete `redb` adapter MAY contain additional private APIs for compaction, backup, integrity checks, and statistics.
+Storage first provides a source-free database-identity probe with the closed
+result `Existing(DatabaseId) | NeedsInitialization`; malformed or partial
+metadata is an integrity error. Only `NeedsInitialization` permits the server to
+generate a checked candidate. A separate initialization transition accepts that
+candidate, re-proves true emptiness, and atomically installs it with the complete
+initial metadata. If another initializer won after the probe, it returns the
+durable winner without comparing or replacing it. Reopen returns `Existing` and
+therefore performs no candidate generation. A missing or malformed ID in any
+otherwise initialized/nonempty store fails readiness; backup/restore preserve it.
+Storage code has no clock or entropy source.
+
+Production invokes the probe and mutating initialization transition only through
+the commit-owned `DatabaseInitializationExecutor`. `riffdb-server` may request a
+candidate after the executor returns `NeedsInitialization`, but it passes that
+checked value back to the executor and never obtains a storage mutation handle.
+Memory/redb conformance tests may exercise the storage transition directly; this
+does not create a second production authoritative-mutation path.
+
+The concrete `redb` adapter may contain private compaction, backup, integrity,
+and statistics APIs. The approved baseline is exactly `redb` 4.1.0 with default
+features disabled and no optional features, directly owned only by
+`riffdb-storage-redb`; any dependency-graph or feature change requires renewed
+human review. Approval of the dependency does not replace WP-070 semantic
+conformance and process crash/reopen evidence.
+
+The v1 semantic storage hard ceilings are 4,096 binding observations, read
+dependencies, validation targets, mutations, index deltas, event intents, or
+outbox intents per command; 1 MiB per canonical entity/event/outcome value;
+16 MiB per owned snapshot; 15 MiB per pre-commit intent or commit-record semantic
+payload; 64 commands and 16 MiB aggregate staged write set per write transaction;
+500 rows and 4 MiB per scan page; 4 KiB per entity/index/partition/conflict key
+or index prefix; 256 integrity findings plus a `truncated` flag; 15 MiB per
+catalog bundle; 16 targets and 64 KiB per service-audit record; and ADR-0006's
+absolute 16 MiB durable payload/envelope ceiling. Counts and bytes use checked
+arithmetic before allocation or transaction opening. Configuration may lower,
+but never raise, a hard ceiling.
+
+`StorageErrorKind` is closed: `Unavailable`, `CommitStatusUnknown`,
+`CorruptData`, `IncompatibleFormat`, `LimitExceeded`, `InvariantViolation`, and
+`SequenceExhausted`. A backend-proven abort maps to unavailable and never claims
+terminal success. Unknown commit status fences further writes until
+reopen/integrity recovery and command resolution uses idempotency. Corruption,
+incompatibility, impossible transitions, and exhaustion fail readiness with an
+opaque incident. Missing records, replay, mismatch, pending admission,
+dependency change, catalog conflict, already-revoked capability, projection gap,
+and scan end are typed semantic results, never parsed error strings.
 
 ## 10.2 Redb table layout
 
@@ -1044,21 +1326,39 @@ The concrete `redb` adapter MAY contain additional private APIs for compaction, 
 | `entities` | entity type ID + canonical entity key | Entity record envelope |
 | `secondary_indexes` | index ID + canonical index key + entity key | Empty marker or covered value |
 | `index_epochs` | index ID + prefix bucket | Monotonic validation epoch |
-| `idempotency` | canonical identity from Section 7.6 | Stored outcome pointer and input hash |
-| `idempotency_pending` | canonical idempotency identity | Pending reservation, fixed transaction context, and plan identity |
+| `idempotency` | canonical identity from Section 7.6 | Terminal committed-outcome pointer or closed ADR-0012 `ExecutionFailed` record, plus input hash |
+| `idempotency_pending` | canonical idempotency identity | Pending reservation, fixed transaction context, complete `ExecutablePlanRef`, admitted actor, and stored approved provenance claims |
 | `commits` | commit sequence, big endian | Commit record envelope |
+| `provenance` | provenance ID | Immutable approved provenance record envelope linked from one commit |
 | `outbox` | commit sequence + event ordinal | Outbox entry |
 | `outbox_status` | event ID | Delivery state and attempts |
-| `projection_state` | projection ID + group key | Aggregate state |
-| `projection_frontier` | projection ID | Frontier and lifecycle state |
-| `capabilities` | opaque token hash | Capability record |
-| `audit` | administration sequence | Security and administration event |
+| `projection_state` | `0x47 0x01` + projection identity + generation + framed complete group components | Versioned aggregate state and last-changed sequence |
+| `projection_frontier` | `0x46 0x01` + projection identity | Versioned control record with highest generation, published/candidate frontiers, lifecycle, apply mode, and closed failure |
+| `projection_applied` | `0x41 0x01` + projection identity + generation + commit sequence | Versioned marker containing the exact `ProjectionApplyHash` |
+| `capabilities` | `0x01` + stable `CapabilityId` | Versioned capability grant and lifecycle record with repeated typed digest reference |
+| `capability_tokens` | `0x01` + digest scheme + digest-key ID + digest | Versioned lookup containing exactly one `CapabilityId` |
+| `audit` | `0x01` + administration sequence | Versioned registered catalog/capability-administration or service-audit record in one ordered sequence space with disjoint closed payload registries |
 
 `STO-010` Ordered numeric keys MUST use big-endian encoding so lexicographic scans preserve numeric order.
 
 `STO-011` Table names and key prefixes are storage-format API and require migration planning after POC format freeze.
 
-`STO-012` The POC MUST maintain metadata keys for storage format version, database and node identity, next application commit sequence, next administration audit sequence, active contract, clean shutdown marker, and last successful integrity check.
+`STO-012` The POC durable operational metadata MUST contain exactly these six
+categories: storage format version; the permanent `DatabaseId`; application
+commit allocator state; administration audit allocator state; the active
+contract pointer and its catalog-consistency data; and the singleton
+`capability_bootstrap/v1` marker. Application and administration allocator
+metadata starts at 1; zero is unassigned and every advance uses checked
+arithmetic. Committing the maximum representable sequence atomically leaves the
+corresponding allocator in an explicit exhausted semantic state; it never wraps
+or advertises another numeric value.
+
+The POC defines no durable node identity, clean-shutdown marker, or persisted
+last-successful-integrity-check value. Every production startup MUST run the
+complete accepted read-only authoritative integrity and metadata-consistency
+validation before readiness, regardless of whether the prior process terminated
+gracefully. Graceful shutdown remains required process-lifecycle behavior but
+MUST NOT write a clean-shutdown marker or substitute authoritative metadata.
 
 ## 10.3 Record envelope
 
@@ -1082,57 +1382,115 @@ The payload is a typed Protobuf message. The outer checksum provides early corru
 
 ## 10.4 Commit record
 
-```protobuf
-message CommitRecord {
-  uint64 sequence = 1;
-  bytes request_id = 2;
-  uint32 command_id = 3;
-  uint64 contract_version = 4;
-  bytes plan_hash = 5;
-  bytes canonical_input_hash = 6;
-  Actor actor = 7;
-  Timestamp tx_time = 8;
-  repeated ReadDependency reads = 9;
-  repeated EntityMutation mutations = 10;
-  repeated DurableEvent events = 11;
-  EncodedOutcome outcome = 12;
-  Provenance provenance = 13;
-  reserved 14; // replay is response metadata and never creates another commit
-}
-```
+The semantic commit record contains the assigned nonzero sequence, original
+admission request ID, complete five-field `ExecutablePlanRef`, canonical input
+hash, admitted actor/logical time/partition and redacted conflict identities,
+canonical read dependencies, complete mutation post-images, ordered durable
+event identities/payloads, original declared outcome, and links to the immutable
+provenance and outbox intent created in the same atomic record set. Replay is
+response metadata and never creates or modifies a commit record.
 
-For POC rebuildability, entity mutations SHOULD include a complete post-image. Sensitive command input values MUST NOT be recorded by default; the record stores a canonical hash and selected policy-approved provenance fields.
+The pre-commit `CommitIntent` carries the coordinator-generated checked
+`ProvenanceId`; storage never generates or substitutes it. A collision is an
+atomic invariant failure with no sequence, overwrite, or partial record. A
+proven-aborted retry may use a different invisible candidate, while unknown
+commit status must be resolved through idempotency before requesting another.
+
+Sensitive command input values MUST NOT be recorded by default; only the
+canonical hash and policy-approved admitted provenance fields are retained.
+WP-065 assigns the exact versioned Protobuf message and field numbers after the
+storage semantic DTO is frozen. This section intentionally does not pre-empt
+that proto-owner review.
 
 ## 10.5 Durability modes
 
 | Mode | Behavior | Use |
 |---|---|---|
 | `sync` | Commit is acknowledged only after the embedded engine reports durable synchronization. | Default POC correctness mode |
-| `group` | Coordinator batches compatible intents and performs one durable flush for the batch. | Benchmark and likely MVP default |
+| `group` | Coordinator batches compatible intents and performs one durable flush for the batch. | Semantic interface and benchmark experiments only in the POC |
 | `memory` | No durability guarantee. | Unit and model tests only; server refuses non-test startup |
 
 The returned outcome MUST identify the durability mode used for its commit.
+The POC production server exposes only `sync` durability. Production `group`
+mode remains disabled unless the WP-100 scheduling, fairness, latency, and crash
+evidence receives explicit human review; defining the semantic mode and measuring
+it does not enable it. Its possible MVP default remains a post-POC decision.
 
 ## 10.6 Recovery
 
-Startup recovery performs:
+Startup recovery first performs an authoritative, read-only integrity phase:
 
 1. Open the database and run engine integrity checks appropriate to configuration.
-2. Validate storage format and node identity.
-3. Verify active contract bundle and plan hash.
-4. Verify `next_sequence` equals one greater than the last commit, repairing from the commit table if safe.
-5. Verify idempotency pointers reference valid commit records.
-6. Verify pending reservations are structurally valid and can be safely resumed or resolved by retry without allocating a sequence during recovery.
-7. Verify projection frontier does not exceed the last commit.
-8. Mark outbox entries in `Delivering` from the previous process as retryable according to policy.
-9. Rebuild in-memory indexes, lock metrics, and subscriptions.
-10. Set readiness only after validation succeeds.
+2. Validate the storage format and permanent durable `DatabaseId`. ADR-0019
+   defers a distinct durable node identity beyond the POC.
+3. When an active catalog pointer exists, verify its bundle and plan hash. An
+   absent pointer is a valid initialization state only while the contract-bundle
+   table and every application-authoritative table are empty; capability,
+   bootstrap, and administration-audit records may already exist. Any bundle,
+   application commit/state, or active-pointer mismatch outside that state is
+   corruption.
+4. Verify that application commits are contiguous and application-sequence
+   metadata is exactly the checked successor of the last commit, or the first
+   sequence when empty, with an explicit exhausted state when no successor
+   exists. Verify the same invariant independently for the contiguous shared
+   administration stream and administration-sequence metadata. Any gap,
+   mismatch, invalid before-first state, or exhaustion inconsistency fails
+   readiness; the POC performs no online repair. A matching explicit exhausted
+   state is structurally valid rather than corruption, but authoritative
+   readiness remains false because no further sequence can be assigned.
+5. Verify every pending and terminal idempotency identity uses a supported digest
+   scheme and a readable `DigestKeyId`. Verify committed-outcome pointers
+   reference matching commit records and ADR-0012 `ExecutionFailed` records have
+   no sequence, outcome, event, outbox, or command-provenance cross-link.
+6. Verify pending reservations are structurally valid and can be safely resumed
+   or resolved by retry without allocating a sequence during recovery.
+7. Verify reciprocal identity and payload linkage among every commit-record
+   event reference, durable event, and authoritative outbox intent. Reject an
+   orphan, duplicate, missing counterpart, mismatched `EventId`, or unequal
+   canonical event identity/payload.
+8. Verify capability-record/token-lookup one-to-one integrity; every bootstrap
+   marker, bootstrap `started` record, capability-administration record, and
+   create/revoke sequence and timestamp cross-link; exact target capability and
+   record kind; and readable configured digest support for every active
+   unexpired capability. A missing, duplicate, mismatched, wrong-kind, wrong-
+   target, or unsupported cross-link fails readiness.
+9. Rebuild authoritative in-memory indexes, lock metrics, and subscriptions.
+
+Authoritative readiness becomes true only after those checks succeed, both
+allocators can progress, and an active contract is valid. A truly empty database
+may pass structural integrity while remaining in `Initializing`, not ready. In
+that mode the server exposes health plus the exact loopback bootstrap operation;
+after bootstrap it additionally permits authenticated contract deployment
+through the ordinary service/coordinator path. No command or general read path
+is enabled until deployment atomically establishes the active contract.
+
+Derived-component recovery is separate and cannot rewrite authoritative source
+state:
+
+1. WP-070 reports bounded structural findings for projection rows/control/
+   markers and outbox delivery status without applying worker policy or blocking
+   otherwise healthy authoritative writes solely for a derived fault.
+2. WP-160 interprets an outbox intent with no status row as never-attempted
+   `Pending` and idempotently normalizes a prior `Delivering` status to the
+   policy's retryable pending state before the dispatcher becomes ready.
+3. WP-170 verifies each retained projection generation's reciprocal contiguous
+   markers, apply hashes, lifecycle, pointers, and state keys. A component fault
+   is `Degraded`; recovery retires/quarantines the failed candidate as specified
+   and rebuilds only into a fresh generation. It never repairs commits/entities
+   from projection state or lowers a published frontier.
+4. WP-185 reports projection/outbox recovery failures as component degradation
+   while preserving the distinct authoritative readiness signal. A shared engine
+   corruption that prevents trustworthy table isolation remains an authoritative
+   storage failure, not a derived exception.
 
 `REC-001` Recovery MUST be idempotent.
 
 `REC-002` Repeated restart after a crash MUST not create new commits, events, or outcome records.
 
-`REC-003` Projection state MAY be discarded and rebuilt from commits; source entities and commit records MUST not depend on projection state for correctness.
+`REC-003` Projection state MAY be discarded and rebuilt into a new generation
+from commits; source entities and commit records MUST not depend on projection
+state for correctness. Rebuild MUST NOT lower the published frontier of one exact
+`ProjectionIdentity` or expose candidate rows.
 
 ## 10.7 Storage benchmark gate
 
@@ -1157,8 +1515,54 @@ No application or protocol API may expose `redb`-specific types.
 - gRPC is the primary programmatic API for applications and internal tools.
 - Business outcomes are data, not gRPC error codes.
 - gRPC status codes are reserved for malformed requests, authentication and authorization failure, unavailable server, deadline, incompatible protocol, and internal errors.
-- Every mutating call requires request ID, idempotency key, actor context, and expected contract version or explicit active-version behavior.
+- Every mutating command call requires a request ID, contract-declared idempotency key, authenticated transport credential, and expected contract version or explicit active-version behavior. The caller never supplies a trusted actor context or provenance decision.
 - The outer `request_id` identifies a transport submission. The caller's command `idempotency_key` is a separate typed command input and is the uncertainty-recovery identity component.
+
+The API-neutral service surface is six object-safe operation-specific traits:
+`ContractApplication`, `CommandApplication`, `QueryApplication`,
+`CommitApplication`, `AdministrationApplication`, and `DiscoveryApplication`.
+Together they own the closed ADR-0007 operation inventory: validate/explain/
+deploy/get active/get version; execute/resolve outcome; entity/index/projection
+query and projection status; commit get/scan/subscribe and provenance trace;
+health/statistics/capability create/revoke/outbox status; and policy-filtered
+command/resource discovery. There is no catch-all enum/payload method, generic
+read, generic mutation, SQL, or raw administration call. An aggregate service
+handle only groups those six traits.
+
+Adapters own transport decode, credential extraction, checked conversion,
+deadline/cancellation propagation, and total result mapping. The service owns
+semantic validation, current authorization, approved provenance, audit
+orchestration, obligations/redaction, and safe release. Typed WP-100 executors
+own all work after an authorized command/control-plane preparation is accepted.
+Consumer-owned bounded ports expose authoritative reads and later projection,
+outbox, and operational sources without giving the service a general storage
+engine.
+
+Pagination uses server-side opaque cursors. A token is exactly 16 random bytes;
+the registry binds it to principal/capability context, operation, target, policy
+fingerprint, sanitized request fingerprint, lower continuation, and 300-second
+expiry. Limits are 4,096 live server-wide and 64 per principal. Every page
+reloads current policy and invalidates on policy or ADR-0017 projection fence
+change. Cursors are neither durable nor authorization proofs and cannot be
+decoded or forged by adapters. Waits and streams hold no storage transaction,
+materialized snapshot, conflict lease, synchronous mutex guard, or runtime frame
+across `.await` and recheck current policy before each visible result.
+
+`riffdb-service` owns injected `CursorTokenGenerator` and
+`CursorMonotonicClock` consumer ports. WP-185 supplies OS entropy and a private
+`std::time::Instant`-origin provider; tests use explicit tokens/ticks and never
+sleep. Cursor time is process-relative, non-durable, and disjoint from the four
+wall-clock domains. Regression or arithmetic overflow fails closed, and restart
+invalidates every cursor.
+
+Service hard bounds are 1 MiB per structurally decoded unary request, 4 MiB per
+service unary response, 500 page items (default 50 when omitted), 30 seconds per
+projection/read wait, 128 commit subscribers, 256 buffered items per subscriber,
+500 commits per catch-up batch, and 900 seconds per subscription. Command
+preparation observes idempotency state at most three times and cursor generation
+attempts at most three times. Source repository, source commit, reason, and
+approval-reference claims are respectively bounded to 512, 128, 1,024, and 256
+bytes. Configuration may lower but not raise these POC hard bounds.
 
 ## 11.2 Services
 
@@ -1203,7 +1607,7 @@ WP-130 proves `QueryProjection` wire mapping and public-client behavior against 
 message ExecuteCommandRequest {
   bytes request_id = 1; // UUID bytes; distinct from command input
   string command_name = 2;
-  uint64 expected_contract_version = 3;
+  optional uint64 expected_contract_version = 3;
   Value input = 4; // includes the contract-declared idempotency_key field
 }
 
@@ -1212,6 +1616,7 @@ message ExecuteCommandResponse {
     COMPLETION_STATUS_UNSPECIFIED = 0;
     COMMITTED = 1;
     REPLAYED = 2;
+    EXECUTED_READ_ONLY = 3;
   }
 
   CompletionStatus status = 1;
@@ -1263,9 +1668,49 @@ message ValueField { optional uint32 field_id = 1; string name = 2; Value value 
 message ValueRecord { repeated ValueField fields = 1; }
 ```
 
+For `EXECUTED_READ_ONLY`, `commit_sequence` is the wire sentinel zero and
+`provenance_uri` and `durability_mode` are empty. Adapters map these to semantic
+absence and never construct `CommitSequence(0)`, a provenance identity, or a
+durability mode. `COMMITTED` and `REPLAYED` require their original nonzero
+sequence and complete terminal fields. Unknown status values and every
+status/field inconsistency reject. This status gives no durable replay or
+outcome-recovery promise.
+
 The custom `Value` family is required; `google.protobuf.Struct` is forbidden at exact business-value boundaries because it cannot preserve all signed/unsigned integer and decimal values. Lists, records, strings, and bytes inherit compiled or protocol bounds. Record fields MUST be unique and canonically ordered by stable field ID where available, then by UTF-8 name. Decimal coefficient, scale, currency, UUID, date, and timestamp encodings MUST be validated and canonical before hashing or persistence.
 
-`riffdb-proto` is the single owner of all checked-in `.proto` sources and generated compatibility fixtures. WP-020 freezes the package names, common exact `Value` messages, request/response envelopes, service and RPC names, bounds policy, generation toolchain, and durable envelope. Semantic records whose Rust owners are not yet stable, including final commit, capability, outbox, and projection payloads, are added later through small proto-owner interface PRs after the owning package has stabilized them. No other work package may create a competing schema or pre-emptively guess those fields.
+`riffdb-proto` is the single owner of all checked-in `.proto` sources and
+generated compatibility fixtures. WP-020 freezes package/version rules, common
+exact values and errors, five service and 16 RPC names, phase-zero shells,
+bounds, generation, and `StoredEnvelope`; it is not reopened by later semantic
+owners. The focused WP-010 follow-up may add only ADR-0012's already reviewed
+`CommandExecutionFailed` kind, detail, closed code, mapper, preflight, descriptor,
+and golden fixtures so the domain registry remains exhaustively compilable. It
+may add no other public or durable symbol. Formal WP-065, after WP-060, owns all durable semantic-record messages,
+descriptors, hashes, goldens, wire validation, historical registration, and the
+checked storage-owned mapping bridge before WP-070 persistence. Formal WP-127,
+after WP-120, completes public messages, descriptors, hashes, goldens, and wire
+validation before WP-130 conversion. WP-127 never depends on `riffdb-service`
+and owns no semantic conversion; WP-130 owns total service-to-wire conversion.
+No package may invent a competing schema, persist an ad hoc encoding, or guess
+field numbers before its proto-owner package.
+
+Before WP-130 exposes the ADR-0012 error, the public error registry additively
+includes `PUBLIC_ERROR_KIND_COMMAND_EXECUTION_FAILED = 9`, stable code
+`command_execution_failed`, static message `command execution failed`, recovery
+`CONTACT_OPERATOR`, and required `CommandExecutionFailureDetails` in
+`PublicError.execution_failure = 8`. Its required closed code is arithmetic
+fault `1` or resource limit `2`; zero and unknown values reject. gRPC maps it to
+`FAILED_PRECONDITION`. No existing error value or field is renumbered.
+
+`AdminService.CreateCapability` has a closed create mode: unspecified `0`,
+normal `1`, bootstrap `2`; zero and unknown values reject. Normal creation uses
+ordinary bearer authentication and may return the one newly issued token only
+after durable success. Bootstrap is loopback gRPC only, never MCP, and carries
+its retained canonical token in exactly one sensitive binary metadata entry
+`riffdb-bootstrap-token-bin`; the request message contains no raw token. Normal
+creation rejects bootstrap metadata, and bootstrap rejects ordinary
+`authorization` metadata. The service-owned closed results and exact public
+fields are frozen by WP-127 before WP-130 implements them.
 
 ## 11.4 Limits
 
@@ -1282,7 +1727,8 @@ The POC MUST provide:
 
 - A generic client capable of invoking commands by name and dynamic typed value.
 - Generated Rust input structs and outcome enums for the example contract.
-- Automatic idempotent retry on safe transport failures using the same request and key.
+- Automatic idempotent retry on safe transport failures using the same canonical
+  command input and idempotency key with a fresh `RequestId` for each submission.
 - An explicit `OutcomeUnknown` client error when automatic resolution cannot complete.
 - `wait_for_projection(sequence)` helpers.
 - Trace-context propagation.
@@ -1322,7 +1768,10 @@ The stdio process MUST write protocol messages only to stdout. Diagnostics go to
 
 `MCP-010` Stdio and Streamable HTTP MUST expose equivalent authorized tools and resources for the same principal and active contract.
 
-`MCP-011` Transport-specific authentication MUST resolve to the same internal `ActorContext` and capability decision.
+`MCP-011` Transport-specific authentication MUST call the same auth-owned
+`CredentialAuthenticator`, produce the same privately constructed
+`AuthenticatedPrincipal`, and enter the same service-owned authorization and
+obligation path. MCP adapters MUST NOT construct an actor or capability decision.
 
 ## 12.3 Advertised capabilities
 
@@ -1351,26 +1800,47 @@ Every command authorized for the connected principal is exposed as an MCP tool g
 ### Naming
 
 ```text
-riffdb.cmd.<normalized_contract_name>.<normalized_command_name>
+riffdb.cmd.<contract-segment>.<command-segment>
 ```
 
 Example:
 
 ```text
-riffdb.cmd.legal_spend.allocate_budget
+riffdb.cmd.legalspend.allocatebudget
 ```
 
-- Contract and command segments use lowercase ASCII snake case (`[a-z][a-z0-9_]*`); dots separate the fixed prefix, contract segment, and command segment.
-- Names MUST remain under 128 characters.
-- Names MUST be unique in the active tool catalog.
-- Deployment MUST reject any normalization collision. The server MUST NOT append an unstable or hash-derived suffix to make a collision appear valid.
+- Each segment is derived from the exact source contract or command identifier
+  by mapping ASCII `A` through `Z` to ASCII lowercase. Existing lowercase ASCII
+  letters, digits, and underscores are preserved byte for byte; no other
+  normalization, separator insertion, trimming, escaping, or Unicode case
+  conversion occurs.
+- After mapping, each segment MUST match `[a-z][a-z0-9_]*`. An empty segment, a
+  source identifier beginning with an underscore, or any other invalid segment
+  rejects compilation.
+- The complete ASCII name, including `riffdb.cmd.` and both separators, MUST be
+  at most 128 bytes inclusive. A 129-byte name rejects and is never truncated.
+- WP-040 MUST reject every complete-name normalization collision and MUST NOT
+  append an ordinal, hash, version, or other suffix. It emits the checked,
+  versioned, deterministically ordered command-name registry as a compiler
+  artifact covered by the contract bundle's canonical encoding and hashes.
+- WP-050 MUST independently revalidate the compiled registry during activation,
+  including derivation, completeness, stable-ID binding, canonical ordering,
+  length, segment validity, and complete-name uniqueness. It never repairs or
+  substitutes a public name.
+- The service exposes policy-filtered descriptors carrying the compiled name,
+  and the MCP adapter consumes that name verbatim for discovery and invocation;
+  neither layer reimplements normalization.
 - Contract deployment that adds, removes, or changes visible command tools emits `notifications/tools/list_changed` when negotiated.
+
+These naming rules accept only ADR-0020. Resource URI encoding, HTTP audience,
+stdio-over-gRPC transport, cursor presentation, and their exact compatibility
+fixtures remain Proposed under ADR-0008 and are not frozen by this section.
 
 ### Generated tool definition
 
 ```json
 {
-  "name": "riffdb.cmd.legal_spend.allocate_budget",
+  "name": "riffdb.cmd.legalspend.allocatebudget",
   "title": "Allocate Budget",
   "description": "Atomically allocate an amount from an organization's annual budget. Requires a caller-supplied idempotency key. Returns a declared business outcome and commit sequence.",
   "inputSchema": {
@@ -1566,12 +2036,19 @@ MCP list and scan operations use opaque cursor pagination.
 | `MCP-043` | Never place raw secrets, capability tokens, or unrestricted PII in tool descriptions, resource metadata, or errors. |
 | `MCP-044` | Treat model-provided reason, source commit, and approval references as untrusted claims until validated. |
 | `MCP-045` | Bound tool output, resource size, scan count, wait time, and diagnostic count. |
-| `MCP-046` | Record every mutating tool invocation and administrative read in the audit stream. |
+| `MCP-046` | Record every structurally valid, authenticated mutating tool invocation and administrative read after successful `RequestContext` construction in the durable administration audit stream. Malformed or unauthenticated traffic remains bounded transport-security telemetry. |
 | `MCP-047` | Stdio credentials MUST come from environment or protected local configuration, not command-line arguments visible in process listings. |
 | `MCP-048` | HTTP deployment MUST reject tokens not audience-bound to the canonical MCP resource server. |
 | `MCP-049` | The server MUST sanitize user-controlled strings included in Markdown or text results to prevent misleading instruction injection in generated operational summaries. |
 
 For the POC HTTP transport, the protected resource identity is a configured canonical URI ending in `/mcp`; it MUST NOT be synthesized from the request `Host` header. The stdio bridge connects to `riffdbd` only through gRPC and therefore uses a capability explicitly carrying the configured gRPC audience. Tests MAY inject the API-neutral service in process, but production stdio has no in-process or storage path.
+
+ADR-0009 bootstrap is the sole principal-less durable-audit exception and is
+never exposed through MCP. Discovery omissions do not emit one denial record per
+hidden item, but invoking a stale or hidden operation repeats current
+authorization and emits the normal denied audit record when the authenticated
+request is denied. Audit failure never grants permission or releases protected
+data.
 
 ## 12.12 MCP conformance and compatibility
 
@@ -1587,53 +2064,66 @@ For the POC HTTP transport, the protected resource identity is a configured cano
 
 ## 13.1 Actor context
 
-```rust
-pub struct ActorContext {
-    pub principal_id: ActorId,
-    pub actor_kind: ActorKind,
-    pub agent_session_id: Option<AgentSessionId>,
-    pub source_repository: Option<String>,
-    pub source_commit: Option<String>,
-    pub reason: Option<String>,
-    pub approval_id: Option<String>,
-    pub capability_id: CapabilityId,
-}
-```
+Transport authentication returns a privately constructible
+`AuthenticatedPrincipal` containing the stable principal, actor kind, current
+capability identity/revision, audience, tenant scope, and authentication time,
+but no raw token or digest material. The adapter combines it with one request ID,
+trusted ingress, bounded untrusted provenance claims, deadline/cancellation, and
+trusted trace propagation into the service-owned checked `RequestContext`.
 
-Fields supplied by clients are claims. The authorization layer decides which claims are trusted, required, stored, redacted, or ignored.
+Policy decides which claims are valid for one exact operation. A newly admitted
+command freezes only stable principal, trusted actor kind,
+authorization-resolved tenant scope, and optional validated agent session in
+`AdmittedActorContext`. Approved source repository, source commit, reason, and
+`ApprovalId` are frozen separately in
+`StoredAdmittedProvenanceClaimsV1`. Current capability ID/revision and retry
+claims are used for current authorization and service audit but never enter
+deterministic runtime or overwrite admission/provenance state.
 
 ## 13.2 POC capability tokens
 
-The POC uses opaque random bearer tokens backed by server-side capability records.
+The POC uses opaque random bearer tokens backed by two cross-linked server-side
+records and a singleton bootstrap marker. A normal token is exactly 32 bytes
+from the approved OS entropy provider outside deterministic command runtime,
+encoded as exactly 43 canonical unpadded base64url ASCII bytes. Authentication
+strictly decodes/re-encodes it, computes every readable-key candidate under the
+ADR-0011 keyed frame and domain `riffdb.capability-token/v1`, performs every
+bounded lookup, and accepts exactly one mutually cross-linked match.
 
-1. Generate exactly 32 bytes using operating-system cryptographic randomness outside the command runtime and encode them as unpadded base64url.
-2. Return the encoded token once.
-3. Store only an HMAC-SHA-256 digest with an explicit digest-key ID and version.
-4. Resolve token to a capability record at request time.
-5. Support expiry and revocation.
+The stable `capabilities` record is keyed by `CapabilityId` and contains the
+typed digest reference, nonzero revision, database/environment, stable principal
+and actor kind, canonical audiences, issue/expiry time, creation sequence/request
+ID, complete `CapabilityGrantV1`, and active or irreversible revoked lifecycle.
+The `capability_tokens` lookup is keyed by digest scheme, nonzero `DigestKeyId`,
+and 32 digest bytes and contains only the stable ID. Both are versioned
+`StoredEnvelope` payloads; raw tokens and key material are never persisted.
+Missing, duplicate, or inconsistent cross-links are integrity failures.
 
-This avoids designing a new self-contained token format or cryptographic verification scheme for the POC.
+`CapabilityGrantV1` has one tenant scope, one all-or-explicit partition scope,
+a canonical set of closed permission atoms, canonical entity-field visibility,
+`max_scan_rows` in `1..=500`, and the canonical set of permission tags requiring
+validated approval. Grammar v1 has no tenant mapping, so commands are authorized
+only under global tenant scope unless separately reviewed static metadata exists.
+Unknown permission, lifecycle, scope, reason, or obligation tags fail closed.
+Command and projection permission requires disclosure of the complete declared
+result schema; the POC denies rather than returning a schema-invalid partial
+outcome or projection row.
 
-```rust
-pub struct CapabilityRecord {
-    pub capability_id: CapabilityId,
-    pub principal_id: ActorId,
-    pub environment: Environment,
-    pub database_id: DatabaseId,
-    pub audiences: BTreeSet<Audience>,
-    pub digest_key_id: DigestKeyId,
-    pub digest_version: u32,
-    pub expires_at: Timestamp,
-    pub tenant_scope: TenantScope,
-    pub command_allowlist: BTreeSet<CommandId>,
-    pub entity_read_allowlist: BTreeSet<EntityTypeId>,
-    pub field_policy: FieldPolicy,
-    pub max_scan_rows: u32,
-    pub allow_contract_validate: bool,
-    pub allow_contract_deploy: bool,
-    pub require_approval_for: BTreeSet<OperationClass>,
-}
-```
+Capability and ADR-0005 idempotency digest keys use distinct typed auth-owned
+provider namespaces and exact protected documents. Raw operational key bytes
+never enter policy, idempotency, service, runtime, storage records, diagnostics,
+or backups. Startup rejects active capabilities whose digest scheme/key is not
+readable and rejects reused key material across the two namespaces. Rotation
+uses one current write key plus at most seven readable prior keys; key ID
+material is immutable by operator contract.
+
+Authentication and authorization use separate synchronous clocks implemented by
+server composition. Every service safe point obtains fresh authorization time,
+reloads current capability state, and performs a new deny-by-default decision;
+positive decisions and clock values are not cached. Capability create/revoke
+additionally revalidate transaction-current policy facts after any queue wait
+through the narrow pure policy verifier inside their short authoritative
+coordinator transaction and before applying the transition.
 
 ## 13.3 Authorization decision
 
@@ -1642,11 +2132,14 @@ Every operation yields a structured decision:
 ```rust
 pub enum Decision {
     Allow { obligations: Vec<Obligation> },
-    Deny { code: PolicyCode, safe_reason: String },
+    Deny { code: PolicyCode },
 }
 ```
 
-Obligations include field redaction, row limit, tenant predicate, approval requirement, audit level, and output classification.
+Obligations are a closed canonical set containing at most one effective tenant
+scope, exact partition constraint, field mask, row limit, validated approval
+identity, audit class, and output classification. Free-form policy reasons never
+cross the public boundary.
 
 `SEC-001` Authorization MUST be deny-by-default.
 
@@ -1656,18 +2149,65 @@ Obligations include field redaction, row limit, tenant predicate, approval requi
 
 `SEC-004` Administrative deployment requires expected active version and an approval reference when policy requires it.
 
-Capabilities MUST also be bound to the database/server identity and one or more explicit audiences. Capability creation, revocation, and catalog activation are authoritative typed administrative operations routed through the commit coordinator and recorded under the separate ordered administration audit sequence. No API or authentication component may write their storage tables directly.
+Capabilities MUST be bound to durable database identity, configured environment,
+and one or more exact configured audiences. Capability creation, revocation, and
+catalog activation are authoritative typed administrative operations routed from
+the shared service through the commit coordinator and recorded under the separate
+ordered nonzero `AdministrationSequence`. No API, service, policy, or
+authentication component may write their storage records directly.
 
-The first local operator may be created only by a one-time bootstrap operation against an empty database. Bootstrap MUST fail closed once any bootstrap marker, capability, active catalog state, application commit, or administration record exists; its durable marker and capability creation are atomic. The exact HMAC key custody and rotation procedure requires the proposed capability-token ADR before WP-110 implementation.
+Normal capability creation generates the credential server-side and returns it
+once only after durable creation. Retrying an equal committed create by the same
+caller-selected `CapabilityId` returns typed
+`AlreadyCreatedTokenUnavailable`; it does not mint or recover another token or
+administration sequence. Reuse of the ID with different normalized content
+returns detail-free `CapabilityIdConflict`. Revocation targets the stable ID,
+increments its revision exactly once, retains the lookup, and is idempotent.
+
+The first local operator uses only the bootstrap mode of
+`AdminService.CreateCapability` on the explicitly enabled loopback gRPC listener.
+The CLI creates and retains the exact ADR-0009 protected 132-byte bootstrap
+credential document; it never supplies the credential through argv and bootstrap
+never echoes it. The target actor must be human and the grant must contain
+permission `0x13`.
+
+```text
+riffdb-bootstrap-credential-v1<LF>
+capability-id:<canonical-lowercase-hyphenated-UUIDv7><LF>
+token:<43-canonical-token-bytes><LF>
+```
+
+The document ends after the third line feed. The CLI reads it only from bounded
+stdin or the ADR-0009 protected-file path. For generated output it creates
+without overwrite at requested mode `0o600`, writes and synchronizes the file,
+closes it, successfully synchronizes the containing directory, and revalidates
+the document through the protected-file loader before making any database RPC.
+An unsupported or failed file or directory synchronization or protected reread
+aborts before transmission. The protected document is retained across an
+uncertain response. The public request's capability ID must equal the retained
+document ID.
+
+Bootstrap checks transaction-current emptiness of the marker, all capability
+records/lookups, active catalog, application commits, and administration stream.
+A new bootstrap atomically allocates two consecutive administration sequences:
+the principal-less service-audit `started` record first, then the authoritative
+capability-administration record together with marker, capability, and digest
+lookup. Exact replay appends a new principal-less `started` record linked to the
+original transition but creates no second capability transition. The service
+must append a separate linked `succeeded` record before releasing either result.
+Malformed, mismatched, or failed-emptiness principal-less attempts are bounded
+transport-security telemetry and consume no sequence. Unknown compound commit
+status fences authoritative writes; recovery retries with the retained
+credential and never infers success.
 
 ## 13.4 Provenance
 
-Every terminal admitted command stores:
+Every committed declared command outcome stores:
 
 - Principal and actor kind.
-- Agent session ID.
+- Optional validated and admitted agent session ID; human/service actors may have none.
 - Request ID and idempotency key hash.
-- Source repository and commit when validated or supplied as untrusted metadata.
+- Source repository and commit only when validated and approved by policy.
 - Contract version and plan hash.
 - Command ID and canonical input hash.
 - Partition and conflict-key hashes.
@@ -1679,7 +2219,107 @@ Every terminal admitted command stores:
 
 Provenance is immutable. Corrections are additional records linked to the original.
 
-## 13.5 MVP authorization
+ADR-0012 `ExecutionFailed` retains the exact admitted actor and separately stored
+approved provenance claims in terminal admission state, but creates no command
+provenance record because no application command committed. An unjournaled
+read-only result likewise creates no command provenance. Service-security audit
+is separate from command provenance.
+
+## 13.5 Durable service audit
+
+Every structurally valid authenticated command/control-plane mutation and
+administrative read is audited through the shared application service. The
+storage-owned versioned record uses one coordinator-assigned nonzero
+`AdministrationSequence`, request ID, coordinator-observed timestamp, closed operation
+and phase tags, optional authenticated principal/capability reference, trusted
+ingress, at most 16 safe stable targets, optional validated approval, and an
+exact closed linked result: `None`, `Command { commit_sequence, provenance_id }`,
+or `ControlPlane { administration_sequence }`. Commit/provenance IDs may also be
+independent read targets; the linked result is not a target oneof. The record contains no
+credential, digest, idempotency key, business key, cursor, source text, input,
+output, free-form reason/error, network address, or transport object.
+
+The exact phase tags are started `0x01`, succeeded `0x02`, denied `0x03`,
+cancelled `0x04`, failed without an application commit `0x05`, and outcome
+uncertain `0x06`; zero and unknown tags reject. `Cancelled` means cancellation
+was proven before any authoritative result committed or protected read/stream
+establishment became visible; a resumable pending command admission may remain.
+Unknown commit status uses outcome uncertain, never cancelled. The exact operation,
+ingress, and phase registries are owned by ADR-0007; accepted ADR-0021 owns the
+exact target registry and its shared `riffdb-types` newtypes.
+
+The target tags are contract lineage `0x01`, lineage-scoped contract version
+`0x02`, entity type `0x03`, command `0x04`, projection `0x05`, index `0x06`,
+commit sequence `0x07`, provenance ID `0x08`, and capability ID `0x09`; zero and
+unknown tags reject. Every contract numeric ID repeats its lineage. The checked
+list contains zero through 16 entries, sorts by the exact ADR-0021 canonical
+tag/payload key, and rejects duplicates or a seventeenth entry. Durable decoding
+also rejects noncanonical order rather than repairing it. Only
+`riffdb-service` derives targets from independently request-addressed objects
+known before `started`; authorizing capability, result links, traversed or
+returned objects, and business keys/values are never inferred as targets. Start
+and terminal records retain the same list.
+
+Capability-administration records and service-audit
+records share the one contiguous administration sequence but use disjoint closed
+payload/tag registries.
+
+After successful `RequestContext` construction and exact plan classification,
+mutations and administrative reads are intrinsically in audit scope. An allowed
+standard read joins only when its policy decision carries an audit obligation;
+an ordinary allowed standard read remains unaudited. Every explicit authenticated
+policy denial after context appends one standalone `denied`, including a standard
+read denial. A standard read's pre-decision semantic/clock failure and an unknown
+generic execute target remain bounded redacted telemetry because no audit
+obligation or mutating classification exists yet. Malformed or unauthenticated
+traffic and rejected principal-less bootstrap attempts likewise remain bounded
+transport telemetry. Audit append never audits itself.
+
+An intrinsically audit-required semantic, target, current-policy-clock, or
+internal failure after classification but before `started` appends exactly one
+standalone `failed`. Neither standalone phase admits work or assigns an
+application sequence. An allowed mutation appends durable `started`, waits for a
+bounded executor permit, performs the fresh final authorization check, and then
+synchronously submits. Post-start denial, clock/internal failure, or cancellation
+appends its terminal phase without admission. Every durable `started`, including
+new execution, resume, replay, administrative read, and audit-obligated read,
+selects exactly one terminal phase and attempts exactly one append when the
+service learns the invocation class. At most one terminal record becomes durable;
+an append failure, unknown status, or process crash may leave none visible, and
+recovery never synthesizes it.
+
+For unary reads and command/control results, the service fully applies current
+obligations and constructs a bounded redacted semantic result before appending
+`succeeded`; only then may an adapter receive it. A shaping error appends
+`failed`, never a false success. Subscription audit covers establishment only:
+the service appends `started`, establishes and filters the stream, appends
+`succeeded`, then exposes it. Later item-level reauthorization may close the
+stream and emits bounded redacted telemetry rather than unbounded durable rows.
+
+`riffdb-commit` obtains standalone/start/terminal, catalog, and bootstrap times
+from its injected `AdministrationClock`; service/adapters never supply them.
+Bootstrap shares one sample across its compound linked records. Normal capability
+create/revoke instead uses the one fresh transaction-current `AuthorizationClock`
+sample for the verifier, issued/revoked time, and capability-administration audit
+so child-expiry validation and durable timestamps cannot diverge. Clock values
+need not be monotonic; sequence order is authoritative. Administration-clock
+failure is an audit outage: it is not recursively audited, protected work/output
+is withheld, and readiness becomes unhealthy.
+
+Before business admission, a required standalone/start append proven abort or
+unknown status returns `StorageUnavailable` and submits no business work; unknown
+status also fences authoritative writes. A denial remains
+`AuthorizationDenied` even when its denial append fails, while still recording a
+redacted incident and failing health; an unknown denial append fences writes.
+Terminal append failure after a known command commit or durable
+`ExecutionFailed` returns `OutcomeUnknown` for same-key resolution. A known
+precommit cancellation/failure with no durable terminal identity, and every read
+or stream-establishment terminal append failure, returns `StorageUnavailable`
+with no protected output. A committed or uncertain control-plane transition uses
+its typed unavailable/uncertain recovery result. No audit failure rolls back an
+authoritative transition already known durable.
+
+## 13.6 MVP authorization
 
 MVP Streamable HTTP authorization SHOULD conform to the MCP HTTP authorization specification using OAuth 2.1 resource-server behavior. The internal capability model remains authoritative after token validation. OAuth scopes map to capabilities but do not replace tenant, field, command, approval, and environment policy.
 
@@ -1707,6 +2347,14 @@ Pending -> Delivering -> Delivered
    |           +-> Pending      (retryable failure or worker crash)
    +-> DeadLetter               (non-retryable or attempt policy exhausted)
 ```
+
+The authoritative command transaction writes one outbox intent for each durable
+event and writes no initial `outbox_status` row. Absence of that row is the
+canonical never-attempted `Pending` state with zero attempts. A later explicit
+pending status may retain bounded retry/backoff metadata. Every status row must
+reference exactly one existing intent; an orphan status is an integrity error.
+Delivery status remains worker-derived and is never required to prove that the
+event intent committed atomically.
 
 A connector declares:
 
@@ -1772,60 +2420,134 @@ Unsupported operators:
 
 ## 15.2 Consumption and frontier
 
-The projection worker scans commit records in strictly increasing sequence. A projection advances its durable frontier only after all events from the next sequence are durably reflected in projection state.
+Projection durable identity is the exact tuple of contract lineage, nonzero
+`ProjectionId`, and `ProjectionPlanHash`. It excludes application contract
+version and bundle hash so an unchanged plan may retain state across an unrelated
+compatible deployment; a changed plan hash creates a disjoint identity and
+rebuilds from `BeforeFirst`.
 
-```rust
-pub struct ProjectionFrontier {
-    pub projection_id: ProjectionId,
-    pub applied_through: CommitSequence,
-    pub lifecycle: ProjectionLifecycle,
-    pub last_error: Option<SafeError>,
-}
-```
+Each identity has nonzero, never-reused `ProjectionGeneration` values. The
+control record owns the highest allocated generation, optional published and
+candidate generations with their `FrontierPosition`, published apply mode,
+closed lifecycle, and optional closed failure. `FrontierPosition` is exactly
+`BeforeFirst` or `AppliedThrough(nonzero CommitSequence)`; semantic code never
+constructs sequence zero as an empty sentinel.
 
-Lifecycle states:
+The projection worker scans every authoritative commit in strictly increasing
+sequence, including commits with no relevant event. For each retained generation
+it writes exactly one apply marker per applied sequence. State row post-images,
+the marker containing the canonical domain-separated `ProjectionApplyHash`, and
+the matching frontier advance are one atomic transaction. A duplicate is an
+equal no-op only when identity, generation, sequence, and apply hash all match;
+gaps, missing markers, hash mismatch, or frontier inversion fail closed.
 
-```text
-Building -> CatchingUp -> Ready
-     |          |          |
-     +----------+----------+-> Degraded -> Rebuilding -> Ready
-                                  |
-                                  +-> Invalid
-```
+Group state keys use versioned prefix `0x47 0x01`, the exact projection identity,
+generation, and length-framed ADR-0011 canonical scalar group values. Apply keys
+use `0x41 0x01`; the generation-neutral control key uses `0x46 0x01`. Grouping
+supports the exact ADR-0017 closed scalar registry, including decimal and money,
+and only complete-key equality or complete leading-component prefix scans.
+Keys, rows, apply requests, query pages, and snapshots obey ADR-0017's fixed
+bounds; raw group keys/values are redacted by default.
 
-`PRJ-001` A frontier MUST never decrease.
+One projection has 1..=1,024 group components. A state semantic payload is at
+most 1 MiB; one apply request has at most 4,096 row updates and 15 MiB canonical
+semantic content; its complete rows/marker/control write set and one apply
+snapshot are at most 16 MiB; one query returns at most 500 rows and 4 MiB row
+content. Compilation rejects a group schema whose complete key or stored row
+maximum can exceed its bound.
+
+The closed lifecycle is `Building`, `CatchingUp`, `Ready`, `Rebuilding`,
+`Degraded`, or `Invalid`, with exact published/candidate/apply-mode/failure
+shapes from ADR-0017. Absence of control for an identity known to the checked
+bundle is normal uninitialized state: public status/query maps it to building at
+`BeforeFirst`, not ready or corrupt. Unknown identities remain not-found.
+
+`PRJ-001` The published frontier of one exact `ProjectionIdentity` MUST never
+decrease. Replacing a generation for the same identity cannot lower it; a changed
+plan hash creates a new identity whose independent initial position is
+`BeforeFirst`.
 
 `PRJ-002` A frontier MUST never advance past a commit whose relevant events have not been durably applied.
 
-`PRJ-003` Projection application MUST be idempotent by `(projection_id, commit_sequence)`.
+`PRJ-003` Projection application MUST be idempotent with equality validation by
+`(ProjectionIdentity, ProjectionGeneration, CommitSequence)`; a rebuild
+generation intentionally reapplies the authoritative prefix in a disjoint
+derived-state namespace. Within that identity, duplicate equality MUST also
+require exact `ProjectionApplyHash` equality; a mismatch fails closed.
 
 `PRJ-004` Projection state MUST be rebuildable from the authoritative commit log.
 
+Initial build creates generation 1 as an unpublished candidate and applies the
+log from sequence 1. Publication is one control transition only when its
+frontier equals the transaction-current authoritative head. A same-plan rebuild
+allocates the next generation, retains the published generation, applies into a
+disjoint namespace, and publishes only when the candidate is not behind the old
+published frontier and equals the current head. Candidate rows are never public.
+Replaced generations, including failed candidates once an explicit recovery
+transition replaces them, are retired: their canonical rows and markers may
+remain, but they are never queried, resumed, reused, or accepted as apply targets
+and have no active frontier. A failed candidate still retained by `Degraded`
+control is suspended and inert but is not retired until replacement. Garbage
+collection is deferred to a whole-generation crash-safe policy.
+
+A deterministic overflow, malformed event, missing commit/plan, schema mismatch,
+integrity failure, or hard-limit failure records one closed generation failure
+without advancing. A failed published generation is suspended until replacement
+publication. `Invalid` has no v1 recovery transition; authoritative commits or
+derived rows are never fabricated. Generation exhaustion never wraps and leaves
+the prior control record unchanged.
+
 ## 15.3 Read-after-commit query
 
-A query accepts optional `after_sequence` and wait deadline.
+A query accepts an optional real nonzero `after_sequence`, bounded wait deadline,
+schema-checked generation-neutral complete/prefix selector, bounded limit, and
+opaque service cursor. Storage reads lifecycle/control, selects the published
+generation, scans rows, and returns rows plus frontier and lower continuation
+from one read transaction. It never joins a control read to a later scan.
 
 ```rust
 pub enum ProjectionQueryResult<T> {
     Ready {
         data: T,
-        frontier: CommitSequence,
+        frontier: FrontierPosition,
     },
     WaitTimedOut {
         required: CommitSequence,
-        current: CommitSequence,
+        current: FrontierPosition,
     },
     Degraded {
-        current: CommitSequence,
-        reason: String,
+        current: FrontierPosition,
+        reason: ProjectionUnavailableReason,
     },
     Invalid {
-        reason: String,
+        reason: ProjectionUnavailableReason,
     },
 }
 ```
 
-The server MUST NOT silently return stale data when `after_sequence` is provided and the frontier is behind.
+`ProjectionUnavailableReason` is closed: `Building`, `Rebuilding`, or
+`Failure(ProjectionFailureCode)`. Stored/engine strings are never public. A known
+identity without control and `Building`/`CatchingUp` return degraded-building
+with no rows; `Rebuilding` returns degraded-rebuilding with no rows even while a
+published generation is retained; durable `Degraded` and `Invalid` expose only
+the closed safe failure. `Ready` behind the requested sequence waits and returns
+`WaitTimedOut` on deadline. An unavailable lifecycle never becomes `Ready`
+merely because `after_sequence` is absent.
+
+The server MUST NOT silently return stale data when `after_sequence` is provided
+and the frontier is behind. Every wake rechecks current policy and rereads one
+complete persisted snapshot. A pagination continuation fences exact identity,
+published generation, prefix, last key, and observed published frontier; any
+generation or frontier change invalidates it and returns no rows. The service
+maps that to its generic policy-safe invalid-cursor result rather than silently
+restarting or misreporting lifecycle.
+
+Projection status returns the exact identity, lifecycle, optional
+published/candidate generation and `FrontierPosition`, optional published apply
+mode and closed failure, and transaction-current authoritative head from one
+read transaction. Lag is derived, not persisted. WP-065 owns the durable
+projection messages and checked storage mappings; WP-127 owns the public
+query/status/frontier/lifecycle/page messages; WP-130 owns total wire conversion.
 
 ## 15.4 Budget projection
 
@@ -1900,11 +2622,18 @@ Configuration parsing MUST reject unknown keys by default. Every setting MUST do
 - **Readiness**: storage opened, active contract loaded, commit coordinator accepting work, and required migration checks complete.
 - **Degraded state**: core writes remain available but a non-authoritative subsystem such as projection or outbox is unhealthy.
 
+`Initializing` is distinct from corruption and readiness. A structurally empty
+database without an active contract reports not ready while exposing only health,
+one-time loopback bootstrap while the marker is absent, and authenticated first
+contract deployment after bootstrap. The deployment still uses the shared
+service, authorization, audit, and coordinator. Once an active contract exists,
+its later absence or mismatch is a fail-closed authoritative integrity error.
+
 ```rust
 pub struct HealthReport {
     pub status: HealthStatus,
     pub active_contract_version: Option<ContractVersion>,
-    pub last_commit_sequence: CommitSequence,
+    pub last_commit_sequence: Option<CommitSequence>,
     pub components: Vec<ComponentHealth>,
     pub started_at: Timestamp,
     pub build: BuildInfo,
@@ -2006,14 +2735,14 @@ Generated command histories run against the reference model and the real server.
 | Property | Scope |
 |---|---|
 | Invariant preservation | Every committed entity set satisfies every supported invariant. |
-| Outcome determinism | Same initial snapshot, normalized input, contract plan, and logical time produce the same outcome and `CommitIntent`; the POC command runtime has no randomness. |
+| Outcome determinism | Same owned snapshot, normalized input, exact plan, transaction context, and fixed evaluation budget produce the same `ExecutionResult`, `EvaluatedCommand`, or typed fault; the POC command runtime has no randomness. Coordinator tests separately freeze final `CommitIntent` assembly from that value and the exact stored admission. |
 | Idempotent replay | Repeating an admitted idempotency identity with equal canonical input never creates a second mutation or event set. |
 | Idempotency mismatch rejection | Reusing an identity with a different canonical input never returns the earlier outcome as though it applied. |
 | Conflict serialization | Histories sharing a mutable conflict key are observationally equivalent to an allowed serial order. |
 | Lock release | Cancellation, business rejection, panic containment, and storage failure release all acquired capabilities. |
-| Sequence monotonicity | Terminal admitted records have unique increasing sequences. |
+| Sequence monotonicity | Every committed declared outcome has one unique increasing nonzero application sequence; pending and ADR-0012 `ExecutionFailed` admission records have none. Administration records use a separate contiguous nonzero sequence space. |
 | Recovery equivalence | Reopening after any completed durable prefix yields the same observable state as replaying that prefix in the model. |
-| Projection prefix | A projection at frontier N equals model application of relevant events through N. |
+| Projection prefix | A published projection identity/generation at `AppliedThrough(N)` equals model application of every authoritative sequence through N, including irrelevant-event markers; `BeforeFirst` has no marker or visible row. |
 | Authorization non-bypass | No transport reaches command, entity, commit, or deployment operations without a policy decision. |
 
 ## 17.4 Concurrency testing
@@ -2034,6 +2763,8 @@ The lock manager MUST expose a test-only deterministic scheduler abstraction. Te
 - Storage failure after runtime evaluation.
 - Read-only command concurrent with mutation.
 - A dynamically discovered undeclared dependency causing a safe rejection.
+- Arithmetic/resource fault with concurrent change to every present, absent, and
+  range-epoch dependency; stale evidence never terminalizes `ExecutionFailed`.
 
 ## 17.5 Crash and failpoint matrix
 
@@ -2045,16 +2776,20 @@ The POC MUST support named, test-only failpoints. Process tests terminate the se
 | After pending idempotency reservation, before locking | Only the valid pending reservation is durable; retry reuses its contract version, plan, and `tx.time`; no sequence exists. |
 | After lock acquisition, before evaluation | Pending reservation may remain; locks are absent after restart; no terminal state or sequence exists. |
 | After evaluation, before commit submission | Pending reservation may remain; no mutation, event, outcome, or sequence is visible. |
+| During execution-failure terminalization | Either the equal-evidence `ExecutionFailed` admission is durable with no application sequence/provenance/event/commit, or the original pending admission remains; unknown status fences writes and same-key recovery resolves it. |
 | Before storage transaction commit | No partial mutation, outcome, event, or sequence. |
 | During embedded-engine durable commit | Either entire atomic commit is visible or none, according to engine guarantee. |
 | After durable commit, before coordinator response | Complete state visible; retry returns persisted result. |
 | After coordinator response, before API response | Complete state visible; retry returns persisted result. |
-| After outbox record commit, before dispatch | Event remains pending and is eventually retried. |
+| After event/outbox-intent commit, before dispatch | Event and matching intent are durable; no status row canonically means never-attempted `Pending`, and dispatch is eventually attempted. |
+| During outbox delivery-status transition | Status is absent/previous or one complete state; an orphan status fails integrity, and restart idempotently normalizes `Delivering` according to retry policy before worker readiness. |
 | After destination success, before delivery acknowledgment | Duplicate dispatch is allowed; connector/idempotency policy handles it. |
-| After projection apply, before frontier commit | Replay is idempotent; frontier cannot skip required work. |
+| During projection row/marker/frontier commit | State post-images, exact apply-hash marker, and matching generation frontier are all visible or none; replay is an equal-hash no-op and a mismatch fails closed. |
 | After frontier commit, before query wakeup | Query observes persisted frontier after restart. |
 | During contract deployment before active pointer switch | Previous bundle remains active. |
 | After active pointer switch, before API acknowledgment | New bundle is active and deployment retry is resolved by expected version. |
+| During new-database metadata initialization | Either the complete initial metadata including one `DatabaseId` is durable or the store remains truly uninitialized; reopen never substitutes a new identity. |
+| After provenance-ID generation, before/during command commit | A proven abort exposes no candidate or sequence; a collision writes nothing; unknown commit status is resolved by idempotency before another candidate is requested. |
 
 `TEST-001` Every failpoint MUST have an automated assertion over entities, indexes, outcomes, commit records, outbox records, and projection frontier as applicable.
 
@@ -2113,9 +2848,11 @@ The Fjall comparison is likewise isolated in a nested non-production workspace w
 The final acceptance test is a scripted, self-verifying scenario:
 
 1. Start `riffdbd` on an empty directory.
-2. Create a local operator capability and a restricted agent capability.
+2. Bootstrap the first local human operator through retained loopback gRPC
+   credentials, then create a restricted agent capability through the ordinary
+   authenticated service path.
 3. Validate and deploy the budget contract.
-4. Verify the MCP client receives or can refresh the generated `allocate_budget` tool.
+4. Verify the MCP client receives or can refresh the generated `allocatebudget` tool.
 5. Seed an annual budget of 100 through a contract command.
 6. Start two concurrent 80-unit allocation calls using different idempotency keys.
 7. Assert exactly one `Allocated` outcome and one `InsufficientBudget` outcome.
@@ -2253,6 +2990,17 @@ Agents MUST NOT reinterpret normative requirements from issue summaries. This sp
 8. No TODO that weakens correctness or authorization without a tracked issue and explicit safe failure behavior.
 9. Generated files MUST be reproducible from checked-in sources.
 10. Every PR description MUST list satisfied requirement IDs and executed test commands.
+11. Because the root is a virtual Cargo workspace, every root-level integration
+    test MUST be registered as an explicit `[[test]]` target in exactly one
+    owning crate manifest and invoked by a package-qualified acceptance command.
+12. `Cargo.lock` path authority permits generated root-workspace dependency
+    resolution only; it does not approve a new crate, version, feature, build
+    script, native/unsafe surface, or license without its ordinary review.
+13. WP-020, the exact ADR-0012 WP-010 public-error carve-out, WP-065, and WP-127
+    are the only schema-owner phases. The carve-out may add no request, result,
+    service, RPC, or durable-record field. WP-060/WP-070 cannot guess durable
+    fields, and WP-120/WP-130 cannot guess public fields or move service
+    conversion into `riffdb-proto`.
 
 ## 19.3 Work-package dependency graph
 
@@ -2265,29 +3013,31 @@ The graph uses hard dependencies. Parallel work is encouraged only after shared 
 | ID | Name | Depends on | Primary deliverable | Exit gate |
 |---|---|---|---|---|
 | `WP-000` | Repository foundation | None | Cargo workspace, toolchain, CI, ADR template, contribution rules, deterministic generation checks | Clean CI on skeleton workspace |
-| `WP-010` | Core types and error taxonomy | WP-000 | IDs, versions, money/decimal type, time type, safe errors, canonical value model | Serialization and canonicalization properties pass |
+| `WP-010` | Core types and error taxonomy | WP-000 | Nonzero IDs/versions, money/decimal type, time type, safe errors, canonical value model, and the exact ADR-0012 public-error slice | Serialization, canonicalization, error-schema generation, and zero-rejection properties pass |
 | `WP-020` | Protobuf and durable envelope | WP-010 | Public/internal `.proto`, Protox/Prost build, versioned stored-record envelope | Golden compatibility fixtures pass |
 | `WP-030` | Contract syntax | WP-010 | Logos lexer, LALRPOP grammar, source spans, AST | Parser corpus, diagnostics, fuzz smoke pass |
-| `WP-040` | Typed IR and compiler | WP-030, WP-010 | Name resolution, type checker, invariant/outcome/dependency plans, JSON Schema | Budget contract compiles; invalid corpus rejects with stable diagnostics |
-| `WP-045` | Budget comparison foundation | WP-040 | Shared workload/oracle and isolated PostgreSQL implementation | Deterministic oracle and PostgreSQL correctness preflight pass |
+| `WP-040` | Typed IR and compiler | WP-010, WP-030 | Name resolution, type checker, invariant/outcome/dependency plans, JSON Schema | Budget contract compiles; invalid corpus rejects with stable diagnostics |
+| `WP-045` | Budget comparison baseline | WP-040 | Shared workload/oracle and isolated PostgreSQL implementation | Deterministic oracle and PostgreSQL correctness preflight pass |
 | `WP-050` | Contract catalog | WP-020, WP-040, WP-060 | Bundle lookup, catalog state semantics, compatibility report, and typed expected-version deployment operation for later coordinator routing | Catalog semantic and atomic-storage-operation tests pass; final routing evidence is WP-100/WP-120 |
-| `WP-060` | Storage semantic API | WP-010, WP-020 | Narrow snapshot/commit/log-scan trait and in-memory reference implementation | Reference-model tests pass |
-| `WP-070` | Redb storage engine | WP-020, WP-060 | Tables, coordinator write transaction, atomic records, indexes, recovery, integrity scan, backup | Storage properties and core process recovery matrix pass |
+| `WP-060` | Storage semantic API | WP-010, WP-020, WP-040 | Owned snapshots, dependencies, `EvaluatedCommand`/`CommitIntent`, semantic durable DTOs, typed persistence transitions including audit/capability/projection, and in-memory reference implementation | Reference-model and semantic conformance tests pass |
+| `WP-065` | Durable semantic record schema | WP-020, WP-060 | Versioned `riffdb.storage.v1` records, envelopes, descriptors, schema hashes, goldens, wire validation, historical registrations, and checked storage-owned Proto mappings | Proto/storage tests and clean deterministic regeneration pass |
+| `WP-070` | Redb storage engine | WP-020, WP-060, WP-065 | Tables, coordinator write transaction, atomic records, indexes, capability/audit/projection persistence, recovery, integrity scan, backup | Storage properties and core process recovery matrix pass |
 | `WP-075` | Fjall semantic comparison | WP-060, WP-070 | Isolated non-production Fjall adapter and unchanged conformance/benchmark harness | Conformance report and reproducible evidence pass |
-| `WP-080` | Deterministic command runtime | WP-040, WP-060 | IR interpreter, fixed logical time, read dependencies, `CommitIntent`; no command randomness | Differential tests against model pass |
+| `WP-080` | Deterministic command runtime | WP-040, WP-060 | IR interpreter, fixed logical time and budget, dependencies, `EvaluatedCommand`, and closed execution faults; no provenance or command randomness | Differential tests against model pass |
 | `WP-090` | Conflict manager | WP-010 | Canonical multi-key exclusive acquisition, cancellation, metrics | Loom/Shuttle suites pass |
 | `WP-100` | Commit coordinator and idempotency | WP-050, WP-070, WP-080, WP-090, WP-110 | Admission reservation, revalidation, sequence assignment, atomic outcome/event/provenance/outbox-intent commit, typed control-plane operations | Concurrency, core process crash, and lost-response replay tests pass |
 | `WP-110` | Authorization and capability service | WP-010, WP-070 | Opaque capability records, policy decisions, obligations, and typed create/revoke operations for later coordinator routing | Policy, digest, revocation-state, and fail-closed tests pass; final non-bypass evidence is WP-120 |
-| `WP-120` | API-neutral application service | WP-050, WP-100, WP-110 | Command, query, contract, commit, projection service interfaces | In-process end-to-end tests pass |
-| `WP-125` | RiffDB comparison service adapter | WP-045, WP-120 | Budget workload adapter over the API-neutral service | Shared oracle passes against in-process RiffDB |
-| `WP-130` | gRPC protocol and Rust SDK | WP-020, WP-120 | Tonic services, limits, auth interceptor, generated and ergonomic Rust client | Public API integration suite passes against injected composition |
-| `WP-135` | Canonical comparison client | WP-125, WP-130 | Budget comparison through the public Rust SDK/gRPC path | Shared oracle passes through the canonical client path |
+| `WP-120` | API-neutral application service | WP-050, WP-100, WP-110 | Six operation-specific service traits, checked contexts/DTOs, current policy, audit orchestration, obligations, bounded reads/waits/streams, and server-side cursors | In-process end-to-end and no-storage-bypass tests pass |
+| `WP-125` | Service comparison adapter | WP-045, WP-120 | Budget workload adapter over the API-neutral service | Shared oracle passes against in-process RiffDB |
+| `WP-127` | Public Protobuf API completion | WP-020, WP-120 | Complete all remaining supported `riffdb.v1` messages, preserve the WP-010 execution-failure slice, and freeze descriptors, schema hashes, wire validation, and golden/client fixtures; no service conversion code | Proto tests and clean deterministic regeneration pass |
+| `WP-130` | gRPC server and Rust SDK | WP-020, WP-120, WP-127 | Tonic services, limits, credential handoff, total service/Proto conversion, and generated and ergonomic Rust client | Public API integration suite passes against injected composition |
+| `WP-135` | Public SDK comparison adapter | WP-125, WP-130 | Budget comparison through the public Rust SDK/gRPC path | Shared oracle passes through the canonical client path |
 | `WP-140` | Native MCP interface | WP-040, WP-120, WP-130 | `rmcp` stdio-over-gRPC and HTTP adapters, dynamic tools/resources, schema results, progress/cancellation | MCP conformance and generated-tool tests pass |
 | `WP-150` | CLI and local developer flow | WP-130 | `riffdb`, config, local token flow, JSON/human output | Acceptance steps executable without internal APIs |
 | `WP-160` | Durable outbox | WP-100, WP-120 | Event scanner, delivery state, test connector, retry and duplicate simulations | Crash and duplicate-delivery tests pass |
 | `WP-170` | Projection core | WP-100, WP-120 | Event consumers, count/sum state, durable frontier, read-after-sequence query | Prefix and restart properties pass |
 | `WP-180` | Observability and diagnostics | WP-120 | Tracing, metrics, health, explain output, redaction | Required telemetry present without sensitive labels |
-| `WP-185` | Final server composition | WP-130, WP-140, WP-160, WP-170, WP-180 | `riffdbd` wiring for gRPC, MCP HTTP, outbox, projection, observability, lifecycle, and health | Composed server integration and lifecycle tests pass |
+| `WP-185` | Server composition | WP-130, WP-140, WP-160, WP-170, WP-180 | `riffdbd` wiring for gRPC, MCP HTTP, outbox, projection, observability, lifecycle, and health | Composed server integration and lifecycle tests pass |
 | `WP-190` | Integrated crash harness | WP-070, WP-100, WP-160, WP-170, WP-185 | Named failpoints, process controller, recovery assertions | Full cross-component failpoint matrix passes |
 | `WP-200` | POC acceptance and release | All POC packages | One-command demo, benchmark report, security notes, release artifacts | POC-001 through POC-010 signed off |
 
@@ -2302,16 +3052,19 @@ These are dependency waves, not schedule commitments.
 | A | WP-000 |
 | B | WP-010 |
 | C | WP-020, WP-030, WP-090 |
-| D | WP-040, WP-060 |
-| E | WP-045, WP-050, WP-070, WP-080 |
-| F | WP-075, WP-110 |
-| G | WP-100 |
-| H | WP-120 |
-| I | WP-125, WP-130, WP-160, WP-170, WP-180 |
-| J | WP-135, WP-140, WP-150 |
-| K | WP-185 |
-| L | WP-190 |
-| M | WP-200 |
+| D | WP-040 |
+| E | WP-045, WP-060 |
+| F | WP-050, WP-065, WP-080 |
+| G | WP-070 |
+| H | WP-075, WP-110 |
+| I | WP-100 |
+| J | WP-120 |
+| K | WP-125, WP-127, WP-160, WP-170, WP-180 |
+| L | WP-130 |
+| M | WP-135, WP-140, WP-150 |
+| N | WP-185 |
+| O | WP-190 |
+| P | WP-200 |
 
 Within a wave, agents MUST coordinate changes to shared types through interface PRs before parallel implementation PRs.
 
@@ -2355,7 +3108,7 @@ A PR is incomplete if its acceptance test is described but not automated, unless
 You are implementing <WORK_PACKAGE_ID> in the RiffDB workspace.
 
 Authoritative inputs:
-- Technical specification version 0.3
+- Technical specification version 0.6
 - Accepted ADRs: <LIST>
 - Requirements: <LIST>
 - Upstream interfaces at revision: <COMMIT>
@@ -2404,6 +3157,8 @@ Do not weaken a correctness or security requirement to make a test pass. Add a f
 
 **Gate P0:** The same contract produces deterministic plans and results across repeated builds and model executions.
 
+**P0 work-package members:** WP-030, WP-040, WP-060, and WP-080.
+
 The long-lived budget comparison workload, deterministic oracle, and PostgreSQL baseline begin after the compiler as a non-production evidence track. They are not P0 gate members, but their public-adapter and benchmark evidence must be complete before WP-200 closes P2.
 
 ## 20.3 Stage P1 — durable standalone POC
@@ -2413,14 +3168,22 @@ The long-lived budget comparison workload, deterministic oracle, and PostgreSQL 
 **Deliverables:**
 
 - Redb-backed state and commit records.
+- WP-065-reviewed durable semantic-record schemas and storage-owned mappings
+  before redb persistence.
 - Logical conflict manager and commit revalidation.
 - Persistent idempotency outcomes.
 - Contract catalog and atomic deployment.
 - gRPC, Rust SDK, CLI.
+- WP-127-reviewed complete public schemas before gRPC service/wire conversion.
 - Atomic durable outbox intent as part of every applicable command commit; external dispatch remains P2.
 - Core transaction-path process failpoints and integrity scan for redb and the commit coordinator.
 
 **Gate P1:** All transaction-path and recovery properties pass under the budget acceptance workload and generated histories.
+
+**P1 work-package members:** WP-050, WP-065, WP-070, WP-090, WP-100,
+WP-110, WP-120, WP-127, WP-130, and WP-150. WP-065 and WP-127 are explicit
+gate members as well as hard dependencies of WP-070 and WP-130; they do not
+replace any previously listed member.
 
 ## 20.4 Stage P2 — native agent interface and projection proof
 
@@ -2552,43 +3315,60 @@ Risk owners are assigned in the project tracker. A risk may be closed only with 
 
 ## 22.1 Required ADRs
 
-Specification v0.3 records each ADR's current status. An Accepted record is
+Specification v0.7 records each ADR's current status. An Accepted record is
 authoritative; a Proposed record remains planning input until its exact text
 receives human review. Where this table and a work-package deadline differ, the
 earlier deadline governs unless a reviewed reconciliation changes both sources.
 
 | ADR | Status | Decision | Required before |
 |---|---|---|---|
-| `ADR-0001` | Proposed | Standalone database rather than PostgreSQL extension or control plane | P0 gate |
+| `ADR-0001` | Accepted | Standalone database rather than PostgreSQL extension or control plane | P0 gate |
 | `ADR-0002` | Accepted | Canonical bounded contract grammar, typed IR, versioning, and deterministic bundle | WP-030 grammar freeze and WP-040 interface |
 | `ADR-0003` | Accepted | Logical pessimistic conflict ownership, dependency validation, and commit ordering | WP-060/WP-090 interfaces |
-| `ADR-0004` | Proposed | Coordinator-driven semantic storage API and redb baseline | WP-060 interface |
+| `ADR-0004` | Accepted | Coordinator-driven owned-snapshot semantic storage API and exact redb 4.1.0 baseline | WP-060 interface |
 | `ADR-0005` | Accepted | Idempotency identity, pending reservation, persisted outcomes, and sequence semantics | WP-060 key freeze and WP-100 |
 | `ADR-0006` | Accepted | Phased single-owner Protobuf schemas, exact values, durable envelope, and compatibility policy | WP-020 schema implementation |
-| `ADR-0007` | Proposed | Shared application service for gRPC, MCP, CLI, and SDK | WP-100 coordinator boundary and WP-120 interface |
-| `ADR-0008` | Proposed | Native MCP qualified command names, resources, audiences, and stdio-over-gRPC model | WP-140 fixtures |
-| `ADR-0009` | Proposed | Opaque HMAC-digested, environment/database/audience-bound POC capability tokens | WP-060 storage interface and WP-110 implementation |
+| `ADR-0007` | Accepted | Shared policy-filtered application service, executor/read ports, cursors, and durable invocation audit for gRPC, MCP, CLI, and SDK | WP-100 coordinator boundary and WP-120 interface |
+| `ADR-0008` | Proposed | Native MCP resource URIs, audiences, stdio-over-gRPC model, cursor presentation, and remaining protocol fixtures | WP-140 fixtures |
+| `ADR-0009` | Accepted | Opaque HMAC-digested, environment/database/audience-bound POC capabilities with stable-ID records, digest lookup, key custody, and recoverable one-time bootstrap | WP-060 storage interface and WP-110 implementation |
 | `ADR-0010` | Accepted | Event-derived POC projection engine and frontier semantics | WP-070 projection persistence and WP-170 |
 | `ADR-0011` | Accepted | Canonical values, fixed-scale decimals, keys, serialization, and domain-separated hashing | WP-010 semantic types |
-| `ADR-0012` | Proposed | Deterministic transaction context, durable logical time, and no POC command randomness | WP-080 implementation |
+| `ADR-0012` | Accepted | Deterministic transaction context, durable logical time, no POC command randomness, and dependency-validated terminal execution-failure admission | WP-060 admission state and WP-080 implementation |
 | `ADR-0013` | Accepted | Stable semantic IDs, canonical IR/bundle encoding, plan hashing, and schema generation | WP-040 interface |
 | `ADR-0014` | Accepted | Projection-plan and contract-plan-root typed hash domains | WP-010 follow-up and WP-040 interface |
 | `ADR-0015` | Accepted | Explicit binding-failure outcomes and command-only budget bootstrap | WP-030 follow-up and WP-040 fixtures |
 | `ADR-0016` | Accepted | Canonical key components, typed partition identity, and complete index-key framing | WP-010 follow-up and WP-040 interface |
+| `ADR-0017` | Accepted | Projection group keys, lineage/plan identities, nonzero generations, apply hashes, explicit frontiers, lifecycle, and atomic query/rebuild semantics | WP-040 projection schema and WP-060/WP-070 projection storage boundary |
+| `ADR-0018` | Accepted | Pure UUIDv7 assembly, system-source ownership, database initialization, provenance generation/replay, and request/capability identifier boundaries | WP-010 foundation, WP-060/WP-070 storage, and WP-100/WP-130 providers |
+| `ADR-0019` | Accepted | Exactly six authoritative POC metadata categories; durable node identity, clean-shutdown marker, and persisted integrity history deferred with unconditional startup validation | WP-060 semantic metadata API |
+| `ADR-0020` | Accepted | MCP command tool-name normalization, compiler-owned versioned registry, collision rejection, and catalog activation revalidation | WP-040 compiled contract bundle |
+| `ADR-0021` | Accepted | Exact lineage-scoped service-audit target variants/tags, canonical list ordering, and shared-service construction rule | Amended WP-010 audit vocabulary |
 
 ## 22.2 Decisions to resolve before implementation reaches the named gate
 
 ADR-0015 resolved initial entity creation: the canonical `CreateBudget` compiled
 command seeds the demo through the ordinary coordinator path, and direct
-storage/admin seeding remains forbidden.
+storage/admin seeding remains forbidden. The accepted ADR-0004/ADR-0012 batch
+also resolved the remaining grammar-v1 transaction defaults:
+
+- Read-only commands are unjournaled and receive no durable idempotency record,
+  persisted outcome/provenance, or application sequence; service audit is a
+  separate outcome-free administration record.
+- A command may observe multiple logical conflict domains only within its one
+  declared partition. Every mutation domain is acquired up front and every
+  influential observation is represented and revalidated.
+- Write-influencing indexed range reads are rejected by grammar v1. The frozen
+  prefix-epoch storage capability does not enable them; any future bounded IR
+  requires accepted static target derivation and explicit up-front exclusion.
+- Arithmetic and resource faults may terminalize as ADR-0012
+  `ExecutionFailed` only after complete dependency equality; they receive no
+  application sequence or command provenance and use the exact public error and
+  uncertainty rules in that ADR.
+- POC contract compatibility is additive/documentation-only; removal of an
+  entity, field, command, outcome, event, or projection is rejected.
 
 | Decision | Resolve by | Default in this specification |
 |---|---|---|
-| Are read-only commands stored in the outcome journal? | Before WP-100 exit | Only when idempotency or audit policy requires it; no mutation log record otherwise. |
-| Can a command read multiple conflict domains while mutating one? | Before WP-080 exit | Yes if all mutable domains are declared up front and all influential reads are version-tracked. |
-| How are index phantom dependencies represented? | Before indexed range reads enter POC | Indexed range reads are read-only in initial POC; write-influencing range predicates deferred or use explicit conflict keys. |
-| How are deterministic runtime arithmetic and resource faults resolved after durable admission? | Before WP-080 implementation | No implementation default; ADR-0013 fixes that no `CommitIntent` or business outcome is produced, but durable admission, retry, abandonment, and public-error semantics require human approval. |
-| Does the POC support contract removal of fields or commands? | Before WP-050 exit | Additive and documentation-only changes; destructive changes rejected. |
 | Which cryptographic provider is used for TLS in alpha/MVP? | Before remote MCP alpha | Deferred; requires dependency and platform ADR. |
 | Redb versus Fjall for MVP | POC exit architecture review | Redb remains baseline unless workload and recovery evidence justify change. |
 
@@ -2742,7 +3522,7 @@ match result.outcome {
 
 ```json
 {
-  "name": "riffdb.cmd.legal_spend.allocate_budget",
+  "name": "riffdb.cmd.legalspend.allocatebudget",
   "arguments": {
     "idempotency_key": "budget-allocation-019bf6aa-7fb0-7aa5-8511-4f983a741e31",
     "organization_id": "019bf6aa-89a5-7785-91f8-16e7dcf50404",
@@ -2826,23 +3606,26 @@ These examples illustrate ordering and namespace separation. The exact byte enco
 ```text
 meta/format_version
 meta/database_id
-meta/last_commit_sequence
-contract/bundle/<u64-be-version>
-contract/active
-entity/<entity-type-id>/<encoded-primary-key>
-index/<index-id>/<encoded-index-key>/<encoded-primary-key>
-idempotency/<database-id>/<environment>/<tenant-scope-hash>/<principal-id>/<contract-lineage>/<command-id>/<key-digest>
+meta/next_application_sequence
+meta/next_administration_sequence
+contract_bundles/<u64-be-version>
+catalog_active/fixed
+entities/<entity-type-id>/<encoded-primary-key>
+secondary_indexes/<index-id>/<encoded-index-key>/<encoded-primary-key>
+index_epochs/<index-id>/<prefix-bucket>
+idempotency/<database-id>/<environment>/<tenant-scope>/<principal-id>/<contract-lineage>/<command-id>/<key-digest>
 idempotency_pending/<canonical-idempotency-identity>
-commit/<u64-be-sequence>
+commits/<u64-be-sequence>
 provenance/<provenance-id>
 outbox/<event-id>
-outbox_pending/<next-attempt-time>/<event-id>
-projection_meta/<projection-id>
-projection_state/<projection-id>/<encoded-group-key>
-projection_applied/<projection-id>/<u64-be-sequence>
-capability/<capability-id>
-capability_token/<token-keyed-hash>
-admin_audit/<u64-be-administration-sequence>
+outbox_status/<event-id>
+projection_frontier/0x46-0x01/<lineage>/<projection-id>/<projection-plan-hash>
+projection_state/0x47-0x01/<projection-identity>/<nonzero-generation>/<framed-group-components>
+projection_applied/0x41-0x01/<projection-identity>/<nonzero-generation>/<nonzero-commit-sequence>
+capabilities/0x01/<capability-id>
+capability_tokens/0x01/<digest-scheme>/<digest-key-id>/<32-byte-digest>
+meta/capability_bootstrap/v1
+audit/0x01/<nonzero-administration-sequence>
 ```
 
 Keys MUST not embed raw secrets. Lexicographically ordered integer components use big-endian encoding. Every key namespace has a format version or is migrated atomically with the database format.
@@ -2887,7 +3670,7 @@ service AdminService {
 }
 ```
 
-This appendix intentionally repeats the five canonical services from Section 11.2. A sixth entity or projection service, or abbreviated RPC aliases, is not part of v0.2. Public messages MUST use stable field numbers, reserve removed fields, bound nested sizes, use the exact `Value` family in Section 11.3, and distinguish absent values from defaults when semantics require it.
+This appendix intentionally repeats the five canonical services from Section 11.2. A sixth entity or projection service, or abbreviated RPC aliases, is not part of v0.6. Public messages MUST use stable field numbers, reserve removed fields, bound nested sizes, use the exact `Value` family in Section 11.3, and distinguish absent values from defaults when semantics require it.
 
 ---
 
@@ -2903,6 +3686,7 @@ This appendix intentionally repeats the five canonical services from Section 11.
 | Contract mismatch | Client invokes command absent from active bundle | Failed precondition with active version and refresh hint |
 | Storage unavailable | Commit cannot be made durable | Unavailable/internal class; no success claim |
 | Outcome uncertainty | Client lost response after submission | Client resolves through same idempotency key or `GetOutcome` |
+| Deterministic command execution failure | Dependency-validated arithmetic or fixed resource-limit fault | `CommandExecutionFailed` with closed code and `CONTACT_OPERATOR`; no application commit or sequence |
 | Projection lag | Required sequence not reached by deadline | Typed projection `WaitTimedOut` result |
 | Projection degraded | Worker cannot advance | Typed degraded result with safe reason |
 | Internal bug | Runtime invariant or impossible state | Opaque incident ID, server-side diagnostics, fail closed |

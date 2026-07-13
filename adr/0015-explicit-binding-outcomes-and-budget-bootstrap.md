@@ -21,7 +21,7 @@ storage, or administrative seeding is forbidden.
 
 The human maintainer accepted this exact text on 2026-07-13.
 
-## Proposed Decision
+## Decision
 
 This is a pre-release correction to grammar version 1. Every entity binding has
 one explicit terminal binding-failure outcome:
@@ -100,7 +100,7 @@ seed step invokes `CreateBudget` with approved amount `100.00`.
 
 ## Options Considered
 
-1. **Mandatory declared binding outcomes plus `CreateBudget`:** Proposed. It keeps
+1. **Mandatory declared binding outcomes plus `CreateBudget`:** Selected. It keeps
    absence and duplicate existence inside typed command semantics.
 2. **Implicit generic not-found execution error:** Rejected. It bypasses declared
    outcomes and leaves retry/recovery behavior unowned.

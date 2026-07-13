@@ -2,12 +2,16 @@
 
 - **Status:** Accepted
 - **Direction approved:** 2026-07-12
-- **Exact text accepted:** 2026-07-12, amended 2026-07-12
-- **Amended by:** ADR-0014 for projection/root plan hashes and ADR-0016 for partition/index keys and partition hashing
+- **Exact text accepted:** 2026-07-12, amended 2026-07-12 and 2026-07-13
+- **Amended by:** ADR-0014 for projection/root plan hashes, ADR-0016 for
+  partition/index keys and partition hashing, ADR-0009 for capability-token
+  keyed hashing, ADR-0017 for projection keys and apply hashing, and ADR-0018
+  for UUIDv7 assembly and production-source ownership
 - **Decision deadline:** Before WP-010 semantic types or fixtures merge
 
 The human maintainer accepted this exact text, including the foundational
-identifier and key-envelope amendment, on 2026-07-12.
+identifier and key-envelope amendment, on 2026-07-12, and accepted the companion
+registry and UUIDv7 boundary additions below on 2026-07-13.
 
 ## Context
 
@@ -82,6 +86,31 @@ network order. `EventId` is the deterministic pair of the event's
 `CommitSequence` and zero-based `u32` event ordinal; its canonical bytes are the
 sequence as `u64` big endian followed by the ordinal as `u32` big endian.
 
+ADR-0018 leaves that representation unchanged and assigns `riffdb-types` only
+pure RFC 9562 UUIDv7 value semantics: checked assembly from an explicit 48-bit
+Unix-millisecond field and explicit ten-byte random source input, with six high
+source bits masked so 74 random bits enter the UUID, plus checked network-order
+byte validation and access. The value layer sets and checks the UUIDv7 version
+and RFC variant bits. It owns no ambient clock, entropy provider, persistent
+generator state, monotonicity policy, collision registry, or production
+identifier source. UUID byte ordering provides only the UUIDv7 layout's coarse
+source-time ordering; it is not logical time, commit order, causality,
+uniqueness evidence, or an authorization/audit timestamp.
+
+Identifier generation is orchestration metadata outside deterministic command
+execution. Under ADR-0018, production source implementations are limited to
+`riffdb-auth` for bootstrap `CapabilityId` generation and its separately
+approved token entropy; `riffdb-client-rust` for outer `RequestId` and client-
+convenience `CapabilityId`/`AgentSessionId` generation; and `riffdb-server` for
+new-database `DatabaseId` candidates, injected `ProvenanceIdSource`, hosted-MCP
+`RequestId`, injected `IncidentIdSource`, and existing cursor IDs. Consumer-owned
+source ports remain with their semantic consumers. A source clock, entropy
+payload, provider, or ordering state for a `DatabaseId`, `RequestId`,
+`CapabilityId`, or `ProvenanceId` never enters `riffdb-runtime` and must never be
+repurposed as command randomness. ADR-0012's already validated `RequestId`
+context value remains opaque; its UUID fields have no command-time, entropy, or
+ordering semantics.
+
 Contract lineage is the exact, nonempty UTF-8 contract name bounded to 256 bytes.
 An environment is a nonempty ASCII slug bounded to 64 bytes and containing only
 ASCII letters, digits, `.`, `_`, or `-`. A POC tenant scope is either the global
@@ -143,6 +172,33 @@ keyed domain. The custom Protobuf `riffdb.v1.Value` is an exact checked mapping
 of this algebra; adapters must supply the compiled decimal type where a wire
 value does not carry precision.
 
+### 2026-07-13 companion registry additions
+
+ADR-0009 extends the keyed registry with `CapabilityTokenDigest`, domain
+`riffdb.capability-token/v1`, HMAC-SHA-256 under the unchanged keyed frame. Its
+payload is exactly the decoded 32 raw token bytes; the canonical base64url text,
+database, environment, audience, and policy values are not appended. The typed
+digest carries scheme byte `0x01`, one nonzero `DigestKeyId` as `u32` big endian,
+and exactly 32 HMAC bytes. It is not convertible to the idempotency digest or an
+untyped byte array.
+
+ADR-0017 extends the typed key-envelope registry with projection apply marker
+`0x41 0x01`, projection frontier/control `0x46 0x01`, and projection group state
+`0x47 0x01`. Their exact identity, generation, sequence, and length-framed
+canonical group-component payloads are defined only by ADR-0017 and remain under
+the 4 KiB key bound. They do not reuse the ADR-0016 ordered component codec.
+
+ADR-0017 also extends the unkeyed registry with typed
+`ProjectionApplyHash`, domain `riffdb.projection-apply/v1`, using the unchanged
+SHA-256 frame over the exact checked storage-owned canonical apply request. The
+hash is idempotency evidence, not a signature or authorization proof. Existing
+prefixes, domains, frames, and meanings remain unchanged; the central collision
+fixtures include every added entry.
+
+The registry tables above remain the accepted initial baseline as amended by
+these explicit additions. They must not be read as excluding the later accepted
+domains or key envelopes named here and in ADR-0014/ADR-0016.
+
 ## Options Considered
 
 1. **Checked i128 fixed-scale plus custom canonical bytes:** Approved POC choice.
@@ -192,7 +248,8 @@ domain-tag collision registry check.
 
 - **Requirements:** `ID-001` through `ID-005`, `VAL-001` through `VAL-003`,
   `ENT-002`, `STO-002`, `TXN-042`
-- **Defines or blocks:** `WP-010`, `WP-020`, `WP-040`, `WP-060`, `WP-090`, `WP-100`
+- **Defines or blocks:** `WP-010`, `WP-020`, `WP-040`, `WP-060`, formal
+  durable-schema `WP-065`, `WP-090`, `WP-100`, and formal public-schema `WP-127`
 - **Final evidence:** `WP-190`, `WP-200`
 
 ## Decision Deadline

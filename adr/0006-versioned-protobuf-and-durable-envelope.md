@@ -2,11 +2,14 @@
 
 - **Status:** Accepted
 - **Direction approved:** 2026-07-12
-- **Exact text accepted:** 2026-07-12, amended 2026-07-12
+- **Exact text accepted:** 2026-07-12, amended 2026-07-12 and 2026-07-13
+- **Amended by:** ADR-0004, ADR-0007, ADR-0009, ADR-0012, and ADR-0017
+  for the formal post-semantic schema phases and reviewed additive public symbols
 - **Decision deadline:** Before WP-020 schemas or fixtures merge
 
 The human maintainer accepted this exact text, including the dependency
-disclosure amendment, on 2026-07-12.
+disclosure amendment, on 2026-07-12. The human maintainer accepted the companion
+schema-ownership and additive-symbol amendments below on 2026-07-13.
 
 ## Context
 
@@ -199,6 +202,60 @@ on 2026-07-12. All first-party crates remain `#![forbid(unsafe_code)]`.
 an additional NCSA license decision; malformed-input Proptest coverage is
 required in WP-020 meanwhile.
 
+### 2026-07-13 companion amendments
+
+WP-020 remains the completed phase-zero owner of package/version rules, common
+exact values/errors, five services and 16 RPC names, unsupported shells,
+generation, descriptors, fixtures, and `StoredEnvelope`. It is not reopened with
+records or public fields that depend on later semantic packages.
+
+Formal WP-065 depends on WP-020 and WP-060 and is the sole package that adds the
+reviewed `riffdb.storage.v1` semantic-record messages required by accepted
+ADR-0004, ADR-0007, ADR-0009, ADR-0012, and ADR-0017. It owns descriptors,
+schema hashes, golden bytes, bounds, historical registrations, wire-structural
+validation, and checked semantic mappings in the narrowly scoped storage-owned
+`proto_codec`. `riffdb-proto` never depends on `riffdb-storage-api`; WP-070 may
+persist no record before its WP-065 schema/mapping is reviewed.
+
+The focused WP-010 follow-up owns one narrow exception to the phase sequence: it
+adds the exact ADR-0012 `CommandExecutionFailed` kind, detail field, closed code,
+domain mapper, preflight, descriptor, and golden fixtures already specified
+below. This keeps the closed domain and wire error registries exhaustive and the
+workspace compilable. It may add no request, result, service, RPC, capability,
+projection, or durable-record field.
+
+Formal WP-127 depends on WP-020 and WP-120 and completes every remaining public
+`riffdb.v1` messages only after API-neutral service DTOs stabilize. It owns
+descriptors, schema hashes, goldens, bounds, and wire-structural validation, but
+does not depend on `riffdb-service` and implements no semantic conversion.
+WP-130 depends on WP-127 and owns total service-to-wire conversion. These phases
+preserve the one proto owner without a back-edge or speculative field numbers.
+
+The supported Execute completion enum appends `EXECUTED_READ_ONLY = 3`.
+Only for that status, zero `commit_sequence` and empty provenance URI/durability
+mode are documented wire sentinels that adapters convert to semantic absence.
+Committed/replayed results still require their nonzero sequence and complete
+terminal fields; every inconsistent combination rejects.
+
+The focused WP-010 follow-up additively appends ADR-0012's
+`PublicErrorKind::CommandExecutionFailed` at wire
+value `9`, stable code `command_execution_failed`, static message
+`command execution failed`, failed-precondition class, and existing
+`CONTACT_OPERATOR` recovery. Required detail field
+`PublicError.execution_failure = 8` contains
+`CommandExecutionFailureDetails { code = 1 }`, whose closed enum is unspecified
+`0`, arithmetic fault `1`, and resource limit `2`; zero is invalid when decoding
+the required semantic detail. No existing kind, detail field, or code is
+renumbered.
+
+ADR-0009 appends the closed `CreateCapabilityRequest` mode values unspecified
+`0`, normal `1`, and bootstrap `2` and the closed service result variants; raw
+bootstrap token bytes remain gRPC binary metadata, never a request field.
+WP-127 preserves that compatible error slice and assigns and freezes all
+remaining reviewed public fields before WP-130.
+ADR-0017 durable projection records likewise belong to WP-065 and public
+projection query/status/frontier/lifecycle/page shapes to WP-127.
+
 ## Options Considered
 
 1. **Section 11 plus custom exact `Value` and phased ownership:** Approved model.
@@ -252,8 +309,10 @@ before POC exit after their dependency/license review.
 
 - **Requirements:** `API-001`, `VAL-001` through `VAL-003`, `STO-002`, `STO-020`
   through `STO-022`, `ID-004`, `ENT-002`, `ENT-003`
-- **Defines or blocks:** `WP-020`; later interface PRs for `WP-050`, `WP-070`,
-  `WP-100`, `WP-110`, `WP-130`, `WP-160`, `WP-170`
+- **Defines or blocks:** `WP-020`; focused `WP-010` execution-failure error-schema
+  follow-up; formal durable-schema `WP-065`; formal public-schema `WP-127`;
+  consumers `WP-050`, `WP-070`, `WP-100`, `WP-110`, `WP-130`, `WP-160`, and
+  `WP-170`
 - **Final evidence:** `WP-190`, `WP-200`
 
 ## Decision Deadline

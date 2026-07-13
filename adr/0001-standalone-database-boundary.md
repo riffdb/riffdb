@@ -1,12 +1,12 @@
 # ADR-0001: Standalone Database Boundary
 
-- **Status:** Proposed
+- **Status:** Accepted
 - **Direction approved:** 2026-07-12
-- **Exact text accepted:** No
+- **Exact text accepted:** Yes
+- **Accepted:** 2026-07-13
 - **Decision deadline:** Before claiming the P0 gate
 
-The human architecture review approved this direction. This record remains
-Proposed until its exact text is reviewed and accepted.
+The human maintainer accepted this exact record on 2026-07-13.
 
 ## Context
 
@@ -17,7 +17,7 @@ existing database or as an external semantic control plane would leave ownership
 of key atomicity and recovery guarantees unclear. Replication and distributed
 transactions are explicitly outside the POC.
 
-## Proposed Decision
+## Decision
 
 RiffDB is a standalone single-node Rust database server. It owns the authoritative
 entity state, commit log, outcomes, events, provenance, catalog, and security
@@ -72,5 +72,5 @@ database and reports comparison workloads separately.
 
 ## Decision Deadline
 
-Exact acceptance is required before P0 is claimed. WP-000 may create only the
-non-semantic standalone workspace skeleton while this record is Proposed.
+This record was accepted before P0. WP-000 created only the non-semantic
+standalone workspace skeleton before acceptance.

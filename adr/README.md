@@ -22,27 +22,35 @@ direction, merged draft, or implementation choice.
 | ADR | Title | Status |
 |---|---|---|
 | [0000](0000-template.md) | ADR template | Template |
-| [0001](0001-standalone-database-boundary.md) | Standalone Database Boundary | Proposed |
+| [0001](0001-standalone-database-boundary.md) | Standalone Database Boundary | Accepted |
 | [0002](0002-bounded-typed-dsl-and-versioned-deterministic-ir.md) | Bounded Typed DSL and Deterministic Compilation Boundary | Accepted |
 | [0003](0003-logical-conflict-dependency-validation-and-commit-ordering.md) | Logical Conflict Ownership, Dependency Validation, and Commit Ordering | Accepted |
-| [0004](0004-semantic-storage-api-and-redb-baseline.md) | Semantic Storage API and Redb Baseline | Proposed |
+| [0004](0004-semantic-storage-api-and-redb-baseline.md) | Semantic Storage API and Redb Baseline | Accepted |
 | [0005](0005-idempotency-identity-terminal-outcomes-and-sequences.md) | Idempotency Identity, Terminal Outcomes, and Sequence Semantics | Accepted |
 | [0006](0006-versioned-protobuf-and-durable-envelope.md) | Versioned Protobuf and Durable Envelope | Accepted |
-| [0007](0007-shared-application-service-boundary.md) | Shared Application-Service Boundary | Proposed |
+| [0007](0007-shared-application-service-boundary.md) | Shared Application-Service Boundary | Accepted |
 | [0008](0008-native-mcp-tool-and-resource-model.md) | Native MCP Tool and Resource Model | Proposed |
-| [0009](0009-opaque-server-side-poc-capabilities.md) | Opaque Server-Side POC Capabilities | Proposed |
+| [0009](0009-opaque-server-side-poc-capabilities.md) | Opaque Server-Side POC Capabilities | Accepted |
 | [0010](0010-event-derived-projection-and-frontiers.md) | Event-Derived Projection and Frontier Semantics | Accepted |
 | [0011](0011-canonical-values-keys-and-hashing.md) | Canonical Values, Fixed-Scale Decimals, Keys, and Hashing | Accepted |
-| [0012](0012-deterministic-transaction-context.md) | Deterministic Transaction Context | Proposed |
+| [0012](0012-deterministic-transaction-context.md) | Deterministic Transaction Context and Execution-Fault Admission | Accepted |
 | [0013](0013-stable-ids-ir-encoding-and-plan-hash.md) | Stable IDs, IR Encoding, and Plan-Hash Framing | Accepted |
 | [0014](0014-projection-and-contract-plan-hash-domains.md) | Projection and Contract Plan Hash Domains | Accepted |
 | [0015](0015-explicit-binding-outcomes-and-budget-bootstrap.md) | Explicit Binding Outcomes and Budget Bootstrap | Accepted |
 | [0016](0016-canonical-key-components-and-partition-identity.md) | Canonical Key Components and Partition Identity | Accepted |
+| [0017](0017-projection-group-keys-generations-and-frontiers.md) | Projection Group Keys, Generations, and Durable Frontiers | Accepted |
+| [0018](0018-uuidv7-generation-ownership-and-replay-boundaries.md) | UUIDv7 Generation, Ownership, and Replay Boundaries | Accepted |
+| [0019](0019-poc-operational-metadata-deferral.md) | POC Operational Metadata Deferral | Accepted |
+| [0020](0020-mcp-command-tool-name-normalization-and-compiler-ownership.md) | MCP Command Tool-Name Normalization and Compiler Ownership | Accepted |
+| [0021](0021-service-audit-target-registry-and-canonical-ordering.md) | Service-Audit Target Registry and Canonical Ordering | Accepted |
 
 The human architecture review on 2026-07-12 approved the direction represented
-by ADR-0001 through ADR-0012. ADR-0002, ADR-0003, ADR-0005, ADR-0006, ADR-0010,
-ADR-0011, and ADR-0013 through ADR-0016 have received exact-text acceptance;
-the remaining records stay Proposed until separately reviewed.
+by ADR-0001 through ADR-0012. The human maintainer accepted ADR-0001 through
+ADR-0007, ADR-0009 through ADR-0021, and their recorded companion amendments by
+2026-07-13. ADR-0008 remains Proposed for resource URIs, HTTP audience,
+stdio-over-gRPC transport, cursor presentation, and the remaining exact MCP
+fixtures; ADR-0020 separately accepts command tool-name normalization and its
+compiler/catalog ownership.
 
 ## Workflow
 

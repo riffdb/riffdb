@@ -2,10 +2,14 @@
 
 - **Status:** Accepted
 - **Direction approved:** 2026-07-13
-- **Exact text accepted:** 2026-07-13
+- **Exact text accepted:** 2026-07-13, clarified 2026-07-13
+- **Clarified by:** ADR-0004 (complete executable plan reference), ADR-0007
+  (unjournaled read-only service boundary), ADR-0012 (runtime result/fault
+  boundary), and ADR-0017 (bound projection group schema)
 - **Decision deadline:** Before WP-040 public interfaces or fixtures merge
 
-The human maintainer accepted this exact text on 2026-07-13.
+The human maintainer accepted this exact text and the companion clarifications
+below on 2026-07-13.
 
 ## Context
 
@@ -20,7 +24,7 @@ proto-owner process will carry the exact versioned bundle bytes. The semantic IR
 must therefore own a checked canonical encoding without coupling runtime crates
 to generated Protobuf types.
 
-## Proposed Decision
+## Decision
 
 ### Ownership and construction boundary
 
@@ -407,8 +411,10 @@ without advancing its frontier under ADR-0010. Projection filters accept only
 same-type equality, enum-value equality, and Boolean `&&` as accepted by
 ADR-0002; `!=`, ordering, `||`, and arithmetic filter nodes fail projection-plan
 validation. Group keys accept nonoptional Boolean, integer, decimal, money,
-string, bytes, timestamp, date, UUID, or enum values; their later durable storage
-envelope remains deferred to WP-170 under ADR-0016.
+string, bytes, timestamp, date, UUID, or enum values. Accepted ADR-0017 owns their
+canonical derived-state key/payload semantics; WP-060 freezes semantic projection
+DTOs, WP-065 their durable envelope, WP-070 persistence, and WP-170 worker/query
+behavior.
 
 Execution classification is read-only `0x01` or idempotent mutation `0x02`.
 The command locality and required-binding rules are those of ADR-0016. The only
@@ -622,8 +628,11 @@ command output schema. The shared service owns one later versioned generic
 operation-envelope schema and MCP mechanically composes it with the bundle's
 outcome union; neither service nor MCP maintains a parallel command-specific
 schema. WP-040 does not invent a sequence for an unjournaled read-only command.
-The exact read-only journaling and generic public result-envelope decision remains
-at the accepted ADR-0005 WP-100 deadline.
+Accepted ADR-0004, ADR-0007, and ADR-0012 close grammar-v1 read-only execution as
+unjournaled and outcome-recovery-free; the service result is `ReadOnlyExecuted`,
+and accepted ADR-0006 reserves public status `EXECUTED_READ_ONLY = 3` with exact
+absence sentinels. A durable read-only result or fault requires a future accepted
+ADR.
 
 ### Compatibility
 
@@ -702,23 +711,48 @@ For a transitively exposed optional entity field, the report contains its
 `RDB-K013` entity-field entry and one `RDB-K021` entry for each affected command
 outcome path; the latter raises the overall class to `RequiresExplicitVersion`.
 
+### 2026-07-13 companion clarifications
+
+ADR-0004's `ExecutablePlanRef` is the required checked historical command-plan
+identity at every admission/snapshot/intent/outcome/commit/provenance boundary:
+contract lineage, contract version, `ContractBundleHash`, stable `CommandId`, and
+command `PlanHash`. The bundle and plan hashes defined here remain unchanged;
+the complete tuple prevents active-plan substitution or ambiguous historical
+lookup.
+
+ADR-0012 owns the runtime result and durable admission disposition of the checked
+arithmetic/resource faults defined here. Runtime returns no `EvaluatedCommand` or
+`CommitIntent` for such a fault. Only the coordinator may dependency-validate and
+terminalize it as the closed non-commit `ExecutionFailed` admission state. This
+clarification does not turn a fault into a declared business outcome or alter IR
+arithmetic semantics.
+
+ADR-0017's immutable `ProjectionGroupSchema` contains the nonzero
+`ProjectionId`, group/measure types, codecs, and bounds, but not
+`ProjectionPlanHash` or `ProjectionIdentity`: its canonical bytes are already in
+the projection-plan-hash preimage. After that hash is computed or verified, the
+checked bundle exposes `BoundProjectionGroupSchema`, pairing the exact schema
+with contract lineage, projection ID, and plan hash. This avoids a self-reference
+and is the only projection IR value the storage projection-schema module may
+consume; contract IR retains no storage dependency.
+
 ## Options Considered
 
-1. **Deterministic allocation plus explicit lineage ledger:** Proposed. Source IDs
+1. **Deterministic allocation plus explicit lineage ledger:** Selected. Source IDs
    would enlarge grammar v1, while name/hash-only reconstruction cannot preserve
    tombstones across evolution.
-2. **Checked custom IR codec:** Proposed. It preserves IR ownership and the
+2. **Checked custom IR codec:** Selected. It preserves IR ownership and the
    WP-040 dependency graph; a later Protobuf catalog record carries rather than
    redefines the bytes.
 3. **Protobuf as the IR itself:** Rejected for v1 because WP-040 does not depend on
    WP-020 and semantic IR crates must not depend on generated transport/durable
    DTOs.
-4. **One POC execution version:** Proposed. A compatibility window without an
+4. **One POC execution version:** Selected. A compatibility window without an
    existing historical format would be speculative.
-5. **Typed command/projection hashes plus aggregate root:** Proposed. One
+5. **Typed command/projection hashes plus aggregate root:** Selected. One
    monolithic hash would invalidate unrelated command identity and make
    uncertainty recovery and projection rebuild identity coarser.
-6. **Compiler-derived ordered schema IR:** Proposed. Hand-maintained MCP schemas
+6. **Compiler-derived ordered schema IR:** Selected. Hand-maintained MCP schemas
    violate `MCP-020`, and generic map serialization is not canonical.
 
 ## Consequences
@@ -783,7 +817,9 @@ never reaches runtime.
 
 - **Requirements:** `ID-003`, `ID-005`, `CMP-001`, `CMP-020` through `CMP-022`,
   `DSL-003` through `DSL-012`, `TXN-001`, `MCP-020`
-- **Defines or blocks:** `WP-040`, `WP-050`, `WP-080`
+- **Defines or blocks:** focused foundational `WP-010` follow-up, `WP-040`,
+  `WP-050`, `WP-060`, formal durable-schema `WP-065`, `WP-080`, and formal
+  public-schema `WP-127`
 - **Final evidence:** `WP-140`, `WP-200`
 
 ## Decision Deadline

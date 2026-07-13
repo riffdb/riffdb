@@ -11,6 +11,7 @@ digraph G {
   wp045 [label="WP-045\nPostgreSQL comparison baseline", style="rounded,filled,dashed", fillcolor="#FAFAFA"];
   wp050 [label="WP-050\nContract catalog", fillcolor="#E4F0F2"];
   wp060 [label="WP-060\nStorage semantic API", fillcolor="#EEF5F7"];
+  wp065 [label="WP-065\nDurable semantic record schema", fillcolor="#E4F0F2"];
   wp070 [label="WP-070\nredb engine", fillcolor="#E4F0F2"];
   wp075 [label="WP-075\nFjall semantic comparison", style="rounded,filled,dashed", fillcolor="#FAFAFA"];
   wp080 [label="WP-080\nDeterministic runtime", fillcolor="#EEF5F7"];
@@ -19,6 +20,7 @@ digraph G {
   wp110 [label="WP-110\nAuthorization", fillcolor="#E4F0F2"];
   wp120 [label="WP-120\nApplication service", fillcolor="#E4F0F2", penwidth=1.6];
   wp125 [label="WP-125\nService comparison adapter", style="rounded,filled,dashed", fillcolor="#FAFAFA"];
+  wp127 [label="WP-127\nPublic API schemas", fillcolor="#E4F0F2"];
   wp130 [label="WP-130\ngRPC + Rust SDK", fillcolor="#E4F0F2"];
   wp135 [label="WP-135\nSDK/gRPC comparison adapter", style="rounded,filled,dashed", fillcolor="#FAFAFA"];
   wp140 [label="WP-140\nNative MCP", fillcolor="#CFE6E8"];
@@ -28,7 +30,7 @@ digraph G {
   wp180 [label="WP-180\nObservability", fillcolor="#CFE6E8"];
   wp185 [label="WP-185\nServer composition", fillcolor="#CFE6E8", penwidth=1.6];
   wp190 [label="WP-190\nIntegrated crash harness", fillcolor="#CFE6E8"];
-  wp200 [label="WP-200\nAcceptance + release", fillcolor="#DCEFF0", penwidth=1.8];
+  wp200 [label="WP-200\nAcceptance + release", fillcolor="#CFE6E8", penwidth=1.8];
 
   key [shape=plain, label="Gate colors: P0  light • P1  medium • P2  green • dashed  non-gating evidence"];
 
@@ -37,14 +39,17 @@ digraph G {
   wp030 -> wp040;
   wp010 -> {wp040 wp060};
   wp020 -> {wp050 wp060 wp070};
-  wp040 -> {wp045 wp050 wp080};
-  wp060 -> {wp050 wp070 wp075 wp080};
+  wp040 -> {wp045 wp050 wp060 wp080};
+  wp020 -> wp065;
+  wp060 -> {wp050 wp065 wp070 wp075 wp080};
+  wp065 -> wp070;
   wp070 -> wp075;
   wp010 -> wp110;
   wp070 -> wp110;
   {wp050 wp070 wp080 wp090 wp110} -> wp100;
   {wp050 wp100 wp110} -> wp120;
-  {wp020 wp120} -> wp130;
+  {wp020 wp120} -> wp127;
+  {wp020 wp120 wp127} -> wp130;
   {wp045 wp120} -> wp125;
   {wp125 wp130} -> wp135;
   {wp040 wp120 wp130} -> wp140;
