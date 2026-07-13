@@ -8,6 +8,7 @@ use riffdb_types::{ProvenanceId, RequestId};
 
 use crate::v1;
 use crate::value::{MAX_PROTOCOL_NAME_BYTES, validate_value};
+use crate::wire::{self, PreflightError};
 
 /// Default maximum encoded unary command request size.
 pub const MAX_EXECUTE_REQUEST_BYTES: usize = 1024 * 1024;
@@ -26,6 +27,7 @@ pub fn decode_execute_request(input: &[u8]) -> Result<v1::ExecuteCommandRequest,
     if input.len() > MAX_EXECUTE_REQUEST_BYTES {
         return Err(ExecuteWireError::MessageTooLarge);
     }
+    preflight_result(wire::execute_request(input))?;
     let request = v1::ExecuteCommandRequest::decode(input)
         .map_err(|_| ExecuteWireError::MalformedEncoding)?;
     validate_execute_request(&request)?;
@@ -36,9 +38,6 @@ pub fn decode_execute_request(input: &[u8]) -> Result<v1::ExecuteCommandRequest,
 pub fn validate_execute_request(
     request: &v1::ExecuteCommandRequest,
 ) -> Result<(), ExecuteWireError> {
-    if request.encoded_len() > MAX_EXECUTE_REQUEST_BYTES {
-        return Err(ExecuteWireError::MessageTooLarge);
-    }
     let request_id: [u8; 16] = request
         .request_id
         .as_slice()
@@ -52,7 +51,11 @@ pub fn validate_execute_request(
             .as_ref()
             .ok_or(ExecuteWireError::MissingValue)?,
     )
-    .map_err(|_| ExecuteWireError::InvalidValue)
+    .map_err(|_| ExecuteWireError::InvalidValue)?;
+    if request.encoded_len() > MAX_EXECUTE_REQUEST_BYTES {
+        return Err(ExecuteWireError::MessageTooLarge);
+    }
+    Ok(())
 }
 
 /// Decodes and structurally validates a bounded Execute response.
@@ -62,6 +65,7 @@ pub fn decode_execute_response(
     if input.len() > MAX_EXECUTE_RESPONSE_BYTES {
         return Err(ExecuteWireError::MessageTooLarge);
     }
+    preflight_result(wire::execute_response(input))?;
     let response = v1::ExecuteCommandResponse::decode(input)
         .map_err(|_| ExecuteWireError::MalformedEncoding)?;
     validate_execute_response(&response)?;
@@ -72,9 +76,6 @@ pub fn decode_execute_response(
 pub fn validate_execute_response(
     response: &v1::ExecuteCommandResponse,
 ) -> Result<(), ExecuteWireError> {
-    if response.encoded_len() > MAX_EXECUTE_RESPONSE_BYTES {
-        return Err(ExecuteWireError::MessageTooLarge);
-    }
     match v1::execute_command_response::CompletionStatus::try_from(response.status) {
         Ok(v1::execute_command_response::CompletionStatus::Committed)
         | Ok(v1::execute_command_response::CompletionStatus::Replayed) => {}
@@ -94,15 +95,24 @@ pub fn validate_execute_response(
     )
     .map_err(|_| ExecuteWireError::InvalidValue)?;
     validate_provenance_uri(&response.provenance_uri)?;
-    if response.durability_mode.is_empty()
-        || response.durability_mode.len() > MAX_DURABILITY_MODE_BYTES
-        || !response.durability_mode.bytes().all(|byte| {
-            byte.is_ascii_lowercase() || byte.is_ascii_digit() || matches!(byte, b'_' | b'-')
-        })
-    {
+    if !matches!(
+        response.durability_mode.as_str(),
+        "sync" | "group" | "memory"
+    ) {
         return Err(ExecuteWireError::InvalidDurabilityMode);
     }
+    if response.encoded_len() > MAX_EXECUTE_RESPONSE_BYTES {
+        return Err(ExecuteWireError::MessageTooLarge);
+    }
     Ok(())
+}
+
+fn preflight_result(result: Result<(), PreflightError>) -> Result<(), ExecuteWireError> {
+    match result {
+        Ok(()) => Ok(()),
+        Err(PreflightError::Malformed) => Err(ExecuteWireError::MalformedEncoding),
+        Err(PreflightError::LimitExceeded) => Err(ExecuteWireError::PreflightLimitExceeded),
+    }
 }
 
 fn validate_protocol_name(name: &str) -> Result<(), ExecuteWireError> {
@@ -161,6 +171,8 @@ pub enum ExecuteWireError {
     MessageTooLarge,
     /// Protobuf decoding failed.
     MalformedEncoding,
+    /// A nested wire length, item count, or depth exceeds its pre-allocation limit.
+    PreflightLimitExceeded,
     /// The request identifier is not an exact UUIDv7.
     InvalidRequestId,
     /// A command or outcome name is empty or too long.
@@ -268,5 +280,29 @@ mod tests {
                 Err(ExecuteWireError::InvalidProvenanceUri)
             );
         }
+    }
+
+    #[test]
+    fn response_accepts_only_specified_durability_modes() {
+        let mut response = v1::ExecuteCommandResponse {
+            status: v1::execute_command_response::CompletionStatus::Committed as i32,
+            commit_sequence: 1,
+            contract_version: 2,
+            plan_hash: vec![7; 32],
+            outcome_type: "Reserved".to_owned(),
+            outcome: Some(canonical_value_to_proto(&CanonicalValue::Null).expect("valid outcome")),
+            provenance_uri: "riffdb://provenance/019bf6aa-a640-7de6-89c9-8a7f70bbbd23".to_owned(),
+            durability_mode: String::new(),
+        };
+
+        for mode in ["sync", "group", "memory"] {
+            response.durability_mode = mode.to_owned();
+            validate_execute_response(&response).expect("specified durability mode");
+        }
+        response.durability_mode = "eventual".to_owned();
+        assert_eq!(
+            validate_execute_response(&response),
+            Err(ExecuteWireError::InvalidDurabilityMode)
+        );
     }
 }

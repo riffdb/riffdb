@@ -1,5 +1,14 @@
 
-b
-compatibility_probe.protoriffdb.testing.v1"*
+È
+compatibility_probe.protoriffdb.testing.v1&riffdb/testing/v1/probe_metadata.proto"h
 CompatibilityProbe
-value (Rvaluebproto3
+value (Rvalue<
+metadata (2 .riffdb.testing.v1.ProbeMetadataRmetadatabproto3
+d
+$riffdb/testing/v1/probe_common.protoriffdb.testing.v1"!
+ProbeSource
+name (	Rnamebproto3
+²
+&riffdb/testing/v1/probe_metadata.protoriffdb.testing.v1$riffdb/testing/v1/probe_common.proto"G
+ProbeMetadata6
+source (2.riffdb.testing.v1.ProbeSourceRsourcebproto3

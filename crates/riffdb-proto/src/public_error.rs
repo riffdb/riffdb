@@ -14,6 +14,7 @@ use riffdb_errors::{
 use riffdb_types::{ContractVersion, FieldId, IncidentId};
 
 use crate::v1;
+use crate::wire::{self, PreflightError};
 
 /// Conservative ceiling for the bounded public error envelope.
 pub const MAX_PUBLIC_ERROR_BYTES: usize = 16 * 1024;
@@ -57,6 +58,15 @@ pub fn public_error_to_proto(error: &DomainPublicError) -> v1::PublicError {
 pub fn decode_public_error(input: &[u8]) -> Result<DomainPublicError, PublicErrorWireError> {
     if input.len() > MAX_PUBLIC_ERROR_BYTES {
         return Err(PublicErrorWireError::MessageTooLarge);
+    }
+    match wire::public_error(input) {
+        Ok(()) => {}
+        Err(PreflightError::Malformed) => {
+            return Err(PublicErrorWireError::MalformedEncoding);
+        }
+        Err(PreflightError::LimitExceeded) => {
+            return Err(PublicErrorWireError::PreflightLimitExceeded);
+        }
     }
     let wire =
         v1::PublicError::decode(input).map_err(|_| PublicErrorWireError::MalformedEncoding)?;
@@ -252,6 +262,8 @@ pub enum PublicErrorWireError {
     MessageTooLarge,
     /// Protobuf decoding failed.
     MalformedEncoding,
+    /// A nested wire length or collection count exceeds its pre-allocation limit.
+    PreflightLimitExceeded,
     /// The error kind is absent or not recognized.
     UnknownKind,
     /// Redundant kind, code, message, recovery, or detail fields disagree.

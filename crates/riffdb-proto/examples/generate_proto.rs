@@ -2,6 +2,7 @@
 
 //! Pure-Rust, deterministic Protobuf artifact generator.
 
+use std::collections::{BTreeMap, BTreeSet};
 use std::env;
 use std::error::Error;
 use std::fmt::Write as _;
@@ -9,6 +10,7 @@ use std::fs;
 use std::io;
 use std::path::{Component, Path, PathBuf};
 
+use crc::{CRC_32_ISCSI, Crc};
 use prost::Message;
 use prost_types::{DescriptorProto, FileDescriptorSet};
 use protox::Compiler;
@@ -18,12 +20,14 @@ use riffdb_errors::{
 };
 use riffdb_proto::{
     canonical_value_to_proto,
-    envelope::{PayloadValidationError, RecordSchema, encode},
-    public_error_to_proto, v1,
+    envelope::{MAX_STORED_ENVELOPE_BYTES, STORAGE_FORMAT_VERSION_V1},
+    public_error_to_proto,
+    storage::v1::StoredEnvelope,
+    v1,
 };
 use riffdb_types::{
     CanonicalValue, ContractVersion, CurrencyCode, Date, Decimal, DecimalSpec, EnumTypeId,
-    EnumVariantId, FieldId, IncidentId, Money, Timestamp,
+    EnumVariantId, FieldId, IncidentId, Money, Timestamp, hash_schema,
 };
 
 const PRODUCTION_SOURCES: &[&str] = &[
@@ -36,6 +40,7 @@ const PRODUCTION_SOURCES: &[&str] = &[
 const PROBE_SOURCE: &str = "compatibility_probe.proto";
 const PROBE_RECORD_TYPE: &str = "riffdb.testing.v1.CompatibilityProbe";
 const PROBE_PAYLOAD: &[u8] = &[0x08, 0x2a];
+const CRC_32C: Crc<u32> = Crc::<u32>::new(&CRC_32_ISCSI);
 const EXPECTED_METHODS: &[(&str, &str, bool)] = &[
     ("AdminService", "CreateCapability", false),
     ("AdminService", "Health", false),
@@ -62,17 +67,14 @@ fn main() -> Result<(), Box<dyn Error>> {
         .and_then(Path::parent)
         .ok_or_else(|| io::Error::other("riffdb-proto is not inside the workspace"))?;
 
-    let production = compile_descriptors(&repository_root.join("proto"), PRODUCTION_SOURCES)?;
+    let production_root = repository_root.join("proto");
+    validate_production_source_inventory(&production_root, PRODUCTION_SOURCES)?;
+    let production = compile_descriptors(&production_root, PRODUCTION_SOURCES)?;
     validate_service_inventory(&production)?;
     let probe = compile_descriptors(&repository_root.join("fixtures/proto"), &[PROBE_SOURCE])?;
+    validate_record_exists(&probe, PROBE_RECORD_TYPE)?;
     let probe_descriptor = probe.encode_to_vec();
-    let probe_schema = RecordSchema::new(
-        PROBE_RECORD_TYPE,
-        &probe_descriptor,
-        PROBE_PAYLOAD.len(),
-        validate_probe_payload,
-    )?;
-    let probe_envelope = encode(&probe_schema, PROBE_PAYLOAD)?;
+    let probe_envelope = encode_probe_envelope(&probe_descriptor)?;
 
     generate_rust(&output_root, production.clone())?;
     write_artifact(
@@ -107,14 +109,6 @@ fn main() -> Result<(), Box<dyn Error>> {
     )?;
 
     Ok(())
-}
-
-fn validate_probe_payload(payload: &[u8]) -> Result<(), PayloadValidationError> {
-    if payload == PROBE_PAYLOAD {
-        Ok(())
-    } else {
-        Err(PayloadValidationError::Malformed)
-    }
 }
 
 fn parse_output_root() -> Result<PathBuf, Box<dyn Error>> {
@@ -152,7 +146,117 @@ fn compile_descriptors(
     descriptor_set
         .file
         .sort_by(|left, right| left.name().cmp(right.name()));
+    validate_descriptor_set(&descriptor_set, source_names)?;
     Ok(descriptor_set)
+}
+
+fn validate_descriptor_set(
+    descriptor_set: &FileDescriptorSet,
+    roots: &[&str],
+) -> Result<(), Box<dyn Error>> {
+    if descriptor_set
+        .file
+        .iter()
+        .any(|file| file.source_code_info.is_some())
+    {
+        return Err(io::Error::other("canonical descriptors must omit source info").into());
+    }
+
+    let actual_names = descriptor_set
+        .file
+        .iter()
+        .map(|file| file.name().to_owned())
+        .collect::<Vec<_>>();
+    let mut sorted_names = actual_names.clone();
+    sorted_names.sort();
+    if actual_names != sorted_names {
+        return Err(io::Error::other("canonical descriptor files are not sorted").into());
+    }
+
+    let files = descriptor_set
+        .file
+        .iter()
+        .map(|file| (file.name(), file))
+        .collect::<BTreeMap<_, _>>();
+    if files.len() != descriptor_set.file.len() {
+        return Err(io::Error::other("descriptor set contains duplicate file names").into());
+    }
+
+    let mut pending = roots
+        .iter()
+        .map(|root| (*root).to_owned())
+        .collect::<Vec<_>>();
+    let mut closure = BTreeSet::new();
+    while let Some(name) = pending.pop() {
+        if !closure.insert(name.clone()) {
+            continue;
+        }
+        let file = files.get(name.as_str()).ok_or_else(|| {
+            io::Error::other(format!("descriptor transitive closure is missing {name}"))
+        })?;
+        pending.extend(file.dependency.iter().cloned());
+    }
+
+    let actual = files.keys().copied().collect::<BTreeSet<_>>();
+    let expected = closure.iter().map(String::as_str).collect::<BTreeSet<_>>();
+    if actual != expected {
+        return Err(io::Error::other(
+            "descriptor set is not the exact transitive closure of its roots",
+        )
+        .into());
+    }
+    Ok(())
+}
+
+fn validate_record_exists(
+    descriptor_set: &FileDescriptorSet,
+    record_type: &str,
+) -> Result<(), Box<dyn Error>> {
+    let exists = descriptor_set
+        .file
+        .iter()
+        .any(|file| message_exists(file.package(), &file.message_type, record_type));
+    if !exists {
+        return Err(io::Error::other(format!(
+            "descriptor set does not define durable record type {record_type}"
+        ))
+        .into());
+    }
+    Ok(())
+}
+
+fn message_exists(prefix: &str, messages: &[DescriptorProto], target: &str) -> bool {
+    messages.iter().any(|message| {
+        let full_name = if prefix.is_empty() {
+            message.name().to_owned()
+        } else {
+            format!("{prefix}.{}", message.name())
+        };
+        full_name == target || message_exists(&full_name, &message.nested_type, target)
+    })
+}
+
+fn encode_probe_envelope(descriptor_set: &[u8]) -> Result<Vec<u8>, Box<dyn Error>> {
+    if descriptor_set.len() > MAX_STORED_ENVELOPE_BYTES {
+        return Err(io::Error::other("probe descriptor set exceeds the hard limit").into());
+    }
+    let record_type_len = u16::try_from(PROBE_RECORD_TYPE.len())?;
+    let descriptor_len = u64::try_from(descriptor_set.len())?;
+    let mut schema_frame =
+        Vec::with_capacity(2 + PROBE_RECORD_TYPE.len() + 8 + descriptor_set.len());
+    schema_frame.extend_from_slice(&record_type_len.to_be_bytes());
+    schema_frame.extend_from_slice(PROBE_RECORD_TYPE.as_bytes());
+    schema_frame.extend_from_slice(&descriptor_len.to_be_bytes());
+    schema_frame.extend_from_slice(descriptor_set);
+
+    Ok(StoredEnvelope {
+        storage_format_version: STORAGE_FORMAT_VERSION_V1,
+        record_type: PROBE_RECORD_TYPE.to_owned(),
+        payload: PROBE_PAYLOAD.to_vec(),
+        payload_crc32c: CRC_32C.checksum(PROBE_PAYLOAD),
+        schema_hash: hash_schema(&schema_frame).as_bytes().to_vec(),
+    }
+    .encode_to_vec())
 }
 
 fn validate_file_name(name: &str) -> Result<(), Box<dyn Error>> {
@@ -169,6 +273,72 @@ fn validate_file_name(name: &str) -> Result<(), Box<dyn Error>> {
     Ok(())
 }
 
+fn validate_production_source_inventory(
+    root: &Path,
+    expected: &[&str],
+) -> Result<(), Box<dyn Error>> {
+    let mut actual = Vec::new();
+    collect_proto_sources(root, root, &mut actual)?;
+    actual.sort();
+    let mut expected = expected
+        .iter()
+        .map(|name| (*name).to_owned())
+        .collect::<Vec<_>>();
+    expected.sort();
+    if actual != expected {
+        return Err(io::Error::other(format!(
+            "production proto source inventory differs from the generator roots: expected {expected:?}, found {actual:?}"
+        ))
+        .into());
+    }
+    Ok(())
+}
+
+fn collect_proto_sources(
+    root: &Path,
+    directory: &Path,
+    output: &mut Vec<String>,
+) -> Result<(), Box<dyn Error>> {
+    let mut entries = fs::read_dir(directory)?.collect::<Result<Vec<_>, _>>()?;
+    entries.sort_by_key(std::fs::DirEntry::file_name);
+    for entry in entries {
+        let path = entry.path();
+        let file_type = entry.file_type()?;
+        if file_type.is_dir() {
+            collect_proto_sources(root, &path, output)?;
+        } else if path
+            .extension()
+            .is_some_and(|extension| extension == "proto")
+        {
+            if !file_type.is_file() {
+                return Err(io::Error::other(format!(
+                    "production proto source is not a regular file: {}",
+                    path.display()
+                ))
+                .into());
+            }
+            let relative = path.strip_prefix(root)?;
+            let mut segments = Vec::new();
+            for component in relative.components() {
+                let Component::Normal(segment) = component else {
+                    return Err(io::Error::other(format!(
+                        "production proto path is not normalized: {}",
+                        relative.display()
+                    ))
+                    .into());
+                };
+                segments.push(
+                    segment
+                        .to_str()
+                        .ok_or_else(|| io::Error::other("production proto path is not UTF-8"))?,
+                );
+            }
+            output.push(segments.join("/"));
+        }
+    }
+    Ok(())
+}
+
 fn validate_service_inventory(descriptor_set: &FileDescriptorSet) -> Result<(), Box<dyn Error>> {
     if descriptor_set
         .file
@@ -176,6 +346,27 @@ fn validate_service_inventory(descriptor_set: &FileDescriptorSet) -> Result<(), 
         .any(|file| !file.service.is_empty() && file.package() != "riffdb.v1")
     {
         return Err(io::Error::other("public services must remain in riffdb.v1").into());
+    }
+
+    let actual_services = descriptor_set
+        .file
+        .iter()
+        .flat_map(|file| file.service.iter().map(|service| service.name().to_owned()))
+        .collect::<BTreeSet<_>>();
+    let expected_services = EXPECTED_METHODS
+        .iter()
+        .map(|(service, _, _)| (*service).to_owned())
+        .collect::<BTreeSet<_>>();
+    let service_count = descriptor_set
+        .file
+        .iter()
+        .map(|file| file.service.len())
+        .sum::<usize>();
+    if actual_services != expected_services || service_count != expected_services.len() {
+        return Err(io::Error::other(
+            "service descriptors differ from the accepted five-service baseline",
+        )
+        .into());
     }
 
     let mut actual = descriptor_set

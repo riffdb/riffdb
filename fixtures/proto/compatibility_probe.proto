@@ -2,8 +2,11 @@ syntax = "proto3";
 
 package riffdb.testing.v1;
 
+import "riffdb/testing/v1/probe_metadata.proto";
+
 // Test-only payload for freezing durable-envelope compatibility without
 // introducing a production durable record ahead of its semantic owner.
 message CompatibilityProbe {
   uint64 value = 1;
+  ProbeMetadata metadata = 2;
 }
