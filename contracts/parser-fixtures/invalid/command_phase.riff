@@ -1,0 +1,6 @@
+contract InvalidPhase version 1 {
+  command OutOfOrder {
+    return Done {}
+    input value: i64
+  }
+}

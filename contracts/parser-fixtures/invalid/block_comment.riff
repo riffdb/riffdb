@@ -1,0 +1,3 @@
+contract BlockComment version 1 {
+  /* block comments are not grammar-version-1 syntax */
+}

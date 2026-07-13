@@ -161,7 +161,9 @@ jobs:
       - name: Install pinned Rust toolchain
         run: rustup toolchain install "$RUST_TOOLCHAIN" --profile minimal --component rustfmt,clippy
       - name: Check generated artifacts
-        run: ./scripts/check-generated
+        run: |
+          ./scripts/check-generated
+          ./crates/riffdb-contract-syntax/generate-language-reference --check
 
   workspace-policy:
     name: Workspace policy
@@ -177,3 +179,47 @@ jobs:
         run: ./scripts/check-workspace-policy
       - name: Check requirement coverage
         run: ./scripts/check-requirement-coverage
+
+  parser-fuzz:
+    name: Parser fuzz smoke
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - name: Load pinned tool versions
+        run: |
+          source scripts/tool-versions
+          printf 'RIFFDB_CARGO_FUZZ_VERSION=%s\n' "$RIFFDB_CARGO_FUZZ_VERSION" >> "$GITHUB_ENV"
+          printf 'RIFFDB_FUZZ_TOOLCHAIN=%s\n' "$RIFFDB_FUZZ_TOOLCHAIN" >> "$GITHUB_ENV"
+          printf 'RIFFDB_CARGO_DENY_VERSION=%s\n' "$RIFFDB_CARGO_DENY_VERSION" >> "$GITHUB_ENV"
+          printf 'RIFFDB_CARGO_AUDIT_VERSION=%s\n' "$RIFFDB_CARGO_AUDIT_VERSION" >> "$GITHUB_ENV"
+      - name: Install pinned fuzz toolchain
+        run: rustup toolchain install "$RIFFDB_FUZZ_TOOLCHAIN" --profile minimal
+      - name: Cache Cargo registry
+        uses: actions/cache@5a3ec84eff668545956fd18022155c47e93e2684 # v4.2.3
+        with:
+          path: ~/.cargo/registry
+          key: cargo-registry-fuzz-${{ runner.os }}-${{ hashFiles('Cargo.lock', 'fuzz/Cargo.lock', 'scripts/tool-versions') }}
+      - name: Cache Cargo Git sources
+        uses: actions/cache@5a3ec84eff668545956fd18022155c47e93e2684 # v4.2.3
+        with:
+          path: ~/.cargo/git
+          key: cargo-git-fuzz-${{ runner.os }}-${{ hashFiles('Cargo.lock', 'fuzz/Cargo.lock', 'scripts/tool-versions') }}
+      - name: Cache fuzz target
+        uses: actions/cache@5a3ec84eff668545956fd18022155c47e93e2684 # v4.2.3
+        with:
+          path: fuzz/target
+          key: target-fuzz-${{ runner.os }}-${{ env.RIFFDB_FUZZ_TOOLCHAIN }}-${{ hashFiles('Cargo.lock', 'fuzz/Cargo.lock') }}
+      - name: Install pinned fuzz policy tools
+        run: |
+          cargo install --locked --version "$RIFFDB_CARGO_FUZZ_VERSION" cargo-fuzz
+          cargo install --locked --version "$RIFFDB_CARGO_DENY_VERSION" cargo-deny
+          cargo install --locked --version "$RIFFDB_CARGO_AUDIT_VERSION" cargo-audit
+      - name: Check fuzz dependency policy
+        run: |
+          cargo deny --manifest-path fuzz/Cargo.toml check --config fuzz/deny.toml
+          cargo audit --file fuzz/Cargo.lock
+      - name: Run parser fuzz smoke
+        run: cargo +"$RIFFDB_FUZZ_TOOLCHAIN" fuzz run contract_parser -- -max_total_time=30

@@ -1,0 +1,22 @@
+[package]
+name = "riffdb-contract-syntax-fuzz"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = { version = "0.4.13" }
+riffdb-contract-syntax = { version = "0.1.0", path = "../crates/riffdb-contract-syntax" }
+
+[[bin]]
+name = "contract_parser"
+path = "fuzz_targets/contract_parser.rs"
+test = false
+doc = false
+bench = false
+
+[workspace]
+members = ["."]

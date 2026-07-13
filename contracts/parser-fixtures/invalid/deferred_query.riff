@@ -1,0 +1,4 @@
+contract Deferred version 1 {
+  query FindItem {
+  }
+}

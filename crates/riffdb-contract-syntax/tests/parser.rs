@@ -1,0 +1,522 @@
+//! Parser corpus, AST, diagnostic, and safety-bound tests.
+
+use proptest::prelude::*;
+use riffdb_contract_syntax::ast::{BinaryOperator, Declaration, Effect, Expression, Literal};
+use riffdb_contract_syntax::diagnostic::SyntaxDiagnosticCode;
+use riffdb_contract_syntax::limits::{MAX_EXPECTED_TOKENS, MAX_SYNTAX_DIAGNOSTICS};
+use riffdb_contract_syntax::{parse_contract, parse_contract_bytes};
+use std::fmt::Write as _;
+
+const LEGAL_SPEND: &str = include_str!("../../../contracts/parser-fixtures/valid/legal_spend.riff");
+const FULL_SURFACE: &str =
+    include_str!("../../../contracts/parser-fixtures/valid/full_surface.riff");
+
+#[test]
+fn invalid_corpus_matches_golden_diagnostics() {
+    for (source, golden) in [
+        (
+            include_str!("../../../contracts/parser-fixtures/invalid/block_comment.riff"),
+            include_str!("../../../contracts/parser-fixtures/invalid/block_comment.diag"),
+        ),
+        (
+            include_str!("../../../contracts/parser-fixtures/invalid/command_phase.riff"),
+            include_str!("../../../contracts/parser-fixtures/invalid/command_phase.diag"),
+        ),
+        (
+            include_str!("../../../contracts/parser-fixtures/invalid/deferred_query.riff"),
+            include_str!("../../../contracts/parser-fixtures/invalid/deferred_query.diag"),
+        ),
+        (
+            include_str!("../../../contracts/parser-fixtures/invalid/deferred_state_machine.riff"),
+            include_str!("../../../contracts/parser-fixtures/invalid/deferred_state_machine.diag"),
+        ),
+        (
+            include_str!("../../../contracts/parser-fixtures/invalid/generic_call.riff"),
+            include_str!("../../../contracts/parser-fixtures/invalid/generic_call.diag"),
+        ),
+    ] {
+        let diagnostics = parse_contract(source).expect_err("invalid fixture must fail");
+        assert_eq!(diagnostic_snapshot(&diagnostics), golden);
+    }
+}
+
+fn diagnostic_snapshot(diagnostics: &riffdb_contract_syntax::SyntaxDiagnostics) -> String {
+    let mut snapshot = String::new();
+    for diagnostic in diagnostics.as_slice() {
+        snapshot.push_str(&format!(
+            "code={}\nspan={}..{}\nexpected={:?}\n",
+            diagnostic.code().as_str(),
+            diagnostic.span().start(),
+            diagnostic.span().end(),
+            diagnostic.expected(),
+        ));
+    }
+    snapshot
+}
+
+#[test]
+fn parses_the_checked_valid_corpus() {
+    let legal_spend = parse_contract(LEGAL_SPEND).expect("LegalSpend must parse");
+    assert_eq!(legal_spend.contract.value.name.value, "LegalSpend");
+    assert_eq!(legal_spend.contract.value.version.value, "1");
+    assert_eq!(legal_spend.contract.value.declarations.len(), 5);
+
+    let full_surface = parse_contract(FULL_SURFACE).expect("full grammar surface must parse");
+    assert_eq!(full_surface.contract.value.name.value, "Inventory");
+    assert_eq!(full_surface.contract.value.declarations.len(), 7);
+    assert!(matches!(
+        full_surface.contract.value.declarations[0].value,
+        Declaration::Enum(_)
+    ));
+}
+
+#[test]
+fn preserves_exact_half_open_source_spans() {
+    let source = "contract A version 7 { event E { value: i64 } }";
+    let document = parse_contract(source).expect("small contract must parse");
+    assert_eq!(document.contract.span.start(), 0);
+    assert_eq!(document.contract.span.end() as usize, source.len());
+    assert_eq!(document.contract.value.name.span.start(), 9);
+    assert_eq!(document.contract.value.name.span.end(), 10);
+    assert_eq!(document.contract.value.version.span.start(), 19);
+    assert_eq!(document.contract.value.version.span.end(), 20);
+}
+
+#[test]
+fn date_is_contextual_only_as_a_transaction_path_segment() {
+    let path_source = concat!(
+        "contract C version 1 { command C { ",
+        "return Done { value: tx.date } } }"
+    );
+    assert!(parse_contract(path_source).is_ok());
+
+    let field_source = "contract C version 1 { event E { date: date } }";
+    let diagnostics = parse_contract(field_source).expect_err("date cannot be a field name");
+    assert_eq!(
+        diagnostics.as_slice()[0].code(),
+        SyntaxDiagnosticCode::UnexpectedToken
+    );
+}
+
+#[test]
+fn expression_precedence_is_fixed_and_left_associative() {
+    let source = concat!(
+        "contract P version 1 { command C { ",
+        "return Done { value: 1 + 2 * 3 - 4 == 3 && !false || null == null } ",
+        "} }"
+    );
+    let document = parse_contract(source).expect("precedence contract must parse");
+    let Declaration::Command(command) = &document.contract.value.declarations[0].value else {
+        panic!("expected command declaration");
+    };
+    let expression = &command
+        .return_clause
+        .value
+        .outcome
+        .value
+        .payload
+        .value
+        .fields[0]
+        .value
+        .value;
+
+    let Expression::Binary { operator, left, .. } = &expression.value else {
+        panic!("expected outer binary expression");
+    };
+    assert_eq!(operator.value, BinaryOperator::Or);
+    let Expression::Binary {
+        operator: and_operator,
+        left: equality,
+        ..
+    } = &left.value
+    else {
+        panic!("expected and expression");
+    };
+    assert_eq!(and_operator.value, BinaryOperator::And);
+    let Expression::Binary {
+        operator: equality_operator,
+        left: subtraction,
+        ..
+    } = &equality.value
+    else {
+        panic!("expected equality expression");
+    };
+    assert_eq!(equality_operator.value, BinaryOperator::Equal);
+    let Expression::Binary {
+        operator: subtraction_operator,
+        left: addition,
+        ..
+    } = &subtraction.value
+    else {
+        panic!("expected subtraction expression");
+    };
+    assert_eq!(subtraction_operator.value, BinaryOperator::Subtract);
+    let Expression::Binary {
+        operator: addition_operator,
+        right: multiplication,
+        ..
+    } = &addition.value
+    else {
+        panic!("expected addition expression");
+    };
+    assert_eq!(addition_operator.value, BinaryOperator::Add);
+    assert!(matches!(
+        multiplication.value,
+        Expression::Binary { ref operator, .. } if operator.value == BinaryOperator::Multiply
+    ));
+}
+
+#[test]
+fn parses_source_spelling_without_decoding_or_typing_literals() {
+    let source = concat!(
+        "contract L version 0001 { command C { ",
+        "return Done { unsigned: 00042, decimal_value: 001.2300, text: \"a\\n\\u0021\" } ",
+        "} }"
+    );
+    let document = parse_contract(source).expect("literal contract must parse");
+    assert_eq!(document.contract.value.version.value, "0001");
+    let Declaration::Command(command) = &document.contract.value.declarations[0].value else {
+        panic!("expected command declaration");
+    };
+    let fields = &command
+        .return_clause
+        .value
+        .outcome
+        .value
+        .payload
+        .value
+        .fields;
+    assert!(matches!(
+        fields[0].value.value.value,
+        Expression::Literal(ref literal) if literal.value == Literal::UInt("00042".to_owned())
+    ));
+    assert!(matches!(
+        fields[1].value.value.value,
+        Expression::Literal(ref literal)
+            if literal.value == Literal::FixedDecimal("001.2300".to_owned())
+    ));
+    assert!(matches!(
+        fields[2].value.value.value,
+        Expression::Literal(ref literal)
+            if literal.value == Literal::String("\"a\\n\\u0021\"".to_owned())
+    ));
+}
+
+#[test]
+fn enforces_command_phases_and_rejects_generic_calls() {
+    for fixture in [
+        include_str!("../../../contracts/parser-fixtures/invalid/command_phase.riff"),
+        include_str!("../../../contracts/parser-fixtures/invalid/generic_call.riff"),
+    ] {
+        let diagnostics = parse_contract(fixture).expect_err("invalid grammar must fail");
+        assert_eq!(diagnostics.len(), 1);
+        assert_eq!(
+            diagnostics.as_slice()[0].code(),
+            SyntaxDiagnosticCode::UnexpectedToken
+        );
+    }
+}
+
+#[test]
+fn deferred_syntax_and_block_comments_have_a_closed_failure_code() {
+    for fixture in [
+        include_str!("../../../contracts/parser-fixtures/invalid/block_comment.riff"),
+        include_str!("../../../contracts/parser-fixtures/invalid/deferred_query.riff"),
+        include_str!("../../../contracts/parser-fixtures/invalid/deferred_state_machine.riff"),
+    ] {
+        let diagnostics = parse_contract(fixture).expect_err("deferred grammar must fail");
+        assert_eq!(diagnostics.len(), 1);
+        assert_eq!(
+            diagnostics.as_slice()[0].code(),
+            SyntaxDiagnosticCode::UnsupportedSyntax
+        );
+    }
+}
+
+#[test]
+fn validates_currency_as_exact_uppercase_ascii() {
+    assert!(parse_contract("contract C version 1 { event E { price: money<USD> } }").is_ok());
+    for currency in ["usd", "US", "USDD", "U1D"] {
+        let source = format!("contract C version 1 {{ event E {{ price: money<{currency}> }} }}");
+        let diagnostics = parse_contract(&source).expect_err("invalid currency must fail");
+        assert_eq!(
+            diagnostics.as_slice()[0].code(),
+            SyntaxDiagnosticCode::InvalidToken
+        );
+    }
+}
+
+#[test]
+fn enforces_expression_and_collection_bounds() {
+    let at_depth = format!(
+        "contract C version 1 {{ command C {{ return Done {{ value: {}true }} }} }}",
+        "!".repeat(32)
+    );
+    assert!(parse_contract(&at_depth).is_ok());
+
+    let above_depth = format!(
+        "contract C version 1 {{ command C {{ return Done {{ value: {}true }} }} }}",
+        "!".repeat(33)
+    );
+    let diagnostics = parse_contract(&above_depth).expect_err("deep expression must fail");
+    assert_eq!(
+        diagnostics.as_slice()[0].code(),
+        SyntaxDiagnosticCode::NestingLimit
+    );
+
+    let arguments = (0..=1024).map(|_| "value").collect::<Vec<_>>().join(",");
+    let above_list = format!(
+        "contract C version 1 {{ command C {{ read E({arguments}) as e return Done {{}} }} }}"
+    );
+    let diagnostics = parse_contract(&above_list).expect_err("large list must fail");
+    assert_eq!(
+        diagnostics.as_slice()[0].code(),
+        SyntaxDiagnosticCode::CollectionLimit
+    );
+
+    let long_path = (0..=1024)
+        .map(|index| format!("segment{index}"))
+        .collect::<Vec<_>>()
+        .join(".");
+    let path_source =
+        format!("contract C version 1 {{ command C {{ return Done {{ value: {long_path} }} }} }}");
+    assert!(
+        parse_contract(&path_source).is_ok(),
+        "path segments are governed by node bounds, not tuple-list bounds"
+    );
+}
+
+#[test]
+fn incomplete_input_has_bounded_static_expected_tokens() {
+    let source = "contract C version 1 { event E { value:";
+    let diagnostics = parse_contract(source).expect_err("incomplete source must fail");
+    let diagnostic = &diagnostics.as_slice()[0];
+    assert_eq!(diagnostic.code(), SyntaxDiagnosticCode::UnexpectedEnd);
+    assert!(diagnostic.span().is_empty());
+    assert_eq!(diagnostic.span().start() as usize, source.len());
+    assert!(!diagnostic.expected().is_empty());
+    assert!(diagnostic.expected().len() <= MAX_EXPECTED_TOKENS);
+}
+
+#[test]
+fn eof_span_includes_trailing_skipped_bytes() {
+    for source in [
+        "contract C version 1 { event E { value:   ",
+        "contract C version 1 { event E { value: // trailing comment é",
+    ] {
+        let diagnostics = parse_contract(source).expect_err("incomplete source must fail");
+        let diagnostic = &diagnostics.as_slice()[0];
+        assert_eq!(diagnostic.code(), SyntaxDiagnosticCode::UnexpectedEnd);
+        assert_eq!(diagnostic.span().start() as usize, source.len());
+        assert_eq!(diagnostic.span().end() as usize, source.len());
+    }
+}
+
+#[test]
+fn invalid_utf8_is_rejected_at_the_first_invalid_sequence() {
+    let source = b"contract C version 1 {\xff}";
+    let diagnostics = parse_contract_bytes(source).expect_err("invalid UTF-8 must fail");
+    let diagnostic = &diagnostics.as_slice()[0];
+    assert_eq!(diagnostic.code(), SyntaxDiagnosticCode::InvalidToken);
+    assert_eq!(
+        (diagnostic.span().start(), diagnostic.span().end()),
+        (22, 23)
+    );
+}
+
+#[test]
+fn declaration_and_item_limits_are_checked_before_ast_construction() {
+    let declarations_at_limit = repeated_event_declarations(4096);
+    assert!(parse_contract(&declarations_at_limit).is_ok());
+    assert_collection_error_at(&repeated_event_declarations(4097), "event E4096");
+
+    let entity_items_at_limit = repeated_entity_fields(4096);
+    assert!(parse_contract(&entity_items_at_limit).is_ok());
+    assert_collection_error_at(&repeated_entity_fields(4097), "field f4096");
+
+    let projection_at_limit = repeated_projection_measures(4093);
+    assert!(parse_contract(&projection_at_limit).is_ok());
+    assert_collection_error_at(&repeated_projection_measures(4094), "frontier");
+}
+
+#[test]
+fn each_bounded_collection_accepts_1024_and_rejects_1025_entries() {
+    for (at_limit, above_limit, failing_lexeme) in [
+        repeated_enum_variants(1024),
+        repeated_object_fields(1024),
+        repeated_key_fields(1024),
+        repeated_index_fields(1024),
+        repeated_arguments(1024),
+    ] {
+        assert!(parse_contract(&at_limit).is_ok());
+        assert_collection_error_at(&above_limit, &failing_lexeme);
+    }
+}
+
+fn assert_collection_error_at(source: &str, lexeme: &str) {
+    let diagnostics =
+        parse_contract(source).expect_err("source above a collection limit must fail");
+    let diagnostic = &diagnostics.as_slice()[0];
+    assert_eq!(diagnostic.code(), SyntaxDiagnosticCode::CollectionLimit);
+    let start = source
+        .rfind(lexeme)
+        .expect("failing lexeme must be present in generated source");
+    assert_eq!(
+        diagnostic.span().start() as usize,
+        start,
+        "wrong collection diagnostic span for {lexeme:?} in {:?}",
+        &source[..source.len().min(80)]
+    );
+}
+
+fn repeated_event_declarations(count: usize) -> String {
+    let mut source = String::from("contract C version 1 {");
+    for index in 0..count {
+        write!(source, " event E{index} {{}}").expect("String writes are infallible");
+    }
+    source.push('}');
+    source
+}
+
+fn repeated_entity_fields(count: usize) -> String {
+    let mut source = String::from("contract C version 1 { entity E {");
+    for index in 0..count {
+        write!(source, " field f{index}: bool").expect("String writes are infallible");
+    }
+    source.push_str("} }");
+    source
+}
+
+fn repeated_projection_measures(count: usize) -> String {
+    let mut source =
+        String::from("contract C version 1 { projection P { source event E key (group)");
+    for index in 0..count {
+        write!(source, " measure m{index} = count()").expect("String writes are infallible");
+    }
+    source.push_str(" frontier transactionally_ordered } }");
+    source
+}
+
+fn repeated_enum_variants(count: usize) -> (String, String, String) {
+    let build = |count| {
+        let values = (0..count)
+            .map(|index| format!("V{index}"))
+            .collect::<Vec<_>>()
+            .join(",");
+        format!("contract C version 1 {{ enum E {{ {values} }} }}")
+    };
+    (build(count), build(count + 1), format!("V{count}"))
+}
+
+fn repeated_object_fields(count: usize) -> (String, String, String) {
+    let build = |count| {
+        let values = (0..count)
+            .map(|index| format!("f{index}: true"))
+            .collect::<Vec<_>>()
+            .join(",");
+        format!("contract C version 1 {{ command C {{ return Done {{ {values} }} }} }}")
+    };
+    (build(count), build(count + 1), ":".to_owned())
+}
+
+fn repeated_key_fields(count: usize) -> (String, String, String) {
+    let build = |count| {
+        let values = (0..count)
+            .map(|index| format!("f{index}: decimal<28,2>"))
+            .collect::<Vec<_>>()
+            .join(",");
+        format!("contract C version 1 {{ entity E {{ key ({values}) }} }}")
+    };
+    (build(count), build(count + 1), format!("f{count}:"))
+}
+
+fn repeated_index_fields(count: usize) -> (String, String, String) {
+    let build = |count| {
+        let values = (0..count)
+            .map(|index| format!("f{index}"))
+            .collect::<Vec<_>>()
+            .join(",");
+        format!("contract C version 1 {{ entity E {{ index I ({values}) }} }}")
+    };
+    (build(count), build(count + 1), format!("f{count}"))
+}
+
+fn repeated_arguments(count: usize) -> (String, String, String) {
+    let build = |count| {
+        let values = (0..count)
+            .map(|index| format!("a{index}"))
+            .collect::<Vec<_>>()
+            .join(",");
+        format!("contract C version 1 {{ command C {{ read E({values}) as e return Done {{}} }} }}")
+    };
+    (build(count), build(count + 1), format!("a{count}"))
+}
+
+#[test]
+fn diagnostics_never_include_source_or_parser_debug_text() {
+    let canary = "DO_NOT_EXPOSE_THIS_CANARY";
+    let source =
+        format!("contract C version 1 {{ command C {{ return Done {{ value: {canary}(1) }} }} }}");
+    let diagnostics = parse_contract(&source).expect_err("call syntax must fail");
+    let rendered = diagnostics.to_string();
+    assert!(!rendered.contains(canary));
+    assert!(!rendered.contains("ParseError"));
+}
+
+proptest! {
+    #[test]
+    fn arbitrary_utf8_never_panics_or_escapes_diagnostic_bounds(source in any::<String>()) {
+        if let Err(diagnostics) = parse_contract(&source) {
+            prop_assert!(!diagnostics.is_empty());
+            prop_assert!(diagnostics.len() <= MAX_SYNTAX_DIAGNOSTICS);
+            for diagnostic in diagnostics.as_slice() {
+                prop_assert!(diagnostic.expected().len() <= MAX_EXPECTED_TOKENS);
+                prop_assert!(diagnostic.span().start() <= diagnostic.span().end());
+                prop_assert!((diagnostic.span().end() as usize) <= source.len());
+            }
+        }
+    }
+
+
+    #[test]
+    fn arbitrary_bytes_exercise_utf8_validation_and_parser_bounds(
+        source in proptest::collection::vec(any::<u8>(), 0..4096)
+    ) {
+        if let Err(diagnostics) = parse_contract_bytes(&source) {
+            prop_assert!(!diagnostics.is_empty());
+            prop_assert!(diagnostics.len() <= MAX_SYNTAX_DIAGNOSTICS);
+            for diagnostic in diagnostics.as_slice() {
+                prop_assert!(diagnostic.expected().len() <= MAX_EXPECTED_TOKENS);
+                prop_assert!(diagnostic.span().start() <= diagnostic.span().end());
+                prop_assert!((diagnostic.span().end() as usize) <= source.len());
+            }
+        }
+    }
+}
+
+#[test]
+fn all_effect_variants_are_represented_in_the_full_fixture() {
+    let document = parse_contract(FULL_SURFACE).expect("full grammar surface must parse");
+    let command = document
+        .contract
+        .value
+        .declarations
+        .iter()
+        .find_map(|declaration| match &declaration.value {
+            Declaration::Command(command) => Some(command),
+            _ => None,
+        })
+        .expect("fixture contains a command");
+    assert!(
+        command
+            .effects
+            .iter()
+            .any(|effect| matches!(effect.value, Effect::Set(_)))
+    );
+    assert!(
+        command
+            .effects
+            .iter()
+            .any(|effect| matches!(effect.value, Effect::Emit(_)))
+    );
+}
