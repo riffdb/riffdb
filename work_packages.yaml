@@ -143,13 +143,14 @@ work_packages:
   - ADR-0006
   - ADR-0011
   allowed_paths:
+  - Cargo.lock
   - proto/**
   - crates/riffdb-proto/**
   - fixtures/proto/**
   - scripts/generate-proto*
   deliverables:
   - Versioned service and record messages
-  - Protox/Prost/Tonic generation
+  - Protox/Prost generation and Tonic-compatible service descriptors; Tonic Rust stubs are deferred to WP-130
   - Size limits and decode validation
   - Golden compatibility fixtures
   - Reserved-field policy
