@@ -9,6 +9,11 @@ publish.workspace = true
 default = []
 
 [dependencies]
+hmac = { version = "0.13.0", default-features = false }
+sha2 = { version = "0.11.0", default-features = false }
+
+[dev-dependencies]
+proptest = { version = "1.11.0", default-features = false, features = ["std"] }
 
 [lints]
 workspace = true

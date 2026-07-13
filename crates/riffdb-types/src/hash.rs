@@ -1,0 +1,327 @@
+//! Versioned, domain-separated SHA-256 and HMAC-SHA-256 digests.
+
+use std::fmt;
+
+use hmac::{Hmac, KeyInit, Mac};
+use sha2::{Digest, Sha256};
+
+use crate::{
+    CanonicalInputHash, CanonicalValueHash, ConflictKeyHash, ContractBundleHash, DigestKey,
+    DigestKeyId, EntityKeyHash, EventHash, PlanHash, SchemaHash, SourceHash,
+};
+
+/// Hash framing and algorithm scheme defined by ADR-0011.
+pub const DIGEST_SCHEME_V1: u8 = 0x01;
+
+const HASH_PREFIX: &[u8] = b"RIFFDB-HASH\0";
+const HMAC_PREFIX: &[u8] = b"RIFFDB-HMAC\0";
+
+/// An unkeyed SHA-256 domain from the accepted central registry.
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+pub enum HashDomain {
+    /// Canonical value content.
+    CanonicalValue,
+    /// Canonical contract source.
+    Source,
+    /// Canonical contract bundle.
+    ContractBundle,
+    /// Executable command plan.
+    Plan,
+    /// Canonical command input.
+    CommandInput,
+    /// Durable event content.
+    Event,
+    /// Canonical entity key.
+    EntityKey,
+    /// Canonical conflict key.
+    ConflictKey,
+    /// Generated schema content.
+    Schema,
+}
+
+impl HashDomain {
+    /// Every registered unkeyed domain, for compatibility and collision checks.
+    pub const ALL: [Self; 9] = [
+        Self::CanonicalValue,
+        Self::Source,
+        Self::ContractBundle,
+        Self::Plan,
+        Self::CommandInput,
+        Self::Event,
+        Self::EntityKey,
+        Self::ConflictKey,
+        Self::Schema,
+    ];
+
+    /// Returns the immutable ASCII v1 domain label.
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::CanonicalValue => "riffdb.canonical-value/v1",
+            Self::Source => "riffdb.source/v1",
+            Self::ContractBundle => "riffdb.contract-bundle/v1",
+            Self::Plan => "riffdb.plan/v1",
+            Self::CommandInput => "riffdb.command-input/v1",
+            Self::Event => "riffdb.event/v1",
+            Self::EntityKey => "riffdb.entity-key/v1",
+            Self::ConflictKey => "riffdb.conflict-key/v1",
+            Self::Schema => "riffdb.schema/v1",
+        }
+    }
+}
+
+/// A keyed HMAC-SHA-256 domain from the accepted central registry.
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+pub enum KeyedHashDomain {
+    /// Caller-provided idempotency key lookup.
+    IdempotencyKey,
+}
+
+impl KeyedHashDomain {
+    /// Every registered keyed domain, for compatibility and collision checks.
+    pub const ALL: [Self; 1] = [Self::IdempotencyKey];
+
+    /// Returns the immutable ASCII v1 domain label.
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::IdempotencyKey => "riffdb.idempotency-key/v1",
+        }
+    }
+}
+
+/// A versioned unkeyed content digest.
+#[derive(Clone, Copy, Eq, Hash, Ord, PartialEq, PartialOrd)]
+pub struct ContentDigest {
+    scheme: u8,
+    domain: HashDomain,
+    bytes: [u8; 32],
+}
+
+impl ContentDigest {
+    const fn new(domain: HashDomain, bytes: [u8; 32]) -> Self {
+        Self {
+            scheme: DIGEST_SCHEME_V1,
+            domain,
+            bytes,
+        }
+    }
+
+    /// Returns the hash scheme version.
+    pub const fn scheme(self) -> u8 {
+        self.scheme
+    }
+
+    /// Returns the immutable semantic domain used to calculate the digest.
+    pub const fn domain(self) -> HashDomain {
+        self.domain
+    }
+
+    /// Returns the 32 digest bytes.
+    pub const fn as_bytes(&self) -> &[u8; 32] {
+        &self.bytes
+    }
+}
+
+impl fmt::Debug for ContentDigest {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("ContentDigest")
+            .field("scheme", &self.scheme)
+            .field("domain", &self.domain)
+            .field("bytes", &HexDigest(&self.bytes))
+            .finish()
+    }
+}
+
+/// A versioned keyed digest that records the selected key ID without exposing
+/// key material.
+#[derive(Clone, Copy, Eq, Hash, Ord, PartialEq, PartialOrd)]
+pub struct KeyedDigest {
+    scheme: u8,
+    key_id: DigestKeyId,
+    bytes: [u8; 32],
+}
+
+impl KeyedDigest {
+    /// Constructs a v1 keyed digest from its key ID and digest bytes.
+    pub const fn new(key_id: DigestKeyId, bytes: [u8; 32]) -> Self {
+        Self {
+            scheme: DIGEST_SCHEME_V1,
+            key_id,
+            bytes,
+        }
+    }
+
+    /// Returns the HMAC scheme version.
+    pub const fn scheme(self) -> u8 {
+        self.scheme
+    }
+
+    /// Returns the non-secret digest-key identifier.
+    pub const fn key_id(self) -> DigestKeyId {
+        self.key_id
+    }
+
+    /// Returns the 32 digest bytes.
+    pub const fn as_bytes(&self) -> &[u8; 32] {
+        &self.bytes
+    }
+}
+
+impl fmt::Debug for KeyedDigest {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("KeyedDigest")
+            .field("scheme", &self.scheme)
+            .field("key_id", &self.key_id)
+            .field("bytes", &HexDigest(&self.bytes))
+            .finish()
+    }
+}
+
+/// Computes a domain-separated v1 SHA-256 content digest.
+pub fn hash(domain: HashDomain, payload: &[u8]) -> ContentDigest {
+    let mut hasher = Sha256::new();
+    write_frame(&mut hasher, HASH_PREFIX, domain.label(), payload);
+    ContentDigest::new(domain, hasher.finalize().into())
+}
+
+macro_rules! typed_hash_function {
+    ($(#[$meta:meta])* $name:ident, $domain:ident, $output:ident) => {
+        $(#[$meta])*
+        #[must_use]
+        pub fn $name(payload: &[u8]) -> $output {
+            $output::from_bytes(*hash(HashDomain::$domain, payload).as_bytes())
+        }
+    };
+}
+
+typed_hash_function!(
+    /// Hashes a canonical value document in its immutable v1 domain.
+    hash_canonical_value,
+    CanonicalValue,
+    CanonicalValueHash
+);
+typed_hash_function!(
+    /// Hashes canonical contract source in its immutable v1 domain.
+    hash_source,
+    Source,
+    SourceHash
+);
+typed_hash_function!(
+    /// Hashes an immutable contract bundle in its v1 domain.
+    hash_contract_bundle,
+    ContractBundle,
+    ContractBundleHash
+);
+typed_hash_function!(
+    /// Hashes an executable command plan in its immutable v1 domain.
+    hash_plan,
+    Plan,
+    PlanHash
+);
+typed_hash_function!(
+    /// Hashes canonical command input in its immutable v1 domain.
+    hash_command_input,
+    CommandInput,
+    CanonicalInputHash
+);
+typed_hash_function!(
+    /// Hashes canonical event content in its immutable v1 domain.
+    hash_event,
+    Event,
+    EventHash
+);
+typed_hash_function!(
+    /// Hashes canonical entity-key bytes in their immutable v1 domain.
+    hash_entity_key,
+    EntityKey,
+    EntityKeyHash
+);
+typed_hash_function!(
+    /// Hashes canonical conflict-key bytes in their immutable v1 domain.
+    hash_conflict_key,
+    ConflictKey,
+    ConflictKeyHash
+);
+typed_hash_function!(
+    /// Hashes generated schema content in its immutable v1 domain.
+    hash_schema,
+    Schema,
+    SchemaHash
+);
+
+/// Computes a domain-separated v1 HMAC-SHA-256 lookup digest.
+pub fn keyed_hash(
+    domain: KeyedHashDomain,
+    key_id: DigestKeyId,
+    key: &DigestKey,
+    payload: &[u8],
+) -> KeyedDigest {
+    let mut mac = Hmac::<Sha256>::new_from_slice(key.expose_secret())
+        .expect("HMAC-SHA-256 accepts keys of every length");
+    write_frame(&mut mac, HMAC_PREFIX, domain.label(), payload);
+    KeyedDigest::new(key_id, mac.finalize().into_bytes().into())
+}
+
+fn write_frame<T: sha2::digest::Update>(
+    target: &mut T,
+    prefix: &[u8],
+    domain: &str,
+    payload: &[u8],
+) {
+    let domain = domain.as_bytes();
+    debug_assert!(u16::try_from(domain.len()).is_ok());
+    let domain_length = domain.len() as u16;
+    let payload_length = payload.len() as u64;
+    target.update(prefix);
+    target.update(&[DIGEST_SCHEME_V1]);
+    target.update(&domain_length.to_be_bytes());
+    target.update(domain);
+    target.update(&payload_length.to_be_bytes());
+    target.update(payload);
+}
+
+struct HexDigest<'a>(&'a [u8; 32]);
+
+impl fmt::Debug for HexDigest<'_> {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        for byte in self.0 {
+            write!(formatter, "{byte:02x}")?;
+        }
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::collections::BTreeSet;
+
+    use super::*;
+
+    #[test]
+    fn domain_registry_has_no_duplicate_labels() {
+        let mut labels = BTreeSet::new();
+        for domain in HashDomain::ALL {
+            assert!(labels.insert(domain.label()));
+        }
+        for domain in KeyedHashDomain::ALL {
+            assert!(labels.insert(domain.label()));
+        }
+    }
+
+    #[test]
+    fn identical_payloads_are_separated_by_domain() {
+        let values = HashDomain::ALL
+            .map(|domain| hash(domain, b"same payload"))
+            .into_iter()
+            .collect::<BTreeSet<_>>();
+        assert_eq!(values.len(), HashDomain::ALL.len());
+    }
+
+    #[test]
+    fn content_digest_retains_its_domain() {
+        for domain in HashDomain::ALL {
+            assert_eq!(hash(domain, b"payload").domain(), domain);
+        }
+    }
+}
