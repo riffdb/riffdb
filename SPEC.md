@@ -6,9 +6,9 @@
 **Tagline:** *Vibe fast. Commit safely.*  
 **Category:** Contract-first operational database for agent-built applications  
 
-**Version:** 0.2  
+**Version:** 0.3
 **Status:** Architecture-approved implementation handoff draft  
-**Date:** 12 July 2026  
+**Date:** 13 July 2026
 **Audience:** Coding agents, database engineers, compiler engineers, security reviewers, and technical product leads  
 **Working binaries:** `riffdbd`, `riffdb`, `riffdb-mcp`  
 **Working URI scheme:** `riffdb://`  
@@ -38,6 +38,7 @@
 |---|---|---|
 | 0.1 | 2026-07-12 | Initial RiffDB implementation handoff specification for a standalone Rust POC and gated path to MVP. |
 | 0.2 | 2026-07-12 | Reconciled the canonical contract grammar and gRPC surface; fixed commit, idempotency, control-plane, capability, MCP, gate, evidence, and work-package ownership decisions approved after the initial planning review. Associated ADRs remain Proposed until separately reviewed and accepted. |
+| 0.3 | 2026-07-13 | Applied accepted ADR-0013 through ADR-0016: explicit binding-failure outcomes and command-only budget seeding, stable IR/hash/key boundaries, typed partition identity, and complete index-entry framing. |
 
 ### Normative language
 
@@ -343,17 +344,30 @@ The semantic model MUST use newtypes rather than raw strings or integers at comp
 ```rust
 pub struct ContractVersion(pub u64);
 pub struct PlanHash(pub [u8; 32]);
+pub struct ProjectionPlanHash(pub [u8; 32]);
+pub struct ContractPlanRootHash(pub [u8; 32]);
 pub struct CommitSequence(pub u64);
 pub struct RequestId(pub uuid::Uuid);
 pub struct ActorId(pub String);
 pub struct AgentSessionId(pub uuid::Uuid);
 pub struct EntityTypeId(pub u32);
+pub struct EventTypeId(pub u32);
+pub struct EnumTypeId(pub u32);
+pub struct EnumVariantId(pub u32);
+pub struct AggregateTypeId(pub u32);
 pub struct FieldId(pub u32);
 pub struct CommandId(pub u32);
 pub struct OutcomeId(pub u32);
 pub struct ProjectionId(pub u32);
+pub struct IndexId(pub u32);
+pub struct InvariantId(pub u32);
 pub struct EntityKey(pub Vec<u8>);
+pub struct PartitionKey(pub Vec<u8>);
 pub struct ConflictKey(pub Vec<u8>);
+pub struct IndexEntryKey(pub Vec<u8>);
+pub struct PartitionKeyHash(pub [u8; 32]);
+pub struct ConflictKeyHash(pub [u8; 32]);
+pub struct CanonicalInputHash(pub [u8; 32]);
 pub struct IdempotencyKey(pub String);
 ```
 
@@ -451,6 +465,29 @@ contract LegalSpend version 1 {
     conflict_key (organization_id, fiscal_year)
   }
 
+  command CreateBudget {
+    input idempotency_key: string<128>
+    input organization_id: uuid
+    input fiscal_year: i64
+    input approved_amount: decimal<28,2>
+
+    idempotency_key idempotency_key
+    create Budget(organization_id, fiscal_year) as budget
+      else BudgetAlreadyExists {
+        organization_id: organization_id,
+        fiscal_year: fiscal_year
+      }
+
+    require positive_approval: approved_amount > 0.00
+      else InvalidApprovedAmount { minimum: 0.01 }
+
+    set budget.approved_amount = approved_amount
+    set budget.allocated_amount = 0.00
+    set budget.updated_at = tx.time
+
+    return BudgetCreated { budget: budget }
+  }
+
   command AllocateBudget {
     input idempotency_key: string<128>
     input organization_id: uuid
@@ -460,6 +497,10 @@ contract LegalSpend version 1 {
 
     idempotency_key idempotency_key
     mutate Budget(organization_id, fiscal_year) as budget
+      else BudgetNotFound {
+        organization_id: organization_id,
+        fiscal_year: fiscal_year
+      }
 
     require positive_amount: amount > 0.00
       else InvalidAmount { minimum: 0.01 }
@@ -519,7 +560,7 @@ A command declares:
 
 - Typed inputs.
 - Exactly one idempotency key expression for mutating commands.
-- Read and mutate bindings.
+- Read, mutate, and create bindings with explicit absence/duplicate outcomes.
 - Preconditions with explicit typed outcomes.
 - Mutations.
 - Durable events.
@@ -574,7 +615,7 @@ Joins, distinct count, windows, arbitrary user functions, and approximation are 
 | `DSL-011` | Compiler and runtime MUST reject undeclared field access, mutation, event type, or outcome. |
 | `DSL-012` | POC cross-partition mutation MUST fail compilation. |
 
-Section 7.2 is the canonical v0.1 surface grammar. The POC grammar has one top-level `contract <Name> version <Integer> { ... }` declaration. It does not include modules, user-defined scalar aliases, or a separate `outcomes` block. Rejection variants are declared by `require ... else ...`, and the terminal success variant is declared by `return ...`. A future syntax extension requires an accepted language/IR ADR and compatibility fixtures; implementations MUST NOT accept alternate spellings merely because they appear in an old example.
+Section 7.2 is the canonical v0.1 surface grammar. The POC grammar has one top-level `contract <Name> version <Integer> { ... }` declaration. It does not include modules, user-defined scalar aliases, or a separate `outcomes` block. Rejection variants are declared by binding or `require ... else ...` clauses, and the terminal success variant is declared by `return ...`. A future syntax extension requires an accepted language/IR ADR and compatibility fixtures; implementations MUST NOT accept alternate spellings merely because they appear in an old example.
 
 ## 7.5 Illustrative grammar excerpt
 
@@ -587,7 +628,8 @@ aggregate       = "aggregate" Ident "{" aggregate_item* "}" ;
 command         = "command" Ident "{" command_item* "}" ;
 command_item    = input_decl | idempotency_decl | binding_decl
                 | require_stmt | mutation_stmt | emit_stmt | return_stmt ;
-binding_decl    = ("read" | "mutate") Ident "(" expr_list ")" "as" Ident ;
+binding_decl    = ("read" | "mutate" | "create") Ident "(" expr_list ")"
+                  "as" Ident "else" outcome_expr ;
 require_stmt    = "require" Ident ":" expr "else" outcome_expr ;
 mutation_stmt   = "set" field_ref "=" expr ;
 emit_stmt       = "emit" Ident object_expr ;
@@ -813,7 +855,7 @@ pub struct TransactionContext {
     pub actor: ActorContext,
     pub contract_version: ContractVersion,
     pub plan_hash: PlanHash,
-    pub partition_key: Vec<u8>,
+    pub partition_key: PartitionKey,
 }
 ```
 
@@ -827,7 +869,7 @@ pub struct TransactionContext {
 A conflict key is an opaque canonical byte string with a type prefix and aggregate identity. Example:
 
 ```text
-0x01 | aggregate_type_id:u32_be | organization_uuid:16 | fiscal_year:i64_be
+0x43 | 0x01 | aggregate_type_id:u32_be | organization_uuid:16 | fiscal_year:sign_flipped_i64_be
 ```
 
 ### POC lock semantics
@@ -890,14 +932,14 @@ POC commands SHOULD use primary-key reads. Bounded index reads are allowed only 
 pub struct CommitIntent {
     pub request_id: RequestId,
     pub idempotency_identity: IdempotencyIdentity,
-    pub input_hash: [u8; 32],
+    pub input_hash: CanonicalInputHash,
     pub command_id: CommandId,
     pub contract_version: ContractVersion,
     pub plan_hash: PlanHash,
     pub actor: ActorContext,
     pub tx_time: Timestamp,
-    pub partition_key: Vec<u8>,
-    pub conflict_key_hashes: Vec<[u8; 32]>,
+    pub partition_key: PartitionKey,
+    pub conflict_key_hashes: Vec<ConflictKeyHash>,
     pub read_dependencies: Vec<ReadDependency>,
     pub mutations: Vec<EntityMutation>,
     pub durable_events: Vec<DurableEvent>,
@@ -2313,7 +2355,7 @@ A PR is incomplete if its acceptance test is described but not automated, unless
 You are implementing <WORK_PACKAGE_ID> in the RiffDB workspace.
 
 Authoritative inputs:
-- Technical specification version 0.2
+- Technical specification version 0.3
 - Accepted ADRs: <LIST>
 - Requirements: <LIST>
 - Upstream interfaces at revision: <COMMIT>
@@ -2508,33 +2550,44 @@ Risk owners are assigned in the project tracker. A risk may be closed only with 
 
 # 22. Architecture decision records and open decisions
 
-## 22.1 Required initial ADRs
+## 22.1 Required ADRs
 
-The following records are **Proposed**, not Accepted. Specification v0.2 records the approved architecture direction, but each ADR still requires its own human review before the implementation boundary named below is frozen.
+Specification v0.3 records each ADR's current status. An Accepted record is
+authoritative; a Proposed record remains planning input until its exact text
+receives human review. Where this table and a work-package deadline differ, the
+earlier deadline governs unless a reviewed reconciliation changes both sources.
 
 | ADR | Status | Decision | Required before |
 |---|---|---|---|
 | `ADR-0001` | Proposed | Standalone database rather than PostgreSQL extension or control plane | P0 gate |
-| `ADR-0002` | Proposed | Canonical bounded contract grammar, typed IR, versioning, and deterministic bundle | WP-030 grammar freeze and WP-040 interface |
-| `ADR-0003` | Proposed | Logical pessimistic conflict ownership, dependency validation, and commit ordering | WP-060/WP-090 interfaces |
+| `ADR-0002` | Accepted | Canonical bounded contract grammar, typed IR, versioning, and deterministic bundle | WP-030 grammar freeze and WP-040 interface |
+| `ADR-0003` | Accepted | Logical pessimistic conflict ownership, dependency validation, and commit ordering | WP-060/WP-090 interfaces |
 | `ADR-0004` | Proposed | Coordinator-driven semantic storage API and redb baseline | WP-060 interface |
-| `ADR-0005` | Proposed | Idempotency identity, pending reservation, persisted outcomes, and sequence semantics | WP-060 key freeze and WP-100 |
-| `ADR-0006` | Proposed | Phased single-owner Protobuf schemas, exact values, durable envelope, and compatibility policy | WP-020 schema implementation |
-| `ADR-0007` | Proposed | Shared application service for gRPC, MCP, CLI, and SDK | WP-120 interface |
+| `ADR-0005` | Accepted | Idempotency identity, pending reservation, persisted outcomes, and sequence semantics | WP-060 key freeze and WP-100 |
+| `ADR-0006` | Accepted | Phased single-owner Protobuf schemas, exact values, durable envelope, and compatibility policy | WP-020 schema implementation |
+| `ADR-0007` | Proposed | Shared application service for gRPC, MCP, CLI, and SDK | WP-100 coordinator boundary and WP-120 interface |
 | `ADR-0008` | Proposed | Native MCP qualified command names, resources, audiences, and stdio-over-gRPC model | WP-140 fixtures |
-| `ADR-0009` | Proposed | Opaque HMAC-digested, environment/database/audience-bound POC capability tokens | WP-110 implementation |
-| `ADR-0010` | Proposed | Event-derived POC projection engine and frontier semantics | WP-070 projection persistence and WP-170 |
-| `ADR-0011` | Proposed | Canonical values, fixed-scale decimals, keys, serialization, and domain-separated hashing | WP-010 semantic types |
+| `ADR-0009` | Proposed | Opaque HMAC-digested, environment/database/audience-bound POC capability tokens | WP-060 storage interface and WP-110 implementation |
+| `ADR-0010` | Accepted | Event-derived POC projection engine and frontier semantics | WP-070 projection persistence and WP-170 |
+| `ADR-0011` | Accepted | Canonical values, fixed-scale decimals, keys, serialization, and domain-separated hashing | WP-010 semantic types |
 | `ADR-0012` | Proposed | Deterministic transaction context, durable logical time, and no POC command randomness | WP-080 implementation |
+| `ADR-0013` | Accepted | Stable semantic IDs, canonical IR/bundle encoding, plan hashing, and schema generation | WP-040 interface |
+| `ADR-0014` | Accepted | Projection-plan and contract-plan-root typed hash domains | WP-010 follow-up and WP-040 interface |
+| `ADR-0015` | Accepted | Explicit binding-failure outcomes and command-only budget bootstrap | WP-030 follow-up and WP-040 fixtures |
+| `ADR-0016` | Accepted | Canonical key components, typed partition identity, and complete index-key framing | WP-010 follow-up and WP-040 interface |
 
 ## 22.2 Decisions to resolve before implementation reaches the named gate
 
+ADR-0015 resolved initial entity creation: the canonical `CreateBudget` compiled
+command seeds the demo through the ordinary coordinator path, and direct
+storage/admin seeding remains forbidden.
+
 | Decision | Resolve by | Default in this specification |
 |---|---|---|
-| What typed command binding creates the initial budget/entity state? | Before WP-030 grammar freeze and WP-040/WP-045 fixtures | A dedicated statically analyzable create binding under the compiled command and coordinator path; exact syntax remains for ADR-0002 review, and direct storage/admin seeding is forbidden. |
 | Are read-only commands stored in the outcome journal? | Before WP-100 exit | Only when idempotency or audit policy requires it; no mutation log record otherwise. |
 | Can a command read multiple conflict domains while mutating one? | Before WP-080 exit | Yes if all mutable domains are declared up front and all influential reads are version-tracked. |
 | How are index phantom dependencies represented? | Before indexed range reads enter POC | Indexed range reads are read-only in initial POC; write-influencing range predicates deferred or use explicit conflict keys. |
+| How are deterministic runtime arithmetic and resource faults resolved after durable admission? | Before WP-080 implementation | No implementation default; ADR-0013 fixes that no `CommitIntent` or business outcome is produced, but durable admission, retry, abandonment, and public-error semantics require human approval. |
 | Does the POC support contract removal of fields or commands? | Before WP-050 exit | Additive and documentation-only changes; destructive changes rejected. |
 | Which cryptographic provider is used for TLS in alpha/MVP? | Before remote MCP alpha | Deferred; requires dependency and platform ADR. |
 | Redb versus Fjall for MVP | POC exit architecture review | Redb remains baseline unless workload and recovery evidence justify change. |
@@ -2584,6 +2637,29 @@ contract LegalSpend version 1 {
     conflict_key (organization_id, fiscal_year)
   }
 
+  command CreateBudget {
+    input idempotency_key: string<128>
+    input organization_id: uuid
+    input fiscal_year: i64
+    input approved_amount: decimal<28,2>
+
+    idempotency_key idempotency_key
+    create Budget(organization_id, fiscal_year) as budget
+      else BudgetAlreadyExists {
+        organization_id: organization_id,
+        fiscal_year: fiscal_year
+      }
+
+    require positive_approval: approved_amount > 0.00
+      else InvalidApprovedAmount { minimum: 0.01 }
+
+    set budget.approved_amount = approved_amount
+    set budget.allocated_amount = 0.00
+    set budget.updated_at = tx.time
+
+    return BudgetCreated { budget: budget }
+  }
+
   command AllocateBudget {
     input idempotency_key: string<128>
     input organization_id: uuid
@@ -2593,6 +2669,10 @@ contract LegalSpend version 1 {
 
     idempotency_key idempotency_key
     mutate Budget(organization_id, fiscal_year) as budget
+      else BudgetNotFound {
+        organization_id: organization_id,
+        fiscal_year: fiscal_year
+      }
 
     require positive_amount: amount > 0.00
       else InvalidAmount { minimum: 0.01 }
@@ -2693,6 +2773,7 @@ Representative structured result:
 The demo MUST make failure behavior visible, not only the success path. It shows:
 
 - The contract source and generated explain plan.
+- An empty database seeded with approved amount `100.00` through `CreateBudget`, never a direct storage or administration write.
 - The same command invoked through Rust and MCP.
 - Lock contention on the annual budget conflict key.
 - A declared business rejection rather than a generic serialization exception.

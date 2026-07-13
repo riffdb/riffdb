@@ -1,12 +1,11 @@
 # ADR-0003: Logical Conflict Ownership, Dependency Validation, and Commit Ordering
 
-- **Status:** Proposed
+- **Status:** Accepted
 - **Direction approved:** 2026-07-12
-- **Exact text accepted:** No
+- **Exact text accepted:** 2026-07-13
 - **Decision deadline:** Before WP-060 or WP-090 public interfaces merge
 
-The human architecture review approved this direction. This record remains
-Proposed until its exact text is reviewed and accepted.
+The human maintainer accepted this exact text on 2026-07-13.
 
 ## Context
 
