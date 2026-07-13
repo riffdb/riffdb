@@ -1,12 +1,11 @@
 # ADR-0010: Event-Derived Projection and Frontier Semantics
 
-- **Status:** Proposed
+- **Status:** Accepted
 - **Direction approved:** 2026-07-12
-- **Exact text accepted:** No
+- **Exact text accepted:** 2026-07-13
 - **Decision deadline:** Persistence semantics before WP-070; full record before WP-170
 
-The human architecture review approved this direction. This record remains
-Proposed until its exact text is reviewed and accepted.
+The human maintainer accepted this exact text on 2026-07-13.
 
 ## Context
 

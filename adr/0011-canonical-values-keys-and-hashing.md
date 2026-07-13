@@ -3,6 +3,7 @@
 - **Status:** Accepted
 - **Direction approved:** 2026-07-12
 - **Exact text accepted:** 2026-07-12, amended 2026-07-12
+- **Amended by:** ADR-0014 for projection/root plan hashes and ADR-0016 for partition/index keys and partition hashing
 - **Decision deadline:** Before WP-010 semantic types or fixtures merge
 
 The human maintainer accepted this exact text, including the foundational

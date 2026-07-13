@@ -4,49 +4,46 @@
 
 ### Current contents
 
-The repository is an intentionally pre-bootstrap planning repository. It contains
-`AGENTS.md`, `SPEC.md`, `work_packages.yaml`, four DOT diagrams under `diagrams/`,
-this `PLAN.md`, and `adr/README.md`, an ADR template, and twelve Proposed ADRs.
-There is no Rust workspace, production source, Cargo configuration, CI workflow,
-test corpus, generated artifact, compatibility fixture, or implementation script.
-That is expected before WP-000 and is not a defect.
+The repository is now bootstrapped and contains the 29-crate Rust workspace,
+quality and generation scripts, GitHub Actions configuration, ADR records,
+Protobuf sources and compatibility fixtures, the bounded contract parser and its
+corpus/fuzz target, and the original planning inputs and diagrams. WP-000 through
+WP-030 have landed; accepted ADR-0014 through ADR-0016 require narrow follow-up
+work in WP-010 and WP-030 before WP-040 begins.
 
-No ADR is Accepted. The human architecture review on 2026-07-12 approved the
-direction represented by ADR-0001 through ADR-0012, but their exact text remains
-Proposed and therefore non-authoritative until separately accepted.
+ADR-0002, ADR-0003, ADR-0005, ADR-0006, ADR-0010, ADR-0011, and ADR-0013 through
+ADR-0016 are Accepted. ADR-0001, ADR-0004, ADR-0007 through ADR-0009, and
+ADR-0012 remain Proposed and are non-authoritative until their exact text receives
+human approval.
 
 ### Git state
 
-Git is initialized on an unborn `main` branch with no commits, tags, or remotes.
-All repository files are untracked. WP-000 cannot name its required `Upstream
-revision`, prove a fresh-checkout result, or finish with a meaningful clean-tree
-check until a maintainer creates a baseline commit containing the reconciled
-authoritative inputs and planning records.
+Git is initialized on `main`; the authoritative baseline is `3235477` and WP-000
+landed as `4407d59`. No remote is configured yet. The maintainer has confirmed
+that the repository will be pushed to GitHub, so GitHub Actions remains the CI
+provider and adding the remote can wait until publication.
 
 ### Rust and host environment
 
-The observed host is x86-64 Linux with Rust/Cargo 1.96.1, rustfmt, Clippy, Git,
-and Graphviz. It lacks the required Rust 1.97.0 toolchain, `rustup`, `cargo-deny`,
-`cargo-fuzz`, `cargo-audit`, and `cargo-machete`. WP-000 needs a provisioned image
-or documented pinned installation path. CI installation does not make an unpinned
-local `cargo install` reproducible.
+The host is x86-64 Linux with the pinned Rust 1.97.0 toolchain, rustfmt, Clippy,
+Git, Graphviz, `cargo-deny`, `cargo-audit`, `cargo-machete`, and `cargo-fuzz`.
+The pinned nightly used only for parser fuzzing is also installed. Tool versions
+and CI installation policy are recorded by the workspace bootstrap.
 
 ### Existing conflicts
 
-There is no code or project configuration to conflict with the architecture. The
+No existing implementation conflicts with the architecture are known. The
 governance reconciliation aligns grammar, gRPC/value boundaries, gate membership,
-package dependencies and paths, coordinator ownership, comparison tracks, and
-server composition. Section 2 lists only prerequisites that remain after that
-reconciliation.
+package dependencies and paths, coordinator ownership, comparison tracks, server
+composition, stable IR IDs, plan-hash domains, explicit binding failures, and
+canonical partition/index keys. Section 2 lists the remaining package-level
+freezes.
 
 ### Missing prerequisites for WP-000
 
-1. Create and name the baseline Git revision.
-2. Provision Rust 1.97.0 with rustfmt/Clippy and pinned compatible versions of
-   `cargo-deny`, `cargo-audit`, and `cargo-machete` in acceptance environments.
-3. Approve the initial dependency license/source policy for `deny.toml`.
-4. Confirm GitHub Actions as the CI provider, or amend the `.github/**`-scoped
-   package before implementation.
+None. WP-000 is complete. Its baseline, toolchain, dependency policy, CI provider,
+workspace inventory, generated-artifact convention, and acceptance evidence were
+frozen before semantic implementation began.
 
 ## 2. Consistency Findings
 
@@ -61,41 +58,38 @@ with the shared-service and coordinator boundaries.
 
 ### Blocking before WP-000
 
-1. **No baseline revision exists.** This blocks the upstream-revision and
-   fresh-checkout exit evidence, not drafting.
-2. **The acceptance toolchain is not provisioned.** The required Rust and Cargo
-   tools must be pinned and available; versions must not be relaxed to fit the
-   current host.
-3. **Dependency policy and CI provider need maintainer confirmation.** WP-000 must
-   not invent a license allowlist, repository license, or alternate CI path.
+None. All identified WP-000 blockers were resolved before commit `4407d59`.
 
 ### Blocking before P0
 
-1. **Required ADRs are still Proposed.** Direction approval is not formal ADR
-   acceptance. Each package must stop until every entry in its `required_adrs`
-   has exact Accepted text. In particular, WP-010, WP-020, WP-030, WP-040,
-   WP-060, and WP-080 cannot freeze semantic, public, or durable interfaces while
-   their required ADRs remain Proposed.
-2. **The canonical budget demo has no typed create/seed command.** The acceptance
-   and comparison workload requires initial budget state, but no approved Section
-   7.2 binding defines how that state is created through a compiled command. The
-   exact create command, input/outcome shape, invariant behavior, and grammar
-   binding must be decided before WP-040 freezes the budget bundle and WP-045
-   freezes seed fixtures. Direct storage, catalog, or administrative seeding is
-   not an acceptable workaround.
+1. **Accepted key/hash additions need their owning WP-010 follow-up.**
+   `PartitionKey`, `IndexEntryKey`, `PartitionKeyHash`, projection plan hashes,
+   and contract plan-root hashes must land in `riffdb-types` before WP-040 or
+   WP-060 consumes them.
+2. **Accepted binding failures need their owning WP-030 follow-up.** Every
+   `read`, `mutate`, and `create` binding must require an explicit `else` outcome,
+   and the canonical `CreateBudget` workload must enter the parser corpus before
+   WP-040 freezes its bundle.
+3. **ADR-0001, ADR-0004, and ADR-0009 remain Proposed.** ADR-0001's spec
+   deadline is P0; ADR-0004/0009's exact storage transaction,
+   semantic port, and capability-record boundaries must be accepted before
+   WP-060 exposes public traits.
+4. **ADR-0012 remains Proposed.** Logical-time admission and deterministic
+   runtime context must be accepted before WP-080. The deterministic arithmetic
+   and resource-fault durability/public-error disposition required by ADR-0013
+   must be frozen at the same boundary.
 
 ### Blocking before P1
 
-No additional authoritative-input contradiction remains. P1 is blocked only by
-normal hard dependencies, acceptance evidence, and any Proposed ADR still listed
-by an entering package.
+No additional authoritative-input contradiction remains. After the P0 ADR batch,
+ADR-0007 must be accepted before WP-100/WP-120 freeze the shared application
+service and coordinator entry points.
 
 ### Blocking before P2
 
-No additional authoritative-input contradiction remains. WP-185 now owns final
-server composition, WP-075 owns the isolated Fjall comparison, and WP-140 owns
-its Inspector script. P2 remains blocked by its hard dependencies and exact ADR
-acceptance deadlines.
+No additional authoritative-input contradiction remains. ADR-0008 must be
+accepted before WP-140 freezes MCP names/resources. WP-185 owns final server composition, WP-075 owns
+the isolated Fjall comparison, and WP-140 owns its Inspector script.
 
 ### Non-blocking clarifications
 
@@ -106,9 +100,9 @@ acceptance deadlines.
   use reviewed proto-owner interface PRs rather than speculative WP-020 fields.
 - PostgreSQL and Fjall dependency/version choices are intentionally deferred to
   WP-045 and WP-075 human review. They remain in isolated nested workspaces.
-- Unknown-field retention, exact canonical hash/domain registries, cryptographic
-  dependency selection, and key-rotation mechanics must be explicit in the exact
-  Accepted ADR text before their fixtures or implementations merge.
+- Capability cryptographic dependency selection and key-rotation mechanics remain
+  part of the ADR-0009 acceptance review; no token implementation may choose them
+  implicitly.
 
 ## 3. Planning Assumptions
 
@@ -615,6 +609,10 @@ The budget comparison application remains a compatibility and evidence canary ac
 
 ## 7. WP-000 Detailed Plan
 
+WP-000 completed in commit `4407d59`. This section is retained as the reviewed
+bootstrap design and acceptance record; its future-tense instructions are not a
+request to recreate or replace the existing workspace.
+
 ### 7.1 Scope and completion prerequisites
 
 The reconciled WP-000 scope includes `.gitignore`, every crate manifest, and
@@ -659,7 +657,7 @@ The intended roots and their current manifest ownership are:
 
 | Path | Initial/first owner | Policy |
 |---|---|---|
-| `adr/` | WP-000 | Preserve the index/template and Proposed ADR-0001..0012; agents never mark records Accepted |
+| `adr/` | WP-000 and reviewed governance changes | Preserve the index/template and ADR history; only record acceptance after explicit human approval |
 | `scripts/` | WP-000 plus exact package patterns | WP-020 owns `generate-proto*`; WP-040 `generate-contract-fixtures*`; WP-070 `storage_*`; WP-140 `mcp-inspector-smoke`; WP-150/WP-200 `demo*`; WP-190 `recovery_*`; WP-200 `release*` |
 | `.github/` | WP-000; WP-045 owns only `workflows/budget-comparison.yml` | Core CI/PR templates stay with WP-000; the isolated comparison workflow follows its evidence package |
 | `proto/`, `fixtures/proto/` | WP-020 | Real schema and compatibility artifacts only |
@@ -719,13 +717,13 @@ Do not create empty fuzz, recovery, benchmark, or MCP conformance jobs. Add each
 
 ### 7.7 ADR workflow and status convention
 
-Validate and retain `adr/0000-template.md`, `adr/README.md`, and the twelve
-Proposed records created by the governance pass. The template distinguishes
+Validate and retain `adr/0000-template.md`, `adr/README.md`, and the ADR records
+created by reviewed governance passes. The template distinguishes
 direction approval from exact acceptance and includes the decision deadline,
 context, decision, alternatives, consequences, compatibility/security/test
 effects, affected requirements/work packages, and supersession links.
 
-Allowed statuses are `Proposed`, `Accepted`, `Rejected`, and `Superseded`. New ADRs start `Proposed`. Only a human maintainer may change an ADR to `Accepted`. Superseded records remain immutable except for status/link metadata. The 2026-07-12 direction approval does not authorize WP-000 to accept exact ADR text.
+Allowed statuses are `Proposed`, `Accepted`, `Rejected`, and `Superseded`. New ADRs start `Proposed`. Only explicit human-maintainer approval authorizes an ADR to become `Accepted`; the implementation agent may perform the status edit after receiving that approval. Superseded records remain immutable except for status/link metadata.
 
 ### 7.8 Generation checks
 
@@ -752,99 +750,62 @@ declared owners. WP-000 must not create no-op placeholders.
 
 ## 8. Proposed ADR Queue
 
-The human architecture review approved all twelve directions on 2026-07-12 and
-the records now exist under `adr/`. No record is Accepted: each remains Proposed
-until its exact text receives human review. The ten initial decisions requested by
-SPEC Section 22 plus the two foundational value/context decisions are sufficient;
-commit ordering remains covered jointly by ADR-0003/0004/0005.
+Accepted ADR-0002, ADR-0003, ADR-0005, ADR-0006, ADR-0010, ADR-0011, and
+ADR-0013 through ADR-0016 are frozen inputs, not open choices. The smallest
+remaining queue is ordered by the first work package it can block. Exact-text
+acceptance always requires explicit human approval.
 
 ### ADR-0001 — Standalone Database Boundary
 
 - **Why:** Record the fixed choice that the POC is its own server, not a PostgreSQL extension/control plane, and that replication remains later.
-- **Blocks:** No WP-000 code; required documentation by P0 and a reference for future Stage B.
+- **Blocks:** P0 under SPEC Section 22.1; WP-200 also lists it explicitly.
 - **Options:** Standalone server; PostgreSQL extension; external semantic control plane.
-- **Approved direction in Proposed ADR:** Standalone single-node Rust server; PostgreSQL and Fjall remain isolated evidence workspaces; replication stays post-POC.
-- **Decision point:** Draft alongside WP-000; human acceptance may occur before P0.
-- **Development mode:** May be developed alongside WP-000; it need not block non-semantic skeleton edits, but must be accepted before P0 is claimed.
-
-### ADR-0011 — Canonical Values, Fixed-Scale Decimals, Keys, and Hashing
-
-- **Why:** Every key, plan, idempotency identity, public exact value, and durable fixture depends on one platform-independent value system.
-- **Blocks:** WP-010 exit and all semantic consumers.
-- **Options:** Fixed i128 coefficient with declared precision/scale vs arbitrary precision; custom tagged canonical bytes vs deterministic Protobuf; Unicode normalization/rejection policy; domain-separated hash algorithms.
-- **Approved direction in Proposed ADR:** Checked `i128` coefficient with declared precision/scale, explicit canonical tags/lengths/order, no float, purpose-specific keys, and versioned domain-separated hashes. Exact algorithm/domain registry still requires acceptance review.
-- **Decision point:** Must be accepted before WP-010 implements bytes/hashes.
-- **Development mode:** Must be accepted before semantic implementation; exploratory test vectors may accompany the proposed ADR but cannot become fixtures first.
-
-### ADR-0006 — Versioned Protobuf Envelope and Compatibility Policy
-
-- **Why:** Public fields, durable payloads, checksums, unknown fields, and checked-in generation become compatibility boundaries in WP-020.
-- **Blocks:** WP-020, WP-060, and WP-070.
-- **Options:** Per-record envelope vs table-level versions; CRC/schema-hash meanings; raw-payload retention vs decode/re-encode; generated sources checked in vs generated during build; phased public/durable schemas.
-- **Approved direction in Proposed ADR:** SPEC Section 11 services, exact tagged `riffdb.v1.Value`, explicit envelope/message versions, phased proto-owner PRs, reserved fields, pure-Rust generation, golden fixtures, and a stated unknown-field policy.
-- **Decision point:** Accept before `.proto` or golden durable records merge.
-- **Development mode:** Options can be prototyped alongside WP-010, but ADR acceptance precedes WP-020 schema implementation.
-
-### ADR-0002 — Bounded Typed DSL and Versioned Deterministic IR
-
-- **Why:** The earlier grammar mismatch exposed the need to freeze stable numeric IDs, AST/HIR/IR boundaries, compatibility, plan hashing, and bundle metadata before compiler/runtime branches.
-- **Blocks:** WP-030 grammar freeze, WP-040, WP-050, and WP-080.
-- **Options:** Section 7.2 versus the appendix syntax versus a union; grammar/IR versioning; bundle timestamp treatment; stable ID allocation; compatible IR execution window.
-- **Approved direction in Proposed ADR:** Section 7.2 is canonical; source AST is never executable; typed HIR lowers to validated forward IR with lineage-stable IDs; `generated_at` is removed from canonical bundle content and audit time lives in catalog metadata.
-- **Decision point:** Grammar portion before WP-030; full record accepted before WP-040 interface merge. It may be developed alongside WP-030.
-- **Development mode:** Draft alternatives may accompany WP-030 corpus design, but the grammar decision must be accepted before parser implementation and the full ADR before WP-040.
+- **Recommended proposal:** Accept the existing standalone single-node Rust direction; keep PostgreSQL/Fjall isolated as evidence and replication post-POC.
+- **Decision point:** Include in the immediate P0 batch to satisfy the earlier of the conflicting deadlines without weakening either source.
+- **Development mode:** Acceptance is governance-only; it does not require implementation work.
 
 ### ADR-0004 — Semantic Storage API and Redb Baseline
 
 - **Why:** Storage/coordinator ownership and specialized catalog/capability/outbox/projection ports cannot be inferred safely from the illustrative trait.
 - **Blocks:** WP-060, WP-070, and indirectly P0/P1.
 - **Options:** Live GAT snapshot vs bounded materialized snapshot; engine-owned semantic `commit` vs coordinator-driven narrow typed transaction; specialized subtraits vs one broad trait; repair/backup boundaries.
-- **Approved direction in Proposed ADR:** Bounded materialized snapshot; `riffdb-storage-api` owns `CommitIntent`; runtime constructs it without I/O; the coordinator drives one short narrow typed transaction with no callback or transaction escape; redb is the POC backend.
+- **Recommended proposal:** Bounded materialized snapshots; storage-api-owned intent/evidence records; coordinator-driven short typed transactions; specialized bounded ports; memory/redb conformance.
 - **Decision point:** Must be accepted before WP-060 public traits merge.
-- **Development mode:** Must be accepted before WP-060 implementation; short-lived prototypes belong in the ADR discussion, not production crate APIs.
+- **Development mode:** Exact trait and durable-record shapes must be accepted before WP-060 implementation; redb mechanics may be developed later within that envelope.
 
-### ADR-0003 — Logical Conflict Ownership, Dependency Validation, and Commit Ordering
+### ADR-0009 — Opaque Server-Side POC Capabilities
 
-- **Why:** Key bytes/order, all-or-nothing acquisition, lease lifetime, observed evidence, predicate re-evaluation, and the exact path into durable commit are central correctness semantics.
-- **Blocks:** WP-060, WP-080, WP-090, and WP-100.
-- **Options:** The POC-fixed exclusive known-upfront keys vs alternatives only for future work; FIFO all-key grant details; entity/index/predicate evidence; embed commit-check plan vs historical catalog lookup.
-- **Approved direction in Proposed ADR:** Exclusive known-upfront canonical keys, all-or-nothing ordered acquisition, non-transferable lease, complete observed dependencies, and exact-plan revalidation at the coordinator-owned durable boundary.
-- **Decision point:** Accept before WP-060/WP-090 interfaces; predicate-plan detail before WP-080/WP-100.
-- **Development mode:** Must be accepted before the first affected public interface; Loom model experiments may be developed alongside the proposal.
+- **Why:** WP-060 must persist a stable capability record before WP-110 can safely authenticate tokens.
+- **Blocks:** WP-060, WP-070, WP-110, and later MCP authorization evidence.
+- **Options:** Opaque random tokens vs self-contained tokens; exact HMAC frame/provider; current/previous key policy; audience, expiry, revocation, and audit ownership.
+- **Recommended proposal:** Opaque OS-random 32-byte tokens returned once; persist only a versioned HMAC-SHA-256 digest and bounded authorization metadata; resolve and reauthorize on every request; coordinator-owned create/revoke audit.
+- **Decision point:** Accept the bytes, DTO, provider, and lifecycle before WP-060; implementation may wait for WP-110.
+- **Development mode:** Critical dependency selection needs human review and may not be inferred by a storage agent.
 
 ### ADR-0012 — Deterministic Transaction Context: Logical Time and POC Randomness
 
 - **Why:** WP-080 conflicts with `TXN-011`, and `tx.time` must survive uncertain retries without hidden clocks.
 - **Blocks:** WP-080 and P0.
 - **Options:** Strict no command randomness; a future-only unexposed IR slot; admitted recorded randomness (which would require changing normative scope). For time: durable admission reservation, derivation from approved request identity, or another recorded source.
-- **Approved direction in Proposed ADR:** No POC command randomness. Durable pending admission records one logical time and exact plan before evaluation; retry reuses both; runtime receives no ambient clock or entropy.
-- **Decision point:** Human conflict resolution is required before WP-080; acceptance cannot be delegated to an implementation agent.
+- **Recommended proposal:** No POC command randomness; coordinator records a UTC logical timestamp in pending admission before evaluation; retries reuse that time and exact plan; runtime receives only owned bounded values.
+- **Decision point:** Accept before WP-080 and coordinate with the runtime-fault decision below.
 - **Development mode:** Must be accepted before WP-080 implementation. No production experiment may expose randomness while `TXN-011` stands.
 
-### ADR-0005 — Idempotency Identity, Terminal Outcomes, and Sequence Semantics
+### ADR-0017 — Deterministic Runtime Fault Disposition (number/title proposed)
 
-- **Why:** Durable key scope, canonical input hash, pending reservation, business rejection sequencing, replay metadata, `tx.time`, and read-only outcomes determine uncertainty recovery.
-- **Blocks:** Identity/key freeze in WP-010/WP-060 and full WP-100.
-- **Options:** Principal/environment/tenant/command-lineage/version fields; caller key raw vs digest; durable reservation vs double-check only; sequence for terminal rejections/read-only commands; reservation crash states.
-- **Approved direction in Proposed ADR:** Database/environment + authorization-resolved tenant + stable principal + contract lineage + stable command ID + keyed caller-key digest. Contract version is stored but excluded from lookup. Pending has no sequence; same input replays the original terminal sequence; mismatch never executes; first terminal business rejection receives one sequence.
-- **Decision point:** Identity shape before WP-060/WP-070 key format; full record accepted before WP-100.
-- **Development mode:** May be developed through P0, but the identity/storage-key portion must be accepted before WP-060/WP-070 and the full ADR before WP-100.
-
-### ADR-0009 — Opaque Server-Side POC Capabilities
-
-- **Why:** Token entropy/provider, keyed hashing, environment/audience scope, persistence, expiry, revocation, approval, and audit need a reviewed security boundary.
-- **Blocks:** Storage capability port details and WP-110.
-- **Options:** Opaque random tokens vs self-contained tokens; hash/KDF/provider choices; server/audience binding; storage/audit transition ownership.
-- **Approved direction in Proposed ADR:** Opaque OS-random 32-byte base64url tokens, return once, store only HMAC-SHA-256 with key ID/version, bind environment/database/server/explicit audiences, recheck every request, and keep client provenance claims untrusted.
-- **Decision point:** Storage DTO may be drafted during P0; critical crypto/provider decision and ADR acceptance before WP-110.
-- **Development mode:** May be drafted alongside storage work; accept before any capability token implementation and freeze required persistence fields before WP-070.
+- **Why:** ADR-0013 fixes deterministic arithmetic faults as non-business failures with no `CommitIntent`, but does not fix what happens to the durable pending admission or what callers may safely do.
+- **Blocks:** WP-080 and the recovery/idempotency paths in WP-100/WP-190.
+- **Options:** Terminal sequenced execution-failure record; resumable pending failure; abandoned/cancelled admission; internal-defect vs a new stable public kind.
+- **Recommended proposal:** To be finalized with ADR-0012 after reference-model review; no implementation default is authorized.
+- **Decision point:** Accept before WP-080 implementation.
+- **Development mode:** May be a narrow amendment to ADR-0012 instead of a separate ADR if that yields one coherent exact decision.
 
 ### ADR-0007 — Shared Application-Service Boundary
 
 - **Why:** Service vs commit orchestration, transport authentication, repeated authorization, request/result DTOs, pagination, and derived-system ports must be fixed before adapters branch.
-- **Blocks:** WP-120, WP-130, and WP-140.
+- **Blocks:** WP-100's external coordinator entry, WP-120, WP-130, and WP-140.
 - **Options:** Fine-grained service traits vs one facade; transport-authenticate/service-authorize split; commit executor entry point; cursor/wait/result shapes.
-- **Approved direction in Proposed ADR:** Transport authenticates into an internal principal; service authorizes every operation and applies obligations; commit owns command admission/execution; typed catalog/capability administration also uses the coordinator and ordered administrative audit; no adapter exposes storage.
+- **Recommended proposal:** Transport authenticates into an internal principal; service authorizes every operation and applies obligations; commit owns command admission/execution; typed administration uses coordinator-owned audit; no adapter exposes storage.
 - **Decision point:** Draft alongside WP-100; accept before WP-120 interface merge.
 - **Development mode:** May be developed alongside WP-100 result/interface work; must be accepted before WP-120 implementation.
 
@@ -853,18 +814,9 @@ commit ordering remains covered jointly by ADR-0003/0004/0005.
 - **Why:** Tool normalization/collisions, resource URIs, schema reuse, visibility, stale-name denial, stdio-via-gRPC, HTTP composition, pagination, and text safety are public compatibility/security boundaries.
 - **Blocks:** WP-140.
 - **Options:** Qualified vs unqualified names; percent-encoded IDs vs stable numeric URI segments; stdio gRPC vs in-process; list-change/subscription behavior.
-- **Approved direction in Proposed ADR:** `riffdb.cmd.<normalized_contract>.<normalized_command>` with lowercase snake-case segments and deployment-time collision rejection; stable encoded resource identifiers; stdio uses public gRPC; configured HTTP `/mcp` audience; every invocation reauthorizes.
+- **Recommended proposal:** `riffdb.cmd.<normalized_contract>.<normalized_command>` with deployment-time collision rejection; stable encoded resources; stdio uses public gRPC; configured HTTP audience; every invocation reauthorizes.
 - **Decision point:** Develop after ADR-0007/service interface; accept before WP-140 fixtures.
-- **Development mode:** May be developed alongside late WP-120/WP-130 adapter planning; must be accepted before WP-140 implementation.
-
-### ADR-0010 — Event-Derived Projection and Frontier Semantics
-
-- **Why:** Atomic state/frontier persistence, per-sequence idempotency, contiguous scans, lifecycle, rebuild, and typed waits must be represented before redb format freezes.
-- **Blocks:** Projection storage subinterface in WP-060/WP-070 and WP-170 behavior.
-- **Options:** State+frontier one transaction; separate applied markers; per-projection vs shared worker cursors; wait notification mechanisms.
-- **Proposed direction:** Atomic per-projection state/frontier update, `(projection_id, sequence)` idempotency, strict contiguous commit prefixes, rebuild from authoritative log, typed timeout/degraded results.
-- **Decision point:** Persistence portion before WP-070; complete ADR accepted before WP-170.
-- **Development mode:** Must be accepted before WP-070 freezes projection tables/operations; WP-170 may refine implementation only within that accepted semantic envelope.
+- **Development mode:** May be completed after P1 service interfaces; must be accepted before WP-140 fixtures or MCP implementation.
 
 ## 9. Verification Matrix
 
@@ -924,32 +876,34 @@ Fuzz, Loom, Shuttle, and full crash jobs run in dedicated profiles. Process corr
 
 ## 11. Decisions Requiring Human Input
 
-The architecture directions previously listed here were approved by human review
-on 2026-07-12 and reconciled into the specification, manifest, diagrams, plan,
-and twelve Proposed ADRs. Direction approval is not exact ADR acceptance. The
-remaining human decisions are:
+The immediate human-review batch is deliberately larger than the next package so
+WP-040, WP-060, WP-080, and WP-090 can proceed with fewer interruptions:
 
-1. **Before WP-000:** create the baseline commit; confirm GitHub Actions; provision
-   the pinned Rust/Cargo tools; and approve the initial dependency license/source
-   allowlist. These are operational/governance blockers, not semantic redesigns.
-2. **Before each semantic package:** review and Accept the exact text of every ADR
-   in its `required_adrs`. Particular exact-text decisions still include the
-   canonical hash algorithm/domain registry, unknown-field retention by durable
-   boundary, integrity-envelope details, and the HMAC implementation/key-rotation
-   dependency. An implementation or fixture must not decide these implicitly.
-3. **At WP-045 and WP-075 dependency review:** approve the PostgreSQL and Fjall
+1. **Before P0/WP-060:** accept exact ADR-0001, ADR-0004, and ADR-0009 text after
+   resolving the storage/capability audits. This freezes the standalone boundary,
+   storage semantic transaction, persistence ports, capability record, token
+   framing/provider, and create/revoke audit ownership.
+2. **Before WP-080:** accept exact ADR-0012 plus the deterministic runtime-fault
+   disposition required by ADR-0013. No implementation may infer whether a fault
+   is terminal, sequenced, retryable, abandonable, or exposed as a particular
+   public error.
+3. **During the first WP-040 interface PR:** review the generated canonical
+   `FORMAT.md` and `JSON_SCHEMA_FORMAT.md` registries before their compatibility
+   fixtures merge. The generator may produce the review artifact, but only the
+   maintainer can approve it as the concrete realization of ADR-0013.
+4. **Before WP-100/WP-120:** accept ADR-0007's API-neutral service/coordinator
+   boundary. This can be drafted during P0 but need not block WP-040/WP-060.
+5. **Before WP-140:** accept ADR-0008's MCP name, resource URI, audience,
+   discovery, and invocation-time authorization boundary.
+6. **At WP-045 and WP-075 dependency review:** approve the PostgreSQL and Fjall
    versions/drivers and their license, unsafe/native, and reproducibility posture.
    This must not add either dependency to the root workspace.
-4. **Post-POC only:** decide whether code generation becomes a `riffdb contract
+7. **Post-POC only:** decide whether code generation becomes a `riffdb contract
    generate` subcommand and whether privileged replay/repair warrants a separate
    binary. WP-000 and the POC do not create `riffdb-codegen` or `riffdb-replay`.
-5. **Before WP-040/WP-045:** define the canonical typed budget create/seed command
-   and its exact Section 7.2 grammar binding. It must use the compiled command and
-   coordinator path; fixtures may not seed authoritative storage directly.
 
-In addition to the budget create/seed binding above, SPEC Section 22.2 retains
-six explicit defaulted decisions. Implementations
-use the stated default until human review resolves the decision by its deadline:
+SPEC Section 22.2 retains six defaulted decisions. Implementations use the stated
+default until human review resolves the decision by its deadline:
 
 1. **Read-only outcome journal, before WP-100 exit:** journal only when
    idempotency or audit requires it; create no mutation-log record otherwise.
@@ -965,11 +919,16 @@ use the stated default until human review resolves the decision by its deadline:
 6. **Redb versus Fjall for MVP, at POC exit:** keep redb unless the unchanged
    workload, conformance, recovery, and benchmark evidence justifies a change.
 
-No other unresolved architecture-direction choice is known before P0, P1, or P2
-beyond these defaulted decisions, the budget create/seed binding, and formal ADR
-acceptance at the recorded deadlines.
+The initial budget create/seed decision is no longer open; accepted ADR-0015 owns
+it. No other unresolved architecture-direction choice is known before P0, P1,
+or P2 beyond the immediate batch, these defaults, and later ADR acceptance at
+the recorded deadlines.
 
 ## 12. First Execution Handoff
+
+This handoff is archived: it was executed as WP-000 commit `4407d59` against the
+`3235477` baseline. It remains below to preserve the original planning deliverable
+and must not be rerun against the current implementation branch.
 
 ```text
 You are implementing WP-000 only in /home/user/dev/riffdb.

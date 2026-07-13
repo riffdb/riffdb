@@ -4,6 +4,7 @@
 - **Direction approved:** 2026-07-12
 - **Exact text accepted:** 2026-07-12
 - **Contextual-keyword clarification accepted:** 2026-07-12
+- **Amended by:** ADR-0015 for mandatory read/mutate binding-failure outcomes
 - **Decision deadline:** Before WP-030 grammar implementation
 
 The human maintainer accepted this exact grammar, dependency, and compilation
