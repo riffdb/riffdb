@@ -9,6 +9,16 @@ publish.workspace = true
 default = []
 
 [dependencies]
+crc = { version = "3.4.0", default-features = false }
+prost = { version = "0.14.4", default-features = false, features = ["derive", "std"] }
+riffdb-errors = { version = "0.1.0", path = "../riffdb-errors" }
+riffdb-types = { version = "0.1.0", path = "../riffdb-types" }
+
+[dev-dependencies]
+prost-build = { version = "0.14.4", default-features = false, features = ["format"] }
+prost-types = { version = "0.14.4", default-features = false, features = ["std"] }
+proptest = { version = "1.11.0", default-features = false, features = ["std"] }
+protox = { version = "0.9.1", default-features = false }
 
 [lints]
 workspace = true

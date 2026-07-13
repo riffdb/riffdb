@@ -1,0 +1,70 @@
+syntax = "proto3";
+
+package riffdb.v1;
+
+import "riffdb/v1/command.proto";
+
+// Phase-zero shells reserve the authoritative public names and streaming
+// shapes. With the exception of Execute, these operations remain unsupported
+// until their semantic owner adds reviewed fields.
+service ContractService {
+  rpc ValidateContract(ValidateContractRequest) returns (ValidateContractResponse);
+  rpc ExplainCommand(ExplainCommandRequest) returns (ExplainCommandResponse);
+  rpc DeployContract(DeployContractRequest) returns (DeployContractResponse);
+  rpc GetActiveContract(GetActiveContractRequest) returns (GetActiveContractResponse);
+}
+
+service CommandService {
+  rpc Execute(ExecuteCommandRequest) returns (ExecuteCommandResponse);
+  rpc GetOutcome(GetOutcomeRequest) returns (GetOutcomeResponse);
+}
+
+service QueryService {
+  rpc GetEntity(GetEntityRequest) returns (GetEntityResponse);
+  rpc ScanIndex(ScanIndexRequest) returns (ScanIndexResponse);
+  rpc QueryProjection(QueryProjectionRequest) returns (QueryProjectionResponse);
+}
+
+service CommitService {
+  rpc GetCommit(GetCommitRequest) returns (GetCommitResponse);
+  rpc ScanCommits(ScanCommitsRequest) returns (ScanCommitsResponse);
+  rpc SubscribeCommits(SubscribeCommitsRequest) returns (stream CommitNotification);
+}
+
+service AdminService {
+  rpc Health(HealthRequest) returns (HealthResponse);
+  rpc Stats(StatsRequest) returns (StatsResponse);
+  rpc CreateCapability(CreateCapabilityRequest) returns (CreateCapabilityResponse);
+  rpc RevokeCapability(RevokeCapabilityRequest) returns (RevokeCapabilityResponse);
+}
+
+message ValidateContractRequest {}
+message ValidateContractResponse {}
+message ExplainCommandRequest {}
+message ExplainCommandResponse {}
+message DeployContractRequest {}
+message DeployContractResponse {}
+message GetActiveContractRequest {}
+message GetActiveContractResponse {}
+message GetOutcomeRequest {}
+message GetOutcomeResponse {}
+message GetEntityRequest {}
+message GetEntityResponse {}
+message ScanIndexRequest {}
+message ScanIndexResponse {}
+message QueryProjectionRequest {}
+message QueryProjectionResponse {}
+message GetCommitRequest {}
+message GetCommitResponse {}
+message ScanCommitsRequest {}
+message ScanCommitsResponse {}
+message SubscribeCommitsRequest {}
+message CommitNotification {}
+message HealthRequest {}
+message HealthResponse {}
+message StatsRequest {}
+message StatsResponse {}
+message CreateCapabilityRequest {}
+message CreateCapabilityResponse {}
+message RevokeCapabilityRequest {}
+message RevokeCapabilityResponse {}

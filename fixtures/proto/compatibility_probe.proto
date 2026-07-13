@@ -1,0 +1,9 @@
+syntax = "proto3";
+
+package riffdb.testing.v1;
+
+// Test-only payload for freezing durable-envelope compatibility without
+// introducing a production durable record ahead of its semantic owner.
+message CompatibilityProbe {
+  uint64 value = 1;
+}

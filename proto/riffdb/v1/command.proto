@@ -1,0 +1,29 @@
+syntax = "proto3";
+
+package riffdb.v1;
+
+import "riffdb/v1/value.proto";
+
+message ExecuteCommandRequest {
+  bytes request_id = 1;
+  string command_name = 2;
+  optional uint64 expected_contract_version = 3;
+  Value input = 4;
+}
+
+message ExecuteCommandResponse {
+  enum CompletionStatus {
+    COMPLETION_STATUS_UNSPECIFIED = 0;
+    COMMITTED = 1;
+    REPLAYED = 2;
+  }
+
+  CompletionStatus status = 1;
+  uint64 commit_sequence = 2;
+  uint64 contract_version = 3;
+  bytes plan_hash = 4;
+  string outcome_type = 5;
+  Value outcome = 6;
+  string provenance_uri = 7;
+  string durability_mode = 8;
+}
