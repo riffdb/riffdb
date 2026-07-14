@@ -1,0 +1,28 @@
+{
+  "case_id": "budget-contention-v1",
+  "final_budget": {
+    "allocated_amount": "80.00",
+    "approved_amount": "100.00",
+    "fiscal_year": 2026,
+    "organization_id": "018f22a1-7b3c-7def-8123-456789abcdef"
+  },
+  "outcomes": [
+    {
+      "allocated": "80.00",
+      "approved": "100.00",
+      "name": "InsufficientBudget",
+      "requested": "80.00"
+    },
+    {
+      "budget": {
+        "allocated_amount": "80.00",
+        "approved_amount": "100.00",
+        "fiscal_year": 2026,
+        "organization_id": "018f22a1-7b3c-7def-8123-456789abcdef"
+      },
+      "name": "Allocated",
+      "remaining": "20.00"
+    }
+  ],
+  "schema_version": 1
+}

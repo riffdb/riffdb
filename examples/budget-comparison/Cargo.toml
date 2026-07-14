@@ -1,0 +1,46 @@
+[package]
+name = "riffdb-budget-comparison"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+autotests = false
+
+[workspace]
+resolver = "3"
+members = ["core", "postgres"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.97.0"
+publish = false
+
+[workspace.lints.rust]
+unsafe_code = "forbid"
+unused_must_use = "deny"
+missing_docs = "warn"
+unreachable_pub = "warn"
+
+[workspace.lints.clippy]
+correctness = { level = "warn", priority = -1 }
+await_holding_lock = "deny"
+
+[dev-dependencies]
+riffdb-budget-comparison-core = { path = "core", version = "0.1.0" }
+riffdb-budget-comparison-postgres = { path = "postgres", version = "0.1.0" }
+
+[[test]]
+name = "postgres_oracle"
+path = "tests/postgres_oracle.rs"
+
+[[test]]
+name = "postgres_isolation"
+path = "tests/postgres_isolation.rs"
+
+[[test]]
+name = "postgres_live"
+path = "tests/postgres_live.rs"
+
+[lints]
+workspace = true

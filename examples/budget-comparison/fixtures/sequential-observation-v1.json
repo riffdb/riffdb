@@ -1,0 +1,95 @@
+{
+  "case_id": "budget-sequential-v1",
+  "final_budgets": [
+    {
+      "allocated_amount": "50.00",
+      "approved_amount": "100.00",
+      "fiscal_year": 2026,
+      "organization_id": "018f22a1-7b3c-7def-8123-456789abcdef"
+    }
+  ],
+  "outcomes": [
+    {
+      "operation_id": "create-invalid-approval",
+      "outcome": {
+        "minimum": "0.01",
+        "name": "InvalidApprovedAmount"
+      }
+    },
+    {
+      "operation_id": "allocate-missing-budget",
+      "outcome": {
+        "key": {
+          "fiscal_year": 2026,
+          "organization_id": "018f22a1-7b3c-7def-8123-456789abcd01"
+        },
+        "name": "BudgetNotFound"
+      }
+    },
+    {
+      "operation_id": "create-budget-100",
+      "outcome": {
+        "budget": {
+          "allocated_amount": "0.00",
+          "approved_amount": "100.00",
+          "fiscal_year": 2026,
+          "organization_id": "018f22a1-7b3c-7def-8123-456789abcdef"
+        },
+        "name": "BudgetCreated"
+      }
+    },
+    {
+      "operation_id": "create-duplicate-invalid",
+      "outcome": {
+        "key": {
+          "fiscal_year": 2026,
+          "organization_id": "018f22a1-7b3c-7def-8123-456789abcdef"
+        },
+        "name": "BudgetAlreadyExists"
+      }
+    },
+    {
+      "operation_id": "allocate-invalid-zero",
+      "outcome": {
+        "minimum": "0.01",
+        "name": "InvalidAmount"
+      }
+    },
+    {
+      "operation_id": "allocate-thirty",
+      "outcome": {
+        "budget": {
+          "allocated_amount": "30.00",
+          "approved_amount": "100.00",
+          "fiscal_year": 2026,
+          "organization_id": "018f22a1-7b3c-7def-8123-456789abcdef"
+        },
+        "name": "Allocated",
+        "remaining": "70.00"
+      }
+    },
+    {
+      "operation_id": "allocate-insufficient-eighty",
+      "outcome": {
+        "allocated": "30.00",
+        "approved": "100.00",
+        "name": "InsufficientBudget",
+        "requested": "80.00"
+      }
+    },
+    {
+      "operation_id": "allocate-twenty",
+      "outcome": {
+        "budget": {
+          "allocated_amount": "50.00",
+          "approved_amount": "100.00",
+          "fiscal_year": 2026,
+          "organization_id": "018f22a1-7b3c-7def-8123-456789abcdef"
+        },
+        "name": "Allocated",
+        "remaining": "50.00"
+      }
+    }
+  ],
+  "schema_version": 1
+}

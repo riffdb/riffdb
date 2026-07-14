@@ -1,0 +1,114 @@
+name: Budget Comparison
+
+on:
+  push:
+    paths:
+      - "examples/budget-comparison/**"
+      - ".github/workflows/budget-comparison.yml"
+      - "crates/riffdb-types/**"
+      - "Cargo.toml"
+      - "deny.toml"
+      - "rust-toolchain.toml"
+      - "scripts/tool-versions"
+  pull_request:
+    paths:
+      - "examples/budget-comparison/**"
+      - ".github/workflows/budget-comparison.yml"
+      - "crates/riffdb-types/**"
+      - "Cargo.toml"
+      - "deny.toml"
+      - "rust-toolchain.toml"
+      - "scripts/tool-versions"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: riffdb-budget-comparison-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_INCREMENTAL: "0"
+  RUST_TOOLCHAIN: "1.97.0"
+  CARGO_TARGET_DIR: examples/budget-comparison/target
+  RIFFDB_BUDGET_POSTGRES_REQUIRED: "1"
+  RIFFDB_BUDGET_POSTGRES_URL: postgres://riffdb:riffdb@127.0.0.1:5432/riffdb_budget
+
+jobs:
+  postgres-live:
+    name: PostgreSQL correctness preflight
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    services:
+      postgres:
+        image: postgres:18.4-bookworm@sha256:d9c83446333daec3f0588cc709adb80c26090b7f9f0f7ec8d43c243385d79818
+        env:
+          POSTGRES_USER: riffdb
+          POSTGRES_PASSWORD: riffdb
+          POSTGRES_DB: riffdb_budget
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U riffdb -d riffdb_budget"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 12
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - name: Install pinned Rust toolchain
+        run: rustup toolchain install "$RUST_TOOLCHAIN" --profile minimal --component rustfmt,clippy
+      - name: Install pinned dependency-policy tools
+        run: |
+          source scripts/tool-versions
+          cargo install --locked --version "$RIFFDB_CARGO_DENY_VERSION" cargo-deny
+          cargo install --locked --version "$RIFFDB_CARGO_AUDIT_VERSION" cargo-audit
+          cargo install --locked --version "$RIFFDB_CARGO_MACHETE_VERSION" cargo-machete
+      - name: Cache Cargo registry
+        uses: actions/cache@5a3ec84eff668545956fd18022155c47e93e2684 # v4.2.3
+        with:
+          path: ~/.cargo/registry
+          key: budget-registry-${{ runner.os }}-${{ env.RUST_TOOLCHAIN }}-${{ hashFiles('examples/budget-comparison/Cargo.lock', 'scripts/tool-versions') }}
+      - name: Cache comparison target
+        uses: actions/cache@5a3ec84eff668545956fd18022155c47e93e2684 # v4.2.3
+        with:
+          path: examples/budget-comparison/target
+          key: budget-target-${{ runner.os }}-${{ env.RUST_TOOLCHAIN }}-${{ hashFiles('examples/budget-comparison/Cargo.lock') }}
+      - name: Check formatting
+        run: >-
+          cargo fmt --manifest-path examples/budget-comparison/Cargo.toml
+          -p riffdb-budget-comparison-core -p riffdb-budget-comparison-postgres
+          -p riffdb-budget-comparison -- --check
+      - name: Check generated fixtures
+        run: >-
+          cargo run --locked --manifest-path examples/budget-comparison/Cargo.toml
+          -p riffdb-budget-comparison-core --bin budget-fixtures -- --check
+      - name: Check dependency surface
+        run: |
+          cargo tree --locked --manifest-path examples/budget-comparison/Cargo.toml --workspace
+          if cargo tree --locked --manifest-path examples/budget-comparison/Cargo.toml --workspace | grep -E '(^| )(cc|openssl-sys|native-tls|rustls|ring|libsqlite3-sys|pq-sys|diesel|sqlx|deadpool|bb8|r2d2) v'; then
+            echo "native, TLS, or unreviewed database dependency entered the comparison workspace" >&2
+            exit 1
+          fi
+      - name: Check dependency policy
+        run: >-
+          cargo deny --manifest-path examples/budget-comparison/Cargo.toml
+          --workspace --locked check --config deny.toml
+      - name: Audit advisories
+        run: cargo audit --file examples/budget-comparison/Cargo.lock
+      - name: Check unused dependencies
+        run: cargo machete --with-metadata examples/budget-comparison
+      - name: Run Clippy
+        run: >-
+          cargo clippy --locked --manifest-path examples/budget-comparison/Cargo.toml
+          --workspace --all-targets --all-features -- -D warnings
+      - name: Run mandatory live acceptance
+        run: cargo test --manifest-path examples/budget-comparison/Cargo.toml --workspace
+      - name: Build documentation
+        env:
+          RUSTDOCFLAGS: -D warnings
+        run: >-
+          cargo doc --locked --manifest-path examples/budget-comparison/Cargo.toml
+          --workspace --no-deps

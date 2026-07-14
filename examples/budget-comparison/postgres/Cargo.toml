@@ -1,0 +1,13 @@
+[package]
+name = "riffdb-budget-comparison-postgres"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[dependencies]
+postgres = { version = "=0.19.14", default-features = false }
+riffdb-budget-comparison-core = { path = "../core", version = "0.1.0" }
+
+[lints]
+workspace = true
