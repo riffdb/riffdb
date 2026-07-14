@@ -17,6 +17,9 @@
 The human maintainer accepted this exact UUIDv7 generation, ownership, and
 replay record on 2026-07-13. The maintainer also accepted the exact production
 source owners and dependency extension below.
+On 2026-07-13 the maintainer accepted the P1 composition amendment that moves
+every server source wrapper and its production injection into WP-130; WP-185
+reuses the same sources when it adds P2 components.
 
 ## Context
 
@@ -167,13 +170,19 @@ change requires renewed human dependency review.
 `DatabaseId` is generated only for a truly uninitialized database. WP-060's
 semantic storage boundary first exposes a source-free checked probe with the
 closed result `Existing(DatabaseId) | NeedsInitialization`; malformed or partial
-metadata is an integrity error, never `NeedsInitialization`. `riffdb-server`
-invokes its production source only after `NeedsInitialization`, then passes the
-checked candidate back through `riffdb-commit`'s production
+metadata is an integrity error, never `NeedsInitialization`. WP-130's
+`riffdb-server` composition invokes its production source only after
+`NeedsInitialization`, then passes the checked candidate back through
+`riffdb-commit`'s production
 `DatabaseInitializationExecutor`, which alone invokes the separate atomic storage
 transition. Server composition never receives a storage mutation handle. Storage
 accepts no clock or entropy provider. The memory engine uses explicit fixture
 candidates.
+
+Only after this transition returns the installed durable identity may WP-130
+open ADR-0004's exclusive `StructuralEvidenceSession`. The session is bound to
+that exact `DatabaseId`; neither structural nor catalog validation can request a
+new candidate or invoke initialization.
 
 The initialization transition re-proves true emptiness. It returns the installed
 identity or, if another initializer won after the probe, the already durable
@@ -210,9 +219,9 @@ pub trait ProvenanceIdSource: Send + Sync {
 }
 ```
 
-`riffdb-server` implements the production port with its system UUIDv7 source;
-`riffdb-testkit` supplies deterministic explicit fakes. Neither
-`riffdb-storage-api` nor a storage engine generates provenance IDs.
+WP-130's `riffdb-server` composition implements the production port with its
+system UUIDv7 source; `riffdb-testkit` supplies deterministic explicit fakes.
+Neither `riffdb-storage-api` nor a storage engine generates provenance IDs.
 
 For each new terminal application commit, including a declared no-mutation
 business rejection, the coordinator requests one `ProvenanceId` only after a
@@ -268,7 +277,8 @@ adapter generates it before constructing the API-neutral request context:
 - The CLI and `riffdb-mcp` stdio bridge use the Rust client source; neither owns
   another OS entropy dependency.
 - The hosted MCP HTTP adapter owns a narrow consumer-side `RequestIdSource` port
-  in `riffdb-api-mcp`; `riffdb-server` supplies its production implementation.
+  in `riffdb-api-mcp`; WP-130 supplies the `riffdb-server` production wrapper and
+  WP-185 injects that same wrapper when the hosted adapter is added.
 - In-process service and comparison tests provide explicit checked IDs.
 
 The gRPC adapter validates the required wire value and rejects missing,
@@ -325,8 +335,9 @@ session-lifetime meaning, and RiffDB enforces no global uniqueness registry.
 
 `IncidentId` is server-generated and is never accepted from request data.
 `riffdb-errors` owns a narrow synchronous `IncidentIdSource` port;
-`riffdb-server` supplies the production implementation and tests inject explicit
-values. Trusted error-containment boundaries request an incident before
+WP-130 supplies the `riffdb-server` production implementation and injects it
+into the P1 core; tests use explicit values. Trusted error-containment
+boundaries request an incident before
 constructing an internal error or exposing a public-safe correlation value.
 Runtime may return its closed typed faults but receives no incident source and
 never generates an incident. An incident identifies one observed internal
@@ -421,6 +432,9 @@ compatibility decision and updated golden, crash, and recovery fixtures.
 The direct dependency version and feature set are security/dependency
 compatibility boundaries. A change requires the review specified above even
 when Cargo would classify it as semver-compatible.
+WP-130 ownership of all server source wrappers and injection is the accepted P1
+composition boundary; moving a required source back behind WP-185 would make the
+P1 server incomplete and requires renewed governance review.
 
 ## Security
 
@@ -478,10 +492,12 @@ Package evidence additionally proves:
   the outer request ID only after the credential file and directory are durable;
 - WP-180 integrates the consumer-owned incident source with explicit fakes and
   proves safe exposure, label redaction, source-failure handling, and no ambient
-  entropy; WP-130 proves the server provider implementation and WP-185 proves
-  production composition;
-- WP-185 architecture tests compose the server sources without giving runtime,
-  storage, service, policy, or adapters direct OS providers; and
+  entropy; WP-130 proves the server provider implementation and production
+  composition;
+- WP-130 architecture tests compose the database, provenance, request, incident,
+  and cursor sources without giving runtime, storage, service, policy, or
+  adapters direct OS providers; WP-185 proves its MCP/worker extension reuses
+  those exact sources; and
 - WP-190 process tests cover database initialization crashes, provenance commit
   uncertainty and replay, collision abort, and retained bootstrap recovery.
 
@@ -533,11 +549,11 @@ Exact package ownership is:
 | WP-110 | Auth-owned bootstrap ID/token production with separate entropy and cleanup |
 | WP-120 | Checked `RequestContext`/claims and source-free service behavior; no generator |
 | WP-127 | Existing public 16-byte field validation only; no generation policy or source |
-| WP-130 | Client system source/convenience APIs; one private checked server system-source primitive plus request/incident wrappers; exact dependency graph and gRPC non-substitution tests |
+| WP-130 | Client system source/convenience APIs; one private checked server system-source primitive plus database/provenance/request/incident/cursor wrappers; complete production injection into the P1 graph; exact dependency graph and gRPC non-substitution tests |
 | WP-140 | MCP consumer-side request source port and fresh-ID protocol evidence |
 | WP-150 | Retained bootstrap identity/token and fresh retry request behavior |
 | WP-180 | Incident-source integration and redaction/failure evidence without owning a system provider |
-| WP-185 | Database/provenance wrappers over the WP-130 server primitive and final production injection of database, provenance, MCP request, incident, and cursor sources |
+| WP-185 | Reuse of WP-130's already injected source set when adding hosted MCP and P2 workers; no wrapper, provider, source primitive, or second production graph |
 | WP-190 | Process crash, uncertain-status, replay, and initialization recovery matrix |
 | WP-200 | Final public-path, dependency, recovery, and compatibility evidence |
 
@@ -562,7 +578,9 @@ Acceptance of this exact record decides:
    ID/token generation;
 8. externally supplied, policy-validated agent-session identity;
 9. server-injected incident identity outside deterministic runtime; and
-10. no semantic use of UUID timestamps or random fields.
+10. no semantic use of UUID timestamps or random fields; and
+11. WP-130 ownership of every server UUID/cursor wrapper and production
+    injection, with WP-185 restricted to reusing that established source graph.
 
 ## Decision Deadline
 
@@ -570,5 +588,6 @@ The pure constructor and source interfaces must merge through the focused
 WP-010 completion before packages publish competing generation helpers. WP-060
 must freeze database initialization and intent provenance ownership before
 WP-070 or WP-100. WP-110 must implement bootstrap generation before WP-150;
-WP-130 must freeze the client/server provider graph before WP-140; and WP-185
-must compose the exact production sources before integrated WP-190 evidence.
+WP-130 must freeze and compose the exact client/server provider graph before
+WP-140 or the runnable P1 exit gate. WP-185 must reuse it before integrated
+WP-190 evidence.

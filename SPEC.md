@@ -6,7 +6,7 @@
 **Tagline:** *Vibe fast. Commit safely.*  
 **Category:** Contract-first operational database for agent-built applications  
 
-**Version:** 0.7
+**Version:** 0.8
 **Status:** Architecture-approved implementation handoff
 **Date:** 13 July 2026
 **Audience:** Coding agents, database engineers, compiler engineers, security reviewers, and technical product leads  
@@ -43,6 +43,7 @@
 | 0.5 | 2026-07-13 | Applied the accepted audit-clock/lifecycle, fail-closed recovery/readiness, crash-safe bootstrap-file, implicit-initial-outbox-state, initialization-mode, and ADR-0018 UUIDv7 generation/replay decisions before completing WP-010. |
 | 0.6 | 2026-07-13 | Applied accepted ADR-0019 and ADR-0020: retained exactly the six authoritative POC metadata categories with unconditional startup integrity validation, and froze compiler-owned MCP command tool-name normalization, collision rejection, and catalog revalidation without accepting the remaining ADR-0008 URI or transport decisions. |
 | 0.7 | 2026-07-13 | Applied accepted ADR-0021's exact lineage-scoped service-audit target registry and canonical ordering, and reconciled the canonical `LegalSpend`/`AllocateBudget` source identifiers with ADR-0020's no-word-splitting MCP name. |
+| 0.8 | 2026-07-13 | Reconciled the accepted first-runnable P1 boundary: storage owns complete structural evidence and dormant type-state ports, catalog owns same-session IR-aware historical validation, WP-130 composes the minimal production `riffdbd` startup/lifecycle and restart proof, and WP-185 only extends that graph with P2 components. |
 
 ### Normative language
 
@@ -285,10 +286,10 @@ The binary targets are `riffdbd` from `riffdb-server`, `riffdb` from `riffdb-cli
 | `riffdb-contract-syntax` | Lexer, parser, source spans, syntax AST, and parser diagnostics | Types and parser tooling only |
 | `riffdb-contract-ir` | Typed HIR, executable IR, plans, immutable projection group schemas, and contract bundle structs | Types; no parser implementation, storage, compiler implementation, or runtime dependency |
 | `riffdb-contract-compiler` | Name resolution, type checking, invariant classification, locality analysis, plan generation, and JSON Schema output | Syntax and IR; no storage, service, or transport dependency |
-| `riffdb-catalog` | Immutable contract bundle persistence, compatibility checks, active-version changes, and catalog notifications | IR and storage API |
-| `riffdb-storage-api` | Semantic snapshots, database initialization, evaluated commands, commit intents, durable DTOs, typed transitions/readers, the narrow durable `proto_codec` mapping bridge, and ADR-0017 projection-schema consumers | Types/errors; proto only through `proto_codec`; contract IR only for immutable `ProjectionGroupSchema`/`BoundProjectionGroupSchema` values in the projection-schema module; no clock, entropy, compiler, command-plan interpretation, runtime, commit, service, transport, or concrete-engine dependency |
+| `riffdb-catalog` | Immutable contract bundle persistence, compatibility checks, active-version changes, catalog notifications, and IR-aware validation of bounded same-session historical startup evidence | IR and storage API; its opaque `ValidatedCatalogHistory` never crosses a storage trait |
+| `riffdb-storage-api` | Semantic snapshots, database initialization, structural startup sessions/evidence/type-state ports, evaluated commands, commit intents, durable DTOs, typed transitions/readers, the narrow durable `proto_codec` mapping bridge, and ADR-0017 projection-schema consumers | Types/errors; proto only through `proto_codec`; contract IR only for immutable `ProjectionGroupSchema`/`BoundProjectionGroupSchema` values in the projection-schema module; no clock, entropy, compiler, command-plan interpretation, historical-plan validation, runtime, commit, service, transport, or concrete-engine dependency |
 | `riffdb-storage-memory` | Deterministic reference storage implementation used by model and semantic tests | Storage API only |
-| `riffdb-storage-redb` | Durable POC implementation, table layout, integrity checks, backup, restore, and engine benchmarks | Storage API and `redb`; no API transports |
+| `riffdb-storage-redb` | Durable POC implementation, table layout, complete structural integrity/evidence scan, dormant opened ports, backup, restore, and engine benchmarks | Storage API and `redb`; no contract IR, `ValidatedCatalogHistory`, readiness composition, or API transports |
 | `riffdb-invariant` | Evaluation of supported predicates, transitions, postconditions, and commit-time invariant checks | Types and IR |
 | `riffdb-runtime` | Deterministic command-plan interpreter that consumes owned snapshots and produces `EvaluatedCommand` without external I/O | IR, invariant engine, and storage semantic value/snapshot types; no provenance claims, admission persistence, storage engine, service, or transport dependency |
 | `riffdb-conflict` | Canonical conflict keys, exclusive logical capabilities, wait queues, cancellation, and hot-key diagnostics | Types and synchronization primitives; no storage engine |
@@ -299,7 +300,7 @@ The binary targets are `riffdbd` from `riffdb-server`, `riffdb` from `riffdb-cli
 | `riffdb-service` | API-neutral command, contract, entity, commit, provenance, projection, discovery, administration, and health services, including capability-administration request/result semantics | Foundational types/errors, contract/compiler/catalog semantics, auth and policy entry points, typed commit executors, and consumer-owned bounded read ports; no transport, general storage engine, or concrete storage implementation |
 | `riffdb-api-grpc` | Tonic services, authentication interceptors, bounds checks, and wire conversions | Service, the auth-owned `CredentialAuthenticator` interface, proto, and Tonic; no policy, catalog, runtime, commit, storage API, or storage implementation |
 | `riffdb-client-rust` | Generic and generated Rust client APIs plus the approved system UUIDv7 request/capability/agent-session convenience source | Proto and Tonic client plus the exact ADR-0018 entropy dependency only; no semantic database implementation |
-| `riffdb-server` | `riffdbd` process composition, configuration, lifecycle, hosted gRPC/HTTP endpoints, and concrete OS clock/UUIDv7 providers implementing the separate consumer ports | Service/API crates and concrete auth, clock/identifier, executor, storage, outbox, projection, and observability implementations solely for composition; no new policy, command, query, redaction, cursor, audit, or identifier semantics |
+| `riffdb-server` | `riffdbd` process composition, configuration, lifecycle, hosted gRPC/HTTP endpoints, startup proof composition, and concrete OS clock/UUIDv7/cursor/digest providers implementing the separate consumer ports | Service/API crates and concrete auth, clock/identifier, executor, storage, outbox, projection, and observability implementations solely for composition; no new policy, command, query, redaction, cursor, audit, or identifier semantics |
 | `riffdb-api-mcp` | MCP tool/resource catalogs, schema translation, authorization-aware discovery presentation, Streamable HTTP authentication/handling, and protocol adaptation | Service, the auth-owned `CredentialAuthenticator` interface, `rmcp`, and JSON Schema support; no direct policy, catalog, runtime, commit, storage API, or storage implementation |
 | `riffdb-mcp-stdio` | `riffdb-mcp` local stdio bridge that invokes the shared public service | MCP client/server transport glue only; no storage access |
 | `riffdb-cli` | `riffdb` operator and developer CLI using public APIs | Rust client and bounded local configuration; may depend only on the isolated pure `riffdb-auth::bootstrap_secret` module for offline bootstrap credential generation/validation and protected-file loading, never on authentication, policy, storage, or service internals |
@@ -912,6 +913,23 @@ adapter-owned string registry or a second normalization path.
 
 `CMP-022` The server MUST reject a bundle whose IR version it cannot execute.
 
+During production open, `riffdb-catalog` is the sole IR-aware validator of
+historical contract semantics. The server composition feeds it the bounded
+`HistoricalSemanticEvidence` pages obtained from one storage structural-evidence
+session, in order, through the exact end marker. The catalog resolves every
+referenced immutable bundle and executable plan, validates the recorded lineage,
+version, IR version, plan hash, and active-pointer relationship, and revalidates
+the complete ADR-0020 command-name registry without repair. Only exact-end
+completion may produce opaque catalog-owned `ValidatedCatalogHistory` bound to
+the same database/open session as the evidence. A skipped,
+repeated, reordered, truncated, unknown, mismatched, or cross-session page fails
+closed.
+
+That proof is process-local startup authority, not durable data or a storage DTO.
+It never crosses a storage trait and storage never imports, decodes, or interprets
+contract IR. The boundary accepts neither a generic storage validation callback
+nor a catalog callback invoked from inside an engine transaction.
+
 ## 8.6 Deployment
 
 1. Validate source and compile bundle without mutation.
@@ -1287,6 +1305,33 @@ checked value back to the executor and never obtains a storage mutation handle.
 Memory/redb conformance tests may exercise the storage transition directly; this
 does not create a second production authoritative-mutation path.
 
+After the executor has established the durable `DatabaseId`, a production open
+enters an exclusive `StructuralEvidenceSession`. This type-state owns and
+withholds all backend mutation and operational ports while the open is being
+validated. It exposes only bounded, synchronous structural scan operations and
+ordered `HistoricalSemanticEvidence` pages. Each page is bound to the durable
+database identity and one open session, has a checked continuation, and ends in
+one unambiguous exact-end result. A size/finding ceiling, truncated page, dropped
+session, repeated or skipped continuation, or structural error is failure, never
+successful end-of-history evidence.
+
+The evidence contains only bounded storage-structural facts and canonical stored
+bundle/plan bytes needed by the catalog validator. It carries no decoded IR and
+grants no mutation authority. When the redb structural scan and evidence cursor
+both reach exact end, the session may yield `StructurallyOpened` dormant backend
+ports bound to that database/open session. This value proves storage structure,
+not catalog semantics or operational readiness. On any failure, the entire open
+is dropped and no dormant or operational port is released.
+
+The server drives the evidence pages into the catalog-owned historical validator.
+Only server composition may combine matching `StructurallyOpened` ports and
+opaque same-session `ValidatedCatalogHistory` with the required readable
+digest inventories and lifecycle checks to create operational wiring. The proof
+does not pass back through storage, and redb never receives an IR or catalog
+dependency. The memory engine implements the same initialization-first,
+exclusive-session, exact-end, session-binding, and dormant-port type-state for
+conformance tests.
+
 The concrete `redb` adapter may contain private compaction, backup, integrity,
 and statistics APIs. The approved baseline is exactly `redb` 4.1.0 with default
 features disabled and no optional features, directly owned only by
@@ -1418,17 +1463,23 @@ it does not enable it. Its possible MVP default remains a post-POC decision.
 
 ## 10.6 Recovery
 
-Startup recovery first performs an authoritative, read-only integrity phase:
+Startup recovery first performs a staged, read-only authoritative integrity
+phase. WP-070 completes every storage-structural check and emits exact-end
+historical evidence while its operational ports remain dormant; WP-050 performs
+the IR-aware historical catalog checks; WP-130 is the first production owner that
+may join the two matching same-session results and evaluate readiness:
 
 1. Open the database and run engine integrity checks appropriate to configuration.
 2. Validate the storage format and permanent durable `DatabaseId`. ADR-0019
    defers a distinct durable node identity beyond the POC.
-3. When an active catalog pointer exists, verify its bundle and plan hash. An
-   absent pointer is a valid initialization state only while the contract-bundle
-   table and every application-authoritative table are empty; capability,
-   bootstrap, and administration-audit records may already exist. Any bundle,
-   application commit/state, or active-pointer mismatch outside that state is
-   corruption.
+3. Structurally enumerate every historical bundle/plan reference and the active
+   catalog relationship through exact end. The catalog then resolves and
+   semantically validates every referenced IR version and plan hash from that
+   same session. An absent pointer is a valid initialization state only while the
+   contract-bundle table and every application-authoritative table are empty;
+   capability, bootstrap, and administration-audit records may already exist.
+   Any bundle, application commit/state, active-pointer mismatch, unknown plan,
+   or semantic validation failure outside that state is corruption.
 4. Verify that application commits are contiguous and application-sequence
    metadata is exactly the checked successor of the last commit, or the first
    sequence when empty, with an explicit exhausted state when no successor
@@ -1454,15 +1505,18 @@ Startup recovery first performs an authoritative, read-only integrity phase:
    record kind; and readable configured digest support for every active
    unexpired capability. A missing, duplicate, mismatched, wrong-kind, wrong-
    target, or unsupported cross-link fails readiness.
-9. Rebuild authoritative in-memory indexes, lock metrics, and subscriptions.
+9. Rebuild authoritative in-memory indexes, lock metrics, and subscriptions only
+   after the matching `StructurallyOpened`/`ValidatedCatalogHistory` pair is accepted.
 
-Authoritative readiness becomes true only after those checks succeed, both
-allocators can progress, and an active contract is valid. A truly empty database
-may pass structural integrity while remaining in `Initializing`, not ready. In
-that mode the server exposes health plus the exact loopback bootstrap operation;
-after bootstrap it additionally permits authenticated contract deployment
-through the ordinary service/coordinator path. No command or general read path
-is enabled until deployment atomically establishes the active contract.
+`StructurallyOpened` alone never means readiness. WP-130 authoritative readiness
+becomes true only after matching same-session `ValidatedCatalogHistory`, digest-provider
+inventories, and all remaining checks succeed, both allocators can progress, and
+an active contract is valid. A truly empty database may pass structural and
+catalog integrity while remaining in `Initializing`, not ready. In that mode the
+server exposes health plus the exact loopback bootstrap operation; after
+bootstrap it additionally permits authenticated contract deployment through the
+ordinary service/coordinator path. No command or general read path is enabled
+until deployment atomically establishes the active contract.
 
 Derived-component recovery is separate and cannot rewrite authoritative source
 state:
@@ -1549,7 +1603,7 @@ materialized snapshot, conflict lease, synchronous mutex guard, or runtime frame
 across `.await` and recheck current policy before each visible result.
 
 `riffdb-service` owns injected `CursorTokenGenerator` and
-`CursorMonotonicClock` consumer ports. WP-185 supplies OS entropy and a private
+`CursorMonotonicClock` consumer ports. WP-130 supplies OS entropy and a private
 `std::time::Instant`-origin provider; tests use explicit tokens/ticks and never
 sleep. Cursor time is process-relative, non-durable, and disjoint from the four
 wall-clock domains. Regression or arithmetic overflow fails closed, and restart
@@ -2629,6 +2683,15 @@ contract deployment after bootstrap. The deployment still uses the shared
 service, authorization, audit, and coordinator. Once an active contract exists,
 its later absence or mismatch is a fail-closed authoritative integrity error.
 
+WP-130 owns this minimum production lifecycle and the first runnable `riffdbd`:
+identity initialization through the commit executor, complete redb structural
+evidence, matching catalog historical validation, readable capability and
+idempotency digest inventories, bootstrap, deployment, active readiness, gRPC,
+and clean restart. WP-185 does not replace that gate. It extends the same
+component graph with MCP HTTP, outbox/projection workers, observability, and
+separate derived-health aggregation; a derived failure cannot retroactively
+invalidate the accepted authoritative startup proof.
+
 ```rust
 pub struct HealthReport {
     pub status: HealthStatus,
@@ -3018,10 +3081,10 @@ The graph uses hard dependencies. Parallel work is encouraged only after shared 
 | `WP-030` | Contract syntax | WP-010 | Logos lexer, LALRPOP grammar, source spans, AST | Parser corpus, diagnostics, fuzz smoke pass |
 | `WP-040` | Typed IR and compiler | WP-010, WP-030 | Name resolution, type checker, invariant/outcome/dependency plans, JSON Schema | Budget contract compiles; invalid corpus rejects with stable diagnostics |
 | `WP-045` | Budget comparison baseline | WP-040 | Shared workload/oracle and isolated PostgreSQL implementation | Deterministic oracle and PostgreSQL correctness preflight pass |
-| `WP-050` | Contract catalog | WP-020, WP-040, WP-060 | Bundle lookup, catalog state semantics, compatibility report, and typed expected-version deployment operation for later coordinator routing | Catalog semantic and atomic-storage-operation tests pass; final routing evidence is WP-100/WP-120 |
-| `WP-060` | Storage semantic API | WP-010, WP-020, WP-040 | Owned snapshots, dependencies, `EvaluatedCommand`/`CommitIntent`, semantic durable DTOs, typed persistence transitions including audit/capability/projection, and in-memory reference implementation | Reference-model and semantic conformance tests pass |
+| `WP-050` | Contract catalog | WP-020, WP-040, WP-060 | Bundle lookup, catalog state semantics, compatibility report, same-session historical IR validation proof, and typed expected-version deployment operation for later coordinator routing | Catalog semantic, exact-end historical-validation, and atomic-storage-operation tests pass; final routing evidence is WP-100/WP-120 |
+| `WP-060` | Storage semantic API | WP-010, WP-020, WP-040 | Owned snapshots, dependencies, `EvaluatedCommand`/`CommitIntent`, structural evidence/type-state ports, semantic durable DTOs, typed persistence transitions including audit/capability/projection, and in-memory reference implementation | Reference-model, exact-end startup type-state, and semantic conformance tests pass |
 | `WP-065` | Durable semantic record schema | WP-020, WP-060 | Versioned `riffdb.storage.v1` records, envelopes, descriptors, schema hashes, goldens, wire validation, historical registrations, and checked storage-owned Proto mappings | Proto/storage tests and clean deterministic regeneration pass |
-| `WP-070` | Redb storage engine | WP-020, WP-060, WP-065 | Tables, coordinator write transaction, atomic records, indexes, capability/audit/projection persistence, recovery, integrity scan, backup | Storage properties and core process recovery matrix pass |
+| `WP-070` | Redb storage engine | WP-020, WP-060, WP-065 | Tables, coordinator write transaction, atomic records, indexes, capability/audit/projection persistence, complete structural evidence scan, `StructurallyOpened` dormant ports, recovery, and backup | Storage properties and core process recovery matrix pass without claiming IR-aware readiness |
 | `WP-075` | Fjall semantic comparison | WP-060, WP-070 | Isolated non-production Fjall adapter and unchanged conformance/benchmark harness | Conformance report and reproducible evidence pass |
 | `WP-080` | Deterministic command runtime | WP-040, WP-060 | IR interpreter, fixed logical time and budget, dependencies, `EvaluatedCommand`, and closed execution faults; no provenance or command randomness | Differential tests against model pass |
 | `WP-090` | Conflict manager | WP-010 | Canonical multi-key exclusive acquisition, cancellation, metrics | Loom/Shuttle suites pass |
@@ -3030,14 +3093,14 @@ The graph uses hard dependencies. Parallel work is encouraged only after shared 
 | `WP-120` | API-neutral application service | WP-050, WP-100, WP-110 | Six operation-specific service traits, checked contexts/DTOs, current policy, audit orchestration, obligations, bounded reads/waits/streams, and server-side cursors | In-process end-to-end and no-storage-bypass tests pass |
 | `WP-125` | Service comparison adapter | WP-045, WP-120 | Budget workload adapter over the API-neutral service | Shared oracle passes against in-process RiffDB |
 | `WP-127` | Public Protobuf API completion | WP-020, WP-120 | Complete all remaining supported `riffdb.v1` messages, preserve the WP-010 execution-failure slice, and freeze descriptors, schema hashes, wire validation, and golden/client fixtures; no service conversion code | Proto tests and clean deterministic regeneration pass |
-| `WP-130` | gRPC server and Rust SDK | WP-020, WP-120, WP-127 | Tonic services, limits, credential handoff, total service/Proto conversion, and generated and ergonomic Rust client | Public API integration suite passes against injected composition |
+| `WP-130` | gRPC server and Rust SDK | WP-020, WP-120, WP-127 | Tonic services/client plus the minimal production redb/catalog/commit/auth/policy/service composition, concrete ID/clock/cursor/digest providers, staged startup/lifecycle, and real restart proof | Public API conformance and the child-process temporary-redb bootstrap/deploy/budget/restart suite pass |
 | `WP-135` | Public SDK comparison adapter | WP-125, WP-130 | Budget comparison through the public Rust SDK/gRPC path | Shared oracle passes through the canonical client path |
 | `WP-140` | Native MCP interface | WP-040, WP-120, WP-130 | `rmcp` stdio-over-gRPC and HTTP adapters, dynamic tools/resources, schema results, progress/cancellation | MCP conformance and generated-tool tests pass |
 | `WP-150` | CLI and local developer flow | WP-130 | `riffdb`, config, local token flow, JSON/human output | Acceptance steps executable without internal APIs |
 | `WP-160` | Durable outbox | WP-100, WP-120 | Event scanner, delivery state, test connector, retry and duplicate simulations | Crash and duplicate-delivery tests pass |
 | `WP-170` | Projection core | WP-100, WP-120 | Event consumers, count/sum state, durable frontier, read-after-sequence query | Prefix and restart properties pass |
 | `WP-180` | Observability and diagnostics | WP-120 | Tracing, metrics, health, explain output, redaction | Required telemetry present without sensitive labels |
-| `WP-185` | Server composition | WP-130, WP-140, WP-160, WP-170, WP-180 | `riffdbd` wiring for gRPC, MCP HTTP, outbox, projection, observability, lifecycle, and health | Composed server integration and lifecycle tests pass |
+| `WP-185` | Server composition | WP-130, WP-140, WP-160, WP-170, WP-180 | Extend the runnable WP-130 `riffdbd` graph with MCP HTTP, outbox, projection, observability, and derived health without replacing P1 startup/lifecycle providers | Extended composition tests pass while retaining the WP-130 restart proof |
 | `WP-190` | Integrated crash harness | WP-070, WP-100, WP-160, WP-170, WP-185 | Named failpoints, process controller, recovery assertions | Full cross-component failpoint matrix passes |
 | `WP-200` | POC acceptance and release | All POC packages | One-command demo, benchmark report, security notes, release artifacts | POC-001 through POC-010 signed off |
 
@@ -3173,12 +3236,28 @@ The long-lived budget comparison workload, deterministic oracle, and PostgreSQL 
 - Logical conflict manager and commit revalidation.
 - Persistent idempotency outcomes.
 - Contract catalog and atomic deployment.
+- Minimal production `riffdbd` composition over redb, catalog, commit,
+  authentication, policy, the API-neutral service, and Tonic, including concrete
+  ID/clock/cursor/digest providers and staged same-session startup validation.
 - gRPC, Rust SDK, CLI.
 - WP-127-reviewed complete public schemas before gRPC service/wire conversion.
 - Atomic durable outbox intent as part of every applicable command commit; external dispatch remains P2.
 - Core transaction-path process failpoints and integrity scan for redb and the commit coordinator.
 
-**Gate P1:** All transaction-path and recovery properties pass under the budget acceptance workload and generated histories.
+**Gate P1:** All transaction-path and recovery properties pass under the budget
+acceptance workload and generated histories. The first runnable checkpoint is a
+real child process, not injected composition: start `riffdbd` on a temporary redb
+database; create and durably retain the bootstrap credential; bootstrap and
+deploy the canonical budget contract; execute `CreateBudget`; query the entity;
+execute `AllocateBudget`; query the changed entity and resolve the persisted
+outcome; stop cleanly; restart against the same database; query the same entity
+and outcome again; and replay bootstrap using the retained credential to recover
+the original capability result without echoing or reissuing the token and with
+only the specified linked replay-audit records. Every database operation in this
+sequence uses public gRPC or the public
+CLI, never an in-process storage/service shortcut. It does not wait for MCP,
+external outbox dispatch, projection workers, observability aggregation, or
+WP-185.
 
 **P1 work-package members:** WP-050, WP-065, WP-070, WP-090, WP-100,
 WP-110, WP-120, WP-127, WP-130, and WP-150. WP-065 and WP-127 are explicit
@@ -3197,7 +3276,8 @@ replace any previously listed member.
 - Capability-filtered tool catalog and repeated authorization.
 - External outbox dispatch with duplicate and recovery evidence.
 - Projection filter/count/sum engine with a durable frontier.
-- Final `riffdbd` composition and the full cross-component crash matrix.
+- Extension of the runnable P1 `riffdbd` graph with MCP HTTP, derived workers,
+  observability/derived health, and the full cross-component crash matrix.
 - Full POC demo and handoff documentation.
 
 **Gate P2 / POC exit:** `POC-001` through `POC-010` pass; known limitations are explicit; architecture review confirms the semantics are worth productizing.
@@ -3315,7 +3395,7 @@ Risk owners are assigned in the project tracker. A risk may be closed only with 
 
 ## 22.1 Required ADRs
 
-Specification v0.7 records each ADR's current status. An Accepted record is
+Specification v0.8 records each ADR's current status. An Accepted record is
 authoritative; a Proposed record remains planning input until its exact text
 receives human review. Where this table and a work-package deadline differ, the
 earlier deadline governs unless a reviewed reconciliation changes both sources.

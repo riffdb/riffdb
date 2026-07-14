@@ -23,8 +23,8 @@ though component boundaries require domain newtypes and authorization,
 provenance, tracing, and later routing all depend on an unambiguous logical
 partition identity.
 
-The human maintainer accepted this exact text and the companion clarifications
-below on 2026-07-13.
+The human maintainer accepted this exact text, the canonical root-derivation
+equality clarification, and the companion clarifications below on 2026-07-13.
 
 ## Decision
 
@@ -120,15 +120,31 @@ the compiler-generated root-validation key. The key is not reconstructed from a
 runtime child record: it is the ordered tuple of the child binding's already
 validated input/constant key expressions corresponding exactly to the root's
 complete primary-key prefix. The derived tuple must type-check against the exact
-root `KeySchema`. Multiple child bindings may share one root-validation read only
-when these checked derivations are byte-identical in executable IR; runtime value
-equality cannot merge distinct derivations. An exact source root binding with the
-same checked key derivation supplies the record instead and prevents the internal
-read.
+root `KeySchema`.
+
+Equality of two checked root-key derivations is canonical structural expression
+equality after name resolution and lowering. Tuples have equal arity and compare
+component by component. Expression trees compare result type, node kind, exact
+stable resolved references, canonical constant value, unary operator and operand,
+or binary operator and ordered left/right operands recursively. The comparison
+ignores source spans, aliases and source spelling, plan-local `ExprId` values,
+expression-arena insertion order, and whether equal subexpressions are shared or
+duplicated in the DAG. It performs no constant folding, algebraic equivalence,
+commutative operand reordering, or runtime value comparison.
+
+Mutable child bindings with structurally equal derivations form one group. Its
+representative is the lowest source `BindingId` in that group; groups and their
+dense `RootValidationReadId` values are ordered by those representatives. An
+exact source root binding with the same structural derivation supplies the root
+record and suppresses that internal read; when more than one source root binding
+matches, the lowest `BindingId` is the canonical supplier. Structurally distinct
+derivations remain distinct even when one invocation would evaluate them to equal
+runtime bytes.
 
 Every command has at least one entity binding, and all of its read, mutate, and
 create bindings belong to one `AggregateTypeId`. Their instantiated partition
-derivations must be structurally identical after name resolution and lowering.
+derivations must be structurally identical after name resolution and lowering,
+using the same canonical structural equality above.
 A mutating command has at least one mutate/create binding; `set` and `emit`
 without a mutable binding are rejected, so there is no event-only command with
 an unowned partition. Each mutable binding instantiates the one aggregate's
@@ -247,10 +263,11 @@ non-substitutable for the key types defined here.
 ## Compatibility and Security
 
 The partition/index prefixes, partition hash label, component registry,
-component and composite order, bounds, and validation rules are public/durable
-compatibility boundaries. Lengths and maximum encoded sizes are checked before
-allocation. Diagnostics, debug output, tracing, and metrics redact raw logical
-keys. Hashes are content identifiers, not authorization proofs.
+component and composite order, bounds, root-derivation structural equality and
+representative ordering, and validation rules are public/durable compatibility
+boundaries. Lengths and maximum encoded sizes are checked before allocation.
+Diagnostics, debug output, tracing, and metrics redact raw logical keys. Hashes
+are content identifiers, not authorization proofs.
 
 ## Testing
 
@@ -262,6 +279,11 @@ keys. Hashes are content identifiers, not authorization proofs.
 - Index-entry vectors and boundary tests that include the complete entity key and
   reject a composite maximum of 4,097 bytes.
 - Stable compiler diagnostics for every deferred type and a maximum-size schema.
+- Root-validation fixtures prove equal trees with different `ExprId` allocation
+  and shared-versus-duplicated DAG shapes group together; reordered binary
+  operands and structurally distinct constants remain separate; the lowest
+  mutable child `BindingId` is the group representative; and the lowest exact
+  source-root `BindingId` suppresses the internal read.
 - Malformed decoding properties for wrong purpose/version/owner, truncation,
   invalid lengths, UTF-8, Boolean, timestamp, enum, trailing bytes, and key size.
 - Hash-domain uniqueness and identical-payload cross-domain inequality.

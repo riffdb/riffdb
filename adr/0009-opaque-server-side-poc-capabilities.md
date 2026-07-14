@@ -24,6 +24,10 @@ The maintainer also accepted the audit, bootstrap-file durability, and recovery
 clarifications recorded below on 2026-07-13. They are part of this exact record
 and supersede the narrower earlier wording identified in their sections.
 
+The maintainer accepted the P1 readiness/composition amendment on 2026-07-13;
+the exact clock, digest-inventory, and WP-130/WP-185 ownership changes below are
+also part of this accepted record.
+
 ## Context
 
 The POC needs revocable, inspectable authorization without treating client
@@ -88,8 +92,9 @@ Protobuf payload and later public RPC fields under ADR-0006.
 `riffdb-auth` separately owns the narrow synchronous credential-resolution clock
 port used only for initial authentication. `riffdb-server` owns the concrete
 operating-system providers that implement the separate auth-owned authentication,
-policy-owned authorization, and commit-owned administration clock interfaces.
-None enters deterministic command execution.
+policy-owned authorization, and commit-owned admission and administration clock
+interfaces. WP-130 composes all four for the runnable P1 graph. None enters
+deterministic command execution.
 
 Transport adapters may temporarily hold a raw bearer credential only to call
 `riffdb-auth`. They receive an `AuthenticatedPrincipal`, not a capability record
@@ -191,8 +196,10 @@ boundary. They use different configuration keys or files and different typed
 provider handles even when their numeric `DigestKeyId` values happen to be
 equal. `riffdb-server` loads both through that custody boundary and requires the
 provider to cross-check all readable material; reusing the same secret bytes
-across the namespaces rejects readiness. Domain separation remains mandatory
-and is not a substitute for independent operational key material, rotation,
+across the namespaces rejects readiness. WP-130 owns that production loading and
+cross-check and derives separate bounded, value-only readable scheme/key-ID
+inventories for structural startup validation. Domain separation remains
+mandatory and is not a substitute for independent operational key material, rotation,
 retirement, or backup handling. `riffdb-idempotency` supplies its already
 canonical ADR-0005 frame to its typed handle and receives only its typed digest;
 raw operational keys never enter that crate.
@@ -439,9 +446,17 @@ command provenance, or administration records.
 
 ### Startup and recovery integrity
 
-Before readiness after every open, restart, or restore, storage performs a
-read-only integrity pass over the authoritative metadata and records. The pass
-must establish all of the following:
+After the source-free identity probe and any required commit-owned initialization
+transition, WP-130 samples and validates exactly one canonical startup value
+through the policy-owned `AuthorizationClock`. It also loads and cross-checks the
+two typed digest providers, then derives an independently typed bounded readable
+scheme/key-ID inventory for capability tokens and for idempotency identities.
+Those value-only inputs contain no secret bytes or provider handles.
+
+WP-130 passes the checked time and inventories into ADR-0004's exclusive
+`StructuralEvidenceSession`. Before that session may yield dormant ports, the
+redb structural pass over authoritative metadata and records must establish all
+of the following:
 
 1. Empty application and administration sequence spaces each have `next = 1`.
    Otherwise the next application sequence is exactly the checked successor of
@@ -467,8 +482,10 @@ must establish all of the following:
    present in the readable idempotency-key configuration. The POC has no expiry
    or key migration for these records, so any reference prevents retirement.
 
-The pass may scan in bounded chunks but performs no authoritative write. A
-failure is an opaque integrity/readiness failure: recovery never repairs a
+The pass may scan in bounded chunks but must consume every page and exact end
+marker, and it performs no authoritative write. It samples no clock, opens no
+digest provider, and receives no secret material. A failure is an opaque
+integrity/readiness failure: recovery never repairs a
 counter from a table, fills a sequence gap, synthesizes an audit or cross-link,
 deletes an offending row, or silently downgrades an unsupported live key. Any
 future repair or migration requires a separately reviewed offline procedure and
@@ -478,6 +495,15 @@ A matching `Exhausted` allocator is canonical and is not reported as corrupt.
 It still leaves authoritative readiness false because that sequence space cannot
 accept another operation. An exhausted-state mismatch is corruption. Neither
 case is repaired during startup.
+
+These checks are storage-structural evidence only. While the same session keeps
+mutation frozen, `riffdb-catalog` separately IR-validates all historical bundle
+bytes and the active relation and returns ADR-0004's opaque
+`ValidatedCatalogHistory`. Only WP-130 may combine that matching catalog value
+with `StructurallyOpened` dormant ports and activate the authoritative P1 graph.
+A clock/provider/scan/catalog mismatch or failure drops the open attempt. WP-185
+reuses the resulting graph for P2 and cannot substitute another provider set or
+readiness pass.
 
 The v1 semantic capability record contains, in this order:
 
@@ -933,9 +959,11 @@ Authorization time comes from the synchronous policy-owned
 `AuthorizationClock` outside deterministic command runtime. Initial credential
 resolution instead uses auth's narrow authentication-clock interface. The
 commit-owned `AdministrationClock` supplies service-audit, catalog, and bootstrap
-transition timestamps. Server production composition provides all three
-interfaces; neither caller nor a transport adapter supplies a timestamp. Clock
-values must be canonical but need not be monotonic. A time before `issued_at`,
+transition timestamps, and the separate commit-owned `AdmissionClock` supplies
+the accepted command-admission value. WP-130 production composition provides all
+four wall-clock interfaces; neither caller nor a transport adapter supplies a
+timestamp. Clock values must be canonical but need not be monotonic. A time
+before `issued_at`,
 equality with or passage beyond `expires_at`, arithmetic failure, or an invalid
 timestamp fails closed; sequence values, not timestamps, establish durable order.
 
@@ -1237,11 +1265,14 @@ durable record fields, actor/revocation tags, permission tags and parameter
 identity, canonical set ordering, audience identity, partition and field scope,
 time interval, lifecycle transition, bootstrap credential document, gRPC
 metadata name, create mode, bootstrap replay, digest-key document, and
-uncertain-create result, three-clock ownership, canonical/nonmonotonic timestamp
-semantics, exact clock reuse/sample rules, absence of an authentication-time
+uncertain-create result, four-clock production ownership,
+canonical/nonmonotonic timestamp semantics, exact clock reuse/sample rules,
+absence of an authentication-time
 audit fallback, audit scope/phase/result-link lifecycle and failure mappings,
 sequence-counter validation, and no-repair recovery policy are durable, public,
-or security compatibility boundaries.
+or security compatibility boundaries. Typed readable-inventory inputs, the one
+startup authorization-clock value, exact-end structural evidence, and
+WP-130-only matching activation are security compatibility boundaries.
 
 Changing one of those requires an accepted versioned decision, new Protobuf
 schema/type or key version as applicable, golden fixtures, and a restartable
@@ -1334,7 +1365,10 @@ expiry reduce exposure but do not replace the deferred OAuth/TLS security review
 - Recovery fixtures corrupt each capability/lookup/bootstrap/audit cross-link,
   each key/payload sequence, and each next-sequence counter independently; every
   case refuses readiness without modifying the database, while a repeated clean
-  recovery is read-only and idempotent.
+  recovery is read-only and idempotent. Exact-end and typed-inventory tests prove
+  WP-070 cannot yield `StructurallyOpened` on truncation, unreadable retained
+  idempotency state, or an unreadable active/unexpired capability, and that no
+  raw key or provider enters storage.
 - Secret canaries traverse Debug/Display, tracing, metrics, public errors, panic
   containment, MCP text, provenance, backup manifests, and crash diagnostics.
 - Dependency and architecture checks prevent raw-token types in runtime, commit
@@ -1347,7 +1381,9 @@ expiry reduce exposure but do not replace the deferred OAuth/TLS security review
 - WP-065 proto generation and golden records prove deterministic durable
   descriptors, envelopes, schema hashes, unknown-version refusal, and clean
   regeneration. WP-127 freezes public request/result/create-mode messages;
-  WP-130 proves total service-to-wire conversions and gRPC metadata behavior.
+  WP-130 proves total service-to-wire conversions, gRPC metadata behavior, four
+  disjoint wall-clock adapters, digest-provider/inventory composition, and the
+  matching structural/catalog readiness gate.
 
 ### Exact specification and manifest reconciliation
 
@@ -1399,8 +1435,10 @@ The manifest delta is exact:
   and `./scripts/generate-proto --check` with a clean generated diff.
 - WP-070 retains its existing dependencies and additionally depends on WP-065;
   it requires ADR-0009, persists only the WP-065-reviewed records, and refuses
-  startup/reopen on either sequence-counter mismatch or any capability,
-  bootstrap, or audit cross-link failure without repairing the database.
+  to yield `StructurallyOpened` on either sequence-counter mismatch or any
+  capability, bootstrap, audit cross-link, digest-inventory, or exact-end failure
+  without repairing the database. It does not claim complete catalog-aware
+  readiness by itself.
 - WP-100 retains ADR-0009 and uses the auth-owned typed idempotency digest
   provider without receiving operational key bytes. It owns the authoritative
   capability transition orchestration, compound bootstrap audit transition, and
@@ -1437,8 +1475,11 @@ The manifest delta is exact:
 - WP-130 retains every existing dependency and additionally depends on WP-127;
   it adds ADR-0009 and `Cargo.lock` to its allowed paths and owns total
   service-to-Protobuf conversions, exact gRPC bootstrap metadata extraction,
-  normal bearer handling, adapter tests, and ADR-0018's exact extended direct-
-  owner graph. It never implements capability policy or persistence.
+  normal bearer handling, adapter tests, ADR-0018's exact extended direct-owner
+  graph, production composition of both typed digest providers, cross-namespace
+  key-material checks, readable inventories, the startup authorization-clock
+  value, and matching structural/catalog readiness activation. It never
+  implements capability policy or persistence.
 - WP-140 retains ADR-0009 and proves MCP cannot discover or invoke bootstrap and
   cannot bypass the shared service.
 - WP-150 adds ADR-0009 and delivers the offline bootstrap credential generator,
@@ -1446,12 +1487,13 @@ The manifest delta is exact:
   submission, public-loopback-gRPC invocation, and module-boundary architecture
   tests. Its only auth dependency is
   `riffdb-auth::bootstrap_secret`.
-- WP-180, WP-185, WP-190, and WP-200 retain ADR-0009. WP-185 composes both typed
+- WP-180, WP-185, WP-190, and WP-200 retain ADR-0009. WP-130 composes both typed
   key namespaces, cross-checks readable support for all three idempotency states
-  and every active unexpired capability plus the read-only recovery result before
-  readiness, supplies the approved production entropy provider and concrete
-  authentication-, authorization-, and administration-clock providers, and
-  preserves the server's semantics-free composition role. WP-190
+  and every active unexpired capability plus the complete structural/catalog
+  result before readiness, and supplies the approved production entropy provider
+  and concrete authentication-, authorization-, admission-, and administration-
+  clock providers. WP-185 reuses that same provider/core graph for MCP, workers,
+  and observability without a second readiness path. WP-190
   supplies process evidence for both sequence spaces and all cross-links without
   repair. `riffdb-server` direct `getrandom` use is limited to ADR-0018's exact
   database, provenance, hosted-MCP request, incident, and cursor source set; the
@@ -1468,7 +1510,8 @@ The manifest delta is exact:
 - **Defines or blocks:** foundational follow-up in `WP-010`; semantic records in
   `WP-060`; durable schema in `WP-065`; storage in `WP-070`; authorization in
   `WP-110`; service semantics in `WP-120`; public schema completion in
-  `WP-127`; adapters in `WP-130`; CLI flow in `WP-150`; required ADR for
+  `WP-127`; adapters and production P1 composition in `WP-130`; CLI flow in
+  `WP-150`; required ADR for
   `WP-010`, `WP-060`, `WP-065`, `WP-070`, `WP-100`, `WP-110`, `WP-120`,
   `WP-127`, `WP-130`, `WP-140`, `WP-150`, `WP-180`, `WP-185`, `WP-190`, and
   `WP-200`
@@ -1486,3 +1529,7 @@ WP-020 unchanged. Acceptance of this exact text also accepts only the reviewed
 dependency graph above; any change reopens dependency review. No implementation
 or fixture may choose different bytes, tags, transitions, schema owners, result
 owners, token carriage, clock semantics, or trust boundaries implicitly.
+
+WP-130 must supply the complete provider inventories and composed readiness
+evidence before its runnable P1 exit gate. WP-185 consumes that established core
+and cannot postpone or duplicate this security boundary.

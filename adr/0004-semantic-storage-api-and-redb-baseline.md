@@ -16,6 +16,9 @@
 
 The human maintainer accepted this exact bounded-snapshot and narrow-transaction
 record on 2026-07-13 as part of the atomic semantic-interface governance batch.
+On 2026-07-13 the maintainer also accepted the P1 readiness amendment below,
+which separates redb structural evidence, catalog semantic validation, and
+production activation without adding a storage-to-IR dependency.
 
 ## Context
 
@@ -679,6 +682,72 @@ non-authoritative state transitions. gRPC, MCP, CLI, SDK, service, compiler, and
 runtime crates never receive one of these persistence ports directly as a way to
 bypass the shared service/coordinator boundaries.
 
+#### Exclusive structural evidence and composed readiness
+
+Opening a production database is a type-state progression, not a boolean set by
+the redb adapter. The source-free database-identity probe runs first. If it
+returns `NeedsInitialization`, the commit-owned
+`DatabaseInitializationExecutor` must complete the accepted atomic initialization
+transition before any evidence session begins. If it returns an existing
+identity, that exact durable `DatabaseId` is used. Partial or malformed metadata
+fails closed and never enters either path.
+
+After initialization, `riffdb-storage-redb` opens one exclusive
+`StructuralEvidenceSession`. The session owns and withholds every dormant
+authoritative read and mutation port, prevents any interleaving authoritative
+mutation, and is bound to one process-local session identity and the durable
+`DatabaseId`. Neither general service reads nor command execution can observe
+the database while this session is live. Dropping or failing the session drops
+the entire open attempt; it never exposes a partially validated backend.
+
+The session performs the complete bounded structural pass and exposes only
+session-scoped, bounded reads of stored historical bundle bytes and their
+storage-structural metadata. The pass must reach an exact end marker for every
+authoritative namespace. A page limit, finding limit, or diagnostic truncation
+is never treated as evidence that unvisited rows are valid. The storage-owned
+`HistoricalSemanticEvidence` records prove only decoding, canonical encoding,
+bounds, keys, sequence continuity, record reciprocity, durable references, and
+the other storage-structural facts in this ADR. They contain no `CommandPlan`,
+IR semantic proof, parser value, or executable expression.
+
+The structural pass receives three already checked, value-only startup inputs:
+one canonical value sampled and validated through the policy-owned
+`AuthorizationClock`, one typed inventory of readable capability digest schemes
+and key IDs, and one independently typed inventory of readable idempotency
+digest schemes and key IDs. The inventories contain no raw key material or
+provider handle. They exist only so the pass can enforce ADR-0009's live
+capability and ADR-0005's retained-idempotency support rules. Storage samples no
+clock, opens no secret provider, and performs no authorization decision.
+
+While the session remains exclusive, `riffdb-catalog` borrows its bounded
+historical-bundle reader. WP-050 resolves and IR-validates every stored bundle,
+its immutable identity/hash/version relations, every referenced historical
+plan, and the active-catalog relation, and consumes the exact end marker. On
+success it returns an opaque, privately constructible, nonserializable
+`ValidatedCatalogHistory` bound to the same process-local session
+identity and `DatabaseId`. That value is catalog-owned and never crosses a
+storage trait. The storage API and redb adapter neither depend on catalog/IR nor
+interpret the proof.
+
+Only after both complete passes succeed may the evidence session finish and
+yield `StructurallyOpened` dormant ports. WP-130 mechanically consumes those
+ports together with the matching `ValidatedCatalogHistory`; a session or
+database mismatch fails closed. That composition step is the only operation that
+activates the production catalog, commit, authorization, service, and gRPC graph
+and establishes composed authoritative integrity for the runnable P1 server. It
+does not by itself report general readiness: WP-130 must also enforce ADR-0007's
+bootstrap/deployment lifecycle, require a valid active catalog, and require both
+authoritative allocators to be able to progress. It stores no ready bit and
+persists no validation proof. WP-070 therefore proves structural completeness
+and produces structural evidence; it cannot by itself claim full authoritative
+readiness.
+
+This startup proof does not replace per-command validation. Every command still
+resolves its exact immutable historical bundle and plan, rechecks the complete
+`ExecutablePlanRef`, and performs transaction-current validation through
+`riffdb-commit`. No startup proof, `CommandPlan`, generic callback, or active
+port is passed through storage to avoid that work.
+
 #### Authoritative event/outbox reciprocity and derived recovery
 
 The command record set freezes one reciprocal authoritative graph. For every
@@ -730,11 +799,14 @@ Readiness is therefore explicit rather than one undifferentiated flag:
 Core reads and writes may remain ready when only a derived subsystem is degraded;
 an operation that depends on that subsystem returns its typed degraded or
 unavailable result. A shared-engine failure that prevents trustworthy table or
-record isolation remains a core storage failure, not a derived exception. WP-185
-server health exposes both the core gate and subsystem findings so a derived
-failure is never hidden as globally healthy. WP-070 owns read-only detection and
+record isolation remains a core storage failure, not a derived exception. WP-130
+exposes the composed core gate through P1 lifecycle and gRPC health. WP-185
+extends that same graph and health view with P2 outbox/projection/observability
+findings so a derived failure is never hidden as globally healthy; it does not
+construct a second core graph. WP-070 owns structural read-only detection and
 reporting, WP-160 owns outbox delivery normalization, and WP-170 owns projection
-rebuild/degradation. None may claim another owner's recovery action.
+rebuild/degradation. None may claim another owner's validation or recovery
+action.
 
 #### Standalone service-audit append
 
@@ -1024,7 +1096,10 @@ representations, prefix-bucket advancement, transaction transition loop, atomic
 record membership, event/outbox-intent reciprocity, absent-status-as-`Pending`,
 core/subsystem readiness split and recovery ownership, bounds, error kinds,
 specialized port semantics, standalone service-audit timestamp/link boundary,
-clock-source rules, and batch staging rules are semantic compatibility boundaries.
+clock-source rules, initialization-before-evidence ordering, exclusive session
+and exact-end semantics, structural/catalog proof ownership and binding,
+WP-130-only dormant-port activation, and batch staging rules are semantic
+compatibility boundaries.
 
 Physical redb tables and engine-private handles remain adapter implementation
 details until WP-070 freezes the normative SPEC table/key layout with durable
@@ -1056,7 +1131,9 @@ storage API owns the source-free probe and consuming atomic transition, while a
 commit-owned `DatabaseInitializationExecutor` is the only production caller of
 that transition. Server composition may generate and pass a checked candidate
 through the executor after `NeedsInitialization`; it never receives the storage
-mutation handle.
+mutation handle. Initialization completes before the exclusive structural
+evidence session begins; neither the evidence session nor catalog validation can
+initialize, repair, or otherwise mutate the database.
 
 All lengths/counts are checked with overflow-safe arithmetic before allocation.
 Malformed keys, records, plans, duplicate targets, unsupported schemas, and
@@ -1086,6 +1163,12 @@ It includes:
   storage API's narrow `proto_codec` may name Prost types, runtime cannot name an engine/transaction,
   only commit composition can receive a write handle, and storage exposes no
   callback, raw write, async method, semantic-proof marker, or transport type;
+- startup type-state and architecture checks proving initialization precedes one
+  exclusive `StructuralEvidenceSession`, no mutation or live service port is
+  reachable during the session, every bounded namespace reaches exact end,
+  catalog alone IR-validates session-scoped history, and only WP-130 can consume
+  matching `StructurallyOpened` and `ValidatedCatalogHistory` values; storage and
+  redb cannot name catalog, command IR, or the catalog proof;
 - compile-fail/type-state tests for every invalid batch transition, including
   attempting to commit `EmptyBatch`, sequence before private validation,
   candidate reuse, staging a partial record set, and starting a second candidate
@@ -1127,8 +1210,8 @@ process tests use named failpoints and durable reopen.
   `EFF-001`, `EFF-003`, `REC-001` through `REC-003`, `PRJ-001` through
   `PRJ-004`, `MCP-046`
 - **Defines or blocks:** `WP-050`, `WP-060`, `WP-070`, `WP-075`, `WP-080`,
-  `WP-100`, `WP-110`, `WP-120`, `WP-160`, `WP-170`, `WP-180`, `WP-185`, and the
-  focused durable proto-owner interface package
+  `WP-100`, `WP-110`, `WP-120`, `WP-130`, `WP-160`, `WP-170`, `WP-180`,
+  `WP-185`, and the focused durable proto-owner interface package
 - **Final evidence:** `WP-190`, `WP-200`
 
 ### Required companion and work-package reconciliation
@@ -1191,9 +1274,12 @@ changes below; affected implementation must follow the reconciled manifest:
    `tests/service_audit_recovery/**` to its allowed paths, and durable standalone
    audit append, compound-bootstrap/replay crash and reopen evidence, complete
    authoritative reciprocity checks, and separately classified derived-state
-   findings to its deliverables and recovery matrix. WP-070 reports findings and
-   establishes core authoritative readiness; it never normalizes outbox status or
-   rebuilds/degrades a projection. `crates/riffdb-storage-redb/Cargo.toml`,
+   findings to its deliverables and recovery matrix. WP-070 reports structural
+   findings and yields the exclusive evidence/session type state; full core
+   authoritative readiness requires the matching WP-050 catalog proof and
+   WP-130 lifecycle gate, including allocator progress and a valid active
+   catalog. WP-070 never normalizes outbox status or rebuilds/degrades a
+   projection. `crates/riffdb-storage-redb/Cargo.toml`,
    already inside WP-070's
    allowed crate path, owns an external `[[test]]` named
    `service_audit_recovery` whose path is
@@ -1235,6 +1321,13 @@ changes below; affected implementation must follow the reconciled manifest:
     generation from the commit log or exposes its typed degraded state. Neither
     package repairs authoritative data, and WP-070 does not perform either action
     during open/readiness validation. This adds no undeclared hard dependency.
+11. WP-050 owns exhaustive historical IR/catalog validation over the borrowed
+    session reader and returns the opaque `ValidatedCatalogHistory`; WP-070 owns
+    the exclusive structural session and `StructurallyOpened` output. WP-130
+    owns their matching, the production core composition, and the runnable P1
+    readiness gate. This split introduces no redb-to-catalog/IR edge and passes
+    neither catalog proof nor `CommandPlan` through a storage trait. WP-185
+    reuses and extends the activated graph for P2 workers, MCP, and observability.
 
 ADR-0007 was accepted in the same governance change and cross-references this
 specialized lower transition and proto-owner sequence. ADR-0005's complete-plan-
@@ -1282,7 +1375,13 @@ Acceptance of this exact record decided:
     disabled, no optional features, the reviewed dependency/unsafe/build/license
     surface and isolated policy-eligibility evidence above, mandatory WP-070
     root-lock `cargo deny check` and durability evidence, and new review for any
-    dependency-graph change.
+    dependency-graph change; and
+12. source-free initialization before an exclusive structural evidence session,
+    bounded exact-end structural and catalog-history validation, catalog-owned
+    process-local `ValidatedCatalogHistory`, storage-API-owned and redb-produced
+    `StructurallyOpened` dormant ports, and WP-130-only matching/activation
+    without a storage-to-IR
+    edge or any weakening of per-command historical-plan revalidation.
 
 These semantic details received explicit maintainer review on 2026-07-13; they
 were not inferred merely from the earlier direction approval.

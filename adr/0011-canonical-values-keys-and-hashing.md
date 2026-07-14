@@ -5,8 +5,9 @@
 - **Exact text accepted:** 2026-07-12, amended 2026-07-12 and 2026-07-13
 - **Amended by:** ADR-0014 for projection/root plan hashes, ADR-0016 for
   partition/index keys and partition hashing, ADR-0009 for capability-token
-  keyed hashing, ADR-0017 for projection keys and apply hashing, and ADR-0018
-  for UUIDv7 assembly and production-source ownership
+  keyed hashing, ADR-0005 for the versioned idempotency key, ADR-0017 for
+  projection keys and apply hashing, and ADR-0018 for UUIDv7 assembly and
+  production-source ownership
 - **Decision deadline:** Before WP-010 semantic types or fixtures merge
 
 The human maintainer accepted this exact text, including the foundational
@@ -174,6 +175,16 @@ value does not carry precision.
 
 ### 2026-07-13 companion registry additions
 
+ADR-0005 extends the typed key-envelope registry with idempotency identity
+prefix `0x59 0x01`. Its exact payload is the accepted ADR-0005 identity tuple:
+16-byte `DatabaseId`; length-framed environment; global/tenant tag and optional
+length-framed tenant ID; length-framed `ActorId`; length-framed contract lineage;
+`CommandId`; digest scheme; `DigestKeyId`; and 32 digest bytes. Its complete
+accepted maximum is 908 bytes, and its checked builder still enforces this ADR's
+4,096-byte complete-key ceiling before allocation. Prefix `0x59` is ASCII `Y`
+and does not collide with another accepted purpose. ADR-0005 alone owns the
+component meanings, order, bounds, and exact decode checks.
+
 ADR-0009 extends the keyed registry with `CapabilityTokenDigest`, domain
 `riffdb.capability-token/v1`, HMAC-SHA-256 under the unchanged keyed frame. Its
 payload is exactly the decoded 32 raw token bytes; the canonical base64url text,
@@ -242,7 +253,9 @@ Cryptographic hashes are content identifiers, not authorization or signatures.
 Cross-platform golden byte/hash/key vectors; decimal boundary, arithmetic, and
 ordering properties; canonical collection permutation tests; exact Proto/JSON
 round trips; malformed decoder fuzzing; maximum depth/length tests; and a central
-domain-tag collision registry check.
+domain-tag collision registry check. The central purpose registry includes the
+ADR-0005 `0x59 0x01` idempotency key and checks its global, maximum 908-byte
+tenant, malformed, and over-4,096-byte pre-allocation fixtures through WP-060.
 
 ## Requirements and Work Packages
 
