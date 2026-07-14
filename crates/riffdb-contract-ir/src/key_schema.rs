@@ -365,6 +365,39 @@ impl KeySchema {
             bytes: builder.as_bytes().to_vec(),
         })
     }
+
+    /// Decodes and validates a component-complete transient index scan prefix.
+    ///
+    /// The prefix may stop after any complete leading component, including the
+    /// six-byte whole-index envelope. Partial variable-width payloads and bytes
+    /// following the schema's final component are rejected.
+    pub fn decode_index_prefix(&self, bytes: &[u8]) -> Result<IndexScanPrefix, IrValidationError> {
+        let KeyPurpose::Index { index_id, .. } = self.purpose else {
+            return Err(IrValidationError::InvalidKey {
+                reason: "not an index key schema",
+            });
+        };
+        checked_len("index prefix", bytes.len(), MAX_KEY_BYTES)?;
+        let mut cursor = KeyCursor::new(bytes);
+        cursor.expect_prefix(&[0x49, 0x01], index_id.get())?;
+
+        let mut values = Vec::new();
+        while !cursor.is_empty() {
+            let schema = self
+                .components
+                .get(values.len())
+                .ok_or(IrValidationError::TrailingBytes)?;
+            values.push(cursor.read_component(schema)?);
+        }
+
+        let canonical = self.encode_index_prefix(&values)?;
+        if canonical.as_bytes() != bytes {
+            return Err(IrValidationError::InvalidKey {
+                reason: "index prefix is not canonical",
+            });
+        }
+        Ok(canonical)
+    }
 }
 
 /// A decoded complete local-index entry.
@@ -745,5 +778,31 @@ mod tests {
             .expect("prefix");
         assert_eq!(prefix.component_count(), 1);
         assert_eq!(&prefix.as_bytes()[..6], &[0x49, 0x01, 0, 0, 0, 1]);
+        assert_eq!(
+            index
+                .decode_index_prefix(prefix.as_bytes())
+                .expect("decode complete prefix"),
+            prefix
+        );
+        assert_eq!(
+            index
+                .decode_index_prefix(&prefix.as_bytes()[..6])
+                .expect("decode whole-index prefix")
+                .component_count(),
+            0
+        );
+        assert!(
+            index
+                .decode_index_prefix(&prefix.as_bytes()[..prefix.as_bytes().len() - 1])
+                .is_err()
+        );
+
+        let mut trailing = prefix.as_bytes().to_vec();
+        trailing.push(0);
+        assert!(index.decode_index_prefix(&trailing).is_err());
+
+        let mut wrong_owner = prefix.as_bytes().to_vec();
+        wrong_owner[5] = 2;
+        assert!(index.decode_index_prefix(&wrong_owner).is_err());
     }
 }

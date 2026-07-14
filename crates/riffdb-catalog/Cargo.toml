@@ -9,6 +9,16 @@ publish.workspace = true
 default = []
 
 [dependencies]
+riffdb-contract-ir = { version = "0.1.0", path = "../riffdb-contract-ir" }
+riffdb-storage-api = { version = "0.1.0", path = "../riffdb-storage-api" }
+riffdb-types = { version = "0.1.0", path = "../riffdb-types" }
+
+[dev-dependencies]
+riffdb-contract-compiler = { version = "0.1.0", path = "../riffdb-contract-compiler" }
+
+[[test]]
+name = "contract_deploy_recovery"
+path = "../../tests/contract_deploy_recovery.rs"
 
 [lints]
 workspace = true
