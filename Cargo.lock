@@ -1043,6 +1043,10 @@ version = "0.1.0"
 [[package]]
 name = "riffdb-invariant"
 version = "0.1.0"
+dependencies = [
+ "riffdb-contract-ir",
+ "riffdb-types",
+]
 
 [[package]]
 name = "riffdb-mcp-stdio"
@@ -1081,6 +1085,13 @@ dependencies = [
 [[package]]
 name = "riffdb-runtime"
 version = "0.1.0"
+dependencies = [
+ "riffdb-contract-compiler",
+ "riffdb-contract-ir",
+ "riffdb-invariant",
+ "riffdb-storage-api",
+ "riffdb-types",
+]
 
 [[package]]
 name = "riffdb-server"
@@ -1117,6 +1128,9 @@ name = "riffdb-testkit"
 version = "0.1.0"
 dependencies = [
  "riffdb-contract-compiler",
+ "riffdb-contract-ir",
+ "riffdb-invariant",
+ "riffdb-runtime",
  "riffdb-storage-api",
  "riffdb-types",
 ]
