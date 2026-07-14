@@ -1,3 +1,5 @@
 #![forbid(unsafe_code)]
 
-//! Non-semantic bootstrap root for the `riffdb-testkit` crate.
+//! Deterministic fixtures and reference models shared by RiffDB tests.
+
+pub mod model;

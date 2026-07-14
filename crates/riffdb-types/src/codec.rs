@@ -36,6 +36,16 @@ pub fn encode_canonical_value(value: &CanonicalValue) -> Result<Vec<u8>, Canonic
     Ok(encoder.output)
 }
 
+/// Encodes one borrowed record as a complete canonical `Value::Record` document.
+///
+/// This produces exactly the same v1 bytes as [`encode_canonical_value`] without
+/// cloning the record and its potentially large value graph first.
+pub fn encode_canonical_record(record: &CanonicalRecord) -> Result<Vec<u8>, CanonicalCodecError> {
+    let mut encoder = Encoder::default();
+    encoder.encode_record_value(record, 0)?;
+    Ok(encoder.output)
+}
+
 /// Decodes exactly one canonical value encoding v1 document.
 pub fn decode_canonical_value(input: &[u8]) -> Result<CanonicalValue, CanonicalCodecError> {
     if input.len() > MAX_CANONICAL_DOCUMENT_BYTES {
@@ -61,17 +71,22 @@ struct Encoder {
 }
 
 impl Encoder {
-    fn encode_value(
-        &mut self,
-        value: &CanonicalValue,
-        depth: usize,
-    ) -> Result<(), CanonicalCodecError> {
+    fn validate_depth(depth: usize) -> Result<(), CanonicalCodecError> {
         if depth > MAX_NESTING_DEPTH {
             return Err(CanonicalCodecError::NestingTooDeep {
                 depth,
                 maximum: MAX_NESTING_DEPTH,
             });
         }
+        Ok(())
+    }
+
+    fn encode_value(
+        &mut self,
+        value: &CanonicalValue,
+        depth: usize,
+    ) -> Result<(), CanonicalCodecError> {
+        Self::validate_depth(depth)?;
 
         self.write(&[CANONICAL_VALUE_VERSION])?;
         match value {
@@ -138,28 +153,44 @@ impl Encoder {
                 }
                 Ok(())
             }
-            CanonicalValue::Record(record) => {
-                if record.len() > MAX_RECORD_FIELDS {
-                    return Err(CanonicalCodecError::TooManyEntries {
-                        kind: CollectionKind::Record,
-                        actual: record.len(),
-                        maximum: MAX_RECORD_FIELDS,
-                    });
-                }
-                self.write(&[TAG_RECORD])?;
-                self.write(&(record.len() as u32).to_be_bytes())?;
-                let mut previous = None;
-                for (field_id, value) in record.fields() {
-                    if previous.is_some_and(|id| id >= field_id.get()) {
-                        return Err(CanonicalCodecError::NonCanonicalRecordOrder);
-                    }
-                    previous = Some(field_id.get());
-                    self.write(&field_id.get().to_be_bytes())?;
-                    self.encode_value(value, depth + 1)?;
-                }
-                Ok(())
-            }
+            CanonicalValue::Record(record) => self.encode_record_payload(record, depth),
         }
+    }
+
+    fn encode_record_value(
+        &mut self,
+        record: &CanonicalRecord,
+        depth: usize,
+    ) -> Result<(), CanonicalCodecError> {
+        Self::validate_depth(depth)?;
+        self.write(&[CANONICAL_VALUE_VERSION])?;
+        self.encode_record_payload(record, depth)
+    }
+
+    fn encode_record_payload(
+        &mut self,
+        record: &CanonicalRecord,
+        depth: usize,
+    ) -> Result<(), CanonicalCodecError> {
+        if record.len() > MAX_RECORD_FIELDS {
+            return Err(CanonicalCodecError::TooManyEntries {
+                kind: CollectionKind::Record,
+                actual: record.len(),
+                maximum: MAX_RECORD_FIELDS,
+            });
+        }
+        self.write(&[TAG_RECORD])?;
+        self.write(&(record.len() as u32).to_be_bytes())?;
+        let mut previous = None;
+        for (field_id, value) in record.fields() {
+            if previous.is_some_and(|id| id >= field_id.get()) {
+                return Err(CanonicalCodecError::NonCanonicalRecordOrder);
+            }
+            previous = Some(field_id.get());
+            self.write(&field_id.get().to_be_bytes())?;
+            self.encode_value(value, depth + 1)?;
+        }
+        Ok(())
     }
 
     fn encode_decimal(&mut self, value: &Decimal) -> Result<(), CanonicalCodecError> {
@@ -555,6 +586,58 @@ impl std::error::Error for CanonicalCodecError {}
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn one_bytes_field(length: usize) -> CanonicalRecord {
+        CanonicalRecord::new(vec![(
+            FieldId::new(1).expect("nonzero field ID"),
+            CanonicalValue::bytes(vec![0xa5; length]).expect("bounded byte value"),
+        )])
+        .expect("bounded canonical record")
+    }
+
+    #[test]
+    fn borrowed_record_encoder_preserves_complete_value_record_bytes() {
+        let record = CanonicalRecord::new(vec![
+            (
+                FieldId::new(2).expect("field ID"),
+                CanonicalValue::Bool(true),
+            ),
+            (FieldId::new(1).expect("field ID"), CanonicalValue::U64(42)),
+        ])
+        .expect("canonical record");
+
+        assert_eq!(
+            encode_canonical_record(&record),
+            encode_canonical_value(&CanonicalValue::Record(record.clone()))
+        );
+        assert_eq!(
+            encode_canonical_record(&record).expect("borrowed encoding")[..2],
+            [CANONICAL_VALUE_VERSION, TAG_RECORD]
+        );
+    }
+
+    #[test]
+    fn borrowed_record_encoder_accepts_exact_document_maximum_and_rejects_one_over() {
+        // Root version/tag/count (6), field ID (4), and nested bytes
+        // version/tag/length (6) leave exactly this much byte payload.
+        const RECORD_OVERHEAD: usize = 16;
+        let exact = one_bytes_field(MAX_CANONICAL_DOCUMENT_BYTES - RECORD_OVERHEAD);
+        assert_eq!(
+            encode_canonical_record(&exact)
+                .expect("exact maximum canonical record")
+                .len(),
+            MAX_CANONICAL_DOCUMENT_BYTES
+        );
+
+        let over = one_bytes_field(MAX_CANONICAL_DOCUMENT_BYTES - RECORD_OVERHEAD + 1);
+        assert_eq!(
+            encode_canonical_record(&over),
+            Err(CanonicalCodecError::DocumentTooLarge {
+                actual: MAX_CANONICAL_DOCUMENT_BYTES + 1,
+                maximum: MAX_CANONICAL_DOCUMENT_BYTES,
+            })
+        );
+    }
 
     #[test]
     fn rejects_malformed_documents_without_panicking() {
