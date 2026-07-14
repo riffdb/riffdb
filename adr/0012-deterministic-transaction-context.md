@@ -2,12 +2,13 @@
 
 - **Status:** Accepted
 - **Direction approved:** 2026-07-12
-- **Exact text accepted:** Yes
+- **Exact text accepted:** Yes; amended 2026-07-14
 - **Accepted:** 2026-07-13
 - **Requires:** ADR-0004 and ADR-0007 accepted before or in the same governance
   change
 - **Amended by:** ADR-0018 for UUIDv7 source isolation
-- **Companion clarification:** 2026-07-13 `AdmissionClock` port/provider ownership
+- **Companion clarifications:** 2026-07-13 `AdmissionClock` port/provider
+  ownership; 2026-07-14 pre-admission input-expression arithmetic disposition
 - **Amends:** SPEC `LOG-001` and Sections 5.2, 9.1, 9.2, 9.5,
   13.4, 17, and 22.2; ADR-0004 runtime/intent construction; ADR-0005 terminal
   admission states; ADR-0006 public-error registry; ADR-0007 admitted-
@@ -17,6 +18,8 @@
 The human maintainer accepted this exact no-randomness and recorded-time record
 on 2026-07-13 as part of the atomic semantic-interface governance batch and
 accepted ADR-0018's companion source-isolation amendment the same day.
+On 2026-07-14 the maintainer accepted the companion pre-admission arithmetic
+boundary below.
 
 ## Context
 
@@ -64,6 +67,25 @@ actor, logical time, plan reference, identity, input hash, partition, and the
 separate stored provenance-claim snapshot, to construct the storage-owned
 `CommitIntent`. No caller, adapter, policy component, or runtime value may
 replace a field already frozen by admission.
+
+### Shared input-expression evaluation before admission
+
+`riffdb-invariant` owns the shared pure evaluator for checked input-computable
+expressions. `riffdb-service` owns the combined command-input preparation that
+uses it to normalize input and derive partition, conflict, and authorization
+facts before policy and before any pending admission. `riffdb-runtime` reuses the
+same pure evaluator after it receives an owned `ReadSnapshot`, but it does not
+own or expose a combined request-preparation DTO.
+
+Checked arithmetic failure during the service-owned pre-admission input-only
+phase is root `ValidationCode::OutOfRange`. It creates no pending admission,
+acquires no mutation capability, and can never become `ExecutionFailed`. A
+checked plan/input state that cannot be evaluated according to its validated
+type is an internal integrity failure rather than a caller validation result.
+Once an owned snapshot exists, runtime `Arithmetic` and `ResourceLimit` retain
+the dependency-validated terminalization rules in this record unchanged. No
+layer may move an arithmetic fault across this boundary merely to obtain a more
+convenient public or durable disposition.
 
 ### No command randomness
 
@@ -585,10 +607,16 @@ The manifest delta is exact:
   it requires ADR-0012 and persists only the WP-065-reviewed records.
 - WP-080's objective and SPEC-facing deliverable change from constructing
   `CommitIntent` to constructing `EvaluatedCommand`; it adds the immutable fixed
-  budget and deterministic fault tests and never receives stored provenance.
+  budget and deterministic fault tests, owns the shared pure input-computable
+  expression evaluator in `riffdb-invariant`, and never receives stored
+  provenance or a combined request-preparation DTO.
 - WP-100 delivers coordinator-only intent assembly, dependency-validated failure
   terminalization, changed-dependency reevaluation, and proven-abort versus
   unknown-commit recovery.
+- WP-120 adds WP-080 as a direct dependency and owns combined input/partition/
+  conflict/fact preparation through the shared evaluator. Its pre-admission
+  arithmetic fixtures require root `ValidationCode::OutOfRange`, no pending
+  admission, and no `ExecutionFailed`; impossible checked state is internal.
 - WP-127 is the public API schema-completion package. It depends on WP-020 and
   WP-120, requires ADR-0006, ADR-0007, ADR-0009, ADR-0010, ADR-0011,
   ADR-0012, ADR-0013, and ADR-0017, and may edit only `Cargo.lock`, `proto/**`,

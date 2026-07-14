@@ -2,13 +2,15 @@
 
 - **Status:** Accepted
 - **Direction approved:** 2026-07-12
-- **Exact text accepted:** 2026-07-12
+- **Exact text accepted:** 2026-07-12; amended 2026-07-14
 - **Contextual-keyword clarification accepted:** 2026-07-12
+- **POC state-machine deferral accepted:** 2026-07-14
 - **Amended by:** ADR-0015 for mandatory read/mutate binding-failure outcomes
 - **Decision deadline:** Before WP-030 grammar implementation
 
 The human maintainer accepted this exact grammar, dependency, and compilation
-boundary on 2026-07-12.
+boundary on 2026-07-12. On 2026-07-14 the maintainer accepted the explicit POC
+grammar/IR-v1 state-machine deferral below.
 
 ## Context
 
@@ -169,13 +171,22 @@ application-service operations. The compatibility prose about adding a query
 does not create an unowned surface production. A named query language requires
 a later accepted grammar and QueryPlan decision.
 
-State-machine source syntax is deferred as SPEC permits for the first vertical
-slice; WP-040 may reserve a typed IR concept but must not invent executable
-state-machine instructions. Contract-authored capability and approval clauses
-are also deferred: the POC command capability derives from stable contract and
-command identity, while approval remains external policy. Optional fields have
-only the explicit null default in grammar version 1; there is no `default`
-clause. Adding any deferred construct is a compatibility-reviewed grammar change.
+Contract state machines are deferred completely from the POC. Grammar version 1
+contains no state-machine declaration, field modifier, transition clause, or
+transition instruction. Its AST, typed HIR, executable IR, canonical bundle, and
+runtime contain no state-machine placeholder or execution path; WP-040 and
+WP-080 MUST NOT reserve or invent one. POC commands mutate ordinary fields only
+through the bounded instructions already declared above, subject to predicates,
+invariants, postconditions, and commit-time checks. This deferral does not permit
+generic writes or weaken command-only mutation. A future state-machine surface
+requires an accepted new grammar and IR version with explicit dependency,
+compatibility, and migration semantics.
+
+Contract-authored capability and approval clauses are also deferred: the POC
+command capability derives from stable contract and command identity, while
+approval remains external policy. Optional fields have only the explicit null
+default in grammar version 1; there is no `default` clause. Adding any deferred
+construct is a compatibility-reviewed grammar change.
 
 ### Bounds, spans, and diagnostics
 
@@ -219,8 +230,10 @@ HIR and validates a versioned executable IR. The AST stores names, literal
 lexemes, type syntax, item order, and spans. It is never canonical, durable,
 typed HIR, or executable input. Runtime code never evaluates the AST.
 
-Every executable plan must eventually declare bounded reads, writes, conflict
-keys, invariants, effects, outcomes, and locality. `ContractBundle` canonical
+Every POC executable plan declares bounded reads, writes, conflict keys,
+predicates, invariants, postconditions, commit-time checks, effects, outcomes,
+and locality. It contains no contract state-machine node or transition
+instruction. `ContractBundle` canonical
 content excludes `generated_at`; compilation and deployment timestamps belong
 in non-canonical catalog audit metadata. Exact stable-ID allocation, IR tags and
 encoding, supported execution-version window, canonical plan-hash framing, and
@@ -264,6 +277,9 @@ checks the independent lockfile, license exception, and 30-second smoke run.
 - SPEC Sections 7.2 and 23.1 are the same canonical valid fixture.
 - Unsupported and deferred constructs fail with bounded, source-spanned codes.
 - Creation is a typed command operation with a declared duplicate outcome.
+- Contract state-machine source, AST/HIR/IR, bundle content, and execution are
+  outside POC grammar/IR v1; ordinary compiled mutations remain subject to all
+  declared checks.
 - Grammar version changes require an accepted ADR and compatibility corpus.
 - WP-040 remains blocked on ADR-0013 even after WP-030 completes.
 - Native and NCSA-licensed code remains isolated from the root production graph.
@@ -271,8 +287,9 @@ checks the independent lockfile, license exception, and 30-second smoke run.
 ## Compatibility
 
 Accepted tokens, productions, precedence, source spelling, bounds, span units,
-and diagnostic codes are compiler compatibility boundaries. AST Rust layout and
-LALRPOP-generated Rust are internal and are not durable compatibility formats.
+diagnostic codes, and the absence of a POC state-machine surface are compiler
+compatibility boundaries. AST Rust layout and LALRPOP-generated Rust are
+internal and are not durable compatibility formats.
 
 ## Security
 
@@ -287,13 +304,16 @@ Use valid/invalid source corpora, diagnostic span snapshots with semantic
 assertions, exact language-reference examples, delimiter and collection boundary
 tests, arbitrary-byte Proptest coverage, and the pinned parser fuzz smoke. WP-040
 adds stable-ID, typed-IR, bundle, plan-hash, and repeated-build evidence only
-after ADR-0013 acceptance.
+after ADR-0013 acceptance. WP-040/WP-080 architecture and negative-corpus tests
+must prove that state-machine syntax, HIR/IR nodes, transition instructions, and
+runtime dispatch are absent rather than represented by placeholders.
 
 ## Requirements and Work Packages
 
 - **Requirements:** `DSL-001`, `DSL-002`, `DSL-006`, `DSL-008`, `CMP-001`, and
   parser prerequisites for the remaining `DSL-*` and `CMP-*` requirements
-- **Defines or blocks:** `WP-030`; AST input for `WP-040`
+- **Defines or blocks:** `WP-030`; AST input and state-machine exclusion for
+  `WP-040`; execution-surface exclusion for `WP-080`
 - **Final evidence:** `WP-040`, `WP-140`, `WP-200`
 
 ## Decision Deadline

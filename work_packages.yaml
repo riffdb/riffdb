@@ -1,4 +1,4 @@
-spec_version: '0.10'
+spec_version: '0.12'
 product: RiffDB
 repository: riffdb
 status: implementation-handoff
@@ -568,8 +568,11 @@ work_packages:
   - crates/riffdb-storage-api/src/lib.rs
   - crates/riffdb-storage-api/src/proto_codec/**
   deliverables:
-  - Versioned riffdb.storage.v1 semantic-record messages and envelopes for authoritative state, command admission
-    and terminal failure, events, provenance, catalog, capability, bootstrap, audit, outbox, and projection state
+  - Exactly eight riffdb.storage.v1 semantic-record source modules named common.proto, metadata.proto,
+    application.proto, catalog.proto, capability.proto, audit.proto, outbox.proto, and projection.proto, in addition
+    to the existing envelope.proto; together they contain the accepted exact 26 top-level StoredEnvelope payload
+    registry for authoritative state, command admission and terminal failure, standalone events, provenance,
+    catalog, capability, bootstrap, audit, outbox, and projection state
   - Exact application and administration allocator-state messages/codecs for Next(nonzero) and Exhausted, with
     first, maximum, exhausted, malformed, and compound-bootstrap capacity fixtures
   - Descriptors, schema hashes, wire-structural validation, decoder bounds, golden bytes, and historical compatibility
@@ -581,6 +584,8 @@ work_packages:
     and absent-initial-outbox-status mappings with deterministic wire fixtures
   - Exact EventHash preimage/domain-frame codec, descriptor and golden fixtures, including EventId/type/ordinal,
     payload-length, canonical-record ordering, cross-domain, malformed, and durable round-trip cases
+  - Separately registered top-level StoredDurableEventV1 envelope and codec in addition to its exact reciprocal
+    nested commit/outbox representations, with no missing, orphaned, unequal, or hash-invalid copy accepted
   - Conservative per-record-class upper bounds for the complete canonical StoredEnvelope, with proofs against the
     real codec, exact actual byte-charge reporting, equal-bound success, one-byte-over rejection, and aggregate
     reservation fixtures consumed by WP-070 before sequence staging; WP-060 remains responsible only for
@@ -589,6 +594,11 @@ work_packages:
     order while rejecting unknown/zero kinds, malformed lineage scope, duplicates, noncanonical order, and over 16
   - Generated schema inventory proving the exact ADR-0019 retained metadata records and no NodeId, clean-shutdown,
     last-successful-integrity-check, reserved-field, key-codec, or envelope placeholder for deferred metadata
+  - Terminal-idempotency fixtures proving that one full StoredOutcomeV1 envelope is both terminal state and persisted
+    outcome, with no pointer, tombstone, or second terminal envelope, and malformed outcome/commit/provenance
+    reciprocity vectors for WP-070 startup validation
+  - Encoded-capacity fixtures proving that atomic pending-row deletion and index-entry deletion write no envelope
+    bytes, mixed index classes sum only canonical Put post-images, and their distinct semantic charges remain nonzero
   acceptance_commands:
   - cargo test -p riffdb-proto -p riffdb-storage-api
   - ./scripts/generate-proto --check
@@ -649,23 +659,29 @@ work_packages:
   - tests/storage_recovery/**
   - scripts/storage_*
   deliverables:
-  - Redb table layout
+  - Frozen redb table/key layout using lineage-framed contract-bundle keys, one catalog_active/0x01 row, exact
+    canonical entity/index/range-prefix keys, the exact retained metadata keys, and no durable memory accelerators
   - Atomic entity/index/outcome/event/provenance/log commit
+  - Authoritative events table keyed by exact EventId, atomically written and reciprocally validated against the
+    equal commit and outbox copies
   - Exact consuming candidate ordering from count-only start through current validation, mutation-affected epoch
     reads, sequence-free write-plan reservation, sequence assignment, graph verification, canonical encoding, and
     staging, with no assigned sequence on capacity failure
   - Pre-stage recomputation of every actual canonical StoredEnvelope byte charge against WP-065's retained per-class
     upper bounds, aborting the complete transaction before any write on mismatch or excess
   - Durable EventHash recomputation using the exact ADR-0011 preimage during decode, startup integrity, and reciprocal
-    commit/event/outbox validation, with mismatch rejected rather than repaired
+    commit/event/outbox validation, with every missing, orphaned, duplicate, unequal, or hash-invalid standalone
+    event row rejected rather than repaired
   - Complete storage-structural startup scan and exact-end historical semantic evidence
   - Complete bounded enumeration of every persisted entity key, index-entry key, and range-prefix key with IR-opaque
     durable owner/reference evidence for catalog validation, without interpreting KeySchema in the redb adapter
   - Offline backup and restore
   - Storage benchmarks
+  - Dependency-free repeated-run storage benchmark target; no Criterion dependency
   - Named storage failpoints and redaction-safe telemetry hooks
   - Exact redb 4.1.0 dependency with default features disabled, no optional features, and no engine-specific public
     surface
+  - Exact sha2 0.11.0 dependency with default features disabled, used only for SHA-256 backup manifests
   - Durable standalone service-audit records and indexes, admitted-provenance admission fields, and compound
     bootstrap and replay persistence using only WP-065-reviewed schemas and mappings
   - Startup integrity rejection of unknown, malformed, duplicate, noncanonically ordered, or over-limit ADR-0021
@@ -748,7 +764,8 @@ work_packages:
   - WP-040
   - WP-060
   objective: Interpret compiler-produced command plans against a snapshot and produce deterministic typed outcomes
-    and EvaluatedCommands without I/O.
+    and EvaluatedCommands without I/O, limited to expressions, predicates, invariants, postconditions, and commit
+    checks with no contract state-machine source, IR, or execution surface.
   requirements:
   - TXN-002
   - TXN-010
@@ -781,14 +798,19 @@ work_packages:
   - crates/riffdb-testkit/src/lib.rs
   - crates/riffdb-testkit/src/histories/**
   deliverables:
-  - IR evaluator
+  - Shared pure riffdb-invariant evaluator for checked input-computable expressions plus predicate, invariant,
+    postcondition, and commit-check evaluation over snapshot IR, with no service-owned logic duplicated in runtime
+    and no runtime-owned combined request-preparation DTO
   - Durable-reservation-supplied logical time and no command randomness
   - Read dependency tracking
-  - Invariant and transition evaluation
+  - Architecture and negative-corpus proof that POC grammar/IR v1 and runtime contain no contract state-machine node,
+    transition instruction, placeholder, or execution path
   - EvaluatedCommand construction without stored provenance claims or final CommitIntent assembly
   - Architecture proof that runtime receives only checked identifier values and no UUIDv7 clock, entropy, source,
     provider, or source-ordering state and never derives logical time or order from UUID fields
   - Immutable fixed-budget and deterministic arithmetic/resource-fault tests
+  - Boundary tests proving pre-admission arithmetic is left to service preparation while arithmetic after an owned
+    snapshot is the closed ADR-0012 ExecutionFault::Arithmetic path
   - One-partition cross-domain read evidence with complete influential dependency tracking
   acceptance_commands:
   - cargo test -p riffdb-runtime -p riffdb-invariant
@@ -997,6 +1019,7 @@ work_packages:
   name: API-neutral application service
   depends_on:
   - WP-050
+  - WP-080
   - WP-100
   - WP-110
   objective: Expose transport-independent command, contract, entity, commit, provenance, projection, and health
@@ -1024,6 +1047,9 @@ work_packages:
   - tests/service/**
   deliverables:
   - Service traits and implementations
+  - Combined input normalization and input-computable partition/conflict/authorization-fact preparation using the
+    shared pure riffdb-invariant evaluator, mapping checked arithmetic to root ValidationCode::OutOfRange before
+    admission and impossible checked-plan/input state to internal integrity
   - Shared request context
   - Authorization enforcement
   - Bounded pagination and waits

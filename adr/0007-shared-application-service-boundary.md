@@ -4,7 +4,7 @@
 - **Amended by:** ADR-0021 for the exact service-audit target registry,
   lineage scoping, canonical order, and per-operation construction rule
 - **Direction approved:** 2026-07-12
-- **Exact text accepted:** Yes
+- **Exact text accepted:** Yes; amended 2026-07-14
 - **Accepted:** 2026-07-13
 - **Requires:** ADR-0004, ADR-0009, ADR-0012, and ADR-0017 accepted before or
   in the same governance commit
@@ -20,6 +20,8 @@ part of the atomic semantic-interface governance batch.
 The maintainer accepted the P1 production-composition amendment on 2026-07-13:
 WP-130 now owns the one runnable authoritative redb/gRPC graph and WP-185 only
 extends that same graph for P2 MCP, workers, and observability.
+On 2026-07-14 the maintainer accepted the shared pure input-expression and
+pre-admission arithmetic amendment below.
 
 ## Context
 
@@ -64,8 +66,9 @@ Protobuf types cannot become the service's semantic model.
 
 `riffdb-service` owns API-neutral orchestration. It depends downward on
 foundational types and errors, contract IR/compiler/catalog readers,
-authentication and policy entry points, the WP-100 executor ports, and bounded
-consumer-owned semantic read ports. It never owns a storage engine, storage
+the `riffdb-invariant` pure input-expression evaluator, authentication and policy
+entry points, the WP-100 executor ports, and bounded consumer-owned semantic
+read ports. It never owns a storage engine, storage
 transaction, conflict lease, idempotency record, raw capability record, or
 protocol object.
 
@@ -377,8 +380,9 @@ retry's service audit, without overwriting either admitted snapshot.
 The accepted resolution of the SPEC/WP-100 ownership tension is:
 
 - `riffdb-service` owns request-level orchestration through semantic validation,
-  exact plan preparation, policy authorization, audit admission, invocation of
-  the executor, obligation application, and final safe result.
+  exact plan preparation using the shared pure `riffdb-invariant` expression
+  evaluator, policy authorization, audit admission, invocation of the executor,
+  obligation application, and final safe result.
 - `riffdb-commit` owns the lower command admission and execution port and the
   complete lifecycle after an authorized preparation is accepted: pending
   reservation creation/resolution, idempotency recheck, conflict acquisition,
@@ -393,6 +397,15 @@ and command plan hash), schema-normalized canonical input, caller idempotency
 identity material, policy-resolved actor and tenant/partition context, request
 ID, and bounded request control. It contains no raw token, policy engine,
 transport value, storage transaction, or caller-supplied `ActorContext`.
+
+The service also derives every input-computable partition and mutation-conflict
+key through that same pure evaluator before policy and admission. Arithmetic
+failure in this phase maps to root `ValidationCode::OutOfRange`, appends the
+applicable service audit under this record, and creates no pending command
+admission. An impossible checked-plan/input state is an internal integrity
+failure. The service does not call the snapshot runtime to prepare a request,
+and `riffdb-runtime` does not own a combined preparation DTO. Snapshot-time
+arithmetic remains ADR-0012 runtime behavior.
 
 After bounded snapshot materialization, the executor supplies deterministic
 runtime only the exact checked plan, snapshot, and ADR-0012 transaction context.
@@ -1224,10 +1237,10 @@ remains additive.
 | WP-060 | WP-040 | ADR-0007, ADR-0012, ADR-0017 | `Cargo.lock` | `StoredServiceAuditRecordV1` with independent targets, exact closed result links, and coordinator-owned timestamps; specialized ordered service-audit append/read transitions; `StoredAdmittedProvenanceClaimsV1` in admission records; exact ADR-0017 projection ports; and memory conformance tests |
 | WP-065 (new) | WP-020, WP-060 | ADR-0004, ADR-0005, ADR-0006, ADR-0007, ADR-0009, ADR-0010, ADR-0011, ADR-0012, ADR-0013, ADR-0014, ADR-0016, ADR-0017 | `Cargo.lock`; `proto/**`; `crates/riffdb-proto/**`; `fixtures/proto/**`; `scripts/generate-proto*`; `crates/riffdb-storage-api/Cargo.toml`; `crates/riffdb-storage-api/src/lib.rs`; `crates/riffdb-storage-api/src/proto_codec/**` | Durable semantic-record messages, descriptors, schema hashes, goldens, historical registrations, wire validation, and checked storage DTO mappings; no reverse proto-to-storage dependency |
 | WP-070 | WP-065 | ADR-0007, ADR-0012, ADR-0017 | `Cargo.lock`; `tests/service_audit_recovery/**` | Durable service-audit persistence/indexes, admitted-provenance admission fields, exact projection tables, integrity checks, and crash/reopen coverage using WP-065 schemas/mappings |
-| WP-080 | None | ADR-0007 | `Cargo.lock` | Runtime returns `EvaluatedCommand`; it receives no stored provenance claims and does not construct the final `CommitIntent` |
+| WP-080 | None | ADR-0007 | `Cargo.lock` | `riffdb-invariant` owns the shared pure input-computable expression evaluator; runtime returns `EvaluatedCommand`, receives no stored provenance claims or combined request-preparation DTO, and does not construct the final `CommitIntent` |
 | WP-100 | None | None | `Cargo.lock`; `tests/service_audit/**` | Bounded idempotency inspect/confirm plus command, control-plane, and `AdministrationAuditExecutor` ports; commit-owned synchronous `AdministrationClock` and exact sample rules; coordinator assembly of `CommitIntent`; new-admission provenance freezing; stored-claim reuse; bounded-permit/fresh-auth/synchronous-admission behavior and exact start/terminal link/failure semantics plus the compound bootstrap audit transition; complete mechanical storage-record-to-policy-facts lowering and verifier/clock use after capability-mutation queue wait; an unjournaled read-only path with no command admission/sequence; and executor cancellation/uncertainty tests |
 | WP-110 | None | ADR-0007 | `Cargo.lock` | Auth-owned `CredentialAuthenticator`; policy-owned synchronous `AuthorizationClock`, value-only `AuthorizedCapabilityMutationPreparation` and `TransactionCurrentCapabilityFacts`, pure `TransactionCurrentCapabilityVerifier`, exhaustive typed service-operation-to-permission mapping, and privately constructible `AuthorizedProvenanceClaims`; verifier, clock-failure, denial, delegation, approval, and redaction tests; ADR-0009 retains separate approval of its capability entropy/HMAC/base64/zeroization graph |
-| WP-120 | None | ADR-0004, ADR-0009, ADR-0012, ADR-0017 | `Cargo.lock` | Six API-neutral service traits, checked request context, executor/read consumer ports, initial/start/permit/fresh-auth/synchronous-admission orchestration, exact audit scope and append-failure mappings, fully filtered/bounded pre-success results, stream-establishment audit, current-policy safe points, obligation application, cursors/pages/waits/streams, and deterministic fake cursor generator |
+| WP-120 | WP-080 | ADR-0004, ADR-0009, ADR-0012, ADR-0017 | `Cargo.lock` | Combined input/partition/conflict/fact preparation through the shared pure evaluator with pre-admission arithmetic mapped to root `ValidationCode::OutOfRange`; six API-neutral service traits, checked request context, executor/read consumer ports, initial/start/permit/fresh-auth/synchronous-admission orchestration, exact audit scope and append-failure mappings, fully filtered/bounded pre-success results, stream-establishment audit, current-policy safe points, obligation application, cursors/pages/waits/streams, and deterministic fake cursor generator |
 | WP-125 | None | None | None | None; the existing no-storage service adapter and shared oracle are sufficient |
 | WP-127 (new) | WP-020, WP-120 | ADR-0006, ADR-0007, ADR-0009, ADR-0010, ADR-0011, ADR-0012, ADR-0013, ADR-0017 | `Cargo.lock`; `proto/**`; `crates/riffdb-proto/**`; `fixtures/proto/**`; `scripts/generate-proto*` | Completed public phase-zero message fields, including `EXECUTED_READ_ONLY = 3` and its exact sentinel rules; descriptors, wire validation, schema hashes, and golden/client fixtures for every WP-130-supported RPC; no service-to-wire adapter code |
 | WP-130 | WP-127 | ADR-0009, ADR-0012, ADR-0017 | `Cargo.lock` | gRPC credential handoff through `CredentialAuthenticator`; total service/proto conversion including status-dependent Execute validation and sentinel-to-absence mapping; error/stream/projection mapping; the production authoritative read adapter; one production redb/catalog/commit/auth/policy/service/gRPC object graph; ADR-0004 exact structural/catalog evidence matching and readiness gate; all four disjoint authentication/authorization/admission/administration wall-clock providers; database/provenance/request/incident UUID-source wrappers; cursor token and monotonic-clock providers; typed capability/idempotency digest-provider composition and readable inventories; initialization/bootstrap/deploy/active-catalog lifecycle and health; and architecture tests proving no policy or lower semantic bypass |
@@ -1258,7 +1271,9 @@ dependencies rather than retroactive WP-020 revisions. In particular:
   executor pieces inside their declared or explicitly added paths; no package
   edits a neighboring owner merely to avoid an interface PR.
 - WP-120 gains `Cargo.lock` only for generated root-workspace path-dependency
-  wiring and supplies no production randomness implementation.
+  wiring, directly depends on WP-080 because it consumes the
+  `riffdb-invariant` evaluator, and supplies no production randomness
+  implementation.
 - WP-130 owns the exact reviewed direct `getrandom` configuration above and its
   `Cargo.lock` authority. WP-185 may update the lockfile only for its separately
   reviewed P2 composition edges; it does not replace or duplicate the provider.

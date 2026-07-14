@@ -6,7 +6,7 @@
 **Tagline:** *Vibe fast. Commit safely.*  
 **Category:** Contract-first operational database for agent-built applications  
 
-**Version:** 0.10
+**Version:** 0.12
 **Status:** Architecture-approved implementation handoff
 **Date:** 14 July 2026
 **Audience:** Coding agents, database engineers, compiler engineers, security reviewers, and technical product leads  
@@ -46,6 +46,8 @@
 | 0.8 | 2026-07-13 | Reconciled the accepted first-runnable P1 boundary: storage owns complete structural evidence and dormant type-state ports, catalog owns same-session IR-aware historical validation, WP-130 composes the minimal production `riffdbd` startup/lifecycle and restart proof, and WP-185 only extends that graph with P2 components. |
 | 0.9 | 2026-07-13 | Clarified schema-complete startup evidence for every persisted entity, index-entry, and range-prefix key without a storage-to-IR dependency, and assigned ordered commit scans a dedicated 16 MiB internal encoded-content page ceiling while retaining the generic 4 MiB scan ceiling. |
 | 0.10 | 2026-07-14 | Applied the accepted pre-sequence transaction-capacity clarification and exact `EventHash` preimage: mutation-affected epochs and conservative encoded capacity are resolved inside the write transaction before sequence assignment, while every final canonical `StoredEnvelope` is checked against its retained per-class bound before staging. |
+| 0.11 | 2026-07-14 | Froze the accepted POC durable table keys and 26-record registry, including authoritative standalone event rows and lineage-scoped bundle keys; approved the pure-Rust backup checksum dependency and dependency-free storage benchmark harness; and clarified shared pure input-expression evaluation plus fail-closed pre-admission arithmetic. |
+| 0.12 | 2026-07-14 | Clarified that one full `StoredOutcomeV1` envelope is both the committed terminal idempotency row and persisted outcome, with atomic pending deletion, no tombstone or second terminal envelope, and startup commit reciprocity; explicitly deferred contract state-machine source, IR, and execution from POC grammar/IR v1 and narrowed WP-080 to predicate, invariant, postcondition, and commit-check evaluation. |
 
 ### Normative language
 
@@ -292,14 +294,14 @@ The binary targets are `riffdbd` from `riffdb-server`, `riffdb` from `riffdb-cli
 | `riffdb-storage-api` | Semantic snapshots, database initialization, structural startup sessions/evidence/type-state ports, evaluated commands, commit intents, durable DTOs, typed transitions/readers, the narrow durable `proto_codec` mapping bridge, and ADR-0017 projection-schema consumers | Types/errors; proto only through `proto_codec`; contract IR only for immutable `ProjectionGroupSchema`/`BoundProjectionGroupSchema` values in the projection-schema module; no clock, entropy, compiler, command-plan interpretation, historical-plan validation, runtime, commit, service, transport, or concrete-engine dependency |
 | `riffdb-storage-memory` | Deterministic reference storage implementation used by model and semantic tests | Storage API only |
 | `riffdb-storage-redb` | Durable POC implementation, table layout, complete structural integrity/evidence scan, dormant opened ports, backup, restore, and engine benchmarks | Storage API and `redb`; no contract IR, `ValidatedCatalogHistory`, readiness composition, or API transports |
-| `riffdb-invariant` | Evaluation of supported predicates, transitions, postconditions, and commit-time invariant checks | Types and IR |
+| `riffdb-invariant` | Shared pure evaluation of checked input-computable expressions plus supported predicates, invariants, postconditions, and commit-time checks | Types and IR; no snapshot, admission, storage, service, clock, entropy, or transport dependency; no POC state-machine source, IR, or execution surface |
 | `riffdb-runtime` | Deterministic command-plan interpreter that consumes owned snapshots and produces `EvaluatedCommand` without external I/O | IR, invariant engine, and storage semantic value/snapshot types; no provenance claims, admission persistence, storage engine, service, or transport dependency |
 | `riffdb-conflict` | Canonical conflict keys, exclusive logical capabilities, wait queues, cancellation, and hot-key diagnostics | Types and synchronization primitives; no storage engine |
 | `riffdb-idempotency` | Canonical command identity, input hashing, persisted outcome lookup, duplicate detection, and uncertain-result recovery | Types and storage API |
 | `riffdb-commit` | Database-initialization executor, admission, capability acquisition, deterministic evaluation orchestration, final `CommitIntent` assembly, revalidation, sequencing, authoritative commit, typed control-plane operations, ordered audit execution, and consumer-owned `AdmissionClock`, `AdministrationClock`, and `ProvenanceIdSource` ports | Runtime, conflict, idempotency, catalog, storage API, and policy-owned authorized-preparation/provenance/facts values plus only `TransactionCurrentCapabilityVerifier` and `AuthorizationClock`; no service, transport, protocol, general policy authorizer, obligations/redaction engine, policy-owned storage reader, or concrete clock/entropy implementation |
 | `riffdb-auth` | Principal authentication, local development capability tokens, expiry, credential resolution, narrow synchronous authentication clock, and `CredentialAuthenticator` entry point | Types, errors, and storage-owned capability readers; no policy, command execution, service, or transport dependency |
 | `riffdb-policy` | Deny-by-default authorization, capability scopes, obligations, approvals, provenance validation, value-only authorized capability-mutation preparation and transaction-current facts, synchronous authorization clock, and pure transaction-current capability verification | Auth and types/errors only; no storage API, commit, service, transport, protocol, authoritative write handle, or concrete storage dependency |
-| `riffdb-service` | API-neutral command, contract, entity, commit, provenance, projection, discovery, administration, and health services, including capability-administration request/result semantics | Foundational types/errors, contract/compiler/catalog semantics, auth and policy entry points, typed commit executors, and consumer-owned bounded read ports; no transport, general storage engine, or concrete storage implementation |
+| `riffdb-service` | API-neutral command, contract, entity, commit, provenance, projection, discovery, administration, and health services, including capability-administration request/result semantics and checked command-input preparation | Foundational types/errors, contract/compiler/catalog semantics, the pure `riffdb-invariant` expression evaluator, auth and policy entry points, typed commit executors, and consumer-owned bounded read ports; no runtime execution API, transport, general storage engine, or concrete storage implementation |
 | `riffdb-api-grpc` | Tonic services, authentication interceptors, bounds checks, and wire conversions | Service, the auth-owned `CredentialAuthenticator` interface, proto, and Tonic; no policy, catalog, runtime, commit, storage API, or storage implementation |
 | `riffdb-client-rust` | Generic and generated Rust client APIs plus the approved system UUIDv7 request/capability/agent-session convenience source | Proto and Tonic client plus the exact ADR-0018 entropy dependency only; no semantic database implementation |
 | `riffdb-server` | `riffdbd` process composition, configuration, lifecycle, hosted gRPC/HTTP endpoints, startup proof composition, and concrete OS clock/UUIDv7/cursor/digest providers implementing the separate consumer ports | Service/API crates and concrete auth, clock/identifier, executor, storage, outbox, projection, and observability implementations solely for composition; no new policy, command, query, redaction, cursor, audit, or identifier semantics |
@@ -336,6 +338,7 @@ Versions are the verified July 2026 starting point, not a promise to track every
 | Protobuf | Prost 0.14.x | Wire and durable record generation |
 | Pure-Rust proto compiler | Protox 0.9.x | Build without requiring an external `protoc` executable |
 | Embedded storage | redb 4.1.0, default features disabled, no optional features | POC durable state and atomic commits; direct only in `riffdb-storage-redb` |
+| Backup checksum | sha2 0.11.0, default features disabled | SHA-256 backup manifests; direct only in `riffdb-storage-redb` and never command semantics |
 | Storage comparison | Fjall 3.1.x | POC-exit benchmark and possible MVP engine |
 | MCP SDK | rmcp 2.2.x | Native MCP server, stdio, Streamable HTTP |
 | OS entropy | getrandom 0.3.4, default features disabled, no optional features | Capability/bootstrap identifiers and tokens in `riffdb-auth`, request/capability/agent-session convenience IDs in `riffdb-client-rust`, and injected database/provenance/request/incident/cursor IDs in `riffdb-server`; never command runtime |
@@ -348,7 +351,7 @@ Versions are the verified July 2026 starting point, not a promise to track every
 | Property testing | Proptest 1.x | Generated contracts, values, and histories |
 | Exhaustive concurrency | Loom 0.7.x | Small lock-manager and notification components |
 | Randomized concurrency | Shuttle 0.9.x | Larger command and task schedules |
-| Benchmarks | Criterion | Stable local micro and scenario benchmarks |
+| Benchmarks | Dependency-free repeated-run harnesses | Stable local component and scenario benchmarks without adding a POC Criterion dependency |
 | Future replication | OpenRaft 0.9.x behind a facade | MVP replicated state machine; not linked into POC server |
 
 ---
@@ -504,7 +507,7 @@ pub struct EntityRecord {
 
 ## 7.1 Design objective
 
-The language is not a general-purpose programming language. It is a small, terminating, typed description of persistent entities, aggregate ownership, commands, invariants, state transitions, durable events, queries, and simple projections.
+The language is not a general-purpose programming language. It is a small, terminating, typed description of persistent entities, aggregate ownership, commands, invariants, typed mutations, durable events, queries, and simple projections.
 
 The compiler MUST know every possible database read, mutation class, conflict key derivation, outcome variant, durable event type, and transactional source of nondeterminism.
 
@@ -651,9 +654,16 @@ POC queries support:
 
 A query MUST declare a maximum result count. Unbounded scans are not part of the application contract language.
 
-### State machines
+### Contract state machines (deferred)
 
-State machine syntax is optional for the first vertical slice but MUST be represented in the IR model. Direct writes to a state-machine field are illegal; only declared transition instructions may change it.
+Contract-authored state-machine source syntax, AST/HIR/IR nodes, transition
+instructions, and runtime execution are outside POC grammar/IR version 1. The
+POC command language mutates ordinary fields only through its compiled bounded
+instructions, subject to declared predicates, invariants, postconditions, and
+commit-time checks. This deferral does not permit generic writes or weaken
+command-only mutation. Adding a contract state machine requires a future
+accepted grammar and IR version with explicit dependency and compatibility
+semantics.
 
 ### Durable events
 
@@ -740,6 +750,15 @@ reuses every frozen field; a retry with a different input fails without executio
 A terminal declared rejection receives one sequence like any other committed
 declared outcome. Returning a persisted outcome on replay allocates no new
 sequence.
+
+For each committed declared outcome, the `idempotency` table contains exactly
+one full `StoredOutcomeV1` `StoredEnvelope` under the canonical idempotency
+identity. That envelope is simultaneously the terminal idempotency state and
+the persisted outcome returned on replay; it is not a pointer to another outcome
+row. The committing transaction deletes the corresponding
+`StoredPendingAdmissionV1` row and installs this one outcome envelope atomically
+with the commit record and the rest of the command record set. Pending deletion
+writes no tombstone envelope, and no second terminal or outcome envelope exists.
 
 ADR-0012 adds a closed terminal admission state
 `ExecutionFailed { ArithmeticFault | ResourceLimit }`. It may be persisted only
@@ -968,8 +987,14 @@ A mutating command follows this sequence:
    unknown target before this classification is bounded security telemetry, not
    a fabricated mutating invocation.
 3. The service validates and canonicalizes input under that exact schema,
-   computes its hash, and derives the one `PartitionKey`, all mutation conflict
-   keys, and authorization facts.
+   computes its hash, and uses the shared pure `riffdb-invariant` evaluator to
+   derive the one `PartitionKey`, all mutation conflict keys, and authorization
+   facts. Checked arithmetic failure in this pre-admission, input-only phase is
+   root `ValidationCode::OutOfRange`: it creates no pending admission and can
+   never become `ExecutionFailed`. A checked plan/input combination that cannot
+   be evaluated as its validated type declares is an internal integrity failure,
+   not an arithmetic validation result. Arithmetic after snapshot evaluation
+   retains ADR-0012's dependency-validated terminalization unchanged.
 4. The service performs an initial current-policy check over the exact facts and
    validates only allowed provenance claims. Every explicit authenticated policy
    denial appends one standalone `denied` record before returning denial.
@@ -1034,9 +1059,11 @@ A mutating command follows this sequence:
     that it matches the retained intent, write plan, and assignment, and prove
     each actual canonical `StoredEnvelope` byte length does not exceed its
     reserved per-class upper bound before staging.
-19. The storage commit atomically makes sequence metadata, entity/index changes,
-    pending resolution and terminal outcome, events/outbox intent, provenance,
-    and commit record durable, or makes none of them durable.
+19. The storage commit atomically deletes the pending row and installs exactly
+    one full `StoredOutcomeV1` envelope as both terminal idempotency state and
+    persisted outcome together with sequence metadata, entity/index changes,
+    events/outbox intent, provenance, and the commit record, or makes none of
+    them durable. It writes no pending tombstone or second terminal envelope.
 20. The coordinator releases logical capabilities and publishes bounded
     post-durability notifications.
 21. The service applies every current disclosure obligation and constructs the
@@ -1421,23 +1448,34 @@ and scan end are typed semantic results, never parsed error strings.
 | Table | Key | Value |
 |---|---|---|
 | `meta` | UTF-8 system key | Versioned metadata value |
-| `contract_bundles` | contract version, big endian | Contract bundle envelope |
-| `catalog_active` | fixed key | Active contract version and hash |
-| `entities` | entity type ID + canonical entity key | Entity record envelope |
-| `secondary_indexes` | index ID + canonical index key + entity key | Empty marker or covered value |
-| `index_epochs` | index ID + prefix bucket | Monotonic validation epoch |
-| `idempotency` | canonical identity from Section 7.6 | Terminal committed-outcome pointer or closed ADR-0012 `ExecutionFailed` record, plus input hash |
+| `contract_bundles` | lineage byte length as `u32` big endian + exact lineage UTF-8 + contract version as `u64` big endian | Contract bundle envelope |
+| `catalog_active` | exact byte `0x01` | Active contract version and hash |
+| `entities` | exact canonical `EntityKey` bytes | Entity record envelope |
+| `secondary_indexes` | exact canonical `IndexEntryKey` bytes | Index entry envelope including covered values |
+| `index_epochs` | exact canonical index-range-prefix bytes | Monotonic validation epoch envelope |
+| `idempotency` | canonical identity from Section 7.6 | One full `StoredOutcomeV1` envelope serving as both committed terminal state and persisted outcome, or one closed ADR-0012 `StoredExecutionFailedV1` envelope; never a pointer or tombstone |
 | `idempotency_pending` | canonical idempotency identity | Pending reservation, fixed transaction context, complete `ExecutablePlanRef`, admitted actor, and stored approved provenance claims |
 | `commits` | commit sequence, big endian | Commit record envelope |
-| `provenance` | provenance ID | Immutable approved provenance record envelope linked from one commit |
-| `outbox` | commit sequence + event ordinal | Outbox entry |
-| `outbox_status` | event ID | Delivery state and attempts |
+| `provenance` | exact 16-byte provenance ID | Immutable approved provenance record envelope linked from one commit |
+| `events` | exact 12-byte event ID | Authoritative durable event envelope |
+| `outbox` | exact 12-byte event ID | Outbox-intent envelope containing the same event |
+| `outbox_status` | exact 12-byte event ID | Delivery state and attempts |
 | `projection_state` | `0x47 0x01` + projection identity + generation + framed complete group components | Versioned aggregate state and last-changed sequence |
 | `projection_frontier` | `0x46 0x01` + projection identity | Versioned control record with highest generation, published/candidate frontiers, lifecycle, apply mode, and closed failure |
 | `projection_applied` | `0x41 0x01` + projection identity + generation + commit sequence | Versioned marker containing the exact `ProjectionApplyHash` |
 | `capabilities` | `0x01` + stable `CapabilityId` | Versioned capability grant and lifecycle record with repeated typed digest reference |
 | `capability_tokens` | `0x01` + digest scheme + digest-key ID + digest | Versioned lookup containing exactly one `CapabilityId` |
 | `audit` | `0x01` + administration sequence | Versioned registered catalog/capability-administration or service-audit record in one ordered sequence space with disjoint closed payload registries |
+
+The only `meta` keys are the exact UTF-8 strings `format_version`,
+`database_id`, `next_application_sequence`, `next_administration_sequence`, and
+`capability_bootstrap/v1`. The active-contract metadata category is represented
+once by `catalog_active/0x01`; it is not duplicated in `meta`. Physical keys use
+the complete canonical key bytes named above and MUST NOT prepend a redundant
+entity type, index ID, or other owner field already present in that canonical
+encoding. The POC persists only the frozen primary tables in this section;
+backend-private accelerators are rebuilt from authoritative records and are not
+unversioned durable state.
 
 `STO-010` Ordered numeric keys MUST use big-endian encoding so lexicographic scans preserve numeric order.
 
@@ -1480,6 +1518,45 @@ The payload is a typed Protobuf message. The outer checksum provides early corru
 
 `STO-022` POC storage migrations MAY be offline but MUST be restartable and idempotent.
 
+The `riffdb.storage.v1` compatibility registry contains exactly these 26
+top-level `StoredEnvelope` payload types for the POC:
+
+1. `StoredStorageFormatVersionV1`
+2. `StoredDatabaseIdentityV1`
+3. `StoredApplicationSequenceAllocatorV1`
+4. `StoredAdministrationSequenceAllocatorV1`
+5. `StoredContractBundleV1`
+6. `ActiveCatalogPointerV1`
+7. `StoredCatalogAdministrationV1`
+8. `StoredEntityRecordV1`
+9. `StoredIndexEntryV1`
+10. `StoredIndexEpochV1`
+11. `StoredPendingAdmissionV1`
+12. `StoredExecutionFailedV1`
+13. `StoredOutcomeV1`
+14. `StoredDurableEventV1`
+15. `StoredOutboxIntentV1`
+16. `StoredProvenanceRecordV1`
+17. `StoredCommitRecordV1`
+18. `CapabilityRecordV1`
+19. `CapabilityTokenLookupV1`
+20. `CapabilityBootstrapMarkerV1`
+21. `CapabilityAdministrationAuditV1`
+22. `ServiceAuditRecordV1`
+23. `StoredOutboxStatusV1`
+24. `StoredProjectionStateV1`
+25. `StoredProjectionApplyV1`
+26. `StoredProjectionControlV1`
+
+The capability and service-audit wire names in that list are fixed even where
+the Rust semantic DTO uses a `Stored*` name. Closed helper messages, including
+read-dependency collections and capability grants/permission sets, remain nested
+and are not separately registered envelopes. No speculative reserved field,
+record type, key codec, ADR-0019 deferred metadata, or later-feature placeholder
+is part of the v1 registry. Any addition, removal, rename, field-number change,
+enum/oneof tag change, or top-level/nested reclassification is a durable-format
+change requiring compatibility and recovery review.
+
 ## 10.4 Commit record
 
 The semantic commit record contains the assigned nonzero sequence, original
@@ -1489,6 +1566,16 @@ canonical read dependencies, complete mutation post-images, ordered durable
 event identities/payloads, original declared outcome, and links to the immutable
 provenance and outbox intent created in the same atomic record set. Replay is
 response metadata and never creates or modifies a commit record.
+
+Every `StoredOutcomeV1` must reciprocate with exactly one
+`StoredCommitRecordV1` at its nonzero commit sequence, and every committed
+command record must have exactly one corresponding outcome row. Startup checks
+the outcome table key against the payload identity and requires the outcome and
+commit to agree exactly on their shared admission request, plan, canonical input
+hash, actor, logical time, partition/conflict hashes, declared outcome,
+provenance link, sequence, and durability mode. The linked provenance record
+must carry the same idempotency identity. A missing, duplicate, mismatched, or
+still-pending reciprocal record is corruption and is rejected without repair.
 
 Each durable event carries an `EventHash` under the existing unkeyed
 `riffdb.event/v1` domain. The exact domain-frame payload is:
@@ -1506,6 +1593,13 @@ format byte and record tag. Hashing only the business payload, omitting identity
 or type, using a different length width/order, or hashing Protobuf bytes is
 noncanonical. Construction, durable decode, startup integrity, and reciprocal
 commit/event/outbox validation MUST recompute and compare this exact hash.
+
+Each durable event is also stored as its own `StoredDurableEventV1`
+`StoredEnvelope` in the authoritative `events` table under its exact 12-byte
+`EventId`. The standalone event row, the event nested in the corresponding
+`StoredOutboxIntentV1`, and the event nested in `StoredCommitRecordV1` commit
+atomically and MUST be exactly equal. A missing, duplicate, orphaned, unequal,
+or hash-invalid copy is corruption and MUST be rejected without repair.
 
 The pre-commit `CommitIntent` carries the coordinator-generated checked
 `ProvenanceId`; storage never generates or substitutes it. A collision is an
@@ -2966,7 +3060,10 @@ Snapshots MUST not substitute for semantic assertions.
 
 ## 17.8 Benchmarks
 
-Use Criterion for component benchmarks and a separate process harness for end-to-end results. Every benchmark records:
+Use dependency-free repeated-run component harnesses and a separate process
+harness for end-to-end results. WP-070 MUST NOT add Criterion merely to compile
+the storage benchmark; introducing any benchmark framework later requires the
+normal dependency review. Every benchmark records:
 
 - Git revision and dirty state.
 - Rust version and target.
@@ -3163,14 +3260,14 @@ The graph uses hard dependencies. Parallel work is encouraged only after shared 
 | `WP-045` | Budget comparison baseline | WP-040 | Shared workload/oracle and isolated PostgreSQL implementation | Deterministic oracle and PostgreSQL correctness preflight pass |
 | `WP-050` | Contract catalog | WP-020, WP-040, WP-060 | Bundle lookup, catalog state semantics, compatibility report, same-session historical IR validation proof, and typed expected-version deployment operation for later coordinator routing | Catalog semantic, exact-end historical-validation, and atomic-storage-operation tests pass; final routing evidence is WP-100/WP-120 |
 | `WP-060` | Storage semantic API | WP-010, WP-020, WP-040 | Owned snapshots, dependencies, `EvaluatedCommand`/`CommitIntent`, the pre-sequence write-plan/capacity type-state, exact `EventHash` semantics, structural evidence/type-state ports, semantic durable DTOs, typed persistence transitions including audit/capability/projection, and in-memory reference implementation | Reference-model, exact-end startup type-state, pre-sequence ordering/capacity, event-hash, and semantic conformance tests pass |
-| `WP-065` | Durable semantic record schema | WP-020, WP-060 | Versioned `riffdb.storage.v1` records, canonical envelopes and per-class upper-bound proofs, exact event-hash goldens, descriptors, schema hashes, wire validation, historical registrations, and checked storage-owned Proto mappings | Proto/storage size/hash tests and clean deterministic regeneration pass |
-| `WP-070` | Redb storage engine | WP-020, WP-060, WP-065 | Tables, ordered coordinator write transaction with pre-sequence reservation and pre-stage canonical-envelope checks, atomic records, indexes, capability/audit/projection persistence, complete structural evidence scan, `StructurallyOpened` dormant ports, recovery, and backup | Storage properties and core process recovery matrix pass without claiming IR-aware readiness |
+| `WP-065` | Durable semantic record schema | WP-020, WP-060 | Exact 26-record `riffdb.storage.v1` registry including standalone durable events, canonical envelopes and per-class upper-bound proofs, exact event-hash goldens, descriptors, schema hashes, wire validation, historical registrations, and checked storage-owned Proto mappings | Proto/storage size/hash tests and clean deterministic regeneration pass |
+| `WP-070` | Redb storage engine | WP-020, WP-060, WP-065 | Frozen canonical tables/keys including standalone events, ordered coordinator write transaction with pre-sequence reservation and pre-stage canonical-envelope checks, atomic records, indexes, capability/audit/projection persistence, complete structural evidence scan, `StructurallyOpened` dormant ports, recovery, SHA-256 backup, and dependency-free benchmarks | Storage properties and core process recovery matrix pass without claiming IR-aware readiness |
 | `WP-075` | Fjall semantic comparison | WP-060, WP-070 | Isolated non-production Fjall adapter and unchanged conformance/benchmark harness | Conformance report and reproducible evidence pass |
-| `WP-080` | Deterministic command runtime | WP-040, WP-060 | IR interpreter, fixed logical time and budget, dependencies, `EvaluatedCommand`, and closed execution faults; no provenance or command randomness | Differential tests against model pass |
+| `WP-080` | Deterministic command runtime | WP-040, WP-060 | Shared pure expression evaluator plus predicate, invariant, postcondition, and commit-check evaluation; snapshot IR interpreter, fixed logical time and budget, dependencies, `EvaluatedCommand`, and closed post-snapshot execution faults; no contract state-machine IR/execution, provenance, or command randomness | Differential tests against model pass |
 | `WP-090` | Conflict manager | WP-010 | Canonical multi-key exclusive acquisition, cancellation, metrics | Loom/Shuttle suites pass |
 | `WP-100` | Commit coordinator and idempotency | WP-050, WP-070, WP-080, WP-090, WP-110 | Admission reservation, revalidation, mutation-affected epoch planning, pre-sequence capacity reservation, verified sequence-derived event/record graph, atomic outcome/event/provenance/outbox-intent commit, and typed control-plane operations | Concurrency, pre-sequence failpoints, core process crash, and lost-response replay tests pass |
 | `WP-110` | Authorization and capability service | WP-010, WP-070 | Opaque capability records, policy decisions, obligations, and typed create/revoke operations for later coordinator routing | Policy, digest, revocation-state, and fail-closed tests pass; final non-bypass evidence is WP-120 |
-| `WP-120` | API-neutral application service | WP-050, WP-100, WP-110 | Six operation-specific service traits, checked contexts/DTOs, current policy, audit orchestration, obligations, bounded reads/waits/streams, and server-side cursors | In-process end-to-end and no-storage-bypass tests pass |
+| `WP-120` | API-neutral application service | WP-050, WP-080, WP-100, WP-110 | Six operation-specific service traits, checked contexts/DTOs, pure input/partition/conflict preparation with fail-closed pre-admission arithmetic, current policy, audit orchestration, obligations, bounded reads/waits/streams, and server-side cursors | In-process end-to-end and no-storage-bypass tests pass |
 | `WP-125` | Service comparison adapter | WP-045, WP-120 | Budget workload adapter over the API-neutral service | Shared oracle passes against in-process RiffDB |
 | `WP-127` | Public Protobuf API completion | WP-020, WP-120 | Complete all remaining supported `riffdb.v1` messages, preserve the WP-010 execution-failure slice, and freeze descriptors, schema hashes, wire validation, and golden/client fixtures; no service conversion code | Proto tests and clean deterministic regeneration pass |
 | `WP-130` | gRPC server and Rust SDK | WP-020, WP-120, WP-127 | Tonic services/client plus the minimal production redb/catalog/commit/auth/policy/service composition, concrete ID/clock/cursor/digest providers, staged startup/lifecycle, and real restart proof | Public API conformance and the child-process temporary-redb bootstrap/deploy/budget/restart suite pass |
@@ -3475,7 +3572,7 @@ Risk owners are assigned in the project tracker. A risk may be closed only with 
 
 ## 22.1 Required ADRs
 
-Specification v0.10 records each ADR's current status. An Accepted record is
+Specification v0.12 records each ADR's current status. An Accepted record is
 authoritative; a Proposed record remains planning input until its exact text
 receives human review. Where this table and a work-package deadline differ, the
 earlier deadline governs unless a reviewed reconciliation changes both sources.
@@ -3483,7 +3580,7 @@ earlier deadline governs unless a reviewed reconciliation changes both sources.
 | ADR | Status | Decision | Required before |
 |---|---|---|---|
 | `ADR-0001` | Accepted | Standalone database rather than PostgreSQL extension or control plane | P0 gate |
-| `ADR-0002` | Accepted | Canonical bounded contract grammar, typed IR, versioning, and deterministic bundle | WP-030 grammar freeze and WP-040 interface |
+| `ADR-0002` | Accepted | Canonical bounded contract grammar, typed IR, versioning, deterministic bundle, and explicit POC deferral of contract state-machine source/IR/execution | WP-030 grammar freeze and WP-040 interface |
 | `ADR-0003` | Accepted | Logical pessimistic conflict ownership, dependency validation, and commit ordering | WP-060/WP-090 interfaces |
 | `ADR-0004` | Accepted | Coordinator-driven owned-snapshot semantic storage API, pre-sequence write-plan/capacity ordering, and exact redb 4.1.0 baseline | WP-060 interface |
 | `ADR-0005` | Accepted | Idempotency identity, pending reservation, persisted outcomes, and sequence semantics | WP-060 key freeze and WP-100 |
@@ -3776,15 +3873,16 @@ meta/format_version
 meta/database_id
 meta/next_application_sequence
 meta/next_administration_sequence
-contract_bundles/<u64-be-version>
-catalog_active/fixed
-entities/<entity-type-id>/<encoded-primary-key>
-secondary_indexes/<index-id>/<encoded-index-key>/<encoded-primary-key>
-index_epochs/<index-id>/<prefix-bucket>
-idempotency/<database-id>/<environment>/<tenant-scope>/<principal-id>/<contract-lineage>/<command-id>/<key-digest>
-idempotency_pending/<canonical-idempotency-identity>
+contract_bundles/<u32-be-lineage-length>/<lineage-utf8>/<u64-be-version>
+catalog_active/0x01
+entities/<exact-canonical-entity-key>
+secondary_indexes/<exact-canonical-index-entry-key>
+index_epochs/<exact-canonical-index-range-prefix>
+idempotency/<database-id>/<environment>/<tenant-scope>/<principal-id>/<contract-lineage>/<command-id>/<key-digest>  # one full StoredOutcomeV1 or StoredExecutionFailedV1 envelope
+idempotency_pending/<canonical-idempotency-identity>  # deleted atomically at terminalization; no tombstone
 commits/<u64-be-sequence>
 provenance/<provenance-id>
+events/<u64-be-commit-sequence>/<u32-be-event-ordinal>
 outbox/<event-id>
 outbox_status/<event-id>
 projection_frontier/0x46-0x01/<lineage>/<projection-id>/<projection-plan-hash>
@@ -3881,7 +3979,7 @@ The implementation MUST prefer primary project documentation and pin reviewed ve
 12. LALRPOP parser generator documentation.
 13. Miette diagnostic framework documentation.
 14. tracing structured diagnostics documentation.
-15. Proptest, Loom, Shuttle, Criterion, cargo-fuzz, and Insta documentation.
+15. Proptest, Loom, Shuttle, cargo-fuzz, and Insta documentation.
 16. OpenRaft documentation for the replicated beta research and implementation stage.
 
 ---
