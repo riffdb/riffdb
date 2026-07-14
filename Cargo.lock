@@ -994,10 +994,20 @@ dependencies = [
 [[package]]
 name = "riffdb-contract-compiler"
 version = "0.1.0"
+dependencies = [
+ "proptest",
+ "riffdb-contract-ir",
+ "riffdb-contract-syntax",
+ "riffdb-types",
+]
 
 [[package]]
 name = "riffdb-contract-ir"
 version = "0.1.0"
+dependencies = [
+ "proptest",
+ "riffdb-types",
+]
 
 [[package]]
 name = "riffdb-contract-syntax"

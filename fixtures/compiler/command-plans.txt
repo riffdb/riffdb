@@ -1,0 +1,163 @@
+format=riffdb-command-plan-fixture-v1
+
+[command 1]
+name=CreateBudget
+contract_version=1
+plan_hash=e128287fe0d5245e6aaf36f3c6045127e24869e52ee40c7e1fdcc76e5a3d74ff
+execution=idempotent-mutation
+retry=bounded-full-reevaluation
+capability=invoke-command:LegalSpend:1
+idempotency_input=3
+success_outcome=1
+input_owner=command-input:1
+input.field_count=4
+input.field.1=name:fiscal_year type:i64
+input.field.2=name:approved_amount type:decimal<28,2>
+input.field.3=name:idempotency_key type:string<128>
+input.field.4=name:organization_id type:uuid
+outcome_count=3
+outcome=1 name=BudgetCreated owner=command-outcome:1:1
+outcome.1.field_count=1
+outcome.1.field.1=name:budget type:record<entity:1>
+outcome=2 name=BudgetAlreadyExists owner=command-outcome:1:2
+outcome.2.field_count=2
+outcome.2.field.1=name:fiscal_year type:i64
+outcome.2.field.2=name:organization_id type:uuid
+outcome=3 name=InvalidApprovedAmount owner=command-outcome:1:3
+outcome.3.field_count=1
+outcome.3.field.1=name:minimum type:decimal<2,2>
+expression_count=18
+expression.0=type:uuid kind:input_field:4
+expression.1=type:i64 kind:input_field:1
+expression.2=type:uuid kind:input_field:4
+expression.3=type:i64 kind:input_field:1
+expression.4=type:decimal<28,2> kind:input_field:2
+expression.5=type:decimal<28,2> kind:constant:01041c0200000000000000000000000000000000
+expression.6=type:bool kind:binary:greater:4:5
+expression.7=type:decimal<2,2> kind:constant:0104020200000000000000000000000000000001
+expression.8=type:decimal<28,2> kind:input_field:2
+expression.9=type:decimal<28,2> kind:constant:01041c0200000000000000000000000000000000
+expression.10=type:timestamp kind:transaction_time
+expression.11=type:record<entity:1> kind:complete_binding:0
+expression.12=type:decimal<28,2> kind:bound_field:0:5
+expression.13=type:decimal<28,2> kind:constant:01041c0200000000000000000000000000000000
+expression.14=type:bool kind:binary:greater-equal:12:13
+expression.15=type:decimal<28,2> kind:bound_field:0:5
+expression.16=type:decimal<28,2> kind:bound_field:0:3
+expression.17=type:bool kind:binary:less-equal:15:16
+binding_count=1
+binding=0 name=budget mode=create entity=1 keys=0,1 reads=3,5 complete=true failure=owner:command-outcome:1:2 fields:[1:3,2:2]
+binding.key=purpose:entity:1 components:2 maximum_encoded_bytes:30
+binding.key.component.0=type:uuid variants: maximum_payload_bytes:16
+binding.key.component.1=type:i64 variants: maximum_payload_bytes:8
+root_validation_read_count=0
+locality.aggregate=1 partition_expression=0
+locality.partition=purpose:partition:1 components:1 maximum_encoded_bytes:22
+locality.partition.component.0=type:uuid variants: maximum_payload_bytes:16
+locality.conflict_count=1
+locality.conflict.0.expressions=0,1
+locality.conflict.key=purpose:conflict:1 components:2 maximum_encoded_bytes:30
+locality.conflict.key.component.0=type:uuid variants: maximum_payload_bytes:16
+locality.conflict.key.component.1=type:i64 variants: maximum_payload_bytes:8
+commit_check_count=2
+commit_check invariant=1 predicate=14 bindings=0 root_reads=
+commit_check invariant=2 predicate=17 bindings=0 root_reads=
+instruction_count=5
+instruction.0=require index:0 predicate:6 reject:owner:command-outcome:1:3 fields:[1:7]
+instruction.1=set binding:0 field:3 value:8
+instruction.2=set binding:0 field:5 value:9
+instruction.3=set binding:0 field:1 value:10
+instruction.4=return outcome:1 payload:owner:command-outcome:1:1 fields:[1:11]
+
+[command 2]
+name=AllocateBudget
+contract_version=1
+plan_hash=1fa001109c4005be078c1de742f49365b92a4718dd277ecbff8f97d8713b33bb
+execution=idempotent-mutation
+retry=bounded-full-reevaluation
+capability=invoke-command:LegalSpend:2
+idempotency_input=4
+success_outcome=1
+input_owner=command-input:2
+input.field_count=5
+input.field.1=name:amount type:decimal<28,2>
+input.field.2=name:matter_id type:uuid
+input.field.3=name:fiscal_year type:i64
+input.field.4=name:idempotency_key type:string<128>
+input.field.5=name:organization_id type:uuid
+outcome_count=4
+outcome=1 name=Allocated owner=command-outcome:2:1
+outcome.1.field_count=2
+outcome.1.field.1=name:budget type:record<entity:1>
+outcome.1.field.2=name:remaining type:decimal<28,2>
+outcome=2 name=InvalidAmount owner=command-outcome:2:2
+outcome.2.field_count=1
+outcome.2.field.1=name:minimum type:decimal<2,2>
+outcome=3 name=BudgetNotFound owner=command-outcome:2:3
+outcome.3.field_count=2
+outcome.3.field.1=name:fiscal_year type:i64
+outcome.3.field.2=name:organization_id type:uuid
+outcome=4 name=InsufficientBudget owner=command-outcome:2:4
+outcome.4.field_count=3
+outcome.4.field.1=name:approved type:decimal<28,2>
+outcome.4.field.2=name:allocated type:decimal<28,2>
+outcome.4.field.3=name:requested type:decimal<28,2>
+expression_count=34
+expression.0=type:uuid kind:input_field:5
+expression.1=type:i64 kind:input_field:3
+expression.2=type:uuid kind:input_field:5
+expression.3=type:i64 kind:input_field:3
+expression.4=type:decimal<28,2> kind:input_field:1
+expression.5=type:decimal<28,2> kind:constant:01041c0200000000000000000000000000000000
+expression.6=type:bool kind:binary:greater:4:5
+expression.7=type:decimal<2,2> kind:constant:0104020200000000000000000000000000000001
+expression.8=type:decimal<28,2> kind:bound_field:0:5
+expression.9=type:decimal<28,2> kind:input_field:1
+expression.10=type:decimal<28,2> kind:binary:add:8:9
+expression.11=type:decimal<28,2> kind:bound_field:0:3
+expression.12=type:bool kind:binary:less-equal:10:11
+expression.13=type:decimal<28,2> kind:bound_field:0:3
+expression.14=type:decimal<28,2> kind:bound_field:0:5
+expression.15=type:decimal<28,2> kind:input_field:1
+expression.16=type:decimal<28,2> kind:bound_field:0:5
+expression.17=type:decimal<28,2> kind:input_field:1
+expression.18=type:decimal<28,2> kind:binary:add:16:17
+expression.19=type:timestamp kind:transaction_time
+expression.20=type:uuid kind:input_field:5
+expression.21=type:i64 kind:input_field:3
+expression.22=type:uuid kind:input_field:2
+expression.23=type:decimal<28,2> kind:input_field:1
+expression.24=type:record<entity:1> kind:complete_binding:0
+expression.25=type:decimal<28,2> kind:bound_field:0:3
+expression.26=type:decimal<28,2> kind:bound_field:0:5
+expression.27=type:decimal<28,2> kind:binary:subtract:25:26
+expression.28=type:decimal<28,2> kind:bound_field:0:5
+expression.29=type:decimal<28,2> kind:constant:01041c0200000000000000000000000000000000
+expression.30=type:bool kind:binary:greater-equal:28:29
+expression.31=type:decimal<28,2> kind:bound_field:0:5
+expression.32=type:decimal<28,2> kind:bound_field:0:3
+expression.33=type:bool kind:binary:less-equal:31:32
+binding_count=1
+binding=0 name=budget mode=mutate entity=1 keys=0,1 reads=3,5 complete=true failure=owner:command-outcome:2:3 fields:[1:3,2:2]
+binding.key=purpose:entity:1 components:2 maximum_encoded_bytes:30
+binding.key.component.0=type:uuid variants: maximum_payload_bytes:16
+binding.key.component.1=type:i64 variants: maximum_payload_bytes:8
+root_validation_read_count=0
+locality.aggregate=1 partition_expression=0
+locality.partition=purpose:partition:1 components:1 maximum_encoded_bytes:22
+locality.partition.component.0=type:uuid variants: maximum_payload_bytes:16
+locality.conflict_count=1
+locality.conflict.0.expressions=0,1
+locality.conflict.key=purpose:conflict:1 components:2 maximum_encoded_bytes:30
+locality.conflict.key.component.0=type:uuid variants: maximum_payload_bytes:16
+locality.conflict.key.component.1=type:i64 variants: maximum_payload_bytes:8
+commit_check_count=2
+commit_check invariant=1 predicate=30 bindings=0 root_reads=
+commit_check invariant=2 predicate=33 bindings=0 root_reads=
+instruction_count=6
+instruction.0=require index:0 predicate:6 reject:owner:command-outcome:2:2 fields:[1:7]
+instruction.1=require index:1 predicate:12 reject:owner:command-outcome:2:4 fields:[1:13,2:14,3:15]
+instruction.2=set binding:0 field:5 value:18
+instruction.3=set binding:0 field:1 value:19
+instruction.4=emit event:1 payload:owner:event:1 fields:[1:23,2:22,3:21,4:20]
+instruction.5=return outcome:1 payload:owner:command-outcome:2:1 fields:[1:24,2:27]

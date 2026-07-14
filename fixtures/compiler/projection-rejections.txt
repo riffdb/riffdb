@@ -1,0 +1,86 @@
+format=riffdb-projection-boundary-fixture-v1
+
+[optional-component]
+declared_type=optional<i64>
+component_count=1
+expected=RDB-C019
+primary=135..140
+primary_text=group
+ir.reason=projection group component is not a nonoptional scalar
+kind=semantic
+count=1
+diagnostic.0.code=RDB-C019
+diagnostic.0.message=the projection uses an unsupported or invalid operation
+diagnostic.0.primary=135..140
+diagnostic.0.related=none
+diagnostic.0.help=use equality/conjunction filters and bounded count or sum aggregation
+
+[collection-component]
+declared_type=list<i64,4>
+component_count=1
+expected=RDB-C019
+primary=133..138
+primary_text=group
+ir.reason=projection group component is not a nonoptional scalar
+kind=semantic
+count=1
+diagnostic.0.code=RDB-C019
+diagnostic.0.message=the projection uses an unsupported or invalid operation
+diagnostic.0.primary=133..138
+diagnostic.0.related=none
+diagnostic.0.help=use equality/conjunction filters and bounded count or sum aggregation
+
+[component-count-1024]
+component_count=1024
+component_count_limit=accepted
+expected=RDB-C020
+primary=84..90
+primary_text=Totals
+ir.kind=maximum projection group key
+ir.actual=7474
+ir.maximum=4096
+kind=semantic
+count=1
+diagnostic.0.code=RDB-C020
+diagnostic.0.message=a compiled artifact exceeds a fixed semantic bound
+diagnostic.0.primary=84..90
+diagnostic.0.related=none
+diagnostic.0.help=reduce declared bounds or the number of schema components
+
+[component-count-1025]
+component_count=1025
+expected=RDB-S007
+primary=7294..7299
+primary_text=group
+ir.kind=projection group components
+ir.actual=1025
+ir.maximum=1024
+kind=syntax
+count=1
+diagnostic.0.code=RDB-S007
+diagnostic.0.message=contract declaration contains too many items
+diagnostic.0.primary=7294..7299
+diagnostic.0.expected=
+diagnostic.0.help=reduce the contract source to the documented grammar-version-1 bounds
+
+[complete-key-4096]
+declared_type=string<3780>
+expected=accepted
+maximum_complete_key_bytes=4096
+projection_plan_hash=56a7304d29e210dc3fc7cbbdf811f5bbfb1163861b296031a307577e0750fc59
+
+[complete-key-4097]
+declared_type=string<3781>
+expected=RDB-C020
+primary=92..98
+primary_text=Totals
+ir.kind=maximum projection group key
+ir.actual=4097
+ir.maximum=4096
+kind=semantic
+count=1
+diagnostic.0.code=RDB-C020
+diagnostic.0.message=a compiled artifact exceeds a fixed semantic bound
+diagnostic.0.primary=92..98
+diagnostic.0.related=none
+diagnostic.0.help=reduce declared bounds or the number of schema components

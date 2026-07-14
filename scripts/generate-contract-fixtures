@@ -1,0 +1,48 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+repo_root="$(git rev-parse --show-toplevel)"
+cd "$repo_root"
+
+mode="${1:-}"
+case "$mode" in
+    "")
+        output_root="$repo_root"
+        ;;
+    --check)
+        output_root="$(mktemp -d)"
+        trap 'rm -rf "$output_root"' EXIT
+        ;;
+    *)
+        printf 'usage: %s [--check]\n' "$0" >&2
+        exit 2
+        ;;
+esac
+
+LC_ALL=C TZ=UTC cargo run --quiet --locked -p riffdb-contract-ir \
+    --example generate_format_docs -- --output-root "$output_root"
+LC_ALL=C TZ=UTC cargo run --quiet --locked -p riffdb-contract-compiler \
+    --example generate_contract_fixtures -- --output-root "$output_root"
+
+if [[ "$mode" == "--check" ]]; then
+    if ! diff --brief -- \
+        crates/riffdb-contract-ir/FORMAT.md \
+        "$output_root/crates/riffdb-contract-ir/FORMAT.md"; then
+        printf 'contract IR format documentation is stale\n' >&2
+        exit 1
+    fi
+    if ! diff --brief -- \
+        crates/riffdb-contract-ir/JSON_SCHEMA_FORMAT.md \
+        "$output_root/crates/riffdb-contract-ir/JSON_SCHEMA_FORMAT.md"; then
+        printf 'contract IR JSON Schema documentation is stale\n' >&2
+        exit 1
+    fi
+    if ! diff --recursive --brief -- fixtures/compiler "$output_root/fixtures/compiler"; then
+        printf 'compiler fixtures are stale, missing, or have an unexpected file inventory\n' >&2
+        exit 1
+    fi
+    printf 'Contract IR documentation and compiler fixtures are current.\n'
+else
+    artifact_count="$(find fixtures/compiler -type f -print | wc -l | tr -d ' ')"
+    printf 'Generated 2 contract IR documents and %s compiler fixtures.\n' "$artifact_count"
+fi

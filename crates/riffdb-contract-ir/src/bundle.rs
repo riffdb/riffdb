@@ -1,0 +1,4728 @@
+//! Stable lineage ledger, plan hashes, and canonical contract bundle bytes.
+
+use std::collections::{BTreeMap, BTreeSet};
+
+use riffdb_types::{
+    AggregateTypeId, CommandId, ContractBundleHash, ContractLineage, ContractPlanRootHash,
+    ContractVersion, CurrencyCode, DecimalSpec, EntityTypeId, EnumTypeId, EnumVariantId,
+    EventTypeId, FieldId, IndexId, InvariantId, OutcomeId, PlanHash, ProjectionId,
+    ProjectionPlanHash, SchemaHash, SourceHash, decode_canonical_value, encode_canonical_value,
+    hash_contract_bundle, hash_contract_plan_root, hash_plan, hash_projection_plan, hash_schema,
+};
+
+use crate::codec::{Reader, Writer};
+use crate::format_registry::{
+    binary_operator as binary_tag, binding_mode as binding_tag,
+    capability_requirement as capability_tag, compatibility_class as compatibility_tag,
+    enum_variant_owner as variant_owner_tag, execution_class as execution_tag,
+    expression as expression_tag, index_owner as index_owner_tag, instruction as instruction_tag,
+    invariant_owner as invariant_owner_tag, key_purpose as key_purpose_tag,
+    lineage_entry_state as lineage_state_tag, outcome_owner as outcome_owner_tag,
+    projection_aggregation as aggregation_tag, projection_frontier as frontier_tag,
+    record_owner as record_owner_tag, record_reference as record_tag, retry_policy as retry_tag,
+    stable_id_namespace as namespace_tag, unary_operator as unary_tag,
+    value_type as value_type_tag,
+};
+use crate::{
+    AggregateKeyPlan, AggregateSchema, BinaryOperator, BindingId, BindingMode, BindingPlan,
+    CapabilityRequirement, CommandInputSchema, CommandPlan, CompatibilityClass, CompatibilityCode,
+    CompatibilityEntry, CompatibilityReport, ConflictDerivationPlan, EntitySchema, EnumSchema,
+    EnumVariantSchema, EventConstruction, EventSchema, ExecutionClass, ExprId, ExpressionArena,
+    ExpressionKind, FieldExpression, FieldSchema, GeneratedSchemaArtifact, IndexSchema,
+    Instruction, InvariantPlan, IrValidationError, KeyComponentSchema, KeyPurpose, KeySchema,
+    LocalityPlan, McpCommandNameEntryV1, McpCommandNameRegistryV1, ObjectConstruction,
+    OutcomeConstruction, OutcomeSchema, ProjectionFrontierPolicy, ProjectionGroupComponentSchema,
+    ProjectionGroupSchema, ProjectionMeasurePlan, ProjectionPlan, RecordSchema, RecordTypeRef,
+    RetryPolicy, SchemaIr, UnaryOperator, ValueType, ValueTypeTag, checked_len,
+    validate_source_name,
+};
+
+/// Canonical bundle format version emitted and executed by the POC.
+pub const BUNDLE_FORMAT_VERSION_V1: u32 = 1;
+/// Canonical grammar version represented by a bundle.
+pub const GRAMMAR_VERSION_V1: u32 = 1;
+/// Executable IR version represented by a bundle.
+pub const EXECUTABLE_IR_VERSION_V1: u32 = 1;
+/// Immutable stable-ID lineage-ledger format version.
+pub const LINEAGE_LEDGER_VERSION_V1: u32 = 1;
+/// Maximum canonical bundle bytes below the durable envelope limit.
+pub const MAX_BUNDLE_BYTES: usize = 15 * 1024 * 1024;
+/// Maximum stable lineage ledger entries including tombstones.
+pub const MAX_LINEAGE_LEDGER_ENTRIES: usize = 262_144;
+/// Maximum historical allocation-state namespaces in one lineage ledger.
+pub const MAX_LINEAGE_ALLOCATION_STATES: usize = 262_144;
+
+const BUNDLE_MAGIC: &[u8] = b"RIFFDB-BUNDLE\0";
+const COMMAND_PLAN_MAGIC: &[u8] = b"RIFFDB-COMMAND-PLAN\0";
+const PROJECTION_PLAN_MAGIC: &[u8] = b"RIFFDB-PROJECTION-PLAN\0";
+const ROOT_PLAN_MAGIC: &[u8] = b"RIFFDB-CONTRACT-PLAN-ROOT\0";
+const SCHEMA_IR_MAGIC: &[u8] = b"RIFFDB-SCHEMA-IR\0";
+
+/// Stable semantic ID namespace tags.
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+#[repr(u8)]
+pub enum StableIdNamespaceTag {
+    /// Entity type.
+    Entity = crate::format_registry::stable_id_namespace::ENTITY,
+    /// Event type.
+    Event = crate::format_registry::stable_id_namespace::EVENT,
+    /// Enum type.
+    Enum = crate::format_registry::stable_id_namespace::ENUM,
+    /// Aggregate type.
+    Aggregate = crate::format_registry::stable_id_namespace::AGGREGATE,
+    /// Command.
+    Command = crate::format_registry::stable_id_namespace::COMMAND,
+    /// Projection.
+    Projection = crate::format_registry::stable_id_namespace::PROJECTION,
+    /// Entity-local index.
+    Index = crate::format_registry::stable_id_namespace::INDEX,
+    /// Entity- or aggregate-owned invariant.
+    Invariant = crate::format_registry::stable_id_namespace::INVARIANT,
+    /// Record field.
+    Field = crate::format_registry::stable_id_namespace::FIELD,
+    /// Command outcome.
+    Outcome = crate::format_registry::stable_id_namespace::OUTCOME,
+    /// Enum variant.
+    EnumVariant = crate::format_registry::stable_id_namespace::ENUM_VARIANT,
+}
+
+/// One exact stable-ID allocation namespace including its owner path.
+#[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+pub struct StableIdNamespace {
+    tag: StableIdNamespaceTag,
+    owner_kind: u8,
+    owner_ids: Vec<u32>,
+}
+
+impl StableIdNamespace {
+    /// Creates a checked namespace/owner path.
+    pub fn new(
+        tag: StableIdNamespaceTag,
+        owner_kind: u8,
+        owner_ids: Vec<u32>,
+    ) -> Result<Self, IrValidationError> {
+        let valid = match tag {
+            StableIdNamespaceTag::Entity
+            | StableIdNamespaceTag::Event
+            | StableIdNamespaceTag::Enum
+            | StableIdNamespaceTag::Aggregate
+            | StableIdNamespaceTag::Command
+            | StableIdNamespaceTag::Projection => owner_kind == 0 && owner_ids.is_empty(),
+            StableIdNamespaceTag::Index => {
+                owner_kind == index_owner_tag::ENTITY && owner_ids.len() == 1
+            }
+            StableIdNamespaceTag::Invariant => {
+                matches!(
+                    owner_kind,
+                    invariant_owner_tag::ENTITY | invariant_owner_tag::AGGREGATE
+                ) && owner_ids.len() == 1
+            }
+            StableIdNamespaceTag::Field => {
+                matches!(
+                    owner_kind,
+                    record_owner_tag::ENTITY
+                        | record_owner_tag::EVENT
+                        | record_owner_tag::COMMAND_INPUT
+                        | record_owner_tag::COMMAND_OUTCOME
+                        | record_owner_tag::PROJECTION_RESULT
+                ) && matches!(owner_ids.len(), 1 | 2)
+                    && (owner_kind == record_owner_tag::COMMAND_OUTCOME) == (owner_ids.len() == 2)
+            }
+            StableIdNamespaceTag::Outcome => {
+                owner_kind == outcome_owner_tag::COMMAND && owner_ids.len() == 1
+            }
+            StableIdNamespaceTag::EnumVariant => {
+                owner_kind == variant_owner_tag::ENUM && owner_ids.len() == 1
+            }
+        };
+        if !valid || owner_ids.contains(&0) {
+            return Err(IrValidationError::InvalidLineageLedger {
+                reason: "invalid stable-ID namespace owner path",
+            });
+        }
+        Ok(Self {
+            tag,
+            owner_kind,
+            owner_ids,
+        })
+    }
+
+    /// Namespace kind.
+    #[must_use]
+    pub const fn tag(&self) -> StableIdNamespaceTag {
+        self.tag
+    }
+    /// Closed owner-kind tag.
+    #[must_use]
+    pub const fn owner_kind(&self) -> u8 {
+        self.owner_kind
+    }
+    /// Stable owner components.
+    #[must_use]
+    pub fn owner_ids(&self) -> &[u32] {
+        &self.owner_ids
+    }
+
+    fn identity_key(&self, name: &str) -> Result<Vec<u8>, IrValidationError> {
+        let mut writer = Writer::new(1_024);
+        writer.u8(self.tag as u8)?;
+        writer.u8(self.owner_kind)?;
+        writer.u8(u8::try_from(self.owner_ids.len()).map_err(|_| {
+            IrValidationError::InvalidLineageLedger {
+                reason: "too many stable-ID owners",
+            }
+        })?)?;
+        for id in &self.owner_ids {
+            writer.u32(*id)?;
+        }
+        let length = u16::try_from(name.len()).map_err(|_| IrValidationError::InvalidName {
+            kind: "stable identity",
+        })?;
+        writer.raw(&length.to_be_bytes())?;
+        writer.raw(name.as_bytes())?;
+        Ok(writer.finish())
+    }
+
+    pub(crate) fn allocation_namespace(&self) -> StableIdAllocationNamespace {
+        match self.tag {
+            StableIdNamespaceTag::Entity
+            | StableIdNamespaceTag::Event
+            | StableIdNamespaceTag::Enum
+            | StableIdNamespaceTag::Aggregate
+            | StableIdNamespaceTag::Command
+            | StableIdNamespaceTag::Projection
+            | StableIdNamespaceTag::Index
+            | StableIdNamespaceTag::Invariant => StableIdAllocationNamespace {
+                tag: self.tag,
+                owner_kind: 0,
+                owner_ids: Vec::new(),
+            },
+            StableIdNamespaceTag::Field
+            | StableIdNamespaceTag::Outcome
+            | StableIdNamespaceTag::EnumVariant => StableIdAllocationNamespace {
+                tag: self.tag,
+                owner_kind: self.owner_kind,
+                owner_ids: self.owner_ids.clone(),
+            },
+        }
+    }
+}
+
+/// One numeric allocation state, distinct from a declaration identity path.
+///
+/// Index and invariant identities carry owner paths, but each uses one global
+/// numeric sequence. Fields, outcomes, and enum variants have scoped sequences.
+#[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+pub struct StableIdAllocationNamespace {
+    tag: StableIdNamespaceTag,
+    owner_kind: u8,
+    owner_ids: Vec<u32>,
+}
+
+impl StableIdAllocationNamespace {
+    /// Creates one of the eight required lineage-global allocation states.
+    pub fn global(tag: StableIdNamespaceTag) -> Result<Self, IrValidationError> {
+        if !matches!(
+            tag,
+            StableIdNamespaceTag::Entity
+                | StableIdNamespaceTag::Event
+                | StableIdNamespaceTag::Enum
+                | StableIdNamespaceTag::Aggregate
+                | StableIdNamespaceTag::Command
+                | StableIdNamespaceTag::Projection
+                | StableIdNamespaceTag::Index
+                | StableIdNamespaceTag::Invariant
+        ) {
+            return Err(IrValidationError::InvalidLineageLedger {
+                reason: "scoped stable-ID kind cannot use a global allocation state",
+            });
+        }
+        Ok(Self {
+            tag,
+            owner_kind: 0,
+            owner_ids: Vec::new(),
+        })
+    }
+
+    /// Creates one required field, outcome, or enum-variant allocation state.
+    pub fn scoped(
+        tag: StableIdNamespaceTag,
+        owner_kind: u8,
+        owner_ids: Vec<u32>,
+    ) -> Result<Self, IrValidationError> {
+        let valid = match tag {
+            StableIdNamespaceTag::Field => {
+                matches!(
+                    owner_kind,
+                    record_owner_tag::ENTITY
+                        | record_owner_tag::EVENT
+                        | record_owner_tag::COMMAND_INPUT
+                        | record_owner_tag::COMMAND_OUTCOME
+                        | record_owner_tag::PROJECTION_RESULT
+                ) && matches!(owner_ids.len(), 1 | 2)
+                    && (owner_kind == record_owner_tag::COMMAND_OUTCOME) == (owner_ids.len() == 2)
+            }
+            StableIdNamespaceTag::Outcome => {
+                owner_kind == outcome_owner_tag::COMMAND && owner_ids.len() == 1
+            }
+            StableIdNamespaceTag::EnumVariant => {
+                owner_kind == variant_owner_tag::ENUM && owner_ids.len() == 1
+            }
+            _ => false,
+        };
+        if !valid || owner_ids.contains(&0) {
+            return Err(IrValidationError::InvalidLineageLedger {
+                reason: "invalid scoped allocation-state owner path",
+            });
+        }
+        Ok(Self {
+            tag,
+            owner_kind,
+            owner_ids,
+        })
+    }
+
+    /// Stable ID kind allocated by this state.
+    #[must_use]
+    pub const fn tag(&self) -> StableIdNamespaceTag {
+        self.tag
+    }
+    /// Closed allocation owner kind, or zero for a global state.
+    #[must_use]
+    pub const fn owner_kind(&self) -> u8 {
+        self.owner_kind
+    }
+    /// Exact scoped owner IDs, empty for a global state.
+    #[must_use]
+    pub fn owner_ids(&self) -> &[u32] {
+        &self.owner_ids
+    }
+}
+
+/// Compiler-supplied canonical semantic identity before numeric allocation.
+#[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+pub struct StableIdentity {
+    namespace: StableIdNamespace,
+    name: String,
+}
+
+impl StableIdentity {
+    /// Creates one exact source identity path.
+    pub fn new(
+        namespace: StableIdNamespace,
+        name: impl Into<String>,
+    ) -> Result<Self, IrValidationError> {
+        let name = name.into();
+        validate_source_name(&name, "stable identity")?;
+        Ok(Self { namespace, name })
+    }
+    /// Exact allocation namespace.
+    #[must_use]
+    pub const fn namespace(&self) -> &StableIdNamespace {
+        &self.namespace
+    }
+    /// Exact identity name.
+    #[must_use]
+    pub fn name(&self) -> &str {
+        &self.name
+    }
+}
+
+/// Active or permanently tombstoned stable identity.
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+#[repr(u8)]
+pub enum LineageEntryState {
+    /// Present in this bundle.
+    Active = crate::format_registry::lineage_entry_state::ACTIVE,
+    /// Removed and never reusable.
+    Tombstone = crate::format_registry::lineage_entry_state::TOMBSTONE,
+}
+
+/// One assigned stable lineage entry.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct LineageEntry {
+    id: u32,
+    identity: StableIdentity,
+    state: LineageEntryState,
+}
+
+impl LineageEntry {
+    /// One-based assigned numeric ID.
+    #[must_use]
+    pub const fn id(&self) -> u32 {
+        self.id
+    }
+    /// Exact identity name.
+    #[must_use]
+    pub fn name(&self) -> &str {
+        &self.identity.name
+    }
+    /// Full semantic identity, including its declaration owner path.
+    #[must_use]
+    pub const fn identity(&self) -> &StableIdentity {
+        &self.identity
+    }
+    /// Active/tombstone state.
+    #[must_use]
+    pub const fn state(&self) -> LineageEntryState {
+        self.state
+    }
+}
+
+/// One exact allocation state's contiguous history.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct LineageAllocation {
+    namespace: StableIdAllocationNamespace,
+    max_allocated: u32,
+    entries: Vec<LineageEntry>,
+}
+
+impl LineageAllocation {
+    /// Exact allocation namespace.
+    #[must_use]
+    pub const fn namespace(&self) -> &StableIdAllocationNamespace {
+        &self.namespace
+    }
+    /// Highest ever allocated ID, or zero for an empty namespace.
+    #[must_use]
+    pub const fn max_allocated(&self) -> u32 {
+        self.max_allocated
+    }
+    /// Complete contiguous entries in numeric-ID order.
+    #[must_use]
+    pub fn entries(&self) -> &[LineageEntry] {
+        &self.entries
+    }
+}
+
+/// Complete immutable stable-ID lineage ledger v1.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct LineageLedgerV1 {
+    version: u32,
+    allocations: Vec<LineageAllocation>,
+}
+
+impl LineageLedgerV1 {
+    /// Allocates a genesis ledger deterministically from canonical identities.
+    pub fn genesis(identities: Vec<StableIdentity>) -> Result<Self, IrValidationError> {
+        let required = inferred_allocation_namespaces(&identities)?;
+        Self::from_parent(None, identities, required)
+    }
+
+    /// Allocates genesis while retaining explicitly required empty scoped states.
+    pub fn genesis_complete(
+        identities: Vec<StableIdentity>,
+        required: Vec<StableIdAllocationNamespace>,
+    ) -> Result<Self, IrValidationError> {
+        Self::from_parent(None, identities, required)
+    }
+
+    /// Allocates a successor, preserving surviving IDs and permanent tombstones.
+    pub fn successor(
+        parent: &Self,
+        identities: Vec<StableIdentity>,
+    ) -> Result<Self, IrValidationError> {
+        let required = inferred_allocation_namespaces(&identities)?;
+        Self::from_parent(Some(parent), identities, required)
+    }
+
+    /// Allocates a successor while retaining explicitly required empty states.
+    pub fn successor_complete(
+        parent: &Self,
+        identities: Vec<StableIdentity>,
+        required: Vec<StableIdAllocationNamespace>,
+    ) -> Result<Self, IrValidationError> {
+        Self::from_parent(Some(parent), identities, required)
+    }
+
+    fn from_parent(
+        parent: Option<&Self>,
+        identities: Vec<StableIdentity>,
+        required: Vec<StableIdAllocationNamespace>,
+    ) -> Result<Self, IrValidationError> {
+        checked_len(
+            "stable identities",
+            identities.len(),
+            MAX_LINEAGE_LEDGER_ENTRIES,
+        )?;
+        checked_len(
+            "required lineage allocation states",
+            required.len(),
+            MAX_LINEAGE_ALLOCATION_STATES,
+        )?;
+        if let Some(parent) = parent {
+            checked_len(
+                "parent lineage allocation states",
+                parent.allocations.len(),
+                MAX_LINEAGE_ALLOCATION_STATES,
+            )?;
+        }
+        let mut desired: BTreeMap<StableIdAllocationNamespace, BTreeMap<Vec<u8>, StableIdentity>> =
+            BTreeMap::new();
+        for identity in identities {
+            let key = identity.namespace.identity_key(&identity.name)?;
+            let allocation = identity.namespace.allocation_namespace();
+            if desired
+                .entry(allocation)
+                .or_default()
+                .insert(key, identity)
+                .is_some()
+            {
+                return Err(IrValidationError::InvalidLineageLedger {
+                    reason: "duplicate stable identity",
+                });
+            }
+        }
+        let mut namespaces = required.into_iter().collect::<BTreeSet<_>>();
+        namespaces.extend(required_global_allocation_namespaces()?);
+        namespaces.extend(desired.keys().cloned());
+        if let Some(parent) = parent {
+            namespaces.extend(
+                parent
+                    .allocations
+                    .iter()
+                    .filter(|value| !value.entries.is_empty())
+                    .map(|value| value.namespace.clone()),
+            );
+        }
+        checked_len(
+            "lineage allocation states",
+            namespaces.len(),
+            MAX_LINEAGE_ALLOCATION_STATES,
+        )?;
+        let mut allocations = Vec::with_capacity(namespaces.len());
+        let mut total = 0usize;
+        for namespace in namespaces {
+            let parent_allocation = parent.and_then(|ledger| {
+                ledger
+                    .allocations
+                    .binary_search_by(|value| value.namespace.cmp(&namespace))
+                    .ok()
+                    .map(|index| &ledger.allocations[index])
+            });
+            let wanted = desired.remove(&namespace).unwrap_or_default();
+            let mut by_name = parent_allocation
+                .into_iter()
+                .flat_map(|allocation| allocation.entries.iter())
+                .map(|entry| (entry.identity.clone(), entry.clone()))
+                .collect::<BTreeMap<_, _>>();
+            for identity in wanted.values() {
+                if by_name
+                    .get(identity)
+                    .is_some_and(|entry| entry.state == LineageEntryState::Tombstone)
+                {
+                    return Err(IrValidationError::InvalidLineageLedger {
+                        reason: "tombstoned stable identity cannot be reintroduced",
+                    });
+                }
+            }
+            for entry in by_name.values_mut() {
+                entry.state = if wanted.values().any(|identity| identity == &entry.identity) {
+                    LineageEntryState::Active
+                } else {
+                    LineageEntryState::Tombstone
+                };
+            }
+            let mut next = parent_allocation.map_or(1, |allocation| {
+                allocation.max_allocated.checked_add(1).unwrap_or(0)
+            });
+            for (_, identity) in wanted {
+                if by_name.contains_key(&identity) {
+                    continue;
+                }
+                if next == 0 {
+                    return Err(IrValidationError::InvalidLineageLedger {
+                        reason: "stable-ID allocation exhausted",
+                    });
+                }
+                by_name.insert(
+                    identity.clone(),
+                    LineageEntry {
+                        id: next,
+                        identity,
+                        state: LineageEntryState::Active,
+                    },
+                );
+                next = next.checked_add(1).unwrap_or(0);
+            }
+            let mut entries = by_name.into_values().collect::<Vec<_>>();
+            entries.sort_unstable_by_key(|entry| entry.id);
+            let max_allocated = entries.last().map_or(0, |entry| entry.id);
+            if entries
+                .iter()
+                .enumerate()
+                .any(|(index, entry)| entry.id as usize != index + 1)
+            {
+                return Err(IrValidationError::InvalidLineageLedger {
+                    reason: "stable-ID ledger contains a numeric gap",
+                });
+            }
+            total = total
+                .checked_add(entries.len())
+                .ok_or(IrValidationError::SizeOverflow {
+                    kind: "lineage ledger",
+                })?;
+            allocations.push(LineageAllocation {
+                namespace,
+                max_allocated,
+                entries,
+            });
+        }
+        checked_len("lineage ledger entries", total, MAX_LINEAGE_LEDGER_ENTRIES)?;
+        Ok(Self {
+            version: LINEAGE_LEDGER_VERSION_V1,
+            allocations,
+        })
+    }
+
+    /// Ledger format version.
+    #[must_use]
+    pub const fn version(&self) -> u32 {
+        self.version
+    }
+    /// Allocation states in namespace/owner-path order.
+    #[must_use]
+    pub fn allocations(&self) -> &[LineageAllocation] {
+        &self.allocations
+    }
+    /// Finds the assigned active ID for a compiler identity.
+    #[must_use]
+    pub fn active_id(&self, identity: &StableIdentity) -> Option<u32> {
+        let allocation = self
+            .allocations
+            .binary_search_by(|value| {
+                value
+                    .namespace
+                    .cmp(&identity.namespace.allocation_namespace())
+            })
+            .ok()
+            .map(|index| &self.allocations[index])?;
+        allocation
+            .entries
+            .iter()
+            .find(|entry| entry.identity == *identity && entry.state == LineageEntryState::Active)
+            .map(|entry| entry.id)
+    }
+}
+
+fn required_global_allocation_namespaces()
+-> Result<Vec<StableIdAllocationNamespace>, IrValidationError> {
+    [
+        StableIdNamespaceTag::Entity,
+        StableIdNamespaceTag::Event,
+        StableIdNamespaceTag::Enum,
+        StableIdNamespaceTag::Aggregate,
+        StableIdNamespaceTag::Command,
+        StableIdNamespaceTag::Projection,
+        StableIdNamespaceTag::Index,
+        StableIdNamespaceTag::Invariant,
+    ]
+    .into_iter()
+    .map(StableIdAllocationNamespace::global)
+    .collect()
+}
+
+fn inferred_allocation_namespaces(
+    identities: &[StableIdentity],
+) -> Result<Vec<StableIdAllocationNamespace>, IrValidationError> {
+    let mut namespaces = required_global_allocation_namespaces()?;
+    namespaces.extend(
+        identities
+            .iter()
+            .map(|identity| identity.namespace.allocation_namespace()),
+    );
+    namespaces.sort_unstable();
+    namespaces.dedup();
+    Ok(namespaces)
+}
+
+/// Exact optional predecessor identity for a successor bundle.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct ParentBundleRef {
+    contract_version: ContractVersion,
+    bundle_hash: ContractBundleHash,
+}
+
+impl ParentBundleRef {
+    /// Creates an exact predecessor reference.
+    #[must_use]
+    pub const fn new(contract_version: ContractVersion, bundle_hash: ContractBundleHash) -> Self {
+        Self {
+            contract_version,
+            bundle_hash,
+        }
+    }
+    /// Parent application version.
+    #[must_use]
+    pub const fn contract_version(self) -> ContractVersion {
+        self.contract_version
+    }
+    /// Parent canonical bundle hash.
+    #[must_use]
+    pub const fn bundle_hash(self) -> ContractBundleHash {
+        self.bundle_hash
+    }
+}
+
+/// A fully validated immutable executable contract bundle.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ContractBundle {
+    compiler_version: String,
+    lineage: ContractLineage,
+    contract_version: ContractVersion,
+    parent: Option<ParentBundleRef>,
+    source_hash: SourceHash,
+    plan_root_hash: ContractPlanRootHash,
+    ledger: LineageLedgerV1,
+    schema: SchemaIr,
+    commands: Vec<CommandPlan>,
+    projections: Vec<ProjectionPlan>,
+    schema_artifacts: Vec<GeneratedSchemaArtifact>,
+    mcp_command_names: McpCommandNameRegistryV1,
+    compatibility: CompatibilityReport,
+    canonical_bytes: Vec<u8>,
+    bundle_hash: ContractBundleHash,
+}
+
+impl ContractBundle {
+    /// Creates and canonicalizes one bundle, recomputing every aggregate hash.
+    #[allow(clippy::too_many_arguments)]
+    pub fn new(
+        compiler_version: impl Into<String>,
+        lineage: ContractLineage,
+        contract_version: ContractVersion,
+        parent: Option<ParentBundleRef>,
+        source_hash: SourceHash,
+        ledger: LineageLedgerV1,
+        schema: SchemaIr,
+        mut commands: Vec<CommandPlan>,
+        mut projections: Vec<ProjectionPlan>,
+        mut schema_artifacts: Vec<GeneratedSchemaArtifact>,
+        mcp_command_names: McpCommandNameRegistryV1,
+        compatibility: CompatibilityReport,
+    ) -> Result<Self, IrValidationError> {
+        let compiler_version = compiler_version.into();
+        if compiler_version.is_empty()
+            || compiler_version.len() > 64
+            || !compiler_version.is_ascii()
+        {
+            return Err(IrValidationError::InvalidText {
+                kind: "compiler version",
+            });
+        }
+        validate_source_name(lineage.as_str(), "contract lineage")?;
+        if let Some(parent) = parent {
+            if contract_version <= parent.contract_version {
+                return Err(IrValidationError::InvalidReference {
+                    kind: "parent contract version",
+                });
+            }
+        } else if !compatibility.entries().is_empty() {
+            return Err(IrValidationError::InvalidCompatibilityReport);
+        }
+        commands.sort_unstable_by_key(CommandPlan::command_id);
+        projections.sort_unstable_by_key(ProjectionPlan::projection_id);
+        schema_artifacts.sort_unstable_by_key(GeneratedSchemaArtifact::key);
+        reject_duplicate_by(&commands, CommandPlan::command_id, "commands")?;
+        reject_duplicate_by(&projections, ProjectionPlan::projection_id, "projections")?;
+        reject_duplicate_by(
+            &schema_artifacts,
+            GeneratedSchemaArtifact::key,
+            "schema artifacts",
+        )?;
+        if commands
+            .iter()
+            .any(|command| command.contract_version() != contract_version)
+        {
+            return Err(IrValidationError::InvalidReference {
+                kind: "command contract version",
+            });
+        }
+        if commands.iter().any(|command| {
+            command.required_capability().lineage() != &lineage
+                || command.required_capability().command_id() != command.command_id()
+        }) {
+            return Err(IrValidationError::InvalidReference {
+                kind: "command capability requirement",
+            });
+        }
+        validate_bundle_global_bounds(&schema, &commands, &projections)?;
+        for command in &commands {
+            let recomputed = compute_command_plan_hash(command, &schema)?;
+            if recomputed != command.plan_hash() {
+                return Err(IrValidationError::HashMismatch {
+                    kind: "command plan",
+                });
+            }
+        }
+        for projection in &projections {
+            let recomputed = compute_projection_plan_hash(projection, &schema)?;
+            if recomputed != projection.plan_hash() {
+                return Err(IrValidationError::HashMismatch {
+                    kind: "projection plan",
+                });
+            }
+        }
+        validate_ledger(&ledger, &schema, &commands, &projections)?;
+        validate_mcp_registry(&lineage, &commands, &mcp_command_names)?;
+        validate_schema_artifacts(&schema, &commands, &projections, &schema_artifacts)?;
+        let plan_root_hash = compute_plan_root_hash(&schema, &commands, &projections)?;
+        let mut bundle = Self {
+            compiler_version,
+            lineage,
+            contract_version,
+            parent,
+            source_hash,
+            plan_root_hash,
+            ledger,
+            schema,
+            commands,
+            projections,
+            schema_artifacts,
+            mcp_command_names,
+            compatibility,
+            canonical_bytes: Vec::new(),
+            bundle_hash: ContractBundleHash::from_bytes([0; 32]),
+        };
+        bundle.canonical_bytes = encode_bundle(&bundle)?;
+        bundle.bundle_hash = hash_contract_bundle(&bundle.canonical_bytes);
+        Ok(bundle)
+    }
+
+    /// Decodes canonical bundle bytes and rechecks every semantic constructor,
+    /// stored hash, generated artifact, registry, and canonical ordering choice.
+    pub fn decode(bytes: &[u8]) -> Result<Self, IrValidationError> {
+        decode_bundle(bytes)
+    }
+
+    /// Bundle format version.
+    #[must_use]
+    pub const fn format_version(&self) -> u32 {
+        BUNDLE_FORMAT_VERSION_V1
+    }
+    /// Grammar version.
+    #[must_use]
+    pub const fn grammar_version(&self) -> u32 {
+        GRAMMAR_VERSION_V1
+    }
+    /// Executable IR version.
+    #[must_use]
+    pub const fn ir_version(&self) -> u32 {
+        EXECUTABLE_IR_VERSION_V1
+    }
+    /// Compiler semantic version.
+    #[must_use]
+    pub fn compiler_version(&self) -> &str {
+        &self.compiler_version
+    }
+    /// Contract lineage.
+    #[must_use]
+    pub const fn lineage(&self) -> &ContractLineage {
+        &self.lineage
+    }
+    /// Application contract version.
+    #[must_use]
+    pub const fn contract_version(&self) -> ContractVersion {
+        self.contract_version
+    }
+    /// Exact optional parent.
+    #[must_use]
+    pub const fn parent(&self) -> Option<ParentBundleRef> {
+        self.parent
+    }
+    /// Exact source hash.
+    #[must_use]
+    pub const fn source_hash(&self) -> SourceHash {
+        self.source_hash
+    }
+    /// Ordered semantic plan root hash.
+    #[must_use]
+    pub const fn plan_root_hash(&self) -> ContractPlanRootHash {
+        self.plan_root_hash
+    }
+    /// Stable lineage ledger.
+    #[must_use]
+    pub const fn ledger(&self) -> &LineageLedgerV1 {
+        &self.ledger
+    }
+    /// Structural schema.
+    #[must_use]
+    pub const fn schema(&self) -> &SchemaIr {
+        &self.schema
+    }
+    /// Commands in stable-ID order.
+    #[must_use]
+    pub fn commands(&self) -> &[CommandPlan] {
+        &self.commands
+    }
+    /// Projections in stable-ID order.
+    #[must_use]
+    pub fn projections(&self) -> &[ProjectionPlan] {
+        &self.projections
+    }
+    /// Generated schema artifacts in closed-key order.
+    #[must_use]
+    pub fn schema_artifacts(&self) -> &[GeneratedSchemaArtifact] {
+        &self.schema_artifacts
+    }
+    /// Checked compiler-owned MCP registry.
+    #[must_use]
+    pub const fn mcp_command_names(&self) -> &McpCommandNameRegistryV1 {
+        &self.mcp_command_names
+    }
+    /// Reproducible compatibility report.
+    #[must_use]
+    pub const fn compatibility(&self) -> &CompatibilityReport {
+        &self.compatibility
+    }
+    /// Canonical immutable bundle bytes.
+    #[must_use]
+    pub fn canonical_bytes(&self) -> &[u8] {
+        &self.canonical_bytes
+    }
+    /// External typed hash of canonical bundle bytes.
+    #[must_use]
+    pub const fn bundle_hash(&self) -> ContractBundleHash {
+        self.bundle_hash
+    }
+    /// Resolves one exact checked command.
+    #[must_use]
+    pub fn command(&self, id: CommandId) -> Option<&CommandPlan> {
+        self.commands
+            .binary_search_by_key(&id, CommandPlan::command_id)
+            .ok()
+            .map(|i| &self.commands[i])
+    }
+    /// Resolves one exact checked projection.
+    #[must_use]
+    pub fn projection(&self, id: ProjectionId) -> Option<&ProjectionPlan> {
+        self.projections
+            .binary_search_by_key(&id, ProjectionPlan::projection_id)
+            .ok()
+            .map(|i| &self.projections[i])
+    }
+    /// Exposes the only bundle-validated bound projection schema.
+    #[must_use]
+    pub fn bound_projection_group_schema(
+        &self,
+        id: ProjectionId,
+    ) -> Option<crate::BoundProjectionGroupSchema> {
+        self.projection(id).map(|projection| {
+            projection
+                .group_schema()
+                .clone()
+                .bind_checked(self.lineage.clone(), projection.plan_hash())
+        })
+    }
+}
+
+/// Computes every allocation state required by one complete executable bundle.
+///
+/// Callers pass this list to `genesis_complete` or `successor_complete` so
+/// empty dynamic record/outcome/variant namespaces remain explicit.
+pub fn required_lineage_allocation_namespaces(
+    schema: &SchemaIr,
+    commands: &[CommandPlan],
+    projections: &[ProjectionPlan],
+) -> Result<Vec<StableIdAllocationNamespace>, IrValidationError> {
+    let mut required = required_global_allocation_namespaces()?;
+    for entity in schema.entities() {
+        required.push(record_allocation_namespace(entity.record().owner())?);
+    }
+    for event in schema.events() {
+        required.push(record_allocation_namespace(event.payload().owner())?);
+    }
+    for enumeration in schema.enums() {
+        required.push(StableIdAllocationNamespace::scoped(
+            StableIdNamespaceTag::EnumVariant,
+            variant_owner_tag::ENUM,
+            vec![enumeration.id().get()],
+        )?);
+    }
+    for command in commands {
+        required.push(record_allocation_namespace(
+            command.input().record().owner(),
+        )?);
+        required.push(StableIdAllocationNamespace::scoped(
+            StableIdNamespaceTag::Outcome,
+            outcome_owner_tag::COMMAND,
+            vec![command.command_id().get()],
+        )?);
+        for outcome in command.outcomes() {
+            required.push(record_allocation_namespace(outcome.payload().owner())?);
+        }
+    }
+    for projection in projections {
+        required.push(record_allocation_namespace(
+            projection.group_schema().measures().owner(),
+        )?);
+    }
+    required.sort_unstable();
+    required.dedup();
+    Ok(required)
+}
+
+fn record_allocation_namespace(
+    owner: &RecordTypeRef,
+) -> Result<StableIdAllocationNamespace, IrValidationError> {
+    let (owner_kind, owner_ids) = match owner {
+        RecordTypeRef::Entity(id) => (record_owner_tag::ENTITY, vec![id.get()]),
+        RecordTypeRef::Event(id) => (record_owner_tag::EVENT, vec![id.get()]),
+        RecordTypeRef::CommandInput(id) => (record_owner_tag::COMMAND_INPUT, vec![id.get()]),
+        RecordTypeRef::CommandOutcome {
+            command_id,
+            outcome_id,
+        } => (
+            record_owner_tag::COMMAND_OUTCOME,
+            vec![command_id.get(), outcome_id.get()],
+        ),
+        RecordTypeRef::ProjectionResult(id) => {
+            (record_owner_tag::PROJECTION_RESULT, vec![id.get()])
+        }
+    };
+    StableIdAllocationNamespace::scoped(StableIdNamespaceTag::Field, owner_kind, owner_ids)
+}
+
+fn validate_ledger(
+    ledger: &LineageLedgerV1,
+    schema: &SchemaIr,
+    commands: &[CommandPlan],
+    projections: &[ProjectionPlan],
+) -> Result<(), IrValidationError> {
+    if ledger.version != LINEAGE_LEDGER_VERSION_V1
+        || ledger
+            .allocations
+            .windows(2)
+            .any(|pair| pair[0].namespace >= pair[1].namespace)
+    {
+        return Err(IrValidationError::InvalidLineageLedger {
+            reason: "ledger version or allocation-state order is invalid",
+        });
+    }
+    let required = required_lineage_allocation_namespaces(schema, commands, projections)?;
+    if required.iter().any(|namespace| {
+        ledger
+            .allocations
+            .binary_search_by(|allocation| allocation.namespace.cmp(namespace))
+            .is_err()
+    }) {
+        return Err(IrValidationError::InvalidLineageLedger {
+            reason: "ledger omits a required allocation state",
+        });
+    }
+    if ledger.allocations.iter().any(|allocation| {
+        allocation.entries.is_empty() && required.binary_search(&allocation.namespace).is_err()
+    }) {
+        return Err(IrValidationError::InvalidLineageLedger {
+            reason: "ledger contains an extra empty allocation state",
+        });
+    }
+    let mut expected = Vec::<(StableIdentity, u32)>::new();
+    let mut push = |tag, owner_kind, owner_ids, name: &str, id| {
+        let namespace = StableIdNamespace::new(tag, owner_kind, owner_ids)?;
+        expected.push((StableIdentity::new(namespace, name)?, id));
+        Ok::<_, IrValidationError>(())
+    };
+    for entity in schema.entities() {
+        push(
+            StableIdNamespaceTag::Entity,
+            0,
+            vec![],
+            entity.name(),
+            entity.id().get(),
+        )?;
+        for field in entity.record().fields() {
+            push(
+                StableIdNamespaceTag::Field,
+                record_owner_tag::ENTITY,
+                vec![entity.id().get()],
+                field.name(),
+                field.id().get(),
+            )?;
+        }
+        for invariant in entity.invariants() {
+            push(
+                StableIdNamespaceTag::Invariant,
+                invariant_owner_tag::ENTITY,
+                vec![entity.id().get()],
+                invariant.name(),
+                invariant.id().get(),
+            )?;
+        }
+        for index in entity.indexes() {
+            push(
+                StableIdNamespaceTag::Index,
+                index_owner_tag::ENTITY,
+                vec![entity.id().get()],
+                index.name(),
+                index.id().get(),
+            )?;
+        }
+    }
+    for event in schema.events() {
+        push(
+            StableIdNamespaceTag::Event,
+            0,
+            vec![],
+            event.name(),
+            event.id().get(),
+        )?;
+        for field in event.payload().fields() {
+            push(
+                StableIdNamespaceTag::Field,
+                record_owner_tag::EVENT,
+                vec![event.id().get()],
+                field.name(),
+                field.id().get(),
+            )?;
+        }
+    }
+    for enumeration in schema.enums() {
+        push(
+            StableIdNamespaceTag::Enum,
+            0,
+            vec![],
+            enumeration.name(),
+            enumeration.id().get(),
+        )?;
+        for variant in enumeration.variants() {
+            push(
+                StableIdNamespaceTag::EnumVariant,
+                variant_owner_tag::ENUM,
+                vec![enumeration.id().get()],
+                variant.name(),
+                variant.id().get(),
+            )?;
+        }
+    }
+    for aggregate in schema.aggregates() {
+        push(
+            StableIdNamespaceTag::Aggregate,
+            0,
+            vec![],
+            aggregate.name(),
+            aggregate.id().get(),
+        )?;
+        for invariant in aggregate.invariants() {
+            push(
+                StableIdNamespaceTag::Invariant,
+                invariant_owner_tag::AGGREGATE,
+                vec![aggregate.id().get()],
+                invariant.name(),
+                invariant.id().get(),
+            )?;
+        }
+    }
+    for command in commands {
+        push(
+            StableIdNamespaceTag::Command,
+            0,
+            vec![],
+            command.name(),
+            command.command_id().get(),
+        )?;
+        for field in command.input().record().fields() {
+            push(
+                StableIdNamespaceTag::Field,
+                record_owner_tag::COMMAND_INPUT,
+                vec![command.command_id().get()],
+                field.name(),
+                field.id().get(),
+            )?;
+        }
+        for outcome in command.outcomes() {
+            push(
+                StableIdNamespaceTag::Outcome,
+                outcome_owner_tag::COMMAND,
+                vec![command.command_id().get()],
+                outcome.name(),
+                outcome.id().get(),
+            )?;
+            for field in outcome.payload().fields() {
+                push(
+                    StableIdNamespaceTag::Field,
+                    record_owner_tag::COMMAND_OUTCOME,
+                    vec![command.command_id().get(), outcome.id().get()],
+                    field.name(),
+                    field.id().get(),
+                )?;
+            }
+        }
+    }
+    for projection in projections {
+        push(
+            StableIdNamespaceTag::Projection,
+            0,
+            vec![],
+            projection.name(),
+            projection.projection_id().get(),
+        )?;
+        for field in projection.group_schema().measures().fields() {
+            push(
+                StableIdNamespaceTag::Field,
+                record_owner_tag::PROJECTION_RESULT,
+                vec![projection.projection_id().get()],
+                field.name(),
+                field.id().get(),
+            )?;
+        }
+    }
+    let active_count = ledger
+        .allocations
+        .iter()
+        .flat_map(|allocation| &allocation.entries)
+        .filter(|entry| entry.state == LineageEntryState::Active)
+        .count();
+    checked_len(
+        "active semantic declarations",
+        active_count,
+        crate::MAX_EXPRESSION_NODES,
+    )?;
+    if active_count != expected.len()
+        || expected
+            .iter()
+            .any(|(identity, id)| ledger.active_id(identity) != Some(*id))
+    {
+        return Err(IrValidationError::InvalidLineageLedger {
+            reason: "ledger active identities disagree with executable structures",
+        });
+    }
+    let mut identities = BTreeSet::new();
+    for allocation in &ledger.allocations {
+        if allocation.max_allocated as usize != allocation.entries.len()
+            || allocation.entries.iter().enumerate().any(|(index, entry)| {
+                entry.id as usize != index + 1
+                    || entry.identity.namespace.allocation_namespace() != allocation.namespace
+                    || !identities.insert(entry.identity.clone())
+            })
+        {
+            return Err(IrValidationError::InvalidLineageLedger {
+                reason: "ledger allocation history is noncontiguous or mis-scoped",
+            });
+        }
+    }
+    Ok(())
+}
+
+pub(crate) fn validate_bundle_global_bounds(
+    schema: &SchemaIr,
+    commands: &[CommandPlan],
+    projections: &[ProjectionPlan],
+) -> Result<(), IrValidationError> {
+    let mut expression_count = 0usize;
+    let mut add_expressions = |count: usize| -> Result<(), IrValidationError> {
+        expression_count =
+            expression_count
+                .checked_add(count)
+                .ok_or(IrValidationError::SizeOverflow {
+                    kind: "bundle expression nodes",
+                })?;
+        checked_len(
+            "bundle expression nodes",
+            expression_count,
+            crate::MAX_EXPRESSION_NODES,
+        )
+    };
+    for entity in schema.entities() {
+        for invariant in entity.invariants() {
+            add_expressions(invariant.expressions().len())?;
+        }
+    }
+    for aggregate in schema.aggregates() {
+        add_expressions(aggregate.keys().expressions().len())?;
+        for invariant in aggregate.invariants() {
+            add_expressions(invariant.expressions().len())?;
+        }
+    }
+    for command in commands {
+        add_expressions(command.expressions().len())?;
+    }
+    for projection in projections {
+        add_expressions(projection.expressions().len())?;
+    }
+
+    let mut declaration_count = 0usize;
+    let mut add_declarations = |count: usize| -> Result<(), IrValidationError> {
+        declaration_count =
+            declaration_count
+                .checked_add(count)
+                .ok_or(IrValidationError::SizeOverflow {
+                    kind: "active semantic declarations",
+                })?;
+        checked_len(
+            "active semantic declarations",
+            declaration_count,
+            crate::MAX_EXPRESSION_NODES,
+        )
+    };
+    for entity in schema.entities() {
+        add_declarations(1 + entity.record().fields().len())?;
+        add_declarations(entity.invariants().len() + entity.indexes().len())?;
+    }
+    for event in schema.events() {
+        add_declarations(1 + event.payload().fields().len())?;
+    }
+    for enumeration in schema.enums() {
+        add_declarations(1 + enumeration.variants().len())?;
+    }
+    for aggregate in schema.aggregates() {
+        add_declarations(1 + aggregate.invariants().len())?;
+    }
+    for command in commands {
+        add_declarations(1 + command.input().record().fields().len())?;
+        add_declarations(command.outcomes().len())?;
+        for outcome in command.outcomes() {
+            add_declarations(outcome.payload().fields().len())?;
+        }
+    }
+    for projection in projections {
+        add_declarations(1 + projection.group_schema().measures().fields().len())?;
+    }
+    Ok(())
+}
+
+pub(crate) fn compute_command_plan_hash(
+    plan: &CommandPlan,
+    schema: &SchemaIr,
+) -> Result<PlanHash, IrValidationError> {
+    let mut writer = Writer::new(MAX_BUNDLE_BYTES);
+    writer.raw(COMMAND_PLAN_MAGIC)?;
+    writer.u32(EXECUTABLE_IR_VERSION_V1)?;
+    writer.u32(plan.command_id().get())?;
+    encode_command_semantics(&mut writer, plan, schema, false)?;
+    encode_enum_closure(
+        &mut writer,
+        &collect_command_enum_closure(plan, schema)?,
+        schema,
+    )?;
+    Ok(hash_plan(&writer.finish()))
+}
+
+pub(crate) fn compute_projection_plan_hash(
+    plan: &ProjectionPlan,
+    schema: &SchemaIr,
+) -> Result<ProjectionPlanHash, IrValidationError> {
+    let mut writer = Writer::new(MAX_BUNDLE_BYTES);
+    writer.raw(PROJECTION_PLAN_MAGIC)?;
+    writer.u32(EXECUTABLE_IR_VERSION_V1)?;
+    writer.u32(plan.projection_id().get())?;
+    let source = schema
+        .event(plan.source_event())
+        .ok_or(IrValidationError::InvalidReference {
+            kind: "projection source event",
+        })?;
+    encode_event_schema(&mut writer, source, false)?;
+    encode_projection_semantics(&mut writer, plan)?;
+    encode_enum_closure(
+        &mut writer,
+        &collect_projection_enum_closure(plan, source, schema)?,
+        schema,
+    )?;
+    Ok(hash_projection_plan(&writer.finish()))
+}
+
+fn encode_enum_closure(
+    writer: &mut Writer,
+    enum_ids: &BTreeSet<EnumTypeId>,
+    schema: &SchemaIr,
+) -> Result<(), IrValidationError> {
+    writer.u32(enum_ids.len() as u32)?;
+    for id in enum_ids {
+        let enumeration = schema
+            .enumeration(*id)
+            .ok_or(IrValidationError::InvalidReference {
+                kind: "plan enum closure",
+            })?;
+        writer.u32(enumeration.id().get())?;
+        writer.u32(enumeration.variants().len() as u32)?;
+        for variant in enumeration.variants() {
+            writer.u32(variant.id().get())?;
+            writer.string(variant.name())?;
+        }
+    }
+    Ok(())
+}
+
+fn collect_command_enum_closure(
+    plan: &CommandPlan,
+    schema: &SchemaIr,
+) -> Result<BTreeSet<EnumTypeId>, IrValidationError> {
+    let mut enum_ids = BTreeSet::new();
+    let mut visited_records = BTreeSet::new();
+    collect_record_enum_ids(
+        plan.input().record(),
+        schema,
+        &mut enum_ids,
+        &mut visited_records,
+    )?;
+    for outcome in plan.outcomes() {
+        collect_record_enum_ids(
+            outcome.payload(),
+            schema,
+            &mut enum_ids,
+            &mut visited_records,
+        )?;
+    }
+    collect_expression_enum_ids(
+        plan.expressions(),
+        schema,
+        &mut enum_ids,
+        &mut visited_records,
+    )?;
+
+    let entity_ids = plan
+        .bindings()
+        .iter()
+        .map(BindingPlan::entity_type)
+        .chain(
+            plan.root_validation_reads()
+                .iter()
+                .map(crate::RootValidationReadPlan::entity_type),
+        )
+        .collect::<BTreeSet<_>>();
+    for binding in plan.bindings() {
+        collect_key_schema_enum_ids(
+            binding.key_schema(),
+            schema,
+            &mut enum_ids,
+            &mut visited_records,
+        )?;
+    }
+    for read in plan.root_validation_reads() {
+        collect_key_schema_enum_ids(
+            read.key_schema(),
+            schema,
+            &mut enum_ids,
+            &mut visited_records,
+        )?;
+    }
+    for entity_id in &entity_ids {
+        let entity = schema
+            .entity(*entity_id)
+            .ok_or(IrValidationError::InvalidReference {
+                kind: "command entity enum closure",
+            })?;
+        collect_entity_enum_ids(entity, schema, &mut enum_ids, &mut visited_records)?;
+    }
+
+    collect_key_schema_enum_ids(
+        plan.locality().partition_schema(),
+        schema,
+        &mut enum_ids,
+        &mut visited_records,
+    )?;
+    for conflict in plan.locality().conflict_keys() {
+        collect_key_schema_enum_ids(
+            conflict.schema(),
+            schema,
+            &mut enum_ids,
+            &mut visited_records,
+        )?;
+    }
+    let aggregate = schema.aggregate(plan.locality().aggregate_id()).ok_or(
+        IrValidationError::InvalidReference {
+            kind: "command aggregate enum closure",
+        },
+    )?;
+    collect_expression_enum_ids(
+        aggregate.keys().expressions(),
+        schema,
+        &mut enum_ids,
+        &mut visited_records,
+    )?;
+    collect_key_schema_enum_ids(
+        aggregate.keys().partition_schema(),
+        schema,
+        &mut enum_ids,
+        &mut visited_records,
+    )?;
+    collect_key_schema_enum_ids(
+        aggregate.keys().conflict_schema(),
+        schema,
+        &mut enum_ids,
+        &mut visited_records,
+    )?;
+    for invariant in aggregate.invariants() {
+        collect_expression_enum_ids(
+            invariant.expressions(),
+            schema,
+            &mut enum_ids,
+            &mut visited_records,
+        )?;
+    }
+
+    for event_id in plan
+        .instructions()
+        .iter()
+        .filter_map(|instruction| match instruction {
+            Instruction::EmitEvent(event) => Some(event.event_type()),
+            _ => None,
+        })
+        .collect::<BTreeSet<_>>()
+    {
+        let event = schema
+            .event(event_id)
+            .ok_or(IrValidationError::InvalidReference {
+                kind: "command event enum closure",
+            })?;
+        collect_record_enum_ids(event.payload(), schema, &mut enum_ids, &mut visited_records)?;
+    }
+    Ok(enum_ids)
+}
+
+fn collect_projection_enum_closure(
+    plan: &ProjectionPlan,
+    source: &EventSchema,
+    schema: &SchemaIr,
+) -> Result<BTreeSet<EnumTypeId>, IrValidationError> {
+    let mut enum_ids = BTreeSet::new();
+    let mut visited_records = BTreeSet::new();
+    collect_record_enum_ids(
+        source.payload(),
+        schema,
+        &mut enum_ids,
+        &mut visited_records,
+    )?;
+    collect_expression_enum_ids(
+        plan.expressions(),
+        schema,
+        &mut enum_ids,
+        &mut visited_records,
+    )?;
+    for measure in plan.measures() {
+        collect_value_type_enum_ids(
+            measure.field().value_type(),
+            schema,
+            &mut enum_ids,
+            &mut visited_records,
+        )?;
+    }
+    for component in plan.group_schema().group_components() {
+        collect_value_type_enum_ids(
+            component.value_type(),
+            schema,
+            &mut enum_ids,
+            &mut visited_records,
+        )?;
+    }
+    collect_record_enum_ids(
+        plan.group_schema().measures(),
+        schema,
+        &mut enum_ids,
+        &mut visited_records,
+    )?;
+    Ok(enum_ids)
+}
+
+fn collect_entity_enum_ids(
+    entity: &EntitySchema,
+    schema: &SchemaIr,
+    enum_ids: &mut BTreeSet<EnumTypeId>,
+    visited_records: &mut BTreeSet<RecordTypeRef>,
+) -> Result<(), IrValidationError> {
+    collect_record_enum_ids(entity.record(), schema, enum_ids, visited_records)?;
+    collect_key_schema_enum_ids(entity.primary_key(), schema, enum_ids, visited_records)?;
+    for invariant in entity.invariants() {
+        collect_expression_enum_ids(invariant.expressions(), schema, enum_ids, visited_records)?;
+    }
+    for index in entity.indexes() {
+        collect_key_schema_enum_ids(index.key_schema(), schema, enum_ids, visited_records)?;
+    }
+    Ok(())
+}
+
+fn collect_expression_enum_ids(
+    arena: &ExpressionArena,
+    schema: &SchemaIr,
+    enum_ids: &mut BTreeSet<EnumTypeId>,
+    visited_records: &mut BTreeSet<RecordTypeRef>,
+) -> Result<(), IrValidationError> {
+    for node in arena.nodes() {
+        collect_value_type_enum_ids(node.result_type(), schema, enum_ids, visited_records)?;
+    }
+    Ok(())
+}
+
+fn collect_key_schema_enum_ids(
+    key: &KeySchema,
+    schema: &SchemaIr,
+    enum_ids: &mut BTreeSet<EnumTypeId>,
+    visited_records: &mut BTreeSet<RecordTypeRef>,
+) -> Result<(), IrValidationError> {
+    for component in key.components() {
+        collect_value_type_enum_ids(component.value_type(), schema, enum_ids, visited_records)?;
+    }
+    if let Some(entity_key) = key.entity_key_schema() {
+        collect_key_schema_enum_ids(entity_key, schema, enum_ids, visited_records)?;
+    }
+    Ok(())
+}
+
+fn collect_record_enum_ids(
+    record: &RecordSchema,
+    schema: &SchemaIr,
+    enum_ids: &mut BTreeSet<EnumTypeId>,
+    visited_records: &mut BTreeSet<RecordTypeRef>,
+) -> Result<(), IrValidationError> {
+    if !visited_records.insert(record.owner().clone()) {
+        return Ok(());
+    }
+    for field in record.fields() {
+        collect_value_type_enum_ids(field.value_type(), schema, enum_ids, visited_records)?;
+    }
+    Ok(())
+}
+
+fn collect_value_type_enum_ids(
+    value_type: &ValueType,
+    schema: &SchemaIr,
+    enum_ids: &mut BTreeSet<EnumTypeId>,
+    visited_records: &mut BTreeSet<RecordTypeRef>,
+) -> Result<(), IrValidationError> {
+    if let Some(id) = value_type.enum_type_id() {
+        enum_ids.insert(id);
+    }
+    if let Some(inner) = value_type.optional_inner() {
+        collect_value_type_enum_ids(inner, schema, enum_ids, visited_records)?;
+    }
+    if let Some((element, _)) = value_type.list_parts() {
+        collect_value_type_enum_ids(element, schema, enum_ids, visited_records)?;
+    }
+    if let Some(record) = value_type.record_ref() {
+        let referenced = match record {
+            RecordTypeRef::Entity(id) => schema.entity(*id).map(EntitySchema::record),
+            RecordTypeRef::Event(id) => schema.event(*id).map(EventSchema::payload),
+            _ => None,
+        }
+        .ok_or(IrValidationError::InvalidReference {
+            kind: "plan enum record closure",
+        })?;
+        collect_record_enum_ids(referenced, schema, enum_ids, visited_records)?;
+    }
+    Ok(())
+}
+
+fn compute_plan_root_hash(
+    schema: &SchemaIr,
+    commands: &[CommandPlan],
+    projections: &[ProjectionPlan],
+) -> Result<ContractPlanRootHash, IrValidationError> {
+    let schema_bytes = encode_structural_schema(schema)?;
+    let mut schema_preimage = Writer::new(MAX_BUNDLE_BYTES);
+    schema_preimage.raw(SCHEMA_IR_MAGIC)?;
+    schema_preimage.u32(EXECUTABLE_IR_VERSION_V1)?;
+    schema_preimage.raw(&schema_bytes)?;
+    let structural_hash: SchemaHash = hash_schema(&schema_preimage.finish());
+
+    let mut writer = Writer::new(MAX_BUNDLE_BYTES);
+    writer.raw(ROOT_PLAN_MAGIC)?;
+    writer.u32(EXECUTABLE_IR_VERSION_V1)?;
+    writer.raw(structural_hash.as_bytes())?;
+    writer.u32(commands.len() as u32)?;
+    for command in commands {
+        writer.u32(command.command_id().get())?;
+        writer.raw(command.plan_hash().as_bytes())?;
+    }
+    writer.u32(projections.len() as u32)?;
+    for projection in projections {
+        writer.u32(projection.projection_id().get())?;
+        writer.raw(projection.plan_hash().as_bytes())?;
+    }
+    Ok(hash_contract_plan_root(&writer.finish()))
+}
+
+pub(crate) fn validate_mcp_registry(
+    lineage: &ContractLineage,
+    commands: &[CommandPlan],
+    registry: &McpCommandNameRegistryV1,
+) -> Result<(), IrValidationError> {
+    if registry.lineage() != lineage || registry.entries().len() != commands.len() {
+        return Err(IrValidationError::InvalidMcpName {
+            reason: "MCP registry lineage or completeness mismatch",
+        });
+    }
+    for (entry, command) in registry.entries().iter().zip(commands) {
+        if entry.command_id() != command.command_id()
+            || entry.source_command_name() != command.name()
+        {
+            return Err(IrValidationError::InvalidMcpName {
+                reason: "MCP registry command binding mismatch",
+            });
+        }
+    }
+    Ok(())
+}
+
+fn validate_schema_artifacts(
+    schema: &SchemaIr,
+    commands: &[CommandPlan],
+    projections: &[ProjectionPlan],
+    artifacts: &[GeneratedSchemaArtifact],
+) -> Result<(), IrValidationError> {
+    if artifacts.len() != expected_schema_artifact_count(schema, commands, projections)? {
+        return Err(IrValidationError::HashMismatch {
+            kind: "generated schema artifact registry",
+        });
+    }
+    let mut actual = artifacts.iter();
+    visit_expected_schema_artifacts(schema, commands, projections, |expected| {
+        if actual.next() != Some(&expected) {
+            return Err(IrValidationError::HashMismatch {
+                kind: "generated schema artifact registry",
+            });
+        }
+        Ok(())
+    })?;
+    if actual.next().is_some() {
+        return Err(IrValidationError::HashMismatch {
+            kind: "generated schema artifact registry",
+        });
+    }
+    Ok(())
+}
+
+fn expected_schema_artifact_count(
+    schema: &SchemaIr,
+    commands: &[CommandPlan],
+    projections: &[ProjectionPlan],
+) -> Result<usize, IrValidationError> {
+    let command_artifacts =
+        commands
+            .len()
+            .checked_mul(2)
+            .ok_or(IrValidationError::SizeOverflow {
+                kind: "generated schema artifacts",
+            })?;
+    let count = schema
+        .entities()
+        .len()
+        .checked_add(schema.events().len())
+        .and_then(|count| count.checked_add(command_artifacts))
+        .and_then(|count| count.checked_add(projections.len()))
+        .ok_or(IrValidationError::SizeOverflow {
+            kind: "generated schema artifacts",
+        })?;
+    checked_len("generated schema artifacts", count, 20_480)?;
+    Ok(count)
+}
+
+fn visit_expected_schema_artifacts(
+    schema: &SchemaIr,
+    commands: &[CommandPlan],
+    projections: &[ProjectionPlan],
+    mut visit: impl FnMut(GeneratedSchemaArtifact) -> Result<(), IrValidationError>,
+) -> Result<(), IrValidationError> {
+    for entity in schema.entities() {
+        visit(GeneratedSchemaArtifact::entity(
+            entity.id(),
+            entity.record(),
+            schema,
+        )?)?;
+    }
+    for event in schema.events() {
+        visit(GeneratedSchemaArtifact::event(
+            event.id(),
+            event.payload(),
+            schema,
+        )?)?;
+    }
+    for command in commands {
+        visit(GeneratedSchemaArtifact::command_input(
+            command.command_id(),
+            command.input().record(),
+            schema,
+            command.idempotency_input(),
+        )?)?;
+    }
+    for command in commands {
+        visit(GeneratedSchemaArtifact::command_outcomes(
+            command.command_id(),
+            command.outcomes(),
+            schema,
+        )?)?;
+    }
+    for projection in projections {
+        let types = projection
+            .group_schema()
+            .group_components()
+            .iter()
+            .map(|component| component.value_type().clone())
+            .collect::<Vec<_>>();
+        visit(GeneratedSchemaArtifact::projection_result(
+            projection.projection_id(),
+            &types,
+            projection.group_schema().measures(),
+            schema,
+        )?)?;
+    }
+    Ok(())
+}
+
+fn encode_bundle(bundle: &ContractBundle) -> Result<Vec<u8>, IrValidationError> {
+    let mut writer = Writer::new(MAX_BUNDLE_BYTES);
+    writer.raw(BUNDLE_MAGIC)?;
+    writer.u32(BUNDLE_FORMAT_VERSION_V1)?;
+    writer.u32(GRAMMAR_VERSION_V1)?;
+    writer.u32(EXECUTABLE_IR_VERSION_V1)?;
+    writer.string(&bundle.compiler_version)?;
+    writer.string(bundle.lineage.as_str())?;
+    writer.u64(bundle.contract_version.get())?;
+    writer.bool(bundle.parent.is_some())?;
+    if let Some(parent) = bundle.parent {
+        writer.u64(parent.contract_version.get())?;
+        writer.raw(parent.bundle_hash.as_bytes())?;
+    }
+    writer.raw(bundle.source_hash.as_bytes())?;
+    writer.raw(bundle.plan_root_hash.as_bytes())?;
+    encode_ledger(&mut writer, &bundle.ledger)?;
+    encode_schema(&mut writer, &bundle.schema)?;
+    writer.u32(bundle.commands.len() as u32)?;
+    for command in &bundle.commands {
+        encode_command_bundle_entry(&mut writer, command, &bundle.schema)?;
+    }
+    writer.u32(bundle.projections.len() as u32)?;
+    for projection in &bundle.projections {
+        encode_projection_bundle_entry(&mut writer, projection)?;
+    }
+    writer.u32(bundle.schema_artifacts.len() as u32)?;
+    for artifact in &bundle.schema_artifacts {
+        writer.raw(&artifact.key().to_bytes())?;
+        writer.bytes(artifact.canonical_json().as_bytes())?;
+        writer.raw(artifact.hash().as_bytes())?;
+    }
+    encode_mcp_registry(&mut writer, &bundle.mcp_command_names)?;
+    encode_compatibility(&mut writer, &bundle.compatibility)?;
+    writer.finish().pipe(Ok)
+}
+
+trait Pipe: Sized {
+    fn pipe<T>(self, operation: impl FnOnce(Self) -> T) -> T {
+        operation(self)
+    }
+}
+impl<T> Pipe for T {}
+
+fn encode_ledger(writer: &mut Writer, ledger: &LineageLedgerV1) -> Result<(), IrValidationError> {
+    writer.u32(ledger.version)?;
+    writer.u32(ledger.allocations.len() as u32)?;
+    for allocation in &ledger.allocations {
+        writer.u8(allocation.namespace.tag as u8)?;
+        writer.u8(allocation.namespace.owner_kind)?;
+        writer.u8(allocation.namespace.owner_ids.len() as u8)?;
+        for id in &allocation.namespace.owner_ids {
+            writer.u32(*id)?;
+        }
+        writer.u32(allocation.max_allocated)?;
+        writer.u32(allocation.entries.len() as u32)?;
+        for entry in &allocation.entries {
+            writer.u32(entry.id)?;
+            writer.u8(entry.identity.namespace.owner_kind)?;
+            writer.u8(entry.identity.namespace.owner_ids.len() as u8)?;
+            for id in &entry.identity.namespace.owner_ids {
+                writer.u32(*id)?;
+            }
+            writer.string(&entry.identity.name)?;
+            writer.u8(entry.state as u8)?;
+        }
+    }
+    Ok(())
+}
+
+fn encode_structural_schema(schema: &SchemaIr) -> Result<Vec<u8>, IrValidationError> {
+    let mut writer = Writer::new(MAX_BUNDLE_BYTES);
+    encode_schema(&mut writer, schema)?;
+    Ok(writer.finish())
+}
+
+fn encode_schema(writer: &mut Writer, schema: &SchemaIr) -> Result<(), IrValidationError> {
+    writer.u32(schema.entities().len() as u32)?;
+    for entity in schema.entities() {
+        encode_entity_schema(writer, entity, true)?;
+    }
+    writer.u32(schema.events().len() as u32)?;
+    for event in schema.events() {
+        encode_event_schema(writer, event, true)?;
+    }
+    writer.u32(schema.enums().len() as u32)?;
+    for enumeration in schema.enums() {
+        writer.u32(enumeration.id().get())?;
+        writer.string(enumeration.name())?;
+        writer.u32(enumeration.variants().len() as u32)?;
+        for variant in enumeration.variants() {
+            writer.u32(variant.id().get())?;
+            writer.string(variant.name())?;
+        }
+    }
+    writer.u32(schema.aggregates().len() as u32)?;
+    for aggregate in schema.aggregates() {
+        encode_aggregate_schema(writer, aggregate, true)?;
+    }
+    Ok(())
+}
+
+fn encode_entity_schema(
+    writer: &mut Writer,
+    entity: &crate::EntitySchema,
+    include_display_names: bool,
+) -> Result<(), IrValidationError> {
+    writer.u32(entity.id().get())?;
+    if include_display_names {
+        writer.string(entity.name())?;
+    }
+    encode_record_schema(writer, entity.record())?;
+    writer.u32(entity.primary_key_fields().len() as u32)?;
+    for field in entity.primary_key_fields() {
+        writer.u32(field.get())?;
+    }
+    encode_key_schema(writer, entity.primary_key())?;
+    writer.u32(entity.invariants().len() as u32)?;
+    for invariant in entity.invariants() {
+        encode_invariant(writer, invariant, include_display_names)?;
+    }
+    writer.u32(entity.indexes().len() as u32)?;
+    for index in entity.indexes() {
+        encode_index_schema(writer, index, include_display_names)?;
+    }
+    Ok(())
+}
+
+fn encode_event_schema(
+    writer: &mut Writer,
+    event: &crate::EventSchema,
+    include_display_names: bool,
+) -> Result<(), IrValidationError> {
+    writer.u32(event.id().get())?;
+    if include_display_names {
+        writer.string(event.name())?;
+    }
+    encode_record_schema(writer, event.payload())
+}
+
+fn encode_aggregate_schema(
+    writer: &mut Writer,
+    aggregate: &AggregateSchema,
+    include_display_names: bool,
+) -> Result<(), IrValidationError> {
+    writer.u32(aggregate.id().get())?;
+    if include_display_names {
+        writer.string(aggregate.name())?;
+    }
+    writer.u32(aggregate.root().get())?;
+    writer.u32(aggregate.children().len() as u32)?;
+    for child in aggregate.children() {
+        writer.u32(child.get())?;
+    }
+    encode_aggregate_keys(writer, aggregate.keys())?;
+    writer.u32(aggregate.invariants().len() as u32)?;
+    for invariant in aggregate.invariants() {
+        encode_invariant(writer, invariant, include_display_names)?;
+    }
+    Ok(())
+}
+
+fn encode_aggregate_keys(
+    writer: &mut Writer,
+    keys: &AggregateKeyPlan,
+) -> Result<(), IrValidationError> {
+    encode_expression_arena(writer, keys.expressions())?;
+    writer.u32(keys.partition_expression().get())?;
+    writer.u32(keys.conflict_expressions().len() as u32)?;
+    for expression in keys.conflict_expressions() {
+        writer.u32(expression.get())?;
+    }
+    encode_key_schema(writer, keys.partition_schema())?;
+    encode_key_schema(writer, keys.conflict_schema())
+}
+
+fn encode_invariant(
+    writer: &mut Writer,
+    invariant: &InvariantPlan,
+    include_display_names: bool,
+) -> Result<(), IrValidationError> {
+    writer.u32(invariant.id().get())?;
+    if include_display_names {
+        writer.string(invariant.name())?;
+    }
+    encode_expression_arena(writer, invariant.expressions())?;
+    writer.u32(invariant.predicate().get())
+}
+
+fn encode_index_schema(
+    writer: &mut Writer,
+    index: &IndexSchema,
+    include_display_names: bool,
+) -> Result<(), IrValidationError> {
+    writer.u32(index.id().get())?;
+    if include_display_names {
+        writer.string(index.name())?;
+    }
+    writer.u32(index.fields().len() as u32)?;
+    for field in index.fields() {
+        writer.u32(field.get())?;
+    }
+    encode_key_schema(writer, index.key_schema())
+}
+
+fn encode_record_schema(
+    writer: &mut Writer,
+    record: &RecordSchema,
+) -> Result<(), IrValidationError> {
+    encode_record_ref(writer, record.owner())?;
+    writer.u32(record.fields().len() as u32)?;
+    for field in record.fields() {
+        writer.u32(field.id().get())?;
+        writer.string(field.name())?;
+        encode_value_type(writer, field.value_type())?;
+    }
+    Ok(())
+}
+
+fn encode_record_ref(writer: &mut Writer, record: &RecordTypeRef) -> Result<(), IrValidationError> {
+    writer.u8(record.tag())?;
+    match record {
+        RecordTypeRef::Entity(id) => writer.u32(id.get()),
+        RecordTypeRef::Event(id) => writer.u32(id.get()),
+        RecordTypeRef::CommandInput(id) => writer.u32(id.get()),
+        RecordTypeRef::CommandOutcome {
+            command_id,
+            outcome_id,
+        } => {
+            writer.u32(command_id.get())?;
+            writer.u32(outcome_id.get())
+        }
+        RecordTypeRef::ProjectionResult(id) => writer.u32(id.get()),
+    }
+}
+
+fn encode_value_type(writer: &mut Writer, value_type: &ValueType) -> Result<(), IrValidationError> {
+    writer.u8(value_type.tag() as u8)?;
+    match value_type.tag() {
+        ValueTypeTag::Decimal => {
+            let spec = value_type.decimal_spec().expect("decimal tag");
+            writer.u8(spec.precision())?;
+            writer.u8(spec.scale())
+        }
+        ValueTypeTag::Money => writer.raw(value_type.currency().expect("money tag").as_bytes()),
+        ValueTypeTag::String | ValueTypeTag::Bytes => {
+            writer.u32(value_type.byte_bound().expect("byte bound") as u32)
+        }
+        ValueTypeTag::Enum => writer.u32(value_type.enum_type_id().expect("enum tag").get()),
+        ValueTypeTag::Optional => {
+            encode_value_type(writer, value_type.optional_inner().expect("optional tag"))
+        }
+        ValueTypeTag::List => {
+            let (element, maximum) = value_type.list_parts().expect("list tag");
+            encode_value_type(writer, element)?;
+            writer.u32(maximum as u32)
+        }
+        ValueTypeTag::Record => {
+            encode_record_ref(writer, value_type.record_ref().expect("record tag"))
+        }
+        _ => Ok(()),
+    }
+}
+
+fn encode_key_schema(writer: &mut Writer, schema: &KeySchema) -> Result<(), IrValidationError> {
+    writer.u32(crate::KEY_CODEC_VERSION_V1)?;
+    writer.u8(schema.purpose().tag())?;
+    match schema.purpose() {
+        KeyPurpose::Entity(id) => writer.u32(id.get())?,
+        KeyPurpose::Partition(id) | KeyPurpose::Conflict(id) => writer.u32(id.get())?,
+        KeyPurpose::Index {
+            index_id,
+            entity_type,
+        } => {
+            writer.u32(index_id.get())?;
+            writer.u32(entity_type.get())?;
+        }
+    }
+    writer.u32(schema.components().len() as u32)?;
+    for component in schema.components() {
+        encode_value_type(writer, component.value_type())?;
+        writer.u32(component.enum_variants().len() as u32)?;
+        for variant in component.enum_variants() {
+            writer.u32(variant.get())?;
+        }
+        writer.u32(component.maximum_payload_bytes() as u32)?;
+    }
+    writer.u32(schema.maximum_encoded_bytes() as u32)?;
+    writer.bool(schema.entity_key_schema().is_some())?;
+    if let Some(entity) = schema.entity_key_schema() {
+        encode_key_schema(writer, entity)?;
+    }
+    Ok(())
+}
+
+fn encode_expression_arena(
+    writer: &mut Writer,
+    arena: &ExpressionArena,
+) -> Result<(), IrValidationError> {
+    writer.u32(arena.len() as u32)?;
+    for node in arena.nodes() {
+        writer.u8(node.kind().tag())?;
+        encode_value_type(writer, node.result_type())?;
+        match node.kind() {
+            ExpressionKind::Constant(value) => {
+                writer.bytes(&encode_canonical_value(value).map_err(|_| {
+                    IrValidationError::TypeMismatch {
+                        context: "expression constant encoding",
+                    }
+                })?)?
+            }
+            ExpressionKind::InputField(field) | ExpressionKind::SourceEventField(field) => {
+                writer.u32(field.get())?;
+            }
+            ExpressionKind::CompleteBinding(binding) => writer.u32(binding.get())?,
+            ExpressionKind::BoundField { binding, field } => {
+                writer.u32(binding.get())?;
+                writer.u32(field.get())?;
+            }
+            ExpressionKind::SchemaField { entity_type, field } => {
+                writer.u32(entity_type.get())?;
+                writer.u32(field.get())?;
+            }
+            ExpressionKind::RootValidationField { read, field } => {
+                writer.u32(read.get())?;
+                writer.u32(field.get())?;
+            }
+            ExpressionKind::TransactionTime | ExpressionKind::TransactionDate => {}
+            ExpressionKind::Unary { operator, operand } => {
+                writer.u8(*operator as u8)?;
+                writer.u32(operand.get())?;
+            }
+            ExpressionKind::Binary {
+                operator,
+                left,
+                right,
+            } => {
+                writer.u8(*operator as u8)?;
+                writer.u32(left.get())?;
+                writer.u32(right.get())?;
+            }
+        }
+    }
+    Ok(())
+}
+
+fn encode_command_bundle_entry(
+    writer: &mut Writer,
+    command: &CommandPlan,
+    schema: &SchemaIr,
+) -> Result<(), IrValidationError> {
+    writer.u32(command.command_id().get())?;
+    writer.string(command.name())?;
+    writer.u64(command.contract_version().get())?;
+    writer.raw(command.plan_hash().as_bytes())?;
+    encode_command_semantics(writer, command, schema, true)
+}
+
+fn encode_command_semantics(
+    writer: &mut Writer,
+    command: &CommandPlan,
+    schema: &SchemaIr,
+    include_display_names: bool,
+) -> Result<(), IrValidationError> {
+    encode_record_schema(writer, command.input().record())?;
+    writer.u32(command.outcomes().len() as u32)?;
+    for outcome in command.outcomes() {
+        encode_outcome_schema(writer, outcome)?;
+    }
+    writer.u32(command.success_outcome().get())?;
+    writer.bool(command.idempotency_input().is_some())?;
+    if let Some(field) = command.idempotency_input() {
+        writer.u32(field.get())?;
+    }
+
+    let input_artifact = GeneratedSchemaArtifact::command_input(
+        command.command_id(),
+        command.input().record(),
+        schema,
+        command.idempotency_input(),
+    )?;
+    let output_artifact = GeneratedSchemaArtifact::command_outcomes(
+        command.command_id(),
+        command.outcomes(),
+        schema,
+    )?;
+    writer.raw(input_artifact.hash().as_bytes())?;
+    writer.raw(output_artifact.hash().as_bytes())?;
+
+    encode_expression_arena(writer, command.expressions())?;
+    writer.u32(command.bindings().len() as u32)?;
+    for binding in command.bindings() {
+        encode_binding(writer, binding, include_display_names)?;
+    }
+    writer.u32(command.root_validation_reads().len() as u32)?;
+    for read in command.root_validation_reads() {
+        writer.u32(read.id().get())?;
+        writer.u32(read.source_binding().get())?;
+        writer.u32(read.entity_type().get())?;
+        encode_key_schema(writer, read.key_schema())?;
+        writer.u32(read.key_expressions().len() as u32)?;
+        for expression in read.key_expressions() {
+            writer.u32(expression.get())?;
+        }
+        writer.u32(read.accessed_fields().len() as u32)?;
+        for field in read.accessed_fields() {
+            writer.u32(field.get())?;
+        }
+    }
+    encode_locality(writer, command.locality())?;
+    writer.u32(command.commit_checks().len() as u32)?;
+    for check in command.commit_checks() {
+        writer.u32(check.invariant_id().get())?;
+        writer.u32(check.predicate().get())?;
+        writer.u32(check.source_bindings().len() as u32)?;
+        for binding in check.source_bindings() {
+            writer.u32(binding.get())?;
+        }
+        writer.u32(check.root_validation_reads().len() as u32)?;
+        for read in check.root_validation_reads() {
+            writer.u32(read.get())?;
+        }
+    }
+    writer.u32(command.instructions().len() as u32)?;
+    for instruction in command.instructions() {
+        encode_instruction(writer, instruction)?;
+    }
+    writer.u8(command.execution_class() as u8)?;
+    writer.u8(command.retry_policy() as u8)?;
+    match command.required_capability() {
+        CapabilityRequirement::InvokeCommand {
+            lineage,
+            command_id,
+        } => {
+            writer.u8(capability_tag::INVOKE_COMMAND)?;
+            writer.string(lineage.as_str())?;
+            writer.u32(command_id.get())?;
+        }
+    }
+
+    // Transitive schema closure: bound entities, aggregate, and emitted events.
+    let mut entities = command
+        .bindings()
+        .iter()
+        .map(BindingPlan::entity_type)
+        .chain(
+            command
+                .root_validation_reads()
+                .iter()
+                .map(crate::RootValidationReadPlan::entity_type),
+        )
+        .collect::<Vec<_>>();
+    entities.sort_unstable();
+    entities.dedup();
+    writer.u32(entities.len() as u32)?;
+    for id in entities {
+        encode_entity_schema(
+            writer,
+            schema
+                .entity(id)
+                .ok_or(IrValidationError::InvalidReference {
+                    kind: "command entity closure",
+                })?,
+            include_display_names,
+        )?;
+    }
+    encode_aggregate_schema(
+        writer,
+        schema.aggregate(command.locality().aggregate_id()).ok_or(
+            IrValidationError::InvalidReference {
+                kind: "command aggregate closure",
+            },
+        )?,
+        include_display_names,
+    )?;
+    let mut events = command
+        .instructions()
+        .iter()
+        .filter_map(|instruction| match instruction {
+            Instruction::EmitEvent(event) => Some(event.event_type()),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    events.sort_unstable();
+    events.dedup();
+    writer.u32(events.len() as u32)?;
+    for id in events {
+        encode_event_schema(
+            writer,
+            schema
+                .event(id)
+                .ok_or(IrValidationError::InvalidReference {
+                    kind: "command event closure",
+                })?,
+            include_display_names,
+        )?;
+    }
+    Ok(())
+}
+
+fn encode_outcome_schema(
+    writer: &mut Writer,
+    outcome: &OutcomeSchema,
+) -> Result<(), IrValidationError> {
+    writer.u32(outcome.id().get())?;
+    writer.string(outcome.name())?;
+    encode_record_schema(writer, outcome.payload())
+}
+
+fn encode_binding(
+    writer: &mut Writer,
+    binding: &BindingPlan,
+    include_display_names: bool,
+) -> Result<(), IrValidationError> {
+    writer.u32(binding.id().get())?;
+    if include_display_names {
+        writer.string(binding.name())?;
+    }
+    writer.u8(binding.mode() as u8)?;
+    writer.u32(binding.entity_type().get())?;
+    encode_key_schema(writer, binding.key_schema())?;
+    writer.u32(binding.key_expressions().len() as u32)?;
+    for expression in binding.key_expressions() {
+        writer.u32(expression.get())?;
+    }
+    writer.u32(binding.accessed_fields().len() as u32)?;
+    for field in binding.accessed_fields() {
+        writer.u32(field.get())?;
+    }
+    writer.bool(binding.complete_record_access())?;
+    encode_outcome_construction(writer, binding.failure())
+}
+
+fn encode_locality(
+    writer: &mut Writer,
+    locality: &crate::LocalityPlan,
+) -> Result<(), IrValidationError> {
+    writer.u32(locality.aggregate_id().get())?;
+    encode_key_schema(writer, locality.partition_schema())?;
+    writer.u32(locality.partition_expression().get())?;
+    writer.u32(locality.conflict_keys().len() as u32)?;
+    for conflict in locality.conflict_keys() {
+        encode_conflict_derivation(writer, conflict)?;
+    }
+    Ok(())
+}
+
+fn encode_conflict_derivation(
+    writer: &mut Writer,
+    conflict: &ConflictDerivationPlan,
+) -> Result<(), IrValidationError> {
+    encode_key_schema(writer, conflict.schema())?;
+    writer.u32(conflict.expressions().len() as u32)?;
+    for expression in conflict.expressions() {
+        writer.u32(expression.get())?;
+    }
+    Ok(())
+}
+
+fn encode_instruction(
+    writer: &mut Writer,
+    instruction: &Instruction,
+) -> Result<(), IrValidationError> {
+    writer.u8(instruction.tag())?;
+    match instruction {
+        Instruction::Require {
+            requirement_index,
+            predicate,
+            reject,
+        } => {
+            writer.u32(*requirement_index)?;
+            writer.u32(predicate.get())?;
+            encode_outcome_construction(writer, reject)
+        }
+        Instruction::SetField {
+            binding,
+            field,
+            value,
+        } => {
+            writer.u32(binding.get())?;
+            writer.u32(field.get())?;
+            writer.u32(value.get())
+        }
+        Instruction::EmitEvent(event) => encode_event_construction(writer, event),
+        Instruction::Return(outcome) => encode_outcome_construction(writer, outcome),
+    }
+}
+
+fn encode_object(
+    writer: &mut Writer,
+    object: &ObjectConstruction,
+) -> Result<(), IrValidationError> {
+    encode_record_ref(writer, object.record())?;
+    writer.u32(object.fields().len() as u32)?;
+    for field in object.fields() {
+        writer.u32(field.field_id().get())?;
+        writer.u32(field.expression().get())?;
+    }
+    Ok(())
+}
+
+fn encode_outcome_construction(
+    writer: &mut Writer,
+    outcome: &OutcomeConstruction,
+) -> Result<(), IrValidationError> {
+    writer.u32(outcome.outcome_id().get())?;
+    encode_object(writer, outcome.payload())
+}
+
+fn encode_event_construction(
+    writer: &mut Writer,
+    event: &EventConstruction,
+) -> Result<(), IrValidationError> {
+    writer.u32(event.event_type().get())?;
+    encode_object(writer, event.payload())
+}
+
+fn encode_projection_bundle_entry(
+    writer: &mut Writer,
+    projection: &ProjectionPlan,
+) -> Result<(), IrValidationError> {
+    writer.u32(projection.projection_id().get())?;
+    writer.string(projection.name())?;
+    writer.raw(projection.plan_hash().as_bytes())?;
+    encode_projection_semantics(writer, projection)
+}
+
+fn encode_projection_semantics(
+    writer: &mut Writer,
+    projection: &ProjectionPlan,
+) -> Result<(), IrValidationError> {
+    writer.u32(projection.source_event().get())?;
+    encode_expression_arena(writer, projection.expressions())?;
+    writer.bool(projection.filter().is_some())?;
+    if let Some(filter) = projection.filter() {
+        writer.u32(filter.get())?;
+    }
+    writer.u32(projection.key_expressions().len() as u32)?;
+    for expression in projection.key_expressions() {
+        writer.u32(expression.get())?;
+    }
+    writer.u32(projection.measures().len() as u32)?;
+    for measure in projection.measures() {
+        encode_projection_measure(writer, measure)?;
+    }
+    writer.u8(projection.frontier() as u8)?;
+    encode_projection_group_schema(writer, projection.group_schema())
+}
+
+fn encode_projection_measure(
+    writer: &mut Writer,
+    measure: &ProjectionMeasurePlan,
+) -> Result<(), IrValidationError> {
+    writer.u32(measure.field().id().get())?;
+    writer.string(measure.field().name())?;
+    encode_value_type(writer, measure.field().value_type())?;
+    writer.u8(measure.aggregation() as u8)?;
+    writer.bool(measure.expression().is_some())?;
+    if let Some(expression) = measure.expression() {
+        writer.u32(expression.get())?;
+    }
+    Ok(())
+}
+
+fn encode_projection_group_schema(
+    writer: &mut Writer,
+    schema: &ProjectionGroupSchema,
+) -> Result<(), IrValidationError> {
+    writer.u32(schema.projection_id().get())?;
+    writer.u32(schema.codec_version())?;
+    writer.u32(schema.group_components().len() as u32)?;
+    for component in schema.group_components() {
+        encode_projection_component(writer, component)?;
+    }
+    encode_record_schema(writer, schema.measures())?;
+    writer.u32(schema.maximum_complete_key_bytes() as u32)?;
+    writer.u32(schema.maximum_stored_state_bytes() as u32)
+}
+
+fn encode_projection_component(
+    writer: &mut Writer,
+    component: &ProjectionGroupComponentSchema,
+) -> Result<(), IrValidationError> {
+    encode_value_type(writer, component.value_type())?;
+    writer.u32(component.enum_variants().len() as u32)?;
+    for variant in component.enum_variants() {
+        writer.u32(variant.get())?;
+    }
+    writer.u32(component.maximum_framed_bytes() as u32)
+}
+
+fn encode_mcp_registry(
+    writer: &mut Writer,
+    registry: &McpCommandNameRegistryV1,
+) -> Result<(), IrValidationError> {
+    writer.u32(registry.version())?;
+    writer.string(registry.lineage().as_str())?;
+    writer.string(registry.source_contract_name())?;
+    writer.u32(registry.entries().len() as u32)?;
+    for entry in registry.entries() {
+        writer.u32(entry.command_id().get())?;
+        writer.string(entry.source_command_name())?;
+        writer.string(entry.tool_name().as_str())?;
+    }
+    Ok(())
+}
+
+fn encode_compatibility(
+    writer: &mut Writer,
+    report: &CompatibilityReport,
+) -> Result<(), IrValidationError> {
+    writer.u8(report.overall() as u8)?;
+    writer.u32(report.entries().len() as u32)?;
+    for entry in report.entries() {
+        writer.string(entry.code().as_str())?;
+        writer.string(entry.affected_path())?;
+    }
+    Ok(())
+}
+
+fn decode_bundle(bytes: &[u8]) -> Result<ContractBundle, IrValidationError> {
+    checked_len("canonical contract bundle", bytes.len(), MAX_BUNDLE_BYTES)?;
+    let mut reader = Reader::new(bytes);
+    if reader.read(BUNDLE_MAGIC.len())? != BUNDLE_MAGIC {
+        return Err(IrValidationError::InvalidText {
+            kind: "bundle magic",
+        });
+    }
+    require_version(reader.u32()?, BUNDLE_FORMAT_VERSION_V1, "bundle format")?;
+    require_version(reader.u32()?, GRAMMAR_VERSION_V1, "grammar")?;
+    require_version(reader.u32()?, EXECUTABLE_IR_VERSION_V1, "executable IR")?;
+    let compiler_version = reader.string(64)?;
+    let lineage_text = reader.string(256)?;
+    validate_source_name(&lineage_text, "contract lineage")?;
+    let lineage =
+        ContractLineage::new(lineage_text).map_err(|_| IrValidationError::InvalidText {
+            kind: "contract lineage",
+        })?;
+    let contract_version =
+        ContractVersion::new(reader.u64()?).ok_or(IrValidationError::InvalidReference {
+            kind: "contract version",
+        })?;
+    let parent = if reader.bool()? {
+        Some(ParentBundleRef::new(
+            ContractVersion::new(reader.u64()?).ok_or(IrValidationError::InvalidReference {
+                kind: "parent contract version",
+            })?,
+            ContractBundleHash::from_bytes(reader.array()?),
+        ))
+    } else {
+        None
+    };
+    let source_hash = SourceHash::from_bytes(reader.array()?);
+    let stored_root_hash = ContractPlanRootHash::from_bytes(reader.array()?);
+    let ledger = decode_ledger(&mut reader)?;
+    let schema = decode_schema(&mut reader)?;
+    let commands = decode_commands(&mut reader, &lineage, &schema)?;
+    let projections = decode_projections(&mut reader, &schema)?;
+    let schema_artifacts = decode_schema_artifacts(&mut reader, &schema, &commands, &projections)?;
+    let mcp_command_names = decode_mcp_registry(&mut reader)?;
+    let compatibility = decode_compatibility(&mut reader, parent.is_some())?;
+    reader.finish()?;
+
+    let bundle = ContractBundle::new(
+        compiler_version,
+        lineage,
+        contract_version,
+        parent,
+        source_hash,
+        ledger,
+        schema,
+        commands,
+        projections,
+        schema_artifacts,
+        mcp_command_names,
+        compatibility,
+    )?;
+    if bundle.plan_root_hash != stored_root_hash {
+        return Err(IrValidationError::HashMismatch {
+            kind: "contract plan root",
+        });
+    }
+    if bundle.canonical_bytes != bytes {
+        return Err(IrValidationError::NonCanonicalOrder {
+            kind: "canonical contract bundle bytes",
+        });
+    }
+    Ok(bundle)
+}
+
+fn require_version(value: u32, expected: u32, kind: &'static str) -> Result<(), IrValidationError> {
+    if value == expected {
+        Ok(())
+    } else {
+        Err(IrValidationError::UnsupportedVersion { kind, value })
+    }
+}
+
+fn decode_len(
+    reader: &mut Reader<'_>,
+    kind: &'static str,
+    maximum: usize,
+) -> Result<usize, IrValidationError> {
+    decode_len_with_minimum(reader, kind, maximum, 1)
+}
+
+fn decode_len_with_minimum(
+    reader: &mut Reader<'_>,
+    kind: &'static str,
+    maximum: usize,
+    minimum_encoded_bytes: usize,
+) -> Result<usize, IrValidationError> {
+    let value = reader.u32()? as usize;
+    checked_len(kind, value, maximum)?;
+    let minimum = value
+        .checked_mul(minimum_encoded_bytes)
+        .ok_or(IrValidationError::SizeOverflow { kind })?;
+    if minimum > reader.remaining() {
+        return Err(IrValidationError::UnexpectedEnd);
+    }
+    Ok(value)
+}
+
+fn ensure_fixed_width_items(
+    reader: &Reader<'_>,
+    count: usize,
+    width: usize,
+    kind: &'static str,
+) -> Result<(), IrValidationError> {
+    let minimum = count
+        .checked_mul(width)
+        .ok_or(IrValidationError::SizeOverflow { kind })?;
+    if minimum > reader.remaining() {
+        return Err(IrValidationError::UnexpectedEnd);
+    }
+    Ok(())
+}
+
+macro_rules! decode_u32_id {
+    ($name:ident, $type:ty, $kind:literal) => {
+        fn $name(reader: &mut Reader<'_>) -> Result<$type, IrValidationError> {
+            <$type>::new(reader.u32()?).ok_or(IrValidationError::InvalidReference { kind: $kind })
+        }
+    };
+}
+
+decode_u32_id!(decode_entity_id, EntityTypeId, "entity ID");
+decode_u32_id!(decode_event_id, EventTypeId, "event ID");
+decode_u32_id!(decode_enum_id, EnumTypeId, "enum ID");
+decode_u32_id!(decode_enum_variant_id, EnumVariantId, "enum variant ID");
+decode_u32_id!(decode_aggregate_id, AggregateTypeId, "aggregate ID");
+decode_u32_id!(decode_command_id, CommandId, "command ID");
+decode_u32_id!(decode_projection_id, ProjectionId, "projection ID");
+decode_u32_id!(decode_field_id, FieldId, "field ID");
+decode_u32_id!(decode_outcome_id, OutcomeId, "outcome ID");
+decode_u32_id!(decode_index_id, IndexId, "index ID");
+decode_u32_id!(decode_invariant_id, InvariantId, "invariant ID");
+
+fn decode_namespace_tag(tag: u8) -> Result<StableIdNamespaceTag, IrValidationError> {
+    match tag {
+        namespace_tag::ENTITY => Ok(StableIdNamespaceTag::Entity),
+        namespace_tag::EVENT => Ok(StableIdNamespaceTag::Event),
+        namespace_tag::ENUM => Ok(StableIdNamespaceTag::Enum),
+        namespace_tag::AGGREGATE => Ok(StableIdNamespaceTag::Aggregate),
+        namespace_tag::COMMAND => Ok(StableIdNamespaceTag::Command),
+        namespace_tag::PROJECTION => Ok(StableIdNamespaceTag::Projection),
+        namespace_tag::INDEX => Ok(StableIdNamespaceTag::Index),
+        namespace_tag::INVARIANT => Ok(StableIdNamespaceTag::Invariant),
+        namespace_tag::FIELD => Ok(StableIdNamespaceTag::Field),
+        namespace_tag::OUTCOME => Ok(StableIdNamespaceTag::Outcome),
+        namespace_tag::ENUM_VARIANT => Ok(StableIdNamespaceTag::EnumVariant),
+        tag => Err(IrValidationError::UnknownTag {
+            kind: "stable-ID namespace",
+            tag,
+        }),
+    }
+}
+
+fn decode_lineage_entry_state(tag: u8) -> Result<LineageEntryState, IrValidationError> {
+    match tag {
+        lineage_state_tag::ACTIVE => Ok(LineageEntryState::Active),
+        lineage_state_tag::TOMBSTONE => Ok(LineageEntryState::Tombstone),
+        tag => Err(IrValidationError::UnknownTag {
+            kind: "lineage entry state",
+            tag,
+        }),
+    }
+}
+
+fn decode_ledger(reader: &mut Reader<'_>) -> Result<LineageLedgerV1, IrValidationError> {
+    require_version(reader.u32()?, LINEAGE_LEDGER_VERSION_V1, "lineage ledger")?;
+    let count = decode_len_with_minimum(
+        reader,
+        "lineage allocations",
+        MAX_LINEAGE_ALLOCATION_STATES,
+        11,
+    )?;
+    let mut allocations = Vec::with_capacity(count);
+    let mut total_entries = 0usize;
+    for _ in 0..count {
+        let tag = decode_namespace_tag(reader.u8()?)?;
+        let owner_kind = reader.u8()?;
+        let owner_count = reader.u8()? as usize;
+        ensure_fixed_width_items(reader, owner_count, 4, "lineage allocation owner path")?;
+        let mut owner_ids = Vec::with_capacity(owner_count);
+        for _ in 0..owner_count {
+            owner_ids.push(reader.u32()?);
+        }
+        let namespace = if matches!(
+            tag,
+            StableIdNamespaceTag::Entity
+                | StableIdNamespaceTag::Event
+                | StableIdNamespaceTag::Enum
+                | StableIdNamespaceTag::Aggregate
+                | StableIdNamespaceTag::Command
+                | StableIdNamespaceTag::Projection
+                | StableIdNamespaceTag::Index
+                | StableIdNamespaceTag::Invariant
+        ) {
+            if owner_kind != 0 || !owner_ids.is_empty() {
+                return Err(IrValidationError::InvalidLineageLedger {
+                    reason: "global allocation state has an owner path",
+                });
+            }
+            StableIdAllocationNamespace::global(tag)?
+        } else {
+            StableIdAllocationNamespace::scoped(tag, owner_kind, owner_ids)?
+        };
+        let max_allocated = reader.u32()?;
+        let entry_count =
+            decode_len_with_minimum(reader, "lineage entries", MAX_LINEAGE_LEDGER_ENTRIES, 11)?;
+        total_entries =
+            total_entries
+                .checked_add(entry_count)
+                .ok_or(IrValidationError::SizeOverflow {
+                    kind: "lineage entries",
+                })?;
+        checked_len("lineage entries", total_entries, MAX_LINEAGE_LEDGER_ENTRIES)?;
+        let mut entries = Vec::with_capacity(entry_count);
+        for expected in 1..=entry_count {
+            let id = reader.u32()?;
+            if id as usize != expected {
+                return Err(IrValidationError::InvalidLineageLedger {
+                    reason: "lineage entry IDs are not contiguous",
+                });
+            }
+            let identity_owner_kind = reader.u8()?;
+            let identity_owner_count = reader.u8()? as usize;
+            ensure_fixed_width_items(
+                reader,
+                identity_owner_count,
+                4,
+                "lineage identity owner path",
+            )?;
+            let mut identity_owner_ids = Vec::with_capacity(identity_owner_count);
+            for _ in 0..identity_owner_count {
+                identity_owner_ids.push(reader.u32()?);
+            }
+            let identity = StableIdentity::new(
+                StableIdNamespace::new(tag, identity_owner_kind, identity_owner_ids)?,
+                reader.string(256)?,
+            )?;
+            if identity.namespace.allocation_namespace() != namespace {
+                return Err(IrValidationError::InvalidLineageLedger {
+                    reason: "lineage identity is in the wrong allocation state",
+                });
+            }
+            let state = decode_lineage_entry_state(reader.u8()?)?;
+            entries.push(LineageEntry {
+                id,
+                identity,
+                state,
+            });
+        }
+        if max_allocated as usize != entries.len() {
+            return Err(IrValidationError::InvalidLineageLedger {
+                reason: "lineage max_allocated does not equal its complete history",
+            });
+        }
+        allocations.push(LineageAllocation {
+            namespace,
+            max_allocated,
+            entries,
+        });
+    }
+    if allocations
+        .windows(2)
+        .any(|pair| pair[0].namespace >= pair[1].namespace)
+    {
+        return Err(IrValidationError::NonCanonicalOrder {
+            kind: "lineage allocation states",
+        });
+    }
+    Ok(LineageLedgerV1 {
+        version: LINEAGE_LEDGER_VERSION_V1,
+        allocations,
+    })
+}
+
+fn decode_schema(reader: &mut Reader<'_>) -> Result<SchemaIr, IrValidationError> {
+    let entity_count = decode_len(reader, "entities", crate::MAX_DECLARATIONS_PER_KIND)?;
+    let mut entities = Vec::with_capacity(entity_count);
+    for _ in 0..entity_count {
+        entities.push(decode_entity_schema(reader)?);
+    }
+    let event_count = decode_len(reader, "events", crate::MAX_DECLARATIONS_PER_KIND)?;
+    let mut events = Vec::with_capacity(event_count);
+    for _ in 0..event_count {
+        events.push(decode_event_schema(reader)?);
+    }
+    let enum_count = decode_len(reader, "enums", crate::MAX_DECLARATIONS_PER_KIND)?;
+    let mut enums = Vec::with_capacity(enum_count);
+    for _ in 0..enum_count {
+        enums.push(decode_enum_schema(reader)?);
+    }
+    let aggregate_count = decode_len(reader, "aggregates", crate::MAX_DECLARATIONS_PER_KIND)?;
+    let mut aggregates = Vec::with_capacity(aggregate_count);
+    for _ in 0..aggregate_count {
+        aggregates.push(decode_aggregate_schema(reader)?);
+    }
+    SchemaIr::new(entities, events, enums, aggregates)
+}
+
+fn decode_entity_schema(reader: &mut Reader<'_>) -> Result<EntitySchema, IrValidationError> {
+    let id = decode_entity_id(reader)?;
+    let name = reader.string(256)?;
+    let record = decode_record_schema(reader)?;
+    let primary_count = decode_len(reader, "primary-key fields", 1_024)?;
+    let mut primary_key_fields = Vec::with_capacity(primary_count);
+    for _ in 0..primary_count {
+        primary_key_fields.push(decode_field_id(reader)?);
+    }
+    let primary_key = decode_key_schema(reader, 0)?;
+    let invariant_count = decode_len(
+        reader,
+        "entity invariants",
+        crate::MAX_DECLARATIONS_PER_KIND,
+    )?;
+    let mut invariants = Vec::with_capacity(invariant_count);
+    for _ in 0..invariant_count {
+        invariants.push(decode_invariant(reader)?);
+    }
+    let index_count = decode_len(reader, "entity indexes", crate::MAX_DECLARATIONS_PER_KIND)?;
+    let mut indexes = Vec::with_capacity(index_count);
+    for _ in 0..index_count {
+        indexes.push(decode_index_schema(reader)?);
+    }
+    EntitySchema::new(
+        id,
+        name,
+        record,
+        primary_key_fields,
+        primary_key,
+        invariants,
+        indexes,
+    )
+}
+
+fn decode_event_schema(reader: &mut Reader<'_>) -> Result<EventSchema, IrValidationError> {
+    EventSchema::new(
+        decode_event_id(reader)?,
+        reader.string(256)?,
+        decode_record_schema(reader)?,
+    )
+}
+
+fn decode_enum_schema(reader: &mut Reader<'_>) -> Result<EnumSchema, IrValidationError> {
+    let id = decode_enum_id(reader)?;
+    let name = reader.string(256)?;
+    let count = decode_len(reader, "enum variants", crate::MAX_DECLARATIONS_PER_KIND)?;
+    let mut variants = Vec::with_capacity(count);
+    for _ in 0..count {
+        variants.push(EnumVariantSchema::new(
+            decode_enum_variant_id(reader)?,
+            reader.string(256)?,
+        )?);
+    }
+    EnumSchema::new(id, name, variants)
+}
+
+fn decode_aggregate_schema(reader: &mut Reader<'_>) -> Result<AggregateSchema, IrValidationError> {
+    let id = decode_aggregate_id(reader)?;
+    let name = reader.string(256)?;
+    let root = decode_entity_id(reader)?;
+    let child_count = decode_len(
+        reader,
+        "aggregate children",
+        crate::MAX_DECLARATIONS_PER_KIND,
+    )?;
+    let mut children = Vec::with_capacity(child_count);
+    for _ in 0..child_count {
+        children.push(decode_entity_id(reader)?);
+    }
+    let keys = decode_aggregate_keys(reader)?;
+    let invariant_count = decode_len(
+        reader,
+        "aggregate invariants",
+        crate::MAX_DECLARATIONS_PER_KIND,
+    )?;
+    let mut invariants = Vec::with_capacity(invariant_count);
+    for _ in 0..invariant_count {
+        invariants.push(decode_invariant(reader)?);
+    }
+    AggregateSchema::new(id, name, root, children, keys, invariants)
+}
+
+fn decode_aggregate_keys(reader: &mut Reader<'_>) -> Result<AggregateKeyPlan, IrValidationError> {
+    let expressions = decode_expression_arena(reader)?;
+    let partition_expression = ExprId::new(reader.u32()?);
+    let count = decode_len(reader, "aggregate conflict expressions", 1_024)?;
+    let mut conflict_expressions = Vec::with_capacity(count);
+    for _ in 0..count {
+        conflict_expressions.push(ExprId::new(reader.u32()?));
+    }
+    AggregateKeyPlan::new(
+        expressions,
+        partition_expression,
+        conflict_expressions,
+        decode_key_schema(reader, 0)?,
+        decode_key_schema(reader, 0)?,
+    )
+}
+
+fn decode_invariant(reader: &mut Reader<'_>) -> Result<InvariantPlan, IrValidationError> {
+    let id = decode_invariant_id(reader)?;
+    let name = reader.string(256)?;
+    let expressions = decode_expression_arena(reader)?;
+    let predicate = ExprId::new(reader.u32()?);
+    InvariantPlan::new(id, name, expressions, predicate)
+}
+
+fn decode_index_schema(reader: &mut Reader<'_>) -> Result<IndexSchema, IrValidationError> {
+    let id = decode_index_id(reader)?;
+    let name = reader.string(256)?;
+    let count = decode_len(reader, "index fields", 1_024)?;
+    let mut fields = Vec::with_capacity(count);
+    for _ in 0..count {
+        fields.push(decode_field_id(reader)?);
+    }
+    IndexSchema::new(id, name, fields, decode_key_schema(reader, 0)?)
+}
+
+fn decode_record_schema(reader: &mut Reader<'_>) -> Result<RecordSchema, IrValidationError> {
+    let owner = decode_record_ref(reader)?;
+    let count = decode_len(reader, "record fields", crate::MAX_DECLARATIONS_PER_KIND)?;
+    let mut fields = Vec::with_capacity(count);
+    for _ in 0..count {
+        fields.push(FieldSchema::new(
+            decode_field_id(reader)?,
+            reader.string(256)?,
+            decode_value_type(reader, 0)?,
+        )?);
+    }
+    RecordSchema::new(owner, fields)
+}
+
+fn decode_record_ref(reader: &mut Reader<'_>) -> Result<RecordTypeRef, IrValidationError> {
+    match reader.u8()? {
+        record_tag::ENTITY => Ok(RecordTypeRef::Entity(decode_entity_id(reader)?)),
+        record_tag::EVENT => Ok(RecordTypeRef::Event(decode_event_id(reader)?)),
+        record_tag::COMMAND_INPUT => Ok(RecordTypeRef::CommandInput(decode_command_id(reader)?)),
+        record_tag::COMMAND_OUTCOME => Ok(RecordTypeRef::CommandOutcome {
+            command_id: decode_command_id(reader)?,
+            outcome_id: decode_outcome_id(reader)?,
+        }),
+        record_tag::PROJECTION_RESULT => Ok(RecordTypeRef::ProjectionResult(decode_projection_id(
+            reader,
+        )?)),
+        tag => Err(IrValidationError::UnknownTag {
+            kind: "record reference",
+            tag,
+        }),
+    }
+}
+
+fn decode_value_type(
+    reader: &mut Reader<'_>,
+    depth: usize,
+) -> Result<ValueType, IrValidationError> {
+    if depth >= 32 {
+        return Err(IrValidationError::LimitExceeded {
+            kind: "type nesting",
+            actual: depth + 1,
+            maximum: 32,
+        });
+    }
+    match reader.u8()? {
+        value_type_tag::BOOL => Ok(ValueType::bool()),
+        value_type_tag::I64 => Ok(ValueType::i64()),
+        value_type_tag::U64 => Ok(ValueType::u64()),
+        value_type_tag::DECIMAL => Ok(ValueType::decimal(
+            DecimalSpec::new(reader.u8()?, reader.u8()?).map_err(|_| {
+                IrValidationError::TypeMismatch {
+                    context: "decimal type",
+                }
+            })?,
+        )),
+        value_type_tag::MONEY => Ok(ValueType::money(
+            CurrencyCode::new(reader.array::<3>()?).map_err(|_| {
+                IrValidationError::TypeMismatch {
+                    context: "money type",
+                }
+            })?,
+        )),
+        value_type_tag::STRING => ValueType::string(reader.u32()? as usize),
+        value_type_tag::BYTES => ValueType::bytes(reader.u32()? as usize),
+        value_type_tag::TIMESTAMP => Ok(ValueType::timestamp()),
+        value_type_tag::DATE => Ok(ValueType::date()),
+        value_type_tag::UUID => Ok(ValueType::uuid()),
+        value_type_tag::ENUM => Ok(ValueType::enumeration(decode_enum_id(reader)?)),
+        value_type_tag::OPTIONAL => ValueType::optional(decode_value_type(reader, depth + 1)?),
+        value_type_tag::LIST => {
+            let element = decode_value_type(reader, depth + 1)?;
+            ValueType::list(element, reader.u32()? as usize)
+        }
+        value_type_tag::RECORD => Ok(ValueType::record(decode_record_ref(reader)?)),
+        tag => Err(IrValidationError::UnknownTag {
+            kind: "value type",
+            tag,
+        }),
+    }
+}
+
+fn decode_key_schema(
+    reader: &mut Reader<'_>,
+    depth: usize,
+) -> Result<KeySchema, IrValidationError> {
+    if depth > 1 {
+        return Err(IrValidationError::InvalidKey {
+            reason: "key schema nesting exceeds the index/entity shape",
+        });
+    }
+    require_version(reader.u32()?, crate::KEY_CODEC_VERSION_V1, "key codec")?;
+    let purpose = match reader.u8()? {
+        key_purpose_tag::ENTITY => KeyPurpose::Entity(decode_entity_id(reader)?),
+        key_purpose_tag::PARTITION => KeyPurpose::Partition(decode_aggregate_id(reader)?),
+        key_purpose_tag::CONFLICT => KeyPurpose::Conflict(decode_aggregate_id(reader)?),
+        key_purpose_tag::INDEX => KeyPurpose::Index {
+            index_id: decode_index_id(reader)?,
+            entity_type: decode_entity_id(reader)?,
+        },
+        tag => {
+            return Err(IrValidationError::UnknownTag {
+                kind: "key purpose",
+                tag,
+            });
+        }
+    };
+    let count = decode_len(reader, "key components", 1_024)?;
+    let mut components = Vec::with_capacity(count);
+    for _ in 0..count {
+        let value_type = decode_value_type(reader, 0)?;
+        let variant_count = decode_len(
+            reader,
+            "key enum variants",
+            crate::MAX_DECLARATIONS_PER_KIND,
+        )?;
+        let mut variants = Vec::with_capacity(variant_count);
+        for _ in 0..variant_count {
+            variants.push(decode_enum_variant_id(reader)?);
+        }
+        let stored_maximum = reader.u32()? as usize;
+        let component = KeyComponentSchema::new(value_type, variants)?;
+        if component.maximum_payload_bytes() != stored_maximum {
+            return Err(IrValidationError::HashMismatch {
+                kind: "key component maximum",
+            });
+        }
+        components.push(component);
+    }
+    let stored_maximum = reader.u32()? as usize;
+    let embedded = if reader.bool()? {
+        Some(decode_key_schema(reader, depth + 1)?)
+    } else {
+        None
+    };
+    let schema = match purpose {
+        KeyPurpose::Index {
+            index_id,
+            entity_type,
+        } => KeySchema::index(
+            index_id,
+            entity_type,
+            components,
+            embedded.ok_or(IrValidationError::InvalidKey {
+                reason: "index key schema omits its entity key",
+            })?,
+        )?,
+        _ if embedded.is_none() => KeySchema::new(purpose, components)?,
+        _ => {
+            return Err(IrValidationError::InvalidKey {
+                reason: "non-index key schema embeds another schema",
+            });
+        }
+    };
+    if schema.maximum_encoded_bytes() != stored_maximum {
+        return Err(IrValidationError::HashMismatch {
+            kind: "key schema maximum",
+        });
+    }
+    Ok(schema)
+}
+
+fn decode_expression_arena(reader: &mut Reader<'_>) -> Result<ExpressionArena, IrValidationError> {
+    let count =
+        decode_len_with_minimum(reader, "expression arena", crate::MAX_EXPRESSION_NODES, 2)?;
+    let mut nodes = Vec::with_capacity(count);
+    for _ in 0..count {
+        let tag = reader.u8()?;
+        let result_type = decode_value_type(reader, 0)?;
+        let kind = match tag {
+            expression_tag::CONSTANT => ExpressionKind::Constant({
+                let bytes = reader.bytes(1024 * 1024)?;
+                preflight_ir_canonical_value(bytes)?;
+                decode_canonical_value(bytes).map_err(|_| IrValidationError::TypeMismatch {
+                    context: "expression constant",
+                })?
+            }),
+            expression_tag::INPUT_FIELD => ExpressionKind::InputField(decode_field_id(reader)?),
+            expression_tag::COMPLETE_BINDING => {
+                ExpressionKind::CompleteBinding(BindingId::new(reader.u32()?))
+            }
+            expression_tag::BOUND_FIELD => ExpressionKind::BoundField {
+                binding: BindingId::new(reader.u32()?),
+                field: decode_field_id(reader)?,
+            },
+            expression_tag::SCHEMA_FIELD => ExpressionKind::SchemaField {
+                entity_type: decode_entity_id(reader)?,
+                field: decode_field_id(reader)?,
+            },
+            expression_tag::SOURCE_EVENT_FIELD => {
+                ExpressionKind::SourceEventField(decode_field_id(reader)?)
+            }
+            expression_tag::TRANSACTION_TIME => ExpressionKind::TransactionTime,
+            expression_tag::TRANSACTION_DATE => ExpressionKind::TransactionDate,
+            expression_tag::UNARY => ExpressionKind::Unary {
+                operator: decode_unary_operator(reader.u8()?)?,
+                operand: ExprId::new(reader.u32()?),
+            },
+            expression_tag::BINARY => ExpressionKind::Binary {
+                operator: decode_binary_operator(reader.u8()?)?,
+                left: ExprId::new(reader.u32()?),
+                right: ExprId::new(reader.u32()?),
+            },
+            expression_tag::ROOT_VALIDATION_FIELD => ExpressionKind::RootValidationField {
+                read: crate::RootValidationReadId::new(reader.u32()?),
+                field: decode_field_id(reader)?,
+            },
+            tag => {
+                return Err(IrValidationError::UnknownTag {
+                    kind: "expression",
+                    tag,
+                });
+            }
+        };
+        nodes.push((kind, result_type));
+    }
+    ExpressionArena::new(nodes)
+}
+
+fn preflight_ir_canonical_value(bytes: &[u8]) -> Result<(), IrValidationError> {
+    struct Preflight<'a> {
+        bytes: &'a [u8],
+        position: usize,
+    }
+
+    impl Preflight<'_> {
+        fn read(&mut self, length: usize) -> Result<&[u8], IrValidationError> {
+            let end = self
+                .position
+                .checked_add(length)
+                .ok_or(IrValidationError::UnexpectedEnd)?;
+            let value = self
+                .bytes
+                .get(self.position..end)
+                .ok_or(IrValidationError::UnexpectedEnd)?;
+            self.position = end;
+            Ok(value)
+        }
+
+        fn u8(&mut self) -> Result<u8, IrValidationError> {
+            Ok(self.read(1)?[0])
+        }
+
+        fn u32(&mut self) -> Result<u32, IrValidationError> {
+            Ok(u32::from_be_bytes(
+                self.read(4)?
+                    .try_into()
+                    .map_err(|_| IrValidationError::UnexpectedEnd)?,
+            ))
+        }
+
+        fn value(&mut self, depth: usize) -> Result<(), IrValidationError> {
+            if depth > riffdb_types::MAX_NESTING_DEPTH {
+                return Err(IrValidationError::LimitExceeded {
+                    kind: "IR constant nesting",
+                    actual: depth,
+                    maximum: riffdb_types::MAX_NESTING_DEPTH,
+                });
+            }
+            let version = self.u8()?;
+            if version != riffdb_types::CANONICAL_VALUE_VERSION {
+                return Err(IrValidationError::UnsupportedVersion {
+                    kind: "canonical value",
+                    value: u32::from(version),
+                });
+            }
+            // These immutable tags are owned by accepted ADR-0011/riffdb-types.
+            match self.u8()? {
+                0x00 => {}
+                0x01 => {
+                    self.read(1)?;
+                }
+                0x02 | 0x03 => {
+                    self.read(8)?;
+                }
+                0x04 => {
+                    self.read(18)?;
+                }
+                0x05 => {
+                    self.read(21)?;
+                }
+                0x06 | 0x07 => {
+                    let length = self.u32()? as usize;
+                    self.read(length)?;
+                }
+                0x08 => {
+                    self.read(12)?;
+                }
+                0x09 => {
+                    self.read(4)?;
+                }
+                0x0a => {
+                    self.read(16)?;
+                }
+                0x0b => {
+                    self.read(8)?;
+                }
+                0x0c => {
+                    let count = self.u32()? as usize;
+                    checked_len("IR constant list entries", count, crate::MAX_OBJECT_FIELDS)?;
+                    for _ in 0..count {
+                        self.value(depth + 1)?;
+                    }
+                }
+                0x0d => {
+                    let count = self.u32()? as usize;
+                    checked_len("IR constant record fields", count, crate::MAX_OBJECT_FIELDS)?;
+                    for _ in 0..count {
+                        self.read(4)?;
+                        self.value(depth + 1)?;
+                    }
+                }
+                tag => {
+                    return Err(IrValidationError::UnknownTag {
+                        kind: "canonical value",
+                        tag,
+                    });
+                }
+            }
+            Ok(())
+        }
+    }
+
+    let mut preflight = Preflight { bytes, position: 0 };
+    preflight.value(0)?;
+    if preflight.position != bytes.len() {
+        return Err(IrValidationError::TrailingBytes);
+    }
+    Ok(())
+}
+
+fn decode_unary_operator(tag: u8) -> Result<UnaryOperator, IrValidationError> {
+    match tag {
+        unary_tag::NOT => Ok(UnaryOperator::Not),
+        unary_tag::NEGATE => Ok(UnaryOperator::Negate),
+        tag => Err(IrValidationError::UnknownTag {
+            kind: "unary operator",
+            tag,
+        }),
+    }
+}
+
+fn decode_binary_operator(tag: u8) -> Result<BinaryOperator, IrValidationError> {
+    match tag {
+        binary_tag::MULTIPLY => Ok(BinaryOperator::Multiply),
+        binary_tag::DIVIDE => Ok(BinaryOperator::Divide),
+        binary_tag::ADD => Ok(BinaryOperator::Add),
+        binary_tag::SUBTRACT => Ok(BinaryOperator::Subtract),
+        binary_tag::EQUAL => Ok(BinaryOperator::Equal),
+        binary_tag::NOT_EQUAL => Ok(BinaryOperator::NotEqual),
+        binary_tag::LESS => Ok(BinaryOperator::Less),
+        binary_tag::LESS_EQUAL => Ok(BinaryOperator::LessEqual),
+        binary_tag::GREATER => Ok(BinaryOperator::Greater),
+        binary_tag::GREATER_EQUAL => Ok(BinaryOperator::GreaterEqual),
+        binary_tag::AND => Ok(BinaryOperator::And),
+        binary_tag::OR => Ok(BinaryOperator::Or),
+        tag => Err(IrValidationError::UnknownTag {
+            kind: "binary operator",
+            tag,
+        }),
+    }
+}
+
+fn decode_field_expressions(
+    reader: &mut Reader<'_>,
+) -> Result<Vec<FieldExpression>, IrValidationError> {
+    let count = decode_len(reader, "object fields", crate::MAX_OBJECT_FIELDS)?;
+    let mut fields = Vec::with_capacity(count);
+    for _ in 0..count {
+        fields.push(FieldExpression::new(
+            decode_field_id(reader)?,
+            ExprId::new(reader.u32()?),
+        ));
+    }
+    Ok(fields)
+}
+
+fn decode_outcome_construction(
+    reader: &mut Reader<'_>,
+    outcomes: &[OutcomeSchema],
+    arena: &ExpressionArena,
+) -> Result<OutcomeConstruction, IrValidationError> {
+    let outcome_id = decode_outcome_id(reader)?;
+    let encoded_owner = decode_record_ref(reader)?;
+    let fields = decode_field_expressions(reader)?;
+    let outcome = outcomes
+        .iter()
+        .find(|outcome| outcome.id() == outcome_id)
+        .ok_or(IrValidationError::InvalidReference {
+            kind: "outcome construction",
+        })?;
+    if &encoded_owner != outcome.payload().owner() {
+        return Err(IrValidationError::InvalidReference {
+            kind: "outcome construction owner",
+        });
+    }
+    OutcomeConstruction::new(outcome, fields, arena)
+}
+
+fn decode_event_construction(
+    reader: &mut Reader<'_>,
+    schema: &SchemaIr,
+    arena: &ExpressionArena,
+) -> Result<EventConstruction, IrValidationError> {
+    let event_type = decode_event_id(reader)?;
+    let encoded_owner = decode_record_ref(reader)?;
+    let fields = decode_field_expressions(reader)?;
+    let expected = schema
+        .event(event_type)
+        .ok_or(IrValidationError::InvalidReference {
+            kind: "event construction",
+        })?;
+    if &encoded_owner != expected.payload().owner() {
+        return Err(IrValidationError::InvalidReference {
+            kind: "event construction owner",
+        });
+    }
+    EventConstruction::new(event_type, fields, schema, arena)
+}
+
+fn decode_commands(
+    reader: &mut Reader<'_>,
+    lineage: &ContractLineage,
+    schema: &SchemaIr,
+) -> Result<Vec<CommandPlan>, IrValidationError> {
+    let count = decode_len_with_minimum(reader, "commands", crate::MAX_DECLARATIONS_PER_KIND, 48)?;
+    let mut commands = Vec::with_capacity(count);
+    for _ in 0..count {
+        commands.push(decode_command(reader, lineage, schema)?);
+    }
+    Ok(commands)
+}
+
+fn decode_command(
+    reader: &mut Reader<'_>,
+    lineage: &ContractLineage,
+    schema: &SchemaIr,
+) -> Result<CommandPlan, IrValidationError> {
+    let command_id = decode_command_id(reader)?;
+    let name = reader.string(256)?;
+    let contract_version =
+        ContractVersion::new(reader.u64()?).ok_or(IrValidationError::InvalidReference {
+            kind: "command contract version",
+        })?;
+    let stored_plan_hash = PlanHash::from_bytes(reader.array()?);
+    let input = CommandInputSchema::new(command_id, decode_record_schema(reader)?)?;
+    let outcome_count = decode_len(reader, "command outcomes", crate::MAX_COMMAND_ITEMS)?;
+    let mut outcomes = Vec::with_capacity(outcome_count);
+    for _ in 0..outcome_count {
+        outcomes.push(decode_outcome_schema(reader, command_id)?);
+    }
+    let success_outcome = decode_outcome_id(reader)?;
+    let idempotency_input = if reader.bool()? {
+        Some(decode_field_id(reader)?)
+    } else {
+        None
+    };
+    let stored_input_hash = SchemaHash::from_bytes(reader.array()?);
+    let stored_output_hash = SchemaHash::from_bytes(reader.array()?);
+    if GeneratedSchemaArtifact::command_input(
+        command_id,
+        input.record(),
+        schema,
+        idempotency_input,
+    )?
+    .hash()
+        != stored_input_hash
+        || GeneratedSchemaArtifact::command_outcomes(command_id, &outcomes, schema)?.hash()
+            != stored_output_hash
+    {
+        return Err(IrValidationError::HashMismatch {
+            kind: "command generated schema",
+        });
+    }
+    let expressions = decode_expression_arena(reader)?;
+    let binding_count = decode_len(reader, "command bindings", crate::MAX_COMMAND_ITEMS)?;
+    let mut bindings = Vec::with_capacity(binding_count);
+    for _ in 0..binding_count {
+        bindings.push(decode_binding(reader, &outcomes, &expressions)?);
+    }
+    let root_read_count = decode_len(
+        reader,
+        "command root-validation reads",
+        crate::MAX_COMMAND_ITEMS,
+    )?;
+    let mut root_validation_reads = Vec::with_capacity(root_read_count);
+    for _ in 0..root_read_count {
+        let id = crate::RootValidationReadId::new(reader.u32()?);
+        let source_binding = BindingId::new(reader.u32()?);
+        let entity_type = decode_entity_id(reader)?;
+        let key_schema = decode_key_schema(reader, 0)?;
+        let key_count = decode_len(
+            reader,
+            "root-validation key expressions",
+            crate::MAX_COMMAND_ITEMS,
+        )?;
+        let mut key_expressions = Vec::with_capacity(key_count);
+        for _ in 0..key_count {
+            key_expressions.push(ExprId::new(reader.u32()?));
+        }
+        let field_count = decode_len(
+            reader,
+            "root-validation accessed fields",
+            crate::MAX_COMMAND_ITEMS,
+        )?;
+        let mut accessed_fields = Vec::with_capacity(field_count);
+        for _ in 0..field_count {
+            accessed_fields.push(decode_field_id(reader)?);
+        }
+        root_validation_reads.push(crate::RootValidationReadPlan::new(
+            id,
+            source_binding,
+            entity_type,
+            key_schema,
+            key_expressions,
+            accessed_fields,
+        )?);
+    }
+    let locality = decode_locality(reader)?;
+    let check_count = decode_len(reader, "commit checks", crate::MAX_COMMAND_ITEMS)?;
+    let mut commit_checks = Vec::with_capacity(check_count);
+    for _ in 0..check_count {
+        let invariant_id = decode_invariant_id(reader)?;
+        let predicate = ExprId::new(reader.u32()?);
+        let binding_count = decode_len(
+            reader,
+            "commit-check source bindings",
+            crate::MAX_COMMAND_ITEMS,
+        )?;
+        let mut check_bindings = Vec::with_capacity(binding_count);
+        for _ in 0..binding_count {
+            check_bindings.push(BindingId::new(reader.u32()?));
+        }
+        let root_read_count = decode_len(
+            reader,
+            "commit-check root-validation reads",
+            crate::MAX_COMMAND_ITEMS,
+        )?;
+        let mut check_root_reads = Vec::with_capacity(root_read_count);
+        for _ in 0..root_read_count {
+            check_root_reads.push(crate::RootValidationReadId::new(reader.u32()?));
+        }
+        commit_checks.push(crate::CommitCheckPlan::new(
+            invariant_id,
+            predicate,
+            check_bindings,
+            check_root_reads,
+        )?);
+    }
+    let instruction_count = decode_len(reader, "command instructions", crate::MAX_COMMAND_ITEMS)?;
+    let mut instructions = Vec::with_capacity(instruction_count);
+    for _ in 0..instruction_count {
+        instructions.push(decode_instruction(reader, &outcomes, schema, &expressions)?);
+    }
+    let execution_class = decode_execution_class(reader.u8()?)?;
+    let _retry_policy = decode_retry_policy(reader.u8()?)?;
+    if decode_capability_requirement(reader)?
+        != (CapabilityRequirement::InvokeCommand {
+            lineage: lineage.clone(),
+            command_id,
+        })
+    {
+        return Err(IrValidationError::InvalidReference {
+            kind: "command capability requirement",
+        });
+    }
+
+    decode_command_schema_closure(
+        reader,
+        schema,
+        &bindings,
+        &root_validation_reads,
+        locality.aggregate_id(),
+        &instructions,
+    )?;
+    let plan = CommandPlan::new(
+        command_id,
+        lineage.clone(),
+        name,
+        contract_version,
+        input,
+        outcomes,
+        success_outcome,
+        idempotency_input,
+        expressions,
+        bindings,
+        root_validation_reads,
+        locality,
+        commit_checks,
+        instructions,
+        execution_class,
+        schema,
+    )?;
+    if plan.plan_hash() != stored_plan_hash {
+        return Err(IrValidationError::HashMismatch {
+            kind: "command plan",
+        });
+    }
+    Ok(plan)
+}
+
+fn decode_execution_class(tag: u8) -> Result<ExecutionClass, IrValidationError> {
+    match tag {
+        execution_tag::READ_ONLY => Ok(ExecutionClass::ReadOnly),
+        execution_tag::IDEMPOTENT_MUTATION => Ok(ExecutionClass::IdempotentMutation),
+        tag => Err(IrValidationError::UnknownTag {
+            kind: "execution class",
+            tag,
+        }),
+    }
+}
+
+fn decode_retry_policy(tag: u8) -> Result<RetryPolicy, IrValidationError> {
+    match tag {
+        retry_tag::BOUNDED_FULL_REEVALUATION => Ok(RetryPolicy::BoundedFullReevaluation),
+        tag => Err(IrValidationError::UnknownTag {
+            kind: "retry policy",
+            tag,
+        }),
+    }
+}
+
+fn decode_capability_requirement(
+    reader: &mut Reader<'_>,
+) -> Result<CapabilityRequirement, IrValidationError> {
+    match reader.u8()? {
+        capability_tag::INVOKE_COMMAND => {
+            let lineage = ContractLineage::new(reader.string(256)?).map_err(|_| {
+                IrValidationError::InvalidText {
+                    kind: "capability contract lineage",
+                }
+            })?;
+            Ok(CapabilityRequirement::InvokeCommand {
+                lineage,
+                command_id: decode_command_id(reader)?,
+            })
+        }
+        tag => Err(IrValidationError::UnknownTag {
+            kind: "capability requirement",
+            tag,
+        }),
+    }
+}
+
+fn decode_outcome_schema(
+    reader: &mut Reader<'_>,
+    command_id: CommandId,
+) -> Result<OutcomeSchema, IrValidationError> {
+    let outcome_id = decode_outcome_id(reader)?;
+    OutcomeSchema::new(
+        command_id,
+        outcome_id,
+        reader.string(256)?,
+        decode_record_schema(reader)?,
+    )
+}
+
+fn decode_binding(
+    reader: &mut Reader<'_>,
+    outcomes: &[OutcomeSchema],
+    arena: &ExpressionArena,
+) -> Result<BindingPlan, IrValidationError> {
+    let id = BindingId::new(reader.u32()?);
+    let name = reader.string(256)?;
+    let mode = decode_binding_mode(reader.u8()?)?;
+    let entity_type = decode_entity_id(reader)?;
+    let key_schema = decode_key_schema(reader, 0)?;
+    let key_count = decode_len(reader, "binding key expressions", 1_024)?;
+    let mut key_expressions = Vec::with_capacity(key_count);
+    for _ in 0..key_count {
+        key_expressions.push(ExprId::new(reader.u32()?));
+    }
+    let field_count = decode_len(reader, "binding accessed fields", crate::MAX_COMMAND_ITEMS)?;
+    let mut accessed_fields = Vec::with_capacity(field_count);
+    for _ in 0..field_count {
+        accessed_fields.push(decode_field_id(reader)?);
+    }
+    let complete_record_access = reader.bool()?;
+    let failure = decode_outcome_construction(reader, outcomes, arena)?;
+    BindingPlan::new(
+        id,
+        name,
+        mode,
+        entity_type,
+        key_schema,
+        key_expressions,
+        accessed_fields,
+        complete_record_access,
+        failure,
+    )
+}
+
+fn decode_binding_mode(tag: u8) -> Result<BindingMode, IrValidationError> {
+    match tag {
+        binding_tag::READ => Ok(BindingMode::Read),
+        binding_tag::MUTATE => Ok(BindingMode::Mutate),
+        binding_tag::CREATE => Ok(BindingMode::Create),
+        tag => Err(IrValidationError::UnknownTag {
+            kind: "binding mode",
+            tag,
+        }),
+    }
+}
+
+fn decode_locality(reader: &mut Reader<'_>) -> Result<LocalityPlan, IrValidationError> {
+    let aggregate_id = decode_aggregate_id(reader)?;
+    let partition_schema = decode_key_schema(reader, 0)?;
+    let partition_expression = ExprId::new(reader.u32()?);
+    let count = decode_len(reader, "conflict derivations", 1_024)?;
+    let mut conflicts = Vec::with_capacity(count);
+    for _ in 0..count {
+        let key_schema = decode_key_schema(reader, 0)?;
+        let expression_count = decode_len(reader, "conflict expressions", 1_024)?;
+        let mut expressions = Vec::with_capacity(expression_count);
+        for _ in 0..expression_count {
+            expressions.push(ExprId::new(reader.u32()?));
+        }
+        conflicts.push(ConflictDerivationPlan::new(key_schema, expressions)?);
+    }
+    LocalityPlan::new(
+        aggregate_id,
+        partition_schema,
+        partition_expression,
+        conflicts,
+    )
+}
+
+fn decode_instruction(
+    reader: &mut Reader<'_>,
+    outcomes: &[OutcomeSchema],
+    schema: &SchemaIr,
+    arena: &ExpressionArena,
+) -> Result<Instruction, IrValidationError> {
+    match reader.u8()? {
+        instruction_tag::REQUIRE => Ok(Instruction::Require {
+            requirement_index: reader.u32()?,
+            predicate: ExprId::new(reader.u32()?),
+            reject: decode_outcome_construction(reader, outcomes, arena)?,
+        }),
+        instruction_tag::SET_FIELD => Ok(Instruction::SetField {
+            binding: BindingId::new(reader.u32()?),
+            field: decode_field_id(reader)?,
+            value: ExprId::new(reader.u32()?),
+        }),
+        instruction_tag::EMIT_EVENT => Ok(Instruction::EmitEvent(decode_event_construction(
+            reader, schema, arena,
+        )?)),
+        instruction_tag::RETURN => Ok(Instruction::Return(decode_outcome_construction(
+            reader, outcomes, arena,
+        )?)),
+        tag => Err(IrValidationError::UnknownTag {
+            kind: "instruction",
+            tag,
+        }),
+    }
+}
+
+fn decode_command_schema_closure(
+    reader: &mut Reader<'_>,
+    schema: &SchemaIr,
+    bindings: &[BindingPlan],
+    root_validation_reads: &[crate::RootValidationReadPlan],
+    aggregate_id: AggregateTypeId,
+    instructions: &[Instruction],
+) -> Result<(), IrValidationError> {
+    let mut expected_entities = bindings
+        .iter()
+        .map(BindingPlan::entity_type)
+        .chain(
+            root_validation_reads
+                .iter()
+                .map(crate::RootValidationReadPlan::entity_type),
+        )
+        .collect::<Vec<_>>();
+    expected_entities.sort_unstable();
+    expected_entities.dedup();
+    let count = decode_len(
+        reader,
+        "command entity closure",
+        crate::MAX_DECLARATIONS_PER_KIND,
+    )?;
+    if count != expected_entities.len() {
+        return Err(IrValidationError::InvalidReference {
+            kind: "command entity closure",
+        });
+    }
+    for expected in expected_entities {
+        let decoded = decode_entity_schema(reader)?;
+        if schema.entity(expected) != Some(&decoded) {
+            return Err(IrValidationError::InvalidReference {
+                kind: "command entity closure",
+            });
+        }
+    }
+    let decoded_aggregate = decode_aggregate_schema(reader)?;
+    if schema.aggregate(aggregate_id) != Some(&decoded_aggregate) {
+        return Err(IrValidationError::InvalidReference {
+            kind: "command aggregate closure",
+        });
+    }
+    let mut expected_events = instructions
+        .iter()
+        .filter_map(|instruction| match instruction {
+            Instruction::EmitEvent(event) => Some(event.event_type()),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    expected_events.sort_unstable();
+    expected_events.dedup();
+    let count = decode_len(
+        reader,
+        "command event closure",
+        crate::MAX_DECLARATIONS_PER_KIND,
+    )?;
+    if count != expected_events.len() {
+        return Err(IrValidationError::InvalidReference {
+            kind: "command event closure",
+        });
+    }
+    for expected in expected_events {
+        let decoded = decode_event_schema(reader)?;
+        if schema.event(expected) != Some(&decoded) {
+            return Err(IrValidationError::InvalidReference {
+                kind: "command event closure",
+            });
+        }
+    }
+    Ok(())
+}
+
+fn decode_projections(
+    reader: &mut Reader<'_>,
+    schema: &SchemaIr,
+) -> Result<Vec<ProjectionPlan>, IrValidationError> {
+    let count =
+        decode_len_with_minimum(reader, "projections", crate::MAX_DECLARATIONS_PER_KIND, 40)?;
+    let mut projections = Vec::with_capacity(count);
+    for _ in 0..count {
+        projections.push(decode_projection(reader, schema)?);
+    }
+    Ok(projections)
+}
+
+fn decode_projection(
+    reader: &mut Reader<'_>,
+    schema: &SchemaIr,
+) -> Result<ProjectionPlan, IrValidationError> {
+    let projection_id = decode_projection_id(reader)?;
+    let name = reader.string(256)?;
+    let stored_hash = ProjectionPlanHash::from_bytes(reader.array()?);
+    let source_event = decode_event_id(reader)?;
+    let expressions = decode_expression_arena(reader)?;
+    let filter = if reader.bool()? {
+        Some(ExprId::new(reader.u32()?))
+    } else {
+        None
+    };
+    let key_count = decode_len(
+        reader,
+        "projection key expressions",
+        crate::MAX_COMMAND_ITEMS,
+    )?;
+    let mut key_expressions = Vec::with_capacity(key_count);
+    for _ in 0..key_count {
+        key_expressions.push(ExprId::new(reader.u32()?));
+    }
+    let measure_count = decode_len(reader, "projection measures", crate::MAX_COMMAND_ITEMS)?;
+    let mut measures = Vec::with_capacity(measure_count);
+    for _ in 0..measure_count {
+        measures.push(decode_projection_measure(reader)?);
+    }
+    let frontier = decode_projection_frontier(reader.u8()?)?;
+    let group_schema = decode_projection_group_schema(reader)?;
+    let plan = ProjectionPlan::new(
+        projection_id,
+        name,
+        source_event,
+        expressions,
+        filter,
+        key_expressions,
+        measures,
+        frontier,
+        group_schema,
+        schema,
+    )?;
+    if plan.plan_hash() != stored_hash {
+        return Err(IrValidationError::HashMismatch {
+            kind: "projection plan",
+        });
+    }
+    Ok(plan)
+}
+
+fn decode_projection_frontier(tag: u8) -> Result<ProjectionFrontierPolicy, IrValidationError> {
+    match tag {
+        frontier_tag::TRANSACTIONALLY_ORDERED => {
+            Ok(ProjectionFrontierPolicy::TransactionallyOrdered)
+        }
+        tag => Err(IrValidationError::UnknownTag {
+            kind: "projection frontier",
+            tag,
+        }),
+    }
+}
+
+fn decode_projection_measure(
+    reader: &mut Reader<'_>,
+) -> Result<ProjectionMeasurePlan, IrValidationError> {
+    let field = FieldSchema::new(
+        decode_field_id(reader)?,
+        reader.string(256)?,
+        decode_value_type(reader, 0)?,
+    )?;
+    let aggregation = decode_projection_aggregation(reader.u8()?)?;
+    let expression = if reader.bool()? {
+        Some(ExprId::new(reader.u32()?))
+    } else {
+        None
+    };
+    match (aggregation, expression) {
+        (ProjectionAggregation::Count, None) => ProjectionMeasurePlan::count(field),
+        (ProjectionAggregation::Sum, Some(expression)) => {
+            ProjectionMeasurePlan::sum(field, expression)
+        }
+        (ProjectionAggregation::Count, Some(_)) => Err(IrValidationError::InvalidProjection {
+            reason: "count measure carries an expression",
+        }),
+        (ProjectionAggregation::Sum, None) => Err(IrValidationError::InvalidProjection {
+            reason: "sum measure omits its expression",
+        }),
+    }
+}
+
+#[derive(Clone, Copy)]
+enum ProjectionAggregation {
+    Count,
+    Sum,
+}
+
+fn decode_projection_aggregation(tag: u8) -> Result<ProjectionAggregation, IrValidationError> {
+    match tag {
+        aggregation_tag::COUNT => Ok(ProjectionAggregation::Count),
+        aggregation_tag::SUM => Ok(ProjectionAggregation::Sum),
+        tag => Err(IrValidationError::UnknownTag {
+            kind: "projection aggregation",
+            tag,
+        }),
+    }
+}
+
+fn decode_projection_group_schema(
+    reader: &mut Reader<'_>,
+) -> Result<ProjectionGroupSchema, IrValidationError> {
+    let projection_id = decode_projection_id(reader)?;
+    require_version(
+        reader.u32()?,
+        crate::PROJECTION_GROUP_CODEC_VERSION_V1,
+        "projection group codec",
+    )?;
+    let count = decode_len(
+        reader,
+        "projection group components",
+        riffdb_types::MAX_PROJECTION_GROUP_COMPONENTS,
+    )?;
+    let mut components = Vec::with_capacity(count);
+    for _ in 0..count {
+        let value_type = decode_value_type(reader, 0)?;
+        let variant_count = decode_len(
+            reader,
+            "projection enum variants",
+            crate::MAX_DECLARATIONS_PER_KIND,
+        )?;
+        let mut variants = Vec::with_capacity(variant_count);
+        for _ in 0..variant_count {
+            variants.push(decode_enum_variant_id(reader)?);
+        }
+        let stored_maximum = reader.u32()? as usize;
+        let component = ProjectionGroupComponentSchema::new(value_type, variants)?;
+        if component.maximum_framed_bytes() != stored_maximum {
+            return Err(IrValidationError::HashMismatch {
+                kind: "projection component maximum",
+            });
+        }
+        components.push(component);
+    }
+    let measures = decode_record_schema(reader)?;
+    let stored_key_maximum = reader.u32()? as usize;
+    let stored_state_maximum = reader.u32()? as usize;
+    let schema = ProjectionGroupSchema::new(projection_id, components, measures)?;
+    if schema.maximum_complete_key_bytes() != stored_key_maximum
+        || schema.maximum_stored_state_bytes() != stored_state_maximum
+    {
+        return Err(IrValidationError::HashMismatch {
+            kind: "projection group maximum",
+        });
+    }
+    Ok(schema)
+}
+
+fn decode_schema_artifacts(
+    reader: &mut Reader<'_>,
+    schema: &SchemaIr,
+    commands: &[CommandPlan],
+    projections: &[ProjectionPlan],
+) -> Result<Vec<GeneratedSchemaArtifact>, IrValidationError> {
+    let count = decode_len_with_minimum(reader, "generated schema artifacts", 20_480, 41)?;
+    if count != expected_schema_artifact_count(schema, commands, projections)? {
+        return Err(IrValidationError::HashMismatch {
+            kind: "generated schema artifact registry",
+        });
+    }
+    let mut expected = Vec::with_capacity(count);
+    visit_expected_schema_artifacts(schema, commands, projections, |artifact| {
+        if reader.array::<5>()? != artifact.key().to_bytes()
+            || reader.bytes(crate::MAX_JSON_SCHEMA_ARTIFACT_BYTES)?
+                != artifact.canonical_json().as_bytes()
+            || SchemaHash::from_bytes(reader.array()?) != artifact.hash()
+        {
+            return Err(IrValidationError::HashMismatch {
+                kind: "generated schema artifact registry",
+            });
+        }
+        expected.push(artifact);
+        Ok(())
+    })?;
+    Ok(expected)
+}
+
+fn decode_mcp_registry(
+    reader: &mut Reader<'_>,
+) -> Result<McpCommandNameRegistryV1, IrValidationError> {
+    require_version(
+        reader.u32()?,
+        crate::MCP_COMMAND_NAME_REGISTRY_VERSION_V1,
+        "MCP command-name registry",
+    )?;
+    let lineage =
+        ContractLineage::new(reader.string(256)?).map_err(|_| IrValidationError::InvalidText {
+            kind: "MCP registry lineage",
+        })?;
+    let source_contract_name = reader.string(256)?;
+    let count = decode_len_with_minimum(reader, "MCP command-name entries", 4_096, 8)?;
+    let mut entries = Vec::with_capacity(count);
+    for _ in 0..count {
+        entries.push(McpCommandNameEntryV1::new(
+            decode_command_id(reader)?,
+            &source_contract_name,
+            reader.string(256)?,
+            reader.string(crate::MAX_MCP_COMMAND_TOOL_NAME_BYTES)?,
+        )?);
+    }
+    McpCommandNameRegistryV1::new(lineage, source_contract_name, entries)
+}
+
+fn decode_compatibility(
+    reader: &mut Reader<'_>,
+    has_parent: bool,
+) -> Result<CompatibilityReport, IrValidationError> {
+    let stored_overall = decode_compatibility_class(reader.u8()?)?;
+    let count = decode_len_with_minimum(reader, "compatibility entries", 4_096, 13)?;
+    let mut entries = Vec::with_capacity(count);
+    for _ in 0..count {
+        entries.push(CompatibilityEntry::new(
+            decode_compatibility_code(&reader.string(8)?)?,
+            reader.string(1_024)?,
+        )?);
+    }
+    let report = if has_parent {
+        CompatibilityReport::successor(entries)?
+    } else if entries.is_empty() {
+        CompatibilityReport::genesis()
+    } else {
+        return Err(IrValidationError::InvalidCompatibilityReport);
+    };
+    if report.overall() != stored_overall {
+        return Err(IrValidationError::InvalidCompatibilityReport);
+    }
+    Ok(report)
+}
+
+fn decode_compatibility_class(tag: u8) -> Result<CompatibilityClass, IrValidationError> {
+    match tag {
+        compatibility_tag::COMPATIBLE => Ok(CompatibilityClass::Compatible),
+        compatibility_tag::REQUIRES_EXPLICIT_VERSION => {
+            Ok(CompatibilityClass::RequiresExplicitVersion)
+        }
+        compatibility_tag::INCOMPATIBLE => Ok(CompatibilityClass::Incompatible),
+        tag => Err(IrValidationError::UnknownTag {
+            kind: "compatibility class",
+            tag,
+        }),
+    }
+}
+
+fn decode_compatibility_code(value: &str) -> Result<CompatibilityCode, IrValidationError> {
+    CompatibilityCode::from_code(value).ok_or(IrValidationError::InvalidCompatibilityReport)
+}
+
+fn reject_duplicate_by<T, K: Eq>(
+    values: &[T],
+    key: impl Fn(&T) -> K,
+    kind: &'static str,
+) -> Result<(), IrValidationError> {
+    if values.windows(2).any(|pair| key(&pair[0]) == key(&pair[1])) {
+        Err(IrValidationError::NonCanonicalOrder { kind })
+    } else {
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+mod conformance;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn empty_bundle() -> ContractBundle {
+        let lineage = ContractLineage::new("TestContract").expect("lineage");
+        ContractBundle::new(
+            "0.1.0",
+            lineage.clone(),
+            ContractVersion::new(1).expect("version"),
+            None,
+            SourceHash::from_bytes([3; 32]),
+            LineageLedgerV1::genesis(vec![]).expect("ledger"),
+            SchemaIr::new(vec![], vec![], vec![], vec![]).expect("schema"),
+            vec![],
+            vec![],
+            vec![],
+            McpCommandNameRegistryV1::new(lineage, "TestContract", vec![]).expect("registry"),
+            CompatibilityReport::genesis(),
+        )
+        .expect("bundle")
+    }
+
+    #[test]
+    fn mcp_registry_encoding_is_identical_for_every_declaration_permutation() {
+        fn visit_permutations<T>(values: &mut [T], index: usize, visit: &mut impl FnMut(&[T])) {
+            if index == values.len() {
+                visit(values);
+                return;
+            }
+            for selected in index..values.len() {
+                values.swap(index, selected);
+                visit_permutations(values, index + 1, visit);
+                values.swap(index, selected);
+            }
+        }
+
+        let contract_name = "LegalSpend2";
+        let lineage = ContractLineage::new(contract_name).expect("lineage");
+        let mut entries = [
+            (11, "Rebuild2", "riffdb.cmd.legalspend2.rebuild2"),
+            (2, "Run", "riffdb.cmd.legalspend2.run"),
+            (
+                10,
+                "Allocate_Budget",
+                "riffdb.cmd.legalspend2.allocate_budget",
+            ),
+            (1, "Z", "riffdb.cmd.legalspend2.z"),
+        ]
+        .map(|(id, source, tool)| {
+            McpCommandNameEntryV1::new(
+                CommandId::new(id).expect("command ID"),
+                contract_name,
+                source,
+                tool,
+            )
+            .expect("entry")
+        });
+        let expected_registry =
+            McpCommandNameRegistryV1::new(lineage.clone(), contract_name, entries.to_vec())
+                .expect("registry");
+        let mut expected_writer = Writer::new(4_096);
+        encode_mcp_registry(&mut expected_writer, &expected_registry).expect("encode registry");
+        let expected_bytes = expected_writer.finish();
+        assert_eq!(
+            expected_registry
+                .entries()
+                .iter()
+                .map(|entry| (
+                    entry.command_id().get(),
+                    entry.source_command_name(),
+                    entry.tool_name().as_str(),
+                ))
+                .collect::<Vec<_>>(),
+            vec![
+                (1, "Z", "riffdb.cmd.legalspend2.z"),
+                (2, "Run", "riffdb.cmd.legalspend2.run"),
+                (
+                    10,
+                    "Allocate_Budget",
+                    "riffdb.cmd.legalspend2.allocate_budget",
+                ),
+                (11, "Rebuild2", "riffdb.cmd.legalspend2.rebuild2"),
+            ]
+        );
+
+        let mut permutations = 0;
+        visit_permutations(&mut entries, 0, &mut |permutation| {
+            let registry =
+                McpCommandNameRegistryV1::new(lineage.clone(), contract_name, permutation.to_vec())
+                    .expect("permuted registry");
+            assert_eq!(registry, expected_registry);
+            let mut writer = Writer::new(4_096);
+            encode_mcp_registry(&mut writer, &registry).expect("encode registry");
+            assert_eq!(writer.finish(), expected_bytes);
+            permutations += 1;
+        });
+        assert_eq!(permutations, 24);
+    }
+
+    #[test]
+    fn referenced_enum_hash_layout_omits_display_name_and_has_exact_bytes() {
+        let enum_id = EnumTypeId::new(2).expect("enum ID");
+        let enum_ids = BTreeSet::from([enum_id]);
+        let schema = |name: &str, second_variant: &str| {
+            SchemaIr::new(
+                vec![],
+                vec![],
+                vec![
+                    EnumSchema::new(
+                        enum_id,
+                        name,
+                        vec![
+                            EnumVariantSchema::new(
+                                EnumVariantId::new(1).expect("variant ID"),
+                                "Open",
+                            )
+                            .expect("variant"),
+                            EnumVariantSchema::new(
+                                EnumVariantId::new(10).expect("variant ID"),
+                                second_variant,
+                            )
+                            .expect("variant"),
+                        ],
+                    )
+                    .expect("enum"),
+                ],
+                vec![],
+            )
+            .expect("schema")
+        };
+        let encode = |schema: &SchemaIr| {
+            let mut writer = Writer::new(128);
+            encode_enum_closure(&mut writer, &enum_ids, schema).expect("enum closure");
+            writer.finish()
+        };
+
+        let expected = [
+            0, 0, 0, 1, // enum count
+            0, 0, 0, 2, // EnumTypeId
+            0, 0, 0, 2, // variant count
+            0, 0, 0, 1, // first EnumVariantId
+            0, 0, 0, 4, b'O', b'p', b'e', b'n', // first name
+            0, 0, 0, 10, // second EnumVariantId
+            0, 0, 0, 6, b'C', b'l', b'o', b's', b'e', b'd', // second name
+        ];
+        let base = encode(&schema("State", "Closed"));
+        assert_eq!(base, expected);
+        assert_eq!(base, encode(&schema("Status", "Closed")));
+        assert_ne!(base, encode(&schema("State", "Sealed")));
+    }
+
+    #[test]
+    fn genesis_allocation_is_independent_of_input_order() {
+        let namespace =
+            StableIdNamespace::new(StableIdNamespaceTag::Command, 0, vec![]).expect("namespace");
+        let a = StableIdentity::new(namespace.clone(), "Alpha").expect("identity");
+        let b = StableIdentity::new(namespace, "Beta").expect("identity");
+        let one = LineageLedgerV1::genesis(vec![b.clone(), a.clone()]).expect("ledger");
+        let two = LineageLedgerV1::genesis(vec![a.clone(), b.clone()]).expect("ledger");
+        assert_eq!(one, two);
+        // Identity keys compare the canonical u16 name length before bytes.
+        assert_eq!(one.active_id(&a), Some(2));
+        assert_eq!(one.active_id(&b), Some(1));
+    }
+
+    #[test]
+    fn successor_never_resurrects_a_tombstone() {
+        let namespace =
+            StableIdNamespace::new(StableIdNamespaceTag::Command, 0, vec![]).expect("namespace");
+        let identity = StableIdentity::new(namespace, "Alpha").expect("identity");
+        let genesis = LineageLedgerV1::genesis(vec![identity.clone()]).expect("genesis");
+        let removed = LineageLedgerV1::successor(&genesis, vec![]).expect("removed");
+        assert!(LineageLedgerV1::successor(&removed, vec![identity]).is_err());
+    }
+
+    #[test]
+    fn index_ids_share_one_global_sequence_across_entity_owners() {
+        let first = StableIdentity::new(
+            StableIdNamespace::new(StableIdNamespaceTag::Index, 0x01, vec![1]).expect("namespace"),
+            "by_name",
+        )
+        .expect("identity");
+        let second = StableIdentity::new(
+            StableIdNamespace::new(StableIdNamespaceTag::Index, 0x01, vec![2]).expect("namespace"),
+            "by_name",
+        )
+        .expect("identity");
+        let ledger = LineageLedgerV1::genesis(vec![second.clone(), first.clone()]).expect("ledger");
+        let index_allocations = ledger
+            .allocations()
+            .iter()
+            .filter(|allocation| allocation.namespace().tag() == StableIdNamespaceTag::Index)
+            .collect::<Vec<_>>();
+        assert_eq!(index_allocations.len(), 1);
+        assert_eq!(ledger.active_id(&first), Some(1));
+        assert_eq!(ledger.active_id(&second), Some(2));
+    }
+
+    #[test]
+    fn empty_genesis_retains_all_eight_global_states() {
+        let ledger = LineageLedgerV1::genesis(vec![]).expect("ledger");
+        assert_eq!(ledger.allocations().len(), 8);
+        assert!(ledger.allocations().iter().all(|allocation| {
+            allocation.namespace().owner_ids().is_empty()
+                && allocation.max_allocated() == 0
+                && allocation.entries().is_empty()
+        }));
+    }
+
+    #[test]
+    fn ledger_rejects_empty_scoped_state_without_current_or_historical_owner() {
+        let mut ledger = LineageLedgerV1::genesis(vec![]).expect("ledger");
+        ledger.allocations.push(LineageAllocation {
+            namespace: StableIdAllocationNamespace::scoped(
+                StableIdNamespaceTag::Field,
+                0x01,
+                vec![99],
+            )
+            .expect("namespace"),
+            max_allocated: 0,
+            entries: vec![],
+        });
+        ledger
+            .allocations
+            .sort_unstable_by(|left, right| left.namespace.cmp(&right.namespace));
+        let schema = SchemaIr::new(vec![], vec![], vec![], vec![]).expect("schema");
+        assert!(validate_ledger(&ledger, &schema, &[], &[]).is_err());
+
+        let mut bundle = empty_bundle();
+        bundle.ledger = ledger;
+        let encoded = encode_bundle(&bundle).expect("encode hostile bundle");
+        assert!(ContractBundle::decode(&encoded).is_err());
+    }
+
+    #[test]
+    fn successor_drops_nonrequired_empty_parent_allocation_state() {
+        let extra = StableIdAllocationNamespace::scoped(
+            StableIdNamespaceTag::Field,
+            record_owner_tag::ENTITY,
+            vec![99],
+        )
+        .expect("namespace");
+        let parent =
+            LineageLedgerV1::genesis_complete(vec![], vec![extra.clone()]).expect("parent ledger");
+        assert!(
+            parent
+                .allocations()
+                .iter()
+                .any(|item| item.namespace() == &extra)
+        );
+        let successor = LineageLedgerV1::successor(&parent, vec![]).expect("successor");
+        assert!(
+            successor
+                .allocations()
+                .iter()
+                .all(|item| item.namespace() != &extra)
+        );
+    }
+
+    #[test]
+    fn canonical_empty_bundle_round_trips_and_rejects_trailing_bytes() {
+        let bundle = empty_bundle();
+        assert_eq!(
+            ContractBundle::decode(bundle.canonical_bytes()).expect("decoded"),
+            bundle
+        );
+        let mut trailing = bundle.canonical_bytes().to_vec();
+        trailing.push(0);
+        assert!(ContractBundle::decode(&trailing).is_err());
+    }
+
+    #[test]
+    fn bundle_construction_rejects_a_command_capability_from_another_lineage() {
+        let (plan, schema) = crate::plan::tests::minimal_mutation();
+        let lineage = ContractLineage::new("DifferentLineage").expect("lineage");
+        let result = ContractBundle::new(
+            "0.1.0",
+            lineage.clone(),
+            plan.contract_version(),
+            None,
+            SourceHash::from_bytes([3; 32]),
+            LineageLedgerV1::genesis(vec![]).expect("ledger"),
+            schema,
+            vec![plan],
+            vec![],
+            vec![],
+            McpCommandNameRegistryV1::new(lineage, "DifferentLineage", vec![]).expect("registry"),
+            CompatibilityReport::genesis(),
+        );
+        assert!(matches!(
+            result,
+            Err(IrValidationError::InvalidReference {
+                kind: "command capability requirement"
+            })
+        ));
+    }
+
+    #[test]
+    fn command_entry_round_trips_root_validation_table_and_expression_tag() {
+        let (plan, schema) = crate::plan::tests::root_validation_mutation(true);
+        let mut writer = Writer::new(MAX_BUNDLE_BYTES);
+        encode_command_bundle_entry(&mut writer, &plan, &schema).expect("encode command");
+        let bytes = writer.finish();
+        let mut reader = Reader::new(&bytes);
+        let decoded = decode_command(&mut reader, plan.required_capability().lineage(), &schema)
+            .expect("decode command");
+        reader.finish().expect("fully consumed");
+        assert_eq!(decoded, plan);
+        assert_eq!(decoded.root_validation_reads().len(), 1);
+        assert!(matches!(
+            decoded.expressions().get(ExprId::new(2)).map(|node| node.kind()),
+            Some(ExpressionKind::RootValidationField { read, field })
+                if *read == crate::RootValidationReadId::new(0)
+                    && *field == FieldId::new(2).expect("field")
+        ));
+    }
+
+    #[test]
+    fn every_truncated_canonical_prefix_and_deterministic_malformed_corpus_rejects() {
+        let bundle = empty_bundle();
+        for length in 0..bundle.canonical_bytes().len() {
+            assert!(ContractBundle::decode(&bundle.canonical_bytes()[..length]).is_err());
+        }
+        for seed in 0u64..256 {
+            let mut state = seed.wrapping_add(0x9e37_79b9_7f4a_7c15);
+            let length = (seed as usize * 37) % 513;
+            let mut bytes = Vec::with_capacity(length);
+            for _ in 0..length {
+                state ^= state << 13;
+                state ^= state >> 7;
+                state ^= state << 17;
+                bytes.push(state as u8);
+            }
+            assert!(ContractBundle::decode(&bytes).is_err());
+        }
+    }
+
+    #[test]
+    fn decoder_rejects_count_before_count_controlled_allocation() {
+        let encoded_count = 262_144u32.to_be_bytes();
+        let mut reader = Reader::new(&encoded_count);
+        assert!(matches!(
+            decode_len_with_minimum(&mut reader, "hostile count", 262_144, 2),
+            Err(IrValidationError::UnexpectedEnd)
+        ));
+    }
+
+    #[test]
+    fn decoder_rejects_unknown_core_tags_and_nonforward_expression() {
+        assert!(matches!(
+            decode_namespace_tag(0),
+            Err(IrValidationError::UnknownTag { .. })
+        ));
+        assert!(matches!(
+            decode_lineage_entry_state(0),
+            Err(IrValidationError::UnknownTag { .. })
+        ));
+        assert!(matches!(
+            decode_record_ref(&mut Reader::new(&[0])),
+            Err(IrValidationError::UnknownTag { .. })
+        ));
+        assert!(matches!(
+            decode_value_type(&mut Reader::new(&[0]), 0),
+            Err(IrValidationError::UnknownTag { .. })
+        ));
+        assert!(matches!(
+            decode_unary_operator(0),
+            Err(IrValidationError::UnknownTag { .. })
+        ));
+        assert!(matches!(
+            decode_binary_operator(0),
+            Err(IrValidationError::UnknownTag { .. })
+        ));
+        assert!(matches!(
+            decode_binding_mode(0),
+            Err(IrValidationError::UnknownTag { .. })
+        ));
+        assert!(matches!(
+            decode_execution_class(0),
+            Err(IrValidationError::UnknownTag { .. })
+        ));
+        assert!(matches!(
+            decode_retry_policy(0),
+            Err(IrValidationError::UnknownTag { .. })
+        ));
+        assert!(matches!(
+            decode_capability_requirement(&mut Reader::new(&[0])),
+            Err(IrValidationError::UnknownTag { .. })
+        ));
+        assert!(matches!(
+            decode_projection_frontier(0),
+            Err(IrValidationError::UnknownTag { .. })
+        ));
+        assert!(matches!(
+            decode_projection_aggregation(0),
+            Err(IrValidationError::UnknownTag { .. })
+        ));
+        assert!(matches!(
+            decode_compatibility_class(0),
+            Err(IrValidationError::UnknownTag { .. })
+        ));
+
+        let empty_schema = SchemaIr::new(vec![], vec![], vec![], vec![]).expect("schema");
+        assert!(matches!(
+            decode_instruction(
+                &mut Reader::new(&[0]),
+                &[],
+                &empty_schema,
+                &ExpressionArena::empty(),
+            ),
+            Err(IrValidationError::UnknownTag { .. })
+        ));
+
+        let mut key = Writer::new(32);
+        key.u32(crate::KEY_CODEC_VERSION_V1).expect("version");
+        key.u8(0).expect("unknown purpose");
+        assert!(matches!(
+            decode_key_schema(&mut Reader::new(&key.finish()), 0),
+            Err(IrValidationError::UnknownTag { .. })
+        ));
+
+        let mut unknown = Writer::new(32);
+        unknown.u32(1).expect("count");
+        unknown.u8(0).expect("unknown expression");
+        encode_value_type(&mut unknown, &ValueType::bool()).expect("type");
+        assert!(matches!(
+            decode_expression_arena(&mut Reader::new(&unknown.finish())),
+            Err(IrValidationError::UnknownTag { .. })
+        ));
+
+        let mut nonforward = Writer::new(32);
+        nonforward.u32(1).expect("count");
+        nonforward.u8(expression_tag::UNARY).expect("tag");
+        encode_value_type(&mut nonforward, &ValueType::bool()).expect("type");
+        nonforward.u8(unary_tag::NOT).expect("operator");
+        nonforward.u32(0).expect("self operand");
+        assert!(matches!(
+            decode_expression_arena(&mut Reader::new(&nonforward.finish())),
+            Err(IrValidationError::NonForwardExpression)
+        ));
+
+        let count = crate::MAX_EXPRESSION_NESTING + 1;
+        let mut too_deep = Writer::new(4_096);
+        too_deep.u32(count as u32).expect("count");
+        for index in 0..count {
+            if index == 0 {
+                too_deep.u8(expression_tag::CONSTANT).expect("constant tag");
+                encode_value_type(&mut too_deep, &ValueType::bool()).expect("type");
+                too_deep
+                    .bytes(
+                        &encode_canonical_value(&riffdb_types::CanonicalValue::Bool(true))
+                            .expect("value"),
+                    )
+                    .expect("constant");
+            } else {
+                too_deep.u8(expression_tag::BINARY).expect("binary tag");
+                encode_value_type(&mut too_deep, &ValueType::bool()).expect("type");
+                too_deep.u8(binary_tag::AND).expect("operator");
+                too_deep.u32((index - 1) as u32).expect("left");
+                too_deep.u32((index - 1) as u32).expect("right");
+            }
+        }
+        assert!(matches!(
+            decode_expression_arena(&mut Reader::new(&too_deep.finish())),
+            Err(IrValidationError::LimitExceeded { .. })
+        ));
+    }
+
+    #[test]
+    fn canonical_constant_preflight_enforces_ir_collection_bound_before_allocation() {
+        let list = |count| {
+            encode_canonical_value(
+                &riffdb_types::CanonicalValue::list(vec![
+                    riffdb_types::CanonicalValue::Bool(true);
+                    count
+                ])
+                .expect("list"),
+            )
+            .expect("canonical value")
+        };
+        assert!(preflight_ir_canonical_value(&list(crate::MAX_OBJECT_FIELDS)).is_ok());
+        assert!(matches!(
+            preflight_ir_canonical_value(&list(crate::MAX_OBJECT_FIELDS + 1)),
+            Err(IrValidationError::LimitExceeded { .. })
+        ));
+        let record = |count| {
+            encode_canonical_value(
+                &riffdb_types::CanonicalValue::record(
+                    (1..=count)
+                        .map(|id| {
+                            (
+                                FieldId::new(id as u32).expect("field ID"),
+                                riffdb_types::CanonicalValue::Bool(true),
+                            )
+                        })
+                        .collect(),
+                )
+                .expect("record"),
+            )
+            .expect("canonical value")
+        };
+        assert!(preflight_ir_canonical_value(&record(crate::MAX_OBJECT_FIELDS)).is_ok());
+        assert!(matches!(
+            preflight_ir_canonical_value(&record(crate::MAX_OBJECT_FIELDS + 1)),
+            Err(IrValidationError::LimitExceeded { .. })
+        ));
+
+        let mut truncated = vec![riffdb_types::CANONICAL_VALUE_VERSION, 0x0c];
+        truncated.extend_from_slice(&65_535u32.to_be_bytes());
+        assert!(matches!(
+            preflight_ir_canonical_value(&truncated),
+            Err(IrValidationError::LimitExceeded { .. })
+        ));
+
+        let mut nested = vec![riffdb_types::CANONICAL_VALUE_VERSION, 0x0c];
+        nested.extend_from_slice(&1u32.to_be_bytes());
+        nested.extend_from_slice(&[riffdb_types::CANONICAL_VALUE_VERSION, 0x0c]);
+        nested.extend_from_slice(&(crate::MAX_OBJECT_FIELDS as u32 + 1).to_be_bytes());
+        assert!(matches!(
+            preflight_ir_canonical_value(&nested),
+            Err(IrValidationError::LimitExceeded { .. })
+        ));
+    }
+
+    #[test]
+    fn decoder_rejects_every_top_level_version_mismatch_and_hash_mismatch() {
+        let bundle = empty_bundle();
+        for version_index in 0..3 {
+            let mut bytes = bundle.canonical_bytes().to_vec();
+            let offset = BUNDLE_MAGIC.len() + version_index * 4;
+            bytes[offset..offset + 4].copy_from_slice(&0u32.to_be_bytes());
+            assert!(matches!(
+                ContractBundle::decode(&bytes),
+                Err(IrValidationError::UnsupportedVersion { .. })
+            ));
+        }
+
+        let mut bytes = bundle.canonical_bytes().to_vec();
+        let source_hash = bundle.source_hash();
+        let source = source_hash.as_bytes();
+        let source_offset = bytes
+            .windows(source.len())
+            .position(|window| window == source)
+            .expect("source hash offset");
+        bytes[source_offset + source.len()] ^= 0x01;
+        assert!(matches!(
+            ContractBundle::decode(&bytes),
+            Err(IrValidationError::HashMismatch { .. })
+        ));
+    }
+
+    #[test]
+    fn decoder_rejects_every_nested_format_version_mismatch() {
+        let unsupported = 0u32.to_be_bytes();
+        assert!(matches!(
+            decode_ledger(&mut Reader::new(&unsupported)),
+            Err(IrValidationError::UnsupportedVersion { .. })
+        ));
+        assert!(matches!(
+            decode_key_schema(&mut Reader::new(&unsupported), 0),
+            Err(IrValidationError::UnsupportedVersion { .. })
+        ));
+        assert!(matches!(
+            decode_mcp_registry(&mut Reader::new(&unsupported)),
+            Err(IrValidationError::UnsupportedVersion { .. })
+        ));
+
+        let mut projection_group = Writer::new(8);
+        projection_group.u32(1).expect("projection ID");
+        projection_group.u32(0).expect("unsupported version");
+        assert!(matches!(
+            decode_projection_group_schema(&mut Reader::new(&projection_group.finish())),
+            Err(IrValidationError::UnsupportedVersion { .. })
+        ));
+    }
+
+    #[test]
+    fn decoder_rejects_recursive_declared_event_record_types_without_recursing() {
+        let encode = |references: &[(EventTypeId, EventTypeId)]| {
+            let mut writer = Writer::new(4_096);
+            writer.u32(0).expect("entity count");
+            writer.u32(references.len() as u32).expect("event count");
+            for (event_id, referenced_id) in references {
+                writer.u32(event_id.get()).expect("event ID");
+                writer
+                    .string(&format!("RecursiveEvent{}", event_id.get()))
+                    .expect("event name");
+                encode_record_ref(&mut writer, &RecordTypeRef::Event(*event_id))
+                    .expect("event owner");
+                writer.u32(1).expect("field count");
+                writer.u32(FieldId::first().get()).expect("field ID");
+                writer.string("nested").expect("field name");
+                encode_value_type(
+                    &mut writer,
+                    &ValueType::record(RecordTypeRef::Event(*referenced_id)),
+                )
+                .expect("record type");
+            }
+            writer.u32(0).expect("enum count");
+            writer.u32(0).expect("aggregate count");
+            writer.finish()
+        };
+
+        let first = EventTypeId::first();
+        let second = EventTypeId::new(2).expect("event ID");
+        for bytes in [
+            encode(&[(first, first)]),
+            encode(&[(first, second), (second, first)]),
+        ] {
+            assert!(matches!(
+                decode_schema(&mut Reader::new(&bytes)),
+                Err(IrValidationError::TypeMismatch { .. })
+            ));
+        }
+    }
+
+    #[test]
+    fn schema_artifact_count_mismatch_rejects_before_artifact_generation() {
+        let event_id = EventTypeId::first();
+        let fields = (1..=crate::MAX_DECLARATIONS_PER_KIND as u32)
+            .map(|id| {
+                FieldSchema::new(
+                    FieldId::new(id).expect("field ID"),
+                    format!("field_{id}_{}", "x".repeat(220)),
+                    ValueType::bool(),
+                )
+                .expect("field")
+            })
+            .collect();
+        let event = EventSchema::new(
+            event_id,
+            "LargeEvent",
+            RecordSchema::new(RecordTypeRef::Event(event_id), fields).expect("payload"),
+        )
+        .expect("event");
+        let schema = SchemaIr::new(vec![], vec![event], vec![], vec![]).expect("schema");
+        let encoded_zero_count = 0u32.to_be_bytes();
+        assert!(matches!(
+            decode_schema_artifacts(&mut Reader::new(&encoded_zero_count), &schema, &[], &[],),
+            Err(IrValidationError::HashMismatch {
+                kind: "generated schema artifact registry",
+            })
+        ));
+    }
+
+    #[test]
+    fn decoded_count_and_writer_size_boundaries_are_exact() {
+        let mut exact = 4_096u32.to_be_bytes().to_vec();
+        exact.resize(4 + 4_096, 0);
+        assert_eq!(
+            decode_len(&mut Reader::new(&exact), "boundary", 4_096).expect("exact maximum"),
+            4_096
+        );
+        let above = 4_097u32.to_be_bytes();
+        assert!(matches!(
+            decode_len(&mut Reader::new(&above), "boundary", 4_096),
+            Err(IrValidationError::LimitExceeded { .. })
+        ));
+
+        let mut writer = Writer::new(4);
+        writer.raw(&[0; 4]).expect("exact maximum");
+        assert!(matches!(
+            writer.raw(&[0]),
+            Err(IrValidationError::LimitExceeded { .. })
+        ));
+    }
+
+    #[test]
+    fn ledger_rejects_duplicate_identity_across_tombstone_history() {
+        let mut ledger = LineageLedgerV1::genesis(vec![]).expect("ledger");
+        let identity = StableIdentity::new(
+            StableIdNamespace::new(StableIdNamespaceTag::Command, 0, vec![]).expect("namespace"),
+            "OldCommand",
+        )
+        .expect("identity");
+        let allocation = ledger
+            .allocations
+            .iter_mut()
+            .find(|allocation| allocation.namespace.tag == StableIdNamespaceTag::Command)
+            .expect("command allocation");
+        allocation.max_allocated = 2;
+        allocation.entries = vec![
+            LineageEntry {
+                id: 1,
+                identity: identity.clone(),
+                state: LineageEntryState::Tombstone,
+            },
+            LineageEntry {
+                id: 2,
+                identity,
+                state: LineageEntryState::Tombstone,
+            },
+        ];
+        let schema = SchemaIr::new(vec![], vec![], vec![], vec![]).expect("schema");
+        assert!(validate_ledger(&ledger, &schema, &[], &[]).is_err());
+    }
+
+    proptest::proptest! {
+        #![proptest_config(proptest::test_runner::Config::with_cases(128))]
+
+        #[test]
+        fn arbitrary_bundle_bytes_decode_totally_and_only_to_canonical_roundtrips(
+            bytes in proptest::collection::vec(proptest::prelude::any::<u8>(), 0..=2_048),
+        ) {
+            if let Ok(bundle) = ContractBundle::decode(&bytes) {
+                proptest::prop_assert_eq!(bundle.canonical_bytes(), bytes.as_slice());
+                let decoded = ContractBundle::decode(bundle.canonical_bytes())
+                    .expect("accepted canonical bytes round trip");
+                proptest::prop_assert_eq!(decoded, bundle);
+            }
+        }
+    }
+}

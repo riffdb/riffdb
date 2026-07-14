@@ -1,0 +1,17 @@
+format=riffdb-late-bound-fixture-v1
+entity_fields=64
+accepted_outcome_fields=128
+accepted_plan_hash=7101d01d50c60511d569e5919f26cd047849eea06cd65437718272581169f278
+rejected_outcome_fields=512
+rejected_source_bytes=13699
+expected=RDB-C020
+primary=2326..2332
+primary_text=Expand
+help=reduce declared bounds or the number of schema components
+kind=semantic
+count=1
+diagnostic.0.code=RDB-C020
+diagnostic.0.message=a compiled artifact exceeds a fixed semantic bound
+diagnostic.0.primary=2326..2332
+diagnostic.0.related=none
+diagnostic.0.help=reduce declared bounds or the number of schema components

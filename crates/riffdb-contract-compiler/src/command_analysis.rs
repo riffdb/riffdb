@@ -1,0 +1,459 @@
+//! Grammar-v1 command semantic validation over resolved typed HIR.
+
+use std::collections::{BTreeMap, BTreeSet};
+
+use riffdb_contract_ir::{BindingId, BindingMode, ExpressionKind, ValueTypeTag};
+use riffdb_types::FieldId;
+
+use crate::diagnostic::{CompilerDiagnostic, CompilerDiagnosticCode, CompilerDiagnostics};
+use crate::hir::{
+    HirCommand, HirEffect, HirExpressionRoot, HirObjectField, HirOutcome, TypedContractHir,
+};
+
+#[derive(Clone, Debug)]
+struct BindingState {
+    mode: BindingMode,
+    key_fields: BTreeSet<FieldId>,
+    initialized_fields: BTreeSet<FieldId>,
+    required_create_fields: BTreeSet<FieldId>,
+}
+
+/// Validates all command-local semantics and dependency visibility.
+pub(crate) fn validate_commands(hir: &TypedContractHir) -> Result<(), CompilerDiagnostics> {
+    let mut diagnostics = Vec::new();
+    for command in &hir.commands {
+        validate_command(hir, command, &mut diagnostics);
+    }
+    if diagnostics.is_empty() {
+        Ok(())
+    } else {
+        Err(CompilerDiagnostics::new(diagnostics).expect("nonempty diagnostics"))
+    }
+}
+
+fn validate_command(
+    hir: &TypedContractHir,
+    command: &HirCommand,
+    diagnostics: &mut Vec<CompilerDiagnostic>,
+) {
+    validate_binding_ownership(command, diagnostics);
+    let secret_input = validate_idempotency(command, diagnostics);
+    let mut states = command
+        .bindings
+        .iter()
+        .filter_map(|binding| {
+            let entity = hir.entity(binding.entity_id)?;
+            let key_fields = entity.key_field_set();
+            let initialized_fields = if binding.mode == BindingMode::Create {
+                entity
+                    .fields
+                    .iter()
+                    .filter_map(|field| {
+                        (key_fields.contains(&field.id) || field.value_type.is_optional())
+                            .then_some(field.id)
+                    })
+                    .collect()
+            } else {
+                entity.fields.iter().map(|field| field.id).collect()
+            };
+            let required_create_fields = if binding.mode == BindingMode::Create {
+                entity
+                    .fields
+                    .iter()
+                    .filter_map(|field| {
+                        (!key_fields.contains(&field.id) && !field.value_type.is_optional())
+                            .then_some(field.id)
+                    })
+                    .collect()
+            } else {
+                BTreeSet::new()
+            };
+            Some((
+                binding.id,
+                BindingState {
+                    mode: binding.mode,
+                    key_fields,
+                    initialized_fields,
+                    required_create_fields,
+                },
+            ))
+        })
+        .collect::<BTreeMap<_, _>>();
+
+    let mut influential_roots = Vec::new();
+    for binding in &command.bindings {
+        influential_roots.extend(binding.arguments.iter());
+        influential_roots.extend(binding.failure.fields.iter().map(|field| &field.value));
+    }
+    let mut outcomes = command
+        .bindings
+        .iter()
+        .map(|binding| &binding.failure)
+        .collect::<Vec<_>>();
+    for requirement in &command.requirements {
+        validate_create_reads(command, &states, &requirement.condition, diagnostics);
+        validate_create_object_reads(command, &states, &requirement.rejection.fields, diagnostics);
+        influential_roots.push(&requirement.condition);
+        influential_roots.extend(
+            requirement
+                .rejection
+                .fields
+                .iter()
+                .map(|field| &field.value),
+        );
+        outcomes.push(&requirement.rejection);
+    }
+
+    let mut written = BTreeSet::new();
+    for effect in &command.effects {
+        match effect {
+            HirEffect::Set {
+                target_span,
+                binding,
+                field,
+                value,
+                ..
+            } => {
+                let Some(state) = states.get(binding) else {
+                    diagnostics.push(CompilerDiagnostic::new(
+                        CompilerDiagnosticCode::UnknownName,
+                        *target_span,
+                    ));
+                    continue;
+                };
+                if state.mode == BindingMode::Read
+                    || state.key_fields.contains(field)
+                    || !written.insert((*binding, *field))
+                {
+                    diagnostics.push(CompilerDiagnostic::new(
+                        CompilerDiagnosticCode::InvalidMutation,
+                        *target_span,
+                    ));
+                    continue;
+                }
+                validate_create_reads(command, &states, value, diagnostics);
+                influential_roots.push(value);
+                states
+                    .get_mut(binding)
+                    .expect("binding state exists")
+                    .initialized_fields
+                    .insert(*field);
+            }
+            HirEffect::Emit { fields, .. } => {
+                validate_create_object_reads(command, &states, fields, diagnostics);
+                influential_roots.extend(fields.iter().map(|field| &field.value));
+            }
+        }
+    }
+    validate_create_object_reads(command, &states, &command.success.fields, diagnostics);
+    influential_roots.extend(command.success.fields.iter().map(|field| &field.value));
+    outcomes.push(&command.success);
+
+    for state in states.values() {
+        if state.mode == BindingMode::Create
+            && !state
+                .required_create_fields
+                .is_subset(&state.initialized_fields)
+        {
+            diagnostics.push(CompilerDiagnostic::new(
+                CompilerDiagnosticCode::InvalidCreation,
+                command.span,
+            ));
+        }
+    }
+    validate_outcome_shapes(&outcomes, diagnostics);
+    validate_secret_taint(secret_input, command, &influential_roots, diagnostics);
+}
+
+fn validate_binding_ownership(command: &HirCommand, diagnostics: &mut Vec<CompilerDiagnostic>) {
+    let has_mutable_binding = command
+        .bindings
+        .iter()
+        .any(|binding| matches!(binding.mode, BindingMode::Mutate | BindingMode::Create));
+    if !command.bindings.is_empty() && (command.effects.is_empty() || has_mutable_binding) {
+        return;
+    }
+
+    let span = command
+        .effects
+        .first()
+        .map_or(command.span, |effect| match effect {
+            HirEffect::Set { target_span, .. } => *target_span,
+            HirEffect::Emit { event_span, .. } => *event_span,
+        });
+    diagnostics.push(CompilerDiagnostic::new(
+        CompilerDiagnosticCode::InvalidBinding,
+        span,
+    ));
+}
+
+fn validate_idempotency(
+    command: &HirCommand,
+    diagnostics: &mut Vec<CompilerDiagnostic>,
+) -> Option<FieldId> {
+    let mutating = command
+        .bindings
+        .iter()
+        .any(|binding| matches!(binding.mode, BindingMode::Mutate | BindingMode::Create))
+        || !command.effects.is_empty();
+    let Some(idempotency) = &command.idempotency else {
+        if mutating {
+            diagnostics.push(CompilerDiagnostic::new(
+                CompilerDiagnosticCode::MissingIdempotency,
+                command.span,
+            ));
+        }
+        return None;
+    };
+    let Some(node) = idempotency.expressions.node(idempotency.root.id) else {
+        diagnostics.push(CompilerDiagnostic::new(
+            CompilerDiagnosticCode::InvalidIdempotency,
+            idempotency.root.span,
+        ));
+        return None;
+    };
+    let ExpressionKind::InputField(field_id) = node.kind else {
+        diagnostics.push(CompilerDiagnostic::new(
+            CompilerDiagnosticCode::InvalidIdempotency,
+            idempotency.root.span,
+        ));
+        return None;
+    };
+    let Some(input) = command
+        .inputs
+        .iter()
+        .find(|input| input.field.id == field_id)
+    else {
+        diagnostics.push(CompilerDiagnostic::new(
+            CompilerDiagnosticCode::InvalidIdempotency,
+            idempotency.root.span,
+        ));
+        return None;
+    };
+    let valid = input.field.value_type.tag() == ValueTypeTag::String
+        && input
+            .field
+            .value_type
+            .byte_bound()
+            .is_some_and(|maximum| (1..=128).contains(&maximum));
+    if valid {
+        Some(field_id)
+    } else {
+        diagnostics.push(CompilerDiagnostic::new(
+            CompilerDiagnosticCode::InvalidIdempotency,
+            idempotency.root.span,
+        ));
+        None
+    }
+}
+
+fn validate_create_object_reads(
+    command: &HirCommand,
+    states: &BTreeMap<BindingId, BindingState>,
+    fields: &[HirObjectField],
+    diagnostics: &mut Vec<CompilerDiagnostic>,
+) {
+    for field in fields {
+        validate_create_reads(command, states, &field.value, diagnostics);
+    }
+}
+
+fn validate_create_reads(
+    command: &HirCommand,
+    states: &BTreeMap<BindingId, BindingState>,
+    root: &HirExpressionRoot,
+    diagnostics: &mut Vec<CompilerDiagnostic>,
+) {
+    let Ok(dependencies) = command.expressions.dependencies(root.id, root.span) else {
+        diagnostics.push(CompilerDiagnostic::new(
+            CompilerDiagnosticCode::InvalidIr,
+            root.span,
+        ));
+        return;
+    };
+    for (binding, field) in dependencies.bound_fields() {
+        if states.get(binding).is_some_and(|state| {
+            state.mode == BindingMode::Create && !state.initialized_fields.contains(field)
+        }) {
+            diagnostics.push(CompilerDiagnostic::new(
+                CompilerDiagnosticCode::InvalidCreation,
+                root.span,
+            ));
+        }
+    }
+    for binding in dependencies.complete_bindings() {
+        if states.get(binding).is_some_and(|state| {
+            state.mode == BindingMode::Create
+                && !state
+                    .required_create_fields
+                    .is_subset(&state.initialized_fields)
+        }) {
+            diagnostics.push(CompilerDiagnostic::new(
+                CompilerDiagnosticCode::InvalidCreation,
+                root.span,
+            ));
+        }
+    }
+}
+
+fn validate_outcome_shapes(outcomes: &[&HirOutcome], diagnostics: &mut Vec<CompilerDiagnostic>) {
+    let mut by_id = BTreeMap::<_, Vec<&HirOutcome>>::new();
+    for outcome in outcomes {
+        by_id.entry(outcome.id).or_default().push(outcome);
+    }
+    for occurrences in by_id.values() {
+        let field_names = occurrences
+            .iter()
+            .flat_map(|outcome| outcome.fields.iter().map(|field| field.name.clone()))
+            .collect::<BTreeSet<_>>();
+        for name in field_names {
+            let present = occurrences
+                .iter()
+                .filter_map(|outcome| outcome.fields.iter().find(|field| field.name == name))
+                .collect::<Vec<_>>();
+            let inconsistent_type = present
+                .windows(2)
+                .any(|pair| pair[0].value.value_type != pair[1].value.value_type);
+            let missing_required = present.len() != occurrences.len()
+                && present
+                    .iter()
+                    .any(|field| !field.value.value_type.is_optional());
+            if inconsistent_type || missing_required {
+                let span = present
+                    .get(1)
+                    .map_or(occurrences[0].span, |field| field.name_span);
+                diagnostics.push(CompilerDiagnostic::new(
+                    CompilerDiagnosticCode::InvalidOutcome,
+                    span,
+                ));
+            }
+        }
+    }
+}
+
+fn validate_secret_taint(
+    secret_input: Option<FieldId>,
+    command: &HirCommand,
+    roots: &[&HirExpressionRoot],
+    diagnostics: &mut Vec<CompilerDiagnostic>,
+) {
+    let Some(secret_input) = secret_input else {
+        return;
+    };
+    for root in roots {
+        if command
+            .expressions
+            .dependencies(root.id, root.span)
+            .is_ok_and(|dependencies| dependencies.input_fields().contains(&secret_input))
+        {
+            diagnostics.push(CompilerDiagnostic::new(
+                CompilerDiagnosticCode::InvalidIdempotency,
+                root.span,
+            ));
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use riffdb_contract_syntax::parse_contract;
+
+    use super::*;
+    use crate::hir::lower_contract_hir;
+    use crate::symbols::allocate_genesis_symbols;
+    use crate::typecheck::resolve_declared_types;
+
+    fn validate(source: &str) -> Result<(), CompilerDiagnostics> {
+        let document = parse_contract(source).expect("valid syntax");
+        let symbols = allocate_genesis_symbols(&document)?;
+        let types = resolve_declared_types(&document, &symbols)?;
+        let hir = lower_contract_hir(&document, &symbols, &types)?;
+        validate_commands(&hir)
+    }
+
+    #[test]
+    fn canonical_budget_commands_validate() {
+        validate(include_str!("../../../contracts/examples/budget.riff")).expect("budget commands");
+    }
+
+    #[test]
+    fn idempotency_secret_cannot_influence_event_or_outcome() {
+        let source = r#"
+contract Invalid version 1 {
+  entity Row { key (id: uuid) field value: i64 }
+  event Changed { leaked: string<128> }
+  aggregate Rows { root Row partition_by id conflict_key (id) }
+  command Change {
+    input idempotency_key: string<128>
+    input id: uuid
+    idempotency_key idempotency_key
+    mutate Row(id) as row else Missing { id: id }
+    set row.value = 1
+    emit Changed { leaked: idempotency_key }
+    return ChangedOutcome { row: row }
+  }
+}
+"#;
+        let diagnostics = validate(source).expect_err("secret leak rejects");
+        assert!(
+            diagnostics.as_slice().iter().any(|diagnostic| {
+                diagnostic.code() == CompilerDiagnosticCode::InvalidIdempotency
+            })
+        );
+    }
+
+    #[test]
+    fn create_requires_every_nonoptional_nonkey_field_once() {
+        let source = r#"
+contract Invalid version 1 {
+  entity Row { key (id: uuid) field first: i64 field second: i64 }
+  aggregate Rows { root Row partition_by id conflict_key (id) }
+  command Create {
+    input idempotency_key: string<128>
+    input id: uuid
+    idempotency_key idempotency_key
+    create Row(id) as row else Exists { id: id }
+    set row.first = 1
+    return Created { row: row }
+  }
+}
+"#;
+        let diagnostics = validate(source).expect_err("incomplete create rejects");
+        assert!(
+            diagnostics
+                .as_slice()
+                .iter()
+                .any(|diagnostic| { diagnostic.code() == CompilerDiagnosticCode::InvalidCreation })
+        );
+    }
+
+    #[test]
+    fn binding_failure_payloads_reject_binding_and_transaction_dependencies() {
+        for forbidden in ["first_row", "second_row", "tx.time"] {
+            let source = format!(
+                r#"
+contract Invalid version 1 {{
+  entity Row {{ key (id: uuid) field value: i64 }}
+  aggregate Rows {{ root Row partition_by id conflict_key (id) }}
+  command ReadTwo {{
+    input first_id: uuid
+    input second_id: uuid
+    read Row(first_id) as first_row else MissingFirst {{ leaked: {forbidden} }}
+    read Row(second_id) as second_row else MissingSecond {{ id: second_id }}
+    return Found {{}}
+  }}
+}}
+"#
+            );
+            let diagnostics = validate(&source).expect_err("failure dependency rejects");
+            let forbidden_start = source
+                .find(&format!("leaked: {forbidden}"))
+                .expect("payload marker")
+                + "leaked: ".len();
+            assert!(diagnostics.as_slice().iter().any(|diagnostic| {
+                diagnostic.code() == CompilerDiagnosticCode::UnknownName
+                    && diagnostic.primary_span().start() as usize == forbidden_start
+            }));
+        }
+    }
+}
