@@ -1,4 +1,4 @@
-spec_version: '0.8'
+spec_version: '0.10'
 product: RiffDB
 repository: riffdb
 status: implementation-handoff
@@ -438,6 +438,8 @@ work_packages:
   - ENT-003
   - TXN-030
   - TXN-031
+  - TXN-041
+  - TXN-042
   - EFF-001
   - EFF-003
   - REC-003
@@ -464,6 +466,7 @@ work_packages:
   - ADR-0021
   allowed_paths:
   - Cargo.lock
+  - crates/riffdb-types/src/codec.rs
   - crates/riffdb-storage-api/**
   - crates/riffdb-storage-memory/**
   - crates/riffdb-testkit/Cargo.toml
@@ -471,6 +474,13 @@ work_packages:
   - crates/riffdb-testkit/src/model/**
   deliverables:
   - Bounded materialized ReadSnapshot and coordinator-driven atomic commit interfaces
+  - Consuming command-candidate type state with count-only start, admission/current-dependency recheck, private
+    validation and mutation-affected prefix derivation, same-transaction affected-epoch reads, exact sequence-free
+    CommandWriteSetPlanV1 and semantic/conservative encoded-capacity reservation, sequence assignment only after
+    reservation, retained intent/plan/assignment verification, and complete graph staging; the WP-060 interface and
+    memory conformance use explicit synthetic charges and do not depend on the later WP-065 codec
+  - Storage-API-owned EventHash derivation and constructor validation over the exact ADR-0011 EventId, EventTypeId,
+    u32-length-framed canonical Value::Record preimage, including reciprocal commit/event/outbox mismatch rejection
   - Closed Next(nonzero) or Exhausted application/administration allocator semantics, including atomic multi-slot
     preflight for compound bootstrap
   - Semantic key/value records
@@ -510,8 +520,9 @@ work_packages:
     cannot become operational without the separate catalog-owned same-session ValidatedCatalogHistory
   acceptance_commands:
   - cargo test -p riffdb-storage-api -p riffdb-storage-memory
-  exit_gate: Reference storage satisfies atomicity, ordering, snapshot, metadata-deferral, startup type-state,
-    exact-end historical-evidence, and model-state properties without introducing a storage-to-IR dependency.
+  exit_gate: Reference storage satisfies atomicity, pre-sequence reservation and no-gap ordering, exact event-hash,
+    snapshot, metadata-deferral, startup type-state, exact-end historical-evidence, and model-state properties without
+    introducing a storage-to-IR dependency.
   human_review_triggers: *id001
 - id: WP-065
   name: Durable semantic record schema
@@ -526,6 +537,8 @@ work_packages:
   - STO-021
   - STO-022
   - VAL-003
+  - TXN-031
+  - EFF-003
   - MCP-046
   required_adrs:
   - ADR-0004
@@ -564,6 +577,12 @@ work_packages:
   - Linked durable records for the compound bootstrap transition and reviewed projection generation/frontier records
   - Exact DatabaseId initialization metadata, ProvenanceId commit linkage, UUIDv7 validation, audit linked-result,
     and absent-initial-outbox-status mappings with deterministic wire fixtures
+  - Exact EventHash preimage/domain-frame codec, descriptor and golden fixtures, including EventId/type/ordinal,
+    payload-length, canonical-record ordering, cross-domain, malformed, and durable round-trip cases
+  - Conservative per-record-class upper bounds for the complete canonical StoredEnvelope, with proofs against the
+    real codec, exact actual byte-charge reporting, equal-bound success, one-byte-over rejection, and aggregate
+    reservation fixtures consumed by WP-070 before sequence staging; WP-060 remains responsible only for
+    synthetic-charge conformance
   - Reviewed durable representation and total mapping for all nine ADR-0021 target variants, preserving canonical
     order while rejecting unknown/zero kinds, malformed lineage scope, duplicates, noncanonical order, and over 16
   - Generated schema inventory proving the exact ADR-0019 retained metadata records and no NodeId, clean-shutdown,
@@ -572,8 +591,8 @@ work_packages:
   - cargo test -p riffdb-proto -p riffdb-storage-api
   - ./scripts/generate-proto --check
   exit_gate: Every durable semantic record has bounded validation, stable generated descriptors and goldens, checked
-    storage mappings, no deferred operational-metadata placeholder, and a clean generation diff before redb
-    persistence begins.
+    storage mappings, exact event-hash and canonical-envelope upper-bound evidence, no deferred operational-metadata
+    placeholder, and a clean generation diff before redb persistence begins.
   human_review_triggers: *id001
 - id: WP-070
   name: Redb storage engine
@@ -595,7 +614,10 @@ work_packages:
   - REC-001
   - REC-002
   - REC-003
+  - TXN-041
+  - TXN-042
   - EFF-001
+  - EFF-003
   - POC-009
   - PRJ-001
   - PRJ-002
@@ -627,6 +649,13 @@ work_packages:
   deliverables:
   - Redb table layout
   - Atomic entity/index/outcome/event/provenance/log commit
+  - Exact consuming candidate ordering from count-only start through current validation, mutation-affected epoch
+    reads, sequence-free write-plan reservation, sequence assignment, graph verification, canonical encoding, and
+    staging, with no assigned sequence on capacity failure
+  - Pre-stage recomputation of every actual canonical StoredEnvelope byte charge against WP-065's retained per-class
+    upper bounds, aborting the complete transaction before any write on mismatch or excess
+  - Durable EventHash recomputation using the exact ADR-0011 preimage during decode, startup integrity, and reciprocal
+    commit/event/outbox validation, with mismatch rejected rather than repaired
   - Complete storage-structural startup scan and exact-end historical semantic evidence
   - Complete bounded enumeration of every persisted entity key, index-entry key, and range-prefix key with IR-opaque
     durable owner/reference evidence for catalog validation, without interpreting KeySchema in the redb adapter
@@ -673,9 +702,10 @@ work_packages:
     owner_crate: riffdb-storage-redb
     manifest: crates/riffdb-storage-redb/Cargo.toml
     path: ../../tests/service_audit_recovery/service_audit_recovery.rs
-  exit_gate: Storage property suite and process recovery matrix pass with no torn command state; every open completes
-    the full structural scan and exact-end evidence handoff before yielding StructurallyOpened dormant ports; no open
-    claims IR-aware readiness, and no ADR-0019 deferred record is persisted.
+  exit_gate: Storage property suite and process recovery matrix pass with no torn command state, pre-sequence gap, or
+    event-hash/envelope-bound mismatch; every open completes the full structural scan and exact-end evidence handoff
+    before yielding StructurallyOpened dormant ports; no open claims IR-aware readiness, and no ADR-0019 deferred
+    record is persisted.
   human_review_triggers: *id001
 - id: WP-075
   name: Fjall semantic comparison
@@ -863,6 +893,11 @@ work_packages:
   - Commit-owned injected AdmissionClock, AdministrationClock, and ProvenanceIdSource ports with exact sampling,
     failure, and retry behavior and no ambient clock or entropy access in the coordinator
   - Coordinator-only final CommitIntent assembly from EvaluatedCommand and the exact immutable stored admission
+  - Exact transaction progression that distinguishes influential range dependencies from mutation-affected epochs,
+    derives and reads the latter after private validation, freezes/reserves the sequence-free write plan before
+    sequence assignment, and verifies the final assigned graph before staging
+  - EventId/EventHash generation only from the retained sequence assignment, event type, and canonical record payload,
+    with exact ordinal order and no payload-only or Protobuf hash path
   - New-admission provenance freezing, stored-claim reuse, and complete mechanical storage-record-to-policy-facts
     lowering with transaction-current verifier and authorization-clock use after capability queue waits
   - ProvenanceId generation only for a successfully evaluated new attempt before transaction open, with
@@ -897,7 +932,8 @@ work_packages:
     owner_crate: riffdb-commit
     manifest: crates/riffdb-commit/Cargo.toml
     path: ../../tests/service_audit/service_audit_ordering.rs
-  exit_gate: Concurrent budget and fail-after-commit tests prove one atomic logical execution per idempotency identity.
+  exit_gate: Concurrent budget, pre-sequence capacity/failpoint, event-hash, and fail-after-commit tests prove one
+    atomic logical execution per idempotency identity without sequence gaps.
   human_review_triggers: *id001
 - id: WP-110
   name: Authorization and capability service
@@ -1566,6 +1602,9 @@ work_packages:
   - REC-002
   - REC-003
   - POC-009
+  - TXN-041
+  - TXN-042
+  - EFF-003
   - MCP-046
   required_adrs:
   - ADR-0003
@@ -1601,6 +1640,11 @@ work_packages:
   - Projection identity/generation/frontier, compound-bootstrap, idempotency digest-provider retirement, both
     sequence-metadata spaces, capability lookup plus bootstrap/create/revoke audit kind/target/sequence/timestamp
     cross-links, and terminal execution-failure recovery evidence
+  - Process failpoints before/after sequence-free capacity reservation, sequence assignment, canonical-envelope
+    verification, and staging, proving a failed reservation or envelope excess consumes no sequence and exposes no
+    partial graph
+  - Crash/reopen evidence that every durable event hash recomputes from its exact EventId/type/length-framed canonical
+    record payload and that any commit/event/outbox hash mismatch fails authoritative readiness without repair
   - Separate WP-070 structural evidence, WP-050 ValidatedCatalogHistory, WP-130 authoritative readiness, WP-160
     Delivering normalization, WP-170 degradation/new-generation rebuild, and WP-185 aggregate-health evidence with
     no online repair of authoritative state
@@ -1614,8 +1658,9 @@ work_packages:
     owner_crate: riffdb-testkit
     manifest: crates/riffdb-testkit/Cargo.toml
     path: ../../tests/recovery/full_recovery_matrix.rs
-  exit_gate: Every failpoint produces exactly the allowed pre-commit or post-commit state, every reopen performs
-    complete authoritative integrity validation, and repeated recovery is stable without deferred metadata writes.
+  exit_gate: Every failpoint produces exactly the allowed pre-commit or post-commit state with no sequence consumed by
+    failed capacity/envelope checks and exact durable event-hash recomputation, every reopen performs complete
+    authoritative integrity validation, and repeated recovery is stable without deferred metadata writes.
   human_review_triggers: *id001
 - id: WP-200
   name: POC acceptance and release
@@ -1684,6 +1729,9 @@ work_packages:
     adapters, fixtures, or guarantee profiles without a separately approved owner-package amendment
   - Cross-transport semantic and durable-audit parity plus generated durable/public artifact evidence in the final
     requirement report
+  - Final transaction-order evidence from current validation through mutation-affected epoch reads, sequence-free
+    reservation, sequence assignment, canonical-envelope verification, staging, durability, and same-key recovery,
+    including the exact EventHash preimage/golden/restart chain
   - Final evidence that every startup validates authoritative integrity, the durable schema contains only the
     ADR-0019 retained metadata set, and graceful shutdown or recovery creates no deferred operational record
   - End-to-end compiler, catalog, shared-service, and MCP evidence that the exact ADR-0020 name is stable, collision

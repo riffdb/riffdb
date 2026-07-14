@@ -6,9 +6,9 @@
 **Tagline:** *Vibe fast. Commit safely.*  
 **Category:** Contract-first operational database for agent-built applications  
 
-**Version:** 0.9
+**Version:** 0.10
 **Status:** Architecture-approved implementation handoff
-**Date:** 13 July 2026
+**Date:** 14 July 2026
 **Audience:** Coding agents, database engineers, compiler engineers, security reviewers, and technical product leads  
 **Working binaries:** `riffdbd`, `riffdb`, `riffdb-mcp`  
 **Working URI scheme:** `riffdb://`  
@@ -45,6 +45,7 @@
 | 0.7 | 2026-07-13 | Applied accepted ADR-0021's exact lineage-scoped service-audit target registry and canonical ordering, and reconciled the canonical `LegalSpend`/`AllocateBudget` source identifiers with ADR-0020's no-word-splitting MCP name. |
 | 0.8 | 2026-07-13 | Reconciled the accepted first-runnable P1 boundary: storage owns complete structural evidence and dormant type-state ports, catalog owns same-session IR-aware historical validation, WP-130 composes the minimal production `riffdbd` startup/lifecycle and restart proof, and WP-185 only extends that graph with P2 components. |
 | 0.9 | 2026-07-13 | Clarified schema-complete startup evidence for every persisted entity, index-entry, and range-prefix key without a storage-to-IR dependency, and assigned ordered commit scans a dedicated 16 MiB internal encoded-content page ceiling while retaining the generic 4 MiB scan ceiling. |
+| 0.10 | 2026-07-14 | Applied the accepted pre-sequence transaction-capacity clarification and exact `EventHash` preimage: mutation-affected epochs and conservative encoded capacity are resolved inside the write transaction before sequence assignment, while every final canonical `StoredEnvelope` is checked against its retained per-class bound before staging. |
 
 ### Normative language
 
@@ -1010,24 +1011,38 @@ A mutating command follows this sequence:
     reevaluation or leaves the admission pending, and no application sequence is
     assigned.
 14. For a commit-required result, the coordinator opens a short synchronous
-    write transaction and rechecks the exact pending identity, input, admission,
-    and plan reference.
-15. Storage reads all validation targets from transaction-current state. The
-    coordinator compares every absence/version/epoch dependency and evaluates
-    the exact historical commit-check plan over current values plus proposed
-    post-images.
-16. Only after private semantic validation, the coordinator assigns the next
-    nonzero `CommitSequence`, constructs the complete atomic record set, and
-    stages it through the consuming typed storage transaction protocol.
-17. The storage commit atomically makes sequence metadata, entity/index changes,
+    write transaction and starts a count-only candidate. Starting the candidate
+    checks only the 64-command count ceiling; it does not assign a sequence or
+    guess an encoded write-set charge.
+15. The transaction rechecks the exact pending identity, input, admission, and
+    plan reference, then reads all influential validation targets from
+    transaction-current state. The coordinator compares every
+    absence/version/epoch dependency and evaluates the exact historical
+    commit-check plan over current values plus proposed post-images.
+16. After semantic validation, the coordinator derives the canonical set of
+    mutation-affected index-prefix epoch targets from transaction-current old
+    entries and proposed new entries. Storage reads those epoch positions in the
+    same write transaction. They are distinct from influential range-epoch read
+    dependencies, except when one exact prefix happens to belong to both sets.
+17. The coordinator freezes the exact sequence-free `CommandWriteSetPlanV1` and
+    reserves its semantic charge plus conservative per-record-class and
+    aggregate canonical `StoredEnvelope` capacity. This exact aggregate staged-
+    write reservation occurs inside the transaction, after current reads and
+    before sequence assignment.
+18. Only after that reservation succeeds may the coordinator assign the next
+    nonzero `CommitSequence`, construct the exact complete record graph, verify
+    that it matches the retained intent, write plan, and assignment, and prove
+    each actual canonical `StoredEnvelope` byte length does not exceed its
+    reserved per-class upper bound before staging.
+19. The storage commit atomically makes sequence metadata, entity/index changes,
     pending resolution and terminal outcome, events/outbox intent, provenance,
     and commit record durable, or makes none of them durable.
-18. The coordinator releases logical capabilities and publishes bounded
+20. The coordinator releases logical capabilities and publishes bounded
     post-durability notifications.
-19. The service applies every current disclosure obligation and constructs the
+21. The service applies every current disclosure obligation and constructs the
     fully bounded, filtered, redacted semantic result. A shaping failure is a
     failure and never produces a false successful audit.
-20. The service appends the matching terminal service-audit record, then releases
+22. The service appends the matching terminal service-audit record, then releases
     the already-safe typed result. Failure to persist the required terminal audit
     withholds the result and uses the accepted uncertainty/unavailable recovery
     path without rolling back authoritative state.
@@ -1158,6 +1173,16 @@ snapshot as its entries and advances atomically for every affected whole-index
 and complete leading-component prefix bucket when an index entry or covered
 value changes.
 
+An influential `IndexRangeEpoch` dependency and a mutation-affected epoch target
+serve different purposes and MUST NOT be inferred from one another. The first is
+snapshot evidence for a range whose contents influenced evaluation and is
+compared during transaction-current dependency validation. The second is the
+canonical union of whole-index and complete leading-prefix buckets affected by
+transaction-current old index entries and proposed new entries. It is derived
+only after private validation, read in that same write transaction, and advanced
+once by the staged command. An exact prefix may appear in both sets, but equality
+of the sets is neither required nor generally correct.
+
 Captured predicate booleans or values are not commit proof and are not a v1
 storage dependency. Predicate and invariant correctness uses the exact
 historical `ExecutablePlanRef`, a structurally checked validation request, and a
@@ -1200,17 +1225,18 @@ The commit coordinator is the only component permitted to create idempotency res
 
 The coordinator performs:
 
-1. Open durable write transaction.
-2. Recheck idempotency key.
-3. Revalidate read dependencies.
+1. Open the durable write transaction and start a count-only candidate.
+2. Recheck the exact pending admission and idempotency identity.
+3. Read and revalidate every influential transaction-current dependency.
 4. Re-evaluate commit-time invariant plans over current values plus proposed mutations.
-5. Allocate next commit sequence.
-6. Apply entity mutations and secondary index changes.
-7. Persist command outcome and idempotency record.
-8. Persist commit record and provenance.
-9. Persist outbox entries.
-10. Commit the storage transaction using configured durability.
-11. Publish the committed result to the waiting caller and subscribers.
+5. Derive the exact mutation-affected prefix targets from current and proposed index entries.
+6. Read every affected epoch position in the same transaction.
+7. Freeze the exact sequence-free write plan and reserve semantic plus conservative encoded capacity.
+8. Allocate the next commit sequence only after reservation succeeds.
+9. Construct and verify the complete entity/index/epoch/outcome/event/outbox/provenance/commit graph against the retained intent, plan, and assignment.
+10. Canonically encode every durable envelope and prove its actual per-class byte charge is within the retained upper bound before staging.
+11. Stage the complete record graph and commit the storage transaction using configured durability.
+12. Publish the committed result to the waiting caller and subscribers only after durable success.
 
 For an ADR-0012 arithmetic or resource fault, the coordinator instead opens the
 narrow terminalization transaction, rechecks the complete pending admission and
@@ -1223,7 +1249,11 @@ admission pending.
 
 `TXN-040` The commit queue MUST be bounded and apply backpressure.
 
-`TXN-041` The coordinator MUST NOT assign a visible sequence before the storage transaction can atomically persist that sequence and its complete record.
+`TXN-041` The coordinator MUST NOT assign even an invisible transaction-local
+sequence until transaction-current validation, mutation-affected epoch reads,
+the exact sequence-free write plan, and semantic plus conservative encoded-
+capacity reservation have all succeeded. An assigned sequence becomes visible
+only with atomic persistence of its complete verified record graph.
 
 `TXN-042` Sequence allocation, entity writes, idempotency record, command outcome, durable events and outbox intent, commit record, and provenance MUST commit atomically.
 
@@ -1273,9 +1303,13 @@ transaction.
 All engine operations are synchronous. The async boundary is the bounded
 coordinator queue. Authoritative command writes use ADR-0004's consuming typed
 `EmptyBatch`/`NonEmptyBatch` candidate protocol: an empty batch cannot commit;
-each candidate must progress through admission recheck, transaction-current
-state read, private plan validation, sequence assignment, and complete atomic
-record-set staging; only a nonempty batch can commit. The interface accepts no
+starting a candidate checks only the command-count ceiling; each candidate must
+then progress through admission recheck, influential transaction-current state
+read, private plan validation and mutation-affected prefix derivation, same-
+transaction affected-epoch reads, exact sequence-free plan and capacity
+reservation, sequence assignment, complete graph verification, actual canonical
+envelope-bound checks, and atomic record-set staging; only a nonempty batch can
+commit. The interface accepts no
 closure, callback, raw key/value batch, caller-selected sequence, engine handle,
 or async method. Runtime evaluation never occurs while a storage transaction is
 open.
@@ -1361,9 +1395,16 @@ per internal ordered commit-scan page; 4 KiB per
 entity/index/partition/conflict key or index prefix; 256 integrity findings plus
 a `truncated` flag; 15 MiB per
 catalog bundle; 16 targets and 64 KiB per service-audit record; and ADR-0006's
-absolute 16 MiB durable payload/envelope ceiling. Counts and bytes use checked
-arithmetic before allocation or transaction opening. Configuration may lower,
-but never raise, a hard ceiling.
+absolute 16 MiB durable payload/envelope ceiling. Every input, runtime result,
+component count, semantic value, and component byte bound that is knowable before
+transaction open uses checked arithmetic and is rejected before unbounded
+allocation or opening that transaction. The sole deferred aggregate calculation
+is the exact staged-write capacity reservation derived from transaction-current
+old values, affected epochs, and the sequence-free plan; it occurs inside the
+transaction after current reads and before sequence assignment. WP-065 defines
+and proves conservative canonical `StoredEnvelope` upper bounds per record class,
+and WP-070 recomputes actual canonical envelope bytes and rejects any excess
+before staging. Configuration may lower, but never raise, a hard ceiling.
 
 `StorageErrorKind` is closed: `Unavailable`, `CommitStatusUnknown`,
 `CorruptData`, `IncompatibleFormat`, `LimitExceeded`, `InvariantViolation`, and
@@ -1449,6 +1490,23 @@ event identities/payloads, original declared outcome, and links to the immutable
 provenance and outbox intent created in the same atomic record set. Replay is
 response metadata and never creates or modifies a commit record.
 
+Each durable event carries an `EventHash` under the existing unkeyed
+`riffdb.event/v1` domain. The exact domain-frame payload is:
+
+```text
+EventId canonical bytes (CommitSequence:u64_be || event_ordinal:u32_be)
+|| EventTypeId:u32_be
+|| payload_length:u32_be
+|| canonical Value::Record payload bytes
+```
+
+The event ID is therefore exactly 12 bytes. `payload_length` is the exact byte
+length of the complete canonical record value, including its canonical value
+format byte and record tag. Hashing only the business payload, omitting identity
+or type, using a different length width/order, or hashing Protobuf bytes is
+noncanonical. Construction, durable decode, startup integrity, and reciprocal
+commit/event/outbox validation MUST recompute and compare this exact hash.
+
 The pre-commit `CommitIntent` carries the coordinator-generated checked
 `ProvenanceId`; storage never generates or substitutes it. A collision is an
 atomic invariant failure with no sequence, overwrite, or partial record. A
@@ -1512,7 +1570,8 @@ may join the two matching same-session results and evaluate readiness:
 7. Verify reciprocal identity and payload linkage among every commit-record
    event reference, durable event, and authoritative outbox intent. Reject an
    orphan, duplicate, missing counterpart, mismatched `EventId`, or unequal
-   canonical event identity/payload.
+   canonical event identity/payload. Recompute the exact ADR-0011 `EventHash`
+   for every event and require equal hash copies across the reciprocal graph.
 8. Verify capability-record/token-lookup one-to-one integrity; every bootstrap
    marker, bootstrap `started` record, capability-administration record, and
    create/revoke sequence and timestamp cross-link; exact target capability and
@@ -2855,6 +2914,8 @@ The POC MUST support named, test-only failpoints. Process tests terminate the se
 | After evaluation, before commit submission | Pending reservation may remain; no mutation, event, outcome, or sequence is visible. |
 | During execution-failure terminalization | Either the equal-evidence `ExecutionFailed` admission is durable with no application sequence/provenance/event/commit, or the original pending admission remains; unknown status fences writes and same-key recovery resolves it. |
 | Before storage transaction commit | No partial mutation, outcome, event, or sequence. |
+| After capacity reservation, before sequence assignment | No sequence or record graph is assigned or staged; rollback releases the reservation. |
+| After sequence assignment, before canonical-envelope verification/staging | The assignment remains transaction-local and invisible; a verification failure or crash exposes no sequence or partial graph. |
 | During embedded-engine durable commit | Either entire atomic commit is visible or none, according to engine guarantee. |
 | After durable commit, before coordinator response | Complete state visible; retry returns persisted result. |
 | After coordinator response, before API response | Complete state visible; retry returns persisted result. |
@@ -2869,6 +2930,11 @@ The POC MUST support named, test-only failpoints. Process tests terminate the se
 | After provenance-ID generation, before/during command commit | A proven abort exposes no candidate or sequence; a collision writes nothing; unknown commit status is resolved by idempotency before another candidate is requested. |
 
 `TEST-001` Every failpoint MUST have an automated assertion over entities, indexes, outcomes, commit records, outbox records, and projection frontier as applicable.
+
+The storage/coordinator matrix additionally asserts that an equal per-class
+canonical-envelope bound stages, a one-byte excess aborts before staging without
+consuming a sequence, and every recovered durable event recomputes to its stored
+ADR-0011 `EventHash`.
 
 ## 17.6 Parser, protocol, and storage fuzzing
 
@@ -3096,13 +3162,13 @@ The graph uses hard dependencies. Parallel work is encouraged only after shared 
 | `WP-040` | Typed IR and compiler | WP-010, WP-030 | Name resolution, type checker, invariant/outcome/dependency plans, JSON Schema | Budget contract compiles; invalid corpus rejects with stable diagnostics |
 | `WP-045` | Budget comparison baseline | WP-040 | Shared workload/oracle and isolated PostgreSQL implementation | Deterministic oracle and PostgreSQL correctness preflight pass |
 | `WP-050` | Contract catalog | WP-020, WP-040, WP-060 | Bundle lookup, catalog state semantics, compatibility report, same-session historical IR validation proof, and typed expected-version deployment operation for later coordinator routing | Catalog semantic, exact-end historical-validation, and atomic-storage-operation tests pass; final routing evidence is WP-100/WP-120 |
-| `WP-060` | Storage semantic API | WP-010, WP-020, WP-040 | Owned snapshots, dependencies, `EvaluatedCommand`/`CommitIntent`, structural evidence/type-state ports, semantic durable DTOs, typed persistence transitions including audit/capability/projection, and in-memory reference implementation | Reference-model, exact-end startup type-state, and semantic conformance tests pass |
-| `WP-065` | Durable semantic record schema | WP-020, WP-060 | Versioned `riffdb.storage.v1` records, envelopes, descriptors, schema hashes, goldens, wire validation, historical registrations, and checked storage-owned Proto mappings | Proto/storage tests and clean deterministic regeneration pass |
-| `WP-070` | Redb storage engine | WP-020, WP-060, WP-065 | Tables, coordinator write transaction, atomic records, indexes, capability/audit/projection persistence, complete structural evidence scan, `StructurallyOpened` dormant ports, recovery, and backup | Storage properties and core process recovery matrix pass without claiming IR-aware readiness |
+| `WP-060` | Storage semantic API | WP-010, WP-020, WP-040 | Owned snapshots, dependencies, `EvaluatedCommand`/`CommitIntent`, the pre-sequence write-plan/capacity type-state, exact `EventHash` semantics, structural evidence/type-state ports, semantic durable DTOs, typed persistence transitions including audit/capability/projection, and in-memory reference implementation | Reference-model, exact-end startup type-state, pre-sequence ordering/capacity, event-hash, and semantic conformance tests pass |
+| `WP-065` | Durable semantic record schema | WP-020, WP-060 | Versioned `riffdb.storage.v1` records, canonical envelopes and per-class upper-bound proofs, exact event-hash goldens, descriptors, schema hashes, wire validation, historical registrations, and checked storage-owned Proto mappings | Proto/storage size/hash tests and clean deterministic regeneration pass |
+| `WP-070` | Redb storage engine | WP-020, WP-060, WP-065 | Tables, ordered coordinator write transaction with pre-sequence reservation and pre-stage canonical-envelope checks, atomic records, indexes, capability/audit/projection persistence, complete structural evidence scan, `StructurallyOpened` dormant ports, recovery, and backup | Storage properties and core process recovery matrix pass without claiming IR-aware readiness |
 | `WP-075` | Fjall semantic comparison | WP-060, WP-070 | Isolated non-production Fjall adapter and unchanged conformance/benchmark harness | Conformance report and reproducible evidence pass |
 | `WP-080` | Deterministic command runtime | WP-040, WP-060 | IR interpreter, fixed logical time and budget, dependencies, `EvaluatedCommand`, and closed execution faults; no provenance or command randomness | Differential tests against model pass |
 | `WP-090` | Conflict manager | WP-010 | Canonical multi-key exclusive acquisition, cancellation, metrics | Loom/Shuttle suites pass |
-| `WP-100` | Commit coordinator and idempotency | WP-050, WP-070, WP-080, WP-090, WP-110 | Admission reservation, revalidation, sequence assignment, atomic outcome/event/provenance/outbox-intent commit, typed control-plane operations | Concurrency, core process crash, and lost-response replay tests pass |
+| `WP-100` | Commit coordinator and idempotency | WP-050, WP-070, WP-080, WP-090, WP-110 | Admission reservation, revalidation, mutation-affected epoch planning, pre-sequence capacity reservation, verified sequence-derived event/record graph, atomic outcome/event/provenance/outbox-intent commit, and typed control-plane operations | Concurrency, pre-sequence failpoints, core process crash, and lost-response replay tests pass |
 | `WP-110` | Authorization and capability service | WP-010, WP-070 | Opaque capability records, policy decisions, obligations, and typed create/revoke operations for later coordinator routing | Policy, digest, revocation-state, and fail-closed tests pass; final non-bypass evidence is WP-120 |
 | `WP-120` | API-neutral application service | WP-050, WP-100, WP-110 | Six operation-specific service traits, checked contexts/DTOs, current policy, audit orchestration, obligations, bounded reads/waits/streams, and server-side cursors | In-process end-to-end and no-storage-bypass tests pass |
 | `WP-125` | Service comparison adapter | WP-045, WP-120 | Budget workload adapter over the API-neutral service | Shared oracle passes against in-process RiffDB |
@@ -3409,7 +3475,7 @@ Risk owners are assigned in the project tracker. A risk may be closed only with 
 
 ## 22.1 Required ADRs
 
-Specification v0.8 records each ADR's current status. An Accepted record is
+Specification v0.10 records each ADR's current status. An Accepted record is
 authoritative; a Proposed record remains planning input until its exact text
 receives human review. Where this table and a work-package deadline differ, the
 earlier deadline governs unless a reviewed reconciliation changes both sources.
@@ -3419,14 +3485,14 @@ earlier deadline governs unless a reviewed reconciliation changes both sources.
 | `ADR-0001` | Accepted | Standalone database rather than PostgreSQL extension or control plane | P0 gate |
 | `ADR-0002` | Accepted | Canonical bounded contract grammar, typed IR, versioning, and deterministic bundle | WP-030 grammar freeze and WP-040 interface |
 | `ADR-0003` | Accepted | Logical pessimistic conflict ownership, dependency validation, and commit ordering | WP-060/WP-090 interfaces |
-| `ADR-0004` | Accepted | Coordinator-driven owned-snapshot semantic storage API and exact redb 4.1.0 baseline | WP-060 interface |
+| `ADR-0004` | Accepted | Coordinator-driven owned-snapshot semantic storage API, pre-sequence write-plan/capacity ordering, and exact redb 4.1.0 baseline | WP-060 interface |
 | `ADR-0005` | Accepted | Idempotency identity, pending reservation, persisted outcomes, and sequence semantics | WP-060 key freeze and WP-100 |
 | `ADR-0006` | Accepted | Phased single-owner Protobuf schemas, exact values, durable envelope, and compatibility policy | WP-020 schema implementation |
 | `ADR-0007` | Accepted | Shared policy-filtered application service, executor/read ports, cursors, and durable invocation audit for gRPC, MCP, CLI, and SDK | WP-100 coordinator boundary and WP-120 interface |
 | `ADR-0008` | Proposed | Native MCP resource URIs, audiences, stdio-over-gRPC model, cursor presentation, and remaining protocol fixtures | WP-140 fixtures |
 | `ADR-0009` | Accepted | Opaque HMAC-digested, environment/database/audience-bound POC capabilities with stable-ID records, digest lookup, key custody, and recoverable one-time bootstrap | WP-060 storage interface and WP-110 implementation |
 | `ADR-0010` | Accepted | Event-derived POC projection engine and frontier semantics | WP-070 projection persistence and WP-170 |
-| `ADR-0011` | Accepted | Canonical values, fixed-scale decimals, keys, serialization, and domain-separated hashing | WP-010 semantic types |
+| `ADR-0011` | Accepted | Canonical values, fixed-scale decimals, keys, serialization, domain-separated hashing, and the exact durable-event hash preimage | WP-010 semantic types and WP-060 event boundary |
 | `ADR-0012` | Accepted | Deterministic transaction context, durable logical time, no POC command randomness, and dependency-validated terminal execution-failure admission | WP-060 admission state and WP-080 implementation |
 | `ADR-0013` | Accepted | Stable semantic IDs, canonical IR/bundle encoding, plan hashing, and schema generation | WP-040 interface |
 | `ADR-0014` | Accepted | Projection-plan and contract-plan-root typed hash domains | WP-010 follow-up and WP-040 interface |
@@ -3460,6 +3526,14 @@ also resolved the remaining grammar-v1 transaction defaults:
   uncertainty rules in that ADR.
 - POC contract compatibility is additive/documentation-only; removal of an
   entity, field, command, outcome, event, or projection is rejected.
+- A command candidate assigns no sequence until private validation has derived
+  mutation-affected epoch targets, read their current positions, frozen the exact
+  sequence-free write plan, and reserved semantic plus conservative encoded
+  capacity. Actual canonical envelopes are checked against the retained per-
+  class bounds before staging.
+- `EventHash` is the `riffdb.event/v1` hash of the exact EventId/EventTypeId/
+  length-framed canonical `Value::Record` preimage in Section 10.4; no component
+  may substitute payload-only or Protobuf hashing.
 
 | Decision | Resolve by | Default in this specification |
 |---|---|---|

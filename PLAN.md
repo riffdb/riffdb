@@ -54,6 +54,14 @@ ADR-0021 freezes the exact lineage-scoped service-audit targets, canonical
 ordering, and shared-service-only construction rule. Section 2 lists the
 remaining package-level freezes.
 
+The 2026-07-14 accepted clarification additionally freezes the command write-
+transaction order and exact durable-event hash preimage. A candidate begins with
+a count check only, validates current state before deriving and reading mutation-
+affected epochs, reserves an exact sequence-free plan against semantic and
+conservative encoded capacity, and only then receives a sequence. `EventHash`
+uses the exact EventId/EventTypeId/u32-length-framed canonical record preimage
+under `riffdb.event/v1`.
+
 ### Missing prerequisites for WP-000
 
 None. WP-000 is complete. Its baseline, toolchain, dependency policy, CI provider,
@@ -70,6 +78,11 @@ binaries (`riffdbd`, `riffdb`, and `riffdb-mcp`) agree across the specification
 and package scopes. Allowed paths now cover each declared deliverable and
 acceptance script. Public/durable ownership and MCP/gRPC/CLI/SDK layering agree
 with the shared-service and coordinator boundaries.
+The manifest identifies SPEC version 0.10 and assigns the accepted pre-sequence
+reservation, envelope-bound, and event-hash evidence to the existing
+WP-060/WP-065/WP-070/WP-100/WP-190/WP-200 owners without changing their IDs,
+dependencies, or acceptance commands. The separately approved WP-060
+`riffdb-types/src/codec.rs` exception is the only allowed-path addition.
 
 ### Blocking before WP-000
 
@@ -83,6 +96,9 @@ ADR-0020/ADR-0021 decisions are frozen. WP-040 still has
 its required human review of the generated `FORMAT.md` and
 `JSON_SCHEMA_FORMAT.md`, but that is an interface-PR review trigger rather than a
 pre-package architecture blocker.
+The accepted ADR-0004/ADR-0011 clarifications remove the earlier ambiguity about
+post-current-read aggregate capacity and event-hash content; neither remains a
+P0 decision.
 
 ### Blocking before P1
 
@@ -145,13 +161,23 @@ isolated Fjall comparison, and WP-140 owns its Inspector script.
 - Root-workspace packages may update the generated root `Cargo.lock` within their
   declared paths. That path permission records reproducibility mechanics and does
   not approve an external dependency or feature graph.
+- Influential range-epoch dependencies and mutation-affected epoch advances are
+  distinct sets. The former prove evaluation reads; the latter are derived from
+  transaction-current old and proposed new index entries after private
+  validation. Exact-prefix overlap is allowed but equality is not assumed.
+- All knowable input/runtime/component bounds remain pre-transaction. Only the
+  exact aggregate staged-write reservation waits for bounded transaction-current
+  values; it occurs before sequence assignment, and each actual canonical
+  `StoredEnvelope` must fit its retained WP-065 per-class upper bound before
+  staging.
 
 ## 3. Planning Assumptions
 
 1. `AGENTS.md`, `SPEC.md`, `work_packages.yaml`, and Accepted ADRs are
    authoritative. Proposed ADRs and diagrams are planning context only.
-2. The reconciled YAML hard dependencies and allowed paths are preserved exactly.
-   Soft sequencing below never removes a declared dependency.
+2. The reconciled YAML hard dependencies are preserved exactly, and allowed
+   paths are authoritative as amended by explicit maintainer approval. Soft
+   sequencing below never removes a declared dependency.
 3. All first-party crates are private Rust 2024 workspace packages on the fixed
    Rust 1.97.0 baseline. Linux CI is gating; macOS is best effort and Windows is
    outside the POC gate.
@@ -185,11 +211,15 @@ isolated Fjall comparison, and WP-140 owns its Inspector script.
 12. `CommitSequence` and `AdministrationSequence`, never UUID ordering or wall
     time, establish authoritative order. Clock failure is fail-closed; it is not
     repaired by a UUID timestamp or a different clock domain.
+13. `EventHash` is SHA-256 under the existing `riffdb.event/v1` frame over exact
+    12-byte `EventId`, big-endian `EventTypeId`, big-endian `u32` payload length,
+    and complete canonical `Value::Record` bytes. Payload-only, JSON, or
+    Protobuf-derived event hashes are invalid.
 
 ## 4. Architectural Interface Map
 
 The following map is the minimum interface freeze needed before agents branch.
-Ownership and direction were accepted through the 2026-07-13 governance batch
+Ownership and direction were accepted through the 2026-07-14 governance batch
 and are reflected in the reconciled specification and manifest. ADR-0019 and
 ADR-0020 are frozen inputs. The remaining Proposed ADR-0008 affects only MCP
 resource URI, audience, transport, cursor-presentation, and presentation-text
@@ -207,10 +237,10 @@ compatibility; those parts cannot freeze until its exact text is Accepted.
 | Active catalog snapshot, `ValidatedCatalogHistory`, deployment CAS, catalog notifications | `riffdb-catalog`, WP-050 | WP-100/WP-120 consume catalog state; WP-130 consumes `ValidatedCatalogHistory`; WP-140 consumes descriptors | Active pointer changes only after durable bundle through a typed coordinator administrative operation. Historical resolution consumes every ordered `HistoricalSemanticEvidence` page through exact end and alone creates opaque same-session `ValidatedCatalogHistory`; storage never imports IR and the proof never crosses a storage trait; ADR-0002/0004/0005/0007/0020 | Expected-version and malformed-name-registry tests; old-or-new crash; skipped/repeated/truncated/cross-session evidence rejection; proof-opacity architecture test; audit ordering and notification-after-durability |
 | `ReadSnapshot` | `riffdb-storage-api`, WP-060 | WP-100 orchestration and WP-080 runtime only; catalog/query services use consumer-owned bounded read DTO ports | Synchronous, bounded, engine-neutral command reads; no storage write transaction held through runtime evaluation and no storage-API type exposed to the service; ADR-0004/0007 | Shared memory/redb conformance suite for consistent entity versions, absence, bounded prefix/epoch, ordered scans plus dependency-architecture checks |
 | Compile-time read/predicate templates | `riffdb-contract-ir`, WP-040 | WP-080 and WP-100 | Every influential read statically visible; predicate plan hash/version stable; ADR-0002/0003 | Compiler negative tests for hidden/unbounded reads and semantic dependency assertions |
-| Observed read evidence and checked predicate-validation request | `riffdb-storage-api`, WP-060 | WP-100 coordinates storage materialization; WP-080 consumes and preserves owned read evidence; WP-100 revalidates reads and evaluates the exact historical validation plan; WP-065 encodes durable forms | Read variants, current-value lookup, absence/version/epoch meaning, exact plan identity, validation inputs, and canonical order fixed before WP-080/WP-065. Captured predicate booleans or values are not v1 storage dependencies; ADR-0003/0004 | Mutation-between-evaluation-and-commit tests for every read variant and predicate plan; undeclared dependency, captured-result shortcut, or plan mismatch fails closed |
+| Observed read evidence and checked predicate-validation request | `riffdb-storage-api`, WP-060 | WP-100 coordinates storage materialization; WP-080 consumes and preserves owned read evidence; WP-100 revalidates reads and evaluates the exact historical validation plan; WP-065 encodes durable forms | Read variants, current-value lookup, absence/version/epoch meaning, exact plan identity, validation inputs, and canonical order fixed before WP-080/WP-065. Influential range epochs prove snapshot reads; mutation-affected epochs are a separate post-validation write-planning set. Captured predicate booleans or values are not v1 storage dependencies; ADR-0003/0004 | Mutation-between-evaluation-and-commit tests for every read variant and predicate plan; overlap/difference tests for the two epoch sets; undeclared dependency, captured-result shortcut, or plan mismatch fails closed |
 | `EvaluatedCommand` runtime result | Type owned by `riffdb-storage-api`, WP-060; instances constructed by `riffdb-runtime`, WP-080 | WP-100 and testkit | Contains the exact executable plan reference, checked targets/dependencies, canonical post-image mutations, ordered event intents, and declared business outcome. It contains no admission/idempotency identity, actor, provenance, logical time, partition/conflict hash, sequence, lease, storage transaction, or credential; ADR-0003/0004/0005/0007/0012 | Golden evaluated command, reference-model differential histories, determinism properties, and API checks excluding orchestration state |
 | Pre-commit `CommitIntent` | Type and checked structural constructor owned by `riffdb-storage-api`, WP-060; assembled only by `riffdb-commit`, WP-100 | Coordinator write transaction and testkit | Coordinator combines the exact stored pending admission and stored admitted-provenance snapshot, a newly sourced checked `ProvenanceId`, plan-derived partition/conflict evidence, and unchanged `EvaluatedCommand`. It is self-contained but contains no assigned sequence, durable record, replay flag, lease, transaction, or semantic-validation proof; ADR-0003/0004/0005/0007/0012/0018 | Constructor mismatch tests, canonical intent fixture, provenance/admission identity assertions, source call-count/collision tests, and architecture checks proving runtime never receives admitted provenance or entropy |
-| `StorageEngine` and atomic command transaction | `riffdb-storage-api`, WP-060; memory/redb implement | WP-070 and WP-100 | Must be a narrow semantic transaction, not SQL, arbitrary callback, or generic mutation API. Coordinator retains exact order: idempotency check, dependency/predicate validation, `Next(nonzero) | Exhausted` sequence allocation with complete multi-slot preflight, full atomic apply; ADR-0003/0004/0005 | Same conformance suite over memory/redb, first/max/exhausted and compound-slot cases, exact pre/post failpoints, no visible partial state |
+| `StorageEngine`, `CommandWriteSetPlanV1`, and atomic command transaction | `riffdb-storage-api`, WP-060; memory/redb implement; WP-065 supplies codec upper-bound proofs | WP-070 and WP-100 | Must be a narrow semantic transaction, not SQL, arbitrary callback, or generic mutation API. Exact order is count-only start; admission/current-dependency recheck; private plan validation; mutation-affected target derivation/read; exact sequence-free plan; semantic and conservative encoded reservation; sequence assignment; exact graph/retained-candidate verification; actual canonical per-class envelope proof; staging. All knowable component bounds remain pre-open; only the bounded aggregate reservation uses transaction-current inputs; ADR-0003/0004/0005 | WP-060 synthetic-charge memory conformance; epoch-set distinction; capacity-before-sequence compile/type tests; WP-065 real-codec equal/one-byte-over envelope fixtures consumed by WP-070; first/max/exhausted cases; exact reservation/assignment/stage failpoints; no visible partial state or sequence gap |
 | Database initialization identity and readiness | Source-free probe and atomic transition in `riffdb-storage-api`, WP-060; redb WP-070; sole production caller `DatabaseInitializationExecutor` in `riffdb-commit`, WP-100; source/lifecycle composition server WP-130 | Capability binding, idempotency identity, health/bootstrap/catalog lifecycle; WP-185 extends the accepted lifecycle | Executor returns Existing or NeedsInitialization; server generates only after Needs and passes candidate back through executor, never storage. Transition re-proves emptiness/returns a concurrent winner; reopen has no source call; invalid partial state is corrupt. Initialized remains `Initializing` until bootstrap, then only deployment until active contract; ADR-0004/0007/0009/0018/0019 | Probe/source call-count, architecture no-server-storage-mutation edge, memory/redb install/race/reopen/crash, invalid rejection, P1 process lifecycle tests |
 | Structural startup evidence and operational handoff | `StructuralEvidenceSession`, bounded `HistoricalSemanticEvidence`, and dormant-port type-state owned by `riffdb-storage-api`, WP-060; memory conformance WP-060; redb `StructurallyOpened` producer WP-070; catalog-owned `ValidatedCatalogHistory` WP-050; join WP-130 | WP-130 startup/lifecycle; WP-185 reuses the resulting graph; WP-190 extends crash evidence | Initialization precedes one exclusive nonmutating session. Exact-end structural scan enumerates every authoritative namespace plus every persisted entity, index-entry, and range-prefix key as IR-opaque owner-bound evidence and yields only same-session dormant ports; catalog alone validates every historical IR reference and key against its exact retained/active schema and yields opaque same-session `ValidatedCatalogHistory`. Only WP-130 joins both plus readable inventories. No storage-to-IR edge, callback, proof-through-storage, truncation-as-success, or readiness claim in WP-070; ADR-0004/0006/0016/0019 | Memory/redb page/end/session/drop/key-coverage conformance, catalog skipped/repeated/cross-session/schema-mismatch rejection, architecture direction tests, P1 real-process graceful/restart proof |
 | POC operational metadata and startup validation | Semantic retained-set interface in `riffdb-storage-api`, WP-060; exact durable inventory WP-065; redb structural validation WP-070; catalog `ValidatedCatalogHistory` WP-050; readiness composition WP-130 | WP-185 derived-component extension and WP-190 recovery | Exactly storage format version, permanent DatabaseId, independent application/administration allocator states, active-contract consistency data, and singleton bootstrap marker. No `NodeId`, clean-shutdown marker, persisted integrity result/history, reserved field, key, type, or source port. Canonical absence is valid and complete; every startup performs the full staged read-only validation with no marker fast path or repair; ADR-0019 | Memory retained-set/absence architecture tests, WP-065 schema-inventory negative fixture, same-session structural/`ValidatedCatalogHistory` proof, graceful/crash startup call evidence, no-write checks, repeated-open idempotence |
@@ -224,7 +254,7 @@ compatibility; those parts cannot freeze until its exact text is Accepted.
 | Admission and administration clocks | Consumer-owned synchronous `AdmissionClock` and `AdministrationClock` ports in `riffdb-commit`, WP-100; concrete OS providers in `riffdb-server`, WP-130 | Coordinator admission/audit and compound bootstrap/catalog/control-plane paths; WP-185 reuses them | Disjoint from authentication/authorization clocks. Initial exact-facts authorization precedes durable Started; bounded permit wait precedes fresh final authorization and synchronous admission. Standalone/start/terminal/catalog/bootstrap timestamps use `AdministrationClock`; linked bootstrap facts share one sample. Clock failure is an audit outage and fails closed; ADR-0007/0009/0012 | Fake-clock call-order/count tests, queue/cancellation schedules, one-sample bootstrap linkage, clock-failure append/output-withholding matrices |
 | API-neutral service requests/results | `riffdb-service`, WP-120 | WP-130 and WP-140 | No Prost/Tonic/rmcp/redb types. Every operation takes authenticated context and obtains a policy decision; bounded cursor/wait/result types fixed before transport branches; ADR-0007 | In-process service suite and dependency/architecture test proving no transport-storage edge |
 | Cursor token and monotonic expiry | `CursorTokenGenerator` and `CursorMonotonicClock` consumer ports in `riffdb-service`, WP-120; OS entropy and private Instant-origin providers composed by server WP-130 | All paged service methods; transports carry only opaque tokens; WP-185 reuses the providers | Exactly 16 unpredictable bytes, bounded collision retries/capacity, process-relative 300-second expiry, checked tick regression/overflow, restart invalidation; distinct from four wall clocks and runtime; ADR-0007 | Explicit token/tick fakes, collision/capacity/expiry/rollback properties without sleeps, restart and reauthorization tests |
-| Commit record, durable events, provenance | Semantic DTOs in `riffdb-storage-api`, WP-060; exact durable Protobuf messages/descriptors/goldens and storage-owned codec bridge in WP-065; WP-100 supplies values | WP-070, WP-160, WP-170, services | Field numbers, canonical repeated order, complete post-image policy, redaction, event IDs, atomic record set, and one-way dependency from `riffdb-storage-api::proto_codec` to `riffdb-proto` fixed before WP-070; `riffdb-proto` never depends on storage; ADR-0005/0006 | WP-065 descriptors/goldens/codec round trips, decoder fuzz, torn-write failpoints, provenance/idempotency assertions on every mutation |
+| Commit record, durable events, `EventHash`, provenance | Semantic DTOs plus post-assignment event preimage/hash construction and constructor validation in `riffdb-storage-api`, WP-060; exact durable Protobuf messages, complete framed hash/envelope goldens, per-class upper-bound proofs, and storage-owned codec bridge in WP-065; WP-100 supplies assigned values | WP-070, WP-160, WP-170, services | Field numbers, canonical repeated order, complete post-image policy, redaction, event IDs, the exact `EventId[12] || EventTypeId:u32_be || payload_length:u32_be || canonical Value::Record` preimage under `riffdb.event/v1`, atomic graph membership, and one-way dependency from `riffdb-storage-api::proto_codec` to `riffdb-proto` fixed before WP-070; `riffdb-proto` never depends on storage; ADR-0005/0006/0011 | WP-060 constructor mismatch cases; WP-065 complete framed preimage, field-order/type/ordinal/length/cross-domain goldens, codec round trips and actual-envelope charge proofs; WP-070 corruption/recovery checks; torn-write failpoints and provenance/idempotency assertions on every mutation |
 | Capability repository and compound bootstrap transition | Neutral semantic DTO/port plus atomic bootstrap transition in `riffdb-storage-api` WP-060, durable message in WP-065, redb implementation WP-070; auth/policy semantics WP-110 | WP-100/WP-110/WP-120 | Stable capability ID plus digest lookup; bootstrap atomically appends the principal-less service-audit `started` record immediately before the authoritative capability/marker/lookup set, with replay linkage and no raw secret; retained credential file and containing directory are synchronized before RPC; create/revoke use coordinator operations and administration sequencing; ADR-0004/0007/0009 | Memory/redb conformance, raw-token absence, credential file/directory failpoints, crash/reopen at compound transition boundaries, replay linkage, audit ordering, revocation-next-request test |
 | Durable service and administration audit | `riffdb-types` WP-010 owns closed operation/phase/ingress/link values and ADR-0021 target values; semantic `StoredServiceAuditRecordV1` and bounded append/compound transitions in `riffdb-storage-api` WP-060; durable schema WP-065; coordinator lifecycle WP-100; service target/scope/result shaping WP-120 | WP-070 recovery, WP-180 diagnostics, WP-190 process evidence | Nine lineage-scoped target tags use one canonical zero-through-16 list; service derives request-addressed targets only, while storage/transports preserve them. Mutations/admin always audit after classification; every explicit authenticated Deny audits; allowed standard reads only by obligation. Every Started selects one terminal phase and attempts one append; at most one terminal becomes durable, and outage/crash may leave none without recovery synthesis. Obligations complete before Succeeded/output. Links are closed and independent of targets; cancellation is proven, not uncertainty; ADR-0004/0007/0009/0021 | Target tag/key/permutation/duplicate/bound goldens; exhaustive 22-operation mapping and start/terminal equality; durable malformed/order recovery; exact scope/phase/link matrix, two-authorization admission order, no-audit standard-read case, replay/resume, append failure map, output withholding, compound-bootstrap and process recovery |
 | Outbox repository and transition | Atomic event/intent storage port in `riffdb-storage-api` WP-060, durable codec WP-065, redb integrity WP-070; worker semantics/recovery WP-160 | WP-160, WP-185 health, and recovery | Command commit writes event plus intent but no initial status. Missing status is canonical never-attempted Pending; explicit Pending may retain retry metadata; orphan status is corrupt. WP-160 idempotently normalizes interrupted Delivering before worker readiness; authoritative WP-070 records are not repaired; ADR-0004/0005/0006 | Event/intent reciprocity and absent-status conformance, orphan rejection, fake connector duplicate/crash histories, Delivering restart normalization, no-lost-event scan |
@@ -251,7 +281,14 @@ transport decode/authenticate
      exact stored admission/provenance + plan evidence + unchanged EvaluatedCommand
      into the final CommitIntent
   -> coordinator performs transaction-current policy verification where required
-     and drives one narrow storage transaction
+     and opens one narrow storage transaction with a count-only candidate
+  -> candidate rechecks admission and influential dependencies, validates the exact
+     historical plan, derives mutation-affected prefixes, and reads their epochs
+  -> candidate freezes the exact sequence-free write plan and reserves semantic plus
+     conservative encoded capacity before any sequence assignment
+  -> coordinator assigns the sequence, derives EventId/EventHash and the exact record
+     graph, and storage verifies retained intent/plan/assignment plus actual canonical
+     envelope bytes before staging
   -> storage atomically persists mutations + outcome + events + provenance + commit
   -> service fully applies redaction/filter/bound obligations to the result
   -> the one invocation-terminal audit record is durably appended
@@ -298,14 +335,19 @@ The following preserves every reconciled YAML dependency:
   registry, before WP-060 starts; WP-050 revalidates that registry and WP-080
   consumes only merged IR.
 - WP-060 lands reviewed snapshot, observed-dependency, `EvaluatedCommand`,
-  `CommitIntent`, atomic-transaction, compound-bootstrap/audit, catalog,
+  `CommitIntent`, distinct influential/mutation-affected epoch sets,
+  `CommandWriteSetPlanV1`, pre-sequence capacity/assignment/stage type states,
+  exact EventHash constructor validation, compound-bootstrap/audit, catalog,
   capability, outbox, projection, and structural-evidence/type-state ports before
   its downstream branches. WP-070 may yield only same-session
   `StructurallyOpened` dormant ports; WP-050 alone yields the opaque historical
   `ValidatedCatalogHistory`, and WP-130 alone joins the matching pair into production
   readiness.
-- WP-065 freezes durable semantic Protobuf messages, descriptors, goldens, and
-  the storage-owned codec bridge before WP-070 persists any of those records.
+- WP-065 freezes durable semantic Protobuf messages, exact event-hash framed
+  goldens, canonical `StoredEnvelope` codecs and conservative per-record-class
+  upper-bound proofs, descriptors, and the storage-owned codec bridge before
+  WP-070 persists any of those records. WP-070 must compare actual canonical
+  bytes to the retained bounds before staging.
 - WP-100 lands `CommittedOutcome`, the coordinator handle, and its invocation
   audit integration before WP-120 begins.
 - WP-120 lands service DTOs/traits and public policy-safe result shapes before
@@ -464,9 +506,10 @@ implements their interfaces.
 - **Purpose:** Define the narrow engine-neutral snapshot, observed-dependency, evaluated-command/intent DTOs, atomic command, catalog, capability/bootstrap, service-audit, outbox, projection, scan, integrity, startup structural-evidence/type-state, and backup semantics plus a memory reference engine.
 - **Hard dependencies:** WP-010, WP-020, and WP-040.
 - **Upstream inputs:** Canonical values/keys, phase-zero envelopes, immutable checked projection-group schemas, accepted transaction/storage/service/capability/projection ADRs, ADR-0019's exact retained metadata set, and ADR-0021's checked target collection.
-- **Downstream interfaces:** Source-free database-identity probe/initialization, exactly the six retained metadata categories with canonical absence of all deferred items, `StructuralEvidenceSession`, bounded exact-end `HistoricalSemanticEvidence`, same-database/session type-state and `StructurallyOpened` dormant-port handoff, `ReadSnapshot`, `EvaluatedCommand`, checked `CommitIntent` including ProvenanceId, ordered scan, atomic records, compound bootstrap and standalone audit transitions preserving checked targets without derivation, event/intent plus absent-status semantics, specialized repositories, separated integrity findings/readiness, and shared conformance suite.
-- **Principal risks:** Generating identity in storage or on reopen, inventing a `NodeId`/shutdown marker/integrity history placeholder, deriving or reordering audit targets in storage, treating truncation as exact end, releasing ports before scan completion, allowing mutation during evidence, importing or interpreting historical IR in storage, passing `ValidatedCatalogHistory` through storage, giving storage sequence/business/policy ownership, holding a transaction across runtime, generic callbacks/transactions, redb leakage, reversed IR/Proto dependencies, provenance entering runtime, incorrect audit/outbox semantics, or omitted persistence needs.
-- **Acceptance evidence:** Memory suite proving source-free Existing/NeedsInitialization and atomic initialization races; initialization-before-evidence; exclusive noninterleaving session behavior; bounded continuation, exact-end, drop/failure, and database/session mismatch cases; dormant ports that cannot self-activate; exact retained metadata plus valid absence/architecture rejection of deferred items; checked target preservation/bounds; snapshot/bounds; evaluated-command/intent/provenance checks; atomicity; sequence/log ordering; idempotency; catalog CAS; audit/bootstrap ordering/failure classes; reciprocal event/intent with implicit Pending; separated derived findings; projection generation/frontier; and model equality.
+- **Approved narrow scope exception:** WP-060 may edit only `crates/riffdb-types/src/codec.rs` outside its original crate set to add a borrowed canonical-record encoder. The helper must produce byte-for-byte canonical value v1 output, must not change any tag, bound, ordering, error compatibility, or durable format, and exists only to establish the aggregate bound before storage code duplicates an owned record.
+- **Downstream interfaces:** Source-free database-identity probe/initialization, exactly the six retained metadata categories with canonical absence of all deferred items, `StructuralEvidenceSession`, bounded exact-end `HistoricalSemanticEvidence`, same-database/session type-state and `StructurallyOpened` dormant-port handoff, `ReadSnapshot`, `EvaluatedCommand`, checked `CommitIntent` including ProvenanceId, distinct influential and mutation-affected epoch collections, exact sequence-free `CommandWriteSetPlanV1`, pre-sequence capacity type states, post-assignment `EventHash` construction/constructor validation, ordered scan, atomic records, compound bootstrap and standalone audit transitions preserving checked targets without derivation, event/intent plus absent-status semantics, specialized repositories, separated integrity findings/readiness, and shared conformance suite.
+- **Principal risks:** Generating identity in storage or on reopen, inventing a `NodeId`/shutdown marker/integrity history placeholder, deriving or reordering audit targets in storage, conflating influential and mutation-affected epochs, assigning a sequence before exact aggregate reservation, trusting an upper bound without checking actual canonical envelopes, hashing only an event payload, treating truncation as exact end, releasing ports before scan completion, allowing mutation during evidence, importing or interpreting historical IR in storage, passing `ValidatedCatalogHistory` through storage, giving storage sequence/business/policy ownership, holding a transaction across runtime, generic callbacks/transactions, redb leakage, reversed IR/Proto dependencies, provenance entering runtime, incorrect audit/outbox semantics, or omitted persistence needs.
+- **Acceptance evidence:** Memory suite proving source-free Existing/NeedsInitialization and atomic initialization races; initialization-before-evidence; exclusive noninterleaving session behavior; bounded continuation, exact-end, drop/failure, and database/session mismatch cases; dormant ports that cannot self-activate; exact retained metadata plus valid absence/architecture rejection of deferred items; checked target preservation/bounds; snapshot/bounds; evaluated-command/intent/provenance checks; epoch-set overlap/difference; count-only start and capacity-before-sequence type states; synthetic equal/over-charge staging with no dependency on the later durable codec; exact event-hash preimage and mismatch rejection; atomicity; no-gap sequence/log ordering; idempotency; catalog CAS; audit/bootstrap ordering/failure classes; reciprocal event/intent with implicit Pending; separated derived findings; projection generation/frontier; and model equality.
 - **Human-review triggers:** Transaction ordering/lifetime, revalidation responsibility, key/record encoding, sequence allocation, generic mutation ability, or any path that resembles arbitrary transaction callbacks.
 - **Parallelism:** Begins only after WP-040's checked projection schema merges. Its interface must merge before WP-050/WP-065/WP-080 implementations branch.
 - **Recommended PR boundary:** ADR-backed trait/record interface; memory implementation; shared semantic/model properties.
@@ -509,10 +552,10 @@ protocol-specific MCP objects remain WP-140.
 
 - **Purpose:** Freeze the exact versioned Protobuf representation of the semantic durable records accepted by WP-060 before any production backend persists them.
 - **Hard dependencies:** WP-020 and WP-060.
-- **Upstream inputs:** Phase-zero envelope/value policy, storage-owned semantic DTOs and bounds, ADR-0019's exact retained metadata inventory, ADR-0021's nine targets/canonical order, projection identity/generation/frontier records, service-audit records, capability/bootstrap records, and every atomic command record.
-- **Downstream interfaces:** Durable `.proto` messages including both `Next(nonzero) | Exhausted` allocator states and the reviewed target representation, descriptors, schema hashes, golden old/current bytes, structural wire validators, a generated inventory proving no deferred-metadata record/field/key/envelope placeholder, and the one-way `riffdb-storage-api::proto_codec` semantic codec bridge. `riffdb-proto` never depends on storage API.
-- **Principal risks:** Guessing field numbers before semantic DTOs freeze, losing ADR-0021 tags/order or repairing malformed targets, reserving speculative `NodeId`/shutdown/integrity-history fields, reversing the foundational dependency, conflating public and durable messages, lossy unknown-field handling, or letting generated Prost types escape into runtime/service/policy APIs.
-- **Acceptance evidence:** `cargo test -p riffdb-proto -p riffdb-storage-api`, deterministic proto generation check, durable descriptor/golden and negative schema-inventory diffs including all target variants/order/malformed cases plus first/max/exhausted allocator and compound-capacity cases, semantic round trips, malformed/limit tests, and decoder-fuzz corpus registration.
+- **Upstream inputs:** Phase-zero envelope/value policy, storage-owned semantic DTOs and bounds, exact ADR-0011 event preimage, sequence-free write-set charge classes, ADR-0019's exact retained metadata inventory, ADR-0021's nine targets/canonical order, projection identity/generation/frontier records, service-audit records, capability/bootstrap records, and every atomic command record.
+- **Downstream interfaces:** Durable `.proto` messages including both `Next(nonzero) | Exhausted` allocator states and the reviewed target representation; exact event-hash codec and complete framed goldens; exact actual canonical `StoredEnvelope` charge reporting and conservative per-record-class upper-bound proofs; descriptors, schema hashes, golden old/current bytes, structural wire validators, a generated inventory proving no deferred-metadata record/field/key/envelope placeholder, and the one-way `riffdb-storage-api::proto_codec` semantic codec bridge. `riffdb-proto` never depends on storage API.
+- **Principal risks:** Guessing field numbers before semantic DTOs freeze, defining an upper bound that the real codec can exceed, hashing Protobuf or payload-only event bytes, losing ADR-0021 tags/order or repairing malformed targets, reserving speculative `NodeId`/shutdown/integrity-history fields, reversing the foundational dependency, conflating public and durable messages, lossy unknown-field handling, or letting generated Prost types escape into runtime/service/policy APIs.
+- **Acceptance evidence:** `cargo test -p riffdb-proto -p riffdb-storage-api`, deterministic proto generation check, durable descriptor/golden and negative schema-inventory diffs including all target variants/order/malformed cases plus first/max/exhausted allocator and compound-capacity cases; complete framed event-hash vectors and mismatch cases; real-codec equal-bound/one-byte-over/aggregate reservation fixtures; semantic round trips, malformed/limit tests, and decoder-fuzz corpus registration.
 - **Human-review triggers:** Any durable message/field number, envelope/key/codec change, compatibility classification, unknown-field policy, or dependency-direction change.
 - **Parallelism:** May run with WP-050/WP-080 after WP-060; WP-070 must wait for it. It does not own public API messages or service conversions.
 - **Recommended PR boundary:** One interface-first durable-schema PR: messages/descriptors and review fixtures, then storage-owned codecs and negative compatibility evidence. Do not mix redb mechanics into it.
@@ -521,19 +564,22 @@ protocol-specific MCP objects remain WP-140.
 
 - **Purpose:** Implement all frozen semantic storage ports using redb, versioned tables, atomic command records, complete structural startup evidence with dormant opened ports, recovery/integrity, offline backup/restore, and component benchmarks.
 - **Hard dependencies:** WP-020, WP-060, and WP-065.
-- **Upstream inputs:** Frozen storage traits/semantic DTOs, reviewed durable messages/envelopes/codecs/key layouts, ADR-0019 retained metadata and canonical absence rules, ADR-0021 target validation, durability modes, and named failpoint protocol.
+- **Upstream inputs:** Frozen storage traits/semantic DTOs and exact candidate order, reviewed durable messages/envelopes/codecs/key layouts, per-record-class envelope upper bounds, exact event-hash fixtures, ADR-0019 retained metadata and canonical absence rules, ADR-0021 target validation, durability modes, and named failpoint protocol.
 - **Downstream interfaces:** Concrete engine/configuration hidden behind storage API, exclusive structural-evidence session, complete exact-end historical pages, same-session `StructurallyOpened` dormant ports, recovery/integrity report, backup manifest, and failpoint hooks for WP-190. It exposes no IR-aware or operational-readiness proof.
-- **Principal risks:** Redb type leakage, sequence visibility before durability, incomplete specialized tables, format ambiguity, accepting or repairing unknown/duplicate/noncanonical audit targets, a marker/history fast path that weakens startup validation, treating a bounded/truncated scan as complete, releasing mutation ports during validation, importing catalog/IR, claiming readiness from structure alone, writing deferred operational metadata, unsafe repair, or engine-specific semantics becoming public.
+- **Principal risks:** Redb type leakage, sequence assignment before capacity, a codec upper-bound excess discovered after staging, event-hash drift, sequence visibility before durability, incomplete specialized tables, format ambiguity, accepting or repairing unknown/duplicate/noncanonical audit targets, a marker/history fast path that weakens startup validation, treating a bounded/truncated scan as complete, releasing mutation ports during validation, importing catalog/IR, claiming readiness from structure alone, writing deferred operational metadata, unsafe repair, or engine-specific semantics becoming public.
 - **Acceptance evidence:** Shared engine conformance, package properties, and a
   process recovery matrix covering both sequence spaces and exhaustion metadata,
   pending/terminal idempotency digest-provider availability, capability lookup/
-  bootstrap/audit cross-links, reciprocal commit/event/outbox-intent linkage,
+  bootstrap/audit cross-links, exact event-hash and reciprocal commit/event/outbox-intent linkage,
   standalone audit with exact target integrity, compound bootstrap/replay,
   verified backup/restore, complete read-only structural validation and historical
   evidence through exact end after both graceful close and crash, dormant-port
   session binding with no catalog/IR dependency or readiness claim, no deferred
   metadata write, and benchmark compilation. Mismatch fails the open;
-  no POC online sequence repair or referenced-key retirement is accepted.
+  no POC online sequence repair or referenced-key retirement is accepted. The
+  matrix also covers capacity failure before sequence, exact-bound staging,
+  one-byte-over canonical-envelope rejection before staging, and every boundary
+  through assignment/graph verification/commit.
 - **Human-review triggers:** Table/key/envelope change, repair behavior, durability interpretation, backup overwrite policy, critical/unsafe/native dependency.
 - **Parallelism:** Safe with WP-050/WP-080 after interface freeze.
 - **Recommended PR boundary:** Layout/envelope fixtures; read/atomic operations; catalog/capability/derived ports; recovery/backup; benchmarks.
@@ -564,12 +610,12 @@ protocol-specific MCP objects remain WP-140.
 
 #### WP-100 — Commit coordinator and idempotency
 
-- **Purpose:** Own transaction admission after policy/plan resolution: idempotency, conflict acquisition, runtime evaluation, revalidation, sequence assignment, atomic persistence, replay, and lease release.
+- **Purpose:** Own transaction admission after policy/plan resolution: idempotency, conflict acquisition, runtime evaluation, influential revalidation, mutation-affected epoch planning, pre-sequence capacity reservation, sequence-derived event/record construction, atomic persistence, replay, and lease release.
 - **Hard dependencies:** WP-050, WP-070, WP-080, WP-090, and WP-110.
 - **Upstream inputs:** Engine and atomic transaction, pure evaluator returning `EvaluatedCommand`, conflict lease, catalog/commit-check plan, stored pending admission/provenance, checked ADR-0021 target lists, policy-owned value-only capability preparation/facts/verifier, injected admission/administration clocks and provenance source, failpoints, and approved idempotency/audit semantics.
 - **Downstream interfaces:** Bounded coordinator handle/queue and permit; commit-owned `DatabaseInitializationExecutor`, `AdmissionClock`, `AdministrationClock`, `ProvenanceIdSource`, and audit executor; idempotency derivation/reservation, checked final `CommitIntent`, `CommittedOutcome`, typed replay/mismatch/failure mapping, and post-durability notification.
-- **Principal risks:** Business work before durable Started, changing/rederiving target lists in the executor, stale final authorization after queue wait, duplicate effects or provenance after uncertainty, identifier collision after sequence allocation, wrong identity scope, unstable `tx.time`, runtime entropy/provenance leakage, sequence gaps, duplicated policy predicates, missing revalidation, incorrect audit terminal/link, output before terminal durability, cancellation after an authoritative result, or lease release failure.
-- **Acceptance evidence:** Package/backpressure tests; initialization probe/candidate flow proving commit is sole production transition caller; exact initial-auth/Started/permit/fresh-auth/admit order; target preservation; clock/source calls; intent assembly; provenance collision/replay/unknown schedules; capability tests; exhaustive audit map/links; budget race; revalidation; and fail-after-commit replay with one mutation/event/record/sequence/provenance ID.
+- **Principal risks:** Business work before durable Started, changing/rederiving target lists in the executor, conflating influential dependencies with affected epochs, stale final authorization after queue wait, duplicate effects or provenance after uncertainty, identifier collision after sequence allocation, capacity failure after sequence, wrong EventHash preimage, wrong identity scope, unstable `tx.time`, runtime entropy/provenance leakage, sequence gaps, duplicated policy predicates, missing revalidation, incorrect audit terminal/link, output before terminal durability, cancellation after an authoritative result, or lease release failure.
+- **Acceptance evidence:** Package/backpressure tests; initialization probe/candidate flow proving commit is sole production transition caller; exact initial-auth/Started/permit/fresh-auth/admit order; target preservation; clock/source calls; intent assembly; epoch-set distinction; capacity-before-sequence and retained-plan/assignment equality; exact ordinal/EventId/EventHash graph; provenance collision/replay/unknown schedules; capability tests; exhaustive audit map/links; budget race; revalidation; reservation/assignment/envelope/stage failpoints; and fail-after-commit replay with one mutation/event/record/sequence/provenance ID.
 - **Human-review triggers:** Identity tuple/reservation, transaction ordering, predicate source, sequence semantics, atomic set, admission ownership, cancellation boundary, or outcome persistence.
 - **Parallelism:** Starts only after WP-110; it may overlap no package that is still changing its catalog, storage, runtime, conflict, or principal inputs. Do not start WP-120 until its public result freezes.
 - **Recommended PR boundary:** Identity/outcome interfaces; coordinator queue/state machine; atomic engine integration; concurrency/idempotency/failpoint evidence.
@@ -667,7 +713,9 @@ protocol-specific MCP objects remain WP-140.
 
 The durable gate must include WP-065 and WP-127 and show reviewed durable/public
 schema fixtures, one authoritative atomic command set, sequence/revalidation
-correctness, same-key uncertain-response recovery, compound-bootstrap and
+correctness including mutation-affected epoch reads and capacity-before-sequence,
+actual canonical-envelope bound checks, exact EventHash construction/recovery,
+same-key uncertain-response recovery, compound-bootstrap and
 invocation-audit ordering, transaction-current authorization, deny-by-default
 shared service access, stable database/provenance identity, transaction-path
 process recovery, and the public-API-only CLI. Atomic event/outbox intent with an
@@ -758,8 +806,8 @@ extension, and it must not use an in-process storage or service bypass.
 - **Hard dependencies:** WP-070, WP-100, WP-160, WP-170, and WP-185.
 - **Upstream inputs:** Named failpoints already present, deterministic barriers/control protocol, temporary server lifecycle, durable inspector, and reference model.
 - **Downstream interfaces:** Child-process controller, failpoint scenario DSL/config, state inspector, recovery report, and repeat-open harness.
-- **Principal risks:** Replacing process death with recoverable errors, timing via sleeps, inspecting through repair, skipping validation after graceful close, accidentally persisting deferred metadata, conflating authoritative and derived findings, missing UUID/database/provenance dimensions, nondeterministic failpoints, or a path that mutates recovery state.
-- **Acceptance evidence:** Exact pre/post state at every SPEC failpoint across initialization/DatabaseId, sequence metadata, entities/indexes/outcomes/records, event-intent reciprocity, provenance generation/collision/replay, capability/audit links and ADR-0021 target order, idempotency provider readiness, outbox Delivering normalization, projection degradation/new generation, and aggregate health; graceful and crash reopen both run complete authoritative integrity; repeated restart creates no ADR-0019 deferred record and remains stable with no authoritative repair.
+- **Principal risks:** Replacing process death with recoverable errors, timing via sleeps, omitting pre-sequence reservation/envelope-check boundaries, inspecting through repair, skipping validation after graceful close, accidentally persisting deferred metadata, conflating authoritative and derived findings, missing UUID/database/provenance/event-hash dimensions, nondeterministic failpoints, or a path that mutates recovery state.
+- **Acceptance evidence:** Exact pre/post state at every SPEC failpoint across initialization/DatabaseId; capacity reservation, sequence assignment, canonical-envelope verification, staging, and durability; sequence metadata; entities/indexes/outcomes/records; exact `EventHash` recomputation and event-intent reciprocity; provenance generation/collision/replay; capability/audit links and ADR-0021 target order; idempotency provider readiness; outbox Delivering normalization; projection degradation/new generation; and aggregate health. A reservation or one-byte-over envelope failure exposes no sequence or partial graph; graceful and crash reopen both run complete authoritative integrity; repeated restart creates no ADR-0019 deferred record and remains stable with no authoritative repair.
 - **Human-review triggers:** Any third recovered state, mismatch with redb guarantees, sequence/event duplication, frontier skip, integrity repair ambiguity, or missing upstream hook.
 - **Parallelism:** No useful production-package parallelism after WP-185; reporting preparation may overlap without editing the harness inputs.
 - **Recommended PR boundary:** Failpoint/controller protocol; durable inspector/model; matrix cases; machine-readable report.
@@ -771,7 +819,7 @@ extension, and it must not use an in-process storage or service bypass.
 - **Upstream inputs:** Stable binaries/protocols/formats, complete automated evidence, benchmark harnesses including the resolved Fjall experiment, known limitations, and security posture.
 - **Downstream interfaces:** POC-001..010 JSON report, demo, benchmark report, SBOM/checksums, compatibility statement, release bundle, and architecture-review packet.
 - **Principal risks:** Becoming an out-of-scope integration repair package, missing requirement ownership, irreproducible benchmarks, overstated durability/security claims, or release generation that changes tracked files.
-- **Acceptance evidence:** Exact YAML commands, clean `ci-all`, asserted demo through every transport, UUID/source-owner and audit/recovery matrices, final ADR-0019 retained/deferred metadata inventory, end-to-end ADR-0020 compiler/catalog/service/MCP name evidence, verified release artifacts/checksums/SBOM, and human sign-off for all ten POC criteria.
+- **Acceptance evidence:** Exact YAML commands, clean `ci-all`, asserted demo through every transport, UUID/source-owner and audit/recovery matrices, end-to-end current-validation/affected-epoch/reservation/sequence/envelope/staging evidence, exact EventHash golden-to-restart evidence, final ADR-0019 retained/deferred metadata inventory, end-to-end ADR-0020 compiler/catalog/service/MCP name evidence, verified release artifacts/checksums/SBOM, and human sign-off for all ten POC criteria.
 - **Human-review triggers:** Any implementation fix outside allowed release paths, omitted criterion, benchmark engine decision, security claim, format claim, or POC/MVP scope change.
 - **Parallelism:** None; this is the final integration and evidence package.
 - **Recommended PR boundary:** Acceptance/demo/report; benchmarks/threat/dependency documents; release packaging; then a separate human architecture decision, not an agent acceptance.
@@ -954,6 +1002,9 @@ and WP-127, the reviewed redb/capability
 dependency baselines, and the exact
 `EvaluatedCommand`/`CommitIntent`, policy verifier/clock, audit, and projection
 boundaries reflected above.
+The 2026-07-14 accepted ADR-0004/ADR-0011 amendments also freeze the exact
+pre-sequence candidate/capacity chain and the durable-event hash preimage. They
+are implementation inputs, not additions to the open ADR queue.
 
 The smallest remaining POC architecture queue contains only ADR-0008. Exact-text
 acceptance still requires explicit human approval.
@@ -975,16 +1026,17 @@ acceptance still requires explicit human approval.
 | Canonical IDs/values/decimal/keys/hashes | Unit tests, Proptest ordering/overflow/scale algebra, cross-platform golden bytes/hashes, encoder/decoder fuzz | WP-010 | WP-100 identity/history tests and WP-200 demo |
 | UUIDv7 construction, source isolation, and replay | Exact byte/text/max/overflow goldens; wrong version/variant/length tests; dependency-owner and no-ambient-source checks; fake source calls; database install/reopen, provenance collision/unknown/replay, fresh RequestId, retained bootstrap ID/token, and normal-create token-unavailable cases | WP-010 | WP-110/WP-130 providers, WP-190 crash matrix, and WP-200 |
 | Public-safe errors and redaction | Unit/property bounds, safe conversion snapshots, secret canaries through logs/gRPC/MCP, business outcome not transport error | WP-010 | WP-180 telemetry redaction and WP-200 |
-| Phase-zero, durable, and public Protobuf compatibility | WP-020 common/envelope/service-descriptor goldens; exact WP-010 execution-failure error descriptor/mapping/preflight/wire goldens; WP-065 durable descriptors/records/storage-codec round trips; WP-127 remaining public descriptors/schema hashes/wire goldens; reserved-field tests, decoder fuzz, deterministic regeneration, and dependency-direction checks | WP-010 for the amended current boundary | WP-065/WP-127 freezes, WP-070/WP-190 recovery, and WP-200 release |
+| Phase-zero, durable, and public Protobuf compatibility | WP-020 common/envelope/service-descriptor goldens; exact WP-010 execution-failure error descriptor/mapping/preflight/wire goldens; WP-065 durable descriptors/records/storage-codec round trips plus conservative complete-envelope upper-bound proofs and equal/one-byte-over fixtures; WP-127 remaining public descriptors/schema hashes/wire goldens; reserved-field tests, decoder fuzz, deterministic regeneration, and dependency-direction checks | WP-010 for the amended current boundary | WP-065/WP-127 freezes, WP-070 actual-envelope enforcement, WP-190 recovery, and WP-200 release |
 | Parser bounds and diagnostics | Valid/invalid corpus, source-span snapshots plus semantic assertions, parser/round-trip fuzz with production limits | WP-030 | WP-040 fixture and WP-200 demo compile |
 | Deterministic IR/plan/schema and MCP command names | Golden bundle/plan hash/JSON Schema, repeated-build equality, compatibility properties, unsupported IR rejection; exact ADR-0020 case mapping, segment/128-byte boundaries, collision spans, CommandId ordering, registry/hash fixtures, and WP-050 activation revalidation | WP-040 | WP-050 catalog, WP-120/WP-140 verbatim consumption, and WP-200 |
 | Runtime determinism and invariant preservation | Pure unit tests, property-generated command histories, same snapshot/input/time `EvaluatedCommand` comparison, single-thread reference-model differential testing, and architecture checks excluding admission/provenance/I/O | WP-080 | WP-100 intent assembly/real concurrency and WP-200 POC-002/003 |
 | Deterministic execution-fault disposition | Fixed arithmetic/resource-fault vectors; assert no evaluated command/sequence/provenance/commit; mutate each influential dependency before terminalization; failpoints distinguish proven abort from unknown commit; public error descriptor/mapping fixtures | WP-060/WP-080 | WP-100/WP-127/WP-130, WP-190, and WP-200 |
-| Complete read/predicate tracking | Compiler negative tests, runtime evidence assertions, mutate each influential read before commit, safe rejection of undeclared dependencies | WP-040/WP-080 | WP-100 concurrency/revalidation and WP-190 |
+| Complete read/predicate and affected-epoch tracking | Compiler negative tests, runtime evidence assertions, mutate each influential read before commit, safe rejection of undeclared dependencies; prove influential range dependencies and mutation-affected prefix targets may overlap or differ and cannot substitute for each other | WP-040/WP-060/WP-080 | WP-100 concurrency/revalidation and WP-190 |
 | Snapshot/storage semantic conformance | One parameterized suite over memory and redb: absence/version, bounded scan/epoch, ordered scan, atomic state/model equality | WP-060 | WP-070 and WP-190 |
 | Staged startup proof and first runnable process | Memory/redb initialization-first structural-session type-state; bounded page/continuation/exact-end properties; catalog historical IR resolver with skipped/repeated/truncated/cross-session rejection; architecture checks excluding storage-to-IR, generic callbacks, and proof-through-storage; matching dormant-port/proof join; digest inventory, lifecycle, clean-stop/reopen, and retained bootstrap-replay assertions | WP-050/WP-060 | WP-130 real temporary-redb gRPC restart checkpoint, then WP-190/WP-200 |
 | Conflict exclusivity/fairness/cancellation | Unit tests; Loom reduced grant/release/cancel/timeout/fairness/lost-wakeup model; Shuttle multi-key schedules; barriers/hooks, no sleeps | WP-090 | WP-100 budget race and WP-200 |
-| Atomic sequence/mutations/outcome/events/provenance/log | Reference properties and failpoints before/during/after durable transaction; inspect the entire record set and sequence visibility; freeze exact records/codecs in WP-065 | WP-060 memory, WP-065 schema, WP-070 durable | WP-190 matrix and WP-200 |
+| Pre-sequence capacity and atomic sequence/mutations/outcome/events/provenance/log | Type-state/compile checks and reference properties for count-only start, current validation, affected-epoch read, sequence-free plan, semantic/conservative reservation, assignment, retained-candidate verification, actual canonical envelope charge, and staging; WP-060 synthetic equal/over-charge cases; WP-065 real-codec equal-bound/one-byte-over fixtures; failpoints at every boundary; inspect the entire record set and sequence visibility | WP-060 memory, then WP-065 codec proof without a back-edge | WP-070 durable enforcement, WP-100 semantics, WP-190 matrix, and WP-200 |
+| Exact durable `EventHash` | Golden full domain frame over 12-byte EventId, EventTypeId u32 BE, payload length u32 BE, and canonical record bytes; field-order/ordinal/type/length/cross-domain mutations; storage-API constructor rejection; Proto round trip; startup reciprocal graph mismatch and crash/reopen rejection without repair | WP-060 semantic constructor and WP-065 wire/goldens | WP-070 integrity, WP-100 assigned graph, WP-190 crash matrix, and WP-200 |
 | Idempotent uncertain-response recovery | Canonical identity/hash properties, equal/mismatch cases, pending/committed/failed digest-provider readiness scan, referenced-key retirement rejection, kill after durable commit, same sequence/result and no second mutation/event | WP-070/WP-100 | WP-190 and WP-200 POC-004/005 |
 | Catalog activation/compatibility | Expected-version races, compatibility golden fixtures, process crash before/after pointer, notification timing | WP-050 | WP-140 list changes, WP-190/WP-200 |
 | Authorization non-bypass and obligations | Deny-default matrix, revocation/environment/audience/tenant/field tests, initial and fresh-final facts around bounded queue wait, one transaction-current capability timestamp across verifier/state/audit, architecture checks excluding storage from policy and predicate duplication from commit, stale MCP invocation, secret canaries | WP-110 | WP-120 service, WP-130 gRPC, WP-140 MCP, WP-200 POC-008 |
@@ -1010,10 +1062,13 @@ Fuzz, Loom, Shuttle, and full crash jobs run in dedicated profiles. Process corr
 | UUID source ownership or replay drifts | A fourth direct entropy owner appears, types/runtime/storage access ambient sources, a retry regenerates durable identity, UUID order substitutes for sequence order, or provenance collision occurs after allocation | WP-010/060/070/100/110/130/150/185/190 | Nondeterminism, duplicate/ambiguous durable records, unsafe uncertainty recovery, or dependency sprawl | ADR-0018; pure assembler; auth/client/server-only dependency check; injected ports; exact call-count/collision/replay/crash tests; sequences remain sole order | Core uncertainty proof if identity duplicates; otherwise implementation/security |
 | Storage transaction held across execution | Live redb transaction or guard appears in runtime context/intent; long writer stalls | WP-060/070/080/100 | Throughput collapse, cancellation hazards, engine leakage, unclear atomicity | ADR-0004 prototype comparing bounded snapshot plus coordinator transaction; compile-time ownership tests | Selected implementation, unless needed for correctness |
 | Incomplete read dependency tracking | Runtime reads absent from plan/evidence; invariant fails only under interleaving | WP-040/060/080/100 | Invalid committed state | Compiler fail-closed analysis, materialized evidence for every read, mutate-before-commit adversarial tests, reference model | Core concept |
+| Influential and mutation-affected epochs are conflated | Affected advances are inferred from snapshot dependencies, influential ranges are omitted because no mutation touches them, or one collection type is reused | WP-040/060/070/080/100/190 | Phantom/read validation can be incomplete or required prefix epochs fail to advance | ADR-0004 distinct checked collections; derive affected targets from exact old/new entries after validation; overlap/difference conformance and crash tests | Core invariant proof if influential reads escape; otherwise durable implementation |
 | Predicate revalidation cannot use exact plan | Only invariant ID/captured values survive, catalog lacks historical plan, plan hash mismatch | WP-040/050/060/080/100 | Commit validates the wrong rule or cannot validate | ADR-0003 chooses embedded validated commit-check representation or historical immutable lookup; version/hash assertions | Core concept |
+| Sequence assigned before exact capacity | Capacity is guessed at candidate start, transaction-current envelope charge appears only after allocation, one-byte-over fails after allocator advance, or actual codec bytes exceed the reserved class | WP-060/065/070/100/190 | Invisible gaps, late partial staging risk, or a batch exceeds its hard bound | ADR-0004 count-only start and sequence-free plan; WP-065 conservative real-codec proofs; WP-070 actual-byte check before staging; type-state and boundary failpoints | Core contiguous-sequence/atomicity proof |
 | Lock cancellation/fairness defects | Lost wakeup, queue growth, double grant, starved multi-key waiter, leaked lease after cancellation/panic | WP-090/100 | Deadlock, availability failure, or conflicting execution | Reduced Loom model, Shuttle schedules, RAII lease, explicit barriers, bounded queues and wait metrics | Selected implementation; double grant threatens concept proof |
 | Idempotency fails after uncertain response | Duplicate event/mutation, different result/sequence, lost `tx.time`, orphan reservation, or a pending/terminal identity whose digest key is no longer readable | WP-060/070/100/130/140/190 | POC’s uncertainty-recovery thesis fails | ADR-0005; atomic terminal set; reservation crash model; startup scan of all three identity states; referenced-key retirement rejection; kill after commit and same-key retry | Core concept |
 | Durable format evolves unsafely | Field/key reuse, fixture drift, decode/re-encode loses required data, table examples disagree, or WP-070 persists a DTO not frozen by WP-065 | WP-020/050/060/065/070/100/170 | Startup failure, silent reinterpretation, unrecoverable data | ADR-0006; WP-065 owner gate; reserved fields, versioned envelopes/keys, old/current fixtures, offline idempotent migration policy | Implementation now; product viability if unmanaged |
+| Event hash identity drifts | One layer hashes payload-only/Protobuf bytes, omits EventId/type/length, changes byte order, or accepts a stored mismatch | WP-010/060/065/070/100/160/170/190/200 | Reciprocal event/outbox evidence can alias or fail across restart and format evolution | ADR-0011 exact preimage/domain; one storage-API builder/constructor check; WP-065 framed goldens; WP-070 recomputation; crash/recovery mismatch rejection | Durable integrity and idempotency evidence; selected hash design is replaceable only by migration |
 | Deferred operational metadata leaks into the POC | A `NodeId`, shutdown marker, persisted integrity timestamp, placeholder key/field, or startup fast path appears | WP-060/065/070/130/185/190/200 | Premature durable compatibility surface or skipped integrity validation | ADR-0019; retained-set conformance and schema negative fixtures; complete validation after graceful/crash restart; no marker writes | Selected implementation and future migration risk |
 | Startup proof ownership collapses or can be bypassed | Redb imports IR/catalog, `ValidatedCatalogHistory` crosses storage, a callback runs inside the engine, a truncated scan counts as end, dormant ports activate without a matching session, or WP-185 rebuilds the gate | WP-050/060/070/130/185/190 | Cyclic dependencies, unvalidated historical plans, interleaved mutation during evidence, or a process serving from structurally/semantically inconsistent state | ADR-0004 split proof; exact-end/session-bound types; opaque catalog-owned `ValidatedCatalogHistory`; WP-130-only join; compile-time dependency checks; memory/redb/catalog adversarial cases; real graceful/restart process evidence | Core authoritative-readiness boundary |
 | MCP authorization bypass | Adapter imports storage, visibility substitutes for auth, stale hidden tool succeeds, obligations applied after rendering | WP-110/120/140/180/200 | Unauthorized data access/mutation and failed thesis | Dependency architecture test, service-only adapter, invoke-time reauthorization, stale-name and secret-canary tests | Core concept/security |
@@ -1037,7 +1092,8 @@ Fuzz, Loom, Shuttle, and full crash jobs run in dedicated profiles. Process corr
 
 ## 11. Decisions Requiring Human Input
 
-The consolidated 2026-07-13 approvals resolve the architecture decisions needed
+The consolidated 2026-07-13 approvals plus the accepted 2026-07-14
+ADR-0004/ADR-0011 clarifications resolve the architecture decisions needed
 to complete amended WP-010 and to start/complete WP-040, WP-060, WP-080,
 WP-090, and their downstream audit/recovery/UUID consumers, including ADR-0021's
 exact service-audit target boundary. The following concrete
@@ -1050,11 +1106,15 @@ pre-approved without seeing their exact output:
    maintainer can approve it as the concrete realization of ADR-0013.
 2. **During WP-065 and WP-127 interface PRs:** review exact durable and public
    Protobuf messages, field numbers, descriptor/schema hashes, golden bytes, and
-   compatibility classifications. The accepted ADRs assign ownership and known
-   ADR-0012 error tags; they do not pre-approve every future field number.
+   compatibility classifications. WP-065 review includes the concrete EventHash
+   framed goldens and proof that every real canonical envelope fits its declared
+   conservative per-class upper bound. The accepted ADRs assign ownership and
+   known semantic preimages/tags; they do not pre-approve every future field
+   number or codec implementation.
 3. **During the WP-070 interface/recovery PR:** review the exact redb table/key/
    metadata mapping within the frozen semantic prefixes and the named failpoint,
-   process-crash, reopen, and integrity matrix before claiming durable acceptance.
+   process-crash, reopen, and integrity matrix, including actual-envelope-bound
+   enforcement and event-hash recomputation, before claiming durable acceptance.
    This does not reopen ADR-0004 or the approved redb version.
 4. **Before WP-180 or WP-140, whichever starts first:** accept ADR-0008's
    remaining resource URI, HTTP audience, stdio transport, cursor presentation,
@@ -1075,7 +1135,8 @@ pre-approved without seeing their exact output:
    generate` subcommand and whether privileged replay/repair warrants a separate
    binary. WP-000 and the POC do not create `riffdb-codegen` or `riffdb-replay`.
 
-Four former SPEC Section 22.2 defaults are now resolved architecture decisions:
+The former SPEC Section 22.2 defaults and the two 2026-07-14 clarifications are
+now resolved architecture decisions:
 
 - Grammar-v1 read-only commands are unjournaled: no command-idempotency record,
   persisted command outcome, or application `CommitSequence`; required service
@@ -1089,6 +1150,16 @@ Four former SPEC Section 22.2 defaults are now resolved architecture decisions:
 - Additive/documentation-compatible contract changes follow the accepted
   compatibility registry; removal of an entity, field, command, outcome, event,
   or projection is rejected rather than implemented destructively.
+- A candidate starts with the count ceiling only; current validation, mutation-
+  affected epoch reads, exact sequence-free planning, and semantic/conservative
+  capacity reservation all precede sequence assignment. Actual canonical
+  envelopes must fit their retained class bounds before staging.
+- `EventHash` uses the exact ADR-0011 EventId/EventTypeId/u32-length-framed
+  canonical `Value::Record` preimage under `riffdb.event/v1`.
+- WP-060 has one maintainer-approved allowed-path exception for
+  `crates/riffdb-types/src/codec.rs`: a borrowed whole-record encoder must retain
+  the exact WP-010 canonical bytes while preventing clone-before-bound behavior.
+  It does not reopen canonical value or durable-format semantics.
 
 Two decisions intentionally remain later-bound:
 
