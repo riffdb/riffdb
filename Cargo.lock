@@ -1087,10 +1087,20 @@ version = "0.1.0"
 [[package]]
 name = "riffdb-storage-api"
 version = "0.1.0"
+dependencies = [
+ "riffdb-contract-compiler",
+ "riffdb-contract-ir",
+ "riffdb-types",
+]
 
 [[package]]
 name = "riffdb-storage-memory"
 version = "0.1.0"
+dependencies = [
+ "riffdb-storage-api",
+ "riffdb-testkit",
+ "riffdb-types",
+]
 
 [[package]]
 name = "riffdb-storage-redb"
@@ -1099,6 +1109,11 @@ version = "0.1.0"
 [[package]]
 name = "riffdb-testkit"
 version = "0.1.0"
+dependencies = [
+ "riffdb-contract-compiler",
+ "riffdb-storage-api",
+ "riffdb-types",
+]
 
 [[package]]
 name = "riffdb-types"

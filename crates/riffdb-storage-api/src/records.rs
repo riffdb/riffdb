@@ -1,0 +1,2821 @@
+//! Engine-neutral semantic records for one atomic application command.
+
+use std::error::Error;
+use std::fmt;
+
+use riffdb_types::{
+    AdmittedActorContext, CanonicalInputHash, CanonicalRecord, CommitSequence, ConflictKeyHash,
+    ContractVersion, EntityVersion, EventHash, EventId, EventTypeId, IndexEntryKey, IndexEpoch,
+    LogicalTime, MAX_CANONICAL_DOCUMENT_BYTES, MAX_COMMIT_INTENT_SEMANTIC_BYTES, OutcomeId,
+    PartitionKeyHash, ProvenanceId, RequestId, encode_canonical_record, hash_event,
+    hash_partition_key,
+};
+
+use crate::{
+    AffectedEpochCurrentState, AffectedIndexEpochTargets, ApplicationSequenceAllocator,
+    AssignedCommandSequence, CommitIntent, DeclaredOutcome, DurableKeySchemaBindingV1,
+    EntityMutation, EntityTarget, ExecutablePlanRef, ExpectedEntityState, IdempotencyIdentity,
+    IndexEpochPosition, IndexRangeTarget, MAX_COMMIT_CONFLICT_HASHES, MAX_ENTITY_MUTATIONS,
+    MAX_EVENT_INTENTS, MAX_INDEX_DELTAS, MAX_STAGED_WRITE_BYTES, MAX_VALIDATION_TARGETS,
+    StorageValueError, StoredAdmittedProvenanceClaimsV1, StoredReadDependenciesV1,
+    StructurallyDecodedIndexRangePrefixV1, actor_semantic_bytes, canonical_codec_storage_error,
+    canonical_record_bytes, framed_bytes,
+};
+
+/// The durability contract used for one completed engine commit.
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+pub enum DurabilityMode {
+    /// Acknowledged only after durable synchronization.
+    Sync,
+    /// Multiple compatible commands share one durable flush.
+    Group,
+    /// No durability guarantee; valid only in tests and models.
+    Memory,
+}
+
+/// One authoritative canonical entity row.
+#[derive(Clone, Eq, PartialEq)]
+pub struct StoredEntityRecordV1 {
+    target: EntityTarget,
+    entity_version: EntityVersion,
+    written_by_contract: ContractVersion,
+    schema_binding: DurableKeySchemaBindingV1,
+    fields: CanonicalRecord,
+}
+
+impl StoredEntityRecordV1 {
+    /// Constructs a complete bounded entity row.
+    pub fn new(
+        target: EntityTarget,
+        entity_version: EntityVersion,
+        written_by_contract: ContractVersion,
+        schema_binding: DurableKeySchemaBindingV1,
+        fields: CanonicalRecord,
+    ) -> Result<Self, StorageValueError> {
+        if canonical_record_bytes(&fields)? > MAX_CANONICAL_DOCUMENT_BYTES {
+            return Err(StorageValueError::LimitExceeded);
+        }
+        if written_by_contract != schema_binding.contract_version() {
+            return Err(StorageValueError::IdentityMismatch);
+        }
+        Ok(Self {
+            target,
+            entity_version,
+            written_by_contract,
+            schema_binding,
+            fields,
+        })
+    }
+
+    /// Borrows the complete canonical entity target.
+    #[must_use]
+    pub const fn target(&self) -> &EntityTarget {
+        &self.target
+    }
+
+    /// Returns the nonzero authoritative entity version.
+    #[must_use]
+    pub const fn entity_version(&self) -> EntityVersion {
+        self.entity_version
+    }
+
+    /// Returns the application contract version that wrote this image.
+    #[must_use]
+    pub const fn written_by_contract(&self) -> ContractVersion {
+        self.written_by_contract
+    }
+
+    /// Borrows the exact retained bundle owning this persisted key post-image.
+    #[must_use]
+    pub const fn schema_binding(&self) -> &DurableKeySchemaBindingV1 {
+        &self.schema_binding
+    }
+
+    /// Borrows all canonical fields, including compatible unknown fields.
+    #[must_use]
+    pub const fn fields(&self) -> &CanonicalRecord {
+        &self.fields
+    }
+
+    pub(crate) fn semantic_bytes(&self) -> Result<usize, StorageValueError> {
+        stored_entity_semantic_bytes(&self.target, &self.schema_binding, &self.fields)
+    }
+}
+
+/// One complete index entry post-image.
+#[derive(Clone, Eq, PartialEq)]
+pub struct StoredIndexEntryV1 {
+    key: IndexEntryKey,
+    schema_binding: DurableKeySchemaBindingV1,
+    covered_values: CanonicalRecord,
+}
+
+impl StoredIndexEntryV1 {
+    /// Constructs a bounded canonical index-entry record.
+    pub fn new(
+        key: IndexEntryKey,
+        schema_binding: DurableKeySchemaBindingV1,
+        covered_values: CanonicalRecord,
+    ) -> Result<Self, StorageValueError> {
+        if canonical_record_bytes(&covered_values)? > MAX_CANONICAL_DOCUMENT_BYTES {
+            return Err(StorageValueError::LimitExceeded);
+        }
+        Ok(Self {
+            key,
+            schema_binding,
+            covered_values,
+        })
+    }
+
+    /// Borrows the complete canonical index key.
+    #[must_use]
+    pub const fn key(&self) -> &IndexEntryKey {
+        &self.key
+    }
+
+    /// Borrows the exact retained bundle owning this persisted key post-image.
+    #[must_use]
+    pub const fn schema_binding(&self) -> &DurableKeySchemaBindingV1 {
+        &self.schema_binding
+    }
+
+    /// Borrows the complete canonical covered-value record.
+    #[must_use]
+    pub const fn covered_values(&self) -> &CanonicalRecord {
+        &self.covered_values
+    }
+
+    fn semantic_bytes(&self) -> Result<usize, StorageValueError> {
+        let covered_bytes = framed_bytes(canonical_record_bytes(&self.covered_values)?)?;
+        framed_bytes(self.key.as_bytes().len())?
+            .checked_add(self.schema_binding.semantic_bytes()?)
+            .and_then(|value| value.checked_add(covered_bytes))
+            .ok_or(StorageValueError::SizeOverflow)
+    }
+}
+
+/// One authoritative secondary-index change.
+#[derive(Clone, Eq, PartialEq)]
+pub enum IndexEntryMutationV1 {
+    /// Removes the exact complete index key and its entire current schema binding.
+    Delete(IndexEntryKey),
+    /// Installs or replaces the complete entry post-image.
+    Put(StoredIndexEntryV1),
+}
+
+impl IndexEntryMutationV1 {
+    /// Borrows the canonical key ordering this change.
+    #[must_use]
+    pub const fn key(&self) -> &IndexEntryKey {
+        match self {
+            Self::Delete(key) => key,
+            Self::Put(record) => record.key(),
+        }
+    }
+
+    fn semantic_bytes(&self) -> Result<usize, StorageValueError> {
+        match self {
+            Self::Delete(key) => framed_bytes(key.as_bytes().len())?
+                .checked_add(1)
+                .ok_or(StorageValueError::SizeOverflow),
+            Self::Put(record) => record
+                .semantic_bytes()?
+                .checked_add(1)
+                .ok_or(StorageValueError::SizeOverflow),
+        }
+    }
+}
+
+/// One persisted range-epoch post-image with durable schema ownership.
+#[derive(Clone, Eq, PartialEq)]
+pub struct StoredIndexEpochV1 {
+    target: StructurallyDecodedIndexRangePrefixV1,
+    schema_binding: DurableKeySchemaBindingV1,
+    epoch: IndexEpoch,
+}
+
+impl StoredIndexEpochV1 {
+    /// Constructs a structurally decoded persisted epoch post-image.
+    #[must_use]
+    pub const fn new(
+        target: StructurallyDecodedIndexRangePrefixV1,
+        schema_binding: DurableKeySchemaBindingV1,
+        epoch: IndexEpoch,
+    ) -> Self {
+        Self {
+            target,
+            schema_binding,
+            epoch,
+        }
+    }
+
+    /// Borrows the exact persisted prefix bytes.
+    #[must_use]
+    pub const fn target(&self) -> &StructurallyDecodedIndexRangePrefixV1 {
+        &self.target
+    }
+
+    /// Borrows the exact retained bundle owning this prefix post-image.
+    #[must_use]
+    pub const fn schema_binding(&self) -> &DurableKeySchemaBindingV1 {
+        &self.schema_binding
+    }
+
+    /// Returns the assigned nonzero epoch.
+    #[must_use]
+    pub const fn epoch(&self) -> IndexEpoch {
+        self.epoch
+    }
+
+    fn semantic_bytes(&self) -> Result<usize, StorageValueError> {
+        self.target
+            .semantic_bytes()?
+            .checked_add(self.schema_binding.semantic_bytes()?)
+            .and_then(|value| value.checked_add(8))
+            .ok_or(StorageValueError::SizeOverflow)
+    }
+}
+
+/// One exact affected range bucket and its checked epoch advance.
+#[derive(Clone, Eq, PartialEq)]
+pub struct IndexEpochAdvanceV1 {
+    prior: IndexEpochPosition,
+    post_image: StoredIndexEpochV1,
+}
+
+impl IndexEpochAdvanceV1 {
+    /// Advances `BeforeFirst` to one or a nonzero epoch without wrapping.
+    pub fn new(
+        target: IndexRangeTarget,
+        schema_binding: DurableKeySchemaBindingV1,
+        prior: IndexEpochPosition,
+    ) -> Result<Self, IndexEpochAdvanceError> {
+        let next = match prior {
+            IndexEpochPosition::BeforeFirst => IndexEpoch::first(),
+            IndexEpochPosition::Value(value) => value
+                .checked_next()
+                .ok_or(IndexEpochAdvanceError::Exhausted)?,
+        };
+        Ok(Self {
+            prior,
+            post_image: StoredIndexEpochV1::new(
+                StructurallyDecodedIndexRangePrefixV1::from_live(target.prefix()),
+                schema_binding,
+                next,
+            ),
+        })
+    }
+
+    /// Borrows the exact affected prefix bucket.
+    #[must_use]
+    pub const fn target(&self) -> &StructurallyDecodedIndexRangePrefixV1 {
+        self.post_image.target()
+    }
+
+    /// Returns the required prior epoch position.
+    #[must_use]
+    pub const fn prior(&self) -> IndexEpochPosition {
+        self.prior
+    }
+
+    /// Returns the newly assigned nonzero epoch.
+    #[must_use]
+    pub const fn next(&self) -> IndexEpoch {
+        self.post_image.epoch()
+    }
+
+    /// Borrows the exact persisted epoch post-image.
+    #[must_use]
+    pub const fn post_image(&self) -> &StoredIndexEpochV1 {
+        &self.post_image
+    }
+
+    fn semantic_bytes(&self) -> Result<usize, StorageValueError> {
+        let prior_bytes = match self.prior {
+            IndexEpochPosition::BeforeFirst => 1,
+            IndexEpochPosition::Value(_) => 1 + 8,
+        };
+        self.post_image
+            .semantic_bytes()?
+            .checked_add(prior_bytes)
+            .ok_or(StorageValueError::SizeOverflow)
+    }
+}
+
+/// A range epoch cannot advance without wrapping.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum IndexEpochAdvanceError {
+    /// The prior epoch is the maximum representable value.
+    Exhausted,
+}
+
+impl fmt::Display for IndexEpochAdvanceError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("index epoch is exhausted")
+    }
+}
+
+impl Error for IndexEpochAdvanceError {}
+
+/// One committed entity change, including its exact expected prior state.
+#[derive(Clone, Eq, PartialEq)]
+pub struct CommittedEntityMutationV1 {
+    expected: ExpectedEntityState,
+    post_image: StoredEntityRecordV1,
+}
+
+impl CommittedEntityMutationV1 {
+    /// Checks first-version and monotonic replacement semantics.
+    pub fn new(
+        expected: ExpectedEntityState,
+        post_image: StoredEntityRecordV1,
+    ) -> Result<Self, StorageValueError> {
+        let required = match expected {
+            ExpectedEntityState::Absent => EntityVersion::first(),
+            ExpectedEntityState::Present(version) => version
+                .checked_next()
+                .ok_or(StorageValueError::InvalidShape)?,
+        };
+        if post_image.entity_version() != required {
+            return Err(StorageValueError::IdentityMismatch);
+        }
+        Ok(Self {
+            expected,
+            post_image,
+        })
+    }
+
+    /// Returns the exact required prior observation.
+    #[must_use]
+    pub const fn expected(&self) -> ExpectedEntityState {
+        self.expected
+    }
+
+    /// Borrows the complete committed post-image.
+    #[must_use]
+    pub const fn post_image(&self) -> &StoredEntityRecordV1 {
+        &self.post_image
+    }
+
+    fn semantic_bytes(&self) -> Result<usize, StorageValueError> {
+        committed_entity_semantic_bytes(
+            self.expected,
+            self.post_image.target(),
+            self.post_image.schema_binding(),
+            self.post_image.fields(),
+        )
+    }
+}
+
+/// The immutable stored result used for equal-input replay.
+#[derive(Clone, Eq, PartialEq)]
+pub struct StoredOutcomeV1 {
+    identity: IdempotencyIdentity,
+    commit_sequence: CommitSequence,
+    admission_request_id: RequestId,
+    plan: ExecutablePlanRef,
+    canonical_input_hash: CanonicalInputHash,
+    actor: AdmittedActorContext,
+    logical_time: LogicalTime,
+    partition_hash: PartitionKeyHash,
+    conflict_hashes: Vec<ConflictKeyHash>,
+    declared_outcome: DeclaredOutcome,
+    admitted_claims: StoredAdmittedProvenanceClaimsV1,
+    provenance_id: ProvenanceId,
+    durability_mode: DurabilityMode,
+}
+
+impl StoredOutcomeV1 {
+    /// Constructs a complete terminal outcome with immutable commit context.
+    #[allow(clippy::too_many_arguments)]
+    pub fn new(
+        identity: IdempotencyIdentity,
+        commit_sequence: CommitSequence,
+        admission_request_id: RequestId,
+        plan: ExecutablePlanRef,
+        canonical_input_hash: CanonicalInputHash,
+        actor: AdmittedActorContext,
+        logical_time: LogicalTime,
+        partition_hash: PartitionKeyHash,
+        conflict_hashes: Vec<ConflictKeyHash>,
+        declared_outcome: DeclaredOutcome,
+        admitted_claims: StoredAdmittedProvenanceClaimsV1,
+        provenance_id: ProvenanceId,
+        durability_mode: DurabilityMode,
+    ) -> Result<Self, StorageValueError> {
+        if identity.contract_lineage() != plan.contract_lineage()
+            || identity.command_id() != plan.command_id()
+            || identity.principal_id() != actor.principal_id()
+            || identity.tenant_scope() != actor.tenant_scope()
+        {
+            return Err(StorageValueError::IdentityMismatch);
+        }
+        validate_conflict_hashes(&conflict_hashes)?;
+        Ok(Self {
+            identity,
+            commit_sequence,
+            admission_request_id,
+            plan,
+            canonical_input_hash,
+            actor,
+            logical_time,
+            partition_hash,
+            conflict_hashes,
+            declared_outcome,
+            admitted_claims,
+            provenance_id,
+            durability_mode,
+        })
+    }
+
+    /// Borrows the complete durable idempotency identity.
+    #[must_use]
+    pub const fn identity(&self) -> &IdempotencyIdentity {
+        &self.identity
+    }
+
+    /// Returns the original application commit sequence.
+    #[must_use]
+    pub const fn commit_sequence(&self) -> CommitSequence {
+        self.commit_sequence
+    }
+
+    /// Returns the original admission request identity.
+    #[must_use]
+    pub const fn admission_request_id(&self) -> RequestId {
+        self.admission_request_id
+    }
+
+    /// Borrows the exact historical plan reference.
+    #[must_use]
+    pub const fn plan(&self) -> &ExecutablePlanRef {
+        &self.plan
+    }
+
+    /// Returns the original canonical input hash.
+    #[must_use]
+    pub const fn canonical_input_hash(&self) -> CanonicalInputHash {
+        self.canonical_input_hash
+    }
+
+    /// Borrows the admitted actor context.
+    #[must_use]
+    pub const fn actor(&self) -> &AdmittedActorContext {
+        &self.actor
+    }
+
+    /// Returns the logical time frozen at admission.
+    #[must_use]
+    pub const fn logical_time(&self) -> LogicalTime {
+        self.logical_time
+    }
+
+    /// Returns the canonical partition identity hash.
+    #[must_use]
+    pub const fn partition_hash(&self) -> PartitionKeyHash {
+        self.partition_hash
+    }
+
+    /// Borrows canonical conflict identities.
+    #[must_use]
+    pub fn conflict_hashes(&self) -> &[ConflictKeyHash] {
+        &self.conflict_hashes
+    }
+
+    /// Borrows the original declared business outcome.
+    #[must_use]
+    pub const fn declared_outcome(&self) -> &DeclaredOutcome {
+        &self.declared_outcome
+    }
+
+    /// Borrows the immutable provenance-claim snapshot frozen at admission.
+    #[must_use]
+    pub const fn admitted_claims(&self) -> &StoredAdmittedProvenanceClaimsV1 {
+        &self.admitted_claims
+    }
+
+    /// Returns the immutable provenance record identity.
+    #[must_use]
+    pub const fn provenance_id(&self) -> ProvenanceId {
+        self.provenance_id
+    }
+
+    /// Returns the durability contract used for the original commit.
+    #[must_use]
+    pub const fn durability_mode(&self) -> DurabilityMode {
+        self.durability_mode
+    }
+
+    pub(crate) fn semantic_bytes(&self) -> Result<usize, StorageValueError> {
+        stored_outcome_semantic_bytes(
+            &self.identity,
+            &self.plan,
+            &self.actor,
+            &self.conflict_hashes,
+            &self.declared_outcome,
+            &self.admitted_claims,
+        )
+    }
+}
+
+/// One authoritative durable event with its stable committed identity.
+#[derive(Clone, Eq, PartialEq)]
+pub struct StoredDurableEventV1 {
+    event_id: EventId,
+    event_type_id: EventTypeId,
+    payload: CanonicalRecord,
+    event_hash: EventHash,
+}
+
+impl StoredDurableEventV1 {
+    /// Constructs a bounded durable event from coordinator-checked values.
+    pub fn new(
+        event_id: EventId,
+        event_type_id: EventTypeId,
+        payload: CanonicalRecord,
+        event_hash: EventHash,
+    ) -> Result<Self, StorageValueError> {
+        if derive_event_hash_v1(event_id, event_type_id, &payload)? != event_hash {
+            return Err(StorageValueError::IdentityMismatch);
+        }
+        Ok(Self {
+            event_id,
+            event_type_id,
+            payload,
+            event_hash,
+        })
+    }
+
+    /// Returns the stable commit-sequence and ordinal identity.
+    #[must_use]
+    pub const fn event_id(&self) -> EventId {
+        self.event_id
+    }
+
+    /// Returns the stable event type identity.
+    #[must_use]
+    pub const fn event_type_id(&self) -> EventTypeId {
+        self.event_type_id
+    }
+
+    /// Borrows the complete canonical event payload.
+    #[must_use]
+    pub const fn payload(&self) -> &CanonicalRecord {
+        &self.payload
+    }
+
+    /// Returns the domain-separated canonical event hash.
+    #[must_use]
+    pub const fn event_hash(&self) -> EventHash {
+        self.event_hash
+    }
+
+    fn semantic_bytes(&self) -> Result<usize, StorageValueError> {
+        stored_event_semantic_bytes(self.event_type_id, &self.payload)
+    }
+}
+
+/// Derives the accepted v1 hash of one complete durable event.
+///
+/// The payload supplied to the `riffdb.event/v1` hash domain is exactly the
+/// 12-byte canonical event ID, the four-byte event type ID, the four-byte
+/// canonical-record length, and the complete canonical record bytes.
+pub fn derive_event_hash_v1(
+    event_id: EventId,
+    event_type_id: EventTypeId,
+    payload: &CanonicalRecord,
+) -> Result<EventHash, StorageValueError> {
+    Ok(hash_event(&canonical_event_preimage_v1(
+        event_id,
+        event_type_id,
+        payload,
+    )?))
+}
+
+fn canonical_event_preimage_v1(
+    event_id: EventId,
+    event_type_id: EventTypeId,
+    payload: &CanonicalRecord,
+) -> Result<Vec<u8>, StorageValueError> {
+    let payload_bytes =
+        encode_canonical_record(payload).map_err(|error| canonical_codec_storage_error(&error))?;
+    let payload_length =
+        u32::try_from(payload_bytes.len()).map_err(|_| StorageValueError::LimitExceeded)?;
+    let preimage_capacity = 12usize
+        .checked_add(4)
+        .and_then(|value| value.checked_add(4))
+        .and_then(|value| value.checked_add(payload_bytes.len()))
+        .ok_or(StorageValueError::SizeOverflow)?;
+    let mut preimage = Vec::with_capacity(preimage_capacity);
+    preimage.extend_from_slice(&event_id.to_be_bytes());
+    preimage.extend_from_slice(&event_type_id.to_be_bytes());
+    preimage.extend_from_slice(&payload_length.to_be_bytes());
+    preimage.extend_from_slice(&payload_bytes);
+    Ok(preimage)
+}
+
+/// One authoritative outbox intent written atomically with its event.
+#[derive(Clone, Eq, PartialEq)]
+pub struct StoredOutboxIntentV1 {
+    event: StoredDurableEventV1,
+}
+
+impl StoredOutboxIntentV1 {
+    /// Freezes the exact event identity and payload for later at-least-once dispatch.
+    #[must_use]
+    pub const fn new(event: StoredDurableEventV1) -> Self {
+        Self { event }
+    }
+
+    /// Returns the stable downstream deduplication identity.
+    #[must_use]
+    pub const fn event_id(&self) -> EventId {
+        self.event.event_id()
+    }
+
+    /// Borrows the exact reciprocal durable event value.
+    #[must_use]
+    pub const fn event(&self) -> &StoredDurableEventV1 {
+        &self.event
+    }
+
+    /// Returns the reciprocal canonical event hash.
+    #[must_use]
+    pub const fn event_hash(&self) -> EventHash {
+        self.event.event_hash()
+    }
+
+    fn semantic_bytes(&self) -> Result<usize, StorageValueError> {
+        self.event.semantic_bytes()
+    }
+}
+
+/// One immutable affected entity identity and committed version.
+#[derive(Clone, Eq, PartialEq)]
+pub struct AffectedEntityV1 {
+    target: EntityTarget,
+    entity_version: EntityVersion,
+}
+
+impl AffectedEntityV1 {
+    /// Constructs an affected-entity link from a complete post-image.
+    #[must_use]
+    pub fn from_record(record: &StoredEntityRecordV1) -> Self {
+        Self {
+            target: record.target().clone(),
+            entity_version: record.entity_version(),
+        }
+    }
+
+    /// Borrows the affected entity target.
+    #[must_use]
+    pub const fn target(&self) -> &EntityTarget {
+        &self.target
+    }
+
+    /// Returns the committed entity version.
+    #[must_use]
+    pub const fn entity_version(&self) -> EntityVersion {
+        self.entity_version
+    }
+}
+
+/// Immutable policy-approved command provenance.
+#[derive(Clone, Eq, PartialEq)]
+pub struct StoredProvenanceRecordV1 {
+    provenance_id: ProvenanceId,
+    commit_sequence: CommitSequence,
+    identity: IdempotencyIdentity,
+    admission_request_id: RequestId,
+    plan: ExecutablePlanRef,
+    canonical_input_hash: CanonicalInputHash,
+    actor: AdmittedActorContext,
+    logical_time: LogicalTime,
+    partition_hash: PartitionKeyHash,
+    conflict_hashes: Vec<ConflictKeyHash>,
+    outcome_id: OutcomeId,
+    affected_entities: Vec<AffectedEntityV1>,
+    event_ids: Vec<EventId>,
+    admitted_claims: StoredAdmittedProvenanceClaimsV1,
+}
+
+impl StoredProvenanceRecordV1 {
+    /// Constructs a complete immutable provenance record.
+    #[allow(clippy::too_many_arguments)]
+    pub fn new(
+        provenance_id: ProvenanceId,
+        commit_sequence: CommitSequence,
+        identity: IdempotencyIdentity,
+        admission_request_id: RequestId,
+        plan: ExecutablePlanRef,
+        canonical_input_hash: CanonicalInputHash,
+        actor: AdmittedActorContext,
+        logical_time: LogicalTime,
+        partition_hash: PartitionKeyHash,
+        conflict_hashes: Vec<ConflictKeyHash>,
+        outcome_id: OutcomeId,
+        affected_entities: Vec<AffectedEntityV1>,
+        event_ids: Vec<EventId>,
+        admitted_claims: StoredAdmittedProvenanceClaimsV1,
+    ) -> Result<Self, StorageValueError> {
+        if affected_entities.len() > MAX_ENTITY_MUTATIONS || event_ids.len() > MAX_EVENT_INTENTS {
+            return Err(StorageValueError::LimitExceeded);
+        }
+        if identity.contract_lineage() != plan.contract_lineage()
+            || identity.command_id() != plan.command_id()
+            || identity.principal_id() != actor.principal_id()
+            || identity.tenant_scope() != actor.tenant_scope()
+        {
+            return Err(StorageValueError::IdentityMismatch);
+        }
+        validate_conflict_hashes(&conflict_hashes)?;
+        if affected_entities.windows(2).any(|pair| {
+            pair[0].target().canonical_target_key() >= pair[1].target().canonical_target_key()
+        }) || event_ids.windows(2).any(|pair| pair[0] >= pair[1])
+            || event_ids
+                .iter()
+                .any(|event_id| event_id.commit_sequence() != commit_sequence)
+        {
+            return Err(StorageValueError::NonCanonicalOrder);
+        }
+        Ok(Self {
+            provenance_id,
+            commit_sequence,
+            identity,
+            admission_request_id,
+            plan,
+            canonical_input_hash,
+            actor,
+            logical_time,
+            partition_hash,
+            conflict_hashes,
+            outcome_id,
+            affected_entities,
+            event_ids,
+            admitted_claims,
+        })
+    }
+
+    /// Returns this immutable provenance identity.
+    #[must_use]
+    pub const fn provenance_id(&self) -> ProvenanceId {
+        self.provenance_id
+    }
+
+    /// Returns the linked application sequence.
+    #[must_use]
+    pub const fn commit_sequence(&self) -> CommitSequence {
+        self.commit_sequence
+    }
+
+    /// Borrows the complete idempotency identity.
+    #[must_use]
+    pub const fn identity(&self) -> &IdempotencyIdentity {
+        &self.identity
+    }
+
+    /// Returns the original admission request identity.
+    #[must_use]
+    pub const fn admission_request_id(&self) -> RequestId {
+        self.admission_request_id
+    }
+
+    /// Borrows the exact historical plan reference.
+    #[must_use]
+    pub const fn plan(&self) -> &ExecutablePlanRef {
+        &self.plan
+    }
+
+    /// Returns the canonical input hash.
+    #[must_use]
+    pub const fn canonical_input_hash(&self) -> CanonicalInputHash {
+        self.canonical_input_hash
+    }
+
+    /// Borrows the admitted actor context.
+    #[must_use]
+    pub const fn actor(&self) -> &AdmittedActorContext {
+        &self.actor
+    }
+
+    /// Returns the deterministic logical time.
+    #[must_use]
+    pub const fn logical_time(&self) -> LogicalTime {
+        self.logical_time
+    }
+
+    /// Returns the partition identity hash.
+    #[must_use]
+    pub const fn partition_hash(&self) -> PartitionKeyHash {
+        self.partition_hash
+    }
+
+    /// Borrows canonical conflict identity hashes.
+    #[must_use]
+    pub fn conflict_hashes(&self) -> &[ConflictKeyHash] {
+        &self.conflict_hashes
+    }
+
+    /// Returns the declared business outcome identity.
+    #[must_use]
+    pub const fn outcome_id(&self) -> OutcomeId {
+        self.outcome_id
+    }
+
+    /// Borrows canonical affected entity/version links.
+    #[must_use]
+    pub fn affected_entities(&self) -> &[AffectedEntityV1] {
+        &self.affected_entities
+    }
+
+    /// Borrows event links in ordinal order.
+    #[must_use]
+    pub fn event_ids(&self) -> &[EventId] {
+        &self.event_ids
+    }
+
+    /// Borrows the immutable admitted provenance-claim snapshot.
+    #[must_use]
+    pub const fn admitted_claims(&self) -> &StoredAdmittedProvenanceClaimsV1 {
+        &self.admitted_claims
+    }
+
+    pub(crate) fn semantic_bytes(&self) -> Result<usize, StorageValueError> {
+        stored_provenance_semantic_bytes(
+            &self.identity,
+            &self.plan,
+            &self.actor,
+            &self.conflict_hashes,
+            self.affected_entities.iter().map(AffectedEntityV1::target),
+            self.event_ids.len(),
+            &self.admitted_claims,
+        )
+    }
+}
+
+/// The complete authoritative command-log record.
+#[derive(Clone, Eq, PartialEq)]
+pub struct StoredCommitRecordV1 {
+    commit_sequence: CommitSequence,
+    admission_request_id: RequestId,
+    plan: ExecutablePlanRef,
+    canonical_input_hash: CanonicalInputHash,
+    actor: AdmittedActorContext,
+    logical_time: LogicalTime,
+    partition_hash: PartitionKeyHash,
+    conflict_hashes: Vec<ConflictKeyHash>,
+    read_dependencies: StoredReadDependenciesV1,
+    mutations: Vec<CommittedEntityMutationV1>,
+    events: Vec<StoredDurableEventV1>,
+    declared_outcome: DeclaredOutcome,
+    provenance_id: ProvenanceId,
+    outbox_event_ids: Vec<EventId>,
+    durability_mode: DurabilityMode,
+}
+
+impl StoredCommitRecordV1 {
+    /// Constructs a complete canonical commit record.
+    #[allow(clippy::too_many_arguments)]
+    pub fn new(
+        commit_sequence: CommitSequence,
+        admission_request_id: RequestId,
+        plan: ExecutablePlanRef,
+        canonical_input_hash: CanonicalInputHash,
+        actor: AdmittedActorContext,
+        logical_time: LogicalTime,
+        partition_hash: PartitionKeyHash,
+        conflict_hashes: Vec<ConflictKeyHash>,
+        read_dependencies: StoredReadDependenciesV1,
+        mutations: Vec<CommittedEntityMutationV1>,
+        events: Vec<StoredDurableEventV1>,
+        declared_outcome: DeclaredOutcome,
+        provenance_id: ProvenanceId,
+        outbox_event_ids: Vec<EventId>,
+        durability_mode: DurabilityMode,
+    ) -> Result<Self, StorageValueError> {
+        validate_conflict_hashes(&conflict_hashes)?;
+        validate_committed_mutations(&mutations)?;
+        if mutations.iter().any(|mutation| {
+            mutation.post_image().written_by_contract() != plan.contract_version()
+                || !mutation.post_image().schema_binding().matches_plan(&plan)
+                || read_dependencies.expected_entity_state(mutation.post_image().target())
+                    != Some(mutation.expected())
+        }) {
+            return Err(StorageValueError::IdentityMismatch);
+        }
+        validate_events(commit_sequence, &events)?;
+        let expected_event_ids: Vec<_> =
+            events.iter().map(StoredDurableEventV1::event_id).collect();
+        if outbox_event_ids != expected_event_ids {
+            return Err(StorageValueError::IdentityMismatch);
+        }
+        let value = Self {
+            commit_sequence,
+            admission_request_id,
+            plan,
+            canonical_input_hash,
+            actor,
+            logical_time,
+            partition_hash,
+            conflict_hashes,
+            read_dependencies,
+            mutations,
+            events,
+            declared_outcome,
+            provenance_id,
+            outbox_event_ids,
+            durability_mode,
+        };
+        if value.semantic_bytes()? > MAX_COMMIT_INTENT_SEMANTIC_BYTES {
+            return Err(StorageValueError::LimitExceeded);
+        }
+        Ok(value)
+    }
+
+    /// Returns this authoritative application sequence.
+    #[must_use]
+    pub const fn commit_sequence(&self) -> CommitSequence {
+        self.commit_sequence
+    }
+
+    /// Returns the original admission request identity.
+    #[must_use]
+    pub const fn admission_request_id(&self) -> RequestId {
+        self.admission_request_id
+    }
+
+    /// Borrows the exact historical executable-plan identity.
+    #[must_use]
+    pub const fn plan(&self) -> &ExecutablePlanRef {
+        &self.plan
+    }
+
+    /// Returns the canonical input hash.
+    #[must_use]
+    pub const fn canonical_input_hash(&self) -> CanonicalInputHash {
+        self.canonical_input_hash
+    }
+
+    /// Borrows the admitted actor context.
+    #[must_use]
+    pub const fn actor(&self) -> &AdmittedActorContext {
+        &self.actor
+    }
+
+    /// Returns the deterministic logical time.
+    #[must_use]
+    pub const fn logical_time(&self) -> LogicalTime {
+        self.logical_time
+    }
+
+    /// Returns the partition identity hash.
+    #[must_use]
+    pub const fn partition_hash(&self) -> PartitionKeyHash {
+        self.partition_hash
+    }
+
+    /// Borrows canonical conflict identity hashes.
+    #[must_use]
+    pub fn conflict_hashes(&self) -> &[ConflictKeyHash] {
+        &self.conflict_hashes
+    }
+
+    /// Borrows complete canonical dependency evidence.
+    #[must_use]
+    pub const fn read_dependencies(&self) -> &StoredReadDependenciesV1 {
+        &self.read_dependencies
+    }
+
+    /// Borrows complete committed mutation post-images.
+    #[must_use]
+    pub fn mutations(&self) -> &[CommittedEntityMutationV1] {
+        &self.mutations
+    }
+
+    /// Borrows complete durable events in ordinal order.
+    #[must_use]
+    pub fn events(&self) -> &[StoredDurableEventV1] {
+        &self.events
+    }
+
+    /// Returns stable event links in ordinal order.
+    #[must_use]
+    pub fn event_ids(&self) -> Vec<EventId> {
+        self.events
+            .iter()
+            .map(StoredDurableEventV1::event_id)
+            .collect()
+    }
+
+    /// Borrows the original declared business outcome.
+    #[must_use]
+    pub const fn declared_outcome(&self) -> &DeclaredOutcome {
+        &self.declared_outcome
+    }
+
+    /// Returns the immutable provenance link.
+    #[must_use]
+    pub const fn provenance_id(&self) -> ProvenanceId {
+        self.provenance_id
+    }
+
+    /// Borrows reciprocal outbox intent links.
+    #[must_use]
+    pub fn outbox_event_ids(&self) -> &[EventId] {
+        &self.outbox_event_ids
+    }
+
+    /// Returns the durability contract used for the engine commit.
+    #[must_use]
+    pub const fn durability_mode(&self) -> DurabilityMode {
+        self.durability_mode
+    }
+
+    pub(crate) fn semantic_bytes(&self) -> Result<usize, StorageValueError> {
+        stored_commit_semantic_bytes(
+            &self.plan,
+            &self.actor,
+            &self.conflict_hashes,
+            &self.read_dependencies,
+            self.mutations.iter().map(|mutation| {
+                (
+                    mutation.expected(),
+                    mutation.post_image().target(),
+                    mutation.post_image().schema_binding(),
+                    mutation.post_image().fields(),
+                )
+            }),
+            self.events
+                .iter()
+                .map(|event| (event.event_type_id(), event.payload())),
+            &self.declared_outcome,
+            self.outbox_event_ids.len(),
+        )
+    }
+}
+
+/// Per-record-class charge for one complete command write set.
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+pub struct CommandWriteClassBreakdownV1 {
+    allocator: usize,
+    pending_resolution: usize,
+    entities: usize,
+    index_entries: usize,
+    index_epochs: usize,
+    outcome: usize,
+    events: usize,
+    outbox_intents: usize,
+    provenance: usize,
+    commit: usize,
+}
+
+impl CommandWriteClassBreakdownV1 {
+    /// Checks all class values and their aggregate against the staged ceiling.
+    #[allow(clippy::too_many_arguments)]
+    pub fn new(
+        allocator: usize,
+        pending_resolution: usize,
+        entities: usize,
+        index_entries: usize,
+        index_epochs: usize,
+        outcome: usize,
+        events: usize,
+        outbox_intents: usize,
+        provenance: usize,
+        commit: usize,
+    ) -> Result<Self, StorageValueError> {
+        let value = Self {
+            allocator,
+            pending_resolution,
+            entities,
+            index_entries,
+            index_epochs,
+            outcome,
+            events,
+            outbox_intents,
+            provenance,
+            commit,
+        };
+        if value.total()? > MAX_STAGED_WRITE_BYTES {
+            return Err(StorageValueError::LimitExceeded);
+        }
+        Ok(value)
+    }
+
+    /// Returns the allocator metadata contribution.
+    #[must_use]
+    pub const fn allocator(self) -> usize {
+        self.allocator
+    }
+
+    /// Returns the pending-resolution contribution.
+    #[must_use]
+    pub const fn pending_resolution(self) -> usize {
+        self.pending_resolution
+    }
+
+    /// Returns the framed entity mutation contribution.
+    #[must_use]
+    pub const fn entities(self) -> usize {
+        self.entities
+    }
+
+    /// Returns the framed index mutation contribution.
+    #[must_use]
+    pub const fn index_entries(self) -> usize {
+        self.index_entries
+    }
+
+    /// Returns the framed epoch post-image contribution.
+    #[must_use]
+    pub const fn index_epochs(self) -> usize {
+        self.index_epochs
+    }
+
+    /// Returns the terminal outcome contribution.
+    #[must_use]
+    pub const fn outcome(self) -> usize {
+        self.outcome
+    }
+
+    /// Returns the framed durable-event contribution.
+    #[must_use]
+    pub const fn events(self) -> usize {
+        self.events
+    }
+
+    /// Returns the framed outbox-intent contribution.
+    #[must_use]
+    pub const fn outbox_intents(self) -> usize {
+        self.outbox_intents
+    }
+
+    /// Returns the immutable provenance contribution.
+    #[must_use]
+    pub const fn provenance(self) -> usize {
+        self.provenance
+    }
+
+    /// Returns the complete commit-record contribution.
+    #[must_use]
+    pub const fn commit(self) -> usize {
+        self.commit
+    }
+
+    /// Returns the checked aggregate of every record class.
+    pub fn total(self) -> Result<usize, StorageValueError> {
+        [
+            self.allocator,
+            self.pending_resolution,
+            self.entities,
+            self.index_entries,
+            self.index_epochs,
+            self.outcome,
+            self.events,
+            self.outbox_intents,
+            self.provenance,
+            self.commit,
+        ]
+        .into_iter()
+        .try_fold(0usize, |total, value| {
+            total
+                .checked_add(value)
+                .ok_or(StorageValueError::SizeOverflow)
+        })
+    }
+}
+
+/// Conservative backend/codec upper bounds for every staged record class.
+///
+/// This is intentionally distinct from semantic byte accounting and exact read
+/// page charges. The WP-060 memory model uses explicit per-class synthetic
+/// complete-envelope charges for conformance and makes no durable-codec claim.
+/// Once WP-065 supplies the canonical codec, a durable backend must recompute the
+/// actual complete `StoredEnvelope` bytes for every record before staging and
+/// prove each class is at most its corresponding reservation.
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+pub struct EncodedWriteSetUpperBound {
+    classes: CommandWriteClassBreakdownV1,
+    total: usize,
+}
+
+impl EncodedWriteSetUpperBound {
+    /// Checks a complete conservative per-class encoded reservation.
+    pub fn new(classes: CommandWriteClassBreakdownV1) -> Result<Self, StorageValueError> {
+        let total = classes.total()?;
+        if total == 0 || total > MAX_STAGED_WRITE_BYTES {
+            return Err(StorageValueError::LimitExceeded);
+        }
+        Ok(Self { classes, total })
+    }
+
+    /// Returns every conservative encoded class reservation.
+    #[must_use]
+    pub const fn classes(self) -> CommandWriteClassBreakdownV1 {
+        self.classes
+    }
+
+    /// Returns the aggregate conservative encoded write-set bound.
+    #[must_use]
+    pub const fn total(self) -> usize {
+        self.total
+    }
+}
+
+/// Checked pre-sequence capacity charge for one privately validated command.
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+pub struct CommandWriteSetChargeV1 {
+    semantic_classes: CommandWriteClassBreakdownV1,
+    encoded_upper_bound: EncodedWriteSetUpperBound,
+}
+
+impl CommandWriteSetChargeV1 {
+    /// Computes the exact future semantic copies from the complete validated shape.
+    ///
+    /// The affected observations and advances must have exact one-to-one coverage.
+    /// No application sequence or sequence-bearing record is constructed here.
+    fn from_validated_shape(
+        intent: &CommitIntent,
+        affected_targets: &AffectedIndexEpochTargets,
+        affected_current: &AffectedEpochCurrentState,
+        index_entries: &[IndexEntryMutationV1],
+        index_epochs: &[IndexEpochAdvanceV1],
+        encoded_upper_bound: EncodedWriteSetUpperBound,
+    ) -> Result<Self, StorageValueError> {
+        validate_index_entries(index_entries)?;
+        validate_index_epochs(index_epochs)?;
+        validate_affected_epoch_coverage(affected_targets, affected_current, index_epochs)?;
+        validate_post_image_bindings(intent.evaluated().plan(), index_entries, index_epochs)?;
+        let semantic_classes =
+            projected_atomic_semantic_breakdown(intent, index_entries, index_epochs)?;
+        Ok(Self {
+            semantic_classes,
+            encoded_upper_bound,
+        })
+    }
+
+    /// Returns the exact future semantic record-class breakdown.
+    #[must_use]
+    pub const fn semantic_classes(self) -> CommandWriteClassBreakdownV1 {
+        self.semantic_classes
+    }
+
+    /// Returns the exact aggregate semantic staged-record charge.
+    #[must_use]
+    pub fn semantic_bytes(self) -> usize {
+        self.semantic_classes
+            .total()
+            .expect("constructor checked semantic class arithmetic")
+    }
+
+    /// Returns the conservative codec/backend encoded write-set bound.
+    #[must_use]
+    pub const fn encoded_upper_bound(self) -> EncodedWriteSetUpperBound {
+        self.encoded_upper_bound
+    }
+}
+
+/// Exact sequence-free write plan retained across capacity reservation.
+///
+/// It owns every coordinator-derived index mutation and epoch advance, preventing
+/// an equal-size shape from being substituted after preflight.
+#[derive(Clone, Eq, PartialEq)]
+pub struct CommandWriteSetPlanV1 {
+    intent: CommitIntent,
+    affected_targets: AffectedIndexEpochTargets,
+    affected_current: AffectedEpochCurrentState,
+    index_entries: Vec<IndexEntryMutationV1>,
+    index_epochs: Vec<IndexEpochAdvanceV1>,
+    charge: CommandWriteSetChargeV1,
+}
+
+impl CommandWriteSetPlanV1 {
+    /// Validates exact affected coverage and freezes the complete pre-sequence plan.
+    pub fn new(
+        intent: &CommitIntent,
+        affected_targets: AffectedIndexEpochTargets,
+        affected_current: AffectedEpochCurrentState,
+        index_entries: Vec<IndexEntryMutationV1>,
+        index_epochs: Vec<IndexEpochAdvanceV1>,
+        encoded_upper_bound: EncodedWriteSetUpperBound,
+    ) -> Result<Self, StorageValueError> {
+        let validation = intent.evaluated().validation_request();
+        let validation_target_count = validation
+            .binding_targets()
+            .len()
+            .checked_add(validation.root_validation_targets().len())
+            .and_then(|value| value.checked_add(validation.range_targets().len()))
+            .and_then(|value| value.checked_add(affected_targets.as_slice().len()))
+            .ok_or(StorageValueError::SizeOverflow)?;
+        if validation_target_count > MAX_VALIDATION_TARGETS {
+            return Err(StorageValueError::LimitExceeded);
+        }
+        let charge = CommandWriteSetChargeV1::from_validated_shape(
+            intent,
+            &affected_targets,
+            &affected_current,
+            &index_entries,
+            &index_epochs,
+            encoded_upper_bound,
+        )?;
+        Ok(Self {
+            intent: intent.clone(),
+            affected_targets,
+            affected_current,
+            index_entries,
+            index_epochs,
+            charge,
+        })
+    }
+
+    /// Borrows the exact retained candidate intent used for every derivation.
+    #[must_use]
+    pub const fn intent(&self) -> &CommitIntent {
+        &self.intent
+    }
+
+    /// Borrows the canonical affected prefix set.
+    #[must_use]
+    pub const fn affected_targets(&self) -> &AffectedIndexEpochTargets {
+        &self.affected_targets
+    }
+
+    /// Borrows exact transaction-current epoch positions used by the advances.
+    #[must_use]
+    pub const fn affected_current(&self) -> &AffectedEpochCurrentState {
+        &self.affected_current
+    }
+
+    /// Borrows exact canonical index mutations.
+    #[must_use]
+    pub fn index_entries(&self) -> &[IndexEntryMutationV1] {
+        &self.index_entries
+    }
+
+    /// Borrows exact canonical affected epoch advances.
+    #[must_use]
+    pub fn index_epochs(&self) -> &[IndexEpochAdvanceV1] {
+        &self.index_epochs
+    }
+
+    /// Returns the checked semantic and encoded capacity charge.
+    #[must_use]
+    pub const fn charge(&self) -> CommandWriteSetChargeV1 {
+        self.charge
+    }
+
+    /// Proves this plan is the exact candidate retained before capacity reservation.
+    #[must_use]
+    pub fn matches_retained_candidate(
+        &self,
+        intent: &CommitIntent,
+        affected_targets: &AffectedIndexEpochTargets,
+        affected_current: &AffectedEpochCurrentState,
+    ) -> bool {
+        self.intent == *intent
+            && self.affected_targets == *affected_targets
+            && self.affected_current == *affected_current
+    }
+}
+
+/// The exact authoritative record graph staged for one command sequence.
+#[derive(Clone, Eq, PartialEq)]
+pub struct AtomicCommandRecordSet {
+    assignment: AssignedCommandSequence,
+    entities: Vec<CommittedEntityMutationV1>,
+    write_plan: CommandWriteSetPlanV1,
+    stored_outcome: StoredOutcomeV1,
+    events: Vec<StoredDurableEventV1>,
+    outbox_intents: Vec<StoredOutboxIntentV1>,
+    provenance: StoredProvenanceRecordV1,
+    commit: StoredCommitRecordV1,
+    semantic_bytes: usize,
+}
+
+impl AtomicCommandRecordSet {
+    /// Validates complete membership, canonical order, reciprocal links, and bounds.
+    #[allow(clippy::too_many_arguments)]
+    pub fn new(
+        assignment: AssignedCommandSequence,
+        entities: Vec<CommittedEntityMutationV1>,
+        write_plan: CommandWriteSetPlanV1,
+        stored_outcome: StoredOutcomeV1,
+        events: Vec<StoredDurableEventV1>,
+        outbox_intents: Vec<StoredOutboxIntentV1>,
+        provenance: StoredProvenanceRecordV1,
+        commit: StoredCommitRecordV1,
+    ) -> Result<Self, StorageValueError> {
+        let expected_pending = write_plan.intent().pending();
+        let evaluated = write_plan.intent().evaluated();
+        let index_entries = write_plan.index_entries();
+        let index_epochs = write_plan.index_epochs();
+        let presequence_charge = write_plan.charge();
+        let sequence = commit.commit_sequence();
+        if sequence != assignment.assigned()
+            || assignment.next_allocator() != expected_next_allocator(sequence)
+            || expected_pending.identity() != stored_outcome.identity()
+            || expected_pending.admission_request_id() != stored_outcome.admission_request_id()
+            || expected_pending.plan() != stored_outcome.plan()
+            || expected_pending.canonical_input_hash() != stored_outcome.canonical_input_hash()
+            || expected_pending.actor() != stored_outcome.actor()
+            || expected_pending.logical_time() != stored_outcome.logical_time()
+            || expected_pending.provenance_claims() != stored_outcome.admitted_claims()
+            || hash_partition_key(expected_pending.partition_key().as_bytes())
+                != stored_outcome.partition_hash()
+            || entities != commit.mutations()
+            || entities.iter().any(|mutation| {
+                mutation.post_image().written_by_contract() != commit.plan().contract_version()
+                    || !mutation
+                        .post_image()
+                        .schema_binding()
+                        .matches_plan(commit.plan())
+                    || commit
+                        .read_dependencies()
+                        .expected_entity_state(mutation.post_image().target())
+                        != Some(mutation.expected())
+            })
+            || events != commit.events()
+            || stored_outcome.commit_sequence() != sequence
+            || stored_outcome.plan() != commit.plan()
+            || stored_outcome.admission_request_id() != commit.admission_request_id()
+            || stored_outcome.canonical_input_hash() != commit.canonical_input_hash()
+            || stored_outcome.actor() != commit.actor()
+            || stored_outcome.logical_time() != commit.logical_time()
+            || stored_outcome.partition_hash() != commit.partition_hash()
+            || stored_outcome.conflict_hashes() != commit.conflict_hashes()
+            || stored_outcome.declared_outcome() != commit.declared_outcome()
+            || stored_outcome.provenance_id() != commit.provenance_id()
+            || stored_outcome.durability_mode() != commit.durability_mode()
+            || provenance.commit_sequence() != sequence
+            || provenance.provenance_id() != commit.provenance_id()
+            || provenance.identity() != stored_outcome.identity()
+            || provenance.admission_request_id() != commit.admission_request_id()
+            || provenance.plan() != commit.plan()
+            || provenance.canonical_input_hash() != commit.canonical_input_hash()
+            || provenance.actor() != commit.actor()
+            || provenance.logical_time() != commit.logical_time()
+            || provenance.partition_hash() != commit.partition_hash()
+            || provenance.conflict_hashes() != commit.conflict_hashes()
+            || provenance.outcome_id() != commit.declared_outcome().outcome_id()
+            || provenance.admitted_claims() != stored_outcome.admitted_claims()
+            || stored_outcome.provenance_id() != write_plan.intent().provenance_id()
+            || stored_outcome.partition_hash() != write_plan.intent().partition_hash()
+            || stored_outcome.conflict_hashes() != write_plan.intent().conflict_hashes()
+            || stored_outcome.declared_outcome() != evaluated.outcome()
+        {
+            return Err(StorageValueError::IdentityMismatch);
+        }
+
+        validate_committed_mutations(&entities)?;
+        validate_intent_entity_derivation(evaluated, &entities)?;
+        validate_index_entries(index_entries)?;
+        validate_index_epochs(index_epochs)?;
+        validate_affected_target_coverage(write_plan.affected_targets(), index_epochs)?;
+        validate_post_image_bindings(commit.plan(), index_entries, index_epochs)?;
+        validate_events(sequence, &events)?;
+        validate_intent_event_derivation(evaluated, sequence, &events)?;
+        let expected_dependencies =
+            StoredReadDependenciesV1::from_live(evaluated.read_dependencies())?;
+        if commit.read_dependencies() != &expected_dependencies {
+            return Err(StorageValueError::IdentityMismatch);
+        }
+        if outbox_intents.len() != events.len()
+            || outbox_intents
+                .iter()
+                .zip(&events)
+                .any(|(intent, event)| intent.event() != event)
+            || commit.outbox_event_ids()
+                != outbox_intents
+                    .iter()
+                    .map(StoredOutboxIntentV1::event_id)
+                    .collect::<Vec<_>>()
+        {
+            return Err(StorageValueError::IdentityMismatch);
+        }
+
+        let affected: Vec<_> = entities
+            .iter()
+            .map(|mutation| AffectedEntityV1::from_record(mutation.post_image()))
+            .collect();
+        let event_ids: Vec<_> = events.iter().map(StoredDurableEventV1::event_id).collect();
+        if provenance.affected_entities() != affected || provenance.event_ids() != event_ids {
+            return Err(StorageValueError::IdentityMismatch);
+        }
+
+        let semantic_classes = atomic_semantic_breakdown(
+            expected_pending,
+            &entities,
+            index_entries,
+            index_epochs,
+            &events,
+            &outbox_intents,
+            &stored_outcome,
+            &provenance,
+            &commit,
+        )?;
+        if semantic_classes != presequence_charge.semantic_classes() {
+            return Err(StorageValueError::IdentityMismatch);
+        }
+        let semantic_bytes = semantic_classes.total()?;
+        Ok(Self {
+            assignment,
+            entities,
+            write_plan,
+            stored_outcome,
+            events,
+            outbox_intents,
+            provenance,
+            commit,
+            semantic_bytes,
+        })
+    }
+
+    /// Returns allocator metadata after assigning this record set's sequence.
+    #[must_use]
+    pub const fn next_application_sequence(&self) -> ApplicationSequenceAllocator {
+        self.assignment.next_allocator()
+    }
+
+    /// Borrows the exact pending admission this record set atomically resolves.
+    #[must_use]
+    pub const fn expected_pending(&self) -> &crate::StoredPendingAdmissionV1 {
+        self.write_plan.intent().pending()
+    }
+
+    /// Returns the exact invisible sequence assignment used for every final ID.
+    #[must_use]
+    pub const fn assignment(&self) -> AssignedCommandSequence {
+        self.assignment
+    }
+
+    /// Borrows the exact retained intent from which the graph was derived.
+    #[must_use]
+    pub const fn intent(&self) -> &CommitIntent {
+        self.write_plan.intent()
+    }
+
+    /// Borrows canonical committed entity changes.
+    #[must_use]
+    pub fn entities(&self) -> &[CommittedEntityMutationV1] {
+        &self.entities
+    }
+
+    /// Borrows canonical secondary-index changes.
+    #[must_use]
+    pub fn index_entries(&self) -> &[IndexEntryMutationV1] {
+        self.write_plan.index_entries()
+    }
+
+    /// Borrows canonical exact-prefix epoch advances.
+    #[must_use]
+    pub fn index_epochs(&self) -> &[IndexEpochAdvanceV1] {
+        self.write_plan.index_epochs()
+    }
+
+    /// Borrows the terminal stored outcome.
+    #[must_use]
+    pub const fn stored_outcome(&self) -> &StoredOutcomeV1 {
+        &self.stored_outcome
+    }
+
+    /// Borrows authoritative events in ordinal order.
+    #[must_use]
+    pub fn events(&self) -> &[StoredDurableEventV1] {
+        &self.events
+    }
+
+    /// Borrows reciprocal authoritative outbox intents.
+    #[must_use]
+    pub fn outbox_intents(&self) -> &[StoredOutboxIntentV1] {
+        &self.outbox_intents
+    }
+
+    /// Borrows immutable command provenance.
+    #[must_use]
+    pub const fn provenance(&self) -> &StoredProvenanceRecordV1 {
+        &self.provenance
+    }
+
+    /// Borrows the complete authoritative commit record.
+    #[must_use]
+    pub const fn commit(&self) -> &StoredCommitRecordV1 {
+        &self.commit
+    }
+
+    /// Returns checked aggregate semantic write-set bytes.
+    #[must_use]
+    pub const fn semantic_bytes(&self) -> usize {
+        self.semantic_bytes
+    }
+
+    /// Returns the pre-sequence charge cross-checked against this complete graph.
+    #[must_use]
+    pub const fn presequence_charge(&self) -> CommandWriteSetChargeV1 {
+        self.write_plan.charge()
+    }
+
+    /// Borrows the exact sequence-free plan retained across capacity reservation.
+    #[must_use]
+    pub const fn write_plan(&self) -> &CommandWriteSetPlanV1 {
+        &self.write_plan
+    }
+
+    /// Proves this graph exactly matches the sequence-assigned candidate being staged.
+    #[must_use]
+    pub fn matches_reserved_candidate(
+        &self,
+        assignment: AssignedCommandSequence,
+        intent: &CommitIntent,
+        write_plan: &CommandWriteSetPlanV1,
+    ) -> bool {
+        self.assignment == assignment
+            && self.intent() == intent
+            && self.write_plan() == write_plan
+            && self.commit.commit_sequence() == assignment.assigned()
+    }
+
+    /// Proves both durable command records use the requested engine commit mode.
+    #[must_use]
+    pub fn matches_durability_mode(&self, durability: DurabilityMode) -> bool {
+        self.stored_outcome.durability_mode() == durability
+            && self.commit.durability_mode() == durability
+    }
+}
+
+fn validate_conflict_hashes(hashes: &[ConflictKeyHash]) -> Result<(), StorageValueError> {
+    if hashes.len() > MAX_COMMIT_CONFLICT_HASHES {
+        return Err(StorageValueError::LimitExceeded);
+    }
+    if hashes.windows(2).any(|pair| pair[0] >= pair[1]) {
+        return Err(StorageValueError::NonCanonicalOrder);
+    }
+    Ok(())
+}
+
+fn validate_committed_mutations(
+    mutations: &[CommittedEntityMutationV1],
+) -> Result<(), StorageValueError> {
+    if mutations.len() > MAX_ENTITY_MUTATIONS {
+        return Err(StorageValueError::LimitExceeded);
+    }
+    if mutations.windows(2).any(|pair| {
+        pair[0].post_image().target().canonical_target_key()
+            >= pair[1].post_image().target().canonical_target_key()
+    }) {
+        return Err(StorageValueError::NonCanonicalOrder);
+    }
+    Ok(())
+}
+
+fn validate_intent_entity_derivation(
+    evaluated: &crate::EvaluatedCommand,
+    committed: &[CommittedEntityMutationV1],
+) -> Result<(), StorageValueError> {
+    if evaluated.mutations().len() != committed.len() {
+        return Err(StorageValueError::IdentityMismatch);
+    }
+
+    for (intent_mutation, committed_mutation) in evaluated.mutations().iter().zip(committed) {
+        let expected = match intent_mutation {
+            EntityMutation::Create(_) => ExpectedEntityState::Absent,
+            EntityMutation::Replace {
+                expected_version, ..
+            } => ExpectedEntityState::Present(*expected_version),
+        };
+        let intent_post_image = intent_mutation.post_image();
+        let committed_post_image = committed_mutation.post_image();
+        if committed_mutation.expected() != expected
+            || committed_post_image.target() != intent_post_image.target()
+            || committed_post_image.written_by_contract() != intent_post_image.written_by_contract()
+            || committed_post_image.fields() != intent_post_image.fields()
+            || !committed_post_image
+                .schema_binding()
+                .matches_plan(evaluated.plan())
+        {
+            return Err(StorageValueError::IdentityMismatch);
+        }
+    }
+    Ok(())
+}
+
+fn validate_index_entries(entries: &[IndexEntryMutationV1]) -> Result<(), StorageValueError> {
+    if entries.len() > MAX_INDEX_DELTAS {
+        return Err(StorageValueError::LimitExceeded);
+    }
+    if entries
+        .windows(2)
+        .any(|pair| pair[0].key().as_bytes() >= pair[1].key().as_bytes())
+    {
+        return Err(StorageValueError::NonCanonicalOrder);
+    }
+    Ok(())
+}
+
+fn validate_index_epochs(epochs: &[IndexEpochAdvanceV1]) -> Result<(), StorageValueError> {
+    if epochs.len() > MAX_INDEX_DELTAS {
+        return Err(StorageValueError::LimitExceeded);
+    }
+    if epochs
+        .windows(2)
+        .any(|pair| pair[0].target() >= pair[1].target())
+    {
+        return Err(StorageValueError::NonCanonicalOrder);
+    }
+    Ok(())
+}
+
+fn validate_post_image_bindings(
+    plan: &ExecutablePlanRef,
+    entries: &[IndexEntryMutationV1],
+    epochs: &[IndexEpochAdvanceV1],
+) -> Result<(), StorageValueError> {
+    if entries.iter().any(|entry| match entry {
+        IndexEntryMutationV1::Delete(_) => false,
+        IndexEntryMutationV1::Put(record) => !record.schema_binding().matches_plan(plan),
+    }) || epochs
+        .iter()
+        .any(|epoch| !epoch.post_image().schema_binding().matches_plan(plan))
+    {
+        return Err(StorageValueError::IdentityMismatch);
+    }
+    Ok(())
+}
+
+fn validate_affected_target_coverage(
+    targets: &AffectedIndexEpochTargets,
+    epochs: &[IndexEpochAdvanceV1],
+) -> Result<(), StorageValueError> {
+    if targets.as_slice().len() != epochs.len()
+        || targets
+            .as_slice()
+            .iter()
+            .zip(epochs)
+            .any(|(target, epoch)| {
+                StructurallyDecodedIndexRangePrefixV1::from_live(target.prefix()) != *epoch.target()
+            })
+    {
+        return Err(StorageValueError::IdentityMismatch);
+    }
+    Ok(())
+}
+
+fn validate_affected_epoch_coverage(
+    targets: &AffectedIndexEpochTargets,
+    current: &AffectedEpochCurrentState,
+    epochs: &[IndexEpochAdvanceV1],
+) -> Result<(), StorageValueError> {
+    validate_affected_target_coverage(targets, epochs)?;
+    if current.observations().len() != epochs.len()
+        || current
+            .observations()
+            .iter()
+            .zip(epochs)
+            .any(|(observation, epoch)| {
+                StructurallyDecodedIndexRangePrefixV1::from_live(observation.target().prefix())
+                    != *epoch.target()
+                    || observation.epoch() != epoch.prior()
+            })
+    {
+        return Err(StorageValueError::IdentityMismatch);
+    }
+    Ok(())
+}
+
+fn stored_entity_semantic_bytes(
+    target: &EntityTarget,
+    schema_binding: &DurableKeySchemaBindingV1,
+    fields: &CanonicalRecord,
+) -> Result<usize, StorageValueError> {
+    target
+        .semantic_bytes()?
+        .checked_add(8 + 8)
+        .and_then(|value| value.checked_add(schema_binding.semantic_bytes().ok()?))
+        .and_then(|value| {
+            value.checked_add(framed_bytes(canonical_record_bytes(fields).ok()?).ok()?)
+        })
+        .ok_or(StorageValueError::SizeOverflow)
+}
+
+fn committed_entity_semantic_bytes(
+    expected: ExpectedEntityState,
+    target: &EntityTarget,
+    schema_binding: &DurableKeySchemaBindingV1,
+    fields: &CanonicalRecord,
+) -> Result<usize, StorageValueError> {
+    let expected_bytes: usize = match expected {
+        ExpectedEntityState::Absent => 1,
+        ExpectedEntityState::Present(_) => 1 + 8,
+    };
+    expected_bytes
+        .checked_add(stored_entity_semantic_bytes(
+            target,
+            schema_binding,
+            fields,
+        )?)
+        .ok_or(StorageValueError::SizeOverflow)
+}
+
+fn stored_event_semantic_bytes(
+    _event_type_id: EventTypeId,
+    payload: &CanonicalRecord,
+) -> Result<usize, StorageValueError> {
+    framed_bytes(canonical_record_bytes(payload)?)?
+        .checked_add(12 + 4 + 32)
+        .ok_or(StorageValueError::SizeOverflow)
+}
+
+fn stored_outcome_semantic_bytes(
+    identity: &IdempotencyIdentity,
+    plan: &ExecutablePlanRef,
+    actor: &AdmittedActorContext,
+    conflict_hashes: &[ConflictKeyHash],
+    outcome: &DeclaredOutcome,
+    admitted_claims: &StoredAdmittedProvenanceClaimsV1,
+) -> Result<usize, StorageValueError> {
+    let identity = identity
+        .storage_key()
+        .map_err(|_| StorageValueError::InvalidShape)?;
+    let conflict_bytes = conflict_hashes
+        .len()
+        .checked_mul(32)
+        .ok_or(StorageValueError::SizeOverflow)?;
+    framed_bytes(identity.as_bytes().len())?
+        .checked_add(8 + 16)
+        .and_then(|value| value.checked_add(plan.semantic_bytes()?))
+        .and_then(|value| value.checked_add(32))
+        .and_then(|value| value.checked_add(actor_semantic_bytes(actor).ok()?))
+        .and_then(|value| value.checked_add(12 + 32 + 4))
+        .and_then(|value| value.checked_add(conflict_bytes))
+        .and_then(|value| value.checked_add(outcome.semantic_bytes().ok()?))
+        .and_then(|value| value.checked_add(admitted_claims.semantic_bytes().ok()?))
+        .and_then(|value| value.checked_add(16 + 1))
+        .ok_or(StorageValueError::SizeOverflow)
+}
+
+fn stored_provenance_semantic_bytes<'a>(
+    identity: &IdempotencyIdentity,
+    plan: &ExecutablePlanRef,
+    actor: &AdmittedActorContext,
+    conflict_hashes: &[ConflictKeyHash],
+    affected_targets: impl IntoIterator<Item = &'a EntityTarget>,
+    event_count: usize,
+    admitted_claims: &StoredAdmittedProvenanceClaimsV1,
+) -> Result<usize, StorageValueError> {
+    let identity = identity
+        .storage_key()
+        .map_err(|_| StorageValueError::InvalidShape)?;
+    let conflict_bytes = conflict_hashes
+        .len()
+        .checked_mul(32)
+        .ok_or(StorageValueError::SizeOverflow)?;
+    let mut total = 16usize
+        .checked_add(8)
+        .and_then(|value| value.checked_add(framed_bytes(identity.as_bytes().len()).ok()?))
+        .and_then(|value| value.checked_add(16))
+        .and_then(|value| value.checked_add(plan.semantic_bytes()?))
+        .and_then(|value| value.checked_add(32))
+        .and_then(|value| value.checked_add(actor_semantic_bytes(actor).ok()?))
+        .and_then(|value| value.checked_add(12 + 32 + 4))
+        .and_then(|value| value.checked_add(conflict_bytes))
+        .and_then(|value| value.checked_add(4 + 4 + 4))
+        .ok_or(StorageValueError::SizeOverflow)?;
+    for target in affected_targets {
+        total = total
+            .checked_add(target.semantic_bytes()?)
+            .and_then(|value| value.checked_add(8))
+            .ok_or(StorageValueError::SizeOverflow)?;
+    }
+    total
+        .checked_add(
+            event_count
+                .checked_mul(12)
+                .ok_or(StorageValueError::SizeOverflow)?,
+        )
+        .and_then(|value| value.checked_add(admitted_claims.semantic_bytes().ok()?))
+        .ok_or(StorageValueError::SizeOverflow)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn stored_commit_semantic_bytes<'a, M, E>(
+    plan: &ExecutablePlanRef,
+    actor: &AdmittedActorContext,
+    conflict_hashes: &[ConflictKeyHash],
+    read_dependencies: &StoredReadDependenciesV1,
+    mutations: M,
+    events: E,
+    outcome: &DeclaredOutcome,
+    event_count: usize,
+) -> Result<usize, StorageValueError>
+where
+    M: IntoIterator<
+        Item = (
+            ExpectedEntityState,
+            &'a EntityTarget,
+            &'a DurableKeySchemaBindingV1,
+            &'a CanonicalRecord,
+        ),
+    >,
+    E: IntoIterator<Item = (EventTypeId, &'a CanonicalRecord)>,
+{
+    let conflict_bytes = conflict_hashes
+        .len()
+        .checked_mul(32)
+        .ok_or(StorageValueError::SizeOverflow)?;
+    let mut total = 8usize
+        .checked_add(16)
+        .and_then(|value| value.checked_add(plan.semantic_bytes()?))
+        .and_then(|value| value.checked_add(32))
+        .and_then(|value| value.checked_add(actor_semantic_bytes(actor).ok()?))
+        .and_then(|value| value.checked_add(12 + 32 + 4))
+        .and_then(|value| value.checked_add(conflict_bytes))
+        .and_then(|value| value.checked_add(read_dependencies.semantic_bytes().ok()?))
+        .and_then(|value| value.checked_add(4 + 4))
+        .ok_or(StorageValueError::SizeOverflow)?;
+    for (expected, target, binding, fields) in mutations {
+        total = total
+            .checked_add(committed_entity_semantic_bytes(
+                expected, target, binding, fields,
+            )?)
+            .ok_or(StorageValueError::SizeOverflow)?;
+    }
+    for (event_type_id, payload) in events {
+        total = total
+            .checked_add(stored_event_semantic_bytes(event_type_id, payload)?)
+            .ok_or(StorageValueError::SizeOverflow)?;
+    }
+    total
+        .checked_add(outcome.semantic_bytes()?)
+        .and_then(|value| value.checked_add(16 + 4))
+        .and_then(|value| value.checked_add(event_count.checked_mul(12)?))
+        .and_then(|value| value.checked_add(1))
+        .ok_or(StorageValueError::SizeOverflow)
+}
+
+fn validate_events(
+    sequence: CommitSequence,
+    events: &[StoredDurableEventV1],
+) -> Result<(), StorageValueError> {
+    if events.len() > MAX_EVENT_INTENTS {
+        return Err(StorageValueError::LimitExceeded);
+    }
+    for (ordinal, event) in events.iter().enumerate() {
+        let ordinal = u32::try_from(ordinal).map_err(|_| StorageValueError::LimitExceeded)?;
+        if event.event_id() != EventId::new(sequence, ordinal) {
+            return Err(StorageValueError::IdentityMismatch);
+        }
+    }
+    Ok(())
+}
+
+fn validate_intent_event_derivation(
+    evaluated: &crate::EvaluatedCommand,
+    sequence: CommitSequence,
+    events: &[StoredDurableEventV1],
+) -> Result<(), StorageValueError> {
+    if evaluated.event_intents().len() != events.len() {
+        return Err(StorageValueError::IdentityMismatch);
+    }
+
+    for (ordinal, (intent_event, committed_event)) in
+        evaluated.event_intents().iter().zip(events).enumerate()
+    {
+        let ordinal = u32::try_from(ordinal).map_err(|_| StorageValueError::LimitExceeded)?;
+        if committed_event.event_id() != EventId::new(sequence, ordinal)
+            || committed_event.event_type_id() != intent_event.event_type_id()
+            || committed_event.payload() != intent_event.payload()
+        {
+            return Err(StorageValueError::IdentityMismatch);
+        }
+    }
+    Ok(())
+}
+
+fn expected_next_allocator(sequence: CommitSequence) -> ApplicationSequenceAllocator {
+    sequence.checked_next().map_or(
+        ApplicationSequenceAllocator::Exhausted,
+        ApplicationSequenceAllocator::Next,
+    )
+}
+
+fn projected_atomic_semantic_breakdown(
+    intent: &CommitIntent,
+    index_entries: &[IndexEntryMutationV1],
+    index_epochs: &[IndexEpochAdvanceV1],
+) -> Result<CommandWriteClassBreakdownV1, StorageValueError> {
+    let pending = intent.pending();
+    let evaluated = intent.evaluated();
+    let binding = DurableKeySchemaBindingV1::from_plan(evaluated.plan());
+    let expected_for = |mutation: &EntityMutation| match mutation {
+        EntityMutation::Create(_) => ExpectedEntityState::Absent,
+        EntityMutation::Replace {
+            expected_version, ..
+        } => ExpectedEntityState::Present(*expected_version),
+    };
+
+    let entity_bytes = evaluated.mutations().iter().try_fold(
+        0usize,
+        |total, mutation| -> Result<usize, StorageValueError> {
+            total
+                .checked_add(committed_entity_semantic_bytes(
+                    expected_for(mutation),
+                    mutation.target(),
+                    &binding,
+                    mutation.post_image().fields(),
+                )?)
+                .ok_or(StorageValueError::SizeOverflow)
+        },
+    )?;
+    let index_bytes = index_entries.iter().try_fold(0usize, |total, entry| {
+        total
+            .checked_add(entry.semantic_bytes()?)
+            .ok_or(StorageValueError::SizeOverflow)
+    })?;
+    let epoch_bytes = index_epochs.iter().try_fold(0usize, |total, epoch| {
+        total
+            .checked_add(epoch.semantic_bytes()?)
+            .ok_or(StorageValueError::SizeOverflow)
+    })?;
+    let event_bytes = evaluated
+        .event_intents()
+        .iter()
+        .try_fold(0usize, |total, event| {
+            total
+                .checked_add(stored_event_semantic_bytes(
+                    event.event_type_id(),
+                    event.payload(),
+                )?)
+                .ok_or(StorageValueError::SizeOverflow)
+        })?;
+    let stored_dependencies = StoredReadDependenciesV1::from_live(evaluated.read_dependencies())?;
+    let outcome_bytes = stored_outcome_semantic_bytes(
+        pending.identity(),
+        evaluated.plan(),
+        pending.actor(),
+        intent.conflict_hashes(),
+        evaluated.outcome(),
+        pending.provenance_claims(),
+    )?;
+    let provenance_bytes = stored_provenance_semantic_bytes(
+        pending.identity(),
+        evaluated.plan(),
+        pending.actor(),
+        intent.conflict_hashes(),
+        evaluated.mutations().iter().map(EntityMutation::target),
+        evaluated.event_intents().len(),
+        pending.provenance_claims(),
+    )?;
+    let commit_bytes = stored_commit_semantic_bytes(
+        evaluated.plan(),
+        pending.actor(),
+        intent.conflict_hashes(),
+        &stored_dependencies,
+        evaluated.mutations().iter().map(|mutation| {
+            (
+                expected_for(mutation),
+                mutation.target(),
+                &binding,
+                mutation.post_image().fields(),
+            )
+        }),
+        evaluated
+            .event_intents()
+            .iter()
+            .map(|event| (event.event_type_id(), event.payload())),
+        evaluated.outcome(),
+        evaluated.event_intents().len(),
+    )?;
+
+    CommandWriteClassBreakdownV1::new(
+        // Reserve the complete fixed-width future allocator field even when
+        // the maximum assigned sequence transitions the state to Exhausted.
+        9,
+        pending.semantic_bytes()?,
+        entity_bytes
+            .checked_add(4)
+            .ok_or(StorageValueError::SizeOverflow)?,
+        index_bytes
+            .checked_add(4)
+            .ok_or(StorageValueError::SizeOverflow)?,
+        epoch_bytes
+            .checked_add(4)
+            .ok_or(StorageValueError::SizeOverflow)?,
+        outcome_bytes,
+        event_bytes
+            .checked_add(4)
+            .ok_or(StorageValueError::SizeOverflow)?,
+        event_bytes
+            .checked_add(4)
+            .ok_or(StorageValueError::SizeOverflow)?,
+        provenance_bytes,
+        commit_bytes,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn atomic_semantic_breakdown(
+    expected_pending: &crate::StoredPendingAdmissionV1,
+    entities: &[CommittedEntityMutationV1],
+    index_entries: &[IndexEntryMutationV1],
+    index_epochs: &[IndexEpochAdvanceV1],
+    events: &[StoredDurableEventV1],
+    outbox_intents: &[StoredOutboxIntentV1],
+    outcome: &StoredOutcomeV1,
+    provenance: &StoredProvenanceRecordV1,
+    commit: &StoredCommitRecordV1,
+) -> Result<CommandWriteClassBreakdownV1, StorageValueError> {
+    let entity_bytes = entities.iter().try_fold(4usize, |total, mutation| {
+        total
+            .checked_add(mutation.semantic_bytes()?)
+            .ok_or(StorageValueError::SizeOverflow)
+    })?;
+    let index_bytes = index_entries.iter().try_fold(4usize, |total, entry| {
+        total
+            .checked_add(entry.semantic_bytes()?)
+            .ok_or(StorageValueError::SizeOverflow)
+    })?;
+    let epoch_bytes = index_epochs.iter().try_fold(4usize, |total, epoch| {
+        total
+            .checked_add(epoch.semantic_bytes()?)
+            .ok_or(StorageValueError::SizeOverflow)
+    })?;
+    let event_bytes = events.iter().try_fold(4usize, |total, event| {
+        total
+            .checked_add(event.semantic_bytes()?)
+            .ok_or(StorageValueError::SizeOverflow)
+    })?;
+    let outbox_bytes = outbox_intents.iter().try_fold(4usize, |total, intent| {
+        total
+            .checked_add(intent.semantic_bytes()?)
+            .ok_or(StorageValueError::SizeOverflow)
+    })?;
+    CommandWriteClassBreakdownV1::new(
+        9,
+        expected_pending.semantic_bytes()?,
+        entity_bytes,
+        index_bytes,
+        epoch_bytes,
+        outcome.semantic_bytes()?,
+        event_bytes,
+        outbox_bytes,
+        provenance.semantic_bytes()?,
+        commit.semantic_bytes()?,
+    )
+}
+
+macro_rules! redacted_debug {
+    ($($type:ty),+ $(,)?) => {
+        $(
+            impl fmt::Debug for $type {
+                fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+                    formatter.write_str(concat!(stringify!($type), "([REDACTED])"))
+                }
+            }
+        )+
+    };
+}
+
+redacted_debug!(
+    StoredEntityRecordV1,
+    StoredIndexEntryV1,
+    StoredIndexEpochV1,
+    IndexEntryMutationV1,
+    IndexEpochAdvanceV1,
+    CommittedEntityMutationV1,
+    StoredOutcomeV1,
+    StoredDurableEventV1,
+    StoredOutboxIntentV1,
+    AffectedEntityV1,
+    StoredProvenanceRecordV1,
+    StoredCommitRecordV1,
+    CommandWriteSetPlanV1,
+    AtomicCommandRecordSet,
+);
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use riffdb_types::{
+        ActorId, ActorKind, AggregateTypeId, ApprovalId, CanonicalInputHash, CanonicalValue,
+        CommandId, ContractBundleHash, ContractLineage, DatabaseId, DigestKeyId, EntityKeyBuilder,
+        EntityTypeId, Environment, FieldId, PartitionKeyBuilder, PlanHash, TenantId, TenantScope,
+        Timestamp,
+    };
+
+    use crate::{
+        AffectedEpochCurrentState, AffectedIndexEpochTargets, EntityMutation, EntityObservation,
+        EntityPostImage, EvaluatedCommand, EvaluationBudget, EventIntent, IdempotencyKeyDigest,
+        PreEvaluationCommitContext, ReadDependencies, ReadDependency, ReadSnapshot,
+        SnapshotRequest, StoredPendingAdmissionV1,
+    };
+
+    fn uuid_bytes(fill: u8) -> [u8; 16] {
+        let mut bytes = [fill; 16];
+        bytes[6] = 0x70 | (fill & 0x0f);
+        bytes[8] = 0x80 | (fill & 0x3f);
+        bytes
+    }
+
+    fn plan() -> ExecutablePlanRef {
+        ExecutablePlanRef::new(
+            ContractLineage::new("bounded-records").expect("lineage"),
+            ContractVersion::new(1).expect("version"),
+            ContractBundleHash::from_bytes([0x21; 32]),
+            CommandId::new(1).expect("command"),
+            PlanHash::from_bytes([0x22; 32]),
+        )
+    }
+
+    fn entity_target() -> EntityTarget {
+        let entity_type = EntityTypeId::new(1).expect("entity type");
+        let mut key = EntityKeyBuilder::new(entity_type);
+        key.push_u64(1).expect("key component");
+        EntityTarget::new(entity_type, key.finish().expect("entity key")).expect("target")
+    }
+
+    fn payload_record(length: usize) -> CanonicalRecord {
+        CanonicalRecord::new(vec![(
+            FieldId::new(1).expect("field"),
+            CanonicalValue::bytes(vec![0xa5; length]).expect("bounded payload"),
+        )])
+        .expect("record")
+    }
+
+    fn atomic_record_set(
+        entity_payload_bytes: usize,
+        event_payload_bytes: &[usize],
+    ) -> Result<AtomicCommandRecordSet, StorageValueError> {
+        let plan = plan();
+        let sequence = CommitSequence::first();
+        let tenant_scope = TenantScope::Tenant(TenantId::new("tenant-a").expect("tenant"));
+        let principal = ActorId::new("principal-a").expect("principal");
+        let actor = AdmittedActorContext::new(
+            principal.clone(),
+            ActorKind::Human,
+            tenant_scope.clone(),
+            None,
+        );
+        let identity = IdempotencyIdentity::new(
+            DatabaseId::from_bytes(uuid_bytes(0x11)).expect("database"),
+            Environment::new("test").expect("environment"),
+            tenant_scope,
+            principal,
+            plan.contract_lineage().clone(),
+            plan.command_id(),
+            IdempotencyKeyDigest::from_hmac_bytes(
+                DigestKeyId::new(1).expect("digest key"),
+                [0x31; 32],
+            ),
+        );
+        let request_id = RequestId::from_bytes(uuid_bytes(0x12)).expect("request");
+        let provenance_id = ProvenanceId::from_bytes(uuid_bytes(0x13)).expect("provenance");
+        let logical_time = LogicalTime::new(Timestamp::new(42, 7).expect("timestamp"));
+        let mut partition = PartitionKeyBuilder::new(AggregateTypeId::new(1).expect("aggregate"));
+        partition.push_u64(1).expect("partition component");
+        let partition = partition.finish().expect("partition");
+        let pending = StoredPendingAdmissionV1::new(
+            identity.clone(),
+            CanonicalInputHash::from_bytes([0x32; 32]),
+            request_id,
+            plan.clone(),
+            logical_time,
+            actor.clone(),
+            partition.clone(),
+            StoredAdmittedProvenanceClaimsV1::default(),
+        )?;
+
+        let target = entity_target();
+        let snapshot_request =
+            SnapshotRequest::new(plan.clone(), vec![target.clone()], Vec::new(), Vec::new())?;
+        let snapshot = ReadSnapshot::new(
+            &snapshot_request,
+            None,
+            vec![EntityObservation::Absent(target.clone())],
+            Vec::new(),
+            Vec::new(),
+        )?;
+        let runtime_mutation = EntityMutation::Create(EntityPostImage::new(
+            target.clone(),
+            plan.contract_version(),
+            payload_record(entity_payload_bytes),
+        )?);
+        let runtime_events = event_payload_bytes
+            .iter()
+            .map(|length| {
+                EventIntent::new(
+                    EventTypeId::new(1).expect("event type"),
+                    payload_record(*length),
+                )
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        let declared_outcome =
+            DeclaredOutcome::new(OutcomeId::new(1).expect("outcome"), payload_record(0))?;
+        let evaluated = EvaluatedCommand::new(
+            &snapshot,
+            vec![runtime_mutation],
+            runtime_events,
+            declared_outcome.clone(),
+            EvaluationBudget::v1(),
+        )?;
+        let partition_hash = hash_partition_key(partition.as_bytes());
+        let context = PreEvaluationCommitContext::new(pending.clone(), partition_hash, Vec::new())?;
+        let intent = CommitIntent::new(context, evaluated, provenance_id)?;
+
+        let read_dependencies = ReadDependencies::new([ReadDependency::EntityObservation {
+            target: target.clone(),
+            expected: ExpectedEntityState::Absent,
+        }])?;
+        let stored_read_dependencies = StoredReadDependenciesV1::from_live(&read_dependencies)?;
+        let entity = StoredEntityRecordV1::new(
+            target,
+            EntityVersion::first(),
+            plan.contract_version(),
+            DurableKeySchemaBindingV1::from_plan(&plan),
+            payload_record(entity_payload_bytes),
+        )?;
+        let mutation = CommittedEntityMutationV1::new(ExpectedEntityState::Absent, entity)?;
+        let mutations = vec![mutation];
+
+        let events = event_payload_bytes
+            .iter()
+            .enumerate()
+            .map(|(ordinal, length)| {
+                let ordinal = u32::try_from(ordinal).expect("bounded event count");
+                let event_id = EventId::new(sequence, ordinal);
+                let event_type_id = EventTypeId::new(1).expect("event type");
+                let payload = payload_record(*length);
+                let event_hash = derive_event_hash_v1(event_id, event_type_id, &payload)
+                    .expect("canonical event hash");
+                StoredDurableEventV1::new(event_id, event_type_id, payload, event_hash)
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        let event_ids = events
+            .iter()
+            .map(StoredDurableEventV1::event_id)
+            .collect::<Vec<_>>();
+        let stored_outcome = StoredOutcomeV1::new(
+            identity.clone(),
+            sequence,
+            request_id,
+            plan.clone(),
+            CanonicalInputHash::from_bytes([0x32; 32]),
+            actor.clone(),
+            logical_time,
+            partition_hash,
+            Vec::new(),
+            declared_outcome.clone(),
+            StoredAdmittedProvenanceClaimsV1::default(),
+            provenance_id,
+            DurabilityMode::Memory,
+        )?;
+        let affected = mutations
+            .iter()
+            .map(|item| AffectedEntityV1::from_record(item.post_image()))
+            .collect();
+        let provenance = StoredProvenanceRecordV1::new(
+            provenance_id,
+            sequence,
+            identity,
+            request_id,
+            plan.clone(),
+            CanonicalInputHash::from_bytes([0x32; 32]),
+            actor.clone(),
+            logical_time,
+            partition_hash,
+            Vec::new(),
+            declared_outcome.outcome_id(),
+            affected,
+            event_ids.clone(),
+            StoredAdmittedProvenanceClaimsV1::default(),
+        )?;
+        let commit = StoredCommitRecordV1::new(
+            sequence,
+            request_id,
+            plan.clone(),
+            CanonicalInputHash::from_bytes([0x32; 32]),
+            actor,
+            logical_time,
+            partition_hash,
+            Vec::new(),
+            stored_read_dependencies,
+            mutations.clone(),
+            events.clone(),
+            declared_outcome,
+            provenance_id,
+            event_ids,
+            DurabilityMode::Memory,
+        )?;
+        let outbox: Vec<_> = events
+            .iter()
+            .cloned()
+            .map(StoredOutboxIntentV1::new)
+            .collect();
+        let affected_targets = AffectedIndexEpochTargets::new(Vec::new())?;
+        let affected_current = AffectedEpochCurrentState::new(&affected_targets, Vec::new())?;
+        let semantic_classes = projected_atomic_semantic_breakdown(&intent, &[], &[])?;
+        let encoded_upper_bound = EncodedWriteSetUpperBound::new(semantic_classes)?;
+        let write_plan = CommandWriteSetPlanV1::new(
+            &intent,
+            affected_targets,
+            affected_current,
+            Vec::new(),
+            Vec::new(),
+            encoded_upper_bound,
+        )?;
+        AtomicCommandRecordSet::new(
+            AssignedCommandSequence::from_assigned(sequence),
+            mutations,
+            write_plan,
+            stored_outcome,
+            events,
+            outbox,
+            provenance,
+            commit,
+        )
+    }
+
+    #[test]
+    fn event_hash_v1_freezes_the_complete_identity_type_and_payload_preimage() {
+        let event_id = EventId::new(CommitSequence::first(), 0);
+        let event_type_id = EventTypeId::new(1).expect("event type");
+        let payload = CanonicalRecord::new(Vec::new()).expect("empty record");
+        assert_eq!(
+            canonical_event_preimage_v1(event_id, event_type_id, &payload)
+                .expect("canonical preimage"),
+            vec![
+                0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01, // commit sequence
+                0x00, 0x00, 0x00, 0x00, // event ordinal
+                0x00, 0x00, 0x00, 0x01, // event type
+                0x00, 0x00, 0x00, 0x06, // complete canonical payload length
+                0x01, 0x0d, 0x00, 0x00, 0x00, 0x00, // empty Value::Record
+            ]
+        );
+        let expected = EventHash::from_bytes([
+            0xe5, 0xd1, 0x5c, 0x17, 0xd9, 0x67, 0xed, 0x14, 0xa4, 0xd0, 0xa9, 0xc4, 0x6e, 0x42,
+            0xc3, 0x64, 0xf5, 0xbb, 0x9f, 0xce, 0x20, 0x73, 0xff, 0x06, 0x0f, 0x48, 0xcd, 0xba,
+            0x27, 0xc8, 0x56, 0x3d,
+        ]);
+
+        assert_eq!(
+            derive_event_hash_v1(event_id, event_type_id, &payload),
+            Ok(expected)
+        );
+        assert!(
+            StoredDurableEventV1::new(event_id, event_type_id, payload.clone(), expected).is_ok()
+        );
+        assert_eq!(
+            StoredDurableEventV1::new(
+                event_id,
+                event_type_id,
+                payload.clone(),
+                EventHash::from_bytes([0; 32]),
+            ),
+            Err(StorageValueError::IdentityMismatch)
+        );
+        assert_ne!(
+            derive_event_hash_v1(
+                EventId::new(CommitSequence::first(), 1),
+                event_type_id,
+                &payload
+            )
+            .expect("ordinal hash"),
+            expected
+        );
+        assert_ne!(
+            derive_event_hash_v1(
+                EventId::new(CommitSequence::new(2).expect("second sequence"), 0),
+                event_type_id,
+                &payload
+            )
+            .expect("commit-sequence hash"),
+            expected
+        );
+        assert_ne!(
+            derive_event_hash_v1(
+                event_id,
+                EventTypeId::new(2).expect("second event type"),
+                &payload,
+            )
+            .expect("type hash"),
+            expected
+        );
+        assert_ne!(
+            derive_event_hash_v1(event_id, event_type_id, &payload_record(0))
+                .expect("payload hash"),
+            expected
+        );
+    }
+
+    #[test]
+    fn event_hash_v1_has_a_nonempty_record_golden() {
+        let event_id = EventId::new(CommitSequence::first(), 0);
+        let event_type_id = EventTypeId::new(1).expect("event type");
+        let payload = payload_record(1);
+        let expected = EventHash::from_bytes([
+            0xa9, 0x77, 0xa3, 0xe8, 0xa4, 0x33, 0xcf, 0x89, 0xda, 0xf5, 0x69, 0x58, 0xfd, 0xc7,
+            0x1c, 0xbb, 0xe2, 0xa5, 0x5d, 0xf8, 0xee, 0x08, 0x2f, 0x7e, 0xe8, 0x94, 0xbd, 0xbf,
+            0x65, 0x47, 0x32, 0x14,
+        ]);
+
+        assert_eq!(
+            derive_event_hash_v1(event_id, event_type_id, &payload),
+            Ok(expected)
+        );
+    }
+
+    #[test]
+    fn event_hash_v1_accepts_exact_payload_maximum_and_classifies_one_over_as_limit() {
+        const RECORD_OVERHEAD: usize = 16;
+        let event_id = EventId::new(CommitSequence::first(), 0);
+        let event_type_id = EventTypeId::new(1).expect("event type");
+        let exact = payload_record(MAX_CANONICAL_DOCUMENT_BYTES - RECORD_OVERHEAD);
+        assert!(derive_event_hash_v1(event_id, event_type_id, &exact).is_ok());
+
+        let over = payload_record(MAX_CANONICAL_DOCUMENT_BYTES - RECORD_OVERHEAD + 1);
+        assert_eq!(
+            derive_event_hash_v1(event_id, event_type_id, &over),
+            Err(StorageValueError::LimitExceeded)
+        );
+        assert_eq!(
+            StoredDurableEventV1::new(
+                event_id,
+                event_type_id,
+                over,
+                EventHash::from_bytes([0; 32]),
+            ),
+            Err(StorageValueError::LimitExceeded)
+        );
+    }
+
+    fn ordered_conflict_hashes(count: usize) -> Vec<ConflictKeyHash> {
+        (0..count)
+            .map(|value| {
+                let mut bytes = [0_u8; 32];
+                bytes[..4].copy_from_slice(
+                    &u32::try_from(value)
+                        .expect("test conflict count fits u32")
+                        .to_be_bytes(),
+                );
+                ConflictKeyHash::from_bytes(bytes)
+            })
+            .collect()
+    }
+
+    fn outcome_with_conflicts(
+        template: &StoredOutcomeV1,
+        conflict_hashes: Vec<ConflictKeyHash>,
+    ) -> Result<StoredOutcomeV1, StorageValueError> {
+        StoredOutcomeV1::new(
+            template.identity.clone(),
+            template.commit_sequence,
+            template.admission_request_id,
+            template.plan.clone(),
+            template.canonical_input_hash,
+            template.actor.clone(),
+            template.logical_time,
+            template.partition_hash,
+            conflict_hashes,
+            template.declared_outcome.clone(),
+            template.admitted_claims.clone(),
+            template.provenance_id,
+            template.durability_mode,
+        )
+    }
+
+    fn outcome_with_claims(
+        template: &StoredOutcomeV1,
+        admitted_claims: StoredAdmittedProvenanceClaimsV1,
+    ) -> Result<StoredOutcomeV1, StorageValueError> {
+        StoredOutcomeV1::new(
+            template.identity.clone(),
+            template.commit_sequence,
+            template.admission_request_id,
+            template.plan.clone(),
+            template.canonical_input_hash,
+            template.actor.clone(),
+            template.logical_time,
+            template.partition_hash,
+            template.conflict_hashes.clone(),
+            template.declared_outcome.clone(),
+            admitted_claims,
+            template.provenance_id,
+            template.durability_mode,
+        )
+    }
+
+    #[test]
+    fn terminal_outcome_claims_must_match_pending_admission_and_provenance() {
+        let records = atomic_record_set(1, &[]).expect("valid record graph");
+        let claims = StoredAdmittedProvenanceClaimsV1::new(
+            None,
+            None,
+            None,
+            Some(ApprovalId::new("approval-2").expect("approval ID")),
+        )
+        .expect("admitted claims");
+        let mismatched_outcome = outcome_with_claims(records.stored_outcome(), claims.clone())
+            .expect("structurally valid outcome");
+        assert_eq!(mismatched_outcome.admitted_claims(), &claims);
+
+        assert_eq!(
+            AtomicCommandRecordSet::new(
+                records.assignment(),
+                records.entities().to_vec(),
+                records.write_plan().clone(),
+                mismatched_outcome,
+                records.events().to_vec(),
+                records.outbox_intents().to_vec(),
+                records.provenance().clone(),
+                records.commit().clone(),
+            ),
+            Err(StorageValueError::IdentityMismatch)
+        );
+
+        let mismatched_provenance = provenance_with_claims(records.provenance(), claims)
+            .expect("structurally valid provenance");
+        assert_eq!(
+            AtomicCommandRecordSet::new(
+                records.assignment(),
+                records.entities().to_vec(),
+                records.write_plan().clone(),
+                records.stored_outcome().clone(),
+                records.events().to_vec(),
+                records.outbox_intents().to_vec(),
+                mismatched_provenance,
+                records.commit().clone(),
+            ),
+            Err(StorageValueError::IdentityMismatch)
+        );
+    }
+
+    fn provenance_with_conflicts(
+        template: &StoredProvenanceRecordV1,
+        conflict_hashes: Vec<ConflictKeyHash>,
+    ) -> Result<StoredProvenanceRecordV1, StorageValueError> {
+        StoredProvenanceRecordV1::new(
+            template.provenance_id,
+            template.commit_sequence,
+            template.identity.clone(),
+            template.admission_request_id,
+            template.plan.clone(),
+            template.canonical_input_hash,
+            template.actor.clone(),
+            template.logical_time,
+            template.partition_hash,
+            conflict_hashes,
+            template.outcome_id,
+            template.affected_entities.clone(),
+            template.event_ids.clone(),
+            template.admitted_claims.clone(),
+        )
+    }
+
+    fn provenance_with_claims(
+        template: &StoredProvenanceRecordV1,
+        admitted_claims: StoredAdmittedProvenanceClaimsV1,
+    ) -> Result<StoredProvenanceRecordV1, StorageValueError> {
+        StoredProvenanceRecordV1::new(
+            template.provenance_id,
+            template.commit_sequence,
+            template.identity.clone(),
+            template.admission_request_id,
+            template.plan.clone(),
+            template.canonical_input_hash,
+            template.actor.clone(),
+            template.logical_time,
+            template.partition_hash,
+            template.conflict_hashes.clone(),
+            template.outcome_id,
+            template.affected_entities.clone(),
+            template.event_ids.clone(),
+            admitted_claims,
+        )
+    }
+
+    fn commit_with_conflicts(
+        template: &StoredCommitRecordV1,
+        conflict_hashes: Vec<ConflictKeyHash>,
+    ) -> Result<StoredCommitRecordV1, StorageValueError> {
+        StoredCommitRecordV1::new(
+            template.commit_sequence,
+            template.admission_request_id,
+            template.plan.clone(),
+            template.canonical_input_hash,
+            template.actor.clone(),
+            template.logical_time,
+            template.partition_hash,
+            conflict_hashes,
+            template.read_dependencies.clone(),
+            template.mutations.clone(),
+            template.events.clone(),
+            template.declared_outcome.clone(),
+            template.provenance_id,
+            template.outbox_event_ids.clone(),
+            template.durability_mode,
+        )
+    }
+
+    #[test]
+    fn stored_outcome_conflict_hash_count_accepts_2046_and_rejects_2047() {
+        let records = atomic_record_set(1, &[]).expect("valid record graph");
+        let exact = outcome_with_conflicts(
+            records.stored_outcome(),
+            ordered_conflict_hashes(MAX_COMMIT_CONFLICT_HASHES),
+        )
+        .expect("exact maximum");
+        assert_eq!(exact.conflict_hashes().len(), MAX_COMMIT_CONFLICT_HASHES);
+        assert_eq!(
+            outcome_with_conflicts(
+                records.stored_outcome(),
+                ordered_conflict_hashes(MAX_COMMIT_CONFLICT_HASHES + 1),
+            ),
+            Err(StorageValueError::LimitExceeded)
+        );
+    }
+
+    #[test]
+    fn stored_provenance_conflict_hash_count_accepts_2046_and_rejects_2047() {
+        let records = atomic_record_set(1, &[]).expect("valid record graph");
+        let exact = provenance_with_conflicts(
+            records.provenance(),
+            ordered_conflict_hashes(MAX_COMMIT_CONFLICT_HASHES),
+        )
+        .expect("exact maximum");
+        assert_eq!(exact.conflict_hashes().len(), MAX_COMMIT_CONFLICT_HASHES);
+        assert_eq!(
+            provenance_with_conflicts(
+                records.provenance(),
+                ordered_conflict_hashes(MAX_COMMIT_CONFLICT_HASHES + 1),
+            ),
+            Err(StorageValueError::LimitExceeded)
+        );
+    }
+
+    #[test]
+    fn stored_commit_conflict_hash_count_accepts_2046_and_rejects_2047() {
+        let records = atomic_record_set(1, &[]).expect("valid record graph");
+        let exact = commit_with_conflicts(
+            records.commit(),
+            ordered_conflict_hashes(MAX_COMMIT_CONFLICT_HASHES),
+        )
+        .expect("exact maximum");
+        assert_eq!(exact.conflict_hashes().len(), MAX_COMMIT_CONFLICT_HASHES);
+        assert_eq!(
+            commit_with_conflicts(
+                records.commit(),
+                ordered_conflict_hashes(MAX_COMMIT_CONFLICT_HASHES + 1),
+            ),
+            Err(StorageValueError::LimitExceeded)
+        );
+    }
+
+    #[test]
+    fn duplicated_entity_and_event_payloads_are_counted_per_persisted_copy() {
+        let baseline = atomic_record_set(10, &[10]).expect("baseline");
+        let larger_entity = atomic_record_set(11, &[10]).expect("larger entity");
+        let larger_event = atomic_record_set(10, &[11]).expect("larger event");
+        assert_eq!(
+            larger_entity.semantic_bytes() - baseline.semantic_bytes(),
+            2
+        );
+        assert_eq!(larger_event.semantic_bytes() - baseline.semantic_bytes(), 3);
+    }
+
+    #[test]
+    fn aggregate_staged_limit_rejects_exactly_one_charged_byte_over() {
+        const BULK: usize = 900_000;
+        let mut base_events = vec![BULK; 5];
+        base_events.push(0);
+        let base = atomic_record_set(0, &base_events).expect("base fits");
+        let remaining = MAX_STAGED_WRITE_BYTES
+            .checked_sub(base.semantic_bytes())
+            .expect("five bulk events leave tuning room");
+        drop(base);
+
+        let (event_bytes, entity_bytes) = (0..=BULK)
+            .rev()
+            .find_map(|event_bytes| {
+                let event_charge = 3 * event_bytes;
+                let entity_charge = remaining.checked_sub(event_charge)?;
+                if entity_charge % 2 != 0 {
+                    return None;
+                }
+                let entity_bytes = entity_charge / 2;
+                (entity_bytes <= BULK && entity_bytes > 0 && event_bytes < BULK)
+                    .then_some((event_bytes, entity_bytes))
+            })
+            .expect("two- and three-copy payloads can tune the exact boundary");
+
+        let mut exact_events = vec![BULK; 5];
+        exact_events.push(event_bytes);
+        let exact = atomic_record_set(entity_bytes, &exact_events).expect("exact limit fits");
+        assert_eq!(exact.semantic_bytes(), MAX_STAGED_WRITE_BYTES);
+        drop(exact);
+
+        let mut over_events = vec![BULK; 5];
+        over_events.push(event_bytes + 1);
+        assert_eq!(
+            atomic_record_set(entity_bytes - 1, &over_events),
+            Err(StorageValueError::LimitExceeded)
+        );
+    }
+}

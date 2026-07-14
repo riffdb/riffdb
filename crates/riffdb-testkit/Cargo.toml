@@ -9,6 +9,9 @@ publish.workspace = true
 default = []
 
 [dependencies]
+riffdb-contract-compiler = { path = "../riffdb-contract-compiler", version = "0.1.0" }
+riffdb-storage-api = { path = "../riffdb-storage-api", version = "0.1.0" }
+riffdb-types = { path = "../riffdb-types", version = "0.1.0" }
 
 [lints]
 workspace = true
