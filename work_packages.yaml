@@ -334,6 +334,7 @@ work_packages:
   allowed_paths:
   - examples/budget-comparison/Cargo.toml
   - examples/budget-comparison/Cargo.lock
+  - examples/budget-comparison/.gitignore
   - examples/budget-comparison/README.md
   - examples/budget-comparison/core/**
   - examples/budget-comparison/fixtures/**
