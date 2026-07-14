@@ -1,0 +1,108 @@
+{
+  "contention": {
+    "case_id": "budget-contention-v1",
+    "contenders": [
+      {
+        "amount": "80.00",
+        "command": "AllocateBudget",
+        "fiscal_year": 2026,
+        "idempotency_key": "wp045-contention-a",
+        "matter_id": "018f22a1-7b3c-7def-8123-456789ab2001",
+        "operation_id": "contention-allocate-a",
+        "organization_id": "018f22a1-7b3c-7def-8123-456789abcdef"
+      },
+      {
+        "amount": "80.00",
+        "command": "AllocateBudget",
+        "fiscal_year": 2026,
+        "idempotency_key": "wp045-contention-b",
+        "matter_id": "018f22a1-7b3c-7def-8123-456789ab2002",
+        "operation_id": "contention-allocate-b",
+        "organization_id": "018f22a1-7b3c-7def-8123-456789abcdef"
+      }
+    ],
+    "seed": {
+      "approved_amount": "100.00",
+      "command": "CreateBudget",
+      "fiscal_year": 2026,
+      "idempotency_key": "wp045-contention-create",
+      "operation_id": "contention-create-budget-100",
+      "organization_id": "018f22a1-7b3c-7def-8123-456789abcdef"
+    }
+  },
+  "schema_version": 1,
+  "sequential": {
+    "case_id": "budget-sequential-v1",
+    "operations": [
+      {
+        "approved_amount": "-1.00",
+        "command": "CreateBudget",
+        "fiscal_year": 2026,
+        "idempotency_key": "wp045-create-invalid",
+        "operation_id": "create-invalid-approval",
+        "organization_id": "018f22a1-7b3c-7def-8123-456789abcd00"
+      },
+      {
+        "amount": "1.00",
+        "command": "AllocateBudget",
+        "fiscal_year": 2026,
+        "idempotency_key": "wp045-allocate-missing",
+        "matter_id": "018f22a1-7b3c-7def-8123-456789ab1001",
+        "operation_id": "allocate-missing-budget",
+        "organization_id": "018f22a1-7b3c-7def-8123-456789abcd01"
+      },
+      {
+        "approved_amount": "100.00",
+        "command": "CreateBudget",
+        "fiscal_year": 2026,
+        "idempotency_key": "wp045-create-primary",
+        "operation_id": "create-budget-100",
+        "organization_id": "018f22a1-7b3c-7def-8123-456789abcdef"
+      },
+      {
+        "approved_amount": "-1.00",
+        "command": "CreateBudget",
+        "fiscal_year": 2026,
+        "idempotency_key": "wp045-create-duplicate",
+        "operation_id": "create-duplicate-invalid",
+        "organization_id": "018f22a1-7b3c-7def-8123-456789abcdef"
+      },
+      {
+        "amount": "0.00",
+        "command": "AllocateBudget",
+        "fiscal_year": 2026,
+        "idempotency_key": "wp045-allocate-zero",
+        "matter_id": "018f22a1-7b3c-7def-8123-456789ab1002",
+        "operation_id": "allocate-invalid-zero",
+        "organization_id": "018f22a1-7b3c-7def-8123-456789abcdef"
+      },
+      {
+        "amount": "30.00",
+        "command": "AllocateBudget",
+        "fiscal_year": 2026,
+        "idempotency_key": "wp045-allocate-thirty",
+        "matter_id": "018f22a1-7b3c-7def-8123-456789ab1003",
+        "operation_id": "allocate-thirty",
+        "organization_id": "018f22a1-7b3c-7def-8123-456789abcdef"
+      },
+      {
+        "amount": "80.00",
+        "command": "AllocateBudget",
+        "fiscal_year": 2026,
+        "idempotency_key": "wp045-allocate-eighty",
+        "matter_id": "018f22a1-7b3c-7def-8123-456789ab1004",
+        "operation_id": "allocate-insufficient-eighty",
+        "organization_id": "018f22a1-7b3c-7def-8123-456789abcdef"
+      },
+      {
+        "amount": "20.00",
+        "command": "AllocateBudget",
+        "fiscal_year": 2026,
+        "idempotency_key": "wp045-allocate-twenty",
+        "matter_id": "018f22a1-7b3c-7def-8123-456789ab1005",
+        "operation_id": "allocate-twenty",
+        "organization_id": "018f22a1-7b3c-7def-8123-456789abcdef"
+      }
+    ]
+  }
+}

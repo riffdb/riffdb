@@ -1,0 +1,23 @@
+{
+  "adapter": "postgresql-explicit-sql-v1",
+  "assumptions": [
+    "The adapter is the only writer to its dedicated comparison table.",
+    "Required-live evidence probes server_version_num=180004, synchronous_commit=on, fsync=on, and full_page_writes=on.",
+    "Commands bound lock waits to 5 seconds and statements/idle transactions to 10 seconds.",
+    "Connection loss after COMMIT remains uncertain because this baseline has no idempotency ledger.",
+    "The comparison table is reset only inside a dedicated test database.",
+    "Correctness preflight must pass before any timing result is reported."
+  ],
+  "authorization": "unsupported",
+  "command_invariants": "matched",
+  "conflict_control": "SELECT ... FOR UPDATE on the annual budget row",
+  "durability": "PostgreSQL 18.4 with synchronous_commit=on, fsync=on, and full_page_writes=on; server-acknowledged commit only",
+  "durable_events": "unsupported",
+  "idempotency": "unsupported",
+  "isolation": "READ COMMITTED per explicit transaction",
+  "outbox": "unsupported",
+  "projections": "unsupported",
+  "provenance": "unsupported",
+  "schema_version": 1,
+  "timestamp_observation": "transaction_timestamp() is required but normalized out"
+}
