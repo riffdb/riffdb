@@ -2,10 +2,12 @@
 
 - **Status:** Accepted
 - **Direction approved:** 2026-07-12
-- **Exact text accepted:** 2026-07-13
+- **Exact text accepted:** 2026-07-13, clarified 2026-07-13
+- **Clarified by:** ADR-0016 for canonical structural root-key derivation equality
 - **Decision deadline:** Before WP-060 or WP-090 public interfaces merge
 
-The human maintainer accepted this exact text on 2026-07-13.
+The human maintainer accepted this exact text and the ADR-0016 root-key
+derivation equality clarification on 2026-07-13.
 
 ## Context
 
@@ -45,8 +47,11 @@ aggregate invariant, the compiler makes the required aggregate-root observation
 explicit. It emits one dense, plan-local `RootValidationReadPlan` unless an exact
 source-declared binding of that root supplies the record. This plan is not a
 source binding, does not acquire an additional conflict domain, and has no
-declared business outcome. Multiple child mutations with byte-identical checked
-root-key derivations share one root-validation read.
+declared business outcome. Multiple child mutations share one root-validation
+read exactly when their checked root-key derivations are canonically
+structurally equal under ADR-0016. That comparison ignores plan-local expression
+IDs, arena insertion order, and shared-versus-duplicated DAG representation; it
+does not use runtime value equality or algebraic rewriting.
 
 The snapshot and commit-validation request carry root-validation observations
 separately from source binding observations. Each produces the existing

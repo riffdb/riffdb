@@ -1,4 +1,4 @@
-spec_version: '0.7'
+spec_version: '0.8'
 product: RiffDB
 repository: riffdb
 status: implementation-handoff
@@ -345,6 +345,14 @@ work_packages:
   - Explicit semantic guarantee profiles
   - PostgreSQL schema and adapter in an isolated nested workspace
   - Golden workload and observation fixtures
+  - >-
+    Exact isolated dependencies: postgres 0.19.14 with default features disabled and synchronous NoTls only, plus
+    serde_json 1.0.150 with default features disabled and only std; no ORM, pool, TLS integration, native dependency,
+    or root-workspace production dependency
+  - CI live-adapter evidence against exactly
+    postgres:18.4-bookworm@sha256:d9c83446333daec3f0588cc709adb80c26090b7f9f0f7ec8d43c243385d79818,
+    running the declared acceptance command with PostgreSQL required rather than treating a local skipped-live test
+    as exit-gate evidence
   acceptance_commands:
   - cargo test --manifest-path examples/budget-comparison/Cargo.toml --workspace
   exit_gate: The PostgreSQL adapter passes the budget workload oracle and records its exact isolation, durability,
@@ -356,8 +364,8 @@ work_packages:
   - WP-020
   - WP-040
   - WP-060
-  objective: Define immutable bundle persistence and a typed catalog-activation intent for coordinator-owned,
-    optimistic expected-version deployment.
+  objective: Define immutable bundle persistence, catalog-owned historical-plan validation for startup, and a typed
+    catalog-activation intent for coordinator-owned, optimistic expected-version deployment.
   requirements:
   - CMP-001
   - CMP-020
@@ -386,6 +394,11 @@ work_packages:
   - Activation-time revalidation of compiled command tool-name registry completeness, deterministic v1 derivation,
     canonical ordering, CommandId and lineage binding, and uniqueness, with rejection rather than repair or
     regeneration of invalid metadata
+  - IR-aware, bounded historical bundle and executable-plan resolver that consumes every same-session
+    HistoricalSemanticEvidence page through exact end and returns an opaque catalog-owned ValidatedCatalogHistory
+    bound to that startup session; truncated, skipped, repeated, reordered, mismatched, or unknown evidence fails closed
+  - Architecture checks proving ValidatedCatalogHistory never crosses a storage trait, storage never
+    imports or interprets contract IR, and neither side accepts a generic validation callback
   acceptance_commands:
   - cargo test -p riffdb-catalog
   - cargo test -p riffdb-catalog --test contract_deploy_recovery
@@ -394,8 +407,9 @@ work_packages:
     owner_crate: riffdb-catalog
     manifest: crates/riffdb-catalog/Cargo.toml
     path: ../../tests/contract_deploy_recovery.rs
-  exit_gate: Deployment crash tests leave exactly the old or new bundle active, retries resolve by version, and every
-    malformed or misbound ADR-0020 command-name registry rejects activation.
+  exit_gate: Deployment crash tests leave exactly the old or new bundle active, retries resolve by version, every
+    malformed or misbound ADR-0020 command-name registry rejects activation, and only complete same-session
+    historical evidence can produce ValidatedCatalogHistory.
   human_review_triggers: *id001
 - id: WP-060
   name: Storage semantic API
@@ -403,8 +417,8 @@ work_packages:
   - WP-010
   - WP-020
   - WP-040
-  objective: Define the narrow storage contract required by snapshots, atomic command commits, catalog state, scans,
-    and derived workers.
+  objective: Define the narrow storage contract required by snapshots, atomic command commits, catalog state,
+    exclusive startup evidence, scans, and derived workers.
   requirements:
   - SYS-004
   - STO-001
@@ -482,9 +496,16 @@ work_packages:
   - Exact ADR-0019 retained metadata surface, canonical validity of absent deferred operational metadata, and
     architecture checks rejecting NodeId, clean-shutdown, persisted-integrity-result, or substitute placeholder
     types, keys, ports, and records
+  - Engine-neutral StructuralEvidenceSession type-state, bounded HistoricalSemanticEvidence pages with an unambiguous
+    exact-end result, and StructurallyOpened dormant-port handoff bound to one database/open session; initialization
+    precedes evidence, no mutation port is available during the session, and failure releases no operational ports
+  - Memory conformance for initialization-before-evidence, exclusive noninterleaving scans, page continuation and
+    exact-end coverage, session/database mismatch rejection, dropped/failed session behavior, and dormant ports that
+    cannot become operational without the separate catalog-owned same-session ValidatedCatalogHistory
   acceptance_commands:
   - cargo test -p riffdb-storage-api -p riffdb-storage-memory
-  exit_gate: Reference storage satisfies atomicity, ordering, snapshot, metadata-deferral, and model-state properties.
+  exit_gate: Reference storage satisfies atomicity, ordering, snapshot, metadata-deferral, startup type-state,
+    exact-end historical-evidence, and model-state properties without introducing a storage-to-IR dependency.
   human_review_triggers: *id001
 - id: WP-065
   name: Durable semantic record schema
@@ -600,7 +621,7 @@ work_packages:
   deliverables:
   - Redb table layout
   - Atomic entity/index/outcome/event/provenance/log commit
-  - Startup integrity validation
+  - Complete storage-structural startup scan and exact-end historical semantic evidence
   - Offline backup and restore
   - Storage benchmarks
   - Named storage failpoints and redaction-safe telemetry hooks
@@ -621,9 +642,14 @@ work_packages:
     recovery evidence
   - Authoritative recovery result separated from bounded projection/outbox component findings; redb reports but does
     not invent WP-160 retry or WP-170 rebuild policy
-  - Complete read-only authoritative integrity validation on every startup after graceful close or crash, with no
+  - Complete read-only storage-structural integrity validation on every startup after graceful close or crash, with no
     marker/history fast path, deferred operational-metadata write, or online repair, plus retained-metadata invariant
     and canonical-absence evidence
+  - Exclusive StructuralEvidenceSession implementation that withholds every mutation/operational port while scanning
+    and yields StructurallyOpened dormant redb ports bound to the DatabaseId and startup session only after the
+    complete structural scan and historical evidence cursor both reach exact end
+  - Explicit evidence that StructurallyOpened is not IR-aware or operational readiness; redb neither validates command
+    plans nor consumes ValidatedCatalogHistory, and any scan failure drops the open rather than publishing ports
   acceptance_commands:
   - cargo test -p riffdb-storage-redb
   - cargo test -p riffdb-storage-redb --test storage_recovery_matrix
@@ -639,8 +665,9 @@ work_packages:
     owner_crate: riffdb-storage-redb
     manifest: crates/riffdb-storage-redb/Cargo.toml
     path: ../../tests/service_audit_recovery/service_audit_recovery.rs
-  exit_gate: Storage property suite and process recovery matrix pass with no torn command state, every startup runs
-    full authoritative integrity validation, and no ADR-0019 deferred record is persisted.
+  exit_gate: Storage property suite and process recovery matrix pass with no torn command state; every open completes
+    the full structural scan and exact-end evidence handoff before yielding StructurallyOpened dormant ports; no open
+    claims IR-aware readiness, and no ADR-0019 deferred record is persisted.
   human_review_triggers: *id001
 - id: WP-075
   name: Fjall semantic comparison
@@ -1079,12 +1106,26 @@ work_packages:
   - WP-020
   - WP-120
   - WP-127
-  objective: Expose the public application and administration protocol through Tonic and a typed Rust client.
+  objective: Expose the public application and administration protocol through Tonic and a typed Rust client, and
+    compose the minimum production riffdbd required for the first runnable P1 restart checkpoint.
   requirements:
+  - SYS-001
+  - SYS-004
+  - ID-001
+  - ID-005
+  - STO-001
+  - STO-012
+  - REC-001
+  - REC-002
   - API-001
   - POC-001
   - POC-004
+  - POC-008
+  - POC-009
   required_adrs:
+  - ADR-0002
+  - ADR-0003
+  - ADR-0004
   - ADR-0005
   - ADR-0006
   - ADR-0007
@@ -1094,6 +1135,9 @@ work_packages:
   - ADR-0013
   - ADR-0017
   - ADR-0018
+  - ADR-0019
+  - ADR-0020
+  - ADR-0021
   allowed_paths:
   - Cargo.lock
   - crates/riffdb-api-grpc/**
@@ -1115,19 +1159,48 @@ work_packages:
   - Total service-to-Protobuf conversion, including status-dependent Execute validation, sentinel-to-absence
     mapping, public errors, streams, capability results, and projection variants
   - Architecture tests proving no direct policy, commit, storage, or lower semantic bypass
-  - One private checked server SystemUuidV7Source primitive plus hosted RequestId and IncidentId consumer wrappers,
-    with one clock conversion and entropy fill per candidate, source-failure propagation, and no process-global
-    generator state or uniqueness registry; database/provenance wrappers and final composition remain WP-185
+  - One private checked server SystemUuidV7Source primitive plus hosted RequestId, IncidentId, DatabaseId-candidate,
+    and ProvenanceIdSource consumer wrappers, with one clock conversion and entropy fill per candidate, source-failure
+    propagation, and no process-global generator state or uniqueness registry
+  - Minimal production riffdbd component graph wiring redb, catalog, commit coordinator, authentication, policy,
+    API-neutral service, and Tonic exactly once, with no storage or policy bypass and no MCP, outbox dispatcher,
+    projection worker, observability aggregation, or derived-health semantics
+  - Initialization composition only through the commit-owned DatabaseInitializationExecutor; the server invokes no
+    storage mutation transition directly, does not request a DatabaseId candidate on reopen, and preserves the
+    durable winner across restart
+  - Four disjoint concrete wall-clock providers for auth-owned authentication time, policy-owned AuthorizationClock,
+    and commit-owned AdmissionClock and AdministrationClock; one implementation may be shared, but consumer ports and
+    call sites remain distinct and bootstrap shares exactly one AdministrationClock sample
+  - Production CursorTokenGenerator and CursorMonotonicClock providers, including reviewed cursor entropy and one
+    private std::time::Instant origin, with restart invalidation, checked regression/overflow, and no test sleeps
+  - Production capability-token and idempotency digest-key providers, cross-namespace key-material reuse rejection,
+    and nonsecret readable scheme/key inventories supplied to fail-closed startup validation
+  - Staged startup gate that performs identity initialization first, drives redb structural evidence to exact end,
+    obtains catalog-owned opaque same-session ValidatedCatalogHistory, and only then activates the matching
+    StructurallyOpened dormant ports; no proof crosses the storage trait and any mismatch leaves the process unready
+  - P1 lifecycle exposing only health and one-time loopback bootstrap before the marker, authenticated deployment after
+    bootstrap, and general command/read readiness only after a valid active catalog; exact bootstrap replay uses the
+    caller-retained credential, returns the existing capability result without echoing or reissuing the token, and
+    appends only the required linked audit records
+  - Real child-process temporary-redb restart test over public gRPC covering bootstrap, budget deployment,
+    CreateBudget, entity read, AllocateBudget, outcome resolution, clean stop, reopen, repeated entity/outcome reads,
+    and retained bootstrap replay without an in-process storage or service shortcut
   acceptance_commands:
   - cargo test -p riffdb-api-grpc -p riffdb-client-rust -p riffdb-server
   - cargo test -p riffdb-api-grpc --test grpc_end_to_end
+  - cargo test -p riffdb-server --test p1_riffdbd_restart
   external_test_targets:
   - name: grpc_end_to_end
     owner_crate: riffdb-api-grpc
     manifest: crates/riffdb-api-grpc/Cargo.toml
     path: ../../tests/grpc/grpc_end_to_end.rs
-  exit_gate: Budget command, outcome recovery, contract deploy, and entity read work through public gRPC; every
-    projection result variant maps correctly against an injected service stub.
+  - name: p1_riffdbd_restart
+    owner_crate: riffdb-server
+    manifest: crates/riffdb-server/Cargo.toml
+    path: ../../tests/grpc/p1_riffdbd_restart.rs
+  exit_gate: A real riffdbd process reaches staged readiness on redb and the bootstrap/deploy/budget command, outcome,
+    entity-read, clean-restart, durable reread, and retained-bootstrap-replay sequence works through public gRPC;
+    every projection result variant also maps correctly against an injected service stub.
   human_review_triggers: *id001
 - id: WP-135
   name: Public SDK comparison adapter
@@ -1308,7 +1381,7 @@ work_packages:
   - Canonical interpretation of a missing outbox-status row as never-attempted Pending, rejection of orphan status
     rows, and preservation of retry metadata when an explicit Pending row exists
   - Idempotent recovery normalization of interrupted Delivering rows before the worker is declared ready, with
-    bounded findings reported separately from authoritative WP-070 integrity and readiness
+    bounded findings reported separately from WP-070 structural evidence and WP-130 authoritative readiness
   acceptance_commands:
   - cargo test -p riffdb-outbox
   - cargo test -p riffdb-outbox --test outbox_crash_and_duplicate
@@ -1415,8 +1488,8 @@ work_packages:
   - WP-160
   - WP-170
   - WP-180
-  objective: Compose the final riffdbd process from the shared service, gRPC, loopback MCP HTTP, outbox, projection,
-    observability, lifecycle, and health components without adding business semantics.
+  objective: Extend the runnable WP-130 riffdbd graph with loopback MCP HTTP, outbox, projection, observability, and
+    derived-health components without replacing its P1 providers, startup gate, lifecycle, or business semantics.
   requirements:
   - SYS-001
   - API-001
@@ -1442,46 +1515,32 @@ work_packages:
   - crates/riffdb-server/**
   - tests/server_composition/**
   deliverables:
-  - Final riffdbd component graph and bounded lifecycle
-  - gRPC and loopback MCP HTTP endpoint composition
+  - P2 extension of the existing WP-130 riffdbd component graph and bounded lifecycle
+  - Existing gRPC plus loopback MCP HTTP endpoint composition
   - Outbox and projection worker startup and shutdown
   - Authoritative versus derived health aggregation
-  - Initialization lifecycle wiring that exposes only health and bootstrap before the compound bootstrap marker,
-    allows authenticated contract deployment after bootstrap, and withholds general command/read readiness until an
-    active contract exists
-  - Four disjoint concrete server clock providers for auth-owned authentication time, policy-owned AuthorizationClock,
-    and commit-owned AdmissionClock and AdministrationClock; one implementation may be shared but consumer ports and
-    call sites remain distinct
-  - DatabaseId-candidate and ProvenanceIdSource wrappers over WP-130's private checked SystemUuidV7Source plus final
-    production composition of those wrappers and the hosted RequestId and IncidentId sources
-  - Production CursorMonotonicClock provider with one private std::time::Instant origin, separate from all wall-clock
-    ports, plus deterministic composition tests proving cursor restart invalidation and no sleeps
-  - Initialization composition only through the commit-owned DatabaseInitializationExecutor; server calls no storage
-    mutation transition directly
-  - One AdministrationClock sample shared by linked bootstrap metadata and audit records; capability administration
-    instead uses its one transaction-current AuthorizationClock sample
   - Authoritative readiness preserved when only derived outbox or projection recovery is degraded, with bounded
     derived findings and worker-specific readiness surfaced separately
   - Real projection gRPC and MCP end-to-end coverage
   - Mechanical authoritative, projection, outbox, and operational service-port adapters without new semantics
-  - Reviewed direct getrandom 0.3.4 cursor-ID generator with default and optional features disabled
-  - Production composition of the disjoint capability-token and idempotency digest-key providers, cross-namespace
-    key-material reuse rejection, and readable scheme/key inventories supplied to fail-closed recovery readiness
-  - Startup wiring that always invokes complete authoritative integrity validation before readiness after graceful
-    or ungraceful termination, while graceful shutdown writes no clean-shutdown or integrity-history metadata
+  - Reuse and regression evidence for WP-130's exact UUID wrappers, four clocks, cursor providers, disjoint digest
+    providers/inventories, initialization executor, same-session structural/ValidatedCatalogHistory startup proof, bootstrap/deploy/
+    active lifecycle, and graceful/crash authoritative validation; WP-185 defines no replacement provider or gate
   - MCP registration and dispatch composition that preserves compiler-owned ADR-0020 command names without an
     alternate derivation, normalization, or repair path
   acceptance_commands:
   - cargo test -p riffdb-server
+  - cargo test -p riffdb-server --test p1_riffdbd_restart
   - cargo test -p riffdb-server --test server_composition
   external_test_targets:
   - name: server_composition
     owner_crate: riffdb-server
     manifest: crates/riffdb-server/Cargo.toml
     path: ../../tests/server_composition/server_composition.rs
-  exit_gate: One riffdbd process serves gRPC and loopback MCP HTTP with exact compiled command names, runs both
-    workers, always validates authoritative integrity before readiness, reports accurate health, and proves real
-    read-after-sequence projection behavior through public APIs.
+  exit_gate: The same riffdbd graph accepted in WP-130 still passes its P1 restart sequence while also serving loopback
+    MCP HTTP with exact compiled command names, running both workers, preserving the startup/lifecycle gate, reporting
+    separate authoritative and derived health, and proving real read-after-sequence projection behavior through public
+    APIs.
   human_review_triggers: *id001
 - id: WP-190
   name: Integrated crash harness
@@ -1534,8 +1593,9 @@ work_packages:
   - Projection identity/generation/frontier, compound-bootstrap, idempotency digest-provider retirement, both
     sequence-metadata spaces, capability lookup plus bootstrap/create/revoke audit kind/target/sequence/timestamp
     cross-links, and terminal execution-failure recovery evidence
-  - Separate authoritative WP-070 integrity/readiness, WP-160 Delivering normalization, WP-170 degradation/new-
-    generation rebuild, and WP-185 aggregate-health evidence with no online repair of authoritative state
+  - Separate WP-070 structural evidence, WP-050 ValidatedCatalogHistory, WP-130 authoritative readiness, WP-160
+    Delivering normalization, WP-170 degradation/new-generation rebuild, and WP-185 aggregate-health evidence with
+    no online repair of authoritative state
   - Graceful-close and crash/reopen evidence that complete authoritative integrity validation runs every time,
     repeated recovery creates no deferred ADR-0019 metadata, and canonical absence remains valid and idempotent
   acceptance_commands:

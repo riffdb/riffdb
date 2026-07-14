@@ -17,6 +17,9 @@
 
 The human maintainer accepted this exact shared-service record on 2026-07-13 as
 part of the atomic semantic-interface governance batch.
+The maintainer accepted the P1 production-composition amendment on 2026-07-13:
+WP-130 now owns the one runnable authoritative redb/gRPC graph and WP-185 only
+extends that same graph for P2 MCP, workers, and observability.
 
 ## Context
 
@@ -92,14 +95,18 @@ on every peer. In particular:
   or arbitrary callback.
 - `riffdb-projection`, `riffdb-outbox`, and `riffdb-observability` retain their
   existing lower-level ownership and do not depend on `riffdb-service` merely to
-  implement a service trait. WP-185 supplies mechanical newtype adapters around
-  their handles for consumer-owned service ports.
+  implement a service trait. WP-185 supplies only their P2 mechanical newtype
+  adapters around the already activated WP-130 core for consumer-owned service
+  ports.
 - API adapters may call the credential-authentication entry point and
   `riffdb-service`. They do not call a policy evaluator, catalog, runtime,
   idempotency component, commit executor, projection store, outbox store, or
   storage API directly.
-- `riffdb-server` composes implementations and adapters. It adds no policy,
-  redaction, command, query, cursor, or audit semantics.
+- `riffdb-server` composes implementations and adapters. WP-130 builds its one
+  production redb/catalog/commit/auth/policy/service/gRPC core and gates
+  activation with ADR-0004's matching structural/catalog evidence. WP-185 reuses
+  and extends that object graph; it never constructs a parallel core. The crate
+  adds no policy, redaction, command, query, cursor, or audit semantics.
 - Production CLI and SDK calls use public gRPC. Production MCP stdio is a gRPC
   client. Only MCP HTTP is in-process in `riffdbd`, and it still calls the same
   application service object.
@@ -107,6 +114,47 @@ on every peer. In particular:
 An in-process service handle is an internal Rust interface and a test/comparison
 surface, not a supported embedded-database API. WP-125 may use it. Production
 callers outside `riffdbd` use public protocols.
+
+### P1 production composition and lifecycle gates
+
+WP-130 owns the first runnable `riffdbd`, not an adapter around injected fakes.
+It wires one production redb/catalog/commit/auth/policy/service/gRPC graph and
+keeps it dormant until ADR-0004's matching `StructurallyOpened` and
+`ValidatedCatalogHistory` values are consumed. It also owns the four disjoint
+production wall-clock adapters for authentication, authorization, admission, and
+administration; the database, provenance, request, and incident UUID-source
+wrappers; cursor token and monotonic-clock providers; and the two typed digest-
+provider inventories. Consumer-owned traits and validation remain in their
+semantic crates. Server composition performs only construction, type-state
+matching, lifecycle routing, and shutdown.
+
+The P1 lifecycle is closed:
+
+1. **Initializing validation:** run the source-free identity probe, use only the commit-
+   owned initialization executor when needed, then complete structural and
+   catalog-history validation. Health may report not ready; no bootstrap,
+   catalog, command, or entity operation is released while validation is live.
+2. **Initializing/bootstrap:** after composed authoritative integrity succeeds
+   and no bootstrap marker exists, the database remains `Initializing`; expose
+   bounded health and the one principal-less bootstrap operation only. No
+   general authenticated mutation or read is ready.
+3. **Deployment required:** after bootstrap, expose bounded health and the
+   authenticated contract validate/explain/deploy/active-catalog operations
+   needed to install the first active bundle. The retained bootstrap credential
+   may still perform ADR-0009's exact replay recovery; it cannot create a second
+   bootstrap capability. General command/entity readiness remains withheld.
+4. **Ready:** only an IR-validated active catalog plus application and
+   administration allocators that can progress permits command execution and
+   authoritative entity/commit reads. Pending/terminal idempotency resolution,
+   bootstrap replay, and catalog deployment retain their accepted recovery and
+   authorization semantics rather than acquiring a composition shortcut.
+
+Startup failure, provider failure, catalog-proof mismatch, or authoritative
+integrity failure never advances the lifecycle. Graceful shutdown stops
+admission, drains or cancels bounded non-durable work according to its owner,
+closes the one graph, and writes no readiness or clean-shutdown proof. WP-185
+reuses these exact phases when adding MCP HTTP, workers, and observability; it
+does not reopen, revalidate through an alternate path, or replace the P1 graph.
 
 ### Authentication and request context
 
@@ -464,8 +512,8 @@ authorized result plus obligations. A positive result is not cached across safe
 points. For an audited mutation, the pre-start check and the post-start check
 immediately before synchronous executor acceptance are distinct safe points.
 `riffdb-server` owns the concrete operating-system provider used in production
-composition; policy owns this interface and its time validation. The
-deterministic runtime never receives either.
+composition, and WP-130 wires it into the P1 core; policy owns this interface
+and its time validation. The deterministic runtime never receives either.
 
 The mandatory safe points are:
 
@@ -553,9 +601,9 @@ persistence handle. For all other authoritative or late state,
 WP-120 ships deterministic fake/unavailable providers for its own service tests.
 It does not claim real projection or outbox behavior. WP-130 tests projection
 wire mapping against an injected fake as required by the SPEC. WP-160, WP-170,
-and WP-180 retain their core APIs. WP-130/server composition may provide the
-first mechanical `AuthoritativeReadPort` adapter needed by public entity/commit
-RPCs. WP-185 owns the final projection/outbox/operational newtype adapters. These
+and WP-180 retain their core APIs. WP-130 server composition owns the production
+mechanical `AuthoritativeReadPort` adapter needed by public entity/commit RPCs.
+WP-185 owns only the later projection/outbox/operational newtype adapters. These
 adapters may translate checked typed states but contain no query, frontier,
 retry, health, cursor, or policy decision.
 
@@ -614,7 +662,7 @@ reinterpret `FrontierPosition`; projection service results use its exact
 
 `riffdb-service` owns a narrow `CursorTokenGenerator` consumer port and a
 deterministic fake restricted to tests. Production cursor generation is wired by
-WP-185 server composition by direct use of `getrandom` 0.3.4 with default
+WP-130 server composition by direct use of `getrandom` 0.3.4 with default
 features disabled and no optional features. The provider fills exactly 16 bytes
 per attempt and exposes only the injected `CursorTokenGenerator` interface to
 the service. It is independent of capability-token entropy and deterministic
@@ -622,7 +670,7 @@ command runtime.
 
 `riffdb-service` separately owns a synchronous `CursorMonotonicClock` consumer
 port that returns an opaque process-relative checked tick used only for cursor
-expiry. WP-185 supplies a server provider backed by one private
+expiry. WP-130 supplies a server provider backed by one private
 `std::time::Instant` origin; tests inject explicit ticks and advance without
 sleeps. Tick regression or checked-add/elapsed overflow fails closed as cursor
 unavailable. This port is neither serialized nor exposed to runtime and is
@@ -634,7 +682,7 @@ Its reviewed implementation uses target-gated unsafe/operating-system calls and
 its `build.rs` performs target configuration detection only; its licenses are
 MIT OR Apache-2.0. Current dependency-policy checks pass. This acceptance
 authorizes `riffdb-server` to make it a direct dependency and adds `Cargo.lock`
-to WP-185 allowed paths even if the already locked version leaves the file
+to WP-130 allowed paths even if the already locked version leaves the file
 unchanged. A version, feature, target-support, transitive-dependency, build-script,
 unsafe-surface, or license change requires a new dependency/security review.
 Changing to self-contained signed cursors requires a separate keyed-domain,
@@ -1110,7 +1158,7 @@ in this record:
 | `riffdb-service` | API-neutral command, contract, entity, commit, provenance, projection, discovery, administration, and health services | Foundational types/errors, contract/compiler/catalog semantics, auth and policy entry points, typed commit executors, and consumer-owned bounded read ports; no transport, general storage engine, or concrete storage implementation |
 | `riffdb-api-grpc` | Tonic services, authentication interceptors, bounds checks, and wire conversions | Service, the auth-owned `CredentialAuthenticator` interface, proto, and Tonic; no policy, catalog, runtime, commit, storage API, or storage implementation |
 | `riffdb-api-mcp` | MCP tool/resource catalogs, schema translation, authorization-aware discovery presentation, Streamable HTTP authentication/handling, and protocol adaptation | Service, the auth-owned `CredentialAuthenticator` interface, `rmcp`, and JSON Schema support; no direct policy, catalog, runtime, commit, storage API, or storage implementation |
-| `riffdb-server` | `riffdbd` process composition, configuration, lifecycle, hosted gRPC/HTTP endpoints, and concrete OS-time providers implementing the separate authentication, authorization, and administration clock ports | Service/API crates and concrete auth, policy-clock, executor, storage, outbox, projection, and observability implementations solely for composition; no new policy, command, query, redaction, cursor, or audit semantics |
+| `riffdb-server` | `riffdbd` process composition, configuration, lifecycle, hosted gRPC/HTTP endpoints, concrete OS providers for the separate authentication, authorization, admission, and administration clock ports, UUID/cursor sources, digest-provider custody wiring, and ADR-0004 readiness activation | Service/API crates and concrete auth, policy-clock, executor, storage, catalog, outbox, projection, and observability implementations solely for composition; no new policy, command, query, redaction, cursor, audit, storage, or catalog-validation semantics |
 
 `CredentialAuthenticator` accepts one size-checked opaque credential plus trusted
 configured database, environment, and audience context. It returns only a
@@ -1162,7 +1210,10 @@ The following table is the additive delta from the current
 `work_packages.yaml`. “None” is deliberate: it means the current field remains
 unchanged. The governance commit applies the entire table, including rows whose
 change originates in a required ADR, so the accepted ADR set and manifest cannot
-describe different implementation orders.
+describe different implementation orders. The later accepted P1 readiness
+amendment replaces the WP-130 and WP-185 deliverable cells below and any earlier
+sentence assigning core production composition to WP-185; every other cell
+remains additive.
 
 | WP | `depends_on` additions | `required_adrs` additions | `allowed_paths` additions | Deliverable additions |
 |---|---|---|---|---|
@@ -1179,14 +1230,14 @@ describe different implementation orders.
 | WP-120 | None | ADR-0004, ADR-0009, ADR-0012, ADR-0017 | `Cargo.lock` | Six API-neutral service traits, checked request context, executor/read consumer ports, initial/start/permit/fresh-auth/synchronous-admission orchestration, exact audit scope and append-failure mappings, fully filtered/bounded pre-success results, stream-establishment audit, current-policy safe points, obligation application, cursors/pages/waits/streams, and deterministic fake cursor generator |
 | WP-125 | None | None | None | None; the existing no-storage service adapter and shared oracle are sufficient |
 | WP-127 (new) | WP-020, WP-120 | ADR-0006, ADR-0007, ADR-0009, ADR-0010, ADR-0011, ADR-0012, ADR-0013, ADR-0017 | `Cargo.lock`; `proto/**`; `crates/riffdb-proto/**`; `fixtures/proto/**`; `scripts/generate-proto*` | Completed public phase-zero message fields, including `EXECUTED_READ_ONLY = 3` and its exact sentinel rules; descriptors, wire validation, schema hashes, and golden/client fixtures for every WP-130-supported RPC; no service-to-wire adapter code |
-| WP-130 | WP-127 | ADR-0009, ADR-0012, ADR-0017 | `Cargo.lock` | gRPC credential handoff through `CredentialAuthenticator`; total service/proto conversion including status-dependent Execute validation and sentinel-to-absence mapping; error/stream/projection mapping; and architecture tests proving no policy or lower semantic bypass |
+| WP-130 | WP-127 | ADR-0009, ADR-0012, ADR-0017 | `Cargo.lock` | gRPC credential handoff through `CredentialAuthenticator`; total service/proto conversion including status-dependent Execute validation and sentinel-to-absence mapping; error/stream/projection mapping; the production authoritative read adapter; one production redb/catalog/commit/auth/policy/service/gRPC object graph; ADR-0004 exact structural/catalog evidence matching and readiness gate; all four disjoint authentication/authorization/admission/administration wall-clock providers; database/provenance/request/incident UUID-source wrappers; cursor token and monotonic-clock providers; typed capability/idempotency digest-provider composition and readable inventories; initialization/bootstrap/deploy/active-catalog lifecycle and health; and architecture tests proving no policy or lower semantic bypass |
 | WP-135 | None | None | None | None; it remains a public gRPC client of the shared semantics |
 | WP-140 | None | ADR-0012, ADR-0017 | None | MCP HTTP credential handoff through `CredentialAuthenticator`, stdio-over-gRPC parity, service-only invocation/discovery, and durable authorization/audit conformance evidence |
 | WP-150 | None | ADR-0009 | None | None beyond its existing public-gRPC CLI deliverables; it gains no in-process auth or service bypass |
 | WP-160 | None | ADR-0007 | None | Bounded payload-free outbox-status source semantics for the later mechanical service adapter |
 | WP-170 | None | ADR-0007, ADR-0017 | None | Bounded projection query/status/wait source using exact projection identity, generation, frontier, and lower continuation semantics |
 | WP-180 | None | None | None | None; its existing upstream telemetry/health-hook integration remains sufficient |
-| WP-185 | None | ADR-0017 | `Cargo.lock` | Mechanical authoritative/projection/outbox/operational service-port adapters; concrete authentication-, authorization-, and administration-clock providers; and the reviewed direct `getrandom` 0.3.4 cursor generator with default features disabled and no optional features |
+| WP-185 | None | ADR-0017 | `Cargo.lock` | Reuse and extend the activated WP-130 graph with MCP HTTP, outbox/projection workers, observability, and the mechanical projection/outbox/operational service-port adapters; no second authoritative core, replacement provider set, or alternate readiness path |
 | WP-190 | None | ADR-0007, ADR-0017 | None | Process crash/restart evidence for started/terminal service audit, retry/resume audit linkage, admitted-provenance preservation, cursor invalidation, and projection frontier behavior |
 | WP-200 | None | ADR-0017 | None | Cross-transport semantic/audit parity and generated-artifact evidence in the final requirement report |
 
@@ -1208,9 +1259,10 @@ dependencies rather than retroactive WP-020 revisions. In particular:
   edits a neighboring owner merely to avoid an interface PR.
 - WP-120 gains `Cargo.lock` only for generated root-workspace path-dependency
   wiring and supplies no production randomness implementation.
-- WP-185 gains `Cargo.lock` authority only for the exact reviewed direct
-  `getrandom` configuration above. Any graph change outside that approval stops
-  for a new review.
+- WP-130 owns the exact reviewed direct `getrandom` configuration above and its
+  `Cargo.lock` authority. WP-185 may update the lockfile only for its separately
+  reviewed P2 composition edges; it does not replace or duplicate the provider.
+  Any graph change outside those approvals stops for a new review.
 
 The same governance reconciliation grants `Cargo.lock` to every root-workspace
 implementation package whose owned crate manifests can change dependency edges,
@@ -1323,9 +1375,11 @@ not treat a status-only edit or a subset of the manifest table as authoritative.
 - WP-120 owns all operation orchestration, current authorization, obligation
   application, pagination, waits, sanitized DTOs, and audit emission.
 - WP-130 and WP-140 are conversion/protocol packages, not alternate
-  application services.
+  application services; WP-130 additionally owns semantics-free production core
+  composition and cannot implement service behavior in the server crate.
 - WP-160/WP-170/WP-180 can proceed in parallel after WP-120 by targeting their
-  core semantics while WP-185 owns mechanical service-port adapters.
+  core semantics while WP-185 owns only their P2 mechanical service-port
+  adapters over the already composed core.
 - Server-side cursors are bounded and safely invalidated by restart; they do not
   promise snapshot isolation across a changed scan epoch.
 - Required audit introduces an ordered coordinator write before protected
@@ -1345,7 +1399,9 @@ result semantics, error classes, authorization safe points, obligation behavior,
 cursor/page consistency, wait/stream terminal states, cancellation admission
 boundaries, audit scope, phase meanings, result-link variants, administration-
 clock ownership/sample rules, and append-failure mappings are cross-transport
-behavioral compatibility surfaces.
+behavioral compatibility surfaces. The closed initializing/bootstrap/deployment/
+ready lifecycle, WP-130 core activation, and WP-185 reuse rule
+are production-composition compatibility surfaces.
 
 Public compatibility begins when a proto/MCP operation leaves its ADR-0006
 phase-zero shell or its ADR-0008 fixture is published. Wire field numbers, cursor
@@ -1431,8 +1487,13 @@ ports:
 - Panic tests prove contained defects receive one incident and release cursors,
   waiters, and executor receivers while coordinator corruption fails readiness.
 
-WP-130 runs the same canonical service scenarios through gRPC and checks exact
-proto/error/stream conversion. WP-140 runs them through MCP HTTP and stdio-over-
+WP-130 runs the same canonical service scenarios through the real production
+redb/catalog/commit/auth/policy/service graph over gRPC, checks exact
+proto/error/stream conversion, and proves initialization, bootstrap, deploy,
+ready, replay, restart, and provider-failure lifecycle gates. Its architecture
+tests prove only matching structural/catalog evidence can activate dormant ports
+and no server adapter bypasses service semantics. WP-140 runs the scenarios
+through MCP HTTP and stdio-over-
 gRPC, including stale-name denial, structured result/schema conformance,
 progress, cancellation, pagination, administrative audit, and secret canaries.
 WP-125 compares the in-process service against the shared workload oracle.
@@ -1512,6 +1573,11 @@ from the earlier direction approval:
 13. Accept the atomic governance rule: ADR-0004, ADR-0007, ADR-0009, ADR-0012,
     ADR-0017, every named authoritative amendment, formal WP-065/WP-127, and the
     manifest delta land in one commit; partial application is invalid.
+14. Place the first runnable production redb/catalog/commit/auth/policy/service/
+    gRPC graph, all four wall-clock adapters, UUID/cursor providers, digest
+    provider inventories, and lifecycle/readiness activation in WP-130. WP-185
+    must reuse and extend that exact graph for MCP/workers/observability and may
+    not build a second production core.
 
 ## Decision Deadline
 
@@ -1521,6 +1587,11 @@ cursors, waits, streams, and late-subsystem ports must be accepted before
 WP-120 merges them. WP-065 must merge before WP-070; WP-127 and its reviewed
 public fields must merge before WP-130. Public fields require ADR-0006 review, and
 MCP names/URIs/text cursor mappings require ADR-0008 acceptance.
+
+WP-130 must not claim its P1 exit gate until the real production core reaches the
+closed lifecycle above and public gRPC exercises it. WP-185 starts from that
+accepted object graph and may not defer, replace, or reimplement any P1
+composition prerequisite.
 
 The atomic governance commit satisfies this decision deadline. No package may
 depart from the now-frozen semantic/durable interfaces, claim durable MCP-046

@@ -5,11 +5,23 @@
 - **Exact text accepted:** 2026-07-13, clarified 2026-07-13
 - **Clarified by:** ADR-0004 (complete executable plan reference), ADR-0007
   (unjournaled read-only service boundary), ADR-0012 (runtime result/fault
-  boundary), and ADR-0017 (bound projection group schema)
+  boundary), ADR-0016 (canonical root-derivation equality), and ADR-0017 (bound
+  projection group schema)
 - **Decision deadline:** Before WP-040 public interfaces or fixtures merge
 
-The human maintainer accepted this exact text and the companion clarifications
-below on 2026-07-13.
+The human maintainer accepted this exact text, the canonical root-derivation
+equality clarification, and the companion clarifications below on 2026-07-13.
+The accepted initial generated review artifacts are identified outside their own
+bytes by these exact SHA-256 digests:
+
+- `crates/riffdb-contract-ir/FORMAT.md`:
+  `5e99e84900cdf795747711e0cab09140eebeac2fae257b4ad67ab25c086454e4`
+- `crates/riffdb-contract-ir/JSON_SCHEMA_FORMAT.md`:
+  `6d5a95b81baf97d417372c0a4f2f01a392402b66105ed625a3a7bc2f856c9b64`
+
+Any byte change produces a different artifact and requires the compatibility and
+human-review process below; regenerating the source and document together does
+not preserve this initial acceptance identity.
 
 ## Context
 
@@ -343,9 +355,22 @@ exact root `KeySchema`, an ordered tuple of input/constant-computable key
 `ExprId`s, and an ordered duplicate-free set of root `FieldId`s accessed by its
 aggregate commit checks. The accessed-field set may be empty for a constant
 aggregate invariant because root presence and invariant application remain
-required. Entries are grouped only when their checked root-key derivations are
-byte-identical. A plan uses no entry when an exact source-declared root binding
-supplies that root record.
+required.
+
+Checked root-key derivations use ADR-0016 canonical structural expression
+equality after name resolution and lowering, not encoded `ExprId` identity or
+runtime value equality. Tuples compare component by component. Trees compare
+result type, node kind, exact stable resolved references, canonical constants,
+unary operator/operand, and binary operator with ordered left/right operands.
+Spans, aliases and source spelling, plan-local IDs, arena insertion order, and
+shared-versus-duplicated DAG representation are ignored. No constant folding,
+algebraic equivalence, or commutative reordering is performed.
+
+Mutable children with equal derivations form one group whose representative is
+its lowest source `BindingId`; groups and dense `RootValidationReadId` values are
+ordered by representative. A plan uses no entry when an exact source-declared
+root binding has the same structural derivation and supplies that root record;
+the lowest matching root `BindingId` is canonical when more than one matches.
 
 Each commit check encodes separately its ordered source `BindingId` application
 subjects and ordered `RootValidationReadId` application subjects. These subjects
@@ -834,6 +859,9 @@ never reaches runtime.
   historical-plan unknown-field preservation, deployment-between-retry hashing,
   and transitive full-record outcome compatibility fixtures.
 - Multiple binding failures proving ascending-`BindingId` outcome priority.
+- Root-validation equality fixtures proving `ExprId` and arena-allocation
+  independence, shared-versus-duplicated DAG equality, ordered binary structure,
+  lowest-child grouping/ID order, and lowest matching source-root suppression.
 - Unsupported IR rejection and historical exact-plan lookup tests in downstream
   catalog/runtime packages.
 

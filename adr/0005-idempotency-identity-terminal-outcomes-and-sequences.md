@@ -9,9 +9,10 @@
 - **Decision deadline:** Identity before WP-060 durable keys; full record before WP-100
 
 The human maintainer accepted this exact text, including the identity-component
-amendment, on 2026-07-12. The human maintainer accepted the companion amendments
-below on 2026-07-13; they supersede only the narrower points identified and do
-not change the durable identity tuple or committed-outcome replay semantics.
+amendment, on 2026-07-12. The human maintainer accepted the exact storage-key
+envelope/bound and companion amendments on 2026-07-13; they supersede only the
+narrower points identified and do not change the durable identity tuple or
+committed-outcome replay semantics.
 
 ## Context
 
@@ -45,9 +46,41 @@ their exact bounded text bytes. Tenant scope is a one-byte tag (`0` for global,
 text components are `u32` length-prefixed. Principal identity is the exact
 bounded `ActorId`; command identity is `CommandId` as `u32` big endian. The
 keyed caller digest contributes scheme byte, `DigestKeyId` as `u32` big endian,
-and 32 digest bytes. WP-060 will place these components in a separately
-versioned idempotency storage-key envelope; it may not reorder, omit, normalize,
-or reinterpret them.
+and 32 digest bytes.
+
+The complete v1 idempotency storage key is exactly:
+
+```text
+0x59 0x01
++ DatabaseId as 16 network-order bytes
++ u32_be environment byte length + exact environment bytes
++ tenant tag: global 0x00 or tenant 0x01
++ when tenant: u32_be tenant-ID byte length + exact tenant-ID bytes
++ u32_be ActorId byte length + exact ActorId bytes
++ u32_be contract-lineage byte length + exact lineage bytes
++ CommandId as u32 big endian
++ digest scheme byte, exactly 0x01 for v1
++ DigestKeyId as u32 big endian
++ exactly 32 caller-key digest bytes
+```
+
+The purpose byte is ASCII `Y`; the second byte is key format version 1. Using
+the accepted maxima of 64 environment bytes, 256 tenant-ID bytes, 256 `ActorId`
+bytes, and 256 lineage bytes, the largest complete v1 key is exactly 908 bytes:
+
+```text
+2 + 16 + (4 + 64) + 1 + (4 + 256) + (4 + 256)
+  + (4 + 256) + 4 + 1 + 4 + 32 = 908
+```
+
+The global form omits the tenant length and bytes. A checked builder validates
+every component and the complete ADR-0011 4,096-byte durable-key limit before
+allocating the output. Reconstruction validates the purpose/version, every
+fixed width, tag, declared text bound and UTF-8 rule, supported digest scheme,
+nonzero `DigestKeyId`, full input consumption, and the complete-key
+limit before returning a typed key. WP-060 may not reorder, omit, normalize, or
+reinterpret any component, accept an unknown tag or scheme, or allocate from an
+untrusted declared length before validating the complete bound.
 
 The v1 caller-key digest is HMAC-SHA-256 over the keyed hash frame defined by
 ADR-0011, using domain `riffdb.idempotency-key/v1` and the exact validated UTF-8
@@ -155,10 +188,11 @@ read-only replay requires a future accepted ADR.
 ## Compatibility
 
 Identity component bytes and order, digest scheme and key version, canonical
-input hashing, pending-record version, terminal outcome encoding, and sequence
-semantics are durable boundaries. Adding a readable digest key is compatible.
-Changing the HMAC algorithm, framing, identity tuple, component encoding, or
-existing domain label requires a new version and migration plan.
+input hashing, idempotency key prefix/version and encoding, pending-record
+version, terminal outcome encoding, and sequence semantics are durable
+boundaries. Adding a readable digest key is compatible. Changing the HMAC
+algorithm, framing, identity tuple, key component encoding/order, prefix,
+version, or existing domain label requires a new version and migration plan.
 
 ## Security
 
@@ -177,7 +211,10 @@ one sequence, mutation, event set, provenance record, and outcome. Startup tests
 must cover every pending and terminal identity state, reject an unsupported digest
 scheme or absent readable `DigestKeyId`, and prove that key retirement remains
 blocked while any `Pending`, `StoredOutcome`, or `ExecutionFailed` record refers
-to it.
+to it. WP-060 key fixtures cover the exact global and maximum tenant forms,
+the 908-byte maximum, malformed tags/schemes/lengths/UTF-8, trailing bytes, and
+pre-allocation rejection of a declared complete key above 4,096 bytes. The
+central ADR-0011 purpose-prefix fixture proves `0x59 0x01` has no collision.
 
 ## Requirements and Work Packages
 

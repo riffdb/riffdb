@@ -2,7 +2,7 @@
 
 - **Status:** Accepted
 - **Direction approved:** 2026-07-13
-- **Exact text accepted:** Yes
+- **Exact text accepted:** 2026-07-13, amended 2026-07-13
 - **Accepted:** 2026-07-13
 - **Requires:** ADR-0004 accepted before or in the same governance change
 - **Amends:** ADR-0010 projection identity, generation, idempotency, lifecycle,
@@ -15,7 +15,8 @@ This record closes a sequencing gap discovered before storage implementation.
 WP-070 owns the production redb adapter, while WP-170 is not allowed to change
 that adapter. Projection key and generation semantics therefore cannot first be
 chosen in WP-170. The human maintainer accepted this exact record on 2026-07-13
-as part of the atomic semantic-interface governance batch.
+as part of the atomic semantic-interface governance batch and accepted the exact
+single-reserve framing clarification on 2026-07-13.
 
 ## Context
 
@@ -265,10 +266,38 @@ and exact schema before allocation. The calculation includes every four-byte
 component length, canonical value version/tag bytes, decimal precision/scale,
 money currency bytes, and the complete identity/generation envelope.
 
-Compilation checks the maximum complete stored state record as well as the key.
-The identity, generation, repeated group components, measure record, sequence,
-record framing, and durable-envelope headroom must fit the limits below; a
-contract is rejected rather than relying on observed small values.
+The v1 checked-size terms are exact:
+
+```text
+I = 4 + 256 + 4 + 32
+C = sum of each component's u32 length and maximum complete canonical value bytes
+M = maximum complete canonical measure-record bytes
+
+maximum_complete_group_key = 2 + I + 8 + C
+maximum_stored_state_bytes = I + 8 + C + 4 + M + 8 + 32
+```
+
+`I` is the maximum projection-identity payload: lineage length and bytes,
+`ProjectionId`, and `ProjectionPlanHash`. `C` is the already length-framed group
+component total. The `4 + M` term is the measure-record length and complete
+canonical record, and the following `8` is `last_changed_sequence`.
+
+The final `32` is included exactly once and is the v1 stored-record framing
+reserve. It is conservative semantic-payload sizing headroom for the reviewed
+generated `StoredProjectionStateV1` representation. It is not a persisted
+padding field, an extension field, `StoredEnvelope` overhead, or headroom that
+another field may consume. Compilation checks this complete calculated maximum
+as well as the key and rejects a contract rather than relying on observed small
+values.
+
+Before WP-070 persists any projection state row, WP-065 must prove with the real
+generated message and maximum-size fixtures that the complete encoded
+`StoredProjectionStateV1` payload is no larger than
+`maximum_stored_state_bytes`, and that wrapping that real payload in the accepted
+`StoredEnvelope` remains within ADR-0006's 16 MiB absolute ceiling. If the actual
+payload framing requires more than the single 32-byte reserve, or the envelope
+does not fit, implementation stops for human review before changing this format,
+field layout, limit, or reserve.
 
 One stored projection state semantic payload is at most 1 MiB. One
 `ProjectionApplyRequestV1` contains at most 4,096 distinct group-row updates and
@@ -780,6 +809,9 @@ page, or join two snapshots.
 - WP-065 freezes durable projection messages after WP-060; WP-127 separately
   freezes public projection messages after WP-120. The two proto packages are
   hard-sequenced and remain the only writers of their respective schema phase.
+- WP-065 must discharge the generated-payload and real-envelope size proof above
+  before WP-070 may persist a projection state row; the proof cannot be deferred
+  to a redb adapter or replaced with an estimated serializer overhead.
 - WP-170 implements only projection evaluation, lifecycle orchestration, waits,
   and queries over the already conformed storage port.
 - Rebuild temporarily retains two generations and may consume up to twice the
@@ -789,11 +821,12 @@ page, or join two snapshots.
 
 Identity fields and order, purpose/version bytes, component framing and codec,
 apply-hash domain/payload, generation semantics, group schema, key and record
-bounds, lifecycle/failure/reason tags, state/control/apply-marker record fields,
+bounds and exact formulas, the single 32-byte stored-record framing reserve,
+lifecycle/failure/reason tags, state/control/apply-marker record fields,
 published-apply mode, prefix behavior, and atomic frontier rules are durable or
-public semantic boundaries. Any incompatible change requires a new
-key/record/hash version, fixtures, and a restartable idempotent migration or
-controlled refusal.
+public semantic boundaries. Any incompatible change requires a new key/record/
+hash version, fixtures, and a restartable idempotent migration or controlled
+refusal.
 
 Adding an unrelated contract declaration or deploying a bundle with the same
 projection plan hash is compatible. Changing the projection plan hash creates a
@@ -828,6 +861,11 @@ returning partial data.
   multiple-row, and maximum bounded batches; cross-domain hash inequality.
 - Compiler snapshots for optional/collection group rejection, 1,024/1,025
   components, exact 4,096-byte maximum, and a 4,097-byte maximum.
+- WP-040 unit/golden tests freeze every term in both checked-size formulas and
+  prove the 32-byte reserve is included exactly once. WP-065 generated-message
+  fixtures prove the maximum `StoredProjectionStateV1` payload fits that
+  calculation and the complete real `StoredEnvelope` fits 16 MiB; a one-byte
+  excess fails the gate before WP-070 persistence.
 - Schema-directed round trips and malformed decoder fuzzing for every length,
   tag, type, enum, currency, scale, generation, identity, and trailing-byte case.
 - Equality and insertion-order properties; explicit tests that byte order is not
