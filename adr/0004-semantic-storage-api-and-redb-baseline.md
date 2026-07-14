@@ -2,14 +2,14 @@
 
 - **Status:** Accepted
 - **Direction approved:** 2026-07-12
-- **Exact text accepted:** Yes
+- **Exact text accepted:** Yes; amended 2026-07-14
 - **Accepted:** 2026-07-13
 - **Requires:** ADR-0007, ADR-0009, ADR-0012, and ADR-0017 accepted before or in
   the same governance change
 - **Amends:** SPEC Sections 4.1, 5.2, 9.1, 9.5, 10.1, 13.4,
   17.3, 19.4, 19.5, 22.1, and 22.2; `WP-010`, `WP-050`, `WP-060`, `WP-070`,
-  `WP-080`, `WP-100`, `WP-160`, and `WP-170` metadata; gates; and the durable
-  proto-owner work-package graph
+  `WP-065`, `WP-080`, `WP-100`, `WP-160`, `WP-170`, `WP-190`, and `WP-200`
+  metadata; gates; and the durable proto-owner work-package graph
 - **Clarifies:** ADR-0005 pending admission and terminal atomicity
 - **Implements the durable boundary of:** ADR-0006
 - **Decision deadline:** Before WP-060 public traits or durable DTOs merge
@@ -21,6 +21,9 @@ which separates redb structural evidence, catalog semantic validation, and
 production activation without adding a storage-to-IR dependency.
 On 2026-07-13 the maintainer accepted the schema-complete historical-key evidence
 and dedicated ordered-commit-scan ceiling clarifications below.
+On 2026-07-14 the maintainer accepted the exact pre-sequence candidate ordering,
+mutation-affected epoch read, sequence-free write-plan, conservative encoded-
+capacity reservation, and pre-stage canonical-envelope proof clarified below.
 
 ## Context
 
@@ -40,6 +43,15 @@ deliberately defers semantic durable records until their Rust owner stabilizes.
 The storage API therefore needs an exact semantic boundary without guessing
 engine layout, transport DTOs, or later worker policy.
 
+The original accepted candidate chain placed sequence assignment immediately
+after private plan validation, while the original bounds text could be read to
+require an exact aggregate encoded write-set calculation before transaction
+open. That is impossible to state precisely when old index entries and affected
+epoch positions are transaction-current inputs. The clarification below keeps
+all input/runtime/component bounds before open, performs only the bounded exact
+aggregate reservation after those current reads, and still forbids sequence
+assignment until capacity is proven.
+
 ## Decision
 
 ### Ownership and dependency boundary
@@ -49,7 +61,8 @@ engine layout, transport DTOs, or later worker policy.
 - owned bounded snapshot, observation, dependency, validation-target,
   `EvaluatedCommand`, and pre-commit `CommitIntent` DTOs;
 - structurally checked `ValidationReadRequest`, `TransactionCurrentState`,
-  `AtomicCommandRecordSet`, `ServiceAuditAppendIntentV1`, and
+  sequence-free `CommandWriteSetPlanV1`, `AtomicCommandRecordSet`,
+  `ServiceAuditAppendIntentV1`, and
   `BootstrapServiceAuditStartV1` values;
 - semantic durable DTOs and typed transition requests/results;
 - the compound bootstrap transition that atomically appends its principal-less
@@ -292,6 +305,17 @@ Every present or absent root-validation observation also produces the existing
 therefore collapse to one dependency only when their observations agree. This
 does not collapse their distinct semantic positions in `ReadSnapshot`.
 
+Influential range dependencies and mutation-affected epoch targets are separate
+canonical sets. An influential `IndexRangeEpoch` records a snapshot range whose
+entries affected evaluation and must compare equal during dependency validation.
+A mutation-affected target is derived later, inside the write transaction, from
+the normalized transaction-current old index entries and proposed new entries
+whose presence or covered value changes. Its position is read so the command can
+stage exactly one advance for that affected prefix. An exact prefix may occur in
+both sets, but neither set is derived from or required to equal the other. The
+coordinator and storage API use purpose-specific checked collection types so a
+mutation-affected set cannot silently stand in for influential read evidence.
+
 #### Exact `IndexRangeEpoch` bucket semantics
 
 One range bucket is identified by the exact validated scan-prefix bytes from
@@ -304,13 +328,16 @@ the exact prefix bytes, so there is no second backend-specific bucket encoding.
 
 For an index with `m` components, one visible index entry belongs to exactly
 `m + 1` buckets: the whole-index bucket and the bucket after each complete
-leading component. Before staging a command, the coordinator normalizes the
-transaction-current and proposed index entries and identifies every entry whose
-presence or covered value changes. The affected-bucket set is the exact union of
-all buckets for those old and new entries. Each affected bucket advances exactly
-once for that staged command, regardless of how many changed entries named it;
-unchanged net entries do not advance it. A later command in the same write batch
-observes those staged advances and may advance the same bucket once again.
+leading component. After private transaction-current validation and before
+capacity reservation, the coordinator normalizes the transaction-current and
+proposed index entries and identifies every entry whose presence or covered
+value changes. The affected-bucket set is the exact union of all buckets for
+those old and new entries. The transaction reads every affected current epoch
+position before freezing the sequence-free write plan. Each affected bucket
+advances exactly once for that staged command, regardless of how many changed
+entries named it; unchanged net entries do not advance it. A later command in
+the same write batch observes those staged advances and may advance the same
+bucket once again.
 
 Epoch state is represented semantically as the closed
 `IndexEpochPosition::{BeforeFirst, Value(nonzero IndexEpoch)}`. An absent
@@ -362,22 +389,38 @@ request contains no checked plan, executable closure, captured predicate result,
 or public semantic-proof marker.
 
 Inside the short write transaction, storage returns transaction-current complete
-entity observations and range epochs as `TransactionCurrentState` for all
-requested targets. The coordinator:
+entity observations and influential range epochs as `TransactionCurrentState`
+for all requested targets. The coordinator:
 
 1. compares every current absence/version/epoch with the intent's dependency;
 2. evaluates the exact historical compiler-produced commit-check plan against
    transaction-current values plus the proposed complete post-images; and
-3. verifies all mutation preconditions and index deltas against that same state.
+3. verifies all mutation preconditions and normalizes the exact old/new index
+   deltas against that same state; and
+4. derives the canonical mutation-affected prefix-target set from those exact
+   old/new index entries.
 
-Only successful completion of those three steps creates the private
-`CheckedCommitCandidate`. The coordinator uses it to finalize sequences and
-records, then passes storage a storage-owned `AtomicCommandRecordSet`. That
-record-set constructor checks complete membership, cross-links, canonical order,
-bounds, and structural sequence consistency. Storage still does not assert that
-the record set is faithful to a plan; the private coordinator proof and the
-first-party dependency ban provide that guarantee without reversing a crate
-dependency.
+Only successful completion of those steps creates the private
+`CheckedCommitCandidate`. The transaction then reads the exact current positions
+of every mutation-affected target. The coordinator combines the retained intent,
+affected targets/positions, normalized index changes, epoch advances, semantic
+charge, and WP-065-defined conservative encoded upper bounds into one exact
+sequence-free `CommandWriteSetPlanV1`. Storage verifies that this plan matches
+the candidate values retained by the consuming state and reserves its semantic
+and conservative encoded aggregate capacity before any sequence is assigned.
+
+After reservation, the coordinator may request the sequence and construct the
+complete graph. The storage-owned `AtomicCommandRecordSet` constructor checks
+complete membership, cross-links, canonical order, bounds, structural sequence
+consistency, and exact equality with the retained intent, sequence-free plan,
+and assignment. WP-065 defines and proves the real canonical `StoredEnvelope`
+upper bounds; before durable redb staging, WP-070 canonically encodes every final
+envelope, computes the actual byte charge for each record class, and proves it
+does not exceed the corresponding retained upper bound. WP-060 memory
+conformance uses explicit synthetic charges and cannot depend on the WP-065
+codec. Storage still does not assert that the record set is faithful to a
+`CommandPlan`; the private coordinator proof and first-party dependency ban
+provide that guarantee without reversing a crate dependency.
 
 A changed dependency, false validation plan, or mutation precondition mismatch
 invalidates the intent and produces no write or sequence. The coordinator may
@@ -493,14 +536,20 @@ expressible on stable Rust without generic-const arithmetic:
 EmptyBatch
   -> CandidateAdmission<EmptyBatch>
   -> CandidateStateRead<EmptyBatch>
-  -> CandidatePlanValidated<EmptyBatch>
+  -> CandidateAwaitingValidation<EmptyBatch>
+  -> CandidateAffectedEpochRead<EmptyBatch>
+  -> CandidateAwaitingCapacity<EmptyBatch>
+  -> CandidateCapacityReserved<EmptyBatch>
   -> CandidateSequenceAssigned<EmptyBatch>
   -> NonEmptyBatch { staged_count = 1 }
 
 NonEmptyBatch { staged_count: NonZeroU8, staged_bytes }
   -> CandidateAdmission<NonEmptyBatch>
   -> CandidateStateRead<NonEmptyBatch>
-  -> CandidatePlanValidated<NonEmptyBatch>
+  -> CandidateAwaitingValidation<NonEmptyBatch>
+  -> CandidateAffectedEpochRead<NonEmptyBatch>
+  -> CandidateAwaitingCapacity<NonEmptyBatch>
+  -> CandidateCapacityReserved<NonEmptyBatch>
   -> CandidateSequenceAssigned<NonEmptyBatch>
   -> NonEmptyBatch { staged_count = prior + 1 }
 
@@ -508,8 +557,10 @@ NonEmptyBatch -> CommittedBatch
 ```
 
 `EmptyBatch` has no `commit` operation. `NonEmptyBatch` carries the checked
-runtime count and aggregate encoded-byte budget; starting another candidate
-requires `staged_count < 64` and enough remaining byte budget. Each arrow
+runtime count and aggregate encoded-byte budget. Starting another candidate is
+count-only and requires only `staged_count < 64`; it cannot know or reserve the
+candidate's exact aggregate charge until transaction-current values and affected
+epochs have been read. Each arrow
 consumes the prior wrapper and returns the next wrapper or a closed typed result.
 Terminal replay, input mismatch, missing pending state, dependency change,
 validation rejection, or another nonfatal candidate resolution returns the
@@ -520,16 +571,26 @@ candidate separately. A storage, corruption, incompatibility, invariant, or
 structural record-set failure aborts the entire uncommitted batch instead of
 returning the prior batch.
 
-`CandidatePlanValidated<Prior>` exists only after the coordinator creates its
-private `CheckedCommitCandidate`; storage neither constructs nor interprets that
-proof. The type state enforces call order, while the composition boundary enforces
-that only the coordinator can assert completion of its private semantic proof;
-the storage state is not itself that proof. Sequence assignment occurs after
-that state, and staging the complete atomic record set is the only transition
-from either candidate chain to `NonEmptyBatch`. Dropping any uncommitted state
-rolls back the entire batch; rollback is idempotent. `commit` consumes only
-`NonEmptyBatch` and is the only operation that can report durable success. A
-candidate state can neither commit nor be reused to start another candidate.
+`CandidateAwaitingValidation<Prior>` may advance only after the coordinator
+creates its private `CheckedCommitCandidate` and supplies the exact canonical
+mutation-affected prefix set; storage neither constructs nor interprets that
+proof. `CandidateAffectedEpochRead<Prior>` reads those positions in the same
+transaction. `CandidateAwaitingCapacity<Prior>` accepts only the exact
+sequence-free `CommandWriteSetPlanV1` matching the retained intent, targets, and
+positions. `CandidateCapacityReserved<Prior>` exists only after semantic and
+conservative encoded aggregate capacity is retained, and it alone may assign the
+next sequence. The type state enforces call order, while the composition boundary
+enforces that only the coordinator can assert completion of its private semantic
+proof; no storage state is itself that proof.
+
+After sequence assignment, constructing and verifying the complete graph and
+proving actual canonical per-class `StoredEnvelope` charges fit the retained
+upper bounds are mandatory before staging. Staging that complete atomic record
+set is the only transition from either candidate chain to `NonEmptyBatch`.
+Dropping any uncommitted state rolls back the entire batch; rollback is
+idempotent. `commit` consumes only `NonEmptyBatch` and is the only operation that
+can report durable success. A candidate state can neither commit nor be reused
+to start another candidate.
 
 The interface has no function accepting a closure, trait object callback,
 arbitrary table/key/value, untyped batch, engine transaction, or caller-selected
@@ -548,23 +609,35 @@ The coordinator performs the following exact order for each mutating command:
 2. Resolve the pending record's complete historical plan, acquire the declared
    mutation capability, recheck the pending record, materialize the owned
    snapshot, and run deterministic evaluation with no storage transaction open.
-3. Open a command write transaction.
+3. Check every input, runtime-result, collection, component, key, and semantic
+   byte bound that can be known without transaction-current state, then open a
+   command write transaction and start a count-only candidate.
 4. Recheck that the exact pending identity, input hash, original admission data,
    and `ExecutablePlanRef` still match and that no terminal result exists.
-5. Read the complete `ValidationReadRequest` into one
+5. Read the complete influential `ValidationReadRequest` into one
    `TransactionCurrentState` from transaction-current state.
 6. Compare every absence/version/epoch dependency and re-run the exact historical
-   commit-check plan over current values plus proposed post-images.
-7. If valid, request the next application sequence from transaction metadata;
-   the coordinator is the sole semantic caller of this transition.
-8. Construct final entity versions, ordered index deletes/inserts and affected
-   epochs, event IDs and durable event records, outbox intents, stored outcome,
-   provenance, and commit record from the private checked candidate and assigned
-   sequence.
-9. Construct and stage one structurally checked `AtomicCommandRecordSet`,
-   including the advanced next-sequence metadata.
-10. Commit using the configured durability mode.
-11. Only after durable success, return the committed result and publish
+   commit-check plan over current values plus proposed post-images; verify
+   mutation preconditions and normalize exact old/new index changes.
+7. Derive the canonical mutation-affected whole-index/leading-prefix target set
+   from those normalized changes, then read each affected epoch position in the
+   same transaction.
+8. Freeze the exact sequence-free `CommandWriteSetPlanV1`, including all index
+   mutations and epoch advances, and reserve its semantic charge plus WP-065's
+   conservative per-class and aggregate canonical-envelope upper bounds. A
+   capacity failure returns the unchanged prior batch and assigns no sequence.
+9. Only after reservation succeeds, request the next application sequence from
+   transaction metadata; the coordinator is the sole semantic caller of this
+   transition.
+10. Construct final entity versions, event IDs and hashes, durable event records,
+    outbox intents, stored outcome, provenance, commit record, and allocator
+    metadata from the retained intent/write plan and exact assigned sequence.
+11. Construct one structurally checked `AtomicCommandRecordSet`, verify its exact
+    retained intent/plan/assignment equality, canonically encode every final
+    envelope, and prove every actual per-class byte charge is within its retained
+    upper bound before staging any part of the graph.
+12. Stage the complete set and commit using the configured durability mode.
+13. Only after durable success, return the committed result and publish
     notifications. Replay metadata is created for the current response and is
     never persisted as another result.
 
@@ -905,9 +978,10 @@ operation.
 
 ### Process hard bounds
 
-All counts and encoded sizes use checked arithmetic and are rejected before
-unbounded allocation or transaction opening. Compiler- or policy-specific limits
-may be lower. The v1 storage hard ceilings are:
+All input, runtime-result, collection, key, semantic-value, and component-size
+bounds that are knowable before transaction-current state use checked arithmetic
+and are rejected before unbounded allocation or transaction opening. Compiler-
+or policy-specific limits may be lower. The v1 storage hard ceilings are:
 
 | Boundary | Maximum |
 |---|---:|
@@ -932,7 +1006,18 @@ may be lower. The v1 storage hard ceilings are:
 | Any encoded durable payload/envelope | ADR-0006 absolute 16 MiB ceiling |
 
 The total intent/commit limits dominate the per-collection limits; satisfying a
-count does not permit exceeding the byte budget. The dedicated internal ordered
+count does not permit exceeding the byte budget. The exact aggregate staged-write
+capacity is deliberately calculated inside the write transaction only after
+influential current values, normalized old/new index entries, and affected epoch
+positions are available, and it must be reserved before sequence assignment.
+That bounded calculation uses a sequence-free semantic plan and conservative
+WP-065-defined upper bounds for the complete canonical `StoredEnvelope` of each
+record class. After assignment and exact graph construction, WP-070 recomputes
+each actual envelope charge and rejects an excess before staging; unused reserved
+headroom has no durable meaning. This is the only aggregate byte calculation
+deferred past transaction open and does not permit an unbounded allocation.
+
+The dedicated internal ordered
 commit scan may therefore return any one valid commit record up to the absolute
 16 MiB durable-envelope ceiling; it does not chunk a semantic commit. Public
 service and transport APIs may impose lower response limits. Range reads that
@@ -986,9 +1071,12 @@ The POC may initially stage one validated command per transaction, but the
 consuming protocol deliberately preserves bounded multi-command staging for the
 SPEC group-durability mode. A coordinator may append up to 64 independently
 admitted and validated commands while the aggregate write set remains within 16
-MiB. Each appended command is rechecked and validated against transaction-current
-state including earlier staged writes, then receives the next contiguous
-sequence and complete atomic sub-record set.
+MiB. Starting each appended candidate checks only the remaining command count.
+That candidate is rechecked and validated against transaction-current state
+including earlier staged writes, derives and reads affected epochs, then freezes
+and reserves its exact sequence-free plan against the remaining semantic and
+conservative encoded capacity. Only then does it receive the next contiguous
+sequence and construct its complete atomic sub-record set.
 
 A candidate resolved before staging returns its exact prior `EmptyBatch` or
 `NonEmptyBatch` and is not partially added. The coordinator may commit an already
@@ -1098,6 +1186,10 @@ This decision does not define or enable:
   no crate-cycle or public forgeable proof type is introduced.
 - Memory/redb adapters implement meaningful atomic transitions rather than a thin
   untyped key/value facade.
+- Sequence assignment is unreachable until the exact transaction-current
+  mutation-affected epochs and sequence-free write plan have reserved semantic
+  and conservative encoded capacity; every final canonical envelope is checked
+  against that reservation before staging.
 - Index-range validation uses lazily created exact leading-prefix epochs with an
   explicit before-first position, and standalone service audit shares the one
   ordered administration sequence through its dedicated append transition.
@@ -1113,7 +1205,10 @@ This decision does not define or enable:
 
 The exact plan-reference fields, observation/dependency variants and tags,
 canonical order, absence/version meaning, validation-request/private-proof
-boundary, intent boundary, sequence origins, frontier and epoch-position
+boundary, intent boundary, influential-versus-mutation-affected epoch ownership,
+count-only candidate start, sequence-free write plan, pre-sequence capacity
+reservation, pre-stage canonical-envelope verification, sequence origins,
+frontier and epoch-position
 representations, prefix-bucket advancement, transaction transition loop, atomic
 record membership, event/outbox-intent reciprocity, absent-status-as-`Pending`,
 core/subsystem readiness split and recovery ownership, bounds, error kinds,
@@ -1192,9 +1287,15 @@ It includes:
   matching `StructurallyOpened` and `ValidatedCatalogHistory` values; storage and
   redb cannot name catalog, command IR, or the catalog proof;
 - compile-fail/type-state tests for every invalid batch transition, including
-  attempting to commit `EmptyBatch`, sequence before private validation,
-  candidate reuse, staging a partial record set, and starting a second candidate
-  from a candidate state;
+  attempting to commit `EmptyBatch`, capacity before affected-epoch reads,
+  sequence before capacity reservation, candidate reuse, staging an unequal or
+  partial record set, and starting a second candidate from a candidate state;
+- explicit tests that influential range dependencies and mutation-affected epoch
+  targets may overlap, differ in either direction, and cannot be substituted;
+- exact per-record-class conservative envelope-bound fixtures from WP-065 and
+  memory/redb checks that equal-bound bytes stage, one-byte-over aborts before
+  staging, unused headroom is harmless, and no failed reservation consumes a
+  sequence;
 - atomic state/model comparison for complete success, no-op outcome, replay,
   mismatch, dependency retry, and every staged-record failpoint;
 - sequence/version tests starting at 1, zero-construction rejection, fallible
@@ -1350,6 +1451,14 @@ changes below; affected implementation must follow the reconciled manifest:
     readiness gate. This split introduces no redb-to-catalog/IR edge and passes
     neither catalog proof nor `CommandPlan` through a storage trait. WP-185
     reuses and extends the activated graph for P2 workers, MCP, and observability.
+12. The 2026-07-14 clarification adds no work package, dependency, allowed path,
+    or acceptance command. WP-060 freezes the complete candidate type-state and
+    memory conformance; WP-065 owns canonical envelope codecs, per-record-class
+    conservative upper-bound proofs, and boundary fixtures; WP-070 enforces the
+    ordering and actual-envelope checks in redb; WP-100 supplies coordinator
+    semantic/failpoint evidence; and WP-190/WP-200 retain the final crash and
+    end-to-end evidence. No package may assign a sequence first and treat a later
+    size failure as an acceptable gap.
 
 ADR-0007 was accepted in the same governance change and cross-references this
 specialized lower transition and proto-owner sequence. ADR-0005's complete-plan-
@@ -1408,9 +1517,17 @@ Acceptance of this exact record decided:
     range-prefix key, with catalog-owned exact historical `KeySchema` validation,
     plus a dedicated 500-record/16 MiB internal ordered commit-scan page ceiling
     that leaves the generic scan ceiling at 500 entries/4 MiB.
+14. count-only candidate start followed by admission/current-dependency recheck,
+    private validation and mutation-affected prefix derivation, same-transaction
+    affected-epoch reads, an exact sequence-free `CommandWriteSetPlanV1`, semantic
+    and conservative encoded-capacity reservation, and only then sequence
+    assignment, exact graph construction, retained-candidate verification,
+    canonical per-class envelope-bound proof, and staging.
 
 These semantic details received explicit maintainer review on 2026-07-13; they
-were not inferred merely from the earlier direction approval.
+were not inferred merely from the earlier direction approval. Item 14 and its
+associated bounds/testing reconciliation received explicit maintainer review on
+2026-07-14.
 
 WP-060 may start after its declared package dependencies merge, but cannot be
 completed until it implements the following accepted interfaces together:

@@ -2,7 +2,7 @@
 
 - **Status:** Accepted
 - **Direction approved:** 2026-07-12
-- **Exact text accepted:** 2026-07-12, amended 2026-07-12 and 2026-07-13
+- **Exact text accepted:** 2026-07-12, amended 2026-07-12, 2026-07-13, and 2026-07-14
 - **Amended by:** ADR-0014 for projection/root plan hashes, ADR-0016 for
   partition/index keys and partition hashing, ADR-0009 for capability-token
   keyed hashing, ADR-0005 for the versioned idempotency key, ADR-0017 for
@@ -13,6 +13,8 @@
 The human maintainer accepted this exact text, including the foundational
 identifier and key-envelope amendment, on 2026-07-12, and accepted the companion
 registry and UUIDv7 boundary additions below on 2026-07-13.
+The maintainer accepted the exact durable-event hash preimage below on
+2026-07-14.
 
 ## Context
 
@@ -173,6 +175,48 @@ keyed domain. The custom Protobuf `riffdb.v1.Value` is an exact checked mapping
 of this algebra; adapters must supply the compiled decimal type where a wire
 value does not carry precision.
 
+### Exact durable-event hash preimage
+
+`EventHash` uses the existing v1 unkeyed frame and SHA-256 domain
+`riffdb.event/v1`. The payload supplied to that domain frame is exactly:
+
+```text
+EventId canonical bytes
+|| EventTypeId:u32_be
+|| payload_length:u32_be
+|| canonical Value::Record payload bytes
+```
+
+`EventId` is exactly 12 bytes: its nonzero `CommitSequence` as `u64` big endian
+followed by the zero-based event ordinal as `u32` big endian. `EventTypeId` is
+its nonzero numeric value as four big-endian bytes. `payload_length` is the exact
+number of bytes in the following complete canonical value and must fit `u32`;
+the accepted one-event value bound is tighter. The payload is required to be a
+canonical `Value::Record`, including the `0x01` value-format byte, the `0x0d`
+record tag, field count, and strictly ordered field/value encodings. It is not a
+bare record body, source object, JSON, or deterministic-Protobuf encoding.
+
+The unchanged outer frame is therefore:
+
+```text
+"RIFFDB-HASH" || 0x00 || 0x01
+|| domain_length:u16_be || "riffdb.event/v1"
+|| preimage_length:u64_be || preimage
+```
+
+No component may hash payload-only content, omit the event identity or type,
+change a length width or byte order, or add the commit/bundle/provenance data to
+this domain. `riffdb-types` owns the canonical component encodings and the
+generic `riffdb.event/v1` domain-frame hashing primitive; it does not assemble an
+event-specific preimage. `riffdb-storage-api` solely owns post-assignment
+event-specific preimage construction, hash derivation, and semantic durable-event
+constructor validation when building the exact record graph. WP-065 freezes the
+exact wire mapping, codec, complete framed goldens, and boundary proofs. WP-070
+recomputes the hash during durable decode, structural integrity, and reciprocal
+commit/event/outbox validation. A mismatch is
+corruption or an invariant violation according to whether it was read from
+durable state or proposed before staging; it is never repaired.
+
 ### 2026-07-13 companion registry additions
 
 ADR-0005 extends the typed key-envelope registry with idempotency identity
@@ -227,6 +271,8 @@ domains or key envelopes named here and in ADR-0014/ADR-0016.
 - Conversion adapters must prove exact round trips or reject values.
 - Changing any tag, ordering, bound, hash algorithm, or text rule is a versioned
   compatibility change.
+- Changing any `EventHash` preimage component, width, order, canonical payload
+  encoding, domain, or frame is a durable compatibility change.
 - The Rust SHA-256/HMAC provider requires separate critical-dependency review and
   may not change canonical bytes or framing.
 - The reviewed POC baseline is `sha2` 0.11.0 and `hmac` 0.13.0 with default
@@ -239,8 +285,8 @@ domains or key envelopes named here and in ADR-0014/ADR-0016.
 
 Identifier representations, value variants and tags, numeric bounds,
 decimal/money encoding, text policy, field order, key envelopes and domains,
-canonical bytes, hash algorithm/version, and Protobuf mapping are public and
-durable compatibility boundaries.
+canonical bytes, hash algorithm/version, the exact durable-event hash preimage,
+and Protobuf mapping are public and durable compatibility boundaries.
 
 ## Security
 
@@ -256,13 +302,19 @@ round trips; malformed decoder fuzzing; maximum depth/length tests; and a centra
 domain-tag collision registry check. The central purpose registry includes the
 ADR-0005 `0x59 0x01` idempotency key and checks its global, maximum 908-byte
 tenant, malformed, and over-4,096-byte pre-allocation fixtures through WP-060.
+Event-hash fixtures include the complete framed preimage, empty/nonempty record
+payloads, field-order rejection, event ID/type/ordinal changes, payload-length
+boundaries, cross-domain inequality, codec round trips, and durable mismatch
+rejection through WP-060/WP-065/WP-070. WP-100 and WP-190 prove the assigned
+sequence/ordinal graph and crash-recovery validation end to end.
 
 ## Requirements and Work Packages
 
 - **Requirements:** `ID-001` through `ID-005`, `VAL-001` through `VAL-003`,
   `ENT-002`, `STO-002`, `TXN-042`
 - **Defines or blocks:** `WP-010`, `WP-020`, `WP-040`, `WP-060`, formal
-  durable-schema `WP-065`, `WP-090`, `WP-100`, and formal public-schema `WP-127`
+  durable-schema `WP-065`, `WP-070`, `WP-090`, `WP-100`, and formal
+  public-schema `WP-127`
 - **Final evidence:** `WP-190`, `WP-200`
 
 ## Decision Deadline
