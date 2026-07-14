@@ -1,0 +1,1341 @@
+//! Snapshot-based deterministic runtime conformance tests.
+
+use std::collections::BTreeMap;
+
+use riffdb_contract_compiler::compile_contract_source;
+use riffdb_contract_ir::{CommandPlan, ContractBundle, RecordSchema};
+use riffdb_invariant::{ExpressionValueSource, evaluate_expression};
+use riffdb_runtime::{ExecutionFault, ExecutionResult, TransactionContext, execute_command};
+use riffdb_storage_api::{
+    DurableKeySchemaBindingV1, EntityObservation, EntityTarget, EvaluationBudget,
+    ExecutablePlanRef, ReadDependency, ReadSnapshot, SnapshotRequest, StoredEntityRecordV1,
+};
+use riffdb_types::{
+    ActorId, ActorKind, AdmittedActorContext, CanonicalBytes, CanonicalRecord, CanonicalValue,
+    Decimal, DecimalSpec, EntityVersion, FieldId, LogicalTime, OutcomeId, RequestId, TenantScope,
+    Timestamp,
+};
+
+const BUDGET_SOURCE: &str = include_str!(concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/../../contracts/examples/budget.riff"
+));
+
+const CROSS_DOMAIN_SOURCE: &str = r#"
+contract CrossDomain version 1 {
+  entity Ledger {
+    key (organization_id: uuid, domain: i64)
+    field value: i64
+    invariant non_negative: value >= 0
+  }
+
+  aggregate OrganizationLedger {
+    root Ledger
+    partition_by organization_id
+    conflict_key (organization_id, domain)
+  }
+
+  command Advance {
+    input idempotency_key: string<128>
+    input organization_id: uuid
+    input write_domain: i64
+    input observed_domain: i64
+    idempotency_key idempotency_key
+
+    mutate Ledger(organization_id, write_domain) as target
+      else TargetMissing { domain: write_domain }
+    read Ledger(organization_id, observed_domain) as observed
+      else ObservationMissing { domain: observed_domain }
+
+    require observed_non_negative: observed.value >= 0
+      else ObservationInvalid { value: observed.value }
+    set target.value = target.value + 1
+    return Advanced { target: target, observed: observed }
+  }
+}
+"#;
+
+const READ_ONLY_SOURCE: &str = r#"
+contract ReadOnlyRows version 1 {
+  entity Row {
+    key (id: i64)
+    field value: i64
+  }
+  aggregate Rows {
+    root Row
+    partition_by id
+    conflict_key (id)
+  }
+  command ReadRow {
+    input id: i64
+    read Row(id) as row else Missing { id: id }
+    return Found { row: row }
+  }
+}
+"#;
+
+const RESOURCE_LIMIT_SOURCE: &str = r#"
+contract BoundedEffects version 1 {
+  entity Counter {
+    key (id: i64)
+    field value: i64
+  }
+  event Chunk { payload: bytes<1000000> }
+  aggregate Counters {
+    root Counter
+    partition_by id
+    conflict_key (id)
+  }
+  command EmitMany {
+    input idempotency_key: string<128>
+    input id: i64
+    input payload: bytes<1000000>
+    idempotency_key idempotency_key
+    mutate Counter(id) as counter else Missing { id: id }
+    set counter.value = counter.value + 1
+    emit Chunk { payload: payload }
+    emit Chunk { payload: payload }
+    emit Chunk { payload: payload }
+    emit Chunk { payload: payload }
+    emit Chunk { payload: payload }
+    emit Chunk { payload: payload }
+    emit Chunk { payload: payload }
+    emit Chunk { payload: payload }
+    emit Chunk { payload: payload }
+    emit Chunk { payload: payload }
+    emit Chunk { payload: payload }
+    emit Chunk { payload: payload }
+    emit Chunk { payload: payload }
+    emit Chunk { payload: payload }
+    emit Chunk { payload: payload }
+    emit Chunk { payload: payload }
+    return Emitted { value: counter.value }
+  }
+}
+"#;
+
+const EARLY_RECORD_LIMIT_SOURCE: &str = r#"
+contract EarlyRecordLimit version 1 {
+  entity Counter {
+    key (id: i64)
+    field value: i64
+  }
+  event Amplified {
+    a_first: bytes<600000>
+    b_second: bytes<600000>
+    z_marker: i64
+  }
+  aggregate Counters {
+    root Counter
+    partition_by id
+    conflict_key (id)
+  }
+  command EmitAmplified {
+    input idempotency_key: string<128>
+    input id: i64
+    input payload: bytes<600000>
+    idempotency_key idempotency_key
+    mutate Counter(id) as counter else Missing { id: id }
+    emit Amplified {
+      a_first: payload,
+      b_second: payload,
+      z_marker: counter.value + 1
+    }
+    return Emitted {}
+  }
+}
+"#;
+
+const POST_EFFECT_FAULT_SOURCE: &str = r#"
+contract PostEffectFault version 1 {
+  entity Counter {
+    key (id: i64)
+    field value: i64
+  }
+  event CounterChanged { value: i64 }
+  aggregate Counters {
+    root Counter
+    partition_by id
+    conflict_key (id)
+  }
+  command ChangeThenFault {
+    input idempotency_key: string<128>
+    input id: i64
+    input divisor: i64
+    idempotency_key idempotency_key
+    mutate Counter(id) as counter else Missing { id: id }
+    set counter.value = counter.value + 1
+    emit CounterChanged { value: counter.value }
+    return Changed { quotient: counter.value / divisor }
+  }
+}
+"#;
+
+const ROOT_VALIDATION_SOURCE: &str = r#"
+contract RootValidation version 1 {
+  entity Root {
+    key (tenant: uuid, root_id: uuid)
+    field total: i64
+  }
+  entity Child {
+    key (tenant: uuid, root_id: uuid, child_id: uuid)
+    field amount: i64
+  }
+  aggregate Family {
+    root Root
+    child Child
+    partition_by tenant
+    conflict_key (tenant, root_id)
+    invariant non_negative: total >= 0
+  }
+  command ChangeChildren {
+    input request_key: string<128>
+    input tenant: uuid
+    input root_id: uuid
+    input first_child: uuid
+    input second_child: uuid
+    input amount: i64
+    idempotency_key request_key
+    mutate Child(tenant, root_id, first_child) as first else MissingFirst {}
+    mutate Child(tenant, root_id, second_child) as second else MissingSecond {}
+    set first.amount = amount
+    set second.amount = amount
+    return Changed { first: first, second: second }
+  }
+}
+"#;
+
+const PREPARED_ARITHMETIC_SOURCE: &str = r#"
+contract PreparedArithmetic version 1 {
+  entity Row {
+    key (id: i64)
+    field value: i64
+  }
+  aggregate Rows {
+    root Row
+    partition_by id
+    conflict_key (id)
+  }
+  command CreateRow {
+    input idempotency_key: string<128>
+    input id: i64
+    idempotency_key idempotency_key
+    create Row(id + 1) as row else AlreadyExists {}
+    set row.value = 0
+    return Created { row: row }
+  }
+}
+"#;
+
+#[test]
+fn create_executes_with_fixed_time_and_complete_absence_dependency() {
+    let bundle = budget_bundle();
+    let plan = command(&bundle, "CreateBudget");
+    let input = create_input(plan, [0x11; 16], 2027, 10_000);
+    let target = derive_binding_target(plan, &input, 0);
+    let snapshot = snapshot(
+        plan_ref(&bundle, plan),
+        vec![EntityObservation::Absent(target)],
+    );
+    let timestamp = Timestamp::new(-1_234, 987).expect("timestamp");
+    let context = context(&bundle, plan, &input, LogicalTime::new(timestamp));
+
+    let ExecutionResult::CommitRequired(evaluated) =
+        execute_command(&bundle, &input, &snapshot, &context, EvaluationBudget::v1())
+            .expect("create evaluates")
+    else {
+        panic!("create must require commit");
+    };
+
+    assert_eq!(evaluated.mutations().len(), 1);
+    assert!(evaluated.event_intents().is_empty());
+    assert_eq!(
+        evaluated.outcome().outcome_id(),
+        outcome_id(plan, "BudgetCreated")
+    );
+    assert_eq!(evaluated.read_dependencies().as_slice().len(), 1);
+    assert!(matches!(
+        evaluated.read_dependencies().as_slice()[0],
+        ReadDependency::EntityObservation {
+            expected: riffdb_storage_api::ExpectedEntityState::Absent,
+            ..
+        }
+    ));
+    assert_eq!(
+        field(
+            evaluated.mutations()[0].post_image().fields(),
+            entity_field(&bundle, "Budget", "updated_at")
+        ),
+        &CanonicalValue::Timestamp(timestamp)
+    );
+}
+
+#[test]
+fn logical_time_extrema_flow_through_runtime_without_conversion() {
+    let bundle = budget_bundle();
+    let plan = command(&bundle, "CreateBudget");
+    let input = create_input(plan, [0x19; 16], 2027, 10_000);
+    let target = derive_binding_target(plan, &input, 0);
+    let snapshot = snapshot(
+        plan_ref(&bundle, plan),
+        vec![EntityObservation::Absent(target)],
+    );
+
+    for timestamp in [
+        Timestamp::new(i64::MIN, 0).expect("minimum timestamp"),
+        Timestamp::new(0, 999_999_999).expect("maximum nanoseconds"),
+        Timestamp::new(i64::MAX, 999_999_999).expect("maximum timestamp"),
+    ] {
+        let context = context(&bundle, plan, &input, LogicalTime::new(timestamp));
+        let ExecutionResult::CommitRequired(evaluated) =
+            execute_command(&bundle, &input, &snapshot, &context, EvaluationBudget::v1())
+                .expect("boundary logical time evaluates")
+        else {
+            panic!("create must require commit");
+        };
+        assert_eq!(
+            field(
+                evaluated.mutations()[0].post_image().fields(),
+                entity_field(&bundle, "Budget", "updated_at")
+            ),
+            &CanonicalValue::Timestamp(timestamp)
+        );
+    }
+}
+
+#[test]
+fn duplicate_create_is_a_persistable_zero_mutation_business_outcome() {
+    let bundle = budget_bundle();
+    let plan = command(&bundle, "CreateBudget");
+    let input = create_input(plan, [0x22; 16], 2028, 5_000);
+    let target = derive_binding_target(plan, &input, 0);
+    let stored = stored_budget(
+        &bundle,
+        plan,
+        target,
+        5_000,
+        0,
+        Timestamp::new(1, 0).expect("timestamp"),
+        vec![],
+    );
+    let snapshot = snapshot(
+        plan_ref(&bundle, plan),
+        vec![EntityObservation::Present(stored)],
+    );
+    let logical_time = LogicalTime::new(Timestamp::new(2, 0).expect("timestamp"));
+    let context = context(&bundle, plan, &input, logical_time);
+
+    let ExecutionResult::CommitRequired(evaluated) =
+        execute_command(&bundle, &input, &snapshot, &context, EvaluationBudget::v1())
+            .expect("duplicate is declared")
+    else {
+        panic!("mutating rejection must require commit");
+    };
+    assert!(evaluated.mutations().is_empty());
+    assert!(evaluated.event_intents().is_empty());
+    assert_eq!(
+        evaluated.outcome().outcome_id(),
+        outcome_id(plan, "BudgetAlreadyExists")
+    );
+    assert_eq!(evaluated.read_dependencies().as_slice().len(), 1);
+}
+
+#[test]
+fn mutation_event_and_outcome_are_deterministic_and_instruction_ordered() {
+    let bundle = budget_bundle();
+    let plan = command(&bundle, "AllocateBudget");
+    let input = allocate_input(plan, [0x33; 16], 2029, [0x44; 16], 2_500);
+    let target = derive_binding_target(plan, &input, 0);
+    let stored = stored_budget(
+        &bundle,
+        plan,
+        target,
+        10_000,
+        1_500,
+        Timestamp::new(10, 0).expect("timestamp"),
+        vec![],
+    );
+    let snapshot = snapshot(
+        plan_ref(&bundle, plan),
+        vec![EntityObservation::Present(stored)],
+    );
+    let timestamp = Timestamp::new(20, 123).expect("timestamp");
+    let context = context(&bundle, plan, &input, LogicalTime::new(timestamp));
+
+    let first = execute_command(&bundle, &input, &snapshot, &context, EvaluationBudget::v1())
+        .expect("allocation evaluates");
+    let second = execute_command(&bundle, &input, &snapshot, &context, EvaluationBudget::v1())
+        .expect("same allocation evaluates");
+    assert_eq!(first, second);
+
+    let ExecutionResult::CommitRequired(evaluated) = first else {
+        panic!("allocation must require commit");
+    };
+    assert_eq!(evaluated.mutations().len(), 1);
+    assert_eq!(evaluated.event_intents().len(), 1);
+    assert_eq!(
+        evaluated.outcome().outcome_id(),
+        outcome_id(plan, "Allocated")
+    );
+    let fields = evaluated.mutations()[0].post_image().fields();
+    assert_eq!(
+        decimal_coefficient(field(
+            fields,
+            entity_field(&bundle, "Budget", "allocated_amount")
+        )),
+        4_000
+    );
+    assert_eq!(
+        field(fields, entity_field(&bundle, "Budget", "updated_at")),
+        &CanonicalValue::Timestamp(timestamp)
+    );
+    assert_eq!(
+        decimal_coefficient(field(
+            evaluated.event_intents()[0].payload(),
+            event_field(&bundle, "BudgetAllocated", "amount")
+        )),
+        2_500
+    );
+}
+
+#[test]
+fn unknown_fields_survive_mutation_but_are_hidden_from_historical_outputs() {
+    let bundle = budget_bundle();
+    let plan = command(&bundle, "AllocateBudget");
+    let input = allocate_input(plan, [0x35; 16], 2029, [0x46; 16], 2_500);
+    let target = derive_binding_target(plan, &input, 0);
+    let future_field = FieldId::new(65_000).expect("future field ID");
+    let future_value = CanonicalValue::string("future-private-value").expect("future value");
+    let stored = stored_budget(
+        &bundle,
+        plan,
+        target,
+        10_000,
+        1_500,
+        Timestamp::new(10, 0).expect("timestamp"),
+        vec![(future_field, future_value.clone())],
+    );
+    let snapshot = snapshot(
+        plan_ref(&bundle, plan),
+        vec![EntityObservation::Present(stored)],
+    );
+    let context = context(
+        &bundle,
+        plan,
+        &input,
+        LogicalTime::new(Timestamp::new(20, 0).expect("timestamp")),
+    );
+
+    let ExecutionResult::CommitRequired(evaluated) =
+        execute_command(&bundle, &input, &snapshot, &context, EvaluationBudget::v1())
+            .expect("allocation evaluates")
+    else {
+        panic!("allocation must require commit");
+    };
+    assert_eq!(
+        field(evaluated.mutations()[0].post_image().fields(), future_field),
+        &future_value
+    );
+
+    let outcome_schema = plan
+        .outcomes()
+        .iter()
+        .find(|outcome| outcome.name() == "Allocated")
+        .expect("Allocated outcome");
+    let budget_field = outcome_schema
+        .payload()
+        .fields()
+        .iter()
+        .find(|candidate| candidate.name() == "budget")
+        .expect("budget outcome field")
+        .id();
+    let CanonicalValue::Record(visible_budget) = field(evaluated.outcome().value(), budget_field)
+    else {
+        panic!("budget outcome is a record");
+    };
+    assert!(
+        visible_budget
+            .fields()
+            .iter()
+            .all(|(field_id, _)| *field_id != future_field)
+    );
+    assert!(
+        evaluated
+            .event_intents()
+            .iter()
+            .all(|event| !record_contains_field(event.payload(), future_field))
+    );
+}
+
+#[test]
+fn arithmetic_fault_discards_all_provisional_effects() {
+    let bundle = budget_bundle();
+    let plan = command(&bundle, "AllocateBudget");
+    let input = allocate_input(plan, [0x55; 16], 2030, [0x66; 16], 1);
+    let target = derive_binding_target(plan, &input, 0);
+    let maximum = 10_i128.pow(28) - 1;
+    let stored = stored_budget(
+        &bundle,
+        plan,
+        target,
+        maximum,
+        maximum,
+        Timestamp::new(1, 0).expect("timestamp"),
+        vec![],
+    );
+    let snapshot = snapshot(
+        plan_ref(&bundle, plan),
+        vec![EntityObservation::Present(stored)],
+    );
+    let context = context(
+        &bundle,
+        plan,
+        &input,
+        LogicalTime::new(Timestamp::new(2, 0).expect("timestamp")),
+    );
+    assert_eq!(
+        execute_command(&bundle, &input, &snapshot, &context, EvaluationBudget::v1()),
+        Err(ExecutionFault::Arithmetic)
+    );
+}
+
+#[test]
+fn arithmetic_fault_after_event_and_mutation_returns_no_provisional_effects() {
+    let bundle =
+        compile_contract_source(POST_EFFECT_FAULT_SOURCE).expect("fault contract compiles");
+    let plan = command(&bundle, "ChangeThenFault");
+    let input = input_record(
+        plan.input().record(),
+        [
+            (
+                "idempotency_key",
+                CanonicalValue::string("post-effect-fault-1").expect("string"),
+            ),
+            ("id", CanonicalValue::I64(1)),
+            ("divisor", CanonicalValue::I64(0)),
+        ],
+    );
+    let target = derive_binding_target(plan, &input, 0);
+    let stored = stored_record(
+        &bundle,
+        plan,
+        target,
+        input_record(
+            bundle
+                .schema()
+                .entity(plan.bindings()[0].entity_type())
+                .expect("counter entity")
+                .record(),
+            [
+                ("id", CanonicalValue::I64(1)),
+                ("value", CanonicalValue::I64(41)),
+            ],
+        ),
+    );
+    let snapshot = snapshot(
+        plan_ref(&bundle, plan),
+        vec![EntityObservation::Present(stored)],
+    );
+    let context = context(
+        &bundle,
+        plan,
+        &input,
+        LogicalTime::new(Timestamp::new(3, 0).expect("timestamp")),
+    );
+
+    assert_eq!(
+        execute_command(&bundle, &input, &snapshot, &context, EvaluationBudget::v1()),
+        Err(ExecutionFault::Arithmetic)
+    );
+}
+
+#[test]
+fn aggregate_output_budget_is_charged_before_retention() {
+    let bundle =
+        compile_contract_source(RESOURCE_LIMIT_SOURCE).expect("resource contract compiles");
+    let plan = command(&bundle, "EmitMany");
+    let input = input_record(
+        plan.input().record(),
+        [
+            (
+                "idempotency_key",
+                CanonicalValue::string("emit-many-1").expect("string"),
+            ),
+            ("id", CanonicalValue::I64(1)),
+            (
+                "payload",
+                CanonicalValue::Bytes(
+                    CanonicalBytes::new(vec![0x5a; 1_000_000]).expect("bounded bytes"),
+                ),
+            ),
+        ],
+    );
+    let target = derive_binding_target(plan, &input, 0);
+    let stored = stored_record(
+        &bundle,
+        plan,
+        target,
+        input_record(
+            bundle.schema().entities()[0].record(),
+            [
+                ("id", CanonicalValue::I64(1)),
+                ("value", CanonicalValue::I64(0)),
+            ],
+        ),
+    );
+    let snapshot = snapshot(
+        plan_ref(&bundle, plan),
+        vec![EntityObservation::Present(stored)],
+    );
+    let context = context(
+        &bundle,
+        plan,
+        &input,
+        LogicalTime::new(Timestamp::new(2, 0).expect("timestamp")),
+    );
+    assert_eq!(
+        execute_command(&bundle, &input, &snapshot, &context, EvaluationBudget::v1()),
+        Err(ExecutionFault::ResourceLimit)
+    );
+}
+
+#[test]
+fn oversized_record_stops_before_evaluating_later_fields() {
+    let bundle = compile_contract_source(EARLY_RECORD_LIMIT_SOURCE)
+        .expect("early record limit contract compiles");
+    let plan = command(&bundle, "EmitAmplified");
+    let input = input_record(
+        plan.input().record(),
+        [
+            (
+                "idempotency_key",
+                CanonicalValue::string("early-record-limit-1").expect("string"),
+            ),
+            ("id", CanonicalValue::I64(1)),
+            (
+                "payload",
+                CanonicalValue::Bytes(
+                    CanonicalBytes::new(vec![0x5a; 600_000]).expect("bounded bytes"),
+                ),
+            ),
+        ],
+    );
+    let target = derive_binding_target(plan, &input, 0);
+    let stored = stored_record(
+        &bundle,
+        plan,
+        target,
+        input_record(
+            bundle.schema().entities()[0].record(),
+            [
+                ("id", CanonicalValue::I64(1)),
+                ("value", CanonicalValue::I64(i64::MAX)),
+            ],
+        ),
+    );
+    let snapshot = snapshot(
+        plan_ref(&bundle, plan),
+        vec![EntityObservation::Present(stored)],
+    );
+    let context = context(
+        &bundle,
+        plan,
+        &input,
+        LogicalTime::new(Timestamp::new(2, 0).expect("timestamp")),
+    );
+
+    // The second 600 KiB field crosses the canonical record ceiling. The
+    // trailing marker would overflow, so ResourceLimit proves it was not run.
+    assert_eq!(
+        execute_command(&bundle, &input, &snapshot, &context, EvaluationBudget::v1()),
+        Err(ExecutionFault::ResourceLimit)
+    );
+}
+
+#[test]
+fn read_only_outcome_is_direct_and_unjournaled() {
+    let bundle = compile_contract_source(READ_ONLY_SOURCE).expect("read-only contract compiles");
+    let plan = command(&bundle, "ReadRow");
+    let input = input_record(plan.input().record(), [("id", CanonicalValue::I64(7))]);
+    let target = derive_binding_target(plan, &input, 0);
+    let record = stored_record(
+        &bundle,
+        plan,
+        target,
+        input_record(
+            bundle.schema().entities()[0].record(),
+            [
+                ("id", CanonicalValue::I64(7)),
+                ("value", CanonicalValue::I64(9)),
+            ],
+        ),
+    );
+    let snapshot = snapshot(
+        plan_ref(&bundle, plan),
+        vec![EntityObservation::Present(record)],
+    );
+    let context = context(
+        &bundle,
+        plan,
+        &input,
+        LogicalTime::new(Timestamp::new(42, 0).expect("timestamp")),
+    );
+    let ExecutionResult::ReadOnly(outcome) =
+        execute_command(&bundle, &input, &snapshot, &context, EvaluationBudget::v1())
+            .expect("read evaluates")
+    else {
+        panic!("read-only command must not produce an evaluated commit");
+    };
+    assert_eq!(outcome.outcome_id(), outcome_id(plan, "Found"));
+}
+
+#[test]
+fn one_partition_cross_domain_read_preserves_every_influential_dependency() {
+    let bundle = compile_contract_source(CROSS_DOMAIN_SOURCE).expect("contract compiles");
+    let plan = command(&bundle, "Advance");
+    let input = input_record(
+        plan.input().record(),
+        [
+            (
+                "idempotency_key",
+                CanonicalValue::string("advance-1").expect("string"),
+            ),
+            ("organization_id", CanonicalValue::Uuid([0x99; 16])),
+            ("write_domain", CanonicalValue::I64(1)),
+            ("observed_domain", CanonicalValue::I64(2)),
+        ],
+    );
+    let observations = plan
+        .bindings()
+        .iter()
+        .enumerate()
+        .map(|(index, _)| {
+            let target = derive_binding_target(plan, &input, index);
+            let key_values = plan.bindings()[index]
+                .key_schema()
+                .decode_entity(target.key())
+                .expect("key decodes");
+            let entity = bundle
+                .schema()
+                .entity(plan.bindings()[index].entity_type())
+                .expect("entity");
+            let fields = input_record(
+                entity.record(),
+                [
+                    ("organization_id", key_values[0].clone()),
+                    ("domain", key_values[1].clone()),
+                    ("value", CanonicalValue::I64(10 + index as i64)),
+                ],
+            );
+            EntityObservation::Present(stored_record(&bundle, plan, target, fields))
+        })
+        .collect();
+    let snapshot = snapshot(plan_ref(&bundle, plan), observations);
+    let context = context(
+        &bundle,
+        plan,
+        &input,
+        LogicalTime::new(Timestamp::new(50, 0).expect("timestamp")),
+    );
+
+    let ExecutionResult::CommitRequired(evaluated) =
+        execute_command(&bundle, &input, &snapshot, &context, EvaluationBudget::v1())
+            .expect("cross-domain command evaluates")
+    else {
+        panic!("advance mutates");
+    };
+    assert_eq!(evaluated.mutations().len(), 1);
+    assert_eq!(evaluated.read_dependencies().as_slice().len(), 2);
+    assert!(
+        evaluated
+            .read_dependencies()
+            .as_slice()
+            .iter()
+            .all(|dependency| matches!(dependency, ReadDependency::EntityObservation { .. }))
+    );
+}
+
+#[test]
+fn binding_failure_priority_precedes_internal_root_validation() {
+    let bundle = compile_contract_source(ROOT_VALIDATION_SOURCE).expect("root contract compiles");
+    let plan = command(&bundle, "ChangeChildren");
+    let input = root_validation_input(plan);
+    let bindings = (0..2)
+        .map(|index| EntityObservation::Absent(derive_binding_target(plan, &input, index)))
+        .collect();
+    let roots = vec![EntityObservation::Absent(derive_root_target(
+        plan, &input, 0,
+    ))];
+    let snapshot = snapshot_with_roots(plan_ref(&bundle, plan), bindings, roots);
+    let context = context(
+        &bundle,
+        plan,
+        &input,
+        LogicalTime::new(Timestamp::new(60, 0).expect("timestamp")),
+    );
+    let ExecutionResult::CommitRequired(evaluated) =
+        execute_command(&bundle, &input, &snapshot, &context, EvaluationBudget::v1())
+            .expect("binding failure is declared before root absence")
+    else {
+        panic!("mutating rejection must require commit");
+    };
+    assert_eq!(
+        evaluated.outcome().outcome_id(),
+        outcome_id(plan, "MissingFirst")
+    );
+    assert!(evaluated.mutations().is_empty());
+}
+
+#[test]
+fn missing_internal_root_after_successful_bindings_is_integrity() {
+    let bundle = compile_contract_source(ROOT_VALIDATION_SOURCE).expect("root contract compiles");
+    let plan = command(&bundle, "ChangeChildren");
+    let input = root_validation_input(plan);
+    let bindings = plan
+        .bindings()
+        .iter()
+        .enumerate()
+        .map(|(index, binding)| {
+            let target = derive_binding_target(plan, &input, index);
+            let key_values = binding
+                .key_schema()
+                .decode_entity(target.key())
+                .expect("child key");
+            let entity = bundle
+                .schema()
+                .entity(binding.entity_type())
+                .expect("child entity");
+            let fields = input_record(
+                entity.record(),
+                [
+                    ("tenant", key_values[0].clone()),
+                    ("root_id", key_values[1].clone()),
+                    ("child_id", key_values[2].clone()),
+                    ("amount", CanonicalValue::I64(index as i64)),
+                ],
+            );
+            EntityObservation::Present(stored_record(&bundle, plan, target, fields))
+        })
+        .collect();
+    let roots = vec![EntityObservation::Absent(derive_root_target(
+        plan, &input, 0,
+    ))];
+    let snapshot = snapshot_with_roots(plan_ref(&bundle, plan), bindings, roots);
+    let context = context(
+        &bundle,
+        plan,
+        &input,
+        LogicalTime::new(Timestamp::new(61, 0).expect("timestamp")),
+    );
+    assert_eq!(
+        execute_command(&bundle, &input, &snapshot, &context, EvaluationBudget::v1()),
+        Err(ExecutionFault::Integrity)
+    );
+}
+
+#[test]
+fn multiple_mutations_are_canonical_even_when_binding_order_is_not() {
+    let bundle = compile_contract_source(ROOT_VALIDATION_SOURCE).expect("root contract compiles");
+    let plan = command(&bundle, "ChangeChildren");
+    let input = root_validation_input_with(plan, [0xff; 16], [0x01; 16]);
+    let bindings = plan
+        .bindings()
+        .iter()
+        .enumerate()
+        .map(|(index, binding)| {
+            let target = derive_binding_target(plan, &input, index);
+            let key_values = binding
+                .key_schema()
+                .decode_entity(target.key())
+                .expect("child key");
+            let entity = bundle
+                .schema()
+                .entity(binding.entity_type())
+                .expect("child entity");
+            EntityObservation::Present(stored_record(
+                &bundle,
+                plan,
+                target,
+                input_record(
+                    entity.record(),
+                    [
+                        ("tenant", key_values[0].clone()),
+                        ("root_id", key_values[1].clone()),
+                        ("child_id", key_values[2].clone()),
+                        ("amount", CanonicalValue::I64(index as i64)),
+                    ],
+                ),
+            ))
+        })
+        .collect();
+    let root_target = derive_root_target(plan, &input, 0);
+    let root_read = &plan.root_validation_reads()[0];
+    let root_entity = bundle
+        .schema()
+        .entity(root_read.entity_type())
+        .expect("root entity");
+    let key_values = root_read
+        .key_schema()
+        .decode_entity(root_target.key())
+        .expect("root key");
+    let root = EntityObservation::Present(stored_record(
+        &bundle,
+        plan,
+        root_target,
+        input_record(
+            root_entity.record(),
+            [
+                ("tenant", key_values[0].clone()),
+                ("root_id", key_values[1].clone()),
+                ("total", CanonicalValue::I64(0)),
+            ],
+        ),
+    ));
+    let snapshot = snapshot_with_roots(plan_ref(&bundle, plan), bindings, vec![root]);
+    let context = context(
+        &bundle,
+        plan,
+        &input,
+        LogicalTime::new(Timestamp::new(62, 0).expect("timestamp")),
+    );
+    let ExecutionResult::CommitRequired(evaluated) =
+        execute_command(&bundle, &input, &snapshot, &context, EvaluationBudget::v1())
+            .expect("multi-mutation command evaluates")
+    else {
+        panic!("command mutates");
+    };
+    assert_eq!(evaluated.mutations().len(), 2);
+    assert!(
+        evaluated.mutations()[0].target().key().as_bytes()
+            < evaluated.mutations()[1].target().key().as_bytes()
+    );
+}
+
+#[test]
+fn context_partition_mismatch_is_integrity_and_debug_is_redacted() {
+    let bundle = budget_bundle();
+    let plan = command(&bundle, "CreateBudget");
+    let input = create_input(plan, [0xaa; 16], 2032, 1_000);
+    let target = derive_binding_target(plan, &input, 0);
+    let snapshot = snapshot(
+        plan_ref(&bundle, plan),
+        vec![EntityObservation::Absent(target)],
+    );
+    let other_input = create_input(plan, [0xbb; 16], 2032, 1_000);
+    let context = context(
+        &bundle,
+        plan,
+        &other_input,
+        LogicalTime::new(Timestamp::new(1, 0).expect("timestamp")),
+    );
+    assert_eq!(
+        execute_command(&bundle, &input, &snapshot, &context, EvaluationBudget::v1()),
+        Err(ExecutionFault::Integrity)
+    );
+    assert_eq!(format!("{context:?}"), "TransactionContext([REDACTED])");
+}
+
+#[test]
+fn prepared_locality_arithmetic_failure_is_integrity_not_business_arithmetic() {
+    let bundle = compile_contract_source(PREPARED_ARITHMETIC_SOURCE)
+        .expect("prepared-arithmetic contract compiles");
+    let plan = command(&bundle, "CreateRow");
+    let input = input_record(
+        plan.input().record(),
+        [
+            (
+                "idempotency_key",
+                CanonicalValue::string("prepared-overflow").expect("string"),
+            ),
+            ("id", CanonicalValue::I64(i64::MAX)),
+        ],
+    );
+
+    // These values stand in for an impossible admitted preparation. The
+    // repeated `id + 1` derivation must close as integrity before execution.
+    let key = plan.bindings()[0]
+        .key_schema()
+        .encode_entity(&[CanonicalValue::I64(0)])
+        .expect("synthetic entity key");
+    let target =
+        EntityTarget::new(plan.bindings()[0].entity_type(), key).expect("synthetic entity target");
+    let snapshot = snapshot(
+        plan_ref(&bundle, plan),
+        vec![EntityObservation::Absent(target)],
+    );
+    let partition = plan
+        .locality()
+        .partition_schema()
+        .encode_partition(&[CanonicalValue::I64(0)])
+        .expect("synthetic partition key");
+    let context = TransactionContext::new(
+        RequestId::from_unix_milliseconds_and_random(1, [0x13; 10]).expect("request ID"),
+        AdmittedActorContext::new(
+            ActorId::new("runtime-test").expect("actor"),
+            ActorKind::Service,
+            TenantScope::Global,
+            None,
+        ),
+        plan_ref(&bundle, plan),
+        LogicalTime::new(Timestamp::new(1, 0).expect("timestamp")),
+        partition,
+    );
+
+    assert_eq!(
+        execute_command(&bundle, &input, &snapshot, &context, EvaluationBudget::v1()),
+        Err(ExecutionFault::Integrity)
+    );
+}
+
+fn budget_bundle() -> ContractBundle {
+    compile_contract_source(BUDGET_SOURCE).expect("budget contract compiles")
+}
+
+fn command<'a>(bundle: &'a ContractBundle, name: &str) -> &'a CommandPlan {
+    bundle
+        .commands()
+        .iter()
+        .find(|command| command.name() == name)
+        .expect("command exists")
+}
+
+fn plan_ref(bundle: &ContractBundle, plan: &CommandPlan) -> ExecutablePlanRef {
+    ExecutablePlanRef::new(
+        bundle.lineage().clone(),
+        bundle.contract_version(),
+        bundle.bundle_hash(),
+        plan.command_id(),
+        plan.plan_hash(),
+    )
+}
+
+fn snapshot(plan: ExecutablePlanRef, bindings: Vec<EntityObservation>) -> ReadSnapshot {
+    snapshot_with_roots(plan, bindings, vec![])
+}
+
+fn snapshot_with_roots(
+    plan: ExecutablePlanRef,
+    bindings: Vec<EntityObservation>,
+    roots: Vec<EntityObservation>,
+) -> ReadSnapshot {
+    let targets = bindings
+        .iter()
+        .map(|observation| observation.target().clone())
+        .collect();
+    let root_targets = roots
+        .iter()
+        .map(|observation| observation.target().clone())
+        .collect();
+    let request =
+        SnapshotRequest::new(plan, targets, root_targets, vec![]).expect("snapshot request");
+    ReadSnapshot::new(&request, None, bindings, roots, vec![]).expect("snapshot")
+}
+
+fn context(
+    bundle: &ContractBundle,
+    plan: &CommandPlan,
+    input: &CanonicalRecord,
+    logical_time: LogicalTime,
+) -> TransactionContext {
+    let partition_expression = plan.locality().partition_expression();
+    let values = Inputs { input };
+    let value = evaluate_expression(plan.expressions(), partition_expression, &values)
+        .expect("partition expression");
+    let partition = plan
+        .locality()
+        .partition_schema()
+        .encode_partition(&[value])
+        .expect("partition key");
+    TransactionContext::new(
+        RequestId::from_unix_milliseconds_and_random(1, [0x12; 10]).expect("request ID"),
+        AdmittedActorContext::new(
+            ActorId::new("runtime-test").expect("actor"),
+            ActorKind::Service,
+            TenantScope::Global,
+            None,
+        ),
+        plan_ref(bundle, plan),
+        logical_time,
+        partition,
+    )
+}
+
+fn derive_binding_target(
+    plan: &CommandPlan,
+    input: &CanonicalRecord,
+    index: usize,
+) -> EntityTarget {
+    let binding = &plan.bindings()[index];
+    let values = Inputs { input };
+    let components = binding
+        .key_expressions()
+        .iter()
+        .map(|expression| {
+            evaluate_expression(plan.expressions(), *expression, &values).expect("key expression")
+        })
+        .collect::<Vec<_>>();
+    let key = binding
+        .key_schema()
+        .encode_entity(&components)
+        .expect("entity key");
+    EntityTarget::new(binding.entity_type(), key).expect("entity target")
+}
+
+fn derive_root_target(plan: &CommandPlan, input: &CanonicalRecord, index: usize) -> EntityTarget {
+    let read = &plan.root_validation_reads()[index];
+    let values = Inputs { input };
+    let components = read
+        .key_expressions()
+        .iter()
+        .map(|expression| {
+            evaluate_expression(plan.expressions(), *expression, &values)
+                .expect("root key expression")
+        })
+        .collect::<Vec<_>>();
+    let key = read
+        .key_schema()
+        .encode_entity(&components)
+        .expect("root entity key");
+    EntityTarget::new(read.entity_type(), key).expect("root entity target")
+}
+
+fn root_validation_input(plan: &CommandPlan) -> CanonicalRecord {
+    root_validation_input_with(plan, [0xc3; 16], [0xc4; 16])
+}
+
+fn root_validation_input_with(
+    plan: &CommandPlan,
+    first_child: [u8; 16],
+    second_child: [u8; 16],
+) -> CanonicalRecord {
+    input_record(
+        plan.input().record(),
+        [
+            (
+                "request_key",
+                CanonicalValue::string("change-children-1").expect("string"),
+            ),
+            ("tenant", CanonicalValue::Uuid([0xc1; 16])),
+            ("root_id", CanonicalValue::Uuid([0xc2; 16])),
+            ("first_child", CanonicalValue::Uuid(first_child)),
+            ("second_child", CanonicalValue::Uuid(second_child)),
+            ("amount", CanonicalValue::I64(5)),
+        ],
+    )
+}
+
+fn create_input(
+    plan: &CommandPlan,
+    organization: [u8; 16],
+    year: i64,
+    approved: i128,
+) -> CanonicalRecord {
+    input_record(
+        plan.input().record(),
+        [
+            (
+                "idempotency_key",
+                CanonicalValue::string("create-1").expect("string"),
+            ),
+            ("organization_id", CanonicalValue::Uuid(organization)),
+            ("fiscal_year", CanonicalValue::I64(year)),
+            ("approved_amount", decimal(approved)),
+        ],
+    )
+}
+
+fn allocate_input(
+    plan: &CommandPlan,
+    organization: [u8; 16],
+    year: i64,
+    matter: [u8; 16],
+    amount: i128,
+) -> CanonicalRecord {
+    input_record(
+        plan.input().record(),
+        [
+            (
+                "idempotency_key",
+                CanonicalValue::string("allocate-1").expect("string"),
+            ),
+            ("organization_id", CanonicalValue::Uuid(organization)),
+            ("fiscal_year", CanonicalValue::I64(year)),
+            ("matter_id", CanonicalValue::Uuid(matter)),
+            ("amount", decimal(amount)),
+        ],
+    )
+}
+
+fn input_record<const N: usize>(
+    schema: &RecordSchema,
+    fields: [(&str, CanonicalValue); N],
+) -> CanonicalRecord {
+    let by_name = fields.into_iter().collect::<BTreeMap<_, _>>();
+    CanonicalRecord::new(
+        schema
+            .fields()
+            .iter()
+            .map(|field| {
+                (
+                    field.id(),
+                    by_name
+                        .get(field.name())
+                        .unwrap_or_else(|| panic!("missing field {}", field.name()))
+                        .clone(),
+                )
+            })
+            .collect(),
+    )
+    .expect("canonical record")
+}
+
+fn stored_budget(
+    bundle: &ContractBundle,
+    plan: &CommandPlan,
+    target: EntityTarget,
+    approved: i128,
+    allocated: i128,
+    updated_at: Timestamp,
+    unknowns: Vec<(FieldId, CanonicalValue)>,
+) -> StoredEntityRecordV1 {
+    let entity = bundle
+        .schema()
+        .entities()
+        .iter()
+        .find(|entity| entity.name() == "Budget")
+        .expect("Budget entity");
+    let key_values = entity
+        .primary_key()
+        .decode_entity(target.key())
+        .expect("budget key");
+    let mut fields = entity
+        .record()
+        .fields()
+        .iter()
+        .map(|field| {
+            let value = match field.name() {
+                "organization_id" => key_values[0].clone(),
+                "fiscal_year" => key_values[1].clone(),
+                "approved_amount" => decimal(approved),
+                "allocated_amount" => decimal(allocated),
+                "updated_at" => CanonicalValue::Timestamp(updated_at),
+                other => panic!("unexpected Budget field {other}"),
+            };
+            (field.id(), value)
+        })
+        .collect::<Vec<_>>();
+    fields.extend(unknowns);
+    stored_record(
+        bundle,
+        plan,
+        target,
+        CanonicalRecord::new(fields).expect("budget record"),
+    )
+}
+
+fn stored_record(
+    bundle: &ContractBundle,
+    plan: &CommandPlan,
+    target: EntityTarget,
+    fields: CanonicalRecord,
+) -> StoredEntityRecordV1 {
+    StoredEntityRecordV1::new(
+        target,
+        EntityVersion::first(),
+        bundle.contract_version(),
+        DurableKeySchemaBindingV1::from_plan(&plan_ref(bundle, plan)),
+        fields,
+    )
+    .expect("stored record")
+}
+
+fn outcome_id(plan: &CommandPlan, name: &str) -> OutcomeId {
+    plan.outcomes()
+        .iter()
+        .find(|outcome| outcome.name() == name)
+        .expect("outcome exists")
+        .id()
+}
+
+fn entity_field(bundle: &ContractBundle, entity: &str, field: &str) -> FieldId {
+    bundle
+        .schema()
+        .entities()
+        .iter()
+        .find(|candidate| candidate.name() == entity)
+        .and_then(|entity| {
+            entity
+                .record()
+                .fields()
+                .iter()
+                .find(|candidate| candidate.name() == field)
+        })
+        .expect("entity field")
+        .id()
+}
+
+fn event_field(bundle: &ContractBundle, event: &str, field: &str) -> FieldId {
+    bundle
+        .schema()
+        .events()
+        .iter()
+        .find(|candidate| candidate.name() == event)
+        .and_then(|event| {
+            event
+                .payload()
+                .fields()
+                .iter()
+                .find(|candidate| candidate.name() == field)
+        })
+        .expect("event field")
+        .id()
+}
+
+fn field(record: &CanonicalRecord, field: FieldId) -> &CanonicalValue {
+    record
+        .fields()
+        .iter()
+        .find(|(candidate, _)| *candidate == field)
+        .map(|(_, value)| value)
+        .expect("record field")
+}
+
+fn record_contains_field(record: &CanonicalRecord, field: FieldId) -> bool {
+    record.fields().iter().any(|(candidate, value)| {
+        *candidate == field
+            || match value {
+                CanonicalValue::Record(record) => record_contains_field(record, field),
+                CanonicalValue::List(values) => values.values().iter().any(|value| match value {
+                    CanonicalValue::Record(record) => record_contains_field(record, field),
+                    _ => false,
+                }),
+                _ => false,
+            }
+    })
+}
+
+fn decimal(coefficient: i128) -> CanonicalValue {
+    let spec = DecimalSpec::new(28, 2).expect("budget decimal spec");
+    CanonicalValue::Decimal(Decimal::new(spec, coefficient).expect("budget decimal"))
+}
+
+fn decimal_coefficient(value: &CanonicalValue) -> i128 {
+    let CanonicalValue::Decimal(value) = value else {
+        panic!("expected decimal");
+    };
+    value.coefficient()
+}
+
+struct Inputs<'a> {
+    input: &'a CanonicalRecord,
+}
+
+impl ExpressionValueSource for Inputs<'_> {
+    fn input_field(&self, field: FieldId) -> Option<CanonicalValue> {
+        self.input
+            .fields()
+            .iter()
+            .find(|(candidate, _)| *candidate == field)
+            .map(|(_, value)| value.clone())
+    }
+}
