@@ -24,6 +24,13 @@ and dedicated ordered-commit-scan ceiling clarifications below.
 On 2026-07-14 the maintainer accepted the exact pre-sequence candidate ordering,
 mutation-affected epoch read, sequence-free write-plan, conservative encoded-
 capacity reservation, and pre-stage canonical-envelope proof clarified below.
+On 2026-07-14 the maintainer also accepted the companion durable-layout and
+dependency amendment below: lineage-scoped bundle keys, one physical active-
+catalog row, exact canonical entity/index/range keys, a standalone authoritative
+event table with three-way reciprocity, the exact 26-record POC registry,
+`sha2` 0.11.0 for backup manifests, and no Criterion dependency in WP-070.
+On 2026-07-14 the maintainer accepted the single full-outcome terminal-row and
+startup outcome/commit reciprocity clarification below.
 
 ## Context
 
@@ -141,6 +148,14 @@ WP-070 may add `redb` 4.1.0 directly to `riffdb-storage-redb` with default
 features disabled and no optional features. No other first-party crate may depend
 on or re-export redb, and no redb type crosses the semantic storage API.
 
+WP-070 may also add `sha2` 0.11.0 directly to `riffdb-storage-redb` with default
+features disabled for SHA-256 backup-manifest checksums. It reuses the already
+locked, reviewed pure-Rust version and MUST NOT enter command hashing, event
+hashing, idempotency identity, or another semantic domain. A version, feature,
+transitive graph, native/unsafe surface, license, or purpose change requires a
+new dependency review. WP-070 uses a dependency-free repeated-run storage
+benchmark harness and does not add Criterion.
+
 The reviewed package is the current 4.1.x baseline, is licensed MIT OR
 Apache-2.0, and declares Rust 1.89 as its minimum supported version. On the POC
 Linux target it has no active normal dependency; `libc` is target-only for WASI.
@@ -174,6 +189,51 @@ unchanged semantic conformance suite and process crash/reopen matrix. The exit
 strategy remains the engine-neutral semantic API, memory reference
 implementation, and isolated Fjall comparison; replacing redb cannot weaken the
 contract.
+
+### Frozen POC durable layout and record registry
+
+The durable identity of a contract bundle is
+`(ContractLineage, ContractVersion)`. Its canonical `contract_bundles` key is
+`u32_be lineage_length || exact lineage UTF-8 || u64_be contract_version`.
+The payload repeats lineage/version and carries the bundle hash; key/payload
+mismatch is corruption. A version-only key is superseded and MUST NOT be
+persisted.
+
+`catalog_active` contains exactly one row under byte `0x01`. That row is the
+sole physical representation of ADR-0019's active-contract metadata category;
+the adapter MUST NOT duplicate it in `meta`. The exact `meta` keys remain
+`format_version`, `database_id`, `next_application_sequence`,
+`next_administration_sequence`, and `capability_bootstrap/v1`. Entity, secondary-
+index, and index-epoch rows use the complete canonical `EntityKey`,
+`IndexEntryKey`, and index-range-prefix bytes respectively, without prepending a
+redundant owner already encoded in the key. Backend-private accelerators are
+rebuildable memory state, not additional durable tables or unversioned values.
+
+For a committed declared outcome, the `idempotency` table value is exactly one
+full `StoredOutcomeV1` `StoredEnvelope` under the canonical identity. It is both
+the terminal idempotency state and persisted outcome, not a pointer. The same
+atomic command transaction deletes the matching pending row and writes the
+outcome, commit, provenance, event, and outbox graph. Pending deletion writes no
+envelope bytes or tombstone, and no separate outcome or second terminal envelope
+exists. `StoredExecutionFailedV1` remains the disjoint terminal non-commit value
+defined by ADR-0012.
+
+`StoredDurableEventV1` is a separately registered ADR-0006 envelope in an
+authoritative `events` table keyed by the exact 12-byte `EventId`. For every
+committed event, the standalone row, the event nested in the matching outbox
+intent, and the event nested in the commit record are exactly equal and commit
+atomically. Missing, duplicate, orphaned, unequal, or hash-invalid copies are
+corruption and are never repaired.
+
+The POC compatibility registry contains exactly the 26 top-level payload types
+listed in SPEC Section 10.3. In particular, its accepted fixed wire names include
+`CapabilityRecordV1`, `CapabilityAdministrationAuditV1`,
+`CapabilityBootstrapMarkerV1`, and `ServiceAuditRecordV1`; the catalog audit
+payload is `StoredCatalogAdministrationV1`. `StoredReadDependenciesV1` and
+capability grant/permission collections are nested closed messages rather than
+top-level envelopes. WP-065 must freeze the accepted field/enum/oneof inventory,
+schema hashes, bounds, and goldens without speculative reserved fields, record
+types, key codecs, or ADR-0019 placeholders before WP-070 persists any record.
 
 ### Exact executable plan reference
 
@@ -837,7 +897,16 @@ resolves its exact immutable historical bundle and plan, rechecks the complete
 `riffdb-commit`. No startup proof, `CommandPlan`, generic callback, or active
 port is passed through storage to avoid that work.
 
-#### Authoritative event/outbox reciprocity and derived recovery
+#### Authoritative outcome/commit and event/outbox reciprocity
+
+For every committed command, exactly one full stored outcome exists at its
+idempotency identity and reciprocates with exactly one commit at the same
+sequence. The outcome table key matches its payload identity; outcome and commit
+agree on every shared immutable field; the linked provenance record repeats the
+same identity; and no matching pending row remains. A missing, duplicate,
+mismatched, orphaned, or still-pending outcome/commit/provenance edge is
+`CorruptData`, fails authoritative readiness, and is never repaired or replaced
+with a synthesized pointer.
 
 The command record set freezes one reciprocal authoritative graph. For every
 event ordinal named by a commit record, exactly one durable event and exactly one
@@ -1193,9 +1262,10 @@ This decision does not define or enable:
 - Index-range validation uses lazily created exact leading-prefix epochs with an
   explicit before-first position, and standalone service audit shares the one
   ordered administration sequence through its dedicated append transition.
-- Authoritative commit/event/outbox-intent reciprocity is checked at readiness;
-  missing delivery status means `Pending`, while delivery status and projection
-  state remain typed rebuildable overlays with distinct health.
+- Authoritative outcome/commit/provenance and commit/event/outbox-intent
+  reciprocity are checked at readiness; missing delivery status means `Pending`,
+  while delivery status and projection state remain typed rebuildable overlays
+  with distinct health.
 - New authoritative or derived transitions require storage-interface review,
   conformance cases, and a compatible durable schema before persistence.
 - A commit whose backend result is uncertain cannot be reported as definitely
@@ -1211,6 +1281,7 @@ reservation, pre-stage canonical-envelope verification, sequence origins,
 frontier and epoch-position
 representations, prefix-bucket advancement, transaction transition loop, atomic
 record membership, event/outbox-intent reciprocity, absent-status-as-`Pending`,
+single-outcome terminal-row ownership, outcome/commit/provenance reciprocity,
 core/subsystem readiness split and recovery ownership, bounds, error kinds,
 specialized port semantics, standalone service-audit timestamp/link boundary,
 clock-source rules, initialization-before-evidence ordering, exclusive session
@@ -1218,9 +1289,11 @@ and exact-end semantics, structural/catalog proof ownership and binding,
 WP-130-only dormant-port activation, and batch staging rules are semantic
 compatibility boundaries.
 
-Physical redb tables and engine-private handles remain adapter implementation
-details until WP-070 freezes the normative SPEC table/key layout with durable
-fixtures. Semantic records become durable only through ADR-0006 proto-owner PRs.
+Engine-private handles and physical access mechanics remain adapter
+implementation details. The normative POC table/key layout and 26-type registry
+are frozen by this accepted amendment; WP-065 freezes their durable messages and
+fixtures before WP-070 implements them. Semantic records become durable only
+through ADR-0006 proto-owner PRs.
 Changing a durable field, key, table prefix, schema hash, or migration behavior
 requires compatibility and recovery review.
 
@@ -1298,6 +1371,10 @@ It includes:
   sequence;
 - atomic state/model comparison for complete success, no-op outcome, replay,
   mismatch, dependency retry, and every staged-record failpoint;
+- exact full-`StoredOutcomeV1` terminal-row fixtures proving pending deletion
+  writes no tombstone or envelope, no second outcome/terminal record exists, and
+  startup rejects every missing, duplicate, mismatched, orphaned, or
+  still-pending outcome/commit/provenance edge;
 - sequence/version tests starting at 1, zero-construction rejection, fallible
   decoding, contiguous allocation, rollback/restart, exhaustion, administration
   isolation, empty frontier/epoch positions, and no `EventId` at zero;
@@ -1523,11 +1600,21 @@ Acceptance of this exact record decided:
     and conservative encoded-capacity reservation, and only then sequence
     assignment, exact graph construction, retained-candidate verification,
     canonical per-class envelope-bound proof, and staging.
+15. the frozen physical key rules, exact metadata keys, lineage/version bundle
+    identity, one-row active catalog, 26-type registry, and authoritative
+    standalone event row with atomic three-way event reciprocity; and
+16. direct `sha2` 0.11.0 use with default features disabled solely for backup
+    manifests, plus a dependency-free WP-070 storage benchmark harness and no
+    Criterion dependency; and
+17. one full `StoredOutcomeV1` envelope as both terminal idempotency state and
+    persisted outcome, atomic pending-row deletion without a tombstone or second
+    terminal envelope, and mandatory startup outcome/commit/provenance
+    reciprocity validation without repair.
 
 These semantic details received explicit maintainer review on 2026-07-13; they
 were not inferred merely from the earlier direction approval. Item 14 and its
-associated bounds/testing reconciliation received explicit maintainer review on
-2026-07-14.
+associated bounds/testing reconciliation and items 15-17 received explicit
+maintainer review on 2026-07-14.
 
 WP-060 may start after its declared package dependencies merge, but cannot be
 completed until it implements the following accepted interfaces together:

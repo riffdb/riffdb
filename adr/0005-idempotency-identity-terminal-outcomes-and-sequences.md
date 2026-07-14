@@ -2,7 +2,7 @@
 
 - **Status:** Accepted
 - **Direction approved:** 2026-07-12
-- **Exact text accepted:** 2026-07-12, amended 2026-07-12 and 2026-07-13
+- **Exact text accepted:** 2026-07-12, amended 2026-07-12, 2026-07-13, and 2026-07-14
 - **Amended by:** ADR-0004 (complete executable-plan reference and semantic
   storage boundary), ADR-0007 (unjournaled read-only service result), ADR-0009
   (typed digest-key custody), and ADR-0012 (terminal non-commit execution failure)
@@ -13,6 +13,8 @@ amendment, on 2026-07-12. The human maintainer accepted the exact storage-key
 envelope/bound and companion amendments on 2026-07-13; they supersede only the
 narrower points identified and do not change the durable identity tuple or
 committed-outcome replay semantics.
+The human maintainer accepted the exact single-terminal-row clarification below
+on 2026-07-14.
 
 ## Context
 
@@ -107,13 +109,16 @@ contract version, plan hash, and fixed `tx.time`. A pending admission has no
 commit sequence. The capability/lease is not durable. Resume reuses time and plan
 and reacquires current non-durable capabilities.
 
-At terminal commit, sequence, mutations, terminal idempotency state and pending
-resolution, persisted `StoredOutcome`, events and outbox intent, provenance,
-and commit record become atomic. Same identity and input returns the stored
-outcome and original sequence without execution. Different input returns a safe
-mismatch error without execution. Declared terminal business rejections,
-including zero-mutation rejections, receive exactly one sequence on first
-terminal commit; replay receives no new sequence.
+At terminal commit, sequence, mutations, one full `StoredOutcome`, deletion of
+the pending row, events and outbox intent, provenance, and commit record become
+atomic. That `StoredOutcome` is both the terminal idempotency state and the
+persisted outcome; it is not a pointer to a second record. Pending deletion
+writes no tombstone envelope, and no second terminal or outcome envelope is
+written. Same identity and input returns the stored outcome and original
+sequence without execution. Different input returns a safe mismatch error
+without execution. Declared terminal business rejections, including
+zero-mutation rejections, receive exactly one sequence on first terminal commit;
+replay receives no new sequence.
 
 ### 2026-07-13 companion amendments
 
@@ -146,6 +151,26 @@ transport-neutral WP-100 response wrapper is `CommittedOutcome`: it contains the
 stored result plus current-invocation metadata such as `replayed`. Replay never
 rewrites `StoredOutcome`; the older phrase "persisted `CommittedOutcome`" is
 amended to this distinction.
+
+### 2026-07-14 single terminal-row clarification
+
+For a committed declared outcome, the canonical `idempotency` table value is
+exactly one full `StoredOutcomeV1` `StoredEnvelope` keyed by the complete
+idempotency identity. The same envelope is the terminal command-idempotency
+state and the durable result returned by uncertainty recovery. There is no
+terminal pointer, separate outcome table, second terminal envelope, or pending
+tombstone. The atomic command transaction deletes the matching
+`StoredPendingAdmissionV1` row while installing the outcome and its reciprocal
+commit/provenance/event/outbox record graph.
+
+On every startup, each stored outcome key must match its payload identity, each
+outcome must identify exactly one commit at the same sequence, and every commit
+must identify exactly one stored outcome. The two records must agree on every
+shared immutable field, including admission request, executable plan, canonical
+input hash, actor, logical time, partition/conflict hashes, declared outcome,
+provenance ID, sequence, and durability mode; linked provenance carries the same
+idempotency identity. A missing, duplicate, mismatched, or still-pending
+reciprocal row is corruption and is never repaired.
 
 ADR-0012 adds the terminal admission state
 `ExecutionFailed { ArithmeticFault | ResourceLimit }`. It may be written only
@@ -189,7 +214,8 @@ read-only replay requires a future accepted ADR.
 
 Identity component bytes and order, digest scheme and key version, canonical
 input hashing, idempotency key prefix/version and encoding, pending-record
-version, terminal outcome encoding, and sequence semantics are durable
+version, the single full-outcome terminal-row shape, outcome/commit reciprocity,
+and sequence semantics are durable
 boundaries. Adding a readable digest key is compatible. Changing the HMAC
 algorithm, framing, identity tuple, key component encoding/order, prefix,
 version, or existing domain label requires a new version and migration plan.
@@ -207,7 +233,11 @@ separate critical-dependency review; it may not change these bytes.
 Golden identity and input-hash vectors; scope-separation properties; equal/mismatch
 tests; deployment-between-retry tests; crashes after reservation, evaluation,
 durable commit, and before response; concurrent same-key tests; and assertions for
-one sequence, mutation, event set, provenance record, and outcome. Startup tests
+one sequence, mutation, event set, provenance record, and outcome. Fixtures and
+startup tests must prove atomic pending deletion without a tombstone, absence of
+a second terminal/outcome envelope, exact outcome/commit/provenance reciprocity,
+and rejection of every missing, duplicate, mismatched, or still-pending edge.
+Startup tests
 must cover every pending and terminal identity state, reject an unsupported digest
 scheme or absent readable `DigestKeyId`, and prove that key retirement remains
 blocked while any `Pending`, `StoredOutcome`, or `ExecutionFailed` record refers
