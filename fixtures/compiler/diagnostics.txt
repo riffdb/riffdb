@@ -1,0 +1,352 @@
+format=riffdb-compiler-diagnostic-fixture-v1
+
+[semantic-code-registry]
+count=25
+code.0.id=RDB-C001
+code.0.message=contract version must be a supported nonzero integer
+code.0.help=use a base-10 application version in 1..=u64::MAX
+code.1.id=RDB-C002
+code.1.message=a name is declared more than once in this namespace
+code.1.help=rename or remove one declaration in the shared namespace
+code.2.id=RDB-C003
+code.2.message=a required declaration or singleton item is missing
+code.2.help=add the required grammar-version-1 declaration
+code.3.id=RDB-C004
+code.3.message=a referenced declaration, field, or binding is unknown
+code.3.help=reference an exact case-sensitive declared name
+code.4.id=RDB-C005
+code.4.message=the declared type is invalid or unsupported
+code.4.help=use a bounded grammar-version-1 value type
+code.5.id=RDB-C006
+code.5.message=an expression does not have the required exact type
+code.5.help=make both sides use the same complete static type
+code.6.id=RDB-C007
+code.6.message=the expression is invalid in this context
+code.6.help=use an expression allowed by this declaration context
+code.7.id=RDB-C008
+code.7.message=aggregate ownership or key shape is invalid
+code.7.help=declare one root and the required root-key prefix ownership
+code.8.id=RDB-C009
+code.8.message=the command binding is invalid or ambiguously owned
+code.8.help=bind an entity owned by the command's one aggregate
+code.9.id=RDB-C010
+code.9.message=a mutating command must declare one idempotency key
+code.9.help=declare a direct bounded string input as idempotency_key
+code.10.id=RDB-C011
+code.10.message=the idempotency expression is invalid or used outside its clause
+code.10.help=use one required string<1..=128> input only in the idempotency clause
+code.11.id=RDB-C012
+code.11.message=the create binding does not definitely initialize its record
+code.11.help=assign every required non-key field exactly once before return
+code.12.id=RDB-C013
+code.12.message=the command mutation target is invalid
+code.12.help=write one declared non-key field through a mutable binding
+code.13.id=RDB-C014
+code.13.message=an outcome name or payload shape is invalid
+code.13.help=use one consistent typed payload for each declared outcome name
+code.14.id=RDB-C015
+code.14.message=an event name or payload shape is invalid
+code.14.help=construct every declared event field with its exact type
+code.15.id=RDB-C016
+code.15.message=partition and conflict keys must be computable from validated inputs
+code.15.help=derive aggregate keys only from root-key inputs and constants
+code.16.id=RDB-C017
+code.16.message=all command bindings must be statically colocated in one partition
+code.16.help=make all bindings use the same structural partition derivation
+code.17.id=RDB-C019
+code.17.message=the projection uses an unsupported or invalid operation
+code.17.help=use equality/conjunction filters and bounded count or sum aggregation
+code.18.id=RDB-C020
+code.18.message=a compiled artifact exceeds a fixed semantic bound
+code.18.help=reduce declared bounds or the number of schema components
+code.19.id=RDB-C021
+code.19.message=stable semantic identifiers cannot be allocated compatibly
+code.19.help=preserve lineage identities and do not reuse removed identifiers
+code.20.id=RDB-C022
+code.20.message=the parent bundle is not a valid predecessor
+code.20.help=compile against the exact validated predecessor bundle
+code.21.id=RDB-C023
+code.21.message=checked executable IR construction rejected the compiled plan
+code.21.help=none
+code.22.id=RDB-C201
+code.22.message=an identifier cannot form a valid MCP command tool-name segment
+code.22.help=start contract and command identifiers with an ASCII letter
+code.23.id=RDB-C202
+code.23.message=the complete MCP command tool name exceeds 128 bytes
+code.23.help=shorten the source contract or command identifier
+code.24.id=RDB-C203
+code.24.message=two commands normalize to the same MCP command tool name
+code.24.help=rename one command so lowercase identifiers remain distinct
+
+[RDB-C001-invalid-contract-version]
+expected=RDB-C001
+kind=semantic
+count=1
+diagnostic.0.code=RDB-C001
+diagnostic.0.message=contract version must be a supported nonzero integer
+diagnostic.0.primary=32..33
+diagnostic.0.related=none
+diagnostic.0.help=use a base-10 application version in 1..=u64::MAX
+
+[RDB-C002-duplicate-name]
+expected=RDB-C002
+kind=semantic
+count=1
+diagnostic.0.code=RDB-C002
+diagnostic.0.message=a name is declared more than once in this namespace
+diagnostic.0.primary=50..54
+diagnostic.0.related=44..48
+diagnostic.0.help=rename or remove one declaration in the shared namespace
+
+[RDB-C003-missing-declaration]
+expected=RDB-C003
+kind=semantic
+count=1
+diagnostic.0.code=RDB-C003
+diagnostic.0.message=a required declaration or singleton item is missing
+diagnostic.0.primary=39..42
+diagnostic.0.related=none
+diagnostic.0.help=add the required grammar-version-1 declaration
+
+[RDB-C004-unknown-name]
+expected=RDB-C004
+kind=semantic
+count=1
+diagnostic.0.code=RDB-C004
+diagnostic.0.message=a referenced declaration, field, or binding is unknown
+diagnostic.0.primary=100..107
+diagnostic.0.related=none
+diagnostic.0.help=reference an exact case-sensitive declared name
+
+[RDB-C005-invalid-type]
+expected=RDB-C005
+kind=semantic
+count=1
+diagnostic.0.code=RDB-C005
+diagnostic.0.message=the declared type is invalid or unsupported
+diagnostic.0.primary=55..62
+diagnostic.0.related=none
+diagnostic.0.help=use a bounded grammar-version-1 value type
+
+[RDB-C006-type-mismatch]
+expected=RDB-C006
+kind=semantic
+count=1
+diagnostic.0.code=RDB-C006
+diagnostic.0.message=an expression does not have the required exact type
+diagnostic.0.primary=87..88
+diagnostic.0.related=none
+diagnostic.0.help=make both sides use the same complete static type
+
+[RDB-C007-invalid-expression]
+expected=RDB-C007
+kind=semantic
+count=1
+diagnostic.0.code=RDB-C007
+diagnostic.0.message=the expression is invalid in this context
+diagnostic.0.primary=251..261
+diagnostic.0.related=none
+diagnostic.0.help=use an expression allowed by this declaration context
+
+[RDB-C008-invalid-aggregate]
+expected=RDB-C008
+kind=semantic
+count=1
+diagnostic.0.code=RDB-C008
+diagnostic.0.message=aggregate ownership or key shape is invalid
+diagnostic.0.primary=143..148
+diagnostic.0.related=none
+diagnostic.0.help=declare one root and the required root-key prefix ownership
+
+[RDB-C009-invalid-binding]
+expected=RDB-C009
+kind=semantic
+count=1
+diagnostic.0.code=RDB-C009
+diagnostic.0.message=the command binding is invalid or ambiguously owned
+diagnostic.0.primary=285..292
+diagnostic.0.related=none
+diagnostic.0.help=bind an entity owned by the command's one aggregate
+
+[RDB-C010-missing-idempotency]
+expected=RDB-C010
+kind=semantic
+count=1
+diagnostic.0.code=RDB-C010
+diagnostic.0.message=a mutating command must declare one idempotency key
+diagnostic.0.primary=157..163
+diagnostic.0.related=none
+diagnostic.0.help=declare a direct bounded string input as idempotency_key
+
+[RDB-C011-invalid-idempotency]
+expected=RDB-C011
+kind=semantic
+count=1
+diagnostic.0.code=RDB-C011
+diagnostic.0.message=the idempotency expression is invalid or used outside its clause
+diagnostic.0.primary=365..380
+diagnostic.0.related=none
+diagnostic.0.help=use one required string<1..=128> input only in the idempotency clause
+
+[RDB-C012-invalid-creation]
+expected=RDB-C012
+kind=semantic
+count=2
+diagnostic.0.code=RDB-C012
+diagnostic.0.message=the create binding does not definitely initialize its record
+diagnostic.0.primary=173..179
+diagnostic.0.related=none
+diagnostic.0.help=assign every required non-key field exactly once before return
+diagnostic.1.code=RDB-C012
+diagnostic.1.message=the create binding does not definitely initialize its record
+diagnostic.1.primary=333..336
+diagnostic.1.related=none
+diagnostic.1.help=assign every required non-key field exactly once before return
+
+[RDB-C013-invalid-mutation]
+expected=RDB-C013
+kind=semantic
+count=1
+diagnostic.0.code=RDB-C013
+diagnostic.0.message=the command mutation target is invalid
+diagnostic.0.primary=258..264
+diagnostic.0.related=none
+diagnostic.0.help=write one declared non-key field through a mutable binding
+
+[RDB-C014-invalid-outcome]
+expected=RDB-C014
+kind=semantic
+count=1
+diagnostic.0.code=RDB-C014
+diagnostic.0.message=an outcome name or payload shape is invalid
+diagnostic.0.primary=208..212
+diagnostic.0.related=185..189
+diagnostic.0.help=use one consistent typed payload for each declared outcome name
+
+[RDB-C015-invalid-event]
+expected=RDB-C015
+kind=semantic
+count=1
+diagnostic.0.code=RDB-C015
+diagnostic.0.message=an event name or payload shape is invalid
+diagnostic.0.primary=298..300
+diagnostic.0.related=none
+diagnostic.0.help=construct every declared event field with its exact type
+
+[RDB-C016-conflict-not-input-computable]
+expected=RDB-C016
+kind=semantic
+count=1
+diagnostic.0.code=RDB-C016
+diagnostic.0.message=partition and conflict keys must be computable from validated inputs
+diagnostic.0.primary=134..149
+diagnostic.0.related=none
+diagnostic.0.help=derive aggregate keys only from root-key inputs and constants
+
+[RDB-C017-cross-partition-mutation]
+expected=RDB-C017
+kind=semantic
+count=1
+diagnostic.0.code=RDB-C017
+diagnostic.0.message=all command bindings must be statically colocated in one partition
+diagnostic.0.primary=425..428
+diagnostic.0.related=none
+diagnostic.0.help=make all bindings use the same structural partition derivation
+
+[RDB-C019-invalid-projection]
+expected=RDB-C019
+kind=semantic
+count=1
+diagnostic.0.code=RDB-C019
+diagnostic.0.message=the projection uses an unsupported or invalid operation
+diagnostic.0.primary=146..153
+diagnostic.0.related=none
+diagnostic.0.help=use equality/conjunction filters and bounded count or sum aggregation
+
+[RDB-C020-bound-exceeded]
+expected=RDB-C020
+kind=semantic
+count=1
+diagnostic.0.code=RDB-C020
+diagnostic.0.message=a compiled artifact exceeds a fixed semantic bound
+diagnostic.0.primary=41..44
+diagnostic.0.related=none
+diagnostic.0.help=reduce declared bounds or the number of schema components
+
+[RDB-C021-stable-id-allocation]
+expected=RDB-C021
+kind=semantic
+count=1
+diagnostic.0.code=RDB-C021
+diagnostic.0.message=stable semantic identifiers cannot be allocated compatibly
+diagnostic.0.primary=139..143
+diagnostic.0.related=none
+diagnostic.0.help=preserve lineage identities and do not reuse removed identifiers
+
+[RDB-C022-invalid-parent]
+expected=RDB-C022
+kind=semantic
+count=1
+diagnostic.0.code=RDB-C022
+diagnostic.0.message=the parent bundle is not a valid predecessor
+diagnostic.0.primary=35..36
+diagnostic.0.related=none
+diagnostic.0.help=compile against the exact validated predecessor bundle
+
+[RDB-C023-invalid-ir-synthetic-hir]
+expected=RDB-C023
+kind=semantic
+count=1
+diagnostic.0.code=RDB-C023
+diagnostic.0.message=checked executable IR construction rejected the compiled plan
+diagnostic.0.primary=23..37
+diagnostic.0.related=none
+diagnostic.0.help=none
+
+[RDB-C201-invalid-command-tool-name]
+expected=RDB-C201
+kind=semantic
+count=1
+diagnostic.0.code=RDB-C201
+diagnostic.0.message=an identifier cannot form a valid MCP command tool-name segment
+diagnostic.0.primary=9..21
+diagnostic.0.related=none
+diagnostic.0.help=start contract and command identifiers with an ASCII letter
+
+[RDB-C202-command-tool-name-too-long]
+expected=RDB-C202
+kind=semantic
+count=1
+diagnostic.0.code=RDB-C202
+diagnostic.0.message=the complete MCP command tool name exceeds 128 bytes
+diagnostic.0.primary=182..239
+diagnostic.0.related=none
+diagnostic.0.help=shorten the source contract or command identifier
+
+[RDB-C203-command-tool-name-collision]
+expected=RDB-C203
+kind=semantic
+count=1
+diagnostic.0.code=RDB-C203
+diagnostic.0.message=two commands normalize to the same MCP command tool name
+diagnostic.0.primary=135..143
+diagnostic.0.related=245..253
+diagnostic.0.help=rename one command so lowercase identifiers remain distinct
+
+[syntax]
+kind=syntax
+count=1
+diagnostic.0.code=RDB-S004
+diagnostic.0.message=contract source contains an unexpected token
+diagnostic.0.primary=0..3
+diagnostic.0.expected=contract
+diagnostic.0.help=use the grammar-version-1 spelling shown in the language reference
+
+[write-influencing-indexed-range-read]
+kind=syntax
+count=1
+diagnostic.0.code=RDB-S004
+diagnostic.0.message=contract source contains an unexpected token
+diagnostic.0.primary=385..387
+diagnostic.0.expected=(
+diagnostic.0.help=use the grammar-version-1 spelling shown in the language reference

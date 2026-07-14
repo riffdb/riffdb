@@ -1,0 +1,71 @@
+format=riffdb-lineage-ledger-fixture-v1
+version=1
+allocation_count=22
+allocation.0=tag:entity owner_kind:0x00 owners: max_allocated:1 entries:1
+entry id:1 state:active identity_tag:entity owner_kind:0x00 owners: name:Budget
+allocation.1=tag:event owner_kind:0x00 owners: max_allocated:1 entries:1
+entry id:1 state:active identity_tag:event owner_kind:0x00 owners: name:BudgetAllocated
+allocation.2=tag:enum owner_kind:0x00 owners: max_allocated:0 entries:0
+allocation.3=tag:aggregate owner_kind:0x00 owners: max_allocated:1 entries:1
+entry id:1 state:active identity_tag:aggregate owner_kind:0x00 owners: name:AnnualBudget
+allocation.4=tag:command owner_kind:0x00 owners: max_allocated:2 entries:2
+entry id:1 state:active identity_tag:command owner_kind:0x00 owners: name:CreateBudget
+entry id:2 state:active identity_tag:command owner_kind:0x00 owners: name:AllocateBudget
+allocation.5=tag:projection owner_kind:0x00 owners: max_allocated:1 entries:1
+entry id:1 state:active identity_tag:projection owner_kind:0x00 owners: name:BudgetUtilizationDaily
+allocation.6=tag:index owner_kind:0x00 owners: max_allocated:0 entries:0
+allocation.7=tag:invariant owner_kind:0x00 owners: max_allocated:2 entries:2
+entry id:1 state:active identity_tag:invariant owner_kind:0x01 owners:1 name:non_negative
+entry id:2 state:active identity_tag:invariant owner_kind:0x01 owners:1 name:within_approval
+allocation.8=tag:field owner_kind:0x01 owners:1 max_allocated:5 entries:5
+entry id:1 state:active identity_tag:field owner_kind:0x01 owners:1 name:updated_at
+entry id:2 state:active identity_tag:field owner_kind:0x01 owners:1 name:fiscal_year
+entry id:3 state:active identity_tag:field owner_kind:0x01 owners:1 name:approved_amount
+entry id:4 state:active identity_tag:field owner_kind:0x01 owners:1 name:organization_id
+entry id:5 state:active identity_tag:field owner_kind:0x01 owners:1 name:allocated_amount
+allocation.9=tag:field owner_kind:0x02 owners:1 max_allocated:4 entries:4
+entry id:1 state:active identity_tag:field owner_kind:0x02 owners:1 name:amount
+entry id:2 state:active identity_tag:field owner_kind:0x02 owners:1 name:matter_id
+entry id:3 state:active identity_tag:field owner_kind:0x02 owners:1 name:fiscal_year
+entry id:4 state:active identity_tag:field owner_kind:0x02 owners:1 name:organization_id
+allocation.10=tag:field owner_kind:0x03 owners:1 max_allocated:4 entries:4
+entry id:1 state:active identity_tag:field owner_kind:0x03 owners:1 name:fiscal_year
+entry id:2 state:active identity_tag:field owner_kind:0x03 owners:1 name:approved_amount
+entry id:3 state:active identity_tag:field owner_kind:0x03 owners:1 name:idempotency_key
+entry id:4 state:active identity_tag:field owner_kind:0x03 owners:1 name:organization_id
+allocation.11=tag:field owner_kind:0x03 owners:2 max_allocated:5 entries:5
+entry id:1 state:active identity_tag:field owner_kind:0x03 owners:2 name:amount
+entry id:2 state:active identity_tag:field owner_kind:0x03 owners:2 name:matter_id
+entry id:3 state:active identity_tag:field owner_kind:0x03 owners:2 name:fiscal_year
+entry id:4 state:active identity_tag:field owner_kind:0x03 owners:2 name:idempotency_key
+entry id:5 state:active identity_tag:field owner_kind:0x03 owners:2 name:organization_id
+allocation.12=tag:field owner_kind:0x04 owners:1,1 max_allocated:1 entries:1
+entry id:1 state:active identity_tag:field owner_kind:0x04 owners:1,1 name:budget
+allocation.13=tag:field owner_kind:0x04 owners:1,2 max_allocated:2 entries:2
+entry id:1 state:active identity_tag:field owner_kind:0x04 owners:1,2 name:fiscal_year
+entry id:2 state:active identity_tag:field owner_kind:0x04 owners:1,2 name:organization_id
+allocation.14=tag:field owner_kind:0x04 owners:1,3 max_allocated:1 entries:1
+entry id:1 state:active identity_tag:field owner_kind:0x04 owners:1,3 name:minimum
+allocation.15=tag:field owner_kind:0x04 owners:2,1 max_allocated:2 entries:2
+entry id:1 state:active identity_tag:field owner_kind:0x04 owners:2,1 name:budget
+entry id:2 state:active identity_tag:field owner_kind:0x04 owners:2,1 name:remaining
+allocation.16=tag:field owner_kind:0x04 owners:2,2 max_allocated:1 entries:1
+entry id:1 state:active identity_tag:field owner_kind:0x04 owners:2,2 name:minimum
+allocation.17=tag:field owner_kind:0x04 owners:2,3 max_allocated:2 entries:2
+entry id:1 state:active identity_tag:field owner_kind:0x04 owners:2,3 name:fiscal_year
+entry id:2 state:active identity_tag:field owner_kind:0x04 owners:2,3 name:organization_id
+allocation.18=tag:field owner_kind:0x04 owners:2,4 max_allocated:3 entries:3
+entry id:1 state:active identity_tag:field owner_kind:0x04 owners:2,4 name:approved
+entry id:2 state:active identity_tag:field owner_kind:0x04 owners:2,4 name:allocated
+entry id:3 state:active identity_tag:field owner_kind:0x04 owners:2,4 name:requested
+allocation.19=tag:field owner_kind:0x05 owners:1 max_allocated:1 entries:1
+entry id:1 state:active identity_tag:field owner_kind:0x05 owners:1 name:allocated
+allocation.20=tag:outcome owner_kind:0x01 owners:1 max_allocated:3 entries:3
+entry id:1 state:active identity_tag:outcome owner_kind:0x01 owners:1 name:BudgetCreated
+entry id:2 state:active identity_tag:outcome owner_kind:0x01 owners:1 name:BudgetAlreadyExists
+entry id:3 state:active identity_tag:outcome owner_kind:0x01 owners:1 name:InvalidApprovedAmount
+allocation.21=tag:outcome owner_kind:0x01 owners:2 max_allocated:4 entries:4
+entry id:1 state:active identity_tag:outcome owner_kind:0x01 owners:2 name:Allocated
+entry id:2 state:active identity_tag:outcome owner_kind:0x01 owners:2 name:InvalidAmount
+entry id:3 state:active identity_tag:outcome owner_kind:0x01 owners:2 name:BudgetNotFound
+entry id:4 state:active identity_tag:outcome owner_kind:0x01 owners:2 name:InsufficientBudget

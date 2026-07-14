@@ -1,0 +1,25 @@
+format=riffdb-mcp-command-evolution-fixture-v1
+
+[genesis]
+registry command=1 source=Allocate tool=riffdb.cmd.toolevolution.allocate
+compatibility=compatible
+command_identity id=1 name=Allocate state=active
+
+[unchanged]
+registry command=1 source=Allocate tool=riffdb.cmd.toolevolution.allocate
+compatibility=compatible
+compatibility_entry code=RDB-K001 class=compatible path=contract
+command_identity id=1 name=Allocate state=active
+
+[renamed]
+registry command=2 source=Reallocate tool=riffdb.cmd.toolevolution.reallocate
+compatibility=incompatible
+compatibility_entry code=RDB-K010 class=compatible path=command:2
+compatibility_entry code=RDB-K100 class=incompatible path=command:1
+compatibility_entry code=RDB-K100 class=incompatible path=command:1/input/field:1
+compatibility_entry code=RDB-K100 class=incompatible path=command:1/outcome:1
+compatibility_entry code=RDB-K100 class=incompatible path=command:1/outcome:1/field:1
+compatibility_entry code=RDB-K100 class=incompatible path=command:1/outcome:2
+compatibility_entry code=RDB-K100 class=incompatible path=command:1/outcome:2/field:1
+command_identity id=1 name=Allocate state=tombstone
+command_identity id=2 name=Reallocate state=active

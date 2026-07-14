@@ -1,0 +1,57 @@
+format=riffdb-command-plan-fixture-v1
+
+[command 1]
+name=ChangeChild
+contract_version=1
+plan_hash=d99eddd37051e7b913ad7c6b53724f85a3fc73a4d2868572e49c5a437535c518
+execution=idempotent-mutation
+retry=bounded-full-reevaluation
+capability=invoke-command:RootValidationConstantFixture:1
+idempotency_input=5
+success_outcome=1
+input_owner=command-input:1
+input.field_count=5
+input.field.1=name:amount type:i64
+input.field.2=name:tenant type:uuid
+input.field.3=name:root_id type:uuid
+input.field.4=name:child_id type:uuid
+input.field.5=name:request_key type:string<128>
+outcome_count=2
+outcome=1 name=Changed owner=command-outcome:1:1
+outcome.1.field_count=1
+outcome.1.field.1=name:child_row type:record<entity:2>
+outcome=2 name=MissingChild owner=command-outcome:1:2
+outcome.2.field_count=0
+expression_count=8
+expression.0=type:uuid kind:input_field:2
+expression.1=type:uuid kind:input_field:3
+expression.2=type:uuid kind:input_field:4
+expression.3=type:i64 kind:input_field:1
+expression.4=type:record<entity:2> kind:complete_binding:0
+expression.5=type:i64 kind:constant:01020000000000000001
+expression.6=type:i64 kind:constant:01020000000000000001
+expression.7=type:bool kind:binary:equal:5:6
+binding_count=1
+binding=0 name=child_row mode=mutate entity=2 keys=0,1,2 reads= complete=true failure=owner:command-outcome:1:2 fields:[]
+binding.key=purpose:entity:2 components:3 maximum_encoded_bytes:54
+binding.key.component.0=type:uuid variants: maximum_payload_bytes:16
+binding.key.component.1=type:uuid variants: maximum_payload_bytes:16
+binding.key.component.2=type:uuid variants: maximum_payload_bytes:16
+root_validation_read_count=1
+root_validation_read=0 source_binding=0 entity=1 keys=0,1 reads=
+root_validation.key=purpose:entity:1 components:2 maximum_encoded_bytes:38
+root_validation.key.component.0=type:uuid variants: maximum_payload_bytes:16
+root_validation.key.component.1=type:uuid variants: maximum_payload_bytes:16
+locality.aggregate=1 partition_expression=0
+locality.partition=purpose:partition:1 components:1 maximum_encoded_bytes:22
+locality.partition.component.0=type:uuid variants: maximum_payload_bytes:16
+locality.conflict_count=1
+locality.conflict.0.expressions=0,1
+locality.conflict.key=purpose:conflict:1 components:2 maximum_encoded_bytes:38
+locality.conflict.key.component.0=type:uuid variants: maximum_payload_bytes:16
+locality.conflict.key.component.1=type:uuid variants: maximum_payload_bytes:16
+commit_check_count=1
+commit_check invariant=1 predicate=7 bindings= root_reads=0
+instruction_count=2
+instruction.0=set binding:0 field:1 value:3
+instruction.1=return outcome:1 payload:owner:command-outcome:1:1 fields:[1:4]

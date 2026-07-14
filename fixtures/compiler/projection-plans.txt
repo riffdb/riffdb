@@ -1,0 +1,25 @@
+format=riffdb-projection-plan-fixture-v1
+
+[projection 1]
+name=BudgetUtilizationDaily
+source_event=1
+plan_hash=a7e3cef0a846437d75a53c074e8af37e31a69829efe753db6eb49b67bd64080a
+frontier=transactionally-ordered
+filter=none
+key_expressions=0,1,2
+expression_count=4
+expression.0=type:uuid kind:source_event_field:4
+expression.1=type:i64 kind:source_event_field:3
+expression.2=type:date kind:transaction_date
+expression.3=type:decimal<28,2> kind:source_event_field:1
+group.codec=1
+group.components=3
+group.component.0=type:uuid variants: maximum_framed_bytes:22
+group.component.1=type:i64 variants: maximum_framed_bytes:14
+group.component.2=type:date variants: maximum_framed_bytes:10
+group.measures.field_count=1
+group.measures.field.1=name:allocated type:decimal<28,2>
+measure_count=1
+measure=1 name=allocated type=decimal<28,2> aggregation=sum expression=3
+maximum_complete_key_bytes=352
+maximum_stored_state_bytes=424

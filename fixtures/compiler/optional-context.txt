@@ -1,0 +1,10 @@
+format=riffdb-optional-context-fixture-v1
+lineage=OptionalArithmetic
+command_id=1
+plan_hash=60e48549d1cc719089aa794212009184f742e0f21b579a1a6636683f2cc8c88c
+source_expression=amount + 1
+source_span=389..399
+expression_id=4
+binary_result=i64
+destination=optional<i64>
+injection=nonoptional-to-optional

@@ -1,0 +1,87 @@
+format=riffdb-command-explain-fixture-v1
+
+[command 1]
+execution=idempotent-mutation
+partition_components=1
+partition_expression=0
+conflict_keys=1
+bindings=0
+read_fields=0:3,0:5
+write_fields=0:1,0:3,0:5
+invariants=1,2
+events=
+outcomes=1,2,3
+root_validation_read_count=0
+commit_check_count=2
+commit_check invariant=1 predicate=14 bindings=0 root_reads=
+commit_check invariant=2 predicate=17 bindings=0 root_reads=
+expression_count=18
+expression.0=type:uuid kind:input_field:4
+expression.1=type:i64 kind:input_field:1
+expression.2=type:uuid kind:input_field:4
+expression.3=type:i64 kind:input_field:1
+expression.4=type:decimal<28,2> kind:input_field:2
+expression.5=type:decimal<28,2> kind:constant:01041c0200000000000000000000000000000000
+expression.6=type:bool kind:binary:greater:4:5
+expression.7=type:decimal<2,2> kind:constant:0104020200000000000000000000000000000001
+expression.8=type:decimal<28,2> kind:input_field:2
+expression.9=type:decimal<28,2> kind:constant:01041c0200000000000000000000000000000000
+expression.10=type:timestamp kind:transaction_time
+expression.11=type:record<entity:1> kind:complete_binding:0
+expression.12=type:decimal<28,2> kind:bound_field:0:5
+expression.13=type:decimal<28,2> kind:constant:01041c0200000000000000000000000000000000
+expression.14=type:bool kind:binary:greater-equal:12:13
+expression.15=type:decimal<28,2> kind:bound_field:0:5
+expression.16=type:decimal<28,2> kind:bound_field:0:3
+expression.17=type:bool kind:binary:less-equal:15:16
+
+[command 2]
+execution=idempotent-mutation
+partition_components=1
+partition_expression=0
+conflict_keys=1
+bindings=0
+read_fields=0:3,0:5
+write_fields=0:1,0:5
+invariants=1,2
+events=1
+outcomes=1,2,3,4
+root_validation_read_count=0
+commit_check_count=2
+commit_check invariant=1 predicate=30 bindings=0 root_reads=
+commit_check invariant=2 predicate=33 bindings=0 root_reads=
+expression_count=34
+expression.0=type:uuid kind:input_field:5
+expression.1=type:i64 kind:input_field:3
+expression.2=type:uuid kind:input_field:5
+expression.3=type:i64 kind:input_field:3
+expression.4=type:decimal<28,2> kind:input_field:1
+expression.5=type:decimal<28,2> kind:constant:01041c0200000000000000000000000000000000
+expression.6=type:bool kind:binary:greater:4:5
+expression.7=type:decimal<2,2> kind:constant:0104020200000000000000000000000000000001
+expression.8=type:decimal<28,2> kind:bound_field:0:5
+expression.9=type:decimal<28,2> kind:input_field:1
+expression.10=type:decimal<28,2> kind:binary:add:8:9
+expression.11=type:decimal<28,2> kind:bound_field:0:3
+expression.12=type:bool kind:binary:less-equal:10:11
+expression.13=type:decimal<28,2> kind:bound_field:0:3
+expression.14=type:decimal<28,2> kind:bound_field:0:5
+expression.15=type:decimal<28,2> kind:input_field:1
+expression.16=type:decimal<28,2> kind:bound_field:0:5
+expression.17=type:decimal<28,2> kind:input_field:1
+expression.18=type:decimal<28,2> kind:binary:add:16:17
+expression.19=type:timestamp kind:transaction_time
+expression.20=type:uuid kind:input_field:5
+expression.21=type:i64 kind:input_field:3
+expression.22=type:uuid kind:input_field:2
+expression.23=type:decimal<28,2> kind:input_field:1
+expression.24=type:record<entity:1> kind:complete_binding:0
+expression.25=type:decimal<28,2> kind:bound_field:0:3
+expression.26=type:decimal<28,2> kind:bound_field:0:5
+expression.27=type:decimal<28,2> kind:binary:subtract:25:26
+expression.28=type:decimal<28,2> kind:bound_field:0:5
+expression.29=type:decimal<28,2> kind:constant:01041c0200000000000000000000000000000000
+expression.30=type:bool kind:binary:greater-equal:28:29
+expression.31=type:decimal<28,2> kind:bound_field:0:5
+expression.32=type:decimal<28,2> kind:bound_field:0:3
+expression.33=type:bool kind:binary:less-equal:31:32

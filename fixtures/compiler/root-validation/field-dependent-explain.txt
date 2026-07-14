@@ -1,0 +1,24 @@
+format=riffdb-command-explain-fixture-v1
+
+[command 1]
+execution=idempotent-mutation
+partition_components=1
+partition_expression=0
+conflict_keys=1
+bindings=0
+read_fields=
+write_fields=0:1
+invariants=1
+events=
+outcomes=1,2
+root_validation_read_count=1
+root_validation_read=0 source_binding=0 entity=1 keys=0,1 reads=2
+commit_check_count=1
+commit_check invariant=1 predicate=5 bindings= root_reads=0
+expression_count=6
+expression.0=type:uuid kind:input_field:2
+expression.1=type:uuid kind:input_field:3
+expression.2=type:uuid kind:input_field:4
+expression.3=type:i64 kind:input_field:1
+expression.4=type:record<entity:2> kind:complete_binding:0
+expression.5=type:bool kind:root_validation_field:0:2

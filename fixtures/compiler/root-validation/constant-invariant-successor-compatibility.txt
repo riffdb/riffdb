@@ -1,0 +1,4 @@
+format=riffdb-compatibility-report-fixture-v1
+overall=compatible
+entry_count=1
+entry code=RDB-K001 class=compatible path=contract

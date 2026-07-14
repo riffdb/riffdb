@@ -1,0 +1,2 @@
+format=riffdb-projection-maxima-fixture-v1
+projection=1 plan_hash=a7e3cef0a846437d75a53c074e8af37e31a69829efe753db6eb49b67bd64080a complete_key_bytes=352 stored_state_bytes=424

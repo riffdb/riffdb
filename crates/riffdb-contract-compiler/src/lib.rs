@@ -1,3 +1,26 @@
 #![forbid(unsafe_code)]
 
-//! Non-semantic bootstrap root for the `riffdb-contract-compiler` crate.
+//! Total compiler from the source-oriented grammar-v1 AST to checked executable IR.
+
+pub mod diagnostic;
+
+mod bundle_lowering;
+mod command_analysis;
+mod command_lowering;
+mod compiler;
+mod expression_lowering;
+mod hir;
+mod literal;
+mod locality;
+mod mcp_name;
+mod projection_lowering;
+mod schema_lowering;
+mod symbols;
+mod typecheck;
+
+pub use compiler::{
+    CompilationError, compile_contract_source, compile_contract_successor, validate_contract_source,
+};
+pub use diagnostic::{
+    CompilerDiagnostic, CompilerDiagnosticCode, CompilerDiagnostics, DiagnosticBoundsError,
+};

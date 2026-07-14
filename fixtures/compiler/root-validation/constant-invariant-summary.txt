@@ -1,0 +1,16 @@
+format=riffdb-root-validation-fixture-v1
+case=constant-invariant
+bundle_v1_bytes=5256
+bundle_v1_hash=fb1620ac5351491bf8f845e81d22d8190cc1f46f489b0393a949982521332ebe
+bundle_v2_bytes=5320
+bundle_v2_hash=4a2a73852e2589da4dbb787b9cc1766cf9ad1e01d9c354e600387ff976a74d47
+plan_hash=d99eddd37051e7b913ad7c6b53724f85a3fc73a4d2868572e49c5a437535c518
+root_read_id=0
+source_binding=0
+root_entity=1
+key_expressions=0,1
+accessed_fields=
+root_field_expressions=0
+successor_compatibility=compatible
+successor_compatibility_entries=1
+successor_compatibility_code=RDB-K001
