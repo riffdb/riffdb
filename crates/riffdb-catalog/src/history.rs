@@ -113,10 +113,15 @@ pub fn validate_catalog_history<S: StructuralEvidenceSession>(
             } => {
                 let amount = u64::try_from(evidence.len())
                     .map_err(|_| CatalogError::new(CatalogErrorKind::InvalidHistoricalEvidence))?;
+                if amount == 0 || amount > u64::from(page_limit.get()) {
+                    return Err(CatalogError::new(
+                        CatalogErrorKind::InvalidHistoricalEvidence,
+                    ));
+                }
                 let expected_next = cursor
                     .advanced(amount)
                     .map_err(|_| CatalogError::new(CatalogErrorKind::InvalidHistoricalEvidence))?;
-                if start != cursor || next != expected_next {
+                if start != cursor || next == cursor || next != expected_next {
                     return Err(CatalogError::new(
                         CatalogErrorKind::InvalidHistoricalEvidence,
                     ));
