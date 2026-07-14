@@ -379,10 +379,12 @@ work_packages:
   - ADR-0005
   - ADR-0006
   - ADR-0013
+  - ADR-0016
   - ADR-0020
   allowed_paths:
   - Cargo.lock
   - crates/riffdb-catalog/**
+  - crates/riffdb-contract-ir/src/key_schema.rs
   - crates/riffdb-storage-api/src/catalog*
   - tests/contract_deploy*
   deliverables:

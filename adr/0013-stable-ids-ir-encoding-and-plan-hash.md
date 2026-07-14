@@ -504,9 +504,10 @@ capacity calculations:
 
 The 1 MiB headroom below ADR-0006's absolute 16 MiB payload/envelope ceiling is
 reserved for the catalog Protobuf wrapper and `StoredEnvelope`. WP-050 must prove
-with a maximum-size fixture that the complete encoded envelope remains at or
-below 16 MiB. A semantic owner may impose a lower bound where the source grammar
-already does.
+the 15 MiB semantic bundle bound with a maximum-size fixture. WP-065, which owns
+the durable Protobuf wrapper and `StoredEnvelope`, must prove with that fixture
+that the complete encoded envelope remains at or below 16 MiB. A semantic owner
+may impose a lower bound where the source grammar already does.
 
 ### Compiler and execution version policy
 
