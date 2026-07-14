@@ -6,7 +6,7 @@
 **Tagline:** *Vibe fast. Commit safely.*  
 **Category:** Contract-first operational database for agent-built applications  
 
-**Version:** 0.8
+**Version:** 0.9
 **Status:** Architecture-approved implementation handoff
 **Date:** 13 July 2026
 **Audience:** Coding agents, database engineers, compiler engineers, security reviewers, and technical product leads  
@@ -44,6 +44,7 @@
 | 0.6 | 2026-07-13 | Applied accepted ADR-0019 and ADR-0020: retained exactly the six authoritative POC metadata categories with unconditional startup integrity validation, and froze compiler-owned MCP command tool-name normalization, collision rejection, and catalog revalidation without accepting the remaining ADR-0008 URI or transport decisions. |
 | 0.7 | 2026-07-13 | Applied accepted ADR-0021's exact lineage-scoped service-audit target registry and canonical ordering, and reconciled the canonical `LegalSpend`/`AllocateBudget` source identifiers with ADR-0020's no-word-splitting MCP name. |
 | 0.8 | 2026-07-13 | Reconciled the accepted first-runnable P1 boundary: storage owns complete structural evidence and dormant type-state ports, catalog owns same-session IR-aware historical validation, WP-130 composes the minimal production `riffdbd` startup/lifecycle and restart proof, and WP-185 only extends that graph with P2 components. |
+| 0.9 | 2026-07-13 | Clarified schema-complete startup evidence for every persisted entity, index-entry, and range-prefix key without a storage-to-IR dependency, and assigned ordered commit scans a dedicated 16 MiB internal encoded-content page ceiling while retaining the generic 4 MiB scan ceiling. |
 
 ### Normative language
 
@@ -1316,12 +1317,23 @@ session, repeated or skipped continuation, or structural error is failure, never
 successful end-of-history evidence.
 
 The evidence contains only bounded storage-structural facts and canonical stored
-bundle/plan bytes needed by the catalog validator. It carries no decoded IR and
-grants no mutation authority. When the redb structural scan and evidence cursor
-both reach exact end, the session may yield `StructurallyOpened` dormant backend
-ports bound to that database/open session. This value proves storage structure,
-not catalog semantics or operational readiness. On any failure, the entire open
-is dropped and no dormant or operational port is released.
+bundle/plan bytes needed by the catalog validator. It also enumerates every
+persisted entity key, index-entry key, and range-prefix key as bounded,
+IR-opaque evidence with the durable owner/reference facts needed to select its
+exact retained or active key schema. Storage checks framing, bounds, canonical
+bytes, and record reciprocity but does not interpret a `KeySchema`. The catalog
+must consume the exact end of these key-evidence streams and validate every key
+against the selected historical schema before it may construct
+`ValidatedCatalogHistory`; an unknown owner/schema, incomplete component,
+schema mismatch, omitted row, or truncated stream fails closed. This changes no
+durable key encoding and introduces no storage-to-IR dependency.
+
+The evidence carries no decoded IR and grants no mutation authority. When the
+redb structural scan and every evidence cursor reach exact end, the session may
+yield `StructurallyOpened` dormant backend ports bound to that database/open
+session. This value proves storage structure, not catalog semantics or
+operational readiness. On any failure, the entire open is dropped and no dormant
+or operational port is released.
 
 The server drives the evidence pages into the catalog-owned historical validator.
 Only server composition may combine matching `StructurallyOpened` ports and
@@ -1344,8 +1356,10 @@ dependencies, validation targets, mutations, index deltas, event intents, or
 outbox intents per command; 1 MiB per canonical entity/event/outcome value;
 16 MiB per owned snapshot; 15 MiB per pre-commit intent or commit-record semantic
 payload; 64 commands and 16 MiB aggregate staged write set per write transaction;
-500 rows and 4 MiB per scan page; 4 KiB per entity/index/partition/conflict key
-or index prefix; 256 integrity findings plus a `truncated` flag; 15 MiB per
+500 rows and 4 MiB per generic scan page; 500 records and 16 MiB encoded content
+per internal ordered commit-scan page; 4 KiB per
+entity/index/partition/conflict key or index prefix; 256 integrity findings plus
+a `truncated` flag; 15 MiB per
 catalog bundle; 16 targets and 64 KiB per service-audit record; and ADR-0006's
 absolute 16 MiB durable payload/envelope ceiling. Counts and bytes use checked
 arithmetic before allocation or transaction opening. Configuration may lower,

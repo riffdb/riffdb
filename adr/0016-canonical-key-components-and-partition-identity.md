@@ -25,6 +25,8 @@ partition identity.
 
 The human maintainer accepted this exact text, the canonical root-derivation
 equality clarification, and the companion clarifications below on 2026-07-13.
+The maintainer also accepted the schema-complete startup-evidence clarification
+below on 2026-07-13.
 
 ## Decision
 
@@ -230,6 +232,18 @@ apply, frontier/control, and group state keys use the distinct versioned prefixe
 `0x41 0x01`, `0x46 0x01`, and `0x47 0x01` and include the exact projection
 identity plus generation/sequence/components defined by ADR-0017. They remain
 non-substitutable for the key types defined here.
+
+Because these canonical key payloads deliberately contain no component type
+tags, storage-only structural decoding cannot prove that historical bytes end at
+component boundaries or satisfy the schema that produced them. The exclusive
+ADR-0004 startup pass therefore enumerates every persisted entity key,
+index-entry key, and persisted range-prefix key as bounded IR-opaque bytes plus
+the durable owner/reference facts needed to select its exact retained or active
+`KeySchema`. `riffdb-catalog`, not storage, validates every item with that exact
+historical schema and consumes each evidence stream through exact end before it
+may construct `ValidatedCatalogHistory`. This does not change any key byte,
+permit current-active-schema substitution for a historical owner, or introduce
+an IR dependency into `riffdb-storage-api` or `riffdb-storage-redb`.
 
 ## Options Considered
 

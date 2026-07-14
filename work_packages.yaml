@@ -398,6 +398,8 @@ work_packages:
   - IR-aware, bounded historical bundle and executable-plan resolver that consumes every same-session
     HistoricalSemanticEvidence page through exact end and returns an opaque catalog-owned ValidatedCatalogHistory
     bound to that startup session; truncated, skipped, repeated, reordered, mismatched, or unknown evidence fails closed
+  - Exact historical KeySchema validation for every IR-opaque persisted entity-key, index-entry-key, and range-prefix-key
+    evidence item, with unknown owners/schemas, component-incomplete bytes, omissions, and non-exact stream ends rejected
   - Architecture checks proving ValidatedCatalogHistory never crosses a storage trait, storage never
     imports or interprets contract IR, and neither side accepts a generic validation callback
   acceptance_commands:
@@ -474,7 +476,8 @@ work_packages:
   - Semantic key/value records
   - Catalog, capability, outbox, and projection persistence ports
   - In-memory storage implementation
-  - Ordered commit scan
+  - Ordered commit scan with a dedicated internal ceiling of 500 complete records and 16 MiB encoded page content;
+    semantic commit records are never chunked and generic scan pages remain limited to 500 entries and 4 MiB
   - Integrity-check interface
   - Checked EvaluatedCommand and complete dependency-validation request, terminal non-commit admission transition,
     and memory conformance cases
@@ -500,6 +503,8 @@ work_packages:
   - Engine-neutral StructuralEvidenceSession type-state, bounded HistoricalSemanticEvidence pages with an unambiguous
     exact-end result, and StructurallyOpened dormant-port handoff bound to one database/open session; initialization
     precedes evidence, no mutation port is available during the session, and failure releases no operational ports
+  - Bounded IR-opaque exact-end evidence for every persisted entity key, index-entry key, and range-prefix key, carrying
+    only the durable owner/reference facts needed for catalog-owned exact historical KeySchema validation
   - Memory conformance for initialization-before-evidence, exclusive noninterleaving scans, page continuation and
     exact-end coverage, session/database mismatch rejection, dropped/failed session behavior, and dormant ports that
     cannot become operational without the separate catalog-owned same-session ValidatedCatalogHistory
@@ -623,6 +628,8 @@ work_packages:
   - Redb table layout
   - Atomic entity/index/outcome/event/provenance/log commit
   - Complete storage-structural startup scan and exact-end historical semantic evidence
+  - Complete bounded enumeration of every persisted entity key, index-entry key, and range-prefix key with IR-opaque
+    durable owner/reference evidence for catalog validation, without interpreting KeySchema in the redb adapter
   - Offline backup and restore
   - Storage benchmarks
   - Named storage failpoints and redaction-safe telemetry hooks

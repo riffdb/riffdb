@@ -19,6 +19,8 @@ record on 2026-07-13 as part of the atomic semantic-interface governance batch.
 On 2026-07-13 the maintainer also accepted the P1 readiness amendment below,
 which separates redb structural evidence, catalog semantic validation, and
 production activation without adding a storage-to-IR dependency.
+On 2026-07-13 the maintainer accepted the schema-complete historical-key evidence
+and dedicated ordered-commit-scan ceiling clarifications below.
 
 ## Context
 
@@ -710,6 +712,20 @@ bounds, keys, sequence continuity, record reciprocity, durable references, and
 the other storage-structural facts in this ADR. They contain no `CommandPlan`,
 IR semantic proof, parser value, or executable expression.
 
+The pass enumerates every persisted entity key, complete index-entry key, and
+persisted range-prefix key in bounded, exact-end evidence streams. Each evidence
+item carries only canonical key bytes and the IR-opaque durable owner/reference
+facts needed for the catalog to select the exact retained or active ADR-0016
+`KeySchema`; it carries no decoded schema or IR. Storage validates framing,
+bounds, canonical byte preservation, ownership cross-links, and record
+reciprocity, but cannot claim component completeness because ADR-0016 key bytes
+contain no component type tags. While the same session remains exclusive,
+`riffdb-catalog` must validate every enumerated key against its selected exact
+historical schema. Unknown or mismatched ownership, a missing schema, incomplete
+components, omitted evidence, or failure to consume exact end prevents
+`ValidatedCatalogHistory` and fails the open. This evidence requirement changes
+no durable key encoding and creates no storage-to-IR dependency.
+
 The structural pass receives three already checked, value-only startup inputs:
 one canonical value sampled and validated through the policy-owned
 `AuthorizationClock`, one typed inventory of readable capability digest schemes
@@ -905,8 +921,10 @@ may be lower. The v1 storage hard ceilings are:
 | One pre-commit intent or final commit-record semantic payload | 15 MiB |
 | Commands staged in one write transaction | 64 |
 | Aggregate encoded staged write set | 16 MiB |
-| Entries returned by one storage scan page | 500 |
-| Encoded content returned by one scan page | 4 MiB |
+| Entries returned by one generic storage scan page | 500 |
+| Encoded content returned by one generic scan page | 4 MiB |
+| Records returned by one internal ordered commit-scan page | 500 |
+| Encoded content returned by one internal ordered commit-scan page | 16 MiB |
 | Entity, index, partition, conflict key, or index prefix | 4 KiB |
 | Integrity findings returned in one report | 256 plus a `truncated` flag |
 | Catalog bundle semantic payload | 15 MiB |
@@ -914,12 +932,16 @@ may be lower. The v1 storage hard ceilings are:
 | Any encoded durable payload/envelope | ADR-0006 absolute 16 MiB ceiling |
 
 The total intent/commit limits dominate the per-collection limits; satisfying a
-count does not permit exceeding the byte budget. Range reads that would need a
-second page cannot influence one command in v1. Integrity truncation reports the
-total as at least the returned count and never means the unreported problems are
-accepted. Any authoritative finding, returned or truncated, fails core readiness;
-a scan that establishes only derived findings degrades the corresponding outbox
-or projection subsystem under the ownership rules above.
+count does not permit exceeding the byte budget. The dedicated internal ordered
+commit scan may therefore return any one valid commit record up to the absolute
+16 MiB durable-envelope ceiling; it does not chunk a semantic commit. Public
+service and transport APIs may impose lower response limits. Range reads that
+would need a second generic page cannot influence one command in v1. Integrity
+truncation reports the total as at least the returned count and never means the
+unreported problems are accepted. Any authoritative finding, returned or
+truncated, fails core readiness; a scan that establishes only derived findings
+degrades the corresponding outbox or projection subsystem under the ownership
+rules above.
 
 ### Closed storage errors and semantic results
 
@@ -1382,6 +1404,10 @@ Acceptance of this exact record decided:
     `StructurallyOpened` dormant ports, and WP-130-only matching/activation
     without a storage-to-IR
     edge or any weakening of per-command historical-plan revalidation.
+13. bounded IR-opaque evidence for every persisted entity, index-entry, and
+    range-prefix key, with catalog-owned exact historical `KeySchema` validation,
+    plus a dedicated 500-record/16 MiB internal ordered commit-scan page ceiling
+    that leaves the generic scan ceiling at 500 entries/4 MiB.
 
 These semantic details received explicit maintainer review on 2026-07-13; they
 were not inferred merely from the earlier direction approval.
