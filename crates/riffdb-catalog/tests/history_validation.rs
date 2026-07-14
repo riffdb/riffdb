@@ -24,6 +24,9 @@ enum CursorFault {
     Skip,
     WrongStart,
     WrongEnd,
+    RawRepeatEmpty,
+    RawNonAdvancing,
+    RawOversized,
 }
 
 struct FakeHistoricalEnd(HistoricalEvidenceCursor);
@@ -81,8 +84,18 @@ impl StructuralEvidenceSession for FakeSession {
     fn read_historical_evidence(
         &mut self,
         cursor: HistoricalEvidenceCursor,
-        _limit: EvidencePageLimit,
+        limit: EvidencePageLimit,
     ) -> Result<HistoricalEvidencePage<Self::HistoricalEnd>, StorageError> {
+        if matches!(self.fault, CursorFault::RawRepeatEmpty) {
+            assert_eq!(self.page, 0, "validator reread a non-advancing page");
+            self.page += 1;
+            return Ok(HistoricalEvidencePage::Page {
+                start: cursor,
+                evidence: Vec::new(),
+                next: cursor,
+            });
+        }
+
         let Some(evidence) = self.pages.get(self.page).cloned() else {
             let end = if matches!(self.fault, CursorFault::WrongEnd) {
                 cursor
@@ -113,6 +126,21 @@ impl StructuralEvidenceSession for FakeSession {
         let next = start
             .advanced(advance)
             .map_err(|_| storage_error(StorageErrorKind::InvariantViolation))?;
+        if matches!(self.fault, CursorFault::RawNonAdvancing) {
+            return Ok(HistoricalEvidencePage::Page {
+                start,
+                evidence,
+                next: start,
+            });
+        }
+        if matches!(self.fault, CursorFault::RawOversized) && evidence.len() > limit.get() as usize
+        {
+            return Ok(HistoricalEvidencePage::Page {
+                start,
+                evidence,
+                next,
+            });
+        }
         HistoricalEvidencePage::page(start, evidence, next)
             .map_err(|_| storage_error(StorageErrorKind::InvariantViolation))
     }
@@ -284,6 +312,78 @@ fn skipped_repeated_reordered_cross_session_and_truncated_streams_fail_closed() 
             .expect("invalid sequence");
         assert_eq!(error.kind(), CatalogErrorKind::InvalidHistoricalEvidence);
     }
+}
+
+#[test]
+fn raw_empty_nonadvancing_and_oversized_pages_fail_closed() {
+    let mut repeat_empty = session(Vec::new(), Vec::new(), CursorFault::RawRepeatEmpty);
+    assert_eq!(
+        validate_catalog_history(&mut repeat_empty)
+            .err()
+            .expect("empty non-advancing page")
+            .kind(),
+        CatalogErrorKind::InvalidHistoricalEvidence
+    );
+    assert_eq!(repeat_empty.page, 1, "invalid page must not be reread");
+
+    let mut nonadvancing = session(
+        vec![vec![HistoricalSemanticEvidence::ActiveCatalog(None)]],
+        Vec::new(),
+        CursorFault::RawNonAdvancing,
+    );
+    assert_eq!(
+        validate_catalog_history(&mut nonadvancing)
+            .err()
+            .expect("non-advancing page")
+            .kind(),
+        CatalogErrorKind::InvalidHistoricalEvidence
+    );
+
+    const INDEXED: &str = r#"
+contract Indexed version 1 {
+  entity Row {
+    key (id: u64)
+    field name: string<8>
+    index ByName(name)
+  }
+  aggregate Rows {
+    root Row
+    partition_by id
+    conflict_key (id)
+  }
+}
+"#;
+    let bundle = ValidatedContractBundle::from_compiler_bundle(
+        compile_contract_source(INDEXED).expect("indexed contract"),
+    )
+    .expect("validated");
+    let stored = stored_bundle(&bundle);
+    let entity = bundle.bundle().schema().entities().first().expect("entity");
+    let oversized = (0..=500)
+        .map(|id| {
+            let key = entity
+                .primary_key()
+                .encode_entity(&[CanonicalValue::U64(id)])
+                .expect("entity key");
+            HistoricalSemanticEvidence::PersistedKey(entity_key_evidence(&bundle, key))
+        })
+        .collect();
+    let mut oversized_page = session(
+        vec![
+            vec![HistoricalSemanticEvidence::Bundle(stored.clone())],
+            vec![active(&bundle)],
+            oversized,
+        ],
+        vec![stored],
+        CursorFault::RawOversized,
+    );
+    assert_eq!(
+        validate_catalog_history(&mut oversized_page)
+            .err()
+            .expect("oversized raw page")
+            .kind(),
+        CatalogErrorKind::InvalidHistoricalEvidence
+    );
 }
 
 #[test]
