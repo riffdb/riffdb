@@ -1,3 +1,19 @@
 #![forbid(unsafe_code)]
 
-//! Non-semantic bootstrap root for the `riffdb-auth` crate.
+//! Opaque capability credentials and operational digest-key custody.
+
+/// Isolated offline bootstrap credential generation and validation.
+pub mod bootstrap_secret;
+
+mod authenticator;
+mod current;
+mod digest_keys;
+mod entropy;
+mod protected_file;
+mod token;
+
+pub use authenticator::*;
+pub use current::*;
+pub use digest_keys::*;
+pub use entropy::*;
+pub use token::*;

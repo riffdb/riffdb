@@ -39,6 +39,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f2032f911046de80f0a198e0901378627c33f59ea0ac00e363d481118bd70a53"
 
 [[package]]
+name = "base64"
+version = "0.22.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "72b3254f16251a8381aa12e40e3c4d2f0199f8c6508fbecb9d91f575e0fbb8c6"
+
+[[package]]
 name = "beef"
 version = "0.5.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -974,6 +980,13 @@ version = "0.1.0"
 [[package]]
 name = "riffdb-auth"
 version = "0.1.0"
+dependencies = [
+ "base64",
+ "getrandom 0.3.4",
+ "riffdb-storage-api",
+ "riffdb-types",
+ "zeroize",
+]
 
 [[package]]
 name = "riffdb-catalog"
@@ -1620,3 +1633,9 @@ dependencies = [
  "quote",
  "syn",
 ]
+
+[[package]]
+name = "zeroize"
+version = "1.8.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ced3678a2879b30306d323f4542626697a464a97c0a07c9aebf7ebca65cd4dde"
