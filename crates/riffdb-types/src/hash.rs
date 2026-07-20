@@ -304,7 +304,18 @@ pub fn keyed_hash(
     key: &DigestKey,
     payload: &[u8],
 ) -> KeyedDigest {
-    let mut mac = Hmac::<Sha256>::new_from_slice(key.expose_secret())
+    keyed_hash_secret(domain, key_id, key.expose_secret(), payload)
+}
+
+/// Computes a domain-separated v1 HMAC-SHA-256 lookup digest from borrowed
+/// secret key bytes.
+pub fn keyed_hash_secret(
+    domain: KeyedHashDomain,
+    key_id: DigestKeyId,
+    key_bytes: &[u8; 32],
+    payload: &[u8],
+) -> KeyedDigest {
+    let mut mac = Hmac::<Sha256>::new_from_slice(key_bytes)
         .expect("HMAC-SHA-256 accepts keys of every length");
     write_frame(&mut mac, HMAC_PREFIX, domain.label(), payload);
     KeyedDigest::new(key_id, mac.finalize().into_bytes().into())
@@ -318,7 +329,23 @@ pub fn hash_capability_token(
     key: &DigestKey,
     raw_token: &[u8; 32],
 ) -> CapabilityTokenDigest {
-    let digest = keyed_hash(KeyedHashDomain::CapabilityToken, key_id, key, raw_token);
+    hash_capability_token_secret(key_id, key.expose_secret(), raw_token)
+}
+
+/// Computes the v1 capability-token lookup digest from borrowed secret key
+/// bytes and exactly 32 decoded raw token bytes.
+#[must_use]
+pub fn hash_capability_token_secret(
+    key_id: DigestKeyId,
+    key_bytes: &[u8; 32],
+    raw_token: &[u8; 32],
+) -> CapabilityTokenDigest {
+    let digest = keyed_hash_secret(
+        KeyedHashDomain::CapabilityToken,
+        key_id,
+        key_bytes,
+        raw_token,
+    );
     CapabilityTokenDigest::from_hmac_bytes(key_id, *digest.as_bytes())
 }
 

@@ -8,8 +8,9 @@ use riffdb_types::{
     DIGEST_SCHEME_V1, Date, DigestKey, DigestKeyId, ENTITY_KEY_V1_PREFIX, EntityKeyBuilder,
     EntityTypeId, EnumVariantId, HashDomain, INDEX_ENTRY_KEY_V1_PREFIX, IndexEntryKeyBuilder,
     IndexId, KeyedHashDomain, MAX_KEY_BYTES, PARTITION_KEY_V1_PREFIX, PartitionKeyBuilder,
-    ProjectionApplyHash, Timestamp, hash, hash_capability_token, hash_contract_plan_root,
-    hash_partition_key, hash_plan, hash_projection_apply, hash_projection_plan, keyed_hash,
+    ProjectionApplyHash, Timestamp, hash, hash_capability_token, hash_capability_token_secret,
+    hash_contract_plan_root, hash_partition_key, hash_plan, hash_projection_apply,
+    hash_projection_plan, keyed_hash, keyed_hash_secret,
 };
 
 fn hex(input: &str) -> Vec<u8> {
@@ -104,11 +105,15 @@ fn typed_hash_helpers_preserve_semantic_output_types() {
 
 #[test]
 fn hmac_v1_idempotency_vector_and_key_metadata_are_stable() {
-    let key = DigestKey::from_bytes(std::array::from_fn(|index| index as u8));
+    let key_bytes = std::array::from_fn(|index| index as u8);
+    let key = DigestKey::from_bytes(key_bytes);
     let key_id = DigestKeyId::new(7).expect("nonzero key ID");
     let digest = keyed_hash(KeyedHashDomain::IdempotencyKey, key_id, &key, b"abc");
+    let borrowed_digest =
+        keyed_hash_secret(KeyedHashDomain::IdempotencyKey, key_id, &key_bytes, b"abc");
     assert_eq!(digest.scheme(), DIGEST_SCHEME_V1);
     assert_eq!(digest.key_id(), key_id);
+    assert_eq!(borrowed_digest, digest);
     assert_eq!(
         digest.as_bytes().as_slice(),
         hex("1f4efc4b2b126d651bcadff9d0db50cc3a356ee64281cb8ac421b190f3830f0c")
@@ -117,14 +122,24 @@ fn hmac_v1_idempotency_vector_and_key_metadata_are_stable() {
 
 #[test]
 fn hmac_v1_capability_token_vector_uses_raw_token_bytes_and_redacts() {
-    let key = DigestKey::from_bytes(std::array::from_fn(|index| index as u8));
+    let key_bytes = std::array::from_fn(|index| index as u8);
+    let key = DigestKey::from_bytes(key_bytes);
     let key_id = DigestKeyId::new(7).expect("nonzero key ID");
     let raw_token = std::array::from_fn(|index| index as u8);
     let digest: CapabilityTokenDigest = hash_capability_token(key_id, &key, &raw_token);
+    let borrowed_digest = hash_capability_token_secret(key_id, &key_bytes, &raw_token);
     let idempotency_digest = keyed_hash(KeyedHashDomain::IdempotencyKey, key_id, &key, &raw_token);
+    let borrowed_idempotency_digest = keyed_hash_secret(
+        KeyedHashDomain::IdempotencyKey,
+        key_id,
+        &key_bytes,
+        &raw_token,
+    );
 
     assert_eq!(digest.scheme(), DIGEST_SCHEME_V1);
     assert_eq!(digest.key_id(), key_id);
+    assert_eq!(borrowed_digest, digest);
+    assert_eq!(borrowed_idempotency_digest, idempotency_digest);
     assert_eq!(
         digest.as_bytes().as_slice(),
         hex("836b1036b35f59f04efaace126446cbf0f81ff113e6e768ae7b3c88e72a8e042")
