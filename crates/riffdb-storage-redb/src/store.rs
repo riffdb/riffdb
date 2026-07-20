@@ -2,11 +2,12 @@
 
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex, MutexGuard};
 
 use redb::{
-    Database, Durability, MultimapTableHandle, ReadableDatabase, ReadableTable, TableHandle,
+    Database, Durability, MultimapTableHandle, ReadTransaction, ReadableDatabase, ReadableTable,
+    TableHandle, WriteTransaction,
 };
 use riffdb_storage_api::{
     ApplicationSequenceAllocator, DatabaseIdentityProbe, DatabaseIdentityProbePort,
@@ -25,6 +26,7 @@ use crate::error::{
     commit_error, database_error, precommit_storage_error, storage_error, table_error,
     transaction_error,
 };
+use crate::gate::{ExclusiveGate, ExclusiveLease};
 use crate::layout::{
     META, META_ADMINISTRATION_SEQUENCE, META_APPLICATION_SEQUENCE, META_CAPABILITY_BOOTSTRAP,
     META_DATABASE_ID, META_FORMAT_VERSION, META_KEYS, TABLE_NAMES, create_all_tables,
@@ -34,7 +36,7 @@ pub(crate) struct SharedRedb {
     pub(crate) database: Database,
     #[allow(dead_code, reason = "WP-070 offline backup consumes the source path")]
     path: PathBuf,
-    mutation_gate: Mutex<()>,
+    mutation_gate: ExclusiveGate,
     write_fenced: AtomicBool,
 }
 
@@ -44,6 +46,28 @@ pub(crate) struct SharedRedb {
 /// structural, catalog, or operational readiness.
 pub struct RedbStore {
     pub(crate) shared: Arc<SharedRedb>,
+}
+
+/// Redb ports released by a complete structural evidence session.
+///
+/// This value is still dormant: it exposes no storage trait implementation and
+/// is not an operational-readiness proof.
+pub struct RedbDormantPorts {
+    pub(crate) shared: Arc<SharedRedb>,
+}
+
+/// Activated redb-backed semantic storage ports.
+///
+/// Only server composition should construct this value, after it has matched
+/// the structural handoff with the catalog-owned validation proof.
+pub struct RedbOperationalPorts {
+    pub(crate) shared: Arc<SharedRedb>,
+}
+
+pub(crate) struct RedbWriteAccess {
+    shared: Arc<SharedRedb>,
+    transaction: Option<WriteTransaction>,
+    _lease: ExclusiveLease,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -61,7 +85,7 @@ impl RedbStore {
             shared: Arc::new(SharedRedb {
                 database,
                 path,
-                mutation_gate: Mutex::new(()),
+                mutation_gate: ExclusiveGate::default(),
                 write_fenced: AtomicBool::new(false),
             }),
         })
@@ -73,11 +97,8 @@ impl RedbStore {
         &self.shared.path
     }
 
-    pub(crate) fn mutation_guard(&self) -> Result<MutexGuard<'_, ()>, StorageError> {
-        self.shared
-            .mutation_gate
-            .lock()
-            .map_err(|_| storage_error(StorageErrorKind::InvariantViolation))
+    pub(crate) fn acquire_mutation_lease(&self) -> Result<ExclusiveLease, StorageError> {
+        self.shared.mutation_gate.acquire()
     }
 
     pub(crate) fn ensure_writable(&self) -> Result<(), StorageError> {
@@ -96,6 +117,93 @@ impl RedbStore {
         Self {
             shared: Arc::clone(&self.shared),
         }
+    }
+}
+
+impl RedbDormantPorts {
+    /// Consumes dormant ports after the caller has matched the separate
+    /// catalog-owned startup proof.
+    ///
+    /// The redb adapter cannot depend on contract IR or the catalog proof type;
+    /// WP-130 is the sole production caller and owns that proof composition.
+    #[must_use]
+    pub fn into_operational_after_catalog_validation(self) -> RedbOperationalPorts {
+        RedbOperationalPorts {
+            shared: self.shared,
+        }
+    }
+}
+
+impl RedbOperationalPorts {
+    pub(crate) fn begin_read(&self) -> Result<ReadTransaction, StorageError> {
+        self.shared.database.begin_read().map_err(transaction_error)
+    }
+
+    pub(crate) fn begin_write(&self) -> Result<RedbWriteAccess, StorageError> {
+        let lease = self.shared.mutation_gate.acquire()?;
+        if self.shared.write_fenced.load(Ordering::Acquire) {
+            return Err(storage_error(StorageErrorKind::Unavailable));
+        }
+        let mut transaction = self
+            .shared
+            .database
+            .begin_write()
+            .map_err(transaction_error)?;
+        transaction.set_two_phase_commit(true);
+        transaction
+            .set_durability(Durability::Immediate)
+            .map_err(|_| storage_error(StorageErrorKind::InvariantViolation))?;
+        Ok(RedbWriteAccess {
+            shared: Arc::clone(&self.shared),
+            transaction: Some(transaction),
+            _lease: lease,
+        })
+    }
+}
+
+impl RedbWriteAccess {
+    pub(crate) fn transaction(&self) -> Result<&WriteTransaction, StorageError> {
+        self.transaction
+            .as_ref()
+            .ok_or_else(|| storage_error(StorageErrorKind::InvariantViolation))
+    }
+
+    pub(crate) fn commit(mut self) -> Result<(), StorageError> {
+        let transaction = self
+            .transaction
+            .take()
+            .ok_or_else(|| storage_error(StorageErrorKind::InvariantViolation))?;
+        if let Err(error) = transaction.commit() {
+            self.shared.write_fenced.store(true, Ordering::Release);
+            return Err(commit_error(error));
+        }
+        Ok(())
+    }
+
+    pub(crate) fn abort(mut self) -> Result<(), StorageError> {
+        let transaction = self
+            .transaction
+            .take()
+            .ok_or_else(|| storage_error(StorageErrorKind::InvariantViolation))?;
+        transaction.abort().map_err(precommit_storage_error)
+    }
+}
+
+impl std::fmt::Debug for RedbStore {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("RedbStore([DORMANT])")
+    }
+}
+
+impl std::fmt::Debug for RedbDormantPorts {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("RedbDormantPorts([STRUCTURALLY_OPENED])")
+    }
+}
+
+impl std::fmt::Debug for RedbOperationalPorts {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("RedbOperationalPorts([OPERATIONAL])")
     }
 }
 
@@ -119,7 +227,7 @@ impl DatabaseInitializationPort for RedbStore {
         &mut self,
         candidate: DatabaseId,
     ) -> Result<DatabaseInitializationResult, StorageError> {
-        let _guard = self.mutation_guard()?;
+        let _lease = self.acquire_mutation_lease()?;
         self.ensure_writable()?;
 
         let mut transaction = self
