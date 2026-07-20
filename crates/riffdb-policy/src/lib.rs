@@ -4,6 +4,7 @@
 
 mod authorizer;
 mod clock;
+mod command;
 mod decision;
 mod mutation;
 mod operation;
@@ -12,6 +13,7 @@ mod telemetry;
 
 pub use authorizer::*;
 pub use clock::*;
+pub use command::*;
 pub use decision::*;
 pub use mutation::*;
 pub use operation::*;
