@@ -470,7 +470,7 @@ fn inspect_table_row(
     };
     let (key, value) = nth_bytes_entry(transaction, definition, index)?;
     match phase {
-        1 => inspect_bundle_row(&key, &value),
+        1 => inspect_bundle_row(transaction, &key, &value),
         2 => inspect_active_row(transaction, &key, &value),
         3 => inspect_entity_row(transaction, &key, &value),
         4 => inspect_index_row(transaction, &key, &value),
@@ -547,6 +547,11 @@ fn inspect_header(
     {
         return Ok(Some(authoritative(StructuralFindingCode::MissingCrossLink)));
     }
+    if !active_catalog_matches_last_activation(transaction, active.as_ref())? {
+        return Ok(Some(authoritative(
+            StructuralFindingCode::CrossLinkMismatch,
+        )));
+    }
     if active.is_none()
         && (table_len(transaction, CONTRACT_BUNDLES)? != 0
             || has_application_authoritative_state(transaction)?)
@@ -561,7 +566,7 @@ fn inspect_header(
             Ok(value) => value,
             Err(code) => return Ok(Some(authoritative(code))),
         };
-        if marker.database_id() != database_id || !capability_marker_exists(transaction, marker)? {
+        if !bootstrap_is_consistent(transaction, database_id, marker)? {
             return Ok(Some(authoritative(
                 StructuralFindingCode::CrossLinkMismatch,
             )));
@@ -592,7 +597,11 @@ fn inspect_meta_row(key: &str, value: &[u8], database_id: DatabaseId) -> Option<
     (!valid).then(|| authoritative(StructuralFindingCode::MalformedRecord))
 }
 
-fn inspect_bundle_row(key: &[u8], value: &[u8]) -> Result<Option<StructuralFinding>, StorageError> {
+fn inspect_bundle_row(
+    transaction: &ReadTransaction,
+    key: &[u8],
+    value: &[u8],
+) -> Result<Option<StructuralFinding>, StorageError> {
     let Ok((lineage, version)) = keys::decode_contract_bundle_key(key) else {
         return Ok(Some(authoritative(StructuralFindingCode::MalformedRecord)));
     };
@@ -608,7 +617,8 @@ fn inspect_bundle_row(key: &[u8], value: &[u8]) -> Result<Option<StructuralFindi
             StructuralFindingCode::CrossLinkMismatch,
         )));
     }
-    Ok(None)
+    Ok((!bundle_has_activation(transaction, &bundle)?)
+        .then(|| authoritative(StructuralFindingCode::MissingCrossLink)))
 }
 
 fn inspect_active_row(
@@ -623,8 +633,13 @@ fn inspect_active_row(
         Ok(value) => value,
         Err(code) => return Ok(Some(authoritative(code))),
     };
-    Ok((!bundle_pointer_exists(transaction, &active)?)
-        .then(|| authoritative(StructuralFindingCode::MissingCrossLink)))
+    if !bundle_pointer_exists(transaction, &active)? {
+        return Ok(Some(authoritative(StructuralFindingCode::MissingCrossLink)));
+    }
+    Ok(
+        (!active_catalog_matches_last_activation(transaction, Some(&active))?)
+            .then(|| authoritative(StructuralFindingCode::CrossLinkMismatch)),
+    )
 }
 
 fn inspect_entity_row(
@@ -639,9 +654,16 @@ fn inspect_entity_row(
         Ok(value) => value,
         Err(code) => return Ok(Some(authoritative(code))),
     };
-    Ok((record.target().key() != &key
-        || !binding_bundle_exists(transaction, record.schema_binding())?)
-    .then(|| authoritative(StructuralFindingCode::MissingCrossLink)))
+    if record.target().key() != &key {
+        return Ok(Some(authoritative(
+            StructuralFindingCode::CrossLinkMismatch,
+        )));
+    }
+    Ok(
+        (!binding_bundle_exists(transaction, record.schema_binding())?
+            || !entity_history_matches(transaction, &record)?)
+        .then(|| authoritative(StructuralFindingCode::MissingCrossLink)),
+    )
 }
 
 fn inspect_index_row(
@@ -868,12 +890,51 @@ fn inspect_projection_state_row(
         Ok(value) => value,
         Err(code) => return Ok(Some(derived_projection(code))),
     };
-    if state.key() != &key || !projection_control_exists(transaction, state.identity())? {
+    if state.key() != &key {
         return Ok(Some(derived_projection(
             StructuralFindingCode::ProjectionStateMismatch,
         )));
     }
-    missing_projection_source_finding(transaction, state.last_changed_sequence())
+    let control = match projection_control(transaction, state.identity())? {
+        Ok(Some(value)) => value,
+        Ok(None) => {
+            return Ok(Some(derived_projection(
+                StructuralFindingCode::MissingCrossLink,
+            )));
+        }
+        Err(code) => return Ok(Some(derived_projection(code))),
+    };
+    if state.generation() > control.highest_allocated_generation() {
+        return Ok(Some(derived_projection(
+            StructuralFindingCode::ProjectionStateMismatch,
+        )));
+    }
+    let Some(frontier) = control.frontier_for(state.generation()) else {
+        // Rows from retired generations are canonical but inert.
+        return Ok(None);
+    };
+    let FrontierPosition::AppliedThrough(frontier) = frontier else {
+        return Ok(Some(derived_projection(
+            StructuralFindingCode::ProjectionStateMismatch,
+        )));
+    };
+    if state.last_changed_sequence() > frontier {
+        return Ok(Some(derived_projection(
+            StructuralFindingCode::ProjectionStateMismatch,
+        )));
+    }
+    if let Some(finding) =
+        missing_projection_source_finding(transaction, state.last_changed_sequence())?
+    {
+        return Ok(Some(finding));
+    }
+    let marker_key = riffdb_types::ProjectionApplyKey::new(
+        state.identity().clone(),
+        state.generation(),
+        state.last_changed_sequence(),
+    );
+    Ok((!projection_marker_exists(transaction, &marker_key)?)
+        .then(|| derived_projection(StructuralFindingCode::MissingCrossLink)))
 }
 
 fn inspect_projection_control_row(
@@ -899,10 +960,50 @@ fn inspect_projection_control_row(
         .into_iter()
         .flatten()
     {
-        if let FrontierPosition::AppliedThrough(sequence) = position.frontier()
-            && let Some(finding) = missing_projection_source_finding(transaction, sequence)?
-        {
-            return Ok(Some(finding));
+        match position.frontier() {
+            FrontierPosition::BeforeFirst => {
+                if projection_state_namespace_has_row(
+                    transaction,
+                    control.identity(),
+                    position.generation(),
+                )? || projection_marker_namespace_has_row(
+                    transaction,
+                    control.identity(),
+                    position.generation(),
+                )? {
+                    return Ok(Some(derived_projection(
+                        StructuralFindingCode::ProjectionStateMismatch,
+                    )));
+                }
+            }
+            FrontierPosition::AppliedThrough(sequence) => {
+                if let Some(finding) = missing_projection_source_finding(transaction, sequence)? {
+                    return Ok(Some(finding));
+                }
+                let first = riffdb_types::ProjectionApplyKey::new(
+                    control.identity().clone(),
+                    position.generation(),
+                    CommitSequence::first(),
+                );
+                let last = riffdb_types::ProjectionApplyKey::new(
+                    control.identity().clone(),
+                    position.generation(),
+                    sequence,
+                );
+                if !projection_marker_exists(transaction, &first)?
+                    || !projection_marker_exists(transaction, &last)?
+                    || projection_marker_exists_after(
+                        transaction,
+                        control.identity(),
+                        position.generation(),
+                        sequence,
+                    )?
+                {
+                    return Ok(Some(derived_projection(
+                        StructuralFindingCode::ProjectionStateMismatch,
+                    )));
+                }
+            }
         }
     }
     Ok(None)
@@ -926,6 +1027,49 @@ fn inspect_projection_apply_row(
         return Ok(Some(derived_projection(
             StructuralFindingCode::ProjectionStateMismatch,
         )));
+    }
+    let control = match projection_control(transaction, key.identity())? {
+        Ok(Some(value)) => value,
+        Ok(None) => {
+            return Ok(Some(derived_projection(
+                StructuralFindingCode::MissingCrossLink,
+            )));
+        }
+        Err(code) => return Ok(Some(derived_projection(code))),
+    };
+    if key.generation() > control.highest_allocated_generation() {
+        return Ok(Some(derived_projection(
+            StructuralFindingCode::ProjectionStateMismatch,
+        )));
+    }
+    if let Some(frontier) = control.frontier_for(key.generation()) {
+        match frontier {
+            FrontierPosition::BeforeFirst => {
+                return Ok(Some(derived_projection(
+                    StructuralFindingCode::ProjectionStateMismatch,
+                )));
+            }
+            FrontierPosition::AppliedThrough(frontier) if key.commit_sequence() > frontier => {
+                return Ok(Some(derived_projection(
+                    StructuralFindingCode::ProjectionStateMismatch,
+                )));
+            }
+            FrontierPosition::AppliedThrough(_) => {}
+        }
+        if key.commit_sequence() != CommitSequence::first() {
+            let previous = CommitSequence::new(key.commit_sequence().get() - 1)
+                .expect("a non-first commit sequence has a nonzero predecessor");
+            let predecessor = riffdb_types::ProjectionApplyKey::new(
+                key.identity().clone(),
+                key.generation(),
+                previous,
+            );
+            if !projection_marker_exists(transaction, &predecessor)? {
+                return Ok(Some(derived_projection(
+                    StructuralFindingCode::ProjectionStateMismatch,
+                )));
+            }
+        }
     }
     missing_projection_source_finding(transaction, key.commit_sequence())
 }
@@ -970,8 +1114,17 @@ fn inspect_capability_row(
             StructuralFindingCode::DigestUnavailable,
         )));
     }
-    Ok((!capability_audit_exists(transaction, &capability)?)
-        .then(|| authoritative(StructuralFindingCode::MissingCrossLink)))
+    Ok(
+        match capability_record_audit_status(transaction, &capability)? {
+            CrossLinkStatus::Exact => None,
+            CrossLinkStatus::Missing => {
+                Some(authoritative(StructuralFindingCode::MissingCrossLink))
+            }
+            CrossLinkStatus::Mismatch => {
+                Some(authoritative(StructuralFindingCode::CrossLinkMismatch))
+            }
+        },
+    )
 }
 
 fn inspect_capability_lookup_row(
@@ -1022,19 +1175,33 @@ fn inspect_audit_row(
             StructuralFindingCode::SequenceDiscontinuity,
         )));
     }
-    let reciprocal = match &record {
+    let finding = match &record {
         riffdb_storage_api::StoredAdministrationAuditRecordV1::Catalog(record) => {
-            bundle_pointer_exists(transaction, record.activated())?
+            if !bundle_pointer_exists(transaction, record.activated())? {
+                Some(authoritative(StructuralFindingCode::MissingCrossLink))
+            } else if !catalog_record_is_reciprocal(transaction, record)? {
+                Some(authoritative(StructuralFindingCode::CrossLinkMismatch))
+            } else {
+                None
+            }
         }
         riffdb_storage_api::StoredAdministrationAuditRecordV1::Capability(record) => {
-            let key = keys::encode_capability_key(record.target_capability_id());
-            raw_exists(transaction, CAPABILITIES, &key)?
+            match capability_administration_status(transaction, record)? {
+                CrossLinkStatus::Exact => None,
+                CrossLinkStatus::Missing => {
+                    Some(authoritative(StructuralFindingCode::MissingCrossLink))
+                }
+                CrossLinkStatus::Mismatch => {
+                    Some(authoritative(StructuralFindingCode::CrossLinkMismatch))
+                }
+            }
         }
         riffdb_storage_api::StoredAdministrationAuditRecordV1::Service(record) => {
-            service_link_exists(transaction, record)?
+            (!service_lifecycle_is_reciprocal(transaction, record)?)
+                .then(|| authoritative(StructuralFindingCode::CrossLinkMismatch))
         }
     };
-    Ok((!reciprocal).then(|| authoritative(StructuralFindingCode::MissingCrossLink)))
+    Ok(finding)
 }
 
 fn select_next_historical(
@@ -1462,6 +1629,101 @@ fn bundle_pointer_exists(
     )
 }
 
+fn bundle_has_activation(
+    transaction: &ReadTransaction,
+    bundle: &riffdb_storage_api::StoredContractBundleV1,
+) -> Result<bool, StorageError> {
+    let table = transaction.open_table(AUDIT).map_err(table_error)?;
+    for entry in table.iter().map_err(precommit_storage_error)? {
+        let (physical_key, value) = entry.map_err(precommit_storage_error)?;
+        let Ok(sequence) = keys::decode_audit_key(physical_key.value()) else {
+            return Ok(false);
+        };
+        let Ok(record) = decoded(codec::decode_administration_audit_record_v1(value.value()))
+        else {
+            return Ok(false);
+        };
+        if record.administration_sequence() != sequence {
+            return Ok(false);
+        }
+        if matches!(
+            record,
+            riffdb_storage_api::StoredAdministrationAuditRecordV1::Catalog(ref activation)
+                if activation.activated().matches_bundle(bundle)
+        ) {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
+fn catalog_record_is_reciprocal(
+    transaction: &ReadTransaction,
+    record: &riffdb_storage_api::StoredCatalogAdministrationV1,
+) -> Result<bool, StorageError> {
+    if !bundle_pointer_exists(transaction, record.activated())? {
+        return Ok(false);
+    }
+    let table = transaction.open_table(AUDIT).map_err(table_error)?;
+    let mut previous = None;
+    let mut found = false;
+    for entry in table.iter().map_err(precommit_storage_error)? {
+        let (physical_key, value) = entry.map_err(precommit_storage_error)?;
+        let Ok(sequence) = keys::decode_audit_key(physical_key.value()) else {
+            return Ok(false);
+        };
+        let Ok(candidate) = decoded(codec::decode_administration_audit_record_v1(value.value()))
+        else {
+            return Ok(false);
+        };
+        if candidate.administration_sequence() != sequence {
+            return Ok(false);
+        }
+        if sequence < record.administration_sequence() {
+            if let riffdb_storage_api::StoredAdministrationAuditRecordV1::Catalog(candidate) =
+                candidate
+            {
+                previous = Some(candidate.activated().clone());
+            }
+            continue;
+        }
+        if sequence == record.administration_sequence() {
+            found = matches!(
+                candidate,
+                riffdb_storage_api::StoredAdministrationAuditRecordV1::Catalog(candidate)
+                    if candidate == *record
+            );
+        }
+        break;
+    }
+    Ok(found && record.previous_active() == previous.as_ref())
+}
+
+fn active_catalog_matches_last_activation(
+    transaction: &ReadTransaction,
+    active: Option<&riffdb_storage_api::ActiveCatalogPointerV1>,
+) -> Result<bool, StorageError> {
+    let table = transaction.open_table(AUDIT).map_err(table_error)?;
+    let mut last = None;
+    for entry in table.iter().map_err(precommit_storage_error)? {
+        let (physical_key, value) = entry.map_err(precommit_storage_error)?;
+        let Ok(sequence) = keys::decode_audit_key(physical_key.value()) else {
+            return Ok(false);
+        };
+        let Ok(record) = decoded(codec::decode_administration_audit_record_v1(value.value()))
+        else {
+            return Ok(false);
+        };
+        if record.administration_sequence() != sequence {
+            return Ok(false);
+        }
+        if let riffdb_storage_api::StoredAdministrationAuditRecordV1::Catalog(record) = record {
+            last = Some(record.activated().clone());
+        }
+    }
+    Ok(last.as_ref() == active)
+}
+
 fn bundle_exists(
     transaction: &ReadTransaction,
     lineage: &ContractLineage,
@@ -1622,7 +1884,74 @@ fn commit_graph_is_reciprocal(
             return Ok(false);
         }
     }
+    for mutation in commit.mutations() {
+        if !current_entity_covers_mutation(transaction, mutation)? {
+            return Ok(false);
+        }
+    }
     Ok(true)
+}
+
+fn current_entity_covers_mutation(
+    transaction: &ReadTransaction,
+    mutation: &riffdb_storage_api::CommittedEntityMutationV1,
+) -> Result<bool, StorageError> {
+    let post_image = mutation.post_image();
+    let current = get_decoded(
+        transaction,
+        ENTITIES,
+        keys::encode_entity_key(post_image.target().key()),
+        codec::decode_entity_record_v1,
+    )?;
+    Ok(matches!(current, Ok(Some(record))
+        if record.target() == post_image.target()
+            && record.entity_version() >= post_image.entity_version()))
+}
+
+fn entity_history_matches(
+    transaction: &ReadTransaction,
+    current: &riffdb_storage_api::StoredEntityRecordV1,
+) -> Result<bool, StorageError> {
+    let table = transaction.open_table(COMMITS).map_err(table_error)?;
+    let mut prior: Option<riffdb_storage_api::StoredEntityRecordV1> = None;
+    let mut saw_mutation = false;
+    for entry in table.iter().map_err(precommit_storage_error)? {
+        let (physical_key, value) = entry.map_err(precommit_storage_error)?;
+        let Ok(sequence) = keys::decode_application_sequence_key(physical_key.value()) else {
+            return Ok(false);
+        };
+        let Ok(commit) = decoded(codec::decode_commit_record_v1(value.value())) else {
+            return Ok(false);
+        };
+        if commit.commit_sequence() != sequence {
+            return Ok(false);
+        }
+
+        let mut matching = commit
+            .mutations()
+            .iter()
+            .filter(|mutation| mutation.post_image().target() == current.target());
+        let Some(mutation) = matching.next() else {
+            continue;
+        };
+        if matching.next().is_some() {
+            return Ok(false);
+        }
+        let expected_matches = match (prior.as_ref(), mutation.expected()) {
+            (None, riffdb_storage_api::ExpectedEntityState::Absent) => true,
+            (Some(prior), riffdb_storage_api::ExpectedEntityState::Present(version)) => {
+                prior.entity_version() == version
+            }
+            (None, riffdb_storage_api::ExpectedEntityState::Present(_))
+            | (Some(_), riffdb_storage_api::ExpectedEntityState::Absent) => false,
+        };
+        if !expected_matches {
+            return Ok(false);
+        }
+        prior = Some(mutation.post_image().clone());
+        saw_mutation = true;
+    }
+    Ok(saw_mutation && prior.as_ref() == Some(current))
 }
 
 fn provenance_graph_is_reciprocal(
@@ -1713,10 +2042,13 @@ fn idempotency_digest_is_readable(
         .is_ok_and(|key| inputs.idempotency_digests().as_slice().contains(&key))
 }
 
-fn projection_control_exists(
+fn projection_control(
     transaction: &ReadTransaction,
     identity: &riffdb_types::ProjectionIdentity,
-) -> Result<bool, StorageError> {
+) -> Result<
+    Result<Option<riffdb_storage_api::StoredProjectionControlV1>, StructuralFindingCode>,
+    StorageError,
+> {
     let key = riffdb_types::ProjectionFrontierKey::new(identity.clone());
     let control = get_decoded(
         transaction,
@@ -1724,58 +2056,504 @@ fn projection_control_exists(
         key.as_bytes(),
         codec::decode_projection_control_v1,
     )?;
-    Ok(matches!(control, Ok(Some(value)) if value.identity() == identity))
+    Ok(match control {
+        Ok(Some(value)) if value.identity() == identity => Ok(Some(value)),
+        Ok(Some(_)) => Err(StructuralFindingCode::CrossLinkMismatch),
+        Ok(None) => Ok(None),
+        Err(code) => Err(code),
+    })
 }
 
-fn capability_audit_exists(
+fn projection_marker_exists(
     transaction: &ReadTransaction,
-    capability: &riffdb_storage_api::StoredCapabilityRecordV1,
+    key: &riffdb_types::ProjectionApplyKey,
 ) -> Result<bool, StorageError> {
-    let key = keys::encode_audit_key(capability.creation_sequence());
-    let record = get_decoded(
+    let marker = get_decoded(
+        transaction,
+        PROJECTION_APPLIED,
+        key.as_bytes(),
+        codec::decode_projection_apply_v1,
+    )?;
+    Ok(matches!(marker, Ok(Some(value)) if value.key() == key))
+}
+
+fn projection_state_namespace_has_row(
+    transaction: &ReadTransaction,
+    identity: &riffdb_types::ProjectionIdentity,
+    generation: riffdb_types::ProjectionGeneration,
+) -> Result<bool, StorageError> {
+    let prefix =
+        riffdb_types::ProjectionGroupPrefixBuilder::new(identity.clone(), generation).finish();
+    let table = transaction
+        .open_table(PROJECTION_STATE)
+        .map_err(table_error)?;
+    let mut rows = table
+        .range(prefix.as_bytes()..)
+        .map_err(precommit_storage_error)?;
+    let Some(entry) = rows.next() else {
+        return Ok(false);
+    };
+    let (key, _) = entry.map_err(precommit_storage_error)?;
+    Ok(key.value().starts_with(prefix.as_bytes()))
+}
+
+fn projection_apply_namespace_prefix(
+    identity: &riffdb_types::ProjectionIdentity,
+    generation: riffdb_types::ProjectionGeneration,
+) -> Vec<u8> {
+    let first = riffdb_types::ProjectionApplyKey::new(
+        identity.clone(),
+        generation,
+        CommitSequence::first(),
+    );
+    first.as_bytes()[..first.as_bytes().len() - std::mem::size_of::<u64>()].to_vec()
+}
+
+fn projection_marker_namespace_has_row(
+    transaction: &ReadTransaction,
+    identity: &riffdb_types::ProjectionIdentity,
+    generation: riffdb_types::ProjectionGeneration,
+) -> Result<bool, StorageError> {
+    let prefix = projection_apply_namespace_prefix(identity, generation);
+    let table = transaction
+        .open_table(PROJECTION_APPLIED)
+        .map_err(table_error)?;
+    let mut markers = table
+        .range(prefix.as_slice()..)
+        .map_err(precommit_storage_error)?;
+    let Some(entry) = markers.next() else {
+        return Ok(false);
+    };
+    let (key, _) = entry.map_err(precommit_storage_error)?;
+    Ok(key.value().starts_with(&prefix))
+}
+
+fn projection_marker_exists_after(
+    transaction: &ReadTransaction,
+    identity: &riffdb_types::ProjectionIdentity,
+    generation: riffdb_types::ProjectionGeneration,
+    sequence: CommitSequence,
+) -> Result<bool, StorageError> {
+    let Some(next) = sequence.checked_next() else {
+        return Ok(false);
+    };
+    let prefix = projection_apply_namespace_prefix(identity, generation);
+    let start = riffdb_types::ProjectionApplyKey::new(identity.clone(), generation, next);
+    let table = transaction
+        .open_table(PROJECTION_APPLIED)
+        .map_err(table_error)?;
+    let mut markers = table
+        .range(start.as_bytes()..)
+        .map_err(precommit_storage_error)?;
+    let Some(entry) = markers.next() else {
+        return Ok(false);
+    };
+    let (key, _) = entry.map_err(precommit_storage_error)?;
+    Ok(key.value().starts_with(&prefix))
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum CrossLinkStatus {
+    Exact,
+    Missing,
+    Mismatch,
+}
+
+fn audit_record_at(
+    transaction: &ReadTransaction,
+    sequence: riffdb_types::AdministrationSequence,
+) -> Result<
+    Result<Option<riffdb_storage_api::StoredAdministrationAuditRecordV1>, StructuralFindingCode>,
+    StorageError,
+> {
+    let key = keys::encode_audit_key(sequence);
+    get_decoded(
         transaction,
         AUDIT,
         &key,
         codec::decode_administration_audit_record_v1,
-    )?;
-    Ok(matches!(record,
-        Ok(Some(riffdb_storage_api::StoredAdministrationAuditRecordV1::Capability(record)))
-            if record.target_capability_id() == capability.capability_id()
-                && record.request_id() == capability.creation_request_id()
-                && record.timestamp() == capability.issued_at()))
+    )
 }
 
-fn capability_marker_exists(
+fn capability_record_at(
     transaction: &ReadTransaction,
-    marker: riffdb_storage_api::CapabilityBootstrapMarkerV1,
-) -> Result<bool, StorageError> {
-    let key = keys::encode_capability_key(marker.capability_id());
-    let capability = get_decoded(
+    capability_id: riffdb_types::CapabilityId,
+) -> Result<
+    Result<Option<riffdb_storage_api::StoredCapabilityRecordV1>, StructuralFindingCode>,
+    StorageError,
+> {
+    let key = keys::encode_capability_key(capability_id);
+    get_decoded(
         transaction,
         CAPABILITIES,
         &key,
         codec::decode_capability_record_v1,
-    )?;
-    Ok(matches!(capability, Ok(Some(value))
-        if value.creation_sequence() == marker.administration_sequence()))
+    )
 }
 
-fn service_link_exists(
+fn bootstrap_marker(
+    transaction: &ReadTransaction,
+) -> Result<
+    Result<Option<riffdb_storage_api::CapabilityBootstrapMarkerV1>, StructuralFindingCode>,
+    StorageError,
+> {
+    let meta = transaction.open_table(META).map_err(table_error)?;
+    let Some(value) = meta
+        .get(META_CAPABILITY_BOOTSTRAP)
+        .map_err(precommit_storage_error)?
+    else {
+        return Ok(Ok(None));
+    };
+    Ok(decoded(codec::decode_capability_bootstrap_marker_v1(value.value())).map(Some))
+}
+
+fn capability_record_audit_status(
+    transaction: &ReadTransaction,
+    capability: &riffdb_storage_api::StoredCapabilityRecordV1,
+) -> Result<CrossLinkStatus, StorageError> {
+    let marker = match bootstrap_marker(transaction)? {
+        Ok(value) => value,
+        Err(_) => return Ok(CrossLinkStatus::Mismatch),
+    };
+    let expected_operation =
+        if marker.is_some_and(|marker| marker.capability_id() == capability.capability_id()) {
+            riffdb_storage_api::CapabilityAdministrationOperationV1::Bootstrap
+        } else {
+            riffdb_storage_api::CapabilityAdministrationOperationV1::Create
+        };
+    let creation = match audit_record_at(transaction, capability.creation_sequence())? {
+        Ok(Some(riffdb_storage_api::StoredAdministrationAuditRecordV1::Capability(record))) => {
+            record
+        }
+        Ok(None) => return Ok(CrossLinkStatus::Missing),
+        Ok(Some(_)) | Err(_) => return Ok(CrossLinkStatus::Mismatch),
+    };
+    if creation.operation() != expected_operation
+        || creation.request_id() != capability.creation_request_id()
+        || creation.timestamp() != capability.issued_at()
+        || creation.target_capability_id() != capability.capability_id()
+        || creation.resulting_revision().get() != 1
+    {
+        return Ok(CrossLinkStatus::Mismatch);
+    }
+
+    if let CapabilityLifecycleV1::Revoked {
+        revoked_at,
+        administration_sequence,
+        reason,
+    } = capability.lifecycle()
+    {
+        let revocation = match audit_record_at(transaction, *administration_sequence)? {
+            Ok(Some(riffdb_storage_api::StoredAdministrationAuditRecordV1::Capability(record))) => {
+                record
+            }
+            Ok(None) => return Ok(CrossLinkStatus::Missing),
+            Ok(Some(_)) | Err(_) => return Ok(CrossLinkStatus::Mismatch),
+        };
+        if revocation.operation() != riffdb_storage_api::CapabilityAdministrationOperationV1::Revoke
+            || revocation.timestamp() != *revoked_at
+            || revocation.target_capability_id() != capability.capability_id()
+            || revocation.resulting_revision() != capability.revision()
+            || revocation.revocation_reason() != Some(*reason)
+        {
+            return Ok(CrossLinkStatus::Mismatch);
+        }
+    }
+    Ok(CrossLinkStatus::Exact)
+}
+
+fn capability_administration_status(
+    transaction: &ReadTransaction,
+    record: &riffdb_storage_api::StoredCapabilityAdministrationV1,
+) -> Result<CrossLinkStatus, StorageError> {
+    let capability = match capability_record_at(transaction, record.target_capability_id())? {
+        Ok(Some(value)) => value,
+        Ok(None) => return Ok(CrossLinkStatus::Missing),
+        Err(_) => return Ok(CrossLinkStatus::Mismatch),
+    };
+    let marker = match bootstrap_marker(transaction)? {
+        Ok(value) => value,
+        Err(_) => return Ok(CrossLinkStatus::Mismatch),
+    };
+    let exact = match record.operation() {
+        riffdb_storage_api::CapabilityAdministrationOperationV1::Bootstrap
+        | riffdb_storage_api::CapabilityAdministrationOperationV1::Create => {
+            let operation_matches_marker = match record.operation() {
+                riffdb_storage_api::CapabilityAdministrationOperationV1::Bootstrap => marker
+                    .is_some_and(|marker| marker.capability_id() == record.target_capability_id()),
+                riffdb_storage_api::CapabilityAdministrationOperationV1::Create => marker
+                    .is_none_or(|marker| marker.capability_id() != record.target_capability_id()),
+                riffdb_storage_api::CapabilityAdministrationOperationV1::Revoke => false,
+            };
+            operation_matches_marker
+                && capability.creation_sequence() == record.administration_sequence()
+                && capability.creation_request_id() == record.request_id()
+                && capability.issued_at() == record.timestamp()
+                && record.resulting_revision().get() == 1
+        }
+        riffdb_storage_api::CapabilityAdministrationOperationV1::Revoke => {
+            matches!(
+                capability.lifecycle(),
+                CapabilityLifecycleV1::Revoked {
+                    revoked_at,
+                    administration_sequence,
+                    reason,
+                } if *administration_sequence == record.administration_sequence()
+                    && *revoked_at == record.timestamp()
+                    && Some(*reason) == record.revocation_reason()
+                    && capability.revision() == record.resulting_revision()
+            )
+        }
+    };
+    Ok(if exact {
+        CrossLinkStatus::Exact
+    } else {
+        CrossLinkStatus::Mismatch
+    })
+}
+
+fn bootstrap_is_consistent(
+    transaction: &ReadTransaction,
+    database_id: DatabaseId,
+    marker: riffdb_storage_api::CapabilityBootstrapMarkerV1,
+) -> Result<bool, StorageError> {
+    if marker.database_id() != database_id {
+        return Ok(false);
+    }
+    let capability = match capability_record_at(transaction, marker.capability_id())? {
+        Ok(Some(value)) => value,
+        Ok(None) | Err(_) => return Ok(false),
+    };
+    if capability.creation_sequence() != marker.administration_sequence()
+        || capability_record_audit_status(transaction, &capability)? != CrossLinkStatus::Exact
+    {
+        return Ok(false);
+    }
+    let transition = match audit_record_at(transaction, marker.administration_sequence())? {
+        Ok(Some(riffdb_storage_api::StoredAdministrationAuditRecordV1::Capability(record))) => {
+            record
+        }
+        Ok(None) | Ok(Some(_)) | Err(_) => return Ok(false),
+    };
+    if transition.operation() != riffdb_storage_api::CapabilityAdministrationOperationV1::Bootstrap
+        || transition.request_id() != capability.creation_request_id()
+        || transition.timestamp() != capability.issued_at()
+        || transition.target_capability_id() != marker.capability_id()
+        || transition.resulting_revision().get() != 1
+        || transition.initiator().is_some()
+    {
+        return Ok(false);
+    }
+    let Some(started_sequence) = marker
+        .administration_sequence()
+        .get()
+        .checked_sub(1)
+        .and_then(riffdb_types::AdministrationSequence::new)
+    else {
+        return Ok(false);
+    };
+    let started = match audit_record_at(transaction, started_sequence)? {
+        Ok(Some(riffdb_storage_api::StoredAdministrationAuditRecordV1::Service(record))) => record,
+        Ok(None) | Ok(Some(_)) | Err(_) => return Ok(false),
+    };
+    Ok(started.request_id() == transition.request_id()
+        && started.timestamp() == transition.timestamp()
+        && started.operation() == riffdb_types::ServiceOperationV1::CreateCapability
+        && started.phase() == riffdb_types::ServiceAuditPhaseV1::Started
+        && started.principal().is_none()
+        && started.approval_id() == transition.approval_id()
+        && started.link()
+            == (riffdb_types::ServiceAuditLinkV1::ControlPlane {
+                administration_sequence: marker.administration_sequence(),
+            })
+        && started
+            .targets()
+            .as_slice()
+            .contains(&riffdb_types::ServiceAuditTargetV1::Capability(
+                marker.capability_id(),
+            ))
+        && service_lifecycle_is_reciprocal(transaction, &started)?)
+}
+
+enum ObservedServiceLifecycle {
+    Standalone,
+    Started {
+        started: riffdb_storage_api::StoredServiceAuditRecordV1,
+        terminal_seen: bool,
+    },
+}
+
+fn service_lifecycle_is_reciprocal(
+    transaction: &ReadTransaction,
+    target: &riffdb_storage_api::StoredServiceAuditRecordV1,
+) -> Result<bool, StorageError> {
+    let table = transaction.open_table(AUDIT).map_err(table_error)?;
+    let mut lifecycle = None;
+    let mut target_seen = false;
+    for entry in table.iter().map_err(precommit_storage_error)? {
+        let (physical_key, value) = entry.map_err(precommit_storage_error)?;
+        let Ok(sequence) = keys::decode_audit_key(physical_key.value()) else {
+            return Ok(false);
+        };
+        let Ok(record) = decoded(codec::decode_administration_audit_record_v1(value.value()))
+        else {
+            return Ok(false);
+        };
+        if record.administration_sequence() != sequence {
+            return Ok(false);
+        }
+        let riffdb_storage_api::StoredAdministrationAuditRecordV1::Service(record) = record else {
+            continue;
+        };
+        if record.request_id() != target.request_id() {
+            continue;
+        }
+        target_seen |= record.administration_sequence() == target.administration_sequence()
+            && record == *target;
+        if !service_link_is_valid(transaction, &record)? {
+            return Ok(false);
+        }
+        lifecycle = Some(match lifecycle {
+            None if record.phase() == riffdb_types::ServiceAuditPhaseV1::Started => {
+                ObservedServiceLifecycle::Started {
+                    started: record,
+                    terminal_seen: false,
+                }
+            }
+            None if record.principal().is_some()
+                && record.link() == riffdb_types::ServiceAuditLinkV1::None
+                && matches!(
+                    record.phase(),
+                    riffdb_types::ServiceAuditPhaseV1::Denied
+                        | riffdb_types::ServiceAuditPhaseV1::Cancelled
+                        | riffdb_types::ServiceAuditPhaseV1::Failed
+                ) =>
+            {
+                ObservedServiceLifecycle::Standalone
+            }
+            Some(ObservedServiceLifecycle::Started {
+                started,
+                terminal_seen: false,
+            }) if record.administration_sequence() > started.administration_sequence()
+                && record.phase() != riffdb_types::ServiceAuditPhaseV1::Started
+                && service_audit_common_matches(&started, &record) =>
+            {
+                ObservedServiceLifecycle::Started {
+                    started,
+                    terminal_seen: true,
+                }
+            }
+            Some(ObservedServiceLifecycle::Standalone)
+            | Some(ObservedServiceLifecycle::Started {
+                terminal_seen: true,
+                ..
+            })
+            | Some(ObservedServiceLifecycle::Started {
+                terminal_seen: false,
+                ..
+            })
+            | None => return Ok(false),
+        });
+    }
+    Ok(target_seen && lifecycle.is_some())
+}
+
+fn service_audit_common_matches(
+    started: &riffdb_storage_api::StoredServiceAuditRecordV1,
+    terminal: &riffdb_storage_api::StoredServiceAuditRecordV1,
+) -> bool {
+    terminal.request_id() == started.request_id()
+        && terminal.operation() == started.operation()
+        && terminal.principal() == started.principal()
+        && terminal.ingress() == started.ingress()
+        && terminal.targets() == started.targets()
+        && terminal.approval_id() == started.approval_id()
+        && (started.principal().is_some() || terminal.link() == started.link())
+}
+
+fn service_link_is_valid(
     transaction: &ReadTransaction,
     record: &riffdb_storage_api::StoredServiceAuditRecordV1,
 ) -> Result<bool, StorageError> {
     match record.link() {
-        riffdb_types::ServiceAuditLinkV1::None => Ok(true),
+        riffdb_types::ServiceAuditLinkV1::None => Ok(record.principal().is_some()
+            && (record.phase() != riffdb_types::ServiceAuditPhaseV1::Succeeded
+                || !matches!(
+                    record.operation(),
+                    riffdb_types::ServiceOperationV1::ExecuteCommand
+                        | riffdb_types::ServiceOperationV1::ResolveCommandOutcome
+                        | riffdb_types::ServiceOperationV1::DeployContract
+                        | riffdb_types::ServiceOperationV1::CreateCapability
+                        | riffdb_types::ServiceOperationV1::RevokeCapability
+                ))),
         riffdb_types::ServiceAuditLinkV1::Command {
             commit_sequence,
             provenance_id,
-        } => Ok(get_commit(transaction, commit_sequence)?
-            .is_some_and(|commit| commit.provenance_id() == provenance_id)),
+        } => Ok(
+            record.phase() == riffdb_types::ServiceAuditPhaseV1::Succeeded
+                && matches!(
+                    record.operation(),
+                    riffdb_types::ServiceOperationV1::ExecuteCommand
+                        | riffdb_types::ServiceOperationV1::ResolveCommandOutcome
+                )
+                && get_commit(transaction, commit_sequence)?
+                    .is_some_and(|commit| commit.provenance_id() == provenance_id)
+                && get_provenance(transaction, provenance_id)?
+                    .is_some_and(|provenance| provenance.commit_sequence() == commit_sequence),
+        ),
         riffdb_types::ServiceAuditLinkV1::ControlPlane {
             administration_sequence,
         } => {
-            let key = keys::encode_audit_key(administration_sequence);
-            raw_exists(transaction, AUDIT, &key)
+            let target = match audit_record_at(transaction, administration_sequence)? {
+                Ok(Some(value)) => value,
+                Ok(None) | Err(_) => return Ok(false),
+            };
+            let operation_matches = match (&target, record.operation()) {
+                (
+                    riffdb_storage_api::StoredAdministrationAuditRecordV1::Catalog(_),
+                    riffdb_types::ServiceOperationV1::DeployContract,
+                ) => true,
+                (
+                    riffdb_storage_api::StoredAdministrationAuditRecordV1::Capability(target),
+                    riffdb_types::ServiceOperationV1::CreateCapability,
+                ) => matches!(
+                    target.operation(),
+                    riffdb_storage_api::CapabilityAdministrationOperationV1::Bootstrap
+                        | riffdb_storage_api::CapabilityAdministrationOperationV1::Create
+                ),
+                (
+                    riffdb_storage_api::StoredAdministrationAuditRecordV1::Capability(target),
+                    riffdb_types::ServiceOperationV1::RevokeCapability,
+                ) => {
+                    target.operation()
+                        == riffdb_storage_api::CapabilityAdministrationOperationV1::Revoke
+                }
+                _ => false,
+            };
+            if !operation_matches {
+                return Ok(false);
+            }
+            if let riffdb_storage_api::StoredAdministrationAuditRecordV1::Capability(target) =
+                &target
+                && !record.targets().as_slice().contains(
+                    &riffdb_types::ServiceAuditTargetV1::Capability(target.target_capability_id()),
+                )
+            {
+                return Ok(false);
+            }
+            Ok(
+                if record.phase() == riffdb_types::ServiceAuditPhaseV1::Started {
+                    record.principal().is_none()
+                        && matches!(
+                            target,
+                            riffdb_storage_api::StoredAdministrationAuditRecordV1::Capability(target)
+                                if target.operation()
+                                    == riffdb_storage_api::CapabilityAdministrationOperationV1::Bootstrap
+                        )
+                } else {
+                    record.phase() == riffdb_types::ServiceAuditPhaseV1::Succeeded
+                },
+            )
         }
     }
 }
@@ -1921,14 +2699,30 @@ fn value_error_as_storage(error: StorageValueError) -> StorageError {
 
 #[cfg(test)]
 mod tests {
+    use std::num::{NonZeroU16, NonZeroU32, NonZeroU64};
     use std::path::PathBuf;
     use std::sync::atomic::{AtomicU64, Ordering};
 
     use riffdb_storage_api::{
-        DatabaseInitializationPort, HistoricalEvidencePage, ReadableCapabilityDigestInventory,
-        ReadableIdempotencyDigestInventory, StructuralEvidenceEnd, StructuralEvidencePage,
+        ActiveCatalogPointerV1, AdministrationSequenceAllocator, AuditPrincipalV1,
+        CapabilityAdministrationOperationV1, CapabilityGrantV1, CapabilityPermissionKindV1,
+        CapabilityPermissionV1, CapabilityPermissionsV1, CapabilityRequestedRecordV1,
+        DatabaseInitializationPort, DurableKeySchemaBindingV1, HistoricalEvidencePage,
+        PartitionScopeV1, ProjectionGenerationPosition, ProjectionLifecycleV1,
+        PublishedApplyModeV1, ReadableCapabilityDigestInventory,
+        ReadableIdempotencyDigestInventory, RevocationReasonCodeV1,
+        StoredAdministrationAuditRecordV1, StoredCapabilityAdministrationV1,
+        StoredCapabilityRecordV1, StoredCatalogAdministrationV1, StoredContractBundleV1,
+        StoredEntityRecordV1, StoredProjectionApplyV1, StoredProjectionControlV1,
+        StoredServiceAuditRecordV1, StructuralEvidenceEnd, StructuralEvidencePage,
     };
-    use riffdb_types::{DigestKeyId, Timestamp};
+    use riffdb_types::{
+        ActorId, ActorKind, AdministrationSequence, Audience, CanonicalRecord, CapabilityId,
+        CapabilityTokenDigest, DigestKeyId, EntityKeyBuilder, EntityTypeId, EntityVersion,
+        Environment, ProjectionApplyHash, ProjectionApplyKey, ProjectionGeneration, ProjectionId,
+        ProjectionIdentity, ProjectionPlanHash, RequestId, ServiceAuditLinkV1, ServiceAuditPhaseV1,
+        ServiceAuditTargetsV1, ServiceIngressKindV1, ServiceOperationV1, TenantScope, Timestamp,
+    };
 
     use super::*;
 
@@ -1957,6 +2751,30 @@ mod tests {
             .expect("valid deterministic UUIDv7")
     }
 
+    fn uuid_bytes(seed: u8) -> [u8; 16] {
+        let mut bytes = [seed; 16];
+        bytes[6] = 0x70 | (seed & 0x0f);
+        bytes[8] = 0x80 | (seed & 0x3f);
+        bytes
+    }
+
+    fn capability_id(seed: u8) -> CapabilityId {
+        CapabilityId::from_bytes(uuid_bytes(seed)).expect("capability ID")
+    }
+
+    fn request_id(seed: u8) -> RequestId {
+        RequestId::from_bytes(uuid_bytes(seed)).expect("request ID")
+    }
+
+    fn audit_principal(seed: u8) -> AuditPrincipalV1 {
+        AuditPrincipalV1::new(
+            ActorId::new("operator").expect("actor ID"),
+            ActorKind::Human,
+            capability_id(seed),
+            NonZeroU64::MIN,
+        )
+    }
+
     fn inputs() -> StartupValidationInputs {
         let key = ReadableDigestKey::v1(DigestKeyId::new(1).expect("digest key"));
         StartupValidationInputs::new(
@@ -1972,9 +2790,59 @@ mod tests {
         store
     }
 
-    fn finish_structural(session: &mut RedbStructuralEvidenceSession) -> RedbStructuralEvidenceEnd {
+    fn stored_bundle(lineage: &str, version: u64, bytes: &[u8]) -> StoredContractBundleV1 {
+        StoredContractBundleV1::new(
+            ContractLineage::new(lineage).expect("lineage"),
+            ContractVersion::new(version).expect("version"),
+            hash_contract_bundle(bytes),
+            bytes.to_vec(),
+        )
+        .expect("stored bundle")
+    }
+
+    fn requested_capability(database_id: DatabaseId) -> CapabilityRequestedRecordV1 {
+        let permissions = CapabilityPermissionsV1::new(vec![
+            CapabilityPermissionV1::unparameterized(
+                CapabilityPermissionKindV1::AdministerCapabilities,
+            )
+            .expect("permission"),
+        ])
+        .expect("permissions");
+        let grant = CapabilityGrantV1::new(
+            TenantScope::Global,
+            PartitionScopeV1::All,
+            permissions,
+            Vec::new(),
+            NonZeroU16::MIN,
+            Vec::new(),
+        )
+        .expect("grant");
+        CapabilityRequestedRecordV1::new(
+            database_id,
+            Environment::new("test").expect("environment"),
+            ActorId::new("subject").expect("subject"),
+            ActorKind::Human,
+            NonZeroU32::new(60).expect("duration"),
+            vec![Audience::new("riffdb-test").expect("audience")],
+            grant,
+        )
+        .expect("requested capability")
+    }
+
+    fn projection_identity() -> ProjectionIdentity {
+        ProjectionIdentity::new(
+            ContractLineage::new("projection-integrity").expect("lineage"),
+            ProjectionId::first(),
+            ProjectionPlanHash::from_bytes([0x91; 32]),
+        )
+    }
+
+    fn collect_structural(
+        session: &mut RedbStructuralEvidenceSession,
+    ) -> (RedbStructuralEvidenceEnd, Vec<StructuralFinding>) {
         let mut cursor =
             StructuralEvidenceCursor::start(session.database_id(), session.open_session_id());
+        let mut collected = Vec::new();
         loop {
             match session
                 .read_structural_evidence(cursor, EvidencePageLimit::new(1).expect("page limit"))
@@ -1986,15 +2854,21 @@ mod tests {
                     next,
                 } => {
                     assert_eq!(start, cursor);
-                    assert!(findings.is_empty());
+                    collected.extend(findings);
                     cursor = next;
                 }
                 StructuralEvidencePage::ExactEnd(end) => {
                     assert_eq!(end.cursor(), cursor);
-                    return end;
+                    return (end, collected);
                 }
             }
         }
+    }
+
+    fn finish_structural(session: &mut RedbStructuralEvidenceSession) -> RedbStructuralEvidenceEnd {
+        let (end, findings) = collect_structural(session);
+        assert!(findings.is_empty());
+        end
     }
 
     fn finish_historical(session: &mut RedbStructuralEvidenceSession) -> RedbHistoricalEvidenceEnd {
@@ -2143,5 +3017,579 @@ mod tests {
             .begin_structural_evidence(inputs())
             .expect("second session");
         assert_ne!(first.open_session_id(), second.open_session_id());
+    }
+
+    #[test]
+    fn current_entity_without_any_committed_post_image_is_not_reciprocal() {
+        let path = TestDatabasePath::new("orphan-entity");
+        let store = initialized_store(&path, database_id(0x71));
+        let entity_type = EntityTypeId::first();
+        let mut key = EntityKeyBuilder::new(entity_type);
+        key.push_u64(1).expect("entity key component");
+        let target =
+            riffdb_storage_api::EntityTarget::new(entity_type, key.finish().expect("entity key"))
+                .expect("entity target");
+        let bundle = stored_bundle("entity-history", 1, b"entity-history-bundle");
+        let current = StoredEntityRecordV1::new(
+            target,
+            EntityVersion::first(),
+            bundle.contract_version(),
+            DurableKeySchemaBindingV1::new(
+                bundle.lineage().clone(),
+                bundle.contract_version(),
+                bundle.bundle_hash(),
+            ),
+            CanonicalRecord::new(Vec::new()).expect("entity fields"),
+        )
+        .expect("entity row");
+        let transaction = store
+            .shared
+            .database
+            .begin_read()
+            .expect("read transaction");
+        assert!(!entity_history_matches(&transaction, &current).expect("history check"));
+    }
+
+    #[test]
+    fn catalog_chain_accepts_reactivation_and_rejects_a_wrong_previous_pointer() {
+        let path = TestDatabasePath::new("catalog-chain");
+        let store = initialized_store(&path, database_id(0x72));
+        let first_bundle = stored_bundle("catalog-chain", 1, b"catalog-one");
+        let second_bundle = stored_bundle("catalog-chain", 2, b"catalog-two");
+        let first_pointer = ActiveCatalogPointerV1::from_bundle(&first_bundle);
+        let second_pointer = ActiveCatalogPointerV1::from_bundle(&second_bundle);
+        let first = StoredCatalogAdministrationV1::from_stored_parts(
+            AdministrationSequence::first(),
+            request_id(0x31),
+            Timestamp::new(1, 0).expect("timestamp"),
+            audit_principal(0x41),
+            None,
+            first_pointer.clone(),
+            None,
+        );
+        let second = StoredCatalogAdministrationV1::from_stored_parts(
+            AdministrationSequence::new(2).expect("sequence"),
+            request_id(0x32),
+            Timestamp::new(2, 0).expect("timestamp"),
+            audit_principal(0x41),
+            Some(first_pointer.clone()),
+            second_pointer.clone(),
+            None,
+        );
+        let third = StoredCatalogAdministrationV1::from_stored_parts(
+            AdministrationSequence::new(3).expect("sequence"),
+            request_id(0x33),
+            Timestamp::new(3, 0).expect("timestamp"),
+            audit_principal(0x41),
+            Some(second_pointer),
+            first_pointer,
+            None,
+        );
+        let encoded_first_bundle =
+            codec::encode_contract_bundle_v1(&first_bundle).expect("encode first bundle");
+        let encoded_second_bundle =
+            codec::encode_contract_bundle_v1(&second_bundle).expect("encode second bundle");
+        let encoded_first = codec::encode_administration_audit_record_v1(
+            &StoredAdministrationAuditRecordV1::Catalog(first.clone()),
+        )
+        .expect("encode first activation");
+        let encoded_second = codec::encode_administration_audit_record_v1(
+            &StoredAdministrationAuditRecordV1::Catalog(second.clone()),
+        )
+        .expect("encode second activation");
+        let encoded_third = codec::encode_administration_audit_record_v1(
+            &StoredAdministrationAuditRecordV1::Catalog(third.clone()),
+        )
+        .expect("encode third activation");
+        let first_bundle_key = keys::encode_contract_bundle_key(
+            first_bundle.lineage(),
+            first_bundle.contract_version(),
+        )
+        .expect("first bundle key");
+        let second_bundle_key = keys::encode_contract_bundle_key(
+            second_bundle.lineage(),
+            second_bundle.contract_version(),
+        )
+        .expect("second bundle key");
+        let write = store
+            .shared
+            .database
+            .begin_write()
+            .expect("write transaction");
+        {
+            let mut bundles = write.open_table(CONTRACT_BUNDLES).expect("bundle table");
+            bundles
+                .insert(first_bundle_key.as_slice(), encoded_first_bundle.as_bytes())
+                .expect("insert first bundle");
+            bundles
+                .insert(
+                    second_bundle_key.as_slice(),
+                    encoded_second_bundle.as_bytes(),
+                )
+                .expect("insert second bundle");
+        }
+        {
+            let mut audit = write.open_table(AUDIT).expect("audit table");
+            audit
+                .insert(
+                    keys::encode_audit_key(first.administration_sequence()).as_slice(),
+                    encoded_first.as_bytes(),
+                )
+                .expect("insert first activation");
+            audit
+                .insert(
+                    keys::encode_audit_key(second.administration_sequence()).as_slice(),
+                    encoded_second.as_bytes(),
+                )
+                .expect("insert second activation");
+            audit
+                .insert(
+                    keys::encode_audit_key(third.administration_sequence()).as_slice(),
+                    encoded_third.as_bytes(),
+                )
+                .expect("insert third activation");
+        }
+        write.commit().expect("commit fixture");
+
+        let read = store
+            .shared
+            .database
+            .begin_read()
+            .expect("read transaction");
+        assert!(catalog_record_is_reciprocal(&read, &first).expect("first chain link"));
+        assert!(catalog_record_is_reciprocal(&read, &second).expect("second chain link"));
+        assert!(catalog_record_is_reciprocal(&read, &third).expect("reactivation chain link"));
+        assert!(bundle_has_activation(&read, &first_bundle).expect("first activation"));
+        assert!(bundle_has_activation(&read, &second_bundle).expect("second activation"));
+        assert!(
+            active_catalog_matches_last_activation(&read, Some(third.activated()))
+                .expect("latest activation")
+        );
+        drop(read);
+
+        let wrong_second = StoredCatalogAdministrationV1::from_stored_parts(
+            second.administration_sequence(),
+            second.request_id(),
+            second.timestamp(),
+            second.principal().clone(),
+            None,
+            second.activated().clone(),
+            second.approval_id().cloned(),
+        );
+        let encoded_wrong_second = codec::encode_administration_audit_record_v1(
+            &StoredAdministrationAuditRecordV1::Catalog(wrong_second.clone()),
+        )
+        .expect("encode wrong second activation");
+        let write = store
+            .shared
+            .database
+            .begin_write()
+            .expect("write transaction");
+        {
+            let mut audit = write.open_table(AUDIT).expect("audit table");
+            audit
+                .insert(
+                    keys::encode_audit_key(wrong_second.administration_sequence()).as_slice(),
+                    encoded_wrong_second.as_bytes(),
+                )
+                .expect("replace second activation");
+        }
+        write.commit().expect("commit corruption");
+        let read = store
+            .shared
+            .database
+            .begin_read()
+            .expect("read transaction");
+        assert!(
+            !catalog_record_is_reciprocal(&read, &wrong_second).expect("wrong previous pointer")
+        );
+    }
+
+    #[test]
+    fn capability_create_and_revoke_audits_are_checked_in_both_directions() {
+        let path = TestDatabasePath::new("capability-audit");
+        let database_id = database_id(0x73);
+        let store = initialized_store(&path, database_id);
+        let capability_id = capability_id(0x51);
+        let issued_at = Timestamp::new(10, 0).expect("issued at");
+        let active = StoredCapabilityRecordV1::active(
+            capability_id,
+            CapabilityTokenDigest::from_hmac_bytes(
+                DigestKeyId::new(1).expect("digest key ID"),
+                [0x61; 32],
+            ),
+            requested_capability(database_id),
+            issued_at,
+            Timestamp::new(70, 0).expect("expires at"),
+            AdministrationSequence::first(),
+            request_id(0x52),
+        )
+        .expect("active capability");
+        let revoked_at = Timestamp::new(20, 0).expect("revoked at");
+        let revoked = active
+            .revoked(
+                NonZeroU64::MIN,
+                revoked_at,
+                AdministrationSequence::new(2).expect("revoke sequence"),
+                RevocationReasonCodeV1::Requested,
+            )
+            .expect("revoked capability");
+        let create = StoredCapabilityAdministrationV1::new(
+            AdministrationSequence::first(),
+            active.creation_request_id(),
+            CapabilityAdministrationOperationV1::Create,
+            issued_at,
+            Some(audit_principal(0x41)),
+            capability_id,
+            NonZeroU64::MIN,
+            None,
+            None,
+        )
+        .expect("create audit");
+        let revoke = StoredCapabilityAdministrationV1::new(
+            AdministrationSequence::new(2).expect("revoke sequence"),
+            request_id(0x53),
+            CapabilityAdministrationOperationV1::Revoke,
+            revoked_at,
+            Some(audit_principal(0x41)),
+            capability_id,
+            NonZeroU64::new(2).expect("revision"),
+            None,
+            Some(RevocationReasonCodeV1::Requested),
+        )
+        .expect("revoke audit");
+        let encoded_capability =
+            codec::encode_capability_record_v1(&revoked).expect("encode capability");
+        let encoded_create = codec::encode_administration_audit_record_v1(
+            &StoredAdministrationAuditRecordV1::Capability(create.clone()),
+        )
+        .expect("encode create");
+        let encoded_revoke = codec::encode_administration_audit_record_v1(
+            &StoredAdministrationAuditRecordV1::Capability(revoke.clone()),
+        )
+        .expect("encode revoke");
+        let write = store
+            .shared
+            .database
+            .begin_write()
+            .expect("write transaction");
+        {
+            let mut capabilities = write.open_table(CAPABILITIES).expect("capability table");
+            capabilities
+                .insert(
+                    keys::encode_capability_key(capability_id).as_slice(),
+                    encoded_capability.as_bytes(),
+                )
+                .expect("insert capability");
+        }
+        {
+            let mut audit = write.open_table(AUDIT).expect("audit table");
+            audit
+                .insert(
+                    keys::encode_audit_key(create.administration_sequence()).as_slice(),
+                    encoded_create.as_bytes(),
+                )
+                .expect("insert create");
+            audit
+                .insert(
+                    keys::encode_audit_key(revoke.administration_sequence()).as_slice(),
+                    encoded_revoke.as_bytes(),
+                )
+                .expect("insert revoke");
+        }
+        write.commit().expect("commit fixture");
+        {
+            let read = store
+                .shared
+                .database
+                .begin_read()
+                .expect("read transaction");
+            assert_eq!(
+                capability_record_audit_status(&read, &revoked).expect("record links"),
+                CrossLinkStatus::Exact
+            );
+            assert_eq!(
+                capability_administration_status(&read, &create).expect("create link"),
+                CrossLinkStatus::Exact
+            );
+            assert_eq!(
+                capability_administration_status(&read, &revoke).expect("revoke link"),
+                CrossLinkStatus::Exact
+            );
+        }
+
+        let wrong_revoke = StoredCapabilityAdministrationV1::new(
+            revoke.administration_sequence(),
+            revoke.request_id(),
+            CapabilityAdministrationOperationV1::Revoke,
+            revoke.timestamp(),
+            Some(audit_principal(0x41)),
+            capability_id,
+            revoke.resulting_revision(),
+            None,
+            Some(RevocationReasonCodeV1::PolicyChange),
+        )
+        .expect("type-valid wrong revoke");
+        let encoded_wrong = codec::encode_administration_audit_record_v1(
+            &StoredAdministrationAuditRecordV1::Capability(wrong_revoke.clone()),
+        )
+        .expect("encode wrong revoke");
+        let write = store
+            .shared
+            .database
+            .begin_write()
+            .expect("write transaction");
+        {
+            let mut audit = write.open_table(AUDIT).expect("audit table");
+            audit
+                .insert(
+                    keys::encode_audit_key(wrong_revoke.administration_sequence()).as_slice(),
+                    encoded_wrong.as_bytes(),
+                )
+                .expect("replace revoke");
+        }
+        write.commit().expect("commit corruption");
+        let read = store
+            .shared
+            .database
+            .begin_read()
+            .expect("read transaction");
+        assert_eq!(
+            capability_record_audit_status(&read, &revoked).expect("record mismatch"),
+            CrossLinkStatus::Mismatch
+        );
+        assert_eq!(
+            capability_administration_status(&read, &wrong_revoke).expect("audit mismatch"),
+            CrossLinkStatus::Mismatch
+        );
+    }
+
+    #[test]
+    fn duplicate_standalone_service_lifecycle_is_authoritative_corruption() {
+        let path = TestDatabasePath::new("duplicate-service");
+        let store = initialized_store(&path, database_id(0x74));
+        let request_id = request_id(0x61);
+        let first = StoredServiceAuditRecordV1::from_stored_parts(
+            AdministrationSequence::first(),
+            request_id,
+            Timestamp::new(1, 0).expect("timestamp"),
+            ServiceOperationV1::GetHealth,
+            ServiceAuditPhaseV1::Denied,
+            Some(audit_principal(0x62)),
+            ServiceIngressKindV1::Grpc,
+            ServiceAuditTargetsV1::empty(),
+            None,
+            ServiceAuditLinkV1::None,
+        )
+        .expect("first standalone audit");
+        let second = StoredServiceAuditRecordV1::from_stored_parts(
+            AdministrationSequence::new(2).expect("sequence"),
+            request_id,
+            Timestamp::new(2, 0).expect("timestamp"),
+            ServiceOperationV1::GetHealth,
+            ServiceAuditPhaseV1::Denied,
+            Some(audit_principal(0x62)),
+            ServiceIngressKindV1::Grpc,
+            ServiceAuditTargetsV1::empty(),
+            None,
+            ServiceAuditLinkV1::None,
+        )
+        .expect("second standalone audit");
+        let encoded_first = codec::encode_administration_audit_record_v1(
+            &StoredAdministrationAuditRecordV1::Service(first),
+        )
+        .expect("encode first service audit");
+        let encoded_second = codec::encode_administration_audit_record_v1(
+            &StoredAdministrationAuditRecordV1::Service(second),
+        )
+        .expect("encode second service audit");
+        let allocator = codec::encode_administration_sequence_allocator_v1(
+            AdministrationSequenceAllocator::next(
+                AdministrationSequence::new(3).expect("allocator sequence"),
+            ),
+        )
+        .expect("encode allocator");
+        let write = store
+            .shared
+            .database
+            .begin_write()
+            .expect("write transaction");
+        {
+            let mut audit = write.open_table(AUDIT).expect("audit table");
+            audit
+                .insert(
+                    keys::encode_audit_key(AdministrationSequence::first()).as_slice(),
+                    encoded_first.as_bytes(),
+                )
+                .expect("insert first service audit");
+            audit
+                .insert(
+                    keys::encode_audit_key(
+                        AdministrationSequence::new(2).expect("second sequence"),
+                    )
+                    .as_slice(),
+                    encoded_second.as_bytes(),
+                )
+                .expect("insert second service audit");
+        }
+        {
+            let mut meta = write.open_table(META).expect("metadata table");
+            meta.insert(META_ADMINISTRATION_SEQUENCE, allocator.as_bytes())
+                .expect("advance allocator");
+        }
+        write.commit().expect("commit fixture");
+
+        let mut session = store
+            .begin_structural_evidence(inputs())
+            .expect("begin evidence");
+        let (structural_end, findings) = collect_structural(&mut session);
+        assert!(findings.iter().all(|finding| {
+            finding.scope() == StructuralFindingScope::Authoritative
+                && finding.code() == StructuralFindingCode::CrossLinkMismatch
+        }));
+        assert_eq!(findings.len(), 2);
+        let historical_end = finish_historical(&mut session);
+        let error = session
+            .finish(structural_end, historical_end)
+            .expect_err("authoritative findings must withhold ports");
+        assert_eq!(error.kind(), StorageErrorKind::CorruptData);
+
+        let reopened = RedbStore::open(&path.0).expect("reopen corrupt fixture");
+        let mut repeated = reopened
+            .begin_structural_evidence(inputs())
+            .expect("repeat evidence");
+        let (repeated_structural_end, repeated_findings) = collect_structural(&mut repeated);
+        assert_eq!(repeated_findings, findings);
+        let repeated_historical_end = finish_historical(&mut repeated);
+        let repeated_error = repeated
+            .finish(repeated_structural_end, repeated_historical_end)
+            .expect_err("repeated authoritative findings must withhold ports");
+        assert_eq!(repeated_error.kind(), StorageErrorKind::CorruptData);
+    }
+
+    #[test]
+    fn projection_frontier_and_marker_prefix_defects_are_derived_only() {
+        let path = TestDatabasePath::new("before-first-marker");
+        let store = initialized_store(&path, database_id(0x75));
+        let identity = projection_identity();
+        let control = StoredProjectionControlV1::initial(identity.clone());
+        let marker_key = ProjectionApplyKey::new(
+            identity,
+            ProjectionGeneration::first(),
+            CommitSequence::first(),
+        );
+        let marker = StoredProjectionApplyV1::new(
+            marker_key.clone(),
+            ProjectionApplyHash::from_bytes([0x92; 32]),
+        );
+        let gap_identity = ProjectionIdentity::new(
+            ContractLineage::new("projection-gap").expect("lineage"),
+            ProjectionId::new(2).expect("projection ID"),
+            ProjectionPlanHash::from_bytes([0x93; 32]),
+        );
+        let gap_frontier = CommitSequence::new(3).expect("gap frontier");
+        let gap_control = StoredProjectionControlV1::new(
+            gap_identity.clone(),
+            ProjectionGeneration::first(),
+            Some(ProjectionGenerationPosition::new(
+                ProjectionGeneration::first(),
+                FrontierPosition::AppliedThrough(gap_frontier),
+            )),
+            None,
+            Some(PublishedApplyModeV1::Enabled),
+            ProjectionLifecycleV1::Ready,
+            None,
+        )
+        .expect("gap control");
+        let gap_first_key = ProjectionApplyKey::new(
+            gap_identity.clone(),
+            ProjectionGeneration::first(),
+            CommitSequence::first(),
+        );
+        let gap_last_key =
+            ProjectionApplyKey::new(gap_identity, ProjectionGeneration::first(), gap_frontier);
+        let gap_first = StoredProjectionApplyV1::new(
+            gap_first_key.clone(),
+            ProjectionApplyHash::from_bytes([0x94; 32]),
+        );
+        let gap_last = StoredProjectionApplyV1::new(
+            gap_last_key.clone(),
+            ProjectionApplyHash::from_bytes([0x95; 32]),
+        );
+        let encoded_control =
+            codec::encode_projection_control_v1(&control).expect("encode control");
+        let encoded_marker = codec::encode_projection_apply_v1(&marker).expect("encode marker");
+        let encoded_gap_control =
+            codec::encode_projection_control_v1(&gap_control).expect("encode gap control");
+        let encoded_gap_first =
+            codec::encode_projection_apply_v1(&gap_first).expect("encode first gap marker");
+        let encoded_gap_last =
+            codec::encode_projection_apply_v1(&gap_last).expect("encode last gap marker");
+        let control_key = riffdb_types::ProjectionFrontierKey::new(control.identity().clone());
+        let gap_control_key =
+            riffdb_types::ProjectionFrontierKey::new(gap_control.identity().clone());
+        let write = store
+            .shared
+            .database
+            .begin_write()
+            .expect("write transaction");
+        {
+            let mut controls = write
+                .open_table(PROJECTION_FRONTIER)
+                .expect("control table");
+            controls
+                .insert(control_key.as_bytes(), encoded_control.as_bytes())
+                .expect("insert control");
+            controls
+                .insert(gap_control_key.as_bytes(), encoded_gap_control.as_bytes())
+                .expect("insert gap control");
+        }
+        {
+            let mut markers = write.open_table(PROJECTION_APPLIED).expect("marker table");
+            markers
+                .insert(marker_key.as_bytes(), encoded_marker.as_bytes())
+                .expect("insert marker");
+            markers
+                .insert(gap_first_key.as_bytes(), encoded_gap_first.as_bytes())
+                .expect("insert first gap marker");
+            markers
+                .insert(gap_last_key.as_bytes(), encoded_gap_last.as_bytes())
+                .expect("insert last gap marker");
+        }
+        write.commit().expect("commit fixture");
+
+        {
+            let read = store
+                .shared
+                .database
+                .begin_read()
+                .expect("read transaction");
+            assert_eq!(
+                inspect_projection_apply_row(
+                    &read,
+                    gap_last_key.as_bytes(),
+                    encoded_gap_last.as_bytes(),
+                )
+                .expect("inspect marker gap"),
+                Some(derived_projection(
+                    StructuralFindingCode::ProjectionStateMismatch,
+                ))
+            );
+        }
+
+        let mut session = store
+            .begin_structural_evidence(inputs())
+            .expect("begin evidence");
+        let (structural_end, findings) = collect_structural(&mut session);
+        assert!(!findings.is_empty());
+        assert!(findings.iter().all(|finding| {
+            finding.scope() == StructuralFindingScope::Projection
+                && finding.code() == StructuralFindingCode::ProjectionStateMismatch
+        }));
+        let historical_end = finish_historical(&mut session);
+        let opened = session
+            .finish(structural_end, historical_end)
+            .expect("derived findings do not withhold ports");
+        assert_eq!(opened.database_id(), database_id(0x75));
     }
 }
