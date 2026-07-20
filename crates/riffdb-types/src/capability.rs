@@ -4,6 +4,49 @@ use std::fmt;
 
 use crate::{DIGEST_SCHEME_V1, DigestKeyId};
 
+/// Maximum audiences retained by one capability.
+pub const MAX_CAPABILITY_AUDIENCES: usize = 8;
+/// Maximum requested capability lifetime in seconds.
+pub const MAX_CAPABILITY_LIFETIME_SECONDS: u32 = 2_592_000;
+
+/// Closed revocation reason registry.
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+pub enum RevocationReasonCodeV1 {
+    /// Explicit operator request.
+    Requested,
+    /// Capability was replaced.
+    Replaced,
+    /// Suspected credential compromise.
+    SuspectedCompromise,
+    /// Current policy changed.
+    PolicyChange,
+}
+
+impl RevocationReasonCodeV1 {
+    /// Returns the immutable v1 tag.
+    #[must_use]
+    pub const fn tag(self) -> u8 {
+        match self {
+            Self::Requested => 0x01,
+            Self::Replaced => 0x02,
+            Self::SuspectedCompromise => 0x03,
+            Self::PolicyChange => 0x04,
+        }
+    }
+
+    /// Decodes a stable v1 revocation-reason tag.
+    #[must_use]
+    pub const fn from_tag(tag: u8) -> Option<Self> {
+        match tag {
+            0x01 => Some(Self::Requested),
+            0x02 => Some(Self::Replaced),
+            0x03 => Some(Self::SuspectedCompromise),
+            0x04 => Some(Self::PolicyChange),
+            _ => None,
+        }
+    }
+}
+
 /// A versioned capability-token lookup digest.
 ///
 /// The digest bytes are not bearer credentials, but their formatting is still
@@ -80,5 +123,29 @@ mod tests {
         assert_eq!(digest.scheme(), DIGEST_SCHEME_V1);
         assert_eq!(digest.key_id(), digest_key_id(7));
         assert_eq!(digest.as_bytes(), &[0xab; 32]);
+    }
+
+    #[test]
+    fn capability_hard_limits_have_exact_v1_values() {
+        assert_eq!(MAX_CAPABILITY_AUDIENCES, 8);
+        assert_eq!(MAX_CAPABILITY_LIFETIME_SECONDS, 2_592_000);
+    }
+
+    #[test]
+    fn revocation_reason_registry_has_exact_v1_tags() {
+        let registry = [
+            (RevocationReasonCodeV1::Requested, 0x01),
+            (RevocationReasonCodeV1::Replaced, 0x02),
+            (RevocationReasonCodeV1::SuspectedCompromise, 0x03),
+            (RevocationReasonCodeV1::PolicyChange, 0x04),
+        ];
+
+        for (reason, tag) in registry {
+            assert_eq!(reason.tag(), tag);
+            assert_eq!(RevocationReasonCodeV1::from_tag(tag), Some(reason));
+        }
+        assert_eq!(RevocationReasonCodeV1::from_tag(0), None);
+        assert_eq!(RevocationReasonCodeV1::from_tag(5), None);
+        assert_eq!(RevocationReasonCodeV1::from_tag(u8::MAX), None);
     }
 }
