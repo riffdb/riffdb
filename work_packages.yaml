@@ -569,6 +569,9 @@ work_packages:
   - crates/riffdb-storage-api/src/lib.rs
   - crates/riffdb-storage-api/src/proto_codec/**
   - crates/riffdb-storage-api/tests/architecture.rs
+  - fuzz/Cargo.toml
+  - fuzz/Cargo.lock
+  - fuzz/fuzz_targets/proto_durable.rs
   deliverables:
   - Exactly eight riffdb.storage.v1 semantic-record source modules named common.proto, metadata.proto,
     application.proto, catalog.proto, capability.proto, audit.proto, outbox.proto, and projection.proto, in addition
@@ -604,6 +607,7 @@ work_packages:
   acceptance_commands:
   - cargo test -p riffdb-proto -p riffdb-storage-api
   - ./scripts/generate-proto --check
+  - cargo +nightly-2026-07-12 fuzz run proto_durable -- -max_len=16777216 -max_total_time=30
   exit_gate: Every durable semantic record has bounded validation, stable generated descriptors and goldens, checked
     storage mappings, exact event-hash and canonical-envelope upper-bound evidence, no deferred operational-metadata
     placeholder, and a clean generation diff before redb persistence begins.
