@@ -565,9 +565,8 @@ mod tests {
         );
 
         let after_path = TestDatabasePath::new("after-commit");
-        let after = RedbTestController::return_unknown_after_commit(
-            RedbTestOperation::Initialization,
-        );
+        let after =
+            RedbTestController::return_unknown_after_commit(RedbTestOperation::Initialization);
         let mut store = RedbStore::open_with_test_controller(&after_path.0, after)
             .expect("open controlled store");
         assert_eq!(
