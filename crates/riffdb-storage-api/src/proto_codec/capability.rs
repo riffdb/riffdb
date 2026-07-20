@@ -2,17 +2,17 @@ use std::num::{NonZeroU16, NonZeroU64};
 
 use riffdb_proto::storage::v1 as wire;
 use riffdb_types::{
-    ActorId, AdministrationSequence, ApprovalId, Audience, CapabilityId, CapabilityTokenDigest,
-    CommandId, ContractLineage, DatabaseId, DigestKeyId, EntityTypeId, Environment, FieldId,
-    IndexId, PartitionKey, ProjectionId, RequestId,
+    ActorId, AdministrationSequence, ApprovalId, Audience, CapabilityGrantError, CapabilityId,
+    CapabilityTokenDigest, CommandId, ContractLineage, DatabaseId, DigestKeyId, EntityTypeId,
+    Environment, FieldId, IndexId, PartitionKey, ProjectionId, RequestId,
 };
 
 use crate::{
     CapabilityAdministrationOperationV1, CapabilityBootstrapMarkerV1, CapabilityGrantV1,
     CapabilityLifecycleV1, CapabilityPermissionKindV1, CapabilityPermissionV1,
     CapabilityPermissionsV1, CapabilityTokenLookupV1, EncodedPageItem, EntityFieldVisibilityV1,
-    PartitionScopeV1, RevocationReasonCodeV1, ScopedPartitionV1, StoredCapabilityAdministrationV1,
-    StoredCapabilityRecordV1,
+    PartitionScopeV1, RevocationReasonCodeV1, ScopedPartitionV1, StorageValueError,
+    StoredCapabilityAdministrationV1, StoredCapabilityRecordV1,
 };
 
 use super::{
@@ -26,6 +26,10 @@ const RECORD: &str = "riffdb.storage.v1.CapabilityRecordV1";
 const LOOKUP: &str = "riffdb.storage.v1.CapabilityTokenLookupV1";
 const BOOTSTRAP: &str = "riffdb.storage.v1.CapabilityBootstrapMarkerV1";
 const ADMINISTRATION: &str = "riffdb.storage.v1.CapabilityAdministrationAuditV1";
+
+fn grant_result<T>(value: Result<T, CapabilityGrantError>) -> Result<T, DurableCodecError> {
+    storage_result(value.map_err(StorageValueError::from))
+}
 
 fn permission_to_proto(value: &CapabilityPermissionV1) -> wire::CapabilityPermissionV1 {
     use CapabilityPermissionV1::{
@@ -103,8 +107,7 @@ fn permission_from_proto(
                 ProjectionId::new(id).ok_or_else(DurableCodecError::corrupt)?,
             ))
         }
-        (kind, None) => CapabilityPermissionV1::unparameterized(kind)
-            .map_err(DurableCodecError::from_storage_value),
+        (kind, None) => grant_result(CapabilityPermissionV1::unparameterized(kind)),
         (_, Some(_)) => Err(DurableCodecError::corrupt()),
     }
 }
@@ -123,7 +126,7 @@ fn permissions_from_proto(
         .into_iter()
         .map(permission_from_proto)
         .collect::<Result<Vec<_>, _>>()?;
-    let checked = storage_result(CapabilityPermissionsV1::new(raw.clone()))?;
+    let checked = grant_result(CapabilityPermissionsV1::new(raw.clone()))?;
     if checked.as_slice() != raw {
         return Err(DurableCodecError::corrupt());
     }
@@ -169,7 +172,7 @@ fn partition_scope_from_proto(
                 .into_iter()
                 .map(scoped_partition_from_proto)
                 .collect::<Result<Vec<_>, _>>()?;
-            let checked = storage_result(PartitionScopeV1::explicit(raw.clone()))?;
+            let checked = grant_result(PartitionScopeV1::explicit(raw.clone()))?;
             if checked.explicit_entries() != Some(raw.as_slice()) {
                 return Err(DurableCodecError::corrupt());
             }
@@ -194,7 +197,7 @@ fn visibility_from_proto(
         .into_iter()
         .map(field_id)
         .collect::<Result<Vec<FieldId>, _>>()?;
-    let checked = storage_result(EntityFieldVisibilityV1::new(
+    let checked = grant_result(EntityFieldVisibilityV1::new(
         ContractLineage::new(value.contract_lineage).map_err(|_| DurableCodecError::corrupt())?,
         EntityTypeId::new(value.entity_type_id).ok_or_else(DurableCodecError::corrupt)?,
         raw_fields.clone(),
@@ -242,7 +245,7 @@ fn grant_from_proto(
                 .ok_or_else(DurableCodecError::corrupt)
         })
         .collect::<Result<Vec<_>, _>>()?;
-    let checked = storage_result(CapabilityGrantV1::new(
+    let checked = grant_result(CapabilityGrantV1::new(
         tenant_scope_from_proto(require(value.tenant_scope)?)?,
         partition_scope_from_proto(require(value.partition_scope)?)?,
         permissions_from_proto(require(value.permissions)?)?,

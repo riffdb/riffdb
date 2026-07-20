@@ -2,11 +2,10 @@
 
 use std::{error::Error, fmt};
 
-use riffdb_storage_api::{
-    CapabilityGrantV1, CapabilityLifecycleV1, CapabilityReader, StoredCapabilityRecordV1,
-};
+use riffdb_storage_api::{CapabilityLifecycleV1, CapabilityReader, StoredCapabilityRecordV1};
 use riffdb_types::{
-    ActorId, ActorKind, Audience, CapabilityId, DatabaseId, Environment, Timestamp,
+    ActorId, ActorKind, Audience, CapabilityGrantV1, CapabilityId, DatabaseId, Environment,
+    Timestamp,
 };
 
 use crate::AuthenticatedPrincipal;

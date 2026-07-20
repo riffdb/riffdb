@@ -4,6 +4,7 @@
 
 mod actor;
 mod capability;
+mod capability_grant;
 mod codec;
 mod decimal;
 mod execution;
@@ -18,6 +19,7 @@ mod value;
 
 pub use actor::*;
 pub use capability::*;
+pub use capability_grant::*;
 pub use codec::*;
 pub use decimal::*;
 pub use execution::*;
