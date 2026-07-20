@@ -568,6 +568,7 @@ work_packages:
   - crates/riffdb-storage-api/Cargo.toml
   - crates/riffdb-storage-api/src/lib.rs
   - crates/riffdb-storage-api/src/proto_codec/**
+  - crates/riffdb-storage-api/tests/architecture.rs
   deliverables:
   - Exactly eight riffdb.storage.v1 semantic-record source modules named common.proto, metadata.proto,
     application.proto, catalog.proto, capability.proto, audit.proto, outbox.proto, and projection.proto, in addition
