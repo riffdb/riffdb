@@ -6,7 +6,7 @@
 **Tagline:** *Vibe fast. Commit safely.*  
 **Category:** Contract-first operational database for agent-built applications  
 
-**Version:** 0.13
+**Version:** 0.14
 **Status:** Architecture-approved implementation handoff
 **Date:** 20 July 2026
 **Audience:** Coding agents, database engineers, compiler engineers, security reviewers, and technical product leads  
@@ -49,6 +49,7 @@
 | 0.11 | 2026-07-14 | Froze the accepted POC durable table keys and 26-record registry, including authoritative standalone event rows and lineage-scoped bundle keys; approved the pure-Rust backup checksum dependency and dependency-free storage benchmark harness; and clarified shared pure input-expression evaluation plus fail-closed pre-admission arithmetic. |
 | 0.12 | 2026-07-14 | Clarified that one full `StoredOutcomeV1` envelope is both the committed terminal idempotency row and persisted outcome, with atomic pending deletion, no tombstone or second terminal envelope, and startup commit reciprocity; explicitly deferred contract state-machine source, IR, and execution from POC grammar/IR v1 and narrowed WP-080 to predicate, invariant, postcondition, and commit-check evaluation. |
 | 0.13 | 2026-07-20 | Applied accepted ADR-0022's exact self-contained durable semantic Protobuf modules, 26-payload registry, field/tag/presence rules, canonical-wire validation, complete terminal outcome, and checked storage-codec boundary before WP-065 implementation. |
+| 0.14 | 2026-07-20 | Applied accepted ADR-0023's exact WP-100 coordinator edge semantics: commit evaluator ownership, bounded full reevaluation, audit-input inversion, provenance attempt recovery, grammar-v1 empty index covered values, commit-check arithmetic classification, absent-target capability revocation, and no-transition control-plane audit classification. |
 
 ### Normative language
 
@@ -299,7 +300,7 @@ The binary targets are `riffdbd` from `riffdb-server`, `riffdb` from `riffdb-cli
 | `riffdb-runtime` | Deterministic command-plan interpreter that consumes owned snapshots and produces `EvaluatedCommand` without external I/O | IR, invariant engine, and storage semantic value/snapshot types; no provenance claims, admission persistence, storage engine, service, or transport dependency |
 | `riffdb-conflict` | Canonical conflict keys, exclusive logical capabilities, wait queues, cancellation, and hot-key diagnostics | Types and synchronization primitives; no storage engine |
 | `riffdb-idempotency` | Canonical command identity, input hashing, persisted outcome lookup, duplicate detection, and uncertain-result recovery | Types and storage API |
-| `riffdb-commit` | Database-initialization executor, admission, capability acquisition, deterministic evaluation orchestration, final `CommitIntent` assembly, revalidation, sequencing, authoritative commit, typed control-plane operations, ordered audit execution, and consumer-owned `AdmissionClock`, `AdministrationClock`, and `ProvenanceIdSource` ports | Runtime, conflict, idempotency, catalog, storage API, and policy-owned authorized-preparation/provenance/facts values plus only `TransactionCurrentCapabilityVerifier` and `AuthorizationClock`; no service, transport, protocol, general policy authorizer, obligations/redaction engine, policy-owned storage reader, or concrete clock/entropy implementation |
+| `riffdb-commit` | Database-initialization executor, admission, capability acquisition, deterministic evaluation orchestration, exact historical-plan matching, final `CommitIntent` assembly, transaction-current commit-check orchestration, revalidation, sequencing, authoritative commit, typed control-plane operations, ordered audit execution, and consumer-owned `AdmissionClock`, `AdministrationClock`, `ProvenanceIdSource`, and `AdministrationAuditInputView` ports | Runtime, conflict, idempotency, catalog, `riffdb-contract-ir`, `riffdb-invariant`, storage API, and policy-owned authorized-preparation/provenance/facts values plus only `TransactionCurrentCapabilityVerifier` and `AuthorizationClock`; direct IR/invariant use is limited to exact plan matching, grammar-v1 index derivation, and pure transaction-current commit-check evaluation; no syntax/compiler, service, transport, protocol, general policy authorizer, obligations/redaction engine, policy-owned storage reader, or concrete clock/entropy implementation |
 | `riffdb-auth` | Principal authentication, local development capability tokens, expiry, credential resolution, narrow synchronous authentication clock, and `CredentialAuthenticator` entry point | Types, errors, and storage-owned capability readers; no policy, command execution, service, or transport dependency |
 | `riffdb-policy` | Deny-by-default authorization, capability scopes, obligations, approvals, provenance validation, value-only authorized capability-mutation preparation and transaction-current facts, synchronous authorization clock, and pure transaction-current capability verification | Auth and types/errors only; no storage API, commit, service, transport, protocol, authoritative write handle, or concrete storage dependency |
 | `riffdb-service` | API-neutral command, contract, entity, commit, provenance, projection, discovery, administration, and health services, including capability-administration request/result semantics and checked command-input preparation | Foundational types/errors, contract/compiler/catalog semantics, the pure `riffdb-invariant` expression evaluator, auth and policy entry points, typed commit executors, and consumer-owned bounded read ports; no runtime execution API, transport, general storage engine, or concrete storage implementation |
@@ -437,8 +438,11 @@ before transmission. A new database atomically installs a checked candidate
 `DatabaseId` only when every initialization predicate proves the store is truly
 uninitialized; reopen preserves the durable ID. The coordinator obtains a new
 `ProvenanceId` only for a new commit attempt after successful evaluation and
-before the authoritative transaction, never for reads, `ExecutionFailed`, or
-terminal replay. Unknown commit status is resolved through idempotency before
+before the authoritative transaction, never for reads or terminal replay.
+Execution faults known before successful evaluation source none; the narrow late
+transaction-current commit-check arithmetic path discards the one already-
+sourced, never-persisted candidate and obtains no second candidate while
+terminalizing. Unknown commit status is resolved through idempotency before
 another provenance candidate is generated. Any durable-ID collision fails the
 whole operation without overwrite or sequence assignment.
 
@@ -772,6 +776,14 @@ abort leaves the admission pending and maps to storage unavailability; unknown
 commit status fences writes and maps to outcome uncertainty until same-key
 resolution.
 
+ADR-0023 fixes bounded full reevaluation at three complete evaluation attempts
+per outer invocation, including the initial attempt. Exhausting that fixed
+invocation-local budget leaves the durable Pending admission byte-for-byte
+unchanged and creates no terminal record or application sequence. The service
+maps the coordinator's internal `RetryBudgetExhausted` to the existing public
+`ConcurrencyDeadlineExceeded`; a later caller retry is a new bounded invocation
+under the same idempotency identity and frozen admission.
+
 An impossible validated-plan/snapshot `Integrity` fault is a redacted internal
 incident, leaves a mutating admission pending for operator intervention, and never
 uses the expected `ExecutionFailed` transition. The POC supplies no online repair
@@ -1031,11 +1043,18 @@ A mutating command follows this sequence:
     For a new commit attempt, the coordinator obtains one `ProvenanceId` from its
     injected source and combines it with the exact stored admission and plan-
     derived partition/conflict evidence into the final self-contained
-    `CommitIntent`. Replay and `ExecutionFailed` generate no provenance ID.
+    `CommitIntent`. Replay never invokes the source. An `ExecutionFailed` path
+    invokes no source unless transaction-current commit-check arithmetic fails
+    after successful evaluation has already sourced one candidate; that narrow
+    late-fault path discards the never-persisted candidate and sources no second
+    one while terminalizing.
 13. An arithmetic or resource fault follows ADR-0012's dependency-validated
     `Pending -> ExecutionFailed` transition; changed evidence triggers full
     reevaluation or leaves the admission pending, and no application sequence is
-    assigned.
+    assigned. A proven pre-commit abort ends that attempt; a later safe
+    reevaluation of the same Pending admission is a new attempt and may source
+    one new provenance candidate. Unknown status is resolved against the same
+    idempotency identity before any reevaluation or source call.
 14. For a commit-required result, the coordinator opens a short synchronous
     write transaction and starts a count-only candidate. Starting the candidate
     checks only the 64-command count ceiling; it does not assign a sequence or
@@ -1150,6 +1169,9 @@ A conflict key is an opaque canonical byte string with a type prefix and aggrega
 - Lock timeout returns the transient public `ConcurrencyDeadlineExceeded`
   failure, not a declared business outcome or ADR-0012 `ExecutionFault`. It does
   not terminalize or consume the idempotency admission.
+- ADR-0023's distinct internal full-reevaluation budget exhaustion maps to the
+  same existing public `ConcurrencyDeadlineExceeded` code, safe message, retry
+  action, and gRPC `DEADLINE_EXCEEDED` status without becoming a lock result.
 
 A grammar-v1 command may observe multiple logical conflict domains only within
 its one statically proven `PartitionKey`. Every domain it may mutate and every
@@ -1201,6 +1223,14 @@ snapshot as its entries and advances atomically for every affected whole-index
 and complete leading-component prefix bucket when an index entry or covered
 value changes.
 
+Grammar and executable IR version 1 declare index key components but no covering
+fields. Every coordinator-produced v1 index entry therefore carries the one
+canonical empty `CanonicalRecord` as `covered_values`; the coordinator MUST NOT
+copy an entity, indexed fields, or an ad hoc projection into that field. The
+storage semantic API and durable codec remain generic and retain bounded covered
+values plus their epoch behavior. Any nonempty v1 producer requires a future
+accepted language/IR and durable compatibility decision.
+
 An influential `IndexRangeEpoch` dependency and a mutation-affected epoch target
 serve different purposes and MUST NOT be inferred from one another. The first is
 snapshot evidence for a range whose contents influenced evaluation and is
@@ -1251,6 +1281,20 @@ The commit coordinator runs on a dedicated blocking thread or tightly controlled
 
 The commit coordinator is the only component permitted to create idempotency reservations, assign application commit sequences, or drive authoritative write transactions. It opens a write transaction only after deterministic command evaluation has completed. The write transaction is intentionally short: it rechecks identity and dependencies, supplies transaction-current values for the exact compiled validation plan, applies one bounded atomic record set, and commits. Runtime evaluation MUST NOT occur while a storage transaction is held. The storage API MUST NOT expose arbitrary transaction callbacks or a generic public write surface.
 
+For exact historical-plan matching, grammar-v1 index derivation, and pure
+transaction-current commit-check evaluation only, `riffdb-commit` directly
+consumes the checked `CommandPlan` from `riffdb-contract-ir` and the sole
+`riffdb-invariant` evaluator. It mechanically assembles a private owned value
+source from frozen normalized input and `tx.time`, transaction-current complete
+binding/root observations, and proposed complete post-images. Mutate/create
+bindings resolve only to their proposed post-images; read-only bindings and
+internal aggregate-root validation reads resolve only to transaction-current
+records. Missing, duplicate, out-of-order, or unmatched semantic positions are
+`EvaluationError::Integrity`; there is no pre-image/post-image fallback. No
+storage transaction, handle, callback, reader, engine object, clock, entropy
+source, or asynchronous operation crosses into the evaluator, and neither the
+coordinator nor a backend duplicates evaluator logic.
+
 The coordinator performs:
 
 1. Open the durable write transaction and start a count-only candidate.
@@ -1274,6 +1318,36 @@ sequence and constructs none of the command atomic record set. A normal
 dependency change writes nothing and follows the bounded full-reevaluation
 policy; malformed or missing evidence is an integrity incident and leaves the
 admission pending.
+
+A false transaction-current commit check remains the non-durable
+`CandidateValidationRejection::CommitCheckRejected`. A transaction-current
+`EvaluationError::Arithmetic` is instead the additive non-durable
+`CandidateValidationRejection::CommitCheckArithmeticFault`: the coordinator
+abandons and rolls back the application candidate before sequence assignment,
+maps it to `ExecutionFailureCode::ArithmeticFault`, and uses the separate
+dependency-revalidating terminalization transition above. It discards the one
+never-persisted provenance candidate already sourced after successful runtime
+evaluation and obtains no second candidate for terminalization. Integrity faults
+remain redacted internal incidents, never caller data or predicate rejection.
+
+`riffdb-commit` privately fixes
+`MAX_COMMAND_EVALUATION_ATTEMPTS_V1: usize = 3`. An attempt begins immediately
+before one complete owned-snapshot runtime evaluation, so one invocation may
+perform at most two automatic full reevaluations. Dependency change,
+commit-check rejection, mutation-precondition change, or changed evidence while
+terminalizing an execution fault consumes the completed attempt. Before another
+attempt, the coordinator proves abort, releases the logical capability, checks
+cancellation/deadline, reacquires every canonical conflict key, and materializes
+a new complete snapshot. `CommitStatusUnknown` instead fences writes and forces
+same-key durable resolution without another attempt.
+
+If attempt three requires reevaluation, no fourth attempt begins. The
+coordinator releases non-durable capabilities, discards any unpersisted
+provenance candidate, and returns internal `RetryBudgetExhausted`; Pending remains
+byte-identical and no sequence, mutation, outcome, event, outbox intent, commit,
+execution-failure record, or durable provenance is written. The ceiling is
+nonconfigurable, invocation-local, non-durable, absent from IR and hashes, and
+resets only for a fresh authenticated and authorized submission.
 
 `TXN-040` The commit queue MUST be bounded and apply backpressure.
 
@@ -2386,6 +2460,31 @@ administration sequence. Reuse of the ID with different normalized content
 returns detail-free `CapabilityIdConflict`. Revocation targets the stable ID,
 increments its revision exactly once, retains the lookup, and is idempotent.
 
+Capability-revoke authorization facts distinguish a present target from an
+absent target. A present target supplies its complete current capability-record
+facts: ordinary `RevokeCapability` authority must prove the complete subset
+relation, while exact database/environment `AdministerCapabilities` authority
+may authorize the administration operation. An absent target supplies only the
+checked request ID and target `CapabilityId` plus trusted database and
+environment. No target grant, revision, principal, lifecycle, audience, issue
+time, or expiry may be invented, so ordinary `RevokeCapability` fails closed;
+only current exact-database/environment `AdministerCapabilities` authority may
+receive an authorized absent-target preparation.
+
+After a capability queue wait, the coordinator reloads both authorizer and
+target, samples the accepted authorization clock, and rechecks mechanically
+lowered transaction-current facts. If an authorized absent target remains
+absent, storage returns typed `CapabilityNotFound` without a capability-
+administration transition sequence; the invocation still has its separate
+started and terminal service-audit sequences. If the target has appeared, the
+coordinator aborts without a transition or sequence and returns internal
+`CapabilityPreparationChanged`. The service reloads the complete now-present
+facts, reruns current policy, obtains a fresh bounded executor permit, and
+resubmits without appending another `started` record. Changed authorizer facts
+deny through the transaction-current verifier and are not reinterpreted as a
+preparation change. Capability records are retained, so this absence-to-presence
+branch is monotone and does not create an unbounded existence-change loop.
+
 The first local operator uses only the bootstrap mode of
 `AdminService.CreateCapability` on the explicitly enabled loopback gRPC listener.
 The CLI creates and retains the exact ADR-0009 protected 132-byte bootstrap
@@ -2461,6 +2560,17 @@ independent read targets; the linked result is not a target oneof. The record co
 credential, digest, idempotency key, business key, cursor, source text, input,
 output, free-form reason/error, network address, or transport object.
 
+`riffdb-service` owns the concrete checked pre-sequence `ServiceAuditInput` and
+implements the object-safe, `Send + Sync`, commit-owned
+`AdministrationAuditInputView`. The view exposes by reference only complete
+already-checked semantic fields required by the audit record; it exposes no
+sequence, timestamp, storage operation, raw credential, free-form error, or
+policy-decision constructor. `riffdb-commit` consumes that view and never depends
+on the service crate or duplicates its concrete input. Principal-less bootstrap
+instead consumes a separate commit-owned opaque, nonserializable
+`BootstrapCompoundAuditProof` constructed only by the checked bootstrap
+coordinator path; it is not a general append or authorization capability.
+
 The exact phase tags are started `0x01`, succeeded `0x02`, denied `0x03`,
 cancelled `0x04`, failed without an application commit `0x05`, and outcome
 uncertain `0x06`; zero and unknown tags reject. `Cancelled` means cancellation
@@ -2517,6 +2627,22 @@ obligations and constructs a bounded redacted semantic result before appending
 the service appends `started`, establishes and filters the stream, appends
 `succeeded`, then exposes it. Later item-level reauthorization may close the
 stream and emits bounded redacted telemetry rather than unbounded durable rows.
+
+A control-plane result uses terminal `succeeded` with
+`ControlPlane { administration_sequence }` only when the executor knows the
+exact sequence of a new or replayed authoritative transition. Already-active,
+already-created, and already-revoked states link that original sequence, while
+their API-neutral result shapes remain unchanged; in particular,
+`AlreadyCreatedTokenUnavailable` does not expose the sequence. Unknown transition
+status uses `outcome uncertain` under the existing recovery rules.
+
+An authorized typed no-transition result instead uses terminal `failed` with
+linked result `None`, and the service appends it before releasing the unchanged
+typed API-neutral result. This closed POC set is catalog expected-version
+mismatch, catalog bundle conflict, capability-ID conflict, and
+`CapabilityNotFound`. Internal token-digest collision remains a redacted internal
+failure. Bootstrap conflict retains pre-bootstrap bounded telemetry and gains no
+fabricated sequence or general audit append.
 
 `riffdb-commit` obtains standalone/start/terminal, catalog, and bootstrap times
 from its injected `AdministrationClock`; service/adapters never supply them.
@@ -3573,7 +3699,7 @@ Risk owners are assigned in the project tracker. A risk may be closed only with 
 
 ## 22.1 Required ADRs
 
-Specification v0.13 records each ADR's current status. An Accepted record is
+Specification v0.14 records each ADR's current status. An Accepted record is
 authoritative; a Proposed record remains planning input until its exact text
 receives human review. Where this table and a work-package deadline differ, the
 earlier deadline governs unless a reviewed reconciliation changes both sources.
@@ -3602,13 +3728,14 @@ earlier deadline governs unless a reviewed reconciliation changes both sources.
 | `ADR-0020` | Accepted | MCP command tool-name normalization, compiler-owned versioned registry, collision rejection, and catalog activation revalidation | WP-040 compiled contract bundle |
 | `ADR-0021` | Accepted | Exact lineage-scoped service-audit target variants/tags, canonical list ordering, and shared-service construction rule | Amended WP-010 audit vocabulary |
 | `ADR-0022` | Accepted | Exact durable semantic Protobuf modules, 26-payload registry, field/tag/presence rules, canonical-wire validation, and storage-owned codec boundary | WP-065 implementation |
+| `ADR-0023` | Accepted | WP-100 commit-evaluator dependency, bounded reevaluation, audit-input inversion, provenance attempts, v1 empty covered values, late commit-check arithmetic, absent revoke, and no-transition audit semantics | WP-060 correction, WP-100/WP-110/WP-120 implementation, and WP-130/WP-200 evidence |
 
 ## 22.2 Decisions to resolve before implementation reaches the named gate
 
 ADR-0015 resolved initial entity creation: the canonical `CreateBudget` compiled
 command seeds the demo through the ordinary coordinator path, and direct
 storage/admin seeding remains forbidden. The accepted ADR-0004/ADR-0012 batch
-also resolved the remaining grammar-v1 transaction defaults:
+and ADR-0023 also resolved the remaining grammar-v1 transaction defaults:
 
 - Read-only commands are unjournaled and receive no durable idempotency record,
   persisted outcome/provenance, or application sequence; service audit is a
@@ -3621,8 +3748,16 @@ also resolved the remaining grammar-v1 transaction defaults:
   requires accepted static target derivation and explicit up-front exclusion.
 - Arithmetic and resource faults may terminalize as ADR-0012
   `ExecutionFailed` only after complete dependency equality; they receive no
-  application sequence or command provenance and use the exact public error and
-  uncertainty rules in that ADR.
+  application sequence or durable command provenance and use the exact public
+  error and uncertainty rules in that ADR. A late transaction-current
+  commit-check arithmetic fault discards the already-sourced unpersisted
+  provenance candidate and sources no second candidate while terminalizing.
+- Grammar/IR-v1 coordinator writes always use the canonical empty record for
+  index `covered_values`; nonempty covered values remain a future language/IR
+  and durable-compatibility decision.
+- Full reevaluation is bounded to three complete attempts per invocation.
+  Exhaustion leaves Pending unchanged and maps to the existing public
+  `ConcurrencyDeadlineExceeded` without adding a durable counter or error kind.
 - POC contract compatibility is additive/documentation-only; removal of an
   entity, field, command, outcome, event, or projection is rejected.
 - A command candidate assigns no sequence until private validation has derived
@@ -3950,7 +4085,7 @@ This appendix intentionally repeats the five canonical services from Section 11.
 | Input/schema error | Invalid UUID or unknown field | Validation error with bounded field diagnostics |
 | Idempotency misuse | Same key, different canonical input | Stable conflict error containing no previous sensitive input |
 | Authorization | Command or field not allowed | Permission denied; tool may also be hidden from catalog |
-| Concurrency admission | Lock deadline exceeded | Retryable execution error with safe retry guidance |
+| Concurrency admission | Lock deadline or fixed coordinator reevaluation budget exhausted | Retryable `ConcurrencyDeadlineExceeded` with safe retry guidance |
 | Contract mismatch | Client invokes command absent from active bundle | Failed precondition with active version and refresh hint |
 | Storage unavailable | Commit cannot be made durable | Unavailable/internal class; no success claim |
 | Outcome uncertainty | Client lost response after submission | Client resolves through same idempotency key or `GetOutcome` |
