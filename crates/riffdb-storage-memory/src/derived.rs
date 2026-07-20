@@ -1939,7 +1939,7 @@ mod tests {
         let failure = ProjectionFailureV1::new(
             generation(1),
             ProjectionFailureCodeV1::ProjectionStateIntegrity,
-            Some(sequence(1)),
+            Some(sequence(2)),
         );
         let ProjectionControlResult::Updated(degraded) = ports
             .transition_projection_control(ProjectionControlOperation::RecordFailure {

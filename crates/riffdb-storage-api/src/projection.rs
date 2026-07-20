@@ -322,6 +322,15 @@ impl StoredProjectionControlV1 {
             })
     }
 
+    fn failure_matches_retained_position(&self, failure: &ProjectionFailureV1) -> bool {
+        self.retained_position(failure.generation())
+            .is_some_and(|position| {
+                failure
+                    .at_sequence()
+                    .is_none_or(|sequence| is_exact_successor(position.frontier(), sequence))
+            })
+    }
+
     fn validate_shape(&self) -> Result<(), StorageValueError> {
         let highest = self.highest_allocated_generation.get();
         for position in [self.published, self.candidate].into_iter().flatten() {
@@ -379,12 +388,7 @@ impl StoredProjectionControlV1 {
                 let failure_targets_published = self
                     .published
                     .is_some_and(|position| position.generation == failure.generation);
-                let failure_frontier = failure.at_sequence.map_or(
-                    FrontierPosition::BeforeFirst,
-                    FrontierPosition::AppliedThrough,
-                );
-                self.retained_position(failure.generation)
-                    .is_some_and(|position| position.frontier == failure_frontier)
+                self.failure_matches_retained_position(failure)
                     && (self.published.is_some() || self.candidate.is_some())
                     && (!failure_targets_published
                         || self.published_apply_mode == Some(PublishedApplyModeV1::Suspended))
@@ -1566,7 +1570,7 @@ pub enum ProjectionControlOperation {
         /// Complete expected prior record.
         expected: StoredProjectionControlV1,
     },
-    /// Persist one closed generation failure at its expected frontier.
+    /// Persist one closed generation failure without advancing its retained frontier.
     RecordFailure {
         /// Complete expected prior record.
         expected: StoredProjectionControlV1,
@@ -1699,11 +1703,7 @@ pub fn evaluate_projection_control_operation(
                     | ProjectionLifecycleV1::CatchingUp
                     | ProjectionLifecycleV1::Ready
                     | ProjectionLifecycleV1::Rebuilding
-            ) || expected.frontier_for(failure.generation())
-                != Some(failure.at_sequence().map_or(
-                    FrontierPosition::BeforeFirst,
-                    FrontierPosition::AppliedThrough,
-                ))
+            ) || !expected.failure_matches_retained_position(failure)
             {
                 return Err(StorageValueError::InvalidShape);
             }
@@ -2570,7 +2570,7 @@ mod tests {
     }
 
     #[test]
-    fn failure_requires_exact_retained_frontier_and_suspends_only_published() {
+    fn failure_requires_exact_successor_or_omission_and_suspends_only_published() {
         let ready = control(
             1,
             Some(position(1, applied(2))),
@@ -2582,7 +2582,7 @@ mod tests {
         let matching_published_failure = ProjectionFailureV1::new(
             generation(1),
             ProjectionFailureCodeV1::ProjectionStateIntegrity,
-            Some(sequence(2)),
+            Some(sequence(3)),
         );
         let degraded = updated(
             evaluate(
@@ -2606,7 +2606,7 @@ mod tests {
             ProjectionFailureV1::new(
                 generation(1),
                 ProjectionFailureCodeV1::ProjectionStateIntegrity,
-                Some(sequence(1)),
+                Some(sequence(2)),
             ),
             ProjectionFailureV1::new(
                 generation(2),
@@ -2638,7 +2638,7 @@ mod tests {
         let candidate_failure = ProjectionFailureV1::new(
             generation(2),
             ProjectionFailureCodeV1::ArithmeticOverflow,
-            Some(sequence(1)),
+            Some(sequence(2)),
         );
         let degraded_candidate = updated(
             evaluate(
@@ -2673,6 +2673,25 @@ mod tests {
             )
             .is_ok()
         );
+        let first_commit_failure = ProjectionFailureV1::new(
+            generation(1),
+            ProjectionFailureCodeV1::PlanOrSchemaUnavailable,
+            Some(sequence(1)),
+        );
+        let degraded_before_first = updated(
+            evaluate(
+                &initial,
+                ProjectionControlOperation::RecordFailure {
+                    expected: initial.clone(),
+                    failure: first_commit_failure.clone(),
+                },
+                FrontierPosition::BeforeFirst,
+            )
+            .expect("first commit failure follows before-first frontier"),
+        );
+        assert_eq!(degraded_before_first.candidate(), initial.candidate());
+        assert_eq!(degraded_before_first.failure(), Some(&first_commit_failure));
+
         assert_eq!(
             evaluate(
                 &initial,
@@ -2681,12 +2700,34 @@ mod tests {
                     failure: ProjectionFailureV1::new(
                         generation(1),
                         ProjectionFailureCodeV1::PlanOrSchemaUnavailable,
-                        Some(sequence(1)),
+                        Some(sequence(2)),
                     ),
                 },
                 FrontierPosition::BeforeFirst,
             ),
             Err(StorageValueError::InvalidShape)
+        );
+
+        let omitted_sequence_failure = ProjectionFailureV1::new(
+            generation(1),
+            ProjectionFailureCodeV1::PlanOrSchemaUnavailable,
+            None,
+        );
+        let degraded_after_progress = updated(
+            evaluate(
+                &ready,
+                ProjectionControlOperation::RecordFailure {
+                    expected: ready.clone(),
+                    failure: omitted_sequence_failure.clone(),
+                },
+                applied(2),
+            )
+            .expect("pre-application failure may omit a sequence after progress"),
+        );
+        assert_eq!(degraded_after_progress.published(), ready.published());
+        assert_eq!(
+            degraded_after_progress.failure(),
+            Some(&omitted_sequence_failure)
         );
     }
 
@@ -2741,7 +2782,7 @@ mod tests {
                     failure: ProjectionFailureV1::new(
                         generation(2),
                         ProjectionFailureCodeV1::ArithmeticOverflow,
-                        Some(sequence(1)),
+                        Some(sequence(2)),
                     ),
                 },
                 applied(2),
@@ -2776,7 +2817,7 @@ mod tests {
                     failure: ProjectionFailureV1::new(
                         generation(1),
                         ProjectionFailureCodeV1::MalformedDurableEvent,
-                        Some(sequence(2)),
+                        Some(sequence(3)),
                     ),
                 },
                 applied(2),
@@ -2815,7 +2856,7 @@ mod tests {
                     failure: ProjectionFailureV1::new(
                         generation(1),
                         ProjectionFailureCodeV1::MissingCommit,
-                        Some(sequence(2)),
+                        Some(sequence(3)),
                     ),
                 },
                 applied(2),
@@ -3009,7 +3050,7 @@ mod tests {
     }
 
     #[test]
-    fn degraded_control_rejects_failure_frontier_mismatch() {
+    fn degraded_control_rejects_failure_that_is_not_frontier_successor() {
         assert_eq!(
             StoredProjectionControlV1::new(
                 projection_identity(),
@@ -3021,7 +3062,7 @@ mod tests {
                 Some(ProjectionFailureV1::new(
                     generation(1),
                     ProjectionFailureCodeV1::ProjectionStateIntegrity,
-                    Some(sequence(1)),
+                    Some(sequence(2)),
                 )),
             ),
             Err(StorageValueError::InvalidShape)

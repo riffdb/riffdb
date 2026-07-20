@@ -555,6 +555,7 @@ fn every_projection_lifecycle_shape_round_trips() {
     let generation = ProjectionGeneration::first();
     let replacement = ProjectionGeneration::new(2).expect("replacement generation");
     let frontier = FrontierPosition::AppliedThrough(CommitSequence::first());
+    let failure_sequence = CommitSequence::new(2).expect("failure sequence");
     let building = StoredProjectionControlV1::initial(schema.identity().clone());
     let catching_up = StoredProjectionControlV1::new(
         schema.identity().clone(),
@@ -599,7 +600,7 @@ fn every_projection_lifecycle_shape_round_trips() {
         Some(ProjectionFailureV1::new(
             generation,
             ProjectionFailureCodeV1::ProjectionStateIntegrity,
-            Some(CommitSequence::first()),
+            Some(failure_sequence),
         )),
     )
     .expect("degraded control");
@@ -613,7 +614,7 @@ fn every_projection_lifecycle_shape_round_trips() {
         Some(ProjectionFailureV1::new(
             generation,
             ProjectionFailureCodeV1::PlanOrSchemaUnavailable,
-            Some(CommitSequence::first()),
+            Some(failure_sequence),
         )),
     )
     .expect("invalid control");
@@ -631,6 +632,7 @@ fn every_projection_failure_code_round_trips() {
     let (schema, _, _, _) = sample::projection_records();
     let generation = ProjectionGeneration::first();
     let sequence = CommitSequence::first();
+    let failure_sequence = CommitSequence::new(2).expect("failure sequence");
     for code in [
         ProjectionFailureCodeV1::ArithmeticOverflow,
         ProjectionFailureCodeV1::MalformedDurableEvent,
@@ -649,7 +651,11 @@ fn every_projection_failure_code_round_trips() {
             None,
             Some(PublishedApplyModeV1::Suspended),
             ProjectionLifecycleV1::Degraded,
-            Some(ProjectionFailureV1::new(generation, code, Some(sequence))),
+            Some(ProjectionFailureV1::new(
+                generation,
+                code,
+                Some(failure_sequence),
+            )),
         )
         .expect("degraded projection control");
         assert_round_trip(
