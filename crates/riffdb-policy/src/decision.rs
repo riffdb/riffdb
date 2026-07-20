@@ -4,9 +4,9 @@ use std::fmt;
 use std::num::NonZeroU16;
 
 use riffdb_types::{
-    ApprovalId, CapabilityGrantV1, CapabilityPermissionV1, ContractLineage, EntityTypeId, FieldId,
-    MAX_CAPABILITY_FIELD_VISIBILITY, PartitionScopeV1, ScopedPartitionV1, ServiceOperationV1,
-    TenantScope,
+    ActorId, ActorKind, ApprovalId, CapabilityGrantV1, CapabilityPermissionV1, ContractLineage,
+    EntityTypeId, FieldId, MAX_CAPABILITY_FIELD_VISIBILITY, PartitionScopeV1, ScopedPartitionV1,
+    ServiceOperationV1, TenantScope,
 };
 
 use crate::operation::{
@@ -14,8 +14,9 @@ use crate::operation::{
     resource_field_requirement, resource_permission,
 };
 use crate::{
-    AuthorizedCapabilityMutationPreparation, CommandToolCandidate, DiscoveryResource,
-    FixedToolCandidate, OperationRequest,
+    AgentSessionAdmissionPolicy, AuthorizedCapabilityMutationPreparation,
+    AuthorizedCommandExecution, CommandAuthorizationBindingError, CommandToolCandidate,
+    DiscoveryResource, FixedToolCandidate, OperationRequest, UntrustedInvocationClaims,
 };
 
 /// Maximum dynamic tool or resource candidates filtered by one safe-point proof.
@@ -416,14 +417,23 @@ pub struct AuthorizedOperation {
     request: OperationRequest,
     obligations: Obligations,
     discovery_authority: Option<CapabilityGrantV1>,
+    principal_id: ActorId,
+    actor_kind: ActorKind,
 }
 
 impl AuthorizedOperation {
-    pub(crate) const fn new(request: OperationRequest, obligations: Obligations) -> Self {
+    pub(crate) const fn new(
+        request: OperationRequest,
+        obligations: Obligations,
+        principal_id: ActorId,
+        actor_kind: ActorKind,
+    ) -> Self {
         Self {
             request,
             obligations,
             discovery_authority: None,
+            principal_id,
+            actor_kind,
         }
     }
 
@@ -431,11 +441,15 @@ impl AuthorizedOperation {
         request: OperationRequest,
         obligations: Obligations,
         grant: CapabilityGrantV1,
+        principal_id: ActorId,
+        actor_kind: ActorKind,
     ) -> Self {
         Self {
             request,
             obligations,
             discovery_authority: Some(grant),
+            principal_id,
+            actor_kind,
         }
     }
 
@@ -457,6 +471,37 @@ impl AuthorizedOperation {
         self.request.operation()
     }
 
+    /// Consumes this fresh allow proof into an exact command-execution binding.
+    ///
+    /// This does not perform or replace a current-policy safe point. The proof
+    /// must already have been returned by [`crate::CurrentAuthorizer`] for the
+    /// exact command facts. Claim admission only binds bounded caller claims to
+    /// the actor retained by that same authorization decision.
+    pub fn into_command_execution(
+        self,
+        claims: UntrustedInvocationClaims,
+        agent_session_policy: AgentSessionAdmissionPolicy,
+    ) -> Result<AuthorizedCommandExecution, CommandAuthorizationBindingError> {
+        let Self {
+            request,
+            obligations,
+            discovery_authority,
+            principal_id,
+            actor_kind,
+        } = self;
+        if discovery_authority.is_some() {
+            return Err(CommandAuthorizationBindingError::OperationMismatch);
+        }
+        AuthorizedCommandExecution::bind(
+            request,
+            obligations,
+            principal_id,
+            actor_kind,
+            claims,
+            agent_session_policy,
+        )
+    }
+
     /// Consumes a discovery allow proof into its candidate-filtering authority.
     ///
     /// A non-discovery proof is consumed and rejected so it cannot be reused as
@@ -472,6 +517,8 @@ impl AuthorizedOperation {
             request,
             obligations,
             discovery_authority,
+            principal_id: _,
+            actor_kind: _,
         } = self;
         match discovery_authority {
             Some(grant) => Ok(AuthorizedDiscovery {
@@ -870,9 +917,15 @@ mod tests {
     }
 
     fn discovery(request: OperationRequest, grant: CapabilityGrantV1) -> AuthorizedDiscovery {
-        AuthorizedOperation::new_discovery(request, obligations(), grant)
-            .into_discovery()
-            .expect("discovery proof")
+        AuthorizedOperation::new_discovery(
+            request,
+            obligations(),
+            grant,
+            ActorId::new("discovery-principal").expect("bounded principal"),
+            ActorKind::Service,
+        )
+        .into_discovery()
+        .expect("discovery proof")
     }
 
     fn explicit_partition() -> PartitionScopeV1 {

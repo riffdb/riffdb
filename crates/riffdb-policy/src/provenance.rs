@@ -138,6 +138,10 @@ impl ClaimAdmission {
     pub const fn agent_session_id(&self) -> Option<AgentSessionId> {
         self.agent_session_id
     }
+
+    pub(crate) fn into_parts(self) -> (AuthorizedProvenanceClaims, Option<AgentSessionId>) {
+        (self.provenance, self.agent_session_id)
+    }
 }
 
 impl fmt::Debug for ClaimAdmission {
@@ -161,7 +165,7 @@ pub fn admit_invocation_claims(
     admit_for_actor_kind(principal.actor_kind(), claims, agent_session_policy)
 }
 
-fn admit_for_actor_kind(
+pub(crate) fn admit_for_actor_kind(
     actor_kind: ActorKind,
     claims: UntrustedInvocationClaims,
     agent_session_policy: AgentSessionAdmissionPolicy,

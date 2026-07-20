@@ -143,9 +143,20 @@ where
         ) {
             Ok(obligations) => {
                 let proof = if request.permission_requirement().is_none() {
-                    AuthorizedOperation::new_discovery(request, obligations, current_facts.grant)
+                    AuthorizedOperation::new_discovery(
+                        request,
+                        obligations,
+                        current_facts.grant,
+                        principal_facts.principal_id,
+                        principal_facts.actor_kind,
+                    )
                 } else {
-                    AuthorizedOperation::new(request, obligations)
+                    AuthorizedOperation::new(
+                        request,
+                        obligations,
+                        principal_facts.principal_id,
+                        principal_facts.actor_kind,
+                    )
                 };
                 Ok(Decision::Allow(Box::new(proof)))
             }

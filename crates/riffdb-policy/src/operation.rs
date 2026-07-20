@@ -943,6 +943,25 @@ impl OperationRequest {
             _ => None,
         }
     }
+
+    pub(crate) fn into_command_execution(self) -> Option<CommandOperationBinding> {
+        match self.0 {
+            OperationKind::ExecuteCommand {
+                lineage,
+                version,
+                command_id,
+                class,
+                scope,
+            } => Some(CommandOperationBinding {
+                lineage,
+                version,
+                command_id,
+                class,
+                partition: scope.partition,
+            }),
+            _ => None,
+        }
+    }
 }
 
 impl fmt::Debug for OperationRequest {
@@ -977,6 +996,14 @@ pub(crate) struct FieldRequirement<'a> {
 pub(crate) struct OutcomeOwnerRequirement<'a> {
     pub(crate) principal_id: &'a ActorId,
     pub(crate) tenant_scope: &'a TenantScope,
+}
+
+pub(crate) struct CommandOperationBinding {
+    pub(crate) lineage: ContractLineage,
+    pub(crate) version: ContractVersion,
+    pub(crate) command_id: CommandId,
+    pub(crate) class: CommandExecutionClass,
+    pub(crate) partition: ScopedPartitionV1,
 }
 
 pub(crate) fn command_tool_permission(candidate: &CommandToolCandidate) -> PermissionRequirement {
