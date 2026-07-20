@@ -3,7 +3,7 @@
 use std::error::Error;
 use std::fmt;
 
-use riffdb_types::{CanonicalCodecError, IncidentId};
+use riffdb_types::{CanonicalCodecError, CapabilityGrantError, IncidentId};
 
 /// The closed engine-neutral storage failure taxonomy.
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
@@ -123,6 +123,18 @@ impl fmt::Display for StorageValueError {
 }
 
 impl Error for StorageValueError {}
+
+impl From<CapabilityGrantError> for StorageValueError {
+    fn from(error: CapabilityGrantError) -> Self {
+        match error {
+            CapabilityGrantError::Empty => Self::Empty,
+            CapabilityGrantError::LimitExceeded => Self::LimitExceeded,
+            CapabilityGrantError::Duplicate => Self::Duplicate,
+            CapabilityGrantError::InvalidShape => Self::InvalidShape,
+            CapabilityGrantError::SizeOverflow => Self::SizeOverflow,
+        }
+    }
+}
 
 pub(crate) const fn canonical_codec_storage_error(
     error: &CanonicalCodecError,
