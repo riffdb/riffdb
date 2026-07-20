@@ -1085,6 +1085,10 @@ version = "0.1.0"
 [[package]]
 name = "riffdb-policy"
 version = "0.1.0"
+dependencies = [
+ "riffdb-auth",
+ "riffdb-types",
+]
 
 [[package]]
 name = "riffdb-projection"
@@ -1157,6 +1161,7 @@ dependencies = [
 name = "riffdb-testkit"
 version = "0.1.0"
 dependencies = [
+ "riffdb-auth",
  "riffdb-contract-compiler",
  "riffdb-contract-ir",
  "riffdb-invariant",
