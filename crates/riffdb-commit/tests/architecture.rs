@@ -1,5 +1,8 @@
 //! Dependency and authority checks for the commit orchestration boundary.
 
+use std::{fs, path::PathBuf};
+
+const LOCKFILE: &str = include_str!("../../../Cargo.lock");
 const MANIFEST: &str = include_str!("../Cargo.toml");
 const AUDIT_SOURCE: &str = include_str!("../src/audit.rs");
 const LIB_SOURCE: &str = include_str!("../src/lib.rs");
@@ -7,6 +10,37 @@ const CLOCK_SOURCE: &str = include_str!("../src/clock.rs");
 const INITIALIZATION_SOURCE: &str = include_str!("../src/initialization.rs");
 const OUTCOME_SOURCE: &str = include_str!("../src/outcome.rs");
 const PROVENANCE_SOURCE: &str = include_str!("../src/provenance.rs");
+
+fn crate_root() -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+}
+
+fn production_dependency_owners(dependency: &str) -> Vec<String> {
+    let root = crate_root();
+    let crates = root.parent().expect("workspace crates directory");
+    let mut owners = fs::read_dir(crates)
+        .expect("read workspace crates")
+        .filter_map(|entry| {
+            let path = entry.expect("crate entry").path();
+            let manifest = fs::read_to_string(path.join("Cargo.toml")).ok()?;
+            let owns_dependency = manifest
+                .lines()
+                .skip_while(|line| *line != "[dependencies]")
+                .skip(1)
+                .take_while(|line| !line.starts_with('['))
+                .filter_map(|line| line.split_once('=').map(|(name, _)| name.trim()))
+                .any(|name| name == dependency);
+            owns_dependency.then(|| {
+                path.file_name()
+                    .expect("crate directory name")
+                    .to_string_lossy()
+                    .into_owned()
+            })
+        })
+        .collect::<Vec<_>>();
+    owners.sort();
+    owners
+}
 
 #[test]
 fn manifest_has_only_the_foundational_dependencies_needed_by_this_slice() {
@@ -31,7 +65,6 @@ fn manifest_has_only_the_foundational_dependencies_needed_by_this_slice() {
         "riffdb-catalog",
         "riffdb-policy",
         "riffdb-auth",
-        "tokio",
         "tonic",
         "rmcp",
         "redb",
@@ -42,6 +75,32 @@ fn manifest_has_only_the_foundational_dependencies_needed_by_this_slice() {
         assert!(
             !MANIFEST.contains(forbidden),
             "commit manifest contains forbidden dependency {forbidden}"
+        );
+    }
+
+    assert_eq!(
+        MANIFEST.lines().find(|line| line.starts_with("tokio =")),
+        Some(
+            "tokio = { version = \"=1.52.0\", default-features = false, features = [\"rt\", \"sync\"] }"
+        ),
+        "Tokio must retain the exact reviewed current-thread channel feature graph"
+    );
+}
+
+#[test]
+fn reviewed_tokio_owner_and_lock_graph_are_frozen() {
+    assert_eq!(
+        production_dependency_owners("tokio"),
+        ["riffdb-commit"],
+        "a new production Tokio owner requires dependency and feature-unification review"
+    );
+    for exact_entry in [
+        "name = \"tokio\"\nversion = \"1.52.0\"\nsource = \"registry+https://github.com/rust-lang/crates.io-index\"\nchecksum = \"a91135f59b1cbf38c91e73cf3386fca9bb77915c45ce2771460c9d92f0f3d776\"\ndependencies = [\n \"pin-project-lite\",\n]",
+        "name = \"pin-project-lite\"\nversion = \"0.2.17\"\nsource = \"registry+https://github.com/rust-lang/crates.io-index\"\nchecksum = \"a89322df9ebe1c1578d689c92318e070967d1042b512afbe49518723f4e6d5cd\"",
+    ] {
+        assert!(
+            LOCKFILE.contains(exact_entry),
+            "reviewed coordinator dependency lock entry changed: {exact_entry}"
         );
     }
 }
