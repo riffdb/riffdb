@@ -203,6 +203,17 @@ where
                     reason,
                 )
             }
+            CapabilityMutationRequest::RevokeAbsent { target, reason } => {
+                AuthorizedCapabilityMutationPreparation::revoke_absent(
+                    &transaction_current,
+                    &principal.principal_id,
+                    principal.actor_kind,
+                    &principal.audience,
+                    &principal.tenant_scope,
+                    target,
+                    reason,
+                )
+            }
         }
     }
 }
@@ -666,6 +677,106 @@ mod tests {
         assert_eq!(
             preparation.revoke_reason(),
             Some(crate::RevocationReasonCodeV1::Requested)
+        );
+    }
+
+    #[test]
+    fn current_authorizer_exposes_absent_revoke_only_to_exact_scope_administrator() {
+        let database_id = database_id();
+        let environment = Environment::new("dev").expect("valid environment");
+        let audience = Audience::new("grpc").expect("valid audience");
+        let permission_grant = |kind| {
+            grant(
+                TenantScope::Global,
+                PartitionScopeV1::All,
+                vec![CapabilityPermissionV1::unparameterized(kind).expect("valid permission")],
+                Vec::new(),
+                1,
+                Vec::new(),
+            )
+        };
+        let target = crate::AbsentCapabilityRevokeTargetFacts::new(
+            RequestId::from_unix_milliseconds_and_random(7, [0x71; 10]).expect("valid UUIDv7"),
+            CapabilityId::from_unix_milliseconds_and_random(8, [0x81; 10]).expect("valid UUIDv7"),
+            database_id,
+            environment.clone(),
+        );
+        let authorize = |grant| {
+            let fixture = AuthorizationFixture::new(AuthorizationFixtureConfig::new(
+                database_id,
+                environment.clone(),
+                ActorId::new("principal-1").expect("valid actor"),
+                ActorKind::Service,
+                audience.clone(),
+                AuthorizationFixtureTimes::new(timestamp(100), timestamp(1_000), timestamp(150)),
+                grant,
+            ))
+            .expect("valid fixture");
+            let resolver = fixture.current_capability_resolver();
+            CurrentAuthorizer::new(
+                &resolver,
+                &FixedAuthorizationClock(timestamp(200)),
+                &crate::NoopAuthorizationTelemetry,
+                database_id,
+                environment.clone(),
+            )
+            .authorize(
+                fixture.authenticated_principal(),
+                OperationRequest::revoke_absent_capability(
+                    target.clone(),
+                    crate::RevocationReasonCodeV1::Requested,
+                ),
+            )
+            .expect("policy decision")
+        };
+
+        assert_eq!(
+            authorize(permission_grant(
+                CapabilityPermissionKindV1::RevokeCapability
+            )),
+            Decision::Deny(PolicyCode::MissingPermission)
+        );
+        let Decision::PrepareCapabilityMutation(preparation) = authorize(permission_grant(
+            CapabilityPermissionKindV1::AdministerCapabilities,
+        )) else {
+            panic!("expected absent revoke preparation");
+        };
+        assert_eq!(preparation.absent_revoke_target(), Some(&target));
+
+        let wrong_scope = crate::AbsentCapabilityRevokeTargetFacts::new(
+            target.request_id(),
+            target.capability_id(),
+            DatabaseId::from_unix_milliseconds_and_random(9, [0x91; 10]).expect("valid UUIDv7"),
+            environment.clone(),
+        );
+        let fixture = AuthorizationFixture::new(AuthorizationFixtureConfig::new(
+            database_id,
+            environment.clone(),
+            ActorId::new("principal-1").expect("valid actor"),
+            ActorKind::Service,
+            audience,
+            AuthorizationFixtureTimes::new(timestamp(100), timestamp(1_000), timestamp(150)),
+            permission_grant(CapabilityPermissionKindV1::AdministerCapabilities),
+        ))
+        .expect("valid fixture");
+        let resolver = fixture.current_capability_resolver();
+        assert_eq!(
+            CurrentAuthorizer::new(
+                &resolver,
+                &FixedAuthorizationClock(timestamp(200)),
+                &crate::NoopAuthorizationTelemetry,
+                database_id,
+                environment,
+            )
+            .authorize(
+                fixture.authenticated_principal(),
+                OperationRequest::revoke_absent_capability(
+                    wrong_scope,
+                    crate::RevocationReasonCodeV1::Requested,
+                ),
+            )
+            .expect("policy decision"),
+            Decision::Deny(PolicyCode::DelegationExceedsAuthority)
         );
     }
 
