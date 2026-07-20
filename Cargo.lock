@@ -1012,6 +1012,7 @@ version = "0.1.0"
 dependencies = [
  "riffdb-storage-api",
  "riffdb-types",
+ "tokio",
 ]
 
 [[package]]
@@ -1389,6 +1390,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1ad99c4c6d32803332c548b1af0540b357b3f5fc0be8f6c6bfe8b2e6ae784070"
 dependencies = [
  "cfg-if",
+]
+
+[[package]]
+name = "tokio"
+version = "1.52.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a91135f59b1cbf38c91e73cf3386fca9bb77915c45ce2771460c9d92f0f3d776"
+dependencies = [
+ "pin-project-lite",
 ]
 
 [[package]]
