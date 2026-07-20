@@ -13,7 +13,10 @@ use crate::operation::{
     FieldRequirement, PermissionRequirement, command_tool_permission, fixed_tool_permission_kind,
     resource_field_requirement, resource_permission,
 };
-use crate::{CommandToolCandidate, DiscoveryResource, FixedToolCandidate, OperationRequest};
+use crate::{
+    AuthorizedCapabilityMutationPreparation, CommandToolCandidate, DiscoveryResource,
+    FixedToolCandidate, OperationRequest,
+};
 
 /// Maximum dynamic tool or resource candidates filtered by one safe-point proof.
 pub const MAX_DISCOVERY_PAGE_ITEMS: usize = 500;
@@ -803,6 +806,8 @@ fn resource_scope_is_discoverable(
 pub enum Decision {
     /// Current policy allowed this exact request and produced obligations.
     Allow(Box<AuthorizedOperation>),
+    /// Initial policy authorized transaction-current preparation of one mutation.
+    PrepareCapabilityMutation(Box<AuthorizedCapabilityMutationPreparation>),
     /// Current policy denied the request with a closed internal code.
     Deny(PolicyCode),
 }
@@ -811,6 +816,9 @@ impl fmt::Debug for Decision {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Allow(_) => formatter.write_str("Decision::Allow([REDACTED])"),
+            Self::PrepareCapabilityMutation(_) => {
+                formatter.write_str("Decision::PrepareCapabilityMutation([REDACTED])")
+            }
             Self::Deny(code) => formatter.debug_tuple("Decision::Deny").field(code).finish(),
         }
     }

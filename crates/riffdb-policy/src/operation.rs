@@ -3,14 +3,17 @@
 use std::{error::Error, fmt, num::NonZeroU16};
 
 use riffdb_types::{
-    ActorId, CanonicalValue, CapabilityId, CapabilityPermissionKindV1, CapabilityPermissionV1,
-    CommandId, CommitSequence, ContractBundleHash, ContractLineage, ContractVersion, EntityTypeId,
-    FieldId, IndexId, MAX_CAPABILITY_FIELD_VISIBILITY, MAX_PROJECTION_GROUP_COMPONENTS,
-    PartitionKey, ProjectionGeneration, ProjectionGroupPrefixBuilder, ProjectionId,
-    ProjectionIdentity, ProvenanceId, ScopedPartitionV1, ServiceOperationV1, TenantScope,
+    ActorId, CanonicalValue, CapabilityPermissionKindV1, CapabilityPermissionV1, CommandId,
+    CommitSequence, ContractBundleHash, ContractLineage, ContractVersion, EntityTypeId, FieldId,
+    IndexId, MAX_CAPABILITY_FIELD_VISIBILITY, MAX_PROJECTION_GROUP_COMPONENTS, PartitionKey,
+    ProjectionGeneration, ProjectionGroupPrefixBuilder, ProjectionId, ProjectionIdentity,
+    ProvenanceId, ScopedPartitionV1, ServiceOperationV1, TenantScope,
 };
 
-use crate::{AuditClass, OutputClassification};
+use crate::{
+    AuditClass, CapabilityCreateTargetFacts, CapabilityMutationRequest,
+    CapabilityRevokeTargetFacts, OutputClassification, RevocationReasonCodeV1,
+};
 
 /// Whether an execute target is a command mutation or an unjournaled command read.
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
@@ -405,10 +408,11 @@ enum OperationKind {
     GetHealth,
     GetStatistics,
     CreateCapability {
-        target: CapabilityId,
+        target: CapabilityCreateTargetFacts,
     },
     RevokeCapability {
-        target: CapabilityId,
+        target: CapabilityRevokeTargetFacts,
+        reason: RevocationReasonCodeV1,
     },
     ListPendingOutboxDeliveries {
         requested_rows: NonZeroU16,
@@ -641,22 +645,19 @@ impl OperationRequest {
         Self(OperationKind::GetStatistics)
     }
 
-    /// Constructs a capability-create authorization request.
-    ///
-    /// The current core deliberately carries no delegation facts, so evaluation
-    /// remains fail closed after checking the permission mapping.
+    /// Constructs a capability-create authorization request with complete target facts.
     #[must_use]
-    pub const fn create_capability(target: CapabilityId) -> Self {
+    pub const fn create_capability(target: CapabilityCreateTargetFacts) -> Self {
         Self(OperationKind::CreateCapability { target })
     }
 
-    /// Constructs a capability-revoke authorization request.
-    ///
-    /// The current core deliberately carries no delegation facts, so evaluation
-    /// remains fail closed after checking the permission mapping.
+    /// Constructs a capability-revoke request with complete target facts and reason.
     #[must_use]
-    pub const fn revoke_capability(target: CapabilityId) -> Self {
-        Self(OperationKind::RevokeCapability { target })
+    pub const fn revoke_capability(
+        target: CapabilityRevokeTargetFacts,
+        reason: RevocationReasonCodeV1,
+    ) -> Self {
+        Self(OperationKind::RevokeCapability { target, reason })
     }
 
     /// Constructs a bounded outbox-status request.
@@ -906,11 +907,16 @@ impl OperationRequest {
         }
     }
 
-    pub(crate) const fn needs_delegation_facts(&self) -> bool {
-        matches!(
-            &self.0,
-            OperationKind::CreateCapability { .. } | OperationKind::RevokeCapability { .. }
-        )
+    pub(crate) fn into_capability_mutation(self) -> Option<CapabilityMutationRequest> {
+        match self.0 {
+            OperationKind::CreateCapability { target } => {
+                Some(CapabilityMutationRequest::Create(target))
+            }
+            OperationKind::RevokeCapability { target, reason } => {
+                Some(CapabilityMutationRequest::Revoke { target, reason })
+            }
+            _ => None,
+        }
     }
 }
 
@@ -1036,9 +1042,12 @@ pub(crate) fn resource_field_requirement(
 #[cfg(test)]
 mod tests {
     use std::collections::BTreeSet;
+    use std::num::NonZeroU32;
 
     use riffdb_types::{
-        AggregateTypeId, CanonicalValue, MAX_KEY_BYTES, PartitionKeyBuilder, ProjectionPlanHash,
+        ActorKind, AggregateTypeId, Audience, CanonicalValue, CapabilityGrantV1, CapabilityId,
+        CapabilityPermissionsV1, DatabaseId, Environment, MAX_KEY_BYTES, PartitionKeyBuilder,
+        PartitionScopeV1, ProjectionPlanHash, RequestId, Timestamp,
     };
 
     use super::*;
@@ -1063,6 +1072,60 @@ mod tests {
 
     fn capability_id() -> CapabilityId {
         CapabilityId::from_unix_milliseconds_and_random(1, [2; 10]).expect("valid UUIDv7")
+    }
+
+    fn create_target() -> CapabilityCreateTargetFacts {
+        let request_id =
+            RequestId::from_unix_milliseconds_and_random(1, [3; 10]).expect("valid UUIDv7");
+        let database_id =
+            DatabaseId::from_unix_milliseconds_and_random(1, [4; 10]).expect("valid UUIDv7");
+        let grant = CapabilityGrantV1::new(
+            TenantScope::Global,
+            PartitionScopeV1::All,
+            CapabilityPermissionsV1::new(Vec::new()).expect("empty permission set"),
+            Vec::new(),
+            NonZeroU16::new(1).expect("nonzero rows"),
+            Vec::new(),
+        )
+        .expect("valid grant");
+        let requested_record = crate::NormalizedCapabilityCreateRecord::new(
+            database_id,
+            Environment::new("dev").expect("valid environment"),
+            actor_id(),
+            ActorKind::Service,
+            NonZeroU32::new(60).expect("nonzero duration"),
+            vec![Audience::new("grpc").expect("valid audience")],
+            grant,
+        )
+        .expect("valid requested record");
+        CapabilityCreateTargetFacts::new(request_id, capability_id(), requested_record)
+    }
+
+    fn revoke_target() -> CapabilityRevokeTargetFacts {
+        let grant = CapabilityGrantV1::new(
+            TenantScope::Global,
+            PartitionScopeV1::All,
+            CapabilityPermissionsV1::new(Vec::new()).expect("empty permission set"),
+            Vec::new(),
+            NonZeroU16::new(1).expect("nonzero rows"),
+            Vec::new(),
+        )
+        .expect("valid grant");
+        CapabilityRevokeTargetFacts::new(
+            RequestId::from_unix_milliseconds_and_random(1, [5; 10]).expect("valid UUIDv7"),
+            capability_id(),
+            std::num::NonZeroU64::MIN,
+            crate::CapabilityActivity::Active,
+            DatabaseId::from_unix_milliseconds_and_random(1, [4; 10]).expect("valid UUIDv7"),
+            Environment::new("dev").expect("valid environment"),
+            actor_id(),
+            ActorKind::Service,
+            vec![Audience::new("grpc").expect("valid audience")],
+            Timestamp::new(1, 0).expect("valid timestamp"),
+            Timestamp::new(2, 0).expect("valid timestamp"),
+            grant,
+        )
+        .expect("valid revoke target")
     }
 
     fn actor_id() -> ActorId {
@@ -1141,8 +1204,8 @@ mod tests {
             OperationRequest::trace_provenance(ProvenanceSelector::Commit(CommitSequence::first())),
             OperationRequest::get_health(),
             OperationRequest::get_statistics(),
-            OperationRequest::create_capability(capability_id()),
-            OperationRequest::revoke_capability(capability_id()),
+            OperationRequest::create_capability(create_target()),
+            OperationRequest::revoke_capability(revoke_target(), RevocationReasonCodeV1::Requested),
             OperationRequest::list_pending_outbox_deliveries(NonZeroU16::new(10).expect("nonzero")),
             OperationRequest::discover_command_tools(),
             OperationRequest::discover_resources(),

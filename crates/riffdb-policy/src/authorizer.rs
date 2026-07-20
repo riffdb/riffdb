@@ -7,14 +7,16 @@ use riffdb_auth::{
 };
 use riffdb_types::{
     ActorId, ActorKind, Audience, CapabilityGrantV1, CapabilityId, DatabaseId, Environment,
-    PartitionScopeV1, TenantScope, Timestamp,
+    PartitionScopeV1, ServiceOperationV1, TenantScope, Timestamp,
 };
 
 use crate::decision::{PermissionCheck, check_permission, derive_field_mask};
 use crate::operation::PartitionRequirement;
 use crate::{
     AuthorizationClock, AuthorizationDefect, AuthorizationTelemetry, AuthorizationTelemetryEvent,
-    AuthorizedOperation, Decision, Obligations, OperationRequest, PolicyCode,
+    AuthorizedCapabilityMutationPreparation, AuthorizedOperation, CapabilityActivity,
+    CapabilityMutationRequest, Decision, Obligations, OperationRequest, PolicyCode,
+    TransactionCurrentCapabilityFacts, TrustedAudienceCatalog,
 };
 
 /// A redaction-safe internal failure before policy could decide.
@@ -44,10 +46,17 @@ pub struct CurrentAuthorizer<'a, R: ?Sized, C: ?Sized, T: ?Sized> {
     telemetry: &'a T,
     expected_database_id: DatabaseId,
     expected_environment: Environment,
+    trusted_audience_catalog: Option<&'a TrustedAudienceCatalog>,
 }
 
 impl<'a, R: ?Sized, C: ?Sized, T: ?Sized> CurrentAuthorizer<'a, R, C, T> {
     /// Wires the current-state sources and trusted server boundary.
+    ///
+    /// The base configuration has no audience catalog. Read authorization is
+    /// unaffected, while capability creation fails closed with the existing
+    /// redacted delegation denial until
+    /// [`Self::with_trusted_audience_catalog`] is called. This deliberately
+    /// avoids exposing server configuration state as a caller-visible defect.
     #[must_use]
     pub const fn new(
         resolver: &'a R,
@@ -62,7 +71,18 @@ impl<'a, R: ?Sized, C: ?Sized, T: ?Sized> CurrentAuthorizer<'a, R, C, T> {
             telemetry,
             expected_database_id,
             expected_environment,
+            trusted_audience_catalog: None,
         }
+    }
+
+    /// Attaches the complete trusted audience configuration used for capability creation.
+    #[must_use]
+    pub const fn with_trusted_audience_catalog(
+        mut self,
+        trusted_audience_catalog: &'a TrustedAudienceCatalog,
+    ) -> Self {
+        self.trusted_audience_catalog = Some(trusted_audience_catalog);
+        self
     }
 }
 
@@ -93,6 +113,26 @@ where
 
         let principal_facts = PrincipalFacts::from(principal);
         let current_facts = CurrentFacts::from(&current);
+        if matches!(
+            request.operation(),
+            ServiceOperationV1::CreateCapability | ServiceOperationV1::RevokeCapability
+        ) {
+            let preparation = self.prepare_capability_mutation(
+                &principal_facts,
+                &current_facts,
+                &current,
+                now,
+                request,
+            );
+            return match preparation {
+                Ok(preparation) => Ok(Decision::PrepareCapabilityMutation(Box::new(preparation))),
+                Err(code) => {
+                    self.telemetry
+                        .record(AuthorizationTelemetryEvent::Denied(code));
+                    Ok(Decision::Deny(code))
+                }
+            };
+        }
         match evaluate(
             &principal_facts,
             &current_facts,
@@ -116,6 +156,78 @@ where
             }
         }
     }
+
+    fn prepare_capability_mutation(
+        &self,
+        principal: &PrincipalFacts,
+        current: &CurrentFacts,
+        resolved: &CurrentCapability,
+        now: Timestamp,
+        request: OperationRequest,
+    ) -> Result<AuthorizedCapabilityMutationPreparation, PolicyCode> {
+        validate_current(
+            principal,
+            current,
+            self.expected_database_id,
+            &self.expected_environment,
+            now,
+        )?;
+        let mutation = request
+            .into_capability_mutation()
+            .ok_or(PolicyCode::DelegationExceedsAuthority)?;
+        let transaction_current = transaction_current_facts(resolved)?;
+        match mutation {
+            CapabilityMutationRequest::Create(target) => {
+                let catalog = self
+                    .trusted_audience_catalog
+                    .ok_or(PolicyCode::DelegationExceedsAuthority)?;
+                AuthorizedCapabilityMutationPreparation::create(
+                    &transaction_current,
+                    &principal.principal_id,
+                    principal.actor_kind,
+                    &principal.audience,
+                    &principal.tenant_scope,
+                    catalog,
+                    now,
+                    target,
+                )
+            }
+            CapabilityMutationRequest::Revoke { target, reason } => {
+                AuthorizedCapabilityMutationPreparation::revoke(
+                    &transaction_current,
+                    &principal.principal_id,
+                    principal.actor_kind,
+                    &principal.audience,
+                    &principal.tenant_scope,
+                    target,
+                    reason,
+                )
+            }
+        }
+    }
+}
+
+fn transaction_current_facts(
+    current: &CurrentCapability,
+) -> Result<TransactionCurrentCapabilityFacts, PolicyCode> {
+    let activity = match current.activity() {
+        CurrentCapabilityActivity::Active => CapabilityActivity::Active,
+        CurrentCapabilityActivity::Revoked => CapabilityActivity::Revoked,
+    };
+    TransactionCurrentCapabilityFacts::new(
+        current.capability_id(),
+        current.revision(),
+        activity,
+        current.database_id(),
+        current.environment().clone(),
+        current.principal_id().clone(),
+        current.actor_kind(),
+        current.audiences().to_vec(),
+        current.issued_at(),
+        current.expires_at(),
+        current.grant().clone(),
+    )
+    .map_err(|_| PolicyCode::InactiveOrStaleCapability)
 }
 
 #[derive(Clone)]
@@ -234,10 +346,6 @@ fn evaluate(
         .requested_rows()
         .map(|requested| requested.min(current.grant.max_scan_rows()));
 
-    if request.needs_delegation_facts() {
-        return Err(PolicyCode::DelegationExceedsAuthority);
-    }
-
     Ok(Obligations::new(
         effective_tenant_scope,
         partition_constraint,
@@ -290,17 +398,28 @@ fn authorize_tenant(
 
 #[cfg(test)]
 mod tests {
-    use std::num::{NonZeroU16, NonZeroU64};
+    use std::num::{NonZeroU16, NonZeroU32, NonZeroU64};
 
+    use riffdb_testkit::authorization::{
+        AuthorizationFixture, AuthorizationFixtureConfig, AuthorizationFixtureTimes,
+    };
     use riffdb_types::{
         AggregateTypeId, CapabilityPermissionKindV1, CapabilityPermissionV1,
         CapabilityPermissionsV1, CommandId, ContractLineage, EntityFieldVisibilityV1, EntityTypeId,
         FieldId, IndexId, PartitionKeyBuilder, ProjectionId, ProjectionIdentity,
-        ProjectionPlanHash, ScopedPartitionV1, TenantId,
+        ProjectionPlanHash, RequestId, ScopedPartitionV1, TenantId,
     };
 
     use super::*;
     use crate::{CommandExecutionClass, OperationTenantScope, PartitionConstraint};
+
+    struct FixedAuthorizationClock(Timestamp);
+
+    impl AuthorizationClock for FixedAuthorizationClock {
+        fn now(&self) -> Result<Timestamp, crate::AuthorizationClockError> {
+            Ok(self.0)
+        }
+    }
 
     fn timestamp(seconds: i64) -> Timestamp {
         Timestamp::new(seconds, 0).expect("valid timestamp")
@@ -375,6 +494,179 @@ mod tests {
             grant,
         };
         (principal, current, environment)
+    }
+
+    #[test]
+    fn current_authorizer_returns_target_bound_create_preparation_only_with_trusted_config() {
+        let database_id = database_id();
+        let environment = Environment::new("dev").expect("valid environment");
+        let audience = Audience::new("grpc").expect("valid audience");
+        let parent_grant = grant(
+            TenantScope::Global,
+            PartitionScopeV1::All,
+            vec![
+                CapabilityPermissionV1::unparameterized(CapabilityPermissionKindV1::ReadHealth)
+                    .expect("valid permission"),
+                CapabilityPermissionV1::unparameterized(
+                    CapabilityPermissionKindV1::CreateCapability,
+                )
+                .expect("valid permission"),
+                CapabilityPermissionV1::unparameterized(
+                    CapabilityPermissionKindV1::RevokeCapability,
+                )
+                .expect("valid permission"),
+            ],
+            Vec::new(),
+            100,
+            Vec::new(),
+        );
+        let fixture = AuthorizationFixture::new(AuthorizationFixtureConfig::new(
+            database_id,
+            environment.clone(),
+            ActorId::new("principal-1").expect("valid actor"),
+            ActorKind::Service,
+            audience.clone(),
+            AuthorizationFixtureTimes::new(timestamp(100), timestamp(1_000), timestamp(150)),
+            parent_grant,
+        ))
+        .expect("valid fixture");
+        let target_grant = grant(
+            TenantScope::Global,
+            PartitionScopeV1::All,
+            vec![
+                CapabilityPermissionV1::unparameterized(CapabilityPermissionKindV1::ReadHealth)
+                    .expect("valid permission"),
+            ],
+            Vec::new(),
+            10,
+            Vec::new(),
+        );
+        let target = |target_audience: Audience| {
+            let requested_record = crate::NormalizedCapabilityCreateRecord::new(
+                database_id,
+                environment.clone(),
+                ActorId::new("target-principal").expect("valid actor"),
+                ActorKind::Agent,
+                NonZeroU32::new(60).expect("nonzero duration"),
+                vec![target_audience],
+                target_grant.clone(),
+            )
+            .expect("valid requested record");
+            crate::CapabilityCreateTargetFacts::new(
+                RequestId::from_unix_milliseconds_and_random(3, [0x31; 10]).expect("valid UUIDv7"),
+                CapabilityId::from_unix_milliseconds_and_random(4, [0x41; 10])
+                    .expect("valid UUIDv7"),
+                requested_record,
+            )
+        };
+        let resolver = fixture.current_capability_resolver();
+        let clock = FixedAuthorizationClock(timestamp(200));
+        let unconfigured = CurrentAuthorizer::new(
+            &resolver,
+            &clock,
+            &crate::NoopAuthorizationTelemetry,
+            database_id,
+            environment.clone(),
+        )
+        .authorize(
+            fixture.authenticated_principal(),
+            OperationRequest::create_capability(target(audience.clone())),
+        )
+        .expect("policy decision");
+        assert_eq!(
+            unconfigured,
+            Decision::Deny(PolicyCode::DelegationExceedsAuthority)
+        );
+
+        let catalog = crate::TrustedAudienceCatalog::new(vec![
+            audience.clone(),
+            Audience::new("mcp").expect("valid audience"),
+        ])
+        .expect("valid catalog");
+        let configured = CurrentAuthorizer::new(
+            &resolver,
+            &clock,
+            &crate::NoopAuthorizationTelemetry,
+            database_id,
+            environment.clone(),
+        )
+        .with_trusted_audience_catalog(&catalog)
+        .authorize(
+            fixture.authenticated_principal(),
+            OperationRequest::create_capability(target(audience)),
+        )
+        .expect("policy decision");
+        let Decision::PrepareCapabilityMutation(preparation) = configured else {
+            panic!("expected create preparation");
+        };
+        let prepared_target = preparation.create_target().expect("create target");
+        assert_eq!(
+            prepared_target.normalized_requested_record().database_id(),
+            database_id
+        );
+        assert_eq!(
+            prepared_target.normalized_requested_record().environment(),
+            &environment
+        );
+
+        let outside_current_audience = CurrentAuthorizer::new(
+            &resolver,
+            &clock,
+            &crate::NoopAuthorizationTelemetry,
+            database_id,
+            environment.clone(),
+        )
+        .with_trusted_audience_catalog(&catalog)
+        .authorize(
+            fixture.authenticated_principal(),
+            OperationRequest::create_capability(target(
+                Audience::new("mcp").expect("valid audience"),
+            )),
+        )
+        .expect("policy decision");
+        assert_eq!(
+            outside_current_audience,
+            Decision::Deny(PolicyCode::DelegationExceedsAuthority)
+        );
+
+        let revoke_target = crate::CapabilityRevokeTargetFacts::new(
+            RequestId::from_unix_milliseconds_and_random(5, [0x51; 10]).expect("valid UUIDv7"),
+            CapabilityId::from_unix_milliseconds_and_random(6, [0x61; 10]).expect("valid UUIDv7"),
+            NonZeroU64::new(3).expect("nonzero revision"),
+            crate::CapabilityActivity::Active,
+            database_id,
+            environment.clone(),
+            ActorId::new("target-principal").expect("valid actor"),
+            ActorKind::Agent,
+            vec![Audience::new("grpc").expect("valid audience")],
+            timestamp(100),
+            timestamp(900),
+            target_grant,
+        )
+        .expect("valid revoke target");
+        let revoke = CurrentAuthorizer::new(
+            &resolver,
+            &clock,
+            &crate::NoopAuthorizationTelemetry,
+            database_id,
+            environment,
+        )
+        .authorize(
+            fixture.authenticated_principal(),
+            OperationRequest::revoke_capability(
+                revoke_target.clone(),
+                crate::RevocationReasonCodeV1::Requested,
+            ),
+        )
+        .expect("policy decision");
+        let Decision::PrepareCapabilityMutation(preparation) = revoke else {
+            panic!("expected revoke preparation");
+        };
+        assert_eq!(preparation.revoke_target(), Some(&revoke_target));
+        assert_eq!(
+            preparation.revoke_reason(),
+            Some(crate::RevocationReasonCodeV1::Requested)
+        );
     }
 
     #[test]
