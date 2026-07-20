@@ -8,17 +8,13 @@ use riffdb_types::{
 };
 pub use riffdb_types::{
     CapabilityGrantError, CapabilityGrantV1, CapabilityPermissionKindV1, CapabilityPermissionV1,
-    CapabilityPermissionsV1, EntityFieldVisibilityV1, MAX_CAPABILITY_FIELD_VISIBILITY,
-    MAX_CAPABILITY_PARTITIONS, MAX_CAPABILITY_PAYLOAD_BYTES, MAX_CAPABILITY_PERMISSIONS,
-    PartitionScopeV1, ScopedPartitionV1,
+    CapabilityPermissionsV1, EntityFieldVisibilityV1, MAX_CAPABILITY_AUDIENCES,
+    MAX_CAPABILITY_FIELD_VISIBILITY, MAX_CAPABILITY_LIFETIME_SECONDS, MAX_CAPABILITY_PARTITIONS,
+    MAX_CAPABILITY_PAYLOAD_BYTES, MAX_CAPABILITY_PERMISSIONS, PartitionScopeV1,
+    RevocationReasonCodeV1, ScopedPartitionV1,
 };
 
 use crate::{AuditPrincipalV1, BootstrapServiceAuditStartV1, StorageError, StorageValueError};
-
-/// Maximum audiences retained by one capability.
-pub const MAX_CAPABILITY_AUDIENCES: usize = 8;
-/// Maximum requested capability lifetime in seconds.
-pub const MAX_CAPABILITY_LIFETIME_SECONDS: u32 = 2_592_000;
 
 /// Canonical request-owned record used to detect create/bootstrap replay.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -142,44 +138,6 @@ impl CapabilityLifecycleV1 {
         match self {
             Self::Active => 0x01,
             Self::Revoked { .. } => 0x02,
-        }
-    }
-}
-
-/// Closed revocation reason registry.
-#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
-pub enum RevocationReasonCodeV1 {
-    /// Explicit operator request.
-    Requested,
-    /// Capability was replaced.
-    Replaced,
-    /// Suspected credential compromise.
-    SuspectedCompromise,
-    /// Current policy changed.
-    PolicyChange,
-}
-
-impl RevocationReasonCodeV1 {
-    /// Returns the immutable v1 tag.
-    #[must_use]
-    pub const fn tag(self) -> u8 {
-        match self {
-            Self::Requested => 0x01,
-            Self::Replaced => 0x02,
-            Self::SuspectedCompromise => 0x03,
-            Self::PolicyChange => 0x04,
-        }
-    }
-
-    /// Decodes a stable v1 revocation-reason tag.
-    #[must_use]
-    pub const fn from_tag(tag: u8) -> Option<Self> {
-        match tag {
-            0x01 => Some(Self::Requested),
-            0x02 => Some(Self::Replaced),
-            0x03 => Some(Self::SuspectedCompromise),
-            0x04 => Some(Self::PolicyChange),
-            _ => None,
         }
     }
 }
@@ -1606,6 +1564,21 @@ mod tests {
         assert_eq!(
             validate_capability_payload_bytes(MAX_CAPABILITY_PAYLOAD_BYTES + 1),
             Err(StorageValueError::LimitExceeded)
+        );
+    }
+
+    #[test]
+    fn foundational_capability_values_keep_storage_api_compatibility_exports() {
+        let reason: riffdb_types::RevocationReasonCodeV1 = RevocationReasonCodeV1::PolicyChange;
+
+        assert_eq!(reason.tag(), 0x04);
+        assert_eq!(
+            MAX_CAPABILITY_AUDIENCES,
+            riffdb_types::MAX_CAPABILITY_AUDIENCES
+        );
+        assert_eq!(
+            MAX_CAPABILITY_LIFETIME_SECONDS,
+            riffdb_types::MAX_CAPABILITY_LIFETIME_SECONDS
         );
     }
 }
