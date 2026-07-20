@@ -5,6 +5,7 @@
 const MANIFEST: &str = include_str!("../Cargo.toml");
 const INSPECTION_SOURCE: &str = include_str!("../src/inspection.rs");
 const PREPARATION_SOURCE: &str = include_str!("../src/prepare.rs");
+const RECHECK_SOURCE: &str = include_str!("../src/recheck.rs");
 const LIB_ROOT: &str = include_str!("../src/lib.rs");
 
 #[test]
@@ -47,4 +48,32 @@ fn inspection_is_read_only_and_keeps_full_observations_private() {
     assert!(!INSPECTION_SOURCE.contains("pub prepared_command:"));
     assert!(!INSPECTION_SOURCE.contains("impl Clone for InspectedIdempotencyV1"));
     assert!(!INSPECTION_SOURCE.contains("impl Clone for ConfirmedIdempotencyInspectionV1"));
+    assert!(INSPECTION_SOURCE.contains("normalized_input: CanonicalRecord"));
+}
+
+#[test]
+fn recheck_is_single_read_only_and_authority_values_are_move_only() {
+    assert_eq!(RECHECK_SOURCE.matches(".lookup_admission(").count(), 1);
+    assert!(!RECHECK_SOURCE.contains(".admit_or_resolve("));
+    assert!(!RECHECK_SOURCE.contains("SystemTime"));
+    assert!(!RECHECK_SOURCE.contains("Instant"));
+    assert!(!RECHECK_SOURCE.contains("Random"));
+    assert!(!RECHECK_SOURCE.contains("impl Clone for PreparedIdempotencyRecheckV1"));
+    assert!(!RECHECK_SOURCE.contains("impl Clone for VacantIdempotencyAdmissionV1"));
+    assert!(!RECHECK_SOURCE.contains("impl Clone for RecheckedPendingAdmissionV1"));
+    assert!(RECHECK_SOURCE.contains("original_observation: AdmissionLookupResultV1"));
+    assert!(RECHECK_SOURCE.contains("selected_plan: ExecutablePlanRef"));
+    assert!(!RECHECK_SOURCE.contains("pub original_observation:"));
+    assert!(!RECHECK_SOURCE.contains("pub selected_plan:"));
+}
+
+#[test]
+fn plan_comparison_is_source_adjacent_before_input_hash_comparison() {
+    let plan_comparison = RECHECK_SOURCE
+        .find("state_plan(&current) != &selected_plan")
+        .expect("exact plan comparison");
+    let hash_comparison = RECHECK_SOURCE
+        .find("state_input_hash(&current) != prepared_command.canonical_input_hash()")
+        .expect("exact input-hash comparison");
+    assert!(plan_comparison < hash_comparison);
 }

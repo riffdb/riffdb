@@ -9,8 +9,8 @@ use riffdb_storage_api::{
 use riffdb_types::{CanonicalRecord, FieldId, IdempotencyKey};
 
 use crate::{
-    IdempotencyPreparationError, PreparedCommandIdempotencyV1, PreparedIdempotencyLookupV1,
-    confirm_command_idempotency,
+    IdempotencyPreparationError, IdempotencyRecheckIntegrityV1, PreparedCommandIdempotencyV1,
+    PreparedIdempotencyLookupV1, PreparedIdempotencyRecheckV1, confirm_command_idempotency,
 };
 
 /// The only durable-state information exposed for command-plan selection.
@@ -86,6 +86,7 @@ impl InspectedIdempotencyV1 {
         )?;
         Ok(ConfirmedIdempotencyInspectionV1 {
             prepared_command,
+            normalized_input: normalized_input.clone(),
             observation: self.observation,
         })
     }
@@ -110,9 +111,50 @@ impl fmt::Debug for InspectedIdempotencyV1 {
 ///     let _ = value.prepared_command;
 /// }
 /// ```
+///
+/// ```compile_fail
+/// use riffdb_idempotency::ConfirmedIdempotencyInspectionV1;
+///
+/// fn cannot_duplicate(value: &ConfirmedIdempotencyInspectionV1) {
+///     let _: ConfirmedIdempotencyInspectionV1 =
+///         <ConfirmedIdempotencyInspectionV1 as Clone>::clone(value);
+/// }
+/// ```
 pub struct ConfirmedIdempotencyInspectionV1 {
     prepared_command: PreparedCommandIdempotencyV1,
+    normalized_input: CanonicalRecord,
     observation: AdmissionLookupResultV1,
+}
+
+impl ConfirmedIdempotencyInspectionV1 {
+    /// Binds the exact plan selected from this retained observation.
+    ///
+    /// A historical observation may only be bound to its exact immutable plan.
+    /// Absence may be bound to the requested active or explicit plan. The result
+    /// is consumed by the coordinator's one-read recheck immediately before
+    /// admission, resume, or replay.
+    pub fn bind_selected_plan(
+        self,
+        selected_plan: ExecutablePlanRef,
+    ) -> Result<PreparedIdempotencyRecheckV1, IdempotencyRecheckIntegrityV1> {
+        match &self.observation {
+            AdmissionLookupResultV1::NotFound => {}
+            AdmissionLookupResultV1::Found(state) if plan_for_state(state) == &selected_plan => {}
+            AdmissionLookupResultV1::Found(_) => {
+                return Err(IdempotencyRecheckIntegrityV1::SelectedPlanMismatch);
+            }
+            AdmissionLookupResultV1::MultipleMatches => {
+                return Err(IdempotencyRecheckIntegrityV1::ImpossibleTransition);
+            }
+        }
+
+        Ok(PreparedIdempotencyRecheckV1::new(
+            self.prepared_command,
+            self.normalized_input,
+            selected_plan,
+            self.observation,
+        ))
+    }
 }
 
 impl fmt::Debug for ConfirmedIdempotencyInspectionV1 {
@@ -121,6 +163,7 @@ impl fmt::Debug for ConfirmedIdempotencyInspectionV1 {
         formatter
             .debug_struct("ConfirmedIdempotencyInspectionV1")
             .field("prepared_command", &self.prepared_command)
+            .field("normalized_input", &"[REDACTED]")
             .field("observation", &"[REDACTED]")
             .finish()
     }
