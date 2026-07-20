@@ -31,6 +31,7 @@ use crate::codec::{
     encode_execution_failed_v1, encode_pending_admission_v1,
 };
 use crate::error::{codec_error, precommit_storage_error, table_error};
+use crate::hooks::RedbTestOperation;
 use crate::keys::{
     encode_application_sequence_key, encode_contract_bundle_key, encode_entity_key,
     encode_event_key, encode_idempotency_key, encode_index_entry_key,
@@ -200,7 +201,9 @@ impl NonEmptyCommandBatch for RedbNonEmptyBatch {
             .map(|records| records.stored_outcome().clone())
             .collect();
         let committed = CommittedBatchV1::new(outcomes, durability).map_err(invariant_value)?;
-        self.core.access.commit()?;
+        self.core
+            .access
+            .commit_for(RedbTestOperation::CommandBatch)?;
         Ok(committed)
     }
 
@@ -241,7 +244,7 @@ impl AdmissionRepository for RedbOperationalPorts {
         }
         drop(table);
         let created = request.proposed_pending().clone();
-        access.commit()?;
+        access.commit_for(RedbTestOperation::Admission)?;
         Ok(AdmissionResultV1::Created(created))
     }
 
@@ -349,7 +352,8 @@ impl ExecutionFailureAwaitingDecision for RedbExecutionFailureAwaitingDecision {
                 return Err(storage_error(StorageErrorKind::InvariantViolation));
             }
         }
-        self.access.commit()?;
+        self.access
+            .commit_for(RedbTestOperation::ExecutionFailure)?;
         Ok(terminal)
     }
 
