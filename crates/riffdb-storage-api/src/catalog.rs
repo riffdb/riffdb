@@ -228,6 +228,30 @@ pub struct StoredCatalogAdministrationV1 {
 }
 
 impl StoredCatalogAdministrationV1 {
+    /// Reconstructs an exact durable administration record without fabricating
+    /// the separately stored contract bundle.
+    #[allow(clippy::too_many_arguments)]
+    #[must_use]
+    pub const fn from_stored_parts(
+        administration_sequence: AdministrationSequence,
+        request_id: RequestId,
+        timestamp: Timestamp,
+        principal: AuditPrincipalV1,
+        previous_active: Option<ActiveCatalogPointerV1>,
+        activated: ActiveCatalogPointerV1,
+        approval_id: Option<ApprovalId>,
+    ) -> Self {
+        Self {
+            administration_sequence,
+            request_id,
+            timestamp,
+            principal,
+            previous_active,
+            activated,
+            approval_id,
+        }
+    }
+
     /// Lowers one successful CAS using the transaction-current prior pointer.
     pub fn from_committed_intent(
         administration_sequence: AdministrationSequence,
@@ -241,15 +265,15 @@ impl StoredCatalogAdministrationV1 {
         {
             return Err(StorageValueError::IdentityMismatch);
         }
-        Ok(Self {
+        Ok(Self::from_stored_parts(
             administration_sequence,
-            request_id: intent.request_id,
-            timestamp: intent.timestamp,
-            principal: intent.principal.clone(),
+            intent.request_id,
+            intent.timestamp,
+            intent.principal.clone(),
             previous_active,
-            activated: intent.requested_active(),
-            approval_id: intent.approval_id.clone(),
-        })
+            intent.requested_active(),
+            intent.approval_id.clone(),
+        ))
     }
 
     /// Returns the assigned total administration order.
@@ -445,6 +469,17 @@ mod tests {
         )
         .expect("matching CAS");
         assert_eq!(stored.previous_active(), Some(&previous));
+
+        let reconstructed = StoredCatalogAdministrationV1::from_stored_parts(
+            stored.administration_sequence(),
+            stored.request_id(),
+            stored.timestamp(),
+            stored.principal().clone(),
+            stored.previous_active().cloned(),
+            stored.activated().clone(),
+            stored.approval_id().cloned(),
+        );
+        assert_eq!(reconstructed, stored);
         assert_eq!(
             StoredCatalogAdministrationV1::from_committed_intent(
                 AdministrationSequence::first(),
