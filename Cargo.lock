@@ -1009,6 +1009,10 @@ version = "0.1.0"
 [[package]]
 name = "riffdb-commit"
 version = "0.1.0"
+dependencies = [
+ "riffdb-storage-api",
+ "riffdb-types",
+]
 
 [[package]]
 name = "riffdb-conflict"
@@ -1061,6 +1065,10 @@ dependencies = [
 [[package]]
 name = "riffdb-idempotency"
 version = "0.1.0"
+dependencies = [
+ "riffdb-storage-api",
+ "riffdb-types",
+]
 
 [[package]]
 name = "riffdb-invariant"

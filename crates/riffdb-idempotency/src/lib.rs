@@ -1,3 +1,11 @@
 #![forbid(unsafe_code)]
 
-//! Non-semantic bootstrap root for the `riffdb-idempotency` crate.
+//! Canonical command idempotency preparation and durable-state classification.
+
+mod digest;
+mod lookup;
+mod prepare;
+
+pub use digest::*;
+pub use lookup::*;
+pub use prepare::*;
