@@ -11,8 +11,9 @@ use riffdb_types::{
 };
 
 use crate::{
-    AuditClass, CapabilityCreateTargetFacts, CapabilityMutationRequest,
-    CapabilityRevokeTargetFacts, OutputClassification, RevocationReasonCodeV1,
+    AbsentCapabilityRevokeTargetFacts, AuditClass, CapabilityCreateTargetFacts,
+    CapabilityMutationRequest, CapabilityRevokeTargetFacts, OutputClassification,
+    RevocationReasonCodeV1,
 };
 
 /// Whether an execute target is a command mutation or an unjournaled command read.
@@ -414,6 +415,10 @@ enum OperationKind {
         target: CapabilityRevokeTargetFacts,
         reason: RevocationReasonCodeV1,
     },
+    RevokeAbsentCapability {
+        target: AbsentCapabilityRevokeTargetFacts,
+        reason: RevocationReasonCodeV1,
+    },
     ListPendingOutboxDeliveries {
         requested_rows: NonZeroU16,
     },
@@ -660,6 +665,15 @@ impl OperationRequest {
         Self(OperationKind::RevokeCapability { target, reason })
     }
 
+    /// Constructs a capability-revoke request whose exact target is absent.
+    #[must_use]
+    pub const fn revoke_absent_capability(
+        target: AbsentCapabilityRevokeTargetFacts,
+        reason: RevocationReasonCodeV1,
+    ) -> Self {
+        Self(OperationKind::RevokeAbsentCapability { target, reason })
+    }
+
     /// Constructs a bounded outbox-status request.
     #[must_use]
     pub const fn list_pending_outbox_deliveries(requested_rows: NonZeroU16) -> Self {
@@ -702,7 +716,8 @@ impl OperationRequest {
             OperationKind::GetHealth => ServiceOperationV1::GetHealth,
             OperationKind::GetStatistics => ServiceOperationV1::GetStatistics,
             OperationKind::CreateCapability { .. } => ServiceOperationV1::CreateCapability,
-            OperationKind::RevokeCapability { .. } => ServiceOperationV1::RevokeCapability,
+            OperationKind::RevokeCapability { .. }
+            | OperationKind::RevokeAbsentCapability { .. } => ServiceOperationV1::RevokeCapability,
             OperationKind::ListPendingOutboxDeliveries { .. } => {
                 ServiceOperationV1::ListPendingOutboxDeliveries
             }
@@ -785,6 +800,9 @@ impl OperationRequest {
             }
             OperationKind::RevokeCapability { .. } => {
                 PermissionRequirement::Either(Kind::RevokeCapability, Kind::AdministerCapabilities)
+            }
+            OperationKind::RevokeAbsentCapability { .. } => {
+                PermissionRequirement::Kind(Kind::AdministerCapabilities)
             }
             OperationKind::ListPendingOutboxDeliveries { .. } => {
                 PermissionRequirement::Kind(Kind::InspectOutbox)
@@ -870,7 +888,10 @@ impl OperationRequest {
             } => Some(AuditClass::CommandMutation),
             OperationKind::DeployContract { .. }
             | OperationKind::CreateCapability { .. }
-            | OperationKind::RevokeCapability { .. } => Some(AuditClass::ControlPlaneMutation),
+            | OperationKind::RevokeCapability { .. }
+            | OperationKind::RevokeAbsentCapability { .. } => {
+                Some(AuditClass::ControlPlaneMutation)
+            }
             OperationKind::GetCommit { .. }
             | OperationKind::ScanCommits { .. }
             | OperationKind::SubscribeToCommits
@@ -900,6 +921,7 @@ impl OperationRequest {
             | OperationKind::GetStatistics
             | OperationKind::CreateCapability { .. }
             | OperationKind::RevokeCapability { .. }
+            | OperationKind::RevokeAbsentCapability { .. }
             | OperationKind::ListPendingOutboxDeliveries { .. } => {
                 OutputClassification::AdministrativeRedactedData
             }
@@ -914,6 +936,9 @@ impl OperationRequest {
             }
             OperationKind::RevokeCapability { target, reason } => {
                 Some(CapabilityMutationRequest::Revoke { target, reason })
+            }
+            OperationKind::RevokeAbsentCapability { target, reason } => {
+                Some(CapabilityMutationRequest::RevokeAbsent { target, reason })
             }
             _ => None,
         }
@@ -1128,6 +1153,15 @@ mod tests {
         .expect("valid revoke target")
     }
 
+    fn absent_revoke_target() -> AbsentCapabilityRevokeTargetFacts {
+        AbsentCapabilityRevokeTargetFacts::new(
+            RequestId::from_unix_milliseconds_and_random(1, [6; 10]).expect("valid UUIDv7"),
+            capability_id(),
+            DatabaseId::from_unix_milliseconds_and_random(1, [4; 10]).expect("valid UUIDv7"),
+            Environment::new("dev").expect("valid environment"),
+        )
+    }
+
     fn actor_id() -> ActorId {
         ActorId::new("principal-1").expect("valid actor")
     }
@@ -1253,6 +1287,30 @@ mod tests {
                 .collect::<Vec<_>>(),
             (1..=19).collect::<Vec<_>>()
         );
+    }
+
+    #[test]
+    fn absent_revoke_request_maps_only_to_capability_administration() {
+        let request = OperationRequest::revoke_absent_capability(
+            absent_revoke_target(),
+            RevocationReasonCodeV1::Requested,
+        );
+        assert_eq!(request.operation(), ServiceOperationV1::RevokeCapability);
+        assert!(matches!(
+            request.permission_requirement(),
+            Some(PermissionRequirement::Kind(
+                CapabilityPermissionKindV1::AdministerCapabilities
+            ))
+        ));
+        assert_eq!(
+            request.audit_obligation(),
+            Some(AuditClass::ControlPlaneMutation)
+        );
+        assert_eq!(
+            request.output_classification(),
+            OutputClassification::AdministrativeRedactedData
+        );
+        assert!(format!("{request:?}").contains("[REDACTED]"));
     }
 
     #[test]

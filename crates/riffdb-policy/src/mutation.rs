@@ -376,6 +376,115 @@ impl fmt::Debug for CapabilityRevokeTargetFacts {
     }
 }
 
+/// Checked request and server-scope facts for an absent revoke target.
+///
+/// Absence cannot supply a revision, principal, lifecycle, audience, grant, or
+/// validity interval. This type deliberately has no fields for those facts.
+#[derive(Clone, Eq, PartialEq)]
+pub struct AbsentCapabilityRevokeTargetFacts {
+    request_id: RequestId,
+    capability_id: CapabilityId,
+    database_id: DatabaseId,
+    environment: Environment,
+}
+
+impl AbsentCapabilityRevokeTargetFacts {
+    /// Binds an absent-target request to the trusted database and environment.
+    #[must_use]
+    pub const fn new(
+        request_id: RequestId,
+        capability_id: CapabilityId,
+        database_id: DatabaseId,
+        environment: Environment,
+    ) -> Self {
+        Self {
+            request_id,
+            capability_id,
+            database_id,
+            environment,
+        }
+    }
+
+    /// Returns the tracing/audit identity of this transport invocation.
+    #[must_use]
+    pub const fn request_id(&self) -> RequestId {
+        self.request_id
+    }
+
+    /// Returns the exact requested capability identity.
+    #[must_use]
+    pub const fn capability_id(&self) -> CapabilityId {
+        self.capability_id
+    }
+
+    /// Returns the trusted request database.
+    #[must_use]
+    pub const fn database_id(&self) -> DatabaseId {
+        self.database_id
+    }
+
+    /// Returns the trusted request environment.
+    #[must_use]
+    pub const fn environment(&self) -> &Environment {
+        &self.environment
+    }
+}
+
+impl fmt::Debug for AbsentCapabilityRevokeTargetFacts {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("AbsentCapabilityRevokeTargetFacts([REDACTED])")
+    }
+}
+
+/// Transaction-current existence of one exact capability target.
+///
+/// The coordinator lowers this fact mechanically from its transaction. A
+/// present observation carries no target record because an absence-authorized
+/// preparation must be abandoned rather than promoted to a present revoke.
+#[derive(Clone, Copy, Eq, PartialEq)]
+pub struct TransactionCurrentCapabilityExistence {
+    capability_id: CapabilityId,
+    exists: bool,
+}
+
+impl TransactionCurrentCapabilityExistence {
+    /// Records that the exact target remains absent in the current transaction.
+    #[must_use]
+    pub const fn absent(capability_id: CapabilityId) -> Self {
+        Self {
+            capability_id,
+            exists: false,
+        }
+    }
+
+    /// Records that the exact target appeared before the current transaction.
+    #[must_use]
+    pub const fn present(capability_id: CapabilityId) -> Self {
+        Self {
+            capability_id,
+            exists: true,
+        }
+    }
+
+    /// Returns the exact target identity observed by the transaction.
+    #[must_use]
+    pub const fn capability_id(self) -> CapabilityId {
+        self.capability_id
+    }
+
+    /// Reports whether the exact target is transaction-current present.
+    #[must_use]
+    pub const fn is_present(self) -> bool {
+        self.exists
+    }
+}
+
+impl fmt::Debug for TransactionCurrentCapabilityExistence {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("TransactionCurrentCapabilityExistence([REDACTED])")
+    }
+}
+
 /// Complete policy-relevant current capability facts supplied by commit.
 ///
 /// This is a trusted commit-coordinator lowering boundary, not an unforgeable
@@ -525,12 +634,20 @@ enum PreparedCapabilityMutation {
         target: CapabilityRevokeTargetFacts,
         reason: RevocationReasonCodeV1,
     },
+    RevokeAbsent {
+        target: AbsentCapabilityRevokeTargetFacts,
+        reason: RevocationReasonCodeV1,
+    },
 }
 
 pub(crate) enum CapabilityMutationRequest {
     Create(CapabilityCreateTargetFacts),
     Revoke {
         target: CapabilityRevokeTargetFacts,
+        reason: RevocationReasonCodeV1,
+    },
+    RevokeAbsent {
+        target: AbsentCapabilityRevokeTargetFacts,
         reason: RevocationReasonCodeV1,
     },
 }
@@ -625,6 +742,44 @@ impl AuthorizedCapabilityMutationPreparation {
         })
     }
 
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn revoke_absent(
+        authorizing: &TransactionCurrentCapabilityFacts,
+        authenticated_principal_id: &ActorId,
+        authenticated_actor_kind: ActorKind,
+        authenticated_audience: &Audience,
+        authenticated_tenant_scope: &TenantScope,
+        target: AbsentCapabilityRevokeTargetFacts,
+        reason: RevocationReasonCodeV1,
+    ) -> Result<Self, PolicyCode> {
+        if authorizing.principal_id != *authenticated_principal_id
+            || authorizing.actor_kind != authenticated_actor_kind
+            || authorizing
+                .audiences
+                .binary_search(authenticated_audience)
+                .is_err()
+            || authorizing.grant.tenant_scope() != authenticated_tenant_scope
+        {
+            return Err(PolicyCode::InactiveOrStaleCapability);
+        }
+        verify_permission_path(
+            &authorizing.grant,
+            CapabilityPermissionKindV1::AdministerCapabilities,
+            target.database_id == authorizing.database_id
+                && target.environment == authorizing.environment,
+        )?;
+        Ok(Self {
+            authorizing_capability_id: authorizing.capability_id,
+            authorizing_revision: authorizing.revision,
+            authorizing_principal_id: authenticated_principal_id.clone(),
+            authorizing_actor_kind: authenticated_actor_kind,
+            authenticated_audience: authenticated_audience.clone(),
+            authenticated_tenant_scope: authenticated_tenant_scope.clone(),
+            mode: CapabilityDelegationMode::Administrator,
+            mutation: PreparedCapabilityMutation::RevokeAbsent { target, reason },
+        })
+    }
+
     /// Returns the exact authorizing capability identity.
     #[must_use]
     pub const fn authorizing_capability_id(&self) -> CapabilityId {
@@ -672,7 +827,8 @@ impl AuthorizedCapabilityMutationPreparation {
     pub const fn create_target(&self) -> Option<&CapabilityCreateTargetFacts> {
         match &self.mutation {
             PreparedCapabilityMutation::Create { target, .. } => Some(target),
-            PreparedCapabilityMutation::Revoke { .. } => None,
+            PreparedCapabilityMutation::Revoke { .. }
+            | PreparedCapabilityMutation::RevokeAbsent { .. } => None,
         }
     }
 
@@ -682,6 +838,17 @@ impl AuthorizedCapabilityMutationPreparation {
         match &self.mutation {
             PreparedCapabilityMutation::Create { .. } => None,
             PreparedCapabilityMutation::Revoke { target, .. } => Some(target),
+            PreparedCapabilityMutation::RevokeAbsent { .. } => None,
+        }
+    }
+
+    /// Returns the exact checked absent revoke target, when one was authorized.
+    #[must_use]
+    pub const fn absent_revoke_target(&self) -> Option<&AbsentCapabilityRevokeTargetFacts> {
+        match &self.mutation {
+            PreparedCapabilityMutation::RevokeAbsent { target, .. } => Some(target),
+            PreparedCapabilityMutation::Create { .. }
+            | PreparedCapabilityMutation::Revoke { .. } => None,
         }
     }
 
@@ -690,7 +857,8 @@ impl AuthorizedCapabilityMutationPreparation {
     pub const fn revoke_reason(&self) -> Option<RevocationReasonCodeV1> {
         match &self.mutation {
             PreparedCapabilityMutation::Create { .. } => None,
-            PreparedCapabilityMutation::Revoke { reason, .. } => Some(*reason),
+            PreparedCapabilityMutation::Revoke { reason, .. }
+            | PreparedCapabilityMutation::RevokeAbsent { reason, .. } => Some(*reason),
         }
     }
 }
@@ -862,6 +1030,79 @@ impl fmt::Debug for AuthorizedTransactionCapabilityMutation {
     }
 }
 
+/// Move-only proof that an administrator reauthorized one still-absent target.
+///
+/// This is a proof for returning a typed no-transition result. It is not an
+/// authorization to create a durable capability transition or assign its
+/// sequence.
+#[derive(Eq, PartialEq)]
+pub struct AuthorizedTransactionAbsentCapabilityRevoke {
+    authoritative_time: Timestamp,
+    preparation: AuthorizedCapabilityMutationPreparation,
+}
+
+impl AuthorizedTransactionAbsentCapabilityRevoke {
+    /// Returns the single authoritative clock sample used for this decision.
+    #[must_use]
+    pub const fn authoritative_time(&self) -> Timestamp {
+        self.authoritative_time
+    }
+
+    /// Returns the exact absence-bound initial authorization.
+    #[must_use]
+    pub const fn preparation(&self) -> &AuthorizedCapabilityMutationPreparation {
+        &self.preparation
+    }
+
+    /// Consumes the proof into its exact value-only parts.
+    #[must_use]
+    pub fn into_parts(self) -> (Timestamp, AuthorizedCapabilityMutationPreparation) {
+        (self.authoritative_time, self.preparation)
+    }
+}
+
+impl fmt::Debug for AuthorizedTransactionAbsentCapabilityRevoke {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("AuthorizedTransactionAbsentCapabilityRevoke([REDACTED])")
+    }
+}
+
+/// Closed policy reason an absent-revoke preparation must be rebuilt.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum AbsentCapabilityRevokePreparationChange {
+    /// A target proven absent during initial policy evaluation is now present.
+    TargetAppeared,
+}
+
+/// Deny-by-default result for a transaction-current absent-target recheck.
+#[derive(Eq, PartialEq)]
+pub enum TransactionAbsentCapabilityRevokeDecision {
+    /// Current policy allowed returning the exact no-transition result.
+    Allow(Box<AuthorizedTransactionAbsentCapabilityRevoke>),
+    /// Target existence changed and complete present-target facts are required.
+    PreparationChanged(AbsentCapabilityRevokePreparationChange),
+    /// Current authorizing policy denied the operation with a closed code.
+    Deny(PolicyCode),
+}
+
+impl fmt::Debug for TransactionAbsentCapabilityRevokeDecision {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Allow(_) => {
+                formatter.write_str("TransactionAbsentCapabilityRevokeDecision::Allow([REDACTED])")
+            }
+            Self::PreparationChanged(change) => formatter
+                .debug_tuple("TransactionAbsentCapabilityRevokeDecision::PreparationChanged")
+                .field(change)
+                .finish(),
+            Self::Deny(code) => formatter
+                .debug_tuple("TransactionAbsentCapabilityRevokeDecision::Deny")
+                .field(code)
+                .finish(),
+        }
+    }
+}
+
 /// Deny-by-default result of the transaction-current policy check.
 #[derive(Eq, PartialEq)]
 pub enum TransactionCapabilityMutationDecision {
@@ -925,6 +1166,9 @@ impl TransactionCurrentCapabilityVerifier {
                     preparation.mode,
                     proposed_revoke,
                 ),
+                (PreparedCapabilityMutation::RevokeAbsent { .. }, _) => {
+                    Err(PolicyCode::DelegationExceedsAuthority)
+                }
                 _ => Err(PolicyCode::DelegationExceedsAuthority),
             },
         );
@@ -938,6 +1182,53 @@ impl TransactionCurrentCapabilityVerifier {
             )),
             Err(code) => TransactionCapabilityMutationDecision::Deny(code),
         }
+    }
+
+    /// Rechecks an absence-authorized revoke against exact transaction state.
+    ///
+    /// Authorizer changes deny before target appearance is classified. A
+    /// present target never inherits the absence authorization; callers must
+    /// rebuild complete present-target facts and run initial policy again.
+    #[must_use]
+    pub fn verify_absent_revoke(
+        current: &TransactionCurrentCapabilityFacts,
+        target_existence: TransactionCurrentCapabilityExistence,
+        authorization_time: Timestamp,
+        preparation: AuthorizedCapabilityMutationPreparation,
+    ) -> TransactionAbsentCapabilityRevokeDecision {
+        let current_result = verify_current_binding(current, authorization_time, &preparation)
+            .and_then(|()| match &preparation.mutation {
+                PreparedCapabilityMutation::RevokeAbsent { target, .. } => {
+                    verify_permission_path(
+                        &current.grant,
+                        CapabilityPermissionKindV1::AdministerCapabilities,
+                        target.database_id == current.database_id
+                            && target.environment == current.environment,
+                    )?;
+                    if target.capability_id != target_existence.capability_id {
+                        return Err(PolicyCode::DelegationExceedsAuthority);
+                    }
+                    Ok(())
+                }
+                PreparedCapabilityMutation::Create { .. }
+                | PreparedCapabilityMutation::Revoke { .. } => {
+                    Err(PolicyCode::DelegationExceedsAuthority)
+                }
+            });
+        if let Err(code) = current_result {
+            return TransactionAbsentCapabilityRevokeDecision::Deny(code);
+        }
+        if target_existence.is_present() {
+            return TransactionAbsentCapabilityRevokeDecision::PreparationChanged(
+                AbsentCapabilityRevokePreparationChange::TargetAppeared,
+            );
+        }
+        TransactionAbsentCapabilityRevokeDecision::Allow(Box::new(
+            AuthorizedTransactionAbsentCapabilityRevoke {
+                authoritative_time: authorization_time,
+                preparation,
+            },
+        ))
     }
 }
 
@@ -1448,6 +1739,15 @@ mod tests {
         .expect("valid revoke target")
     }
 
+    fn absent_revoke_target(seed: u8) -> AbsentCapabilityRevokeTargetFacts {
+        AbsentCapabilityRevokeTargetFacts::new(
+            request_id(seed),
+            target_capability_id(seed),
+            database_id(),
+            environment(),
+        )
+    }
+
     fn catalog() -> TrustedAudienceCatalog {
         TrustedAudienceCatalog::new(vec![audience("grpc"), audience("mcp")]).expect("valid catalog")
     }
@@ -1485,6 +1785,22 @@ mod tests {
         )
     }
 
+    fn prepare_absent_revoke(
+        current: &TransactionCurrentCapabilityFacts,
+        target: AbsentCapabilityRevokeTargetFacts,
+        reason: RevocationReasonCodeV1,
+    ) -> Result<AuthorizedCapabilityMutationPreparation, PolicyCode> {
+        AuthorizedCapabilityMutationPreparation::revoke_absent(
+            current,
+            &principal_id(),
+            ActorKind::Service,
+            &audience("grpc"),
+            current.grant().tenant_scope(),
+            target,
+            reason,
+        )
+    }
+
     fn ordinary_grant() -> CapabilityGrantV1 {
         grant(
             TenantScope::Global,
@@ -1505,6 +1821,17 @@ mod tests {
                 permission(CapabilityPermissionKindV1::RevokeCapability),
             ],
             100,
+            Vec::new(),
+        )
+    }
+
+    fn administrator_grant() -> CapabilityGrantV1 {
+        grant(
+            TenantScope::Global,
+            vec![permission(
+                CapabilityPermissionKindV1::AdministerCapabilities,
+            )],
+            1,
             Vec::new(),
         )
     }
@@ -1952,6 +2279,205 @@ mod tests {
     }
 
     #[test]
+    fn absent_revoke_is_admin_only_and_preserves_the_exact_absence() {
+        let ordinary = current(
+            ordinary_revoke_grant(),
+            vec![audience("grpc")],
+            timestamp(1_000),
+        );
+        let target = absent_revoke_target(0x81);
+        assert_eq!(
+            prepare_absent_revoke(&ordinary, target.clone(), RevocationReasonCodeV1::Requested,),
+            Err(PolicyCode::MissingPermission)
+        );
+
+        let administrator = current(
+            administrator_grant(),
+            vec![audience("grpc")],
+            timestamp(1_000),
+        );
+        let preparation = prepare_absent_revoke(
+            &administrator,
+            target.clone(),
+            RevocationReasonCodeV1::PolicyChange,
+        )
+        .expect("administrator prepares exact absence");
+        assert_eq!(
+            preparation.delegation_mode(),
+            CapabilityDelegationMode::Administrator
+        );
+        assert_eq!(preparation.create_target(), None);
+        assert_eq!(preparation.revoke_target(), None);
+        assert_eq!(preparation.absent_revoke_target(), Some(&target));
+        assert_eq!(
+            preparation.revoke_reason(),
+            Some(RevocationReasonCodeV1::PolicyChange)
+        );
+
+        let TransactionAbsentCapabilityRevokeDecision::Allow(proof) =
+            TransactionCurrentCapabilityVerifier::verify_absent_revoke(
+                &administrator,
+                TransactionCurrentCapabilityExistence::absent(target.capability_id()),
+                timestamp(250),
+                preparation,
+            )
+        else {
+            panic!("expected exact absent-target authorization");
+        };
+        assert_eq!(proof.authoritative_time(), timestamp(250));
+        assert_eq!(
+            proof
+                .preparation()
+                .absent_revoke_target()
+                .expect("absent target"),
+            &target
+        );
+    }
+
+    #[test]
+    fn absent_revoke_rejects_database_environment_and_target_substitution() {
+        let administrator = current(
+            administrator_grant(),
+            vec![audience("grpc")],
+            timestamp(1_000),
+        );
+        let target = absent_revoke_target(0x82);
+        let mut wrong_database = target.clone();
+        wrong_database.database_id =
+            DatabaseId::from_unix_milliseconds_and_random(9, [0x82; 10]).expect("valid UUIDv7");
+        assert_eq!(
+            prepare_absent_revoke(
+                &administrator,
+                wrong_database,
+                RevocationReasonCodeV1::Requested,
+            ),
+            Err(PolicyCode::DelegationExceedsAuthority)
+        );
+
+        let mut wrong_environment = target.clone();
+        wrong_environment.environment = Environment::new("other").expect("valid environment");
+        assert_eq!(
+            prepare_absent_revoke(
+                &administrator,
+                wrong_environment,
+                RevocationReasonCodeV1::Requested,
+            ),
+            Err(PolicyCode::DelegationExceedsAuthority)
+        );
+
+        let preparation =
+            prepare_absent_revoke(&administrator, target, RevocationReasonCodeV1::Requested)
+                .expect("prepared");
+        assert_eq!(
+            TransactionCurrentCapabilityVerifier::verify_absent_revoke(
+                &administrator,
+                TransactionCurrentCapabilityExistence::absent(target_capability_id(0x83)),
+                timestamp(250),
+                preparation,
+            ),
+            TransactionAbsentCapabilityRevokeDecision::Deny(PolicyCode::DelegationExceedsAuthority)
+        );
+    }
+
+    #[test]
+    fn appeared_absent_revoke_target_requires_a_fresh_present_preparation() {
+        let administrator = current(
+            administrator_grant(),
+            vec![audience("grpc")],
+            timestamp(1_000),
+        );
+        let target = absent_revoke_target(0x84);
+        let preparation = prepare_absent_revoke(
+            &administrator,
+            target.clone(),
+            RevocationReasonCodeV1::Requested,
+        )
+        .expect("prepared");
+
+        assert_eq!(
+            TransactionCurrentCapabilityVerifier::verify_absent_revoke(
+                &administrator,
+                TransactionCurrentCapabilityExistence::present(target.capability_id()),
+                timestamp(250),
+                preparation,
+            ),
+            TransactionAbsentCapabilityRevokeDecision::PreparationChanged(
+                AbsentCapabilityRevokePreparationChange::TargetAppeared
+            )
+        );
+    }
+
+    #[test]
+    fn absent_revoke_rechecks_authorizer_before_classifying_target_appearance() {
+        let initial = current(
+            administrator_grant(),
+            vec![audience("grpc")],
+            timestamp(1_000),
+        );
+        let target = absent_revoke_target(0x85);
+        let verify = |transaction_current: &TransactionCurrentCapabilityFacts| {
+            let preparation =
+                prepare_absent_revoke(&initial, target.clone(), RevocationReasonCodeV1::Requested)
+                    .expect("prepared");
+            TransactionCurrentCapabilityVerifier::verify_absent_revoke(
+                transaction_current,
+                TransactionCurrentCapabilityExistence::present(target.capability_id()),
+                timestamp(250),
+                preparation,
+            )
+        };
+
+        let mut stale = initial.clone();
+        stale.revision = NonZeroU64::new(8).expect("nonzero revision");
+        assert_eq!(
+            verify(&stale),
+            TransactionAbsentCapabilityRevokeDecision::Deny(PolicyCode::InactiveOrStaleCapability)
+        );
+
+        let mut revoked = initial.clone();
+        revoked.activity = CapabilityActivity::Revoked;
+        assert_eq!(
+            verify(&revoked),
+            TransactionAbsentCapabilityRevokeDecision::Deny(PolicyCode::InactiveOrStaleCapability)
+        );
+
+        let mut expired = initial.clone();
+        expired.expires_at = timestamp(250);
+        assert_eq!(
+            verify(&expired),
+            TransactionAbsentCapabilityRevokeDecision::Deny(PolicyCode::InactiveOrStaleCapability)
+        );
+
+        let mut missing = initial.clone();
+        missing.grant = grant(TenantScope::Global, Vec::new(), 1, Vec::new());
+        assert_eq!(
+            verify(&missing),
+            TransactionAbsentCapabilityRevokeDecision::Deny(PolicyCode::MissingPermission)
+        );
+
+        let mut approval = initial.clone();
+        approval.grant = grant(
+            TenantScope::Global,
+            vec![permission(
+                CapabilityPermissionKindV1::AdministerCapabilities,
+            )],
+            1,
+            vec![CapabilityPermissionKindV1::AdministerCapabilities],
+        );
+        assert_eq!(
+            verify(&approval),
+            TransactionAbsentCapabilityRevokeDecision::Deny(PolicyCode::ApprovalRequired)
+        );
+
+        let mut wrong_environment = initial.clone();
+        wrong_environment.environment = Environment::new("other").expect("valid environment");
+        assert_eq!(
+            verify(&wrong_environment),
+            TransactionAbsentCapabilityRevokeDecision::Deny(PolicyCode::DelegationExceedsAuthority)
+        );
+    }
+
+    #[test]
     fn ordinary_revoke_rejects_every_complete_subset_escalation() {
         let current = current(
             ordinary_revoke_grant(),
@@ -2220,6 +2746,47 @@ mod tests {
             assert!(!rendered.contains("authorizing-principal"));
             assert!(!rendered.contains("target-principal"));
             assert!(!rendered.contains("grpc"));
+        }
+    }
+
+    #[test]
+    fn absent_revoke_debug_output_redacts_scope_and_identity_facts() {
+        let secret_environment = Environment::new("secret-environment").expect("valid environment");
+        let mut administrator = current(
+            administrator_grant(),
+            vec![audience("grpc")],
+            timestamp(1_000),
+        );
+        administrator.environment = secret_environment.clone();
+        let target = AbsentCapabilityRevokeTargetFacts::new(
+            request_id(0x86),
+            target_capability_id(0x86),
+            database_id(),
+            secret_environment,
+        );
+        let existence = TransactionCurrentCapabilityExistence::absent(target.capability_id());
+        let preparation = prepare_absent_revoke(
+            &administrator,
+            target.clone(),
+            RevocationReasonCodeV1::Requested,
+        )
+        .expect("prepared");
+        let preparation_debug = format!("{preparation:?}");
+        let decision = TransactionCurrentCapabilityVerifier::verify_absent_revoke(
+            &administrator,
+            existence,
+            timestamp(250),
+            preparation,
+        );
+
+        for rendered in [
+            format!("{target:?}"),
+            format!("{existence:?}"),
+            preparation_debug,
+            format!("{decision:?}"),
+        ] {
+            assert!(rendered.contains("[REDACTED]"));
+            assert!(!rendered.contains("secret-environment"));
         }
     }
 
