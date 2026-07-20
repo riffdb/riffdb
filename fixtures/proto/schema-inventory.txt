@@ -313,7 +313,7 @@ messages
     3 delivering optional .riffdb.storage.v1.OutboxDeliveringV1 oneof=state
     4 delivered optional .riffdb.storage.v1.OutboxDeliveredV1 oneof=state
     5 dead_letter optional .riffdb.storage.v1.OutboxDeadLetterV1 oneof=state
-  riffdb.storage.v1.StoredOutcomeV1 fields=13
+  riffdb.storage.v1.StoredOutcomeV1 fields=14
     1 identity optional .riffdb.storage.v1.IdempotencyIdentityV1
     2 commit_sequence optional uint64
     3 admission_request_id optional bytes
@@ -327,6 +327,7 @@ messages
     11 admitted_claims optional .riffdb.storage.v1.StoredAdmittedProvenanceClaimsV1
     12 provenance_id optional bytes
     13 durability_mode optional .riffdb.storage.v1.DurabilityModeV1
+    14 partition_key optional bytes
   riffdb.storage.v1.StoredPendingAdmissionV1 fields=8
     1 identity optional .riffdb.storage.v1.IdempotencyIdentityV1
     2 canonical_input_hash optional bytes

@@ -373,6 +373,7 @@ fn command_fixture() -> CommandFixture {
         pending.canonical_input_hash(),
         actor.clone(),
         logical_time,
+        partition.clone(),
         partition_hash,
         Vec::new(),
         declared_outcome.clone(),
@@ -630,11 +631,15 @@ fn assert_postcommit_command_state(ports: &RedbOperationalPorts, fixture: &Comma
         ports.read_entity(&fixture.target).expect("read entity"),
         Some(fixture.records.entities()[0].post_image().clone())
     );
+    let stored_outcome = ports
+        .read_stored_outcome(fixture.pending.identity())
+        .expect("read terminal outcome")
+        .expect("committed outcome");
+    assert_eq!(&stored_outcome, fixture.records.stored_outcome());
     assert_eq!(
-        ports
-            .read_stored_outcome(fixture.pending.identity())
-            .expect("read terminal outcome"),
-        Some(fixture.records.stored_outcome().clone())
+        stored_outcome.partition_key(),
+        fixture.pending.partition_key(),
+        "the exact admitted partition key must survive commit and reopen"
     );
     assert_eq!(
         ports

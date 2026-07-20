@@ -252,10 +252,30 @@ fn outcome_provenance_and_commit_canonical_lists_fail_closed() {
 
     const OUTCOME: &str = "riffdb.storage.v1.StoredOutcomeV1";
     let outcome = encode_stored_outcome_v1(records.stored_outcome()).expect("outcome encodes");
-    let mut outcome = payload_message::<wire::StoredOutcomeV1>(outcome.as_bytes());
-    outcome.conflict_hashes = vec![[0x82; 32].to_vec(), [0x81; 32].to_vec()];
+    let outcome = payload_message::<wire::StoredOutcomeV1>(outcome.as_bytes());
+
+    let mut missing_partition_key = outcome.clone();
+    missing_partition_key.partition_key.clear();
     assert_corrupt(decode_stored_outcome_v1(&checked_envelope(
-        OUTCOME, &outcome,
+        OUTCOME,
+        &missing_partition_key,
+    )));
+
+    let mut mismatched_partition_hash = outcome.clone();
+    *mismatched_partition_hash
+        .partition_key
+        .last_mut()
+        .expect("sample partition key") ^= 1;
+    assert_corrupt(decode_stored_outcome_v1(&checked_envelope(
+        OUTCOME,
+        &mismatched_partition_hash,
+    )));
+
+    let mut noncanonical_conflicts = outcome;
+    noncanonical_conflicts.conflict_hashes = vec![[0x82; 32].to_vec(), [0x81; 32].to_vec()];
+    assert_corrupt(decode_stored_outcome_v1(&checked_envelope(
+        OUTCOME,
+        &noncanonical_conflicts,
     )));
 
     const PROVENANCE: &str = "riffdb.storage.v1.StoredProvenanceRecordV1";

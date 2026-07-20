@@ -218,6 +218,7 @@ shape!(OUTCOME [
     message(10, &DECLARED_OUTCOME),
     message(11, &PROVENANCE_CLAIMS),
     fixed_bytes(12, 16),
+    bytes(14, MAX_KEY_BYTES),
 ]);
 shape!(DURABLE_EVENT [
     message(1, &EVENT_ID),

@@ -149,6 +149,7 @@ message StoredOutcomeV1 {
   StoredAdmittedProvenanceClaimsV1 admitted_claims = 11;
   bytes provenance_id = 12;
   DurabilityModeV1 durability_mode = 13;
+  bytes partition_key = 14;
 }
 
 message StoredDurableEventV1 {

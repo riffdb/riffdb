@@ -75,6 +75,7 @@ fn command_staging_retains_and_checks_the_exact_candidate_graph() {
 
     let records = include_str!("../src/records.rs");
     assert!(records.contains("sequence != assignment.assigned()"));
+    assert!(records.contains("expected_pending.partition_key() != stored_outcome.partition_key()"));
     assert!(records.contains("validate_intent_entity_derivation(evaluated, &entities)?"));
     assert!(records.contains("validate_intent_event_derivation(evaluated, sequence, &events)?"));
     assert!(records.contains("pub fn matches_retained_candidate("));

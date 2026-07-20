@@ -164,6 +164,7 @@ pub fn command_write_set_upper_bound_v1(
         admitted_claims: Some(claims_to_proto(pending.provenance_claims())),
         provenance_id: intent.provenance_id().as_bytes().to_vec(),
         durability_mode: durability_to_proto(DurabilityMode::Memory),
+        partition_key: pending.partition_key().as_bytes().to_vec(),
     };
     let affected_entities = entity_messages
         .iter()
