@@ -1105,8 +1105,10 @@ version = "0.1.0"
 name = "riffdb-storage-api"
 version = "0.1.0"
 dependencies = [
+ "prost",
  "riffdb-contract-compiler",
  "riffdb-contract-ir",
+ "riffdb-proto",
  "riffdb-types",
 ]
 

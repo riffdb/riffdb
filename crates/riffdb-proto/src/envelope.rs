@@ -60,10 +60,30 @@ pub struct RecordSchema<'a> {
     record_type: &'a str,
     schema_hash: SchemaHash,
     max_payload_bytes: usize,
+    max_envelope_bytes: usize,
+    preflight_payload: fn(&[u8]) -> Result<(), PayloadValidationError>,
     validate_payload: fn(&[u8]) -> Result<(), PayloadValidationError>,
 }
 
 impl RecordSchema<'_> {
+    pub(crate) const fn new_current(
+        record_type: &'static str,
+        schema_hash: SchemaHash,
+        max_payload_bytes: usize,
+        max_envelope_bytes: usize,
+        preflight_payload: fn(&[u8]) -> Result<(), PayloadValidationError>,
+        validate_payload: fn(&[u8]) -> Result<(), PayloadValidationError>,
+    ) -> RecordSchema<'static> {
+        RecordSchema {
+            record_type,
+            schema_hash,
+            max_payload_bytes,
+            max_envelope_bytes,
+            preflight_payload,
+            validate_payload,
+        }
+    }
+
     /// Returns the fully qualified Protobuf record name.
     #[must_use]
     pub const fn record_type(&self) -> &str {
@@ -81,6 +101,12 @@ impl RecordSchema<'_> {
     pub const fn max_payload_bytes(&self) -> usize {
         self.max_payload_bytes
     }
+
+    /// Returns the conservative maximum complete canonical envelope size.
+    #[must_use]
+    pub const fn max_envelope_bytes(&self) -> usize {
+        self.max_envelope_bytes
+    }
 }
 
 impl fmt::Debug for RecordSchema<'_> {
@@ -90,6 +116,7 @@ impl fmt::Debug for RecordSchema<'_> {
             .field("record_type", &self.record_type)
             .field("schema_hash", &self.schema_hash)
             .field("max_payload_bytes", &self.max_payload_bytes)
+            .field("max_envelope_bytes", &self.max_envelope_bytes)
             .finish_non_exhaustive()
     }
 }
@@ -148,8 +175,8 @@ impl<'a> RecordRegistry<'a> {
         if encoded.len() > MAX_STORED_ENVELOPE_BYTES {
             return Err(EnvelopeError::EnvelopeTooLarge);
         }
-        match wire::stored_envelope(encoded) {
-            Ok(()) => {}
+        let preflight = match wire::stored_envelope(encoded) {
+            Ok(preflight) => preflight,
             Err(EnvelopePreflightError::Malformed) => return Err(EnvelopeError::Malformed),
             Err(EnvelopePreflightError::InvalidRecordType) => {
                 return Err(EnvelopeError::InvalidRecordType);
@@ -160,47 +187,53 @@ impl<'a> RecordRegistry<'a> {
             Err(EnvelopePreflightError::NonCanonical) => {
                 return Err(EnvelopeError::NonCanonicalEnvelope);
             }
-        }
+        };
 
-        let envelope = StoredEnvelope::decode(encoded).map_err(|_| EnvelopeError::Malformed)?;
-
-        if envelope.storage_format_version != STORAGE_FORMAT_VERSION_V1 {
+        if preflight.storage_format_version != STORAGE_FORMAT_VERSION_V1 {
             return Err(EnvelopeError::UnsupportedStorageFormatVersion);
         }
 
-        if !is_valid_record_type(&envelope.record_type) {
+        let record_type =
+            std::str::from_utf8(preflight.record_type).map_err(|_| EnvelopeError::Malformed)?;
+        if !is_valid_record_type(record_type) {
             return Err(EnvelopeError::InvalidRecordType);
         }
 
         if !self
             .schemas
             .iter()
-            .any(|schema| schema.record_type == envelope.record_type)
+            .any(|schema| schema.record_type == record_type)
         {
             return Err(EnvelopeError::UnknownRecordType);
         }
 
-        let encoded_schema_hash: [u8; 32] = envelope
+        let encoded_schema_hash: [u8; 32] = preflight
             .schema_hash
-            .as_slice()
             .try_into()
             .map_err(|_| EnvelopeError::InvalidSchemaHashLength)?;
         let schema = self
             .schemas
             .iter()
-            .filter(|schema| schema.record_type == envelope.record_type)
+            .filter(|schema| schema.record_type == record_type)
             .find(|schema| schema.schema_hash.as_bytes() == &encoded_schema_hash)
             .ok_or(EnvelopeError::UnsupportedSchemaHash)?;
 
-        if envelope.payload.len() > MAX_STORED_ENVELOPE_BYTES
-            || envelope.payload.len() > schema.max_payload_bytes
+        if preflight.payload.len() > MAX_STORED_ENVELOPE_BYTES
+            || preflight.payload.len() > schema.max_payload_bytes
         {
             return Err(EnvelopeError::PayloadTooLarge);
         }
-
-        if payload_crc32c(&envelope.payload) != envelope.payload_crc32c {
+        if encoded.len() > schema.max_envelope_bytes {
+            return Err(EnvelopeError::EnvelopeTooLarge);
+        }
+        if payload_crc32c(preflight.payload) != preflight.payload_crc32c {
             return Err(EnvelopeError::ChecksumMismatch);
         }
+        (schema.preflight_payload)(preflight.payload).map_err(EnvelopeError::InvalidPayload)?;
+
+        // All knowable record-specific sizes have been checked against borrowed
+        // wire slices before Prost allocates the owned envelope fields.
+        let envelope = StoredEnvelope::decode(encoded).map_err(|_| EnvelopeError::Malformed)?;
 
         if envelope.encode_to_vec() != encoded {
             return Err(EnvelopeError::NonCanonicalEnvelope);
@@ -216,7 +249,10 @@ impl<'a> RecordRegistry<'a> {
     }
 }
 
-/// A supported, integrity-checked, semantically canonical durable payload.
+/// A supported, integrity-checked, wire-canonical durable payload.
+///
+/// Storage's semantic codec must still reconstruct and validate the typed DTO
+/// before the payload is treated as authoritative state.
 pub struct DecodedEnvelope {
     record_type: String,
     schema_hash: SchemaHash,
@@ -311,9 +347,7 @@ impl Error for EnvelopeError {}
 
 /// Encodes one semantically canonical payload in its registered v1 envelope.
 pub fn encode(schema: &RecordSchema<'_>, payload: &[u8]) -> Result<Vec<u8>, EnvelopeError> {
-    if payload.len() > MAX_STORED_ENVELOPE_BYTES || payload.len() > schema.max_payload_bytes {
-        return Err(EnvelopeError::PayloadTooLarge);
-    }
+    maximum_encoded_envelope_bytes(schema, payload.len())?;
     (schema.validate_payload)(payload).map_err(EnvelopeError::InvalidPayload)?;
 
     let envelope = StoredEnvelope {
@@ -324,10 +358,61 @@ pub fn encode(schema: &RecordSchema<'_>, payload: &[u8]) -> Result<Vec<u8>, Enve
         schema_hash: schema.schema_hash.as_bytes().to_vec(),
     };
     let encoded = envelope.encode_to_vec();
-    if encoded.len() > MAX_STORED_ENVELOPE_BYTES {
+    if encoded.len() > MAX_STORED_ENVELOPE_BYTES || encoded.len() > schema.max_envelope_bytes {
         return Err(EnvelopeError::EnvelopeTooLarge);
     }
     Ok(encoded)
+}
+
+/// Returns a conservative complete-envelope size for a registered payload.
+///
+/// The checksum field is charged as present even when a particular CRC-32C is
+/// zero and Proto3 would omit it. Storage reservation code must use this helper
+/// instead of sizing a placeholder `StoredEnvelope`.
+pub fn maximum_encoded_envelope_bytes(
+    schema: &RecordSchema<'_>,
+    payload_bytes: usize,
+) -> Result<usize, EnvelopeError> {
+    if payload_bytes > MAX_STORED_ENVELOPE_BYTES || payload_bytes > schema.max_payload_bytes {
+        return Err(EnvelopeError::PayloadTooLarge);
+    }
+    let maximum = maximum_encoded_envelope_bytes_for(schema.record_type, payload_bytes)?;
+    if maximum > schema.max_envelope_bytes {
+        return Err(EnvelopeError::EnvelopeTooLarge);
+    }
+    Ok(maximum)
+}
+
+/// Returns the conservative v1 envelope size for generation and compatibility checks.
+///
+/// Prefer [`maximum_encoded_envelope_bytes`] when a registry schema is available.
+pub fn maximum_encoded_envelope_bytes_for(
+    record_type: &str,
+    payload_bytes: usize,
+) -> Result<usize, EnvelopeError> {
+    if !is_valid_record_type(record_type) {
+        return Err(EnvelopeError::InvalidRecordType);
+    }
+    // Version and worst-case fixed32 checksum are always charged as present.
+    let maximum = 2usize
+        .checked_add(1 + varint_bytes(record_type.len()) + record_type.len())
+        .and_then(|value| value.checked_add(1 + varint_bytes(payload_bytes) + payload_bytes))
+        .and_then(|value| value.checked_add(5))
+        .and_then(|value| value.checked_add(1 + varint_bytes(32) + 32))
+        .ok_or(EnvelopeError::EnvelopeTooLarge)?;
+    if maximum > MAX_STORED_ENVELOPE_BYTES {
+        return Err(EnvelopeError::EnvelopeTooLarge);
+    }
+    Ok(maximum)
+}
+
+const fn varint_bytes(mut value: usize) -> usize {
+    let mut bytes = 1;
+    while value >= 0x80 {
+        value >>= 7;
+        bytes += 1;
+    }
+    bytes
 }
 
 /// Computes CRC-32C/Castagnoli over the exact payload bytes.
@@ -402,6 +487,10 @@ mod tests {
         Ok(())
     }
 
+    fn preflight_probe(_payload: &[u8]) -> Result<(), PayloadValidationError> {
+        Ok(())
+    }
+
     #[derive(Debug, Eq, PartialEq)]
     enum TestSchemaError {
         InvalidRecordType,
@@ -438,6 +527,8 @@ mod tests {
             record_type,
             schema_hash: hash_schema(&frame),
             max_payload_bytes,
+            max_envelope_bytes: MAX_STORED_ENVELOPE_BYTES,
+            preflight_payload: preflight_probe,
             validate_payload: validate_probe,
         })
     }
@@ -534,6 +625,42 @@ mod tests {
             RecordRegistry::new(&[schema, schema]).expect_err("duplicate schema must fail"),
             RecordRegistryError::DuplicateSchema
         );
+    }
+
+    #[test]
+    fn reservation_size_charges_a_nonzero_checksum_field() {
+        let schema = schema();
+        let envelope_without_checksum = StoredEnvelope {
+            storage_format_version: STORAGE_FORMAT_VERSION_V1,
+            record_type: schema.record_type().to_owned(),
+            payload: PROBE_PAYLOAD.to_vec(),
+            payload_crc32c: 0,
+            schema_hash: schema.schema_hash().as_bytes().to_vec(),
+        }
+        .encode_to_vec();
+        assert_eq!(
+            maximum_encoded_envelope_bytes(&schema, PROBE_PAYLOAD.len())
+                .expect("fixture payload is within its schema limit"),
+            envelope_without_checksum.len() + 5
+        );
+    }
+
+    #[test]
+    fn duplicate_and_truncating_outer_scalars_fail_in_preflight() {
+        let schema = schema();
+        let canonical = encode(&schema, PROBE_PAYLOAD).expect("canonical payload encodes");
+
+        let mut duplicate_version = canonical.clone();
+        duplicate_version.extend_from_slice(&[0x08, 0x01]);
+        decode_error(&duplicate_version, EnvelopeError::NonCanonicalEnvelope);
+
+        let mut duplicate_checksum = canonical.clone();
+        duplicate_checksum.extend_from_slice(&[0x25, 0, 0, 0, 0]);
+        decode_error(&duplicate_checksum, EnvelopeError::NonCanonicalEnvelope);
+
+        let mut truncating_version = canonical;
+        truncating_version.splice(0..2, [0x08, 0x81, 0x80, 0x80, 0x80, 0x10]);
+        decode_error(&truncating_version, EnvelopeError::NonCanonicalEnvelope);
     }
 
     #[test]

@@ -1,0 +1,117 @@
+syntax = "proto3";
+
+package riffdb.storage.v1;
+
+import "riffdb/storage/v1/common.proto";
+
+enum ServiceOperationV1 {
+  SERVICE_OPERATION_UNSPECIFIED = 0;
+  SERVICE_OPERATION_VALIDATE_CONTRACT = 1;
+  SERVICE_OPERATION_EXPLAIN_COMMAND = 2;
+  SERVICE_OPERATION_DEPLOY_CONTRACT = 3;
+  SERVICE_OPERATION_GET_ACTIVE_CONTRACT = 4;
+  SERVICE_OPERATION_GET_CONTRACT_VERSION = 5;
+  SERVICE_OPERATION_EXECUTE_COMMAND = 6;
+  SERVICE_OPERATION_RESOLVE_COMMAND_OUTCOME = 7;
+  SERVICE_OPERATION_GET_ENTITY = 8;
+  SERVICE_OPERATION_SCAN_INDEX = 9;
+  SERVICE_OPERATION_QUERY_PROJECTION = 10;
+  SERVICE_OPERATION_GET_PROJECTION_STATUS = 11;
+  SERVICE_OPERATION_GET_COMMIT = 12;
+  SERVICE_OPERATION_SCAN_COMMITS = 13;
+  SERVICE_OPERATION_SUBSCRIBE_TO_COMMITS = 14;
+  SERVICE_OPERATION_TRACE_PROVENANCE = 15;
+  SERVICE_OPERATION_GET_HEALTH = 16;
+  SERVICE_OPERATION_GET_STATISTICS = 17;
+  SERVICE_OPERATION_CREATE_CAPABILITY = 18;
+  SERVICE_OPERATION_REVOKE_CAPABILITY = 19;
+  SERVICE_OPERATION_LIST_PENDING_OUTBOX_DELIVERIES = 20;
+  SERVICE_OPERATION_DISCOVER_COMMAND_TOOLS = 21;
+  SERVICE_OPERATION_DISCOVER_RESOURCES = 22;
+}
+
+enum ServiceAuditPhaseV1 {
+  SERVICE_AUDIT_PHASE_UNSPECIFIED = 0;
+  SERVICE_AUDIT_PHASE_STARTED = 1;
+  SERVICE_AUDIT_PHASE_SUCCEEDED = 2;
+  SERVICE_AUDIT_PHASE_DENIED = 3;
+  SERVICE_AUDIT_PHASE_CANCELLED = 4;
+  SERVICE_AUDIT_PHASE_FAILED = 5;
+  SERVICE_AUDIT_PHASE_OUTCOME_UNCERTAIN = 6;
+}
+
+enum ServiceIngressKindV1 {
+  SERVICE_INGRESS_KIND_UNSPECIFIED = 0;
+  SERVICE_INGRESS_KIND_GRPC = 1;
+  SERVICE_INGRESS_KIND_MCP_HTTP = 2;
+  SERVICE_INGRESS_KIND_IN_PROCESS_TEST_COMPARISON = 3;
+}
+
+message ContractVersionAuditTargetV1 {
+  string contract_lineage = 1;
+  uint64 contract_version = 2;
+}
+
+message EntityTypeAuditTargetV1 {
+  string contract_lineage = 1;
+  uint32 entity_type_id = 2;
+}
+
+message CommandAuditTargetV1 {
+  string contract_lineage = 1;
+  uint32 command_id = 2;
+}
+
+message ProjectionAuditTargetV1 {
+  string contract_lineage = 1;
+  uint32 projection_id = 2;
+}
+
+message IndexAuditTargetV1 {
+  string contract_lineage = 1;
+  uint32 index_id = 2;
+}
+
+message ServiceAuditTargetV1 {
+  oneof target {
+    string contract_lineage = 1;
+    ContractVersionAuditTargetV1 contract_version = 2;
+    EntityTypeAuditTargetV1 entity_type = 3;
+    CommandAuditTargetV1 command = 4;
+    ProjectionAuditTargetV1 projection = 5;
+    IndexAuditTargetV1 index = 6;
+    uint64 commit_sequence = 7;
+    bytes provenance_id = 8;
+    bytes capability_id = 9;
+  }
+}
+
+message CommandServiceAuditLinkV1 {
+  uint64 commit_sequence = 1;
+  bytes provenance_id = 2;
+}
+
+message ControlPlaneServiceAuditLinkV1 {
+  uint64 administration_sequence = 1;
+}
+
+message ServiceAuditLinkV1 {
+  oneof link {
+    UnitV1 none = 1;
+    CommandServiceAuditLinkV1 command = 2;
+    ControlPlaneServiceAuditLinkV1 control_plane = 3;
+  }
+}
+
+message ServiceAuditRecordV1 {
+  uint64 administration_sequence = 1;
+  bytes request_id = 2;
+  TimestampV1 timestamp = 3;
+  ServiceOperationV1 operation = 4;
+  ServiceAuditPhaseV1 phase = 5;
+  AuditPrincipalV1 principal = 6;
+  ServiceIngressKindV1 ingress = 7;
+  repeated ServiceAuditTargetV1 targets = 8;
+  optional string approval_id = 9;
+  ServiceAuditLinkV1 link = 10;
+}

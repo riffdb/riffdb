@@ -1,0 +1,28 @@
+syntax = "proto3";
+
+package riffdb.storage.v1;
+
+import "riffdb/storage/v1/common.proto";
+
+message StoredContractBundleV1 {
+  string contract_lineage = 1;
+  uint64 contract_version = 2;
+  bytes contract_bundle_hash = 3;
+  bytes canonical_bundle = 4;
+}
+
+message ActiveCatalogPointerV1 {
+  string contract_lineage = 1;
+  uint64 contract_version = 2;
+  bytes contract_bundle_hash = 3;
+}
+
+message StoredCatalogAdministrationV1 {
+  uint64 administration_sequence = 1;
+  bytes request_id = 2;
+  TimestampV1 timestamp = 3;
+  AuditPrincipalV1 principal = 4;
+  ActiveCatalogPointerV1 previous_active = 5;
+  ActiveCatalogPointerV1 activated = 6;
+  optional string approval_id = 7;
+}

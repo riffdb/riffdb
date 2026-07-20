@@ -1,0 +1,27 @@
+syntax = "proto3";
+
+package riffdb.storage.v1;
+
+import "riffdb/storage/v1/common.proto";
+
+message StoredStorageFormatVersionV1 {
+  uint32 storage_format_version = 1;
+}
+
+message StoredDatabaseIdentityV1 {
+  bytes database_id = 1;
+}
+
+message StoredApplicationSequenceAllocatorV1 {
+  oneof state {
+    uint64 next_commit_sequence = 1;
+    UnitV1 exhausted = 2;
+  }
+}
+
+message StoredAdministrationSequenceAllocatorV1 {
+  oneof state {
+    uint64 next_administration_sequence = 1;
+    UnitV1 exhausted = 2;
+  }
+}

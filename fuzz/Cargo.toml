@@ -10,10 +10,19 @@ cargo-fuzz = true
 [dependencies]
 libfuzzer-sys = { version = "0.4.13" }
 riffdb-contract-syntax = { version = "0.1.0", path = "../crates/riffdb-contract-syntax" }
+riffdb-proto = { version = "0.1.0", path = "../crates/riffdb-proto" }
+riffdb-storage-api = { version = "0.1.0", path = "../crates/riffdb-storage-api" }
 
 [[bin]]
 name = "contract_parser"
 path = "fuzz_targets/contract_parser.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "proto_durable"
+path = "fuzz_targets/proto_durable.rs"
 test = false
 doc = false
 bench = false

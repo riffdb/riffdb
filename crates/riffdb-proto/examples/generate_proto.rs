@@ -20,7 +20,9 @@ use riffdb_errors::{
 };
 use riffdb_proto::{
     canonical_value_to_proto,
-    envelope::{MAX_STORED_ENVELOPE_BYTES, STORAGE_FORMAT_VERSION_V1},
+    envelope::{
+        MAX_STORED_ENVELOPE_BYTES, STORAGE_FORMAT_VERSION_V1, maximum_encoded_envelope_bytes_for,
+    },
     public_error_to_proto,
     storage::v1::StoredEnvelope,
     v1,
@@ -30,13 +32,192 @@ use riffdb_types::{
     EnumVariantId, ExecutionFailureCode, FieldId, IncidentId, Money, Timestamp, hash_schema,
 };
 
-const PRODUCTION_SOURCES: &[&str] = &[
+const STORAGE_SOURCES: &[&str] = &[
+    "riffdb/storage/v1/application.proto",
+    "riffdb/storage/v1/audit.proto",
+    "riffdb/storage/v1/capability.proto",
+    "riffdb/storage/v1/catalog.proto",
+    "riffdb/storage/v1/common.proto",
     "riffdb/storage/v1/envelope.proto",
+    "riffdb/storage/v1/metadata.proto",
+    "riffdb/storage/v1/outbox.proto",
+    "riffdb/storage/v1/projection.proto",
+];
+const PRODUCTION_SOURCES: &[&str] = &[
+    "riffdb/storage/v1/application.proto",
+    "riffdb/storage/v1/audit.proto",
+    "riffdb/storage/v1/capability.proto",
+    "riffdb/storage/v1/catalog.proto",
+    "riffdb/storage/v1/common.proto",
+    "riffdb/storage/v1/envelope.proto",
+    "riffdb/storage/v1/metadata.proto",
+    "riffdb/storage/v1/outbox.proto",
+    "riffdb/storage/v1/projection.proto",
     "riffdb/v1/command.proto",
     "riffdb/v1/error.proto",
     "riffdb/v1/services.proto",
     "riffdb/v1/value.proto",
 ];
+
+const TINY_PAYLOAD_BOUND: usize = 8 * 1024;
+const ADMISSION_PAYLOAD_BOUND: usize = 128 * 1024;
+const DOCUMENT_PAYLOAD_BOUND: usize = 2 * 1024 * 1024;
+
+#[derive(Clone, Copy)]
+enum PayloadBound {
+    Tiny,
+    Admission,
+    Document,
+    EnvelopeMaximum,
+}
+
+#[derive(Clone, Copy)]
+struct DurableRecord {
+    source: &'static str,
+    name: &'static str,
+    payload_bound: PayloadBound,
+}
+
+const DURABLE_RECORDS: &[DurableRecord] = &[
+    durable(
+        "metadata.proto",
+        "StoredStorageFormatVersionV1",
+        PayloadBound::Tiny,
+    ),
+    durable(
+        "metadata.proto",
+        "StoredDatabaseIdentityV1",
+        PayloadBound::Tiny,
+    ),
+    durable(
+        "metadata.proto",
+        "StoredApplicationSequenceAllocatorV1",
+        PayloadBound::Tiny,
+    ),
+    durable(
+        "metadata.proto",
+        "StoredAdministrationSequenceAllocatorV1",
+        PayloadBound::Tiny,
+    ),
+    durable(
+        "catalog.proto",
+        "StoredContractBundleV1",
+        PayloadBound::EnvelopeMaximum,
+    ),
+    durable(
+        "catalog.proto",
+        "ActiveCatalogPointerV1",
+        PayloadBound::Tiny,
+    ),
+    durable(
+        "catalog.proto",
+        "StoredCatalogAdministrationV1",
+        PayloadBound::Tiny,
+    ),
+    durable(
+        "application.proto",
+        "StoredEntityRecordV1",
+        PayloadBound::Document,
+    ),
+    durable(
+        "application.proto",
+        "StoredIndexEntryV1",
+        PayloadBound::Document,
+    ),
+    durable(
+        "application.proto",
+        "StoredIndexEpochV1",
+        PayloadBound::Tiny,
+    ),
+    durable(
+        "application.proto",
+        "StoredPendingAdmissionV1",
+        PayloadBound::Admission,
+    ),
+    durable(
+        "application.proto",
+        "StoredExecutionFailedV1",
+        PayloadBound::Admission,
+    ),
+    durable(
+        "application.proto",
+        "StoredOutcomeV1",
+        PayloadBound::Document,
+    ),
+    durable(
+        "application.proto",
+        "StoredDurableEventV1",
+        PayloadBound::Document,
+    ),
+    durable(
+        "outbox.proto",
+        "StoredOutboxIntentV1",
+        PayloadBound::Document,
+    ),
+    durable(
+        "application.proto",
+        "StoredProvenanceRecordV1",
+        PayloadBound::EnvelopeMaximum,
+    ),
+    durable(
+        "application.proto",
+        "StoredCommitRecordV1",
+        PayloadBound::EnvelopeMaximum,
+    ),
+    durable(
+        "capability.proto",
+        "CapabilityRecordV1",
+        PayloadBound::Document,
+    ),
+    durable(
+        "capability.proto",
+        "CapabilityTokenLookupV1",
+        PayloadBound::Tiny,
+    ),
+    durable(
+        "capability.proto",
+        "CapabilityBootstrapMarkerV1",
+        PayloadBound::Tiny,
+    ),
+    durable(
+        "capability.proto",
+        "CapabilityAdministrationAuditV1",
+        PayloadBound::Tiny,
+    ),
+    durable(
+        "audit.proto",
+        "ServiceAuditRecordV1",
+        PayloadBound::Admission,
+    ),
+    durable("outbox.proto", "StoredOutboxStatusV1", PayloadBound::Tiny),
+    durable(
+        "projection.proto",
+        "StoredProjectionStateV1",
+        PayloadBound::Document,
+    ),
+    durable(
+        "projection.proto",
+        "StoredProjectionApplyV1",
+        PayloadBound::Tiny,
+    ),
+    durable(
+        "projection.proto",
+        "StoredProjectionControlV1",
+        PayloadBound::Tiny,
+    ),
+];
+
+const fn durable(
+    source: &'static str,
+    name: &'static str,
+    payload_bound: PayloadBound,
+) -> DurableRecord {
+    DurableRecord {
+        source,
+        name,
+        payload_bound,
+    }
+}
 const PROBE_SOURCE: &str = "compatibility_probe.proto";
 const PROBE_RECORD_TYPE: &str = "riffdb.testing.v1.CompatibilityProbe";
 const PROBE_PAYLOAD: &[u8] = &[0x08, 0x2a];
@@ -71,6 +252,8 @@ fn main() -> Result<(), Box<dyn Error>> {
     validate_production_source_inventory(&production_root, PRODUCTION_SOURCES)?;
     let production = compile_descriptors(&production_root, PRODUCTION_SOURCES)?;
     validate_service_inventory(&production)?;
+    let storage = compile_descriptors(&production_root, STORAGE_SOURCES)?;
+    let durable_registry = build_durable_registry(&storage)?;
     let probe = compile_descriptors(&repository_root.join("fixtures/proto"), &[PROBE_SOURCE])?;
     validate_record_exists(&probe, PROBE_RECORD_TYPE)?;
     let probe_descriptor = probe.encode_to_vec();
@@ -81,6 +264,11 @@ fn main() -> Result<(), Box<dyn Error>> {
         &output_root,
         "fixtures/proto/descriptors/riffdb-v1-descriptor-set.bin",
         &production.encode_to_vec(),
+    )?;
+    write_artifact(
+        &output_root,
+        "fixtures/proto/descriptors/riffdb-storage-v1-descriptor-set.bin",
+        &storage.encode_to_vec(),
     )?;
     write_artifact(
         &output_root,
@@ -101,6 +289,21 @@ fn main() -> Result<(), Box<dyn Error>> {
         &output_root,
         "fixtures/proto/schema-inventory.txt",
         inventory(&production).as_bytes(),
+    )?;
+    write_artifact(
+        &output_root,
+        "fixtures/proto/durable-registry.txt",
+        durable_registry_fixture(&durable_registry).as_bytes(),
+    )?;
+    write_artifact(
+        &output_root,
+        "fixtures/proto/durable-schema-hashes.bin",
+        &durable_schema_hashes(&durable_registry),
+    )?;
+    write_artifact(
+        &output_root,
+        "fixtures/proto/durable-record-bounds.bin",
+        &durable_record_bounds(&durable_registry),
     )?;
     write_artifact(
         &output_root,
@@ -148,6 +351,202 @@ fn compile_descriptors(
         .sort_by(|left, right| left.name().cmp(right.name()));
     validate_descriptor_set(&descriptor_set, source_names)?;
     Ok(descriptor_set)
+}
+
+struct BuiltDurableRecord {
+    source: &'static str,
+    name: &'static str,
+    record_type: String,
+    descriptor_bytes: usize,
+    schema_hash: [u8; 32],
+    max_payload_bytes: usize,
+    max_envelope_bytes: usize,
+}
+
+fn build_durable_registry(
+    storage: &FileDescriptorSet,
+) -> Result<Vec<BuiltDurableRecord>, Box<dyn Error>> {
+    if DURABLE_RECORDS.len() != 26 {
+        return Err(io::Error::other("durable registry must contain exactly 26 records").into());
+    }
+    if storage.file.len() != STORAGE_SOURCES.len()
+        || storage
+            .file
+            .iter()
+            .any(|file| file.package() != "riffdb.storage.v1")
+    {
+        return Err(io::Error::other(
+            "storage descriptor must contain exactly the nine riffdb.storage.v1 sources",
+        )
+        .into());
+    }
+    let message_count = storage
+        .file
+        .iter()
+        .map(|file| file.message_type.len())
+        .sum::<usize>();
+    let enum_count = storage
+        .file
+        .iter()
+        .map(|file| file.enum_type.len())
+        .sum::<usize>();
+    if message_count != 75 || enum_count != 12 {
+        return Err(io::Error::other(format!(
+            "storage schema must contain 74 semantic messages plus StoredEnvelope and 12 enums; found {message_count} messages and {enum_count} enums"
+        ))
+        .into());
+    }
+
+    let files = storage
+        .file
+        .iter()
+        .map(|file| (file.name(), file))
+        .collect::<BTreeMap<_, _>>();
+    let mut record_types = BTreeSet::new();
+    let mut built = Vec::with_capacity(DURABLE_RECORDS.len());
+    for record in DURABLE_RECORDS {
+        let source = format!("riffdb/storage/v1/{}", record.source);
+        let file = files.get(source.as_str()).ok_or_else(|| {
+            io::Error::other(format!("durable registry source is missing: {source}"))
+        })?;
+        if !file
+            .message_type
+            .iter()
+            .any(|message| message.name() == record.name)
+        {
+            return Err(io::Error::other(format!(
+                "durable registry source {source} does not own {}",
+                record.name
+            ))
+            .into());
+        }
+        let record_type = format!("riffdb.storage.v1.{}", record.name);
+        if !record_types.insert(record_type.clone()) {
+            return Err(io::Error::other(format!("durable registry repeats {record_type}")).into());
+        }
+        let descriptor = descriptor_closure(storage, &source)?;
+        let descriptor = descriptor.encode_to_vec();
+        let record_type_len = u16::try_from(record_type.len())?;
+        let descriptor_len = u64::try_from(descriptor.len())?;
+        let mut frame = Vec::with_capacity(2 + record_type.len() + 8 + descriptor.len());
+        frame.extend_from_slice(&record_type_len.to_be_bytes());
+        frame.extend_from_slice(record_type.as_bytes());
+        frame.extend_from_slice(&descriptor_len.to_be_bytes());
+        frame.extend_from_slice(&descriptor);
+        let max_payload_bytes = match record.payload_bound {
+            PayloadBound::Tiny => TINY_PAYLOAD_BOUND,
+            PayloadBound::Admission => ADMISSION_PAYLOAD_BOUND,
+            PayloadBound::Document => DOCUMENT_PAYLOAD_BOUND,
+            PayloadBound::EnvelopeMaximum => maximum_payload_for_envelope(&record_type),
+        };
+        let max_envelope_bytes =
+            maximum_encoded_envelope_bytes_for(&record_type, max_payload_bytes)?;
+        built.push(BuiltDurableRecord {
+            source: record.source,
+            name: record.name,
+            record_type,
+            descriptor_bytes: descriptor.len(),
+            schema_hash: hash_schema(&frame).into_bytes(),
+            max_payload_bytes,
+            max_envelope_bytes,
+        });
+    }
+    Ok(built)
+}
+
+fn maximum_payload_for_envelope(record_type: &str) -> usize {
+    let mut lower = 0_usize;
+    let mut upper = MAX_STORED_ENVELOPE_BYTES;
+    while lower < upper {
+        let middle = lower + (upper - lower).div_ceil(2);
+        if maximum_encoded_envelope_bytes_for(record_type, middle).is_ok() {
+            lower = middle;
+        } else {
+            upper = middle - 1;
+        }
+    }
+    lower
+}
+
+fn descriptor_closure(
+    descriptors: &FileDescriptorSet,
+    root: &str,
+) -> Result<FileDescriptorSet, Box<dyn Error>> {
+    let files = descriptors
+        .file
+        .iter()
+        .map(|file| (file.name(), file))
+        .collect::<BTreeMap<_, _>>();
+    let mut pending = vec![root.to_owned()];
+    let mut names = BTreeSet::new();
+    while let Some(name) = pending.pop() {
+        if !names.insert(name.clone()) {
+            continue;
+        }
+        let file = files.get(name.as_str()).ok_or_else(|| {
+            io::Error::other(format!("descriptor transitive closure is missing {name}"))
+        })?;
+        pending.extend(file.dependency.iter().cloned());
+    }
+    let closure = FileDescriptorSet {
+        file: names
+            .iter()
+            .map(|name| {
+                (*files
+                    .get(name.as_str())
+                    .expect("closure names came from descriptor map"))
+                .clone()
+            })
+            .collect(),
+    };
+    validate_descriptor_set(&closure, &[root])?;
+    Ok(closure)
+}
+
+fn durable_registry_fixture(records: &[BuiltDurableRecord]) -> String {
+    let mut output = String::from("riffdb-durable-registry-v1\n");
+    let _ = writeln!(output, "records {}", records.len());
+    for record in records {
+        let _ = write!(
+            output,
+            "{} source={} message={} descriptor-bytes={} max-payload-bytes={} max-envelope-bytes={} schema-hash=",
+            record.record_type,
+            record.source,
+            record.name,
+            record.descriptor_bytes,
+            record.max_payload_bytes,
+            record.max_envelope_bytes,
+        );
+        for byte in record.schema_hash {
+            let _ = write!(output, "{byte:02x}");
+        }
+        output.push('\n');
+    }
+    output
+}
+
+fn durable_schema_hashes(records: &[BuiltDurableRecord]) -> Vec<u8> {
+    records
+        .iter()
+        .flat_map(|record| record.schema_hash)
+        .collect()
+}
+
+fn durable_record_bounds(records: &[BuiltDurableRecord]) -> Vec<u8> {
+    let mut output = Vec::with_capacity(records.len() * 8);
+    for record in records {
+        output.extend_from_slice(
+            &u32::try_from(record.max_payload_bytes)
+                .expect("durable payload bound fits u32")
+                .to_be_bytes(),
+        );
+        output.extend_from_slice(
+            &u32::try_from(record.max_envelope_bytes)
+                .expect("durable envelope bound fits u32")
+                .to_be_bytes(),
+        );
+    }
+    output
 }
 
 fn validate_descriptor_set(
@@ -452,6 +851,9 @@ fn inventory(descriptor_set: &FileDescriptorSet) -> String {
     let mut output = String::from("riffdb-proto-schema-inventory-v1\n\nfiles\n");
     for file in &descriptor_set.file {
         let _ = writeln!(output, "  {}", file.name());
+        for dependency in &file.dependency {
+            let _ = writeln!(output, "    import {dependency}");
+        }
     }
 
     output.push_str("\nmessages\n");
@@ -459,14 +861,60 @@ fn inventory(descriptor_set: &FileDescriptorSet) -> String {
     for file in &descriptor_set.file {
         collect_messages(file.package(), &file.message_type, &mut messages);
     }
-    messages.sort();
-    for (name, field_count) in messages {
-        let phase = if field_count == 0 {
+    messages.sort_by(|left, right| left.0.cmp(&right.0));
+    for (name, message) in messages {
+        let phase = if message.field.is_empty() && name.starts_with("riffdb.v1.") {
             " phase-zero-shell"
         } else {
             ""
         };
-        let _ = writeln!(output, "  {name} fields={field_count}{phase}");
+        let _ = writeln!(output, "  {name} fields={}{phase}", message.field.len());
+        for field in &message.field {
+            let cardinality = match field.label() {
+                prost_types::field_descriptor_proto::Label::Optional => "optional",
+                prost_types::field_descriptor_proto::Label::Repeated => "repeated",
+                prost_types::field_descriptor_proto::Label::Required => "required",
+            };
+            let field_type = if field.type_name().is_empty() {
+                scalar_type_name(field.r#type())
+            } else {
+                field.type_name()
+            };
+            let presence = if field.proto3_optional() {
+                " proto3-optional"
+            } else {
+                ""
+            };
+            let oneof = field
+                .oneof_index
+                .and_then(|index| usize::try_from(index).ok())
+                .and_then(|index| message.oneof_decl.get(index))
+                .map_or(String::new(), |oneof| format!(" oneof={}", oneof.name()));
+            let _ = writeln!(
+                output,
+                "    {} {} {cardinality} {field_type}{presence}{oneof}",
+                field.number(),
+                field.name(),
+            );
+        }
+    }
+
+    output.push_str("\nenums\n");
+    let mut enums = Vec::new();
+    for file in &descriptor_set.file {
+        collect_enums(
+            file.package(),
+            &file.enum_type,
+            &file.message_type,
+            &mut enums,
+        );
+    }
+    enums.sort_by(|left, right| left.0.cmp(&right.0));
+    for (name, enumeration) in enums {
+        let _ = writeln!(output, "  {name} values={}", enumeration.value.len());
+        for value in &enumeration.value {
+            let _ = writeln!(output, "    {} {}", value.number(), value.name());
+        }
     }
 
     output.push_str("\nservices\n");
@@ -636,14 +1084,64 @@ fn append_wire_vector(output: &mut String, name: &str, message: &impl Message) {
     output.push('\n');
 }
 
-fn collect_messages(prefix: &str, messages: &[DescriptorProto], output: &mut Vec<(String, usize)>) {
+fn scalar_type_name(r#type: prost_types::field_descriptor_proto::Type) -> &'static str {
+    use prost_types::field_descriptor_proto::Type;
+    match r#type {
+        Type::Double => "double",
+        Type::Float => "float",
+        Type::Int64 => "int64",
+        Type::Uint64 => "uint64",
+        Type::Int32 => "int32",
+        Type::Fixed64 => "fixed64",
+        Type::Fixed32 => "fixed32",
+        Type::Bool => "bool",
+        Type::String => "string",
+        Type::Group => "group",
+        Type::Message => "message",
+        Type::Bytes => "bytes",
+        Type::Uint32 => "uint32",
+        Type::Enum => "enum",
+        Type::Sfixed32 => "sfixed32",
+        Type::Sfixed64 => "sfixed64",
+        Type::Sint32 => "sint32",
+        Type::Sint64 => "sint64",
+    }
+}
+
+fn collect_messages<'a>(
+    prefix: &str,
+    messages: &'a [DescriptorProto],
+    output: &mut Vec<(String, &'a DescriptorProto)>,
+) {
     for message in messages {
         let full_name = if prefix.is_empty() {
             message.name().to_owned()
         } else {
             format!("{prefix}.{}", message.name())
         };
-        output.push((full_name.clone(), message.field.len()));
+        output.push((full_name.clone(), message));
         collect_messages(&full_name, &message.nested_type, output);
+    }
+}
+
+fn collect_enums<'a>(
+    prefix: &str,
+    enums: &'a [prost_types::EnumDescriptorProto],
+    messages: &'a [DescriptorProto],
+    output: &mut Vec<(String, &'a prost_types::EnumDescriptorProto)>,
+) {
+    output.extend(
+        enums
+            .iter()
+            .map(|enumeration| (format!("{prefix}.{}", enumeration.name()), enumeration)),
+    );
+    for message in messages {
+        let message_name = format!("{prefix}.{}", message.name());
+        collect_enums(
+            &message_name,
+            &message.enum_type,
+            &message.nested_type,
+            output,
+        );
     }
 }

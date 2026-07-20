@@ -1,0 +1,80 @@
+syntax = "proto3";
+
+package riffdb.storage.v1;
+
+import "riffdb/storage/v1/common.proto";
+
+enum ProjectionLifecycleV1 {
+  PROJECTION_LIFECYCLE_UNSPECIFIED = 0;
+  PROJECTION_LIFECYCLE_BUILDING = 1;
+  PROJECTION_LIFECYCLE_CATCHING_UP = 2;
+  PROJECTION_LIFECYCLE_READY = 3;
+  PROJECTION_LIFECYCLE_DEGRADED = 4;
+  PROJECTION_LIFECYCLE_REBUILDING = 5;
+  PROJECTION_LIFECYCLE_INVALID = 6;
+}
+
+enum PublishedApplyModeV1 {
+  PUBLISHED_APPLY_MODE_UNSPECIFIED = 0;
+  PUBLISHED_APPLY_MODE_ENABLED = 1;
+  PUBLISHED_APPLY_MODE_SUSPENDED = 2;
+}
+
+enum ProjectionFailureCodeV1 {
+  PROJECTION_FAILURE_CODE_UNSPECIFIED = 0;
+  PROJECTION_FAILURE_CODE_ARITHMETIC_OVERFLOW = 1;
+  PROJECTION_FAILURE_CODE_MALFORMED_DURABLE_EVENT = 2;
+  PROJECTION_FAILURE_CODE_MISSING_COMMIT = 3;
+  PROJECTION_FAILURE_CODE_PLAN_OR_SCHEMA_UNAVAILABLE = 4;
+  PROJECTION_FAILURE_CODE_PROJECTION_STATE_INTEGRITY = 5;
+  PROJECTION_FAILURE_CODE_HARD_LIMIT_EXCEEDED = 6;
+}
+
+message ProjectionIdentityV1 {
+  string contract_lineage = 1;
+  uint32 projection_id = 2;
+  bytes projection_plan_hash = 3;
+}
+
+message FrontierPositionV1 {
+  oneof position {
+    UnitV1 before_first = 1;
+    uint64 applied_through = 2;
+  }
+}
+
+message ProjectionGenerationPositionV1 {
+  uint64 generation = 1;
+  FrontierPositionV1 frontier = 2;
+}
+
+message ProjectionFailureV1 {
+  uint64 generation = 1;
+  ProjectionFailureCodeV1 code = 2;
+  optional uint64 at_sequence = 3;
+}
+
+message StoredProjectionStateV1 {
+  ProjectionIdentityV1 identity = 1;
+  uint64 generation = 2;
+  repeated bytes canonical_group_values = 3;
+  bytes canonical_measures = 4;
+  uint64 last_changed_sequence = 5;
+}
+
+message StoredProjectionApplyV1 {
+  ProjectionIdentityV1 identity = 1;
+  uint64 generation = 2;
+  uint64 commit_sequence = 3;
+  bytes projection_apply_hash = 4;
+}
+
+message StoredProjectionControlV1 {
+  ProjectionIdentityV1 identity = 1;
+  uint64 highest_allocated_generation = 2;
+  ProjectionGenerationPositionV1 published = 3;
+  ProjectionGenerationPositionV1 candidate = 4;
+  optional PublishedApplyModeV1 published_apply_mode = 5;
+  ProjectionLifecycleV1 lifecycle = 6;
+  ProjectionFailureV1 failure = 7;
+}
