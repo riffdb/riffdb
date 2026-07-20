@@ -43,14 +43,16 @@ direction, merged draft, or implementation choice.
 | [0019](0019-poc-operational-metadata-deferral.md) | POC Operational Metadata Deferral | Accepted |
 | [0020](0020-mcp-command-tool-name-normalization-and-compiler-ownership.md) | MCP Command Tool-Name Normalization and Compiler Ownership | Accepted |
 | [0021](0021-service-audit-target-registry-and-canonical-ordering.md) | Service-Audit Target Registry and Canonical Ordering | Accepted |
+| [0022](0022-durable-semantic-protobuf-schema-v1.md) | Durable Semantic Protobuf Schema Version 1 | Accepted |
 
 The human architecture review on 2026-07-12 approved the direction represented
 by ADR-0001 through ADR-0012. The human maintainer accepted ADR-0001 through
-ADR-0007, ADR-0009 through ADR-0021, and their recorded companion amendments by
-2026-07-13. ADR-0008 remains Proposed for resource URIs, HTTP audience,
+ADR-0007, ADR-0009 through ADR-0022, and their recorded companion amendments by
+2026-07-20. ADR-0008 remains Proposed for resource URIs, HTTP audience,
 stdio-over-gRPC transport, cursor presentation, and the remaining exact MCP
 fixtures; ADR-0020 separately accepts command tool-name normalization and its
-compiler/catalog ownership.
+compiler/catalog ownership. ADR-0022 freezes the exact WP-065 durable
+semantic-record field, tag, presence, and validation registry.
 
 ## Workflow
 

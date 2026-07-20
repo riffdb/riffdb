@@ -6,9 +6,9 @@
 **Tagline:** *Vibe fast. Commit safely.*  
 **Category:** Contract-first operational database for agent-built applications  
 
-**Version:** 0.12
+**Version:** 0.13
 **Status:** Architecture-approved implementation handoff
-**Date:** 14 July 2026
+**Date:** 20 July 2026
 **Audience:** Coding agents, database engineers, compiler engineers, security reviewers, and technical product leads  
 **Working binaries:** `riffdbd`, `riffdb`, `riffdb-mcp`  
 **Working URI scheme:** `riffdb://`  
@@ -48,6 +48,7 @@
 | 0.10 | 2026-07-14 | Applied the accepted pre-sequence transaction-capacity clarification and exact `EventHash` preimage: mutation-affected epochs and conservative encoded capacity are resolved inside the write transaction before sequence assignment, while every final canonical `StoredEnvelope` is checked against its retained per-class bound before staging. |
 | 0.11 | 2026-07-14 | Froze the accepted POC durable table keys and 26-record registry, including authoritative standalone event rows and lineage-scoped bundle keys; approved the pure-Rust backup checksum dependency and dependency-free storage benchmark harness; and clarified shared pure input-expression evaluation plus fail-closed pre-admission arithmetic. |
 | 0.12 | 2026-07-14 | Clarified that one full `StoredOutcomeV1` envelope is both the committed terminal idempotency row and persisted outcome, with atomic pending deletion, no tombstone or second terminal envelope, and startup commit reciprocity; explicitly deferred contract state-machine source, IR, and execution from POC grammar/IR v1 and narrowed WP-080 to predicate, invariant, postcondition, and commit-check evaluation. |
+| 0.13 | 2026-07-20 | Applied accepted ADR-0022's exact self-contained durable semantic Protobuf modules, 26-payload registry, field/tag/presence rules, canonical-wire validation, complete terminal outcome, and checked storage-codec boundary before WP-065 implementation. |
 
 ### Normative language
 
@@ -3572,7 +3573,7 @@ Risk owners are assigned in the project tracker. A risk may be closed only with 
 
 ## 22.1 Required ADRs
 
-Specification v0.12 records each ADR's current status. An Accepted record is
+Specification v0.13 records each ADR's current status. An Accepted record is
 authoritative; a Proposed record remains planning input until its exact text
 receives human review. Where this table and a work-package deadline differ, the
 earlier deadline governs unless a reviewed reconciliation changes both sources.
@@ -3600,6 +3601,7 @@ earlier deadline governs unless a reviewed reconciliation changes both sources.
 | `ADR-0019` | Accepted | Exactly six authoritative POC metadata categories; durable node identity, clean-shutdown marker, and persisted integrity history deferred with unconditional startup validation | WP-060 semantic metadata API |
 | `ADR-0020` | Accepted | MCP command tool-name normalization, compiler-owned versioned registry, collision rejection, and catalog activation revalidation | WP-040 compiled contract bundle |
 | `ADR-0021` | Accepted | Exact lineage-scoped service-audit target variants/tags, canonical list ordering, and shared-service construction rule | Amended WP-010 audit vocabulary |
+| `ADR-0022` | Accepted | Exact durable semantic Protobuf modules, 26-payload registry, field/tag/presence rules, canonical-wire validation, and storage-owned codec boundary | WP-065 implementation |
 
 ## 22.2 Decisions to resolve before implementation reaches the named gate
 
