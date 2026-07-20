@@ -280,6 +280,12 @@ pub enum CandidateValidationRejection {
     DependencyChanged,
     /// The exact historical commit-check plan evaluated false.
     CommitCheckRejected,
+    /// The exact historical commit-check plan encountered checked arithmetic failure.
+    ///
+    /// This is a non-durable coordinator control result. The application candidate
+    /// must be abandoned before sequence assignment so the coordinator can use the
+    /// separate execution-failure transition.
+    CommitCheckArithmeticFault,
     /// A mutation or secondary-index precondition changed.
     MutationPreconditionChanged,
 }
