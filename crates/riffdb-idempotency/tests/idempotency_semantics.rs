@@ -5,7 +5,8 @@
 use riffdb_idempotency::{
     CommandIdempotencyScopeV1, IdempotencyDigestCandidatesV1, IdempotencyDigestError,
     IdempotencyDigestProvider, IdempotencyLookupClassificationV1, IdempotencyPreparationError,
-    classify_idempotency_lookup, prepare_command_idempotency,
+    classify_idempotency_lookup, confirm_command_idempotency, prepare_command_idempotency,
+    prepare_idempotency_lookup,
 };
 use riffdb_storage_api::{
     AdmissionLookupResultV1, DeclaredOutcome, DurabilityMode, ExecutablePlanRef,
@@ -147,6 +148,41 @@ fn digest_provider_port_is_object_safe_and_candidate_order_is_preserved() {
             .key_id()
             .get(),
         19
+    );
+}
+
+#[test]
+fn lookup_preparation_precedes_plan_dependent_input_confirmation() {
+    let provider = FixedProvider::new(&[19, 2]);
+    let checked_key = IdempotencyKey::new("retry-a").expect("checked caller key");
+    let prepared_lookup = prepare_idempotency_lookup(&scope(), &checked_key, &provider)
+        .expect("plan-independent lookup preparation");
+
+    assert_eq!(
+        prepared_lookup
+            .lookup_candidates()
+            .as_slice()
+            .iter()
+            .map(|candidate| candidate.caller_key_digest().key_id().get())
+            .collect::<Vec<_>>(),
+        [19, 2]
+    );
+
+    let confirmed = confirm_command_idempotency(
+        prepared_lookup,
+        &input("retry-a", 42),
+        field(7),
+        &checked_key,
+    )
+    .expect("historical-plan input confirmation");
+    assert_eq!(
+        confirmed
+            .lookup_candidates()
+            .as_slice()
+            .iter()
+            .map(|candidate| candidate.caller_key_digest().key_id().get())
+            .collect::<Vec<_>>(),
+        [19, 2]
     );
 }
 
@@ -308,6 +344,14 @@ fn every_identity_scope_component_separates_lookup() {
             database(1),
             Environment::new("development").expect("environment"),
             TenantScope::Tenant(TenantId::new("tenant-b").expect("tenant")),
+            ActorId::new("principal-a").expect("principal"),
+            ContractLineage::new("budget").expect("lineage"),
+            command(7),
+        ),
+        CommandIdempotencyScopeV1::new(
+            database(1),
+            Environment::new("development").expect("environment"),
+            TenantScope::Global,
             ActorId::new("principal-a").expect("principal"),
             ContractLineage::new("budget").expect("lineage"),
             command(7),

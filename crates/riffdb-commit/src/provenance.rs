@@ -10,10 +10,12 @@ use riffdb_types::ProvenanceId;
 /// The coordinator calls this source once only after a new mutating attempt has
 /// evaluated successfully and before opening its authoritative write
 /// transaction. It is not called for read-only execution, execution-failure
-/// terminalization, unevaluated pending work, proven pre-commit failures, or
-/// terminal replay. After an unknown commit status, durable same-key resolution
-/// must complete before another source call. Production providers belong to
-/// server composition.
+/// terminalization, unevaluated pending work, or terminal replay. A source call
+/// may precede a proven pre-commit abort; that attempt's invisible candidate is
+/// discarded, and a later safe reevaluation is a new attempt that may call the
+/// source again. After an unknown commit status, durable same-key resolution must
+/// complete before another source call. Production providers belong to server
+/// composition.
 pub trait ProvenanceIdSource: Send + Sync {
     /// Returns one fresh checked UUIDv7 provenance identifier.
     fn next_provenance_id(&self) -> Result<ProvenanceId, ProvenanceIdSourceError>;

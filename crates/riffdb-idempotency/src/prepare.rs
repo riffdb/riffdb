@@ -68,6 +68,36 @@ impl fmt::Debug for CommandIdempotencyScopeV1 {
     }
 }
 
+/// Plan-independent identities used for the first bounded durable-state inspection.
+///
+/// The service prepares this value before selecting an active or historical plan.
+/// Presence selects the exact stored plan; absence permits selection of the
+/// requested active or explicit plan. Input normalization and hashing happen only
+/// after that selection through [`confirm_command_idempotency`].
+pub struct PreparedIdempotencyLookupV1 {
+    lookup_candidates: IdempotencyLookupCandidatesV1,
+}
+
+impl PreparedIdempotencyLookupV1 {
+    /// Borrows the current write-key identity followed by readable previous identities.
+    #[must_use]
+    pub const fn lookup_candidates(&self) -> &IdempotencyLookupCandidatesV1 {
+        &self.lookup_candidates
+    }
+
+    /// Borrows the identity selected if confirmation observes no durable admission.
+    #[must_use]
+    pub fn current_identity(&self) -> &IdempotencyIdentity {
+        &self.lookup_candidates.as_slice()[0]
+    }
+}
+
+impl fmt::Debug for PreparedIdempotencyLookupV1 {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("PreparedIdempotencyLookupV1([REDACTED])")
+    }
+}
+
 /// Privately constructed idempotency evidence for one normalized mutating input.
 ///
 /// This value is not durable. The commit coordinator uses its first identity for
@@ -165,6 +195,44 @@ pub fn prepare_command_idempotency(
     caller_key: &IdempotencyKey,
     digest_provider: &dyn IdempotencyDigestProvider,
 ) -> Result<PreparedCommandIdempotencyV1, IdempotencyPreparationError> {
+    let lookup = prepare_idempotency_lookup(scope, caller_key, digest_provider)?;
+    confirm_command_idempotency(lookup, normalized_input, idempotency_field, caller_key)
+}
+
+/// Prepares only rotation-aware identities for plan-independent durable inspection.
+///
+/// This operation does not accept a plan, normalized input, deployment version,
+/// or request ID. Provider order is retained exactly; numeric digest-key IDs are
+/// never sorted.
+pub fn prepare_idempotency_lookup(
+    scope: &CommandIdempotencyScopeV1,
+    caller_key: &IdempotencyKey,
+    digest_provider: &dyn IdempotencyDigestProvider,
+) -> Result<PreparedIdempotencyLookupV1, IdempotencyPreparationError> {
+    let digests = digest_provider.digest_candidates(caller_key)?;
+    let identities = digests
+        .as_slice()
+        .iter()
+        .map(|digest| scope.identity(*digest))
+        .collect();
+    let lookup_candidates =
+        IdempotencyLookupCandidatesV1::new(identities).map_err(map_lookup_candidate_error)?;
+
+    Ok(PreparedIdempotencyLookupV1 { lookup_candidates })
+}
+
+/// Confirms normalized input against identities prepared before plan selection.
+///
+/// Consuming the lookup evidence prevents confirmation from silently recomputing
+/// digest candidates under a different provider configuration. The selected
+/// plan's normalized record must contain the exact caller-key field, which is
+/// omitted before canonical hashing.
+pub fn confirm_command_idempotency(
+    lookup: PreparedIdempotencyLookupV1,
+    normalized_input: &CanonicalRecord,
+    idempotency_field: FieldId,
+    caller_key: &IdempotencyKey,
+) -> Result<PreparedCommandIdempotencyV1, IdempotencyPreparationError> {
     let field_index = normalized_input
         .fields()
         .binary_search_by_key(&idempotency_field, |(field_id, _)| *field_id)
@@ -192,18 +260,9 @@ pub fn prepare_command_idempotency(
         .map_err(|_| IdempotencyPreparationError::InvalidCanonicalInput)?;
     let canonical_input_hash = hash_command_input(&encoded);
 
-    let digests = digest_provider.digest_candidates(caller_key)?;
-    let identities = digests
-        .as_slice()
-        .iter()
-        .map(|digest| scope.identity(*digest))
-        .collect();
-    let lookup_candidates =
-        IdempotencyLookupCandidatesV1::new(identities).map_err(map_lookup_candidate_error)?;
-
     Ok(PreparedCommandIdempotencyV1 {
         canonical_input_hash,
-        lookup_candidates,
+        lookup_candidates: lookup.lookup_candidates,
     })
 }
 
