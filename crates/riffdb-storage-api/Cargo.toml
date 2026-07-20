@@ -9,7 +9,9 @@ publish.workspace = true
 default = []
 
 [dependencies]
+prost = { version = "0.14.4", default-features = false, features = ["std"] }
 riffdb-contract-ir = { version = "0.1.0", path = "../riffdb-contract-ir" }
+riffdb-proto = { version = "0.1.0", path = "../riffdb-proto" }
 riffdb-types = { version = "0.1.0", path = "../riffdb-types" }
 
 [dev-dependencies]

@@ -1,0 +1,43 @@
+syntax = "proto3";
+
+package riffdb.storage.v1;
+
+message UnitV1 {}
+
+message TimestampV1 {
+  sint64 seconds = 1;
+  uint32 nanos = 2;
+}
+
+enum ActorKindV1 {
+  ACTOR_KIND_UNSPECIFIED = 0;
+  ACTOR_KIND_HUMAN = 1;
+  ACTOR_KIND_AGENT = 2;
+  ACTOR_KIND_SERVICE = 3;
+}
+
+message TenantScopeV1 {
+  oneof scope {
+    UnitV1 global = 1;
+    string tenant_id = 2;
+  }
+}
+
+message AdmittedActorContextV1 {
+  string principal_id = 1;
+  ActorKindV1 actor_kind = 2;
+  TenantScopeV1 tenant_scope = 3;
+  optional bytes agent_session_id = 4;
+}
+
+message AuditPrincipalV1 {
+  string principal_id = 1;
+  ActorKindV1 actor_kind = 2;
+  bytes capability_id = 3;
+  uint64 capability_revision = 4;
+}
+
+message EventIdV1 {
+  uint64 commit_sequence = 1;
+  uint32 event_ordinal = 2;
+}

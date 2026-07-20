@@ -28,10 +28,20 @@ pub(crate) enum EnvelopePreflightError {
 }
 
 #[derive(Clone, Copy)]
-struct Field<'a> {
-    number: u32,
-    wire_type: u8,
-    bytes: &'a [u8],
+pub(crate) struct EnvelopePreflight<'a> {
+    pub(crate) storage_format_version: u32,
+    pub(crate) record_type: &'a [u8],
+    pub(crate) payload: &'a [u8],
+    pub(crate) payload_crc32c: u32,
+    pub(crate) schema_hash: &'a [u8],
+}
+
+#[derive(Clone, Copy)]
+pub(crate) struct Field<'a> {
+    pub(crate) number: u32,
+    pub(crate) wire_type: u8,
+    pub(crate) bytes: &'a [u8],
+    varint: Option<u64>,
 }
 
 impl Field<'_> {
@@ -42,19 +52,29 @@ impl Field<'_> {
             Err(PreflightError::Malformed)
         }
     }
+
+    fn require_varint(self) -> Result<u64, PreflightError> {
+        self.require_wire(0)?
+            .varint
+            .ok_or(PreflightError::Malformed)
+    }
 }
 
-struct Cursor<'a> {
+pub(crate) struct Cursor<'a> {
     input: &'a [u8],
     position: usize,
 }
 
 impl<'a> Cursor<'a> {
-    const fn new(input: &'a [u8]) -> Self {
+    pub(crate) const fn new(input: &'a [u8]) -> Self {
         Self { input, position: 0 }
     }
 
-    fn next(&mut self) -> Result<Option<Field<'a>>, PreflightError> {
+    pub(crate) const fn input_is_empty(&self) -> bool {
+        self.position == self.input.len()
+    }
+
+    pub(crate) fn next(&mut self) -> Result<Option<Field<'a>>, PreflightError> {
         if self.position == self.input.len() {
             return Ok(None);
         }
@@ -69,9 +89,10 @@ impl<'a> Cursor<'a> {
             return Err(PreflightError::Malformed);
         }
 
+        let mut varint = None;
         let bytes = match wire_type {
             0 => {
-                self.read_varint()?;
+                varint = Some(self.read_varint()?);
                 &[][..]
             }
             1 => self.read_exact(8)?,
@@ -92,6 +113,7 @@ impl<'a> Cursor<'a> {
             number,
             wire_type,
             bytes,
+            varint,
         }))
     }
 
@@ -133,7 +155,7 @@ impl<'a> Cursor<'a> {
         }
     }
 
-    fn read_varint(&mut self) -> Result<u64, PreflightError> {
+    pub(crate) fn read_varint(&mut self) -> Result<u64, PreflightError> {
         let mut value = 0_u64;
         for shift in (0..70).step_by(7) {
             let byte = *self
@@ -393,10 +415,19 @@ pub(crate) fn public_error(input: &[u8]) -> Result<(), PreflightError> {
     Ok(())
 }
 
-pub(crate) fn stored_envelope(input: &[u8]) -> Result<(), EnvelopePreflightError> {
+pub(crate) fn stored_envelope(
+    input: &[u8],
+) -> Result<EnvelopePreflight<'_>, EnvelopePreflightError> {
     let mut cursor = Cursor::new(input);
+    let mut storage_format_version = 0;
+    let mut record_type_bytes = &[][..];
+    let mut payload_bytes = &[][..];
+    let mut payload_crc32c = 0;
+    let mut schema_hash_bytes = &[][..];
     let mut record_type = false;
     let mut payload = false;
+    let mut version = false;
+    let mut checksum = false;
     let mut schema_hash = false;
     while let Some(field) = cursor
         .next()
@@ -404,9 +435,12 @@ pub(crate) fn stored_envelope(input: &[u8]) -> Result<(), EnvelopePreflightError
     {
         match field.number {
             1 => {
-                field
-                    .require_wire(0)
+                claim_envelope_singular(&mut version)?;
+                let raw_version = field
+                    .require_varint()
                     .map_err(|_| EnvelopePreflightError::Malformed)?;
+                storage_format_version =
+                    u32::try_from(raw_version).map_err(|_| EnvelopePreflightError::NonCanonical)?;
             }
             2 => {
                 claim_envelope_singular(&mut record_type)?;
@@ -417,17 +451,26 @@ pub(crate) fn stored_envelope(input: &[u8]) -> Result<(), EnvelopePreflightError
                 if bytes.len() > crate::envelope::MAX_RECORD_TYPE_BYTES {
                     return Err(EnvelopePreflightError::InvalidRecordType);
                 }
+                record_type_bytes = bytes;
             }
             3 => {
                 claim_envelope_singular(&mut payload)?;
-                field
+                payload_bytes = field
                     .require_wire(2)
-                    .map_err(|_| EnvelopePreflightError::Malformed)?;
+                    .map_err(|_| EnvelopePreflightError::Malformed)?
+                    .bytes;
             }
             4 => {
-                field
+                claim_envelope_singular(&mut checksum)?;
+                let bytes = field
                     .require_wire(5)
-                    .map_err(|_| EnvelopePreflightError::Malformed)?;
+                    .map_err(|_| EnvelopePreflightError::Malformed)?
+                    .bytes;
+                payload_crc32c = u32::from_le_bytes(
+                    bytes
+                        .try_into()
+                        .map_err(|_| EnvelopePreflightError::Malformed)?,
+                );
             }
             5 => {
                 claim_envelope_singular(&mut schema_hash)?;
@@ -438,11 +481,18 @@ pub(crate) fn stored_envelope(input: &[u8]) -> Result<(), EnvelopePreflightError
                 if bytes.len() != 32 {
                     return Err(EnvelopePreflightError::InvalidSchemaHashLength);
                 }
+                schema_hash_bytes = bytes;
             }
             _ => {}
         }
     }
-    Ok(())
+    Ok(EnvelopePreflight {
+        storage_format_version,
+        record_type: record_type_bytes,
+        payload: payload_bytes,
+        payload_crc32c,
+        schema_hash: schema_hash_bytes,
+    })
 }
 
 fn claim_envelope_singular(seen: &mut bool) -> Result<(), EnvelopePreflightError> {

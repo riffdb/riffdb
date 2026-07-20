@@ -24,12 +24,28 @@ generate() {
         --output-root "$output_root"
 }
 
+generate_durable_vectors() {
+    LC_ALL=C TZ=UTC \
+        RIFFDB_DURABLE_VECTOR_OUTPUT="$output_root/fixtures/proto/durable-wire-vectors.txt" \
+        cargo test --quiet --locked -p riffdb-storage-api --lib \
+            proto_codec::tests::emit_semantic_wire_vectors_for_fixture_regeneration -- --exact
+}
+
+generate_durable_relationship_vectors() {
+    LC_ALL=C TZ=UTC \
+        RIFFDB_DURABLE_RELATIONSHIP_VECTOR_OUTPUT="$output_root/fixtures/proto/durable-relationship-vectors.txt" \
+        cargo test --quiet --locked -p riffdb-storage-api --lib \
+            proto_codec::tests::relationships::emit_relationship_vectors_for_fixture_regeneration -- --exact
+}
+
 generate
 if [[ "$mode" == "" ]]; then
     # The checked-in Prost types are inputs to public wire-vector generation.
     # A second pass reaches a fixed point after a schema edit changes those types.
     generate
 fi
+generate_durable_vectors
+generate_durable_relationship_vectors
 
 artifacts=(
     crates/riffdb-proto/src/generated/riffdb.storage.v1.rs
@@ -37,7 +53,13 @@ artifacts=(
     fixtures/proto/compatibility-probe-envelope.bin
     fixtures/proto/compatibility-probe-payload.bin
     fixtures/proto/descriptors/compatibility-probe-descriptor-set.bin
+    fixtures/proto/descriptors/riffdb-storage-v1-descriptor-set.bin
     fixtures/proto/descriptors/riffdb-v1-descriptor-set.bin
+    fixtures/proto/durable-record-bounds.bin
+    fixtures/proto/durable-relationship-vectors.txt
+    fixtures/proto/durable-registry.txt
+    fixtures/proto/durable-schema-hashes.bin
+    fixtures/proto/durable-wire-vectors.txt
     fixtures/proto/schema-inventory.txt
     fixtures/proto/wire-vectors.txt
 )

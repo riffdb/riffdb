@@ -1,0 +1,48 @@
+syntax = "proto3";
+
+package riffdb.storage.v1;
+
+import "riffdb/storage/v1/application.proto";
+import "riffdb/storage/v1/common.proto";
+
+message StoredOutboxIntentV1 {
+  StoredDurableEventV1 event = 1;
+}
+
+message OutboxRetryMetadataV1 {
+  uint32 attempts = 1;
+  TimestampV1 last_attempt_at = 2;
+  TimestampV1 next_attempt_at = 3;
+  string destination_id = 4;
+  optional string last_safe_error = 5;
+}
+
+message OutboxDeliveringV1 {
+  uint32 attempt = 1;
+  string destination_id = 2;
+  TimestampV1 started_at = 3;
+  TimestampV1 lease_deadline = 4;
+}
+
+message OutboxDeliveredV1 {
+  uint32 attempts = 1;
+  string destination_id = 2;
+  TimestampV1 delivered_at = 3;
+}
+
+message OutboxDeadLetterV1 {
+  uint32 attempts = 1;
+  string destination_id = 2;
+  TimestampV1 failed_at = 3;
+  optional string last_safe_error = 4;
+}
+
+message StoredOutboxStatusV1 {
+  EventIdV1 event_id = 1;
+  oneof state {
+    OutboxRetryMetadataV1 pending = 2;
+    OutboxDeliveringV1 delivering = 3;
+    OutboxDeliveredV1 delivered = 4;
+    OutboxDeadLetterV1 dead_letter = 5;
+  }
+}

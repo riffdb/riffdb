@@ -3,6 +3,8 @@
 //! Versioned public and durable Protobuf boundaries for RiffDB.
 
 mod command;
+pub mod durable;
+mod durable_wire;
 pub mod envelope;
 mod public_error;
 mod value;
@@ -27,8 +29,14 @@ pub use command::*;
 pub use public_error::*;
 pub use value::*;
 
-/// Source-info-stripped, path-sorted descriptors for all WP-020 production schemas.
+/// Source-info-stripped, path-sorted descriptors for all current production schemas.
 pub const PRODUCTION_FILE_DESCRIPTOR_SET: &[u8] = include_bytes!(concat!(
     env!("CARGO_MANIFEST_DIR"),
     "/../../fixtures/proto/descriptors/riffdb-v1-descriptor-set.bin"
+));
+
+/// Source-info-stripped descriptors for the nine durable v1 schema sources.
+pub const STORAGE_FILE_DESCRIPTOR_SET: &[u8] = include_bytes!(concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/../../fixtures/proto/descriptors/riffdb-storage-v1-descriptor-set.bin"
 ));

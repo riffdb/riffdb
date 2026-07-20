@@ -1,0 +1,142 @@
+syntax = "proto3";
+
+package riffdb.storage.v1;
+
+import "riffdb/storage/v1/common.proto";
+
+enum CapabilityPermissionKindV1 {
+  CAPABILITY_PERMISSION_KIND_UNSPECIFIED = 0;
+  CAPABILITY_PERMISSION_KIND_VALIDATE_CONTRACT = 1;
+  CAPABILITY_PERMISSION_KIND_READ_CONTRACT = 2;
+  CAPABILITY_PERMISSION_KIND_EXPLAIN_COMMAND = 3;
+  CAPABILITY_PERMISSION_KIND_DEPLOY_CONTRACT = 4;
+  CAPABILITY_PERMISSION_KIND_INVOKE_COMMAND = 5;
+  CAPABILITY_PERMISSION_KIND_READ_ENTITY = 6;
+  CAPABILITY_PERMISSION_KIND_SCAN_INDEX = 7;
+  CAPABILITY_PERMISSION_KIND_QUERY_PROJECTION = 8;
+  CAPABILITY_PERMISSION_KIND_READ_PROJECTION_STATUS = 9;
+  CAPABILITY_PERMISSION_KIND_READ_COMMIT = 10;
+  CAPABILITY_PERMISSION_KIND_SCAN_COMMITS = 11;
+  CAPABILITY_PERMISSION_KIND_SUBSCRIBE_COMMITS = 12;
+  CAPABILITY_PERMISSION_KIND_READ_PROVENANCE = 13;
+  CAPABILITY_PERMISSION_KIND_INSPECT_OUTBOX = 14;
+  CAPABILITY_PERMISSION_KIND_READ_HEALTH = 15;
+  CAPABILITY_PERMISSION_KIND_READ_STATISTICS = 16;
+  CAPABILITY_PERMISSION_KIND_CREATE_CAPABILITY = 17;
+  CAPABILITY_PERMISSION_KIND_REVOKE_CAPABILITY = 18;
+  CAPABILITY_PERMISSION_KIND_ADMINISTER_CAPABILITIES = 19;
+}
+
+enum RevocationReasonCodeV1 {
+  REVOCATION_REASON_CODE_UNSPECIFIED = 0;
+  REVOCATION_REASON_CODE_REQUESTED = 1;
+  REVOCATION_REASON_CODE_REPLACED = 2;
+  REVOCATION_REASON_CODE_SUSPECTED_COMPROMISE = 3;
+  REVOCATION_REASON_CODE_POLICY_CHANGE = 4;
+}
+
+enum CapabilityAdministrationOperationV1 {
+  CAPABILITY_ADMINISTRATION_OPERATION_UNSPECIFIED = 0;
+  CAPABILITY_ADMINISTRATION_OPERATION_BOOTSTRAP = 1;
+  CAPABILITY_ADMINISTRATION_OPERATION_CREATE = 2;
+  CAPABILITY_ADMINISTRATION_OPERATION_REVOKE = 3;
+}
+
+message CapabilityTokenDigestV1 {
+  uint32 digest_scheme = 1;
+  uint32 digest_key_id = 2;
+  bytes digest = 3;
+}
+
+message CapabilityPermissionV1 {
+  CapabilityPermissionKindV1 kind = 1;
+  optional string contract_lineage = 2;
+  optional uint32 stable_id = 3;
+}
+
+message CapabilityPermissionsV1 {
+  repeated CapabilityPermissionV1 values = 1;
+}
+
+message ScopedPartitionV1 {
+  string contract_lineage = 1;
+  bytes partition_key = 2;
+}
+
+message ExplicitPartitionScopeV1 {
+  repeated ScopedPartitionV1 partitions = 1;
+}
+
+message PartitionScopeV1 {
+  oneof scope {
+    UnitV1 all = 1;
+    ExplicitPartitionScopeV1 explicit = 2;
+  }
+}
+
+message EntityFieldVisibilityV1 {
+  string contract_lineage = 1;
+  uint32 entity_type_id = 2;
+  repeated uint32 field_ids = 3 [packed = true];
+}
+
+message CapabilityGrantV1 {
+  TenantScopeV1 tenant_scope = 1;
+  PartitionScopeV1 partition_scope = 2;
+  CapabilityPermissionsV1 permissions = 3;
+  repeated EntityFieldVisibilityV1 field_visibility = 4;
+  uint32 max_scan_rows = 5;
+  repeated CapabilityPermissionKindV1 approval_required = 6 [packed = true];
+}
+
+message RevokedCapabilityV1 {
+  TimestampV1 revoked_at = 1;
+  uint64 administration_sequence = 2;
+  RevocationReasonCodeV1 reason = 3;
+}
+
+message CapabilityLifecycleV1 {
+  oneof state {
+    UnitV1 active = 1;
+    RevokedCapabilityV1 revoked = 2;
+  }
+}
+
+message CapabilityRecordV1 {
+  bytes capability_id = 1;
+  uint64 revision = 2;
+  CapabilityTokenDigestV1 token_digest = 3;
+  bytes database_id = 4;
+  string environment = 5;
+  string principal_id = 6;
+  ActorKindV1 actor_kind = 7;
+  repeated string audiences = 8;
+  TimestampV1 issued_at = 9;
+  TimestampV1 expires_at = 10;
+  uint64 creation_sequence = 11;
+  bytes creation_request_id = 12;
+  CapabilityGrantV1 grant = 13;
+  CapabilityLifecycleV1 lifecycle = 14;
+}
+
+message CapabilityTokenLookupV1 {
+  bytes capability_id = 1;
+}
+
+message CapabilityBootstrapMarkerV1 {
+  bytes database_id = 1;
+  bytes capability_id = 2;
+  uint64 administration_sequence = 3;
+}
+
+message CapabilityAdministrationAuditV1 {
+  uint64 administration_sequence = 1;
+  bytes request_id = 2;
+  CapabilityAdministrationOperationV1 operation = 3;
+  TimestampV1 timestamp = 4;
+  AuditPrincipalV1 initiator = 5;
+  bytes target_capability_id = 6;
+  uint64 resulting_revision = 7;
+  optional string approval_id = 8;
+  optional RevocationReasonCodeV1 revocation_reason = 9;
+}

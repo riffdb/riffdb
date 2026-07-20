@@ -1,0 +1,661 @@
+use std::num::{NonZeroU16, NonZeroU32, NonZeroU64};
+
+use prost::Message;
+use riffdb_proto::storage::v1 as wire;
+use riffdb_types::{
+    AdministrationSequence, ApprovalId, CommitSequence, ExecutionFailureCode, FrontierPosition,
+    ProjectionGeneration, ServiceAuditLinkV1, ServiceAuditPhaseV1, ServiceAuditTargetsV1,
+    ServiceIngressKindV1, ServiceOperationV1, TenantScope, Timestamp,
+};
+
+use crate::{
+    AdministrationSequenceAllocator, ApplicationSequenceAllocator,
+    CapabilityAdministrationOperationV1, CapabilityGrantV1, CapabilityLifecycleV1,
+    CapabilityPermissionsV1, DurabilityMode, OutboxDestinationIdV1, OutboxRetryMetadataV1,
+    OutboxSafeErrorV1, PartitionScopeV1, ProjectionFailureCodeV1, ProjectionFailureV1,
+    ProjectionGenerationPosition, ProjectionLifecycleV1, PublishedApplyModeV1,
+    RevocationReasonCodeV1, StoredCapabilityAdministrationV1, StoredCapabilityRecordV1,
+    StoredCatalogAdministrationV1, StoredCommitRecordV1, StoredOutboxStatusV1, StoredOutcomeV1,
+    StoredProjectionControlV1, StoredServiceAuditRecordV1,
+};
+
+use super::super::*;
+use super::{assert_round_trip, sample};
+
+fn payload<M: Message + Default>(envelope: &CanonicalStoredEnvelopeV1) -> M {
+    let decoded = riffdb_proto::durable::current_record_registry()
+        .decode(envelope.as_bytes())
+        .expect("checked envelope");
+    M::decode(decoded.payload()).expect("registered payload")
+}
+
+#[test]
+fn allocator_variants_include_maximum_and_exhausted_states() {
+    let maximum_commit = CommitSequence::new(u64::MAX).expect("maximum commit sequence");
+    let maximum_administration =
+        AdministrationSequence::new(u64::MAX).expect("maximum administration sequence");
+    for value in [
+        ApplicationSequenceAllocator::Next(maximum_commit),
+        ApplicationSequenceAllocator::Exhausted,
+    ] {
+        assert_round_trip(
+            value,
+            |value| encode_application_sequence_allocator_v1(*value),
+            decode_application_sequence_allocator_v1,
+        );
+    }
+    for value in [
+        AdministrationSequenceAllocator::Next(maximum_administration),
+        AdministrationSequenceAllocator::Exhausted,
+    ] {
+        assert_round_trip(
+            value,
+            |value| encode_administration_sequence_allocator_v1(*value),
+            decode_administration_sequence_allocator_v1,
+        );
+    }
+}
+
+#[test]
+fn unit_variants_are_encoded_as_present_oneofs() {
+    use wire::capability_lifecycle_v1::State as CapabilityState;
+    use wire::expected_entity_state_v1::State as ExpectedState;
+    use wire::frontier_position_v1::Position as FrontierPosition;
+    use wire::index_epoch_position_v1::Position as IndexEpochPosition;
+    use wire::partition_scope_v1::Scope as PartitionScope;
+    use wire::service_audit_link_v1::Link as AuditLink;
+    use wire::stored_application_sequence_allocator_v1::State as AllocatorState;
+    use wire::tenant_scope_v1::Scope as TenantScopeWire;
+
+    let allocator =
+        encode_application_sequence_allocator_v1(ApplicationSequenceAllocator::Exhausted)
+            .expect("allocator encodes");
+    let allocator: wire::StoredApplicationSequenceAllocatorV1 = payload(&allocator);
+    assert!(matches!(
+        allocator.state,
+        Some(AllocatorState::Exhausted(_))
+    ));
+
+    let records = sample::atomic_record_set();
+    let commit = encode_commit_record_v1(records.commit()).expect("commit encodes");
+    let commit: wire::StoredCommitRecordV1 = payload(&commit);
+    assert!(matches!(
+        commit.mutations[0]
+            .expected
+            .as_ref()
+            .and_then(|expected| expected.state.as_ref()),
+        Some(ExpectedState::Absent(_))
+    ));
+    assert!(matches!(
+        super::super::epoch_to_proto(crate::IndexEpochPosition::BeforeFirst).position,
+        Some(IndexEpochPosition::BeforeFirst(_))
+    ));
+
+    let audit =
+        encode_service_audit_record_v1(&sample::service_audit_record()).expect("audit encodes");
+    let audit: wire::ServiceAuditRecordV1 = payload(&audit);
+    assert!(matches!(
+        audit.link.and_then(|link| link.link),
+        Some(AuditLink::None(_))
+    ));
+
+    let (_, _, _, control) = sample::projection_records();
+    let control = encode_projection_control_v1(&control).expect("control encodes");
+    let control: wire::StoredProjectionControlV1 = payload(&control);
+    assert!(matches!(
+        control
+            .candidate
+            .and_then(|candidate| candidate.frontier)
+            .and_then(|frontier| frontier.position),
+        Some(FrontierPosition::BeforeFirst(_))
+    ));
+
+    let (active, _, _, _) = sample::capability_records();
+    let grant = CapabilityGrantV1::new(
+        TenantScope::Global,
+        PartitionScopeV1::All,
+        CapabilityPermissionsV1::new(Vec::new()).expect("empty permissions"),
+        Vec::new(),
+        NonZeroU16::MIN,
+        Vec::new(),
+    )
+    .expect("least-authority global grant shape");
+    let global = StoredCapabilityRecordV1::from_stored_parts(
+        active.capability_id(),
+        active.revision(),
+        active.token_digest(),
+        active.database_id(),
+        active.environment().clone(),
+        active.principal_id().clone(),
+        active.actor_kind(),
+        active.audiences().to_vec(),
+        active.issued_at(),
+        active.expires_at(),
+        active.creation_sequence(),
+        active.creation_request_id(),
+        grant,
+        CapabilityLifecycleV1::Active,
+    )
+    .expect("global active capability");
+    let global = assert_round_trip(
+        global,
+        encode_capability_record_v1,
+        decode_capability_record_v1,
+    );
+    let global: wire::CapabilityRecordV1 = payload(&global);
+    let grant = global.grant.expect("grant wrapper present");
+    assert!(matches!(
+        grant.tenant_scope.and_then(|scope| scope.scope),
+        Some(TenantScopeWire::Global(_))
+    ));
+    assert!(matches!(
+        grant.partition_scope.and_then(|scope| scope.scope),
+        Some(PartitionScope::All(_))
+    ));
+    assert!(
+        grant
+            .permissions
+            .expect("empty permissions wrapper remains present")
+            .values
+            .is_empty()
+    );
+    assert!(matches!(
+        global.lifecycle.and_then(|lifecycle| lifecycle.state),
+        Some(CapabilityState::Active(_))
+    ));
+}
+
+#[test]
+fn both_execution_failure_codes_round_trip() {
+    for code in [
+        ExecutionFailureCode::ArithmeticFault,
+        ExecutionFailureCode::ResourceLimit,
+    ] {
+        assert_round_trip(
+            crate::StoredExecutionFailedV1::new(sample::pending(), code),
+            encode_execution_failed_v1,
+            decode_execution_failed_v1,
+        );
+    }
+}
+
+#[test]
+fn catalog_administration_preserves_optional_previous_pointer() {
+    let (_, active, administration) = sample::catalog_records();
+    let with_previous = StoredCatalogAdministrationV1::from_stored_parts(
+        administration.administration_sequence(),
+        administration.request_id(),
+        administration.timestamp(),
+        administration.principal().clone(),
+        Some(active.clone()),
+        active,
+        administration.approval_id().cloned(),
+    );
+    let envelope = assert_round_trip(
+        with_previous,
+        encode_catalog_administration_v1,
+        decode_catalog_administration_v1,
+    );
+    assert!(
+        decode_catalog_administration_v1(envelope.as_bytes())
+            .expect("catalog administration")
+            .value()
+            .previous_active()
+            .is_some()
+    );
+}
+
+#[test]
+fn every_durability_mode_survives_outcome_and_commit_round_trips() {
+    let records = sample::atomic_record_set();
+    for mode in [
+        DurabilityMode::Sync,
+        DurabilityMode::Group,
+        DurabilityMode::Memory,
+    ] {
+        let outcome = outcome_with_mode(records.stored_outcome(), mode);
+        let commit = commit_with_mode(records.commit(), mode);
+        let outcome =
+            assert_round_trip(outcome, encode_stored_outcome_v1, decode_stored_outcome_v1);
+        assert_eq!(
+            decode_stored_outcome_v1(outcome.as_bytes())
+                .expect("outcome")
+                .value()
+                .durability_mode(),
+            mode
+        );
+        let commit = assert_round_trip(commit, encode_commit_record_v1, decode_commit_record_v1);
+        assert_eq!(
+            decode_commit_record_v1(commit.as_bytes())
+                .expect("commit")
+                .value()
+                .durability_mode(),
+            mode
+        );
+    }
+}
+
+fn outcome_with_mode(value: &StoredOutcomeV1, mode: DurabilityMode) -> StoredOutcomeV1 {
+    StoredOutcomeV1::new(
+        value.identity().clone(),
+        value.commit_sequence(),
+        value.admission_request_id(),
+        value.plan().clone(),
+        value.canonical_input_hash(),
+        value.actor().clone(),
+        value.logical_time(),
+        value.partition_hash(),
+        value.conflict_hashes().to_vec(),
+        value.declared_outcome().clone(),
+        value.admitted_claims().clone(),
+        value.provenance_id(),
+        mode,
+    )
+    .expect("durability does not alter outcome identity")
+}
+
+fn commit_with_mode(value: &StoredCommitRecordV1, mode: DurabilityMode) -> StoredCommitRecordV1 {
+    StoredCommitRecordV1::new(
+        value.commit_sequence(),
+        value.admission_request_id(),
+        value.plan().clone(),
+        value.canonical_input_hash(),
+        value.actor().clone(),
+        value.logical_time(),
+        value.partition_hash(),
+        value.conflict_hashes().to_vec(),
+        value.read_dependencies().clone(),
+        value.mutations().to_vec(),
+        value.events().to_vec(),
+        value.declared_outcome().clone(),
+        value.provenance_id(),
+        value.outbox_event_ids().to_vec(),
+        mode,
+    )
+    .expect("durability does not alter commit graph")
+}
+
+#[test]
+fn capability_permission_and_lifecycle_registries_round_trip() {
+    let (active, _, _, _) = sample::capability_records();
+    let permission_tags = active
+        .grant()
+        .permissions()
+        .as_slice()
+        .iter()
+        .map(|permission| permission.kind().tag())
+        .collect::<Vec<_>>();
+    assert_eq!(permission_tags, (1..=19).collect::<Vec<_>>());
+
+    for reason in [
+        RevocationReasonCodeV1::Requested,
+        RevocationReasonCodeV1::Replaced,
+        RevocationReasonCodeV1::SuspectedCompromise,
+        RevocationReasonCodeV1::PolicyChange,
+    ] {
+        let (active, _, _, _) = sample::capability_records();
+        let revoked = active
+            .revoked(
+                NonZeroU64::MIN,
+                Timestamp::new(1_030, 9).expect("revocation timestamp"),
+                AdministrationSequence::new(2).expect("revocation sequence"),
+                reason,
+            )
+            .expect("revoked capability");
+        let envelope = assert_round_trip(
+            revoked,
+            encode_capability_record_v1,
+            decode_capability_record_v1,
+        );
+        assert!(matches!(
+            decode_capability_record_v1(envelope.as_bytes())
+                .expect("capability")
+                .value()
+                .lifecycle(),
+            CapabilityLifecycleV1::Revoked {
+                reason: decoded,
+                ..
+            } if *decoded == reason
+        ));
+    }
+}
+
+#[test]
+fn every_capability_administration_shape_round_trips() {
+    let timestamp = Timestamp::new(1_100, 1).expect("administration timestamp");
+    let sequence = AdministrationSequence::new(2).expect("administration sequence");
+    let mut records = vec![
+        StoredCapabilityAdministrationV1::new(
+            sequence,
+            sample::request_id(),
+            CapabilityAdministrationOperationV1::Bootstrap,
+            timestamp,
+            None,
+            sample::capability_id(),
+            NonZeroU64::MIN,
+            None,
+            None,
+        )
+        .expect("bootstrap audit"),
+        StoredCapabilityAdministrationV1::new(
+            sequence,
+            sample::request_id(),
+            CapabilityAdministrationOperationV1::Create,
+            timestamp,
+            Some(sample::audit_principal()),
+            sample::capability_id(),
+            NonZeroU64::MIN,
+            Some(ApprovalId::new("create-approval").expect("approval")),
+            None,
+        )
+        .expect("create audit"),
+    ];
+    for reason in [
+        RevocationReasonCodeV1::Requested,
+        RevocationReasonCodeV1::Replaced,
+        RevocationReasonCodeV1::SuspectedCompromise,
+        RevocationReasonCodeV1::PolicyChange,
+    ] {
+        records.push(
+            StoredCapabilityAdministrationV1::new(
+                sequence,
+                sample::request_id(),
+                CapabilityAdministrationOperationV1::Revoke,
+                timestamp,
+                Some(sample::audit_principal()),
+                sample::capability_id(),
+                NonZeroU64::new(2).expect("revision two"),
+                None,
+                Some(reason),
+            )
+            .expect("revoke audit"),
+        );
+    }
+    for record in records {
+        assert_round_trip(
+            record,
+            encode_capability_administration_v1,
+            decode_capability_administration_v1,
+        );
+    }
+}
+
+#[test]
+fn all_explicit_outbox_status_variants_round_trip() {
+    let event_id = riffdb_types::EventId::new(CommitSequence::first(), 0);
+    let destination = || OutboxDestinationIdV1::new("destination-a").expect("destination");
+    let statuses = vec![
+        sample::outbox_status(),
+        StoredOutboxStatusV1::pending(
+            event_id,
+            OutboxRetryMetadataV1::new(
+                NonZeroU32::MIN,
+                Timestamp::new(5, 1).expect("last attempt"),
+                None,
+                destination(),
+                None,
+            ),
+        ),
+        StoredOutboxStatusV1::delivering(
+            event_id,
+            NonZeroU32::MIN,
+            destination(),
+            Timestamp::new(10, 1).expect("started"),
+            Timestamp::new(20, 1).expect("lease deadline"),
+        ),
+        StoredOutboxStatusV1::delivered(
+            event_id,
+            NonZeroU32::new(2).expect("attempts"),
+            destination(),
+            Timestamp::new(30, 1).expect("delivered"),
+        ),
+        StoredOutboxStatusV1::dead_letter(
+            event_id,
+            3,
+            destination(),
+            Timestamp::new(40, 1).expect("failed"),
+            Some(OutboxSafeErrorV1::new("terminal").expect("safe error")),
+        ),
+        StoredOutboxStatusV1::dead_letter(
+            event_id,
+            0,
+            destination(),
+            Timestamp::new(41, 1).expect("failed without attempt"),
+            None,
+        ),
+    ];
+    for status in statuses {
+        assert_round_trip(status, encode_outbox_status_v1, decode_outbox_status_v1);
+    }
+}
+
+fn service_audit_with(
+    operation: ServiceOperationV1,
+    phase: ServiceAuditPhaseV1,
+    ingress: ServiceIngressKindV1,
+) -> StoredServiceAuditRecordV1 {
+    StoredServiceAuditRecordV1::from_stored_parts(
+        AdministrationSequence::first(),
+        sample::request_id(),
+        Timestamp::new(60, 1).expect("audit timestamp"),
+        operation,
+        phase,
+        Some(sample::audit_principal()),
+        ingress,
+        ServiceAuditTargetsV1::empty(),
+        None,
+        ServiceAuditLinkV1::None,
+    )
+    .expect("standalone audit shape")
+}
+
+#[test]
+fn every_service_operation_round_trips() {
+    for operation in ServiceOperationV1::ALL {
+        assert_round_trip(
+            service_audit_with(
+                operation,
+                ServiceAuditPhaseV1::Started,
+                ServiceIngressKindV1::Grpc,
+            ),
+            encode_service_audit_record_v1,
+            decode_service_audit_record_v1,
+        );
+    }
+}
+
+#[test]
+fn every_service_phase_and_ingress_round_trips() {
+    for phase in ServiceAuditPhaseV1::ALL {
+        assert_round_trip(
+            service_audit_with(
+                ServiceOperationV1::GetEntity,
+                phase,
+                ServiceIngressKindV1::Grpc,
+            ),
+            encode_service_audit_record_v1,
+            decode_service_audit_record_v1,
+        );
+    }
+    for ingress in ServiceIngressKindV1::ALL {
+        assert_round_trip(
+            service_audit_with(
+                ServiceOperationV1::GetEntity,
+                ServiceAuditPhaseV1::Started,
+                ingress,
+            ),
+            encode_service_audit_record_v1,
+            decode_service_audit_record_v1,
+        );
+    }
+}
+
+#[test]
+fn command_and_control_plane_audit_links_round_trip() {
+    let principal = Some(sample::audit_principal());
+    let command = StoredServiceAuditRecordV1::from_stored_parts(
+        AdministrationSequence::first(),
+        sample::request_id(),
+        Timestamp::new(70, 1).expect("timestamp"),
+        ServiceOperationV1::ExecuteCommand,
+        ServiceAuditPhaseV1::Succeeded,
+        principal.clone(),
+        ServiceIngressKindV1::Grpc,
+        ServiceAuditTargetsV1::empty(),
+        None,
+        ServiceAuditLinkV1::Command {
+            commit_sequence: CommitSequence::first(),
+            provenance_id: sample::provenance_id(),
+        },
+    )
+    .expect("command-linked audit");
+    let control = StoredServiceAuditRecordV1::from_stored_parts(
+        AdministrationSequence::new(2).expect("sequence two"),
+        sample::request_id(),
+        Timestamp::new(71, 1).expect("timestamp"),
+        ServiceOperationV1::DeployContract,
+        ServiceAuditPhaseV1::Succeeded,
+        principal,
+        ServiceIngressKindV1::Grpc,
+        ServiceAuditTargetsV1::empty(),
+        None,
+        ServiceAuditLinkV1::ControlPlane {
+            administration_sequence: AdministrationSequence::first(),
+        },
+    )
+    .expect("control-linked audit");
+    for value in [command, control] {
+        assert_round_trip(
+            value,
+            encode_service_audit_record_v1,
+            decode_service_audit_record_v1,
+        );
+    }
+}
+
+#[test]
+fn projection_structural_and_contextual_boundaries_are_distinct() {
+    let (schema, state, _, _) = sample::projection_records();
+    let encoded = encode_projection_state_v1(&state).expect("projection state encodes");
+    let structural = decode_projection_state_structural_v1(encoded.as_bytes())
+        .expect("structural state decodes");
+    assert_eq!(structural.value().identity(), state.identity());
+    assert_eq!(structural.value().generation(), state.generation());
+    assert_eq!(
+        decode_projection_state_v1(encoded.as_bytes(), &schema)
+            .expect("contextual state decodes")
+            .value(),
+        &state
+    );
+}
+
+#[test]
+fn every_projection_lifecycle_shape_round_trips() {
+    let (schema, _, _, _) = sample::projection_records();
+    let generation = ProjectionGeneration::first();
+    let replacement = ProjectionGeneration::new(2).expect("replacement generation");
+    let frontier = FrontierPosition::AppliedThrough(CommitSequence::first());
+    let building = StoredProjectionControlV1::initial(schema.identity().clone());
+    let catching_up = StoredProjectionControlV1::new(
+        schema.identity().clone(),
+        generation,
+        None,
+        Some(ProjectionGenerationPosition::new(generation, frontier)),
+        None,
+        ProjectionLifecycleV1::CatchingUp,
+        None,
+    )
+    .expect("catching-up control");
+    let ready = StoredProjectionControlV1::new(
+        schema.identity().clone(),
+        generation,
+        Some(ProjectionGenerationPosition::new(generation, frontier)),
+        None,
+        Some(PublishedApplyModeV1::Enabled),
+        ProjectionLifecycleV1::Ready,
+        None,
+    )
+    .expect("ready control");
+    let rebuilding = StoredProjectionControlV1::new(
+        schema.identity().clone(),
+        replacement,
+        Some(ProjectionGenerationPosition::new(generation, frontier)),
+        Some(ProjectionGenerationPosition::new(
+            replacement,
+            FrontierPosition::BeforeFirst,
+        )),
+        Some(PublishedApplyModeV1::Enabled),
+        ProjectionLifecycleV1::Rebuilding,
+        None,
+    )
+    .expect("rebuilding control");
+    let degraded = StoredProjectionControlV1::new(
+        schema.identity().clone(),
+        generation,
+        Some(ProjectionGenerationPosition::new(generation, frontier)),
+        None,
+        Some(PublishedApplyModeV1::Suspended),
+        ProjectionLifecycleV1::Degraded,
+        Some(ProjectionFailureV1::new(
+            generation,
+            ProjectionFailureCodeV1::ProjectionStateIntegrity,
+            Some(CommitSequence::first()),
+        )),
+    )
+    .expect("degraded control");
+    let invalid = StoredProjectionControlV1::new(
+        schema.identity().clone(),
+        generation,
+        None,
+        Some(ProjectionGenerationPosition::new(generation, frontier)),
+        None,
+        ProjectionLifecycleV1::Invalid,
+        Some(ProjectionFailureV1::new(
+            generation,
+            ProjectionFailureCodeV1::PlanOrSchemaUnavailable,
+            Some(CommitSequence::first()),
+        )),
+    )
+    .expect("invalid control");
+    for value in [building, catching_up, ready, rebuilding, degraded, invalid] {
+        assert_round_trip(
+            value,
+            encode_projection_control_v1,
+            decode_projection_control_v1,
+        );
+    }
+}
+
+#[test]
+fn every_projection_failure_code_round_trips() {
+    let (schema, _, _, _) = sample::projection_records();
+    let generation = ProjectionGeneration::first();
+    let sequence = CommitSequence::first();
+    for code in [
+        ProjectionFailureCodeV1::ArithmeticOverflow,
+        ProjectionFailureCodeV1::MalformedDurableEvent,
+        ProjectionFailureCodeV1::MissingCommit,
+        ProjectionFailureCodeV1::PlanOrSchemaUnavailable,
+        ProjectionFailureCodeV1::ProjectionStateIntegrity,
+        ProjectionFailureCodeV1::HardLimitExceeded,
+    ] {
+        let control = StoredProjectionControlV1::new(
+            schema.identity().clone(),
+            generation,
+            Some(ProjectionGenerationPosition::new(
+                generation,
+                FrontierPosition::AppliedThrough(sequence),
+            )),
+            None,
+            Some(PublishedApplyModeV1::Suspended),
+            ProjectionLifecycleV1::Degraded,
+            Some(ProjectionFailureV1::new(generation, code, Some(sequence))),
+        )
+        .expect("degraded projection control");
+        assert_round_trip(
+            control,
+            encode_projection_control_v1,
+            decode_projection_control_v1,
+        );
+    }
+}
