@@ -13,5 +13,9 @@ redb = { version = "=4.1.0", default-features = false }
 riffdb-storage-api = { version = "0.1.0", path = "../riffdb-storage-api" }
 riffdb-types = { version = "0.1.0", path = "../riffdb-types" }
 
+[[test]]
+name = "storage_recovery_matrix"
+path = "../../tests/storage_recovery/storage_recovery_matrix.rs"
+
 [lints]
 workspace = true
