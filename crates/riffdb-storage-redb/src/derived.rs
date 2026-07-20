@@ -29,16 +29,18 @@ use crate::codec::{
     encode_projection_control_v1, encode_projection_state_v1,
 };
 use crate::error::{precommit_storage_error, storage_error, table_error};
+use crate::hooks::RedbTestOperation;
 use crate::keys::{
-    decode_application_sequence_key, decode_event_key, decode_projection_group_key,
-    encode_application_sequence_key, encode_event_key, encode_projection_apply_key,
-    encode_projection_frontier_key, encode_projection_group_key,
+    decode_application_sequence_key, decode_projection_group_key, encode_application_sequence_key,
+    encode_event_key, encode_projection_apply_key, encode_projection_frontier_key,
+    encode_projection_group_key,
 };
 use crate::layout::{
     COMMITS, EVENTS, OUTBOX, OUTBOX_STATUS, PROJECTION_APPLIED, PROJECTION_FRONTIER,
     PROJECTION_STATE,
 };
 use crate::store::RedbOperationalPorts;
+use crate::transient::TransientIndexDelta;
 
 impl OutboxRepository for RedbOperationalPorts {
     fn read_outbox_status(
@@ -63,34 +65,22 @@ impl OutboxRepository for RedbOperationalPorts {
         after: Option<EventId>,
         limit: OutboxPageLimit,
     ) -> Result<PendingOutboxScanV1, StorageError> {
+        let _lease = self.acquire_indexed_read_lease()?;
+        let wanted = usize::from(limit.get().get());
+        let (event_ids, mut has_more) = self.pending_outbox_page(after, wanted)?;
         let transaction = self.begin_read()?;
         let events = transaction.open_table(EVENTS).map_err(table_error)?;
         let intents = transaction.open_table(OUTBOX).map_err(table_error)?;
         let statuses = transaction.open_table(OUTBOX_STATUS).map_err(table_error)?;
         let commits = transaction.open_table(COMMITS).map_err(table_error)?;
-        let after_key = after.map(encode_event_key);
-        let mut scan = match after_key.as_ref() {
-            Some(key) => intents
-                .range::<&[u8]>((Excluded(key.as_slice()), Unbounded))
-                .map_err(precommit_storage_error)?,
-            None => intents.iter().map_err(precommit_storage_error)?,
-        };
-        let wanted = usize::from(limit.get().get());
         let mut items = Vec::with_capacity(wanted);
         let mut encoded_bytes = 0usize;
-        let mut has_more = false;
 
-        for entry in &mut scan {
-            let (physical_key, _) = entry.map_err(precommit_storage_error)?;
-            let event_id = decode_event_key(physical_key.value()).map_err(|_| corrupt())?;
+        for event_id in event_ids {
             let item = reciprocal_outbox_item(&events, &intents, &statuses, &commits, event_id)?
                 .ok_or_else(corrupt)?;
             if !item.status.is_pending() {
-                continue;
-            }
-            if items.len() == wanted {
-                has_more = true;
-                break;
+                return Err(corrupt());
             }
             let next_bytes = encoded_bytes
                 .checked_add(item.encoded_bytes)
@@ -179,6 +169,7 @@ impl RedbOperationalPorts {
             return Err(storage_error(StorageErrorKind::InvariantViolation));
         }
         let access = self.begin_write()?;
+        access.ensure_pending_outbox_available()?;
         let current = {
             let transaction = access.transaction()?;
             let events = transaction.open_table(EVENTS).map_err(table_error)?;
@@ -220,7 +211,13 @@ impl RedbOperationalPorts {
                 ) => return Err(storage_error(StorageErrorKind::InvariantViolation)),
             }
         }
-        access.commit()?;
+        access.commit_for_with_delta(
+            RedbTestOperation::OutboxTransition,
+            Some(TransientIndexDelta::PendingOutboxMembership {
+                event_id,
+                pending: updated.state().is_pending(),
+            }),
+        )?;
         Ok(OutboxTransitionResultV1::Applied(updated.clone()))
     }
 }
@@ -543,7 +540,7 @@ impl ProjectionMutationRepository for RedbOperationalPorts {
                 return Err(corrupt());
             }
         }
-        access.commit()?;
+        access.commit_for(RedbTestOperation::ProjectionMutation)?;
         Ok(ProjectionApplyResult::Applied { marker, control })
     }
 
@@ -594,7 +591,7 @@ impl ProjectionMutationRepository for RedbOperationalPorts {
                 }
             }
         }
-        access.commit()?;
+        access.commit_for(RedbTestOperation::ProjectionMutation)?;
         Ok(ProjectionControlResult::Updated(updated))
     }
 }
@@ -934,7 +931,6 @@ const fn corrupt() -> StorageError {
 mod tests {
     use std::num::{NonZeroU16, NonZeroU32};
     use std::path::PathBuf;
-    use std::sync::Arc;
     use std::sync::atomic::{AtomicU64, Ordering};
 
     use redb::ReadableTableMetadata;
@@ -997,9 +993,12 @@ mod tests {
         store
             .initialize_database(database_id())
             .expect("initialize store");
-        let ports = RedbOperationalPorts {
-            shared: Arc::clone(&store.shared),
+        let dormant = crate::store::RedbDormantPorts {
+            shared: store.shared,
         };
+        let ports = dormant
+            .into_operational_after_catalog_validation()
+            .expect("activate test ports");
         (path, ports)
     }
 
@@ -1139,7 +1138,14 @@ mod tests {
                 );
             }
         }
-        access.commit().expect("commit seed transaction");
+        access
+            .commit_for_with_delta(
+                RedbTestOperation::CommandBatch,
+                Some(TransientIndexDelta::PendingOutboxInserted(
+                    events.iter().map(StoredDurableEventV1::event_id).collect(),
+                )),
+            )
+            .expect("commit seed transaction");
         events
     }
 
@@ -1253,6 +1259,82 @@ mod tests {
         assert_eq!(
             items[0].encoded_content_charge().get(),
             expected_initial_charge + status_charge
+        );
+    }
+
+    #[test]
+    fn pending_outbox_accelerator_rebuilds_from_durable_rows_after_reopen() {
+        let (path, ports) = operational("outbox-index-rebuild");
+        let events = seed_command(&ports, CommitSequence::first(), 2);
+        let expected = events
+            .iter()
+            .map(StoredDurableEventV1::event_id)
+            .collect::<Vec<_>>();
+        drop(ports);
+
+        let store = RedbStore::open(&path.0).expect("reopen store");
+        let dormant = crate::store::RedbDormantPorts {
+            shared: store.shared,
+        };
+        let reopened = dormant
+            .into_operational_after_catalog_validation()
+            .expect("rebuild transient indexes");
+        let limit = OutboxPageLimit::new(NonZeroU16::new(2).expect("nonzero")).expect("limit");
+        let PendingOutboxScanV1::ExactEnd { items } = reopened
+            .scan_pending_outbox(None, limit)
+            .expect("scan rebuilt pending index")
+        else {
+            panic!("two durable pending rows reach exact end");
+        };
+        assert_eq!(
+            items
+                .iter()
+                .map(|item| item.value().event_id())
+                .collect::<Vec<_>>(),
+            expected
+        );
+    }
+
+    #[test]
+    fn malformed_delivery_status_degrades_outbox_without_blocking_core_activation() {
+        let (path, ports) = operational("outbox-index-degraded");
+        let event_id = seed_command(&ports, CommitSequence::first(), 1)[0].event_id();
+        let access = ports.begin_write().expect("begin corruption transaction");
+        {
+            let mut statuses = access
+                .transaction()
+                .expect("corruption transaction")
+                .open_table(OUTBOX_STATUS)
+                .expect("status table");
+            let key = encode_event_key(event_id);
+            statuses
+                .insert(key.as_slice(), b"not-a-stored-envelope".as_slice())
+                .expect("insert malformed derived status");
+        }
+        access.commit().expect("commit derived corruption");
+        drop(ports);
+
+        let store = RedbStore::open(&path.0).expect("reopen store");
+        let dormant = crate::store::RedbDormantPorts {
+            shared: store.shared,
+        };
+        let reopened = dormant
+            .into_operational_after_catalog_validation()
+            .expect("derived corruption does not block core activation");
+        let transaction = reopened.begin_read().expect("core read remains available");
+        let commits = transaction.open_table(COMMITS).expect("commit table");
+        let key = encode_application_sequence_key(CommitSequence::first());
+        assert!(commits.get(key.as_slice()).expect("read commit").is_some());
+        drop(commits);
+        drop(transaction);
+
+        let limit = OutboxPageLimit::new(NonZeroU16::MIN).expect("limit");
+        assert_eq!(
+            reopened
+                .scan_pending_outbox(None, limit)
+                .expect_err("degraded outbox index is unavailable")
+                .kind(),
+            StorageErrorKind::Unavailable
         );
     }
 

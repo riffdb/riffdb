@@ -158,7 +158,9 @@ fn open_operational(store: RedbStore) -> RedbOperationalPorts {
         .finish(structural_end, historical_end)
         .expect("finish structural session");
     let (_, _, dormant) = opened.into_parts();
-    dormant.into_operational_after_catalog_validation()
+    dormant
+        .into_operational_after_catalog_validation()
+        .expect("rebuild transient indexes")
 }
 
 fn audit_count(ports: &RedbOperationalPorts) -> usize {

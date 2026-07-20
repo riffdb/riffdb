@@ -42,6 +42,7 @@ use crate::layout::{
     META, META_APPLICATION_SEQUENCE, OUTBOX, PROVENANCE, SECONDARY_INDEXES,
 };
 use crate::store::{RedbOperationalPorts, RedbWriteAccess};
+use crate::transient::TransientIndexDelta;
 
 struct BatchCore {
     access: RedbWriteAccess,
@@ -201,9 +202,17 @@ impl NonEmptyCommandBatch for RedbNonEmptyBatch {
             .map(|records| records.stored_outcome().clone())
             .collect();
         let committed = CommittedBatchV1::new(outcomes, durability).map_err(invariant_value)?;
+        let pending_events = self
+            .core
+            .staged
+            .iter()
+            .flat_map(|records| records.events().iter().map(|event| event.event_id()))
+            .collect::<Vec<_>>();
+        let delta = (!pending_events.is_empty())
+            .then_some(TransientIndexDelta::PendingOutboxInserted(pending_events));
         self.core
             .access
-            .commit_for(RedbTestOperation::CommandBatch)?;
+            .commit_for_with_delta(RedbTestOperation::CommandBatch, delta)?;
         Ok(committed)
     }
 

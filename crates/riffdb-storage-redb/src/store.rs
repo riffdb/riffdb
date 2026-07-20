@@ -3,6 +3,7 @@
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use redb::{
@@ -32,6 +33,7 @@ use crate::layout::{
     META, META_ADMINISTRATION_SEQUENCE, META_APPLICATION_SEQUENCE, META_CAPABILITY_BOOTSTRAP,
     META_DATABASE_ID, META_FORMAT_VERSION, META_KEYS, TABLE_NAMES, create_all_tables,
 };
+use crate::transient::{TransientIndexDelta, TransientIndexState, TransientIndexes};
 
 pub(crate) struct SharedRedb {
     pub(crate) database: Database,
@@ -40,6 +42,7 @@ pub(crate) struct SharedRedb {
     mutation_gate: ExclusiveGate,
     write_fenced: AtomicBool,
     test_controller: Option<RedbTestController>,
+    transient_indexes: Mutex<TransientIndexState>,
 }
 
 /// A dormant handle to one redb-backed RiffDB database.
@@ -106,6 +109,7 @@ impl RedbStore {
                 mutation_gate: ExclusiveGate::default(),
                 write_fenced: AtomicBool::new(false),
                 test_controller,
+                transient_indexes: Mutex::new(TransientIndexState::Dormant),
             }),
         })
     }
@@ -145,11 +149,29 @@ impl RedbDormantPorts {
     ///
     /// The redb adapter cannot depend on contract IR or the catalog proof type;
     /// WP-130 is the sole production caller and owns that proof composition.
-    #[must_use]
-    pub fn into_operational_after_catalog_validation(self) -> RedbOperationalPorts {
-        RedbOperationalPorts {
-            shared: self.shared,
+    pub fn into_operational_after_catalog_validation(
+        self,
+    ) -> Result<RedbOperationalPorts, StorageError> {
+        let transaction = self
+            .shared
+            .database
+            .begin_read()
+            .map_err(transaction_error)?;
+        let indexes = TransientIndexes::rebuild(&transaction)?;
+        drop(transaction);
+        let mut state = self
+            .shared
+            .transient_indexes
+            .lock()
+            .map_err(|_| storage_error(StorageErrorKind::InvariantViolation))?;
+        if !matches!(*state, TransientIndexState::Dormant) {
+            return Err(storage_error(StorageErrorKind::InvariantViolation));
         }
+        *state = TransientIndexState::Ready(indexes);
+        drop(state);
+        Ok(RedbOperationalPorts {
+            shared: self.shared,
+        })
     }
 }
 
@@ -178,6 +200,18 @@ impl RedbOperationalPorts {
             _lease: lease,
         })
     }
+
+    pub(crate) fn acquire_indexed_read_lease(&self) -> Result<ExclusiveLease, StorageError> {
+        self.shared.mutation_gate.acquire()
+    }
+
+    pub(crate) fn pending_outbox_page(
+        &self,
+        after: Option<riffdb_types::EventId>,
+        limit: usize,
+    ) -> Result<(Vec<riffdb_types::EventId>, bool), StorageError> {
+        self.shared.pending_outbox_page(after, limit)
+    }
 }
 
 impl RedbWriteAccess {
@@ -195,7 +229,15 @@ impl RedbWriteAccess {
         self.commit_for(RedbTestOperation::CommandBatch)
     }
 
-    pub(crate) fn commit_for(mut self, operation: RedbTestOperation) -> Result<(), StorageError> {
+    pub(crate) fn commit_for(self, operation: RedbTestOperation) -> Result<(), StorageError> {
+        self.commit_for_with_delta(operation, None)
+    }
+
+    pub(crate) fn commit_for_with_delta(
+        mut self,
+        operation: RedbTestOperation,
+        delta: Option<TransientIndexDelta>,
+    ) -> Result<(), StorageError> {
         if let Some(controller) = &self.shared.test_controller {
             controller.before_commit(operation)?;
         }
@@ -205,7 +247,13 @@ impl RedbWriteAccess {
             .ok_or_else(|| storage_error(StorageErrorKind::InvariantViolation))?;
         if let Err(error) = transaction.commit() {
             self.shared.write_fenced.store(true, Ordering::Release);
+            self.invalidate_transient_indexes();
             return Err(commit_error(error));
+        }
+        if let Some(delta) = delta
+            && let Ok(mut state) = self.shared.transient_indexes.lock()
+        {
+            state.apply_delta(delta);
         }
         if let Some(controller) = &self.shared.test_controller
             && let Err(error) = controller.after_commit(operation)
@@ -216,12 +264,79 @@ impl RedbWriteAccess {
         Ok(())
     }
 
+    fn invalidate_transient_indexes(&self) {
+        if let Ok(mut state) = self.shared.transient_indexes.lock() {
+            *state = TransientIndexState::Invalid;
+        }
+    }
+
     pub(crate) fn abort(mut self) -> Result<(), StorageError> {
         let transaction = self
             .transaction
             .take()
             .ok_or_else(|| storage_error(StorageErrorKind::InvariantViolation))?;
         transaction.abort().map_err(precommit_storage_error)
+    }
+}
+
+impl RedbWriteAccess {
+    pub(crate) fn service_audit_sequences(
+        &self,
+        request_id: riffdb_types::RequestId,
+    ) -> Result<Vec<riffdb_types::AdministrationSequence>, StorageError> {
+        self.shared.service_audit_sequences(request_id)
+    }
+
+    pub(crate) fn ensure_pending_outbox_available(&self) -> Result<(), StorageError> {
+        self.shared.pending_outbox_page(None, 0).map(|_| ())
+    }
+}
+
+impl SharedRedb {
+    fn service_audit_sequences(
+        &self,
+        request_id: riffdb_types::RequestId,
+    ) -> Result<Vec<riffdb_types::AdministrationSequence>, StorageError> {
+        let state = self
+            .transient_indexes
+            .lock()
+            .map_err(|_| storage_error(StorageErrorKind::InvariantViolation))?;
+        match &*state {
+            TransientIndexState::Ready(indexes) => indexes
+                .service_audit_sequences(request_id)
+                .map(|sequences| sequences.to_vec())
+                .ok_or_else(|| storage_error(StorageErrorKind::Unavailable)),
+            TransientIndexState::Dormant | TransientIndexState::Invalid => {
+                Err(storage_error(StorageErrorKind::Unavailable))
+            }
+        }
+    }
+
+    fn pending_outbox_page(
+        &self,
+        after: Option<riffdb_types::EventId>,
+        limit: usize,
+    ) -> Result<(Vec<riffdb_types::EventId>, bool), StorageError> {
+        let state = self
+            .transient_indexes
+            .lock()
+            .map_err(|_| storage_error(StorageErrorKind::InvariantViolation))?;
+        match &*state {
+            TransientIndexState::Ready(indexes) => indexes
+                .pending_outbox_page(after, limit)
+                .ok_or_else(|| storage_error(StorageErrorKind::Unavailable)),
+            TransientIndexState::Dormant | TransientIndexState::Invalid => {
+                Err(storage_error(StorageErrorKind::Unavailable))
+            }
+        }
+    }
+}
+
+impl TransientIndexState {
+    fn apply_delta(&mut self, delta: TransientIndexDelta) {
+        if let Self::Ready(indexes) = self {
+            indexes.apply(delta);
+        }
     }
 }
 
@@ -470,6 +585,8 @@ where
 mod tests {
     use std::sync::atomic::{AtomicU64, Ordering};
 
+    use riffdb_types::{CommitSequence, EventId};
+
     use super::*;
 
     static NEXT_TEST_PATH: AtomicU64 = AtomicU64::new(1);
@@ -594,5 +711,44 @@ mod tests {
             reopened.probe_database_identity().expect("reopen identity"),
             DatabaseIdentityProbe::Existing(database_id(0x55))
         );
+    }
+
+    #[test]
+    fn postcommit_accelerator_failure_preserves_known_success_and_does_not_fence_core_writes() {
+        let path = TestDatabasePath::new("postcommit-accelerator");
+        let mut store = RedbStore::open(&path.0).expect("open store");
+        store
+            .initialize_database(database_id(0x77))
+            .expect("initialize store");
+        let dormant = RedbDormantPorts {
+            shared: store.shared,
+        };
+        let ports = dormant
+            .into_operational_after_catalog_validation()
+            .expect("activate ports");
+        let event_id = EventId::new(CommitSequence::first(), 0);
+
+        for _ in 0..2 {
+            ports
+                .begin_write()
+                .expect("begin known-success transaction")
+                .commit_for_with_delta(
+                    RedbTestOperation::CommandBatch,
+                    Some(TransientIndexDelta::PendingOutboxInserted(vec![event_id])),
+                )
+                .expect("confirmed engine commit remains known success");
+        }
+        assert_eq!(
+            ports
+                .pending_outbox_page(None, 1)
+                .expect_err("duplicate delta degrades only the outbox accelerator")
+                .kind(),
+            StorageErrorKind::Unavailable
+        );
+        ports
+            .begin_write()
+            .expect("core writes remain unfenced")
+            .abort()
+            .expect("abort proof transaction");
     }
 }

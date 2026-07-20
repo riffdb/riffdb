@@ -47,6 +47,7 @@ use crate::layout::{
     META_DATABASE_ID, PROVENANCE,
 };
 use crate::store::{RedbOperationalPorts, RedbWriteAccess};
+use crate::transient::TransientIndexDelta;
 
 fn decoded_value<T>(item: EncodedPageItem<T>) -> T {
     item.into_parts().0
@@ -667,20 +668,20 @@ fn service_common_matches(
 fn service_lifecycle<T>(
     table: &T,
     request_id: RequestId,
+    sequences: &[AdministrationSequence],
 ) -> Result<Option<ServiceLifecycle>, StorageError>
 where
     T: ReadableTable<&'static [u8], &'static [u8]>,
 {
     let mut lifecycle = None;
-    for entry in table.iter().map_err(precommit_storage_error)? {
-        let (_, value) = entry.map_err(precommit_storage_error)?;
+    for sequence in sequences {
         let StoredAdministrationAuditRecordV1::Service(record) =
-            decoded_value(decode_administration_audit_record_v1(value.value())?)
+            read_audit_record(table, *sequence)?
         else {
-            continue;
+            return Err(corrupt());
         };
         if record.request_id() != request_id {
-            continue;
+            return Err(corrupt());
         }
         lifecycle = Some(match lifecycle {
             None if record.phase() == ServiceAuditPhaseV1::Started => ServiceLifecycle::Started {
@@ -807,7 +808,8 @@ impl ServiceAuditAppendRepository for RedbOperationalPorts {
         let transaction = access.transaction()?;
         let allocator = validate_administration_stream(transaction)?;
         let audit = transaction.open_table(AUDIT).map_err(table_error)?;
-        let lifecycle = service_lifecycle(&audit, intent.request_id())?;
+        let sequences = access.service_audit_sequences(intent.request_id())?;
+        let lifecycle = service_lifecycle(&audit, intent.request_id(), &sequences)?;
         drop(audit);
 
         let phase_allowed = match lifecycle {
@@ -852,7 +854,13 @@ impl ServiceAuditAppendRepository for RedbOperationalPorts {
             &StoredAdministrationAuditRecordV1::Service(record.clone()),
         )?;
         write_administration_allocator(transaction, allocator, next)?;
-        access.commit_for(RedbTestOperation::ServiceAudit)?;
+        access.commit_for_with_delta(
+            RedbTestOperation::ServiceAudit,
+            Some(TransientIndexDelta::ServiceAuditAppended {
+                request_id: intent.request_id(),
+                sequence: assigned[0],
+            }),
+        )?;
         Ok(ServiceAuditAppendResult::Appended(record))
     }
 }
@@ -1226,9 +1234,10 @@ where
 }
 
 fn validate_bootstrap_graph(
-    transaction: &redb::WriteTransaction,
+    access: &RedbWriteAccess,
     marker: CapabilityBootstrapMarkerV1,
 ) -> Result<StoredCapabilityRecordV1, StorageError> {
+    let transaction = access.transaction()?;
     if marker.database_id() != read_database_id(transaction)? {
         return Err(corrupt());
     }
@@ -1262,8 +1271,9 @@ fn validate_bootstrap_graph(
     else {
         return Err(corrupt());
     };
+    let sequences = access.service_audit_sequences(started.request_id())?;
     let lifecycle_valid = matches!(
-        service_lifecycle(&audit, started.request_id())?,
+        service_lifecycle(&audit, started.request_id(), &sequences)?,
         Some(ServiceLifecycle::Started { record, .. }) if record == started
     );
     if started.request_id() != transition.request_id()
@@ -1417,7 +1427,13 @@ impl CapabilityBootstrapAdministrationRepository for RedbOperationalPorts {
             &StoredAdministrationAuditRecordV1::Capability(capability_audit),
         )?;
         write_administration_allocator(transaction, allocator, next)?;
-        access.commit_for(RedbTestOperation::CapabilityBootstrap)?;
+        access.commit_for_with_delta(
+            RedbTestOperation::CapabilityBootstrap,
+            Some(TransientIndexDelta::ServiceAuditAppended {
+                request_id: intent.start().request_id(),
+                sequence: started_sequence,
+            }),
+        )?;
         Ok(CapabilityBootstrapResult::BootstrapCreated {
             capability_id: intent.capability_id(),
             revision: NonZeroU64::MIN,
@@ -1434,7 +1450,7 @@ fn bootstrap_replay(
     marker: CapabilityBootstrapMarkerV1,
 ) -> Result<CapabilityBootstrapResult, StorageError> {
     let transaction = access.transaction()?;
-    let capability = validate_bootstrap_graph(transaction, marker)?;
+    let capability = validate_bootstrap_graph(&access, marker)?;
     let digest_matches =
         match resolve_capability_digests_write(transaction, intent.digests().candidates())? {
             CapabilityLookupResult::Found(record) => {
@@ -1443,7 +1459,9 @@ fn bootstrap_replay(
             CapabilityLookupResult::NotFound | CapabilityLookupResult::MultipleMatches => false,
         };
     let audit = transaction.open_table(AUDIT).map_err(table_error)?;
-    let request_is_unused = service_lifecycle(&audit, intent.start().request_id())?.is_none();
+    let sequences = access.service_audit_sequences(intent.start().request_id())?;
+    let request_is_unused =
+        service_lifecycle(&audit, intent.start().request_id(), &sequences)?.is_none();
     drop(audit);
     if marker.capability_id() != intent.capability_id()
         || !capability.matches_requested(intent.requested())
@@ -1467,7 +1485,13 @@ fn bootstrap_replay(
         &StoredAdministrationAuditRecordV1::Service(started),
     )?;
     write_administration_allocator(transaction, allocator, next)?;
-    access.commit_for(RedbTestOperation::CapabilityBootstrap)?;
+    access.commit_for_with_delta(
+        RedbTestOperation::CapabilityBootstrap,
+        Some(TransientIndexDelta::ServiceAuditAppended {
+            request_id: intent.start().request_id(),
+            sequence: started_sequence,
+        }),
+    )?;
     Ok(CapabilityBootstrapResult::BootstrapReplayed {
         capability_id: capability.capability_id(),
         revision: capability.revision(),
@@ -1591,9 +1615,12 @@ mod tests {
                 .expect("initialize test database"),
             DatabaseInitializationResult::Installed(database_id())
         );
-        let ports = RedbOperationalPorts {
+        let dormant = crate::store::RedbDormantPorts {
             shared: store.shared,
         };
+        let ports = dormant
+            .into_operational_after_catalog_validation()
+            .expect("activate test ports");
         (path, ports)
     }
 
@@ -1928,9 +1955,12 @@ mod tests {
         store
             .initialize_database(database_id())
             .expect("initialize controlled database");
-        let mut ports = RedbOperationalPorts {
+        let dormant = crate::store::RedbDormantPorts {
             shared: store.shared,
         };
+        let mut ports = dormant
+            .into_operational_after_catalog_validation()
+            .expect("activate controlled ports");
         let deployed = bundle("uncertain", 1, 8);
         let error = ports
             .activate_catalog(&catalog_intent(None, deployed.clone(), 50))

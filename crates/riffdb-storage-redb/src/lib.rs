@@ -14,6 +14,7 @@ mod layout;
 mod reads;
 mod startup;
 mod store;
+mod transient;
 
 #[doc(hidden)]
 pub use hooks::{RedbTestController, RedbTestEvent, RedbTestOperation, RedbTestPhase};
