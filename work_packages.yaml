@@ -1,4 +1,4 @@
-spec_version: '0.13'
+spec_version: '0.14'
 product: RiffDB
 repository: riffdb
 status: implementation-handoff
@@ -466,6 +466,7 @@ work_packages:
   - ADR-0018
   - ADR-0019
   - ADR-0021
+  - ADR-0023
   allowed_paths:
   - Cargo.lock
   - crates/riffdb-types/src/codec.rs
@@ -493,6 +494,8 @@ work_packages:
   - Integrity-check interface
   - Checked EvaluatedCommand and complete dependency-validation request, terminal non-commit admission transition,
     and memory conformance cases
+  - Additive non-durable CandidateValidationRejection::CommitCheckArithmeticFault control result, distinct from a
+    false commit predicate and integrity fault, with memory conformance proving rollback before sequence assignment
   - Source-free Existing(DatabaseId) or NeedsInitialization probe, checked candidate initialization that atomically
     re-proves emptiness and returns any concurrent durable winner without candidate comparison, plus
     CommitIntent-carried ProvenanceId, collision/no-overwrite results, and architecture checks excluding
@@ -902,6 +905,7 @@ work_packages:
   - ADR-0016
   - ADR-0018
   - ADR-0021
+  - ADR-0023
   allowed_paths:
   - Cargo.lock
   - crates/riffdb-commit/**
@@ -917,12 +921,17 @@ work_packages:
   - Uncertain-response recovery
   - Named transaction failpoints and redaction-safe telemetry hooks
   - Bounded idempotency inspect/confirm plus command, control-plane, and AdministrationAuditExecutor ports
+  - Commit-owned AdministrationAuditInputView plus opaque BootstrapCompoundAuditProof, exact control-plane transition
+    sequence recovery metadata, and typed CapabilityPreparationChanged for an absent revoke target that appears
   - Commit-owned DatabaseInitializationExecutor that exposes the source-free identity probe and is the sole
     production caller of the authoritative initialization transition, accepting a checked candidate only after
     NeedsInitialization and never exposing a storage mutation handle to server composition
   - Commit-owned injected AdmissionClock, AdministrationClock, and ProvenanceIdSource ports with exact sampling,
     failure, and retry behavior and no ambient clock or entropy access in the coordinator
   - Coordinator-only final CommitIntent assembly from EvaluatedCommand and the exact immutable stored admission
+  - Narrow direct riffdb-contract-ir and riffdb-invariant use for exact historical-plan matching, grammar-v1 index
+    derivation, and pure transaction-current commit-check evaluation through a private owned positional value source;
+    no compiler, storage handle/callback, I/O, clock, entropy, async operation, or duplicate evaluator crosses it
   - Exact transaction progression that distinguishes influential range dependencies from mutation-affected epochs,
     derives and reads the latter after private validation, freezes/reserves the sequence-free write plan before
     sequence assignment, and verifies the final assigned graph before staging
@@ -931,10 +940,17 @@ work_packages:
   - New-admission provenance freezing, stored-claim reuse, and complete mechanical storage-record-to-policy-facts
     lowering with transaction-current verifier and authorization-clock use after capability queue waits
   - ProvenanceId generation only for a successfully evaluated new attempt before transaction open, with
-    collision-before-sequence handling, no regeneration on pending resume or terminal replay, and same-key
-    resolution before any retry after an unknown response
-  - Dependency-validated execution-failure terminalization, changed-dependency reevaluation, and proven-abort versus
-    unknown-commit recovery
+    collision-before-sequence handling, no regeneration during uncertain same-attempt resolution or terminal replay,
+    a new candidate permitted only for a proven-noncommit reevaluation attempt, and same-key resolution before any
+    retry or source call after an unknown response
+  - Dependency-validated execution-failure terminalization, including the late commit-check arithmetic path that
+    rolls back before sequence assignment, discards its one unpersisted provenance candidate, sources no second
+    candidate, and follows changed-dependency reevaluation plus proven-abort versus unknown-commit recovery
+  - Fixed private MAX_COMMAND_EVALUATION_ATTEMPTS_V1 ceiling of three complete evaluations per invocation, with no
+    fourth attempt, byte-identical Pending and no durable graph on internal RetryBudgetExhausted, and no reevaluation
+    while resolving CommitStatusUnknown
+  - Grammar/IR-v1 index derivation that always writes the canonical empty CanonicalRecord as covered_values while
+    preserving generic storage conformance for covered-value epoch changes
   - Bounded executor-capacity permit between durable Started and fresh final authorization, with synchronous
     nonretroactive admission and no business work when standalone/Started append is not proven durable
   - Exact Started-to-one-selected-and-attempted-terminal behavior for new admission, pending resume, terminal replay,
@@ -985,6 +1001,7 @@ work_packages:
   - ADR-0011
   - ADR-0016
   - ADR-0018
+  - ADR-0023
   allowed_paths:
   - Cargo.lock
   - crates/riffdb-auth/**
@@ -1003,6 +1020,9 @@ work_packages:
   - Field/tenant filters
   - Policy-owned synchronous AuthorizationClock, value-only AuthorizedCapabilityMutationPreparation and
     TransactionCurrentCapabilityFacts, and pure TransactionCurrentCapabilityVerifier
+  - Present-target revoke facts with ordinary complete-subset authorization, plus a distinct absent-target
+    preparation authorized only by exact database/environment AdministerCapabilities and carrying no invented target
+    grant, lifecycle, revision, principal, audience, issue-time, or expiry facts
   - One fresh transaction-current AuthorizationClock sample shared by verifier facts, issued_at or revoked_at,
     expiry validation, and the corresponding capability administration audit timestamp
   - Exhaustive service-operation-to-permission mapping and privately constructible AuthorizedProvenanceClaims
@@ -1047,6 +1067,7 @@ work_packages:
   - ADR-0018
   - ADR-0020
   - ADR-0021
+  - ADR-0023
   allowed_paths:
   - Cargo.lock
   - crates/riffdb-service/**
@@ -1067,6 +1088,8 @@ work_packages:
     protocol-ID substitution, or identifier-order interpretation in the service
   - Capability create, revoke, and bootstrap service DTOs with checked principal-less bootstrap context and typed
     executor-result mapping that never receives a storage transition
+  - Absent-revoke CapabilityPreparationChanged recovery that reloads now-present complete facts, reruns current
+    policy, obtains a fresh bounded executor permit, and resubmits without appending a second Started record
   - Current-policy safe points, obligation application, bounded pages/cursors/waits/streams, and deterministic fake
     cursor generation
   - Service-owned CursorMonotonicClock consumer port with explicit-tick tests, checked regression/overflow failure,
@@ -1077,6 +1100,11 @@ work_packages:
     visible after append failure/crash, including Denied, Failed, Cancelled, resume/replay, append-failure mapping,
     post-commit bootstrap success handling, and no conversion of audit uncertainty into command OutcomeUnknown
     before business work begins
+  - Service-owned ServiceAuditInput implementation of commit-owned AdministrationAuditInputView, plus the exact
+    control-plane terminal matrix covering known new/replayed transition Succeeded with its original ControlPlane sequence,
+    authorized typed no-transition Failed with None, and unknown transition OutcomeUncertain before typed release
+  - Internal RetryBudgetExhausted mapping to the unchanged public ConcurrencyDeadlineExceeded error, retry action, and
+    protocol-independent safe message
   - Standalone audit orchestration for every mutation and administration attempt after exact classification, every
     explicit authenticated policy Deny, and allowed standard reads only when an Allow obligation requires it, with
     the principal-less bootstrap exception
@@ -1216,6 +1244,7 @@ work_packages:
   - ADR-0019
   - ADR-0020
   - ADR-0021
+  - ADR-0023
   allowed_paths:
   - Cargo.lock
   - crates/riffdb-api-grpc/**
@@ -1230,6 +1259,8 @@ work_packages:
     getrandom 0.3.4 sources; every retry uses a fresh RequestId and UUID ordering is never a semantic signal
   - Generated ergonomic command module
   - Error and retry mapping
+  - Conformance evidence that retry-budget exhaustion preserves the existing public ConcurrencyDeadlineExceeded code,
+    safe message, retry action, and gRPC DEADLINE_EXCEEDED mapping
   - Projection protocol mapping against an injected application-service stub
   - gRPC-path telemetry, limits, and server lifecycle hooks
   - Credential handoff only through CredentialAuthenticator with exact bootstrap metadata extraction and normal
@@ -1745,6 +1776,8 @@ work_packages:
   - ADR-0019
   - ADR-0020
   - ADR-0021
+  - ADR-0022
+  - ADR-0023
   allowed_paths:
   - scripts/demo*
   - scripts/release*
@@ -1772,6 +1805,10 @@ work_packages:
     checked before activation, consumed verbatim, authorization filtered, and never repaired or rederived
   - Cross-transport and crash/restart evidence that the exact ADR-0021 target registry, canonical order, and
     request-only construction rule are preserved without adapter/storage derivation or result expansion
+  - Final ADR-0023 evidence for the three-attempt reevaluation ceiling, proven-noncommit versus uncertain same-attempt
+    provenance recovery, canonical empty v1 covered values, late commit-check arithmetic terminalization, absent
+    capability revoke, exact transaction-current evaluator boundary, audit-input ownership inversion, and
+    known/no-transition control-plane audit classifications
   acceptance_commands:
   - ./scripts/ci-all
   - ./scripts/demo --assert
