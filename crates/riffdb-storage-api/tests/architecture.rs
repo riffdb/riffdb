@@ -94,6 +94,7 @@ fn semantic_api_excludes_engines_transports_sources_and_generic_transactions() {
         "getrandom",
         "rand::",
         "redb::",
+        "riffdb_proto",
         "prost::",
         "tonic::",
         "rmcp::",
@@ -117,12 +118,12 @@ fn manifest_has_only_the_reviewed_semantic_dependencies() {
     let manifest = include_str!("../Cargo.toml");
     assert!(manifest.contains("riffdb-types"));
     assert!(manifest.contains("riffdb-contract-ir"));
+    assert!(manifest.contains("riffdb-proto"));
+    assert!(manifest.contains("prost"));
     for forbidden in [
-        "riffdb-proto",
         "riffdb-runtime",
         "riffdb-commit",
         "redb",
-        "prost",
         "tokio",
         "rand",
         "getrandom",
