@@ -2,5 +2,6 @@
 
 //! Deterministic fixtures and reference models shared by RiffDB tests.
 
+pub mod authorization;
 pub mod histories;
 pub mod model;
