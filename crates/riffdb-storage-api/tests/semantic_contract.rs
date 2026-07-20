@@ -1,9 +1,9 @@
 //! Frozen foundational storage semantics and exact identity fixtures.
 
 use riffdb_storage_api::{
-    AdministrationSequenceAllocator, ApplicationSequenceAllocator, DatabaseIdentityProbe,
-    IdempotencyIdentity, IdempotencyIdentityKey, IdempotencyKeyDigest, IndexEpochPosition,
-    OpenSessionId, ReadableCapabilityDigestInventory, ReadableDigestKey,
+    AdministrationSequenceAllocator, ApplicationSequenceAllocator, CandidateValidationRejection,
+    DatabaseIdentityProbe, IdempotencyIdentity, IdempotencyIdentityKey, IdempotencyKeyDigest,
+    IndexEpochPosition, OpenSessionId, ReadableCapabilityDigestInventory, ReadableDigestKey,
     ReadableIdempotencyDigestInventory, StorageError, StorageErrorKind,
 };
 use riffdb_types::{
@@ -109,4 +109,27 @@ fn identity_probe_and_storage_errors_keep_normal_state_separate() {
     let error = StorageError::new(StorageErrorKind::CorruptData, None);
     assert_eq!(error.kind(), StorageErrorKind::CorruptData);
     assert!(!error.to_string().contains("path"));
+}
+
+#[test]
+fn candidate_validation_rejections_are_distinct_non_durable_controls() {
+    fn fixture_tag(rejection: CandidateValidationRejection) -> u8 {
+        match rejection {
+            CandidateValidationRejection::DependencyChanged => 1,
+            CandidateValidationRejection::CommitCheckRejected => 2,
+            CandidateValidationRejection::CommitCheckArithmeticFault => 3,
+            CandidateValidationRejection::MutationPreconditionChanged => 4,
+        }
+    }
+
+    assert_eq!(
+        [
+            CandidateValidationRejection::DependencyChanged,
+            CandidateValidationRejection::CommitCheckRejected,
+            CandidateValidationRejection::CommitCheckArithmeticFault,
+            CandidateValidationRejection::MutationPreconditionChanged,
+        ]
+        .map(fixture_tag),
+        [1, 2, 3, 4]
+    );
 }

@@ -87,7 +87,8 @@ pub enum PublicErrorKind {
     IdempotencyKeyReuse,
     /// Authorization denied the operation.
     AuthorizationDenied,
-    /// Logical conflict acquisition exceeded its deadline.
+    /// Logical conflict acquisition exceeded its deadline, or the fixed v1
+    /// command reevaluation budget was exhausted.
     ConcurrencyDeadlineExceeded,
     /// The requested contract version or plan is not current.
     ContractMismatch,
@@ -414,7 +415,8 @@ impl PublicError {
         Self::contextless(PublicErrorKind::AuthorizationDenied)
     }
 
-    /// Creates a concurrency-deadline-exceeded failure.
+    /// Creates the shared failure for a logical-conflict deadline or exhausted
+    /// fixed v1 command reevaluation budget.
     #[must_use]
     pub const fn concurrency_deadline_exceeded() -> Self {
         Self::contextless(PublicErrorKind::ConcurrencyDeadlineExceeded)
@@ -708,6 +710,36 @@ mod tests {
             assert_eq!(kind.recovery_action(), recovery_action);
             assert!(code.is_ascii());
             assert!(message.is_ascii());
+        }
+    }
+
+    #[test]
+    fn concurrency_deadline_error_represents_both_v1_retryable_causes() {
+        #[derive(Clone, Copy)]
+        enum Cause {
+            LogicalConflictDeadline,
+            ReevaluationBudgetExhausted,
+        }
+
+        const fn public_error_for(cause: Cause) -> PublicError {
+            match cause {
+                Cause::LogicalConflictDeadline | Cause::ReevaluationBudgetExhausted => {
+                    PublicError::concurrency_deadline_exceeded()
+                }
+            }
+        }
+
+        for cause in [
+            Cause::LogicalConflictDeadline,
+            Cause::ReevaluationBudgetExhausted,
+        ] {
+            let error = public_error_for(cause);
+            assert_eq!(error.kind(), PublicErrorKind::ConcurrencyDeadlineExceeded);
+            assert_eq!(error.kind().code(), "concurrency_deadline_exceeded");
+            assert_eq!(error.kind().safe_message(), "concurrency deadline exceeded");
+            assert_eq!(error.kind().class(), ErrorClass::DeadlineExceeded);
+            assert_eq!(error.kind().recovery_action(), RecoveryAction::Retry);
+            assert_eq!(error.details(), &PublicErrorDetails::None);
         }
     }
 
