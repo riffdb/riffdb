@@ -12,5 +12,12 @@ default = []
 riffdb-auth = { version = "0.1.0", path = "../riffdb-auth", default-features = false }
 riffdb-types = { version = "0.1.0", path = "../riffdb-types", default-features = false }
 
+[dev-dependencies]
+riffdb-testkit = { version = "0.1.0", path = "../riffdb-testkit", default-features = false }
+
+[[test]]
+name = "authorization_non_bypass"
+path = "../../tests/authorization/authorization_non_bypass.rs"
+
 [lints]
 workspace = true
