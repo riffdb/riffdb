@@ -1840,6 +1840,7 @@ mod tests {
             pending.canonical_input_hash(),
             actor.clone(),
             logical_time,
+            partition.clone(),
             partition_hash,
             Vec::new(),
             outcome.clone(),

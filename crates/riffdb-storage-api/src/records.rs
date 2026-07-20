@@ -7,7 +7,7 @@ use riffdb_types::{
     AdmittedActorContext, CanonicalInputHash, CanonicalRecord, CommitSequence, ConflictKeyHash,
     ContractVersion, EntityVersion, EventHash, EventId, EventTypeId, IndexEntryKey, IndexEpoch,
     LogicalTime, MAX_CANONICAL_DOCUMENT_BYTES, MAX_COMMIT_INTENT_SEMANTIC_BYTES, OutcomeId,
-    PartitionKeyHash, ProvenanceId, RequestId, encode_canonical_record, hash_event,
+    PartitionKey, PartitionKeyHash, ProvenanceId, RequestId, encode_canonical_record, hash_event,
     hash_partition_key,
 };
 
@@ -377,6 +377,7 @@ pub struct StoredOutcomeV1 {
     canonical_input_hash: CanonicalInputHash,
     actor: AdmittedActorContext,
     logical_time: LogicalTime,
+    partition_key: PartitionKey,
     partition_hash: PartitionKeyHash,
     conflict_hashes: Vec<ConflictKeyHash>,
     declared_outcome: DeclaredOutcome,
@@ -396,6 +397,7 @@ impl StoredOutcomeV1 {
         canonical_input_hash: CanonicalInputHash,
         actor: AdmittedActorContext,
         logical_time: LogicalTime,
+        partition_key: PartitionKey,
         partition_hash: PartitionKeyHash,
         conflict_hashes: Vec<ConflictKeyHash>,
         declared_outcome: DeclaredOutcome,
@@ -407,6 +409,7 @@ impl StoredOutcomeV1 {
             || identity.command_id() != plan.command_id()
             || identity.principal_id() != actor.principal_id()
             || identity.tenant_scope() != actor.tenant_scope()
+            || hash_partition_key(partition_key.as_bytes()) != partition_hash
         {
             return Err(StorageValueError::IdentityMismatch);
         }
@@ -419,6 +422,7 @@ impl StoredOutcomeV1 {
             canonical_input_hash,
             actor,
             logical_time,
+            partition_key,
             partition_hash,
             conflict_hashes,
             declared_outcome,
@@ -470,6 +474,14 @@ impl StoredOutcomeV1 {
         self.logical_time
     }
 
+    /// Borrows the exact canonical partition identity retained for internal authorization.
+    ///
+    /// Transport and public-error layers must not expose these bytes.
+    #[must_use]
+    pub const fn partition_key(&self) -> &PartitionKey {
+        &self.partition_key
+    }
+
     /// Returns the canonical partition identity hash.
     #[must_use]
     pub const fn partition_hash(&self) -> PartitionKeyHash {
@@ -511,6 +523,7 @@ impl StoredOutcomeV1 {
             &self.identity,
             &self.plan,
             &self.actor,
+            &self.partition_key,
             &self.conflict_hashes,
             &self.declared_outcome,
             &self.admitted_claims,
@@ -1426,6 +1439,7 @@ impl AtomicCommandRecordSet {
             || expected_pending.actor() != stored_outcome.actor()
             || expected_pending.logical_time() != stored_outcome.logical_time()
             || expected_pending.provenance_claims() != stored_outcome.admitted_claims()
+            || expected_pending.partition_key() != stored_outcome.partition_key()
             || hash_partition_key(expected_pending.partition_key().as_bytes())
                 != stored_outcome.partition_hash()
             || entities != commit.mutations()
@@ -1834,6 +1848,7 @@ fn stored_outcome_semantic_bytes(
     identity: &IdempotencyIdentity,
     plan: &ExecutablePlanRef,
     actor: &AdmittedActorContext,
+    partition_key: &PartitionKey,
     conflict_hashes: &[ConflictKeyHash],
     outcome: &DeclaredOutcome,
     admitted_claims: &StoredAdmittedProvenanceClaimsV1,
@@ -1851,6 +1866,7 @@ fn stored_outcome_semantic_bytes(
         .and_then(|value| value.checked_add(32))
         .and_then(|value| value.checked_add(actor_semantic_bytes(actor).ok()?))
         .and_then(|value| value.checked_add(12 + 32 + 4))
+        .and_then(|value| value.checked_add(framed_bytes(partition_key.as_bytes().len()).ok()?))
         .and_then(|value| value.checked_add(conflict_bytes))
         .and_then(|value| value.checked_add(outcome.semantic_bytes().ok()?))
         .and_then(|value| value.checked_add(admitted_claims.semantic_bytes().ok()?))
@@ -2057,6 +2073,7 @@ fn projected_atomic_semantic_breakdown(
         pending.identity(),
         evaluated.plan(),
         pending.actor(),
+        pending.partition_key(),
         intent.conflict_hashes(),
         evaluated.outcome(),
         pending.provenance_claims(),
@@ -2376,6 +2393,7 @@ mod tests {
             CanonicalInputHash::from_bytes([0x32; 32]),
             actor.clone(),
             logical_time,
+            partition.clone(),
             partition_hash,
             Vec::new(),
             declared_outcome.clone(),
@@ -2588,6 +2606,7 @@ mod tests {
             template.canonical_input_hash,
             template.actor.clone(),
             template.logical_time,
+            template.partition_key.clone(),
             template.partition_hash,
             conflict_hashes,
             template.declared_outcome.clone(),
@@ -2609,6 +2628,7 @@ mod tests {
             template.canonical_input_hash,
             template.actor.clone(),
             template.logical_time,
+            template.partition_key.clone(),
             template.partition_hash,
             template.conflict_hashes.clone(),
             template.declared_outcome.clone(),

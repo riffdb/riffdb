@@ -537,6 +537,25 @@ fn critical_cross_package_field_numbers_are_frozen() {
         ]
     );
     assert_eq!(fields("CapabilityPermissionsV1"), vec![("values", 1)]);
+    assert_eq!(
+        fields("StoredOutcomeV1"),
+        vec![
+            ("identity", 1),
+            ("commit_sequence", 2),
+            ("admission_request_id", 3),
+            ("plan", 4),
+            ("canonical_input_hash", 5),
+            ("actor", 6),
+            ("logical_time", 7),
+            ("partition_hash", 8),
+            ("conflict_hashes", 9),
+            ("declared_outcome", 10),
+            ("admitted_claims", 11),
+            ("provenance_id", 12),
+            ("durability_mode", 13),
+            ("partition_key", 14),
+        ]
+    );
     assert_eq!(fields("StoredCommitRecordV1")[8], ("read_dependencies", 9));
 }
 

@@ -237,6 +237,7 @@ pub(super) fn atomic_record_set() -> AtomicCommandRecordSet {
         CanonicalInputHash::from_bytes([0x32; 32]),
         actor(),
         pending.logical_time(),
+        pending.partition_key().clone(),
         partition_hash,
         Vec::new(),
         outcome.clone(),

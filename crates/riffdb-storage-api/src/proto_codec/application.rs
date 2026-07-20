@@ -355,6 +355,7 @@ pub fn encode_stored_outcome_v1(
             admitted_claims: Some(claims_to_proto(value.admitted_claims())),
             provenance_id: value.provenance_id().as_bytes().to_vec(),
             durability_mode: durability_to_proto(value.durability_mode()),
+            partition_key: value.partition_key().as_bytes().to_vec(),
         },
     )
 }
@@ -373,6 +374,8 @@ pub fn decode_stored_outcome_v1(
             CanonicalInputHash::from_bytes(fixed(value.canonical_input_hash)?),
             actor_from_proto(require(value.actor)?)?,
             logical_time_from_proto(require(value.logical_time)?)?,
+            PartitionKey::from_bytes(value.partition_key)
+                .map_err(|_| DurableCodecError::corrupt())?,
             PartitionKeyHash::from_bytes(fixed(value.partition_hash)?),
             hashes_from_proto(value.conflict_hashes)?,
             declared_outcome_from_proto(require(value.declared_outcome)?)?,

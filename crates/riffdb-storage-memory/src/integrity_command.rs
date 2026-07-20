@@ -583,7 +583,7 @@ mod tests {
             plan.clone(),
             logical_time,
             actor.clone(),
-            partition,
+            partition.clone(),
             admitted_claims.clone(),
         )
         .expect("pending");
@@ -608,6 +608,7 @@ mod tests {
             input_hash,
             actor.clone(),
             logical_time,
+            partition,
             partition_hash,
             Vec::new(),
             outcome.clone(),
@@ -708,6 +709,7 @@ mod tests {
             original.canonical_input_hash(),
             original.actor().clone(),
             original.logical_time(),
+            original.partition_key().clone(),
             original.partition_hash(),
             original.conflict_hashes().to_vec(),
             original.declared_outcome().clone(),

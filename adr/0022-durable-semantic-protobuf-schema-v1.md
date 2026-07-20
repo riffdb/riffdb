@@ -4,6 +4,8 @@
 - **Direction approved:** 2026-07-20
 - **Exact text accepted:** 2026-07-20
 - **Accepted:** 2026-07-20
+- **Maintainer-accepted correction:** 2026-07-20, terminal outcomes retain the
+  exact canonical partition key at field 14
 - **Requires:** ADR-0004, ADR-0005, ADR-0006, ADR-0007, ADR-0009,
   ADR-0010, ADR-0011, ADR-0012, ADR-0013, ADR-0014, ADR-0016,
   ADR-0017, ADR-0018, ADR-0019, and ADR-0021
@@ -16,6 +18,18 @@ The human maintainer accepted this exact durable semantic-record schema on
 2026-07-20. Its package, modules, registered payloads, fields, numbers, enum and
 oneof tags, presence rules, canonical-wire rules, and validation boundaries are
 now authoritative for WP-065 and its durable consumers.
+
+On 2026-07-20 the human maintainer accepted a pre-release correction to
+`StoredOutcomeV1`: the terminal row retains the exact canonical complete
+partition key in new field 14. This resolves the conflict with ADR-0009, which
+requires outcome recovery authorization against the recorded partition and
+forbids treating `PartitionKeyHash` as authorization evidence. This correction
+does not renumber or reinterpret fields 1 through 13.
+
+Because no v1 database or semantic-schema fixture has shipped, this required
+field and schema-hash correction intentionally replaces the pre-release v1
+fixtures. Existing pre-correction database bytes are rejected as an unknown
+schema rather than migrated; there is no shipped-user migration obligation.
 
 ## Context
 
@@ -389,6 +403,7 @@ message StoredOutcomeV1 {
   StoredAdmittedProvenanceClaimsV1 admitted_claims = 11;
   bytes provenance_id = 12;
   DurabilityModeV1 durability_mode = 13;
+  bytes partition_key = 14;
 }
 
 message StoredDurableEventV1 {
@@ -492,9 +507,16 @@ Nested event values in a commit and outbox intent must be byte-for-byte equal to
 the separately registered event row.
 
 `StoredOutcomeV1` is the complete terminal idempotency-table value and the
-persisted result. It is not a pointer. A terminal commit deletes the pending row
-and installs exactly one `StoredOutcomeV1` envelope atomically; it writes no
-pending tombstone, separate outcome-result row, or second terminal envelope.
+persisted result. It is not a pointer. Its `partition_key` is the exact bounded,
+canonical, complete `PartitionKey` admitted in `StoredPendingAdmissionV1`; its
+hash under the accepted `riffdb.partition-key/v1` domain must equal
+`partition_hash`. The atomic command record graph requires byte-for-byte
+partition-key equality between the pending admission and terminal outcome. The
+exact key is internal authorization evidence and must never be included in a
+public outcome, public error, log, metric, or protocol response. A terminal
+commit deletes the pending row and installs exactly one `StoredOutcomeV1`
+envelope atomically; it writes no pending tombstone, separate outcome-result
+row, or second terminal envelope.
 `StoredExecutionFailedV1` is the disjoint non-commit terminal value and contains
 the complete frozen pending admission plus code.
 
@@ -1130,7 +1152,7 @@ The mapping is lossless for these reasons:
 | Catalog | Exact lineage/version/hash/opaque canonical bytes and exact optional prior pointer; `StoredCatalogAdministrationV1` preserves principal, request, timestamp, approval, and transition-current pointers. |
 | Entity/index/epoch | Complete canonical key bytes, exact schema binding, version/epoch, and canonical record bytes; explicit entity owner must match its key, while index owners are derived from keys with no redundant field. |
 | Pending/failure | Every field of `StoredPendingAdmissionV1` is present; `StoredExecutionFailedV1` nests that exact value and one closed failure code. |
-| Outcome | Every field of the full `StoredOutcomeV1` is present, including admitted claims, provenance, conflicts, and durability. Replay-only metadata is absent because it is not durable. |
+| Outcome | Every field of the full `StoredOutcomeV1` is present, including the exact canonical partition key, its reciprocal hash, admitted claims, provenance, conflicts, and durability. Replay-only metadata is absent because it is not durable. |
 | Event/outbox intent | Exact typed event ID, type ID, canonical payload, and event hash; outbox intent nests the same event message without a divergent copy shape. |
 | Provenance | Every immutable identity/context/claim, affected entity/version, and ordered event link is represented. |
 | Commit | Every stored read dependency, expected prior state, complete entity post-image, event, outcome, provenance/outbox link, and durability value is represented. |
@@ -1279,8 +1301,10 @@ Acceptance requires WP-065 to freeze at least:
   `CapabilityPermissionsV1 { values = 1 }` wrapper including its empty set;
 - all nine service targets with oneof numbers equal to semantic tags, canonical
   order, duplicate, zero, unknown, wrong-lineage, empty, 16, and 17 cases;
-- full StoredOutcome terminal row and no-pointer/no-tombstone/no-second-record
-  fixtures plus malformed outcome/commit/provenance reciprocity vectors;
+- full StoredOutcome terminal row, exact pending/outcome partition-key
+  reciprocity, missing-key and key/hash mismatch rejection, and
+  no-pointer/no-tombstone/no-second-record fixtures plus malformed
+  outcome/commit/provenance reciprocity vectors;
 - exact event preimage/hash and standalone/commit/outbox three-copy fixtures;
 - absent initial outbox status and every present status variant;
 - every projection lifecycle/control shape, key identity, generation, frontier,

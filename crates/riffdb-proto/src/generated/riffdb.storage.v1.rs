@@ -221,6 +221,8 @@ pub struct StoredOutcomeV1 {
     pub provenance_id: ::prost::alloc::vec::Vec<u8>,
     #[prost(enumeration = "DurabilityModeV1", tag = "13")]
     pub durability_mode: i32,
+    #[prost(bytes = "vec", tag = "14")]
+    pub partition_key: ::prost::alloc::vec::Vec<u8>,
 }
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct StoredDurableEventV1 {

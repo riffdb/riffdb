@@ -244,6 +244,7 @@ fn outcome_with_mode(value: &StoredOutcomeV1, mode: DurabilityMode) -> StoredOut
         value.canonical_input_hash(),
         value.actor().clone(),
         value.logical_time(),
+        value.partition_key().clone(),
         value.partition_hash(),
         value.conflict_hashes().to_vec(),
         value.declared_outcome().clone(),
