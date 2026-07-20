@@ -1,4 +1,4 @@
-spec_version: '0.12'
+spec_version: '0.13'
 product: RiffDB
 repository: riffdb
 status: implementation-handoff
@@ -558,6 +558,7 @@ work_packages:
   - ADR-0018
   - ADR-0019
   - ADR-0021
+  - ADR-0022
   allowed_paths:
   - Cargo.lock
   - proto/**
