@@ -298,6 +298,51 @@ pub struct StoredServiceAuditRecordV1 {
 }
 
 impl StoredServiceAuditRecordV1 {
+    /// Reconstructs and validates one exact durable service-audit record.
+    ///
+    /// Principal-less records are accepted only for the closed bootstrap
+    /// lifecycle. Cross-record target and invocation reciprocity remains the
+    /// responsibility of the structural startup pass.
+    #[allow(clippy::too_many_arguments)]
+    pub fn from_stored_parts(
+        administration_sequence: AdministrationSequence,
+        request_id: RequestId,
+        timestamp: Timestamp,
+        operation: ServiceOperationV1,
+        phase: ServiceAuditPhaseV1,
+        principal: Option<AuditPrincipalV1>,
+        ingress: ServiceIngressKindV1,
+        targets: ServiceAuditTargetsV1,
+        approval_id: Option<ApprovalId>,
+        link: ServiceAuditLinkV1,
+    ) -> Result<Self, StorageValueError> {
+        validate_stored_service_audit_shape(
+            administration_sequence,
+            operation,
+            phase,
+            principal.as_ref(),
+            ingress,
+            link,
+        )?;
+        let semantic_bytes =
+            service_audit_semantic_bytes(principal.as_ref(), &targets, approval_id.as_ref(), link)?;
+        if semantic_bytes > MAX_SERVICE_AUDIT_BYTES {
+            return Err(StorageValueError::LimitExceeded);
+        }
+        Ok(Self {
+            administration_sequence,
+            request_id,
+            timestamp,
+            operation,
+            phase,
+            principal,
+            ingress,
+            targets,
+            approval_id,
+            link,
+        })
+    }
+
     /// Lowers a normal checked append intent after sequence assignment.
     #[must_use]
     pub fn from_intent(
@@ -656,6 +701,48 @@ fn validate_service_audit_phase_link(
     Ok(())
 }
 
+fn validate_stored_service_audit_shape(
+    administration_sequence: AdministrationSequence,
+    operation: ServiceOperationV1,
+    phase: ServiceAuditPhaseV1,
+    principal: Option<&AuditPrincipalV1>,
+    ingress: ServiceIngressKindV1,
+    link: ServiceAuditLinkV1,
+) -> Result<(), StorageValueError> {
+    if principal.is_some() {
+        return validate_service_audit_phase_link(operation, phase, link);
+    }
+
+    let ServiceAuditLinkV1::ControlPlane {
+        administration_sequence: transition_sequence,
+    } = link
+    else {
+        return Err(StorageValueError::InvalidShape);
+    };
+    if operation != ServiceOperationV1::CreateCapability || ingress == ServiceIngressKindV1::McpHttp
+    {
+        return Err(StorageValueError::InvalidShape);
+    }
+
+    let valid_sequence = match phase {
+        ServiceAuditPhaseV1::Started => {
+            administration_sequence.checked_next() == Some(transition_sequence)
+                || transition_sequence < administration_sequence
+        }
+        ServiceAuditPhaseV1::Succeeded => transition_sequence < administration_sequence,
+        ServiceAuditPhaseV1::Denied
+        | ServiceAuditPhaseV1::Cancelled
+        | ServiceAuditPhaseV1::Failed
+        | ServiceAuditPhaseV1::OutcomeUncertain => {
+            return Err(StorageValueError::InvalidShape);
+        }
+    };
+    if !valid_sequence {
+        return Err(StorageValueError::IdentityMismatch);
+    }
+    Ok(())
+}
+
 fn target_key_bytes(targets: &ServiceAuditTargetsV1) -> Result<usize, StorageValueError> {
     targets.as_slice().iter().try_fold(0usize, |total, target| {
         total
@@ -678,6 +765,19 @@ fn checked_semantic_sum(
 mod tests {
     use super::*;
     use crate::{EncodedContentCharge, MAX_SCAN_PAGE_ENTRIES};
+
+    fn audit_principal() -> AuditPrincipalV1 {
+        AuditPrincipalV1::new(
+            ActorId::new("maintainer").expect("actor"),
+            ActorKind::Human,
+            CapabilityId::from_bytes([
+                0x01, 0x8f, 0x00, 0x00, 0x00, 0x00, 0x70, 0x01, 0x80, 0x02, 0x00, 0x00, 0x00, 0x00,
+                0x00, 0x05,
+            ])
+            .expect("valid UUIDv7"),
+            NonZeroU64::MIN,
+        )
+    }
 
     fn bootstrap_start() -> BootstrapServiceAuditStartV1 {
         BootstrapServiceAuditStartV1::new(
@@ -726,6 +826,189 @@ mod tests {
                 template.approval_id().cloned(),
             ),
             Err(StorageValueError::InvalidShape)
+        );
+    }
+
+    fn reconstruct_service_record(
+        sequence: AdministrationSequence,
+        operation: ServiceOperationV1,
+        phase: ServiceAuditPhaseV1,
+        principal: Option<AuditPrincipalV1>,
+        ingress: ServiceIngressKindV1,
+        link: ServiceAuditLinkV1,
+    ) -> Result<StoredServiceAuditRecordV1, StorageValueError> {
+        let template = bootstrap_start();
+        StoredServiceAuditRecordV1::from_stored_parts(
+            sequence,
+            template.request_id(),
+            template.timestamp(),
+            operation,
+            phase,
+            principal,
+            ingress,
+            template.targets().clone(),
+            template.approval_id().cloned(),
+            link,
+        )
+    }
+
+    #[test]
+    fn normal_service_audit_record_round_trips_through_stored_parts() {
+        let intent = ServiceAuditAppendIntentV1::new(
+            bootstrap_start().request_id(),
+            Timestamp::new(7, 8).expect("timestamp"),
+            ServiceOperationV1::GetEntity,
+            ServiceAuditPhaseV1::Started,
+            audit_principal(),
+            ServiceIngressKindV1::Grpc,
+            ServiceAuditTargetsV1::empty(),
+            None,
+            ServiceAuditLinkV1::None,
+        )
+        .expect("normal audit intent");
+        let stored =
+            StoredServiceAuditRecordV1::from_intent(AdministrationSequence::first(), &intent);
+        let reconstructed = StoredServiceAuditRecordV1::from_stored_parts(
+            stored.administration_sequence(),
+            stored.request_id(),
+            stored.timestamp(),
+            stored.operation(),
+            stored.phase(),
+            stored.principal().cloned(),
+            stored.ingress(),
+            stored.targets().clone(),
+            stored.approval_id().cloned(),
+            stored.link(),
+        )
+        .expect("stored parts remain valid");
+
+        assert_eq!(reconstructed, stored);
+    }
+
+    #[test]
+    fn stored_parts_accept_only_the_exact_principal_less_bootstrap_shapes() {
+        let one = AdministrationSequence::first();
+        let two = one.checked_next().expect("sequence two");
+        let three = two.checked_next().expect("sequence three");
+        let control = |sequence| ServiceAuditLinkV1::ControlPlane {
+            administration_sequence: sequence,
+        };
+
+        assert!(
+            reconstruct_service_record(
+                one,
+                ServiceOperationV1::CreateCapability,
+                ServiceAuditPhaseV1::Started,
+                None,
+                ServiceIngressKindV1::Grpc,
+                control(two),
+            )
+            .is_ok(),
+            "new bootstrap start immediately precedes its transition"
+        );
+        assert!(
+            reconstruct_service_record(
+                three,
+                ServiceOperationV1::CreateCapability,
+                ServiceAuditPhaseV1::Started,
+                None,
+                ServiceIngressKindV1::InProcessTestComparison,
+                control(two),
+            )
+            .is_ok(),
+            "replay start links an earlier transition"
+        );
+        assert!(
+            reconstruct_service_record(
+                three,
+                ServiceOperationV1::CreateCapability,
+                ServiceAuditPhaseV1::Succeeded,
+                None,
+                ServiceIngressKindV1::Grpc,
+                control(two),
+            )
+            .is_ok(),
+            "bootstrap success links an earlier transition"
+        );
+
+        let invalid_sequence_links = [
+            reconstruct_service_record(
+                one,
+                ServiceOperationV1::CreateCapability,
+                ServiceAuditPhaseV1::Started,
+                None,
+                ServiceIngressKindV1::Grpc,
+                control(three),
+            ),
+            reconstruct_service_record(
+                two,
+                ServiceOperationV1::CreateCapability,
+                ServiceAuditPhaseV1::Started,
+                None,
+                ServiceIngressKindV1::Grpc,
+                control(two),
+            ),
+            reconstruct_service_record(
+                one,
+                ServiceOperationV1::CreateCapability,
+                ServiceAuditPhaseV1::Succeeded,
+                None,
+                ServiceIngressKindV1::Grpc,
+                control(two),
+            ),
+            reconstruct_service_record(
+                two,
+                ServiceOperationV1::CreateCapability,
+                ServiceAuditPhaseV1::Succeeded,
+                None,
+                ServiceIngressKindV1::Grpc,
+                control(two),
+            ),
+        ];
+        assert!(
+            invalid_sequence_links
+                .into_iter()
+                .all(|result| result == Err(StorageValueError::IdentityMismatch))
+        );
+
+        let invalid_shapes = [
+            reconstruct_service_record(
+                three,
+                ServiceOperationV1::CreateCapability,
+                ServiceAuditPhaseV1::Failed,
+                None,
+                ServiceIngressKindV1::Grpc,
+                control(two),
+            ),
+            reconstruct_service_record(
+                three,
+                ServiceOperationV1::CreateCapability,
+                ServiceAuditPhaseV1::Succeeded,
+                None,
+                ServiceIngressKindV1::McpHttp,
+                control(two),
+            ),
+            reconstruct_service_record(
+                three,
+                ServiceOperationV1::DeployContract,
+                ServiceAuditPhaseV1::Succeeded,
+                None,
+                ServiceIngressKindV1::Grpc,
+                control(two),
+            ),
+            reconstruct_service_record(
+                three,
+                ServiceOperationV1::CreateCapability,
+                ServiceAuditPhaseV1::Succeeded,
+                None,
+                ServiceIngressKindV1::Grpc,
+                ServiceAuditLinkV1::None,
+            ),
+        ];
+        assert!(
+            invalid_shapes
+                .into_iter()
+                .all(|result| result == Err(StorageValueError::InvalidShape))
         );
     }
 

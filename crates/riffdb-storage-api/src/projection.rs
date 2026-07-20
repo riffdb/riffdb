@@ -7,8 +7,9 @@ use riffdb_types::{
     CanonicalRecord, CanonicalValue, CommitSequence, FrontierPosition,
     MAX_PROJECTION_APPLY_SEMANTIC_BYTES, MAX_PROJECTION_APPLY_SNAPSHOT_BYTES,
     MAX_PROJECTION_QUERY_CONTENT_BYTES, MAX_PROJECTION_QUERY_ROWS, MAX_PROJECTION_ROW_UPDATES,
-    MAX_PROJECTION_WRITE_SET_BYTES, ProjectionApplyHash, ProjectionApplyKey, ProjectionGeneration,
-    ProjectionGroupKey, ProjectionIdentity, encode_canonical_record, hash_projection_apply,
+    MAX_PROJECTION_STATE_SEMANTIC_BYTES, MAX_PROJECTION_WRITE_SET_BYTES, ProjectionApplyHash,
+    ProjectionApplyKey, ProjectionGeneration, ProjectionGroupKey, ProjectionGroupKeyBuilder,
+    ProjectionIdentity, ProjectionKeyError, encode_canonical_record, hash_projection_apply,
 };
 
 use crate::{
@@ -488,6 +489,7 @@ impl StoredProjectionStateV1 {
         measures: CanonicalRecord,
         last_changed_sequence: CommitSequence,
     ) -> Result<Self, StorageValueError> {
+        validate_projection_state_structure(&key, &measures)?;
         schema.validate_group_key(&key)?;
         schema.validate_measure_record(&measures)?;
         Ok(Self {
@@ -531,6 +533,97 @@ impl StoredProjectionStateV1 {
     #[must_use]
     pub const fn last_changed_sequence(&self) -> CommitSequence {
         self.last_changed_sequence
+    }
+}
+
+/// IR-opaque, structurally decoded durable projection group row.
+///
+/// This type proves canonical scalar components, a complete bounded group key,
+/// a canonical measure record, and the complete stored-state semantic bound. It
+/// does not prove group arity, component types, measure schema, or plan identity.
+#[derive(Clone, Eq, PartialEq)]
+pub struct StructurallyDecodedProjectionStateV1 {
+    key: ProjectionGroupKey,
+    measures: CanonicalRecord,
+    last_changed_sequence: CommitSequence,
+}
+
+impl StructurallyDecodedProjectionStateV1 {
+    /// Reconstructs the structural row from the exact durable payload parts.
+    pub fn from_stored_parts(
+        identity: ProjectionIdentity,
+        generation: ProjectionGeneration,
+        group_values: Vec<CanonicalValue>,
+        measures: CanonicalRecord,
+        last_changed_sequence: CommitSequence,
+    ) -> Result<Self, StorageValueError> {
+        let mut key = ProjectionGroupKeyBuilder::new(identity, generation);
+        for value in group_values {
+            key.push_component(value)
+                .map_err(projection_key_storage_error)?;
+        }
+        let key = key.finish().map_err(projection_key_storage_error)?;
+        validate_projection_state_structure(&key, &measures)?;
+        Ok(Self {
+            key,
+            measures,
+            last_changed_sequence,
+        })
+    }
+
+    /// Borrows the structurally canonical complete group key.
+    #[must_use]
+    pub const fn key(&self) -> &ProjectionGroupKey {
+        &self.key
+    }
+
+    /// Returns the exact projection identity repeated by the payload parts.
+    #[must_use]
+    pub const fn identity(&self) -> &ProjectionIdentity {
+        self.key.identity()
+    }
+
+    /// Returns the nonzero generation repeated by the payload parts.
+    #[must_use]
+    pub const fn generation(&self) -> ProjectionGeneration {
+        self.key.generation()
+    }
+
+    /// Borrows the structurally canonical scalar values in durable order.
+    #[must_use]
+    pub fn group_values(&self) -> &[CanonicalValue] {
+        self.key.components()
+    }
+
+    /// Borrows the canonical measure record without claiming schema validity.
+    #[must_use]
+    pub const fn measures(&self) -> &CanonicalRecord {
+        &self.measures
+    }
+
+    /// Returns the nonzero sequence repeated by the payload.
+    #[must_use]
+    pub const fn last_changed_sequence(&self) -> CommitSequence {
+        self.last_changed_sequence
+    }
+
+    /// Consumes the structural row and validates it against the exact schema.
+    pub fn into_checked(
+        self,
+        schema: &CheckedProjectionSchema,
+    ) -> Result<StoredProjectionStateV1, StorageValueError> {
+        StoredProjectionStateV1::new(schema, self.key, self.measures, self.last_changed_sequence)
+    }
+}
+
+impl fmt::Debug for StructurallyDecodedProjectionStateV1 {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("StructurallyDecodedProjectionStateV1")
+            .field("key", &self.key)
+            .field("measures", &"[REDACTED]")
+            .field("last_changed_sequence", &self.last_changed_sequence)
+            .finish()
     }
 }
 
@@ -1824,6 +1917,37 @@ fn projection_state_semantic_bytes(
     ])
 }
 
+fn validate_projection_state_structure(
+    key: &ProjectionGroupKey,
+    measures: &CanonicalRecord,
+) -> Result<(), StorageValueError> {
+    validate_projection_bound(
+        projection_state_semantic_bytes(key, measures)?,
+        MAX_PROJECTION_STATE_SEMANTIC_BYTES,
+    )
+}
+
+const fn projection_key_storage_error(error: ProjectionKeyError) -> StorageValueError {
+    match error {
+        ProjectionKeyError::TooLong { .. } | ProjectionKeyError::TooManyComponents => {
+            StorageValueError::LimitExceeded
+        }
+        ProjectionKeyError::Truncated
+        | ProjectionKeyError::TrailingBytes
+        | ProjectionKeyError::TruncatedOrTrailing
+        | ProjectionKeyError::WrongPurpose
+        | ProjectionKeyError::UnsupportedVersion
+        | ProjectionKeyError::InvalidIdentity
+        | ProjectionKeyError::ZeroProjectionId
+        | ProjectionKeyError::ZeroGeneration
+        | ProjectionKeyError::ZeroCommitSequence
+        | ProjectionKeyError::EmptyGroupKey
+        | ProjectionKeyError::EmptyComponent
+        | ProjectionKeyError::NonScalarComponent
+        | ProjectionKeyError::InvalidCanonicalComponent => StorageValueError::InvalidShape,
+    }
+}
+
 fn maximum_projection_control_semantic_bytes(
     identity: &ProjectionIdentity,
 ) -> Result<usize, StorageValueError> {
@@ -1936,6 +2060,91 @@ mod tests {
     fn count_measures() -> CanonicalRecord {
         CanonicalRecord::new(vec![(FieldId::first(), CanonicalValue::U64(1))])
             .expect("count measures")
+    }
+
+    #[test]
+    fn structural_projection_state_requires_context_before_operational_use() {
+        let schema = maximum_key_projection_schema();
+        let generation = ProjectionGeneration::first();
+        let group_value = CanonicalValue::string("group-a").expect("group value");
+        let key = schema
+            .group_key(generation, std::slice::from_ref(&group_value))
+            .expect("schema-valid key");
+        let expected =
+            StoredProjectionStateV1::new(&schema, key, count_measures(), CommitSequence::first())
+                .expect("schema-valid state");
+
+        let structural = StructurallyDecodedProjectionStateV1::from_stored_parts(
+            schema.identity().clone(),
+            generation,
+            vec![group_value],
+            count_measures(),
+            CommitSequence::first(),
+        )
+        .expect("structurally valid state");
+        assert_eq!(structural.identity(), schema.identity());
+        assert_eq!(structural.generation(), generation);
+        assert_eq!(structural.group_values().len(), 1);
+        assert_eq!(structural.measures(), expected.measures());
+        assert_eq!(structural.last_changed_sequence(), CommitSequence::first());
+        assert_eq!(structural.into_checked(&schema), Ok(expected));
+
+        let wrong_type = StructurallyDecodedProjectionStateV1::from_stored_parts(
+            schema.identity().clone(),
+            generation,
+            vec![CanonicalValue::U64(1)],
+            count_measures(),
+            CommitSequence::first(),
+        )
+        .expect("u64 is structurally canonical");
+        assert_eq!(
+            wrong_type.into_checked(&schema),
+            Err(StorageValueError::InvalidShape)
+        );
+    }
+
+    #[test]
+    fn structural_projection_state_rejects_non_scalar_empty_and_over_limit_parts() {
+        let identity = projection_identity();
+        let generation = ProjectionGeneration::first();
+        let measures = count_measures();
+        assert_eq!(
+            StructurallyDecodedProjectionStateV1::from_stored_parts(
+                identity.clone(),
+                generation,
+                Vec::new(),
+                measures.clone(),
+                CommitSequence::first(),
+            ),
+            Err(StorageValueError::InvalidShape)
+        );
+        assert_eq!(
+            StructurallyDecodedProjectionStateV1::from_stored_parts(
+                identity.clone(),
+                generation,
+                vec![CanonicalValue::Null],
+                measures,
+                CommitSequence::first(),
+            ),
+            Err(StorageValueError::InvalidShape)
+        );
+
+        let maximum_measures = CanonicalRecord::new(vec![(
+            FieldId::first(),
+            CanonicalValue::bytes(vec![0xa5; riffdb_types::MAX_CANONICAL_DOCUMENT_BYTES - 16])
+                .expect("bounded bytes"),
+        )])
+        .expect("bounded record");
+        assert_eq!(
+            StructurallyDecodedProjectionStateV1::from_stored_parts(
+                identity,
+                generation,
+                vec![CanonicalValue::U64(1)],
+                maximum_measures,
+                CommitSequence::first(),
+            ),
+            Err(StorageValueError::LimitExceeded)
+        );
     }
 
     fn generation(value: u64) -> ProjectionGeneration {

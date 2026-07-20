@@ -658,13 +658,19 @@ pub struct AffectedEntityV1 {
 }
 
 impl AffectedEntityV1 {
+    /// Reconstructs an affected-entity link from its exact durable parts.
+    #[must_use]
+    pub const fn from_stored_parts(target: EntityTarget, entity_version: EntityVersion) -> Self {
+        Self {
+            target,
+            entity_version,
+        }
+    }
+
     /// Constructs an affected-entity link from a complete post-image.
     #[must_use]
     pub fn from_record(record: &StoredEntityRecordV1) -> Self {
-        Self {
-            target: record.target().clone(),
-            entity_version: record.entity_version(),
-        }
+        Self::from_stored_parts(record.target().clone(), record.entity_version())
     }
 
     /// Borrows the affected entity target.
@@ -2238,6 +2244,16 @@ mod tests {
             CanonicalValue::bytes(vec![0xa5; length]).expect("bounded payload"),
         )])
         .expect("record")
+    }
+
+    #[test]
+    fn affected_entity_reconstructs_from_exact_stored_parts() {
+        let target = entity_target();
+        let entity_version = EntityVersion::first();
+        let affected = AffectedEntityV1::from_stored_parts(target.clone(), entity_version);
+
+        assert_eq!(affected.target(), &target);
+        assert_eq!(affected.entity_version(), entity_version);
     }
 
     fn atomic_record_set(
