@@ -1,4 +1,4 @@
-spec_version: '0.14'
+spec_version: '0.15'
 product: RiffDB
 repository: riffdb
 status: implementation-handoff
@@ -921,8 +921,10 @@ work_packages:
   - Uncertain-response recovery
   - Named transaction failpoints and redaction-safe telemetry hooks
   - Bounded idempotency inspect/confirm plus command, control-plane, and AdministrationAuditExecutor ports
-  - Commit-owned AdministrationAuditInputView plus opaque BootstrapCompoundAuditProof, exact control-plane transition
-    sequence recovery metadata, and typed CapabilityPreparationChanged for an absent revoke target that appears
+  - Commit-owned AdministrationAuditInputView with no field or method for the new audit record's assigned sequence,
+    while preserving an already-authoritative transition sequence only inside the unchanged ControlPlane result link;
+    plus opaque BootstrapCompoundAuditProof, exact control-plane transition sequence recovery metadata, and typed
+    CapabilityPreparationChanged for an absent revoke target that appears
   - Commit-owned DatabaseInitializationExecutor that exposes the source-free identity probe and is the sole
     production caller of the authoritative initialization transition, accepting a checked candidate only after
     NeedsInitialization and never exposing a storage mutation handle to server composition
@@ -1100,9 +1102,11 @@ work_packages:
     visible after append failure/crash, including Denied, Failed, Cancelled, resume/replay, append-failure mapping,
     post-commit bootstrap success handling, and no conversion of audit uncertainty into command OutcomeUnknown
     before business work begins
-  - Service-owned ServiceAuditInput implementation of commit-owned AdministrationAuditInputView, plus the exact
-    control-plane terminal matrix covering known new/replayed transition Succeeded with its original ControlPlane sequence,
-    authorized typed no-transition Failed with None, and unknown transition OutcomeUncertain before typed release
+  - Service-owned ServiceAuditInput implementation of commit-owned AdministrationAuditInputView, exposing an original
+    authoritative transition sequence only inside its ControlPlane result link and never exposing a field or method
+    for the new audit record's assigned sequence; plus the exact control-plane terminal matrix covering known
+    new/replayed transition Succeeded with its original ControlPlane sequence, authorized typed no-transition Failed
+    with None, and unknown transition OutcomeUncertain before typed release
   - Internal RetryBudgetExhausted mapping to the unchanged public ConcurrencyDeadlineExceeded error, retry action, and
     protocol-independent safe message
   - Standalone audit orchestration for every mutation and administration attempt after exact classification, every

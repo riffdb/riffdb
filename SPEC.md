@@ -6,7 +6,7 @@
 **Tagline:** *Vibe fast. Commit safely.*  
 **Category:** Contract-first operational database for agent-built applications  
 
-**Version:** 0.14
+**Version:** 0.15
 **Status:** Architecture-approved implementation handoff
 **Date:** 20 July 2026
 **Audience:** Coding agents, database engineers, compiler engineers, security reviewers, and technical product leads  
@@ -50,6 +50,7 @@
 | 0.12 | 2026-07-14 | Clarified that one full `StoredOutcomeV1` envelope is both the committed terminal idempotency row and persisted outcome, with atomic pending deletion, no tombstone or second terminal envelope, and startup commit reciprocity; explicitly deferred contract state-machine source, IR, and execution from POC grammar/IR v1 and narrowed WP-080 to predicate, invariant, postcondition, and commit-check evaluation. |
 | 0.13 | 2026-07-20 | Applied accepted ADR-0022's exact self-contained durable semantic Protobuf modules, 26-payload registry, field/tag/presence rules, canonical-wire validation, complete terminal outcome, and checked storage-codec boundary before WP-065 implementation. |
 | 0.14 | 2026-07-20 | Applied accepted ADR-0023's exact WP-100 coordinator edge semantics: commit evaluator ownership, bounded full reevaluation, audit-input inversion, provenance attempt recovery, grammar-v1 empty index covered values, commit-check arithmetic classification, absent-target capability revocation, and no-transition control-plane audit classification. |
+| 0.15 | 2026-07-20 | Clarified ADR-0023's audit-input inversion: the consumer view has no field or method for the new audit record's assigned administration sequence, while its checked control-plane result link may carry the sequence of an already-authoritative transition. |
 
 ### Normative language
 
@@ -2563,11 +2564,18 @@ output, free-form reason/error, network address, or transport object.
 `riffdb-service` owns the concrete checked pre-sequence `ServiceAuditInput` and
 implements the object-safe, `Send + Sync`, commit-owned
 `AdministrationAuditInputView`. The view exposes by reference only complete
-already-checked semantic fields required by the audit record; it exposes no
-sequence, timestamp, storage operation, raw credential, free-form error, or
-policy-decision constructor. `riffdb-commit` consumes that view and never depends
-on the service crate or duplicates its concrete input. Principal-less bootstrap
-instead consumes a separate commit-owned opaque, nonserializable
+already-checked semantic fields required by the audit record. It has no field or
+method for the new audit record's coordinator-assigned
+`AdministrationSequence`, timestamp, storage operation, raw credential,
+free-form error, or policy-decision constructor. The view may expose the checked
+`ServiceAuditLinkV1` by reference: its
+`ControlPlane { administration_sequence }` value identifies an
+already-authoritative control-plane transition and is not the new audit record's
+assigned sequence. `riffdb-commit` copies that link unchanged, consumes the view,
+and never depends on the service crate or duplicates its concrete input. Only the
+coordinator/storage transition assigns the new audit record's sequence.
+Principal-less bootstrap instead consumes a separate commit-owned opaque,
+nonserializable
 `BootstrapCompoundAuditProof` constructed only by the checked bootstrap
 coordinator path; it is not a general append or authorization capability.
 
@@ -3699,7 +3707,7 @@ Risk owners are assigned in the project tracker. A risk may be closed only with 
 
 ## 22.1 Required ADRs
 
-Specification v0.14 records each ADR's current status. An Accepted record is
+Specification v0.15 records each ADR's current status. An Accepted record is
 authoritative; a Proposed record remains planning input until its exact text
 receives human review. Where this table and a work-package deadline differ, the
 earlier deadline governs unless a reviewed reconciliation changes both sources.

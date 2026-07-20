@@ -4,6 +4,9 @@
 - **Direction approved:** 2026-07-20
 - **Exact text accepted:** 2026-07-20
 - **Accepted:** 2026-07-20
+- **Maintainer-accepted clarification:** 2026-07-20, the audit-input view has no
+  field or method for the new audit record's assigned sequence, while its
+  checked result link may carry a prior authoritative transition sequence
 - **Requires:** ADR-0002, ADR-0003, ADR-0004, ADR-0005, ADR-0006, ADR-0007,
   ADR-0009, ADR-0011, ADR-0012, ADR-0013, ADR-0016, ADR-0018, ADR-0021, and
   ADR-0022
@@ -21,6 +24,11 @@ inversion, provenance-attempt boundary, grammar-v1 covered-value rule,
 commit-check arithmetic classification, absent-revoke rule, no-transition audit
 classification, exact commit-evaluator dependency, and bounded-reevaluation
 ceiling are authoritative for the affected work packages.
+
+On 2026-07-20 the human maintainer accepted the audit-sequence clarification
+below. It distinguishes the new service-audit record's sequence, which remains
+coordinator/storage assigned, from a prior authoritative control-plane sequence
+carried as checked result-link data.
 
 ## Context
 
@@ -140,17 +148,22 @@ admitted claims after current authentication and authorization.
 `riffdb-commit` owns an object-safe, `Send + Sync`
 `AdministrationAuditInputView` consumer interface. It exposes by reference only
 the complete already checked, pre-sequence semantic fields needed to construct a
-service-audit record. It exposes no administration sequence, timestamp, storage
+service-audit record. It exposes no field or method for the new service-audit
+record's coordinator-assigned `AdministrationSequence`, timestamp, storage
 handle, append operation, raw credential, free-form error, or constructor for a
-policy decision.
+policy decision. It does expose the checked `ServiceAuditLinkV1` by reference.
+The link's `ControlPlane { administration_sequence }` member identifies the
+already-authoritative control-plane transition linked from this audit attempt;
+it is not the sequence assigned to the new service-audit record.
 
 `riffdb-service` continues to own the concrete `ServiceAuditInput` and implements
 the view. `riffdb-commit` never depends on `riffdb-service` and never duplicates
 that concrete type. `AdministrationAuditExecutor` consumes the view, samples its
 injected `AdministrationClock` exactly once at the accepted lifecycle point,
-allocates the administration sequence only inside the storage transition, and
-copies the checked fields into the storage-owned record. Storage does not accept
-a caller-selected timestamp or sequence.
+copies the checked result link unchanged, allocates the new audit record's
+administration sequence only inside the storage transition, and copies the
+remaining checked fields into the storage-owned record. Storage does not accept a
+caller-selected timestamp or sequence for the new record.
 
 Principal-less bootstrap does not use the general view as a way to forge a
 service audit. `riffdb-commit` owns a separate opaque, nonserializable
@@ -433,8 +446,10 @@ turning a stale observation into a terminal failure or bypassing reauthorization
 - Public-error and gRPC fixtures prove retry-budget exhaustion has the unchanged
   `ConcurrencyDeadlineExceeded` code, safe text, class, recovery action, and
   status mapping. A no-index entity-dependency case exercises the branch.
-- Audit tests prove one clock sample, coordinator-assigned sequence, exact field
-  copying, and bootstrap proof non-constructibility.
+- Audit tests prove one clock sample, coordinator assignment of the new record's
+  sequence, absence of a view accessor for that sequence, unchanged copying of a
+  prior control-plane transition sequence inside the checked result link, exact
+  field copying, and bootstrap proof non-constructibility.
 - Provenance source call-count tests cover first attempt, proven abort and new
   attempt, uncertain same-attempt resolution, process-loss Pending recovery, and
   committed-outcome and execution-failure replay. The commit-check arithmetic
