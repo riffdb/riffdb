@@ -1087,6 +1087,7 @@ name = "riffdb-policy"
 version = "0.1.0"
 dependencies = [
  "riffdb-auth",
+ "riffdb-testkit",
  "riffdb-types",
 ]
 
