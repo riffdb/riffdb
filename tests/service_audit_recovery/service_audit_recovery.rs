@@ -70,10 +70,10 @@ fn digest() -> CapabilityTokenDigest {
 }
 
 fn requested_record() -> CapabilityRequestedRecordV1 {
-    let permissions = CapabilityPermissionsV1::new(vec![CapabilityPermissionV1::unparameterized(
-        CapabilityPermissionKindV1::AdministerCapabilities,
-    )
-    .expect("permission")])
+    let permissions = CapabilityPermissionsV1::new(vec![
+        CapabilityPermissionV1::unparameterized(CapabilityPermissionKindV1::AdministerCapabilities)
+            .expect("permission"),
+    ])
     .expect("permissions");
     let grant = CapabilityGrantV1::new(
         TenantScope::Global,
@@ -171,9 +171,11 @@ fn audit_count(ports: &RedbOperationalPorts) -> usize {
     let AdministrationAuditScan::ExactEnd { records } = scan else {
         panic!("small audit stream reaches exact end");
     };
-    assert!(records
-        .iter()
-        .all(|record| record.encoded_content_charge().get() > 0));
+    assert!(
+        records
+            .iter()
+            .all(|record| record.encoded_content_charge().get() > 0)
+    );
     records.len()
 }
 
