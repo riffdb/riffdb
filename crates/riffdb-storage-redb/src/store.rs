@@ -27,6 +27,7 @@ use crate::error::{
     transaction_error,
 };
 use crate::gate::{ExclusiveGate, ExclusiveLease};
+use crate::hooks::{RedbTestController, RedbTestOperation};
 use crate::layout::{
     META, META_ADMINISTRATION_SEQUENCE, META_APPLICATION_SEQUENCE, META_CAPABILITY_BOOTSTRAP,
     META_DATABASE_ID, META_FORMAT_VERSION, META_KEYS, TABLE_NAMES, create_all_tables,
@@ -38,6 +39,7 @@ pub(crate) struct SharedRedb {
     path: PathBuf,
     mutation_gate: ExclusiveGate,
     write_fenced: AtomicBool,
+    test_controller: Option<RedbTestController>,
 }
 
 /// A dormant handle to one redb-backed RiffDB database.
@@ -79,7 +81,23 @@ enum LayoutState {
 impl RedbStore {
     /// Opens an existing redb file or creates an empty redb container.
     pub fn open(path: impl AsRef<Path>) -> Result<Self, StorageError> {
-        let path = path.as_ref().to_path_buf();
+        Self::open_inner(path.as_ref(), None)
+    }
+
+    /// Opens a database with one closed process-test failpoint controller.
+    #[doc(hidden)]
+    pub fn open_with_test_controller(
+        path: impl AsRef<Path>,
+        controller: RedbTestController,
+    ) -> Result<Self, StorageError> {
+        Self::open_inner(path.as_ref(), Some(controller))
+    }
+
+    fn open_inner(
+        path: &Path,
+        test_controller: Option<RedbTestController>,
+    ) -> Result<Self, StorageError> {
+        let path = path.to_path_buf();
         let database = Database::create(&path).map_err(database_error)?;
         Ok(Self {
             shared: Arc::new(SharedRedb {
@@ -87,6 +105,7 @@ impl RedbStore {
                 path,
                 mutation_gate: ExclusiveGate::default(),
                 write_fenced: AtomicBool::new(false),
+                test_controller,
             }),
         })
     }
@@ -168,7 +187,18 @@ impl RedbWriteAccess {
             .ok_or_else(|| storage_error(StorageErrorKind::InvariantViolation))
     }
 
-    pub(crate) fn commit(mut self) -> Result<(), StorageError> {
+    #[allow(
+        dead_code,
+        reason = "WP-070 administration and derived ports migrate to named commits"
+    )]
+    pub(crate) fn commit(self) -> Result<(), StorageError> {
+        self.commit_for(RedbTestOperation::CommandBatch)
+    }
+
+    pub(crate) fn commit_for(mut self, operation: RedbTestOperation) -> Result<(), StorageError> {
+        if let Some(controller) = &self.shared.test_controller {
+            controller.before_commit(operation)?;
+        }
         let transaction = self
             .transaction
             .take()
@@ -176,6 +206,12 @@ impl RedbWriteAccess {
         if let Err(error) = transaction.commit() {
             self.shared.write_fenced.store(true, Ordering::Release);
             return Err(commit_error(error));
+        }
+        if let Some(controller) = &self.shared.test_controller
+            && let Err(error) = controller.after_commit(operation)
+        {
+            self.shared.write_fenced.store(true, Ordering::Release);
+            return Err(error);
         }
         Ok(())
     }
@@ -249,9 +285,18 @@ impl DatabaseInitializationPort for RedbStore {
             LayoutState::Empty => {
                 create_all_tables(&transaction).map_err(table_error)?;
                 write_initial_metadata(&transaction, candidate)?;
+                if let Some(controller) = &self.shared.test_controller {
+                    controller.before_commit(RedbTestOperation::Initialization)?;
+                }
                 if let Err(error) = transaction.commit() {
                     self.fence_writes();
                     return Err(commit_error(error));
+                }
+                if let Some(controller) = &self.shared.test_controller
+                    && let Err(error) = controller.after_commit(RedbTestOperation::Initialization)
+                {
+                    self.fence_writes();
+                    return Err(error);
                 }
                 Ok(DatabaseInitializationResult::Installed(candidate))
             }
@@ -498,6 +543,57 @@ mod tests {
         assert_eq!(
             second.initialize_database(loser).expect("observe winner"),
             DatabaseInitializationResult::ConcurrentWinner(winner)
+        );
+    }
+
+    #[test]
+    fn precommit_failure_is_proven_absent_and_postcommit_unknown_fences_writes() {
+        let before_path = TestDatabasePath::new("before-commit");
+        let before = RedbTestController::return_before_commit(RedbTestOperation::Initialization);
+        let mut store = RedbStore::open_with_test_controller(&before_path.0, before)
+            .expect("open controlled store");
+        assert_eq!(
+            store
+                .initialize_database(database_id(0x44))
+                .expect_err("injected precommit failure")
+                .kind(),
+            StorageErrorKind::Unavailable
+        );
+        assert_eq!(
+            store.probe_database_identity().expect("probe after abort"),
+            DatabaseIdentityProbe::NeedsInitialization
+        );
+
+        let after_path = TestDatabasePath::new("after-commit");
+        let after = RedbTestController::return_unknown_after_commit(
+            RedbTestOperation::Initialization,
+        );
+        let mut store = RedbStore::open_with_test_controller(&after_path.0, after)
+            .expect("open controlled store");
+        assert_eq!(
+            store
+                .initialize_database(database_id(0x55))
+                .expect_err("injected uncertain response")
+                .kind(),
+            StorageErrorKind::CommitStatusUnknown
+        );
+        assert_eq!(
+            store.probe_database_identity().expect("durable winner"),
+            DatabaseIdentityProbe::Existing(database_id(0x55))
+        );
+        assert_eq!(
+            store
+                .initialize_database(database_id(0x66))
+                .expect_err("fenced handle")
+                .kind(),
+            StorageErrorKind::Unavailable
+        );
+
+        drop(store);
+        let reopened = RedbStore::open(&after_path.0).expect("reopen clears process-local fence");
+        assert_eq!(
+            reopened.probe_database_identity().expect("reopen identity"),
+            DatabaseIdentityProbe::Existing(database_id(0x55))
         );
     }
 }
