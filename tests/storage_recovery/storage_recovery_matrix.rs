@@ -8,9 +8,13 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use riffdb_storage_api::{
     DatabaseIdentityProbe, DatabaseIdentityProbePort, DatabaseInitializationPort,
+    EvidencePageLimit, HistoricalEvidenceCursor, HistoricalEvidencePage,
+    ReadableCapabilityDigestInventory, ReadableDigestKey, ReadableIdempotencyDigestInventory,
+    StartupValidationInputs, StructuralEvidenceCursor, StructuralEvidenceOpen,
+    StructuralEvidencePage, StructuralEvidenceSession,
 };
 use riffdb_storage_redb::{RedbStore, RedbTestController, RedbTestOperation};
-use riffdb_types::DatabaseId;
+use riffdb_types::{DatabaseId, DigestKeyId, Timestamp};
 
 const CHILD_MODE: &str = "RIFFDB_STORAGE_RECOVERY_CHILD_MODE";
 const CHILD_PATH: &str = "RIFFDB_STORAGE_RECOVERY_CHILD_PATH";
@@ -52,6 +56,51 @@ fn run_crashing_child(mode: &str, path: &Path) {
         .status()
         .expect("run recovery child");
     assert!(!status.success(), "the armed child must terminate abruptly");
+}
+
+fn complete_structural_open(store: RedbStore) -> DatabaseId {
+    let digest_key = DigestKeyId::new(1).expect("digest key ID");
+    let inputs = StartupValidationInputs::new(
+        Timestamp::new(1_700_000_000, 0).expect("startup timestamp"),
+        ReadableCapabilityDigestInventory::new(vec![ReadableDigestKey::v1(digest_key)])
+            .expect("capability digest inventory"),
+        ReadableIdempotencyDigestInventory::new(vec![ReadableDigestKey::v1(digest_key)])
+            .expect("idempotency digest inventory"),
+    );
+    let mut session = store
+        .begin_structural_evidence(inputs)
+        .expect("begin exclusive structural evidence");
+    let database_id = session.database_id();
+    let open_session_id = session.open_session_id();
+    let limit = EvidencePageLimit::new(64).expect("page limit");
+
+    let mut structural_cursor = StructuralEvidenceCursor::start(database_id, open_session_id);
+    let structural_end = loop {
+        match session
+            .read_structural_evidence(structural_cursor, limit)
+            .expect("read structural evidence")
+        {
+            StructuralEvidencePage::Page { next, .. } => structural_cursor = next,
+            StructuralEvidencePage::ExactEnd(end) => break end,
+        }
+    };
+
+    let mut historical_cursor = HistoricalEvidenceCursor::start(database_id, open_session_id);
+    let historical_end = loop {
+        match session
+            .read_historical_evidence(historical_cursor, limit)
+            .expect("read historical evidence")
+        {
+            HistoricalEvidencePage::Page { next, .. } => historical_cursor = next,
+            HistoricalEvidencePage::ExactEnd(end) => break end,
+        }
+    };
+
+    let opened = session
+        .finish(structural_end, historical_end)
+        .expect("finish structural evidence");
+    assert_eq!(opened.database_id(), database_id);
+    database_id
 }
 
 #[test]
@@ -97,4 +146,5 @@ fn crash_after_initialization_commit_preserves_the_durable_database_identity() {
         store.probe_database_identity().expect("probe recovery"),
         DatabaseIdentityProbe::Existing(database_id())
     );
+    assert_eq!(complete_structural_open(store), database_id());
 }
