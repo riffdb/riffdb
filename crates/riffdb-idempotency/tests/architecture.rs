@@ -3,6 +3,7 @@
 //! Dependency and durable-ownership guards for command idempotency.
 
 const MANIFEST: &str = include_str!("../Cargo.toml");
+const INSPECTION_SOURCE: &str = include_str!("../src/inspection.rs");
 const PREPARATION_SOURCE: &str = include_str!("../src/prepare.rs");
 const LIB_ROOT: &str = include_str!("../src/lib.rs");
 
@@ -35,4 +36,15 @@ fn preparation_api_excludes_deployment_and_invocation_versions_by_shape() {
 #[test]
 fn crate_root_keeps_safe_rust_mandatory() {
     assert!(LIB_ROOT.starts_with("#![forbid(unsafe_code)]"));
+}
+
+#[test]
+fn inspection_is_read_only_and_keeps_full_observations_private() {
+    assert!(INSPECTION_SOURCE.contains("repository.lookup_admission(candidates)?"));
+    assert!(!INSPECTION_SOURCE.contains("repository.admit_or_resolve"));
+    assert!(INSPECTION_SOURCE.contains("observation: AdmissionLookupResultV1"));
+    assert!(!INSPECTION_SOURCE.contains("pub observation:"));
+    assert!(!INSPECTION_SOURCE.contains("pub prepared_command:"));
+    assert!(!INSPECTION_SOURCE.contains("impl Clone for InspectedIdempotencyV1"));
+    assert!(!INSPECTION_SOURCE.contains("impl Clone for ConfirmedIdempotencyInspectionV1"));
 }
