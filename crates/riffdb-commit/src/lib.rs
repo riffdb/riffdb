@@ -6,11 +6,13 @@
 //! not provide operating-system clock or identifier sources, expose a storage
 //! mutation handle, or define a transport-facing service API.
 
+mod audit;
 mod clock;
 mod initialization;
 mod outcome;
 mod provenance;
 
+pub use audit::{AdministrationAuditInputView, BootstrapCompoundAuditProof};
 pub use clock::{
     AdministrationClock, AdministrationClockError, AdmissionClock, AdmissionClockError,
 };

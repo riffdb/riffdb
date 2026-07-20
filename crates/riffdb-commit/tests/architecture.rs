@@ -1,6 +1,7 @@
 //! Dependency and authority checks for the commit orchestration boundary.
 
 const MANIFEST: &str = include_str!("../Cargo.toml");
+const AUDIT_SOURCE: &str = include_str!("../src/audit.rs");
 const LIB_SOURCE: &str = include_str!("../src/lib.rs");
 const CLOCK_SOURCE: &str = include_str!("../src/clock.rs");
 const INITIALIZATION_SOURCE: &str = include_str!("../src/initialization.rs");
@@ -49,6 +50,7 @@ fn manifest_has_only_the_foundational_dependencies_needed_by_this_slice() {
 fn this_slice_has_no_concrete_clock_entropy_transport_or_engine_authority() {
     let sources = [
         LIB_SOURCE,
+        AUDIT_SOURCE,
         CLOCK_SOURCE,
         INITIALIZATION_SOURCE,
         OUTCOME_SOURCE,
@@ -74,6 +76,99 @@ fn this_slice_has_no_concrete_clock_entropy_transport_or_engine_authority() {
         assert!(
             !sources.contains(forbidden),
             "commit source contains forbidden authority {forbidden}"
+        );
+    }
+}
+
+#[test]
+fn audit_view_is_borrowed_and_has_no_durable_or_policy_authority() {
+    let production_source = AUDIT_SOURCE
+        .split_once("#[cfg(test)]")
+        .map_or(AUDIT_SOURCE, |(production, _)| production);
+
+    assert!(production_source.contains("pub trait AdministrationAuditInputView: Send + Sync"));
+    let trait_body = production_source
+        .split_once("pub trait AdministrationAuditInputView: Send + Sync {")
+        .and_then(|(_, remainder)| remainder.split_once("\n}"))
+        .map(|(body, _)| body)
+        .expect("audit view trait body");
+    assert_eq!(
+        trait_body.matches("    fn ").count(),
+        11,
+        "audit view must expose exactly the approved borrowed fields"
+    );
+    assert_eq!(
+        production_source
+            .matches("impl AdministrationAuditInputView for")
+            .count(),
+        0,
+        "commit must not own the concrete service audit input"
+    );
+    for signature in [
+        "fn request_id(&self) -> &RequestId",
+        "fn operation(&self) -> &ServiceOperationV1",
+        "fn phase(&self) -> &ServiceAuditPhaseV1",
+        "fn principal_id(&self) -> &ActorId",
+        "fn actor_kind(&self) -> &ActorKind",
+        "fn capability_id(&self) -> &CapabilityId",
+        "fn capability_revision(&self) -> &NonZeroU64",
+        "fn ingress(&self) -> &ServiceIngressKindV1",
+        "fn targets(&self) -> &ServiceAuditTargetsV1",
+        "fn approval_id(&self) -> Option<&ApprovalId>",
+        "fn link(&self) -> &ServiceAuditLinkV1",
+    ] {
+        assert!(
+            production_source.contains(signature),
+            "audit view is missing borrowed field {signature}"
+        );
+    }
+
+    for forbidden in [
+        "fn administration_sequence(&self)",
+        "fn audit_record_sequence(&self)",
+        "fn assigned_sequence(&self)",
+        "Timestamp",
+        "ServiceAuditAppendIntentV1",
+        "ServiceAuditAppendRepository",
+        "append_service_audit",
+        "StorageEngine",
+        "StorageWrite",
+        "PolicyDecision",
+        "AuthorizationDecision",
+        "RawCredential",
+        "riffdb_service",
+        "serde::",
+        "prost::",
+    ] {
+        assert!(
+            !production_source.contains(forbidden),
+            "audit interface crosses forbidden authority through {forbidden}"
+        );
+    }
+}
+
+#[test]
+fn bootstrap_audit_proof_is_sealed_and_nonserializable() {
+    let production_source = AUDIT_SOURCE
+        .split_once("#[cfg(test)]")
+        .map_or(AUDIT_SOURCE, |(production, _)| production);
+
+    assert!(production_source.contains("pub struct BootstrapCompoundAuditProof"));
+    assert!(production_source.contains("_private: BootstrapCompoundAuditProofSeal"));
+    for forbidden in [
+        "derive(Clone",
+        "derive(Copy",
+        "derive(Default",
+        "impl Default for BootstrapCompoundAuditProof",
+        "Serialize",
+        "Deserialize",
+        "Message",
+        "Encode",
+        "Decode",
+    ] {
+        assert!(
+            !production_source.contains(forbidden),
+            "bootstrap proof gains forbidden capability through {forbidden}"
         );
     }
 }
