@@ -17,5 +17,9 @@ riffdb-types = { version = "0.1.0", path = "../riffdb-types" }
 name = "storage_recovery_matrix"
 path = "../../tests/storage_recovery/storage_recovery_matrix.rs"
 
+[[test]]
+name = "service_audit_recovery"
+path = "../../tests/service_audit_recovery/service_audit_recovery.rs"
+
 [lints]
 workspace = true
