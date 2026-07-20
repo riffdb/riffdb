@@ -4,6 +4,7 @@
 
 mod administration;
 mod application;
+mod backup;
 mod codec;
 mod derived;
 mod error;
@@ -16,6 +17,7 @@ mod startup;
 mod store;
 mod transient;
 
+pub use backup::{RedbOfflineBackup, RedbOfflineRestore};
 #[doc(hidden)]
 pub use hooks::{RedbTestController, RedbTestEvent, RedbTestOperation, RedbTestPhase};
 pub use startup::{

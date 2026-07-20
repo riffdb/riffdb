@@ -1137,6 +1137,7 @@ dependencies = [
  "redb",
  "riffdb-storage-api",
  "riffdb-types",
+ "sha2",
 ]
 
 [[package]]

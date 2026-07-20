@@ -28,6 +28,7 @@ fn rust_sources() -> String {
 fn dependency_surface_keeps_redb_private_and_excludes_infrastructure_assemblies() {
     let manifest = read(crate_root().join("Cargo.toml"));
     assert!(manifest.contains("redb = { version = \"=4.1.0\", default-features = false }"));
+    assert!(manifest.contains("sha2 = { version = \"=0.11.0\", default-features = false }"));
     for forbidden in [
         "criterion",
         "riffdb-catalog",
@@ -46,6 +47,24 @@ fn dependency_surface_keeps_redb_private_and_excludes_infrastructure_assemblies(
     let public_root = read(crate_root().join("src/lib.rs"));
     assert!(!public_root.contains("pub use redb"));
     assert!(!public_root.contains("extern crate redb"));
+}
+
+#[test]
+fn sha256_dependency_is_confined_to_offline_backup_manifests() {
+    let source = crate_root().join("src");
+    for entry in fs::read_dir(source).expect("read source directory") {
+        let path = entry.expect("source entry").path();
+        if path.file_name().is_some_and(|name| name == "backup.rs")
+            || path.extension().is_none_or(|extension| extension != "rs")
+        {
+            continue;
+        }
+        assert!(
+            !read(&path).contains("sha2"),
+            "sha2 must remain confined to backup.rs: {}",
+            path.display()
+        );
+    }
 }
 
 #[test]

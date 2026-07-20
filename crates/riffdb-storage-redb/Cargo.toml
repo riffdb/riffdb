@@ -12,6 +12,7 @@ default = []
 redb = { version = "=4.1.0", default-features = false }
 riffdb-storage-api = { version = "0.1.0", path = "../riffdb-storage-api" }
 riffdb-types = { version = "0.1.0", path = "../riffdb-types" }
+sha2 = { version = "=0.11.0", default-features = false }
 
 [[test]]
 name = "storage_recovery_matrix"
