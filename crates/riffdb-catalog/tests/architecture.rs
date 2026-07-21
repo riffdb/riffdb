@@ -77,6 +77,28 @@ fn catalog_storage_boundary_has_no_generic_semantic_validation_callback() {
 }
 
 #[test]
+fn every_active_lineage_ingress_uses_the_exact_canonical_byte_budget() {
+    let production_lineage = CATALOG_LINEAGE
+        .split("\n#[cfg(test)]\nmod tests")
+        .next()
+        .expect("lineage production source");
+    for required in [
+        "budget.push_bundle(bundle.bundle().canonical_bytes().len())?;",
+        "budget.push_bundle(stored.canonical_bytes().len())?;",
+        "projected.push_bundle(candidate.bundle().canonical_bytes().len())?;",
+    ] {
+        assert!(
+            production_lineage.contains(required),
+            "active-lineage path bypassed the canonical-byte budget: {required}"
+        );
+    }
+    assert!(
+        CATALOG_HISTORY.contains(".push_bundle(evidence.bytes().as_bytes().len())"),
+        "same-session startup evidence bypassed the canonical-byte budget"
+    );
+}
+
+#[test]
 fn catalog_revalidates_the_complete_compiler_owned_command_registry() {
     for required in [
         "MCP_COMMAND_NAME_REGISTRY_VERSION_V1",
