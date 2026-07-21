@@ -17,6 +17,7 @@ use riffdb_commit::{
     ProvenanceIdSourceError, RunningCommandCoordinator,
 };
 use riffdb_conflict::{ConflictManager, ConflictManagerConfig, ShardedConflictManager};
+use riffdb_policy::{AuthorizationClock, AuthorizationClockError};
 use riffdb_storage_api::{
     AdministrationAuditReader, AdministrationAuditScan, AdministrationAuditScanRequest,
     AuthoritativePointReader, DatabaseInitializationPort, DatabaseInitializationResult,
@@ -156,6 +157,14 @@ impl AdmissionClock for UnusedAdmissionClock {
     }
 }
 
+struct UnusedAuthorizationClock;
+
+impl AuthorizationClock for UnusedAuthorizationClock {
+    fn now(&self) -> Result<Timestamp, AuthorizationClockError> {
+        Err(AuthorizationClockError)
+    }
+}
+
 struct ScriptedAdministrationClock {
     seconds: Vec<i64>,
     calls: AtomicUsize,
@@ -204,6 +213,7 @@ fn start_coordinator(
     );
     let admission_clock: Arc<dyn AdmissionClock> = Arc::new(UnusedAdmissionClock);
     let administration_clock: Arc<dyn AdministrationClock> = administration_clock;
+    let authorization_clock: Arc<dyn AuthorizationClock> = Arc::new(UnusedAuthorizationClock);
     let provenance_source: Arc<dyn ProvenanceIdSource> = Arc::new(UnusedProvenanceSource);
     RunningCommandCoordinator::start(
         CoordinatorWorkloadCapacity::new(4).expect("nonzero workload capacity"),
@@ -212,6 +222,7 @@ fn start_coordinator(
         conflicts,
         admission_clock,
         administration_clock,
+        authorization_clock,
         provenance_source,
     )
     .expect("start production coordinator")
@@ -360,8 +371,8 @@ fn production_actor_persists_fifo_order_without_timestamp_order_or_sequence_gaps
         BASE_SECONDS + 30,
         BASE_SECONDS + 10,
         BASE_SECONDS + 20,
-        BASE_SECONDS,
         BASE_SECONDS + 40,
+        BASE_SECONDS,
     ]));
     let running = start_coordinator(database.open(), Arc::clone(&clock));
     let executor = running.administration_audit_executor();
@@ -376,6 +387,10 @@ fn production_actor_persists_fifo_order_without_timestamp_order_or_sequence_gaps
     let succeeded_receipt = submit(&executor, succeeded.clone());
     assert_eq!(block_on(started_receipt.completion()), Ok(()));
     assert_eq!(block_on(succeeded_receipt.completion()), Ok(()));
+    assert_eq!(
+        block_on(submit(&executor, failed.clone()).completion()),
+        Ok(())
+    );
 
     assert_eq!(
         block_on(submit(&executor, succeeded.clone()).completion()),
@@ -383,9 +398,14 @@ fn production_actor_persists_fifo_order_without_timestamp_order_or_sequence_gaps
         "a second terminal is rejected without consuming a sequence"
     );
     assert_eq!(
-        block_on(submit(&executor, failed.clone()).completion()),
-        Ok(())
+        executor.lifecycle_state(),
+        CoordinatorLifecycleState::Stopped,
+        "a checked phase conflict fails authoritative readiness"
     );
+    assert!(matches!(
+        block_on(executor.reserve_capacity()),
+        Err(AdministrationAuditAdmissionError::Stopped)
+    ));
     running.shutdown().expect("drain and join coordinator");
     assert_eq!(clock.calls(), 5, "each attempted append samples once");
 

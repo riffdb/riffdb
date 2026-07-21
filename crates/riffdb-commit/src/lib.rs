@@ -17,6 +17,7 @@ mod command_index;
 mod command_preparation;
 mod command_records;
 mod command_validation;
+mod control_plane;
 mod idempotency_inspection;
 mod initialization;
 mod outcome;
@@ -30,8 +31,11 @@ pub use audit::{AdministrationAuditInputView, BootstrapCompoundAuditProof};
 pub use audit_executor::{
     AdministrationAuditAdmissionError, AdministrationAuditCapacityPermit,
     AdministrationAuditExecutionError, AdministrationAuditExecutor, AdministrationAuditReceipt,
-    CommandExecutionAdmissionError, CommandExecutionCapacityPermit, CommandExecutionReceipt,
-    CommandExecutor, CommandIdempotencyInspector, CoordinatorLifecycleState,
+    CapabilityBootstrapReceipt, CapabilityBootstrapTerminalReceipt, CapabilityCreateReceipt,
+    CapabilityRevokeReceipt, CatalogDeploymentReceipt, CommandExecutionAdmissionError,
+    CommandExecutionCapacityPermit, CommandExecutionReceipt, CommandExecutor,
+    CommandIdempotencyInspector, ControlPlaneExecutionAdmissionError,
+    ControlPlaneExecutionCapacityPermit, ControlPlaneExecutor, CoordinatorLifecycleState,
     CoordinatorShutdownError, CoordinatorStartError, CoordinatorWorkloadCapacity,
     ReadOnlyExecutionReceipt, RunningCommandCoordinator,
 };
@@ -44,6 +48,16 @@ pub use command_execution::{
 pub use command_preparation::{
     CommandCancellationHandle, CommandExecutionPreparation, CommandExecutionPreparationError,
     CommandRequestControl,
+};
+pub use control_plane::{
+    ActivatedCatalog, CapabilityBootstrapCompletion, CapabilityBootstrapExecutionResult,
+    CapabilityBootstrapOutcome, CapabilityBootstrapPreparation,
+    CapabilityBootstrapTerminalPreparation, CapabilityCreateExecutionResult,
+    CapabilityCreateOutcome, CapabilityCreatePreparation, CapabilityIdentity,
+    CapabilityRevokeExecutionResult, CapabilityRevokeOutcome, CapabilityRevokePreparation,
+    CapabilityTransition, CatalogDeploymentOutcome, CatalogDeploymentPreparation,
+    CatalogDeploymentResult, ControlPlaneExecutionError, ControlPlaneExecutionErrorKind,
+    ControlPlanePreparationError, ControlPlaneTerminalAudit,
 };
 pub use idempotency_inspection::{
     CommandIdempotencyConfirmationError, CommandIdempotencyInspectionError,

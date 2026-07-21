@@ -1478,18 +1478,31 @@ fn coordinator_actor_uses_only_the_reviewed_current_thread_channel_surface() {
                 .find("submission_gate.close()")
                 .expect("shutdown gate close")
     );
-    let fence_publication = production_source
+    let audit_execution = production_source
         .split_once("fn execute_audit(")
         .expect("audit execution implementation")
         .1
-        .split_once("async fn reject_remaining_after_fence")
+        .split_once("async fn execute_command")
         .expect("bounded audit execution implementation")
         .0;
     assert!(
-        fence_publication
+        audit_execution.contains("StorageErrorKind::CommitStatusUnknown")
+            && audit_execution.contains("self.lifecycle.fence();")
+            && audit_execution.contains("Err(_) => self.lifecycle.stop()"),
+        "audit execution must fence only unknown commit status and stop every proven failure"
+    );
+    let lifecycle_publication = production_source
+        .split_once("impl CommandExecutionLifecycle for ActorLifecyclePublisher")
+        .expect("actor lifecycle publication implementation")
+        .1
+        .split_once("struct CommandCoordinatorActor")
+        .expect("bounded actor lifecycle publication implementation")
+        .0;
+    assert!(
+        lifecycle_publication
             .find(".store(LIFECYCLE_FENCED, Ordering::Release)")
             .expect("fenced-state publication")
-            < fence_publication
+            < lifecycle_publication
                 .find("submission_gate.close()")
                 .expect("fenced gate close")
     );

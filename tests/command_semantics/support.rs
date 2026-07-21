@@ -351,6 +351,8 @@ pub(crate) fn start_coordinator(
     let admission_clock: Arc<dyn AdmissionClock> = admission_clock;
     let administration_clock: Arc<dyn AdministrationClock> =
         Arc::new(FixedAdministrationClock(timestamp(1_700_000_002)));
+    let authorization_clock: Arc<dyn AuthorizationClock> =
+        Arc::new(FixedAuthorizationClock(timestamp(1_700_000_002)));
     let provenance_source: Arc<dyn ProvenanceIdSource> = provenance_source;
     RunningCommandCoordinator::start(
         CoordinatorWorkloadCapacity::new(8).expect("nonzero coordinator capacity"),
@@ -359,6 +361,7 @@ pub(crate) fn start_coordinator(
         conflicts,
         admission_clock,
         administration_clock,
+        authorization_clock,
         provenance_source,
     )
     .expect("start command coordinator")

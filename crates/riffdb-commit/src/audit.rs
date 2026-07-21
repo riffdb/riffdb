@@ -100,6 +100,14 @@ pub struct BootstrapCompoundAuditProof {
 
 struct BootstrapCompoundAuditProofSeal;
 
+impl BootstrapCompoundAuditProof {
+    pub(crate) const fn checked() -> Self {
+        Self {
+            _private: BootstrapCompoundAuditProofSeal,
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

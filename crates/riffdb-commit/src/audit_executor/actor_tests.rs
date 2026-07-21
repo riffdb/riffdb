@@ -69,7 +69,7 @@ impl AdministrationClock for TestClock {
 #[derive(Clone)]
 enum RepositoryBehavior {
     Append,
-    Fail(StorageError),
+    PhaseConflict,
 }
 
 struct RecordingRepository {
@@ -85,10 +85,10 @@ impl RecordingRepository {
         }
     }
 
-    fn failing(probe: Probe, error: StorageError) -> Self {
+    fn phase_conflicting(probe: Probe) -> Self {
         Self {
             probe,
-            behavior: RepositoryBehavior::Fail(error),
+            behavior: RepositoryBehavior::PhaseConflict,
         }
     }
 }
@@ -116,7 +116,7 @@ impl ServiceAuditAppendRepository for RecordingRepository {
                     intent,
                 ),
             )),
-            RepositoryBehavior::Fail(error) => Err(error.clone()),
+            RepositoryBehavior::PhaseConflict => Ok(ServiceAuditAppendResult::PhaseConflict),
         }
     }
 }
@@ -267,8 +267,8 @@ fn uuid_bytes(fill: u8) -> [u8; 16] {
     bytes
 }
 
-fn input(fill: u8) -> Box<dyn AdministrationAuditInputView> {
-    Box::new(CheckedInput {
+fn checked_input(fill: u8) -> CheckedInput {
+    CheckedInput {
         request_id: RequestId::from_bytes(uuid_bytes(fill)).expect("request UUIDv7"),
         operation: ServiceOperationV1::GetCommit,
         phase: ServiceAuditPhaseV1::Started,
@@ -281,7 +281,11 @@ fn input(fill: u8) -> Box<dyn AdministrationAuditInputView> {
         targets: ServiceAuditTargetsV1::empty(),
         approval_id: None,
         link: ServiceAuditLinkV1::None,
-    })
+    }
+}
+
+fn input(fill: u8) -> Box<dyn AdministrationAuditInputView> {
+    Box::new(checked_input(fill))
 }
 
 fn capacity(value: u16) -> CoordinatorWorkloadCapacity {
@@ -708,7 +712,7 @@ fn unexpected_actor_panic_stops_admission_and_every_queued_receipt() {
 }
 
 #[test]
-fn actor_reports_clock_and_storage_errors_once_without_retry() {
+fn proven_clock_audit_failure_stops_all_admission_without_retry() {
     let clock = TestClock::failing();
     let clock_calls = Arc::clone(&clock.calls);
     let probe = Probe::new();
@@ -719,6 +723,7 @@ fn actor_reports_clock_and_storage_errors_once_without_retry() {
     )
     .expect("start coordinator");
     let executor = running.administration_audit_executor();
+    let command_executor = running.command_executor();
     let receipt = block_on(executor.reserve_capacity())
         .expect("workload slot")
         .submit(input(0x71))
@@ -729,30 +734,131 @@ fn actor_reports_clock_and_storage_errors_once_without_retry() {
             AdministrationClockError
         ))
     );
+    assert_eq!(
+        executor.lifecycle_state(),
+        CoordinatorLifecycleState::Stopped
+    );
+    assert!(matches!(
+        block_on(executor.reserve_capacity()),
+        Err(AdministrationAuditAdmissionError::Stopped)
+    ));
+    assert!(matches!(
+        block_on(command_executor.reserve_capacity()),
+        Err(CommandExecutionAdmissionError::Stopped)
+    ));
     running.shutdown().expect("clean shutdown");
     assert_eq!(clock_calls.load(Ordering::Relaxed), 1);
     assert_eq!(probe.calls.load(Ordering::Relaxed), 0);
+}
 
+#[test]
+fn proven_storage_audit_failure_stops_before_completion_and_rejects_queued_work() {
     let expected = StorageError::new(StorageErrorKind::Unavailable, None);
+    let (entered_sender, entered_receiver) = std_mpsc::sync_channel(0);
+    let (release_sender, release_receiver) = std_mpsc::sync_channel(0);
     let clock = TestClock::fixed(fixed_timestamp());
     let clock_calls = Arc::clone(&clock.calls);
     let probe = Probe::new();
     let running = RunningCommandCoordinator::start_audit_only(
-        capacity(1),
-        RecordingRepository::failing(probe.clone(), expected.clone()),
+        capacity(2),
+        BlockingFailureRepository {
+            probe: probe.clone(),
+            entered: entered_sender,
+            release: Some(release_receiver),
+            error: expected.clone(),
+        },
         clock,
+    )
+    .expect("start coordinator");
+    let executor = running.administration_audit_executor();
+    let command_executor = running.command_executor();
+    let first = block_on(executor.reserve_capacity())
+        .expect("first workload slot")
+        .submit(input(0x72))
+        .expect("accepted storage-failure attempt");
+    entered_receiver.recv().expect("failed append entered");
+    let queued = block_on(executor.reserve_capacity())
+        .expect("queued workload slot")
+        .submit(input(0x73))
+        .expect("queued accepted append");
+
+    release_sender.send(()).expect("release failed append");
+    assert_eq!(
+        block_on(first.completion()),
+        Err(AdministrationAuditExecutionError::Storage(expected))
+    );
+    assert_eq!(
+        executor.lifecycle_state(),
+        CoordinatorLifecycleState::Stopped
+    );
+    assert!(matches!(
+        block_on(executor.reserve_capacity()),
+        Err(AdministrationAuditAdmissionError::Stopped)
+    ));
+    assert!(matches!(
+        block_on(command_executor.reserve_capacity()),
+        Err(CommandExecutionAdmissionError::Stopped)
+    ));
+    assert_eq!(
+        block_on(queued.completion()),
+        Err(AdministrationAuditExecutionError::CoordinatorStopped)
+    );
+    running.shutdown().expect("clean shutdown");
+    assert_eq!(clock_calls.load(Ordering::Relaxed), 1);
+    assert_eq!(probe.calls.load(Ordering::Relaxed), 1);
+}
+
+#[test]
+fn invalid_or_phase_conflicting_audit_attempt_stops_readiness() {
+    let probe = Probe::new();
+    let running = RunningCommandCoordinator::start_audit_only(
+        capacity(1),
+        RecordingRepository::appending(probe.clone()),
+        TestClock::fixed(fixed_timestamp()),
+    )
+    .expect("start coordinator");
+    let executor = running.administration_audit_executor();
+    let mut invalid = checked_input(0x74);
+    invalid.link = ServiceAuditLinkV1::ControlPlane {
+        administration_sequence: AdministrationSequence::first(),
+    };
+    let receipt = block_on(executor.reserve_capacity())
+        .expect("workload slot")
+        .submit(Box::new(invalid))
+        .expect("accepted invalid-input attempt");
+    assert_eq!(
+        block_on(receipt.completion()),
+        Err(AdministrationAuditExecutionError::InvalidInput(
+            StorageValueError::InvalidShape
+        ))
+    );
+    assert_eq!(
+        executor.lifecycle_state(),
+        CoordinatorLifecycleState::Stopped
+    );
+    running.shutdown().expect("join stopped coordinator");
+    assert_eq!(probe.calls.load(Ordering::Relaxed), 0);
+
+    let probe = Probe::new();
+    let running = RunningCommandCoordinator::start_audit_only(
+        capacity(1),
+        RecordingRepository::phase_conflicting(probe.clone()),
+        TestClock::fixed(fixed_timestamp()),
     )
     .expect("start coordinator");
     let executor = running.administration_audit_executor();
     let receipt = block_on(executor.reserve_capacity())
         .expect("workload slot")
-        .submit(input(0x72))
-        .expect("accepted storage-failure attempt");
+        .submit(input(0x75))
+        .expect("accepted phase-conflict attempt");
     assert_eq!(
         block_on(receipt.completion()),
-        Err(AdministrationAuditExecutionError::Storage(expected))
+        Err(AdministrationAuditExecutionError::PhaseConflict)
     );
-    running.shutdown().expect("clean shutdown");
-    assert_eq!(clock_calls.load(Ordering::Relaxed), 1);
+    assert_eq!(
+        executor.lifecycle_state(),
+        CoordinatorLifecycleState::Stopped
+    );
+    running.shutdown().expect("join stopped coordinator");
     assert_eq!(probe.calls.load(Ordering::Relaxed), 1);
 }
