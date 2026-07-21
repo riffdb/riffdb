@@ -11,10 +11,12 @@ mod deployment;
 mod error;
 mod history;
 mod lineage;
+mod materialization;
 mod notification;
 
 pub use bundle::*;
 pub use deployment::*;
 pub use error::*;
 pub use history::*;
+pub use materialization::*;
 pub use notification::*;

@@ -68,7 +68,6 @@ impl RecordOwnerV1 {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-#[allow(dead_code)] // Consumed by the proof-guided normalizer in the next commit slice.
 pub(crate) enum WriterRelation {
     Ancestor,
     Exact,
@@ -76,15 +75,33 @@ pub(crate) enum WriterRelation {
 }
 
 #[derive(Clone, Eq, PartialEq)]
-#[allow(dead_code)] // Consumed by the proof-guided normalizer in the next commit slice.
 pub(crate) struct NullFillMask {
     canonical_bits: Vec<u8>,
 }
 
 impl NullFillMask {
-    #[allow(dead_code)] // Consumed by the proof-guided normalizer in the next commit slice.
     pub(crate) fn semantic_bytes(&self) -> usize {
         self.canonical_bits.len()
+    }
+
+    pub(crate) fn allows(&self, position: usize) -> bool {
+        self.canonical_bits
+            .get(position / 8)
+            .is_some_and(|byte| byte & (1 << (position % 8)) != 0)
+    }
+
+    pub(crate) fn has_canonical_shape(&self, field_count: usize) -> bool {
+        if self.canonical_bits.len() != field_count.div_ceil(8)
+            || !self.canonical_bits.iter().any(|byte| *byte != 0)
+        {
+            return false;
+        }
+        let used_bits = field_count % 8;
+        used_bits == 0
+            || self
+                .canonical_bits
+                .last()
+                .is_some_and(|last| last & !((1u8 << used_bits) - 1) == 0)
     }
 }
 
@@ -260,7 +277,6 @@ impl LineageMaterializationProof {
         self.exact_member(binding.contract_version(), binding.bundle_hash())
     }
 
-    #[allow(dead_code)] // Consumed by the proof-guided normalizer in the next commit slice.
     pub(crate) fn writer_materialization(
         &self,
         owner: RecordOwnerV1,
@@ -486,7 +502,6 @@ fn register_record_fields(
     Ok(())
 }
 
-#[allow(dead_code)] // Consumed by the proof-guided normalizer in the next commit slice.
 fn record_schema(bundle: &ValidatedContractBundle, owner: RecordOwnerV1) -> Option<&RecordSchema> {
     match owner {
         RecordOwnerV1::Entity(id) => bundle

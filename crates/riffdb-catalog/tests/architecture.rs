@@ -6,6 +6,7 @@ const CATALOG_DEPLOYMENT: &str = include_str!("../src/deployment.rs");
 const CATALOG_HISTORY: &str = include_str!("../src/history.rs");
 const CATALOG_LINEAGE: &str = include_str!("../src/lineage.rs");
 const CATALOG_LIB: &str = include_str!("../src/lib.rs");
+const CATALOG_MATERIALIZATION: &str = include_str!("../src/materialization.rs");
 const STORAGE_MANIFEST: &str = include_str!("../../riffdb-storage-api/Cargo.toml");
 const STORAGE_CATALOG: &str = include_str!("../../riffdb-storage-api/src/catalog.rs");
 const STORAGE_LIB: &str = include_str!("../../riffdb-storage-api/src/lib.rs");
@@ -17,6 +18,7 @@ fn catalog_prepares_but_cannot_submit_storage_mutations() {
         CATALOG_DEPLOYMENT,
         CATALOG_HISTORY,
         CATALOG_LINEAGE,
+        CATALOG_MATERIALIZATION,
         CATALOG_LIB,
     ]
     .join("\n");
@@ -28,6 +30,40 @@ fn catalog_prepares_but_cannot_submit_storage_mutations() {
         );
     }
     assert!(catalog_sources.contains("CatalogActivationIntentV1"));
+}
+
+#[test]
+fn command_materialization_authority_has_no_serializable_or_cloneable_escape() {
+    let production = CATALOG_MATERIALIZATION
+        .split("\n#[cfg(test)]\nmod tests")
+        .next()
+        .expect("materialization production source");
+    for wrapper in [
+        "MaterializedCommandSnapshot",
+        "MaterializedTransactionCurrentState",
+        "CommandSnapshotResourceLimitEvidence",
+    ] {
+        assert!(production.contains(&format!("pub struct {wrapper} {{")));
+        assert!(!production.contains(&format!("#[derive(Clone)]\npub struct {wrapper}")));
+    }
+    for forbidden in [
+        "Serialize",
+        "Deserialize",
+        "pub fn new(",
+        "pub fn masks(",
+        "pub fn into_snapshot(",
+        "pub fn into_state(",
+    ] {
+        assert!(
+            !production.contains(forbidden),
+            "process-local materialization authority escaped through {forbidden}"
+        );
+    }
+    assert!(production.contains("resolved_plan: ResolvedExecutablePlan,"));
+    assert!(production.contains("raw_snapshot: ReadSnapshot,"));
+    assert!(!production.contains("raw_snapshot: ReadSnapshot,\n    masks:"));
+    assert!(production.contains("state.bindings() != self.snapshot.bindings()"));
+    assert!(production.contains("state.root_validations() != self.snapshot.root_validations()"));
 }
 
 #[test]
