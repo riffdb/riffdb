@@ -34,6 +34,8 @@ pub enum CommandExecutionClass {
 #[derive(Clone, Eq, PartialEq)]
 pub struct OperationTenantScope(TenantScope);
 
+static GLOBAL_ONLY_OPERATION_SCOPE: OperationTenantScope = OperationTenantScope::global_only();
+
 impl OperationTenantScope {
     /// Constructs the exact global scope required by grammar-v1 commands.
     #[must_use]
@@ -884,6 +886,14 @@ impl OperationRequest {
             OperationKind::ResolveCommandOutcomePreLookup { tenant_scope, .. }
             | OperationKind::ScanIndex { tenant_scope, .. }
             | OperationKind::QueryProjection { tenant_scope, .. } => Some(tenant_scope),
+            OperationKind::GetCommit { .. }
+            | OperationKind::ScanCommits { .. }
+            | OperationKind::SubscribeToCommits
+            | OperationKind::TraceProvenance { .. }
+            | OperationKind::GetStatistics
+            | OperationKind::ListPendingOutboxDeliveries { .. } => {
+                Some(&GLOBAL_ONLY_OPERATION_SCOPE)
+            }
             _ => None,
         }
     }
@@ -916,6 +926,11 @@ impl OperationRequest {
                     PartitionRequirement::Filter
                 }
             }
+            OperationKind::GetCommit { .. }
+            | OperationKind::ScanCommits { .. }
+            | OperationKind::SubscribeToCommits
+            | OperationKind::TraceProvenance { .. }
+            | OperationKind::ListPendingOutboxDeliveries { .. } => PartitionRequirement::AllOnly,
             _ => PartitionRequirement::None,
         }
     }
