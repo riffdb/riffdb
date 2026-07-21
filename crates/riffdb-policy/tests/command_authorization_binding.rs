@@ -128,6 +128,8 @@ fn consuming_allow_binds_exact_command_actor_tenant_partition_and_claims() {
         .into_command_execution(claims(), AgentSessionAdmissionPolicy::AllowForAgent)
         .expect("exact command binding");
 
+    assert_eq!(authorized.database_id(), database_id());
+    assert_eq!(authorized.environment(), &environment());
     assert_eq!(authorized.lineage(), &lineage());
     assert_eq!(authorized.version(), version);
     assert_eq!(authorized.command_id(), CommandId::first());
@@ -145,6 +147,73 @@ fn consuming_allow_binds_exact_command_actor_tenant_partition_and_claims() {
     assert!(authorized.provenance().source_commit().is_none());
     assert!(authorized.provenance().reason().is_none());
     assert!(authorized.provenance().approval_id().is_none());
+}
+
+#[test]
+fn allow_and_command_proofs_retain_the_exact_authorizer_boundary() {
+    let fixture = fixture(ActorKind::Agent, "boundary-agent");
+    let request = OperationRequest::execute_command(
+        lineage(),
+        ContractVersion::new(2).expect("nonzero version"),
+        CommandId::first(),
+        CommandExecutionClass::Mutation,
+        partition(45),
+    );
+    let proof = allowed(authorize(&fixture, request).expect("policy decision"));
+
+    assert_eq!(proof.database_id(), database_id());
+    assert_eq!(proof.environment(), &environment());
+    let proof_debug = format!("{proof:?}");
+    assert_eq!(proof_debug, "AuthorizedOperation([REDACTED])");
+    assert!(!proof_debug.contains(&database_id().to_string()));
+    assert!(!proof_debug.contains(environment().as_str()));
+
+    let authorized = proof
+        .into_command_execution(claims(), AgentSessionAdmissionPolicy::Discard)
+        .expect("exact command binding");
+    assert_eq!(authorized.database_id(), database_id());
+    assert_eq!(authorized.environment(), &environment());
+}
+
+#[test]
+fn cross_database_or_environment_authorizer_boundaries_fail_closed() {
+    let fixture = fixture(ActorKind::Agent, "boundary-agent");
+    let request = || {
+        OperationRequest::execute_command(
+            lineage(),
+            ContractVersion::new(2).expect("nonzero version"),
+            CommandId::first(),
+            CommandExecutionClass::Mutation,
+            partition(46),
+        )
+    };
+    let resolver = fixture.current_capability_resolver();
+    let wrong_database =
+        DatabaseId::from_unix_milliseconds_and_random(9, [0x91; 10]).expect("valid UUIDv7");
+    assert_eq!(
+        CurrentAuthorizer::new(
+            &resolver,
+            &FixedClock(timestamp(200)),
+            &NoopAuthorizationTelemetry,
+            wrong_database,
+            environment(),
+        )
+        .authorize(fixture.authenticated_principal(), request())
+        .expect("policy decision"),
+        Decision::Deny(PolicyCode::InactiveOrStaleCapability)
+    );
+    assert_eq!(
+        CurrentAuthorizer::new(
+            &resolver,
+            &FixedClock(timestamp(200)),
+            &NoopAuthorizationTelemetry,
+            database_id(),
+            Environment::new("other-environment").expect("bounded environment"),
+        )
+        .authorize(fixture.authenticated_principal(), request())
+        .expect("policy decision"),
+        Decision::Deny(PolicyCode::InactiveOrStaleCapability)
+    );
 }
 
 #[test]
@@ -211,9 +280,13 @@ fn command_binding_debug_and_errors_are_redaction_safe() {
         .into_command_execution(claims(), AgentSessionAdmissionPolicy::AllowForAgent)
         .expect("exact command binding");
     let rendered = format!("{authorized:?}");
+    let database_text = database_id().to_string();
+    let environment = environment();
     assert_eq!(rendered, "AuthorizedCommandExecution([REDACTED])");
     for secret in [
         "private-principal",
+        database_text.as_str(),
+        environment.as_str(),
         "private/repository",
         "0123456789abcdef",
         "caller supplied reason",

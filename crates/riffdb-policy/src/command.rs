@@ -4,7 +4,7 @@ use std::{error::Error, fmt};
 
 use riffdb_types::{
     ActorId, ActorKind, AdmittedActorContext, CommandId, ContractLineage, ContractVersion,
-    ScopedPartitionV1, TenantScope,
+    DatabaseId, Environment, ScopedPartitionV1, TenantScope,
 };
 
 use crate::provenance::admit_for_actor_kind;
@@ -37,9 +37,10 @@ impl Error for CommandAuthorizationBindingError {}
 /// Move-only proof binding one fresh allow decision to exact command authority.
 ///
 /// The proof retains the command identity and class, exact lineage-scoped
-/// partition, policy-resolved actor, and only policy-admitted provenance claims.
-/// It contains no capability token, durable record, storage handle, or protocol
-/// value. Capability identity remains on the separate service-audit path.
+/// partition, authorizer-proven database boundary, policy-resolved actor, and
+/// only policy-admitted provenance claims. It contains no capability token,
+/// durable record, storage handle, or protocol value. Capability identity
+/// remains on the separate service-audit path.
 ///
 /// ```compile_fail
 /// use riffdb_policy::AuthorizedCommandExecution;
@@ -59,6 +60,8 @@ impl Error for CommandAuthorizationBindingError {}
 /// ```
 #[derive(Eq, PartialEq)]
 pub struct AuthorizedCommandExecution {
+    database_id: DatabaseId,
+    environment: Environment,
     lineage: ContractLineage,
     version: ContractVersion,
     command_id: CommandId,
@@ -71,6 +74,8 @@ pub struct AuthorizedCommandExecution {
 impl AuthorizedCommandExecution {
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn bind(
+        database_id: DatabaseId,
+        environment: Environment,
         request: OperationRequest,
         obligations: Obligations,
         principal_id: ActorId,
@@ -106,6 +111,8 @@ impl AuthorizedCommandExecution {
         }
         let (provenance, agent_session_id) = admission.into_parts();
         Ok(Self {
+            database_id,
+            environment,
             lineage: command.lineage,
             version: command.version,
             command_id: command.command_id,
@@ -119,6 +126,18 @@ impl AuthorizedCommandExecution {
             ),
             provenance,
         })
+    }
+
+    /// Returns the exact database boundary checked by the current authorizer.
+    #[must_use]
+    pub const fn database_id(&self) -> DatabaseId {
+        self.database_id
+    }
+
+    /// Borrows the exact environment checked by the current authorizer.
+    #[must_use]
+    pub const fn environment(&self) -> &Environment {
+        &self.environment
     }
 
     /// Borrows the exact authorized contract lineage.
@@ -230,6 +249,8 @@ mod tests {
         obligations: Obligations,
     ) -> Result<AuthorizedCommandExecution, CommandAuthorizationBindingError> {
         AuthorizedCommandExecution::bind(
+            DatabaseId::from_unix_milliseconds_and_random(1, [0x61; 10]).expect("valid UUIDv7"),
+            Environment::new("command-binding-test").expect("bounded environment"),
             request(),
             obligations,
             ActorId::new("authorized-agent").expect("bounded actor"),
