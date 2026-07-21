@@ -74,6 +74,26 @@ contract ReadOnlyRows version 1 {
 }
 "#;
 
+const OPTIONAL_STORED_SOURCE: &str = r#"
+contract OptionalStored version 1 {
+  entity Row {
+    key (id: i64)
+    field value: i64
+    field note: optional<string<8>>
+  }
+  aggregate Rows {
+    root Row
+    partition_by id
+    conflict_key (id)
+  }
+  command GetRow {
+    input id: i64
+    read Row(id) as row else Missing { id: id }
+    return Found { row: row }
+  }
+}
+"#;
+
 const RESOURCE_LIMIT_SOURCE: &str = r#"
 contract BoundedEffects version 1 {
   entity Counter {
@@ -465,6 +485,74 @@ fn unknown_fields_survive_mutation_but_are_hidden_from_historical_outputs() {
             .iter()
             .all(|event| !record_contains_field(event.payload(), future_field))
     );
+}
+
+#[test]
+fn stored_optional_fields_must_be_normalized_before_runtime_entry() {
+    let bundle = compile_contract_source(OPTIONAL_STORED_SOURCE).expect("optional contract");
+    let plan = command(&bundle, "GetRow");
+    let input = input_record(plan.input().record(), [("id", CanonicalValue::I64(7))]);
+    let target = derive_binding_target(plan, &input, 0);
+    let id = entity_field(&bundle, "Row", "id");
+    let value = entity_field(&bundle, "Row", "value");
+    let note = entity_field(&bundle, "Row", "note");
+    let context = context(
+        &bundle,
+        plan,
+        &input,
+        LogicalTime::new(Timestamp::new(20, 0).expect("timestamp")),
+    );
+
+    let missing = stored_record(
+        &bundle,
+        plan,
+        target.clone(),
+        CanonicalRecord::new(vec![
+            (id, CanonicalValue::I64(7)),
+            (value, CanonicalValue::I64(11)),
+        ])
+        .expect("physically incomplete historical record"),
+    );
+    let missing_snapshot = snapshot(
+        plan_ref(&bundle, plan),
+        vec![EntityObservation::Present(missing)],
+    );
+    assert_eq!(
+        execute_command(
+            &bundle,
+            &input,
+            &missing_snapshot,
+            &context,
+            EvaluationBudget::v1(),
+        ),
+        Err(ExecutionFault::Integrity)
+    );
+
+    let normalized = stored_record(
+        &bundle,
+        plan,
+        target,
+        CanonicalRecord::new(vec![
+            (id, CanonicalValue::I64(7)),
+            (value, CanonicalValue::I64(11)),
+            (note, CanonicalValue::Null),
+        ])
+        .expect("catalog-normalized record"),
+    );
+    let normalized_snapshot = snapshot(
+        plan_ref(&bundle, plan),
+        vec![EntityObservation::Present(normalized)],
+    );
+    assert!(matches!(
+        execute_command(
+            &bundle,
+            &input,
+            &normalized_snapshot,
+            &context,
+            EvaluationBudget::v1(),
+        ),
+        Ok(ExecutionResult::ReadOnly(_))
+    ));
 }
 
 #[test]

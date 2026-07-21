@@ -499,13 +499,10 @@ fn materialize_entity_record(
     if key_values.len() != key_fields.len() {
         return Err(ExecutionFault::Integrity);
     }
-    let mut fields = stored.fields().to_vec();
+    let fields = stored.fields().to_vec();
     for declared_field in declared.fields() {
         match record_field(stored, declared_field.id()) {
             Some(value) => validate_value(schema, declared_field.value_type(), value)?,
-            None if declared_field.value_type().is_optional() => {
-                fields.push((declared_field.id(), CanonicalValue::Null));
-            }
             None => return Err(ExecutionFault::Integrity),
         }
     }
