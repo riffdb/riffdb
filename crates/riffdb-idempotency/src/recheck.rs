@@ -46,6 +46,19 @@ impl PreparedIdempotencyRecheckV1 {
             original_observation,
         }
     }
+
+    /// Returns whether this preparation is bound to both supplied values.
+    ///
+    /// This comparison is non-consuming and intentionally reveals neither the
+    /// retained values nor which value differed.
+    #[must_use]
+    pub fn matches_preparation(
+        &self,
+        selected_plan: &ExecutablePlanRef,
+        normalized_input: &CanonicalRecord,
+    ) -> bool {
+        &self.selected_plan == selected_plan && &self.normalized_input == normalized_input
+    }
 }
 
 impl fmt::Debug for PreparedIdempotencyRecheckV1 {

@@ -68,6 +68,27 @@ fn recheck_is_single_read_only_and_authority_values_are_move_only() {
 }
 
 #[test]
+fn recheck_preparation_matcher_is_exact_and_does_not_expose_retained_values() {
+    let preparation_impl = RECHECK_SOURCE
+        .split_once("impl PreparedIdempotencyRecheckV1 {")
+        .expect("preparation implementation")
+        .1
+        .split_once("impl fmt::Debug for PreparedIdempotencyRecheckV1")
+        .expect("bounded preparation implementation")
+        .0;
+
+    assert!(preparation_impl.contains("pub fn matches_preparation("));
+    assert!(preparation_impl.contains("&self.selected_plan == selected_plan"));
+    assert!(preparation_impl.contains("&self.normalized_input == normalized_input"));
+    assert!(!preparation_impl.contains("pub fn selected_plan("));
+    assert!(!preparation_impl.contains("pub const fn selected_plan("));
+    assert!(!preparation_impl.contains("pub fn normalized_input("));
+    assert!(!preparation_impl.contains("pub const fn normalized_input("));
+    assert!(!preparation_impl.contains("pub fn original_observation("));
+    assert!(!preparation_impl.contains("pub fn prepared_command("));
+}
+
+#[test]
 fn plan_comparison_is_source_adjacent_before_input_hash_comparison() {
     let plan_comparison = RECHECK_SOURCE
         .find("state_plan(&current) != &selected_plan")
