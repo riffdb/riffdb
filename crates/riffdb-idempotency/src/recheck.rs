@@ -9,7 +9,7 @@ use riffdb_storage_api::{
 };
 use riffdb_types::{
     ActorId, CanonicalInputHash, CanonicalRecord, CommandId, ContractLineage, DatabaseId,
-    Environment, TenantScope,
+    Environment, FieldId, TenantScope,
 };
 
 use crate::PreparedCommandIdempotencyV1;
@@ -50,7 +50,7 @@ impl PreparedIdempotencyRecheckV1 {
         }
     }
 
-    /// Returns whether this preparation is bound to both supplied values.
+    /// Returns whether this preparation is bound to all supplied values.
     ///
     /// This comparison is non-consuming and intentionally reveals neither the
     /// retained values nor which value differed.
@@ -59,8 +59,13 @@ impl PreparedIdempotencyRecheckV1 {
         &self,
         selected_plan: &ExecutablePlanRef,
         normalized_input: &CanonicalRecord,
+        idempotency_field: FieldId,
     ) -> bool {
-        &self.selected_plan == selected_plan && &self.normalized_input == normalized_input
+        &self.selected_plan == selected_plan
+            && &self.normalized_input == normalized_input
+            && self
+                .prepared_command
+                .matches_idempotency_field(idempotency_field)
     }
 
     /// Returns whether every retained digest candidate has the expected scope.

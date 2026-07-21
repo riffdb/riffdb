@@ -345,7 +345,7 @@ fn preparation_matcher_requires_every_plan_dimension_and_the_exact_input() {
     let prepared = prepared_recheck(&repository, &provider, selected_plan.clone(), 40)
         .expect("absent preparation");
 
-    assert!(prepared.matches_preparation(&selected_plan, &input));
+    assert!(prepared.matches_preparation(&selected_plan, &input, field(7)));
 
     let mismatched_plans = [
         ExecutablePlanRef::new(
@@ -386,15 +386,17 @@ fn preparation_matcher_requires_every_plan_dimension_and_the_exact_input() {
     ];
 
     for mismatched_plan in mismatched_plans {
-        assert!(!prepared.matches_preparation(&mismatched_plan, &input));
+        assert!(!prepared.matches_preparation(&mismatched_plan, &input, field(7)));
     }
 
-    assert!(!prepared.matches_preparation(&selected_plan, &normalized_input(41)));
+    assert!(!prepared.matches_preparation(&selected_plan, &normalized_input(41), field(7)));
     assert!(!prepared.matches_preparation(
         &selected_plan,
         &normalized_input_with_key("different-caller-key", 40),
+        field(7),
     ));
-    assert!(prepared.matches_preparation(&selected_plan, &input));
+    assert!(!prepared.matches_preparation(&selected_plan, &input, field(11)));
+    assert!(prepared.matches_preparation(&selected_plan, &input, field(7)));
 }
 
 #[test]
@@ -766,7 +768,7 @@ fn all_authority_and_result_diagnostics_are_redacted() {
     ]);
     let prepared =
         prepared_recheck(&repository, &provider, selected_plan, 40).expect("absent preparation");
-    assert!(!prepared.matches_preparation(&plan(2), &normalized_input(40)));
+    assert!(!prepared.matches_preparation(&plan(2), &normalized_input(40), field(7)));
     assert!(!prepared.matches_scope(
         database(1),
         &Environment::new("environment-secret-canary").expect("environment"),
