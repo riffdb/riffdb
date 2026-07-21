@@ -1017,6 +1017,7 @@ dependencies = [
  "riffdb-idempotency",
  "riffdb-invariant",
  "riffdb-policy",
+ "riffdb-runtime",
  "riffdb-storage-api",
  "riffdb-testkit",
  "riffdb-types",

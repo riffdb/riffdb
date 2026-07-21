@@ -7,6 +7,7 @@ const MANIFEST: &str = include_str!("../Cargo.toml");
 const AUDIT_SOURCE: &str = include_str!("../src/audit.rs");
 const AUDIT_EXECUTOR_SOURCE: &str = include_str!("../src/audit_executor.rs");
 const COMMAND_ADMISSION_SOURCE: &str = include_str!("../src/command_admission.rs");
+const COMMAND_ATTEMPT_SOURCE: &str = include_str!("../src/command_attempt.rs");
 const COMMAND_PREPARATION_SOURCE: &str = include_str!("../src/command_preparation.rs");
 const LIB_SOURCE: &str = include_str!("../src/lib.rs");
 const CLOCK_SOURCE: &str = include_str!("../src/clock.rs");
@@ -73,6 +74,7 @@ fn manifest_has_only_the_reviewed_dependencies_needed_by_commit_orchestration() 
             "riffdb-idempotency",
             "riffdb-invariant",
             "riffdb-policy",
+            "riffdb-runtime",
             "riffdb-storage-api",
             "riffdb-types",
         ]
@@ -89,7 +91,6 @@ fn manifest_has_only_the_reviewed_dependencies_needed_by_commit_orchestration() 
         "riffdb-api-mcp",
         "riffdb-storage-memory",
         "riffdb-storage-redb",
-        "riffdb-runtime",
         "riffdb-auth",
         "riffdb-contract-compiler",
         "riffdb-contract-syntax",
@@ -323,6 +324,100 @@ fn command_admission_is_private_move_only_and_orders_external_calls_exactly() {
         clock < mutation,
         "clock sampling must precede admission mutation"
     );
+}
+
+#[test]
+fn command_attempt_owns_one_lease_around_synchronous_recheck_snapshot_and_runtime() {
+    let production_source = COMMAND_ATTEMPT_SOURCE
+        .split_once("#[cfg(test)]")
+        .map_or(COMMAND_ATTEMPT_SOURCE, |(production, _)| production);
+    for required in [
+        "pub(crate) const MAX_COMMAND_EVALUATION_ATTEMPTS_V1: usize = 3",
+        "pub(crate) struct PendingCommandAttempts",
+        "commit_context: PreEvaluationCommitContext",
+        "lookup_candidates: IdempotencyLookupCandidatesV1",
+        "completed_attempts: usize",
+        "pub(crate) enum CommandAttemptResolution",
+        "Evaluated(EvaluatedCommandAttempt)",
+        "ExecutionFault(ExecutionFaultAttempt)",
+        "OutcomeReplay(StoredOutcomeV1)",
+        "ExecutionFailureReplay(StoredExecutionFailedV1)",
+        "lease: MutationLease",
+        "snapshot: ReadSnapshot",
+        "pub(crate) async fn evaluate_next_command_attempt(",
+        ".acquire_mut(",
+        ".lookup_admission(state.lookup_candidates.clone())",
+        ".read_snapshot(state.snapshot_request.clone())",
+        "state.completed_attempts >= MAX_COMMAND_EVALUATION_ATTEMPTS_V1",
+        "state.completed_attempts = state",
+        "let execution = execute_command(",
+        "pending.admission_request_id()",
+        "pending.actor().clone()",
+        "pending.logical_time()",
+        "pending.partition_key().clone()",
+        "if pending == *state.commit_context.pending()",
+        "outcome_matches_context(&outcome, &state.commit_context)",
+        "if failure.pending() == state.commit_context.pending()",
+        "ExecutionFailureCode::ArithmeticFault",
+        "ExecutionFailureCode::ResourceLimit",
+        "Ok(ExecutionResult::ReadOnly(_)) | Err(ExecutionFault::Integrity)",
+    ] {
+        assert!(
+            production_source.contains(required),
+            "command attempt is missing reviewed mechanism {required}"
+        );
+    }
+
+    assert!(LIB_SOURCE.contains("mod command_attempt;"));
+    assert!(!LIB_SOURCE.contains("pub mod command_attempt"));
+    assert!(!LIB_SOURCE.contains("pub use command_attempt"));
+    assert_eq!(
+        production_source.matches(".await").count(),
+        1,
+        "capability acquisition must remain the attempt's only await point"
+    );
+    let after_acquisition = production_source
+        .split_once(".await")
+        .map(|(_, tail)| tail)
+        .expect("one acquisition await");
+    assert!(
+        !after_acquisition.contains(".await"),
+        "no await is permitted while a mutation lease may be owned"
+    );
+
+    let context = production_source
+        .split_once("fn transaction_context(")
+        .and_then(|(_, remainder)| remainder.split_once("\nfn check_request_control("))
+        .map(|(body, _)| body)
+        .expect("bounded transaction-context lowering");
+    assert!(
+        !context.contains("invocation_request_id"),
+        "runtime context must use the original admitted request identity"
+    );
+
+    for forbidden in [
+        "pub mod command_attempt",
+        "pub use command_attempt",
+        "StorageEngine",
+        "StorageWrite",
+        "CommitIntent",
+        "ProvenanceId",
+        "ProvenanceIdSource",
+        "riffdb_contract_compiler",
+        "SystemTime",
+        "tokio::",
+        "spawn(",
+        "sleep(",
+        "std::net",
+        "std::fs",
+        "begin_command",
+        "assign_sequence",
+    ] {
+        assert!(
+            !production_source.contains(forbidden),
+            "command attempt crosses reviewed boundary through {forbidden}"
+        );
+    }
 }
 
 #[test]

@@ -15,6 +15,7 @@ riffdb-contract-ir = { version = "0.1.0", path = "../riffdb-contract-ir", defaul
 riffdb-idempotency = { version = "0.1.0", path = "../riffdb-idempotency", default-features = false }
 riffdb-invariant = { version = "0.1.0", path = "../riffdb-invariant", default-features = false }
 riffdb-policy = { version = "0.1.0", path = "../riffdb-policy", default-features = false }
+riffdb-runtime = { version = "0.1.0", path = "../riffdb-runtime", default-features = false }
 riffdb-storage-api = { version = "0.1.0", path = "../riffdb-storage-api", default-features = false }
 riffdb-types = { version = "0.1.0", path = "../riffdb-types", default-features = false }
 tokio = { version = "=1.52.0", default-features = false, features = ["rt", "sync"] }
