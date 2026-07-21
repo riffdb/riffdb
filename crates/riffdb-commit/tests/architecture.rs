@@ -11,6 +11,7 @@ const AUDIT_SOURCE: &str = include_str!("../src/audit.rs");
 const AUDIT_EXECUTOR_SOURCE: &str = include_str!("../src/audit_executor.rs");
 const COMMAND_ADMISSION_SOURCE: &str = include_str!("../src/command_admission.rs");
 const COMMAND_ATTEMPT_SOURCE: &str = include_str!("../src/command_attempt.rs");
+const COMMAND_INDEX_SOURCE: &str = include_str!("../src/command_index.rs");
 const COMMAND_VALIDATION_SOURCE: &str = include_str!("../src/command_validation.rs");
 const COMMAND_PREPARATION_SOURCE: &str = include_str!("../src/command_preparation.rs");
 const LIB_SOURCE: &str = include_str!("../src/lib.rs");
@@ -244,6 +245,64 @@ fn command_validation_is_sealed_until_candidate_identity_is_preserved_by_constru
     assert!(LIB_SOURCE.contains("mod command_validation;"));
     assert!(!LIB_SOURCE.contains("pub mod command_validation"));
     assert!(!LIB_SOURCE.contains("pub use command_validation"));
+}
+
+#[test]
+fn command_index_derivation_is_sealed_and_has_no_storage_progression_authority() {
+    let production = COMMAND_INDEX_SOURCE
+        .split_once("#[cfg(test)]")
+        .map_or(COMMAND_INDEX_SOURCE, |(source, _)| source);
+
+    for required in [
+        "fn derive_grammar_v1_indexes(",
+        "evaluated.mutations().is_empty()",
+        "IndexEntryMutationV1::Delete(old_key)",
+        "IndexEntryMutationV1::Put(",
+        "CanonicalRecord::new(Vec::new())",
+        "encode_index(&new_values",
+        "encode_index_prefix(&values[..component_count])",
+        "IndexRangePrefixBuilder::new(index.id())",
+        "storage.as_bytes() != ir_prefix.as_bytes()",
+        "MAX_INDEX_DELTAS",
+        "MAX_AFFECTED_INDEX_EPOCH_TARGETS",
+        "MAX_VALIDATION_TARGETS",
+        "MAX_READ_SNAPSHOT_BYTES",
+        "CommandIndexError::internal_defect()",
+    ] {
+        assert!(
+            production.contains(required),
+            "sealed command-index derivation is missing {required}"
+        );
+    }
+    for forbidden in [
+        "pub(crate)",
+        "pub fn ",
+        "pub struct ",
+        "pub enum ",
+        "pub(",
+        "ApplicationTransaction",
+        "StorageEngine",
+        "SnapshotReader",
+        ".begin_candidate(",
+        ".recheck_admission(",
+        ".read_transaction_current(",
+        ".read_affected_index_epochs(",
+        ".plan_validated(",
+        ".assign_sequence(",
+        ".stage(",
+        ".commit(",
+        "async fn",
+        ".await",
+        "ResourceLimit",
+    ] {
+        assert!(
+            !production.contains(forbidden),
+            "sealed command-index derivation gained forbidden authority through {forbidden}"
+        );
+    }
+    assert!(LIB_SOURCE.contains("mod command_index;"));
+    assert!(!LIB_SOURCE.contains("pub mod command_index"));
+    assert!(!LIB_SOURCE.contains("pub use command_index"));
 }
 
 #[test]
