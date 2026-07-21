@@ -416,11 +416,11 @@ fn authorize_tenant(
     grant: &TenantScope,
     required: Option<&crate::OperationTenantScope>,
 ) -> Result<TenantScope, PolicyCode> {
-    let Some(_required) = required else {
+    let Some(required) = required else {
         return Ok(grant.clone());
     };
-    if matches!(grant, TenantScope::Global) {
-        Ok(TenantScope::Global)
+    if grant == required.tenant_scope() {
+        Ok(grant.clone())
     } else {
         Err(PolicyCode::TenantScopeMismatch)
     }
@@ -857,6 +857,20 @@ mod tests {
             ),
             Err(PolicyCode::TenantScopeMismatch)
         );
+        assert_eq!(
+            evaluate(
+                &principal,
+                &current,
+                current.database_id,
+                &environment,
+                timestamp(15),
+                &OperationRequest::resolve_command_outcome_pre_lookup(
+                    lineage(),
+                    CommandId::first(),
+                ),
+            ),
+            Err(PolicyCode::TenantScopeMismatch)
+        );
     }
 
     #[test]
@@ -1121,6 +1135,19 @@ mod tests {
             Vec::new(),
         );
         let (principal, current, environment) = facts(owner_grant);
+        let pre_lookup =
+            OperationRequest::resolve_command_outcome_pre_lookup(lineage(), CommandId::first());
+        assert!(
+            evaluate(
+                &principal,
+                &current,
+                current.database_id,
+                &environment,
+                timestamp(15),
+                &pre_lookup,
+            )
+            .is_ok()
+        );
         let request = |owner_principal_id, owner_tenant_scope| {
             OperationRequest::resolve_command_outcome(
                 lineage(),
