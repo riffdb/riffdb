@@ -1117,11 +1117,20 @@ impl fmt::Debug for TransactionAbsentCapabilityRevokeDecision {
     }
 }
 
+/// Closed reason an initially authorized present-target revoke must be rebuilt.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum CapabilityRevokePreparationChange {
+    /// The complete transaction-current target no longer matches initial authorization.
+    TargetChanged,
+}
+
 /// Deny-by-default result of the transaction-current policy check.
 #[derive(Eq, PartialEq)]
 pub enum TransactionCapabilityMutationDecision {
     /// Current policy allowed the exact proposed transition.
     Allow(Box<AuthorizedTransactionCapabilityMutation>),
+    /// Initial target facts changed and require fresh service authorization.
+    PreparationChanged(CapabilityRevokePreparationChange),
     /// Current policy denied the transition with a closed internal code.
     Deny(PolicyCode),
 }
@@ -1132,6 +1141,10 @@ impl fmt::Debug for TransactionCapabilityMutationDecision {
             Self::Allow(_) => {
                 formatter.write_str("TransactionCapabilityMutationDecision::Allow([REDACTED])")
             }
+            Self::PreparationChanged(change) => formatter
+                .debug_tuple("TransactionCapabilityMutationDecision::PreparationChanged")
+                .field(change)
+                .finish(),
             Self::Deny(code) => formatter
                 .debug_tuple("TransactionCapabilityMutationDecision::Deny")
                 .field(code)
@@ -1145,57 +1158,91 @@ impl fmt::Debug for TransactionCapabilityMutationDecision {
 pub struct TransactionCurrentCapabilityVerifier;
 
 impl TransactionCurrentCapabilityVerifier {
-    /// Rechecks every bound fact using one fresh authoritative clock sample.
+    /// Rechecks one create preparation using one fresh authoritative clock sample.
     #[must_use]
-    pub fn verify(
+    pub fn verify_create(
         current: &TransactionCurrentCapabilityFacts,
         authorization_time: Timestamp,
         preparation: AuthorizedCapabilityMutationPreparation,
-        proposed: ProposedCapabilityMutation,
+        proposed: ProposedCapabilityCreate,
     ) -> TransactionCapabilityMutationDecision {
-        let result = verify_current_binding(current, authorization_time, &preparation).and_then(
-            |()| match (&preparation.mutation, &proposed) {
-                (
+        let result =
+            verify_current_binding(current, authorization_time, &preparation).and_then(|()| {
+                match &preparation.mutation {
                     PreparedCapabilityMutation::Create {
                         target,
                         trusted_audiences,
-                    },
-                    ProposedCapabilityMutation::Create(proposed_create),
-                ) => verify_create(
-                    current,
-                    authorization_time,
-                    target,
-                    trusted_audiences,
-                    preparation.mode,
-                    proposed_create,
-                ),
-                (
-                    PreparedCapabilityMutation::Revoke { target, reason },
-                    ProposedCapabilityMutation::Revoke(proposed_revoke),
-                ) => verify_revoke(
-                    current,
-                    authorization_time,
-                    target,
-                    *reason,
-                    preparation.mode,
-                    proposed_revoke,
-                ),
-                (PreparedCapabilityMutation::RevokeAbsent { .. }, _) => {
-                    Err(PolicyCode::DelegationExceedsAuthority)
+                    } => verify_create_proposal(
+                        current,
+                        authorization_time,
+                        target,
+                        trusted_audiences,
+                        preparation.mode,
+                        &proposed,
+                    ),
+                    PreparedCapabilityMutation::Revoke { .. }
+                    | PreparedCapabilityMutation::RevokeAbsent { .. } => {
+                        Err(PolicyCode::DelegationExceedsAuthority)
+                    }
                 }
-                _ => Err(PolicyCode::DelegationExceedsAuthority),
-            },
-        );
+            });
         match result {
             Ok(()) => TransactionCapabilityMutationDecision::Allow(Box::new(
                 AuthorizedTransactionCapabilityMutation {
                     authoritative_time: authorization_time,
                     preparation,
-                    proposed,
+                    proposed: ProposedCapabilityMutation::Create(proposed),
                 },
             )),
             Err(code) => TransactionCapabilityMutationDecision::Deny(code),
         }
+    }
+
+    /// Rechecks one present-target revoke at the transaction's final safe point.
+    ///
+    /// Authorizer changes deny before target drift is classified. A changed target
+    /// never inherits the initial authorization; callers must reload complete
+    /// facts and perform initial policy evaluation again.
+    #[must_use]
+    pub fn verify_revoke(
+        current_authorizer: &TransactionCurrentCapabilityFacts,
+        current_target: &TransactionCurrentCapabilityFacts,
+        authorization_time: Timestamp,
+        preparation: AuthorizedCapabilityMutationPreparation,
+        proposed: ProposedCapabilityRevoke,
+    ) -> TransactionCapabilityMutationDecision {
+        if let Err(code) =
+            verify_current_binding(current_authorizer, authorization_time, &preparation)
+        {
+            return TransactionCapabilityMutationDecision::Deny(code);
+        }
+        let PreparedCapabilityMutation::Revoke { target, reason } = &preparation.mutation else {
+            return TransactionCapabilityMutationDecision::Deny(
+                PolicyCode::DelegationExceedsAuthority,
+            );
+        };
+        if !current_target_matches_revoke_target(current_target, target) {
+            return TransactionCapabilityMutationDecision::PreparationChanged(
+                CapabilityRevokePreparationChange::TargetChanged,
+            );
+        }
+        if let Err(code) = verify_revoke_proposal(
+            current_authorizer,
+            authorization_time,
+            target,
+            *reason,
+            preparation.mode,
+            &proposed,
+        ) {
+            return TransactionCapabilityMutationDecision::Deny(code);
+        }
+        TransactionCapabilityMutationDecision::Allow(Box::new(
+            AuthorizedTransactionCapabilityMutation {
+                authoritative_time: authorization_time,
+                preparation,
+                proposed: ProposedCapabilityMutation::Revoke(proposed),
+            },
+        ))
     }
 
     /// Rechecks an absence-authorized revoke against exact transaction state.
@@ -1270,7 +1317,7 @@ fn verify_current_binding(
     }
 }
 
-fn verify_create(
+fn verify_create_proposal(
     current: &TransactionCurrentCapabilityFacts,
     now: Timestamp,
     target: &CapabilityCreateTargetFacts,
@@ -1291,7 +1338,7 @@ fn verify_create(
     verify_selected_create_mode(current, target, expected_expires, mode)
 }
 
-fn verify_revoke(
+fn verify_revoke_proposal(
     current: &TransactionCurrentCapabilityFacts,
     now: Timestamp,
     target: &CapabilityRevokeTargetFacts,
@@ -1303,6 +1350,23 @@ fn verify_revoke(
         return Err(PolicyCode::DelegationExceedsAuthority);
     }
     verify_selected_revoke_mode(current, target, mode)
+}
+
+fn current_target_matches_revoke_target(
+    current: &TransactionCurrentCapabilityFacts,
+    target: &CapabilityRevokeTargetFacts,
+) -> bool {
+    current.capability_id == target.capability_id
+        && current.revision == target.revision
+        && current.activity == target.activity
+        && current.database_id == target.database_id
+        && current.environment == target.environment
+        && current.principal_id == target.principal_id
+        && current.actor_kind == target.actor_kind
+        && current.audiences == target.audiences
+        && current.issued_at == target.issued_at
+        && current.expires_at == target.expires_at
+        && current.grant == target.grant
 }
 
 fn select_create_mode(
@@ -1753,6 +1817,25 @@ mod tests {
         .expect("valid revoke target")
     }
 
+    fn current_revoke_target(
+        target: &CapabilityRevokeTargetFacts,
+    ) -> TransactionCurrentCapabilityFacts {
+        TransactionCurrentCapabilityFacts::new(
+            target.capability_id,
+            target.revision,
+            target.activity,
+            target.database_id,
+            target.environment.clone(),
+            target.principal_id.clone(),
+            target.actor_kind,
+            target.audiences.clone(),
+            target.issued_at,
+            target.expires_at,
+            target.grant.clone(),
+        )
+        .expect("valid transaction-current revoke target")
+    }
+
     fn absent_revoke_target(seed: u8) -> AbsentCapabilityRevokeTargetFacts {
         AbsentCapabilityRevokeTargetFacts::new(
             request_id(seed),
@@ -2128,13 +2211,9 @@ mod tests {
         );
 
         let commit_time = timestamp(250);
-        let proposed = ProposedCapabilityMutation::Create(ProposedCapabilityCreate::new(
-            target,
-            commit_time,
-            timestamp(310),
-        ));
+        let proposed = ProposedCapabilityCreate::new(target, commit_time, timestamp(310));
         let TransactionCapabilityMutationDecision::Allow(proof) =
-            TransactionCurrentCapabilityVerifier::verify(
+            TransactionCurrentCapabilityVerifier::verify_create(
                 &current,
                 commit_time,
                 preparation,
@@ -2223,15 +2302,11 @@ mod tests {
 
         let commit_time = timestamp(260);
         assert!(matches!(
-            TransactionCurrentCapabilityVerifier::verify(
+            TransactionCurrentCapabilityVerifier::verify_create(
                 &current,
                 commit_time,
                 preparation,
-                ProposedCapabilityMutation::Create(ProposedCapabilityCreate::new(
-                    target,
-                    commit_time,
-                    timestamp(360),
-                )),
+                ProposedCapabilityCreate::new(target, commit_time, timestamp(360),),
             ),
             TransactionCapabilityMutationDecision::Allow(_)
         ));
@@ -2259,21 +2334,169 @@ mod tests {
         );
 
         let commit_time = timestamp(250);
+        let current_target = current_revoke_target(&target);
         let TransactionCapabilityMutationDecision::Allow(proof) =
-            TransactionCurrentCapabilityVerifier::verify(
+            TransactionCurrentCapabilityVerifier::verify_revoke(
                 &current,
+                &current_target,
                 commit_time,
                 preparation,
-                ProposedCapabilityMutation::Revoke(ProposedCapabilityRevoke::new(
+                ProposedCapabilityRevoke::new(
                     target,
                     RevocationReasonCodeV1::Requested,
                     commit_time,
-                )),
+                ),
             )
         else {
             panic!("expected transaction-current allow");
         };
         assert_eq!(proof.authoritative_time(), commit_time);
+    }
+
+    #[test]
+    fn present_revoke_requires_exact_transaction_current_target_facts() {
+        let authorizer = current(
+            ordinary_revoke_grant(),
+            vec![audience("grpc"), audience("mcp")],
+            timestamp(1_000),
+        );
+        let target = revoke_target(0x7d, child_grant(), vec![audience("mcp")], timestamp(900));
+        let exact_current_target = current_revoke_target(&target);
+        let mut changes = Vec::new();
+
+        let mut changed = exact_current_target.clone();
+        changed.capability_id = target_capability_id(0x7e);
+        changes.push(changed);
+        let mut changed = exact_current_target.clone();
+        changed.revision = NonZeroU64::new(4).expect("nonzero revision");
+        changes.push(changed);
+        let mut changed = exact_current_target.clone();
+        changed.activity = CapabilityActivity::Revoked;
+        changes.push(changed);
+        let mut changed = exact_current_target.clone();
+        changed.database_id =
+            DatabaseId::from_unix_milliseconds_and_random(9, [0x7e; 10]).expect("valid UUIDv7");
+        changes.push(changed);
+        let mut changed = exact_current_target.clone();
+        changed.environment = Environment::new("other").expect("valid environment");
+        changes.push(changed);
+        let mut changed = exact_current_target.clone();
+        changed.principal_id = ActorId::new("changed-principal").expect("valid actor");
+        changes.push(changed);
+        let mut changed = exact_current_target.clone();
+        changed.actor_kind = ActorKind::Human;
+        changes.push(changed);
+        let mut changed = exact_current_target.clone();
+        changed.audiences = vec![audience("grpc")];
+        changes.push(changed);
+        let mut changed = exact_current_target.clone();
+        changed.issued_at = timestamp(101);
+        changes.push(changed);
+        let mut changed = exact_current_target.clone();
+        changed.expires_at = timestamp(901);
+        changes.push(changed);
+        let mut changed = exact_current_target;
+        changed.grant = grant(
+            TenantScope::Global,
+            vec![permission(CapabilityPermissionKindV1::ReadHealth)],
+            1,
+            Vec::new(),
+        );
+        changes.push(changed);
+
+        for changed_target in changes {
+            let preparation = prepare_revoke(
+                &authorizer,
+                target.clone(),
+                RevocationReasonCodeV1::Requested,
+            )
+            .expect("prepared");
+            assert_eq!(
+                TransactionCurrentCapabilityVerifier::verify_revoke(
+                    &authorizer,
+                    &changed_target,
+                    timestamp(250),
+                    preparation,
+                    ProposedCapabilityRevoke::new(
+                        target.clone(),
+                        RevocationReasonCodeV1::Requested,
+                        timestamp(250),
+                    ),
+                ),
+                TransactionCapabilityMutationDecision::PreparationChanged(
+                    CapabilityRevokePreparationChange::TargetChanged,
+                )
+            );
+        }
+    }
+
+    #[test]
+    fn present_revoke_denies_authorizer_drift_before_classifying_target_drift() {
+        let authorizer = current(
+            ordinary_revoke_grant(),
+            vec![audience("grpc")],
+            timestamp(1_000),
+        );
+        let target = revoke_target(0x7f, child_grant(), vec![audience("grpc")], timestamp(900));
+        let preparation = prepare_revoke(
+            &authorizer,
+            target.clone(),
+            RevocationReasonCodeV1::Requested,
+        )
+        .expect("prepared");
+        let mut changed_authorizer = authorizer;
+        changed_authorizer.activity = CapabilityActivity::Revoked;
+        let mut changed_target = current_revoke_target(&target);
+        changed_target.revision = NonZeroU64::new(4).expect("nonzero revision");
+
+        assert_eq!(
+            TransactionCurrentCapabilityVerifier::verify_revoke(
+                &changed_authorizer,
+                &changed_target,
+                timestamp(250),
+                preparation,
+                ProposedCapabilityRevoke::new(
+                    target,
+                    RevocationReasonCodeV1::Requested,
+                    timestamp(250),
+                ),
+            ),
+            TransactionCapabilityMutationDecision::Deny(PolicyCode::InactiveOrStaleCapability,)
+        );
+    }
+
+    #[test]
+    fn freshly_prepared_revoked_target_remains_eligible_for_idempotent_revoke() {
+        let authorizer = current(
+            ordinary_revoke_grant(),
+            vec![audience("grpc")],
+            timestamp(1_000),
+        );
+        let mut target = revoke_target(0x80, child_grant(), vec![audience("grpc")], timestamp(900));
+        target.revision = NonZeroU64::new(4).expect("nonzero revision");
+        target.activity = CapabilityActivity::Revoked;
+        let preparation = prepare_revoke(
+            &authorizer,
+            target.clone(),
+            RevocationReasonCodeV1::Requested,
+        )
+        .expect("prepared");
+        let current_target = current_revoke_target(&target);
+
+        assert!(matches!(
+            TransactionCurrentCapabilityVerifier::verify_revoke(
+                &authorizer,
+                &current_target,
+                timestamp(250),
+                preparation,
+                ProposedCapabilityRevoke::new(
+                    target,
+                    RevocationReasonCodeV1::Requested,
+                    timestamp(250),
+                ),
+            ),
+            TransactionCapabilityMutationDecision::Allow(_)
+        ));
     }
 
     #[test]
@@ -2309,16 +2532,18 @@ mod tests {
             preparation.delegation_mode(),
             CapabilityDelegationMode::Administrator
         );
+        let current_target = current_revoke_target(&target);
         assert!(matches!(
-            TransactionCurrentCapabilityVerifier::verify(
+            TransactionCurrentCapabilityVerifier::verify_revoke(
                 &current,
+                &current_target,
                 timestamp(250),
                 preparation,
-                ProposedCapabilityMutation::Revoke(ProposedCapabilityRevoke::new(
+                ProposedCapabilityRevoke::new(
                     target,
                     RevocationReasonCodeV1::PolicyChange,
                     timestamp(250),
-                )),
+                ),
             ),
             TransactionCapabilityMutationDecision::Allow(_)
         ));
@@ -2652,16 +2877,18 @@ mod tests {
             100,
             Vec::new(),
         );
+        let current_target = current_revoke_target(&target);
         assert_eq!(
-            TransactionCurrentCapabilityVerifier::verify(
+            TransactionCurrentCapabilityVerifier::verify_revoke(
                 &changed,
+                &current_target,
                 timestamp(250),
                 preparation,
-                ProposedCapabilityMutation::Revoke(ProposedCapabilityRevoke::new(
+                ProposedCapabilityRevoke::new(
                     target,
                     RevocationReasonCodeV1::Requested,
                     timestamp(250),
-                )),
+                ),
             ),
             TransactionCapabilityMutationDecision::Deny(PolicyCode::MissingPermission)
         );
@@ -2702,20 +2929,18 @@ mod tests {
                 timestamp(251),
             ),
         ];
+        let current_target = current_revoke_target(&target);
         for (proposed_target, proposed_reason, proposed_time) in cases {
             let preparation =
                 prepare_revoke(&current, target.clone(), RevocationReasonCodeV1::Requested)
                     .expect("prepared");
             assert_eq!(
-                TransactionCurrentCapabilityVerifier::verify(
+                TransactionCurrentCapabilityVerifier::verify_revoke(
                     &current,
+                    &current_target,
                     timestamp(250),
                     preparation,
-                    ProposedCapabilityMutation::Revoke(ProposedCapabilityRevoke::new(
-                        proposed_target,
-                        proposed_reason,
-                        proposed_time,
-                    )),
+                    ProposedCapabilityRevoke::new(proposed_target, proposed_reason, proposed_time,),
                 ),
                 TransactionCapabilityMutationDecision::Deny(PolicyCode::DelegationExceedsAuthority)
             );
@@ -2762,16 +2987,18 @@ mod tests {
             revoke_target(0x7b, child_grant(), vec![audience("grpc")], timestamp(900));
         let create_preparation =
             prepare(&current, create_target.clone(), timestamp(200)).expect("create prepared");
+        let current_revoke_target = current_revoke_target(&revoke_target);
         assert_eq!(
-            TransactionCurrentCapabilityVerifier::verify(
+            TransactionCurrentCapabilityVerifier::verify_revoke(
                 &current,
+                &current_revoke_target,
                 timestamp(250),
                 create_preparation,
-                ProposedCapabilityMutation::Revoke(ProposedCapabilityRevoke::new(
+                ProposedCapabilityRevoke::new(
                     revoke_target.clone(),
                     RevocationReasonCodeV1::Requested,
                     timestamp(250),
-                )),
+                ),
             ),
             TransactionCapabilityMutationDecision::Deny(PolicyCode::DelegationExceedsAuthority)
         );
@@ -2780,15 +3007,11 @@ mod tests {
             prepare_revoke(&current, revoke_target, RevocationReasonCodeV1::Requested)
                 .expect("revoke prepared");
         assert_eq!(
-            TransactionCurrentCapabilityVerifier::verify(
+            TransactionCurrentCapabilityVerifier::verify_create(
                 &current,
                 timestamp(250),
                 revoke_preparation,
-                ProposedCapabilityMutation::Create(ProposedCapabilityCreate::new(
-                    create_target,
-                    timestamp(250),
-                    timestamp(310),
-                )),
+                ProposedCapabilityCreate::new(create_target, timestamp(250), timestamp(310),),
             ),
             TransactionCapabilityMutationDecision::Deny(PolicyCode::DelegationExceedsAuthority)
         );
@@ -3001,15 +3224,11 @@ mod tests {
             Vec::new(),
         );
         assert_eq!(
-            TransactionCurrentCapabilityVerifier::verify(
+            TransactionCurrentCapabilityVerifier::verify_create(
                 &transaction_current,
                 timestamp(250),
                 preparation,
-                ProposedCapabilityMutation::Create(ProposedCapabilityCreate::new(
-                    target,
-                    timestamp(250),
-                    timestamp(310),
-                )),
+                ProposedCapabilityCreate::new(target, timestamp(250), timestamp(310),),
             ),
             TransactionCapabilityMutationDecision::Deny(PolicyCode::MissingPermission)
         );
@@ -3045,15 +3264,11 @@ mod tests {
         ] {
             let preparation = prepare(&current, target.clone(), timestamp(200)).expect("prepared");
             assert_eq!(
-                TransactionCurrentCapabilityVerifier::verify(
+                TransactionCurrentCapabilityVerifier::verify_create(
                     &current,
                     timestamp(250),
                     preparation,
-                    ProposedCapabilityMutation::Create(ProposedCapabilityCreate::new(
-                        substituted,
-                        timestamp(250),
-                        timestamp(310),
-                    )),
+                    ProposedCapabilityCreate::new(substituted, timestamp(250), timestamp(310),),
                 ),
                 TransactionCapabilityMutationDecision::Deny(PolicyCode::DelegationExceedsAuthority)
             );
@@ -3074,15 +3289,11 @@ mod tests {
             [(first_preparation, second), (second_preparation, first)]
         {
             assert_eq!(
-                TransactionCurrentCapabilityVerifier::verify(
+                TransactionCurrentCapabilityVerifier::verify_create(
                     &current,
                     timestamp(250),
                     preparation,
-                    ProposedCapabilityMutation::Create(ProposedCapabilityCreate::new(
-                        proposed_target,
-                        timestamp(250),
-                        timestamp(310),
-                    )),
+                    ProposedCapabilityCreate::new(proposed_target, timestamp(250), timestamp(310),),
                 ),
                 TransactionCapabilityMutationDecision::Deny(PolicyCode::DelegationExceedsAuthority)
             );
@@ -3101,45 +3312,33 @@ mod tests {
         let commit_time = timestamp(250);
         let preparation = prepare(&current, target.clone(), timestamp(200)).expect("prepared");
         assert_eq!(
-            TransactionCurrentCapabilityVerifier::verify(
+            TransactionCurrentCapabilityVerifier::verify_create(
                 &current,
                 commit_time,
                 preparation,
-                ProposedCapabilityMutation::Create(ProposedCapabilityCreate::new(
-                    substituted,
-                    commit_time,
-                    timestamp(310),
-                )),
+                ProposedCapabilityCreate::new(substituted, commit_time, timestamp(310),),
             ),
             TransactionCapabilityMutationDecision::Deny(PolicyCode::DelegationExceedsAuthority)
         );
 
         let preparation = prepare(&current, target.clone(), timestamp(200)).expect("prepared");
         assert_eq!(
-            TransactionCurrentCapabilityVerifier::verify(
+            TransactionCurrentCapabilityVerifier::verify_create(
                 &current,
                 commit_time,
                 preparation,
-                ProposedCapabilityMutation::Create(ProposedCapabilityCreate::new(
-                    target.clone(),
-                    timestamp(249),
-                    timestamp(310),
-                )),
+                ProposedCapabilityCreate::new(target.clone(), timestamp(249), timestamp(310),),
             ),
             TransactionCapabilityMutationDecision::Deny(PolicyCode::DelegationExceedsAuthority)
         );
 
         let preparation = prepare(&current, target.clone(), timestamp(200)).expect("prepared");
         assert_eq!(
-            TransactionCurrentCapabilityVerifier::verify(
+            TransactionCurrentCapabilityVerifier::verify_create(
                 &current,
                 commit_time,
                 preparation,
-                ProposedCapabilityMutation::Create(ProposedCapabilityCreate::new(
-                    target.clone(),
-                    commit_time,
-                    timestamp(311),
-                )),
+                ProposedCapabilityCreate::new(target.clone(), commit_time, timestamp(311),),
             ),
             TransactionCapabilityMutationDecision::Deny(PolicyCode::DelegationExceedsAuthority)
         );
@@ -3148,15 +3347,11 @@ mod tests {
         stale.revision = NonZeroU64::new(8).expect("nonzero revision");
         let preparation = prepare(&current, target.clone(), timestamp(200)).expect("prepared");
         assert_eq!(
-            TransactionCurrentCapabilityVerifier::verify(
+            TransactionCurrentCapabilityVerifier::verify_create(
                 &stale,
                 commit_time,
                 preparation,
-                ProposedCapabilityMutation::Create(ProposedCapabilityCreate::new(
-                    target,
-                    commit_time,
-                    timestamp(310),
-                )),
+                ProposedCapabilityCreate::new(target, commit_time, timestamp(310),),
             ),
             TransactionCapabilityMutationDecision::Deny(PolicyCode::InactiveOrStaleCapability)
         );
@@ -3173,15 +3368,11 @@ mod tests {
         let commit_time = timestamp(250);
         let verify = |transaction_current: &TransactionCurrentCapabilityFacts| {
             let preparation = prepare(&initial, target.clone(), timestamp(200)).expect("prepared");
-            TransactionCurrentCapabilityVerifier::verify(
+            TransactionCurrentCapabilityVerifier::verify_create(
                 transaction_current,
                 commit_time,
                 preparation,
-                ProposedCapabilityMutation::Create(ProposedCapabilityCreate::new(
-                    target.clone(),
-                    commit_time,
-                    timestamp(310),
-                )),
+                ProposedCapabilityCreate::new(target.clone(), commit_time, timestamp(310)),
             )
         };
 
