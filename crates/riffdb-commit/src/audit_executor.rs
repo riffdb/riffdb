@@ -1410,6 +1410,9 @@ struct CommandCoordinatorActor {
 impl CommandCoordinatorActor {
     async fn run(mut self) {
         while let Some(message) = self.receiver.recv().await {
+            // This local must drop before `message` so a panic publishes the
+            // terminal lifecycle before any completion sender wakes its caller.
+            let _panic_guard = ActorMessagePanicGuard::new(self.lifecycle.clone());
             match message {
                 CoordinatorMessage::AdministrationAudit { input, completion } => {
                     self.execute_audit(input, completion);
@@ -1492,6 +1495,8 @@ impl CommandCoordinatorActor {
                 CoordinatorMessage::Shutdown => {
                     self.receiver.close();
                     while let Some(message) = self.receiver.recv().await {
+                        // Preserve the same ordering while draining accepted work.
+                        let _panic_guard = ActorMessagePanicGuard::new(self.lifecycle.clone());
                         match message {
                             CoordinatorMessage::AdministrationAudit { input, completion } => {
                                 self.execute_audit(input, completion);
@@ -1782,6 +1787,22 @@ impl CommandCoordinatorActor {
                 }
                 CoordinatorMessage::Shutdown => {}
             }
+        }
+    }
+}
+
+struct ActorMessagePanicGuard(ActorLifecyclePublisher);
+
+impl ActorMessagePanicGuard {
+    fn new(lifecycle: ActorLifecyclePublisher) -> Self {
+        Self(lifecycle)
+    }
+}
+
+impl Drop for ActorMessagePanicGuard {
+    fn drop(&mut self) {
+        if thread::panicking() {
+            self.0.stop();
         }
     }
 }

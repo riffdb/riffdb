@@ -690,6 +690,11 @@ fn unexpected_actor_panic_stops_admission_and_every_queued_receipt() {
         Err(AdministrationAuditExecutionError::CoordinatorStopped)
     );
     assert_eq!(
+        executor.lifecycle_state(),
+        CoordinatorLifecycleState::Stopped,
+        "panic publication precedes the in-flight sender drop and receipt wake"
+    );
+    assert_eq!(
         block_on(queued.completion()),
         Err(AdministrationAuditExecutionError::CoordinatorStopped)
     );
