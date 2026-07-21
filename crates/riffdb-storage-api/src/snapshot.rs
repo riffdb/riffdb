@@ -1861,7 +1861,7 @@ mod builder_tests {
     }
 
     fn affected_targets_for_state_bytes(total: usize) -> AffectedIndexEpochTargets {
-        let target_count = crate::MAX_INDEX_DELTAS;
+        let target_count = crate::MAX_AFFECTED_INDEX_EPOCH_TARGETS;
         let desired_prefix_bytes = total
             .checked_sub(affected_epoch_current_fixed_semantic_bytes() + target_count * 9)
             .expect("requested state total covers fixed observation bytes");
@@ -1887,6 +1887,34 @@ mod builder_tests {
         }
         assert_eq!(reduction, 0);
         AffectedIndexEpochTargets::new(targets).expect("bounded affected target set")
+    }
+
+    #[test]
+    fn affected_epoch_semantic_framing_matches_the_checked_plan_estimator() {
+        let index = IndexId::first();
+        let whole = range_target(index);
+        assert_eq!(whole.semantic_bytes(), Ok(14));
+
+        let expected =
+            AffectedIndexEpochTargets::new(vec![whole.clone()]).expect("one whole-index target");
+        let current = AffectedEpochCurrentState::new(
+            &expected,
+            vec![CurrentRangeObservation::new(
+                whole,
+                IndexEpochPosition::Value(IndexEpoch::first()),
+            )],
+        )
+        .expect("one current epoch");
+        assert_eq!(current.semantic_bytes(), 4 + 14 + 9);
+
+        let mut component_prefix = IndexRangePrefixBuilder::new(index);
+        component_prefix
+            .push_u64(u64::MAX)
+            .expect("fixed-width component");
+        assert_eq!(
+            IndexRangeTarget::new(component_prefix.finish()).semantic_bytes(),
+            Ok(14 + 8)
+        );
     }
 
     fn range_entry(index: IndexId, order: u64, payload: usize) -> IndexRangeEntry {

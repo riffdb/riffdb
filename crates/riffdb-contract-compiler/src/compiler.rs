@@ -232,6 +232,15 @@ mod tests {
         )
     }
 
+    fn indexed_mutation_source(index_count: usize) -> String {
+        let indexes = (0..index_count)
+            .map(|index| format!("    index by_value_{index:04} (value)\n"))
+            .collect::<String>();
+        format!(
+            "contract IndexedMutation version 1 {{\n  entity Row {{\n    key (id: uuid)\n    field value: i64\n{indexes}  }}\n  aggregate Rows {{ root Row partition_by id conflict_key (id) }}\n  command Change {{\n    input idempotency_key: string<128>\n    input id: uuid\n    idempotency_key idempotency_key\n    mutate Row(id) as row else Missing {{ id: id }}\n    set row.value = 1\n    return Changed {{ row: row }}\n  }}\n}}\n"
+        )
+    }
+
     #[test]
     fn canonical_budget_source_passes_pre_ir_validation() {
         validate_contract_source(include_str!("../../../contracts/examples/budget.riff"))
@@ -1131,6 +1140,14 @@ contract OptionalArithmetic version 1 {
             CompilerDiagnosticCode::BoundExceeded.help(),
             Some("reduce declared bounds or the number of schema components")
         );
+    }
+
+    #[test]
+    fn mutation_index_cross_product_is_rejected_during_checked_plan_lowering() {
+        compile_contract_source(&indexed_mutation_source(1_365))
+            .expect("exact combined validation-target boundary compiles");
+        let source = indexed_mutation_source(1_366);
+        assert_semantic_diagnostic_at(&source, CompilerDiagnosticCode::BoundExceeded, "Change");
     }
 
     #[test]
