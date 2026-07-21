@@ -32,6 +32,9 @@ fn preparation_api_excludes_deployment_and_invocation_versions_by_shape() {
     assert!(!PREPARATION_SOURCE.contains("ContractVersion"));
     assert!(!PREPARATION_SOURCE.contains("RequestId"));
     assert!(!PREPARATION_SOURCE.contains("CommittedOutcome"));
+    assert!(PREPARATION_SOURCE.contains("idempotency_field: FieldId"));
+    assert!(!PREPARATION_SOURCE.contains("pub fn idempotency_field("));
+    assert!(!PREPARATION_SOURCE.contains("pub const fn idempotency_field("));
 }
 
 #[test]
@@ -80,6 +83,7 @@ fn recheck_preparation_matcher_is_exact_and_does_not_expose_retained_values() {
     assert!(preparation_impl.contains("pub fn matches_preparation("));
     assert!(preparation_impl.contains("&self.selected_plan == selected_plan"));
     assert!(preparation_impl.contains("&self.normalized_input == normalized_input"));
+    assert!(preparation_impl.contains(".matches_idempotency_field(idempotency_field)"));
     assert!(preparation_impl.contains("pub fn matches_scope("));
     assert!(preparation_impl.contains(".lookup_candidates()"));
     assert!(preparation_impl.contains(".as_slice()"));

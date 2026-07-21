@@ -104,11 +104,16 @@ impl fmt::Debug for PreparedIdempotencyLookupV1 {
 /// a new admission and the complete ordered candidate set for rotation-aware
 /// lookup. It must not be constructed for grammar-v1 read-only commands.
 pub struct PreparedCommandIdempotencyV1 {
+    idempotency_field: FieldId,
     canonical_input_hash: CanonicalInputHash,
     lookup_candidates: IdempotencyLookupCandidatesV1,
 }
 
 impl PreparedCommandIdempotencyV1 {
+    pub(crate) fn matches_idempotency_field(&self, expected: FieldId) -> bool {
+        self.idempotency_field == expected
+    }
+
     /// Returns the v1 hash of canonical input with the declared caller-key field omitted.
     #[must_use]
     pub const fn canonical_input_hash(&self) -> CanonicalInputHash {
@@ -261,6 +266,7 @@ pub fn confirm_command_idempotency(
     let canonical_input_hash = hash_command_input(&encoded);
 
     Ok(PreparedCommandIdempotencyV1 {
+        idempotency_field,
         canonical_input_hash,
         lookup_candidates: lookup.lookup_candidates,
     })
