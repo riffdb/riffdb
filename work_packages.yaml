@@ -1,4 +1,4 @@
-spec_version: '0.15'
+spec_version: '0.16'
 product: RiffDB
 repository: riffdb
 status: implementation-handoff
@@ -931,6 +931,10 @@ work_packages:
   - Commit-owned injected AdmissionClock, AdministrationClock, and ProvenanceIdSource ports with exact sampling,
     failure, and retry behavior and no ambient clock or entropy access in the coordinator
   - Coordinator-only final CommitIntent assembly from EvaluatedCommand and the exact immutable stored admission
+  - Exact zero/nonzero mutation branch after universal influential-dependency revalidation, where zero mutations skip
+    commit-check evaluation and index/affected-epoch derivation but still atomically persist the declared outcome,
+    sequence, provenance, and commit record; nonzero mutations prove exactly one complete mutation per mutable
+    historical-plan binding before the complete commit-check plan and index derivation, with no pre-image fallback
   - Narrow direct riffdb-contract-ir and riffdb-invariant use for exact historical-plan matching, grammar-v1 index
     derivation, and pure transaction-current commit-check evaluation through a private owned positional value source;
     no compiler, storage handle/callback, I/O, clock, entropy, async operation, or duplicate evaluator crosses it
@@ -980,8 +984,10 @@ work_packages:
     owner_crate: riffdb-commit
     manifest: crates/riffdb-commit/Cargo.toml
     path: ../../tests/service_audit/service_audit_ordering.rs
-  exit_gate: Concurrent budget, pre-sequence capacity/failpoint, event-hash, and fail-after-commit tests prove one
-    atomic logical execution per idempotency identity without sequence gaps.
+  exit_gate: Concurrent budget, zero-mutation rejection, exact nonzero mutation coverage, pre-sequence
+    capacity/failpoint, event-hash, and fail-after-commit tests prove one atomic logical execution per idempotency
+    identity without sequence gaps; zero-mutation fixtures prove dependency revalidation, no commit-check/index
+    derivation, and unchanged terminal replay.
   human_review_triggers: *id001
 - id: WP-110
   name: Authorization and capability service
@@ -1263,6 +1269,10 @@ work_packages:
     getrandom 0.3.4 sources; every retry uses a fresh RequestId and UUID ordering is never a semantic signal
   - Generated ergonomic command module
   - Error and retry mapping
+  - Exact PublicError carriage using Tonic Status::with_details with the bounded riffdb.v1.PublicError bytes directly
+    in grpc-status-details-bin, canonical ErrorClass-to-gRPC status, only the static safe grpc-message, no
+    google.rpc.Status/Any/second envelope, and closed client protocol failures for missing, malformed, oversized,
+    unknown, status-inconsistent, or message-inconsistent details
   - Conformance evidence that retry-budget exhaustion preserves the existing public ConcurrencyDeadlineExceeded code,
     safe message, retry action, and gRPC DEADLINE_EXCEEDED mapping
   - Projection protocol mapping against an injected application-service stub
@@ -1313,7 +1323,8 @@ work_packages:
     path: ../../tests/grpc/p1_riffdbd_restart.rs
   exit_gate: A real riffdbd process reaches staged readiness on redb and the bootstrap/deploy/budget command, outcome,
     entity-read, clean-restart, durable reread, and retained-bootstrap-replay sequence works through public gRPC;
-    every projection result variant also maps correctly against an injected service stub.
+    every projection result variant maps correctly against an injected service stub, and error conformance proves
+    exact direct PublicError detail bytes plus fail-closed status/message/detail validation at every boundary case.
   human_review_triggers: *id001
 - id: WP-135
   name: Public SDK comparison adapter

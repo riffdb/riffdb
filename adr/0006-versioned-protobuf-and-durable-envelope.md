@@ -2,7 +2,12 @@
 
 - **Status:** Accepted
 - **Direction approved:** 2026-07-12
-- **Exact text accepted:** 2026-07-12, amended 2026-07-12 and 2026-07-13
+- **Exact text accepted:** 2026-07-12, amended 2026-07-12, 2026-07-13, and
+  2026-07-20
+- **Maintainer-accepted gRPC error-carriage clarification:** 2026-07-20, carry
+  exact bounded `riffdb.v1.PublicError` bytes directly in
+  `grpc-status-details-bin`, derive the status from `ErrorClass`, expose only the
+  static safe message, and fail closed on absent or inconsistent detail
 - **Amended by:** ADR-0004, ADR-0007, ADR-0009, ADR-0012, and ADR-0017
   for the formal post-semantic schema phases and reviewed additive public symbols
 - **Decision deadline:** Before WP-020 schemas or fixtures merge
@@ -10,6 +15,8 @@
 The human maintainer accepted this exact text, including the dependency
 disclosure amendment, on 2026-07-12. The human maintainer accepted the companion
 schema-ownership and additive-symbol amendments below on 2026-07-13.
+The human maintainer accepted the exact gRPC public-error carriage clarification
+below on 2026-07-20.
 
 ## Context
 
@@ -101,6 +108,30 @@ idempotency reuse to `ALREADY_EXISTS`, authorization denial to
 `PERMISSION_DENIED`, concurrency deadline to `DEADLINE_EXCEEDED`, contract
 mismatch to `FAILED_PRECONDITION`, storage unavailability to `UNAVAILABLE`,
 outcome uncertainty to `UNKNOWN`, and internal defect to `INTERNAL`.
+
+For every API-neutral `PublicError`, WP-130 encodes the exact checked
+`riffdb.v1.PublicError` message, bounded by `MAX_PUBLIC_ERROR_BYTES` (16 KiB), and
+passes those bytes directly to Tonic `Status::with_details`. Those bytes are the
+entire `grpc-status-details-bin` value: RiffDB does not wrap them in
+`google.rpc.Status`, `Any`, or a second custom envelope. The canonical gRPC status
+is derived only from the decoded `ErrorClass`: `InvalidArgument` maps to
+`INVALID_ARGUMENT`, `Conflict` to `ALREADY_EXISTS`, `PermissionDenied` to
+`PERMISSION_DENIED`, `DeadlineExceeded` to `DEADLINE_EXCEEDED`,
+`FailedPrecondition` to `FAILED_PRECONDITION`, `Unavailable` to `UNAVAILABLE`,
+`Uncertain` to `UNKNOWN`, and `Internal` to `INTERNAL`. `grpc-message` is exactly
+the public error's registry-owned static safe message; it never carries an
+internal source, arbitrary diagnostic, incident narrative, or serialized error.
+
+The Rust transport client accepts a non-OK API-neutral response as a
+`PublicError` only when details are present, at most 16 KiB, structurally and
+semantically valid under the checked `riffdb.v1.PublicError` decoder, and
+consistent with both the canonical gRPC status and static safe message. Missing,
+malformed, oversized, unknown, or status/message-inconsistent details fail closed
+as a typed protocol failure; the client does not reconstruct an error or retry
+instruction from `grpc-message` alone. The pre-authentication
+`UNAUTHENTICATED` framing exception remains a distinct closed transport failure
+before an API-neutral `PublicError` exists and carries no fabricated public-error
+detail.
 
 ### Durable envelope
 
@@ -267,6 +298,12 @@ projection query/status/frontier/lifecycle/page shapes to WP-127.
    preempts WP-130 transport ownership.
 7. **External or vendored protoc:** Adds native/toolchain supply surface despite
    the approved pure-Rust Protox path.
+8. **Wrap the public error in `google.rpc.Status`/`Any`:** Rejected because it
+   adds a second type registry and envelope without adding RiffDB semantics.
+9. **Use only gRPC status and message:** Rejected because it discards structured
+   recovery/detail fields and would make an untrusted text field semantic.
+10. **Carry a second custom error envelope:** Rejected because the versioned,
+    bounded `riffdb.v1.PublicError` is already the complete public boundary.
 
 ## Consequences
 
@@ -278,8 +315,9 @@ projection query/status/frontier/lifecycle/page shapes to WP-127.
   become API-neutral service DTOs.
 - Decode/re-encode behavior must be tested anywhere unknown-field preservation is
   promised.
-- The binary carriage of `PublicError` on non-OK gRPC responses remains a WP-130
-  decision and requires human review before client/server conformance freezes.
+- WP-130 owns the exact `Status::with_details` server conversion and inverse
+  client validation; no transport package may introduce another public-error
+  envelope or infer semantics from `grpc-message` alone.
 - WP-020 provides policy and refusal evidence for `STO-022`; restartable,
   idempotent migration evidence belongs to the first production durable-record
   migration and final recovery testing.
@@ -291,11 +329,19 @@ field numbers, enum numbers, descriptor sets, exact value semantics, error
 mappings, envelope framing/checksum/hash rules, and durable golden bytes are
 explicit compatibility boundaries.
 
+For supported gRPC operations, direct `riffdb.v1.PublicError` detail bytes, the
+16 KiB ceiling, `ErrorClass`-to-status mapping, and exact static safe
+`grpc-message` are also compatibility boundaries. Adding a wrapper is a protocol
+change, not an implementation detail.
+
 ## Security
 
 All decoders enforce size, nesting, collection, and diagnostic bounds. Public
 errors contain safe fields only. Malformed, unknown, or oversized values fail
 closed without panics or resource amplification.
+Server and client tests must also prove that arbitrary internal text cannot enter
+`grpc-message` or details, and that invalid details cannot induce a retry or a
+typed `PublicError` on the client.
 
 ## Testing
 
@@ -304,6 +350,12 @@ exact-value vectors, deterministic regeneration, malformed/proptest decoder
 coverage, nesting/size limits, unknown-version/type/hash tests, checksum
 corruption, and public error redaction. Actual libFuzzer targets remain required
 before POC exit after their dependency/license review.
+
+WP-130 conformance fixtures additionally cover every `ErrorClass` mapping, exact
+detail bytes, the 16 KiB boundary, static safe messages, and missing, malformed,
+oversized, unknown, status-inconsistent, and message-inconsistent details. They
+also prove no `google.rpc.Status`, `Any`, or second custom envelope is emitted or
+accepted.
 
 ## Requirements and Work Packages
 
@@ -319,4 +371,5 @@ before POC exit after their dependency/license review.
 
 The initial decision deadline was satisfied by exact-text acceptance on
 2026-07-12. Later records require review under this policy, not a new ownership
-model.
+model. The gRPC carriage decision deadline was satisfied by maintainer acceptance
+on 2026-07-20 before WP-130 conversion and conformance implementation.

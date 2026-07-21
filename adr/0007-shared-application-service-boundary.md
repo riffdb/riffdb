@@ -2,9 +2,10 @@
 
 - **Status:** Accepted
 - **Amended by:** ADR-0021 for the exact service-audit target registry,
-  lineage scoping, canonical order, and per-operation construction rule
+  lineage scoping, canonical order, and per-operation construction rule; and
+  ADR-0006's 2026-07-20 accepted direct gRPC public-error carriage
 - **Direction approved:** 2026-07-12
-- **Exact text accepted:** Yes; amended 2026-07-14
+- **Exact text accepted:** Yes; amended 2026-07-14 and 2026-07-20
 - **Accepted:** 2026-07-13
 - **Requires:** ADR-0004, ADR-0009, ADR-0012, and ADR-0017 accepted before or
   in the same governance commit
@@ -22,6 +23,8 @@ WP-130 now owns the one runnable authoritative redb/gRPC graph and WP-185 only
 extends that same graph for P2 MCP, workers, and observability.
 On 2026-07-14 the maintainer accepted the shared pure input-expression and
 pre-admission arithmetic amendment below.
+On 2026-07-20 the maintainer accepted ADR-0006's direct gRPC public-error
+carriage; the transport boundary below now delegates to that exact decision.
 
 ## Context
 
@@ -1090,9 +1093,10 @@ fixtures in WP-127/WP-130.
 WP-127 adds and fixtures exact wire shapes for pages/cursors, command results,
 projection typed results, health, capability operations, and every commit-stream
 terminal variant before those RPCs become supported. Service-to-wire conversion
-remains WP-130 adapter code. The binary carriage of `PublicError` on non-OK gRPC
-responses remains the explicit ADR-0006 WP-130 human-review item; this ADR does
-not choose it silently.
+remains WP-130 adapter code. ADR-0006's accepted 2026-07-20 clarification controls
+the direct bounded `riffdb.v1.PublicError` carriage, canonical status/message
+mapping, and fail-closed client validation; this service-boundary ADR introduces
+no competing transport envelope.
 
 MCP command input and declared-outcome schemas remain the exact compiler-owned
 ADR-0013 artifacts. `riffdb-service` owns only the generic operation envelope
