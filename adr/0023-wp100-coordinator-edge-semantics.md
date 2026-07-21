@@ -2,7 +2,7 @@
 
 - **Status:** Accepted
 - **Direction approved:** 2026-07-20
-- **Exact text accepted:** 2026-07-20, amended 2026-07-20
+- **Exact text accepted:** 2026-07-20, amended 2026-07-20 and 2026-07-21
 - **Accepted:** 2026-07-20
 - **Maintainer-accepted clarification:** 2026-07-20, the audit-input view has no
   field or method for the new audit record's assigned sequence, while its
@@ -19,6 +19,15 @@
   catalog proves bounded exact ancestry; commit applies its opaque ancestor-only
   null-fill authority before snapshot and transaction-current evaluation; and
   runtime rejects every remaining omission
+- **Maintainer-accepted lineage-overflow clarification:** 2026-07-21, valid
+  over-budget returned evidence retains only the raw snapshot and exact resolved
+  plan/proof; catalog owns opaque readiness/resource evidence and the pure
+  current-recheck API, while commit orders dependency comparison and
+  terminalization
+- **Maintainer-accepted durability-construction clarification:** 2026-07-21,
+  production coordinator construction explicitly receives `Sync` or `Group`,
+  `Memory` is test-only, P1 `riffdbd` passes `Sync`, and no implicit default is
+  permitted
 - **Requires:** ADR-0002, ADR-0003, ADR-0004, ADR-0005, ADR-0006, ADR-0007,
   ADR-0009, ADR-0011, ADR-0012, ADR-0013, ADR-0016, ADR-0018, ADR-0021, and
   ADR-0022
@@ -27,8 +36,8 @@
   service-audit ownership declarations; ADR-0009's capability-revoke
   authorization; ADR-0012's retry wording; ADR-0018's provenance replay wording;
   ADR-0006's `ConcurrencyDeadlineExceeded` cause; ADR-0013's checked-plan bounds
-  and lineage materialization; SPEC Section 5.2's dependency row; and narrow
-  WP-060/WP-100/WP-110/WP-120/WP-130/WP-200 metadata
+  and lineage materialization; SPEC Sections 5.2, 9.5, 9.6, 10.5, and 16.2; and narrow
+  WP-050/WP-060/WP-100/WP-110/WP-120/WP-130/WP-200 metadata
 - **Decision deadline:** Before WP-100 publishes the affected executor, retry,
   index, lineage-normalization, execution-failure, or capability-revoke paths
 
@@ -58,12 +67,17 @@ clarification below. It closes blind optional-field fill versus blanket missing-
 field rejection while preserving exact parent/hash ancestry, fail-closed durable
 integrity, and every public/durable format.
 
+On 2026-07-21 the human maintainer accepted the lineage-overflow retention and
+recheck clarification plus explicit process-local coordinator durability
+selection below. They add no durable/protocol field, operator-facing durability
+setting, or POC group-commit policy.
+
 ## Context
 
 WP-100 must join already accepted compiler, runtime, storage, authorization,
 idempotency, and audit interfaces without introducing a dependency cycle or
 silently choosing unspecified durable behavior. Implementation tracing exposed
-ten narrow gaps:
+twelve narrow gaps:
 
 1. `riffdb-service` owns the concrete checked `ServiceAuditInput`, while
    `riffdb-commit` owns `AdministrationAuditExecutor`; a direct executor
@@ -101,6 +115,14 @@ ten narrow gaps:
     reject both. Treating numeric versions or a stored compatibility report as
     ancestry evidence would make these paths disagree and authorize unproved
     state materialization.
+11. A valid lineage null-fill expansion can cross the shared 16 MiB ceiling
+    before runtime, but returned resource evidence must not retain over-budget
+    normalized data or masks and terminalization still needs an exact bounded
+    source of truth.
+12. The semantic durability enum includes `Sync`, `Group`, and test-only
+    `Memory`, but coordinator construction and P1 composition do not yet state
+    an explicit production selection boundary; an inferred/default mode could
+    silently change correctness and the durable outcome's recorded mode.
 
 These are interface and fail-closed decisions. None permits a new POC language
 feature, transport path, storage bypass, or durable record kind.
@@ -140,15 +162,17 @@ post-image to a current pre-image or vice versa.
 snapshot execution, but does not gain a coordinator callback or a wrapper around
 transaction-current validation. `riffdb-storage-api` remains structurally aware
 and IR-blind outside its already accepted projection-schema value dependency.
-The coordinator retains its private semantic proof and storage alone retains the
-transaction and progression type state.
+The coordinator retains its private commit-candidate semantic proof, distinct
+from catalog-owned lineage evidence, and storage alone retains the transaction
+and progression type state.
 
 ### Lineage-proved record normalization
 
 ADR-0013's catalog-owned `ResolvedExecutablePlan` carries a shared opaque
 `LineageMaterializationProofV1` over the exact bounded active chain. The
-coordinator is the only command-path component that applies it, at two fixed
-points:
+catalog owns the opaque command-materialization evidence API that applies it;
+the coordinator is the only command-path orchestrator and invokes that API at
+two fixed points:
 
 1. after the synchronous storage read has copied a complete owned
    `ReadSnapshot` and closed its engine view, but before runtime evaluation; and
@@ -157,46 +181,61 @@ points:
    enter the private commit-check value source or any index/post-image validation
    that consumes their declared fields.
 
-At both points, the coordinator identifies the exact stored writer through the
-proof, applies only the opaque writer/executing-schema mask, inserts null only
-for fields satisfying
+At both points, the catalog-owned pure operation identifies the exact stored
+writer through the proof, applies only the opaque writer/executing-schema mask,
+inserts null only for fields satisfying
 `writer_ordinal < introduction_ordinal <= executing_ordinal`, and returns a
 canonical `FieldId`-ordered record. It preserves every present unknown field and
 value. A numeric `ContractVersion` comparison, field optionality alone, or the
-stored compatibility report never authorizes materialization. Storage remains
-IR-blind and never receives the proof or mask.
+stored compatibility report never authorizes materialization. WP-100 consumes
+opaque evidence and normalized results but does not inspect masks or implement
+proof application. Storage remains IR-blind and never receives the proof or mask.
 
-The first application retains aligned normalized-observation and mask vectors;
-each nonempty inserted-null mask corresponds by position, so no separate
-position metadata is retained or charged. Normalized `ReadSnapshot` semantic
-bytes plus all retained nonempty mask bitset payload bytes must fit together
-inside the existing 16 MiB command-snapshot ceiling; the 2 MiB mask structural
-maximum is not an extra budget. Checked accounting accepts the combined charge
-at exactly 16 MiB and rejects one byte more.
+On a successful first application, the catalog returns opaque `Ready` evidence
+containing the bounded normalized snapshot and current-recheck evidence. Its
+retained normalized semantic bytes plus all retained nonempty mask bitset payload
+bytes fit together inside the existing 16 MiB command-snapshot ceiling; the 2
+MiB mask structural maximum is not an extra budget. Checked accounting accepts
+the combined charge at exactly 16 MiB.
+
+If valid insertion exceeds the shared cap, the catalog instead returns opaque
+resource evidence retaining only the original bounded raw `ReadSnapshot` plus
+the exact `ResolvedExecutablePlan` and shared proof. Returned resource evidence
+retains no over-budget normalized data or masks, and runtime/invariant evaluation
+receives no partial record. The exact charge and result are deterministic;
+internal allocation strategy, transient masks, and evaluation order are not
+semantic interfaces.
 
 Inside the write transaction, the coordinator compares influential
 absence/version/epoch dependencies first. `DependencyChanged` aborts and
-reevaluates before normalization. For each equal present dependency, it removes
-exactly the catalog-issued mask fields from the retained normalized observation
-and requires the raw current record to equal that reconstructed physical
-observation in target, entity version, writer identity, schema binding, canonical
-field order, and every known or unknown field/value. Same-version or binding
-drift is `InternalDefect`, not `DependencyChanged`. Only after equality may the
-coordinator reapply the retained proof/mask. It performs no catalog lookup,
-storage callback, or additional read to reconstruct ancestry inside the write
-transaction.
+reevaluates before current recheck. For each equal present dependency, the
+coordinator passes the raw current observation to the opaque evidence's catalog-
+owned pure current-recheck operation. That operation requires equality with the
+retained raw physical observation in target, entity version, writer identity,
+schema binding, canonical field order, and every known or unknown field/value,
+then returns the normalized current value. Same-version or binding drift is
+`InternalDefect`, not `DependencyChanged`. It performs no catalog lookup,
+storage callback, or additional read inside the write transaction.
 
 Each inserted null adds exactly six canonical bytes: four for `FieldId` and two
 for the canonical value-version/null-tag pair. The coordinator rechecks the
 existing 1 MiB record, 16 MiB owned-snapshot, and immutable evaluation-budget
 limits using checked arithmetic. A proof-authorized expansion that exceeds an
 existing execution limit is the closed dependency-sensitive
-`ExecutionFault::ResourceLimit`; no partial normalized record reaches runtime or
-the invariant evaluator. It may become durable `ExecutionFailed` only through
-ADR-0012's separate equality-revalidating terminalization. Exact raw equality at
-the second application fixes the same normalization result and charge; a new
-transaction-current limit failure is therefore an internal proof/cap invariant,
-not a `CandidateValidationRejection` or resource fault.
+`ExecutionFault::ResourceLimit`. It may become durable `ExecutionFailed` only
+through ADR-0012's separate terminalization. That recheck compares every
+absence/version/epoch dependency first, then invokes the resource evidence's
+catalog-owned pure current-recheck operation with each transaction-current raw
+binding/root observation. That operation requires exact equality with the
+retained raw physical observation across absence/presence, target, entity
+version, writer identity, schema binding, canonical field order, and every known
+or unknown field/value before repeating the same deterministic materialization
+and exact charge. The coordinator may terminalize only if
+that pass reproduces the same valid over-limit `ResourceLimit` result. A changed
+dependency reevaluates; raw drift, successful normalization, a different fault,
+or an impossible proof/cap result is integrity. The pure recheck performs no
+catalog lookup, storage callback/additional read, runtime evaluation, clock, or
+entropy.
 
 A missing exact-writer, descendant-writer, genesis, or required field; a foreign
 lineage/version/hash; malformed proof or mask; or any other unproved omission is
@@ -289,6 +328,25 @@ retry recovery action, and gRPC `DEADLINE_EXCEEDED` mapping remain unchanged. A
 later caller retry is a new bounded invocation, must use the same idempotency key,
 and still resumes the exact stored plan, actor, partition, logical time, and
 admitted claims after current authentication and authorization.
+
+### Explicit coordinator durability construction
+
+Every production `riffdb-commit` coordinator constructor requires one explicit
+checked process-local durability value. Its closed production variants are
+`Sync` and `Group`; it has no `Default`, zero-argument constructor, backend-
+inferred mode, or other fallback. `Memory` remains in the storage semantic and
+durable enum for memory-adapter/model fixtures, but only a test-only coordinator
+constructor may select it. The production constructor input cannot represent
+`Memory`.
+
+The selected mode is immutable for that coordinator instance and is carried
+unchanged into the storage commit operation, stored outcome, and commit record.
+P1 `riffdbd` explicitly passes the code-level `Sync` value from its component
+graph and exposes no operator durability selector. `Group` remains a valid
+production coordinator value but is not an enabled POC server selection until
+the already required scheduling, fairness, latency, crash evidence, and human
+review exist. This decision chooses no implicit POC or MVP default and does not
+alter the durable `DurabilityMode` encoding.
 
 ### Audit input dependency inversion
 
@@ -557,6 +615,15 @@ a fabricated sequence or general audit append.
 18. **Infer ancestry from numeric versions or compatibility reports:** Rejected
     because versions are identifiers rather than chain positions and reports are
     reproducible display evidence, not parent/hash authority.
+19. **Return over-budget normalized data or masks as resource evidence:**
+    Rejected because retained evidence would violate the same command ceiling
+    whose failure is being reported and create two possible replay inputs.
+20. **Terminalize lineage overflow from dependency equality alone:** Rejected
+    because equal versions do not prove equal writer/schema/field content and
+    cannot establish that the same deterministic expansion still overflows.
+21. **Default coordinator durability from the backend or `Default`:** Rejected
+    because deployment composition could silently change acknowledgement and
+    durable outcome semantics. Production construction must make the choice.
 
 ## Consequences
 
@@ -577,13 +644,22 @@ a fabricated sequence or general audit append.
   fabricating mutable post-images, while every influential snapshot dependency
   is still revalidated and every nonzero mutation set has exact plan coverage.
 - Compatible optional-null evolution has one executable path: catalog proves
-  ancestry, commit applies the proof twice, and runtime rejects unproved
-  omissions. Unknown descendant fields survive both normalization and older-plan
-  mutations.
+  ancestry and owns opaque first-pass/current-recheck proof application, commit
+  orchestrates both calls, and runtime rejects unproved omissions. Unknown
+  descendant fields survive both normalization and older-plan mutations.
 - Transaction-current dependency comparison precedes normalization, and equal
   versions additionally prove exact raw physical equality against the retained
   observation. This preserves short-transaction closure without trusting a
   version alone or introducing catalog/storage callbacks.
+- Valid over-budget lineage expansion returns one catalog-owned bounded source
+  of truth: opaque resource evidence containing the raw snapshot plus exact
+  resolved plan/proof and no over-budget normalized value or mask.
+  Terminalization reproduces the fault only after dependency equality and the
+  evidence's exact raw-observation recheck.
+- Production coordinator construction makes durability an explicit immutable
+  input. `Memory` remains test-only, and P1 composition visibly passes code-
+  level `Sync`; it exposes no operator selector, does not enable `Group`, and
+  introduces no fallback.
 - Missing capability targets fail closed for delegated revokers while exact
   administrators retain the typed not-found result.
 - Typed no-transition control-plane results have one audit classification and
@@ -614,6 +690,13 @@ process-local Rust values. Existing stored records and bundles require no data
 migration; startup revalidates them against the exact active chain and fails
 closed if that evidence is not valid.
 
+The overflow amendment adds opaque process-local catalog evidence and operations
+but no durable DTO, public error, terminal code, or encoded state. It narrows
+returned resource evidence and the order used to establish the already accepted
+`ResourceLimit` terminal state. The durability amendment adds no
+`DurabilityMode` tag, durable field, or operator configuration; it constrains
+only process-local construction and P1 component-graph composition.
+
 The retry decision adds no public error kind or wire value, but it intentionally
 broadens the documented cause of existing `ConcurrencyDeadlineExceeded`. The
 private attempt counter is not recoverable across process loss because it is an
@@ -639,6 +722,10 @@ Only exact parent/hash ancestry can authorize null insertion. Untrusted writer
 versions, stored reports, masks, and malformed omissions never become runtime
 values or caller-visible diagnostics. The fixed proof/mask and existing
 record/snapshot budgets bound adversarial lineage and expansion work.
+Returned overflow evidence retains no over-budget normalized data or masks, and
+terminalization cannot use a version-only comparison to convert changed raw
+state into a durable failure. Explicit durability construction prevents a
+backend or constructor fallback from silently weakening acknowledgement.
 
 ## Testing
 
@@ -689,16 +776,19 @@ record/snapshot budgets bound adversarial lineage and expansion work.
   through older-plan mutation; malformed/foreign proof failure; and no runtime
   blind fill. Combined snapshot accounting accepts normalized semantic bytes
   plus retained nonempty mask bitset payload bytes at exactly 16 MiB and rejects
-  one byte more, with aligned vector position adding no charge. A dependency-
-  change terminalization fixture proves a pre-runtime resource expansion cannot
-  persist against stale evidence, while equal evidence produces only the
-  accepted `ResourceLimit` execution failure.
-- Transaction-current tests compare dependencies before normalization, abort a
-  change without applying a mask, accept exact raw equality after removing only
-  catalog-issued inserted nulls, and classify equal-version changes to target,
-  writer, schema binding, known fields, or unknown fields as stopped-readiness
-  `InternalDefect`. Architecture/call-count tests prove no catalog or additional
-  storage I/O occurs while the write transaction is open.
+  one byte more, with aligned vector position adding no charge. One-byte-over
+  WP-050 tests prove returned resource evidence contains only the raw snapshot
+  and exact resolved plan/proof and no over-budget normalized data/masks. WP-100
+  terminalization fixtures instrument dependency comparison followed by the
+  opaque current recheck and deterministic re-derivation; changed evidence
+  cannot persist, raw drift is integrity, and only the same reproduced overflow
+  produces the accepted `ResourceLimit` execution failure.
+- Transaction-current tests compare dependencies before invoking the opaque
+  current recheck, abort a change without invoking it, accept its exact raw
+  equality and normalized-current result, and classify equal-version changes to
+  target, writer, schema binding, known fields, or unknown fields as stopped-
+  readiness `InternalDefect`. Architecture/call-count tests prove no catalog
+  lookup or additional storage I/O occurs while the write transaction is open.
 - Catalog/service tests cover 4,096 versus 4,097 active bundles, exactly 64 MiB
   versus one byte more canonical lineage bytes, a synthetic checked proof-charge
   calculator at exactly 2 MiB versus one byte more, and the separate valid
@@ -713,14 +803,20 @@ record/snapshot budgets bound adversarial lineage and expansion work.
   change, and redacted diagnostics.
 - Service-audit tests prove exact `Succeeded + ControlPlane`, `Failed + None`,
   and uncertain classifications for every closed control-plane result.
+- Compile/source-shape tests prove every production coordinator constructor
+  requires an explicit `Sync` or `Group`, has no `Default`, zero-argument, or
+  backend-inferred path, and cannot receive `Memory`. WP-130 component-graph
+  tests prove the P1 child process explicitly passes code-level `Sync`, exposes
+  no POC operator durability selector, and does not enable `Group`.
 
 ## Requirements and Work Packages
 
-- **Requirements:** `SYS-004`, `DSL-005`, `TXN-001`, `TXN-002`, `TXN-012`, `TXN-013`,
+- **Requirements:** `SYS-004`, `STO-001`, `DSL-005`, `TXN-001`, `TXN-002`, `TXN-012`, `TXN-013`,
   `TXN-030`, `TXN-040`, `TXN-041`, `TXN-042`, `TXN-043`, `TXN-044`, `ENT-002`,
   `ENT-003`, `ID-005`, `SEC-001`, `SEC-002`, `SEC-003`, `SEC-004`, `OUT-003`,
-  `MCP-046`, `POC-003`, `REC-001`, and `REC-002`
-- **Defines or corrects:** the narrow WP-060 storage-control variant, `WP-100`,
+  `MCP-046`, `POC-003`, `POC-009`, `REC-001`, and `REC-002`
+- **Defines or corrects:** the narrow WP-060 storage-control variant, WP-050
+  command-materialization evidence API, `WP-100`,
   the WP-110 capability-revoke interface, WP-120 audit input/orchestration,
   retry and catalog-limit mapping, WP-130 gRPC/startup mapping evidence, and
   WP-200 final evidence metadata
@@ -741,3 +837,12 @@ transaction-current record validation and before WP-120 publishes deployment-
 limit error mapping. The
 foundation clock, initialization, immutable outcome, and idempotency
 preparation/inspection interfaces do not depend on this decision.
+
+The accepted 2026-07-21 amendments are required before WP-100 publishes lineage
+overflow terminalization or a production coordinator constructor and before
+WP-130 publishes P1 component-graph composition. The manifest adds WP-050
+ADR-0023 ownership, evidence/current-recheck deliverables and fixtures, plus
+WP-100/WP-130 consumption evidence under existing paths and commands; it adds no
+package, hard WP dependency, allowed path, acceptance command, protocol, or
+durable-format change. Atomic commit requirement `TXN-042` remains outside the
+catalog package.

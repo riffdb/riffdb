@@ -2,11 +2,12 @@
 
 - **Status:** Accepted
 - **Direction approved:** 2026-07-13
-- **Exact text accepted:** 2026-07-13, clarified 2026-07-13 and 2026-07-20
+- **Exact text accepted:** 2026-07-13, clarified 2026-07-13, 2026-07-20, and 2026-07-21
 - **Clarified by:** ADR-0004 (complete executable plan reference), ADR-0007
   (unjournaled read-only service boundary), ADR-0012 (runtime result/fault
   boundary), ADR-0016 (canonical root-derivation equality), and ADR-0017 (bound
-  projection group schema)
+  projection group schema), plus ADR-0023 (catalog evidence and coordinator
+  lineage orchestration/overflow terminalization)
 - **Decision deadline:** Before WP-040 public interfaces or fixtures merge
 
 The human maintainer accepted this exact text, the canonical root-derivation
@@ -22,6 +23,12 @@ On 2026-07-20 the maintainer accepted the projection application clarification:
 catalog owns the opaque process-local event-materialization view, projection
 uses it for both catch-up and rebuild, and durable event bytes/hashes and the
 IR-blind storage boundary remain unchanged.
+On 2026-07-21 the maintainer accepted the lineage-overflow retention and replay
+clarification: catalog owns opaque command readiness/resource evidence and the
+pure current-recheck API; valid over-limit returned evidence retains only the raw
+snapshot and exact resolved plan/proof, and terminalization must deterministically
+reproduce the overflow after dependency and raw-observation equality. No bundle,
+proof, mask, IR, hash, protocol, or durable encoding changes.
 The accepted initial generated review artifacts are identified outside their own
 bytes by these exact SHA-256 digests:
 
@@ -820,6 +827,18 @@ ceiling. Binding/root and mask vectors are aligned, so position is implicit and
 has no separate metadata charge. Exact-equality and one-byte-over combined-
 charge tests freeze that rule. Neither a mask nor its cache is encoded or hashed.
 
+`riffdb-catalog` owns the opaque process-local command-materialization API bound
+to the exact `ResolvedExecutablePlan`. Success returns `Ready` evidence with the
+bounded normalized snapshot and opaque current-recheck evidence. A valid
+proof-authorized insertion beyond the ceiling instead returns resource evidence
+retaining only the original bounded raw `ReadSnapshot` plus the exact resolved
+plan/proof. Returned resource evidence MUST NOT retain over-budget normalized
+data or masks. The same raw snapshot and exact proof are sufficient for the
+catalog-owned pure current-recheck operation to reproduce the deterministic
+normalization and exact charge. Internal allocation strategy, transient masks,
+and evaluation order are not compatibility boundaries. This process-local
+evidence rule adds no encoded value or hash input.
+
 Checked materialization supplies `CanonicalValue::Null` if and only if the
 writer is an exact chain member,
 `writer_ordinal < field_introduction_ordinal <= executing_ordinal`, and the
@@ -868,6 +887,17 @@ three ceilings, and proof. A broken or over-limit active history is
 `InvalidHistoricalEvidence`, with readiness false and a redacted public
 `InternalDefect`. A proof or cap invariant reached after an admitted activation
 is also internal integrity, never `ExecutionFault::ResourceLimit`.
+
+For a valid lineage expansion that returns `ExecutionFault::ResourceLimit`, the
+coordinator may terminalize only after it compares every dependency and invokes
+the resource evidence's catalog-owned pure current-recheck operation with the
+transaction-current raw binding/root observations. That operation compares them
+exactly with the retained raw snapshot and repeats the same materialization and
+exact charge from the retained resolved plan/proof. Only reproduction of the
+same over-limit result authorizes the existing non-commit terminal state. A
+dependency change reevaluates; raw drift or a different materialization result
+is integrity. No catalog lookup, runtime call, or over-budget normalized state is
+needed or allowed for that recheck.
 
 New admission validates and hashes input with the active plan. If idempotency
 lookup finds an existing pending or terminal identity, the application service
@@ -986,11 +1016,17 @@ consume; contract IR retains no storage dependency.
 - Catalog resolution now has one bounded, process-local ancestry proof shared by
   active and historical execution. This adds no durable/protocol field, bundle
   byte, IR tag, plan-hash input, or storage dependency.
+- A valid command-side expansion overflow returns catalog-owned opaque resource
+  evidence retaining only its bounded raw snapshot and exact resolution/proof;
+  coordinator dependency equality precedes the evidence's pure current recheck
+  and deterministic overflow reproduction.
 - WP-050 owns exact active-chain walking, forward comparator replay, activation
   admission, startup validation, field-introduction derivation, proof framing,
   opaque masks, and the opaque process-local projection event-materialization
-  view. WP-100 owns the two command-record applications; WP-080 receives only
-  normalized records and rejects every remaining omission. WP-170 depends
+  view plus opaque command `Ready`/resource evidence and its pure current-recheck
+  implementation. WP-100 owns orchestration of the first call and dependency-
+  ordered recheck/terminalization without interpreting masks; WP-080 receives
+  only normalized records and rejects every remaining omission. WP-170 depends
   directly on WP-050 and consumes the catalog view for both live catch-up and
   rebuild; it does not interpret raw durable payloads against contract IR.
 - Custom codec code is security-sensitive and requires malformed-byte property or
@@ -1045,8 +1081,11 @@ never disclose lineage, contract bytes, field values, or hashes.
   1,810,703-byte v1 maximum with its 286,449-byte headroom. Snapshot accounting
   accepts normalized semantic bytes plus retained nonempty mask bitset payload
   bytes at exactly 16 MiB and rejects one byte more; aligned vectors add no
-  position-metadata charge. Compile-time assertions
-  bind proof and mask arithmetic to their IR constituent limits.
+  position-metadata charge. One-byte-over catalog fixtures prove returned
+  resource evidence retains no over-budget normalized data/masks and contains
+  only the raw snapshot and exact resolution/proof; current-recheck fixtures
+  deterministically reproduce the exact overflow charge. Compile-time
+  assertions bind proof and mask arithmetic to their IR constituent limits.
 - Lineage fixtures cover gaps, cycles, repeated versions, parent-hash
   substitution, wrong lineage, exact ancestor/equal/descendant writer masks,
   genesis and exact-writer omissions, required omissions, malformed masks,

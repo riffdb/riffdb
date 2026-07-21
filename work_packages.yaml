@@ -1,4 +1,4 @@
-spec_version: '0.20'
+spec_version: '0.21'
 product: RiffDB
 repository: riffdb
 status: implementation-handoff
@@ -365,8 +365,9 @@ work_packages:
   - WP-020
   - WP-040
   - WP-060
-  objective: Define immutable bundle persistence, catalog-owned historical-plan validation for startup, and a typed
-    catalog-activation intent for coordinator-owned, optimistic expected-version deployment.
+  objective: Define immutable bundle persistence, catalog-owned historical-plan validation and opaque command
+    materialization evidence, and a typed catalog-activation intent for coordinator-owned, optimistic expected-version
+    deployment.
   requirements:
   - CMP-001
   - CMP-020
@@ -385,6 +386,7 @@ work_packages:
   - ADR-0013
   - ADR-0016
   - ADR-0020
+  - ADR-0023
   allowed_paths:
   - Cargo.lock
   - crates/riffdb-catalog/**
@@ -415,6 +417,12 @@ work_packages:
   - Schema-derived, canonical field-introduction ledgers and opaque exact-writer null-fill masks for entity/event
     owners, preserving unknown fields and authorizing only strict ancestor optional-null omissions without trusting a
     compatibility report as proof
+  - Opaque process-local command-materialization API whose successful Ready evidence supplies a bounded normalized
+    snapshot and opaque current-recheck evidence, while valid over-limit resource evidence retains only the original
+    bounded raw snapshot plus the exact resolved plan/proof and no over-budget normalized data or masks
+  - Pure catalog-owned current-recheck operation consumed only after coordinator dependency equality; it proves exact
+    raw physical observation equality and deterministically repeats the same normalization and exact charge without a
+    catalog lookup, storage I/O, runtime evaluation, or exposure of masks/proof internals to WP-100
   - Opaque process-local projection event-materialization view that binds the exact resolved projection bundle and
     plan to an enclosing commit's exact writer-plan reference and immutable durable event, reuses the catalog-proved
     omission authority, preserves unknown fields, and never changes event bytes/hash or crosses a storage trait
@@ -423,12 +431,14 @@ work_packages:
     remain CatalogError::Storage and expected-active comparison remains coordinator-owned
   - Boundary fixtures for 4,096/4,097 bundles, 64 MiB/equal-plus-one canonical bytes, a synthetic checked proof-charge
     calculator at 2 MiB/equal-plus-one without claiming a valid proof reaches the cap, the separate valid 1,810,703-byte
-    proof maximum/headroom, combined 16 MiB snapshot-plus-mask equality/equal-plus-one, parent gaps/cycles/hash
-    substitution, and ancestor/equal/descendant writer masks
+    proof maximum/headroom, combined 16 MiB snapshot-plus-mask equality/equal-plus-one, one-byte-over returned resource
+    evidence retaining no normalized data/masks, Ready/resource current-recheck equality and deterministic charge,
+    parent gaps/cycles/hash substitution, and ancestor/equal/descendant writer masks
   - Exact historical KeySchema validation for every IR-opaque persisted entity-key, index-entry-key, and range-prefix-key
     evidence item, with unknown owners/schemas, component-incomplete bytes, omissions, and non-exact stream ends rejected
-  - Architecture checks proving ValidatedCatalogHistory never crosses a storage trait, storage never
-    imports or interprets contract IR, and neither side accepts a generic validation callback
+  - Architecture checks proving ValidatedCatalogHistory and command materialization evidence never cross a storage
+    trait, storage never imports or interprets contract IR, WP-100 consumes but does not implement or inspect the opaque
+    evidence API, and neither side accepts a generic validation callback
   acceptance_commands:
   - cargo test -p riffdb-catalog
   - cargo test -p riffdb-catalog --test contract_deploy_recovery
@@ -438,8 +448,9 @@ work_packages:
     manifest: crates/riffdb-catalog/Cargo.toml
     path: ../../tests/contract_deploy_recovery.rs
   exit_gate: Deployment crash tests leave exactly the old or new bundle active, retries resolve by version, exact
-    active-lineage count/byte/proof boundaries and writer masks pass, malformed chains or ADR-0020 command-name
-    registries reject, and only complete same-session historical evidence can produce ValidatedCatalogHistory.
+    active-lineage count/byte/proof boundaries, opaque Ready/resource evidence retention, current-recheck, and writer
+    masks pass, malformed chains or ADR-0020 command-name registries reject, and only complete same-session historical
+    evidence can produce ValidatedCatalogHistory.
   human_review_triggers: *id001
 - id: WP-060
   name: Storage semantic API
@@ -981,23 +992,29 @@ work_packages:
   - Commit-owned injected AdmissionClock, AdministrationClock, and ProvenanceIdSource ports with exact sampling,
     failure, and retry behavior and no ambient clock or entropy access in the coordinator
   - Coordinator-only final CommitIntent assembly from EvaluatedCommand and the exact immutable stored admission
-  - Coordinator-owned application of the ResolvedExecutablePlan's shared opaque lineage proof after the owned read
-    view closes and again to transaction-current binding/root records before value-source use, with strict
-    ancestor-only null insertion, canonical FieldId ordering, and lossless preservation of present unknown fields
+  - Coordinator-owned orchestration of WP-050's opaque command-materialization API after the owned read view closes
+    and of its pure current-recheck operation after dependency equality; WP-100 consumes Ready/resource evidence but
+    neither applies/interprets lineage masks nor implements the catalog proof algorithm
   - Checked six-byte charge per inserted null under existing record/snapshot/evaluation limits; valid expansion
-    excess follows dependency-sensitive ExecutionFault::ResourceLimit and ADR-0012 equality revalidation, normalized
-    snapshot semantic bytes plus retained nonempty mask bitset payload bytes share the 16 MiB cap with aligned vector
-    position implicit and uncharged, while
-    foreign writers, unproved omissions, malformed proof/mask, or a post-activation proof/cap breach remain integrity,
+    excess follows dependency-sensitive ExecutionFault::ResourceLimit and ADR-0012 equality revalidation; successful
+    normalized snapshot semantic bytes plus retained nonempty mask bitset payload bytes share the 16 MiB cap with
+    aligned vector position implicit and uncharged, while returned overflow resource evidence retains only the
+    original bounded raw snapshot and exact resolved plan/proof and no over-budget normalized value or mask; foreign writers, unproved
+    omissions, malformed proof/mask, or a post-activation proof/cap breach remain integrity,
     leave Pending unchanged, write no sequence or ExecutionFailed graph, and stop authoritative readiness when durable
-  - Transaction-current ordering that compares dependencies first and reevaluates a change before normalization;
-    equal present records must exactly match the retained pre-runtime physical observation after removing only its
-    catalog-issued inserted-null mask across target/version/writer/schema binding and all known/unknown fields, with
-    same-version drift as stopped-readiness InternalDefect and no catalog/additional storage I/O in the transaction
+  - Transaction-current ordering that compares dependencies first and reevaluates a change before invoking the
+    catalog-owned opaque current-recheck; that pure operation compares exact raw physical observations across
+    target/version/writer/schema binding and all known/unknown fields and returns normalized current values, with
+    same-version drift as stopped-readiness InternalDefect and no catalog lookup/additional storage I/O in the transaction
+  - Lineage-overflow terminalization that compares all dependencies first, then invokes the catalog-owned resource
+    evidence current-recheck to compare exact raw physical binding/root observations and deterministically repeat the
+    same normalization/exact charge; only reproduction of the same valid over-limit ResourceLimit may replace Pending
+    with ExecutionFailed
   - Normalization integration tests for ancestor/equal/descendant writers, same-version/genesis/required omission,
     exact +6-byte expansion, canonical and unknown-field preservation through an older-plan mutation, dependency
     change versus ResourceLimit terminalization, combined snapshot-plus-mask 16 MiB equality/equal-plus-one, raw
-    current equality and same-version drift, and identical pre-runtime/transaction-current proof behavior
+    current equality and same-version drift, returned resource-evidence absence of over-budget normalized data/masks,
+    dependency-then-current-recheck-then-overflow replay order, and identical first/current-recheck proof behavior
   - Exact zero/nonzero mutation branch after universal influential-dependency revalidation, where zero mutations skip
     commit-check evaluation and index/affected-epoch derivation but still atomically persist the declared outcome,
     sequence, provenance, and commit record; nonzero mutations prove exactly one complete mutation per mutable
@@ -1022,6 +1039,9 @@ work_packages:
   - Fixed private MAX_COMMAND_EVALUATION_ATTEMPTS_V1 ceiling of three complete evaluations per invocation, with no
     fourth attempt, byte-identical Pending and no durable graph on internal RetryBudgetExhausted, and no reevaluation
     while resolving CommitStatusUnknown
+  - Explicit process-local production coordinator durability value with the closed variants Sync or Group, no Default
+    or backend-inferred/zero-argument constructor path, Memory admitted only by test-only construction, and
+    outcome/commit records carrying the exact selected mode
   - Grammar/IR-v1 index derivation that always writes the canonical empty CanonicalRecord as covered_values while
     preserving generic storage conformance for covered-value epoch changes
   - Maintainer-approved format-neutral checked-plan correction that conservatively rejects a v1 mutation shape above
@@ -1062,8 +1082,9 @@ work_packages:
   exit_gate: Concurrent budget, lineage normalization and unknown-field preservation, zero-mutation rejection, exact
     nonzero mutation coverage, pre-sequence capacity/failpoint, event-hash, and fail-after-commit tests prove one
     atomic logical execution per idempotency identity without sequence gaps; resource expansion and zero-mutation
-    fixtures prove dependency revalidation, correct terminalization, no forbidden commit-check/index derivation, and
-    unchanged terminal replay.
+    fixtures prove dependency-first/catalog-current-recheck/re-derived-overflow terminalization, correct opaque
+    evidence consumption, no forbidden commit-check/index derivation, and unchanged terminal replay; constructor tests
+    prove every production coordinator explicitly receives Sync or Group while Memory remains test-only.
   human_review_triggers: *id001
 - id: WP-110
   name: Authorization and capability service
@@ -1373,6 +1394,9 @@ work_packages:
   - Minimal production riffdbd component graph wiring redb, catalog, commit coordinator, authentication, policy,
     API-neutral service, and Tonic exactly once, with no storage or policy bypass and no MCP, outbox dispatcher,
     projection worker, observability aggregation, or derived-health semantics
+  - P1 component graph explicitly constructs the production coordinator with the code-level Sync value and no
+    constructor/backend default; it exposes no operator durability selector, admits no production Memory path, and
+    keeps Group server-disabled until its existing scheduling, fairness, latency, crash-evidence, and human-review gate
   - Initialization composition only through the commit-owned DatabaseInitializationExecutor; the server invokes no
     storage mutation transition directly, does not request a DatabaseId candidate on reopen, and preserves the
     durable winner across restart
@@ -1409,7 +1433,9 @@ work_packages:
   exit_gate: A real riffdbd process reaches staged readiness on redb and the bootstrap/deploy/budget command, outcome,
     entity-read, clean-restart, durable reread, and retained-bootstrap-replay sequence works through public gRPC;
     every projection result variant maps correctly against an injected service stub, and error conformance proves
-    exact direct PublicError detail bytes plus fail-closed status/message/detail validation at every boundary case.
+    exact direct PublicError detail bytes plus fail-closed status/message/detail validation at every boundary case;
+    component-graph tests prove explicit code-level Sync construction with no constructor/backend default or
+    operator-facing POC durability selector.
   human_review_triggers: *id001
 - id: WP-135
   name: Public SDK comparison adapter

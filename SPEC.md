@@ -6,9 +6,9 @@
 **Tagline:** *Vibe fast. Commit safely.*  
 **Category:** Contract-first operational database for agent-built applications  
 
-**Version:** 0.20
+**Version:** 0.21
 **Status:** Architecture-approved implementation handoff
-**Date:** 20 July 2026
+**Date:** 21 July 2026
 **Audience:** Coding agents, database engineers, compiler engineers, security reviewers, and technical product leads  
 **Working binaries:** `riffdbd`, `riffdb`, `riffdb-mcp`  
 **Working URI scheme:** `riffdb://`  
@@ -56,6 +56,7 @@
 | 0.18 | 2026-07-20 | Applied the accepted checked-plan derived-index ceilings and index-epoch exhaustion behavior: conservative IR-v1 admission rejects plans whose successful mutation shape can exceed pre-sequence storage bounds, while runtime guards remain defense in depth and an exhausted epoch aborts before sequence assignment, stops the coordinator, and never enters uncertain-write fencing. |
 | 0.19 | 2026-07-20 | Applied the accepted bounded active-lineage materialization clarification: catalog resolution proves exact parent/hash ancestry and optional-null field introductions under fixed count, canonical-byte, and process-local proof ceilings; commit normalizes both owned snapshots and transaction-current records before evaluation; runtime rejects every unproved omission; and activation/startup fail closed without changing durable, protocol, IR, or plan-hash formats. |
 | 0.20 | 2026-07-20 | Clarified the accepted projection side of compatible event-payload evolution: catalog owns the opaque process-local event-materialization view used by projections, projection depends directly on catalog and consumes only that normalized view, and immutable event bytes/hashes plus the IR-blind storage boundary remain unchanged. |
+| 0.21 | 2026-07-21 | Applied the accepted lineage-overflow retention/recheck and explicit coordinator-durability decisions: catalog owns opaque command-materialization readiness/resource evidence and the pure current-recheck API; over-budget returned evidence retains only the raw snapshot and exact resolved plan/proof and must reproduce the overflow after dependency and raw-observation equality; production coordinator construction explicitly receives `sync` or `group`, `memory` remains test-only, P1 `riffdbd` passes a code-level `sync`, and no constructor/backend default is inferred. |
 
 ### Normative language
 
@@ -298,7 +299,7 @@ The binary targets are `riffdbd` from `riffdb-server`, `riffdb` from `riffdb-cli
 | `riffdb-contract-syntax` | Lexer, parser, source spans, syntax AST, and parser diagnostics | Types and parser tooling only |
 | `riffdb-contract-ir` | Typed HIR, executable IR, plans, immutable projection group schemas, and contract bundle structs | Types; no parser implementation, storage, compiler implementation, or runtime dependency |
 | `riffdb-contract-compiler` | Name resolution, type checking, invariant classification, locality analysis, plan generation, and JSON Schema output | Syntax and IR; no storage, service, or transport dependency |
-| `riffdb-catalog` | Immutable contract bundle persistence, compatibility checks, active-version changes, catalog notifications, bounded active-lineage materialization proofs, opaque process-local projection event-materialization views, and IR-aware validation of bounded same-session historical startup evidence | IR and storage API; its opaque process-local proofs and materialization views never cross a storage trait |
+| `riffdb-catalog` | Immutable contract bundle persistence, compatibility checks, active-version changes, catalog notifications, bounded active-lineage materialization proofs, opaque command `Ready`/resource evidence and pure current-recheck operations, opaque projection event-materialization views, and IR-aware validation of bounded same-session historical startup evidence | IR and storage API; its opaque process-local proofs, evidence, and materialization views never cross a storage trait |
 | `riffdb-storage-api` | Semantic snapshots, database initialization, structural startup sessions/evidence/type-state ports, evaluated commands, commit intents, durable DTOs, typed transitions/readers, the narrow durable `proto_codec` mapping bridge, and ADR-0017 projection-schema consumers | Types/errors; proto only through `proto_codec`; contract IR only for immutable `ProjectionGroupSchema`/`BoundProjectionGroupSchema` values in the projection-schema module; no clock, entropy, compiler, command-plan interpretation, historical-plan validation, runtime, commit, service, transport, or concrete-engine dependency |
 | `riffdb-storage-memory` | Deterministic reference storage implementation used by model and semantic tests | Storage API only |
 | `riffdb-storage-redb` | Durable POC implementation, table layout, complete structural integrity/evidence scan, dormant opened ports, backup, restore, and engine benchmarks | Storage API and `redb`; no contract IR, `ValidatedCatalogHistory`, readiness composition, or API transports |
@@ -306,7 +307,7 @@ The binary targets are `riffdbd` from `riffdb-server`, `riffdb` from `riffdb-cli
 | `riffdb-runtime` | Deterministic command-plan interpreter that consumes lineage-normalized owned snapshots, rejects unproved missing fields, and produces `EvaluatedCommand` without external I/O | IR, invariant engine, and storage semantic value/snapshot types; no catalog lineage construction, provenance claims, admission persistence, storage engine, service, or transport dependency |
 | `riffdb-conflict` | Canonical conflict keys, exclusive logical capabilities, wait queues, cancellation, and hot-key diagnostics | Types and synchronization primitives; no storage engine |
 | `riffdb-idempotency` | Canonical command identity, input hashing, persisted outcome lookup, duplicate detection, and uncertain-result recovery | Types and storage API |
-| `riffdb-commit` | Database-initialization executor, admission, capability acquisition, catalog-proof-guided owned-snapshot and transaction-current normalization, deterministic evaluation orchestration, exact historical-plan matching, final `CommitIntent` assembly, transaction-current commit-check orchestration, revalidation, sequencing, authoritative commit, typed control-plane operations, ordered audit execution, and consumer-owned `AdmissionClock`, `AdministrationClock`, `ProvenanceIdSource`, and `AdministrationAuditInputView` ports | Runtime, conflict, idempotency, catalog, `riffdb-contract-ir`, `riffdb-invariant`, storage API, and policy-owned authorized-preparation/provenance/facts values plus only `TransactionCurrentCapabilityVerifier` and `AuthorizationClock`; direct IR/invariant use is limited to exact plan matching, proof-guided normalization, grammar-v1 index derivation, and pure transaction-current commit-check evaluation; no syntax/compiler, service, transport, protocol, general policy authorizer, obligations/redaction engine, policy-owned storage reader, or concrete clock/entropy implementation |
+| `riffdb-commit` | Database-initialization executor, admission, capability acquisition, orchestration of catalog-owned snapshot readiness/resource evidence and current rechecks, deterministic evaluation orchestration, exact historical-plan matching, final `CommitIntent` assembly, transaction-current commit-check orchestration, revalidation, sequencing, authoritative commit, typed control-plane operations, ordered audit execution, and consumer-owned `AdmissionClock`, `AdministrationClock`, `ProvenanceIdSource`, and `AdministrationAuditInputView` ports | Runtime, conflict, idempotency, catalog, `riffdb-contract-ir`, `riffdb-invariant`, storage API, and policy-owned authorized-preparation/provenance/facts values plus only `TransactionCurrentCapabilityVerifier` and `AuthorizationClock`; direct IR/invariant use is limited to exact plan matching, grammar-v1 index derivation, and pure transaction-current commit-check evaluation; no syntax/compiler, service, transport, protocol, general policy authorizer, obligations/redaction engine, policy-owned storage reader, or concrete clock/entropy implementation |
 | `riffdb-auth` | Principal authentication, local development capability tokens, expiry, credential resolution, narrow synchronous authentication clock, and `CredentialAuthenticator` entry point | Types, errors, and storage-owned capability readers; no policy, command execution, service, or transport dependency |
 | `riffdb-policy` | Deny-by-default authorization, capability scopes, obligations, approvals, provenance validation, value-only authorized capability-mutation preparation and transaction-current facts, synchronous authorization clock, and pure transaction-current capability verification | Auth and types/errors only; no storage API, commit, service, transport, protocol, authoritative write handle, or concrete storage dependency |
 | `riffdb-service` | API-neutral command, contract, entity, commit, provenance, projection, discovery, administration, and health services, including capability-administration request/result semantics and checked command-input preparation | Foundational types/errors, contract/compiler/catalog semantics, the pure `riffdb-invariant` expression evaluator, auth and policy entry points, typed commit executors, and consumer-owned bounded read ports; no runtime execution API, transport, general storage engine, or concrete storage implementation |
@@ -1054,6 +1055,21 @@ position is implicit and adds no separate metadata charge. Tests freeze exact
 combined acceptance at 16 MiB and rejection at one byte more. Masks are
 process-local normalization authority, not serialized or hashed data.
 
+`riffdb-catalog` owns the opaque process-local command-materialization evidence
+API bound to the exact `ResolvedExecutablePlan`. A successful first pass returns
+`Ready`: the bounded normalized snapshot plus opaque current-recheck evidence.
+A valid proof-authorized expansion beyond the ceiling instead returns resource
+evidence retaining only the original bounded raw `ReadSnapshot` together with
+the exact resolved plan/proof. Returned resource evidence MUST retain no
+over-budget normalized record or mask. The catalog-owned pure current-recheck
+operation accepts transaction-current raw observations only after the
+coordinator has compared dependencies; it proves exact raw-observation equality
+and deterministically repeats the same normalization and exact charge. It
+performs no catalog lookup, storage I/O, clock, entropy, or runtime evaluation.
+The exact result and charge are semantic; internal allocation strategy,
+transient masks, and evaluation order are not frozen. These opaque values add no
+durable or protocol field and never cross a storage trait.
+
 A missing field may be materialized as `CanonicalValue::Null` if and only if
 the stored writer is an exact chain member,
 `writer_ordinal < field_introduction_ordinal <= executing_ordinal`, and the
@@ -1159,7 +1175,8 @@ A mutating command follows this sequence:
    never become `ExecutionFailed`. A checked plan/input combination that cannot
    be evaluated as its validated type declares is an internal integrity failure,
    not an arithmetic validation result. Arithmetic after snapshot evaluation
-   retains ADR-0012's dependency-validated terminalization unchanged.
+   uses ADR-0012's dependency-validated terminalization as narrowed for lineage
+   expansion in steps 10 and 13 below.
 4. The service performs an initial current-policy check over the exact facts and
    validates only allowed provenance claims. Every explicit authenticated policy
    denial appends one standalone `denied` record before returning denial.
@@ -1188,11 +1205,14 @@ A mutating command follows this sequence:
 10. A synchronous storage read copies every declared binding and range
     observation into one owned bounded `ReadSnapshot`, closes the engine read
     view, and returns canonical read dependencies. After the view is closed and
-    before runtime entry, the coordinator uses only the catalog-owned lineage
-    proof attached to the resolved plan to normalize eligible ancestor-written
-    optional omissions to canonical null. Unknown fields remain byte-for-byte
-    present. A proof failure is integrity; a valid expansion beyond the fixed
-    execution budget is dependency-sensitive `ExecutionFault::ResourceLimit`.
+    before runtime entry, the coordinator invokes the catalog-owned opaque
+    materialization API bound to the resolved plan. `Ready` supplies the bounded
+    normalized snapshot and current-recheck evidence; eligible ancestor-written
+    optional omissions are canonical null and unknown fields remain byte-for-
+    byte present. A proof failure is integrity. Valid expansion beyond the fixed
+    execution budget returns dependency-sensitive resource evidence retaining
+    only the raw bounded snapshot plus the exact resolved plan/proof and no
+    over-budget normalized data or masks.
 11. The deterministic runtime evaluates the exact checked plan, normalized
     snapshot, immutable `TransactionContext`, and fixed `EvaluationBudget`, with
     no storage transaction, I/O, clock, entropy, provenance claims, or `.await`.
@@ -1210,7 +1230,13 @@ A mutating command follows this sequence:
 13. An arithmetic or resource fault follows ADR-0012's dependency-validated
     `Pending -> ExecutionFailed` transition; changed evidence triggers full
     reevaluation or leaves the admission pending, and no application sequence is
-    assigned. A proven pre-commit abort ends that attempt; a later safe
+    assigned. For a lineage-expansion resource fault, terminalization first
+    compares every dependency, then invokes the resource evidence's catalog-
+    owned pure current-recheck operation. That operation requires exact equality
+    of every raw physical binding/root observation and deterministically
+    re-derives the same over-limit result before the coordinator may write
+    `ExecutionFailed`. A proven pre-commit abort ends that attempt; a
+    later safe
     reevaluation of the same Pending admission is a new attempt and may source
     one new provenance candidate. Unknown status is resolved against the same
     idempotency identity before any reevaluation or source call.
@@ -1223,14 +1249,14 @@ A mutating command follows this sequence:
     transaction-current state and compares every absence/version/epoch
     dependency regardless of mutation count. `DependencyChanged` aborts and
     requests reevaluation before any transaction-current normalization. For each
-    equal present dependency, the raw current record must exactly equal the
-    retained pre-runtime observation after removing precisely the fields marked
-    by its catalog-issued inserted-null mask, including target, entity version,
-    writer identity, schema binding, and every physical field. Drift behind an
-    equal version is integrity. Only after that equality proof does the
-    coordinator apply the already-retained catalog proof/mask to the current
-    record before any value-source or commit-check use; it performs no catalog or
-    extra storage lookup in the transaction. A missing field not proved eligible
+    equal present dependency, the coordinator passes the raw current observation
+    to the `Ready` evidence's catalog-owned pure current-recheck operation. That
+    opaque operation proves exact equality with the retained raw pre-runtime
+    observation across target, entity version, writer identity, schema binding,
+    canonical field order, and every physical field, then returns the normalized
+    current record for value-source or commit-check use. Drift behind an equal
+    version is integrity. It performs no catalog lookup or extra storage I/O in
+    the transaction. A missing field not proved eligible
     for ancestor null fill is integrity, and unknown fields remain present. A
     zero-mutation declared business outcome then skips commit-check evaluation
     and index derivation. A nonzero mutation set must first prove exactly one
@@ -1442,14 +1468,16 @@ falling back to mutable pre-images.
 
 Dependency comparison precedes transaction-current normalization. Any changed
 absence, entity version, or range epoch aborts the candidate and requests full
-reevaluation. When a present entity version is equal, the coordinator also
-requires exact raw-record equality with the retained pre-runtime observation
-after removing only fields named by that observation's catalog-issued inserted-
-null mask. The comparison includes target, entity version, writer identity,
-schema binding, canonical field order, and every physical known or unknown
-field/value. Unequal content behind an equal version is `InternalDefect`, not
-`DependencyChanged`; no catalog lookup, storage callback, or second read is
-allowed to explain or repair it inside the write transaction.
+reevaluation. When a present entity version is equal, the coordinator invokes
+the catalog-owned opaque current-recheck operation on the retained `Ready` or
+resource evidence and the raw current observation. That pure operation requires
+exact raw-record equality with the retained pre-runtime observation, including
+target, entity version, writer identity, schema binding, canonical field order,
+and every physical known or unknown field/value, before deterministic
+normalization or overflow reproduction. Unequal content behind an equal version
+is `InternalDefect`, not `DependencyChanged`; no catalog lookup, storage
+callback, or second read is allowed to explain or repair it inside the write
+transaction.
 
 Grammar v1 does not enable write-influencing indexed range reads. A future
 bounded indexed command-read IR requires an accepted static-target/epoch policy
@@ -1479,9 +1507,12 @@ bytes plus every retained nonempty null-mask bitset payload byte; aligned
 binding/root and mask vectors make position implicit with no separate metadata
 charge. The mask's 2 MiB structural maximum grants no extra capacity. If a valid
 proof-authorized expansion exceeds one of those limits, runtime receives no
-partial record or `EvaluatedCommand`; the
-coordinator treats it as `ExecutionFault::ResourceLimit` and may terminalize it
-under ADR-0012 only after equality of all captured dependencies. A malformed
+partial record or `EvaluatedCommand`; the catalog-owned returned resource
+evidence retains only the original bounded raw snapshot plus the exact resolved
+plan/proof and no over-budget normalized values or masks. The coordinator treats
+the result as `ExecutionFault::ResourceLimit` and may terminalize it under
+ADR-0012 only after the ordered current recheck and deterministic overflow
+reproduction in Section 9.6. A malformed
 proof, foreign writer, unproved omission, or a proof/cap invariant reached after
 successful activation is instead integrity and never a resource fault.
 
@@ -1530,33 +1561,26 @@ complete commit-check plan and index derivation consume the proposed post-images
 Missing, duplicate, or extra mutations are integrity failures, never permission
 to substitute transaction-current pre-images.
 
-The coordinator, not storage or runtime, owns both proof applications: once on
-the complete owned snapshot after the read view closes and once on every
-transaction-current binding/root record before commit-check value assembly.
-Both applications use the exact writer identity and opaque mask derived by the
-`ResolvedExecutablePlan`'s shared proof. They preserve all present unknown
-fields. Storage remains IR-blind and runtime remains unable to infer ancestry
-from a numeric version or optional field type.
-
-The first application retains each nonempty inserted-null mask in the aligned
-entry for its normalized observation under the shared 16 MiB snapshot charge;
-no separate position value is retained or charged. In the short write
-transaction, dependency comparison happens first. If
-it is equal, the coordinator removes exactly those mask-named inserted fields
-from the retained observation and requires exact equality with the raw current
-record, including target/version/writer/schema binding and every physical field,
-before reapplying the same mask. Same-version drift is a stopped-readiness
-integrity defect. The coordinator performs no catalog or additional storage I/O
-to rebuild ancestry or masks while the transaction is open.
+`riffdb-catalog` owns both opaque proof-application operations and their returned
+evidence; the coordinator owns when they are invoked. The first call consumes
+the complete owned snapshot after the read view closes and returns `Ready` or
+resource evidence. After dependency equality, the coordinator passes each
+transaction-current raw binding/root observation to that evidence's pure
+current-recheck operation before commit-check value assembly or resource-fault
+terminalization. The opaque operation proves exact raw equality and repeats the
+same deterministic normalization/charge without a catalog lookup or additional
+storage I/O. It preserves all present unknown fields. Storage remains IR-blind,
+runtime cannot infer ancestry from a numeric version or optional field type, and
+WP-100 neither interprets masks nor implements proof application.
 
 The coordinator performs:
 
 1. Open the durable write transaction and start a count-only candidate.
 2. Recheck the exact pending admission and idempotency identity.
 3. Read and compare every influential transaction-current dependency; on equal
-   present records, prove exact raw equality against the retained observation
-   with only catalog-issued null insertions removed, then apply the retained
-   mask before semantic use.
+   present records, invoke the catalog-owned opaque current-recheck operation to
+   prove exact raw equality and obtain the normalized current record before
+   semantic use.
 4. For nonzero mutations only, prove exact mutable-binding coverage and
    re-evaluate the complete commit-time invariant plan over current read/root
    values plus proposed post-images; zero mutations skip this step.
@@ -1579,6 +1603,19 @@ sequence and constructs none of the command atomic record set. A normal
 dependency change writes nothing and follows the bounded full-reevaluation
 policy; malformed or missing evidence is an integrity incident and leaves the
 admission pending.
+
+For a lineage-normalization `ResourceLimit`, "all evidence is equal" has one
+mandatory order. The coordinator first compares every canonical dependency. It
+then invokes the catalog-owned resource evidence's pure current-recheck operation
+with each transaction-current raw binding/root observation. That operation
+compares the raw observations exactly, including absence/presence, target,
+entity version, writer identity, schema binding, canonical field order, and every
+known or unknown field/value, before re-running the same deterministic
+normalization and exact charge. The coordinator may terminalize only if that recheck again
+produces the same valid over-limit `ResourceLimit`; success, a different fault,
+or an impossible proof/cap result is an integrity incident. The recheck performs
+no catalog lookup, additional storage read, runtime evaluation, or partial
+over-budget retention.
 
 A false transaction-current commit check remains the non-durable
 `CandidateValidationRejection::CommitCheckRejected`. A transaction-current
@@ -1653,9 +1690,10 @@ The storage abstraction is semantic, not a generic database portability layer.
 `riffdb-storage-api` owns the owned bounded `ReadSnapshot`, canonical dependency
 and observation types, `EvaluatedCommand`, `CommitIntent`, semantic durable DTOs,
 typed transition/read requests and results, and engine-neutral persistence ports.
-It owns only structural constructors; the coordinator retains the private proof
-that targets, dependencies, mutations, events, and outcome match one exact
-checked historical plan.
+It owns only structural constructors; the coordinator retains the private
+commit-candidate proof that targets, dependencies, mutations, events, and
+outcome match one exact checked historical plan. That proof is distinct from
+catalog-owned opaque lineage materialization evidence.
 
 `ReadSnapshot` is an owned value, not a live engine view or trait object. A
 synchronous storage call privately opens one consistent read view, copies every
@@ -1982,15 +2020,24 @@ that proto-owner review.
 
 | Mode | Behavior | Use |
 |---|---|---|
-| `sync` | Commit is acknowledged only after the embedded engine reports durable synchronization. | Default POC correctness mode |
+| `sync` | Commit is acknowledged only after the embedded engine reports durable synchronization. | Required P1 `riffdbd` correctness mode |
 | `group` | Coordinator batches compatible intents and performs one durable flush for the batch. | Semantic interface and benchmark experiments only in the POC |
 | `memory` | No durability guarantee. | Unit and model tests only; server refuses non-test startup |
 
 The returned outcome MUST identify the durability mode used for its commit.
+Every production commit-coordinator constructor MUST receive an explicit closed
+process-local durability value whose variants are `sync` or `group`; it MUST have no
+implicit or trait-provided default and MUST NOT infer a mode from the backend.
+`memory` may be supplied only through test-only coordinator construction and is
+not a production constructor value.
+
 The POC production server exposes only `sync` durability. Production `group`
 mode remains disabled unless the WP-100 scheduling, fairness, latency, and crash
 evidence receives explicit human review; defining the semantic mode and measuring
 it does not enable it. Its possible MVP default remains a post-POC decision.
+The P1 `riffdbd` component graph explicitly passes the code-level `sync` value to
+coordinator construction; it does not obtain `sync` from a constructor or
+backend fallback and exposes no POC operator durability selector.
 
 ## 10.6 Recovery
 
@@ -3274,7 +3321,6 @@ shutdown_grace_ms = 10000
 
 [storage]
 engine = "redb"
-durability = "sync"
 group_commit_max_delay_ms = 2
 
 [transactions]
@@ -3469,7 +3515,7 @@ The POC MUST support named, test-only failpoints. Process tests terminate the se
 | After pending idempotency reservation, before locking | Only the valid pending reservation is durable; retry reuses its contract version, plan, and `tx.time`; no sequence exists. |
 | After lock acquisition, before evaluation | Pending reservation may remain; locks are absent after restart; no terminal state or sequence exists. |
 | After evaluation, before commit submission | Pending reservation may remain; no mutation, event, outcome, or sequence is visible. |
-| During execution-failure terminalization | Either the equal-evidence `ExecutionFailed` admission is durable with no application sequence/provenance/event/commit, or the original pending admission remains; unknown status fences writes and same-key recovery resolves it. |
+| During execution-failure terminalization | Either the equal-evidence `ExecutionFailed` admission is durable with no application sequence/provenance/event/commit, or the original pending admission remains; lineage-expansion `ResourceLimit` additionally requires exact raw-observation equality and deterministic reproduction of the same overflow; unknown status fences writes and same-key recovery resolves it. |
 | Before storage transaction commit | No partial mutation, outcome, event, or sequence. |
 | After capacity reservation, before sequence assignment | No sequence or record graph is assigned or staged; rollback releases the reservation. |
 | After sequence assignment, before canonical-envelope verification/staging | The assignment remains transaction-local and invisible; a verification failure or crash exposes no sequence or partial graph. |
@@ -3721,19 +3767,19 @@ The graph uses hard dependencies. Parallel work is encouraged only after shared 
 | `WP-030` | Contract syntax | WP-010 | Logos lexer, LALRPOP grammar, source spans, AST | Parser corpus, diagnostics, fuzz smoke pass |
 | `WP-040` | Typed IR and compiler | WP-010, WP-030 | Name resolution, type checker, invariant/outcome/dependency plans, JSON Schema | Budget contract compiles; invalid corpus rejects with stable diagnostics |
 | `WP-045` | Budget comparison baseline | WP-040 | Shared workload/oracle and isolated PostgreSQL implementation | Deterministic oracle and PostgreSQL correctness preflight pass |
-| `WP-050` | Contract catalog | WP-020, WP-040, WP-060 | Bundle lookup, catalog state semantics, compatibility report, bounded active-lineage materialization proof, same-session historical IR validation proof, and typed expected-version deployment operation for later coordinator routing | Exact chain/count/byte/proof boundaries, null-fill masks, catalog semantics, exact-end historical validation, and atomic storage-operation tests pass; final routing evidence is WP-100/WP-120 |
+| `WP-050` | Contract catalog | WP-020, WP-040, WP-060 | Bundle lookup, catalog state semantics, compatibility report, bounded active-lineage materialization proof, opaque command `Ready`/resource evidence and pure current-recheck API, same-session historical IR validation proof, and typed expected-version deployment operation for later coordinator routing | Exact chain/count/byte/proof boundaries, returned-evidence retention, raw-current recheck, null-fill masks, catalog semantics, exact-end historical validation, and atomic storage-operation tests pass; final orchestration evidence is WP-100/WP-120 |
 | `WP-060` | Storage semantic API | WP-010, WP-020, WP-040 | Owned snapshots, dependencies, `EvaluatedCommand`/`CommitIntent`, the pre-sequence write-plan/capacity type-state, exact `EventHash` semantics, structural evidence/type-state ports, semantic durable DTOs, typed persistence transitions including audit/capability/projection, and in-memory reference implementation | Reference-model, exact-end startup type-state, pre-sequence ordering/capacity, event-hash, and semantic conformance tests pass |
 | `WP-065` | Durable semantic record schema | WP-020, WP-060 | Exact 26-record `riffdb.storage.v1` registry including standalone durable events, canonical envelopes and per-class upper-bound proofs, exact event-hash goldens, descriptors, schema hashes, wire validation, historical registrations, and checked storage-owned Proto mappings | Proto/storage size/hash tests and clean deterministic regeneration pass |
 | `WP-070` | Redb storage engine | WP-020, WP-060, WP-065 | Frozen canonical tables/keys including standalone events, ordered coordinator write transaction with pre-sequence reservation and pre-stage canonical-envelope checks, atomic records, indexes, capability/audit/projection persistence, complete structural evidence scan, `StructurallyOpened` dormant ports, recovery, SHA-256 backup, and dependency-free benchmarks | Storage properties and core process recovery matrix pass without claiming IR-aware readiness |
 | `WP-075` | Fjall semantic comparison | WP-060, WP-070 | Isolated non-production Fjall adapter and unchanged conformance/benchmark harness | Conformance report and reproducible evidence pass |
 | `WP-080` | Deterministic command runtime | WP-040, WP-060 | Shared pure expression evaluator plus predicate, invariant, postcondition, and commit-check evaluation; lineage-normalized snapshot IR interpreter that never blindly fills omissions, fixed logical time and budget, dependencies, `EvaluatedCommand`, and closed post-snapshot execution faults; no contract state-machine IR/execution, provenance, or command randomness | Differential tests against model and missing-field fail-closed fixtures pass |
 | `WP-090` | Conflict manager | WP-010 | Canonical multi-key exclusive acquisition, cancellation, metrics | Loom/Shuttle suites pass |
-| `WP-100` | Commit coordinator and idempotency | WP-050, WP-070, WP-080, WP-090, WP-110 | Admission reservation, proof-guided owned-snapshot and transaction-current normalization, revalidation, mutation-affected epoch planning, pre-sequence capacity reservation, verified sequence-derived event/record graph, atomic outcome/event/provenance/outbox-intent commit, and typed control-plane operations | Lineage normalization/preservation, concurrency, pre-sequence failpoints, core process crash, and lost-response replay tests pass |
+| `WP-100` | Commit coordinator and idempotency | WP-050, WP-070, WP-080, WP-090, WP-110 | Admission reservation, orchestration of catalog-owned readiness/resource evidence and current rechecks, revalidation, explicit process-local production durability selection, mutation-affected epoch planning, pre-sequence capacity reservation, verified sequence-derived event/record graph, atomic outcome/event/provenance/outbox-intent commit, and typed control-plane operations | Dependency/evidence/recheck ordering, overflow terminalization, explicit-durability construction, concurrency, pre-sequence failpoints, core process crash, and lost-response replay tests pass |
 | `WP-110` | Authorization and capability service | WP-010, WP-070 | Opaque capability records, policy decisions, obligations, and typed create/revoke operations for later coordinator routing | Policy, digest, revocation-state, and fail-closed tests pass; final non-bypass evidence is WP-120 |
 | `WP-120` | API-neutral application service | WP-050, WP-080, WP-100, WP-110 | Six operation-specific service traits, checked contexts/DTOs, pure input/partition/conflict preparation with fail-closed pre-admission arithmetic, catalog-lineage limit validation mapping, current policy, audit orchestration, obligations, bounded reads/waits/streams, and server-side cursors | In-process end-to-end, exact root limit-error mapping, and no-storage-bypass tests pass |
 | `WP-125` | Service comparison adapter | WP-045, WP-120 | Budget workload adapter over the API-neutral service | Shared oracle passes against in-process RiffDB |
 | `WP-127` | Public Protobuf API completion | WP-020, WP-120 | Complete all remaining supported `riffdb.v1` messages, preserve the WP-010 execution-failure slice, and freeze descriptors, schema hashes, wire validation, and golden/client fixtures; no service conversion code | Proto tests and clean deterministic regeneration pass |
-| `WP-130` | gRPC server and Rust SDK | WP-020, WP-120, WP-127 | Tonic services/client plus the minimal production redb/catalog/commit/auth/policy/service composition, concrete ID/clock/cursor/digest providers, staged startup/lifecycle, and real restart proof | Public API conformance and the child-process temporary-redb bootstrap/deploy/budget/restart suite pass |
+| `WP-130` | gRPC server and Rust SDK | WP-020, WP-120, WP-127 | Tonic services/client plus the minimal production redb/catalog/commit/auth/policy/service composition, concrete ID/clock/cursor/digest providers, explicit code-level `sync` coordinator value without constructor/backend fallback, staged startup/lifecycle, and real restart proof | Public API and component-graph conformance plus the child-process temporary-redb bootstrap/deploy/budget/restart suite pass |
 | `WP-135` | Public SDK comparison adapter | WP-125, WP-130 | Budget comparison through the public Rust SDK/gRPC path | Shared oracle passes through the canonical client path |
 | `WP-140` | Native MCP interface | WP-040, WP-120, WP-130 | `rmcp` stdio-over-gRPC and HTTP adapters, dynamic tools/resources, schema results, progress/cancellation | MCP conformance and generated-tool tests pass |
 | `WP-150` | CLI and local developer flow | WP-130 | `riffdb`, config, local token flow, JSON/human output | Acceptance steps executable without internal APIs |
@@ -3878,7 +3924,9 @@ The long-lived budget comparison workload, deterministic oracle, and PostgreSQL 
 - Contract catalog and atomic deployment.
 - Minimal production `riffdbd` composition over redb, catalog, commit,
   authentication, policy, the API-neutral service, and Tonic, including concrete
-  ID/clock/cursor/digest providers and staged same-session startup validation.
+  ID/clock/cursor/digest providers, an explicit code-level `sync` coordinator
+  durability value with no constructor/backend default, and staged same-session
+  startup validation.
 - gRPC, Rust SDK, CLI.
 - WP-127-reviewed complete public schemas before gRPC service/wire conversion.
 - Atomic durable outbox intent as part of every applicable command commit; external dispatch remains P2.
@@ -4083,9 +4131,11 @@ and ADR-0023 also resolved the remaining grammar-v1 transaction defaults:
   prefix-epoch storage capability does not enable them; any future bounded IR
   requires accepted static target derivation and explicit up-front exclusion.
 - Arithmetic and resource faults may terminalize as ADR-0012
-  `ExecutionFailed` only after complete dependency equality; they receive no
-  application sequence or durable command provenance and use the exact public
-  error and uncertainty rules in that ADR. A late transaction-current
+  `ExecutionFailed` only after complete dependency equality; lineage expansion
+  additionally requires exact raw-observation equality and deterministic
+  reproduction of the same overflow. They receive no application sequence or
+  durable command provenance and use the exact public error and uncertainty
+  rules in that ADR. A late transaction-current
   commit-check arithmetic fault discards the already-sourced unpersisted
   provenance candidate and sources no second candidate while terminalizing.
 - Grammar/IR-v1 coordinator writes always use the canonical empty record for
