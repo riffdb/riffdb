@@ -6,7 +6,7 @@
 **Tagline:** *Vibe fast. Commit safely.*  
 **Category:** Contract-first operational database for agent-built applications  
 
-**Version:** 0.21
+**Version:** 0.22
 **Status:** Architecture-approved implementation handoff
 **Date:** 21 July 2026
 **Audience:** Coding agents, database engineers, compiler engineers, security reviewers, and technical product leads  
@@ -57,6 +57,7 @@
 | 0.19 | 2026-07-20 | Applied the accepted bounded active-lineage materialization clarification: catalog resolution proves exact parent/hash ancestry and optional-null field introductions under fixed count, canonical-byte, and process-local proof ceilings; commit normalizes both owned snapshots and transaction-current records before evaluation; runtime rejects every unproved omission; and activation/startup fail closed without changing durable, protocol, IR, or plan-hash formats. |
 | 0.20 | 2026-07-20 | Clarified the accepted projection side of compatible event-payload evolution: catalog owns the opaque process-local event-materialization view used by projections, projection depends directly on catalog and consumes only that normalized view, and immutable event bytes/hashes plus the IR-blind storage boundary remain unchanged. |
 | 0.21 | 2026-07-21 | Applied the accepted lineage-overflow retention/recheck and explicit coordinator-durability decisions: catalog owns opaque command-materialization readiness/resource evidence and the pure current-recheck API; over-budget returned evidence retains only the raw snapshot and exact resolved plan/proof and must reproduce the overflow after dependency and raw-observation equality; production coordinator construction explicitly receives `sync` or `group`, `memory` remains test-only, P1 `riffdbd` passes a code-level `sync`, and no constructor/backend default is inferred. |
+| 0.22 | 2026-07-21 | Clarified the accepted three-attempt boundary: each attempt slot is consumed immediately before catalog snapshot materialization; a valid lineage-expansion `ResourceLimit` consumes that slot even though runtime is not entered, while a `Ready` result continues into exactly one runtime evaluation in the same slot. |
 
 ### Normative language
 
@@ -793,9 +794,10 @@ abort leaves the admission pending and maps to storage unavailability; unknown
 commit status fences writes and maps to outcome uncertainty until same-key
 resolution.
 
-ADR-0023 fixes bounded full reevaluation at three complete evaluation attempts
-per outer invocation, including the initial attempt. Exhausting that fixed
-invocation-local budget leaves the durable Pending admission byte-for-byte
+ADR-0023 fixes bounded full reevaluation at three attempt slots per outer
+invocation, including the initial materialization. A valid lineage-expansion
+resource overflow consumes its slot without entering runtime. Exhausting that
+fixed invocation-local budget leaves the durable Pending admission byte-for-byte
 unchanged and creates no terminal record or application sequence. The service
 maps the coordinator's internal `RetryBudgetExhausted` to the existing public
 `ConcurrencyDeadlineExceeded`; a later caller retry is a new bounded invocation
@@ -1204,10 +1206,11 @@ A mutating command follows this sequence:
    acquisition, upgrade, and cross-partition mutation are forbidden.
 10. A synchronous storage read copies every declared binding and range
     observation into one owned bounded `ReadSnapshot`, closes the engine read
-    view, and returns canonical read dependencies. After the view is closed and
-    before runtime entry, the coordinator invokes the catalog-owned opaque
-    materialization API bound to the resolved plan. `Ready` supplies the bounded
-    normalized snapshot and current-recheck evidence; eligible ancestor-written
+    view, and returns canonical read dependencies. After the view is closed, the
+    coordinator consumes one invocation-local attempt slot and invokes the
+    catalog-owned opaque materialization API bound to the resolved plan. `Ready`
+    supplies the bounded normalized snapshot and current-recheck evidence;
+    eligible ancestor-written
     optional omissions are canonical null and unknown fields remain byte-for-
     byte present. A proof failure is integrity. Valid expansion beyond the fixed
     execution budget returns dependency-sensitive resource evidence retaining
@@ -1629,9 +1632,12 @@ evaluation and obtains no second candidate for terminalization. Integrity faults
 remain redacted internal incidents, never caller data or predicate rejection.
 
 `riffdb-commit` privately fixes
-`MAX_COMMAND_EVALUATION_ATTEMPTS_V1: usize = 3`. An attempt begins immediately
-before one complete owned-snapshot runtime evaluation, so one invocation may
-perform at most two automatic full reevaluations. Dependency change,
+`MAX_COMMAND_EVALUATION_ATTEMPTS_V1: usize = 3`. An attempt slot is consumed
+immediately before catalog materialization of one complete owned snapshot. A
+`Ready` result continues into exactly one runtime evaluation in that same slot;
+a valid lineage-expansion `ResourceLimit` consumes the slot even though runtime
+is not entered. Thus one invocation may perform at most two automatic full
+reevaluations. Dependency change,
 commit-check rejection, mutation-precondition change, or changed evidence while
 terminalizing an execution fault consumes the completed attempt. Before another
 attempt, the coordinator proves abort, releases the logical capability, checks
@@ -4141,7 +4147,9 @@ and ADR-0023 also resolved the remaining grammar-v1 transaction defaults:
 - Grammar/IR-v1 coordinator writes always use the canonical empty record for
   index `covered_values`; nonempty covered values remain a future language/IR
   and durable-compatibility decision.
-- Full reevaluation is bounded to three complete attempts per invocation.
+- Full reevaluation is bounded to three attempt slots per invocation, consumed
+  before catalog snapshot materialization; valid lineage overflow consumes a
+  slot without runtime entry.
   Exhaustion leaves Pending unchanged and maps to the existing public
   `ConcurrencyDeadlineExceeded` without adding a durable counter or error kind.
 - POC contract compatibility is additive/documentation-only; removal of an

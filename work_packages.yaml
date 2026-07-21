@@ -1,4 +1,4 @@
-spec_version: '0.21'
+spec_version: '0.22'
 product: RiffDB
 repository: riffdb
 status: implementation-handoff
@@ -1036,9 +1036,11 @@ work_packages:
   - Dependency-validated execution-failure terminalization, including the late commit-check arithmetic path that
     rolls back before sequence assignment, discards its one unpersisted provenance candidate, sources no second
     candidate, and follows changed-dependency reevaluation plus proven-abort versus unknown-commit recovery
-  - Fixed private MAX_COMMAND_EVALUATION_ATTEMPTS_V1 ceiling of three complete evaluations per invocation, with no
-    fourth attempt, byte-identical Pending and no durable graph on internal RetryBudgetExhausted, and no reevaluation
-    while resolving CommitStatusUnknown
+  - Fixed private MAX_COMMAND_EVALUATION_ATTEMPTS_V1 ceiling of three attempt slots per invocation, each consumed
+    immediately before catalog snapshot materialization; Ready continues into exactly one runtime evaluation in that
+    slot and valid lineage-expansion ResourceLimit consumes it without runtime entry, with no fourth attempt,
+    byte-identical Pending and no durable graph on internal RetryBudgetExhausted, and no reevaluation while resolving
+    CommitStatusUnknown
   - Explicit process-local production coordinator durability value with the closed variants Sync or Group, no Default
     or backend-inferred/zero-argument constructor path, Memory admitted only by test-only construction, and
     outcome/commit records carrying the exact selected mode

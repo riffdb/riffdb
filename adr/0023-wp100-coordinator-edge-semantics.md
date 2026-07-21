@@ -28,6 +28,10 @@
   production coordinator construction explicitly receives `Sync` or `Group`,
   `Memory` is test-only, P1 `riffdbd` passes `Sync`, and no implicit default is
   permitted
+- **Maintainer-accepted attempt-scope clarification:** 2026-07-21, an attempt
+  slot is consumed immediately before catalog snapshot materialization; a valid
+  lineage-expansion `ResourceLimit` consumes the slot without entering runtime,
+  while `Ready` continues into one runtime evaluation in the same slot
 - **Requires:** ADR-0002, ADR-0003, ADR-0004, ADR-0005, ADR-0006, ADR-0007,
   ADR-0009, ADR-0011, ADR-0012, ADR-0013, ADR-0016, ADR-0018, ADR-0021, and
   ADR-0022
@@ -71,6 +75,10 @@ On 2026-07-21 the human maintainer accepted the lineage-overflow retention and
 recheck clarification plus explicit process-local coordinator durability
 selection below. They add no durable/protocol field, operator-facing durability
 setting, or POC group-commit policy.
+
+On 2026-07-21 the human maintainer also accepted the attempt-scope clarification
+below. It closes whether a deterministic pre-runtime lineage overflow consumes
+the bounded invocation budget without changing any durable or public format.
 
 ## Context
 
@@ -294,16 +302,21 @@ transaction-current pre-image in either branch.
 ### Bounded full-reevaluation ceiling
 
 `riffdb-commit` privately owns the fixed v1 ceiling
-`MAX_COMMAND_EVALUATION_ATTEMPTS_V1: usize = 3`. The initial complete evaluation
-counts as attempt one, so one outer invocation may perform at most two automatic
-full reevaluations. The ceiling is invocation-local, resets only for a fresh
-authenticated and authorized submission, and is unrelated to the coincidentally
-three-observation inspect/confirm protocol. It is nonconfigurable, non-durable,
-not command-visible, not an executable-IR field, and absent from every plan hash,
-public message, and durable encoding.
+`MAX_COMMAND_EVALUATION_ATTEMPTS_V1: usize = 3`. The initial materialization
+consumes attempt slot one, so one outer invocation may perform at most two
+automatic full reevaluations. The ceiling is invocation-local, resets only for a
+fresh authenticated and authorized submission, and is unrelated to the
+coincidentally three-observation inspect/confirm protocol. It is nonconfigurable,
+non-durable, not command-visible, not an executable-IR field, and absent from
+every plan hash, public message, and durable encoding.
 
-An attempt begins immediately before `riffdb-runtime` evaluates one complete
-owned snapshot. `DependencyChanged`, `CommitCheckRejected`,
+An attempt slot is consumed immediately before the catalog materializes one
+complete owned snapshot. If materialization returns `Ready`, that slot continues
+into exactly one `riffdb-runtime` evaluation. If valid lineage expansion returns
+the dependency-sensitive `ResourceLimit`, that slot is consumed even though
+runtime is not entered. Integrity, storage, cancellation, or deadline failures
+are not reclassified as resource faults merely to consume retry budget.
+`DependencyChanged`, `CommitCheckRejected`,
 `MutationPreconditionChanged`, and changed evidence while terminalizing an
 execution fault consume that completed attempt and require full reevaluation.
 Before a next attempt, the coordinator proves the prior transaction aborted,
