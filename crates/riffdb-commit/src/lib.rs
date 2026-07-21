@@ -17,9 +17,12 @@ mod command_index;
 mod command_preparation;
 mod command_records;
 mod command_validation;
+mod idempotency_inspection;
 mod initialization;
 mod outcome;
 mod provenance;
+mod read_only_execution;
+mod read_only_preparation;
 #[cfg(test)]
 mod test_support;
 
@@ -28,8 +31,9 @@ pub use audit_executor::{
     AdministrationAuditAdmissionError, AdministrationAuditCapacityPermit,
     AdministrationAuditExecutionError, AdministrationAuditExecutor, AdministrationAuditReceipt,
     CommandExecutionAdmissionError, CommandExecutionCapacityPermit, CommandExecutionReceipt,
-    CommandExecutor, CoordinatorLifecycleState, CoordinatorShutdownError, CoordinatorStartError,
-    CoordinatorWorkloadCapacity, RunningCommandCoordinator,
+    CommandExecutor, CommandIdempotencyInspector, CoordinatorLifecycleState,
+    CoordinatorShutdownError, CoordinatorStartError, CoordinatorWorkloadCapacity,
+    ReadOnlyExecutionReceipt, RunningCommandCoordinator,
 };
 pub use clock::{
     AdministrationClock, AdministrationClockError, AdmissionClock, AdmissionClockError,
@@ -41,9 +45,16 @@ pub use command_preparation::{
     CommandCancellationHandle, CommandExecutionPreparation, CommandExecutionPreparationError,
     CommandRequestControl,
 };
+pub use idempotency_inspection::{
+    CommandIdempotencyConfirmationError, CommandIdempotencyInspectionError,
+    CommandIdempotencyInspectionErrorKind, CommandIdempotencyInspectionRequest,
+    CommandIdempotencyPlanSelection, InspectedCommandIdempotency,
+};
 pub use initialization::{
     DatabaseInitializationCompletion, DatabaseInitializationDecision,
     DatabaseInitializationExecutor, DatabaseInitializationPermit, InitializedDatabase,
 };
 pub use outcome::{CommittedOutcome, CommittedOutcomeDisposition};
 pub use provenance::{ProvenanceIdSource, ProvenanceIdSourceError};
+pub use read_only_execution::{ReadOnlyExecuted, ReadOnlyExecutionResult};
+pub use read_only_preparation::{ReadOnlyExecutionPreparation, ReadOnlyExecutionPreparationError};
