@@ -194,9 +194,22 @@ impl CapabilityDigestKeyProvider {
         capability_digest(&self.keys[0], token)
     }
 
+    /// Consumes one validated bootstrap token and returns only its checked,
+    /// bounded digest candidates.
+    ///
+    /// The raw token is dropped before this method returns, so downstream
+    /// bootstrap handling cannot retain or recover the bearer credential.
+    #[must_use]
+    pub fn prepare_bootstrap_token(&self, token: RawCapabilityToken) -> BootstrapDigestCandidates {
+        BootstrapDigestCandidates(self.digest_candidates(&token))
+    }
+
     /// Computes every readable-key candidate before any match is selected.
     #[must_use]
-    pub fn digest_candidates(&self, token: &RawCapabilityToken) -> CapabilityDigestCandidates {
+    pub(crate) fn digest_candidates(
+        &self,
+        token: &RawCapabilityToken,
+    ) -> CapabilityDigestCandidates {
         let digests = self
             .keys
             .iter()
@@ -221,7 +234,7 @@ impl fmt::Debug for CapabilityDigestKeyProvider {
 }
 
 /// Bounded capability-token digests for every configured readable key.
-pub struct CapabilityDigestCandidates {
+pub(crate) struct CapabilityDigestCandidates {
     digests: Vec<CapabilityTokenDigest>,
     current: CapabilityTokenDigest,
 }
@@ -229,13 +242,13 @@ pub struct CapabilityDigestCandidates {
 impl CapabilityDigestCandidates {
     /// Returns candidates in exact newest-to-oldest configuration order.
     #[must_use]
-    pub fn as_slice(&self) -> &[CapabilityTokenDigest] {
+    pub(crate) fn as_slice(&self) -> &[CapabilityTokenDigest] {
         &self.digests
     }
 
     /// Returns the candidate produced by the current write key.
     #[must_use]
-    pub const fn current(&self) -> CapabilityTokenDigest {
+    pub(crate) const fn current(&self) -> CapabilityTokenDigest {
         self.current
     }
 }
@@ -245,6 +258,44 @@ impl fmt::Debug for CapabilityDigestCandidates {
         formatter
             .debug_struct("CapabilityDigestCandidates")
             .field("count", &self.digests.len())
+            .field("digests", &"[REDACTED]")
+            .finish()
+    }
+}
+
+/// Checked bootstrap-token digests for every configured readable key.
+///
+/// Values are privately constructed by
+/// [`CapabilityDigestKeyProvider::prepare_bootstrap_token`], deliberately
+/// non-`Clone`, and contain no raw bearer credential.
+///
+/// ```compile_fail
+/// use riffdb_auth::BootstrapDigestCandidates;
+///
+/// fn requires_clone<T: Clone>() {}
+/// requires_clone::<BootstrapDigestCandidates>();
+/// ```
+pub struct BootstrapDigestCandidates(CapabilityDigestCandidates);
+
+impl BootstrapDigestCandidates {
+    /// Returns candidates in exact newest-to-oldest configuration order.
+    #[must_use]
+    pub fn as_slice(&self) -> &[CapabilityTokenDigest] {
+        self.0.as_slice()
+    }
+
+    /// Returns the candidate produced by the current write key.
+    #[must_use]
+    pub const fn current(&self) -> CapabilityTokenDigest {
+        self.0.current()
+    }
+}
+
+impl fmt::Debug for BootstrapDigestCandidates {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("BootstrapDigestCandidates")
+            .field("count", &self.0.digests.len())
             .field("digests", &"[REDACTED]")
             .finish()
     }
@@ -686,6 +737,47 @@ mod tests {
             capability_candidates.current().as_bytes(),
             idempotency_candidates.current().as_bytes()
         );
+    }
+
+    #[test]
+    fn bootstrap_preparation_consumes_token_and_preserves_checked_key_order() {
+        let keys = CapabilityDigestKeyProvider::parse_document(&capability_document(&format!(
+            "7:{KEY_ZERO_TO_31}\n3:{KEY_32_TO_63}\n"
+        )))
+        .expect("valid capability document");
+        let token = RawCapabilityToken::parse_canonical(TOKEN_TEXT).expect("canonical token");
+        let expected = keys.digest_candidates(&token);
+        let expected_current = keys.current_digest(&token);
+
+        let prepared = keys.prepare_bootstrap_token(token);
+
+        assert_eq!(prepared.as_slice(), expected.as_slice());
+        assert_eq!(prepared.current(), expected_current);
+        assert_eq!(prepared.current(), prepared.as_slice()[0]);
+        assert_eq!(prepared.as_slice()[0].key_id().get(), 7);
+        assert_eq!(prepared.as_slice()[1].key_id().get(), 3);
+    }
+
+    #[test]
+    fn bootstrap_preparation_debug_is_redacted_and_value_is_move_only() {
+        fn consume(candidates: BootstrapDigestCandidates) -> (usize, CapabilityTokenDigest) {
+            (candidates.as_slice().len(), candidates.current())
+        }
+
+        let keys = CapabilityDigestKeyProvider::parse_document(&capability_document(&format!(
+            "7:{KEY_ZERO_TO_31}\n3:{KEY_32_TO_63}\n"
+        )))
+        .expect("valid capability document");
+        let token = RawCapabilityToken::parse_canonical(TOKEN_TEXT).expect("canonical token");
+        let prepared = keys.prepare_bootstrap_token(token);
+        let debug = format!("{prepared:?}");
+
+        assert_eq!(
+            debug,
+            "BootstrapDigestCandidates { count: 2, digests: \"[REDACTED]\" }"
+        );
+        assert!(!debug.contains(std::str::from_utf8(TOKEN_TEXT).expect("ASCII token")));
+        assert_eq!(consume(prepared).0, 2);
     }
 
     #[test]
