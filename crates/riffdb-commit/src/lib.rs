@@ -13,6 +13,8 @@ mod clock;
 mod command_admission;
 #[allow(dead_code)] // Private semantic slice consumed by the later command executor.
 mod command_attempt;
+#[allow(dead_code)] // Private semantic slice consumed by the later command executor.
+mod command_index;
 mod command_preparation;
 #[allow(dead_code)] // Private semantic slice consumed by the later command executor.
 mod command_validation;
