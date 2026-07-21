@@ -80,12 +80,33 @@ fn recheck_preparation_matcher_is_exact_and_does_not_expose_retained_values() {
     assert!(preparation_impl.contains("pub fn matches_preparation("));
     assert!(preparation_impl.contains("&self.selected_plan == selected_plan"));
     assert!(preparation_impl.contains("&self.normalized_input == normalized_input"));
+    assert!(preparation_impl.contains("pub fn matches_scope("));
+    assert!(preparation_impl.contains(".lookup_candidates()"));
+    assert!(preparation_impl.contains(".as_slice()"));
+    assert!(preparation_impl.contains(".all(|identity|"));
+    assert!(!preparation_impl.contains("CommandIdempotencyScopeV1"));
+    assert!(!preparation_impl.contains("caller_key_digest"));
+    for exact_comparison in [
+        "identity.database_id() == database_id",
+        "identity.environment() == environment",
+        "identity.tenant_scope() == tenant_scope",
+        "identity.principal_id() == principal_id",
+        "identity.contract_lineage() == contract_lineage",
+        "identity.command_id() == command_id",
+    ] {
+        assert!(
+            preparation_impl.contains(exact_comparison),
+            "scope matcher is missing exact comparison {exact_comparison}"
+        );
+    }
     assert!(!preparation_impl.contains("pub fn selected_plan("));
     assert!(!preparation_impl.contains("pub const fn selected_plan("));
     assert!(!preparation_impl.contains("pub fn normalized_input("));
     assert!(!preparation_impl.contains("pub const fn normalized_input("));
     assert!(!preparation_impl.contains("pub fn original_observation("));
     assert!(!preparation_impl.contains("pub fn prepared_command("));
+    assert!(!preparation_impl.contains("pub fn lookup_candidates("));
+    assert!(!preparation_impl.contains("pub fn current_identity("));
 }
 
 #[test]

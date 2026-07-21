@@ -7,7 +7,10 @@ use riffdb_storage_api::{
     StorageError, StoredAdmissionStateV1, StoredExecutionFailedV1, StoredOutcomeV1,
     StoredPendingAdmissionV1,
 };
-use riffdb_types::{CanonicalInputHash, CanonicalRecord};
+use riffdb_types::{
+    ActorId, CanonicalInputHash, CanonicalRecord, CommandId, ContractLineage, DatabaseId,
+    Environment, TenantScope,
+};
 
 use crate::PreparedCommandIdempotencyV1;
 
@@ -58,6 +61,37 @@ impl PreparedIdempotencyRecheckV1 {
         normalized_input: &CanonicalRecord,
     ) -> bool {
         &self.selected_plan == selected_plan && &self.normalized_input == normalized_input
+    }
+
+    /// Returns whether every retained digest candidate has the expected scope.
+    ///
+    /// Expected values are supplied separately so callers must derive database
+    /// and environment from trusted configuration and authorization-owned facts
+    /// from the exact allow proof. Digest material and retained identities are
+    /// not exposed, and digest-key rotation does not change scope equality.
+    #[must_use]
+    #[allow(clippy::too_many_arguments)]
+    pub fn matches_scope(
+        &self,
+        database_id: DatabaseId,
+        environment: &Environment,
+        tenant_scope: &TenantScope,
+        principal_id: &ActorId,
+        contract_lineage: &ContractLineage,
+        command_id: CommandId,
+    ) -> bool {
+        self.prepared_command
+            .lookup_candidates()
+            .as_slice()
+            .iter()
+            .all(|identity| {
+                identity.database_id() == database_id
+                    && identity.environment() == environment
+                    && identity.tenant_scope() == tenant_scope
+                    && identity.principal_id() == principal_id
+                    && identity.contract_lineage() == contract_lineage
+                    && identity.command_id() == command_id
+            })
     }
 }
 
