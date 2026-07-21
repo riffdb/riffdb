@@ -2,7 +2,7 @@
 
 - **Status:** Accepted
 - **Direction approved:** 2026-07-12
-- **Exact text accepted:** Yes
+- **Exact text accepted:** Yes; dependency graph amended 2026-07-20
 - **Accepted:** 2026-07-13
 - **Requires:** ADR-0004 and ADR-0007 accepted before or in the same governance
   change
@@ -27,6 +27,10 @@ and supersede the narrower earlier wording identified in their sections.
 The maintainer accepted the P1 readiness/composition amendment on 2026-07-13;
 the exact clock, digest-inventory, and WP-130/WP-185 ownership changes below are
 also part of this accepted record.
+
+On 2026-07-20 the maintainer accepted the narrow Tonic 0.14.6 feature-unification
+exception below. It changes no token format, semantic owner, or first-party
+safe-Rust rule.
 
 ## Context
 
@@ -1148,9 +1152,29 @@ licenses, build-script behavior, and external unsafe inventory remain unchanged:
 | `base64` | `=0.22.1`, `default-features = false`, `features = ["alloc"]` | `riffdb-auth` only | strict canonical URL-safe token text |
 | `zeroize` | `=1.8.1`, `default-features = false`, `features = ["alloc"]` | `riffdb-auth` only | owned core secret-buffer cleanup |
 
-All three are licensed `MIT OR Apache-2.0`. Under these features, `base64` and
-`zeroize` have no build script, native code, or transitive dependency. `base64`
-forbids unsafe code. `zeroize` contains localized reviewed unsafe volatile-write
+The accepted WP-130 Tonic graph is an explicit narrow exception to the table's
+`base64` feature statement, not to its direct-owner statement. Every Tonic edge
+uses exact version `=0.14.6` with default features disabled:
+
+| First-party owner/edge | Exact features and companion |
+|---|---|
+| `riffdb-api-grpc` production | `tonic` feature `codegen`; exact `tonic-prost` |
+| `riffdb-api-grpc` build/dev generation | exact `tonic-prost-build` feature `transport` |
+| `riffdb-client-rust` production | `tonic` features `channel`, `codegen`; exact `tonic-prost` |
+| `riffdb-server` production | `tonic` features `router`, `server` |
+
+This graph may feature-unify the one locked `base64 = 0.22.1` instance with
+`std`. `riffdb-auth` remains the sole first-party crate with a direct `base64`
+dependency and the sole owner of token encoding/decoding semantics. API, client,
+server, and generated transport code MUST NOT call `base64` directly. The graph
+admits no second base64 version, TLS, compression, transport-wide production
+feature, new cryptography, or first-party unsafe code. Any such change, any
+version change, or any broader feature requires renewed human dependency review.
+
+All three are licensed `MIT OR Apache-2.0`. In the auth-owned review slice under
+the direct features in the first table, `base64` and `zeroize` have no build
+script, native code, or transitive dependency. `base64` forbids unsafe code.
+`zeroize` contains localized reviewed unsafe volatile-write
 code implementing its cleanup guarantee. `getrandom` contains target-gated
 unsafe operating-system/libc calls and has a build script used only for
 sanitizer and old-Windows configuration detection; version `0.3.4` is already in

@@ -6,7 +6,7 @@
 **Tagline:** *Vibe fast. Commit safely.*  
 **Category:** Contract-first operational database for agent-built applications  
 
-**Version:** 0.16
+**Version:** 0.17
 **Status:** Architecture-approved implementation handoff
 **Date:** 20 July 2026
 **Audience:** Coding agents, database engineers, compiler engineers, security reviewers, and technical product leads  
@@ -52,6 +52,7 @@
 | 0.14 | 2026-07-20 | Applied accepted ADR-0023's exact WP-100 coordinator edge semantics: commit evaluator ownership, bounded full reevaluation, audit-input inversion, provenance attempt recovery, grammar-v1 empty index covered values, commit-check arithmetic classification, absent-target capability revocation, and no-transition control-plane audit classification. |
 | 0.15 | 2026-07-20 | Clarified ADR-0023's audit-input inversion: the consumer view has no field or method for the new audit record's assigned administration sequence, while its checked control-plane result link may carry the sequence of an already-authoritative transition. |
 | 0.16 | 2026-07-20 | Applied the accepted zero-mutation command clarification and direct gRPC public-error carriage: all influential dependencies remain revalidated, only exact nonzero mutation coverage invokes commit checks/index derivation, and WP-130 carries bounded `riffdb.v1.PublicError` bytes directly with closed status/message validation. |
+| 0.17 | 2026-07-20 | Froze the accepted WP-100 command-executor result, error, completion-ownership, and cancellation boundary; and approved the narrow Tonic 0.14.6 dependency graph whose transport-only feature unification enables `base64` 0.22.1 `std` without changing auth's sole direct ownership or admitting TLS, compression, cryptography, or another base64 version. |
 
 ### Normative language
 
@@ -338,7 +339,7 @@ Versions are the verified July 2026 starting point, not a promise to track every
 |---|---|---|
 | Toolchain | Rust 1.97.0 | Workspace toolchain and CI baseline |
 | Async runtime | Tokio 1.52.x | Networking, service tasks, channels, timeouts |
-| gRPC | Tonic 0.14.x | Public RPC server and client |
+| gRPC | Tonic 0.14.6 with crate-specific default-disabled features fixed by ADR-0009 | Public RPC server and client without TLS or compression in the POC |
 | Protobuf | Prost 0.14.x | Wire and durable record generation |
 | Pure-Rust proto compiler | Protox 0.9.x | Build without requiring an external `protoc` executable |
 | Embedded storage | redb 4.1.0, default features disabled, no optional features | POC durable state and atomic commits; direct only in `riffdb-storage-redb` |
@@ -346,7 +347,7 @@ Versions are the verified July 2026 starting point, not a promise to track every
 | Storage comparison | Fjall 3.1.x | POC-exit benchmark and possible MVP engine |
 | MCP SDK | rmcp 2.2.x | Native MCP server, stdio, Streamable HTTP |
 | OS entropy | getrandom 0.3.4, default features disabled, no optional features | Capability/bootstrap identifiers and tokens in `riffdb-auth`, request/capability/agent-session convenience IDs in `riffdb-client-rust`, and injected database/provenance/request/incident/cursor IDs in `riffdb-server`; never command runtime |
-| Base64url | base64 0.22.1, default features disabled, `alloc` only | Canonical capability token text in `riffdb-auth` |
+| Base64url | base64 0.22.1; direct auth edge uses default-disabled `alloc`, while the accepted Tonic graph may unify `std` transitively | Canonical capability token text remains owned only by `riffdb-auth`; transport code has no direct semantic use |
 | Secret cleanup | zeroize 1.8.1, default features disabled, `alloc` only | Owned auth secret buffers; no claim about transport-generated copies |
 | Lexer | Logos 0.16.x | Contract tokenization |
 | Parser | LALRPOP 0.23.x | Contract grammar |
