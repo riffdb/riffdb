@@ -6,6 +6,10 @@
 //! through [`ExpressionValueSource`]; the evaluator owns no clock, storage,
 //! randomness, or process-global state.
 
+mod input_facts;
+
+pub use input_facts::{InputDerivedCommandFacts, derive_input_command_facts};
+
 use std::cmp::Ordering;
 use std::error::Error;
 use std::fmt;
