@@ -892,6 +892,7 @@ pub struct ReadSnapshot {
     root_validations: Vec<EntityObservation>,
     ranges: Vec<IndexRangeObservation>,
     read_dependencies: ReadDependencies,
+    semantic_bytes: usize,
 }
 
 /// Incremental adapter-facing construction of one bounded owned snapshot.
@@ -1044,6 +1045,7 @@ impl<'request> ReadSnapshotBuilder<'request> {
             root_validations: self.root_validations,
             ranges: self.ranges,
             read_dependencies: ReadDependencies(self.dependencies),
+            semantic_bytes: self.semantic_bytes,
         })
     }
 
@@ -1279,6 +1281,7 @@ impl ReadSnapshot {
             root_validations,
             ranges,
             read_dependencies,
+            semantic_bytes: total,
         })
     }
 
@@ -1316,6 +1319,12 @@ impl ReadSnapshot {
     #[must_use]
     pub const fn read_dependencies(&self) -> &ReadDependencies {
         &self.read_dependencies
+    }
+
+    /// Returns the exact checked bytes retained by this owned snapshot.
+    #[must_use]
+    pub const fn semantic_bytes(&self) -> usize {
+        self.semantic_bytes
     }
 
     /// Constructs the transaction-current read request for this exact snapshot.
@@ -1982,7 +1991,8 @@ mod builder_tests {
             .push_binding(final_observation)
             .expect("exact snapshot bound");
         assert_eq!(exact.semantic_bytes, MAX_READ_SNAPSHOT_BYTES);
-        assert!(exact.finish().is_ok());
+        let exact = exact.finish().expect("complete exact snapshot");
+        assert_eq!(exact.semantic_bytes(), MAX_READ_SNAPSHOT_BYTES);
 
         let mut over = ReadSnapshotBuilder::new(&request, None).expect("snapshot builder");
         push_snapshot_bulk(&mut over, &plan, &targets);
