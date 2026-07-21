@@ -6,8 +6,9 @@ use std::num::NonZeroU16;
 
 use riffdb_policy::{
     AgentSessionAdmissionPolicy, AuthorizationClock, AuthorizationClockError,
-    CommandAuthorizationBindingError, CommandExecutionClass, CurrentAuthorizer, Decision,
-    NoopAuthorizationTelemetry, OperationRequest, PolicyCode, UntrustedInvocationClaims,
+    CatalogDeploymentAuthorizationBindingError, CommandAuthorizationBindingError,
+    CommandExecutionClass, CurrentAuthorizer, Decision, NoopAuthorizationTelemetry,
+    OperationRequest, PolicyCode, UntrustedInvocationClaims,
 };
 use riffdb_testkit::authorization::{
     AuthorizationFixture, AuthorizationFixtureConfig, AuthorizationFixtureTimes,
@@ -15,8 +16,9 @@ use riffdb_testkit::authorization::{
 use riffdb_types::{
     ActorId, ActorKind, AgentSessionId, AggregateTypeId, Audience, CapabilityGrantV1,
     CapabilityPermissionKindV1, CapabilityPermissionV1, CapabilityPermissionsV1, CommandId,
-    ContractLineage, ContractVersion, DatabaseId, Environment, PartitionKey, PartitionKeyBuilder,
-    PartitionScopeV1, ProvenanceReason, SourceCommit, SourceRepository, TenantScope, Timestamp,
+    ContractBundleHash, ContractLineage, ContractVersion, DatabaseId, Environment, PartitionKey,
+    PartitionKeyBuilder, PartitionScopeV1, ProvenanceReason, SourceCommit, SourceRepository,
+    TenantScope, Timestamp,
 };
 
 struct FixedClock(Timestamp);
@@ -41,6 +43,10 @@ fn environment() -> Environment {
 
 fn lineage() -> ContractLineage {
     ContractLineage::new("example.command-binding").expect("bounded lineage")
+}
+
+fn bundle_hash(seed: u8) -> ContractBundleHash {
+    ContractBundleHash::from_bytes([seed; 32])
 }
 
 fn partition(value: u64) -> PartitionKey {
@@ -69,6 +75,8 @@ fn fixture(actor_kind: ActorKind, principal_id: &str) -> AuthorizationFixture {
         PartitionScopeV1::All,
         CapabilityPermissionsV1::new(vec![
             CapabilityPermissionV1::InvokeCommand(lineage(), CommandId::first()),
+            CapabilityPermissionV1::unparameterized(CapabilityPermissionKindV1::DeployContract)
+                .expect("unparameterized permission"),
             CapabilityPermissionV1::unparameterized(CapabilityPermissionKindV1::ReadHealth)
                 .expect("unparameterized permission"),
         ])
@@ -173,6 +181,60 @@ fn allow_and_command_proofs_retain_the_exact_authorizer_boundary() {
         .expect("exact command binding");
     assert_eq!(authorized.database_id(), database_id());
     assert_eq!(authorized.environment(), &environment());
+}
+
+#[test]
+fn catalog_deployment_binding_retains_exact_authority_and_rejects_substitution() {
+    let fixture = fixture(ActorKind::Service, "catalog-deployer");
+    let version = ContractVersion::new(7).expect("nonzero version");
+    let expected_active_version = Some(ContractVersion::new(6).expect("nonzero version"));
+    let hash = bundle_hash(0x71);
+    let deployment_request =
+        || OperationRequest::deploy_contract(lineage(), version, hash, expected_active_version);
+
+    let deployment = allowed(authorize(&fixture, deployment_request()).expect("policy decision"))
+        .into_catalog_deployment(&lineage(), version, hash, expected_active_version)
+        .expect("exact deployment binding");
+    assert_eq!(deployment.database_id(), database_id());
+    assert_eq!(deployment.environment(), &environment());
+    assert_eq!(deployment.lineage(), &lineage());
+    assert_eq!(deployment.version(), version);
+    assert_eq!(deployment.bundle_hash(), hash);
+    assert_eq!(
+        deployment.expected_active_version(),
+        expected_active_version
+    );
+    assert_eq!(
+        deployment.authorizing_capability_id(),
+        fixture.authenticated_principal().capability_id()
+    );
+    assert_eq!(
+        deployment.authorizing_revision(),
+        fixture.authenticated_principal().capability_revision()
+    );
+    assert_eq!(deployment.principal_id().as_str(), "catalog-deployer");
+    assert_eq!(deployment.actor_kind(), ActorKind::Service);
+    assert_eq!(deployment.obligations().validated_approval(), None);
+    assert_eq!(
+        format!("{deployment:?}"),
+        "AuthorizedCatalogDeployment([REDACTED])"
+    );
+
+    assert_eq!(
+        allowed(authorize(&fixture, deployment_request()).expect("policy decision"))
+            .into_catalog_deployment(
+                &lineage(),
+                version,
+                bundle_hash(0x72),
+                expected_active_version,
+            ),
+        Err(CatalogDeploymentAuthorizationBindingError::IdentityMismatch)
+    );
+    assert_eq!(
+        allowed(authorize(&fixture, OperationRequest::get_health()).expect("policy decision"),)
+            .into_catalog_deployment(&lineage(), version, hash, expected_active_version),
+        Err(CatalogDeploymentAuthorizationBindingError::OperationMismatch)
+    );
 }
 
 #[test]

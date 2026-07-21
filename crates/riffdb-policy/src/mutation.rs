@@ -3,9 +3,9 @@
 use std::{error::Error, fmt, num::NonZeroU32, num::NonZeroU64};
 
 use riffdb_types::{
-    ActorId, ActorKind, Audience, CapabilityGrantV1, CapabilityId, CapabilityPermissionKindV1,
-    CapabilityPermissionV1, DatabaseId, Environment, PartitionScopeV1, RequestId, TenantScope,
-    Timestamp,
+    ActorId, ActorKind, ApprovalId, Audience, CapabilityGrantV1, CapabilityId,
+    CapabilityPermissionKindV1, CapabilityPermissionV1, DatabaseId, Environment, PartitionScopeV1,
+    RequestId, TenantScope, Timestamp,
 };
 pub use riffdb_types::{
     MAX_CAPABILITY_AUDIENCES, MAX_CAPABILITY_LIFETIME_SECONDS, RevocationReasonCodeV1,
@@ -661,6 +661,7 @@ pub struct AuthorizedCapabilityMutationPreparation {
     authorizing_actor_kind: ActorKind,
     authenticated_audience: Audience,
     authenticated_tenant_scope: TenantScope,
+    validated_approval: Option<ApprovalId>,
     mode: CapabilityDelegationMode,
     mutation: PreparedCapabilityMutation,
 }
@@ -701,6 +702,7 @@ impl AuthorizedCapabilityMutationPreparation {
             authorizing_actor_kind: authenticated_actor_kind,
             authenticated_audience: authenticated_audience.clone(),
             authenticated_tenant_scope: authenticated_tenant_scope.clone(),
+            validated_approval: None,
             mode,
             mutation: PreparedCapabilityMutation::Create {
                 target,
@@ -737,6 +739,7 @@ impl AuthorizedCapabilityMutationPreparation {
             authorizing_actor_kind: authenticated_actor_kind,
             authenticated_audience: authenticated_audience.clone(),
             authenticated_tenant_scope: authenticated_tenant_scope.clone(),
+            validated_approval: None,
             mode,
             mutation: PreparedCapabilityMutation::Revoke { target, reason },
         })
@@ -775,6 +778,7 @@ impl AuthorizedCapabilityMutationPreparation {
             authorizing_actor_kind: authenticated_actor_kind,
             authenticated_audience: authenticated_audience.clone(),
             authenticated_tenant_scope: authenticated_tenant_scope.clone(),
+            validated_approval: None,
             mode: CapabilityDelegationMode::Administrator,
             mutation: PreparedCapabilityMutation::RevokeAbsent { target, reason },
         })
@@ -814,6 +818,16 @@ impl AuthorizedCapabilityMutationPreparation {
     #[must_use]
     pub const fn authenticated_tenant_scope(&self) -> &TenantScope {
         &self.authenticated_tenant_scope
+    }
+
+    /// Borrows the exact validated approval retained for this mutation.
+    ///
+    /// The POC default has no approval provider and therefore always returns
+    /// `None`; approval-required permission paths fail closed before a
+    /// preparation is constructed.
+    #[must_use]
+    pub const fn validated_approval(&self) -> Option<&ApprovalId> {
+        self.validated_approval.as_ref()
     }
 
     /// Returns the exact selected delegation mode.
@@ -1823,6 +1837,59 @@ mod tests {
             100,
             Vec::new(),
         )
+    }
+
+    #[test]
+    fn every_mutation_preparation_retains_exact_authority_without_fabricated_approval() {
+        let create_current = current(ordinary_grant(), vec![audience("grpc")], timestamp(1_000));
+        let create = prepare(
+            &create_current,
+            create_target(0x37, child_grant(), vec![audience("grpc")], 60),
+            timestamp(200),
+        )
+        .expect("create preparation");
+        assert_eq!(
+            create.authorizing_capability_id(),
+            create_current.capability_id()
+        );
+        assert_eq!(create.authorizing_revision(), create_current.revision());
+        assert_eq!(create.validated_approval(), None);
+
+        let revoke_current = current(
+            ordinary_revoke_grant(),
+            vec![audience("grpc")],
+            timestamp(1_000),
+        );
+        let revoke = prepare_revoke(
+            &revoke_current,
+            revoke_target(0x38, child_grant(), vec![audience("grpc")], timestamp(900)),
+            RevocationReasonCodeV1::Requested,
+        )
+        .expect("revoke preparation");
+        assert_eq!(
+            revoke.authorizing_capability_id(),
+            revoke_current.capability_id()
+        );
+        assert_eq!(revoke.authorizing_revision(), revoke_current.revision());
+        assert_eq!(revoke.validated_approval(), None);
+
+        let administrator = current(
+            administrator_grant(),
+            vec![audience("grpc")],
+            timestamp(1_000),
+        );
+        let absent = prepare_absent_revoke(
+            &administrator,
+            absent_revoke_target(0x39),
+            RevocationReasonCodeV1::Requested,
+        )
+        .expect("absent revoke preparation");
+        assert_eq!(
+            absent.authorizing_capability_id(),
+            administrator.capability_id()
+        );
+        assert_eq!(absent.authorizing_revision(), administrator.revision());
+        assert_eq!(absent.validated_approval(), None);
     }
 
     fn administrator_grant() -> CapabilityGrantV1 {
