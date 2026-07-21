@@ -7,12 +7,19 @@
 //! mutation handle, or define a transport-facing service API.
 
 mod audit;
+mod audit_executor;
 mod clock;
 mod initialization;
 mod outcome;
 mod provenance;
 
 pub use audit::{AdministrationAuditInputView, BootstrapCompoundAuditProof};
+pub use audit_executor::{
+    AdministrationAuditAdmissionError, AdministrationAuditCapacityPermit,
+    AdministrationAuditExecutionError, AdministrationAuditExecutor, AdministrationAuditReceipt,
+    CoordinatorLifecycleState, CoordinatorShutdownError, CoordinatorStartError,
+    CoordinatorWorkloadCapacity, RunningCommandCoordinator,
+};
 pub use clock::{
     AdministrationClock, AdministrationClockError, AdmissionClock, AdmissionClockError,
 };

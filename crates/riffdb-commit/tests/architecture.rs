@@ -5,6 +5,7 @@ use std::{fs, path::PathBuf};
 const LOCKFILE: &str = include_str!("../../../Cargo.lock");
 const MANIFEST: &str = include_str!("../Cargo.toml");
 const AUDIT_SOURCE: &str = include_str!("../src/audit.rs");
+const AUDIT_EXECUTOR_SOURCE: &str = include_str!("../src/audit_executor.rs");
 const LIB_SOURCE: &str = include_str!("../src/lib.rs");
 const CLOCK_SOURCE: &str = include_str!("../src/clock.rs");
 const INITIALIZATION_SOURCE: &str = include_str!("../src/initialization.rs");
@@ -204,6 +205,101 @@ fn audit_view_is_borrowed_and_has_no_durable_or_policy_authority() {
             "audit interface crosses forbidden authority through {forbidden}"
         );
     }
+}
+
+#[test]
+fn coordinator_actor_uses_only_the_reviewed_current_thread_channel_surface() {
+    let production_source = AUDIT_EXECUTOR_SOURCE
+        .split_once("#[cfg(test)]\nmod tests {")
+        .map_or(AUDIT_EXECUTOR_SOURCE, |(production, _)| production);
+
+    for required in [
+        "enum CoordinatorMessage",
+        "runtime::Builder::new_current_thread()",
+        "mpsc::channel(channel_capacity)",
+        ".try_reserve_owned()",
+        ".reserve_owned()",
+        "permit.send(CoordinatorMessage::AdministrationAudit",
+        "permit.send(CoordinatorMessage::Shutdown)",
+        "self.receiver.close()",
+        ".store(LIFECYCLE_FENCED, Ordering::Release)",
+        "thread::Builder::new()",
+    ] {
+        assert!(
+            production_source.contains(required),
+            "coordinator actor is missing reviewed mechanism {required}"
+        );
+    }
+    for forbidden in [
+        "new_multi_thread",
+        "tokio::spawn",
+        "tokio::time",
+        "tokio::net",
+        "tokio::fs",
+        "tokio::signal",
+        "SystemTime",
+        "Instant",
+        "getrandom",
+        "rand::",
+        "redb::",
+        "select!",
+        "join!",
+        "spawn!",
+        "std::sync::Mutex",
+        "std::sync::RwLock",
+        "ServiceAuditAppendRepository for",
+    ] {
+        assert!(
+            !production_source.contains(forbidden),
+            "coordinator actor crosses reviewed boundary through {forbidden}"
+        );
+    }
+    assert_eq!(
+        production_source.matches(".append_service_audit(").count(),
+        1,
+        "the private synchronous audit driver must own the sole append call"
+    );
+
+    let shutdown_publication = production_source
+        .split_once("fn initiate_shutdown_after_publication")
+        .expect("shutdown publication implementation")
+        .1
+        .split_once("impl fmt::Debug for RunningCommandCoordinator")
+        .expect("bounded shutdown publication implementation")
+        .0;
+    assert!(
+        shutdown_publication
+            .find(".compare_exchange(")
+            .expect("draining-state publication")
+            < shutdown_publication
+                .find("submission_gate.close()")
+                .expect("shutdown gate close")
+    );
+    let fence_publication = production_source
+        .split_once("fn execute_audit(")
+        .expect("audit execution implementation")
+        .1
+        .split_once("async fn reject_remaining_after_fence")
+        .expect("bounded audit execution implementation")
+        .0;
+    assert!(
+        fence_publication
+            .find(".store(LIFECYCLE_FENCED, Ordering::Release)")
+            .expect("fenced-state publication")
+            < fence_publication
+                .find("submission_gate.close()")
+                .expect("fenced gate close")
+    );
+
+    let drop_body = production_source
+        .split_once("impl Drop for RunningCommandCoordinator {")
+        .and_then(|(_, remainder)| remainder.split_once("\n}"))
+        .map(|(body, _)| body)
+        .expect("running coordinator Drop implementation");
+    assert!(
+        !drop_body.contains(".join()"),
+        "coordinator Drop must initiate shutdown without blocking on a join"
+    );
 }
 
 #[test]
