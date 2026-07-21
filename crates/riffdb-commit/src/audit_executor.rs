@@ -16,6 +16,7 @@ use tokio::runtime;
 use tokio::sync::{mpsc, oneshot};
 
 use riffdb_conflict::ConflictManager;
+use riffdb_idempotency::IdempotencyDigestProvider;
 
 use crate::{
     AdministrationAuditInputView, AdministrationClock, AdministrationClockError, AdmissionClock,
@@ -24,6 +25,13 @@ use crate::{
         CommandExecutionError, CommandExecutionLifecycle, CommandExecutionResult,
         CoordinatorDurability, drive_command_execution,
     },
+    idempotency_inspection::{
+        CommandIdempotencyInspectionError, CommandIdempotencyInspectionRequest,
+        InspectedCommandIdempotency, PreparedCommandIdempotencyInspection,
+        inspect_command_idempotency, prepare_command_idempotency_inspection,
+    },
+    read_only_execution::{ReadOnlyExecutionResult, drive_read_only_execution},
+    read_only_preparation::ReadOnlyExecutionPreparation,
 };
 
 /// Closed safe failure from one service-audit append attempt.
@@ -481,6 +489,33 @@ impl CommandExecutionCapacityPermit {
         drop(submission);
         Ok(CommandExecutionReceipt { receiver })
     }
+
+    /// Synchronously transfers one checked read-only preparation to the actor.
+    ///
+    /// This consumes the same capacity authority and final-authorization
+    /// boundary as a mutating command. The accepted operation creates no
+    /// command admission, provenance, application sequence, or durable outcome.
+    pub fn submit_read_only(
+        mut self,
+        preparation: ReadOnlyExecutionPreparation,
+    ) -> Result<ReadOnlyExecutionReceipt, CommandExecutionAdmissionError> {
+        let submission = self
+            .submission_gate
+            .begin()
+            .ok_or_else(|| command_lifecycle_error(&self.lifecycle))?;
+        ensure_command_accepting(&self.lifecycle)?;
+        let (completion, receiver) = oneshot::channel();
+        let permit = self
+            .permit
+            .take()
+            .expect("move-only command capacity permit is consumed once");
+        let _sender = permit.send(CoordinatorMessage::ReadOnlyCommand {
+            preparation: Box::new(preparation),
+            completion,
+        });
+        drop(submission);
+        Ok(ReadOnlyExecutionReceipt { receiver })
+    }
 }
 
 impl fmt::Debug for CommandExecutionCapacityPermit {
@@ -507,6 +542,99 @@ impl CommandExecutionReceipt {
 impl fmt::Debug for CommandExecutionReceipt {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter.write_str("CommandExecutionReceipt([REDACTED])")
+    }
+}
+
+/// Move-only completion handle for one accepted unjournaled command read.
+#[must_use = "await or deliberately drop the receipt; dropping does not cancel accepted work"]
+pub struct ReadOnlyExecutionReceipt {
+    receiver: oneshot::Receiver<Result<ReadOnlyExecutionResult, CommandExecutionError>>,
+}
+
+impl ReadOnlyExecutionReceipt {
+    /// Waits for the accepted read-only execution to finish.
+    pub async fn completion(self) -> Result<ReadOnlyExecutionResult, CommandExecutionError> {
+        self.receiver
+            .await
+            .unwrap_or_else(|_| Err(CommandExecutionError::coordinator_stopped()))
+    }
+}
+
+impl fmt::Debug for ReadOnlyExecutionReceipt {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("ReadOnlyExecutionReceipt([REDACTED])")
+    }
+}
+
+/// Cloneable least-authority handle for bounded pre-admission inspection.
+///
+/// The handle owns no storage reference. Each call enters the same bounded
+/// actor queue as audit, read, control-plane, and command work so the
+/// application service cannot bypass repository ownership.
+#[derive(Clone)]
+pub struct CommandIdempotencyInspector {
+    sender: mpsc::Sender<CoordinatorMessage>,
+    lifecycle: Arc<AtomicU8>,
+    submission_gate: Arc<SubmissionGate>,
+    digest_provider: Arc<dyn IdempotencyDigestProvider>,
+}
+
+impl CommandIdempotencyInspector {
+    /// Performs one cancellation-safe bounded observation through the actor.
+    ///
+    /// Cancelling before the queue reservation resolves submits no work.
+    /// Cancelling after synchronous submission may discard the response, but
+    /// the actor still completes the read-only observation.
+    pub async fn inspect(
+        &self,
+        request: CommandIdempotencyInspectionRequest,
+    ) -> Result<InspectedCommandIdempotency, CommandIdempotencyInspectionError> {
+        let lifecycle = ActorLifecyclePublisher {
+            lifecycle: Arc::clone(&self.lifecycle),
+            submission_gate: Arc::clone(&self.submission_gate),
+        };
+        let preparation = prepare_command_idempotency_inspection(
+            self.digest_provider.as_ref(),
+            &lifecycle,
+            request,
+        )?;
+        ensure_idempotency_inspection_accepting(&self.lifecycle)?;
+        let permit = self
+            .sender
+            .clone()
+            .reserve_owned()
+            .await
+            .map_err(|_| idempotency_inspection_lifecycle_error(&self.lifecycle))?;
+        if self.submission_gate.is_closed() {
+            drop(permit);
+            return Err(idempotency_inspection_lifecycle_error(&self.lifecycle));
+        }
+        let submission = self
+            .submission_gate
+            .begin()
+            .ok_or_else(|| idempotency_inspection_lifecycle_error(&self.lifecycle))?;
+        ensure_idempotency_inspection_accepting(&self.lifecycle)?;
+        let (completion, receiver) = oneshot::channel();
+        let _sender = permit.send(CoordinatorMessage::IdempotencyInspection {
+            preparation: Box::new(preparation),
+            completion,
+        });
+        drop(submission);
+        receiver
+            .await
+            .unwrap_or_else(|_| Err(CommandIdempotencyInspectionError::coordinator_stopped()))
+    }
+
+    /// Returns the current process-local coordinator lifecycle.
+    #[must_use]
+    pub fn lifecycle_state(&self) -> CoordinatorLifecycleState {
+        lifecycle_state(&self.lifecycle)
+    }
+}
+
+impl fmt::Debug for CommandIdempotencyInspector {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("CommandIdempotencyInspector([REDACTED])")
     }
 }
 
@@ -601,9 +729,9 @@ impl RunningCommandCoordinator {
                 submission_gate: Arc::clone(&submission_gate),
             },
             command_executor: CommandExecutor {
-                sender,
-                lifecycle,
-                submission_gate,
+                sender: sender.clone(),
+                lifecycle: Arc::clone(&lifecycle),
+                submission_gate: Arc::clone(&submission_gate),
             },
             shutdown_permit: Some(shutdown_permit),
             actor_thread: Some(actor_thread),
@@ -636,6 +764,20 @@ impl RunningCommandCoordinator {
     #[must_use]
     pub fn command_executor(&self) -> CommandExecutor {
         self.command_executor.clone()
+    }
+
+    /// Returns a cloneable handle for bounded idempotency plan selection.
+    #[must_use]
+    pub fn command_idempotency_inspector(
+        &self,
+        digest_provider: Arc<dyn IdempotencyDigestProvider>,
+    ) -> CommandIdempotencyInspector {
+        CommandIdempotencyInspector {
+            sender: self.command_executor.sender.clone(),
+            lifecycle: Arc::clone(&self.command_executor.lifecycle),
+            submission_gate: Arc::clone(&self.command_executor.submission_gate),
+            digest_provider,
+        }
     }
 
     /// Stops admission, drains accepted work, and joins the dedicated actor thread.
@@ -698,6 +840,15 @@ enum CoordinatorMessage {
         preparation: Box<CommandExecutionPreparation>,
         completion: oneshot::Sender<Result<CommandExecutionResult, CommandExecutionError>>,
     },
+    ReadOnlyCommand {
+        preparation: Box<ReadOnlyExecutionPreparation>,
+        completion: oneshot::Sender<Result<ReadOnlyExecutionResult, CommandExecutionError>>,
+    },
+    IdempotencyInspection {
+        preparation: Box<PreparedCommandIdempotencyInspection>,
+        completion:
+            oneshot::Sender<Result<InspectedCommandIdempotency, CommandIdempotencyInspectionError>>,
+    },
     Shutdown,
 }
 
@@ -712,6 +863,16 @@ trait CoordinatorActorOperations: Send {
 
     fn drive_command(&mut self, preparation: CommandExecutionPreparation)
     -> LocalCommandFuture<'_>;
+
+    fn inspect_idempotency(
+        &mut self,
+        preparation: PreparedCommandIdempotencyInspection,
+    ) -> Result<InspectedCommandIdempotency, CommandIdempotencyInspectionError>;
+
+    fn drive_read_only(
+        &mut self,
+        preparation: ReadOnlyExecutionPreparation,
+    ) -> Result<ReadOnlyExecutionResult, CommandExecutionError>;
 }
 
 struct ProductionCoordinatorOperations<Repository> {
@@ -758,6 +919,32 @@ where
             preparation,
         ))
     }
+
+    fn inspect_idempotency(
+        &mut self,
+        preparation: PreparedCommandIdempotencyInspection,
+    ) -> Result<InspectedCommandIdempotency, CommandIdempotencyInspectionError> {
+        inspect_command_idempotency(&self.repository, &self.lifecycle, preparation)
+    }
+
+    fn drive_read_only(
+        &mut self,
+        preparation: ReadOnlyExecutionPreparation,
+    ) -> Result<ReadOnlyExecutionResult, CommandExecutionError> {
+        match drive_read_only_execution(
+            &self.repository,
+            self.admission_clock.as_ref(),
+            preparation,
+        ) {
+            Ok(result) => Ok(result),
+            Err(error) => {
+                if error.requires_readiness_stop() {
+                    self.lifecycle.stop();
+                }
+                Err(CommandExecutionError::from_read_only(error))
+            }
+        }
+    }
 }
 
 #[cfg(test)]
@@ -782,6 +969,20 @@ where
 
     fn drive_command(&mut self, _: CommandExecutionPreparation) -> LocalCommandFuture<'_> {
         Box::pin(async { Err(CommandExecutionError::coordinator_stopped()) })
+    }
+
+    fn inspect_idempotency(
+        &mut self,
+        _: PreparedCommandIdempotencyInspection,
+    ) -> Result<InspectedCommandIdempotency, CommandIdempotencyInspectionError> {
+        Err(CommandIdempotencyInspectionError::coordinator_stopped())
+    }
+
+    fn drive_read_only(
+        &mut self,
+        _: ReadOnlyExecutionPreparation,
+    ) -> Result<ReadOnlyExecutionResult, CommandExecutionError> {
+        Err(CommandExecutionError::coordinator_stopped())
     }
 }
 
@@ -839,6 +1040,24 @@ impl CommandCoordinatorActor {
                         break;
                     }
                 }
+                CoordinatorMessage::ReadOnlyCommand {
+                    preparation,
+                    completion,
+                } => {
+                    self.execute_read_only(*preparation, completion);
+                    if self.reject_after_published_terminal_state().await {
+                        break;
+                    }
+                }
+                CoordinatorMessage::IdempotencyInspection {
+                    preparation,
+                    completion,
+                } => {
+                    self.execute_idempotency_inspection(*preparation, completion);
+                    if self.reject_after_published_terminal_state().await {
+                        break;
+                    }
+                }
                 CoordinatorMessage::Shutdown => {
                     self.receiver.close();
                     while let Some(message) = self.receiver.recv().await {
@@ -855,6 +1074,24 @@ impl CommandCoordinatorActor {
                                 completion,
                             } => {
                                 self.execute_command(*preparation, completion).await;
+                                if self.reject_after_published_terminal_state().await {
+                                    return;
+                                }
+                            }
+                            CoordinatorMessage::ReadOnlyCommand {
+                                preparation,
+                                completion,
+                            } => {
+                                self.execute_read_only(*preparation, completion);
+                                if self.reject_after_published_terminal_state().await {
+                                    return;
+                                }
+                            }
+                            CoordinatorMessage::IdempotencyInspection {
+                                preparation,
+                                completion,
+                            } => {
+                                self.execute_idempotency_inspection(*preparation, completion);
                                 if self.reject_after_published_terminal_state().await {
                                     return;
                                 }
@@ -899,6 +1136,26 @@ impl CommandCoordinatorActor {
         let _receiver_may_be_dropped = completion.send(result);
     }
 
+    fn execute_read_only(
+        &mut self,
+        preparation: ReadOnlyExecutionPreparation,
+        completion: oneshot::Sender<Result<ReadOnlyExecutionResult, CommandExecutionError>>,
+    ) {
+        let result = self.operations.drive_read_only(preparation);
+        let _receiver_may_be_dropped = completion.send(result);
+    }
+
+    fn execute_idempotency_inspection(
+        &mut self,
+        preparation: PreparedCommandIdempotencyInspection,
+        completion: oneshot::Sender<
+            Result<InspectedCommandIdempotency, CommandIdempotencyInspectionError>,
+        >,
+    ) {
+        let result = self.operations.inspect_idempotency(preparation);
+        let _receiver_may_be_dropped = completion.send(result);
+    }
+
     async fn reject_after_published_terminal_state(&mut self) -> bool {
         match lifecycle_state(&self.lifecycle.lifecycle) {
             CoordinatorLifecycleState::Fenced => {
@@ -926,6 +1183,14 @@ impl CommandCoordinatorActor {
                     let _receiver_may_be_dropped =
                         completion.send(Err(CommandExecutionError::coordinator_fenced()));
                 }
+                CoordinatorMessage::ReadOnlyCommand { completion, .. } => {
+                    let _receiver_may_be_dropped =
+                        completion.send(Err(CommandExecutionError::coordinator_fenced()));
+                }
+                CoordinatorMessage::IdempotencyInspection { completion, .. } => {
+                    let _receiver_may_be_dropped = completion
+                        .send(Err(CommandIdempotencyInspectionError::coordinator_fenced()));
+                }
                 CoordinatorMessage::Shutdown => {}
             }
         }
@@ -941,6 +1206,14 @@ impl CommandCoordinatorActor {
                 CoordinatorMessage::Command { completion, .. } => {
                     let _receiver_may_be_dropped =
                         completion.send(Err(CommandExecutionError::coordinator_stopped()));
+                }
+                CoordinatorMessage::ReadOnlyCommand { completion, .. } => {
+                    let _receiver_may_be_dropped =
+                        completion.send(Err(CommandExecutionError::coordinator_stopped()));
+                }
+                CoordinatorMessage::IdempotencyInspection { completion, .. } => {
+                    let _receiver_may_be_dropped = completion
+                        .send(Err(CommandIdempotencyInspectionError::coordinator_stopped()));
                 }
                 CoordinatorMessage::Shutdown => {}
             }
@@ -1048,6 +1321,31 @@ fn command_lifecycle_error(lifecycle: &AtomicU8) -> CommandExecutionAdmissionErr
         LIFECYCLE_FENCED => CommandExecutionAdmissionError::Fenced,
         LIFECYCLE_ACCEPTING | LIFECYCLE_STOPPED => CommandExecutionAdmissionError::Stopped,
         _ => CommandExecutionAdmissionError::Stopped,
+    }
+}
+
+fn ensure_idempotency_inspection_accepting(
+    lifecycle: &AtomicU8,
+) -> Result<(), CommandIdempotencyInspectionError> {
+    match lifecycle.load(Ordering::Acquire) {
+        LIFECYCLE_ACCEPTING => Ok(()),
+        LIFECYCLE_FENCED => Err(CommandIdempotencyInspectionError::coordinator_fenced()),
+        LIFECYCLE_DRAINING | LIFECYCLE_STOPPED => {
+            Err(CommandIdempotencyInspectionError::coordinator_stopped())
+        }
+        _ => Err(CommandIdempotencyInspectionError::coordinator_stopped()),
+    }
+}
+
+fn idempotency_inspection_lifecycle_error(
+    lifecycle: &AtomicU8,
+) -> CommandIdempotencyInspectionError {
+    match lifecycle.load(Ordering::Acquire) {
+        LIFECYCLE_FENCED => CommandIdempotencyInspectionError::coordinator_fenced(),
+        LIFECYCLE_ACCEPTING | LIFECYCLE_DRAINING | LIFECYCLE_STOPPED => {
+            CommandIdempotencyInspectionError::coordinator_stopped()
+        }
+        _ => CommandIdempotencyInspectionError::coordinator_stopped(),
     }
 }
 

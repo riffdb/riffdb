@@ -39,6 +39,7 @@ use crate::{
         CheckedCandidateDecision, CommandCandidateChainStart, TransactionCurrentAttemptDecision,
         begin_bound_command_candidate, validate_checked_transaction_current,
     },
+    read_only_execution::{ReadOnlyExecutionCoreError, ReadOnlyExecutionCoreErrorKind},
 };
 
 /// Explicit production durability selected when the coordinator is constructed.
@@ -140,6 +141,7 @@ enum CommandExecutionErrorDetail {
     Conflict(ConflictError),
     AdmissionClock(AdmissionClockError),
     ProvenanceSource(ProvenanceIdSourceError),
+    ReadOnly(ReadOnlyExecutionCoreError),
 }
 
 impl CommandExecutionError {
@@ -155,6 +157,25 @@ impl CommandExecutionError {
 
     pub(super) const fn coordinator_fenced() -> Self {
         Self::without_detail(CommandExecutionErrorKind::CoordinatorFenced)
+    }
+
+    pub(super) fn from_read_only(error: ReadOnlyExecutionCoreError) -> Self {
+        let kind = match error.kind() {
+            ReadOnlyExecutionCoreErrorKind::Cancelled => CommandExecutionErrorKind::Cancelled,
+            ReadOnlyExecutionCoreErrorKind::DeadlineExceeded => {
+                CommandExecutionErrorKind::DeadlineExceeded
+            }
+            ReadOnlyExecutionCoreErrorKind::StorageUnavailable => {
+                CommandExecutionErrorKind::StorageUnavailable
+            }
+            ReadOnlyExecutionCoreErrorKind::InternalDefect => {
+                CommandExecutionErrorKind::InternalDefect
+            }
+        };
+        Self {
+            kind,
+            detail: CommandExecutionErrorDetail::ReadOnly(error),
+        }
     }
 
     const fn without_detail(kind: CommandExecutionErrorKind) -> Self {
