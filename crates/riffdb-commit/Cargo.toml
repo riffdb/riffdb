@@ -9,9 +9,19 @@ publish.workspace = true
 default = []
 
 [dependencies]
+riffdb-catalog = { version = "0.1.0", path = "../riffdb-catalog", default-features = false }
+riffdb-conflict = { version = "0.1.0", path = "../riffdb-conflict", default-features = false }
+riffdb-contract-ir = { version = "0.1.0", path = "../riffdb-contract-ir", default-features = false }
+riffdb-idempotency = { version = "0.1.0", path = "../riffdb-idempotency", default-features = false }
+riffdb-invariant = { version = "0.1.0", path = "../riffdb-invariant", default-features = false }
+riffdb-policy = { version = "0.1.0", path = "../riffdb-policy", default-features = false }
 riffdb-storage-api = { version = "0.1.0", path = "../riffdb-storage-api", default-features = false }
 riffdb-types = { version = "0.1.0", path = "../riffdb-types", default-features = false }
 tokio = { version = "=1.52.0", default-features = false, features = ["rt", "sync"] }
+
+[dev-dependencies]
+riffdb-contract-compiler = { version = "0.1.0", path = "../riffdb-contract-compiler", default-features = false }
+riffdb-testkit = { version = "0.1.0", path = "../riffdb-testkit", default-features = false }
 
 [lints]
 workspace = true

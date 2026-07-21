@@ -6,6 +6,7 @@ const LOCKFILE: &str = include_str!("../../../Cargo.lock");
 const MANIFEST: &str = include_str!("../Cargo.toml");
 const AUDIT_SOURCE: &str = include_str!("../src/audit.rs");
 const AUDIT_EXECUTOR_SOURCE: &str = include_str!("../src/audit_executor.rs");
+const COMMAND_PREPARATION_SOURCE: &str = include_str!("../src/command_preparation.rs");
 const LIB_SOURCE: &str = include_str!("../src/lib.rs");
 const CLOCK_SOURCE: &str = include_str!("../src/clock.rs");
 const INITIALIZATION_SOURCE: &str = include_str!("../src/initialization.rs");
@@ -43,15 +44,42 @@ fn production_dependency_owners(dependency: &str) -> Vec<String> {
     owners
 }
 
-#[test]
-fn manifest_has_only_the_foundational_dependencies_needed_by_this_slice() {
-    let dependency_names = MANIFEST
+fn manifest_section(header: &str) -> &str {
+    MANIFEST
+        .split_once(header)
+        .map(|(_, remainder)| remainder)
+        .and_then(|remainder| remainder.split_once("\n[").map(|(section, _)| section))
+        .unwrap_or_else(|| panic!("manifest section {header}"))
+}
+
+fn riffdb_dependencies(section: &str) -> Vec<&str> {
+    section
         .lines()
         .filter_map(|line| line.split_once(" = ").map(|(name, _)| name))
         .filter(|name| name.starts_with("riffdb-"))
-        .collect::<Vec<_>>();
+        .collect()
+}
 
-    assert_eq!(dependency_names, vec!["riffdb-storage-api", "riffdb-types"]);
+#[test]
+fn manifest_has_only_the_reviewed_dependencies_needed_by_commit_orchestration() {
+    let production = manifest_section("[dependencies]\n");
+    assert_eq!(
+        riffdb_dependencies(production),
+        vec![
+            "riffdb-catalog",
+            "riffdb-conflict",
+            "riffdb-contract-ir",
+            "riffdb-idempotency",
+            "riffdb-invariant",
+            "riffdb-policy",
+            "riffdb-storage-api",
+            "riffdb-types",
+        ]
+    );
+    assert_eq!(
+        riffdb_dependencies(manifest_section("[dev-dependencies]\n")),
+        vec!["riffdb-contract-compiler", "riffdb-testkit"]
+    );
 
     for forbidden in [
         "riffdb-service",
@@ -61,11 +89,10 @@ fn manifest_has_only_the_foundational_dependencies_needed_by_this_slice() {
         "riffdb-storage-memory",
         "riffdb-storage-redb",
         "riffdb-runtime",
-        "riffdb-conflict",
-        "riffdb-idempotency",
-        "riffdb-catalog",
-        "riffdb-policy",
         "riffdb-auth",
+        "riffdb-contract-compiler",
+        "riffdb-contract-syntax",
+        "riffdb-testkit",
         "tonic",
         "rmcp",
         "redb",
@@ -74,17 +101,119 @@ fn manifest_has_only_the_foundational_dependencies_needed_by_this_slice() {
         "uuid",
     ] {
         assert!(
-            !MANIFEST.contains(forbidden),
-            "commit manifest contains forbidden dependency {forbidden}"
+            !production.contains(forbidden),
+            "commit production manifest contains forbidden dependency {forbidden}"
         );
     }
 
     assert_eq!(
-        MANIFEST.lines().find(|line| line.starts_with("tokio =")),
+        production.lines().find(|line| line.starts_with("tokio =")),
         Some(
             "tokio = { version = \"=1.52.0\", default-features = false, features = [\"rt\", \"sync\"] }"
         ),
         "Tokio must retain the exact reviewed current-thread channel feature graph"
+    );
+}
+
+#[test]
+fn command_preparation_is_a_move_only_exact_join_without_ambient_authority() {
+    let production_source = COMMAND_PREPARATION_SOURCE
+        .split_once("#[cfg(test)]")
+        .map_or(COMMAND_PREPARATION_SOURCE, |(production, _)| production);
+    for required in [
+        "pub struct CommandCancellationHandle",
+        "pub fn cancel(&self)",
+        "pub struct CommandRequestControl",
+        "deadline: Instant",
+        "cancellation: CancellationToken",
+        "pub fn new(deadline: Instant) -> (Self, CommandCancellationHandle)",
+        "let cancellation = CancellationToken::new()",
+        "pub struct CommandExecutionPreparation",
+        "let Some(idempotency_field) = plan.idempotency_input()",
+        "idempotency.matches_preparation(reference, &normalized_input, idempotency_field)",
+        "input_facts.matches_command(plan, &normalized_input)",
+        "authorization.lineage() != reference.contract_lineage()",
+        "authorization.version() != reference.contract_version()",
+        "authorization.command_id() != reference.command_id()",
+        "authorization.database_id() != database_id",
+        "authorization.environment() != environment",
+        "plan.execution_class() != ExecutionClass::IdempotentMutation",
+        "authorization.class() != CommandExecutionClass::Mutation",
+        "authorization.partition().lineage() != reference.contract_lineage()",
+        "authorization.partition().partition_key() != input_facts.partition_key()",
+        "idempotency.matches_scope(",
+        "authorization.actor().tenant_scope()",
+        "authorization.actor().principal_id()",
+        "pub(crate) fn into_parts(self) -> CommandExecutionPreparationParts",
+        "pub struct CommandExecutionPreparationError",
+        "_private: ()",
+    ] {
+        assert!(
+            production_source.contains(required),
+            "command preparation is missing reviewed mechanism {required}"
+        );
+    }
+
+    for forbidden in [
+        "Instant::now",
+        "SystemTime",
+        ".is_cancelled()",
+        "Serialize",
+        "Deserialize",
+        "prost::",
+        "StorageEngine",
+        "AdmissionRepository",
+        "CommitIntent",
+        "pub fn deadline(",
+        "pub fn cancellation(",
+        "pub fn request_id(",
+        "pub fn resolved_plan(",
+        "pub fn normalized_input(",
+        "pub enum CommandExecutionPreparationError",
+        "IdempotencyBindingMismatch",
+        "IdempotencyScopeMismatch",
+        "InputFactsBindingMismatch",
+        "AuthorizationBindingMismatch",
+        "ExecutionClassMismatch",
+        "PartitionBindingMismatch",
+        "pub fn new(deadline: Instant, cancellation:",
+    ] {
+        assert!(
+            !production_source.contains(forbidden),
+            "command preparation crosses reviewed boundary through {forbidden}"
+        );
+    }
+
+    let control = production_source
+        .split_once("pub struct CommandRequestControl {")
+        .and_then(|(_, remainder)| remainder.split_once("\n}"))
+        .map(|(body, _)| body)
+        .expect("request-control body");
+    let preparation = production_source
+        .split_once("pub struct CommandExecutionPreparation {")
+        .and_then(|(_, remainder)| remainder.split_once("\n}"))
+        .map(|(body, _)| body)
+        .expect("preparation body");
+    let cancellation_handle = production_source
+        .split_once("pub struct CommandCancellationHandle {")
+        .and_then(|(_, remainder)| remainder.split_once("\n}"))
+        .map(|(body, _)| body)
+        .expect("cancellation-handle body");
+    assert!(
+        !cancellation_handle.contains("pub "),
+        "cancellation-handle fields must remain private"
+    );
+    assert!(
+        !control.contains("pub "),
+        "request-control fields must remain private"
+    );
+    assert!(
+        !preparation.contains("pub "),
+        "preparation retained fields must remain private"
+    );
+    assert!(
+        !LIB_SOURCE.contains("CancellationToken"),
+        "commit must not re-export the conflict-manager cancellation type"
     );
 }
 

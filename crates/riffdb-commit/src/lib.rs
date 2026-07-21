@@ -9,6 +9,7 @@
 mod audit;
 mod audit_executor;
 mod clock;
+mod command_preparation;
 mod initialization;
 mod outcome;
 mod provenance;
@@ -22,6 +23,10 @@ pub use audit_executor::{
 };
 pub use clock::{
     AdministrationClock, AdministrationClockError, AdmissionClock, AdmissionClockError,
+};
+pub use command_preparation::{
+    CommandCancellationHandle, CommandExecutionPreparation, CommandExecutionPreparationError,
+    CommandRequestControl,
 };
 pub use initialization::{
     DatabaseInitializationCompletion, DatabaseInitializationDecision,
