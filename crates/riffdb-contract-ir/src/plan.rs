@@ -4,7 +4,10 @@ use std::collections::BTreeSet;
 
 use riffdb_types::{
     AggregateTypeId, CommandId, ContractLineage, ContractVersion, EntityTypeId, EventTypeId,
-    FieldId, InvariantId, MAX_COMMAND_CONFLICT_KEYS_V1, OutcomeId, PlanHash,
+    FieldId, IndexId, InvariantId, MAX_COMMAND_AFFECTED_INDEX_PREFIXES_V1,
+    MAX_COMMAND_CONFLICT_KEYS_V1, MAX_COMMAND_INDEX_DELTAS_V1,
+    MAX_COMMAND_READ_STATE_SEMANTIC_BYTES_V1, MAX_COMMAND_VALIDATION_TARGETS_V1, OutcomeId,
+    PlanHash,
 };
 
 use crate::{
@@ -885,6 +888,13 @@ impl CommandPlan {
             });
         }
 
+        validate_worst_case_index_derivation(
+            &bindings,
+            &root_validation_reads,
+            &instructions,
+            contract_schema,
+        )?;
+
         let mut plan = Self {
             command_id,
             name,
@@ -996,6 +1006,183 @@ impl CommandPlan {
     pub const fn plan_hash(&self) -> PlanHash {
         self.plan_hash
     }
+}
+
+// Closed v1 storage framing charges are repeated here to preserve the
+// IR/storage dependency direction.
+const INDEX_PREFIX_TARGET_FIXED_SEMANTIC_BYTES_V1: usize = 14;
+const AFFECTED_EPOCH_CURRENT_FIXED_SEMANTIC_BYTES_V1: usize = 4;
+const MAX_INDEX_EPOCH_POSITION_SEMANTIC_BYTES_V1: usize = 9;
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct WorstCaseIndexDerivation {
+    index_entry_deltas: usize,
+    affected_prefixes: usize,
+    affected_target_bytes: usize,
+}
+
+fn validate_worst_case_index_derivation(
+    bindings: &[BindingPlan],
+    root_validation_reads: &[RootValidationReadPlan],
+    instructions: &[Instruction],
+    schema: &SchemaIr,
+) -> Result<(), IrValidationError> {
+    let derivation = worst_case_index_derivation(bindings, instructions, schema)?;
+    validate_worst_case_index_limits(derivation, bindings.len(), root_validation_reads.len())
+}
+
+fn worst_case_index_derivation(
+    bindings: &[BindingPlan],
+    instructions: &[Instruction],
+    schema: &SchemaIr,
+) -> Result<WorstCaseIndexDerivation, IrValidationError> {
+    let mut assigned_fields = vec![BTreeSet::new(); bindings.len()];
+    for instruction in instructions {
+        if let Instruction::SetField { binding, field, .. } = instruction {
+            assigned_fields
+                .get_mut(binding.get() as usize)
+                .ok_or(IrValidationError::InvalidReference {
+                    kind: "instruction binding",
+                })?
+                .insert(*field);
+        }
+    }
+
+    let mut index_entry_deltas = 0usize;
+    let mut non_whole_prefixes = 0usize;
+    let mut non_whole_prefix_bytes = 0usize;
+    let mut affected_indexes = BTreeSet::<IndexId>::new();
+
+    for (binding, assigned) in bindings.iter().zip(&assigned_fields) {
+        if binding.mode == BindingMode::Read {
+            continue;
+        }
+        let entity =
+            schema
+                .entity(binding.entity_type)
+                .ok_or(IrValidationError::InvalidReference {
+                    kind: "binding entity",
+                })?;
+        for index in entity.indexes() {
+            let earliest_changed_component = match binding.mode {
+                BindingMode::Read => continue,
+                BindingMode::Create => None,
+                BindingMode::Mutate => {
+                    let Some(position) = index
+                        .fields()
+                        .iter()
+                        .position(|field| assigned.contains(field))
+                    else {
+                        continue;
+                    };
+                    Some(position)
+                }
+            };
+
+            let entry_delta = if binding.mode == BindingMode::Create {
+                1
+            } else {
+                2
+            };
+            index_entry_deltas = checked_index_derivation_add(index_entry_deltas, entry_delta)?;
+            affected_indexes.insert(index.id());
+
+            let mut cumulative_component_bytes = 0usize;
+            for (position, component) in index.key_schema().components().iter().enumerate() {
+                cumulative_component_bytes = checked_index_derivation_add(
+                    cumulative_component_bytes,
+                    component.maximum_payload_bytes(),
+                )?;
+                let prefix_bytes = checked_index_derivation_add(
+                    INDEX_PREFIX_TARGET_FIXED_SEMANTIC_BYTES_V1,
+                    cumulative_component_bytes,
+                )?;
+                let copies =
+                    if earliest_changed_component.is_some_and(|earliest| position >= earliest) {
+                        2
+                    } else {
+                        1
+                    };
+                non_whole_prefixes = checked_index_derivation_add(non_whole_prefixes, copies)?;
+                non_whole_prefix_bytes = checked_index_derivation_add(
+                    non_whole_prefix_bytes,
+                    checked_index_derivation_mul(prefix_bytes, copies)?,
+                )?;
+            }
+        }
+    }
+
+    let affected_prefixes =
+        checked_index_derivation_add(non_whole_prefixes, affected_indexes.len())?;
+    let affected_target_bytes = checked_index_derivation_add(
+        non_whole_prefix_bytes,
+        checked_index_derivation_mul(
+            affected_indexes.len(),
+            INDEX_PREFIX_TARGET_FIXED_SEMANTIC_BYTES_V1,
+        )?,
+    )?;
+    Ok(WorstCaseIndexDerivation {
+        index_entry_deltas,
+        affected_prefixes,
+        affected_target_bytes,
+    })
+}
+
+fn validate_worst_case_index_limits(
+    derivation: WorstCaseIndexDerivation,
+    binding_count: usize,
+    root_validation_read_count: usize,
+) -> Result<(), IrValidationError> {
+    checked_len(
+        "command worst-case index entry deltas",
+        derivation.index_entry_deltas,
+        MAX_COMMAND_INDEX_DELTAS_V1,
+    )?;
+    checked_len(
+        "command worst-case affected index prefixes",
+        derivation.affected_prefixes,
+        MAX_COMMAND_AFFECTED_INDEX_PREFIXES_V1,
+    )?;
+
+    let validation_targets = checked_index_derivation_add(
+        checked_index_derivation_add(binding_count, root_validation_read_count)?,
+        derivation.affected_prefixes,
+    )?;
+    checked_len(
+        "command worst-case validation targets",
+        validation_targets,
+        MAX_COMMAND_VALIDATION_TARGETS_V1,
+    )?;
+
+    let affected_epoch_state_bytes = checked_index_derivation_add(
+        checked_index_derivation_add(
+            AFFECTED_EPOCH_CURRENT_FIXED_SEMANTIC_BYTES_V1,
+            derivation.affected_target_bytes,
+        )?,
+        checked_index_derivation_mul(
+            derivation.affected_prefixes,
+            MAX_INDEX_EPOCH_POSITION_SEMANTIC_BYTES_V1,
+        )?,
+    )?;
+    checked_len(
+        "command worst-case affected epoch state bytes",
+        affected_epoch_state_bytes,
+        MAX_COMMAND_READ_STATE_SEMANTIC_BYTES_V1,
+    )
+}
+
+fn checked_index_derivation_add(left: usize, right: usize) -> Result<usize, IrValidationError> {
+    left.checked_add(right)
+        .ok_or(IrValidationError::SizeOverflow {
+            kind: "command worst-case index derivation",
+        })
+}
+
+fn checked_index_derivation_mul(left: usize, right: usize) -> Result<usize, IrValidationError> {
+    left.checked_mul(right)
+        .ok_or(IrValidationError::SizeOverflow {
+            kind: "command worst-case index derivation",
+        })
 }
 
 fn validate_declared_constructions(
@@ -2501,6 +2688,126 @@ pub(crate) mod tests {
         ContractLineage::new("PlanFixture").expect("lineage")
     }
 
+    fn index_estimator_derivation(
+        mode: BindingMode,
+        assigned_fields: &[FieldId],
+        binding_count: usize,
+    ) -> WorstCaseIndexDerivation {
+        let entity_id = EntityTypeId::first();
+        let index_id = IndexId::first();
+        let key_field = FieldId::first();
+        let first_index_field = FieldId::new(2).expect("field");
+        let middle_index_field = FieldId::new(3).expect("field");
+        let last_index_field = FieldId::new(4).expect("field");
+        let unrelated_field = FieldId::new(5).expect("field");
+        let component =
+            crate::KeyComponentSchema::new(crate::ValueType::u64(), vec![]).expect("component");
+        let entity_key = KeySchema::new(KeyPurpose::Entity(entity_id), vec![component.clone()])
+            .expect("entity key");
+        let index = crate::IndexSchema::new(
+            index_id,
+            "by_components",
+            vec![first_index_field, middle_index_field, last_index_field],
+            KeySchema::index(
+                index_id,
+                entity_id,
+                vec![component.clone(), component.clone(), component],
+                entity_key.clone(),
+            )
+            .expect("index key"),
+        )
+        .expect("index");
+        let entity = crate::EntitySchema::new(
+            entity_id,
+            "Row",
+            RecordSchema::new(
+                RecordTypeRef::Entity(entity_id),
+                vec![
+                    FieldSchema::new(key_field, "id", crate::ValueType::u64()).expect("field"),
+                    FieldSchema::new(first_index_field, "first", crate::ValueType::u64())
+                        .expect("field"),
+                    FieldSchema::new(middle_index_field, "middle", crate::ValueType::u64())
+                        .expect("field"),
+                    FieldSchema::new(last_index_field, "last", crate::ValueType::u64())
+                        .expect("field"),
+                    FieldSchema::new(unrelated_field, "enabled", crate::ValueType::bool())
+                        .expect("field"),
+                ],
+            )
+            .expect("record"),
+            vec![key_field],
+            entity_key.clone(),
+            vec![],
+            vec![index],
+        )
+        .expect("entity");
+        let schema = SchemaIr::new(vec![entity], vec![], vec![], vec![]).expect("schema");
+
+        let command_id = CommandId::first();
+        let failure = OutcomeSchema::new(
+            command_id,
+            OutcomeId::first(),
+            "Missing",
+            RecordSchema::new(
+                RecordTypeRef::CommandOutcome {
+                    command_id,
+                    outcome_id: OutcomeId::first(),
+                },
+                vec![],
+            )
+            .expect("failure record"),
+        )
+        .expect("failure");
+        let expressions = ExpressionArena::new(vec![
+            (
+                ExpressionKind::Constant(CanonicalValue::U64(1)),
+                crate::ValueType::u64(),
+            ),
+            (
+                ExpressionKind::Constant(CanonicalValue::Bool(true)),
+                crate::ValueType::bool(),
+            ),
+        ])
+        .expect("expressions");
+        let failure =
+            OutcomeConstruction::new(&failure, vec![], &expressions).expect("failure outcome");
+        let bindings = (0..binding_count)
+            .map(|position| {
+                BindingPlan::new(
+                    BindingId::new(u32::try_from(position).expect("binding position fits u32")),
+                    format!("row_{position}"),
+                    mode,
+                    entity_id,
+                    entity_key.clone(),
+                    vec![ExprId::new(0)],
+                    vec![],
+                    false,
+                    failure.clone(),
+                )
+                .expect("binding")
+            })
+            .collect::<Vec<_>>();
+        let instructions = (0..binding_count)
+            .flat_map(|position| {
+                assigned_fields
+                    .iter()
+                    .copied()
+                    .map(move |field| Instruction::SetField {
+                        binding: BindingId::new(
+                            u32::try_from(position).expect("binding position fits u32"),
+                        ),
+                        field,
+                        value: if field == unrelated_field {
+                            ExprId::new(1)
+                        } else {
+                            ExprId::new(0)
+                        },
+                    })
+            })
+            .collect::<Vec<_>>();
+        worst_case_index_derivation(&bindings, &instructions, &schema).expect("derivation")
+    }
+
     #[test]
     fn outcome_name_type_is_legal_but_payload_field_type_is_reserved() {
         let command_id = CommandId::first();
@@ -2570,6 +2877,185 @@ pub(crate) mod tests {
                 actual: MAX_COMMAND_CONFLICT_KEYS_V1 + 1,
                 maximum: MAX_COMMAND_CONFLICT_KEYS_V1,
             })
+        );
+    }
+
+    #[test]
+    fn worst_case_index_limits_accept_exact_boundaries_and_reject_one_over_in_priority_order() {
+        let empty = WorstCaseIndexDerivation {
+            index_entry_deltas: 0,
+            affected_prefixes: 0,
+            affected_target_bytes: 0,
+        };
+        assert!(
+            validate_worst_case_index_limits(
+                WorstCaseIndexDerivation {
+                    index_entry_deltas: MAX_COMMAND_INDEX_DELTAS_V1,
+                    ..empty
+                },
+                0,
+                0,
+            )
+            .is_ok()
+        );
+        assert_eq!(
+            validate_worst_case_index_limits(
+                WorstCaseIndexDerivation {
+                    index_entry_deltas: MAX_COMMAND_INDEX_DELTAS_V1 + 1,
+                    affected_prefixes: MAX_COMMAND_AFFECTED_INDEX_PREFIXES_V1 + 1,
+                    affected_target_bytes: 0,
+                },
+                0,
+                0,
+            ),
+            Err(IrValidationError::LimitExceeded {
+                kind: "command worst-case index entry deltas",
+                actual: MAX_COMMAND_INDEX_DELTAS_V1 + 1,
+                maximum: MAX_COMMAND_INDEX_DELTAS_V1,
+            })
+        );
+
+        let exact_prefixes = WorstCaseIndexDerivation {
+            affected_prefixes: MAX_COMMAND_AFFECTED_INDEX_PREFIXES_V1,
+            ..empty
+        };
+        assert!(validate_worst_case_index_limits(exact_prefixes, 0, 0).is_ok());
+        assert_eq!(
+            validate_worst_case_index_limits(
+                WorstCaseIndexDerivation {
+                    affected_prefixes: MAX_COMMAND_AFFECTED_INDEX_PREFIXES_V1 + 1,
+                    ..empty
+                },
+                0,
+                0,
+            ),
+            Err(IrValidationError::LimitExceeded {
+                kind: "command worst-case affected index prefixes",
+                actual: MAX_COMMAND_AFFECTED_INDEX_PREFIXES_V1 + 1,
+                maximum: MAX_COMMAND_AFFECTED_INDEX_PREFIXES_V1,
+            })
+        );
+
+        assert!(
+            validate_worst_case_index_limits(
+                WorstCaseIndexDerivation {
+                    affected_prefixes: MAX_COMMAND_VALIDATION_TARGETS_V1 - 1,
+                    ..empty
+                },
+                1,
+                0,
+            )
+            .is_ok()
+        );
+        assert_eq!(
+            validate_worst_case_index_limits(
+                WorstCaseIndexDerivation {
+                    affected_prefixes: MAX_COMMAND_VALIDATION_TARGETS_V1 - 1,
+                    ..empty
+                },
+                2,
+                0,
+            ),
+            Err(IrValidationError::LimitExceeded {
+                kind: "command worst-case validation targets",
+                actual: MAX_COMMAND_VALIDATION_TARGETS_V1 + 1,
+                maximum: MAX_COMMAND_VALIDATION_TARGETS_V1,
+            })
+        );
+
+        let exact_state_target_bytes = MAX_COMMAND_READ_STATE_SEMANTIC_BYTES_V1
+            - AFFECTED_EPOCH_CURRENT_FIXED_SEMANTIC_BYTES_V1
+            - MAX_INDEX_EPOCH_POSITION_SEMANTIC_BYTES_V1;
+        assert!(
+            validate_worst_case_index_limits(
+                WorstCaseIndexDerivation {
+                    affected_prefixes: 1,
+                    affected_target_bytes: exact_state_target_bytes,
+                    ..empty
+                },
+                0,
+                0,
+            )
+            .is_ok()
+        );
+        assert_eq!(
+            validate_worst_case_index_limits(
+                WorstCaseIndexDerivation {
+                    affected_prefixes: 1,
+                    affected_target_bytes: exact_state_target_bytes + 1,
+                    ..empty
+                },
+                0,
+                0,
+            ),
+            Err(IrValidationError::LimitExceeded {
+                kind: "command worst-case affected epoch state bytes",
+                actual: MAX_COMMAND_READ_STATE_SEMANTIC_BYTES_V1 + 1,
+                maximum: MAX_COMMAND_READ_STATE_SEMANTIC_BYTES_V1,
+            })
+        );
+        assert_eq!(
+            checked_index_derivation_add(usize::MAX, 1),
+            Err(IrValidationError::SizeOverflow {
+                kind: "command worst-case index derivation",
+            })
+        );
+    }
+
+    #[test]
+    fn worst_case_index_estimator_freezes_create_replace_and_shared_whole_prefix_formulas() {
+        let first = FieldId::new(2).expect("field");
+        let middle = FieldId::new(3).expect("field");
+        let last = FieldId::new(4).expect("field");
+        let unrelated = FieldId::new(5).expect("field");
+
+        assert_eq!(
+            index_estimator_derivation(BindingMode::Create, &[first, middle, last, unrelated], 1,),
+            WorstCaseIndexDerivation {
+                index_entry_deltas: 1,
+                affected_prefixes: 4,
+                affected_target_bytes: 104,
+            }
+        );
+        assert_eq!(
+            index_estimator_derivation(BindingMode::Mutate, &[first], 1),
+            WorstCaseIndexDerivation {
+                index_entry_deltas: 2,
+                affected_prefixes: 7,
+                affected_target_bytes: 194,
+            }
+        );
+        assert_eq!(
+            index_estimator_derivation(BindingMode::Mutate, &[middle], 1),
+            WorstCaseIndexDerivation {
+                index_entry_deltas: 2,
+                affected_prefixes: 6,
+                affected_target_bytes: 172,
+            }
+        );
+        assert_eq!(
+            index_estimator_derivation(BindingMode::Mutate, &[last], 1),
+            WorstCaseIndexDerivation {
+                index_entry_deltas: 2,
+                affected_prefixes: 5,
+                affected_target_bytes: 142,
+            }
+        );
+        assert_eq!(
+            index_estimator_derivation(BindingMode::Mutate, &[unrelated], 1),
+            WorstCaseIndexDerivation {
+                index_entry_deltas: 0,
+                affected_prefixes: 0,
+                affected_target_bytes: 0,
+            }
+        );
+        assert_eq!(
+            index_estimator_derivation(BindingMode::Mutate, &[first], 2),
+            WorstCaseIndexDerivation {
+                index_entry_deltas: 4,
+                affected_prefixes: 13,
+                affected_target_bytes: 374,
+            }
         );
     }
 

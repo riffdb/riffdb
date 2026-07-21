@@ -7,19 +7,22 @@ pub const MAX_BINDING_OBSERVATIONS: usize = 4_096;
 /// Maximum internal aggregate-root observations in one command.
 pub const MAX_ROOT_VALIDATION_OBSERVATIONS: usize = 4_096;
 /// Maximum combined binding, root, and range targets in one command.
-pub const MAX_COMMAND_READ_TARGETS: usize = 4_096;
+pub const MAX_COMMAND_READ_TARGETS: usize = riffdb_types::MAX_COMMAND_VALIDATION_TARGETS_V1;
 /// Maximum canonical read dependencies in one command.
 pub const MAX_READ_DEPENDENCIES: usize = 4_096;
 /// Maximum validation targets in one command.
-pub const MAX_VALIDATION_TARGETS: usize = 4_096;
+pub const MAX_VALIDATION_TARGETS: usize = riffdb_types::MAX_COMMAND_VALIDATION_TARGETS_V1;
 /// Maximum entity mutations in one command.
 pub const MAX_ENTITY_MUTATIONS: usize = 4_096;
 /// Maximum index deltas in one command.
-pub const MAX_INDEX_DELTAS: usize = 4_096;
+pub const MAX_INDEX_DELTAS: usize = riffdb_types::MAX_COMMAND_INDEX_DELTAS_V1;
+/// Maximum mutation-affected index-prefix epoch targets in one command.
+pub const MAX_AFFECTED_INDEX_EPOCH_TARGETS: usize =
+    riffdb_types::MAX_COMMAND_AFFECTED_INDEX_PREFIXES_V1;
 /// Maximum event or outbox intents in one command.
 pub const MAX_EVENT_INTENTS: usize = 4_096;
 /// Maximum bytes in one owned command snapshot.
-pub const MAX_READ_SNAPSHOT_BYTES: usize = 16 * 1024 * 1024;
+pub const MAX_READ_SNAPSHOT_BYTES: usize = riffdb_types::MAX_COMMAND_READ_STATE_SEMANTIC_BYTES_V1;
 /// Maximum bytes in one scan page.
 pub const MAX_SCAN_PAGE_BYTES: usize = 4 * 1024 * 1024;
 /// Maximum bytes in one internal ordered commit-log scan page.
@@ -136,6 +139,27 @@ pub(crate) fn checked_encoded_page_content<T>(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn command_runtime_bounds_alias_the_shared_checked_plan_limits() {
+        assert_eq!(MAX_INDEX_DELTAS, riffdb_types::MAX_COMMAND_INDEX_DELTAS_V1);
+        assert_eq!(
+            MAX_AFFECTED_INDEX_EPOCH_TARGETS,
+            riffdb_types::MAX_COMMAND_AFFECTED_INDEX_PREFIXES_V1
+        );
+        assert_eq!(
+            MAX_VALIDATION_TARGETS,
+            riffdb_types::MAX_COMMAND_VALIDATION_TARGETS_V1
+        );
+        assert_eq!(
+            MAX_COMMAND_READ_TARGETS,
+            riffdb_types::MAX_COMMAND_VALIDATION_TARGETS_V1
+        );
+        assert_eq!(
+            MAX_READ_SNAPSHOT_BYTES,
+            riffdb_types::MAX_COMMAND_READ_STATE_SEMANTIC_BYTES_V1
+        );
+    }
 
     #[test]
     fn encoded_content_charge_accepts_the_absolute_boundary_only() {

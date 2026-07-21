@@ -13,9 +13,9 @@ use riffdb_types::{
 
 use crate::{
     EntityTarget, ExecutablePlanRef, IdempotencyIdentity, IndexRangeTarget,
-    MAX_COMMAND_READ_TARGETS, MAX_ENTITY_MUTATIONS, MAX_EVENT_INTENTS, MAX_INDEX_DELTAS,
-    MAX_READ_DEPENDENCIES, MAX_READ_SNAPSHOT_BYTES, ReadDependencies, ReadSnapshot,
-    StorageValueError, ValidationReadRequest, canonical_codec_storage_error,
+    MAX_AFFECTED_INDEX_EPOCH_TARGETS, MAX_COMMAND_READ_TARGETS, MAX_ENTITY_MUTATIONS,
+    MAX_EVENT_INTENTS, MAX_READ_DEPENDENCIES, MAX_READ_SNAPSHOT_BYTES, ReadDependencies,
+    ReadSnapshot, StorageValueError, ValidationReadRequest, canonical_codec_storage_error,
 };
 
 /// Fixed provenance ID, partition hash, conflict-count framing, and empty conflict set.
@@ -865,7 +865,7 @@ pub struct AffectedIndexEpochTargets {
 impl AffectedIndexEpochTargets {
     /// Canonicalizes and bounds the complete affected bucket set.
     pub fn new(mut targets: Vec<IndexRangeTarget>) -> Result<Self, StorageValueError> {
-        if targets.len() > MAX_INDEX_DELTAS {
+        if targets.len() > MAX_AFFECTED_INDEX_EPOCH_TARGETS {
             return Err(StorageValueError::LimitExceeded);
         }
         targets.sort_unstable();
@@ -1046,10 +1046,10 @@ redacted_debug!(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{EntityObservation, SnapshotRequest};
+    use crate::{EntityObservation, IndexRangePrefixBuilder, SnapshotRequest};
     use riffdb_types::{
         CanonicalValue, CommandId, ContractBundleHash, ContractLineage, EntityKeyBuilder,
-        EntityTypeId, FieldId, PlanHash,
+        EntityTypeId, FieldId, IndexId, PlanHash,
     };
 
     fn plan() -> ExecutablePlanRef {
@@ -1104,6 +1104,30 @@ mod tests {
             maximum_semantic_bytes,
             ..EvaluationBudget::v1()
         }
+    }
+
+    #[test]
+    fn affected_index_epoch_targets_use_the_distinct_shared_prefix_limit() {
+        let targets = |count: usize| {
+            (1..=count)
+                .map(|value| {
+                    let index = IndexId::new(u32::try_from(value).expect("test index fits u32"))
+                        .expect("nonzero index");
+                    IndexRangeTarget::new(IndexRangePrefixBuilder::new(index).finish())
+                })
+                .collect::<Vec<_>>()
+        };
+
+        let exact = AffectedIndexEpochTargets::new(targets(MAX_AFFECTED_INDEX_EPOCH_TARGETS))
+            .expect("exact affected-prefix limit");
+        assert_eq!(
+            exact.as_slice().len(),
+            riffdb_types::MAX_COMMAND_AFFECTED_INDEX_PREFIXES_V1
+        );
+        assert_eq!(
+            AffectedIndexEpochTargets::new(targets(MAX_AFFECTED_INDEX_EPOCH_TARGETS + 1)),
+            Err(StorageValueError::LimitExceeded)
+        );
     }
 
     #[test]

@@ -21,6 +21,18 @@ pub const MAX_KEY_BYTES: usize = 4_096;
 /// Maximum conflict-key derivations and acquisition entries for one v1 command.
 pub const MAX_COMMAND_CONFLICT_KEYS_V1: usize = 256;
 
+/// Maximum worst-case index-entry deltas produced by one v1 command.
+pub const MAX_COMMAND_INDEX_DELTAS_V1: usize = 4_096;
+
+/// Maximum mutation-affected index-prefix epoch targets produced by one v1 command.
+pub const MAX_COMMAND_AFFECTED_INDEX_PREFIXES_V1: usize = 4_096;
+
+/// Maximum transaction-current validation targets for one v1 command.
+pub const MAX_COMMAND_VALIDATION_TARGETS_V1: usize = 4_096;
+
+/// Maximum semantic bytes retained for one v1 command's transaction-current read state.
+pub const MAX_COMMAND_READ_STATE_SEMANTIC_BYTES_V1: usize = 16 * 1024 * 1024;
+
 /// Maximum nesting depth of one canonical value.
 pub const MAX_NESTING_DEPTH: usize = 32;
 
@@ -107,6 +119,10 @@ mod tests {
         assert_eq!(MAX_RECORD_FIELDS, 65_535);
         assert_eq!(MAX_KEY_BYTES, 4_096);
         assert_eq!(MAX_COMMAND_CONFLICT_KEYS_V1, 256);
+        assert_eq!(MAX_COMMAND_INDEX_DELTAS_V1, 4_096);
+        assert_eq!(MAX_COMMAND_AFFECTED_INDEX_PREFIXES_V1, 4_096);
+        assert_eq!(MAX_COMMAND_VALIDATION_TARGETS_V1, 4_096);
+        assert_eq!(MAX_COMMAND_READ_STATE_SEMANTIC_BYTES_V1, 16_777_216);
         assert_eq!(MAX_NESTING_DEPTH, 32);
         assert_eq!(MAX_ACTOR_ID_BYTES, 256);
         assert_eq!(MAX_IDEMPOTENCY_KEY_BYTES, 128);
