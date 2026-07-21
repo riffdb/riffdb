@@ -398,6 +398,91 @@ fn preparation_matcher_requires_every_plan_dimension_and_the_exact_input() {
 }
 
 #[test]
+fn scope_matcher_requires_every_non_digest_dimension_across_rotation_candidates() {
+    let provider = FixedDigestProvider::new(&[3, 2, 1]);
+    let repository = SequencedRepository::new(vec![AdmissionLookupResultV1::NotFound]);
+    let prepared =
+        prepared_recheck(&repository, &provider, plan(1), 40).expect("absent preparation");
+    let expected_database = database(1);
+    let expected_environment = Environment::new("development").expect("environment");
+    let expected_tenant = TenantScope::Tenant(TenantId::new("tenant-a").expect("tenant"));
+    let expected_principal = ActorId::new("actor-secret-canary").expect("principal");
+    let expected_lineage = ContractLineage::new("budget").expect("lineage");
+    let expected_command = command();
+
+    assert!(prepared.matches_scope(
+        expected_database,
+        &expected_environment,
+        &expected_tenant,
+        &expected_principal,
+        &expected_lineage,
+        expected_command,
+    ));
+
+    assert!(!prepared.matches_scope(
+        database(2),
+        &expected_environment,
+        &expected_tenant,
+        &expected_principal,
+        &expected_lineage,
+        expected_command,
+    ));
+    assert!(!prepared.matches_scope(
+        expected_database,
+        &Environment::new("different-environment").expect("environment"),
+        &expected_tenant,
+        &expected_principal,
+        &expected_lineage,
+        expected_command,
+    ));
+    assert!(!prepared.matches_scope(
+        expected_database,
+        &expected_environment,
+        &TenantScope::Tenant(TenantId::new("tenant-b").expect("tenant")),
+        &expected_principal,
+        &expected_lineage,
+        expected_command,
+    ));
+    assert!(!prepared.matches_scope(
+        expected_database,
+        &expected_environment,
+        &expected_tenant,
+        &ActorId::new("different-principal").expect("principal"),
+        &expected_lineage,
+        expected_command,
+    ));
+    assert!(!prepared.matches_scope(
+        expected_database,
+        &expected_environment,
+        &expected_tenant,
+        &expected_principal,
+        &ContractLineage::new("different-lineage").expect("lineage"),
+        expected_command,
+    ));
+    assert!(!prepared.matches_scope(
+        expected_database,
+        &expected_environment,
+        &expected_tenant,
+        &expected_principal,
+        &expected_lineage,
+        CommandId::new(expected_command.get() + 1).expect("command ID"),
+    ));
+
+    let observed = repository.candidates.borrow();
+    let candidates = observed.first().expect("initial lookup candidates");
+    assert_eq!(candidates.as_slice().len(), 3);
+    assert_eq!(
+        candidates
+            .as_slice()
+            .iter()
+            .map(|candidate| candidate.caller_key_digest().key_id().get())
+            .collect::<Vec<_>>(),
+        [3, 2, 1],
+        "digest rotation order is independent of common scope"
+    );
+}
+
+#[test]
 fn stable_absence_yields_one_move_only_token_with_exact_bound_values() {
     let provider = FixedDigestProvider::new(&[1, 2]);
     let selected_plan = plan(1);
@@ -682,6 +767,14 @@ fn all_authority_and_result_diagnostics_are_redacted() {
     let prepared =
         prepared_recheck(&repository, &provider, selected_plan, 40).expect("absent preparation");
     assert!(!prepared.matches_preparation(&plan(2), &normalized_input(40)));
+    assert!(!prepared.matches_scope(
+        database(1),
+        &Environment::new("environment-secret-canary").expect("environment"),
+        &TenantScope::Tenant(TenantId::new("tenant-secret-canary").expect("tenant")),
+        &ActorId::new("principal-secret-canary").expect("principal"),
+        &ContractLineage::new("lineage-secret-canary").expect("lineage"),
+        CommandId::new(99).expect("command ID"),
+    ));
     let prepared_debug = format!("{prepared:?}");
     let result = IdempotencyRecheckExecutor::new(&repository)
         .recheck(prepared)
@@ -695,5 +788,9 @@ fn all_authority_and_result_diagnostics_are_redacted() {
         assert!(!diagnostic.contains("input-value-secret-canary"));
         assert!(!diagnostic.contains("actor-secret-canary"));
         assert!(!diagnostic.contains("partition-secret-canary"));
+        assert!(!diagnostic.contains("environment-secret-canary"));
+        assert!(!diagnostic.contains("tenant-secret-canary"));
+        assert!(!diagnostic.contains("principal-secret-canary"));
+        assert!(!diagnostic.contains("lineage-secret-canary"));
     }
 }
