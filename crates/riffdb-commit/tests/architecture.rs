@@ -1,6 +1,9 @@
 //! Dependency and authority checks for the commit orchestration boundary.
 
-use std::{fs, path::PathBuf};
+use std::{
+    fs,
+    path::{Path, PathBuf},
+};
 
 const LOCKFILE: &str = include_str!("../../../Cargo.lock");
 const MANIFEST: &str = include_str!("../Cargo.toml");
@@ -8,6 +11,7 @@ const AUDIT_SOURCE: &str = include_str!("../src/audit.rs");
 const AUDIT_EXECUTOR_SOURCE: &str = include_str!("../src/audit_executor.rs");
 const COMMAND_ADMISSION_SOURCE: &str = include_str!("../src/command_admission.rs");
 const COMMAND_ATTEMPT_SOURCE: &str = include_str!("../src/command_attempt.rs");
+const COMMAND_VALIDATION_SOURCE: &str = include_str!("../src/command_validation.rs");
 const COMMAND_PREPARATION_SOURCE: &str = include_str!("../src/command_preparation.rs");
 const LIB_SOURCE: &str = include_str!("../src/lib.rs");
 const CLOCK_SOURCE: &str = include_str!("../src/clock.rs");
@@ -60,6 +64,186 @@ fn riffdb_dependencies(section: &str) -> Vec<&str> {
         .filter_map(|line| line.split_once(" = ").map(|(name, _)| name))
         .filter(|name| name.starts_with("riffdb-"))
         .collect()
+}
+
+fn rust_sources_under(directory: &Path, sources: &mut Vec<(PathBuf, String)>) {
+    for entry in fs::read_dir(directory).expect("read Rust source directory") {
+        let path = entry.expect("Rust source entry").path();
+        if path.is_dir() {
+            rust_sources_under(&path, sources);
+        } else if path.extension().is_some_and(|extension| extension == "rs") {
+            let source = fs::read_to_string(&path).expect("read Rust source");
+            sources.push((path, source));
+        }
+    }
+}
+
+#[test]
+fn command_validation_is_sealed_until_candidate_identity_is_preserved_by_construction() {
+    let production = COMMAND_VALIDATION_SOURCE
+        .split_once("#[cfg(test)]")
+        .map_or(COMMAND_VALIDATION_SOURCE, |(source, _)| source);
+
+    for forbidden in [
+        "pub(crate)",
+        "TransactionCurrentCommand",
+        "CommandValidationDecision",
+        "ValidatedCommandSemantics",
+        "ValidatedZeroMutation",
+        "ValidatedNonzeroCommand",
+        "RejectedCommandCandidate",
+        "read_transaction_current_command",
+        "AffectedIndexEpochTargets",
+        ".read_transaction_current(",
+        ".plan_validated(",
+        ".reject(",
+    ] {
+        assert!(
+            !production.contains(forbidden),
+            "sealed validation exposes an unreviewed pairing or progression path through {forbidden}"
+        );
+    }
+
+    let attempt_production = COMMAND_ATTEMPT_SOURCE
+        .split_once("#[cfg(test)]")
+        .map_or(COMMAND_ATTEMPT_SOURCE, |(source, _)| source);
+    assert!(attempt_production.contains("pub(crate) struct EvaluatedCommandAttempt"));
+    assert!(attempt_production.contains("Ok(ExecutionResult::CommitRequired(evaluated))"));
+    assert!(attempt_production.contains("EvaluatedCommandAttempt {"));
+    let evaluated_attempt_impl = attempt_production
+        .split_once("impl EvaluatedCommandAttempt {")
+        .and_then(|(_, rest)| {
+            rest.split_once("\n}\n\nimpl fmt::Debug for EvaluatedCommandAttempt")
+                .map(|(body, _)| body)
+        })
+        .expect("evaluated-attempt implementation");
+    assert!(evaluated_attempt_impl.contains("fn into_parts(\n        self,"));
+    assert!(!evaluated_attempt_impl.contains("pub(crate)"));
+    for forbidden in [
+        "pub(crate) const fn resolved_plan(&self)",
+        "pub(crate) const fn normalized_input(&self)",
+        "pub(crate) const fn logical_time(&self)",
+        "pub(crate) const fn evaluated(&self)",
+    ] {
+        assert!(
+            !attempt_production.contains(forbidden),
+            "evaluated attempt exposes a sibling bypass through {forbidden}"
+        );
+    }
+
+    let mut commit_sources = Vec::new();
+    rust_sources_under(&crate_root().join("src"), &mut commit_sources);
+    for (path, source) in &commit_sources {
+        for forbidden in [
+            ".begin_candidate(",
+            ".recheck_admission(",
+            ".read_transaction_current(",
+            ".plan_validated(",
+        ] {
+            assert!(
+                !source.contains(forbidden),
+                "{} calls storage candidate progression outside the future reviewed wrapper via {forbidden}",
+                path.display()
+            );
+        }
+    }
+
+    let value_source = production
+        .split_once("struct TransactionCurrentValues {")
+        .and_then(|(_, rest)| rest.split_once("\n}").map(|(body, _)| body))
+        .expect("owned transaction-current value source");
+    for forbidden in [
+        "&'",
+        "TransactionCurrentState",
+        "EvaluatedCommandAttempt",
+        "Awaiting",
+    ] {
+        assert!(!value_source.contains(forbidden));
+    }
+    let materializer = production
+        .split_once("fn materialize_current_entity_record(")
+        .and_then(|(_, rest)| {
+            rest.split_once("\nfn validate_post_image_and_project")
+                .map(|(body, _)| body)
+        })
+        .expect("current-record materializer");
+    assert!(materializer.contains("record.schema_binding().matches_plan(plan)"));
+    assert!(!materializer.contains("None if field.value_type().is_optional()"));
+
+    let validation = production
+        .split_once("fn validate_transaction_current_command_parts(")
+        .and_then(|(_, rest)| {
+            rest.split_once("\nfn validate_identity_positions_and_output")
+                .map(|(body, _)| body)
+        })
+        .expect("pure validation core");
+    let identity = validation
+        .find("validate_identity_positions_and_output(")
+        .expect("identity validation");
+    let dependencies = validation
+        .find("dependencies_from_current(current)")
+        .expect("dependency reconstruction");
+    let zero_branch = validation
+        .find("if evaluated.mutations().is_empty()")
+        .expect("zero-mutation branch");
+    let coverage = validation
+        .find("prove_mutation_coverage(")
+        .expect("nonzero coverage");
+    let evaluator = validation
+        .find("evaluate_commit_checks(")
+        .expect("commit-check evaluator");
+    assert!(identity < dependencies);
+    assert!(dependencies < zero_branch);
+    assert!(zero_branch < coverage);
+    assert!(coverage < evaluator);
+    assert_eq!(production.matches("evaluate_commit_checks(").count(), 1);
+
+    for required in [
+        "plan.execution_class() != ExecutionClass::IdempotentMutation",
+        "!request.range_targets().is_empty()",
+        "!current.ranges().is_empty()",
+        "&current_dependencies != evaluated.read_dependencies()",
+        "CandidateValidationRejection::DependencyChanged",
+        "validate_evaluated_output(",
+        "validate_post_image_and_project(",
+        "materialize_current_entity_record(",
+        "struct TransactionCurrentValues",
+        "input: CanonicalRecord",
+        "bindings: Box<[PositionedBindingRecord]>",
+        "roots: Box<[PositionedRootRecord]>",
+        "record.schema_binding().matches_plan(plan)",
+    ] {
+        assert!(
+            production.contains(required),
+            "command validation is missing reviewed mechanism {required}"
+        );
+    }
+    for forbidden in [
+        "derive_input_command_facts",
+        "execute_command(",
+        "SnapshotReader",
+        "StorageEngine",
+        "ApplicationTransaction",
+        "SystemTime",
+        "Instant::now",
+        "std::fs",
+        "std::net",
+        "getrandom",
+        "rand::",
+        "async fn",
+        ".await",
+        "assign_sequence",
+        "reserve_sequence",
+    ] {
+        assert!(
+            !production.contains(forbidden),
+            "command validation gained forbidden authority through {forbidden}"
+        );
+    }
+
+    assert!(LIB_SOURCE.contains("mod command_validation;"));
+    assert!(!LIB_SOURCE.contains("pub mod command_validation"));
+    assert!(!LIB_SOURCE.contains("pub use command_validation"));
 }
 
 #[test]
