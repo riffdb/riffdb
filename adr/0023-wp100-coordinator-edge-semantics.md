@@ -11,6 +11,10 @@
   influential dependency is revalidated; zero-mutation declared outcomes skip
   commit-check evaluation and index derivation but still commit their terminal
   outcome graph; nonzero mutation sets exactly cover all mutable plan bindings
+- **Maintainer-accepted derived-index bound and exhaustion clarification:**
+  2026-07-20, checked v1 plans conservatively fit all pre-sequence index bounds;
+  an exhausted mutation-affected epoch aborts before sequence assignment and
+  stops, rather than fences, the coordinator
 - **Requires:** ADR-0002, ADR-0003, ADR-0004, ADR-0005, ADR-0006, ADR-0007,
   ADR-0009, ADR-0011, ADR-0012, ADR-0013, ADR-0016, ADR-0018, ADR-0021, and
   ADR-0022
@@ -18,8 +22,9 @@
   coordinator/storage validation boundary; ADR-0007's commit dependency and
   service-audit ownership declarations; ADR-0009's capability-revoke
   authorization; ADR-0012's retry wording; ADR-0018's provenance replay wording;
-  ADR-0006's `ConcurrencyDeadlineExceeded` cause; SPEC Section 5.2's dependency
-  row; and narrow WP-060/WP-100/WP-110/WP-120/WP-130/WP-200 metadata
+  ADR-0006's `ConcurrencyDeadlineExceeded` cause; ADR-0013's checked-plan bounds;
+  SPEC Section 5.2's dependency row; and narrow
+  WP-060/WP-100/WP-110/WP-120/WP-130/WP-200 metadata
 - **Decision deadline:** Before WP-100 publishes the affected executor, retry,
   index, execution-failure, or capability-revoke paths
 
@@ -38,6 +43,11 @@ On 2026-07-20 the human maintainer also accepted the zero-mutation clarification
 below. It distinguishes a durable declared business rejection from a read-only
 command and closes the post-image coverage rule without permitting pre-image
 fallback.
+
+On 2026-07-20 the human maintainer accepted the derived-index admission and
+epoch-exhaustion clarification below. It closes a checked-plan cross-product gap
+without changing IR or durable bytes and distinguishes proven exhaustion from
+uncertain commit status.
 
 ## Context
 
@@ -258,6 +268,34 @@ For v1 coordinator writes, entry presence or key changes determine index entry
 mutations. Backend conformance tests continue to prove that a generic
 covered-value replacement advances every affected whole-index and complete
 leading-prefix epoch even though the v1 compiler cannot currently produce one.
+
+### Checked derived-index bounds and epoch exhaustion
+
+Checked grammar/IR-v1 plan construction uses a conservative, checked-arithmetic
+upper bound over mutable bindings, assigned fields, declared index components,
+and component byte maxima. Before plan hashing it rejects any successful shape
+that can exceed 4,096 index-entry mutations, 4,096 mutation-affected prefix
+targets, 4,096 combined binding/root/affected-prefix validation positions, or
+16 MiB for affected targets and their current epoch observations. The estimator
+deduplicates a guaranteed whole-index bucket once per stable `IndexId` and the
+unchanged leading prefixes before the earliest possibly changed component for
+one replacement; it need not prove runtime equality or cross-binding
+deduplication. This conservative compiler-specific lower acceptance limit is
+authoritative for v1.
+
+The coordinator still constructs index entries and affected targets
+incrementally and storage still checks exact count and byte bounds. If one of
+those guards is reached from a canonical checked plan, the coordinator treats it
+as `InternalDefect`; it never persists or publicly returns
+`ExecutionFailureCode::ResourceLimit` for that impossible shape.
+
+If an affected current epoch is `Value(u64::MAX)`, advancing it returns internal
+`StorageErrorKind::SequenceExhausted`. The complete transaction aborts before
+application-sequence assignment, Pending remains unchanged, and no command
+record is durable. The current executor call returns opaque `InternalDefect`,
+the actor transitions to `Stopped` and readiness fails, and queued or future
+work returns `CoordinatorStopped`. Because rollback is proven, this path is
+never `StorageUnavailable`, `OutcomeUnknown`, or `CoordinatorFenced`.
 
 ### Commit-check arithmetic classification
 

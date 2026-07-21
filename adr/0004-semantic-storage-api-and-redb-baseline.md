@@ -2,7 +2,7 @@
 
 - **Status:** Accepted
 - **Direction approved:** 2026-07-12
-- **Exact text accepted:** Yes; amended 2026-07-14
+- **Exact text accepted:** Yes; amended 2026-07-14 and 2026-07-20
 - **Accepted:** 2026-07-13
 - **Requires:** ADR-0007, ADR-0009, ADR-0012, and ADR-0017 accepted before or in
   the same governance change
@@ -31,6 +31,9 @@ event table with three-way reciprocity, the exact 26-record POC registry,
 `sha2` 0.11.0 for backup manifests, and no Criterion dependency in WP-070.
 On 2026-07-14 the maintainer accepted the single full-outcome terminal-row and
 startup outcome/commit reciprocity clarification below.
+On 2026-07-20 the maintainer accepted conservative checked-plan derived-index
+bounds and the exact coordinator stop behavior for mutation-affected index-epoch
+exhaustion below.
 
 ## Context
 
@@ -416,6 +419,18 @@ covered values for that range. Component-incomplete prefixes reject. This
 mechanism must have backend-conformance tests even while the compiler rejects
 write-influencing indexed reads; its existence does not silently enable such an
 IR operation.
+
+Checked grammar/IR-v1 command-plan construction conservatively proves before
+hashing that a successful mutation cannot require more than 4,096 index-entry
+mutations, 4,096 mutation-affected prefix targets, 4,096 combined binding,
+root-validation, and affected-prefix validation positions, or 16 MiB for the
+affected target/current-epoch state. It uses declared bindings, assigned fields,
+index component order, and component maximum payload sizes with checked
+arithmetic. It may reject a plan whose runtime keys could happen to deduplicate
+across bindings; this is an accepted compiler-specific lower limit. The exact
+transaction path retains incremental checks for every count and byte ceiling.
+Reaching one from a canonical checked plan is an internal invariant defect, not
+a command-visible resource-limit terminal.
 
 The illustrative `ReadDependency::Predicate { captured_values }` in SPEC
 Section 9.4 is not a sufficient commit proof and is not a v1 storage dependency.
@@ -1127,6 +1142,16 @@ invariant violation or exhaustion, fail core readiness and map to an opaque
 internal incident. A storage error confined to derived state degrades that
 subsystem and cannot authorize an authoritative rewrite. Final mapping of a
 caller-supplied limit violation is owned by the API-neutral service.
+
+An attempted mutation-affected index-epoch advance from `Value(u64::MAX)` is a
+backend-proven abort of the complete authoritative transaction. It occurs before
+application-sequence assignment, leaves Pending byte-identical, and makes no
+part of the command graph durable. Storage reports internal
+`SequenceExhausted`; the current command executor result is the opaque
+`InternalDefect`, the coordinator stops and becomes unready, and queued or
+future submissions receive `CoordinatorStopped`. This path is not
+`Unavailable`, `CommitStatusUnknown`, `OutcomeUnknown`, or
+`CoordinatorFenced`; the latter remains reserved for uncertain write status.
 
 Normal semantic states are not `StorageError`: missing entity, observed absence,
 terminal replay, idempotency input mismatch, pending admission, dependency
