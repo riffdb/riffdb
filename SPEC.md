@@ -6,7 +6,7 @@
 **Tagline:** *Vibe fast. Commit safely.*  
 **Category:** Contract-first operational database for agent-built applications  
 
-**Version:** 0.15
+**Version:** 0.16
 **Status:** Architecture-approved implementation handoff
 **Date:** 20 July 2026
 **Audience:** Coding agents, database engineers, compiler engineers, security reviewers, and technical product leads  
@@ -51,6 +51,7 @@
 | 0.13 | 2026-07-20 | Applied accepted ADR-0022's exact self-contained durable semantic Protobuf modules, 26-payload registry, field/tag/presence rules, canonical-wire validation, complete terminal outcome, and checked storage-codec boundary before WP-065 implementation. |
 | 0.14 | 2026-07-20 | Applied accepted ADR-0023's exact WP-100 coordinator edge semantics: commit evaluator ownership, bounded full reevaluation, audit-input inversion, provenance attempt recovery, grammar-v1 empty index covered values, commit-check arithmetic classification, absent-target capability revocation, and no-transition control-plane audit classification. |
 | 0.15 | 2026-07-20 | Clarified ADR-0023's audit-input inversion: the consumer view has no field or method for the new audit record's assigned administration sequence, while its checked control-plane result link may carry the sequence of an already-authoritative transition. |
+| 0.16 | 2026-07-20 | Applied the accepted zero-mutation command clarification and direct gRPC public-error carriage: all influential dependencies remain revalidated, only exact nonzero mutation coverage invokes commit checks/index derivation, and WP-130 carries bounded `riffdb.v1.PublicError` bytes directly with closed status/message validation. |
 
 ### Normative language
 
@@ -741,6 +742,15 @@ The database distinguishes three categories:
 
 `OUT-003` A business rejection MAY have zero entity mutations, but for an admitted idempotent command it MUST be persisted as a terminal command record so later retries return the same result.
 
+A zero-mutation `OUT-003` result is still a commit-required command: every
+influential snapshot dependency is revalidated and its declared outcome receives
+the ordinary commit sequence, provenance, commit record, atomicity, replay, and
+uncertainty semantics. It skips commit-check evaluation and index derivation
+because it has no mutable post-images; current pre-images MUST NOT be substituted.
+A nonzero result MUST instead provide exactly one complete mutation for every
+mutable binding in the checked historical plan before complete commit-check and
+index processing.
+
 `OUT-004` The POC MUST NOT model duplicate delivery as a separate generic `Duplicate` business outcome. Replay is envelope metadata around the original outcome.
 
 For the POC, idempotency identity is the tuple of database identity, environment, authorization-resolved tenant scope, stable principal ID, contract lineage, stable command ID, and a domain-separated keyed digest of the caller-supplied idempotency key. Contract version is stored with the reservation and outcome but excluded from lookup identity so an uncertainty retry survives active-version deployment. The identity never contains a raw capability token or raw idempotency key.
@@ -1062,14 +1072,20 @@ A mutating command follows this sequence:
     guess an encoded write-set charge.
 15. The transaction rechecks the exact pending identity, input, admission, and
     plan reference, then reads all influential validation targets from
-    transaction-current state. The coordinator compares every
-    absence/version/epoch dependency and evaluates the exact historical
-    commit-check plan over current values plus proposed post-images.
-16. After semantic validation, the coordinator derives the canonical set of
-    mutation-affected index-prefix epoch targets from transaction-current old
-    entries and proposed new entries. Storage reads those epoch positions in the
-    same write transaction. They are distinct from influential range-epoch read
-    dependencies, except when one exact prefix happens to belong to both sets.
+    transaction-current state and compares every absence/version/epoch
+    dependency regardless of mutation count. A zero-mutation declared business
+    outcome then skips commit-check evaluation and index derivation. A nonzero
+    mutation set must first prove exactly one complete mutation for every mutable
+    historical-plan binding, then evaluates the complete commit-check plan over
+    current read/root values plus those proposed post-images. A missing post-image
+    is never replaced by a current pre-image.
+16. Only for a nonzero mutation set, after semantic validation the coordinator
+    derives the canonical set of mutation-affected index-prefix epoch targets
+    from transaction-current old entries and proposed new entries. Storage reads
+    those epoch positions in the same write transaction. A zero-mutation outcome
+    retains empty index deltas and affected-epoch targets. Mutation-affected
+    targets are distinct from influential range-epoch read dependencies, except
+    when one exact prefix happens to belong to both sets.
 17. The coordinator freezes the exact sequence-free `CommandWriteSetPlanV1` and
     reserves its semantic charge plus conservative per-record-class and
     aggregate canonical `StoredEnvelope` capacity. This exact aggregate staged-
@@ -1245,8 +1261,12 @@ of the sets is neither required nor generally correct.
 Captured predicate booleans or values are not commit proof and are not a v1
 storage dependency. Predicate and invariant correctness uses the exact
 historical `ExecutablePlanRef`, a structurally checked validation request, and a
-coordinator-private semantic match; the exact commit-check plan is re-evaluated
-over transaction-current values and proposed post-images.
+coordinator-private semantic match. Every influential dependency is compared for
+both zero- and nonzero-mutation outcomes. A nonzero mutation set must exactly
+cover every mutable plan binding before the complete commit-check plan is
+re-evaluated over transaction-current read/root values and proposed post-images.
+A zero-mutation declared outcome skips commit-check and index derivation without
+falling back to mutable pre-images.
 
 Grammar v1 does not enable write-influencing indexed range reads. A future
 bounded indexed command-read IR requires an accepted static-target/epoch policy
@@ -1259,9 +1279,12 @@ hidden runtime scan.
 `riffdb-storage-api` owns both `EvaluatedCommand` and the transport-neutral
 `CommitIntent`. Runtime constructs only `EvaluatedCommand`, containing the exact
 plan reference, canonical binding/range targets and dependencies, complete
-mutation post-images with expected observations, ordered pre-commit event
-values, and declared encoded outcome. It contains no admission identity, actor,
-provenance, logical time, sequence, event ID, durable record, or storage handle.
+mutation post-images with expected observations when mutations are present,
+ordered pre-commit event values, and declared encoded outcome. An admitted
+mutating command may carry zero mutations for a declared business rejection
+under `OUT-003`; otherwise it must carry exactly one complete mutation for every
+mutable plan binding. It contains no admission identity, actor, provenance,
+logical time, sequence, event ID, durable record, or storage handle.
 
 After evaluation, only `riffdb-commit` may construct `CommitIntent`. Its checked
 constructor combines the unchanged `EvaluatedCommand` with the exact stored
@@ -1296,13 +1319,28 @@ storage transaction, handle, callback, reader, engine object, clock, entropy
 source, or asynchronous operation crosses into the evaluator, and neither the
 coordinator nor a backend duplicates evaluator logic.
 
+The coordinator always revalidates every influential dependency. If the
+`EvaluatedCommand` has no mutations, it does not construct mutable value-source
+positions, invoke the commit-check plan, or derive index deltas and
+mutation-affected epochs. It still reserves an empty-mutation write plan and,
+after validation, assigns a sequence and atomically persists the declared
+outcome, provenance, and commit record. If mutations are present, private
+validation first proves exact one-per-mutable-binding coverage; only then may the
+complete commit-check plan and index derivation consume the proposed post-images.
+Missing, duplicate, or extra mutations are integrity failures, never permission
+to substitute transaction-current pre-images.
+
 The coordinator performs:
 
 1. Open the durable write transaction and start a count-only candidate.
 2. Recheck the exact pending admission and idempotency identity.
 3. Read and revalidate every influential transaction-current dependency.
-4. Re-evaluate commit-time invariant plans over current values plus proposed mutations.
-5. Derive the exact mutation-affected prefix targets from current and proposed index entries.
+4. For nonzero mutations only, prove exact mutable-binding coverage and
+   re-evaluate the complete commit-time invariant plan over current read/root
+   values plus proposed post-images; zero mutations skip this step.
+5. For nonzero mutations only, derive the exact mutation-affected prefix targets
+   from current and proposed index entries; zero mutations retain empty targets
+   and index deltas.
 6. Read every affected epoch position in the same transaction.
 7. Freeze the exact sequence-free write plan and reserve semantic plus conservative encoded capacity.
 8. Allocate the next commit sequence only after reservation succeeds.
@@ -1998,6 +2036,29 @@ includes `PUBLIC_ERROR_KIND_COMMAND_EXECUTION_FAILED = 9`, stable code
 `PublicError.execution_failure = 8`. Its required closed code is arithmetic
 fault `1` or resource limit `2`; zero and unknown values reject. gRPC maps it to
 `FAILED_PRECONDITION`. No existing error value or field is renumbered.
+
+For every API-neutral `PublicError`, WP-130 MUST encode the exact checked
+`riffdb.v1.PublicError` bytes, enforce `MAX_PUBLIC_ERROR_BYTES = 16 KiB`, and pass
+those bytes directly to Tonic `Status::with_details` as
+`grpc-status-details-bin`. It MUST NOT wrap them in `google.rpc.Status`, `Any`, or
+a second custom envelope. The gRPC status is derived only from `ErrorClass`:
+`InvalidArgument -> INVALID_ARGUMENT`, `Conflict -> ALREADY_EXISTS`,
+`PermissionDenied -> PERMISSION_DENIED`,
+`DeadlineExceeded -> DEADLINE_EXCEEDED`,
+`FailedPrecondition -> FAILED_PRECONDITION`, `Unavailable -> UNAVAILABLE`,
+`Uncertain -> UNKNOWN`, and `Internal -> INTERNAL`. `grpc-message` MUST equal the
+registry-owned static safe message and MUST NOT contain an internal source,
+arbitrary diagnostic, incident narrative, or serialized error.
+
+The Rust client MUST accept a non-OK API-neutral response as a `PublicError` only
+when details are present, within 16 KiB, valid under the checked public-error
+decoder, and consistent with both the canonical status and static safe message.
+Missing, malformed, oversized, unknown, status-inconsistent, or
+message-inconsistent details are a closed typed protocol failure; the client MUST
+NOT infer a public error or retry action from `grpc-message` alone. The existing
+pre-authentication `UNAUTHENTICATED` framing exception remains a distinct closed
+transport error before an API-neutral `PublicError` exists and carries no
+fabricated public-error detail.
 
 `AdminService.CreateCapability` has a closed create mode: unspecified `0`,
 normal `1`, bootstrap `2`; zero and unknown values reject. Normal creation uses
@@ -3707,7 +3768,7 @@ Risk owners are assigned in the project tracker. A risk may be closed only with 
 
 ## 22.1 Required ADRs
 
-Specification v0.15 records each ADR's current status. An Accepted record is
+Specification v0.16 records each ADR's current status. An Accepted record is
 authoritative; a Proposed record remains planning input until its exact text
 receives human review. Where this table and a work-package deadline differ, the
 earlier deadline governs unless a reviewed reconciliation changes both sources.

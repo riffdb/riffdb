@@ -2,11 +2,15 @@
 
 - **Status:** Accepted
 - **Direction approved:** 2026-07-20
-- **Exact text accepted:** 2026-07-20
+- **Exact text accepted:** 2026-07-20, amended 2026-07-20
 - **Accepted:** 2026-07-20
 - **Maintainer-accepted clarification:** 2026-07-20, the audit-input view has no
   field or method for the new audit record's assigned sequence, while its
   checked result link may carry a prior authoritative transition sequence
+- **Maintainer-accepted zero-mutation clarification:** 2026-07-20, every
+  influential dependency is revalidated; zero-mutation declared outcomes skip
+  commit-check evaluation and index derivation but still commit their terminal
+  outcome graph; nonzero mutation sets exactly cover all mutable plan bindings
 - **Requires:** ADR-0002, ADR-0003, ADR-0004, ADR-0005, ADR-0006, ADR-0007,
   ADR-0009, ADR-0011, ADR-0012, ADR-0013, ADR-0016, ADR-0018, ADR-0021, and
   ADR-0022
@@ -30,12 +34,17 @@ below. It distinguishes the new service-audit record's sequence, which remains
 coordinator/storage assigned, from a prior authoritative control-plane sequence
 carried as checked result-link data.
 
+On 2026-07-20 the human maintainer also accepted the zero-mutation clarification
+below. It distinguishes a durable declared business rejection from a read-only
+command and closes the post-image coverage rule without permitting pre-image
+fallback.
+
 ## Context
 
 WP-100 must join already accepted compiler, runtime, storage, authorization,
 idempotency, and audit interfaces without introducing a dependency cycle or
 silently choosing unspecified durable behavior. Implementation tracing exposed
-eight narrow gaps:
+nine narrow gaps:
 
 1. `riffdb-service` owns the concrete checked `ServiceAuditInput`, while
    `riffdb-commit` owns `AdministrationAuditExecutor`; a direct executor
@@ -63,6 +72,11 @@ eight narrow gaps:
    policy, and ADR-0012 fixes the durable behavior when that budget is exhausted,
    but no accepted source sets a numeric attempt ceiling or identifies the exact
    existing public result for count exhaustion.
+9. Runtime correctly emits a zero-mutation `EvaluatedCommand` for a declared
+   business rejection, but the transaction-current wording assumes every
+   evaluated command supplies mutable post-images. Applying that wording
+   literally would either reject the required `OUT-003` result or invite an
+   undeclared pre-image fallback for commit checks and index derivation.
 
 These are interface and fail-closed decisions. None permits a new POC language
 feature, transport path, storage bypass, or durable record kind.
@@ -104,6 +118,34 @@ transaction-current validation. `riffdb-storage-api` remains structurally aware
 and IR-blind outside its already accepted projection-schema value dependency.
 The coordinator retains its private semantic proof and storage alone retains the
 transaction and progression type state.
+
+### Zero-mutation evaluated outcomes
+
+For an admitted mutating command, a successful `EvaluatedCommand` with zero
+mutations is a commit-required declared business outcome under `OUT-003`; it is
+not reclassified as an unjournaled read-only execution. The coordinator always
+reads and compares every influential absence, entity-version, and range-epoch
+dependency before choosing either mutation branch. A changed dependency writes
+nothing and follows the accepted bounded full-reevaluation policy.
+
+When the evaluated mutation set is empty, the coordinator skips the historical
+commit-check plan and skips mutation-affected index-entry, prefix-target, epoch,
+and index-delta derivation. There is no mutable post-image value source in this
+branch, and no current pre-image may be substituted. The coordinator still
+freezes and reserves the zero-mutation sequence-free write plan, assigns one
+nonzero `CommitSequence` only after validation and reservation, and atomically
+replaces Pending with the declared terminal outcome together with its provenance
+and commit record. The result retains ordinary committed-outcome replay and
+uncertain-response recovery semantics.
+
+When the evaluated mutation set is nonempty, it must contain exactly one complete
+mutation for every mutable create/mutate binding in the exact checked historical
+plan, with no missing, duplicate, or extra binding. Failure of that coverage
+proof is `EvaluationError::Integrity`. Only after coverage succeeds does the
+coordinator expose those proposed complete post-images to the sole invariant
+evaluator, evaluate the complete historical commit-check plan, and derive index
+entry and mutation-affected epoch changes. A mutable binding never resolves to a
+transaction-current pre-image in either branch.
 
 ### Bounded full-reevaluation ceiling
 
@@ -367,6 +409,13 @@ a fabricated sequence or general audit append.
 13. **Add a new public retry-budget error:** Rejected because the existing
     transient concurrency error already carries the required retry recovery and
     protocol mapping; its broadened trigger is made explicit here instead.
+14. **Evaluate zero-mutation commit checks against current pre-images:** Rejected
+    because it changes the meaning of mutable binding references, violates exact
+    post-image semantics, and can turn a declared business rejection into an
+    undeclared commit-check result.
+15. **Skip dependency validation for a zero-mutation outcome:** Rejected because
+    snapshot observations can influence the declared outcome even when the
+    command proposes no entity mutation.
 
 ## Consequences
 
@@ -383,6 +432,9 @@ a fabricated sequence or general audit append.
   language feature.
 - Commit-time arithmetic uses the existing dependency-validated terminal failure
   path and consumes no application sequence.
+- A zero-mutation business rejection retains `OUT-003` durability without
+  fabricating mutable post-images, while every influential snapshot dependency
+  is still revalidated and every nonzero mutation set has exact plan coverage.
 - Missing capability targets fail closed for delegated revokers while exact
   administrators retain the typed not-found result.
 - Typed no-transition control-plane results have one audit classification and
@@ -400,6 +452,11 @@ transaction-current value source, `RetryBudgetExhausted`,
 `CapabilityPreparationChanged`, and absent-target facts are non-durable Rust
 interfaces and may be added without a data migration. The added crate
 dependencies do not alter a public or durable encoding.
+
+The zero-mutation clarification adds no public field, durable field, record kind,
+or IR node. It uses the already accepted terminal outcome, provenance, and commit
+records with an empty mutation/index/epoch portion of the command graph. Exact
+nonzero mutation coverage is a coordinator-private semantic proof.
 
 The retry decision adds no public error kind or wire value, but it intentionally
 broadens the documented cause of existing `ConcurrencyDeadlineExceeded`. The
@@ -460,6 +517,12 @@ turning a stale observation into a terminal failure or bypassing reauthorization
 - Command tests force commit-check overflow with unchanged and changed
   dependencies and assert terminalization, reevaluation, rollback, and no
   sequence gap.
+- Zero-mutation outcome tests prove every influential dependency is compared,
+  changed evidence reevaluates without a write, no commit-check or index
+  derivation call occurs, and the declared outcome, sequence, provenance, and
+  commit record persist atomically and replay unchanged. Nonzero fixtures prove
+  exact one-per-mutable-binding coverage and reject missing, duplicate, and extra
+  mutations as integrity failures without pre-image fallback.
 - Policy/coordinator tests cover present and absent revoke targets, ordinary and
   administrator permission, database/environment mismatch, target appearance,
   exact no-write `CapabilityPreparationChanged`, fresh service authorization
@@ -472,7 +535,7 @@ turning a stale observation into a terminal failure or bypassing reauthorization
 
 - **Requirements:** `SYS-004`, `DSL-005`, `TXN-001`, `TXN-002`, `TXN-012`, `TXN-013`,
   `TXN-040`, `TXN-041`, `TXN-042`, `TXN-043`, `TXN-044`, `ID-005`, `SEC-001`,
-  `SEC-002`, `SEC-003`, `SEC-004`, and `MCP-046`
+  `SEC-002`, `SEC-003`, `SEC-004`, `OUT-003`, and `MCP-046`
 - **Defines or corrects:** the narrow WP-060 storage-control variant, `WP-100`,
   the WP-110 capability-revoke interface, WP-120 audit input/orchestration and
   retry mapping, WP-130 gRPC mapping evidence, and WP-200 final evidence metadata
@@ -486,6 +549,7 @@ ADR-0023. No declared work-package dependency or gate changes.
 
 Exact acceptance is required before WP-100 merges the command executor, retry
 loop, audit executor, index write planner, commit-check arithmetic path, or
-capability-revoke coordinator. The foundation clock, initialization, immutable
-outcome, and idempotency preparation/inspection interfaces do not depend on this
-decision.
+capability-revoke coordinator. The accepted zero-mutation clarification is also
+required before WP-100 merges commit validation or graph construction. The
+foundation clock, initialization, immutable outcome, and idempotency
+preparation/inspection interfaces do not depend on this decision.
