@@ -883,6 +883,15 @@ impl SnapshotRequest {
     }
 }
 
+/// Dense entity-observation position visited during a snapshot transformation.
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+pub enum EntityObservationPosition {
+    /// One source binding at its plan-local position.
+    Binding(usize),
+    /// One internal root validation at its plan-local position.
+    RootValidation(usize),
+}
+
 /// A fully owned bounded snapshot with no live engine handle.
 #[derive(Clone, Eq, PartialEq)]
 pub struct ReadSnapshot {
@@ -1254,26 +1263,14 @@ impl ReadSnapshot {
                 .map(ReadDependency::from_entity)
                 .chain(ranges.iter().map(ReadDependency::from_range)),
         )?;
-        let total =
-            bindings
-                .iter()
-                .chain(&root_validations)
-                .try_fold(0usize, |sum, observation| {
-                    sum.checked_add(observation.semantic_bytes()?)
-                        .ok_or(StorageValueError::SizeOverflow)
-                })?;
-        let total = ranges.iter().try_fold(total, |sum, observation| {
-            sum.checked_add(observation.semantic_bytes()?)
-                .ok_or(StorageValueError::SizeOverflow)
-        })?;
-        let fixed_bytes = snapshot_fixed_semantic_bytes(request, observed_through)?;
-        let total = total
-            .checked_add(read_dependencies.semantic_bytes()?)
-            .and_then(|value| value.checked_add(fixed_bytes))
-            .ok_or(StorageValueError::SizeOverflow)?;
-        if total > MAX_READ_SNAPSHOT_BYTES {
-            return Err(StorageValueError::LimitExceeded);
-        }
+        let semantic_bytes = read_snapshot_semantic_bytes(
+            &request.plan,
+            observed_through,
+            &bindings,
+            &root_validations,
+            &ranges,
+            &read_dependencies,
+        )?;
         Ok(Self {
             plan: request.plan.clone(),
             observed_through,
@@ -1281,7 +1278,7 @@ impl ReadSnapshot {
             root_validations,
             ranges,
             read_dependencies,
-            semantic_bytes: total,
+            semantic_bytes,
         })
     }
 
@@ -1327,6 +1324,53 @@ impl ReadSnapshot {
         self.semantic_bytes
     }
 
+    /// Transforms present entity records without exposing snapshot structure.
+    ///
+    /// Present bindings are visited in dense binding order, followed by present
+    /// root validations in dense root-validation order. Absences and range
+    /// observations are retained unchanged. A replacement may change only the
+    /// record fields; target, entity version, writer, and schema binding must
+    /// remain exact. The original read dependencies are retained verbatim and
+    /// the aggregate snapshot byte bound is checked again before returning.
+    pub fn try_map_present_records<E, F>(self, mut mapper: F) -> Result<Self, E>
+    where
+        E: From<StorageValueError>,
+        F: FnMut(
+            EntityObservationPosition,
+            StoredEntityRecordV1,
+        ) -> Result<StoredEntityRecordV1, E>,
+    {
+        let Self {
+            plan,
+            observed_through,
+            bindings,
+            root_validations,
+            ranges,
+            read_dependencies,
+            semantic_bytes: _,
+        } = self;
+        let bindings = try_map_present_observations(bindings, false, &mut mapper)?;
+        let root_validations = try_map_present_observations(root_validations, true, &mut mapper)?;
+        let semantic_bytes = read_snapshot_semantic_bytes(
+            &plan,
+            observed_through,
+            &bindings,
+            &root_validations,
+            &ranges,
+            &read_dependencies,
+        )
+        .map_err(E::from)?;
+        Ok(Self {
+            plan,
+            observed_through,
+            bindings,
+            root_validations,
+            ranges,
+            read_dependencies,
+            semantic_bytes,
+        })
+    }
+
     /// Constructs the transaction-current read request for this exact snapshot.
     #[must_use]
     pub fn validation_request(&self) -> ValidationReadRequest {
@@ -1355,15 +1399,53 @@ fn snapshot_fixed_semantic_bytes(
     request: &SnapshotRequest,
     observed_through: Option<CommitSequence>,
 ) -> Result<usize, StorageValueError> {
+    snapshot_fixed_semantic_bytes_for_plan(&request.plan, observed_through)
+}
+
+fn snapshot_fixed_semantic_bytes_for_plan(
+    plan: &ExecutablePlanRef,
+    observed_through: Option<CommitSequence>,
+) -> Result<usize, StorageValueError> {
     let observed_bytes = match observed_through {
         None => 1,
         Some(_) => 1 + 8,
     };
-    request
-        .plan
-        .semantic_bytes()
+    plan.semantic_bytes()
         .and_then(|value| value.checked_add(observed_bytes + 4 + 4 + 4))
         .ok_or(StorageValueError::SizeOverflow)
+}
+
+fn read_snapshot_semantic_bytes(
+    plan: &ExecutablePlanRef,
+    observed_through: Option<CommitSequence>,
+    bindings: &[EntityObservation],
+    root_validations: &[EntityObservation],
+    ranges: &[IndexRangeObservation],
+    read_dependencies: &ReadDependencies,
+) -> Result<usize, StorageValueError> {
+    let observation_bytes =
+        bindings
+            .iter()
+            .chain(root_validations)
+            .try_fold(0usize, |sum, observation| {
+                sum.checked_add(observation.semantic_bytes()?)
+                    .ok_or(StorageValueError::SizeOverflow)
+            })?;
+    let observation_bytes = ranges
+        .iter()
+        .try_fold(observation_bytes, |sum, observation| {
+            sum.checked_add(observation.semantic_bytes()?)
+                .ok_or(StorageValueError::SizeOverflow)
+        })?;
+    let fixed_bytes = snapshot_fixed_semantic_bytes_for_plan(plan, observed_through)?;
+    let total = observation_bytes
+        .checked_add(read_dependencies.semantic_bytes()?)
+        .and_then(|value| value.checked_add(fixed_bytes))
+        .ok_or(StorageValueError::SizeOverflow)?;
+    if total > MAX_READ_SNAPSHOT_BYTES {
+        return Err(StorageValueError::LimitExceeded);
+    }
+    Ok(total)
 }
 
 /// Structurally checked transaction-current read targets.
@@ -1686,20 +1768,8 @@ impl TransactionCurrentState {
         {
             return Err(StorageValueError::IdentityMismatch);
         }
-        let mut semantic_bytes = transaction_current_fixed_semantic_bytes();
-        for observation in bindings.iter().chain(&root_validations) {
-            semantic_bytes = semantic_bytes
-                .checked_add(observation.semantic_bytes()?)
-                .ok_or(StorageValueError::SizeOverflow)?;
-        }
-        for range in &ranges {
-            semantic_bytes = semantic_bytes
-                .checked_add(range.semantic_bytes()?)
-                .ok_or(StorageValueError::SizeOverflow)?;
-        }
-        if semantic_bytes > MAX_READ_SNAPSHOT_BYTES {
-            return Err(StorageValueError::LimitExceeded);
-        }
+        let semantic_bytes =
+            transaction_current_semantic_bytes(&bindings, &root_validations, &ranges)?;
         Ok(Self {
             bindings,
             root_validations,
@@ -1731,6 +1801,102 @@ impl TransactionCurrentState {
     pub const fn semantic_bytes(&self) -> usize {
         self.semantic_bytes
     }
+
+    /// Transforms present current records while preserving validation structure.
+    ///
+    /// Present bindings are visited in dense binding order, followed by present
+    /// root validations in dense root-validation order. Absences and range
+    /// epochs are retained unchanged. A replacement may change only fields;
+    /// target, entity version, writer, and schema binding must remain exact.
+    /// The aggregate current-state byte bound is checked again before returning.
+    pub fn try_map_present_records<E, F>(self, mut mapper: F) -> Result<Self, E>
+    where
+        E: From<StorageValueError>,
+        F: FnMut(
+            EntityObservationPosition,
+            StoredEntityRecordV1,
+        ) -> Result<StoredEntityRecordV1, E>,
+    {
+        let Self {
+            bindings,
+            root_validations,
+            ranges,
+            semantic_bytes: _,
+        } = self;
+        let bindings = try_map_present_observations(bindings, false, &mut mapper)?;
+        let root_validations = try_map_present_observations(root_validations, true, &mut mapper)?;
+        let semantic_bytes =
+            transaction_current_semantic_bytes(&bindings, &root_validations, &ranges)
+                .map_err(E::from)?;
+        Ok(Self {
+            bindings,
+            root_validations,
+            ranges,
+            semantic_bytes,
+        })
+    }
+}
+
+fn try_map_present_observations<E, F>(
+    observations: Vec<EntityObservation>,
+    root_validation: bool,
+    mapper: &mut F,
+) -> Result<Vec<EntityObservation>, E>
+where
+    E: From<StorageValueError>,
+    F: FnMut(EntityObservationPosition, StoredEntityRecordV1) -> Result<StoredEntityRecordV1, E>,
+{
+    observations
+        .into_iter()
+        .enumerate()
+        .map(|(index, observation)| match observation {
+            EntityObservation::Absent(target) => Ok(EntityObservation::Absent(target)),
+            EntityObservation::Present(record) => {
+                let target = record.target().clone();
+                let entity_version = record.entity_version();
+                let written_by_contract = record.written_by_contract();
+                let schema_binding = record.schema_binding().clone();
+                let position = if root_validation {
+                    EntityObservationPosition::RootValidation(index)
+                } else {
+                    EntityObservationPosition::Binding(index)
+                };
+                let replacement = mapper(position, record)?;
+                if replacement.target() != &target
+                    || replacement.entity_version() != entity_version
+                    || replacement.written_by_contract() != written_by_contract
+                    || replacement.schema_binding() != &schema_binding
+                {
+                    return Err(E::from(StorageValueError::IdentityMismatch));
+                }
+                Ok(EntityObservation::Present(replacement))
+            }
+        })
+        .collect()
+}
+
+fn transaction_current_semantic_bytes(
+    bindings: &[EntityObservation],
+    root_validations: &[EntityObservation],
+    ranges: &[CurrentRangeObservation],
+) -> Result<usize, StorageValueError> {
+    let entity_bytes = bindings.iter().chain(root_validations).try_fold(
+        transaction_current_fixed_semantic_bytes(),
+        |total, observation| {
+            total
+                .checked_add(observation.semantic_bytes()?)
+                .ok_or(StorageValueError::SizeOverflow)
+        },
+    )?;
+    let total = ranges.iter().try_fold(entity_bytes, |total, range| {
+        total
+            .checked_add(range.semantic_bytes()?)
+            .ok_or(StorageValueError::SizeOverflow)
+    })?;
+    if total > MAX_READ_SNAPSHOT_BYTES {
+        return Err(StorageValueError::LimitExceeded);
+    }
+    Ok(total)
 }
 
 const fn transaction_current_fixed_semantic_bytes() -> usize {
@@ -1848,21 +2014,38 @@ mod builder_tests {
         .expect("canonical record")
     }
 
+    fn stored(
+        plan: &ExecutablePlanRef,
+        target: EntityTarget,
+        payload: usize,
+    ) -> StoredEntityRecordV1 {
+        StoredEntityRecordV1::new(
+            target,
+            EntityVersion::first(),
+            plan.contract_version(),
+            DurableKeySchemaBindingV1::from_plan(plan),
+            record(payload),
+        )
+        .expect("stored entity")
+    }
+
     fn present(
         plan: &ExecutablePlanRef,
         target: EntityTarget,
         payload: usize,
     ) -> EntityObservation {
-        EntityObservation::Present(
-            StoredEntityRecordV1::new(
-                target,
-                EntityVersion::first(),
-                plan.contract_version(),
-                DurableKeySchemaBindingV1::from_plan(plan),
-                record(payload),
-            )
-            .expect("stored entity"),
+        EntityObservation::Present(stored(plan, target, payload))
+    }
+
+    fn with_fields(source: StoredEntityRecordV1, fields: CanonicalRecord) -> StoredEntityRecordV1 {
+        StoredEntityRecordV1::new(
+            source.target().clone(),
+            source.entity_version(),
+            source.written_by_contract(),
+            source.schema_binding().clone(),
+            fields,
         )
+        .expect("replacement fields")
     }
 
     fn range_target(index: IndexId) -> IndexRangeTarget {
@@ -1993,6 +2176,18 @@ mod builder_tests {
         assert_eq!(exact.semantic_bytes, MAX_READ_SNAPSHOT_BYTES);
         let exact = exact.finish().expect("complete exact snapshot");
         assert_eq!(exact.semantic_bytes(), MAX_READ_SNAPSHOT_BYTES);
+        assert_eq!(
+            exact.try_map_present_records::<StorageValueError, _>(|position, source| {
+                Ok(match position {
+                    EntityObservationPosition::Binding(18) => {
+                        with_fields(source, record(final_payload + 1))
+                    }
+                    EntityObservationPosition::Binding(_)
+                    | EntityObservationPosition::RootValidation(_) => source,
+                })
+            }),
+            Err(StorageValueError::LimitExceeded)
+        );
 
         let mut over = ReadSnapshotBuilder::new(&request, None).expect("snapshot builder");
         push_snapshot_bulk(&mut over, &plan, &targets);
@@ -2104,6 +2299,258 @@ mod builder_tests {
         range_builder.push_entry(entry).expect("range entry");
         range_builder.finish().expect("retain range");
         assert_eq!(builder.finish().expect("built snapshot"), direct);
+    }
+
+    #[test]
+    fn snapshot_map_visits_only_present_entities_and_preserves_dependency_evidence() {
+        let plan = plan();
+        let binding_absent = target(1);
+        let binding_present = target(2);
+        let root_present = target(3);
+        let root_absent = target(4);
+        let range = range_target(IndexId::first());
+        let request = SnapshotRequest::new(
+            plan.clone(),
+            vec![binding_absent.clone(), binding_present.clone()],
+            vec![root_present.clone(), root_absent.clone()],
+            vec![range.clone()],
+        )
+        .expect("request");
+        let ranges = vec![
+            IndexRangeObservation::new(
+                range,
+                IndexEpochPosition::Value(IndexEpoch::first()),
+                Vec::new(),
+            )
+            .expect("range observation"),
+        ];
+        let snapshot = ReadSnapshot::new(
+            &request,
+            Some(CommitSequence::first()),
+            vec![
+                EntityObservation::Absent(binding_absent),
+                present(&plan, binding_present, 1),
+            ],
+            vec![
+                present(&plan, root_present, 2),
+                EntityObservation::Absent(root_absent),
+            ],
+            ranges.clone(),
+        )
+        .expect("snapshot");
+        let dependencies = snapshot.read_dependencies().clone();
+        let original_bytes = snapshot.semantic_bytes();
+        let mut visited = Vec::new();
+
+        let mapped = snapshot
+            .try_map_present_records::<StorageValueError, _>(|position, source| {
+                visited.push(position);
+                let payload = match position {
+                    EntityObservationPosition::Binding(1) => 16,
+                    EntityObservationPosition::RootValidation(0) => 32,
+                    _ => panic!("unexpected present position"),
+                };
+                Ok(with_fields(source, record(payload)))
+            })
+            .expect("field-only mapping");
+
+        assert_eq!(
+            visited,
+            vec![
+                EntityObservationPosition::Binding(1),
+                EntityObservationPosition::RootValidation(0),
+            ]
+        );
+        assert_eq!(mapped.read_dependencies(), &dependencies);
+        assert_eq!(mapped.ranges(), ranges);
+        assert!(matches!(mapped.bindings()[0], EntityObservation::Absent(_)));
+        assert!(matches!(
+            mapped.root_validations()[1],
+            EntityObservation::Absent(_)
+        ));
+        assert!(mapped.semantic_bytes() > original_bytes);
+    }
+
+    #[test]
+    fn snapshot_map_rejects_every_structural_identity_change() {
+        let plan = plan();
+        let source_target = target(1);
+        let request = SnapshotRequest::new(
+            plan.clone(),
+            vec![source_target.clone()],
+            Vec::new(),
+            Vec::new(),
+        )
+        .expect("request");
+        let other_version = ContractVersion::new(2).expect("contract version");
+        let replacements = vec![
+            StoredEntityRecordV1::new(
+                target(2),
+                EntityVersion::first(),
+                plan.contract_version(),
+                DurableKeySchemaBindingV1::from_plan(&plan),
+                record(0),
+            )
+            .expect("changed target"),
+            StoredEntityRecordV1::new(
+                source_target.clone(),
+                EntityVersion::new(2).expect("entity version"),
+                plan.contract_version(),
+                DurableKeySchemaBindingV1::from_plan(&plan),
+                record(0),
+            )
+            .expect("changed entity version"),
+            StoredEntityRecordV1::new(
+                source_target.clone(),
+                EntityVersion::first(),
+                other_version,
+                DurableKeySchemaBindingV1::new(
+                    plan.contract_lineage().clone(),
+                    other_version,
+                    ContractBundleHash::from_bytes([0x91; 32]),
+                ),
+                record(0),
+            )
+            .expect("changed writer"),
+            StoredEntityRecordV1::new(
+                source_target.clone(),
+                EntityVersion::first(),
+                plan.contract_version(),
+                DurableKeySchemaBindingV1::new(
+                    plan.contract_lineage().clone(),
+                    plan.contract_version(),
+                    ContractBundleHash::from_bytes([0x92; 32]),
+                ),
+                record(0),
+            )
+            .expect("changed schema binding"),
+        ];
+
+        for replacement in replacements {
+            let snapshot = ReadSnapshot::new(
+                &request,
+                None,
+                vec![present(&plan, source_target.clone(), 0)],
+                Vec::new(),
+                Vec::new(),
+            )
+            .expect("snapshot");
+            assert_eq!(
+                snapshot.try_map_present_records::<StorageValueError, _>(|_, _| {
+                    Ok(replacement.clone())
+                }),
+                Err(StorageValueError::IdentityMismatch)
+            );
+        }
+    }
+
+    #[test]
+    fn snapshot_map_short_circuits_callback_errors() {
+        let plan = plan();
+        let absent = target(1);
+        let binding = target(2);
+        let root = target(3);
+        let range = range_target(IndexId::first());
+        let request = SnapshotRequest::new(
+            plan.clone(),
+            vec![absent.clone(), binding.clone()],
+            vec![root.clone()],
+            vec![range.clone()],
+        )
+        .expect("request");
+        let snapshot = ReadSnapshot::new(
+            &request,
+            None,
+            vec![
+                EntityObservation::Absent(absent),
+                present(&plan, binding, 0),
+            ],
+            vec![present(&plan, root, 0)],
+            vec![
+                IndexRangeObservation::new(range, IndexEpochPosition::BeforeFirst, Vec::new())
+                    .expect("range observation"),
+            ],
+        )
+        .expect("snapshot");
+        let mut calls = 0;
+
+        let result = snapshot.try_map_present_records::<StorageValueError, _>(|position, _| {
+            calls += 1;
+            assert_eq!(position, EntityObservationPosition::Binding(1));
+            Err(StorageValueError::InvalidShape)
+        });
+
+        assert_eq!(result, Err(StorageValueError::InvalidShape));
+        assert_eq!(calls, 1);
+    }
+
+    #[test]
+    fn transaction_current_map_uses_the_same_sealed_position_order() {
+        let plan = plan();
+        let binding_absent = target(1);
+        let binding_present = target(2);
+        let root_present = target(3);
+        let range = range_target(IndexId::first());
+        let snapshot_request = SnapshotRequest::new(
+            plan.clone(),
+            vec![binding_absent.clone(), binding_present.clone()],
+            vec![root_present.clone()],
+            vec![range.clone()],
+        )
+        .expect("snapshot request");
+        let snapshot = ReadSnapshot::new(
+            &snapshot_request,
+            None,
+            vec![
+                EntityObservation::Absent(binding_absent.clone()),
+                present(&plan, binding_present.clone(), 0),
+            ],
+            vec![present(&plan, root_present.clone(), 0)],
+            vec![
+                IndexRangeObservation::new(
+                    range.clone(),
+                    IndexEpochPosition::BeforeFirst,
+                    Vec::new(),
+                )
+                .expect("range observation"),
+            ],
+        )
+        .expect("snapshot");
+        let validation = snapshot.validation_request();
+        let current_ranges = vec![CurrentRangeObservation::new(
+            range,
+            IndexEpochPosition::Value(IndexEpoch::first()),
+        )];
+        let current = TransactionCurrentState::new(
+            &validation,
+            vec![
+                EntityObservation::Absent(binding_absent),
+                present(&plan, binding_present, 1),
+            ],
+            vec![present(&plan, root_present, 2)],
+            current_ranges.clone(),
+        )
+        .expect("transaction current state");
+        let original_bytes = current.semantic_bytes();
+        let mut visited = Vec::new();
+
+        let mapped = current
+            .try_map_present_records::<StorageValueError, _>(|position, source| {
+                visited.push(position);
+                Ok(with_fields(source, record(32)))
+            })
+            .expect("field-only mapping");
+
+        assert_eq!(
+            visited,
+            vec![
+                EntityObservationPosition::Binding(1),
+                EntityObservationPosition::RootValidation(0),
+            ]
+        );
+        assert_eq!(mapped.ranges(), current_ranges);
+        assert!(matches!(mapped.bindings()[0], EntityObservation::Absent(_)));
+        assert!(mapped.semantic_bytes() > original_bytes);
     }
 
     #[test]
