@@ -2,7 +2,7 @@
 
 - **Status:** Accepted
 - **Direction approved:** 2026-07-12
-- **Exact text accepted:** Yes; amended 2026-07-14 and 2026-07-20
+- **Exact text accepted:** Yes; amended 2026-07-14, 2026-07-20, and 2026-07-21
 - **Accepted:** 2026-07-13
 - **Requires:** ADR-0007, ADR-0009, ADR-0012, and ADR-0017 accepted before or in
   the same governance change
@@ -34,6 +34,9 @@ startup outcome/commit reciprocity clarification below.
 On 2026-07-20 the maintainer accepted conservative checked-plan derived-index
 bounds and the exact coordinator stop behavior for mutation-affected index-epoch
 exhaustion below.
+On 2026-07-21 the maintainer accepted the bounded lineage-overflow retention and
+recheck rule plus explicit coordinator-durability construction below. These
+clarifications add no durable record, wire field, or storage key.
 
 ## Context
 
@@ -89,10 +92,12 @@ projection-schema module; this is the narrow reason WP-060 depends on WP-040.
 It never consumes or interprets `CommandPlan`, executable expressions, compiler
 services, or source diagnostics. `riffdb-runtime` constructs an
 `EvaluatedCommand` and consumes a `ReadSnapshot`, but does not open storage or
-receive admitted provenance claims. `riffdb-commit` depends on both
-contract IR and storage API and owns orchestration, historical-plan lookup,
-semantic plan/target matching, validation, retry, sequence assignment policy,
-and transaction progression. `riffdb-storage-memory` and
+receive admitted provenance claims. `riffdb-catalog` owns the opaque process-
+local command `Ready`/resource evidence and pure current-recheck implementation
+bound to its exact resolved plan/proof. `riffdb-commit` depends on catalog,
+contract IR, and storage API; it consumes that opaque API and owns orchestration,
+historical-plan lookup, semantic plan/target matching, validation, retry,
+sequence assignment policy, and transaction progression. `riffdb-storage-memory` and
 `riffdb-storage-redb` implement the same semantic interfaces. Generated Prost
 messages and `StoredEnvelope` remain owned by `riffdb-proto`; they are encodings
 of storage semantic DTOs and never replace them in runtime, service, or policy
@@ -107,8 +112,9 @@ riffdb-types / riffdb-errors --> riffdb-storage-api
 riffdb-proto -----------------> riffdb-storage-api::proto_codec
 riffdb-types -----------------> riffdb-contract-ir
 riffdb-contract-ir -----------> riffdb-storage-api::projection_schema
+riffdb-storage-api + riffdb-contract-ir --> riffdb-catalog
 riffdb-storage-api -----------> riffdb-runtime
-riffdb-storage-api + riffdb-contract-ir --> riffdb-commit
+riffdb-storage-api + riffdb-contract-ir + riffdb-catalog --> riffdb-commit
 ```
 
 Only the narrowly scoped `riffdb-storage-api::proto_codec` bridge may name
@@ -340,6 +346,30 @@ port's existence does not enable a hidden scan.
 Snapshot observations are immutable and do not claim freshness. After the
 snapshot is returned, correctness comes only from canonical dependencies and
 transaction-current validation.
+
+The storage-owned `ReadSnapshot` is the bounded raw physical observation before
+catalog-proof-guided lineage normalization. `riffdb-catalog` owns an opaque
+process-local materialization API bound to the exact resolved plan. Its successful
+`Ready` evidence supplies the bounded normalized snapshot plus opaque current-
+recheck evidence. A valid null expansion beyond the shared 16 MiB ceiling
+instead returns resource evidence retaining only this original raw snapshot plus
+the exact resolved plan/proof and no over-budget normalized data or masks. The
+raw snapshot remains bounded by the existing storage limit; the resolved
+plan/proof retain their independent accepted bounds. Evidence never crosses a
+storage trait or becomes a new snapshot, intent, or durable-record variant.
+
+The existing execution-failure transaction does not trust dependency versions
+alone for this overflow case. The coordinator first compares every canonical
+dependency, then invokes the resource evidence's catalog-owned pure current-
+recheck operation with transaction-current raw binding/root observations. That
+operation proves exact raw physical equality and deterministically repeats the
+same normalization and exact charge. The storage transition may
+replace Pending with `StoredExecutionFailedV1` carrying `ResourceLimit` only
+when that deterministic pass reproduces the same valid overflow. A dependency change
+reevaluates; raw drift or a nonmatching normalization result is integrity. The
+operation performs no catalog lookup, storage I/O, runtime evaluation, clock, or
+entropy. The storage API remains IR-blind and stores no overflow evidence, mask,
+or normalized snapshot.
 
 ### Canonical read dependencies
 
@@ -1181,9 +1211,30 @@ results correspond one-to-one with assigned sequences. Batching never
 shares idempotency identity, merges command outcomes/events, reorders queue
 admission, or permits storage to choose semantic grouping.
 
-Group-flush scheduling, latency windows, fairness, and the production default are
-deferred to WP-100/benchmark review. Preserving staging in the interface does not
-enable group mode before those policies and crash tests exist.
+Group-flush scheduling, latency windows, fairness, and any future production-
+default policy are deferred to WP-100/benchmark review; the POC has no implicit
+default. Preserving staging in the interface does not enable group mode before
+those policies and crash tests exist.
+
+### Explicit coordinator durability selection
+
+Coordinator construction has no implicit durability mode. Every production
+constructor receives one explicit checked process-local value whose
+closed values are `Sync` and `Group`; it does not implement `Default`, infer a
+mode from the selected backend, or expose a zero-argument/fallback construction
+path. `Memory` remains a semantic `DurabilityMode` value because memory-adapter,
+codec, and model fixtures must represent it, but only test-only coordinator
+construction may select it. The production constructor's input type cannot
+represent `Memory`; having no argument is not a valid construction path.
+
+The P1 `riffdbd` component graph explicitly selects and passes the code-level
+`Sync` value. The production
+server does not yet expose `Group`; the existing scheduling, fairness, latency,
+crash-evidence, and human-review gate remains controlling. Thus `Sync` and
+`Group` are the production coordinator value domain without making `Group` an
+enabled POC server choice or choosing an MVP default. The exact selected mode is
+passed through graph construction and recorded unchanged in the committed
+outcome and commit record.
 
 ### Resolved grammar-v1 transaction defaults
 
@@ -1311,7 +1362,10 @@ core/subsystem readiness split and recovery ownership, bounds, error kinds,
 specialized port semantics, standalone service-audit timestamp/link boundary,
 clock-source rules, initialization-before-evidence ordering, exclusive session
 and exact-end semantics, structural/catalog proof ownership and binding,
-WP-130-only dormant-port activation, and batch staging rules are semantic
+WP-130-only dormant-port activation, catalog-owned opaque command readiness/
+resource evidence and current recheck, bounded lineage-overflow retention and
+ordered reproduction, explicit process-local production coordinator durability
+selection, and batch staging rules are semantic
 compatibility boundaries.
 
 Engine-private handles and physical access mechanics remain adapter
@@ -1363,6 +1417,11 @@ It includes:
 - snapshot consistency, ownership/lifetime compile checks, complete-record copy,
   empty/present observations, range epochs, count/byte boundaries, and exact
   `BindingId` ordering;
+- catalog evidence tests proving that one-byte-over valid expansion returns only
+  the raw bounded snapshot and exact resolved plan/proof with no over-budget
+  normalized record or mask; pure current-recheck tests prove exact raw equality
+  and deterministic charge, while coordinator integration compares dependencies
+  before invoking that recheck and terminalizing the reproduced overflow;
 - exact whole-index and every leading-component epoch buckets, before-first,
   old/new prefix union and deduplication, covered-value changes, later commands
   seeing staged epochs, overflow rollback, and component-incomplete rejection;
@@ -1405,6 +1464,11 @@ It includes:
   isolation, empty frontier/epoch positions, and no `EventId` at zero;
 - single-command and bounded multi-command staging, staged-prefix behavior,
   aggregate bounds, one flush, ordered results, and whole-batch crash outcomes;
+- construction/source-shape tests proving production coordinator creation
+  requires an explicit `Sync` or `Group`, has no `Default` or backend fallback,
+  and its input cannot represent production `Memory`, plus P1 composition tests
+  proving `riffdbd` explicitly supplies code-level `Sync`, exposes no operator
+  selector, and does not enable `Group`;
 - error classification tests distinguishing proven abort from unknown commit,
   fencing after uncertainty, secret canaries, and readiness refusal;
 - event/outbox model tests for every missing, duplicate, mismatched, and orphaned
@@ -1561,6 +1625,17 @@ changes below; affected implementation must follow the reconciled manifest:
     semantic/failpoint evidence; and WP-190/WP-200 retain the final crash and
     end-to-end evidence. No package may assign a sequence first and treat a later
     size failure as an acceptable gap.
+13. The 2026-07-21 clarification requires manifest reconciliation but no new
+    package, hard WP dependency, allowed path, or acceptance command. WP-050 adds
+    `TXN-042` and ADR-0023, and owns the opaque `Ready`/resource evidence, pure
+    current-recheck API, and one-byte-over returned-evidence fixtures under its
+    existing catalog paths. WP-100 consumes
+    that API and owns dependency ordering and terminalization without catalog
+    path authority. WP-100 also owns explicit process-local production
+    durability construction. WP-130 explicitly passes code-level `Sync` in its
+    component graph, exposes no POC operator durability selector, and keeps
+    `Group` server-disabled. Existing WP-050, WP-100, and WP-130 test commands
+    provide the evidence.
 
 ADR-0007 was accepted in the same governance change and cross-references this
 specialized lower transition and proto-owner sequence. ADR-0005's complete-plan-
@@ -1634,12 +1709,22 @@ Acceptance of this exact record decided:
 17. one full `StoredOutcomeV1` envelope as both terminal idempotency state and
     persisted outcome, atomic pending-row deletion without a tombstone or second
     terminal envelope, and mandatory startup outcome/commit/provenance
-    reciprocity validation without repair.
+    reciprocity validation without repair;
+18. catalog-owned opaque `Ready`/resource evidence and pure current recheck:
+    valid over-limit returned evidence retains only the original bounded raw
+    snapshot and exact resolved plan/proof with no over-budget normalized data or
+    masks, followed by coordinator-owned dependency-first invocation and
+    deterministic overflow reproduction before `ResourceLimit` terminalization;
+    and
+19. explicit production coordinator durability construction over only `Sync` or
+    `Group`, test-only `Memory`, no implicit default or backend inference, and
+    explicit `Sync` selection by P1 `riffdbd` while `Group` remains disabled.
 
 These semantic details received explicit maintainer review on 2026-07-13; they
 were not inferred merely from the earlier direction approval. Item 14 and its
 associated bounds/testing reconciliation and items 15-17 received explicit
-maintainer review on 2026-07-14.
+maintainer review on 2026-07-14. Items 18-19 received explicit maintainer review
+on 2026-07-21.
 
 WP-060 may start after its declared package dependencies merge, but cannot be
 completed until it implements the following accepted interfaces together:
