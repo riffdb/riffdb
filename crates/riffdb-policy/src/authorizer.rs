@@ -144,6 +144,8 @@ where
             Ok(obligations) => {
                 let proof = if request.permission_requirement().is_none() {
                     AuthorizedOperation::new_discovery(
+                        self.expected_database_id,
+                        self.expected_environment.clone(),
                         request,
                         obligations,
                         current_facts.grant,
@@ -152,6 +154,8 @@ where
                     )
                 } else {
                     AuthorizedOperation::new(
+                        self.expected_database_id,
+                        self.expected_environment.clone(),
                         request,
                         obligations,
                         principal_facts.principal_id,

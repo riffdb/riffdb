@@ -5,8 +5,8 @@ use std::num::NonZeroU16;
 
 use riffdb_types::{
     ActorId, ActorKind, ApprovalId, CapabilityGrantV1, CapabilityPermissionV1, ContractLineage,
-    EntityTypeId, FieldId, MAX_CAPABILITY_FIELD_VISIBILITY, PartitionScopeV1, ScopedPartitionV1,
-    ServiceOperationV1, TenantScope,
+    DatabaseId, EntityTypeId, Environment, FieldId, MAX_CAPABILITY_FIELD_VISIBILITY,
+    PartitionScopeV1, ScopedPartitionV1, ServiceOperationV1, TenantScope,
 };
 
 use crate::operation::{
@@ -411,9 +411,11 @@ impl fmt::Debug for Obligations {
     }
 }
 
-/// Privately constructed proof that current policy allowed one exact request.
+/// Privately constructed proof that current policy allowed one exact boundary and request.
 #[derive(Eq, PartialEq)]
 pub struct AuthorizedOperation {
+    database_id: DatabaseId,
+    environment: Environment,
     request: OperationRequest,
     obligations: Obligations,
     discovery_authority: Option<CapabilityGrantV1>,
@@ -423,12 +425,16 @@ pub struct AuthorizedOperation {
 
 impl AuthorizedOperation {
     pub(crate) const fn new(
+        database_id: DatabaseId,
+        environment: Environment,
         request: OperationRequest,
         obligations: Obligations,
         principal_id: ActorId,
         actor_kind: ActorKind,
     ) -> Self {
         Self {
+            database_id,
+            environment,
             request,
             obligations,
             discovery_authority: None,
@@ -438,6 +444,8 @@ impl AuthorizedOperation {
     }
 
     pub(crate) const fn new_discovery(
+        database_id: DatabaseId,
+        environment: Environment,
         request: OperationRequest,
         obligations: Obligations,
         grant: CapabilityGrantV1,
@@ -445,12 +453,26 @@ impl AuthorizedOperation {
         actor_kind: ActorKind,
     ) -> Self {
         Self {
+            database_id,
+            environment,
             request,
             obligations,
             discovery_authority: Some(grant),
             principal_id,
             actor_kind,
         }
+    }
+
+    /// Returns the exact database boundary checked by the current authorizer.
+    #[must_use]
+    pub const fn database_id(&self) -> DatabaseId {
+        self.database_id
+    }
+
+    /// Borrows the exact environment checked by the current authorizer.
+    #[must_use]
+    pub const fn environment(&self) -> &Environment {
+        &self.environment
     }
 
     /// Returns the exact request authorized by this proof.
@@ -483,6 +505,8 @@ impl AuthorizedOperation {
         agent_session_policy: AgentSessionAdmissionPolicy,
     ) -> Result<AuthorizedCommandExecution, CommandAuthorizationBindingError> {
         let Self {
+            database_id,
+            environment,
             request,
             obligations,
             discovery_authority,
@@ -493,6 +517,8 @@ impl AuthorizedOperation {
             return Err(CommandAuthorizationBindingError::OperationMismatch);
         }
         AuthorizedCommandExecution::bind(
+            database_id,
+            environment,
             request,
             obligations,
             principal_id,
@@ -514,6 +540,8 @@ impl AuthorizedOperation {
             return Err(DiscoveryFilterError::CatalogMismatch);
         }
         let Self {
+            database_id: _,
+            environment: _,
             request,
             obligations,
             discovery_authority,
@@ -918,6 +946,8 @@ mod tests {
 
     fn discovery(request: OperationRequest, grant: CapabilityGrantV1) -> AuthorizedDiscovery {
         AuthorizedOperation::new_discovery(
+            DatabaseId::from_unix_milliseconds_and_random(1, [0x51; 10]).expect("valid UUIDv7"),
+            Environment::new("discovery-test").expect("bounded environment"),
             request,
             obligations(),
             grant,

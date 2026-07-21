@@ -171,6 +171,8 @@ fn exact_command_scope_and_field_obligations_cannot_be_bypassed() {
         partition(),
     );
     let proof = allowed(authorize(&fixture, environment(), timestamp(160), execute).unwrap());
+    assert_eq!(proof.database_id(), database_id());
+    assert_eq!(proof.environment(), &environment());
     assert!(proof.obligations().partition_constraint().is_some());
 
     let wrong_command = OperationRequest::execute_command(
