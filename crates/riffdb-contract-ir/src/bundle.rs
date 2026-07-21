@@ -5,9 +5,10 @@ use std::collections::{BTreeMap, BTreeSet};
 use riffdb_types::{
     AggregateTypeId, CommandId, ContractBundleHash, ContractLineage, ContractPlanRootHash,
     ContractVersion, CurrencyCode, DecimalSpec, EntityTypeId, EnumTypeId, EnumVariantId,
-    EventTypeId, FieldId, IndexId, InvariantId, OutcomeId, PlanHash, ProjectionId,
-    ProjectionPlanHash, SchemaHash, SourceHash, decode_canonical_value, encode_canonical_value,
-    hash_contract_bundle, hash_contract_plan_root, hash_plan, hash_projection_plan, hash_schema,
+    EventTypeId, FieldId, IndexId, InvariantId, MAX_COMMAND_CONFLICT_KEYS_V1, OutcomeId, PlanHash,
+    ProjectionId, ProjectionPlanHash, SchemaHash, SourceHash, decode_canonical_value,
+    encode_canonical_value, hash_contract_bundle, hash_contract_plan_root, hash_plan,
+    hash_projection_plan, hash_schema,
 };
 
 use crate::codec::{Reader, Writer};
@@ -3607,7 +3608,11 @@ fn decode_locality(reader: &mut Reader<'_>) -> Result<LocalityPlan, IrValidation
     let aggregate_id = decode_aggregate_id(reader)?;
     let partition_schema = decode_key_schema(reader, 0)?;
     let partition_expression = ExprId::new(reader.u32()?);
-    let count = decode_len(reader, "conflict derivations", 1_024)?;
+    let count = decode_len(
+        reader,
+        "command conflict derivations",
+        MAX_COMMAND_CONFLICT_KEYS_V1,
+    )?;
     let mut conflicts = Vec::with_capacity(count);
     for _ in 0..count {
         let key_schema = decode_key_schema(reader, 0)?;

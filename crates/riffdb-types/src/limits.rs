@@ -18,6 +18,9 @@ pub const MAX_RECORD_FIELDS: usize = 65_535;
 /// Maximum encoded size of one durable key, in bytes.
 pub const MAX_KEY_BYTES: usize = 4_096;
 
+/// Maximum conflict-key derivations and acquisition entries for one v1 command.
+pub const MAX_COMMAND_CONFLICT_KEYS_V1: usize = 256;
+
 /// Maximum nesting depth of one canonical value.
 pub const MAX_NESTING_DEPTH: usize = 32;
 
@@ -103,6 +106,7 @@ mod tests {
         assert_eq!(MAX_LIST_ENTRIES, 65_535);
         assert_eq!(MAX_RECORD_FIELDS, 65_535);
         assert_eq!(MAX_KEY_BYTES, 4_096);
+        assert_eq!(MAX_COMMAND_CONFLICT_KEYS_V1, 256);
         assert_eq!(MAX_NESTING_DEPTH, 32);
         assert_eq!(MAX_ACTOR_ID_BYTES, 256);
         assert_eq!(MAX_IDEMPOTENCY_KEY_BYTES, 128);
