@@ -6,7 +6,9 @@
 
 use std::{collections::BTreeMap, error::Error, fmt};
 
-use riffdb_catalog::ResolvedExecutablePlan;
+use riffdb_catalog::{
+    MaterializedTransactionCurrentState, ResolvedExecutablePlan, TransactionCurrentMaterialization,
+};
 use riffdb_contract_ir::{
     BindingId, BindingMode, CommandPlan, ExecutionClass, Instruction, RecordSchema, RecordTypeRef,
     RootValidationReadId, SchemaIr, ValueType,
@@ -15,15 +17,24 @@ use riffdb_invariant::{
     CommitCheckResult, EvaluationError, ExpressionValueSource, evaluate_commit_checks,
 };
 use riffdb_storage_api::{
-    CandidateValidationRejection, EntityMutation, EntityObservation, EntityTarget,
-    EvaluatedCommand, ExecutablePlanRef, ReadDependencies, ReadDependency, StoredEntityRecordV1,
-    TransactionCurrentState,
+    ApplicationCommandTransactionPort, AtomicCommandRecordSet, CandidateAdmissionResult,
+    CandidateCapacityResult, CandidateValidationRejection, CommandCandidateAdmission,
+    CommandCandidateAffectedEpochRead, CommandCandidateAwaitingCapacity,
+    CommandCandidateAwaitingValidation, CommandCandidateCapacityReserved,
+    CommandCandidateSequenceAssigned, CommandCandidateStateRead, CommandWriteSetPlanV1,
+    EmptyCommandBatch, EntityMutation, EntityObservation, EntityTarget, EvaluatedCommand,
+    ExecutablePlanRef, ReadDependencies, ReadDependency, StorageError, StoredEntityRecordV1,
+    StoredExecutionFailedV1, StoredOutcomeV1, TransactionCurrentState,
 };
 use riffdb_types::{CanonicalRecord, CanonicalValue, FieldId, LogicalTime};
 
+use crate::command_attempt::{
+    PendingCommandAttempts, ProvenanceBoundCommandAttempt, RolledBackCandidateDisposition,
+};
+
 /// Redacted failure for an impossible checked-plan/value combination.
 #[derive(Clone, Copy, Eq, PartialEq)]
-struct CommandValidationError {
+pub(super) struct CommandValidationError {
     _private: (),
 }
 
@@ -53,6 +64,631 @@ enum CheckedCommandDecision {
     Rejected(CandidateValidationRejection),
 }
 
+/// Closed result of opening and atomically rechecking one exact storage candidate.
+pub(super) enum CommandCandidateChainStart<S> {
+    /// The exact Pending admission remains and the storage state is inseparably bound.
+    Ready(Box<BoundCommandCandidateStateRead<S>>),
+    /// A concurrent equal-input command committed before this write transaction opened.
+    OutcomeReplay(StoredOutcomeV1),
+    /// A concurrent equal-input deterministic failure became terminal.
+    ExecutionFailureReplay(StoredExecutionFailedV1),
+    /// The same identity retained another canonical input.
+    InputMismatch,
+    /// Opening or rechecking the short transaction failed.
+    StorageFailure(StorageError),
+    /// Storage returned state inconsistent with the exact bound attempt.
+    Integrity,
+}
+
+/// The sole phase-1 carrier after exact storage admission recheck.
+pub(super) struct BoundCommandCandidateStateRead<S> {
+    state_read: S,
+    attempt: ProvenanceBoundCommandAttempt,
+}
+
+/// Opens an empty authoritative transaction and binds its exact candidate to the attempt.
+pub(super) fn begin_bound_command_candidate<P>(
+    port: &P,
+    attempt: ProvenanceBoundCommandAttempt,
+) -> CommandCandidateChainStart<
+    <<P::EmptyBatch as EmptyCommandBatch>::Candidate as CommandCandidateAdmission>::StateRead,
+>
+where
+    P: ApplicationCommandTransactionPort,
+{
+    let empty = match port.begin_empty_batch() {
+        Ok(empty) => empty,
+        Err(error) => return CommandCandidateChainStart::StorageFailure(error),
+    };
+    let candidate = match empty.begin_candidate(attempt.storage_intent()) {
+        Ok(candidate) => candidate,
+        Err(error) => return CommandCandidateChainStart::StorageFailure(error),
+    };
+    let rechecked = match candidate.recheck_admission() {
+        Ok(rechecked) => rechecked,
+        Err(error) => return CommandCandidateChainStart::StorageFailure(error),
+    };
+    match rechecked {
+        CandidateAdmissionResult::Proceed(state_read) => {
+            CommandCandidateChainStart::Ready(Box::new(BoundCommandCandidateStateRead {
+                attempt,
+                state_read,
+            }))
+        }
+        CandidateAdmissionResult::StoredOutcome { prior, outcome } => {
+            drop(prior);
+            if outcome_matches_bound_attempt(&outcome, &attempt) {
+                CommandCandidateChainStart::OutcomeReplay(outcome)
+            } else {
+                CommandCandidateChainStart::Integrity
+            }
+        }
+        CandidateAdmissionResult::ExecutionFailed { prior, failure } => {
+            drop(prior);
+            if failure.pending() == attempt.commit_intent().pending() {
+                CommandCandidateChainStart::ExecutionFailureReplay(failure)
+            } else {
+                CommandCandidateChainStart::Integrity
+            }
+        }
+        CandidateAdmissionResult::InputMismatch(abandoned) => {
+            let (prior, intent) = abandoned.into_parts();
+            let exact_intent = *intent == *attempt.commit_intent();
+            drop(prior);
+            drop(intent);
+            if exact_intent {
+                CommandCandidateChainStart::InputMismatch
+            } else {
+                CommandCandidateChainStart::Integrity
+            }
+        }
+        CandidateAdmissionResult::MissingPending(abandoned)
+        | CandidateAdmissionResult::PendingMismatch(abandoned) => {
+            let (prior, intent) = abandoned.into_parts();
+            drop(prior);
+            drop(intent);
+            CommandCandidateChainStart::Integrity
+        }
+    }
+}
+
+fn outcome_matches_bound_attempt(
+    outcome: &StoredOutcomeV1,
+    attempt: &ProvenanceBoundCommandAttempt,
+) -> bool {
+    let context = attempt.commit_context();
+    let pending = context.pending();
+    outcome.identity() == pending.identity()
+        && outcome.admission_request_id() == pending.admission_request_id()
+        && outcome.plan() == pending.plan()
+        && outcome.canonical_input_hash() == pending.canonical_input_hash()
+        && outcome.actor() == pending.actor()
+        && outcome.logical_time() == pending.logical_time()
+        && outcome.partition_key() == pending.partition_key()
+        && outcome.partition_hash() == context.partition_hash()
+        && outcome.conflict_hashes() == context.conflict_hashes()
+        && outcome.admitted_claims() == pending.provenance_claims()
+}
+
+/// Closed current-state result retaining the exact awaiting-validation state.
+pub(super) enum TransactionCurrentAttemptDecision<C> {
+    /// Dependencies and every raw physical observation matched the retained snapshot.
+    Ready(CheckedTransactionCurrentAttempt<C>),
+    /// An influential absence, version, or range epoch changed before catalog recheck.
+    DependencyChanged(CheckedDependencyChangedAttempt<C>),
+    /// Storage could not read the complete current state.
+    StorageFailure(StorageError),
+    /// Current state contradicted the retained attempt evidence.
+    Integrity,
+}
+
+/// The only transaction-current value accepted by semantic validation.
+pub(super) struct CheckedTransactionCurrentAttempt<C> {
+    candidate: C,
+    current: MaterializedTransactionCurrentState,
+    attempt: ProvenanceBoundCommandAttempt,
+}
+
+/// A changed-dependency decision that can release only its exact storage candidate.
+pub(super) struct CheckedDependencyChangedAttempt<C> {
+    candidate: C,
+    attempt: ProvenanceBoundCommandAttempt,
+}
+
+impl<C> CheckedDependencyChangedAttempt<C>
+where
+    C: CommandCandidateAwaitingValidation,
+{
+    pub(super) fn reject_storage_and_rollback(self) -> RolledBackCandidateDisposition {
+        self.attempt.reject_storage_and_rollback(
+            self.candidate,
+            CandidateValidationRejection::DependencyChanged,
+        )
+    }
+}
+
+impl<S> BoundCommandCandidateStateRead<S>
+where
+    S: CommandCandidateStateRead,
+{
+    /// Reads transaction-current state from the exact retained storage candidate.
+    pub(super) fn read_transaction_current(
+        self,
+    ) -> TransactionCurrentAttemptDecision<S::AwaitingValidation> {
+        let Self {
+            attempt,
+            state_read,
+        } = self;
+        let (candidate, current) = match state_read.read_transaction_current() {
+            Ok(current) => current,
+            Err(error) => return TransactionCurrentAttemptDecision::StorageFailure(error),
+        };
+        if !attempt.has_exact_semantic_join() {
+            drop(candidate);
+            drop(attempt);
+            return TransactionCurrentAttemptDecision::Integrity;
+        }
+        let dependencies = match dependencies_from_current(&current) {
+            Ok(dependencies) => dependencies,
+            Err(_) => {
+                drop(candidate);
+                drop(attempt);
+                return TransactionCurrentAttemptDecision::Integrity;
+            }
+        };
+        if dependencies != *attempt.evaluated().read_dependencies() {
+            return TransactionCurrentAttemptDecision::DependencyChanged(
+                CheckedDependencyChangedAttempt { attempt, candidate },
+            );
+        }
+        let materialized = match attempt
+            .materialized_snapshot()
+            .materialize_transaction_current(current)
+        {
+            Ok(materialized) => materialized,
+            Err(_) => {
+                drop(candidate);
+                drop(attempt);
+                return TransactionCurrentAttemptDecision::Integrity;
+            }
+        };
+        match materialized {
+            TransactionCurrentMaterialization::Ready(current) => {
+                TransactionCurrentAttemptDecision::Ready(CheckedTransactionCurrentAttempt {
+                    attempt,
+                    candidate,
+                    current,
+                })
+            }
+            TransactionCurrentMaterialization::DependencyChanged => {
+                drop(candidate);
+                drop(attempt);
+                TransactionCurrentAttemptDecision::Integrity
+            }
+        }
+    }
+}
+
+/// Closed result of validating the exact candidate/current aggregate.
+pub(super) enum CheckedCandidateDecision<C> {
+    Validated(CheckedValidatedCommand<C>),
+    Rejected(CheckedCandidateRejection<C>),
+}
+
+/// A proven noncommit decision that owns the exact storage candidate to reject.
+pub(super) struct CheckedCandidateRejection<C> {
+    candidate: C,
+    reason: CandidateValidationRejection,
+    attempt: ProvenanceBoundCommandAttempt,
+}
+
+impl<C> CheckedCandidateRejection<C>
+where
+    C: CommandCandidateAwaitingValidation,
+{
+    pub(super) fn reject_storage_and_rollback(self) -> RolledBackCandidateDisposition {
+        self.attempt
+            .reject_storage_and_rollback(self.candidate, self.reason)
+    }
+}
+
+/// Unforgeable authority created only after every transaction-current semantic check.
+pub(super) struct CheckedCandidateSeal {
+    _private: (),
+}
+
+impl CheckedCandidateSeal {
+    fn after_successful_validation() -> Self {
+        Self { _private: () }
+    }
+
+    #[cfg(test)]
+    pub(super) fn for_record_graph_test() -> Self {
+        Self::after_successful_validation()
+    }
+}
+
+/// Exact validated values and their inseparable storage candidate.
+pub(super) struct CheckedValidatedCommand<C> {
+    seal: CheckedCandidateSeal,
+    candidate: C,
+    current: MaterializedTransactionCurrentState,
+    mutation_positions: Box<[Option<usize>]>,
+    attempt: ProvenanceBoundCommandAttempt,
+}
+
+impl<C> CheckedValidatedCommand<C> {
+    pub(super) const fn attempt(&self) -> &ProvenanceBoundCommandAttempt {
+        &self.attempt
+    }
+
+    pub(super) const fn resolved(&self) -> &ResolvedExecutablePlan {
+        self.attempt.resolved_plan()
+    }
+
+    pub(super) const fn evaluated(&self) -> &EvaluatedCommand {
+        self.attempt.evaluated()
+    }
+
+    pub(super) const fn current(&self) -> &TransactionCurrentState {
+        self.current.state()
+    }
+
+    pub(super) fn mutation_positions(&self) -> &[Option<usize>] {
+        &self.mutation_positions
+    }
+}
+
+impl<C> CheckedValidatedCommand<C>
+where
+    C: CommandCandidateAwaitingValidation,
+{
+    pub(super) fn plan_validated(
+        self,
+        affected_targets: riffdb_storage_api::AffectedIndexEpochTargets,
+    ) -> CheckedValidatedCommand<C::AffectedEpochRead> {
+        let Self {
+            seal,
+            attempt,
+            candidate,
+            current,
+            mutation_positions,
+        } = self;
+        let candidate = candidate.plan_validated(affected_targets);
+        CheckedValidatedCommand {
+            seal,
+            attempt,
+            candidate,
+            current,
+            mutation_positions,
+        }
+    }
+}
+
+/// Closed result of reading mutation-affected epochs from the exact candidate.
+pub(super) enum CheckedAffectedEpochRead<C> {
+    Ready(Box<CheckedValidatedCommand<C>>),
+    StorageFailure(StorageError),
+}
+
+impl<C> CheckedValidatedCommand<C>
+where
+    C: CommandCandidateAffectedEpochRead,
+{
+    pub(super) fn read_affected_epoch_current(
+        self,
+    ) -> CheckedAffectedEpochRead<C::AwaitingCapacity> {
+        let Self {
+            seal,
+            attempt,
+            candidate,
+            current,
+            mutation_positions,
+        } = self;
+        let candidate = match candidate.read_affected_epoch_current() {
+            Ok(candidate) => candidate,
+            Err(error) => {
+                drop(current);
+                drop(mutation_positions);
+                drop(attempt);
+                return CheckedAffectedEpochRead::StorageFailure(error);
+            }
+        };
+        CheckedAffectedEpochRead::Ready(Box::new(CheckedValidatedCommand {
+            seal,
+            attempt,
+            candidate,
+            current,
+            mutation_positions,
+        }))
+    }
+}
+
+/// Closed result of capacity reservation with no detached storage state.
+pub(super) enum CheckedCapacityReservation<C> {
+    Reserved(Box<CheckedValidatedCommand<C>>),
+    BatchFull,
+    ProvenanceIdCollision,
+    StorageFailure(StorageError),
+    Integrity,
+}
+
+impl<C> CheckedValidatedCommand<C>
+where
+    C: CommandCandidateAwaitingCapacity,
+{
+    pub(super) const fn awaiting_capacity(&self) -> &C {
+        &self.candidate
+    }
+
+    pub(super) fn reserve_capacity(
+        self,
+        write_plan: CommandWriteSetPlanV1,
+    ) -> CheckedCapacityReservation<C::CapacityReserved> {
+        let Self {
+            seal,
+            attempt,
+            candidate,
+            current,
+            mutation_positions,
+        } = self;
+        if candidate.intent() != attempt.commit_intent()
+            || !write_plan.matches_retained_candidate(
+                candidate.intent(),
+                candidate.affected_targets(),
+                candidate.affected_current(),
+            )
+        {
+            drop(candidate);
+            drop(current);
+            drop(mutation_positions);
+            drop(attempt);
+            return CheckedCapacityReservation::Integrity;
+        }
+        match candidate.reserve_capacity(write_plan) {
+            Ok(CandidateCapacityResult::Reserved(candidate)) => {
+                CheckedCapacityReservation::Reserved(Box::new(CheckedValidatedCommand {
+                    seal,
+                    attempt,
+                    candidate,
+                    current,
+                    mutation_positions,
+                }))
+            }
+            Ok(CandidateCapacityResult::BatchFull(abandoned)) => {
+                let (prior, intent) = abandoned.into_parts();
+                let exact_intent = *intent == *attempt.commit_intent();
+                drop(prior);
+                drop(intent);
+                drop(current);
+                drop(mutation_positions);
+                drop(attempt);
+                if exact_intent {
+                    CheckedCapacityReservation::BatchFull
+                } else {
+                    CheckedCapacityReservation::Integrity
+                }
+            }
+            Ok(CandidateCapacityResult::ProvenanceIdCollision(_)) => {
+                drop(current);
+                drop(mutation_positions);
+                drop(attempt);
+                CheckedCapacityReservation::ProvenanceIdCollision
+            }
+            Err(error) => {
+                drop(current);
+                drop(mutation_positions);
+                drop(attempt);
+                CheckedCapacityReservation::StorageFailure(error)
+            }
+        }
+    }
+}
+
+/// Closed sequence-assignment result retaining the exact reserved candidate.
+pub(super) enum CheckedSequenceAssignment<C> {
+    Assigned(Box<CheckedValidatedCommand<C>>),
+    StorageFailure(StorageError),
+    Integrity,
+}
+
+impl<C> CheckedValidatedCommand<C>
+where
+    C: CommandCandidateCapacityReserved,
+{
+    pub(super) const fn capacity_reserved(&self) -> &C {
+        &self.candidate
+    }
+
+    pub(super) fn assign_sequence(self) -> CheckedSequenceAssignment<C::SequenceAssigned> {
+        let Self {
+            seal,
+            attempt,
+            candidate,
+            current,
+            mutation_positions,
+        } = self;
+        if candidate.intent() != attempt.commit_intent() {
+            drop(candidate);
+            drop(current);
+            drop(mutation_positions);
+            drop(attempt);
+            return CheckedSequenceAssignment::Integrity;
+        }
+        match candidate.assign_sequence() {
+            Ok(candidate) => {
+                CheckedSequenceAssignment::Assigned(Box::new(CheckedValidatedCommand {
+                    seal,
+                    attempt,
+                    candidate,
+                    current,
+                    mutation_positions,
+                }))
+            }
+            Err(error) => {
+                drop(current);
+                drop(mutation_positions);
+                drop(attempt);
+                CheckedSequenceAssignment::StorageFailure(error)
+            }
+        }
+    }
+}
+
+/// Semantic evidence retained after the exact sequence-assigned state stages.
+pub(super) struct StagedValidatedCommand {
+    _seal: CheckedCandidateSeal,
+    attempt: ProvenanceBoundCommandAttempt,
+    _current: MaterializedTransactionCurrentState,
+    _mutation_positions: Box<[Option<usize>]>,
+}
+
+impl StagedValidatedCommand {
+    pub(super) const fn attempt(&self) -> &ProvenanceBoundCommandAttempt {
+        &self.attempt
+    }
+
+    pub(super) fn into_pending_after_proven_noncommit(self) -> PendingCommandAttempts {
+        let Self {
+            _seal,
+            attempt,
+            _current,
+            _mutation_positions,
+        } = self;
+        drop(_current);
+        drop(_mutation_positions);
+        attempt.into_pending_after_proven_noncommit()
+    }
+}
+
+/// Closed staging result; only the storage stage call can construct `Staged`.
+pub(super) enum CheckedStorageStage<S> {
+    Staged {
+        storage: S,
+        evidence: Box<StagedValidatedCommand>,
+    },
+    StorageFailure(StorageError),
+    Integrity,
+}
+
+impl<C> CheckedValidatedCommand<C>
+where
+    C: CommandCandidateSequenceAssigned,
+{
+    pub(super) const fn sequence_assigned(&self) -> &C {
+        &self.candidate
+    }
+
+    pub(super) fn stage(self, records: AtomicCommandRecordSet) -> CheckedStorageStage<C::Staged> {
+        let Self {
+            seal,
+            attempt,
+            candidate,
+            current,
+            mutation_positions,
+        } = self;
+        if !records.matches_reserved_candidate(
+            candidate.assignment(),
+            candidate.intent(),
+            candidate.write_plan(),
+        ) || candidate.intent() != attempt.commit_intent()
+        {
+            drop(candidate);
+            drop(current);
+            drop(mutation_positions);
+            drop(attempt);
+            return CheckedStorageStage::Integrity;
+        }
+        match candidate.stage(records) {
+            Ok(storage) => CheckedStorageStage::Staged {
+                storage,
+                evidence: Box::new(StagedValidatedCommand {
+                    _seal: seal,
+                    attempt,
+                    _current: current,
+                    _mutation_positions: mutation_positions,
+                }),
+            },
+            Err(error) => {
+                drop(current);
+                drop(mutation_positions);
+                drop(attempt);
+                CheckedStorageStage::StorageFailure(error)
+            }
+        }
+    }
+}
+
+/// Validates only the inseparable attempt/current/storage aggregate.
+pub(super) fn validate_checked_transaction_current<C>(
+    checked_current: CheckedTransactionCurrentAttempt<C>,
+) -> Result<CheckedCandidateDecision<C>, CommandValidationError>
+where
+    C: CommandCandidateAwaitingValidation,
+{
+    let CheckedTransactionCurrentAttempt {
+        attempt,
+        candidate,
+        current,
+    } = checked_current;
+    if !attempt.has_exact_semantic_join() {
+        drop(candidate);
+        drop(current);
+        drop(attempt);
+        return Err(CommandValidationError::integrity());
+    }
+    let decision = {
+        let pending = attempt.commit_context().pending();
+        validate_transaction_current_command_parts(
+            attempt.resolved_plan(),
+            attempt.normalized_input(),
+            pending.logical_time(),
+            attempt.evaluated(),
+            current.state(),
+        )
+    };
+    let decision = match decision {
+        Ok(decision) => decision,
+        Err(error) => {
+            drop(candidate);
+            drop(current);
+            drop(attempt);
+            return Err(error);
+        }
+    };
+    match decision {
+        CheckedCommandDecision::ZeroMutation => Ok(CheckedCandidateDecision::Validated(
+            CheckedValidatedCommand {
+                seal: CheckedCandidateSeal::after_successful_validation(),
+                mutation_positions: vec![None; attempt.resolved_plan().plan().bindings().len()]
+                    .into_boxed_slice(),
+                attempt,
+                candidate,
+                current,
+            },
+        )),
+        CheckedCommandDecision::NonZero(mutation_positions) => Ok(
+            CheckedCandidateDecision::Validated(CheckedValidatedCommand {
+                seal: CheckedCandidateSeal::after_successful_validation(),
+                attempt,
+                candidate,
+                current,
+                mutation_positions,
+            }),
+        ),
+        CheckedCommandDecision::Rejected(reason) => {
+            drop(current);
+            Ok(CheckedCandidateDecision::Rejected(
+                CheckedCandidateRejection {
+                    attempt,
+                    candidate,
+                    reason,
+                },
+            ))
+        }
+    }
+}
+
 /// Pure semantic core, deliberately private until candidate identity can be
 /// preserved by construction across the full storage admission chain.
 fn validate_transaction_current_command_parts(
@@ -63,13 +699,6 @@ fn validate_transaction_current_command_parts(
     current: &TransactionCurrentState,
 ) -> Result<CheckedCommandDecision, CommandValidationError> {
     validate_identity_positions_and_output(resolved, normalized_input, evaluated, current)?;
-
-    let current_dependencies = dependencies_from_current(current)?;
-    if &current_dependencies != evaluated.read_dependencies() {
-        return Ok(CheckedCommandDecision::Rejected(
-            CandidateValidationRejection::DependencyChanged,
-        ));
-    }
 
     if evaluated.mutations().is_empty() {
         return Ok(CheckedCommandDecision::ZeroMutation);
@@ -1221,18 +1850,10 @@ contract ReadOnlyValidation version 1 {
             Vec::new(),
         )
         .expect("changed current");
-        assert!(matches!(
-            validate_transaction_current_command_parts(
-                &fixture.prepared.resolved,
-                &fixture.prepared.input,
-                fixture.prepared.logical_time,
-                &fixture.evaluated,
-                &changed_current,
-            ),
-            Ok(CheckedCommandDecision::Rejected(
-                CandidateValidationRejection::DependencyChanged
-            ))
-        ));
+        assert_ne!(
+            dependencies_from_current(&changed_current).expect("changed dependencies"),
+            *fixture.evaluated.read_dependencies()
+        );
     }
 
     #[test]
@@ -2185,11 +2806,10 @@ contract ReadOnlyValidation version 1 {
             Vec::new(),
         )
         .expect("changed version current");
-        assert!(matches!(
-            validation(&fixture),
-            Ok(CheckedCommandDecision::Rejected(
-                CandidateValidationRejection::DependencyChanged
-            ))
-        ));
+        assert!(
+            dependencies_from_current(&fixture.current).is_ok_and(|dependencies| {
+                dependencies != *fixture.evaluated.read_dependencies()
+            })
+        );
     }
 }

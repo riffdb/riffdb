@@ -3,26 +3,38 @@
 //! This module is deliberately sealed until the coordinator carries the exact
 //! validated command attempt into derivation by construction.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeSet;
 
 use riffdb_catalog::ResolvedExecutablePlan;
 use riffdb_contract_ir::{
     BindingMode, EXECUTABLE_IR_VERSION_V1, ExecutionClass, GRAMMAR_VERSION_V1, IndexSchema,
 };
 use riffdb_storage_api::{
-    AffectedIndexEpochTargets, DurableKeySchemaBindingV1, EntityMutation, EntityObservation,
-    EntityTarget, EvaluatedCommand, IndexEntryMutationV1, IndexRangePrefixBuilder,
+    AffectedIndexEpochTargets, CommandCandidateAffectedEpochRead, CommandCandidateAwaitingCapacity,
+    CommandCandidateAwaitingValidation, CommandCandidateCapacityReserved,
+    CommandCandidateSequenceAssigned, CommandWriteSetPlanV1, CommitIntent,
+    DurableKeySchemaBindingV1, EntityObservation, EvaluatedCommand, IdempotencyLookupCandidatesV1,
+    IndexEntryMutationV1, IndexEpochAdvanceError, IndexEpochAdvanceV1, IndexRangePrefixBuilder,
     IndexRangeTarget, MAX_AFFECTED_INDEX_EPOCH_TARGETS, MAX_INDEX_DELTAS, MAX_READ_SNAPSHOT_BYTES,
-    MAX_VALIDATION_TARGETS, StoredIndexEntryV1, TransactionCurrentState,
+    MAX_VALIDATION_TARGETS, StorageError, StoredIndexEntryV1, TransactionCurrentState,
+    command_write_set_upper_bound_v1,
 };
 use riffdb_types::{CanonicalRecord, CanonicalValue, IndexEntryKey};
+
+use crate::command_attempt::PendingCommandAttempts;
+#[cfg(test)]
+use crate::command_validation::CheckedCandidateSeal;
+use crate::command_validation::{
+    CheckedAffectedEpochRead, CheckedCapacityReservation, CheckedSequenceAssignment,
+    CheckedStorageStage, CheckedValidatedCommand, StagedValidatedCommand,
+};
 
 const AFFECTED_CURRENT_STATE_FIXED_BYTES_V1: usize = 4;
 const INDEX_RANGE_TARGET_FIXED_BYTES_V1: usize = 8;
 const MAX_INDEX_EPOCH_POSITION_BYTES_V1: usize = 9;
 
 #[derive(Clone, Copy, Eq, PartialEq)]
-struct CommandIndexError {
+pub(super) struct CommandIndexError {
     _private: (),
 }
 
@@ -41,6 +53,407 @@ impl std::fmt::Debug for CommandIndexError {
 struct DerivedCommandIndexes {
     entry_mutations: Vec<IndexEntryMutationV1>,
     affected_targets: AffectedIndexEpochTargets,
+}
+
+/// Exact semantically checked candidate retained after index derivation.
+pub(super) struct CheckedCommitCandidate<S = ()> {
+    authority: CheckedAttemptAuthority<S>,
+    entry_mutations: Vec<IndexEntryMutationV1>,
+    affected_targets: AffectedIndexEpochTargets,
+}
+
+struct CheckedAttemptAuthority<S>(Box<CheckedValidatedCommand<S>>);
+
+impl<S> CheckedCommitCandidate<S> {
+    pub(super) fn entry_mutations(&self) -> &[IndexEntryMutationV1] {
+        &self.entry_mutations
+    }
+
+    pub(super) const fn affected_targets(&self) -> &AffectedIndexEpochTargets {
+        &self.affected_targets
+    }
+
+    pub(super) fn matches_intent(&self, intent: &CommitIntent) -> bool {
+        let attempt = self.authority.0.attempt();
+        attempt.has_exact_semantic_join() && intent == attempt.commit_intent()
+    }
+
+    pub(super) const fn exact_intent(&self) -> &CommitIntent {
+        self.authority.0.attempt().commit_intent()
+    }
+
+    pub(super) const fn lookup_candidates(&self) -> &IdempotencyLookupCandidatesV1 {
+        self.authority.0.attempt().lookup_candidates()
+    }
+}
+
+/// Consumes the sole post-validation authority and freezes the exact derived
+/// index values that later write-plan construction must preserve.
+pub(super) fn derive_checked_command_indexes<C>(
+    checked: CheckedValidatedCommand<C>,
+) -> Result<CheckedCommitCandidate<C::AffectedEpochRead>, CommandIndexError>
+where
+    C: CommandCandidateAwaitingValidation,
+{
+    let derived = if checked.evaluated().mutations().is_empty() {
+        DerivedCommandIndexes {
+            entry_mutations: Vec::new(),
+            affected_targets: AffectedIndexEpochTargets::new(Vec::new())
+                .map_err(|_| CommandIndexError::internal_defect())?,
+        }
+    } else {
+        derive_grammar_v1_indexes(
+            checked.resolved(),
+            checked.evaluated(),
+            checked.current(),
+            checked.mutation_positions(),
+        )?
+    };
+    let checked = checked.plan_validated(derived.affected_targets.clone());
+    Ok(CheckedCommitCandidate {
+        authority: CheckedAttemptAuthority(Box::new(checked)),
+        entry_mutations: derived.entry_mutations,
+        affected_targets: derived.affected_targets,
+    })
+}
+
+/// Closed result of reading exact mutation-affected epoch positions.
+pub(super) enum CheckedAffectedEpochDecision<C> {
+    Ready(CheckedCommitCandidate<C>),
+    StorageFailure(StorageError),
+    Integrity,
+}
+
+impl<S> CheckedCommitCandidate<S>
+where
+    S: CommandCandidateAffectedEpochRead,
+{
+    pub(super) fn read_affected_epoch_current(
+        self,
+    ) -> CheckedAffectedEpochDecision<S::AwaitingCapacity> {
+        let Self {
+            authority,
+            entry_mutations,
+            affected_targets,
+        } = self;
+        let CheckedAttemptAuthority(checked) = authority;
+        match checked.read_affected_epoch_current() {
+            CheckedAffectedEpochRead::Ready(checked) => {
+                CheckedAffectedEpochDecision::Ready(CheckedCommitCandidate {
+                    authority: CheckedAttemptAuthority(checked),
+                    entry_mutations,
+                    affected_targets,
+                })
+            }
+            CheckedAffectedEpochRead::StorageFailure(error) => {
+                CheckedAffectedEpochDecision::StorageFailure(error)
+            }
+        }
+    }
+}
+
+/// Closed result of deriving and reserving the exact sequence-free write plan.
+pub(super) enum CheckedReserveDecision<C> {
+    Reserved(CheckedCommitCandidate<C>),
+    BatchFull,
+    ProvenanceIdCollision,
+    EpochExhausted,
+    StorageFailure(StorageError),
+    Integrity,
+}
+
+impl<S> CheckedCommitCandidate<S>
+where
+    S: CommandCandidateAwaitingCapacity,
+{
+    pub(super) fn reserve_capacity(self) -> CheckedReserveDecision<S::CapacityReserved> {
+        let Self {
+            authority,
+            entry_mutations,
+            affected_targets,
+        } = self;
+        let CheckedAttemptAuthority(checked) = authority;
+        let retained = checked.awaiting_capacity();
+        if retained.intent() != checked.attempt().commit_intent()
+            || retained.affected_targets() != &affected_targets
+            || retained.affected_current().observations().len() != affected_targets.as_slice().len()
+        {
+            drop(checked);
+            return CheckedReserveDecision::Integrity;
+        }
+        let schema_binding = DurableKeySchemaBindingV1::from_plan(
+            checked.attempt().commit_intent().evaluated().plan(),
+        );
+        let mut epoch_advances = Vec::with_capacity(affected_targets.as_slice().len());
+        for (target, observation) in affected_targets
+            .as_slice()
+            .iter()
+            .zip(retained.affected_current().observations())
+        {
+            if observation.target() != target {
+                drop(checked);
+                return CheckedReserveDecision::Integrity;
+            }
+            let advance = match IndexEpochAdvanceV1::new(
+                target.clone(),
+                schema_binding.clone(),
+                observation.epoch(),
+            ) {
+                Ok(advance) => advance,
+                Err(IndexEpochAdvanceError::Exhausted) => {
+                    drop(checked);
+                    return CheckedReserveDecision::EpochExhausted;
+                }
+            };
+            epoch_advances.push(advance);
+        }
+        let encoded_upper_bound = match command_write_set_upper_bound_v1(
+            checked.attempt().commit_intent(),
+            &entry_mutations,
+            &epoch_advances,
+        ) {
+            Ok(bound) => bound,
+            Err(_) => {
+                drop(checked);
+                return CheckedReserveDecision::Integrity;
+            }
+        };
+        let write_plan = match CommandWriteSetPlanV1::new(
+            checked.attempt().commit_intent(),
+            affected_targets.clone(),
+            retained.affected_current().clone(),
+            entry_mutations.clone(),
+            epoch_advances,
+            encoded_upper_bound,
+        ) {
+            Ok(write_plan) => write_plan,
+            Err(_) => {
+                drop(checked);
+                return CheckedReserveDecision::Integrity;
+            }
+        };
+        let expected_write_plan = write_plan.clone();
+        match checked.reserve_capacity(write_plan) {
+            CheckedCapacityReservation::Reserved(checked)
+                if checked.capacity_reserved().write_plan() == &expected_write_plan =>
+            {
+                CheckedReserveDecision::Reserved(CheckedCommitCandidate {
+                    authority: CheckedAttemptAuthority(checked),
+                    entry_mutations,
+                    affected_targets,
+                })
+            }
+            CheckedCapacityReservation::Reserved(checked) => {
+                drop(checked);
+                CheckedReserveDecision::Integrity
+            }
+            CheckedCapacityReservation::BatchFull => CheckedReserveDecision::BatchFull,
+            CheckedCapacityReservation::ProvenanceIdCollision => {
+                CheckedReserveDecision::ProvenanceIdCollision
+            }
+            CheckedCapacityReservation::StorageFailure(error) => {
+                CheckedReserveDecision::StorageFailure(error)
+            }
+            CheckedCapacityReservation::Integrity => CheckedReserveDecision::Integrity,
+        }
+    }
+}
+
+/// Closed result of assigning an invisible transaction-local sequence.
+pub(super) enum CheckedAssignDecision<C> {
+    Assigned(CheckedCommitCandidate<C>),
+    StorageFailure(StorageError),
+    Integrity,
+}
+
+impl<S> CheckedCommitCandidate<S>
+where
+    S: CommandCandidateCapacityReserved,
+{
+    pub(super) fn assign_sequence(self) -> CheckedAssignDecision<S::SequenceAssigned> {
+        let Self {
+            authority,
+            entry_mutations,
+            affected_targets,
+        } = self;
+        let CheckedAttemptAuthority(checked) = authority;
+        let retained = checked.capacity_reserved();
+        if retained.intent() != checked.attempt().commit_intent()
+            || retained.write_plan().index_entries() != entry_mutations
+            || retained.write_plan().affected_targets() != &affected_targets
+        {
+            drop(checked);
+            return CheckedAssignDecision::Integrity;
+        }
+        let expected_write_plan = retained.write_plan().clone();
+        match checked.assign_sequence() {
+            CheckedSequenceAssignment::Assigned(checked)
+                if checked.sequence_assigned().write_plan() == &expected_write_plan =>
+            {
+                CheckedAssignDecision::Assigned(CheckedCommitCandidate {
+                    authority: CheckedAttemptAuthority(checked),
+                    entry_mutations,
+                    affected_targets,
+                })
+            }
+            CheckedSequenceAssignment::Assigned(checked) => {
+                drop(checked);
+                CheckedAssignDecision::Integrity
+            }
+            CheckedSequenceAssignment::StorageFailure(error) => {
+                CheckedAssignDecision::StorageFailure(error)
+            }
+            CheckedSequenceAssignment::Integrity => CheckedAssignDecision::Integrity,
+        }
+    }
+}
+
+/// Non-generic semantic evidence retained after staging and across engine commit.
+pub(super) struct RetainedCheckedCommitCandidate {
+    authority: RetainedCheckedAttemptAuthority,
+    entry_mutations: Vec<IndexEntryMutationV1>,
+    affected_targets: AffectedIndexEpochTargets,
+}
+
+enum RetainedCheckedAttemptAuthority {
+    Validated(Box<StagedValidatedCommand>),
+    #[cfg(test)]
+    Fixture {
+        _seal: CheckedCandidateSeal,
+        intent: Box<CommitIntent>,
+        lookup_candidates: IdempotencyLookupCandidatesV1,
+    },
+}
+
+impl RetainedCheckedCommitCandidate {
+    pub(super) fn entry_mutations(&self) -> &[IndexEntryMutationV1] {
+        &self.entry_mutations
+    }
+
+    pub(super) const fn affected_targets(&self) -> &AffectedIndexEpochTargets {
+        &self.affected_targets
+    }
+
+    pub(super) fn matches_intent(&self, intent: &CommitIntent) -> bool {
+        match &self.authority {
+            RetainedCheckedAttemptAuthority::Validated(checked) => {
+                let attempt = checked.attempt();
+                attempt.has_exact_semantic_join() && intent == attempt.commit_intent()
+            }
+            #[cfg(test)]
+            RetainedCheckedAttemptAuthority::Fixture {
+                intent: expected, ..
+            } => expected.as_ref() == intent,
+        }
+    }
+
+    pub(super) const fn exact_intent(&self) -> &CommitIntent {
+        match &self.authority {
+            RetainedCheckedAttemptAuthority::Validated(checked) => {
+                checked.attempt().commit_intent()
+            }
+            #[cfg(test)]
+            RetainedCheckedAttemptAuthority::Fixture { intent, .. } => intent,
+        }
+    }
+
+    pub(super) const fn lookup_candidates(&self) -> &IdempotencyLookupCandidatesV1 {
+        match &self.authority {
+            RetainedCheckedAttemptAuthority::Validated(checked) => {
+                checked.attempt().lookup_candidates()
+            }
+            #[cfg(test)]
+            RetainedCheckedAttemptAuthority::Fixture {
+                lookup_candidates, ..
+            } => lookup_candidates,
+        }
+    }
+
+    pub(super) fn into_pending_after_proven_noncommit(self) -> Result<PendingCommandAttempts, ()> {
+        let Self {
+            authority,
+            entry_mutations,
+            affected_targets,
+        } = self;
+        drop(entry_mutations);
+        drop(affected_targets);
+        match authority {
+            RetainedCheckedAttemptAuthority::Validated(checked) => {
+                Ok(checked.into_pending_after_proven_noncommit())
+            }
+            #[cfg(test)]
+            RetainedCheckedAttemptAuthority::Fixture { .. } => Err(()),
+        }
+    }
+
+    #[cfg(test)]
+    pub(super) fn for_record_graph_test(
+        intent: CommitIntent,
+        entry_mutations: Vec<IndexEntryMutationV1>,
+        affected_targets: AffectedIndexEpochTargets,
+    ) -> Self {
+        let lookup_candidates =
+            IdempotencyLookupCandidatesV1::new(vec![intent.pending().identity().clone()])
+                .expect("one fixture lookup identity");
+        Self {
+            authority: RetainedCheckedAttemptAuthority::Fixture {
+                _seal: CheckedCandidateSeal::for_record_graph_test(),
+                intent: Box::new(intent),
+                lookup_candidates,
+            },
+            entry_mutations,
+            affected_targets,
+        }
+    }
+}
+
+/// Closed stage result retaining exact checked evidence on success only.
+pub(super) enum CheckedCandidateStage<S> {
+    Staged {
+        storage: S,
+        evidence: RetainedCheckedCommitCandidate,
+    },
+    StorageFailure(StorageError),
+    Integrity,
+}
+
+impl<S> CheckedCommitCandidate<S>
+where
+    S: CommandCandidateSequenceAssigned,
+{
+    pub(super) fn assignment(&self) -> riffdb_storage_api::AssignedCommandSequence {
+        self.authority.0.sequence_assigned().assignment()
+    }
+
+    pub(super) fn write_plan(&self) -> &CommandWriteSetPlanV1 {
+        self.authority.0.sequence_assigned().write_plan()
+    }
+
+    pub(super) fn stage(
+        self,
+        records: riffdb_storage_api::AtomicCommandRecordSet,
+    ) -> CheckedCandidateStage<S::Staged> {
+        let Self {
+            authority,
+            entry_mutations,
+            affected_targets,
+        } = self;
+        let CheckedAttemptAuthority(checked) = authority;
+        match checked.stage(records) {
+            CheckedStorageStage::Staged { storage, evidence } => CheckedCandidateStage::Staged {
+                storage,
+                evidence: RetainedCheckedCommitCandidate {
+                    authority: RetainedCheckedAttemptAuthority::Validated(evidence),
+                    entry_mutations,
+                    affected_targets,
+                },
+            },
+            CheckedStorageStage::StorageFailure(error) => {
+                CheckedCandidateStage::StorageFailure(error)
+            }
+            CheckedStorageStage::Integrity => CheckedCandidateStage::Integrity,
+        }
+    }
 }
 
 struct IndexDerivationBuilder {
@@ -136,6 +549,7 @@ fn derive_grammar_v1_indexes(
     resolved: &ResolvedExecutablePlan,
     evaluated: &EvaluatedCommand,
     current: &TransactionCurrentState,
+    mutation_positions: &[Option<usize>],
 ) -> Result<DerivedCommandIndexes, CommandIndexError> {
     let bundle = resolved.bundle().bundle();
     let plan = resolved.plan();
@@ -148,6 +562,7 @@ fn derive_grammar_v1_indexes(
         || evaluated.mutations().is_empty()
         || plan.bindings().len() != request.binding_targets().len()
         || plan.bindings().len() != current.bindings().len()
+        || plan.bindings().len() != mutation_positions.len()
         || plan.root_validation_reads().len() != request.root_validation_targets().len()
         || plan.root_validation_reads().len() != current.root_validations().len()
         || !request.range_targets().is_empty()
@@ -170,7 +585,6 @@ fn derive_grammar_v1_indexes(
         }
     }
 
-    let mutation_positions = exact_mutation_positions(resolved, evaluated, current)?;
     let mut builder =
         IndexDerivationBuilder::new(plan.bindings().len(), plan.root_validation_reads().len())?;
     let schema_binding = DurableKeySchemaBindingV1::from_plan(resolved.reference());
@@ -240,79 +654,6 @@ fn derive_grammar_v1_indexes(
         }
     }
     builder.finish()
-}
-
-fn exact_mutation_positions(
-    resolved: &ResolvedExecutablePlan,
-    evaluated: &EvaluatedCommand,
-    current: &TransactionCurrentState,
-) -> Result<Box<[Option<usize>]>, CommandIndexError> {
-    let plan = resolved.plan();
-    let mutable_count = plan
-        .bindings()
-        .iter()
-        .filter(|binding| binding.mode() != BindingMode::Read)
-        .count();
-    if mutable_count != evaluated.mutations().len() {
-        return Err(CommandIndexError::internal_defect());
-    }
-    let mut mutations = BTreeMap::<EntityTarget, usize>::new();
-    for (position, mutation) in evaluated.mutations().iter().enumerate() {
-        if mutations
-            .insert(mutation.target().clone(), position)
-            .is_some()
-        {
-            return Err(CommandIndexError::internal_defect());
-        }
-    }
-
-    let mut positions = vec![None; plan.bindings().len()];
-    let mut mutable_targets = BTreeSet::new();
-    for (position, ((binding, target), observation)) in plan
-        .bindings()
-        .iter()
-        .zip(evaluated.validation_request().binding_targets())
-        .zip(current.bindings())
-        .enumerate()
-    {
-        if binding.id().get() as usize != position
-            || binding.entity_type() != target.entity_type_id()
-            || observation.target() != target
-        {
-            return Err(CommandIndexError::internal_defect());
-        }
-        if binding.mode() == BindingMode::Read {
-            continue;
-        }
-        if !mutable_targets.insert(target.clone()) {
-            return Err(CommandIndexError::internal_defect());
-        }
-        let mutation_position = mutations
-            .remove(target)
-            .ok_or_else(CommandIndexError::internal_defect)?;
-        let mutation = &evaluated.mutations()[mutation_position];
-        if mutation.post_image().written_by_contract() != plan.contract_version() {
-            return Err(CommandIndexError::internal_defect());
-        }
-        match (binding.mode(), mutation, observation) {
-            (BindingMode::Create, EntityMutation::Create(_), EntityObservation::Absent(_)) => {}
-            (
-                BindingMode::Mutate,
-                EntityMutation::Replace {
-                    expected_version, ..
-                },
-                EntityObservation::Present(record),
-            ) if *expected_version == record.entity_version() => {}
-            (BindingMode::Read | BindingMode::Create | BindingMode::Mutate, _, _) => {
-                return Err(CommandIndexError::internal_defect());
-            }
-        }
-        positions[position] = Some(mutation_position);
-    }
-    if !mutations.is_empty() {
-        return Err(CommandIndexError::internal_defect());
-    }
-    Ok(positions.into_boxed_slice())
 }
 
 fn index_values(
@@ -398,7 +739,8 @@ mod tests {
     use riffdb_invariant::derive_input_command_facts;
     use riffdb_runtime::{ExecutionResult, TransactionContext, execute_command};
     use riffdb_storage_api::{
-        EvaluationBudget, ExecutablePlanRef, ReadSnapshot, SnapshotRequest, StoredEntityRecordV1,
+        EntityTarget, EvaluationBudget, ExecutablePlanRef, ReadSnapshot, SnapshotRequest,
+        StoredEntityRecordV1,
     };
     use riffdb_types::{
         ActorId, ActorKind, AdmittedActorContext, CanonicalValue, Date, EntityVersion, IndexId,
@@ -692,9 +1034,13 @@ contract ScalarPrefixes version 1 {
     #[test]
     fn create_puts_each_index_with_empty_covered_values_and_all_new_prefixes() {
         let fixture = fixture("CreateRow", "create-1", ([0x21; 16], "new", 10), None);
-        let derived =
-            derive_grammar_v1_indexes(&fixture.resolved, &fixture.evaluated, &fixture.current)
-                .expect("create indexes");
+        let derived = derive_grammar_v1_indexes(
+            &fixture.resolved,
+            &fixture.evaluated,
+            &fixture.current,
+            &[Some(0)],
+        )
+        .expect("create indexes");
         assert_eq!(derived.entry_mutations.len(), 2);
         assert!(
             derived
@@ -767,6 +1113,7 @@ contract ScalarPrefixes version 1 {
             &unchanged.resolved,
             &unchanged.evaluated,
             &unchanged.current,
+            &[Some(0)],
         )
         .expect("unchanged indexes");
         assert!(unchanged.entry_mutations.is_empty());
@@ -778,9 +1125,13 @@ contract ScalarPrefixes version 1 {
             ([0x21; 16], "new", 20),
             Some(([0x21; 16], "old", 10)),
         );
-        let derived =
-            derive_grammar_v1_indexes(&changed.resolved, &changed.evaluated, &changed.current)
-                .expect("changed indexes");
+        let derived = derive_grammar_v1_indexes(
+            &changed.resolved,
+            &changed.evaluated,
+            &changed.current,
+            &[Some(0)],
+        )
+        .expect("changed indexes");
         assert_eq!(derived.entry_mutations.len(), 4);
         assert_eq!(
             derived
@@ -913,9 +1264,13 @@ contract ScalarPrefixes version 1 {
     #[test]
     fn incremental_guards_reject_duplicate_deltas_and_each_exact_plus_one_bound() {
         let fixture = fixture("CreateRow", "bounds-1", ([0x21; 16], "new", 10), None);
-        let derived =
-            derive_grammar_v1_indexes(&fixture.resolved, &fixture.evaluated, &fixture.current)
-                .expect("fixture indexes");
+        let derived = derive_grammar_v1_indexes(
+            &fixture.resolved,
+            &fixture.evaluated,
+            &fixture.current,
+            &[Some(0)],
+        )
+        .expect("fixture indexes");
         let entry = derived.entry_mutations[0].clone();
         let mut duplicate = IndexDerivationBuilder::new(0, 0).expect("builder");
         duplicate.push_entry(entry.clone()).expect("first key");
@@ -1027,7 +1382,7 @@ contract ScalarPrefixes version 1 {
         )
         .expect("structural zero-mutation candidate");
         assert_eq!(
-            derive_grammar_v1_indexes(&fixture.resolved, &empty, &fixture.current).err(),
+            derive_grammar_v1_indexes(&fixture.resolved, &empty, &fixture.current, &[None]).err(),
             Some(CommandIndexError::internal_defect())
         );
 
