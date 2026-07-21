@@ -1,9 +1,6 @@
 //! Dependency and authority checks for the commit orchestration boundary.
 
-use std::{
-    fs,
-    path::{Path, PathBuf},
-};
+use std::{fs, path::PathBuf};
 
 const LOCKFILE: &str = include_str!("../../../Cargo.lock");
 const MANIFEST: &str = include_str!("../Cargo.toml");
@@ -12,6 +9,7 @@ const AUDIT_EXECUTOR_SOURCE: &str = include_str!("../src/audit_executor.rs");
 const COMMAND_ADMISSION_SOURCE: &str = include_str!("../src/command_admission.rs");
 const COMMAND_ATTEMPT_SOURCE: &str = include_str!("../src/command_attempt.rs");
 const COMMAND_INDEX_SOURCE: &str = include_str!("../src/command_index.rs");
+const COMMAND_RECORDS_SOURCE: &str = include_str!("../src/command_records.rs");
 const COMMAND_VALIDATION_SOURCE: &str = include_str!("../src/command_validation.rs");
 const COMMAND_PREPARATION_SOURCE: &str = include_str!("../src/command_preparation.rs");
 const LIB_SOURCE: &str = include_str!("../src/lib.rs");
@@ -67,87 +65,183 @@ fn riffdb_dependencies(section: &str) -> Vec<&str> {
         .collect()
 }
 
-fn rust_sources_under(directory: &Path, sources: &mut Vec<(PathBuf, String)>) {
-    for entry in fs::read_dir(directory).expect("read Rust source directory") {
-        let path = entry.expect("Rust source entry").path();
-        if path.is_dir() {
-            rust_sources_under(&path, sources);
-        } else if path.extension().is_some_and(|extension| extension == "rs") {
-            let source = fs::read_to_string(&path).expect("read Rust source");
-            sources.push((path, source));
-        }
-    }
+fn production_source(source: &str) -> &str {
+    source
+        .split_once("\n#[cfg(test)]\nmod tests")
+        .map_or(source, |(production, _)| production)
 }
 
 #[test]
-fn command_validation_is_sealed_until_candidate_identity_is_preserved_by_construction() {
-    let production = COMMAND_VALIDATION_SOURCE
-        .split_once("#[cfg(test)]")
-        .map_or(COMMAND_VALIDATION_SOURCE, |(source, _)| source);
+fn command_validation_seals_one_exact_attempt_before_index_or_record_authority() {
+    let production = production_source(COMMAND_VALIDATION_SOURCE);
+    let attempt_production = COMMAND_ATTEMPT_SOURCE
+        .split_once("\n#[cfg(test)]\nimpl EvaluatedCommandAttempt")
+        .map_or(COMMAND_ATTEMPT_SOURCE, |(production, _)| production);
 
-    for forbidden in [
-        "pub(crate)",
-        "TransactionCurrentCommand",
-        "CommandValidationDecision",
-        "ValidatedCommandSemantics",
-        "ValidatedZeroMutation",
-        "ValidatedNonzeroCommand",
-        "RejectedCommandCandidate",
-        "read_transaction_current_command",
-        "AffectedIndexEpochTargets",
-        ".read_transaction_current(",
-        ".plan_validated(",
-        ".reject(",
+    assert!(attempt_production.contains("pub(crate) struct EvaluatedCommandAttempt"));
+    assert!(attempt_production.contains("fn has_exact_semantic_join(&self) -> bool"));
+    assert!(attempt_production.contains("snapshot_matches_request(&self.state.snapshot_request"));
+    assert!(
+        attempt_production
+            .contains("snapshot.validation_request() == *self.evaluated.validation_request()")
+    );
+    assert!(
+        attempt_production
+            .contains("snapshot.read_dependencies() == self.evaluated.read_dependencies()")
+    );
+    assert!(
+        !attempt_production
+            .contains("EvaluatedCommandAttempt {\n    /// Consumes the attempt into")
+    );
+    assert!(!attempt_production.contains("pub(super) fn into_parts("));
+    assert!(!attempt_production.contains("into_retry_state"));
+    for required in [
+        "pub(super) struct ProvenanceBoundCommandAttempt",
+        "attempt: EvaluatedCommandAttempt",
+        "intent: CommitIntent",
+        "pub(super) fn bind_provenance(",
+        "CommitIntent::new(",
+        "pub(super) fn storage_intent(&self) -> Box<CommitIntent>",
+        "Box::new(self.intent.clone())",
+        "self.intent.evaluated() == self.attempt.evaluated()",
+        "pub(super) fn reject_storage_and_rollback<C>(",
+        "let abandoned = candidate.reject(reason)",
+        "let (prior, storage_intent) = abandoned.into_parts()",
+        "let intent_matches = *storage_intent == self.intent",
+        "drop(prior)",
+        "drop(storage_intent)",
+        "self.finish_after_candidate_rollback(intent_matches, reason)",
+        "pub(super) enum RolledBackCandidateDisposition",
+        "CandidateValidationRejection::CommitCheckArithmeticFault",
+        "ExecutionFaultAttempt::Arithmetic",
+        "RolledBackCandidateDisposition::Retry {",
+        "state: Box::new(state)",
     ] {
         assert!(
-            !production.contains(forbidden),
-            "sealed validation exposes an unreviewed pairing or progression path through {forbidden}"
+            attempt_production.contains(required),
+            "missing provenance-bound rollback mechanism {required}"
         );
     }
+    assert!(attempt_production.contains("pub(crate) enum ExecutionFaultAttempt"));
+    assert!(attempt_production.contains("Arithmetic {"));
+    assert!(attempt_production.contains("ResourceLimit {"));
+    assert!(!attempt_production.contains("code: ExecutionFailureCode"));
 
-    let attempt_production = COMMAND_ATTEMPT_SOURCE
-        .split_once("#[cfg(test)]")
-        .map_or(COMMAND_ATTEMPT_SOURCE, |(source, _)| source);
-    assert!(attempt_production.contains("pub(crate) struct EvaluatedCommandAttempt"));
-    assert!(attempt_production.contains("Ok(ExecutionResult::CommitRequired(evaluated))"));
-    assert!(attempt_production.contains("EvaluatedCommandAttempt {"));
-    let evaluated_attempt_impl = attempt_production
-        .split_once("impl EvaluatedCommandAttempt {")
+    for required in [
+        "pub(super) struct CheckedCandidateSeal",
+        "pub(super) struct CheckedValidatedCommand<C>",
+        "attempt: ProvenanceBoundCommandAttempt",
+        "current: MaterializedTransactionCurrentState",
+        "pub(super) enum CommandCandidateChainStart<S>",
+        "pub(super) struct BoundCommandCandidateStateRead<S>",
+        "pub(super) fn begin_bound_command_candidate<P>(",
+        "let empty = match port.begin_empty_batch()",
+        "let candidate = match empty.begin_candidate(attempt.storage_intent())",
+        "let rechecked = match candidate.recheck_admission()",
+        "pub(super) enum TransactionCurrentAttemptDecision<C>",
+        "Ready(CheckedTransactionCurrentAttempt<C>)",
+        "DependencyChanged(CheckedDependencyChangedAttempt<C>)",
+        "pub(super) struct CheckedTransactionCurrentAttempt<C>",
+        "pub(super) fn read_transaction_current(",
+        "let (candidate, current) = match state_read.read_transaction_current()",
+        "dependencies != *attempt.evaluated().read_dependencies()",
+        ".materialized_snapshot()",
+        ".materialize_transaction_current(current)",
+        "pub(super) fn validate_checked_transaction_current<C>(",
+        "checked_current: CheckedTransactionCurrentAttempt<C>",
+        "let CheckedTransactionCurrentAttempt {",
+        "if !attempt.has_exact_semantic_join()",
+        "CheckedCandidateSeal::after_successful_validation()",
+        "pub(super) struct CheckedCandidateRejection<C>",
+        "self.attempt\n            .reject_storage_and_rollback(self.candidate, self.reason)",
+        "pub(super) fn plan_validated(",
+        "let candidate = candidate.plan_validated(affected_targets)",
+    ] {
+        assert!(
+            production.contains(required),
+            "missing checked-attempt mechanism {required}"
+        );
+    }
+    assert!(
+        !production.contains("pub(super) fn recheck_transaction_current_attempt("),
+        "no detached attempt/current recheck entrypoint may exist"
+    );
+    for sole_call in [
+        "port.begin_empty_batch()",
+        "empty.begin_candidate(attempt.storage_intent())",
+        "candidate.recheck_admission()",
+        "candidate.plan_validated(affected_targets)",
+        "state_read.read_transaction_current()",
+    ] {
+        assert_eq!(
+            production.matches(sole_call).count(),
+            1,
+            "checked storage progression must retain one reviewed call site: {sole_call}"
+        );
+    }
+    let checked_entry = production
+        .split_once("pub(super) fn read_transaction_current(")
         .and_then(|(_, rest)| {
-            rest.split_once("\n}\n\nimpl fmt::Debug for EvaluatedCommandAttempt")
+            rest.split_once("\n    }\n}\n\n/// Closed result of validating")
                 .map(|(body, _)| body)
         })
-        .expect("evaluated-attempt implementation");
-    assert!(evaluated_attempt_impl.contains("fn into_parts(\n        self,"));
-    assert!(!evaluated_attempt_impl.contains("pub(crate)"));
-    for forbidden in [
-        "pub(crate) const fn resolved_plan(&self)",
-        "pub(crate) const fn normalized_input(&self)",
-        "pub(crate) const fn logical_time(&self)",
-        "pub(crate) const fn evaluated(&self)",
-    ] {
-        assert!(
-            !attempt_production.contains(forbidden),
-            "evaluated attempt exposes a sibling bypass through {forbidden}"
-        );
-    }
-
-    let mut commit_sources = Vec::new();
-    rust_sources_under(&crate_root().join("src"), &mut commit_sources);
-    for (path, source) in &commit_sources {
-        for forbidden in [
-            ".begin_candidate(",
-            ".recheck_admission(",
-            ".read_transaction_current(",
-            ".plan_validated(",
-        ] {
-            assert!(
-                !source.contains(forbidden),
-                "{} calls storage candidate progression outside the future reviewed wrapper via {forbidden}",
-                path.display()
-            );
-        }
-    }
+        .expect("bound storage-current checked entrypoint");
+    let dependencies = checked_entry
+        .find("dependencies_from_current(&current)")
+        .expect("dependency comparison");
+    let raw_recheck = checked_entry
+        .find(".materialize_transaction_current(current)")
+        .expect("exact attempt raw recheck");
+    assert!(dependencies < raw_recheck);
+    let bound_fields = production
+        .split_once("pub(super) struct BoundCommandCandidateStateRead<S> {")
+        .and_then(|(_, rest)| rest.split_once("\n}").map(|(fields, _)| fields))
+        .expect("bound candidate fields");
+    assert!(
+        bound_fields.find("state_read: S").expect("storage state")
+            < bound_fields
+                .find("attempt: ProvenanceBoundCommandAttempt")
+                .expect("attempt lease"),
+        "storage state must drop before the attempt releases its conflict lease"
+    );
+    let checked_fields = production
+        .split_once("pub(super) struct CheckedTransactionCurrentAttempt<C> {")
+        .and_then(|(_, rest)| rest.split_once("\n}").map(|(fields, _)| fields))
+        .expect("checked current fields");
+    assert!(
+        checked_fields
+            .find("candidate: C")
+            .expect("storage candidate")
+            < checked_fields
+                .find("attempt: ProvenanceBoundCommandAttempt")
+                .expect("attempt lease")
+    );
+    let seal_impl = production
+        .split_once("impl CheckedCandidateSeal {")
+        .and_then(|(_, rest)| {
+            rest.split_once("\n}\n\n/// Exact validated values")
+                .map(|(body, _)| body)
+        })
+        .expect("checked seal implementation");
+    assert_eq!(seal_impl.matches("Self { _private: () }").count(), 1);
+    let rejection = attempt_production
+        .split_once("pub(super) fn reject_storage_and_rollback<C>(")
+        .and_then(|(_, rest)| {
+            rest.split_once("\n    fn finish_after_candidate_rollback")
+                .map(|(body, _)| body)
+        })
+        .expect("provenance-bound rejection rollback");
+    let drop_prior = rejection
+        .find("drop(prior)")
+        .expect("drop prior transaction");
+    let drop_intent = rejection
+        .find("drop(storage_intent)")
+        .expect("drop storage intent");
+    let recover_retry = rejection
+        .find("self.finish_after_candidate_rollback")
+        .expect("select rolled-back disposition");
+    assert!(drop_prior < drop_intent);
+    assert!(drop_intent < recover_retry);
 
     let value_source = production
         .split_once("struct TransactionCurrentValues {")
@@ -181,9 +275,6 @@ fn command_validation_is_sealed_until_candidate_identity_is_preserved_by_constru
     let identity = validation
         .find("validate_identity_positions_and_output(")
         .expect("identity validation");
-    let dependencies = validation
-        .find("dependencies_from_current(current)")
-        .expect("dependency reconstruction");
     let zero_branch = validation
         .find("if evaluated.mutations().is_empty()")
         .expect("zero-mutation branch");
@@ -193,8 +284,7 @@ fn command_validation_is_sealed_until_candidate_identity_is_preserved_by_constru
     let evaluator = validation
         .find("evaluate_commit_checks(")
         .expect("commit-check evaluator");
-    assert!(identity < dependencies);
-    assert!(dependencies < zero_branch);
+    assert!(identity < zero_branch);
     assert!(zero_branch < coverage);
     assert!(coverage < evaluator);
     assert_eq!(production.matches("evaluate_commit_checks(").count(), 1);
@@ -203,8 +293,6 @@ fn command_validation_is_sealed_until_candidate_identity_is_preserved_by_constru
         "plan.execution_class() != ExecutionClass::IdempotentMutation",
         "!request.range_targets().is_empty()",
         "!current.ranges().is_empty()",
-        "&current_dependencies != evaluated.read_dependencies()",
-        "CandidateValidationRejection::DependencyChanged",
         "validate_evaluated_output(",
         "validate_post_image_and_project(",
         "materialize_current_entity_record(",
@@ -233,7 +321,6 @@ fn command_validation_is_sealed_until_candidate_identity_is_preserved_by_constru
         "rand::",
         "async fn",
         ".await",
-        "assign_sequence",
         "reserve_sequence",
     ] {
         assert!(
@@ -248,12 +335,29 @@ fn command_validation_is_sealed_until_candidate_identity_is_preserved_by_constru
 }
 
 #[test]
-fn command_index_derivation_is_sealed_and_has_no_storage_progression_authority() {
-    let production = COMMAND_INDEX_SOURCE
-        .split_once("#[cfg(test)]")
-        .map_or(COMMAND_INDEX_SOURCE, |(source, _)| source);
+fn command_index_derivation_preserves_the_sealed_storage_progression_chain() {
+    let production = production_source(COMMAND_INDEX_SOURCE);
 
     for required in [
+        "pub(super) struct CheckedCommitCandidate",
+        "authority: CheckedAttemptAuthority",
+        "struct CheckedAttemptAuthority<S>(Box<CheckedValidatedCommand<S>>)",
+        "attempt.has_exact_semantic_join() && intent == attempt.commit_intent()",
+        "pub(super) const fn exact_intent(&self) -> &CommitIntent",
+        "pub(super) fn derive_checked_command_indexes<C>(",
+        "checked: CheckedValidatedCommand<C>",
+        "checked.mutation_positions()",
+        "let checked = checked.plan_validated(derived.affected_targets.clone())",
+        "pub(super) fn read_affected_epoch_current(",
+        "match checked.read_affected_epoch_current()",
+        "pub(super) fn reserve_capacity(self)",
+        "match checked.reserve_capacity(write_plan)",
+        "checked.capacity_reserved().write_plan() == &expected_write_plan",
+        "pub(super) fn assign_sequence(self)",
+        "match checked.assign_sequence()",
+        "checked.sequence_assigned().write_plan() == &expected_write_plan",
+        "pub(super) fn stage(",
+        "match checked.stage(records)",
         "fn derive_grammar_v1_indexes(",
         "evaluated.mutations().is_empty()",
         "IndexEntryMutationV1::Delete(old_key)",
@@ -274,25 +378,34 @@ fn command_index_derivation_is_sealed_and_has_no_storage_progression_authority()
             "sealed command-index derivation is missing {required}"
         );
     }
+    assert!(!production.contains("fn exact_mutation_positions("));
+    for sole_call in [
+        "checked.plan_validated(derived.affected_targets.clone())",
+        "checked.read_affected_epoch_current()",
+        "checked.reserve_capacity(write_plan)",
+        "checked.assign_sequence()",
+        "checked.stage(records)",
+    ] {
+        assert_eq!(
+            production.matches(sole_call).count(),
+            1,
+            "sealed index carrier must retain one reviewed progression call: {sole_call}"
+        );
+    }
     for forbidden in [
         "pub(crate)",
         "pub fn ",
         "pub struct ",
         "pub enum ",
-        "pub(",
         "ApplicationTransaction",
         "StorageEngine",
         "SnapshotReader",
         ".begin_candidate(",
         ".recheck_admission(",
         ".read_transaction_current(",
-        ".read_affected_index_epochs(",
-        ".plan_validated(",
-        ".assign_sequence(",
-        ".stage(",
         ".commit(",
         "async fn",
-        ".await",
+        ".await;",
         "ResourceLimit",
     ] {
         assert!(
@@ -303,6 +416,90 @@ fn command_index_derivation_is_sealed_and_has_no_storage_progression_authority()
     assert!(LIB_SOURCE.contains("mod command_index;"));
     assert!(!LIB_SOURCE.contains("pub mod command_index"));
     assert!(!LIB_SOURCE.contains("pub use command_index"));
+}
+
+#[test]
+fn durable_graph_construction_requires_checked_input_and_retains_attempt_through_commit() {
+    let production = production_source(COMMAND_RECORDS_SOURCE);
+    for required in [
+        "struct CheckedRecordGraphInput",
+        "fn from_assigned_candidate<S>(",
+        "candidate: &CheckedCommitCandidate<S>",
+        "if !candidate.matches_intent(write_plan.intent())",
+        "fn build_atomic_command_record_set(\n    input: &CheckedRecordGraphInput,",
+        "pub(super) fn build_and_stage_checked_candidate<S>",
+        "candidate: CheckedCommitCandidate<S>",
+        "let records = match build_atomic_command_record_set(&input, durability_mode)",
+        "drop(candidate)",
+        "match candidate.stage(records)",
+        "S::Prior: EmptyCommandBatch",
+        "CheckedCandidateStage::StorageFailure(error)\n            if error.kind() == StorageErrorKind::CommitStatusUnknown",
+        "CheckedCommandStageError::InternalDefect(",
+        "pub(super) struct CheckedStagedCommand",
+        "candidate: RetainedCheckedCommitCandidate",
+        "expected_outcome: StoredOutcomeV1",
+        "pub(super) enum CheckedCommandCommitResult",
+        "StatusUnknown(Box<UncertainCommandCommit>)",
+        "pub(super) struct UncertainCommandCommit",
+        "lookup_candidates: IdempotencyLookupCandidatesV1",
+        "pub(super) fn commit(self) -> CheckedCommandCommitResult",
+        "let result = staged.commit(durability_mode)",
+        "finish_checked_commit(candidate, expected_outcome, durability_mode, result)",
+        "batch.outcomes() == std::slice::from_ref(&expected_outcome)",
+        "CheckedCommandCommitResult::StatusUnknown(Box::new(UncertainCommandCommit",
+        "pub(super) fn resolve_uncertain_command_commit(",
+        "repository.lookup_admission(uncertain.lookup_candidates.clone())",
+        "ProvenNotCommitted(ProvenNonCommitCommand)",
+        "uncertain: Box<UncertainCommandCommit>",
+        "into_pending_after_proven_noncommit()",
+        "if outcome == uncertain.expected_outcome",
+        "StoredAdmissionStateV1::ExecutionFailed(failure)",
+        "if failure.pending() == uncertain.candidate.exact_intent().pending()",
+    ] {
+        assert!(
+            production.contains(required),
+            "missing checked record-chain mechanism {required}"
+        );
+    }
+    let builder = production
+        .split_once("fn build_atomic_command_record_set(")
+        .and_then(|(_, rest)| {
+            rest.split_once("\nfn committed_entity(")
+                .map(|(body, _)| body)
+        })
+        .expect("private record graph builder");
+    assert!(!builder.starts_with("\n    assignment:"));
+    assert!(!builder.starts_with("\n    write_plan:"));
+    assert!(!production.contains("pub(crate) fn build_atomic_command_record_set"));
+    assert!(!production.contains("pub(super) fn build_atomic_command_record_set"));
+    assert!(!production.contains("ProvenanceIdSource"));
+    assert_eq!(
+        production
+            .matches("CheckedCommandCommitResult::StatusUnknown(Box::new(")
+            .count(),
+        1,
+        "only engine commit may construct uncertain command state"
+    );
+    let stage_transition = production
+        .split_once("let (staged, candidate) = match candidate.stage(records)")
+        .and_then(|(_, rest)| {
+            rest.split_once("\n    Ok(CheckedStagedCommand")
+                .map(|(body, _)| body)
+        })
+        .expect("checked stage transition");
+    assert!(stage_transition.contains("StorageErrorKind::CommitStatusUnknown"));
+    assert!(stage_transition.contains("CheckedCommandStageError::InternalDefect"));
+    assert!(!stage_transition.contains("CheckedCommandCommitResult::StatusUnknown"));
+    let transition = production
+        .split_once("pub(super) fn build_and_stage_checked_candidate")
+        .and_then(|(_, rest)| {
+            rest.split_once("\n/// Derives the complete successful-command graph")
+                .map(|(body, _)| body)
+        })
+        .expect("checked build-and-stage transition");
+    assert_eq!(transition.matches("candidate.stage(records)").count(), 1);
+    assert!(!transition.contains("assigned:"));
+    assert!(!transition.contains("assigned.stage("));
 }
 
 #[test]
@@ -491,7 +688,7 @@ fn command_admission_is_private_move_only_and_orders_external_calls_exactly() {
         "StoredPendingAdmissionV1::new(",
         "AdmissionRequestV1::new(lookup_candidates, &context)",
         ".admit_or_resolve(request)",
-        "AdmissionResultV1::Created(created) if created == pending",
+        "Ok(AdmissionResultV1::Created(created)) if created == pending",
         "raw.sort_unstable()",
         "raw.dedup()",
         "raw.is_empty() || raw.len() > MAX_COMMAND_CONFLICT_KEYS_V1",
@@ -586,14 +783,25 @@ fn command_attempt_owns_one_lease_around_synchronous_recheck_snapshot_and_runtim
         "OutcomeReplay(StoredOutcomeV1)",
         "ExecutionFailureReplay(StoredExecutionFailedV1)",
         "lease: MutationLease",
-        "snapshot: ReadSnapshot",
+        "snapshot: MaterializedCommandSnapshot",
+        "pub(crate) enum ResourceLimitFaultEvidence",
+        "Runtime(MaterializedCommandSnapshot)",
+        "Materialization(CommandSnapshotResourceLimitEvidence)",
+        "pub(crate) enum ExecutionFaultAttempt",
+        "Arithmetic {",
+        "ResourceLimit {",
+        "fn has_exact_semantic_join(&self) -> bool",
         "pub(crate) async fn evaluate_next_command_attempt(",
         ".acquire_mut(",
         ".lookup_admission(state.lookup_candidates.clone())",
         ".read_snapshot(state.snapshot_request.clone())",
+        "if !snapshot_matches_request(&state.snapshot_request, &raw_snapshot)",
+        ".materialize_command_snapshot(raw_snapshot)",
         "state.completed_attempts >= MAX_COMMAND_EVALUATION_ATTEMPTS_V1",
         "state.completed_attempts = state",
         "let execution = execute_command(",
+        "snapshot.resolved_plan().bundle().bundle()",
+        "snapshot.snapshot()",
         "pending.admission_request_id()",
         "pending.actor().clone()",
         "pending.logical_time()",
@@ -601,8 +809,6 @@ fn command_attempt_owns_one_lease_around_synchronous_recheck_snapshot_and_runtim
         "if pending == *state.commit_context.pending()",
         "outcome_matches_context(&outcome, &state.commit_context)",
         "if failure.pending() == state.commit_context.pending()",
-        "ExecutionFailureCode::ArithmeticFault",
-        "ExecutionFailureCode::ResourceLimit",
         "Ok(ExecutionResult::ReadOnly(_)) | Err(ExecutionFault::Integrity)",
     ] {
         assert!(
@@ -614,6 +820,8 @@ fn command_attempt_owns_one_lease_around_synchronous_recheck_snapshot_and_runtim
     assert!(LIB_SOURCE.contains("mod command_attempt;"));
     assert!(!LIB_SOURCE.contains("pub mod command_attempt"));
     assert!(!LIB_SOURCE.contains("pub use command_attempt"));
+    assert!(!production_source.contains("pub(super) fn into_parts("));
+    assert!(!production_source.contains("code: ExecutionFailureCode"));
     assert_eq!(
         production_source.matches(".await").count(),
         1,
@@ -630,7 +838,7 @@ fn command_attempt_owns_one_lease_around_synchronous_recheck_snapshot_and_runtim
 
     let context = production_source
         .split_once("fn transaction_context(")
-        .and_then(|(_, remainder)| remainder.split_once("\nfn check_request_control("))
+        .and_then(|(_, remainder)| remainder.split_once("\nfn snapshot_matches_request("))
         .map(|(body, _)| body)
         .expect("bounded transaction-context lowering");
     assert!(
@@ -638,13 +846,44 @@ fn command_attempt_owns_one_lease_around_synchronous_recheck_snapshot_and_runtim
         "runtime context must use the original admitted request identity"
     );
 
+    let target_check = production_source
+        .find("if !snapshot_matches_request(&state.snapshot_request, &raw_snapshot)")
+        .expect("exact adapter target check");
+    let materialization = production_source
+        .find(".materialize_command_snapshot(raw_snapshot)")
+        .expect("catalog materialization");
+    let attempt_counter = production_source
+        .find("state.completed_attempts = state")
+        .expect("accepted attempt-slot consumption");
+    let runtime = production_source
+        .find("let execution = execute_command(")
+        .expect("deterministic runtime call");
+    assert!(target_check < attempt_counter);
+    assert!(attempt_counter < materialization);
+    assert!(materialization < runtime);
+
+    let lookup = production_source
+        .find(".lookup_admission(state.lookup_candidates.clone())")
+        .expect("exact Pending lookup");
+    let replay = production_source[lookup..]
+        .find("return Ok(CommandAttemptResolution::OutcomeReplay(outcome))")
+        .map(|offset| lookup + offset)
+        .expect("terminal replay precedence");
+    let post_lookup_control = production_source[lookup..]
+        .find("check_request_control(state.deadline, &state.cancellation)?;")
+        .map(|offset| lookup + offset)
+        .expect("post-Pending control point");
+    let snapshot_read = production_source
+        .find(".read_snapshot(state.snapshot_request.clone())")
+        .expect("snapshot read");
+    assert!(replay < post_lookup_control);
+    assert!(post_lookup_control < snapshot_read);
+
     for forbidden in [
         "pub mod command_attempt",
         "pub use command_attempt",
         "StorageEngine",
         "StorageWrite",
-        "CommitIntent",
-        "ProvenanceId",
         "ProvenanceIdSource",
         "riffdb_contract_compiler",
         "SystemTime",

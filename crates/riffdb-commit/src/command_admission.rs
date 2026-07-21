@@ -11,10 +11,10 @@ use riffdb_idempotency::{
 use riffdb_invariant::InputDerivedCommandFacts;
 use riffdb_policy::AuthorizedCommandExecution;
 use riffdb_storage_api::{
-    AdmissionRepository, AdmissionRequestV1, AdmissionResultV1, EntityTarget,
-    IdempotencyLookupCandidatesV1, PreEvaluationCommitContext, SnapshotRequest, StorageError,
-    StoredAdmittedProvenanceClaimsV1, StoredExecutionFailedV1, StoredOutcomeV1,
-    StoredPendingAdmissionV1,
+    AdmissionLookupResultV1, AdmissionRepository, AdmissionRequestV1, AdmissionResultV1,
+    EntityTarget, IdempotencyLookupCandidatesV1, PreEvaluationCommitContext, SnapshotRequest,
+    StorageError, StorageErrorKind, StoredAdmissionStateV1, StoredAdmittedProvenanceClaimsV1,
+    StoredExecutionFailedV1, StoredOutcomeV1, StoredPendingAdmissionV1,
 };
 use riffdb_types::{
     CanonicalRecord, ConflictKey, ConflictKeyHash, EntityKey, EntityTypeId, LogicalTime,
@@ -35,6 +35,96 @@ pub(crate) enum CommandAdmissionResult {
     PreparationChanged,
     /// The same plan and idempotency identity retained another canonical input.
     InputMismatch,
+}
+
+/// Move-only evidence retained when pending-admission durability is uncertain.
+pub(crate) struct UncertainCommandAdmission {
+    cause: StorageError,
+    lookup_candidates: IdempotencyLookupCandidatesV1,
+    proposed_pending: StoredPendingAdmissionV1,
+    candidate: Box<CommandExecutionCandidate>,
+}
+
+impl UncertainCommandAdmission {
+    fn new(
+        cause: StorageError,
+        lookup_candidates: IdempotencyLookupCandidatesV1,
+        proposed_pending: StoredPendingAdmissionV1,
+        candidate: Box<CommandExecutionCandidate>,
+    ) -> Result<Self, CommandAdmissionError> {
+        if cause.kind() != StorageErrorKind::CommitStatusUnknown
+            || lookup_candidates.as_slice().first() != Some(proposed_pending.identity())
+            || candidate.commit_context().pending() != &proposed_pending
+        {
+            return Err(CommandAdmissionError::Integrity);
+        }
+        Ok(Self {
+            cause,
+            lookup_candidates,
+            proposed_pending,
+            candidate,
+        })
+    }
+
+    const fn cause(&self) -> &StorageError {
+        &self.cause
+    }
+}
+
+impl fmt::Debug for UncertainCommandAdmission {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("UncertainCommandAdmission([REDACTED])")
+    }
+}
+
+/// Closed disposition of one consuming same-key admission recovery lookup.
+pub(crate) enum UncertainCommandAdmissionResolution {
+    /// The exact proposed pending state committed and the retained candidate may execute.
+    Execute(Box<CommandExecutionCandidate>),
+    /// The exact admission already reached a declared terminal outcome.
+    Outcome(StoredOutcomeV1),
+    /// The exact admission already reached a deterministic terminal failure.
+    ExecutionFailed(StoredExecutionFailedV1),
+    /// Durable state contradicts the retained admission evidence.
+    Integrity,
+    /// The read cannot yet distinguish an absent write from an unavailable result.
+    OutcomeUnknown(UncertainCommandAdmissionReadFailure),
+}
+
+/// Private storage evidence retained when admission recovery remains inconclusive.
+pub(crate) struct UncertainCommandAdmissionReadFailure {
+    admission_error: StorageError,
+    lookup_error: Option<StorageError>,
+}
+
+impl UncertainCommandAdmissionReadFailure {
+    /// Borrows the original uncertain admission-write failure for trusted telemetry.
+    pub(crate) const fn admission_error(&self) -> &StorageError {
+        &self.admission_error
+    }
+
+    /// Borrows the optional failed recovery read for trusted telemetry.
+    pub(crate) const fn lookup_error(&self) -> Option<&StorageError> {
+        self.lookup_error.as_ref()
+    }
+}
+
+impl fmt::Debug for UncertainCommandAdmissionReadFailure {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("UncertainCommandAdmissionReadFailure([REDACTED])")
+    }
+}
+
+impl fmt::Debug for UncertainCommandAdmissionResolution {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(match self {
+            Self::Execute(_) => "Execute([REDACTED])",
+            Self::Outcome(_) => "Outcome([REDACTED])",
+            Self::ExecutionFailed(_) => "ExecutionFailed([REDACTED])",
+            Self::Integrity => "Integrity",
+            Self::OutcomeUnknown(_) => "OutcomeUnknown([REDACTED])",
+        })
+    }
 }
 
 impl fmt::Debug for CommandAdmissionResult {
@@ -59,6 +149,8 @@ pub(crate) enum CommandAdmissionError {
     Integrity,
     /// The one mutating pending-admission transition failed.
     AdmissionWrite(StorageError),
+    /// The pending-admission transition may have committed and must be resolved by same-key read.
+    AdmissionStatusUnknown(Box<UncertainCommandAdmission>),
 }
 
 impl fmt::Debug for CommandAdmissionError {
@@ -79,6 +171,7 @@ impl Error for CommandAdmissionError {
             Self::Recheck(error) => Some(error),
             Self::Clock(error) => Some(error),
             Self::AdmissionWrite(error) => Some(error),
+            Self::AdmissionStatusUnknown(uncertain) => Some(uncertain.cause()),
             Self::Integrity => None,
         }
     }
@@ -209,6 +302,60 @@ pub(crate) fn reduce_command_admission(
     reduce_command_admission_with_hash(repository, clock, preparation, &hash_conflict_key)
 }
 
+/// Resolves an uncertain pending-admission write using only its original identity evidence.
+pub(crate) fn resolve_uncertain_command_admission(
+    repository: &dyn AdmissionRepository,
+    uncertain: UncertainCommandAdmission,
+) -> UncertainCommandAdmissionResolution {
+    let UncertainCommandAdmission {
+        cause,
+        lookup_candidates,
+        proposed_pending,
+        candidate,
+    } = uncertain;
+    let observation = match repository.lookup_admission(lookup_candidates) {
+        Ok(observation) => observation,
+        Err(lookup_error) => {
+            return UncertainCommandAdmissionResolution::OutcomeUnknown(
+                UncertainCommandAdmissionReadFailure {
+                    admission_error: cause,
+                    lookup_error: Some(lookup_error),
+                },
+            );
+        }
+    };
+
+    match observation {
+        AdmissionLookupResultV1::NotFound => UncertainCommandAdmissionResolution::OutcomeUnknown(
+            UncertainCommandAdmissionReadFailure {
+                admission_error: cause,
+                lookup_error: None,
+            },
+        ),
+        AdmissionLookupResultV1::MultipleMatches => UncertainCommandAdmissionResolution::Integrity,
+        AdmissionLookupResultV1::Found(state) => match *state {
+            StoredAdmissionStateV1::Pending(pending) if pending == proposed_pending => {
+                UncertainCommandAdmissionResolution::Execute(candidate)
+            }
+            StoredAdmissionStateV1::StoredOutcome(outcome)
+                if outcome_matches_context(&outcome, candidate.commit_context()) =>
+            {
+                UncertainCommandAdmissionResolution::Outcome(outcome)
+            }
+            StoredAdmissionStateV1::ExecutionFailed(failure)
+                if failure.pending() == &proposed_pending =>
+            {
+                UncertainCommandAdmissionResolution::ExecutionFailed(failure)
+            }
+            StoredAdmissionStateV1::Pending(_)
+            | StoredAdmissionStateV1::StoredOutcome(_)
+            | StoredAdmissionStateV1::ExecutionFailed(_) => {
+                UncertainCommandAdmissionResolution::Integrity
+            }
+        },
+    }
+}
+
 fn reduce_command_admission_with_hash(
     repository: &dyn AdmissionRepository,
     clock: &dyn AdmissionClock,
@@ -306,20 +453,32 @@ fn admit_vacant(
     .map_err(|_| CommandAdmissionError::Integrity)?;
     let request = AdmissionRequestV1::new(lookup_candidates, &context)
         .map_err(|_| CommandAdmissionError::Integrity)?;
+    let recovery_candidates = request.lookup_candidates().clone();
+    let execution_candidate = Box::new(candidate(lowered, context));
 
-    match repository
-        .admit_or_resolve(request)
-        .map_err(CommandAdmissionError::AdmissionWrite)?
-    {
-        AdmissionResultV1::Created(created) if created == pending => Ok(
-            CommandAdmissionResult::Execute(Box::new(candidate(lowered, context))),
-        ),
-        AdmissionResultV1::Created(_)
-        | AdmissionResultV1::Resumed(_)
-        | AdmissionResultV1::StoredOutcome(_)
-        | AdmissionResultV1::ExecutionFailed(_)
-        | AdmissionResultV1::InputMismatch
-        | AdmissionResultV1::MultipleMatches => Err(CommandAdmissionError::Integrity),
+    match repository.admit_or_resolve(request) {
+        Ok(AdmissionResultV1::Created(created)) if created == pending => {
+            Ok(CommandAdmissionResult::Execute(execution_candidate))
+        }
+        Err(error) if error.kind() == StorageErrorKind::CommitStatusUnknown => {
+            Err(CommandAdmissionError::AdmissionStatusUnknown(Box::new(
+                UncertainCommandAdmission::new(
+                    error,
+                    recovery_candidates,
+                    pending,
+                    execution_candidate,
+                )?,
+            )))
+        }
+        Err(error) => Err(CommandAdmissionError::AdmissionWrite(error)),
+        Ok(
+            AdmissionResultV1::Created(_)
+            | AdmissionResultV1::Resumed(_)
+            | AdmissionResultV1::StoredOutcome(_)
+            | AdmissionResultV1::ExecutionFailed(_)
+            | AdmissionResultV1::InputMismatch
+            | AdmissionResultV1::MultipleMatches,
+        ) => Err(CommandAdmissionError::Integrity),
     }
 }
 
@@ -381,6 +540,23 @@ fn candidate(
         deadline: lowered.deadline,
         cancellation: lowered.cancellation,
     }
+}
+
+fn outcome_matches_context(
+    outcome: &StoredOutcomeV1,
+    context: &PreEvaluationCommitContext,
+) -> bool {
+    let pending = context.pending();
+    outcome.identity() == pending.identity()
+        && outcome.admission_request_id() == pending.admission_request_id()
+        && outcome.plan() == pending.plan()
+        && outcome.canonical_input_hash() == pending.canonical_input_hash()
+        && outcome.actor() == pending.actor()
+        && outcome.logical_time() == pending.logical_time()
+        && outcome.partition_key() == pending.partition_key()
+        && outcome.partition_hash() == context.partition_hash()
+        && outcome.conflict_hashes() == context.conflict_hashes()
+        && outcome.admitted_claims() == pending.provenance_claims()
 }
 
 fn lower_provenance_claims(
@@ -584,6 +760,7 @@ mod tests {
         lookup: Result<AdmissionLookupResultV1, StorageError>,
         behavior: AdmitBehavior,
         lookup_calls: Cell<usize>,
+        lookup_requests: RefCell<Vec<IdempotencyLookupCandidatesV1>>,
         admission_calls: Cell<usize>,
         admitted_request: RefCell<Option<AdmissionRequestV1>>,
     }
@@ -594,6 +771,7 @@ mod tests {
                 lookup: Ok(lookup),
                 behavior,
                 lookup_calls: Cell::new(0),
+                lookup_requests: RefCell::new(Vec::new()),
                 admission_calls: Cell::new(0),
                 admitted_request: RefCell::new(None),
             }
@@ -604,6 +782,7 @@ mod tests {
                 lookup: Err(StorageError::new(kind, None)),
                 behavior: AdmitBehavior::EchoCreated,
                 lookup_calls: Cell::new(0),
+                lookup_requests: RefCell::new(Vec::new()),
                 admission_calls: Cell::new(0),
                 admitted_request: RefCell::new(None),
             }
@@ -641,9 +820,10 @@ mod tests {
 
         fn lookup_admission(
             &self,
-            _: IdempotencyLookupCandidatesV1,
+            candidates: IdempotencyLookupCandidatesV1,
         ) -> Result<AdmissionLookupResultV1, StorageError> {
             self.lookup_calls.set(self.lookup_calls.get() + 1);
+            self.lookup_requests.borrow_mut().push(candidates);
             self.lookup.clone()
         }
     }
@@ -867,7 +1047,26 @@ mod tests {
     }
 
     fn outcome_from(pending: &StoredPendingAdmissionV1) -> StoredOutcomeV1 {
-        let partition_hash = hash_partition_key(pending.partition_key().as_bytes());
+        outcome_from_parts(
+            pending,
+            hash_partition_key(pending.partition_key().as_bytes()),
+            Vec::new(),
+        )
+    }
+
+    fn outcome_from_context(context: &PreEvaluationCommitContext) -> StoredOutcomeV1 {
+        outcome_from_parts(
+            context.pending(),
+            context.partition_hash(),
+            context.conflict_hashes().to_vec(),
+        )
+    }
+
+    fn outcome_from_parts(
+        pending: &StoredPendingAdmissionV1,
+        partition_hash: riffdb_types::PartitionKeyHash,
+        conflict_hashes: Vec<ConflictKeyHash>,
+    ) -> StoredOutcomeV1 {
         StoredOutcomeV1::new(
             pending.identity().clone(),
             CommitSequence::new(3).expect("commit sequence"),
@@ -878,7 +1077,7 @@ mod tests {
             pending.logical_time(),
             pending.partition_key().clone(),
             partition_hash,
-            Vec::new(),
+            conflict_hashes,
             DeclaredOutcome::new(
                 OutcomeId::first(),
                 CanonicalRecord::new(Vec::new()).expect("empty outcome record"),
@@ -889,6 +1088,57 @@ mod tests {
             DurabilityMode::Memory,
         )
         .expect("stored outcome")
+    }
+
+    fn uncertain_admission(
+        command: &CommandFixture,
+        invocation: RequestId,
+    ) -> (
+        UncertainCommandAdmission,
+        StoredPendingAdmissionV1,
+        IdempotencyLookupCandidatesV1,
+        ScriptedRepository,
+        ScriptedClock,
+    ) {
+        let repository = ScriptedRepository::new(
+            AdmissionLookupResultV1::NotFound,
+            AdmitBehavior::Error(StorageErrorKind::CommitStatusUnknown),
+        );
+        let clock = ScriptedClock::fixed(timestamp(52));
+        let error = reduce_command_admission(
+            &repository,
+            &clock,
+            preparation(command, AdmissionLookupResultV1::NotFound, invocation),
+        )
+        .expect_err("unknown admission status must retain recovery evidence");
+        let uncertain = match error {
+            CommandAdmissionError::AdmissionStatusUnknown(uncertain) => *uncertain,
+            other => panic!("unexpected admission error: {other:?}"),
+        };
+        let (proposed_pending, lookup_candidates) = {
+            let request = repository.admitted_request.borrow();
+            let request = request.as_ref().expect("captured admission request");
+            (
+                request.proposed_pending().clone(),
+                request.lookup_candidates().clone(),
+            )
+        };
+        assert_eq!(repository.lookup_calls.get(), 1);
+        assert_eq!(repository.admission_calls.get(), 1);
+        assert_eq!(clock.calls.load(Ordering::Relaxed), 1);
+        assert_eq!(uncertain.proposed_pending, proposed_pending);
+        assert_eq!(uncertain.lookup_candidates, lookup_candidates);
+        assert_eq!(
+            uncertain.candidate.commit_context().pending(),
+            &proposed_pending
+        );
+        (
+            uncertain,
+            proposed_pending,
+            lookup_candidates,
+            repository,
+            clock,
+        )
     }
 
     fn authorized(command: &CommandFixture) -> AuthorizedCommandExecution {
@@ -1321,12 +1571,175 @@ mod tests {
         .expect_err("admission write must preserve uncertain status");
         assert!(matches!(
             write_error,
-            CommandAdmissionError::AdmissionWrite(error)
-                if error.kind() == riffdb_storage_api::StorageErrorKind::CommitStatusUnknown
+            CommandAdmissionError::AdmissionStatusUnknown(uncertain)
+                if uncertain.cause().kind() == StorageErrorKind::CommitStatusUnknown
         ));
         assert_eq!(write_repository.lookup_calls.get(), 1);
         assert_eq!(write_repository.admission_calls.get(), 1);
         assert_eq!(write_clock.calls.load(Ordering::Relaxed), 1);
+    }
+
+    #[test]
+    fn uncertain_admission_exact_pending_executes_the_original_candidate() {
+        let command = fixture();
+        let (uncertain, proposed_pending, lookup_candidates, original, clock) =
+            uncertain_admission(&command, request_id(53));
+        let recovery = ScriptedRepository::new(
+            AdmissionLookupResultV1::Found(Box::new(StoredAdmissionStateV1::Pending(
+                proposed_pending.clone(),
+            ))),
+            AdmitBehavior::EchoCreated,
+        );
+
+        let resolution = resolve_uncertain_command_admission(&recovery, uncertain);
+        let UncertainCommandAdmissionResolution::Execute(candidate) = resolution else {
+            panic!("exact pending admission must recover its original candidate");
+        };
+
+        assert_eq!(candidate.commit_context().pending(), &proposed_pending);
+        assert_eq!(candidate.invocation_request_id(), request_id(53));
+        assert_eq!(recovery.lookup_calls.get(), 1);
+        assert_eq!(
+            recovery.lookup_requests.borrow().as_slice(),
+            &[lookup_candidates]
+        );
+        assert_eq!(recovery.admission_calls.get(), 0);
+        assert_eq!(original.admission_calls.get(), 1);
+        assert_eq!(clock.calls.load(Ordering::Relaxed), 1);
+    }
+
+    #[test]
+    fn uncertain_admission_exact_terminal_states_replay_without_execution() {
+        let command = fixture();
+
+        let (uncertain, _, lookup_candidates, original, clock) =
+            uncertain_admission(&command, request_id(54));
+        let outcome = outcome_from_context(uncertain.candidate.commit_context());
+        let recovery = ScriptedRepository::new(
+            AdmissionLookupResultV1::Found(Box::new(StoredAdmissionStateV1::StoredOutcome(
+                outcome.clone(),
+            ))),
+            AdmitBehavior::EchoCreated,
+        );
+        let result = resolve_uncertain_command_admission(&recovery, uncertain);
+        let UncertainCommandAdmissionResolution::Outcome(actual) = result else {
+            panic!("exact terminal outcome must replay");
+        };
+        assert_eq!(actual, outcome);
+        assert_eq!(recovery.lookup_calls.get(), 1);
+        assert_eq!(
+            recovery.lookup_requests.borrow().as_slice(),
+            &[lookup_candidates]
+        );
+        assert_eq!(recovery.admission_calls.get(), 0);
+        assert_eq!(original.admission_calls.get(), 1);
+        assert_eq!(clock.calls.load(Ordering::Relaxed), 1);
+
+        let (uncertain, proposed_pending, lookup_candidates, original, clock) =
+            uncertain_admission(&command, request_id(55));
+        let failure =
+            StoredExecutionFailedV1::new(proposed_pending, ExecutionFailureCode::ResourceLimit);
+        let recovery = ScriptedRepository::new(
+            AdmissionLookupResultV1::Found(Box::new(StoredAdmissionStateV1::ExecutionFailed(
+                failure.clone(),
+            ))),
+            AdmitBehavior::EchoCreated,
+        );
+        let result = resolve_uncertain_command_admission(&recovery, uncertain);
+        let UncertainCommandAdmissionResolution::ExecutionFailed(actual) = result else {
+            panic!("exact terminal execution failure must replay");
+        };
+        assert_eq!(actual, failure);
+        assert_eq!(recovery.lookup_calls.get(), 1);
+        assert_eq!(
+            recovery.lookup_requests.borrow().as_slice(),
+            &[lookup_candidates]
+        );
+        assert_eq!(recovery.admission_calls.get(), 0);
+        assert_eq!(original.admission_calls.get(), 1);
+        assert_eq!(clock.calls.load(Ordering::Relaxed), 1);
+    }
+
+    #[test]
+    fn uncertain_admission_mismatch_and_multiple_matches_are_integrity() {
+        let command = fixture();
+        for case in 0_u8..3 {
+            let (uncertain, proposed_pending, _, original, clock) =
+                uncertain_admission(&command, request_id(56 + case));
+            let changed = pending_with_request(&proposed_pending, request_id(90 + case));
+            let state = match case {
+                0 => StoredAdmissionStateV1::Pending(changed),
+                1 => StoredAdmissionStateV1::StoredOutcome(outcome_from(&changed)),
+                2 => StoredAdmissionStateV1::ExecutionFailed(StoredExecutionFailedV1::new(
+                    changed,
+                    ExecutionFailureCode::ArithmeticFault,
+                )),
+                _ => unreachable!("bounded cases"),
+            };
+            let recovery = ScriptedRepository::new(
+                AdmissionLookupResultV1::Found(Box::new(state)),
+                AdmitBehavior::EchoCreated,
+            );
+
+            assert!(matches!(
+                resolve_uncertain_command_admission(&recovery, uncertain),
+                UncertainCommandAdmissionResolution::Integrity
+            ));
+            assert_eq!(recovery.lookup_calls.get(), 1);
+            assert_eq!(recovery.admission_calls.get(), 0);
+            assert_eq!(original.admission_calls.get(), 1);
+            assert_eq!(clock.calls.load(Ordering::Relaxed), 1);
+        }
+
+        let (uncertain, _, _, original, clock) = uncertain_admission(&command, request_id(59));
+        let recovery = ScriptedRepository::new(
+            AdmissionLookupResultV1::MultipleMatches,
+            AdmitBehavior::EchoCreated,
+        );
+        assert!(matches!(
+            resolve_uncertain_command_admission(&recovery, uncertain),
+            UncertainCommandAdmissionResolution::Integrity
+        ));
+        assert_eq!(recovery.lookup_calls.get(), 1);
+        assert_eq!(recovery.admission_calls.get(), 0);
+        assert_eq!(original.admission_calls.get(), 1);
+        assert_eq!(clock.calls.load(Ordering::Relaxed), 1);
+    }
+
+    #[test]
+    fn uncertain_admission_missing_or_lookup_failure_remains_outcome_unknown() {
+        let command = fixture();
+        for read_fails in [false, true] {
+            let seed = if read_fails { 61 } else { 60 };
+            let (uncertain, _, _, original, clock) =
+                uncertain_admission(&command, request_id(seed));
+            let recovery = if read_fails {
+                ScriptedRepository::read_error(StorageErrorKind::Unavailable)
+            } else {
+                ScriptedRepository::new(
+                    AdmissionLookupResultV1::NotFound,
+                    AdmitBehavior::EchoCreated,
+                )
+            };
+
+            let UncertainCommandAdmissionResolution::OutcomeUnknown(failure) =
+                resolve_uncertain_command_admission(&recovery, uncertain)
+            else {
+                panic!("missing or unreadable admission must remain uncertain");
+            };
+            assert_eq!(
+                failure.admission_error().kind(),
+                StorageErrorKind::CommitStatusUnknown
+            );
+            assert_eq!(
+                failure.lookup_error().map(StorageError::kind),
+                read_fails.then_some(StorageErrorKind::Unavailable)
+            );
+            assert_eq!(recovery.lookup_calls.get(), 1);
+            assert_eq!(recovery.admission_calls.get(), 0);
+            assert_eq!(original.admission_calls.get(), 1);
+            assert_eq!(clock.calls.load(Ordering::Relaxed), 1);
+        }
     }
 
     #[test]
@@ -1469,6 +1882,30 @@ mod tests {
         }
 
         let command = fixture();
+        let (uncertain, _, _, _, _) = uncertain_admission(&command, request_id(69));
+        assert_eq!(
+            format!("{uncertain:?}"),
+            "UncertainCommandAdmission([REDACTED])"
+        );
+        assert!(!format!("{uncertain:?}").contains(CALLER_KEY));
+        assert!(!format!("{uncertain:?}").contains(PRINCIPAL));
+        let uncertainty_error = CommandAdmissionError::AdmissionStatusUnknown(Box::new(uncertain));
+        assert_eq!(
+            format!("{uncertainty_error:?}"),
+            "CommandAdmissionError([REDACTED])"
+        );
+        assert_eq!(
+            uncertainty_error.to_string(),
+            "command admission could not be completed"
+        );
+        let unknown = UncertainCommandAdmissionResolution::OutcomeUnknown(
+            UncertainCommandAdmissionReadFailure {
+                admission_error: StorageError::new(StorageErrorKind::CommitStatusUnknown, None),
+                lookup_error: Some(StorageError::new(StorageErrorKind::Unavailable, None)),
+            },
+        );
+        assert_eq!(format!("{unknown:?}"), "OutcomeUnknown([REDACTED])");
+
         let repository = ScriptedRepository::new(
             AdmissionLookupResultV1::NotFound,
             AdmitBehavior::EchoCreated,

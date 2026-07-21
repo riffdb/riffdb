@@ -2,19 +2,24 @@
 
 use std::{error::Error, fmt, time::Instant};
 
-use riffdb_catalog::ResolvedExecutablePlan;
+use riffdb_catalog::{
+    CommandSnapshotMaterialization, CommandSnapshotResourceLimitEvidence,
+    MaterializedCommandSnapshot, ResolvedExecutablePlan,
+};
 use riffdb_conflict::{CancellationToken, ConflictError, ConflictManager, MutationLease};
 use riffdb_runtime::{ExecutionFault, ExecutionResult, TransactionContext, execute_command};
 use riffdb_storage_api::{
-    AdmissionLookupResultV1, AdmissionRepository, EvaluatedCommand, IdempotencyLookupCandidatesV1,
-    PreEvaluationCommitContext, ReadSnapshot, SnapshotReader, SnapshotRequest, StorageError,
-    StoredAdmissionStateV1, StoredExecutionFailedV1, StoredOutcomeV1,
+    AdmissionLookupResultV1, AdmissionRepository, CandidateValidationRejection,
+    CommandCandidateAwaitingValidation, CommitIntent, EvaluatedCommand,
+    IdempotencyLookupCandidatesV1, PreEvaluationCommitContext, ReadSnapshot, SnapshotReader,
+    SnapshotRequest, StorageError, StoredAdmissionStateV1, StoredExecutionFailedV1,
+    StoredOutcomeV1,
 };
-use riffdb_types::{CanonicalRecord, ConflictKey, ExecutionFailureCode, RequestId};
+use riffdb_types::{CanonicalRecord, ConflictKey, ProvenanceId, RequestId};
 
 use crate::command_admission::CommandExecutionCandidate;
 
-/// Maximum complete owned-snapshot evaluations in one outer invocation.
+/// Maximum snapshot-materialization attempt slots in one outer invocation.
 pub(crate) const MAX_COMMAND_EVALUATION_ATTEMPTS_V1: usize = 3;
 
 /// Move-only admitted state between complete command-evaluation attempts.
@@ -73,7 +78,7 @@ impl PendingCommandAttempts {
         self.invocation_request_id
     }
 
-    /// Returns the number of complete runtime evaluations already begun.
+    /// Returns the number of snapshot-materialization attempt slots consumed.
     pub(crate) const fn completed_attempts(&self) -> usize {
         self.completed_attempts
     }
@@ -115,21 +120,70 @@ impl fmt::Debug for CommandAttemptResolution {
 pub(crate) struct EvaluatedCommandAttempt {
     state: PendingCommandAttempts,
     lease: MutationLease,
-    snapshot: ReadSnapshot,
+    snapshot: MaterializedCommandSnapshot,
     evaluated: EvaluatedCommand,
 }
 
 impl EvaluatedCommandAttempt {
-    /// Consumes the attempt into the exact inputs required by later commit orchestration.
-    fn into_parts(
+    pub(super) const fn commit_context(&self) -> &PreEvaluationCommitContext {
+        &self.state.commit_context
+    }
+
+    pub(super) const fn resolved_plan(&self) -> &ResolvedExecutablePlan {
+        &self.state.resolved_plan
+    }
+
+    pub(super) const fn normalized_input(&self) -> &CanonicalRecord {
+        &self.state.normalized_input
+    }
+
+    pub(super) const fn materialized_snapshot(&self) -> &MaterializedCommandSnapshot {
+        &self.snapshot
+    }
+
+    pub(super) const fn evaluated(&self) -> &EvaluatedCommand {
+        &self.evaluated
+    }
+
+    /// Proves all independently checked values still belong to the one admitted
+    /// attempt aggregate that produced them.
+    pub(super) fn has_exact_semantic_join(&self) -> bool {
+        let pending = self.state.commit_context.pending();
+        let resolved = self.snapshot.resolved_plan();
+        let snapshot = self.snapshot.snapshot();
+        pending.plan() == self.state.resolved_plan.reference()
+            && self.state.resolved_plan.reference() == resolved.reference()
+            && self.state.snapshot_request.plan() == resolved.reference()
+            && snapshot.plan() == resolved.reference()
+            && snapshot_matches_request(&self.state.snapshot_request, snapshot)
+            && snapshot.validation_request() == *self.evaluated.validation_request()
+            && snapshot.read_dependencies() == self.evaluated.read_dependencies()
+            && self.evaluated.plan() == resolved.reference()
+            && self.evaluated.validation_request().plan() == resolved.reference()
+    }
+
+    /// Binds the sole provenance candidate sourced for this successful evaluation.
+    pub(super) fn bind_provenance(
         self,
-    ) -> (
-        PendingCommandAttempts,
-        MutationLease,
-        ReadSnapshot,
-        EvaluatedCommand,
-    ) {
-        (self.state, self.lease, self.snapshot, self.evaluated)
+        provenance_id: ProvenanceId,
+    ) -> Result<ProvenanceBoundCommandAttempt, CommandAttemptError> {
+        if !self.has_exact_semantic_join() {
+            return Err(CommandAttemptError::Integrity);
+        }
+        let intent = CommitIntent::new(
+            self.state.commit_context.clone(),
+            self.evaluated.clone(),
+            provenance_id,
+        )
+        .map_err(|_| CommandAttemptError::Integrity)?;
+        let bound = ProvenanceBoundCommandAttempt {
+            attempt: self,
+            intent,
+        };
+        if !bound.has_exact_semantic_join() {
+            return Err(CommandAttemptError::Integrity);
+        }
+        Ok(bound)
     }
 }
 
@@ -139,26 +193,195 @@ impl fmt::Debug for EvaluatedCommandAttempt {
     }
 }
 
-/// Dependency-sensitive deterministic failure bundled with its read evidence.
-pub(crate) struct ExecutionFaultAttempt {
-    state: PendingCommandAttempts,
-    lease: MutationLease,
-    snapshot: ReadSnapshot,
-    code: ExecutionFailureCode,
+/// A successfully evaluated attempt bound to its one sourced provenance identity.
+pub(super) struct ProvenanceBoundCommandAttempt {
+    attempt: EvaluatedCommandAttempt,
+    intent: CommitIntent,
 }
 
-impl ExecutionFaultAttempt {
-    /// Consumes the attempt into the exact inputs required by terminalization.
-    pub(crate) fn into_parts(
-        self,
-    ) -> (
-        PendingCommandAttempts,
-        MutationLease,
-        ReadSnapshot,
-        ExecutionFailureCode,
-    ) {
-        (self.state, self.lease, self.snapshot, self.code)
+impl ProvenanceBoundCommandAttempt {
+    pub(super) const fn commit_intent(&self) -> &CommitIntent {
+        &self.intent
     }
+
+    /// Produces the one narrow clone transferred into storage candidate admission.
+    pub(super) fn storage_intent(&self) -> Box<CommitIntent> {
+        Box::new(self.intent.clone())
+    }
+
+    pub(super) const fn commit_context(&self) -> &PreEvaluationCommitContext {
+        self.attempt.commit_context()
+    }
+
+    pub(super) const fn resolved_plan(&self) -> &ResolvedExecutablePlan {
+        self.attempt.resolved_plan()
+    }
+
+    pub(super) const fn normalized_input(&self) -> &CanonicalRecord {
+        self.attempt.normalized_input()
+    }
+
+    pub(super) const fn materialized_snapshot(&self) -> &MaterializedCommandSnapshot {
+        self.attempt.materialized_snapshot()
+    }
+
+    pub(super) const fn evaluated(&self) -> &EvaluatedCommand {
+        self.attempt.evaluated()
+    }
+
+    pub(super) const fn lookup_candidates(&self) -> &IdempotencyLookupCandidatesV1 {
+        &self.attempt.state.lookup_candidates
+    }
+
+    pub(super) fn has_exact_semantic_join(&self) -> bool {
+        let context = self.attempt.commit_context();
+        self.attempt.has_exact_semantic_join()
+            && self.intent.pending() == context.pending()
+            && self.intent.evaluated() == self.attempt.evaluated()
+            && self.intent.partition_hash() == context.partition_hash()
+            && self.intent.conflict_hashes() == context.conflict_hashes()
+    }
+
+    /// Rejects the live storage candidate before releasing the logical capability.
+    /// The closed reason determines whether the completed attempt may retry or must
+    /// enter dependency-validated arithmetic-fault terminalization.
+    pub(super) fn reject_storage_and_rollback<C>(
+        self,
+        candidate: C,
+        reason: CandidateValidationRejection,
+    ) -> RolledBackCandidateDisposition
+    where
+        C: CommandCandidateAwaitingValidation,
+    {
+        let abandoned = candidate.reject(reason);
+        let (prior, storage_intent) = abandoned.into_parts();
+        let intent_matches = *storage_intent == self.intent;
+        drop(prior);
+        drop(storage_intent);
+
+        self.finish_after_candidate_rollback(intent_matches, reason)
+    }
+
+    /// Discards one unpersisted provenance attempt only after storage proved
+    /// that its uncertain commit did not replace the exact Pending admission.
+    pub(super) fn into_pending_after_proven_noncommit(self) -> PendingCommandAttempts {
+        let Self { attempt, intent } = self;
+        drop(intent);
+        let EvaluatedCommandAttempt {
+            state,
+            lease,
+            snapshot,
+            evaluated,
+        } = attempt;
+        drop(evaluated);
+        drop(snapshot);
+        drop(lease);
+        state
+    }
+
+    fn finish_after_candidate_rollback(
+        self,
+        intent_matches: bool,
+        reason: CandidateValidationRejection,
+    ) -> RolledBackCandidateDisposition {
+        let Self { attempt, intent } = self;
+        drop(intent);
+        let EvaluatedCommandAttempt {
+            state,
+            lease,
+            snapshot,
+            evaluated,
+        } = attempt;
+        drop(evaluated);
+
+        if !intent_matches {
+            drop(snapshot);
+            drop(lease);
+            return RolledBackCandidateDisposition::Integrity;
+        }
+
+        match reason {
+            CandidateValidationRejection::CommitCheckArithmeticFault => {
+                RolledBackCandidateDisposition::ExecutionFault(Box::new(
+                    ExecutionFaultAttempt::Arithmetic {
+                        state,
+                        lease,
+                        snapshot,
+                    },
+                ))
+            }
+            CandidateValidationRejection::DependencyChanged
+            | CandidateValidationRejection::CommitCheckRejected
+            | CandidateValidationRejection::MutationPreconditionChanged => {
+                drop(snapshot);
+                drop(lease);
+                RolledBackCandidateDisposition::Retry {
+                    state: Box::new(state),
+                    reason,
+                }
+            }
+        }
+    }
+}
+
+impl fmt::Debug for ProvenanceBoundCommandAttempt {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("ProvenanceBoundCommandAttempt([REDACTED])")
+    }
+}
+
+/// Closed result after the authoritative candidate has been proven rolled back.
+pub(super) enum RolledBackCandidateDisposition {
+    /// The completed attempt may be reevaluated within the invocation ceiling.
+    Retry {
+        state: Box<PendingCommandAttempts>,
+        reason: CandidateValidationRejection,
+    },
+    /// Late commit-check arithmetic reuses the same attempt evidence without provenance.
+    ExecutionFault(Box<ExecutionFaultAttempt>),
+    /// The storage candidate did not retain the exact provenance-bound intent.
+    Integrity,
+}
+
+impl fmt::Debug for RolledBackCandidateDisposition {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(match self {
+            Self::Retry { .. } => "RolledBackCandidateDisposition::Retry([REDACTED])",
+            Self::ExecutionFault(_) => "RolledBackCandidateDisposition::ExecutionFault([REDACTED])",
+            Self::Integrity => "RolledBackCandidateDisposition::Integrity",
+        })
+    }
+}
+
+/// Intrinsically resource-limit evidence; it cannot be paired with another code.
+pub(crate) enum ResourceLimitFaultEvidence {
+    /// Runtime resource failure over a normalized snapshot.
+    Runtime(MaterializedCommandSnapshot),
+    /// Valid lineage expansion exceeded a materialization limit before runtime.
+    Materialization(CommandSnapshotResourceLimitEvidence),
+}
+
+impl fmt::Debug for ResourceLimitFaultEvidence {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(match self {
+            Self::Runtime(_) => "ResourceLimitFaultEvidence::Runtime([REDACTED])",
+            Self::Materialization(_) => "ResourceLimitFaultEvidence::Materialization([REDACTED])",
+        })
+    }
+}
+
+/// Dependency-sensitive deterministic failure as a closed, move-only aggregate.
+pub(crate) enum ExecutionFaultAttempt {
+    Arithmetic {
+        state: PendingCommandAttempts,
+        lease: MutationLease,
+        snapshot: MaterializedCommandSnapshot,
+    },
+    ResourceLimit {
+        state: PendingCommandAttempts,
+        lease: MutationLease,
+        evidence: ResourceLimitFaultEvidence,
+    },
 }
 
 impl fmt::Debug for ExecutionFaultAttempt {
@@ -179,7 +402,7 @@ pub(crate) enum CommandAttemptError {
     PendingRecheck(StorageError),
     /// A complete owned snapshot could not be materialized.
     SnapshotRead(StorageError),
-    /// Three complete evaluations were already begun by this invocation.
+    /// Three snapshot-materialization attempt slots were already consumed.
     RetryBudgetExhausted,
     /// Independently checked semantic state was inconsistent.
     Integrity,
@@ -259,21 +482,44 @@ pub(crate) async fn evaluate_next_command_attempt(
             return Err(CommandAttemptError::Integrity);
         }
     }
+    check_request_control(state.deadline, &state.cancellation)?;
 
-    let snapshot = snapshots
+    let raw_snapshot = snapshots
         .read_snapshot(state.snapshot_request.clone())
         .map_err(CommandAttemptError::SnapshotRead)?;
     check_request_control(state.deadline, &state.cancellation)?;
+    if !snapshot_matches_request(&state.snapshot_request, &raw_snapshot) {
+        return Err(CommandAttemptError::Integrity);
+    }
 
-    let context = transaction_context(&state.commit_context);
     state.completed_attempts = state
         .completed_attempts
         .checked_add(1)
         .ok_or(CommandAttemptError::Integrity)?;
+    let materialization = state
+        .resolved_plan
+        .clone()
+        .materialize_command_snapshot(raw_snapshot)
+        .map_err(|_| CommandAttemptError::Integrity)?;
+    let snapshot = match materialization {
+        CommandSnapshotMaterialization::Ready(snapshot) => snapshot,
+        CommandSnapshotMaterialization::ResourceLimit(evidence) => {
+            check_request_control(state.deadline, &state.cancellation)?;
+            return Ok(CommandAttemptResolution::ExecutionFault(
+                ExecutionFaultAttempt::ResourceLimit {
+                    state,
+                    lease,
+                    evidence: ResourceLimitFaultEvidence::Materialization(evidence),
+                },
+            ));
+        }
+    };
+
+    let context = transaction_context(&state.commit_context);
     let execution = execute_command(
-        state.resolved_plan.bundle().bundle(),
+        snapshot.resolved_plan().bundle().bundle(),
         &state.normalized_input,
-        &snapshot,
+        snapshot.snapshot(),
         &context,
         state.commit_context.evaluation_budget(),
     );
@@ -290,20 +536,18 @@ pub(crate) async fn evaluate_next_command_attempt(
         }
         Err(ExecutionFault::Arithmetic) => {
             check_request_control(state.deadline, &state.cancellation)?;
-            CommandAttemptResolution::ExecutionFault(ExecutionFaultAttempt {
+            CommandAttemptResolution::ExecutionFault(ExecutionFaultAttempt::Arithmetic {
                 state,
                 lease,
                 snapshot,
-                code: ExecutionFailureCode::ArithmeticFault,
             })
         }
         Err(ExecutionFault::ResourceLimit) => {
             check_request_control(state.deadline, &state.cancellation)?;
-            CommandAttemptResolution::ExecutionFault(ExecutionFaultAttempt {
+            CommandAttemptResolution::ExecutionFault(ExecutionFaultAttempt::ResourceLimit {
                 state,
                 lease,
-                snapshot,
-                code: ExecutionFailureCode::ResourceLimit,
+                evidence: ResourceLimitFaultEvidence::Runtime(snapshot),
             })
         }
         Ok(ExecutionResult::ReadOnly(_)) | Err(ExecutionFault::Integrity) => {
@@ -322,6 +566,28 @@ fn transaction_context(context: &PreEvaluationCommitContext) -> TransactionConte
         pending.logical_time(),
         pending.partition_key().clone(),
     )
+}
+
+fn snapshot_matches_request(request: &SnapshotRequest, snapshot: &ReadSnapshot) -> bool {
+    snapshot.plan() == request.plan()
+        && snapshot.bindings().len() == request.binding_targets().len()
+        && snapshot
+            .bindings()
+            .iter()
+            .zip(request.binding_targets())
+            .all(|(observation, target)| observation.target() == target)
+        && snapshot.root_validations().len() == request.root_validation_targets().len()
+        && snapshot
+            .root_validations()
+            .iter()
+            .zip(request.root_validation_targets())
+            .all(|(observation, target)| observation.target() == target)
+        && snapshot.ranges().len() == request.range_targets().len()
+        && snapshot
+            .ranges()
+            .iter()
+            .zip(request.range_targets())
+            .all(|(observation, target)| observation.target() == target)
 }
 
 fn check_request_control(
@@ -363,31 +629,62 @@ fn outcome_matches_context(
 }
 
 #[cfg(test)]
+impl EvaluatedCommandAttempt {
+    /// Releases an attempt without storage only for fixed-ceiling unit tests.
+    fn into_retry_state_for_test(self) -> PendingCommandAttempts {
+        self.state
+    }
+}
+
+#[cfg(test)]
+impl ProvenanceBoundCommandAttempt {
+    /// Enters the post-rollback disposition only for focused ownership tests.
+    fn after_proven_rollback_for_test(
+        self,
+        reason: CandidateValidationRejection,
+    ) -> RolledBackCandidateDisposition {
+        self.finish_after_candidate_rollback(true, reason)
+    }
+}
+
+#[cfg(test)]
 mod tests {
     use std::{
         cell::{Cell, RefCell},
         collections::BTreeMap,
+        marker::PhantomData,
         rc::Rc,
         task::{Context, Poll, Waker},
         time::Duration,
     };
 
-    use riffdb_catalog::ValidatedContractBundle;
+    use riffdb_catalog::{ValidatedContractBundle, resolve_executable_plan};
     use riffdb_conflict::{ConflictManagerConfig, ShardedConflictManager};
+    use riffdb_contract_compiler::{compile_contract_source, compile_contract_successor};
     use riffdb_contract_ir::{CommandPlan, RecordSchema};
     use riffdb_invariant::derive_input_command_facts;
 
     use riffdb_storage_api::{
-        AdmissionRequestV1, AdmissionResultV1, DeclaredOutcome, DurabilityMode, EntityObservation,
-        EntityTarget, ExecutablePlanRef, IdempotencyIdentity, IdempotencyKeyDigest,
-        StoredAdmittedProvenanceClaimsV1, StoredPendingAdmissionV1,
+        AbandonedCandidate, ActiveCatalogPointerV1, AdmissionRequestV1, AdmissionResultV1,
+        AffectedEpochCurrentState, AffectedIndexEpochTargets, ApplicationCommandTransactionPort,
+        AtomicCommandRecordSet, CandidateAdmissionResult, CandidateCapacityResult,
+        CandidateStartResult, CatalogRepository, CommandCandidateAdmission,
+        CommandCandidateAffectedEpochRead, CommandCandidateAwaitingCapacity,
+        CommandCandidateAwaitingValidation, CommandCandidateCapacityReserved,
+        CommandCandidateSequenceAssigned, CommandCandidateStateRead, CommandWriteSetPlanV1,
+        CommitIntent, CommittedBatchV1, DeclaredOutcome, DurabilityMode, DurableKeySchemaBindingV1,
+        EmptyCommandBatch, EntityObservation, EntityTarget, ExecutablePlanRef, IdempotencyIdentity,
+        IdempotencyKeyDigest, NonEmptyCommandBatch, StagedBatchMetrics,
+        StoredAdmittedProvenanceClaimsV1, StoredContractBundleV1, StoredEntityRecordV1,
+        StoredPendingAdmissionV1, TransactionCurrentState,
     };
     use riffdb_types::{
         ActorId, ActorKind, AdmittedActorContext, AggregateTypeId, CanonicalInputHash,
         CanonicalRecord, CanonicalValue, CommandId, CommitSequence, ConflictKeyHash,
         ContractBundleHash, ContractLineage, ContractVersion, DatabaseId, Decimal, DecimalSpec,
-        DigestKeyId, Environment, LogicalTime, OutcomeId, PartitionKeyBuilder, PlanHash,
-        ProvenanceId, TenantScope, Timestamp, hash_conflict_key, hash_partition_key,
+        DigestKeyId, EntityVersion, Environment, ExecutionFailureCode, FieldId, LogicalTime,
+        MAX_CANONICAL_DOCUMENT_BYTES, OutcomeId, PartitionKeyBuilder, PlanHash, ProvenanceId,
+        TenantScope, Timestamp, encode_canonical_record, hash_conflict_key, hash_partition_key,
     };
 
     use super::*;
@@ -400,6 +697,7 @@ mod tests {
         result: AdmissionLookupResultV1,
         calls: Cell<usize>,
         order: Rc<RefCell<Vec<&'static str>>>,
+        cancel_during_lookup: Option<CancellationToken>,
     }
 
     impl ScriptedRepository {
@@ -413,7 +711,13 @@ mod tests {
                 result,
                 calls: Cell::new(0),
                 order,
+                cancel_during_lookup: None,
             }
+        }
+
+        fn cancelling_during_lookup(mut self, cancellation: CancellationToken) -> Self {
+            self.cancel_during_lookup = Some(cancellation);
+            self
         }
     }
 
@@ -432,6 +736,9 @@ mod tests {
             assert_eq!(candidates, self.expected);
             self.calls.set(self.calls.get() + 1);
             self.order.borrow_mut().push("pending-recheck");
+            if let Some(cancellation) = &self.cancel_during_lookup {
+                cancellation.cancel();
+            }
             Ok(self.result.clone())
         }
     }
@@ -474,6 +781,31 @@ mod tests {
                 cancellation.cancel();
             }
             Ok(self.snapshot.clone())
+        }
+    }
+
+    struct LineageRepository {
+        active: ActiveCatalogPointerV1,
+        bundles: Vec<StoredContractBundleV1>,
+    }
+
+    impl CatalogRepository for LineageRepository {
+        fn read_active_catalog(&self) -> Result<Option<ActiveCatalogPointerV1>, StorageError> {
+            Ok(Some(self.active.clone()))
+        }
+
+        fn read_contract_bundle(
+            &self,
+            lineage: &ContractLineage,
+            contract_version: ContractVersion,
+        ) -> Result<Option<StoredContractBundleV1>, StorageError> {
+            Ok(self
+                .bundles
+                .iter()
+                .find(|bundle| {
+                    bundle.lineage() == lineage && bundle.contract_version() == contract_version
+                })
+                .cloned())
         }
     }
 
@@ -536,6 +868,126 @@ mod tests {
                 ("approved_amount", decimal(25_000)),
             ],
         )
+    }
+
+    fn materialization_input(plan: &CommandPlan) -> CanonicalRecord {
+        input_record(
+            plan.input().record(),
+            [
+                (
+                    "idempotency_key",
+                    CanonicalValue::string(SENSITIVE_MARKER).expect("bounded caller key"),
+                ),
+                ("tenant", CanonicalValue::Uuid([0x41; 16])),
+                ("id", CanonicalValue::Uuid([0x42; 16])),
+            ],
+        )
+    }
+
+    fn materialization_source(version: u64, optional_note: bool) -> String {
+        let note = if optional_note {
+            "    field note: optional<string<8>>\n"
+        } else {
+            ""
+        };
+        format!(
+            r#"
+contract AttemptMaterialization version {version} {{
+  entity Row {{
+    key (tenant: uuid, id: uuid)
+    field value: i64
+{note}  }}
+
+  aggregate Rows {{
+    root Row
+    partition_by tenant
+    conflict_key (tenant)
+  }}
+
+  command Increment {{
+    input idempotency_key: string<128>
+    input tenant: uuid
+    input id: uuid
+
+    idempotency_key idempotency_key
+    mutate Row(tenant, id) as row
+      else Missing {{ id: id }}
+
+    set row.value = row.value + 1
+    return Updated {{ value: row.value }}
+  }}
+}}
+"#
+        )
+    }
+
+    fn pending_attempt(
+        resolved_plan: ResolvedExecutablePlan,
+        normalized_input: CanonicalRecord,
+        snapshot_request: SnapshotRequest,
+    ) -> PendingCommandAttempts {
+        let facts = derive_input_command_facts(resolved_plan.plan(), normalized_input.clone())
+            .expect("input-derived command facts");
+        let reference = resolved_plan.reference().clone();
+        let actor = AdmittedActorContext::new(
+            ActorId::new(PRINCIPAL).expect("principal"),
+            ActorKind::Service,
+            TenantScope::Global,
+            None,
+        );
+        let identity = IdempotencyIdentity::new(
+            database_id(),
+            Environment::new("development").expect("environment"),
+            TenantScope::Global,
+            ActorId::new(PRINCIPAL).expect("principal"),
+            reference.contract_lineage().clone(),
+            reference.command_id(),
+            IdempotencyKeyDigest::from_hmac_bytes(
+                DigestKeyId::new(1).expect("digest key ID"),
+                [0x51; 32],
+            ),
+        );
+        let pending = StoredPendingAdmissionV1::new(
+            identity,
+            CanonicalInputHash::from_bytes([0x61; 32]),
+            request_id(1),
+            reference,
+            LogicalTime::new(Timestamp::new(100, 17).expect("timestamp")),
+            actor,
+            facts.partition_key().clone(),
+            StoredAdmittedProvenanceClaimsV1::default(),
+        )
+        .expect("pending admission");
+        let mut raw_conflict_keys = facts.declared_conflict_keys().to_vec();
+        raw_conflict_keys.sort_unstable();
+        raw_conflict_keys.dedup();
+        let mut conflict_hashes = raw_conflict_keys
+            .iter()
+            .map(|key| hash_conflict_key(key.as_bytes()))
+            .collect::<Vec<_>>();
+        conflict_hashes.sort_unstable();
+        let commit_context = PreEvaluationCommitContext::new(
+            pending,
+            hash_partition_key(facts.partition_key().as_bytes()),
+            conflict_hashes,
+        )
+        .expect("pre-evaluation context");
+        let lookup_candidates =
+            IdempotencyLookupCandidatesV1::new(vec![commit_context.pending().identity().clone()])
+                .expect("singleton lookup");
+
+        PendingCommandAttempts {
+            resolved_plan,
+            normalized_input,
+            commit_context,
+            raw_conflict_keys,
+            snapshot_request,
+            lookup_candidates,
+            invocation_request_id: request_id(2),
+            deadline: future_deadline(),
+            cancellation: CancellationToken::new(),
+            completed_attempts: 0,
+        }
     }
 
     fn execution_fixture() -> (PendingCommandAttempts, ReadSnapshot) {
@@ -665,6 +1117,169 @@ mod tests {
         )
     }
 
+    fn evolved_row_fixture(
+        desired_raw_record_bytes: Option<usize>,
+    ) -> (PendingCommandAttempts, ReadSnapshot, FieldId) {
+        let genesis_compiled =
+            compile_contract_source(&materialization_source(1, false)).expect("genesis compiles");
+        let successor_source = materialization_source(2, true);
+        let successor_compiled = compile_contract_successor(&successor_source, &genesis_compiled)
+            .expect("optional-field successor compiles");
+        let genesis = ValidatedContractBundle::from_compiler_bundle(genesis_compiled)
+            .expect("checked genesis");
+        let successor = ValidatedContractBundle::from_compiler_bundle(successor_compiled)
+            .expect("checked successor");
+        let command = successor
+            .bundle()
+            .commands()
+            .iter()
+            .find(|plan| plan.name() == "Increment")
+            .expect("Increment plan");
+        let reference = ExecutablePlanRef::new(
+            successor.lineage().clone(),
+            successor.contract_version(),
+            successor.bundle_hash(),
+            command.command_id(),
+            command.plan_hash(),
+        );
+        let tip = successor.to_stored().expect("stored successor");
+        let repository = LineageRepository {
+            active: ActiveCatalogPointerV1::from_bundle(&tip),
+            bundles: vec![genesis.to_stored().expect("stored genesis"), tip],
+        };
+        let resolved_plan =
+            resolve_executable_plan(&repository, &reference).expect("resolved successor plan");
+        let input = materialization_input(resolved_plan.plan());
+        let facts = derive_input_command_facts(resolved_plan.plan(), input.clone())
+            .expect("allocation facts");
+        let binding_targets = resolved_plan
+            .plan()
+            .bindings()
+            .iter()
+            .map(|binding| binding.entity_type())
+            .zip(facts.binding_entity_keys().iter().cloned())
+            .map(|(entity_type, key)| EntityTarget::new(entity_type, key))
+            .collect::<Result<Vec<_>, _>>()
+            .expect("binding targets");
+        let root_targets = resolved_plan
+            .plan()
+            .root_validation_reads()
+            .iter()
+            .map(|read| read.entity_type())
+            .zip(facts.root_validation_entity_keys().iter().cloned())
+            .map(|(entity_type, key)| EntityTarget::new(entity_type, key))
+            .collect::<Result<Vec<_>, _>>()
+            .expect("root targets");
+        let request = SnapshotRequest::new(
+            reference,
+            binding_targets.clone(),
+            root_targets.clone(),
+            Vec::new(),
+        )
+        .expect("snapshot request");
+        let target = binding_targets.first().expect("one binding").clone();
+        let entity = genesis
+            .bundle()
+            .schema()
+            .entity(target.entity_type_id())
+            .expect("Row schema");
+        let key_values = entity
+            .primary_key()
+            .decode_entity(target.key())
+            .expect("Row key");
+        let base_fields = entity
+            .record()
+            .fields()
+            .iter()
+            .map(|field| {
+                let value = match field.name() {
+                    "tenant" => key_values[0].clone(),
+                    "id" => key_values[1].clone(),
+                    "value" => CanonicalValue::I64(41),
+                    unexpected => panic!("unexpected genesis Row field {unexpected}"),
+                };
+                (field.id(), value)
+            })
+            .collect::<Vec<_>>();
+        let unknown_field = FieldId::new(u32::MAX).expect("unknown field ID");
+        assert!(
+            entity
+                .record()
+                .fields()
+                .iter()
+                .all(|field| field.id() != unknown_field)
+        );
+        let fields = if let Some(desired_bytes) = desired_raw_record_bytes {
+            let mut empty = base_fields.clone();
+            empty.push((
+                unknown_field,
+                CanonicalValue::bytes(Vec::new()).expect("empty unknown payload"),
+            ));
+            let empty = CanonicalRecord::new(empty).expect("empty-payload record");
+            let payload_bytes = desired_bytes
+                .checked_sub(
+                    encode_canonical_record(&empty)
+                        .expect("empty-payload encoding")
+                        .len(),
+                )
+                .expect("record target leaves payload room");
+            let mut fields = base_fields;
+            fields.push((
+                unknown_field,
+                CanonicalValue::bytes(vec![0; payload_bytes]).expect("bounded unknown payload"),
+            ));
+            let fields = CanonicalRecord::new(fields).expect("large raw record");
+            assert_eq!(
+                encode_canonical_record(&fields)
+                    .expect("large raw encoding")
+                    .len(),
+                desired_bytes
+            );
+            fields
+        } else {
+            CanonicalRecord::new(base_fields).expect("raw genesis record")
+        };
+        let record = StoredEntityRecordV1::new(
+            target,
+            EntityVersion::first(),
+            genesis.contract_version(),
+            DurableKeySchemaBindingV1::new(
+                genesis.lineage().clone(),
+                genesis.contract_version(),
+                genesis.bundle_hash(),
+            ),
+            fields,
+        )
+        .expect("stored genesis record");
+        let snapshot = ReadSnapshot::new(
+            &request,
+            None,
+            vec![EntityObservation::Present(record)],
+            root_targets
+                .into_iter()
+                .map(EntityObservation::Absent)
+                .collect(),
+            Vec::new(),
+        )
+        .expect("raw successor snapshot");
+        let note = successor
+            .bundle()
+            .schema()
+            .entity(binding_targets[0].entity_type_id())
+            .expect("successor Row")
+            .record()
+            .fields()
+            .iter()
+            .find(|field| field.name() == "note")
+            .expect("successor note")
+            .id();
+        (
+            pending_attempt(resolved_plan, input, request),
+            snapshot,
+            note,
+        )
+    }
+
     fn acquire_and_release(
         runtime: &tokio::runtime::Runtime,
         manager: &ShardedConflictManager,
@@ -674,6 +1289,397 @@ mod tests {
             .block_on(manager.acquire_mut(keys, future_deadline(), CancellationToken::new()))
             .expect("logical capability is available")
             .release();
+    }
+
+    struct CandidateChainTrace {
+        order: Rc<RefCell<Vec<&'static str>>>,
+        expected_intent: CommitIntent,
+        intent_address: Cell<Option<usize>>,
+        lease_held_at_rollback: Cell<Option<bool>>,
+        current: RefCell<Option<TransactionCurrentState>>,
+        manager: ShardedConflictManager,
+        keys: Vec<ConflictKey>,
+    }
+
+    impl CandidateChainTrace {
+        fn observe_intent(&self, event: &'static str, intent: &CommitIntent) {
+            self.order.borrow_mut().push(event);
+            assert_eq!(intent, &self.expected_intent, "candidate intent changed");
+            let address = std::ptr::from_ref(intent) as usize;
+            match self.intent_address.get() {
+                Some(expected) => assert_eq!(address, expected, "candidate intent was replaced"),
+                None => self.intent_address.set(Some(address)),
+            }
+        }
+
+        fn record_whether_lease_is_held(&self) {
+            let mut probe = self.manager.acquire_mut(
+                self.keys.clone(),
+                future_deadline(),
+                CancellationToken::new(),
+            );
+            let mut context = Context::from_waker(Waker::noop());
+            self.lease_held_at_rollback.set(Some(matches!(
+                probe.as_mut().poll(&mut context),
+                Poll::Pending
+            )));
+        }
+    }
+
+    struct InstrumentedEmptyBatch {
+        trace: Rc<CandidateChainTrace>,
+    }
+
+    impl Drop for InstrumentedEmptyBatch {
+        fn drop(&mut self) {
+            self.trace.record_whether_lease_is_held();
+            self.trace.order.borrow_mut().push("storage-rollback");
+        }
+    }
+
+    struct InstrumentedCandidateAdmission {
+        prior: InstrumentedEmptyBatch,
+        intent: Box<CommitIntent>,
+    }
+
+    struct InstrumentedCandidateStateRead {
+        prior: InstrumentedEmptyBatch,
+        intent: Box<CommitIntent>,
+    }
+
+    struct InstrumentedAwaitingValidation {
+        prior: InstrumentedEmptyBatch,
+        intent: Box<CommitIntent>,
+    }
+
+    struct InstrumentedTransactionPort {
+        trace: Rc<CandidateChainTrace>,
+    }
+
+    impl ApplicationCommandTransactionPort for InstrumentedTransactionPort {
+        type EmptyBatch = InstrumentedEmptyBatch;
+
+        fn begin_empty_batch(&self) -> Result<Self::EmptyBatch, StorageError> {
+            self.trace.order.borrow_mut().push("begin-empty");
+            Ok(InstrumentedEmptyBatch {
+                trace: Rc::clone(&self.trace),
+            })
+        }
+    }
+
+    impl EmptyCommandBatch for InstrumentedEmptyBatch {
+        type Candidate = InstrumentedCandidateAdmission;
+
+        fn begin_candidate(
+            self,
+            intent: Box<CommitIntent>,
+        ) -> Result<Self::Candidate, StorageError> {
+            self.trace.observe_intent("begin-candidate", &intent);
+            Ok(InstrumentedCandidateAdmission {
+                prior: self,
+                intent,
+            })
+        }
+
+        fn rollback(self) {
+            drop(self);
+        }
+    }
+
+    impl CommandCandidateAdmission for InstrumentedCandidateAdmission {
+        type Prior = InstrumentedEmptyBatch;
+        type StateRead = InstrumentedCandidateStateRead;
+
+        fn recheck_admission(
+            self,
+        ) -> Result<CandidateAdmissionResult<Self::Prior, Self::StateRead>, StorageError> {
+            self.prior
+                .trace
+                .observe_intent("candidate-recheck", &self.intent);
+            Ok(CandidateAdmissionResult::Proceed(
+                InstrumentedCandidateStateRead {
+                    prior: self.prior,
+                    intent: self.intent,
+                },
+            ))
+        }
+    }
+
+    impl CommandCandidateStateRead for InstrumentedCandidateStateRead {
+        type Prior = InstrumentedEmptyBatch;
+        type AwaitingValidation = InstrumentedAwaitingValidation;
+
+        fn read_transaction_current(
+            self,
+        ) -> Result<(Self::AwaitingValidation, TransactionCurrentState), StorageError> {
+            self.prior
+                .trace
+                .observe_intent("current-read", &self.intent);
+            let current = self
+                .prior
+                .trace
+                .current
+                .borrow_mut()
+                .take()
+                .expect("one transaction-current read");
+            Ok((
+                InstrumentedAwaitingValidation {
+                    prior: self.prior,
+                    intent: self.intent,
+                },
+                current,
+            ))
+        }
+    }
+
+    impl CommandCandidateAwaitingValidation for InstrumentedAwaitingValidation {
+        type Prior = InstrumentedEmptyBatch;
+        type AffectedEpochRead = NeverCandidate<InstrumentedEmptyBatch>;
+
+        fn plan_validated(
+            self,
+            _affected_targets: AffectedIndexEpochTargets,
+        ) -> Self::AffectedEpochRead {
+            panic!("dependency-changed test must reject before index planning")
+        }
+
+        fn reject(self, reason: CandidateValidationRejection) -> AbandonedCandidate<Self::Prior> {
+            assert_eq!(reason, CandidateValidationRejection::DependencyChanged);
+            self.prior
+                .trace
+                .observe_intent("candidate-reject", &self.intent);
+            AbandonedCandidate::new(self.prior, self.intent)
+        }
+    }
+
+    struct NeverCandidate<P>(PhantomData<P>);
+
+    impl<P> CommandCandidateAdmission for NeverCandidate<P> {
+        type Prior = P;
+        type StateRead = Self;
+
+        fn recheck_admission(
+            self,
+        ) -> Result<CandidateAdmissionResult<Self::Prior, Self::StateRead>, StorageError> {
+            panic!("unreachable candidate admission")
+        }
+    }
+
+    impl<P> CommandCandidateStateRead for NeverCandidate<P> {
+        type Prior = P;
+        type AwaitingValidation = Self;
+
+        fn read_transaction_current(
+            self,
+        ) -> Result<(Self::AwaitingValidation, TransactionCurrentState), StorageError> {
+            panic!("unreachable transaction-current read")
+        }
+    }
+
+    impl<P> CommandCandidateAwaitingValidation for NeverCandidate<P> {
+        type Prior = P;
+        type AffectedEpochRead = Self;
+
+        fn plan_validated(
+            self,
+            _affected_targets: AffectedIndexEpochTargets,
+        ) -> Self::AffectedEpochRead {
+            panic!("unreachable validated plan")
+        }
+
+        fn reject(self, _reason: CandidateValidationRejection) -> AbandonedCandidate<Self::Prior> {
+            panic!("unreachable rejection")
+        }
+    }
+
+    impl<P> CommandCandidateAffectedEpochRead for NeverCandidate<P> {
+        type Prior = P;
+        type AwaitingCapacity = Self;
+
+        fn read_affected_epoch_current(self) -> Result<Self::AwaitingCapacity, StorageError> {
+            panic!("unreachable affected-epoch read")
+        }
+    }
+
+    impl<P> CommandCandidateAwaitingCapacity for NeverCandidate<P> {
+        type Prior = P;
+        type CapacityReserved = Self;
+
+        fn intent(&self) -> &CommitIntent {
+            panic!("unreachable candidate intent")
+        }
+
+        fn affected_targets(&self) -> &AffectedIndexEpochTargets {
+            panic!("unreachable affected targets")
+        }
+
+        fn affected_current(&self) -> &AffectedEpochCurrentState {
+            panic!("unreachable affected current state")
+        }
+
+        fn reserve_capacity(
+            self,
+            _write_plan: CommandWriteSetPlanV1,
+        ) -> Result<CandidateCapacityResult<Self::Prior, Self::CapacityReserved>, StorageError>
+        {
+            panic!("unreachable capacity reservation")
+        }
+    }
+
+    impl<P> CommandCandidateCapacityReserved for NeverCandidate<P> {
+        type Prior = P;
+        type SequenceAssigned = Self;
+
+        fn intent(&self) -> &CommitIntent {
+            panic!("unreachable reserved intent")
+        }
+
+        fn write_plan(&self) -> &CommandWriteSetPlanV1 {
+            panic!("unreachable reserved write plan")
+        }
+
+        fn assign_sequence(self) -> Result<Self::SequenceAssigned, StorageError> {
+            panic!("unreachable sequence assignment")
+        }
+    }
+
+    impl<P> CommandCandidateSequenceAssigned for NeverCandidate<P> {
+        type Prior = P;
+        type Staged = NeverStagedBatch;
+
+        fn assignment(&self) -> riffdb_storage_api::AssignedCommandSequence {
+            panic!("unreachable sequence assignment evidence")
+        }
+
+        fn intent(&self) -> &CommitIntent {
+            panic!("unreachable assigned intent")
+        }
+
+        fn write_plan(&self) -> &CommandWriteSetPlanV1 {
+            panic!("unreachable assigned write plan")
+        }
+
+        fn stage(self, _records: AtomicCommandRecordSet) -> Result<Self::Staged, StorageError> {
+            panic!("unreachable record staging")
+        }
+    }
+
+    struct NeverStagedBatch;
+
+    impl NonEmptyCommandBatch for NeverStagedBatch {
+        type Candidate = NeverCandidate<Self>;
+
+        fn metrics(&self) -> StagedBatchMetrics {
+            panic!("unreachable staged metrics")
+        }
+
+        fn begin_candidate(
+            self,
+            _intent: Box<CommitIntent>,
+        ) -> Result<CandidateStartResult<Self, Self::Candidate>, StorageError> {
+            panic!("unreachable staged candidate")
+        }
+
+        fn commit(self, _durability: DurabilityMode) -> Result<CommittedBatchV1, StorageError> {
+            panic!("unreachable staged commit")
+        }
+
+        fn rollback(self) {}
+    }
+
+    struct CandidateChainFixture {
+        bound: ProvenanceBoundCommandAttempt,
+        changed_current: TransactionCurrentState,
+        manager: ShardedConflictManager,
+        runtime: tokio::runtime::Runtime,
+        keys: Vec<ConflictKey>,
+        order: Rc<RefCell<Vec<&'static str>>>,
+    }
+
+    fn candidate_chain_fixture() -> CandidateChainFixture {
+        let (state, snapshot, _) = evolved_row_fixture(None);
+        let keys = state.raw_conflict_keys.clone();
+        let EntityObservation::Present(snapshot_record) = &snapshot.bindings()[0] else {
+            panic!("Increment fixture must read one present row")
+        };
+        let changed_record = StoredEntityRecordV1::new(
+            snapshot_record.target().clone(),
+            snapshot_record
+                .entity_version()
+                .checked_next()
+                .expect("fixture entity version advances"),
+            snapshot_record.written_by_contract(),
+            snapshot_record.schema_binding().clone(),
+            snapshot_record.fields().clone(),
+        )
+        .expect("transaction-current changed record");
+        let changed_current = TransactionCurrentState::new(
+            &snapshot.validation_request(),
+            vec![EntityObservation::Present(changed_record)],
+            snapshot.root_validations().to_vec(),
+            Vec::new(),
+        )
+        .expect("complete changed transaction-current state");
+
+        let order = Rc::new(RefCell::new(Vec::new()));
+        let repository = ScriptedRepository::new(
+            state.lookup_candidates.clone(),
+            AdmissionLookupResultV1::Found(Box::new(StoredAdmissionStateV1::Pending(
+                state.commit_context.pending().clone(),
+            ))),
+            Rc::clone(&order),
+        );
+        let snapshots = ScriptedSnapshotReader::new(
+            state.snapshot_request.clone(),
+            snapshot,
+            Rc::clone(&order),
+        );
+        let manager = manager();
+        let runtime = runtime();
+        let resolution = runtime
+            .block_on(evaluate_next_command_attempt(
+                state,
+                &repository,
+                &snapshots,
+                &manager,
+            ))
+            .expect("evaluation attempt");
+        let CommandAttemptResolution::Evaluated(attempt) = resolution else {
+            panic!("Increment must require a commit")
+        };
+        let bound = attempt
+            .bind_provenance(provenance_id())
+            .expect("bind exact provenance");
+        CandidateChainFixture {
+            bound,
+            changed_current,
+            manager,
+            runtime,
+            keys,
+            order,
+        }
+    }
+
+    fn instrumented_transaction_port(
+        bound: &ProvenanceBoundCommandAttempt,
+        current: TransactionCurrentState,
+        manager: ShardedConflictManager,
+        keys: Vec<ConflictKey>,
+        order: Rc<RefCell<Vec<&'static str>>>,
+    ) -> (InstrumentedTransactionPort, Rc<CandidateChainTrace>) {
+        let trace = Rc::new(CandidateChainTrace {
+            order,
+            expected_intent: bound.commit_intent().clone(),
+            intent_address: Cell::new(None),
+            lease_held_at_rollback: Cell::new(None),
+            current: RefCell::new(Some(current)),
+            manager,
+            keys,
+        });
+        let port = InstrumentedTransactionPort {
+            trace: Rc::clone(&trace),
+        };
+        (port, trace)
     }
 
     fn request_id(seed: u8) -> RequestId {
@@ -800,12 +1806,15 @@ mod tests {
         let CommandAttemptResolution::Evaluated(attempt) = resolution else {
             panic!("CreateBudget must require a commit")
         };
-        let (next, lease, owned_snapshot, evaluated) = attempt.into_parts();
-        assert_eq!(next.completed_attempts(), 1);
-        assert_eq!(evaluated.mutations().len(), 1);
+        assert!(attempt.has_exact_semantic_join());
+        assert_eq!(attempt.state.completed_attempts(), 1);
+        assert_eq!(attempt.evaluated().mutations().len(), 1);
         assert_eq!(
-            evaluated.read_dependencies(),
-            owned_snapshot.read_dependencies()
+            attempt.evaluated().read_dependencies(),
+            attempt
+                .materialized_snapshot()
+                .snapshot()
+                .read_dependencies()
         );
         assert_eq!(&*order.borrow(), &["pending-recheck", "snapshot"]);
 
@@ -815,11 +1824,595 @@ mod tests {
             competing.as_mut().poll(&mut context),
             Poll::Pending
         ));
-        drop(lease);
+        let bound = attempt
+            .bind_provenance(provenance_id())
+            .expect("successful evaluation binds one provenance candidate");
+        assert_eq!(bound.commit_intent().provenance_id(), provenance_id());
+        assert_eq!(bound.storage_intent().as_ref(), bound.commit_intent());
+        drop(bound);
         runtime
             .block_on(competing)
             .expect("dropping retained lease grants competitor")
             .release();
+    }
+
+    #[test]
+    fn proven_noncommit_discards_the_old_attempt_before_retry() {
+        let (state, snapshot) = execution_fixture();
+        let keys = state.raw_conflict_keys.clone();
+        let order = Rc::new(RefCell::new(Vec::new()));
+        let repository = ScriptedRepository::new(
+            state.lookup_candidates.clone(),
+            AdmissionLookupResultV1::Found(Box::new(StoredAdmissionStateV1::Pending(
+                state.commit_context.pending().clone(),
+            ))),
+            Rc::clone(&order),
+        );
+        let snapshots = ScriptedSnapshotReader::new(
+            state.snapshot_request.clone(),
+            snapshot,
+            Rc::clone(&order),
+        );
+        let manager = manager();
+        let runtime = runtime();
+        let resolution = runtime
+            .block_on(evaluate_next_command_attempt(
+                state,
+                &repository,
+                &snapshots,
+                &manager,
+            ))
+            .expect("evaluation attempt");
+        let CommandAttemptResolution::Evaluated(attempt) = resolution else {
+            panic!("CreateBudget must require a commit")
+        };
+        let bound = attempt
+            .bind_provenance(provenance_id())
+            .expect("bind old provenance attempt");
+
+        let mut competing = manager.acquire_mut(keys, future_deadline(), CancellationToken::new());
+        let mut context = Context::from_waker(Waker::noop());
+        assert!(matches!(
+            competing.as_mut().poll(&mut context),
+            Poll::Pending
+        ));
+
+        let retry = bound.into_pending_after_proven_noncommit();
+        assert_eq!(retry.completed_attempts(), 1);
+        runtime
+            .block_on(competing)
+            .expect("proven noncommit releases the old attempt lease")
+            .release();
+    }
+
+    #[test]
+    fn storage_candidate_chain_preserves_one_intent_and_rolls_back_before_lease_release() {
+        let CandidateChainFixture {
+            bound,
+            changed_current,
+            manager,
+            runtime,
+            keys,
+            order,
+        } = candidate_chain_fixture();
+        let (port, trace) = instrumented_transaction_port(
+            &bound,
+            changed_current,
+            manager.clone(),
+            keys.clone(),
+            Rc::clone(&order),
+        );
+
+        let crate::command_validation::CommandCandidateChainStart::Ready(candidate) =
+            crate::command_validation::begin_bound_command_candidate(&port, bound)
+        else {
+            panic!("exact Pending candidate must proceed")
+        };
+        let crate::command_validation::TransactionCurrentAttemptDecision::DependencyChanged(
+            changed,
+        ) = candidate.read_transaction_current()
+        else {
+            panic!("changed entity version must reject the exact candidate")
+        };
+        let RolledBackCandidateDisposition::Retry { state, reason } =
+            changed.reject_storage_and_rollback()
+        else {
+            panic!("dependency change must become a post-rollback retry")
+        };
+
+        assert_eq!(reason, CandidateValidationRejection::DependencyChanged);
+        assert_eq!(state.completed_attempts(), 1);
+        assert!(trace.current.borrow().is_none());
+        assert!(trace.intent_address.get().is_some());
+        assert_eq!(trace.lease_held_at_rollback.get(), Some(true));
+        assert_eq!(
+            &*order.borrow(),
+            &[
+                "pending-recheck",
+                "snapshot",
+                "begin-empty",
+                "begin-candidate",
+                "candidate-recheck",
+                "current-read",
+                "candidate-reject",
+                "storage-rollback",
+            ]
+        );
+        acquire_and_release(&runtime, &manager, keys);
+    }
+
+    #[test]
+    fn dropping_bound_state_read_rolls_back_storage_before_releasing_the_lease() {
+        let CandidateChainFixture {
+            bound,
+            changed_current,
+            manager,
+            runtime,
+            keys,
+            order,
+        } = candidate_chain_fixture();
+        let (port, trace) = instrumented_transaction_port(
+            &bound,
+            changed_current,
+            manager.clone(),
+            keys.clone(),
+            Rc::clone(&order),
+        );
+
+        let crate::command_validation::CommandCandidateChainStart::Ready(candidate) =
+            crate::command_validation::begin_bound_command_candidate(&port, bound)
+        else {
+            panic!("exact Pending candidate must proceed")
+        };
+        drop(candidate);
+
+        assert_eq!(trace.lease_held_at_rollback.get(), Some(true));
+        assert_eq!(
+            &*order.borrow(),
+            &[
+                "pending-recheck",
+                "snapshot",
+                "begin-empty",
+                "begin-candidate",
+                "candidate-recheck",
+                "storage-rollback",
+            ]
+        );
+        acquire_and_release(&runtime, &manager, keys);
+    }
+
+    #[test]
+    fn late_commit_check_arithmetic_retains_snapshot_and_lease_after_proven_rollback() {
+        let (state, snapshot) = execution_fixture();
+        let keys = state.raw_conflict_keys.clone();
+        let order = Rc::new(RefCell::new(Vec::new()));
+        let repository = ScriptedRepository::new(
+            state.lookup_candidates.clone(),
+            AdmissionLookupResultV1::Found(Box::new(StoredAdmissionStateV1::Pending(
+                state.commit_context.pending().clone(),
+            ))),
+            Rc::clone(&order),
+        );
+        let snapshots = ScriptedSnapshotReader::new(
+            state.snapshot_request.clone(),
+            snapshot,
+            Rc::clone(&order),
+        );
+        let manager = manager();
+        let runtime = runtime();
+        let resolution = runtime
+            .block_on(evaluate_next_command_attempt(
+                state,
+                &repository,
+                &snapshots,
+                &manager,
+            ))
+            .expect("evaluation attempt");
+        let CommandAttemptResolution::Evaluated(attempt) = resolution else {
+            panic!("CreateBudget must require a commit")
+        };
+        let bound = attempt
+            .bind_provenance(provenance_id())
+            .expect("bind one provenance candidate");
+
+        let RolledBackCandidateDisposition::ExecutionFault(fault) = bound
+            .after_proven_rollback_for_test(
+                CandidateValidationRejection::CommitCheckArithmeticFault,
+            )
+        else {
+            panic!("late arithmetic must enter terminalization evidence")
+        };
+        let ExecutionFaultAttempt::Arithmetic {
+            state,
+            lease,
+            snapshot,
+        } = *fault
+        else {
+            panic!("late commit-check arithmetic must retain arithmetic evidence")
+        };
+        assert_eq!(state.completed_attempts(), 1);
+        assert_eq!(
+            snapshot.snapshot().plan(),
+            state.commit_context.pending().plan()
+        );
+        assert!(
+            !snapshot
+                .snapshot()
+                .read_dependencies()
+                .as_slice()
+                .is_empty()
+        );
+
+        let mut competing = manager.acquire_mut(keys, future_deadline(), CancellationToken::new());
+        let mut context = Context::from_waker(Waker::noop());
+        assert!(matches!(
+            competing.as_mut().poll(&mut context),
+            Poll::Pending
+        ));
+        drop(snapshot);
+        drop(lease);
+        runtime
+            .block_on(competing)
+            .expect("terminalization evidence releases capability only when dropped")
+            .release();
+    }
+
+    #[test]
+    fn successor_snapshot_is_normalized_before_runtime_and_retained_opaquely() {
+        let (state, raw_snapshot, note) = evolved_row_fixture(None);
+        let order = Rc::new(RefCell::new(Vec::new()));
+        let repository = ScriptedRepository::new(
+            state.lookup_candidates.clone(),
+            AdmissionLookupResultV1::Found(Box::new(StoredAdmissionStateV1::Pending(
+                state.commit_context.pending().clone(),
+            ))),
+            Rc::clone(&order),
+        );
+        let snapshots = ScriptedSnapshotReader::new(
+            state.snapshot_request.clone(),
+            raw_snapshot,
+            Rc::clone(&order),
+        );
+        let manager = manager();
+        let runtime = runtime();
+
+        let resolution = runtime
+            .block_on(evaluate_next_command_attempt(
+                state,
+                &repository,
+                &snapshots,
+                &manager,
+            ))
+            .expect("normalized evaluation");
+        let CommandAttemptResolution::Evaluated(attempt) = resolution else {
+            panic!("Increment must require a commit")
+        };
+        assert_eq!(attempt.state.completed_attempts(), 1);
+        let EntityObservation::Present(record) =
+            &attempt.materialized_snapshot().snapshot().bindings()[0]
+        else {
+            panic!("present Row binding")
+        };
+        let note_position = record
+            .fields()
+            .fields()
+            .binary_search_by_key(&note, |(field, _)| *field)
+            .expect("catalog inserted optional note");
+        assert_eq!(
+            record.fields().fields()[note_position].1,
+            CanonicalValue::Null
+        );
+        let mutated = attempt.evaluated().mutations()[0].post_image().fields();
+        let note_position = mutated
+            .fields()
+            .binary_search_by_key(&note, |(field, _)| *field)
+            .expect("runtime retained normalized optional note");
+        assert_eq!(mutated.fields()[note_position].1, CanonicalValue::Null);
+        assert_eq!(&*order.borrow(), &["pending-recheck", "snapshot"]);
+        drop(attempt);
+    }
+
+    #[test]
+    fn transaction_current_must_pass_through_the_exact_attempt_raw_proof() {
+        let (state, raw_snapshot, note) = evolved_row_fixture(None);
+        let EntityObservation::Present(raw_record) = &raw_snapshot.bindings()[0] else {
+            panic!("present ancestor Row")
+        };
+        let mut explicit_fields = raw_record.fields().fields().to_vec();
+        explicit_fields.push((note, CanonicalValue::Null));
+        let explicit_record = StoredEntityRecordV1::new(
+            raw_record.target().clone(),
+            raw_record.entity_version(),
+            raw_record.written_by_contract(),
+            raw_record.schema_binding().clone(),
+            CanonicalRecord::new(explicit_fields).expect("explicit-null fields"),
+        )
+        .expect("same-version explicit-null record");
+        let explicit_snapshot = ReadSnapshot::new(
+            &state.snapshot_request,
+            None,
+            vec![EntityObservation::Present(explicit_record)],
+            raw_snapshot.root_validations().to_vec(),
+            raw_snapshot.ranges().to_vec(),
+        )
+        .expect("explicit-null raw snapshot");
+
+        let CommandSnapshotMaterialization::Ready(omitted_normalized) = state
+            .resolved_plan
+            .clone()
+            .materialize_command_snapshot(raw_snapshot.clone())
+            .expect("ancestor omission materializes")
+        else {
+            panic!("bounded ancestor omission")
+        };
+        let CommandSnapshotMaterialization::Ready(explicit_normalized) = state
+            .resolved_plan
+            .clone()
+            .materialize_command_snapshot(explicit_snapshot.clone())
+            .expect("explicit null materializes")
+        else {
+            panic!("bounded explicit null")
+        };
+        assert_eq!(
+            omitted_normalized.snapshot().bindings(),
+            explicit_normalized.snapshot().bindings(),
+            "distinct raw states intentionally normalize to the same runtime value"
+        );
+
+        let explicit_current = TransactionCurrentState::new(
+            &explicit_snapshot.validation_request(),
+            explicit_snapshot.bindings().to_vec(),
+            explicit_snapshot.root_validations().to_vec(),
+            Vec::new(),
+        )
+        .expect("transaction-current explicit-null state");
+        let order = Rc::new(RefCell::new(Vec::new()));
+        let repository = ScriptedRepository::new(
+            state.lookup_candidates.clone(),
+            AdmissionLookupResultV1::Found(Box::new(StoredAdmissionStateV1::Pending(
+                state.commit_context.pending().clone(),
+            ))),
+            Rc::clone(&order),
+        );
+        let snapshots = ScriptedSnapshotReader::new(
+            state.snapshot_request.clone(),
+            raw_snapshot,
+            Rc::clone(&order),
+        );
+        let manager = manager();
+        let runtime = runtime();
+        let resolution = runtime
+            .block_on(evaluate_next_command_attempt(
+                state,
+                &repository,
+                &snapshots,
+                &manager,
+            ))
+            .expect("ancestor evaluation");
+        let CommandAttemptResolution::Evaluated(attempt) = resolution else {
+            panic!("Increment must require commit")
+        };
+        let bound = attempt
+            .bind_provenance(provenance_id())
+            .expect("bind exact provenance");
+        assert!(
+            bound
+                .materialized_snapshot()
+                .materialize_transaction_current(explicit_current)
+                .is_err(),
+            "same-version physical drift is an integrity failure, not a retryable dependency change"
+        );
+    }
+
+    #[test]
+    fn lineage_expansion_overflow_returns_pre_runtime_evidence() {
+        let desired_raw_bytes = MAX_CANONICAL_DOCUMENT_BYTES - 5;
+        let (state, raw_snapshot, note) = evolved_row_fixture(Some(desired_raw_bytes));
+        let keys = state.raw_conflict_keys.clone();
+        let order = Rc::new(RefCell::new(Vec::new()));
+        let repository = ScriptedRepository::new(
+            state.lookup_candidates.clone(),
+            AdmissionLookupResultV1::Found(Box::new(StoredAdmissionStateV1::Pending(
+                state.commit_context.pending().clone(),
+            ))),
+            Rc::clone(&order),
+        );
+        let snapshots = ScriptedSnapshotReader::new(
+            state.snapshot_request.clone(),
+            raw_snapshot,
+            Rc::clone(&order),
+        );
+        let manager = manager();
+        let runtime = runtime();
+
+        let resolution = runtime
+            .block_on(evaluate_next_command_attempt(
+                state,
+                &repository,
+                &snapshots,
+                &manager,
+            ))
+            .expect("valid expansion overflow");
+        let CommandAttemptResolution::ExecutionFault(attempt) = resolution else {
+            panic!("overflow must be a dependency-sensitive execution fault")
+        };
+        let ExecutionFaultAttempt::ResourceLimit {
+            state,
+            lease,
+            evidence,
+        } = attempt
+        else {
+            panic!("catalog overflow cannot be paired with arithmetic")
+        };
+        assert_eq!(state.completed_attempts(), 1);
+        let ResourceLimitFaultEvidence::Materialization(evidence) = evidence else {
+            panic!("runtime must not replace catalog overflow evidence")
+        };
+        let EntityObservation::Present(raw) = &evidence.raw_snapshot().bindings()[0] else {
+            panic!("present raw Row binding")
+        };
+        assert_eq!(
+            encode_canonical_record(raw.fields())
+                .expect("raw record encoding")
+                .len(),
+            desired_raw_bytes
+        );
+        assert!(
+            raw.fields()
+                .fields()
+                .binary_search_by_key(&note, |(field, _)| *field)
+                .is_err(),
+            "overflow evidence must retain raw data, not a normalized value"
+        );
+        assert_eq!(&*order.borrow(), &["pending-recheck", "snapshot"]);
+        drop(lease);
+        acquire_and_release(&runtime, &manager, keys);
+    }
+
+    #[test]
+    fn snapshot_adapter_target_drift_fails_before_materialization() {
+        let (state, _, _) = evolved_row_fixture(None);
+        let wrong_input = input_record(
+            state.resolved_plan.plan().input().record(),
+            [
+                (
+                    "idempotency_key",
+                    CanonicalValue::string(SENSITIVE_MARKER).expect("bounded caller key"),
+                ),
+                ("tenant", CanonicalValue::Uuid([0x41; 16])),
+                ("id", CanonicalValue::Uuid([0x43; 16])),
+            ],
+        );
+        let facts = derive_input_command_facts(state.resolved_plan.plan(), wrong_input)
+            .expect("wrong-target facts");
+        let wrong_target = EntityTarget::new(
+            state.resolved_plan.plan().bindings()[0].entity_type(),
+            facts.binding_entity_keys()[0].clone(),
+        )
+        .expect("wrong target");
+        assert_ne!(&wrong_target, &state.snapshot_request.binding_targets()[0]);
+        let wrong_request = SnapshotRequest::new(
+            state.snapshot_request.plan().clone(),
+            vec![wrong_target.clone()],
+            Vec::new(),
+            Vec::new(),
+        )
+        .expect("wrong snapshot request");
+        let wrong_snapshot = ReadSnapshot::new(
+            &wrong_request,
+            None,
+            vec![EntityObservation::Absent(wrong_target)],
+            Vec::new(),
+            Vec::new(),
+        )
+        .expect("internally coherent wrong snapshot");
+        assert!(!snapshot_matches_request(
+            &state.snapshot_request,
+            &wrong_snapshot
+        ));
+
+        let keys = state.raw_conflict_keys.clone();
+        let order = Rc::new(RefCell::new(Vec::new()));
+        let repository = ScriptedRepository::new(
+            state.lookup_candidates.clone(),
+            AdmissionLookupResultV1::Found(Box::new(StoredAdmissionStateV1::Pending(
+                state.commit_context.pending().clone(),
+            ))),
+            Rc::clone(&order),
+        );
+        let snapshots = ScriptedSnapshotReader::new(
+            state.snapshot_request.clone(),
+            wrong_snapshot,
+            Rc::clone(&order),
+        );
+        let manager = manager();
+        let runtime = runtime();
+
+        assert!(matches!(
+            runtime.block_on(evaluate_next_command_attempt(
+                state,
+                &repository,
+                &snapshots,
+                &manager,
+            )),
+            Err(CommandAttemptError::Integrity)
+        ));
+        assert_eq!(&*order.borrow(), &["pending-recheck", "snapshot"]);
+        acquire_and_release(&runtime, &manager, keys);
+    }
+
+    #[test]
+    fn pending_recheck_control_point_skips_snapshot_but_terminal_replay_wins() {
+        let runtime = runtime();
+
+        let (state, snapshot) = execution_fixture();
+        let keys = state.raw_conflict_keys.clone();
+        let cancellation = state.cancellation.clone();
+        let order = Rc::new(RefCell::new(Vec::new()));
+        let repository = ScriptedRepository::new(
+            state.lookup_candidates.clone(),
+            AdmissionLookupResultV1::Found(Box::new(StoredAdmissionStateV1::Pending(
+                state.commit_context.pending().clone(),
+            ))),
+            Rc::clone(&order),
+        )
+        .cancelling_during_lookup(cancellation);
+        let snapshots = ScriptedSnapshotReader::new(
+            state.snapshot_request.clone(),
+            snapshot,
+            Rc::clone(&order),
+        );
+        let pending_manager = manager();
+        assert!(matches!(
+            runtime.block_on(evaluate_next_command_attempt(
+                state,
+                &repository,
+                &snapshots,
+                &pending_manager,
+            )),
+            Err(CommandAttemptError::Cancelled)
+        ));
+        assert_eq!(repository.calls.get(), 1);
+        assert_eq!(snapshots.calls.get(), 0);
+        assert_eq!(&*order.borrow(), &["pending-recheck"]);
+        acquire_and_release(&runtime, &pending_manager, keys);
+
+        let (state, snapshot) = execution_fixture();
+        let keys = state.raw_conflict_keys.clone();
+        let cancellation = state.cancellation.clone();
+        let outcome = outcome_from(
+            &state.commit_context,
+            state.commit_context.pending().admission_request_id(),
+            state.commit_context.conflict_hashes().to_vec(),
+        );
+        let order = Rc::new(RefCell::new(Vec::new()));
+        let repository = ScriptedRepository::new(
+            state.lookup_candidates.clone(),
+            AdmissionLookupResultV1::Found(Box::new(StoredAdmissionStateV1::StoredOutcome(
+                outcome,
+            ))),
+            Rc::clone(&order),
+        )
+        .cancelling_during_lookup(cancellation);
+        let snapshots = ScriptedSnapshotReader::new(
+            state.snapshot_request.clone(),
+            snapshot,
+            Rc::clone(&order),
+        );
+        let replay_manager = manager();
+        assert!(matches!(
+            runtime.block_on(evaluate_next_command_attempt(
+                state,
+                &repository,
+                &snapshots,
+                &replay_manager,
+            )),
+            Ok(CommandAttemptResolution::OutcomeReplay(_))
+        ));
+        assert_eq!(repository.calls.get(), 1);
+        assert_eq!(snapshots.calls.get(), 0);
+        assert_eq!(&*order.borrow(), &["pending-recheck"]);
+        acquire_and_release(&runtime, &replay_manager, keys);
     }
 
     #[test]
@@ -1009,11 +2602,9 @@ mod tests {
             let CommandAttemptResolution::Evaluated(attempt) = resolution else {
                 panic!("CreateBudget must evaluate")
             };
-            let (next, lease, _, evaluated) = attempt.into_parts();
-            assert_eq!(next.completed_attempts(), expected);
-            assert_eq!(evaluated.mutations().len(), 1);
-            drop(lease);
-            state = next;
+            assert_eq!(attempt.state.completed_attempts(), expected);
+            assert_eq!(attempt.evaluated().mutations().len(), 1);
+            state = attempt.into_retry_state_for_test();
         }
 
         let calls_before_fourth = (repository.calls.get(), snapshots.calls.get());
