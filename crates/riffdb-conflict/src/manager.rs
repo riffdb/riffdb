@@ -11,7 +11,7 @@ use std::task::{Context, Poll, Waker};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
-use riffdb_types::{ConflictKey, ConflictKeyHash, hash_conflict_key};
+use riffdb_types::{ConflictKey, ConflictKeyHash, MAX_COMMAND_CONFLICT_KEYS_V1, hash_conflict_key};
 
 use crate::cancellation::{CancellationRegistrationError, CancellationToken};
 use crate::telemetry::{
@@ -22,7 +22,6 @@ use crate::telemetry::{
 use crate::testing::{ConflictSchedulePoint, DeterministicConflictScheduler};
 
 const MAX_SHARDS: usize = 256;
-const MAX_KEYS_PER_ACQUISITION_LIMIT: usize = 256;
 const MAX_KEYS_PER_SHARD_LIMIT: usize = 4_096;
 const MAX_WAITERS_LIMIT: usize = 65_536;
 const MAX_WAITERS_PER_KEY_LIMIT: usize = 4_096;
@@ -57,7 +56,7 @@ impl ConflictManagerConfig {
         check_config_bound(
             "max_keys_per_acquisition",
             max_keys_per_acquisition,
-            MAX_KEYS_PER_ACQUISITION_LIMIT,
+            MAX_COMMAND_CONFLICT_KEYS_V1,
         )?;
         check_config_bound(
             "max_keys_per_shard",
@@ -120,7 +119,7 @@ impl Default for ConflictManagerConfig {
     fn default() -> Self {
         Self {
             shard_count: 64,
-            max_keys_per_acquisition: 64,
+            max_keys_per_acquisition: MAX_COMMAND_CONFLICT_KEYS_V1,
             max_keys_per_shard: 1_024,
             max_waiters: 16_384,
             max_waiters_per_key: 1_024,
@@ -526,10 +525,10 @@ impl Acquisition {
         cancellation: CancellationToken,
     ) -> Self {
         let raw_key_count = keys.len();
-        let raw_count_error = (raw_key_count > MAX_KEYS_PER_ACQUISITION_LIMIT).then_some(
+        let raw_count_error = (raw_key_count > MAX_COMMAND_CONFLICT_KEYS_V1).then_some(
             ConflictError::InputKeyCountExceeded {
                 actual: raw_key_count,
-                maximum: MAX_KEYS_PER_ACQUISITION_LIMIT,
+                maximum: MAX_COMMAND_CONFLICT_KEYS_V1,
             },
         );
         if raw_count_error.is_none() {
@@ -1471,7 +1470,9 @@ mod tests {
     use std::thread;
     use std::time::{Duration, Instant};
 
-    use riffdb_types::{AggregateTypeId, ConflictKey, ConflictKeyBuilder};
+    use riffdb_types::{
+        AggregateTypeId, ConflictKey, ConflictKeyBuilder, MAX_COMMAND_CONFLICT_KEYS_V1,
+    };
 
     use super::{
         Acquisition, ConflictError, ConflictManager, ConflictManagerConfig,
@@ -1487,6 +1488,8 @@ mod tests {
 
     #[test]
     fn configuration_is_checked_and_bounded() {
+        let over_command_limit = MAX_COMMAND_CONFLICT_KEYS_V1 + 1;
+
         assert_eq!(
             ConflictManagerConfig::new(0, 1, 1, 1, 1),
             Err(ConflictManagerConfigError::InvalidBound {
@@ -1501,6 +1504,21 @@ mod tests {
                 per_key: 2,
                 total: 1,
             })
+        );
+        assert_eq!(
+            ConflictManagerConfig::new(1, over_command_limit, 1, 1, 1),
+            Err(ConflictManagerConfigError::InvalidBound {
+                field: "max_keys_per_acquisition",
+                actual: over_command_limit,
+                maximum: MAX_COMMAND_CONFLICT_KEYS_V1,
+            })
+        );
+
+        let lower = ConflictManagerConfig::new(1, 1, 1, 1, 1).expect("lower bound is allowed");
+        assert_eq!(lower.max_keys_per_acquisition(), 1);
+        assert_eq!(
+            ConflictManagerConfig::default().max_keys_per_acquisition(),
+            MAX_COMMAND_CONFLICT_KEYS_V1
         );
     }
 
@@ -1532,7 +1550,7 @@ mod tests {
     fn raw_key_count_is_bounded_before_duplicate_canonicalization() {
         let manager = manager();
         let duplicate = key(1);
-        let raw_count = super::MAX_KEYS_PER_ACQUISITION_LIMIT + 1;
+        let raw_count = MAX_COMMAND_CONFLICT_KEYS_V1 + 1;
         let input = (0..raw_count)
             .map(|_| duplicate.clone())
             .collect::<Vec<_>>();
@@ -1542,10 +1560,22 @@ mod tests {
                 .expect_err("raw vector rejects even though it would deduplicate to one key"),
             ConflictError::InputKeyCountExceeded {
                 actual: raw_count,
-                maximum: super::MAX_KEYS_PER_ACQUISITION_LIMIT,
+                maximum: MAX_COMMAND_CONFLICT_KEYS_V1,
             }
         );
         assert_eq!(manager.queued_waiters(), 0);
+    }
+
+    #[test]
+    fn default_manager_accepts_the_shared_v1_key_limit() {
+        let manager = manager();
+        let input = (0..MAX_COMMAND_CONFLICT_KEYS_V1)
+            .map(|value| key(value as u64))
+            .collect();
+
+        let lease = block_on(manager.acquire_mut(input, deadline(), CancellationToken::new()))
+            .expect("the inclusive v1 limit grants under the default configuration");
+        assert_eq!(lease.key_count(), MAX_COMMAND_CONFLICT_KEYS_V1);
     }
 
     #[test]

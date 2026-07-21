@@ -4,7 +4,7 @@ use std::collections::BTreeSet;
 
 use riffdb_types::{
     AggregateTypeId, CommandId, ContractLineage, ContractVersion, EntityTypeId, EventTypeId,
-    FieldId, InvariantId, OutcomeId, PlanHash,
+    FieldId, InvariantId, MAX_COMMAND_CONFLICT_KEYS_V1, OutcomeId, PlanHash,
 };
 
 use crate::{
@@ -613,6 +613,11 @@ impl LocalityPlan {
         partition_expression: ExprId,
         conflict_keys: Vec<ConflictDerivationPlan>,
     ) -> Result<Self, IrValidationError> {
+        checked_len(
+            "command conflict derivations",
+            conflict_keys.len(),
+            MAX_COMMAND_CONFLICT_KEYS_V1,
+        )?;
         if partition_schema.purpose() != KeyPurpose::Partition(aggregate_id)
             || partition_schema.components().len() != 1
             || conflict_keys
@@ -2528,6 +2533,43 @@ pub(crate) mod tests {
                 .expect("record"),
             )
             .is_err()
+        );
+    }
+
+    #[test]
+    fn locality_conflict_derivations_enforce_the_shared_v1_limit() {
+        let aggregate_id = AggregateTypeId::first();
+        let component =
+            crate::KeyComponentSchema::new(crate::ValueType::u64(), vec![]).expect("component");
+        let partition_schema =
+            KeySchema::new(KeyPurpose::Partition(aggregate_id), vec![component.clone()])
+                .expect("partition schema");
+        let conflict_schema = KeySchema::new(KeyPurpose::Conflict(aggregate_id), vec![component])
+            .expect("conflict schema");
+        let conflict = ConflictDerivationPlan::new(conflict_schema, vec![ExprId::new(0)])
+            .expect("conflict derivation");
+
+        let accepted = LocalityPlan::new(
+            aggregate_id,
+            partition_schema.clone(),
+            ExprId::new(0),
+            vec![conflict.clone(); MAX_COMMAND_CONFLICT_KEYS_V1],
+        )
+        .expect("the inclusive v1 limit is accepted");
+        assert_eq!(accepted.conflict_keys().len(), MAX_COMMAND_CONFLICT_KEYS_V1);
+
+        assert_eq!(
+            LocalityPlan::new(
+                aggregate_id,
+                partition_schema,
+                ExprId::new(0),
+                vec![conflict; MAX_COMMAND_CONFLICT_KEYS_V1 + 1],
+            ),
+            Err(IrValidationError::LimitExceeded {
+                kind: "command conflict derivations",
+                actual: MAX_COMMAND_CONFLICT_KEYS_V1 + 1,
+                maximum: MAX_COMMAND_CONFLICT_KEYS_V1,
+            })
         );
     }
 
