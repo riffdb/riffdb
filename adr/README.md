@@ -50,10 +50,11 @@ direction, merged draft, or implementation choice.
 | [0026](0026-wp120-authorization-recovery-and-failure-boundaries.md) | WP-120 Authorization, Recovery, and Failure Boundaries | Accepted |
 | [0027](0027-service-response-budget-and-oversize-disposition.md) | Service Response Budget and Oversize Disposition | Accepted |
 | [0028](0028-phase-zero-public-protobuf-completion.md) | Phase-Zero Public Protobuf Completion | Accepted |
+| [0029](0029-two-stage-public-key-validation.md) | Two-Stage Public Key Validation | Accepted |
 
 The human architecture review on 2026-07-12 approved the direction represented
 by ADR-0001 through ADR-0012. The human maintainer accepted ADR-0001 through
-ADR-0007, ADR-0009 through ADR-0028, and their recorded companion amendments by
+ADR-0007, ADR-0009 through ADR-0029, and their recorded companion amendments by
 2026-07-21. ADR-0008 remains Proposed for resource URIs other than the exact
 provenance locator, HTTP audience, stdio-over-gRPC transport, cursor
 presentation, and the remaining exact MCP fixtures; ADR-0020 separately accepts
@@ -69,7 +70,10 @@ committed durability, and fail-closed incident-source failure required by
 WP-120. ADR-0027 freezes API-neutral response accounting, whole-item byte-bound
 pagination, and the closed oversize disposition. ADR-0028 freezes the complete
 phase-zero public Protobuf inventory, field numbers, presence rules, and
-structural-validation boundary before WP-127 implementation.
+structural-validation boundary before WP-127 implementation. ADR-0029 clarifies
+that public protocol validation proves only the context-free key envelope while
+the shared service owns schema-directed validation, including fail-closed
+admission of explicit capability partition scopes.
 
 ## Workflow
 
