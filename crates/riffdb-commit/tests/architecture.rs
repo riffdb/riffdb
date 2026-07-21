@@ -6,6 +6,7 @@ const LOCKFILE: &str = include_str!("../../../Cargo.lock");
 const MANIFEST: &str = include_str!("../Cargo.toml");
 const AUDIT_SOURCE: &str = include_str!("../src/audit.rs");
 const AUDIT_EXECUTOR_SOURCE: &str = include_str!("../src/audit_executor.rs");
+const COMMAND_ADMISSION_SOURCE: &str = include_str!("../src/command_admission.rs");
 const COMMAND_PREPARATION_SOURCE: &str = include_str!("../src/command_preparation.rs");
 const LIB_SOURCE: &str = include_str!("../src/lib.rs");
 const CLOCK_SOURCE: &str = include_str!("../src/clock.rs");
@@ -214,6 +215,113 @@ fn command_preparation_is_a_move_only_exact_join_without_ambient_authority() {
     assert!(
         !LIB_SOURCE.contains("CancellationToken"),
         "commit must not re-export the conflict-manager cancellation type"
+    );
+}
+
+#[test]
+fn command_admission_is_private_move_only_and_orders_external_calls_exactly() {
+    let production_source = COMMAND_ADMISSION_SOURCE
+        .split_once("#[cfg(test)]")
+        .map_or(COMMAND_ADMISSION_SOURCE, |(production, _)| production);
+    for required in [
+        "pub(crate) enum CommandAdmissionResult",
+        "Execute(Box<CommandExecutionCandidate>)",
+        "Outcome(StoredOutcomeV1)",
+        "ExecutionFailed(StoredExecutionFailedV1)",
+        "pub(crate) enum CommandAdmissionError",
+        "Recheck(IdempotencyRecheckError)",
+        "AdmissionWrite(StorageError)",
+        "struct CommandSnapshotRequestProof",
+        "pub(crate) struct CommandExecutionCandidate",
+        "resolved_plan: ResolvedExecutablePlan",
+        "normalized_input: CanonicalRecord",
+        "commit_context: PreEvaluationCommitContext",
+        "raw_conflict_keys: Vec<ConflictKey>",
+        "invocation_request_id: RequestId",
+        "deadline: Instant",
+        "cancellation: CancellationToken",
+        "pub(crate) fn reduce_command_admission(",
+        "IdempotencyRecheckExecutor::new(repository)",
+        ".recheck(idempotency)",
+        "lower_provenance_claims(&parts.authorization)",
+        "StoredPendingAdmissionV1::new(",
+        "AdmissionRequestV1::new(lookup_candidates, &context)",
+        ".admit_or_resolve(request)",
+        "AdmissionResultV1::Created(created) if created == pending",
+        "raw.sort_unstable()",
+        "raw.dedup()",
+        "raw.is_empty() || raw.len() > MAX_COMMAND_CONFLICT_KEYS_V1",
+        "hashes.sort_unstable()",
+        "hashes.windows(2).any(|pair| pair[0] == pair[1])",
+        "SnapshotRequest::new(",
+        "Vec::new()",
+    ] {
+        assert!(
+            production_source.contains(required),
+            "command admission is missing reviewed mechanism {required}"
+        );
+    }
+
+    assert!(LIB_SOURCE.contains("mod command_admission;"));
+    assert!(!LIB_SOURCE.contains("pub mod command_admission"));
+    assert!(!LIB_SOURCE.contains("pub use command_admission"));
+    assert_eq!(production_source.matches(".recheck(").count(), 1);
+    assert_eq!(production_source.matches(".admit_or_resolve(").count(), 1);
+
+    let candidate_body = production_source
+        .split_once("pub(crate) struct CommandExecutionCandidate {")
+        .and_then(|(_, remainder)| remainder.split_once("\n}"))
+        .map(|(body, _)| body)
+        .expect("execution-candidate body");
+    let snapshot_proof_body = production_source
+        .split_once("struct CommandSnapshotRequestProof {")
+        .and_then(|(_, remainder)| remainder.split_once("\n}"))
+        .map(|(body, _)| body)
+        .expect("snapshot-proof body");
+    assert!(!candidate_body.contains("pub "));
+    assert!(!snapshot_proof_body.contains("pub "));
+    for forbidden in [
+        "#[derive(Clone",
+        "#[derive(Copy",
+        "impl Clone for CommandExecutionCandidate",
+        "impl Clone for CommandSnapshotRequestProof",
+        "Serialize",
+        "Deserialize",
+        "prost::",
+        "StorageEngine",
+        "StorageWrite",
+        "riffdb_runtime",
+        "riffdb_contract_compiler",
+        "SystemTime",
+        "Instant::now",
+        "async fn",
+        ".await",
+    ] {
+        assert!(
+            !production_source.contains(forbidden),
+            "command admission crosses reviewed boundary through {forbidden}"
+        );
+    }
+
+    let vacant_body = production_source
+        .split_once("fn admit_vacant(")
+        .and_then(|(_, remainder)| remainder.split_once("\nfn resume_pending("))
+        .map(|(body, _)| body)
+        .expect("bounded vacant-admission implementation");
+    let lowering = vacant_body
+        .find("lower_preparation(parts, normalized_input, conflict_hasher)")
+        .expect("pure lowering");
+    let clock = vacant_body.find("clock.now()").expect("one clock sample");
+    let mutation = vacant_body
+        .find(".admit_or_resolve(request)")
+        .expect("one admission mutation");
+    assert!(
+        lowering < clock,
+        "pure lowering must finish before clock sampling"
+    );
+    assert!(
+        clock < mutation,
+        "clock sampling must precede admission mutation"
     );
 }
 
