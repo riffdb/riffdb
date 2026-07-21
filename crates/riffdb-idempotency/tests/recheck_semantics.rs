@@ -170,10 +170,14 @@ fn plan(seed: u8) -> ExecutablePlanRef {
 }
 
 fn normalized_input(amount: u64) -> CanonicalRecord {
+    normalized_input_with_key(CALLER_KEY, amount)
+}
+
+fn normalized_input_with_key(caller_key: &str, amount: u64) -> CanonicalRecord {
     CanonicalRecord::new(vec![
         (
             field(7),
-            CanonicalValue::string(CALLER_KEY).expect("bounded caller key"),
+            CanonicalValue::string(caller_key).expect("bounded caller key"),
         ),
         (field(9), CanonicalValue::U64(amount)),
         (
@@ -330,6 +334,67 @@ fn assert_exact_state_result(
         ) => assert_eq!(&actual, expected),
         (actual, _) => panic!("unexpected exact-state result: {actual:?}"),
     }
+}
+
+#[test]
+fn preparation_matcher_requires_every_plan_dimension_and_the_exact_input() {
+    let provider = FixedDigestProvider::new(&[1]);
+    let selected_plan = plan(1);
+    let input = normalized_input(40);
+    let repository = SequencedRepository::new(vec![AdmissionLookupResultV1::NotFound]);
+    let prepared = prepared_recheck(&repository, &provider, selected_plan.clone(), 40)
+        .expect("absent preparation");
+
+    assert!(prepared.matches_preparation(&selected_plan, &input));
+
+    let mismatched_plans = [
+        ExecutablePlanRef::new(
+            ContractLineage::new("different-lineage").expect("lineage"),
+            selected_plan.contract_version(),
+            selected_plan.contract_bundle_hash(),
+            selected_plan.command_id(),
+            selected_plan.command_plan_hash(),
+        ),
+        ExecutablePlanRef::new(
+            selected_plan.contract_lineage().clone(),
+            ContractVersion::new(selected_plan.contract_version().get() + 1).expect("version"),
+            selected_plan.contract_bundle_hash(),
+            selected_plan.command_id(),
+            selected_plan.command_plan_hash(),
+        ),
+        ExecutablePlanRef::new(
+            selected_plan.contract_lineage().clone(),
+            selected_plan.contract_version(),
+            ContractBundleHash::from_bytes([0x31; 32]),
+            selected_plan.command_id(),
+            selected_plan.command_plan_hash(),
+        ),
+        ExecutablePlanRef::new(
+            selected_plan.contract_lineage().clone(),
+            selected_plan.contract_version(),
+            selected_plan.contract_bundle_hash(),
+            CommandId::new(selected_plan.command_id().get() + 1).expect("command ID"),
+            selected_plan.command_plan_hash(),
+        ),
+        ExecutablePlanRef::new(
+            selected_plan.contract_lineage().clone(),
+            selected_plan.contract_version(),
+            selected_plan.contract_bundle_hash(),
+            selected_plan.command_id(),
+            PlanHash::from_bytes([0x32; 32]),
+        ),
+    ];
+
+    for mismatched_plan in mismatched_plans {
+        assert!(!prepared.matches_preparation(&mismatched_plan, &input));
+    }
+
+    assert!(!prepared.matches_preparation(&selected_plan, &normalized_input(41)));
+    assert!(!prepared.matches_preparation(
+        &selected_plan,
+        &normalized_input_with_key("different-caller-key", 40),
+    ));
+    assert!(prepared.matches_preparation(&selected_plan, &input));
 }
 
 #[test]
@@ -616,6 +681,7 @@ fn all_authority_and_result_diagnostics_are_redacted() {
     ]);
     let prepared =
         prepared_recheck(&repository, &provider, selected_plan, 40).expect("absent preparation");
+    assert!(!prepared.matches_preparation(&plan(2), &normalized_input(40)));
     let prepared_debug = format!("{prepared:?}");
     let result = IdempotencyRecheckExecutor::new(&repository)
         .recheck(prepared)
