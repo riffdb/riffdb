@@ -10,6 +10,7 @@ mod bundle;
 mod deployment;
 mod error;
 mod history;
+mod lineage;
 mod notification;
 
 pub use bundle::*;

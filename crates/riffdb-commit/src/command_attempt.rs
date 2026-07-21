@@ -644,9 +644,9 @@ mod tests {
         let lookup_candidates =
             IdempotencyLookupCandidatesV1::new(vec![commit_context.pending().identity().clone()])
                 .expect("singleton lookup");
-        let resolved_plan = bundle
-            .resolve_plan(commit_context.pending().plan())
-            .expect("exact checked plan");
+        let resolved_plan =
+            crate::test_support::resolve_genesis_plan(&bundle, commit_context.pending().plan())
+                .expect("exact checked plan");
 
         (
             PendingCommandAttempts {
