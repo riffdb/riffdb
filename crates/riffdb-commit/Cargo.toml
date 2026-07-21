@@ -37,5 +37,9 @@ path = "../../tests/command_semantics/lost_response_replay.rs"
 name = "service_audit_ordering"
 path = "../../tests/service_audit/service_audit_ordering.rs"
 
+[[test]]
+name = "control_plane_execution"
+path = "../../tests/service_audit/control_plane_execution.rs"
+
 [lints]
 workspace = true

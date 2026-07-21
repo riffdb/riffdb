@@ -9,14 +9,17 @@ use std::{error::Error, fmt, thread};
 
 use riffdb_storage_api::{
     AdmissionRepository, ApplicationCommandTransactionPort, AuditPrincipalV1,
-    ExecutionFailureTransitionPort, ServiceAuditAppendIntentV1, ServiceAuditAppendRepository,
-    ServiceAuditAppendResult, SnapshotReader, StorageError, StorageValueError,
+    CapabilityAdministrationTransactionPort, CapabilityBootstrapAdministrationRepository,
+    CatalogAdministrationRepository, ExecutionFailureTransitionPort, ServiceAuditAppendIntentV1,
+    ServiceAuditAppendRepository, ServiceAuditAppendResult, SnapshotReader, StorageError,
+    StorageValueError,
 };
 use tokio::runtime;
 use tokio::sync::{mpsc, oneshot};
 
 use riffdb_conflict::ConflictManager;
 use riffdb_idempotency::IdempotencyDigestProvider;
+use riffdb_policy::AuthorizationClock;
 
 use crate::{
     AdministrationAuditInputView, AdministrationClock, AdministrationClockError, AdmissionClock,
@@ -24,6 +27,14 @@ use crate::{
     command_execution::{
         CommandExecutionError, CommandExecutionLifecycle, CommandExecutionResult,
         CoordinatorDurability, drive_command_execution,
+    },
+    control_plane::{
+        CapabilityBootstrapExecutionResult, CapabilityBootstrapPreparation,
+        CapabilityBootstrapTerminalPreparation, CapabilityCreateExecutionResult,
+        CapabilityCreatePreparation, CapabilityRevokeExecutionResult, CapabilityRevokePreparation,
+        CatalogDeploymentPreparation, CatalogDeploymentResult, ControlPlaneExecutionError,
+        drive_capability_bootstrap, drive_capability_bootstrap_terminal, drive_capability_create,
+        drive_capability_revoke, drive_catalog_deployment,
     },
     idempotency_inspection::{
         CommandIdempotencyInspectionError, CommandIdempotencyInspectionRequest,
@@ -374,6 +385,217 @@ impl fmt::Debug for AdministrationAuditReceipt {
     }
 }
 
+/// Safe rejection before a control-plane preparation enters the sole-writer queue.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ControlPlaneExecutionAdmissionError {
+    /// Shutdown has begun and new work is no longer accepted.
+    Draining,
+    /// An unknown authoritative write fenced all later work.
+    Fenced,
+    /// The coordinator actor has stopped.
+    Stopped,
+}
+
+impl fmt::Display for ControlPlaneExecutionAdmissionError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(match self {
+            Self::Draining => "command coordinator is draining",
+            Self::Fenced => "command coordinator fenced authoritative writes",
+            Self::Stopped => "command coordinator has stopped",
+        })
+    }
+}
+
+impl Error for ControlPlaneExecutionAdmissionError {}
+
+/// Cloneable least-authority handle for typed control-plane work.
+#[derive(Clone)]
+pub struct ControlPlaneExecutor {
+    sender: mpsc::Sender<CoordinatorMessage>,
+    lifecycle: Arc<AtomicU8>,
+    submission_gate: Arc<SubmissionGate>,
+}
+
+impl ControlPlaneExecutor {
+    /// Reserves one slot in the same bounded queue used by commands and audit work.
+    pub async fn reserve_capacity(
+        &self,
+    ) -> Result<ControlPlaneExecutionCapacityPermit, ControlPlaneExecutionAdmissionError> {
+        ensure_control_plane_accepting(&self.lifecycle)?;
+        let permit = self
+            .sender
+            .clone()
+            .reserve_owned()
+            .await
+            .map_err(|_| control_plane_lifecycle_error(&self.lifecycle))?;
+        if self.submission_gate.is_closed() {
+            drop(permit);
+            return Err(control_plane_lifecycle_error(&self.lifecycle));
+        }
+        ensure_control_plane_accepting(&self.lifecycle)?;
+        Ok(ControlPlaneExecutionCapacityPermit {
+            permit: Some(permit),
+            lifecycle: Arc::clone(&self.lifecycle),
+            submission_gate: Arc::clone(&self.submission_gate),
+        })
+    }
+
+    /// Returns the current process-local coordinator lifecycle.
+    #[must_use]
+    pub fn lifecycle_state(&self) -> CoordinatorLifecycleState {
+        lifecycle_state(&self.lifecycle)
+    }
+}
+
+impl fmt::Debug for ControlPlaneExecutor {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("ControlPlaneExecutor([REDACTED])")
+    }
+}
+
+/// Move-only authority to synchronously submit one typed control-plane operation.
+#[must_use = "dropping the permit releases its reserved workload capacity"]
+pub struct ControlPlaneExecutionCapacityPermit {
+    permit: Option<mpsc::OwnedPermit<CoordinatorMessage>>,
+    lifecycle: Arc<AtomicU8>,
+    submission_gate: Arc<SubmissionGate>,
+}
+
+impl ControlPlaneExecutionCapacityPermit {
+    /// Submits one authorized catalog deployment without another await point.
+    pub fn submit_catalog_deployment(
+        self,
+        preparation: CatalogDeploymentPreparation,
+    ) -> Result<CatalogDeploymentReceipt, ControlPlaneExecutionAdmissionError> {
+        let (permit, submission) = self.into_submission()?;
+        let (completion, receiver) = oneshot::channel();
+        let _sender = permit.send(CoordinatorMessage::CatalogDeployment {
+            preparation: Box::new(preparation),
+            completion,
+        });
+        drop(submission);
+        Ok(CatalogDeploymentReceipt { receiver })
+    }
+
+    /// Submits one freshly authorized normal capability creation.
+    pub fn submit_capability_create(
+        self,
+        preparation: CapabilityCreatePreparation,
+    ) -> Result<CapabilityCreateReceipt, ControlPlaneExecutionAdmissionError> {
+        let (permit, submission) = self.into_submission()?;
+        let (completion, receiver) = oneshot::channel();
+        let _sender = permit.send(CoordinatorMessage::CapabilityCreate {
+            preparation: Box::new(preparation),
+            completion,
+        });
+        drop(submission);
+        Ok(CapabilityCreateReceipt { receiver })
+    }
+
+    /// Submits one freshly authorized normal capability revocation.
+    pub fn submit_capability_revoke(
+        self,
+        preparation: CapabilityRevokePreparation,
+    ) -> Result<CapabilityRevokeReceipt, ControlPlaneExecutionAdmissionError> {
+        let (permit, submission) = self.into_submission()?;
+        let (completion, receiver) = oneshot::channel();
+        let _sender = permit.send(CoordinatorMessage::CapabilityRevoke {
+            preparation: Box::new(preparation),
+            completion,
+        });
+        drop(submission);
+        Ok(CapabilityRevokeReceipt { receiver })
+    }
+
+    /// Submits the closed principal-less compound bootstrap transition.
+    pub fn submit_capability_bootstrap(
+        self,
+        preparation: CapabilityBootstrapPreparation,
+    ) -> Result<CapabilityBootstrapReceipt, ControlPlaneExecutionAdmissionError> {
+        let (permit, submission) = self.into_submission()?;
+        let (completion, receiver) = oneshot::channel();
+        let _sender = permit.send(CoordinatorMessage::CapabilityBootstrap {
+            preparation: Box::new(preparation),
+            completion,
+        });
+        drop(submission);
+        Ok(CapabilityBootstrapReceipt { receiver })
+    }
+
+    /// Submits exactly one terminal append derived from a successful bootstrap.
+    pub fn submit_capability_bootstrap_terminal(
+        self,
+        preparation: CapabilityBootstrapTerminalPreparation,
+    ) -> Result<CapabilityBootstrapTerminalReceipt, ControlPlaneExecutionAdmissionError> {
+        let (permit, submission) = self.into_submission()?;
+        let (completion, receiver) = oneshot::channel();
+        let _sender = permit.send(CoordinatorMessage::CapabilityBootstrapTerminal {
+            preparation: Box::new(preparation),
+            completion,
+        });
+        drop(submission);
+        Ok(CapabilityBootstrapTerminalReceipt { receiver })
+    }
+
+    fn into_submission(
+        mut self,
+    ) -> Result<
+        (mpsc::OwnedPermit<CoordinatorMessage>, ActiveSubmission),
+        ControlPlaneExecutionAdmissionError,
+    > {
+        let submission = self
+            .submission_gate
+            .begin()
+            .ok_or_else(|| control_plane_lifecycle_error(&self.lifecycle))?;
+        ensure_control_plane_accepting(&self.lifecycle)?;
+        let permit = self
+            .permit
+            .take()
+            .expect("move-only control-plane capacity permit is consumed once");
+        Ok((permit, submission))
+    }
+}
+
+impl fmt::Debug for ControlPlaneExecutionCapacityPermit {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("ControlPlaneExecutionCapacityPermit([REDACTED])")
+    }
+}
+
+macro_rules! control_plane_receipt {
+    ($name:ident, $result:ty) => {
+        #[doc = "Move-only completion handle for one accepted control-plane operation."]
+        #[must_use = "await or deliberately drop the receipt; dropping does not cancel accepted work"]
+        pub struct $name {
+            receiver: oneshot::Receiver<Result<$result, ControlPlaneExecutionError>>,
+        }
+
+        impl $name {
+            /// Waits for the actor-owned operation to finish.
+            pub async fn completion(self) -> Result<$result, ControlPlaneExecutionError> {
+                self.receiver
+                    .await
+                    .unwrap_or_else(|_| Err(ControlPlaneExecutionError::coordinator_stopped()))
+            }
+        }
+
+        impl fmt::Debug for $name {
+            fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+                formatter.write_str(concat!(stringify!($name), "([REDACTED])"))
+            }
+        }
+    };
+}
+
+control_plane_receipt!(CatalogDeploymentReceipt, CatalogDeploymentResult);
+control_plane_receipt!(CapabilityCreateReceipt, CapabilityCreateExecutionResult);
+control_plane_receipt!(CapabilityRevokeReceipt, CapabilityRevokeExecutionResult);
+control_plane_receipt!(
+    CapabilityBootstrapReceipt,
+    CapabilityBootstrapExecutionResult
+);
+control_plane_receipt!(CapabilityBootstrapTerminalReceipt, ());
+
 /// Safe rejection before a command preparation is accepted by the coordinator.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum CommandExecutionAdmissionError {
@@ -646,6 +868,7 @@ impl fmt::Debug for CommandIdempotencyInspector {
 pub struct RunningCommandCoordinator {
     executor: AdministrationAuditExecutor,
     command_executor: CommandExecutor,
+    control_plane_executor: ControlPlaneExecutor,
     shutdown_permit: Option<mpsc::OwnedPermit<CoordinatorMessage>>,
     actor_thread: Option<thread::JoinHandle<()>>,
     actor_thread_id: thread::ThreadId,
@@ -661,6 +884,7 @@ impl RunningCommandCoordinator {
         conflicts: Arc<dyn ConflictManager>,
         admission_clock: Arc<dyn AdmissionClock>,
         administration_clock: Arc<dyn AdministrationClock>,
+        authorization_clock: Arc<dyn AuthorizationClock>,
         provenance_source: Arc<dyn ProvenanceIdSource>,
     ) -> Result<Self, CoordinatorStartError>
     where
@@ -669,6 +893,9 @@ impl RunningCommandCoordinator {
             + ApplicationCommandTransactionPort
             + ExecutionFailureTransitionPort
             + ServiceAuditAppendRepository
+            + CatalogAdministrationRepository
+            + CapabilityAdministrationTransactionPort
+            + CapabilityBootstrapAdministrationRepository
             + Send
             + 'static,
     {
@@ -678,6 +905,7 @@ impl RunningCommandCoordinator {
                 conflicts,
                 admission_clock,
                 administration_clock,
+                authorization_clock,
                 provenance_source,
                 durability,
                 lifecycle,
@@ -733,6 +961,11 @@ impl RunningCommandCoordinator {
                 lifecycle: Arc::clone(&lifecycle),
                 submission_gate: Arc::clone(&submission_gate),
             },
+            control_plane_executor: ControlPlaneExecutor {
+                sender: sender.clone(),
+                lifecycle: Arc::clone(&lifecycle),
+                submission_gate: Arc::clone(&submission_gate),
+            },
             shutdown_permit: Some(shutdown_permit),
             actor_thread: Some(actor_thread),
             actor_thread_id,
@@ -764,6 +997,12 @@ impl RunningCommandCoordinator {
     #[must_use]
     pub fn command_executor(&self) -> CommandExecutor {
         self.command_executor.clone()
+    }
+
+    /// Returns a cloneable least-authority handle to typed control-plane work.
+    #[must_use]
+    pub fn control_plane_executor(&self) -> ControlPlaneExecutor {
+        self.control_plane_executor.clone()
     }
 
     /// Returns a cloneable handle for bounded idempotency plan selection.
@@ -849,6 +1088,29 @@ enum CoordinatorMessage {
         completion:
             oneshot::Sender<Result<InspectedCommandIdempotency, CommandIdempotencyInspectionError>>,
     },
+    CatalogDeployment {
+        preparation: Box<CatalogDeploymentPreparation>,
+        completion: oneshot::Sender<Result<CatalogDeploymentResult, ControlPlaneExecutionError>>,
+    },
+    CapabilityCreate {
+        preparation: Box<CapabilityCreatePreparation>,
+        completion:
+            oneshot::Sender<Result<CapabilityCreateExecutionResult, ControlPlaneExecutionError>>,
+    },
+    CapabilityRevoke {
+        preparation: Box<CapabilityRevokePreparation>,
+        completion:
+            oneshot::Sender<Result<CapabilityRevokeExecutionResult, ControlPlaneExecutionError>>,
+    },
+    CapabilityBootstrap {
+        preparation: Box<CapabilityBootstrapPreparation>,
+        completion:
+            oneshot::Sender<Result<CapabilityBootstrapExecutionResult, ControlPlaneExecutionError>>,
+    },
+    CapabilityBootstrapTerminal {
+        preparation: Box<CapabilityBootstrapTerminalPreparation>,
+        completion: oneshot::Sender<Result<(), ControlPlaneExecutionError>>,
+    },
     Shutdown,
 }
 
@@ -873,6 +1135,31 @@ trait CoordinatorActorOperations: Send {
         &mut self,
         preparation: ReadOnlyExecutionPreparation,
     ) -> Result<ReadOnlyExecutionResult, CommandExecutionError>;
+
+    fn deploy_catalog(
+        &mut self,
+        preparation: CatalogDeploymentPreparation,
+    ) -> Result<CatalogDeploymentResult, ControlPlaneExecutionError>;
+
+    fn create_capability(
+        &mut self,
+        preparation: CapabilityCreatePreparation,
+    ) -> Result<CapabilityCreateExecutionResult, ControlPlaneExecutionError>;
+
+    fn revoke_capability(
+        &mut self,
+        preparation: CapabilityRevokePreparation,
+    ) -> Result<CapabilityRevokeExecutionResult, ControlPlaneExecutionError>;
+
+    fn bootstrap_capability(
+        &mut self,
+        preparation: CapabilityBootstrapPreparation,
+    ) -> Result<CapabilityBootstrapExecutionResult, ControlPlaneExecutionError>;
+
+    fn append_bootstrap_terminal(
+        &mut self,
+        preparation: CapabilityBootstrapTerminalPreparation,
+    ) -> Result<(), ControlPlaneExecutionError>;
 }
 
 struct ProductionCoordinatorOperations<Repository> {
@@ -880,6 +1167,7 @@ struct ProductionCoordinatorOperations<Repository> {
     conflicts: Arc<dyn ConflictManager>,
     admission_clock: Arc<dyn AdmissionClock>,
     administration_clock: Arc<dyn AdministrationClock>,
+    authorization_clock: Arc<dyn AuthorizationClock>,
     provenance_source: Arc<dyn ProvenanceIdSource>,
     durability: CoordinatorDurability,
     lifecycle: ActorLifecyclePublisher,
@@ -892,6 +1180,9 @@ where
         + ApplicationCommandTransactionPort
         + ExecutionFailureTransitionPort
         + ServiceAuditAppendRepository
+        + CatalogAdministrationRepository
+        + CapabilityAdministrationTransactionPort
+        + CapabilityBootstrapAdministrationRepository
         + Send,
 {
     fn append_audit(
@@ -945,6 +1236,66 @@ where
             }
         }
     }
+
+    fn deploy_catalog(
+        &mut self,
+        preparation: CatalogDeploymentPreparation,
+    ) -> Result<CatalogDeploymentResult, ControlPlaneExecutionError> {
+        drive_catalog_deployment(
+            &mut self.repository,
+            self.administration_clock.as_ref(),
+            &self.lifecycle,
+            preparation,
+        )
+    }
+
+    fn create_capability(
+        &mut self,
+        preparation: CapabilityCreatePreparation,
+    ) -> Result<CapabilityCreateExecutionResult, ControlPlaneExecutionError> {
+        drive_capability_create(
+            &self.repository,
+            self.authorization_clock.as_ref(),
+            &self.lifecycle,
+            preparation,
+        )
+    }
+
+    fn revoke_capability(
+        &mut self,
+        preparation: CapabilityRevokePreparation,
+    ) -> Result<CapabilityRevokeExecutionResult, ControlPlaneExecutionError> {
+        drive_capability_revoke(
+            &self.repository,
+            self.authorization_clock.as_ref(),
+            &self.lifecycle,
+            preparation,
+        )
+    }
+
+    fn bootstrap_capability(
+        &mut self,
+        preparation: CapabilityBootstrapPreparation,
+    ) -> Result<CapabilityBootstrapExecutionResult, ControlPlaneExecutionError> {
+        drive_capability_bootstrap(
+            &mut self.repository,
+            self.administration_clock.as_ref(),
+            &self.lifecycle,
+            preparation,
+        )
+    }
+
+    fn append_bootstrap_terminal(
+        &mut self,
+        preparation: CapabilityBootstrapTerminalPreparation,
+    ) -> Result<(), ControlPlaneExecutionError> {
+        drive_capability_bootstrap_terminal(
+            &mut self.repository,
+            self.administration_clock.as_ref(),
+            &self.lifecycle,
+            preparation,
+        )
+    }
 }
 
 #[cfg(test)]
@@ -983,6 +1334,41 @@ where
         _: ReadOnlyExecutionPreparation,
     ) -> Result<ReadOnlyExecutionResult, CommandExecutionError> {
         Err(CommandExecutionError::coordinator_stopped())
+    }
+
+    fn deploy_catalog(
+        &mut self,
+        _: CatalogDeploymentPreparation,
+    ) -> Result<CatalogDeploymentResult, ControlPlaneExecutionError> {
+        Err(ControlPlaneExecutionError::coordinator_stopped())
+    }
+
+    fn create_capability(
+        &mut self,
+        _: CapabilityCreatePreparation,
+    ) -> Result<CapabilityCreateExecutionResult, ControlPlaneExecutionError> {
+        Err(ControlPlaneExecutionError::coordinator_stopped())
+    }
+
+    fn revoke_capability(
+        &mut self,
+        _: CapabilityRevokePreparation,
+    ) -> Result<CapabilityRevokeExecutionResult, ControlPlaneExecutionError> {
+        Err(ControlPlaneExecutionError::coordinator_stopped())
+    }
+
+    fn bootstrap_capability(
+        &mut self,
+        _: CapabilityBootstrapPreparation,
+    ) -> Result<CapabilityBootstrapExecutionResult, ControlPlaneExecutionError> {
+        Err(ControlPlaneExecutionError::coordinator_stopped())
+    }
+
+    fn append_bootstrap_terminal(
+        &mut self,
+        _: CapabilityBootstrapTerminalPreparation,
+    ) -> Result<(), ControlPlaneExecutionError> {
+        Err(ControlPlaneExecutionError::coordinator_stopped())
     }
 }
 
@@ -1026,8 +1412,8 @@ impl CommandCoordinatorActor {
         while let Some(message) = self.receiver.recv().await {
             match message {
                 CoordinatorMessage::AdministrationAudit { input, completion } => {
-                    if self.execute_audit(input, completion) {
-                        self.reject_remaining_after_fence().await;
+                    self.execute_audit(input, completion);
+                    if self.reject_after_published_terminal_state().await {
                         break;
                     }
                 }
@@ -1058,14 +1444,58 @@ impl CommandCoordinatorActor {
                         break;
                     }
                 }
+                CoordinatorMessage::CatalogDeployment {
+                    preparation,
+                    completion,
+                } => {
+                    self.execute_catalog_deployment(*preparation, completion);
+                    if self.reject_after_published_terminal_state().await {
+                        break;
+                    }
+                }
+                CoordinatorMessage::CapabilityCreate {
+                    preparation,
+                    completion,
+                } => {
+                    self.execute_capability_create(*preparation, completion);
+                    if self.reject_after_published_terminal_state().await {
+                        break;
+                    }
+                }
+                CoordinatorMessage::CapabilityRevoke {
+                    preparation,
+                    completion,
+                } => {
+                    self.execute_capability_revoke(*preparation, completion);
+                    if self.reject_after_published_terminal_state().await {
+                        break;
+                    }
+                }
+                CoordinatorMessage::CapabilityBootstrap {
+                    preparation,
+                    completion,
+                } => {
+                    self.execute_capability_bootstrap(*preparation, completion);
+                    if self.reject_after_published_terminal_state().await {
+                        break;
+                    }
+                }
+                CoordinatorMessage::CapabilityBootstrapTerminal {
+                    preparation,
+                    completion,
+                } => {
+                    self.execute_capability_bootstrap_terminal(*preparation, completion);
+                    if self.reject_after_published_terminal_state().await {
+                        break;
+                    }
+                }
                 CoordinatorMessage::Shutdown => {
                     self.receiver.close();
                     while let Some(message) = self.receiver.recv().await {
                         match message {
                             CoordinatorMessage::AdministrationAudit { input, completion } => {
-                                let must_fence = self.execute_audit(input, completion);
-                                if must_fence {
-                                    self.reject_remaining_after_fence().await;
+                                self.execute_audit(input, completion);
+                                if self.reject_after_published_terminal_state().await {
                                     return;
                                 }
                             }
@@ -1096,6 +1526,54 @@ impl CommandCoordinatorActor {
                                     return;
                                 }
                             }
+                            CoordinatorMessage::CatalogDeployment {
+                                preparation,
+                                completion,
+                            } => {
+                                self.execute_catalog_deployment(*preparation, completion);
+                                if self.reject_after_published_terminal_state().await {
+                                    return;
+                                }
+                            }
+                            CoordinatorMessage::CapabilityCreate {
+                                preparation,
+                                completion,
+                            } => {
+                                self.execute_capability_create(*preparation, completion);
+                                if self.reject_after_published_terminal_state().await {
+                                    return;
+                                }
+                            }
+                            CoordinatorMessage::CapabilityRevoke {
+                                preparation,
+                                completion,
+                            } => {
+                                self.execute_capability_revoke(*preparation, completion);
+                                if self.reject_after_published_terminal_state().await {
+                                    return;
+                                }
+                            }
+                            CoordinatorMessage::CapabilityBootstrap {
+                                preparation,
+                                completion,
+                            } => {
+                                self.execute_capability_bootstrap(*preparation, completion);
+                                if self.reject_after_published_terminal_state().await {
+                                    return;
+                                }
+                            }
+                            CoordinatorMessage::CapabilityBootstrapTerminal {
+                                preparation,
+                                completion,
+                            } => {
+                                self.execute_capability_bootstrap_terminal(
+                                    *preparation,
+                                    completion,
+                                );
+                                if self.reject_after_published_terminal_state().await {
+                                    return;
+                                }
+                            }
                             CoordinatorMessage::Shutdown => {}
                         }
                     }
@@ -1109,22 +1587,18 @@ impl CommandCoordinatorActor {
         &mut self,
         input: Box<dyn AdministrationAuditInputView>,
         completion: oneshot::Sender<Result<(), AdministrationAuditExecutionError>>,
-    ) -> bool {
+    ) {
         let result = self.operations.append_audit(input.as_ref());
-        let must_fence = matches!(
-            &result,
+        match &result {
+            Ok(()) => {}
             Err(AdministrationAuditExecutionError::Storage(error))
-                if error.kind() == riffdb_storage_api::StorageErrorKind::CommitStatusUnknown
-        );
-        if must_fence {
-            self.lifecycle
-                .lifecycle
-                .store(LIFECYCLE_FENCED, Ordering::Release);
-            self.lifecycle.submission_gate.close();
-            self.receiver.close();
+                if error.kind() == riffdb_storage_api::StorageErrorKind::CommitStatusUnknown =>
+            {
+                self.lifecycle.fence();
+            }
+            Err(_) => self.lifecycle.stop(),
         }
         let _receiver_may_be_dropped = completion.send(result);
-        must_fence
     }
 
     async fn execute_command(
@@ -1153,6 +1627,57 @@ impl CommandCoordinatorActor {
         >,
     ) {
         let result = self.operations.inspect_idempotency(preparation);
+        let _receiver_may_be_dropped = completion.send(result);
+    }
+
+    fn execute_catalog_deployment(
+        &mut self,
+        preparation: CatalogDeploymentPreparation,
+        completion: oneshot::Sender<Result<CatalogDeploymentResult, ControlPlaneExecutionError>>,
+    ) {
+        let result = self.operations.deploy_catalog(preparation);
+        let _receiver_may_be_dropped = completion.send(result);
+    }
+
+    fn execute_capability_create(
+        &mut self,
+        preparation: CapabilityCreatePreparation,
+        completion: oneshot::Sender<
+            Result<CapabilityCreateExecutionResult, ControlPlaneExecutionError>,
+        >,
+    ) {
+        let result = self.operations.create_capability(preparation);
+        let _receiver_may_be_dropped = completion.send(result);
+    }
+
+    fn execute_capability_revoke(
+        &mut self,
+        preparation: CapabilityRevokePreparation,
+        completion: oneshot::Sender<
+            Result<CapabilityRevokeExecutionResult, ControlPlaneExecutionError>,
+        >,
+    ) {
+        let result = self.operations.revoke_capability(preparation);
+        let _receiver_may_be_dropped = completion.send(result);
+    }
+
+    fn execute_capability_bootstrap(
+        &mut self,
+        preparation: CapabilityBootstrapPreparation,
+        completion: oneshot::Sender<
+            Result<CapabilityBootstrapExecutionResult, ControlPlaneExecutionError>,
+        >,
+    ) {
+        let result = self.operations.bootstrap_capability(preparation);
+        let _receiver_may_be_dropped = completion.send(result);
+    }
+
+    fn execute_capability_bootstrap_terminal(
+        &mut self,
+        preparation: CapabilityBootstrapTerminalPreparation,
+        completion: oneshot::Sender<Result<(), ControlPlaneExecutionError>>,
+    ) {
+        let result = self.operations.append_bootstrap_terminal(preparation);
         let _receiver_may_be_dropped = completion.send(result);
     }
 
@@ -1191,6 +1716,26 @@ impl CommandCoordinatorActor {
                     let _receiver_may_be_dropped = completion
                         .send(Err(CommandIdempotencyInspectionError::coordinator_fenced()));
                 }
+                CoordinatorMessage::CatalogDeployment { completion, .. } => {
+                    let _receiver_may_be_dropped =
+                        completion.send(Err(ControlPlaneExecutionError::coordinator_fenced()));
+                }
+                CoordinatorMessage::CapabilityCreate { completion, .. } => {
+                    let _receiver_may_be_dropped =
+                        completion.send(Err(ControlPlaneExecutionError::coordinator_fenced()));
+                }
+                CoordinatorMessage::CapabilityRevoke { completion, .. } => {
+                    let _receiver_may_be_dropped =
+                        completion.send(Err(ControlPlaneExecutionError::coordinator_fenced()));
+                }
+                CoordinatorMessage::CapabilityBootstrap { completion, .. } => {
+                    let _receiver_may_be_dropped =
+                        completion.send(Err(ControlPlaneExecutionError::coordinator_fenced()));
+                }
+                CoordinatorMessage::CapabilityBootstrapTerminal { completion, .. } => {
+                    let _receiver_may_be_dropped =
+                        completion.send(Err(ControlPlaneExecutionError::coordinator_fenced()));
+                }
                 CoordinatorMessage::Shutdown => {}
             }
         }
@@ -1214,6 +1759,26 @@ impl CommandCoordinatorActor {
                 CoordinatorMessage::IdempotencyInspection { completion, .. } => {
                     let _receiver_may_be_dropped = completion
                         .send(Err(CommandIdempotencyInspectionError::coordinator_stopped()));
+                }
+                CoordinatorMessage::CatalogDeployment { completion, .. } => {
+                    let _receiver_may_be_dropped =
+                        completion.send(Err(ControlPlaneExecutionError::coordinator_stopped()));
+                }
+                CoordinatorMessage::CapabilityCreate { completion, .. } => {
+                    let _receiver_may_be_dropped =
+                        completion.send(Err(ControlPlaneExecutionError::coordinator_stopped()));
+                }
+                CoordinatorMessage::CapabilityRevoke { completion, .. } => {
+                    let _receiver_may_be_dropped =
+                        completion.send(Err(ControlPlaneExecutionError::coordinator_stopped()));
+                }
+                CoordinatorMessage::CapabilityBootstrap { completion, .. } => {
+                    let _receiver_may_be_dropped =
+                        completion.send(Err(ControlPlaneExecutionError::coordinator_stopped()));
+                }
+                CoordinatorMessage::CapabilityBootstrapTerminal { completion, .. } => {
+                    let _receiver_may_be_dropped =
+                        completion.send(Err(ControlPlaneExecutionError::coordinator_stopped()));
                 }
                 CoordinatorMessage::Shutdown => {}
             }
@@ -1321,6 +1886,26 @@ fn command_lifecycle_error(lifecycle: &AtomicU8) -> CommandExecutionAdmissionErr
         LIFECYCLE_FENCED => CommandExecutionAdmissionError::Fenced,
         LIFECYCLE_ACCEPTING | LIFECYCLE_STOPPED => CommandExecutionAdmissionError::Stopped,
         _ => CommandExecutionAdmissionError::Stopped,
+    }
+}
+
+fn ensure_control_plane_accepting(
+    lifecycle: &AtomicU8,
+) -> Result<(), ControlPlaneExecutionAdmissionError> {
+    match lifecycle.load(Ordering::Acquire) {
+        LIFECYCLE_ACCEPTING => Ok(()),
+        LIFECYCLE_DRAINING => Err(ControlPlaneExecutionAdmissionError::Draining),
+        LIFECYCLE_FENCED => Err(ControlPlaneExecutionAdmissionError::Fenced),
+        _ => Err(ControlPlaneExecutionAdmissionError::Stopped),
+    }
+}
+
+fn control_plane_lifecycle_error(lifecycle: &AtomicU8) -> ControlPlaneExecutionAdmissionError {
+    match lifecycle.load(Ordering::Acquire) {
+        LIFECYCLE_DRAINING => ControlPlaneExecutionAdmissionError::Draining,
+        LIFECYCLE_FENCED => ControlPlaneExecutionAdmissionError::Fenced,
+        LIFECYCLE_ACCEPTING | LIFECYCLE_STOPPED => ControlPlaneExecutionAdmissionError::Stopped,
+        _ => ControlPlaneExecutionAdmissionError::Stopped,
     }
 }
 
