@@ -4,7 +4,7 @@
 
 use std::{collections::BTreeMap, num::NonZeroU16, time::Duration, time::Instant};
 
-use riffdb_catalog::{ResolvedExecutablePlan, ValidatedContractBundle};
+use riffdb_catalog::{ResolvedExecutablePlan, ValidatedContractBundle, resolve_executable_plan};
 use riffdb_commit::{
     CommandExecutionPreparation, CommandExecutionPreparationError, CommandRequestControl,
 };
@@ -22,8 +22,9 @@ use riffdb_policy::{
     NoopAuthorizationTelemetry, OperationRequest, UntrustedInvocationClaims,
 };
 use riffdb_storage_api::{
-    AdmissionLookupResultV1, AdmissionRepository, AdmissionRequestV1, AdmissionResultV1,
-    ExecutablePlanRef, IdempotencyKeyDigest, IdempotencyLookupCandidatesV1, StorageError,
+    ActiveCatalogPointerV1, AdmissionLookupResultV1, AdmissionRepository, AdmissionRequestV1,
+    AdmissionResultV1, CatalogRepository, ExecutablePlanRef, IdempotencyKeyDigest,
+    IdempotencyLookupCandidatesV1, StorageError, StoredContractBundleV1,
 };
 use riffdb_testkit::authorization::{
     AuthorizationFixture, AuthorizationFixtureConfig, AuthorizationFixtureTimes,
@@ -61,6 +62,41 @@ struct CommandFixture {
     reference: ExecutablePlanRef,
     normalized_input: CanonicalRecord,
     partition: PartitionKey,
+}
+
+struct SingleBundleCatalog {
+    active: ActiveCatalogPointerV1,
+    bundle: StoredContractBundleV1,
+}
+
+impl CatalogRepository for SingleBundleCatalog {
+    fn read_active_catalog(&self) -> Result<Option<ActiveCatalogPointerV1>, StorageError> {
+        Ok(Some(self.active.clone()))
+    }
+
+    fn read_contract_bundle(
+        &self,
+        lineage: &ContractLineage,
+        contract_version: ContractVersion,
+    ) -> Result<Option<StoredContractBundleV1>, StorageError> {
+        Ok(
+            (self.bundle.lineage() == lineage
+                && self.bundle.contract_version() == contract_version)
+                .then(|| self.bundle.clone()),
+        )
+    }
+}
+
+fn resolve_genesis_plan(
+    bundle: &ValidatedContractBundle,
+    reference: &ExecutablePlanRef,
+) -> ResolvedExecutablePlan {
+    let stored = bundle.to_stored().expect("stored fixture bundle");
+    let repository = SingleBundleCatalog {
+        active: ActiveCatalogPointerV1::from_bundle(&stored),
+        bundle: stored,
+    };
+    resolve_executable_plan(&repository, reference).expect("exact fixture plan resolves")
 }
 
 struct FixedAuthorizationClock(Timestamp);
@@ -191,9 +227,7 @@ fn command_fixture() -> CommandFixture {
     let facts = derive_input_command_facts(plan, normalized_input.clone())
         .expect("input facts for compiler fixture");
     let partition = facts.partition_key().clone();
-    let resolved = bundle
-        .resolve_plan(&reference)
-        .expect("exact plan resolves");
+    let resolved = resolve_genesis_plan(&bundle, &reference);
     CommandFixture {
         resolved,
         reference,
@@ -232,9 +266,7 @@ fn read_only_fixture() -> CommandFixture {
     let facts =
         derive_input_command_facts(plan, normalized_input.clone()).expect("read-only input facts");
     let partition = facts.partition_key().clone();
-    let resolved = bundle
-        .resolve_plan(&reference)
-        .expect("exact read-only plan resolves");
+    let resolved = resolve_genesis_plan(&bundle, &reference);
     CommandFixture {
         resolved,
         reference,

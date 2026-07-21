@@ -1,6 +1,7 @@
 //! Same-session exact-end historical catalog validation.
 
 use std::fmt;
+use std::sync::Arc;
 
 use riffdb_contract_ir::{CompatibilityClass, IndexSchema};
 use riffdb_storage_api::{
@@ -10,6 +11,7 @@ use riffdb_storage_api::{
 };
 use riffdb_types::{DatabaseId, IndexId};
 
+use crate::lineage::{LineageBudget, LineageMaterializationProof};
 use crate::{
     CatalogError, CatalogErrorKind, ValidatedContractBundle, validate_successor_compatibility,
 };
@@ -22,6 +24,7 @@ pub struct ValidatedCatalogHistory {
     database_id: DatabaseId,
     open_session_id: OpenSessionId,
     active: Option<ValidatedContractBundle>,
+    lineage_proof: Option<Arc<LineageMaterializationProof>>,
     evidence_count: u64,
 }
 
@@ -64,6 +67,10 @@ impl fmt::Debug for ValidatedCatalogHistory {
             .field("database_id", &self.database_id)
             .field("open_session_id", &self.open_session_id)
             .field("active", &self.active.as_ref().map(|_| "[CHECKED]"))
+            .field(
+                "lineage_proof",
+                &self.lineage_proof.as_ref().map(|_| "[CHECKED]"),
+            )
             .field("evidence_count", &self.evidence_count)
             .finish()
     }
@@ -73,6 +80,16 @@ impl fmt::Debug for ValidatedCatalogHistory {
 pub struct CatalogHistoryValidation<E> {
     history: ValidatedCatalogHistory,
     historical_end: E,
+}
+
+#[derive(Default)]
+struct HistoricalValidationState {
+    active_seen: bool,
+    active: Option<ValidatedContractBundle>,
+    terminal_bundle: Option<ValidatedContractBundle>,
+    lineage_bundles: Vec<ValidatedContractBundle>,
+    lineage_budget: LineageBudget,
+    lineage_proof: Option<Arc<LineageMaterializationProof>>,
 }
 
 impl<E> CatalogHistoryValidation<E> {
@@ -99,9 +116,7 @@ pub fn validate_catalog_history<S: StructuralEvidenceSession>(
     let page_limit = EvidencePageLimit::new(500)
         .ok_or_else(|| CatalogError::new(CatalogErrorKind::InvalidHistoricalEvidence))?;
     let mut last_order_key: Option<Vec<u8>> = None;
-    let mut active_seen = false;
-    let mut active = None;
-    let mut terminal_bundle = None;
+    let mut state = HistoricalValidationState::default();
     let mut evidence_count = 0u64;
 
     let historical_end = loop {
@@ -137,13 +152,7 @@ pub fn validate_catalog_history<S: StructuralEvidenceSession>(
                             CatalogErrorKind::InvalidHistoricalEvidence,
                         ));
                     }
-                    validate_historical_item(
-                        session,
-                        item,
-                        &mut active_seen,
-                        &mut active,
-                        &mut terminal_bundle,
-                    )?;
+                    validate_historical_item(session, item, &mut state)?;
                     last_order_key = Some(order_key);
                     evidence_count = evidence_count.checked_add(1).ok_or_else(|| {
                         CatalogError::new(CatalogErrorKind::InvalidHistoricalEvidence)
@@ -162,7 +171,9 @@ pub fn validate_catalog_history<S: StructuralEvidenceSession>(
         }
     };
 
-    if !active_seen || !active_matches_terminal(active.as_ref(), terminal_bundle.as_ref()) {
+    if !state.active_seen
+        || !active_matches_terminal(state.active.as_ref(), state.terminal_bundle.as_ref())
+    {
         return Err(CatalogError::new(
             CatalogErrorKind::InvalidHistoricalEvidence,
         ));
@@ -172,7 +183,8 @@ pub fn validate_catalog_history<S: StructuralEvidenceSession>(
         history: ValidatedCatalogHistory {
             database_id,
             open_session_id,
-            active,
+            active: state.active,
+            lineage_proof: state.lineage_proof,
             evidence_count,
         },
         historical_end,
@@ -182,44 +194,67 @@ pub fn validate_catalog_history<S: StructuralEvidenceSession>(
 fn validate_historical_item<S: StructuralEvidenceSession>(
     session: &mut S,
     item: &HistoricalSemanticEvidence,
-    active_seen: &mut bool,
-    active: &mut Option<ValidatedContractBundle>,
-    terminal_bundle: &mut Option<ValidatedContractBundle>,
+    state: &mut HistoricalValidationState,
 ) -> Result<(), CatalogError> {
     match item {
         HistoricalSemanticEvidence::Bundle(evidence) => {
-            let bundle = validate_bundle_evidence(evidence)?;
-            validate_historical_bundle_parent(&bundle, terminal_bundle.as_ref())?;
-            *terminal_bundle = Some(bundle);
-        }
-        HistoricalSemanticEvidence::PlanReference(reference) => {
-            load_historical_bundle(
-                session,
-                reference.contract_lineage(),
-                reference.contract_version(),
-                reference.contract_bundle_hash(),
-            )?
-            .resolve_plan(reference)?;
-        }
-        HistoricalSemanticEvidence::ActiveCatalog(observed) => {
-            if *active_seen {
+            if state.lineage_proof.is_some() {
                 return Err(CatalogError::new(
                     CatalogErrorKind::InvalidHistoricalEvidence,
                 ));
             }
-            *active_seen = true;
-            *active = match observed {
-                Some(pointer) => Some(load_historical_bundle(
-                    session,
-                    pointer.lineage(),
-                    pointer.version(),
-                    pointer.bundle_hash(),
-                )?),
+            state
+                .lineage_budget
+                .push_bundle(evidence.bytes().as_bytes().len())
+                .map_err(map_history_lineage_error)?;
+            let bundle = validate_bundle_evidence(evidence)?;
+            validate_historical_bundle_parent(&bundle, state.terminal_bundle.as_ref())?;
+            state.lineage_bundles.push(bundle.clone());
+            state.terminal_bundle = Some(bundle);
+        }
+        HistoricalSemanticEvidence::PlanReference(reference) => {
+            let proof = ensure_lineage_proof(&state.lineage_bundles, &mut state.lineage_proof)?;
+            let (ordinal, bundle) = proof
+                .exact_member(
+                    reference.contract_version(),
+                    reference.contract_bundle_hash(),
+                )
+                .ok_or_else(|| CatalogError::new(CatalogErrorKind::UnknownExecutablePlan))?;
+            bundle.resolve_plan_with_proof(reference, Arc::clone(proof), ordinal)?;
+        }
+        HistoricalSemanticEvidence::ActiveCatalog(observed) => {
+            if state.active_seen {
+                return Err(CatalogError::new(
+                    CatalogErrorKind::InvalidHistoricalEvidence,
+                ));
+            }
+            state.active_seen = true;
+            state.active = match observed {
+                Some(pointer) => {
+                    let loaded = load_historical_bundle(
+                        session,
+                        pointer.lineage(),
+                        pointer.version(),
+                        pointer.bundle_hash(),
+                    )?;
+                    let proof =
+                        ensure_lineage_proof(&state.lineage_bundles, &mut state.lineage_proof)?;
+                    if proof
+                        .exact_member(pointer.version(), pointer.bundle_hash())
+                        .is_none()
+                    {
+                        return Err(CatalogError::new(
+                            CatalogErrorKind::InvalidHistoricalEvidence,
+                        ));
+                    }
+                    Some(loaded)
+                }
                 None => None,
             };
         }
         HistoricalSemanticEvidence::PersistedKey(evidence) => {
-            validate_persisted_key(session, evidence)?;
+            let proof = ensure_lineage_proof(&state.lineage_bundles, &mut state.lineage_proof)?;
+            validate_persisted_key(session, proof, evidence)?;
         }
     }
     Ok(())
@@ -254,7 +289,7 @@ fn validate_historical_bundle_parent(
             CatalogErrorKind::InvalidHistoricalEvidence,
         ));
     }
-    validate_successor_compatibility(candidate, prior)
+    validate_successor_compatibility(candidate, prior).map_err(map_history_lineage_error)
 }
 
 fn active_matches_terminal(
@@ -274,6 +309,7 @@ fn active_matches_terminal(
 
 fn validate_persisted_key<S: StructuralEvidenceSession>(
     session: &mut S,
+    lineage_proof: &LineageMaterializationProof,
     evidence: &HistoricalPersistedKeyEvidenceV1,
 ) -> Result<(), CatalogError> {
     let binding = evidence.schema();
@@ -283,6 +319,11 @@ fn validate_persisted_key<S: StructuralEvidenceSession>(
         binding.contract_version(),
         binding.bundle_hash(),
     )?;
+    if lineage_proof.exact_binding_member(binding).is_none() {
+        return Err(CatalogError::new(
+            CatalogErrorKind::InvalidHistoricalEvidence,
+        ));
+    }
 
     let valid = match evidence.key() {
         IrOpaquePersistedKeyV1::Entity {
@@ -312,6 +353,24 @@ fn validate_persisted_key<S: StructuralEvidenceSession>(
         return Err(CatalogError::new(CatalogErrorKind::InvalidHistoricalKey));
     }
     Ok(())
+}
+
+fn ensure_lineage_proof<'a>(
+    bundles: &[ValidatedContractBundle],
+    proof: &'a mut Option<Arc<LineageMaterializationProof>>,
+) -> Result<&'a Arc<LineageMaterializationProof>, CatalogError> {
+    if proof.is_none() {
+        let checked = LineageMaterializationProof::from_forward_bundles(bundles.to_vec())
+            .map_err(map_history_lineage_error)?;
+        *proof = Some(checked);
+    }
+    proof
+        .as_ref()
+        .ok_or_else(|| CatalogError::new(CatalogErrorKind::InvalidHistoricalEvidence))
+}
+
+fn map_history_lineage_error(_error: CatalogError) -> CatalogError {
+    CatalogError::new(CatalogErrorKind::InvalidHistoricalEvidence)
 }
 
 fn find_index(
@@ -406,4 +465,41 @@ fn push_lineage(output: &mut Vec<u8>, lineage: &riffdb_types::ContractLineage) {
     let length = u32::try_from(lineage.as_bytes().len()).unwrap_or(u32::MAX);
     output.extend_from_slice(&length.to_be_bytes());
     output.extend_from_slice(lineage.as_bytes());
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::lineage::{MAX_ACTIVE_LINEAGE_BUNDLES_V1, MAX_ACTIVE_LINEAGE_CANONICAL_BYTES_V1};
+
+    #[test]
+    fn startup_maps_incremental_lineage_limits_to_invalid_history() {
+        let mut count = LineageBudget::default();
+        for _ in 0..MAX_ACTIVE_LINEAGE_BUNDLES_V1 {
+            count.push_bundle(0).expect("exact candidate count");
+        }
+        let candidate_error = count.push_bundle(0).expect_err("candidate one over");
+        assert_eq!(
+            candidate_error.kind(),
+            CatalogErrorKind::LineageBundleCountLimit
+        );
+        assert_eq!(
+            map_history_lineage_error(candidate_error).kind(),
+            CatalogErrorKind::InvalidHistoricalEvidence
+        );
+
+        let mut bytes = LineageBudget::default();
+        bytes
+            .push_bundle(MAX_ACTIVE_LINEAGE_CANONICAL_BYTES_V1)
+            .expect("exact candidate bytes");
+        let candidate_error = bytes.push_bundle(1).expect_err("candidate one byte over");
+        assert_eq!(
+            candidate_error.kind(),
+            CatalogErrorKind::LineageCanonicalBytesLimit
+        );
+        assert_eq!(
+            map_history_lineage_error(candidate_error).kind(),
+            CatalogErrorKind::InvalidHistoricalEvidence
+        );
+    }
 }

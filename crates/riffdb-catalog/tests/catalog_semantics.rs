@@ -90,6 +90,20 @@ fn validates_bundle_identity_and_resolves_only_the_complete_plan_reference() {
     let resolved = resolve_executable_plan(&repo, &exact).expect("exact plan");
     assert_eq!(resolved.reference(), &exact);
     assert_eq!(resolved.plan(), command);
+    let active = ActiveCatalogSnapshot::read(&repo)
+        .expect("active catalog read")
+        .expect("active catalog exists");
+    let lineage_canary = checked.lineage().as_str();
+    let hash_canary = format!("{:?}", checked.bundle_hash());
+    for debug in [
+        format!("{checked:?}"),
+        format!("{resolved:?}"),
+        format!("{active:?}"),
+    ] {
+        assert!(debug.contains("[REDACTED]") || debug.contains("[CHECKED]"));
+        assert!(!debug.contains(lineage_canary));
+        assert!(!debug.contains(&hash_canary));
+    }
 
     let wrong_hash = ExecutablePlanRef::new(
         checked.lineage().clone(),
@@ -117,6 +131,59 @@ fn validates_bundle_identity_and_resolves_only_the_complete_plan_reference() {
             .expect_err("opaque identity mismatch")
             .kind(),
         CatalogErrorKind::BundleIdentityConflict
+    );
+}
+
+#[test]
+fn active_lineage_resolves_exact_ancestors_and_rejects_a_missing_parent_edge() {
+    let first_compiled = compile_contract_source(BUDGET).expect("genesis");
+    let first = ValidatedContractBundle::from_compiler_bundle(first_compiled.clone())
+        .expect("checked genesis");
+    let seventh_compiled = compile_contract_successor(
+        &BUDGET.replacen("version 1", "version 7", 1),
+        &first_compiled,
+    )
+    .expect("skipped application version");
+    let seventh = ValidatedContractBundle::from_compiler_bundle(seventh_compiled.clone())
+        .expect("checked seventh");
+    let forty_second_compiled = compile_contract_successor(
+        &BUDGET.replacen("version 1", "version 42", 1),
+        &seventh_compiled,
+    )
+    .expect("second skipped application version");
+    let forty_second =
+        ValidatedContractBundle::from_compiler_bundle(forty_second_compiled).expect("checked tip");
+
+    let first_command = first.bundle().commands().first().expect("command");
+    let first_reference = ExecutablePlanRef::new(
+        first.lineage().clone(),
+        first.contract_version(),
+        first.bundle_hash(),
+        first_command.command_id(),
+        first_command.plan_hash(),
+    );
+    let tip_stored = forty_second.to_stored().expect("stored tip");
+    let repository = ReadRepository {
+        active: Some(ActiveCatalogPointerV1::from_bundle(&tip_stored)),
+        bundles: vec![
+            first.to_stored().expect("stored genesis"),
+            seventh.to_stored().expect("stored seventh"),
+            tip_stored.clone(),
+        ],
+    };
+    let resolved = resolve_executable_plan(&repository, &first_reference)
+        .expect("exact ancestor is in the active lineage");
+    assert_eq!(resolved.reference(), &first_reference);
+
+    let missing_parent = ReadRepository {
+        active: Some(ActiveCatalogPointerV1::from_bundle(&tip_stored)),
+        bundles: vec![first.to_stored().expect("stored genesis"), tip_stored],
+    };
+    assert_eq!(
+        ActiveCatalogSnapshot::read(&missing_parent)
+            .expect_err("the active-to-genesis chain must be complete")
+            .kind(),
+        CatalogErrorKind::InvalidHistoricalEvidence
     );
 }
 

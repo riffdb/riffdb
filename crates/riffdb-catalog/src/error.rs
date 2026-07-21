@@ -27,6 +27,12 @@ pub enum CatalogErrorKind {
     InvalidHistoricalEvidence,
     /// A persisted key does not match its exact retained key schema.
     InvalidHistoricalKey,
+    /// The active lineage exceeds the fixed bundle-count ceiling.
+    LineageBundleCountLimit,
+    /// The active lineage exceeds the fixed cumulative canonical-byte ceiling.
+    LineageCanonicalBytesLimit,
+    /// The process-local materialization proof exceeds its semantic ceiling.
+    LineageMaterializationProofLimit,
     /// A storage read failed before a catalog decision could be made.
     Storage,
 }
@@ -45,6 +51,11 @@ impl CatalogErrorKind {
             Self::UnknownExecutablePlan => "historical executable plan is unavailable",
             Self::InvalidHistoricalEvidence => "catalog history evidence is invalid",
             Self::InvalidHistoricalKey => "historical persisted key is invalid",
+            Self::LineageBundleCountLimit => "contract lineage has too many bundles",
+            Self::LineageCanonicalBytesLimit => "contract lineage bytes exceed the limit",
+            Self::LineageMaterializationProofLimit => {
+                "contract lineage materialization proof exceeds the limit"
+            }
             Self::Storage => "catalog storage read failed",
         }
     }

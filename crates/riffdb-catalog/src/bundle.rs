@@ -13,6 +13,7 @@ use riffdb_storage_api::{
 };
 use riffdb_types::{ContractBundleHash, ContractLineage, ContractVersion};
 
+use crate::lineage::LineageMaterializationProof;
 use crate::{CatalogError, CatalogErrorKind};
 
 /// A canonical bundle that has passed catalog-owned activation revalidation.
@@ -81,14 +82,23 @@ impl ValidatedContractBundle {
         .map_err(|_| CatalogError::new(CatalogErrorKind::InvalidBundle))
     }
 
-    /// Resolves one command and verifies the complete historical plan identity.
-    pub fn resolve_plan(
+    pub(crate) fn resolve_plan_with_proof(
         &self,
         reference: &ExecutablePlanRef,
+        lineage_proof: Arc<LineageMaterializationProof>,
+        executing_ordinal: u16,
     ) -> Result<ResolvedExecutablePlan, CatalogError> {
+        let ordinal_names_self = lineage_proof
+            .exact_member(self.contract_version(), self.bundle_hash())
+            .is_some_and(|(ordinal, bundle)| {
+                ordinal == executing_ordinal
+                    && bundle.lineage() == self.lineage()
+                    && bundle.bundle().canonical_bytes() == self.bundle().canonical_bytes()
+            });
         if self.lineage() != reference.contract_lineage()
             || self.contract_version() != reference.contract_version()
             || self.bundle_hash() != reference.contract_bundle_hash()
+            || !ordinal_names_self
         {
             return Err(CatalogError::new(CatalogErrorKind::UnknownExecutablePlan));
         }
@@ -101,6 +111,8 @@ impl ValidatedContractBundle {
             reference: reference.clone(),
             plan: plan.clone(),
             bundle: self.clone(),
+            lineage_proof,
+            executing_ordinal,
         })
     }
 }
@@ -109,9 +121,9 @@ impl fmt::Debug for ValidatedContractBundle {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter
             .debug_struct("ValidatedContractBundle")
-            .field("lineage", self.lineage())
+            .field("lineage", &"[REDACTED]")
             .field("contract_version", &self.contract_version())
-            .field("bundle_hash", &self.bundle_hash())
+            .field("bundle_hash", &"[REDACTED]")
             .field("canonical_bytes", &"[REDACTED]")
             .finish()
     }
@@ -123,6 +135,8 @@ pub struct ResolvedExecutablePlan {
     reference: ExecutablePlanRef,
     plan: CommandPlan,
     bundle: ValidatedContractBundle,
+    lineage_proof: Arc<LineageMaterializationProof>,
+    executing_ordinal: u16,
 }
 
 impl ResolvedExecutablePlan {
@@ -143,23 +157,37 @@ impl ResolvedExecutablePlan {
     pub const fn bundle(&self) -> &ValidatedContractBundle {
         &self.bundle
     }
+
+    #[allow(dead_code)] // Consumed by catalog-owned snapshot normalization in the next slice.
+    pub(crate) fn lineage_proof(&self) -> &Arc<LineageMaterializationProof> {
+        &self.lineage_proof
+    }
+
+    #[allow(dead_code)] // Consumed by catalog-owned snapshot normalization in the next slice.
+    pub(crate) const fn executing_ordinal(&self) -> u16 {
+        self.executing_ordinal
+    }
 }
 
 impl fmt::Debug for ResolvedExecutablePlan {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter
             .debug_struct("ResolvedExecutablePlan")
-            .field("reference", &self.reference)
+            .field("reference", &"[REDACTED]")
             .field("plan", &"[CHECKED]")
+            .field("lineage_proof", &"[CHECKED]")
+            .field("lineage_bundle_count", &self.lineage_proof.bundle_count())
+            .field("executing_ordinal", &self.executing_ordinal)
             .finish()
     }
 }
 
 /// Current active pointer paired with its exact checked immutable bundle.
-#[derive(Clone, Debug)]
+#[derive(Clone)]
 pub struct ActiveCatalogSnapshot {
     pointer: ActiveCatalogPointerV1,
     bundle: ValidatedContractBundle,
+    lineage_proof: Arc<LineageMaterializationProof>,
 }
 
 impl ActiveCatalogSnapshot {
@@ -168,14 +196,22 @@ impl ActiveCatalogSnapshot {
         let Some(pointer) = repository.read_active_catalog()? else {
             return Ok(None);
         };
-        let stored = repository
-            .read_contract_bundle(pointer.lineage(), pointer.contract_version())?
-            .ok_or_else(|| CatalogError::new(CatalogErrorKind::ActiveCatalogMismatch))?;
-        let bundle = ValidatedContractBundle::from_stored(&stored)?;
-        if !pointer.matches_bundle(&stored) {
-            return Err(CatalogError::new(CatalogErrorKind::ActiveCatalogMismatch));
+        let lineage_proof = LineageMaterializationProof::load_active(repository, &pointer)
+            .map_err(map_stored_lineage_error)?;
+        let bundle = lineage_proof.terminal().clone();
+        if bundle.lineage() != pointer.lineage()
+            || bundle.contract_version() != pointer.contract_version()
+            || bundle.bundle_hash() != pointer.bundle_hash()
+        {
+            return Err(CatalogError::new(
+                CatalogErrorKind::InvalidHistoricalEvidence,
+            ));
         }
-        Ok(Some(Self { pointer, bundle }))
+        Ok(Some(Self {
+            pointer,
+            bundle,
+            lineage_proof,
+        }))
     }
 
     /// Exact durable active pointer.
@@ -189,6 +225,55 @@ impl ActiveCatalogSnapshot {
     pub const fn bundle(&self) -> &ValidatedContractBundle {
         &self.bundle
     }
+
+    pub(crate) fn lineage_proof(&self) -> &Arc<LineageMaterializationProof> {
+        &self.lineage_proof
+    }
+
+    pub(crate) fn resolve_plan(
+        &self,
+        reference: &ExecutablePlanRef,
+    ) -> Result<ResolvedExecutablePlan, CatalogError> {
+        let (ordinal, bundle) = self
+            .lineage_proof
+            .exact_member(
+                reference.contract_version(),
+                reference.contract_bundle_hash(),
+            )
+            .ok_or_else(|| CatalogError::new(CatalogErrorKind::UnknownExecutablePlan))?;
+        bundle.resolve_plan_with_proof(reference, Arc::clone(&self.lineage_proof), ordinal)
+    }
+}
+
+fn map_stored_lineage_error(error: CatalogError) -> CatalogError {
+    match error.kind() {
+        CatalogErrorKind::ActiveCatalogMismatch
+        | CatalogErrorKind::InvalidHistoricalEvidence
+        | CatalogErrorKind::LineageBundleCountLimit
+        | CatalogErrorKind::LineageCanonicalBytesLimit
+        | CatalogErrorKind::LineageMaterializationProofLimit => {
+            CatalogError::new(CatalogErrorKind::InvalidHistoricalEvidence)
+        }
+        CatalogErrorKind::InvalidBundle
+        | CatalogErrorKind::UnsupportedBundleVersion
+        | CatalogErrorKind::InvalidCommandRegistry
+        | CatalogErrorKind::IncompatibleContract
+        | CatalogErrorKind::BundleIdentityConflict
+        | CatalogErrorKind::UnknownExecutablePlan
+        | CatalogErrorKind::InvalidHistoricalKey
+        | CatalogErrorKind::Storage => error,
+    }
+}
+
+impl fmt::Debug for ActiveCatalogSnapshot {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("ActiveCatalogSnapshot")
+            .field("pointer", &"[REDACTED]")
+            .field("bundle", &"[CHECKED]")
+            .field("lineage_proof", &"[CHECKED]")
+            .finish()
+    }
 }
 
 /// Resolves a complete historical plan through the bounded catalog read port.
@@ -196,10 +281,12 @@ pub fn resolve_executable_plan<R: CatalogRepository>(
     repository: &R,
     reference: &ExecutablePlanRef,
 ) -> Result<ResolvedExecutablePlan, CatalogError> {
-    let stored = repository
-        .read_contract_bundle(reference.contract_lineage(), reference.contract_version())?
+    let active = ActiveCatalogSnapshot::read(repository)?
         .ok_or_else(|| CatalogError::new(CatalogErrorKind::UnknownExecutablePlan))?;
-    ValidatedContractBundle::from_stored(&stored)?.resolve_plan(reference)
+    if active.pointer().lineage() != reference.contract_lineage() {
+        return Err(CatalogError::new(CatalogErrorKind::UnknownExecutablePlan));
+    }
+    active.resolve_plan(reference)
 }
 
 fn validate_supported_versions(bundle: &ContractBundle) -> Result<(), CatalogError> {
@@ -240,4 +327,41 @@ fn validate_command_registry(bundle: &ContractBundle) -> Result<(), CatalogError
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn startup_reclassifies_only_broken_or_over_limit_active_lineage() {
+        for kind in [
+            CatalogErrorKind::ActiveCatalogMismatch,
+            CatalogErrorKind::InvalidHistoricalEvidence,
+            CatalogErrorKind::LineageBundleCountLimit,
+            CatalogErrorKind::LineageCanonicalBytesLimit,
+            CatalogErrorKind::LineageMaterializationProofLimit,
+        ] {
+            assert_eq!(
+                map_stored_lineage_error(CatalogError::new(kind)).kind(),
+                CatalogErrorKind::InvalidHistoricalEvidence
+            );
+        }
+
+        for kind in [
+            CatalogErrorKind::InvalidBundle,
+            CatalogErrorKind::UnsupportedBundleVersion,
+            CatalogErrorKind::InvalidCommandRegistry,
+            CatalogErrorKind::IncompatibleContract,
+            CatalogErrorKind::BundleIdentityConflict,
+            CatalogErrorKind::UnknownExecutablePlan,
+            CatalogErrorKind::InvalidHistoricalKey,
+            CatalogErrorKind::Storage,
+        ] {
+            assert_eq!(
+                map_stored_lineage_error(CatalogError::new(kind)).kind(),
+                kind
+            );
+        }
+    }
 }

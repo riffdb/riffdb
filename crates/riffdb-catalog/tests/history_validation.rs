@@ -2,6 +2,7 @@
 
 use riffdb_catalog::{CatalogErrorKind, ValidatedContractBundle, validate_catalog_history};
 use riffdb_contract_compiler::{compile_contract_source, compile_contract_successor};
+use riffdb_contract_ir::{CompatibilityReport, ContractBundle, ParentBundleRef};
 use riffdb_storage_api::{
     DormantPortBundle, DurableKeySchemaBindingV1, EntityTarget, EvidencePageLimit,
     HistoricalActiveCatalogEvidence, HistoricalBundleBytes, HistoricalBundleEvidence,
@@ -473,6 +474,51 @@ fn branched_bundle_history_and_nonterminal_active_pointer_fail_closed() {
 }
 
 #[test]
+fn startup_history_wires_the_exact_bundle_count_boundary() {
+    const MAX_ACTIVE_LINEAGE_BUNDLES_V1: usize = 4_096;
+
+    let lineage = boundary_lineage(MAX_ACTIVE_LINEAGE_BUNDLES_V1 + 1);
+    let mut exact_evidence = lineage[..MAX_ACTIVE_LINEAGE_BUNDLES_V1]
+        .iter()
+        .map(|bundle| HistoricalSemanticEvidence::Bundle(stored_bundle(bundle)))
+        .collect::<Vec<_>>();
+    exact_evidence.push(active(&lineage[MAX_ACTIVE_LINEAGE_BUNDLES_V1 - 1]));
+    let exact_active = stored_bundle(&lineage[MAX_ACTIVE_LINEAGE_BUNDLES_V1 - 1]);
+    let mut exact_session = session(
+        evidence_pages(exact_evidence),
+        vec![exact_active],
+        CursorFault::None,
+    );
+    let exact = validate_catalog_history(&mut exact_session)
+        .expect("startup accepts exactly 4,096 lineage bundles");
+    assert_eq!(
+        exact.history().evidence_count(),
+        u64::try_from(MAX_ACTIVE_LINEAGE_BUNDLES_V1 + 1).expect("bounded evidence count")
+    );
+    drop(exact);
+    drop(exact_session);
+
+    let mut over_evidence = lineage
+        .iter()
+        .map(|bundle| HistoricalSemanticEvidence::Bundle(stored_bundle(bundle)))
+        .collect::<Vec<_>>();
+    over_evidence.push(active(&lineage[MAX_ACTIVE_LINEAGE_BUNDLES_V1]));
+    let over_active = stored_bundle(&lineage[MAX_ACTIVE_LINEAGE_BUNDLES_V1]);
+    let mut over_session = session(
+        evidence_pages(over_evidence),
+        vec![over_active],
+        CursorFault::None,
+    );
+    assert_eq!(
+        validate_catalog_history(&mut over_session)
+            .err()
+            .expect("startup must reject lineage bundle 4,097")
+            .kind(),
+        CatalogErrorKind::InvalidHistoricalEvidence
+    );
+}
+
+#[test]
 fn retained_entity_key_schema_accepts_complete_bytes_and_rejects_truncation() {
     const INDEXED: &str = r#"
 contract Indexed version 1 {
@@ -626,4 +672,54 @@ fn index_prefix_evidence(
 
 fn version(source: &str, number: u64) -> String {
     source.replacen("version 1", &format!("version {number}"), 1)
+}
+
+fn boundary_lineage(bundle_count: usize) -> Vec<ValidatedContractBundle> {
+    const EMPTY_LINEAGE_SOURCE: &str = r#"
+contract StartupBoundary version 1 {
+}
+"#;
+
+    assert!(bundle_count > 0);
+    let genesis = compile_contract_source(EMPTY_LINEAGE_SOURCE).expect("empty genesis");
+    let mut bundles = Vec::with_capacity(bundle_count);
+    bundles.push(
+        ValidatedContractBundle::from_compiler_bundle(genesis.clone()).expect("checked genesis"),
+    );
+    let mut parent = genesis;
+    for version in 2..=u64::try_from(bundle_count).expect("bounded fixture length") {
+        let successor = ContractBundle::new(
+            parent.compiler_version(),
+            parent.lineage().clone(),
+            ContractVersion::new(version).expect("positive boundary version"),
+            Some(ParentBundleRef::new(
+                parent.contract_version(),
+                parent.bundle_hash(),
+            )),
+            parent.source_hash(),
+            parent.ledger().clone(),
+            parent.schema().clone(),
+            parent.commands().to_vec(),
+            parent.projections().to_vec(),
+            parent.schema_artifacts().to_vec(),
+            parent.mcp_command_names().clone(),
+            CompatibilityReport::successor(Vec::new()).expect("no semantic change"),
+        )
+        .expect("unchanged valid successor");
+        bundles.push(
+            ValidatedContractBundle::from_compiler_bundle(successor.clone())
+                .expect("checked successor"),
+        );
+        parent = successor;
+    }
+    bundles
+}
+
+fn evidence_pages(
+    evidence: Vec<HistoricalSemanticEvidence>,
+) -> Vec<Vec<HistoricalSemanticEvidence>> {
+    evidence
+        .chunks(500)
+        .map(<[HistoricalSemanticEvidence]>::to_vec)
+        .collect()
 }

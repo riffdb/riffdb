@@ -21,6 +21,8 @@ mod command_validation;
 mod initialization;
 mod outcome;
 mod provenance;
+#[cfg(test)]
+mod test_support;
 
 pub use audit::{AdministrationAuditInputView, BootstrapCompoundAuditProof};
 pub use audit_executor::{

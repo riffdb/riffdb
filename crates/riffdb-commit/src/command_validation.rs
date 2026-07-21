@@ -996,8 +996,7 @@ contract ReadOnlyValidation version 1 {
             .collect::<Result<Vec<_>, _>>()
             .expect("root targets");
         PreparedFixture {
-            resolved: bundle
-                .resolve_plan(&reference)
+            resolved: crate::test_support::resolve_genesis_plan(&bundle, &reference)
                 .expect("resolved fixture plan"),
             input,
             logical_time: LogicalTime::new(Timestamp::new(123, 456).expect("fixture time")),

@@ -751,8 +751,7 @@ mod tests {
         let facts = derive_input_command_facts(plan, normalized_input.clone())
             .expect("input-derived command facts");
         let partition = facts.partition_key().clone();
-        let resolved = bundle
-            .resolve_plan(&reference)
+        let resolved = crate::test_support::resolve_genesis_plan(&bundle, &reference)
             .expect("exact checked plan resolves");
         CommandFixture {
             resolved,

@@ -578,7 +578,8 @@ contract ScalarPrefixes version 1 {
         )
         .expect("transaction-current state");
         Fixture {
-            resolved: bundle.resolve_plan(&reference).expect("resolved plan"),
+            resolved: crate::test_support::resolve_genesis_plan(&bundle, &reference)
+                .expect("resolved plan"),
             evaluated,
             current,
         }

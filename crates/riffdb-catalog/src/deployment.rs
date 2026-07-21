@@ -1,6 +1,7 @@
 //! Pure catalog activation preparation for coordinator-owned persistence.
 
 use std::fmt;
+use std::sync::Arc;
 
 use riffdb_contract_ir::{
     CompatibilityClass, ContractBundle, ContractCandidateV1, compare_successor,
@@ -8,6 +9,7 @@ use riffdb_contract_ir::{
 use riffdb_storage_api::{ActiveCatalogPointerV1, AuditPrincipalV1, CatalogActivationIntentV1};
 use riffdb_types::{ApprovalId, ContractVersion, RequestId, Timestamp};
 
+use crate::lineage::LineageMaterializationProof;
 use crate::{ActiveCatalogSnapshot, CatalogError, CatalogErrorKind, ValidatedContractBundle};
 
 /// Whether preparation represents a new pointer or an exact idempotent replay.
@@ -25,6 +27,7 @@ pub struct PreparedCatalogActivation {
     expected_active_version: Option<ContractVersion>,
     bundle: ValidatedContractBundle,
     mode: CatalogActivationMode,
+    projected_lineage_proof: Arc<LineageMaterializationProof>,
 }
 
 impl PreparedCatalogActivation {
@@ -75,6 +78,11 @@ impl fmt::Debug for PreparedCatalogActivation {
             .field("expected_active_version", &self.expected_active_version)
             .field("bundle", &self.bundle)
             .field("mode", &self.mode)
+            .field("projected_lineage_proof", &"[CHECKED]")
+            .field(
+                "projected_lineage_bundle_count",
+                &self.projected_lineage_proof.bundle_count(),
+            )
             .finish()
     }
 }
@@ -116,6 +124,7 @@ pub fn prepare_catalog_activation(
                     expected_active_version,
                     bundle: candidate,
                     mode: CatalogActivationMode::ExactReplay,
+                    projected_lineage_proof: Arc::clone(active.lineage_proof()),
                 },
             ));
         }
@@ -132,11 +141,16 @@ pub fn prepare_catalog_activation(
     }
 
     validate_activation_compatibility(&candidate, active)?;
+    let projected_lineage_proof = match active {
+        Some(active) => active.lineage_proof().extend(candidate.clone())?,
+        None => LineageMaterializationProof::from_forward_bundles(vec![candidate.clone()])?,
+    };
     Ok(CatalogPreparationResult::Prepared(
         PreparedCatalogActivation {
             expected_active_version,
             bundle: candidate,
             mode: CatalogActivationMode::NewActivation,
+            projected_lineage_proof,
         },
     ))
 }
