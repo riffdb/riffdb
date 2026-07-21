@@ -6,7 +6,7 @@
 **Tagline:** *Vibe fast. Commit safely.*  
 **Category:** Contract-first operational database for agent-built applications  
 
-**Version:** 0.18
+**Version:** 0.19
 **Status:** Architecture-approved implementation handoff
 **Date:** 20 July 2026
 **Audience:** Coding agents, database engineers, compiler engineers, security reviewers, and technical product leads  
@@ -54,6 +54,7 @@
 | 0.16 | 2026-07-20 | Applied the accepted zero-mutation command clarification and direct gRPC public-error carriage: all influential dependencies remain revalidated, only exact nonzero mutation coverage invokes commit checks/index derivation, and WP-130 carries bounded `riffdb.v1.PublicError` bytes directly with closed status/message validation. |
 | 0.17 | 2026-07-20 | Froze the accepted WP-100 command-executor result, error, completion-ownership, and cancellation boundary; and approved the narrow Tonic 0.14.6 dependency graph whose transport-only feature unification enables `base64` 0.22.1 `std` without changing auth's sole direct ownership or admitting TLS, compression, cryptography, or another base64 version. |
 | 0.18 | 2026-07-20 | Applied the accepted checked-plan derived-index ceilings and index-epoch exhaustion behavior: conservative IR-v1 admission rejects plans whose successful mutation shape can exceed pre-sequence storage bounds, while runtime guards remain defense in depth and an exhausted epoch aborts before sequence assignment, stops the coordinator, and never enters uncertain-write fencing. |
+| 0.19 | 2026-07-20 | Applied the accepted bounded active-lineage materialization clarification: catalog resolution proves exact parent/hash ancestry and optional-null field introductions under fixed count, canonical-byte, and process-local proof ceilings; commit normalizes both owned snapshots and transaction-current records before evaluation; runtime rejects every unproved omission; and activation/startup fail closed without changing durable, protocol, IR, or plan-hash formats. |
 
 ### Normative language
 
@@ -296,15 +297,15 @@ The binary targets are `riffdbd` from `riffdb-server`, `riffdb` from `riffdb-cli
 | `riffdb-contract-syntax` | Lexer, parser, source spans, syntax AST, and parser diagnostics | Types and parser tooling only |
 | `riffdb-contract-ir` | Typed HIR, executable IR, plans, immutable projection group schemas, and contract bundle structs | Types; no parser implementation, storage, compiler implementation, or runtime dependency |
 | `riffdb-contract-compiler` | Name resolution, type checking, invariant classification, locality analysis, plan generation, and JSON Schema output | Syntax and IR; no storage, service, or transport dependency |
-| `riffdb-catalog` | Immutable contract bundle persistence, compatibility checks, active-version changes, catalog notifications, and IR-aware validation of bounded same-session historical startup evidence | IR and storage API; its opaque `ValidatedCatalogHistory` never crosses a storage trait |
+| `riffdb-catalog` | Immutable contract bundle persistence, compatibility checks, active-version changes, catalog notifications, bounded active-lineage materialization proofs, and IR-aware validation of bounded same-session historical startup evidence | IR and storage API; its opaque process-local lineage and `ValidatedCatalogHistory` proofs never cross a storage trait |
 | `riffdb-storage-api` | Semantic snapshots, database initialization, structural startup sessions/evidence/type-state ports, evaluated commands, commit intents, durable DTOs, typed transitions/readers, the narrow durable `proto_codec` mapping bridge, and ADR-0017 projection-schema consumers | Types/errors; proto only through `proto_codec`; contract IR only for immutable `ProjectionGroupSchema`/`BoundProjectionGroupSchema` values in the projection-schema module; no clock, entropy, compiler, command-plan interpretation, historical-plan validation, runtime, commit, service, transport, or concrete-engine dependency |
 | `riffdb-storage-memory` | Deterministic reference storage implementation used by model and semantic tests | Storage API only |
 | `riffdb-storage-redb` | Durable POC implementation, table layout, complete structural integrity/evidence scan, dormant opened ports, backup, restore, and engine benchmarks | Storage API and `redb`; no contract IR, `ValidatedCatalogHistory`, readiness composition, or API transports |
 | `riffdb-invariant` | Shared pure evaluation of checked input-computable expressions plus supported predicates, invariants, postconditions, and commit-time checks | Types and IR; no snapshot, admission, storage, service, clock, entropy, or transport dependency; no POC state-machine source, IR, or execution surface |
-| `riffdb-runtime` | Deterministic command-plan interpreter that consumes owned snapshots and produces `EvaluatedCommand` without external I/O | IR, invariant engine, and storage semantic value/snapshot types; no provenance claims, admission persistence, storage engine, service, or transport dependency |
+| `riffdb-runtime` | Deterministic command-plan interpreter that consumes lineage-normalized owned snapshots, rejects unproved missing fields, and produces `EvaluatedCommand` without external I/O | IR, invariant engine, and storage semantic value/snapshot types; no catalog lineage construction, provenance claims, admission persistence, storage engine, service, or transport dependency |
 | `riffdb-conflict` | Canonical conflict keys, exclusive logical capabilities, wait queues, cancellation, and hot-key diagnostics | Types and synchronization primitives; no storage engine |
 | `riffdb-idempotency` | Canonical command identity, input hashing, persisted outcome lookup, duplicate detection, and uncertain-result recovery | Types and storage API |
-| `riffdb-commit` | Database-initialization executor, admission, capability acquisition, deterministic evaluation orchestration, exact historical-plan matching, final `CommitIntent` assembly, transaction-current commit-check orchestration, revalidation, sequencing, authoritative commit, typed control-plane operations, ordered audit execution, and consumer-owned `AdmissionClock`, `AdministrationClock`, `ProvenanceIdSource`, and `AdministrationAuditInputView` ports | Runtime, conflict, idempotency, catalog, `riffdb-contract-ir`, `riffdb-invariant`, storage API, and policy-owned authorized-preparation/provenance/facts values plus only `TransactionCurrentCapabilityVerifier` and `AuthorizationClock`; direct IR/invariant use is limited to exact plan matching, grammar-v1 index derivation, and pure transaction-current commit-check evaluation; no syntax/compiler, service, transport, protocol, general policy authorizer, obligations/redaction engine, policy-owned storage reader, or concrete clock/entropy implementation |
+| `riffdb-commit` | Database-initialization executor, admission, capability acquisition, catalog-proof-guided owned-snapshot and transaction-current normalization, deterministic evaluation orchestration, exact historical-plan matching, final `CommitIntent` assembly, transaction-current commit-check orchestration, revalidation, sequencing, authoritative commit, typed control-plane operations, ordered audit execution, and consumer-owned `AdmissionClock`, `AdministrationClock`, `ProvenanceIdSource`, and `AdministrationAuditInputView` ports | Runtime, conflict, idempotency, catalog, `riffdb-contract-ir`, `riffdb-invariant`, storage API, and policy-owned authorized-preparation/provenance/facts values plus only `TransactionCurrentCapabilityVerifier` and `AuthorizationClock`; direct IR/invariant use is limited to exact plan matching, proof-guided normalization, grammar-v1 index derivation, and pure transaction-current commit-check evaluation; no syntax/compiler, service, transport, protocol, general policy authorizer, obligations/redaction engine, policy-owned storage reader, or concrete clock/entropy implementation |
 | `riffdb-auth` | Principal authentication, local development capability tokens, expiry, credential resolution, narrow synchronous authentication clock, and `CredentialAuthenticator` entry point | Types, errors, and storage-owned capability readers; no policy, command execution, service, or transport dependency |
 | `riffdb-policy` | Deny-by-default authorization, capability scopes, obligations, approvals, provenance validation, value-only authorized capability-mutation preparation and transaction-current facts, synchronous authorization clock, and pure transaction-current capability verification | Auth and types/errors only; no storage API, commit, service, transport, protocol, authoritative write handle, or concrete storage dependency |
 | `riffdb-service` | API-neutral command, contract, entity, commit, provenance, projection, discovery, administration, and health services, including capability-administration request/result semantics and checked command-input preparation | Foundational types/errors, contract/compiler/catalog semantics, the pure `riffdb-invariant` expression evaluator, auth and policy entry points, typed commit executors, and consumer-owned bounded read ports; no runtime execution API, transport, general storage engine, or concrete storage implementation |
@@ -960,6 +961,127 @@ adapter-owned string registry or a second normalization path.
 
 `CMP-022` The server MUST reject a bundle whose IR version it cannot execute.
 
+### Bounded active-lineage materialization proof
+
+`riffdb-catalog` owns these fixed v1 limits:
+
+```text
+MAX_ACTIVE_LINEAGE_BUNDLES_V1 = 4_096
+MAX_ACTIVE_LINEAGE_CANONICAL_BYTES_V1 = 64 * 1024 * 1024 = 67_108_864
+MAX_LINEAGE_MATERIALIZATION_PROOF_BYTES_V1 = 2 * 1024 * 1024 = 2_097_152
+```
+
+The active lineage is the exact inclusive chain from genesis through the active
+bundle. Its canonical-byte charge is a checked sum of each member's exact
+`ContractBundle::canonical_bytes().len()` and excludes catalog envelopes, keys,
+evidence-page framing, and allocator overhead. These aggregate limits are
+independent of the existing 15 MiB per-bundle limit. The 4,096 active-lineage
+limit is intentionally lower than the generic 65,535-bundle backup-table bound,
+and the 64 MiB lineage charge is distinct from both the 15 MiB bundle and 16 MiB
+historical-evidence page limits.
+
+Both `ActiveCatalogSnapshot::read` and `resolve_executable_plan` MUST load the
+current active pointer and walk from the active bundle to genesis through each
+exact parent `(ContractVersion, ContractBundleHash)`. They reverse that walk
+into genesis-to-active order, reject gaps, cycles, repeated versions, hash
+substitution, lineage mismatch, unsupported versions, or either aggregate-limit
+excess, and re-run the same pure forward compatibility comparator used for
+activation on every adjacent pair. Numeric `ContractVersion` comparison is not
+ancestry evidence. The referenced executing bundle and plan must be an exact
+member of that chain, which permits a pending historical plan to read records
+written by its validated ancestors or descendants without accepting a foreign
+lineage.
+
+Successful resolution constructs one catalog-owned
+`LineageMaterializationProofV1`, shared process-locally by `Arc` and attached to
+the `ResolvedExecutablePlan`. The proof has private construction, is not
+serializable, is not a durable or public DTO, never crosses a storage trait, and
+is excluded from canonical bundle bytes, IR, every hash, and every Protobuf
+message. For accounting and reproducible tests, its exact charged framing is:
+
+```text
+u8 proof_version (= 1)
+u32 lineage_len || lineage
+u32 bundle_count
+repeated(u64 ContractVersion || [u8; 32] BundleHash)
+u16 executing_bundle_ordinal
+u32 owner_count
+repeated(
+  u8 owner_tag { entity = 1, event = 2 }
+  || u32 owner_id
+  || u32 field_count
+  || repeated(u32 FieldId || u16 introduced_at_ordinal)
+)
+```
+
+All integers use big-endian byte order. Bundle and introduction ordinals are
+zero-based and at most 4,095; `BundleHash` is the exact 32-byte
+`ContractBundleHash`. Bundle entries are in genesis-to-active order;
+owners are duplicate-free in `(owner_tag, owner_id)` order; fields are
+duplicate-free in ascending `FieldId` order. At most 8,192 entity/event owners
+and the existing 262,144 lineage-ledger field entries are charged. The lineage
+is bounded at 256 bytes. Checked arithmetic and compile-time assertions MUST
+retain this exact maximum proof charge:
+
+```text
+1 + (4 + 256) + 4 + (4_096 * 40) + 2 + 4
+  + (8_192 * 9) + (262_144 * 6)
+= 1_810_703 bytes
+```
+
+That is 286,449 bytes below the 2 MiB cap. Any change to a constituent bound
+that invalidates the assertion requires human review before merge. The catalog
+derives every field's first introduction ordinal from the revalidated parent and
+child schemas; it MUST NOT trust a stored compatibility report as sufficient
+evidence. Boundary tests exercise the checked proof-charge calculator
+synthetically at exactly 2 MiB and one byte above it; they separately construct
+or calculate the valid-v1 1,810,703-byte maximum and MUST NOT claim a valid v1
+proof can reach the 2 MiB cap.
+
+For one exact stored writer bundle and one executing descendant schema, the
+proof yields an opaque null-fill mask over the executing schema's fields in
+ascending `FieldId` order. The mask is exactly `ceil(field_count / 8)` bytes,
+has zero unused high bits, and is at most 512 bytes under the existing 4,096
+fields-per-owner limit. Across the existing maximum 4,096 combined binding and
+aggregate-root positions, transient masks therefore have an exact independent
+structural maximum of 2 MiB. That maximum is not an additional snapshot budget:
+the retained normalized `ReadSnapshot` semantic bytes plus every retained
+nonempty bitset payload byte MUST together remain at or below the existing 16
+MiB command-snapshot ceiling. Binding/root and mask vectors are aligned, so the
+position is implicit and adds no separate metadata charge. Tests freeze exact
+combined acceptance at 16 MiB and rejection at one byte more. Masks are
+process-local normalization authority, not serialized or hashed data.
+
+A missing field may be materialized as `CanonicalValue::Null` if and only if
+the stored writer is an exact chain member,
+`writer_ordinal < field_introduction_ordinal <= executing_ordinal`, and the
+executing field is optional-with-null-default. A missing field written by the
+executing bundle itself, by a descendant of it, or introduced in genesis is an
+integrity failure, as is a missing required field, malformed mask, or foreign
+lineage/version/hash. Present fields unknown to the executing historical schema
+remain attached to the canonical record unchanged but invisible to its
+expressions. Normalization emits fields in canonical `FieldId` order and never
+drops or rewrites an unknown value.
+
+Activation preparation computes `current_count + 1`,
+`current_canonical_bytes + candidate.canonical_bytes().len()`, and the rebuilt
+proof charge with checked arithmetic against the exact currently active chain.
+It rejects a count excess as one root `ValidationCode::TooManyItems` issue and a
+canonical-byte or proof-byte excess as one root `ValidationCode::TooLong` issue;
+both are public `Validation` errors with `CorrectRequest`, occur before
+coordinator submission, and retain ordinary authenticated service-audit
+behavior. The coordinator's expected-active comparison remains the authority
+for a concurrent activation race. A catalog storage read still returns
+`CatalogError::Storage` rather than being reclassified as validation.
+
+Startup rebuilds the same exact chain and proof and enforces the same three
+ceilings. An already-active history with a broken chain or excess count,
+canonical bytes, or proof bytes is `InvalidHistoricalEvidence`, leaves
+authoritative readiness false, and surfaces only a redacted `InternalDefect`.
+Once activation has admitted a chain, reaching any proof or aggregate ceiling
+inside command resolution or normalization is an internal defect, never a
+caller-controlled `ResourceLimit`.
+
 During production open, `riffdb-catalog` is the sole IR-aware validator of
 historical contract semantics. The server composition feeds it the bounded
 `HistoricalSemanticEvidence` pages obtained from one storage structural-evidence
@@ -1047,11 +1169,18 @@ A mutating command follows this sequence:
    mutation `ConflictKey`, then rechecks the pending admission. Dynamic
    acquisition, upgrade, and cross-partition mutation are forbidden.
 10. A synchronous storage read copies every declared binding and range
-   observation into one owned bounded `ReadSnapshot`, closes the engine read
-   view, and returns canonical read dependencies.
-11. The deterministic runtime evaluates the exact checked plan, snapshot,
-    immutable `TransactionContext`, and fixed `EvaluationBudget`, with no storage
-    transaction, I/O, clock, entropy, provenance claims, or `.await`.
+    observation into one owned bounded `ReadSnapshot`, closes the engine read
+    view, and returns canonical read dependencies. After the view is closed and
+    before runtime entry, the coordinator uses only the catalog-owned lineage
+    proof attached to the resolved plan to normalize eligible ancestor-written
+    optional omissions to canonical null. Unknown fields remain byte-for-byte
+    present. A proof failure is integrity; a valid expansion beyond the fixed
+    execution budget is dependency-sensitive `ExecutionFault::ResourceLimit`.
+11. The deterministic runtime evaluates the exact checked plan, normalized
+    snapshot, immutable `TransactionContext`, and fixed `EvaluationBudget`, with
+    no storage transaction, I/O, clock, entropy, provenance claims, or `.await`.
+    It rejects a remaining missing declared field as integrity and performs no
+    blind optional-field fill.
 12. A successful mutating evaluation returns storage-owned `EvaluatedCommand`.
     For a new commit attempt, the coordinator obtains one `ProvenanceId` from its
     injected source and combines it with the exact stored admission and plan-
@@ -1075,12 +1204,23 @@ A mutating command follows this sequence:
 15. The transaction rechecks the exact pending identity, input, admission, and
     plan reference, then reads all influential validation targets from
     transaction-current state and compares every absence/version/epoch
-    dependency regardless of mutation count. A zero-mutation declared business
-    outcome then skips commit-check evaluation and index derivation. A nonzero
-    mutation set must first prove exactly one complete mutation for every mutable
-    historical-plan binding, then evaluates the complete commit-check plan over
-    current read/root values plus those proposed post-images. A missing post-image
-    is never replaced by a current pre-image.
+    dependency regardless of mutation count. `DependencyChanged` aborts and
+    requests reevaluation before any transaction-current normalization. For each
+    equal present dependency, the raw current record must exactly equal the
+    retained pre-runtime observation after removing precisely the fields marked
+    by its catalog-issued inserted-null mask, including target, entity version,
+    writer identity, schema binding, and every physical field. Drift behind an
+    equal version is integrity. Only after that equality proof does the
+    coordinator apply the already-retained catalog proof/mask to the current
+    record before any value-source or commit-check use; it performs no catalog or
+    extra storage lookup in the transaction. A missing field not proved eligible
+    for ancestor null fill is integrity, and unknown fields remain present. A
+    zero-mutation declared business outcome then skips commit-check evaluation
+    and index derivation. A nonzero mutation set must first prove exactly one
+    complete mutation for every
+    mutable historical-plan binding, then evaluates the complete commit-check
+    plan over normalized current read/root values plus those proposed complete
+    post-images. A missing post-image is never replaced by a current pre-image.
 16. Only for a nonzero mutation set, after semantic validation the coordinator
     derives the canonical set of mutation-affected index-prefix epoch targets
     from transaction-current old entries and proposed new entries. Storage reads
@@ -1283,6 +1423,17 @@ re-evaluated over transaction-current read/root values and proposed post-images.
 A zero-mutation declared outcome skips commit-check and index derivation without
 falling back to mutable pre-images.
 
+Dependency comparison precedes transaction-current normalization. Any changed
+absence, entity version, or range epoch aborts the candidate and requests full
+reevaluation. When a present entity version is equal, the coordinator also
+requires exact raw-record equality with the retained pre-runtime observation
+after removing only fields named by that observation's catalog-issued inserted-
+null mask. The comparison includes target, entity version, writer identity,
+schema binding, canonical field order, and every physical known or unknown
+field/value. Unequal content behind an equal version is `InternalDefect`, not
+`DependencyChanged`; no catalog lookup, storage callback, or second read is
+allowed to explain or repair it inside the write transaction.
+
 Grammar v1 does not enable write-influencing indexed range reads. A future
 bounded indexed command-read IR requires an accepted static-target/epoch policy
 and any required exclusion must use explicit conflict keys known before
@@ -1300,6 +1451,22 @@ mutating command may carry zero mutations for a declared business rejection
 under `OUT-003`; otherwise it must carry exactly one complete mutation for every
 mutable plan binding. It contains no admission identity, actor, provenance,
 logical time, sequence, event ID, durable record, or storage handle.
+
+Every present entity/root record consumed to produce an `EvaluatedCommand` has
+already passed catalog-proof-guided normalization. Each inserted field adds
+exactly six canonical bytes: four bytes of `FieldId` plus the canonical
+value-version and null-tag bytes. The existing 1 MiB per-record, 16 MiB owned-
+snapshot, and fixed evaluation limits are rechecked with checked arithmetic
+during expansion. The snapshot charge includes retained normalized semantic
+bytes plus every retained nonempty null-mask bitset payload byte; aligned
+binding/root and mask vectors make position implicit with no separate metadata
+charge. The mask's 2 MiB structural maximum grants no extra capacity. If a valid
+proof-authorized expansion exceeds one of those limits, runtime receives no
+partial record or `EvaluatedCommand`; the
+coordinator treats it as `ExecutionFault::ResourceLimit` and may terminalize it
+under ADR-0012 only after equality of all captured dependencies. A malformed
+proof, foreign writer, unproved omission, or a proof/cap invariant reached after
+successful activation is instead integrity and never a resource fault.
 
 After evaluation, only `riffdb-commit` may construct `CommitIntent`. Its checked
 constructor combines the unchanged `EvaluatedCommand` with the exact stored
@@ -1325,7 +1492,8 @@ transaction-current commit-check evaluation only, `riffdb-commit` directly
 consumes the checked `CommandPlan` from `riffdb-contract-ir` and the sole
 `riffdb-invariant` evaluator. It mechanically assembles a private owned value
 source from frozen normalized input and `tx.time`, transaction-current complete
-binding/root observations, and proposed complete post-images. Mutate/create
+binding/root observations normalized with the same catalog lineage proof, and
+proposed complete post-images. Mutate/create
 bindings resolve only to their proposed post-images; read-only bindings and
 internal aggregate-root validation reads resolve only to transaction-current
 records. Missing, duplicate, out-of-order, or unmatched semantic positions are
@@ -1345,11 +1513,33 @@ complete commit-check plan and index derivation consume the proposed post-images
 Missing, duplicate, or extra mutations are integrity failures, never permission
 to substitute transaction-current pre-images.
 
+The coordinator, not storage or runtime, owns both proof applications: once on
+the complete owned snapshot after the read view closes and once on every
+transaction-current binding/root record before commit-check value assembly.
+Both applications use the exact writer identity and opaque mask derived by the
+`ResolvedExecutablePlan`'s shared proof. They preserve all present unknown
+fields. Storage remains IR-blind and runtime remains unable to infer ancestry
+from a numeric version or optional field type.
+
+The first application retains each nonempty inserted-null mask in the aligned
+entry for its normalized observation under the shared 16 MiB snapshot charge;
+no separate position value is retained or charged. In the short write
+transaction, dependency comparison happens first. If
+it is equal, the coordinator removes exactly those mask-named inserted fields
+from the retained observation and requires exact equality with the raw current
+record, including target/version/writer/schema binding and every physical field,
+before reapplying the same mask. Same-version drift is a stopped-readiness
+integrity defect. The coordinator performs no catalog or additional storage I/O
+to rebuild ancestry or masks while the transaction is open.
+
 The coordinator performs:
 
 1. Open the durable write transaction and start a count-only candidate.
 2. Recheck the exact pending admission and idempotency identity.
-3. Read and revalidate every influential transaction-current dependency.
+3. Read and compare every influential transaction-current dependency; on equal
+   present records, prove exact raw equality against the retained observation
+   with only catalog-issued null insertions removed, then apply the retained
+   mask before semantic use.
 4. For nonzero mutations only, prove exact mutable-binding coverage and
    re-evaluate the complete commit-time invariant plan over current read/root
    values plus proposed post-images; zero mutations skip this step.
@@ -1549,8 +1739,11 @@ payload; 64 commands and 16 MiB aggregate staged write set per write transaction
 500 rows and 4 MiB per generic scan page; 500 records and 16 MiB encoded content
 per internal ordered commit-scan page; 4 KiB per
 entity/index/partition/conflict key or index prefix; 256 integrity findings plus
-a `truncated` flag; 15 MiB per
-catalog bundle; 16 targets and 64 KiB per service-audit record; and ADR-0006's
+a `truncated` flag; 15 MiB per catalog bundle; 4,096 bundles and 64 MiB exact
+canonical bundle bytes per active lineage; 2 MiB per process-local catalog
+lineage-materialization proof; an independently derived maximum 512-byte
+null-fill mask per record position and 2 MiB structural maximum across 4,096 binding/root
+positions; 16 targets and 64 KiB per service-audit record; and ADR-0006's
 absolute 16 MiB durable payload/envelope ceiling. Every input, runtime result,
 component count, semantic value, and component byte bound that is knowable before
 transaction open uses checked arithmetic and is rejected before unbounded
@@ -1561,6 +1754,16 @@ transaction after current reads and before sequence assignment. WP-065 defines
 and proves conservative canonical `StoredEnvelope` upper bounds per record class,
 and WP-070 recomputes actual canonical envelope bytes and rejects any excess
 before staging. Configuration may lower, but never raise, a hard ceiling.
+
+The active-lineage count, canonical-byte sum, proof charge, and mask charge use
+the exact Section 8.5 definitions. They add no storage-engine allocation or
+envelope charge to canonical bytes; retained normalized snapshot semantic bytes
+plus all retained nonempty mask bitset payload bytes share, rather than add to,
+the existing 16 MiB snapshot budget; aligned vectors make mask position implicit
+without a metadata charge. They do not relax the 1 MiB record, 16 MiB
+snapshot, 15 MiB bundle/intent, 16 MiB evidence/write-set, or generic backup
+limits. Compile-time arithmetic assertions and exact-boundary tests MUST fail if
+a constituent IR bound could exceed its approved proof or mask ceiling.
 
 For a mutating grammar/IR-v1 plan, checked plan construction also proves the
 conservative cross-product ceilings for index-entry deltas, mutation-affected
@@ -1786,11 +1989,19 @@ may join the two matching same-session results and evaluate readiness:
 3. Structurally enumerate every historical bundle/plan reference and the active
    catalog relationship through exact end. The catalog then resolves and
    semantically validates every referenced IR version and plan hash from that
-   same session. An absent pointer is a valid initialization state only while the
+   same session. It also reconstructs the exact active-to-genesis parent/hash
+   chain, revalidates each adjacent successor forward, enforces the 4,096-bundle,
+   64 MiB exact-canonical-byte, and 2 MiB process-local proof ceilings, and
+   derives field-introduction ordinals without trusting stored compatibility
+   reports alone. An absent pointer is a valid initialization state only while the
    contract-bundle table and every application-authoritative table are empty;
    capability, bootstrap, and administration-audit records may already exist.
    Any bundle, application commit/state, active-pointer mismatch, unknown plan,
-   or semantic validation failure outside that state is corruption.
+   broken/gapped/cyclic/substituted lineage, aggregate-limit excess, or semantic
+   validation failure outside that state keeps readiness false and is exposed
+   only as a redacted internal defect. Broken or over-limit active-lineage
+   evidence is specifically `InvalidHistoricalEvidence`; other failures retain
+   their existing typed catalog classifications.
 4. Verify that application commits are contiguous and application-sequence
    metadata is exactly the checked successor of the last commit, or the first
    sequence when empty, with an explicit exhausted state when no successor
@@ -3485,16 +3696,16 @@ The graph uses hard dependencies. Parallel work is encouraged only after shared 
 | `WP-030` | Contract syntax | WP-010 | Logos lexer, LALRPOP grammar, source spans, AST | Parser corpus, diagnostics, fuzz smoke pass |
 | `WP-040` | Typed IR and compiler | WP-010, WP-030 | Name resolution, type checker, invariant/outcome/dependency plans, JSON Schema | Budget contract compiles; invalid corpus rejects with stable diagnostics |
 | `WP-045` | Budget comparison baseline | WP-040 | Shared workload/oracle and isolated PostgreSQL implementation | Deterministic oracle and PostgreSQL correctness preflight pass |
-| `WP-050` | Contract catalog | WP-020, WP-040, WP-060 | Bundle lookup, catalog state semantics, compatibility report, same-session historical IR validation proof, and typed expected-version deployment operation for later coordinator routing | Catalog semantic, exact-end historical-validation, and atomic-storage-operation tests pass; final routing evidence is WP-100/WP-120 |
+| `WP-050` | Contract catalog | WP-020, WP-040, WP-060 | Bundle lookup, catalog state semantics, compatibility report, bounded active-lineage materialization proof, same-session historical IR validation proof, and typed expected-version deployment operation for later coordinator routing | Exact chain/count/byte/proof boundaries, null-fill masks, catalog semantics, exact-end historical validation, and atomic storage-operation tests pass; final routing evidence is WP-100/WP-120 |
 | `WP-060` | Storage semantic API | WP-010, WP-020, WP-040 | Owned snapshots, dependencies, `EvaluatedCommand`/`CommitIntent`, the pre-sequence write-plan/capacity type-state, exact `EventHash` semantics, structural evidence/type-state ports, semantic durable DTOs, typed persistence transitions including audit/capability/projection, and in-memory reference implementation | Reference-model, exact-end startup type-state, pre-sequence ordering/capacity, event-hash, and semantic conformance tests pass |
 | `WP-065` | Durable semantic record schema | WP-020, WP-060 | Exact 26-record `riffdb.storage.v1` registry including standalone durable events, canonical envelopes and per-class upper-bound proofs, exact event-hash goldens, descriptors, schema hashes, wire validation, historical registrations, and checked storage-owned Proto mappings | Proto/storage size/hash tests and clean deterministic regeneration pass |
 | `WP-070` | Redb storage engine | WP-020, WP-060, WP-065 | Frozen canonical tables/keys including standalone events, ordered coordinator write transaction with pre-sequence reservation and pre-stage canonical-envelope checks, atomic records, indexes, capability/audit/projection persistence, complete structural evidence scan, `StructurallyOpened` dormant ports, recovery, SHA-256 backup, and dependency-free benchmarks | Storage properties and core process recovery matrix pass without claiming IR-aware readiness |
 | `WP-075` | Fjall semantic comparison | WP-060, WP-070 | Isolated non-production Fjall adapter and unchanged conformance/benchmark harness | Conformance report and reproducible evidence pass |
-| `WP-080` | Deterministic command runtime | WP-040, WP-060 | Shared pure expression evaluator plus predicate, invariant, postcondition, and commit-check evaluation; snapshot IR interpreter, fixed logical time and budget, dependencies, `EvaluatedCommand`, and closed post-snapshot execution faults; no contract state-machine IR/execution, provenance, or command randomness | Differential tests against model pass |
+| `WP-080` | Deterministic command runtime | WP-040, WP-060 | Shared pure expression evaluator plus predicate, invariant, postcondition, and commit-check evaluation; lineage-normalized snapshot IR interpreter that never blindly fills omissions, fixed logical time and budget, dependencies, `EvaluatedCommand`, and closed post-snapshot execution faults; no contract state-machine IR/execution, provenance, or command randomness | Differential tests against model and missing-field fail-closed fixtures pass |
 | `WP-090` | Conflict manager | WP-010 | Canonical multi-key exclusive acquisition, cancellation, metrics | Loom/Shuttle suites pass |
-| `WP-100` | Commit coordinator and idempotency | WP-050, WP-070, WP-080, WP-090, WP-110 | Admission reservation, revalidation, mutation-affected epoch planning, pre-sequence capacity reservation, verified sequence-derived event/record graph, atomic outcome/event/provenance/outbox-intent commit, and typed control-plane operations | Concurrency, pre-sequence failpoints, core process crash, and lost-response replay tests pass |
+| `WP-100` | Commit coordinator and idempotency | WP-050, WP-070, WP-080, WP-090, WP-110 | Admission reservation, proof-guided owned-snapshot and transaction-current normalization, revalidation, mutation-affected epoch planning, pre-sequence capacity reservation, verified sequence-derived event/record graph, atomic outcome/event/provenance/outbox-intent commit, and typed control-plane operations | Lineage normalization/preservation, concurrency, pre-sequence failpoints, core process crash, and lost-response replay tests pass |
 | `WP-110` | Authorization and capability service | WP-010, WP-070 | Opaque capability records, policy decisions, obligations, and typed create/revoke operations for later coordinator routing | Policy, digest, revocation-state, and fail-closed tests pass; final non-bypass evidence is WP-120 |
-| `WP-120` | API-neutral application service | WP-050, WP-080, WP-100, WP-110 | Six operation-specific service traits, checked contexts/DTOs, pure input/partition/conflict preparation with fail-closed pre-admission arithmetic, current policy, audit orchestration, obligations, bounded reads/waits/streams, and server-side cursors | In-process end-to-end and no-storage-bypass tests pass |
+| `WP-120` | API-neutral application service | WP-050, WP-080, WP-100, WP-110 | Six operation-specific service traits, checked contexts/DTOs, pure input/partition/conflict preparation with fail-closed pre-admission arithmetic, catalog-lineage limit validation mapping, current policy, audit orchestration, obligations, bounded reads/waits/streams, and server-side cursors | In-process end-to-end, exact root limit-error mapping, and no-storage-bypass tests pass |
 | `WP-125` | Service comparison adapter | WP-045, WP-120 | Budget workload adapter over the API-neutral service | Shared oracle passes against in-process RiffDB |
 | `WP-127` | Public Protobuf API completion | WP-020, WP-120 | Complete all remaining supported `riffdb.v1` messages, preserve the WP-010 execution-failure slice, and freeze descriptors, schema hashes, wire validation, and golden/client fixtures; no service conversion code | Proto tests and clean deterministic regeneration pass |
 | `WP-130` | gRPC server and Rust SDK | WP-020, WP-120, WP-127 | Tonic services/client plus the minimal production redb/catalog/commit/auth/policy/service composition, concrete ID/clock/cursor/digest providers, staged startup/lifecycle, and real restart proof | Public API conformance and the child-process temporary-redb bootstrap/deploy/budget/restart suite pass |
@@ -3860,6 +4071,11 @@ and ADR-0023 also resolved the remaining grammar-v1 transaction defaults:
   `ConcurrencyDeadlineExceeded` without adding a durable counter or error kind.
 - POC contract compatibility is additive/documentation-only; removal of an
   entity, field, command, outcome, event, or projection is rejected.
+- Optional-field evolution is executable only through the catalog's exact
+  active-lineage proof: at most 4,096 bundles, 64 MiB summed canonical bundle
+  bytes, and a 2 MiB process-local proof. Commit alone applies its ancestor-only
+  null-fill masks before snapshot and transaction-current evaluation; runtime
+  never infers ancestry or blindly fills a missing optional field.
 - A command candidate assigns no sequence until private validation has derived
   mutation-affected epoch targets, read their current positions, frozen the exact
   sequence-free write plan, and reserved semantic plus conservative encoded
