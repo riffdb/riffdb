@@ -121,7 +121,7 @@ pub(crate) struct EvaluatedCommandAttempt {
 
 impl EvaluatedCommandAttempt {
     /// Consumes the attempt into the exact inputs required by later commit orchestration.
-    pub(crate) fn into_parts(
+    fn into_parts(
         self,
     ) -> (
         PendingCommandAttempts,
