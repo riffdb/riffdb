@@ -1010,7 +1010,15 @@ version = "0.1.0"
 name = "riffdb-commit"
 version = "0.1.0"
 dependencies = [
+ "riffdb-catalog",
+ "riffdb-conflict",
+ "riffdb-contract-compiler",
+ "riffdb-contract-ir",
+ "riffdb-idempotency",
+ "riffdb-invariant",
+ "riffdb-policy",
  "riffdb-storage-api",
+ "riffdb-testkit",
  "riffdb-types",
  "tokio",
 ]
