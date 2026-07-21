@@ -1,4 +1,4 @@
-spec_version: '0.17'
+spec_version: '0.18'
 product: RiffDB
 repository: riffdb
 status: implementation-handoff
@@ -910,6 +910,12 @@ work_packages:
   - Cargo.lock
   - crates/riffdb-commit/**
   - crates/riffdb-idempotency/**
+  - crates/riffdb-types/src/limits.rs
+  - crates/riffdb-storage-api/src/bounds.rs
+  - crates/riffdb-storage-api/src/command.rs
+  - crates/riffdb-storage-api/src/snapshot.rs
+  - crates/riffdb-contract-ir/src/plan.rs
+  - crates/riffdb-contract-compiler/src/compiler.rs
   - tests/command_semantics/**
   - tests/service_audit/**
   deliverables:
@@ -965,6 +971,13 @@ work_packages:
     while resolving CommitStatusUnknown
   - Grammar/IR-v1 index derivation that always writes the canonical empty CanonicalRecord as covered_values while
     preserving generic storage conformance for covered-value epoch changes
+  - Maintainer-approved format-neutral checked-plan correction that conservatively rejects a v1 mutation shape above
+    4,096 index-entry deltas, 4,096 affected prefixes, 4,096 combined validation positions, or 16 MiB affected
+    target/current-epoch state before plan hashing; exact runtime/storage guards remain defense in depth and are an
+    internal defect if reached from a canonical checked plan
+  - Mutation-affected index-epoch exhaustion that aborts before application-sequence assignment, leaves Pending
+    byte-identical, returns opaque InternalDefect for the current call, stops readiness, maps queued/future work to
+    CoordinatorStopped, and never enters uncertain-write CoordinatorFenced
   - Bounded executor-capacity permit between durable Started and fresh final authorization, with synchronous
     nonretroactive admission and no business work when standalone/Started append is not proven durable
   - Exact Started-to-one-selected-and-attempted-terminal behavior for new admission, pending resume, terminal replay,
@@ -976,6 +989,7 @@ work_packages:
   - Unjournaled read-only execution with no command admission, persisted outcome, provenance, or application sequence
   acceptance_commands:
   - cargo test -p riffdb-commit -p riffdb-idempotency
+  - cargo test -p riffdb-types -p riffdb-contract-ir -p riffdb-contract-compiler -p riffdb-storage-api
   - cargo test -p riffdb-commit --test command_concurrency
   - cargo test -p riffdb-commit --test lost_response_replay
   - cargo test -p riffdb-commit --test service_audit_ordering

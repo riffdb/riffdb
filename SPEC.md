@@ -6,7 +6,7 @@
 **Tagline:** *Vibe fast. Commit safely.*  
 **Category:** Contract-first operational database for agent-built applications  
 
-**Version:** 0.17
+**Version:** 0.18
 **Status:** Architecture-approved implementation handoff
 **Date:** 20 July 2026
 **Audience:** Coding agents, database engineers, compiler engineers, security reviewers, and technical product leads  
@@ -53,6 +53,7 @@
 | 0.15 | 2026-07-20 | Clarified ADR-0023's audit-input inversion: the consumer view has no field or method for the new audit record's assigned administration sequence, while its checked control-plane result link may carry the sequence of an already-authoritative transition. |
 | 0.16 | 2026-07-20 | Applied the accepted zero-mutation command clarification and direct gRPC public-error carriage: all influential dependencies remain revalidated, only exact nonzero mutation coverage invokes commit checks/index derivation, and WP-130 carries bounded `riffdb.v1.PublicError` bytes directly with closed status/message validation. |
 | 0.17 | 2026-07-20 | Froze the accepted WP-100 command-executor result, error, completion-ownership, and cancellation boundary; and approved the narrow Tonic 0.14.6 dependency graph whose transport-only feature unification enables `base64` 0.22.1 `std` without changing auth's sole direct ownership or admitting TLS, compression, cryptography, or another base64 version. |
+| 0.18 | 2026-07-20 | Applied the accepted checked-plan derived-index ceilings and index-epoch exhaustion behavior: conservative IR-v1 admission rejects plans whose successful mutation shape can exceed pre-sequence storage bounds, while runtime guards remain defense in depth and an exhausted epoch aborts before sequence assignment, stops the coordinator, and never enters uncertain-write fencing. |
 
 ### Normative language
 
@@ -1249,6 +1250,19 @@ storage semantic API and durable codec remain generic and retain bounded covered
 values plus their epoch behavior. Any nonempty v1 producer requires a future
 accepted language/IR and durable compatibility decision.
 
+Checked command-plan construction conservatively computes the maximum successful
+grammar/IR-v1 index shape before hashing or activation. It rejects a mutating
+plan if that shape can exceed 4,096 index-entry mutations, 4,096 distinct
+mutation-affected prefix targets, 4,096 combined binding, root-validation, and
+affected-prefix validation positions, or the 16 MiB affected-target/current-
+epoch-state bound. The estimator may conservatively reject a shape whose actual
+runtime values would deduplicate across bindings; this is a permitted lower
+compiler acceptance limit, not a relaxation of a storage ceiling. It adds no IR
+field, encoding tag, durable value, or plan-hash input. Runtime derivation and
+storage constructors retain incremental count and byte guards as defense in
+depth; a canonical checked plan reaching one is an internal integrity defect,
+never a durable or public command `ResourceLimit` outcome.
+
 An influential `IndexRangeEpoch` dependency and a mutation-affected epoch target
 serve different purposes and MUST NOT be inferred from one another. The first is
 snapshot evidence for a range whose contents influenced evaluation and is
@@ -1548,6 +1562,13 @@ and proves conservative canonical `StoredEnvelope` upper bounds per record class
 and WP-070 recomputes actual canonical envelope bytes and rejects any excess
 before staging. Configuration may lower, but never raise, a hard ceiling.
 
+For a mutating grammar/IR-v1 plan, checked plan construction also proves the
+conservative cross-product ceilings for index-entry deltas, mutation-affected
+prefix targets, their combined validation positions, and affected epoch-state
+bytes described in Section 9.4. This check occurs before plan hashing and bundle
+activation. The short transaction still enforces every exact dynamic bound
+incrementally before retaining item 4,097 or more than 16 MiB.
+
 `StorageErrorKind` is closed: `Unavailable`, `CommitStatusUnknown`,
 `CorruptData`, `IncompatibleFormat`, `LimitExceeded`, `InvariantViolation`, and
 `SequenceExhausted`. A backend-proven abort maps to unavailable and never claims
@@ -1557,6 +1578,15 @@ incompatibility, impossible transitions, and exhaustion fail readiness with an
 opaque incident. Missing records, replay, mismatch, pending admission,
 dependency change, catalog conflict, already-revoked capability, projection gap,
 and scan end are typed semantic results, never parsed error strings.
+
+If any mutation-affected index epoch is already `u64::MAX`, its attempted
+advance returns internal `SequenceExhausted` and aborts the complete transaction
+before application-sequence assignment. Pending remains byte-identical and no
+command graph is durable. The current executor call returns the opaque internal
+`InternalDefect`, the coordinator transitions to stopped/unready, and queued or
+future work returns `CoordinatorStopped`. This proven abort is neither
+`StorageUnavailable` nor `OutcomeUnknown`, and it never transitions the actor to
+the uncertain-write `CoordinatorFenced` state.
 
 ## 10.2 Redb table layout
 

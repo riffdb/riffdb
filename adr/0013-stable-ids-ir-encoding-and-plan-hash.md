@@ -2,7 +2,7 @@
 
 - **Status:** Accepted
 - **Direction approved:** 2026-07-13
-- **Exact text accepted:** 2026-07-13, clarified 2026-07-13
+- **Exact text accepted:** 2026-07-13, clarified 2026-07-13 and 2026-07-20
 - **Clarified by:** ADR-0004 (complete executable plan reference), ADR-0007
   (unjournaled read-only service boundary), ADR-0012 (runtime result/fault
   boundary), ADR-0016 (canonical root-derivation equality), and ADR-0017 (bound
@@ -11,6 +11,9 @@
 
 The human maintainer accepted this exact text, the canonical root-derivation
 equality clarification, and the companion clarifications below on 2026-07-13.
+On 2026-07-20 the maintainer accepted the format-neutral conservative
+derived-index admission bounds below. They tighten checked IR-v1 acceptance but
+add no encoded field, tag, or plan-hash input.
 The accepted initial generated review artifacts are identified outside their own
 bytes by these exact SHA-256 digests:
 
@@ -501,6 +504,32 @@ capacity calculations:
 | Tuple/object/list entries in one encoded IR value | 1,024 |
 | One generated JSON Schema artifact | 1 MiB |
 | Compiler diagnostics returned | 32 |
+
+In addition to the independent declaration bounds above, every mutating command
+plan is rejected before hashing when a conservative maximum successful v1 shape
+can exceed any of these pre-sequence semantic limits:
+
+| Derived command boundary | v1 limit |
+|---|---:|
+| Index-entry mutations | 4,096 |
+| Mutation-affected index-prefix targets | 4,096 |
+| Binding + root-validation + mutation-affected-prefix validation positions | 4,096 |
+| Affected-prefix targets or their current epoch observations | 16 MiB |
+
+The estimator uses checked arithmetic and the declared mutable bindings,
+assigned fields, index fields, component maxima, and complete leading-prefix
+semantics. It may sum possible non-whole prefixes across bindings even when
+particular runtime values would deduplicate; that conservative lower acceptance
+limit is intentional. Whole-index targets are counted once per affected stable
+`IndexId`, and unchanged leading components before the earliest possibly
+assigned index component are not double-counted for one replacement. No value
+expression is evaluated and no runtime-value equality is assumed.
+
+These checks are constructor validation, not new serialized plan data. Existing
+bundle decoding re-enters checked constructors and therefore rejects a formerly
+constructible oversized v1 plan. That is an intentional semantic tightening;
+the IR-v1 byte layout and hash framing do not change. Runtime and storage retain
+the same exact incremental limits as defense in depth.
 
 The 1 MiB headroom below ADR-0006's absolute 16 MiB payload/envelope ceiling is
 reserved for the catalog Protobuf wrapper and `StoredEnvelope`. WP-050 must prove
