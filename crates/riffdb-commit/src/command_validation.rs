@@ -860,7 +860,7 @@ fn validate_evaluated_output(
     Ok(())
 }
 
-fn dependencies_from_current(
+pub(super) fn dependencies_from_current(
     current: &TransactionCurrentState,
 ) -> Result<ReadDependencies, CommandValidationError> {
     ReadDependencies::new(

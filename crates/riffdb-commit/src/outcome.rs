@@ -20,33 +20,33 @@ pub enum CommittedOutcomeDisposition {
 /// reinterpreting any durable field. Its disposition is response metadata only.
 #[derive(Clone, Eq, PartialEq)]
 pub struct CommittedOutcome {
-    stored_outcome: StoredOutcomeV1,
+    stored_outcome: Box<StoredOutcomeV1>,
     disposition: CommittedOutcomeDisposition,
 }
 
 impl CommittedOutcome {
     /// Wraps the exact outcome produced by this invocation's first commit.
     #[must_use]
-    pub const fn first_commit(stored_outcome: StoredOutcomeV1) -> Self {
+    pub fn first_commit(stored_outcome: StoredOutcomeV1) -> Self {
         Self {
-            stored_outcome,
+            stored_outcome: Box::new(stored_outcome),
             disposition: CommittedOutcomeDisposition::FirstCommit,
         }
     }
 
     /// Wraps the exact durable outcome found by equal-input recovery.
     #[must_use]
-    pub const fn replay(stored_outcome: StoredOutcomeV1) -> Self {
+    pub fn replay(stored_outcome: StoredOutcomeV1) -> Self {
         Self {
-            stored_outcome,
+            stored_outcome: Box::new(stored_outcome),
             disposition: CommittedOutcomeDisposition::Replay,
         }
     }
 
     /// Borrows the complete immutable durable outcome without translation.
     #[must_use]
-    pub const fn stored_outcome(&self) -> &StoredOutcomeV1 {
-        &self.stored_outcome
+    pub fn stored_outcome(&self) -> &StoredOutcomeV1 {
+        self.stored_outcome.as_ref()
     }
 
     /// Returns this invocation's non-durable completion disposition.
@@ -58,7 +58,7 @@ impl CommittedOutcome {
     /// Recovers the complete immutable durable outcome without translation.
     #[must_use]
     pub fn into_stored_outcome(self) -> StoredOutcomeV1 {
-        self.stored_outcome
+        *self.stored_outcome
     }
 }
 

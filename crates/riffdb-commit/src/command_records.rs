@@ -137,7 +137,7 @@ pub(super) enum UncertainCommandCommitResolution {
     /// The exact expected outcome committed during this invocation.
     Committed(CommittedOutcome),
     /// The same pending admission became a deterministic terminal failure.
-    ExecutionFailureReplay(StoredExecutionFailedV1),
+    ExecutionFailureReplay(Box<StoredExecutionFailedV1>),
     /// The exact Pending admission proves this attempt did not commit.
     ProvenNotCommitted(ProvenNonCommitCommand),
     /// Durable state cannot yet distinguish commit from rollback.
@@ -269,7 +269,7 @@ pub(super) fn resolve_uncertain_command_commit(
             StoredAdmissionStateV1::ExecutionFailed(failure)
                 if failure.pending() == uncertain.candidate.exact_intent().pending() =>
             {
-                UncertainCommandCommitResolution::ExecutionFailureReplay(failure)
+                UncertainCommandCommitResolution::ExecutionFailureReplay(Box::new(failure))
             }
             StoredAdmissionStateV1::Pending(pending)
                 if &pending == uncertain.candidate.exact_intent().pending() =>
@@ -1174,7 +1174,7 @@ mod tests {
         assert!(matches!(
             resolve_uncertain_command_commit(&repository, uncertain),
             UncertainCommandCommitResolution::ExecutionFailureReplay(actual)
-                if actual == failure
+                if *actual == failure
         ));
         assert_eq!(repository.lookup_calls.get(), 1);
 

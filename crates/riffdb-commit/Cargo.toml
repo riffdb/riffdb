@@ -22,7 +22,20 @@ tokio = { version = "=1.52.0", default-features = false, features = ["rt", "sync
 
 [dev-dependencies]
 riffdb-contract-compiler = { version = "0.1.0", path = "../riffdb-contract-compiler", default-features = false }
+riffdb-storage-redb = { version = "0.1.0", path = "../riffdb-storage-redb", default-features = false }
 riffdb-testkit = { version = "0.1.0", path = "../riffdb-testkit", default-features = false }
+
+[[test]]
+name = "command_concurrency"
+path = "../../tests/command_semantics/command_concurrency.rs"
+
+[[test]]
+name = "lost_response_replay"
+path = "../../tests/command_semantics/lost_response_replay.rs"
+
+[[test]]
+name = "service_audit_ordering"
+path = "../../tests/service_audit/service_audit_ordering.rs"
 
 [lints]
 workspace = true

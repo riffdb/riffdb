@@ -66,7 +66,7 @@ impl UncertainCommandAdmission {
         })
     }
 
-    const fn cause(&self) -> &StorageError {
+    pub(super) const fn cause(&self) -> &StorageError {
         &self.cause
     }
 }
@@ -79,8 +79,8 @@ impl fmt::Debug for UncertainCommandAdmission {
 
 /// Closed disposition of one consuming same-key admission recovery lookup.
 pub(crate) enum UncertainCommandAdmissionResolution {
-    /// The exact proposed pending state committed and the retained candidate may execute.
-    Execute(Box<CommandExecutionCandidate>),
+    /// The exact proposed pending state committed, but the fenced actor must not execute it.
+    ProvenPending(Box<CommandExecutionCandidate>),
     /// The exact admission already reached a declared terminal outcome.
     Outcome(StoredOutcomeV1),
     /// The exact admission already reached a deterministic terminal failure.
@@ -118,7 +118,7 @@ impl fmt::Debug for UncertainCommandAdmissionReadFailure {
 impl fmt::Debug for UncertainCommandAdmissionResolution {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter.write_str(match self {
-            Self::Execute(_) => "Execute([REDACTED])",
+            Self::ProvenPending(_) => "ProvenPending([REDACTED])",
             Self::Outcome(_) => "Outcome([REDACTED])",
             Self::ExecutionFailed(_) => "ExecutionFailed([REDACTED])",
             Self::Integrity => "Integrity",
@@ -183,6 +183,7 @@ struct CommandSnapshotRequestProof {
 }
 
 impl CommandSnapshotRequestProof {
+    #[allow(dead_code)] // Semantic-test inspection of the sealed request proof.
     fn request_for_attempt(&self) -> SnapshotRequest {
         self.request.clone()
     }
@@ -207,10 +208,12 @@ pub(crate) struct CommandExecutionCandidate {
 }
 
 impl CommandExecutionCandidate {
+    #[allow(dead_code)] // Semantic-test inspection of the sealed candidate.
     pub(crate) const fn resolved_plan(&self) -> &ResolvedExecutablePlan {
         &self.resolved_plan
     }
 
+    #[allow(dead_code)] // Semantic-test inspection of the sealed candidate.
     pub(crate) const fn normalized_input(&self) -> &CanonicalRecord {
         &self.normalized_input
     }
@@ -219,14 +222,17 @@ impl CommandExecutionCandidate {
         &self.commit_context
     }
 
+    #[allow(dead_code)] // Semantic-test inspection of the sealed candidate.
     pub(crate) fn raw_conflict_keys(&self) -> &[ConflictKey] {
         &self.raw_conflict_keys
     }
 
+    #[allow(dead_code)] // Semantic-test inspection of the sealed candidate.
     pub(crate) fn snapshot_request_for_attempt(&self) -> SnapshotRequest {
         self.snapshot.request_for_attempt()
     }
 
+    #[allow(dead_code)] // Semantic-test inspection of the sealed candidate.
     pub(crate) const fn invocation_request_id(&self) -> RequestId {
         self.invocation_request_id
     }
@@ -335,7 +341,7 @@ pub(crate) fn resolve_uncertain_command_admission(
         AdmissionLookupResultV1::MultipleMatches => UncertainCommandAdmissionResolution::Integrity,
         AdmissionLookupResultV1::Found(state) => match *state {
             StoredAdmissionStateV1::Pending(pending) if pending == proposed_pending => {
-                UncertainCommandAdmissionResolution::Execute(candidate)
+                UncertainCommandAdmissionResolution::ProvenPending(candidate)
             }
             StoredAdmissionStateV1::StoredOutcome(outcome)
                 if outcome_matches_context(&outcome, candidate.commit_context()) =>
@@ -1580,7 +1586,7 @@ mod tests {
     }
 
     #[test]
-    fn uncertain_admission_exact_pending_executes_the_original_candidate() {
+    fn uncertain_admission_exact_pending_retains_but_does_not_execute_the_candidate() {
         let command = fixture();
         let (uncertain, proposed_pending, lookup_candidates, original, clock) =
             uncertain_admission(&command, request_id(53));
@@ -1592,8 +1598,8 @@ mod tests {
         );
 
         let resolution = resolve_uncertain_command_admission(&recovery, uncertain);
-        let UncertainCommandAdmissionResolution::Execute(candidate) = resolution else {
-            panic!("exact pending admission must recover its original candidate");
+        let UncertainCommandAdmissionResolution::ProvenPending(candidate) = resolution else {
+            panic!("exact pending admission must retain its original candidate");
         };
 
         assert_eq!(candidate.commit_context().pending(), &proposed_pending);

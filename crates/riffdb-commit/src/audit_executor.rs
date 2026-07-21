@@ -1,18 +1,30 @@
 //! Sole-writer coordinator actor and synchronous service-audit lowering.
 
+use std::future::Future;
 use std::num::NonZeroU16;
+use std::pin::Pin;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU8, AtomicUsize, Ordering};
 use std::{error::Error, fmt, thread};
 
 use riffdb_storage_api::{
-    AuditPrincipalV1, ServiceAuditAppendIntentV1, ServiceAuditAppendRepository,
-    ServiceAuditAppendResult, StorageError, StorageValueError,
+    AdmissionRepository, ApplicationCommandTransactionPort, AuditPrincipalV1,
+    ExecutionFailureTransitionPort, ServiceAuditAppendIntentV1, ServiceAuditAppendRepository,
+    ServiceAuditAppendResult, SnapshotReader, StorageError, StorageValueError,
 };
 use tokio::runtime;
 use tokio::sync::{mpsc, oneshot};
 
-use crate::{AdministrationAuditInputView, AdministrationClock, AdministrationClockError};
+use riffdb_conflict::ConflictManager;
+
+use crate::{
+    AdministrationAuditInputView, AdministrationClock, AdministrationClockError, AdmissionClock,
+    CommandExecutionPreparation, ProvenanceIdSource,
+    command_execution::{
+        CommandExecutionError, CommandExecutionLifecycle, CommandExecutionResult,
+        CoordinatorDurability, drive_command_execution,
+    },
+};
 
 /// Closed safe failure from one service-audit append attempt.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -354,6 +366,150 @@ impl fmt::Debug for AdministrationAuditReceipt {
     }
 }
 
+/// Safe rejection before a command preparation is accepted by the coordinator.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum CommandExecutionAdmissionError {
+    /// Shutdown has begun and new work is no longer accepted.
+    Draining,
+    /// An unknown authoritative write fenced all later work.
+    Fenced,
+    /// The coordinator actor has stopped.
+    Stopped,
+}
+
+impl fmt::Display for CommandExecutionAdmissionError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(match self {
+            Self::Draining => "command coordinator is draining",
+            Self::Fenced => "command coordinator fenced authoritative writes",
+            Self::Stopped => "command coordinator has stopped",
+        })
+    }
+}
+
+impl Error for CommandExecutionAdmissionError {}
+
+/// Cloneable, non-generic application-service handle for command work.
+#[derive(Clone)]
+pub struct CommandExecutor {
+    sender: mpsc::Sender<CoordinatorMessage>,
+    lifecycle: Arc<AtomicU8>,
+    submission_gate: Arc<SubmissionGate>,
+}
+
+impl CommandExecutor {
+    /// Asynchronously reserves exactly one shared coordinator workload slot.
+    ///
+    /// Cancelling this future before it resolves retains no capacity and
+    /// submits no work. The returned permit is move-only and must be consumed
+    /// synchronously after the caller's final authorization safe point.
+    pub async fn reserve_capacity(
+        &self,
+    ) -> Result<CommandExecutionCapacityPermit, CommandExecutionAdmissionError> {
+        ensure_command_accepting(&self.lifecycle)?;
+        let permit = self
+            .sender
+            .clone()
+            .reserve_owned()
+            .await
+            .map_err(|_| command_lifecycle_error(&self.lifecycle))?;
+        if self.submission_gate.is_closed() {
+            drop(permit);
+            return Err(command_lifecycle_error(&self.lifecycle));
+        }
+        ensure_command_accepting(&self.lifecycle)?;
+        Ok(CommandExecutionCapacityPermit {
+            permit: Some(permit),
+            lifecycle: Arc::clone(&self.lifecycle),
+            submission_gate: Arc::clone(&self.submission_gate),
+        })
+    }
+
+    /// Returns the current process-local coordinator lifecycle.
+    #[must_use]
+    pub fn lifecycle_state(&self) -> CoordinatorLifecycleState {
+        lifecycle_state(&self.lifecycle)
+    }
+}
+
+impl fmt::Debug for CommandExecutor {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("CommandExecutor([REDACTED])")
+    }
+}
+
+/// Move-only authority to synchronously submit one checked command preparation.
+///
+/// ```compile_fail
+/// use riffdb_commit::CommandExecutionCapacityPermit;
+///
+/// fn cannot_duplicate(value: &CommandExecutionCapacityPermit) {
+///     let _: CommandExecutionCapacityPermit =
+///         <CommandExecutionCapacityPermit as Clone>::clone(value);
+/// }
+/// ```
+#[must_use = "dropping the permit releases its reserved workload capacity"]
+pub struct CommandExecutionCapacityPermit {
+    permit: Option<mpsc::OwnedPermit<CoordinatorMessage>>,
+    lifecycle: Arc<AtomicU8>,
+    submission_gate: Arc<SubmissionGate>,
+}
+
+impl CommandExecutionCapacityPermit {
+    /// Synchronously transfers one checked command preparation to the actor.
+    ///
+    /// Success is the non-retroactive admission boundary. Dropping the returned
+    /// receipt never cancels the accepted command.
+    pub fn submit(
+        mut self,
+        preparation: CommandExecutionPreparation,
+    ) -> Result<CommandExecutionReceipt, CommandExecutionAdmissionError> {
+        let submission = self
+            .submission_gate
+            .begin()
+            .ok_or_else(|| command_lifecycle_error(&self.lifecycle))?;
+        ensure_command_accepting(&self.lifecycle)?;
+        let (completion, receiver) = oneshot::channel();
+        let permit = self
+            .permit
+            .take()
+            .expect("move-only command capacity permit is consumed once");
+        let _sender = permit.send(CoordinatorMessage::Command {
+            preparation: Box::new(preparation),
+            completion,
+        });
+        drop(submission);
+        Ok(CommandExecutionReceipt { receiver })
+    }
+}
+
+impl fmt::Debug for CommandExecutionCapacityPermit {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("CommandExecutionCapacityPermit([REDACTED])")
+    }
+}
+
+/// Move-only completion handle for one actor-owned command execution.
+#[must_use = "await or deliberately drop the receipt; dropping does not cancel accepted work"]
+pub struct CommandExecutionReceipt {
+    receiver: oneshot::Receiver<Result<CommandExecutionResult, CommandExecutionError>>,
+}
+
+impl CommandExecutionReceipt {
+    /// Waits for the accepted command execution to finish.
+    pub async fn completion(self) -> Result<CommandExecutionResult, CommandExecutionError> {
+        self.receiver
+            .await
+            .unwrap_or_else(|_| Err(CommandExecutionError::coordinator_stopped()))
+    }
+}
+
+impl fmt::Debug for CommandExecutionReceipt {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("CommandExecutionReceipt([REDACTED])")
+    }
+}
+
 /// Owning lifecycle guard for the one extensible sole-writer coordinator actor.
 ///
 /// Call [`Self::shutdown`] to close admission, drain already accepted work, and
@@ -361,22 +517,50 @@ impl fmt::Debug for AdministrationAuditReceipt {
 /// detaches the join so `Drop` never blocks or risks joining the current thread.
 pub struct RunningCommandCoordinator {
     executor: AdministrationAuditExecutor,
+    command_executor: CommandExecutor,
     shutdown_permit: Option<mpsc::OwnedPermit<CoordinatorMessage>>,
     actor_thread: Option<thread::JoinHandle<()>>,
     actor_thread_id: thread::ThreadId,
 }
 
 impl RunningCommandCoordinator {
-    /// Starts one dedicated current-thread Tokio actor owning the mutable repository and clock.
-    pub fn start<Repository, Clock>(
+    /// Starts one dedicated current-thread actor owning the authoritative repository.
+    #[allow(clippy::too_many_arguments)]
+    pub fn start<Repository>(
         workload_capacity: CoordinatorWorkloadCapacity,
+        durability: CoordinatorDurability,
         repository: Repository,
-        clock: Clock,
+        conflicts: Arc<dyn ConflictManager>,
+        admission_clock: Arc<dyn AdmissionClock>,
+        administration_clock: Arc<dyn AdministrationClock>,
+        provenance_source: Arc<dyn ProvenanceIdSource>,
     ) -> Result<Self, CoordinatorStartError>
     where
-        Repository: ServiceAuditAppendRepository + Send + 'static,
-        Clock: AdministrationClock + 'static,
+        Repository: AdmissionRepository
+            + SnapshotReader
+            + ApplicationCommandTransactionPort
+            + ExecutionFailureTransitionPort
+            + ServiceAuditAppendRepository
+            + Send
+            + 'static,
     {
+        Self::spawn_with_operations(workload_capacity, move |lifecycle| {
+            Box::new(ProductionCoordinatorOperations {
+                repository,
+                conflicts,
+                admission_clock,
+                administration_clock,
+                provenance_source,
+                durability,
+                lifecycle,
+            })
+        })
+    }
+
+    fn spawn_with_operations(
+        workload_capacity: CoordinatorWorkloadCapacity,
+        operations: impl FnOnce(ActorLifecyclePublisher) -> Box<dyn CoordinatorActorOperations>,
+    ) -> Result<Self, CoordinatorStartError> {
         let channel_capacity = usize::from(workload_capacity.get()) + 1;
         let (sender, receiver) = mpsc::channel(channel_capacity);
         let shutdown_permit = sender
@@ -390,12 +574,14 @@ impl RunningCommandCoordinator {
         let submission_gate = Arc::new(SubmissionGate::new());
         let actor_lifecycle = Arc::clone(&lifecycle);
         let actor_submission_gate = Arc::clone(&submission_gate);
-        let actor = CommandCoordinatorActor {
-            receiver,
-            repository,
-            clock,
+        let lifecycle_publisher = ActorLifecyclePublisher {
             lifecycle: Arc::clone(&lifecycle),
             submission_gate: Arc::clone(&submission_gate),
+        };
+        let actor = CommandCoordinatorActor {
+            receiver,
+            operations: operations(lifecycle_publisher.clone()),
+            lifecycle: lifecycle_publisher,
         };
         let actor_thread = thread::Builder::new()
             .name("riffdb-command-coordinator".to_owned())
@@ -410,6 +596,11 @@ impl RunningCommandCoordinator {
         let actor_thread_id = actor_thread.thread().id();
         Ok(Self {
             executor: AdministrationAuditExecutor {
+                sender: sender.clone(),
+                lifecycle: Arc::clone(&lifecycle),
+                submission_gate: Arc::clone(&submission_gate),
+            },
+            command_executor: CommandExecutor {
                 sender,
                 lifecycle,
                 submission_gate,
@@ -420,10 +611,31 @@ impl RunningCommandCoordinator {
         })
     }
 
+    #[cfg(test)]
+    fn start_audit_only<Repository, Clock>(
+        workload_capacity: CoordinatorWorkloadCapacity,
+        repository: Repository,
+        clock: Clock,
+    ) -> Result<Self, CoordinatorStartError>
+    where
+        Repository: ServiceAuditAppendRepository + Send + 'static,
+        Clock: AdministrationClock + 'static,
+    {
+        Self::spawn_with_operations(workload_capacity, move |_| {
+            Box::new(AuditOnlyCoordinatorOperations { repository, clock })
+        })
+    }
+
     /// Returns a cloneable least-authority handle to this actor's audit path.
     #[must_use]
     pub fn administration_audit_executor(&self) -> AdministrationAuditExecutor {
         self.executor.clone()
+    }
+
+    /// Returns a cloneable least-authority handle to this actor's command path.
+    #[must_use]
+    pub fn command_executor(&self) -> CommandExecutor {
+        self.command_executor.clone()
     }
 
     /// Stops admission, drains accepted work, and joins the dedicated actor thread.
@@ -482,28 +694,148 @@ enum CoordinatorMessage {
         input: Box<dyn AdministrationAuditInputView>,
         completion: oneshot::Sender<Result<(), AdministrationAuditExecutionError>>,
     },
+    Command {
+        preparation: Box<CommandExecutionPreparation>,
+        completion: oneshot::Sender<Result<CommandExecutionResult, CommandExecutionError>>,
+    },
     Shutdown,
 }
 
-struct CommandCoordinatorActor<Repository, Clock> {
-    receiver: mpsc::Receiver<CoordinatorMessage>,
+type LocalCommandFuture<'a> =
+    Pin<Box<dyn Future<Output = Result<CommandExecutionResult, CommandExecutionError>> + 'a>>;
+
+trait CoordinatorActorOperations: Send {
+    fn append_audit(
+        &mut self,
+        input: &dyn AdministrationAuditInputView,
+    ) -> Result<(), AdministrationAuditExecutionError>;
+
+    fn drive_command(&mut self, preparation: CommandExecutionPreparation)
+    -> LocalCommandFuture<'_>;
+}
+
+struct ProductionCoordinatorOperations<Repository> {
+    repository: Repository,
+    conflicts: Arc<dyn ConflictManager>,
+    admission_clock: Arc<dyn AdmissionClock>,
+    administration_clock: Arc<dyn AdministrationClock>,
+    provenance_source: Arc<dyn ProvenanceIdSource>,
+    durability: CoordinatorDurability,
+    lifecycle: ActorLifecyclePublisher,
+}
+
+impl<Repository> CoordinatorActorOperations for ProductionCoordinatorOperations<Repository>
+where
+    Repository: AdmissionRepository
+        + SnapshotReader
+        + ApplicationCommandTransactionPort
+        + ExecutionFailureTransitionPort
+        + ServiceAuditAppendRepository
+        + Send,
+{
+    fn append_audit(
+        &mut self,
+        input: &dyn AdministrationAuditInputView,
+    ) -> Result<(), AdministrationAuditExecutionError> {
+        append_administration_audit(
+            &mut self.repository,
+            self.administration_clock.as_ref(),
+            input,
+        )
+    }
+
+    fn drive_command(
+        &mut self,
+        preparation: CommandExecutionPreparation,
+    ) -> LocalCommandFuture<'_> {
+        Box::pin(drive_command_execution(
+            &self.repository,
+            self.conflicts.as_ref(),
+            self.admission_clock.as_ref(),
+            self.provenance_source.as_ref(),
+            self.durability,
+            &self.lifecycle,
+            preparation,
+        ))
+    }
+}
+
+#[cfg(test)]
+struct AuditOnlyCoordinatorOperations<Repository, Clock> {
     repository: Repository,
     clock: Clock,
+}
+
+#[cfg(test)]
+impl<Repository, Clock> CoordinatorActorOperations
+    for AuditOnlyCoordinatorOperations<Repository, Clock>
+where
+    Repository: ServiceAuditAppendRepository + Send,
+    Clock: AdministrationClock,
+{
+    fn append_audit(
+        &mut self,
+        input: &dyn AdministrationAuditInputView,
+    ) -> Result<(), AdministrationAuditExecutionError> {
+        append_administration_audit(&mut self.repository, &self.clock, input)
+    }
+
+    fn drive_command(&mut self, _: CommandExecutionPreparation) -> LocalCommandFuture<'_> {
+        Box::pin(async { Err(CommandExecutionError::coordinator_stopped()) })
+    }
+}
+
+#[derive(Clone)]
+struct ActorLifecyclePublisher {
     lifecycle: Arc<AtomicU8>,
     submission_gate: Arc<SubmissionGate>,
 }
 
-impl<Repository, Clock> CommandCoordinatorActor<Repository, Clock>
-where
-    Repository: ServiceAuditAppendRepository,
-    Clock: AdministrationClock,
-{
+impl CommandExecutionLifecycle for ActorLifecyclePublisher {
+    fn fence(&self) {
+        self.lifecycle.store(LIFECYCLE_FENCED, Ordering::Release);
+        self.submission_gate.close();
+    }
+
+    fn stop(&self) {
+        let mut observed = self.lifecycle.load(Ordering::Acquire);
+        while observed != LIFECYCLE_FENCED && observed != LIFECYCLE_STOPPED {
+            match self.lifecycle.compare_exchange_weak(
+                observed,
+                LIFECYCLE_STOPPED,
+                Ordering::AcqRel,
+                Ordering::Acquire,
+            ) {
+                Ok(_) => break,
+                Err(current) => observed = current,
+            }
+        }
+        self.submission_gate.close();
+    }
+}
+
+struct CommandCoordinatorActor {
+    receiver: mpsc::Receiver<CoordinatorMessage>,
+    operations: Box<dyn CoordinatorActorOperations>,
+    lifecycle: ActorLifecyclePublisher,
+}
+
+impl CommandCoordinatorActor {
     async fn run(mut self) {
         while let Some(message) = self.receiver.recv().await {
             match message {
                 CoordinatorMessage::AdministrationAudit { input, completion } => {
                     if self.execute_audit(input, completion) {
                         self.reject_remaining_after_fence().await;
+                        break;
+                    }
+                }
+                CoordinatorMessage::Command {
+                    preparation,
+                    completion,
+                } => {
+                    self.execute_command(*preparation, completion).await;
+                    if self.reject_after_published_terminal_state().await {
                         break;
                     }
                 }
@@ -515,6 +847,15 @@ where
                                 let must_fence = self.execute_audit(input, completion);
                                 if must_fence {
                                     self.reject_remaining_after_fence().await;
+                                    return;
+                                }
+                            }
+                            CoordinatorMessage::Command {
+                                preparation,
+                                completion,
+                            } => {
+                                self.execute_command(*preparation, completion).await;
+                                if self.reject_after_published_terminal_state().await {
                                     return;
                                 }
                             }
@@ -532,19 +873,46 @@ where
         input: Box<dyn AdministrationAuditInputView>,
         completion: oneshot::Sender<Result<(), AdministrationAuditExecutionError>>,
     ) -> bool {
-        let result = append_administration_audit(&mut self.repository, &self.clock, input.as_ref());
+        let result = self.operations.append_audit(input.as_ref());
         let must_fence = matches!(
             &result,
             Err(AdministrationAuditExecutionError::Storage(error))
                 if error.kind() == riffdb_storage_api::StorageErrorKind::CommitStatusUnknown
         );
         if must_fence {
-            self.lifecycle.store(LIFECYCLE_FENCED, Ordering::Release);
-            self.submission_gate.close();
+            self.lifecycle
+                .lifecycle
+                .store(LIFECYCLE_FENCED, Ordering::Release);
+            self.lifecycle.submission_gate.close();
             self.receiver.close();
         }
         let _receiver_may_be_dropped = completion.send(result);
         must_fence
+    }
+
+    async fn execute_command(
+        &mut self,
+        preparation: CommandExecutionPreparation,
+        completion: oneshot::Sender<Result<CommandExecutionResult, CommandExecutionError>>,
+    ) {
+        let result = self.operations.drive_command(preparation).await;
+        let _receiver_may_be_dropped = completion.send(result);
+    }
+
+    async fn reject_after_published_terminal_state(&mut self) -> bool {
+        match lifecycle_state(&self.lifecycle.lifecycle) {
+            CoordinatorLifecycleState::Fenced => {
+                self.receiver.close();
+                self.reject_remaining_after_fence().await;
+                true
+            }
+            CoordinatorLifecycleState::Stopped => {
+                self.receiver.close();
+                self.reject_remaining_after_stop().await;
+                true
+            }
+            CoordinatorLifecycleState::Accepting | CoordinatorLifecycleState::Draining => false,
+        }
     }
 
     async fn reject_remaining_after_fence(&mut self) {
@@ -553,6 +921,26 @@ where
                 CoordinatorMessage::AdministrationAudit { completion, .. } => {
                     let _receiver_may_be_dropped =
                         completion.send(Err(AdministrationAuditExecutionError::CoordinatorFenced));
+                }
+                CoordinatorMessage::Command { completion, .. } => {
+                    let _receiver_may_be_dropped =
+                        completion.send(Err(CommandExecutionError::coordinator_fenced()));
+                }
+                CoordinatorMessage::Shutdown => {}
+            }
+        }
+    }
+
+    async fn reject_remaining_after_stop(&mut self) {
+        while let Some(message) = self.receiver.recv().await {
+            match message {
+                CoordinatorMessage::AdministrationAudit { completion, .. } => {
+                    let _receiver_may_be_dropped =
+                        completion.send(Err(AdministrationAuditExecutionError::CoordinatorStopped));
+                }
+                CoordinatorMessage::Command { completion, .. } => {
+                    let _receiver_may_be_dropped =
+                        completion.send(Err(CommandExecutionError::coordinator_stopped()));
                 }
                 CoordinatorMessage::Shutdown => {}
             }
@@ -642,6 +1030,24 @@ fn lifecycle_error(lifecycle: &AtomicU8) -> AdministrationAuditAdmissionError {
         LIFECYCLE_FENCED => AdministrationAuditAdmissionError::Fenced,
         LIFECYCLE_ACCEPTING | LIFECYCLE_STOPPED => AdministrationAuditAdmissionError::Stopped,
         _ => AdministrationAuditAdmissionError::Stopped,
+    }
+}
+
+fn ensure_command_accepting(lifecycle: &AtomicU8) -> Result<(), CommandExecutionAdmissionError> {
+    match lifecycle.load(Ordering::Acquire) {
+        LIFECYCLE_ACCEPTING => Ok(()),
+        LIFECYCLE_DRAINING => Err(CommandExecutionAdmissionError::Draining),
+        LIFECYCLE_FENCED => Err(CommandExecutionAdmissionError::Fenced),
+        _ => Err(CommandExecutionAdmissionError::Stopped),
+    }
+}
+
+fn command_lifecycle_error(lifecycle: &AtomicU8) -> CommandExecutionAdmissionError {
+    match lifecycle.load(Ordering::Acquire) {
+        LIFECYCLE_DRAINING => CommandExecutionAdmissionError::Draining,
+        LIFECYCLE_FENCED => CommandExecutionAdmissionError::Fenced,
+        LIFECYCLE_ACCEPTING | LIFECYCLE_STOPPED => CommandExecutionAdmissionError::Stopped,
+        _ => CommandExecutionAdmissionError::Stopped,
     }
 }
 
