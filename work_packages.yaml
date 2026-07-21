@@ -1,4 +1,4 @@
-spec_version: '0.22'
+spec_version: '0.23'
 product: RiffDB
 repository: riffdb
 status: implementation-handoff
@@ -1189,12 +1189,19 @@ work_packages:
     ValidationCode::TooLong issue; all use public Validation with CorrectRequest and ordinary authenticated deployment
     audit, while catalog storage errors and startup historical-integrity failures retain their existing closed maps
   - Shared request context
+  - Service-owned privately constructible and nonserializable PreBootstrapHealthContext plus closed HealthContext and
+    HealthResult types used only by the unchanged Health operation during initializing validation/bootstrap before the
+    durable marker
+  - Exact bounded pre-bootstrap health result containing only lifecycle, liveness, and readiness, with no active-
+    contract detail, commit position, component inventory, storage identity or handle, policy fact, build/start-time
+    detail, extensible text, or map
   - Authorization enforcement
   - Bounded pagination and waits
   - In-process integration harness
   - Redaction-safe service telemetry and health hooks
   - Six API-neutral service traits with checked RequestContext and typed command, control-plane, authoritative-read,
-    projection, outbox-status, and operational-status ports
+    projection, outbox-status, and operational-status ports; Health alone accepts the closed authenticated-or-pre-
+    bootstrap HealthContext, and no other operation accepts PreBootstrapHealthContext
   - Source-free checked RequestContext and AgentSessionId handling with no UUID generator, clock, entropy dependency,
     protocol-ID substitution, or identifier-order interpretation in the service
   - Capability create, revoke, and bootstrap service DTOs with checked principal-less bootstrap context and typed
@@ -1220,7 +1227,8 @@ work_packages:
     protocol-independent safe message
   - Standalone audit orchestration for every mutation and administration attempt after exact classification, every
     explicit authenticated policy Deny, and allowed standard reads only when an Allow obligation requires it, with
-    the principal-less bootstrap exception
+    bootstrap as the sole principal-less mutation and sole operation allowed to create durable service-audit records
+    without a principal; pre-bootstrap Health reaches no audit executor and emits no durable audit
   - Stream-establishment audit only; later per-item reauthorization failure closes the stream with bounded telemetry
     and no additional durable audit record
   - Exhaustive ADR-0021 request-to-target mapping for all 22 operations, with identical Started/terminal lists and
@@ -1240,9 +1248,11 @@ work_packages:
     owner_crate: riffdb-service
     manifest: crates/riffdb-service/Cargo.toml
     path: ../../tests/service/service_audit_orchestration.rs
-  exit_gate: All operations pass through shared policy and service code with no transport-specific mutation path or
-    command-name derivation; catalog count/byte/proof limit fixtures produce the exact root validation codes and audit
-    behavior before any coordinator submission.
+  exit_gate: All operations pass through shared service code with no transport-specific mutation path or command-name
+    derivation; except for the exact pre-marker Health context, they pass through current policy. Tests prove the
+    pre-bootstrap result has only lifecycle/liveness/readiness and reaches no policy, storage, or durable audit, that
+    no new principal-less Health call is admitted after the marker, and that catalog count/byte/proof limit fixtures
+    produce the exact root validation codes and audit behavior before any coordinator submission.
   human_review_triggers: *id001
 - id: WP-125
   name: Service comparison adapter
@@ -1308,6 +1318,10 @@ work_packages:
   - EXECUTED_READ_ONLY = 3 plus its exact zero/empty wire sentinels and structural consistency validation
   - Public pages and cursors, command results, capability administration results and create mode, health, streams,
     and every typed projection query/status/frontier/lifecycle/failure/unavailable result
+  - One unchanged Health RPC with a closed discriminated response boundary whose pre-bootstrap variant contains
+    exactly lifecycle/liveness/readiness and cannot co-occur with active-contract detail, commit position, component
+    inventory, storage identity, policy fact, build/start-time detail, extensible text, or map, plus the detailed
+    authenticated post-bootstrap variant
   - Compatibility preservation and integration of the WP-010 CommandExecutionFailed public error symbols while all
     remaining public fields are assigned and frozen here
   - Descriptors, schema hashes, wire-structural checks, golden bytes, and client fixtures
@@ -1412,10 +1426,15 @@ work_packages:
   - Staged startup gate that performs identity initialization first, drives redb structural evidence to exact end,
     obtains catalog-owned opaque same-session ValidatedCatalogHistory, and only then activates the matching
     StructurallyOpened dormant ports; no proof crosses the storage trait and any mismatch leaves the process unready
-  - P1 lifecycle exposing only health and one-time loopback bootstrap before the marker, authenticated deployment after
-    bootstrap, and general command/read readiness only after a valid active catalog; exact bootstrap replay uses the
-    caller-retained credential, returns the existing capability result without echoing or reissuing the token, and
-    appends only the required linked audit records
+  - P1 lifecycle exposing only the unchanged Health RPC's restricted principal-less lifecycle/liveness/readiness view
+    during initializing validation/bootstrap and one-time loopback bootstrap after validation while the marker is
+    absent; the server constructs no pre-bootstrap health context after the marker and requires normal credential
+    handoff, RequestContext, current policy, and obligations for Health in deployment-required, ready, and later states
+  - Bootstrap remains the sole principal-less mutation and sole operation allowed to create durable service-audit
+    records without a principal; pre-bootstrap Health has no policy or storage access and emits no durable audit
+  - Authenticated deployment after bootstrap and general command/read readiness only after a valid active catalog;
+    exact bootstrap replay uses the caller-retained credential, returns the existing capability result without echoing
+    or reissuing the token, and appends only the required linked audit records
   - Real child-process temporary-redb restart test over public gRPC covering bootstrap, budget deployment,
     CreateBudget, entity read, AllocateBudget, outcome resolution, clean stop, reopen, repeated entity/outcome reads,
     and retained bootstrap replay without an in-process storage or service shortcut
@@ -1434,6 +1453,8 @@ work_packages:
     path: ../../tests/grpc/p1_riffdbd_restart.rs
   exit_gate: A real riffdbd process reaches staged readiness on redb and the bootstrap/deploy/budget command, outcome,
     entity-read, clean-restart, durable reread, and retained-bootstrap-replay sequence works through public gRPC;
+    coordinated lifecycle tests prove the Health RPC exposes only the restricted unaudited three-field result before
+    the marker and rejects new principal-less admission afterward in favor of authenticated current-policy handling;
     every projection result variant maps correctly against an injected service stub, and error conformance proves
     exact direct PublicError detail bytes plus fail-closed status/message/detail validation at every boundary case;
     component-graph tests prove explicit code-level Sync construction with no constructor/backend default or

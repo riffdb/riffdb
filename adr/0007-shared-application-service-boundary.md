@@ -4,14 +4,15 @@
 - **Amended by:** ADR-0021 for the exact service-audit target registry,
   lineage scoping, canonical order, and per-operation construction rule; and
   ADR-0006's 2026-07-20 accepted direct gRPC public-error carriage; plus the
-  2026-07-20 accepted command-executor result and cancellation clarification
+  2026-07-20 accepted command-executor result and cancellation clarification;
+  plus the 2026-07-21 accepted pre-bootstrap health-context clarification
 - **Direction approved:** 2026-07-12
-- **Exact text accepted:** Yes; amended 2026-07-14 and 2026-07-20
+- **Exact text accepted:** Yes; amended 2026-07-14, 2026-07-20, and 2026-07-21
 - **Accepted:** 2026-07-13
 - **Requires:** ADR-0004, ADR-0009, ADR-0012, and ADR-0017 accepted before or
   in the same governance commit
 - **Amends:** SPEC Sections 4.1, 5.2, 9.1, 9.2, 9.5, 12.11,
-  13.1, 13.4, 17.3, 19.4, 19.5, 22.1, and 22.2; work-package dependencies,
+  13.1, 13.4, 16.3, 17.3, 19.4, 19.5, 22.1, and 22.2; work-package dependencies,
   required ADRs, allowed paths, gates, and deliverables; ADR-0004's
   administration transition; and ADR-0012's admitted context
 - **Clarifies:** SPEC Sections 4.1, 5.2, 9.1, 11, 12, 13, 15.3, and 19.4
@@ -28,6 +29,8 @@ On 2026-07-20 the maintainer accepted ADR-0006's direct gRPC public-error
 carriage; the transport boundary below now delegates to that exact decision.
 On 2026-07-20 the maintainer also accepted the closed WP-100 command-executor
 result, error, completion-ownership, and cancellation boundary below.
+On 2026-07-21 the maintainer explicitly accepted the pre-bootstrap health-
+context clarification below.
 
 ## Context
 
@@ -141,22 +144,49 @@ The P1 lifecycle is closed:
 
 1. **Initializing validation:** run the source-free identity probe, use only the commit-
    owned initialization executor when needed, then complete structural and
-   catalog-history validation. Health may report not ready; no bootstrap,
-   catalog, command, or entity operation is released while validation is live.
+   catalog-history validation. The restricted principal-less health path may
+   report only its pre-bootstrap lifecycle, liveness, and not-ready state; no
+   bootstrap, catalog, command, or entity operation is released while validation
+   is live.
 2. **Initializing/bootstrap:** after composed authoritative integrity succeeds
    and no bootstrap marker exists, the database remains `Initializing`; expose
-   bounded health and the one principal-less bootstrap operation only. No
-   general authenticated mutation or read is ready.
-3. **Deployment required:** after bootstrap, expose bounded health and the
-   authenticated contract validate/explain/deploy/active-catalog operations
-   needed to install the first active bundle. The retained bootstrap credential
-   may still perform ADR-0009's exact replay recovery; it cannot create a second
-   bootstrap capability. General command/entity readiness remains withheld.
+   the same restricted principal-less health path and the one principal-less
+   bootstrap operation only. No general authenticated mutation or read is ready.
+3. **Deployment required:** after bootstrap, Health and the contract validate/
+   explain/deploy/active-catalog operations needed to install the first active
+   bundle require an authenticated `RequestContext` and current policy. The
+   retained bootstrap credential may still perform ADR-0009's exact replay
+   recovery; it cannot create a second bootstrap capability. General command/
+   entity readiness remains withheld.
 4. **Ready:** only an IR-validated active catalog plus application and
    administration allocators that can progress permits command execution and
    authoritative entity/commit reads. Pending/terminal idempotency resolution,
    bootstrap replay, and catalog deployment retain their accepted recovery and
    authorization semantics rather than acquiring a composition shortcut.
+
+`riffdb-service` owns a privately constructible, nonserializable
+`PreBootstrapHealthContext`, a closed `HealthContext` that contains either that
+value or the ordinary authenticated `RequestContext`, and a closed
+`HealthResult` with pre-bootstrap and authenticated variants.
+`AdministrationApplication::health` is the only operation that accepts
+`HealthContext`; every other service operation continues to require
+`RequestContext`. The server lifecycle router may construct the pre-bootstrap
+variant only during initializing validation or initializing/bootstrap, before a
+durable bootstrap marker exists. It grants no principal, credential, current-
+policy decision or fact, storage handle, audit authority, or access to another
+operation.
+
+The pre-bootstrap result has exactly three bounded fields: a closed lifecycle
+value, liveness, and readiness. It has no active-contract detail, commit
+position, component inventory or diagnostic, storage identity or handle, policy
+fact, build/start-time detail, extensible text, or map, and it emits no durable
+service audit. The unchanged public Health RPC maps this restricted result. No
+second RPC or direct storage path is introduced. Admission of new pre-bootstrap
+contexts closes when the bootstrap marker commits; every Health request in
+`DeploymentRequired`, `Ready`, or any later lifecycle uses the authenticated
+variant, current policy, and applicable obligations/redaction. Bootstrap remains
+the sole principal-less mutation and the sole operation that may create durable
+service-audit records without a principal.
 
 Startup failure, provider failure, catalog-proof mismatch, or authoritative
 integrity failure never advances the lifecycle. Graceful shutdown stops
@@ -182,15 +212,25 @@ Authentication and authorization are separate operations:
    calls the current `riffdb-policy` authorization entry point. Authentication
    never implies authorization.
 
-ADR-0009 bootstrap is the only principal-less exception. The trusted loopback
-gRPC adapter may construct a privately checked `BootstrapRequestContext` only
-after the auth-owned bootstrap preparation has validated and consumed the raw
-credential. It contains the request ID, trusted gRPC ingress, request control,
-and checked digest candidates, but no authenticated principal, raw credential,
-caller provenance claims, or general authorization decision. Only the bootstrap
-mode of `AdministrationApplication::create_capability` accepts it; all other
-service methods require the ordinary `RequestContext`. This adds neither a
-second RPC nor a direct storage path.
+ADR-0009 bootstrap is the only principal-less mutation and the only operation
+that may create durable service-audit records without a principal. The trusted
+loopback gRPC adapter may construct a privately checked
+`BootstrapRequestContext` only after the auth-owned bootstrap preparation has
+validated and consumed the raw credential. It contains the request ID, trusted
+gRPC ingress, request control, and checked digest candidates, but no
+authenticated principal, raw credential, caller provenance claims, or general
+authorization decision. Only the bootstrap mode of
+`AdministrationApplication::create_capability` accepts it.
+
+Separately, the service-owned `PreBootstrapHealthContext` is a principal-less,
+read-only lifecycle capability for the same Health operation only during the two
+pre-marker phases. It contains no request-supplied identity or credential,
+policy state, storage access, or audit authority and emits no durable audit.
+`AdministrationApplication::health` accepts the closed `HealthContext`; all
+other service methods require the ordinary `RequestContext`. Once the bootstrap
+marker commits, every newly admitted Health call also requires `RequestContext`
+and current policy. These two narrowly typed contexts add neither a second RPC
+nor a direct storage path.
 
 Missing or malformed credentials may fail in the adapter as the generic
 unauthenticated transport result allowed by ADR-0006. An authenticated principal
@@ -293,7 +333,8 @@ they expose:
 An aggregate `ApplicationService` handle may expose those six trait objects, but
 it adds no catch-all operation accepting an enum, arbitrary payload, closure, or
 storage key. Operation methods accept a `RequestContext` and their one checked
-request DTO. There is no generic read, generic mutation, SQL, or raw admin call.
+request DTO, except that Health accepts the closed `HealthContext` defined above.
+There is no generic read, generic mutation, SQL, or raw admin call.
 
 The five public gRPC services map their fixed 16 RPCs to the corresponding
 methods above. Get-contract-version, projection-status, provenance, outbox, and
@@ -316,7 +357,7 @@ Semantic types have one owner:
 | `riffdb-commit` | Command admission/execution result port, typed control-plane executor, ordered audit executor, and synchronous `AdministrationClock` |
 | `riffdb-catalog` | Catalog readers, deployment candidate, and active-version semantics |
 | `riffdb-storage-api` | Durable records, lower bounded semantic readers, and the narrow checked durable-record `proto_codec`; never public service DTOs or a port handed directly to the service |
-| `riffdb-service` | Request context/control, operation requests/results, pages/cursors, sanitized summaries, discovery descriptors, authoritative/late-subsystem consumer ports, and the six service traits |
+| `riffdb-service` | Request context/control, the private pre-bootstrap health context and closed `HealthContext`/`HealthResult` boundary, operation requests/results, pages/cursors, sanitized summaries, discovery descriptors, authoritative/late-subsystem consumer ports, and the six service traits |
 | `riffdb-proto` | Public/durable Protobuf messages, envelopes, descriptors, wire-structural validation, and foundational value/error conversions; no storage API dependency or runtime semantics |
 
 Service request and response DTOs use domain types and checked constructors.
@@ -1228,6 +1269,13 @@ The same acceptance commit makes these remaining SPEC edits:
   malformed/unauthenticated attempts as bounded transport-security telemetry;
   it does not silently treat unauthenticated traffic as an authoritative audit
   write request.
+- Sections 11.1 and 16.3 retain one Health operation but give it a closed
+  authenticated-or-pre-bootstrap context. The pre-bootstrap branch exists only
+  during startup validation/bootstrap before the marker, returns exactly bounded
+  lifecycle/liveness/readiness, and never reaches current policy, storage, or
+  durable audit. After the marker, Health uses `RequestContext`, current policy,
+  and applicable obligations; bootstrap remains the sole principal-less
+  mutation and durable-audit exception.
 - Sections 9.1, 11, and 22.2 state that grammar-v1 read-only commands are
   unjournaled and create no pending/terminal command-idempotency record,
   persisted outcome, provenance, or application sequence. Required service audit
@@ -1267,10 +1315,10 @@ remains additive.
 | WP-080 | None | ADR-0007 | `Cargo.lock` | `riffdb-invariant` owns the shared pure input-computable expression evaluator; runtime returns `EvaluatedCommand`, receives no stored provenance claims or combined request-preparation DTO, and does not construct the final `CommitIntent` |
 | WP-100 | None | None | `Cargo.lock`; `tests/service_audit/**` | Bounded idempotency inspect/confirm plus command, control-plane, and `AdministrationAuditExecutor` ports; commit-owned synchronous `AdministrationClock` and exact sample rules; coordinator assembly of `CommitIntent`; new-admission provenance freezing; stored-claim reuse; bounded-permit/fresh-auth/synchronous-admission behavior and exact start/terminal link/failure semantics plus the compound bootstrap audit transition; complete mechanical storage-record-to-policy-facts lowering and verifier/clock use after capability-mutation queue wait; an unjournaled read-only path with no command admission/sequence; and executor cancellation/uncertainty tests |
 | WP-110 | None | ADR-0007 | `Cargo.lock` | Auth-owned `CredentialAuthenticator`; policy-owned synchronous `AuthorizationClock`, value-only `AuthorizedCapabilityMutationPreparation` and `TransactionCurrentCapabilityFacts`, pure `TransactionCurrentCapabilityVerifier`, exhaustive typed service-operation-to-permission mapping, and privately constructible `AuthorizedProvenanceClaims`; verifier, clock-failure, denial, delegation, approval, and redaction tests; ADR-0009 retains separate approval of its capability entropy/HMAC/base64/zeroization graph |
-| WP-120 | WP-080 | ADR-0004, ADR-0009, ADR-0012, ADR-0017 | `Cargo.lock` | Combined input/partition/conflict/fact preparation through the shared pure evaluator with pre-admission arithmetic mapped to root `ValidationCode::OutOfRange`; six API-neutral service traits, checked request context, executor/read consumer ports, initial/start/permit/fresh-auth/synchronous-admission orchestration, exact audit scope and append-failure mappings, fully filtered/bounded pre-success results, stream-establishment audit, current-policy safe points, obligation application, cursors/pages/waits/streams, and deterministic fake cursor generator |
+| WP-120 | WP-080 | ADR-0004, ADR-0009, ADR-0012, ADR-0017 | `Cargo.lock` | Combined input/partition/conflict/fact preparation through the shared pure evaluator with pre-admission arithmetic mapped to root `ValidationCode::OutOfRange`; six API-neutral service traits; checked request context plus the privately constructible pre-bootstrap health context, closed `HealthContext`/`HealthResult`, and exact three-field pre-bootstrap result; executor/read consumer ports; initial/start/permit/fresh-auth/synchronous-admission orchestration; exact audit scope and append-failure mappings; fully filtered/bounded pre-success results; stream-establishment audit; current-policy safe points; obligation application; cursors/pages/waits/streams; and deterministic fake cursor generator |
 | WP-125 | None | None | None | None; the existing no-storage service adapter and shared oracle are sufficient |
-| WP-127 (new) | WP-020, WP-120 | ADR-0006, ADR-0007, ADR-0009, ADR-0010, ADR-0011, ADR-0012, ADR-0013, ADR-0017 | `Cargo.lock`; `proto/**`; `crates/riffdb-proto/**`; `fixtures/proto/**`; `scripts/generate-proto*` | Completed public phase-zero message fields, including `EXECUTED_READ_ONLY = 3` and its exact sentinel rules; descriptors, wire validation, schema hashes, and golden/client fixtures for every WP-130-supported RPC; no service-to-wire adapter code |
-| WP-130 | WP-127 | ADR-0009, ADR-0012, ADR-0017 | `Cargo.lock` | gRPC credential handoff through `CredentialAuthenticator`; total service/proto conversion including status-dependent Execute validation and sentinel-to-absence mapping; error/stream/projection mapping; the production authoritative read adapter; one production redb/catalog/commit/auth/policy/service/gRPC object graph; ADR-0004 exact structural/catalog evidence matching and readiness gate; all four disjoint authentication/authorization/admission/administration wall-clock providers; database/provenance/request/incident UUID-source wrappers; cursor token and monotonic-clock providers; typed capability/idempotency digest-provider composition and readable inventories; initialization/bootstrap/deploy/active-catalog lifecycle and health; and architecture tests proving no policy or lower semantic bypass |
+| WP-127 (new) | WP-020, WP-120 | ADR-0006, ADR-0007, ADR-0009, ADR-0010, ADR-0011, ADR-0012, ADR-0013, ADR-0017 | `Cargo.lock`; `proto/**`; `crates/riffdb-proto/**`; `fixtures/proto/**`; `scripts/generate-proto*` | Completed public phase-zero message fields, including `EXECUTED_READ_ONLY = 3` and its exact sentinel rules plus one Health RPC with a closed discriminated response whose pre-bootstrap variant contains only lifecycle/liveness/readiness and cannot co-occur with detailed fields; descriptors, wire validation, schema hashes, and golden/client fixtures for every WP-130-supported RPC; no service-to-wire adapter code |
+| WP-130 | WP-127 | ADR-0009, ADR-0012, ADR-0017 | `Cargo.lock` | gRPC credential handoff through `CredentialAuthenticator`; total service/proto conversion including status-dependent Execute validation and sentinel-to-absence mapping; error/stream/projection mapping; the production authoritative read adapter; one production redb/catalog/commit/auth/policy/service/gRPC object graph; ADR-0004 exact structural/catalog evidence matching and readiness gate; all four disjoint authentication/authorization/admission/administration wall-clock providers; database/provenance/request/incident UUID-source wrappers; cursor token and monotonic-clock providers; typed capability/idempotency digest-provider composition and readable inventories; initialization/bootstrap/deploy/active-catalog lifecycle and same-RPC health routing that permits only the restricted unaudited principal-less result before the marker and requires authenticated current-policy handling afterward; and architecture tests proving no policy or lower semantic bypass |
 | WP-135 | None | None | None | None; it remains a public gRPC client of the shared semantics |
 | WP-140 | None | ADR-0012, ADR-0017 | None | MCP HTTP credential handoff through `CredentialAuthenticator`, stdio-over-gRPC parity, service-only invocation/discovery, and durable authorization/audit conformance evidence |
 | WP-150 | None | ADR-0009 | None | None beyond its existing public-gRPC CLI deliverables; it gains no in-process auth or service bypass |
@@ -1495,6 +1543,9 @@ ports:
   read-only success; they reject unknown statuses, read-only fields with nonempty
   terminal metadata, journaled statuses with missing terminal metadata, and any
   attempt to construct a semantic zero sequence from a wire sentinel.
+- WP-127/WP-130 Health fixtures cover both closed result variants and reject a
+  pre-bootstrap response carrying any authenticated-detail field or an unknown
+  lifecycle value.
 - Policy matrices cover tenant/partition pushdown, row-limit lowering, entity/
   commit/provenance/outbox/projection filtering, complete command/projection
   results, approval, and fail-closed unknown obligations.
@@ -1520,6 +1571,12 @@ ports:
   marker linkage, a replay-specific started/succeeded pair without a second
   capability transition, no durable record for malformed or mismatched
   candidates, and fail-closed compound-commit or terminal-audit uncertainty.
+- Health lifecycle tests prove that startup validation and bootstrap-required
+  phases can construct only the private pre-bootstrap context and return exactly
+  lifecycle/liveness/readiness without policy, storage, or durable-audit calls;
+  they coordinate marker publication without sleeps and prove no new
+  principal-less Health admission after the marker, while authenticated Health
+  then uses current policy and obligations.
 - Capability-mutation tests advance the injected clock during queue wait and
   mutate lifecycle, revision, audience, delegation, and approval state before
   the transaction-current check. Architecture tests prove commit imports only
@@ -1620,6 +1677,15 @@ from the earlier direction approval:
     provider inventories, and lifecycle/readiness activation in WP-130. WP-185
     must reuse and extend that exact graph for MCP/workers/observability and may
     not build a second production core.
+15. Approve the API-neutral, privately constructible
+    `PreBootstrapHealthContext` and closed `HealthContext`/`HealthResult` solely
+    for the unchanged read-only Health operation during initializing validation/
+    bootstrap. Its pre-bootstrap result contains only
+    bounded lifecycle/liveness/readiness, reaches neither policy nor storage nor
+    durable audit, and stops admitting when the marker commits. Every later
+    Health request uses authenticated `RequestContext` and current policy;
+    bootstrap remains the sole principal-less mutation and the sole operation
+    allowed to create durable service-audit records without a principal.
 
 ## Decision Deadline
 

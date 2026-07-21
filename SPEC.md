@@ -6,7 +6,7 @@
 **Tagline:** *Vibe fast. Commit safely.*  
 **Category:** Contract-first operational database for agent-built applications  
 
-**Version:** 0.22
+**Version:** 0.23
 **Status:** Architecture-approved implementation handoff
 **Date:** 21 July 2026
 **Audience:** Coding agents, database engineers, compiler engineers, security reviewers, and technical product leads  
@@ -58,6 +58,7 @@
 | 0.20 | 2026-07-20 | Clarified the accepted projection side of compatible event-payload evolution: catalog owns the opaque process-local event-materialization view used by projections, projection depends directly on catalog and consumes only that normalized view, and immutable event bytes/hashes plus the IR-blind storage boundary remain unchanged. |
 | 0.21 | 2026-07-21 | Applied the accepted lineage-overflow retention/recheck and explicit coordinator-durability decisions: catalog owns opaque command-materialization readiness/resource evidence and the pure current-recheck API; over-budget returned evidence retains only the raw snapshot and exact resolved plan/proof and must reproduce the overflow after dependency and raw-observation equality; production coordinator construction explicitly receives `sync` or `group`, `memory` remains test-only, P1 `riffdbd` passes a code-level `sync`, and no constructor/backend default is inferred. |
 | 0.22 | 2026-07-21 | Clarified the accepted three-attempt boundary: each attempt slot is consumed immediately before catalog snapshot materialization; a valid lineage-expansion `ResourceLimit` consumes that slot even though runtime is not entered, while a `Ready` result continues into exactly one runtime evaluation in the same slot. |
+| 0.23 | 2026-07-21 | Applied the maintainer-approved pre-bootstrap health clarification: the unchanged API-neutral Health operation may use a private principal-less read-only context only during startup validation/bootstrap and returns only bounded lifecycle, liveness, and readiness; after the bootstrap marker it requires authenticated current-policy handling, while bootstrap remains the sole principal-less mutation and durable-audit exception. |
 
 ### Normative language
 
@@ -2106,7 +2107,8 @@ becomes true only after matching same-session `ValidatedCatalogHistory`, digest-
 inventories, and all remaining checks succeed, both allocators can progress, and
 an active contract is valid. A truly empty database may pass structural and
 catalog integrity while remaining in `Initializing`, not ready. In that mode the
-server exposes health plus the exact loopback bootstrap operation; after
+server exposes only the restricted pre-bootstrap health view defined in Section
+16.3 plus the exact loopback bootstrap operation; after
 bootstrap it additionally permits authenticated contract deployment through the
 ordinary service/coordinator path. No command or general read path is enabled
 until deployment atomically establishes the active contract.
@@ -2175,6 +2177,17 @@ health/statistics/capability create/revoke/outbox status; and policy-filtered
 command/resource discovery. There is no catch-all enum/payload method, generic
 read, generic mutation, SQL, or raw administration call. An aggregate service
 handle only groups those six traits.
+
+Every operation normally accepts a checked `RequestContext` and obtains a
+current policy decision. The sole read-only context exception is
+`AdministrationApplication::health` during the pre-marker lifecycle described
+in Section 16.3. That method accepts a closed service-owned `HealthContext` whose
+authenticated variant contains the ordinary `RequestContext` and whose
+pre-bootstrap variant contains only a privately constructible,
+nonserializable `PreBootstrapHealthContext`. No other operation accepts that
+context, and it is not a credential, principal, policy decision, authorization
+fact, or storage capability. This exception adds no RPC or alternate health
+operation.
 
 Adapters own transport decode, credential extraction, checked conversion,
 deadline/cancellation propagation, and total result mapping. The service owns
@@ -3359,11 +3372,32 @@ Configuration parsing MUST reject unknown keys by default. Every setting MUST do
 - **Degraded state**: core writes remain available but a non-authoritative subsystem such as projection or outbox is unhealthy.
 
 `Initializing` is distinct from corruption and readiness. A structurally empty
-database without an active contract reports not ready while exposing only health,
-one-time loopback bootstrap while the marker is absent, and authenticated first
-contract deployment after bootstrap. The deployment still uses the shared
-service, authorization, audit, and coordinator. Once an active contract exists,
-its later absence or mismatch is a fail-closed authoritative integrity error.
+database without an active contract reports not ready. During initializing
+validation and, after successful validation, while the bootstrap marker remains
+absent, the unchanged Health operation may use the API-neutral principal-less
+`PreBootstrapHealthContext`. `riffdb-service` owns that privately constructible,
+nonserializable context; the server lifecycle router may construct it only for
+those two pre-marker phases. It confers no principal, credential, authorization
+or policy fact, storage handle, audit authority, or access to another service
+operation.
+
+The pre-bootstrap result contains exactly a closed bounded lifecycle value,
+liveness, and readiness. It MUST NOT expose an active contract or version,
+commit position, component inventory or diagnostic, storage handle or identity,
+policy fact, build information, process start time, or any extensible text or
+map. It emits no durable service audit. The same public Health RPC maps this
+restricted result; there is no additional RPC or privileged storage path.
+
+The service and server MUST stop admitting new pre-bootstrap health contexts
+once the bootstrap marker is durably committed. In `DeploymentRequired`, at
+full readiness, and on every later lifecycle path, Health requires the ordinary
+authenticated `RequestContext`, current policy evaluation, and applicable
+obligations/redaction before release. One-time loopback bootstrap while the
+marker is absent remains the sole principal-less mutation and the sole operation
+that may create durable service-audit records without a principal. Authenticated
+first contract deployment after bootstrap still uses the shared service,
+authorization, audit, and coordinator. Once an active contract exists, its later
+absence or mismatch is a fail-closed authoritative integrity error.
 
 WP-130 owns this minimum production lifecycle and the first runnable `riffdbd`:
 identity initialization through the commit executor, complete redb structural
@@ -3375,6 +3409,17 @@ separate derived-health aggregation; a derived failure cannot retroactively
 invalidate the accepted authoritative startup proof.
 
 ```rust
+pub enum HealthResult {
+    PreBootstrap(PreBootstrapHealthReport),
+    Authenticated(HealthReport),
+}
+
+pub struct PreBootstrapHealthReport {
+    pub lifecycle: PreBootstrapLifecycle,
+    pub liveness: bool,
+    pub readiness: bool,
+}
+
 pub struct HealthReport {
     pub status: HealthStatus,
     pub active_contract_version: Option<ContractVersion>,
