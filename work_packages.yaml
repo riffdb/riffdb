@@ -1,4 +1,4 @@
-spec_version: '0.16'
+spec_version: '0.17'
 product: RiffDB
 repository: riffdb
 status: implementation-handoff
@@ -921,6 +921,14 @@ work_packages:
   - Uncertain-response recovery
   - Named transaction failpoints and redaction-safe telemetry hooks
   - Bounded idempotency inspect/confirm plus command, control-plane, and AdministrationAuditExecutor ports
+  - One public CommandExecutor boundary, published only with its real completion driver, whose closed result is
+    Committed(CommittedOutcome), ExecutionFailed(ExecutionFailureCode), PreparationChanged, or InputMismatch; whose
+    redacted executor-error kind is Cancelled, DeadlineExceeded, RetryBudgetExhausted, StorageUnavailable,
+    OutcomeUnknown, InternalDefect, CoordinatorStopped, or CoordinatorFenced; and which never exposes a durable
+    StoredExecutionFailed record
+  - Executor queue-reservation cancellation by dropping or selecting away the service-owned reservation future,
+    followed by the accepted cancellation token after capacity is acquired; submitted work is actor-owned and
+    survives a dropped completion receiver
   - Commit-owned AdministrationAuditInputView with no field or method for the new audit record's assigned sequence,
     while preserving an already-authoritative transition sequence only inside the unchanged ControlPlane result link;
     plus opaque BootstrapCompoundAuditProof, exact control-plane transition sequence recovery metadata, and typed
@@ -1263,6 +1271,10 @@ work_packages:
   - tests/grpc/**
   deliverables:
   - Tonic services and interceptors
+  - Exact Tonic 0.14.6 default-disabled feature graph with API production codegen plus tonic-prost, API build-only
+    tonic-prost-build transport, client channel/codegen plus tonic-prost, and server router/server; the one locked
+    base64 0.22.1 may gain std only through this graph while riffdb-auth remains its sole direct first-party owner,
+    with no TLS, compression, transport-wide production feature, cryptography, or second base64 version
   - Authentication and request limits
   - Rust transport client
   - Fresh client RequestId plus CapabilityId and AgentSessionId convenience generation through reviewed direct

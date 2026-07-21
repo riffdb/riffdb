@@ -3,7 +3,8 @@
 - **Status:** Accepted
 - **Amended by:** ADR-0021 for the exact service-audit target registry,
   lineage scoping, canonical order, and per-operation construction rule; and
-  ADR-0006's 2026-07-20 accepted direct gRPC public-error carriage
+  ADR-0006's 2026-07-20 accepted direct gRPC public-error carriage; plus the
+  2026-07-20 accepted command-executor result and cancellation clarification
 - **Direction approved:** 2026-07-12
 - **Exact text accepted:** Yes; amended 2026-07-14 and 2026-07-20
 - **Accepted:** 2026-07-13
@@ -25,6 +26,8 @@ On 2026-07-14 the maintainer accepted the shared pure input-expression and
 pre-admission arithmetic amendment below.
 On 2026-07-20 the maintainer accepted ADR-0006's direct gRPC public-error
 carriage; the transport boundary below now delegates to that exact decision.
+On 2026-07-20 the maintainer also accepted the closed WP-100 command-executor
+result, error, completion-ownership, and cancellation boundary below.
 
 ## Context
 
@@ -449,6 +452,26 @@ This split preserves ADR-0013 historical-plan normalization without making
 an idempotency record or acquire a conflict lease itself. The lower executor
 request/result types stabilize in a small WP-100 interface PR reviewed with this
 ADR before WP-120 implementation.
+
+WP-100 publishes exactly one command executor only when the same change contains
+the real actor-owned completion driver. Its closed successful result is
+`CommandExecutionResult::{Committed(CommittedOutcome),
+ExecutionFailed(ExecutionFailureCode), PreparationChanged, InputMismatch}`.
+`ExecutionFailed` carries only the closed safe code and never exposes the
+storage-owned durable `StoredExecutionFailedV1` record. Its separate redacted
+executor-error kind is exactly `Cancelled`, `DeadlineExceeded`,
+`RetryBudgetExhausted`, `StorageUnavailable`, `OutcomeUnknown`,
+`InternalDefect`, `CoordinatorStopped`, or `CoordinatorFenced`. Service-owned
+mapping converts these internal control failures to the already accepted public
+errors; this list creates no new public-error kind.
+
+Capacity reservation remains outside submitted actor work. The service cancels
+while waiting for queue capacity by dropping or selecting away the reservation
+future. After capacity is acquired, the checked cancellation token governs the
+accepted safe points. Synchronous submission transfers ownership to the actor:
+dropping the completion receiver cannot cancel, lose, or drop an admitted
+transaction. WP-100 MUST keep this interface private until the complete driver
+exists; a placeholder that can accept work without completing it is forbidden.
 
 An audited mutation has two current-policy checks. The first exact-facts check
 establishes whether the request may proceed to its durable `started` record. Once
