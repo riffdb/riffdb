@@ -1,6 +1,10 @@
 //! Current-invocation wrapper for an immutable durable command outcome.
 
-use riffdb_storage_api::StoredOutcomeV1;
+use std::{error::Error, fmt};
+
+use riffdb_storage_api::{DurabilityMode, StoredOutcomeV1};
+
+use crate::CoordinatorDurability;
 
 /// Whether this invocation first committed or replayed an existing outcome.
 ///
@@ -13,6 +17,21 @@ pub enum CommittedOutcomeDisposition {
     /// This invocation returned the exact already persisted terminal outcome.
     Replay,
 }
+
+/// A committed outcome retained a mode forbidden at a production boundary.
+///
+/// `Memory` is valid for storage models and coordinator tests, but the
+/// production application service cannot report it as durable success.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct CommittedOutcomeDurabilityError;
+
+impl fmt::Display for CommittedOutcomeDurabilityError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("committed outcome has non-production durability")
+    }
+}
+
+impl Error for CommittedOutcomeDurabilityError {}
 
 /// Transport-neutral current-call view of one exact stored command outcome.
 ///
@@ -55,6 +74,18 @@ impl CommittedOutcome {
         self.disposition
     }
 
+    /// Returns the original production durability without exposing storage DTOs.
+    ///
+    /// A test-only memory outcome fails closed instead of being presented as a
+    /// production durability guarantee.
+    pub fn durability(&self) -> Result<CoordinatorDurability, CommittedOutcomeDurabilityError> {
+        match self.stored_outcome.durability_mode() {
+            DurabilityMode::Sync => Ok(CoordinatorDurability::Sync),
+            DurabilityMode::Group => Ok(CoordinatorDurability::Group),
+            DurabilityMode::Memory => Err(CommittedOutcomeDurabilityError),
+        }
+    }
+
     /// Recovers the complete immutable durable outcome without translation.
     #[must_use]
     pub fn into_stored_outcome(self) -> StoredOutcomeV1 {
@@ -86,6 +117,10 @@ mod tests {
     }
 
     fn stored_outcome() -> StoredOutcomeV1 {
+        stored_outcome_with_durability(DurabilityMode::Sync)
+    }
+
+    fn stored_outcome_with_durability(durability: DurabilityMode) -> StoredOutcomeV1 {
         let lineage = ContractLineage::new("budget").expect("lineage");
         let command_id = CommandId::new(1).expect("command ID");
         let plan = ExecutablePlanRef::new(
@@ -145,7 +180,7 @@ mod tests {
             declared_outcome,
             StoredAdmittedProvenanceClaimsV1::default(),
             provenance_id,
-            DurabilityMode::Sync,
+            durability,
         )
         .expect("stored outcome")
     }
@@ -172,5 +207,24 @@ mod tests {
         assert!(first.stored_outcome() == replay.stored_outcome());
         assert_eq!(replay.disposition(), CommittedOutcomeDisposition::Replay);
         assert!(replay.into_stored_outcome() == expected);
+    }
+
+    #[test]
+    fn durability_accessor_is_storage_neutral_and_rejects_memory() {
+        assert_eq!(
+            CommittedOutcome::first_commit(stored_outcome_with_durability(DurabilityMode::Sync))
+                .durability(),
+            Ok(CoordinatorDurability::Sync)
+        );
+        assert_eq!(
+            CommittedOutcome::replay(stored_outcome_with_durability(DurabilityMode::Group))
+                .durability(),
+            Ok(CoordinatorDurability::Group)
+        );
+        assert_eq!(
+            CommittedOutcome::first_commit(stored_outcome_with_durability(DurabilityMode::Memory))
+                .durability(),
+            Err(CommittedOutcomeDurabilityError)
+        );
     }
 }

@@ -47,10 +47,11 @@ direction, merged draft, or implementation choice.
 | [0023](0023-wp100-coordinator-edge-semantics.md) | WP-100 Coordinator Edge Semantics | Accepted |
 | [0024](0024-canonical-provenance-resource-locator.md) | Canonical Provenance Resource Locator | Accepted |
 | [0025](0025-bootstrap-and-service-consumer-boundary-ownership.md) | Bootstrap and Service Consumer Boundary Ownership | Accepted |
+| [0026](0026-wp120-authorization-recovery-and-failure-boundaries.md) | WP-120 Authorization, Recovery, and Failure Boundaries | Accepted |
 
 The human architecture review on 2026-07-12 approved the direction represented
 by ADR-0001 through ADR-0012. The human maintainer accepted ADR-0001 through
-ADR-0007, ADR-0009 through ADR-0025, and their recorded companion amendments by
+ADR-0007, ADR-0009 through ADR-0026, and their recorded companion amendments by
 2026-07-21. ADR-0008 remains Proposed for resource URIs other than the exact
 provenance locator, HTTP audience, stdio-over-gRPC transport, cursor
 presentation, and the remaining exact MCP fixtures; ADR-0020 separately accepts
@@ -60,7 +61,10 @@ exact WP-065 durable semantic-record field, tag, presence, and validation
 registry. ADR-0023 freezes the coordinator edge semantics needed to join those
 accepted interfaces. ADR-0025 freezes the auth-to-service bootstrap handoff,
 service consumer ports, closed create invocation, and production-only bootstrap
-construction required before WP-120.
+construction required before WP-120. ADR-0026 freezes grammar-v1 operation
+tenant scope, two-phase outcome-recovery authorization, storage-neutral
+committed durability, and fail-closed incident-source failure required by
+WP-120.
 
 ## Workflow
 

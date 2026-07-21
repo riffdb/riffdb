@@ -78,6 +78,63 @@ pub enum RecoveryAction {
     ContactOperator,
 }
 
+/// Closed emergency failure when an internal incident cannot be identified.
+///
+/// This value is intentionally distinct from [`PublicError`]: an internal
+/// public error requires a real fresh [`IncidentId`]. It carries no identifier,
+/// arbitrary text, diagnostic source, or protected operation result.
+///
+/// ```compile_fail
+/// use riffdb_errors::{EmergencyInternalFailure, IncidentIdSourceError, PublicError};
+///
+/// let emergency = EmergencyInternalFailure::from(IncidentIdSourceError);
+/// let _: PublicError = emergency.into();
+/// ```
+#[derive(Clone, Copy, Eq, PartialEq)]
+pub struct EmergencyInternalFailure {
+    _private: (),
+}
+
+impl EmergencyInternalFailure {
+    /// Returns the only fixed message safe at an emergency transport boundary.
+    #[must_use]
+    pub const fn safe_message(self) -> &'static str {
+        "an internal error occurred"
+    }
+
+    /// Returns the protocol-neutral emergency classification.
+    #[must_use]
+    pub const fn class(self) -> ErrorClass {
+        ErrorClass::Internal
+    }
+
+    /// Returns the only safe recovery guidance for this readiness failure.
+    #[must_use]
+    pub const fn recovery_action(self) -> RecoveryAction {
+        RecoveryAction::ContactOperator
+    }
+}
+
+impl From<IncidentIdSourceError> for EmergencyInternalFailure {
+    fn from(_: IncidentIdSourceError) -> Self {
+        Self { _private: () }
+    }
+}
+
+impl fmt::Display for EmergencyInternalFailure {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(self.safe_message())
+    }
+}
+
+impl fmt::Debug for EmergencyInternalFailure {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("EmergencyInternalFailure")
+    }
+}
+
+impl Error for EmergencyInternalFailure {}
+
 /// The closed set of failures that RiffDB may expose to an untrusted caller.
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub enum PublicErrorKind {
@@ -934,5 +991,18 @@ mod tests {
             IncidentIdSourceError.to_string(),
             "incident identifier source failed"
         );
+    }
+
+    #[test]
+    fn emergency_internal_failure_has_no_identifier_or_disclosive_source() {
+        let failure = EmergencyInternalFailure::from(IncidentIdSourceError);
+
+        assert_eq!(failure.safe_message(), "an internal error occurred");
+        assert_eq!(failure.class(), ErrorClass::Internal);
+        assert_eq!(failure.recovery_action(), RecoveryAction::ContactOperator);
+        assert_eq!(failure.to_string(), "an internal error occurred");
+        assert_eq!(format!("{failure:?}"), "EmergencyInternalFailure");
+        assert!(failure.source().is_none());
+        assert!(!failure.to_string().contains("incident"));
     }
 }

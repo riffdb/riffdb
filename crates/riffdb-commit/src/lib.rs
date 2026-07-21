@@ -68,7 +68,7 @@ pub use initialization::{
     DatabaseInitializationCompletion, DatabaseInitializationDecision,
     DatabaseInitializationExecutor, DatabaseInitializationPermit, InitializedDatabase,
 };
-pub use outcome::{CommittedOutcome, CommittedOutcomeDisposition};
+pub use outcome::{CommittedOutcome, CommittedOutcomeDisposition, CommittedOutcomeDurabilityError};
 pub use provenance::{ProvenanceIdSource, ProvenanceIdSourceError};
 pub use read_only_execution::{ReadOnlyExecuted, ReadOnlyExecutionResult};
 pub use read_only_preparation::{ReadOnlyExecutionPreparation, ReadOnlyExecutionPreparationError};

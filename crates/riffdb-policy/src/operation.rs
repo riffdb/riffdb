@@ -25,19 +25,35 @@ pub enum CommandExecutionClass {
     Mutation,
 }
 
-/// Checked tenant-mapping facts supplied by a compiled plan or service schema.
+/// Checked static tenant scope supplied by the POC grammar or a service schema.
 ///
-/// Grammar v1 commands and current POC data reads can construct only the public
-/// global-only value. Exact mapped construction remains private until WP-120
-/// introduces a separately reviewed proof-bearing lowering.
+/// This is not an authorization decision. It is a policy-owned proof that the
+/// operation's static semantics require the retained scope. Grammar v1 has no
+/// tenant mapping, so its only constructible command scope is global. A future
+/// mapped scope requires a separately reviewed constructor and lowering.
 #[derive(Clone, Eq, PartialEq)]
-pub struct OperationTenantScope;
+pub struct OperationTenantScope(TenantScope);
 
 impl OperationTenantScope {
-    /// Constructs the fail-closed scope used when no static mapping exists.
+    /// Constructs the exact global scope required by grammar-v1 commands.
+    #[must_use]
+    pub const fn grammar_v1_global() -> Self {
+        Self(TenantScope::Global)
+    }
+
+    /// Constructs the fail-closed global scope used by current POC data reads.
+    ///
+    /// Command paths should prefer [`Self::grammar_v1_global`] so the source of
+    /// the static scope remains explicit at the service boundary.
     #[must_use]
     pub const fn global_only() -> Self {
-        Self
+        Self::grammar_v1_global()
+    }
+
+    /// Borrows the exact tenant scope required by this static proof.
+    #[must_use]
+    pub const fn tenant_scope(&self) -> &TenantScope {
+        &self.0
     }
 }
 
@@ -361,6 +377,11 @@ enum OperationKind {
         class: CommandExecutionClass,
         scope: ExactDataScope,
     },
+    ResolveCommandOutcomePreLookup {
+        lineage: ContractLineage,
+        command_id: CommandId,
+        tenant_scope: OperationTenantScope,
+    },
     ResolveCommandOutcome {
         lineage: ContractLineage,
         version: ContractVersion,
@@ -490,7 +511,7 @@ impl OperationRequest {
         partition: PartitionKey,
     ) -> Self {
         let scope = ExactDataScope::new(
-            OperationTenantScope::global_only(),
+            OperationTenantScope::grammar_v1_global(),
             lineage.clone(),
             partition,
         );
@@ -500,6 +521,24 @@ impl OperationRequest {
             command_id,
             class,
             scope,
+        })
+    }
+
+    /// Constructs the authorization request required before outcome lookup.
+    ///
+    /// An allow decision for this request permits only the bounded internal
+    /// lookup. A present outcome must be authorized again with
+    /// [`Self::resolve_command_outcome`] and every exact stored fact before any
+    /// protected result is returned.
+    #[must_use]
+    pub const fn resolve_command_outcome_pre_lookup(
+        lineage: ContractLineage,
+        command_id: CommandId,
+    ) -> Self {
+        Self(OperationKind::ResolveCommandOutcomePreLookup {
+            lineage,
+            command_id,
+            tenant_scope: OperationTenantScope::grammar_v1_global(),
         })
     }
 
@@ -514,7 +553,7 @@ impl OperationRequest {
         partition: PartitionKey,
     ) -> Self {
         let scope = ExactDataScope::new(
-            OperationTenantScope::global_only(),
+            OperationTenantScope::grammar_v1_global(),
             lineage.clone(),
             partition,
         );
@@ -702,7 +741,8 @@ impl OperationRequest {
             OperationKind::GetActiveContract => ServiceOperationV1::GetActiveContract,
             OperationKind::GetContractVersion { .. } => ServiceOperationV1::GetContractVersion,
             OperationKind::ExecuteCommand { .. } => ServiceOperationV1::ExecuteCommand,
-            OperationKind::ResolveCommandOutcome { .. } => {
+            OperationKind::ResolveCommandOutcomePreLookup { .. }
+            | OperationKind::ResolveCommandOutcome { .. } => {
                 ServiceOperationV1::ResolveCommandOutcome
             }
             OperationKind::GetEntity { .. } => ServiceOperationV1::GetEntity,
@@ -764,6 +804,11 @@ impl OperationRequest {
                 PermissionRequirement::Kind(Kind::ReadContract)
             }
             OperationKind::ExecuteCommand {
+                lineage,
+                command_id,
+                ..
+            }
+            | OperationKind::ResolveCommandOutcomePreLookup {
                 lineage,
                 command_id,
                 ..
@@ -836,7 +881,8 @@ impl OperationRequest {
             OperationKind::ExecuteCommand { scope, .. }
             | OperationKind::ResolveCommandOutcome { scope, .. }
             | OperationKind::GetEntity { scope, .. } => Some(&scope.tenant_scope),
-            OperationKind::ScanIndex { tenant_scope, .. }
+            OperationKind::ResolveCommandOutcomePreLookup { tenant_scope, .. }
+            | OperationKind::ScanIndex { tenant_scope, .. }
             | OperationKind::QueryProjection { tenant_scope, .. } => Some(tenant_scope),
             _ => None,
         }
@@ -926,6 +972,7 @@ impl OperationRequest {
     pub(crate) const fn output_classification(&self) -> OutputClassification {
         match &self.0 {
             OperationKind::ExecuteCommand { .. }
+            | OperationKind::ResolveCommandOutcomePreLookup { .. }
             | OperationKind::ResolveCommandOutcome { .. }
             | OperationKind::GetEntity { .. }
             | OperationKind::ScanIndex { .. }
@@ -1387,6 +1434,48 @@ mod tests {
             vec![FieldId::first(), FieldId::first()],
         );
         assert_eq!(result, Err(OperationRequestError::DuplicateField));
+    }
+
+    #[test]
+    fn grammar_v1_tenant_scope_is_an_explicit_global_proof() {
+        let scope = OperationTenantScope::grammar_v1_global();
+
+        assert_eq!(scope.tenant_scope(), &TenantScope::Global);
+        assert_eq!(scope, OperationTenantScope::global_only());
+        assert_eq!(format!("{scope:?}"), "OperationTenantScope::GlobalOnly");
+    }
+
+    #[test]
+    fn outcome_pre_lookup_authorizes_no_fabricated_stored_facts() {
+        let request = OperationRequest::resolve_command_outcome_pre_lookup(lineage(), command());
+
+        assert_eq!(
+            request.operation(),
+            ServiceOperationV1::ResolveCommandOutcome
+        );
+        assert!(matches!(
+            request.permission_requirement(),
+            Some(PermissionRequirement::Exact(
+                CapabilityPermissionV1::InvokeCommand(required_lineage, required_command)
+            )) if required_lineage == lineage() && required_command == command()
+        ));
+        assert_eq!(
+            request
+                .tenant_requirement()
+                .expect("grammar-v1 scope")
+                .tenant_scope(),
+            &TenantScope::Global
+        );
+        assert!(request.outcome_owner_requirement().is_none());
+        assert!(matches!(
+            request.partition_requirement(),
+            PartitionRequirement::None
+        ));
+        assert_eq!(request.audit_obligation(), None);
+        assert_eq!(
+            request.output_classification(),
+            OutputClassification::PolicyFilteredApplicationData
+        );
     }
 
     #[test]
