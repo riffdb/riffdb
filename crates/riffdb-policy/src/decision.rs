@@ -1,12 +1,13 @@
 //! Closed policy decisions and canonical authorization obligations.
 
 use std::fmt;
-use std::num::NonZeroU16;
+use std::num::{NonZeroU16, NonZeroU64};
 
 use riffdb_types::{
-    ActorId, ActorKind, ApprovalId, CapabilityGrantV1, CapabilityPermissionV1, ContractLineage,
-    DatabaseId, EntityTypeId, Environment, FieldId, MAX_CAPABILITY_FIELD_VISIBILITY,
-    PartitionScopeV1, ScopedPartitionV1, ServiceOperationV1, TenantScope,
+    ActorId, ActorKind, ApprovalId, CapabilityGrantV1, CapabilityId, CapabilityPermissionV1,
+    ContractBundleHash, ContractLineage, ContractVersion, DatabaseId, EntityTypeId, Environment,
+    FieldId, MAX_CAPABILITY_FIELD_VISIBILITY, PartitionScopeV1, ScopedPartitionV1,
+    ServiceOperationV1, TenantScope,
 };
 
 use crate::operation::{
@@ -418,9 +419,32 @@ pub struct AuthorizedOperation {
     environment: Environment,
     request: OperationRequest,
     obligations: Obligations,
+    identity: CurrentAuthorizationIdentity,
     discovery_authority: Option<CapabilityGrantV1>,
+}
+
+#[derive(Eq, PartialEq)]
+pub(crate) struct CurrentAuthorizationIdentity {
+    capability_id: CapabilityId,
+    capability_revision: NonZeroU64,
     principal_id: ActorId,
     actor_kind: ActorKind,
+}
+
+impl CurrentAuthorizationIdentity {
+    pub(crate) const fn new(
+        capability_id: CapabilityId,
+        capability_revision: NonZeroU64,
+        principal_id: ActorId,
+        actor_kind: ActorKind,
+    ) -> Self {
+        Self {
+            capability_id,
+            capability_revision,
+            principal_id,
+            actor_kind,
+        }
+    }
 }
 
 impl AuthorizedOperation {
@@ -429,17 +453,15 @@ impl AuthorizedOperation {
         environment: Environment,
         request: OperationRequest,
         obligations: Obligations,
-        principal_id: ActorId,
-        actor_kind: ActorKind,
+        identity: CurrentAuthorizationIdentity,
     ) -> Self {
         Self {
             database_id,
             environment,
             request,
             obligations,
+            identity,
             discovery_authority: None,
-            principal_id,
-            actor_kind,
         }
     }
 
@@ -449,8 +471,7 @@ impl AuthorizedOperation {
         request: OperationRequest,
         obligations: Obligations,
         grant: CapabilityGrantV1,
-        principal_id: ActorId,
-        actor_kind: ActorKind,
+        identity: CurrentAuthorizationIdentity,
     ) -> Self {
         Self {
             database_id,
@@ -458,8 +479,7 @@ impl AuthorizedOperation {
             request,
             obligations,
             discovery_authority: Some(grant),
-            principal_id,
-            actor_kind,
+            identity,
         }
     }
 
@@ -509,9 +529,8 @@ impl AuthorizedOperation {
             environment,
             request,
             obligations,
+            identity,
             discovery_authority,
-            principal_id,
-            actor_kind,
         } = self;
         if discovery_authority.is_some() {
             return Err(CommandAuthorizationBindingError::OperationMismatch);
@@ -521,11 +540,62 @@ impl AuthorizedOperation {
             environment,
             request,
             obligations,
-            principal_id,
-            actor_kind,
+            identity.principal_id,
+            identity.actor_kind,
             claims,
             agent_session_policy,
         )
+    }
+
+    /// Consumes this proof into the exact catalog-deployment authority it checked.
+    ///
+    /// The caller-supplied identity must be the same checked candidate that will
+    /// be submitted downstream. A proof for another operation or candidate is
+    /// consumed and cannot be reused.
+    pub fn into_catalog_deployment(
+        self,
+        lineage: &ContractLineage,
+        version: ContractVersion,
+        bundle_hash: ContractBundleHash,
+        expected_active_version: Option<ContractVersion>,
+    ) -> Result<AuthorizedCatalogDeployment, CatalogDeploymentAuthorizationBindingError> {
+        let Self {
+            database_id,
+            environment,
+            request,
+            obligations,
+            identity,
+            discovery_authority,
+        } = self;
+        if discovery_authority.is_some() {
+            return Err(CatalogDeploymentAuthorizationBindingError::OperationMismatch);
+        }
+        let Some((
+            authorized_lineage,
+            authorized_version,
+            authorized_bundle_hash,
+            authorized_expected_active_version,
+        )) = request.into_catalog_deployment_parts()
+        else {
+            return Err(CatalogDeploymentAuthorizationBindingError::OperationMismatch);
+        };
+        if &authorized_lineage != lineage
+            || authorized_version != version
+            || authorized_bundle_hash != bundle_hash
+            || authorized_expected_active_version != expected_active_version
+        {
+            return Err(CatalogDeploymentAuthorizationBindingError::IdentityMismatch);
+        }
+        Ok(AuthorizedCatalogDeployment {
+            database_id,
+            environment,
+            lineage: authorized_lineage,
+            version: authorized_version,
+            bundle_hash: authorized_bundle_hash,
+            expected_active_version: authorized_expected_active_version,
+            obligations,
+            identity,
+        })
     }
 
     /// Consumes a discovery allow proof into its candidate-filtering authority.
@@ -544,9 +614,8 @@ impl AuthorizedOperation {
             environment: _,
             request,
             obligations,
+            identity: _,
             discovery_authority,
-            principal_id: _,
-            actor_kind: _,
         } = self;
         match discovery_authority {
             Some(grant) => Ok(AuthorizedDiscovery {
@@ -567,6 +636,113 @@ impl fmt::Debug for AuthorizedOperation {
         formatter.write_str("AuthorizedOperation([REDACTED])")
     }
 }
+
+/// Operation-specific proof for one exact authorized catalog deployment.
+#[derive(Eq, PartialEq)]
+pub struct AuthorizedCatalogDeployment {
+    database_id: DatabaseId,
+    environment: Environment,
+    lineage: ContractLineage,
+    version: ContractVersion,
+    bundle_hash: ContractBundleHash,
+    expected_active_version: Option<ContractVersion>,
+    obligations: Obligations,
+    identity: CurrentAuthorizationIdentity,
+}
+
+impl AuthorizedCatalogDeployment {
+    /// Returns the exact database boundary checked by policy.
+    #[must_use]
+    pub const fn database_id(&self) -> DatabaseId {
+        self.database_id
+    }
+
+    /// Borrows the exact environment checked by policy.
+    #[must_use]
+    pub const fn environment(&self) -> &Environment {
+        &self.environment
+    }
+
+    /// Borrows the exact contract lineage checked by policy.
+    #[must_use]
+    pub const fn lineage(&self) -> &ContractLineage {
+        &self.lineage
+    }
+
+    /// Returns the exact contract version checked by policy.
+    #[must_use]
+    pub const fn version(&self) -> ContractVersion {
+        self.version
+    }
+
+    /// Returns the exact immutable bundle hash checked by policy.
+    #[must_use]
+    pub const fn bundle_hash(&self) -> ContractBundleHash {
+        self.bundle_hash
+    }
+
+    /// Returns the exact expected active version checked by policy.
+    #[must_use]
+    pub const fn expected_active_version(&self) -> Option<ContractVersion> {
+        self.expected_active_version
+    }
+
+    /// Borrows the exact obligations paired with this authorization.
+    #[must_use]
+    pub const fn obligations(&self) -> &Obligations {
+        &self.obligations
+    }
+
+    /// Returns the exact current capability identity that authorized deployment.
+    #[must_use]
+    pub const fn authorizing_capability_id(&self) -> CapabilityId {
+        self.identity.capability_id
+    }
+
+    /// Returns the exact current capability revision that authorized deployment.
+    #[must_use]
+    pub const fn authorizing_revision(&self) -> NonZeroU64 {
+        self.identity.capability_revision
+    }
+
+    /// Borrows the authenticated principal that authorized deployment.
+    #[must_use]
+    pub const fn principal_id(&self) -> &ActorId {
+        &self.identity.principal_id
+    }
+
+    /// Returns the authenticated actor kind that authorized deployment.
+    #[must_use]
+    pub const fn actor_kind(&self) -> ActorKind {
+        self.identity.actor_kind
+    }
+}
+
+impl fmt::Debug for AuthorizedCatalogDeployment {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("AuthorizedCatalogDeployment([REDACTED])")
+    }
+}
+
+/// Safe failure to bind a generic allow proof to one catalog deployment.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum CatalogDeploymentAuthorizationBindingError {
+    /// The proof authorized another closed service operation.
+    OperationMismatch,
+    /// The candidate identity differs from the deployment authorized by policy.
+    IdentityMismatch,
+}
+
+impl fmt::Display for CatalogDeploymentAuthorizationBindingError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(match self {
+            Self::OperationMismatch => "authorization does not permit catalog deployment",
+            Self::IdentityMismatch => "catalog deployment identity does not match authorization",
+        })
+    }
+}
+
+impl std::error::Error for CatalogDeploymentAuthorizationBindingError {}
 
 /// Visibility of one candidate in a current-policy discovery snapshot.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -951,8 +1127,13 @@ mod tests {
             request,
             obligations(),
             grant,
-            ActorId::new("discovery-principal").expect("bounded principal"),
-            ActorKind::Service,
+            CurrentAuthorizationIdentity::new(
+                CapabilityId::from_unix_milliseconds_and_random(2, [0x52; 10])
+                    .expect("valid UUIDv7"),
+                NonZeroU64::MIN,
+                ActorId::new("discovery-principal").expect("bounded principal"),
+                ActorKind::Service,
+            ),
         )
         .into_discovery()
         .expect("discovery proof")

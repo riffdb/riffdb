@@ -15,8 +15,8 @@ use crate::operation::PartitionRequirement;
 use crate::{
     AuthorizationClock, AuthorizationDefect, AuthorizationTelemetry, AuthorizationTelemetryEvent,
     AuthorizedCapabilityMutationPreparation, AuthorizedOperation, CapabilityActivity,
-    CapabilityMutationRequest, Decision, Obligations, OperationRequest, PolicyCode,
-    TransactionCurrentCapabilityFacts, TrustedAudienceCatalog,
+    CapabilityMutationRequest, CurrentAuthorizationIdentity, Decision, Obligations,
+    OperationRequest, PolicyCode, TransactionCurrentCapabilityFacts, TrustedAudienceCatalog,
 };
 
 /// A redaction-safe internal failure before policy could decide.
@@ -142,6 +142,12 @@ where
             &request,
         ) {
             Ok(obligations) => {
+                let identity = CurrentAuthorizationIdentity::new(
+                    current_facts.capability_id,
+                    current_facts.revision,
+                    principal_facts.principal_id,
+                    principal_facts.actor_kind,
+                );
                 let proof = if request.permission_requirement().is_none() {
                     AuthorizedOperation::new_discovery(
                         self.expected_database_id,
@@ -149,8 +155,7 @@ where
                         request,
                         obligations,
                         current_facts.grant,
-                        principal_facts.principal_id,
-                        principal_facts.actor_kind,
+                        identity,
                     )
                 } else {
                     AuthorizedOperation::new(
@@ -158,8 +163,7 @@ where
                         self.expected_environment.clone(),
                         request,
                         obligations,
-                        principal_facts.principal_id,
-                        principal_facts.actor_kind,
+                        identity,
                     )
                 };
                 Ok(Decision::Allow(Box::new(proof)))
@@ -625,6 +629,15 @@ mod tests {
         let Decision::PrepareCapabilityMutation(preparation) = configured else {
             panic!("expected create preparation");
         };
+        assert_eq!(
+            preparation.authorizing_capability_id(),
+            fixture.authenticated_principal().capability_id()
+        );
+        assert_eq!(
+            preparation.authorizing_revision(),
+            fixture.authenticated_principal().capability_revision()
+        );
+        assert_eq!(preparation.validated_approval(), None);
         let prepared_target = preparation.create_target().expect("create target");
         assert_eq!(
             prepared_target.normalized_requested_record().database_id(),
@@ -688,6 +701,15 @@ mod tests {
         let Decision::PrepareCapabilityMutation(preparation) = revoke else {
             panic!("expected revoke preparation");
         };
+        assert_eq!(
+            preparation.authorizing_capability_id(),
+            fixture.authenticated_principal().capability_id()
+        );
+        assert_eq!(
+            preparation.authorizing_revision(),
+            fixture.authenticated_principal().capability_revision()
+        );
+        assert_eq!(preparation.validated_approval(), None);
         assert_eq!(preparation.revoke_target(), Some(&revoke_target));
         assert_eq!(
             preparation.revoke_reason(),
@@ -728,7 +750,9 @@ mod tests {
             ))
             .expect("valid fixture");
             let resolver = fixture.current_capability_resolver();
-            CurrentAuthorizer::new(
+            let capability_id = fixture.authenticated_principal().capability_id();
+            let revision = fixture.authenticated_principal().capability_revision();
+            let decision = CurrentAuthorizer::new(
                 &resolver,
                 &FixedAuthorizationClock(timestamp(200)),
                 &crate::NoopAuthorizationTelemetry,
@@ -742,20 +766,26 @@ mod tests {
                     crate::RevocationReasonCodeV1::Requested,
                 ),
             )
-            .expect("policy decision")
+            .expect("policy decision");
+            (decision, capability_id, revision)
         };
 
         assert_eq!(
             authorize(permission_grant(
                 CapabilityPermissionKindV1::RevokeCapability
-            )),
+            ))
+            .0,
             Decision::Deny(PolicyCode::MissingPermission)
         );
-        let Decision::PrepareCapabilityMutation(preparation) = authorize(permission_grant(
+        let (decision, capability_id, revision) = authorize(permission_grant(
             CapabilityPermissionKindV1::AdministerCapabilities,
-        )) else {
+        ));
+        let Decision::PrepareCapabilityMutation(preparation) = decision else {
             panic!("expected absent revoke preparation");
         };
+        assert_eq!(preparation.authorizing_capability_id(), capability_id);
+        assert_eq!(preparation.authorizing_revision(), revision);
+        assert_eq!(preparation.validated_approval(), None);
         assert_eq!(preparation.absent_revoke_target(), Some(&target));
 
         let wrong_scope = crate::AbsentCapabilityRevokeTargetFacts::new(

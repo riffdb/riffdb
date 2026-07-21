@@ -726,6 +726,25 @@ impl OperationRequest {
         }
     }
 
+    pub(crate) fn into_catalog_deployment_parts(
+        self,
+    ) -> Option<(
+        ContractLineage,
+        ContractVersion,
+        ContractBundleHash,
+        Option<ContractVersion>,
+    )> {
+        match self.0 {
+            OperationKind::DeployContract {
+                lineage,
+                version,
+                bundle_hash,
+                expected_active_version,
+            } => Some((lineage, version, bundle_hash, expected_active_version)),
+            _ => None,
+        }
+    }
+
     pub(crate) fn permission_requirement(&self) -> Option<PermissionRequirement> {
         use CapabilityPermissionKindV1 as Kind;
         let requirement = match &self.0 {
