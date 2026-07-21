@@ -8,6 +8,7 @@ const AUDIT_SOURCE: &str = include_str!("../src/audit.rs");
 const AUDIT_EXECUTOR_SOURCE: &str = include_str!("../src/audit_executor.rs");
 const COMMAND_ADMISSION_SOURCE: &str = include_str!("../src/command_admission.rs");
 const COMMAND_ATTEMPT_SOURCE: &str = include_str!("../src/command_attempt.rs");
+const COMMAND_EXECUTION_SOURCE: &str = include_str!("../src/command_execution.rs");
 const COMMAND_INDEX_SOURCE: &str = include_str!("../src/command_index.rs");
 const COMMAND_RECORDS_SOURCE: &str = include_str!("../src/command_records.rs");
 const COMMAND_VALIDATION_SOURCE: &str = include_str!("../src/command_validation.rs");
@@ -69,6 +70,65 @@ fn production_source(source: &str) -> &str {
     source
         .split_once("\n#[cfg(test)]\nmod tests")
         .map_or(source, |(production, _)| production)
+}
+
+fn braced_item_body<'a>(source: &'a str, declaration: &str) -> &'a str {
+    let remainder = source
+        .split_once(declaration)
+        .unwrap_or_else(|| panic!("missing declaration {declaration}"))
+        .1;
+    let mut brace_depth = 1_usize;
+
+    for (offset, character) in remainder.char_indices() {
+        match character {
+            '{' => brace_depth += 1,
+            '}' => {
+                brace_depth -= 1;
+                if brace_depth == 0 {
+                    return &remainder[..offset];
+                }
+            }
+            _ => {}
+        }
+    }
+
+    panic!("unterminated declaration {declaration}");
+}
+
+fn top_level_enum_variant_names(source: &str, declaration: &str) -> Vec<String> {
+    let body = braced_item_body(source, declaration);
+    let mut variants = Vec::new();
+    let mut segment_start = 0;
+    let mut delimiter_depth = 0_usize;
+
+    for (offset, character) in body.char_indices() {
+        match character {
+            '(' | '[' | '{' => delimiter_depth += 1,
+            ')' | ']' | '}' => delimiter_depth -= 1,
+            ',' if delimiter_depth == 0 => {
+                let segment = &body[segment_start..offset];
+                let declaration = segment
+                    .lines()
+                    .map(str::trim)
+                    .find(|line| !line.is_empty() && !line.starts_with("///"))
+                    .expect("enum variant declaration");
+                let name = declaration
+                    .chars()
+                    .take_while(|character| character.is_ascii_alphanumeric() || *character == '_')
+                    .collect::<String>();
+                assert!(!name.is_empty(), "enum variant name");
+                variants.push(name);
+                segment_start = offset + character.len_utf8();
+            }
+            _ => {}
+        }
+    }
+
+    assert!(
+        body[segment_start..].trim().is_empty(),
+        "enum variants must retain trailing commas"
+    );
+    variants
 }
 
 #[test]
@@ -521,7 +581,11 @@ fn manifest_has_only_the_reviewed_dependencies_needed_by_commit_orchestration() 
     );
     assert_eq!(
         riffdb_dependencies(manifest_section("[dev-dependencies]\n")),
-        vec!["riffdb-contract-compiler", "riffdb-testkit"]
+        vec![
+            "riffdb-contract-compiler",
+            "riffdb-storage-redb",
+            "riffdb-testkit",
+        ]
     );
 
     for forbidden in [
@@ -799,7 +863,9 @@ fn command_attempt_owns_one_lease_around_synchronous_recheck_snapshot_and_runtim
         ".materialize_command_snapshot(raw_snapshot)",
         "state.completed_attempts >= MAX_COMMAND_EVALUATION_ATTEMPTS_V1",
         "state.completed_attempts = state",
-        "let execution = execute_command(",
+        "let execution = catch_unwind(AssertUnwindSafe(|| {",
+        "execute_command(",
+        ".map_err(|_| CommandAttemptError::EvaluationPanicked)?",
         "snapshot.resolved_plan().bundle().bundle()",
         "snapshot.snapshot()",
         "pending.admission_request_id()",
@@ -856,7 +922,7 @@ fn command_attempt_owns_one_lease_around_synchronous_recheck_snapshot_and_runtim
         .find("state.completed_attempts = state")
         .expect("accepted attempt-slot consumption");
     let runtime = production_source
-        .find("let execution = execute_command(")
+        .find("let execution = catch_unwind(AssertUnwindSafe(|| {")
         .expect("deterministic runtime call");
     assert!(target_check < attempt_counter);
     assert!(attempt_counter < materialization);
@@ -898,6 +964,329 @@ fn command_attempt_owns_one_lease_around_synchronous_recheck_snapshot_and_runtim
         assert!(
             !production_source.contains(forbidden),
             "command attempt crosses reviewed boundary through {forbidden}"
+        );
+    }
+}
+
+#[test]
+fn command_driver_public_surface_is_closed_and_has_no_storage_or_transport_authority() {
+    let production = production_source(COMMAND_EXECUTION_SOURCE);
+    assert_eq!(
+        top_level_enum_variant_names(production, "pub enum CommandExecutionResult {"),
+        [
+            "Committed",
+            "ExecutionFailed",
+            "PreparationChanged",
+            "InputMismatch",
+        ]
+    );
+    assert_eq!(
+        top_level_enum_variant_names(production, "pub enum CommandExecutionErrorKind {"),
+        [
+            "Cancelled",
+            "DeadlineExceeded",
+            "RetryBudgetExhausted",
+            "StorageUnavailable",
+            "OutcomeUnknown",
+            "InternalDefect",
+            "CoordinatorStopped",
+            "CoordinatorFenced",
+        ]
+    );
+
+    let result = braced_item_body(production, "pub enum CommandExecutionResult {");
+    assert!(result.contains("Committed(CommittedOutcome)"));
+    assert!(result.contains("ExecutionFailed(ExecutionFailureCode)"));
+    let error_kind = braced_item_body(production, "pub enum CommandExecutionErrorKind {");
+    let error = braced_item_body(production, "pub struct CommandExecutionError {");
+    assert!(
+        !error
+            .lines()
+            .any(|line| line.trim_start().starts_with("pub ")),
+        "executor error detail must remain private"
+    );
+    let error_impl = braced_item_body(production, "impl CommandExecutionError {");
+    let public_error_methods = error_impl
+        .lines()
+        .map(str::trim_start)
+        .filter(|line| line.starts_with("pub "))
+        .collect::<Vec<_>>();
+    assert_eq!(
+        public_error_methods,
+        ["pub const fn kind(&self) -> CommandExecutionErrorKind {"]
+    );
+
+    let public_surface = [result, error_kind, error, public_error_methods[0]].join("\n");
+    for forbidden in [
+        "StoredExecutionFailedV1",
+        "StoredOutcomeV1",
+        "StorageError",
+        "StorageErrorKind",
+        "AdmissionRepository",
+        "SnapshotReader",
+        "ApplicationCommandTransactionPort",
+        "ExecutionFailureTransitionPort",
+        "StorageEngine",
+        "StorageWrite",
+        "tonic::",
+        "rmcp::",
+        "prost::",
+        "redb::",
+    ] {
+        assert!(
+            !public_surface.contains(forbidden),
+            "public command result/error surface exposes forbidden authority {forbidden}"
+        );
+    }
+
+    assert_eq!(
+        top_level_enum_variant_names(production, "pub enum CoordinatorDurability {"),
+        ["Sync", "Group"]
+    );
+    let durability = braced_item_body(production, "pub enum CoordinatorDurability {");
+    let durability_impl = braced_item_body(production, "impl CoordinatorDurability {");
+    let durability_derive = production
+        .split_once("pub enum CoordinatorDurability {")
+        .expect("coordinator durability declaration")
+        .0
+        .rsplit_once("#[derive(")
+        .expect("coordinator durability derive")
+        .1;
+    assert!(!durability.contains("Memory"));
+    assert!(!durability_impl.contains("DurabilityMode::Memory"));
+    assert!(!durability_derive.contains("Default"));
+    assert!(!production.contains("impl Default for CoordinatorDurability"));
+}
+
+#[test]
+fn command_driver_fences_uncertain_admission_before_one_nonexecuting_recovery_read() {
+    let production = production_source(COMMAND_EXECUTION_SOURCE);
+    let driver = production
+        .split_once("pub(super) async fn drive_command_execution<P>(")
+        .and_then(|(_, remainder)| {
+            remainder.split_once("\nasync fn drive_pending_command_attempts<P>(")
+        })
+        .map(|(body, _)| body)
+        .expect("top-level command driver");
+
+    for required_arm in [
+        "Ok(CommandAdmissionResult::Execute(candidate))",
+        "Ok(CommandAdmissionResult::Outcome(outcome))",
+        "Ok(CommandAdmissionResult::ExecutionFailed(failure))",
+        "Ok(CommandAdmissionResult::PreparationChanged)",
+        "Ok(CommandAdmissionResult::InputMismatch)",
+        "Err(CommandAdmissionError::AdmissionStatusUnknown(uncertain))",
+        "Err(CommandAdmissionError::Recheck(IdempotencyRecheckError::Storage(error)))",
+        "Err(CommandAdmissionError::AdmissionWrite(error))",
+        "Err(CommandAdmissionError::Clock(error))",
+        "Err(CommandAdmissionError::Recheck(IdempotencyRecheckError::Integrity(_)))",
+        "Err(CommandAdmissionError::Integrity)",
+    ] {
+        assert!(
+            driver.contains(required_arm),
+            "top-level command admission is missing exhaustive arm {required_arm}"
+        );
+    }
+    assert!(!driver.contains("_ =>"));
+    assert_eq!(driver.matches("reduce_command_admission(").count(), 1);
+
+    let uncertain = driver
+        .split_once("Err(CommandAdmissionError::AdmissionStatusUnknown(uncertain)) => {")
+        .and_then(|(_, remainder)| {
+            remainder.split_once(
+                "\n        Err(CommandAdmissionError::Recheck(IdempotencyRecheckError::Storage(error)))",
+            )
+        })
+        .map(|(body, _)| body)
+        .expect("uncertain admission branch");
+    let fence = uncertain
+        .find("lifecycle.fence()")
+        .expect("uncertain admission fence publication");
+    let resolution = uncertain
+        .find("resolve_uncertain_command_admission(port, *uncertain)")
+        .expect("same-key uncertain admission read");
+    assert!(fence < resolution);
+    assert_eq!(
+        uncertain
+            .matches("resolve_uncertain_command_admission(port, *uncertain)")
+            .count(),
+        1
+    );
+    for resolution_arm in [
+        "UncertainCommandAdmissionResolution::ProvenPending(candidate)",
+        "UncertainCommandAdmissionResolution::Outcome(outcome)",
+        "UncertainCommandAdmissionResolution::ExecutionFailed(failure)",
+        "UncertainCommandAdmissionResolution::OutcomeUnknown(failure)",
+        "UncertainCommandAdmissionResolution::Integrity",
+    ] {
+        assert!(
+            uncertain.contains(resolution_arm),
+            "uncertain admission is missing exhaustive resolution {resolution_arm}"
+        );
+    }
+    assert!(!uncertain.contains("_ =>"));
+
+    let proven_pending = uncertain
+        .split_once("UncertainCommandAdmissionResolution::ProvenPending(candidate) => {")
+        .and_then(|(_, remainder)| {
+            remainder.split_once(
+                "\n                UncertainCommandAdmissionResolution::Outcome(outcome)",
+            )
+        })
+        .map(|(body, _)| body)
+        .expect("proven pending resolution");
+    assert!(proven_pending.contains("drop(candidate)"));
+    assert!(proven_pending.contains("CommandExecutionErrorKind::StorageUnavailable"));
+    for forbidden in [
+        "evaluate_next_command_attempt",
+        "PendingCommandAttempts::from_admission",
+        "drive_pending_command_attempts",
+        "continue_evaluated_command",
+        "next_provenance_id",
+        "bind_provenance",
+    ] {
+        assert!(
+            !proven_pending.contains(forbidden),
+            "fenced ProvenPending admission must not resume through {forbidden}"
+        );
+    }
+}
+
+#[test]
+fn command_driver_fences_every_late_unknown_and_owns_one_bounded_retry_loop() {
+    let production = production_source(COMMAND_EXECUTION_SOURCE);
+    let evaluated = production
+        .split_once("pub(super) fn continue_evaluated_command<P>(")
+        .and_then(|(_, remainder)| {
+            remainder
+                .split_once("\n/// Revalidates and terminalizes one deterministic execution fault.")
+        })
+        .map(|(body, _)| body)
+        .expect("evaluated-command continuation");
+    let uncertain_commit = evaluated
+        .split_once("CheckedCommandCommitResult::StatusUnknown(uncertain) => {")
+        .and_then(|(_, remainder)| {
+            remainder.split_once("\n        CheckedCommandCommitResult::Integrity")
+        })
+        .map(|(body, _)| body)
+        .expect("uncertain successful-command commit");
+    assert_eq!(
+        uncertain_commit
+            .matches("resolve_uncertain_command_commit(port, uncertain)")
+            .count(),
+        1
+    );
+    assert!(
+        uncertain_commit
+            .find("lifecycle.fence()")
+            .expect("successful-command fence publication")
+            < uncertain_commit
+                .find("resolve_uncertain_command_commit(port, uncertain)")
+                .expect("successful-command same-key read")
+    );
+
+    let execution_fault = production
+        .split_once("pub(super) fn continue_execution_fault<P>(")
+        .and_then(|(_, remainder)| remainder.split_once("\nfn after_rollback<P>("))
+        .map(|(body, _)| body)
+        .expect("execution-fault continuation");
+    let uncertain_failure = execution_fault
+        .split_once("ExecutionFailureTerminalizeResult::StatusUnknown(uncertain) => {")
+        .and_then(|(_, remainder)| {
+            remainder.split_once("\n        ExecutionFailureTerminalizeResult::Integrity")
+        })
+        .map(|(body, _)| body)
+        .expect("uncertain execution-failure terminalization");
+    assert_eq!(
+        uncertain_failure
+            .matches("resolve_uncertain_execution_failure(port, uncertain)")
+            .count(),
+        1
+    );
+    assert!(
+        uncertain_failure
+            .find("lifecycle.fence()")
+            .expect("execution-failure fence publication")
+            < uncertain_failure
+                .find("resolve_uncertain_execution_failure(port, uncertain)")
+                .expect("execution-failure same-key read")
+    );
+    assert_eq!(
+        production
+            .matches("::StatusUnknown(uncertain) => {")
+            .count(),
+        2,
+        "only the two post-admission durable transitions may become status-unknown"
+    );
+
+    let attempt_driver = production
+        .split_once("async fn drive_pending_command_attempts<P>(")
+        .and_then(|(_, remainder)| remainder.split_once("\nfn terminal_continuation("))
+        .map(|(body, _)| body)
+        .expect("bounded attempt driver");
+    assert_eq!(production.matches("loop {").count(), 1);
+    assert_eq!(
+        attempt_driver
+            .matches("evaluate_next_command_attempt(")
+            .count(),
+        1
+    );
+    assert_eq!(
+        attempt_driver
+            .matches("continue_evaluated_command(")
+            .count(),
+        1
+    );
+    assert_eq!(
+        attempt_driver.matches("continue_execution_fault(").count(),
+        1
+    );
+    assert!(attempt_driver.contains("CommandDriverContinuation::Retry(retry) => state = *retry"));
+    assert_eq!(attempt_driver.matches(".await").count(), 1);
+
+    let attempt_source = production_source(COMMAND_ATTEMPT_SOURCE);
+    assert!(attempt_source.contains("MAX_COMMAND_EVALUATION_ATTEMPTS_V1: usize = 3"));
+    assert!(
+        attempt_source.contains("state.completed_attempts >= MAX_COMMAND_EVALUATION_ATTEMPTS_V1")
+    );
+}
+
+#[test]
+fn command_driver_maps_caught_runtime_panics_to_the_public_internal_defect() {
+    let attempt_source = production_source(COMMAND_ATTEMPT_SOURCE);
+    assert!(attempt_source.contains("let execution = catch_unwind(AssertUnwindSafe(|| {"));
+    assert!(attempt_source.contains(".map_err(|_| CommandAttemptError::EvaluationPanicked)?"));
+    assert!(!attempt_source.contains("resume_unwind"));
+
+    let production = production_source(COMMAND_EXECUTION_SOURCE);
+    let mapping = production
+        .split_once("pub(super) fn command_attempt_failure(")
+        .and_then(|(_, remainder)| remainder.split_once("\nfn storage_error("))
+        .map(|(body, _)| body)
+        .expect("command-attempt public error mapping");
+    assert_eq!(
+        mapping
+            .matches("CommandAttemptError::EvaluationPanicked")
+            .count(),
+        1
+    );
+    let panic_arm = mapping
+        .split_once("CommandAttemptError::EvaluationPanicked => {")
+        .and_then(|(_, remainder)| {
+            remainder.split_once("\n        CommandAttemptError::PendingRecheck(error)")
+        })
+        .map(|(body, _)| body)
+        .expect("caught-runtime-panic mapping");
+    assert!(panic_arm.contains("CommandExecutionErrorKind::InternalDefect"));
+    for forbidden in [
+        "panic!",
+        "resume_unwind",
+        "StorageError",
+        "StoredExecutionFailedV1",
+    ] {
+        assert!(
+            !panic_arm.contains(forbidden),
+            "caught runtime panic leaks or resumes through {forbidden}"
         );
     }
 }

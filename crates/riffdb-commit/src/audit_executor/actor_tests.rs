@@ -309,15 +309,16 @@ fn fixed_timestamp() -> Timestamp {
 fn workload_capacity_excludes_shutdown_and_cancelled_reservation_releases_position() {
     assert_eq!(CoordinatorWorkloadCapacity::new(0), None);
     let probe = Probe::new();
-    let running = RunningCommandCoordinator::start(
+    let running = RunningCommandCoordinator::start_audit_only(
         capacity(2),
         RecordingRepository::appending(probe),
         TestClock::fixed(fixed_timestamp()),
     )
     .expect("start coordinator");
     let executor = running.administration_audit_executor();
+    let command_executor = running.command_executor();
     let first = block_on(executor.reserve_capacity()).expect("first workload slot");
-    let second = block_on(executor.reserve_capacity()).expect("second workload slot");
+    let second = block_on(command_executor.reserve_capacity()).expect("shared command slot");
     assert_eq!(executor.sender.capacity(), 0);
 
     let mut pending = Box::pin(executor.reserve_capacity());
@@ -330,6 +331,10 @@ fn workload_capacity_excludes_shutdown_and_cancelled_reservation_releases_positi
     drop(second);
     drop(replacement);
     running.shutdown().expect("clean shutdown");
+    assert_eq!(
+        format!("{command_executor:?}"),
+        "CommandExecutor([REDACTED])"
+    );
 }
 
 #[test]
@@ -339,7 +344,7 @@ fn synchronous_submit_executes_on_the_one_actor_thread() {
     let clock = TestClock::fixed(fixed_timestamp());
     let clock_calls = Arc::clone(&clock.calls);
     let clock_threads = Arc::clone(&clock.threads);
-    let running = RunningCommandCoordinator::start(
+    let running = RunningCommandCoordinator::start_audit_only(
         capacity(1),
         RecordingRepository::appending(probe.clone()),
         clock,
@@ -365,7 +370,7 @@ fn synchronous_submit_executes_on_the_one_actor_thread() {
 #[test]
 fn dropping_receipt_does_not_cancel_accepted_append() {
     let probe = Probe::new();
-    let running = RunningCommandCoordinator::start(
+    let running = RunningCommandCoordinator::start_audit_only(
         capacity(1),
         RecordingRepository::appending(probe.clone()),
         TestClock::fixed(fixed_timestamp()),
@@ -389,7 +394,7 @@ fn shutdown_drains_a_full_workload_queue_without_sleeping() {
         entered: entered_sender,
         release_first: Some(release_receiver),
     };
-    let running = RunningCommandCoordinator::start(
+    let running = RunningCommandCoordinator::start_audit_only(
         capacity(2),
         repository,
         TestClock::fixed(fixed_timestamp()),
@@ -431,7 +436,7 @@ fn shutdown_drains_a_full_workload_queue_without_sleeping() {
 #[test]
 fn held_permit_fails_closed_after_draining_and_releases_shutdown() {
     let probe = Probe::new();
-    let running = RunningCommandCoordinator::start(
+    let running = RunningCommandCoordinator::start_audit_only(
         capacity(1),
         RecordingRepository::appending(probe.clone()),
         TestClock::fixed(fixed_timestamp()),
@@ -455,7 +460,7 @@ fn held_permit_fails_closed_after_draining_and_releases_shutdown() {
 
 #[test]
 fn shutdown_reason_is_visible_while_the_submission_gate_is_still_open() {
-    let mut running = RunningCommandCoordinator::start(
+    let mut running = RunningCommandCoordinator::start_audit_only(
         capacity(1),
         RecordingRepository::appending(Probe::new()),
         TestClock::fixed(fixed_timestamp()),
@@ -491,7 +496,7 @@ fn shutdown_reason_is_visible_while_the_submission_gate_is_still_open() {
 #[test]
 fn submission_admitted_before_shutdown_is_drained_even_when_sent_after_shutdown_message() {
     let probe = Probe::new();
-    let mut running = RunningCommandCoordinator::start(
+    let mut running = RunningCommandCoordinator::start_audit_only(
         capacity(1),
         RecordingRepository::appending(probe.clone()),
         TestClock::fixed(fixed_timestamp()),
@@ -527,7 +532,7 @@ fn submission_admitted_before_shutdown_is_drained_even_when_sent_after_shutdown_
 #[test]
 fn explicit_shutdown_waits_for_an_outstanding_permit_to_drop() {
     let probe = Probe::new();
-    let running = RunningCommandCoordinator::start(
+    let running = RunningCommandCoordinator::start_audit_only(
         capacity(1),
         RecordingRepository::appending(probe.clone()),
         TestClock::fixed(fixed_timestamp()),
@@ -557,7 +562,7 @@ fn explicit_shutdown_waits_for_an_outstanding_permit_to_drop() {
 
 #[test]
 fn reservation_completed_before_shutdown_is_rejected_by_the_post_reservation_gate() {
-    let running = RunningCommandCoordinator::start(
+    let running = RunningCommandCoordinator::start_audit_only(
         capacity(1),
         RecordingRepository::appending(Probe::new()),
         TestClock::fixed(fixed_timestamp()),
@@ -598,7 +603,7 @@ fn unknown_audit_status_fences_before_completion_and_rejects_queued_work() {
     let (entered_sender, entered_receiver) = std_mpsc::sync_channel(0);
     let (release_sender, release_receiver) = std_mpsc::sync_channel(0);
     let unknown = StorageError::new(StorageErrorKind::CommitStatusUnknown, None);
-    let running = RunningCommandCoordinator::start(
+    let running = RunningCommandCoordinator::start_audit_only(
         capacity(2),
         BlockingFailureRepository {
             probe: probe.clone(),
@@ -610,6 +615,7 @@ fn unknown_audit_status_fences_before_completion_and_rejects_queued_work() {
     )
     .expect("start coordinator");
     let executor = running.administration_audit_executor();
+    let command_executor = running.command_executor();
     let first = block_on(executor.reserve_capacity())
         .expect("first slot")
         .submit(input(0x73))
@@ -633,6 +639,10 @@ fn unknown_audit_status_fences_before_completion_and_rejects_queued_work() {
         block_on(executor.reserve_capacity()),
         Err(AdministrationAuditAdmissionError::Fenced)
     ));
+    assert!(matches!(
+        block_on(command_executor.reserve_capacity()),
+        Err(CommandExecutionAdmissionError::Fenced)
+    ));
     assert_eq!(
         block_on(queued.completion()),
         Err(AdministrationAuditExecutionError::CoordinatorFenced)
@@ -649,7 +659,7 @@ fn unknown_audit_status_fences_before_completion_and_rejects_queued_work() {
 fn unexpected_actor_panic_stops_admission_and_every_queued_receipt() {
     let (entered_sender, entered_receiver) = std_mpsc::sync_channel(0);
     let (release_sender, release_receiver) = std_mpsc::sync_channel(0);
-    let running = RunningCommandCoordinator::start(
+    let running = RunningCommandCoordinator::start_audit_only(
         capacity(2),
         BlockingPanicRepository {
             entered: entered_sender,
@@ -659,6 +669,7 @@ fn unexpected_actor_panic_stops_admission_and_every_queued_receipt() {
     )
     .expect("start coordinator");
     let executor = running.administration_audit_executor();
+    let command_executor = running.command_executor();
     let first = block_on(executor.reserve_capacity())
         .expect("first slot")
         .submit(input(0x75))
@@ -686,6 +697,10 @@ fn unexpected_actor_panic_stops_admission_and_every_queued_receipt() {
         block_on(executor.reserve_capacity()),
         Err(AdministrationAuditAdmissionError::Stopped)
     ));
+    assert!(matches!(
+        block_on(command_executor.reserve_capacity()),
+        Err(CommandExecutionAdmissionError::Stopped)
+    ));
     assert_eq!(
         running.shutdown(),
         Err(CoordinatorShutdownError::ActorPanicked)
@@ -697,7 +712,7 @@ fn actor_reports_clock_and_storage_errors_once_without_retry() {
     let clock = TestClock::failing();
     let clock_calls = Arc::clone(&clock.calls);
     let probe = Probe::new();
-    let running = RunningCommandCoordinator::start(
+    let running = RunningCommandCoordinator::start_audit_only(
         capacity(1),
         RecordingRepository::appending(probe.clone()),
         clock,
@@ -722,7 +737,7 @@ fn actor_reports_clock_and_storage_errors_once_without_retry() {
     let clock = TestClock::fixed(fixed_timestamp());
     let clock_calls = Arc::clone(&clock.calls);
     let probe = Probe::new();
-    let running = RunningCommandCoordinator::start(
+    let running = RunningCommandCoordinator::start_audit_only(
         capacity(1),
         RecordingRepository::failing(probe.clone(), expected.clone()),
         clock,

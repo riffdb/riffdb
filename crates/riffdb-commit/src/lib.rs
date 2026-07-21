@@ -9,16 +9,13 @@
 mod audit;
 mod audit_executor;
 mod clock;
-#[allow(dead_code)] // Private semantic slice consumed by the later command executor.
 mod command_admission;
-#[allow(dead_code)] // Private semantic slice consumed by the later command executor.
 mod command_attempt;
-#[allow(dead_code)] // Private semantic slice consumed by the later command executor.
+mod command_execution;
+mod command_execution_failure;
 mod command_index;
 mod command_preparation;
-#[allow(dead_code)] // Private semantic slice consumed by the later command executor.
 mod command_records;
-#[allow(dead_code)] // Private semantic slice consumed by the later command executor.
 mod command_validation;
 mod initialization;
 mod outcome;
@@ -30,11 +27,15 @@ pub use audit::{AdministrationAuditInputView, BootstrapCompoundAuditProof};
 pub use audit_executor::{
     AdministrationAuditAdmissionError, AdministrationAuditCapacityPermit,
     AdministrationAuditExecutionError, AdministrationAuditExecutor, AdministrationAuditReceipt,
-    CoordinatorLifecycleState, CoordinatorShutdownError, CoordinatorStartError,
+    CommandExecutionAdmissionError, CommandExecutionCapacityPermit, CommandExecutionReceipt,
+    CommandExecutor, CoordinatorLifecycleState, CoordinatorShutdownError, CoordinatorStartError,
     CoordinatorWorkloadCapacity, RunningCommandCoordinator,
 };
 pub use clock::{
     AdministrationClock, AdministrationClockError, AdmissionClock, AdmissionClockError,
+};
+pub use command_execution::{
+    CommandExecutionError, CommandExecutionErrorKind, CommandExecutionResult, CoordinatorDurability,
 };
 pub use command_preparation::{
     CommandCancellationHandle, CommandExecutionPreparation, CommandExecutionPreparationError,

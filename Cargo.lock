@@ -1019,6 +1019,7 @@ dependencies = [
  "riffdb-policy",
  "riffdb-runtime",
  "riffdb-storage-api",
+ "riffdb-storage-redb",
  "riffdb-testkit",
  "riffdb-types",
  "tokio",

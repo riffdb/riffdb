@@ -77,14 +77,6 @@ impl<S> CheckedCommitCandidate<S> {
         let attempt = self.authority.0.attempt();
         attempt.has_exact_semantic_join() && intent == attempt.commit_intent()
     }
-
-    pub(super) const fn exact_intent(&self) -> &CommitIntent {
-        self.authority.0.attempt().commit_intent()
-    }
-
-    pub(super) const fn lookup_candidates(&self) -> &IdempotencyLookupCandidatesV1 {
-        self.authority.0.attempt().lookup_candidates()
-    }
 }
 
 /// Consumes the sole post-validation authority and freezes the exact derived
@@ -121,7 +113,6 @@ where
 pub(super) enum CheckedAffectedEpochDecision<C> {
     Ready(CheckedCommitCandidate<C>),
     StorageFailure(StorageError),
-    Integrity,
 }
 
 impl<S> CheckedCommitCandidate<S>
@@ -326,10 +317,12 @@ enum RetainedCheckedAttemptAuthority {
 }
 
 impl RetainedCheckedCommitCandidate {
+    #[cfg(test)]
     pub(super) fn entry_mutations(&self) -> &[IndexEntryMutationV1] {
         &self.entry_mutations
     }
 
+    #[cfg(test)]
     pub(super) const fn affected_targets(&self) -> &AffectedIndexEpochTargets {
         &self.affected_targets
     }

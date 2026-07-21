@@ -1,21 +1,27 @@
 //! One capability-owning deterministic command-evaluation attempt.
 
-use std::{error::Error, fmt, time::Instant};
+use std::{
+    error::Error,
+    fmt,
+    panic::{AssertUnwindSafe, catch_unwind},
+    time::Instant,
+};
 
 use riffdb_catalog::{
     CommandSnapshotMaterialization, CommandSnapshotResourceLimitEvidence,
-    MaterializedCommandSnapshot, ResolvedExecutablePlan,
+    MaterializedCommandSnapshot, ResolvedExecutablePlan, ResourceLimitRecheck,
+    TransactionCurrentMaterialization,
 };
 use riffdb_conflict::{CancellationToken, ConflictError, ConflictManager, MutationLease};
 use riffdb_runtime::{ExecutionFault, ExecutionResult, TransactionContext, execute_command};
 use riffdb_storage_api::{
     AdmissionLookupResultV1, AdmissionRepository, CandidateValidationRejection,
     CommandCandidateAwaitingValidation, CommitIntent, EvaluatedCommand,
-    IdempotencyLookupCandidatesV1, PreEvaluationCommitContext, ReadSnapshot, SnapshotReader,
-    SnapshotRequest, StorageError, StoredAdmissionStateV1, StoredExecutionFailedV1,
-    StoredOutcomeV1,
+    ExecutionFailureTransitionRequestV1, IdempotencyLookupCandidatesV1, PreEvaluationCommitContext,
+    ReadSnapshot, SnapshotReader, SnapshotRequest, StorageError, StoredAdmissionStateV1,
+    StoredExecutionFailedV1, StoredOutcomeV1, TransactionCurrentState,
 };
-use riffdb_types::{CanonicalRecord, ConflictKey, ProvenanceId, RequestId};
+use riffdb_types::{CanonicalRecord, ConflictKey, ExecutionFailureCode, ProvenanceId, RequestId};
 
 use crate::command_admission::CommandExecutionCandidate;
 
@@ -30,6 +36,7 @@ pub(crate) struct PendingCommandAttempts {
     raw_conflict_keys: Vec<ConflictKey>,
     snapshot_request: SnapshotRequest,
     lookup_candidates: IdempotencyLookupCandidatesV1,
+    #[allow(dead_code)] // Retained for redaction-safe per-invocation coordinator telemetry.
     invocation_request_id: RequestId,
     deadline: Instant,
     cancellation: CancellationToken,
@@ -68,17 +75,8 @@ impl PendingCommandAttempts {
         })
     }
 
-    /// Borrows immutable capacity and durable-admission context for later commit work.
-    pub(crate) const fn commit_context(&self) -> &PreEvaluationCommitContext {
-        &self.commit_context
-    }
-
-    /// Returns the current transport invocation identity for internal correlation only.
-    pub(crate) const fn invocation_request_id(&self) -> RequestId {
-        self.invocation_request_id
-    }
-
     /// Returns the number of snapshot-materialization attempt slots consumed.
+    #[allow(dead_code)] // Semantic-test inspection of the bounded retry state.
     pub(crate) const fn completed_attempts(&self) -> usize {
         self.completed_attempts
     }
@@ -125,6 +123,11 @@ pub(crate) struct EvaluatedCommandAttempt {
 }
 
 impl EvaluatedCommandAttempt {
+    /// Rechecks advisory request control at the final pre-transaction safe point.
+    pub(super) fn recheck_request_control(&self) -> Result<(), CommandAttemptError> {
+        check_request_control(self.state.deadline, &self.state.cancellation)
+    }
+
     pub(super) const fn commit_context(&self) -> &PreEvaluationCommitContext {
         &self.state.commit_context
     }
@@ -335,6 +338,7 @@ pub(super) enum RolledBackCandidateDisposition {
     /// The completed attempt may be reevaluated within the invocation ceiling.
     Retry {
         state: Box<PendingCommandAttempts>,
+        #[allow(dead_code)] // Preserved for trusted retry telemetry and semantic tests.
         reason: CandidateValidationRejection,
     },
     /// Late commit-check arithmetic reuses the same attempt evidence without provenance.
@@ -384,6 +388,138 @@ pub(crate) enum ExecutionFaultAttempt {
     },
 }
 
+/// Closed result of catalog-owned current evidence revalidation for one fault.
+pub(super) enum ExecutionFaultCurrentRecheck {
+    /// Every dependency and raw physical observation remained exact.
+    Stable,
+    /// Catalog observed changed dependency evidence.
+    DependencyChanged,
+    /// Catalog evidence contradicted an independently checked attempt.
+    Integrity,
+}
+
+impl ExecutionFaultAttempt {
+    /// Rechecks advisory request control at the final pre-transition safe point.
+    pub(super) fn recheck_request_control(&self) -> Result<(), CommandAttemptError> {
+        check_request_control(self.state().deadline, &self.state().cancellation)
+    }
+
+    /// Builds the only storage transition request permitted by this exact attempt.
+    pub(super) fn transition_request(&self) -> Result<ExecutionFailureTransitionRequestV1, ()> {
+        let (snapshot, code) = match self {
+            Self::Arithmetic { snapshot, .. } => {
+                (snapshot.snapshot(), ExecutionFailureCode::ArithmeticFault)
+            }
+            Self::ResourceLimit {
+                evidence: ResourceLimitFaultEvidence::Runtime(snapshot),
+                ..
+            } => (snapshot.snapshot(), ExecutionFailureCode::ResourceLimit),
+            Self::ResourceLimit {
+                evidence: ResourceLimitFaultEvidence::Materialization(evidence),
+                ..
+            } => (evidence.raw_snapshot(), ExecutionFailureCode::ResourceLimit),
+        };
+        ExecutionFailureTransitionRequestV1::new(
+            self.state().commit_context.pending().clone(),
+            snapshot,
+            code,
+        )
+        .map_err(|_| ())
+    }
+
+    /// Borrows the exact lookup identities retained by the admitted attempt.
+    pub(super) const fn lookup_candidates(&self) -> &IdempotencyLookupCandidatesV1 {
+        &self.state().lookup_candidates
+    }
+
+    /// Borrows the exact Pending admission retained by the attempt.
+    pub(super) const fn pending(&self) -> &riffdb_storage_api::StoredPendingAdmissionV1 {
+        self.state().commit_context.pending()
+    }
+
+    /// Borrows the exact influential dependencies retained by the failed snapshot.
+    pub(super) const fn read_dependencies(&self) -> &riffdb_storage_api::ReadDependencies {
+        match self {
+            Self::Arithmetic { snapshot, .. } => snapshot.snapshot().read_dependencies(),
+            Self::ResourceLimit {
+                evidence: ResourceLimitFaultEvidence::Runtime(snapshot),
+                ..
+            } => snapshot.snapshot().read_dependencies(),
+            Self::ResourceLimit {
+                evidence: ResourceLimitFaultEvidence::Materialization(evidence),
+                ..
+            } => evidence.raw_snapshot().read_dependencies(),
+        }
+    }
+
+    /// Returns whether a concurrent command outcome belongs to this admission.
+    pub(super) fn matches_outcome(&self, outcome: &StoredOutcomeV1) -> bool {
+        outcome_matches_context(outcome, &self.state().commit_context)
+    }
+
+    /// Revalidates the opaque lineage evidence only after dependencies compare equal.
+    pub(super) fn recheck_equal_transaction_current(
+        &self,
+        current: TransactionCurrentState,
+    ) -> ExecutionFaultCurrentRecheck {
+        match self {
+            Self::Arithmetic { snapshot, .. }
+            | Self::ResourceLimit {
+                evidence: ResourceLimitFaultEvidence::Runtime(snapshot),
+                ..
+            } => match snapshot.materialize_transaction_current(current) {
+                Ok(TransactionCurrentMaterialization::Ready(_)) => {
+                    ExecutionFaultCurrentRecheck::Stable
+                }
+                Ok(TransactionCurrentMaterialization::DependencyChanged) => {
+                    ExecutionFaultCurrentRecheck::DependencyChanged
+                }
+                Err(_) => ExecutionFaultCurrentRecheck::Integrity,
+            },
+            Self::ResourceLimit {
+                evidence: ResourceLimitFaultEvidence::Materialization(evidence),
+                ..
+            } => match evidence.recheck_transaction_current(current) {
+                Ok(ResourceLimitRecheck::Confirmed) => ExecutionFaultCurrentRecheck::Stable,
+                Ok(ResourceLimitRecheck::DependencyChanged) => {
+                    ExecutionFaultCurrentRecheck::DependencyChanged
+                }
+                Err(_) => ExecutionFaultCurrentRecheck::Integrity,
+            },
+        }
+    }
+
+    /// Releases fault evidence and capability after storage proved rollback.
+    pub(super) fn recover_pending_after_proven_rollback(self) -> PendingCommandAttempts {
+        let (state, lease) = match self {
+            Self::Arithmetic {
+                state,
+                lease,
+                snapshot,
+            } => {
+                drop(snapshot);
+                (state, lease)
+            }
+            Self::ResourceLimit {
+                state,
+                lease,
+                evidence,
+            } => {
+                drop(evidence);
+                (state, lease)
+            }
+        };
+        drop(lease);
+        state
+    }
+
+    const fn state(&self) -> &PendingCommandAttempts {
+        match self {
+            Self::Arithmetic { state, .. } | Self::ResourceLimit { state, .. } => state,
+        }
+    }
+}
+
 impl fmt::Debug for ExecutionFaultAttempt {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter.write_str("ExecutionFaultAttempt([REDACTED])")
@@ -404,6 +540,8 @@ pub(crate) enum CommandAttemptError {
     SnapshotRead(StorageError),
     /// Three snapshot-materialization attempt slots were already consumed.
     RetryBudgetExhausted,
+    /// A containable panic escaped deterministic runtime evaluation.
+    EvaluationPanicked,
     /// Independently checked semantic state was inconsistent.
     Integrity,
 }
@@ -428,6 +566,7 @@ impl Error for CommandAttemptError {
             Self::Cancelled
             | Self::DeadlineExceeded
             | Self::RetryBudgetExhausted
+            | Self::EvaluationPanicked
             | Self::Integrity => None,
         }
     }
@@ -516,13 +655,16 @@ pub(crate) async fn evaluate_next_command_attempt(
     };
 
     let context = transaction_context(&state.commit_context);
-    let execution = execute_command(
-        snapshot.resolved_plan().bundle().bundle(),
-        &state.normalized_input,
-        snapshot.snapshot(),
-        &context,
-        state.commit_context.evaluation_budget(),
-    );
+    let execution = catch_unwind(AssertUnwindSafe(|| {
+        execute_command(
+            snapshot.resolved_plan().bundle().bundle(),
+            &state.normalized_input,
+            snapshot.snapshot(),
+            &context,
+            state.commit_context.evaluation_budget(),
+        )
+    }))
+    .map_err(|_| CommandAttemptError::EvaluationPanicked)?;
 
     let resolution = match execution {
         Ok(ExecutionResult::CommitRequired(evaluated)) => {
@@ -673,8 +815,11 @@ mod tests {
         CommandCandidateAwaitingValidation, CommandCandidateCapacityReserved,
         CommandCandidateSequenceAssigned, CommandCandidateStateRead, CommandWriteSetPlanV1,
         CommitIntent, CommittedBatchV1, DeclaredOutcome, DurabilityMode, DurableKeySchemaBindingV1,
-        EmptyCommandBatch, EntityObservation, EntityTarget, ExecutablePlanRef, IdempotencyIdentity,
-        IdempotencyKeyDigest, NonEmptyCommandBatch, StagedBatchMetrics,
+        EmptyCommandBatch, EntityObservation, EntityTarget, ExecutablePlanRef,
+        ExecutionFailureAdmissionRechecked, ExecutionFailureAdmissionResult,
+        ExecutionFailureAwaitingDecision, ExecutionFailureTransitionPort,
+        ExecutionFailureTransitionRequestV1, IdempotencyIdentity, IdempotencyKeyDigest,
+        NonEmptyCommandBatch, StagedBatchMetrics, StorageErrorKind,
         StoredAdmittedProvenanceClaimsV1, StoredContractBundleV1, StoredEntityRecordV1,
         StoredPendingAdmissionV1, TransactionCurrentState,
     };
@@ -1589,6 +1734,7 @@ contract AttemptMaterialization version {version} {{
 
     struct CandidateChainFixture {
         bound: ProvenanceBoundCommandAttempt,
+        exact_current: TransactionCurrentState,
         changed_current: TransactionCurrentState,
         manager: ShardedConflictManager,
         runtime: tokio::runtime::Runtime,
@@ -1620,6 +1766,13 @@ contract AttemptMaterialization version {version} {{
             Vec::new(),
         )
         .expect("complete changed transaction-current state");
+        let exact_current = TransactionCurrentState::new(
+            &snapshot.validation_request(),
+            snapshot.bindings().to_vec(),
+            snapshot.root_validations().to_vec(),
+            Vec::new(),
+        )
+        .expect("complete exact transaction-current state");
 
         let order = Rc::new(RefCell::new(Vec::new()));
         let repository = ScriptedRepository::new(
@@ -1652,6 +1805,7 @@ contract AttemptMaterialization version {version} {{
             .expect("bind exact provenance");
         CandidateChainFixture {
             bound,
+            exact_current,
             changed_current,
             manager,
             runtime,
@@ -1680,6 +1834,178 @@ contract AttemptMaterialization version {version} {{
             trace: Rc::clone(&trace),
         };
         (port, trace)
+    }
+
+    #[derive(Clone, Copy)]
+    enum FailureTerminalizeBehavior {
+        Commit,
+        Error(StorageErrorKind),
+    }
+
+    struct ExecutionFailureTrace {
+        order: Rc<RefCell<Vec<&'static str>>>,
+        current: RefCell<Option<TransactionCurrentState>>,
+        behavior: FailureTerminalizeBehavior,
+        manager: ShardedConflictManager,
+        keys: Vec<ConflictKey>,
+        lease_held_at_storage_action: Cell<Option<bool>>,
+    }
+
+    impl ExecutionFailureTrace {
+        fn record_whether_lease_is_held(&self) {
+            let mut probe = self.manager.acquire_mut(
+                self.keys.clone(),
+                future_deadline(),
+                CancellationToken::new(),
+            );
+            let mut context = Context::from_waker(Waker::noop());
+            self.lease_held_at_storage_action.set(Some(matches!(
+                probe.as_mut().poll(&mut context),
+                Poll::Pending
+            )));
+        }
+    }
+
+    struct InstrumentedExecutionFailurePort {
+        trace: Rc<ExecutionFailureTrace>,
+    }
+
+    struct InstrumentedExecutionFailureRechecked {
+        trace: Rc<ExecutionFailureTrace>,
+        request: ExecutionFailureTransitionRequestV1,
+    }
+
+    struct InstrumentedExecutionFailureAwaiting {
+        trace: Rc<ExecutionFailureTrace>,
+        expected: StoredExecutionFailedV1,
+    }
+
+    impl ExecutionFailureTransitionPort for InstrumentedExecutionFailurePort {
+        type Rechecked = InstrumentedExecutionFailureRechecked;
+
+        fn begin_execution_failure(
+            &self,
+            request: ExecutionFailureTransitionRequestV1,
+        ) -> Result<ExecutionFailureAdmissionResult<Self::Rechecked>, StorageError> {
+            self.trace.order.borrow_mut().push("failure-begin");
+            Ok(ExecutionFailureAdmissionResult::Rechecked(
+                InstrumentedExecutionFailureRechecked {
+                    trace: Rc::clone(&self.trace),
+                    request,
+                },
+            ))
+        }
+    }
+
+    impl ExecutionFailureAdmissionRechecked for InstrumentedExecutionFailureRechecked {
+        type AwaitingDecision = InstrumentedExecutionFailureAwaiting;
+
+        fn read_transaction_current(
+            self,
+        ) -> Result<(Self::AwaitingDecision, TransactionCurrentState), StorageError> {
+            self.trace.order.borrow_mut().push("failure-current-read");
+            let current = self
+                .trace
+                .current
+                .borrow_mut()
+                .take()
+                .expect("one execution-failure current read");
+            Ok((
+                InstrumentedExecutionFailureAwaiting {
+                    trace: self.trace,
+                    expected: self.request.terminal_record(),
+                },
+                current,
+            ))
+        }
+    }
+
+    impl ExecutionFailureAwaitingDecision for InstrumentedExecutionFailureAwaiting {
+        fn terminalize(self) -> Result<StoredExecutionFailedV1, StorageError> {
+            self.trace.record_whether_lease_is_held();
+            self.trace.order.borrow_mut().push("failure-terminalize");
+            let result = match self.trace.behavior {
+                FailureTerminalizeBehavior::Commit => Ok(self.expected.clone()),
+                FailureTerminalizeBehavior::Error(kind) => Err(StorageError::new(kind, None)),
+            };
+            drop(self);
+            result
+        }
+
+        fn abandon(self) {
+            self.trace.record_whether_lease_is_held();
+            self.trace.order.borrow_mut().push("failure-abandon");
+            drop(self);
+        }
+    }
+
+    impl Drop for InstrumentedExecutionFailureAwaiting {
+        fn drop(&mut self) {
+            self.trace.record_whether_lease_is_held();
+            self.trace.order.borrow_mut().push("failure-storage-drop");
+        }
+    }
+
+    struct ExecutionFailureFixture {
+        fault: ExecutionFaultAttempt,
+        exact_current: TransactionCurrentState,
+        changed_current: TransactionCurrentState,
+        manager: ShardedConflictManager,
+        runtime: tokio::runtime::Runtime,
+        keys: Vec<ConflictKey>,
+        order: Rc<RefCell<Vec<&'static str>>>,
+    }
+
+    fn execution_failure_fixture() -> ExecutionFailureFixture {
+        let CandidateChainFixture {
+            bound,
+            exact_current,
+            changed_current,
+            manager,
+            runtime,
+            keys,
+            order,
+        } = candidate_chain_fixture();
+        let RolledBackCandidateDisposition::ExecutionFault(fault) = bound
+            .after_proven_rollback_for_test(
+                CandidateValidationRejection::CommitCheckArithmeticFault,
+            )
+        else {
+            panic!("late arithmetic must retain execution-failure evidence")
+        };
+        order.borrow_mut().clear();
+        ExecutionFailureFixture {
+            fault: *fault,
+            exact_current,
+            changed_current,
+            manager,
+            runtime,
+            keys,
+            order,
+        }
+    }
+
+    fn instrumented_execution_failure_port(
+        current: TransactionCurrentState,
+        behavior: FailureTerminalizeBehavior,
+        manager: ShardedConflictManager,
+        keys: Vec<ConflictKey>,
+        order: Rc<RefCell<Vec<&'static str>>>,
+    ) -> (InstrumentedExecutionFailurePort, Rc<ExecutionFailureTrace>) {
+        let trace = Rc::new(ExecutionFailureTrace {
+            order,
+            current: RefCell::new(Some(current)),
+            behavior,
+            manager,
+            keys,
+            lease_held_at_storage_action: Cell::new(None),
+        });
+        (
+            InstrumentedExecutionFailurePort {
+                trace: Rc::clone(&trace),
+            },
+            trace,
+        )
     }
 
     fn request_id(seed: u8) -> RequestId {
@@ -1889,6 +2215,7 @@ contract AttemptMaterialization version {version} {{
     fn storage_candidate_chain_preserves_one_intent_and_rolls_back_before_lease_release() {
         let CandidateChainFixture {
             bound,
+            exact_current: _,
             changed_current,
             manager,
             runtime,
@@ -1945,6 +2272,7 @@ contract AttemptMaterialization version {version} {{
     fn dropping_bound_state_read_rolls_back_storage_before_releasing_the_lease() {
         let CandidateChainFixture {
             bound,
+            exact_current: _,
             changed_current,
             manager,
             runtime,
@@ -2054,6 +2382,256 @@ contract AttemptMaterialization version {version} {{
         runtime
             .block_on(competing)
             .expect("terminalization evidence releases capability only when dropped")
+            .release();
+    }
+
+    #[test]
+    fn execution_failure_terminalizes_only_exact_current_evidence() {
+        let ExecutionFailureFixture {
+            fault,
+            exact_current,
+            changed_current: _,
+            manager,
+            runtime,
+            keys,
+            order,
+        } = execution_failure_fixture();
+        let (port, trace) = instrumented_execution_failure_port(
+            exact_current,
+            FailureTerminalizeBehavior::Commit,
+            manager.clone(),
+            keys.clone(),
+            Rc::clone(&order),
+        );
+
+        let crate::command_execution_failure::ExecutionFailureTransitionStart::Ready(current) =
+            crate::command_execution_failure::begin_execution_failure_transition(&port, fault)
+        else {
+            panic!("exact Pending must enter execution-failure current read")
+        };
+        let crate::command_execution_failure::ExecutionFailureCurrentDecision::Ready(checked) =
+            current.read_transaction_current()
+        else {
+            panic!("exact dependency evidence must authorize terminalization")
+        };
+        let crate::command_execution_failure::ExecutionFailureTerminalizeResult::Terminalized(
+            failure,
+        ) = checked.terminalize()
+        else {
+            panic!("exact terminal record must become durable")
+        };
+
+        assert_eq!(failure.code(), ExecutionFailureCode::ArithmeticFault);
+        assert_eq!(trace.lease_held_at_storage_action.get(), Some(true));
+        assert_eq!(
+            &*order.borrow(),
+            &[
+                "failure-begin",
+                "failure-current-read",
+                "failure-terminalize",
+                "failure-storage-drop",
+            ]
+        );
+        acquire_and_release(&runtime, &manager, keys);
+    }
+
+    #[test]
+    fn changed_execution_failure_dependencies_abandon_before_bounded_retry() {
+        let ExecutionFailureFixture {
+            fault,
+            exact_current: _,
+            changed_current,
+            manager,
+            runtime,
+            keys,
+            order,
+        } = execution_failure_fixture();
+        let (port, trace) = instrumented_execution_failure_port(
+            changed_current,
+            FailureTerminalizeBehavior::Commit,
+            manager.clone(),
+            keys.clone(),
+            Rc::clone(&order),
+        );
+
+        let crate::command_execution_failure::ExecutionFailureTransitionStart::Ready(current) =
+            crate::command_execution_failure::begin_execution_failure_transition(&port, fault)
+        else {
+            panic!("exact Pending must enter execution-failure current read")
+        };
+        let crate::command_execution_failure::ExecutionFailureCurrentDecision::Retry(retry) =
+            current.read_transaction_current()
+        else {
+            panic!("changed dependencies must abandon and retry")
+        };
+
+        assert_eq!(retry.completed_attempts(), 1);
+        assert_eq!(trace.lease_held_at_storage_action.get(), Some(true));
+        assert_eq!(
+            &*order.borrow(),
+            &[
+                "failure-begin",
+                "failure-current-read",
+                "failure-abandon",
+                "failure-storage-drop",
+            ]
+        );
+        drop(retry);
+        acquire_and_release(&runtime, &manager, keys);
+    }
+
+    #[test]
+    fn dropping_checked_execution_failure_rolls_back_before_releasing_lease() {
+        let ExecutionFailureFixture {
+            fault,
+            exact_current,
+            changed_current: _,
+            manager,
+            runtime,
+            keys,
+            order,
+        } = execution_failure_fixture();
+        let (port, trace) = instrumented_execution_failure_port(
+            exact_current,
+            FailureTerminalizeBehavior::Commit,
+            manager.clone(),
+            keys.clone(),
+            Rc::clone(&order),
+        );
+
+        let crate::command_execution_failure::ExecutionFailureTransitionStart::Ready(current) =
+            crate::command_execution_failure::begin_execution_failure_transition(&port, fault)
+        else {
+            panic!("exact Pending must enter execution-failure current read")
+        };
+        let crate::command_execution_failure::ExecutionFailureCurrentDecision::Ready(checked) =
+            current.read_transaction_current()
+        else {
+            panic!("exact dependencies must reach checked terminalization")
+        };
+        drop(checked);
+
+        assert_eq!(trace.lease_held_at_storage_action.get(), Some(true));
+        assert_eq!(
+            &*order.borrow(),
+            &[
+                "failure-begin",
+                "failure-current-read",
+                "failure-storage-drop",
+            ]
+        );
+        acquire_and_release(&runtime, &manager, keys);
+    }
+
+    #[test]
+    fn execution_failure_proven_abort_never_enters_uncertain_recovery() {
+        let ExecutionFailureFixture {
+            fault,
+            exact_current,
+            changed_current: _,
+            manager,
+            runtime,
+            keys,
+            order,
+        } = execution_failure_fixture();
+        let (port, trace) = instrumented_execution_failure_port(
+            exact_current,
+            FailureTerminalizeBehavior::Error(StorageErrorKind::Unavailable),
+            manager.clone(),
+            keys.clone(),
+            Rc::clone(&order),
+        );
+
+        let crate::command_execution_failure::ExecutionFailureTransitionStart::Ready(current) =
+            crate::command_execution_failure::begin_execution_failure_transition(&port, fault)
+        else {
+            panic!("exact Pending must enter execution-failure current read")
+        };
+        let crate::command_execution_failure::ExecutionFailureCurrentDecision::Ready(checked) =
+            current.read_transaction_current()
+        else {
+            panic!("exact dependencies must reach terminalization")
+        };
+        let crate::command_execution_failure::ExecutionFailureTerminalizeResult::ProvenAbort(error) =
+            checked.terminalize()
+        else {
+            panic!("proved storage abort must not become uncertain")
+        };
+
+        assert_eq!(error.kind(), StorageErrorKind::Unavailable);
+        assert_eq!(trace.lease_held_at_storage_action.get(), Some(true));
+        acquire_and_release(&runtime, &manager, keys);
+    }
+
+    #[test]
+    fn uncertain_execution_failure_retains_attempt_until_same_key_proves_noncommit() {
+        let ExecutionFailureFixture {
+            fault,
+            exact_current,
+            changed_current: _,
+            manager,
+            runtime,
+            keys,
+            order,
+        } = execution_failure_fixture();
+        let lookup_candidates = fault.lookup_candidates().clone();
+        let pending = fault.pending().clone();
+        let (port, trace) = instrumented_execution_failure_port(
+            exact_current,
+            FailureTerminalizeBehavior::Error(StorageErrorKind::CommitStatusUnknown),
+            manager.clone(),
+            keys.clone(),
+            Rc::clone(&order),
+        );
+
+        let crate::command_execution_failure::ExecutionFailureTransitionStart::Ready(current) =
+            crate::command_execution_failure::begin_execution_failure_transition(&port, fault)
+        else {
+            panic!("exact Pending must enter execution-failure current read")
+        };
+        let crate::command_execution_failure::ExecutionFailureCurrentDecision::Ready(checked) =
+            current.read_transaction_current()
+        else {
+            panic!("exact dependencies must reach terminalization")
+        };
+        let crate::command_execution_failure::ExecutionFailureTerminalizeResult::StatusUnknown(
+            uncertain,
+        ) = checked.terminalize()
+        else {
+            panic!("unknown commit status must retain same-attempt evidence")
+        };
+        assert_eq!(
+            uncertain.cause().kind(),
+            StorageErrorKind::CommitStatusUnknown
+        );
+        assert_eq!(uncertain.expected_failure().pending(), &pending);
+        assert_eq!(trace.lease_held_at_storage_action.get(), Some(true));
+
+        let mut competing =
+            manager.acquire_mut(keys.clone(), future_deadline(), CancellationToken::new());
+        let mut context = Context::from_waker(Waker::noop());
+        assert!(matches!(
+            competing.as_mut().poll(&mut context),
+            Poll::Pending
+        ));
+        let repository = ScriptedRepository::new(
+            lookup_candidates,
+            AdmissionLookupResultV1::Found(Box::new(StoredAdmissionStateV1::Pending(pending))),
+            Rc::clone(&order),
+        );
+        let crate::command_execution_failure::UncertainExecutionFailureResolution::Retry(retry) =
+            crate::command_execution_failure::resolve_uncertain_execution_failure(
+                &repository,
+                uncertain,
+            )
+        else {
+            panic!("exact Pending lookup must prove noncommit and permit retry")
+        };
+        assert_eq!(retry.completed_attempts(), 1);
+        drop(retry);
+        runtime
+            .block_on(competing)
+            .expect("same-key recovery releases the retained attempt lease")
             .release();
     }
 
@@ -2208,6 +2786,13 @@ contract AttemptMaterialization version {version} {{
     fn lineage_expansion_overflow_returns_pre_runtime_evidence() {
         let desired_raw_bytes = MAX_CANONICAL_DOCUMENT_BYTES - 5;
         let (state, raw_snapshot, note) = evolved_row_fixture(Some(desired_raw_bytes));
+        let exact_current = TransactionCurrentState::new(
+            &raw_snapshot.validation_request(),
+            raw_snapshot.bindings().to_vec(),
+            raw_snapshot.root_validations().to_vec(),
+            Vec::new(),
+        )
+        .expect("complete raw current state");
         let keys = state.raw_conflict_keys.clone();
         let order = Rc::new(RefCell::new(Vec::new()));
         let repository = ScriptedRepository::new(
@@ -2237,10 +2822,8 @@ contract AttemptMaterialization version {version} {{
             panic!("overflow must be a dependency-sensitive execution fault")
         };
         let ExecutionFaultAttempt::ResourceLimit {
-            state,
-            lease,
-            evidence,
-        } = attempt
+            state, evidence, ..
+        } = &attempt
         else {
             panic!("catalog overflow cannot be paired with arithmetic")
         };
@@ -2265,7 +2848,32 @@ contract AttemptMaterialization version {version} {{
             "overflow evidence must retain raw data, not a normalized value"
         );
         assert_eq!(&*order.borrow(), &["pending-recheck", "snapshot"]);
-        drop(lease);
+        order.borrow_mut().clear();
+        let (port, trace) = instrumented_execution_failure_port(
+            exact_current,
+            FailureTerminalizeBehavior::Commit,
+            manager.clone(),
+            keys.clone(),
+            Rc::clone(&order),
+        );
+        let crate::command_execution_failure::ExecutionFailureTransitionStart::Ready(current) =
+            crate::command_execution_failure::begin_execution_failure_transition(&port, attempt)
+        else {
+            panic!("lineage resource evidence must enter exact current recheck")
+        };
+        let crate::command_execution_failure::ExecutionFailureCurrentDecision::Ready(checked) =
+            current.read_transaction_current()
+        else {
+            panic!("exact raw lineage evidence must authorize terminalization")
+        };
+        let crate::command_execution_failure::ExecutionFailureTerminalizeResult::Terminalized(
+            failure,
+        ) = checked.terminalize()
+        else {
+            panic!("reproduced lineage overflow must become terminal")
+        };
+        assert_eq!(failure.code(), ExecutionFailureCode::ResourceLimit);
+        assert_eq!(trace.lease_held_at_storage_action.get(), Some(true));
         acquire_and_release(&runtime, &manager, keys);
     }
 
