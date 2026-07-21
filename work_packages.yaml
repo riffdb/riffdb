@@ -1,4 +1,4 @@
-spec_version: '0.19'
+spec_version: '0.20'
 product: RiffDB
 repository: riffdb
 status: implementation-handoff
@@ -415,6 +415,9 @@ work_packages:
   - Schema-derived, canonical field-introduction ledgers and opaque exact-writer null-fill masks for entity/event
     owners, preserving unknown fields and authorizing only strict ancestor optional-null omissions without trusting a
     compatibility report as proof
+  - Opaque process-local projection event-materialization view that binds the exact resolved projection bundle and
+    plan to an enclosing commit's exact writer-plan reference and immutable durable event, reuses the catalog-proved
+    omission authority, preserves unknown fields, and never changes event bytes/hash or crosses a storage trait
   - Activation preparation checks for count, exact canonical bytes, and proof charge before coordinator submission,
     plus startup InvalidHistoricalEvidence classification for any broken or over-limit active chain; storage reads
     remain CatalogError::Storage and expected-active comparison remains coordinator-owned
@@ -1601,6 +1604,7 @@ work_packages:
 - id: WP-170
   name: Projection core
   depends_on:
+  - WP-050
   - WP-100
   - WP-120
   objective: Maintain event-derived count and sum projections with a durable monotonic frontier and typed read-after-sequence
@@ -1624,7 +1628,11 @@ work_packages:
   - crates/riffdb-projection/**
   - tests/projection/**
   deliverables:
-  - Filter/count/sum/group execution
+  - Filter/count/sum/group execution only over the catalog-owned opaque event-materialization view for the exact
+    resolved projection bundle, never over an unnormalized durable payload
+  - Identical live-catch-up and rebuild normalization for strict-ancestor optional-null event fields, with immutable
+    durable event bytes/hash, unknown-field preservation, and fail-closed foreign-writer or exact/descendant/genesis/
+    required-field omission handling
   - Durable state and frontier
   - Idempotent commit application
   - Waiter notification
@@ -1634,6 +1642,8 @@ work_packages:
   - Named state/frontier failpoints and redaction-safe telemetry hooks
   - Bounded query, status, and wait source using exact projection identity, generation, FrontierPosition, lower
     continuation, one-snapshot pagination, marker-hash equality, retirement, and lifecycle semantics
+  - Projection fixtures proving ancestor optional event-field materialization, foreign-writer and descendant/required
+    omission rejection, unknown-field preservation, raw-event immutability, and identical rebuilt state/frontier
   acceptance_commands:
   - cargo test -p riffdb-projection
   - cargo test -p riffdb-projection --test projection_prefix_and_recovery
@@ -1642,7 +1652,10 @@ work_packages:
     owner_crate: riffdb-projection
     manifest: crates/riffdb-projection/Cargo.toml
     path: ../../tests/projection/projection_prefix_and_recovery.rs
-  exit_gate: Projection prefix, monotonic frontier, restart, rebuild, and query-after-sequence properties pass.
+  exit_gate: Catalog-normalized ancestor optional event fields produce identical live and rebuilt projection state,
+    foreign writers and descendant/required omissions fail closed without changing durable event bytes/hash, unknown
+    fields remain preserved, and projection prefix, monotonic frontier, restart, rebuild, and query-after-sequence
+    properties pass.
   human_review_triggers: *id001
 - id: WP-180
   name: Observability and diagnostics

@@ -18,6 +18,10 @@ On 2026-07-20 the maintainer also accepted the bounded active-lineage
 materialization clarification below. It gives optional-null evolution exact
 ancestry proof, omission, activation, and startup semantics without adding a
 bundle field, IR node, durable value, public field, or hash input.
+On 2026-07-20 the maintainer accepted the projection application clarification:
+catalog owns the opaque process-local event-materialization view, projection
+uses it for both catch-up and rebuild, and durable event bytes/hashes and the
+IR-blind storage boundary remain unchanged.
 The accepted initial generated review artifacts are identified outside their own
 bytes by these exact SHA-256 digests:
 
@@ -835,6 +839,20 @@ plan explicitly addresses a field it knows. Storage still receives and validates
 only complete post-images; it performs no field-level merge. Immutable events are
 never persistently decoded and re-encoded merely to add null fields.
 
+For projection application, `riffdb-catalog` resolves the exact projection
+bundle and plan and owns an opaque process-local event-materialization view. It
+combines that exact resolution with the enclosing commit's exact
+`ExecutablePlanRef` and immutable durable event. The view is nonserializable,
+non-durable, non-Protobuf, excluded from every canonical byte string and hash,
+and forbidden across a storage trait. It applies the same introduction ledger
+and null-fill rule above: only a strict-ancestor writer can authorize an omitted
+optional-with-null-default field. A foreign writer, or an exact, descendant,
+genesis, or required-field omission, is rejected. A complete descendant event
+may retain fields unknown to the resolved projection plan; those values remain
+unchanged and invisible to its expressions. Both live catch-up and rebuild use
+this view. Neither catalog nor projection modifies or replaces the original
+payload, event bytes, `EventHash`, or stored copies, and storage remains IR-blind.
+
 Activation preparation walks the exact current chain and checks, with checked
 arithmetic, `current_count + 1`, current canonical bytes plus the candidate's
 exact canonical bytes, and the rebuilt proof charge before coordinator
@@ -970,8 +988,11 @@ consume; contract IR retains no storage dependency.
   byte, IR tag, plan-hash input, or storage dependency.
 - WP-050 owns exact active-chain walking, forward comparator replay, activation
   admission, startup validation, field-introduction derivation, proof framing,
-  and opaque masks. WP-100 owns their two command-record applications; WP-080
-  receives only normalized records and rejects every remaining omission.
+  opaque masks, and the opaque process-local projection event-materialization
+  view. WP-100 owns the two command-record applications; WP-080 receives only
+  normalized records and rejects every remaining omission. WP-170 depends
+  directly on WP-050 and consumes the catalog view for both live catch-up and
+  rebuild; it does not interpret raw durable payloads against contract IR.
 - Custom codec code is security-sensitive and requires malformed-byte property or
   fuzz coverage in addition to golden vectors.
 
@@ -1014,6 +1035,10 @@ never disclose lineage, contract bytes, field values, or hashes.
 - Ancestor-record/event null materialization, missing-required failure,
   historical-plan unknown-field preservation, deployment-between-retry hashing,
   and transitive full-record outcome compatibility fixtures.
+- Projection catch-up/rebuild fixtures proving strict-ancestor optional event
+  null materialization, foreign-writer and exact/descendant/genesis/required
+  omission rejection, unknown-field preservation, and byte-for-byte immutable
+  durable event payloads and hashes.
 - Catalog boundary tests cover 4,096 versus 4,097 active bundles, exactly 64 MiB
   versus one byte more summed canonical bundle bytes, a synthetic checked proof-
   charge calculator at exactly 2 MiB and one byte more, and the separately valid
@@ -1040,7 +1065,7 @@ never disclose lineage, contract bytes, field values, or hashes.
   `TXN-012`, `TXN-030`, `MCP-020`, `REC-001`, and `REC-002`
 - **Defines or blocks:** focused foundational `WP-010` follow-up, `WP-040`,
   `WP-050`, `WP-060`, formal durable-schema `WP-065`, `WP-080`, and formal
-  public-schema `WP-127`
+  public-schema `WP-127`, plus `WP-170` projection consumption
 - **Final evidence:** `WP-140`, `WP-200`
 
 ## Decision Deadline
@@ -1050,4 +1075,5 @@ artifacts, executable IR, plan hashes, or bundle fixtures. ADR-0003, ADR-0010,
 ADR-0014, ADR-0015, and ADR-0016 must also be Accepted and listed by
 `work_packages.yaml` before implementation starts. The accepted lineage
 clarification must be present before WP-050 publishes active/historical plan
-resolution and before WP-100 publishes record normalization.
+resolution, before WP-100 publishes record normalization, and before WP-170
+publishes event consumption or rebuild semantics.

@@ -6,7 +6,7 @@
 **Tagline:** *Vibe fast. Commit safely.*  
 **Category:** Contract-first operational database for agent-built applications  
 
-**Version:** 0.19
+**Version:** 0.20
 **Status:** Architecture-approved implementation handoff
 **Date:** 20 July 2026
 **Audience:** Coding agents, database engineers, compiler engineers, security reviewers, and technical product leads  
@@ -55,6 +55,7 @@
 | 0.17 | 2026-07-20 | Froze the accepted WP-100 command-executor result, error, completion-ownership, and cancellation boundary; and approved the narrow Tonic 0.14.6 dependency graph whose transport-only feature unification enables `base64` 0.22.1 `std` without changing auth's sole direct ownership or admitting TLS, compression, cryptography, or another base64 version. |
 | 0.18 | 2026-07-20 | Applied the accepted checked-plan derived-index ceilings and index-epoch exhaustion behavior: conservative IR-v1 admission rejects plans whose successful mutation shape can exceed pre-sequence storage bounds, while runtime guards remain defense in depth and an exhausted epoch aborts before sequence assignment, stops the coordinator, and never enters uncertain-write fencing. |
 | 0.19 | 2026-07-20 | Applied the accepted bounded active-lineage materialization clarification: catalog resolution proves exact parent/hash ancestry and optional-null field introductions under fixed count, canonical-byte, and process-local proof ceilings; commit normalizes both owned snapshots and transaction-current records before evaluation; runtime rejects every unproved omission; and activation/startup fail closed without changing durable, protocol, IR, or plan-hash formats. |
+| 0.20 | 2026-07-20 | Clarified the accepted projection side of compatible event-payload evolution: catalog owns the opaque process-local event-materialization view used by projections, projection depends directly on catalog and consumes only that normalized view, and immutable event bytes/hashes plus the IR-blind storage boundary remain unchanged. |
 
 ### Normative language
 
@@ -297,7 +298,7 @@ The binary targets are `riffdbd` from `riffdb-server`, `riffdb` from `riffdb-cli
 | `riffdb-contract-syntax` | Lexer, parser, source spans, syntax AST, and parser diagnostics | Types and parser tooling only |
 | `riffdb-contract-ir` | Typed HIR, executable IR, plans, immutable projection group schemas, and contract bundle structs | Types; no parser implementation, storage, compiler implementation, or runtime dependency |
 | `riffdb-contract-compiler` | Name resolution, type checking, invariant classification, locality analysis, plan generation, and JSON Schema output | Syntax and IR; no storage, service, or transport dependency |
-| `riffdb-catalog` | Immutable contract bundle persistence, compatibility checks, active-version changes, catalog notifications, bounded active-lineage materialization proofs, and IR-aware validation of bounded same-session historical startup evidence | IR and storage API; its opaque process-local lineage and `ValidatedCatalogHistory` proofs never cross a storage trait |
+| `riffdb-catalog` | Immutable contract bundle persistence, compatibility checks, active-version changes, catalog notifications, bounded active-lineage materialization proofs, opaque process-local projection event-materialization views, and IR-aware validation of bounded same-session historical startup evidence | IR and storage API; its opaque process-local proofs and materialization views never cross a storage trait |
 | `riffdb-storage-api` | Semantic snapshots, database initialization, structural startup sessions/evidence/type-state ports, evaluated commands, commit intents, durable DTOs, typed transitions/readers, the narrow durable `proto_codec` mapping bridge, and ADR-0017 projection-schema consumers | Types/errors; proto only through `proto_codec`; contract IR only for immutable `ProjectionGroupSchema`/`BoundProjectionGroupSchema` values in the projection-schema module; no clock, entropy, compiler, command-plan interpretation, historical-plan validation, runtime, commit, service, transport, or concrete-engine dependency |
 | `riffdb-storage-memory` | Deterministic reference storage implementation used by model and semantic tests | Storage API only |
 | `riffdb-storage-redb` | Durable POC implementation, table layout, complete structural integrity/evidence scan, dormant opened ports, backup, restore, and engine benchmarks | Storage API and `redb`; no contract IR, `ValidatedCatalogHistory`, readiness composition, or API transports |
@@ -316,7 +317,7 @@ The binary targets are `riffdbd` from `riffdb-server`, `riffdb` from `riffdb-cli
 | `riffdb-mcp-stdio` | `riffdb-mcp` local stdio bridge that invokes the shared public service | MCP client/server transport glue only; no storage access |
 | `riffdb-cli` | `riffdb` operator and developer CLI using public APIs | Rust client and bounded local configuration; may depend only on the isolated pure `riffdb-auth::bootstrap_secret` module for offline bootstrap credential generation/validation and protected-file loading, never on authentication, policy, storage, or service internals |
 | `riffdb-outbox` | Durable event dispatch state machine, leases, retries, deduplication metadata, and connectors | Storage API and Tokio; outside command execution |
-| `riffdb-projection` | POC event-derived filters, counts, sums, durable frontiers, rebuilds, and read-after-sequence outcomes | Ordered commit scans and storage API |
+| `riffdb-projection` | POC event-derived filters, counts, sums, durable frontiers, rebuilds, and read-after-sequence outcomes over catalog-normalized event views | Catalog plus ordered commit scans and storage API; no direct durable-event schema interpretation or storage implementation dependency |
 | `riffdb-observability` | Structured tracing, metrics, health signals, and safe telemetry helpers | Cross-cutting interfaces without business semantics |
 | `riffdb-diagnostics` | Bounded explain output, compiler/runtime diagnostic rendering, and safe operator-facing reports | Types, compiler plans, and observability helpers |
 | `riffdb-testkit` | Reference model, generated histories, failpoints, temporary servers, recovery harnesses, and shared fixtures | May depend on implementation crates only in test contexts |
@@ -330,6 +331,7 @@ The binary targets are `riffdbd` from `riffdb-server`, `riffdb` from `riffdb-cli
 - MCP and gRPC MUST share the `riffdb-service` authorization and execution entry points.
 - `riffdb-proto` MUST NOT depend on `riffdb-storage-api`; only the narrowly scoped storage-owned `proto_codec` bridge may map semantic durable DTOs to generated messages.
 - `riffdb-storage-api` MAY consume only the two immutable checked ADR-0017 projection schema values from `riffdb-contract-ir`; it MUST NOT consume `CommandPlan` or compiler/runtime services, and `riffdb-contract-ir` MUST NOT depend on storage.
+- `riffdb-projection` MUST resolve projection semantics and materialize scanned event payloads through `riffdb-catalog`; it MUST NOT interpret a raw durable event against contract IR or create a second ancestry/null-fill path. Storage remains IR-blind.
 - gRPC and MCP HTTP MAY call only the auth-owned `CredentialAuthenticator` before constructing service request context; production MCP stdio, CLI, and SDK use public gRPC.
 - Generated code MUST be checked in only when generation is deterministic and CI verifies it is current.
 
@@ -1062,6 +1064,21 @@ lineage/version/hash. Present fields unknown to the executing historical schema
 remain attached to the canonical record unchanged but invisible to its
 expressions. Normalization emits fields in canonical `FieldId` order and never
 drops or rewrites an unknown value.
+
+Projection consumption uses the same catalog-proved omission authority without
+rewriting an authoritative event. `riffdb-catalog` resolves the exact projection
+bundle and plan, combines them with the enclosing commit's exact
+`ExecutablePlanRef` and immutable durable event, and returns an opaque
+process-local event-materialization view. The view is nonserializable,
+non-durable, non-Protobuf, and forbidden across a storage trait. It retains
+unknown payload fields unchanged but exposes only fields known to the exact
+resolved projection plan to projection expressions. It may add nulls only for
+strict-ancestor optional-with-null-default fields under the rule above. A
+foreign writer, or an exact, descendant, genesis, or required-field omission,
+fails closed; a descendant event with no such omission may retain fields unknown
+to the resolved plan. The original event payload, canonical bytes, `EventHash`,
+and stored copies remain byte-for-byte immutable, and storage never interprets
+the event schema or contract IR.
 
 Activation preparation computes `current_count + 1`,
 `current_canonical_bytes + candidate.canonical_bytes().len()`, and the rebuilt
@@ -3100,6 +3117,14 @@ the matching frontier advance are one atomic transaction. A duplicate is an
 equal no-op only when identity, generation, sequence, and apply hash all match;
 gaps, missing markers, hash mismatch, or frontier inversion fail closed.
 
+Before filter, key, or measure evaluation, the worker MUST pass each relevant
+immutable event, together with its enclosing commit's exact writer-plan
+reference, through the catalog-owned event-materialization view for the exact
+resolved projection bundle. Live catch-up and rebuild use this identical path.
+The worker MUST NOT evaluate a raw durable payload as though it already matched
+the projection's source-event schema, and it MUST NOT persist the normalized
+view or replace the event's original bytes or hash.
+
 Group state keys use versioned prefix `0x47 0x01`, the exact projection identity,
 generation, and length-framed ADR-0011 canonical scalar group values. Apply keys
 use `0x41 0x01`; the generation-neutral control key uses `0x46 0x01`. Grouping
@@ -3713,7 +3738,7 @@ The graph uses hard dependencies. Parallel work is encouraged only after shared 
 | `WP-140` | Native MCP interface | WP-040, WP-120, WP-130 | `rmcp` stdio-over-gRPC and HTTP adapters, dynamic tools/resources, schema results, progress/cancellation | MCP conformance and generated-tool tests pass |
 | `WP-150` | CLI and local developer flow | WP-130 | `riffdb`, config, local token flow, JSON/human output | Acceptance steps executable without internal APIs |
 | `WP-160` | Durable outbox | WP-100, WP-120 | Event scanner, delivery state, test connector, retry and duplicate simulations | Crash and duplicate-delivery tests pass |
-| `WP-170` | Projection core | WP-100, WP-120 | Event consumers, count/sum state, durable frontier, read-after-sequence query | Prefix and restart properties pass |
+| `WP-170` | Projection core | WP-050, WP-100, WP-120 | Catalog-normalized event consumers, count/sum state, durable frontier, rebuild, and read-after-sequence query | Ancestor-event materialization, prefix, restart, rebuild, and frontier properties pass |
 | `WP-180` | Observability and diagnostics | WP-120 | Tracing, metrics, health, explain output, redaction | Required telemetry present without sensitive labels |
 | `WP-185` | Server composition | WP-130, WP-140, WP-160, WP-170, WP-180 | Extend the runnable WP-130 `riffdbd` graph with MCP HTTP, outbox, projection, observability, and derived health without replacing P1 startup/lifecycle providers | Extended composition tests pass while retaining the WP-130 restart proof |
 | `WP-190` | Integrated crash harness | WP-070, WP-100, WP-160, WP-170, WP-185 | Named failpoints, process controller, recovery assertions | Full cross-component failpoint matrix passes |
