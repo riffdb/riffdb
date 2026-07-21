@@ -435,9 +435,9 @@ mod tests {
     };
     use riffdb_types::{
         AggregateTypeId, CapabilityPermissionKindV1, CapabilityPermissionV1,
-        CapabilityPermissionsV1, CommandId, ContractLineage, EntityFieldVisibilityV1, EntityTypeId,
-        FieldId, IndexId, PartitionKeyBuilder, ProjectionId, ProjectionIdentity,
-        ProjectionPlanHash, RequestId, ScopedPartitionV1, TenantId,
+        CapabilityPermissionsV1, CommandId, CommitSequence, ContractLineage,
+        EntityFieldVisibilityV1, EntityTypeId, FieldId, IndexId, PartitionKeyBuilder, ProjectionId,
+        ProjectionIdentity, ProjectionPlanHash, RequestId, ScopedPartitionV1, TenantId,
     };
 
     use super::*;
@@ -871,6 +871,154 @@ mod tests {
             ),
             Err(PolicyCode::TenantScopeMismatch)
         );
+    }
+
+    #[test]
+    fn unfiltered_administrative_reads_require_global_tenant_and_all_partitions() {
+        let cases = [
+            (
+                OperationRequest::get_commit(CommitSequence::first()),
+                CapabilityPermissionKindV1::ReadCommit,
+            ),
+            (
+                OperationRequest::scan_commits(NonZeroU16::new(10).expect("nonzero rows")),
+                CapabilityPermissionKindV1::ScanCommits,
+            ),
+            (
+                OperationRequest::subscribe_to_commits(),
+                CapabilityPermissionKindV1::SubscribeCommits,
+            ),
+            (
+                OperationRequest::trace_provenance(crate::ProvenanceSelector::Commit(
+                    CommitSequence::first(),
+                )),
+                CapabilityPermissionKindV1::ReadProvenance,
+            ),
+            (
+                OperationRequest::list_pending_outbox_deliveries(
+                    NonZeroU16::new(10).expect("nonzero rows"),
+                ),
+                CapabilityPermissionKindV1::InspectOutbox,
+            ),
+        ];
+
+        for (request, permission_kind) in cases {
+            let permission = CapabilityPermissionV1::unparameterized(permission_kind)
+                .expect("administrative permission");
+            let tenant_grant = grant(
+                TenantScope::Tenant(TenantId::new("tenant-a").expect("valid tenant")),
+                PartitionScopeV1::All,
+                vec![permission.clone()],
+                Vec::new(),
+                50,
+                Vec::new(),
+            );
+            let (principal, current, environment) = facts(tenant_grant);
+            assert_eq!(
+                evaluate(
+                    &principal,
+                    &current,
+                    current.database_id,
+                    &environment,
+                    timestamp(15),
+                    &request,
+                ),
+                Err(PolicyCode::TenantScopeMismatch)
+            );
+
+            let partition_grant = grant(
+                TenantScope::Global,
+                explicit_partition(),
+                vec![permission.clone()],
+                Vec::new(),
+                50,
+                Vec::new(),
+            );
+            let (principal, current, environment) = facts(partition_grant);
+            assert_eq!(
+                evaluate(
+                    &principal,
+                    &current,
+                    current.database_id,
+                    &environment,
+                    timestamp(15),
+                    &request,
+                ),
+                Err(PolicyCode::PartitionScopeMismatch)
+            );
+
+            let global_grant = grant(
+                TenantScope::Global,
+                PartitionScopeV1::All,
+                vec![permission],
+                Vec::new(),
+                50,
+                Vec::new(),
+            );
+            let (principal, current, environment) = facts(global_grant);
+            let obligations = evaluate(
+                &principal,
+                &current,
+                current.database_id,
+                &environment,
+                timestamp(15),
+                &request,
+            )
+            .expect("global administrative read is allowed");
+            assert_eq!(obligations.effective_tenant_scope(), &TenantScope::Global);
+            assert_eq!(
+                obligations.partition_constraint(),
+                Some(&PartitionConstraint::Filter(PartitionScopeV1::All))
+            );
+        }
+    }
+
+    #[test]
+    fn server_statistics_require_global_tenant_without_a_partition_constraint() {
+        let permission =
+            CapabilityPermissionV1::unparameterized(CapabilityPermissionKindV1::ReadStatistics)
+                .expect("administrative permission");
+        let tenant_grant = grant(
+            TenantScope::Tenant(TenantId::new("tenant-a").expect("valid tenant")),
+            PartitionScopeV1::All,
+            vec![permission.clone()],
+            Vec::new(),
+            50,
+            Vec::new(),
+        );
+        let (principal, current, environment) = facts(tenant_grant);
+        assert_eq!(
+            evaluate(
+                &principal,
+                &current,
+                current.database_id,
+                &environment,
+                timestamp(15),
+                &OperationRequest::get_statistics(),
+            ),
+            Err(PolicyCode::TenantScopeMismatch)
+        );
+
+        let global_grant = grant(
+            TenantScope::Global,
+            explicit_partition(),
+            vec![permission],
+            Vec::new(),
+            50,
+            Vec::new(),
+        );
+        let (principal, current, environment) = facts(global_grant);
+        let obligations = evaluate(
+            &principal,
+            &current,
+            current.database_id,
+            &environment,
+            timestamp(15),
+            &OperationRequest::get_statistics(),
+        )
+        .expect("global server-statistics authority is allowed");
+        assert_eq!(obligations.effective_tenant_scope(), &TenantScope::Global);
+        assert_eq!(obligations.partition_constraint(), None);
     }
 
     #[test]

@@ -940,8 +940,19 @@ impl AuthorizedDiscovery {
                 | FixedToolCandidate::GetEntity
                 | FixedToolCandidate::ScanIndex
                 | FixedToolCandidate::QueryProjection
+                | FixedToolCandidate::GetCommit
+                | FixedToolCandidate::ScanCommits
+                | FixedToolCandidate::TraceProvenance
+                | FixedToolCandidate::ListPendingOutboxDeliveries
         );
-        let all_partitions_required = matches!(candidate, FixedToolCandidate::QueryProjection);
+        let all_partitions_required = matches!(
+            candidate,
+            FixedToolCandidate::QueryProjection
+                | FixedToolCandidate::GetCommit
+                | FixedToolCandidate::ScanCommits
+                | FixedToolCandidate::TraceProvenance
+                | FixedToolCandidate::ListPendingOutboxDeliveries
+        );
         let global_allowed =
             !global_required || matches!(self.grant.tenant_scope(), TenantScope::Global);
         let partitions_allowed = !all_partitions_required
@@ -1041,7 +1052,9 @@ fn resource_scope_is_discoverable(
     candidate: &DiscoveryResource,
 ) -> bool {
     match candidate {
-        DiscoveryResource::CommandOutcome { .. } => {
+        DiscoveryResource::CommandOutcome { .. }
+        | DiscoveryResource::Commit
+        | DiscoveryResource::Provenance => {
             matches!(grant.tenant_scope(), TenantScope::Global)
                 && matches!(grant.partition_scope(), PartitionScopeV1::All)
         }
@@ -1241,6 +1254,114 @@ mod tests {
                 )
                 .expect("bounded catalog");
             assert_eq!(hidden.command_tools(), &[DiscoveryVisibility::Hidden]);
+        }
+    }
+
+    #[test]
+    fn unfiltered_administrative_discovery_matches_global_all_invocation_scope() {
+        let tool_cases = [
+            (
+                FixedToolCandidate::GetCommit,
+                CapabilityPermissionKindV1::ReadCommit,
+            ),
+            (
+                FixedToolCandidate::ScanCommits,
+                CapabilityPermissionKindV1::ScanCommits,
+            ),
+            (
+                FixedToolCandidate::TraceProvenance,
+                CapabilityPermissionKindV1::ReadProvenance,
+            ),
+            (
+                FixedToolCandidate::ListPendingOutboxDeliveries,
+                CapabilityPermissionKindV1::InspectOutbox,
+            ),
+        ];
+        for (candidate, permission_kind) in tool_cases {
+            let permission = CapabilityPermissionV1::unparameterized(permission_kind)
+                .expect("administrative permission");
+            let visibility = |tenant_scope, partition_scope| {
+                discovery(
+                    OperationRequest::discover_command_tools(),
+                    grant(
+                        tenant_scope,
+                        partition_scope,
+                        vec![permission.clone()],
+                        Vec::new(),
+                        Vec::new(),
+                    ),
+                )
+                .tool_catalog(FixedToolCandidate::ALL.as_slice(), &[])
+                .expect("bounded catalog")
+                .fixed_tools()[FixedToolCandidate::ALL
+                    .iter()
+                    .position(|fixed| *fixed == candidate)
+                    .expect("candidate is in the fixed inventory")]
+            };
+
+            assert_eq!(
+                visibility(TenantScope::Global, PartitionScopeV1::All),
+                DiscoveryVisibility::Visible
+            );
+            assert_eq!(
+                visibility(TenantScope::Global, explicit_partition()),
+                DiscoveryVisibility::Hidden
+            );
+            assert_eq!(
+                visibility(
+                    TenantScope::Tenant(
+                        riffdb_types::TenantId::new("tenant-a").expect("valid tenant")
+                    ),
+                    PartitionScopeV1::All,
+                ),
+                DiscoveryVisibility::Hidden
+            );
+        }
+
+        for (candidate, permission_kind) in [
+            (
+                DiscoveryResource::Commit,
+                CapabilityPermissionKindV1::ReadCommit,
+            ),
+            (
+                DiscoveryResource::Provenance,
+                CapabilityPermissionKindV1::ReadProvenance,
+            ),
+        ] {
+            let permission = CapabilityPermissionV1::unparameterized(permission_kind)
+                .expect("administrative permission");
+            let visibility = |tenant_scope, partition_scope| {
+                discovery(
+                    OperationRequest::discover_resources(),
+                    grant(
+                        tenant_scope,
+                        partition_scope,
+                        vec![permission.clone()],
+                        Vec::new(),
+                        Vec::new(),
+                    ),
+                )
+                .resource_catalog(std::slice::from_ref(&candidate))
+                .expect("bounded catalog")
+                .remove(0)
+            };
+            assert!(matches!(
+                visibility(TenantScope::Global, PartitionScopeV1::All),
+                ResourceDiscoveryVisibility::Visible { .. }
+            ));
+            assert_eq!(
+                visibility(TenantScope::Global, explicit_partition()),
+                ResourceDiscoveryVisibility::Hidden
+            );
+            assert_eq!(
+                visibility(
+                    TenantScope::Tenant(
+                        riffdb_types::TenantId::new("tenant-a").expect("valid tenant")
+                    ),
+                    PartitionScopeV1::All,
+                ),
+                ResourceDiscoveryVisibility::Hidden
+            );
         }
     }
 
