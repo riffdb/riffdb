@@ -11,6 +11,8 @@ mod audit_executor;
 mod clock;
 #[allow(dead_code)] // Private semantic slice consumed by the later command executor.
 mod command_admission;
+#[allow(dead_code)] // Private semantic slice consumed by the later command executor.
+mod command_attempt;
 mod command_preparation;
 mod initialization;
 mod outcome;
