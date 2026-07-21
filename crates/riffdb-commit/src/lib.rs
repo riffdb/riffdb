@@ -9,6 +9,8 @@
 mod audit;
 mod audit_executor;
 mod clock;
+#[allow(dead_code)] // Private semantic slice consumed by the later command executor.
+mod command_admission;
 mod command_preparation;
 mod initialization;
 mod outcome;
