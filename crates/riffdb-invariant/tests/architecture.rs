@@ -31,8 +31,12 @@ fn proof_is_opaque_move_only_nonserializable_and_redacted() {
     assert!(INPUT_FACTS_SOURCE.contains("pub struct InputDerivedCommandFacts"));
     assert!(INPUT_FACTS_SOURCE.contains("InputDerivedCommandFacts([REDACTED])"));
     assert!(INPUT_FACTS_SOURCE.contains("normalized_input: CanonicalRecord"));
+    assert!(INPUT_FACTS_SOURCE.contains("binding_entity_keys: Vec<EntityKey>"));
+    assert!(INPUT_FACTS_SOURCE.contains("root_validation_entity_keys: Vec<EntityKey>"));
     assert!(!INPUT_FACTS_SOURCE.contains("pub normalized_input:"));
     assert!(!INPUT_FACTS_SOURCE.contains("fn normalized_input("));
+    assert!(!INPUT_FACTS_SOURCE.contains("InputDerivedEntityTarget"));
+    assert!(!INPUT_FACTS_SOURCE.contains("struct EntityTarget"));
     assert!(!INPUT_FACTS_SOURCE.contains("impl Clone for InputDerivedCommandFacts"));
     for forbidden in [
         "derive(Clone",
@@ -66,6 +70,8 @@ fn derivation_has_no_io_time_entropy_or_acquisition_policy() {
     }
     assert!(INPUT_FACTS_SOURCE.contains("ExpressionEvaluator::new(plan.expressions())"));
     assert!(INPUT_FACTS_SOURCE.contains("for derivation in plan.locality().conflict_keys()"));
+    assert!(INPUT_FACTS_SOURCE.contains(".bindings()"));
+    assert!(INPUT_FACTS_SOURCE.contains(".root_validation_reads()"));
     assert!(INPUT_FACTS_SOURCE.contains("pub fn matches_command("));
 }
 
