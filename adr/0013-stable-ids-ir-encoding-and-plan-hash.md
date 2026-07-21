@@ -14,6 +14,10 @@ equality clarification, and the companion clarifications below on 2026-07-13.
 On 2026-07-20 the maintainer accepted the format-neutral conservative
 derived-index admission bounds below. They tighten checked IR-v1 acceptance but
 add no encoded field, tag, or plan-hash input.
+On 2026-07-20 the maintainer also accepted the bounded active-lineage
+materialization clarification below. It gives optional-null evolution exact
+ancestry proof, omission, activation, and startup semantics without adding a
+bundle field, IR node, durable value, public field, or hash input.
 The accepted initial generated review artifacts are identified outside their own
 bytes by these exact SHA-256 digests:
 
@@ -531,6 +535,21 @@ constructible oversized v1 plan. That is an intentional semantic tightening;
 the IR-v1 byte layout and hash framing do not change. Runtime and storage retain
 the same exact incremental limits as defense in depth.
 
+The catalog independently owns these active-lineage limits:
+
+| Catalog-resolved boundary | v1 limit |
+|---|---:|
+| Active bundles from genesis through active | 4,096 |
+| Sum of exact active-lineage canonical bundle bytes | 64 MiB (67,108,864 bytes) |
+| Process-local lineage-materialization proof charge | 2 MiB (2,097,152 bytes) |
+
+The canonical-byte sum uses checked arithmetic over each exact
+`ContractBundle::canonical_bytes().len()` and excludes envelopes, keys,
+historical-page framing, and allocator overhead. These bounds neither replace
+nor relax the 15 MiB per-bundle limit. The 4,096 active-lineage limit is a
+semantic bound below the generic 65,535 catalog-bundle backup bound; the 64 MiB
+aggregate is distinct from the 15 MiB bundle and 16 MiB evidence-page bounds.
+
 The 1 MiB headroom below ADR-0006's absolute 16 MiB payload/envelope ceiling is
 reserved for the catalog Protobuf wrapper and `StoredEnvelope`. WP-050 must prove
 the 15 MiB semantic bundle bound with a maximum-size fixture. WP-065, which owns
@@ -727,16 +746,110 @@ semantic change has exactly one contract-root `RDB-K001` entry. A successor with
 another reported change omits `RDB-K001`, and its explicit overall class must
 equal the most restrictive nonempty entry or validation fails.
 
-Compatible optional-field evolution has one exact normalization rule. When an
-entity record or durable event produced under an ancestor bundle lacks a field
-that the executing descendant schema added as optional-with-null-default, checked
-materialization supplies canonical null. A missing field required by that exact
-schema is an integrity failure. Fields present in storage but unknown to the
-exact historical plan being executed are not visible to its expressions and are
-never silently discarded: storage retains their versioned bytes, and entity
-mutations are canonical per-field patches applied to the transaction-current
-record so unspecified fields survive an older plan's write. Immutable events are
-never decode/re-encoded merely to add null fields.
+#### Active-lineage proof and exact omission authority
+
+Compatible optional-field evolution has one exact normalization rule backed by
+catalog-proved ancestry. Both `ActiveCatalogSnapshot::read` and
+`resolve_executable_plan` load the current active pointer, walk active to genesis
+through exact parent `(ContractVersion, ContractBundleHash)` references, then
+reverse and revalidate every adjacent successor with the same pure compatibility
+comparator used for activation. Gaps, cycles, repeated versions, hash
+substitution, lineage mismatch, unsupported versions, or an active-lineage
+count/byte excess reject. Numeric version comparison is never ancestry proof.
+The executing bundle and plan must be an exact chain member, allowing a pending
+historical plan to consume records written by validated ancestors or descendants
+without admitting a foreign writer.
+
+Successful resolution returns a `ResolvedExecutablePlan` carrying one shared
+`Arc<LineageMaterializationProofV1>` owned and privately constructed by
+`riffdb-catalog`. It is process-local, nonserializable, non-durable,
+non-Protobuf, absent from canonical bundle bytes and every hash, and forbidden
+across a storage trait. Its exact accounting frame is:
+
+```text
+u8 proof_version (= 1)
+u32 lineage_len || lineage
+u32 bundle_count
+repeated(u64 ContractVersion || [u8; 32] BundleHash)
+u16 executing_bundle_ordinal
+u32 owner_count
+repeated(
+  u8 owner_tag { entity = 1, event = 2 }
+  || u32 owner_id
+  || u32 field_count
+  || repeated(u32 FieldId || u16 introduced_at_ordinal)
+)
+```
+
+Integers are big-endian. Ordinals are zero-based and at most 4,095;
+`BundleHash` is the exact 32-byte `ContractBundleHash`. Bundle entries are
+genesis-to-active; owners are unique and ordered by
+`(owner_tag, owner_id)`; fields are unique and ordered by `FieldId`. The lineage
+is at most 256 bytes, there are at most 8,192 entity/event owners, and field
+entries use the existing 262,144 lineage-ledger ceiling. The exact worst-case
+charge is:
+
+```text
+1 + (4 + 256) + 4 + (4_096 * 40) + 2 + 4
+  + (8_192 * 9) + (262_144 * 6)
+= 1_810_703 bytes
+```
+
+That leaves 286,449 bytes below the fixed 2 MiB proof cap. Checked arithmetic
+and compile-time assertions freeze the relationship; changing a constituent
+bound so the assertion fails requires human review. The proof derives each
+field's first introduction ordinal from the revalidated parent and child
+schemas, never from a compatibility report alone. A synthetic checked-charge
+calculator test accepts exactly 2 MiB and rejects one byte more; a separate
+valid-v1 maximum test proves 1,810,703 bytes and the 286,449-byte headroom. The
+synthetic cap test is not evidence that a valid v1 proof can reach 2 MiB.
+
+For an exact stored writer and executing descendant schema, the proof produces
+an opaque bit mask over executing fields in ascending `FieldId` order. Its exact
+length is `ceil(field_count / 8)`, unused high bits are zero, and its maximum is
+512 bytes for 4,096 fields. The existing maximum 4,096 combined binding and
+aggregate-root positions therefore bounds transient masks independently at
+an exact 2 MiB structural maximum. It is not additional capacity: retained
+normalized `ReadSnapshot` semantic bytes plus every retained nonempty mask byte
+of bitset payload must together fit the existing 16 MiB command-snapshot
+ceiling. Binding/root and mask vectors are aligned, so position is implicit and
+has no separate metadata charge. Exact-equality and one-byte-over combined-
+charge tests freeze that rule. Neither a mask nor its cache is encoded or hashed.
+
+Checked materialization supplies `CanonicalValue::Null` if and only if the
+writer is an exact chain member,
+`writer_ordinal < field_introduction_ordinal <= executing_ordinal`, and the
+executing field is optional-with-null-default. An omission from the exact writer
+schema, a descendant writer, or a genesis-declared field cannot be filled. A
+missing required field, foreign lineage/version/hash, malformed mask, or any
+other unproved omission is integrity. Each valid inserted null adds exactly six
+canonical bytes: `FieldId:u32` plus the canonical value-version and null-tag
+bytes. Existing 1 MiB record, 16 MiB snapshot, and evaluation limits remain in
+force.
+
+Fields present in storage but unknown to the exact historical plan being
+executed are not visible to its expressions and are never silently discarded:
+normalization retains their canonical values, and runtime carries those values
+unchanged into each complete canonical mutation post-image unless the historical
+plan explicitly addresses a field it knows. Storage still receives and validates
+only complete post-images; it performs no field-level merge. Immutable events are
+never persistently decoded and re-encoded merely to add null fields.
+
+Activation preparation walks the exact current chain and checks, with checked
+arithmetic, `current_count + 1`, current canonical bytes plus the candidate's
+exact canonical bytes, and the rebuilt proof charge before coordinator
+submission. Concurrent activation is still resolved by the coordinator's exact
+expected-active comparison. Count excess maps through the service to one root
+`ValidationCode::TooManyItems`; canonical/proof byte excess maps to one root
+`ValidationCode::TooLong`. Both use public `Validation` plus `CorrectRequest`
+and ordinary authenticated service audit. A storage read remains
+`CatalogError::Storage`.
+
+Startup reconstructs and validates the same exact chain, compatibility edges,
+three ceilings, and proof. A broken or over-limit active history is
+`InvalidHistoricalEvidence`, with readiness false and a redacted public
+`InternalDefect`. A proof or cap invariant reached after an admitted activation
+is also internal integrity, never `ExecutionFault::ResourceLimit`.
 
 New admission validates and hashes input with the active plan. If idempotency
 lookup finds an existing pending or terminal identity, the application service
@@ -852,6 +965,13 @@ consume; contract IR retains no storage dependency.
   hashes unchanged.
 - Tombstones make lineage metadata grow monotonically, bounded by the v1 ledger
   and bundle limits.
+- Catalog resolution now has one bounded, process-local ancestry proof shared by
+  active and historical execution. This adds no durable/protocol field, bundle
+  byte, IR tag, plan-hash input, or storage dependency.
+- WP-050 owns exact active-chain walking, forward comparator replay, activation
+  admission, startup validation, field-introduction derivation, proof framing,
+  and opaque masks. WP-100 owns their two command-record applications; WP-080
+  receives only normalized records and rejects every remaining omission.
 - Custom codec code is security-sensitive and requires malformed-byte property or
   fuzz coverage in addition to golden vectors.
 
@@ -863,6 +983,12 @@ are typed and bounded and do not expose source values, contract data, raw keys, 
 internal error chains. Content hashes are integrity identities, not signatures or
 authorization. A syntactically valid but unsupported or hash-inconsistent plan
 never reaches runtime.
+
+An untrusted stored writer version, a numerically plausible version, or a stored
+compatibility report cannot authorize a null fill. Only the catalog's exact
+parent/hash chain and schema-derived introduction ledger can do so. Proof and
+mask lengths are checked before allocation, and diagnostic/public-error paths
+never disclose lineage, contract bytes, field values, or hashes.
 
 ## Testing
 
@@ -888,6 +1014,18 @@ never reaches runtime.
 - Ancestor-record/event null materialization, missing-required failure,
   historical-plan unknown-field preservation, deployment-between-retry hashing,
   and transitive full-record outcome compatibility fixtures.
+- Catalog boundary tests cover 4,096 versus 4,097 active bundles, exactly 64 MiB
+  versus one byte more summed canonical bundle bytes, a synthetic checked proof-
+  charge calculator at exactly 2 MiB and one byte more, and the separately valid
+  1,810,703-byte v1 maximum with its 286,449-byte headroom. Snapshot accounting
+  accepts normalized semantic bytes plus retained nonempty mask bitset payload
+  bytes at exactly 16 MiB and rejects one byte more; aligned vectors add no
+  position-metadata charge. Compile-time assertions
+  bind proof and mask arithmetic to their IR constituent limits.
+- Lineage fixtures cover gaps, cycles, repeated versions, parent-hash
+  substitution, wrong lineage, exact ancestor/equal/descendant writer masks,
+  genesis and exact-writer omissions, required omissions, malformed masks,
+  unknown-field retention, and activation/startup error classification.
 - Multiple binding failures proving ascending-`BindingId` outcome priority.
 - Root-validation equality fixtures proving `ExprId` and arena-allocation
   independence, shared-versus-duplicated DAG equality, ordered binary structure,
@@ -898,7 +1036,8 @@ never reaches runtime.
 ## Requirements and Work Packages
 
 - **Requirements:** `ID-003`, `ID-005`, `CMP-001`, `CMP-020` through `CMP-022`,
-  `DSL-003` through `DSL-012`, `TXN-001`, `MCP-020`
+  `DSL-003` through `DSL-012`, `ENT-002`, `ENT-003`, `TXN-001`, `TXN-002`,
+  `TXN-012`, `TXN-030`, `MCP-020`, `REC-001`, and `REC-002`
 - **Defines or blocks:** focused foundational `WP-010` follow-up, `WP-040`,
   `WP-050`, `WP-060`, formal durable-schema `WP-065`, `WP-080`, and formal
   public-schema `WP-127`
@@ -909,4 +1048,6 @@ never reaches runtime.
 The exact text must be accepted before WP-040 publishes stable IDs, schema
 artifacts, executable IR, plan hashes, or bundle fixtures. ADR-0003, ADR-0010,
 ADR-0014, ADR-0015, and ADR-0016 must also be Accepted and listed by
-`work_packages.yaml` before implementation starts.
+`work_packages.yaml` before implementation starts. The accepted lineage
+clarification must be present before WP-050 publishes active/historical plan
+resolution and before WP-100 publishes record normalization.

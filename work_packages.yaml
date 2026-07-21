@@ -1,4 +1,4 @@
-spec_version: '0.18'
+spec_version: '0.19'
 product: RiffDB
 repository: riffdb
 status: implementation-handoff
@@ -372,7 +372,11 @@ work_packages:
   - CMP-020
   - CMP-021
   - CMP-022
+  - ENT-002
+  - ENT-003
   - MCP-032
+  - REC-001
+  - REC-002
   required_adrs:
   - ADR-0002
   - ADR-0004
@@ -400,6 +404,24 @@ work_packages:
   - IR-aware, bounded historical bundle and executable-plan resolver that consumes every same-session
     HistoricalSemanticEvidence page through exact end and returns an opaque catalog-owned ValidatedCatalogHistory
     bound to that startup session; truncated, skipped, repeated, reordered, mismatched, or unknown evidence fails closed
+  - Catalog-owned MAX_ACTIVE_LINEAGE_BUNDLES_V1=4,096, MAX_ACTIVE_LINEAGE_CANONICAL_BYTES_V1=67,108,864,
+    and MAX_LINEAGE_MATERIALIZATION_PROOF_BYTES_V1=2,097,152, with checked exact canonical-byte sums and compile-time
+    arithmetic assertions for the 1,810,703-byte maximum proof framing and independent 2 MiB structural mask bound;
+    normalized snapshot bytes plus retained nonempty mask bitset payload bytes share the existing 16 MiB cap, with
+    aligned binding/root and mask vectors making position implicit and uncharged
+  - ActiveCatalogSnapshot and historical-plan resolution that walk active-to-genesis by exact parent version/hash,
+    revalidate adjacent bundles forward with the shared comparator, reject gaps/cycles/substitution/numeric-version
+    ancestry, and attach one shared nonserializable catalog-owned lineage proof to ResolvedExecutablePlan
+  - Schema-derived, canonical field-introduction ledgers and opaque exact-writer null-fill masks for entity/event
+    owners, preserving unknown fields and authorizing only strict ancestor optional-null omissions without trusting a
+    compatibility report as proof
+  - Activation preparation checks for count, exact canonical bytes, and proof charge before coordinator submission,
+    plus startup InvalidHistoricalEvidence classification for any broken or over-limit active chain; storage reads
+    remain CatalogError::Storage and expected-active comparison remains coordinator-owned
+  - Boundary fixtures for 4,096/4,097 bundles, 64 MiB/equal-plus-one canonical bytes, a synthetic checked proof-charge
+    calculator at 2 MiB/equal-plus-one without claiming a valid proof reaches the cap, the separate valid 1,810,703-byte
+    proof maximum/headroom, combined 16 MiB snapshot-plus-mask equality/equal-plus-one, parent gaps/cycles/hash
+    substitution, and ancestor/equal/descendant writer masks
   - Exact historical KeySchema validation for every IR-opaque persisted entity-key, index-entry-key, and range-prefix-key
     evidence item, with unknown owners/schemas, component-incomplete bytes, omissions, and non-exact stream ends rejected
   - Architecture checks proving ValidatedCatalogHistory never crosses a storage trait, storage never
@@ -412,9 +434,9 @@ work_packages:
     owner_crate: riffdb-catalog
     manifest: crates/riffdb-catalog/Cargo.toml
     path: ../../tests/contract_deploy_recovery.rs
-  exit_gate: Deployment crash tests leave exactly the old or new bundle active, retries resolve by version, every
-    malformed or misbound ADR-0020 command-name registry rejects activation, and only complete same-session
-    historical evidence can produce ValidatedCatalogHistory.
+  exit_gate: Deployment crash tests leave exactly the old or new bundle active, retries resolve by version, exact
+    active-lineage count/byte/proof boundaries and writer masks pass, malformed chains or ADR-0020 command-name
+    registries reject, and only complete same-session historical evidence can produce ValidatedCatalogHistory.
   human_review_triggers: *id001
 - id: WP-060
   name: Storage semantic API
@@ -788,6 +810,8 @@ work_packages:
   - DSL-006
   - DSL-007
   - DSL-008
+  - ENT-002
+  - ENT-003
   - ENT-004
   - POC-003
   required_adrs:
@@ -821,6 +845,11 @@ work_packages:
   - Boundary tests proving pre-admission arithmetic is left to service preparation while arithmetic after an owned
     snapshot is the closed ADR-0012 ExecutionFault::Arithmetic path
   - One-partition cross-domain read evidence with complete influential dependency tracking
+  - Stored-record evaluation accepts only already lineage-normalized complete declared fields, preserves present
+    unknown fields in post-images while hiding them from historical expressions, and returns Integrity for every
+    remaining missing declared field; blind optional fill is removed without changing exact new-record construction
+  - Runtime fixtures for accepted pre-normalized ancestor records, rejected same-version/descendant/genesis/required
+    omissions, and unknown-field preservation; proof construction and application remain outside runtime
   acceptance_commands:
   - cargo test -p riffdb-runtime -p riffdb-invariant
   - cargo test -p riffdb-testkit generated_histories
@@ -875,12 +904,15 @@ work_packages:
   - TXN-010
   - TXN-012
   - TXN-013
+  - TXN-030
   - TXN-040
   - TXN-041
   - TXN-042
   - TXN-043
   - TXN-044
   - LOG-001
+  - ENT-002
+  - ENT-003
   - ENT-004
   - OUT-001
   - OUT-002
@@ -888,6 +920,7 @@ work_packages:
   - OUT-004
   - EFF-001
   - POC-002
+  - POC-003
   - POC-004
   - POC-005
   - MCP-046
@@ -945,6 +978,23 @@ work_packages:
   - Commit-owned injected AdmissionClock, AdministrationClock, and ProvenanceIdSource ports with exact sampling,
     failure, and retry behavior and no ambient clock or entropy access in the coordinator
   - Coordinator-only final CommitIntent assembly from EvaluatedCommand and the exact immutable stored admission
+  - Coordinator-owned application of the ResolvedExecutablePlan's shared opaque lineage proof after the owned read
+    view closes and again to transaction-current binding/root records before value-source use, with strict
+    ancestor-only null insertion, canonical FieldId ordering, and lossless preservation of present unknown fields
+  - Checked six-byte charge per inserted null under existing record/snapshot/evaluation limits; valid expansion
+    excess follows dependency-sensitive ExecutionFault::ResourceLimit and ADR-0012 equality revalidation, normalized
+    snapshot semantic bytes plus retained nonempty mask bitset payload bytes share the 16 MiB cap with aligned vector
+    position implicit and uncharged, while
+    foreign writers, unproved omissions, malformed proof/mask, or a post-activation proof/cap breach remain integrity,
+    leave Pending unchanged, write no sequence or ExecutionFailed graph, and stop authoritative readiness when durable
+  - Transaction-current ordering that compares dependencies first and reevaluates a change before normalization;
+    equal present records must exactly match the retained pre-runtime physical observation after removing only its
+    catalog-issued inserted-null mask across target/version/writer/schema binding and all known/unknown fields, with
+    same-version drift as stopped-readiness InternalDefect and no catalog/additional storage I/O in the transaction
+  - Normalization integration tests for ancestor/equal/descendant writers, same-version/genesis/required omission,
+    exact +6-byte expansion, canonical and unknown-field preservation through an older-plan mutation, dependency
+    change versus ResourceLimit terminalization, combined snapshot-plus-mask 16 MiB equality/equal-plus-one, raw
+    current equality and same-version drift, and identical pre-runtime/transaction-current proof behavior
   - Exact zero/nonzero mutation branch after universal influential-dependency revalidation, where zero mutations skip
     commit-check evaluation and index/affected-epoch derivation but still atomically persist the declared outcome,
     sequence, provenance, and commit record; nonzero mutations prove exactly one complete mutation per mutable
@@ -1006,10 +1056,11 @@ work_packages:
     owner_crate: riffdb-commit
     manifest: crates/riffdb-commit/Cargo.toml
     path: ../../tests/service_audit/service_audit_ordering.rs
-  exit_gate: Concurrent budget, zero-mutation rejection, exact nonzero mutation coverage, pre-sequence
-    capacity/failpoint, event-hash, and fail-after-commit tests prove one atomic logical execution per idempotency
-    identity without sequence gaps; zero-mutation fixtures prove dependency revalidation, no commit-check/index
-    derivation, and unchanged terminal replay.
+  exit_gate: Concurrent budget, lineage normalization and unknown-field preservation, zero-mutation rejection, exact
+    nonzero mutation coverage, pre-sequence capacity/failpoint, event-hash, and fail-after-commit tests prove one
+    atomic logical execution per idempotency identity without sequence gaps; resource expansion and zero-mutation
+    fixtures prove dependency revalidation, correct terminalization, no forbidden commit-check/index derivation, and
+    unchanged terminal replay.
   human_review_triggers: *id001
 - id: WP-110
   name: Authorization and capability service
@@ -1107,6 +1158,10 @@ work_packages:
   - Combined input normalization and input-computable partition/conflict/authorization-fact preparation using the
     shared pure riffdb-invariant evaluator, mapping checked arithmetic to root ValidationCode::OutOfRange before
     admission and impossible checked-plan/input state to internal integrity
+  - Exact candidate catalog-lineage limit mapping before coordinator submission; 4,097 bundles becomes one root
+    ValidationCode::TooManyItems issue; more than 64 MiB exact canonical bytes or 2 MiB proof charge becomes one root
+    ValidationCode::TooLong issue; all use public Validation with CorrectRequest and ordinary authenticated deployment
+    audit, while catalog storage errors and startup historical-integrity failures retain their existing closed maps
   - Shared request context
   - Authorization enforcement
   - Bounded pagination and waits
@@ -1160,7 +1215,8 @@ work_packages:
     manifest: crates/riffdb-service/Cargo.toml
     path: ../../tests/service/service_audit_orchestration.rs
   exit_gate: All operations pass through shared policy and service code with no transport-specific mutation path or
-    command-name derivation.
+    command-name derivation; catalog count/byte/proof limit fixtures produce the exact root validation codes and audit
+    behavior before any coordinator submission.
   human_review_triggers: *id001
 - id: WP-125
   name: Service comparison adapter
