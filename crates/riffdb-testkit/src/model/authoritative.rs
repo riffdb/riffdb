@@ -8,7 +8,7 @@ use riffdb_storage_api::{
     ApplicationSequenceAllocator, AtomicCommandRecordSet, ExpectedEntityState, IdempotencyIdentity,
     IdempotencyIdentityKey, IndexEntryMutationV1, IndexEpochPosition, StoredAdmissionStateV1,
     StoredCommitRecordV1, StoredDurableEventV1, StoredEntityRecordV1, StoredExecutionFailedV1,
-    StoredIndexEntryV1, StoredIndexEpochV1, StoredOutboxIntentV1, StoredOutcomeV1,
+    StoredIndexEntryV2, StoredIndexEpochV1, StoredOutboxIntentV1, StoredOutcomeV1,
     StoredPendingAdmissionV1, StoredProvenanceRecordV1, StructurallyDecodedIndexRangePrefixV1,
 };
 use riffdb_types::{CommitSequence, EventId, IndexEntryKey, ProvenanceId};
@@ -70,7 +70,7 @@ pub struct AuthoritativeCommandModel {
     application_sequence: ApplicationSequenceAllocator,
     admissions: BTreeMap<IdempotencyIdentityKey, StoredAdmissionStateV1>,
     entities: BTreeMap<riffdb_storage_api::EntityTarget, StoredEntityRecordV1>,
-    index_entries: BTreeMap<IndexEntryKey, StoredIndexEntryV1>,
+    index_entries: BTreeMap<IndexEntryKey, StoredIndexEntryV2>,
     index_epochs: BTreeMap<StructurallyDecodedIndexRangePrefixV1, StoredIndexEpochV1>,
     outcomes: BTreeMap<CommitSequence, StoredOutcomeV1>,
     commits: BTreeMap<CommitSequence, StoredCommitRecordV1>,
@@ -275,7 +275,7 @@ impl AuthoritativeCommandModel {
 
     /// Looks up one modeled index-entry post-image.
     #[must_use]
-    pub fn index_entry(&self, key: &IndexEntryKey) -> Option<&StoredIndexEntryV1> {
+    pub fn index_entry(&self, key: &IndexEntryKey) -> Option<&StoredIndexEntryV2> {
         self.index_entries.get(key)
     }
 

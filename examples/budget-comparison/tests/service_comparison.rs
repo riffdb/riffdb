@@ -23,9 +23,9 @@ use riffdb_budget_comparison_riffdb_service::{
     riffdb_service_guarantee_profile,
 };
 use riffdb_catalog::{
-    ActiveCatalogSnapshot, CatalogError, CatalogErrorKind, CatalogPreparationResult,
-    ResolvedExecutablePlan, ValidatedContractBundle, resolve_executable_plan,
-    validate_catalog_history,
+    ActiveCatalogSnapshot, CatalogError, CatalogErrorKind, CatalogHistoryOutcome,
+    CatalogPreparationResult, ResolvedExecutablePlan, ValidatedContractBundle,
+    resolve_executable_plan, validate_catalog_history,
 };
 use riffdb_commit::{
     AdministrationClock, AdministrationClockError, AdmissionClock, AdmissionClockError,
@@ -75,7 +75,7 @@ use riffdb_storage_api::{
     ReadableCapabilityDigestInventory, ReadableDigestKey, ReadableIdempotencyDigestInventory,
     StartupValidationInputs, StorageScanLimit, StoredAdministrationAuditRecordV1,
     StructuralEvidenceCursor, StructuralEvidenceOpen, StructuralEvidencePage,
-    StructuralEvidenceSession,
+    StructuralEvidenceSession, StructuralOpenOutcome,
 };
 use riffdb_storage_redb::{RedbDormantPorts, RedbOperationalPorts, RedbStore};
 use riffdb_testkit::authorization::{
@@ -1298,11 +1298,58 @@ fn open_operational(store: RedbStore) -> RedbOperationalPorts {
     let opened = session
         .finish(structural_end, historical_end)
         .expect("finish structural validation");
+    let history = match history {
+        CatalogHistoryOutcome::Ready(history) => Ok(history),
+        CatalogHistoryOutcome::MigrationRequired(context) => Err(context),
+    };
+    let opened = match opened {
+        StructuralOpenOutcome::Clean(opened) => Ok(opened),
+        StructuralOpenOutcome::MigrationRequired(port) => Err(port),
+    };
+    let (history, opened) = join_v2_only_startup(history, opened)
+        .expect("comparison fixture requires matching Ready and Clean startup outcomes");
     assert!(history.matches(opened.database_id(), opened.open_session_id()));
     let (_, _, _, dormant): (_, _, _, RedbDormantPorts) = opened.into_parts();
     dormant
         .into_operational_after_catalog_validation()
         .expect("activate validated redb ports")
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum ComparisonStartupJoinError {
+    MigrationRequired,
+    CrossedOutcomes,
+}
+
+fn join_v2_only_startup<CatalogReady, CatalogMigration, StorageClean, StorageMigration>(
+    catalog: Result<CatalogReady, CatalogMigration>,
+    storage: Result<StorageClean, StorageMigration>,
+) -> Result<(CatalogReady, StorageClean), ComparisonStartupJoinError> {
+    match (catalog, storage) {
+        (Ok(catalog), Ok(storage)) => Ok((catalog, storage)),
+        (Err(_), Err(_)) => Err(ComparisonStartupJoinError::MigrationRequired),
+        (Ok(_), Err(_)) | (Err(_), Ok(_)) => Err(ComparisonStartupJoinError::CrossedOutcomes),
+    }
+}
+
+#[test]
+fn service_comparison_startup_accepts_only_ready_with_clean() {
+    assert_eq!(
+        join_v2_only_startup::<_, (), _, ()>(Ok("ready"), Ok("clean")),
+        Ok(("ready", "clean"))
+    );
+    assert_eq!(
+        join_v2_only_startup::<(), _, (), _>(Err("catalog migration"), Err("storage migration")),
+        Err(ComparisonStartupJoinError::MigrationRequired)
+    );
+    assert_eq!(
+        join_v2_only_startup::<_, (), (), _>(Ok("ready"), Err("storage migration")),
+        Err(ComparisonStartupJoinError::CrossedOutcomes)
+    );
+    assert_eq!(
+        join_v2_only_startup::<(), _, _, ()>(Err("catalog migration"), Ok("clean")),
+        Err(ComparisonStartupJoinError::CrossedOutcomes)
+    );
 }
 
 fn startup_inputs() -> StartupValidationInputs {

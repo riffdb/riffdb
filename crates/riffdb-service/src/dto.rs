@@ -347,6 +347,24 @@ impl<T, F> Page<T, F> {
         })
     }
 
+    /// Checks an index page whose opaque cursor may carry bounded physical
+    /// progress even when no row is visible to the caller.
+    pub(crate) fn new_sparse_progress(
+        effective_limit: PageLimit,
+        items: Vec<T>,
+        next_cursor: Option<CursorToken>,
+        observed_fence: F,
+    ) -> Result<Self, ServiceDtoError> {
+        if items.len() > usize::from(effective_limit.get().get()) {
+            return Err(ServiceDtoError::TooManyItems);
+        }
+        Ok(Self {
+            items,
+            next_cursor,
+            observed_fence,
+        })
+    }
+
     /// Borrows policy-filtered items in canonical port order.
     #[must_use]
     pub fn items(&self) -> &[T] {
@@ -2272,18 +2290,82 @@ impl fmt::Debug for AuthoritativeIndexRequest {
     }
 }
 
+/// Exact historical schema identity observed through the authoritative read port.
+///
+/// This API-neutral value is mechanically populated from a lower durable row.
+/// It is not a durable record and grants no storage access or validation proof.
+#[derive(Clone, Eq, Hash, Ord, PartialEq, PartialOrd)]
+pub struct AuthoritativeSchemaBinding {
+    lineage: ContractLineage,
+    contract_version: ContractVersion,
+    bundle_hash: ContractBundleHash,
+}
+
+impl AuthoritativeSchemaBinding {
+    /// Joins the exact immutable bundle identity reported by the lower port.
+    #[must_use]
+    pub const fn new(
+        lineage: ContractLineage,
+        contract_version: ContractVersion,
+        bundle_hash: ContractBundleHash,
+    ) -> Self {
+        Self {
+            lineage,
+            contract_version,
+            bundle_hash,
+        }
+    }
+
+    /// Borrows the exact contract lineage.
+    #[must_use]
+    pub const fn lineage(&self) -> &ContractLineage {
+        &self.lineage
+    }
+
+    /// Returns the exact historical contract version.
+    #[must_use]
+    pub const fn contract_version(&self) -> ContractVersion {
+        self.contract_version
+    }
+
+    /// Returns the immutable historical bundle hash.
+    #[must_use]
+    pub const fn bundle_hash(&self) -> ContractBundleHash {
+        self.bundle_hash
+    }
+}
+
+impl fmt::Debug for AuthoritativeSchemaBinding {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("AuthoritativeSchemaBinding([REDACTED])")
+    }
+}
+
 /// One complete authoritative index row before service obligations.
 #[derive(Clone, Eq, PartialEq)]
 pub struct AuthoritativeIndexRow {
     key: IndexEntryKey,
+    schema_binding: AuthoritativeSchemaBinding,
     values: CanonicalRecord,
+    stored_partition: PartitionKey,
 }
 
 impl AuthoritativeIndexRow {
-    /// Joins one complete canonical key and covered/result values.
+    /// Joins one complete canonical key, exact historical binding, covered
+    /// values, and the exact stored partition observed by the lower port.
     #[must_use]
-    pub const fn new(key: IndexEntryKey, values: CanonicalRecord) -> Self {
-        Self { key, values }
+    pub const fn new(
+        key: IndexEntryKey,
+        schema_binding: AuthoritativeSchemaBinding,
+        values: CanonicalRecord,
+        stored_partition: PartitionKey,
+    ) -> Self {
+        Self {
+            key,
+            schema_binding,
+            values,
+            stored_partition,
+        }
     }
 
     /// Borrows the complete index key.
@@ -2292,10 +2374,22 @@ impl AuthoritativeIndexRow {
         &self.key
     }
 
+    /// Borrows the exact historical schema identity retained by this row.
+    #[must_use]
+    pub const fn schema_binding(&self) -> &AuthoritativeSchemaBinding {
+        &self.schema_binding
+    }
+
     /// Borrows complete returned values.
     #[must_use]
     pub const fn values(&self) -> &CanonicalRecord {
         &self.values
+    }
+
+    /// Borrows the exact partition stored in the authoritative V2 row.
+    #[must_use]
+    pub const fn stored_partition(&self) -> &PartitionKey {
+        &self.stored_partition
     }
 }
 
@@ -2309,33 +2403,39 @@ impl fmt::Debug for AuthoritativeIndexRow {
 #[derive(Clone, Eq, PartialEq)]
 pub struct AuthoritativeIndexPage {
     rows: Vec<AuthoritativeIndexRow>,
-    next_after: Option<IndexEntryKey>,
+    scanned_through: Option<IndexEntryKey>,
     epoch: IndexEpochPosition,
 }
 
 impl AuthoritativeIndexPage {
-    /// Checks row count, key identity/order from the requested continuation,
-    /// and continuation equality.
+    /// Checks row count, key identity/order, and independent bounded physical
+    /// progress from the requested continuation.
     pub fn new(
         request: &AuthoritativeIndexRequest,
         rows: Vec<AuthoritativeIndexRow>,
-        next_after: Option<IndexEntryKey>,
+        scanned_through: Option<IndexEntryKey>,
         epoch: IndexEpochPosition,
     ) -> Result<Self, ServiceDtoError> {
         if rows.len() > usize::from(request.limit().get().get()) {
             return Err(ServiceDtoError::TooManyItems);
         }
         if !index_page_rows_follow(request.prefix(), request.after(), rows.iter())
-            || next_after
-                .as_ref()
-                .is_some_and(|next| rows.last().map(AuthoritativeIndexRow::key) != Some(next))
-            || (rows.is_empty() && next_after.is_some())
+            || scanned_through.as_ref().is_some_and(|scanned| {
+                scanned.index_id() != request.index_id()
+                    || !scanned.as_bytes().starts_with(request.prefix().as_bytes())
+                    || request
+                        .after()
+                        .is_some_and(|after| after.as_bytes() >= scanned.as_bytes())
+                    || rows
+                        .last()
+                        .is_some_and(|row| row.key().as_bytes() > scanned.as_bytes())
+            })
         {
             return Err(ServiceDtoError::InvalidShape);
         }
         Ok(Self {
             rows,
-            next_after,
+            scanned_through,
             epoch,
         })
     }
@@ -2346,10 +2446,10 @@ impl AuthoritativeIndexPage {
         &self.rows
     }
 
-    /// Borrows the exclusive lower continuation.
+    /// Borrows the last physical candidate inspected by a non-final lower scan.
     #[must_use]
-    pub const fn next_after(&self) -> Option<&IndexEntryKey> {
-        self.next_after.as_ref()
+    pub const fn scanned_through(&self) -> Option<&IndexEntryKey> {
+        self.scanned_through.as_ref()
     }
 
     /// Returns the atomically observed range epoch.
@@ -5750,9 +5850,9 @@ mod tests {
         RecordSchema, RecordTypeRef, SchemaIr, ValueType,
     };
     use riffdb_types::{
-        CapabilityPermissionV1, CapabilityPermissionsV1, EntityKeyBuilder, EnumVariantId,
-        IndexEntryKeyBuilder, PartitionScopeV1, ProjectionGroupKeyBuilder,
-        ProjectionGroupPrefixBuilder,
+        AggregateTypeId, CapabilityPermissionV1, CapabilityPermissionsV1, EntityKeyBuilder,
+        EnumVariantId, IndexEntryKeyBuilder, IndexEpoch, PartitionKeyBuilder, PartitionScopeV1,
+        ProjectionGroupKeyBuilder, ProjectionGroupPrefixBuilder,
     };
 
     const OUTCOME_SHAPES_SOURCE: &str = r#"
@@ -5913,11 +6013,21 @@ contract OutcomeShapes version 1 {
         entity_key.push_u64(component).expect("bounded entity key");
         let mut index_key = IndexEntryKeyBuilder::new(index_id);
         index_key.push_u64(component).expect("bounded index key");
+        let mut partition = PartitionKeyBuilder::new(AggregateTypeId::first());
+        partition
+            .push_u64(component)
+            .expect("bounded partition component");
         AuthoritativeIndexRow::new(
             index_key
                 .finish(entity_key.finish().expect("bounded entity key"))
                 .expect("bounded index key"),
+            AuthoritativeSchemaBinding::new(
+                ContractLineage::new("dto-index").expect("lineage"),
+                ContractVersion::new(1).expect("contract version"),
+                ContractBundleHash::from_bytes([3; 32]),
+            ),
             CanonicalRecord::new(Vec::new()).expect("empty record"),
+            partition.finish().expect("bounded partition key"),
         )
     }
 
@@ -5933,6 +6043,23 @@ contract OutcomeShapes version 1 {
             .expect("index key schema")
             .encode_index_prefix(&[])
             .expect("whole-index prefix")
+    }
+
+    fn authoritative_index_request(
+        index_id: IndexId,
+        after: Option<IndexEntryKey>,
+    ) -> AuthoritativeIndexRequest {
+        AuthoritativeIndexRequest::new(
+            ContractLineage::new("dto-index").expect("lineage"),
+            ContractVersion::new(1).expect("contract version"),
+            index_id,
+            Vec::new(),
+            whole_index_prefix(index_id),
+            PartitionConstraint::Filter(PartitionScopeV1::All),
+            after,
+            PageLimit::new(10).expect("page limit"),
+        )
+        .expect("authoritative index request")
     }
 
     fn entity_schema_artifact(entity_type_id: EntityTypeId) -> GeneratedSchemaArtifact {
@@ -6359,6 +6486,48 @@ contract OutcomeShapes version 1 {
             Some(after.key()),
             wrong_index.iter()
         ));
+    }
+
+    #[test]
+    fn authoritative_index_pages_allow_independent_sparse_progress() {
+        let index_id = IndexId::first();
+        let after = index_row(index_id, 10);
+        let scanned = index_row(index_id, 12);
+        let request = authoritative_index_request(index_id, Some(after.key().clone()));
+        let epoch = IndexEpochPosition::Value(IndexEpoch::new(1).expect("index epoch"));
+
+        let empty =
+            AuthoritativeIndexPage::new(&request, Vec::new(), Some(scanned.key().clone()), epoch)
+                .expect("empty non-final page makes physical progress");
+        assert!(empty.rows().is_empty());
+        assert_eq!(empty.scanned_through(), Some(scanned.key()));
+
+        let returned = index_row(index_id, 11);
+        let sparse = AuthoritativeIndexPage::new(
+            &request,
+            vec![returned.clone()],
+            Some(scanned.key().clone()),
+            epoch,
+        )
+        .expect("physical progress may pass the last matching row");
+        assert_eq!(sparse.rows(), &[returned]);
+        assert_eq!(sparse.scanned_through(), Some(scanned.key()));
+
+        assert_eq!(
+            AuthoritativeIndexPage::new(&request, Vec::new(), Some(after.key().clone()), epoch,),
+            Err(ServiceDtoError::InvalidShape),
+            "a non-final page must advance beyond its input continuation"
+        );
+        assert_eq!(
+            AuthoritativeIndexPage::new(
+                &request,
+                vec![scanned],
+                Some(index_row(index_id, 11).key().clone()),
+                epoch,
+            ),
+            Err(ServiceDtoError::InvalidShape),
+            "scanned-through cannot precede a returned row"
+        );
     }
 
     #[test]

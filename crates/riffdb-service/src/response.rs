@@ -1016,10 +1016,37 @@ where
     T: ServiceResponseCharge,
     F: ServiceResponseCharge,
 {
+    fit_page_items_with_empty_progress(items, fence, lower_has_more, false)
+}
+
+/// Selects a bounded index prefix while retaining lower physical progress for
+/// an intentionally empty visible page.
+pub(crate) fn fit_sparse_page_items<T, F>(
+    items: &[T],
+    fence: &F,
+    lower_has_more: bool,
+) -> Result<PageFit, ServiceFailure>
+where
+    T: ServiceResponseCharge,
+    F: ServiceResponseCharge,
+{
+    fit_page_items_with_empty_progress(items, fence, lower_has_more, true)
+}
+
+fn fit_page_items_with_empty_progress<T, F>(
+    items: &[T],
+    fence: &F,
+    lower_has_more: bool,
+    permit_empty_progress: bool,
+) -> Result<PageFit, ServiceFailure>
+where
+    T: ServiceResponseCharge,
+    F: ServiceResponseCharge,
+{
     if items.is_empty() {
         return Ok(PageFit {
             item_count: 0,
-            has_more: false,
+            has_more: permit_empty_progress && lower_has_more,
         });
     }
 
@@ -2241,6 +2268,34 @@ mod tests {
             .expect("complete lower page fits with continuation");
         assert_eq!(fit.item_count(), items.len());
         assert!(fit.has_more());
+    }
+
+    #[test]
+    fn empty_sparse_page_preserves_lower_progress() {
+        assert_eq!(
+            fit_sparse_page_items::<ExactCharge, _>(&[], &ExactCharge(0), true)
+                .expect("an empty sparse page needs no item charge"),
+            PageFit {
+                item_count: 0,
+                has_more: true,
+            }
+        );
+        assert_eq!(
+            fit_sparse_page_items::<ExactCharge, _>(&[], &ExactCharge(0), false)
+                .expect("an empty final page needs no item charge"),
+            PageFit {
+                item_count: 0,
+                has_more: false,
+            }
+        );
+        assert_eq!(
+            fit_page_items::<ExactCharge, _>(&[], &ExactCharge(0), true)
+                .expect("ordinary pages retain their dense contract"),
+            PageFit {
+                item_count: 0,
+                has_more: false,
+            }
+        );
     }
 
     #[test]

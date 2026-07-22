@@ -23,7 +23,7 @@ use super::super::*;
 use super::{assert_round_trip, sample};
 
 fn payload<M: Message + Default>(envelope: &CanonicalStoredEnvelopeV1) -> M {
-    let decoded = riffdb_proto::durable::current_record_registry()
+    let decoded = riffdb_proto::durable::readable_record_registry()
         .decode(envelope.as_bytes())
         .expect("checked envelope");
     M::decode(decoded.payload()).expect("registered payload")

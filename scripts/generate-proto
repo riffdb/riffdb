@@ -27,6 +27,7 @@ generate() {
 generate_durable_vectors() {
     LC_ALL=C TZ=UTC \
         RIFFDB_DURABLE_VECTOR_OUTPUT="$output_root/fixtures/proto/durable-wire-vectors.txt" \
+        RIFFDB_DURABLE_INDEX_V2_VECTOR_OUTPUT="$output_root/fixtures/proto/durable-index-v2-wire-vector.txt" \
         cargo test --quiet --locked -p riffdb-storage-api --lib \
             proto_codec::tests::emit_semantic_wire_vectors_for_fixture_regeneration -- --exact
 }
@@ -56,9 +57,14 @@ artifacts=(
     fixtures/proto/descriptors/riffdb-storage-v1-descriptor-set.bin
     fixtures/proto/descriptors/riffdb-v1-descriptor-set.bin
     fixtures/proto/durable-record-bounds.bin
+    fixtures/proto/durable-index-v2-record-bound.bin
+    fixtures/proto/durable-index-v2-schema-hash.bin
+    fixtures/proto/durable-index-v2-wire-vector.txt
+    fixtures/proto/durable-readable-registry.txt
     fixtures/proto/durable-relationship-vectors.txt
     fixtures/proto/durable-registry.txt
     fixtures/proto/durable-schema-hashes.bin
+    fixtures/proto/durable-writable-registry.txt
     fixtures/proto/durable-wire-vectors.txt
     fixtures/proto/public-client-vectors.txt
     fixtures/proto/public-key-envelope-vectors.txt

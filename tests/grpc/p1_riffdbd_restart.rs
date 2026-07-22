@@ -29,11 +29,15 @@ use riffdb_client_rust::generated::legal_spend::{
 use riffdb_client_rust::{
     AttemptBudget, BearerCredential, BootstrapCallMetadata,
     BootstrapCredential as TransportBootstrapCredential, CallMetadata, ClientError,
-    DetailsFreeStatus, RiffDbClient, generate_request_id,
+    DetailsFreeStatus, RiffDbClient, generate_capability_id, generate_request_id,
 };
 use riffdb_proto::decimal_from_proto;
 use riffdb_proto::v1;
-use riffdb_types::{DecimalSpec, EntityKeyBuilder, EntityTypeId};
+use riffdb_storage_redb::downgrade_all_index_rows_to_v1_fixture;
+use riffdb_types::{
+    AggregateTypeId, DecimalSpec, EntityKey, EntityKeyBuilder, EntityTypeId, IndexEntryKeyBuilder,
+    IndexId, PartitionKeyBuilder,
+};
 use tokio::time::timeout;
 use tonic::transport::Endpoint;
 
@@ -58,6 +62,7 @@ const ALLOCATED_MINOR_UNITS: i128 = 2_500;
 const CAPABILITY_KEY_DOCUMENT: &[u8] = b"riffdb-capability-digest-keys-v1\n7:000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f\n";
 const IDEMPOTENCY_KEY_DOCUMENT: &[u8] = b"riffdb-idempotency-digest-keys-v1\n9:202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f\n";
 const BUDGET_CONTRACT: &str = include_str!("../../contracts/examples/budget.riff");
+const INDEXED_BUDGET_CONTRACT: &str = include_str!("fixtures/budget_indexed.riff");
 
 type TestResult<T> = Result<T, Box<dyn Error + Send + Sync>>;
 
@@ -320,6 +325,154 @@ async fn real_riffdbd_restart_preserves_budget_and_bootstrap_replay() -> TestRes
     Ok(())
 }
 
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn real_riffdbd_migrates_v1_index_before_public_readiness() -> TestResult<()> {
+    let temporary = TemporaryDirectory::new()?;
+    let database_path = temporary.path().join("riffdb.redb");
+    let capability_keys_path = temporary.path().join("capability.keys");
+    let idempotency_keys_path = temporary.path().join("idempotency.keys");
+    let bootstrap_path = temporary.path().join("bootstrap.credential");
+
+    write_protected_file(&capability_keys_path, CAPABILITY_KEY_DOCUMENT)?;
+    write_protected_file(&idempotency_keys_path, IDEMPOTENCY_KEY_DOCUMENT)?;
+    let generated_bootstrap =
+        generate_bootstrap_credential(BOOTSTRAP_UNIX_MILLISECONDS, &SystemEntropy)?;
+    write_protected_file(
+        &bootstrap_path,
+        generated_bootstrap.render_document().expose_secret(),
+    )?;
+    drop(generated_bootstrap);
+    let retained_bootstrap = load_bootstrap_credential_file(&bootstrap_path)?;
+    let root_metadata = CallMetadata::authenticated(bearer_credential(&retained_bootstrap)?);
+
+    let entity_key = budget_entity_key()?;
+    let create = CreateBudget {
+        idempotency_key: "p1-create-indexed-budget".to_owned(),
+        organization_id: ORGANIZATION_ID,
+        fiscal_year: FISCAL_YEAR,
+        approved_amount: amount(APPROVED_MINOR_UNITS)?,
+    };
+
+    let mut first_process = ServerProcess::spawn(
+        &database_path,
+        &capability_keys_path,
+        &idempotency_keys_path,
+    )?;
+    let first_address = first_process.wait_for_ready_address()?;
+    let mut first_client = connect(first_address).await?;
+
+    let bootstrap_created = bounded_rpc(
+        "indexed fixture bootstrap",
+        first_client.create_bootstrap_capability(
+            bootstrap_request(&retained_bootstrap)?,
+            &bootstrap_metadata(&retained_bootstrap)?,
+        ),
+    )
+    .await?;
+    let _ = created_bootstrap_transition(bootstrap_created)?;
+
+    let deployment = bounded_rpc(
+        "indexed budget contract deployment",
+        first_client.deploy_contract(
+            v1::DeployContractRequest {
+                request_id: fresh_request_id_bytes()?,
+                source: INDEXED_BUDGET_CONTRACT.to_owned(),
+                expected_active_version: None,
+            },
+            &root_metadata,
+        ),
+    )
+    .await?;
+    assert_activated_budget_contract(deployment)?;
+
+    let created = bounded_rpc(
+        "indexed CreateBudget",
+        first_client.execute_with_retry(
+            &create.idempotent_command()?,
+            one_attempt(),
+            &root_metadata,
+        ),
+    )
+    .await?;
+    assert_eq!(
+        created.status,
+        v1::execute_command_response::CompletionStatus::Committed as i32
+    );
+    assert_eq!(created.commit_sequence, 1);
+    assert_eq!(created.contract_version, CONTRACT_VERSION);
+    assert_eq!(created.durability_mode, "sync");
+
+    let restricted_token = normal_capability_token(
+        bounded_rpc(
+            "explicit partition capability creation",
+            first_client
+                .create_capability(explicit_partition_capability_request()?, &root_metadata),
+        )
+        .await?,
+    )?;
+    let restricted_metadata =
+        CallMetadata::authenticated(BearerCredential::new(&restricted_token)?);
+
+    let before_migration = found_entity(
+        bounded_rpc(
+            "indexed entity read before migration",
+            first_client.get_entity(entity_request(&entity_key)?, &restricted_metadata),
+        )
+        .await?,
+    )?;
+    assert_budget_entity(&before_migration, &entity_key, 1, 0)?;
+
+    drop(first_client);
+    first_process.shutdown_cleanly()?;
+
+    assert_eq!(
+        downgrade_all_index_rows_to_v1_fixture(&database_path)?,
+        1,
+        "the stopped indexed workload must contain exactly one canonical V2 row"
+    );
+
+    let mut migrated_process = ServerProcess::spawn(
+        &database_path,
+        &capability_keys_path,
+        &idempotency_keys_path,
+    )?;
+    let migrated_address = migrated_process.wait_for_ready_address()?;
+    let mut migrated_client = connect(migrated_address).await?;
+
+    assert_principal_less_health_closed(&mut migrated_client).await?;
+    let health = bounded_rpc(
+        "Health after V1 index migration",
+        migrated_client.health(authenticated_health_request()?, &restricted_metadata),
+    )
+    .await?;
+    assert_authenticated_health(
+        &health,
+        v1::HealthStatus::Ready,
+        Some(CONTRACT_VERSION),
+        Some(1),
+    )?;
+
+    let scan = bounded_rpc(
+        "partition-filtered scan after V1 index migration",
+        migrated_client.scan_index(index_scan_request()?, &restricted_metadata),
+    )
+    .await?;
+    assert_migrated_index_scan(&scan, &entity_key)?;
+
+    let after_migration = found_entity(
+        bounded_rpc(
+            "entity read after V1 index migration",
+            migrated_client.get_entity(entity_request(&entity_key)?, &restricted_metadata),
+        )
+        .await?,
+    )?;
+    assert_eq!(after_migration, before_migration);
+
+    migrated_process.shutdown_cleanly()?;
+    drop(migrated_client);
+    Ok(())
+}
+
 async fn bounded_rpc<T, E>(
     label: &'static str,
     future: impl Future<Output = Result<T, E>>,
@@ -396,6 +549,9 @@ fn bootstrap_request(
                     permission: Some(Permission::ReadEntity(scoped(1))),
                 },
                 v1::CapabilityPermission {
+                    permission: Some(Permission::ScanIndex(scoped(1))),
+                },
+                v1::CapabilityPermission {
                     permission: Some(Permission::SubscribeCommits(v1::Unit {})),
                 },
                 v1::CapabilityPermission {
@@ -414,6 +570,149 @@ fn bootstrap_request(
             approval_required: Vec::new(),
         }),
     })
+}
+
+fn explicit_partition_capability_request() -> TestResult<v1::CreateCapabilityRequest> {
+    use v1::capability_permission::Permission;
+
+    let scoped = |stable_id| v1::LineageScopedStableId {
+        contract_lineage: CONTRACT_LINEAGE.to_owned(),
+        stable_id,
+    };
+    Ok(v1::CreateCapabilityRequest {
+        request_id: fresh_request_id_bytes()?,
+        mode: v1::CapabilityCreateMode::Normal as i32,
+        capability_id: generate_capability_id()?.into_bytes().to_vec(),
+        principal_id: "p1-index-reader".to_owned(),
+        actor_kind: v1::ActorKind::Human as i32,
+        requested_lifetime_seconds: CAPABILITY_LIFETIME_SECONDS / 2,
+        audiences: vec![AUDIENCE.to_owned()],
+        grant: Some(v1::CapabilityGrant {
+            tenant_scope: Some(v1::TenantScope {
+                scope: Some(v1::tenant_scope::Scope::Global(v1::Unit {})),
+            }),
+            partition_scope: Some(v1::PartitionScope {
+                scope: Some(v1::partition_scope::Scope::Explicit(
+                    v1::ExplicitPartitionScope {
+                        partitions: vec![v1::ScopedPartition {
+                            contract_lineage: CONTRACT_LINEAGE.to_owned(),
+                            partition_key: budget_partition_key()?,
+                        }],
+                    },
+                )),
+            }),
+            permissions: vec![
+                v1::CapabilityPermission {
+                    permission: Some(Permission::ReadEntity(scoped(1))),
+                },
+                v1::CapabilityPermission {
+                    permission: Some(Permission::ScanIndex(scoped(1))),
+                },
+                v1::CapabilityPermission {
+                    permission: Some(Permission::ReadHealth(v1::Unit {})),
+                },
+            ],
+            field_visibility: vec![v1::EntityFieldVisibility {
+                contract_lineage: CONTRACT_LINEAGE.to_owned(),
+                entity_type_id: 1,
+                field_ids: vec![1, 2, 3, 4, 5],
+            }],
+            max_scan_rows: 10,
+            approval_required: Vec::new(),
+        }),
+    })
+}
+
+fn normal_capability_token(response: v1::CreateCapabilityResponse) -> TestResult<String> {
+    let Some(v1::create_capability_response::Result::Normal(result)) = response.result else {
+        return Err(test_failure(
+            "explicit partition capability used the wrong result family",
+        ));
+    };
+    let Some(v1::normal_create_capability_result::Result::Created(created)) = result.result else {
+        return Err(test_failure(
+            "explicit partition capability was not newly created",
+        ));
+    };
+    if created.transition.is_none() || created.token.is_empty() {
+        return Err(test_failure(
+            "explicit partition capability response was incomplete",
+        ));
+    }
+    Ok(created.token)
+}
+
+fn budget_partition_key() -> TestResult<Vec<u8>> {
+    let aggregate = AggregateTypeId::new(1).expect("AnnualBudget has frozen nonzero ID 1");
+    let mut key = PartitionKeyBuilder::new(aggregate);
+    key.push_uuid(&ORGANIZATION_ID)?;
+    Ok(key.finish()?.into_bytes())
+}
+
+fn index_scan_request() -> TestResult<v1::ScanIndexRequest> {
+    Ok(v1::ScanIndexRequest {
+        request_id: fresh_request_id_bytes()?,
+        contract: Some(v1::ContractSelection {
+            selection: Some(v1::contract_selection::Selection::Active(v1::Unit {})),
+        }),
+        index_id: 1,
+        leading_components: vec![v1::Value {
+            kind: Some(v1::value::Kind::I64Value(FISCAL_YEAR)),
+        }],
+        fields: Some(v1::FieldSelection {
+            field_ids: Vec::new(),
+        }),
+        page: Some(v1::PageRequest {
+            limit: Some(10),
+            cursor: None,
+        }),
+    })
+}
+
+fn assert_migrated_index_scan(
+    response: &v1::ScanIndexResponse,
+    entity_key: &[u8],
+) -> TestResult<()> {
+    let page = response
+        .page
+        .as_ref()
+        .ok_or_else(|| test_failure("migrated index scan omitted its page"))?;
+    if page.items.len() != 1 || page.next_cursor.is_some() {
+        return Err(test_failure(
+            "migrated index scan did not return one exact-end row",
+        ));
+    }
+    let Some(v1::index_scan_fence::Position::AppliedEpoch(1)) = page
+        .observed_fence
+        .as_ref()
+        .and_then(|fence| fence.position.as_ref())
+    else {
+        return Err(test_failure(
+            "migrated index scan did not retain its authoritative epoch",
+        ));
+    };
+
+    let entity_key = EntityKey::from_bytes(entity_key.to_vec())?;
+    let mut expected_key = IndexEntryKeyBuilder::new(IndexId::new(1).expect("index ID"));
+    expected_key.push_i64(FISCAL_YEAR)?;
+    let expected_key = expected_key.finish(entity_key)?;
+    let row = &page.items[0];
+    if row.index_entry_key != expected_key.as_bytes() {
+        return Err(test_failure(
+            "migrated index scan returned the wrong physical row",
+        ));
+    }
+
+    let values = row
+        .values
+        .as_ref()
+        .ok_or_else(|| test_failure("migrated index row omitted selected values"))?;
+    if !values.fields.is_empty() {
+        return Err(test_failure(
+            "grammar-v1 migrated index row returned nonempty covered values",
+        ));
+    }
+    Ok(())
 }
 
 fn bearer_credential(credential: &RetainedBootstrapCredential) -> TestResult<BearerCredential> {

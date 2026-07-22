@@ -5,14 +5,15 @@ use std::fmt;
 use std::num::{NonZeroU32, NonZeroU64};
 
 use riffdb_types::{
-    CapabilityId, ContractBundleHash, ContractLineage, ContractVersion, DIGEST_SCHEME_V1,
-    DatabaseId, DigestKeyId, EntityKey, EntityTypeId, IndexEntryKey, IndexId,
-    MAX_CAPABILITY_PARTITIONS, ScopedPartitionV1, Timestamp,
+    CanonicalRecord, CapabilityId, ContractBundleHash, ContractLineage, ContractVersion,
+    DIGEST_SCHEME_V1, DatabaseId, DigestKeyId, EntityKey, EntityTypeId, IndexEntryKey,
+    MAX_CAPABILITY_PARTITIONS, PartitionKey, ScopedPartitionV1, Timestamp,
 };
 
 use crate::{
-    DurableKeySchemaBindingV1, ExecutablePlanRef, MAX_CATALOG_BUNDLE_BYTES,
-    MAX_HISTORICAL_EVIDENCE_PAGE_BYTES, MAX_INTEGRITY_FINDINGS, MAX_READABLE_DIGEST_KEYS,
+    DurableKeySchemaBindingV1, EncodedContentCharge, ExecutablePlanRef, MAX_CATALOG_BUNDLE_BYTES,
+    MAX_HISTORICAL_EVIDENCE_PAGE_BYTES, MAX_INDEX_MIGRATION_PAGE_BYTES,
+    MAX_INDEX_MIGRATION_PAGE_ENTRIES, MAX_INTEGRITY_FINDINGS, MAX_READABLE_DIGEST_KEYS,
     MAX_SCAN_PAGE_ENTRIES, RetainedMetadataV1, StorageError, StorageValueError,
     StoredEntityRecordV1, StoredIndexEntryV1, StoredIndexEntryV2, StoredIndexEpochV1,
     StructurallyDecodedIndexRangePrefixV1,
@@ -234,6 +235,7 @@ macro_rules! evidence_position_type {
                 self.position
             }
 
+            #[allow(dead_code, reason = "not every cursor family needs local page validation")]
             fn same_session(self, other: Self) -> bool {
                 self.database_id == other.database_id
                     && self.open_session_id == other.open_session_id
@@ -249,6 +251,10 @@ evidence_position_type!(
 evidence_position_type!(
     /// Continuation for ordered IR-opaque historical semantic evidence.
     HistoricalEvidenceCursor
+);
+evidence_position_type!(
+    /// Continuation for one exclusive physical index-row migration scan.
+    IndexMigrationCursor
 );
 
 /// Structural component owning one integrity finding.
@@ -491,13 +497,6 @@ pub enum IrOpaquePersistedKeyV1 {
         /// Structurally decoded opaque key bytes.
         key: EntityKey,
     },
-    /// One current secondary-index-table key and repeated owner identity.
-    IndexEntry {
-        /// Index expected in the envelope.
-        index_id: IndexId,
-        /// Structurally decoded opaque complete entry bytes.
-        key: IndexEntryKey,
-    },
     /// One persisted index-epoch prefix key.
     IndexRangePrefix(StructurallyDecodedIndexRangePrefixV1),
 }
@@ -514,14 +513,6 @@ impl IrOpaquePersistedKeyV1 {
         })
     }
 
-    /// Checks the repeated index owner without interpreting key components.
-    pub fn index_entry(index_id: IndexId, key: IndexEntryKey) -> Result<Self, StorageValueError> {
-        if key.index_id() != index_id {
-            return Err(StorageValueError::IdentityMismatch);
-        }
-        Ok(Self::IndexEntry { index_id, key })
-    }
-
     /// Wraps an envelope-checked prefix without claiming component completeness.
     #[must_use]
     pub const fn index_range_prefix(prefix: StructurallyDecodedIndexRangePrefixV1) -> Self {
@@ -534,7 +525,6 @@ impl IrOpaquePersistedKeyV1 {
                 entity_type_id,
                 key,
             } => (0x01, entity_type_id.to_be_bytes(), key.as_bytes()),
-            Self::IndexEntry { index_id, key } => (0x02, index_id.to_be_bytes(), key.as_bytes()),
             Self::IndexRangePrefix(prefix) => {
                 (0x03, prefix.index_id().to_be_bytes(), prefix.as_bytes())
             }
@@ -554,7 +544,6 @@ impl IrOpaquePersistedKeyV1 {
     fn semantic_bytes(&self) -> Result<usize, StorageValueError> {
         let bytes = match self {
             Self::Entity { key, .. } => key.as_bytes(),
-            Self::IndexEntry { key, .. } => key.as_bytes(),
             Self::IndexRangePrefix(prefix) => prefix.as_bytes(),
         };
         bytes
@@ -586,30 +575,6 @@ impl HistoricalPersistedKeyEvidenceV1 {
             key: IrOpaquePersistedKeyV1::Entity {
                 entity_type_id: record.target().entity_type_id(),
                 key: record.target().key().clone(),
-            },
-        }
-    }
-
-    /// Derives evidence only from an index entry's durable post-image binding.
-    #[must_use]
-    pub fn from_index_entry(record: &StoredIndexEntryV1) -> Self {
-        Self {
-            schema: record.schema_binding().clone(),
-            key: IrOpaquePersistedKeyV1::IndexEntry {
-                index_id: record.key().index_id(),
-                key: record.key().clone(),
-            },
-        }
-    }
-
-    /// Derives evidence only from a current index entry's durable post-image binding.
-    #[must_use]
-    pub fn from_index_entry_v2(record: &StoredIndexEntryV2) -> Self {
-        Self {
-            schema: record.schema_binding().clone(),
-            key: IrOpaquePersistedKeyV1::IndexEntry {
-                index_id: record.key().index_id(),
-                key: record.key().clone(),
             },
         }
     }
@@ -660,6 +625,220 @@ impl fmt::Debug for HistoricalPersistedKeyEvidenceV1 {
             .field("key", &"[REDACTED]")
             .finish()
     }
+}
+
+/// The checked semantic interpretation of one physical migration-scan row.
+#[derive(Eq, PartialEq)]
+pub enum IndexMigrationSemanticRow {
+    /// A legacy decode-only row that requires a catalog-derived V2 replacement.
+    V1(StoredIndexEntryV1),
+    /// A current row whose stored partition must be confirmed by catalog.
+    V2(StoredIndexEntryV2),
+}
+
+impl IndexMigrationSemanticRow {
+    /// Borrows the complete physical key repeated by the semantic record.
+    #[must_use]
+    pub const fn key(&self) -> &IndexEntryKey {
+        match self {
+            Self::V1(row) => row.key(),
+            Self::V2(row) => row.key(),
+        }
+    }
+
+    /// Borrows the exact retained historical schema binding.
+    #[must_use]
+    pub const fn schema_binding(&self) -> &DurableKeySchemaBindingV1 {
+        match self {
+            Self::V1(row) => row.schema_binding(),
+            Self::V2(row) => row.schema_binding(),
+        }
+    }
+
+    /// Borrows the complete canonical covered values.
+    #[must_use]
+    pub const fn covered_values(&self) -> &CanonicalRecord {
+        match self {
+            Self::V1(row) => row.covered_values(),
+            Self::V2(row) => row.covered_values(),
+        }
+    }
+
+    /// Borrows the stored partition for a V2 row.
+    #[must_use]
+    pub const fn stored_partition(&self) -> Option<&PartitionKey> {
+        match self {
+            Self::V1(_) => None,
+            Self::V2(row) => Some(row.partition_key()),
+        }
+    }
+
+    /// Returns whether this row is a legacy migration source.
+    #[must_use]
+    pub const fn is_v1(&self) -> bool {
+        matches!(self, Self::V1(_))
+    }
+}
+
+impl fmt::Debug for IndexMigrationSemanticRow {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let version = match self {
+            Self::V1(_) => "V1",
+            Self::V2(_) => "V2",
+        };
+        formatter
+            .debug_tuple("IndexMigrationSemanticRow")
+            .field(&version)
+            .finish()
+    }
+}
+
+/// One move-only association proved by the canonical durable codec.
+///
+/// No public constructor exists. WP-065's codec is the sole production caller
+/// of `from_codec_checked_parts`; a concrete backend may only move the
+/// returned association into a session-bound page after reading the exact bytes.
+#[derive(Eq, PartialEq)]
+pub struct IndexMigrationRowEvidence {
+    physical_key: IndexEntryKey,
+    row: IndexMigrationSemanticRow,
+    canonical_envelope: Box<[u8]>,
+    evidence_page_charge: usize,
+    instruction_page_charge: usize,
+    conservative_v2_envelope_charge: EncodedContentCharge,
+}
+
+impl IndexMigrationRowEvidence {
+    /// Binds the values already proved inseparable by the canonical codec.
+    ///
+    /// This remains crate-private so engines, catalog, and tests cannot combine
+    /// independently obtained semantic rows and envelope bytes.
+    #[allow(dead_code, reason = "WP-065 is the sole intended caller")]
+    pub(crate) fn from_codec_checked_parts(
+        physical_key: IndexEntryKey,
+        row: IndexMigrationSemanticRow,
+        canonical_envelope: Vec<u8>,
+        conservative_v2_envelope_charge: EncodedContentCharge,
+    ) -> Result<Self, StorageValueError> {
+        if row.key() != &physical_key {
+            return Err(StorageValueError::IdentityMismatch);
+        }
+        let exact_envelope_charge = EncodedContentCharge::new(canonical_envelope.len())
+            .ok_or(StorageValueError::LimitExceeded)?;
+        let evidence_page_charge =
+            migration_evidence_charge(physical_key.as_bytes().len(), exact_envelope_charge.get())?;
+        let instruction_page_charge = migration_instruction_charge(
+            physical_key.as_bytes().len(),
+            exact_envelope_charge.get(),
+            conservative_v2_envelope_charge.get(),
+        )?;
+        if evidence_page_charge > MAX_INDEX_MIGRATION_PAGE_BYTES
+            || instruction_page_charge > MAX_INDEX_MIGRATION_PAGE_BYTES
+        {
+            return Err(StorageValueError::LimitExceeded);
+        }
+        Ok(Self {
+            physical_key,
+            row,
+            canonical_envelope: canonical_envelope.into_boxed_slice(),
+            evidence_page_charge,
+            instruction_page_charge,
+            conservative_v2_envelope_charge,
+        })
+    }
+
+    /// Borrows the exact physical secondary-index key presented to the codec.
+    #[must_use]
+    pub const fn physical_key(&self) -> &IndexEntryKey {
+        &self.physical_key
+    }
+
+    /// Borrows the checked V1 or V2 semantic row.
+    #[must_use]
+    pub const fn row(&self) -> &IndexMigrationSemanticRow {
+        &self.row
+    }
+
+    /// Borrows the exact observed canonical envelope bytes.
+    #[must_use]
+    pub fn canonical_envelope(&self) -> &[u8] {
+        &self.canonical_envelope
+    }
+
+    /// Returns the exact charge used by the migration-evidence page ledger.
+    #[must_use]
+    pub const fn evidence_page_charge(&self) -> usize {
+        self.evidence_page_charge
+    }
+
+    /// Returns the conservative charge used by the instruction/write ledger.
+    #[must_use]
+    pub const fn instruction_page_charge(&self) -> usize {
+        self.instruction_page_charge
+    }
+
+    /// Returns the codec-proved complete V2 replacement-envelope reservation.
+    #[must_use]
+    pub const fn conservative_v2_envelope_charge(&self) -> EncodedContentCharge {
+        self.conservative_v2_envelope_charge
+    }
+
+    fn canonical_order_key(&self) -> Vec<u8> {
+        let binding = self.row.schema_binding();
+        let mut output = Vec::new();
+        push_lineage(&mut output, binding.lineage());
+        output.extend_from_slice(&binding.contract_version().to_be_bytes());
+        output.extend_from_slice(binding.bundle_hash().as_bytes());
+        output.push(0x02);
+        output.extend_from_slice(&self.physical_key.index_id().to_be_bytes());
+        output.extend_from_slice(
+            &u32::try_from(self.physical_key.as_bytes().len())
+                .expect("foundational key hard bound fits u32")
+                .to_be_bytes(),
+        );
+        output.extend_from_slice(self.physical_key.as_bytes());
+        output
+    }
+}
+
+impl fmt::Debug for IndexMigrationRowEvidence {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("IndexMigrationRowEvidence")
+            .field("row", &self.row)
+            .field("physical_key", &"[REDACTED]")
+            .field("canonical_envelope", &"[REDACTED]")
+            .field("evidence_page_charge", &self.evidence_page_charge)
+            .field("instruction_page_charge", &self.instruction_page_charge)
+            .finish()
+    }
+}
+
+fn migration_evidence_charge(
+    physical_key_length: usize,
+    canonical_envelope_length: usize,
+) -> Result<usize, StorageValueError> {
+    1usize
+        .checked_add(4)
+        .and_then(|value| value.checked_add(physical_key_length))
+        .and_then(|value| value.checked_add(4))
+        .and_then(|value| value.checked_add(canonical_envelope_length))
+        .ok_or(StorageValueError::SizeOverflow)
+}
+
+fn migration_instruction_charge(
+    physical_key_length: usize,
+    expected_envelope_length: usize,
+    conservative_replacement_length: usize,
+) -> Result<usize, StorageValueError> {
+    1usize
+        .checked_add(4)
+        .and_then(|value| value.checked_add(physical_key_length))
+        .and_then(|value| value.checked_add(4))
+        .and_then(|value| value.checked_add(expected_envelope_length))
+        .and_then(|value| value.checked_add(4))
+        .and_then(|value| value.checked_add(conservative_replacement_length))
+        .ok_or(StorageValueError::SizeOverflow)
 }
 
 /// One IR-opaque explicit entry emitted for a qualifying durable capability.
@@ -754,7 +933,7 @@ impl fmt::Debug for HistoricalCapabilityPartitionEvidenceV1 {
 }
 
 /// One ordered, storage-structural historical fact consumed by the catalog.
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Debug, Eq, PartialEq)]
 pub enum HistoricalSemanticEvidence {
     /// One immutable stored bundle and its structural identity.
     Bundle(HistoricalBundleEvidence),
@@ -764,6 +943,8 @@ pub enum HistoricalSemanticEvidence {
     ActiveCatalog(Option<HistoricalActiveCatalogEvidence>),
     /// One persisted key requiring exact catalog-owned historical schema validation.
     PersistedKey(HistoricalPersistedKeyEvidenceV1),
+    /// One physical V1 or V2 index row inseparably checked by the durable codec.
+    IndexMigrationRow(IndexMigrationRowEvidence),
     /// One qualifying capability's explicit partition entry.
     CapabilityPartition(HistoricalCapabilityPartitionEvidenceV1),
 }
@@ -797,6 +978,10 @@ impl HistoricalSemanticEvidence {
                 key.push(0x04);
                 key.extend_from_slice(&evidence.canonical_order_key());
             }
+            Self::IndexMigrationRow(evidence) => {
+                key.push(0x04);
+                key.extend_from_slice(&evidence.canonical_order_key());
+            }
             Self::CapabilityPartition(evidence) => return evidence.evidence_order_key(),
         }
         key
@@ -821,6 +1006,7 @@ impl HistoricalSemanticEvidence {
                 .semantic_bytes()?
                 .checked_add(1)
                 .ok_or(StorageValueError::SizeOverflow),
+            Self::IndexMigrationRow(evidence) => Ok(evidence.evidence_page_charge()),
             Self::CapabilityPartition(evidence) => evidence.semantic_bytes(),
         }
     }
@@ -835,7 +1021,7 @@ pub trait HistoricalEvidenceEnd {
 }
 
 /// One bounded historical-evidence result, never an implicit end signal.
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Debug, Eq, PartialEq)]
 pub enum HistoricalEvidencePage<E> {
     /// A non-final ordered page and its exact continuation.
     Page {
@@ -867,6 +1053,9 @@ impl<E> HistoricalEvidencePage<E> {
             return Err(StorageValueError::IdentityMismatch);
         }
         let mut total = 0usize;
+        let mut migration_rows = 0usize;
+        let mut migration_evidence_bytes = 0usize;
+        let mut migration_instruction_bytes = 0usize;
         let mut prior_key: Option<Vec<u8>> = None;
         for item in &evidence {
             total = total
@@ -874,6 +1063,23 @@ impl<E> HistoricalEvidencePage<E> {
                 .ok_or(StorageValueError::SizeOverflow)?;
             if total > MAX_HISTORICAL_EVIDENCE_PAGE_BYTES {
                 return Err(StorageValueError::LimitExceeded);
+            }
+            if let HistoricalSemanticEvidence::IndexMigrationRow(row) = item {
+                migration_rows = migration_rows
+                    .checked_add(1)
+                    .ok_or(StorageValueError::SizeOverflow)?;
+                migration_evidence_bytes = migration_evidence_bytes
+                    .checked_add(row.evidence_page_charge())
+                    .ok_or(StorageValueError::SizeOverflow)?;
+                migration_instruction_bytes = migration_instruction_bytes
+                    .checked_add(row.instruction_page_charge())
+                    .ok_or(StorageValueError::SizeOverflow)?;
+                if migration_rows > MAX_INDEX_MIGRATION_PAGE_ENTRIES
+                    || migration_evidence_bytes > MAX_INDEX_MIGRATION_PAGE_BYTES
+                    || migration_instruction_bytes > MAX_INDEX_MIGRATION_PAGE_BYTES
+                {
+                    return Err(StorageValueError::LimitExceeded);
+                }
             }
             let key = item.canonical_order_key();
             if prior_key.as_ref().is_some_and(|prior| prior >= &key) {
@@ -900,6 +1106,8 @@ pub trait StructuralEvidenceSession: Sized {
     type StructuralEnd: StructuralEvidenceEnd;
     /// Backend-owned unforgeable historical exact-end token.
     type HistoricalEnd: HistoricalEvidenceEnd;
+    /// Backend-owned exclusive migration capability returned only after V1 was observed.
+    type MigrationPort: StartupIndexMigrationPort;
 
     /// Returns the durable database identity bound to this session.
     fn database_id(&self) -> DatabaseId;
@@ -934,12 +1142,44 @@ pub trait StructuralEvidenceSession: Sized {
         bundle_hash: ContractBundleHash,
     ) -> Result<Option<HistoricalBundleEvidence>, StorageError>;
 
-    /// Consumes a completely scanned session and releases dormant ports.
+    /// Consumes a completely scanned session into exactly one startup outcome.
     fn finish(
         self,
         structural_end: Self::StructuralEnd,
         historical_end: Self::HistoricalEnd,
-    ) -> Result<StructurallyOpened<Self::DormantPorts>, StorageError>;
+    ) -> Result<StructuralOpenOutcome<Self::DormantPorts, Self::MigrationPort>, StorageError>;
+}
+
+/// Backend-owned linear startup migration capability.
+///
+/// This trait deliberately exposes identity only. The catalog-owned migration
+/// driver supplies separately branded requests to a concrete backend; merely
+/// holding this port grants no scan, point-read, mutation, or completion call.
+pub trait StartupIndexMigrationPort: Sized {
+    /// Returns the durable database bound to the pre-migration startup session.
+    fn database_id(&self) -> DatabaseId;
+
+    /// Returns the exact process-local startup session that observed V1.
+    fn open_session_id(&self) -> OpenSessionId;
+}
+
+/// Exact result of consuming both startup exact-end authorities.
+pub enum StructuralOpenOutcome<P, M> {
+    /// The complete checked physical range was V2-only.
+    Clean(StructurallyOpened<P>),
+    /// At least one V1 row was observed; no readiness-bearing ports are released.
+    MigrationRequired(M),
+}
+
+impl<P, M> fmt::Debug for StructuralOpenOutcome<P, M> {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Clean(_) => formatter.write_str("StructuralOpenOutcome::Clean([CHECKED])"),
+            Self::MigrationRequired(_) => {
+                formatter.write_str("StructuralOpenOutcome::MigrationRequired([LINEAR])")
+            }
+        }
+    }
 }
 
 /// A dormant initialized backend that can enter exactly one exclusive session.
@@ -1061,8 +1301,9 @@ mod tests {
     use std::num::{NonZeroU16, NonZeroU32};
 
     use riffdb_types::{
-        ActorId, ActorKind, AdministrationSequence, AggregateTypeId, Audience,
-        CapabilityTokenDigest, Environment, PartitionKeyBuilder, RequestId, TenantScope,
+        ActorId, ActorKind, AdministrationSequence, AggregateTypeId, Audience, CanonicalRecord,
+        CapabilityTokenDigest, ContractBundleHash, ContractVersion, EntityKeyBuilder, EntityTypeId,
+        Environment, IndexEntryKeyBuilder, IndexId, PartitionKeyBuilder, RequestId, TenantScope,
     };
 
     use super::*;
@@ -1132,6 +1373,52 @@ mod tests {
             RequestId::from_bytes(uuid_v7(GOLDEN_CAPABILITY_ID_BYTES, 0x72)).expect("request ID"),
         )
         .expect("stored capability")
+    }
+
+    fn synthetic_migration_row(value: u64) -> IndexMigrationRowEvidence {
+        let mut entity = EntityKeyBuilder::new(EntityTypeId::first());
+        entity.push_u64(value).expect("entity component");
+        let mut key = IndexEntryKeyBuilder::new(IndexId::first());
+        key.push_u64(value).expect("index component");
+        let key = key
+            .finish(entity.finish().expect("entity key"))
+            .expect("index key");
+        let row = StoredIndexEntryV1::new(
+            key.clone(),
+            DurableKeySchemaBindingV1::new(
+                ContractLineage::new("migration-boundary").expect("lineage"),
+                ContractVersion::new(1).expect("version"),
+                ContractBundleHash::from_bytes([0x61; 32]),
+            ),
+            CanonicalRecord::new(Vec::new()).expect("covered values"),
+        )
+        .expect("synthetic semantic row");
+        IndexMigrationRowEvidence::from_codec_checked_parts(
+            key,
+            IndexMigrationSemanticRow::V1(row),
+            vec![0x01],
+            EncodedContentCharge::new(1).expect("replacement charge"),
+        )
+        .expect("bounded synthetic WP-060 charge")
+    }
+
+    #[test]
+    fn migration_evidence_and_cursor_retain_neutral_bounds_and_identity() {
+        let evidence = synthetic_migration_row(7);
+        assert!(evidence.evidence_page_charge() <= MAX_INDEX_MIGRATION_PAGE_BYTES);
+        assert!(evidence.instruction_page_charge() <= MAX_INDEX_MIGRATION_PAGE_BYTES);
+        assert!(evidence.evidence_page_charge() > 0);
+        assert!(evidence.instruction_page_charge() > evidence.evidence_page_charge());
+
+        let database_id =
+            DatabaseId::from_bytes(uuid_v7(GOLDEN_CAPABILITY_ID_BYTES, 0x31)).expect("database ID");
+        let session = OpenSessionId::new(2).expect("session");
+        let start = IndexMigrationCursor::start(database_id, session);
+        let next = start.advanced(1).expect("one-row continuation");
+        assert_eq!(next.database_id(), database_id);
+        assert_eq!(next.open_session_id(), session);
+        assert_eq!(next.position(), 1);
+        assert_eq!(start.advanced(0), Err(StorageValueError::InvalidShape));
     }
 
     #[test]

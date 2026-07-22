@@ -7,12 +7,18 @@ publish.workspace = true
 
 [features]
 default = []
+test-fixtures = ["riffdb-storage-api/test-fixtures"]
 
 [dependencies]
 redb = { version = "=4.1.0", default-features = false }
+riffdb-catalog = { version = "0.1.0", path = "../riffdb-catalog", default-features = false }
 riffdb-storage-api = { version = "0.1.0", path = "../riffdb-storage-api" }
 riffdb-types = { version = "0.1.0", path = "../riffdb-types" }
 sha2 = { version = "=0.11.0", default-features = false }
+
+[dev-dependencies]
+riffdb-contract-compiler = { version = "0.1.0", path = "../riffdb-contract-compiler", default-features = false }
+riffdb-storage-api = { version = "0.1.0", path = "../riffdb-storage-api", features = ["test-fixtures"] }
 
 [[test]]
 name = "storage_recovery_matrix"

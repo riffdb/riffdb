@@ -28,8 +28,8 @@ use crate::{
         begin_execution_failure_transition, resolve_uncertain_execution_failure,
     },
     command_index::{
-        CheckedAffectedEpochDecision, CheckedAssignDecision, CheckedReserveDecision,
-        derive_checked_command_indexes,
+        CheckedAffectedEpochDecision, CheckedAssignDecision, CheckedCommitCandidate,
+        CheckedReserveDecision, derive_checked_command_indexes,
     },
     command_records::{
         CheckedCommandCommitResult, CheckedCommandStageError, UncertainCommandCommitResolution,
@@ -433,15 +433,9 @@ where
             return proven_storage_failure(error, lifecycle);
         }
     };
-    let reserved = match indexed.reserve_capacity() {
-        CheckedReserveDecision::Reserved(reserved) => reserved,
-        CheckedReserveDecision::StorageFailure(error) => {
-            return proven_storage_failure(error, lifecycle);
-        }
-        CheckedReserveDecision::BatchFull
-        | CheckedReserveDecision::ProvenanceIdCollision
-        | CheckedReserveDecision::EpochExhausted
-        | CheckedReserveDecision::Integrity => return internal_defect(lifecycle),
+    let reserved = match resolve_checked_reserve_decision(indexed.reserve_capacity(), lifecycle) {
+        Ok(reserved) => reserved,
+        Err(result) => return result,
     };
     let assigned = match reserved.assign_sequence() {
         CheckedAssignDecision::Assigned(assigned) => assigned,
@@ -494,6 +488,23 @@ where
             }
         }
         CheckedCommandCommitResult::Integrity => internal_defect(lifecycle),
+    }
+}
+
+fn resolve_checked_reserve_decision<C>(
+    decision: CheckedReserveDecision<C>,
+    lifecycle: &dyn CommandExecutionLifecycle,
+) -> Result<CheckedCommitCandidate<C>, CommandDriverContinuation> {
+    match decision {
+        CheckedReserveDecision::Reserved(reserved) => Ok(reserved),
+        CheckedReserveDecision::CapacityUnavailable => Err(capacity_unavailable()),
+        CheckedReserveDecision::StorageFailure(error) => {
+            Err(proven_storage_failure(error, lifecycle))
+        }
+        CheckedReserveDecision::BatchFull
+        | CheckedReserveDecision::ProvenanceIdCollision
+        | CheckedReserveDecision::EpochExhausted
+        | CheckedReserveDecision::Integrity => Err(internal_defect(lifecycle)),
     }
 }
 
@@ -620,6 +631,12 @@ fn internal_defect(lifecycle: &dyn CommandExecutionLifecycle) -> CommandDriverCo
     lifecycle.stop();
     CommandDriverContinuation::Failed(CommandExecutionError::without_detail(
         CommandExecutionErrorKind::InternalDefect,
+    ))
+}
+
+fn capacity_unavailable() -> CommandDriverContinuation {
+    CommandDriverContinuation::Failed(CommandExecutionError::without_detail(
+        CommandExecutionErrorKind::StorageUnavailable,
     ))
 }
 
@@ -833,6 +850,40 @@ mod tests {
                 usize::from(kind != StorageErrorKind::Unavailable)
             );
         }
+    }
+
+    #[test]
+    fn accepted_aggregate_capacity_refusal_is_redacted_and_keeps_readiness_live() {
+        let lifecycle = RecordingLifecycle::default();
+        let Err(CommandDriverContinuation::Failed(error)) = resolve_checked_reserve_decision::<()>(
+            CheckedReserveDecision::CapacityUnavailable,
+            &lifecycle,
+        ) else {
+            panic!("aggregate capacity refusal must fail the current attempt")
+        };
+
+        assert_eq!(error.kind(), CommandExecutionErrorKind::StorageUnavailable);
+        assert_eq!(error.to_string(), "command storage is unavailable");
+        assert_eq!(lifecycle.fences.load(Ordering::Relaxed), 0);
+        assert_eq!(lifecycle.stops.load(Ordering::Relaxed), 0);
+    }
+
+    #[test]
+    fn semantic_write_shape_integrity_stops_readiness_as_an_internal_defect() {
+        let lifecycle = RecordingLifecycle::default();
+        let Err(CommandDriverContinuation::Failed(error)) =
+            resolve_checked_reserve_decision::<()>(CheckedReserveDecision::Integrity, &lifecycle)
+        else {
+            panic!("semantic write-shape failure must fail the current attempt")
+        };
+
+        assert_eq!(error.kind(), CommandExecutionErrorKind::InternalDefect);
+        assert_eq!(
+            error.to_string(),
+            "command execution encountered an internal defect"
+        );
+        assert_eq!(lifecycle.fences.load(Ordering::Relaxed), 0);
+        assert_eq!(lifecycle.stops.load(Ordering::Relaxed), 1);
     }
 
     #[test]

@@ -2,9 +2,10 @@
 
 //! Immutable contract validation, activation preparation, and startup history proof.
 //!
-//! This crate interprets checked contract IR but never owns a storage mutation
-//! handle. It prepares the typed catalog intent consumed by the commit
-//! coordinator and observes only the coordinator's durable result.
+//! This crate interprets checked contract IR and prepares the typed catalog
+//! intent consumed by the commit coordinator. Its only direct mutation
+//! capability is the move-only, pre-readiness index-migration driver; normal
+//! operation observes only the coordinator's durable result.
 
 mod bundle;
 mod capability_partition;

@@ -5,6 +5,7 @@
 mod support;
 
 use riffdb_errors::PublicErrorKind;
+use riffdb_policy::PartitionConstraint;
 use riffdb_service::{
     AdministrationApplication, AuthoritativeReadinessFailure, CommandApplication,
     CommandDurability, CommitApplication, ContractApplication, ContractValidationResult,
@@ -16,8 +17,8 @@ use riffdb_service::{
     ResolveCommandOutcomeResult, StatisticsRequest, TraceProvenanceResult,
 };
 use riffdb_types::{
-    ServiceAuditLinkV1, ServiceAuditPhaseV1, ServiceAuditTargetV1, ServiceAuditTargetsV1,
-    ServiceIngressKindV1, ServiceOperationV1,
+    PartitionScopeV1, ServiceAuditLinkV1, ServiceAuditPhaseV1, ServiceAuditTargetV1,
+    ServiceAuditTargetsV1, ServiceIngressKindV1, ServiceOperationV1,
 };
 
 use support::{ReadCommitMode, ServiceHarness, run_async, sequence};
@@ -515,6 +516,173 @@ fn authoritative_projection_and_operational_reads_use_typed_ports_and_audit_by_s
                 "intrinsic administrative reads always retain their durable lifecycle"
             );
         }
+    });
+}
+
+#[test]
+fn index_rows_share_one_exact_historical_bundle_lookup() {
+    run_async(async move {
+        let mut harness = ServiceHarness::operations();
+        let mut rows = vec![harness.primary_index_row(), harness.alternate_index_row()];
+        rows.sort_by(|left, right| left.key().as_bytes().cmp(right.key().as_bytes()));
+        harness.configure_index_pages(vec![(rows, None)]);
+        harness.use_compatible_successor_as_active();
+        let (context, _cancellation) = harness.context(0x80);
+
+        let result = harness
+            .service
+            .scan_index(context, harness.index_request())
+            .await
+            .expect("compatible historical index rows validate under their exact bundle");
+
+        assert_eq!(result.page().items().len(), 2);
+        assert_eq!(
+            harness.ports.prepare_contract_version_calls(),
+            1,
+            "both rows share one exact historical binding"
+        );
+        assert_eq!(harness.ports.index_submissions(), 1);
+        harness.stop_coordinator();
+    });
+}
+
+#[test]
+fn return_time_narrowing_emits_empty_progress_and_resumes_without_refill() {
+    run_async(async move {
+        let mut harness = ServiceHarness::operations();
+        let primary = harness.primary_index_row();
+        let alternate = harness.alternate_index_row();
+        assert!(primary.key().as_bytes() < alternate.key().as_bytes());
+        harness.configure_index_pages(vec![
+            (vec![primary.clone()], Some(primary.key().clone())),
+            (vec![alternate.clone()], None),
+        ]);
+        harness.narrow_policy_after_next_index_submission();
+
+        let (first_context, _cancellation) = harness.context(0x81);
+        let first = harness
+            .service
+            .scan_index(first_context, harness.index_request())
+            .await
+            .expect("narrowed return policy omits the first lower row");
+        assert!(first.page().items().is_empty());
+        let cursor = first
+            .page()
+            .next_cursor()
+            .expect("empty non-final page retains opaque physical progress");
+        assert_eq!(harness.ports.index_submissions(), 1);
+        let first_requests = harness.ports.index_requests();
+        assert_eq!(first_requests.len(), 1);
+        assert!(matches!(
+            first_requests[0].partition_constraint(),
+            PartitionConstraint::Filter(PartitionScopeV1::All)
+        ));
+        assert!(first_requests[0].after().is_none());
+
+        let (second_context, _cancellation) = harness.context(0x82);
+        let second = harness
+            .service
+            .scan_index(
+                second_context,
+                harness.index_request_with_cursor(Some(cursor)),
+            )
+            .await
+            .expect("cursor resumes after the inspected physical candidate");
+        assert_eq!(second.page().items().len(), 1);
+        assert_eq!(second.page().items()[0].key(), alternate.key());
+        assert!(second.page().next_cursor().is_none());
+        assert_eq!(
+            harness.ports.index_submissions(),
+            2,
+            "each RPC performs exactly one lower scan"
+        );
+        let requests = harness.ports.index_requests();
+        assert_eq!(requests.len(), 2);
+        assert_eq!(requests[1].after(), Some(primary.key()));
+        assert!(matches!(
+            requests[1].partition_constraint(),
+            PartitionConstraint::Filter(PartitionScopeV1::Explicit(entries))
+                if entries.len() == 1
+                    && entries[0].lineage() == requests[1].lineage()
+                    && entries[0].partition_key() == alternate.stored_partition()
+        ));
+        harness.stop_coordinator();
+    });
+}
+
+#[test]
+fn authoritative_index_partition_mismatch_releases_no_result_or_cursor() {
+    run_async(async move {
+        let mut harness = ServiceHarness::operations();
+        harness.configure_index_pages(vec![(
+            vec![harness.primary_index_row_with_wrong_partition()],
+            None,
+        )]);
+        let (context, _cancellation) = harness.context(0x83);
+
+        let failure = harness
+            .service
+            .scan_index(context, harness.index_request())
+            .await
+            .expect_err("stored and historically derived partitions must match exactly");
+
+        let public = failure
+            .public_error()
+            .expect("integrity containment obtains a caller-safe incident");
+        assert_eq!(public.kind(), PublicErrorKind::InternalDefect);
+        assert!(public.incident_id().is_some());
+        assert!(
+            harness
+                .health
+                .failures()
+                .contains(&AuthoritativeReadinessFailure::Integrity)
+        );
+        assert_eq!(harness.ports.index_submissions(), 1);
+        assert_eq!(harness.cursor_token_calls(), 0);
+        harness.stop_coordinator();
+    });
+}
+
+#[test]
+fn authoritative_index_row_outside_read_filter_is_an_integrity_failure() {
+    run_async(async move {
+        let mut harness = ServiceHarness::restricted_operations();
+        let expected_partition = harness.primary_index_row().stored_partition().clone();
+        harness.configure_index_pages(vec![(vec![harness.alternate_index_row()], None)]);
+        let (context, _cancellation) = harness.context(0x84);
+
+        let failure = harness
+            .service
+            .scan_index(context, harness.index_request())
+            .await
+            .expect_err("the lower port must not return a row outside its read-time filter");
+
+        let public = failure
+            .public_error()
+            .expect("integrity containment obtains a caller-safe incident");
+        assert_eq!(public.kind(), PublicErrorKind::InternalDefect);
+        assert!(public.incident_id().is_some());
+        assert!(
+            harness
+                .health
+                .failures()
+                .contains(&AuthoritativeReadinessFailure::Integrity)
+        );
+        assert_eq!(harness.ports.index_submissions(), 1);
+        let requests = harness.ports.index_requests();
+        assert!(matches!(
+            requests.as_slice(),
+            [request]
+                if matches!(
+                    request.partition_constraint(),
+                    PartitionConstraint::Filter(PartitionScopeV1::Explicit(entries))
+                        if entries.len() == 1
+                            && entries[0].lineage() == request.lineage()
+                            && entries[0].partition_key() == &expected_partition
+                )
+        ));
+        assert_eq!(harness.cursor_token_calls(), 0);
+        harness.stop_coordinator();
     });
 }
 

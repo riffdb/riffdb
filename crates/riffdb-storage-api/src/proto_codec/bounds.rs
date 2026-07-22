@@ -6,7 +6,7 @@ use riffdb_types::{CanonicalRecord, encode_canonical_record};
 use crate::{
     AtomicCommandRecordSet, CommandWriteClassBreakdownV1, CommitIntent, DurabilityMode,
     DurableKeySchemaBindingV1, EncodedWriteSetUpperBound, EntityMutation, ExpectedEntityState,
-    IndexEntryMutationV1, IndexEpochAdvanceV1, StoredReadDependenciesV1,
+    IndexEntryMutationV1, IndexEpochAdvanceV1, MAX_STAGED_WRITE_BYTES, StoredReadDependenciesV1,
 };
 
 use super::{
@@ -14,7 +14,7 @@ use super::{
     INDEX_ENTRY, INDEX_EPOCH, OUTCOME, PROVENANCE, binding_to_proto, claims_to_proto,
     declared_outcome_to_proto, dependencies_to_proto, durability_to_proto,
     encode_application_sequence_allocator_v1, encode_commit_record_v1, encode_durable_event_v1,
-    encode_entity_record_v1, encode_index_entry_v1, encode_index_epoch_v1, encode_outbox_intent_v1,
+    encode_entity_record_v1, encode_index_entry_v2, encode_index_epoch_v1, encode_outbox_intent_v1,
     encode_provenance_record_v1, encode_stored_outcome_v1, entity_target_to_proto,
     expected_to_proto, hashes_to_proto, identity_to_proto, index_entry_to_proto,
     index_epoch_to_proto, plan_to_proto, storage_result, timestamp_to_proto,
@@ -23,6 +23,89 @@ use super::{
 const OUTBOX_INTENT: &str = "riffdb.storage.v1.StoredOutboxIntentV1";
 const MAXIMUM_WIDTH_U64: u64 = u64::MAX;
 const SIZING_EVENT_HASH: [u8; 32] = [0xff; 32];
+
+/// Codec-minted proof that complete sequence-free sizing exceeded only the
+/// accepted aggregate cap.
+///
+/// This witness has no public constructor or fields. Callers can receive and
+/// consume it only through [`command_write_set_upper_bound_v1`].
+///
+/// ```compile_fail
+/// use riffdb_storage_api::{
+///     AggregateCapExceededOriginV1, EncodedWriteSetUpperBoundResultV1,
+/// };
+///
+/// let _forged = EncodedWriteSetUpperBoundResultV1::ExceedsAcceptedAggregateCap(
+///     AggregateCapExceededOriginV1 { _codec_origin: () },
+/// );
+/// ```
+#[derive(Debug, Eq, PartialEq)]
+#[non_exhaustive]
+pub struct AggregateCapExceededOriginV1 {
+    _codec_origin: (),
+}
+
+impl AggregateCapExceededOriginV1 {
+    const fn from_final_comparison() -> Self {
+        Self { _codec_origin: () }
+    }
+}
+
+/// Closed result of complete sequence-free durable write-set sizing.
+#[derive(Debug, Eq, PartialEq)]
+pub enum EncodedWriteSetUpperBoundResultV1 {
+    /// Every complete record and the checked aggregate fit the accepted cap.
+    Fits(EncodedWriteSetUpperBound),
+    /// Every record and checked addition succeeded, but the final aggregate exceeds the cap.
+    ExceedsAcceptedAggregateCap(AggregateCapExceededOriginV1),
+}
+
+#[derive(Clone, Copy)]
+struct RawWriteClassBreakdownV1 {
+    allocator: usize,
+    pending_resolution: usize,
+    entities: usize,
+    index_entries: usize,
+    index_epochs: usize,
+    outcome: usize,
+    events: usize,
+    outbox_intents: usize,
+    provenance: usize,
+    commit: usize,
+}
+
+impl RawWriteClassBreakdownV1 {
+    fn total(self) -> Result<usize, DurableCodecError> {
+        sum_sizes([
+            Ok(self.allocator),
+            Ok(self.pending_resolution),
+            Ok(self.entities),
+            Ok(self.index_entries),
+            Ok(self.index_epochs),
+            Ok(self.outcome),
+            Ok(self.events),
+            Ok(self.outbox_intents),
+            Ok(self.provenance),
+            Ok(self.commit),
+        ])
+    }
+
+    fn checked(self) -> Result<CommandWriteClassBreakdownV1, DurableCodecError> {
+        CommandWriteClassBreakdownV1::new(
+            self.allocator,
+            self.pending_resolution,
+            self.entities,
+            self.index_entries,
+            self.index_epochs,
+            self.outcome,
+            self.events,
+            self.outbox_intents,
+            self.provenance,
+            self.commit,
+        )
+        .map_err(|_| DurableCodecError::invariant())
+    }
+}
 
 /// Canonical envelopes for one final command graph, ready for backend staging.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -113,7 +196,7 @@ pub fn command_write_set_upper_bound_v1(
     intent: &CommitIntent,
     index_entries: &[IndexEntryMutationV1],
     index_epochs: &[IndexEpochAdvanceV1],
-) -> Result<EncodedWriteSetUpperBound, DurableCodecError> {
+) -> Result<EncodedWriteSetUpperBoundResultV1, DurableCodecError> {
     let evaluated = intent.evaluated();
     let pending = intent.pending();
     let plan = evaluated.plan();
@@ -215,9 +298,9 @@ pub fn command_write_set_upper_bound_v1(
         durability_mode: durability_to_proto(DurabilityMode::Memory),
     };
 
-    let classes =
-        CommandWriteClassBreakdownV1::new(
-            sizing_charge(
+    let raw =
+        RawWriteClassBreakdownV1 {
+            allocator: sizing_charge(
                 super::metadata::APPLICATION,
                 &wire::StoredApplicationSequenceAllocatorV1 {
                     state: Some(
@@ -227,38 +310,53 @@ pub fn command_write_set_upper_bound_v1(
                     ),
                 },
             )?,
-            0,
-            sum_sizes(
+            pending_resolution: 0,
+            entities: sum_sizes(
                 entity_messages
                     .iter()
                     .map(|value| sizing_charge(ENTITY, value)),
             )?,
-            sum_sizes(index_entries.iter().filter_map(|mutation| match mutation {
+            index_entries: sum_sizes(index_entries.iter().filter_map(|mutation| match mutation {
                 IndexEntryMutationV1::Delete(_) => None,
                 IndexEntryMutationV1::Put(value) => {
                     Some(sizing_charge(INDEX_ENTRY, &index_entry_to_proto(value)))
                 }
             }))?,
-            sum_sizes(index_epochs.iter().map(|value| {
+            index_epochs: sum_sizes(index_epochs.iter().map(|value| {
                 sizing_charge(INDEX_EPOCH, &index_epoch_to_proto(value.post_image()))
             }))?,
-            sizing_charge(OUTCOME, &outcome)?,
-            sum_sizes(
+            outcome: sizing_charge(OUTCOME, &outcome)?,
+            events: sum_sizes(
                 event_messages
                     .iter()
                     .map(|value| sizing_charge(EVENT, value)),
             )?,
-            sum_sizes(event_messages.iter().cloned().map(|event| {
+            outbox_intents: sum_sizes(event_messages.iter().cloned().map(|event| {
                 sizing_charge(
                     OUTBOX_INTENT,
                     &wire::StoredOutboxIntentV1 { event: Some(event) },
                 )
             }))?,
-            sizing_charge(PROVENANCE, &provenance)?,
-            sizing_charge(COMMIT, &commit)?,
-        )
-        .map_err(DurableCodecError::from_storage_value)?;
-    EncodedWriteSetUpperBound::new(classes).map_err(DurableCodecError::from_storage_value)
+            provenance: sizing_charge(PROVENANCE, &provenance)?,
+            commit: sizing_charge(COMMIT, &commit)?,
+        };
+    finish_upper_bound(raw)
+}
+
+fn finish_upper_bound(
+    raw: RawWriteClassBreakdownV1,
+) -> Result<EncodedWriteSetUpperBoundResultV1, DurableCodecError> {
+    if raw.total()? > MAX_STAGED_WRITE_BYTES {
+        return Ok(
+            EncodedWriteSetUpperBoundResultV1::ExceedsAcceptedAggregateCap(
+                AggregateCapExceededOriginV1::from_final_comparison(),
+            ),
+        );
+    }
+    let classes = raw.checked()?;
+    let bound =
+        EncodedWriteSetUpperBound::new(classes).map_err(|_| DurableCodecError::invariant())?;
+    Ok(EncodedWriteSetUpperBoundResultV1::Fits(bound))
 }
 
 /// Encodes every final record and checks exact class charges before staging.
@@ -276,7 +374,7 @@ pub fn encode_atomic_command_record_set_v1(
         .iter()
         .map(|value| match value {
             IndexEntryMutationV1::Delete(_) => Ok(None),
-            IndexEntryMutationV1::Put(value) => encode_index_entry_v1(value).map(Some),
+            IndexEntryMutationV1::Put(value) => encode_index_entry_v2(value).map(Some),
         })
         .collect::<Result<Vec<_>, _>>()?;
     let index_epochs = records
@@ -418,4 +516,52 @@ fn sum_optional_envelope_charges(
             .as_ref()
             .map(|value| Ok(value.encoded_content_charge().get()))
     }))
+}
+
+#[cfg(test)]
+mod aggregate_classification_tests {
+    use super::*;
+
+    #[test]
+    fn only_a_successful_final_comparison_produces_the_aggregate_cap_variant() {
+        let exact = raw(MAX_STAGED_WRITE_BYTES);
+        assert!(matches!(
+            finish_upper_bound(exact),
+            Ok(EncodedWriteSetUpperBoundResultV1::Fits(bound))
+                if bound.total() == MAX_STAGED_WRITE_BYTES
+        ));
+
+        let over = raw(MAX_STAGED_WRITE_BYTES + 1);
+        assert!(matches!(
+            finish_upper_bound(over),
+            Ok(EncodedWriteSetUpperBoundResultV1::ExceedsAcceptedAggregateCap(_))
+        ));
+
+        let overflow = RawWriteClassBreakdownV1 {
+            allocator: usize::MAX,
+            pending_resolution: 1,
+            ..raw(0)
+        };
+        assert_eq!(
+            finish_upper_bound(overflow)
+                .expect_err("checked aggregate overflow remains a codec error")
+                .kind(),
+            DurableCodecErrorKind::LimitExceeded
+        );
+    }
+
+    const fn raw(allocator: usize) -> RawWriteClassBreakdownV1 {
+        RawWriteClassBreakdownV1 {
+            allocator,
+            pending_resolution: 0,
+            entities: 0,
+            index_entries: 0,
+            index_epochs: 0,
+            outcome: 0,
+            events: 0,
+            outbox_intents: 0,
+            provenance: 0,
+            commit: 0,
+        }
+    }
 }

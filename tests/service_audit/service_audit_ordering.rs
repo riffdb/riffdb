@@ -332,6 +332,12 @@ fn open_operational(store: RedbStore) -> RedbOperationalPorts {
     let opened = session
         .finish(structural_end, historical_end)
         .expect("finish structural validation");
+    let riffdb_catalog::CatalogHistoryOutcome::Ready(history) = history else {
+        panic!("V2-only audit fixture must not require index migration");
+    };
+    let riffdb_storage_api::StructuralOpenOutcome::Clean(opened) = opened else {
+        panic!("V2-only audit fixture must finish with a clean structural open");
+    };
     assert!(
         history.matches(opened.database_id(), opened.open_session_id()),
         "catalog proof belongs to this structural-open session"

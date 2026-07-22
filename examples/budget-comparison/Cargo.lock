@@ -852,6 +852,7 @@ name = "riffdb-catalog"
 version = "0.1.0"
 dependencies = [
  "riffdb-contract-ir",
+ "riffdb-invariant",
  "riffdb-storage-api",
  "riffdb-types",
 ]
@@ -985,6 +986,7 @@ name = "riffdb-storage-redb"
 version = "0.1.0"
 dependencies = [
  "redb",
+ "riffdb-catalog",
  "riffdb-storage-api",
  "riffdb-types",
  "sha2",

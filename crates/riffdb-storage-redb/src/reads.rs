@@ -6,17 +6,19 @@ use redb::{ReadOnlyTable, ReadableTable};
 use riffdb_storage_api::{
     AuthoritativeIndexScanPage, AuthoritativeIndexScanRequest, AuthoritativePointReader,
     AuthoritativeScanReader, CommitScanPageV1, CommitScanRequest, EncodedPageItem,
-    EntityObservation, EntityTarget, IdempotencyIdentity, IndexEpochPosition, IndexRangeEntry,
-    IndexRangeTarget, MAX_COMMIT_SCAN_PAGE_BYTES, MAX_SCAN_PAGE_BYTES, ReadSnapshot,
-    ReadSnapshotBuilder, SnapshotReader, SnapshotRequest, StorageError, StorageErrorKind,
-    StorageValueError, StoredCommitRecordV1, StoredDurableEventV1, StoredEntityRecordV1,
-    StoredOutcomeV1, StoredProvenanceRecordV1,
+    EntityObservation, EntityTarget, FilteredAuthoritativeIndexScanPage,
+    FilteredAuthoritativeIndexScanRequest, FilteredAuthoritativeScanReader, IdempotencyIdentity,
+    IndexEpochPosition, IndexRangeEntry, IndexRangeTarget, MAX_COMMIT_SCAN_PAGE_BYTES,
+    MAX_INDEX_SCAN_INSPECTED_BYTES, MAX_INDEX_SCAN_INSPECTED_ENTRIES, MAX_SCAN_PAGE_BYTES,
+    ReadSnapshot, ReadSnapshotBuilder, SnapshotReader, SnapshotRequest, StorageError,
+    StorageErrorKind, StorageValueError, StoredCommitRecordV1, StoredDurableEventV1,
+    StoredEntityRecordV1, StoredOutcomeV1, StoredProvenanceRecordV1,
 };
 use riffdb_types::{CommitSequence, EventId, FrontierPosition, ProvenanceId};
 
 use crate::codec::{
     IdempotencyRecordV1, decode_commit_record_v1, decode_durable_event_v1, decode_entity_record_v1,
-    decode_idempotency_record_v1, decode_index_entry_v1, decode_index_epoch_v1,
+    decode_idempotency_record_v1, decode_index_entry_v2, decode_index_epoch_v1,
     decode_provenance_record_v1,
 };
 use crate::error::{precommit_storage_error, storage_error, table_error};
@@ -70,7 +72,7 @@ impl SnapshotReader for RedbOperationalPorts {
                     break;
                 }
                 let key = decode_index_entry_key(physical_key.value()).map_err(|_| corrupt())?;
-                let decoded = decode_index_entry_v1(encoded.value())?;
+                let decoded = decode_index_entry_v2(encoded.value())?;
                 if decoded.value().key() != &key {
                     return Err(corrupt());
                 }
@@ -224,7 +226,7 @@ impl AuthoritativeScanReader for RedbOperationalPorts {
                 has_more = true;
                 break;
             }
-            let decoded = decode_index_entry_v1(encoded.value())?;
+            let decoded = decode_index_entry_v2(encoded.value())?;
             if decoded.value().key() != &key {
                 return Err(corrupt());
             }
@@ -333,6 +335,100 @@ impl AuthoritativeScanReader for RedbOperationalPorts {
     }
 }
 
+impl FilteredAuthoritativeScanReader for RedbOperationalPorts {
+    fn scan_index_filtered(
+        &self,
+        request: FilteredAuthoritativeIndexScanRequest,
+    ) -> Result<FilteredAuthoritativeIndexScanPage, StorageError> {
+        let transaction = self.begin_read()?;
+        let table = transaction
+            .open_table(SECONDARY_INDEXES)
+            .map_err(table_error)?;
+        let index_epochs = transaction.open_table(INDEX_EPOCHS).map_err(table_error)?;
+        let epoch = read_epoch_position(&index_epochs, request.target())?;
+        if request.partition_filter().is_none() {
+            return FilteredAuthoritativeIndexScanPage::exact_end(&request, epoch, Vec::new())
+                .map_err(corrupt_value);
+        }
+
+        let prefix = request.target().prefix().as_bytes();
+        let mut scan = match request.after() {
+            Some(after) => table
+                .range::<&[u8]>((Excluded(after.as_bytes()), Unbounded))
+                .map_err(precommit_storage_error)?,
+            None => table.range(prefix..).map_err(precommit_storage_error)?,
+        };
+        let returned_limit = usize::from(request.limit().get());
+        let mut returned = Vec::with_capacity(returned_limit);
+        let mut returned_bytes = 0usize;
+        let mut inspected_bytes = 0usize;
+        let mut scanned_through = None;
+        let mut exact_end = true;
+
+        for (candidate_index, entry) in (&mut scan).enumerate() {
+            let (physical_key, encoded) = entry.map_err(precommit_storage_error)?;
+            if !physical_key.value().starts_with(prefix) {
+                break;
+            }
+            if returned.len() == returned_limit
+                || candidate_index == MAX_INDEX_SCAN_INSPECTED_ENTRIES
+            {
+                exact_end = false;
+                break;
+            }
+
+            let key = decode_index_entry_key(physical_key.value()).map_err(|_| corrupt())?;
+            let decoded = decode_index_entry_v2(encoded.value())?;
+            if decoded.value().key() != &key {
+                return Err(corrupt());
+            }
+            let charge = decoded.encoded_content_charge();
+            let next_inspected_bytes = inspected_bytes
+                .checked_add(charge.get())
+                .ok_or_else(|| storage_error(StorageErrorKind::LimitExceeded))?;
+            if next_inspected_bytes > MAX_INDEX_SCAN_INSPECTED_BYTES {
+                if scanned_through.is_none() {
+                    return Err(corrupt());
+                }
+                exact_end = false;
+                break;
+            }
+
+            let is_eligible = request.partition_filter().allows(
+                decoded.value().schema_binding(),
+                decoded.value().partition_key(),
+            );
+            let next_returned_bytes = returned_bytes
+                .checked_add(charge.get())
+                .ok_or_else(|| storage_error(StorageErrorKind::LimitExceeded))?;
+            if is_eligible && next_returned_bytes > MAX_SCAN_PAGE_BYTES {
+                if scanned_through.is_none() {
+                    return Err(corrupt());
+                }
+                exact_end = false;
+                break;
+            }
+
+            inspected_bytes = next_inspected_bytes;
+            scanned_through = Some(key);
+            if is_eligible {
+                returned_bytes = next_returned_bytes;
+                returned.push(decoded);
+            }
+        }
+
+        if exact_end {
+            FilteredAuthoritativeIndexScanPage::exact_end(&request, epoch, returned)
+                .map_err(corrupt_value)
+        } else {
+            let scanned_through = scanned_through
+                .ok_or_else(|| storage_error(StorageErrorKind::InvariantViolation))?;
+            FilteredAuthoritativeIndexScanPage::page(&request, epoch, returned, scanned_through)
+                .map_err(corrupt_value)
+        }
+    }
+}
+
 fn read_entity_observation(
     table: &BytesTable,
     target: &EntityTarget,
@@ -422,9 +518,9 @@ mod tests {
     use riffdb_storage_api::{
         AuthoritativeIndexScanPage, DatabaseInitializationPort, DeclaredOutcome, DurabilityMode,
         DurableKeySchemaBindingV1, ExecutablePlanRef, IdempotencyIdentity, IdempotencyKeyDigest,
-        IndexRangePrefixBuilder, ReadDependencies, StorageScanLimit, StoredCommitRecordV1,
-        StoredIndexEntryV1, StoredIndexEpochV1, StoredReadDependenciesV1,
-        StructurallyDecodedIndexRangePrefixV1,
+        IndexPartitionFilter, IndexPartitionFilterScope, IndexRangePrefixBuilder, ReadDependencies,
+        StorageScanLimit, StoredCommitRecordV1, StoredIndexEntryV2, StoredIndexEpochV1,
+        StoredReadDependenciesV1, StructurallyDecodedIndexRangePrefixV1,
     };
     use riffdb_types::{
         ActorId, ActorKind, AdmittedActorContext, AggregateTypeId, CanonicalInputHash,
@@ -436,7 +532,7 @@ mod tests {
 
     use super::*;
     use crate::codec::{
-        encode_commit_record_v1, encode_entity_record_v1, encode_index_entry_v1,
+        encode_commit_record_v1, encode_entity_record_v1, encode_index_entry_v2,
         encode_index_epoch_v1,
     };
     use crate::layout::{COMMITS, ENTITIES, INDEX_EPOCHS, SECONDARY_INDEXES};
@@ -521,6 +617,106 @@ mod tests {
             ContractVersion::new(1).expect("version"),
             ContractBundleHash::from_bytes([0x22; 32]),
         )
+    }
+
+    fn filtered_binding(lineage: &str) -> DurableKeySchemaBindingV1 {
+        DurableKeySchemaBindingV1::new(
+            ContractLineage::new(lineage).expect("lineage"),
+            ContractVersion::new(1).expect("version"),
+            ContractBundleHash::from_bytes([0x22; 32]),
+        )
+    }
+
+    fn filtered_range() -> IndexRangeTarget {
+        let mut prefix = IndexRangePrefixBuilder::new(IndexId::new(7).expect("index"));
+        prefix.push_u64(19).expect("prefix component");
+        IndexRangeTarget::new(prefix.finish())
+    }
+
+    fn filtered_index_key(value: u64) -> riffdb_types::IndexEntryKey {
+        let mut entity = EntityKeyBuilder::new(EntityTypeId::new(1).expect("entity type"));
+        entity.push_u64(value).expect("entity component");
+        let mut index = IndexEntryKeyBuilder::new(IndexId::new(7).expect("index"));
+        index.push_u64(19).expect("index component");
+        index
+            .finish(entity.finish().expect("entity key"))
+            .expect("index key")
+    }
+
+    fn filtered_partition(value: u64) -> riffdb_types::PartitionKey {
+        let mut partition = PartitionKeyBuilder::new(AggregateTypeId::new(1).expect("aggregate"));
+        partition.push_u64(value).expect("partition component");
+        partition.finish().expect("partition")
+    }
+
+    fn filtered_row(value: u64, partition: u64, lineage: &str) -> StoredIndexEntryV2 {
+        StoredIndexEntryV2::new(
+            filtered_index_key(value),
+            filtered_binding(lineage),
+            CanonicalRecord::new(Vec::new()).expect("covered values"),
+            filtered_partition(partition),
+        )
+        .expect("V2 row")
+    }
+
+    fn filtered_request(
+        scope: IndexPartitionFilterScope,
+        after: Option<riffdb_types::IndexEntryKey>,
+        limit: u16,
+    ) -> FilteredAuthoritativeIndexScanRequest {
+        let filter = IndexPartitionFilter::new(
+            ContractLineage::new("application-test").expect("lineage"),
+            scope,
+        )
+        .expect("filter");
+        FilteredAuthoritativeIndexScanRequest::new(
+            filtered_range(),
+            filter,
+            after,
+            StorageScanLimit::new(limit).expect("limit"),
+        )
+        .expect("request")
+    }
+
+    fn seed_filtered_rows(ports: &RedbOperationalPorts, rows: Vec<StoredIndexEntryV2>) {
+        let target = filtered_range();
+        let stored_epoch = StoredIndexEpochV1::new(
+            StructurallyDecodedIndexRangePrefixV1::from_live(target.prefix()),
+            filtered_binding("application-test"),
+            IndexEpoch::first(),
+        );
+        let encoded_epoch = encode_index_epoch_v1(&stored_epoch).expect("encode index epoch");
+        let access = ports.begin_write().expect("begin filtered seed");
+        {
+            let mut table = access
+                .transaction()
+                .expect("seed transaction")
+                .open_table(SECONDARY_INDEXES)
+                .expect("index table");
+            for row in rows {
+                let encoded = encode_index_entry_v2(&row).expect("encode V2 row");
+                assert!(
+                    table
+                        .insert(row.key().as_bytes(), encoded.as_bytes())
+                        .expect("insert V2 row")
+                        .is_none()
+                );
+            }
+        }
+        {
+            let mut table = access
+                .transaction()
+                .expect("seed transaction")
+                .open_table(INDEX_EPOCHS)
+                .expect("epoch table");
+            assert!(
+                table
+                    .insert(target.prefix().as_bytes(), encoded_epoch.as_bytes())
+                    .expect("insert index epoch")
+                    .is_none()
+            );
+        }
+        access.commit().expect("commit filtered seed");
     }
 
     fn stored_commit(sequence: CommitSequence) -> StoredCommitRecordV1 {
@@ -689,13 +885,16 @@ mod tests {
             .finish(entity_target(1).key().clone())
             .expect("index key");
         let target = IndexRangeTarget::new(IndexRangePrefixBuilder::new(index_id).finish());
-        let stored = StoredIndexEntryV1::new(
+        let mut partition = PartitionKeyBuilder::new(AggregateTypeId::first());
+        partition.push_u64(1).expect("partition component");
+        let stored = StoredIndexEntryV2::new(
             key.clone(),
             binding(),
             CanonicalRecord::new(Vec::new()).expect("covered values"),
+            partition.finish().expect("partition key"),
         )
         .expect("stored index entry");
-        let encoded = encode_index_entry_v1(&stored).expect("encode index entry");
+        let encoded = encode_index_entry_v2(&stored).expect("encode index entry");
         let stored_epoch = StoredIndexEpochV1::new(
             StructurallyDecodedIndexRangePrefixV1::from_live(target.prefix()),
             binding(),
@@ -755,6 +954,135 @@ mod tests {
             IndexEpochPosition::Value(IndexEpoch::first())
         );
         assert_eq!(snapshot.ranges()[0].entries()[0].key(), &key);
+    }
+
+    #[test]
+    fn filtered_scan_enforces_all_explicit_none_and_lineage() {
+        let (_path, ports) = operational("filtered-partitions");
+        seed_filtered_rows(
+            &ports,
+            vec![
+                filtered_row(1, 1, "application-test"),
+                filtered_row(2, 2, "foreign"),
+                filtered_row(3, 3, "application-test"),
+            ],
+        );
+
+        let all = ports
+            .scan_index_filtered(filtered_request(IndexPartitionFilterScope::All, None, 500))
+            .expect("all scan");
+        assert_eq!(all.epoch(), IndexEpochPosition::Value(IndexEpoch::first()));
+        assert!(matches!(
+            all,
+            FilteredAuthoritativeIndexScanPage::ExactEnd { ref entries, .. }
+                if entries.len() == 2
+                    && entries[0].value().key() == &filtered_index_key(1)
+                    && entries[1].value().key() == &filtered_index_key(3)
+        ));
+
+        let explicit = ports
+            .scan_index_filtered(filtered_request(
+                IndexPartitionFilterScope::Explicit(vec![filtered_partition(3)]),
+                None,
+                500,
+            ))
+            .expect("explicit scan");
+        assert!(matches!(
+            explicit,
+            FilteredAuthoritativeIndexScanPage::ExactEnd { ref entries, .. }
+                if entries.len() == 1 && entries[0].value().key() == &filtered_index_key(3)
+        ));
+
+        let none = ports
+            .scan_index_filtered(filtered_request(IndexPartitionFilterScope::None, None, 500))
+            .expect("none scan");
+        assert!(matches!(
+            none,
+            FilteredAuthoritativeIndexScanPage::ExactEnd { ref entries, .. }
+                if entries.is_empty()
+        ));
+    }
+
+    #[test]
+    fn sparse_filtered_scan_stops_after_500_physical_candidates() {
+        let (_path, ports) = operational("filtered-sparse");
+        seed_filtered_rows(
+            &ports,
+            (1_u64..=501)
+                .map(|value| filtered_row(value, value, "foreign"))
+                .collect(),
+        );
+
+        let first = ports
+            .scan_index_filtered(filtered_request(IndexPartitionFilterScope::All, None, 500))
+            .expect("first sparse page");
+        let FilteredAuthoritativeIndexScanPage::Page {
+            entries,
+            scanned_through,
+            epoch,
+        } = first
+        else {
+            panic!("501 physical candidates require sparse progress");
+        };
+        assert!(entries.is_empty());
+        assert_eq!(scanned_through, filtered_index_key(500));
+        assert_eq!(epoch, IndexEpochPosition::Value(IndexEpoch::first()));
+
+        let final_page = ports
+            .scan_index_filtered(filtered_request(
+                IndexPartitionFilterScope::All,
+                Some(scanned_through),
+                500,
+            ))
+            .expect("final sparse page");
+        assert!(matches!(
+            final_page,
+            FilteredAuthoritativeIndexScanPage::ExactEnd { ref entries, epoch }
+                if entries.is_empty()
+                    && epoch == IndexEpochPosition::Value(IndexEpoch::first())
+        ));
+    }
+
+    #[test]
+    fn filtered_scan_return_limit_advances_only_through_inspected_rows() {
+        let (_path, ports) = operational("filtered-limit");
+        seed_filtered_rows(
+            &ports,
+            vec![
+                filtered_row(1, 1, "application-test"),
+                filtered_row(2, 2, "application-test"),
+                filtered_row(3, 3, "application-test"),
+            ],
+        );
+
+        let first = ports
+            .scan_index_filtered(filtered_request(IndexPartitionFilterScope::All, None, 2))
+            .expect("bounded first page");
+        let FilteredAuthoritativeIndexScanPage::Page {
+            entries,
+            scanned_through,
+            ..
+        } = first
+        else {
+            panic!("one eligible row remains");
+        };
+        assert_eq!(entries.len(), 2);
+        assert_eq!(entries[0].value().key(), &filtered_index_key(1));
+        assert_eq!(entries[1].value().key(), &filtered_index_key(2));
+        assert_eq!(scanned_through, filtered_index_key(2));
+
+        let final_page = ports
+            .scan_index_filtered(filtered_request(
+                IndexPartitionFilterScope::All,
+                Some(scanned_through),
+                2,
+            ))
+            .expect("bounded final page");
+        assert!(matches!(
+            final_page,
+            FilteredAuthoritativeIndexScanPage::ExactEnd { ref entries, .. }
+                if entries.len() == 1 && entries[0].value().key() == &filtered_index_key(3)
+        ));
     }
 
     #[test]

@@ -154,9 +154,12 @@ fn open_operational(store: RedbStore) -> RedbOperationalPorts {
             HistoricalEvidencePage::ExactEnd(end) => break end,
         }
     };
-    let opened = session
+    let outcome = session
         .finish(structural_end, historical_end)
         .expect("finish structural session");
+    let riffdb_storage_api::StructuralOpenOutcome::Clean(opened) = outcome else {
+        panic!("V2 service-audit fixture must open cleanly");
+    };
     let (_, _, _, dormant) = opened.into_parts();
     dormant
         .into_operational_after_catalog_validation()

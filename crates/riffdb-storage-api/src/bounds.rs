@@ -51,6 +51,10 @@ pub const MAX_SERVICE_AUDIT_BYTES: usize = 64 * 1024;
 pub const MAX_READABLE_DIGEST_KEYS: usize = 8;
 /// Maximum bytes in one page of catalog startup evidence.
 pub const MAX_HISTORICAL_EVIDENCE_PAGE_BYTES: usize = 16 * 1024 * 1024;
+/// Maximum physical index rows in one startup migration evidence or instruction page.
+pub const MAX_INDEX_MIGRATION_PAGE_ENTRIES: usize = 500;
+/// Maximum bytes in each independent startup migration page ledger.
+pub const MAX_INDEX_MIGRATION_PAGE_BYTES: usize = 4 * 1024 * 1024;
 
 /// Maximum encoded content charge accepted for one complete durable `StoredEnvelope`.
 pub const MAX_DURABLE_ENCODED_CONTENT_BYTES: usize = 16 * 1024 * 1024;

@@ -10,11 +10,13 @@ default = []
 
 [dependencies]
 riffdb-contract-ir = { version = "0.1.0", path = "../riffdb-contract-ir" }
+riffdb-invariant = { version = "0.1.0", path = "../riffdb-invariant" }
 riffdb-storage-api = { version = "0.1.0", path = "../riffdb-storage-api" }
 riffdb-types = { version = "0.1.0", path = "../riffdb-types" }
 
 [dev-dependencies]
 riffdb-contract-compiler = { version = "0.1.0", path = "../riffdb-contract-compiler" }
+riffdb-storage-api = { version = "0.1.0", path = "../riffdb-storage-api", default-features = false, features = ["test-fixtures"] }
 
 [[test]]
 name = "contract_deploy_recovery"

@@ -1,12 +1,15 @@
 use riffdb_proto::{
-    durable::CURRENT_RECORD_SCHEMAS,
+    durable::READABLE_RECORD_SCHEMAS,
     envelope::{EnvelopeError, maximum_encoded_envelope_bytes},
 };
-use riffdb_types::{IndexEntryKeyBuilder, IndexId};
+use riffdb_types::{
+    CanonicalRecord, CanonicalValue, FieldId, IndexEntryKeyBuilder, IndexId,
+    MAX_CANONICAL_DOCUMENT_BYTES,
+};
 
 use crate::{
     AffectedEpochCurrentState, AffectedIndexEpochTargets, CommandWriteClassBreakdownV1,
-    CommandWriteSetPlanV1, EncodedWriteSetUpperBound, IndexEntryMutationV1,
+    CommandWriteSetPlanV1, EncodedWriteSetUpperBound, IndexEntryMutationV1, StoredIndexEntryV2,
 };
 
 use super::super::*;
@@ -15,8 +18,8 @@ use super::sample;
 #[test]
 fn every_semantic_fixture_reports_its_exact_complete_envelope_charge() {
     let vectors = super::semantic_wire_vectors();
-    assert_eq!(vectors.len(), CURRENT_RECORD_SCHEMAS.len());
-    for ((name, envelope), schema) in vectors.iter().zip(CURRENT_RECORD_SCHEMAS.iter()) {
+    assert_eq!(vectors.len(), 26);
+    for ((name, envelope), schema) in vectors.iter().zip(READABLE_RECORD_SCHEMAS.iter()) {
         assert_eq!(*name, schema.record_type());
         assert_eq!(
             envelope.encoded_content_charge().get(),
@@ -34,7 +37,7 @@ fn every_semantic_fixture_reports_its_exact_complete_envelope_charge() {
 
 #[test]
 fn every_generated_record_bound_accepts_equal_and_rejects_one_over() {
-    for schema in &CURRENT_RECORD_SCHEMAS {
+    for schema in &READABLE_RECORD_SCHEMAS {
         assert_eq!(
             maximum_encoded_envelope_bytes(schema, schema.max_payload_bytes())
                 .expect("generated payload ceiling fits"),
@@ -157,9 +160,15 @@ fn pending_and_index_deletes_have_zero_encoded_but_nonzero_semantic_charge() {
     ];
     mutations.sort_by(|left, right| left.key().as_bytes().cmp(right.key().as_bytes()));
 
-    let reservation = command_write_set_upper_bound_v1(&intent, &mutations, &[])
-        .expect("mixed index reservation");
-    let put_charge = encode_index_entry_v1(&put)
+    let reservation = match command_write_set_upper_bound_v1(&intent, &mutations, &[])
+        .expect("mixed index reservation")
+    {
+        EncodedWriteSetUpperBoundResultV1::Fits(bound) => bound,
+        EncodedWriteSetUpperBoundResultV1::ExceedsAcceptedAggregateCap(_) => {
+            panic!("small mixed fixture must fit")
+        }
+    };
+    let put_charge = encode_index_entry_v2(&put)
         .expect("put post-image encodes")
         .encoded_content_charge()
         .get();
@@ -181,4 +190,43 @@ fn pending_and_index_deletes_have_zero_encoded_but_nonzero_semantic_charge() {
     let semantic = plan.charge().semantic_classes();
     assert!(semantic.pending_resolution() > 0);
     assert!(semantic.index_entries() > 0);
+}
+
+#[test]
+fn complete_valid_records_can_exceed_only_the_final_aggregate_cap() {
+    const CANONICAL_RECORD_OVERHEAD: usize = 16;
+
+    let intent = sample::commit_intent();
+    let (template, _) = sample::index_records();
+    let covered_values = CanonicalRecord::new(vec![(
+        FieldId::first(),
+        CanonicalValue::bytes(vec![
+            0x5a;
+            MAX_CANONICAL_DOCUMENT_BYTES - CANONICAL_RECORD_OVERHEAD
+        ])
+        .expect("maximum bytes value"),
+    )])
+    .expect("maximum canonical record");
+    let entries = (0_u64..17)
+        .map(|ordinal| {
+            let mut key = IndexEntryKeyBuilder::new(IndexId::first());
+            key.push_u64(ordinal).expect("unique index component");
+            let key = key
+                .finish(sample::entity_target().key().clone())
+                .expect("complete index key");
+            StoredIndexEntryV2::new(
+                key,
+                template.schema_binding().clone(),
+                covered_values.clone(),
+                template.partition_key().clone(),
+            )
+            .map(IndexEntryMutationV1::Put)
+            .expect("each maximum row is individually valid")
+        })
+        .collect::<Vec<_>>();
+
+    assert!(matches!(
+        command_write_set_upper_bound_v1(&intent, &entries, &[]),
+        Ok(EncodedWriteSetUpperBoundResultV1::ExceedsAcceptedAggregateCap(_))
+    ));
 }

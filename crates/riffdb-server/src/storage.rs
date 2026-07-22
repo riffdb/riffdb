@@ -12,11 +12,13 @@ use riffdb_storage_api::{
     CapabilityLookupResult, CapabilityReader, CapabilityRevokeCandidateV1,
     CatalogActivationIntentV1, CatalogActivationResult, CatalogAdministrationRepository,
     CatalogRepository, CommitScanPageV1, CommitScanRequest, ExecutionFailureAdmissionResult,
-    ExecutionFailureTransitionPort, ExecutionFailureTransitionRequestV1, IdempotencyIdentity,
-    IdempotencyLookupCandidatesV1, ReadSnapshot, ServiceAuditAppendIntentV1,
-    ServiceAuditAppendRepository, ServiceAuditAppendResult, SnapshotReader, SnapshotRequest,
-    StorageError, StorageErrorKind, StoredCommitRecordV1, StoredContractBundleV1,
-    StoredDurableEventV1, StoredEntityRecordV1, StoredOutcomeV1, StoredProvenanceRecordV1,
+    ExecutionFailureTransitionPort, ExecutionFailureTransitionRequestV1,
+    FilteredAuthoritativeIndexScanPage, FilteredAuthoritativeIndexScanRequest,
+    FilteredAuthoritativeScanReader, IdempotencyIdentity, IdempotencyLookupCandidatesV1,
+    ReadSnapshot, ServiceAuditAppendIntentV1, ServiceAuditAppendRepository,
+    ServiceAuditAppendResult, SnapshotReader, SnapshotRequest, StorageError, StorageErrorKind,
+    StoredCommitRecordV1, StoredContractBundleV1, StoredDurableEventV1, StoredEntityRecordV1,
+    StoredOutcomeV1, StoredProvenanceRecordV1,
 };
 use riffdb_storage_redb::RedbOperationalPorts;
 use riffdb_types::{
@@ -310,6 +312,16 @@ impl AuthoritativeScanReader for SharedRedbOperationalPorts {
     fn scan_commits(&self, request: CommitScanRequest) -> Result<CommitScanPageV1, StorageError> {
         self.cell
             .with_ref(|ports| AuthoritativeScanReader::scan_commits(ports, request))
+    }
+}
+
+impl FilteredAuthoritativeScanReader for SharedRedbOperationalPorts {
+    fn scan_index_filtered(
+        &self,
+        request: FilteredAuthoritativeIndexScanRequest,
+    ) -> Result<FilteredAuthoritativeIndexScanPage, StorageError> {
+        self.cell
+            .with_ref(|ports| FilteredAuthoritativeScanReader::scan_index_filtered(ports, request))
     }
 }
 

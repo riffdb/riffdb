@@ -21,19 +21,21 @@ use riffdb_service::{
     AuthoritativeEntitySnapshot, AuthoritativeIndexPage, AuthoritativeIndexRequest,
     AuthoritativeIndexRow, AuthoritativeJournaledOutcome, AuthoritativeOutcomeFacts,
     AuthoritativeOutcomeRequest, AuthoritativeOutcomeSnapshot, AuthoritativeProvenanceSnapshot,
-    AuthoritativeReadError, AuthoritativeReadPort, BoxPortCapacityPermit,
-    CapabilityRevokeTargetSnapshot, CatalogExecutablePlanRequest, CatalogReadPort,
-    CommandDurability, CommitNotificationSource, ContractVersionReadPermit, DeclaredOutcomeView,
-    DurableEventView, PortAdmissionError, PortDriverStopped, PortFuture,
+    AuthoritativeReadError, AuthoritativeReadPort, AuthoritativeSchemaBinding,
+    BoxPortCapacityPermit, CapabilityRevokeTargetSnapshot, CatalogExecutablePlanRequest,
+    CatalogReadPort, CommandDurability, CommitNotificationSource, ContractVersionReadPermit,
+    DeclaredOutcomeView, DurableEventView, PortAdmissionError, PortDriverStopped, PortFuture,
     PresentCapabilityRevokeTargetSnapshot, ProvenanceClaimsView, RequestControl,
 };
 use riffdb_storage_api::{
-    AdmissionLookupResultV1, AdmissionRepository, AuthoritativeIndexScanPage,
-    AuthoritativeIndexScanRequest, AuthoritativePointReader, AuthoritativeScanReader,
-    CapabilityLifecycleV1, CapabilityReader, CatalogRepository, CommitScanPageV1,
-    CommitScanRequest, DurabilityMode, EntityTarget, ExecutablePlanRef, IndexRangePrefixBuilder,
-    IndexRangeTarget, StorageError, StorageErrorKind, StorageScanLimit, StoredAdmissionStateV1,
-    StoredCommitRecordV1, StoredPendingAdmissionV1, StoredProvenanceRecordV1,
+    AdmissionLookupResultV1, AdmissionRepository, AuthoritativePointReader,
+    AuthoritativeScanReader, CapabilityLifecycleV1, CapabilityReader, CatalogRepository,
+    CommitScanPageV1, CommitScanRequest, DurabilityMode, EntityTarget, ExecutablePlanRef,
+    FilteredAuthoritativeIndexScanPage, FilteredAuthoritativeIndexScanRequest,
+    FilteredAuthoritativeScanReader, IndexPartitionFilter, IndexPartitionFilterScope,
+    IndexRangePrefixBuilder, IndexRangeTarget, StorageError, StorageErrorKind, StorageScanLimit,
+    StoredAdmissionStateV1, StoredCommitRecordV1, StoredPendingAdmissionV1,
+    StoredProvenanceRecordV1,
 };
 use riffdb_types::{
     CanonicalValue, CapabilityId, CommitSequence, ContractLineage, ContractVersion, DatabaseId,
@@ -519,30 +521,46 @@ fn read_entity(
 }
 
 fn scan_index(
-    storage: &impl AuthoritativeScanReader,
+    storage: &impl FilteredAuthoritativeScanReader,
     request: AuthoritativeIndexRequest,
 ) -> Result<AuthoritativeIndexPage, AuthoritativeReadError> {
-    require_unrestricted_index_scope(request.partition_constraint())?;
-    scan_index_unrestricted(storage, request)
+    let partition_filter =
+        lower_index_partition_filter(request.lineage(), request.partition_constraint())?;
+    scan_index_filtered(storage, request, partition_filter)
 }
 
-fn require_unrestricted_index_scope(
+fn lower_index_partition_filter(
+    target_lineage: &ContractLineage,
     constraint: &PartitionConstraint,
-) -> Result<(), AuthoritativeReadError> {
-    if matches!(
-        constraint,
-        PartitionConstraint::Filter(riffdb_types::PartitionScopeV1::All)
-    ) {
-        return Ok(());
-    }
-    // The lower storage request currently has no partition-constraint field.
-    // Fail closed before calling storage instead of filtering an unrestricted scan.
-    Err(AuthoritativeReadError::Unavailable)
+) -> Result<IndexPartitionFilter, AuthoritativeReadError> {
+    let scope = match constraint {
+        PartitionConstraint::Filter(riffdb_types::PartitionScopeV1::All) => {
+            IndexPartitionFilterScope::All
+        }
+        PartitionConstraint::Filter(riffdb_types::PartitionScopeV1::Explicit(entries)) => {
+            if entries.is_empty() {
+                IndexPartitionFilterScope::None
+            } else {
+                let mut keys = Vec::with_capacity(entries.len());
+                for entry in entries {
+                    if entry.lineage() != target_lineage {
+                        return Err(AuthoritativeReadError::Integrity);
+                    }
+                    keys.push(entry.partition_key().clone());
+                }
+                IndexPartitionFilterScope::Explicit(keys)
+            }
+        }
+        PartitionConstraint::Exact(_) => return Err(AuthoritativeReadError::Integrity),
+    };
+    IndexPartitionFilter::new(target_lineage.clone(), scope)
+        .map_err(|_| AuthoritativeReadError::Integrity)
 }
 
-fn scan_index_unrestricted(
-    storage: &impl AuthoritativeScanReader,
+fn scan_index_filtered(
+    storage: &impl FilteredAuthoritativeScanReader,
     request: AuthoritativeIndexRequest,
+    partition_filter: IndexPartitionFilter,
 ) -> Result<AuthoritativeIndexPage, AuthoritativeReadError> {
     let mut prefix = IndexRangePrefixBuilder::new(request.index_id());
     for component in request.leading_components() {
@@ -557,33 +575,48 @@ fn scan_index_unrestricted(
     let target = IndexRangeTarget::new(prefix);
     let limit = StorageScanLimit::new(request.limit().get().get())
         .ok_or(AuthoritativeReadError::Integrity)?;
-    let lower_request = AuthoritativeIndexScanRequest::new(target, request.after().cloned(), limit)
-        .map_err(|_| {
-            if request.after().is_some() {
-                AuthoritativeReadError::InvalidContinuation
-            } else {
-                AuthoritativeReadError::Integrity
-            }
-        })?;
+    let lower_request = FilteredAuthoritativeIndexScanRequest::new(
+        target,
+        partition_filter,
+        request.after().cloned(),
+        limit,
+    )
+    .map_err(|_| {
+        if request.after().is_some() {
+            AuthoritativeReadError::InvalidContinuation
+        } else {
+            AuthoritativeReadError::Integrity
+        }
+    })?;
     let lower = storage
-        .scan_index(lower_request)
+        .scan_index_filtered(lower_request)
         .map_err(map_storage_error)?;
-    let (entries, next_after, epoch) = match lower {
-        AuthoritativeIndexScanPage::Page {
+    let (entries, scanned_through, epoch) = match lower {
+        FilteredAuthoritativeIndexScanPage::Page {
             entries,
-            next_after,
+            scanned_through,
             epoch,
-        } => (entries, Some(next_after), epoch),
-        AuthoritativeIndexScanPage::ExactEnd { entries, epoch } => (entries, None, epoch),
+        } => (entries, Some(scanned_through), epoch),
+        FilteredAuthoritativeIndexScanPage::ExactEnd { entries, epoch } => (entries, None, epoch),
     };
     let rows = entries
         .into_iter()
         .map(|entry| {
             let (entry, _) = entry.into_parts();
-            AuthoritativeIndexRow::new(entry.key().clone(), entry.covered_values().clone())
+            let binding = entry.schema_binding();
+            AuthoritativeIndexRow::new(
+                entry.key().clone(),
+                AuthoritativeSchemaBinding::new(
+                    binding.lineage().clone(),
+                    binding.contract_version(),
+                    binding.bundle_hash(),
+                ),
+                entry.covered_values().clone(),
+                entry.partition_key().clone(),
+            )
         })
         .collect();
-    AuthoritativeIndexPage::new(&request, rows, next_after, epoch)
+    AuthoritativeIndexPage::new(&request, rows, scanned_through, epoch)
         .map_err(|_| AuthoritativeReadError::Integrity)
 }
 
@@ -929,11 +962,18 @@ fn read_revoke_target(
 
 #[cfg(test)]
 mod tests {
+    use std::sync::Mutex;
+
+    use riffdb_contract_ir::{KeyComponentSchema, KeyPurpose, KeySchema, ValueType};
     use riffdb_policy::PartitionConstraint;
+    use riffdb_storage_api::{
+        AuthoritativeIndexScanPage, AuthoritativeIndexScanRequest, DurableKeySchemaBindingV1,
+        EncodedContentCharge, EncodedPageItem, StoredIndexEntryV2,
+    };
     use riffdb_types::{
-        AggregateTypeId, CanonicalString, EntityKeyBuilder, EntityTypeId, EventId,
-        IndexEntryKeyBuilder, IndexId, PartitionKeyBuilder, PartitionScopeV1, ProvenanceId,
-        ScopedPartitionV1,
+        AggregateTypeId, CanonicalRecord, CanonicalString, ContractBundleHash, EntityKeyBuilder,
+        EntityTypeId, EventId, IndexEntryKey, IndexEntryKeyBuilder, IndexEpoch, IndexId,
+        PartitionKey, PartitionKeyBuilder, PartitionScopeV1, ProvenanceId, ScopedPartitionV1,
     };
 
     use super::*;
@@ -1032,6 +1072,134 @@ mod tests {
         ) -> Result<riffdb_storage_api::CapabilityLookupResult, StorageError> {
             Ok(riffdb_storage_api::CapabilityLookupResult::NotFound)
         }
+    }
+
+    struct FixedFilteredReader {
+        entries: Vec<EncodedPageItem<StoredIndexEntryV2>>,
+        scanned_through: Option<IndexEntryKey>,
+        requests: Mutex<Vec<FilteredAuthoritativeIndexScanRequest>>,
+    }
+
+    impl FixedFilteredReader {
+        fn new(
+            entries: Vec<EncodedPageItem<StoredIndexEntryV2>>,
+            scanned_through: Option<IndexEntryKey>,
+        ) -> Self {
+            Self {
+                entries,
+                scanned_through,
+                requests: Mutex::new(Vec::new()),
+            }
+        }
+
+        fn requests(&self) -> Vec<FilteredAuthoritativeIndexScanRequest> {
+            self.requests
+                .lock()
+                .expect("filtered requests mutex")
+                .clone()
+        }
+    }
+
+    impl FilteredAuthoritativeScanReader for FixedFilteredReader {
+        fn scan_index_filtered(
+            &self,
+            request: FilteredAuthoritativeIndexScanRequest,
+        ) -> Result<FilteredAuthoritativeIndexScanPage, StorageError> {
+            self.requests
+                .lock()
+                .expect("filtered requests mutex")
+                .push(request.clone());
+            let epoch = riffdb_types::IndexEpochPosition::Value(IndexEpoch::first());
+            let page = match &self.scanned_through {
+                Some(scanned_through) => FilteredAuthoritativeIndexScanPage::page(
+                    &request,
+                    epoch,
+                    self.entries.clone(),
+                    scanned_through.clone(),
+                ),
+                None => FilteredAuthoritativeIndexScanPage::exact_end(
+                    &request,
+                    epoch,
+                    self.entries.clone(),
+                ),
+            }
+            .expect("fixed filtered fixture must satisfy the lower contract");
+            Ok(page)
+        }
+    }
+
+    fn adapter_lineage() -> ContractLineage {
+        ContractLineage::new("read-adapter-index").expect("lineage")
+    }
+
+    fn adapter_partition(value: u64) -> PartitionKey {
+        let mut partition = PartitionKeyBuilder::new(AggregateTypeId::first());
+        partition.push_u64(value).expect("partition component");
+        partition.finish().expect("partition")
+    }
+
+    fn adapter_index_key(value: u64) -> IndexEntryKey {
+        let mut entity = EntityKeyBuilder::new(EntityTypeId::first());
+        entity.push_u64(value).expect("entity component");
+        let mut index = IndexEntryKeyBuilder::new(IndexId::new(7).expect("index"));
+        index.push_u64(value).expect("index component");
+        index
+            .finish(entity.finish().expect("entity key"))
+            .expect("index key")
+    }
+
+    fn adapter_index_prefix() -> riffdb_contract_ir::IndexScanPrefix {
+        let component =
+            KeyComponentSchema::new(ValueType::u64(), Vec::new()).expect("key component");
+        let entity = KeySchema::new(
+            KeyPurpose::Entity(EntityTypeId::first()),
+            vec![component.clone()],
+        )
+        .expect("entity key schema");
+        KeySchema::index(
+            IndexId::new(7).expect("index"),
+            EntityTypeId::first(),
+            vec![component],
+            entity,
+        )
+        .expect("index key schema")
+        .encode_index_prefix(&[])
+        .expect("whole-index prefix")
+    }
+
+    fn adapter_index_request(
+        scope: PartitionScopeV1,
+        after: Option<IndexEntryKey>,
+    ) -> AuthoritativeIndexRequest {
+        AuthoritativeIndexRequest::new(
+            adapter_lineage(),
+            ContractVersion::new(1).expect("version"),
+            IndexId::new(7).expect("index"),
+            Vec::new(),
+            adapter_index_prefix(),
+            PartitionConstraint::Filter(scope),
+            after,
+            riffdb_service::PageLimit::new(10).expect("page limit"),
+        )
+        .expect("authoritative index request")
+    }
+
+    fn adapter_index_row(partition: PartitionKey) -> EncodedPageItem<StoredIndexEntryV2> {
+        let row = StoredIndexEntryV2::new(
+            adapter_index_key(7),
+            DurableKeySchemaBindingV1::new(
+                adapter_lineage(),
+                ContractVersion::new(1).expect("version"),
+                ContractBundleHash::from_bytes([0x44; 32]),
+            ),
+            CanonicalRecord::new(Vec::new()).expect("covered values"),
+            partition,
+        )
+        .expect("stored V2 index row");
+        EncodedPageItem::new(
+            row,
+            EncodedContentCharge::new(1).expect("test envelope charge"),
+        )
     }
 
     #[test]
@@ -1137,24 +1305,103 @@ mod tests {
     }
 
     #[test]
-    fn explicit_partition_scope_never_issues_an_unrestricted_storage_scan() {
+    fn partition_scope_conversion_is_exact_and_mixed_lineage_fails_closed() {
         let lineage = ContractLineage::new("read-adapter-test").expect("lineage");
         let mut partition = PartitionKeyBuilder::new(AggregateTypeId::first());
         partition.push_u64(7).expect("partition component");
+        let partition = partition.finish().expect("partition");
         let scope = PartitionScopeV1::explicit(vec![ScopedPartitionV1::new(
-            lineage,
-            partition.finish().expect("partition"),
+            lineage.clone(),
+            partition.clone(),
         )])
         .expect("one explicit partition");
 
+        let explicit = lower_index_partition_filter(&lineage, &PartitionConstraint::Filter(scope))
+            .expect("exact explicit filter");
+        assert!(matches!(
+            explicit.scope(),
+            IndexPartitionFilterScope::Explicit(keys) if keys == &[partition]
+        ));
+
+        let all = lower_index_partition_filter(
+            &lineage,
+            &PartitionConstraint::Filter(PartitionScopeV1::All),
+        )
+        .expect("all filter");
+        assert!(matches!(all.scope(), IndexPartitionFilterScope::All));
+
+        let other = ContractLineage::new("other-lineage").expect("other lineage");
+        let mut mixed_partition = PartitionKeyBuilder::new(AggregateTypeId::first());
+        mixed_partition.push_u64(8).expect("partition component");
+        let mixed = PartitionScopeV1::explicit(vec![ScopedPartitionV1::new(
+            other,
+            mixed_partition.finish().expect("partition"),
+        )])
+        .expect("mixed scope");
+        assert!(matches!(
+            lower_index_partition_filter(&lineage, &PartitionConstraint::Filter(mixed),),
+            Err(AuthoritativeReadError::Integrity)
+        ));
+    }
+
+    #[test]
+    fn explicit_partition_scope_reaches_the_filtered_storage_request() {
+        let partition = adapter_partition(7);
+        let scope = PartitionScopeV1::explicit(vec![ScopedPartitionV1::new(
+            adapter_lineage(),
+            partition.clone(),
+        )])
+        .expect("one explicit partition");
+        let storage = FixedFilteredReader::new(vec![adapter_index_row(partition.clone())], None);
+
+        let page = scan_index(&storage, adapter_index_request(scope, None))
+            .expect("filtered adapter scan");
+
+        assert_eq!(page.rows().len(), 1);
+        assert_eq!(page.rows()[0].key(), &adapter_index_key(7));
+        assert_eq!(page.rows()[0].stored_partition(), &partition);
         assert_eq!(
-            require_unrestricted_index_scope(&PartitionConstraint::Filter(scope)),
-            Err(AuthoritativeReadError::Unavailable)
+            page.rows()[0].schema_binding().lineage(),
+            &adapter_lineage()
         );
+        assert!(page.scanned_through().is_none());
+        let requests = storage.requests();
+        assert!(matches!(
+            requests.as_slice(),
+            [request]
+                if request.partition_filter().target_lineage() == &adapter_lineage()
+                    && matches!(
+                        request.partition_filter().scope(),
+                        IndexPartitionFilterScope::Explicit(keys) if keys == &[partition]
+                    )
+        ));
+    }
+
+    #[test]
+    fn sparse_filtered_progress_maps_to_an_empty_service_page() {
+        let scanned_through = adapter_index_key(41);
+        let storage = FixedFilteredReader::new(Vec::new(), Some(scanned_through.clone()));
+
+        let page = scan_index(&storage, adapter_index_request(PartitionScopeV1::All, None))
+            .expect("sparse adapter scan");
+
+        assert!(page.rows().is_empty());
+        assert_eq!(page.scanned_through(), Some(&scanned_through));
         assert_eq!(
-            require_unrestricted_index_scope(&PartitionConstraint::Filter(PartitionScopeV1::All,)),
-            Ok(())
+            page.epoch(),
+            riffdb_types::IndexEpochPosition::Value(IndexEpoch::first())
         );
+        let requests = storage.requests();
+        assert!(matches!(
+            requests.as_slice(),
+            [request]
+                if request.after().is_none()
+                    && request.limit().get() == 10
+                    && matches!(
+                        request.partition_filter().scope(),
+                        IndexPartitionFilterScope::All
+                    )
+        ));
     }
 
     #[test]

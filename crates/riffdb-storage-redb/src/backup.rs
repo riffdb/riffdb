@@ -1044,9 +1044,12 @@ mod tests {
                 HistoricalEvidencePage::ExactEnd(end) => break end,
             }
         };
-        let opened = session
+        let outcome = session
             .finish(structural_end, historical_end)
             .expect("finish restored structural scan");
+        let riffdb_storage_api::StructuralOpenOutcome::Clean(opened) = outcome else {
+            panic!("V2 backup fixture must reopen cleanly");
+        };
         assert_eq!(opened.database_id(), database_id);
         database_id
     }

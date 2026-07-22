@@ -1160,30 +1160,20 @@ fn apply_index_entries(
         })?;
         match (mutation, position) {
             (IndexEntryMutationV1::Delete(_), Ok(index)) => {
-                let old = overlay.index_entries[index].historical_evidence();
-                remove_persisted_evidence(&mut overlay.historical_persisted_keys, &old)?;
                 overlay.index_entries.remove(index);
             }
             (IndexEntryMutationV1::Delete(_), Err(_)) => {
                 return Err(storage_error(StorageErrorKind::InvariantViolation));
             }
             (IndexEntryMutationV1::Put(record), Ok(index)) => {
-                let old = overlay.index_entries[index].historical_evidence();
-                remove_persisted_evidence(&mut overlay.historical_persisted_keys, &old)?;
-                overlay.index_entries[index] = MemoryIndexEntry::legacy(record.clone());
-                insert_persisted_evidence(
-                    &mut overlay.historical_persisted_keys,
-                    HistoricalPersistedKeyEvidenceV1::from_index_entry(record),
-                )?;
+                overlay.index_entries[index] =
+                    MemoryIndexEntry::current(record.clone(), memory_record_charge())?;
             }
             (IndexEntryMutationV1::Put(record), Err(index)) => {
-                overlay
-                    .index_entries
-                    .insert(index, MemoryIndexEntry::legacy(record.clone()));
-                insert_persisted_evidence(
-                    &mut overlay.historical_persisted_keys,
-                    HistoricalPersistedKeyEvidenceV1::from_index_entry(record),
-                )?;
+                overlay.index_entries.insert(
+                    index,
+                    MemoryIndexEntry::current(record.clone(), memory_record_charge())?,
+                );
             }
         }
     }
@@ -1454,7 +1444,7 @@ impl AuthoritativeScanReader for MemoryOperationalPorts {
                 .take_while(|row| row.key().as_bytes().starts_with(prefix))
                 .take(wanted.saturating_add(1))
             {
-                if row.current_record().is_some() {
+                if row.current_record().is_none() {
                     return Err(storage_error(StorageErrorKind::IncompatibleFormat));
                 }
                 rows.push(EncodedPageItem::new(
@@ -1805,7 +1795,7 @@ mod tests {
                                 .expect("synthetic charge"),
                         )
                     })
-                    .collect();
+                    .collect::<Result<Vec<_>, _>>()?;
                 Ok(())
             })
             .expect("seed filtered rows");
@@ -1977,10 +1967,11 @@ mod tests {
         .expect("entity record");
         let mutation = riffdb_storage_api::CommittedEntityMutationV1::new(expected, entity)
             .expect("entity mutation");
-        let index_record = StoredIndexEntryV1::new(
+        let index_record = StoredIndexEntryV2::new(
             index_key.clone(),
             DurableKeySchemaBindingV1::from_plan(&plan),
             record(u64::from(suffix)),
+            partition.clone(),
         )
         .expect("index record");
         let affected_targets =
@@ -2414,7 +2405,7 @@ mod tests {
                     state
                         .index_entries
                         .first()
-                        .and_then(MemoryIndexEntry::legacy_record),
+                        .and_then(MemoryIndexEntry::current_record),
                     model.index_entry(&second.index_key)
                 );
                 assert_eq!(
@@ -2802,11 +2793,12 @@ mod tests {
             let mut key = IndexEntryKeyBuilder::new(index_id);
             key.push_u64(10).expect("index component");
             entries.push(
-                StoredIndexEntryV1::new(
+                StoredIndexEntryV2::new(
                     key.finish(entity_key.finish().expect("entity key"))
                         .expect("index key"),
                     DurableKeySchemaBindingV1::from_plan(&plan),
                     large_record(u8::try_from(value).expect("small value")),
+                    filtered_partition(value),
                 )
                 .expect("index entry"),
             );
@@ -2815,7 +2807,10 @@ mod tests {
             .acquire()
             .expect("seed access")
             .write(move |state| {
-                state.index_entries = entries.into_iter().map(MemoryIndexEntry::legacy).collect();
+                state.index_entries = entries
+                    .into_iter()
+                    .map(|entry| MemoryIndexEntry::current(entry, memory_record_charge()))
+                    .collect::<Result<Vec<_>, _>>()?;
                 Ok(())
             })
             .expect("seed index entries");
@@ -2874,20 +2869,17 @@ mod tests {
             ],
         );
 
-        assert_eq!(
-            ports
-                .scan_index(
-                    AuthoritativeIndexScanRequest::new(
-                        filtered_range(),
-                        None,
-                        StorageScanLimit::new(500).expect("limit"),
-                    )
-                    .expect("legacy request"),
+        let unfiltered = ports
+            .scan_index(
+                AuthoritativeIndexScanRequest::new(
+                    filtered_range(),
+                    None,
+                    StorageScanLimit::new(500).expect("limit"),
                 )
-                .expect_err("legacy scan cannot discard V2 partition evidence")
-                .kind(),
-            StorageErrorKind::IncompatibleFormat
-        );
+                .expect("unfiltered internal request"),
+            )
+            .expect("V2 rows remain valid for policy-neutral unfiltered reads");
+        assert_eq!(unfiltered.entries().len(), 3);
 
         let all = ports
             .scan_index_filtered(filtered_request(IndexPartitionFilterScope::All, None, 500))

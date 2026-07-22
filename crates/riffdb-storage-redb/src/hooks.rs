@@ -13,6 +13,7 @@ pub enum RedbTestOperation {
     Admission,
     ExecutionFailure,
     CommandBatch,
+    IndexMigrationBatch,
     CatalogAdministration,
     CapabilityAdministration,
     CapabilityBootstrap,
@@ -63,9 +64,17 @@ pub struct RedbTestController {
 }
 
 struct TestControllerInner {
-    armed: ArmedFailpoint,
+    armed: Option<ArmedFailpoint>,
     fired: AtomicBool,
     events: Mutex<Vec<RedbTestEvent>>,
+    index_migration: Mutex<IndexMigrationObservation>,
+}
+
+#[derive(Clone, Copy, Default)]
+struct IndexMigrationObservation {
+    pages: usize,
+    v1_rewrites: usize,
+    v2_confirms: usize,
 }
 
 #[derive(Clone, Copy)]
@@ -83,6 +92,19 @@ enum FailpointAction {
 }
 
 impl RedbTestController {
+    /// Observes bounded migration control flow without arming a failure.
+    #[must_use]
+    pub fn observe_index_migration() -> Self {
+        Self {
+            inner: Arc::new(TestControllerInner {
+                armed: None,
+                fired: AtomicBool::new(false),
+                events: Mutex::new(Vec::new()),
+                index_migration: Mutex::new(IndexMigrationObservation::default()),
+            }),
+        }
+    }
+
     /// Injects one proven-not-committed storage failure.
     #[must_use]
     pub fn return_before_commit(operation: RedbTestOperation) -> Self {
@@ -132,17 +154,42 @@ impl RedbTestController {
             .map_or_else(|_| Vec::new(), |events| events.clone())
     }
 
+    /// Returns page, V1-rewrite, and V2-confirm counts without row material.
+    #[must_use]
+    pub fn index_migration_observation(&self) -> (usize, usize, usize) {
+        self.inner
+            .index_migration
+            .lock()
+            .map_or((0, 0, 0), |value| {
+                (value.pages, value.v1_rewrites, value.v2_confirms)
+            })
+    }
+
     fn new(operation: RedbTestOperation, phase: RedbTestPhase, action: FailpointAction) -> Self {
         Self {
             inner: Arc::new(TestControllerInner {
-                armed: ArmedFailpoint {
+                armed: Some(ArmedFailpoint {
                     operation,
                     phase,
                     action,
-                },
+                }),
                 fired: AtomicBool::new(false),
                 events: Mutex::new(Vec::new()),
+                index_migration: Mutex::new(IndexMigrationObservation::default()),
             }),
+        }
+    }
+
+    pub(crate) fn observe_index_migration_page(&self) {
+        if let Ok(mut observation) = self.inner.index_migration.lock() {
+            observation.pages = observation.pages.saturating_add(1);
+        }
+    }
+
+    pub(crate) fn observe_index_migration_batch(&self, v1_rewrites: usize, v2_confirms: usize) {
+        if let Ok(mut observation) = self.inner.index_migration.lock() {
+            observation.v1_rewrites = observation.v1_rewrites.saturating_add(v1_rewrites);
+            observation.v2_confirms = observation.v2_confirms.saturating_add(v2_confirms);
         }
     }
 
@@ -191,7 +238,7 @@ impl RedbTestController {
         operation: RedbTestOperation,
         phase: RedbTestPhase,
     ) -> Option<FailpointAction> {
-        let armed = self.inner.armed;
+        let armed = self.inner.armed?;
         if armed.operation != operation || armed.phase != phase {
             return None;
         }

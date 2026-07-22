@@ -31,6 +31,8 @@ const MODULES: &[(&str, &str)] = &[
     ("startup.rs", include_str!("../src/startup.rs")),
 ];
 
+const PROTO_CODEC_BOUNDS: &str = include_str!("../src/proto_codec/bounds.rs");
+
 #[test]
 fn only_projection_schema_names_contract_ir() {
     for (name, source) in MODULES {
@@ -58,9 +60,11 @@ fn startup_key_evidence_can_only_derive_schema_binding_from_durable_postimages()
     let source = include_str!("../src/startup.rs");
     assert!(!source.contains("HistoricalKeySchemaRefV1"));
     assert!(source.contains("pub fn from_entity(record: &StoredEntityRecordV1)"));
-    assert!(source.contains("pub fn from_index_entry(record: &StoredIndexEntryV1)"));
     assert!(source.contains("pub fn from_index_epoch(record: &StoredIndexEpochV1)"));
     assert!(!source.contains("pub fn new(schema: DurableKeySchemaBindingV1"));
+    assert!(!source.contains("pub fn from_index_entry"));
+    assert!(source.contains("pub(crate) fn from_codec_checked_parts("));
+    assert!(!source.contains("pub fn from_codec_checked_parts("));
 }
 
 #[test]
@@ -86,6 +90,42 @@ fn completed_startup_handoff_owns_the_same_session_retained_metadata() {
 }
 
 #[test]
+fn startup_migration_port_exposes_identity_but_no_catalog_authority() {
+    let source = include_str!("../src/startup.rs");
+    for required in [
+        "pub trait StartupIndexMigrationPort: Sized {",
+        "fn database_id(&self) -> DatabaseId;",
+        "fn open_session_id(&self) -> OpenSessionId;",
+    ] {
+        assert!(
+            source.contains(required),
+            "missing identity-only port surface `{required}`"
+        );
+    }
+
+    for forbidden in [
+        "IndexMigrationCatalogAuthority",
+        "IndexMigrationCatalogTracker",
+        "IndexMigrationCatalogAdvance",
+        "IndexMigrationCatalogCompletion",
+        "IndexMigrationPageWork",
+        "IndexMigrationPageStep",
+        "IndexMigrationInstruction",
+        "IndexMigrationInstructionBatch",
+        "StartupIndexMigrationRead",
+        "StartupIndexMigrationEnd",
+        "fn read_index_migration_page",
+        "fn apply_index_migration",
+        "fn finish_index_migration",
+    ] {
+        assert!(
+            !source.contains(forbidden),
+            "storage API retained migration authority through `{forbidden}`"
+        );
+    }
+}
+
+#[test]
 fn command_staging_retains_and_checks_the_exact_candidate_graph() {
     let transaction = include_str!("../src/command_txn.rs");
     assert!(transaction.contains("fn intent(&self) -> &CommitIntent;"));
@@ -103,6 +143,46 @@ fn command_staging_retains_and_checks_the_exact_candidate_graph() {
     assert!(records.contains("pub fn matches_retained_candidate("));
     assert!(records.contains("pub fn matches_reserved_candidate("));
     assert!(records.contains("pub fn matches_durability_mode("));
+}
+
+#[test]
+fn aggregate_cap_exceedance_requires_a_codec_minted_origin() {
+    assert!(
+        PROTO_CODEC_BOUNDS.contains(
+            "#[derive(Debug, Eq, PartialEq)]\n#[non_exhaustive]\npub struct AggregateCapExceededOriginV1 {\n    _codec_origin: (),\n}"
+        )
+    );
+    assert!(PROTO_CODEC_BOUNDS.contains("const fn from_final_comparison() -> Self"));
+    assert!(!PROTO_CODEC_BOUNDS.contains("pub fn from_final_comparison"));
+    assert!(!PROTO_CODEC_BOUNDS.contains("pub const fn from_final_comparison"));
+    assert!(
+        PROTO_CODEC_BOUNDS.contains("ExceedsAcceptedAggregateCap(AggregateCapExceededOriginV1),")
+    );
+    assert!(PROTO_CODEC_BOUNDS.contains("AggregateCapExceededOriginV1::from_final_comparison(),"));
+    assert!(!PROTO_CODEC_BOUNDS.contains("ExceedsAcceptedAggregateCap,"));
+}
+
+#[test]
+fn sequence_free_semantic_shape_is_the_single_plan_validation_authority() {
+    let records = include_str!("../src/records.rs");
+    for required in [
+        "#[derive(Eq, PartialEq)]\npub struct ValidatedCommandWriteSetShapeV1 {",
+        "pub fn new(\n        intent: &CommitIntent,",
+        "validate_index_entries(&index_entries)?;",
+        "validate_index_epochs(&index_epochs)?;",
+        "validate_affected_epoch_coverage(",
+        "validate_post_image_bindings(",
+        "projected_atomic_semantic_breakdown(intent, &index_entries, &index_epochs)?",
+        "let shape = ValidatedCommandWriteSetShapeV1::new(",
+        "Ok(Self::from_validated_shape(shape, encoded_upper_bound))",
+        "pub fn from_validated_shape(",
+        "CommandWriteSetChargeV1::from_validated_shape(&shape, encoded_upper_bound)",
+    ] {
+        assert!(
+            records.contains(required),
+            "write-shape authority is missing {required}"
+        );
+    }
 }
 
 #[test]

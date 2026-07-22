@@ -412,6 +412,13 @@ fn command_index_derivation_preserves_the_sealed_storage_progression_chain() {
         "pub(super) fn read_affected_epoch_current(",
         "match checked.read_affected_epoch_current()",
         "pub(super) fn reserve_capacity(self)",
+        "fn prepare_sequence_free_write_set(",
+        "let shape = match ValidatedCommandWriteSetShapeV1::new(",
+        "fn classify_sequence_free_write_set_sizing(",
+        "Ok(EncodedWriteSetUpperBoundResultV1::Fits(bound))",
+        "EncodedWriteSetUpperBoundResultV1::ExceedsAcceptedAggregateCap(_codec_origin)",
+        "Err(_) => SequenceFreeWriteSetSizing::Integrity",
+        "return CheckedReserveDecision::CapacityUnavailable",
         "match checked.reserve_capacity(write_plan)",
         "checked.capacity_reserved().write_plan() == &expected_write_plan",
         "pub(super) fn assign_sequence(self)",
@@ -439,6 +446,34 @@ fn command_index_derivation_preserves_the_sealed_storage_progression_chain() {
             "sealed command-index derivation is missing {required}"
         );
     }
+
+    let semantic_validation = production
+        .find("let shape = match ValidatedCommandWriteSetShapeV1::new(")
+        .expect("sequence-free semantic shape validation");
+    let codec_sizing = production
+        .find("match classify_sequence_free_write_set_sizing(command_write_set_upper_bound_v1(")
+        .expect("sequence-free codec sizing");
+    let frozen_plan = production
+        .find("CommandWriteSetPlanV1::from_validated_shape(shape, bound)")
+        .expect("frozen write plan construction");
+    assert!(semantic_validation < codec_sizing && codec_sizing < frozen_plan);
+    let sequence_free_preparation = production
+        .find("let write_plan = match prepare_sequence_free_write_set(")
+        .expect("sequence-free write-plan preparation");
+    let storage_reservation = production
+        .find("match checked.reserve_capacity(write_plan)")
+        .expect("storage capacity reservation");
+    assert!(sequence_free_preparation < storage_reservation);
+    let capacity_branch = production
+        .split_once("SequenceFreeWriteSetPreparation::CapacityUnavailable => {")
+        .and_then(|(_, remainder)| {
+            remainder.split_once("SequenceFreeWriteSetPreparation::Integrity => {")
+        })
+        .map(|(body, _)| body)
+        .expect("origin-specific sequence-free capacity branch");
+    assert!(capacity_branch.contains("drop(checked);"));
+    assert!(capacity_branch.contains("return CheckedReserveDecision::CapacityUnavailable;"));
+    assert!(!capacity_branch.contains("checked.reserve_capacity"));
     assert!(!production.contains("fn exact_mutation_positions("));
     for sole_call in [
         "checked.plan_validated(derived.affected_targets.clone())",
@@ -1164,6 +1199,50 @@ fn command_driver_fences_every_late_unknown_and_owns_one_bounded_retry_loop() {
         })
         .map(|(body, _)| body)
         .expect("evaluated-command continuation");
+    let capacity_refusal =
+        "resolve_checked_reserve_decision(indexed.reserve_capacity(), lifecycle)";
+    assert!(evaluated.contains(capacity_refusal));
+    assert!(
+        evaluated
+            .find(capacity_refusal)
+            .expect("aggregate capacity refusal")
+            < evaluated
+                .find("let assigned = match reserved.assign_sequence()")
+                .expect("sequence assignment")
+    );
+    let reserve_resolution = production
+        .split_once("fn resolve_checked_reserve_decision<C>(")
+        .and_then(|(_, remainder)| {
+            remainder
+                .split_once("\n/// Revalidates and terminalizes one deterministic execution fault.")
+        })
+        .map(|(body, _)| body)
+        .expect("checked reserve-decision resolution");
+    assert!(
+        reserve_resolution
+            .contains("CheckedReserveDecision::CapacityUnavailable => Err(capacity_unavailable())")
+    );
+    assert!(
+        reserve_resolution
+            .contains("| CheckedReserveDecision::Integrity => Err(internal_defect(lifecycle))")
+    );
+    let capacity_helper = production
+        .split_once("fn capacity_unavailable() -> CommandDriverContinuation {")
+        .and_then(|(_, remainder)| remainder.split_once("\nfn proven_storage_failure("))
+        .map(|(body, _)| body)
+        .expect("aggregate capacity helper");
+    assert!(capacity_helper.contains("CommandExecutionErrorKind::StorageUnavailable"));
+    for forbidden in [
+        "lifecycle.stop()",
+        "lifecycle.fence()",
+        "internal_defect",
+        "StorageError",
+    ] {
+        assert!(
+            !capacity_helper.contains(forbidden),
+            "aggregate capacity refusal must not cross {forbidden}"
+        );
+    }
     let uncertain_commit = evaluated
         .split_once("CheckedCommandCommitResult::StatusUnknown(uncertain) => {")
         .and_then(|(_, remainder)| {

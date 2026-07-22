@@ -1757,6 +1757,12 @@ fn open_operational(store: RedbStore) -> RedbOperationalPorts {
     let opened = session
         .finish(structural_end, historical_end)
         .expect("finish structural validation");
+    let riffdb_catalog::CatalogHistoryOutcome::Ready(history) = history else {
+        panic!("V2-only control-plane fixture must not require index migration");
+    };
+    let riffdb_storage_api::StructuralOpenOutcome::Clean(opened) = opened else {
+        panic!("V2-only control-plane fixture must finish with a clean structural open");
+    };
     assert!(history.matches(opened.database_id(), opened.open_session_id()));
     let (_, _, _, dormant): (_, _, _, RedbDormantPorts) = opened.into_parts();
     dormant

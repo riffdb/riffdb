@@ -5,6 +5,25 @@
 const MANIFEST: &str = include_str!("../Cargo.toml");
 const LOCKFILE: &str = include_str!("../../../Cargo.lock");
 
+fn rust_sources(root: &std::path::Path) -> Vec<(std::path::PathBuf, String)> {
+    fn visit(root: &std::path::Path, sources: &mut Vec<(std::path::PathBuf, String)>) {
+        for entry in std::fs::read_dir(root).expect("read server source directory") {
+            let path = entry.expect("read server source entry").path();
+            if path.is_dir() {
+                visit(&path, sources);
+            } else if path.extension().is_some_and(|extension| extension == "rs") {
+                let source = std::fs::read_to_string(&path).expect("read server Rust source");
+                sources.push((path, source));
+            }
+        }
+    }
+
+    let mut sources = Vec::new();
+    visit(root, &mut sources);
+    sources.sort_by(|left, right| left.0.cmp(&right.0));
+    sources
+}
+
 fn production_dependencies() -> &'static str {
     MANIFEST
         .split_once("[dependencies]")
@@ -91,4 +110,40 @@ fn lockfile_has_one_base64_and_no_tls_or_compression_stack() {
             "forbidden locked transport package: {forbidden_package}"
         );
     }
+}
+
+#[test]
+fn server_source_cannot_receive_catalog_branded_migration_states() {
+    let source_root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+    let sources = rust_sources(&source_root);
+    for forbidden in [
+        "CatalogIndexMigrationBackend",
+        "CatalogIndexMigrationScanRequest",
+        "CatalogIndexMigrationScan",
+        "CatalogIndexMigrationPage",
+        "CatalogIndexMigrationExactEnd",
+        "CatalogIndexMigrationBundleRequest",
+        "CatalogIndexMigrationBundleResponse",
+        "CatalogIndexMigrationInstruction",
+        "CatalogIndexMigrationV1Rewrite",
+        "CatalogIndexMigrationV2Confirm",
+        "CatalogIndexMigrationBatch",
+        "CatalogIndexMigrationPendingBatch",
+        "CatalogIndexMigrationApplied",
+        "CatalogIndexMigrationCompletion",
+        "RedbIndexMigrationPage",
+        "RedbIndexMigrationBatch",
+    ] {
+        for (path, source) in &sources {
+            assert!(
+                !source.contains(forbidden),
+                "server source {} acquired branded migration state through `{forbidden}`",
+                path.display()
+            );
+        }
+    }
+
+    let startup = std::fs::read_to_string(source_root.join("startup.rs"))
+        .expect("read server startup source");
+    assert!(startup.contains("CatalogIndexMigrationDriver::new(context, port)"));
 }

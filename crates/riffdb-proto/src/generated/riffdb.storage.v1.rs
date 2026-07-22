@@ -1285,6 +1285,17 @@ pub struct StoredEnvelope {
     #[prost(bytes = "vec", tag = "5")]
     pub schema_hash: ::prost::alloc::vec::Vec<u8>,
 }
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct StoredIndexEntryV2 {
+    #[prost(bytes = "vec", tag = "1")]
+    pub index_entry_key: ::prost::alloc::vec::Vec<u8>,
+    #[prost(message, optional, tag = "2")]
+    pub schema_binding: ::core::option::Option<DurableKeySchemaBindingV1>,
+    #[prost(bytes = "vec", tag = "3")]
+    pub canonical_covered_values: ::prost::alloc::vec::Vec<u8>,
+    #[prost(bytes = "vec", tag = "4")]
+    pub partition_key: ::prost::alloc::vec::Vec<u8>,
+}
 #[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct StoredStorageFormatVersionV1 {
     #[prost(uint32, tag = "1")]

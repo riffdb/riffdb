@@ -1,6 +1,6 @@
 use prost::Message;
 use riffdb_proto::{
-    durable::current_record_schema,
+    durable::{readable_record_registry, readable_record_schema},
     envelope::{self, STORAGE_FORMAT_VERSION_V1},
     storage::v1 as wire,
 };
@@ -10,7 +10,7 @@ use super::super::*;
 use super::sample;
 
 fn raw_envelope(record_type: &'static str, payload: Vec<u8>) -> Vec<u8> {
-    let schema = current_record_schema(record_type).expect("registered durable record");
+    let schema = readable_record_schema(record_type).expect("registered durable record");
     wire::StoredEnvelope {
         storage_format_version: STORAGE_FORMAT_VERSION_V1,
         record_type: record_type.to_owned(),
@@ -22,12 +22,12 @@ fn raw_envelope(record_type: &'static str, payload: Vec<u8>) -> Vec<u8> {
 }
 
 fn checked_envelope<M: Message>(record_type: &'static str, message: &M) -> Vec<u8> {
-    let schema = current_record_schema(record_type).expect("registered durable record");
+    let schema = readable_record_schema(record_type).expect("registered durable record");
     envelope::encode(schema, &message.encode_to_vec()).expect("fixture is structurally canonical")
 }
 
 fn payload_message<M: Message + Default>(encoded: &[u8]) -> M {
-    let decoded = riffdb_proto::durable::current_record_registry()
+    let decoded = readable_record_registry()
         .decode(encoded)
         .expect("checked sample envelope");
     M::decode(decoded.payload()).expect("checked sample payload")
@@ -150,7 +150,7 @@ fn capability_parameter_presence_and_canonical_order_fail_closed() {
 #[test]
 fn canonical_keys_records_and_event_hashes_are_revalidated() {
     const INDEX_ENTRY: &str = "riffdb.storage.v1.StoredIndexEntryV1";
-    let (entry, _) = sample::index_records();
+    let entry = sample::legacy_index_record();
     let canonical = encode_index_entry_v1(&entry).expect("index entry encodes");
     let mut invalid_key = payload_message::<wire::StoredIndexEntryV1>(canonical.as_bytes());
     invalid_key.index_entry_key = vec![0xff];

@@ -22,6 +22,7 @@ use riffdb_storage_api::{
     ReadableIdempotencyDigestInventory, ServiceAuditAppendIntentV1, ServiceAuditAppendRepository,
     ServiceAuditAppendResult, StartupValidationInputs, StorageScanLimit, StructuralEvidenceCursor,
     StructuralEvidenceOpen, StructuralEvidencePage, StructuralEvidenceSession,
+    StructuralOpenOutcome,
 };
 use riffdb_storage_redb::{RedbDormantPorts, RedbOperationalPorts, RedbStore};
 use riffdb_types::{
@@ -338,9 +339,12 @@ fn complete_startup_evidence(path: &Path) -> Result<RedbDormantPorts, String> {
             HistoricalEvidencePage::ExactEnd(end) => break end,
         }
     };
-    let opened = session
+    let outcome = session
         .finish(structural_end, historical_end)
         .map_err(display_error("finish startup evidence"))?;
+    let StructuralOpenOutcome::Clean(opened) = outcome else {
+        return Err("V2-only benchmark fixture unexpectedly requires index migration".to_owned());
+    };
     let (opened_database_id, _, _, dormant) = opened.into_parts();
     if opened_database_id != database_id() {
         return Err("startup handoff returned the wrong database ID".to_owned());

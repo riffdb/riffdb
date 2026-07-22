@@ -15,6 +15,6 @@ mod store;
 
 pub use startup::{
     MemoryCompletionAuthority, MemoryDormantPorts, MemoryHistoricalEvidenceEnd,
-    MemoryStructuralEvidenceEnd, MemoryStructuralEvidenceSession,
+    MemoryStartupIndexMigrationPort, MemoryStructuralEvidenceEnd, MemoryStructuralEvidenceSession,
 };
 pub use store::{MemoryOperationalPorts, MemoryStore};
