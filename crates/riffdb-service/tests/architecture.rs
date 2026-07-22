@@ -10,6 +10,7 @@ use riffdb_service::{
 const MANIFEST: &str = include_str!("../Cargo.toml");
 const ADMINISTRATION_SOURCE: &str = include_str!("../src/administration_operations.rs");
 const COMMIT_SOURCE: &str = include_str!("../src/commit_operations.rs");
+const CONTEXT_SOURCE: &str = include_str!("../src/context.rs");
 const TRAITS_SOURCE: &str = include_str!("../src/application.rs");
 
 fn assert_object_safe(
@@ -61,6 +62,19 @@ fn service_dependency_graph_has_no_storage_runtime_or_transport_edge() {
             "riffdb-service has a forbidden production dependency on {forbidden}"
         );
     }
+}
+
+#[test]
+fn grpc_context_construction_fixes_ingress_and_hides_policy_claim_vocabulary() {
+    let constructor = CONTEXT_SOURCE
+        .split_once("pub const fn from_authenticated_grpc(")
+        .and_then(|(_, remainder)| remainder.split_once("\n    }"))
+        .map(|(body, _)| body)
+        .expect("bounded authenticated gRPC constructor");
+    assert!(constructor.contains("ServiceIngressKindV1::Grpc"));
+    assert!(constructor.contains("UntrustedInvocationClaims::new(None, None, None, None, None)"));
+    assert!(!constructor.contains("claims:"));
+    assert!(!constructor.contains("ingress:"));
 }
 
 #[test]
