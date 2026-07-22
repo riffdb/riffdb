@@ -6,9 +6,9 @@
 **Tagline:** *Vibe fast. Commit safely.*  
 **Category:** Contract-first operational database for agent-built applications  
 
-**Version:** 0.27
+**Version:** 0.28
 **Status:** Architecture-approved implementation handoff
-**Date:** 21 July 2026
+**Date:** 22 July 2026
 **Audience:** Coding agents, database engineers, compiler engineers, security reviewers, and technical product leads  
 **Working binaries:** `riffdbd`, `riffdb`, `riffdb-mcp`  
 **Working URI scheme:** `riffdb://`  
@@ -30,7 +30,7 @@
 | Storage baseline | `redb`, behind a narrow internal storage interface |
 | Rust baseline | Rust 1.97.0 |
 | MCP baseline | MCP specification 2025-11-25 |
-| MCP Rust SDK baseline | `rmcp` 2.2.x |
+| MCP Rust SDK baseline | `rmcp` 2.2.0 exactly |
 
 ### Revision history
 
@@ -63,6 +63,7 @@
 | 0.25 | 2026-07-21 | Applied accepted ADR-0033: the coordinator publishes only first-durable application commit sequences through an injected least-authority sink into the server-owned bounded subscription hub; replay, read-only, failed, audit, initialization, and control-plane paths never publish. Sink defects preserve the known committed result but stop coordinator admission and process readiness. No public or durable format changed. |
 | 0.26 | 2026-07-21 | Applied accepted ADR-0034 through ADR-0036: startup uses a Health-only initializing service plus move-only activation authority; authoritative index and commit scans return atomic frozen fences including an explicit before-first index position; and public query components remain structurally submitted until schema-directed service materialization. The not-yet-served public index-fence message is corrected and regenerated before WP-130. |
 | 0.27 | 2026-07-21 | Applied accepted ADR-0037: the Rust SDK may depend directly, with default features disabled, on `riffdb-errors` and `riffdb-types` for the single checked public-error and foundational public-identifier/value owners. This grants no dependency on authority-bearing server crates and changes no public or durable format. |
+| 0.28 | 2026-07-22 | Applied accepted ADR-0008, ADR-0039, ADR-0040, and ADR-0041: exact native-MCP transport, resource, schema, and bounded-session behavior; an isolated V2 index descriptor with a 27-readable/26-writable registry and restartable linear migration; the six-operation public gRPC parity bridge and WP-137 gate; and the public-only CLI, comparison-runner, credential, retry, configuration, and versioned JSONL boundaries, while reserving WP-155 for separately reviewed public backup/restore administration. |
 
 ### Normative language
 
@@ -288,7 +289,7 @@ riffdb/
       fixtures/              # golden workload observations
       postgres/              # PostgreSQL comparison implementation
       riffdb-service/        # in-process service adapter added after WP-120
-      riffdb-grpc/           # canonical public SDK/gRPC adapter added after WP-130
+      riffdb-grpc/           # WP-135 package riffdb-budget-comparison-riffdb-grpc and riffdb-budget-public runner
   scripts/
   docs/
 ```
@@ -301,14 +302,14 @@ The binary targets are `riffdbd` from `riffdb-server`, `riffdb` from `riffdb-cli
 |---|---|---|
 | `riffdb-types` | Stable identifiers, pure checked UUIDv7 assembly, canonical value types, versions, timestamps, decimals, and common value semantics | Foundation crate; no clock, entropy, storage, or transport dependencies |
 | `riffdb-errors` | Public-safe errors, internal error layering, redaction boundaries, incident identifiers, and the consumer-owned `IncidentIdSource` port | Types only; no transport-specific errors, clock, entropy, or concrete incident provider in core layers |
-| `riffdb-proto` | Generated public/durable Protobuf types, envelopes, descriptors, wire validation, and foundational value/error conversion helpers | Types, errors, and Prost only; no storage API, runtime, service, or transport dependency |
+| `riffdb-proto` | Generated public/durable Protobuf types, envelopes, readable/writable durable registries, descriptors, wire validation, foundational value/error conversion helpers, and structural canonical outcome-locator validation | Types, errors, Prost, and the presentation-only exact `base64` edge; no storage API, runtime, service, or transport dependency |
 | `riffdb-contract-syntax` | Lexer, parser, source spans, syntax AST, and parser diagnostics | Types and parser tooling only |
 | `riffdb-contract-ir` | Typed HIR, executable IR, plans, immutable projection group schemas, and contract bundle structs | Types; no parser implementation, storage, compiler implementation, or runtime dependency |
 | `riffdb-contract-compiler` | Name resolution, type checking, invariant classification, locality analysis, plan generation, and JSON Schema output | Syntax and IR; no storage, service, or transport dependency |
-| `riffdb-catalog` | Immutable contract bundle persistence, compatibility checks, active-version changes, catalog notifications, bounded active-lineage materialization proofs, opaque command `Ready`/resource evidence and pure current-recheck operations, opaque projection event-materialization views, and IR-aware validation of bounded same-session historical startup evidence | IR and storage API; its opaque process-local proofs, evidence, and materialization views never cross a storage trait |
-| `riffdb-storage-api` | Semantic snapshots, database initialization, structural startup sessions/evidence/type-state ports including the same-snapshot retained-metadata handoff, evaluated commands, commit intents, durable DTOs, typed transitions/readers, the narrow durable `proto_codec` mapping bridge, and ADR-0017 projection-schema consumers | Types/errors; proto only through `proto_codec`; contract IR only for immutable `ProjectionGroupSchema`/`BoundProjectionGroupSchema` values in the projection-schema module; no clock, entropy, compiler, command-plan interpretation, historical-plan validation, runtime, commit, service, transport, or concrete-engine dependency |
+| `riffdb-catalog` | Immutable contract bundle persistence, compatibility checks, active-version changes, catalog notifications, bounded active-lineage materialization proofs, opaque command `Ready`/resource evidence and pure current-recheck operations, opaque projection event-materialization views, IR-aware validation of bounded same-session historical startup evidence, and historical V1/V2 index-partition derivation | IR, storage API, and the sole narrow pure `riffdb-invariant` partition-expression evaluator use accepted by ADR-0039; its opaque process-local proofs, evidence, migration context, and materialization views never cross an operational storage trait |
+| `riffdb-storage-api` | Semantic snapshots, database initialization, structural startup sessions/evidence/type-state ports including the same-snapshot retained-metadata handoff and linear index-migration types, evaluated commands, commit intents, durable DTOs, typed transitions/readers, the narrow durable `proto_codec` mapping bridge, and ADR-0017 projection-schema consumers | Types/errors; proto only through `proto_codec`; contract IR only for immutable `ProjectionGroupSchema`/`BoundProjectionGroupSchema` values in the projection-schema module; no clock, entropy, compiler, command-plan interpretation, historical-plan validation, runtime, commit, service, transport, or concrete-engine dependency |
 | `riffdb-storage-memory` | Deterministic reference storage implementation used by model and semantic tests | Storage API only |
-| `riffdb-storage-redb` | Durable POC implementation, table layout, complete structural integrity/evidence scan, dormant opened ports, backup, restore, and engine benchmarks | Storage API and `redb`; no contract IR, `ValidatedCatalogHistory`, readiness composition, or API transports |
+| `riffdb-storage-redb` | Durable POC implementation, table layout, complete structural integrity/evidence scan, session-bound V1/V2 index evidence and exclusive compare-and-rewrite migration port, dormant opened ports, backup, restore, and engine benchmarks | Storage API and `redb`; no contract IR, historical partition-expression interpretation, `ValidatedCatalogHistory`, readiness composition, or API transports |
 | `riffdb-invariant` | Shared pure evaluation of checked input-computable expressions plus supported predicates, invariants, postconditions, and commit-time checks | Types and IR; no snapshot, admission, storage, service, clock, entropy, or transport dependency; no POC state-machine source, IR, or execution surface |
 | `riffdb-runtime` | Deterministic command-plan interpreter that consumes lineage-normalized owned snapshots, rejects unproved missing fields, and produces `EvaluatedCommand` without external I/O | IR, invariant engine, and storage semantic value/snapshot types; no catalog lineage construction, provenance claims, admission persistence, storage engine, service, or transport dependency |
 | `riffdb-conflict` | Canonical conflict keys, exclusive logical capabilities, wait queues, cancellation, and hot-key diagnostics | Types and synchronization primitives; no storage engine |
@@ -316,13 +317,13 @@ The binary targets are `riffdbd` from `riffdb-server`, `riffdb` from `riffdb-cli
 | `riffdb-commit` | Database-initialization executor, admission, capability acquisition, orchestration of catalog-owned snapshot readiness/resource evidence and current rechecks, deterministic evaluation orchestration, exact historical-plan matching, final `CommitIntent` assembly, transaction-current commit-check orchestration, revalidation, sequencing, authoritative commit, typed control-plane operations, ordered audit execution, and consumer-owned `AdmissionClock`, `AdministrationClock`, `ProvenanceIdSource`, and `AdministrationAuditInputView` ports | Runtime, conflict, idempotency, catalog, `riffdb-contract-ir`, `riffdb-invariant`, storage API, and policy-owned authorized-preparation/provenance/facts values plus only `TransactionCurrentCapabilityVerifier` and `AuthorizationClock`; direct IR/invariant use is limited to exact plan matching, grammar-v1 index derivation, and pure transaction-current commit-check evaluation; no syntax/compiler, service, transport, protocol, general policy authorizer, obligations/redaction engine, policy-owned storage reader, or concrete clock/entropy implementation |
 | `riffdb-auth` | Principal authentication, local development capability tokens, expiry, credential resolution, narrow synchronous authentication clock, and `CredentialAuthenticator` entry point | Types, errors, and storage-owned capability readers; no policy, command execution, service, or transport dependency |
 | `riffdb-policy` | Deny-by-default authorization, capability scopes, obligations, approvals, provenance validation, value-only authorized capability-mutation preparation and transaction-current facts, synchronous authorization clock, and pure transaction-current capability verification | Auth and types/errors only; no storage API, commit, service, transport, protocol, authoritative write handle, or concrete storage dependency |
-| `riffdb-service` | API-neutral command, contract, entity, commit, provenance, projection, discovery, administration, and health services, including capability-administration request/result semantics, checked pre-schema submitted command values, and schema-directed canonical command-input preparation | Foundational types/errors, contract/compiler/catalog semantics, the pure `riffdb-invariant` expression evaluator, auth and policy entry points, typed commit executors, and consumer-owned bounded read ports; no runtime execution API, transport, general storage engine, or concrete storage implementation |
-| `riffdb-api-grpc` | Tonic services, authentication interceptors, bounds checks, and wire conversions | Service, the auth-owned `CredentialAuthenticator` interface, proto, and Tonic; no policy, catalog, runtime, commit, storage API, or storage implementation |
-| `riffdb-client-rust` | Generic and generated Rust client APIs plus the approved system UUIDv7 request/capability/agent-session convenience source | Proto and Tonic client, default-feature-disabled `riffdb-errors` and `riffdb-types`, plus the exact ADR-0018 entropy dependency only; no authority-bearing or semantic database implementation |
-| `riffdb-server` | `riffdbd` process composition, configuration, lifecycle, hosted gRPC/HTTP endpoints, startup proof composition, and concrete OS clock/UUIDv7/cursor/digest providers implementing the separate consumer ports | Service/API crates and concrete auth, clock/identifier, executor, storage, outbox, projection, and observability implementations solely for composition; no new policy, command, query, redaction, cursor, audit, or identifier semantics |
-| `riffdb-api-mcp` | MCP tool/resource catalogs, schema translation, authorization-aware discovery presentation, Streamable HTTP authentication/handling, and protocol adaptation | Service, the auth-owned `CredentialAuthenticator` interface, `rmcp`, and JSON Schema support; no direct policy, catalog, runtime, commit, storage API, or storage implementation |
-| `riffdb-mcp-stdio` | `riffdb-mcp` local stdio bridge that invokes the shared public service | MCP client/server transport glue only; no storage access |
-| `riffdb-cli` | `riffdb` operator and developer CLI using public APIs | Rust client and bounded local configuration; may depend only on the isolated pure `riffdb-auth::bootstrap_secret` module for offline bootstrap credential generation/validation and protected-file loading, never on authentication, policy, storage, or service internals |
+| `riffdb-service` | API-neutral command, contract, entity, commit, provenance, projection, conditional discovery, administration, and health services, including capability-administration request/result semantics, checked pre-schema submitted command values, schema-directed canonical command-input preparation, the immutable operation-schema catalog, and authoritative outcome-locator tuple encoding/decoding | Foundational types/errors, contract/compiler/catalog semantics, the pure `riffdb-invariant` expression evaluator, auth and policy entry points, typed commit executors, consumer-owned bounded read ports, and exact presentation-only `base64`; no runtime execution API, transport, general storage engine, or concrete storage implementation |
+| `riffdb-api-grpc` | Tonic services, authentication interceptors, bounds checks, presentation-fence process-generation joining, and sole total service-to-wire conversion for all 22 public RPCs | Service, the auth-owned `CredentialAuthenticator` interface, proto, and Tonic; no policy, catalog, runtime, commit, storage API, or storage implementation |
+| `riffdb-client-rust` | Generic and generated Rust client APIs, the approved system UUIDv7 request/capability/agent-session convenience source, six parity-bridge methods, three operation-specific retry helpers, public-error re-exports, and one protected presentation-only bearer-file loader/comparison | Proto and Tonic client, default-feature-disabled `riffdb-errors` and `riffdb-types`, exact ADR-0018 entropy, and exact `zeroize`; no `base64`, `riffdb-auth`, authority-bearing, or semantic database implementation dependency |
+| `riffdb-server` | `riffdbd` process composition, configuration, lifecycle, hosted gRPC/HTTP endpoints, startup proof composition, and concrete OS clock/UUIDv7/cursor/digest/server-generation providers implementing the separate consumer ports | Service/API crates and concrete auth, clock/identifier, executor, storage, outbox, projection, and observability implementations solely for composition; no new policy, command, query, redaction, cursor, audit, or identifier semantics |
+| `riffdb-api-mcp` | The sole MCP SDK boundary: common bounded presentation DTOs/rendering, exact tool/resource/schema registries, locators, cursors, observers and structural base64 presentation; plus feature-gated Streamable HTTP authentication/session handling and stdio transport support | Ungated common code has no service/auth/server/policy/runtime/commit/catalog/storage edge; `streamable-http` alone may add optional service and auth-owned `CredentialAuthenticator` edges; no direct policy, catalog, runtime, commit, storage API, or storage implementation |
+| `riffdb-mcp-stdio` | `riffdb-mcp` local stdio bridge that uses the public Rust client and public gRPC only | Client plus MCP stdio transport glue; no auth, service, server, policy, runtime, commit, catalog, or storage access and no gRPC server feature |
+| `riffdb-cli` | `riffdb` operator and developer CLI using only public Rust-client operations, bounded local configuration/credential retention/rendering, and the checked budget-comparison runner | Exact ADR-0041 direct dependency allowlist; the sole auth-crate symbol boundary is isolated `riffdb_auth::bootstrap_secret`, never the root normal-token loader, authenticator, policy, storage, service, server, proto, or semantic internals |
 | `riffdb-outbox` | Durable event dispatch state machine, leases, retries, deduplication metadata, and connectors | Storage API and Tokio; outside command execution |
 | `riffdb-projection` | POC event-derived filters, counts, sums, durable frontiers, rebuilds, and read-after-sequence outcomes over catalog-normalized event views | Catalog plus ordered commit scans and storage API; no direct durable-event schema interpretation or storage implementation dependency |
 | `riffdb-observability` | Structured tracing, metrics, health signals, and safe telemetry helpers | Cross-cutting interfaces without business semantics |
@@ -338,6 +339,12 @@ The binary targets are `riffdbd` from `riffdb-server`, `riffdb` from `riffdb-cli
 - MCP and gRPC MUST share the `riffdb-service` authorization and execution entry points.
 - `riffdb-proto` MUST NOT depend on `riffdb-storage-api`; only the narrowly scoped storage-owned `proto_codec` bridge may map semantic durable DTOs to generated messages.
 - `riffdb-storage-api` MAY consume only the two immutable checked ADR-0017 projection schema values from `riffdb-contract-ir`; it MUST NOT consume `CommandPlan` or compiler/runtime services, and `riffdb-contract-ir` MUST NOT depend on storage.
+- `riffdb-catalog` MAY consume `riffdb-invariant` only to evaluate one selected
+  immutable historical aggregate `partition_expression` over already decoded
+  canonical root-key values while validating or migrating a codec-checked index
+  row. That call is pure, bounded, synchronous, storage-free, callback-free,
+  and grants no command-execution, commit-check, or mutation authority. No
+  reverse invariant-to-catalog or storage-to-IR dependency is permitted.
 - `riffdb-projection` MUST resolve projection semantics and materialize scanned event payloads through `riffdb-catalog`; it MUST NOT interpret a raw durable event against contract IR or create a second ancestry/null-fill path. Storage remains IR-blind.
 - gRPC and MCP HTTP MAY call only the auth-owned `CredentialAuthenticator` before constructing service request context; production MCP stdio, CLI, and SDK use public gRPC.
 - Generated code MUST be checked in only when generation is deterministic and CI verifies it is current.
@@ -356,10 +363,10 @@ Versions are the verified July 2026 starting point, not a promise to track every
 | Embedded storage | redb 4.1.0, default features disabled, no optional features | POC durable state and atomic commits; direct only in `riffdb-storage-redb` |
 | Backup checksum | sha2 0.11.0, default features disabled | SHA-256 backup manifests; direct only in `riffdb-storage-redb` and never command semantics |
 | Storage comparison | Fjall 3.1.x | POC-exit benchmark and possible MVP engine |
-| MCP SDK | rmcp 2.2.x | Native MCP server, stdio, Streamable HTTP |
-| OS entropy | getrandom 0.3.4, default features disabled, no optional features | Capability/bootstrap identifiers and tokens in `riffdb-auth`, request/capability/agent-session convenience IDs in `riffdb-client-rust`, and injected database/provenance/request/incident/cursor IDs in `riffdb-server`; never command runtime |
-| Base64url | base64 0.22.1; direct auth edge uses default-disabled `alloc`, while the accepted Tonic graph may unify `std` transitively | Canonical capability token text remains owned only by `riffdb-auth`; transport code has no direct semantic use |
-| Secret cleanup | zeroize 1.8.1, default features disabled, `alloc` only | Owned auth secret buffers; no claim about transport-generated copies |
+| MCP SDK | rmcp exactly 2.2.0, default features disabled | Solely through `riffdb-api-mcp`: unconditional `server`, `stdio` adds only `transport-io`, and `streamable-http` adds only `transport-streamable-http-server` plus optional service/auth edges |
+| OS entropy | getrandom 0.3.4, default features disabled, no optional features | Capability/bootstrap identifiers and tokens in `riffdb-auth`, request/capability/agent-session convenience IDs in `riffdb-client-rust`, and injected database/provenance/request/incident/cursor IDs plus the independent 16-byte process generation in `riffdb-server`; never command runtime |
+| Base64 presentation | base64 exactly 0.22.1, default features disabled, `alloc` enabled at every direct owner; accepted dependency unification may enable `std` transitively | Direct owners are exactly `riffdb-auth`, `riffdb-proto`, `riffdb-service`, `riffdb-api-mcp`, and `riffdb-cli`; only auth decodes credentials, while the other four own only their reviewed structural/presentation uses |
+| Secret cleanup | zeroize exactly 1.8.1, default features disabled, `alloc` only | Direct owners are exactly `riffdb-auth`, `riffdb-client-rust`, and `riffdb-cli` for bounded credential buffers; no claim about environment, transport-generated, kernel, or allocator copies |
 | Lexer | Logos 0.16.x | Contract tokenization |
 | Parser | LALRPOP 0.23.x | Contract grammar |
 | Diagnostics | Miette | Compiler errors with source spans and stable diagnostic codes |
@@ -369,6 +376,29 @@ Versions are the verified July 2026 starting point, not a promise to track every
 | Randomized concurrency | Shuttle 0.9.x | Larger command and task schedules |
 | Benchmarks | Dependency-free repeated-run harnesses | Stable local component and scenario benchmarks without adding a POC Criterion dependency |
 | Future replication | OpenRaft 0.9.x behind a facade | MVP replicated state machine; not linked into POC server |
+
+`riffdb-api-mcp` has empty default features. Its `rmcp` manifest row is exactly
+`rmcp = { version = "=2.2.0", default-features = false, features = ["server"] }`.
+The crate feature `stdio` adds only `rmcp/transport-io`; `streamable-http` adds
+only the optional `riffdb-auth` and `riffdb-service` edges plus
+`rmcp/transport-streamable-http-server`. No rmcp client, sampling, roots,
+elicitation, task, OAuth, TLS, key-value, or unrelated transport feature is
+enabled. Acceptance of ADR-0008 covers only its recorded 2026-07-22 lock,
+build-script, native, license, advisory, cryptographic, and unsafe inventory.
+The real WP-140 lock and feature graph MUST receive a fresh human-visible review
+and stop on any difference; in particular, the accepted scratch graph selected
+`serde_json` 1.0.151 while ADR-0041 pins 1.0.150 for the CLI.
+
+For WP-150, `riffdb-cli` has empty default features and exactly these direct
+production dependencies: `base64 = 0.22.1` (`alloc`), `clap = 4.6.3`
+(`derive`, `std`, `help`, `usage`, `error-context`), default-feature-disabled
+path dependencies on `riffdb-auth` and `riffdb-client-rust`, `serde = 1.0.229`
+(`derive`, `std`), `serde_json = 1.0.150` (`std`), `tokio = 1.52.0`
+(`macros`, `rt-multi-thread`), `toml = 1.1.3` (`parse`, `serde`, `std`), and
+`zeroize = 1.8.1` (`alloc`). All exact third-party rows disable default
+features. The CLI has no direct Tonic or foundational/semantic crate edge.
+Every first-party crate continues to forbid unsafe code; a differing resolved
+CLI graph requires the same renewed dependency review before merge.
 
 ---
 # 6. Core domain model and identifiers
@@ -1607,6 +1637,24 @@ The coordinator performs:
 11. Stage the complete record graph and commit the storage transaction using configured durability.
 12. Publish the committed result to the waiting caller and subscribers only after durable success.
 
+For the frozen `CommandWriteSetPlanV1`, the durable codec computes every
+conservative complete V2 envelope upper-bound charge and its checked aggregate
+before sequence assignment. `riffdb-storage-api` exposes only the fields-private
+closed result `Fits(EncodedWriteSetUpperBound) |
+ExceedsAcceptedAggregateCap`; only the codec can construct it and only
+`riffdb-commit` consumes it in production. The second variant can arise only
+after every per-record charge and the checked sum succeeded and the final sum
+alone exceeded the accepted 16 MiB aggregate cap. The commit candidate maps only
+that origin-specific case to `CapacityUnavailable` and the existing public
+`StorageUnavailable`: Pending stays byte-identical, no sequence or graph is
+written, readiness remains true, and the coordinator is neither stopped nor
+fenced. Per-record limit failures, checked-sum overflow, malformed or
+noncanonical bytes, unknown type/hash/version, key/envelope mismatch,
+under-reservation, retained-plan substitution, and every other codec/integrity
+failure remain fatal internal integrity failures. Code MUST exhaustively match
+the typed result and MUST NOT classify an error string or a generic
+`LimitExceeded` as retryable availability.
+
 For an ADR-0012 arithmetic or resource fault, the coordinator instead opens the
 narrow terminalization transaction, rechecks the complete pending admission and
 every influential absence/version/epoch, and atomically records
@@ -1767,23 +1815,49 @@ session, repeated or skipped continuation, or structural error is failure, never
 successful end-of-history evidence.
 
 The evidence contains only bounded storage-structural facts and canonical stored
-bundle/plan bytes needed by the catalog validator. It also enumerates every
-persisted entity key, index-entry key, and range-prefix key as bounded,
-IR-opaque evidence with the durable owner/reference facts needed to select its
-exact retained or active key schema. Storage checks framing, bounds, canonical
-bytes, and record reciprocity but does not interpret a `KeySchema`. The catalog
-must consume the exact end of these key-evidence streams and validate every key
-against the selected historical schema before it may construct
-`ValidatedCatalogHistory`; an unknown owner/schema, incomplete component,
-schema mismatch, omitted row, or truncated stream fails closed. This changes no
-durable key encoding and introduces no storage-to-IR dependency.
+bundle/plan bytes needed by the catalog validator. It enumerates every persisted
+entity key and index-range prefix as bounded `PersistedKey` evidence. Every
+physical V1 or V2 index row instead appears exactly once as the closed
+`HistoricalSemanticEvidence::IndexMigrationRow` variant, inseparably binding its
+physical key, semantic row, and exact canonical registered envelope bytes from
+the storage-owned codec. The variant replaces, and never accompanies, an index
+`PersistedKey` item. Storage checks framing, bounds, canonical bytes,
+physical-key/record-key equality, record reciprocity, ordering, and session
+origin but does not interpret a `KeySchema` or partition expression. The catalog
+must consume exact end, validate every key against the selected historical
+schema, and derive/check every index row's historical partition before it may
+construct readiness or migration context; an unknown owner/schema, incomplete
+component, schema mismatch, omitted/duplicate row, or truncated stream fails
+closed. This changes no durable key encoding and introduces no storage-to-IR
+dependency.
 
-The evidence carries no decoded IR and grants no mutation authority. When the
-redb structural scan and every evidence cursor reach exact end, the session may
-yield `StructurallyOpened` dormant backend ports bound to that database/open
-session. This value proves storage structure, not catalog semantics or
-operational readiness. On any failure, the entire open is dropped and no dormant
-or operational port is released.
+`IndexMigrationRow` remains in the historical stream's `0x04` domain with exact
+order key
+`0x04 || u32_be(lineage_length) || lineage || u64_be(contract_version) ||
+bundle_hash[32] || 0x02 || u32_be(index_id) ||
+u32_be(index_entry_key_length) || index_entry_key`. Its checked general-page
+semantic charge is exactly
+`1 + 4 + physical_key_length + 4 + canonical_envelope_length`, using checked
+addition, and the same row simultaneously counts against the independent
+500-row/4-MiB migration-row bound. Capability-partition evidence remains tag
+`0x05`; no `0x04` item may follow it.
+
+The evidence carries no decoded IR and grants no operational mutation authority.
+When the structural scan and every evidence cursor reach exact end, consuming
+the session and both backend exact-end authorities returns
+`StructuralOpenOutcome::Clean(StructurallyOpened)` only if the backend observed
+no V1 index row, or
+`StructuralOpenOutcome::MigrationRequired(StartupIndexMigrationPort)` if it did.
+The catalog independently returns
+`CatalogHistoryOutcome::Ready(ValidatedCatalogHistory)` only for a V2-only
+history, or
+`CatalogHistoryOutcome::MigrationRequired(CatalogIndexMigrationContext)` after
+observing V1. The server may join only `Clean` with `Ready`, or consume the two
+matching `MigrationRequired` values into the migration driver. A crossed pair is
+integrity failure. Migration values have no readiness conversion, current-
+recheck operation, operational accessor, reusable authority, callback, or
+parallel handle. On any failure, the entire open is dropped and no dormant or
+operational port is released.
 
 The server drives the evidence pages into the catalog-owned historical validator.
 Only server composition may combine matching `StructurallyOpened` ports and
@@ -1791,8 +1865,50 @@ opaque same-session `ValidatedCatalogHistory` with the required readable
 digest inventories and lifecycle checks to create operational wiring. The proof
 does not pass back through storage, and redb never receives an IR or catalog
 dependency. The memory engine implements the same initialization-first,
-exclusive-session, exact-end, session-binding, and dormant-port type-state for
-conformance tests.
+exclusive-session, exact-end, session-binding, migration, and dormant-port
+type-state for conformance tests.
+
+The startup-only `StartupIndexMigrationPort` is linear and remains outside every
+operational storage trait. Bound to its original `DatabaseId` and
+`OpenSessionId`, it rescans V1/V2 physical index rows in strict physical-key
+order through short read transactions. Each session-bound page enforces two
+independent ledgers before release: at most 500 rows and 4 MiB for exact observed
+row evidence, and at most 500 rows and 4 MiB for conservative complete
+instruction/write charges. It stops before the first row that would exceed
+either ledger, makes that unconsumed row the strictly advancing continuation,
+and cannot emit an empty nonterminal page when a valid row remains. These bounds
+do not lower the separately accepted 15 MiB immutable bundle or general
+historical-evidence limits.
+
+WP-065 MUST prove from accepted key/value/binding/payload/envelope/framing maxima
+that one maximum valid row and its conservative complete V2 replacement fit in
+4 MiB. A semantic row is never split. Failure of that proof is an authoritative
+bound conflict requiring human review, not permission to raise a limit or loop
+without progress.
+
+For each current row, a paired same-session point read supplies at most its one
+exact retained historical bundle after the storage transaction closes. Catalog
+selects the historical owner/schema, decodes the complete embedded entity key,
+binds the root-key positional prefix, and uses only the pure invariant evaluator
+to derive the exact historical partition. It consumes the row into exactly one
+move-only `V1Rewrite` instruction binding the complete expected V1 evidence and
+derived V2 post-image, or one `V2Confirm` instruction binding the complete
+expected V2 evidence after equality proof. Storage consumes a complete page and
+instruction batch together, constructs replacement envelopes only through the
+durable codec, compares every current value, and atomically applies all V1-to-V2
+replacements or none. An exact already-written V2 is idempotent replay for
+`V1Rewrite`; `V2Confirm` writes nothing. Any absence or byte/semantic mismatch
+aborts as corruption.
+
+Exact end plus the matching catalog completion yields only dormant unopened
+backend state. The server discards every pre-migration proof, begins a fresh
+session with a fresh `OpenSessionId`, and repeats complete structural and catalog
+validation. Only a fresh V2-only `Clean` plus `Ready` pair can reach readiness.
+An immediate second migration requirement after an in-process completion is
+integrity failure. Crash or cancellation drops the port; restart begins the
+complete process again. There is no migration marker, added metadata category,
+online migration, persisted continuation, or readiness concurrent with
+migration.
 
 The concrete `redb` adapter may contain private compaction, backup, integrity,
 and statistics APIs. The approved baseline is exactly `redb` 4.1.0 with default
@@ -1806,7 +1922,9 @@ dependencies, validation targets, mutations, index deltas, event intents, or
 outbox intents per command; 1 MiB per canonical entity/event/outcome value;
 16 MiB per owned snapshot; 15 MiB per pre-commit intent or commit-record semantic
 payload; 64 commands and 16 MiB aggregate staged write set per write transaction;
-500 rows and 4 MiB per generic scan page; 500 records and 16 MiB encoded content
+500 rows and 4 MiB per generic scan page; independently, 500 complete index rows
+and 4 MiB for each startup migration evidence page and each conservative
+instruction/write batch; 500 records and 16 MiB encoded content
 per internal ordered commit-scan page; 4 KiB per
 entity/index/partition/conflict key or index prefix; 256 integrity findings plus
 a `truncated` flag; 15 MiB per catalog bundle; 4,096 bundles and 64 MiB exact
@@ -1945,8 +2063,10 @@ The payload is a typed Protobuf message. The outer checksum provides early corru
 
 `STO-022` POC storage migrations MAY be offline but MUST be restartable and idempotent.
 
-The `riffdb.storage.v1` compatibility registry contains exactly these 26
-top-level `StoredEnvelope` payload types for the POC:
+The `riffdb.storage.v1` readable compatibility registry contains exactly the
+accepted 26 top-level `StoredEnvelope` payload tuples below, with their existing
+descriptor closures and schema hashes byte-identical, plus one additive tuple
+for `StoredIndexEntryV2`:
 
 1. `StoredStorageFormatVersionV1`
 2. `StoredDatabaseIdentityV1`
@@ -1974,15 +2094,37 @@ top-level `StoredEnvelope` payload types for the POC:
 24. `StoredProjectionStateV1`
 25. `StoredProjectionApplyV1`
 26. `StoredProjectionControlV1`
+27. `StoredIndexEntryV2`
+
+`StoredIndexEntryV2` is defined alone in
+`proto/riffdb/storage/v1/index_v2.proto`, which imports the unchanged
+`riffdb/storage/v1/application.proto`, with exact fields
+`bytes index_entry_key = 1`,
+`DurableKeySchemaBindingV1 schema_binding = 2`,
+`bytes canonical_covered_values = 3`, and `bytes partition_key = 4`.
+`application.proto` and the other eight pre-V2 durable sources remain
+byte-identical, so the generated durable-source inventory is exactly ten. Only
+the V2 FQN receives a new descriptor closure and schema
+hash. The outer `StoredEnvelope`, storage-format version, physical
+`secondary_indexes` table, and complete physical `IndexEntryKey` are unchanged.
+
+The writable role registry contains exactly 26 entries: the unchanged 25
+non-index roles plus V2 as the sole current index-entry role. V1 is decode-only
+for migration and has no current encoder or normal-write lookup. Tests MUST
+freeze exact ordered FQNs, hashes, and readable/writable membership; a count
+alone is not sufficient. A pre-V2 binary continues to reject the unknown V2
+tuple, so rollback to it after migration is unsupported. Backup and restore
+preserve exact envelope bytes and reopening restored V1 or mixed state runs the
+same exclusive restartable migration and fresh-validation sequence.
 
 The capability and service-audit wire names in that list are fixed even where
 the Rust semantic DTO uses a `Stored*` name. Closed helper messages, including
 read-dependency collections and capability grants/permission sets, remain nested
-and are not separately registered envelopes. No speculative reserved field,
-record type, key codec, ADR-0019 deferred metadata, or later-feature placeholder
-is part of the v1 registry. Any addition, removal, rename, field-number change,
-enum/oneof tag change, or top-level/nested reclassification is a durable-format
-change requiring compatibility and recovery review.
+and are not separately registered envelopes. No other speculative reserved
+field, record type, key codec, ADR-0019 deferred metadata, or later-feature
+placeholder is part of the v1 registry. Any further addition, removal, rename,
+field-number change, enum/oneof tag change, or top-level/nested reclassification
+is a durable-format change requiring compatibility and recovery review.
 
 ## 10.4 Commit record
 
@@ -2124,6 +2266,19 @@ may join the two matching same-session results and evaluate readiness:
     after the matching `StructurallyOpened`/`ValidatedCatalogHistory` pair and
     retained-metadata checks are accepted.
 
+If the first complete scan observes any V1 index row, steps 1 through 10 do not
+release readiness or operational ports. Storage and catalog must both return
+their same-session `MigrationRequired` types, the server must drive the exact
+bounded linear migration from Section 10.1, and completion yields only dormant
+unopened backend state. Recovery then restarts this entire list under a fresh
+`OpenSessionId`; only an all-V2 scan whose storage and catalog outcomes are
+respectively `Clean` and `Ready` may continue. Mixed V1/V2 state is a normal
+restartable migration input only before that fresh validation. A crossed
+outcome, mismatched row/instruction, second migration requirement immediately
+after in-process completion, or any post-migration V1 row is corruption. No
+startup transaction remains open during catalog evaluation, and no rollback to
+a binary that cannot read V2 is supported.
+
 `StructurallyOpened` alone never means readiness. Its completed same-session
 handoff includes the exact structurally checked `RetainedMetadataV1`, but that
 value is not a catalog proof or operational authority. WP-130 authoritative
@@ -2203,6 +2358,28 @@ command/resource discovery. There is no catch-all enum/payload method, generic
 read, generic mutation, SQL, or raw administration call. An aggregate service
 handle only groups those six traits.
 
+ADR-0040 exposes exactly six already-existing API-neutral operations through the
+public protocol: `GetContractVersion`, `DiscoverCommandTools`,
+`DiscoverResources`, `GetProjectionStatus`, `TraceProvenance`, and
+`ListPendingOutboxDeliveries`. This adds no semantic operation, service trait,
+generic resource read, or alternate authorization path. The two discovery
+operations support full pages, compact-observation pages, and a conditional
+`CatalogUnchanged` result under a semantic fence containing only active/no-active
+catalog identity plus the ordered two-schema operation-catalog identity.
+`DiscoverResources` additionally requires the closed kind `All | Concrete |
+Template`; the service filters that kind before whole-item pagination and binds
+it into cursor state. No adapter filters a mixed service page.
+
+The public presentation fence adds one required 16-byte process generation.
+`riffdb-server` samples it independently exactly once per production graph-
+activation attempt with one `getrandom::fill`, with no retry, clock, fallback,
+derivation, reuse, or global state; failure prevents activation/readiness. It is
+public opaque comparison data, not a UUID, cursor, durable identity, authority,
+runtime input, or uniqueness proof. The gRPC and hosted-HTTP adapters alone
+compare/join the same lifecycle-owned value. A generation mismatch discards the
+prior semantic fence and forces an ordinary freshly authorized first page; the
+API-neutral service never receives process entropy.
+
 Every operation normally accepts a checked `RequestContext` and obtains a
 current policy decision. The sole read-only context exception is
 `AdministrationApplication::health` during the pre-marker lifecycle described
@@ -2257,6 +2434,18 @@ attempts at most three times. Source repository, source commit, reason, and
 approval-reference claims are respectively bounded to 512, 128, 1,024, and 256
 bytes. Configuration may lower but not raise these POC hard bounds.
 
+Full discovery has the stricter conservative service-response ceiling
+2,621,440 bytes. A full item is indivisible and pages may contain fewer than the
+requested limit to fit. Compact items are at most 4,096 bytes each; 500 such
+items plus page/cursor/fence overhead fit beneath 4,194,304 bytes. Every fence is
+required, every present cursor is exactly 16 opaque bytes, an empty page has no
+cursor, and continuation state binds operation, representation, resource kind
+where applicable, normalized limit, request fingerprint, policy, and catalog
+fence. A conditional unchanged result is allowed only for an initial compact
+request with a present equal prior fence and no cursor, after fresh
+authorization and normal audit completion; it carries no item, cursor, or schema
+body and grants no read/invocation authority.
+
 ## 11.2 Services
 
 ```protobuf
@@ -2265,6 +2454,9 @@ service ContractService {
   rpc ExplainCommand(ExplainCommandRequest) returns (ExplainCommandResponse);
   rpc DeployContract(DeployContractRequest) returns (DeployContractResponse);
   rpc GetActiveContract(GetActiveContractRequest) returns (GetActiveContractResponse);
+  rpc GetContractVersion(GetContractVersionRequest) returns (GetContractVersionResponse);
+  rpc DiscoverCommandTools(DiscoverCommandToolsRequest) returns (DiscoverCommandToolsResponse);
+  rpc DiscoverResources(DiscoverResourcesRequest) returns (DiscoverResourcesResponse);
 }
 
 service CommandService {
@@ -2276,12 +2468,14 @@ service QueryService {
   rpc GetEntity(GetEntityRequest) returns (GetEntityResponse);
   rpc ScanIndex(ScanIndexRequest) returns (ScanIndexResponse);
   rpc QueryProjection(QueryProjectionRequest) returns (QueryProjectionResponse);
+  rpc GetProjectionStatus(GetProjectionStatusRequest) returns (GetProjectionStatusResponse);
 }
 
 service CommitService {
   rpc GetCommit(GetCommitRequest) returns (GetCommitResponse);
   rpc ScanCommits(ScanCommitsRequest) returns (ScanCommitsResponse);
   rpc SubscribeCommits(SubscribeCommitsRequest) returns (stream CommitNotification);
+  rpc TraceProvenance(TraceProvenanceRequest) returns (TraceProvenanceResponse);
 }
 
 service AdminService {
@@ -2289,8 +2483,19 @@ service AdminService {
   rpc Stats(StatsRequest) returns (StatsResponse);
   rpc CreateCapability(CreateCapabilityRequest) returns (CreateCapabilityResponse);
   rpc RevokeCapability(RevokeCapabilityRequest) returns (RevokeCapabilityResponse);
+  rpc ListPendingOutboxDeliveries(ListPendingOutboxDeliveriesRequest) returns (ListPendingOutboxDeliveriesResponse);
 }
 ```
+
+The package remains `riffdb.v1`. The result is exactly five services and 22
+RPCs; `CommandService` is unchanged and `SubscribeCommits` remains the sole
+server-streaming RPC. Existing methods remain first and retain their descriptor
+order. The six added methods, their exact message/field/oneof/enum tags, the
+new `discovery.proto` source, and the additive import/method order in
+`services.proto` are the byte-for-byte registry accepted in ADR-0040. Every new
+request has required `bytes request_id = 1`; Health remains the sole existing
+optional-ID exception. Unknown fields are ignored but never relayed, and every
+selector/result oneof requires exactly one known branch.
 
 WP-130 proves `QueryProjection` wire mapping and public-client behavior against an injected API-neutral service stub. WP-170 supplies real projection semantics, WP-185 composes them into `riffdbd`, and WP-200 supplies final public gRPC evidence; the presence of the RPC in the P1 protocol does not move projection implementation into P1.
 
@@ -2320,6 +2525,7 @@ message ExecuteCommandResponse {
   Value outcome = 6;
   string provenance_uri = 7;
   string durability_mode = 8;
+  optional string outcome_uri = 9;
 }
 
 message Value {
@@ -2361,13 +2567,29 @@ message ValueField { optional uint32 field_id = 1; string name = 2; Value value 
 message ValueRecord { repeated ValueField fields = 1; }
 ```
 
-For `EXECUTED_READ_ONLY`, `commit_sequence` is the wire sentinel zero and
-`provenance_uri` and `durability_mode` are empty. Adapters map these to semantic
-absence and never construct `CommitSequence(0)`, a provenance identity, or a
-durability mode. `COMMITTED` and `REPLAYED` require their original nonzero
-sequence and complete terminal fields. Unknown status values and every
-status/field inconsistency reject. This status gives no durable replay or
-outcome-recovery promise.
+For `EXECUTED_READ_ONLY`, `commit_sequence` is the wire sentinel zero,
+`provenance_uri` and `durability_mode` are empty, and `outcome_uri` is absent.
+Adapters map these to semantic absence and never construct `CommitSequence(0)`,
+a provenance identity, durability mode, or locator. `COMMITTED` and `REPLAYED`
+require their original nonzero sequence and complete terminal fields. A WP-137
+server MUST emit a canonical `outcome_uri` bound to the exact durable identity
+for every committed/replayed result; failure to mint it prevents release. An
+ordinary upgraded client may accept absence from a pre-WP-137 server as the
+legacy shape, but a present value must be canonical and status-consistent.
+Unknown status values and every status/field inconsistency reject. Read-only
+status gives no durable replay or outcome-recovery promise.
+
+`GetOutcomeRequest` additively owns `optional string outcome_uri = 5`. When
+present, legacy `contract_lineage = 2`, `command_name = 3`, and
+`idempotency_key = 4` MUST all be empty; when absent, their existing nonempty
+raw-key semantics remain unchanged. The service converts it only to the checked
+`ResolveCommandOutcomeRequest::Locator(OutcomeResourceLocator)` selector. The
+locator path shares the existing operation and audit tag, initial existence-
+blind and terminal disclosure authorization, and one authoritative point-lookup
+port. It does not expose a raw key, key material, HMAC operation, scan, active-
+catalog substitution, or adapter-constructible storage key. A WP-137 server
+returns a found raw-key result with a locator minted from matched durable digest
+evidence; a found locator result returns a byte-for-byte equal URI.
 
 The custom `Value` family is required; `google.protobuf.Struct` is forbidden at exact business-value boundaries because it cannot preserve all signed/unsigned integer and decimal values. Lists, records, strings, and bytes inherit compiled or protocol bounds. Record fields MUST be unique and canonically ordered by stable field ID where available, then by UTF-8 name. Decimal coefficient, scale, currency, UUID, date, and timestamp encodings MUST be validated and canonical before hashing or persistence.
 
@@ -2386,6 +2608,20 @@ validation before WP-130 conversion. WP-127 never depends on `riffdb-service`
 and owns no semantic conversion; WP-130 owns total service-to-wire conversion.
 No package may invent a competing schema, persist an ad hoc encoding, or guess
 field numbers before its proto-owner package.
+
+WP-137 is the sole narrow additive public-protocol owner after WP-127. It owns
+only ADR-0040's six RPCs/messages, two outcome-locator fields, exact descriptor
+and compatibility fixtures, and total conversions. The shared service owns the
+immutable canonical Draft 2020-12 sources
+`riffdb.command-operation-envelope/v1` and
+`riffdb.command-get-outcome-result/v1`; each is at most 65,536 bytes and the
+complete artifact charges total at most 131,584 bytes. Full command discovery
+carries both IDs, hashes, dialects, and exact canonical bodies, while compact or
+unchanged discovery carries only their ordered identities in the required
+fence. Any source/body/hash/identity change requires a new version and human
+compatibility review. These schemas are not compiler artifacts and do not alter
+a bundle, bundle hash, plan hash, canonical input hash, or declared-outcome
+union.
 
 Before WP-130 exposes the ADR-0012 error, the public error registry additively
 includes `PUBLIC_ERROR_KIND_COMMAND_EXECUTION_FAILED = 9`, stable code
@@ -2435,7 +2671,8 @@ fields are frozen by WP-127 before WP-130 implements them.
 - Command input values are bounded by contract types.
 - Scan operations require explicit limit and opaque cursor.
 - Server deadlines cap lock wait, command evaluation, commit queue wait, and projection wait separately.
-- Compression is disabled for small command messages and MAY be enabled for contract bundles or scans.
+- Compression is disabled for every POC gRPC message, including contract
+  bundles and scans.
 
 ## 11.5 Rust SDK
 
@@ -2449,6 +2686,42 @@ The POC MUST provide:
 - `wait_for_projection(sequence)` helpers.
 - Trace-context propagation.
 
+WP-137 additionally exposes checked unary methods for exactly
+`get_contract_version`, `discover_command_tools`, `discover_resources`,
+`get_projection_status`, `trace_provenance`, and
+`list_pending_outbox_deliveries`. Each consumes its exact generated request plus
+`&CallMetadata`, validates outbound/inbound messages and operation-specific
+request/response relations, and returns only its exact checked response or
+`ClientError`. The crate root re-exports the single `riffdb-errors` public-error
+owner types named by ADR-0040; it does not create a wire view, duplicate error
+registry, or expose peer/Tonic text as retry authority.
+
+The only automatic retry helpers are `execute_with_retry`,
+`create_capability_with_retry`, and
+`create_bootstrap_capability_with_retry`. They accept checked private-field
+operation templates plus an explicit attempt budget, obtain a fresh UUIDv7
+`RequestId` before every submission including the first, preserve every semantic
+identity/body byte, and consume only checked recovery actions or the private
+details-free transport-unavailable classification. They expose no generic
+callback/arbitrary-RPC retry, status-only predicate, default budget, sleep, or
+jitter. Once any attempt is uncertain, exhaustion or a later unresubmittable
+failure returns the existing `OutcomeUnknown`; normal capability replay may
+terminally return `AlreadyCreatedTokenUnavailable` and never creates a
+replacement.
+
+The public client also exposes exactly
+`load_protected_bearer_credential(&Path) -> Result<BearerCredential,
+BearerCredentialFileError>` and
+`BearerCredential::has_same_presentation(&self, &BearerCredential) -> bool`.
+The closed error variants are `UnsupportedPlatform`, `ProtectedFileRejected`,
+and `InvalidPresentation`, with fixed redacted text and no source/path. On Linux
+the loader implements ADR-0041's exact bounded `/proc/self/status`, final
+symlink, opened-file device/inode/owner/mode, 43-byte/no-trailing-byte, and
+zeroized-buffer procedure; non-Linux rejects before credential read. It performs
+only presentation validation, exposes no raw bytes, does not base64-decode,
+hash, authenticate, or consult capability state, and is the sole protected
+normal-file loader used by CLI and MCP stdio.
+
 Generated SDK code MUST not contain database correctness logic. It validates ergonomics and shapes data; the server remains authoritative.
 
 ---
@@ -2458,7 +2731,10 @@ Generated SDK code MUST not contain database correctness logic. It validates erg
 
 MCP is a first-class product interface because the database is intended for agent-driven development and operation. The MCP layer is generated from the same active contract bundle and uses the same service, authorization, policy, command runtime, and provenance paths as gRPC.
 
-The POC baseline is MCP protocol version **2025-11-25** and the official Rust SDK `rmcp` 2.2.x, verified on 2026-07-12. MCP protocol and SDK use MUST be isolated behind `riffdb-api-mcp` so future protocol revisions do not leak into compiler, runtime, or storage crates.
+The POC baseline is MCP protocol version **2025-11-25** and the official Rust
+SDK `rmcp` exactly 2.2.0 under ADR-0008's reviewed dependency graph. MCP
+protocol and SDK use MUST be isolated behind `riffdb-api-mcp` so future protocol
+revisions do not leak into compiler, runtime, or storage crates.
 
 ## 12.2 Transports
 
@@ -2475,12 +2751,58 @@ MCP host
 
 The stdio process MUST write protocol messages only to stdout. Diagnostics go to stderr.
 
+Production stdio is an ordinary public client and links no `riffdb-service`,
+auth, policy, catalog, runtime, commit, server, or storage crate. It enables only
+the `riffdb-api-mcp` `stdio` feature and never the gRPC server feature. Its only
+recognized environment names are `RIFFDB_MCP_CONFIG`, `RIFFDB_MCP_ENDPOINT`,
+`RIFFDB_MCP_CAPABILITY_TOKEN`, and `RIFFDB_MCP_CREDENTIAL_FILE`; its only
+configuration flags are `--config` and `--endpoint`. It performs no ambient path
+discovery. Configuration, endpoint, credential exclusivity, protected-file
+loading, 4,096-byte path, 65,536-byte TOML, 512-byte exact literal-loopback
+endpoint, and exact 43-byte environment-presentation rules are those frozen by
+ADR-0008. A credential never appears in argv or TOML, and the bridge uses the
+public-client protected loader rather than `riffdb-auth`.
+
 ### Streamable HTTP
 
 `riffdbd` exposes a native `/mcp` Streamable HTTP endpoint.
 
 - POC: disabled by default, loopback binding only, opaque development capability token.
 - MVP: remote use over TLS, OAuth 2.1 protected-resource behavior, audience-bound access tokens, tenant policy, rate limits, and audit.
+
+The POC route is exactly `/mcp`; no trailing slash, alternate prefix, wildcard,
+query-selected route, remote bind, TLS, or OAuth behavior is accepted. The
+configured protected-resource URI is absolute lowercase HTTP with a loopback IP
+literal, explicit port, exact path, and no user information, query, or fragment.
+Every request must have one byte-equal effective authority and, when `Origin` is
+present, one exact member of the bounded configured loopback-origin allowlist.
+The configured audience is never synthesized from `Host`, forwarding headers,
+or origin.
+
+Every POST, GET, or DELETE carries exactly one canonical `Authorization` value:
+case-sensitive `Bearer ` plus the exact 43-byte token. The adapter strips the
+scheme, calls only the auth-owned `CredentialAuthenticator` with trusted
+database/environment/audience, removes the header before rmcp, and owns no token
+decoder or auth cache. Stateful rmcp mode is mandatory; stateless
+`serve_directly` is forbidden. The private RiffDB `SessionManager` reserves one
+validated SDK-produced ID by insert-if-absent before worker start, counts Pending
+and Active states against 128, never retries/evicts/overwrites, holds no map guard
+across await, and promotes the exact initialized ID to an Active
+`CapabilityId`/clock binding. Every later request reauthenticates and must match
+that binding. Invalid, collided, abandoned, expired, deleted, cancelled, or
+failed sessions release state/worker exactly once and reveal no existence detail.
+Session idle and lifetime are 300 and 900 seconds; SDK keepalive and SSE retry
+are both disabled.
+
+Validation order is route/method framing, Origin, effective authority,
+pre-authentication rate limit and credential, protocol/session headers, bounded
+body, then MCP dispatch. Initialization carries no session header; every later
+POST/GET/DELETE carries exactly one canonical bound header. Origin failure is
+403, authority failure 421, missing/malformed credential 401 with a generic
+Bearer challenge, and absent/malformed/unknown/mismatched post-init session 404;
+all are existence-blind, `Cache-Control: no-store`, and release no JSON-RPC body
+or protected work. ADR-0008's exact header duplication, whitespace, ASCII,
+allowlist, and response rules apply.
 
 `MCP-010` Stdio and Streamable HTTP MUST expose equivalent authorized tools and resources for the same principal and active contract.
 
@@ -2493,11 +2815,14 @@ obligation path. MCP adapters MUST NOT construct an actor or capability decision
 
 ### POC server capabilities
 
-- Tools with `listChanged=true`.
-- Resources with `listChanged=true` and selected subscriptions.
-- Prompt templates for operational workflows MAY be included after tools and resources are stable.
-- Progress for contract validation, deployment analysis, branch replay, and projection rebuild operations.
-- Cancellation support with the command-boundary semantics in Section 9.7.
+- Exactly `tools: { listChanged: true }`.
+- Exactly `resources: { subscribe: true, listChanged: true }`.
+
+No other server capability is advertised. Optional title, description, icons,
+website URL, instructions, prompts, logging, completions, and experimental
+capabilities are absent rather than empty or false-valued extensions. Progress
+and cancellation remain protocol behaviors under Sections 12.9 and 9.7, not
+extra advertised server capability fields.
 
 ### Explicitly deferred MCP capabilities
 
@@ -2506,6 +2831,7 @@ obligation path. MCP adapters MUST NOT construct an actor or capability decision
 - Elicitation.
 - Experimental or extension-based task execution.
 - MCP Apps.
+- Prompts in the POC.
 
 The adapter MUST negotiate capabilities and MUST NOT call client features that were not declared.
 
@@ -2548,89 +2874,47 @@ riffdb.cmd.legalspend.allocatebudget
   neither layer reimplements normalization.
 - Contract deployment that adds, removes, or changes visible command tools emits `notifications/tools/list_changed` when negotiated.
 
-These naming rules accept only ADR-0020. Resource URI encoding, HTTP audience,
-stdio-over-gRPC transport, cursor presentation, and their exact compatibility
-fixtures remain Proposed under ADR-0008 and are not frozen by this section.
+ADR-0020 owns only naming. Accepted ADR-0008 separately freezes resource URI
+encoding, HTTP audience, stdio-over-gRPC topology, cursor presentation, and the
+associated compatibility boundaries in Sections 12.2 through 12.12; the future
+WP-140 fixed-schema and resource-registry bytes still require their explicit
+interface-only human checkpoint.
 
 ### Generated tool definition
 
-```json
-{
-  "name": "riffdb.cmd.legalspend.allocatebudget",
-  "title": "Allocate Budget",
-  "description": "Atomically allocate an amount from an organization's annual budget. Requires a caller-supplied idempotency key. Returns a declared business outcome and commit sequence.",
-  "inputSchema": {
-    "$schema": "https://json-schema.org/draft/2020-12/schema",
-    "type": "object",
-    "additionalProperties": false,
-    "properties": {
-      "idempotency_key": { "type": "string", "minLength": 1, "maxLength": 128 },
-      "organization_id": { "type": "string", "format": "uuid" },
-      "fiscal_year": { "type": "integer" },
-      "matter_id": { "type": "string", "format": "uuid" },
-      "amount": { "type": "string", "pattern": "^-?[0-9]+\\.[0-9]{2}$" }
-    },
-    "required": [
-      "idempotency_key",
-      "organization_id",
-      "fiscal_year",
-      "matter_id",
-      "amount"
-    ]
-  },
-  "outputSchema": {
-    "$schema": "https://json-schema.org/draft/2020-12/schema",
-    "type": "object",
-    "additionalProperties": false,
-    "properties": {
-      "status": { "enum": ["committed", "replayed"] },
-      "commit_sequence": { "type": "string", "pattern": "^[0-9]+$" },
-      "contract_version": { "type": "integer" },
-      "outcome": {
-        "oneOf": [
-          {
-            "type": "object",
-            "properties": {
-              "type": { "const": "Allocated" },
-              "remaining": { "type": "string" }
-            },
-            "required": ["type", "remaining"],
-            "additionalProperties": true
-          },
-          {
-            "type": "object",
-            "properties": {
-              "type": { "const": "InsufficientBudget" },
-              "approved": { "type": "string" },
-              "allocated": { "type": "string" },
-              "requested": { "type": "string" }
-            },
-            "required": ["type", "approved", "allocated", "requested"],
-            "additionalProperties": false
-          },
-          {
-            "type": "object",
-            "properties": {
-              "type": { "const": "InvalidAmount" },
-              "minimum": { "type": "string" }
-            },
-            "required": ["type", "minimum"],
-            "additionalProperties": false
-          }
-        ]
-      },
-      "provenance_uri": { "type": "string", "format": "uri" }
-    },
-    "required": [
-      "status",
-      "commit_sequence",
-      "contract_version",
-      "outcome",
-      "provenance_uri"
-    ]
-  }
-}
-```
+Each dynamic tool consumes the compiler-owned exact name, input artifact, and
+declared-outcome union. The adapter advertises that input artifact unchanged and
+mechanically composes the exact declared union into the `outcome` position of
+the service-owned `riffdb.command-operation-envelope/v1` source. The resulting
+closed Draft 2020-12 output has three ordered status branches: `committed`,
+`replayed`, and `executed_read_only`. Every branch requires `status`,
+`commit_sequence`, `contract_version`, `plan_hash`, `outcome`,
+`provenance_uri`, `durability_mode`, and `outcome_uri`; the four durability-
+specific fields are canonical non-null values for committed/replayed and JSON
+null for read-only. Contract version is a nonzero JSON integer, plan hash is 64
+lowercase hexadecimal characters, and `outcome` matches the inserted exact
+compiler union. The composer does not maintain a second command-specific schema
+source or modify a bundle/hash.
+
+The fixed `riffdb.command.get_outcome` tool instead always advertises the
+invocation-independent `riffdb.command-get-outcome-result/v1` schema. It has
+exactly a closed `{ "status": "not_found" }` branch and a closed replay branch
+whose ordered fields are `status`, `commit_sequence`, `contract_version`,
+`plan_hash`, `outcome_type`, tagged structural `outcome`, `provenance_uri`,
+`durability_mode`, and `outcome_uri`. It never substitutes a selected command's
+union after seeing invocation arguments.
+
+The MCP tagged structural Value is a closed object discriminated by lowercase
+`kind`, with exact variants `null`, `bool`, `i64`, `u64`, `decimal`, `money`,
+`string`, `bytes`, `timestamp`, `date`, `uuid`, `enum`, `list`, and `record`.
+Integers that may lose JSON precision use canonical decimal strings; bytes use
+canonical padded standard base64; UUID uses lowercase hyphenated text; decimal
+and money carry checked precision/scale/coefficient; lists contain at most
+65,535 ordered values; records contain at most 65,535 strictly increasing
+nonzero `field_id`/value pairs; nesting depth is at most 32; and complete
+encoded/scalar bounds remain authoritative even when JSON Schema cannot express
+them. No floating point, display alias, map, lossy integer, alternate base64, or
+unknown property is accepted.
 
 `MCP-020` Generated schemas MUST come from the compiled contract bundle, not hand-maintained MCP code.
 
@@ -2660,10 +2944,24 @@ The MCP protocol request identifier and the service-generated outer `RequestId` 
 | `riffdb.provenance.trace` | Administrative read | Required | Return causal metadata and linked resources. |
 | `riffdb.projection.query` | Read-only data | Required | Query a projection with optional `after_sequence` wait. |
 | `riffdb.projection.status` | Read-only | Required | Return frontier and lifecycle state. |
-| `riffdb.outbox.list_pending` | Administrative read | Optional POC | Inspect pending deliveries without payload fields the caller cannot read. |
+| `riffdb.outbox.list_pending` | Administrative read | Required | Inspect pending deliveries without payload fields the caller cannot read. |
 | `riffdb.server.health` | Read-only | Required | Return readiness, active contract, last commit, and degraded components. |
 
 Administrative tools MUST be absent from `tools/list` when the session lacks permission, rather than merely failing after selection.
+
+These are exactly the 14 fixed tools in their displayed order and correspond to
+ADR-0040 `FixedToolKind` tags 1 through 14. WP-140 owns one versioned
+`riffdb-api-mcp` registry, not runtime reflection, Protobuf debug output, or
+`schemars` generation. The complete operation/fixed manifest has 29 unique
+artifacts: the generic command envelope, the reused GetOutcome result, 14 fixed
+inputs, and 13 new fixed results. Each fixed artifact is at most 65,536 bytes
+and the 27 new artifacts together are at most 1,048,576 bytes. The full
+`tools/list` ledger is exactly 2,621,440 bytes of service discovery,
+1,048,576 bytes of local fixed schemas, and 524,288 bytes of all remaining MCP
+keys/text/annotations/JSON-RPC/link/framing, totaling 4,194,304 bytes. WP-140's
+interface-only PR must separately receive human acceptance for the exact 27
+source bytes, IDs/hashes, mappings, converters, and goldens before presentation
+implementation; accepting ADR-0008 did not pre-accept those future fixtures.
 
 ## 12.6 Resource model
 
@@ -2674,15 +2972,53 @@ MCP resources provide application-controlled context. Resources are redacted by 
 | URI template | MIME type | Contents |
 |---|---|---|
 | `riffdb://contract/active` | `application/json` | Active contract metadata and links |
-| `riffdb://contract/{version}` | `application/json` | Bundle summary, source hash, plan hash, compatibility metadata |
-| `riffdb://entity/{entity}/schema` | `application/schema+json` | Entity JSON Schema and field policy metadata |
-| `riffdb://command/{command}/plan` | `application/json` | Explain plan and generated schemas |
-| `riffdb://command/{command}/docs` | `text/markdown` | Generated command documentation and examples |
-| `riffdb://outcome/{principal}/{command}/{key_hash}` | `application/json` | Authorized persisted outcome for uncertainty recovery |
-| `riffdb://commit/{sequence}` | `application/json` | Redacted commit record |
-| `riffdb://provenance/{provenance_id}` | `application/json` | Actor, agent session, source, approval, contract, and affected aggregates |
-| `riffdb://projection/{projection}/status` | `application/json` | Lifecycle, frontier, lag, and error state |
+| `riffdb://contract/<lineage>/<version>` | `application/json` | Bundle summary, source hash, plan hash, compatibility metadata |
+| `riffdb://entity/<lineage>/<entity-id>/schema` | `application/schema+json` | Entity JSON Schema and field policy metadata |
+| `riffdb://command/<lineage>/<command-id>/plan` | `application/json` | Explain plan and generated schemas |
+| `riffdb://command/<lineage>/<command-id>/docs` | `text/markdown` | Generated command documentation and examples |
+| `riffdb://outcome/<principal>/<lineage>/<command-id>/<tool-name>/<key-hash>` | `application/json` | Authorized persisted outcome for uncertainty recovery |
+| `riffdb://commit/<sequence>` | `application/json` | Redacted commit record |
+| `riffdb://provenance/<provenance-id>` | `application/json` | Actor, agent session, source, approval, contract, and affected aggregates |
+| `riffdb://projection/<lineage>/<projection-id>/status` | `application/json` | Lifecycle, frontier, lag, and error state |
 | `riffdb://server/health` | `application/json` | Health and readiness information |
+
+Concrete active-contract, contract-version, entity-schema, command-plan,
+command-documentation, exact commit, exact provenance, projection-status, and
+health descriptors appear only in `resources/list`. The outcome descriptor
+appears only in `resources/templates/list` as
+`riffdb://outcome/{principal}/<lineage>/<command-id>/<tool-name>/{key_hash}`;
+commit/provenance class descriptors appear only there as
+`riffdb://commit/{sequence}` and
+`riffdb://provenance/{provenance_id}`. A descriptor never appears on both
+surfaces, a template grants no content authority, and an expanded URI must pass
+the same canonical parser. `resources/list` calls full `DiscoverResources` with
+limit 500 and kind `Concrete`; `resources/templates/list` uses kind `Template`;
+compact watchers use kind `All`. The exact 16-byte service cursor is presented
+unchanged except as 32 lowercase hexadecimal characters and cannot cross kind,
+representation, limit, or operation.
+
+Lineage/principal bytes are exact checked UTF-8, with only non-unreserved bytes
+percent-encoded using uppercase two-digit escapes; parsers reject lowercase or
+malformed escapes, escaped unreserved bytes, invalid UTF-8, and normalization.
+Numeric IDs/version/sequence are nonzero unsigned canonical decimal with no
+sign or leading zero. Stable entity/command/projection IDs, rather than display
+names, bind targets. Tool name is the exact compiler-owned ADR-0020 ASCII name.
+Every locator has lowercase scheme/authority, the exact segment count, and no
+port, user info, empty segment, trailing slash, query, or fragment. Producers
+emit only canonical text; parsers never repair it. Non-provenance locators are
+at most 2,048 bytes, with the outcome locator's tighter exact maximum 1,745
+bytes; the ADR-0024 provenance bound remains unchanged.
+
+`key-hash` is exactly 50 characters: canonical unpadded base64url of
+`u8 digest_scheme || u32_be(digest_key_id) || digest[32]`, with scheme 1 and a
+nonzero key ID. It is sensitive correlation data but not the raw idempotency key
+or a secret. Only the shared service mints a checked locator after durable
+identity resolution and terminal disclosure authorization. A locator read
+reconstructs the identity from trusted process context, authenticated principal,
+Global tenant, checked lineage/command ID, and digest tuple, performs one point
+lookup, then checks the stored historical plan's exact tool name before release.
+No adapter computes HMAC, receives digest-key material, scans records, or treats
+the URI as authority.
 
 `MCP-030` Resource list and content MUST be filtered by capability and field policy.
 
@@ -2692,9 +3028,25 @@ MCP resources provide application-controlled context. Resources are redacted by 
 
 `MCP-033` Resource reads MUST enforce bounded payload sizes and MAY return resource links to paginated detail instead of embedding large data.
 
+Every content read is service-mediated and reruns current authorization, audit,
+obligations, bounds, and redaction. Active contract uses `GetActiveContract`;
+version uses exact-identity `GetContractVersion`; entity schema uses one exact
+fresh full-discovery match; outcome uses locator-form
+`ResolveCommandOutcome`; commit/provenance/projection/health use respectively
+`GetCommit`, `TraceProvenance`, `GetProjectionStatus`, and `Health`. A command
+plan/documentation read first scans compact resources to exact end (at most
+three limit-500 calls and 1,024 accepted items), obtains the unique self-
+contained descriptor and fence, calls `ExplainCommand` under its exact
+lineage/version/source name, checks stable command identity, then requires a
+conditional `catalog_unchanged` result under that same fence before content
+release. It never joins through tool discovery or substitutes the active
+version. WP-140's separately reviewed resource-registry fixture freezes every
+descriptor-to-surface/URI/MIME/converter/subscription mapping and result golden.
+
 ## 12.7 Prompt templates
 
-Prompts are user-controlled MCP primitives and are not required for the first command vertical slice. The POC SHOULD add these once tool behavior is stable:
+Prompts are user-controlled MCP primitives and are not part of the POC
+capability or WP-140 acceptance. A later reviewed stage MAY consider:
 
 | Prompt | Purpose |
 |---|---|
@@ -2719,6 +3071,38 @@ active contract tools
 
 Tool visibility is not the authorization boundary. Every invocation MUST repeat authorization using current capability and policy state.
 
+After initialization, list-change notifications are emitted when the
+corresponding already-authorized visible fingerprint inventory changes; they do
+not depend on a client capability bit. Resource updates are emitted only for an
+explicitly subscribed exact URI. The subscribable v1 set is exactly active
+contract, command plan, projection status, and server health, with at most eight
+distinct URIs per session. Other resource kinds reject subscription. Repeating
+subscribe is idempotent; hidden/revoked resources are removed without exposing
+why.
+
+One bounded observer per session runs on injected five-second monotonic ticks
+for at most the 900-second session lifetime. It conditionally scans both compact
+inventories under the prior common presentation fence. On change, each scan
+uses limit 500, reaches exact end in at most three calls for at most 1,024
+accepted visible items, and retains only compact MCP-visible fingerprints. An
+exact 1,024-item inventory yields 500/500/24. A larger inventory may return up
+to 500 items on the third page but is rejected at item 1,025 or any cursor after
+item 1,024; no more than 1,024 fingerprints are retained. Cursor/fence/auth
+failure discards the entire refresh and restarts only at the next tick. A hidden-
+only semantic change produces no notification or count leak.
+
+A 32-permit server-wide semaphore bounds active observation passes; a task that
+cannot acquire immediately coalesces one due marker. Per session, delivery
+retains at most one tools-list marker, one resources-list marker, and one latest
+marker for each of eight subscribed URIs. Output backpressure replaces markers
+rather than blocking or growing a queue, and current authorization/content is
+rerun before emission. Watcher work never refreshes idle time. Across one
+session, watcher work is bounded to 180 ticks, 2,520 background service calls,
+at most 1,500 returned/structurally validated compact items per inventory/tick,
+and at most 1,024 retained items per inventory/tick. It retains no snapshot,
+storage transaction, capability proof, cursor between ticks, or unrestricted
+content.
+
 ## 12.9 Progress and cancellation
 
 Long-running MCP operations SHOULD send progress when the client provided a progress token:
@@ -2731,16 +3115,32 @@ Long-running MCP operations SHOULD send progress when the client provided a prog
 
 Progress values MUST be monotonic. Progress notifications stop after completion or cancellation.
 
+Progress is sent only when negotiated and the client supplied a token. Values
+are finite, nonnegative, monotonic safe integers, come only from service-observed
+milestones/bounded completed units, and are capped at 32 notifications per
+operation. Request-scoped adapter polling, when genuinely required, permits one
+in-flight service call, at most 32 observations, no faster than 100 milliseconds
+under an injected clock, and at most 30 seconds overall. Command execution,
+deployment, projection waits, and cursor scans do not gain polling loops merely
+to populate progress. These request bounds are distinct from the session
+observer in Section 12.8.
+
 Cancellation behavior follows Section 9.7. For a mutating command, the MCP adapter MUST document that cancellation after commit submission may not prevent the commit. The idempotency outcome resource is the recovery mechanism.
 
 ## 12.10 Pagination
 
 MCP list and scan operations use opaque cursor pagination.
 
-- Cursor content is signed or server-stored; clients MUST NOT be able to alter partition, policy, or filter state.
+- The API-neutral cursor is exactly 16 opaque server-stored random bytes and MCP
+  presents it only as exactly 32 lowercase hexadecimal characters. Prefixes,
+  hyphens, uppercase, whitespace, percent encoding, odd length, and base64 reject.
+  Adapters encode/decode this spelling only and never inspect state.
 - Default page size: 50.
 - Maximum page size: 500 for administrative commit scans and lower for entity data when policy requires.
-- Cursors include active contract version and expire after configuration-defined time.
+- Cursor state binds principal/capability context, operation, target,
+  representation/resource kind, normalized request/policy/catalog fences and
+  lower continuation, and expires after the fixed 300-second POC lifetime.
+  Clients cannot alter or transfer those bindings.
 
 ## 12.11 MCP security requirements
 
@@ -2757,6 +3157,34 @@ MCP list and scan operations use opaque cursor pagination.
 | `MCP-048` | HTTP deployment MUST reject tokens not audience-bound to the canonical MCP resource server. |
 | `MCP-049` | The server MUST sanitize user-controlled strings included in Markdown or text results to prevent misleading instruction injection in generated operational summaries. |
 
+The injected monotonic rate limiter has two exact default token buckets:
+pre-authentication HTTP peer-IP burst 32/refill 8 per second, and
+post-authentication `(transport source, principal, policy tenant, operation or
+compiler-owned tool)` burst 16/refill 4 per second. At most 4,096 total buckets
+are retained; only keys idle at least 300 seconds may be removed, and capacity
+exhaustion denies rather than evicts an active key. Monotonic regression,
+arithmetic/provider failure, and capacity exhaustion fail closed. Forwarding
+headers never select the peer key. Configuration may lower but not raise these
+limits.
+
+One inbound MCP message is at most 1,048,576 bytes. One complete outbound
+JSON-RPC/SSE message, structured result, resource, or error including all
+wrappers is at most 4,194,304 bytes. First-party wrappers probe one excess byte
+before decode, reject over-limit HTTP `Content-Length` before collection, count
+chunked bodies, and fully stage/check a stdio frame before stdout. The private
+HTTP session/stream wrappers preflight the typed initialize and every post-ID SSE
+frame, and the outer body gate checks actual complete bytes before yielding any
+byte of that frame. Compression is disabled. There are at most 128 live MCP
+sessions, 256 in-flight requests server-wide, and eight in-flight requests per
+session. Rejection allocates no service request, cursor, observer, subscription,
+or progress task.
+
+Both binaries apply a non-overridable tracing filter that discards target `rmcp`
+and every `rmcp::` descendant because the pinned SDK may log complete protocol
+values/session IDs. Only separately constructed bounded safe RiffDB events are
+emitted; protocol stdout contains no diagnostics. A framing or rmcp/SSE logging
+change is an SDK-upgrade review trigger.
+
 For the POC HTTP transport, the protected resource identity is a configured canonical URI ending in `/mcp`; it MUST NOT be synthesized from the request `Host` header. The stdio bridge connects to `riffdbd` only through gRPC and therefore uses a capability explicitly carrying the configured gRPC audience. Tests MAY inject the API-neutral service in process, but production stdio has no in-process or storage path.
 
 ADR-0009 bootstrap is the sole principal-less durable-audit exception and is
@@ -2770,9 +3198,34 @@ data.
 
 - Run the official MCP Inspector against stdio and Streamable HTTP variants.
 - Add protocol initialization, tool listing, resource listing, schema, pagination, cancellation, and progress integration tests.
-- Pin `rmcp` minor versions in the workspace lockfile.
+- Pin exact `rmcp` 2.2.0 plus the reviewed feature set in the workspace lockfile.
 - Maintain an internal adapter trait so a future MCP protocol revision can coexist during migration.
-- The POC MUST report its supported protocol version and server implementation metadata accurately during initialization.
+- The POC MUST report exactly protocol `2025-11-25`, implementation name
+  `riffdb`, and implementation version equal to the exact `riffdb-api-mcp`
+  package version (`0.1.0` for the POC fixture), plus only the two capabilities
+  in Section 12.3.
+
+Each transport owns a typed negotiation wrapper outside rmcp `serve_server`.
+The wrapper permits the one pre-initialization `ping`; HTTP handles that exact
+bounded request itself after route/origin/authority/rate/auth/body checks and
+returns HTTP 200 with the same checked ID, `{}` result, `application/json`,
+`Cache-Control: no-store`, no session, and no service call. Other methods,
+notifications, missing/invalid IDs, parameters, batches, and duplicate fields do
+not enter that path. Stdio passes the checked ping through rmcp.
+
+For initialize, exact `2025-11-25` passes unchanged. Any other syntactically
+valid offer is replaced only in the typed rmcp input with the fixed private
+`riffdb-unsupported` sentinel, which tests prove is unknown to the pinned SDK;
+rmcp then selects the configured baseline fallback. Malformed input rejects. An
+initialization protocol header may be absent, but when present it occurs once
+and equals the original body offer and is rewritten consistently. After
+initialization every HTTP POST/GET/DELETE requires exactly one
+`MCP-Protocol-Version: 2025-11-25`; absence, duplication, or another value
+rejects before rmcp. A syntactically valid different offer therefore receives
+the RiffDB baseline, and a client unable to use it disconnects. RiffDB never
+advertises or enables another version. The pinned SDK's three older-known and
+one newer-known offers, plus an unknown-newer offer, are explicit fixtures; a
+changed registry/sentinel/fallback ordering requires review.
 
 ---
 
@@ -3345,13 +3798,38 @@ query/status/frontier/lifecycle/page messages; WP-130 owns total wire conversion
 |---|---|
 | `riffdbd` | Database server, gRPC API, optional loopback MCP HTTP endpoint, commit coordinator, projection worker, outbox worker, health and metrics. |
 | `riffdb` | Contract validation and deployment, capability administration, command invocation, entity and commit inspection, projection queries, backup and restore, demo orchestration. |
-| `riffdb-mcp` | Stdio MCP bridge that authenticates locally and invokes the shared `riffdbd` service. It contains no storage or command semantics. |
+| `riffdb-mcp` | Stdio MCP bridge that forwards one checked bearer presentation through the public gRPC client; `riffdbd` performs authentication. It contains no local authentication, storage, or command semantics. |
 
-The POC ships exactly these three binaries. Deterministic code generation, when needed, is a `riffdb contract generate` subcommand. Replay, durable inspection, and recovery helpers remain test-harness code in the POC; a privileged offline repair binary is deferred to Stage A and requires a separate authorization and audit design.
+The POC ships exactly these three binaries. WP-135's nested-workspace
+`riffdb-budget-public` is a long-lived comparison/evidence runner and is not a
+shipped RiffDB product binary. Deterministic code generation, when needed, is a
+`riffdb contract generate` subcommand. Replay, durable inspection, and recovery
+helpers remain test-harness code in the POC; a privileged offline repair binary
+is deferred to Stage A and requires a separate authorization and audit design.
+
+WP-150 implements exactly the 12 public command identities
+`contract.validate`, `contract.deploy`, `command.execute`, `command.outcome`,
+`entity.get`, `commit.show`, `projection.query`, `capability.bootstrap`,
+`capability.create`, `capability.revoke`, `server.health`, and `demo.budget`.
+Every database operation uses `riffdb-client-rust` against the configured
+loopback gRPC endpoint. CLI-local work is limited to bounded argument/config/
+input parsing, checked rendering, bootstrap generation, crash-safe credential
+retention, and direct launch of the accepted public budget runner. It never
+opens redb, instantiates a service, authenticates a principal, evaluates policy,
+compiles/executes a command internally, or constructs a semantic result.
+
+Backup and restore remain mandatory for POC exit but are not WP-150 commands.
+WP-155 is reserved after WP-150 and before WP-200 for a separately human-
+reviewed API-neutral/public-protocol/client/CLI design covering authorization,
+audit, quiescence/offline operation, destructive confirmation, integrity before
+readiness, exact dependencies/paths, and process evidence while reusing WP-070's
+format. Until that decision is accepted, there is no WP-155 registry entry,
+WP-200 edge, hidden file-copy implementation, redb bypass, or invented RPC.
 
 ## 16.2 Configuration precedence
 
-Configuration precedence, highest first:
+Server configuration precedence, and any setting without a narrower accepted
+interface, is highest first:
 
 1. Explicit CLI flags.
 2. Environment variables prefixed `RIFFDB_`.
@@ -3359,6 +3837,36 @@ Configuration precedence, highest first:
 4. Built-in safe defaults.
 
 Secrets MUST NOT be accepted from the TOML file unless the file mode and deployment environment satisfy a documented local-development policy. Production-grade secret delivery is an MVP concern.
+
+The WP-150 client configuration instead has exactly four fields and this per-
+field precedence:
+
+| Field | Flag | Environment | TOML | Default |
+|---|---|---|---|---|
+| Endpoint | `--endpoint` | `RIFFDB_ENDPOINT` | `client.endpoint` | `http://127.0.0.1:7443` |
+| Output | `--output` | `RIFFDB_OUTPUT` | `client.output` | `human` |
+| Attempts | `--max-attempts` | `RIFFDB_MAX_ATTEMPTS` | `client.max_attempts` | `3` |
+| Credential file | `--credential-file` | `RIFFDB_CREDENTIAL_FILE` | `client.credential_file` | absent |
+
+A present empty/invalid higher-precedence value rejects rather than falling
+through. Output is exactly `human | json`; attempts are canonical decimal
+`1..=10`. TOML is read only from `--config`, then `RIFFDB_CONFIG`, then absent;
+there is no directory discovery. Its only table is optional `[client]` with only
+the four optional keys above; input is complete UTF-8 at most 65,536 bytes and
+unknown/duplicate/wrong-type items reject. Raw credentials/bootstrap documents
+are forbidden. Only `RIFFDB_CONFIG`, `RIFFDB_ENDPOINT`, `RIFFDB_OUTPUT`,
+`RIFFDB_MAX_ATTEMPTS`, `RIFFDB_CREDENTIAL_FILE`, and
+`RIFFDB_CAPABILITY_TOKEN` are read; other `RIFFDB_*` variables are ignored.
+
+All CLI paths are nonempty, NUL-free, and at most 4,096 platform bytes; argv
+paths need not be UTF-8. The endpoint is at most 512 ASCII bytes and exactly
+lowercase `http://<loopback-IP-literal>:<port-1..65535>` with no DNS, user info,
+path, query, fragment, whitespace, implicit port, TLS, or normalization. Contract
+source, CLI JSON, and general stdin are streamed with a 1,048,576-byte limit and
+one-byte excess probe; configuration and the exact 132-byte bootstrap document
+retain tighter bounds. The checked terminal model and fully staged rendering
+are each at most 4,194,304 bytes; any oversize/rendering failure leaves stdout
+empty.
 
 Representative configuration:
 
@@ -3528,11 +4036,90 @@ riffdb command outcome AllocateBudget --idempotency-key 81e6...
 riffdb entity get Budget --key organization_id=... --key fiscal_year=2026
 riffdb commit show 42
 riffdb projection query BudgetUtilizationDaily --after 42 --input query.json
-riffdb capability create --profile local-agent --expires-in 8h
 riffdb server health
 ```
 
 CLI JSON output MUST be stable enough for integration scripts. Human-formatted output is additive and MUST not replace a machine-readable mode.
+
+Machine mode is `--output json` and emits exactly one compact UTF-8 JSON object
+plus LF, with no other stdout bytes. Its closed success envelope and key order
+are `schema`, `command`, `ok`, `result`; the error envelope replaces only the
+last key with `error`. `schema` is exactly `riffdb.cli.output/v1`, `command` is
+the exact lowercase dotted command identity, `ok` is Boolean, and exactly one
+of result/error exists. Each command owns a closed DTO and never serializes generated
+Protobuf, unrestricted maps, arbitrary server text, or Rust `Debug`. Human
+output is explicitly unstable. WP-150 must first submit the complete clap
+grammar, configuration examples, exit-code registry, closed result/error DTOs,
+and all command/terminal-branch JSONL goldens as an interface-only PR for
+separate human acceptance; ADR-0041 accepts the common envelope/scalar rules,
+not those not-yet-authored exact command fixture bytes.
+
+In CLI JSON, every `u64`/`i64` uses a canonical decimal string, smaller integers
+use JSON numbers, UUIDs are lowercase hyphenated, typed hashes are fixed
+lowercase hex, and other bytes use padded standard base64. Optional absence
+omits a key; explicit RiffDB null remains tagged; enums are checked lowercase
+snake case; object/repeated ordering follows the closed DTO and semantic order.
+RiffDB Values use the exact ADR-0041 closed `type`-tagged forms for null, bool,
+i64, u64, decimal, money, string, bytes, uuid, date, timestamp, enum, list, and
+record. Record input fields have a nonzero ID, bounded source name, or both, and
+the shared service resolves/equates them. No untagged native JSON, float,
+alternate byte spelling, unknown property, truncation, or generic recursive
+conversion is allowed.
+
+A normal credential comes from exactly one of
+`RIFFDB_CAPABILITY_TOKEN` or the resolved protected credential file. There is
+no raw-token flag, positional argument, TOML value, stdout/stderr echo, or shell
+construction. File input uses only the public-client loader. The environment
+value is checked as one exact 43-byte presentation, promptly moved into a
+zeroizing buffer and redacted `BearerCredential`, and never decoded locally.
+
+Bootstrap generation/input uses only isolated
+`riffdb_auth::bootstrap_secret`, bounded stdin or protected file, and the exact
+132-byte document. `capability.bootstrap` may add `--bearer-output`; it writes
+the same retained 43-byte token presentation, never derives another. Generation
+mode exclusively creates, file-syncs, closes, directory-syncs, and protected-
+rereads both requested outputs before RPC. Existing-input mode never rewrites
+its source and applies that process only to an optional bearer output. Normal
+capability create likewise requires an exclusive protected output, completes
+file/directory durability and a public-loader presentation comparison before
+reporting success, and never prints the one-time token. Failure leaves retained
+files for explicit operator handling, performs no delete/overwrite, and claims
+no recovery from a lost create response.
+
+CLI retries use only the three WP-137 helpers with explicit `max_attempts`
+including the first call. Every attempt has a fresh outer RequestId while
+command/idempotency input, bootstrap document/ID/token, or normal-create
+CapabilityId stays identical. It never retries definitive failures, invents a
+new key/capability, refreshes expected versions/cursors/query input, parses Tonic
+status, or treats a local file as proof of server success.
+
+The comparison command is exactly
+`riffdb demo budget --runner <path> --case
+sequential|contention|same_key_replay`. It requires a resolved credential-file
+path and directly launches the upstream `riffdb-budget-public` protocol from
+WP-135 with no shell, empty environment, closed stdin, independent 4,096-byte
+stdout/stderr caps, and a fixed 180-second kill-and-reap deadline. Only the
+closed one-line/exit combinations in ADR-0041 are accepted; child output is not
+relayed. The runner itself accepts exactly the eight ordered arguments for
+protocol, case, endpoint, and protected credential path, emits the exact
+`riffdb.budget.public-run/v1` success line or fixed failure stderr/exit, and uses
+only public gRPC plus the shared workload oracle.
+
+```text
+riffdb-budget-public --protocol riffdb.budget.public-run/v1 \
+  --case sequential|contention|same_key_replay \
+  --endpoint http://<literal-loopback-ip>:<nonzero-port> \
+  --credential-file <protected-43-byte-file>
+```
+
+Success writes exactly one compact line with ordered keys `schema`, `adapter`,
+`case`, `workload_version`, `status`, where the fixed values are respectively
+`riffdb.budget.public-run/v1`, `riffdb-public-grpc-v1`, selected case, numeric
+`1`, and `passed`, then exits 0. Checked API/oracle/preflight failure writes no
+stdout, exact stderr `riffdb budget public run failed\n`, and exits 1. Invalid
+invocation/configuration writes no stdout, exact stderr
+`riffdb budget public invocation invalid\n`, and exits 2. Any other exit/signal
+or output combination is invalid runner behavior.
 
 ---
 
@@ -3782,6 +4369,14 @@ The POC MUST support an offline consistent backup command. The backup includes:
 
 Restore MUST refuse to overwrite a non-empty directory without an explicit destructive flag. A restored database MUST pass an integrity scan before readiness.
 
+WP-070 owns the durable backend mechanics. The required operator-facing
+commands are reserved to separately reviewed WP-155 after WP-150 and before
+WP-200; they MUST use an API-neutral, authorized, audited, quiescent/offline
+public protocol and client boundary and MUST NOT expose redb copying through
+WP-150. WP-155 must freeze destructive confirmation and restored-readiness
+evidence before it is registered and made a WP-200 dependency. This reservation
+does not defer the POC-exit requirement itself.
+
 Online backup, point-in-time recovery, incremental backup, encrypted backup, and remote object storage are MVP work.
 
 ## 18.6 Release artifacts
@@ -3838,11 +4433,15 @@ Agents MUST NOT reinterpret normative requirements from issue summaries. This sp
 12. `Cargo.lock` path authority permits generated root-workspace dependency
     resolution only; it does not approve a new crate, version, feature, build
     script, native/unsafe surface, or license without its ordinary review.
-13. WP-020, the exact ADR-0012 WP-010 public-error carve-out, WP-065, and WP-127
-    are the only schema-owner phases. The carve-out may add no request, result,
-    service, RPC, or durable-record field. WP-060/WP-070 cannot guess durable
-    fields, and WP-120/WP-130 cannot guess public fields or move service
-    conversion into `riffdb-proto`.
+13. WP-020, the exact ADR-0012 WP-010 public-error carve-out, WP-065, WP-127,
+    and the exact narrow WP-137 additive public-protocol bridge are the only
+    schema-owner phases. WP-137 owns only ADR-0040's reviewed six RPCs/messages,
+    two locator fields, two operation-schema sources, generated artifacts, and
+    compatibility fixtures; it owns no durable, contract/compiler/bundle, or
+    unreviewed public field. The carve-out may add no request, result, service,
+    RPC, or durable-record field. WP-060/WP-070 cannot guess durable fields, and
+    WP-120/WP-130 cannot guess public fields or move service conversion into
+    `riffdb-proto`.
 
 ## 19.3 Work-package dependency graph
 
@@ -3860,27 +4459,28 @@ The graph uses hard dependencies. Parallel work is encouraged only after shared 
 | `WP-030` | Contract syntax | WP-010 | Logos lexer, LALRPOP grammar, source spans, AST | Parser corpus, diagnostics, fuzz smoke pass |
 | `WP-040` | Typed IR and compiler | WP-010, WP-030 | Name resolution, type checker, invariant/outcome/dependency plans, JSON Schema | Budget contract compiles; invalid corpus rejects with stable diagnostics |
 | `WP-045` | Budget comparison baseline | WP-040 | Shared workload/oracle and isolated PostgreSQL implementation | Deterministic oracle and PostgreSQL correctness preflight pass |
-| `WP-050` | Contract catalog | WP-020, WP-040, WP-060 | Bundle lookup, catalog state semantics, compatibility report, bounded active-lineage materialization proof, opaque command `Ready`/resource evidence and pure current-recheck API, same-session historical IR validation proof, and typed expected-version deployment operation for later coordinator routing | Exact chain/count/byte/proof boundaries, returned-evidence retention, raw-current recheck, null-fill masks, catalog semantics, exact-end historical validation, and atomic storage-operation tests pass; final orchestration evidence is WP-100/WP-120 |
-| `WP-060` | Storage semantic API | WP-010, WP-020, WP-040 | Owned snapshots, dependencies, `EvaluatedCommand`/`CommitIntent`, the pre-sequence write-plan/capacity type-state, exact `EventHash` semantics, structural evidence/type-state ports, semantic durable DTOs, typed persistence transitions including audit/capability/projection, and in-memory reference implementation | Reference-model, exact-end startup type-state, pre-sequence ordering/capacity, event-hash, and semantic conformance tests pass |
-| `WP-065` | Durable semantic record schema | WP-020, WP-060 | Exact 26-record `riffdb.storage.v1` registry including standalone durable events, canonical envelopes and per-class upper-bound proofs, exact event-hash goldens, descriptors, schema hashes, wire validation, historical registrations, and checked storage-owned Proto mappings | Proto/storage size/hash tests and clean deterministic regeneration pass |
-| `WP-070` | Redb storage engine | WP-020, WP-060, WP-065 | Frozen canonical tables/keys including standalone events, ordered coordinator write transaction with pre-sequence reservation and pre-stage canonical-envelope checks, atomic records, indexes, capability/audit/projection persistence, complete structural evidence scan, `StructurallyOpened` dormant ports, recovery, SHA-256 backup, and dependency-free benchmarks | Storage properties and core process recovery matrix pass without claiming IR-aware readiness |
-| `WP-075` | Fjall semantic comparison | WP-060, WP-070 | Isolated non-production Fjall adapter and unchanged conformance/benchmark harness | Conformance report and reproducible evidence pass |
+| `WP-050` | Contract catalog | WP-020, WP-040, WP-060 | Bundle lookup, catalog state semantics, compatibility report, bounded active-lineage materialization proof, opaque command `Ready`/resource evidence and pure current-recheck API, same-session historical IR validation, exact V1/V2 historical index partition derivation/migration context, and typed expected-version deployment operation | Exact chain/count/byte/proof boundaries, returned-evidence retention, raw-current recheck, null-fill masks, catalog semantics, positional root-prefix derivation, migration instruction coverage, exact-end validation, and atomic storage-operation tests pass; final orchestration evidence is WP-100/WP-120 |
+| `WP-060` | Storage semantic API | WP-010, WP-020, WP-040 | Owned snapshots, dependencies, `EvaluatedCommand`/`CommitIntent`, fields-private encoded aggregate-cap result, exact `EventHash`, codec-bound migration-row evidence/type-state and linear startup ports, semantic durable DTOs, typed persistence transitions, and in-memory reference implementation | Reference-model, exact-end/migration startup type-state, pre-sequence ordering/capacity, event-hash, and semantic conformance tests pass |
+| `WP-065` | Durable semantic record schema | WP-020, WP-060 | Exact 27-readable/26-writable `riffdb.storage.v1` registries with isolated `StoredIndexEntryV2`, preserved 26-record fixtures, canonical envelopes/V2 bounds, migration evidence factories, descriptors/hashes/wire validation, and checked storage-owned mappings | Proto/storage registry, migration codec, size/hash, decoder-fuzz, and clean deterministic regeneration tests pass |
+| `WP-070` | Redb storage engine | WP-020, WP-060, WP-065 | Frozen canonical tables/keys, ordered coordinator transaction, exact session-bound migration scans and atomic V1-to-V2 compare/rewrite, dormant ports/fresh validation, recovery, SHA-256 backup, and dependency-free benchmarks | Storage properties, memory/redb migration conformance, bounded pages, restart failpoints, and core process recovery pass without claiming IR-aware readiness |
+| `WP-075` | Fjall semantic comparison | WP-060, WP-070 | Isolated non-production Fjall adapter and unchanged conformance/benchmark harness against the accepted V2/migration interface | Conformance report and reproducible evidence pass, or explicitly records an adapter conformance failure without weakening RiffDB |
 | `WP-080` | Deterministic command runtime | WP-040, WP-060 | Shared pure expression evaluator plus predicate, invariant, postcondition, and commit-check evaluation; lineage-normalized snapshot IR interpreter that never blindly fills omissions, fixed logical time and budget, dependencies, `EvaluatedCommand`, and closed post-snapshot execution faults; no contract state-machine IR/execution, provenance, or command randomness | Differential tests against model and missing-field fail-closed fixtures pass |
 | `WP-090` | Conflict manager | WP-010 | Canonical multi-key exclusive acquisition, cancellation, metrics | Loom/Shuttle suites pass |
-| `WP-100` | Commit coordinator and idempotency | WP-050, WP-070, WP-080, WP-090, WP-110 | Admission reservation, orchestration of catalog-owned readiness/resource evidence and current rechecks, revalidation, explicit process-local production durability selection, mutation-affected epoch planning, pre-sequence capacity reservation, verified sequence-derived event/record graph, atomic outcome/event/provenance/outbox-intent commit, and typed control-plane operations | Dependency/evidence/recheck ordering, overflow terminalization, explicit-durability construction, concurrency, pre-sequence failpoints, core process crash, and lost-response replay tests pass |
+| `WP-100` | Commit coordinator and idempotency | WP-050, WP-070, WP-080, WP-090, WP-110 | Admission reservation, catalog readiness/rechecks, explicit durability, mutation-affected epochs, pre-sequence capacity reservation including exact V2 aggregate-cap classification, verified sequence-derived graph, atomic outcome/event/provenance/outbox commit, and typed control-plane operations | Dependency/evidence/recheck ordering, origin-specific capacity mapping, fatal codec cases, explicit durability, concurrency, pre-sequence failpoints, crash, and replay tests pass |
 | `WP-110` | Authorization and capability service | WP-010, WP-070 | Opaque capability records, policy decisions, obligations, and typed create/revoke operations for later coordinator routing | Policy, digest, revocation-state, and fail-closed tests pass; final non-bypass evidence is WP-120 |
 | `WP-120` | API-neutral application service | WP-050, WP-080, WP-100, WP-110 | Six operation-specific service traits, checked contexts/DTOs, pure input/partition/conflict preparation with fail-closed pre-admission arithmetic, catalog-lineage limit validation mapping, current policy, audit orchestration, obligations, bounded reads/waits/streams, and server-side cursors | In-process end-to-end, exact root limit-error mapping, and no-storage-bypass tests pass |
-| `WP-125` | Service comparison adapter | WP-045, WP-120 | Budget workload adapter over the API-neutral service | Shared oracle passes against in-process RiffDB |
+| `WP-125` | Service comparison adapter | WP-045, WP-120 | Budget workload adapter over the API-neutral service, consuming only V2-only `Ready`/`Clean` startup in its fixture | Shared oracle passes against in-process RiffDB and crossed/migration startup outcomes reject |
 | `WP-127` | Public Protobuf API completion | WP-020, WP-120 | Complete all remaining supported `riffdb.v1` messages, preserve the WP-010 execution-failure slice, and freeze descriptors, schema hashes, wire validation, and golden/client fixtures; no service conversion code | Proto tests and clean deterministic regeneration pass |
-| `WP-130` | gRPC server and Rust SDK | WP-020, WP-120, WP-127 | Tonic services/client plus the minimal production redb/catalog/commit/auth/policy/service composition, concrete ID/clock/cursor/digest providers, explicit code-level `sync` coordinator value without constructor/backend fallback, staged startup/lifecycle, and real restart proof | Public API and component-graph conformance plus the child-process temporary-redb bootstrap/deploy/budget/restart suite pass |
-| `WP-135` | Public SDK comparison adapter | WP-125, WP-130 | Budget comparison through the public Rust SDK/gRPC path | Shared oracle passes through the canonical client path |
-| `WP-140` | Native MCP interface | WP-040, WP-120, WP-130 | `rmcp` stdio-over-gRPC and HTTP adapters, dynamic tools/resources, schema results, progress/cancellation | MCP conformance and generated-tool tests pass |
-| `WP-150` | CLI and local developer flow | WP-130 | `riffdb`, config, local token flow, JSON/human output | Acceptance steps executable without internal APIs |
+| `WP-130` | gRPC server and Rust SDK | WP-020, WP-120, WP-127 | Tonic services/client plus minimal production composition, V2-only post-migration startup join, concrete ID/clock/cursor/digest providers, explicit code-level `sync`, staged lifecycle, and real restart proof | Public API/component-graph conformance plus child-process temporary-redb bootstrap/deploy/budget/restart pass |
+| `WP-137` | Public gRPC MCP parity bridge | WP-130 | Exact six-RPC/22-RPC public extension, conditional discovery and operation schemas, locator-form outcome parity, process generation, public-client methods/retries/error view/protected loader, and compatibility artifacts | Human-accepted schema bytes; descriptor/wire generation, all conversions/client round trips, locator parity, retry/credential, fuzz, and architecture tests pass |
+| `WP-135` | Public SDK comparison adapter | WP-125, WP-130, WP-137 | Public gRPC budget adapter plus exact `riffdb-budget-public` runner and `riffdb.budget.public-run/v1` process protocol | Shared oracle and isolated public-runner process fixtures pass through the canonical client path |
+| `WP-140` | Native MCP interface | WP-040, WP-120, WP-130, WP-137 | Pinned-rmcp stdio-over-gRPC and hosted-HTTP adapters, exact dynamic/fixed tools and resources, schemas, sessions, observers, rate/bounds, progress/cancellation | Separately accepted fixed/resource fixture bytes, MCP conformance, parity, authorization, generated-tool, limit, and dependency tests pass |
+| `WP-150` | CLI and local developer flow | WP-130, WP-135, WP-137 | Public-only `riffdb`, exact bounded configuration/credentials/retries, checked budget runner, and reviewed JSONL/human output | Interface-only fixture acceptance and all public acceptance operations execute without internal APIs |
 | `WP-160` | Durable outbox | WP-100, WP-120 | Event scanner, delivery state, test connector, retry and duplicate simulations | Crash and duplicate-delivery tests pass |
 | `WP-170` | Projection core | WP-050, WP-100, WP-120 | Catalog-normalized event consumers, count/sum state, durable frontier, rebuild, and read-after-sequence query | Ancestor-event materialization, prefix, restart, rebuild, and frontier properties pass |
 | `WP-180` | Observability and diagnostics | WP-120 | Tracing, metrics, health, explain output, redaction | Required telemetry present without sensitive labels |
 | `WP-185` | Server composition | WP-130, WP-140, WP-160, WP-170, WP-180 | Extend the runnable WP-130 `riffdbd` graph with MCP HTTP, outbox, projection, observability, and derived health without replacing P1 startup/lifecycle providers | Extended composition tests pass while retaining the WP-130 restart proof |
-| `WP-190` | Integrated crash harness | WP-070, WP-100, WP-160, WP-170, WP-185 | Named failpoints, process controller, recovery assertions | Full cross-component failpoint matrix passes |
+| `WP-190` | Integrated crash harness | WP-070, WP-100, WP-160, WP-170, WP-185 | Named failpoints, process controller, recovery assertions including synchronized post-commit/pre-response TCP loss and process termination/restart | Full cross-component failpoint matrix and same-key public replay identity/uniqueness assertions pass |
 | `WP-200` | POC acceptance and release | All POC packages | One-command demo, benchmark report, security notes, release artifacts | POC-001 through POC-010 signed off |
 
 WP-045, WP-075, WP-125, and WP-135 are evidence tracks rather than dependencies of the production semantic kernel. They may not add PostgreSQL or Fjall dependencies to the main workspace. WP-200 consumes their reports and runner, but a failure in a comparison implementation does not weaken or redefine RiffDB semantics.
@@ -3903,12 +4503,18 @@ These are dependency waves, not schedule commitments.
 | J | WP-120 |
 | K | WP-125, WP-127, WP-160, WP-170, WP-180 |
 | L | WP-130 |
-| M | WP-135, WP-140, WP-150 |
-| N | WP-185 |
-| O | WP-190 |
-| P | WP-200 |
+| M | WP-137 |
+| N | WP-135, WP-140 |
+| O | WP-150 |
+| P | WP-185 |
+| Q | WP-190 |
+| R | WP-200 |
 
 Within a wave, agents MUST coordinate changes to shared types through interface PRs before parallel implementation PRs.
+
+WP-155 is a reservation, not a work-package registry entry or dependency wave.
+Its separately reviewed decision must add the complete package and make WP-200
+depend on it before final POC acceptance begins.
 
 ## 19.6 Human review triggers
 
@@ -4020,7 +4626,13 @@ The long-lived budget comparison workload, deterministic oracle, and PostgreSQL 
   ID/clock/cursor/digest providers, an explicit code-level `sync` coordinator
   durability value with no constructor/backend default, and staged same-session
   startup validation.
-- gRPC, Rust SDK, CLI.
+- gRPC, Rust SDK, and CLI, including WP-137's reviewed six-operation parity
+  bridge (exactly five services and 22 RPCs), operation schemas, locator-form
+  outcome recovery, protected credential loader, and operation-specific retry
+  helpers before MCP or CLI consume them.
+- WP-150's 12-command public developer flow and reviewed JSONL surface; public
+  backup/restore remains a mandatory POC-exit deliverable reserved to the
+  separately reviewed WP-155 boundary rather than being invented in P1.
 - WP-127-reviewed complete public schemas before gRPC service/wire conversion.
 - Atomic durable outbox intent as part of every applicable command commit; external dispatch remains P2.
 - Core transaction-path process failpoints and integrity scan for redb and the commit coordinator.
@@ -4041,9 +4653,9 @@ external outbox dispatch, projection workers, observability aggregation, or
 WP-185.
 
 **P1 work-package members:** WP-050, WP-065, WP-070, WP-090, WP-100,
-WP-110, WP-120, WP-127, WP-130, and WP-150. WP-065 and WP-127 are explicit
-gate members as well as hard dependencies of WP-070 and WP-130; they do not
-replace any previously listed member.
+WP-110, WP-120, WP-127, WP-130, WP-137, and WP-150. WP-065, WP-127, and
+WP-137 are explicit gate members as well as hard dependencies of later packages;
+they do not replace any previously listed member.
 
 ## 20.4 Stage P2 — native agent interface and projection proof
 
@@ -4176,7 +4788,7 @@ Risk owners are assigned in the project tracker. A risk may be closed only with 
 
 ## 22.1 Required ADRs
 
-Specification v0.16 records each ADR's current status. An Accepted record is
+Specification v0.28 records each ADR's current status. An Accepted record is
 authoritative; a Proposed record remains planning input until its exact text
 receives human review. Where this table and a work-package deadline differ, the
 earlier deadline governs unless a reviewed reconciliation changes both sources.
@@ -4190,7 +4802,7 @@ earlier deadline governs unless a reviewed reconciliation changes both sources.
 | `ADR-0005` | Accepted | Idempotency identity, pending reservation, persisted outcomes, and sequence semantics | WP-060 key freeze and WP-100 |
 | `ADR-0006` | Accepted | Phased single-owner Protobuf schemas, exact values, durable envelope, and compatibility policy | WP-020 schema implementation |
 | `ADR-0007` | Accepted | Shared policy-filtered application service, executor/read ports, cursors, and durable invocation audit for gRPC, MCP, CLI, and SDK | WP-100 coordinator boundary and WP-120 interface |
-| `ADR-0008` | Proposed | Native MCP resource URIs, audiences, stdio-over-gRPC model, cursor presentation, and remaining protocol fixtures | WP-140 fixtures |
+| `ADR-0008` | Accepted | Exact native MCP protocol/dependency/features, stdio-over-gRPC and stateful loopback HTTP topology, sessions/rate/bounds, canonical resources/outcome locators/cursors, schemas, discovery/watchers, and compatibility checkpoints | WP-137 and WP-140 interfaces |
 | `ADR-0009` | Accepted | Opaque HMAC-digested, environment/database/audience-bound POC capabilities with stable-ID records, digest lookup, key custody, and recoverable one-time bootstrap | WP-060 storage interface and WP-110 implementation |
 | `ADR-0010` | Accepted | Event-derived POC projection engine and frontier semantics | WP-070 projection persistence and WP-170 |
 | `ADR-0011` | Accepted | Canonical values, fixed-scale decimals, keys, serialization, domain-separated hashing, and the exact durable-event hash preimage | WP-010 semantic types and WP-060 event boundary |
@@ -4206,6 +4818,24 @@ earlier deadline governs unless a reviewed reconciliation changes both sources.
 | `ADR-0021` | Accepted | Exact lineage-scoped service-audit target variants/tags, canonical list ordering, and shared-service construction rule | Amended WP-010 audit vocabulary |
 | `ADR-0022` | Accepted | Exact durable semantic Protobuf modules, 26-payload registry, field/tag/presence rules, canonical-wire validation, and storage-owned codec boundary | WP-065 implementation |
 | `ADR-0023` | Accepted | WP-100 commit-evaluator dependency, bounded reevaluation, audit-input inversion, provenance attempts, v1 empty covered values, late commit-check arithmetic, absent revoke, and no-transition audit semantics | WP-060 correction, WP-100/WP-110/WP-120 implementation, and WP-130/WP-200 evidence |
+| `ADR-0024` | Accepted | Canonical provenance resource locator and bounded redacted presentation | Provenance public presentation |
+| `ADR-0025` | Accepted | Bootstrap/auth-to-service consumer boundary, closed capability-create invocation, and production construction ownership | WP-120 service boundary |
+| `ADR-0026` | Accepted | Grammar-v1 tenant scope, two-stage authorization, outcome recovery, committed durability, and fail-closed incident source | WP-120 authorization/recovery implementation |
+| `ADR-0027` | Accepted | Conservative service response accounting, whole-item byte-fitting, oversize disposition, and response validation | WP-120 response boundary and WP-137 discovery extension |
+| `ADR-0028` | Accepted | Complete phase-zero public Protobuf inventory, tags/presence, validation, generation, and compatibility ownership | WP-127 public schema freeze |
+| `ADR-0029` | Accepted | Structural public key envelopes followed by service-owned schema-directed validation | WP-120 submitted keys |
+| `ADR-0030` | Accepted | Capability-partition startup evidence, catalog validation, ordering, and exact-end coverage | WP-050/WP-060/WP-070 startup |
+| `ADR-0031` | Accepted | Structurally submitted command values and service-owned schema materialization | WP-120 input boundary |
+| `ADR-0032` | Accepted | Same-session retained metadata handoff for lifecycle and readiness | WP-130 startup composition |
+| `ADR-0033` | Accepted | First-durable-commit notification publication through a least-authority sink | WP-100/WP-130 subscription composition |
+| `ADR-0034` | Accepted | Health-only staged application-service activation and move-only authority | WP-130 startup routing |
+| `ADR-0035` | Accepted | Atomic authoritative index/commit scan fences and explicit before-first state | WP-070/WP-120 scans |
+| `ADR-0036` | Accepted | Structural public query components and service-owned schema materialization | WP-120 query boundary |
+| `ADR-0037` | Accepted | Exact foundational public-error/type dependencies for the Rust SDK | WP-130/WP-137 client |
+| `ADR-0038` | Accepted | Partition-filtered authoritative index scans, V2 semantic destination, and restartable offline migration requirement | WP-050 through WP-130 correction |
+| `ADR-0039` | Accepted | Isolated V2 descriptor, 27-readable/26-writable registries, codec/session-bound evidence, historical partition derivation, linear migration, and narrow capacity classification | WP-050 through WP-130 implementation and WP-190/WP-200 evidence |
+| `ADR-0040` | Accepted | Six-RPC public parity bridge, conditional discovery/fences, operation schemas, locator outcome parity, server generation, public-client helpers, and WP-137 | WP-137 before WP-135/WP-140/WP-150 |
+| `ADR-0041` | Accepted | Public-only CLI dependencies/credentials/retries/configuration/JSONL, exact budget runner, package sequencing, and separately reviewed WP-155 reservation | WP-135, WP-137, and WP-150 interfaces |
 
 ## 22.2 Decisions to resolve before implementation reaches the named gate
 
@@ -4428,11 +5058,14 @@ Representative structured result:
   "status": "committed",
   "commit_sequence": "42",
   "contract_version": 1,
+  "plan_hash": "f63b14d3341eb0f8dd847f577994ded6372535ca4d71ec96dc6f20d9a3f9937a",
   "outcome": {
     "type": "Allocated",
     "remaining": "20.00"
   },
-  "provenance_uri": "riffdb://provenance/019bf6aa-a640-7de6-89c9-8a7f70bbbd23"
+  "provenance_uri": "riffdb://provenance/019bf6aa-a640-7de6-89c9-8a7f70bbbd23",
+  "durability_mode": "sync",
+  "outcome_uri": "riffdb://outcome/agent_01/legalspend/2/riffdb.cmd.legalspend.allocatebudget/AQAAAAEAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
 }
 ```
 
@@ -4532,6 +5165,9 @@ service ContractService {
   rpc ExplainCommand(ExplainCommandRequest) returns (ExplainCommandResponse);
   rpc DeployContract(DeployContractRequest) returns (DeployContractResponse);
   rpc GetActiveContract(GetActiveContractRequest) returns (GetActiveContractResponse);
+  rpc GetContractVersion(GetContractVersionRequest) returns (GetContractVersionResponse);
+  rpc DiscoverCommandTools(DiscoverCommandToolsRequest) returns (DiscoverCommandToolsResponse);
+  rpc DiscoverResources(DiscoverResourcesRequest) returns (DiscoverResourcesResponse);
 }
 
 service CommandService {
@@ -4543,12 +5179,14 @@ service QueryService {
   rpc GetEntity(GetEntityRequest) returns (GetEntityResponse);
   rpc ScanIndex(ScanIndexRequest) returns (ScanIndexResponse);
   rpc QueryProjection(QueryProjectionRequest) returns (QueryProjectionResponse);
+  rpc GetProjectionStatus(GetProjectionStatusRequest) returns (GetProjectionStatusResponse);
 }
 
 service CommitService {
   rpc GetCommit(GetCommitRequest) returns (GetCommitResponse);
   rpc ScanCommits(ScanCommitsRequest) returns (ScanCommitsResponse);
   rpc SubscribeCommits(SubscribeCommitsRequest) returns (stream CommitNotification);
+  rpc TraceProvenance(TraceProvenanceRequest) returns (TraceProvenanceResponse);
 }
 
 service AdminService {
@@ -4556,10 +5194,15 @@ service AdminService {
   rpc Stats(StatsRequest) returns (StatsResponse);
   rpc CreateCapability(CreateCapabilityRequest) returns (CreateCapabilityResponse);
   rpc RevokeCapability(RevokeCapabilityRequest) returns (RevokeCapabilityResponse);
+  rpc ListPendingOutboxDeliveries(ListPendingOutboxDeliveriesRequest) returns (ListPendingOutboxDeliveriesResponse);
 }
 ```
 
-This appendix intentionally repeats the five canonical services from Section 11.2. A sixth entity or projection service, or abbreviated RPC aliases, is not part of v0.6. Public messages MUST use stable field numbers, reserve removed fields, bound nested sizes, use the exact `Value` family in Section 11.3, and distinguish absent values from defaults when semantics require it.
+This appendix intentionally repeats the five canonical services and exact 22-RPC
+inventory from Section 11.2. A sixth service or abbreviated RPC alias is not
+part of v0.28. Public messages MUST use stable field numbers, reserve removed
+fields, bound nested sizes, use the exact `Value` family in Section 11.3, and
+distinguish absent values from defaults when semantics require it.
 
 ---
 
@@ -4590,7 +5233,10 @@ The implementation MUST prefer primary project documentation and pin reviewed ve
 
 1. Agentic OLTP Database — Concept Design, Draft, July 2026.
 2. Model Context Protocol specification, version 2025-11-25: architecture, lifecycle, tools, resources, transports, authorization, cancellation, and progress.
-3. Official Model Context Protocol Rust SDK (`rmcp`).
+3. Official Model Context Protocol Rust SDK (`rmcp`) exactly 2.2.0, with the
+   ADR-0008 feature, source, registry-fallback, framing/logging, build-script,
+   native, unsafe, cryptographic, license, advisory, and lock-graph review. Any
+   different real resolution requires renewed human review before merge.
 4. Rust release channel and Rust 1.97.0 release notes.
 5. Tokio asynchronous runtime documentation.
 6. Tonic gRPC implementation documentation.

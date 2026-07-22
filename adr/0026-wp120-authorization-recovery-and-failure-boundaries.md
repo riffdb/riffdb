@@ -2,13 +2,15 @@
 
 - **Status:** Accepted
 - **Direction approved:** 2026-07-21
-- **Exact text accepted:** 2026-07-21
+- **Exact text accepted:** 2026-07-21, amended 2026-07-22
 - **Accepted:** 2026-07-21
 - **Requires:** ADR-0005, ADR-0007, ADR-0009, ADR-0012, ADR-0018, and
   ADR-0023
 - **Clarifies:** Grammar-v1 tenant scope, outcome-recovery authorization,
   committed-outcome durability presentation, and incident-source failure at the
   WP-120 service boundary
+- **Amended by:** ADR-0040 for the checked outcome-locator selector and its
+  unchanged two-phase authorization boundary
 - **Decision deadline:** Before WP-120 publishes its command-service
   implementation
 
@@ -233,6 +235,25 @@ WP-200 supplies final cross-transport non-bypass and redaction evidence.
   corresponding `WP-130` adapter mappings
 - **Final evidence:** `WP-130` for the production process boundary and `WP-200`
   for cross-transport authorization and redaction
+
+## 2026-07-22 outcome-locator selector amendment
+
+ADR-0040 extends `ResolveCommandOutcomeRequest` with a fields-private checked
+selector having exactly `RawKey { lineage, source_command, idempotency_key }`
+and `Locator(OutcomeResourceLocator)` variants. Both selectors retain the same
+`ResolveCommandOutcome` operation and audit tag, the existing existence-blind
+initial authorization, authoritative point lookup, historical-plan validation,
+terminal authorization, disclosure, and single terminal audit lifecycle.
+
+The raw branch preserves its active-catalog command resolution. The locator
+branch uses the locator's checked lineage and stable command ID for the initial
+check, requires the locator owner to equal the authenticated principal, never
+substitutes the active contract, and verifies the returned historical command
+and compiler-owned tool name before release. After initial authorization,
+principal, digest-inventory, existence, lineage, command, or tool mismatch is
+the same nondisclosing `NotFound`; malformed public syntax rejects before
+lookup. The locator grants no authority and neither branch bypasses the second
+authorization check.
 
 ## Decision Deadline
 

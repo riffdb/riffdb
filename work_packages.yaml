@@ -1,4 +1,4 @@
-spec_version: '0.27'
+spec_version: '0.28'
 product: RiffDB
 repository: riffdb
 status: implementation-handoff
@@ -42,6 +42,7 @@ gates:
   - WP-120
   - WP-127
   - WP-130
+  - WP-137
   - WP-150
 - id: P2
   name: POC exit
@@ -390,6 +391,7 @@ work_packages:
   - ADR-0023
   - ADR-0030
   - ADR-0038
+  - ADR-0039
   allowed_paths:
   - Cargo.lock
   - crates/riffdb-catalog/**
@@ -445,6 +447,14 @@ work_packages:
   - Architecture checks proving ValidatedCatalogHistory and command materialization evidence never cross a storage
     trait, storage never imports or interprets contract IR, WP-100 consumes but does not implement or inspect the opaque
     evidence API, and neither side accepts a generic validation callback
+  - Catalog consumption of the replacement-only IndexMigrationRow historical-evidence variant with its exact 0x04
+    ordering, charge, single-consumption, V1/V2 coverage, and unchanged 0x05 capability-partition ordering
+  - Pure bounded historical partition derivation through the sole narrow riffdb-catalog-to-riffdb-invariant edge,
+    using the exact retained bundle and positional aggregate-root key prefix for roots, children, and embedded index
+    entity keys, with wrong ownership, lineage, schema, partition, incomplete consumption, or trailing bytes rejected
+  - Non-readiness CatalogIndexMigrationContext that consumes same-session codec-checked rows and bounded bundle
+    point-reads into exactly one V1Rewrite or V2Confirm instruction per row, while only a fresh V2-only validation can
+    produce ValidatedCatalogHistory
   acceptance_commands:
   - cargo test -p riffdb-catalog
   - cargo test -p riffdb-catalog --test contract_deploy_recovery
@@ -512,6 +522,7 @@ work_packages:
   - ADR-0030
   - ADR-0035
   - ADR-0038
+  - ADR-0039
   allowed_paths:
   - Cargo.lock
   - crates/riffdb-types/src/codec.rs
@@ -572,6 +583,12 @@ work_packages:
   - Memory conformance for initialization-before-evidence, exclusive noninterleaving scans, page continuation and
     exact-end coverage, session/database mismatch rejection, dropped/failed session behavior, and dormant ports that
     cannot become operational without the separate catalog-owned same-session ValidatedCatalogHistory
+  - Fields-private process-local migration-row evidence wrapper, replacement-only IndexMigrationRow historical
+    variant, exact 0x04 ordering and dual charges, and sealed backend/session/page carriage with no forgeable codec-
+    evidence constructor
+  - Linear memory startup outcomes for Ready/Clean versus paired MigrationRequired states, same-session bounded
+    migration pages and one-bundle point reads, and consuming exact-end completion that returns only dormant unopened
+    state and requires a fresh complete validation pass
   acceptance_commands:
   - cargo test -p riffdb-storage-api -p riffdb-storage-memory
   exit_gate: Reference storage satisfies atomicity, pre-sequence reservation and no-gap ordering, exact event-hash,
@@ -612,6 +629,7 @@ work_packages:
   - ADR-0021
   - ADR-0022
   - ADR-0038
+  - ADR-0039
   allowed_paths:
   - Cargo.lock
   - proto/**
@@ -626,11 +644,10 @@ work_packages:
   - fuzz/Cargo.lock
   - fuzz/fuzz_targets/proto_durable.rs
   deliverables:
-  - Exactly eight riffdb.storage.v1 semantic-record source modules named common.proto, metadata.proto,
-    application.proto, catalog.proto, capability.proto, audit.proto, outbox.proto, and projection.proto, in addition
-    to the existing envelope.proto; together they contain the accepted exact 26 top-level StoredEnvelope payload
-    registry for authoritative state, command admission and terminal failure, standalone events, provenance,
-    catalog, capability, bootstrap, audit, outbox, and projection state
+  - Exactly nine riffdb.storage.v1 semantic-record source modules named common.proto, metadata.proto,
+    application.proto, catalog.proto, capability.proto, audit.proto, outbox.proto, projection.proto, and the isolated
+    index_v2.proto, in addition to envelope.proto; the unchanged first eight retain the accepted exact 26 payload
+    tuples and index_v2 adds only the V2 index payload to the readable registry
   - Exact application and administration allocator-state messages/codecs for Next(nonzero) and Exhausted, with
     first, maximum, exhausted, malformed, and compound-bootstrap capacity fixtures
   - Descriptors, schema hashes, wire-structural validation, decoder bounds, golden bytes, and historical compatibility
@@ -657,6 +674,13 @@ work_packages:
     reciprocity vectors for WP-070 startup validation
   - Encoded-capacity fixtures proving that atomic pending-row deletion and index-entry deletion write no envelope
     bytes, mixed index classes sum only canonical Put post-images, and their distinct semantic charges remain nonzero
+  - Isolated index_v2.proto source defining only StoredIndexEntryV2 while all nine existing durable source files and
+    their accepted descriptor closures, hashes, payload goldens, and envelope goldens remain byte-identical
+  - Exact ordered 27-readable/26-writable durable registries, with StoredIndexEntryV1 decode-only and V2 the sole
+    normal-write index role, plus V1/V2 decoder fuzz and unknown/ambiguous tuple rejection
+  - Sole durable-codec factories for canonical migration-row evidence and conservative V2 replacement envelopes,
+    together with the fields-private Fits or ExceedsAcceptedAggregateCap sequence-free result and one-maximum-row
+    proof under the independent 500-row/4-MiB evidence and instruction ledgers
   acceptance_commands:
   - cargo test -p riffdb-proto -p riffdb-storage-api
   - ./scripts/generate-proto --check
@@ -715,6 +739,7 @@ work_packages:
   - ADR-0032
   - ADR-0035
   - ADR-0038
+  - ADR-0039
   allowed_paths:
   - Cargo.lock
   - crates/riffdb-storage-api/src/startup.rs
@@ -775,6 +800,11 @@ work_packages:
     exact end
   - Explicit evidence that StructurallyOpened is not IR-aware or operational readiness; redb neither validates command
     plans nor consumes ValidatedCatalogHistory, and any scan failure drops the open rather than publishing ports
+  - Exclusive linear V1/V2 index migration port with strict physical ordering, short read transactions, same-session
+    codec evidence, bounded one-bundle point reads, paired 500-row/4-MiB evidence and instruction ledgers, whole-batch
+    exact compare-and-rewrite, V2Confirm no-write replay, cancellation release, and no migration marker
+  - Crash/reopen failpoints around every migration batch, dormant-unopened completion, fresh OpenSessionId and full
+    post-migration structural/catalog revalidation, with no storage transaction held during catalog evaluation
   acceptance_commands:
   - cargo test -p riffdb-storage-api
   - cargo test -p riffdb-storage-memory
@@ -817,6 +847,7 @@ work_packages:
   - ADR-0006
   - ADR-0010
   - ADR-0017
+  - ADR-0039
   allowed_paths:
   - benchmarks/storage-fjall/**
   deliverables:
@@ -825,6 +856,8 @@ work_packages:
   - Recovery and benchmark harness compatible with the redb report
   - Separate lockfile and dependency inventory
   - Unchanged projection storage conformance results across identity, generation, markers, lifecycle, and frontier
+  - Conformance against the accepted V2 startup outcome, 27-readable/26-writable registry semantics, and dual-ledger
+    migration pagination, reporting an explicit unchanged-suite failure rather than freezing the pre-migration shape
   acceptance_commands:
   - cargo test --manifest-path benchmarks/storage-fjall/Cargo.toml --workspace
   - cargo bench --manifest-path benchmarks/storage-fjall/Cargo.toml --no-run
@@ -983,6 +1016,7 @@ work_packages:
   - ADR-0023
   - ADR-0033
   - ADR-0038
+  - ADR-0039
   allowed_paths:
   - Cargo.lock
   - crates/riffdb-commit/**
@@ -1096,6 +1130,9 @@ work_packages:
   - Standalone failed/denied audit behavior after RequestContext construction, including every explicit policy Deny,
     fail-closed append handling, and no audit for ordinary allowed standard reads without an obligation
   - Unjournaled read-only execution with no command admission, persisted outcome, provenance, or application sequence
+  - Exhaustive origin-specific conversion of only codec-proved ExceedsAcceptedAggregateCap into sequence-free
+    CapacityUnavailable/StorageUnavailable, retaining Pending byte-for-byte with no sequence or graph, while every
+    per-record, checked-sum, encoding, schema, or integrity failure remains fatal and stops readiness
   acceptance_commands:
   - cargo test -p riffdb-commit -p riffdb-idempotency
   - cargo test -p riffdb-types -p riffdb-contract-ir -p riffdb-contract-compiler -p riffdb-storage-api
@@ -1220,6 +1257,7 @@ work_packages:
   - ADR-0036
   - ADR-0037
   - ADR-0038
+  - ADR-0039
   allowed_paths:
   - Cargo.lock
   - crates/riffdb-service/**
@@ -1293,6 +1331,8 @@ work_packages:
     tests proving authorizing capabilities, result links, traversed objects, and returned rows are never inferred
   - Policy-filtered command descriptors carrying the compiler-owned ADR-0020 name verbatim, with no service-side
     normalization, derivation, collision repair, or transport-specific substitute identity
+  - Service read/filter integration proving migrated V2 index rows participate in the accepted lower partition filter
+    and return-time reauthorization, with migration or crossed startup outcomes never admitted as readiness
   acceptance_commands:
   - cargo test -p riffdb-service
   - cargo test -p riffdb-service --test service_end_to_end
@@ -1331,6 +1371,7 @@ work_packages:
   required_adrs:
   - ADR-0007
   - ADR-0031
+  - ADR-0039
   allowed_paths:
   - .github/workflows/budget-comparison.yml
   - examples/budget-comparison/Cargo.toml
@@ -1341,6 +1382,8 @@ work_packages:
   - RiffDB service adapter with no storage access
   - Parameterized cross-backend semantic conformance suite
   - Correctness preflight for comparison workloads
+  - V2-only startup compatibility fixture that joins only Ready with Clean and fails closed on either migration or a
+    crossed catalog/storage startup outcome without gaining migration ownership
   acceptance_commands:
   - cargo test --manifest-path examples/budget-comparison/Cargo.toml --workspace service_comparison
   exit_gate: The service adapter and PostgreSQL adapter satisfy their declared guarantee profiles under the same
@@ -1460,6 +1503,7 @@ work_packages:
   - ADR-0035
   - ADR-0036
   - ADR-0038
+  - ADR-0039
   allowed_paths:
   - Cargo.lock
   - crates/riffdb-api-grpc/**
@@ -1534,6 +1578,9 @@ work_packages:
   - Real child-process temporary-redb restart test over public gRPC covering bootstrap, budget deployment,
     CreateBudget, entity read, AllocateBudget, outcome resolution, clean stop, reopen, repeated entity/outcome reads,
     and retained bootstrap replay without an in-process storage or service shortcut
+  - Restart-from-V1 integration proving the exclusive migration completes before readiness, a fresh V2-only startup
+    pass joins Ready with Clean, migrated rows participate in partition-filtered reads and return-time authorization,
+    and no transport or server path becomes a migration constructor
   acceptance_commands:
   - cargo test -p riffdb-api-grpc -p riffdb-client-rust -p riffdb-server
   - cargo test -p riffdb-api-grpc --features server,client --test grpc_end_to_end
@@ -1562,17 +1609,28 @@ work_packages:
   depends_on:
   - WP-125
   - WP-130
+  - WP-137
   objective: Make the Rust SDK and public gRPC path the canonical RiffDB adapter for the long-lived comparison
     workload and benchmark runner.
   requirements:
   - API-001
+  - OUT-001
   - POC-001
   - POC-002
-  - POC-004
   - POC-008
   required_adrs:
+  - ADR-0005
   - ADR-0006
   - ADR-0007
+  - ADR-0009
+  - ADR-0011
+  - ADR-0015
+  - ADR-0018
+  - ADR-0028
+  - ADR-0031
+  - ADR-0037
+  - ADR-0040
+  - ADR-0041
   allowed_paths:
   - examples/budget-comparison/Cargo.toml
   - examples/budget-comparison/Cargo.lock
@@ -1582,10 +1640,135 @@ work_packages:
   - Public Rust SDK and gRPC comparison adapter
   - Same-key uncertainty-recovery comparison scenario
   - Process-runner correctness preflight and normalized observations
+  - Nested-workspace package riffdb-budget-comparison-riffdb-grpc with a public-only adapter library and the named
+    riffdb-budget-public evidence binary; normal dependencies are limited to the comparison core, public client,
+    public protocol, foundational values, and the exact reviewed Tokio/Tonic rows
+  - Root comparison workspace registration of riffdb-grpc and the explicit public_comparison integration-test target
+    despite autotests=false, with the exact package library, binary, three fixture files, and process-harness paths
+  - Closed riffdb.budget.public-run/v1 eight-argument subprocess protocol, protected credential-file loading through
+    WP-137, three fresh-database cases, exact one-line success JSON, fixed failure stderr/exit behavior, no ambient
+    configuration, and checked 8,192-byte argv plus endpoint/path/output bounds
+  - Exact success, checked-error, and invalid-invocation process fixtures and discarded-response same-key replay
+    evidence; actual post-commit TCP-loss/restart uncertainty remains WP-190/WP-200 evidence
   acceptance_commands:
   - cargo test --manifest-path examples/budget-comparison/Cargo.toml --workspace public_comparison
+  - cargo build -p riffdb-server --bin riffdbd --target-dir target/wp135-root
+  - cargo build --manifest-path examples/budget-comparison/Cargo.toml -p riffdb-budget-comparison-riffdb-grpc --bin
+    riffdb-budget-public --target-dir target/wp135-comparison
+  - RIFFDB_BUDGET_RIFFDBD_BIN="$PWD/target/wp135-root/debug/riffdbd" RIFFDB_BUDGET_RUNNER_BIN="$PWD/target/wp135-comparison/debug/riffdb-budget-public"
+    cargo test --manifest-path examples/budget-comparison/Cargo.toml -p riffdb-budget-comparison --test
+    public_comparison --target-dir target/wp135-comparison -- --test-threads=1
   exit_gate: The canonical RiffDB comparison uses only public APIs and passes the same workload oracle before any
     comparative benchmark can run.
+  human_review_triggers: *id001
+- id: WP-137
+  name: Public gRPC MCP parity bridge
+  depends_on:
+  - WP-130
+  objective: Freeze and implement the additive public protocol, API-neutral discovery/locator DTOs, gRPC conversions,
+    and Rust-client surfaces needed by MCP stdio, the public comparison runner, and the CLI without introducing a
+    transport-specific authority path.
+  requirements:
+  - API-001
+  - ID-005
+  - MCP-001
+  - MCP-010
+  - MCP-011
+  - MCP-030
+  - MCP-031
+  - MCP-032
+  - MCP-033
+  - MCP-040
+  - MCP-041
+  - MCP-043
+  - MCP-045
+  - MCP-046
+  - MCP-047
+  - MCP-048
+  - POC-001
+  - POC-004
+  - POC-007
+  - POC-008
+  required_adrs:
+  - ADR-0005
+  - ADR-0006
+  - ADR-0007
+  - ADR-0008
+  - ADR-0009
+  - ADR-0013
+  - ADR-0018
+  - ADR-0020
+  - ADR-0024
+  - ADR-0026
+  - ADR-0027
+  - ADR-0028
+  - ADR-0037
+  - ADR-0040
+  - ADR-0041
+  allowed_paths:
+  - proto/riffdb/v1/**
+  - crates/riffdb-proto/**
+  - crates/riffdb-api-grpc/**
+  - crates/riffdb-client-rust/**
+  - crates/riffdb-auth/tests/architecture.rs
+  - crates/riffdb-service/schema/riffdb.command-operation-envelope-v1.schema.json
+  - crates/riffdb-service/schema/riffdb.command-get-outcome-result-v1.schema.json
+  - crates/riffdb-service/Cargo.toml
+  - crates/riffdb-service/src/cursor.rs
+  - crates/riffdb-service/src/dto.rs
+  - crates/riffdb-service/src/command_operations.rs
+  - crates/riffdb-service/src/query_discovery_operations.rs
+  - crates/riffdb-service/src/response.rs
+  - crates/riffdb-server/src/lib.rs
+  - crates/riffdb-server/src/lifecycle.rs
+  - crates/riffdb-server/src/read_adapters.rs
+  - crates/riffdb-server/src/process_graph.rs
+  - crates/riffdb-server/src/server_generation.rs
+  - tests/grpc/**
+  - tests/service/**
+  - fixtures/proto/**
+  - fuzz/Cargo.toml
+  - fuzz/Cargo.lock
+  - fuzz/fuzz_targets/proto_public.rs
+  - scripts/generate-proto
+  - Cargo.lock
+  deliverables:
+  - Additive five-service, 22-RPC public descriptor with exactly six new unary operations and one total streaming RPC,
+    preserving every prior symbol, field number/type/presence, enum value, RPC name, and streaming shape
+  - Language-neutral messages, tags, enums, full/compact representations, ResourceDiscoveryKind, conditional catalog
+    fences, bounded pages/cursors, exact PublicError carriage, compatibility goldens, and decoder fuzz coverage
+  - API-neutral policy-filtered command, contract/resource, provenance, outbox, and projection discovery/read DTOs,
+    including representation/kind-bound cursors, pre-pagination resource-kind filtering, and audited
+    CatalogUnchanged safe-point handling without MCP types or adapter-side filtering
+  - Human-accepted canonical operation-envelope and GetOutcome-result Draft 2020-12 sources plus generated IDs,
+    lengths, hashes, identity/full catalog fixtures, and representative compiler-outcome composition golden, with no
+    compiler artifact or bundle-hash change
+  - Service-owned authoritative outcome-locator tuple encoding/decoding and raw-key-or-locator resolution through one
+    authorized point-lookup path; Proto owns only structural locator validation and adapters receive no raw digest key
+  - One private 16-byte server-generation entropy fill at startup, shared by gRPC and HTTP, with no clock, retry,
+    fallback, storage meaning, or alternate source and fail-closed startup on source failure
+  - Total gRPC conversion and public-client round trips for all six operations, exact response charging through the
+    4,194,304-byte ledger, legacy outcome-locator compatibility, and strict new-server mandatory emission
+  - Public-client checked error views and three operation-specific execute/bootstrap-create/normal-create retry
+    helpers with fresh RequestIds, stable semantic identity, bounded attempts, and no generic arbitrary-RPC helper
+  - Linux protected normal-bearer loader returning only redacted BearerCredential, exact object/owner/mode/race and
+    byte bounds, zeroized staging, non-exposing presentation comparison, and no client auth/base64 dependency
+  - Staged exact dependency-owner architecture registry for base64 and zeroize, with only the accepted owner sets and
+    no auth production/manifest change, service/storage/policy/commit bypass, or server-only stdio dependency
+  acceptance_commands:
+  - cargo test -p riffdb-proto -p riffdb-api-grpc -p riffdb-client-rust
+  - cargo test -p riffdb-api-grpc --features server,client --test grpc_end_to_end
+  - cargo test -p riffdb-service -p riffdb-server
+  - ./scripts/generate-proto --check
+  - cargo +nightly-2026-07-12 fuzz run proto_public -- -max_len=4194304 -max_total_time=30
+  - cargo fmt --all -- --check
+  - cargo clippy -p riffdb-proto -p riffdb-api-grpc -p riffdb-client-rust -p riffdb-service -p riffdb-server
+    --all-targets --all-features -- -D warnings
+  - cargo doc -p riffdb-proto -p riffdb-api-grpc -p riffdb-client-rust -p riffdb-service -p riffdb-server --no-deps
+  exit_gate: Exact descriptor, schema, and wire artifacts reproduce; every new branch converts and round-trips through
+    public clients within bounds; raw-key and locator outcome lookup share one authorized point path; operation-
+    specific retry and protected-credential evidence passes; and architecture checks prove stdio needs no private,
+    authority-bearing, or server dependency.
   human_review_triggers: *id001
 - id: WP-140
   name: Native MCP interface
@@ -1593,6 +1776,7 @@ work_packages:
   - WP-040
   - WP-120
   - WP-130
+  - WP-137
   objective: Expose authorized contract commands as dynamic MCP tools and database context as policy-filtered resources
     through stdio and Streamable HTTP.
   requirements:
@@ -1631,6 +1815,13 @@ work_packages:
   - ADR-0017
   - ADR-0018
   - ADR-0020
+  - ADR-0024
+  - ADR-0026
+  - ADR-0027
+  - ADR-0028
+  - ADR-0037
+  - ADR-0040
+  - ADR-0041
   allowed_paths:
   - Cargo.lock
   - crates/riffdb-api-mcp/**
@@ -1652,10 +1843,30 @@ work_packages:
     conformance evidence
   - Discovery and invocation dispatch using the compiler-owned ADR-0020 command tool name verbatim, with no adapter
     normalization or suffixing and fail-closed stale, unknown, or unauthorized name handling
+  - Exact MCP 2025-11-25 initialization and pinned rmcp 2.2.0 boundary with default-empty crate features, common
+    protocol/presentation code, stdio-only transport-io, HTTP-only optional auth/service edges, and no client, TLS,
+    OAuth, sampling, roots, elicitation, task, prompt, or unrelated transport feature
+  - One common MCP schema composer and renderer for HTTP service DTOs and stdio public-gRPC DTOs, proving byte-
+    identical authorized catalogs/results while stdio has no auth, service, server, storage, policy, runtime, commit,
+    catalog, or gRPC-server dependency
+  - Human-accepted 27-source fixed-tool schema registry and resource/template registry with exact source paths, IDs,
+    lengths, hashes, annotations, URI/MIME mappings, list-surface membership, subscription flags, and generated-
+    artifact reproducibility; compiler-owned dynamic schemas are mechanically composed without drift
+  - Exact canonical resource locators, outcome links, lowercase fixed-width cursor presentation, point lookup,
+    existence-blind two-phase disclosure, pagination, compact/full observation, and catalog/resource notification
+    behavior under the accepted item and byte ledgers
+  - Stateful loopback-only Streamable HTTP route with strict authority/origin/protocol/auth/session ordering, wrapper-
+    owned pre-initialize ping, custom bounded Pending/Active SessionManager, capability binding, rate/in-flight limits,
+    and exact 1-MiB request/4-MiB response boundaries
+  - Production stdio credential-file flow through WP-137's protected public-client loader and HTTP credential handoff
+    only through CredentialAuthenticator, with no local bearer decode, raw credential exposure, or policy bypass
+  - Progress, cancellation, observer/subscription bounds, list-change/resource-update coalescing, five-second polling,
+    idle/lifetime expiry, reconnect/restart fences, redaction canaries, and protocol-only stdout
   acceptance_commands:
   - cargo test -p riffdb-api-mcp -p riffdb-mcp-stdio
   - cargo test -p riffdb-api-mcp --test mcp_conformance
   - ./scripts/mcp-inspector-smoke
+  - cargo deny check
   external_test_targets:
   - name: mcp_conformance
     owner_crate: riffdb-api-mcp
@@ -1669,15 +1880,28 @@ work_packages:
   name: CLI and local developer flow
   depends_on:
   - WP-130
+  - WP-135
+  - WP-137
   objective: Provide an operator and demo CLI that uses public APIs rather than internal storage access.
   requirements:
   - API-001
+  - ID-005
+  - OUT-001
   - POC-001
+  - POC-008
   - POC-010
   required_adrs:
+  - ADR-0005
+  - ADR-0006
   - ADR-0007
   - ADR-0009
+  - ADR-0011
   - ADR-0018
+  - ADR-0028
+  - ADR-0031
+  - ADR-0037
+  - ADR-0040
+  - ADR-0041
   allowed_paths:
   - Cargo.lock
   - crates/riffdb-cli/**
@@ -1699,9 +1923,28 @@ work_packages:
   - Budget-comparison sources owned by WP-045, WP-125, and WP-135 are read-only to WP-150 until WP-135 merges; demo
     packaging may then add integration without rewriting their manifest, lockfile, adapters, fixtures, or guarantee
     profiles unless a separately approved owner-package amendment permits it
+  - Human-accepted interface-only checkpoint freezing the complete v1 command grammar, stable command identities,
+    configuration/precedence table, exit codes, closed local/public error DTOs, JSONL and human output shapes, and
+    exact golden bytes before command implementation begins
+  - Exact direct dependency and feature allowlist, protected normal credentials only through WP-137's public-client
+    loader, bootstrap document handling only through riffdb-auth::bootstrap_secret, zeroized CLI buffers, and source
+    architecture checks forbidding internal service/server/storage/policy or unchecked transport text
+  - Typed invocation of WP-137's execute, bootstrap-create, and normal-create retry helpers using fresh RequestIds and
+    stable semantic identities, consuming only terminal Result/ClientError values and never private dispositions
+  - Direct no-shell riffdb-budget-public launch for the closed riffdb.budget.public-run/v1 protocol with a cleared
+    environment, closed stdin, independent 4,096-byte output caps, fixed 180-second kill/reap deadline, and CLI-owned
+    checked result rendering without relaying child output
+  - Process integration covering all acceptance-demo operations against riffdbd, all three public-runner cases and
+    exit/output branches, no redb path access, and exact machine output/uncertainty fixtures
   acceptance_commands:
   - cargo test -p riffdb-cli
   - ./scripts/demo --dry-run
+  - cargo build -p riffdb-server --bin riffdbd --target-dir target/wp150-root
+  - cargo build --manifest-path examples/budget-comparison/Cargo.toml -p riffdb-budget-comparison-riffdb-grpc --bin
+    riffdb-budget-public --target-dir target/wp150-comparison
+  - RIFFDB_TEST_RIFFDBD_BIN="$PWD/target/wp150-root/debug/riffdbd" RIFFDB_TEST_BUDGET_RUNNER_BIN="$PWD/target/wp150-comparison/debug/riffdb-budget-public"
+    CARGO_TARGET_DIR=target/wp150-root cargo test -p riffdb-cli --test public_process -- --ignored --exact
+    public_process_all_acceptance_operations
   exit_gate: Every acceptance-demo operation is available through the CLI and public gRPC.
   human_review_triggers: *id001
 - id: WP-160
@@ -1922,9 +2165,11 @@ work_packages:
   - REC-001
   - REC-002
   - REC-003
+  - POC-004
   - POC-009
   - TXN-041
   - TXN-042
+  - TXN-044
   - EFF-003
   - MCP-046
   required_adrs:
@@ -1941,6 +2186,9 @@ work_packages:
   - ADR-0019
   - ADR-0021
   - ADR-0038
+  - ADR-0039
+  - ADR-0040
+  - ADR-0041
   allowed_paths:
   - Cargo.lock
   - crates/riffdb-testkit/**
@@ -1972,6 +2220,13 @@ work_packages:
     no online repair of authoritative state
   - Graceful-close and crash/reopen evidence that complete authoritative integrity validation runs every time,
     repeated recovery creates no deferred ADR-0019 metadata, and canonical absence remains valid and idempotent
+  - Named process failpoints throughout V1/V2 startup migration, including before and after each bounded compare-and-
+    rewrite commit, proving restart from a complete fresh scan, no partial batch, V2-only completion, and full fresh
+    structural/catalog exact-end validation before readiness
+  - Two explicitly synchronized post-commit/pre-response public Execute cases, one losing TCP response bytes before a
+    complete frame and one kills then restarts riffdbd; each retries through WP-137 with the same command, raw key,
+    canonical input, and capability but a fresh RequestId, returning the original replayed outcome, sequence, and
+    provenance with no second mutation, event, outbox intent, provenance, commit record, or sequence
   acceptance_commands:
   - cargo test -p riffdb-testkit
   - cargo test -p riffdb-testkit --test full_recovery_matrix -- --ignored
@@ -1981,8 +2236,11 @@ work_packages:
     manifest: crates/riffdb-testkit/Cargo.toml
     path: ../../tests/recovery/full_recovery_matrix.rs
   exit_gate: Every failpoint produces exactly the allowed pre-commit or post-commit state with no sequence consumed by
-    failed capacity/envelope checks and exact durable event-hash recomputation, every reopen performs complete
-    authoritative integrity validation, and repeated recovery is stable without deferred metadata writes.
+    failed capacity/envelope checks and exact durable event-hash recomputation; migration failpoints restart through
+    the complete V2-only validation path; synchronized TCP-response loss and post-commit process termination both
+    recover the original result through a fresh public-client request without a second authoritative graph; every
+    reopen performs complete authoritative integrity validation; and repeated recovery is stable without deferred
+    metadata writes.
   human_review_triggers: *id001
 - id: WP-200
   name: POC acceptance and release
@@ -2036,6 +2294,9 @@ work_packages:
   - ADR-0022
   - ADR-0023
   - ADR-0038
+  - ADR-0039
+  - ADR-0040
+  - ADR-0041
   allowed_paths:
   - scripts/demo*
   - scripts/release*
@@ -2067,6 +2328,10 @@ work_packages:
     provenance recovery, canonical empty v1 covered values, late commit-check arithmetic terminalization, absent
     capability revoke, exact transaction-current evaluator boundary, audit-input ownership inversion, and
     known/no-transition control-plane audit classifications
+  - Final V2 migration generated-artifact, restart/recovery, authorization, cross-transport, and rollback-unsupported
+    evidence, including exact 27-readable/26-writable registry and no post-migration V1 record
+  - Machine-readable consumption of WP-190's synchronized TCP-loss and process-restart same-key replay evidence for
+    POC-004, plus final WP-137/WP-140/WP-150 public protocol, MCP, CLI, generated-artifact, and release conformance
   acceptance_commands:
   - ./scripts/ci-all
   - ./scripts/demo --assert

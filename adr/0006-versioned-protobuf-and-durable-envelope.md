@@ -2,13 +2,14 @@
 
 - **Status:** Accepted
 - **Direction approved:** 2026-07-12
-- **Exact text accepted:** 2026-07-12, amended 2026-07-12, 2026-07-13, and
-  2026-07-20
+- **Exact text accepted:** 2026-07-12, amended 2026-07-12, 2026-07-13,
+  2026-07-20, and 2026-07-22
 - **Maintainer-accepted gRPC error-carriage clarification:** 2026-07-20, carry
   exact bounded `riffdb.v1.PublicError` bytes directly in
   `grpc-status-details-bin`, derive the status from `ErrorClass`, expose only the
   static safe message, and fail closed on absent or inconsistent detail
-- **Amended by:** ADR-0004, ADR-0007, ADR-0009, ADR-0012, and ADR-0017
+- **Amended by:** ADR-0004, ADR-0007, ADR-0009, ADR-0012, ADR-0017, ADR-0039,
+  and ADR-0040
   for the formal post-semantic schema phases and reviewed additive public symbols
 - **Decision deadline:** Before WP-020 schemas or fixtures merge
 
@@ -366,6 +367,33 @@ accepted.
   consumers `WP-050`, `WP-070`, `WP-100`, `WP-110`, `WP-130`, `WP-160`, and
   `WP-170`
 - **Final evidence:** `WP-190`, `WP-200`
+
+## 2026-07-22 additive registry amendments
+
+ADR-0039 adds only `proto/riffdb/storage/v1/index_v2.proto`, importing the
+unchanged `application.proto` and defining only `StoredIndexEntryV2` fields 1
+through 4. The nine previously accepted durable source files and all 26
+previously accepted tuple fixtures remain byte-identical. The durable source
+inventory is now ten files. During migration, the readable registry is exactly
+27 tuples; the writable role registry is exactly 26 roles, consisting of the 25
+unchanged non-index roles plus V2. V1 remains readable but has no current encoder
+or normal-write role.
+
+ADR-0040 makes an additive public-v1 change from five services and 16 RPCs to
+the same five services and exactly 22 RPCs. It adds `GetContractVersion`,
+`DiscoverCommandTools`, and `DiscoverResources` to `ContractService`,
+`GetProjectionStatus` to `QueryService`, `TraceProvenance` to `CommitService`,
+and `ListPendingOutboxDeliveries` to `AdminService`; `CommandService` remains
+unchanged. It creates `proto/riffdb/v1/discovery.proto`, adds optional
+`ExecuteCommandResponse.outcome_uri = 9`, and adds optional
+`GetOutcomeRequest.outcome_uri = 5` with the accepted exclusive legacy-selector
+rule. Existing fields, methods, durable schemas, and fixtures remain unchanged.
+WP-137 is the sole owner of these generated public additions; its separately
+named exact operation-schema byte checkpoint remains mandatory.
+
+The detailed message, tag, presence, import, and validation registries in
+ADR-0039 and ADR-0040 are authoritative. This section does not reopen the
+compatibility policy for any other source or symbol.
 
 ## Decision Deadline
 

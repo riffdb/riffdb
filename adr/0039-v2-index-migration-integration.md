@@ -1,11 +1,13 @@
 # ADR-0039: V2 Index Migration Integration
 
-- **Status:** Proposed
-- **Direction approved:** No
-- **Exact text accepted:** No
+- **Status:** Accepted
+- **Direction approved:** 2026-07-22
+- **Exact text accepted:** 2026-07-22
+- **Accepted:** 2026-07-22
+- **Acceptance reference:** `21a8cfb`
 - **Requires:** ADR-0004, ADR-0006, ADR-0007, ADR-0011, ADR-0016,
   ADR-0022, ADR-0023, ADR-0030, ADR-0035, and ADR-0038
-- **Would amend if accepted:** ADR-0004 pre-sequence capacity reservation,
+- **Amends:** ADR-0004 pre-sequence capacity reservation,
   startup storage type-state, and crate ownership/dependency diagram for the
   narrow catalog-to-invariant edge; ADR-0006 and ADR-0022 durable schema-source
   and registry inventory; ADR-0023 checked derived-index capacity classification;
@@ -20,8 +22,9 @@
   catalog migration derivation, or concrete-engine migration path merges, and
   before WP-130 completion and the P1 gate
 
-This ADR is a review-ready proposal. It is not authoritative unless a human
-maintainer accepts its exact text and changes its status to Accepted.
+The human maintainer accepted this exact text and its ADR-only companion
+reconciliation on 2026-07-22, with revision `21a8cfb` as the acceptance
+reference.
 
 ## Context
 
@@ -395,7 +398,7 @@ proven-rollback or uncertain-outcome rules; this ADR does not reclassify it.
 ## Options Considered
 
 1. **Isolated V2 source, split registries, codec-bound evidence, catalog's
-   narrow shared evaluator use, and linear offline migration:** Proposed. This
+   narrow shared evaluator use, and linear offline migration:** Accepted. This
    preserves old schema hashes and existing ownership while making the first
    production migration executable and restartable.
 2. **Append V2 to `application.proto`:** Rejected. It changes descriptor
@@ -463,7 +466,7 @@ preserve exact envelope bytes; opening a restored mixed or V1 database invokes
 the same exclusive migration and fresh-validation sequence. No new backup
 format or online backup behavior is decided here.
 
-The proposed catalog dependency is process-local and changes no durable or
+The accepted catalog dependency is process-local and changes no durable or
 public format. Positional root-prefix derivation implements the already accepted
 ADR-0016 key convention; it does not add a child-to-root mapping or language
 construct.
@@ -637,7 +640,7 @@ reopen checks provide the evidence.
   `WP-075`, `WP-100`, `WP-120`, `WP-125`, and `WP-130`
 - **Final recovery and exit evidence:** `WP-190` and `WP-200`
 
-If accepted, the affected work-package ADR dependencies, allowed dependency
+Under this accepted decision, the affected work-package ADR dependencies, allowed dependency
 statements, deliverable text, and acceptance fixtures must be reconciled before
 implementation is claimed complete. This ADR does not remove any declared hard
 dependency or acceptance command.
@@ -652,6 +655,7 @@ before WP-130 completion and the P1 gate. WP-125's compatibility fixture must
 land before WP-135 consumes that comparison package. WP-075 exercises and
 reports the interface under its existing package schedule and no later than
 WP-200; it is not a P1 prerequisite. Until the production set is complete, V1
-migration and explicit-scope completion remain incomplete; no Proposed
-statement in this document authorizes an implementation or specification
-change.
+migration and explicit-scope completion remain incomplete. The accepted
+decision authorizes only the exact interfaces and package reconciliation stated
+here; it waives no dependency, acceptance command, or later human-review
+trigger.

@@ -2,11 +2,14 @@
 
 - **Status:** Accepted
 - **Direction approved:** 2026-07-21
-- **Exact text accepted:** 2026-07-21
+- **Exact text accepted:** 2026-07-21, amended 2026-07-22
+- **Accepted:** 2026-07-21
 - **Requires:** ADR-0004, ADR-0007, ADR-0009, ADR-0011, ADR-0016,
   ADR-0029
 - **Amends:** ADR-0029 schema-validator ownership, startup reuse, and security
   disclosure
+- **Amended by:** ADR-0039 for the distinct V2 index-migration startup evidence
+  variant and its fixed ordering relative to capability evidence
 - **Decision deadline:** Before WP-120 merges or WP-130 composes production
   readiness
 
@@ -281,6 +284,24 @@ The correction must pass every affected package's existing acceptance commands:
 `cargo test -p riffdb-service --test service_end_to_end`,
 `cargo test -p riffdb-service --test service_audit_orchestration`, and
 `cargo deny check`, plus repository formatting and workspace Clippy checks.
+
+## 2026-07-22 index-migration evidence amendment
+
+ADR-0039 adds the distinct closed
+`HistoricalSemanticEvidence::IndexMigrationRow` variant. For every physical V1
+or V2 index row it replaces, and never accompanies, the former
+`PersistedKey(IrOpaquePersistedKeyV1::IndexEntry)` evidence. Its exact order key
+is byte-for-byte the former index-entry order key in the `0x04` domain. All
+entity, index-range, and index-migration `0x04` evidence remains before every
+capability-partition `0x05` item.
+
+The initial exact-end pass consumes each checked migration row once and retains
+only whether any V1 was observed. It retains no row evidence or migration
+instruction. Only the bounded, linear, same-session migration rescan may produce
+a fresh row and exactly one `V1Rewrite` or `V2Confirm` instruction. Missing,
+duplicate, old-plus-new duplicate, reordered, wrong-discriminator, or any
+`0x04`-after-`0x05` evidence fails closed. The existing capability evidence and
+catalog-owned validation boundary otherwise remain unchanged.
 
 ## Decision Deadline
 

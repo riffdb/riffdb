@@ -2,7 +2,8 @@
 
 - **Status:** Accepted
 - **Direction approved:** 2026-07-20
-- **Exact text accepted:** 2026-07-20, amended 2026-07-20 and 2026-07-21
+- **Exact text accepted:** 2026-07-20, amended 2026-07-20, 2026-07-21, and
+  2026-07-22
 - **Accepted:** 2026-07-20
 - **Maintainer-accepted clarification:** 2026-07-20, the audit-input view has no
   field or method for the new audit record's assigned sequence, while its
@@ -42,6 +43,8 @@
   ADR-0006's `ConcurrencyDeadlineExceeded` cause; ADR-0013's checked-plan bounds
   and lineage materialization; SPEC Sections 5.2, 9.5, 9.6, 10.5, and 16.2; and narrow
   WP-050/WP-060/WP-100/WP-110/WP-120/WP-130/WP-200 metadata
+- **Amended by:** ADR-0039 for the exact aggregate-capacity admission result and
+  its closed coordinator disposition before sequence assignment
 - **Decision deadline:** Before WP-100 publishes the affected executor, retry,
   index, lineage-normalization, execution-failure, or capability-revoke paths
 
@@ -838,6 +841,29 @@ backend or constructor fallback from silently weakening acknowledgement.
 WP-200's `required_adrs` reconciliation adds both already-accepted ADR-0022,
 which its final generated/durable-artifact evidence already consumes, and this
 ADR-0023. No declared work-package dependency or gate changes.
+
+## 2026-07-22 aggregate-capacity amendment
+
+ADR-0039 adds one closed pre-sequence result owned by `riffdb-storage-api` and
+produced through the WP-065 durable codec:
+`Fits(EncodedWriteSetUpperBound) | ExceedsAcceptedAggregateCap`. The aggregate-
+cap branch is available only after every complete per-record upper bound and the
+checked aggregate sum have succeeded, at the final comparison with the accepted
+16 MiB staged-write cap.
+
+WP-100 is only a consumer. Its candidate maps exactly
+`ExceedsAcceptedAggregateCap` to the private origin-specific
+`CapacityUnavailable` decision and then to the existing public
+`StorageUnavailable`. That path assigns no sequence, attempts no authoritative
+write, leaves the Pending row unchanged, does not fence or stop the coordinator,
+and keeps readiness true. It does not construct the storage result, inspect an
+error string, or classify a general codec failure.
+
+Every per-record limit, checked arithmetic overflow, malformed or noncanonical
+encoding, unknown tuple, key/envelope mismatch, reservation undercharge,
+retained-plan substitution, or other codec/integrity failure remains fatal under
+the existing coordinator rules. Post-sequence or attempted-write disposition is
+unchanged.
 
 ## Decision Deadline
 

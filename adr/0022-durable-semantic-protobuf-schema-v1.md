@@ -2,7 +2,7 @@
 
 - **Status:** Accepted
 - **Direction approved:** 2026-07-20
-- **Exact text accepted:** 2026-07-20
+- **Exact text accepted:** 2026-07-20, amended 2026-07-22
 - **Accepted:** 2026-07-20
 - **Maintainer-accepted correction:** 2026-07-20, terminal outcomes retain the
   exact canonical partition key at field 14
@@ -11,6 +11,8 @@
   ADR-0017, ADR-0018, ADR-0019, and ADR-0021
 - **Clarifies:** The exact WP-065 durable payload schema without changing the
   accepted table, key, envelope, or semantic-storage boundaries
+- **Amended by:** ADR-0039 for isolated `index_v2.proto`, the 27-entry readable
+  registry, and the 26-role writable registry
 - **Decision deadline:** Before WP-065 adds any semantic-record `.proto` source,
   generated descriptor, schema hash, golden payload, or storage codec
 
@@ -1366,6 +1368,23 @@ accepted Rust DTOs themselves.
 The proposal deliberately does not decide a first future migration, old-schema
 retirement window, or later projection/outbox compaction format. Those features
 are not needed to encode the POC records and must not add reservations here.
+
+## 2026-07-22 V2 index registry amendment
+
+ADR-0039 adds exactly `proto/riffdb/storage/v1/index_v2.proto`. It imports the
+unchanged `riffdb/storage/v1/application.proto` and defines only
+`riffdb.storage.v1.StoredIndexEntryV2`, with `index_entry_key = 1`,
+`schema_binding = 2`, `canonical_covered_values = 3`, and
+`partition_key = 4`. The nine existing durable sources, their descriptor
+closures, hashes, and all 26 accepted tuple fixtures remain byte-identical.
+
+The durable source inventory is now ten files. The migration-readable registry
+is exactly the original 26 tuples plus V2, for 27 entries. The current writable
+role registry remains exactly 26 roles: the unchanged 25 non-index roles plus
+V2 as the current index role. `StoredIndexEntryV1` remains registered solely for
+checked decode/migration input and has no current encoder or normal-write lookup.
+Tests must freeze the exact ordered FQNs, hashes, and membership of both
+registries; count-only evidence is insufficient.
 
 ## Decision Deadline
 
