@@ -5,7 +5,8 @@ on:
     paths:
       - "examples/budget-comparison/**"
       - ".github/workflows/budget-comparison.yml"
-      - "crates/riffdb-types/**"
+      - "crates/**"
+      - "contracts/examples/budget.riff"
       - "Cargo.toml"
       - "deny.toml"
       - "rust-toolchain.toml"
@@ -14,7 +15,8 @@ on:
     paths:
       - "examples/budget-comparison/**"
       - ".github/workflows/budget-comparison.yml"
-      - "crates/riffdb-types/**"
+      - "crates/**"
+      - "contracts/examples/budget.riff"
       - "Cargo.toml"
       - "deny.toml"
       - "rust-toolchain.toml"
@@ -79,8 +81,7 @@ jobs:
       - name: Check formatting
         run: >-
           cargo fmt --manifest-path examples/budget-comparison/Cargo.toml
-          -p riffdb-budget-comparison-core -p riffdb-budget-comparison-postgres
-          -p riffdb-budget-comparison -- --check
+          --all -- --check
       - name: Check generated fixtures
         run: >-
           cargo run --locked --manifest-path examples/budget-comparison/Cargo.toml
