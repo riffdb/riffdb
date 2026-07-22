@@ -161,9 +161,13 @@ row. After this amendment a `PersistedKey` stream item is valid only for an
 entity key or index-range prefix; the public index-entry evidence constructors
 are removed or made codec-private. A backend emits exactly one migration-row
 item for every physical V1 or V2 index row, and catalog counts and consumes it
-exactly once: first as the existing historical `KeySchema` check, then as the
-format/partition check and possible migration instruction. It never consumes a
-second synthesized persisted-key item.
+exactly once while applying both the existing historical `KeySchema` check and
+the format/derived-partition check. This initial pass records only whether any
+V1 row was observed; it produces and retains no migration instruction or row
+evidence after that item is consumed. Only the bounded migration rescan in the
+linear port below produces a fresh checked row and exactly one instruction for
+it. Catalog never consumes a second synthesized persisted-key item in either
+pass.
 
 The new variant remains in the existing `0x04` ordering domain. Its exact order
 key is byte-for-byte the former persisted-index-key order key:
@@ -261,11 +265,20 @@ by construction. It is not added to any operational storage trait.
 4. The port scans V1 and V2 physical index rows in strict physical-key order
    through short-lived read transactions. Each page returns backend/session-
    bound codec evidence and an explicit, strictly advancing continuation or
-   exact end. The paired migration driver also provides a same-session bounded
-   historical-bundle point-read path for the exact retained bundle reference of
-   the current checked row; neither the catalog context nor the storage port
-   alone gains the other layer's authority. The point-read consumes the linear
-   driver into a one-bundle state. The backend opens a short read transaction,
+   exact end. Before admitting each row, the backend checked-adds both that
+   row's exact evidence-page charge and its codec-proved conservative
+   instruction/write-batch charge to separate page ledgers. It stops before the
+   first row that would make either ledger exceed 500 rows or 4 MiB and uses
+   a strictly advancing continuation whose next page begins with that unconsumed
+   row. When rows remain,
+   the one-maximum-row proof below requires every emitted page to contain at
+   least one row; a backend may not paginate only against the smaller evidence
+   charge and strand the required instruction batch. The paired migration driver
+   also provides a same-session bounded historical-bundle point-read path for
+   the exact retained bundle reference of the current checked row; neither the
+   catalog context nor the storage port alone gains the other layer's authority.
+   The point-read consumes the linear driver into a one-bundle state. The backend
+   opens a short read transaction,
    reads that one immutable bundle, closes the transaction, and only then
    returns its owned, canonically checked bytes to catalog. Catalog must consume
    that state into the row's instruction before the driver is returned; dropping
@@ -312,7 +325,9 @@ metadata category, retained process-local continuation, online migration, or
 readiness concurrent with migration.
 
 Complete encoded V1/V2 index-row evidence pages and migration instruction/write
-batches each retain independent ceilings of 500 rows and 4 MiB. The evidence
+batches each retain independent ceilings of 500 rows and 4 MiB, and page
+construction enforces both ledgers simultaneously before releasing a linear
+page. The evidence
 page's checked charge is the length-framed physical key plus exact observed
 canonical envelope for every row, including fixed per-item framing. The
 instruction/write batch's checked charge is the length-framed physical key,
@@ -492,24 +507,40 @@ merge sequencing are exact:
    `crates/riffdb-storage-api/src/startup.rs` and the existing memory paths. That
    interface alone grants no constructor capable of asserting codec evidence.
 2. WP-065, which already depends on WP-060, owns `index_v2.proto`, generated
-   descriptors, readable/writable registries, and the storage-API
-   `proto_codec` factory that is the sole production constructor of the wrapper.
-   Its generation, codec, architecture, and durable-decoder fuzz checks merge
-   before any consumer claims migration integration complete.
+   descriptors, readable/writable registries, the fields-private storage-API
+   aggregate-cap result, and the `proto_codec` factories that are the sole
+   production constructors of that result and the migration-row wrapper. Its
+   generation, codec, architecture, and durable-decoder fuzz checks merge before
+   any consumer claims migration integration complete.
 3. Only after the WP-065 factory is fixed may the coordinated consumer PRs land:
    WP-050 owns historical catalog validation and partition derivation; WP-060
    owns memory production/conformance; and WP-070 owns redb production, the
    linear migration port, compare-and-rewrite, and process recovery. This is an
    additional soft sequencing constraint for the correction, especially for
    WP-050, and creates no WP-060/WP-065 dependency cycle.
-4. WP-100 owns only the sequence-free aggregate-cap result and commit mapping.
-   WP-120 and WP-130 consume the completed startup/read-filter behavior and add
-   no migration constructor or semantic owner.
+4. WP-100 owns only the commit-side conversion of WP-065's checked sequence-free
+   aggregate-cap result into the accepted capacity decision and public mapping.
+   It does not define or construct the storage-API result. WP-120 and WP-130
+   consume the completed startup/read-filter behavior and add no migration
+   constructor or semantic owner.
+5. WP-075 is a future nested-workspace storage-interface/conformance consumer
+   and must compile against and exercise the accepted V2/migration outcome
+   rather than freezing the pre-ADR startup shape; its existing exit gate may
+   record an explicit conformance failure instead of claiming a pass. WP-125's
+   existing service-comparison fixture directly
+   calls `validate_catalog_history` and `StructuralEvidenceSession::finish`; it
+   must match `Ready` with `Clean` for its V2-only setup and reject either
+   migration or crossed outcome without gaining a migration owner. Both packages
+   edit only their already declared nested-workspace/example paths and preserve
+   their acceptance commands.
 
-The authoritative reconciliation adds ADR-0039 to every affected package's
-`required_adrs`, records the exact package-owned edits within the existing
+The authoritative reconciliation adds ADR-0039 to the `required_adrs` of
+exactly WP-050, WP-060, WP-065, WP-070, WP-075, WP-100, WP-120, WP-125, WP-130,
+WP-190, and WP-200, records the exact package-owned edits within the existing
 allowed paths described above, and preserves every existing acceptance command.
-It additionally retains WP-065's
+The first nine packages own or consume the implementation; WP-190 and WP-200
+own its declared final recovery and exit evidence. It additionally retains
+WP-065's
 `generate-proto --check` and `proto_durable` fuzz command; no package may treat a
 different owner's passing tests as a substitute for its own acceptance evidence.
 
@@ -557,7 +588,10 @@ different owner's passing tests as a substitute for its own acceptance evidence.
 - WP-060 and WP-070 boundary tests cover 500/501 rows and 4 MiB/equal-plus-one
   for complete index-row evidence and migration batches. They assert the exact
   physical-key, expected-envelope, discriminator/framing, and conservative V2
-  replacement charges, and prove one maximum valid row fits without chunking,
+  replacement charges; exercise pages where the evidence ledger still fits but
+  the next instruction charge does not; prove the next row becomes the exact
+  continuation with no skip or dead end; and prove one maximum valid row fits
+  without chunking,
   while a valid greater-than-4-MiB historical bundle remains accepted under its
   unchanged separate bounds.
 - WP-070 memory/redb conformance covers fresh V2 databases, all-V1 and mixed
@@ -581,6 +615,11 @@ different owner's passing tests as a substitute for its own acceptance evidence.
 - WP-120 and WP-130 tests prove migrated V2 rows participate in the accepted
   lower partition filter and return-time reauthorization without a
   transport/storage bypass, including restart from a V1 fixture.
+- WP-075's unchanged nested conformance suite must exercise and report pass or
+  explicit failure for the accepted V2 startup outcome and dual-ledger migration
+  pagination. WP-125's service-comparison
+  fixture must prove its V2-only setup joins only `Ready` with `Clean` and fails
+  closed on a migration or crossed outcome.
 - WP-190 supplies process-kill coverage throughout migration. WP-200 supplies
   final generated-artifact, recovery, authorization, cross-transport, and POC
   exit evidence.
@@ -595,7 +634,7 @@ reopen checks provide the evidence.
   `STO-021`, `STO-022`, `REC-001`, `REC-002`, `TXN-041`, `TXN-043`,
   `API-001`, `SEC-001`, `VAL-003`, `POC-008`, and `POC-009`
 - **Interfaces corrected or blocked:** `WP-050`, `WP-060`, `WP-065`, `WP-070`,
-  `WP-100`, `WP-120`, and `WP-130`
+  `WP-075`, `WP-100`, `WP-120`, `WP-125`, and `WP-130`
 - **Final recovery and exit evidence:** `WP-190` and `WP-200`
 
 If accepted, the affected work-package ADR dependencies, allowed dependency
@@ -607,7 +646,12 @@ dependency or acceptance command.
 
 The exact text must be accepted or rejected before the V2 durable source and
 codec, catalog-to-invariant dependency, concrete migration port, or narrow
-capacity-error mapping merges. All accepted pieces and their fixtures must be
-implemented before WP-130 completion and the P1 gate. Until then, V1 migration
-and explicit-scope completion remain incomplete; no Proposed statement in this
-document authorizes an implementation or specification change.
+capacity-error mapping merges. The production pieces and P1 fixtures owned by
+WP-050, WP-060, WP-065, WP-070, WP-100, WP-120, and WP-130 must be implemented
+before WP-130 completion and the P1 gate. WP-125's compatibility fixture must
+land before WP-135 consumes that comparison package. WP-075 exercises and
+reports the interface under its existing package schedule and no later than
+WP-200; it is not a P1 prerequisite. Until the production set is complete, V1
+migration and explicit-scope completion remain incomplete; no Proposed
+statement in this document authorizes an implementation or specification
+change.
