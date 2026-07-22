@@ -6,7 +6,7 @@
 **Tagline:** *Vibe fast. Commit safely.*  
 **Category:** Contract-first operational database for agent-built applications  
 
-**Version:** 0.24
+**Version:** 0.25
 **Status:** Architecture-approved implementation handoff
 **Date:** 21 July 2026
 **Audience:** Coding agents, database engineers, compiler engineers, security reviewers, and technical product leads  
@@ -60,6 +60,7 @@
 | 0.22 | 2026-07-21 | Clarified the accepted three-attempt boundary: each attempt slot is consumed immediately before catalog snapshot materialization; a valid lineage-expansion `ResourceLimit` consumes that slot even though runtime is not entered, while a `Ready` result continues into exactly one runtime evaluation in the same slot. |
 | 0.23 | 2026-07-21 | Applied the maintainer-approved pre-bootstrap health clarification: the unchanged API-neutral Health operation may use a private principal-less read-only context only during startup validation/bootstrap and returns only bounded lifecycle, liveness, and readiness; after the bootstrap marker it requires authenticated current-policy handling, while bootstrap remains the sole principal-less mutation and durable-audit exception. |
 | 0.24 | 2026-07-21 | Applied accepted ADR-0031 and ADR-0032: transports preserve structurally checked pre-schema submitted command values for service-owned materialization under the exact selected plan, and the completed structural startup handoff carries the existing same-snapshot retained metadata needed for bootstrap lifecycle, active-pointer agreement, and allocator readiness. No public or durable format changed. |
+| 0.25 | 2026-07-21 | Applied accepted ADR-0033: the coordinator publishes only first-durable application commit sequences through an injected least-authority sink into the server-owned bounded subscription hub; replay, read-only, failed, audit, initialization, and control-plane paths never publish. Sink defects preserve the known committed result but stop coordinator admission and process readiness. No public or durable format changed. |
 
 ### Normative language
 
@@ -1291,8 +1292,12 @@ A mutating command follows this sequence:
     persisted outcome together with sequence metadata, entity/index changes,
     events/outbox intent, provenance, and the commit record, or makes none of
     them durable. It writes no pending tombstone or second terminal envelope.
-20. The coordinator releases logical capabilities and publishes bounded
-    post-durability notifications.
+20. The coordinator releases logical capabilities and publishes the exact
+    first-durable application `CommitSequence` through its injected
+    least-authority notification sink. Replay, read-only, failed, audit,
+    initialization, and control-plane paths publish nothing. A sink error or
+    panic preserves the already-known committed result for its current caller
+    but stops coordinator admission and process readiness.
 21. The service applies every current disclosure obligation and constructs the
     fully bounded, filtered, redacted semantic result. A shaping failure is a
     failure and never produces a false successful audit.

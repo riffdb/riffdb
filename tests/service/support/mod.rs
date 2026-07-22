@@ -19,8 +19,9 @@ use riffdb_catalog::{
 };
 use riffdb_commit::{
     AdministrationClock, AdministrationClockError, AdmissionClock, AdmissionClockError,
-    CoordinatorDurability, CoordinatorWorkloadCapacity, ProvenanceIdSource,
-    ProvenanceIdSourceError, RunningCommandCoordinator,
+    ApplicationCommitNotificationError, ApplicationCommitNotificationSink, CoordinatorDurability,
+    CoordinatorWorkloadCapacity, ProvenanceIdSource, ProvenanceIdSourceError,
+    RunningCommandCoordinator,
 };
 use riffdb_conflict::{ConflictManager, ConflictManagerConfig, ShardedConflictManager};
 use riffdb_contract_compiler::{compile_contract_source, compile_contract_successor};
@@ -62,7 +63,7 @@ use riffdb_service::{
     RequestDeadlineScheduler, ResolveCommandOutcomeRequest, RevokeCapabilityRequest, RiffDbService,
     ScanCommitsRequest, ScanIndexRequest, ServiceDiagnostics, ServiceExecutors, ServiceHealthHooks,
     ServiceIdentity, ServiceJob, ServiceJobSpawner, ServiceProcessMetadata, ServiceProviders,
-    ServiceTelemetry, ServiceTelemetryEvent, SourceName, TraceProvenanceRequest,
+    ServiceTelemetry, ServiceTelemetryEvent, SourceName, SubmittedRecord, TraceProvenanceRequest,
     ValidateContractRequest, port_completion_channel,
 };
 use riffdb_storage_api::{
@@ -955,7 +956,7 @@ impl ServiceHarness {
         ExecuteCommandRequest::new(
             SourceName::new(COMMAND_NAME).expect("checked command name"),
             Some(self.database.executable_plan.reference().contract_version()),
-            input,
+            SubmittedRecord::try_from(input).expect("bounded submitted command input"),
         )
         .expect("bounded command request")
     }
@@ -1565,7 +1566,7 @@ fn open_operational(store: RedbStore) -> RedbOperationalPorts {
         history.matches(opened.database_id(), opened.open_session_id()),
         "catalog proof belongs to the structural-open session"
     );
-    let (_, _, dormant): (_, _, RedbDormantPorts) = opened.into_parts();
+    let (_, _, _, dormant): (_, _, _, RedbDormantPorts) = opened.into_parts();
     dormant
         .into_operational_after_catalog_validation()
         .expect("activate checked redb ports")
@@ -1594,8 +1595,20 @@ fn start_coordinator(ports: RedbOperationalPorts) -> RunningCommandCoordinator {
         Arc::new(IncrementingAdministrationClock::new()),
         Arc::new(FixedAuthorizationClock),
         Arc::new(SequentialProvenanceIds::default()),
+        Arc::new(DiscardApplicationCommitNotifications),
     )
     .expect("start production coordinator")
+}
+
+struct DiscardApplicationCommitNotifications;
+
+impl ApplicationCommitNotificationSink for DiscardApplicationCommitNotifications {
+    fn publish_first_commit(
+        &self,
+        _: CommitSequence,
+    ) -> Result<(), ApplicationCommitNotificationError> {
+        Ok(())
+    }
 }
 
 struct FixedAdmissionClock;

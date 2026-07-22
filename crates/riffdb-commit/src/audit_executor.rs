@@ -5,7 +5,7 @@ use std::num::NonZeroU16;
 use std::pin::Pin;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU8, AtomicUsize, Ordering};
-use std::{error::Error, fmt, thread};
+use std::{error::Error, fmt, panic, thread};
 
 use riffdb_storage_api::{
     AdmissionRepository, ApplicationCommandTransactionPort, AuditPrincipalV1,
@@ -23,7 +23,8 @@ use riffdb_policy::AuthorizationClock;
 
 use crate::{
     AdministrationAuditInputView, AdministrationClock, AdministrationClockError, AdmissionClock,
-    CommandExecutionPreparation, ProvenanceIdSource,
+    ApplicationCommitNotificationSink, CommandExecutionPreparation, CommittedOutcomeDisposition,
+    ProvenanceIdSource,
     command_execution::{
         CommandExecutionError, CommandExecutionLifecycle, CommandExecutionResult,
         CoordinatorDurability, drive_command_execution,
@@ -886,6 +887,7 @@ impl RunningCommandCoordinator {
         administration_clock: Arc<dyn AdministrationClock>,
         authorization_clock: Arc<dyn AuthorizationClock>,
         provenance_source: Arc<dyn ProvenanceIdSource>,
+        notifications: Arc<dyn ApplicationCommitNotificationSink>,
     ) -> Result<Self, CoordinatorStartError>
     where
         Repository: AdmissionRepository
@@ -899,7 +901,7 @@ impl RunningCommandCoordinator {
             + Send
             + 'static,
     {
-        Self::spawn_with_operations(workload_capacity, move |lifecycle| {
+        Self::spawn_with_operations(workload_capacity, notifications, move |lifecycle| {
             Box::new(ProductionCoordinatorOperations {
                 repository,
                 conflicts,
@@ -915,6 +917,7 @@ impl RunningCommandCoordinator {
 
     fn spawn_with_operations(
         workload_capacity: CoordinatorWorkloadCapacity,
+        notifications: Arc<dyn ApplicationCommitNotificationSink>,
         operations: impl FnOnce(ActorLifecyclePublisher) -> Box<dyn CoordinatorActorOperations>,
     ) -> Result<Self, CoordinatorStartError> {
         let channel_capacity = usize::from(workload_capacity.get()) + 1;
@@ -937,6 +940,7 @@ impl RunningCommandCoordinator {
         let actor = CommandCoordinatorActor {
             receiver,
             operations: operations(lifecycle_publisher.clone()),
+            notifications,
             lifecycle: lifecycle_publisher,
         };
         let actor_thread = thread::Builder::new()
@@ -982,9 +986,11 @@ impl RunningCommandCoordinator {
         Repository: ServiceAuditAppendRepository + Send + 'static,
         Clock: AdministrationClock + 'static,
     {
-        Self::spawn_with_operations(workload_capacity, move |_| {
-            Box::new(AuditOnlyCoordinatorOperations { repository, clock })
-        })
+        Self::spawn_with_operations(
+            workload_capacity,
+            Arc::new(DiscardApplicationCommitNotifications),
+            move |_| Box::new(AuditOnlyCoordinatorOperations { repository, clock }),
+        )
     }
 
     /// Returns a cloneable least-authority handle to this actor's audit path.
@@ -1401,9 +1407,23 @@ impl CommandExecutionLifecycle for ActorLifecyclePublisher {
     }
 }
 
+#[cfg(test)]
+struct DiscardApplicationCommitNotifications;
+
+#[cfg(test)]
+impl ApplicationCommitNotificationSink for DiscardApplicationCommitNotifications {
+    fn publish_first_commit(
+        &self,
+        _: riffdb_types::CommitSequence,
+    ) -> Result<(), crate::ApplicationCommitNotificationError> {
+        Ok(())
+    }
+}
+
 struct CommandCoordinatorActor {
     receiver: mpsc::Receiver<CoordinatorMessage>,
     operations: Box<dyn CoordinatorActorOperations>,
+    notifications: Arc<dyn ApplicationCommitNotificationSink>,
     lifecycle: ActorLifecyclePublisher,
 }
 
@@ -1612,6 +1632,17 @@ impl CommandCoordinatorActor {
         completion: oneshot::Sender<Result<CommandExecutionResult, CommandExecutionError>>,
     ) {
         let result = self.operations.drive_command(preparation).await;
+        if let Ok(CommandExecutionResult::Committed(outcome)) = &result
+            && outcome.disposition() == CommittedOutcomeDisposition::FirstCommit
+        {
+            let sequence = outcome.stored_outcome().commit_sequence();
+            let publication = panic::catch_unwind(panic::AssertUnwindSafe(|| {
+                self.notifications.publish_first_commit(sequence)
+            }));
+            if !matches!(publication, Ok(Ok(()))) {
+                self.lifecycle.stop();
+            }
+        }
         let _receiver_may_be_dropped = completion.send(result);
     }
 

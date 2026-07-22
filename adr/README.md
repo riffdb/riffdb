@@ -54,10 +54,11 @@ direction, merged draft, or implementation choice.
 | [0030](0030-capability-partition-startup-evidence.md) | Capability Partition Startup Evidence | Accepted |
 | [0031](0031-schema-directed-submitted-command-values.md) | Schema-Directed Submitted Command Values | Accepted |
 | [0032](0032-same-session-retained-metadata-handoff.md) | Same-Session Retained Metadata Handoff | Accepted |
+| [0033](0033-first-commit-notification-publication.md) | First-Commit Notification Publication | Accepted |
 
 The human architecture review on 2026-07-12 approved the direction represented
 by ADR-0001 through ADR-0012. The human maintainer accepted ADR-0001 through
-ADR-0007, ADR-0009 through ADR-0032, and their recorded companion amendments by
+ADR-0007, ADR-0009 through ADR-0033, and their recorded companion amendments by
 2026-07-21. ADR-0008 remains Proposed for resource URIs other than the exact
 provenance locator, HTTP audience, stdio-over-gRPC transport, cursor
 presentation, and the remaining exact MCP fixtures; ADR-0020 separately accepts
@@ -85,6 +86,10 @@ materializes the sole canonical command input under the selected plan.
 ADR-0032 carries the existing exact retained metadata in the completed
 same-session structural handoff so WP-130 can select bootstrap lifecycle and
 allocator readiness without a post-open storage bypass.
+ADR-0033 supplies the missing sequence-only coordinator-to-server handoff for
+first durable application commits while keeping catch-up, policy, redaction,
+subscriber bounds, and public stream construction in the shared service/server
+composition.
 
 ## Workflow
 

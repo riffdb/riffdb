@@ -20,6 +20,7 @@ mod command_validation;
 mod control_plane;
 mod idempotency_inspection;
 mod initialization;
+mod notification;
 mod outcome;
 mod provenance;
 mod read_only_execution;
@@ -68,6 +69,7 @@ pub use initialization::{
     DatabaseInitializationCompletion, DatabaseInitializationDecision,
     DatabaseInitializationExecutor, DatabaseInitializationPermit, InitializedDatabase,
 };
+pub use notification::{ApplicationCommitNotificationError, ApplicationCommitNotificationSink};
 pub use outcome::{CommittedOutcome, CommittedOutcomeDisposition, CommittedOutcomeDurabilityError};
 pub use provenance::{ProvenanceIdSource, ProvenanceIdSourceError};
 pub use read_only_execution::{ReadOnlyExecuted, ReadOnlyExecutionResult};

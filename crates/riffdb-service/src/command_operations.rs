@@ -1,5 +1,6 @@
 //! Checked command execution and uncertainty-recovery orchestration.
 
+use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
 use riffdb_catalog::{CatalogError, CatalogErrorKind, ResolvedExecutablePlan};
@@ -11,7 +12,8 @@ use riffdb_commit::{
     CoordinatorDurability, ReadOnlyExecutionPreparation, ReadOnlyExecutionResult,
 };
 use riffdb_contract_ir::{
-    CommandPlan, ExecutionClass, OutcomeSchema, SchemaIr, ValueType, ValueTypeTag,
+    CommandPlan, ExecutionClass, OutcomeSchema, RecordSchema, RecordTypeRef, SchemaIr, ValueType,
+    ValueTypeTag,
 };
 use riffdb_errors::{
     MAX_VALIDATION_ISSUES, MAX_VALIDATION_PATH_SEGMENTS, PublicError, ValidationCode,
@@ -23,9 +25,10 @@ use riffdb_policy::{
     OutputClassification, PartitionConstraint,
 };
 use riffdb_types::{
-    CanonicalRecord, CanonicalValue, FieldId, IdempotencyKey, OutcomeId, ScopedPartitionV1,
+    CanonicalCodecError, CanonicalList, CanonicalRecord, CanonicalValue, Decimal, DecimalSpec,
+    FieldId, IdempotencyKey, MAX_DECIMAL_PRECISION, Money, OutcomeId, ScopedPartitionV1,
     ServiceAuditLinkV1, ServiceAuditPhaseV1, ServiceAuditTargetsV1, ServiceOperationV1,
-    TenantScope,
+    TenantScope, encode_canonical_record,
 };
 
 use crate::orchestration::{AuditScope, BegunInvocation};
@@ -38,7 +41,8 @@ use crate::{
     PendingTerminalResponse, PortAdmissionError, PortDriverStopped, ReadOnlyCommandResult,
     RecoveredJournaledCommandResult, RequestContext, ResolveCommandOutcomeRequest,
     ResolveCommandOutcomeResult, RiffDbService, RiffDbServiceInner, ServiceAuditTargetMap,
-    ServiceFailure, ServiceFuture, ServiceResult, ensure_response_budget,
+    ServiceFailure, ServiceFuture, ServiceResult, SubmittedFieldIdentity, SubmittedRecord,
+    SubmittedValue, ensure_response_budget,
 };
 
 impl CommandApplication for RiffDbService {
@@ -1279,67 +1283,98 @@ fn normalize_command_input(
     selected: &CommandPlan,
     selected_schema: &SchemaIr,
     active: &CommandPlan,
-    submitted: &CanonicalRecord,
+    submitted: &SubmittedRecord,
 ) -> Result<CanonicalRecord, InputPreparationError> {
     if selected.command_id() != active.command_id() {
         return Err(InputPreparationError::Integrity);
     }
-    let declared = selected.input().record().fields();
-    let supplied = submitted.fields();
-    let mut normalized = Vec::with_capacity(declared.len());
+    let selected_record = selected.input().record();
+    let active_record = active.input().record();
+    let field_resolver = SubmittedFieldResolver::new(selected_record, active_record);
+    let mut materialized = BTreeMap::new();
+    let mut resolved_fields = BTreeSet::new();
     let mut issues = Vec::new();
-    let mut declared_index = 0;
-    let mut supplied_index = 0;
 
-    while declared_index < declared.len() || supplied_index < supplied.len() {
-        match (declared.get(declared_index), supplied.get(supplied_index)) {
-            (Some(field), Some((actual_id, value))) if field.id() == *actual_id => {
-                let issue =
-                    validate_input_value(selected_schema, field.value_type(), value, field.id())
-                        .or_else(|| {
-                            (selected.idempotency_input() == Some(field.id())
-                        && matches!(value, CanonicalValue::String(value) if value.is_empty()))
-                    .then(|| field_issue(ValidationCode::InvalidValue, field.id()))
-                        });
-                if let Some(issue) = issue {
-                    push_issue(&mut issues, issue);
-                } else {
-                    normalized.push((field.id(), value.clone()));
+    for field in submitted.fields() {
+        if issues.len() == MAX_VALIDATION_ISSUES {
+            break;
+        }
+        let field_id = match field_resolver.resolve(field.identity()) {
+            Ok(field_id) => field_id,
+            Err(code) => {
+                if let Some(field_id) = field_resolver.known_component(field.identity())
+                    && selected_record.field(field_id).is_some()
+                {
+                    resolved_fields.insert(field_id);
                 }
-                declared_index += 1;
-                supplied_index += 1;
+                push_issue(
+                    &mut issues,
+                    identity_issue(code, field.identity(), &field_resolver),
+                );
+                continue;
             }
-            (Some(field), Some((actual_id, _))) if field.id() < *actual_id => {
-                if field.value_type().is_optional() {
-                    normalized.push((field.id(), CanonicalValue::Null));
-                } else {
+        };
+        if !resolved_fields.insert(field_id) {
+            push_issue(
+                &mut issues,
+                field_issue(ValidationCode::DuplicateField, field_id),
+            );
+            continue;
+        }
+
+        let Some(declared) = selected_record.field(field_id) else {
+            let compatible_historical_addition = active_record
+                .field(field_id)
+                .is_some_and(|candidate| candidate.value_type().is_optional())
+                && matches!(field.value(), SubmittedValue::Null);
+            if !compatible_historical_addition {
+                push_issue(
+                    &mut issues,
+                    field_issue(ValidationCode::UnknownField, field_id),
+                );
+            }
+            continue;
+        };
+
+        let mut path = vec![ValidationPathSegment::Field(field_id)];
+        match materialize_value(
+            selected_schema,
+            declared.value_type(),
+            field.value(),
+            &mut path,
+        ) {
+            Ok(value) => {
+                if selected.idempotency_input() == Some(field_id)
+                    && matches!(&value, CanonicalValue::String(value) if value.is_empty())
+                {
                     push_issue(
                         &mut issues,
-                        field_issue(ValidationCode::MissingRequiredValue, field.id()),
+                        field_issue(ValidationCode::InvalidValue, field_id),
                     );
-                }
-                declared_index += 1;
-            }
-            (Some(_), Some((actual_id, value))) => {
-                validate_historical_extra(active, *actual_id, value, &mut issues);
-                supplied_index += 1;
-            }
-            (Some(field), None) => {
-                if field.value_type().is_optional() {
-                    normalized.push((field.id(), CanonicalValue::Null));
                 } else {
-                    push_issue(
-                        &mut issues,
-                        field_issue(ValidationCode::MissingRequiredValue, field.id()),
-                    );
+                    materialized.insert(field_id, value);
                 }
-                declared_index += 1;
             }
-            (None, Some((actual_id, value))) => {
-                validate_historical_extra(active, *actual_id, value, &mut issues);
-                supplied_index += 1;
+            Err(MaterializationError::Public(code, path)) => {
+                push_issue(&mut issues, validation_issue(code, path));
             }
-            (None, None) => break,
+            Err(MaterializationError::Integrity) => {
+                return Err(InputPreparationError::Integrity);
+            }
+        }
+    }
+
+    let mut normalized = Vec::with_capacity(selected_record.fields().len());
+    for declared in selected_record.fields() {
+        if let Some(value) = materialized.remove(&declared.id()) {
+            normalized.push((declared.id(), value));
+        } else if declared.value_type().is_optional() {
+            normalized.push((declared.id(), CanonicalValue::Null));
+        } else if !resolved_fields.contains(&declared.id()) {
+            push_issue(
+                &mut issues,
+                field_issue(ValidationCode::MissingRequiredValue, declared.id()),
+            );
         }
     }
 
@@ -1349,118 +1384,312 @@ fn normalize_command_input(
             issues,
         )));
     }
-    CanonicalRecord::new(normalized).map_err(|_| InputPreparationError::Integrity)
-}
-
-fn validate_historical_extra(
-    active: &CommandPlan,
-    field_id: FieldId,
-    value: &CanonicalValue,
-    issues: &mut Vec<ValidationIssue>,
-) {
-    let compatible_null_addition = active
-        .input()
-        .record()
-        .field(field_id)
-        .is_some_and(|field| field.value_type().is_optional())
-        && matches!(value, CanonicalValue::Null);
-    if !compatible_null_addition {
-        push_issue(issues, field_issue(ValidationCode::UnknownField, field_id));
+    let normalized =
+        CanonicalRecord::new(normalized).map_err(|_| InputPreparationError::Integrity)?;
+    match encode_canonical_record(&normalized) {
+        Ok(_) => Ok(normalized),
+        Err(CanonicalCodecError::DocumentTooLarge { .. }) => Err(InputPreparationError::Public(
+            invalid_root(ValidationCode::TooLong),
+        )),
+        Err(_) => Err(InputPreparationError::Integrity),
     }
 }
 
-fn validate_input_value(
-    schema: &SchemaIr,
-    value_type: &ValueType,
-    value: &CanonicalValue,
-    field_id: FieldId,
-) -> Option<ValidationIssue> {
-    let mut path = vec![ValidationPathSegment::Field(field_id)];
-    validate_value(schema, value_type, value, &mut path).map(|code| {
-        let path = ValidationPath::new(path).unwrap_or_else(|_| ValidationPath::root());
-        ValidationIssue::new(code, path)
-    })
+enum MaterializationError {
+    Public(ValidationCode, Vec<ValidationPathSegment>),
+    Integrity,
 }
 
-fn validate_value(
+fn materialize_value(
     schema: &SchemaIr,
     value_type: &ValueType,
-    value: &CanonicalValue,
+    value: &SubmittedValue,
     path: &mut Vec<ValidationPathSegment>,
-) -> Option<ValidationCode> {
-    if matches!(value, CanonicalValue::Null) {
-        return (!value_type.is_optional()).then_some(ValidationCode::TypeMismatch);
+) -> Result<CanonicalValue, MaterializationError> {
+    if matches!(value, SubmittedValue::Null) {
+        return if value_type.is_optional() {
+            Ok(CanonicalValue::Null)
+        } else {
+            Err(public_materialization(ValidationCode::TypeMismatch, path))
+        };
     }
     if let Some(inner) = value_type.optional_inner() {
-        return validate_value(schema, inner, value, path);
+        return materialize_value(schema, inner, value, path);
     }
     match (value_type.tag(), value) {
-        (ValueTypeTag::Bool, CanonicalValue::Bool(_))
-        | (ValueTypeTag::I64, CanonicalValue::I64(_))
-        | (ValueTypeTag::U64, CanonicalValue::U64(_))
-        | (ValueTypeTag::Timestamp, CanonicalValue::Timestamp(_))
-        | (ValueTypeTag::Date, CanonicalValue::Date(_))
-        | (ValueTypeTag::Uuid, CanonicalValue::Uuid(_)) => None,
-        (ValueTypeTag::Decimal, CanonicalValue::Decimal(actual)) => {
-            (value_type.decimal_spec() != Some(actual.spec())).then_some(ValidationCode::OutOfRange)
+        (ValueTypeTag::Bool, SubmittedValue::Bool(value)) => Ok(CanonicalValue::Bool(*value)),
+        (ValueTypeTag::I64, SubmittedValue::I64(value)) => Ok(CanonicalValue::I64(*value)),
+        (ValueTypeTag::U64, SubmittedValue::U64(value)) => Ok(CanonicalValue::U64(*value)),
+        (ValueTypeTag::Timestamp, SubmittedValue::Timestamp(value)) => {
+            Ok(CanonicalValue::Timestamp(*value))
         }
-        (ValueTypeTag::Money, CanonicalValue::Money(actual)) => {
-            if value_type.currency() != Some(actual.currency()) {
-                Some(ValidationCode::InvalidValue)
-            } else if value_type.validate_value(value).is_err() {
-                Some(ValidationCode::OutOfRange)
-            } else {
-                None
+        (ValueTypeTag::Date, SubmittedValue::Date(value)) => Ok(CanonicalValue::Date(*value)),
+        (ValueTypeTag::Uuid, SubmittedValue::Uuid(value)) => Ok(CanonicalValue::Uuid(*value)),
+        (ValueTypeTag::Decimal, SubmittedValue::Decimal(actual)) => {
+            let spec = value_type
+                .decimal_spec()
+                .ok_or(MaterializationError::Integrity)?;
+            if actual.scale() != spec.scale() {
+                return Err(public_materialization(ValidationCode::OutOfRange, path));
             }
+            Decimal::new(spec, actual.coefficient())
+                .map(CanonicalValue::Decimal)
+                .map_err(|_| public_materialization(ValidationCode::OutOfRange, path))
         }
-        (ValueTypeTag::String, CanonicalValue::String(actual)) => (value_type
-            .byte_bound()
-            .is_some_and(|maximum| actual.len() > maximum))
-        .then_some(ValidationCode::TooLong),
-        (ValueTypeTag::Bytes, CanonicalValue::Bytes(actual)) => (value_type
-            .byte_bound()
-            .is_some_and(|maximum| actual.len() > maximum))
-        .then_some(ValidationCode::TooLong),
-        (
-            ValueTypeTag::Enum,
-            CanonicalValue::Enum {
-                type_id,
-                variant_id,
-            },
-        ) => {
-            if value_type.enum_type_id() != Some(*type_id) {
-                Some(ValidationCode::TypeMismatch)
-            } else if schema
-                .enumeration(*type_id)
-                .is_none_or(|enumeration| !enumeration.contains_variant(*variant_id))
+        (ValueTypeTag::Money, SubmittedValue::Money(actual)) => {
+            let currency = value_type
+                .currency()
+                .ok_or(MaterializationError::Integrity)?;
+            if actual.currency() != currency {
+                return Err(public_materialization(ValidationCode::InvalidValue, path));
+            }
+            let spec = DecimalSpec::new(MAX_DECIMAL_PRECISION, 2)
+                .map_err(|_| MaterializationError::Integrity)?;
+            if actual.amount().scale() != spec.scale() {
+                return Err(public_materialization(ValidationCode::OutOfRange, path));
+            }
+            let amount = Decimal::new(spec, actual.amount().coefficient())
+                .map_err(|_| public_materialization(ValidationCode::OutOfRange, path))?;
+            Ok(CanonicalValue::Money(Money::new(currency, amount)))
+        }
+        (ValueTypeTag::String, SubmittedValue::String(actual)) => {
+            if value_type
+                .byte_bound()
+                .is_some_and(|maximum| actual.len() > maximum)
             {
-                Some(ValidationCode::InvalidValue)
+                Err(public_materialization(ValidationCode::TooLong, path))
             } else {
-                None
+                Ok(CanonicalValue::String(actual.clone()))
             }
         }
-        (ValueTypeTag::List, CanonicalValue::List(values)) => {
+        (ValueTypeTag::Bytes, SubmittedValue::Bytes(actual)) => {
+            if value_type
+                .byte_bound()
+                .is_some_and(|maximum| actual.len() > maximum)
+            {
+                Err(public_materialization(ValidationCode::TooLong, path))
+            } else {
+                Ok(CanonicalValue::Bytes(actual.clone()))
+            }
+        }
+        (ValueTypeTag::Enum, SubmittedValue::Enum(actual)) => {
+            let expected_type = value_type
+                .enum_type_id()
+                .ok_or(MaterializationError::Integrity)?;
+            if actual.type_id() != expected_type {
+                return Err(public_materialization(ValidationCode::TypeMismatch, path));
+            }
+            let enumeration = schema
+                .enumeration(expected_type)
+                .ok_or(MaterializationError::Integrity)?;
+            let Some(variant) = enumeration
+                .variants()
+                .iter()
+                .find(|variant| variant.id() == actual.variant_id())
+            else {
+                return Err(public_materialization(ValidationCode::InvalidValue, path));
+            };
+            if actual
+                .name()
+                .is_some_and(|name| name.as_str() != variant.name())
+            {
+                return Err(public_materialization(ValidationCode::InvalidValue, path));
+            }
+            Ok(CanonicalValue::Enum {
+                type_id: expected_type,
+                variant_id: actual.variant_id(),
+            })
+        }
+        (ValueTypeTag::List, SubmittedValue::List(values)) => {
             let Some((element, maximum)) = value_type.list_parts() else {
-                return Some(ValidationCode::TypeMismatch);
+                return Err(MaterializationError::Integrity);
             };
             if values.len() > maximum {
-                return Some(ValidationCode::TooManyItems);
+                return Err(public_materialization(ValidationCode::TooManyItems, path));
             }
+            let mut materialized = Vec::with_capacity(values.len());
             for (index, item) in values.values().iter().enumerate() {
                 let pushed = path.len() < MAX_VALIDATION_PATH_SEGMENTS;
                 if pushed {
                     path.push(ValidationPathSegment::ListIndex(index as u32));
                 }
-                if let Some(code) = validate_value(schema, element, item, path) {
-                    return Some(code);
-                }
+                let result = materialize_value(schema, element, item, path);
                 if pushed {
                     path.pop();
                 }
+                materialized.push(result?);
             }
-            None
+            CanonicalList::new(materialized)
+                .map(CanonicalValue::List)
+                .map_err(|_| MaterializationError::Integrity)
         }
-        _ => Some(ValidationCode::TypeMismatch),
+        (ValueTypeTag::Record, SubmittedValue::Record(record)) => {
+            let record_schema =
+                resolve_record_schema(schema, value_type).ok_or(MaterializationError::Integrity)?;
+            materialize_exact_record(schema, record_schema, record, path)
+                .map(CanonicalValue::Record)
+        }
+        _ => Err(public_materialization(ValidationCode::TypeMismatch, path)),
+    }
+}
+
+fn materialize_exact_record(
+    schema: &SchemaIr,
+    record_schema: &RecordSchema,
+    submitted: &SubmittedRecord,
+    path: &mut Vec<ValidationPathSegment>,
+) -> Result<CanonicalRecord, MaterializationError> {
+    let field_resolver = SubmittedFieldResolver::new(record_schema, record_schema);
+    let mut values = BTreeMap::new();
+    for field in submitted.fields() {
+        let field_id = field_resolver.resolve(field.identity()).map_err(|code| {
+            let mut issue_path = path.clone();
+            if let Some(field_id) = field.identity().field_id()
+                && issue_path.len() < MAX_VALIDATION_PATH_SEGMENTS
+            {
+                issue_path.push(ValidationPathSegment::Field(field_id));
+            }
+            MaterializationError::Public(code, issue_path)
+        })?;
+        if values.contains_key(&field_id) {
+            let mut issue_path = path.clone();
+            push_path_field(&mut issue_path, field_id);
+            return Err(MaterializationError::Public(
+                ValidationCode::DuplicateField,
+                issue_path,
+            ));
+        }
+        let declared = record_schema
+            .field(field_id)
+            .ok_or(MaterializationError::Integrity)?;
+        let pushed = path.len() < MAX_VALIDATION_PATH_SEGMENTS;
+        if pushed {
+            path.push(ValidationPathSegment::Field(field_id));
+        }
+        let result = materialize_value(schema, declared.value_type(), field.value(), path);
+        if pushed {
+            path.pop();
+        }
+        values.insert(field_id, result?);
+    }
+
+    let mut canonical = Vec::with_capacity(record_schema.fields().len());
+    for declared in record_schema.fields() {
+        if let Some(value) = values.remove(&declared.id()) {
+            canonical.push((declared.id(), value));
+        } else if declared.value_type().is_optional() {
+            canonical.push((declared.id(), CanonicalValue::Null));
+        } else {
+            let mut issue_path = path.clone();
+            push_path_field(&mut issue_path, declared.id());
+            return Err(MaterializationError::Public(
+                ValidationCode::MissingRequiredValue,
+                issue_path,
+            ));
+        }
+    }
+    CanonicalRecord::new(canonical).map_err(|_| MaterializationError::Integrity)
+}
+
+fn resolve_record_schema<'a>(
+    schema: &'a SchemaIr,
+    value_type: &ValueType,
+) -> Option<&'a RecordSchema> {
+    match value_type.record_ref()? {
+        RecordTypeRef::Entity(id) => schema.entity(*id).map(|entity| entity.record()),
+        RecordTypeRef::Event(id) => schema.event(*id).map(|event| event.payload()),
+        RecordTypeRef::CommandInput(_)
+        | RecordTypeRef::CommandOutcome { .. }
+        | RecordTypeRef::ProjectionResult(_) => None,
+    }
+}
+
+struct SubmittedFieldResolver<'a> {
+    selected: &'a RecordSchema,
+    active: &'a RecordSchema,
+    names: BTreeMap<&'a str, FieldId>,
+}
+
+impl<'a> SubmittedFieldResolver<'a> {
+    fn new(selected: &'a RecordSchema, active: &'a RecordSchema) -> Self {
+        let mut names = selected
+            .fields()
+            .iter()
+            .map(|field| (field.name(), field.id()))
+            .collect::<BTreeMap<_, _>>();
+        for field in active.fields() {
+            names.insert(field.name(), field.id());
+        }
+        Self {
+            selected,
+            active,
+            names,
+        }
+    }
+
+    fn resolve(&self, identity: &SubmittedFieldIdentity) -> Result<FieldId, ValidationCode> {
+        let by_id = identity
+            .field_id()
+            .filter(|field_id| self.contains_id(*field_id));
+        let by_name = identity
+            .name()
+            .and_then(|name| self.names.get(name.as_str()).copied());
+
+        match (identity.field_id(), identity.name(), by_id, by_name) {
+            (Some(_), None, Some(field_id), None) => Ok(field_id),
+            (None, Some(_), None, Some(field_id)) => Ok(field_id),
+            (Some(_), Some(_), Some(id), Some(named)) if id == named => Ok(id),
+            (Some(_), Some(_), None, None)
+            | (Some(_), None, None, None)
+            | (None, Some(_), None, None) => Err(ValidationCode::UnknownField),
+            (Some(_), Some(_), _, _) => Err(ValidationCode::InvalidValue),
+            _ => Err(ValidationCode::UnknownField),
+        }
+    }
+
+    fn known_component(&self, identity: &SubmittedFieldIdentity) -> Option<FieldId> {
+        identity
+            .field_id()
+            .filter(|field_id| self.contains_id(*field_id))
+            .or_else(|| {
+                identity
+                    .name()
+                    .and_then(|name| self.names.get(name.as_str()).copied())
+            })
+    }
+
+    fn contains_id(&self, field_id: FieldId) -> bool {
+        self.active.field(field_id).is_some() || self.selected.field(field_id).is_some()
+    }
+}
+
+fn identity_issue(
+    code: ValidationCode,
+    identity: &SubmittedFieldIdentity,
+    resolver: &SubmittedFieldResolver<'_>,
+) -> ValidationIssue {
+    let field_id = resolver.known_component(identity).or(identity.field_id());
+    field_id.map_or_else(
+        || ValidationIssue::new(code, ValidationPath::root()),
+        |field_id| field_issue(code, field_id),
+    )
+}
+
+fn public_materialization(
+    code: ValidationCode,
+    path: &[ValidationPathSegment],
+) -> MaterializationError {
+    MaterializationError::Public(code, path.to_vec())
+}
+
+fn validation_issue(code: ValidationCode, path: Vec<ValidationPathSegment>) -> ValidationIssue {
+    let path = ValidationPath::new(path).unwrap_or_else(|_| ValidationPath::root());
+    ValidationIssue::new(code, path)
+}
+
+fn push_path_field(path: &mut Vec<ValidationPathSegment>, field_id: FieldId) {
+    if path.len() < MAX_VALIDATION_PATH_SEGMENTS {
+        path.push(ValidationPathSegment::Field(field_id));
     }
 }
 
@@ -1891,7 +2120,10 @@ mod tests {
     use std::sync::atomic::{AtomicUsize, Ordering};
 
     use riffdb_contract_compiler::{compile_contract_source, compile_contract_successor};
-    use riffdb_contract_ir::{ContractBundle, EnumSchema};
+    use riffdb_contract_ir::{
+        ContractBundle, EnumSchema, FieldSchema, MAX_DECLARATIONS_PER_KIND, RecordSchema,
+        RecordTypeRef, ValueType,
+    };
     use riffdb_errors::{
         IncidentIdSource, IncidentIdSourceError, InternalError, PublicErrorDetails, PublicErrorKind,
     };
@@ -1900,12 +2132,14 @@ mod tests {
         IdempotencyKeyDigest, StoredAdmittedProvenanceClaimsV1, StoredOutcomeV1,
     };
     use riffdb_types::{
-        ActorId, ActorKind, AdmittedActorContext, AggregateTypeId, CanonicalInputHash,
-        CommitSequence, ContractBundleHash, ContractLineage, ContractVersion, DatabaseId,
-        DigestKeyId, EnumTypeId, EnumVariantId, Environment, FieldId, IncidentId, LogicalTime,
-        OutcomeId, PartitionKeyBuilder, PlanHash, ProvenanceId, RequestId, TenantId, TenantScope,
-        Timestamp, hash_partition_key,
+        ActorId, ActorKind, AdmittedActorContext, AggregateTypeId, CanonicalInputHash, CommandId,
+        CommitSequence, ContractBundleHash, ContractLineage, ContractVersion, CurrencyCode,
+        DatabaseId, DigestKeyId, EnumTypeId, EnumVariantId, Environment, FieldId, IncidentId,
+        LogicalTime, OutcomeId, PartitionKeyBuilder, PlanHash, ProvenanceId, RequestId, TenantId,
+        TenantScope, Timestamp, hash_command_input, hash_partition_key,
     };
+
+    use crate::{SourceName, SubmittedDecimal, SubmittedEnum, SubmittedField, SubmittedMoney};
 
     use super::*;
 
@@ -2074,6 +2308,8 @@ contract InputNormalization version {version} {{
     input id: uuid
     input mode: Mode
     input values: list<i64, 2>
+    input amount: decimal<28,2>
+    input price: money<USD>
 {optional_note}    read Row(id) as row else Missing {{ id: id }}
     return Found {{ row: row }}
   }}
@@ -2094,6 +2330,21 @@ contract MutationInput version 1 {
     mutate Row(id) as row else Missing { id: id }
     set row.value = 1
     return Changed { row: row }
+  }
+}
+"#
+    }
+
+    fn large_decimal_list_source() -> &'static str {
+        r#"
+contract LargeDecimalInput version 1 {
+  entity Row { key (id: uuid) }
+  aggregate Rows { root Row partition_by id conflict_key (id) }
+  command Inspect {
+    input id: uuid
+    input values: list<decimal<38,0>, 65535>
+    read Row(id) as row else Missing { id: id }
+    return Found { row: row }
   }
 }
 "#
@@ -2148,6 +2399,24 @@ contract MutationInput version 1 {
                 field_id(plan, "values"),
                 CanonicalValue::list(vec![CanonicalValue::I64(7)]).expect("bounded list"),
             ),
+            (
+                field_id(plan, "amount"),
+                CanonicalValue::Decimal(
+                    Decimal::new(DecimalSpec::new(28, 2).expect("decimal spec"), 1_234)
+                        .expect("decimal value"),
+                ),
+            ),
+            (
+                field_id(plan, "price"),
+                CanonicalValue::Money(Money::new(
+                    CurrencyCode::new("USD").expect("currency"),
+                    Decimal::new(
+                        DecimalSpec::new(MAX_DECIMAL_PRECISION, 2).expect("money spec"),
+                        5_678,
+                    )
+                    .expect("money value"),
+                )),
+            ),
         ];
         if let Some(note) = note {
             fields.push((field_id(plan, "note"), note));
@@ -2155,15 +2424,43 @@ contract MutationInput version 1 {
         CanonicalRecord::new(fields).expect("canonical fixture input")
     }
 
-    fn issue(error: InputPreparationError) -> ValidationIssue {
+    fn submitted_input(input: CanonicalRecord) -> SubmittedRecord {
+        SubmittedRecord::try_from(input).expect("bounded submitted input")
+    }
+
+    fn replace_submitted_value(
+        submitted: &SubmittedRecord,
+        field_id: FieldId,
+        value: SubmittedValue,
+    ) -> SubmittedRecord {
+        let fields = submitted
+            .fields()
+            .iter()
+            .map(|field| {
+                if field.identity().field_id() == Some(field_id) {
+                    SubmittedField::new(field.identity().clone(), value.clone())
+                } else {
+                    field.clone()
+                }
+            })
+            .collect();
+        SubmittedRecord::new(fields).expect("bounded replacement input")
+    }
+
+    fn validation_issues(error: InputPreparationError) -> Vec<ValidationIssue> {
         let InputPreparationError::Public(error) = error else {
             panic!("expected public input validation failure");
         };
         let PublicErrorDetails::Validation(issues) = error.details() else {
             panic!("expected validation details");
         };
-        assert_eq!(issues.as_slice().len(), 1);
-        issues.as_slice()[0].clone()
+        issues.as_slice().to_vec()
+    }
+
+    fn issue(error: InputPreparationError) -> ValidationIssue {
+        let issues = validation_issues(error);
+        assert_eq!(issues.len(), 1);
+        issues[0].clone()
     }
 
     fn value(record: &CanonicalRecord, field: FieldId) -> Option<&CanonicalValue> {
@@ -2179,7 +2476,7 @@ contract MutationInput version 1 {
         let bundle = compile_normalization_fixture();
         let plan = command(&bundle);
         let note = field_id(plan, "note");
-        let submitted = valid_input(&bundle, None);
+        let submitted = submitted_input(valid_input(&bundle, None));
 
         let normalized = match normalize_command_input(plan, bundle.schema(), plan, &submitted) {
             Ok(normalized) => normalized,
@@ -2194,6 +2491,262 @@ contract MutationInput version 1 {
     }
 
     #[test]
+    fn field_id_name_and_redundant_identities_materialize_identically() {
+        let bundle = compile_normalization_fixture();
+        let plan = command(&bundle);
+        let canonical = valid_input(&bundle, None);
+        let by_id = submitted_input(canonical.clone());
+        let make_named = |redundant: bool| {
+            let fields = canonical
+                .fields()
+                .iter()
+                .map(|(field_id, value)| {
+                    let declared = plan
+                        .input()
+                        .record()
+                        .field(*field_id)
+                        .expect("declared field");
+                    let name = SourceName::new(declared.name()).expect("source name");
+                    let identity = if redundant {
+                        SubmittedFieldIdentity::IdAndName {
+                            id: *field_id,
+                            name,
+                        }
+                    } else {
+                        SubmittedFieldIdentity::Name(name)
+                    };
+                    SubmittedField::new(
+                        identity,
+                        SubmittedValue::try_from(value.clone()).expect("bounded submitted value"),
+                    )
+                })
+                .collect();
+            SubmittedRecord::new(fields).expect("bounded named input")
+        };
+
+        let expected = normalize_command_input(plan, bundle.schema(), plan, &by_id)
+            .unwrap_or_else(|_| panic!("ID input materializes"));
+        for submitted in [make_named(false), make_named(true)] {
+            assert_eq!(
+                normalize_command_input(plan, bundle.schema(), plan, &submitted)
+                    .unwrap_or_else(|_| panic!("named input materializes")),
+                expected
+            );
+        }
+    }
+
+    #[test]
+    fn field_id_and_name_representations_produce_the_same_canonical_input_hash() {
+        let bundle = compile_contract_source(mutation_source()).expect("mutation fixture compiles");
+        let plan = command(&bundle);
+        let idempotency = field_id(plan, "idempotency_key");
+        let id = field_id(plan, "id");
+        let fields = [
+            (
+                idempotency,
+                SubmittedValue::string("key-1").expect("bounded caller key"),
+            ),
+            (id, SubmittedValue::Uuid([0x22; 16])),
+        ];
+        let submitted = |by_name: bool| {
+            SubmittedRecord::new(
+                fields
+                    .iter()
+                    .map(|(field_id, value)| {
+                        let identity = if by_name {
+                            let name = plan
+                                .input()
+                                .record()
+                                .field(*field_id)
+                                .expect("declared field")
+                                .name();
+                            SubmittedFieldIdentity::Name(
+                                SourceName::new(name).expect("source name"),
+                            )
+                        } else {
+                            SubmittedFieldIdentity::Id(*field_id)
+                        };
+                        SubmittedField::new(identity, value.clone())
+                    })
+                    .collect(),
+            )
+            .expect("bounded submitted input")
+        };
+        let normalize = |submitted: SubmittedRecord| {
+            normalize_command_input(plan, bundle.schema(), plan, &submitted)
+                .unwrap_or_else(|_| panic!("input materializes"))
+        };
+        let by_id = normalize(submitted(false));
+        let by_name = normalize(submitted(true));
+        let input_hash = |normalized: &CanonicalRecord| {
+            let hash_record = CanonicalRecord::new(
+                normalized
+                    .fields()
+                    .iter()
+                    .filter(|(field_id, _)| *field_id != idempotency)
+                    .cloned()
+                    .collect(),
+            )
+            .expect("canonical hash record");
+            hash_command_input(
+                &encode_canonical_record(&hash_record).expect("encodable canonical input"),
+            )
+        };
+
+        assert_eq!(input_hash(&by_id), input_hash(&by_name));
+    }
+
+    #[test]
+    fn disagreeing_and_duplicate_resolved_field_identities_are_rejected() {
+        let bundle = compile_normalization_fixture();
+        let plan = command(&bundle);
+        let id = field_id(plan, "id");
+        let mode = field_id(plan, "mode");
+        let valid = submitted_input(valid_input(&bundle, None));
+
+        let mut mismatched = valid.fields().to_vec();
+        let id_index = mismatched
+            .iter()
+            .position(|field| field.identity().field_id() == Some(id))
+            .expect("ID field");
+        mismatched[id_index] = SubmittedField::new(
+            SubmittedFieldIdentity::IdAndName {
+                id,
+                name: SourceName::new("mode").expect("source name"),
+            },
+            SubmittedValue::Uuid([0x11; 16]),
+        );
+        let mismatch = SubmittedRecord::new(mismatched).expect("bounded mismatch");
+        assert_eq!(
+            issue(
+                normalize_command_input(plan, bundle.schema(), plan, &mismatch)
+                    .expect_err("mismatched redundant identity rejects")
+            )
+            .code(),
+            ValidationCode::InvalidValue
+        );
+
+        let mut duplicate = valid.fields().to_vec();
+        duplicate.push(SubmittedField::new(
+            SubmittedFieldIdentity::Name(SourceName::new("mode").expect("source name")),
+            SubmittedValue::Enum(SubmittedEnum::new(
+                enumeration(&bundle).id(),
+                enumeration(&bundle).variants()[0].id(),
+                None,
+            )),
+        ));
+        let duplicate = SubmittedRecord::new(duplicate).expect("bounded duplicate");
+        let duplicate_issue = issue(
+            normalize_command_input(plan, bundle.schema(), plan, &duplicate)
+                .expect_err("duplicate resolved field rejects"),
+        );
+        assert_eq!(duplicate_issue.code(), ValidationCode::DuplicateField);
+        assert_eq!(
+            duplicate_issue.path().segments(),
+            &[ValidationPathSegment::Field(mode)]
+        );
+    }
+
+    #[test]
+    fn decimal_and_money_materialization_uses_exact_declared_types() {
+        let bundle = compile_normalization_fixture();
+        let plan = command(&bundle);
+        let valid = submitted_input(valid_input(&bundle, None));
+        let amount = field_id(plan, "amount");
+        let price = field_id(plan, "price");
+
+        for (field, value, expected_code) in [
+            (
+                amount,
+                SubmittedValue::Decimal(SubmittedDecimal::new(1_234, 3).expect("scale")),
+                ValidationCode::OutOfRange,
+            ),
+            (
+                amount,
+                SubmittedValue::Decimal(
+                    SubmittedDecimal::new(i128::MAX, 2).expect("structural decimal"),
+                ),
+                ValidationCode::OutOfRange,
+            ),
+            (
+                price,
+                SubmittedValue::Money(SubmittedMoney::new(
+                    CurrencyCode::new("EUR").expect("currency"),
+                    SubmittedDecimal::new(5_678, 2).expect("money amount"),
+                )),
+                ValidationCode::InvalidValue,
+            ),
+            (
+                price,
+                SubmittedValue::Money(SubmittedMoney::new(
+                    CurrencyCode::new("USD").expect("currency"),
+                    SubmittedDecimal::new(5_678, 3).expect("money amount"),
+                )),
+                ValidationCode::OutOfRange,
+            ),
+        ] {
+            let submitted = replace_submitted_value(&valid, field, value);
+            let materialization_issue = issue(
+                normalize_command_input(plan, bundle.schema(), plan, &submitted)
+                    .expect_err("invalid exact numeric type rejects"),
+            );
+            assert_eq!(materialization_issue.code(), expected_code);
+            assert_eq!(
+                materialization_issue.path().segments(),
+                &[ValidationPathSegment::Field(field)]
+            );
+        }
+    }
+
+    #[test]
+    fn enum_display_name_must_agree_with_the_selected_variant() {
+        let bundle = compile_normalization_fixture();
+        let plan = command(&bundle);
+        let mode = field_id(plan, "mode");
+        let enumeration = enumeration(&bundle);
+        let alpha = enumeration
+            .variants()
+            .iter()
+            .find(|variant| variant.name() == "Alpha")
+            .expect("Alpha variant");
+        let matching = replace_submitted_value(
+            &submitted_input(valid_input(&bundle, None)),
+            mode,
+            SubmittedValue::Enum(SubmittedEnum::new(
+                enumeration.id(),
+                alpha.id(),
+                Some(SourceName::new("Alpha").expect("variant name")),
+            )),
+        );
+        let normalized = normalize_command_input(plan, bundle.schema(), plan, &matching)
+            .unwrap_or_else(|_| panic!("matching enum display name materializes"));
+        assert!(matches!(
+            value(&normalized, mode),
+            Some(CanonicalValue::Enum { type_id, variant_id })
+                if *type_id == enumeration.id() && *variant_id == alpha.id()
+        ));
+
+        let mismatching = replace_submitted_value(
+            &matching,
+            mode,
+            SubmittedValue::Enum(SubmittedEnum::new(
+                enumeration.id(),
+                alpha.id(),
+                Some(SourceName::new("Beta").expect("variant name")),
+            )),
+        );
+
+        assert_eq!(
+            issue(
+                normalize_command_input(plan, bundle.schema(), plan, &mismatching)
+                    .expect_err("enum display-name mismatch rejects")
+            )
+            .code(),
+            ValidationCode::InvalidValue
+        );
+    }
+
+    #[test]
     fn unknown_field_is_rejected_at_its_stable_field_path() {
         let bundle = compile_normalization_fixture();
         let plan = command(&bundle);
@@ -2201,7 +2754,7 @@ contract MutationInput version 1 {
         assert!(plan.input().record().field(unknown).is_none());
         let mut fields = valid_input(&bundle, None).fields().to_vec();
         fields.push((unknown, CanonicalValue::Null));
-        let submitted = CanonicalRecord::new(fields).expect("canonical input");
+        let submitted = submitted_input(CanonicalRecord::new(fields).expect("canonical input"));
 
         let issue = issue(
             normalize_command_input(plan, bundle.schema(), plan, &submitted)
@@ -2216,6 +2769,65 @@ contract MutationInput version 1 {
     }
 
     #[test]
+    fn field_name_resolution_is_indexed_at_maximum_schema_and_request_counts() {
+        let record = RecordSchema::new(
+            RecordTypeRef::CommandInput(CommandId::first()),
+            (1..=MAX_DECLARATIONS_PER_KIND)
+                .map(|raw| {
+                    FieldSchema::new(
+                        FieldId::new(raw as u32).expect("nonzero field ID"),
+                        format!("known_{raw}"),
+                        ValueType::bool(),
+                    )
+                    .expect("checked field")
+                })
+                .collect(),
+        )
+        .expect("maximum-size record schema");
+        let resolver = SubmittedFieldResolver::new(&record, &record);
+
+        for raw in 0..riffdb_types::MAX_RECORD_FIELDS {
+            let identity = SubmittedFieldIdentity::Name(
+                SourceName::new(format!("unknown_{raw}")).expect("source name"),
+            );
+            assert_eq!(
+                resolver.resolve(&identity),
+                Err(ValidationCode::UnknownField)
+            );
+        }
+    }
+
+    #[test]
+    fn command_input_validation_stops_at_the_diagnostic_limit() {
+        let bundle = compile_normalization_fixture();
+        let plan = command(&bundle);
+        let submitted = SubmittedRecord::new(
+            (0..(MAX_VALIDATION_ISSUES * 4))
+                .map(|raw| {
+                    SubmittedField::new(
+                        SubmittedFieldIdentity::Name(
+                            SourceName::new(format!("unknown_{raw}")).expect("source name"),
+                        ),
+                        SubmittedValue::Null,
+                    )
+                })
+                .collect(),
+        )
+        .expect("bounded unknown-name input");
+
+        let issues = validation_issues(
+            normalize_command_input(plan, bundle.schema(), plan, &submitted)
+                .expect_err("unknown fields reject"),
+        );
+        assert_eq!(issues.len(), MAX_VALIDATION_ISSUES);
+        assert!(
+            issues
+                .iter()
+                .all(|issue| issue.code() == ValidationCode::UnknownField)
+        );
+    }
+
+    #[test]
     fn historical_normalization_omits_a_later_optional_null() {
         let historical = compile_contract_source(&normalization_source(1, false))
             .expect("historical fixture compiles");
@@ -2224,7 +2836,7 @@ contract MutationInput version 1 {
         let historical_plan = command(&historical);
         let active_plan = command(&active);
         let note = field_id(active_plan, "note");
-        let submitted = valid_input(&active, Some(CanonicalValue::Null));
+        let submitted = submitted_input(valid_input(&active, Some(CanonicalValue::Null)));
 
         let normalized = match normalize_command_input(
             historical_plan,
@@ -2252,10 +2864,10 @@ contract MutationInput version 1 {
         let historical_plan = command(&historical);
         let active_plan = command(&active);
         let note = field_id(active_plan, "note");
-        let submitted = valid_input(
+        let submitted = submitted_input(valid_input(
             &active,
             Some(CanonicalValue::string("present").expect("bounded string")),
-        );
+        ));
 
         let issue = issue(
             normalize_command_input(
@@ -2306,7 +2918,7 @@ contract MutationInput version 1 {
                 .binary_search_by_key(&mode, |(candidate, _)| *candidate)
                 .expect("mode field");
             fields[index].1 = submitted_value;
-            let submitted = CanonicalRecord::new(fields).expect("canonical input");
+            let submitted = submitted_input(CanonicalRecord::new(fields).expect("canonical input"));
             let issue = issue(
                 normalize_command_input(plan, bundle.schema(), plan, &submitted)
                     .expect_err("invalid enum rejects"),
@@ -2331,7 +2943,7 @@ contract MutationInput version 1 {
         fields[index].1 =
             CanonicalValue::list(vec![CanonicalValue::I64(1), CanonicalValue::Bool(false)])
                 .expect("bounded list");
-        let submitted = CanonicalRecord::new(fields).expect("canonical input");
+        let submitted = submitted_input(CanonicalRecord::new(fields).expect("canonical input"));
 
         let issue = issue(
             normalize_command_input(plan, bundle.schema(), plan, &submitted)
@@ -2374,7 +2986,7 @@ contract MutationInput version 1 {
                 .binary_search_by_key(&field, |(candidate, _)| *candidate)
                 .expect("fixture field");
             fields[index].1 = submitted_value;
-            let submitted = CanonicalRecord::new(fields).expect("canonical input");
+            let submitted = submitted_input(CanonicalRecord::new(fields).expect("canonical input"));
             let issue = issue(
                 normalize_command_input(plan, bundle.schema(), plan, &submitted)
                     .expect_err("invalid value rejects"),
@@ -2388,18 +3000,51 @@ contract MutationInput version 1 {
     }
 
     #[test]
+    fn materialized_canonical_document_overflow_is_public_root_too_long() {
+        const DECIMAL_COUNT: usize = 55_000;
+
+        let bundle = compile_contract_source(large_decimal_list_source())
+            .expect("large decimal-list fixture compiles");
+        let plan = command(&bundle);
+        let values = SubmittedValue::list(vec![
+            SubmittedValue::Decimal(
+                SubmittedDecimal::new(0, 0).expect("structural decimal"),
+            );
+            DECIMAL_COUNT
+        ])
+        .expect("submitted representation remains within one MiB");
+        let submitted = SubmittedRecord::new(vec![
+            SubmittedField::new(
+                SubmittedFieldIdentity::Id(field_id(plan, "id")),
+                SubmittedValue::Uuid([0x11; 16]),
+            ),
+            SubmittedField::new(SubmittedFieldIdentity::Id(field_id(plan, "values")), values),
+        ])
+        .expect("submitted record remains within one MiB");
+
+        let issue = issue(
+            normalize_command_input(plan, bundle.schema(), plan, &submitted)
+                .expect_err("unencodable canonical document must reject before downstream use"),
+        );
+        assert_eq!(issue.code(), ValidationCode::TooLong);
+        assert!(issue.path().segments().is_empty());
+    }
+
+    #[test]
     fn empty_direct_idempotency_key_is_public_invalid_value() {
         let bundle = compile_contract_source(mutation_source()).expect("mutation fixture compiles");
         let plan = command(&bundle);
         let idempotency = field_id(plan, "idempotency_key");
-        let submitted = CanonicalRecord::new(vec![
-            (
-                idempotency,
-                CanonicalValue::string("").expect("canonical empty string"),
-            ),
-            (field_id(plan, "id"), CanonicalValue::Uuid([0x22; 16])),
-        ])
-        .expect("canonical input");
+        let submitted = submitted_input(
+            CanonicalRecord::new(vec![
+                (
+                    idempotency,
+                    CanonicalValue::string("").expect("canonical empty string"),
+                ),
+                (field_id(plan, "id"), CanonicalValue::Uuid([0x22; 16])),
+            ])
+            .expect("canonical input"),
+        );
 
         let issue = issue(
             normalize_command_input(plan, bundle.schema(), plan, &submitted)

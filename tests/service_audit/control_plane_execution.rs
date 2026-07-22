@@ -12,6 +12,7 @@ use riffdb_catalog::{
 };
 use riffdb_commit::{
     AdministrationClock, AdministrationClockError, AdmissionClock, AdmissionClockError,
+    ApplicationCommitNotificationError, ApplicationCommitNotificationSink,
     CapabilityBootstrapExecutionResult, CapabilityBootstrapOutcome, CapabilityBootstrapPreparation,
     CapabilityCreateOutcome, CapabilityCreatePreparation, CapabilityRevokeOutcome,
     CapabilityRevokePreparation, CatalogDeploymentOutcome, CatalogDeploymentPreparation,
@@ -44,9 +45,10 @@ use riffdb_testkit::authorization::{
 use riffdb_types::{
     ActorId, ActorKind, AdministrationSequence, Audience, CapabilityGrantV1, CapabilityId,
     CapabilityPermissionKindV1, CapabilityPermissionV1, CapabilityPermissionsV1,
-    CapabilityTokenDigest, ContractVersion, DatabaseId, DigestKeyId, Environment, PartitionScopeV1,
-    ProvenanceId, RequestId, RevocationReasonCodeV1, ServiceAuditLinkV1, ServiceAuditPhaseV1,
-    ServiceAuditTargetV1, ServiceAuditTargetsV1, ServiceIngressKindV1, TenantScope, Timestamp,
+    CapabilityTokenDigest, CommitSequence, ContractVersion, DatabaseId, DigestKeyId, Environment,
+    PartitionScopeV1, ProvenanceId, RequestId, RevocationReasonCodeV1, ServiceAuditLinkV1,
+    ServiceAuditPhaseV1, ServiceAuditTargetV1, ServiceAuditTargetsV1, ServiceIngressKindV1,
+    TenantScope, Timestamp,
 };
 
 const CONTRACT_SOURCE: &str = include_str!("../../contracts/examples/budget.riff");
@@ -211,8 +213,20 @@ fn start_coordinator(
         administration_clock,
         authorization_clock,
         Arc::new(UnusedProvenanceSource),
+        Arc::new(DiscardApplicationCommitNotifications),
     )
     .expect("start coordinator")
+}
+
+struct DiscardApplicationCommitNotifications;
+
+impl ApplicationCommitNotificationSink for DiscardApplicationCommitNotifications {
+    fn publish_first_commit(
+        &self,
+        _: CommitSequence,
+    ) -> Result<(), ApplicationCommitNotificationError> {
+        Ok(())
+    }
 }
 
 struct FailingAuthorizationClock {
@@ -1744,7 +1758,7 @@ fn open_operational(store: RedbStore) -> RedbOperationalPorts {
         .finish(structural_end, historical_end)
         .expect("finish structural validation");
     assert!(history.matches(opened.database_id(), opened.open_session_id()));
-    let (_, _, dormant): (_, _, RedbDormantPorts) = opened.into_parts();
+    let (_, _, _, dormant): (_, _, _, RedbDormantPorts) = opened.into_parts();
     dormant
         .into_operational_after_catalog_validation()
         .expect("activate operational ports")

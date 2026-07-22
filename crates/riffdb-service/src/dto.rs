@@ -27,11 +27,12 @@ use riffdb_types::{
     ProjectionGeneration, ProjectionGroupKey, ProjectionGroupKeyBuilder, ProjectionGroupPrefix,
     ProjectionId, ProjectionIdentity, ProvenanceId, RequestId, RevocationReasonCodeV1,
     ServiceAuditTargetV1, SourceCommit, SourceHash, SourceRepository, TenantScope, Timestamp,
-    encode_canonical_record, encode_canonical_value,
+    encode_canonical_value,
 };
 
 use crate::{
     BootstrapRequestContext, CursorToken, PageLimit, PreBootstrapLifecycle, RequestContext,
+    SubmittedRecord,
 };
 
 /// Maximum bytes accepted in one structurally decoded service request.
@@ -99,11 +100,6 @@ impl RequestCharge {
                 .checked_mul(4)
                 .ok_or(ServiceDtoError::TooLong)?,
         )
-    }
-
-    fn add_canonical_record(&mut self, record: &CanonicalRecord) -> Result<(), ServiceDtoError> {
-        let encoded = encode_canonical_record(record).map_err(|_| ServiceDtoError::TooLong)?;
-        self.add_framed_bytes(encoded.len())
     }
 
     fn add_canonical_values(&mut self, values: &[CanonicalValue]) -> Result<(), ServiceDtoError> {
@@ -688,7 +684,7 @@ pub enum GetContractVersionResult {
 pub struct ExecuteCommandRequest {
     command: SourceName,
     expected_contract_version: Option<ContractVersion>,
-    input: CanonicalRecord,
+    input: SubmittedRecord,
 }
 
 impl ExecuteCommandRequest {
@@ -696,7 +692,7 @@ impl ExecuteCommandRequest {
     pub fn new(
         command: SourceName,
         expected_contract_version: Option<ContractVersion>,
-        input: CanonicalRecord,
+        input: SubmittedRecord,
     ) -> Result<Self, ServiceDtoError> {
         let request = Self {
             command,
@@ -719,9 +715,9 @@ impl ExecuteCommandRequest {
         self.expected_contract_version
     }
 
-    /// Borrows schema-normalizable canonical input.
+    /// Borrows structurally checked input awaiting exact-plan materialization.
     #[must_use]
-    pub const fn input(&self) -> &CanonicalRecord {
+    pub const fn input(&self) -> &SubmittedRecord {
         &self.input
     }
 }
@@ -5492,7 +5488,7 @@ impl ServiceRequestCharge for ExecuteCommandRequest {
         if self.expected_contract_version.is_some() {
             charge.add(8)?;
         }
-        charge.add_canonical_record(&self.input)?;
+        charge.add_framed_bytes(self.input.structural_size()?)?;
         Ok(charge.finish())
     }
 }
@@ -5941,22 +5937,25 @@ contract OutcomeShapes version 1 {
         );
     }
 
-    fn nested_bytes_input(payload_bytes: usize) -> CanonicalRecord {
-        CanonicalRecord::new(vec![(
-            FieldId::first(),
-            CanonicalValue::list(vec![
-                CanonicalValue::bytes(vec![0xa5; payload_bytes]).expect("bounded bytes value"),
-            ])
-            .expect("bounded nested list"),
-        )])
-        .expect("bounded nested record")
+    fn nested_bytes_input(payload_bytes: usize) -> SubmittedRecord {
+        SubmittedRecord::try_from(
+            CanonicalRecord::new(vec![(
+                FieldId::first(),
+                CanonicalValue::list(vec![
+                    CanonicalValue::bytes(vec![0xa5; payload_bytes]).expect("bounded bytes value"),
+                ])
+                .expect("bounded nested list"),
+            )])
+            .expect("bounded nested record"),
+        )
+        .expect("bounded submitted record")
     }
 
     #[test]
-    fn complete_command_request_charges_nested_canonical_input_at_the_boundary() {
+    fn complete_command_request_charges_nested_submitted_input_at_the_boundary() {
         // Command frame (5), absent version (1), record frame (4), root
-        // record/field/list/bytes canonical structure (22).
-        const NON_PAYLOAD_BYTES: usize = 32;
+        // record count (4), ID field identity (5), list (5), and bytes (5).
+        const NON_PAYLOAD_BYTES: usize = 29;
         let command = || SourceName::new("C").expect("checked command name");
         let exact = ExecuteCommandRequest::new(
             command(),

@@ -16,6 +16,7 @@ const COMMAND_PREPARATION_SOURCE: &str = include_str!("../src/command_preparatio
 const LIB_SOURCE: &str = include_str!("../src/lib.rs");
 const CLOCK_SOURCE: &str = include_str!("../src/clock.rs");
 const INITIALIZATION_SOURCE: &str = include_str!("../src/initialization.rs");
+const NOTIFICATION_SOURCE: &str = include_str!("../src/notification.rs");
 const OUTCOME_SOURCE: &str = include_str!("../src/outcome.rs");
 const PROVENANCE_SOURCE: &str = include_str!("../src/provenance.rs");
 
@@ -1515,6 +1516,79 @@ fn coordinator_actor_uses_only_the_reviewed_current_thread_channel_surface() {
     assert!(
         !drop_body.contains(".join()"),
         "coordinator Drop must initiate shutdown without blocking on a join"
+    );
+}
+
+#[test]
+fn first_commit_notification_is_explicit_sequence_only_and_fail_closed() {
+    for required in [
+        "pub trait ApplicationCommitNotificationSink: Send + Sync",
+        "sequence: CommitSequence",
+        "Result<(), ApplicationCommitNotificationError>",
+    ] {
+        assert!(
+            NOTIFICATION_SOURCE.contains(required),
+            "notification boundary is missing {required}"
+        );
+    }
+    for forbidden in [
+        "StoredOutcomeV1",
+        "CommitRecord",
+        "EntityKey",
+        "ActorId",
+        "TenantScope",
+        "Storage",
+        "Repository",
+        "riffdb_service",
+        "serde::",
+        "prost::",
+    ] {
+        assert!(
+            !NOTIFICATION_SOURCE.contains(forbidden),
+            "notification sink exposes forbidden authority {forbidden}"
+        );
+    }
+    assert!(!NOTIFICATION_SOURCE.contains("impl Default"));
+
+    let constructor = AUDIT_EXECUTOR_SOURCE
+        .split_once("pub fn start<Repository>(")
+        .and_then(|(_, remainder)| remainder.split_once(") -> Result<Self, CoordinatorStartError>"))
+        .map(|(parameters, _)| parameters)
+        .expect("production coordinator constructor");
+    assert!(constructor.contains("notifications: Arc<dyn ApplicationCommitNotificationSink>"));
+
+    let execution = AUDIT_EXECUTOR_SOURCE
+        .split_once("async fn execute_command(")
+        .and_then(|(_, remainder)| remainder.split_once("\n    fn execute_read_only("))
+        .map(|(body, _)| body)
+        .expect("bounded command completion path");
+    for required in [
+        "CommittedOutcomeDisposition::FirstCommit",
+        "outcome.stored_outcome().commit_sequence()",
+        "panic::catch_unwind",
+        "self.notifications.publish_first_commit(sequence)",
+        "self.lifecycle.stop()",
+    ] {
+        assert!(
+            execution.contains(required),
+            "first-commit publication is missing {required}"
+        );
+    }
+    assert!(
+        execution
+            .find("drive_command(preparation).await")
+            .expect("durable completion")
+            < execution
+                .find("publish_first_commit(sequence)")
+                .expect("publication")
+    );
+    assert!(
+        execution
+            .find("publish_first_commit(sequence)")
+            .expect("publication")
+            < execution
+                .find("completion.send(result)")
+                .expect("caller completion")
     );
 }
 

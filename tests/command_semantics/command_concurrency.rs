@@ -6,11 +6,17 @@ mod support;
 
 use std::sync::Arc;
 
-use riffdb_commit::{CommandExecutionResult, CommittedOutcomeDisposition};
+use riffdb_commit::{
+    ApplicationCommitNotificationSink, CommandExecutionAdmissionError, CommandExecutionResult,
+    CommittedOutcomeDisposition, CoordinatorLifecycleState,
+};
+use riffdb_types::CommitSequence;
 
 use support::{
-    BudgetDatabase, CountingProvenanceSource, FixedAdmissionClock, command_timestamp, runtime,
-    start_coordinator,
+    BudgetDatabase, CountingProvenanceSource, FailingApplicationCommitNotifications,
+    FixedAdmissionClock, PanickingApplicationCommitNotifications,
+    RecordingApplicationCommitNotifications, command_timestamp, runtime,
+    start_coordinator_with_notifications,
 };
 
 #[test]
@@ -22,10 +28,12 @@ fn equal_key_commands_commit_once_and_replay_exactly() {
     let changed_preparation = database.prepare(&ports, 12_600, 0x13);
     let admission_clock = Arc::new(FixedAdmissionClock::new(command_timestamp()));
     let provenance_source = Arc::new(CountingProvenanceSource::new(0x21));
-    let coordinator = start_coordinator(
+    let notifications = Arc::new(RecordingApplicationCommitNotifications::default());
+    let coordinator = start_coordinator_with_notifications(
         ports,
         Arc::clone(&admission_clock),
         Arc::clone(&provenance_source),
+        notifications.clone(),
     );
     let executor = coordinator.command_executor();
 
@@ -90,6 +98,7 @@ fn equal_key_commands_commit_once_and_replay_exactly() {
         right.stored_outcome().provenance_id()
     );
     assert_eq!(changed, CommandExecutionResult::InputMismatch);
+    assert_eq!(notifications.sequences(), vec![CommitSequence::first()]);
     assert_eq!(admission_clock.calls(), 1);
     assert_eq!(provenance_source.calls(), 1);
 
@@ -97,6 +106,74 @@ fn equal_key_commands_commit_once_and_replay_exactly() {
     drop(executor);
     coordinator.shutdown().expect("drain command coordinator");
 
+    let ports = database.open();
+    database.assert_one_budget_commit(&ports, &durable, 12_500);
+}
+
+#[test]
+fn notification_failure_or_panic_preserves_commit_and_stops_admission() {
+    assert_defective_notification_sink(
+        "notification-error",
+        0x31,
+        Arc::new(FailingApplicationCommitNotifications),
+    );
+    assert_defective_notification_sink(
+        "notification-panic",
+        0x32,
+        Arc::new(PanickingApplicationCommitNotifications),
+    );
+}
+
+fn assert_defective_notification_sink(
+    label: &str,
+    seed: u8,
+    notifications: Arc<dyn ApplicationCommitNotificationSink>,
+) {
+    let database = BudgetDatabase::create(label);
+    let ports = database.open();
+    let preparation = database.prepare(&ports, 12_500, seed);
+    let admission_clock = Arc::new(FixedAdmissionClock::new(command_timestamp()));
+    let provenance_source = Arc::new(CountingProvenanceSource::new(seed.wrapping_add(0x20)));
+    let coordinator = start_coordinator_with_notifications(
+        ports,
+        admission_clock,
+        provenance_source,
+        notifications,
+    );
+    let executor = coordinator.command_executor();
+
+    let result = runtime().block_on(async {
+        executor
+            .reserve_capacity()
+            .await
+            .expect("reserve command before sink defect")
+            .submit(preparation)
+            .expect("submit command before sink defect")
+            .completion()
+            .await
+            .expect("known durable result survives sink defect")
+    });
+    let CommandExecutionResult::Committed(committed) = result else {
+        panic!("sink defect must not rewrite a known committed outcome");
+    };
+    assert_eq!(
+        committed.disposition(),
+        CommittedOutcomeDisposition::FirstCommit
+    );
+    assert_eq!(
+        executor.lifecycle_state(),
+        CoordinatorLifecycleState::Stopped
+    );
+    assert!(matches!(
+        runtime().block_on(executor.reserve_capacity()),
+        Err(CommandExecutionAdmissionError::Stopped)
+    ));
+
+    let durable = committed.into_stored_outcome();
+    drop(executor);
+    coordinator
+        .shutdown()
+        .expect("join coordinator stopped by sink defect");
     let ports = database.open();
     database.assert_one_budget_commit(&ports, &durable, 12_500);
 }
