@@ -2,12 +2,12 @@
 
 //! Compile-time signature fixture for the canonical generated contract module.
 
-use riffdb_client_rust::RiffDbClient;
 use riffdb_client_rust::generated::GeneratedCommand;
 use riffdb_client_rust::generated::legal_spend::{
     ALLOCATE_BUDGET_PLAN_HASH, AllocateBudget, AllocateBudgetOutcome, Amount, Budget,
     CONTRACT_LINEAGE, CONTRACT_VERSION, CREATE_BUDGET_PLAN_HASH, CreateBudget, CreateBudgetOutcome,
 };
+use riffdb_client_rust::{RiffDbClient, v1};
 use riffdb_types::{RequestId, Timestamp};
 
 #[test]
@@ -57,6 +57,12 @@ fn legal_spend_public_shapes_remain_source_compatible() {
     // These references make method removal or renaming a compile-time failure.
     let _ = RiffDbClient::execute_generated::<CreateBudget>;
     let _ = RiffDbClient::wait_for_projection;
+}
+
+#[test]
+fn public_wire_package_is_available_through_the_sdk() {
+    let request = v1::HealthRequest::default();
+    assert!(request.request_id.is_none());
 }
 
 fn consume_create_outcome(outcome: CreateBudgetOutcome) {
