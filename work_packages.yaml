@@ -387,6 +387,7 @@ work_packages:
   - ADR-0016
   - ADR-0020
   - ADR-0023
+  - ADR-0030
   allowed_paths:
   - Cargo.lock
   - crates/riffdb-catalog/**
@@ -436,6 +437,9 @@ work_packages:
     parent gaps/cycles/hash substitution, and ancestor/equal/descendant writer masks
   - Exact historical KeySchema validation for every IR-opaque persisted entity-key, index-entry-key, and range-prefix-key
     evidence item, with unknown owners/schemas, component-incomplete bytes, omissions, and non-exact stream ends rejected
+  - Catalog-owned pure bounded capability-partition schema validator shared by service admission and startup history,
+    plus consumption of every 0x05 capability-partition evidence item after persisted-key evidence against the active
+    validated bundle before ValidatedCatalogHistory can be produced
   - Architecture checks proving ValidatedCatalogHistory and command materialization evidence never cross a storage
     trait, storage never imports or interprets contract IR, WP-100 consumes but does not implement or inspect the opaque
     evidence API, and neither side accepts a generic validation callback
@@ -450,7 +454,7 @@ work_packages:
   exit_gate: Deployment crash tests leave exactly the old or new bundle active, retries resolve by version, exact
     active-lineage count/byte/proof boundaries, opaque Ready/resource evidence retention, current-recheck, and writer
     masks pass, malformed chains or ADR-0020 command-name registries reject, and only complete same-session historical
-    evidence can produce ValidatedCatalogHistory.
+    evidence, including every qualifying capability-partition item, can produce ValidatedCatalogHistory.
   human_review_triggers: *id001
 - id: WP-060
   name: Storage semantic API
@@ -503,6 +507,7 @@ work_packages:
   - ADR-0019
   - ADR-0021
   - ADR-0023
+  - ADR-0030
   allowed_paths:
   - Cargo.lock
   - crates/riffdb-types/src/codec.rs
@@ -556,6 +561,9 @@ work_packages:
     precedes evidence, no mutation port is available during the session, and failure releases no operational ports
   - Bounded IR-opaque exact-end evidence for every persisted entity key, index-entry key, and range-prefix key, carrying
     only the durable owner/reference facts needed for catalog-owned exact historical KeySchema validation
+  - Process-local HistoricalCapabilityPartitionEvidenceV1 and memory-engine production for every explicit entry whose
+    durable owner is Active and authorization_time is strictly earlier than expires_at, with exact 0x05 ordering,
+    31-plus-lineage-plus-key charge, redacted diagnostics, future-issued inclusion, and exact-expiry exclusion
   - Memory conformance for initialization-before-evidence, exclusive noninterleaving scans, page continuation and
     exact-end coverage, session/database mismatch rejection, dropped/failed session behavior, and dormant ports that
     cannot become operational without the separate catalog-owned same-session ValidatedCatalogHistory
@@ -563,7 +571,7 @@ work_packages:
   - cargo test -p riffdb-storage-api -p riffdb-storage-memory
   exit_gate: Reference storage satisfies atomicity, pre-sequence reservation and no-gap ordering, exact event-hash,
     snapshot, metadata-deferral, startup type-state, exact-end historical-evidence, and model-state properties without
-    introducing a storage-to-IR dependency.
+    introducing a storage-to-IR dependency; capability-partition inventory fixtures prove complete exact-end emission.
   human_review_triggers: *id001
 - id: WP-065
   name: Durable semantic record schema
@@ -697,6 +705,7 @@ work_packages:
   - ADR-0018
   - ADR-0019
   - ADR-0021
+  - ADR-0030
   allowed_paths:
   - Cargo.lock
   - crates/riffdb-storage-redb/**
@@ -720,6 +729,8 @@ work_packages:
   - Complete storage-structural startup scan and exact-end historical semantic evidence
   - Complete bounded enumeration of every persisted entity key, index-entry key, and range-prefix key with IR-opaque
     durable owner/reference evidence for catalog validation, without interpreting KeySchema in the redb adapter
+  - Complete exact-end enumeration of every qualifying active, unexpired explicit capability-partition entry from the
+    one frozen startup snapshot, preserving all sibling ordinals across pages without interpreting KeySchema
   - Offline backup and restore
   - Storage benchmarks
   - Dependency-free repeated-run storage benchmark target; no Criterion dependency
@@ -766,7 +777,8 @@ work_packages:
     manifest: crates/riffdb-storage-redb/Cargo.toml
     path: ../../tests/service_audit_recovery/service_audit_recovery.rs
   exit_gate: Storage property suite and process recovery matrix pass with no torn command state, pre-sequence gap, or
-    event-hash/envelope-bound mismatch; every open completes the full structural scan and exact-end evidence handoff
+    event-hash/envelope-bound mismatch; every open completes the full structural scan and exact-end persisted-key and
+    capability-partition evidence handoff
     before yielding StructurallyOpened dormant ports; no open claims IR-aware readiness, and no ADR-0019 deferred
     record is persisted.
   human_review_triggers: *id001
@@ -1175,6 +1187,11 @@ work_packages:
   - ADR-0020
   - ADR-0021
   - ADR-0023
+  - ADR-0025
+  - ADR-0026
+  - ADR-0027
+  - ADR-0029
+  - ADR-0030
   allowed_paths:
   - Cargo.lock
   - crates/riffdb-service/**
@@ -1206,6 +1223,9 @@ work_packages:
     protocol-ID substitution, or identifier-order interpretation in the service
   - Capability create, revoke, and bootstrap service DTOs with checked principal-less bootstrap context and typed
     executor-result mapping that never receives a storage transition
+  - Catalog-owned explicit capability-partition schema validation before policy, token issuance, capacity admission,
+    or coordinator submission, including mixed valid/invalid scopes, exact control-plane call exclusion, bootstrap
+    rejection before an active contract, and a barrier-controlled compatible-activation race
   - Absent-revoke CapabilityPreparationChanged recovery that reloads now-present complete facts, reruns current
     policy, obtains a fresh bounded executor permit, and resubmits without appending a second Started record
   - Current-policy safe points, obligation application, bounded pages/cursors/waits/streams, and deterministic fake
@@ -1231,6 +1251,13 @@ work_packages:
     without a principal; pre-bootstrap Health reaches no audit executor and emits no durable audit
   - Stream-establishment audit only; later per-item reauthorization failure closes the stream with bounded telemetry
     and no additional durable audit record
+  - Stage-two validation of every affected entity key in GetCommit, ScanCommits, SubscribeToCommits, and
+    TraceProvenance against each snapshot's exact historical lineage/version before release; catalog waits precede the
+    final policy check, page lookups are deduplicated, and failure publishes no cursor, item, advanced frontier, or
+    success audit terminal
+  - Deterministic commit-subscription coverage for post-establishment cancellation, deadline, lifetime, policy denial,
+    scan gap, lower-source shutdown, stale notification, contiguous catch-up/live delivery, resume, the 128-subscriber
+    limit, and the service-owned exact 256-item lower-source buffer contract, with no sleep synchronization
   - Exhaustive ADR-0021 request-to-target mapping for all 22 operations, with identical Started/terminal lists and
     tests proving authorizing capabilities, result links, traversed objects, and returned rows are never inferred
   - Policy-filtered command descriptors carrying the compiler-owned ADR-0020 name verbatim, with no service-side
@@ -1252,7 +1279,8 @@ work_packages:
     derivation; except for the exact pre-marker Health context, they pass through current policy. Tests prove the
     pre-bootstrap result has only lifecycle/liveness/readiness and reaches no policy, storage, or durable audit, that
     no new principal-less Health call is admitted after the marker, and that catalog count/byte/proof limit fixtures
-    produce the exact root validation codes and audit behavior before any coordinator submission.
+    produce the exact root validation codes and audit behavior before any coordinator submission; every public commit
+    or provenance entity key is schema-valid and every commit-stream terminal path preserves the last visible frontier.
   human_review_triggers: *id001
 - id: WP-125
   name: Service comparison adapter
@@ -1306,12 +1334,19 @@ work_packages:
   - ADR-0013
   - ADR-0017
   - ADR-0018
+  - ADR-0027
+  - ADR-0028
+  - ADR-0029
+  - ADR-0030
   allowed_paths:
   - Cargo.lock
   - proto/**
   - crates/riffdb-proto/**
   - fixtures/proto/**
   - scripts/generate-proto*
+  - fuzz/Cargo.toml
+  - fuzz/Cargo.lock
+  - fuzz/fuzz_targets/proto_public.rs
   deliverables:
   - Completed public phase-zero message fields for every WP-130-supported RPC without changing accepted service or
     RPC names
@@ -1327,10 +1362,13 @@ work_packages:
   - Descriptors, schema hashes, wire-structural checks, golden bytes, and client fixtures
   - Structural UUIDv7 validation for every public shared-identifier field, including wrong-version, wrong-variant,
     wrong-length, and ADR-0018 golden vectors without adding a wire-level generation policy
+  - Allocation-free bounded stage-one envelope validation for every public entity, index-entry, and partition-key
+    position, with fixtures that distinguish envelope validity from catalog-owned schema validity
   - No durable record schema and no service-to-Protobuf semantic conversion code
   acceptance_commands:
   - cargo test -p riffdb-proto
   - ./scripts/generate-proto --check
+  - cargo +nightly-2026-07-12 fuzz run proto_public -- -max_len=4194304 -max_total_time=30
   exit_gate: Every supported public operation has bounded, structurally validated, reproducibly generated wire
     artifacts before transport conversion begins.
   human_review_triggers: *id001
@@ -1373,6 +1411,12 @@ work_packages:
   - ADR-0020
   - ADR-0021
   - ADR-0023
+  - ADR-0025
+  - ADR-0026
+  - ADR-0027
+  - ADR-0028
+  - ADR-0029
+  - ADR-0030
   allowed_paths:
   - Cargo.lock
   - crates/riffdb-api-grpc/**
@@ -1425,7 +1469,11 @@ work_packages:
     and nonsecret readable scheme/key inventories supplied to fail-closed startup validation
   - Staged startup gate that performs identity initialization first, drives redb structural evidence to exact end,
     obtains catalog-owned opaque same-session ValidatedCatalogHistory, and only then activates the matching
-    StructurallyOpened dormant ports; no proof crosses the storage trait and any mismatch leaves the process unready
+    StructurallyOpened dormant ports; the catalog history includes ADR-0030 validation of every qualifying explicit
+    capability partition, no proof crosses the storage trait, and any mismatch leaves the process unready
+  - Exact 256-item lower commit-subscription buffers and retained supervision handles for every accepted service task;
+    buffer overflow remains resumable and any accepted task panic or disappearance stops routing rather than silently
+    dropping work
   - P1 lifecycle exposing only the unchanged Health RPC's restricted principal-less lifecycle/liveness/readiness view
     during initializing validation/bootstrap and one-time loopback bootstrap after validation while the marker is
     absent; the server constructs no pre-bootstrap health context after the marker and requires normal credential
@@ -1458,7 +1506,8 @@ work_packages:
     every projection result variant maps correctly against an injected service stub, and error conformance proves
     exact direct PublicError detail bytes plus fail-closed status/message/detail validation at every boundary case;
     component-graph tests prove explicit code-level Sync construction with no constructor/backend default or
-    operator-facing POC durability selector.
+    operator-facing POC durability selector, and startup cannot bypass capability-partition history validation or
+    accepted-task supervision.
   human_review_triggers: *id001
 - id: WP-135
   name: Public SDK comparison adapter
