@@ -924,6 +924,58 @@ fn index_scan_fence_is_closed_and_preserves_before_first() {
 }
 
 #[test]
+fn only_index_pages_allow_empty_bounded_progress() {
+    let cursor = Some(vec![0x55; 16]);
+    let index = v1::ScanIndexResponse {
+        page: Some(v1::IndexPage {
+            items: Vec::new(),
+            next_cursor: cursor.clone(),
+            observed_fence: Some(v1::IndexScanFence {
+                position: Some(v1::index_scan_fence::Position::AppliedEpoch(1)),
+            }),
+        }),
+    };
+    assert!(validate_public_message(&index).is_ok());
+
+    let projection = v1::QueryProjectionResponse {
+        result: Some(v1::query_projection_response::Result::Ready(
+            v1::QueryProjectionReady {
+                data: Some(v1::ProjectionPage {
+                    items: Vec::new(),
+                    next_cursor: cursor.clone(),
+                    observed_fence: Some(v1::ProjectionPageFence {
+                        identity: Some(v1::ProjectionIdentity {
+                            contract_lineage: "budget".to_owned(),
+                            projection_id: 1,
+                            projection_plan_hash: vec![0x55; 32],
+                        }),
+                        generation: 1,
+                        frontier: Some(before_first()),
+                    }),
+                }),
+                frontier: Some(before_first()),
+            },
+        )),
+    };
+    assert_eq!(
+        validate_public_message(&projection),
+        Err(PublicWireError::InconsistentFields)
+    );
+
+    let commits = v1::ScanCommitsResponse {
+        page: Some(v1::CommitPage {
+            items: Vec::new(),
+            next_cursor: cursor,
+            observed_fence: Some(applied(1)),
+        }),
+    };
+    assert_eq!(
+        validate_public_message(&commits),
+        Err(PublicWireError::InconsistentFields)
+    );
+}
+
+#[test]
 fn capability_grant_order_uses_the_authoritative_length_framed_keys() {
     let scoped_permission = |lineage: &str| v1::CapabilityPermission {
         permission: Some(v1::capability_permission::Permission::ExplainCommand(

@@ -1217,9 +1217,6 @@ fn validate_index_page(page: Option<&v1::IndexPage>) -> Result<(), PublicWireErr
     if page.items.len() > MAX_PAGE_ITEMS {
         return Err(PublicWireError::TooManyItems);
     }
-    if page.items.is_empty() && page.next_cursor.is_some() {
-        return Err(PublicWireError::InconsistentFields);
-    }
     cursor(&page.next_cursor)?;
     let mut previous_key: Option<&[u8]> = None;
     for row in &page.items {
