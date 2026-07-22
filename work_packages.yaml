@@ -1,4 +1,4 @@
-spec_version: '0.25'
+spec_version: '0.27'
 product: RiffDB
 repository: riffdb
 status: implementation-handoff
@@ -291,6 +291,7 @@ work_packages:
   - ADR-0016
   - ADR-0017
   - ADR-0020
+  - ADR-0038
   allowed_paths:
   - Cargo.lock
   - crates/riffdb-contract-ir/**
@@ -388,6 +389,7 @@ work_packages:
   - ADR-0020
   - ADR-0023
   - ADR-0030
+  - ADR-0038
   allowed_paths:
   - Cargo.lock
   - crates/riffdb-catalog/**
@@ -509,6 +511,7 @@ work_packages:
   - ADR-0023
   - ADR-0030
   - ADR-0035
+  - ADR-0038
   allowed_paths:
   - Cargo.lock
   - crates/riffdb-types/src/codec.rs
@@ -608,6 +611,7 @@ work_packages:
   - ADR-0019
   - ADR-0021
   - ADR-0022
+  - ADR-0038
   allowed_paths:
   - Cargo.lock
   - proto/**
@@ -710,6 +714,7 @@ work_packages:
   - ADR-0030
   - ADR-0032
   - ADR-0035
+  - ADR-0038
   allowed_paths:
   - Cargo.lock
   - crates/riffdb-storage-api/src/startup.rs
@@ -977,6 +982,7 @@ work_packages:
   - ADR-0021
   - ADR-0023
   - ADR-0033
+  - ADR-0038
   allowed_paths:
   - Cargo.lock
   - crates/riffdb-commit/**
@@ -1213,6 +1219,7 @@ work_packages:
   - ADR-0035
   - ADR-0036
   - ADR-0037
+  - ADR-0038
   allowed_paths:
   - Cargo.lock
   - crates/riffdb-service/**
@@ -1452,6 +1459,7 @@ work_packages:
   - ADR-0034
   - ADR-0035
   - ADR-0036
+  - ADR-0038
   allowed_paths:
   - Cargo.lock
   - crates/riffdb-api-grpc/**
@@ -1528,7 +1536,7 @@ work_packages:
     and retained bootstrap replay without an in-process storage or service shortcut
   acceptance_commands:
   - cargo test -p riffdb-api-grpc -p riffdb-client-rust -p riffdb-server
-  - cargo test -p riffdb-api-grpc --test grpc_end_to_end
+  - cargo test -p riffdb-api-grpc --features server,client --test grpc_end_to_end
   - cargo test -p riffdb-server --test p1_riffdbd_restart
   external_test_targets:
   - name: grpc_end_to_end
@@ -1932,6 +1940,7 @@ work_packages:
   - ADR-0018
   - ADR-0019
   - ADR-0021
+  - ADR-0038
   allowed_paths:
   - Cargo.lock
   - crates/riffdb-testkit/**
@@ -2026,6 +2035,7 @@ work_packages:
   - ADR-0021
   - ADR-0022
   - ADR-0023
+  - ADR-0038
   allowed_paths:
   - scripts/demo*
   - scripts/release*
