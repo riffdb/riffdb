@@ -21,6 +21,10 @@
 - **Decision deadline:** Before the `StoredIndexEntryV2` durable schema, codec,
   catalog migration derivation, or concrete-engine migration path merges, and
   before WP-130 completion and the P1 gate
+- **Amended by:** ADR-0042, which seals catalog-owned migration instructions,
+  completion, and the consuming driver; reduces storage API to semantic
+  evidence and identity-only startup values; and gives each concrete backend
+  one narrow migration-only catalog dependency
 
 The human maintainer accepted this exact text and its ADR-only companion
 reconciliation on 2026-07-22, with revision `21a8cfb` as the acceptance
@@ -258,34 +262,36 @@ by construction. It is not added to any operational storage trait.
 3. Consuming the storage session and both exact-end tokens returns exactly
    `StructuralOpenOutcome::Clean(StructurallyOpened)` when the backend observed
    no V1, or
-   `StructuralOpenOutcome::MigrationRequired(StartupIndexMigrationPort)` when
-   it observed at least one V1. The port remains bound to the same `DatabaseId`
-   and `OpenSessionId`. The server may join only `Ready` with `Clean`, or consume
-   both `MigrationRequired` values into the migration driver. Either crossed
-   pair is an integrity failure. There is no public constructor, reusable
-   authority, generic callback, fallback conversion, or parallel migration
-   handle.
-4. The port scans V1 and V2 physical index rows in strict physical-key order
-   through short-lived read transactions. Each page returns backend/session-
-   bound codec evidence and an explicit, strictly advancing continuation or
-   exact end. Before admitting each row, the backend checked-adds both that
-   row's exact evidence-page charge and its codec-proved conservative
-   instruction/write-batch charge to separate page ledgers. It stops before the
-   first row that would make either ledger exceed 500 rows or 4 MiB and uses
-   a strictly advancing continuation whose next page begins with that unconsumed
-   row. When rows remain,
+   `StructuralOpenOutcome::MigrationRequired(ConcreteStartupIndexMigrationPort)`
+   when it observed at least one V1. The concrete port privately implements the
+   storage-API-owned identity-only `StartupIndexMigrationPort` contract, is
+   bound to the same `DatabaseId` and `OpenSessionId`, and exposes no public
+   page-read, point-read, apply, exact-end, or finish operation. The server may join only `Ready` with
+   `Clean`, or consume both `MigrationRequired` values into the catalog-owned
+   migration driver. Either crossed pair is an integrity failure. There is no
+   public constructor, reusable authority, generic callback, fallback
+   conversion, or parallel migration handle.
+4. Inside the catalog-owned driver, the concrete backend scans V1 and V2
+   physical index rows in strict physical-key order through short-lived read
+   transactions. Each backend-private page binds codec evidence to the session
+   and an explicit, strictly advancing continuation or exact end. Before
+   admitting each row, the backend checked-adds both that row's exact
+   evidence-page charge and its codec-proved conservative instruction/write-
+   batch charge to separate page ledgers. It stops before the first row that
+   would make either ledger exceed 500 rows or 4 MiB and uses a strictly
+   advancing continuation whose next page begins with that unconsumed row. When rows remain,
    the one-maximum-row proof below requires every emitted page to contain at
    least one row; a backend may not paginate only against the smaller evidence
-   charge and strand the required instruction batch. The paired migration driver
+   charge and strand the required instruction batch. The sealed composition
    also provides a same-session bounded historical-bundle point-read path for
    the exact retained bundle reference of the current checked row; neither the
    catalog context nor the storage port alone gains the other layer's authority.
    The point-read consumes the linear driver into a one-bundle state. The backend
    opens a short read transaction,
    reads that one immutable bundle, closes the transaction, and only then
-   returns its owned, canonically checked bytes to catalog. Catalog must consume
-   that state into the row's instruction before the driver is returned; dropping
-   it aborts migration. The request cannot name an unvalidated reference or a
+   passes its owned, canonically checked bytes to catalog. Catalog must consume
+   that state into the row's instruction before the driver advances; dropping
+   it aborts migration. No caller can name an unvalidated reference or a
    row outside the current page, and one response is bounded by the accepted
    15 MiB bundle limit. The context may retain only its accepted bounded
    reference/digest proof, never an unbounded collection of bundle bytes. No
@@ -294,10 +300,13 @@ by construction. It is not added to any operational storage trait.
 5. Catalog consumes each row with its exact same-session bundle and produces
    exactly one `V1Rewrite` or `V2Confirm` instruction. It cannot skip a row,
    issue two instructions for one row, revisit a consumed row, or complete the
-   page until every row has one instruction. The port consumes the page and its
-   closed instruction batch together; stale, reordered, repeated, cross-page,
-   cross-database, or cross-session values fail closed.
-6. Storage opens one short write transaction for the whole instruction batch.
+   page until every row has one instruction. The instruction, batch, pending
+   state, and completion are catalog-owned, fields-private, move-only values.
+   The backend-private apply state consumes the page and its closed instruction
+   batch together; stale, reordered, repeated, cross-page, cross-database, or
+   cross-session values fail closed.
+6. The concrete backend opens one short write transaction for the whole
+   instruction batch.
    It constructs every canonical V2 replacement through the durable codec,
    compares every current table value, and commits all authorized replacements
    once or none. For `V1Rewrite`, exact expected V1 is replaced by the exact
@@ -306,12 +315,13 @@ by construction. It is not added to any operational storage trait.
    no write occurs. Absence or any other key, envelope, binding, covered value,
    partition, or schema hash aborts the whole batch as corruption. A crash
    cannot expose a proper subset of one batch's committed replacements.
-7. The port can reach its backend-private exact end only after each page and
+7. The concrete port can reach its backend-private exact end only after each page and
    batch has been consumed once and the complete physical range has been
    visited. Only consuming the catalog context after its last row can produce
-   `CatalogIndexMigrationCompletion`; that type is not catalog readiness.
-   Finishing consumes the port, backend exact-end token, and that exact
-   same-session completion and returns only a dormant unopened backend state.
+   the catalog-owned `CatalogIndexMigrationCompletion`; that fields-private type
+   is not catalog readiness. The driver alone may consume the concrete port,
+   backend-private exact end, and that exact same-session completion and return
+   only a dormant unopened backend state.
    It cannot return `StructurallyOpened`, `ValidatedCatalogHistory`, operational
    ports, or readiness.
 8. The server discards all pre-migration evidence, contexts, and proofs, begins
@@ -501,31 +511,40 @@ retryable public response.
 ### Corrective ownership and sequencing
 
 This decision is a coordinated correction across packages that have already
-started; it does not reverse their declared hard-dependency DAG. Ownership and
+started. ADR-0042 adds WP-050 as a hard dependency of WP-070 so the declared DAG
+records the sealed catalog-to-concrete-backend integration order. Ownership and
 merge sequencing are exact:
 
 1. WP-060 first owns the fields-private process-local migration-row evidence
    wrapper, the new `HistoricalSemanticEvidence` variant, its `0x04` ordering and
-   charge rules, sealed session/page carriage, and memory type-state surface in
-   `crates/riffdb-storage-api/src/startup.rs` and the existing memory paths. That
-   interface alone grants no constructor capable of asserting codec evidence.
+   charge rules, the identity-only `StartupIndexMigrationPort`, and the ordinary
+   memory structural-session outcome in `crates/riffdb-storage-api/src/startup.rs`
+   and the existing memory paths. Storage API owns no catalog authority,
+   instruction, page/batch transition, completion, or public migration read.
+   That interface alone grants no constructor capable of asserting codec
+   evidence.
 2. WP-065, which already depends on WP-060, owns `index_v2.proto`, generated
    descriptors, readable/writable registries, the fields-private storage-API
    aggregate-cap result, and the `proto_codec` factories that are the sole
    production constructors of that result and the migration-row wrapper. Its
    generation, codec, architecture, and durable-decoder fuzz checks merge before
    any consumer claims migration integration complete.
-3. Only after the WP-065 factory is fixed may the coordinated consumer PRs land:
-   WP-050 owns historical catalog validation and partition derivation; WP-060
-   owns memory production/conformance; and WP-070 owns redb production, the
-   linear migration port, compare-and-rewrite, and process recovery. This is an
-   additional soft sequencing constraint for the correction, especially for
-   WP-050, and creates no WP-060/WP-065 dependency cycle.
+3. WP-050, already dependent on WP-060, owns historical catalog validation,
+   partition derivation, the fields-private instruction/batch/pending/completion
+   chain, and the consuming migration driver. Only after both that interface and
+   the WP-065 codec factory are fixed may WP-070 integrate the named memory and
+   redb ports, their backend-private page/read/apply/end states, compare-and-
+   rewrite, shared conformance, and process recovery. WP-070 therefore depends
+   on WP-050 in addition to WP-060 and WP-065. The concrete crates may depend on
+   catalog only for this startup migration composition; no storage-to-IR edge or
+   WP-050/WP-060 cycle is introduced.
 4. WP-100 owns only the commit-side conversion of WP-065's checked sequence-free
    aggregate-cap result into the accepted capacity decision and public mapping.
    It does not define or construct the storage-API result. WP-120 and WP-130
    consume the completed startup/read-filter behavior and add no migration
-   constructor or semantic owner.
+   constructor or semantic owner. WP-130 may only join the matching outcomes
+   and invoke the catalog-owned driver; it cannot see an instruction or backend
+   intermediate.
 5. WP-075 is a future nested-workspace storage-interface/conformance consumer
    and must compile against and exercise the accepted V2/migration outcome
    rather than freezing the pre-ADR startup shape; its existing exit gate may
@@ -537,7 +556,7 @@ merge sequencing are exact:
    edit only their already declared nested-workspace/example paths and preserve
    their acceptance commands.
 
-The authoritative reconciliation adds ADR-0039 to the `required_adrs` of
+The authoritative reconciliation adds ADR-0039, and ADR-0042 adds itself, to the `required_adrs` of
 exactly WP-050, WP-060, WP-065, WP-070, WP-075, WP-100, WP-120, WP-125, WP-130,
 WP-190, and WP-200, records the exact package-owned edits within the existing
 allowed paths described above, and preserves every existing acceptance command.
@@ -575,16 +594,20 @@ different owner's passing tests as a substitute for its own acceptance evidence.
   consumption. Wrong owner, prefix length/order/type, lineage, version, bundle
   hash, aggregate, schema, stored V2 partition, and trailing bytes fail closed.
 - Architecture tests permit only the declared `riffdb-catalog` to
-  `riffdb-invariant` edge and prove no inverse edge, storage-to-IR edge, callback,
-  storage handle, clock, entropy, async type, or runtime command API crosses the
-  pure evaluator boundary.
-- WP-060 memory type-state tests prove migration entry requires the same
-  session's two exact-end authorities; handles are linear; stale, skipped,
-  repeated, reordered, cross-database, and cross-session pages/instructions
-  reject; `Ready` joins only `Clean`; the two `MigrationRequired` values are
-  non-readiness types and must be consumed together; crossed outcomes reject;
-  and no operational port is available during or after migration.
-- WP-060 and WP-070 tests prove the migration bundle point-read accepts only the
+  `riffdb-invariant` edge and the ADR-0042 concrete-backend-to-catalog startup
+  migration edges. They prove no inverse invariant edge, direct storage-to-IR
+  edge, callback, storage handle, clock, entropy, async type, or runtime command
+  API crosses the pure evaluator boundary. Compile-fail tests prove storage API
+  cannot construct catalog progress and server cannot name instructions or
+  backend intermediates.
+- WP-060 storage-API and WP-070 memory type-state tests prove migration entry
+  requires the same session's two exact-end authorities; handles are linear;
+  stale, skipped, repeated, reordered, cross-database, and cross-session pages/
+  instructions reject; `Ready` joins only `Clean`; the two
+  `MigrationRequired` values are non-readiness types and must be consumed
+  together; crossed outcomes reject; and no operational port is available
+  during or after migration.
+- WP-070 memory and redb tests prove the migration bundle point-read accepts only the
   current row's exact same-session retained reference, holds no transaction
   during catalog evaluation, returns at most one bounded owned bundle at a
   time, and rejects stale, arbitrary, cross-page, and cross-session requests.

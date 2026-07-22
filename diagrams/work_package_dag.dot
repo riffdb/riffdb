@@ -43,7 +43,7 @@ digraph G {
   wp040 -> {wp045 wp050 wp060 wp080};
   wp020 -> wp065;
   wp060 -> {wp050 wp065 wp070 wp075 wp080};
-  wp065 -> wp070;
+  {wp050 wp065} -> wp070;
   wp070 -> wp075;
   wp010 -> wp110;
   wp070 -> wp110;

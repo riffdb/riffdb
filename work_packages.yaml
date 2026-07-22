@@ -1,4 +1,4 @@
-spec_version: '0.28'
+spec_version: '0.29'
 product: RiffDB
 repository: riffdb
 status: implementation-handoff
@@ -392,6 +392,7 @@ work_packages:
   - ADR-0030
   - ADR-0038
   - ADR-0039
+  - ADR-0042
   allowed_paths:
   - Cargo.lock
   - crates/riffdb-catalog/**
@@ -445,16 +446,21 @@ work_packages:
     plus consumption of every 0x05 capability-partition evidence item after persisted-key evidence against the active
     validated bundle before ValidatedCatalogHistory can be produced
   - Architecture checks proving ValidatedCatalogHistory and command materialization evidence never cross a storage
-    trait, storage never imports or interprets contract IR, WP-100 consumes but does not implement or inspect the opaque
-    evidence API, and neither side accepts a generic validation callback
+    trait, concrete storage never directly imports or interprets contract IR, WP-100 consumes but does not implement
+    or inspect the opaque evidence API, and neither side accepts a generic validation callback
   - Catalog consumption of the replacement-only IndexMigrationRow historical-evidence variant with its exact 0x04
     ordering, charge, single-consumption, V1/V2 coverage, and unchanged 0x05 capability-partition ordering
   - Pure bounded historical partition derivation through the sole narrow riffdb-catalog-to-riffdb-invariant edge,
     using the exact retained bundle and positional aggregate-root key prefix for roots, children, and embedded index
     entity keys, with wrong ownership, lineage, schema, partition, incomplete consumption, or trailing bytes rejected
-  - Non-readiness CatalogIndexMigrationContext that consumes same-session codec-checked rows and bounded bundle
-    point-reads into exactly one V1Rewrite or V2Confirm instruction per row, while only a fresh V2-only validation can
-    produce ValidatedCatalogHistory
+  - Non-readiness CatalogIndexMigrationContext plus catalog-owned fields-private move-only V1Rewrite/V2Confirm,
+    instruction-batch, pending, completion, and consuming driver types; every scan/bundle/apply/finish exchange
+    consumes a request/proof branded by concrete backend type B, response factories consume only that exact request,
+    row derivation accepts the exact owned canonical bundle and never a caller partition, and only a fresh V2-only
+    validation can produce ValidatedCatalogHistory
+  - Compile-fail/type-state fixtures proving no external crate can construct catalog progress/completion, a local fake
+    backend cannot replay Batch<Fake> as Batch<Redb>, and server code cannot receive a branded request/response or
+    instruction
   acceptance_commands:
   - cargo test -p riffdb-catalog
   - cargo test -p riffdb-catalog --test contract_deploy_recovery
@@ -523,6 +529,7 @@ work_packages:
   - ADR-0035
   - ADR-0038
   - ADR-0039
+  - ADR-0042
   allowed_paths:
   - Cargo.lock
   - crates/riffdb-types/src/codec.rs
@@ -583,12 +590,13 @@ work_packages:
   - Memory conformance for initialization-before-evidence, exclusive noninterleaving scans, page continuation and
     exact-end coverage, session/database mismatch rejection, dropped/failed session behavior, and dormant ports that
     cannot become operational without the separate catalog-owned same-session ValidatedCatalogHistory
-  - Fields-private process-local migration-row evidence wrapper, replacement-only IndexMigrationRow historical
-    variant, exact 0x04 ordering and dual charges, and sealed backend/session/page carriage with no forgeable codec-
-    evidence constructor
-  - Linear memory startup outcomes for Ready/Clean versus paired MigrationRequired states, same-session bounded
-    migration pages and one-bundle point reads, and consuming exact-end completion that returns only dormant unopened
-    state and requires a fresh complete validation pass
+  - Codec-owned migration semantic row, fields-private process-local migration-row evidence wrapper, replacement-only
+    IndexMigrationRow historical variant, exact 0x04 ordering and dual charges, checked cursor/bounds, and an identity-
+    only StartupIndexMigrationPort contract with no forgeable codec-evidence constructor or public scan, bundle-read,
+    instruction, page/batch, apply, exact-end, completion, or finish authority
+  - Memory structural startup outcomes for Ready/Clean versus paired MigrationRequired states with a privately
+    constructed concrete port implementing only the identity contract; complete catalog-driven memory migration and
+    shared backend conformance are sequenced under WP-070 after WP-050
   acceptance_commands:
   - cargo test -p riffdb-storage-api -p riffdb-storage-memory
   exit_gate: Reference storage satisfies atomicity, pre-sequence reservation and no-gap ordering, exact event-hash,
@@ -630,6 +638,7 @@ work_packages:
   - ADR-0022
   - ADR-0038
   - ADR-0039
+  - ADR-0042
   allowed_paths:
   - Cargo.lock
   - proto/**
@@ -679,8 +688,9 @@ work_packages:
   - Exact ordered 27-readable/26-writable durable registries, with StoredIndexEntryV1 decode-only and V2 the sole
     normal-write index role, plus V1/V2 decoder fuzz and unknown/ambiguous tuple rejection
   - Sole durable-codec factories for canonical migration-row evidence and conservative V2 replacement envelopes,
-    together with the fields-private Fits or ExceedsAcceptedAggregateCap sequence-free result and one-maximum-row
-    proof under the independent 500-row/4-MiB evidence and instruction ledgers
+    without owning a catalog instruction, tracker, or completion; together with the fields-private Fits or
+    ExceedsAcceptedAggregateCap sequence-free result and one-maximum-row proof under the independent 500-row/4-MiB
+    evidence and instruction ledgers
   acceptance_commands:
   - cargo test -p riffdb-proto -p riffdb-storage-api
   - ./scripts/generate-proto --check
@@ -693,6 +703,7 @@ work_packages:
   name: Redb storage engine
   depends_on:
   - WP-020
+  - WP-050
   - WP-060
   - WP-065
   objective: Implement the POC durable backend with redb, versioned tables, atomic commits, recovery checks, and
@@ -740,11 +751,13 @@ work_packages:
   - ADR-0035
   - ADR-0038
   - ADR-0039
+  - ADR-0042
   allowed_paths:
   - Cargo.lock
   - crates/riffdb-storage-api/src/startup.rs
   - crates/riffdb-storage-api/tests/core_boundaries.rs
   - crates/riffdb-storage-api/tests/architecture.rs
+  - crates/riffdb-storage-memory/Cargo.toml
   - crates/riffdb-storage-memory/src/startup.rs
   - crates/riffdb-storage-redb/**
   - tests/service_audit_recovery/**
@@ -776,6 +789,9 @@ work_packages:
   - Exact redb 4.1.0 dependency with default features disabled, no optional features, and no engine-specific public
     surface
   - Exact sha2 0.11.0 dependency with default features disabled, used only for SHA-256 backup manifests
+  - Default-feature-disabled riffdb-contract-compiler dev-dependencies used only by memory conformance and redb
+    recovery fixtures to build a real canonical indexed bundle and exercise full catalog validation, with no
+    production compiler/IR edge or backend-owned expression interpretation
   - Durable standalone service-audit records and indexes, admitted-provenance admission fields, and compound
     bootstrap and replay persistence using only WP-065-reviewed schemas and mappings
   - Startup integrity rejection of unknown, malformed, duplicate, noncanonically ordered, or over-limit ADR-0021
@@ -800,11 +816,20 @@ work_packages:
     exact end
   - Explicit evidence that StructurallyOpened is not IR-aware or operational readiness; redb neither validates command
     plans nor consumes ValidatedCatalogHistory, and any scan failure drops the open rather than publishing ports
-  - Exclusive linear V1/V2 index migration port with strict physical ordering, short read transactions, same-session
-    codec evidence, bounded one-bundle point reads, paired 500-row/4-MiB evidence and instruction ledgers, whole-batch
-    exact compare-and-rewrite, V2Confirm no-write replay, cancellation release, and no migration marker
+  - Named MemoryStartupIndexMigrationPort and RedbStartupIndexMigrationPort, privately constructed by their consumed
+    structural sessions and privately implementing storage API's identity-only contract, with the sole narrow
+    production backend-to-catalog dependency confined to startup migration and no direct IR/invariant import
+  - Catalog-owned migration-only backend trait implementation in both concrete engines where every cross-crate scan,
+    one-bundle read, batch apply, and finish consumes a fields-private move-only request/proof branded by the exact
+    backend type, its response factory consumes that request, and all concrete page/read/apply/end helper states remain
+    module-private and server-inaccessible
+  - Exclusive linear V1/V2 migration through the catalog-owned driver with strict physical ordering, short read
+    transactions, same-session codec evidence, bounded one-bundle point reads, paired 500-row/4-MiB evidence and
+    instruction ledgers, whole-batch exact compare-and-rewrite, V2Confirm no-write replay, cancellation release, and
+    no migration marker
   - Crash/reopen failpoints around every migration batch, dormant-unopened completion, fresh OpenSessionId and full
-    post-migration structural/catalog revalidation, with no storage transaction held during catalog evaluation
+    post-migration structural/catalog revalidation, with instrumentation proving no storage transaction is held during
+    catalog key decoding, expression evaluation, or instruction retention
   acceptance_commands:
   - cargo test -p riffdb-storage-api
   - cargo test -p riffdb-storage-memory
@@ -848,6 +873,7 @@ work_packages:
   - ADR-0010
   - ADR-0017
   - ADR-0039
+  - ADR-0042
   allowed_paths:
   - benchmarks/storage-fjall/**
   deliverables:
@@ -857,7 +883,8 @@ work_packages:
   - Separate lockfile and dependency inventory
   - Unchanged projection storage conformance results across identity, generation, markers, lifecycle, and frontier
   - Conformance against the accepted V2 startup outcome, 27-readable/26-writable registry semantics, and dual-ledger
-    migration pagination, reporting an explicit unchanged-suite failure rather than freezing the pre-migration shape
+    migration pagination through an identity-only port plus catalog-branded consuming driver contract, reporting an
+    explicit unchanged-suite failure rather than freezing the pre-migration shape or inventing a catalog authority
   acceptance_commands:
   - cargo test --manifest-path benchmarks/storage-fjall/Cargo.toml --workspace
   - cargo bench --manifest-path benchmarks/storage-fjall/Cargo.toml --no-run
@@ -1017,6 +1044,7 @@ work_packages:
   - ADR-0033
   - ADR-0038
   - ADR-0039
+  - ADR-0042
   allowed_paths:
   - Cargo.lock
   - crates/riffdb-commit/**
@@ -1258,6 +1286,7 @@ work_packages:
   - ADR-0037
   - ADR-0038
   - ADR-0039
+  - ADR-0042
   allowed_paths:
   - Cargo.lock
   - crates/riffdb-service/**
@@ -1332,7 +1361,8 @@ work_packages:
   - Policy-filtered command descriptors carrying the compiler-owned ADR-0020 name verbatim, with no service-side
     normalization, derivation, collision repair, or transport-specific substitute identity
   - Service read/filter integration proving migrated V2 index rows participate in the accepted lower partition filter
-    and return-time reauthorization, with migration or crossed startup outcomes never admitted as readiness
+    and return-time reauthorization, with migration or crossed startup outcomes never admitted as readiness and the
+    service receiving no branded driver value, instruction, or backend helper
   acceptance_commands:
   - cargo test -p riffdb-service
   - cargo test -p riffdb-service --test service_end_to_end
@@ -1372,6 +1402,7 @@ work_packages:
   - ADR-0007
   - ADR-0031
   - ADR-0039
+  - ADR-0042
   allowed_paths:
   - .github/workflows/budget-comparison.yml
   - examples/budget-comparison/Cargo.toml
@@ -1383,7 +1414,8 @@ work_packages:
   - Parameterized cross-backend semantic conformance suite
   - Correctness preflight for comparison workloads
   - V2-only startup compatibility fixture that joins only Ready with Clean and fails closed on either migration or a
-    crossed catalog/storage startup outcome without gaining migration ownership
+    crossed catalog/storage startup outcome while treating the identity-only concrete port as opaque and gaining no
+    migration ownership, branded driver value, instruction, or backend helper
   acceptance_commands:
   - cargo test --manifest-path examples/budget-comparison/Cargo.toml --workspace service_comparison
   exit_gate: The service adapter and PostgreSQL adapter satisfy their declared guarantee profiles under the same
@@ -1504,6 +1536,7 @@ work_packages:
   - ADR-0036
   - ADR-0038
   - ADR-0039
+  - ADR-0042
   allowed_paths:
   - Cargo.lock
   - crates/riffdb-api-grpc/**
@@ -1563,6 +1596,10 @@ work_packages:
     capability partition, while StructurallyOpened carries the exact same-snapshot RetainedMetadataV1 used to check
     database identity, active-pointer agreement, bootstrap lifecycle, and allocator capacity; no catalog proof crosses
     the storage trait, and any mismatch leaves the process unready
+  - Migration startup composition that only joins matching CatalogIndexMigrationContext and the privately constructed
+    RedbStartupIndexMigrationPort, invokes the catalog-owned consuming driver, and receives dormant unopened state;
+    server source cannot import or receive catalog-branded requests/responses, instructions, batches, completions, or
+    concrete backend page/read/apply/end helpers
   - Exact 256-item lower commit-subscription buffers and retained supervision handles for every accepted service task;
     buffer overflow remains resumable and any accepted task panic or disappearance stops routing rather than silently
     dropping work
@@ -1580,7 +1617,7 @@ work_packages:
     and retained bootstrap replay without an in-process storage or service shortcut
   - Restart-from-V1 integration proving the exclusive migration completes before readiness, a fresh V2-only startup
     pass joins Ready with Clean, migrated rows participate in partition-filtered reads and return-time authorization,
-    and no transport or server path becomes a migration constructor
+    and no transport or server path becomes a migration constructor or backend transition consumer
   acceptance_commands:
   - cargo test -p riffdb-api-grpc -p riffdb-client-rust -p riffdb-server
   - cargo test -p riffdb-api-grpc --features server,client --test grpc_end_to_end
@@ -2189,6 +2226,7 @@ work_packages:
   - ADR-0039
   - ADR-0040
   - ADR-0041
+  - ADR-0042
   allowed_paths:
   - Cargo.lock
   - crates/riffdb-testkit/**
@@ -2221,8 +2259,9 @@ work_packages:
   - Graceful-close and crash/reopen evidence that complete authoritative integrity validation runs every time,
     repeated recovery creates no deferred ADR-0019 metadata, and canonical absence remains valid and idempotent
   - Named process failpoints throughout V1/V2 startup migration, including before and after each bounded compare-and-
-    rewrite commit, proving restart from a complete fresh scan, no partial batch, V2-only completion, and full fresh
-    structural/catalog exact-end validation before readiness
+    rewrite commit, proving restart from a complete fresh scan, no partial batch, catalog-owned branded completion,
+    dormant-only backend finish, V2-only completion, and full fresh structural/catalog exact-end validation before
+    readiness without exposing driver states to the process harness
   - Two explicitly synchronized post-commit/pre-response public Execute cases, one losing TCP response bytes before a
     complete frame and one kills then restarts riffdbd; each retries through WP-137 with the same command, raw key,
     canonical input, and capability but a fresh RequestId, returning the original replayed outcome, sequence, and
@@ -2297,6 +2336,7 @@ work_packages:
   - ADR-0039
   - ADR-0040
   - ADR-0041
+  - ADR-0042
   allowed_paths:
   - scripts/demo*
   - scripts/release*
@@ -2329,7 +2369,8 @@ work_packages:
     capability revoke, exact transaction-current evaluator boundary, audit-input ownership inversion, and
     known/no-transition control-plane audit classifications
   - Final V2 migration generated-artifact, restart/recovery, authorization, cross-transport, and rollback-unsupported
-    evidence, including exact 27-readable/26-writable registry and no post-migration V1 record
+    evidence, including exact 27-readable/26-writable registry, sealed catalog/backend authority architecture, and no
+    post-migration V1 record
   - Machine-readable consumption of WP-190's synchronized TCP-loss and process-restart same-key replay evidence for
     POC-004, plus final WP-137/WP-140/WP-150 public protocol, MCP, CLI, generated-artifact, and release conformance
   acceptance_commands:
