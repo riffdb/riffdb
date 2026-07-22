@@ -1,23 +1,37 @@
 //! Exact-end same-session historical catalog validation.
 
+use std::num::{NonZeroU16, NonZeroU32};
+
 use riffdb_catalog::{CatalogErrorKind, ValidatedContractBundle, validate_catalog_history};
 use riffdb_contract_compiler::{compile_contract_source, compile_contract_successor};
 use riffdb_contract_ir::{CompatibilityReport, ContractBundle, ParentBundleRef};
 use riffdb_storage_api::{
-    DormantPortBundle, DurableKeySchemaBindingV1, EntityTarget, EvidencePageLimit,
-    HistoricalActiveCatalogEvidence, HistoricalBundleBytes, HistoricalBundleEvidence,
-    HistoricalEvidenceCursor, HistoricalEvidenceEnd, HistoricalEvidencePage,
-    HistoricalPersistedKeyEvidenceV1, HistoricalSemanticEvidence, OpenSessionId, StorageError,
-    StorageErrorKind, StoredEntityRecordV1, StoredIndexEpochV1, StructuralEvidenceCursor,
+    CapabilityGrantV1, CapabilityPermissionKindV1, CapabilityPermissionV1, CapabilityPermissionsV1,
+    CapabilityRequestedRecordV1, DormantPortBundle, DurableKeySchemaBindingV1, EntityTarget,
+    EvidencePageLimit, HistoricalActiveCatalogEvidence, HistoricalBundleBytes,
+    HistoricalBundleEvidence, HistoricalCapabilityPartitionEvidenceV1, HistoricalEvidenceCursor,
+    HistoricalEvidenceEnd, HistoricalEvidencePage, HistoricalPersistedKeyEvidenceV1,
+    HistoricalSemanticEvidence, OpenSessionId, PartitionScopeV1, StorageError, StorageErrorKind,
+    StoredCapabilityRecordV1, StoredEntityRecordV1, StoredIndexEpochV1, StructuralEvidenceCursor,
     StructuralEvidenceEnd, StructuralEvidencePage, StructuralEvidenceSession,
     StructurallyDecodedIndexRangePrefixV1, StructurallyOpened,
 };
 use riffdb_types::{
-    CanonicalRecord, CanonicalValue, ContractBundleHash, ContractLineage, ContractVersion,
-    DatabaseId, EntityKey, EntityVersion, IndexEpoch, PlanHash,
+    ActorId, ActorKind, AdministrationSequence, AggregateTypeId, Audience, CanonicalRecord,
+    CanonicalValue, CapabilityId, CapabilityTokenDigest, ContractBundleHash, ContractLineage,
+    ContractVersion, DatabaseId, DigestKeyId, EntityKey, EntityVersion, Environment, IndexEpoch,
+    PartitionKey, PartitionKeyBuilder, PlanHash, RequestId, ScopedPartitionV1, TenantScope,
+    Timestamp,
 };
 
 const BUDGET: &str = include_str!("../../../contracts/examples/budget.riff");
+
+const CAPABILITY_KEYS: &str = r#"
+contract CapabilityKeys version 1 {
+  entity TextRow { key (id: string<4>) }
+  aggregate TextRows { root TextRow partition_by id conflict_key (id) }
+}
+"#;
 
 #[derive(Clone, Copy)]
 enum CursorFault {
@@ -213,6 +227,64 @@ fn storage_error(kind: StorageErrorKind) -> StorageError {
     StorageError::new(kind, None)
 }
 
+fn uuid_v7(seed: u8) -> [u8; 16] {
+    let mut bytes = [0; 16];
+    bytes[..10].copy_from_slice(&[0x01, 0x8f, 0, 0, 0, 0, 0x70, 1, 0x80, 2]);
+    bytes[15] = seed;
+    bytes
+}
+
+fn capability_partition_evidence(
+    capability_seed: u8,
+    scope: PartitionScopeV1,
+    entry_ordinal: usize,
+) -> HistoricalCapabilityPartitionEvidenceV1 {
+    let permissions = CapabilityPermissionsV1::new(vec![
+        CapabilityPermissionV1::unparameterized(CapabilityPermissionKindV1::AdministerCapabilities)
+            .expect("permission shape"),
+    ])
+    .expect("permissions");
+    let grant = CapabilityGrantV1::new(
+        TenantScope::Global,
+        scope,
+        permissions,
+        Vec::new(),
+        NonZeroU16::MIN,
+        Vec::new(),
+    )
+    .expect("grant");
+    let requested = CapabilityRequestedRecordV1::new(
+        database(),
+        Environment::new("test").expect("environment"),
+        ActorId::new("operator").expect("actor"),
+        ActorKind::Human,
+        NonZeroU32::new(60).expect("duration"),
+        vec![Audience::new("riffdb-test").expect("audience")],
+        grant,
+    )
+    .expect("requested capability");
+    let capability = StoredCapabilityRecordV1::active(
+        CapabilityId::from_bytes(uuid_v7(capability_seed)).expect("capability UUIDv7"),
+        CapabilityTokenDigest::from_hmac_bytes(
+            DigestKeyId::new(1).expect("digest key"),
+            [capability_seed; 32],
+        ),
+        requested,
+        Timestamp::new(10, 0).expect("issued at"),
+        Timestamp::new(70, 0).expect("expires at"),
+        AdministrationSequence::first(),
+        RequestId::from_bytes(uuid_v7(capability_seed.wrapping_add(0x40))).expect("request UUIDv7"),
+    )
+    .expect("stored capability");
+    HistoricalCapabilityPartitionEvidenceV1::from_capability_entry(&capability, entry_ordinal)
+        .expect("capability partition evidence")
+}
+
+fn explicit_partition(lineage: ContractLineage, key: PartitionKey) -> PartitionScopeV1 {
+    PartitionScopeV1::explicit(vec![ScopedPartitionV1::new(lineage, key)])
+        .expect("one explicit partition")
+}
+
 #[test]
 fn complete_history_resolves_every_plan_and_produces_a_session_bound_proof() {
     let bundle = ValidatedContractBundle::from_compiler_bundle(
@@ -262,6 +334,246 @@ fn initialized_but_undeployed_catalog_has_an_exact_empty_history() {
     let validation = validate_catalog_history(&mut session).expect("empty exact history");
     assert!(validation.history().active().is_none());
     assert_eq!(validation.history().evidence_count(), 1);
+}
+
+#[test]
+fn qualifying_capability_partitions_require_the_active_bundle_schema() {
+    let bundle = ValidatedContractBundle::from_compiler_bundle(
+        compile_contract_source(CAPABILITY_KEYS).expect("capability-key contract"),
+    )
+    .expect("validated");
+    let stored = stored_bundle(&bundle);
+    let aggregate = bundle
+        .bundle()
+        .schema()
+        .aggregates()
+        .first()
+        .expect("aggregate");
+    let key = aggregate
+        .keys()
+        .partition_schema()
+        .encode_partition(&[CanonicalValue::string("key").expect("bounded text")])
+        .expect("complete partition key");
+    let evidence =
+        capability_partition_evidence(0x21, explicit_partition(bundle.lineage().clone(), key), 0);
+    let mut valid = session(
+        vec![
+            vec![HistoricalSemanticEvidence::Bundle(stored.clone())],
+            vec![active(&bundle)],
+            vec![HistoricalSemanticEvidence::CapabilityPartition(evidence)],
+        ],
+        vec![stored],
+        CursorFault::None,
+    );
+
+    let validation = validate_catalog_history(&mut valid).expect("schema-valid capability key");
+    assert_eq!(validation.history().evidence_count(), 3);
+}
+
+#[test]
+fn invalid_capability_partition_semantics_fail_as_invalid_history() {
+    let bundle = ValidatedContractBundle::from_compiler_bundle(
+        compile_contract_source(CAPABILITY_KEYS).expect("capability-key contract"),
+    )
+    .expect("validated");
+    let stored = stored_bundle(&bundle);
+    let aggregate = bundle
+        .bundle()
+        .schema()
+        .aggregates()
+        .first()
+        .expect("aggregate");
+    let valid_key = aggregate
+        .keys()
+        .partition_schema()
+        .encode_partition(&[CanonicalValue::string("key").expect("bounded text")])
+        .expect("complete partition key");
+
+    let mut unknown_owner =
+        PartitionKeyBuilder::new(AggregateTypeId::new(u32::MAX).expect("nonzero aggregate ID"));
+    unknown_owner.push_str("key").expect("bounded component");
+
+    let mut invalid_utf8 = PartitionKeyBuilder::new(aggregate.id());
+    invalid_utf8
+        .push_bytes(&[0xff])
+        .expect("structurally bounded component");
+
+    let incomplete = PartitionKeyBuilder::new(aggregate.id())
+        .finish()
+        .expect("envelope-only key");
+
+    let mut trailing = PartitionKeyBuilder::new(aggregate.id());
+    trailing.push_str("key").expect("bounded component");
+    trailing.push_bool(true).expect("bounded trailing value");
+
+    let candidates = [
+        explicit_partition(
+            ContractLineage::new("Foreign").expect("foreign lineage"),
+            valid_key,
+        ),
+        explicit_partition(
+            bundle.lineage().clone(),
+            unknown_owner.finish().expect("unknown-owner envelope"),
+        ),
+        explicit_partition(
+            bundle.lineage().clone(),
+            invalid_utf8.finish().expect("invalid UTF-8 envelope"),
+        ),
+        explicit_partition(bundle.lineage().clone(), incomplete),
+        explicit_partition(
+            bundle.lineage().clone(),
+            trailing.finish().expect("trailing envelope"),
+        ),
+    ];
+
+    for (index, scope) in candidates.into_iter().enumerate() {
+        let evidence = capability_partition_evidence(
+            u8::try_from(index + 0x30).expect("bounded seed"),
+            scope,
+            0,
+        );
+        let mut invalid = session(
+            vec![
+                vec![HistoricalSemanticEvidence::Bundle(stored.clone())],
+                vec![active(&bundle)],
+                vec![HistoricalSemanticEvidence::CapabilityPartition(evidence)],
+            ],
+            vec![stored.clone()],
+            CursorFault::None,
+        );
+        assert_eq!(
+            validate_catalog_history(&mut invalid)
+                .err()
+                .expect("invalid capability partition")
+                .kind(),
+            CatalogErrorKind::InvalidHistoricalEvidence
+        );
+    }
+}
+
+#[test]
+fn capability_partition_without_an_active_bundle_fails_closed() {
+    let bundle = ValidatedContractBundle::from_compiler_bundle(
+        compile_contract_source(CAPABILITY_KEYS).expect("capability-key contract"),
+    )
+    .expect("validated");
+    let stored = stored_bundle(&bundle);
+    let aggregate = bundle
+        .bundle()
+        .schema()
+        .aggregates()
+        .first()
+        .expect("aggregate");
+    let key = aggregate
+        .keys()
+        .partition_schema()
+        .encode_partition(&[CanonicalValue::string("key").expect("bounded text")])
+        .expect("complete partition key");
+    let evidence =
+        capability_partition_evidence(0x41, explicit_partition(bundle.lineage().clone(), key), 0);
+    let mut missing_active = session(
+        vec![
+            vec![HistoricalSemanticEvidence::Bundle(stored.clone())],
+            vec![HistoricalSemanticEvidence::ActiveCatalog(None)],
+            vec![HistoricalSemanticEvidence::CapabilityPartition(evidence)],
+        ],
+        vec![stored],
+        CursorFault::None,
+    );
+
+    assert_eq!(
+        validate_catalog_history(&mut missing_active)
+            .err()
+            .expect("capability partition requires active bundle")
+            .kind(),
+        CatalogErrorKind::InvalidHistoricalEvidence
+    );
+}
+
+#[test]
+fn duplicate_reordered_and_nonexact_capability_evidence_fails_closed() {
+    let bundle = ValidatedContractBundle::from_compiler_bundle(
+        compile_contract_source(CAPABILITY_KEYS).expect("capability-key contract"),
+    )
+    .expect("validated");
+    let stored = stored_bundle(&bundle);
+    let aggregate = bundle
+        .bundle()
+        .schema()
+        .aggregates()
+        .first()
+        .expect("aggregate");
+    let key = aggregate
+        .keys()
+        .partition_schema()
+        .encode_partition(&[CanonicalValue::string("key").expect("bounded text")])
+        .expect("complete partition key");
+    let scope = explicit_partition(bundle.lineage().clone(), key);
+    let lower = HistoricalSemanticEvidence::CapabilityPartition(capability_partition_evidence(
+        0x51,
+        scope.clone(),
+        0,
+    ));
+    let higher = HistoricalSemanticEvidence::CapabilityPartition(capability_partition_evidence(
+        0x52, scope, 0,
+    ));
+
+    let cases = [
+        session(
+            vec![
+                vec![HistoricalSemanticEvidence::Bundle(stored.clone())],
+                vec![active(&bundle)],
+                vec![lower.clone()],
+                vec![lower.clone()],
+            ],
+            vec![stored.clone()],
+            CursorFault::None,
+        ),
+        session(
+            vec![
+                vec![HistoricalSemanticEvidence::Bundle(stored.clone())],
+                vec![active(&bundle)],
+                vec![higher],
+                vec![lower],
+            ],
+            vec![stored.clone()],
+            CursorFault::None,
+        ),
+        session(
+            vec![
+                vec![HistoricalSemanticEvidence::Bundle(stored.clone())],
+                vec![active(&bundle)],
+                vec![HistoricalSemanticEvidence::CapabilityPartition(
+                    capability_partition_evidence(
+                        0x53,
+                        explicit_partition(
+                            bundle.lineage().clone(),
+                            aggregate
+                                .keys()
+                                .partition_schema()
+                                .encode_partition(&[
+                                    CanonicalValue::string("key").expect("bounded text")
+                                ])
+                                .expect("complete partition key"),
+                        ),
+                        0,
+                    ),
+                )],
+            ],
+            vec![stored.clone()],
+            CursorFault::WrongEnd,
+        ),
+    ];
+
+    for mut invalid in cases {
+        assert_eq!(
+            validate_catalog_history(&mut invalid)
+                .err()
+                .expect("invalid capability evidence stream")
+                .kind(),
+            CatalogErrorKind::InvalidHistoricalEvidence
+        );
+    }
 }
 
 #[test]

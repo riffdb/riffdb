@@ -5,8 +5,9 @@ use std::fmt;
 use std::num::{NonZeroU32, NonZeroU64};
 
 use riffdb_types::{
-    ContractBundleHash, ContractLineage, ContractVersion, DIGEST_SCHEME_V1, DatabaseId,
-    DigestKeyId, EntityKey, EntityTypeId, IndexEntryKey, IndexId, Timestamp,
+    CapabilityId, ContractBundleHash, ContractLineage, ContractVersion, DIGEST_SCHEME_V1,
+    DatabaseId, DigestKeyId, EntityKey, EntityTypeId, IndexEntryKey, IndexId,
+    MAX_CAPABILITY_PARTITIONS, ScopedPartitionV1, Timestamp,
 };
 
 use crate::{
@@ -648,6 +649,97 @@ impl fmt::Debug for HistoricalPersistedKeyEvidenceV1 {
     }
 }
 
+/// One IR-opaque explicit entry emitted for a qualifying durable capability.
+#[derive(Clone, Eq, PartialEq)]
+pub struct HistoricalCapabilityPartitionEvidenceV1 {
+    capability_id: CapabilityId,
+    entry_ordinal: u16,
+    scoped_partition: ScopedPartitionV1,
+}
+
+impl HistoricalCapabilityPartitionEvidenceV1 {
+    /// Derives one checked zero-based entry from a durable explicit capability scope.
+    pub fn from_capability_entry(
+        capability: &crate::StoredCapabilityRecordV1,
+        entry_ordinal: usize,
+    ) -> Result<Self, StorageValueError> {
+        if entry_ordinal >= MAX_CAPABILITY_PARTITIONS {
+            return Err(StorageValueError::LimitExceeded);
+        }
+        let scoped_partition = capability
+            .grant()
+            .partition_scope()
+            .explicit_entries()
+            .and_then(|entries| entries.get(entry_ordinal))
+            .ok_or(StorageValueError::InvalidShape)?
+            .clone();
+        Ok(Self {
+            capability_id: capability.capability_id(),
+            entry_ordinal: u16::try_from(entry_ordinal)
+                .map_err(|_| StorageValueError::LimitExceeded)?,
+            scoped_partition,
+        })
+    }
+
+    /// Returns the durable capability that owns this explicit entry.
+    #[must_use]
+    pub const fn capability_id(&self) -> CapabilityId {
+        self.capability_id
+    }
+
+    /// Returns the exact zero-based position in the canonical explicit scope.
+    #[must_use]
+    pub const fn entry_ordinal(&self) -> u16 {
+        self.entry_ordinal
+    }
+
+    /// Borrows the lineage-scoped complete partition key.
+    #[must_use]
+    pub const fn scoped_partition(&self) -> &ScopedPartitionV1 {
+        &self.scoped_partition
+    }
+
+    /// Returns the exact process-local `0x05` historical-evidence order key.
+    #[must_use]
+    pub fn evidence_order_key(&self) -> Vec<u8> {
+        let partition_key = self.scoped_partition.partition_key();
+        let mut output = Vec::new();
+        output.push(0x05);
+        output.extend_from_slice(self.capability_id.as_bytes());
+        output.extend_from_slice(&self.entry_ordinal.to_be_bytes());
+        push_lineage(&mut output, self.scoped_partition.lineage());
+        output.extend_from_slice(&partition_key.aggregate_type_id().to_be_bytes());
+        output.extend_from_slice(
+            &u32::try_from(partition_key.as_bytes().len())
+                .expect("foundational partition-key hard bound fits u32")
+                .to_be_bytes(),
+        );
+        output.extend_from_slice(partition_key.as_bytes());
+        output
+    }
+
+    /// Returns the exact checked semantic charge for evidence-page accounting.
+    pub fn semantic_bytes(&self) -> Result<usize, StorageValueError> {
+        31usize
+            .checked_add(self.scoped_partition.lineage().as_bytes().len())
+            .and_then(|value| {
+                value.checked_add(self.scoped_partition.partition_key().as_bytes().len())
+            })
+            .ok_or(StorageValueError::SizeOverflow)
+    }
+}
+
+impl fmt::Debug for HistoricalCapabilityPartitionEvidenceV1 {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("HistoricalCapabilityPartitionEvidenceV1")
+            .field("capability_id", &self.capability_id)
+            .field("entry_ordinal", &self.entry_ordinal)
+            .field("scoped_partition", &"[REDACTED]")
+            .finish()
+    }
+}
+
 /// One ordered, storage-structural historical fact consumed by the catalog.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum HistoricalSemanticEvidence {
@@ -659,6 +751,8 @@ pub enum HistoricalSemanticEvidence {
     ActiveCatalog(Option<HistoricalActiveCatalogEvidence>),
     /// One persisted key requiring exact catalog-owned historical schema validation.
     PersistedKey(HistoricalPersistedKeyEvidenceV1),
+    /// One qualifying capability's explicit partition entry.
+    CapabilityPartition(HistoricalCapabilityPartitionEvidenceV1),
 }
 
 impl HistoricalSemanticEvidence {
@@ -690,6 +784,7 @@ impl HistoricalSemanticEvidence {
                 key.push(0x04);
                 key.extend_from_slice(&evidence.canonical_order_key());
             }
+            Self::CapabilityPartition(evidence) => return evidence.evidence_order_key(),
         }
         key
     }
@@ -713,6 +808,7 @@ impl HistoricalSemanticEvidence {
                 .semantic_bytes()?
                 .checked_add(1)
                 .ok_or(StorageValueError::SizeOverflow),
+            Self::CapabilityPartition(evidence) => evidence.semantic_bytes(),
         }
     }
 }
@@ -928,4 +1024,146 @@ fn push_lineage(output: &mut Vec<u8>, lineage: &ContractLineage) {
         u32::try_from(lineage.as_bytes().len()).expect("foundational lineage bound fits u32");
     output.extend_from_slice(&length.to_be_bytes());
     output.extend_from_slice(lineage.as_bytes());
+}
+
+#[cfg(test)]
+mod tests {
+    use std::num::{NonZeroU16, NonZeroU32};
+
+    use riffdb_types::{
+        ActorId, ActorKind, AdministrationSequence, AggregateTypeId, Audience,
+        CapabilityTokenDigest, Environment, PartitionKeyBuilder, RequestId, TenantScope,
+    };
+
+    use super::*;
+    use crate::{
+        CapabilityGrantV1, CapabilityPermissionKindV1, CapabilityPermissionV1,
+        CapabilityPermissionsV1, CapabilityRequestedRecordV1, PartitionScopeV1,
+        StoredCapabilityRecordV1,
+    };
+
+    const GOLDEN_CAPABILITY_ID_BYTES: [u8; 16] = [
+        0x01, 0x8f, 0x00, 0x00, 0x00, 0x00, 0x70, 0x01, 0x80, 0x02, 0x11, 0x22, 0x33, 0x44, 0x55,
+        0x66,
+    ];
+
+    fn uuid_v7(mut bytes: [u8; 16], seed: u8) -> [u8; 16] {
+        bytes[15] = seed;
+        bytes
+    }
+
+    fn partition(lineage: &ContractLineage, value: u64) -> ScopedPartitionV1 {
+        let mut builder =
+            PartitionKeyBuilder::new(AggregateTypeId::new(0x0102_0304).expect("aggregate type ID"));
+        builder.push_u64(value).expect("partition component");
+        ScopedPartitionV1::new(lineage.clone(), builder.finish().expect("partition key"))
+    }
+
+    fn stored_capability(
+        capability_id: CapabilityId,
+        partition_scope: PartitionScopeV1,
+    ) -> StoredCapabilityRecordV1 {
+        let permissions = CapabilityPermissionsV1::new(vec![
+            CapabilityPermissionV1::unparameterized(
+                CapabilityPermissionKindV1::AdministerCapabilities,
+            )
+            .expect("permission"),
+        ])
+        .expect("permissions");
+        let grant = CapabilityGrantV1::new(
+            TenantScope::Global,
+            partition_scope,
+            permissions,
+            Vec::new(),
+            NonZeroU16::MIN,
+            Vec::new(),
+        )
+        .expect("grant");
+        let requested = CapabilityRequestedRecordV1::new(
+            DatabaseId::from_bytes(uuid_v7(GOLDEN_CAPABILITY_ID_BYTES, 0x71)).expect("database ID"),
+            Environment::new("test").expect("environment"),
+            ActorId::new("subject").expect("actor ID"),
+            ActorKind::Human,
+            NonZeroU32::new(60).expect("duration"),
+            vec![Audience::new("riffdb-test").expect("audience")],
+            grant,
+        )
+        .expect("requested capability");
+        StoredCapabilityRecordV1::active(
+            capability_id,
+            CapabilityTokenDigest::from_hmac_bytes(
+                DigestKeyId::new(1).expect("digest key ID"),
+                [0x5a; 32],
+            ),
+            requested,
+            Timestamp::new(10, 0).expect("issued at"),
+            Timestamp::new(70, 0).expect("expires at"),
+            AdministrationSequence::first(),
+            RequestId::from_bytes(uuid_v7(GOLDEN_CAPABILITY_ID_BYTES, 0x72)).expect("request ID"),
+        )
+        .expect("stored capability")
+    }
+
+    #[test]
+    fn capability_partition_evidence_freezes_order_charge_and_redaction() {
+        let capability_id =
+            CapabilityId::from_bytes(GOLDEN_CAPABILITY_ID_BYTES).expect("capability ID");
+        let lineage = ContractLineage::new("budget").expect("lineage");
+        let scope = PartitionScopeV1::explicit(vec![
+            partition(&lineage, 1),
+            partition(&lineage, 2),
+            partition(&lineage, 0x0102_0304_0506_0708),
+        ])
+        .expect("explicit scope");
+        let capability = stored_capability(capability_id, scope);
+        let evidence =
+            HistoricalCapabilityPartitionEvidenceV1::from_capability_entry(&capability, 2)
+                .expect("evidence");
+
+        let expected = vec![
+            0x05, 0x01, 0x8f, 0x00, 0x00, 0x00, 0x00, 0x70, 0x01, 0x80, 0x02, 0x11, 0x22, 0x33,
+            0x44, 0x55, 0x66, 0x00, 0x02, 0x00, 0x00, 0x00, 0x06, b'b', b'u', b'd', b'g', b'e',
+            b't', 0x01, 0x02, 0x03, 0x04, 0x00, 0x00, 0x00, 0x0e, 0x50, 0x01, 0x01, 0x02, 0x03,
+            0x04, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08,
+        ];
+        assert_eq!(evidence.capability_id(), capability_id);
+        assert_eq!(evidence.entry_ordinal(), 2);
+        assert_eq!(evidence.evidence_order_key(), expected);
+        assert_eq!(evidence.semantic_bytes(), Ok(51));
+
+        let debug = format!("{evidence:?}");
+        assert!(debug.contains("[REDACTED]"));
+        assert!(!debug.contains("budget"));
+        assert!(!debug.contains("0102030405060708"));
+    }
+
+    #[test]
+    fn capability_partition_evidence_derives_only_checked_explicit_ordinals() {
+        let capability_id =
+            CapabilityId::from_bytes(GOLDEN_CAPABILITY_ID_BYTES).expect("capability ID");
+        let lineage = ContractLineage::new("ordinal-boundary").expect("lineage");
+        let explicit = PartitionScopeV1::explicit(
+            (0..MAX_CAPABILITY_PARTITIONS)
+                .map(|value| partition(&lineage, u64::try_from(value).expect("bounded ordinal")))
+                .collect(),
+        )
+        .expect("maximum explicit scope");
+        let capability = stored_capability(capability_id, explicit);
+        assert_eq!(
+            HistoricalCapabilityPartitionEvidenceV1::from_capability_entry(&capability, 1023)
+                .expect("maximum ordinal")
+                .entry_ordinal(),
+            1023
+        );
+        assert_eq!(
+            HistoricalCapabilityPartitionEvidenceV1::from_capability_entry(&capability, 1024),
+            Err(StorageValueError::LimitExceeded)
+        );
+
+        let all = stored_capability(capability_id, PartitionScopeV1::All);
+        assert_eq!(
+            HistoricalCapabilityPartitionEvidenceV1::from_capability_entry(&all, 0),
+            Err(StorageValueError::InvalidShape)
+        );
+    }
 }

@@ -13,7 +13,8 @@ use riffdb_types::{DatabaseId, IndexId};
 
 use crate::lineage::{LineageBudget, LineageMaterializationProof};
 use crate::{
-    CatalogError, CatalogErrorKind, ValidatedContractBundle, validate_successor_compatibility,
+    CatalogError, CatalogErrorKind, ValidatedContractBundle, validate_capability_partition,
+    validate_successor_compatibility,
 };
 
 /// Process-local proof that every catalog history item was IR-validated to exact end.
@@ -256,6 +257,14 @@ fn validate_historical_item<S: StructuralEvidenceSession>(
             let proof = ensure_lineage_proof(&state.lineage_bundles, &mut state.lineage_proof)?;
             validate_persisted_key(session, proof, evidence)?;
         }
+        HistoricalSemanticEvidence::CapabilityPartition(evidence) => {
+            let active = state
+                .active
+                .as_ref()
+                .ok_or_else(|| CatalogError::new(CatalogErrorKind::InvalidHistoricalEvidence))?;
+            validate_capability_partition(active, evidence.scoped_partition())
+                .map_err(|_| CatalogError::new(CatalogErrorKind::InvalidHistoricalEvidence))?;
+        }
     }
     Ok(())
 }
@@ -457,6 +466,17 @@ fn historical_order_key(item: &HistoricalSemanticEvidence) -> Vec<u8> {
             key.extend_from_slice(&length.to_be_bytes());
             key.extend_from_slice(bytes);
         }
+        HistoricalSemanticEvidence::CapabilityPartition(evidence) => {
+            key.push(0x05);
+            key.extend_from_slice(evidence.capability_id().as_bytes());
+            key.extend_from_slice(&evidence.entry_ordinal().to_be_bytes());
+            push_lineage(&mut key, evidence.scoped_partition().lineage());
+            let partition_key = evidence.scoped_partition().partition_key();
+            key.extend_from_slice(&partition_key.aggregate_type_id().to_be_bytes());
+            let length = u32::try_from(partition_key.as_bytes().len()).unwrap_or(u32::MAX);
+            key.extend_from_slice(&length.to_be_bytes());
+            key.extend_from_slice(partition_key.as_bytes());
+        }
     }
     key
 }
@@ -469,6 +489,20 @@ fn push_lineage(output: &mut Vec<u8>, lineage: &riffdb_types::ContractLineage) {
 
 #[cfg(test)]
 mod tests {
+    use std::num::{NonZeroU16, NonZeroU32};
+
+    use riffdb_storage_api::{
+        CapabilityGrantV1, CapabilityPermissionKindV1, CapabilityPermissionV1,
+        CapabilityPermissionsV1, CapabilityRequestedRecordV1,
+        HistoricalCapabilityPartitionEvidenceV1, StoredCapabilityRecordV1,
+    };
+    use riffdb_types::{
+        ActorId, ActorKind, AdministrationSequence, AggregateTypeId, Audience, CapabilityId,
+        CapabilityTokenDigest, ContractLineage, DatabaseId, DigestKeyId, Environment,
+        PartitionKeyBuilder, PartitionScopeV1, RequestId, ScopedPartitionV1, TenantScope,
+        Timestamp,
+    };
+
     use super::*;
     use crate::lineage::{MAX_ACTIVE_LINEAGE_BUNDLES_V1, MAX_ACTIVE_LINEAGE_CANONICAL_BYTES_V1};
 
@@ -500,6 +534,98 @@ mod tests {
         assert_eq!(
             map_history_lineage_error(candidate_error).kind(),
             CatalogErrorKind::InvalidHistoricalEvidence
+        );
+    }
+
+    #[test]
+    fn capability_partition_history_order_matches_the_shared_golden_vector() {
+        let mut first_key =
+            PartitionKeyBuilder::new(AggregateTypeId::new(1).expect("aggregate ID"));
+        first_key.push_u64(1).expect("bounded component");
+        let mut second_key =
+            PartitionKeyBuilder::new(AggregateTypeId::new(2).expect("aggregate ID"));
+        second_key.push_u64(2).expect("bounded component");
+        let mut golden_key =
+            PartitionKeyBuilder::new(AggregateTypeId::new(0x0102_0304).expect("aggregate ID"));
+        golden_key
+            .push_u64(0x0102_0304_0506_0708)
+            .expect("bounded component");
+        let scope = PartitionScopeV1::explicit(vec![
+            ScopedPartitionV1::new(
+                ContractLineage::new("a").expect("lineage"),
+                first_key.finish().expect("first key"),
+            ),
+            ScopedPartitionV1::new(
+                ContractLineage::new("budget").expect("lineage"),
+                second_key.finish().expect("second key"),
+            ),
+            ScopedPartitionV1::new(
+                ContractLineage::new("budget").expect("lineage"),
+                golden_key.finish().expect("golden key"),
+            ),
+        ])
+        .expect("canonical explicit scope");
+        let permissions = CapabilityPermissionsV1::new(vec![
+            CapabilityPermissionV1::unparameterized(
+                CapabilityPermissionKindV1::AdministerCapabilities,
+            )
+            .expect("permission"),
+        ])
+        .expect("permissions");
+        let grant = CapabilityGrantV1::new(
+            TenantScope::Global,
+            scope,
+            permissions,
+            Vec::new(),
+            NonZeroU16::MIN,
+            Vec::new(),
+        )
+        .expect("grant");
+        let uuid = [
+            0x01, 0x8f, 0x00, 0x00, 0x00, 0x00, 0x70, 0x01, 0x80, 0x02, 0x11, 0x22, 0x33, 0x44,
+            0x55, 0x66,
+        ];
+        let requested = CapabilityRequestedRecordV1::new(
+            DatabaseId::from_bytes([0x01, 0x8f, 0, 0, 0, 0, 0x70, 1, 0x80, 2, 0, 0, 0, 0, 0, 1])
+                .expect("database"),
+            Environment::new("test").expect("environment"),
+            ActorId::new("operator").expect("actor"),
+            ActorKind::Human,
+            NonZeroU32::new(60).expect("duration"),
+            vec![Audience::new("riffdb-test").expect("audience")],
+            grant,
+        )
+        .expect("requested capability");
+        let capability = StoredCapabilityRecordV1::active(
+            CapabilityId::from_bytes(uuid).expect("capability UUIDv7"),
+            CapabilityTokenDigest::from_hmac_bytes(
+                DigestKeyId::new(1).expect("digest key"),
+                [0x31; 32],
+            ),
+            requested,
+            Timestamp::new(10, 0).expect("issued at"),
+            Timestamp::new(70, 0).expect("expires at"),
+            AdministrationSequence::first(),
+            RequestId::from_bytes([0x01, 0x8f, 0, 0, 0, 0, 0x70, 1, 0x80, 2, 0, 0, 0, 0, 0, 2])
+                .expect("request UUIDv7"),
+        )
+        .expect("stored capability");
+        let evidence =
+            HistoricalCapabilityPartitionEvidenceV1::from_capability_entry(&capability, 2)
+                .expect("third explicit entry");
+        let expected = vec![
+            0x05, 0x01, 0x8f, 0x00, 0x00, 0x00, 0x00, 0x70, 0x01, 0x80, 0x02, 0x11, 0x22, 0x33,
+            0x44, 0x55, 0x66, 0x00, 0x02, 0x00, 0x00, 0x00, 0x06, b'b', b'u', b'd', b'g', b'e',
+            b't', 0x01, 0x02, 0x03, 0x04, 0x00, 0x00, 0x00, 0x0e, 0x50, 0x01, 0x01, 0x02, 0x03,
+            0x04, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08,
+        ];
+
+        assert_eq!(evidence.entry_ordinal(), 2);
+        assert_eq!(evidence.semantic_bytes().expect("charge"), 51);
+        assert_eq!(evidence.evidence_order_key(), expected);
+        assert_eq!(
+            historical_order_key(&HistoricalSemanticEvidence::CapabilityPartition(evidence)),
+            expected
         );
     }
 }

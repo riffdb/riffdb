@@ -2,6 +2,7 @@
 
 const CATALOG_MANIFEST: &str = include_str!("../Cargo.toml");
 const CATALOG_BUNDLE: &str = include_str!("../src/bundle.rs");
+const CATALOG_CAPABILITY_PARTITION: &str = include_str!("../src/capability_partition.rs");
 const CATALOG_DEPLOYMENT: &str = include_str!("../src/deployment.rs");
 const CATALOG_HISTORY: &str = include_str!("../src/history.rs");
 const CATALOG_LINEAGE: &str = include_str!("../src/lineage.rs");
@@ -15,6 +16,7 @@ const STORAGE_LIB: &str = include_str!("../../riffdb-storage-api/src/lib.rs");
 fn catalog_prepares_but_cannot_submit_storage_mutations() {
     let catalog_sources = [
         CATALOG_BUNDLE,
+        CATALOG_CAPABILITY_PARTITION,
         CATALOG_DEPLOYMENT,
         CATALOG_HISTORY,
         CATALOG_LINEAGE,
@@ -109,7 +111,35 @@ fn catalog_storage_boundary_has_no_generic_semantic_validation_callback() {
     }
 
     assert!(CATALOG_MANIFEST.contains("riffdb-storage-api"));
+    assert!(!CATALOG_MANIFEST.contains("riffdb-service"));
     assert!(!STORAGE_MANIFEST.contains("riffdb-catalog"));
+}
+
+#[test]
+fn catalog_owns_one_pure_capability_partition_schema_validator() {
+    for required in [
+        "pub fn validate_capability_partition(",
+        "pub fn validate_capability_partition_scope(",
+        "partition.lineage() != contract.lineage()",
+        ".aggregate(partition.partition_key().aggregate_type_id())",
+        ".decode_partition(partition.partition_key())",
+    ] {
+        assert!(
+            CATALOG_CAPABILITY_PARTITION.contains(required),
+            "catalog capability validator omitted `{required}`"
+        );
+    }
+    for forbidden in ["riffdb_service", "riffdb_storage_api", "dyn Fn", "impl Fn"] {
+        assert!(
+            !CATALOG_CAPABILITY_PARTITION.contains(forbidden),
+            "catalog capability validator acquired forbidden authority through `{forbidden}`"
+        );
+    }
+    assert!(
+        CATALOG_HISTORY
+            .contains("validate_capability_partition(active, evidence.scoped_partition())"),
+        "startup history bypassed the shared catalog-owned capability validator"
+    );
 }
 
 #[test]
