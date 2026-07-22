@@ -600,7 +600,14 @@ fn inspect_entity(state: &MemoryState, index: usize) -> Option<StructuralFinding
 
 fn inspect_index_entry(state: &MemoryState, index: usize) -> Option<StructuralFinding> {
     let record = &state.index_entries[index];
-    let evidence = HistoricalPersistedKeyEvidenceV1::from_index_entry(record);
+    if record.current_record().is_some() {
+        // The key-only historical stream cannot prove ADR-0038's stored V2
+        // partition. Fail closed until the row-bearing validation path lands.
+        return Some(authoritative_finding(
+            StructuralFindingCode::CrossLinkMismatch,
+        ));
+    }
+    let evidence = record.historical_evidence();
     if !bundle_exists_for_binding(state, record.schema_binding())
         || !historical_persisted_key_is_indexed(state, &evidence)
         || (index > 0 && state.index_entries[index - 1].key().as_bytes() >= record.key().as_bytes())
@@ -897,10 +904,7 @@ fn persisted_evidence_has_source(
                     .then_with(|| record.key().cmp(key))
             })
             .ok()
-            .is_some_and(|index| {
-                HistoricalPersistedKeyEvidenceV1::from_index_entry(&state.index_entries[index])
-                    == *evidence
-            }),
+            .is_some_and(|index| state.index_entries[index].historical_evidence() == *evidence),
         riffdb_storage_api::IrOpaquePersistedKeyV1::IndexRangePrefix(prefix) => state
             .index_epochs
             .binary_search_by(|record| record.target().cmp(prefix))
@@ -1517,9 +1521,10 @@ mod tests {
         IndexEpochPosition, IndexRangePrefixBuilder, IndexRangeTarget, IrOpaquePersistedKeyV1,
         PartitionScopeV1, ReadableCapabilityDigestInventory, ReadableIdempotencyDigestInventory,
         RevocationReasonCodeV1, ScopedPartitionV1, StoredCapabilityRecordV1,
-        StoredContractBundleV1, StoredEntityRecordV1, StoredIndexEntryV1, StoredProjectionApplyV1,
-        StoredProjectionControlV1, StructuralEvidenceOpen, StructuralEvidencePage,
-        StructuralEvidenceSession, StructuralFindingCode, StructuralFindingScope,
+        StoredContractBundleV1, StoredEntityRecordV1, StoredIndexEntryV1, StoredIndexEntryV2,
+        StoredProjectionApplyV1, StoredProjectionControlV1, StructuralEvidenceOpen,
+        StructuralEvidencePage, StructuralEvidenceSession, StructuralFindingCode,
+        StructuralFindingScope,
     };
     use riffdb_types::{
         ActorId, ActorKind, AdministrationSequence, AggregateTypeId, Audience, CanonicalRecord,
@@ -1995,6 +2000,47 @@ mod tests {
                 .expect_err("uninitialized evidence must fail")
                 .kind(),
             StorageErrorKind::CorruptData
+        );
+    }
+
+    #[test]
+    fn current_v2_index_row_cannot_pass_the_key_only_startup_path() {
+        let lineage = ContractLineage::new("v2-startup-guard").expect("lineage");
+        let binding = DurableKeySchemaBindingV1::new(
+            lineage,
+            ContractVersion::new(1).expect("version"),
+            ContractBundleHash::from_bytes([0x61; 32]),
+        );
+        let mut entity = EntityKeyBuilder::new(EntityTypeId::new(1).expect("entity type"));
+        entity.push_u64(1).expect("entity component");
+        let mut index = IndexEntryKeyBuilder::new(IndexId::new(1).expect("index ID"));
+        index.push_u64(1).expect("index component");
+        let key = index
+            .finish(entity.finish().expect("entity key"))
+            .expect("index key");
+        let mut partition =
+            PartitionKeyBuilder::new(AggregateTypeId::new(1).expect("aggregate type"));
+        partition.push_u64(1).expect("partition component");
+        let row = StoredIndexEntryV2::new(
+            key,
+            binding,
+            CanonicalRecord::new(Vec::new()).expect("covered values"),
+            partition.finish().expect("partition key"),
+        )
+        .expect("V2 row");
+        let mut state = MemoryState::default();
+        state
+            .index_entries
+            .push(crate::state::MemoryIndexEntry::current(
+                row,
+                crate::state::memory_record_charge(),
+            ));
+
+        assert_eq!(
+            inspect_index_entry(&state, 0),
+            Some(authoritative_finding(
+                StructuralFindingCode::CrossLinkMismatch
+            ))
         );
     }
 
@@ -2571,7 +2617,9 @@ mod tests {
                     .catalog_bundles
                     .push(crate::state::CatalogBundleRow::new(bundle));
                 state.entities.push(entity);
-                state.index_entries.push(index_entry);
+                state
+                    .index_entries
+                    .push(crate::state::MemoryIndexEntry::legacy(index_entry));
                 state.index_epochs.push(epoch);
                 state.historical_persisted_keys = persisted;
                 Ok(())

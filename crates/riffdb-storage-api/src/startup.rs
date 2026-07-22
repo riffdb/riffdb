@@ -14,7 +14,7 @@ use crate::{
     DurableKeySchemaBindingV1, ExecutablePlanRef, MAX_CATALOG_BUNDLE_BYTES,
     MAX_HISTORICAL_EVIDENCE_PAGE_BYTES, MAX_INTEGRITY_FINDINGS, MAX_READABLE_DIGEST_KEYS,
     MAX_SCAN_PAGE_ENTRIES, RetainedMetadataV1, StorageError, StorageValueError,
-    StoredEntityRecordV1, StoredIndexEntryV1, StoredIndexEpochV1,
+    StoredEntityRecordV1, StoredIndexEntryV1, StoredIndexEntryV2, StoredIndexEpochV1,
     StructurallyDecodedIndexRangePrefixV1,
 };
 
@@ -593,6 +593,18 @@ impl HistoricalPersistedKeyEvidenceV1 {
     /// Derives evidence only from an index entry's durable post-image binding.
     #[must_use]
     pub fn from_index_entry(record: &StoredIndexEntryV1) -> Self {
+        Self {
+            schema: record.schema_binding().clone(),
+            key: IrOpaquePersistedKeyV1::IndexEntry {
+                index_id: record.key().index_id(),
+                key: record.key().clone(),
+            },
+        }
+    }
+
+    /// Derives evidence only from a current index entry's durable post-image binding.
+    #[must_use]
+    pub fn from_index_entry_v2(record: &StoredIndexEntryV2) -> Self {
         Self {
             schema: record.schema_binding().clone(),
             key: IrOpaquePersistedKeyV1::IndexEntry {
