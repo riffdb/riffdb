@@ -1,0 +1,6643 @@
+//! Checked transport-neutral requests, results, and consumer-port values.
+
+use std::error::Error;
+use std::fmt;
+use std::future::Future;
+use std::num::NonZeroU64;
+use std::pin::Pin;
+use std::time::{Duration, Instant};
+
+use riffdb_auth::CapabilityTokenText;
+use riffdb_catalog::ValidatedContractBundle;
+use riffdb_contract_compiler::CompilationError;
+use riffdb_contract_ir::{
+    CommandExplain, ExecutionClass, GeneratedSchemaArtifact, IndexScanPrefix, McpCommandToolNameV1,
+    OutcomeSchema, RecordSchema, RecordTypeRef, SchemaArtifactKey, SchemaIr, ValueType,
+};
+use riffdb_policy::{
+    CapabilityActivity, FixedToolCandidate, NormalizedCapabilityCreateRecord, PartitionConstraint,
+};
+use riffdb_types::{
+    ActorId, ActorKind, AdministrationSequence, AdmittedActorContext, ApprovalId, Audience,
+    CanonicalInputHash, CanonicalRecord, CanonicalValue, CapabilityGrantV1, CapabilityId,
+    CommandId, CommitSequence, ConflictKeyHash, ContractBundleHash, ContractLineage,
+    ContractPlanRootHash, ContractVersion, DatabaseId, EntityKey, EntityTypeId, EntityVersion,
+    Environment, EventId, EventTypeId, FieldId, FrontierPosition, IdempotencyKey, IndexEntryKey,
+    IndexEpoch, IndexId, LogicalTime, OutcomeId, PartitionKey, PartitionKeyHash, PlanHash,
+    ProjectionGeneration, ProjectionGroupKey, ProjectionGroupKeyBuilder, ProjectionGroupPrefix,
+    ProjectionId, ProjectionIdentity, ProvenanceId, RequestId, RevocationReasonCodeV1,
+    ServiceAuditTargetV1, SourceCommit, SourceHash, SourceRepository, TenantScope, Timestamp,
+    encode_canonical_record, encode_canonical_value,
+};
+
+use crate::{
+    BootstrapRequestContext, CursorToken, PageLimit, PreBootstrapLifecycle, RequestContext,
+};
+
+/// Maximum bytes accepted in one structurally decoded service request.
+pub const MAX_SERVICE_REQUEST_BYTES: usize = 1_048_576;
+
+const STRUCTURAL_LENGTH_BYTES: usize = 4;
+const STRUCTURAL_OPTION_BYTES: usize = 1;
+const STRUCTURAL_ENUM_TAG_BYTES: usize = 1;
+const STRUCTURAL_COLLECTION_COUNT_BYTES: usize = 4;
+const STRUCTURAL_DURATION_BYTES: usize = 12;
+
+trait ServiceRequestCharge {
+    fn structural_charge(&self) -> Result<usize, ServiceDtoError>;
+}
+
+#[derive(Default)]
+struct RequestCharge {
+    bytes: usize,
+}
+
+impl RequestCharge {
+    fn add(&mut self, bytes: usize) -> Result<(), ServiceDtoError> {
+        self.bytes = self
+            .bytes
+            .checked_add(bytes)
+            .ok_or(ServiceDtoError::TooLong)?;
+        if self.bytes > MAX_SERVICE_REQUEST_BYTES {
+            return Err(ServiceDtoError::TooLong);
+        }
+        Ok(())
+    }
+
+    fn add_framed_bytes(&mut self, bytes: usize) -> Result<(), ServiceDtoError> {
+        self.add(STRUCTURAL_LENGTH_BYTES)?;
+        self.add(bytes)
+    }
+
+    fn add_contract_selection(
+        &mut self,
+        selection: &ContractSelection,
+    ) -> Result<(), ServiceDtoError> {
+        self.add(STRUCTURAL_ENUM_TAG_BYTES)?;
+        if let ContractSelection::Exact { lineage, .. } = selection {
+            self.add_framed_bytes(lineage.as_bytes().len())?;
+            self.add(8)?;
+        }
+        Ok(())
+    }
+
+    fn add_page(&mut self, page: PageRequest) -> Result<(), ServiceDtoError> {
+        self.add(2)?;
+        self.add(STRUCTURAL_OPTION_BYTES)?;
+        if let Some(cursor) = page.cursor() {
+            self.add(cursor.as_bytes().len())?;
+        }
+        Ok(())
+    }
+
+    fn add_field_selection(&mut self, fields: &FieldSelection) -> Result<(), ServiceDtoError> {
+        self.add(STRUCTURAL_COLLECTION_COUNT_BYTES)?;
+        self.add(
+            fields
+                .as_slice()
+                .len()
+                .checked_mul(4)
+                .ok_or(ServiceDtoError::TooLong)?,
+        )
+    }
+
+    fn add_canonical_record(&mut self, record: &CanonicalRecord) -> Result<(), ServiceDtoError> {
+        let encoded = encode_canonical_record(record).map_err(|_| ServiceDtoError::TooLong)?;
+        self.add_framed_bytes(encoded.len())
+    }
+
+    fn add_canonical_values(&mut self, values: &[CanonicalValue]) -> Result<(), ServiceDtoError> {
+        self.add(STRUCTURAL_COLLECTION_COUNT_BYTES)?;
+        for value in values {
+            let encoded = encode_canonical_value(value).map_err(|_| ServiceDtoError::TooLong)?;
+            self.add_framed_bytes(encoded.len())?;
+        }
+        Ok(())
+    }
+
+    fn finish(self) -> usize {
+        self.bytes
+    }
+}
+
+fn ensure_service_request_bound<T>(request: &T) -> Result<(), ServiceDtoError>
+where
+    T: ServiceRequestCharge,
+{
+    request.structural_charge().map(|_| ())
+}
+/// Maximum items in a contract-declared field selection.
+pub const MAX_FIELD_SELECTION_ITEMS: usize = 1_024;
+/// Maximum projection group components in one service request or row.
+pub const MAX_PROJECTION_COMPONENTS: usize = 1_024;
+/// Maximum wait requested by one projection query.
+pub const MAX_PROJECTION_WAIT: Duration = Duration::from_secs(30);
+/// Maximum lifetime requested for one commit subscription.
+pub const MAX_COMMIT_SUBSCRIPTION_LIFETIME: Duration = Duration::from_secs(900);
+/// Maximum commits read in one subscription catch-up batch.
+pub const MAX_COMMIT_CATCH_UP_ITEMS: u16 = 500;
+/// Maximum checked items retained in one service-owned semantic collection.
+pub const MAX_SERVICE_COLLECTION_ITEMS: usize = 4_096;
+/// Maximum health components returned by the POC.
+pub const MAX_HEALTH_COMPONENTS: usize = 64;
+/// Maximum live commit subscribers reported by the POC.
+pub const MAX_LIVE_COMMIT_SUBSCRIBERS: u16 = 128;
+/// Maximum enabled feature names retained in build information.
+pub const MAX_BUILD_FEATURES: usize = 64;
+/// Maximum bytes in one build-information text component.
+pub const MAX_BUILD_TEXT_BYTES: usize = 128;
+/// Safe failure to construct one checked service DTO.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ServiceDtoError {
+    /// A required value was empty.
+    Empty,
+    /// A string or byte value exceeded its fixed bound.
+    TooLong,
+    /// A collection exceeded its fixed item bound.
+    TooManyItems,
+    /// A canonical set contained a duplicate.
+    Duplicate,
+    /// Two typed identities did not describe the same semantic object.
+    IdentityMismatch,
+    /// A numeric or duration bound was invalid.
+    OutOfRange,
+    /// A closed result shape violated its lifecycle-specific invariants.
+    InvalidShape,
+}
+
+impl fmt::Display for ServiceDtoError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(match self {
+            Self::Empty => "required service value is empty",
+            Self::TooLong => "service value exceeds its length bound",
+            Self::TooManyItems => "service collection exceeds its item bound",
+            Self::Duplicate => "service collection contains a duplicate",
+            Self::IdentityMismatch => "service value contains mismatched identities",
+            Self::OutOfRange => "service value is outside its accepted range",
+            Self::InvalidShape => "service value has an invalid closed shape",
+        })
+    }
+}
+
+impl Error for ServiceDtoError {}
+
+/// A checked grammar-v1 source identifier used for command selection.
+#[derive(Clone, Eq, Hash, Ord, PartialEq, PartialOrd)]
+pub struct SourceName(String);
+
+impl SourceName {
+    /// Validates the exact grammar-v1 identifier spelling without normalizing it.
+    pub fn new(value: impl Into<String>) -> Result<Self, ServiceDtoError> {
+        let value = value.into();
+        if value.is_empty() {
+            return Err(ServiceDtoError::Empty);
+        }
+        if value.len() > 256 {
+            return Err(ServiceDtoError::TooLong);
+        }
+        let mut bytes = value.bytes();
+        let first = bytes.next().ok_or(ServiceDtoError::Empty)?;
+        if value == "tx"
+            || !(first.is_ascii_alphabetic() || first == b'_')
+            || bytes.any(|byte| !(byte.is_ascii_alphanumeric() || byte == b'_'))
+        {
+            return Err(ServiceDtoError::InvalidShape);
+        }
+        Ok(Self(value))
+    }
+
+    /// Borrows the exact checked source spelling.
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl fmt::Debug for SourceName {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("SourceName([REDACTED])")
+    }
+}
+
+/// Bounded contract source retained only for validation or deployment.
+#[derive(Clone, Eq, PartialEq)]
+pub struct ContractSource(String);
+
+impl ContractSource {
+    /// Checks the structural request bound without performing compiler semantics.
+    pub fn new(source: impl Into<String>) -> Result<Self, ServiceDtoError> {
+        let source = source.into();
+        if source.len() > MAX_SERVICE_REQUEST_BYTES {
+            return Err(ServiceDtoError::TooLong);
+        }
+        Ok(Self(source))
+    }
+
+    /// Borrows the exact source supplied by the caller.
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl fmt::Debug for ContractSource {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("ContractSource")
+            .field("bytes", &self.0.len())
+            .field("source", &"[REDACTED]")
+            .finish()
+    }
+}
+
+/// Active or exact historical contract selection.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum ContractSelection {
+    /// Resolve against the transaction-current active checked bundle.
+    Active,
+    /// Resolve one immutable version in its exact lineage.
+    Exact {
+        /// Exact contract lineage.
+        lineage: ContractLineage,
+        /// Exact application contract version.
+        version: ContractVersion,
+    },
+}
+
+/// Canonical duplicate-free requested non-key fields.
+#[derive(Clone, Eq, PartialEq)]
+pub struct FieldSelection(Vec<FieldId>);
+
+impl FieldSelection {
+    /// Sorts the requested stable IDs and rejects duplicates or excessive counts.
+    pub fn new(mut fields: Vec<FieldId>) -> Result<Self, ServiceDtoError> {
+        if fields.len() > MAX_FIELD_SELECTION_ITEMS {
+            return Err(ServiceDtoError::TooManyItems);
+        }
+        fields.sort_unstable();
+        if fields.windows(2).any(|pair| pair[0] == pair[1]) {
+            return Err(ServiceDtoError::Duplicate);
+        }
+        Ok(Self(fields))
+    }
+
+    /// Borrows stable field IDs in increasing order.
+    #[must_use]
+    pub fn as_slice(&self) -> &[FieldId] {
+        &self.0
+    }
+}
+
+impl fmt::Debug for FieldSelection {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("FieldSelection")
+            .field("count", &self.0.len())
+            .finish()
+    }
+}
+
+/// One bounded initial-page or exact-cursor request.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct PageRequest {
+    limit: PageLimit,
+    cursor: Option<CursorToken>,
+}
+
+impl PageRequest {
+    /// Creates a page request. Current policy may only lower the supplied limit.
+    #[must_use]
+    pub const fn new(limit: PageLimit, cursor: Option<CursorToken>) -> Self {
+        Self { limit, cursor }
+    }
+
+    /// Returns the checked caller limit.
+    #[must_use]
+    pub const fn limit(self) -> PageLimit {
+        self.limit
+    }
+
+    /// Returns the opaque process-local cursor, when this is a continuation.
+    #[must_use]
+    pub const fn cursor(self) -> Option<CursorToken> {
+        self.cursor
+    }
+}
+
+/// A bounded service page and its typed observed consistency fence.
+#[derive(Clone, Eq, PartialEq)]
+pub struct Page<T, F> {
+    items: Vec<T>,
+    next_cursor: Option<CursorToken>,
+    observed_fence: F,
+}
+
+impl<T, F> Page<T, F> {
+    /// Checks the effective item bound and continuation shape.
+    pub fn new(
+        effective_limit: PageLimit,
+        items: Vec<T>,
+        next_cursor: Option<CursorToken>,
+        observed_fence: F,
+    ) -> Result<Self, ServiceDtoError> {
+        if items.len() > usize::from(effective_limit.get().get()) {
+            return Err(ServiceDtoError::TooManyItems);
+        }
+        if items.is_empty() && next_cursor.is_some() {
+            return Err(ServiceDtoError::InvalidShape);
+        }
+        Ok(Self {
+            items,
+            next_cursor,
+            observed_fence,
+        })
+    }
+
+    /// Borrows policy-filtered items in canonical port order.
+    #[must_use]
+    pub fn items(&self) -> &[T] {
+        &self.items
+    }
+
+    /// Returns the next opaque cursor when more data is available.
+    #[must_use]
+    pub const fn next_cursor(&self) -> Option<CursorToken> {
+        self.next_cursor
+    }
+
+    /// Borrows the exact observed consistency fence.
+    #[must_use]
+    pub const fn observed_fence(&self) -> &F {
+        &self.observed_fence
+    }
+}
+
+impl<T, F> fmt::Debug for Page<T, F> {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("Page")
+            .field("item_count", &self.items.len())
+            .field("has_next", &self.next_cursor.is_some())
+            .field("items", &"[REDACTED]")
+            .field("observed_fence", &"[REDACTED]")
+            .finish()
+    }
+}
+
+/// Public-safe immutable contract metadata.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ContractDescriptor {
+    lineage: ContractLineage,
+    version: ContractVersion,
+    bundle_hash: ContractBundleHash,
+    source_hash: SourceHash,
+    plan_root_hash: ContractPlanRootHash,
+}
+
+impl ContractDescriptor {
+    /// Joins the complete checked immutable contract identity.
+    #[must_use]
+    pub const fn new(
+        lineage: ContractLineage,
+        version: ContractVersion,
+        bundle_hash: ContractBundleHash,
+        source_hash: SourceHash,
+        plan_root_hash: ContractPlanRootHash,
+    ) -> Self {
+        Self {
+            lineage,
+            version,
+            bundle_hash,
+            source_hash,
+            plan_root_hash,
+        }
+    }
+
+    /// Returns the contract lineage.
+    #[must_use]
+    pub const fn lineage(&self) -> &ContractLineage {
+        &self.lineage
+    }
+
+    /// Returns the application contract version.
+    #[must_use]
+    pub const fn version(&self) -> ContractVersion {
+        self.version
+    }
+
+    /// Returns the immutable bundle hash.
+    #[must_use]
+    pub const fn bundle_hash(&self) -> ContractBundleHash {
+        self.bundle_hash
+    }
+
+    /// Returns the canonical source hash.
+    #[must_use]
+    pub const fn source_hash(&self) -> SourceHash {
+        self.source_hash
+    }
+
+    /// Returns the root hash of the checked plan set.
+    #[must_use]
+    pub const fn plan_root_hash(&self) -> ContractPlanRootHash {
+        self.plan_root_hash
+    }
+}
+
+/// Request to validate bounded contract source without deployment.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ValidateContractRequest {
+    source: ContractSource,
+}
+
+impl ValidateContractRequest {
+    /// Creates one validation request within the complete structural request bound.
+    pub fn new(source: ContractSource) -> Result<Self, ServiceDtoError> {
+        let request = Self { source };
+        ensure_service_request_bound(&request)?;
+        Ok(request)
+    }
+
+    /// Borrows the exact source.
+    #[must_use]
+    pub const fn source(&self) -> &ContractSource {
+        &self.source
+    }
+}
+
+/// Closed compiler validation result; invalid source is ordinary result data.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum ContractValidationResult {
+    /// The source passed all grammar-v1 validation phases.
+    Valid,
+    /// The source failed with bounded compiler-owned diagnostics.
+    Invalid(CompilationError),
+}
+
+/// Request to explain one command from an active or exact contract.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ExplainCommandRequest {
+    contract: ContractSelection,
+    command: SourceName,
+}
+
+impl ExplainCommandRequest {
+    /// Creates an exact command explanation request.
+    #[must_use]
+    pub const fn new(contract: ContractSelection, command: SourceName) -> Self {
+        Self { contract, command }
+    }
+
+    /// Borrows the contract selection.
+    #[must_use]
+    pub const fn contract(&self) -> &ContractSelection {
+        &self.contract
+    }
+
+    /// Borrows the exact source command name.
+    #[must_use]
+    pub const fn command(&self) -> &SourceName {
+        &self.command
+    }
+}
+
+/// Checked command explanation and its generated schemas.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ExplainedCommand {
+    contract: ContractDescriptor,
+    command_id: CommandId,
+    plan_hash: PlanHash,
+    explanation: CommandExplain,
+    input_schema: GeneratedSchemaArtifact,
+    outcome_schema: GeneratedSchemaArtifact,
+}
+
+impl ExplainedCommand {
+    /// Checks that both compiler-owned schemas describe the selected command.
+    pub fn new(
+        contract: ContractDescriptor,
+        command_id: CommandId,
+        plan_hash: PlanHash,
+        explanation: CommandExplain,
+        input_schema: GeneratedSchemaArtifact,
+        outcome_schema: GeneratedSchemaArtifact,
+    ) -> Result<Self, ServiceDtoError> {
+        if explanation.command_id() != command_id
+            || input_schema.key() != SchemaArtifactKey::CommandInput(command_id)
+            || outcome_schema.key() != SchemaArtifactKey::CommandOutcomeUnion(command_id)
+        {
+            return Err(ServiceDtoError::IdentityMismatch);
+        }
+        Ok(Self {
+            contract,
+            command_id,
+            plan_hash,
+            explanation,
+            input_schema,
+            outcome_schema,
+        })
+    }
+
+    /// Borrows contract metadata.
+    #[must_use]
+    pub const fn contract(&self) -> &ContractDescriptor {
+        &self.contract
+    }
+
+    /// Returns the stable command ID.
+    #[must_use]
+    pub const fn command_id(&self) -> CommandId {
+        self.command_id
+    }
+
+    /// Returns the exact command plan hash.
+    #[must_use]
+    pub const fn plan_hash(&self) -> PlanHash {
+        self.plan_hash
+    }
+
+    /// Borrows the compiler-owned explanation.
+    #[must_use]
+    pub const fn explanation(&self) -> &CommandExplain {
+        &self.explanation
+    }
+
+    /// Borrows the generated command-input schema.
+    #[must_use]
+    pub const fn input_schema(&self) -> &GeneratedSchemaArtifact {
+        &self.input_schema
+    }
+
+    /// Borrows the generated declared-outcome schema.
+    #[must_use]
+    pub const fn outcome_schema(&self) -> &GeneratedSchemaArtifact {
+        &self.outcome_schema
+    }
+}
+
+/// Closed result for a command explanation lookup.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum ExplainCommandResult {
+    /// No command matched the checked selection.
+    NotFound,
+    /// The checked plan and schemas were found.
+    Found(Box<ExplainedCommand>),
+}
+
+/// Request to compile and deploy one immutable contract candidate.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct DeployContractRequest {
+    source: ContractSource,
+    expected_active_version: Option<ContractVersion>,
+}
+
+impl DeployContractRequest {
+    /// Creates one expected-version deployment request within the structural bound.
+    pub fn new(
+        source: ContractSource,
+        expected_active_version: Option<ContractVersion>,
+    ) -> Result<Self, ServiceDtoError> {
+        let request = Self {
+            source,
+            expected_active_version,
+        };
+        ensure_service_request_bound(&request)?;
+        Ok(request)
+    }
+
+    /// Borrows candidate source.
+    #[must_use]
+    pub const fn source(&self) -> &ContractSource {
+        &self.source
+    }
+
+    /// Returns the caller's expected active version, including expected absence.
+    #[must_use]
+    pub const fn expected_active_version(&self) -> Option<ContractVersion> {
+        self.expected_active_version
+    }
+}
+
+/// Closed semantic deployment result with no storage transition value.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum DeployContractResult {
+    /// A new active pointer was committed.
+    Activated(ContractDescriptor),
+    /// The exact immutable pointer was already active.
+    AlreadyActive(ContractDescriptor),
+    /// Transaction-current active version differed from the request.
+    ExpectedActiveVersionMismatch {
+        /// Actual active version, or absence.
+        actual: Option<ContractVersion>,
+    },
+    /// Immutable bytes conflicted at the same lineage/version identity.
+    BundleConflict,
+}
+
+/// Empty request to read the active contract.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct GetActiveContractRequest;
+
+/// Active-contract lookup result.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum GetActiveContractResult {
+    /// No contract is active in a valid deployment-required state.
+    Absent,
+    /// The exact checked active contract.
+    Present(ContractDescriptor),
+}
+
+/// Request to read one immutable contract version.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct GetContractVersionRequest {
+    lineage: ContractLineage,
+    version: ContractVersion,
+}
+
+impl GetContractVersionRequest {
+    /// Creates an exact historical contract lookup.
+    #[must_use]
+    pub const fn new(lineage: ContractLineage, version: ContractVersion) -> Self {
+        Self { lineage, version }
+    }
+
+    /// Borrows the exact lineage.
+    #[must_use]
+    pub const fn lineage(&self) -> &ContractLineage {
+        &self.lineage
+    }
+
+    /// Returns the exact version.
+    #[must_use]
+    pub const fn version(&self) -> ContractVersion {
+        self.version
+    }
+}
+
+/// Historical contract lookup result.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum GetContractVersionResult {
+    /// The requested immutable bundle does not exist.
+    NotFound,
+    /// The exact checked contract exists.
+    Found(ContractDescriptor),
+}
+
+/// Request to execute one source-named command against the active contract.
+#[derive(Clone, Eq, PartialEq)]
+pub struct ExecuteCommandRequest {
+    command: SourceName,
+    expected_contract_version: Option<ContractVersion>,
+    input: CanonicalRecord,
+}
+
+impl ExecuteCommandRequest {
+    /// Creates one normalized invocation within the complete structural request bound.
+    pub fn new(
+        command: SourceName,
+        expected_contract_version: Option<ContractVersion>,
+        input: CanonicalRecord,
+    ) -> Result<Self, ServiceDtoError> {
+        let request = Self {
+            command,
+            expected_contract_version,
+            input,
+        };
+        ensure_service_request_bound(&request)?;
+        Ok(request)
+    }
+
+    /// Borrows the source command name.
+    #[must_use]
+    pub const fn command(&self) -> &SourceName {
+        &self.command
+    }
+
+    /// Returns the active-version expectation, or active-version selection when absent.
+    #[must_use]
+    pub const fn expected_contract_version(&self) -> Option<ContractVersion> {
+        self.expected_contract_version
+    }
+
+    /// Borrows schema-normalizable canonical input.
+    #[must_use]
+    pub const fn input(&self) -> &CanonicalRecord {
+        &self.input
+    }
+}
+
+impl fmt::Debug for ExecuteCommandRequest {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("ExecuteCommandRequest([REDACTED])")
+    }
+}
+
+/// One declared typed business outcome safe for service release.
+#[derive(Clone, Eq, PartialEq)]
+pub struct DeclaredOutcomeView {
+    plan: OutcomePlanBinding,
+    outcome_id: OutcomeId,
+    outcome_name: SourceName,
+    value: CanonicalRecord,
+}
+
+#[derive(Clone, Eq, PartialEq)]
+pub(crate) struct OutcomePlanBinding {
+    lineage: ContractLineage,
+    contract_version: ContractVersion,
+    command_id: CommandId,
+    plan_hash: PlanHash,
+    execution_class: ExecutionClass,
+}
+
+impl OutcomePlanBinding {
+    #[must_use]
+    pub(crate) const fn new(
+        lineage: ContractLineage,
+        contract_version: ContractVersion,
+        command_id: CommandId,
+        plan_hash: PlanHash,
+        execution_class: ExecutionClass,
+    ) -> Self {
+        Self {
+            lineage,
+            contract_version,
+            command_id,
+            plan_hash,
+            execution_class,
+        }
+    }
+}
+
+impl DeclaredOutcomeView {
+    /// Constructs a public outcome from one catalog-validated contract bundle.
+    pub fn from_bundle(
+        bundle: &ValidatedContractBundle,
+        command_id: CommandId,
+        outcome_id: OutcomeId,
+        value: CanonicalRecord,
+    ) -> Result<Self, ServiceDtoError> {
+        let plan = bundle
+            .bundle()
+            .commands()
+            .iter()
+            .find(|plan| plan.command_id() == command_id)
+            .ok_or(ServiceDtoError::IdentityMismatch)?;
+        let schema = plan
+            .outcomes()
+            .iter()
+            .find(|outcome| outcome.id() == outcome_id)
+            .ok_or(ServiceDtoError::IdentityMismatch)?;
+        Self::from_checked_schema(
+            OutcomePlanBinding::new(
+                bundle.lineage().clone(),
+                bundle.contract_version(),
+                plan.command_id(),
+                plan.plan_hash(),
+                plan.execution_class(),
+            ),
+            bundle.bundle().schema(),
+            schema,
+            value,
+        )
+    }
+
+    pub(crate) fn from_checked_schema(
+        plan: OutcomePlanBinding,
+        contract_schema: &SchemaIr,
+        schema: &OutcomeSchema,
+        value: CanonicalRecord,
+    ) -> Result<Self, ServiceDtoError> {
+        validate_outcome_record(contract_schema, schema.payload(), &value, 0)?;
+        let outcome_name =
+            SourceName::new(schema.name().to_owned()).map_err(|_| ServiceDtoError::InvalidShape)?;
+        Ok(Self {
+            plan,
+            outcome_id: schema.id(),
+            outcome_name,
+            value,
+        })
+    }
+
+    /// Returns the stable declared outcome identity.
+    #[must_use]
+    pub const fn outcome_id(&self) -> OutcomeId {
+        self.outcome_id
+    }
+
+    /// Borrows the exact compiler-checked outcome source name.
+    #[must_use]
+    pub const fn outcome_name(&self) -> &SourceName {
+        &self.outcome_name
+    }
+
+    /// Borrows the complete canonical outcome record.
+    #[must_use]
+    pub const fn value(&self) -> &CanonicalRecord {
+        &self.value
+    }
+}
+
+const MAX_OUTCOME_VALIDATION_DEPTH: usize = 64;
+
+fn validate_outcome_record(
+    contract_schema: &SchemaIr,
+    schema: &RecordSchema,
+    value: &CanonicalRecord,
+    depth: usize,
+) -> Result<(), ServiceDtoError> {
+    if depth >= MAX_OUTCOME_VALIDATION_DEPTH || schema.fields().len() != value.fields().len() {
+        return Err(ServiceDtoError::InvalidShape);
+    }
+    for (expected, (actual_id, actual)) in schema.fields().iter().zip(value.fields()) {
+        if expected.id() != *actual_id {
+            return Err(ServiceDtoError::InvalidShape);
+        }
+        validate_outcome_value(contract_schema, expected.value_type(), actual, depth + 1)?;
+    }
+    Ok(())
+}
+
+fn validate_outcome_value(
+    contract_schema: &SchemaIr,
+    value_type: &ValueType,
+    value: &CanonicalValue,
+    depth: usize,
+) -> Result<(), ServiceDtoError> {
+    if depth >= MAX_OUTCOME_VALIDATION_DEPTH || value_type.validate_value(value).is_err() {
+        return Err(ServiceDtoError::InvalidShape);
+    }
+    if matches!(value, CanonicalValue::Null) {
+        return Ok(());
+    }
+    if let Some(inner) = value_type.optional_inner() {
+        return validate_outcome_value(contract_schema, inner, value, depth + 1);
+    }
+    if let Some(enum_id) = value_type.enum_type_id() {
+        let CanonicalValue::Enum {
+            type_id,
+            variant_id,
+        } = value
+        else {
+            return Err(ServiceDtoError::InvalidShape);
+        };
+        if *type_id != enum_id
+            || contract_schema
+                .enumeration(enum_id)
+                .is_none_or(|enumeration| !enumeration.contains_variant(*variant_id))
+        {
+            return Err(ServiceDtoError::InvalidShape);
+        }
+        return Ok(());
+    }
+    if let Some((element, _)) = value_type.list_parts() {
+        let CanonicalValue::List(values) = value else {
+            return Err(ServiceDtoError::InvalidShape);
+        };
+        for value in values.values() {
+            validate_outcome_value(contract_schema, element, value, depth + 1)?;
+        }
+        return Ok(());
+    }
+    if let Some(record_ref) = value_type.record_ref() {
+        let CanonicalValue::Record(value) = value else {
+            return Err(ServiceDtoError::InvalidShape);
+        };
+        let record = match record_ref {
+            RecordTypeRef::Entity(id) => contract_schema.entity(*id).map(|entity| entity.record()),
+            RecordTypeRef::Event(id) => contract_schema.event(*id).map(|event| event.payload()),
+            RecordTypeRef::CommandInput { .. }
+            | RecordTypeRef::CommandOutcome { .. }
+            | RecordTypeRef::ProjectionResult(_) => None,
+        }
+        .ok_or(ServiceDtoError::InvalidShape)?;
+        return validate_outcome_record(contract_schema, record, value, depth + 1);
+    }
+    Ok(())
+}
+
+impl fmt::Debug for DeclaredOutcomeView {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("DeclaredOutcomeView")
+            .field("outcome_id", &self.outcome_id)
+            .field("outcome_name", &"[REDACTED]")
+            .field("value", &"[REDACTED]")
+            .finish()
+    }
+}
+
+/// Production durability acknowledged for a journaled command.
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+pub enum CommandDurability {
+    /// Acknowledgement followed synchronous durable flush.
+    Synchronous,
+    /// Acknowledgement followed the configured bounded group-commit contract.
+    Group,
+}
+
+/// Whether a journaled terminal result was first committed or replayed.
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+pub enum JournaledCompletion {
+    /// This invocation produced the original application commit.
+    Committed,
+    /// This invocation recovered the exact original terminal result.
+    Replayed,
+}
+
+/// Complete policy-safe result of one durable command admission.
+#[derive(Clone, Eq, PartialEq)]
+pub struct JournaledCommandResult {
+    completion: JournaledCompletion,
+    commit_sequence: CommitSequence,
+    lineage: ContractLineage,
+    contract_version: ContractVersion,
+    command_id: CommandId,
+    plan_hash: PlanHash,
+    outcome: DeclaredOutcomeView,
+    provenance_id: ProvenanceId,
+    durability: CommandDurability,
+}
+
+impl JournaledCommandResult {
+    /// Joins terminal fields with plan identity retained by the checked outcome.
+    pub fn new(
+        completion: JournaledCompletion,
+        commit_sequence: CommitSequence,
+        outcome: DeclaredOutcomeView,
+        provenance_id: ProvenanceId,
+        durability: CommandDurability,
+    ) -> Result<Self, ServiceDtoError> {
+        if outcome.plan.execution_class != ExecutionClass::IdempotentMutation {
+            return Err(ServiceDtoError::InvalidShape);
+        }
+        let lineage = outcome.plan.lineage.clone();
+        let contract_version = outcome.plan.contract_version;
+        let command_id = outcome.plan.command_id;
+        let plan_hash = outcome.plan.plan_hash;
+        Ok(Self {
+            completion,
+            commit_sequence,
+            lineage,
+            contract_version,
+            command_id,
+            plan_hash,
+            outcome,
+            provenance_id,
+            durability,
+        })
+    }
+
+    /// Returns first-commit versus replay classification.
+    #[must_use]
+    pub const fn completion(&self) -> JournaledCompletion {
+        self.completion
+    }
+
+    /// Returns the original application commit sequence.
+    #[must_use]
+    pub const fn commit_sequence(&self) -> CommitSequence {
+        self.commit_sequence
+    }
+
+    /// Borrows the exact contract lineage.
+    #[must_use]
+    pub const fn lineage(&self) -> &ContractLineage {
+        &self.lineage
+    }
+
+    /// Returns the exact contract version.
+    #[must_use]
+    pub const fn contract_version(&self) -> ContractVersion {
+        self.contract_version
+    }
+
+    /// Returns the stable command identity.
+    #[must_use]
+    pub const fn command_id(&self) -> CommandId {
+        self.command_id
+    }
+
+    /// Returns the exact executed plan hash.
+    #[must_use]
+    pub const fn plan_hash(&self) -> PlanHash {
+        self.plan_hash
+    }
+
+    /// Borrows the complete declared outcome.
+    #[must_use]
+    pub const fn outcome(&self) -> &DeclaredOutcomeView {
+        &self.outcome
+    }
+
+    /// Returns the durable provenance identity.
+    #[must_use]
+    pub const fn provenance_id(&self) -> ProvenanceId {
+        self.provenance_id
+    }
+
+    /// Returns the original production durability mode.
+    #[must_use]
+    pub const fn durability(&self) -> CommandDurability {
+        self.durability
+    }
+}
+
+impl fmt::Debug for JournaledCommandResult {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("JournaledCommandResult([REDACTED])")
+    }
+}
+
+/// Complete result of an unjournaled grammar-v1 read-only command.
+#[derive(Clone, Eq, PartialEq)]
+pub struct ReadOnlyCommandResult {
+    lineage: ContractLineage,
+    contract_version: ContractVersion,
+    command_id: CommandId,
+    plan_hash: PlanHash,
+    outcome: DeclaredOutcomeView,
+}
+
+impl ReadOnlyCommandResult {
+    /// Joins the exact checked outcome plan without durable fields.
+    pub fn new(outcome: DeclaredOutcomeView) -> Result<Self, ServiceDtoError> {
+        if outcome.plan.execution_class != ExecutionClass::ReadOnly {
+            return Err(ServiceDtoError::InvalidShape);
+        }
+        let lineage = outcome.plan.lineage.clone();
+        let contract_version = outcome.plan.contract_version;
+        let command_id = outcome.plan.command_id;
+        let plan_hash = outcome.plan.plan_hash;
+        Ok(Self {
+            lineage,
+            contract_version,
+            command_id,
+            plan_hash,
+            outcome,
+        })
+    }
+
+    /// Borrows the contract lineage.
+    #[must_use]
+    pub const fn lineage(&self) -> &ContractLineage {
+        &self.lineage
+    }
+
+    /// Returns the contract version.
+    #[must_use]
+    pub const fn contract_version(&self) -> ContractVersion {
+        self.contract_version
+    }
+
+    /// Returns the stable command identity.
+    #[must_use]
+    pub const fn command_id(&self) -> CommandId {
+        self.command_id
+    }
+
+    /// Returns the exact plan hash.
+    #[must_use]
+    pub const fn plan_hash(&self) -> PlanHash {
+        self.plan_hash
+    }
+
+    /// Borrows the declared outcome.
+    #[must_use]
+    pub const fn outcome(&self) -> &DeclaredOutcomeView {
+        &self.outcome
+    }
+}
+
+impl fmt::Debug for ReadOnlyCommandResult {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("ReadOnlyCommandResult([REDACTED])")
+    }
+}
+
+/// Closed result preserving the durable versus unjournaled distinction.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum ExecuteCommandResult {
+    /// A mutating command committed or replayed one durable outcome.
+    Journaled(JournaledCommandResult),
+    /// A read-only command executed without a journal promise.
+    ReadOnlyExecuted(ReadOnlyCommandResult),
+}
+
+/// Request to resolve one prior durable command result.
+#[derive(Clone, Eq, PartialEq)]
+pub struct ResolveCommandOutcomeRequest {
+    lineage: ContractLineage,
+    command: SourceName,
+    idempotency_key: IdempotencyKey,
+}
+
+impl ResolveCommandOutcomeRequest {
+    /// Creates an exact uncertainty-recovery lookup.
+    #[must_use]
+    pub const fn new(
+        lineage: ContractLineage,
+        command: SourceName,
+        idempotency_key: IdempotencyKey,
+    ) -> Self {
+        Self {
+            lineage,
+            command,
+            idempotency_key,
+        }
+    }
+
+    /// Borrows the exact lineage.
+    #[must_use]
+    pub const fn lineage(&self) -> &ContractLineage {
+        &self.lineage
+    }
+
+    /// Borrows the source command name.
+    #[must_use]
+    pub const fn command(&self) -> &SourceName {
+        &self.command
+    }
+
+    /// Borrows the caller's original uncertainty-recovery key.
+    #[must_use]
+    pub const fn idempotency_key(&self) -> &IdempotencyKey {
+        &self.idempotency_key
+    }
+}
+
+impl fmt::Debug for ResolveCommandOutcomeRequest {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("ResolveCommandOutcomeRequest([REDACTED])")
+    }
+}
+
+/// One journaled result proven to be an uncertainty-recovery replay.
+#[derive(Clone, Eq, PartialEq)]
+pub struct RecoveredJournaledCommandResult(JournaledCommandResult);
+
+impl RecoveredJournaledCommandResult {
+    /// Rejects first-execution results at the outcome-recovery boundary.
+    pub fn new(result: JournaledCommandResult) -> Result<Self, ServiceDtoError> {
+        if result.completion() != JournaledCompletion::Replayed {
+            return Err(ServiceDtoError::InvalidShape);
+        }
+        Ok(Self(result))
+    }
+
+    /// Borrows the exact replayed journaled result.
+    #[must_use]
+    pub const fn journaled(&self) -> &JournaledCommandResult {
+        &self.0
+    }
+
+    /// Returns the exact replayed journaled result.
+    #[must_use]
+    pub fn into_journaled(self) -> JournaledCommandResult {
+        self.0
+    }
+}
+
+impl std::ops::Deref for RecoveredJournaledCommandResult {
+    type Target = JournaledCommandResult;
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+impl fmt::Debug for RecoveredJournaledCommandResult {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("RecoveredJournaledCommandResult([REDACTED])")
+    }
+}
+
+/// Durable outcome resolution result.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum ResolveCommandOutcomeResult {
+    /// No terminal outcome exists for the exact identity.
+    NotFound,
+    /// The original terminal outcome is currently authorized for disclosure.
+    Found(Box<RecoveredJournaledCommandResult>),
+}
+
+/// Request to read one exact entity.
+#[derive(Clone, Eq, PartialEq)]
+pub struct GetEntityRequest {
+    contract: ContractSelection,
+    entity_type_id: EntityTypeId,
+    key: EntityKey,
+    fields: FieldSelection,
+}
+
+impl GetEntityRequest {
+    /// Checks that the canonical key belongs to the selected entity type.
+    pub fn new(
+        contract: ContractSelection,
+        entity_type_id: EntityTypeId,
+        key: EntityKey,
+        fields: FieldSelection,
+    ) -> Result<Self, ServiceDtoError> {
+        if key.entity_type_id() != entity_type_id {
+            return Err(ServiceDtoError::IdentityMismatch);
+        }
+        Ok(Self {
+            contract,
+            entity_type_id,
+            key,
+            fields,
+        })
+    }
+
+    /// Borrows the contract selection.
+    #[must_use]
+    pub const fn contract(&self) -> &ContractSelection {
+        &self.contract
+    }
+
+    /// Returns the stable entity type ID.
+    #[must_use]
+    pub const fn entity_type_id(&self) -> EntityTypeId {
+        self.entity_type_id
+    }
+
+    /// Borrows the canonical entity key.
+    #[must_use]
+    pub const fn key(&self) -> &EntityKey {
+        &self.key
+    }
+
+    /// Borrows requested non-key fields.
+    #[must_use]
+    pub const fn fields(&self) -> &FieldSelection {
+        &self.fields
+    }
+}
+
+impl fmt::Debug for GetEntityRequest {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("GetEntityRequest([REDACTED])")
+    }
+}
+
+/// Policy-filtered authoritative entity image.
+#[derive(Clone, Eq, PartialEq)]
+pub struct EntityView {
+    key: EntityKey,
+    entity_version: EntityVersion,
+    written_by_contract: ContractVersion,
+    fields: CanonicalRecord,
+}
+
+impl EntityView {
+    /// Creates one complete filtered entity image.
+    #[must_use]
+    pub const fn new(
+        key: EntityKey,
+        entity_version: EntityVersion,
+        written_by_contract: ContractVersion,
+        fields: CanonicalRecord,
+    ) -> Self {
+        Self {
+            key,
+            entity_version,
+            written_by_contract,
+            fields,
+        }
+    }
+
+    /// Borrows the canonical entity key.
+    #[must_use]
+    pub const fn key(&self) -> &EntityKey {
+        &self.key
+    }
+
+    /// Returns the authoritative entity version.
+    #[must_use]
+    pub const fn entity_version(&self) -> EntityVersion {
+        self.entity_version
+    }
+
+    /// Returns the contract version that wrote this image.
+    #[must_use]
+    pub const fn written_by_contract(&self) -> ContractVersion {
+        self.written_by_contract
+    }
+
+    /// Borrows policy-filtered fields.
+    #[must_use]
+    pub const fn fields(&self) -> &CanonicalRecord {
+        &self.fields
+    }
+}
+
+impl fmt::Debug for EntityView {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("EntityView([REDACTED])")
+    }
+}
+
+/// Exact entity lookup result.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum GetEntityResult {
+    /// No row exists at the exact canonical key.
+    NotFound,
+    /// A policy-filtered row exists.
+    Found(EntityView),
+}
+
+/// Bounded index scan request before schema normalization.
+#[derive(Clone, Eq, PartialEq)]
+pub struct ScanIndexRequest {
+    contract: ContractSelection,
+    index_id: IndexId,
+    leading_components: Vec<CanonicalValue>,
+    fields: FieldSelection,
+    page: PageRequest,
+}
+
+impl ScanIndexRequest {
+    /// Checks the complete request size and tighter prefix-component bound.
+    pub fn new(
+        contract: ContractSelection,
+        index_id: IndexId,
+        leading_components: Vec<CanonicalValue>,
+        fields: FieldSelection,
+        page: PageRequest,
+    ) -> Result<Self, ServiceDtoError> {
+        let request = Self {
+            contract,
+            index_id,
+            leading_components,
+            fields,
+            page,
+        };
+        ensure_service_request_bound(&request)?;
+        if request.leading_components.len() > MAX_PROJECTION_COMPONENTS {
+            return Err(ServiceDtoError::TooManyItems);
+        }
+        Ok(request)
+    }
+
+    /// Borrows the contract selection.
+    #[must_use]
+    pub const fn contract(&self) -> &ContractSelection {
+        &self.contract
+    }
+
+    /// Returns the stable index identity.
+    #[must_use]
+    pub const fn index_id(&self) -> IndexId {
+        self.index_id
+    }
+
+    /// Borrows leading canonical prefix components.
+    #[must_use]
+    pub fn leading_components(&self) -> &[CanonicalValue] {
+        &self.leading_components
+    }
+
+    /// Borrows requested returned fields.
+    #[must_use]
+    pub const fn fields(&self) -> &FieldSelection {
+        &self.fields
+    }
+
+    /// Returns bounded pagination controls.
+    #[must_use]
+    pub const fn page(&self) -> PageRequest {
+        self.page
+    }
+}
+
+impl fmt::Debug for ScanIndexRequest {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("ScanIndexRequest([REDACTED])")
+    }
+}
+
+/// One policy-filtered index row.
+#[derive(Clone, Eq, PartialEq)]
+pub struct IndexRowView {
+    key: IndexEntryKey,
+    values: CanonicalRecord,
+}
+
+impl IndexRowView {
+    /// Joins a canonical complete index key and filtered returned values.
+    #[must_use]
+    pub const fn new(key: IndexEntryKey, values: CanonicalRecord) -> Self {
+        Self { key, values }
+    }
+
+    /// Borrows the complete canonical index key.
+    #[must_use]
+    pub const fn key(&self) -> &IndexEntryKey {
+        &self.key
+    }
+
+    /// Borrows policy-filtered returned values.
+    #[must_use]
+    pub const fn values(&self) -> &CanonicalRecord {
+        &self.values
+    }
+}
+
+impl fmt::Debug for IndexRowView {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("IndexRowView([REDACTED])")
+    }
+}
+
+/// Exact epoch fence observed by an authoritative index page.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct IndexScanFence {
+    epoch: IndexEpoch,
+}
+
+impl IndexScanFence {
+    /// Creates an exact range-epoch fence.
+    #[must_use]
+    pub const fn new(epoch: IndexEpoch) -> Self {
+        Self { epoch }
+    }
+
+    /// Returns the observed range epoch.
+    #[must_use]
+    pub const fn epoch(self) -> IndexEpoch {
+        self.epoch
+    }
+}
+
+/// Bounded authoritative index result.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ScanIndexResult {
+    page: Page<IndexRowView, IndexScanFence>,
+}
+
+impl ScanIndexResult {
+    /// Wraps one already checked policy-filtered page.
+    #[must_use]
+    pub const fn new(page: Page<IndexRowView, IndexScanFence>) -> Self {
+        Self { page }
+    }
+
+    /// Borrows the complete checked page.
+    #[must_use]
+    pub const fn page(&self) -> &Page<IndexRowView, IndexScanFence> {
+        &self.page
+    }
+}
+
+/// Query request for one checked projection identity selected from a contract.
+#[derive(Clone, Eq, PartialEq)]
+pub struct QueryProjectionRequest {
+    contract: ContractSelection,
+    projection_id: ProjectionId,
+    leading_components: Vec<CanonicalValue>,
+    required_sequence: Option<CommitSequence>,
+    wait: Duration,
+    page: PageRequest,
+}
+
+impl QueryProjectionRequest {
+    /// Checks the complete request size plus projection component and wait bounds.
+    pub fn new(
+        contract: ContractSelection,
+        projection_id: ProjectionId,
+        leading_components: Vec<CanonicalValue>,
+        required_sequence: Option<CommitSequence>,
+        wait: Duration,
+        page: PageRequest,
+    ) -> Result<Self, ServiceDtoError> {
+        let request = Self {
+            contract,
+            projection_id,
+            leading_components,
+            required_sequence,
+            wait,
+            page,
+        };
+        ensure_service_request_bound(&request)?;
+        if request.leading_components.len() > MAX_PROJECTION_COMPONENTS {
+            return Err(ServiceDtoError::TooManyItems);
+        }
+        if request.wait > MAX_PROJECTION_WAIT
+            || (request.required_sequence.is_none() && !request.wait.is_zero())
+        {
+            return Err(ServiceDtoError::OutOfRange);
+        }
+        Ok(request)
+    }
+
+    /// Borrows the selected contract.
+    #[must_use]
+    pub const fn contract(&self) -> &ContractSelection {
+        &self.contract
+    }
+
+    /// Returns the stable projection ID.
+    #[must_use]
+    pub const fn projection_id(&self) -> ProjectionId {
+        self.projection_id
+    }
+
+    /// Borrows generation-neutral leading group components.
+    #[must_use]
+    pub fn leading_components(&self) -> &[CanonicalValue] {
+        &self.leading_components
+    }
+
+    /// Returns the optional real read-after-commit requirement.
+    #[must_use]
+    pub const fn required_sequence(&self) -> Option<CommitSequence> {
+        self.required_sequence
+    }
+
+    /// Returns the caller's bounded wait duration.
+    #[must_use]
+    pub const fn wait(&self) -> Duration {
+        self.wait
+    }
+
+    /// Returns page controls.
+    #[must_use]
+    pub const fn page(&self) -> PageRequest {
+        self.page
+    }
+}
+
+impl fmt::Debug for QueryProjectionRequest {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("QueryProjectionRequest([REDACTED])")
+    }
+}
+
+/// One bounded projection aggregate row.
+#[derive(Clone, Eq, PartialEq)]
+pub struct ProjectionRow {
+    group: Vec<CanonicalValue>,
+    values: CanonicalRecord,
+}
+
+impl ProjectionRow {
+    /// Checks the group component bound and retains one schema-checked result row.
+    pub fn new(
+        group: Vec<CanonicalValue>,
+        values: CanonicalRecord,
+    ) -> Result<Self, ServiceDtoError> {
+        if group.len() > MAX_PROJECTION_COMPONENTS {
+            return Err(ServiceDtoError::TooManyItems);
+        }
+        Ok(Self { group, values })
+    }
+
+    /// Borrows canonical group components in schema order.
+    #[must_use]
+    pub fn group(&self) -> &[CanonicalValue] {
+        &self.group
+    }
+
+    /// Borrows the complete projection result record.
+    #[must_use]
+    pub const fn values(&self) -> &CanonicalRecord {
+        &self.values
+    }
+}
+
+impl fmt::Debug for ProjectionRow {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("ProjectionRow([REDACTED])")
+    }
+}
+
+/// Closed public projection failure registry copied without engine text.
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+pub enum ProjectionFailureCode {
+    /// Checked deterministic arithmetic overflowed.
+    ArithmeticOverflow,
+    /// One durable event was malformed.
+    MalformedDurableEvent,
+    /// A required authoritative commit was missing.
+    MissingCommit,
+    /// A required plan or schema was unavailable or mismatched.
+    PlanOrSchemaUnavailable,
+    /// Derived projection state failed integrity validation.
+    StateIntegrityFailure,
+    /// A fixed projection resource limit was exceeded.
+    HardLimitExceeded,
+}
+
+/// Closed reason a projection query cannot return rows.
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+pub enum ProjectionUnavailableReason {
+    /// Initial generation construction is incomplete.
+    Building,
+    /// A replacement generation is being rebuilt.
+    Rebuilding,
+    /// One retained generation has a closed durable failure.
+    Failure(ProjectionFailureCode),
+}
+
+/// Rows from one published generation and its exact atomic frontier.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct QueryProjectionReady {
+    data: Page<ProjectionRow, ProjectionPageFence>,
+    frontier: FrontierPosition,
+}
+
+impl QueryProjectionReady {
+    /// Joins a policy-filtered page with the same frontier carried by its fence.
+    pub fn new(
+        data: Page<ProjectionRow, ProjectionPageFence>,
+        frontier: FrontierPosition,
+    ) -> Result<Self, ServiceDtoError> {
+        if data.observed_fence().frontier() != frontier {
+            return Err(ServiceDtoError::IdentityMismatch);
+        }
+        Ok(Self { data, frontier })
+    }
+
+    /// Borrows the policy-filtered page and exact projection fence.
+    #[must_use]
+    pub const fn data(&self) -> &Page<ProjectionRow, ProjectionPageFence> {
+        &self.data
+    }
+
+    /// Returns the published frontier observed with the returned rows.
+    #[must_use]
+    pub const fn frontier(&self) -> FrontierPosition {
+        self.frontier
+    }
+}
+
+/// Public query result with the exact four accepted semantic classes.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum QueryProjectionResult {
+    /// Rows from one published generation and atomic observed frontier.
+    Ready(QueryProjectionReady),
+    /// A ready projection did not reach the required sequence before the deadline.
+    WaitTimedOut {
+        /// Real nonzero required application sequence.
+        required: CommitSequence,
+        /// Published frontier observed at timeout.
+        current: FrontierPosition,
+    },
+    /// The known projection is temporarily unavailable.
+    Degraded {
+        /// Relevant retained generation frontier.
+        current: FrontierPosition,
+        /// Closed safe unavailable reason.
+        reason: ProjectionUnavailableReason,
+    },
+    /// The known projection cannot recover under v1 policy.
+    Invalid {
+        /// Closed safe failure code.
+        reason: ProjectionFailureCode,
+    },
+}
+
+/// Exact generation/frontier identity bound to a public projection cursor.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ProjectionPageFence {
+    identity: ProjectionIdentity,
+    generation: ProjectionGeneration,
+    frontier: FrontierPosition,
+}
+
+impl ProjectionPageFence {
+    /// Creates the atomic projection page fence.
+    #[must_use]
+    pub const fn new(
+        identity: ProjectionIdentity,
+        generation: ProjectionGeneration,
+        frontier: FrontierPosition,
+    ) -> Self {
+        Self {
+            identity,
+            generation,
+            frontier,
+        }
+    }
+
+    /// Borrows the exact projection identity.
+    #[must_use]
+    pub const fn identity(&self) -> &ProjectionIdentity {
+        &self.identity
+    }
+
+    /// Returns the published generation.
+    #[must_use]
+    pub const fn generation(&self) -> ProjectionGeneration {
+        self.generation
+    }
+
+    /// Returns the observed published frontier.
+    #[must_use]
+    pub const fn frontier(&self) -> FrontierPosition {
+        self.frontier
+    }
+}
+
+/// Exact durable projection lifecycle exposed by status.
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+pub enum ProjectionLifecycle {
+    /// Initial generation allocation has not started applying commits.
+    Building,
+    /// The initial candidate is consuming the authoritative log.
+    CatchingUp,
+    /// One published generation is current and queryable.
+    Ready,
+    /// A replacement candidate is being built.
+    Rebuilding,
+    /// A retained generation failed but may be recoverable.
+    Degraded,
+    /// Recovery is impossible under the v1 policy.
+    Invalid,
+}
+
+/// Whether a retained published generation may continue applying commits.
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+pub enum PublishedApplyMode {
+    /// Published application remains enabled.
+    Enabled,
+    /// The published generation failed and is suspended.
+    Suspended,
+}
+
+/// One retained generation pointer and exact frontier.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct ProjectionGenerationFrontier {
+    generation: ProjectionGeneration,
+    frontier: FrontierPosition,
+}
+
+impl ProjectionGenerationFrontier {
+    /// Joins one nonzero generation with its exact frontier.
+    #[must_use]
+    pub const fn new(generation: ProjectionGeneration, frontier: FrontierPosition) -> Self {
+        Self {
+            generation,
+            frontier,
+        }
+    }
+
+    /// Returns the retained generation.
+    #[must_use]
+    pub const fn generation(self) -> ProjectionGeneration {
+        self.generation
+    }
+
+    /// Returns its exact frontier.
+    #[must_use]
+    pub const fn frontier(self) -> FrontierPosition {
+        self.frontier
+    }
+}
+
+/// Closed failure status for one retained projection generation.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct ProjectionFailure {
+    generation: ProjectionGeneration,
+    code: ProjectionFailureCode,
+    at_sequence: Option<CommitSequence>,
+}
+
+impl ProjectionFailure {
+    /// Creates one safe failure without stored or engine text.
+    #[must_use]
+    pub const fn new(
+        generation: ProjectionGeneration,
+        code: ProjectionFailureCode,
+        at_sequence: Option<CommitSequence>,
+    ) -> Self {
+        Self {
+            generation,
+            code,
+            at_sequence,
+        }
+    }
+
+    /// Returns the affected generation.
+    #[must_use]
+    pub const fn generation(self) -> ProjectionGeneration {
+        self.generation
+    }
+
+    /// Returns the closed failure code.
+    #[must_use]
+    pub const fn code(self) -> ProjectionFailureCode {
+        self.code
+    }
+
+    /// Returns the commit being processed, when applicable.
+    #[must_use]
+    pub const fn at_sequence(self) -> Option<CommitSequence> {
+        self.at_sequence
+    }
+}
+
+/// Exact safe projection status from one atomic lower read.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ProjectionStatusSnapshot {
+    identity: ProjectionIdentity,
+    lifecycle: ProjectionLifecycle,
+    published: Option<ProjectionGenerationFrontier>,
+    candidate: Option<ProjectionGenerationFrontier>,
+    published_apply_mode: Option<PublishedApplyMode>,
+    failure: Option<ProjectionFailure>,
+    authoritative_head: FrontierPosition,
+}
+
+impl ProjectionStatusSnapshot {
+    /// Maps normal control-record absence for one known checked identity.
+    #[must_use]
+    pub const fn uninitialized(
+        identity: ProjectionIdentity,
+        authoritative_head: FrontierPosition,
+    ) -> Self {
+        Self {
+            identity,
+            lifecycle: ProjectionLifecycle::Building,
+            published: None,
+            candidate: None,
+            published_apply_mode: None,
+            failure: None,
+            authoritative_head,
+        }
+    }
+
+    /// Checks one initialized control shape against its highest allocated generation.
+    #[allow(clippy::too_many_arguments)]
+    pub fn from_initialized_control(
+        identity: ProjectionIdentity,
+        highest_allocated_generation: ProjectionGeneration,
+        lifecycle: ProjectionLifecycle,
+        published: Option<ProjectionGenerationFrontier>,
+        candidate: Option<ProjectionGenerationFrontier>,
+        published_apply_mode: Option<PublishedApplyMode>,
+        failure: Option<ProjectionFailure>,
+        authoritative_head: FrontierPosition,
+    ) -> Result<Self, ServiceDtoError> {
+        let pointers_within_highest = [published, candidate]
+            .into_iter()
+            .flatten()
+            .all(|pointer| pointer.generation() <= highest_allocated_generation);
+        let frontiers_not_ahead = [published, candidate]
+            .into_iter()
+            .flatten()
+            .all(|pointer| pointer.frontier() <= authoritative_head);
+        let pointers_distinct = published
+            .zip(candidate)
+            .is_none_or(|(left, right)| left.generation() != right.generation());
+        let mode_matches_pointer = published.is_some() == published_apply_mode.is_some();
+        let candidate_is_highest =
+            candidate.is_none_or(|pointer| pointer.generation() == highest_allocated_generation);
+        let failed_position = failure.and_then(|failure| {
+            published
+                .filter(|pointer| pointer.generation() == failure.generation())
+                .or_else(|| {
+                    candidate.filter(|pointer| pointer.generation() == failure.generation())
+                })
+        });
+        let failure_matches_position = match (failure, failed_position) {
+            (None, None) => true,
+            (Some(failure), Some(position)) => failure.at_sequence().is_none_or(|sequence| {
+                projection_sequence_is_exact_successor(position.frontier(), sequence)
+            }),
+            _ => false,
+        };
+        let lifecycle_shape = match lifecycle {
+            ProjectionLifecycle::Building => {
+                published.is_none()
+                    && candidate.is_some_and(|pointer| {
+                        pointer.generation() == highest_allocated_generation
+                            && pointer.frontier() == FrontierPosition::BeforeFirst
+                    })
+                    && published_apply_mode.is_none()
+                    && failure.is_none()
+            }
+            ProjectionLifecycle::CatchingUp => {
+                published.is_none()
+                    && candidate
+                        .is_some_and(|pointer| pointer.generation() == highest_allocated_generation)
+                    && published_apply_mode.is_none()
+                    && failure.is_none()
+            }
+            ProjectionLifecycle::Ready => {
+                published
+                    .is_some_and(|pointer| pointer.generation() == highest_allocated_generation)
+                    && candidate.is_none()
+                    && published_apply_mode == Some(PublishedApplyMode::Enabled)
+                    && failure.is_none()
+            }
+            ProjectionLifecycle::Rebuilding => {
+                published.is_some_and(|pointer| pointer.generation() < highest_allocated_generation)
+                    && candidate
+                        .is_some_and(|pointer| pointer.generation() == highest_allocated_generation)
+                    && failure.is_none()
+            }
+            ProjectionLifecycle::Degraded | ProjectionLifecycle::Invalid => {
+                failure.is_some()
+                    && match (published, candidate) {
+                        (None, Some(candidate)) => {
+                            candidate.generation() == highest_allocated_generation
+                                && published_apply_mode.is_none()
+                        }
+                        (Some(published), None) => {
+                            published.generation() == highest_allocated_generation
+                        }
+                        (Some(published), Some(candidate)) => {
+                            published.generation() < highest_allocated_generation
+                                && candidate.generation() == highest_allocated_generation
+                        }
+                        (None, None) => false,
+                    }
+            }
+        };
+        let failed_published_is_suspended = failure.is_none_or(|failure| {
+            !published.is_some_and(|pointer| pointer.generation() == failure.generation())
+                || published_apply_mode == Some(PublishedApplyMode::Suspended)
+        });
+        if !pointers_within_highest
+            || !frontiers_not_ahead
+            || !pointers_distinct
+            || !mode_matches_pointer
+            || !candidate_is_highest
+            || !failure_matches_position
+            || !lifecycle_shape
+            || !failed_published_is_suspended
+        {
+            return Err(ServiceDtoError::InvalidShape);
+        }
+        Ok(Self {
+            identity,
+            lifecycle,
+            published,
+            candidate,
+            published_apply_mode,
+            failure,
+            authoritative_head,
+        })
+    }
+
+    /// Borrows the exact projection identity.
+    #[must_use]
+    pub const fn identity(&self) -> &ProjectionIdentity {
+        &self.identity
+    }
+
+    /// Returns the closed lifecycle.
+    #[must_use]
+    pub const fn lifecycle(&self) -> ProjectionLifecycle {
+        self.lifecycle
+    }
+
+    /// Returns the published pointer and frontier.
+    #[must_use]
+    pub const fn published(&self) -> Option<ProjectionGenerationFrontier> {
+        self.published
+    }
+
+    /// Returns the candidate pointer and frontier.
+    #[must_use]
+    pub const fn candidate(&self) -> Option<ProjectionGenerationFrontier> {
+        self.candidate
+    }
+
+    /// Returns published application mode when a published pointer exists.
+    #[must_use]
+    pub const fn published_apply_mode(&self) -> Option<PublishedApplyMode> {
+        self.published_apply_mode
+    }
+
+    /// Returns the optional closed failure.
+    #[must_use]
+    pub const fn failure(&self) -> Option<ProjectionFailure> {
+        self.failure
+    }
+
+    /// Returns transaction-current authoritative application head.
+    #[must_use]
+    pub const fn authoritative_head(&self) -> FrontierPosition {
+        self.authoritative_head
+    }
+}
+
+fn projection_sequence_is_exact_successor(
+    frontier: FrontierPosition,
+    sequence: CommitSequence,
+) -> bool {
+    match frontier {
+        FrontierPosition::BeforeFirst => sequence == CommitSequence::first(),
+        FrontierPosition::AppliedThrough(previous) => previous.checked_next() == Some(sequence),
+    }
+}
+
+/// Request to read one projection's exact status.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct GetProjectionStatusRequest {
+    contract: ContractSelection,
+    projection_id: ProjectionId,
+}
+
+impl GetProjectionStatusRequest {
+    /// Creates one checked projection status selector.
+    #[must_use]
+    pub const fn new(contract: ContractSelection, projection_id: ProjectionId) -> Self {
+        Self {
+            contract,
+            projection_id,
+        }
+    }
+
+    /// Borrows the contract selection.
+    #[must_use]
+    pub const fn contract(&self) -> &ContractSelection {
+        &self.contract
+    }
+
+    /// Returns the stable projection ID.
+    #[must_use]
+    pub const fn projection_id(&self) -> ProjectionId {
+        self.projection_id
+    }
+}
+
+/// Projection status lookup result.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum GetProjectionStatusResult {
+    /// The selected checked bundle has no such projection.
+    NotFound,
+    /// Exact lifecycle and frontier status.
+    Found(ProjectionStatusSnapshot),
+}
+
+/// Fully resolved authoritative entity read used only by the read port.
+#[derive(Clone, Eq, PartialEq)]
+pub struct AuthoritativeEntityRequest {
+    lineage: ContractLineage,
+    version: ContractVersion,
+    key: EntityKey,
+}
+
+impl AuthoritativeEntityRequest {
+    /// Creates one exact checked entity read.
+    #[must_use]
+    pub const fn new(lineage: ContractLineage, version: ContractVersion, key: EntityKey) -> Self {
+        Self {
+            lineage,
+            version,
+            key,
+        }
+    }
+
+    /// Borrows the exact lineage.
+    #[must_use]
+    pub const fn lineage(&self) -> &ContractLineage {
+        &self.lineage
+    }
+
+    /// Returns the selected contract version.
+    #[must_use]
+    pub const fn version(&self) -> ContractVersion {
+        self.version
+    }
+
+    /// Borrows the canonical entity key.
+    #[must_use]
+    pub const fn key(&self) -> &EntityKey {
+        &self.key
+    }
+}
+
+impl fmt::Debug for AuthoritativeEntityRequest {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("AuthoritativeEntityRequest([REDACTED])")
+    }
+}
+
+/// Complete unfiltered authoritative entity observation returned to service internals.
+#[derive(Clone, Eq, PartialEq)]
+pub struct AuthoritativeEntitySnapshot {
+    key: EntityKey,
+    entity_version: EntityVersion,
+    written_by_contract: ContractVersion,
+    fields: CanonicalRecord,
+}
+
+impl AuthoritativeEntitySnapshot {
+    /// Joins the complete authoritative row semantics.
+    #[must_use]
+    pub const fn new(
+        key: EntityKey,
+        entity_version: EntityVersion,
+        written_by_contract: ContractVersion,
+        fields: CanonicalRecord,
+    ) -> Self {
+        Self {
+            key,
+            entity_version,
+            written_by_contract,
+            fields,
+        }
+    }
+
+    /// Borrows the canonical entity key.
+    #[must_use]
+    pub const fn key(&self) -> &EntityKey {
+        &self.key
+    }
+
+    /// Returns the authoritative entity version.
+    #[must_use]
+    pub const fn entity_version(&self) -> EntityVersion {
+        self.entity_version
+    }
+
+    /// Returns the writer contract version.
+    #[must_use]
+    pub const fn written_by_contract(&self) -> ContractVersion {
+        self.written_by_contract
+    }
+
+    /// Borrows complete unfiltered canonical fields.
+    #[must_use]
+    pub const fn fields(&self) -> &CanonicalRecord {
+        &self.fields
+    }
+}
+
+impl fmt::Debug for AuthoritativeEntitySnapshot {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("AuthoritativeEntitySnapshot([REDACTED])")
+    }
+}
+
+/// Fully normalized bounded index request used only by the authoritative read port.
+#[derive(Clone, Eq, PartialEq)]
+pub struct AuthoritativeIndexRequest {
+    lineage: ContractLineage,
+    version: ContractVersion,
+    index_id: IndexId,
+    leading_components: Vec<CanonicalValue>,
+    prefix: IndexScanPrefix,
+    partition_constraint: PartitionConstraint,
+    after: Option<IndexEntryKey>,
+    limit: PageLimit,
+}
+
+impl AuthoritativeIndexRequest {
+    /// Checks index identity, canonical continuation identity, and component bounds.
+    #[allow(clippy::too_many_arguments)]
+    pub fn new(
+        lineage: ContractLineage,
+        version: ContractVersion,
+        index_id: IndexId,
+        leading_components: Vec<CanonicalValue>,
+        prefix: IndexScanPrefix,
+        partition_constraint: PartitionConstraint,
+        after: Option<IndexEntryKey>,
+        limit: PageLimit,
+    ) -> Result<Self, ServiceDtoError> {
+        if leading_components.len() > MAX_PROJECTION_COMPONENTS {
+            return Err(ServiceDtoError::TooManyItems);
+        }
+        if prefix.index_id() != index_id
+            || prefix.component_count() != leading_components.len()
+            || after.as_ref().is_some_and(|key| {
+                key.index_id() != index_id || !key.as_bytes().starts_with(prefix.as_bytes())
+            })
+        {
+            return Err(ServiceDtoError::IdentityMismatch);
+        }
+        Ok(Self {
+            lineage,
+            version,
+            index_id,
+            leading_components,
+            prefix,
+            partition_constraint,
+            after,
+            limit,
+        })
+    }
+
+    /// Borrows the lineage.
+    #[must_use]
+    pub const fn lineage(&self) -> &ContractLineage {
+        &self.lineage
+    }
+
+    /// Returns the contract version.
+    #[must_use]
+    pub const fn version(&self) -> ContractVersion {
+        self.version
+    }
+
+    /// Returns the stable index identity.
+    #[must_use]
+    pub const fn index_id(&self) -> IndexId {
+        self.index_id
+    }
+
+    /// Borrows normalized leading components.
+    #[must_use]
+    pub fn leading_components(&self) -> &[CanonicalValue] {
+        &self.leading_components
+    }
+
+    /// Borrows the historical-schema-checked canonical scan prefix.
+    #[must_use]
+    pub const fn prefix(&self) -> &IndexScanPrefix {
+        &self.prefix
+    }
+
+    /// Borrows the current-policy constraint that must be applied by storage.
+    #[must_use]
+    pub const fn partition_constraint(&self) -> &PartitionConstraint {
+        &self.partition_constraint
+    }
+
+    /// Borrows the exclusive lower continuation.
+    #[must_use]
+    pub const fn after(&self) -> Option<&IndexEntryKey> {
+        self.after.as_ref()
+    }
+
+    /// Returns the effective bounded limit.
+    #[must_use]
+    pub const fn limit(&self) -> PageLimit {
+        self.limit
+    }
+}
+
+impl fmt::Debug for AuthoritativeIndexRequest {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("AuthoritativeIndexRequest([REDACTED])")
+    }
+}
+
+/// One complete authoritative index row before service obligations.
+#[derive(Clone, Eq, PartialEq)]
+pub struct AuthoritativeIndexRow {
+    key: IndexEntryKey,
+    values: CanonicalRecord,
+}
+
+impl AuthoritativeIndexRow {
+    /// Joins one complete canonical key and covered/result values.
+    #[must_use]
+    pub const fn new(key: IndexEntryKey, values: CanonicalRecord) -> Self {
+        Self { key, values }
+    }
+
+    /// Borrows the complete index key.
+    #[must_use]
+    pub const fn key(&self) -> &IndexEntryKey {
+        &self.key
+    }
+
+    /// Borrows complete returned values.
+    #[must_use]
+    pub const fn values(&self) -> &CanonicalRecord {
+        &self.values
+    }
+}
+
+impl fmt::Debug for AuthoritativeIndexRow {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("AuthoritativeIndexRow([REDACTED])")
+    }
+}
+
+/// One bounded atomic authoritative index page.
+#[derive(Clone, Eq, PartialEq)]
+pub struct AuthoritativeIndexPage {
+    rows: Vec<AuthoritativeIndexRow>,
+    next_after: Option<IndexEntryKey>,
+    epoch: IndexEpoch,
+}
+
+impl AuthoritativeIndexPage {
+    /// Checks row count, key identity/order from the requested continuation,
+    /// and continuation equality.
+    pub fn new(
+        request: &AuthoritativeIndexRequest,
+        rows: Vec<AuthoritativeIndexRow>,
+        next_after: Option<IndexEntryKey>,
+        epoch: IndexEpoch,
+    ) -> Result<Self, ServiceDtoError> {
+        if rows.len() > usize::from(request.limit().get().get()) {
+            return Err(ServiceDtoError::TooManyItems);
+        }
+        if !index_page_rows_follow(request.prefix(), request.after(), rows.iter())
+            || next_after
+                .as_ref()
+                .is_some_and(|next| rows.last().map(AuthoritativeIndexRow::key) != Some(next))
+            || (rows.is_empty() && next_after.is_some())
+        {
+            return Err(ServiceDtoError::InvalidShape);
+        }
+        Ok(Self {
+            rows,
+            next_after,
+            epoch,
+        })
+    }
+
+    /// Borrows canonical rows.
+    #[must_use]
+    pub fn rows(&self) -> &[AuthoritativeIndexRow] {
+        &self.rows
+    }
+
+    /// Borrows the exclusive lower continuation.
+    #[must_use]
+    pub const fn next_after(&self) -> Option<&IndexEntryKey> {
+        self.next_after.as_ref()
+    }
+
+    /// Returns the atomically observed range epoch.
+    #[must_use]
+    pub const fn epoch(&self) -> IndexEpoch {
+        self.epoch
+    }
+}
+
+fn index_page_rows_follow<'a>(
+    prefix: &IndexScanPrefix,
+    after: Option<&IndexEntryKey>,
+    rows: impl Iterator<Item = &'a AuthoritativeIndexRow>,
+) -> bool {
+    let mut prior = after.map(IndexEntryKey::as_bytes);
+    for row in rows {
+        let key = row.key();
+        if key.index_id() != prefix.index_id()
+            || !key.as_bytes().starts_with(prefix.as_bytes())
+            || prior.is_some_and(|previous| previous >= key.as_bytes())
+        {
+            return false;
+        }
+        prior = Some(key.as_bytes());
+    }
+    true
+}
+
+impl fmt::Debug for AuthoritativeIndexPage {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("AuthoritativeIndexPage([REDACTED])")
+    }
+}
+
+/// Exact durable outcome identity passed to the authoritative read port.
+#[derive(Clone, Eq, PartialEq)]
+pub struct AuthoritativeOutcomeRequest {
+    lineage: ContractLineage,
+    command_id: CommandId,
+    principal_id: ActorId,
+    tenant_scope: TenantScope,
+    idempotency_key: IdempotencyKey,
+}
+
+impl AuthoritativeOutcomeRequest {
+    /// Joins complete service-owned uncertainty-recovery identity.
+    #[must_use]
+    pub const fn new(
+        lineage: ContractLineage,
+        command_id: CommandId,
+        principal_id: ActorId,
+        tenant_scope: TenantScope,
+        idempotency_key: IdempotencyKey,
+    ) -> Self {
+        Self {
+            lineage,
+            command_id,
+            principal_id,
+            tenant_scope,
+            idempotency_key,
+        }
+    }
+
+    /// Borrows the lineage.
+    #[must_use]
+    pub const fn lineage(&self) -> &ContractLineage {
+        &self.lineage
+    }
+
+    /// Returns the stable command ID.
+    #[must_use]
+    pub const fn command_id(&self) -> CommandId {
+        self.command_id
+    }
+
+    /// Borrows the stable owner principal.
+    #[must_use]
+    pub const fn principal_id(&self) -> &ActorId {
+        &self.principal_id
+    }
+
+    /// Borrows the owner tenant scope.
+    #[must_use]
+    pub const fn tenant_scope(&self) -> &TenantScope {
+        &self.tenant_scope
+    }
+
+    /// Borrows the raw caller key only for the lower keyed-digest lookup.
+    #[must_use]
+    pub const fn idempotency_key(&self) -> &IdempotencyKey {
+        &self.idempotency_key
+    }
+}
+
+impl fmt::Debug for AuthoritativeOutcomeRequest {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("AuthoritativeOutcomeRequest([REDACTED])")
+    }
+}
+
+/// Exact stored facts required by the second outcome-disclosure authorization.
+#[derive(Clone, Eq, PartialEq)]
+pub struct AuthoritativeOutcomeFacts {
+    lineage: ContractLineage,
+    contract_version: ContractVersion,
+    bundle_hash: ContractBundleHash,
+    command_id: CommandId,
+    plan_hash: PlanHash,
+    owner_principal_id: ActorId,
+    owner_tenant_scope: TenantScope,
+    partition: PartitionKey,
+}
+
+impl AuthoritativeOutcomeFacts {
+    /// Joins only exact fields copied from one durable admission state.
+    #[allow(clippy::too_many_arguments)]
+    #[must_use]
+    pub const fn new(
+        lineage: ContractLineage,
+        contract_version: ContractVersion,
+        bundle_hash: ContractBundleHash,
+        command_id: CommandId,
+        plan_hash: PlanHash,
+        owner_principal_id: ActorId,
+        owner_tenant_scope: TenantScope,
+        partition: PartitionKey,
+    ) -> Self {
+        Self {
+            lineage,
+            contract_version,
+            bundle_hash,
+            command_id,
+            plan_hash,
+            owner_principal_id,
+            owner_tenant_scope,
+            partition,
+        }
+    }
+
+    /// Borrows the exact stored lineage.
+    #[must_use]
+    pub const fn lineage(&self) -> &ContractLineage {
+        &self.lineage
+    }
+
+    /// Returns the exact stored contract version.
+    #[must_use]
+    pub const fn contract_version(&self) -> ContractVersion {
+        self.contract_version
+    }
+
+    /// Returns the exact immutable contract bundle hash.
+    #[must_use]
+    pub const fn bundle_hash(&self) -> ContractBundleHash {
+        self.bundle_hash
+    }
+
+    /// Returns the exact stored command identity.
+    #[must_use]
+    pub const fn command_id(&self) -> CommandId {
+        self.command_id
+    }
+
+    /// Returns the exact stored plan hash.
+    #[must_use]
+    pub const fn plan_hash(&self) -> PlanHash {
+        self.plan_hash
+    }
+
+    /// Borrows the stable owner principal.
+    #[must_use]
+    pub const fn owner_principal_id(&self) -> &ActorId {
+        &self.owner_principal_id
+    }
+
+    /// Borrows the exact stored owner tenant.
+    #[must_use]
+    pub const fn owner_tenant_scope(&self) -> &TenantScope {
+        &self.owner_tenant_scope
+    }
+
+    /// Borrows the exact stored logical partition.
+    #[must_use]
+    pub const fn partition(&self) -> &PartitionKey {
+        &self.partition
+    }
+}
+
+impl fmt::Debug for AuthoritativeOutcomeFacts {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("AuthoritativeOutcomeFacts([REDACTED])")
+    }
+}
+
+/// Journaled authoritative outcome data before catalog-owned name resolution.
+///
+/// The storage-facing read port returns only durable facts. The application
+/// service joins these fields with the exact checked historical command plan
+/// before it can construct a caller-visible [`DeclaredOutcomeView`].
+#[derive(Clone, Eq, PartialEq)]
+pub struct AuthoritativeJournaledOutcome {
+    commit_sequence: CommitSequence,
+    outcome_id: OutcomeId,
+    value: CanonicalRecord,
+    provenance_id: ProvenanceId,
+    durability: CommandDurability,
+}
+
+impl AuthoritativeJournaledOutcome {
+    /// Joins the complete durable outcome fields that require no catalog metadata.
+    #[must_use]
+    pub const fn new(
+        commit_sequence: CommitSequence,
+        outcome_id: OutcomeId,
+        value: CanonicalRecord,
+        provenance_id: ProvenanceId,
+        durability: CommandDurability,
+    ) -> Self {
+        Self {
+            commit_sequence,
+            outcome_id,
+            value,
+            provenance_id,
+            durability,
+        }
+    }
+
+    /// Returns the original application commit sequence.
+    #[must_use]
+    pub const fn commit_sequence(&self) -> CommitSequence {
+        self.commit_sequence
+    }
+
+    /// Returns the stable declared outcome identity.
+    #[must_use]
+    pub const fn outcome_id(&self) -> OutcomeId {
+        self.outcome_id
+    }
+
+    /// Borrows the complete canonical outcome value.
+    #[must_use]
+    pub const fn value(&self) -> &CanonicalRecord {
+        &self.value
+    }
+
+    /// Returns the durable provenance identity.
+    #[must_use]
+    pub const fn provenance_id(&self) -> ProvenanceId {
+        self.provenance_id
+    }
+
+    /// Returns the original production durability mode.
+    #[must_use]
+    pub const fn durability(&self) -> CommandDurability {
+        self.durability
+    }
+}
+
+impl fmt::Debug for AuthoritativeJournaledOutcome {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("AuthoritativeJournaledOutcome([REDACTED])")
+    }
+}
+
+/// Complete durable admission observation before current disclosure filtering.
+#[derive(Clone, Eq, PartialEq)]
+pub enum AuthoritativeOutcomeSnapshot {
+    /// Evaluation has not reached a durable terminal state.
+    Pending(AuthoritativeOutcomeFacts),
+    /// A declared application outcome committed.
+    Journaled {
+        /// Exact stored authorization facts.
+        facts: AuthoritativeOutcomeFacts,
+        /// Durable outcome fields before checked historical name resolution.
+        result: AuthoritativeJournaledOutcome,
+    },
+    /// A deterministic failure consumed the admission without a command commit.
+    ExecutionFailed {
+        /// Exact stored authorization facts.
+        facts: AuthoritativeOutcomeFacts,
+        /// Closed durable failure code.
+        code: riffdb_types::ExecutionFailureCode,
+    },
+}
+
+impl AuthoritativeOutcomeSnapshot {
+    /// Borrows the exact stored facts shared by every admission state.
+    #[must_use]
+    pub const fn facts(&self) -> &AuthoritativeOutcomeFacts {
+        match self {
+            Self::Pending(facts)
+            | Self::Journaled { facts, .. }
+            | Self::ExecutionFailed { facts, .. } => facts,
+        }
+    }
+
+    /// Joins immutable plan facts with their durable journaled outcome.
+    #[must_use]
+    pub const fn journaled(
+        facts: AuthoritativeOutcomeFacts,
+        result: AuthoritativeJournaledOutcome,
+    ) -> Self {
+        Self::Journaled { facts, result }
+    }
+}
+
+impl fmt::Debug for AuthoritativeOutcomeSnapshot {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("AuthoritativeOutcomeSnapshot([REDACTED])")
+    }
+}
+
+/// One affected entity identity linked from a commit or provenance record.
+#[derive(Clone, Eq, PartialEq)]
+pub struct AffectedEntityView {
+    key: EntityKey,
+    entity_version: EntityVersion,
+}
+
+impl AffectedEntityView {
+    /// Joins one exact entity key and committed version.
+    #[must_use]
+    pub const fn new(key: EntityKey, entity_version: EntityVersion) -> Self {
+        Self {
+            key,
+            entity_version,
+        }
+    }
+
+    /// Borrows the canonical entity key.
+    #[must_use]
+    pub const fn key(&self) -> &EntityKey {
+        &self.key
+    }
+
+    /// Returns the committed entity version.
+    #[must_use]
+    pub const fn entity_version(&self) -> EntityVersion {
+        self.entity_version
+    }
+}
+
+impl fmt::Debug for AffectedEntityView {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("AffectedEntityView([REDACTED])")
+    }
+}
+
+/// One durable event safe for authorized service release.
+#[derive(Clone, Eq, PartialEq)]
+pub struct DurableEventView {
+    event_id: EventId,
+    event_type_id: EventTypeId,
+    payload: CanonicalRecord,
+}
+
+impl DurableEventView {
+    /// Joins one immutable event identity, type, and filtered payload.
+    #[must_use]
+    pub const fn new(
+        event_id: EventId,
+        event_type_id: EventTypeId,
+        payload: CanonicalRecord,
+    ) -> Self {
+        Self {
+            event_id,
+            event_type_id,
+            payload,
+        }
+    }
+
+    /// Returns the stable event ID.
+    #[must_use]
+    pub const fn event_id(&self) -> EventId {
+        self.event_id
+    }
+
+    /// Returns the stable event type ID.
+    #[must_use]
+    pub const fn event_type_id(&self) -> EventTypeId {
+        self.event_type_id
+    }
+
+    /// Borrows the policy-filtered payload.
+    #[must_use]
+    pub const fn payload(&self) -> &CanonicalRecord {
+        &self.payload
+    }
+}
+
+impl fmt::Debug for DurableEventView {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("DurableEventView([REDACTED])")
+    }
+}
+
+/// Complete unfiltered commit observation returned only to service internals.
+#[derive(Clone, Eq, PartialEq)]
+pub struct AuthoritativeCommitSnapshot {
+    sequence: CommitSequence,
+    admission_request_id: RequestId,
+    lineage: ContractLineage,
+    contract_version: ContractVersion,
+    command_id: CommandId,
+    plan_hash: PlanHash,
+    canonical_input_hash: CanonicalInputHash,
+    actor: AdmittedActorContext,
+    logical_time: LogicalTime,
+    partition_hash: PartitionKeyHash,
+    conflict_hashes: Vec<ConflictKeyHash>,
+    affected_entities: Vec<AffectedEntityView>,
+    events: Vec<DurableEventView>,
+    outcome: DeclaredOutcomeView,
+    provenance_id: ProvenanceId,
+    durability: CommandDurability,
+}
+
+impl AuthoritativeCommitSnapshot {
+    /// Checks collection bounds and joins one complete authoritative commit.
+    #[allow(clippy::too_many_arguments)]
+    pub fn new(
+        sequence: CommitSequence,
+        admission_request_id: RequestId,
+        lineage: ContractLineage,
+        contract_version: ContractVersion,
+        command_id: CommandId,
+        plan_hash: PlanHash,
+        canonical_input_hash: CanonicalInputHash,
+        actor: AdmittedActorContext,
+        logical_time: LogicalTime,
+        partition_hash: PartitionKeyHash,
+        conflict_hashes: Vec<ConflictKeyHash>,
+        affected_entities: Vec<AffectedEntityView>,
+        events: Vec<DurableEventView>,
+        outcome: DeclaredOutcomeView,
+        provenance_id: ProvenanceId,
+        durability: CommandDurability,
+    ) -> Result<Self, ServiceDtoError> {
+        if conflict_hashes.len() > MAX_SERVICE_COLLECTION_ITEMS
+            || affected_entities.len() > MAX_SERVICE_COLLECTION_ITEMS
+            || events.len() > MAX_SERVICE_COLLECTION_ITEMS
+        {
+            return Err(ServiceDtoError::TooManyItems);
+        }
+        Ok(Self {
+            sequence,
+            admission_request_id,
+            lineage,
+            contract_version,
+            command_id,
+            plan_hash,
+            canonical_input_hash,
+            actor,
+            logical_time,
+            partition_hash,
+            conflict_hashes,
+            affected_entities,
+            events,
+            outcome,
+            provenance_id,
+            durability,
+        })
+    }
+
+    /// Returns the commit sequence.
+    #[must_use]
+    pub const fn sequence(&self) -> CommitSequence {
+        self.sequence
+    }
+    /// Returns the original admission request ID.
+    #[must_use]
+    pub const fn admission_request_id(&self) -> RequestId {
+        self.admission_request_id
+    }
+    /// Borrows the exact lineage.
+    #[must_use]
+    pub const fn lineage(&self) -> &ContractLineage {
+        &self.lineage
+    }
+    /// Returns the exact contract version.
+    #[must_use]
+    pub const fn contract_version(&self) -> ContractVersion {
+        self.contract_version
+    }
+    /// Returns the stable command ID.
+    #[must_use]
+    pub const fn command_id(&self) -> CommandId {
+        self.command_id
+    }
+    /// Returns the exact plan hash.
+    #[must_use]
+    pub const fn plan_hash(&self) -> PlanHash {
+        self.plan_hash
+    }
+    /// Returns the canonical input hash.
+    #[must_use]
+    pub const fn canonical_input_hash(&self) -> CanonicalInputHash {
+        self.canonical_input_hash
+    }
+    /// Borrows the admitted actor context.
+    #[must_use]
+    pub const fn actor(&self) -> &AdmittedActorContext {
+        &self.actor
+    }
+    /// Returns deterministic logical time.
+    #[must_use]
+    pub const fn logical_time(&self) -> LogicalTime {
+        self.logical_time
+    }
+    /// Returns the partition identity hash.
+    #[must_use]
+    pub const fn partition_hash(&self) -> PartitionKeyHash {
+        self.partition_hash
+    }
+    /// Borrows conflict identity hashes.
+    #[must_use]
+    pub fn conflict_hashes(&self) -> &[ConflictKeyHash] {
+        &self.conflict_hashes
+    }
+    /// Borrows affected entity links.
+    #[must_use]
+    pub fn affected_entities(&self) -> &[AffectedEntityView] {
+        &self.affected_entities
+    }
+    /// Borrows complete durable events.
+    #[must_use]
+    pub fn events(&self) -> &[DurableEventView] {
+        &self.events
+    }
+    /// Borrows the declared outcome.
+    #[must_use]
+    pub const fn outcome(&self) -> &DeclaredOutcomeView {
+        &self.outcome
+    }
+    /// Returns the durable provenance identity.
+    #[must_use]
+    pub const fn provenance_id(&self) -> ProvenanceId {
+        self.provenance_id
+    }
+    /// Returns production durability.
+    #[must_use]
+    pub const fn durability(&self) -> CommandDurability {
+        self.durability
+    }
+}
+
+impl fmt::Debug for AuthoritativeCommitSnapshot {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("AuthoritativeCommitSnapshot([REDACTED])")
+    }
+}
+
+/// Policy-filtered commit result released by service operations.
+#[derive(Clone, Eq, PartialEq)]
+pub struct CommitView(AuthoritativeCommitSnapshot);
+
+impl CommitView {
+    /// Wraps a service-reconstructed, fully filtered commit shape.
+    #[must_use]
+    pub const fn new(filtered: AuthoritativeCommitSnapshot) -> Self {
+        Self(filtered)
+    }
+
+    /// Borrows the complete filtered semantic commit.
+    #[must_use]
+    pub const fn as_snapshot(&self) -> &AuthoritativeCommitSnapshot {
+        &self.0
+    }
+}
+
+impl fmt::Debug for CommitView {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("CommitView([REDACTED])")
+    }
+}
+
+/// Exact request to read one commit.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct GetCommitRequest {
+    sequence: CommitSequence,
+}
+
+impl GetCommitRequest {
+    /// Creates one exact commit lookup.
+    #[must_use]
+    pub const fn new(sequence: CommitSequence) -> Self {
+        Self { sequence }
+    }
+    /// Returns the requested sequence.
+    #[must_use]
+    pub const fn sequence(self) -> CommitSequence {
+        self.sequence
+    }
+}
+
+/// Exact commit lookup result.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum GetCommitResult {
+    /// The requested commit does not exist.
+    NotFound,
+    /// The policy-filtered authoritative commit.
+    Found(Box<CommitView>),
+}
+
+/// Public commit scan request using a server-side cursor.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct ScanCommitsRequest {
+    page: PageRequest,
+}
+
+impl ScanCommitsRequest {
+    /// Creates one bounded commit page request.
+    #[must_use]
+    pub const fn new(page: PageRequest) -> Self {
+        Self { page }
+    }
+    /// Returns pagination controls.
+    #[must_use]
+    pub const fn page(self) -> PageRequest {
+        self.page
+    }
+}
+
+/// Frozen upper commit-log fence selected on the first page.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct CommitScanFence(FrontierPosition);
+
+impl CommitScanFence {
+    /// Creates a fence from the transaction-current authoritative head.
+    #[must_use]
+    pub const fn new(position: FrontierPosition) -> Self {
+        Self(position)
+    }
+    /// Returns the inclusive frozen upper position.
+    #[must_use]
+    pub const fn position(self) -> FrontierPosition {
+        self.0
+    }
+}
+
+/// Policy-filtered bounded commit page.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ScanCommitsResult(Page<CommitView, CommitScanFence>);
+
+impl ScanCommitsResult {
+    /// Wraps one checked upper-fenced page.
+    #[must_use]
+    pub const fn new(page: Page<CommitView, CommitScanFence>) -> Self {
+        Self(page)
+    }
+    /// Borrows the complete page.
+    #[must_use]
+    pub const fn page(&self) -> &Page<CommitView, CommitScanFence> {
+        &self.0
+    }
+}
+
+/// Lower request that either captures or reuses one inclusive commit-log fence.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum AuthoritativeCommitScanRequest {
+    /// First page; the lower atomic read captures its authoritative upper frontier.
+    Initial {
+        /// Bounded page limit.
+        limit: PageLimit,
+    },
+    /// Later page bound to the exact first-page upper frontier.
+    Continue {
+        /// Exclusive lower continuation.
+        after: CommitSequence,
+        /// Frozen inclusive upper frontier.
+        inclusive_upper: CommitSequence,
+        /// Bounded page limit.
+        limit: PageLimit,
+    },
+}
+
+impl AuthoritativeCommitScanRequest {
+    /// Creates a first-page request that atomically captures the current head.
+    #[must_use]
+    pub const fn initial(limit: PageLimit) -> Self {
+        Self::Initial { limit }
+    }
+
+    /// Creates a continuation bound to the prior page's exact nonempty fence.
+    pub fn continuing(
+        after: CommitSequence,
+        inclusive_upper: CommitSequence,
+        limit: PageLimit,
+    ) -> Result<Self, ServiceDtoError> {
+        if after > inclusive_upper {
+            return Err(ServiceDtoError::InvalidShape);
+        }
+        Ok(Self::Continue {
+            after,
+            inclusive_upper,
+            limit,
+        })
+    }
+
+    /// Returns the exclusive lower continuation.
+    #[must_use]
+    pub const fn after(self) -> Option<CommitSequence> {
+        match self {
+            Self::Initial { .. } => None,
+            Self::Continue { after, .. } => Some(after),
+        }
+    }
+
+    /// Returns the frozen inclusive upper sequence for a continuation.
+    #[must_use]
+    pub const fn inclusive_upper(self) -> Option<CommitSequence> {
+        match self {
+            Self::Initial { .. } => None,
+            Self::Continue {
+                inclusive_upper, ..
+            } => Some(inclusive_upper),
+        }
+    }
+
+    /// Returns the bounded batch limit.
+    #[must_use]
+    pub const fn limit(self) -> PageLimit {
+        match self {
+            Self::Initial { limit } | Self::Continue { limit, .. } => limit,
+        }
+    }
+}
+
+/// One bounded lower authoritative commit page.
+#[derive(Clone, Eq, PartialEq)]
+pub struct AuthoritativeCommitPage {
+    commits: Vec<AuthoritativeCommitSnapshot>,
+    next_after: Option<CommitSequence>,
+    inclusive_upper: FrontierPosition,
+}
+
+impl AuthoritativeCommitPage {
+    /// Checks page count, contiguous sequence order, bounds, and continuation.
+    pub fn new(
+        request: AuthoritativeCommitScanRequest,
+        inclusive_upper: FrontierPosition,
+        commits: Vec<AuthoritativeCommitSnapshot>,
+        next_after: Option<CommitSequence>,
+    ) -> Result<Self, ServiceDtoError> {
+        if commits.len() > usize::from(request.limit().get().get()) {
+            return Err(ServiceDtoError::TooManyItems);
+        }
+        if !commit_page_sequences_are_contiguous(
+            request,
+            commits.iter().map(AuthoritativeCommitSnapshot::sequence),
+        ) || next_after.is_some_and(|next| {
+            commits.last().map(AuthoritativeCommitSnapshot::sequence) != Some(next)
+        }) || (commits.is_empty() && next_after.is_some())
+            || request.inclusive_upper().is_some_and(|expected| {
+                inclusive_upper != FrontierPosition::AppliedThrough(expected)
+            })
+            || commits.iter().any(|commit| match inclusive_upper {
+                FrontierPosition::BeforeFirst => true,
+                FrontierPosition::AppliedThrough(upper) => commit.sequence() > upper,
+            })
+        {
+            return Err(ServiceDtoError::InvalidShape);
+        }
+        Ok(Self {
+            commits,
+            next_after,
+            inclusive_upper,
+        })
+    }
+    /// Borrows authoritative commits in increasing sequence order.
+    #[must_use]
+    pub fn commits(&self) -> &[AuthoritativeCommitSnapshot] {
+        &self.commits
+    }
+    /// Returns the exclusive lower continuation when more rows exist.
+    #[must_use]
+    pub const fn next_after(&self) -> Option<CommitSequence> {
+        self.next_after
+    }
+    /// Returns the frozen inclusive upper frontier.
+    #[must_use]
+    pub const fn inclusive_upper(&self) -> FrontierPosition {
+        self.inclusive_upper
+    }
+}
+
+fn commit_page_sequences_are_contiguous(
+    request: AuthoritativeCommitScanRequest,
+    sequences: impl Iterator<Item = CommitSequence>,
+) -> bool {
+    let mut expected = match request.after() {
+        Some(after) => after.checked_next(),
+        None => Some(CommitSequence::first()),
+    };
+    for sequence in sequences {
+        if expected != Some(sequence) {
+            return false;
+        }
+        expected = sequence.checked_next();
+    }
+    true
+}
+
+impl fmt::Debug for AuthoritativeCommitPage {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("AuthoritativeCommitPage([REDACTED])")
+    }
+}
+
+/// Request to establish a bounded commit subscription.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct SubscribeToCommitsRequest {
+    after: Option<CommitSequence>,
+    maximum_lifetime: Duration,
+}
+
+impl SubscribeToCommitsRequest {
+    /// Checks the fixed 900-second subscription lifetime bound.
+    pub fn new(
+        after: Option<CommitSequence>,
+        maximum_lifetime: Duration,
+    ) -> Result<Self, ServiceDtoError> {
+        if maximum_lifetime.is_zero() || maximum_lifetime > MAX_COMMIT_SUBSCRIPTION_LIFETIME {
+            return Err(ServiceDtoError::OutOfRange);
+        }
+        Ok(Self {
+            after,
+            maximum_lifetime,
+        })
+    }
+    /// Returns the last sequence already held by the caller.
+    #[must_use]
+    pub const fn after(self) -> Option<CommitSequence> {
+        self.after
+    }
+    /// Returns the bounded requested lifetime.
+    #[must_use]
+    pub const fn maximum_lifetime(self) -> Duration {
+        self.maximum_lifetime
+    }
+}
+
+/// Lower commit notification subscription request.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct AuthoritativeCommitSubscriptionRequest {
+    after: Option<CommitSequence>,
+    catch_up_limit: PageLimit,
+}
+
+impl AuthoritativeCommitSubscriptionRequest {
+    /// Checks that the lower catch-up batch does not exceed 500 commits.
+    pub fn new(
+        after: Option<CommitSequence>,
+        catch_up_limit: PageLimit,
+    ) -> Result<Self, ServiceDtoError> {
+        if catch_up_limit.get().get() > MAX_COMMIT_CATCH_UP_ITEMS {
+            return Err(ServiceDtoError::OutOfRange);
+        }
+        Ok(Self {
+            after,
+            catch_up_limit,
+        })
+    }
+    /// Returns the last sequence already delivered.
+    #[must_use]
+    pub const fn after(self) -> Option<CommitSequence> {
+        self.after
+    }
+    /// Returns the bounded lower catch-up batch.
+    #[must_use]
+    pub const fn catch_up_limit(self) -> PageLimit {
+        self.catch_up_limit
+    }
+}
+
+/// Closed terminal reason for a post-establishment commit stream.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum CommitSubscriptionEndReason {
+    /// The fixed maximum stream lifetime elapsed.
+    LifetimeElapsed,
+    /// The bounded subscriber buffer overflowed.
+    Lagged,
+    /// The lower contiguous commit source reported a gap.
+    ScanGap,
+    /// Current policy no longer permits another visible item.
+    PolicyDenied,
+    /// Request cancellation was observed at a safe point.
+    Cancelled,
+    /// The request deadline elapsed.
+    DeadlineExceeded,
+    /// The service began graceful shutdown.
+    ServiceShutdown,
+    /// A required lower dependency became unavailable.
+    Unavailable,
+}
+
+/// Typed terminal stream state and policy-safe resume point.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct CommitSubscriptionTerminal {
+    reason: CommitSubscriptionEndReason,
+    resume_after: FrontierPosition,
+}
+
+impl CommitSubscriptionTerminal {
+    /// Creates one terminal condition without an unauthorized next sequence.
+    #[must_use]
+    pub const fn new(reason: CommitSubscriptionEndReason, resume_after: FrontierPosition) -> Self {
+        Self {
+            reason,
+            resume_after,
+        }
+    }
+    /// Returns the closed terminal reason.
+    #[must_use]
+    pub const fn reason(self) -> CommitSubscriptionEndReason {
+        self.reason
+    }
+    /// Returns the last safely delivered frontier.
+    #[must_use]
+    pub const fn resume_after(self) -> FrontierPosition {
+        self.resume_after
+    }
+}
+
+/// One externally visible commit-stream event.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum CommitSubscriptionEvent {
+    /// One policy-filtered contiguous commit.
+    Commit(Box<CommitView>),
+    /// The stream ended with a typed resume point.
+    Terminal(CommitSubscriptionTerminal),
+}
+
+/// Move-only policy-filtered stream continuation released after establishment audit.
+pub trait CommitSubscription: Send {
+    /// Waits for exactly one commit or terminal event.
+    fn next(
+        &mut self,
+    ) -> Pin<Box<dyn Future<Output = crate::ServiceResult<CommitSubscriptionEvent>> + Send + '_>>;
+}
+
+/// Successfully established bounded commit subscription.
+pub struct SubscribeToCommitsResult {
+    subscription: Box<dyn CommitSubscription>,
+}
+
+impl SubscribeToCommitsResult {
+    /// Wraps the already authorized and audited stream handle.
+    #[must_use]
+    pub fn new(subscription: Box<dyn CommitSubscription>) -> Self {
+        Self { subscription }
+    }
+    /// Consumes the result into its move-only stream continuation.
+    #[must_use]
+    pub fn into_subscription(self) -> Box<dyn CommitSubscription> {
+        self.subscription
+    }
+}
+
+impl fmt::Debug for SubscribeToCommitsResult {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("SubscribeToCommitsResult([REDACTED])")
+    }
+}
+
+/// Exact provenance lookup root.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ProvenanceSelection {
+    /// Trace from one application commit.
+    Commit(CommitSequence),
+    /// Trace one durable provenance identity.
+    Provenance(ProvenanceId),
+}
+
+/// Request to trace one exact provenance root.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct TraceProvenanceRequest {
+    selector: ProvenanceSelection,
+}
+
+impl TraceProvenanceRequest {
+    /// Creates one exact provenance request.
+    #[must_use]
+    pub const fn new(selector: ProvenanceSelection) -> Self {
+        Self { selector }
+    }
+    /// Returns the exact selector.
+    #[must_use]
+    pub const fn selector(self) -> ProvenanceSelection {
+        self.selector
+    }
+}
+
+/// Complete bounded admitted provenance claims before output obligations.
+#[derive(Clone, Eq, PartialEq)]
+pub struct ProvenanceClaimsView {
+    source_repository: Option<SourceRepository>,
+    source_commit: Option<SourceCommit>,
+    reason: Option<riffdb_types::ProvenanceReason>,
+    approval_id: Option<ApprovalId>,
+}
+
+impl ProvenanceClaimsView {
+    /// Joins the exact policy-approved durable claim snapshot.
+    #[must_use]
+    pub const fn new(
+        source_repository: Option<SourceRepository>,
+        source_commit: Option<SourceCommit>,
+        reason: Option<riffdb_types::ProvenanceReason>,
+        approval_id: Option<ApprovalId>,
+    ) -> Self {
+        Self {
+            source_repository,
+            source_commit,
+            reason,
+            approval_id,
+        }
+    }
+    /// Borrows the optional approved repository.
+    #[must_use]
+    pub const fn source_repository(&self) -> Option<&SourceRepository> {
+        self.source_repository.as_ref()
+    }
+    /// Borrows the optional approved source commit.
+    #[must_use]
+    pub const fn source_commit(&self) -> Option<&SourceCommit> {
+        self.source_commit.as_ref()
+    }
+    /// Borrows the optional approved reason.
+    #[must_use]
+    pub const fn reason(&self) -> Option<&riffdb_types::ProvenanceReason> {
+        self.reason.as_ref()
+    }
+    /// Borrows the optional validated approval identity.
+    #[must_use]
+    pub const fn approval_id(&self) -> Option<&ApprovalId> {
+        self.approval_id.as_ref()
+    }
+}
+
+impl fmt::Debug for ProvenanceClaimsView {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("ProvenanceClaimsView([REDACTED])")
+    }
+}
+
+/// Complete unfiltered authoritative provenance observation.
+#[derive(Clone, Eq, PartialEq)]
+pub struct AuthoritativeProvenanceSnapshot {
+    provenance_id: ProvenanceId,
+    commit_sequence: CommitSequence,
+    admission_request_id: RequestId,
+    lineage: ContractLineage,
+    contract_version: ContractVersion,
+    command_id: CommandId,
+    plan_hash: PlanHash,
+    actor: AdmittedActorContext,
+    logical_time: LogicalTime,
+    outcome_id: OutcomeId,
+    affected_entities: Vec<AffectedEntityView>,
+    event_ids: Vec<EventId>,
+    claims: ProvenanceClaimsView,
+}
+
+impl AuthoritativeProvenanceSnapshot {
+    /// Checks bounded graph links and joins one exact provenance record.
+    #[allow(clippy::too_many_arguments)]
+    pub fn new(
+        provenance_id: ProvenanceId,
+        commit_sequence: CommitSequence,
+        admission_request_id: RequestId,
+        lineage: ContractLineage,
+        contract_version: ContractVersion,
+        command_id: CommandId,
+        plan_hash: PlanHash,
+        actor: AdmittedActorContext,
+        logical_time: LogicalTime,
+        outcome_id: OutcomeId,
+        affected_entities: Vec<AffectedEntityView>,
+        event_ids: Vec<EventId>,
+        claims: ProvenanceClaimsView,
+    ) -> Result<Self, ServiceDtoError> {
+        if affected_entities.len() > MAX_SERVICE_COLLECTION_ITEMS
+            || event_ids.len() > MAX_SERVICE_COLLECTION_ITEMS
+        {
+            return Err(ServiceDtoError::TooManyItems);
+        }
+        Ok(Self {
+            provenance_id,
+            commit_sequence,
+            admission_request_id,
+            lineage,
+            contract_version,
+            command_id,
+            plan_hash,
+            actor,
+            logical_time,
+            outcome_id,
+            affected_entities,
+            event_ids,
+            claims,
+        })
+    }
+    /// Returns the durable provenance ID.
+    #[must_use]
+    pub const fn provenance_id(&self) -> ProvenanceId {
+        self.provenance_id
+    }
+    /// Returns the linked application commit.
+    #[must_use]
+    pub const fn commit_sequence(&self) -> CommitSequence {
+        self.commit_sequence
+    }
+    /// Returns the original admission request ID.
+    #[must_use]
+    pub const fn admission_request_id(&self) -> RequestId {
+        self.admission_request_id
+    }
+    /// Borrows the lineage.
+    #[must_use]
+    pub const fn lineage(&self) -> &ContractLineage {
+        &self.lineage
+    }
+    /// Returns the contract version.
+    #[must_use]
+    pub const fn contract_version(&self) -> ContractVersion {
+        self.contract_version
+    }
+    /// Returns the stable command ID.
+    #[must_use]
+    pub const fn command_id(&self) -> CommandId {
+        self.command_id
+    }
+    /// Returns the plan hash.
+    #[must_use]
+    pub const fn plan_hash(&self) -> PlanHash {
+        self.plan_hash
+    }
+    /// Borrows the admitted actor.
+    #[must_use]
+    pub const fn actor(&self) -> &AdmittedActorContext {
+        &self.actor
+    }
+    /// Returns deterministic logical time.
+    #[must_use]
+    pub const fn logical_time(&self) -> LogicalTime {
+        self.logical_time
+    }
+    /// Returns the declared outcome ID.
+    #[must_use]
+    pub const fn outcome_id(&self) -> OutcomeId {
+        self.outcome_id
+    }
+    /// Borrows affected entities.
+    #[must_use]
+    pub fn affected_entities(&self) -> &[AffectedEntityView] {
+        &self.affected_entities
+    }
+    /// Borrows event links.
+    #[must_use]
+    pub fn event_ids(&self) -> &[EventId] {
+        &self.event_ids
+    }
+    /// Borrows admitted claims.
+    #[must_use]
+    pub const fn claims(&self) -> &ProvenanceClaimsView {
+        &self.claims
+    }
+}
+
+impl fmt::Debug for AuthoritativeProvenanceSnapshot {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("AuthoritativeProvenanceSnapshot([REDACTED])")
+    }
+}
+
+/// Policy-filtered provenance released to callers.
+#[derive(Clone, Eq, PartialEq)]
+pub struct ProvenanceView(AuthoritativeProvenanceSnapshot);
+
+impl ProvenanceView {
+    /// Wraps one service-reconstructed filtered provenance value.
+    #[must_use]
+    pub const fn new(filtered: AuthoritativeProvenanceSnapshot) -> Self {
+        Self(filtered)
+    }
+    /// Borrows complete filtered provenance.
+    #[must_use]
+    pub const fn as_snapshot(&self) -> &AuthoritativeProvenanceSnapshot {
+        &self.0
+    }
+}
+
+impl fmt::Debug for ProvenanceView {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("ProvenanceView([REDACTED])")
+    }
+}
+
+/// Provenance trace lookup result.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum TraceProvenanceResult {
+    /// No record exists for the exact selector.
+    NotFound,
+    /// One bounded policy-filtered provenance root.
+    Found(Box<ProvenanceView>),
+}
+
+/// Empty request accepted by the unchanged Health operation.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct HealthRequest;
+
+/// Exact restricted result before the durable bootstrap marker.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct PreBootstrapHealthReport {
+    lifecycle: PreBootstrapLifecycle,
+    liveness: bool,
+    readiness: bool,
+}
+
+impl PreBootstrapHealthReport {
+    /// Creates the exact three-field pre-bootstrap report in the required not-ready state.
+    #[must_use]
+    pub const fn new(lifecycle: PreBootstrapLifecycle, liveness: bool) -> Self {
+        Self {
+            lifecycle,
+            liveness,
+            readiness: false,
+        }
+    }
+    /// Returns the closed pre-bootstrap lifecycle.
+    #[must_use]
+    pub const fn lifecycle(self) -> PreBootstrapLifecycle {
+        self.lifecycle
+    }
+    /// Returns process liveness.
+    #[must_use]
+    pub const fn liveness(self) -> bool {
+        self.liveness
+    }
+    /// Returns restricted readiness.
+    #[must_use]
+    pub const fn readiness(self) -> bool {
+        self.readiness
+    }
+}
+
+/// Overall authenticated health classification.
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+pub enum HealthStatus {
+    /// Authoritative operation is ready and required components are healthy.
+    Ready,
+    /// Authoritative operation is not ready.
+    NotReady,
+    /// Authoritative operation remains ready while a derived component is degraded.
+    Degraded,
+}
+
+/// Closed component identities in authenticated health output.
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+pub enum HealthComponentKind {
+    /// Authoritative storage and integrity gate.
+    AuthoritativeStorage,
+    /// Checked catalog and active lineage.
+    Catalog,
+    /// Sole-writer commit coordinator.
+    CommitCoordinator,
+    /// Derived projection subsystem.
+    Projection,
+    /// Derived outbox subsystem.
+    Outbox,
+}
+
+/// Closed status of one health component.
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+pub enum HealthComponentStatus {
+    /// The component is operating normally.
+    Healthy,
+    /// A derived component is impaired without invalidating source commits.
+    Degraded,
+    /// A required authoritative component is unavailable.
+    Unavailable,
+}
+
+/// One bounded component health signal without free-form diagnostics.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct ComponentHealth {
+    component: HealthComponentKind,
+    status: HealthComponentStatus,
+}
+
+impl ComponentHealth {
+    /// Creates one closed component signal.
+    #[must_use]
+    pub const fn new(component: HealthComponentKind, status: HealthComponentStatus) -> Self {
+        Self { component, status }
+    }
+    /// Returns the component identity.
+    #[must_use]
+    pub const fn component(self) -> HealthComponentKind {
+        self.component
+    }
+    /// Returns its closed status.
+    #[must_use]
+    pub const fn status(self) -> HealthComponentStatus {
+        self.status
+    }
+}
+
+/// Checked release-build metadata required by the specification.
+#[derive(Clone, Eq, PartialEq)]
+pub struct BuildInfo {
+    semantic_version: String,
+    git_revision: String,
+    rust_version: String,
+    enabled_features: Vec<String>,
+    storage_format_version: u32,
+    contract_ir_version: u32,
+    mcp_protocol_baseline: String,
+}
+
+impl BuildInfo {
+    /// Checks bounded ASCII metadata and canonical feature ordering.
+    #[allow(clippy::too_many_arguments)]
+    pub fn new(
+        semantic_version: impl Into<String>,
+        git_revision: impl Into<String>,
+        rust_version: impl Into<String>,
+        mut enabled_features: Vec<String>,
+        storage_format_version: u32,
+        contract_ir_version: u32,
+        mcp_protocol_baseline: impl Into<String>,
+    ) -> Result<Self, ServiceDtoError> {
+        let semantic_version = semantic_version.into();
+        let git_revision = git_revision.into();
+        let rust_version = rust_version.into();
+        let mcp_protocol_baseline = mcp_protocol_baseline.into();
+        if [
+            &semantic_version,
+            &git_revision,
+            &rust_version,
+            &mcp_protocol_baseline,
+        ]
+        .iter()
+        .any(|value| value.is_empty())
+        {
+            return Err(ServiceDtoError::Empty);
+        }
+        if [
+            &semantic_version,
+            &git_revision,
+            &rust_version,
+            &mcp_protocol_baseline,
+        ]
+        .iter()
+        .any(|value| value.len() > MAX_BUILD_TEXT_BYTES || !value.is_ascii())
+            || enabled_features.len() > MAX_BUILD_FEATURES
+            || enabled_features.iter().any(|feature| {
+                feature.is_empty() || feature.len() > MAX_BUILD_TEXT_BYTES || !feature.is_ascii()
+            })
+        {
+            return Err(ServiceDtoError::TooLong);
+        }
+        enabled_features.sort_unstable();
+        if enabled_features.windows(2).any(|pair| pair[0] == pair[1]) {
+            return Err(ServiceDtoError::Duplicate);
+        }
+        Ok(Self {
+            semantic_version,
+            git_revision,
+            rust_version,
+            enabled_features,
+            storage_format_version,
+            contract_ir_version,
+            mcp_protocol_baseline,
+        })
+    }
+    /// Borrows semantic version text.
+    #[must_use]
+    pub fn semantic_version(&self) -> &str {
+        &self.semantic_version
+    }
+    /// Borrows the source revision.
+    #[must_use]
+    pub fn git_revision(&self) -> &str {
+        &self.git_revision
+    }
+    /// Borrows the build Rust version.
+    #[must_use]
+    pub fn rust_version(&self) -> &str {
+        &self.rust_version
+    }
+    /// Borrows enabled features in canonical order.
+    #[must_use]
+    pub fn enabled_features(&self) -> &[String] {
+        &self.enabled_features
+    }
+    /// Returns the durable storage format version.
+    #[must_use]
+    pub const fn storage_format_version(&self) -> u32 {
+        self.storage_format_version
+    }
+    /// Returns the contract IR version.
+    #[must_use]
+    pub const fn contract_ir_version(&self) -> u32 {
+        self.contract_ir_version
+    }
+    /// Borrows the MCP protocol baseline.
+    #[must_use]
+    pub fn mcp_protocol_baseline(&self) -> &str {
+        &self.mcp_protocol_baseline
+    }
+}
+
+impl fmt::Debug for BuildInfo {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("BuildInfo([REDACTED])")
+    }
+}
+
+/// Complete authenticated health result from the specification.
+#[derive(Clone, Eq, PartialEq)]
+pub struct HealthReport {
+    status: HealthStatus,
+    active_contract_version: Option<ContractVersion>,
+    last_commit_sequence: Option<CommitSequence>,
+    components: Vec<ComponentHealth>,
+    started_at: Timestamp,
+    build: BuildInfo,
+}
+
+impl HealthReport {
+    /// Builds the complete authenticated report and classifies raw component signals.
+    pub fn new(
+        active_contract_version: Option<ContractVersion>,
+        last_commit_sequence: Option<CommitSequence>,
+        operational: OperationalHealthSnapshot,
+        started_at: Timestamp,
+        build: BuildInfo,
+    ) -> Self {
+        let components = operational.into_components();
+        let status = classify_health(active_contract_version, &components);
+        Self {
+            status,
+            active_contract_version,
+            last_commit_sequence,
+            components,
+            started_at,
+            build,
+        }
+    }
+    /// Returns overall health status.
+    #[must_use]
+    pub const fn status(&self) -> HealthStatus {
+        self.status
+    }
+    /// Returns active contract version when loaded.
+    #[must_use]
+    pub const fn active_contract_version(&self) -> Option<ContractVersion> {
+        self.active_contract_version
+    }
+    /// Returns the last application commit when any exists.
+    #[must_use]
+    pub const fn last_commit_sequence(&self) -> Option<CommitSequence> {
+        self.last_commit_sequence
+    }
+    /// Borrows canonical component signals.
+    #[must_use]
+    pub fn components(&self) -> &[ComponentHealth] {
+        &self.components
+    }
+    /// Returns process start time.
+    #[must_use]
+    pub const fn started_at(&self) -> Timestamp {
+        self.started_at
+    }
+    /// Borrows build metadata.
+    #[must_use]
+    pub const fn build(&self) -> &BuildInfo {
+        &self.build
+    }
+}
+
+impl fmt::Debug for HealthReport {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("HealthReport([REDACTED])")
+    }
+}
+
+/// Closed authenticated or restricted health result.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum HealthResult {
+    /// Exact pre-marker three-field report.
+    PreBootstrap(PreBootstrapHealthReport),
+    /// Full authenticated, policy-filtered report.
+    Authenticated(HealthReport),
+}
+
+/// Bounded raw component signals consumed by authenticated service orchestration.
+#[derive(Clone, Eq, PartialEq)]
+pub struct OperationalHealthSnapshot {
+    components: Vec<ComponentHealth>,
+}
+
+impl OperationalHealthSnapshot {
+    /// Canonicalizes closed component signals without classifying overall readiness.
+    pub fn new(mut components: Vec<ComponentHealth>) -> Result<Self, ServiceDtoError> {
+        canonicalize_health_components(&mut components)?;
+        Ok(Self { components })
+    }
+    /// Borrows canonical raw component signals.
+    #[must_use]
+    pub fn components(&self) -> &[ComponentHealth] {
+        &self.components
+    }
+    /// Returns canonical raw component signals to service-owned classification.
+    #[must_use]
+    pub fn into_components(self) -> Vec<ComponentHealth> {
+        self.components
+    }
+}
+
+impl fmt::Debug for OperationalHealthSnapshot {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("OperationalHealthSnapshot([REDACTED])")
+    }
+}
+
+fn canonicalize_health_components(
+    components: &mut [ComponentHealth],
+) -> Result<(), ServiceDtoError> {
+    if components.len() > MAX_HEALTH_COMPONENTS {
+        return Err(ServiceDtoError::TooManyItems);
+    }
+    components.sort_unstable_by_key(|component| component.component());
+    if components
+        .windows(2)
+        .any(|pair| pair[0].component() == pair[1].component())
+    {
+        return Err(ServiceDtoError::Duplicate);
+    }
+    Ok(())
+}
+
+fn classify_health(
+    active_contract_version: Option<ContractVersion>,
+    components: &[ComponentHealth],
+) -> HealthStatus {
+    let authoritative_ready = active_contract_version.is_some()
+        && [
+            HealthComponentKind::AuthoritativeStorage,
+            HealthComponentKind::Catalog,
+            HealthComponentKind::CommitCoordinator,
+        ]
+        .into_iter()
+        .all(|required| {
+            components.iter().any(|component| {
+                component.component() == required
+                    && component.status() == HealthComponentStatus::Healthy
+            })
+        });
+    if !authoritative_ready {
+        return HealthStatus::NotReady;
+    }
+    if components.iter().any(|component| {
+        matches!(
+            component.component(),
+            HealthComponentKind::Projection | HealthComponentKind::Outbox
+        ) && component.status() != HealthComponentStatus::Healthy
+    }) {
+        HealthStatus::Degraded
+    } else {
+        HealthStatus::Ready
+    }
+}
+
+/// Empty authenticated statistics request.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct StatisticsRequest;
+
+/// Fixed bounded operational counters with no extensible map.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct StatisticsResult {
+    active_cursors: u32,
+    active_commit_subscribers: u16,
+    last_commit_sequence: Option<CommitSequence>,
+    pending_outbox_deliveries: Option<u64>,
+    known_projections: Option<u32>,
+}
+
+impl StatisticsResult {
+    /// Joins service-owned process counts with raw operational counters.
+    pub fn new(
+        active_cursors: u32,
+        active_commit_subscribers: u16,
+        operational: OperationalStatisticsSnapshot,
+    ) -> Result<Self, ServiceDtoError> {
+        if usize::try_from(active_cursors)
+            .ok()
+            .is_none_or(|count| count > crate::MAX_LIVE_CURSORS)
+            || active_commit_subscribers > MAX_LIVE_COMMIT_SUBSCRIBERS
+        {
+            return Err(ServiceDtoError::OutOfRange);
+        }
+        Ok(Self {
+            active_cursors,
+            active_commit_subscribers,
+            last_commit_sequence: operational.last_commit_sequence,
+            pending_outbox_deliveries: operational.pending_outbox_deliveries,
+            known_projections: operational.known_projections,
+        })
+    }
+    /// Returns live cursor count.
+    #[must_use]
+    pub const fn active_cursors(self) -> u32 {
+        self.active_cursors
+    }
+    /// Returns live commit subscriber count.
+    #[must_use]
+    pub const fn active_commit_subscribers(self) -> u16 {
+        self.active_commit_subscribers
+    }
+    /// Returns the last application commit.
+    #[must_use]
+    pub const fn last_commit_sequence(self) -> Option<CommitSequence> {
+        self.last_commit_sequence
+    }
+    /// Returns pending outbox count when the subsystem is installed.
+    #[must_use]
+    pub const fn pending_outbox_deliveries(self) -> Option<u64> {
+        self.pending_outbox_deliveries
+    }
+    /// Returns known projection count when the subsystem is installed.
+    #[must_use]
+    pub const fn known_projections(self) -> Option<u32> {
+        self.known_projections
+    }
+}
+
+/// Closed raw operational counters that exclude service-owned process resources.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct OperationalStatisticsSnapshot {
+    last_commit_sequence: Option<CommitSequence>,
+    pending_outbox_deliveries: Option<u64>,
+    known_projections: Option<u32>,
+}
+
+impl OperationalStatisticsSnapshot {
+    /// Creates one bounded fixed-shape operational counter snapshot.
+    #[must_use]
+    pub const fn new(
+        last_commit_sequence: Option<CommitSequence>,
+        pending_outbox_deliveries: Option<u64>,
+        known_projections: Option<u32>,
+    ) -> Self {
+        Self {
+            last_commit_sequence,
+            pending_outbox_deliveries,
+            known_projections,
+        }
+    }
+    /// Returns the latest authoritative commit signal.
+    #[must_use]
+    pub const fn last_commit_sequence(self) -> Option<CommitSequence> {
+        self.last_commit_sequence
+    }
+    /// Returns pending outbox work when that subsystem is installed.
+    #[must_use]
+    pub const fn pending_outbox_deliveries(self) -> Option<u64> {
+        self.pending_outbox_deliveries
+    }
+    /// Returns the projection count when that subsystem is installed.
+    #[must_use]
+    pub const fn known_projections(self) -> Option<u32> {
+        self.known_projections
+    }
+}
+
+/// Checked normal capability-create request.
+#[derive(Clone, Eq, PartialEq)]
+pub struct NormalCreateCapabilityRequest {
+    capability_id: CapabilityId,
+    requested: NormalizedCapabilityCreateRecord,
+}
+
+impl NormalCreateCapabilityRequest {
+    /// Joins stable create identity and policy-owned normalized replay content.
+    pub fn new(
+        capability_id: CapabilityId,
+        requested: NormalizedCapabilityCreateRecord,
+    ) -> Result<Self, ServiceDtoError> {
+        let request = Self {
+            capability_id,
+            requested,
+        };
+        ensure_service_request_bound(&request)?;
+        Ok(request)
+    }
+    /// Returns the target capability ID.
+    #[must_use]
+    pub const fn capability_id(&self) -> CapabilityId {
+        self.capability_id
+    }
+    /// Borrows normalized replay identity content.
+    #[must_use]
+    pub const fn requested(&self) -> &NormalizedCapabilityCreateRecord {
+        &self.requested
+    }
+}
+
+impl fmt::Debug for NormalCreateCapabilityRequest {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("NormalCreateCapabilityRequest([REDACTED])")
+    }
+}
+
+/// Checked one-time bootstrap capability request.
+#[derive(Clone, Eq, PartialEq)]
+pub struct BootstrapCapabilityRequest {
+    capability_id: CapabilityId,
+    requested: NormalizedCapabilityCreateRecord,
+}
+
+impl BootstrapCapabilityRequest {
+    /// Joins stable bootstrap identity and normalized replay content.
+    pub fn new(
+        capability_id: CapabilityId,
+        requested: NormalizedCapabilityCreateRecord,
+    ) -> Result<Self, ServiceDtoError> {
+        let request = Self {
+            capability_id,
+            requested,
+        };
+        ensure_service_request_bound(&request)?;
+        Ok(request)
+    }
+    /// Returns the target capability ID.
+    #[must_use]
+    pub const fn capability_id(&self) -> CapabilityId {
+        self.capability_id
+    }
+    /// Borrows normalized replay identity content.
+    #[must_use]
+    pub const fn requested(&self) -> &NormalizedCapabilityCreateRecord {
+        &self.requested
+    }
+}
+
+impl fmt::Debug for BootstrapCapabilityRequest {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("BootstrapCapabilityRequest([REDACTED])")
+    }
+}
+
+/// The one closed capability-create invocation accepted by the service.
+pub enum CreateCapabilityInvocation {
+    /// Ordinary authenticated create with server-generated token.
+    Normal {
+        /// Authenticated request context.
+        context: RequestContext,
+        /// Checked normal create request.
+        request: NormalCreateCapabilityRequest,
+    },
+    /// Principal-less loopback-gRPC one-time bootstrap.
+    Bootstrap {
+        /// Privately checked bootstrap context.
+        context: BootstrapRequestContext,
+        /// Checked bootstrap request.
+        request: BootstrapCapabilityRequest,
+    },
+}
+
+impl fmt::Debug for CreateCapabilityInvocation {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(match self {
+            Self::Normal { .. } => "CreateCapabilityInvocation::Normal([REDACTED])",
+            Self::Bootstrap { .. } => "CreateCapabilityInvocation::Bootstrap([REDACTED])",
+        })
+    }
+}
+
+/// Resulting capability identity and lifecycle revision.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct CapabilityIdentityView {
+    capability_id: CapabilityId,
+    revision: NonZeroU64,
+}
+
+impl CapabilityIdentityView {
+    /// Joins stable capability identity and nonzero revision.
+    #[must_use]
+    pub const fn new(capability_id: CapabilityId, revision: NonZeroU64) -> Self {
+        Self {
+            capability_id,
+            revision,
+        }
+    }
+    /// Returns the capability ID.
+    #[must_use]
+    pub const fn capability_id(self) -> CapabilityId {
+        self.capability_id
+    }
+    /// Returns lifecycle revision.
+    #[must_use]
+    pub const fn revision(self) -> NonZeroU64 {
+        self.revision
+    }
+}
+
+/// Known authoritative capability transition.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct CapabilityTransitionView {
+    identity: CapabilityIdentityView,
+    administration_sequence: AdministrationSequence,
+}
+
+impl CapabilityTransitionView {
+    /// Joins resulting identity and original transition sequence.
+    #[must_use]
+    pub const fn new(
+        identity: CapabilityIdentityView,
+        administration_sequence: AdministrationSequence,
+    ) -> Self {
+        Self {
+            identity,
+            administration_sequence,
+        }
+    }
+    /// Returns resulting identity.
+    #[must_use]
+    pub const fn identity(self) -> CapabilityIdentityView {
+        self.identity
+    }
+    /// Returns original authoritative sequence.
+    #[must_use]
+    pub const fn administration_sequence(self) -> AdministrationSequence {
+        self.administration_sequence
+    }
+}
+
+/// Closed normal-create result.
+pub enum NormalCreateCapabilityResult {
+    /// New capability and its one-time bearer token.
+    Created {
+        /// Newly committed capability transition.
+        transition: CapabilityTransitionView,
+        /// Canonical bearer token released exactly once.
+        token: CapabilityTokenText,
+    },
+    /// Exact replay succeeded but the original raw token is unrecoverable.
+    AlreadyCreatedTokenUnavailable(CapabilityIdentityView),
+    /// The stable capability ID names different normalized content.
+    CapabilityIdConflict,
+}
+
+impl fmt::Debug for NormalCreateCapabilityResult {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(match self {
+            Self::Created { .. } => "NormalCreateCapabilityResult::Created([REDACTED])",
+            Self::AlreadyCreatedTokenUnavailable(_) => {
+                "NormalCreateCapabilityResult::AlreadyCreatedTokenUnavailable([REDACTED])"
+            }
+            Self::CapabilityIdConflict => "NormalCreateCapabilityResult::CapabilityIdConflict",
+        })
+    }
+}
+
+/// Closed bootstrap result; it never contains a bearer token.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum BootstrapCapabilityResult {
+    /// The first capability was created.
+    Created(CapabilityTransitionView),
+    /// Exact credential retry recovered the original transition.
+    Replayed(CapabilityTransitionView),
+    /// Marker, emptiness, identity, record, or digest did not match.
+    BootstrapConflict,
+}
+
+/// Closed result preserving normal/bootstrap output separation.
+#[derive(Debug)]
+pub enum CreateCapabilityResult {
+    /// Ordinary create result.
+    Normal(NormalCreateCapabilityResult),
+    /// One-time bootstrap result.
+    Bootstrap(BootstrapCapabilityResult),
+}
+
+/// Request to revoke one stable capability identity.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct RevokeCapabilityRequest {
+    capability_id: CapabilityId,
+    reason: RevocationReasonCodeV1,
+}
+
+impl RevokeCapabilityRequest {
+    /// Creates one exact irreversible revoke request.
+    #[must_use]
+    pub const fn new(capability_id: CapabilityId, reason: RevocationReasonCodeV1) -> Self {
+        Self {
+            capability_id,
+            reason,
+        }
+    }
+    /// Returns the target capability ID.
+    #[must_use]
+    pub const fn capability_id(self) -> CapabilityId {
+        self.capability_id
+    }
+    /// Returns the closed reason.
+    #[must_use]
+    pub const fn reason(self) -> RevocationReasonCodeV1 {
+        self.reason
+    }
+}
+
+/// Closed revocation result with no storage transition type.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum RevokeCapabilityResult {
+    /// A new irreversible transition committed.
+    Revoked(CapabilityTransitionView),
+    /// The capability was already revoked by the returned original transition.
+    AlreadyRevoked(CapabilityTransitionView),
+    /// No target capability exists.
+    CapabilityNotFound,
+}
+
+/// Digest-free absent capability observation for revoke authorization.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct AbsentCapabilityRevokeTargetSnapshot {
+    capability_id: CapabilityId,
+    database_id: DatabaseId,
+    environment: Environment,
+}
+
+impl AbsentCapabilityRevokeTargetSnapshot {
+    /// Creates the exact permitted absent-target shape.
+    #[must_use]
+    pub const fn new(
+        capability_id: CapabilityId,
+        database_id: DatabaseId,
+        environment: Environment,
+    ) -> Self {
+        Self {
+            capability_id,
+            database_id,
+            environment,
+        }
+    }
+    /// Returns the requested capability ID.
+    #[must_use]
+    pub const fn capability_id(&self) -> CapabilityId {
+        self.capability_id
+    }
+    /// Returns trusted database scope.
+    #[must_use]
+    pub const fn database_id(&self) -> DatabaseId {
+        self.database_id
+    }
+    /// Borrows trusted environment scope.
+    #[must_use]
+    pub const fn environment(&self) -> &Environment {
+        &self.environment
+    }
+}
+
+/// Digest-free complete present capability observation for revoke authorization.
+#[derive(Clone, Eq, PartialEq)]
+pub struct PresentCapabilityRevokeTargetSnapshot {
+    capability_id: CapabilityId,
+    revision: NonZeroU64,
+    activity: CapabilityActivity,
+    database_id: DatabaseId,
+    environment: Environment,
+    principal_id: ActorId,
+    actor_kind: ActorKind,
+    audiences: Vec<Audience>,
+    issued_at: Timestamp,
+    expires_at: Timestamp,
+    grant: CapabilityGrantV1,
+}
+
+impl PresentCapabilityRevokeTargetSnapshot {
+    /// Checks canonical audience order and the complete present-target interval.
+    #[allow(clippy::too_many_arguments)]
+    pub fn new(
+        capability_id: CapabilityId,
+        revision: NonZeroU64,
+        activity: CapabilityActivity,
+        database_id: DatabaseId,
+        environment: Environment,
+        principal_id: ActorId,
+        actor_kind: ActorKind,
+        mut audiences: Vec<Audience>,
+        issued_at: Timestamp,
+        expires_at: Timestamp,
+        grant: CapabilityGrantV1,
+    ) -> Result<Self, ServiceDtoError> {
+        if audiences.is_empty() {
+            return Err(ServiceDtoError::Empty);
+        }
+        if audiences.len() > riffdb_types::MAX_CAPABILITY_AUDIENCES {
+            return Err(ServiceDtoError::TooManyItems);
+        }
+        audiences.sort_unstable();
+        if audiences.windows(2).any(|pair| pair[0] == pair[1]) {
+            return Err(ServiceDtoError::Duplicate);
+        }
+        if expires_at <= issued_at {
+            return Err(ServiceDtoError::InvalidShape);
+        }
+        Ok(Self {
+            capability_id,
+            revision,
+            activity,
+            database_id,
+            environment,
+            principal_id,
+            actor_kind,
+            audiences,
+            issued_at,
+            expires_at,
+            grant,
+        })
+    }
+    /// Returns the capability ID.
+    #[must_use]
+    pub const fn capability_id(&self) -> CapabilityId {
+        self.capability_id
+    }
+    /// Returns lifecycle revision.
+    #[must_use]
+    pub const fn revision(&self) -> NonZeroU64 {
+        self.revision
+    }
+    /// Returns current lifecycle activity.
+    #[must_use]
+    pub const fn activity(&self) -> CapabilityActivity {
+        self.activity
+    }
+    /// Returns trusted database scope.
+    #[must_use]
+    pub const fn database_id(&self) -> DatabaseId {
+        self.database_id
+    }
+    /// Borrows trusted environment scope.
+    #[must_use]
+    pub const fn environment(&self) -> &Environment {
+        &self.environment
+    }
+    /// Borrows target principal.
+    #[must_use]
+    pub const fn principal_id(&self) -> &ActorId {
+        &self.principal_id
+    }
+    /// Returns actor kind.
+    #[must_use]
+    pub const fn actor_kind(&self) -> ActorKind {
+        self.actor_kind
+    }
+    /// Borrows canonical audiences.
+    #[must_use]
+    pub fn audiences(&self) -> &[Audience] {
+        &self.audiences
+    }
+    /// Returns inclusive issue time.
+    #[must_use]
+    pub const fn issued_at(&self) -> Timestamp {
+        self.issued_at
+    }
+    /// Returns exclusive expiry time.
+    #[must_use]
+    pub const fn expires_at(&self) -> Timestamp {
+        self.expires_at
+    }
+    /// Borrows the complete grant.
+    #[must_use]
+    pub const fn grant(&self) -> &CapabilityGrantV1 {
+        &self.grant
+    }
+}
+
+impl fmt::Debug for PresentCapabilityRevokeTargetSnapshot {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("PresentCapabilityRevokeTargetSnapshot([REDACTED])")
+    }
+}
+
+/// Exact digest-free absent-or-present revoke-target read result.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum CapabilityRevokeTargetSnapshot {
+    /// No capability exists in the trusted database/environment scope.
+    Absent(AbsentCapabilityRevokeTargetSnapshot),
+    /// Complete policy-relevant capability facts exist.
+    Present(Box<PresentCapabilityRevokeTargetSnapshot>),
+}
+
+/// Payload-free outbox delivery lifecycle safe for administration.
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+pub enum OutboxDeliveryState {
+    /// No delivery attempt has completed.
+    Pending,
+    /// A retry is scheduled after a prior failure.
+    RetryScheduled,
+    /// One bounded dispatcher attempt is in flight.
+    Delivering,
+    /// Retry policy reached its terminal dead-letter state.
+    DeadLetter,
+}
+
+/// One payload-free outbox status summary.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct OutboxDeliverySummary {
+    event_id: EventId,
+    state: OutboxDeliveryState,
+    attempts: u32,
+    next_attempt_at: Option<Timestamp>,
+}
+
+impl OutboxDeliverySummary {
+    /// Creates a payload-free delivery summary.
+    #[must_use]
+    pub const fn new(
+        event_id: EventId,
+        state: OutboxDeliveryState,
+        attempts: u32,
+        next_attempt_at: Option<Timestamp>,
+    ) -> Self {
+        Self {
+            event_id,
+            state,
+            attempts,
+            next_attempt_at,
+        }
+    }
+    /// Returns the durable event identity.
+    #[must_use]
+    pub const fn event_id(self) -> EventId {
+        self.event_id
+    }
+    /// Returns delivery lifecycle.
+    #[must_use]
+    pub const fn state(self) -> OutboxDeliveryState {
+        self.state
+    }
+    /// Returns completed/started attempt count.
+    #[must_use]
+    pub const fn attempts(self) -> u32 {
+        self.attempts
+    }
+    /// Returns scheduled retry time, when applicable.
+    #[must_use]
+    pub const fn next_attempt_at(self) -> Option<Timestamp> {
+        self.next_attempt_at
+    }
+}
+
+/// Lower payload-free outbox page request.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct OutboxStatusRequest {
+    after: Option<EventId>,
+    limit: PageLimit,
+}
+
+impl OutboxStatusRequest {
+    /// Creates one bounded lower outbox status scan.
+    #[must_use]
+    pub const fn new(after: Option<EventId>, limit: PageLimit) -> Self {
+        Self { after, limit }
+    }
+    /// Returns exclusive event continuation.
+    #[must_use]
+    pub const fn after(self) -> Option<EventId> {
+        self.after
+    }
+    /// Returns bounded limit.
+    #[must_use]
+    pub const fn limit(self) -> PageLimit {
+        self.limit
+    }
+}
+
+/// One lower payload-free outbox page.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct OutboxStatusSnapshot {
+    items: Vec<OutboxDeliverySummary>,
+    next_after: Option<EventId>,
+}
+
+impl OutboxStatusSnapshot {
+    /// Checks count, strict event order, and exact continuation.
+    pub fn new(
+        request: OutboxStatusRequest,
+        items: Vec<OutboxDeliverySummary>,
+        next_after: Option<EventId>,
+    ) -> Result<Self, ServiceDtoError> {
+        if items.len() > usize::from(request.limit().get().get()) {
+            return Err(ServiceDtoError::TooManyItems);
+        }
+        if items
+            .windows(2)
+            .any(|pair| pair[0].event_id() >= pair[1].event_id())
+            || next_after.is_some_and(|next| items.last().map(|item| item.event_id()) != Some(next))
+            || (items.is_empty() && next_after.is_some())
+        {
+            return Err(ServiceDtoError::InvalidShape);
+        }
+        Ok(Self { items, next_after })
+    }
+    /// Borrows payload-free summaries.
+    #[must_use]
+    pub fn items(&self) -> &[OutboxDeliverySummary] {
+        &self.items
+    }
+    /// Returns lower continuation.
+    #[must_use]
+    pub const fn next_after(&self) -> Option<EventId> {
+        self.next_after
+    }
+}
+
+/// Public request to list pending outbox deliveries.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct ListPendingOutboxDeliveriesRequest(PageRequest);
+
+impl ListPendingOutboxDeliveriesRequest {
+    /// Creates one bounded public page request.
+    #[must_use]
+    pub const fn new(page: PageRequest) -> Self {
+        Self(page)
+    }
+    /// Returns pagination controls.
+    #[must_use]
+    pub const fn page(self) -> PageRequest {
+        self.0
+    }
+}
+
+/// Public payload-free outbox page.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ListPendingOutboxDeliveriesResult(Page<OutboxDeliverySummary, ()>);
+
+impl ListPendingOutboxDeliveriesResult {
+    /// Wraps one checked payload-free page.
+    #[must_use]
+    pub const fn new(page: Page<OutboxDeliverySummary, ()>) -> Self {
+        Self(page)
+    }
+    /// Borrows the complete page.
+    #[must_use]
+    pub const fn page(&self) -> &Page<OutboxDeliverySummary, ()> {
+        &self.0
+    }
+}
+
+/// Typed process-local lower projection continuation retained only in a server cursor.
+#[derive(Clone, Eq, PartialEq)]
+pub struct ProjectionContinuation {
+    identity: ProjectionIdentity,
+    generation: ProjectionGeneration,
+    prefix: ProjectionGroupPrefix,
+    exclusive_last_key: ProjectionGroupKey,
+    observed_frontier: FrontierPosition,
+}
+
+impl ProjectionContinuation {
+    /// Checks a provider-produced lower fence without defining a byte encoding.
+    pub fn from_provider(
+        identity: ProjectionIdentity,
+        generation: ProjectionGeneration,
+        prefix: ProjectionGroupPrefix,
+        exclusive_last_key: ProjectionGroupKey,
+        observed_frontier: FrontierPosition,
+    ) -> Result<Self, ServiceDtoError> {
+        if prefix.identity() != &identity
+            || prefix.generation() != generation
+            || exclusive_last_key.identity() != &identity
+            || exclusive_last_key.generation() != generation
+        {
+            return Err(ServiceDtoError::IdentityMismatch);
+        }
+        if !exclusive_last_key.as_bytes().starts_with(prefix.as_bytes()) {
+            return Err(ServiceDtoError::InvalidShape);
+        }
+        Ok(Self {
+            identity,
+            generation,
+            prefix,
+            exclusive_last_key,
+            observed_frontier,
+        })
+    }
+
+    /// Borrows the exact projection identity.
+    #[must_use]
+    pub const fn identity(&self) -> &ProjectionIdentity {
+        &self.identity
+    }
+
+    /// Returns the selected published generation.
+    #[must_use]
+    pub const fn generation(&self) -> ProjectionGeneration {
+        self.generation
+    }
+
+    /// Borrows the exact generated projection prefix.
+    #[must_use]
+    pub const fn prefix(&self) -> &ProjectionGroupPrefix {
+        &self.prefix
+    }
+
+    /// Borrows the exclusive complete key from the preceding page.
+    #[must_use]
+    pub const fn exclusive_last_key(&self) -> &ProjectionGroupKey {
+        &self.exclusive_last_key
+    }
+
+    /// Returns the observed published frontier fencing every page.
+    #[must_use]
+    pub const fn observed_frontier(&self) -> FrontierPosition {
+        self.observed_frontier
+    }
+}
+
+impl fmt::Debug for ProjectionContinuation {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("ProjectionContinuation([REDACTED])")
+    }
+}
+
+/// Fully resolved projection query passed to the derived subsystem port.
+#[derive(Clone, Eq, PartialEq)]
+pub struct ProjectionPortRequest {
+    identity: ProjectionIdentity,
+    leading_components: Vec<CanonicalValue>,
+    required_sequence: Option<CommitSequence>,
+    deadline: Instant,
+    limit: PageLimit,
+    continuation: Option<ProjectionContinuation>,
+}
+
+impl ProjectionPortRequest {
+    /// Checks structural group bounds and retains process-local wait control.
+    pub fn new(
+        identity: ProjectionIdentity,
+        leading_components: Vec<CanonicalValue>,
+        required_sequence: Option<CommitSequence>,
+        deadline: Instant,
+        limit: PageLimit,
+        continuation: Option<ProjectionContinuation>,
+    ) -> Result<Self, ServiceDtoError> {
+        if leading_components.len() > MAX_PROJECTION_COMPONENTS {
+            return Err(ServiceDtoError::TooManyItems);
+        }
+        if continuation.as_ref().is_some_and(|continuation| {
+            continuation.identity() != &identity
+                || continuation.prefix().components() != leading_components.as_slice()
+        }) {
+            return Err(ServiceDtoError::IdentityMismatch);
+        }
+        Ok(Self {
+            identity,
+            leading_components,
+            required_sequence,
+            deadline,
+            limit,
+            continuation,
+        })
+    }
+    /// Borrows exact identity.
+    #[must_use]
+    pub const fn identity(&self) -> &ProjectionIdentity {
+        &self.identity
+    }
+    /// Borrows normalized leading components.
+    #[must_use]
+    pub fn leading_components(&self) -> &[CanonicalValue] {
+        &self.leading_components
+    }
+    /// Returns optional required commit.
+    #[must_use]
+    pub const fn required_sequence(&self) -> Option<CommitSequence> {
+        self.required_sequence
+    }
+    /// Returns absolute process-local deadline.
+    #[must_use]
+    pub const fn deadline(&self) -> Instant {
+        self.deadline
+    }
+    /// Returns effective limit.
+    #[must_use]
+    pub const fn limit(&self) -> PageLimit {
+        self.limit
+    }
+    /// Borrows lower continuation.
+    #[must_use]
+    pub const fn continuation(&self) -> Option<&ProjectionContinuation> {
+        self.continuation.as_ref()
+    }
+}
+
+impl fmt::Debug for ProjectionPortRequest {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("ProjectionPortRequest([REDACTED])")
+    }
+}
+
+/// One provider-produced ready page with an exact continuation fence.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ProjectionPortReady {
+    identity: ProjectionIdentity,
+    generation: ProjectionGeneration,
+    frontier: FrontierPosition,
+    rows: Vec<ProjectionRow>,
+    continuation: Option<Box<ProjectionContinuation>>,
+}
+
+impl ProjectionPortReady {
+    /// Checks row ordering and that every page fence belongs to this exact request snapshot.
+    pub fn from_provider(
+        request: &ProjectionPortRequest,
+        generation: ProjectionGeneration,
+        frontier: FrontierPosition,
+        rows: Vec<ProjectionRow>,
+        continuation: Option<ProjectionContinuation>,
+    ) -> Result<Self, ServiceDtoError> {
+        if rows.len() > usize::from(request.limit().get().get()) {
+            return Err(ServiceDtoError::TooManyItems);
+        }
+        if request.continuation().is_some_and(|prior| {
+            prior.generation() != generation || prior.observed_frontier() != frontier
+        }) {
+            return Err(ServiceDtoError::IdentityMismatch);
+        }
+        if continuation.as_ref().is_some_and(|continuation| {
+            continuation.identity() != request.identity()
+                || continuation.generation() != generation
+                || continuation.prefix().components() != request.leading_components()
+                || continuation.observed_frontier() != frontier
+        }) {
+            return Err(ServiceDtoError::IdentityMismatch);
+        }
+        if rows.is_empty() && continuation.is_some() {
+            return Err(ServiceDtoError::InvalidShape);
+        }
+        let mut row_keys = Vec::with_capacity(rows.len());
+        for row in &rows {
+            if !row.group().starts_with(request.leading_components()) {
+                return Err(ServiceDtoError::IdentityMismatch);
+            }
+            let mut builder =
+                ProjectionGroupKeyBuilder::new(request.identity().clone(), generation);
+            for component in row.group() {
+                builder
+                    .push_component(component.clone())
+                    .map_err(|_| ServiceDtoError::InvalidShape)?;
+            }
+            let key = builder
+                .finish()
+                .map_err(|_| ServiceDtoError::InvalidShape)?;
+            row_keys.push(key);
+        }
+        if row_keys.windows(2).any(|pair| pair[0] >= pair[1]) {
+            return Err(ServiceDtoError::InvalidShape);
+        }
+        if let (Some(prior), Some(first)) = (request.continuation(), row_keys.first())
+            && first <= prior.exclusive_last_key()
+        {
+            return Err(ServiceDtoError::InvalidShape);
+        }
+        if let (Some(next), Some(last)) = (&continuation, row_keys.last())
+            && next.exclusive_last_key() != last
+        {
+            return Err(ServiceDtoError::IdentityMismatch);
+        }
+        Ok(Self {
+            identity: request.identity().clone(),
+            generation,
+            frontier,
+            rows,
+            continuation: continuation.map(Box::new),
+        })
+    }
+
+    /// Borrows the exact projection identity observed with the ready page.
+    #[must_use]
+    pub const fn identity(&self) -> &ProjectionIdentity {
+        &self.identity
+    }
+
+    /// Returns the exact published generation.
+    #[must_use]
+    pub const fn generation(&self) -> ProjectionGeneration {
+        self.generation
+    }
+
+    /// Returns the atomic observed published frontier.
+    #[must_use]
+    pub const fn frontier(&self) -> FrontierPosition {
+        self.frontier
+    }
+
+    /// Borrows the bounded rows.
+    #[must_use]
+    pub fn rows(&self) -> &[ProjectionRow] {
+        &self.rows
+    }
+
+    /// Borrows the lower continuation when more rows exist.
+    #[must_use]
+    pub fn continuation(&self) -> Option<&ProjectionContinuation> {
+        self.continuation.as_deref()
+    }
+}
+
+/// Exact lower-only projection identity and retained-generation position.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ProjectionStateFence {
+    identity: ProjectionIdentity,
+    generation: Option<ProjectionGeneration>,
+    frontier: FrontierPosition,
+}
+
+impl ProjectionStateFence {
+    /// Checks the sole generation-absent position used for a known identity with no control.
+    pub fn new(
+        identity: ProjectionIdentity,
+        generation: Option<ProjectionGeneration>,
+        frontier: FrontierPosition,
+    ) -> Result<Self, ServiceDtoError> {
+        if generation.is_none() && frontier != FrontierPosition::BeforeFirst {
+            return Err(ServiceDtoError::InvalidShape);
+        }
+        Ok(Self {
+            identity,
+            generation,
+            frontier,
+        })
+    }
+
+    /// Borrows the exact projection identity.
+    #[must_use]
+    pub const fn identity(&self) -> &ProjectionIdentity {
+        &self.identity
+    }
+
+    /// Returns the retained generation when one exists.
+    #[must_use]
+    pub const fn generation(&self) -> Option<ProjectionGeneration> {
+        self.generation
+    }
+
+    /// Returns the frontier observed atomically with lifecycle state.
+    #[must_use]
+    pub const fn frontier(&self) -> FrontierPosition {
+        self.frontier
+    }
+}
+
+/// Exact typed result returned by the derived projection consumer port.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum ProjectionPortResult {
+    /// Atomic published-generation rows and frontier.
+    Ready(ProjectionPortReady),
+    /// One atomic ready-generation observation remains behind the required sequence.
+    ///
+    /// The provider completes after one persisted observation so the service can
+    /// perform the mandatory current-policy safe point before registering the
+    /// next bounded observation.
+    PendingObservation {
+        /// Exact identity, generation, and published frontier observed together.
+        fence: ProjectionPageFence,
+    },
+    /// The required sequence was not reached before deadline.
+    WaitTimedOut {
+        /// Real nonzero required sequence.
+        required: CommitSequence,
+        /// Exact published identity, generation, and frontier observed at timeout.
+        fence: ProjectionPageFence,
+    },
+    /// Known but unavailable projection.
+    Degraded {
+        /// Exact identity and optional retained generation observed with lifecycle.
+        fence: ProjectionStateFence,
+        /// Closed safe unavailable reason.
+        reason: ProjectionUnavailableReason,
+    },
+    /// Known irrecoverable projection.
+    Invalid {
+        /// Exact failed identity, generation, and frontier observed with lifecycle.
+        fence: ProjectionPageFence,
+        /// Closed safe failure code.
+        reason: ProjectionFailureCode,
+    },
+    /// A stored lower continuation no longer matches generation/frontier state.
+    ContinuationInvalidated,
+}
+
+/// Exact active-catalog identity observed while shaping one discovery page.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum DiscoveryCatalogFence {
+    /// No contract was active when the candidate catalog was materialized.
+    NoActiveContract,
+    /// One exact immutable active bundle supplied the dynamic candidates.
+    ActiveContract {
+        /// Stable contract lineage.
+        lineage: ContractLineage,
+        /// Exact active version.
+        version: ContractVersion,
+        /// Exact immutable bundle hash.
+        bundle_hash: ContractBundleHash,
+    },
+}
+
+impl DiscoveryCatalogFence {
+    /// Creates the fence for a catalog without an active contract.
+    #[must_use]
+    pub const fn no_active_contract() -> Self {
+        Self::NoActiveContract
+    }
+
+    /// Creates the fence for one exact active immutable bundle.
+    #[must_use]
+    pub const fn active_contract(
+        lineage: ContractLineage,
+        version: ContractVersion,
+        bundle_hash: ContractBundleHash,
+    ) -> Self {
+        Self::ActiveContract {
+            lineage,
+            version,
+            bundle_hash,
+        }
+    }
+}
+
+/// One bounded page request for policy-filtered command-tool discovery.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct DiscoverCommandToolsRequest(PageRequest);
+
+impl DiscoverCommandToolsRequest {
+    /// Creates one initial or continuation request.
+    #[must_use]
+    pub const fn new(page: PageRequest) -> Self {
+        Self(page)
+    }
+
+    /// Returns the checked page request.
+    #[must_use]
+    pub const fn page(self) -> PageRequest {
+        self.0
+    }
+}
+
+impl Default for DiscoverCommandToolsRequest {
+    fn default() -> Self {
+        Self(PageRequest::new(PageLimit::default(), None))
+    }
+}
+
+/// One visible command tool carrying the compiler-owned name verbatim.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct CommandToolDescriptor {
+    name: McpCommandToolNameV1,
+    source_command: SourceName,
+    lineage: ContractLineage,
+    version: ContractVersion,
+    command_id: CommandId,
+    input_schema: GeneratedSchemaArtifact,
+    outcome_schema: GeneratedSchemaArtifact,
+}
+
+impl CommandToolDescriptor {
+    /// Checks that generated schemas belong to the exact command.
+    pub fn new(
+        name: McpCommandToolNameV1,
+        source_command: SourceName,
+        lineage: ContractLineage,
+        version: ContractVersion,
+        command_id: CommandId,
+        input_schema: GeneratedSchemaArtifact,
+        outcome_schema: GeneratedSchemaArtifact,
+    ) -> Result<Self, ServiceDtoError> {
+        if input_schema.key() != SchemaArtifactKey::CommandInput(command_id)
+            || outcome_schema.key() != SchemaArtifactKey::CommandOutcomeUnion(command_id)
+        {
+            return Err(ServiceDtoError::IdentityMismatch);
+        }
+        Ok(Self {
+            name,
+            source_command,
+            lineage,
+            version,
+            command_id,
+            input_schema,
+            outcome_schema,
+        })
+    }
+    /// Borrows the compiler-owned name without service normalization.
+    #[must_use]
+    pub const fn name(&self) -> &McpCommandToolNameV1 {
+        &self.name
+    }
+    /// Borrows the exact compiler-checked source command used for dispatch.
+    #[must_use]
+    pub const fn source_command(&self) -> &SourceName {
+        &self.source_command
+    }
+    /// Borrows contract lineage.
+    #[must_use]
+    pub const fn lineage(&self) -> &ContractLineage {
+        &self.lineage
+    }
+    /// Returns contract version.
+    #[must_use]
+    pub const fn version(&self) -> ContractVersion {
+        self.version
+    }
+    /// Returns stable command ID.
+    #[must_use]
+    pub const fn command_id(&self) -> CommandId {
+        self.command_id
+    }
+    /// Borrows generated input schema.
+    #[must_use]
+    pub const fn input_schema(&self) -> &GeneratedSchemaArtifact {
+        &self.input_schema
+    }
+    /// Borrows generated outcome schema.
+    #[must_use]
+    pub const fn outcome_schema(&self) -> &GeneratedSchemaArtifact {
+        &self.outcome_schema
+    }
+}
+
+/// One item in the canonical fixed-then-compiled tool catalog.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum CommandToolDiscoveryItem {
+    /// One fixed service tool.
+    Fixed(FixedToolCandidate),
+    /// One compiler-owned dynamic command tool.
+    Command(Box<CommandToolDescriptor>),
+}
+
+/// One bounded policy-visible command tool page.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct DiscoverCommandToolsResult {
+    page: Page<CommandToolDiscoveryItem, DiscoveryCatalogFence>,
+}
+
+impl DiscoverCommandToolsResult {
+    /// Checks canonical fixed-tool and compiler-name ordering within this page.
+    pub fn new(
+        page: Page<CommandToolDiscoveryItem, DiscoveryCatalogFence>,
+    ) -> Result<Self, ServiceDtoError> {
+        let mut last_fixed: Option<FixedToolCandidate> = None;
+        let mut last_command: Option<&McpCommandToolNameV1> = None;
+        for item in page.items() {
+            match item {
+                CommandToolDiscoveryItem::Fixed(candidate) if last_command.is_none() => {
+                    if let Some(prior) = last_fixed {
+                        match prior.cmp(candidate) {
+                            std::cmp::Ordering::Less => {}
+                            std::cmp::Ordering::Equal => {
+                                return Err(ServiceDtoError::Duplicate);
+                            }
+                            std::cmp::Ordering::Greater => {
+                                return Err(ServiceDtoError::InvalidShape);
+                            }
+                        }
+                    }
+                    last_fixed = Some(*candidate);
+                }
+                CommandToolDiscoveryItem::Command(descriptor) => {
+                    if let Some(prior) = last_command {
+                        match prior.cmp(descriptor.name()) {
+                            std::cmp::Ordering::Less => {}
+                            std::cmp::Ordering::Equal => {
+                                return Err(ServiceDtoError::Duplicate);
+                            }
+                            std::cmp::Ordering::Greater => {
+                                return Err(ServiceDtoError::InvalidShape);
+                            }
+                        }
+                    }
+                    last_command = Some(descriptor.name());
+                }
+                CommandToolDiscoveryItem::Fixed(_) => {
+                    return Err(ServiceDtoError::InvalidShape);
+                }
+            }
+        }
+        Ok(Self { page })
+    }
+
+    /// Borrows the bounded page and its catalog fence.
+    #[must_use]
+    pub const fn page(&self) -> &Page<CommandToolDiscoveryItem, DiscoveryCatalogFence> {
+        &self.page
+    }
+}
+
+/// One bounded page request for policy-filtered semantic resource discovery.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct DiscoverResourcesRequest(PageRequest);
+
+impl DiscoverResourcesRequest {
+    /// Creates one initial or continuation request.
+    #[must_use]
+    pub const fn new(page: PageRequest) -> Self {
+        Self(page)
+    }
+
+    /// Returns the checked page request.
+    #[must_use]
+    pub const fn page(self) -> PageRequest {
+        self.0
+    }
+}
+
+impl Default for DiscoverResourcesRequest {
+    fn default() -> Self {
+        Self(PageRequest::new(PageLimit::default(), None))
+    }
+}
+
+/// Closed protocol-neutral resource descriptor class.
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+pub enum ResourceDescriptorKind {
+    /// Active contract metadata.
+    ActiveContract,
+    /// One immutable contract version.
+    ContractVersion,
+    /// One entity schema.
+    EntitySchema,
+    /// One command plan.
+    CommandPlan,
+    /// Generated command documentation.
+    CommandDocumentation,
+    /// One authorized durable outcome.
+    CommandOutcome,
+    /// One application commit.
+    Commit,
+    /// One durable provenance record.
+    Provenance,
+    /// One projection status.
+    ProjectionStatus,
+    /// Server health.
+    ServerHealth,
+}
+
+impl ResourceDescriptorKind {
+    const fn canonical_order_tag(self) -> u8 {
+        match self {
+            Self::ActiveContract => 0x01,
+            Self::ContractVersion => 0x02,
+            Self::EntitySchema => 0x03,
+            Self::CommandPlan => 0x04,
+            Self::CommandDocumentation => 0x05,
+            Self::CommandOutcome => 0x06,
+            Self::Commit => 0x07,
+            Self::Provenance => 0x08,
+            Self::ProjectionStatus => 0x09,
+            Self::ServerHealth => 0x0a,
+        }
+    }
+}
+
+/// One protocol-neutral visible resource identity.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ResourceDescriptor {
+    kind: ResourceDescriptorKind,
+    target: Option<ServiceAuditTargetV1>,
+    schema: Option<GeneratedSchemaArtifact>,
+}
+
+impl ResourceDescriptor {
+    /// Creates the singleton active-contract resource candidate.
+    #[must_use]
+    pub const fn active_contract() -> Self {
+        Self {
+            kind: ResourceDescriptorKind::ActiveContract,
+            target: None,
+            schema: None,
+        }
+    }
+    /// Creates one immutable contract-version resource candidate.
+    #[must_use]
+    pub const fn contract_version(lineage: ContractLineage, version: ContractVersion) -> Self {
+        Self::targeted(
+            ResourceDescriptorKind::ContractVersion,
+            ServiceAuditTargetV1::ContractVersion { lineage, version },
+        )
+    }
+    /// Creates one entity-schema candidate with its exact compiler artifact.
+    pub fn entity_schema(
+        lineage: ContractLineage,
+        entity_type_id: EntityTypeId,
+        schema: GeneratedSchemaArtifact,
+    ) -> Result<Self, ServiceDtoError> {
+        if schema.key() != SchemaArtifactKey::Entity(entity_type_id) {
+            return Err(ServiceDtoError::IdentityMismatch);
+        }
+        Ok(Self {
+            kind: ResourceDescriptorKind::EntitySchema,
+            target: Some(ServiceAuditTargetV1::EntityType {
+                lineage,
+                entity_type_id,
+            }),
+            schema: Some(schema),
+        })
+    }
+    /// Creates one generated command-plan resource candidate.
+    #[must_use]
+    pub const fn command_plan(lineage: ContractLineage, command_id: CommandId) -> Self {
+        Self::command_target(ResourceDescriptorKind::CommandPlan, lineage, command_id)
+    }
+    /// Creates one generated command-documentation resource candidate.
+    #[must_use]
+    pub const fn command_documentation(lineage: ContractLineage, command_id: CommandId) -> Self {
+        Self::command_target(
+            ResourceDescriptorKind::CommandDocumentation,
+            lineage,
+            command_id,
+        )
+    }
+    /// Creates one authorized durable-outcome resource candidate.
+    #[must_use]
+    pub const fn command_outcome(lineage: ContractLineage, command_id: CommandId) -> Self {
+        Self::command_target(ResourceDescriptorKind::CommandOutcome, lineage, command_id)
+    }
+    /// Creates the discoverable application-commit resource class.
+    #[must_use]
+    pub const fn commit_class() -> Self {
+        Self::untargeted(ResourceDescriptorKind::Commit)
+    }
+    /// Creates one application-commit resource candidate.
+    #[must_use]
+    pub const fn commit(sequence: CommitSequence) -> Self {
+        Self::targeted(
+            ResourceDescriptorKind::Commit,
+            ServiceAuditTargetV1::Commit(sequence),
+        )
+    }
+    /// Creates the discoverable durable-provenance resource class.
+    #[must_use]
+    pub const fn provenance_class() -> Self {
+        Self::untargeted(ResourceDescriptorKind::Provenance)
+    }
+    /// Creates one durable-provenance resource candidate.
+    #[must_use]
+    pub const fn provenance(provenance_id: ProvenanceId) -> Self {
+        Self::targeted(
+            ResourceDescriptorKind::Provenance,
+            ServiceAuditTargetV1::Provenance(provenance_id),
+        )
+    }
+    /// Creates one projection-status resource candidate.
+    #[must_use]
+    pub const fn projection_status(lineage: ContractLineage, projection_id: ProjectionId) -> Self {
+        Self::targeted(
+            ResourceDescriptorKind::ProjectionStatus,
+            ServiceAuditTargetV1::Projection {
+                lineage,
+                projection_id,
+            },
+        )
+    }
+    /// Creates the singleton server-health resource candidate.
+    #[must_use]
+    pub const fn server_health() -> Self {
+        Self {
+            kind: ResourceDescriptorKind::ServerHealth,
+            target: None,
+            schema: None,
+        }
+    }
+    /// Returns the closed resource class.
+    #[must_use]
+    pub const fn kind(&self) -> ResourceDescriptorKind {
+        self.kind
+    }
+    /// Borrows its semantic target, when object-scoped.
+    #[must_use]
+    pub const fn target(&self) -> Option<&ServiceAuditTargetV1> {
+        self.target.as_ref()
+    }
+    /// Borrows a compiler-owned schema artifact, when applicable.
+    #[must_use]
+    pub const fn schema(&self) -> Option<&GeneratedSchemaArtifact> {
+        self.schema.as_ref()
+    }
+
+    const fn command_target(
+        kind: ResourceDescriptorKind,
+        lineage: ContractLineage,
+        command_id: CommandId,
+    ) -> Self {
+        Self::targeted(
+            kind,
+            ServiceAuditTargetV1::Command {
+                lineage,
+                command_id,
+            },
+        )
+    }
+
+    const fn targeted(kind: ResourceDescriptorKind, target: ServiceAuditTargetV1) -> Self {
+        Self {
+            kind,
+            target: Some(target),
+            schema: None,
+        }
+    }
+
+    const fn untargeted(kind: ResourceDescriptorKind) -> Self {
+        Self {
+            kind,
+            target: None,
+            schema: None,
+        }
+    }
+
+    pub(crate) fn canonical_identity_key(&self) -> Vec<u8> {
+        let mut key = vec![self.kind.canonical_order_tag()];
+        if let Some(target) = &self.target {
+            key.extend_from_slice(&target.canonical_key());
+        }
+        key
+    }
+}
+
+/// Bounded policy-visible resource page.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct DiscoverResourcesResult {
+    page: Page<ResourceDescriptor, DiscoveryCatalogFence>,
+}
+
+impl DiscoverResourcesResult {
+    /// Checks canonical ordering and rejects duplicate resource identities.
+    pub fn new(
+        page: Page<ResourceDescriptor, DiscoveryCatalogFence>,
+    ) -> Result<Self, ServiceDtoError> {
+        for pair in page.items().windows(2) {
+            match pair[0]
+                .canonical_identity_key()
+                .cmp(&pair[1].canonical_identity_key())
+            {
+                std::cmp::Ordering::Less => {}
+                std::cmp::Ordering::Equal => return Err(ServiceDtoError::Duplicate),
+                std::cmp::Ordering::Greater => return Err(ServiceDtoError::InvalidShape),
+            }
+        }
+        Ok(Self { page })
+    }
+
+    /// Borrows the bounded page and its catalog fence.
+    #[must_use]
+    pub const fn page(&self) -> &Page<ResourceDescriptor, DiscoveryCatalogFence> {
+        &self.page
+    }
+}
+
+impl RequestCharge {
+    fn add_capability_create_record(
+        &mut self,
+        record: &NormalizedCapabilityCreateRecord,
+    ) -> Result<(), ServiceDtoError> {
+        self.add(record.database_id().as_bytes().len())?;
+        self.add_framed_bytes(record.environment().as_bytes().len())?;
+        self.add_framed_bytes(record.principal_id().as_str().len())?;
+        self.add(1)?;
+        self.add(4)?;
+        self.add(STRUCTURAL_COLLECTION_COUNT_BYTES)?;
+        for audience in record.audiences() {
+            self.add_framed_bytes(audience.as_bytes().len())?;
+        }
+        let grant_bytes = record
+            .grant()
+            .semantic_bytes()
+            .map_err(|_| ServiceDtoError::TooLong)?;
+        self.add_framed_bytes(grant_bytes)
+    }
+}
+
+impl ServiceRequestCharge for ValidateContractRequest {
+    fn structural_charge(&self) -> Result<usize, ServiceDtoError> {
+        let mut charge = RequestCharge::default();
+        charge.add_framed_bytes(self.source.as_str().len())?;
+        Ok(charge.finish())
+    }
+}
+
+impl ServiceRequestCharge for ExplainCommandRequest {
+    fn structural_charge(&self) -> Result<usize, ServiceDtoError> {
+        let mut charge = RequestCharge::default();
+        charge.add_contract_selection(&self.contract)?;
+        charge.add_framed_bytes(self.command.as_str().len())?;
+        Ok(charge.finish())
+    }
+}
+
+impl ServiceRequestCharge for DeployContractRequest {
+    fn structural_charge(&self) -> Result<usize, ServiceDtoError> {
+        let mut charge = RequestCharge::default();
+        charge.add_framed_bytes(self.source.as_str().len())?;
+        charge.add(STRUCTURAL_OPTION_BYTES)?;
+        if self.expected_active_version.is_some() {
+            charge.add(8)?;
+        }
+        Ok(charge.finish())
+    }
+}
+
+impl ServiceRequestCharge for GetActiveContractRequest {
+    fn structural_charge(&self) -> Result<usize, ServiceDtoError> {
+        Ok(0)
+    }
+}
+
+impl ServiceRequestCharge for GetContractVersionRequest {
+    fn structural_charge(&self) -> Result<usize, ServiceDtoError> {
+        let mut charge = RequestCharge::default();
+        charge.add_framed_bytes(self.lineage.as_bytes().len())?;
+        charge.add(8)?;
+        Ok(charge.finish())
+    }
+}
+
+impl ServiceRequestCharge for ExecuteCommandRequest {
+    fn structural_charge(&self) -> Result<usize, ServiceDtoError> {
+        let mut charge = RequestCharge::default();
+        charge.add_framed_bytes(self.command.as_str().len())?;
+        charge.add(STRUCTURAL_OPTION_BYTES)?;
+        if self.expected_contract_version.is_some() {
+            charge.add(8)?;
+        }
+        charge.add_canonical_record(&self.input)?;
+        Ok(charge.finish())
+    }
+}
+
+impl ServiceRequestCharge for ResolveCommandOutcomeRequest {
+    fn structural_charge(&self) -> Result<usize, ServiceDtoError> {
+        let mut charge = RequestCharge::default();
+        charge.add_framed_bytes(self.lineage.as_bytes().len())?;
+        charge.add_framed_bytes(self.command.as_str().len())?;
+        charge.add_framed_bytes(self.idempotency_key.expose_secret().len())?;
+        Ok(charge.finish())
+    }
+}
+
+impl ServiceRequestCharge for GetEntityRequest {
+    fn structural_charge(&self) -> Result<usize, ServiceDtoError> {
+        let mut charge = RequestCharge::default();
+        charge.add_contract_selection(&self.contract)?;
+        charge.add(4)?;
+        charge.add_framed_bytes(self.key.as_bytes().len())?;
+        charge.add_field_selection(&self.fields)?;
+        Ok(charge.finish())
+    }
+}
+
+impl ServiceRequestCharge for ScanIndexRequest {
+    fn structural_charge(&self) -> Result<usize, ServiceDtoError> {
+        let mut charge = RequestCharge::default();
+        charge.add_contract_selection(&self.contract)?;
+        charge.add(4)?;
+        charge.add_canonical_values(&self.leading_components)?;
+        charge.add_field_selection(&self.fields)?;
+        charge.add_page(self.page)?;
+        Ok(charge.finish())
+    }
+}
+
+impl ServiceRequestCharge for QueryProjectionRequest {
+    fn structural_charge(&self) -> Result<usize, ServiceDtoError> {
+        let mut charge = RequestCharge::default();
+        charge.add_contract_selection(&self.contract)?;
+        charge.add(4)?;
+        charge.add_canonical_values(&self.leading_components)?;
+        charge.add(STRUCTURAL_OPTION_BYTES)?;
+        if self.required_sequence.is_some() {
+            charge.add(8)?;
+        }
+        charge.add(STRUCTURAL_DURATION_BYTES)?;
+        charge.add_page(self.page)?;
+        Ok(charge.finish())
+    }
+}
+
+impl ServiceRequestCharge for GetProjectionStatusRequest {
+    fn structural_charge(&self) -> Result<usize, ServiceDtoError> {
+        let mut charge = RequestCharge::default();
+        charge.add_contract_selection(&self.contract)?;
+        charge.add(4)?;
+        Ok(charge.finish())
+    }
+}
+
+impl ServiceRequestCharge for GetCommitRequest {
+    fn structural_charge(&self) -> Result<usize, ServiceDtoError> {
+        Ok(8)
+    }
+}
+
+impl ServiceRequestCharge for ScanCommitsRequest {
+    fn structural_charge(&self) -> Result<usize, ServiceDtoError> {
+        let mut charge = RequestCharge::default();
+        charge.add_page(self.page)?;
+        Ok(charge.finish())
+    }
+}
+
+impl ServiceRequestCharge for SubscribeToCommitsRequest {
+    fn structural_charge(&self) -> Result<usize, ServiceDtoError> {
+        let mut charge = RequestCharge::default();
+        charge.add(STRUCTURAL_OPTION_BYTES)?;
+        if self.after.is_some() {
+            charge.add(8)?;
+        }
+        charge.add(STRUCTURAL_DURATION_BYTES)?;
+        Ok(charge.finish())
+    }
+}
+
+impl ServiceRequestCharge for TraceProvenanceRequest {
+    fn structural_charge(&self) -> Result<usize, ServiceDtoError> {
+        let mut charge = RequestCharge::default();
+        charge.add(STRUCTURAL_ENUM_TAG_BYTES)?;
+        charge.add(match self.selector {
+            ProvenanceSelection::Commit(_) => 8,
+            ProvenanceSelection::Provenance(_) => 16,
+        })?;
+        Ok(charge.finish())
+    }
+}
+
+impl ServiceRequestCharge for HealthRequest {
+    fn structural_charge(&self) -> Result<usize, ServiceDtoError> {
+        Ok(0)
+    }
+}
+
+impl ServiceRequestCharge for StatisticsRequest {
+    fn structural_charge(&self) -> Result<usize, ServiceDtoError> {
+        Ok(0)
+    }
+}
+
+impl ServiceRequestCharge for NormalCreateCapabilityRequest {
+    fn structural_charge(&self) -> Result<usize, ServiceDtoError> {
+        let mut charge = RequestCharge::default();
+        charge.add(self.capability_id.as_bytes().len())?;
+        charge.add_capability_create_record(&self.requested)?;
+        Ok(charge.finish())
+    }
+}
+
+impl ServiceRequestCharge for BootstrapCapabilityRequest {
+    fn structural_charge(&self) -> Result<usize, ServiceDtoError> {
+        let mut charge = RequestCharge::default();
+        charge.add(self.capability_id.as_bytes().len())?;
+        charge.add_capability_create_record(&self.requested)?;
+        Ok(charge.finish())
+    }
+}
+
+impl ServiceRequestCharge for RevokeCapabilityRequest {
+    fn structural_charge(&self) -> Result<usize, ServiceDtoError> {
+        Ok(17)
+    }
+}
+
+impl ServiceRequestCharge for ListPendingOutboxDeliveriesRequest {
+    fn structural_charge(&self) -> Result<usize, ServiceDtoError> {
+        let mut charge = RequestCharge::default();
+        charge.add_page(self.0)?;
+        Ok(charge.finish())
+    }
+}
+
+impl ServiceRequestCharge for DiscoverCommandToolsRequest {
+    fn structural_charge(&self) -> Result<usize, ServiceDtoError> {
+        let mut charge = RequestCharge::default();
+        charge.add_page(self.0)?;
+        Ok(charge.finish())
+    }
+}
+
+impl ServiceRequestCharge for DiscoverResourcesRequest {
+    fn structural_charge(&self) -> Result<usize, ServiceDtoError> {
+        let mut charge = RequestCharge::default();
+        charge.add_page(self.0)?;
+        Ok(charge.finish())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::num::{NonZeroU16, NonZeroU32};
+
+    use super::*;
+    use riffdb_catalog::ValidatedContractBundle;
+    use riffdb_contract_compiler::compile_contract_source;
+    use riffdb_contract_ir::{
+        CommandPlan, FieldSchema, KeyComponentSchema, KeyPurpose, KeySchema, OutcomeSchema,
+        RecordSchema, RecordTypeRef, SchemaIr, ValueType,
+    };
+    use riffdb_types::{
+        CapabilityPermissionV1, CapabilityPermissionsV1, EntityKeyBuilder, EnumVariantId,
+        IndexEntryKeyBuilder, PartitionScopeV1, ProjectionGroupKeyBuilder,
+        ProjectionGroupPrefixBuilder,
+    };
+
+    const OUTCOME_SHAPES_SOURCE: &str = r#"
+contract OutcomeShapes version 1 {
+  enum State { Open, Closed }
+
+  entity Row {
+    key (id: uuid)
+    field status: State
+  }
+
+  aggregate Rows {
+    root Row
+    partition_by id
+    conflict_key (id)
+  }
+
+  command Inspect {
+    input id: uuid
+    read Row(id) as row else InspectMissing { id: id }
+    require self_equal: id == id else InspectRejected { id: id }
+    return Inspected { row: row }
+  }
+
+  command Change {
+    input idempotency_key: string<128>
+    input id: uuid
+    idempotency_key idempotency_key
+    mutate Row(id) as row else ChangeMissing { id: id }
+    set row.status = State.Closed
+    return Changed { row: row }
+  }
+}
+"#;
+
+    fn outcome_shapes_bundle() -> ValidatedContractBundle {
+        ValidatedContractBundle::from_compiler_bundle(
+            compile_contract_source(OUTCOME_SHAPES_SOURCE).expect("outcome fixture compiles"),
+        )
+        .expect("compiler bundle passes the catalog boundary")
+    }
+
+    fn fixture_command<'a>(bundle: &'a ValidatedContractBundle, name: &str) -> &'a CommandPlan {
+        bundle
+            .bundle()
+            .commands()
+            .iter()
+            .find(|command| command.name() == name)
+            .unwrap_or_else(|| panic!("missing fixture command {name}"))
+    }
+
+    fn fixture_outcome<'a>(command: &'a CommandPlan, name: &str) -> &'a OutcomeSchema {
+        command
+            .outcomes()
+            .iter()
+            .find(|outcome| outcome.name() == name)
+            .unwrap_or_else(|| panic!("missing fixture outcome {name}"))
+    }
+
+    fn fixture_row(bundle: &ValidatedContractBundle, variant_id: EnumVariantId) -> CanonicalRecord {
+        let schema = bundle.bundle().schema();
+        let entity = schema
+            .entities()
+            .iter()
+            .find(|entity| entity.name() == "Row")
+            .expect("fixture Row entity");
+        let enumeration = schema
+            .enums()
+            .iter()
+            .find(|enumeration| enumeration.name() == "State")
+            .expect("fixture State enum");
+        CanonicalRecord::new(
+            entity
+                .record()
+                .fields()
+                .iter()
+                .map(|field| {
+                    let value = match field.name() {
+                        "id" => CanonicalValue::Uuid([0x31; 16]),
+                        "status" => CanonicalValue::Enum {
+                            type_id: enumeration.id(),
+                            variant_id,
+                        },
+                        name => panic!("unexpected Row field {name}"),
+                    };
+                    (field.id(), value)
+                })
+                .collect(),
+        )
+        .expect("canonical fixture row")
+    }
+
+    fn fixture_variant(bundle: &ValidatedContractBundle, name: &str) -> EnumVariantId {
+        bundle
+            .bundle()
+            .schema()
+            .enums()
+            .iter()
+            .find(|enumeration| enumeration.name() == "State")
+            .and_then(|enumeration| {
+                enumeration
+                    .variants()
+                    .iter()
+                    .find(|variant| variant.name() == name)
+            })
+            .map(riffdb_contract_ir::EnumVariantSchema::id)
+            .unwrap_or_else(|| panic!("missing fixture variant {name}"))
+    }
+
+    fn fixture_nested_outcome(outcome: &OutcomeSchema, row: CanonicalRecord) -> CanonicalRecord {
+        let [field] = outcome.payload().fields() else {
+            panic!("nested fixture outcome must contain exactly one field");
+        };
+        assert_eq!(field.name(), "row");
+        CanonicalRecord::new(vec![(field.id(), CanonicalValue::Record(row))])
+            .expect("canonical fixture outcome")
+    }
+
+    fn fixture_uuid_v7(seed: u8) -> [u8; 16] {
+        let mut bytes = [seed; 16];
+        bytes[6] = (bytes[6] & 0x0f) | 0x70;
+        bytes[8] = (bytes[8] & 0x3f) | 0x80;
+        bytes
+    }
+
+    fn projection_identity() -> ProjectionIdentity {
+        ProjectionIdentity::new(
+            ContractLineage::new("budget").expect("lineage"),
+            ProjectionId::first(),
+            riffdb_types::ProjectionPlanHash::from_bytes([3; 32]),
+        )
+    }
+
+    fn projection_continuation(
+        identity: &ProjectionIdentity,
+        generation: ProjectionGeneration,
+        component: CanonicalValue,
+        frontier: FrontierPosition,
+    ) -> ProjectionContinuation {
+        let mut prefix = ProjectionGroupPrefixBuilder::new(identity.clone(), generation);
+        prefix
+            .push_component(component.clone())
+            .expect("bounded component");
+        let mut key = ProjectionGroupKeyBuilder::new(identity.clone(), generation);
+        key.push_component(component).expect("bounded component");
+        ProjectionContinuation::from_provider(
+            identity.clone(),
+            generation,
+            prefix.finish(),
+            key.finish().expect("nonempty key"),
+            frontier,
+        )
+        .expect("matching typed continuation")
+    }
+
+    fn index_row(index_id: IndexId, component: u64) -> AuthoritativeIndexRow {
+        let mut entity_key = EntityKeyBuilder::new(EntityTypeId::first());
+        entity_key.push_u64(component).expect("bounded entity key");
+        let mut index_key = IndexEntryKeyBuilder::new(index_id);
+        index_key.push_u64(component).expect("bounded index key");
+        AuthoritativeIndexRow::new(
+            index_key
+                .finish(entity_key.finish().expect("bounded entity key"))
+                .expect("bounded index key"),
+            CanonicalRecord::new(Vec::new()).expect("empty record"),
+        )
+    }
+
+    fn whole_index_prefix(index_id: IndexId) -> IndexScanPrefix {
+        let component =
+            KeyComponentSchema::new(ValueType::u64(), Vec::new()).expect("key component");
+        let entity = KeySchema::new(
+            KeyPurpose::Entity(EntityTypeId::first()),
+            vec![component.clone()],
+        )
+        .expect("entity key schema");
+        KeySchema::index(index_id, EntityTypeId::first(), vec![component], entity)
+            .expect("index key schema")
+            .encode_index_prefix(&[])
+            .expect("whole-index prefix")
+    }
+
+    fn entity_schema_artifact(entity_type_id: EntityTypeId) -> GeneratedSchemaArtifact {
+        let schema =
+            SchemaIr::new(Vec::new(), Vec::new(), Vec::new(), Vec::new()).expect("empty schema");
+        let record = RecordSchema::new(
+            RecordTypeRef::Entity(entity_type_id),
+            vec![
+                FieldSchema::new(FieldId::first(), "flag", ValueType::bool())
+                    .expect("bounded field"),
+            ],
+        )
+        .expect("entity record");
+        GeneratedSchemaArtifact::entity(entity_type_id, &record, &schema)
+            .expect("entity schema artifact")
+    }
+
+    #[test]
+    fn source_and_wait_bounds_fail_closed() {
+        assert_eq!(SourceName::new("tx"), Err(ServiceDtoError::InvalidShape));
+        assert_eq!(
+            SourceName::new("bad-name"),
+            Err(ServiceDtoError::InvalidShape)
+        );
+        assert_eq!(
+            ContractSource::new("x".repeat(MAX_SERVICE_REQUEST_BYTES + 1)),
+            Err(ServiceDtoError::TooLong)
+        );
+        let projection_id = ProjectionId::first();
+        let page = PageRequest::new(PageLimit::default(), None);
+        assert_eq!(
+            QueryProjectionRequest::new(
+                ContractSelection::Active,
+                projection_id,
+                Vec::new(),
+                Some(CommitSequence::first()),
+                MAX_PROJECTION_WAIT + Duration::from_nanos(1),
+                page,
+            ),
+            Err(ServiceDtoError::OutOfRange)
+        );
+    }
+
+    #[test]
+    fn complete_source_requests_accept_exact_limit_and_reject_one_over() {
+        let exact_validation = ValidateContractRequest::new(
+            ContractSource::new("x".repeat(MAX_SERVICE_REQUEST_BYTES - STRUCTURAL_LENGTH_BYTES))
+                .expect("source within its component bound"),
+        )
+        .expect("exact-limit validation request");
+        assert_eq!(
+            exact_validation
+                .structural_charge()
+                .expect("bounded structural charge"),
+            MAX_SERVICE_REQUEST_BYTES
+        );
+        assert_eq!(
+            ValidateContractRequest::new(
+                ContractSource::new(
+                    "x".repeat(MAX_SERVICE_REQUEST_BYTES - STRUCTURAL_LENGTH_BYTES + 1),
+                )
+                .expect("source remains within its component bound"),
+            ),
+            Err(ServiceDtoError::TooLong)
+        );
+
+        let exact_deploy = DeployContractRequest::new(
+            ContractSource::new("x".repeat(
+                MAX_SERVICE_REQUEST_BYTES - STRUCTURAL_LENGTH_BYTES - STRUCTURAL_OPTION_BYTES,
+            ))
+            .expect("source within its component bound"),
+            None,
+        )
+        .expect("exact-limit deployment request");
+        assert_eq!(
+            exact_deploy
+                .structural_charge()
+                .expect("bounded structural charge"),
+            MAX_SERVICE_REQUEST_BYTES
+        );
+        assert_eq!(
+            DeployContractRequest::new(
+                ContractSource::new("x".repeat(
+                    MAX_SERVICE_REQUEST_BYTES - STRUCTURAL_LENGTH_BYTES - STRUCTURAL_OPTION_BYTES
+                        + 1,
+                ),)
+                .expect("source remains within its component bound"),
+                None,
+            ),
+            Err(ServiceDtoError::TooLong)
+        );
+    }
+
+    fn nested_bytes_input(payload_bytes: usize) -> CanonicalRecord {
+        CanonicalRecord::new(vec![(
+            FieldId::first(),
+            CanonicalValue::list(vec![
+                CanonicalValue::bytes(vec![0xa5; payload_bytes]).expect("bounded bytes value"),
+            ])
+            .expect("bounded nested list"),
+        )])
+        .expect("bounded nested record")
+    }
+
+    #[test]
+    fn complete_command_request_charges_nested_canonical_input_at_the_boundary() {
+        // Command frame (5), absent version (1), record frame (4), root
+        // record/field/list/bytes canonical structure (22).
+        const NON_PAYLOAD_BYTES: usize = 32;
+        let command = || SourceName::new("C").expect("checked command name");
+        let exact = ExecuteCommandRequest::new(
+            command(),
+            None,
+            nested_bytes_input(MAX_SERVICE_REQUEST_BYTES - NON_PAYLOAD_BYTES),
+        )
+        .expect("exact-limit command request");
+        assert_eq!(
+            exact
+                .structural_charge()
+                .expect("bounded structural charge"),
+            MAX_SERVICE_REQUEST_BYTES
+        );
+        assert_eq!(
+            ExecuteCommandRequest::new(
+                command(),
+                None,
+                nested_bytes_input(MAX_SERVICE_REQUEST_BYTES - NON_PAYLOAD_BYTES + 1),
+            ),
+            Err(ServiceDtoError::TooLong)
+        );
+    }
+
+    fn prefix_component(payload_bytes: usize) -> CanonicalValue {
+        CanonicalValue::bytes(vec![0x5a; payload_bytes]).expect("bounded prefix component")
+    }
+
+    #[test]
+    fn index_prefix_list_is_charged_as_one_complete_request() {
+        // Active contract (1), index ID (4), list count (4), two framed
+        // canonical byte values (20), empty field count (4), and page (3).
+        const NON_PAYLOAD_BYTES: usize = 36;
+        let total_payload = MAX_SERVICE_REQUEST_BYTES - NON_PAYLOAD_BYTES;
+        let first_payload = total_payload / 2;
+        let second_payload = total_payload - first_payload;
+        let fields = || FieldSelection::new(Vec::new()).expect("empty field selection");
+        let page = PageRequest::new(PageLimit::default(), None);
+        let exact = ScanIndexRequest::new(
+            ContractSelection::Active,
+            IndexId::first(),
+            vec![
+                prefix_component(first_payload),
+                prefix_component(second_payload),
+            ],
+            fields(),
+            page,
+        )
+        .expect("exact-limit index prefix request");
+        assert_eq!(
+            exact
+                .structural_charge()
+                .expect("bounded structural charge"),
+            MAX_SERVICE_REQUEST_BYTES
+        );
+        assert_eq!(
+            ScanIndexRequest::new(
+                ContractSelection::Active,
+                IndexId::first(),
+                vec![
+                    prefix_component(first_payload),
+                    prefix_component(second_payload + 1),
+                ],
+                fields(),
+                page,
+            ),
+            Err(ServiceDtoError::TooLong)
+        );
+    }
+
+    #[test]
+    fn entity_request_charge_includes_the_complete_canonical_key() {
+        let mut key_bytes = vec![0; riffdb_types::MAX_KEY_BYTES];
+        key_bytes[..6].copy_from_slice(&[0x45, 0x01, 0, 0, 0, 1]);
+        let key = EntityKey::from_bytes(key_bytes).expect("maximum-size entity key");
+        let request = GetEntityRequest::new(
+            ContractSelection::Active,
+            EntityTypeId::first(),
+            key,
+            FieldSelection::new(Vec::new()).expect("empty field selection"),
+        )
+        .expect("bounded entity request");
+
+        assert_eq!(
+            request
+                .structural_charge()
+                .expect("bounded structural charge"),
+            STRUCTURAL_ENUM_TAG_BYTES
+                + 4
+                + STRUCTURAL_LENGTH_BYTES
+                + riffdb_types::MAX_KEY_BYTES
+                + STRUCTURAL_COLLECTION_COUNT_BYTES
+        );
+    }
+
+    #[test]
+    fn every_public_request_family_has_one_structural_charge_contract() {
+        fn assert_charge<T: ServiceRequestCharge>() {}
+
+        assert_charge::<ValidateContractRequest>();
+        assert_charge::<ExplainCommandRequest>();
+        assert_charge::<DeployContractRequest>();
+        assert_charge::<GetActiveContractRequest>();
+        assert_charge::<GetContractVersionRequest>();
+        assert_charge::<ExecuteCommandRequest>();
+        assert_charge::<ResolveCommandOutcomeRequest>();
+        assert_charge::<GetEntityRequest>();
+        assert_charge::<ScanIndexRequest>();
+        assert_charge::<QueryProjectionRequest>();
+        assert_charge::<GetProjectionStatusRequest>();
+        assert_charge::<GetCommitRequest>();
+        assert_charge::<ScanCommitsRequest>();
+        assert_charge::<SubscribeToCommitsRequest>();
+        assert_charge::<TraceProvenanceRequest>();
+        assert_charge::<HealthRequest>();
+        assert_charge::<StatisticsRequest>();
+        assert_charge::<NormalCreateCapabilityRequest>();
+        assert_charge::<BootstrapCapabilityRequest>();
+        assert_charge::<RevokeCapabilityRequest>();
+        assert_charge::<ListPendingOutboxDeliveriesRequest>();
+        assert_charge::<DiscoverCommandToolsRequest>();
+        assert_charge::<DiscoverResourcesRequest>();
+    }
+
+    #[test]
+    fn capability_request_rechecks_the_complete_outer_request_size() {
+        let lineage = ContractLineage::new("l".repeat(riffdb_types::MAX_CONTRACT_LINEAGE_BYTES))
+            .expect("maximum lineage");
+        let permissions = (1_u32..=3_897)
+            .map(|id| {
+                CapabilityPermissionV1::InvokeCommand(
+                    lineage.clone(),
+                    CommandId::new(id).expect("nonzero command ID"),
+                )
+            })
+            .collect();
+        let grant = CapabilityGrantV1::new(
+            TenantScope::Global,
+            PartitionScopeV1::All,
+            CapabilityPermissionsV1::new(permissions).expect("near-limit permissions"),
+            Vec::new(),
+            NonZeroU16::new(1).expect("nonzero scan limit"),
+            Vec::new(),
+        )
+        .expect("near-limit capability grant");
+        let record = NormalizedCapabilityCreateRecord::new(
+            DatabaseId::from_unix_milliseconds_and_random(1, [0x11; 10]).expect("database UUIDv7"),
+            Environment::new("e".repeat(riffdb_types::MAX_ENVIRONMENT_BYTES))
+                .expect("maximum environment"),
+            ActorId::new("a".repeat(riffdb_types::MAX_ACTOR_ID_BYTES)).expect("maximum actor"),
+            ActorKind::Service,
+            NonZeroU32::new(1).expect("nonzero lifetime"),
+            vec![
+                Audience::new("u".repeat(riffdb_types::MAX_AUDIENCE_BYTES))
+                    .expect("maximum audience"),
+            ],
+            grant,
+        )
+        .expect("bounded normalized capability request");
+
+        assert_eq!(
+            NormalCreateCapabilityRequest::new(
+                CapabilityId::from_unix_milliseconds_and_random(2, [0x22; 10])
+                    .expect("capability UUIDv7"),
+                record.clone(),
+            ),
+            Err(ServiceDtoError::TooLong)
+        );
+        assert_eq!(
+            BootstrapCapabilityRequest::new(
+                CapabilityId::from_unix_milliseconds_and_random(3, [0x33; 10])
+                    .expect("capability UUIDv7"),
+                record,
+            ),
+            Err(ServiceDtoError::TooLong)
+        );
+    }
+
+    #[test]
+    fn declared_outcomes_revalidate_nested_records_and_enum_variants() {
+        let bundle = outcome_shapes_bundle();
+        let change = fixture_command(&bundle, "Change");
+        let changed = fixture_outcome(change, "Changed");
+        let empty_row = CanonicalRecord::new(Vec::new()).expect("empty nested record");
+
+        assert_eq!(
+            DeclaredOutcomeView::from_bundle(
+                &bundle,
+                change.command_id(),
+                changed.id(),
+                fixture_nested_outcome(changed, empty_row),
+            ),
+            Err(ServiceDtoError::InvalidShape)
+        );
+
+        let unknown_variant = EnumVariantId::new(u32::MAX).expect("nonzero variant ID");
+        assert_ne!(unknown_variant, fixture_variant(&bundle, "Open"));
+        assert_ne!(unknown_variant, fixture_variant(&bundle, "Closed"));
+        assert_eq!(
+            DeclaredOutcomeView::from_bundle(
+                &bundle,
+                change.command_id(),
+                changed.id(),
+                fixture_nested_outcome(changed, fixture_row(&bundle, unknown_variant)),
+            ),
+            Err(ServiceDtoError::InvalidShape)
+        );
+    }
+
+    #[test]
+    fn declared_outcomes_cannot_cross_command_boundaries() {
+        let bundle = outcome_shapes_bundle();
+        let change = fixture_command(&bundle, "Change");
+        let inspect = fixture_command(&bundle, "Inspect");
+        let foreign = inspect
+            .outcomes()
+            .iter()
+            .find(|candidate| {
+                change
+                    .outcomes()
+                    .iter()
+                    .all(|local| local.id() != candidate.id())
+            })
+            .expect("Inspect has an outcome ID outside Change's local outcome domain");
+
+        assert_eq!(
+            DeclaredOutcomeView::from_bundle(
+                &bundle,
+                change.command_id(),
+                foreign.id(),
+                CanonicalRecord::new(Vec::new()).expect("irrelevant mismatched payload"),
+            ),
+            Err(ServiceDtoError::IdentityMismatch)
+        );
+    }
+
+    #[test]
+    fn command_result_wrappers_enforce_execution_and_recovery_state() {
+        let bundle = outcome_shapes_bundle();
+        let change = fixture_command(&bundle, "Change");
+        let changed = fixture_outcome(change, "Changed");
+        let declared = DeclaredOutcomeView::from_bundle(
+            &bundle,
+            change.command_id(),
+            changed.id(),
+            fixture_nested_outcome(
+                changed,
+                fixture_row(&bundle, fixture_variant(&bundle, "Closed")),
+            ),
+        )
+        .expect("compiler-declared mutation outcome");
+
+        assert_eq!(
+            ReadOnlyCommandResult::new(declared.clone()),
+            Err(ServiceDtoError::InvalidShape)
+        );
+
+        let committed = JournaledCommandResult::new(
+            JournaledCompletion::Committed,
+            CommitSequence::first(),
+            declared,
+            ProvenanceId::from_bytes(fixture_uuid_v7(0x41)).expect("UUIDv7 provenance"),
+            CommandDurability::Synchronous,
+        )
+        .expect("journaled mutation result");
+        assert_eq!(
+            RecoveredJournaledCommandResult::new(committed),
+            Err(ServiceDtoError::InvalidShape)
+        );
+    }
+
+    #[test]
+    fn pages_reject_excess_and_empty_continuations() {
+        let limit = PageLimit::new(1).expect("valid page limit");
+        assert_eq!(
+            Page::new(limit, vec![1_u8, 2], None, ()),
+            Err(ServiceDtoError::TooManyItems)
+        );
+        assert_eq!(
+            Page::<u8, _>::new(
+                limit,
+                Vec::new(),
+                Some(CursorToken::from_bytes([7; 16])),
+                ()
+            ),
+            Err(ServiceDtoError::InvalidShape)
+        );
+    }
+
+    #[test]
+    fn authoritative_index_rows_start_after_the_requested_continuation() {
+        let index_id = IndexId::first();
+        let prefix = whole_index_prefix(index_id);
+        let after = index_row(index_id, 10);
+        let ordered = [index_row(index_id, 11), index_row(index_id, 12)];
+        assert!(index_page_rows_follow(
+            &prefix,
+            Some(after.key()),
+            ordered.iter()
+        ));
+        let repeated = [index_row(index_id, 10)];
+        assert!(!index_page_rows_follow(
+            &prefix,
+            Some(after.key()),
+            repeated.iter()
+        ));
+        let wrong_index = [index_row(
+            index_id.checked_next().expect("second index"),
+            11,
+        )];
+        assert!(!index_page_rows_follow(
+            &prefix,
+            Some(after.key()),
+            wrong_index.iter()
+        ));
+    }
+
+    #[test]
+    fn authoritative_commit_pages_require_exact_contiguous_sequences() {
+        let limit = PageLimit::default();
+        let first = CommitSequence::first();
+        let second = first.checked_next().expect("second sequence");
+        let third = second.checked_next().expect("third sequence");
+        let fourth = third.checked_next().expect("fourth sequence");
+
+        assert!(commit_page_sequences_are_contiguous(
+            AuthoritativeCommitScanRequest::initial(limit),
+            [first, second, third].into_iter(),
+        ));
+        assert!(!commit_page_sequences_are_contiguous(
+            AuthoritativeCommitScanRequest::initial(limit),
+            [second, third].into_iter(),
+        ));
+        let continuation = AuthoritativeCommitScanRequest::continuing(second, fourth, limit)
+            .expect("bounded continuation");
+        assert!(commit_page_sequences_are_contiguous(
+            continuation,
+            [third, fourth].into_iter(),
+        ));
+        assert!(!commit_page_sequences_are_contiguous(
+            continuation,
+            [fourth].into_iter(),
+        ));
+        assert!(!commit_page_sequences_are_contiguous(
+            continuation,
+            [third, first].into_iter(),
+        ));
+    }
+
+    #[test]
+    fn prebootstrap_health_has_only_the_three_normative_values() {
+        let report =
+            PreBootstrapHealthReport::new(PreBootstrapLifecycle::InitializingBootstrap, true);
+        assert_eq!(
+            report.lifecycle(),
+            PreBootstrapLifecycle::InitializingBootstrap
+        );
+        assert!(report.liveness());
+        assert!(!report.readiness());
+        assert_eq!(std::mem::size_of::<PreBootstrapHealthReport>(), 3);
+    }
+
+    #[test]
+    fn authenticated_health_classification_is_service_owned() {
+        let authoritative = vec![
+            ComponentHealth::new(
+                HealthComponentKind::CommitCoordinator,
+                HealthComponentStatus::Healthy,
+            ),
+            ComponentHealth::new(
+                HealthComponentKind::AuthoritativeStorage,
+                HealthComponentStatus::Healthy,
+            ),
+            ComponentHealth::new(HealthComponentKind::Catalog, HealthComponentStatus::Healthy),
+        ];
+        let operational =
+            OperationalHealthSnapshot::new(authoritative).expect("unique bounded components");
+        assert_eq!(
+            operational.components()[0].component(),
+            HealthComponentKind::AuthoritativeStorage
+        );
+        assert_eq!(
+            classify_health(
+                Some(ContractVersion::new(1).expect("version")),
+                operational.components()
+            ),
+            HealthStatus::Ready
+        );
+        assert_eq!(
+            classify_health(None, operational.components()),
+            HealthStatus::NotReady
+        );
+
+        let mut degraded = operational.into_components();
+        degraded.push(ComponentHealth::new(
+            HealthComponentKind::Projection,
+            HealthComponentStatus::Unavailable,
+        ));
+        let degraded = OperationalHealthSnapshot::new(degraded).expect("unique components");
+        assert_eq!(
+            classify_health(
+                Some(ContractVersion::new(1).expect("version")),
+                degraded.components()
+            ),
+            HealthStatus::Degraded
+        );
+        assert_eq!(
+            OperationalHealthSnapshot::new(vec![
+                ComponentHealth::new(HealthComponentKind::Catalog, HealthComponentStatus::Healthy,),
+                ComponentHealth::new(
+                    HealthComponentKind::Catalog,
+                    HealthComponentStatus::Unavailable,
+                ),
+            ]),
+            Err(ServiceDtoError::Duplicate)
+        );
+    }
+
+    #[test]
+    fn statistics_join_only_service_owned_resource_counts() {
+        let operational =
+            OperationalStatisticsSnapshot::new(Some(CommitSequence::first()), Some(7), Some(2));
+        let result = StatisticsResult::new(3, 4, operational).expect("bounded process counts");
+        assert_eq!(result.active_cursors(), 3);
+        assert_eq!(result.active_commit_subscribers(), 4);
+        assert_eq!(result.last_commit_sequence(), Some(CommitSequence::first()));
+        assert_eq!(result.pending_outbox_deliveries(), Some(7));
+        assert_eq!(result.known_projections(), Some(2));
+        assert_eq!(
+            StatisticsResult::new(
+                u32::try_from(crate::MAX_LIVE_CURSORS).expect("POC bound fits u32") + 1,
+                0,
+                operational,
+            ),
+            Err(ServiceDtoError::OutOfRange)
+        );
+        assert_eq!(
+            StatisticsResult::new(0, MAX_LIVE_COMMIT_SUBSCRIBERS + 1, operational),
+            Err(ServiceDtoError::OutOfRange)
+        );
+    }
+
+    #[test]
+    fn resource_descriptors_are_closed_canonical_and_duplicate_free() {
+        let lineage = ContractLineage::new("budget").expect("lineage");
+        let entity_type_id = EntityTypeId::first();
+        let entity = ResourceDescriptor::entity_schema(
+            lineage.clone(),
+            entity_type_id,
+            entity_schema_artifact(entity_type_id),
+        )
+        .expect("matching schema identity");
+        assert_eq!(entity.kind(), ResourceDescriptorKind::EntitySchema);
+        assert!(matches!(
+            entity.target(),
+            Some(ServiceAuditTargetV1::EntityType {
+                lineage: target_lineage,
+                entity_type_id: target_id,
+            }) if target_lineage == &lineage && *target_id == entity_type_id
+        ));
+        assert!(entity.schema().is_some());
+
+        let commit_class = ResourceDescriptor::commit_class();
+        assert_eq!(commit_class.kind(), ResourceDescriptorKind::Commit);
+        assert_eq!(commit_class.target(), None);
+        let provenance_class = ResourceDescriptor::provenance_class();
+        assert_eq!(provenance_class.kind(), ResourceDescriptorKind::Provenance);
+        assert_eq!(provenance_class.target(), None);
+
+        let mismatched_id = entity_type_id.checked_next().expect("second entity type");
+        assert_eq!(
+            ResourceDescriptor::entity_schema(
+                lineage.clone(),
+                mismatched_id,
+                entity_schema_artifact(entity_type_id),
+            ),
+            Err(ServiceDtoError::IdentityMismatch)
+        );
+
+        let first = CommitSequence::first();
+        let second = first.checked_next().expect("second sequence");
+        let page = Page::new(
+            PageLimit::default(),
+            vec![
+                ResourceDescriptor::active_contract(),
+                ResourceDescriptor::commit_class(),
+                ResourceDescriptor::commit(first),
+                ResourceDescriptor::commit(second),
+                ResourceDescriptor::server_health(),
+            ],
+            None,
+            DiscoveryCatalogFence::no_active_contract(),
+        )
+        .expect("bounded discovery page");
+        let result = DiscoverResourcesResult::new(page).expect("unique resource identities");
+        assert_eq!(
+            result
+                .page()
+                .items()
+                .iter()
+                .map(ResourceDescriptor::kind)
+                .collect::<Vec<_>>(),
+            vec![
+                ResourceDescriptorKind::ActiveContract,
+                ResourceDescriptorKind::Commit,
+                ResourceDescriptorKind::Commit,
+                ResourceDescriptorKind::Commit,
+                ResourceDescriptorKind::ServerHealth,
+            ]
+        );
+        let duplicate_page = Page::new(
+            PageLimit::default(),
+            vec![
+                ResourceDescriptor::active_contract(),
+                ResourceDescriptor::active_contract(),
+            ],
+            None,
+            DiscoveryCatalogFence::no_active_contract(),
+        )
+        .expect("bounded duplicate page");
+        assert_eq!(
+            DiscoverResourcesResult::new(duplicate_page),
+            Err(ServiceDtoError::Duplicate)
+        );
+    }
+
+    #[test]
+    fn projection_continuation_revalidates_request_and_ready_snapshot() {
+        let identity = projection_identity();
+        let generation = ProjectionGeneration::first();
+        let frontier = FrontierPosition::AppliedThrough(CommitSequence::first());
+        let continuation =
+            projection_continuation(&identity, generation, CanonicalValue::Bool(true), frontier);
+
+        assert_eq!(
+            ProjectionPortRequest::new(
+                identity.clone(),
+                vec![CanonicalValue::Bool(false)],
+                None,
+                Instant::now(),
+                PageLimit::default(),
+                Some(continuation.clone()),
+            ),
+            Err(ServiceDtoError::IdentityMismatch)
+        );
+        let request = ProjectionPortRequest::new(
+            identity,
+            vec![CanonicalValue::Bool(true)],
+            None,
+            Instant::now(),
+            PageLimit::default(),
+            None,
+        )
+        .expect("matching initial request");
+        let row = ProjectionRow::new(
+            vec![CanonicalValue::Bool(true)],
+            CanonicalRecord::new(Vec::new()).expect("empty record"),
+        )
+        .expect("bounded row");
+        assert_eq!(
+            ProjectionPortReady::from_provider(
+                &request,
+                generation,
+                FrontierPosition::BeforeFirst,
+                vec![row.clone()],
+                Some(continuation.clone()),
+            ),
+            Err(ServiceDtoError::IdentityMismatch)
+        );
+        let ready = ProjectionPortReady::from_provider(
+            &request,
+            generation,
+            frontier,
+            vec![row],
+            Some(continuation.clone()),
+        )
+        .expect("one atomic provider snapshot");
+        assert_eq!(ready.generation(), generation);
+        assert_eq!(ready.frontier(), frontier);
+        assert_eq!(ready.continuation(), Some(&continuation));
+    }
+
+    #[test]
+    fn projection_ready_result_requires_one_frontier() {
+        let fence = ProjectionPageFence::new(
+            projection_identity(),
+            ProjectionGeneration::first(),
+            FrontierPosition::BeforeFirst,
+        );
+        let page = Page::new(PageLimit::default(), Vec::new(), None, fence)
+            .expect("empty final page is valid");
+        assert_eq!(
+            QueryProjectionReady::new(
+                page,
+                FrontierPosition::AppliedThrough(CommitSequence::first()),
+            ),
+            Err(ServiceDtoError::IdentityMismatch)
+        );
+    }
+
+    #[test]
+    fn projection_status_distinguishes_uninitialized_from_control() {
+        let status = ProjectionStatusSnapshot::uninitialized(
+            projection_identity(),
+            FrontierPosition::BeforeFirst,
+        );
+        assert_eq!(status.lifecycle(), ProjectionLifecycle::Building);
+        assert_eq!(status.published(), None);
+        assert_eq!(status.candidate(), None);
+
+        assert_eq!(
+            ProjectionStatusSnapshot::from_initialized_control(
+                projection_identity(),
+                ProjectionGeneration::first(),
+                ProjectionLifecycle::Ready,
+                None,
+                None,
+                None,
+                None,
+                FrontierPosition::BeforeFirst,
+            ),
+            Err(ServiceDtoError::InvalidShape)
+        );
+    }
+
+    #[test]
+    fn projection_status_checks_highest_generation_and_failure_successor() {
+        let first_generation = ProjectionGeneration::first();
+        let second_generation = first_generation.checked_next().expect("second generation");
+        let first_sequence = CommitSequence::first();
+        let second_sequence = first_sequence.checked_next().expect("second sequence");
+        let published = ProjectionGenerationFrontier::new(
+            first_generation,
+            FrontierPosition::AppliedThrough(first_sequence),
+        );
+
+        assert_eq!(
+            ProjectionStatusSnapshot::from_initialized_control(
+                projection_identity(),
+                second_generation,
+                ProjectionLifecycle::Ready,
+                Some(published),
+                None,
+                Some(PublishedApplyMode::Enabled),
+                None,
+                FrontierPosition::AppliedThrough(second_sequence),
+            ),
+            Err(ServiceDtoError::InvalidShape)
+        );
+        assert_eq!(
+            ProjectionStatusSnapshot::from_initialized_control(
+                projection_identity(),
+                first_generation,
+                ProjectionLifecycle::Degraded,
+                Some(published),
+                None,
+                Some(PublishedApplyMode::Suspended),
+                Some(ProjectionFailure::new(
+                    first_generation,
+                    ProjectionFailureCode::MalformedDurableEvent,
+                    Some(first_sequence),
+                )),
+                FrontierPosition::AppliedThrough(second_sequence),
+            ),
+            Err(ServiceDtoError::InvalidShape)
+        );
+        assert!(
+            ProjectionStatusSnapshot::from_initialized_control(
+                projection_identity(),
+                first_generation,
+                ProjectionLifecycle::Degraded,
+                Some(published),
+                None,
+                Some(PublishedApplyMode::Suspended),
+                Some(ProjectionFailure::new(
+                    first_generation,
+                    ProjectionFailureCode::MalformedDurableEvent,
+                    Some(second_sequence),
+                )),
+                FrontierPosition::AppliedThrough(second_sequence),
+            )
+            .is_ok()
+        );
+    }
+}

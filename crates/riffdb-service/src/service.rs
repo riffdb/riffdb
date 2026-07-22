@@ -1,0 +1,655 @@
+//! Concrete API-neutral service composition and independent job ownership.
+
+use std::error::Error;
+use std::fmt;
+use std::future::{Future, poll_fn};
+use std::panic::{AssertUnwindSafe, catch_unwind};
+use std::pin::Pin;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicU16, Ordering};
+use std::task::Poll;
+
+use riffdb_commit::{
+    AdministrationAuditExecutor, CommandExecutor, CommandIdempotencyInspector, ControlPlaneExecutor,
+};
+use riffdb_errors::{IncidentIdSource, InternalError, PublicError};
+use riffdb_policy::AgentSessionAdmissionPolicy;
+use riffdb_types::{DatabaseId, Environment, ServiceOperationV1, Timestamp};
+
+use crate::context::PreBootstrapHealthAdmission;
+use crate::orchestration::{
+    ContainedAuditFailure, OperationAuditLifecycle, with_operation_audit_lifecycle,
+};
+use crate::{
+    AuthoritativeReadPort, BuildInfo, CapabilityTokenIssuer, CatalogReadPort, CurrentPolicyPort,
+    CursorMonotonicClock, CursorTokenGenerator, OperationalStatusPort, OutboxStatusPort,
+    PortDriverStopped, PortReceipt, PreBootstrapHealthContextIssuer, ProjectionQueryPort,
+    RequestDeadlineScheduler, ServiceCursorRegistries, ServiceDiagnostics, ServiceFailure,
+    ServiceFuture, ServiceHealthHooks, ServiceJob, ServiceJobSpawner, ServiceResponseCharge,
+    ServiceResult, ServiceTelemetry, ServiceTelemetryEvent, port_completion_channel,
+};
+
+/// Trusted immutable process facts displayed by authenticated health.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ServiceProcessMetadata {
+    started_at: Timestamp,
+    build: BuildInfo,
+}
+
+impl ServiceProcessMetadata {
+    /// Joins the process start instant and checked build manifest.
+    #[must_use]
+    pub const fn new(started_at: Timestamp, build: BuildInfo) -> Self {
+        Self { started_at, build }
+    }
+
+    /// Returns the process start timestamp captured by the server composition.
+    #[must_use]
+    pub const fn started_at(&self) -> Timestamp {
+        self.started_at
+    }
+
+    /// Borrows immutable checked build metadata.
+    #[must_use]
+    pub const fn build(&self) -> &BuildInfo {
+        &self.build
+    }
+}
+
+/// Trusted process identity and command-claim admission policy.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ServiceIdentity {
+    database_id: DatabaseId,
+    environment: Environment,
+    agent_session_policy: AgentSessionAdmissionPolicy,
+}
+
+impl ServiceIdentity {
+    /// Joins values fixed by the production database process.
+    #[must_use]
+    pub const fn new(
+        database_id: DatabaseId,
+        environment: Environment,
+        agent_session_policy: AgentSessionAdmissionPolicy,
+    ) -> Self {
+        Self {
+            database_id,
+            environment,
+            agent_session_policy,
+        }
+    }
+
+    /// Returns the process's durable database identity.
+    #[must_use]
+    pub const fn database_id(&self) -> DatabaseId {
+        self.database_id
+    }
+
+    /// Borrows the process's exact environment.
+    #[must_use]
+    pub const fn environment(&self) -> &Environment {
+        &self.environment
+    }
+
+    /// Returns the checked agent-session admission rule.
+    #[must_use]
+    pub const fn agent_session_policy(&self) -> AgentSessionAdmissionPolicy {
+        self.agent_session_policy
+    }
+}
+
+/// Cloneable least-authority handles to the sole-writer coordinator actor.
+#[derive(Clone)]
+pub struct ServiceExecutors {
+    pub(crate) audit: AdministrationAuditExecutor,
+    pub(crate) control_plane: ControlPlaneExecutor,
+    pub(crate) command: CommandExecutor,
+    pub(crate) idempotency: CommandIdempotencyInspector,
+}
+
+impl ServiceExecutors {
+    /// Groups the four already bounded WP-100 executor capabilities.
+    #[must_use]
+    pub const fn new(
+        audit: AdministrationAuditExecutor,
+        control_plane: ControlPlaneExecutor,
+        command: CommandExecutor,
+        idempotency: CommandIdempotencyInspector,
+    ) -> Self {
+        Self {
+            audit,
+            control_plane,
+            command,
+            idempotency,
+        }
+    }
+}
+
+impl fmt::Debug for ServiceExecutors {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("ServiceExecutors([CAPABILITIES])")
+    }
+}
+
+/// Consumer-owned semantic and process capabilities required by the service.
+#[derive(Clone)]
+pub struct ServiceProviders {
+    pub(crate) catalog: Arc<dyn CatalogReadPort>,
+    pub(crate) policy: Arc<dyn CurrentPolicyPort>,
+    pub(crate) authoritative: Arc<dyn AuthoritativeReadPort>,
+    pub(crate) projection: Arc<dyn ProjectionQueryPort>,
+    pub(crate) outbox: Option<Arc<dyn OutboxStatusPort>>,
+    pub(crate) operational: Arc<dyn OperationalStatusPort>,
+    pub(crate) token_issuer: Arc<dyn CapabilityTokenIssuer>,
+    pub(crate) incident_ids: Arc<dyn IncidentIdSource>,
+    pub(crate) diagnostics: Arc<dyn ServiceDiagnostics>,
+    pub(crate) telemetry: Arc<dyn ServiceTelemetry>,
+    pub(crate) health: Arc<dyn ServiceHealthHooks>,
+    pub(crate) spawner: Arc<dyn ServiceJobSpawner>,
+    pub(crate) deadline_scheduler: Arc<dyn RequestDeadlineScheduler>,
+    pub(crate) cursor_tokens: Arc<dyn CursorTokenGenerator>,
+    pub(crate) cursor_clock: Arc<dyn CursorMonotonicClock>,
+}
+
+impl ServiceProviders {
+    /// Groups disjoint consumer capabilities without exposing their implementation.
+    #[allow(clippy::too_many_arguments)]
+    #[must_use]
+    pub fn new(
+        catalog: Arc<dyn CatalogReadPort>,
+        policy: Arc<dyn CurrentPolicyPort>,
+        authoritative: Arc<dyn AuthoritativeReadPort>,
+        projection: Arc<dyn ProjectionQueryPort>,
+        outbox: Option<Arc<dyn OutboxStatusPort>>,
+        operational: Arc<dyn OperationalStatusPort>,
+        token_issuer: Arc<dyn CapabilityTokenIssuer>,
+        incident_ids: Arc<dyn IncidentIdSource>,
+        diagnostics: Arc<dyn ServiceDiagnostics>,
+        telemetry: Arc<dyn ServiceTelemetry>,
+        health: Arc<dyn ServiceHealthHooks>,
+        spawner: Arc<dyn ServiceJobSpawner>,
+        deadline_scheduler: Arc<dyn RequestDeadlineScheduler>,
+        cursor_tokens: Arc<dyn CursorTokenGenerator>,
+        cursor_clock: Arc<dyn CursorMonotonicClock>,
+    ) -> Self {
+        Self {
+            catalog,
+            policy,
+            authoritative,
+            projection,
+            outbox,
+            operational,
+            token_issuer,
+            incident_ids,
+            diagnostics,
+            telemetry,
+            health,
+            spawner,
+            deadline_scheduler,
+            cursor_tokens,
+            cursor_clock,
+        }
+    }
+}
+
+impl fmt::Debug for ServiceProviders {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("ServiceProviders([CAPABILITIES])")
+    }
+}
+
+pub(crate) struct RiffDbServiceInner {
+    pub(crate) identity: ServiceIdentity,
+    pub(crate) process: ServiceProcessMetadata,
+    pub(crate) executors: ServiceExecutors,
+    pub(crate) providers: ServiceProviders,
+    pub(crate) cursors: ServiceCursorRegistries,
+    pub(crate) pre_bootstrap_health: Arc<PreBootstrapHealthAdmission>,
+    active_commit_subscribers: Arc<AtomicU16>,
+}
+
+/// The one concrete implementation shared by gRPC, MCP, CLI, and SDK adapters.
+#[derive(Clone)]
+pub struct RiffDbService {
+    pub(crate) inner: Arc<RiffDbServiceInner>,
+}
+
+impl RiffDbService {
+    /// Composes the service and the sole authority for restricted pre-bootstrap health.
+    #[must_use]
+    pub fn compose(
+        identity: ServiceIdentity,
+        process: ServiceProcessMetadata,
+        executors: ServiceExecutors,
+        providers: ServiceProviders,
+    ) -> (Self, PreBootstrapHealthContextIssuer) {
+        let admission = Arc::new(PreBootstrapHealthAdmission::open());
+        let issuer = PreBootstrapHealthContextIssuer::new(Arc::clone(&admission));
+        (
+            Self::with_pre_bootstrap_health(identity, process, executors, providers, admission),
+            issuer,
+        )
+    }
+
+    /// Constructs one API-neutral service over already activated dependencies.
+    #[must_use]
+    pub fn new(
+        identity: ServiceIdentity,
+        process: ServiceProcessMetadata,
+        executors: ServiceExecutors,
+        providers: ServiceProviders,
+    ) -> Self {
+        Self::with_pre_bootstrap_health(
+            identity,
+            process,
+            executors,
+            providers,
+            Arc::new(PreBootstrapHealthAdmission::closed()),
+        )
+    }
+
+    fn with_pre_bootstrap_health(
+        identity: ServiceIdentity,
+        process: ServiceProcessMetadata,
+        executors: ServiceExecutors,
+        providers: ServiceProviders,
+        pre_bootstrap_health: Arc<PreBootstrapHealthAdmission>,
+    ) -> Self {
+        let cursors = ServiceCursorRegistries::new(
+            Arc::clone(&providers.cursor_tokens),
+            Arc::clone(&providers.cursor_clock),
+        );
+        Self {
+            inner: Arc::new(RiffDbServiceInner {
+                identity,
+                process,
+                executors,
+                providers,
+                cursors,
+                pre_bootstrap_health,
+                active_commit_subscribers: Arc::new(AtomicU16::new(0)),
+            }),
+        }
+    }
+
+    pub(crate) fn spawn_operation<T, F>(
+        &self,
+        operation: ServiceOperationV1,
+        future: F,
+    ) -> ServiceFuture<'static, T>
+    where
+        T: ServiceResponseCharge + Send + 'static,
+        F: Future<Output = ServiceResult<T>> + Send + 'static,
+    {
+        let (sender, receipt) = port_completion_channel();
+        let job_inner = Arc::clone(&self.inner);
+        let lifecycle = Arc::new(OperationAuditLifecycle::new(operation));
+        let job = Box::pin(async move {
+            let observed = catch_future_panic(future, &lifecycle).await;
+            let result = match observed {
+                Ok(result) if !lifecycle.normal_completion_requires_containment(result.is_ok()) => {
+                    result
+                }
+                Ok(_) => {
+                    let failure =
+                        job_inner.internal_failure(operation, InternalDefect::UnterminatedAudit);
+                    match catch_future_panic(
+                        job_inner.settle_contained_failure_audit(&lifecycle),
+                        &lifecycle,
+                    )
+                    .await
+                    {
+                        Ok(Ok(())) => Err(failure),
+                        Ok(Err(failure)) => Err(contained_audit_failure(failure)),
+                        Err(()) => {
+                            job_inner.note_audit_failure(operation);
+                            Err(PublicError::storage_unavailable().into())
+                        }
+                    }
+                }
+                Err(()) => {
+                    let failure = job_inner.internal_failure(operation, InternalDefect::Panic);
+                    match catch_future_panic(
+                        job_inner.settle_contained_failure_audit(&lifecycle),
+                        &lifecycle,
+                    )
+                    .await
+                    {
+                        Ok(Ok(())) => Err(failure),
+                        Ok(Err(failure)) => Err(contained_audit_failure(failure)),
+                        Err(()) => {
+                            job_inner.note_audit_failure(operation);
+                            Err(PublicError::storage_unavailable().into())
+                        }
+                    }
+                }
+            };
+            sender.complete(result);
+        });
+
+        spawn_trusted_service_job(self.inner.providers.spawner.as_ref(), job);
+
+        Box::pin(trusted_service_job_completion(receipt))
+    }
+}
+
+fn spawn_trusted_service_job(spawner: &dyn ServiceJobSpawner, job: ServiceJob) {
+    spawner.spawn(job);
+}
+
+// Losing an accepted job is an uncertain-execution composition breach, not a
+// request failure: lower irreversible work may already have been submitted.
+async fn trusted_service_job_completion<T>(
+    receipt: PortReceipt<T, ServiceFailure>,
+) -> ServiceResult<T> {
+    match receipt.completion().await {
+        Ok(result) => result,
+        Err(PortDriverStopped) => {
+            panic!("accepted service job stopped without publishing its result")
+        }
+    }
+}
+
+impl RiffDbServiceInner {
+    pub(crate) fn reserve_commit_subscriber(
+        &self,
+    ) -> Result<CommitSubscriberLease, CommitSubscriberLimitReached> {
+        let count = Arc::clone(&self.active_commit_subscribers);
+        count
+            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |current| {
+                (current < crate::MAX_LIVE_COMMIT_SUBSCRIBERS).then_some(current + 1)
+            })
+            .map_err(|_| CommitSubscriberLimitReached)?;
+        Ok(CommitSubscriberLease { count })
+    }
+
+    pub(crate) fn active_commit_subscribers(&self) -> u16 {
+        self.active_commit_subscribers.load(Ordering::Acquire)
+    }
+
+    pub(crate) fn internal_failure(
+        &self,
+        operation: ServiceOperationV1,
+        defect: InternalDefect,
+    ) -> ServiceFailure {
+        contained_internal_failure(
+            self.providers.telemetry.as_ref(),
+            self.providers.incident_ids.as_ref(),
+            self.providers.diagnostics.as_ref(),
+            self.providers.health.as_ref(),
+            operation,
+            defect,
+        )
+    }
+}
+
+pub(crate) fn contained_internal_failure(
+    telemetry: &dyn ServiceTelemetry,
+    incident_ids: &dyn IncidentIdSource,
+    diagnostics: &dyn ServiceDiagnostics,
+    health: &dyn ServiceHealthHooks,
+    operation: ServiceOperationV1,
+    defect: InternalDefect,
+) -> ServiceFailure {
+    telemetry.record(ServiceTelemetryEvent::InternalIntegrity { operation });
+    match incident_ids.next_incident_id() {
+        Ok(incident_id) => {
+            diagnostics.record_internal(InternalError::new(incident_id, defect));
+            PublicError::internal_defect(incident_id).into()
+        }
+        Err(error) => {
+            health.fail_authoritative_readiness(crate::AuthoritativeReadinessFailure::Integrity);
+            riffdb_errors::EmergencyInternalFailure::from(error).into()
+        }
+    }
+}
+
+/// A fully shaped response withheld until its exact terminal audit is durable.
+pub(crate) struct PendingTerminalResponse<T, Terminal> {
+    terminal: Terminal,
+    response: ServiceResult<T>,
+}
+
+impl<T, Terminal: Copy> PendingTerminalResponse<T, Terminal> {
+    pub(crate) fn new(
+        result: T,
+        terminal: Terminal,
+        budget: impl FnOnce(&T) -> Result<(), ServiceFailure>,
+    ) -> Self {
+        let response = budget(&result).map(|()| result);
+        Self { terminal, response }
+    }
+
+    pub(crate) const fn terminal(&self) -> Terminal {
+        self.terminal
+    }
+
+    pub(crate) fn into_response(self) -> ServiceResult<T> {
+        self.response
+    }
+}
+
+/// One live service-owned commit-subscription slot.
+pub(crate) struct CommitSubscriberLease {
+    count: Arc<AtomicU16>,
+}
+
+impl Drop for CommitSubscriberLease {
+    fn drop(&mut self) {
+        let previous = self.count.fetch_sub(1, Ordering::AcqRel);
+        debug_assert!(previous > 0);
+    }
+}
+
+impl fmt::Debug for CommitSubscriberLease {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("CommitSubscriberLease([CAPACITY])")
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct CommitSubscriberLimitReached;
+
+impl fmt::Debug for RiffDbService {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("RiffDbService([CAPABILITIES])")
+    }
+}
+
+#[derive(Clone, Copy, Debug)]
+pub(crate) enum InternalDefect {
+    Panic,
+    UnterminatedAudit,
+    ProofMismatch,
+    LowerIntegrity,
+}
+
+impl fmt::Display for InternalDefect {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(match self {
+            Self::Panic => "contained service panic",
+            Self::UnterminatedAudit => "service operation omitted its terminal audit",
+            Self::ProofMismatch => "checked service proofs did not join",
+            Self::LowerIntegrity => "lower semantic state failed integrity",
+        })
+    }
+}
+
+impl Error for InternalDefect {}
+
+fn contained_audit_failure(failure: ContainedAuditFailure) -> ServiceFailure {
+    match failure {
+        ContainedAuditFailure::StorageUnavailable => PublicError::storage_unavailable().into(),
+        ContainedAuditFailure::OutcomeUnknown => PublicError::outcome_unknown().into(),
+    }
+}
+
+async fn catch_future_panic<F>(
+    future: F,
+    lifecycle: &Arc<OperationAuditLifecycle>,
+) -> Result<F::Output, ()>
+where
+    F: Future,
+{
+    let mut future = Box::pin(future);
+    poll_fn(move |context| {
+        match catch_unwind(AssertUnwindSafe(|| {
+            with_operation_audit_lifecycle(lifecycle, || Pin::as_mut(&mut future).poll(context))
+        })) {
+            Ok(Poll::Ready(value)) => Poll::Ready(Ok(value)),
+            Ok(Poll::Pending) => Poll::Pending,
+            Err(_) => Poll::Ready(Err(())),
+        }
+    })
+    .await
+}
+
+/// Catches a containable panic while polling a post-invocation continuation.
+///
+/// Stream items run after the audited establishment invocation has completed,
+/// so this boundary deliberately carries no operation-audit lifecycle.
+pub(crate) async fn catch_continuation_panic<F>(future: F) -> Result<F::Output, ()>
+where
+    F: Future,
+{
+    let mut future = Box::pin(future);
+    poll_fn(move |context| {
+        match catch_unwind(AssertUnwindSafe(|| Pin::as_mut(&mut future).poll(context))) {
+            Ok(Poll::Ready(value)) => Poll::Ready(Ok(value)),
+            Ok(Poll::Pending) => Poll::Pending,
+            Err(_) => Poll::Ready(Err(())),
+        }
+    })
+    .await
+}
+
+#[cfg(test)]
+mod tests {
+    use std::future::pending;
+    use std::panic::{AssertUnwindSafe, catch_unwind};
+    use std::sync::Mutex;
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::task::{Context, Poll, Waker};
+
+    use crate::orchestration::current_operation_audit_lifecycle;
+    use riffdb_types::{
+        AdministrationSequence, CommitSequence, ProvenanceId, ServiceAuditLinkV1,
+        ServiceAuditPhaseV1,
+    };
+
+    use super::*;
+
+    #[derive(Default)]
+    struct EnqueueThenPanicSpawner {
+        accepted: Mutex<Option<ServiceJob>>,
+    }
+
+    impl ServiceJobSpawner for EnqueueThenPanicSpawner {
+        fn spawn(&self, job: ServiceJob) {
+            *self
+                .accepted
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(job);
+            panic!("injected panic after service-job acceptance");
+        }
+    }
+
+    struct PollOnceThenDropSpawner;
+
+    impl ServiceJobSpawner for PollOnceThenDropSpawner {
+        fn spawn(&self, mut job: ServiceJob) {
+            let mut context = Context::from_waker(Waker::noop());
+            assert!(matches!(job.as_mut().poll(&mut context), Poll::Pending));
+        }
+    }
+
+    #[test]
+    fn enqueue_then_panic_remains_a_fail_fast_spawner_contract_breach() {
+        let spawner = EnqueueThenPanicSpawner::default();
+        let panicked = catch_unwind(AssertUnwindSafe(|| {
+            spawn_trusted_service_job(&spawner, Box::pin(async {}));
+        }));
+
+        assert!(panicked.is_err());
+        assert!(
+            spawner
+                .accepted
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .is_some(),
+            "the job was accepted before the trusted spawner breached its contract"
+        );
+    }
+
+    #[test]
+    fn accepted_job_drop_after_lower_submission_panics_instead_of_returning_failure() {
+        let lower_submitted = Arc::new(AtomicBool::new(false));
+        let job_lower_submitted = Arc::clone(&lower_submitted);
+        let (sender, receipt) = port_completion_channel::<(), ServiceFailure>();
+        let job: ServiceJob = Box::pin(async move {
+            job_lower_submitted.store(true, Ordering::Release);
+            pending::<()>().await;
+            sender.complete(Ok(()));
+        });
+
+        spawn_trusted_service_job(&PollOnceThenDropSpawner, job);
+        assert!(lower_submitted.load(Ordering::Acquire));
+
+        let mut completion = Box::pin(trusted_service_job_completion(receipt));
+        let mut context = Context::from_waker(Waker::noop());
+        let panicked = catch_unwind(AssertUnwindSafe(|| completion.as_mut().poll(&mut context)));
+
+        assert!(panicked.is_err());
+    }
+
+    #[test]
+    fn panic_boundary_retains_the_started_audit_lifecycle() {
+        let operation = ServiceOperationV1::GetEntity;
+        let lifecycle = Arc::new(OperationAuditLifecycle::new(operation));
+        let expected = Arc::clone(&lifecycle);
+        let operation_future = async move {
+            let current = current_operation_audit_lifecycle(operation);
+            assert!(Arc::ptr_eq(&current, &expected));
+            current.mark_started_for_test();
+            panic!("contained test panic");
+        };
+        let mut caught = Box::pin(catch_future_panic(operation_future, &lifecycle));
+        let mut context = Context::from_waker(Waker::noop());
+
+        assert!(matches!(
+            caught.as_mut().poll(&mut context),
+            Poll::Ready(Err(()))
+        ));
+        assert!(lifecycle.normal_completion_requires_containment(false));
+    }
+
+    #[test]
+    fn oversized_known_results_retain_their_normal_terminal_and_exact_link() {
+        let mut provenance_bytes = [0x41; 16];
+        provenance_bytes[6] = 0x71;
+        provenance_bytes[8] = 0x81;
+        let links = [
+            ServiceAuditLinkV1::Command {
+                commit_sequence: CommitSequence::first(),
+                provenance_id: ProvenanceId::from_bytes(provenance_bytes)
+                    .expect("valid UUIDv7 provenance"),
+            },
+            ServiceAuditLinkV1::ControlPlane {
+                administration_sequence: AdministrationSequence::first(),
+            },
+        ];
+
+        for link in links {
+            let pending =
+                PendingTerminalResponse::new((), (ServiceAuditPhaseV1::Succeeded, link), |_| {
+                    Err(ServiceFailure::ResponseTooLarge)
+                });
+
+            assert_eq!(pending.terminal(), (ServiceAuditPhaseV1::Succeeded, link));
+            assert!(matches!(
+                pending.into_response(),
+                Err(ServiceFailure::ResponseTooLarge)
+            ));
+        }
+    }
+}
