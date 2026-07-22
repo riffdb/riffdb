@@ -7,9 +7,9 @@ use riffdb_storage_api::{
     RetainedMetadataV1, SequenceAllocationError, StorageError, StorageErrorKind,
     StoredAdministrationAuditRecordV1, StoredAdmissionStateV1, StoredCapabilityRecordV1,
     StoredCommitRecordV1, StoredContractBundleV1, StoredDurableEventV1, StoredEntityRecordV1,
-    StoredIndexEntryV1, StoredIndexEpochV1, StoredOutboxIntentV1, StoredOutboxStatusV1,
-    StoredProjectionApplyV1, StoredProjectionControlV1, StoredProjectionStateV1,
-    StoredProvenanceRecordV1,
+    StoredIndexEntryV1, StoredIndexEntryV2, StoredIndexEpochV1, StoredOutboxIntentV1,
+    StoredOutboxStatusV1, StoredProjectionApplyV1, StoredProjectionControlV1,
+    StoredProjectionStateV1, StoredProvenanceRecordV1,
 };
 use riffdb_types::{
     AdministrationSequence, CapabilityTokenDigest, CommitSequence, ContractBundleHash,
@@ -359,6 +359,84 @@ pub(crate) struct HistoricalPlanReferenceRow {
     pub(crate) source: HistoricalPlanReferenceSource,
 }
 
+/// One physical memory index-table row during the coordinated ADR-0038 cutover.
+///
+/// `LegacyV1` exists only so already-merged command writers and startup tests
+/// keep compiling while their owning packages move to V2. Both variants share
+/// one ordered physical table; there is no reciprocal partition side table.
+#[derive(Clone)]
+#[allow(dead_code)]
+pub(crate) enum MemoryIndexEntry {
+    LegacyV1(StoredIndexEntryV1),
+    CurrentV2 {
+        record: StoredIndexEntryV2,
+        charge: EncodedContentCharge,
+    },
+}
+
+impl MemoryIndexEntry {
+    pub(crate) fn legacy(record: StoredIndexEntryV1) -> Self {
+        Self::LegacyV1(record)
+    }
+
+    #[allow(dead_code)]
+    pub(crate) fn current(record: StoredIndexEntryV2, charge: EncodedContentCharge) -> Self {
+        Self::CurrentV2 { record, charge }
+    }
+
+    pub(crate) fn key(&self) -> &riffdb_types::IndexEntryKey {
+        match self {
+            Self::LegacyV1(record) => record.key(),
+            Self::CurrentV2 { record, .. } => record.key(),
+        }
+    }
+
+    pub(crate) fn schema_binding(&self) -> &riffdb_storage_api::DurableKeySchemaBindingV1 {
+        match self {
+            Self::LegacyV1(record) => record.schema_binding(),
+            Self::CurrentV2 { record, .. } => record.schema_binding(),
+        }
+    }
+
+    pub(crate) fn covered_values(&self) -> &riffdb_types::CanonicalRecord {
+        match self {
+            Self::LegacyV1(record) => record.covered_values(),
+            Self::CurrentV2 { record, .. } => record.covered_values(),
+        }
+    }
+
+    pub(crate) fn current_record(&self) -> Option<&StoredIndexEntryV2> {
+        match self {
+            Self::LegacyV1(_) => None,
+            Self::CurrentV2 { record, .. } => Some(record),
+        }
+    }
+
+    pub(crate) fn encoded_content_charge(&self) -> EncodedContentCharge {
+        match self {
+            Self::LegacyV1(_) => memory_record_charge(),
+            Self::CurrentV2 { charge, .. } => *charge,
+        }
+    }
+
+    pub(crate) fn historical_evidence(&self) -> HistoricalPersistedKeyEvidenceV1 {
+        match self {
+            Self::LegacyV1(record) => HistoricalPersistedKeyEvidenceV1::from_index_entry(record),
+            Self::CurrentV2 { record, .. } => {
+                HistoricalPersistedKeyEvidenceV1::from_index_entry_v2(record)
+            }
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn legacy_record(&self) -> Option<&StoredIndexEntryV1> {
+        match self {
+            Self::LegacyV1(record) => Some(record),
+            Self::CurrentV2 { .. } => None,
+        }
+    }
+}
+
 impl HistoricalPlanReferenceRow {
     #[allow(dead_code)]
     pub(crate) fn new(plan: ExecutablePlanRef, source: HistoricalPlanReferenceSource) -> Self {
@@ -394,7 +472,7 @@ pub(crate) struct MemoryState {
     pub(crate) admissions: Vec<StoredAdmissionStateV1>,
     pub(crate) entities: Vec<StoredEntityRecordV1>,
     pub(crate) entity_commits: Vec<EntityCommitIndexRow>,
-    pub(crate) index_entries: Vec<StoredIndexEntryV1>,
+    pub(crate) index_entries: Vec<MemoryIndexEntry>,
     pub(crate) index_epochs: Vec<StoredIndexEpochV1>,
     // Writers maintain both historical indexes atomically with their source
     // rows while holding MemoryAccess. Plan rows retain one immutable source;

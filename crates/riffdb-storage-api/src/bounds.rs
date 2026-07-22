@@ -25,6 +25,14 @@ pub const MAX_EVENT_INTENTS: usize = 4_096;
 pub const MAX_READ_SNAPSHOT_BYTES: usize = riffdb_types::MAX_COMMAND_READ_STATE_SEMANTIC_BYTES_V1;
 /// Maximum bytes in one scan page.
 pub const MAX_SCAN_PAGE_BYTES: usize = 4 * 1024 * 1024;
+/// Maximum physical index candidates inspected by one partition-filtered scan call.
+pub const MAX_INDEX_SCAN_INSPECTED_ENTRIES: usize = 500;
+/// Maximum complete encoded candidate bytes inspected by one partition-filtered scan call.
+pub const MAX_INDEX_SCAN_INSPECTED_BYTES: usize = 4 * 1024 * 1024;
+/// Maximum exact partition keys in one lower index filter.
+pub const MAX_INDEX_PARTITION_FILTER_KEYS: usize = 1_024;
+/// Maximum length-framed partition-key content in one lower index filter.
+pub const MAX_INDEX_PARTITION_FILTER_BYTES: usize = 1024 * 1024;
 /// Maximum bytes in one internal ordered commit-log scan page.
 pub const MAX_COMMIT_SCAN_PAGE_BYTES: usize = 16 * 1024 * 1024;
 /// Maximum rows in one scan page.

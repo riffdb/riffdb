@@ -111,7 +111,10 @@ pub struct StoredIndexEntryV1 {
 }
 
 impl StoredIndexEntryV1 {
-    /// Constructs a bounded canonical index-entry record.
+    /// Constructs a bounded legacy index-entry migration source.
+    ///
+    /// Current writes must use [`StoredIndexEntryV2`]. V1 remains public until
+    /// the ADR-0038 startup migration and durable decoder are integrated.
     pub fn new(
         key: IndexEntryKey,
         schema_binding: DurableKeySchemaBindingV1,
@@ -150,6 +153,72 @@ impl StoredIndexEntryV1 {
         framed_bytes(self.key.as_bytes().len())?
             .checked_add(self.schema_binding.semantic_bytes()?)
             .and_then(|value| value.checked_add(covered_bytes))
+            .ok_or(StorageValueError::SizeOverflow)
+    }
+}
+
+/// One complete current index-entry post-image with exact partition identity.
+#[derive(Clone, Eq, PartialEq)]
+pub struct StoredIndexEntryV2 {
+    key: IndexEntryKey,
+    schema_binding: DurableKeySchemaBindingV1,
+    covered_values: CanonicalRecord,
+    partition_key: PartitionKey,
+}
+
+impl StoredIndexEntryV2 {
+    /// Constructs a bounded canonical current index-entry record.
+    pub fn new(
+        key: IndexEntryKey,
+        schema_binding: DurableKeySchemaBindingV1,
+        covered_values: CanonicalRecord,
+        partition_key: PartitionKey,
+    ) -> Result<Self, StorageValueError> {
+        if canonical_record_bytes(&covered_values)? > MAX_CANONICAL_DOCUMENT_BYTES {
+            return Err(StorageValueError::LimitExceeded);
+        }
+        let record = Self {
+            key,
+            schema_binding,
+            covered_values,
+            partition_key,
+        };
+        let _ = record.semantic_bytes()?;
+        Ok(record)
+    }
+
+    /// Borrows the complete canonical index key.
+    #[must_use]
+    pub const fn key(&self) -> &IndexEntryKey {
+        &self.key
+    }
+
+    /// Borrows the exact retained bundle owning this persisted key post-image.
+    #[must_use]
+    pub const fn schema_binding(&self) -> &DurableKeySchemaBindingV1 {
+        &self.schema_binding
+    }
+
+    /// Borrows the complete canonical covered-value record.
+    #[must_use]
+    pub const fn covered_values(&self) -> &CanonicalRecord {
+        &self.covered_values
+    }
+
+    /// Borrows the exact canonical logical partition stored with this row.
+    #[must_use]
+    pub const fn partition_key(&self) -> &PartitionKey {
+        &self.partition_key
+    }
+
+    pub(crate) fn semantic_bytes(&self) -> Result<usize, StorageValueError> {
+        let covered_bytes = framed_bytes(canonical_record_bytes(&self.covered_values)?)?;
+        framed_bytes(self.key.as_bytes().len())?
+            .checked_add(self.schema_binding.semantic_bytes()?)
+            .and_then(|value| value.checked_add(covered_bytes))
+            .and_then(|value| {
+                value.checked_add(framed_bytes(self.partition_key.as_bytes().len()).ok()?)
+            })
             .ok_or(StorageValueError::SizeOverflow)
     }
 }
@@ -2200,6 +2269,7 @@ macro_rules! redacted_debug {
 redacted_debug!(
     StoredEntityRecordV1,
     StoredIndexEntryV1,
+    StoredIndexEntryV2,
     StoredIndexEpochV1,
     IndexEntryMutationV1,
     IndexEpochAdvanceV1,
