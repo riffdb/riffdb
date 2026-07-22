@@ -114,24 +114,26 @@ fn service_comparison_matches_the_shared_semantic_oracle() {
             &workload.contention,
         )
         .expect("in-process RiffDB service matches the shared oracle");
-
-        if let Some(database_url) = live_database_url().expect("live PostgreSQL config is valid") {
-            let postgres = PostgresBudgetAdapter::new(database_url).expect("bounded database URL");
-            verify_parameterized_backend(
-                || {
-                    postgres.reset_schema()?;
-                    postgres.run_sequential(&workload.sequential)
-                },
-                || {
-                    postgres.reset_schema()?;
-                    postgres.run_contention(&workload.contention)
-                },
-                &workload.sequential,
-                &workload.contention,
-            )
-            .expect("PostgreSQL and RiffDB use the same normalized oracle");
-        }
     });
+
+    let Some(database_url) = live_database_url().expect("live PostgreSQL config is valid") else {
+        return;
+    };
+    let workload = canonical_workload();
+    let postgres = PostgresBudgetAdapter::new(database_url).expect("bounded database URL");
+    verify_parameterized_backend(
+        || {
+            postgres.reset_schema()?;
+            postgres.run_sequential(&workload.sequential)
+        },
+        || {
+            postgres.reset_schema()?;
+            postgres.run_contention(&workload.contention)
+        },
+        &workload.sequential,
+        &workload.contention,
+    )
+    .expect("PostgreSQL and RiffDB use the same normalized oracle");
 }
 
 #[test]
