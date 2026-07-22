@@ -6,8 +6,8 @@ use riffdb_types::{
     AggregateTypeId, CommandId, ContractLineage, ContractVersion, EntityTypeId, EventTypeId,
     FieldId, IndexId, InvariantId, MAX_COMMAND_AFFECTED_INDEX_PREFIXES_V1,
     MAX_COMMAND_CONFLICT_KEYS_V1, MAX_COMMAND_INDEX_DELTAS_V1,
-    MAX_COMMAND_READ_STATE_SEMANTIC_BYTES_V1, MAX_COMMAND_VALIDATION_TARGETS_V1, OutcomeId,
-    PlanHash,
+    MAX_COMMAND_READ_STATE_SEMANTIC_BYTES_V1, MAX_COMMAND_VALIDATION_TARGETS_V1, MAX_KEY_BYTES,
+    OutcomeId, PlanHash,
 };
 
 use crate::{
@@ -892,6 +892,7 @@ impl CommandPlan {
             &bindings,
             &root_validation_reads,
             &instructions,
+            locality.partition_schema().maximum_encoded_bytes(),
             contract_schema,
         )?;
 
@@ -1013,10 +1014,17 @@ impl CommandPlan {
 const INDEX_PREFIX_TARGET_FIXED_SEMANTIC_BYTES_V1: usize = 14;
 const AFFECTED_EPOCH_CURRENT_FIXED_SEMANTIC_BYTES_V1: usize = 4;
 const MAX_INDEX_EPOCH_POSITION_SEMANTIC_BYTES_V1: usize = 9;
+// This compiler proof ceiling is independent of the exact pre-sequence
+// write-set budget, which may reject a concrete otherwise-valid plan later.
+const INDEX_ENTRY_V2_PARTITION_LENGTH_SEMANTIC_BYTES: usize = 4;
+const MAX_INDEX_ENTRY_V2_PARTITION_SEMANTIC_BYTES: usize =
+    MAX_COMMAND_INDEX_DELTAS_V1 * (INDEX_ENTRY_V2_PARTITION_LENGTH_SEMANTIC_BYTES + MAX_KEY_BYTES);
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 struct WorstCaseIndexDerivation {
     index_entry_deltas: usize,
+    index_entry_puts: usize,
+    index_entry_v2_partition_semantic_bytes: usize,
     affected_prefixes: usize,
     affected_target_bytes: usize,
 }
@@ -1025,15 +1033,18 @@ fn validate_worst_case_index_derivation(
     bindings: &[BindingPlan],
     root_validation_reads: &[RootValidationReadPlan],
     instructions: &[Instruction],
+    maximum_partition_key_bytes: usize,
     schema: &SchemaIr,
 ) -> Result<(), IrValidationError> {
-    let derivation = worst_case_index_derivation(bindings, instructions, schema)?;
+    let derivation =
+        worst_case_index_derivation(bindings, instructions, maximum_partition_key_bytes, schema)?;
     validate_worst_case_index_limits(derivation, bindings.len(), root_validation_reads.len())
 }
 
 fn worst_case_index_derivation(
     bindings: &[BindingPlan],
     instructions: &[Instruction],
+    maximum_partition_key_bytes: usize,
     schema: &SchemaIr,
 ) -> Result<WorstCaseIndexDerivation, IrValidationError> {
     let mut assigned_fields = vec![BTreeSet::new(); bindings.len()];
@@ -1049,6 +1060,7 @@ fn worst_case_index_derivation(
     }
 
     let mut index_entry_deltas = 0usize;
+    let mut index_entry_puts = 0usize;
     let mut non_whole_prefixes = 0usize;
     let mut non_whole_prefix_bytes = 0usize;
     let mut affected_indexes = BTreeSet::<IndexId>::new();
@@ -1085,6 +1097,7 @@ fn worst_case_index_derivation(
                 2
             };
             index_entry_deltas = checked_index_derivation_add(index_entry_deltas, entry_delta)?;
+            index_entry_puts = checked_index_derivation_add(index_entry_puts, 1)?;
             affected_indexes.insert(index.id());
 
             let mut cumulative_component_bytes = 0usize;
@@ -1121,8 +1134,16 @@ fn worst_case_index_derivation(
             INDEX_PREFIX_TARGET_FIXED_SEMANTIC_BYTES_V1,
         )?,
     )?;
+    let partition_semantic_bytes_per_put = checked_index_derivation_add(
+        INDEX_ENTRY_V2_PARTITION_LENGTH_SEMANTIC_BYTES,
+        maximum_partition_key_bytes,
+    )?;
+    let index_entry_v2_partition_semantic_bytes =
+        checked_index_derivation_mul(index_entry_puts, partition_semantic_bytes_per_put)?;
     Ok(WorstCaseIndexDerivation {
         index_entry_deltas,
+        index_entry_puts,
+        index_entry_v2_partition_semantic_bytes,
         affected_prefixes,
         affected_target_bytes,
     })
@@ -1137,6 +1158,21 @@ fn validate_worst_case_index_limits(
         "command worst-case index entry deltas",
         derivation.index_entry_deltas,
         MAX_COMMAND_INDEX_DELTAS_V1,
+    )?;
+    if derivation.index_entry_puts > derivation.index_entry_deltas {
+        return Err(IrValidationError::InvalidDependency {
+            reason: "index put count exceeds complete index-delta count",
+        });
+    }
+    checked_len(
+        "command worst-case index entry puts",
+        derivation.index_entry_puts,
+        MAX_COMMAND_INDEX_DELTAS_V1,
+    )?;
+    checked_len(
+        "command worst-case V2 index partition semantic bytes",
+        derivation.index_entry_v2_partition_semantic_bytes,
+        MAX_INDEX_ENTRY_V2_PARTITION_SEMANTIC_BYTES,
     )?;
     checked_len(
         "command worst-case affected index prefixes",
@@ -2702,6 +2738,12 @@ pub(crate) mod tests {
         let unrelated_field = FieldId::new(5).expect("field");
         let component =
             crate::KeyComponentSchema::new(crate::ValueType::u64(), vec![]).expect("component");
+        let maximum_partition_key_bytes = KeySchema::new(
+            KeyPurpose::Partition(AggregateTypeId::first()),
+            vec![component.clone()],
+        )
+        .expect("partition key")
+        .maximum_encoded_bytes();
         let entity_key = KeySchema::new(KeyPurpose::Entity(entity_id), vec![component.clone()])
             .expect("entity key");
         let index = crate::IndexSchema::new(
@@ -2805,7 +2847,13 @@ pub(crate) mod tests {
                     })
             })
             .collect::<Vec<_>>();
-        worst_case_index_derivation(&bindings, &instructions, &schema).expect("derivation")
+        worst_case_index_derivation(
+            &bindings,
+            &instructions,
+            maximum_partition_key_bytes,
+            &schema,
+        )
+        .expect("derivation")
     }
 
     #[test]
@@ -2884,6 +2932,8 @@ pub(crate) mod tests {
     fn worst_case_index_limits_accept_exact_boundaries_and_reject_one_over_in_priority_order() {
         let empty = WorstCaseIndexDerivation {
             index_entry_deltas: 0,
+            index_entry_puts: 0,
+            index_entry_v2_partition_semantic_bytes: 0,
             affected_prefixes: 0,
             affected_target_bytes: 0,
         };
@@ -2891,6 +2941,9 @@ pub(crate) mod tests {
             validate_worst_case_index_limits(
                 WorstCaseIndexDerivation {
                     index_entry_deltas: MAX_COMMAND_INDEX_DELTAS_V1,
+                    index_entry_puts: MAX_COMMAND_INDEX_DELTAS_V1,
+                    index_entry_v2_partition_semantic_bytes:
+                        MAX_INDEX_ENTRY_V2_PARTITION_SEMANTIC_BYTES,
                     ..empty
                 },
                 0,
@@ -2902,6 +2955,8 @@ pub(crate) mod tests {
             validate_worst_case_index_limits(
                 WorstCaseIndexDerivation {
                     index_entry_deltas: MAX_COMMAND_INDEX_DELTAS_V1 + 1,
+                    index_entry_puts: 0,
+                    index_entry_v2_partition_semantic_bytes: 0,
                     affected_prefixes: MAX_COMMAND_AFFECTED_INDEX_PREFIXES_V1 + 1,
                     affected_target_bytes: 0,
                 },
@@ -3003,6 +3058,65 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn v2_index_partition_charge_preserves_independent_count_and_write_set_limits() {
+        const AGGREGATE_STAGED_WRITE_BYTES_V1: usize = 16 * 1024 * 1024;
+
+        assert_eq!(MAX_INDEX_ENTRY_V2_PARTITION_SEMANTIC_BYTES, 16_793_600);
+        assert_eq!(
+            MAX_INDEX_ENTRY_V2_PARTITION_SEMANTIC_BYTES
+                .checked_sub(AGGREGATE_STAGED_WRITE_BYTES_V1),
+            Some(16_384),
+            "the exact sequence-free write plan, not the compiler count ceiling, enforces the aggregate"
+        );
+
+        let empty = WorstCaseIndexDerivation {
+            index_entry_deltas: 0,
+            index_entry_puts: 0,
+            index_entry_v2_partition_semantic_bytes: 0,
+            affected_prefixes: 0,
+            affected_target_bytes: 0,
+        };
+        assert_eq!(
+            validate_worst_case_index_limits(
+                WorstCaseIndexDerivation {
+                    index_entry_deltas: 1,
+                    index_entry_puts: 2,
+                    ..empty
+                },
+                0,
+                0,
+            ),
+            Err(IrValidationError::InvalidDependency {
+                reason: "index put count exceeds complete index-delta count",
+            })
+        );
+        assert_eq!(
+            validate_worst_case_index_limits(
+                WorstCaseIndexDerivation {
+                    index_entry_deltas: 1,
+                    index_entry_puts: 1,
+                    index_entry_v2_partition_semantic_bytes:
+                        MAX_INDEX_ENTRY_V2_PARTITION_SEMANTIC_BYTES + 1,
+                    ..empty
+                },
+                0,
+                0,
+            ),
+            Err(IrValidationError::LimitExceeded {
+                kind: "command worst-case V2 index partition semantic bytes",
+                actual: MAX_INDEX_ENTRY_V2_PARTITION_SEMANTIC_BYTES + 1,
+                maximum: MAX_INDEX_ENTRY_V2_PARTITION_SEMANTIC_BYTES,
+            })
+        );
+        assert_eq!(
+            checked_index_derivation_mul(usize::MAX, 2),
+            Err(IrValidationError::SizeOverflow {
+                kind: "command worst-case index derivation",
+            })
+        );
+    }
+
+    #[test]
     fn worst_case_index_estimator_freezes_create_replace_and_shared_whole_prefix_formulas() {
         let first = FieldId::new(2).expect("field");
         let middle = FieldId::new(3).expect("field");
@@ -3013,6 +3127,8 @@ pub(crate) mod tests {
             index_estimator_derivation(BindingMode::Create, &[first, middle, last, unrelated], 1,),
             WorstCaseIndexDerivation {
                 index_entry_deltas: 1,
+                index_entry_puts: 1,
+                index_entry_v2_partition_semantic_bytes: 18,
                 affected_prefixes: 4,
                 affected_target_bytes: 104,
             }
@@ -3021,6 +3137,8 @@ pub(crate) mod tests {
             index_estimator_derivation(BindingMode::Mutate, &[first], 1),
             WorstCaseIndexDerivation {
                 index_entry_deltas: 2,
+                index_entry_puts: 1,
+                index_entry_v2_partition_semantic_bytes: 18,
                 affected_prefixes: 7,
                 affected_target_bytes: 194,
             }
@@ -3029,6 +3147,8 @@ pub(crate) mod tests {
             index_estimator_derivation(BindingMode::Mutate, &[middle], 1),
             WorstCaseIndexDerivation {
                 index_entry_deltas: 2,
+                index_entry_puts: 1,
+                index_entry_v2_partition_semantic_bytes: 18,
                 affected_prefixes: 6,
                 affected_target_bytes: 172,
             }
@@ -3037,6 +3157,8 @@ pub(crate) mod tests {
             index_estimator_derivation(BindingMode::Mutate, &[last], 1),
             WorstCaseIndexDerivation {
                 index_entry_deltas: 2,
+                index_entry_puts: 1,
+                index_entry_v2_partition_semantic_bytes: 18,
                 affected_prefixes: 5,
                 affected_target_bytes: 142,
             }
@@ -3045,6 +3167,8 @@ pub(crate) mod tests {
             index_estimator_derivation(BindingMode::Mutate, &[unrelated], 1),
             WorstCaseIndexDerivation {
                 index_entry_deltas: 0,
+                index_entry_puts: 0,
+                index_entry_v2_partition_semantic_bytes: 0,
                 affected_prefixes: 0,
                 affected_target_bytes: 0,
             }
@@ -3053,6 +3177,8 @@ pub(crate) mod tests {
             index_estimator_derivation(BindingMode::Mutate, &[first], 2),
             WorstCaseIndexDerivation {
                 index_entry_deltas: 4,
+                index_entry_puts: 2,
+                index_entry_v2_partition_semantic_bytes: 36,
                 affected_prefixes: 13,
                 affected_target_bytes: 374,
             }
