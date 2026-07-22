@@ -1,4 +1,4 @@
-spec_version: '0.23'
+spec_version: '0.24'
 product: RiffDB
 repository: riffdb
 status: implementation-handoff
@@ -706,8 +706,13 @@ work_packages:
   - ADR-0019
   - ADR-0021
   - ADR-0030
+  - ADR-0032
   allowed_paths:
   - Cargo.lock
+  - crates/riffdb-storage-api/src/startup.rs
+  - crates/riffdb-storage-api/tests/core_boundaries.rs
+  - crates/riffdb-storage-api/tests/architecture.rs
+  - crates/riffdb-storage-memory/src/startup.rs
   - crates/riffdb-storage-redb/**
   - tests/service_audit_recovery/**
   - tests/storage_recovery/**
@@ -757,11 +762,14 @@ work_packages:
     marker/history fast path, deferred operational-metadata write, or online repair, plus retained-metadata invariant
     and canonical-absence evidence
   - Exclusive StructuralEvidenceSession implementation that withholds every mutation/operational port while scanning
-    and yields StructurallyOpened dormant redb ports bound to the DatabaseId and startup session only after the
-    complete structural scan and historical evidence cursor both reach exact end
+    and yields StructurallyOpened dormant redb ports plus the exact same-snapshot RetainedMetadataV1 bound to the
+    DatabaseId and startup session only after the complete structural scan and historical evidence cursor both reach
+    exact end
   - Explicit evidence that StructurallyOpened is not IR-aware or operational readiness; redb neither validates command
     plans nor consumes ValidatedCatalogHistory, and any scan failure drops the open rather than publishing ports
   acceptance_commands:
+  - cargo test -p riffdb-storage-api
+  - cargo test -p riffdb-storage-memory
   - cargo test -p riffdb-storage-redb
   - cargo test -p riffdb-storage-redb --test storage_recovery_matrix
   - cargo test -p riffdb-storage-redb --test service_audit_recovery
@@ -1192,12 +1200,16 @@ work_packages:
   - ADR-0027
   - ADR-0029
   - ADR-0030
+  - ADR-0031
   allowed_paths:
   - Cargo.lock
   - crates/riffdb-service/**
   - tests/service/**
   deliverables:
   - Service traits and implementations
+  - Service-owned bounded pre-schema submitted-value family and exact-plan schema-directed materialization into the
+    sole CanonicalRecord before hashing, policy, facts, admission, runtime, or persistence, including field ID/name,
+    decimal, money, enum, list, nested-record, and historical optional-field validation
   - Combined input normalization and input-computable partition/conflict/authorization-fact preparation using the
     shared pure riffdb-invariant evaluator, mapping checked arithmetic to root ValidationCode::OutOfRange before
     admission and impossible checked-plan/input state to internal integrity
@@ -1299,6 +1311,7 @@ work_packages:
   - POC-008
   required_adrs:
   - ADR-0007
+  - ADR-0031
   allowed_paths:
   - examples/budget-comparison/Cargo.toml
   - examples/budget-comparison/Cargo.lock
@@ -1338,6 +1351,7 @@ work_packages:
   - ADR-0028
   - ADR-0029
   - ADR-0030
+  - ADR-0031
   allowed_paths:
   - Cargo.lock
   - proto/**
@@ -1417,6 +1431,8 @@ work_packages:
   - ADR-0028
   - ADR-0029
   - ADR-0030
+  - ADR-0031
+  - ADR-0032
   allowed_paths:
   - Cargo.lock
   - crates/riffdb-api-grpc/**
@@ -1470,7 +1486,9 @@ work_packages:
   - Staged startup gate that performs identity initialization first, drives redb structural evidence to exact end,
     obtains catalog-owned opaque same-session ValidatedCatalogHistory, and only then activates the matching
     StructurallyOpened dormant ports; the catalog history includes ADR-0030 validation of every qualifying explicit
-    capability partition, no proof crosses the storage trait, and any mismatch leaves the process unready
+    capability partition, while StructurallyOpened carries the exact same-snapshot RetainedMetadataV1 used to check
+    database identity, active-pointer agreement, bootstrap lifecycle, and allocator capacity; no catalog proof crosses
+    the storage trait, and any mismatch leaves the process unready
   - Exact 256-item lower commit-subscription buffers and retained supervision handles for every accepted service task;
     buffer overflow remains resumable and any accepted task panic or disappearance stops routing rather than silently
     dropping work

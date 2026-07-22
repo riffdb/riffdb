@@ -6,7 +6,7 @@
 **Tagline:** *Vibe fast. Commit safely.*  
 **Category:** Contract-first operational database for agent-built applications  
 
-**Version:** 0.23
+**Version:** 0.24
 **Status:** Architecture-approved implementation handoff
 **Date:** 21 July 2026
 **Audience:** Coding agents, database engineers, compiler engineers, security reviewers, and technical product leads  
@@ -59,6 +59,7 @@
 | 0.21 | 2026-07-21 | Applied the accepted lineage-overflow retention/recheck and explicit coordinator-durability decisions: catalog owns opaque command-materialization readiness/resource evidence and the pure current-recheck API; over-budget returned evidence retains only the raw snapshot and exact resolved plan/proof and must reproduce the overflow after dependency and raw-observation equality; production coordinator construction explicitly receives `sync` or `group`, `memory` remains test-only, P1 `riffdbd` passes a code-level `sync`, and no constructor/backend default is inferred. |
 | 0.22 | 2026-07-21 | Clarified the accepted three-attempt boundary: each attempt slot is consumed immediately before catalog snapshot materialization; a valid lineage-expansion `ResourceLimit` consumes that slot even though runtime is not entered, while a `Ready` result continues into exactly one runtime evaluation in the same slot. |
 | 0.23 | 2026-07-21 | Applied the maintainer-approved pre-bootstrap health clarification: the unchanged API-neutral Health operation may use a private principal-less read-only context only during startup validation/bootstrap and returns only bounded lifecycle, liveness, and readiness; after the bootstrap marker it requires authenticated current-policy handling, while bootstrap remains the sole principal-less mutation and durable-audit exception. |
+| 0.24 | 2026-07-21 | Applied accepted ADR-0031 and ADR-0032: transports preserve structurally checked pre-schema submitted command values for service-owned materialization under the exact selected plan, and the completed structural startup handoff carries the existing same-snapshot retained metadata needed for bootstrap lifecycle, active-pointer agreement, and allocator readiness. No public or durable format changed. |
 
 ### Normative language
 
@@ -212,7 +213,7 @@ These decisions are binding for the POC unless changed through an ADR reviewed b
 
 ## 4.2 Trust boundaries
 
-1. Network input is untrusted until transport decoding, size checks, authentication, and schema validation complete.
+1. Network input is untrusted until transport decoding, size checks, authentication, and the shared service's schema-directed validation complete. A transport's structural value validation does not claim compiled-schema materialization.
 2. Contract source is untrusted until compilation succeeds and deployment policy approves the resulting plan.
 3. MCP client and model behavior is untrusted; every tool call is authorization-checked and input-validated.
 4. The deterministic runtime is trusted to evaluate only compiler-produced IR.
@@ -302,7 +303,7 @@ The binary targets are `riffdbd` from `riffdb-server`, `riffdb` from `riffdb-cli
 | `riffdb-contract-ir` | Typed HIR, executable IR, plans, immutable projection group schemas, and contract bundle structs | Types; no parser implementation, storage, compiler implementation, or runtime dependency |
 | `riffdb-contract-compiler` | Name resolution, type checking, invariant classification, locality analysis, plan generation, and JSON Schema output | Syntax and IR; no storage, service, or transport dependency |
 | `riffdb-catalog` | Immutable contract bundle persistence, compatibility checks, active-version changes, catalog notifications, bounded active-lineage materialization proofs, opaque command `Ready`/resource evidence and pure current-recheck operations, opaque projection event-materialization views, and IR-aware validation of bounded same-session historical startup evidence | IR and storage API; its opaque process-local proofs, evidence, and materialization views never cross a storage trait |
-| `riffdb-storage-api` | Semantic snapshots, database initialization, structural startup sessions/evidence/type-state ports, evaluated commands, commit intents, durable DTOs, typed transitions/readers, the narrow durable `proto_codec` mapping bridge, and ADR-0017 projection-schema consumers | Types/errors; proto only through `proto_codec`; contract IR only for immutable `ProjectionGroupSchema`/`BoundProjectionGroupSchema` values in the projection-schema module; no clock, entropy, compiler, command-plan interpretation, historical-plan validation, runtime, commit, service, transport, or concrete-engine dependency |
+| `riffdb-storage-api` | Semantic snapshots, database initialization, structural startup sessions/evidence/type-state ports including the same-snapshot retained-metadata handoff, evaluated commands, commit intents, durable DTOs, typed transitions/readers, the narrow durable `proto_codec` mapping bridge, and ADR-0017 projection-schema consumers | Types/errors; proto only through `proto_codec`; contract IR only for immutable `ProjectionGroupSchema`/`BoundProjectionGroupSchema` values in the projection-schema module; no clock, entropy, compiler, command-plan interpretation, historical-plan validation, runtime, commit, service, transport, or concrete-engine dependency |
 | `riffdb-storage-memory` | Deterministic reference storage implementation used by model and semantic tests | Storage API only |
 | `riffdb-storage-redb` | Durable POC implementation, table layout, complete structural integrity/evidence scan, dormant opened ports, backup, restore, and engine benchmarks | Storage API and `redb`; no contract IR, `ValidatedCatalogHistory`, readiness composition, or API transports |
 | `riffdb-invariant` | Shared pure evaluation of checked input-computable expressions plus supported predicates, invariants, postconditions, and commit-time checks | Types and IR; no snapshot, admission, storage, service, clock, entropy, or transport dependency; no POC state-machine source, IR, or execution surface |
@@ -312,7 +313,7 @@ The binary targets are `riffdbd` from `riffdb-server`, `riffdb` from `riffdb-cli
 | `riffdb-commit` | Database-initialization executor, admission, capability acquisition, orchestration of catalog-owned snapshot readiness/resource evidence and current rechecks, deterministic evaluation orchestration, exact historical-plan matching, final `CommitIntent` assembly, transaction-current commit-check orchestration, revalidation, sequencing, authoritative commit, typed control-plane operations, ordered audit execution, and consumer-owned `AdmissionClock`, `AdministrationClock`, `ProvenanceIdSource`, and `AdministrationAuditInputView` ports | Runtime, conflict, idempotency, catalog, `riffdb-contract-ir`, `riffdb-invariant`, storage API, and policy-owned authorized-preparation/provenance/facts values plus only `TransactionCurrentCapabilityVerifier` and `AuthorizationClock`; direct IR/invariant use is limited to exact plan matching, grammar-v1 index derivation, and pure transaction-current commit-check evaluation; no syntax/compiler, service, transport, protocol, general policy authorizer, obligations/redaction engine, policy-owned storage reader, or concrete clock/entropy implementation |
 | `riffdb-auth` | Principal authentication, local development capability tokens, expiry, credential resolution, narrow synchronous authentication clock, and `CredentialAuthenticator` entry point | Types, errors, and storage-owned capability readers; no policy, command execution, service, or transport dependency |
 | `riffdb-policy` | Deny-by-default authorization, capability scopes, obligations, approvals, provenance validation, value-only authorized capability-mutation preparation and transaction-current facts, synchronous authorization clock, and pure transaction-current capability verification | Auth and types/errors only; no storage API, commit, service, transport, protocol, authoritative write handle, or concrete storage dependency |
-| `riffdb-service` | API-neutral command, contract, entity, commit, provenance, projection, discovery, administration, and health services, including capability-administration request/result semantics and checked command-input preparation | Foundational types/errors, contract/compiler/catalog semantics, the pure `riffdb-invariant` expression evaluator, auth and policy entry points, typed commit executors, and consumer-owned bounded read ports; no runtime execution API, transport, general storage engine, or concrete storage implementation |
+| `riffdb-service` | API-neutral command, contract, entity, commit, provenance, projection, discovery, administration, and health services, including capability-administration request/result semantics, checked pre-schema submitted command values, and schema-directed canonical command-input preparation | Foundational types/errors, contract/compiler/catalog semantics, the pure `riffdb-invariant` expression evaluator, auth and policy entry points, typed commit executors, and consumer-owned bounded read ports; no runtime execution API, transport, general storage engine, or concrete storage implementation |
 | `riffdb-api-grpc` | Tonic services, authentication interceptors, bounds checks, and wire conversions | Service, the auth-owned `CredentialAuthenticator` interface, proto, and Tonic; no policy, catalog, runtime, commit, storage API, or storage implementation |
 | `riffdb-client-rust` | Generic and generated Rust client APIs plus the approved system UUIDv7 request/capability/agent-session convenience source | Proto and Tonic client plus the exact ADR-0018 entropy dependency only; no semantic database implementation |
 | `riffdb-server` | `riffdbd` process composition, configuration, lifecycle, hosted gRPC/HTTP endpoints, startup proof composition, and concrete OS clock/UUIDv7/cursor/digest providers implementing the separate consumer ports | Service/API crates and concrete auth, clock/identifier, executor, storage, outbox, projection, and observability implementations solely for composition; no new policy, command, query, redaction, cursor, audit, or identifier semantics |
@@ -2099,13 +2100,21 @@ may join the two matching same-session results and evaluate readiness:
    record kind; and readable configured digest support for every active
    unexpired capability. A missing, duplicate, mismatched, wrong-kind, wrong-
    target, or unsupported cross-link fails readiness.
-9. Rebuild authoritative in-memory indexes, lock metrics, and subscriptions only
-   after the matching `StructurallyOpened`/`ValidatedCatalogHistory` pair is accepted.
+9. Require the `RetainedMetadataV1` carried inside `StructurallyOpened` to match
+   its database identity and the catalog proof's absent or exact active pointer.
+   Use that same-snapshot value for bootstrap-marker lifecycle selection and
+   require both independent allocator states to be `Next(_)` before readiness.
+10. Rebuild authoritative in-memory indexes, lock metrics, and subscriptions only
+    after the matching `StructurallyOpened`/`ValidatedCatalogHistory` pair and
+    retained-metadata checks are accepted.
 
-`StructurallyOpened` alone never means readiness. WP-130 authoritative readiness
-becomes true only after matching same-session `ValidatedCatalogHistory`, digest-provider
-inventories, and all remaining checks succeed, both allocators can progress, and
-an active contract is valid. A truly empty database may pass structural and
+`StructurallyOpened` alone never means readiness. Its completed same-session
+handoff includes the exact structurally checked `RetainedMetadataV1`, but that
+value is not a catalog proof or operational authority. WP-130 authoritative
+readiness becomes true only after matching same-session `ValidatedCatalogHistory`,
+retained identity and active-pointer agreement, digest-provider inventories,
+and all remaining checks succeed, both allocators can progress, and an active
+contract is valid. A truly empty database may pass structural and
 catalog integrity while remaining in `Initializing`, not ready. In that mode the
 server exposes only the restricted pre-bootstrap health view defined in Section
 16.3 plus the exact loopback bootstrap operation; after
@@ -2189,10 +2198,15 @@ context, and it is not a credential, principal, policy decision, authorization
 fact, or storage capability. This exception adds no RPC or alternate health
 operation.
 
-Adapters own transport decode, credential extraction, checked conversion,
-deadline/cancellation propagation, and total result mapping. The service owns
-semantic validation, current authorization, approved provenance, audit
-orchestration, obligations/redaction, and safe release. Typed WP-100 executors
+Adapters own transport decode, credential extraction, structural conversion
+into checked pre-schema submitted DTOs, deadline/cancellation propagation, and
+total result mapping. They do not select schemas or construct canonical decimal,
+money, enum, or named-record values. After selecting the exact active or
+historical plan, the service resolves submitted names/IDs and recursively
+materializes the sole canonical command input before hashing, policy, or
+admission. The service owns semantic validation, current authorization,
+approved provenance, audit orchestration, obligations/redaction, and safe
+release. Typed WP-100 executors
 own all work after an authorized command/control-plane preparation is accepted.
 Consumer-owned bounded ports expose authoritative reads and later projection,
 outbox, and operational sources without giving the service a general storage
