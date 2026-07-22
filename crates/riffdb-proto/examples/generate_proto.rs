@@ -258,6 +258,77 @@ const EXPECTED_METHODS: &[(&str, &str, bool)] = &[
 const SERVICE_RESPONSE_CHARGE_FIXTURE: &str =
     include_str!("../../riffdb-service/fixtures/response-charge-v1.tsv");
 
+const OPERATION_SCHEMA_DIALECT: &str = "https://json-schema.org/draft/2020-12/schema";
+const OPERATION_ENVELOPE_SCHEMA_ID: &str = "riffdb.command-operation-envelope/v1";
+const GET_OUTCOME_RESULT_SCHEMA_ID: &str = "riffdb.command-get-outcome-result/v1";
+const OPERATION_ENVELOPE_SCHEMA_PATH: &str =
+    "crates/riffdb-service/schema/riffdb.command-operation-envelope-v1.schema.json";
+const GET_OUTCOME_RESULT_SCHEMA_PATH: &str =
+    "crates/riffdb-service/schema/riffdb.command-get-outcome-result-v1.schema.json";
+const OPERATION_ENVELOPE_SCHEMA_BYTES: usize = 2_545;
+const GET_OUTCOME_RESULT_SCHEMA_BYTES: usize = 4_729;
+const OPERATION_ENVELOPE_SCHEMA_HASH: &str =
+    "f1847c1cd869562a11a6e67c7954e4b5c6b06f73c37f68c2a439d7359f2b9cf7";
+const GET_OUTCOME_RESULT_SCHEMA_HASH: &str =
+    "cbf5cb3d869f5b157c62e37c2d0704269cbf0a7c317fee4757f13bd0012b7f96";
+const OPERATION_SCHEMA_SOURCE_MAX_BYTES: usize = 65_536;
+const OPERATION_SCHEMA_AGGREGATE_CHARGE_MAX_BYTES: usize = 131_584;
+const OPERATION_SCHEMA_FULL_CATALOG_BYTES: usize = 7_522;
+const OPERATION_SCHEMA_IDENTITY_CATALOG_BYTES: usize = 148;
+const OPERATION_SCHEMA_COMPOSITION_BYTES: usize = 4_876;
+const OPERATION_SCHEMA_COMPOSITION_HASH: &str =
+    "623026e5bdd2cd311faff031a5a775d7b045b6821a67b56ca1dfc172ffd32da4";
+const REPRESENTATIVE_OUTCOME_SCHEMA_PATH: &str = "fixtures/compiler/schemas/04-00000002.json";
+const REPRESENTATIVE_OUTCOME_SCHEMA_BYTES: usize = 2_393;
+const REPRESENTATIVE_OUTCOME_SCHEMA_HASH: &str =
+    "f711c1596dee5a94f03d6b727cc47ebc9a35e6f9a35cd6a84b52cdebd3850f6c";
+const REPRESENTATIVE_BUNDLE_HASH_PATH: &str = "fixtures/compiler/bundle-hash.txt";
+const REPRESENTATIVE_BUNDLE_HASH: &str =
+    "8a22cd047f46682a37468c40900fd67161f1a1d52d71b221d1eb9c9caa74cf5f";
+
+#[derive(Clone, PartialEq, Message)]
+struct OperationSchemaArtifactFixture {
+    #[prost(string, tag = "1")]
+    schema_id: String,
+    #[prost(string, tag = "2")]
+    dialect: String,
+    #[prost(bytes = "vec", tag = "3")]
+    schema_hash: Vec<u8>,
+    #[prost(string, tag = "4")]
+    canonical_json: String,
+}
+
+#[derive(Clone, PartialEq, Message)]
+struct OperationSchemaCatalogFixture {
+    #[prost(message, optional, tag = "1")]
+    command_operation_envelope: Option<OperationSchemaArtifactFixture>,
+    #[prost(message, optional, tag = "2")]
+    command_get_outcome_result: Option<OperationSchemaArtifactFixture>,
+}
+
+#[derive(Clone, PartialEq, Message)]
+struct OperationSchemaIdentityFixture {
+    #[prost(string, tag = "1")]
+    schema_id: String,
+    #[prost(bytes = "vec", tag = "2")]
+    schema_hash: Vec<u8>,
+}
+
+#[derive(Clone, PartialEq, Message)]
+struct OperationSchemaCatalogIdentityFixture {
+    #[prost(message, optional, tag = "1")]
+    command_operation_envelope: Option<OperationSchemaIdentityFixture>,
+    #[prost(message, optional, tag = "2")]
+    command_get_outcome_result: Option<OperationSchemaIdentityFixture>,
+}
+
+struct OperationSchemaCheckpoint {
+    manifest: String,
+    full_catalog: Vec<u8>,
+    identity_catalog: Vec<u8>,
+    representative_composition: Vec<u8>,
+}
+
 fn main() -> Result<(), Box<dyn Error>> {
     let output_root = parse_output_root()?;
     let repository_root = Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -275,6 +346,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     validate_record_exists(&probe, PROBE_RECORD_TYPE)?;
     let probe_descriptor = probe.encode_to_vec();
     let probe_envelope = encode_probe_envelope(&probe_descriptor)?;
+    let operation_schema_checkpoint = build_operation_schema_checkpoint(repository_root)?;
 
     generate_rust(&output_root, production.clone())?;
     write_artifact(
@@ -326,6 +398,26 @@ fn main() -> Result<(), Box<dyn Error>> {
         &output_root,
         "fixtures/proto/public-response-charge-v1.tsv",
         public_response_charge_vectors()?.as_bytes(),
+    )?;
+    write_artifact(
+        &output_root,
+        "fixtures/proto/operation-schema-catalog-v1.txt",
+        operation_schema_checkpoint.manifest.as_bytes(),
+    )?;
+    write_artifact(
+        &output_root,
+        "fixtures/proto/operation-schema-catalog-full-v1.bin",
+        &operation_schema_checkpoint.full_catalog,
+    )?;
+    write_artifact(
+        &output_root,
+        "fixtures/proto/operation-schema-catalog-identity-v1.bin",
+        &operation_schema_checkpoint.identity_catalog,
+    )?;
+    write_artifact(
+        &output_root,
+        "fixtures/proto/operation-schema-composition-allocate-budget-v1.schema.json",
+        &operation_schema_checkpoint.representative_composition,
     )?;
     let legacy_registry = durable_registry
         .get(..LEGACY_DURABLE_RECORD_COUNT)
@@ -392,6 +484,214 @@ fn parse_output_root() -> Result<PathBuf, Box<dyn Error>> {
         return Err(io::Error::other("unexpected generator argument").into());
     }
     Ok(output_root.into())
+}
+
+fn build_operation_schema_checkpoint(
+    repository_root: &Path,
+) -> Result<OperationSchemaCheckpoint, Box<dyn Error>> {
+    let envelope = read_operation_schema_source(
+        repository_root,
+        OPERATION_ENVELOPE_SCHEMA_PATH,
+        OPERATION_ENVELOPE_SCHEMA_BYTES,
+        OPERATION_ENVELOPE_SCHEMA_HASH,
+    )?;
+    let get_outcome = read_operation_schema_source(
+        repository_root,
+        GET_OUTCOME_RESULT_SCHEMA_PATH,
+        GET_OUTCOME_RESULT_SCHEMA_BYTES,
+        GET_OUTCOME_RESULT_SCHEMA_HASH,
+    )?;
+    if envelope.len() + get_outcome.len() > OPERATION_SCHEMA_AGGREGATE_CHARGE_MAX_BYTES {
+        return Err(
+            io::Error::other("operation schema sources exceed the aggregate charge bound").into(),
+        );
+    }
+
+    let envelope_hash = hash_schema(envelope.as_bytes());
+    let get_outcome_hash = hash_schema(get_outcome.as_bytes());
+    let full_message = OperationSchemaCatalogFixture {
+        command_operation_envelope: Some(OperationSchemaArtifactFixture {
+            schema_id: OPERATION_ENVELOPE_SCHEMA_ID.to_owned(),
+            dialect: OPERATION_SCHEMA_DIALECT.to_owned(),
+            schema_hash: envelope_hash.as_bytes().to_vec(),
+            canonical_json: envelope.clone(),
+        }),
+        command_get_outcome_result: Some(OperationSchemaArtifactFixture {
+            schema_id: GET_OUTCOME_RESULT_SCHEMA_ID.to_owned(),
+            dialect: OPERATION_SCHEMA_DIALECT.to_owned(),
+            schema_hash: get_outcome_hash.as_bytes().to_vec(),
+            canonical_json: get_outcome,
+        }),
+    };
+    let full_catalog = full_message.encode_to_vec();
+    if full_catalog.len() != OPERATION_SCHEMA_FULL_CATALOG_BYTES
+        || full_catalog.len() > OPERATION_SCHEMA_AGGREGATE_CHARGE_MAX_BYTES
+        || OperationSchemaCatalogFixture::decode(full_catalog.as_slice())? != full_message
+    {
+        return Err(io::Error::other("operation schema full-catalog fixture drifted").into());
+    }
+
+    let identity_message = OperationSchemaCatalogIdentityFixture {
+        command_operation_envelope: Some(OperationSchemaIdentityFixture {
+            schema_id: OPERATION_ENVELOPE_SCHEMA_ID.to_owned(),
+            schema_hash: envelope_hash.as_bytes().to_vec(),
+        }),
+        command_get_outcome_result: Some(OperationSchemaIdentityFixture {
+            schema_id: GET_OUTCOME_RESULT_SCHEMA_ID.to_owned(),
+            schema_hash: get_outcome_hash.as_bytes().to_vec(),
+        }),
+    };
+    let identity_catalog = identity_message.encode_to_vec();
+    if identity_catalog.len() != OPERATION_SCHEMA_IDENTITY_CATALOG_BYTES
+        || OperationSchemaCatalogIdentityFixture::decode(identity_catalog.as_slice())?
+            != identity_message
+    {
+        return Err(io::Error::other("operation schema identity-catalog fixture drifted").into());
+    }
+
+    let representative_display =
+        fs::read(repository_root.join(REPRESENTATIVE_OUTCOME_SCHEMA_PATH))?;
+    let representative_bytes = representative_display
+        .strip_suffix(b"\n")
+        .ok_or_else(|| io::Error::other("representative compiler schema lost its display LF"))?;
+    if representative_bytes.ends_with(b"\n")
+        || representative_bytes.len() != REPRESENTATIVE_OUTCOME_SCHEMA_BYTES
+        || schema_hash_hex(representative_bytes) != REPRESENTATIVE_OUTCOME_SCHEMA_HASH
+    {
+        return Err(io::Error::other("representative compiler outcome schema drifted").into());
+    }
+    let representative = std::str::from_utf8(representative_bytes)?;
+    let compiler_root_prefix = format!("{{\"$schema\":\"{OPERATION_SCHEMA_DIALECT}\",");
+    let representative_without_dialect = representative
+        .strip_prefix(&compiler_root_prefix)
+        .ok_or_else(|| {
+            io::Error::other("representative compiler schema has an unexpected root dialect")
+        })?;
+    let mut representative_body = String::with_capacity(representative.len());
+    representative_body.push('{');
+    representative_body.push_str(representative_without_dialect);
+
+    let outcome_slot = "\"$defs\":{\"outcome\":false}";
+    if envelope.match_indices(outcome_slot).count() != 1 {
+        return Err(
+            io::Error::other("operation envelope must have one uncomposed outcome slot").into(),
+        );
+    }
+    let mut composed_slot = String::with_capacity(outcome_slot.len() + representative_body.len());
+    composed_slot.push_str("\"$defs\":{\"outcome\":");
+    composed_slot.push_str(&representative_body);
+    composed_slot.push('}');
+    let representative_composition = envelope
+        .replacen(outcome_slot, &composed_slot, 1)
+        .into_bytes();
+    if representative_composition.len() != OPERATION_SCHEMA_COMPOSITION_BYTES
+        || schema_hash_hex(&representative_composition) != OPERATION_SCHEMA_COMPOSITION_HASH
+    {
+        return Err(io::Error::other("representative operation schema composition drifted").into());
+    }
+
+    let bundle_hash = fs::read_to_string(repository_root.join(REPRESENTATIVE_BUNDLE_HASH_PATH))?;
+    if bundle_hash != format!("{REPRESENTATIVE_BUNDLE_HASH}\n") {
+        return Err(io::Error::other("representative compiler bundle hash drifted").into());
+    }
+
+    let mut manifest = String::from("riffdb-operation-schema-catalog-v1\n");
+    writeln!(manifest, "hash-scheme=1")?;
+    writeln!(manifest, "hash-domain=riffdb.schema/v1")?;
+    writeln!(manifest, "dialect={OPERATION_SCHEMA_DIALECT}")?;
+    writeln!(manifest, "artifacts=2")?;
+    writeln!(manifest, "full-catalog-bytes={}", full_catalog.len())?;
+    writeln!(
+        manifest,
+        "identity-catalog-bytes={}",
+        identity_catalog.len()
+    )?;
+    writeln!(
+        manifest,
+        "field=1 name=command_operation_envelope source={OPERATION_ENVELOPE_SCHEMA_PATH} schema_id={OPERATION_ENVELOPE_SCHEMA_ID} canonical_bytes={} schema_hash={}",
+        envelope.len(),
+        schema_hash_hex(envelope.as_bytes())
+    )?;
+    writeln!(
+        manifest,
+        "field=2 name=command_get_outcome_result source={GET_OUTCOME_RESULT_SCHEMA_PATH} schema_id={GET_OUTCOME_RESULT_SCHEMA_ID} canonical_bytes={} schema_hash={}",
+        get_outcome_schema_len(&full_message)?,
+        schema_hash_hex(
+            full_message
+                .command_get_outcome_result
+                .as_ref()
+                .ok_or_else(|| io::Error::other("full catalog lost GetOutcome schema"))?
+                .canonical_json
+                .as_bytes()
+        )
+    )?;
+    writeln!(
+        manifest,
+        "composition_source={REPRESENTATIVE_OUTCOME_SCHEMA_PATH} canonical_bytes={REPRESENTATIVE_OUTCOME_SCHEMA_BYTES} schema_hash={REPRESENTATIVE_OUTCOME_SCHEMA_HASH}"
+    )?;
+    writeln!(
+        manifest,
+        "composition_output=fixtures/proto/operation-schema-composition-allocate-budget-v1.schema.json canonical_bytes={} schema_hash={OPERATION_SCHEMA_COMPOSITION_HASH}",
+        representative_composition.len()
+    )?;
+    writeln!(
+        manifest,
+        "compiler_bundle_hash={REPRESENTATIVE_BUNDLE_HASH}"
+    )?;
+
+    Ok(OperationSchemaCheckpoint {
+        manifest,
+        full_catalog,
+        identity_catalog,
+        representative_composition,
+    })
+}
+
+fn read_operation_schema_source(
+    repository_root: &Path,
+    relative_path: &str,
+    expected_bytes: usize,
+    expected_hash: &str,
+) -> Result<String, Box<dyn Error>> {
+    let bytes = fs::read(repository_root.join(relative_path))?;
+    let dialect_member = format!("\"$schema\":\"{OPERATION_SCHEMA_DIALECT}\"");
+    if bytes.len() != expected_bytes
+        || bytes.len() > OPERATION_SCHEMA_SOURCE_MAX_BYTES
+        || bytes.last() != Some(&b'}')
+        || bytes.contains(&b'\n')
+        || bytes.contains(&b'\r')
+        || schema_hash_hex(&bytes) != expected_hash
+    {
+        return Err(
+            io::Error::other(format!("operation schema source drifted: {relative_path}")).into(),
+        );
+    }
+    let source = String::from_utf8(bytes)?;
+    if source.match_indices(&dialect_member).count() != 1 {
+        return Err(io::Error::other(format!(
+            "operation schema source has an unexpected dialect: {relative_path}"
+        ))
+        .into());
+    }
+    Ok(source)
+}
+
+fn get_outcome_schema_len(
+    catalog: &OperationSchemaCatalogFixture,
+) -> Result<usize, Box<dyn Error>> {
+    catalog
+        .command_get_outcome_result
+        .as_ref()
+        .map(|artifact| artifact.canonical_json.len())
+        .ok_or_else(|| io::Error::other("full catalog lost GetOutcome schema").into())
+}
+
+fn schema_hash_hex(bytes: &[u8]) -> String {
+    let mut output = String::with_capacity(64);
+    for byte in hash_schema(bytes).as_bytes() {
+        let _ = write!(output, "{byte:02x}");
+    }
+    output
 }
 
 fn compile_descriptors(
