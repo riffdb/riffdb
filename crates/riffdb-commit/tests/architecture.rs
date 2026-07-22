@@ -1296,11 +1296,11 @@ fn command_driver_maps_caught_runtime_panics_to_the_public_internal_defect() {
 fn reviewed_tokio_owner_and_lock_graph_are_frozen() {
     assert_eq!(
         production_dependency_owners("tokio"),
-        ["riffdb-commit"],
+        ["riffdb-commit", "riffdb-server"],
         "a new production Tokio owner requires dependency and feature-unification review"
     );
     for exact_entry in [
-        "name = \"tokio\"\nversion = \"1.52.0\"\nsource = \"registry+https://github.com/rust-lang/crates.io-index\"\nchecksum = \"a91135f59b1cbf38c91e73cf3386fca9bb77915c45ce2771460c9d92f0f3d776\"\ndependencies = [\n \"pin-project-lite\",\n]",
+        "name = \"tokio\"\nversion = \"1.52.0\"\nsource = \"registry+https://github.com/rust-lang/crates.io-index\"\nchecksum = \"a91135f59b1cbf38c91e73cf3386fca9bb77915c45ce2771460c9d92f0f3d776\"\ndependencies = [\n \"bytes\",\n \"libc\",\n \"mio\",\n \"pin-project-lite\",\n \"socket2\",\n \"tokio-macros\",\n \"windows-sys 0.61.2\",\n]",
         "name = \"pin-project-lite\"\nversion = \"0.2.17\"\nsource = \"registry+https://github.com/rust-lang/crates.io-index\"\nchecksum = \"a89322df9ebe1c1578d689c92318e070967d1042b512afbe49518723f4e6d5cd\"",
     ] {
         assert!(

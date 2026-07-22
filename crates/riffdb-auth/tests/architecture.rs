@@ -77,13 +77,18 @@ fn direct_dependency_slice_is_exact() {
 
 #[test]
 fn reviewed_dependency_owners_and_lock_entries_are_frozen() {
-    for dependency in ["base64", "getrandom", "zeroize"] {
+    for dependency in ["base64", "zeroize"] {
         assert_eq!(
             production_dependency_owners(dependency),
             ["riffdb-auth"],
             "WP-110 direct owner changed for {dependency}"
         );
     }
+    assert_eq!(
+        production_dependency_owners("getrandom"),
+        ["riffdb-auth", "riffdb-client-rust", "riffdb-server"],
+        "reviewed ADR-0018 getrandom owners changed"
+    );
     for exact_entry in [
         "name = \"base64\"\nversion = \"0.22.1\"\nsource = \"registry+https://github.com/rust-lang/crates.io-index\"\nchecksum = \"72b3254f16251a8381aa12e40e3c4d2f0199f8c6508fbecb9d91f575e0fbb8c6\"",
         "name = \"getrandom\"\nversion = \"0.3.4\"\nsource = \"registry+https://github.com/rust-lang/crates.io-index\"\nchecksum = \"899def5c37c4fd7b2664648c28120ecec138e4d395b459e5ca34f9cce2dd77fd\"",
