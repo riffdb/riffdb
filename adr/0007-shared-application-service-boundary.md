@@ -5,9 +5,11 @@
   lineage scoping, canonical order, and per-operation construction rule; and
   ADR-0006's 2026-07-20 accepted direct gRPC public-error carriage; plus the
   2026-07-20 accepted command-executor result and cancellation clarification;
-  plus the 2026-07-21 accepted pre-bootstrap health-context clarification
+  plus the 2026-07-21 accepted pre-bootstrap health-context clarification; and
+  ADR-0040 for conditional discovery and checked outcome-locator resolution
 - **Direction approved:** 2026-07-12
-- **Exact text accepted:** Yes; amended 2026-07-14, 2026-07-20, and 2026-07-21
+- **Exact text accepted:** Yes; amended 2026-07-14, 2026-07-20, 2026-07-21,
+  and 2026-07-22
 - **Accepted:** 2026-07-13
 - **Requires:** ADR-0004, ADR-0009, ADR-0012, and ADR-0017 accepted before or
   in the same governance commit
@@ -1686,6 +1688,37 @@ from the earlier direction approval:
     Health request uses authenticated `RequestContext` and current policy;
     bootstrap remains the sole principal-less mutation and the sole operation
     allowed to create durable service-audit records without a principal.
+
+## 2026-07-22 conditional discovery and outcome-locator amendment
+
+ADR-0040 maps the six additive public RPCs onto the existing API-neutral service
+operations; the resulting public inventory is five services and 22 RPCs. This
+adds no transport-only business operation and gives no adapter direct policy,
+catalog, commit, runtime, or storage authority.
+
+The API-neutral `DiscoveryCatalogFence` remains semantic and contains no process
+entropy. Public gRPC and common MCP presentation join that semantic fence with
+the exact 16-byte `ServerGenerationV1` owned by the server lifecycle. Adapters
+drop a prior semantic fence when the presented generation differs and never
+fabricate `CatalogUnchanged`; the service still authenticates and authorizes
+each request and invocation.
+
+`ResolveCommandOutcomeRequest` gains exactly the checked `RawKey` and
+`Locator(OutcomeResourceLocator)` selectors. Both use the same service operation,
+audit lifecycle, existence-blind initial authorization, authoritative point
+lookup, historical-plan verification, terminal authorization, and disclosure
+rules. The authoritative read port retains one operation and no scan. Its
+fields-private lower selector is either the established raw-key lookup or the
+complete digest-tuple lookup; the server adapter supplies trusted database and
+environment context and can perform only the same existing point lookup. A
+locator cannot expose or reconstruct a raw key, broaden authority, select the
+active contract, or bypass either authorization phase.
+
+The API-neutral service owns conditional discovery DTOs, semantic fences,
+operation-schema identities, outcome-locator parsing/minting, and digest
+evidence. WP-137 owns only public conversion and client transport surfaces.
+MCP remains a policy-filtered consumer of this shared service and never accesses
+storage directly.
 
 ## Decision Deadline
 

@@ -2,13 +2,15 @@
 
 - **Status:** Accepted
 - **Direction approved:** 2026-07-22
-- **Exact text accepted:** 2026-07-22
+- **Exact text accepted:** 2026-07-22; amended 2026-07-22
 - **Accepted:** 2026-07-22
 - **Requires:** ADR-0004, ADR-0006, ADR-0007, ADR-0011, ADR-0016,
   ADR-0022, ADR-0029, ADR-0030, ADR-0035, and ADR-0036
 - **Amends:** ADR-0004 authoritative index records and scans, ADR-0006 and
   ADR-0022 durable compatibility registry, ADR-0007 obligation application and
   pagination, and ADR-0035 authoritative index-page continuation
+- **Amended by:** ADR-0039 for the exact schema source, registries, migration
+  type states, bounded evidence, and compare-and-rewrite ownership
 - **Decision deadline:** Before WP-130 completion and the P1 gate
 
 The human maintainer accepted this exact decision and its work-package
@@ -349,6 +351,38 @@ the concurrency and durable boundaries.
 - **Corrects or blocks:** focused WP-040 bound review; `WP-050`, `WP-060`,
   `WP-065`, `WP-070`, `WP-100`, `WP-120`, and `WP-130`
 - **Final evidence:** `WP-190` and `WP-200`
+
+## 2026-07-22 executable migration amendment
+
+ADR-0039 makes this record's migration executable without changing its durable
+meaning. V2 resides alone in `proto/riffdb/storage/v1/index_v2.proto`; the nine
+existing durable sources and 26 existing tuple fixtures remain byte-identical.
+Migration reads exactly 27 registered tuples, while normal writes use exactly
+26 roles: 25 unchanged non-index roles plus V2. V1 is decode-only.
+
+WP-065's codec-bound row evidence binds the exact physical key, checked V1 or
+V2 semantics, and observed canonical envelope. Concrete storage then binds
+pages to the backend, `DatabaseId`, `OpenSessionId`, and continuation. The
+initial scan emits `IndexMigrationRow` in the former `0x04` index-entry order,
+records only whether V1 exists, and retains no instruction. The bounded rescan
+is the sole producer of one fresh row and exactly one closed instruction.
+
+Catalog may depend on the pure bounded invariant evaluator only to evaluate the
+exact retained historical aggregate `partition_expression`. Startup joins only
+catalog `Ready` with storage `Clean`, or the two matching
+`MigrationRequired` values. Migration alternates short storage reads, one-bundle
+catalog states, and atomic compare-and-rewrite batches; no storage transaction
+spans catalog work. Completion yields a dormant unopened backend and requires a
+new full session with a fresh `OpenSessionId`; no marker or readiness proof is
+carried across the rewrite pass.
+
+Evidence and instruction/write-batch pages have independent 500-row and 4-MiB
+ceilings and must each make progress for one maximum row. General historical
+evidence and bundle bounds remain unchanged. WP-060 owns storage type-state and
+memory behavior; WP-065 owns schema, registries, codecs, evidence/result
+factories, and bound proofs; WP-050 owns catalog derivation; WP-070 owns redb
+migration; WP-100 only consumes the exact pre-sequence aggregate-cap result.
+ADR-0039 is authoritative for the complete linear protocol and failure classes.
 
 ## Decision Deadline
 

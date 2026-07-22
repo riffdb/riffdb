@@ -2,18 +2,19 @@
 
 - **Status:** Accepted
 - **Direction approved:** 2026-07-13
-- **Exact text accepted:** 2026-07-13
+- **Exact text accepted:** 2026-07-13; status cross-reference amended 2026-07-22
 - **Accepted:** 2026-07-13
 - **Requires:** ADR-0002, ADR-0006, ADR-0007, and ADR-0013
 - **Amends:** ADR-0008 by moving the command tool-name grammar,
   normalization, collision handling, and compiler/catalog ownership into this
-  accepted record; ADR-0008 remains Proposed for resource URIs, audience and
-  transport text, cursor presentation, and the remaining MCP fixtures
+  accepted record; ADR-0008 and ADR-0040 later accepted the remaining resource
+  URI, audience, transport, cursor-presentation, and MCP-fixture decisions at
+  acceptance reference `21a8cfb`
 - **Decision deadline:** Before WP-040 emits a compiled contract bundle
 
 The human maintainer accepted the exact command tool-name rule and its early
-compiler/catalog ownership on 2026-07-13. This record accepts no other part of
-proposed ADR-0008.
+compiler/catalog ownership on 2026-07-13. At that acceptance, this record
+accepted no other part of then-Proposed ADR-0008.
 
 ## Context
 
@@ -127,9 +128,10 @@ This record deliberately does not accept or freeze:
 - JSON-to-canonical-value conversion fixtures beyond the compiler-owned JSON
   Schemas.
 
-Those remain under Proposed ADR-0008 and require exact review before the first
-dependent public fixture merges. This split does not permit WP-040 or WP-050 to
-implement MCP transport behavior.
+ADR-0008 and ADR-0040 later accepted those decisions on 2026-07-22. Their named
+future exact-byte checkpoints still require review before the first dependent
+public fixture merges. This split does not permit WP-040 or WP-050 to implement
+MCP transport behavior.
 
 ## Alternatives Considered
 

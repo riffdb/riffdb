@@ -2,7 +2,8 @@
 
 - **Status:** Accepted
 - **Direction approved:** 2026-07-12
-- **Exact text accepted:** Yes; dependency graph amended 2026-07-20
+- **Exact text accepted:** Yes; dependency graph amended 2026-07-20 and
+  2026-07-22
 - **Accepted:** 2026-07-13
 - **Requires:** ADR-0004 and ADR-0007 accepted before or in the same governance
   change
@@ -14,6 +15,9 @@
   ownership
 - **Amends:** ADR-0005 operational-secret custody, ADR-0007 service ownership and
   durable-audit lifecycle, and ADR-0011 keyed hash-domain registry
+- **Amended by:** ADR-0008, ADR-0040, and ADR-0041 for the exact credential-
+  presentation owners, protected client loader, CLI isolation, and server
+  process-generation entropy purpose
 - **Decision deadline:** Before WP-060 capability types or persistence ports merge
 
 The human maintainer accepted this exact opaque-token record on 2026-07-13 as
@@ -1136,7 +1140,7 @@ with checked arithmetic before allocation. Repeated values use canonical order
 and reject duplicates. The 1 MiB semantic payload bound is below ADR-0006's 16
 MiB absolute envelope bound.
 
-### Reviewed and proposed dependencies
+### Reviewed dependencies
 
 Capability HMAC uses the already reviewed `sha2` 0.11.0 and `hmac` 0.13.0
 configuration from ADR-0011 through the central `riffdb-types` keyed-hash
@@ -1148,13 +1152,13 @@ licenses, build-script behavior, and external unsafe inventory remain unchanged:
 
 | Crate | Exact version and features | Direct first-party owner | Reviewed purpose |
 |---|---|---|---|
-| `getrandom` | `=0.3.4`, `default-features = false`, no optional features | `riffdb-auth`, `riffdb-client-rust`, and `riffdb-server` only | capability-token/bootstrap-ID entropy, client UUIDv7 sources, and server database/provenance/hosted-MCP-request/incident/cursor UUIDv7 sources outside deterministic runtime |
-| `base64` | `=0.22.1`, `default-features = false`, `features = ["alloc"]` | `riffdb-auth` only | strict canonical URL-safe token text |
-| `zeroize` | `=1.8.1`, `default-features = false`, `features = ["alloc"]` | `riffdb-auth` only | owned core secret-buffer cleanup |
+| `getrandom` | `=0.3.4`, `default-features = false`, no optional features | `riffdb-auth`, `riffdb-client-rust`, and `riffdb-server` only | capability-token/bootstrap-ID entropy, client UUIDv7 sources, and server database/provenance/hosted-MCP-request/incident/cursor UUIDv7 sources plus the independent non-UUID process generation, all outside deterministic runtime |
+| `base64` | `=0.22.1`, `default-features = false`, `features = ["alloc"]` | exactly `riffdb-auth`, `riffdb-proto`, `riffdb-service`, `riffdb-api-mcp`, and `riffdb-cli` | auth-only token encoding/decoding; Proto structural outcome-locator validation; service-owned authoritative outcome-locator tuple encoding/decoding; MCP locator/value/opaque-byte presentation; and CLI structural machine input/output bytes |
+| `zeroize` | `=1.8.1`, `default-features = false`, `features = ["alloc"]` | exactly `riffdb-auth`, `riffdb-client-rust`, and `riffdb-cli` | auth-owned core token, digest-key, and credential secret-buffer cleanup; client/CLI bounded public-delivery credential-buffer cleanup |
 
 The accepted WP-130 Tonic graph is an explicit narrow exception to the table's
-`base64` feature statement, not to its direct-owner statement. Every Tonic edge
-uses exact version `=0.14.6` with default features disabled:
+`base64` direct-feature statement. Every Tonic edge uses exact version `=0.14.6`
+with default features disabled:
 
 | First-party owner/edge | Exact features and companion |
 |---|---|
@@ -1164,16 +1168,18 @@ uses exact version `=0.14.6` with default features disabled:
 | `riffdb-server` production | `tonic` features `router`, `server` |
 
 This graph may feature-unify the one locked `base64 = 0.22.1` instance with
-`std`. `riffdb-auth` remains the sole first-party crate with a direct `base64`
-dependency and the sole owner of token encoding/decoding semantics. API, client,
-server, and generated transport code MUST NOT call `base64` directly. The graph
-admits no second base64 version, TLS, compression, transport-wide production
-feature, new cryptography, or first-party unsafe code. Any such change, any
-version change, or any broader feature requires renewed human dependency review.
+`std`. `riffdb-auth` remains the sole owner of token encoding/decoding semantics.
+The other four reviewed direct owners may use base64 only for their exact
+structural or presentation purposes in the table; `riffdb-client-rust`,
+`riffdb-server`, generated transport code, and every unlisted crate MUST NOT call
+it directly. The graph admits no second base64 version, TLS, compression,
+transport-wide production feature, new cryptography, or first-party unsafe code.
+Any such change, any version change, broader feature, owner, or purpose requires
+renewed human dependency review.
 
-All three are licensed `MIT OR Apache-2.0`. In the auth-owned review slice under
-the direct features in the first table, `base64` and `zeroize` have no build
-script, native code, or transitive dependency. `base64` forbids unsafe code.
+All three are licensed `MIT OR Apache-2.0`. Under the direct features in the
+first table, `base64` and `zeroize` have no build script, native code, or
+transitive dependency. `base64` forbids unsafe code.
 `zeroize` contains localized reviewed unsafe volatile-write
 code implementing its cleanup guarantee. `getrandom` contains target-gated
 unsafe operating-system/libc calls and has a build script used only for
@@ -1520,8 +1526,9 @@ The manifest delta is exact:
   and observability without a second readiness path. WP-190
   supplies process evidence for both sequence spaces and all cross-links without
   repair. `riffdb-server` direct `getrandom` use is limited to ADR-0018's exact
-  database, provenance, hosted-MCP request, incident, and cursor source set; the
-  corresponding consumer ports retain their accepted semantic owners.
+  database, provenance, hosted-MCP request, incident, and cursor source set plus
+  ADR-0040's independent 16-byte process generation; the corresponding consumer
+  ports retain their accepted semantic owners.
 - WP-065 and WP-127 are explicit P1 gate members; their hard downstream edges do
   not replace any existing P1 package or dependency.
 
@@ -1540,6 +1547,29 @@ The manifest delta is exact:
   `WP-127`, `WP-130`, `WP-140`, `WP-150`, `WP-180`, `WP-185`, `WP-190`, and
   `WP-200`
 - **Final evidence:** `WP-190`, `WP-200`
+
+## 2026-07-22 credential-presentation amendment
+
+ADR-0008, ADR-0040, and ADR-0041 accept only the direct-owner and presentation
+changes reflected in the table above. The normal protected credential loader is
+owned by `riffdb-client-rust`, uses `zeroize` for bounded temporary storage, and
+returns only its redacted checked presentation plus a Boolean exact-presentation
+comparison. It has no direct `riffdb-auth` or `base64` dependency and performs no
+token decode, HMAC, capability lookup, or authentication.
+
+`riffdb-cli` uses that client loader for every normal bearer file. Its sole
+auth-crate symbol boundary remains the isolated
+`riffdb_auth::bootstrap_secret`; the CLI root and normal modules cannot load or
+decode a token through auth. CLI-owned direct base64 use is confined to
+structural machine input/output bytes, and its zeroize use is confined to
+bounded credential buffers. WP-150's exact command grammar, DTO, and golden-byte
+checkpoint remains a separate human-review requirement; this amendment does not
+pre-accept those artifacts or activate the WP-155 reservation.
+
+ADR-0040's `ServerGenerationV1` adds one purpose to the already reviewed server
+entropy owner, not a new owner: one graph-activation attempt performs exactly one
+fill of 16 independent bytes. The value is not a UUID, identifier, cursor,
+durable fact, semantic fence component, or deterministic-runtime input.
 
 ## Decision Deadline
 

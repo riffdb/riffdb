@@ -1,14 +1,16 @@
 # ADR-0008: Native MCP Tool and Resource Model
 
-- **Status:** Proposed
+- **Status:** Accepted
 - **Direction approved:** 2026-07-12
-- **Exact text accepted:** No
+- **Exact text accepted:** 2026-07-22
+- **Accepted:** 2026-07-22
+- **Acceptance reference:** `21a8cfb`
 - **Partially resolved by:** ADR-0020 for command tool-name grammar,
   normalization, collision handling, and compiler/catalog ownership; ADR-0024
   for the exact provenance resource locator
-- **Paired proposal:** ADR-0040 for the public gRPC parity bridge required by
+- **Paired accepted record:** ADR-0040 for the public gRPC parity bridge required by
   production stdio
-- **Would amend:** ADR-0009's protected-file/direct-owner boundary, including
+- **Amends:** ADR-0009's protected-file/direct-owner boundary, including
   the exact semantic, structural, and presentation-only `base64` owners added
   here and in paired ADR-0040; ADR-0037's
   public-client dependency allowlist for the narrow client-owned normal-bearer
@@ -17,9 +19,10 @@
 - **Decision deadline:** Before WP-137 changes the public protocol or WP-140
   freezes an MCP compatibility fixture
 
-Direction approval is not acceptance of this text. In particular, the outcome-
-resource locator amendment below changes already accepted public/service
-interfaces and requires explicit human review together with ADR-0040.
+The human maintainer accepted this exact text and its ADR-only companion
+reconciliation on 2026-07-22, with revision `21a8cfb` as the acceptance
+reference. The separately named WP-137 and WP-140 exact-byte checkpoints remain
+required before their generated public artifacts merge.
 
 ## Context
 
@@ -38,11 +41,11 @@ There is also a real interface conflict. SPEC Sections 9.7, 12.6, and 12.9 make
 an outcome resource the cancellation/uncertainty recovery mechanism, while the
 current API-neutral resolve operation accepts the caller's raw idempotency key.
 The specified hash-only URI cannot be dereferenced by an adapter without either
-a checked service lookup form or a forbidden storage scan. This proposal keeps
+a checked service lookup form or a forbidden storage scan. This decision keeps
 the resource and defines a narrow service-owned lookup form; it does not pretend
 the existing interface can already serve it.
 
-## Proposed Decision
+## Decision
 
 ### Protocol and dependency baseline
 
@@ -645,7 +648,7 @@ hashes in its required fence. A changed identity cannot return
 compatibility review.
 
 The generic envelope schema is not embedded in or hashed into a compiled bundle.
-This proposal changes no compiler schema artifact, contract bundle
+This decision changes no compiler schema artifact, contract bundle
 encoding/hash, plan hash, canonical input hash, or declared outcome. Any change
 to the bundle outcome union remains compiler-owned; any change to the generic
 envelope, fixed GetOutcome result, or tagged-Value mapping requires a new
@@ -680,14 +683,13 @@ storage key, inspect digest material, scan records, or call storage directly.
 
 This requires reviewed additive service/public fields: a checked opaque locator
 on terminal Execute/GetOutcome results and a locator branch on GetOutcome input.
-ADR-0040 proposes exact additive public fields
+ADR-0040 defines exact additive public fields
 `ExecuteCommandResponse.optional string outcome_uri = 9` and
 `GetOutcomeRequest.optional string outcome_uri = 5`, with the latter exclusive
 with the three legacy raw-lookup fields. Whether the locator shares the existing
-service-operation/audit tag as proposed requires explicit human acceptance
-because ADR-0006, ADR-0007, ADR-0026, and ADR-0028 are already Accepted. WP-137
-and WP-140 must not implement a hash-only adapter shortcut while that review is
-pending.
+service-operation/audit tag is accepted together with the explicit amendments
+to ADR-0006, ADR-0007, ADR-0026, and ADR-0028. WP-137 and WP-140 must not
+implement a hash-only adapter shortcut.
 
 The public wire field remains compatibility-optional for an upgraded ordinary
 SDK reading a pre-WP-137 server: absence is the legacy response shape, while a
@@ -986,7 +988,7 @@ principal, policy-resolved tenant, service operation or compiler-owned tool
 name)`. A discovery result, MCP session, or prior allow never bypasses either
 applicable check.
 
-The proposed POC defaults are a pre-authentication burst of 32 with refill 8 per
+The accepted POC defaults are a pre-authentication burst of 32 with refill 8 per
 second and a post-authentication burst of 16 with refill 4 per second. The
 registry holds at most 4,096 total buckets and removes only buckets idle for at
 least 300 seconds; when no expired bucket is available, a new key is denied
@@ -1089,7 +1091,7 @@ surface is stable and are not part of WP-140 acceptance.
 ## Options Considered
 
 1. **Protocol-isolated adapter, public-gRPC stdio, and shared-service HTTP:**
-   proposed; it proves transport parity without a privileged local process.
+   Accepted; it proves transport parity without a privileged local process.
 2. **In-process stdio service or storage access:** rejected; it creates a second
    authority path and cannot prove public-client parity.
 3. **General URI parser with normalization:** rejected; multiple spellings would
@@ -1123,7 +1125,8 @@ surface is stable and are not part of WP-140 acceptance.
 Tool names remain owned by ADR-0020 and provenance text remains owned by
 ADR-0024. All other URI bytes, cursor text, fixed-tool names, schemas, structured
 result shapes, protocol version, route, and initialization metadata become
-public compatibility fixtures only when this record is accepted and generated.
+public compatibility fixtures only through this accepted record and the
+separately required generated-artifact checkpoints.
 
 Acceptance requires companion amendments to SPEC Sections 5.4, 11.1, 12.2
 through 12.6, 12.8 through 12.12, and Appendix D for the exact dependency owner,
@@ -1132,22 +1135,22 @@ notifications, cursor spelling, bounds, protocol, and pin. ADR-0009's complete
 direct-owner table must add `riffdb-proto`, `riffdb-service`, and
 `riffdb-api-mcp` for exact base64 0.22.1 with default features disabled and
 `alloc` enabled, respectively for structural outcome-locator validation,
-authoritative locator tuple encoding/decoding, and MCP presentation. Proposed
-ADR-0041 additionally adds the CLI structural-presentation owner. It
+authoritative locator tuple encoding/decoding, and MCP presentation. ADR-0041
+additionally adds the CLI structural-presentation owner. It
 also requires the public/service and server-generation amendments described in
 ADR-0040, including conditional discovery and the explicit ADR-0018/ADR-0009
 entropy-purpose change. No durable
 storage key, contract grammar, IR, plan hash, canonical input hash, commit
 ordering, or atomicity changes.
 
-The Section 12.6 URI table changes are explicit human-review items: contract
+The Section 12.6 URI table changes were explicit human-review items: contract
 versions gain lineage; entity, command, and projection targets use exact lineage
 plus stable numeric ID rather than ambiguous source/display names; the outcome
 locator gains exact lineage and stable command ID alongside the complete
 ADR-0020 tool name; and the key hash gains the exact versioned digest-tuple
 presentation above. Grammar-v1 Global tenant scope remains trusted context under
 ADR-0026 rather than a caller-controlled segment. These are not editorial
-clarifications and do not take effect while this ADR remains Proposed.
+clarifications and take effect through the accepted companion reconciliation.
 
 ## Security
 
@@ -1246,7 +1249,7 @@ evidence.
 
 ## Decision Deadline
 
-The exact locator, outcome-lookup, protocol, SDK feature, audience, transport,
-cursor, progress, and fixture text must be accepted before WP-137 or WP-140
-publishes the affected interface. The `rmcp` dependency cannot merge before the
-separate lock-graph review. Until then, this record is planning input only.
+The exact-text decision deadline was satisfied on 2026-07-22. The `rmcp`
+dependency still cannot merge before the separate lock-graph review, and the
+record's explicitly deferred interface-only fixture checkpoints still require
+their own human acceptance before generated bytes or consumers merge.

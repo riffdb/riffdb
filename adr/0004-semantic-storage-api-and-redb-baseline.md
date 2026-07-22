@@ -2,7 +2,8 @@
 
 - **Status:** Accepted
 - **Direction approved:** 2026-07-12
-- **Exact text accepted:** Yes; amended 2026-07-14, 2026-07-20, and 2026-07-21
+- **Exact text accepted:** Yes; amended 2026-07-14, 2026-07-20, 2026-07-21,
+  and 2026-07-22
 - **Accepted:** 2026-07-13
 - **Requires:** ADR-0007, ADR-0009, ADR-0012, and ADR-0017 accepted before or in
   the same governance change
@@ -12,6 +13,8 @@
   metadata; gates; and the durable proto-owner work-package graph
 - **Clarifies:** ADR-0005 pending admission and terminal atomicity
 - **Implements the durable boundary of:** ADR-0006
+- **Amended by:** ADR-0039 for V2 migration evidence, startup type state,
+  catalog/invariant evaluation, and the narrow pre-sequence capacity result
 - **Decision deadline:** Before WP-060 public traits or durable DTOs merge
 
 The human maintainer accepted this exact bounded-snapshot and narrow-transaction
@@ -1747,6 +1750,49 @@ for an illustrative frontier without defining the empty state; the explicit
 reinterpretation. A future choice of zero as an assigned sequence, a different
 empty-state representation, or eager epoch-prefix creation requires a
 superseding accepted ADR before incompatible fixtures merge.
+
+## 2026-07-22 V2 migration and aggregate-cap amendment
+
+ADR-0039 is authoritative for the following narrow additions and supersedes
+older statements in this record only where they conflict with these additions:
+
+- `HistoricalSemanticEvidence::IndexMigrationRow` replaces
+  `PersistedKey(IrOpaquePersistedKeyV1::IndexEntry)` for each physical V1 or V2
+  index row. It retains the former index-entry `0x04` order key, precedes all
+  `0x05` capability-partition evidence, and binds the physical key, checked V1
+  or V2 semantics, and exact canonical envelope through the WP-065 codec. The
+  initial scan records only whether V1 was observed and retains no row or
+  instruction; only the bounded migration rescan produces one fresh row and
+  exactly one closed migration instruction.
+- `riffdb-catalog` may use `riffdb-invariant` only for pure, bounded evaluation
+  of a selected historical aggregate `partition_expression`. This adds no
+  storage, runtime, commit-check, I/O, time, entropy, callback, or reverse
+  dependency.
+- Startup is linear and session-bound. Catalog returns only `Ready` or
+  `MigrationRequired`; storage returns only `Clean` or `MigrationRequired`.
+  Only matching pairs may be joined. Migration uses one-bundle states, no
+  storage transaction spans catalog work, and compare-and-rewrite batches are
+  atomic. Completion returns a dormant unopened backend; readiness requires a
+  complete new startup session with a fresh `OpenSessionId`. There is no
+  migration marker or operational migration port.
+- Migration evidence and instruction/write-batch ledgers are independently
+  capped at 500 rows and 4 MiB per page, while the existing general historical
+  and bundle bounds remain unchanged. WP-065 must prove that one maximum valid
+  row and its conservative replacement fit.
+- `riffdb-storage-api` owns the fields-private result
+  `Fits(EncodedWriteSetUpperBound) | ExceedsAcceptedAggregateCap`, produced only
+  by the WP-065 codec after every record charge and checked aggregate sum have
+  succeeded. WP-100 alone maps the exact aggregate-cap branch to its private
+  `CapacityUnavailable` decision and existing public `StorageUnavailable`,
+  before sequence assignment and without a write or readiness loss. Per-record,
+  overflow, encoding, compatibility, reservation, and integrity failures remain
+  fatal and are never mapped through that branch.
+
+Corrective ownership is WP-060 for storage type-state and memory behavior,
+WP-065 for the source, codec, registries, evidence/result factories, and bound
+proofs, WP-050 for catalog derivation, WP-070 for redb migration, and WP-100 only
+for consuming the aggregate-cap result. ADR-0039 contains the complete package
+and fixture reconciliation.
 
 ## Decision Deadline
 

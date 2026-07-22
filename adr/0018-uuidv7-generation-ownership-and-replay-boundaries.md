@@ -2,7 +2,7 @@
 
 - **Status:** Accepted
 - **Direction approved:** 2026-07-13
-- **Exact text accepted:** 2026-07-13
+- **Exact text accepted:** 2026-07-13, amended 2026-07-22
 - **Accepted:** 2026-07-13
 - **Requires:** ADR-0004, ADR-0005, ADR-0007, ADR-0009, ADR-0011, and
   ADR-0012
@@ -10,6 +10,8 @@
   ownership; ADR-0007 request and incident source boundaries; ADR-0009
   bootstrap generation and the reviewed `getrandom` direct-owner set; ADR-0011
   UUIDv7 construction; and ADR-0012's no-runtime-entropy boundary
+- **Amended by:** ADR-0040 for one server-owned, non-UUID, nonsemantic process
+  generation sampled through the existing reviewed entropy owner
 - **Decision deadline:** Pure construction before WP-010 closes; database and
   provenance ownership before WP-060; production sources before their owning
   packages merge
@@ -550,6 +552,7 @@ Exact package ownership is:
 | WP-120 | Checked `RequestContext`/claims and source-free service behavior; no generator |
 | WP-127 | Existing public 16-byte field validation only; no generation policy or source |
 | WP-130 | Client system source/convenience APIs; one private checked server system-source primitive plus database/provenance/request/incident/cursor wrappers; complete production injection into the P1 graph; exact dependency graph and gRPC non-substitution tests |
+| WP-137 | One private `ServerGenerationV1` and exactly one independent non-UUID process-generation source/fill at graph activation, shared adapter injection, source-failure startup behavior, and exact dependency/entropy tests; reuses the reviewed server entropy primitive but owns the new value/source files |
 | WP-140 | MCP consumer-side request source port and fresh-ID protocol evidence |
 | WP-150 | Retained bootstrap identity/token and fresh retry request behavior |
 | WP-180 | Incident-source integration and redaction/failure evidence without owning a system provider |
@@ -561,6 +564,21 @@ No package may edit a neighboring owner to hide an unavailable source. If an
 implementation needs another direct dependency owner, an ID in a different
 durable state, a different source timing point, or a fallback behavior, it stops
 for human review.
+
+## 2026-07-22 non-UUID process-generation amendment
+
+ADR-0040 adds one non-UUID purpose to the existing `riffdb-server` direct
+`getrandom` owner. One production graph-activation attempt fills exactly one
+fresh `[u8; 16]` for `ServerGenerationV1`, with no clock, retry, fallback,
+derivation, truncation, counter, or reuse of any UUID/cursor buffer. Failure
+stops activation and readiness.
+
+This value is deliberately outside the UUIDv7 source table above. It is not a
+UUID, RiffDB identifier, cursor, request identity, commit or policy signal,
+durable fact, semantic discovery fence, or deterministic-runtime input. The
+server lifecycle stores it and exposes a copy only to public presentation
+adapters. The direct owner, version, feature set, first-party safe-Rust policy,
+and all UUIDv7 source contracts remain unchanged.
 
 ## Accepted Decisions
 

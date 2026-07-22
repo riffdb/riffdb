@@ -2,11 +2,13 @@
 
 - **Status:** Accepted
 - **Direction approved:** 2026-07-21
-- **Exact text accepted:** 2026-07-21
+- **Exact text accepted:** 2026-07-21, amended 2026-07-22
 - **Accepted:** 2026-07-21
 - **Requires:** ADR-0006, ADR-0007, ADR-0017, ADR-0021, and ADR-0026
 - **Clarifies:** API-neutral response accounting, whole-item pagination, and the
   failure used when one valid result cannot fit the service response bound
+- **Amended by:** ADR-0040 for the lower full-discovery service ceiling and its
+  fixed outbound MCP response ledger
 - **Decision deadline:** Before WP-120 publishes bounded service results and
   before WP-127 freezes their public wire mapping
 
@@ -164,6 +166,26 @@ and WP-200 prove MCP uses the same service disposition and cannot bypass it.
 - **Defines or blocks:** `WP-120`, `WP-127`, `WP-130`, and the corresponding
   `WP-140` MCP mapping
 - **Final evidence:** `WP-200`
+
+## 2026-07-22 full-discovery budget amendment
+
+ADR-0040 preserves this record's charge version and global 4,194,304-byte
+API-neutral/MCP outbound ceiling. Full API-neutral discovery responses use the
+stricter inclusive ceiling of exactly 2,621,440 bytes, covering their dynamic
+schemas, complete operation catalog, semantic fence, and page framing.
+
+The remaining 1,572,864 bytes are partitioned exactly: at most 1,048,576 bytes
+for WP-140's complete local fixed-schema registry and at most 524,288 bytes for
+all additional MCP tool metadata, JSON-RPC structure, links, delimiters, and
+framing. These three ceilings total 4,194,304 bytes. Dynamic schema source bytes
+already charged by the service are not charged a second time solely because the
+MCP composer places them in JSON objects. WP-137 proves the service maximum;
+WP-140's separately accepted fixtures must prove fixed-only, dynamic-only, and
+mixed maxima before emission.
+
+Whole-item pagination, authorization/redaction before charging, arithmetic
+failure, indivisible-item disposition, and every non-discovery service ceiling
+remain as accepted in this record.
 
 ## Decision Deadline
 

@@ -4,10 +4,10 @@ digraph G {
   edge [color="#5E7C90", penwidth=1.45, arrowsize=0.70, fontname="Liberation Sans", fontsize=8.5, fontcolor="#35566D"];
 
   p0 [label="P0 — Executable semantics\nDSL • typed IR • checked projection schema • storage semantics • deterministic runtime", fillcolor="#EEF5F7"];
-  p1 [label="P1 — Durable standalone POC\ndurable/public schema freezes • commit • recovery • idempotency • provenance • audit\natomic outbox intent • gRPC • Rust SDK • CLI", fillcolor="#E4F0F2"];
-  p2 [label="P2 / POC exit — Native agent and derived-system proof\nMCP • outbox dispatch • projection identities/generations/frontiers\nfinal server composition • integrated recovery", fillcolor="#CFE6E8", penwidth=2.0];
+  p1 [label="P1 — Durable standalone POC\ndurable/public schema freezes • V1-to-V2 index migration • commit • recovery • idempotency\nprovenance • audit • atomic outbox intent • gRPC • Rust SDK • CLI", fillcolor="#E4F0F2"];
+  p2 [label="P2 / POC exit — Native agent and derived-system proof\nMCP • outbox dispatch • projection identities/generations/frontiers • reviewed public backup/restore\nfinal server composition • integrated recovery", fillcolor="#CFE6E8", penwidth=2.0];
   evidence [label="Cross-stage budget comparison evidence\nPostgreSQL baseline → service parity → public SDK runner\nredb/Fjall semantic and benchmark comparison", style="rounded,filled,dashed", fillcolor="#FAFAFA"];
-  a [label="Single-node alpha\nformat migrations • backup/restore • remote auth • generated clients"];
+  a [label="Single-node alpha\ncontinued format evolution • hardened backup/restore • remote auth • generated clients"];
   b [label="Replicated beta\nRaft • snapshots • failover • unchanged command semantics"];
   c [label="Partitioned MVP\ntenant-local leaders • placement epochs • movement • agent branches", fillcolor="#FFF1D9", penwidth=2.0];
   post [label="Post-MVP research\ndistributed transactions • escrow • global indexes • richer analytics • multi-region", style="rounded,filled,dashed", fillcolor="#FAFAFA"];

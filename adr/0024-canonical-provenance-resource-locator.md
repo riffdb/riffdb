@@ -2,16 +2,18 @@
 
 - **Status:** Accepted
 - **Direction approved:** 2026-07-21
-- **Exact text accepted:** 2026-07-21
+- **Exact text accepted:** 2026-07-21; status cross-reference amended 2026-07-22
 - **Accepted:** 2026-07-21
 - **Requires:** ADR-0006, ADR-0007, ADR-0011, and ADR-0018
 - **Amends:** ADR-0008 only for the exact provenance resource-locator spelling;
-  ADR-0008 remains Proposed for every other resource URI, HTTP audience,
-  transport, cursor-presentation, and remaining protocol-fixture decision
+  ADR-0008 and ADR-0040 later accepted every other resource URI, HTTP audience,
+  transport, cursor-presentation, and remaining protocol-fixture decision at
+  acceptance reference `21a8cfb`
 - **Decision deadline:** Before WP-127 freezes completed public response fields
 
-The human maintainer accepted this exact narrow locator rule on 2026-07-21. No
-other proposed part of ADR-0008 is accepted by this record.
+The human maintainer accepted this exact narrow locator rule on 2026-07-21. At
+that acceptance, this record accepted no other then-proposed part of ADR-0008;
+those decisions were accepted separately on 2026-07-22.
 
 ## Context
 
@@ -78,8 +80,8 @@ access storage directly.
 - Public Execute responses and MCP provenance links share one formatter.
 - A canonical locator is always 56 bytes; broader generic URI bounds do not
   permit a longer provenance locator.
-- Other RiffDB resource URI templates remain unresolved under Proposed
-  ADR-0008.
+- Other RiffDB resource URI templates were later resolved by ADR-0008 and
+  ADR-0040; their separate future exact-byte fixtures remain required.
 - A future incompatible spelling requires a new compatibility decision and a
   versioned public boundary; version-one bytes are never reinterpreted.
 
@@ -122,6 +124,7 @@ cross-transport evidence.
 
 ## Decision Deadline
 
-This exact text is accepted before WP-127 freezes completed public message
-fixtures. Every other resource URI and MCP transport decision remains Proposed
-until separately reviewed.
+This exact text was accepted before WP-127 froze completed public message
+fixtures. Every other resource URI and MCP transport decision was reviewed and
+accepted separately through ADR-0008 and ADR-0040 on 2026-07-22; this record
+does not accept or redefine those semantics.

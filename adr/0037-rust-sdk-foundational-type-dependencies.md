@@ -2,10 +2,12 @@
 
 - **Status:** Accepted
 - **Direction approved:** 2026-07-21
-- **Exact text accepted:** 2026-07-21
+- **Exact text accepted:** 2026-07-21, amended 2026-07-22
 - **Accepted:** 2026-07-21
 - **Requires:** ADR-0006, ADR-0007, ADR-0018, and ADR-0028
 - **Amends:** The `riffdb-client-rust` dependency row and WP-130 dependency evidence
+- **Amended by:** ADR-0008, ADR-0040, and ADR-0041 for the exact protected-
+  credential loader, retry-helper surface, and direct `zeroize` edge
 - **Decision deadline:** Before WP-130 completion
 
 The human maintainer accepted this exact decision and its authoritative-file
@@ -32,7 +34,11 @@ ownership and produces an equivalent transitive dependency.
 with default features disabled, solely to expose checked public errors and
 foundational public identifier/value newtypes. It may also retain its already
 reviewed `riffdb-proto`, client-only `riffdb-api-grpc`, exact Tonic/Tonic-Prost,
-and exact ADR-0018 `getrandom` dependencies.
+and exact ADR-0018 `getrandom` dependencies. Under ADR-0008, ADR-0040, and
+ADR-0041 it may additionally depend directly on exactly
+`zeroize = { version = "=1.8.1", default-features = false, features = ["alloc"] }`
+solely for bounded protected-credential staging buffers. It gains no direct
+`base64` or `riffdb-auth` dependency.
 
 This exception grants no dependency on `riffdb-auth`, `riffdb-catalog`,
 `riffdb-commit`, `riffdb-conflict`, `riffdb-policy`, `riffdb-runtime`,
@@ -45,6 +51,19 @@ The generic retry wrapper retains identical submitted input bytes and a fresh
 outer `RequestId`; it does not claim that a caller-supplied separate key is
 schema-bound. Contract-generated modules own typed idempotency-key placement and
 construct matching outcome-recovery requests.
+
+The public client owns one protected normal-bearer file loader. It returns only
+the existing redacted `BearerCredential`, has the closed safe error cases
+`UnsupportedPlatform`, `ProtectedFileRejected`, and `InvalidPresentation`, and
+offers only an exact Boolean presentation comparison. It exposes no raw bytes,
+decoded token, auth type, file callback, or path-bearing error; it performs no
+base64 decode, digest, capability lookup, or authentication.
+
+WP-137 adds exactly three operation-specific retry helpers: command execution,
+normal capability creation, and bootstrap capability creation. Their accepted
+attempt, request-ID, retryability, response-inspection, and uncertain-outcome
+rules are those in ADR-0040 and ADR-0041; no generic automatic retry authority
+is implied.
 
 ## Options Considered
 

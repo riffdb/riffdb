@@ -1,17 +1,19 @@
 # ADR-0041: CLI Public Flow and Output Contract
 
-- **Status:** Proposed
-- **Direction approved:** No
-- **Exact text accepted:** No
+- **Status:** Accepted
+- **Direction approved:** 2026-07-22
+- **Exact text accepted:** 2026-07-22
+- **Accepted:** 2026-07-22
+- **Acceptance reference:** `21a8cfb`
 - **Requires:** ADR-0006, ADR-0007, ADR-0008, ADR-0009, ADR-0011, ADR-0018,
   ADR-0028, ADR-0031, ADR-0037, and ADR-0040
-- **Would amend:** SPEC Sections 5.2, 5.4, 16.1, 16.2, and 16.6; ADR-0009's
+- **Amends:** SPEC Sections 5.2, 5.4, 16.1, 16.2, and 16.6; ADR-0009's
   credential-delivery ownership and exact `base64`/`zeroize` direct-owner rows
   only as expressly described below, without broadening its isolated
   `riffdb_auth::bootstrap_secret` CLI exception; ADR-0037's exact public-client
   dependency allowlist only to add `zeroize`; ADR-0040's WP-137 SDK ownership
   and required ADRs; and WP-150's exact dependency, credential, configuration,
-  and output evidence; would add WP-137 as a WP-135 predecessor, add WP-135 and
+  and output evidence; adds WP-137 as a WP-135 predecessor, adds WP-135 and
   WP-137 as WP-150 predecessors, freeze a launchable WP-135 public runner, and
   reserve a separately reviewed WP-155 before WP-200 for the required public
   backup/restore flow
@@ -20,9 +22,10 @@
   a CLI configuration, credential, retry, or machine-output interface,
   whichever occurs first
 
-This record is a proposal. It does not override the specification or an
-Accepted ADR until a human maintainer accepts its exact text and the companion
-authoritative-file reconciliation.
+The human maintainer accepted this exact text and its ADR-only companion
+reconciliation on 2026-07-22, with revision `21a8cfb` as the acceptance
+reference. The same governance change must reconcile the authoritative SPEC,
+work-package registry, and DAG before implementation begins.
 
 ## Context
 
@@ -62,12 +65,12 @@ There are also three current boundary gaps:
    POC acceptance.
 3. The public client's transport classification and checked public-error model
    are client-owned boundaries. WP-150 cannot safely copy their private logic,
-   and its allowed paths cannot add the required client APIs. Proposed WP-137
+   and its allowed paths cannot add the required client APIs. WP-137
    must therefore land the narrow operation-specific retry helpers and
    serialization-neutral public-error views before WP-150 starts. Retry
    classification remains private to the client.
 
-## Proposed Decision
+## Decision
 
 ### Dependency and authority boundary
 
@@ -106,7 +109,7 @@ toml = { version = "=1.1.3", default-features = false, features = ["parse", "ser
 zeroize = { version = "=1.8.1", default-features = false, features = ["alloc"] }
 ```
 
-This proposes the following exact amendments to ADR-0009's direct-owner table;
+This decision makes the following exact amendments to ADR-0009's direct-owner table;
 versions and features remain byte-for-byte unchanged and no other owner or
 purpose is added:
 
@@ -700,7 +703,7 @@ compatibility authority for those exact objects.
 ## Options Considered
 
 1. **Reviewed public-client graph, explicit configuration, protected
-   credentials, and versioned structural JSON:** Proposed. This keeps the CLI
+   credentials, and versioned structural JSON:** Accepted. This keeps the CLI
    useful while making its security and compatibility boundaries testable.
 2. **Serialize generated Protobuf messages directly:** Rejected. Generated
    representation, 64-bit JSON behavior, oneofs, bytes, and presence are not
@@ -753,7 +756,7 @@ compatibility authority for those exact objects.
 
 ## Compatibility
 
-This proposal changes no public Protobuf message, RPC, durable record, contract
+This decision changes no public Protobuf message, RPC, durable record, contract
 source, IR, hashing rule, storage key, or database migration. It adds the
 source-additive Rust SDK functions
 `load_protected_bearer_credential` and
@@ -934,10 +937,10 @@ POC backup/restore obligation has been completed.
 
 - **Requirements:** `API-001`, `ID-005`, `MCP-047`, `OUT-001`, `POC-001`,
   `POC-008`, and `POC-010`
-- **Defines or blocks:** the proposed WP-135/WP-137-to-WP-150 dependencies,
+- **Defines or blocks:** the accepted WP-135/WP-137-to-WP-150 dependencies,
   `WP-150`, and the reserved `WP-155` packaging boundary
-- **Consumed by:** `WP-137`, `WP-150`, proposed `WP-155`, and `WP-200`
-- **Final evidence:** `WP-150` public CLI integration, proposed `WP-155`
+- **Consumed by:** `WP-137`, `WP-150`, reserved `WP-155`, and `WP-200`
+- **Final evidence:** `WP-150` public CLI integration, reserved `WP-155`
   backup/restore integration, and the `WP-200` POC acceptance/demo run
 
 The companion WP-135 reconciliation adds WP-137 as a hard dependency, removes

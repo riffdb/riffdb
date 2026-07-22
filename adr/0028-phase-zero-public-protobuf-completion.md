@@ -2,12 +2,15 @@
 
 - **Status:** Accepted
 - **Direction approved:** 2026-07-21
-- **Exact text accepted:** 2026-07-21
+- **Exact text accepted:** 2026-07-21, amended 2026-07-22
+- **Accepted:** 2026-07-21
 - **Requires:** ADR-0006, ADR-0007, ADR-0009, ADR-0010, ADR-0011,
   ADR-0012, ADR-0013, ADR-0017, ADR-0018, and ADR-0027
 - **Clarifies:** The complete `riffdb.v1` public message inventory, field
   numbers, closed results, presence rules, and structural validation owned by
   WP-127
+- **Amended by:** ADR-0040 for six additive RPCs, `discovery.proto`, and the
+  additive outcome-locator fields
 - **Decision deadline:** Before WP-127 changes any phase-zero public message,
   generated descriptor, schema hash, or compatibility fixture
 
@@ -1451,6 +1454,35 @@ policy, commit coordination, or storage implementations.
 - **Defines or blocks:** `WP-127` and `WP-130`
 - **Consumed later by:** `WP-140`, `WP-150`, `WP-190`, and `WP-200`
 - **Final evidence:** `WP-200`
+
+## 2026-07-22 additive public-v1 amendment
+
+ADR-0040 supersedes this record's 16-RPC and reserved-shell statements only for
+the following exact additive inventory. The package remains `riffdb.v1`, the
+same five services now contain exactly 22 RPCs, and `SubscribeCommits` remains
+the only server-streaming RPC:
+
+- `ContractService` appends `GetContractVersion`, `DiscoverCommandTools`, and
+  `DiscoverResources` after its existing four RPCs;
+- `QueryService` appends `GetProjectionStatus` after its existing three RPCs;
+- `CommitService` appends `TraceProvenance` after its existing three RPCs;
+- `AdminService` appends `ListPendingOutboxDeliveries` after its existing four
+  RPCs; and
+- `CommandService` is unchanged.
+
+WP-137 creates `proto/riffdb/v1/discovery.proto` and owns the exact additive
+messages, imports, validation, descriptors, schemas, and public fixtures in
+ADR-0040. It also adds optional `ExecuteCommandResponse.outcome_uri = 9` and
+optional `GetOutcomeRequest.outcome_uri = 5`. When request field 5 is present,
+legacy fields 2 through 4 must be empty; when absent, the existing raw-key
+semantics are unchanged. Generic compatibility accepts legacy absence of
+response field 9, while WP-137 servers must populate it for every committed or
+replayed durable result and omit it for read-only execution.
+
+No existing tag, RPC, package, durable schema, service semantic, or fixture is
+renumbered or reinterpreted. ADR-0040 contains the complete accepted field and
+presence registry; WP-137's separately named operation-schema exact-byte
+checkpoint remains mandatory before conversion or consumer implementation.
 
 ## Decision Deadline
 

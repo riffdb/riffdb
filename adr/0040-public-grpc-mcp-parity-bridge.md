@@ -1,16 +1,18 @@
 # ADR-0040: Public gRPC MCP Parity Bridge
 
-- **Status:** Proposed
-- **Direction approved:** No
-- **Exact text accepted:** No
+- **Status:** Accepted
+- **Direction approved:** 2026-07-22
+- **Exact text accepted:** 2026-07-22
+- **Accepted:** 2026-07-22
+- **Acceptance reference:** `21a8cfb`
 - **Requires:** ADR-0005, ADR-0006, ADR-0007, ADR-0009, ADR-0013, ADR-0018,
-  ADR-0020, ADR-0024, ADR-0026, ADR-0027, ADR-0028, ADR-0037, Proposed
+  ADR-0020, ADR-0024, ADR-0026, ADR-0027, ADR-0028, ADR-0037,
   ADR-0008
-- **Paired proposal:** ADR-0041 defines the CLI-consumed WP-137 client surface;
+- **Paired accepted record:** ADR-0041 defines the CLI-consumed WP-137 client surface;
   this bridge can be reviewed independently, but WP-137 implementation and the
   companion authoritative reconciliation are jointly gated on accepting both
   records
-- **Would amend:** ADR-0006 and ADR-0028's exact 16-RPC inventory; the
+- **Amends:** ADR-0006 and ADR-0028's exact 16-RPC inventory; the
   public/service/client portions of ADR-0007 and ADR-0026 for conditional
   discovery and outcome-locator resolution; ADR-0027's response-charge
   inventory and discovery-specific lower ceiling without raising its global
@@ -21,9 +23,10 @@
 - **Decision deadline:** Before WP-137 edits a public `.proto`, descriptor,
   generated fixture, gRPC service, or public SDK retry surface
 
-This proposal is not authoritative. The current 16-RPC inventory remains in
-force until a human accepts an exact amendment and the authoritative SPEC and
-work-package registry are reconciled in the same governance change.
+The human maintainer accepted this exact text and its ADR-only companion
+reconciliation on 2026-07-22, with revision `21a8cfb` as the acceptance
+reference. The same governance change must reconcile the authoritative SPEC,
+work-package registry, and DAG before implementation begins.
 
 ## Context
 
@@ -39,7 +42,7 @@ without an RPC are:
 - `DiscoverResources`
 
 ADR-0006 and ADR-0028 deliberately froze the smaller inventory and explicitly
-said those RPCs do not exist. Proposed ADR-0008 and SPEC Section 12.2 also require
+said those RPCs do not exist. ADR-0008 and SPEC Section 12.2 also require
 production MCP stdio to be a normal public gRPC client. With only 16 RPCs, stdio
 cannot implement the required projection status, provenance, outbox, historical
 contract-resource, or policy-filtered discovery behavior without an in-process
@@ -54,7 +57,7 @@ support must be supplied upstream rather than reimplemented in the CLI. The
 helpers keep their dispositions private and expose only checked terminal
 `Result`/`ClientError` values.
 
-## Proposed Decision
+## Decision
 
 ### Formal WP-137 bridge
 
@@ -1027,7 +1030,7 @@ pub fn load_protected_bearer_credential(
 with exactly `UnsupportedPlatform`, `ProtectedFileRejected`, and
 `InvalidPresentation`. The loader returns the existing redacted
 `BearerCredential`, exposes no credential text/bytes or auth-owned type, and
-implements Proposed ADR-0041's exact bounded Linux protected-file procedure,
+implements ADR-0041's exact bounded Linux protected-file procedure,
 non-Linux rejection, presentation-only validation, and temporary-buffer
 zeroization. Authentication and canonical token decoding remain server-owned.
 `BearerCredential` gains exactly this sole non-exposing comparison:
@@ -1042,7 +1045,7 @@ returns only a Boolean, and makes no constant-time authentication claim. There
 is no raw accessor, file-reader callback, decoded token, path-bearing error, or
 second loader.
 
-Acceptance applies Proposed ADR-0041's exact companion dependency amendments.
+Acceptance applies ADR-0041's exact companion dependency amendments.
 ADR-0009's complete direct first-party owner set becomes `riffdb-auth`,
 `riffdb-proto`, `riffdb-service`, `riffdb-api-mcp`, and `riffdb-cli` for exact
 `base64 = 0.22.1`, and `riffdb-auth`,
@@ -1136,7 +1139,7 @@ does not duplicate transport classification.
 
 ### WP-137 ownership and acceptance
 
-The proposed hard dependency is `WP-130`. Required ADRs are ADR-0005, ADR-0006,
+The accepted hard dependency is `WP-130`. Required ADRs are ADR-0005, ADR-0006,
 ADR-0007, ADR-0009, ADR-0013, ADR-0018, ADR-0020, ADR-0024, ADR-0026, ADR-0027,
 ADR-0028, ADR-0037, and accepted exact text for ADR-0008, ADR-0040, and ADR-0041.
 WP-137 is added to the P1 gate. WP-135, WP-140, and WP-150 gain a hard
@@ -1220,7 +1223,7 @@ proceeds. Equivalent-but-byte-different Draft 2020-12 spelling is a public
 compatibility change, not an implementation choice. Later source, hash, bound,
 or composition drift stops for the same review.
 
-The package acceptance commands are proposed as:
+The package acceptance commands are:
 
 ```text
 cargo test -p riffdb-proto -p riffdb-api-grpc -p riffdb-client-rust
@@ -1255,7 +1258,7 @@ treat a discovery response as a capability.
 
 ## Options Considered
 
-1. **Add exactly six RPCs to the existing five services:** proposed; it exposes
+1. **Add exactly six RPCs to the existing five services:** Accepted; it exposes
    the already closed service inventory and lets stdio remain a normal client.
 2. **Add a sixth DiscoveryService:** rejected; it changes the accepted five-
    service organization without necessity.
@@ -1288,7 +1291,7 @@ treat a discovery response as a capability.
 
 ## Compatibility
 
-This proposal explicitly amends, rather than silently reinterprets, ADR-0006
+This decision explicitly amends, rather than silently reinterprets, ADR-0006
 and ADR-0028's five-service/16-RPC freeze and their statements that the six RPCs
 do not exist. The package remains `riffdb.v1`, so the additions follow its
 additive compatibility policy. Existing messages and fields are not renumbered
@@ -1308,7 +1311,7 @@ contract-schema, compiler-artifact, or unreviewed public-field ownership.
 
 `diagrams/work_package_dag.dot` is part of that same governance change. It adds
 the WP-137 node and exact `WP-130 -> WP-137`, `WP-137 -> WP-140`, and
-`WP-137 -> WP-150` edges. Proposed ADR-0041 additionally requires
+`WP-137 -> WP-150` edges. ADR-0041 additionally requires
 `WP-137 -> WP-135` and `WP-135 -> WP-150`, while preserving the existing direct
 `WP-130 -> WP-150` edge. WP-155 remains reservation-only and receives no node or
 edge. The roadmap's existing P1 public-protocol label remains accurate and does
@@ -1439,7 +1442,7 @@ capability uncertainty evidence. WP-200 supplies final cross-transport proof.
 - **Requirements:** `API-001`, `ID-005`, `MCP-001`, `MCP-010`, `MCP-011`, `MCP-030`
   through `MCP-033`, `MCP-040`, `MCP-041`, `MCP-043`, `MCP-045`, `MCP-046`,
   `MCP-047`, `MCP-048`, `POC-001`, `POC-004`, `POC-007`, and `POC-008`
-- **Defines:** proposed P1 `WP-137`, depending on `WP-130`
+- **Defines:** P1 `WP-137`, depending on `WP-130`
 - **Blocks:** `WP-135`, `WP-140`, and `WP-150`
 - **Final evidence:** `WP-200`
 
@@ -1451,4 +1454,6 @@ specific SDK retry surface must be accepted before WP-137 changes any public
 source or generated artifact. WP-140 cannot implement production stdio until
 WP-137 merges. Acceptance must include authoritative SPEC/work-package,
 ADR-0006/ADR-0028, ADR-0009/ADR-0018/ADR-0037, ADR-0041, and work-package-DAG
-reconciliation; merging this Proposed file alone changes no authority.
+reconciliation. The exact-text deadline was satisfied on 2026-07-22; the
+separately named operation-schema byte checkpoint remains mandatory before
+conversion, client, or consumer implementation proceeds.
