@@ -1,0 +1,65 @@
+//! Stable boundary for compiler-generated Rust command modules.
+
+use std::error::Error;
+use std::fmt;
+
+use riffdb_proto::v1;
+use riffdb_types::RequestId;
+
+use crate::{CommandShapeError, IdempotentCommand};
+
+/// One command shape emitted from a checked contract bundle.
+///
+/// Implementations contain only value-shape ergonomics. The server remains
+/// authoritative for schema validation and every database guarantee.
+pub trait GeneratedCommand {
+    /// The generated declared-outcome enum.
+    type Outcome;
+
+    /// Constructs the immutable generic transport command.
+    fn idempotent_command(&self) -> Result<IdempotentCommand, GeneratedCommandError>;
+
+    /// Constructs same-key outcome recovery from this typed command input.
+    ///
+    /// The generated implementation owns the schema binding between the
+    /// command input's idempotency field and this recovery request.
+    fn outcome_request(
+        &self,
+        request_id: RequestId,
+    ) -> Result<v1::GetOutcomeRequest, GeneratedCommandError>;
+
+    /// Decodes a structurally checked Execute response into the generated outcome.
+    fn decode_outcome(
+        &self,
+        response: &v1::ExecuteCommandResponse,
+    ) -> Result<Self::Outcome, GeneratedCommandError>;
+}
+
+/// A closed failure in generated shape-only code.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum GeneratedCommandError {
+    /// Typed input could not form the frozen generic command envelope.
+    InvalidInputShape,
+    /// A successful response did not match the generated declared-outcome union.
+    InvalidOutcomeShape,
+}
+
+impl From<CommandShapeError> for GeneratedCommandError {
+    fn from(_: CommandShapeError) -> Self {
+        Self::InvalidInputShape
+    }
+}
+
+impl fmt::Display for GeneratedCommandError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(match self {
+            Self::InvalidInputShape => "generated command input is invalid",
+            Self::InvalidOutcomeShape => "generated command outcome is invalid",
+        })
+    }
+}
+
+impl Error for GeneratedCommandError {}
+
+/// Generated ergonomic bindings for the canonical POC contract.
+pub mod legal_spend;

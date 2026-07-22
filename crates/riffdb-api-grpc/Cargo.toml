@@ -7,8 +7,29 @@ publish.workspace = true
 
 [features]
 default = []
+client = ["tonic/channel"]
+server = [
+    "dep:riffdb-auth",
+    "dep:riffdb-errors",
+    "dep:riffdb-service",
+    "dep:riffdb-types",
+    "tonic/router",
+    "tonic/server",
+]
 
 [dependencies]
+riffdb-auth = { version = "0.1.0", path = "../riffdb-auth", default-features = false, optional = true }
+riffdb-errors = { version = "0.1.0", path = "../riffdb-errors", default-features = false, optional = true }
+riffdb-proto = { version = "0.1.0", path = "../riffdb-proto", default-features = false }
+riffdb-service = { version = "0.1.0", path = "../riffdb-service", default-features = false, optional = true }
+riffdb-types = { version = "0.1.0", path = "../riffdb-types", default-features = false, optional = true }
+tonic = { version = "=0.14.6", default-features = false, features = ["codegen"] }
+tonic-prost = { version = "=0.14.6", default-features = false }
+
+[build-dependencies]
+prost = { version = "=0.14.4", default-features = false, features = ["std"] }
+prost-types = { version = "=0.14.4", default-features = false, features = ["std"] }
+tonic-prost-build = { version = "=0.14.6", default-features = false, features = ["transport"] }
 
 [lints]
 workspace = true

@@ -1212,6 +1212,7 @@ work_packages:
   - ADR-0034
   - ADR-0035
   - ADR-0036
+  - ADR-0037
   allowed_paths:
   - Cargo.lock
   - crates/riffdb-service/**
@@ -1465,6 +1466,9 @@ work_packages:
     with no TLS, compression, transport-wide production feature, cryptography, or second base64 version
   - Authentication and request limits
   - Rust transport client
+  - Direct default-feature-disabled riffdb-errors and riffdb-types dependencies solely for the single checked
+    PublicError and foundational public identifier/value owners, with architecture tests forbidding every
+    authority-bearing server crate and server-only API feature
   - Fresh client RequestId plus CapabilityId and AgentSessionId convenience generation through reviewed direct
     getrandom 0.3.4 sources; every retry uses a fresh RequestId and UUID ordering is never a semantic signal
   - Generated ergonomic command module

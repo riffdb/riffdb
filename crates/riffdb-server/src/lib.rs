@@ -1,3 +1,9 @@
 #![forbid(unsafe_code)]
 
-//! Non-semantic bootstrap root for the `riffdb-server` crate.
+//! Production composition and process providers for `riffdbd`.
+
+mod clocks;
+mod cursor;
+mod identifiers;
+mod notifications;
+mod storage;
