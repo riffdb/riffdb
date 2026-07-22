@@ -82,14 +82,31 @@ pub fn decode_execute_response(
 pub fn validate_execute_response(
     response: &v1::ExecuteCommandResponse,
 ) -> Result<(), ExecuteWireError> {
-    match v1::execute_command_response::CompletionStatus::try_from(response.status) {
+    let journaled = match v1::execute_command_response::CompletionStatus::try_from(response.status)
+    {
         Ok(v1::execute_command_response::CompletionStatus::Committed)
-        | Ok(v1::execute_command_response::CompletionStatus::Replayed) => {}
+        | Ok(v1::execute_command_response::CompletionStatus::Replayed) => true,
+        Ok(v1::execute_command_response::CompletionStatus::ExecutedReadOnly) => false,
         Ok(v1::execute_command_response::CompletionStatus::Unspecified) | Err(_) => {
             return Err(ExecuteWireError::InvalidCompletionStatus);
         }
+    };
+    if journaled {
+        CommitSequence::new(response.commit_sequence)
+            .ok_or(ExecuteWireError::InvalidCommitSequence)?;
+        validate_provenance_uri(&response.provenance_uri)?;
+        if !matches!(
+            response.durability_mode.as_str(),
+            "sync" | "group" | "memory"
+        ) {
+            return Err(ExecuteWireError::InvalidDurabilityMode);
+        }
+    } else if response.commit_sequence != 0
+        || !response.provenance_uri.is_empty()
+        || !response.durability_mode.is_empty()
+    {
+        return Err(ExecuteWireError::InvalidReadOnlySentinel);
     }
-    CommitSequence::new(response.commit_sequence).ok_or(ExecuteWireError::InvalidCommitSequence)?;
     ContractVersion::new(response.contract_version)
         .ok_or(ExecuteWireError::InvalidContractVersion)?;
     if response.plan_hash.len() != 32 {
@@ -103,13 +120,6 @@ pub fn validate_execute_response(
             .ok_or(ExecuteWireError::MissingValue)?,
     )
     .map_err(|_| ExecuteWireError::InvalidValue)?;
-    validate_provenance_uri(&response.provenance_uri)?;
-    if !matches!(
-        response.durability_mode.as_str(),
-        "sync" | "group" | "memory"
-    ) {
-        return Err(ExecuteWireError::InvalidDurabilityMode);
-    }
     if response.encoded_len() > MAX_EXECUTE_RESPONSE_BYTES {
         return Err(ExecuteWireError::MessageTooLarge);
     }
@@ -131,7 +141,7 @@ fn validate_protocol_name(name: &str) -> Result<(), ExecuteWireError> {
     Ok(())
 }
 
-fn validate_provenance_uri(uri: &str) -> Result<(), ExecuteWireError> {
+pub(crate) fn validate_provenance_uri(uri: &str) -> Result<(), ExecuteWireError> {
     const PREFIX: &str = "riffdb://provenance/";
     if uri.len() > MAX_PROVENANCE_URI_BYTES {
         return Err(ExecuteWireError::InvalidProvenanceUri);
@@ -202,6 +212,8 @@ pub enum ExecuteWireError {
     InvalidProvenanceUri,
     /// The durability-mode identifier is absent or malformed.
     InvalidDurabilityMode,
+    /// A read-only result does not carry the exact zero/empty journal sentinels.
+    InvalidReadOnlySentinel,
 }
 
 impl fmt::Display for ExecuteWireError {

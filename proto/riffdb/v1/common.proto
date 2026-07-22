@@ -1,0 +1,74 @@
+syntax = "proto3";
+
+package riffdb.v1;
+
+import "riffdb/v1/value.proto";
+
+message Unit {}
+
+message ExactContractSelection {
+  string contract_lineage = 1;
+  uint64 contract_version = 2;
+}
+
+message ContractSelection {
+  oneof selection {
+    Unit active = 1;
+    ExactContractSelection exact = 2;
+  }
+}
+
+message PageRequest {
+  optional uint32 limit = 1;
+  optional bytes cursor = 2;
+}
+
+message FieldSelection {
+  repeated uint32 field_ids = 1;
+}
+
+message FrontierPosition {
+  oneof position {
+    Unit before_first = 1;
+    uint64 applied_through = 2;
+  }
+}
+
+enum ActorKind {
+  ACTOR_KIND_UNSPECIFIED = 0;
+  ACTOR_KIND_HUMAN = 1;
+  ACTOR_KIND_AGENT = 2;
+  ACTOR_KIND_SERVICE = 3;
+}
+
+message TenantScope {
+  oneof scope {
+    Unit global = 1;
+    string tenant_id = 2;
+  }
+}
+
+message AdmittedActor {
+  string principal_id = 1;
+  ActorKind actor_kind = 2;
+  TenantScope tenant_scope = 3;
+  optional bytes agent_session_id = 4;
+}
+
+enum ExecutionClass {
+  EXECUTION_CLASS_UNSPECIFIED = 0;
+  EXECUTION_CLASS_READ_ONLY = 1;
+  EXECUTION_CLASS_IDEMPOTENT_MUTATION = 2;
+}
+
+enum CommandDurability {
+  COMMAND_DURABILITY_UNSPECIFIED = 0;
+  COMMAND_DURABILITY_SYNCHRONOUS = 1;
+  COMMAND_DURABILITY_GROUP = 2;
+}
+
+message DeclaredOutcome {
+  uint32 outcome_id = 1;
+  string outcome_name = 2;
+  ValueRecord value = 3;
+}

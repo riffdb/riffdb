@@ -1,0 +1,248 @@
+syntax = "proto3";
+
+package riffdb.v1;
+
+import "riffdb/v1/common.proto";
+import "riffdb/v1/value.proto";
+
+message HealthRequest {
+  optional bytes request_id = 1;
+}
+
+enum PreBootstrapLifecycle {
+  PRE_BOOTSTRAP_LIFECYCLE_UNSPECIFIED = 0;
+  PRE_BOOTSTRAP_LIFECYCLE_INITIALIZING_VALIDATION = 1;
+  PRE_BOOTSTRAP_LIFECYCLE_INITIALIZING_BOOTSTRAP = 2;
+}
+
+message PreBootstrapHealth {
+  PreBootstrapLifecycle lifecycle = 1;
+  bool liveness = 2;
+  bool readiness = 3;
+}
+
+enum HealthStatus {
+  HEALTH_STATUS_UNSPECIFIED = 0;
+  HEALTH_STATUS_READY = 1;
+  HEALTH_STATUS_NOT_READY = 2;
+  HEALTH_STATUS_DEGRADED = 3;
+}
+
+enum HealthComponentKind {
+  HEALTH_COMPONENT_KIND_UNSPECIFIED = 0;
+  HEALTH_COMPONENT_KIND_AUTHORITATIVE_STORAGE = 1;
+  HEALTH_COMPONENT_KIND_CATALOG = 2;
+  HEALTH_COMPONENT_KIND_COMMIT_COORDINATOR = 3;
+  HEALTH_COMPONENT_KIND_PROJECTION = 4;
+  HEALTH_COMPONENT_KIND_OUTBOX = 5;
+}
+
+enum HealthComponentStatus {
+  HEALTH_COMPONENT_STATUS_UNSPECIFIED = 0;
+  HEALTH_COMPONENT_STATUS_HEALTHY = 1;
+  HEALTH_COMPONENT_STATUS_DEGRADED = 2;
+  HEALTH_COMPONENT_STATUS_UNAVAILABLE = 3;
+}
+
+message HealthComponent {
+  HealthComponentKind component = 1;
+  HealthComponentStatus status = 2;
+}
+
+message BuildInfo {
+  string semantic_version = 1;
+  string git_revision = 2;
+  string rust_version = 3;
+  repeated string enabled_features = 4;
+  uint32 storage_format_version = 5;
+  uint32 contract_ir_version = 6;
+  string mcp_protocol_baseline = 7;
+}
+
+message AuthenticatedHealth {
+  HealthStatus status = 1;
+  optional uint64 active_contract_version = 2;
+  optional uint64 last_commit_sequence = 3;
+  repeated HealthComponent components = 4;
+  Timestamp started_at = 5;
+  BuildInfo build = 6;
+}
+
+message HealthResponse {
+  oneof result {
+    PreBootstrapHealth pre_bootstrap = 1;
+    AuthenticatedHealth authenticated = 2;
+  }
+}
+
+message StatsRequest {
+  bytes request_id = 1;
+}
+
+message StatsResponse {
+  uint32 active_cursors = 1;
+  uint32 active_commit_subscribers = 2;
+  optional uint64 last_commit_sequence = 3;
+  optional uint64 pending_outbox_deliveries = 4;
+  optional uint32 known_projections = 5;
+}
+
+enum CapabilityCreateMode {
+  CAPABILITY_CREATE_MODE_UNSPECIFIED = 0;
+  CAPABILITY_CREATE_MODE_NORMAL = 1;
+  CAPABILITY_CREATE_MODE_BOOTSTRAP = 2;
+}
+
+enum CapabilityPermissionKind {
+  CAPABILITY_PERMISSION_KIND_UNSPECIFIED = 0;
+  CAPABILITY_PERMISSION_KIND_VALIDATE_CONTRACT = 1;
+  CAPABILITY_PERMISSION_KIND_READ_CONTRACT = 2;
+  CAPABILITY_PERMISSION_KIND_EXPLAIN_COMMAND = 3;
+  CAPABILITY_PERMISSION_KIND_DEPLOY_CONTRACT = 4;
+  CAPABILITY_PERMISSION_KIND_INVOKE_COMMAND = 5;
+  CAPABILITY_PERMISSION_KIND_READ_ENTITY = 6;
+  CAPABILITY_PERMISSION_KIND_SCAN_INDEX = 7;
+  CAPABILITY_PERMISSION_KIND_QUERY_PROJECTION = 8;
+  CAPABILITY_PERMISSION_KIND_READ_PROJECTION_STATUS = 9;
+  CAPABILITY_PERMISSION_KIND_READ_COMMIT = 10;
+  CAPABILITY_PERMISSION_KIND_SCAN_COMMITS = 11;
+  CAPABILITY_PERMISSION_KIND_SUBSCRIBE_COMMITS = 12;
+  CAPABILITY_PERMISSION_KIND_READ_PROVENANCE = 13;
+  CAPABILITY_PERMISSION_KIND_INSPECT_OUTBOX = 14;
+  CAPABILITY_PERMISSION_KIND_READ_HEALTH = 15;
+  CAPABILITY_PERMISSION_KIND_READ_STATISTICS = 16;
+  CAPABILITY_PERMISSION_KIND_CREATE_CAPABILITY = 17;
+  CAPABILITY_PERMISSION_KIND_REVOKE_CAPABILITY = 18;
+  CAPABILITY_PERMISSION_KIND_ADMINISTER_CAPABILITIES = 19;
+}
+
+message LineageScopedStableId {
+  string contract_lineage = 1;
+  uint32 stable_id = 2;
+}
+
+message CapabilityPermission {
+  oneof permission {
+    Unit validate_contract = 1;
+    Unit read_contract = 2;
+    LineageScopedStableId explain_command = 3;
+    Unit deploy_contract = 4;
+    LineageScopedStableId invoke_command = 5;
+    LineageScopedStableId read_entity = 6;
+    LineageScopedStableId scan_index = 7;
+    LineageScopedStableId query_projection = 8;
+    LineageScopedStableId read_projection_status = 9;
+    Unit read_commit = 10;
+    Unit scan_commits = 11;
+    Unit subscribe_commits = 12;
+    Unit read_provenance = 13;
+    Unit inspect_outbox = 14;
+    Unit read_health = 15;
+    Unit read_statistics = 16;
+    Unit create_capability = 17;
+    Unit revoke_capability = 18;
+    Unit administer_capabilities = 19;
+  }
+}
+
+message ScopedPartition {
+  string contract_lineage = 1;
+  bytes partition_key = 2;
+}
+
+message ExplicitPartitionScope {
+  repeated ScopedPartition partitions = 1;
+}
+
+message PartitionScope {
+  oneof scope {
+    Unit all = 1;
+    ExplicitPartitionScope explicit = 2;
+  }
+}
+
+message EntityFieldVisibility {
+  string contract_lineage = 1;
+  uint32 entity_type_id = 2;
+  repeated uint32 field_ids = 3;
+}
+
+message CapabilityGrant {
+  TenantScope tenant_scope = 1;
+  PartitionScope partition_scope = 2;
+  repeated CapabilityPermission permissions = 3;
+  repeated EntityFieldVisibility field_visibility = 4;
+  uint32 max_scan_rows = 5;
+  repeated CapabilityPermissionKind approval_required = 6;
+}
+
+message CreateCapabilityRequest {
+  bytes request_id = 1;
+  CapabilityCreateMode mode = 2;
+  bytes capability_id = 3;
+  string principal_id = 4;
+  ActorKind actor_kind = 5;
+  uint32 requested_lifetime_seconds = 6;
+  repeated string audiences = 7;
+  CapabilityGrant grant = 8;
+}
+
+message CapabilityIdentity {
+  bytes capability_id = 1;
+  uint64 revision = 2;
+}
+
+message CapabilityTransition {
+  CapabilityIdentity identity = 1;
+  uint64 administration_sequence = 2;
+}
+
+message NormalCapabilityCreated {
+  CapabilityTransition transition = 1;
+  string token = 2;
+}
+
+message NormalCreateCapabilityResult {
+  oneof result {
+    NormalCapabilityCreated created = 1;
+    CapabilityIdentity already_created_token_unavailable = 2;
+    Unit capability_id_conflict = 3;
+  }
+}
+
+message BootstrapCreateCapabilityResult {
+  oneof result {
+    CapabilityTransition created = 1;
+    CapabilityTransition replayed = 2;
+    Unit bootstrap_conflict = 3;
+  }
+}
+
+message CreateCapabilityResponse {
+  oneof result {
+    NormalCreateCapabilityResult normal = 1;
+    BootstrapCreateCapabilityResult bootstrap = 2;
+  }
+}
+
+enum RevocationReason {
+  REVOCATION_REASON_UNSPECIFIED = 0;
+  REVOCATION_REASON_REQUESTED = 1;
+  REVOCATION_REASON_REPLACED = 2;
+  REVOCATION_REASON_SUSPECTED_COMPROMISE = 3;
+  REVOCATION_REASON_POLICY_CHANGE = 4;
+}
+
+message RevokeCapabilityRequest {
+  bytes request_id = 1;
+  bytes capability_id = 2;
+  RevocationReason reason = 3;
+}
+
+message RevokeCapabilityResponse {
+  oneof result {
+    CapabilityTransition revoked = 1;
+    CapabilityTransition already_revoked = 2;
+    Unit capability_not_found = 3;
+  }
+}

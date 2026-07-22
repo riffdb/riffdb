@@ -1,0 +1,29 @@
+riffdb_public_response_charge_fixture_version	1
+service_response_charge_version	1
+ceiling_bytes	4194304
+case_id	response_family	service_charge_bytes	protobuf_encoded_bytes	disposition
+boundary.exact_ceiling	boundary	4194304	4194304	release
+boundary.one_over	boundary	4194305	4194305	response_too_large
+commit_notification.commit_oversize	commit_notification	4227733	4202743	response_too_large
+commit_notification.commit_representative	commit_notification	773	305	release
+commit_notification.terminal	commit_notification	96	8	release
+contract_validation.invalid_empty_source	contract_validation	379	158	release
+contract_validation.valid	contract_validation	48	2	release
+create_capability.created	create_capability	187	75	release
+deploy_contract.activated	deploy_contract	231	114	release
+execute_command.journaled	execute_command	392	118	release
+execute_command.read_only	execute_command	272	52	release
+explain_command.found_budget	explain_command	5731	4720	release
+get_active_contract.present	get_active_contract	231	114	release
+get_commit.found_oversize	get_commit	4227733	4202743	response_too_large
+get_commit.found_representative	get_commit	773	305	release
+get_entity.found_record	get_entity	281	59	release
+get_outcome.found_replayed	get_outcome	392	120	release
+health.authenticated	health	428	92	release
+health.prebootstrap	health	112	6	release
+projection_status.uninitialized	projection_status	167	55	release
+query_projection.ready_page	query_projection	631	113	release
+revoke_capability.revoked	revoke_capability	128	26	release
+scan_commits.page_with_cursor	scan_commits	917	330	release
+scan_index.page_with_cursor	scan_index	652	112	release
+stats.populated	stats	112	10	release

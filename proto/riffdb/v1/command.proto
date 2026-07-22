@@ -2,6 +2,7 @@ syntax = "proto3";
 
 package riffdb.v1;
 
+import "riffdb/v1/common.proto";
 import "riffdb/v1/value.proto";
 
 message ExecuteCommandRequest {
@@ -16,6 +17,7 @@ message ExecuteCommandResponse {
     COMPLETION_STATUS_UNSPECIFIED = 0;
     COMMITTED = 1;
     REPLAYED = 2;
+    EXECUTED_READ_ONLY = 3;
   }
 
   CompletionStatus status = 1;
@@ -26,4 +28,18 @@ message ExecuteCommandResponse {
   Value outcome = 6;
   string provenance_uri = 7;
   string durability_mode = 8;
+}
+
+message GetOutcomeRequest {
+  bytes request_id = 1;
+  string contract_lineage = 2;
+  string command_name = 3;
+  string idempotency_key = 4;
+}
+
+message GetOutcomeResponse {
+  oneof result {
+    Unit not_found = 1;
+    ExecuteCommandResponse found = 2;
+  }
 }

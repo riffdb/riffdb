@@ -2,11 +2,12 @@ syntax = "proto3";
 
 package riffdb.v1;
 
+import "riffdb/v1/admin.proto";
 import "riffdb/v1/command.proto";
-
-// Phase-zero shells reserve the authoritative public names and streaming
-// shapes. With the exception of Execute, these operations remain unsupported
-// until their semantic owner adds reviewed fields.
+import "riffdb/v1/commit.proto";
+import "riffdb/v1/contract.proto";
+import "riffdb/v1/projection.proto";
+import "riffdb/v1/query.proto";
 service ContractService {
   rpc ValidateContract(ValidateContractRequest) returns (ValidateContractResponse);
   rpc ExplainCommand(ExplainCommandRequest) returns (ExplainCommandResponse);
@@ -37,34 +38,3 @@ service AdminService {
   rpc CreateCapability(CreateCapabilityRequest) returns (CreateCapabilityResponse);
   rpc RevokeCapability(RevokeCapabilityRequest) returns (RevokeCapabilityResponse);
 }
-
-message ValidateContractRequest {}
-message ValidateContractResponse {}
-message ExplainCommandRequest {}
-message ExplainCommandResponse {}
-message DeployContractRequest {}
-message DeployContractResponse {}
-message GetActiveContractRequest {}
-message GetActiveContractResponse {}
-message GetOutcomeRequest {}
-message GetOutcomeResponse {}
-message GetEntityRequest {}
-message GetEntityResponse {}
-message ScanIndexRequest {}
-message ScanIndexResponse {}
-message QueryProjectionRequest {}
-message QueryProjectionResponse {}
-message GetCommitRequest {}
-message GetCommitResponse {}
-message ScanCommitsRequest {}
-message ScanCommitsResponse {}
-message SubscribeCommitsRequest {}
-message CommitNotification {}
-message HealthRequest {}
-message HealthResponse {}
-message StatsRequest {}
-message StatsResponse {}
-message CreateCapabilityRequest {}
-message CreateCapabilityResponse {}
-message RevokeCapabilityRequest {}
-message RevokeCapabilityResponse {}

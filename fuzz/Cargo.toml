@@ -27,5 +27,12 @@ test = false
 doc = false
 bench = false
 
+[[bin]]
+name = "proto_public"
+path = "fuzz_targets/proto_public.rs"
+test = false
+doc = false
+bench = false
+
 [workspace]
 members = ["."]

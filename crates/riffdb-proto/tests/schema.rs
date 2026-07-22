@@ -8,6 +8,12 @@ use prost_types::{
     field_descriptor_proto::Type,
 };
 use riffdb_proto::PRODUCTION_FILE_DESCRIPTOR_SET;
+use riffdb_types::hash_schema;
+
+const PUBLIC_SCHEMA_HASHES: &str = include_str!(concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/../../fixtures/proto/public-schema-hashes.txt"
+));
 
 fn descriptors() -> FileDescriptorSet {
     FileDescriptorSet::decode(PRODUCTION_FILE_DESCRIPTOR_SET).expect("checked descriptor fixture")
@@ -264,12 +270,13 @@ fn exact_closed_enum_registries_are_frozen() {
             ("COMPLETION_STATUS_UNSPECIFIED", 0),
             ("COMMITTED", 1),
             ("REPLAYED", 2),
+            ("EXECUTED_READ_ONLY", 3),
         ]
     );
 }
 
 #[test]
-fn service_inventory_and_phase_zero_shells_are_exact() {
+fn service_inventory_and_completed_phase_zero_messages_are_exact() {
     let descriptors = descriptors();
     let services = descriptors
         .file
@@ -335,7 +342,7 @@ fn service_inventory_and_phase_zero_shells_are_exact() {
     );
 
     let messages = message_map(&descriptors);
-    let shells = [
+    let completed = [
         "CommitNotification",
         "CreateCapabilityRequest",
         "CreateCapabilityResponse",
@@ -368,9 +375,24 @@ fn service_inventory_and_phase_zero_shells_are_exact() {
         "ValidateContractResponse",
     ];
     assert!(
-        shells
+        completed
             .iter()
-            .all(|name| messages[&format!("riffdb.v1.{name}")].field.is_empty())
+            .all(|name| { !messages[&format!("riffdb.v1.{name}")].field.is_empty() })
+    );
+    assert_eq!(
+        messages
+            .keys()
+            .filter(|name| name.starts_with("riffdb.v1."))
+            .count(),
+        109
+    );
+    assert_eq!(
+        messages
+            .iter()
+            .filter(|(name, message)| name.starts_with("riffdb.v1.") && message.field.is_empty())
+            .map(|(name, _)| name.as_str())
+            .collect::<Vec<_>>(),
+        vec!["riffdb.v1.Unit"]
     );
 }
 
@@ -384,4 +406,126 @@ fn dynamic_values_never_use_floating_point_or_struct_fallbacks() {
                 && field.type_name() != ".google.protobuf.Struct"
         }));
     }
+}
+
+fn collect_hash_message_inputs(
+    prefix: &str,
+    messages: &[DescriptorProto],
+    output: &mut BTreeMap<(String, String), Vec<u8>>,
+) {
+    for message in messages {
+        let name = format!("{prefix}.{}", message.name());
+        output.insert(
+            ("message".to_owned(), name.clone()),
+            message.encode_to_vec(),
+        );
+        for field in &message.field {
+            output.insert(
+                ("field".to_owned(), format!("{name}.{}", field.name())),
+                field.encode_to_vec(),
+            );
+        }
+        for oneof in &message.oneof_decl {
+            output.insert(
+                ("oneof".to_owned(), format!("{name}.{}", oneof.name())),
+                oneof.encode_to_vec(),
+            );
+        }
+        for enumeration in &message.enum_type {
+            collect_hash_enum_inputs(
+                &format!("{name}.{}", enumeration.name()),
+                enumeration,
+                output,
+            );
+        }
+        collect_hash_message_inputs(&name, &message.nested_type, output);
+    }
+}
+
+fn collect_hash_enum_inputs(
+    name: &str,
+    enumeration: &EnumDescriptorProto,
+    output: &mut BTreeMap<(String, String), Vec<u8>>,
+) {
+    output.insert(
+        ("enum".to_owned(), name.to_owned()),
+        enumeration.encode_to_vec(),
+    );
+    for value in &enumeration.value {
+        output.insert(
+            ("enum-value".to_owned(), format!("{name}.{}", value.name())),
+            value.encode_to_vec(),
+        );
+    }
+}
+
+#[test]
+fn every_public_descriptor_element_has_an_exact_schema_hash() {
+    let descriptors = descriptors();
+    let public = FileDescriptorSet {
+        file: descriptors
+            .file
+            .into_iter()
+            .filter(|file| file.package() == "riffdb.v1")
+            .collect(),
+    };
+    let mut expected = BTreeMap::new();
+    expected.insert(
+        ("schema".to_owned(), "riffdb.v1".to_owned()),
+        public.encode_to_vec(),
+    );
+    for file in &public.file {
+        expected.insert(
+            ("file".to_owned(), file.name().to_owned()),
+            file.encode_to_vec(),
+        );
+        collect_hash_message_inputs(file.package(), &file.message_type, &mut expected);
+        for enumeration in &file.enum_type {
+            collect_hash_enum_inputs(
+                &format!("{}.{}", file.package(), enumeration.name()),
+                enumeration,
+                &mut expected,
+            );
+        }
+        for service in &file.service {
+            let name = format!("{}.{}", file.package(), service.name());
+            expected.insert(
+                ("service".to_owned(), name.clone()),
+                service.encode_to_vec(),
+            );
+            for method in &service.method {
+                expected.insert(
+                    ("rpc".to_owned(), format!("{name}.{}", method.name())),
+                    method.encode_to_vec(),
+                );
+            }
+        }
+    }
+
+    let mut lines = PUBLIC_SCHEMA_HASHES.lines();
+    assert_eq!(lines.next(), Some("riffdb-public-schema-hashes-v1"));
+    let mut actual_names = BTreeSet::new();
+    for line in lines {
+        let mut fields = line.split_whitespace();
+        let kind = fields.next().expect("kind");
+        let name = fields.next().expect("name");
+        let actual_hash = fields.next().expect("hash");
+        assert!(fields.next().is_none());
+        let key = (kind.to_owned(), name.to_owned());
+        let descriptor = expected.get(&key).expect("known descriptor element");
+        let mut frame = Vec::new();
+        frame.extend_from_slice(kind.as_bytes());
+        frame.push(0);
+        frame.extend_from_slice(name.as_bytes());
+        frame.push(0);
+        frame.extend_from_slice(descriptor);
+        let expected_hash = hash_schema(&frame)
+            .as_bytes()
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect::<String>();
+        assert_eq!(actual_hash, expected_hash);
+        assert!(actual_names.insert(key));
+    }
+    assert_eq!(actual_names, expected.keys().cloned().collect());
 }

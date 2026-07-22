@@ -45,7 +45,7 @@ pub(crate) struct Field<'a> {
 }
 
 impl Field<'_> {
-    fn require_wire(self, expected: u8) -> Result<Self, PreflightError> {
+    pub(crate) fn require_wire(self, expected: u8) -> Result<Self, PreflightError> {
         if self.wire_type == expected {
             Ok(self)
         } else {
@@ -53,11 +53,20 @@ impl Field<'_> {
         }
     }
 
-    fn require_varint(self) -> Result<u64, PreflightError> {
+    pub(crate) fn require_varint(self) -> Result<u64, PreflightError> {
         self.require_wire(0)?
             .varint
             .ok_or(PreflightError::Malformed)
     }
+}
+
+pub(crate) fn bounded_message(input: &[u8], maximum: usize) -> Result<(), PreflightError> {
+    if input.len() > maximum {
+        return Err(PreflightError::LimitExceeded);
+    }
+    let mut cursor = Cursor::new(input);
+    while cursor.next()?.is_some() {}
+    Ok(())
 }
 
 pub(crate) struct Cursor<'a> {
@@ -227,9 +236,13 @@ fn value_at_depth(input: &[u8], depth: usize) -> Result<(), PreflightError> {
                 claim_singular(&mut saw_kind)?;
                 check_exact_length(field.require_wire(2)?.bytes, 16)?;
             }
-            10 | 11 => {
+            10 => {
                 claim_singular(&mut saw_kind)?;
-                field.require_wire(2)?;
+                date(field.require_wire(2)?.bytes)?;
+            }
+            11 => {
+                claim_singular(&mut saw_kind)?;
+                timestamp(field.require_wire(2)?.bytes)?;
             }
             12 => {
                 claim_singular(&mut saw_kind)?;
@@ -251,13 +264,17 @@ fn value_at_depth(input: &[u8], depth: usize) -> Result<(), PreflightError> {
 
 fn decimal(input: &[u8]) -> Result<(), PreflightError> {
     let mut cursor = Cursor::new(input);
+    let mut saw_coefficient = false;
+    let mut saw_scale = false;
     while let Some(field) = cursor.next()? {
         if field.number == 1 {
+            claim_singular(&mut saw_coefficient)?;
             let coefficient = field.require_wire(2)?.bytes;
             if coefficient.is_empty() || coefficient.len() > 16 {
                 return Err(PreflightError::LimitExceeded);
             }
         } else if field.number == 2 {
+            claim_singular(&mut saw_scale)?;
             field.require_wire(0)?;
         }
     }
@@ -266,10 +283,14 @@ fn decimal(input: &[u8]) -> Result<(), PreflightError> {
 
 fn money(input: &[u8]) -> Result<(), PreflightError> {
     let mut cursor = Cursor::new(input);
+    let mut saw_currency = false;
     let mut saw_amount = false;
     while let Some(field) = cursor.next()? {
         match field.number {
-            1 => check_exact_length(field.require_wire(2)?.bytes, 3)?,
+            1 => {
+                claim_singular(&mut saw_currency)?;
+                check_exact_length(field.require_wire(2)?.bytes, 3)?;
+            }
             2 => {
                 claim_singular(&mut saw_amount)?;
                 decimal(field.require_wire(2)?.bytes)?;
@@ -280,11 +301,58 @@ fn money(input: &[u8]) -> Result<(), PreflightError> {
     Ok(())
 }
 
+fn date(input: &[u8]) -> Result<(), PreflightError> {
+    let mut cursor = Cursor::new(input);
+    let mut saw_days = false;
+    while let Some(field) = cursor.next()? {
+        if field.number == 1 {
+            claim_singular(&mut saw_days)?;
+            field.require_wire(0)?;
+        }
+    }
+    Ok(())
+}
+
+fn timestamp(input: &[u8]) -> Result<(), PreflightError> {
+    let mut cursor = Cursor::new(input);
+    let mut saw_seconds = false;
+    let mut saw_nanos = false;
+    while let Some(field) = cursor.next()? {
+        match field.number {
+            1 => {
+                claim_singular(&mut saw_seconds)?;
+                field.require_wire(0)?;
+            }
+            2 => {
+                claim_singular(&mut saw_nanos)?;
+                field.require_wire(0)?;
+            }
+            _ => {}
+        }
+    }
+    Ok(())
+}
+
 fn enum_value(input: &[u8]) -> Result<(), PreflightError> {
     let mut cursor = Cursor::new(input);
+    let mut saw_type = false;
+    let mut saw_variant = false;
+    let mut saw_name = false;
     while let Some(field) = cursor.next()? {
-        if field.number == 3 {
-            check_length(field.require_wire(2)?.bytes, MAX_PROTOCOL_NAME_BYTES)?;
+        match field.number {
+            1 => {
+                claim_singular(&mut saw_type)?;
+                field.require_wire(0)?;
+            }
+            2 => {
+                claim_singular(&mut saw_variant)?;
+                field.require_wire(0)?;
+            }
+            3 => {
+                claim_singular(&mut saw_name)?;
+                check_length(field.require_wire(2)?.bytes, MAX_PROTOCOL_NAME_BYTES)?;
+            }
+            _ => {}
         }
     }
     Ok(())
@@ -320,15 +388,28 @@ fn record(input: &[u8], depth: usize) -> Result<(), PreflightError> {
     Ok(())
 }
 
+pub(crate) fn value_record(input: &[u8]) -> Result<(), PreflightError> {
+    if input.len() > MAX_CANONICAL_DOCUMENT_BYTES {
+        return Err(PreflightError::LimitExceeded);
+    }
+    record(input, 0)
+}
+
 fn value_field(input: &[u8], depth: usize) -> Result<(), PreflightError> {
     let mut cursor = Cursor::new(input);
+    let mut saw_field_id = false;
+    let mut saw_name = false;
     let mut saw_value = false;
     while let Some(field) = cursor.next()? {
         match field.number {
             1 => {
+                claim_singular(&mut saw_field_id)?;
                 field.require_wire(0)?;
             }
-            2 => check_length(field.require_wire(2)?.bytes, MAX_PROTOCOL_NAME_BYTES)?,
+            2 => {
+                claim_singular(&mut saw_name)?;
+                check_length(field.require_wire(2)?.bytes, MAX_PROTOCOL_NAME_BYTES)?;
+            }
             3 => {
                 claim_singular(&mut saw_value)?;
                 value_at_depth(field.require_wire(2)?.bytes, depth + 1)?;
@@ -372,10 +453,19 @@ fn execute(
         return Err(PreflightError::LimitExceeded);
     }
     let mut cursor = Cursor::new(input);
-    let mut saw_value = false;
+    let maximum_known_field = byte_limits
+        .iter()
+        .map(|(number, _)| *number)
+        .max()
+        .unwrap_or(value_field_number)
+        .max(value_field_number);
+    let mut seen = [false; 8];
     while let Some(field) = cursor.next()? {
+        if (1..=maximum_known_field).contains(&field.number) {
+            let index = usize::try_from(field.number - 1).map_err(|_| PreflightError::Malformed)?;
+            claim_singular(seen.get_mut(index).ok_or(PreflightError::Malformed)?)?;
+        }
         if field.number == value_field_number {
-            claim_singular(&mut saw_value)?;
             value(field.require_wire(2)?.bytes)?;
         } else if let Some((_, limit)) = byte_limits
             .iter()
@@ -393,21 +483,44 @@ pub(crate) fn public_error(input: &[u8]) -> Result<(), PreflightError> {
     }
     let mut cursor = Cursor::new(input);
     let mut saw_details = false;
+    let mut saw_kind = false;
+    let mut saw_code = false;
+    let mut saw_safe_message = false;
+    let mut saw_recovery_action = false;
+    let mut saw_incident_id = false;
     while let Some(field) = cursor.next()? {
         match field.number {
-            2 | 3 => check_length(field.require_wire(2)?.bytes, 256)?,
+            1 => {
+                claim_singular(&mut saw_kind)?;
+                field.require_wire(0)?;
+            }
+            2 => {
+                claim_singular(&mut saw_code)?;
+                check_length(field.require_wire(2)?.bytes, 256)?;
+            }
+            3 => {
+                claim_singular(&mut saw_safe_message)?;
+                check_length(field.require_wire(2)?.bytes, 256)?;
+            }
+            4 => {
+                claim_singular(&mut saw_recovery_action)?;
+                field.require_wire(0)?;
+            }
             5 => {
                 claim_singular(&mut saw_details)?;
                 validation_issues(field.require_wire(2)?.bytes)?;
             }
             6 => {
                 claim_singular(&mut saw_details)?;
-                field.require_wire(2)?;
+                contract_mismatch_details(field.require_wire(2)?.bytes)?;
             }
-            7 => check_exact_length(field.require_wire(2)?.bytes, 16)?,
+            7 => {
+                claim_singular(&mut saw_incident_id)?;
+                check_exact_length(field.require_wire(2)?.bytes, 16)?;
+            }
             8 => {
                 claim_singular(&mut saw_details)?;
-                field.require_wire(2)?;
+                execution_failure_details(field.require_wire(2)?.bytes)?;
             }
             _ => {}
         }
@@ -521,19 +634,59 @@ fn validation_issues(input: &[u8]) -> Result<(), PreflightError> {
 fn validation_issue(input: &[u8]) -> Result<(), PreflightError> {
     let mut cursor = Cursor::new(input);
     let mut count = 0_usize;
+    let mut saw_code = false;
     while let Some(field) = cursor.next()? {
-        if field.number == 2 {
-            count += 1;
-            if count > MAX_VALIDATION_PATH_SEGMENTS {
-                return Err(PreflightError::LimitExceeded);
+        match field.number {
+            1 => {
+                claim_singular(&mut saw_code)?;
+                field.require_wire(0)?;
             }
-            field.require_wire(2)?;
+            2 => {
+                count += 1;
+                if count > MAX_VALIDATION_PATH_SEGMENTS {
+                    return Err(PreflightError::LimitExceeded);
+                }
+                validation_path_segment(field.require_wire(2)?.bytes)?;
+            }
+            _ => {}
         }
     }
     Ok(())
 }
 
-fn claim_singular(seen: &mut bool) -> Result<(), PreflightError> {
+fn validation_path_segment(input: &[u8]) -> Result<(), PreflightError> {
+    let mut cursor = Cursor::new(input);
+    let mut saw_segment = false;
+    while let Some(field) = cursor.next()? {
+        if matches!(field.number, 1 | 2) {
+            claim_singular(&mut saw_segment)?;
+            field.require_wire(0)?;
+        }
+    }
+    Ok(())
+}
+
+fn contract_mismatch_details(input: &[u8]) -> Result<(), PreflightError> {
+    singular_varint_message(input, 1)
+}
+
+fn execution_failure_details(input: &[u8]) -> Result<(), PreflightError> {
+    singular_varint_message(input, 1)
+}
+
+fn singular_varint_message(input: &[u8], field_number: u32) -> Result<(), PreflightError> {
+    let mut cursor = Cursor::new(input);
+    let mut saw_value = false;
+    while let Some(field) = cursor.next()? {
+        if field.number == field_number {
+            claim_singular(&mut saw_value)?;
+            field.require_wire(0)?;
+        }
+    }
+    Ok(())
+}
+
+pub(crate) fn claim_singular(seen: &mut bool) -> Result<(), PreflightError> {
     if *seen {
         return Err(PreflightError::Malformed);
     }
@@ -541,7 +694,7 @@ fn claim_singular(seen: &mut bool) -> Result<(), PreflightError> {
     Ok(())
 }
 
-fn check_length(bytes: &[u8], maximum: usize) -> Result<(), PreflightError> {
+pub(crate) fn check_length(bytes: &[u8], maximum: usize) -> Result<(), PreflightError> {
     if bytes.len() > maximum {
         Err(PreflightError::LimitExceeded)
     } else {
@@ -549,7 +702,7 @@ fn check_length(bytes: &[u8], maximum: usize) -> Result<(), PreflightError> {
     }
 }
 
-fn check_exact_length(bytes: &[u8], expected: usize) -> Result<(), PreflightError> {
+pub(crate) fn check_exact_length(bytes: &[u8], expected: usize) -> Result<(), PreflightError> {
     if bytes.len() == expected {
         Ok(())
     } else {
@@ -684,6 +837,61 @@ mod tests {
         let mut mixed_details = public_validation(1, 0);
         mixed_details.extend(execution_failure);
         assert_eq!(public_error(&mixed_details), Err(PreflightError::Malformed));
+
+        let duplicate_request_scalar = [0x18, 0x01, 0x18, 0x02];
+        assert_eq!(
+            execute_request(&duplicate_request_scalar),
+            Err(PreflightError::Malformed)
+        );
+
+        let duplicate_error_kind = [0x08, 0x01, 0x08, 0x02];
+        assert_eq!(
+            public_error(&duplicate_error_kind),
+            Err(PreflightError::Malformed)
+        );
+
+        let mixed_path_segment = [0x08, 0x01, 0x10, 0x02];
+        let mut issue = vec![0x08, 0x01];
+        issue.extend(length_delimited(2, &mixed_path_segment));
+        let issues = length_delimited(1, &issue);
+        let nested_duplicate = length_delimited(5, &issues);
+        assert_eq!(
+            public_error(&nested_duplicate),
+            Err(PreflightError::Malformed)
+        );
+    }
+
+    #[test]
+    fn duplicate_singular_fields_in_nested_values_cannot_merge() {
+        let duplicate_decimal = [0x0a, 0x01, 0x0a, 0x01];
+        assert_eq!(
+            value(&length_delimited(5, &duplicate_decimal)),
+            Err(PreflightError::Malformed)
+        );
+
+        let duplicate_money_currency = [0x0a, 0x03, b'U', b'S', b'D', 0x0a, 0x03, b'E', b'U', b'R'];
+        assert_eq!(
+            value(&length_delimited(6, &duplicate_money_currency)),
+            Err(PreflightError::Malformed)
+        );
+
+        for (field_number, nested) in [
+            (10, vec![0x08, 0x00, 0x08, 0x02]),
+            (11, vec![0x10, 0x01, 0x10, 0x02]),
+            (12, vec![0x08, 0x01, 0x08, 0x02]),
+        ] {
+            assert_eq!(
+                value(&length_delimited(field_number, &nested)),
+                Err(PreflightError::Malformed)
+            );
+        }
+
+        let duplicate_field_name = [0x12, 0x01, b'a', 0x12, 0x01, b'b', 0x1a, 0x02, 0x08, 0x00];
+        let record = length_delimited(1, &duplicate_field_name);
+        assert_eq!(
+            value(&length_delimited(14, &record)),
+            Err(PreflightError::Malformed)
+        );
     }
 
     #[test]

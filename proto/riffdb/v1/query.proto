@@ -1,0 +1,56 @@
+syntax = "proto3";
+
+package riffdb.v1;
+
+import "riffdb/v1/common.proto";
+import "riffdb/v1/value.proto";
+
+message GetEntityRequest {
+  bytes request_id = 1;
+  ContractSelection contract = 2;
+  uint32 entity_type_id = 3;
+  bytes entity_key = 4;
+  FieldSelection fields = 5;
+}
+
+message Entity {
+  bytes entity_key = 1;
+  uint64 entity_version = 2;
+  uint64 written_by_contract_version = 3;
+  ValueRecord fields = 4;
+}
+
+message GetEntityResponse {
+  oneof result {
+    Unit not_found = 1;
+    Entity found = 2;
+  }
+}
+
+message ScanIndexRequest {
+  bytes request_id = 1;
+  ContractSelection contract = 2;
+  uint32 index_id = 3;
+  repeated Value leading_components = 4;
+  FieldSelection fields = 5;
+  PageRequest page = 6;
+}
+
+message IndexRow {
+  bytes index_entry_key = 1;
+  ValueRecord values = 2;
+}
+
+message IndexScanFence {
+  uint64 index_epoch = 1;
+}
+
+message IndexPage {
+  repeated IndexRow items = 1;
+  optional bytes next_cursor = 2;
+  IndexScanFence observed_fence = 3;
+}
+
+message ScanIndexResponse {
+  IndexPage page = 1;
+}

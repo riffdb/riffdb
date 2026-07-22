@@ -7,11 +7,12 @@ pub mod durable;
 mod durable_wire;
 pub mod envelope;
 mod public_error;
+mod public_message;
 mod value;
 mod wire;
 
 /// Checked-in Prost messages for the `riffdb.v1` public package.
-#[allow(missing_docs)]
+#[allow(missing_docs, clippy::large_enum_variant)]
 pub mod v1 {
     include!("generated/riffdb.v1.rs");
 }
@@ -27,6 +28,7 @@ pub mod storage {
 
 pub use command::*;
 pub use public_error::*;
+pub use public_message::*;
 pub use value::*;
 
 /// Source-info-stripped, path-sorted descriptors for all current production schemas.
