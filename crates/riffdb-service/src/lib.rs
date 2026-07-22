@@ -17,6 +17,7 @@ mod ports;
 mod query_discovery_operations;
 mod response;
 mod service;
+mod submitted;
 mod wait;
 
 pub use application::*;
@@ -28,3 +29,4 @@ pub use failure::*;
 pub use ports::*;
 pub use response::*;
 pub use service::*;
+pub use submitted::*;

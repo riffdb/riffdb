@@ -341,7 +341,7 @@ fn complete_startup_evidence(path: &Path) -> Result<RedbDormantPorts, String> {
     let opened = session
         .finish(structural_end, historical_end)
         .map_err(display_error("finish startup evidence"))?;
-    let (opened_database_id, _, dormant) = opened.into_parts();
+    let (opened_database_id, _, _, dormant) = opened.into_parts();
     if opened_database_id != database_id() {
         return Err("startup handoff returned the wrong database ID".to_owned());
     }

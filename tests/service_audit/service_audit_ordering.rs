@@ -12,9 +12,10 @@ use riffdb_catalog::validate_catalog_history;
 use riffdb_commit::{
     AdministrationAuditAdmissionError, AdministrationAuditExecutionError,
     AdministrationAuditInputView, AdministrationClock, AdministrationClockError, AdmissionClock,
-    AdmissionClockError, CommandExecutionAdmissionError, CoordinatorDurability,
-    CoordinatorLifecycleState, CoordinatorWorkloadCapacity, ProvenanceIdSource,
-    ProvenanceIdSourceError, RunningCommandCoordinator,
+    AdmissionClockError, ApplicationCommitNotificationError, ApplicationCommitNotificationSink,
+    CommandExecutionAdmissionError, CoordinatorDurability, CoordinatorLifecycleState,
+    CoordinatorWorkloadCapacity, ProvenanceIdSource, ProvenanceIdSourceError,
+    RunningCommandCoordinator,
 };
 use riffdb_conflict::{ConflictManager, ConflictManagerConfig, ShardedConflictManager};
 use riffdb_policy::{AuthorizationClock, AuthorizationClockError};
@@ -224,8 +225,20 @@ fn start_coordinator(
         administration_clock,
         authorization_clock,
         provenance_source,
+        Arc::new(DiscardApplicationCommitNotifications),
     )
     .expect("start production coordinator")
+}
+
+struct DiscardApplicationCommitNotifications;
+
+impl ApplicationCommitNotificationSink for DiscardApplicationCommitNotifications {
+    fn publish_first_commit(
+        &self,
+        _: CommitSequence,
+    ) -> Result<(), ApplicationCommitNotificationError> {
+        Ok(())
+    }
 }
 
 fn audit_input(request_seed: u8, phase: ServiceAuditPhaseV1) -> CheckedAuditInput {
@@ -323,7 +336,7 @@ fn open_operational(store: RedbStore) -> RedbOperationalPorts {
         history.matches(opened.database_id(), opened.open_session_id()),
         "catalog proof belongs to this structural-open session"
     );
-    let (_, _, dormant): (_, _, RedbDormantPorts) = opened.into_parts();
+    let (_, _, _, dormant): (_, _, _, RedbDormantPorts) = opened.into_parts();
     dormant
         .into_operational_after_catalog_validation()
         .expect("activate structurally checked redb ports")

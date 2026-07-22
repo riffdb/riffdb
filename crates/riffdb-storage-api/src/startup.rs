@@ -13,8 +13,9 @@ use riffdb_types::{
 use crate::{
     DurableKeySchemaBindingV1, ExecutablePlanRef, MAX_CATALOG_BUNDLE_BYTES,
     MAX_HISTORICAL_EVIDENCE_PAGE_BYTES, MAX_INTEGRITY_FINDINGS, MAX_READABLE_DIGEST_KEYS,
-    MAX_SCAN_PAGE_ENTRIES, StorageError, StorageValueError, StoredEntityRecordV1,
-    StoredIndexEntryV1, StoredIndexEpochV1, StructurallyDecodedIndexRangePrefixV1,
+    MAX_SCAN_PAGE_ENTRIES, RetainedMetadataV1, StorageError, StorageValueError,
+    StoredEntityRecordV1, StoredIndexEntryV1, StoredIndexEpochV1,
+    StructurallyDecodedIndexRangePrefixV1,
 };
 
 /// A process-local, non-durable structural-open session identity.
@@ -948,6 +949,7 @@ pub trait StructuralEvidenceOpen: Sized {
 pub struct StructurallyOpened<P> {
     database_id: DatabaseId,
     open_session_id: OpenSessionId,
+    retained_metadata: RetainedMetadataV1,
     dormant_ports: P,
 }
 
@@ -960,17 +962,21 @@ pub trait DormantPortBundle: Sized {
 impl<P: DormantPortBundle> StructurallyOpened<P> {
     /// Constructs the handoff returned by a successfully finished backend session.
     ///
-    /// The authority type must have no public constructor in a concrete backend.
+    /// `retained_metadata` must be the complete value decoded from the same
+    /// immutable startup snapshot. The authority type must have no public
+    /// constructor in a concrete backend.
     #[must_use]
     pub fn from_finished_session(
         database_id: DatabaseId,
         open_session_id: OpenSessionId,
+        retained_metadata: RetainedMetadataV1,
         dormant_ports: P,
         _authority: P::CompletionAuthority,
     ) -> Self {
         Self {
             database_id,
             open_session_id,
+            retained_metadata,
             dormant_ports,
         }
     }
@@ -989,10 +995,21 @@ impl<P> StructurallyOpened<P> {
         self.open_session_id
     }
 
-    /// Consumes the structural handoff into its IDs and dormant port collection.
+    /// Borrows the complete retained metadata decoded by this startup session.
     #[must_use]
-    pub fn into_parts(self) -> (DatabaseId, OpenSessionId, P) {
-        (self.database_id, self.open_session_id, self.dormant_ports)
+    pub const fn retained_metadata(&self) -> &RetainedMetadataV1 {
+        &self.retained_metadata
+    }
+
+    /// Consumes the structural handoff into its IDs, metadata, and dormant ports.
+    #[must_use]
+    pub fn into_parts(self) -> (DatabaseId, OpenSessionId, RetainedMetadataV1, P) {
+        (
+            self.database_id,
+            self.open_session_id,
+            self.retained_metadata,
+            self.dormant_ports,
+        )
     }
 }
 
@@ -1002,6 +1019,7 @@ impl<P> fmt::Debug for StructurallyOpened<P> {
             .debug_struct("StructurallyOpened")
             .field("database_id", &self.database_id)
             .field("open_session_id", &self.open_session_id)
+            .field("retained_metadata", &self.retained_metadata)
             .field("dormant_ports", &"[DORMANT]")
             .finish()
     }

@@ -1,12 +1,13 @@
 //! Cross-module structural invariants for the engine-neutral storage boundary.
 
 use riffdb_storage_api::{
-    CommitIntent, DeclaredOutcome, DurableKeySchemaBindingV1, EntityMutation, EntityObservation,
-    EntityPostImage, EntityTarget, EvaluatedCommand, EvaluationBudget, EventIntent,
-    ExecutablePlanRef, IdempotencyIdentity, IdempotencyIdentityKey, IdempotencyKeyDigest,
-    IndexRangePrefixBuilder, PreEvaluationCommitContext, ReadSnapshot, RetainedMetadataV1,
-    SnapshotRequest, StorageValueError, StoredAdmittedProvenanceClaimsV1, StoredEntityRecordV1,
-    StoredPendingAdmissionV1, TransactionCurrentState,
+    CommitIntent, DeclaredOutcome, DormantPortBundle, DurableKeySchemaBindingV1, EntityMutation,
+    EntityObservation, EntityPostImage, EntityTarget, EvaluatedCommand, EvaluationBudget,
+    EventIntent, ExecutablePlanRef, IdempotencyIdentity, IdempotencyIdentityKey,
+    IdempotencyKeyDigest, IndexRangePrefixBuilder, OpenSessionId, PreEvaluationCommitContext,
+    ReadSnapshot, RetainedMetadataV1, SnapshotRequest, StorageValueError,
+    StoredAdmittedProvenanceClaimsV1, StoredEntityRecordV1, StoredPendingAdmissionV1,
+    StructurallyOpened, TransactionCurrentState,
 };
 use riffdb_types::{
     ActorId, ActorKind, AdmittedActorContext, AggregateTypeId, CanonicalInputHash, CanonicalRecord,
@@ -25,6 +26,14 @@ fn uuid_bytes(fill: u8) -> [u8; 16] {
 
 fn database_id() -> DatabaseId {
     DatabaseId::from_bytes(uuid_bytes(0x11)).expect("valid database UUIDv7")
+}
+
+struct TestDormantPorts;
+
+struct TestCompletionAuthority;
+
+impl DormantPortBundle for TestDormantPorts {
+    type CompletionAuthority = TestCompletionAuthority;
 }
 
 fn request_id() -> RequestId {
@@ -382,6 +391,29 @@ fn initial_metadata_contains_only_canonical_initial_six_category_values() {
     );
     assert!(metadata.active_catalog().is_none());
     assert!(metadata.capability_bootstrap().is_none());
+}
+
+#[test]
+fn structurally_opened_carries_metadata_through_its_consuming_handoff() {
+    let database_id = database_id();
+    let open_session_id = OpenSessionId::new(7).expect("nonzero open session");
+    let metadata = RetainedMetadataV1::initial(database_id);
+    let opened = StructurallyOpened::from_finished_session(
+        database_id,
+        open_session_id,
+        metadata.clone(),
+        TestDormantPorts,
+        TestCompletionAuthority,
+    );
+
+    assert_eq!(opened.database_id(), database_id);
+    assert_eq!(opened.open_session_id(), open_session_id);
+    assert_eq!(opened.retained_metadata(), &metadata);
+
+    let (opened_database_id, opened_session_id, opened_metadata, _) = opened.into_parts();
+    assert_eq!(opened_database_id, database_id);
+    assert_eq!(opened_session_id, open_session_id);
+    assert_eq!(opened_metadata, metadata);
 }
 
 #[test]

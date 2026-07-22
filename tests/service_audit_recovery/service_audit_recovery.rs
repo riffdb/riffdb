@@ -157,7 +157,7 @@ fn open_operational(store: RedbStore) -> RedbOperationalPorts {
     let opened = session
         .finish(structural_end, historical_end)
         .expect("finish structural session");
-    let (_, _, dormant) = opened.into_parts();
+    let (_, _, _, dormant) = opened.into_parts();
     dormant
         .into_operational_after_catalog_validation()
         .expect("rebuild transient indexes")

@@ -7,7 +7,7 @@ use riffdb_storage_api::{
     HistoricalBundleBytes, HistoricalBundleEvidence, HistoricalCapabilityPartitionEvidenceV1,
     HistoricalEvidenceCursor, HistoricalEvidenceEnd, HistoricalEvidencePage,
     HistoricalPersistedKeyEvidenceV1, HistoricalSemanticEvidence, OpenSessionId, ReadableDigestKey,
-    StartupValidationInputs, StorageError, StorageErrorKind, StorageValueError,
+    RetainedMetadataV1, StartupValidationInputs, StorageError, StorageErrorKind, StorageValueError,
     StoredAdmissionStateV1, StructuralEvidenceCursor, StructuralEvidenceEnd,
     StructuralEvidenceOpen, StructuralEvidencePage, StructuralEvidenceSession, StructuralFinding,
     StructuralFindingCode, StructuralFindingScope, StructurallyOpened,
@@ -51,6 +51,7 @@ pub struct MemoryStructuralEvidenceSession {
     access: Option<MemoryAccess>,
     database_id: DatabaseId,
     open_session_id: OpenSessionId,
+    retained_metadata: RetainedMetadataV1,
     inputs: StartupValidationInputs,
     structural_total: u64,
     authoritative_finding_seen: bool,
@@ -75,6 +76,7 @@ impl fmt::Debug for MemoryStructuralEvidenceSession {
 
 struct StartupSnapshot {
     database_id: DatabaseId,
+    retained_metadata: RetainedMetadataV1,
     structural_total: u64,
 }
 
@@ -112,6 +114,7 @@ impl StructuralEvidenceOpen for MemoryStore {
             access: Some(access),
             database_id: snapshot.database_id,
             open_session_id,
+            retained_metadata: snapshot.retained_metadata,
             inputs,
             structural_total: snapshot.structural_total,
             authoritative_finding_seen: false,
@@ -263,6 +266,7 @@ impl StructuralEvidenceSession for MemoryStructuralEvidenceSession {
         Ok(StructurallyOpened::from_finished_session(
             self.database_id,
             self.open_session_id,
+            self.retained_metadata,
             MemoryDormantPorts { store },
             MemoryCompletionAuthority { _private: () },
         ))
@@ -280,6 +284,7 @@ fn collect_startup_header(state: &MemoryState) -> Result<StartupSnapshot, Storag
     };
     Ok(StartupSnapshot {
         database_id: metadata.database_id(),
+        retained_metadata: metadata.clone(),
         structural_total: structural_item_count(state)?,
     })
 }
@@ -1504,12 +1509,13 @@ mod tests {
     use std::num::{NonZeroU16, NonZeroU32, NonZeroU64};
 
     use riffdb_storage_api::{
-        CapabilityGrantV1, CapabilityPermissionKindV1, CapabilityPermissionV1,
-        CapabilityPermissionsV1, CapabilityRequestedRecordV1, DatabaseIdentityProbe,
-        DatabaseIdentityProbePort, DatabaseInitializationPort, DurableKeySchemaBindingV1,
-        ExecutablePlanRef, HistoricalEvidencePage, IndexEpochAdvanceV1, IndexEpochPosition,
-        IndexRangePrefixBuilder, IndexRangeTarget, IrOpaquePersistedKeyV1, PartitionScopeV1,
-        ReadableCapabilityDigestInventory, ReadableIdempotencyDigestInventory,
+        ActiveCatalogPointerV1, AdministrationSequenceAllocator, ApplicationSequenceAllocator,
+        CapabilityBootstrapMarkerV1, CapabilityGrantV1, CapabilityPermissionKindV1,
+        CapabilityPermissionV1, CapabilityPermissionsV1, CapabilityRequestedRecordV1,
+        DatabaseIdentityProbe, DatabaseIdentityProbePort, DatabaseInitializationPort,
+        DurableKeySchemaBindingV1, ExecutablePlanRef, HistoricalEvidencePage, IndexEpochAdvanceV1,
+        IndexEpochPosition, IndexRangePrefixBuilder, IndexRangeTarget, IrOpaquePersistedKeyV1,
+        PartitionScopeV1, ReadableCapabilityDigestInventory, ReadableIdempotencyDigestInventory,
         RevocationReasonCodeV1, ScopedPartitionV1, StoredCapabilityRecordV1,
         StoredContractBundleV1, StoredEntityRecordV1, StoredIndexEntryV1, StoredProjectionApplyV1,
         StoredProjectionControlV1, StructuralEvidenceOpen, StructuralEvidencePage,
@@ -1552,6 +1558,38 @@ mod tests {
         let mut store = MemoryStore::new();
         store.initialize_database(id).expect("initialize database");
         store
+    }
+
+    #[test]
+    fn startup_header_clones_all_six_retained_metadata_categories() {
+        let id = database(0x31);
+        let active = ActiveCatalogPointerV1::new(
+            ContractLineage::new("retained").expect("lineage"),
+            ContractVersion::new(9).expect("version"),
+            ContractBundleHash::from_bytes([0x45; 32]),
+        );
+        let marker = CapabilityBootstrapMarkerV1::new(
+            id,
+            capability_id(0x32),
+            AdministrationSequence::new(17).expect("administration sequence"),
+        );
+        let metadata = RetainedMetadataV1::new(
+            riffdb_storage_api::StorageFormatVersion::V1,
+            id,
+            ApplicationSequenceAllocator::Exhausted,
+            AdministrationSequenceAllocator::Exhausted,
+            Some(active),
+            Some(marker),
+        )
+        .expect("complete retained metadata");
+        let state = MemoryState {
+            metadata: MemoryMetadataSlot::Retained(metadata.clone()),
+            ..MemoryState::default()
+        };
+
+        let snapshot = collect_startup_header(&state).expect("startup header");
+        assert_eq!(snapshot.database_id, id);
+        assert_eq!(snapshot.retained_metadata, metadata);
     }
 
     fn uuid_v7(seed: u8) -> [u8; 16] {
@@ -2079,7 +2117,9 @@ mod tests {
             .finish(structural_end, historical_end)
             .expect("finish exact session");
         assert_eq!(opened.database_id(), id);
-        let (_, _, dormant) = opened.into_parts();
+        assert_eq!(opened.retained_metadata(), &RetainedMetadataV1::initial(id));
+        let (_, _, metadata, dormant) = opened.into_parts();
+        assert_eq!(metadata, RetainedMetadataV1::initial(id));
         assert!(!dormant.store.gate_is_held());
     }
 

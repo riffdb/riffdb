@@ -14,10 +14,10 @@ use riffdb_storage_api::{
     HistoricalActiveCatalogEvidence, HistoricalBundleBytes, HistoricalBundleEvidence,
     HistoricalCapabilityPartitionEvidenceV1, HistoricalEvidenceCursor, HistoricalEvidenceEnd,
     HistoricalEvidencePage, HistoricalPersistedKeyEvidenceV1, HistoricalSemanticEvidence,
-    OpenSessionId, ReadableDigestKey, StartupValidationInputs, StorageError, StorageErrorKind,
-    StorageValueError, StructuralEvidenceCursor, StructuralEvidenceEnd, StructuralEvidenceOpen,
-    StructuralEvidencePage, StructuralEvidenceSession, StructuralFinding, StructuralFindingCode,
-    StructuralFindingScope, StructurallyOpened,
+    OpenSessionId, ReadableDigestKey, RetainedMetadataV1, StartupValidationInputs, StorageError,
+    StorageErrorKind, StorageValueError, StructuralEvidenceCursor, StructuralEvidenceEnd,
+    StructuralEvidenceOpen, StructuralEvidencePage, StructuralEvidenceSession, StructuralFinding,
+    StructuralFindingCode, StructuralFindingScope, StructurallyOpened,
 };
 use riffdb_types::{
     CommitSequence, ContractBundleHash, ContractLineage, ContractVersion, DatabaseId,
@@ -64,6 +64,7 @@ pub struct RedbStructuralEvidenceSession {
     lease: Option<ExclusiveLease>,
     database_id: DatabaseId,
     open_session_id: OpenSessionId,
+    retained_metadata: RetainedMetadataV1,
     inputs: StartupValidationInputs,
     structural_counts: [u64; STRUCTURAL_TABLE_COUNT],
     structural_total: u64,
@@ -115,8 +116,8 @@ impl StructuralEvidenceOpen for RedbStore {
             .database
             .begin_read()
             .map_err(transaction_error)?;
-        let (database_id, structural_counts, structural_total) =
-            collect_startup_snapshot(&transaction)?;
+        let snapshot = collect_startup_snapshot(&transaction)?;
+        let database_id = snapshot.retained_metadata.database_id();
         let open_session_id = allocate_open_session()?;
         Ok(Self::Session {
             shared: Arc::clone(&self.shared),
@@ -124,9 +125,10 @@ impl StructuralEvidenceOpen for RedbStore {
             lease: Some(lease),
             database_id,
             open_session_id,
+            retained_metadata: snapshot.retained_metadata,
             inputs,
-            structural_counts,
-            structural_total,
+            structural_counts: snapshot.structural_counts,
+            structural_total: snapshot.structural_total,
             next_structural: StructuralEvidenceCursor::start(database_id, open_session_id),
             next_historical: HistoricalEvidenceCursor::start(database_id, open_session_id),
             last_historical_key: None,
@@ -279,6 +281,7 @@ impl StructuralEvidenceSession for RedbStructuralEvidenceSession {
         Ok(StructurallyOpened::from_finished_session(
             self.database_id,
             self.open_session_id,
+            self.retained_metadata,
             RedbDormantPorts {
                 shared: Arc::clone(&self.shared),
             },
@@ -302,16 +305,18 @@ fn allocate_open_session() -> Result<OpenSessionId, StorageError> {
     OpenSessionId::new(value).ok_or_else(|| storage_error(StorageErrorKind::SequenceExhausted))
 }
 
+struct StartupSnapshot {
+    retained_metadata: RetainedMetadataV1,
+    structural_counts: [u64; STRUCTURAL_TABLE_COUNT],
+    structural_total: u64,
+}
+
 fn collect_startup_snapshot(
     transaction: &ReadTransaction,
-) -> Result<(DatabaseId, [u64; STRUCTURAL_TABLE_COUNT], u64), StorageError> {
+) -> Result<StartupSnapshot, StorageError> {
     validate_table_inventory(transaction)?;
+    let retained_metadata = read_retained_metadata(transaction)?;
     let meta = transaction.open_table(META).map_err(table_error)?;
-    let identity = meta
-        .get(META_DATABASE_ID)
-        .map_err(precommit_storage_error)?
-        .ok_or_else(|| storage_error(StorageErrorKind::CorruptData))?;
-    let database_id = *codec::decode_database_identity_v1(identity.value())?.value();
     let counts = [
         meta.len().map_err(precommit_storage_error)?,
         table_len(transaction, CONTRACT_BUNDLES)?,
@@ -336,7 +341,90 @@ fn collect_startup_snapshot(
     let total = counts.iter().try_fold(1u64, |total, count| {
         total.checked_add(*count).ok_or_else(limit_exceeded)
     })?;
-    Ok((database_id, counts, total))
+    Ok(StartupSnapshot {
+        retained_metadata,
+        structural_counts: counts,
+        structural_total: total,
+    })
+}
+
+fn read_retained_metadata(
+    transaction: &ReadTransaction,
+) -> Result<RetainedMetadataV1, StorageError> {
+    let meta = transaction.open_table(META).map_err(table_error)?;
+    let format = required_meta_value(
+        &meta,
+        META_FORMAT_VERSION,
+        codec::decode_storage_format_version_v1,
+    )?;
+    let database_id =
+        required_meta_value(&meta, META_DATABASE_ID, codec::decode_database_identity_v1)?;
+    let application = required_meta_value(
+        &meta,
+        META_APPLICATION_SEQUENCE,
+        codec::decode_application_sequence_allocator_v1,
+    )?;
+    let administration = required_meta_value(
+        &meta,
+        META_ADMINISTRATION_SEQUENCE,
+        codec::decode_administration_sequence_allocator_v1,
+    )?;
+    let bootstrap = meta
+        .get(META_CAPABILITY_BOOTSTRAP)
+        .map_err(precommit_storage_error)?
+        .map(|value| {
+            codec::decode_capability_bootstrap_marker_v1(value.value())
+                .map(riffdb_storage_api::EncodedPageItem::into_parts)
+                .map(|(value, _)| value)
+        })
+        .transpose()?;
+    drop(meta);
+
+    let active_table = transaction
+        .open_table(CATALOG_ACTIVE)
+        .map_err(table_error)?;
+    if active_table.len().map_err(precommit_storage_error)? > 1 {
+        return Err(corrupt());
+    }
+    let active = active_table
+        .first()
+        .map_err(precommit_storage_error)?
+        .map(|(key, value)| {
+            if key.value() != CATALOG_ACTIVE_KEY {
+                return Err(corrupt());
+            }
+            codec::decode_active_catalog_pointer_v1(value.value())
+                .map(riffdb_storage_api::EncodedPageItem::into_parts)
+                .map(|(value, _)| value)
+        })
+        .transpose()?;
+
+    RetainedMetadataV1::new(
+        format,
+        database_id,
+        application,
+        administration,
+        active,
+        bootstrap,
+    )
+    .map_err(|_| corrupt())
+}
+
+fn required_meta_value<T, R>(
+    table: &R,
+    key: &'static str,
+    decoder: impl FnOnce(&[u8]) -> Result<riffdb_storage_api::EncodedPageItem<T>, StorageError>,
+) -> Result<T, StorageError>
+where
+    R: ReadableTable<&'static str, &'static [u8]>,
+{
+    let encoded = table
+        .get(key)
+        .map_err(precommit_storage_error)?
+        .ok_or_else(corrupt)?;
+    decoder(encoded.value())
+        .map(riffdb_storage_api::EncodedPageItem::into_parts)
+        .map(|(value, _)| value)
 }
 
 fn validate_table_inventory(transaction: &ReadTransaction) -> Result<(), StorageError> {
@@ -2754,11 +2842,11 @@ mod tests {
 
     use riffdb_storage_api::{
         ActiveCatalogPointerV1, AdministrationSequenceAllocator, AuditPrincipalV1,
-        CapabilityAdministrationOperationV1, CapabilityGrantV1, CapabilityPermissionKindV1,
-        CapabilityPermissionV1, CapabilityPermissionsV1, CapabilityRequestedRecordV1,
-        DatabaseInitializationPort, DurableKeySchemaBindingV1, HistoricalEvidencePage,
-        PartitionScopeV1, ProjectionGenerationPosition, ProjectionLifecycleV1,
-        PublishedApplyModeV1, ReadableCapabilityDigestInventory,
+        CapabilityAdministrationOperationV1, CapabilityBootstrapMarkerV1, CapabilityGrantV1,
+        CapabilityPermissionKindV1, CapabilityPermissionV1, CapabilityPermissionsV1,
+        CapabilityRequestedRecordV1, DatabaseInitializationPort, DurableKeySchemaBindingV1,
+        HistoricalEvidencePage, PartitionScopeV1, ProjectionGenerationPosition,
+        ProjectionLifecycleV1, PublishedApplyModeV1, ReadableCapabilityDigestInventory,
         ReadableIdempotencyDigestInventory, RevocationReasonCodeV1,
         StoredAdministrationAuditRecordV1, StoredCapabilityAdministrationV1,
         StoredCapabilityRecordV1, StoredCatalogAdministrationV1, StoredContractBundleV1,
@@ -3073,7 +3161,12 @@ mod tests {
             .finish(structural_end, historical_end)
             .expect("finish evidence");
         assert_eq!(opened.database_id(), id);
-        drop(opened);
+        assert_eq!(opened.retained_metadata(), &RetainedMetadataV1::initial(id));
+        let (opened_id, opened_session, metadata, dormant) = opened.into_parts();
+        assert_eq!(opened_id, id);
+        assert!(opened_session.get() > 0);
+        assert_eq!(metadata, RetainedMetadataV1::initial(id));
+        drop(dormant);
 
         let reopened = RedbStore::open(&path.0).expect("reopen after handoff drop");
         assert_eq!(
@@ -3081,6 +3174,108 @@ mod tests {
                 .expect("probe reopened"),
             riffdb_storage_api::DatabaseIdentityProbe::Existing(id)
         );
+    }
+
+    #[test]
+    fn retained_metadata_decode_reads_all_six_categories_from_one_snapshot() {
+        let path = TestDatabasePath::new("retained-metadata-six-categories");
+        let id = database_id(0x19);
+        let store = initialized_store(&path, id);
+        let active = ActiveCatalogPointerV1::new(
+            ContractLineage::new("retained").expect("lineage"),
+            ContractVersion::new(11).expect("version"),
+            ContractBundleHash::from_bytes([0x41; 32]),
+        );
+        let marker = CapabilityBootstrapMarkerV1::new(
+            id,
+            capability_id(0x42),
+            AdministrationSequence::new(13).expect("administration sequence"),
+        );
+        let application = codec::encode_application_sequence_allocator_v1(
+            ApplicationSequenceAllocator::Exhausted,
+        )
+        .expect("encode application allocator");
+        let administration = codec::encode_administration_sequence_allocator_v1(
+            AdministrationSequenceAllocator::Exhausted,
+        )
+        .expect("encode administration allocator");
+        let encoded_active =
+            codec::encode_active_catalog_pointer_v1(&active).expect("encode active pointer");
+        let encoded_marker =
+            codec::encode_capability_bootstrap_marker_v1(marker).expect("encode bootstrap marker");
+        let write = store
+            .shared
+            .database
+            .begin_write()
+            .expect("write transaction");
+        {
+            let mut meta = write.open_table(META).expect("metadata table");
+            meta.insert(META_APPLICATION_SEQUENCE, application.as_bytes())
+                .expect("replace application allocator");
+            meta.insert(META_ADMINISTRATION_SEQUENCE, administration.as_bytes())
+                .expect("replace administration allocator");
+            meta.insert(META_CAPABILITY_BOOTSTRAP, encoded_marker.as_bytes())
+                .expect("insert bootstrap marker");
+        }
+        {
+            let mut catalog = write.open_table(CATALOG_ACTIVE).expect("active table");
+            catalog
+                .insert(CATALOG_ACTIVE_KEY.as_slice(), encoded_active.as_bytes())
+                .expect("insert active pointer");
+        }
+        write.commit().expect("commit retained metadata fixture");
+
+        let read = store
+            .shared
+            .database
+            .begin_read()
+            .expect("read transaction");
+        let observed = read_retained_metadata(&read).expect("decode retained metadata");
+        assert_eq!(observed.storage_format_version().get(), 1);
+        assert_eq!(observed.database_id(), id);
+        assert_eq!(
+            observed.application_sequence(),
+            ApplicationSequenceAllocator::Exhausted
+        );
+        assert_eq!(
+            observed.administration_sequence(),
+            AdministrationSequenceAllocator::Exhausted
+        );
+        assert_eq!(observed.active_catalog(), Some(&active));
+        assert_eq!(observed.capability_bootstrap(), Some(marker));
+    }
+
+    #[test]
+    fn mismatched_retained_metadata_is_rejected_before_handoff() {
+        let path = TestDatabasePath::new("retained-metadata-mismatch");
+        let store = initialized_store(&path, database_id(0x1a));
+        let marker = CapabilityBootstrapMarkerV1::new(
+            database_id(0x1b),
+            capability_id(0x43),
+            AdministrationSequence::first(),
+        );
+        let encoded_marker =
+            codec::encode_capability_bootstrap_marker_v1(marker).expect("encode marker");
+        let write = store
+            .shared
+            .database
+            .begin_write()
+            .expect("write transaction");
+        {
+            let mut meta = write.open_table(META).expect("metadata table");
+            meta.insert(META_CAPABILITY_BOOTSTRAP, encoded_marker.as_bytes())
+                .expect("insert mismatched marker");
+        }
+        write.commit().expect("commit corrupt fixture");
+
+        assert_eq!(
+            store
+                .begin_structural_evidence(inputs())
+                .expect_err("database-mismatched marker cannot publish a session")
+                .kind(),
+            StorageErrorKind::CorruptData
+        );
+        RedbStore::open(&path.0).expect("failed open releases the database handle");
     }
 
     #[test]

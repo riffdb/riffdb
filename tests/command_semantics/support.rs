@@ -5,13 +5,14 @@
 use std::collections::BTreeMap;
 use std::num::{NonZeroU16, NonZeroU64};
 use std::path::PathBuf;
-use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use riffdb_catalog::{ValidatedContractBundle, resolve_executable_plan, validate_catalog_history};
 use riffdb_commit::{
     AdministrationClock, AdministrationClockError, AdmissionClock, AdmissionClockError,
+    ApplicationCommitNotificationError, ApplicationCommitNotificationSink,
     CommandExecutionPreparation, CommandRequestControl, CoordinatorDurability,
     CoordinatorWorkloadCapacity, ProvenanceIdSource, ProvenanceIdSourceError,
     RunningCommandCoordinator,
@@ -344,6 +345,20 @@ pub(crate) fn start_coordinator(
     admission_clock: Arc<FixedAdmissionClock>,
     provenance_source: Arc<CountingProvenanceSource>,
 ) -> RunningCommandCoordinator {
+    start_coordinator_with_notifications(
+        ports,
+        admission_clock,
+        provenance_source,
+        Arc::new(DiscardApplicationCommitNotifications),
+    )
+}
+
+pub(crate) fn start_coordinator_with_notifications(
+    ports: RedbOperationalPorts,
+    admission_clock: Arc<FixedAdmissionClock>,
+    provenance_source: Arc<CountingProvenanceSource>,
+    notifications: Arc<dyn ApplicationCommitNotificationSink>,
+) -> RunningCommandCoordinator {
     let conflicts: Arc<dyn ConflictManager> = Arc::new(
         ShardedConflictManager::new(ConflictManagerConfig::default())
             .expect("start conflict manager"),
@@ -363,8 +378,61 @@ pub(crate) fn start_coordinator(
         administration_clock,
         authorization_clock,
         provenance_source,
+        notifications,
     )
     .expect("start command coordinator")
+}
+
+struct DiscardApplicationCommitNotifications;
+
+impl ApplicationCommitNotificationSink for DiscardApplicationCommitNotifications {
+    fn publish_first_commit(
+        &self,
+        _: CommitSequence,
+    ) -> Result<(), ApplicationCommitNotificationError> {
+        Ok(())
+    }
+}
+
+#[derive(Default)]
+pub(crate) struct RecordingApplicationCommitNotifications(Mutex<Vec<CommitSequence>>);
+
+impl RecordingApplicationCommitNotifications {
+    pub(crate) fn sequences(&self) -> Vec<CommitSequence> {
+        self.0.lock().expect("notification lock").clone()
+    }
+}
+
+impl ApplicationCommitNotificationSink for RecordingApplicationCommitNotifications {
+    fn publish_first_commit(
+        &self,
+        sequence: CommitSequence,
+    ) -> Result<(), ApplicationCommitNotificationError> {
+        self.0.lock().expect("notification lock").push(sequence);
+        Ok(())
+    }
+}
+
+pub(crate) struct FailingApplicationCommitNotifications;
+
+impl ApplicationCommitNotificationSink for FailingApplicationCommitNotifications {
+    fn publish_first_commit(
+        &self,
+        _: CommitSequence,
+    ) -> Result<(), ApplicationCommitNotificationError> {
+        Err(ApplicationCommitNotificationError)
+    }
+}
+
+pub(crate) struct PanickingApplicationCommitNotifications;
+
+impl ApplicationCommitNotificationSink for PanickingApplicationCommitNotifications {
+    fn publish_first_commit(
+        &self,
+        _: CommitSequence,
+    ) -> Result<(), ApplicationCommitNotificationError> {
+        panic!("injected notification panic")
+    }
 }
 
 pub(crate) fn runtime() -> tokio::runtime::Runtime {
@@ -379,7 +447,7 @@ pub(crate) fn command_timestamp() -> Timestamp {
 
 fn open_operational(store: RedbStore) -> RedbOperationalPorts {
     let opened = complete_structural_open(store);
-    let (_, _, dormant) = opened.into_parts();
+    let (_, _, _, dormant) = opened.into_parts();
     dormant
         .into_operational_after_catalog_validation()
         .expect("activate structurally checked redb ports")

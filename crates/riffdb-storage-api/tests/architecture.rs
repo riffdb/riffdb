@@ -73,6 +73,19 @@ fn startup_capability_evidence_can_only_derive_entries_from_durable_records() {
 }
 
 #[test]
+fn completed_startup_handoff_owns_the_same_session_retained_metadata() {
+    let source = include_str!("../src/startup.rs");
+    assert!(source.contains("retained_metadata: RetainedMetadataV1"));
+    assert!(source.contains("pub const fn retained_metadata(&self) -> &RetainedMetadataV1"));
+    assert!(
+        source.contains(
+            "pub fn into_parts(self) -> (DatabaseId, OpenSessionId, RetainedMetadataV1, P)"
+        )
+    );
+    assert!(source.contains("_authority: P::CompletionAuthority"));
+}
+
+#[test]
 fn command_staging_retains_and_checks_the_exact_candidate_graph() {
     let transaction = include_str!("../src/command_txn.rs");
     assert!(transaction.contains("fn intent(&self) -> &CommitIntent;"));

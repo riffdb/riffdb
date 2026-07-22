@@ -149,7 +149,7 @@ fn complete_structural_open(store: RedbStore) -> StructurallyOpened<RedbDormantP
 
 fn open_operational(store: RedbStore) -> RedbOperationalPorts {
     let opened = complete_structural_open(store);
-    let (_, _, dormant) = opened.into_parts();
+    let (_, _, _, dormant) = opened.into_parts();
     dormant
         .into_operational_after_catalog_validation()
         .expect("activate storage fixture; WP-130 owns catalog-proof composition")

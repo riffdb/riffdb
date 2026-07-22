@@ -1,4 +1,4 @@
-spec_version: '0.24'
+spec_version: '0.25'
 product: RiffDB
 repository: riffdb
 status: implementation-handoff
@@ -973,6 +973,7 @@ work_packages:
   - ADR-0018
   - ADR-0021
   - ADR-0023
+  - ADR-0033
   allowed_paths:
   - Cargo.lock
   - crates/riffdb-commit/**
@@ -987,6 +988,10 @@ work_packages:
   - tests/service_audit/**
   deliverables:
   - Commit coordinator actor
+  - Explicit least-authority ApplicationCommitNotificationSink injected into production coordinator construction;
+    exactly one sequence-only publication follows each first durable application commit, while replay, read-only,
+    failures, audit, initialization, and control-plane work publish none; sink error or panic preserves the known
+    committed result but stops coordinator admission and readiness
   - Durable pending idempotency reservation with fixed tx.time and canonical input hash
   - Typed catalog activation and capability create/revoke coordination
   - Read/predicate revalidation
@@ -1313,6 +1318,7 @@ work_packages:
   - ADR-0007
   - ADR-0031
   allowed_paths:
+  - .github/workflows/budget-comparison.yml
   - examples/budget-comparison/Cargo.toml
   - examples/budget-comparison/Cargo.lock
   - examples/budget-comparison/riffdb-service/**
@@ -1433,6 +1439,7 @@ work_packages:
   - ADR-0030
   - ADR-0031
   - ADR-0032
+  - ADR-0033
   allowed_paths:
   - Cargo.lock
   - crates/riffdb-api-grpc/**
