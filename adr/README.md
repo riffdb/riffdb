@@ -59,11 +59,12 @@ direction, merged draft, or implementation choice.
 | [0035](0035-atomic-authoritative-scan-fences.md) | Atomic Authoritative Scan Fences | Accepted |
 | [0036](0036-schema-directed-submitted-query-components.md) | Schema-Directed Submitted Query Components | Accepted |
 | [0037](0037-rust-sdk-foundational-type-dependencies.md) | Rust SDK Foundational Type Dependencies | Accepted |
+| [0038](0038-partition-filtered-authoritative-index-scans.md) | Partition-Filtered Authoritative Index Scans | Accepted |
 
 The human architecture review on 2026-07-12 approved the direction represented
 by ADR-0001 through ADR-0012. The human maintainer accepted ADR-0001 through
-ADR-0007, ADR-0009 through ADR-0037, and their recorded companion amendments by
-2026-07-21. ADR-0008 remains Proposed for resource URIs other than the exact
+ADR-0007, ADR-0009 through ADR-0038, and their recorded companion amendments by
+2026-07-22. ADR-0008 remains Proposed for resource URIs other than the exact
 provenance locator, HTTP audience, stdio-over-gRPC transport, cursor
 presentation, and the remaining exact MCP fixtures; ADR-0020 separately accepts
 command tool-name normalization and its compiler/catalog ownership, while
@@ -102,7 +103,10 @@ components structurally submitted until the shared service materializes them
 against the selected schema. ADR-0037 permits the Rust SDK's direct,
 default-feature-disabled dependency on the single owners of checked public
 errors and foundational public identifiers while continuing to forbid every
-authority-bearing server dependency.
+authority-bearing server dependency. ADR-0038 adds exact partition identity to
+durable index rows, a restartable offline V1-to-V2 migration, and bounded sparse
+scan progress so explicit partition scopes reach storage without an unrestricted
+post-filter or a policy dependency in the storage layer.
 
 ## Workflow
 
