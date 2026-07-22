@@ -10,14 +10,16 @@ use std::task::{Context, Poll};
 use std::time::{Duration, Instant};
 
 use riffdb_auth::{AuthenticationContext, CapabilityDigestKeyProvider, CredentialAuthenticator};
+use riffdb_errors::PublicErrorKind;
 use riffdb_proto::{MAX_PUBLIC_REQUEST_BYTES, MAX_PUBLIC_RESPONSE_BYTES, v1};
 use riffdb_service::{
-    ApplicationService, BootstrapRequestContext, CommitSubscription, CommitSubscriptionEvent,
-    CreateCapabilityInvocation, HealthContext, HealthRequest, HealthResult,
+    ApplicationService, BootstrapCapabilityResult, BootstrapRequestContext, CommitSubscription,
+    CommitSubscriptionEvent, CreateCapabilityInvocation, CreateCapabilityResult,
+    DeployContractResult, HealthContext, HealthRequest, HealthResult,
     MAX_COMMIT_SUBSCRIPTION_LIFETIME, RequestCancellationHandle, RequestContext, RequestControl,
     ServiceFuture, ServiceResult,
 };
-use riffdb_types::RequestId;
+use riffdb_types::{RequestId, ServiceOperationV1};
 use tonic::codegen::tokio_stream::Stream;
 use tonic::metadata::MetadataMap;
 use tonic::{Request, Response, Status};
@@ -38,14 +40,76 @@ const GRPC_TIMEOUT_METADATA_KEY: &str = "grpc-timeout";
 
 /// Server-owned atomic route across initializing and activated service stages.
 pub trait GrpcLifecycleRoute: Send + Sync {
-    /// Returns the complete application service only after startup proofs join.
-    fn active_service(&self) -> Option<Arc<dyn ApplicationService>>;
+    /// Atomically admits one authenticated operation in the current lifecycle.
+    ///
+    /// Implementations must reject before authentication when the operation is
+    /// unavailable, and must never return a service for a broader lifecycle
+    /// surface than the supplied exact operation permits.
+    fn admit_authenticated(
+        &self,
+        operation: ServiceOperationV1,
+    ) -> Option<Arc<dyn ApplicationService>>;
+
+    /// Returns the checked transport security installed after startup validation.
+    ///
+    /// Callers must first establish that the exact lifecycle operation is
+    /// admissible. Initializing and stopped routes return no context.
+    fn security_context(&self) -> Option<CheckedGrpcSecurityContext>;
 
     /// Routes restricted Health through the current API-neutral service stage.
     fn restricted_health(&self, request: HealthRequest) -> Option<ServiceFuture<'_, HealthResult>>;
 
-    /// Irreversibly closes principal-less Health before bootstrap submission.
-    fn close_pre_bootstrap_admission(&self);
+    /// Checks whether bootstrap token preparation is legal without changing state.
+    fn bootstrap_available(&self) -> bool;
+
+    /// Atomically admits one legal bootstrap attempt and returns its exact service.
+    ///
+    /// At most one caller may hold bootstrap admission. For initial bootstrap,
+    /// the transition must close the shared pre-bootstrap Health issuer before
+    /// returning, so submission has no close-versus-submit race.
+    fn begin_bootstrap(&self) -> Option<Arc<dyn ApplicationService>>;
+
+    /// Applies the terminal lifecycle disposition for the admitted bootstrap attempt.
+    ///
+    /// `Created` and `Replayed` transition to authenticated deployment-required
+    /// routing. `OutcomeUnknown`, `Failed`, and `Abandoned` stop routing. The
+    /// server-owned route applies the separately reviewed conflict disposition.
+    fn finish_bootstrap(&self, completion: GrpcBootstrapCompletion);
+
+    /// Applies the terminal lifecycle disposition for an admitted first deployment.
+    fn finish_deployment(&self, completion: GrpcDeploymentCompletion);
+}
+
+/// Transport-observed terminal classification for one admitted bootstrap attempt.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum GrpcBootstrapCompletion {
+    /// The first durable capability and marker were created.
+    Created,
+    /// The retained credential recovered the original durable transition.
+    Replayed,
+    /// Storage returned the closed bootstrap-conflict result.
+    Conflict,
+    /// The application service reported that durable completion is uncertain.
+    OutcomeUnknown,
+    /// The admitted attempt ended with another definite failure.
+    Failed,
+    /// The transport future disappeared before observing a terminal result.
+    Abandoned,
+}
+
+/// Transport-observed terminal classification for deployment-required activation.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum GrpcDeploymentCompletion {
+    /// A new active catalog was committed.
+    Activated,
+    /// The exact candidate was already active.
+    AlreadyActive,
+    /// A definite non-activating result or failure leaves deployment required.
+    NotActivated,
+    /// The application service reported uncertain durable completion.
+    OutcomeUnknown,
+    /// The transport future disappeared before observing a terminal result.
+    Abandoned,
 }
 
 /// Explicit hard cap used to derive one finite service request deadline.
@@ -88,12 +152,39 @@ impl fmt::Display for GrpcConfigurationError {
 
 impl Error for GrpcConfigurationError {}
 
+/// Cloneable transport security installed only after checked startup activation.
+#[derive(Clone)]
+pub struct CheckedGrpcSecurityContext {
+    authenticator: Arc<dyn CredentialAuthenticator>,
+    authentication: AuthenticationContext,
+    bootstrap_keys: Arc<CapabilityDigestKeyProvider>,
+}
+
+impl CheckedGrpcSecurityContext {
+    /// Packages the exact startup-validated authentication scope and key custody.
+    #[must_use]
+    pub fn new(
+        authenticator: Arc<dyn CredentialAuthenticator>,
+        authentication: AuthenticationContext,
+        bootstrap_keys: Arc<CapabilityDigestKeyProvider>,
+    ) -> Self {
+        Self {
+            authenticator,
+            authentication,
+            bootstrap_keys,
+        }
+    }
+}
+
+impl fmt::Debug for CheckedGrpcSecurityContext {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("CheckedGrpcSecurityContext([CAPABILITY])")
+    }
+}
+
 /// One transport adapter shared by all five generated gRPC services.
 #[derive(Clone)]
 pub struct GrpcApplication {
-    authenticator: Arc<dyn CredentialAuthenticator>,
-    authentication: AuthenticationContext,
-    bootstrap_keys: Option<Arc<CapabilityDigestKeyProvider>>,
     lifecycle: Arc<dyn GrpcLifecycleRoute>,
     limits: GrpcRequestLimits,
 }
@@ -101,20 +192,8 @@ pub struct GrpcApplication {
 impl GrpcApplication {
     /// Wires transport-only dependencies around the shared application service.
     #[must_use]
-    pub fn new(
-        authenticator: Arc<dyn CredentialAuthenticator>,
-        authentication: AuthenticationContext,
-        bootstrap_keys: Option<Arc<CapabilityDigestKeyProvider>>,
-        lifecycle: Arc<dyn GrpcLifecycleRoute>,
-        limits: GrpcRequestLimits,
-    ) -> Self {
-        Self {
-            authenticator,
-            authentication,
-            bootstrap_keys,
-            lifecycle,
-            limits,
-        }
+    pub fn new(lifecycle: Arc<dyn GrpcLifecycleRoute>, limits: GrpcRequestLimits) -> Self {
+        Self { lifecycle, limits }
     }
 
     /// Builds the bounded contract service without enabling compression.
@@ -161,12 +240,13 @@ impl GrpcApplication {
         &self,
         metadata: &MetadataMap,
         request_id: RequestId,
+        security: &CheckedGrpcSecurityContext,
     ) -> Result<(RequestContext, CancellationGuard), Status> {
         let deadline = self.limits.deadline(metadata)?;
         let principal = authenticate_normal_request(
             metadata,
-            self.authenticator.as_ref(),
-            &self.authentication,
+            security.authenticator.as_ref(),
+            &security.authentication,
         )?;
         let (control, cancellation) = RequestControl::new(deadline);
         Ok((
@@ -175,10 +255,37 @@ impl GrpcApplication {
         ))
     }
 
-    fn active_service(&self) -> Result<Arc<dyn ApplicationService>, Status> {
-        self.lifecycle
-            .active_service()
-            .ok_or_else(|| Status::unavailable("service is not ready"))
+    fn normal_invocation(
+        &self,
+        operation: ServiceOperationV1,
+        metadata: &MetadataMap,
+        request_id: RequestId,
+    ) -> Result<
+        (
+            Arc<dyn ApplicationService>,
+            RequestContext,
+            CancellationGuard,
+        ),
+        Status,
+    > {
+        let (service, security) = self.normal_admission(operation)?;
+        let (context, cancellation) = self.normal_context(metadata, request_id, &security)?;
+        Ok((service, context, cancellation))
+    }
+
+    fn normal_admission(
+        &self,
+        operation: ServiceOperationV1,
+    ) -> Result<(Arc<dyn ApplicationService>, CheckedGrpcSecurityContext), Status> {
+        let service = self
+            .lifecycle
+            .admit_authenticated(operation)
+            .ok_or_else(service_not_ready)?;
+        let security = self
+            .lifecycle
+            .security_context()
+            .ok_or_else(service_not_ready)?;
+        Ok((service, security))
     }
 
     fn bootstrap_context(
@@ -186,15 +293,123 @@ impl GrpcApplication {
         metadata: &MetadataMap,
         peer: Option<SocketAddr>,
         request_id: RequestId,
+        security: &CheckedGrpcSecurityContext,
     ) -> Result<(BootstrapRequestContext, CancellationGuard), Status> {
         let deadline = self.limits.deadline(metadata)?;
-        let keys = self.bootstrap_keys.as_deref().ok_or_else(unauthenticated)?;
-        let digests = prepare_loopback_bootstrap_token(metadata, peer, keys)?;
+        let digests = prepare_loopback_bootstrap_token(metadata, peer, &security.bootstrap_keys)?;
         let (control, cancellation) = RequestControl::new(deadline);
         Ok((
             BootstrapRequestContext::from_loopback_grpc(request_id, control, digests),
             CancellationGuard(cancellation),
         ))
+    }
+
+    fn bootstrap_security(&self) -> Result<CheckedGrpcSecurityContext, Status> {
+        if !self.lifecycle.bootstrap_available() {
+            return Err(service_not_ready());
+        }
+        self.lifecycle
+            .security_context()
+            .ok_or_else(service_not_ready)
+    }
+}
+
+struct BootstrapLifecycleGuard<'a> {
+    lifecycle: &'a dyn GrpcLifecycleRoute,
+    completed: bool,
+}
+
+impl<'a> BootstrapLifecycleGuard<'a> {
+    fn new(lifecycle: &'a dyn GrpcLifecycleRoute) -> Self {
+        Self {
+            lifecycle,
+            completed: false,
+        }
+    }
+
+    fn complete(mut self, completion: GrpcBootstrapCompletion) {
+        self.completed = true;
+        self.lifecycle.finish_bootstrap(completion);
+    }
+}
+
+impl Drop for BootstrapLifecycleGuard<'_> {
+    fn drop(&mut self) {
+        if !self.completed {
+            self.lifecycle
+                .finish_bootstrap(GrpcBootstrapCompletion::Abandoned);
+        }
+    }
+}
+
+struct DeploymentLifecycleGuard<'a> {
+    lifecycle: &'a dyn GrpcLifecycleRoute,
+    completed: bool,
+}
+
+impl<'a> DeploymentLifecycleGuard<'a> {
+    fn new(lifecycle: &'a dyn GrpcLifecycleRoute) -> Self {
+        Self {
+            lifecycle,
+            completed: false,
+        }
+    }
+
+    fn complete(mut self, completion: GrpcDeploymentCompletion) {
+        self.completed = true;
+        self.lifecycle.finish_deployment(completion);
+    }
+}
+
+impl Drop for DeploymentLifecycleGuard<'_> {
+    fn drop(&mut self) {
+        if !self.completed {
+            self.lifecycle
+                .finish_deployment(GrpcDeploymentCompletion::Abandoned);
+        }
+    }
+}
+
+fn classify_bootstrap_completion(
+    result: &ServiceResult<CreateCapabilityResult>,
+) -> GrpcBootstrapCompletion {
+    match result {
+        Ok(CreateCapabilityResult::Bootstrap(BootstrapCapabilityResult::Created(_))) => {
+            GrpcBootstrapCompletion::Created
+        }
+        Ok(CreateCapabilityResult::Bootstrap(BootstrapCapabilityResult::Replayed(_))) => {
+            GrpcBootstrapCompletion::Replayed
+        }
+        Ok(CreateCapabilityResult::Bootstrap(BootstrapCapabilityResult::BootstrapConflict)) => {
+            GrpcBootstrapCompletion::Conflict
+        }
+        Err(failure)
+            if failure
+                .public_error()
+                .is_some_and(|error| error.kind() == PublicErrorKind::OutcomeUnknown) =>
+        {
+            GrpcBootstrapCompletion::OutcomeUnknown
+        }
+        Ok(CreateCapabilityResult::Normal(_)) | Err(_) => GrpcBootstrapCompletion::Failed,
+    }
+}
+
+fn classify_deployment_completion(
+    result: &ServiceResult<DeployContractResult>,
+) -> GrpcDeploymentCompletion {
+    match result {
+        Ok(DeployContractResult::Activated(_)) => GrpcDeploymentCompletion::Activated,
+        Ok(DeployContractResult::AlreadyActive(_)) => GrpcDeploymentCompletion::AlreadyActive,
+        Err(failure)
+            if failure
+                .public_error()
+                .is_some_and(|error| error.kind() == PublicErrorKind::OutcomeUnknown) =>
+        {
+            GrpcDeploymentCompletion::OutcomeUnknown
+        }
+        Ok(DeployContractResult::ExpectedActiveVersionMismatch { .. })
+        | Ok(DeployContractResult::BundleConflict)
+        | Err(_) => GrpcDeploymentCompletion::NotActivated,
     }
 }
 
@@ -220,6 +435,10 @@ fn split_request<T>(request: Request<T>) -> (MetadataMap, Option<SocketAddr>, T)
 
 fn unauthenticated() -> Status {
     Status::unauthenticated(UNAUTHENTICATED_MESSAGE)
+}
+
+fn service_not_ready() -> Status {
+    Status::unavailable("service is not ready")
 }
 
 fn map_service<T>(result: ServiceResult<T>) -> Result<T, Status> {
@@ -263,8 +482,8 @@ impl ContractService for GrpcApplication {
     ) -> Result<Response<v1::ValidateContractResponse>, Status> {
         let (metadata, _peer, message) = split_request(request);
         let (request_id, request) = validate_contract_request_from_proto(message)?;
-        let (context, _cancellation) = self.normal_context(&metadata, request_id)?;
-        let service = self.active_service()?;
+        let (service, context, _cancellation) =
+            self.normal_invocation(ServiceOperationV1::ValidateContract, &metadata, request_id)?;
         let result = map_service(service.validate_contract(context, request).await)?;
         Ok(Response::new(contract_validation_result_to_proto(&result)?))
     }
@@ -275,8 +494,8 @@ impl ContractService for GrpcApplication {
     ) -> Result<Response<v1::ExplainCommandResponse>, Status> {
         let (metadata, _peer, message) = split_request(request);
         let (request_id, request) = explain_command_request_from_proto(message)?;
-        let (context, _cancellation) = self.normal_context(&metadata, request_id)?;
-        let service = self.active_service()?;
+        let (service, context, _cancellation) =
+            self.normal_invocation(ServiceOperationV1::ExplainCommand, &metadata, request_id)?;
         let result = map_service(service.explain_command(context, request).await)?;
         Ok(Response::new(explain_command_result_to_proto(&result)?))
     }
@@ -287,9 +506,13 @@ impl ContractService for GrpcApplication {
     ) -> Result<Response<v1::DeployContractResponse>, Status> {
         let (metadata, _peer, message) = split_request(request);
         let (request_id, request) = deploy_contract_request_from_proto(message)?;
-        let (context, _cancellation) = self.normal_context(&metadata, request_id)?;
-        let service = self.active_service()?;
-        let result = map_service(service.deploy_contract(context, request).await)?;
+        let (service, context, _cancellation) =
+            self.normal_invocation(ServiceOperationV1::DeployContract, &metadata, request_id)?;
+        let lifecycle = DeploymentLifecycleGuard::new(self.lifecycle.as_ref());
+        let result = service.deploy_contract(context, request).await;
+        let completion = classify_deployment_completion(&result);
+        lifecycle.complete(completion);
+        let result = map_service(result)?;
         Ok(Response::new(deploy_contract_result_to_proto(&result)))
     }
 
@@ -299,8 +522,8 @@ impl ContractService for GrpcApplication {
     ) -> Result<Response<v1::GetActiveContractResponse>, Status> {
         let (metadata, _peer, message) = split_request(request);
         let (request_id, request) = get_active_contract_request_from_proto(message)?;
-        let (context, _cancellation) = self.normal_context(&metadata, request_id)?;
-        let service = self.active_service()?;
+        let (service, context, _cancellation) =
+            self.normal_invocation(ServiceOperationV1::GetActiveContract, &metadata, request_id)?;
         let result = map_service(service.get_active_contract(context, request).await)?;
         Ok(Response::new(get_active_contract_result_to_proto(&result)))
     }
@@ -314,8 +537,8 @@ impl CommandService for GrpcApplication {
     ) -> Result<Response<v1::ExecuteCommandResponse>, Status> {
         let (metadata, _peer, message) = split_request(request);
         let (request_id, request) = execute_command_request_from_proto(message)?;
-        let (context, _cancellation) = self.normal_context(&metadata, request_id)?;
-        let service = self.active_service()?;
+        let (service, context, _cancellation) =
+            self.normal_invocation(ServiceOperationV1::ExecuteCommand, &metadata, request_id)?;
         let result = map_service(service.execute_command(context, request).await)?;
         Ok(Response::new(execute_command_result_to_proto(&result)?))
     }
@@ -326,8 +549,11 @@ impl CommandService for GrpcApplication {
     ) -> Result<Response<v1::GetOutcomeResponse>, Status> {
         let (metadata, _peer, message) = split_request(request);
         let (request_id, request) = resolve_outcome_request_from_proto(message)?;
-        let (context, _cancellation) = self.normal_context(&metadata, request_id)?;
-        let service = self.active_service()?;
+        let (service, context, _cancellation) = self.normal_invocation(
+            ServiceOperationV1::ResolveCommandOutcome,
+            &metadata,
+            request_id,
+        )?;
         let result = map_service(service.resolve_command_outcome(context, request).await)?;
         Ok(Response::new(resolve_outcome_result_to_proto(&result)?))
     }
@@ -341,8 +567,8 @@ impl QueryService for GrpcApplication {
     ) -> Result<Response<v1::GetEntityResponse>, Status> {
         let (metadata, _peer, message) = split_request(request);
         let (request_id, request) = get_entity_request_from_proto(message)?;
-        let (context, _cancellation) = self.normal_context(&metadata, request_id)?;
-        let service = self.active_service()?;
+        let (service, context, _cancellation) =
+            self.normal_invocation(ServiceOperationV1::GetEntity, &metadata, request_id)?;
         let result = map_service(service.get_entity(context, request).await)?;
         Ok(Response::new(get_entity_result_to_proto(&result)?))
     }
@@ -353,8 +579,8 @@ impl QueryService for GrpcApplication {
     ) -> Result<Response<v1::ScanIndexResponse>, Status> {
         let (metadata, _peer, message) = split_request(request);
         let (request_id, request) = scan_index_request_from_proto(message)?;
-        let (context, _cancellation) = self.normal_context(&metadata, request_id)?;
-        let service = self.active_service()?;
+        let (service, context, _cancellation) =
+            self.normal_invocation(ServiceOperationV1::ScanIndex, &metadata, request_id)?;
         let result = map_service(service.scan_index(context, request).await)?;
         Ok(Response::new(scan_index_result_to_proto(&result)?))
     }
@@ -365,8 +591,8 @@ impl QueryService for GrpcApplication {
     ) -> Result<Response<v1::QueryProjectionResponse>, Status> {
         let (metadata, _peer, message) = split_request(request);
         let (request_id, request) = query_projection_request_from_proto(message)?;
-        let (context, _cancellation) = self.normal_context(&metadata, request_id)?;
-        let service = self.active_service()?;
+        let (service, context, _cancellation) =
+            self.normal_invocation(ServiceOperationV1::QueryProjection, &metadata, request_id)?;
         let result = map_service(service.query_projection(context, request).await)?;
         Ok(Response::new(query_projection_result_to_proto(&result)?))
     }
@@ -382,8 +608,8 @@ impl CommitService for GrpcApplication {
     ) -> Result<Response<v1::GetCommitResponse>, Status> {
         let (metadata, _peer, message) = split_request(request);
         let (request_id, request) = get_commit_request_from_proto(message)?;
-        let (context, _cancellation) = self.normal_context(&metadata, request_id)?;
-        let service = self.active_service()?;
+        let (service, context, _cancellation) =
+            self.normal_invocation(ServiceOperationV1::GetCommit, &metadata, request_id)?;
         let result = map_service(service.get_commit(context, request).await)?;
         Ok(Response::new(get_commit_result_to_proto(&result)?))
     }
@@ -394,8 +620,8 @@ impl CommitService for GrpcApplication {
     ) -> Result<Response<v1::ScanCommitsResponse>, Status> {
         let (metadata, _peer, message) = split_request(request);
         let (request_id, request) = scan_commits_request_from_proto(message)?;
-        let (context, _cancellation) = self.normal_context(&metadata, request_id)?;
-        let service = self.active_service()?;
+        let (service, context, _cancellation) =
+            self.normal_invocation(ServiceOperationV1::ScanCommits, &metadata, request_id)?;
         let result = map_service(service.scan_commits(context, request).await)?;
         Ok(Response::new(scan_commits_result_to_proto(&result)?))
     }
@@ -406,8 +632,11 @@ impl CommitService for GrpcApplication {
     ) -> Result<Response<Self::SubscribeCommitsStream>, Status> {
         let (metadata, _peer, message) = split_request(request);
         let (request_id, request) = subscribe_commits_request_from_proto(message)?;
-        let (context, cancellation) = self.normal_context(&metadata, request_id)?;
-        let service = self.active_service()?;
+        let (service, context, cancellation) = self.normal_invocation(
+            ServiceOperationV1::SubscribeToCommits,
+            &metadata,
+            request_id,
+        )?;
         let result = map_service(service.subscribe_to_commits(context, request).await)?;
         Ok(Response::new(CommitNotificationStream::new(
             result.into_subscription(),
@@ -426,8 +655,8 @@ impl AdminService for GrpcApplication {
         let (request_id, request) = health_request_from_proto(message)?;
         let result = match request_id {
             Some(request_id) => {
-                let (context, _cancellation) = self.normal_context(&metadata, request_id)?;
-                let service = self.active_service()?;
+                let (service, context, _cancellation) =
+                    self.normal_invocation(ServiceOperationV1::GetHealth, &metadata, request_id)?;
                 map_service(
                     service
                         .health(HealthContext::authenticated(context), request)
@@ -456,8 +685,8 @@ impl AdminService for GrpcApplication {
     ) -> Result<Response<v1::StatsResponse>, Status> {
         let (metadata, _peer, message) = split_request(request);
         let (request_id, request) = statistics_request_from_proto(message)?;
-        let (context, _cancellation) = self.normal_context(&metadata, request_id)?;
-        let service = self.active_service()?;
+        let (service, context, _cancellation) =
+            self.normal_invocation(ServiceOperationV1::GetStatistics, &metadata, request_id)?;
         let result = map_service(service.statistics(context, request).await)?;
         Ok(Response::new(statistics_result_to_proto(result)))
     }
@@ -467,34 +696,38 @@ impl AdminService for GrpcApplication {
         request: Request<v1::CreateCapabilityRequest>,
     ) -> Result<Response<v1::CreateCapabilityResponse>, Status> {
         let (metadata, peer, message) = split_request(request);
-        let service = self.active_service()?;
-        let (invocation, _cancellation) = match v1::CapabilityCreateMode::try_from(message.mode)
-            .map_err(|_| invalid_request())?
-        {
+        match v1::CapabilityCreateMode::try_from(message.mode).map_err(|_| invalid_request())? {
             v1::CapabilityCreateMode::Normal => {
+                let (service, security) =
+                    self.normal_admission(ServiceOperationV1::CreateCapability)?;
                 let (request_id, request) =
-                    normal_create_capability_request_from_proto(message, &self.authentication)?;
-                let (context, cancellation) = self.normal_context(&metadata, request_id)?;
-                (
-                    CreateCapabilityInvocation::Normal { context, request },
-                    cancellation,
-                )
+                    normal_create_capability_request_from_proto(message, &security.authentication)?;
+                let (context, _cancellation) =
+                    self.normal_context(&metadata, request_id, &security)?;
+                let invocation = CreateCapabilityInvocation::Normal { context, request };
+                let result = map_service(service.create_capability(invocation).await)?;
+                Ok(Response::new(create_capability_result_to_proto(&result)?))
             }
             v1::CapabilityCreateMode::Bootstrap => {
+                let security = self.bootstrap_security()?;
                 let (request_id, request) =
-                    bootstrap_capability_request_from_proto(message, &self.authentication)?;
-                let (context, cancellation) =
-                    self.bootstrap_context(&metadata, peer, request_id)?;
-                self.lifecycle.close_pre_bootstrap_admission();
-                (
-                    CreateCapabilityInvocation::Bootstrap { context, request },
-                    cancellation,
-                )
+                    bootstrap_capability_request_from_proto(message, &security.authentication)?;
+                let (context, _cancellation) =
+                    self.bootstrap_context(&metadata, peer, request_id, &security)?;
+                let service = self
+                    .lifecycle
+                    .begin_bootstrap()
+                    .ok_or_else(service_not_ready)?;
+                let lifecycle = BootstrapLifecycleGuard::new(self.lifecycle.as_ref());
+                let invocation = CreateCapabilityInvocation::Bootstrap { context, request };
+                let result = service.create_capability(invocation).await;
+                let completion = classify_bootstrap_completion(&result);
+                lifecycle.complete(completion);
+                let result = map_service(result)?;
+                Ok(Response::new(create_capability_result_to_proto(&result)?))
             }
             v1::CapabilityCreateMode::Unspecified => return Err(invalid_request()),
-        };
-        let result = map_service(service.create_capability(invocation).await)?;
-        Ok(Response::new(create_capability_result_to_proto(&result)?))
+        }
     }
 
     async fn revoke_capability(
@@ -503,8 +736,8 @@ impl AdminService for GrpcApplication {
     ) -> Result<Response<v1::RevokeCapabilityResponse>, Status> {
         let (metadata, _peer, message) = split_request(request);
         let (request_id, request) = revoke_capability_request_from_proto(message)?;
-        let (context, _cancellation) = self.normal_context(&metadata, request_id)?;
-        let service = self.active_service()?;
+        let (service, context, _cancellation) =
+            self.normal_invocation(ServiceOperationV1::RevokeCapability, &metadata, request_id)?;
         let result = map_service(service.revoke_capability(context, request).await)?;
         Ok(Response::new(revoke_capability_result_to_proto(result)))
     }
@@ -603,25 +836,120 @@ fn next_commit(mut subscription: Box<dyn CommitSubscription>) -> NextCommitFutur
 mod tests {
     use super::*;
     use riffdb_auth::{AuthenticatedPrincipal, AuthenticationFailure, OpaqueCredential};
-    use riffdb_types::{Audience, DatabaseId, Environment};
+    use riffdb_errors::PublicError;
+    use riffdb_service::{CapabilityIdentityView, CapabilityTransitionView};
+    use riffdb_types::{
+        AdministrationSequence, Audience, CapabilityId, DatabaseId, Environment, RequestId,
+    };
+    use std::num::NonZeroU64;
+    use std::sync::atomic::{AtomicBool, AtomicU8, AtomicUsize, Ordering};
+    use std::sync::{Barrier, Mutex};
+    use std::thread;
     use tonic::metadata::MetadataValue;
 
-    struct RejectingAuthenticator;
+    struct CountingAuthenticator(AtomicUsize);
 
-    impl CredentialAuthenticator for RejectingAuthenticator {
+    impl CredentialAuthenticator for CountingAuthenticator {
         fn authenticate(
             &self,
             _credential: OpaqueCredential<'_>,
             _context: &AuthenticationContext,
         ) -> Result<AuthenticatedPrincipal, AuthenticationFailure> {
+            self.0.fetch_add(1, Ordering::SeqCst);
             Err(AuthenticationFailure::Unauthenticated)
         }
     }
 
-    struct InitializingRoute;
+    struct InitializingRoute {
+        security_fetches: AtomicUsize,
+        security: Option<CheckedGrpcSecurityContext>,
+    }
+
+    impl InitializingRoute {
+        fn without_security() -> Self {
+            Self {
+                security_fetches: AtomicUsize::new(0),
+                security: None,
+            }
+        }
+
+        fn with_security(security: CheckedGrpcSecurityContext) -> Self {
+            Self {
+                security_fetches: AtomicUsize::new(0),
+                security: Some(security),
+            }
+        }
+    }
 
     impl GrpcLifecycleRoute for InitializingRoute {
-        fn active_service(&self) -> Option<Arc<dyn ApplicationService>> {
+        fn admit_authenticated(
+            &self,
+            _operation: ServiceOperationV1,
+        ) -> Option<Arc<dyn ApplicationService>> {
+            None
+        }
+
+        fn security_context(&self) -> Option<CheckedGrpcSecurityContext> {
+            self.security_fetches.fetch_add(1, Ordering::SeqCst);
+            self.security.clone()
+        }
+
+        fn restricted_health(
+            &self,
+            _request: HealthRequest,
+        ) -> Option<ServiceFuture<'_, HealthResult>> {
+            None
+        }
+
+        fn bootstrap_available(&self) -> bool {
+            false
+        }
+
+        fn begin_bootstrap(&self) -> Option<Arc<dyn ApplicationService>> {
+            None
+        }
+
+        fn finish_bootstrap(&self, _completion: GrpcBootstrapCompletion) {}
+
+        fn finish_deployment(&self, _completion: GrpcDeploymentCompletion) {}
+    }
+
+    struct AtomicBootstrapRoute {
+        admitted: AtomicBool,
+        phase: AtomicU8,
+        completions: Mutex<Vec<GrpcBootstrapCompletion>>,
+    }
+
+    impl AtomicBootstrapRoute {
+        fn new() -> Self {
+            Self {
+                admitted: AtomicBool::new(false),
+                phase: AtomicU8::new(0),
+                completions: Mutex::new(Vec::new()),
+            }
+        }
+
+        fn claim_bootstrap(&self) -> bool {
+            let admitted = self
+                .admitted
+                .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+                .is_ok();
+            if admitted {
+                self.phase.store(1, Ordering::Release);
+            }
+            admitted
+        }
+    }
+
+    impl GrpcLifecycleRoute for AtomicBootstrapRoute {
+        fn admit_authenticated(
+            &self,
+            _operation: ServiceOperationV1,
+        ) -> Option<Arc<dyn ApplicationService>> {
+            None
+        }
+
+        fn security_context(&self) -> Option<CheckedGrpcSecurityContext> {
             None
         }
 
@@ -632,7 +960,31 @@ mod tests {
             None
         }
 
-        fn close_pre_bootstrap_admission(&self) {}
+        fn bootstrap_available(&self) -> bool {
+            !self.admitted.load(Ordering::Acquire)
+        }
+
+        fn begin_bootstrap(&self) -> Option<Arc<dyn ApplicationService>> {
+            None
+        }
+
+        fn finish_bootstrap(&self, completion: GrpcBootstrapCompletion) {
+            self.completions
+                .lock()
+                .expect("completion lock")
+                .push(completion);
+            let phase = match completion {
+                GrpcBootstrapCompletion::Created
+                | GrpcBootstrapCompletion::Replayed
+                | GrpcBootstrapCompletion::Conflict => 2,
+                GrpcBootstrapCompletion::OutcomeUnknown
+                | GrpcBootstrapCompletion::Failed
+                | GrpcBootstrapCompletion::Abandoned => 4,
+            };
+            self.phase.store(phase, Ordering::Release);
+        }
+
+        fn finish_deployment(&self, _completion: GrpcDeploymentCompletion) {}
     }
 
     #[test]
@@ -666,23 +1018,194 @@ mod tests {
 
     #[test]
     fn initializing_adapter_requires_no_full_application_service() {
+        let route = Arc::new(InitializingRoute::without_security());
         let adapter = GrpcApplication::new(
-            Arc::new(RejectingAuthenticator),
-            AuthenticationContext::new(
-                DatabaseId::from_unix_milliseconds_and_random(1, [0; 10])
-                    .expect("valid database ID"),
-                Environment::new("test").expect("valid environment"),
-                Audience::new("grpc").expect("valid audience"),
-            ),
-            None,
-            Arc::new(InitializingRoute),
+            route.clone(),
             GrpcRequestLimits::new(Duration::from_secs(30)).expect("valid request limit"),
         );
-        let status = match adapter.active_service() {
-            Ok(_) => panic!("initializing route must not expose a full service"),
-            Err(status) => status,
+        let status = match adapter
+            .lifecycle
+            .admit_authenticated(ServiceOperationV1::GetEntity)
+        {
+            Some(_) => panic!("initializing route must not expose a full service"),
+            None => service_not_ready(),
         };
         assert_eq!(status.code(), tonic::Code::Unavailable);
         assert!(status.details().is_empty());
+        assert_eq!(route.security_fetches.load(Ordering::SeqCst), 0);
+    }
+
+    #[test]
+    fn initializing_route_rejects_before_fetching_security_or_authenticating() {
+        let authenticator = Arc::new(CountingAuthenticator(AtomicUsize::new(0)));
+        let security = CheckedGrpcSecurityContext::new(
+            authenticator.clone(),
+            test_authentication_context(),
+            Arc::new(test_bootstrap_keys()),
+        );
+        let route = Arc::new(InitializingRoute::with_security(security));
+        let adapter = GrpcApplication::new(
+            route.clone(),
+            GrpcRequestLimits::new(Duration::from_secs(30)).expect("valid request limit"),
+        );
+        let mut metadata = MetadataMap::new();
+        metadata.insert(
+            AUTHORIZATION_METADATA_KEY,
+            MetadataValue::try_from(format!("Bearer {}", "A".repeat(43)))
+                .expect("bounded bearer metadata"),
+        );
+
+        let status =
+            match adapter.normal_invocation(ServiceOperationV1::GetEntity, &metadata, request_id())
+            {
+                Ok(_) => panic!("initializing route must reject normal invocation"),
+                Err(status) => status,
+            };
+
+        assert_eq!(status.code(), tonic::Code::Unavailable);
+        assert_eq!(route.security_fetches.load(Ordering::SeqCst), 0);
+        assert_eq!(authenticator.0.load(Ordering::SeqCst), 0);
+    }
+
+    #[test]
+    fn unavailable_bootstrap_rejects_before_fetching_security() {
+        let authenticator = Arc::new(CountingAuthenticator(AtomicUsize::new(0)));
+        let security = CheckedGrpcSecurityContext::new(
+            authenticator.clone(),
+            test_authentication_context(),
+            Arc::new(test_bootstrap_keys()),
+        );
+        let route = Arc::new(InitializingRoute::with_security(security));
+        let adapter = GrpcApplication::new(
+            route.clone(),
+            GrpcRequestLimits::new(Duration::from_secs(30)).expect("valid request limit"),
+        );
+
+        let status = adapter
+            .bootstrap_security()
+            .expect_err("initializing bootstrap must not fetch security");
+
+        assert_eq!(status.code(), tonic::Code::Unavailable);
+        assert_eq!(route.security_fetches.load(Ordering::SeqCst), 0);
+        assert_eq!(authenticator.0.load(Ordering::SeqCst), 0);
+    }
+
+    #[test]
+    fn bootstrap_begin_is_atomic_under_a_barrier_race() {
+        const CALLERS: usize = 8;
+        let route = Arc::new(AtomicBootstrapRoute::new());
+        let barrier = Arc::new(Barrier::new(CALLERS + 1));
+        let mut callers = Vec::with_capacity(CALLERS);
+        for _ in 0..CALLERS {
+            let route = Arc::clone(&route);
+            let barrier = Arc::clone(&barrier);
+            callers.push(thread::spawn(move || {
+                barrier.wait();
+                route.claim_bootstrap()
+            }));
+        }
+
+        barrier.wait();
+        let admitted = callers
+            .into_iter()
+            .map(|caller| caller.join().expect("bootstrap caller completed"))
+            .filter(|admitted| *admitted)
+            .count();
+
+        assert_eq!(admitted, 1);
+        assert_eq!(route.phase.load(Ordering::Acquire), 1);
+    }
+
+    #[test]
+    fn bootstrap_results_have_closed_lifecycle_classifications() {
+        let transition = capability_transition();
+        let cases = [
+            (
+                Ok(CreateCapabilityResult::Bootstrap(
+                    BootstrapCapabilityResult::Created(transition),
+                )),
+                GrpcBootstrapCompletion::Created,
+            ),
+            (
+                Ok(CreateCapabilityResult::Bootstrap(
+                    BootstrapCapabilityResult::Replayed(transition),
+                )),
+                GrpcBootstrapCompletion::Replayed,
+            ),
+            (
+                Ok(CreateCapabilityResult::Bootstrap(
+                    BootstrapCapabilityResult::BootstrapConflict,
+                )),
+                GrpcBootstrapCompletion::Conflict,
+            ),
+            (
+                Err(PublicError::outcome_unknown().into()),
+                GrpcBootstrapCompletion::OutcomeUnknown,
+            ),
+            (
+                Err(PublicError::storage_unavailable().into()),
+                GrpcBootstrapCompletion::Failed,
+            ),
+        ];
+
+        for (result, expected) in cases {
+            assert_eq!(classify_bootstrap_completion(&result), expected);
+        }
+    }
+
+    #[test]
+    fn bootstrap_completion_and_abandonment_are_fail_closed() {
+        let success = AtomicBootstrapRoute::new();
+        assert!(success.claim_bootstrap());
+        BootstrapLifecycleGuard::new(&success).complete(GrpcBootstrapCompletion::Created);
+        assert_eq!(success.phase.load(Ordering::Acquire), 2);
+
+        let uncertain = AtomicBootstrapRoute::new();
+        assert!(uncertain.claim_bootstrap());
+        BootstrapLifecycleGuard::new(&uncertain).complete(GrpcBootstrapCompletion::OutcomeUnknown);
+        assert_eq!(uncertain.phase.load(Ordering::Acquire), 4);
+
+        let abandoned = AtomicBootstrapRoute::new();
+        assert!(abandoned.claim_bootstrap());
+        drop(BootstrapLifecycleGuard::new(&abandoned));
+        assert_eq!(abandoned.phase.load(Ordering::Acquire), 4);
+        assert_eq!(
+            abandoned
+                .completions
+                .lock()
+                .expect("completion lock")
+                .as_slice(),
+            &[GrpcBootstrapCompletion::Abandoned]
+        );
+    }
+
+    fn test_authentication_context() -> AuthenticationContext {
+        AuthenticationContext::new(
+            DatabaseId::from_unix_milliseconds_and_random(1, [0; 10]).expect("valid database ID"),
+            Environment::new("test").expect("valid environment"),
+            Audience::new("grpc").expect("valid audience"),
+        )
+    }
+
+    fn test_bootstrap_keys() -> CapabilityDigestKeyProvider {
+        CapabilityDigestKeyProvider::parse_document(
+            b"riffdb-capability-digest-keys-v1\n7:000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f\n",
+        )
+        .expect("valid capability digest-key document")
+    }
+
+    fn request_id() -> RequestId {
+        RequestId::from_unix_milliseconds_and_random(2, [1; 10]).expect("valid request ID")
+    }
+
+    fn capability_transition() -> CapabilityTransitionView {
+        CapabilityTransitionView::new(
+            CapabilityIdentityView::new(
+                CapabilityId::from_unix_milliseconds_and_random(3, [2; 10])
+                    .expect("valid capability ID"),
+                NonZeroU64::MIN,
+            ),
+            AdministrationSequence::first(),
+        )
     }
 }

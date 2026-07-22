@@ -1249,10 +1249,13 @@ dependencies = [
  "prost",
  "prost-types",
  "riffdb-auth",
+ "riffdb-client-rust",
  "riffdb-errors",
  "riffdb-proto",
  "riffdb-service",
+ "riffdb-testkit",
  "riffdb-types",
+ "tokio",
  "tonic",
  "tonic-prost",
  "tonic-prost-build",
@@ -1438,14 +1441,23 @@ name = "riffdb-server"
 version = "0.1.0"
 dependencies = [
  "getrandom 0.3.4",
+ "riffdb-api-grpc",
  "riffdb-auth",
+ "riffdb-catalog",
+ "riffdb-client-rust",
  "riffdb-commit",
+ "riffdb-conflict",
+ "riffdb-contract-ir",
  "riffdb-errors",
+ "riffdb-idempotency",
  "riffdb-policy",
+ "riffdb-proto",
  "riffdb-service",
  "riffdb-storage-api",
  "riffdb-storage-redb",
  "riffdb-types",
+ "tokio",
+ "tonic",
 ]
 
 [[package]]

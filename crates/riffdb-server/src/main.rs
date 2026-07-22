@@ -1,5 +1,7 @@
 #![forbid(unsafe_code)]
 
-//! Bootstrap target for the future `riffdbd` server process.
+//! Hosted `riffdbd` server process.
 
-fn main() {}
+fn main() -> std::process::ExitCode {
+    riffdb_server::riffdbd_main()
+}
