@@ -1,14 +1,16 @@
+use prost::Message;
 use riffdb_proto::storage::v1 as wire;
 use riffdb_types::{
     CanonicalInputHash, CommitSequence, ConflictKeyHash, ContractVersion, EntityVersion, EventHash,
-    EventTypeId, IndexEntryKey, IndexEpoch, OutcomeId, PartitionKey, PartitionKeyHash,
-    ProvenanceId, RequestId, encode_canonical_record,
+    EventTypeId, IndexEntryKey, IndexEpoch, MAX_KEY_BYTES, OutcomeId, PartitionKey,
+    PartitionKeyHash, ProvenanceId, RequestId, encode_canonical_record,
 };
 
 use crate::{
     AffectedEntityV1, CommittedEntityMutationV1, DurabilityMode, EncodedPageItem,
-    StoredCommitRecordV1, StoredDurableEventV1, StoredEntityRecordV1, StoredExecutionFailedV1,
-    StoredIndexEntryV1, StoredIndexEpochV1, StoredOutcomeV1, StoredPendingAdmissionV1,
+    IndexMigrationRowEvidence, IndexMigrationSemanticRow, StoredCommitRecordV1,
+    StoredDurableEventV1, StoredEntityRecordV1, StoredExecutionFailedV1, StoredIndexEntryV1,
+    StoredIndexEntryV2, StoredIndexEpochV1, StoredOutcomeV1, StoredPendingAdmissionV1,
     StoredProvenanceRecordV1, StoredReadDependenciesV1, StoredReadDependencyV1,
 };
 
@@ -23,7 +25,8 @@ use super::{
 };
 
 pub(super) const ENTITY: &str = "riffdb.storage.v1.StoredEntityRecordV1";
-pub(super) const INDEX_ENTRY: &str = "riffdb.storage.v1.StoredIndexEntryV1";
+pub(super) const INDEX_ENTRY: &str = "riffdb.storage.v1.StoredIndexEntryV2";
+const LEGACY_INDEX_ENTRY: &str = "riffdb.storage.v1.StoredIndexEntryV1";
 pub(super) const INDEX_EPOCH: &str = "riffdb.storage.v1.StoredIndexEpochV1";
 const PENDING: &str = "riffdb.storage.v1.StoredPendingAdmissionV1";
 const EXECUTION_FAILED: &str = "riffdb.storage.v1.StoredExecutionFailedV1";
@@ -99,16 +102,17 @@ fn entity_from_proto(
     ))
 }
 
-pub(super) fn index_entry_to_proto(value: &StoredIndexEntryV1) -> wire::StoredIndexEntryV1 {
-    wire::StoredIndexEntryV1 {
+pub(super) fn index_entry_to_proto(value: &StoredIndexEntryV2) -> wire::StoredIndexEntryV2 {
+    wire::StoredIndexEntryV2 {
         index_entry_key: value.key().as_bytes().to_vec(),
         schema_binding: Some(binding_to_proto(value.schema_binding())),
         canonical_covered_values: encode_canonical_record(value.covered_values())
             .expect("checked index record must encode"),
+        partition_key: value.partition_key().as_bytes().to_vec(),
     }
 }
 
-fn index_entry_from_proto(
+fn legacy_index_entry_from_proto(
     value: wire::StoredIndexEntryV1,
 ) -> Result<StoredIndexEntryV1, DurableCodecError> {
     storage_result(StoredIndexEntryV1::new(
@@ -116,6 +120,18 @@ fn index_entry_from_proto(
             .map_err(|_| DurableCodecError::corrupt())?,
         binding_from_proto(require(value.schema_binding)?)?,
         canonical_record_from_bytes(&value.canonical_covered_values)?,
+    ))
+}
+
+fn index_entry_from_proto(
+    value: wire::StoredIndexEntryV2,
+) -> Result<StoredIndexEntryV2, DurableCodecError> {
+    storage_result(StoredIndexEntryV2::new(
+        IndexEntryKey::from_bytes(value.index_entry_key)
+            .map_err(|_| DurableCodecError::corrupt())?,
+        binding_from_proto(require(value.schema_binding)?)?,
+        canonical_record_from_bytes(&value.canonical_covered_values)?,
+        PartitionKey::from_bytes(value.partition_key).map_err(|_| DurableCodecError::corrupt())?,
     ))
 }
 
@@ -268,18 +284,120 @@ pub fn decode_entity_record_v1(
     decode_message::<wire::StoredEntityRecordV1, _, _>(ENTITY, encoded, entity_from_proto)
 }
 
-/// Encodes one authoritative index-entry post-image.
-pub fn encode_index_entry_v1(
-    value: &StoredIndexEntryV1,
+/// Encodes one current authoritative index-entry post-image.
+pub fn encode_index_entry_v2(
+    value: &StoredIndexEntryV2,
 ) -> Result<CanonicalStoredEnvelopeV1, DurableCodecError> {
     encode_message(INDEX_ENTRY, &index_entry_to_proto(value))
 }
 
-/// Decodes one authoritative index-entry post-image.
+/// Decodes one current authoritative index-entry post-image.
+pub fn decode_index_entry_v2(
+    encoded: &[u8],
+) -> Result<EncodedPageItem<StoredIndexEntryV2>, DurableCodecError> {
+    decode_message::<wire::StoredIndexEntryV2, _, _>(INDEX_ENTRY, encoded, index_entry_from_proto)
+}
+
+/// Decodes one legacy migration-only index-entry post-image.
 pub fn decode_index_entry_v1(
     encoded: &[u8],
 ) -> Result<EncodedPageItem<StoredIndexEntryV1>, DurableCodecError> {
-    decode_message::<wire::StoredIndexEntryV1, _, _>(INDEX_ENTRY, encoded, index_entry_from_proto)
+    decode_message::<wire::StoredIndexEntryV1, _, _>(
+        LEGACY_INDEX_ENTRY,
+        encoded,
+        legacy_index_entry_from_proto,
+    )
+}
+
+/// Decodes and inseparably binds one physical migration-scan row.
+pub fn decode_index_migration_row(
+    physical_key: &IndexEntryKey,
+    observed_envelope: &[u8],
+) -> Result<IndexMigrationRowEvidence, DurableCodecError> {
+    let decoded = riffdb_proto::durable::readable_record_registry()
+        .decode(observed_envelope)
+        .map_err(DurableCodecError::from_decode_envelope)?;
+    let row = match decoded.record_type() {
+        LEGACY_INDEX_ENTRY => IndexMigrationSemanticRow::V1(legacy_index_entry_from_proto(
+            wire::StoredIndexEntryV1::decode(decoded.payload())
+                .map_err(|_| DurableCodecError::corrupt())?,
+        )?),
+        INDEX_ENTRY => IndexMigrationSemanticRow::V2(index_entry_from_proto(
+            wire::StoredIndexEntryV2::decode(decoded.payload())
+                .map_err(|_| DurableCodecError::corrupt())?,
+        )?),
+        _ => {
+            return Err(DurableCodecError::new(
+                super::DurableCodecErrorKind::UnexpectedRecordType,
+            ));
+        }
+    };
+    if row.key() != physical_key {
+        return Err(DurableCodecError::corrupt());
+    }
+    let conservative_v2_envelope_charge = conservative_index_v2_envelope_charge(&row)?;
+    IndexMigrationRowEvidence::from_codec_checked_parts(
+        physical_key.clone(),
+        row,
+        observed_envelope.to_vec(),
+        conservative_v2_envelope_charge,
+    )
+    .map_err(DurableCodecError::from_storage_value)
+}
+
+fn conservative_index_v2_envelope_charge(
+    row: &IndexMigrationSemanticRow,
+) -> Result<crate::EncodedContentCharge, DurableCodecError> {
+    let message = wire::StoredIndexEntryV2 {
+        index_entry_key: row.key().as_bytes().to_vec(),
+        schema_binding: Some(binding_to_proto(row.schema_binding())),
+        canonical_covered_values: encode_canonical_record(row.covered_values())
+            .map_err(|_| DurableCodecError::invariant())?,
+        partition_key: vec![0; MAX_KEY_BYTES],
+    };
+    let schema = riffdb_proto::durable::current_record_schema(INDEX_ENTRY)
+        .ok_or_else(DurableCodecError::invariant)?;
+    let bytes =
+        riffdb_proto::envelope::maximum_encoded_envelope_bytes(schema, message.encoded_len())
+            .map_err(DurableCodecError::from_encode_envelope)?;
+    crate::EncodedContentCharge::new(bytes).ok_or_else(DurableCodecError::invariant)
+}
+
+#[cfg(any(test, feature = "test-fixtures"))]
+fn encode_index_entry_v1_fixture_inner(
+    value: &StoredIndexEntryV1,
+) -> Result<CanonicalStoredEnvelopeV1, DurableCodecError> {
+    let message = wire::StoredIndexEntryV1 {
+        index_entry_key: value.key().as_bytes().to_vec(),
+        schema_binding: Some(binding_to_proto(value.schema_binding())),
+        canonical_covered_values: encode_canonical_record(value.covered_values())
+            .expect("checked index record must encode"),
+    };
+    let schema = riffdb_proto::durable::readable_record_schema(LEGACY_INDEX_ENTRY)
+        .ok_or_else(DurableCodecError::invariant)?;
+    let bytes = riffdb_proto::envelope::encode(schema, &message.encode_to_vec())
+        .map_err(DurableCodecError::from_encode_envelope)?;
+    let charge =
+        crate::EncodedContentCharge::new(bytes.len()).ok_or_else(DurableCodecError::invariant)?;
+    Ok(CanonicalStoredEnvelopeV1 { bytes, charge })
+}
+
+#[cfg(test)]
+pub(super) fn encode_index_entry_v1(
+    value: &StoredIndexEntryV1,
+) -> Result<CanonicalStoredEnvelopeV1, DurableCodecError> {
+    encode_index_entry_v1_fixture_inner(value)
+}
+
+/// Encodes one legacy V1 index row for migration and compatibility fixtures.
+///
+/// This helper is absent unless the non-default `test-fixtures` feature is enabled. It must not
+/// be used by a production writer; the writable durable registry selects V2 exclusively.
+#[cfg(feature = "test-fixtures")]
+pub fn encode_index_entry_v1_fixture(
+    value: &StoredIndexEntryV1,
+) -> Result<CanonicalStoredEnvelopeV1, DurableCodecError> {
+    encode_index_entry_v1_fixture_inner(value)
 }
 
 /// Encodes one authoritative index-range epoch post-image.

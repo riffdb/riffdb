@@ -4,7 +4,7 @@ use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::Mutex;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
 use redb::{
     Database, Durability, MultimapTableHandle, ReadTransaction, ReadableDatabase, ReadableTable,
@@ -41,8 +41,76 @@ pub(crate) struct SharedRedb {
     path: PathBuf,
     mutation_gate: ExclusiveGate,
     write_fenced: AtomicBool,
+    durable_commit_epoch: AtomicU64,
     test_controller: Option<RedbTestController>,
     transient_indexes: Mutex<TransientIndexState>,
+}
+
+impl SharedRedb {
+    pub(crate) fn before_test_commit(
+        &self,
+        operation: RedbTestOperation,
+    ) -> Result<(), StorageError> {
+        if let Some(controller) = &self.test_controller {
+            controller.before_commit(operation)?;
+        }
+        Ok(())
+    }
+
+    pub(crate) fn after_test_commit(
+        &self,
+        operation: RedbTestOperation,
+    ) -> Result<(), StorageError> {
+        if let Some(controller) = &self.test_controller
+            && let Err(error) = controller.after_commit(operation)
+        {
+            self.fence_writes();
+            return Err(error);
+        }
+        Ok(())
+    }
+
+    pub(crate) fn observe_index_migration_page(&self) {
+        if let Some(controller) = &self.test_controller {
+            controller.observe_index_migration_page();
+        }
+    }
+
+    pub(crate) fn observe_index_migration_batch(&self, v1_rewrites: usize, v2_confirms: usize) {
+        if let Some(controller) = &self.test_controller {
+            controller.observe_index_migration_batch(v1_rewrites, v2_confirms);
+        }
+    }
+
+    pub(crate) fn fence_writes(&self) {
+        self.write_fenced.store(true, Ordering::Release);
+    }
+
+    pub(crate) fn durable_commit_epoch(&self) -> u64 {
+        self.durable_commit_epoch.load(Ordering::Acquire)
+    }
+
+    pub(crate) fn commit_durable(&self, transaction: WriteTransaction) -> Result<(), StorageError> {
+        if self.durable_commit_epoch.load(Ordering::Acquire) == u64::MAX {
+            self.fence_writes();
+            return Err(storage_error(StorageErrorKind::SequenceExhausted));
+        }
+        if let Err(error) = transaction.commit() {
+            self.fence_writes();
+            return Err(commit_error(error));
+        }
+        if self
+            .durable_commit_epoch
+            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |current| {
+                current.checked_add(1)
+            })
+            .is_err()
+        {
+            self.fence_writes();
+            return Err(storage_error(StorageErrorKind::SequenceExhausted));
+        }
+        Ok(())
+    }
 }
 
 /// A dormant handle to one redb-backed RiffDB database.
@@ -108,6 +176,7 @@ impl RedbStore {
                 path,
                 mutation_gate: ExclusiveGate::default(),
                 write_fenced: AtomicBool::new(false),
+                durable_commit_epoch: AtomicU64::new(0),
                 test_controller,
                 transient_indexes: Mutex::new(TransientIndexState::Dormant),
             }),
@@ -132,7 +201,7 @@ impl RedbStore {
     }
 
     pub(crate) fn fence_writes(&self) {
-        self.shared.write_fenced.store(true, Ordering::Release);
+        self.shared.fence_writes();
     }
 
     #[cfg(test)]
@@ -245,10 +314,9 @@ impl RedbWriteAccess {
             .transaction
             .take()
             .ok_or_else(|| storage_error(StorageErrorKind::InvariantViolation))?;
-        if let Err(error) = transaction.commit() {
-            self.shared.write_fenced.store(true, Ordering::Release);
+        if let Err(error) = self.shared.commit_durable(transaction) {
             self.invalidate_transient_indexes();
-            return Err(commit_error(error));
+            return Err(error);
         }
         if let Some(delta) = delta
             && let Ok(mut state) = self.shared.transient_indexes.lock()
@@ -403,10 +471,7 @@ impl DatabaseInitializationPort for RedbStore {
                 if let Some(controller) = &self.shared.test_controller {
                     controller.before_commit(RedbTestOperation::Initialization)?;
                 }
-                if let Err(error) = transaction.commit() {
-                    self.fence_writes();
-                    return Err(commit_error(error));
-                }
+                self.shared.commit_durable(transaction)?;
                 if let Some(controller) = &self.shared.test_controller
                     && let Err(error) = controller.after_commit(RedbTestOperation::Initialization)
                 {

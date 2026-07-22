@@ -8,15 +8,22 @@ use std::fmt;
 use std::path::Path;
 
 use riffdb_catalog::{
-    CatalogError, ValidatedCatalogHistory, ValidatedContractBundle, validate_catalog_history,
+    CatalogError, CatalogHistoryOutcome, CatalogIndexMigrationContext,
+    CatalogIndexMigrationDriveError, CatalogIndexMigrationDriver, ValidatedCatalogHistory,
+    ValidatedContractBundle, validate_catalog_history,
 };
-use riffdb_commit::{DatabaseInitializationDecision, DatabaseInitializationExecutor};
+use riffdb_commit::{
+    DatabaseInitializationDecision, DatabaseInitializationExecutor, InitializedDatabase,
+};
 use riffdb_storage_api::{
     AdministrationSequenceAllocator, ApplicationSequenceAllocator, EvidencePageLimit,
-    RetainedMetadataV1, StartupValidationInputs, StorageError, StructuralEvidenceCursor,
-    StructuralEvidenceEnd, StructuralEvidencePage, StructuralEvidenceSession,
+    RetainedMetadataV1, StartupIndexMigrationPort, StartupValidationInputs, StorageError,
+    StructuralEvidenceCursor, StructuralEvidenceEnd, StructuralEvidencePage,
+    StructuralEvidenceSession, StructuralOpenOutcome, StructurallyOpened,
 };
-use riffdb_storage_redb::{RedbOperationalPorts, RedbStore};
+use riffdb_storage_redb::{
+    RedbDormantPorts, RedbOperationalPorts, RedbStartupIndexMigrationPort, RedbStore,
+};
 use riffdb_types::{ContractBundleHash, ContractLineage, ContractVersion, DatabaseId};
 
 use crate::identifiers::{DatabaseIdCandidateSource, ServerIdentifierSourceError};
@@ -122,9 +129,34 @@ pub(crate) enum StartupIntegrityFailure {
     StructuralContinuationMismatch,
     StructuralFinding,
     CatalogSessionMismatch,
+    StartupOutcomeMismatch,
+    MigrationRepeated,
     RetainedIdentityMismatch,
     ActiveCatalogMismatch,
     InvalidBootstrapLifecycle,
+}
+
+enum RedbStartupPass {
+    Ready {
+        catalog_history: ValidatedCatalogHistory,
+        structurally_opened: StructurallyOpened<RedbDormantPorts>,
+    },
+    MigrationRequired {
+        context: CatalogIndexMigrationContext,
+        port: RedbStartupIndexMigrationPort,
+    },
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum CatalogStartupOutcomeKind {
+    Ready,
+    MigrationRequired,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum StorageStartupOutcomeKind {
+    Clean,
+    MigrationRequired,
 }
 
 /// Private startup failure retaining only already-safe lower classifications.
@@ -197,6 +229,38 @@ where
             permit.initialize(candidate()?)?.into_initialized_database()
         }
     };
+    match run_redb_startup_pass(initialized, inputs.clone())? {
+        RedbStartupPass::Ready {
+            catalog_history,
+            structurally_opened,
+        } => complete_ready_redb_startup(catalog_history, structurally_opened),
+        RedbStartupPass::MigrationRequired { context, port } => {
+            let store = drive_index_migration(context, port)?;
+            let reopened = match DatabaseInitializationExecutor::new(store).probe()? {
+                DatabaseInitializationDecision::Existing(initialized) => initialized,
+                DatabaseInitializationDecision::NeedsInitialization(_) => {
+                    return Err(RedbStartupError::Integrity(
+                        StartupIntegrityFailure::InitializationIdentityMismatch,
+                    ));
+                }
+            };
+            match run_redb_startup_pass(reopened, inputs)? {
+                RedbStartupPass::Ready {
+                    catalog_history,
+                    structurally_opened,
+                } => complete_ready_redb_startup(catalog_history, structurally_opened),
+                RedbStartupPass::MigrationRequired { .. } => Err(RedbStartupError::Integrity(
+                    StartupIntegrityFailure::MigrationRepeated,
+                )),
+            }
+        }
+    }
+}
+
+fn run_redb_startup_pass(
+    initialized: InitializedDatabase<RedbStore>,
+    inputs: StartupValidationInputs,
+) -> Result<RedbStartupPass, RedbStartupError> {
     let initialized_database_id = initialized.database_id();
     let mut session = initialized.begin_structural_evidence(inputs)?;
     if session.database_id() != initialized_database_id {
@@ -207,14 +271,75 @@ where
 
     let structural_end = drive_structural_evidence(&mut session)?;
     let validation = validate_catalog_history(&mut session)?;
-    let (catalog_history, historical_end) = validation.into_parts();
-    if !catalog_history.matches(session.database_id(), session.open_session_id()) {
-        return Err(RedbStartupError::Integrity(
-            StartupIntegrityFailure::CatalogSessionMismatch,
-        ));
+    let (catalog_outcome, historical_end) = validation.into_parts();
+    let storage_outcome = session.finish(structural_end, historical_end)?;
+    validate_startup_outcome_kinds(
+        match &catalog_outcome {
+            CatalogHistoryOutcome::Ready(_) => CatalogStartupOutcomeKind::Ready,
+            CatalogHistoryOutcome::MigrationRequired(_) => {
+                CatalogStartupOutcomeKind::MigrationRequired
+            }
+        },
+        match &storage_outcome {
+            StructuralOpenOutcome::Clean(_) => StorageStartupOutcomeKind::Clean,
+            StructuralOpenOutcome::MigrationRequired(_) => {
+                StorageStartupOutcomeKind::MigrationRequired
+            }
+        },
+    )?;
+    match (catalog_outcome, storage_outcome) {
+        (CatalogHistoryOutcome::Ready(catalog_history), StructuralOpenOutcome::Clean(opened)) => {
+            if !catalog_history.matches(initialized_database_id, opened.open_session_id()) {
+                return Err(RedbStartupError::Integrity(
+                    StartupIntegrityFailure::CatalogSessionMismatch,
+                ));
+            }
+            Ok(RedbStartupPass::Ready {
+                catalog_history,
+                structurally_opened: opened,
+            })
+        }
+        (
+            CatalogHistoryOutcome::MigrationRequired(context),
+            StructuralOpenOutcome::MigrationRequired(port),
+        ) => {
+            if context.database_id() != port.database_id()
+                || context.open_session_id() != port.open_session_id()
+                || context.database_id() != initialized_database_id
+            {
+                return Err(RedbStartupError::Integrity(
+                    StartupIntegrityFailure::CatalogSessionMismatch,
+                ));
+            }
+            Ok(RedbStartupPass::MigrationRequired { context, port })
+        }
+        _ => Err(RedbStartupError::Integrity(
+            StartupIntegrityFailure::StartupOutcomeMismatch,
+        )),
     }
+}
 
-    let structurally_opened = session.finish(structural_end, historical_end)?;
+fn validate_startup_outcome_kinds(
+    catalog: CatalogStartupOutcomeKind,
+    storage: StorageStartupOutcomeKind,
+) -> Result<(), RedbStartupError> {
+    match (catalog, storage) {
+        (CatalogStartupOutcomeKind::Ready, StorageStartupOutcomeKind::Clean)
+        | (
+            CatalogStartupOutcomeKind::MigrationRequired,
+            StorageStartupOutcomeKind::MigrationRequired,
+        ) => Ok(()),
+        (CatalogStartupOutcomeKind::Ready, StorageStartupOutcomeKind::MigrationRequired)
+        | (CatalogStartupOutcomeKind::MigrationRequired, StorageStartupOutcomeKind::Clean) => Err(
+            RedbStartupError::Integrity(StartupIntegrityFailure::StartupOutcomeMismatch),
+        ),
+    }
+}
+
+fn complete_ready_redb_startup(
+    catalog_history: ValidatedCatalogHistory,
+    structurally_opened: StructurallyOpened<RedbDormantPorts>,
+) -> Result<CheckedRedbStartup, RedbStartupError> {
     let (database_id, open_session_id, retained_metadata, dormant_ports) =
         structurally_opened.into_parts();
     if !catalog_history.matches(database_id, open_session_id) {
@@ -238,6 +363,23 @@ where
         allocator_capacity,
         operational_ports,
     })
+}
+
+fn drive_index_migration(
+    context: CatalogIndexMigrationContext,
+    port: RedbStartupIndexMigrationPort,
+) -> Result<RedbStore, RedbStartupError> {
+    CatalogIndexMigrationDriver::new(context, port)
+        .map_err(map_index_migration_drive_error)?
+        .run()
+        .map_err(map_index_migration_drive_error)
+}
+
+fn map_index_migration_drive_error(error: CatalogIndexMigrationDriveError) -> RedbStartupError {
+    match error {
+        CatalogIndexMigrationDriveError::Catalog(error) => RedbStartupError::Catalog(error),
+        CatalogIndexMigrationDriveError::Storage(error) => RedbStartupError::Storage(error),
+    }
 }
 
 fn drive_structural_evidence<S>(session: &mut S) -> Result<S::StructuralEnd, RedbStartupError>
@@ -364,7 +506,6 @@ mod tests {
         HistoricalEvidencePage, OpenSessionId, ReadableCapabilityDigestInventory,
         ReadableDigestKey, ReadableIdempotencyDigestInventory, StorageErrorKind,
         StorageFormatVersion, StructuralFinding, StructuralFindingCode, StructuralFindingScope,
-        StructurallyOpened,
     };
     use riffdb_types::{
         AdministrationSequence, CapabilityId, CommitSequence, DigestKeyId, Timestamp,
@@ -501,6 +642,21 @@ mod tests {
         }
     }
 
+    struct FakeMigrationPort {
+        database_id: DatabaseId,
+        open_session_id: OpenSessionId,
+    }
+
+    impl StartupIndexMigrationPort for FakeMigrationPort {
+        fn database_id(&self) -> DatabaseId {
+            self.database_id
+        }
+
+        fn open_session_id(&self) -> OpenSessionId {
+            self.open_session_id
+        }
+    }
+
     struct FindingSession {
         database_id: DatabaseId,
         open_session_id: OpenSessionId,
@@ -516,6 +672,7 @@ mod tests {
         type DormantPorts = FakeDormantPorts;
         type StructuralEnd = FakeStructuralEnd;
         type HistoricalEnd = FakeHistoricalEnd;
+        type MigrationPort = FakeMigrationPort;
 
         fn database_id(&self) -> DatabaseId {
             self.database_id
@@ -569,7 +726,8 @@ mod tests {
             self,
             _structural_end: Self::StructuralEnd,
             _historical_end: Self::HistoricalEnd,
-        ) -> Result<StructurallyOpened<Self::DormantPorts>, StorageError> {
+        ) -> Result<StructuralOpenOutcome<Self::DormantPorts, Self::MigrationPort>, StorageError>
+        {
             Err(StorageError::new(StorageErrorKind::Unavailable, None))
         }
     }
@@ -603,6 +761,41 @@ mod tests {
             Err(RedbStartupError::Integrity(
                 StartupIntegrityFailure::StructuralContinuationMismatch
             ))
+        );
+    }
+
+    #[test]
+    fn crossed_catalog_and_storage_startup_outcomes_fail_closed() {
+        let mismatch = Err(RedbStartupError::Integrity(
+            StartupIntegrityFailure::StartupOutcomeMismatch,
+        ));
+        assert_eq!(
+            validate_startup_outcome_kinds(
+                CatalogStartupOutcomeKind::Ready,
+                StorageStartupOutcomeKind::MigrationRequired,
+            ),
+            mismatch
+        );
+        assert_eq!(
+            validate_startup_outcome_kinds(
+                CatalogStartupOutcomeKind::MigrationRequired,
+                StorageStartupOutcomeKind::Clean,
+            ),
+            mismatch
+        );
+        assert_eq!(
+            validate_startup_outcome_kinds(
+                CatalogStartupOutcomeKind::Ready,
+                StorageStartupOutcomeKind::Clean,
+            ),
+            Ok(())
+        );
+        assert_eq!(
+            validate_startup_outcome_kinds(
+                CatalogStartupOutcomeKind::MigrationRequired,
+                StorageStartupOutcomeKind::MigrationRequired,
+            ),
+            Ok(())
         );
     }
 

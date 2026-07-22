@@ -1282,6 +1282,7 @@ version = "0.1.0"
 dependencies = [
  "riffdb-contract-compiler",
  "riffdb-contract-ir",
+ "riffdb-invariant",
  "riffdb-storage-api",
  "riffdb-types",
 ]
@@ -1496,6 +1497,8 @@ dependencies = [
 name = "riffdb-storage-memory"
 version = "0.1.0"
 dependencies = [
+ "riffdb-catalog",
+ "riffdb-contract-compiler",
  "riffdb-storage-api",
  "riffdb-testkit",
  "riffdb-types",
@@ -1506,6 +1509,8 @@ name = "riffdb-storage-redb"
 version = "0.1.0"
 dependencies = [
  "redb",
+ "riffdb-catalog",
+ "riffdb-contract-compiler",
  "riffdb-storage-api",
  "riffdb-types",
  "sha2",

@@ -147,14 +147,6 @@ impl StoredIndexEntryV1 {
     pub const fn covered_values(&self) -> &CanonicalRecord {
         &self.covered_values
     }
-
-    fn semantic_bytes(&self) -> Result<usize, StorageValueError> {
-        let covered_bytes = framed_bytes(canonical_record_bytes(&self.covered_values)?)?;
-        framed_bytes(self.key.as_bytes().len())?
-            .checked_add(self.schema_binding.semantic_bytes()?)
-            .and_then(|value| value.checked_add(covered_bytes))
-            .ok_or(StorageValueError::SizeOverflow)
-    }
 }
 
 /// One complete current index-entry post-image with exact partition identity.
@@ -229,7 +221,7 @@ pub enum IndexEntryMutationV1 {
     /// Removes the exact complete index key and its entire current schema binding.
     Delete(IndexEntryKey),
     /// Installs or replaces the complete entry post-image.
-    Put(StoredIndexEntryV1),
+    Put(StoredIndexEntryV2),
 }
 
 impl IndexEntryMutationV1 {
@@ -1318,28 +1310,14 @@ pub struct CommandWriteSetChargeV1 {
 }
 
 impl CommandWriteSetChargeV1 {
-    /// Computes the exact future semantic copies from the complete validated shape.
-    ///
-    /// The affected observations and advances must have exact one-to-one coverage.
-    /// No application sequence or sequence-bearing record is constructed here.
-    fn from_validated_shape(
-        intent: &CommitIntent,
-        affected_targets: &AffectedIndexEpochTargets,
-        affected_current: &AffectedEpochCurrentState,
-        index_entries: &[IndexEntryMutationV1],
-        index_epochs: &[IndexEpochAdvanceV1],
+    const fn from_validated_shape(
+        shape: &ValidatedCommandWriteSetShapeV1,
         encoded_upper_bound: EncodedWriteSetUpperBound,
-    ) -> Result<Self, StorageValueError> {
-        validate_index_entries(index_entries)?;
-        validate_index_epochs(index_epochs)?;
-        validate_affected_epoch_coverage(affected_targets, affected_current, index_epochs)?;
-        validate_post_image_bindings(intent.evaluated().plan(), index_entries, index_epochs)?;
-        let semantic_classes =
-            projected_atomic_semantic_breakdown(intent, index_entries, index_epochs)?;
-        Ok(Self {
-            semantic_classes,
+    ) -> Self {
+        Self {
+            semantic_classes: shape.semantic_classes,
             encoded_upper_bound,
-        })
+        }
     }
 
     /// Returns the exact future semantic record-class breakdown.
@@ -1360,6 +1338,100 @@ impl CommandWriteSetChargeV1 {
     #[must_use]
     pub const fn encoded_upper_bound(self) -> EncodedWriteSetUpperBound {
         self.encoded_upper_bound
+    }
+}
+
+/// Complete sequence-free command write shape after semantic validation.
+///
+/// Construction checks target cardinality, index ordering and bindings,
+/// affected-epoch coverage, every projected semantic record charge, checked
+/// aggregate arithmetic, and the accepted semantic staged-write ceiling. No
+/// codec sizing or application sequence is performed here.
+#[derive(Eq, PartialEq)]
+pub struct ValidatedCommandWriteSetShapeV1 {
+    intent: CommitIntent,
+    affected_targets: AffectedIndexEpochTargets,
+    affected_current: AffectedEpochCurrentState,
+    index_entries: Vec<IndexEntryMutationV1>,
+    index_epochs: Vec<IndexEpochAdvanceV1>,
+    semantic_classes: CommandWriteClassBreakdownV1,
+}
+
+impl ValidatedCommandWriteSetShapeV1 {
+    /// Validates and freezes the complete sequence-free semantic write shape.
+    pub fn new(
+        intent: &CommitIntent,
+        affected_targets: AffectedIndexEpochTargets,
+        affected_current: AffectedEpochCurrentState,
+        index_entries: Vec<IndexEntryMutationV1>,
+        index_epochs: Vec<IndexEpochAdvanceV1>,
+    ) -> Result<Self, StorageValueError> {
+        let validation = intent.evaluated().validation_request();
+        let validation_target_count = validation
+            .binding_targets()
+            .len()
+            .checked_add(validation.root_validation_targets().len())
+            .and_then(|value| value.checked_add(validation.range_targets().len()))
+            .and_then(|value| value.checked_add(affected_targets.as_slice().len()))
+            .ok_or(StorageValueError::SizeOverflow)?;
+        if validation_target_count > MAX_VALIDATION_TARGETS {
+            return Err(StorageValueError::LimitExceeded);
+        }
+        validate_index_entries(&index_entries)?;
+        validate_index_epochs(&index_epochs)?;
+        validate_affected_epoch_coverage(&affected_targets, &affected_current, &index_epochs)?;
+        validate_post_image_bindings(
+            intent.evaluated().plan(),
+            intent.pending().partition_key(),
+            &index_entries,
+            &index_epochs,
+        )?;
+        let semantic_classes =
+            projected_atomic_semantic_breakdown(intent, &index_entries, &index_epochs)?;
+        Ok(Self {
+            intent: intent.clone(),
+            affected_targets,
+            affected_current,
+            index_entries,
+            index_epochs,
+            semantic_classes,
+        })
+    }
+
+    /// Borrows the exact retained candidate intent.
+    #[must_use]
+    pub const fn intent(&self) -> &CommitIntent {
+        &self.intent
+    }
+
+    /// Borrows the canonical affected prefix set.
+    #[must_use]
+    pub const fn affected_targets(&self) -> &AffectedIndexEpochTargets {
+        &self.affected_targets
+    }
+
+    /// Borrows exact transaction-current affected epoch observations.
+    #[must_use]
+    pub const fn affected_current(&self) -> &AffectedEpochCurrentState {
+        &self.affected_current
+    }
+
+    /// Borrows exact canonical index mutations.
+    #[must_use]
+    pub fn index_entries(&self) -> &[IndexEntryMutationV1] {
+        &self.index_entries
+    }
+
+    /// Borrows exact canonical affected epoch advances.
+    #[must_use]
+    pub fn index_epochs(&self) -> &[IndexEpochAdvanceV1] {
+        &self.index_epochs
+    }
+
+    /// Returns the checked semantic record-class breakdown.
+    #[must_use]
+    pub const fn semantic_classes(&self) -> CommandWriteClassBreakdownV1 {
+        self.semantic_classes
     }
 }
 
@@ -1387,33 +1459,39 @@ impl CommandWriteSetPlanV1 {
         index_epochs: Vec<IndexEpochAdvanceV1>,
         encoded_upper_bound: EncodedWriteSetUpperBound,
     ) -> Result<Self, StorageValueError> {
-        let validation = intent.evaluated().validation_request();
-        let validation_target_count = validation
-            .binding_targets()
-            .len()
-            .checked_add(validation.root_validation_targets().len())
-            .and_then(|value| value.checked_add(validation.range_targets().len()))
-            .and_then(|value| value.checked_add(affected_targets.as_slice().len()))
-            .ok_or(StorageValueError::SizeOverflow)?;
-        if validation_target_count > MAX_VALIDATION_TARGETS {
-            return Err(StorageValueError::LimitExceeded);
-        }
-        let charge = CommandWriteSetChargeV1::from_validated_shape(
+        let shape = ValidatedCommandWriteSetShapeV1::new(
             intent,
-            &affected_targets,
-            &affected_current,
-            &index_entries,
-            &index_epochs,
-            encoded_upper_bound,
+            affected_targets,
+            affected_current,
+            index_entries,
+            index_epochs,
         )?;
-        Ok(Self {
-            intent: intent.clone(),
+        Ok(Self::from_validated_shape(shape, encoded_upper_bound))
+    }
+
+    /// Binds a codec-proved fitting upper bound to one validated semantic shape.
+    #[must_use]
+    pub fn from_validated_shape(
+        shape: ValidatedCommandWriteSetShapeV1,
+        encoded_upper_bound: EncodedWriteSetUpperBound,
+    ) -> Self {
+        let charge = CommandWriteSetChargeV1::from_validated_shape(&shape, encoded_upper_bound);
+        let ValidatedCommandWriteSetShapeV1 {
+            intent,
+            affected_targets,
+            affected_current,
+            index_entries,
+            index_epochs,
+            semantic_classes: _,
+        } = shape;
+        Self {
+            intent,
             affected_targets,
             affected_current,
             index_entries,
             index_epochs,
             charge,
-        })
+        }
     }
 
     /// Borrows the exact retained candidate intent used for every derivation.
@@ -1560,7 +1638,12 @@ impl AtomicCommandRecordSet {
         validate_index_entries(index_entries)?;
         validate_index_epochs(index_epochs)?;
         validate_affected_target_coverage(write_plan.affected_targets(), index_epochs)?;
-        validate_post_image_bindings(commit.plan(), index_entries, index_epochs)?;
+        validate_post_image_bindings(
+            commit.plan(),
+            expected_pending.partition_key(),
+            index_entries,
+            index_epochs,
+        )?;
         validate_events(sequence, &events)?;
         validate_intent_event_derivation(evaluated, sequence, &events)?;
         let expected_dependencies =
@@ -1815,12 +1898,16 @@ fn validate_index_epochs(epochs: &[IndexEpochAdvanceV1]) -> Result<(), StorageVa
 
 fn validate_post_image_bindings(
     plan: &ExecutablePlanRef,
+    command_partition: &PartitionKey,
     entries: &[IndexEntryMutationV1],
     epochs: &[IndexEpochAdvanceV1],
 ) -> Result<(), StorageValueError> {
     if entries.iter().any(|entry| match entry {
         IndexEntryMutationV1::Delete(_) => false,
-        IndexEntryMutationV1::Put(record) => !record.schema_binding().matches_plan(plan),
+        IndexEntryMutationV1::Put(record) => {
+            !record.schema_binding().matches_plan(plan)
+                || record.partition_key() != command_partition
+        }
     }) || epochs
         .iter()
         .any(|epoch| !epoch.post_image().schema_binding().matches_plan(plan))
@@ -2280,6 +2367,7 @@ redacted_debug!(
     AffectedEntityV1,
     StoredProvenanceRecordV1,
     StoredCommitRecordV1,
+    ValidatedCommandWriteSetShapeV1,
     CommandWriteSetPlanV1,
     AtomicCommandRecordSet,
 );
@@ -2515,16 +2603,15 @@ mod tests {
             .collect();
         let affected_targets = AffectedIndexEpochTargets::new(Vec::new())?;
         let affected_current = AffectedEpochCurrentState::new(&affected_targets, Vec::new())?;
-        let semantic_classes = projected_atomic_semantic_breakdown(&intent, &[], &[])?;
-        let encoded_upper_bound = EncodedWriteSetUpperBound::new(semantic_classes)?;
-        let write_plan = CommandWriteSetPlanV1::new(
+        let shape = ValidatedCommandWriteSetShapeV1::new(
             &intent,
             affected_targets,
             affected_current,
             Vec::new(),
             Vec::new(),
-            encoded_upper_bound,
         )?;
+        let encoded_upper_bound = EncodedWriteSetUpperBound::new(shape.semantic_classes())?;
+        let write_plan = CommandWriteSetPlanV1::from_validated_shape(shape, encoded_upper_bound);
         AtomicCommandRecordSet::new(
             AssignedCommandSequence::from_assigned(sequence),
             mutations,

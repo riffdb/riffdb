@@ -2,22 +2,30 @@
 
 use std::collections::BTreeSet;
 use std::fmt;
+use std::ops::Bound::{Excluded, Unbounded};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use redb::{
-    MultimapTableHandle, ReadTransaction, ReadableDatabase, ReadableTable, ReadableTableMetadata,
-    TableDefinition, TableHandle,
+    Durability, MultimapTableHandle, ReadTransaction, ReadableDatabase, ReadableTable,
+    ReadableTableMetadata, TableDefinition, TableHandle,
+};
+use riffdb_catalog::{
+    CatalogIndexMigrationApplied, CatalogIndexMigrationBackend, CatalogIndexMigrationBundleRequest,
+    CatalogIndexMigrationBundleResponse, CatalogIndexMigrationCompletion,
+    CatalogIndexMigrationInstruction, CatalogIndexMigrationPendingBatch, CatalogIndexMigrationScan,
+    CatalogIndexMigrationScanRequest,
 };
 use riffdb_storage_api::{
     ApplicationSequenceAllocator, CapabilityLifecycleV1, DormantPortBundle, EvidencePageLimit,
     HistoricalActiveCatalogEvidence, HistoricalBundleBytes, HistoricalBundleEvidence,
     HistoricalCapabilityPartitionEvidenceV1, HistoricalEvidenceCursor, HistoricalEvidenceEnd,
     HistoricalEvidencePage, HistoricalPersistedKeyEvidenceV1, HistoricalSemanticEvidence,
-    OpenSessionId, ReadableDigestKey, RetainedMetadataV1, StartupValidationInputs, StorageError,
-    StorageErrorKind, StorageValueError, StructuralEvidenceCursor, StructuralEvidenceEnd,
-    StructuralEvidenceOpen, StructuralEvidencePage, StructuralEvidenceSession, StructuralFinding,
-    StructuralFindingCode, StructuralFindingScope, StructurallyOpened,
+    IndexMigrationCursor, OpenSessionId, ReadableDigestKey, RetainedMetadataV1,
+    StartupIndexMigrationPort, StartupValidationInputs, StorageError, StorageErrorKind,
+    StorageValueError, StructuralEvidenceCursor, StructuralEvidenceEnd, StructuralEvidenceOpen,
+    StructuralEvidencePage, StructuralEvidenceSession, StructuralFinding, StructuralFindingCode,
+    StructuralFindingScope, StructuralOpenOutcome, StructurallyOpened,
 };
 use riffdb_types::{
     CommitSequence, ContractBundleHash, ContractLineage, ContractVersion, DatabaseId,
@@ -27,6 +35,7 @@ use riffdb_types::{
 use crate::codec::{self, IdempotencyRecordV1};
 use crate::error::{precommit_storage_error, storage_error, table_error, transaction_error};
 use crate::gate::ExclusiveLease;
+use crate::hooks::RedbTestOperation;
 use crate::keys;
 use crate::layout::{
     AUDIT, CAPABILITIES, CAPABILITY_TOKENS, CATALOG_ACTIVE, CATALOG_ACTIVE_KEY, COMMITS,
@@ -57,11 +66,23 @@ pub struct RedbHistoricalEvidenceEnd {
     cursor: HistoricalEvidenceCursor,
 }
 
+/// Exclusive redb migration capability released only by a V1-observing startup pass.
+pub struct RedbStartupIndexMigrationPort {
+    shared: Arc<SharedRedb>,
+    lease: ExclusiveLease,
+    database_id: DatabaseId,
+    open_session_id: OpenSessionId,
+    next_cursor: IndexMigrationCursor,
+    after: Option<riffdb_types::IndexEntryKey>,
+    #[cfg(test)]
+    substitute_before_apply: Option<riffdb_storage_api::StoredIndexEntryV2>,
+}
+
 /// One exclusive startup session bound to a single immutable redb snapshot.
 pub struct RedbStructuralEvidenceSession {
     shared: Arc<SharedRedb>,
-    transaction: Option<ReadTransaction>,
     lease: Option<ExclusiveLease>,
+    durable_commit_epoch: u64,
     database_id: DatabaseId,
     open_session_id: OpenSessionId,
     retained_metadata: RetainedMetadataV1,
@@ -74,6 +95,7 @@ pub struct RedbStructuralEvidenceSession {
     structural_finished: bool,
     historical_finished: bool,
     authoritative_finding_seen: bool,
+    saw_v1_index: bool,
 }
 
 impl fmt::Debug for RedbStructuralEvidenceSession {
@@ -103,6 +125,256 @@ impl HistoricalEvidenceEnd for RedbHistoricalEvidenceEnd {
     }
 }
 
+impl StartupIndexMigrationPort for RedbStartupIndexMigrationPort {
+    fn database_id(&self) -> DatabaseId {
+        self.database_id
+    }
+
+    fn open_session_id(&self) -> OpenSessionId {
+        self.open_session_id
+    }
+}
+
+impl CatalogIndexMigrationBackend for RedbStartupIndexMigrationPort {
+    type Output = RedbStore;
+
+    fn read_index_migration_page(
+        self,
+        request: CatalogIndexMigrationScanRequest<Self>,
+    ) -> Result<CatalogIndexMigrationScan<Self>, StorageError> {
+        let cursor = request.cursor();
+        if cursor != self.next_cursor {
+            return Err(invariant());
+        }
+
+        let transaction = self
+            .shared
+            .database
+            .begin_read()
+            .map_err(transaction_error)?;
+        let table = transaction
+            .open_table(SECONDARY_INDEXES)
+            .map_err(table_error)?;
+        let lower = self
+            .after
+            .as_ref()
+            .map_or(Unbounded, |key| Excluded(key.as_bytes()));
+        let mut scan = table
+            .range::<&[u8]>((lower, Unbounded))
+            .map_err(precommit_storage_error)?;
+        let mut rows = Vec::new();
+        let mut evidence_bytes = 0usize;
+        let mut instruction_bytes = 0usize;
+        let mut exhausted = true;
+
+        for entry in &mut scan {
+            let (physical_key, envelope) = entry.map_err(precommit_storage_error)?;
+            let physical =
+                keys::decode_index_entry_key(physical_key.value()).map_err(|_| corrupt())?;
+            let evidence = codec::decode_index_migration_row(&physical, envelope.value())?;
+            let next_evidence = evidence_bytes
+                .checked_add(evidence.evidence_page_charge())
+                .ok_or_else(limit_exceeded)?;
+            let next_instruction = instruction_bytes
+                .checked_add(evidence.instruction_page_charge())
+                .ok_or_else(limit_exceeded)?;
+            if rows.len() == riffdb_storage_api::MAX_INDEX_MIGRATION_PAGE_ENTRIES
+                || next_evidence > riffdb_storage_api::MAX_INDEX_MIGRATION_PAGE_BYTES
+                || next_instruction > riffdb_storage_api::MAX_INDEX_MIGRATION_PAGE_BYTES
+            {
+                if rows.is_empty() {
+                    return Err(limit_exceeded());
+                }
+                exhausted = false;
+                break;
+            }
+            evidence_bytes = next_evidence;
+            instruction_bytes = next_instruction;
+            rows.push(evidence);
+        }
+        drop(scan);
+        drop(table);
+        drop(transaction);
+
+        if rows.is_empty() {
+            if !exhausted {
+                return Err(invariant());
+            }
+            return request.exact_end(self).map_err(value_error_as_storage);
+        }
+
+        let count = u64::try_from(rows.len()).map_err(|_| limit_exceeded())?;
+        let next = cursor.advanced(count).map_err(value_error_as_storage)?;
+        let after = rows.last().ok_or_else(invariant)?.physical_key().clone();
+        let mut port = self;
+        port.next_cursor = next;
+        port.after = Some(after);
+        port.shared.observe_index_migration_page();
+        request
+            .page(port, rows, next)
+            .map_err(value_error_as_storage)
+    }
+
+    fn read_historical_bundle(
+        self,
+        request: CatalogIndexMigrationBundleRequest<Self>,
+    ) -> Result<CatalogIndexMigrationBundleResponse<Self>, StorageError> {
+        let binding = request.evidence().row().schema_binding();
+        let lineage = binding.lineage().clone();
+        let version = binding.contract_version();
+        let bundle_hash = binding.bundle_hash();
+        let transaction = self
+            .shared
+            .database
+            .begin_read()
+            .map_err(transaction_error)?;
+        let bundle = read_historical_bundle(&transaction, &lineage, version, bundle_hash)?
+            .ok_or_else(corrupt)?;
+        drop(transaction);
+        request
+            .respond(self, bundle)
+            .map_err(value_error_as_storage)
+    }
+
+    fn apply_index_migration_batch(
+        self,
+        pending: CatalogIndexMigrationPendingBatch<Self>,
+    ) -> Result<CatalogIndexMigrationApplied<Self>, StorageError> {
+        let batch = pending.batch();
+        if self.next_cursor != batch.next()
+            || batch.next().database_id() != self.database_id
+            || batch.next().open_session_id() != self.open_session_id
+        {
+            return Err(invariant());
+        }
+        #[cfg(test)]
+        if let Some(replacement) = &self.substitute_before_apply {
+            apply_index_migration_substitution_fixture(&self.shared, replacement)?;
+        }
+        let (v1_rewrites, v2_confirms) =
+            batch
+                .instructions()
+                .iter()
+                .fold(
+                    (0usize, 0usize),
+                    |(v1, v2), instruction| match instruction {
+                        CatalogIndexMigrationInstruction::V1Rewrite(_) => (v1 + 1, v2),
+                        CatalogIndexMigrationInstruction::V2Confirm(_) => (v1, v2 + 1),
+                    },
+                );
+        let mut transaction = self
+            .shared
+            .database
+            .begin_write()
+            .map_err(transaction_error)?;
+        transaction.set_two_phase_commit(true);
+        transaction
+            .set_durability(Durability::Immediate)
+            .map_err(|_| invariant())?;
+        {
+            let mut table = transaction
+                .open_table(SECONDARY_INDEXES)
+                .map_err(table_error)?;
+            for instruction in batch.instructions() {
+                apply_index_migration_instruction(&mut table, instruction)?;
+            }
+        }
+        self.shared
+            .before_test_commit(RedbTestOperation::IndexMigrationBatch)?;
+        self.shared.commit_durable(transaction)?;
+        self.shared
+            .after_test_commit(RedbTestOperation::IndexMigrationBatch)?;
+        self.shared
+            .observe_index_migration_batch(v1_rewrites, v2_confirms);
+        pending.applied(self).map_err(value_error_as_storage)
+    }
+
+    fn finish_index_migration(
+        self,
+        completion: CatalogIndexMigrationCompletion<Self>,
+    ) -> Result<RedbStore, StorageError> {
+        if completion.final_cursor() != self.next_cursor {
+            return Err(invariant());
+        }
+        let RedbStartupIndexMigrationPort {
+            shared,
+            lease,
+            database_id: _,
+            open_session_id: _,
+            next_cursor: _,
+            after: _,
+            #[cfg(test)]
+                substitute_before_apply: _,
+        } = self;
+        drop(lease);
+        Ok(RedbStore { shared })
+    }
+}
+
+#[cfg(test)]
+fn apply_index_migration_substitution_fixture(
+    shared: &SharedRedb,
+    replacement: &riffdb_storage_api::StoredIndexEntryV2,
+) -> Result<(), StorageError> {
+    let encoded = codec::encode_index_entry_v2(replacement)?;
+    let mut transaction = shared.database.begin_write().map_err(transaction_error)?;
+    transaction.set_two_phase_commit(true);
+    transaction
+        .set_durability(Durability::Immediate)
+        .map_err(|_| invariant())?;
+    {
+        let mut table = transaction
+            .open_table(SECONDARY_INDEXES)
+            .map_err(table_error)?;
+        table
+            .insert(replacement.key().as_bytes(), encoded.as_bytes())
+            .map_err(precommit_storage_error)?;
+    }
+    shared.commit_durable(transaction)
+}
+
+fn apply_index_migration_instruction(
+    table: &mut redb::Table<'_, &'static [u8], &'static [u8]>,
+    instruction: &CatalogIndexMigrationInstruction,
+) -> Result<(), StorageError> {
+    let expected = instruction.expected();
+    let key = expected.physical_key().as_bytes();
+    let current = table
+        .get(key)
+        .map_err(precommit_storage_error)?
+        .ok_or_else(corrupt)?;
+    let current_bytes = current.value();
+    match instruction {
+        CatalogIndexMigrationInstruction::V1Rewrite(rewrite) => {
+            if !rewrite.expected().row().is_v1() {
+                return Err(invariant());
+            }
+            let replacement = codec::encode_index_entry_v2(rewrite.replacement())?;
+            if replacement.encoded_content_charge().get()
+                > expected.conservative_v2_envelope_charge().get()
+            {
+                return Err(invariant());
+            }
+            if current_bytes == rewrite.expected().canonical_envelope() {
+                drop(current);
+                table
+                    .insert(key, replacement.as_bytes())
+                    .map_err(precommit_storage_error)?;
+            } else if current_bytes != replacement.as_bytes() {
+                return Err(corrupt());
+            }
+        }
+        CatalogIndexMigrationInstruction::V2Confirm(confirm) => {
+            if confirm.expected().row().is_v1()
+                || current_bytes != confirm.expected().canonical_envelope()
+            {
+                return Err(corrupt());
+            }
+        }
+    }
+    Ok(())
+}
+
 impl StructuralEvidenceOpen for RedbStore {
     type Session = RedbStructuralEvidenceSession;
 
@@ -111,18 +383,23 @@ impl StructuralEvidenceOpen for RedbStore {
         inputs: StartupValidationInputs,
     ) -> Result<Self::Session, StorageError> {
         let lease = self.acquire_mutation_lease()?;
+        let durable_commit_epoch = self.shared.durable_commit_epoch();
         let transaction = self
             .shared
             .database
             .begin_read()
             .map_err(transaction_error)?;
         let snapshot = collect_startup_snapshot(&transaction)?;
+        drop(transaction);
+        if self.shared.durable_commit_epoch() != durable_commit_epoch {
+            return Err(corrupt());
+        }
         let database_id = snapshot.retained_metadata.database_id();
         let open_session_id = allocate_open_session()?;
         Ok(Self::Session {
             shared: Arc::clone(&self.shared),
-            transaction: Some(transaction),
             lease: Some(lease),
+            durable_commit_epoch,
             database_id,
             open_session_id,
             retained_metadata: snapshot.retained_metadata,
@@ -135,6 +412,7 @@ impl StructuralEvidenceOpen for RedbStore {
             structural_finished: false,
             historical_finished: false,
             authoritative_finding_seen: false,
+            saw_v1_index: false,
         })
     }
 }
@@ -143,6 +421,7 @@ impl StructuralEvidenceSession for RedbStructuralEvidenceSession {
     type DormantPorts = RedbDormantPorts;
     type StructuralEnd = RedbStructuralEvidenceEnd;
     type HistoricalEnd = RedbHistoricalEvidenceEnd;
+    type MigrationPort = RedbStartupIndexMigrationPort;
 
     fn database_id(&self) -> DatabaseId {
         self.database_id
@@ -163,6 +442,7 @@ impl StructuralEvidenceSession for RedbStructuralEvidenceSession {
         if cursor.position() > self.structural_total {
             return Err(invariant());
         }
+        let transaction = self.open_snapshot_read()?;
         if cursor.position() == self.structural_total {
             self.structural_finished = true;
             return Ok(StructuralEvidencePage::ExactEnd(
@@ -182,7 +462,7 @@ impl StructuralEvidenceSession for RedbStructuralEvidenceSession {
                 .checked_add(offset)
                 .ok_or_else(limit_exceeded)?;
             if let Some(finding) = inspect_structural_item(
-                self.transaction()?,
+                &transaction,
                 &self.inputs,
                 self.database_id,
                 &self.structural_counts,
@@ -209,14 +489,18 @@ impl StructuralEvidenceSession for RedbStructuralEvidenceSession {
         if self.historical_finished || cursor != self.next_historical {
             return Err(invariant());
         }
+        let transaction = self.open_snapshot_read()?;
         let requested = usize::try_from(limit.get()).map_err(|_| limit_exceeded())?;
         let mut evidence = Vec::new();
         let mut bytes = 0usize;
+        let mut migration_rows = 0usize;
+        let mut migration_evidence_bytes = 0usize;
+        let mut migration_instruction_bytes = 0usize;
         let mut last_key = self.last_historical_key.clone();
         let mut exhausted = false;
         while evidence.len() < requested {
             let Some(candidate) =
-                select_next_historical(self.transaction()?, &self.inputs, last_key.as_deref())?
+                select_next_historical(&transaction, &self.inputs, last_key.as_deref())?
             else {
                 exhausted = true;
                 break;
@@ -230,8 +514,35 @@ impl StructuralEvidenceSession for RedbStructuralEvidenceSession {
                 }
                 break;
             }
+            if let HistoricalSemanticEvidence::IndexMigrationRow(row) = &candidate.evidence {
+                let next_rows = migration_rows.checked_add(1).ok_or_else(limit_exceeded)?;
+                let next_evidence_bytes = migration_evidence_bytes
+                    .checked_add(row.evidence_page_charge())
+                    .ok_or_else(limit_exceeded)?;
+                let next_instruction_bytes = migration_instruction_bytes
+                    .checked_add(row.instruction_page_charge())
+                    .ok_or_else(limit_exceeded)?;
+                if next_rows > riffdb_storage_api::MAX_INDEX_MIGRATION_PAGE_ENTRIES
+                    || next_evidence_bytes > riffdb_storage_api::MAX_INDEX_MIGRATION_PAGE_BYTES
+                    || next_instruction_bytes > riffdb_storage_api::MAX_INDEX_MIGRATION_PAGE_BYTES
+                {
+                    if evidence.is_empty() {
+                        return Err(limit_exceeded());
+                    }
+                    break;
+                }
+                migration_rows = next_rows;
+                migration_evidence_bytes = next_evidence_bytes;
+                migration_instruction_bytes = next_instruction_bytes;
+            }
             bytes = next_bytes;
             last_key = Some(candidate.key);
+            if matches!(
+                &candidate.evidence,
+                HistoricalSemanticEvidence::IndexMigrationRow(row) if row.row().is_v1()
+            ) {
+                self.saw_v1_index = true;
+            }
             evidence.push(candidate.evidence);
         }
         if evidence.is_empty() {
@@ -258,14 +569,15 @@ impl StructuralEvidenceSession for RedbStructuralEvidenceSession {
         version: ContractVersion,
         hash: ContractBundleHash,
     ) -> Result<Option<HistoricalBundleEvidence>, StorageError> {
-        read_historical_bundle(self.transaction()?, lineage, version, hash)
+        let transaction = self.open_snapshot_read()?;
+        read_historical_bundle(&transaction, lineage, version, hash)
     }
 
     fn finish(
         mut self,
         structural_end: Self::StructuralEnd,
         historical_end: Self::HistoricalEnd,
-    ) -> Result<StructurallyOpened<Self::DormantPorts>, StorageError> {
+    ) -> Result<StructuralOpenOutcome<Self::DormantPorts, Self::MigrationPort>, StorageError> {
         if !self.structural_finished
             || !self.historical_finished
             || structural_end.cursor != self.next_structural
@@ -276,23 +588,58 @@ impl StructuralEvidenceSession for RedbStructuralEvidenceSession {
         if self.authoritative_finding_seen {
             return Err(storage_error(StorageErrorKind::CorruptData));
         }
-        drop(self.transaction.take());
-        drop(self.lease.take());
-        Ok(StructurallyOpened::from_finished_session(
-            self.database_id,
-            self.open_session_id,
-            self.retained_metadata,
-            RedbDormantPorts {
-                shared: Arc::clone(&self.shared),
-            },
-            RedbCompletionAuthority { _private: () },
-        ))
+        drop(self.open_snapshot_read()?);
+        let lease = self.lease.take().ok_or_else(invariant)?;
+        if self.saw_v1_index {
+            let next_cursor = IndexMigrationCursor::start(self.database_id, self.open_session_id);
+            Ok(StructuralOpenOutcome::MigrationRequired(
+                RedbStartupIndexMigrationPort {
+                    shared: Arc::clone(&self.shared),
+                    lease,
+                    database_id: self.database_id,
+                    open_session_id: self.open_session_id,
+                    next_cursor,
+                    after: None,
+                    #[cfg(test)]
+                    substitute_before_apply: None,
+                },
+            ))
+        } else {
+            drop(lease);
+            Ok(StructuralOpenOutcome::Clean(
+                StructurallyOpened::from_finished_session(
+                    self.database_id,
+                    self.open_session_id,
+                    self.retained_metadata,
+                    RedbDormantPorts {
+                        shared: Arc::clone(&self.shared),
+                    },
+                    RedbCompletionAuthority { _private: () },
+                ),
+            ))
+        }
     }
 }
 
 impl RedbStructuralEvidenceSession {
-    fn transaction(&self) -> Result<&ReadTransaction, StorageError> {
-        self.transaction.as_ref().ok_or_else(invariant)
+    fn open_snapshot_read(&self) -> Result<ReadTransaction, StorageError> {
+        if self.shared.durable_commit_epoch() != self.durable_commit_epoch {
+            return Err(corrupt());
+        }
+        let transaction = self
+            .shared
+            .database
+            .begin_read()
+            .map_err(transaction_error)?;
+        let snapshot = collect_startup_snapshot(&transaction)?;
+        if snapshot.retained_metadata != self.retained_metadata
+            || snapshot.structural_counts != self.structural_counts
+            || snapshot.structural_total != self.structural_total
+            || self.shared.durable_commit_epoch() != self.durable_commit_epoch
+        {
+            return Err(corrupt());
+        }
+        Ok(transaction)
     }
 }
 
@@ -763,12 +1110,18 @@ fn inspect_index_row(
     let Ok(key) = keys::decode_index_entry_key(key) else {
         return Ok(Some(authoritative(StructuralFindingCode::MalformedRecord)));
     };
-    let record = match decoded(codec::decode_index_entry_v1(value)) {
+    let record = match codec::decode_index_migration_row(&key, value) {
         Ok(value) => value,
-        Err(code) => return Ok(Some(authoritative(code))),
+        Err(error) => {
+            let code = match error.kind() {
+                StorageErrorKind::LimitExceeded => StructuralFindingCode::LimitExceeded,
+                _ => StructuralFindingCode::MalformedRecord,
+            };
+            return Ok(Some(authoritative(code)));
+        }
     };
     Ok(
-        (record.key() != &key || !binding_bundle_exists(transaction, record.schema_binding())?)
+        (!binding_bundle_exists(transaction, record.row().schema_binding())?)
             .then(|| authoritative(StructuralFindingCode::MissingCrossLink)),
     )
 }
@@ -1460,16 +1813,11 @@ fn scan_persisted_key_candidates(
     for entry in indexes.iter().map_err(precommit_storage_error)? {
         let (key, value) = entry.map_err(precommit_storage_error)?;
         let physical = keys::decode_index_entry_key(key.value()).map_err(|_| corrupt())?;
-        let record = decoded(codec::decode_index_entry_v1(value.value())).map_err(|_| corrupt())?;
-        if record.key() != &physical {
-            return Err(corrupt());
-        }
+        let record = codec::decode_index_migration_row(&physical, value.value())?;
         consider_evidence(
             selected,
             after,
-            HistoricalSemanticEvidence::PersistedKey(
-                HistoricalPersistedKeyEvidenceV1::from_index_entry(&record),
-            ),
+            HistoricalSemanticEvidence::IndexMigrationRow(record),
         );
     }
     let epochs = transaction.open_table(INDEX_EPOCHS).map_err(table_error)?;
@@ -1595,20 +1943,27 @@ fn historical_order_key(evidence: &HistoricalSemanticEvidence) -> Vec<u8> {
                     key.extend_from_slice(&entity_type_id.to_be_bytes());
                     push_bytes(&mut key, entity_key.as_bytes());
                 }
-                riffdb_storage_api::IrOpaquePersistedKeyV1::IndexEntry {
-                    index_id,
-                    key: index_key,
-                } => {
-                    key.push(0x02);
-                    key.extend_from_slice(&index_id.to_be_bytes());
-                    push_bytes(&mut key, index_key.as_bytes());
-                }
                 riffdb_storage_api::IrOpaquePersistedKeyV1::IndexRangePrefix(prefix) => {
                     key.push(0x03);
                     key.extend_from_slice(&prefix.index_id().to_be_bytes());
                     push_bytes(&mut key, prefix.as_bytes());
                 }
             }
+        }
+        HistoricalSemanticEvidence::IndexMigrationRow(evidence) => {
+            key.push(0x04);
+            push_lineage(&mut key, evidence.row().schema_binding().lineage());
+            key.extend_from_slice(
+                &evidence
+                    .row()
+                    .schema_binding()
+                    .contract_version()
+                    .to_be_bytes(),
+            );
+            key.extend_from_slice(evidence.row().schema_binding().bundle_hash().as_bytes());
+            key.push(0x02);
+            key.extend_from_slice(&evidence.physical_key().index_id().to_be_bytes());
+            push_bytes(&mut key, evidence.physical_key().as_bytes());
         }
         HistoricalSemanticEvidence::CapabilityPartition(evidence) => {
             return evidence.evidence_order_key();
@@ -1634,14 +1989,14 @@ fn historical_semantic_bytes(evidence: &HistoricalSemanticEvidence) -> Result<us
         HistoricalSemanticEvidence::PersistedKey(persisted) => {
             let key_bytes = match persisted.key() {
                 riffdb_storage_api::IrOpaquePersistedKeyV1::Entity { key, .. } => key.as_bytes(),
-                riffdb_storage_api::IrOpaquePersistedKeyV1::IndexEntry { key, .. } => {
-                    key.as_bytes()
-                }
                 riffdb_storage_api::IrOpaquePersistedKeyV1::IndexRangePrefix(key) => key.as_bytes(),
             };
             (1 + 4 + persisted.schema().lineage().as_bytes().len())
                 .checked_add(8 + 32 + 1 + 4 + 4)
                 .and_then(|value| value.checked_add(key_bytes.len()))
+        }
+        HistoricalSemanticEvidence::IndexMigrationRow(evidence) => {
+            Some(evidence.evidence_page_charge())
         }
         HistoricalSemanticEvidence::CapabilityPartition(evidence) => {
             Some(evidence.semantic_bytes().map_err(value_error_as_storage)?)
@@ -2839,32 +3194,68 @@ mod tests {
     use std::num::{NonZeroU16, NonZeroU32, NonZeroU64};
     use std::path::PathBuf;
     use std::sync::atomic::{AtomicU64, Ordering};
+    use std::sync::{Arc, OnceLock};
 
+    use riffdb_catalog::{
+        CatalogHistoryOutcome, CatalogIndexMigrationDriveError, CatalogIndexMigrationDriver,
+        ValidatedContractBundle, validate_catalog_history,
+    };
+    use riffdb_contract_compiler::compile_contract_source;
     use riffdb_storage_api::{
         ActiveCatalogPointerV1, AdministrationSequenceAllocator, AuditPrincipalV1,
         CapabilityAdministrationOperationV1, CapabilityBootstrapMarkerV1, CapabilityGrantV1,
         CapabilityPermissionKindV1, CapabilityPermissionV1, CapabilityPermissionsV1,
-        CapabilityRequestedRecordV1, DatabaseInitializationPort, DurableKeySchemaBindingV1,
-        HistoricalEvidencePage, PartitionScopeV1, ProjectionGenerationPosition,
-        ProjectionLifecycleV1, PublishedApplyModeV1, ReadableCapabilityDigestInventory,
+        CapabilityRequestedRecordV1, CatalogActivationIntentV1, CatalogAdministrationRepository,
+        DatabaseInitializationPort, DurableKeySchemaBindingV1, HistoricalEvidencePage,
+        PartitionScopeV1, ProjectionGenerationPosition, ProjectionLifecycleV1,
+        PublishedApplyModeV1, ReadableCapabilityDigestInventory,
         ReadableIdempotencyDigestInventory, RevocationReasonCodeV1,
         StoredAdministrationAuditRecordV1, StoredCapabilityAdministrationV1,
         StoredCapabilityRecordV1, StoredCatalogAdministrationV1, StoredContractBundleV1,
-        StoredEntityRecordV1, StoredProjectionApplyV1, StoredProjectionControlV1,
-        StoredServiceAuditRecordV1, StructuralEvidenceEnd, StructuralEvidencePage,
+        StoredEntityRecordV1, StoredIndexEntryV1, StoredIndexEntryV2, StoredProjectionApplyV1,
+        StoredProjectionControlV1, StoredServiceAuditRecordV1, StructuralEvidenceEnd,
+        StructuralEvidencePage,
     };
     use riffdb_types::{
         ActorId, ActorKind, AdministrationSequence, AggregateTypeId, Audience, CanonicalRecord,
-        CapabilityId, CapabilityTokenDigest, DigestKeyId, EntityKeyBuilder, EntityTypeId,
-        EntityVersion, Environment, PartitionKeyBuilder, ProjectionApplyHash, ProjectionApplyKey,
-        ProjectionGeneration, ProjectionId, ProjectionIdentity, ProjectionPlanHash, RequestId,
-        ScopedPartitionV1, ServiceAuditLinkV1, ServiceAuditPhaseV1, ServiceAuditTargetsV1,
-        ServiceIngressKindV1, ServiceOperationV1, TenantScope, Timestamp,
+        CanonicalValue, CapabilityId, CapabilityTokenDigest, DigestKeyId, EntityKeyBuilder,
+        EntityTypeId, EntityVersion, Environment, FieldId, IndexEntryKeyBuilder,
+        PartitionKeyBuilder, ProjectionApplyHash, ProjectionApplyKey, ProjectionGeneration,
+        ProjectionId, ProjectionIdentity, ProjectionPlanHash, RequestId, ScopedPartitionV1,
+        ServiceAuditLinkV1, ServiceAuditPhaseV1, ServiceAuditTargetsV1, ServiceIngressKindV1,
+        ServiceOperationV1, TenantScope, Timestamp,
     };
 
     use super::*;
 
     static NEXT_TEST_PATH: AtomicU64 = AtomicU64::new(1);
+
+    const REDB_MIGRATION_CONTRACT: &str = r#"
+contract RedbMigration version 1 {
+  entity Row {
+    key (id: u64)
+    field value: u64
+    index ByValue(value)
+  }
+
+  aggregate Rows {
+    root Row
+    partition_by id
+    conflict_key (id)
+  }
+}
+"#;
+
+    fn validated_migration_bundle() -> &'static ValidatedContractBundle {
+        static BUNDLE: OnceLock<ValidatedContractBundle> = OnceLock::new();
+        BUNDLE.get_or_init(|| {
+            ValidatedContractBundle::from_compiler_bundle(
+                compile_contract_source(REDB_MIGRATION_CONTRACT)
+                    .expect("compile indexed redb migration contract"),
+            )
+            .expect("validate indexed redb migration bundle")
+        })
+    }
 
     struct TestDatabasePath(PathBuf);
 
@@ -2930,6 +3321,72 @@ mod tests {
         let mut store = RedbStore::open(&path.0).expect("open store");
         store.initialize_database(id).expect("initialize store");
         store
+    }
+
+    fn deployed_migration_store(path: &TestDatabasePath, id: DatabaseId) -> RedbStore {
+        let store = initialized_store(path, id);
+        let dormant = RedbDormantPorts {
+            shared: Arc::clone(&store.shared),
+        };
+        drop(store);
+        let mut ports = dormant
+            .into_operational_after_catalog_validation()
+            .expect("activate migration fixture ports");
+        let bundle = validated_migration_bundle()
+            .to_stored()
+            .expect("stored migration bundle");
+        let intent = CatalogActivationIntentV1::new(
+            None,
+            bundle,
+            request_id(0x51),
+            audit_principal(0x52),
+            Timestamp::new(1, 0).expect("activation timestamp"),
+            None,
+        );
+        ports
+            .activate_catalog(&intent)
+            .expect("activate migration catalog");
+        drop(ports);
+        RedbStore::open(&path.0).expect("reopen deployed migration store")
+    }
+
+    fn compiled_migration_legacy_row(value: u64) -> StoredIndexEntryV1 {
+        let bundle = validated_migration_bundle();
+        let entity_schema = bundle
+            .bundle()
+            .schema()
+            .entities()
+            .first()
+            .expect("migration entity");
+        let index_schema = entity_schema.indexes().first().expect("migration index");
+        let mut entity = EntityKeyBuilder::new(entity_schema.id());
+        entity.push_u64(value).expect("entity key component");
+        let mut index = IndexEntryKeyBuilder::new(index_schema.id());
+        index.push_u64(value).expect("index key component");
+        StoredIndexEntryV1::new(
+            index
+                .finish(entity.finish().expect("entity key"))
+                .expect("index key"),
+            DurableKeySchemaBindingV1::new(
+                bundle.lineage().clone(),
+                bundle.contract_version(),
+                bundle.bundle_hash(),
+            ),
+            CanonicalRecord::new(Vec::new()).expect("covered values"),
+        )
+        .expect("legacy migration row")
+    }
+
+    fn compiled_migration_partition(value: u64) -> riffdb_types::PartitionKey {
+        let aggregate = validated_migration_bundle()
+            .bundle()
+            .schema()
+            .aggregates()
+            .first()
+            .expect("migration aggregate");
+        let mut partition = PartitionKeyBuilder::new(aggregate.id());
+        partition.push_u64(value).expect("partition key component");
+        partition.finish().expect("partition key")
     }
 
     fn stored_bundle(lineage: &str, version: u64, bytes: &[u8]) -> StoredContractBundleV1 {
@@ -3157,9 +3614,12 @@ mod tests {
                 .expect("point lookup remains live after exact ends")
                 .is_none()
         );
-        let opened = session
+        let outcome = session
             .finish(structural_end, historical_end)
             .expect("finish evidence");
+        let StructuralOpenOutcome::Clean(opened) = outcome else {
+            panic!("empty V2 store must finish cleanly");
+        };
         assert_eq!(opened.database_id(), id);
         assert_eq!(opened.retained_metadata(), &RetainedMetadataV1::initial(id));
         let (opened_id, opened_session, metadata, dormant) = opened.into_parts();
@@ -3173,6 +3633,108 @@ mod tests {
             riffdb_storage_api::DatabaseIdentityProbePort::probe_database_identity(&reopened)
                 .expect("probe reopened"),
             riffdb_storage_api::DatabaseIdentityProbe::Existing(id)
+        );
+    }
+
+    #[test]
+    fn migration_compare_mismatch_rolls_back_the_complete_catalog_batch() {
+        let path = TestDatabasePath::new("migration-compare-mismatch");
+        let id = database_id(0x18);
+        let store = deployed_migration_store(&path, id);
+        let rows = [
+            compiled_migration_legacy_row(1),
+            compiled_migration_legacy_row(2),
+        ];
+        let envelopes = rows
+            .iter()
+            .map(|row| {
+                riffdb_storage_api::encode_index_entry_v1_fixture(row)
+                    .expect("encode V1 migration row")
+                    .into_bytes()
+            })
+            .collect::<Vec<_>>();
+        let write = store
+            .shared
+            .database
+            .begin_write()
+            .expect("seed migration transaction");
+        {
+            let mut table = write
+                .open_table(SECONDARY_INDEXES)
+                .expect("secondary index table");
+            for (row, envelope) in rows.iter().zip(&envelopes) {
+                table
+                    .insert(row.key().as_bytes(), envelope.as_slice())
+                    .expect("insert V1 migration row");
+            }
+        }
+        write.commit().expect("commit V1 migration rows");
+
+        let substituted = StoredIndexEntryV2::new(
+            rows[1].key().clone(),
+            rows[1].schema_binding().clone(),
+            CanonicalRecord::new(vec![(FieldId::first(), CanonicalValue::U64(999))])
+                .expect("substituted covered values"),
+            compiled_migration_partition(2),
+        )
+        .expect("substituted V2 row");
+        let substituted_envelope = codec::encode_index_entry_v2(&substituted)
+            .expect("encode substituted V2 row")
+            .into_bytes();
+
+        let mut session = store
+            .begin_structural_evidence(inputs())
+            .expect("begin migration evidence");
+        let structural_end = finish_structural(&mut session);
+        let (catalog_outcome, historical_end) = validate_catalog_history(&mut session)
+            .expect("catalog validates migration history")
+            .into_parts();
+        let CatalogHistoryOutcome::MigrationRequired(context) = catalog_outcome else {
+            panic!("V1 catalog history must require migration");
+        };
+        let StructuralOpenOutcome::MigrationRequired(mut port) = session
+            .finish(structural_end, historical_end)
+            .expect("finish migration evidence")
+        else {
+            panic!("V1 storage history must retain a migration port");
+        };
+        port.substitute_before_apply = Some(substituted);
+        let error = CatalogIndexMigrationDriver::new(context, port)
+            .expect("bind same-session migration driver")
+            .run()
+            .expect_err("stale compare must reject the complete batch");
+        assert!(matches!(
+            error,
+            CatalogIndexMigrationDriveError::Storage(ref error)
+                if error.kind() == StorageErrorKind::CorruptData
+        ));
+
+        let reopened = RedbStore::open(&path.0).expect("reopen after rejected batch");
+        let read = reopened
+            .shared
+            .database
+            .begin_read()
+            .expect("read rejected batch state");
+        let table = read
+            .open_table(SECONDARY_INDEXES)
+            .expect("secondary index table");
+        assert_eq!(
+            table
+                .get(rows[0].key().as_bytes())
+                .expect("read first row")
+                .expect("first row exists")
+                .value(),
+            envelopes[0].as_slice(),
+            "the first rewrite must roll back when the second compare is stale"
+        );
+        assert_eq!(
+            table
+                .get(rows[1].key().as_bytes())
+                .expect("read second row")
+                .expect("second row exists")
+                .value(),
+            substituted_envelope.as_slice(),
+            "the independently committed stale row must remain exact"
         );
     }
 
@@ -3535,6 +4097,63 @@ mod tests {
             StorageErrorKind::InvariantViolation
         );
         assert!(next.position() > start.position());
+    }
+
+    #[test]
+    fn same_count_value_drift_is_rejected_by_the_session_commit_epoch() {
+        let path = TestDatabasePath::new("same-count-drift");
+        let store = initialized_store(&path, database_id(0x23));
+        let seed = store
+            .shared
+            .database
+            .begin_write()
+            .expect("begin seed transaction");
+        {
+            let mut table = seed
+                .open_table(SECONDARY_INDEXES)
+                .expect("open secondary-index table");
+            table
+                .insert(b"same-key".as_slice(), b"before".as_slice())
+                .expect("insert seed value");
+        }
+        store
+            .shared
+            .commit_durable(seed)
+            .expect("commit seed value");
+
+        let mut session = store
+            .begin_structural_evidence(inputs())
+            .expect("begin anchored evidence session");
+        let drift = session
+            .shared
+            .database
+            .begin_write()
+            .expect("begin deliberate internal bypass");
+        {
+            let mut table = drift
+                .open_table(SECONDARY_INDEXES)
+                .expect("open secondary-index table");
+            assert!(
+                table
+                    .insert(b"same-key".as_slice(), b"after!".as_slice())
+                    .expect("replace same-count value")
+                    .is_some()
+            );
+        }
+        session
+            .shared
+            .commit_durable(drift)
+            .expect("commit deliberate same-count drift");
+
+        let start =
+            StructuralEvidenceCursor::start(session.database_id(), session.open_session_id());
+        assert_eq!(
+            session
+                .read_structural_evidence(start, EvidencePageLimit::new(1).expect("page limit"))
+                .expect_err("commit-epoch drift must fail closed")
+                .kind(),
+            StorageErrorKind::CorruptData
+        );
     }
 
     #[test]
@@ -4139,9 +4758,12 @@ mod tests {
                 && finding.code() == StructuralFindingCode::ProjectionStateMismatch
         }));
         let historical_end = finish_historical(&mut session);
-        let opened = session
+        let outcome = session
             .finish(structural_end, historical_end)
             .expect("derived findings do not withhold ports");
+        let StructuralOpenOutcome::Clean(opened) = outcome else {
+            panic!("V2 derived-state fixture must finish cleanly");
+        };
         assert_eq!(opened.database_id(), database_id(0x75));
     }
 }

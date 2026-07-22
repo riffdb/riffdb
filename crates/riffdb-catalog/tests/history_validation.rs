@@ -1,8 +1,17 @@
 //! Exact-end same-session historical catalog validation.
 
+use std::collections::VecDeque;
 use std::num::{NonZeroU16, NonZeroU32};
 
-use riffdb_catalog::{CatalogErrorKind, ValidatedContractBundle, validate_catalog_history};
+use riffdb_catalog::{
+    CatalogErrorKind, CatalogHistoryOutcome, CatalogHistoryValidation,
+    CatalogIndexMigrationApplied, CatalogIndexMigrationBackend, CatalogIndexMigrationBundleRequest,
+    CatalogIndexMigrationBundleResponse, CatalogIndexMigrationCompletion,
+    CatalogIndexMigrationContext, CatalogIndexMigrationDriveError, CatalogIndexMigrationDriver,
+    CatalogIndexMigrationInstruction, CatalogIndexMigrationPendingBatch, CatalogIndexMigrationScan,
+    CatalogIndexMigrationScanRequest, ValidatedCatalogHistory, ValidatedContractBundle,
+    validate_catalog_history,
+};
 use riffdb_contract_compiler::{compile_contract_source, compile_contract_successor};
 use riffdb_contract_ir::{CompatibilityReport, ContractBundle, ParentBundleRef};
 use riffdb_storage_api::{
@@ -11,10 +20,11 @@ use riffdb_storage_api::{
     EvidencePageLimit, HistoricalActiveCatalogEvidence, HistoricalBundleBytes,
     HistoricalBundleEvidence, HistoricalCapabilityPartitionEvidenceV1, HistoricalEvidenceCursor,
     HistoricalEvidenceEnd, HistoricalEvidencePage, HistoricalPersistedKeyEvidenceV1,
-    HistoricalSemanticEvidence, OpenSessionId, PartitionScopeV1, StorageError, StorageErrorKind,
-    StoredCapabilityRecordV1, StoredEntityRecordV1, StoredIndexEpochV1, StructuralEvidenceCursor,
-    StructuralEvidenceEnd, StructuralEvidencePage, StructuralEvidenceSession,
-    StructurallyDecodedIndexRangePrefixV1, StructurallyOpened,
+    HistoricalSemanticEvidence, IndexMigrationCursor, IndexMigrationRowEvidence, OpenSessionId,
+    PartitionScopeV1, StartupIndexMigrationPort, StorageError, StorageErrorKind, StorageValueError,
+    StoredCapabilityRecordV1, StoredEntityRecordV1, StoredIndexEntryV1, StoredIndexEntryV2,
+    StoredIndexEpochV1, StructuralEvidenceCursor, StructuralEvidenceEnd, StructuralEvidencePage,
+    StructuralEvidenceSession, StructuralOpenOutcome, StructurallyDecodedIndexRangePrefixV1,
 };
 use riffdb_types::{
     ActorId, ActorKind, AdministrationSequence, AggregateTypeId, Audience, CanonicalRecord,
@@ -60,6 +70,21 @@ impl StructuralEvidenceEnd for FakeStructuralEnd {
     }
 }
 
+struct FakeMigrationPort {
+    database_id: DatabaseId,
+    open_session_id: OpenSessionId,
+}
+
+impl StartupIndexMigrationPort for FakeMigrationPort {
+    fn database_id(&self) -> DatabaseId {
+        self.database_id
+    }
+
+    fn open_session_id(&self) -> OpenSessionId {
+        self.open_session_id
+    }
+}
+
 struct FakeDormantPorts;
 
 impl DormantPortBundle for FakeDormantPorts {
@@ -69,7 +94,7 @@ impl DormantPortBundle for FakeDormantPorts {
 struct FakeSession {
     database_id: DatabaseId,
     open_session_id: OpenSessionId,
-    pages: Vec<Vec<HistoricalSemanticEvidence>>,
+    pages: Vec<Option<Vec<HistoricalSemanticEvidence>>>,
     page: usize,
     bundles: Vec<HistoricalBundleEvidence>,
     fault: CursorFault,
@@ -79,6 +104,7 @@ impl StructuralEvidenceSession for FakeSession {
     type DormantPorts = FakeDormantPorts;
     type StructuralEnd = FakeStructuralEnd;
     type HistoricalEnd = FakeHistoricalEnd;
+    type MigrationPort = FakeMigrationPort;
 
     fn database_id(&self) -> DatabaseId {
         self.database_id
@@ -111,7 +137,7 @@ impl StructuralEvidenceSession for FakeSession {
             });
         }
 
-        let Some(evidence) = self.pages.get(self.page).cloned() else {
+        let Some(evidence) = self.pages.get_mut(self.page).and_then(Option::take) else {
             let end = if matches!(self.fault, CursorFault::WrongEnd) {
                 cursor
                     .advanced(1)
@@ -181,7 +207,7 @@ impl StructuralEvidenceSession for FakeSession {
         self,
         _structural_end: Self::StructuralEnd,
         _historical_end: Self::HistoricalEnd,
-    ) -> Result<StructurallyOpened<Self::DormantPorts>, StorageError> {
+    ) -> Result<StructuralOpenOutcome<Self::DormantPorts, Self::MigrationPort>, StorageError> {
         Err(storage_error(StorageErrorKind::InvariantViolation))
     }
 }
@@ -216,10 +242,19 @@ fn session(
     FakeSession {
         database_id: database(),
         open_session_id: OpenSessionId::new(7).expect("session"),
-        pages,
+        pages: pages.into_iter().map(Some).collect(),
         page: 0,
         bundles,
         fault,
+    }
+}
+
+fn ready_history<E>(validation: &CatalogHistoryValidation<E>) -> &ValidatedCatalogHistory {
+    match validation.outcome() {
+        CatalogHistoryOutcome::Ready(history) => history,
+        CatalogHistoryOutcome::MigrationRequired(_) => {
+            panic!("fixture unexpectedly requires index migration")
+        }
     }
 }
 
@@ -312,13 +347,14 @@ fn complete_history_resolves_every_plan_and_produces_a_session_bound_proof() {
 
     let validation = validate_catalog_history(&mut session).expect("complete history");
     assert!(
-        validation
-            .history()
-            .matches(database(), OpenSessionId::new(7).expect("session"))
+        ready_history(&validation).matches(database(), OpenSessionId::new(7).expect("session"))
     );
-    assert_eq!(validation.history().evidence_count(), 3);
+    assert_eq!(ready_history(&validation).evidence_count(), 3);
     assert_eq!(
-        validation.history().active().expect("active").bundle_hash(),
+        ready_history(&validation)
+            .active()
+            .expect("active")
+            .bundle_hash(),
         bundle.bundle_hash()
     );
 }
@@ -332,8 +368,8 @@ fn initialized_but_undeployed_catalog_has_an_exact_empty_history() {
     );
 
     let validation = validate_catalog_history(&mut session).expect("empty exact history");
-    assert!(validation.history().active().is_none());
-    assert_eq!(validation.history().evidence_count(), 1);
+    assert!(ready_history(&validation).active().is_none());
+    assert_eq!(ready_history(&validation).evidence_count(), 1);
 }
 
 #[test]
@@ -367,7 +403,7 @@ fn qualifying_capability_partitions_require_the_active_bundle_schema() {
     );
 
     let validation = validate_catalog_history(&mut valid).expect("schema-valid capability key");
-    assert_eq!(validation.history().evidence_count(), 3);
+    assert_eq!(ready_history(&validation).evidence_count(), 3);
 }
 
 #[test]
@@ -509,13 +545,17 @@ fn duplicate_reordered_and_nonexact_capability_evidence_fails_closed() {
         .encode_partition(&[CanonicalValue::string("key").expect("bounded text")])
         .expect("complete partition key");
     let scope = explicit_partition(bundle.lineage().clone(), key);
-    let lower = HistoricalSemanticEvidence::CapabilityPartition(capability_partition_evidence(
-        0x51,
+    let lower = || {
+        HistoricalSemanticEvidence::CapabilityPartition(capability_partition_evidence(
+            0x51,
+            scope.clone(),
+            0,
+        ))
+    };
+    let higher = HistoricalSemanticEvidence::CapabilityPartition(capability_partition_evidence(
+        0x52,
         scope.clone(),
         0,
-    ));
-    let higher = HistoricalSemanticEvidence::CapabilityPartition(capability_partition_evidence(
-        0x52, scope, 0,
     ));
 
     let cases = [
@@ -523,8 +563,8 @@ fn duplicate_reordered_and_nonexact_capability_evidence_fails_closed() {
             vec![
                 vec![HistoricalSemanticEvidence::Bundle(stored.clone())],
                 vec![active(&bundle)],
-                vec![lower.clone()],
-                vec![lower.clone()],
+                vec![lower()],
+                vec![lower()],
             ],
             vec![stored.clone()],
             CursorFault::None,
@@ -534,7 +574,7 @@ fn duplicate_reordered_and_nonexact_capability_evidence_fails_closed() {
                 vec![HistoricalSemanticEvidence::Bundle(stored.clone())],
                 vec![active(&bundle)],
                 vec![higher],
-                vec![lower],
+                vec![lower()],
             ],
             vec![stored.clone()],
             CursorFault::None,
@@ -583,40 +623,40 @@ fn skipped_repeated_reordered_cross_session_and_truncated_streams_fail_closed() 
     )
     .expect("validated");
     let stored = stored_bundle(&bundle);
-    let bundle_item = HistoricalSemanticEvidence::Bundle(stored.clone());
-    let active_item = active(&bundle);
+    let bundle_item = || HistoricalSemanticEvidence::Bundle(stored.clone());
+    let active_item = || active(&bundle);
 
     let cases = [
         session(
-            vec![vec![bundle_item.clone()], vec![active_item.clone()]],
+            vec![vec![bundle_item()], vec![active_item()]],
             vec![stored.clone()],
             CursorFault::Skip,
         ),
         session(
             vec![
-                vec![bundle_item.clone()],
-                vec![bundle_item.clone()],
-                vec![active_item.clone()],
+                vec![bundle_item()],
+                vec![bundle_item()],
+                vec![active_item()],
             ],
             vec![stored.clone()],
             CursorFault::None,
         ),
         session(
-            vec![vec![active_item.clone()], vec![bundle_item.clone()]],
+            vec![vec![active_item()], vec![bundle_item()]],
             vec![stored.clone()],
             CursorFault::None,
         ),
         session(
-            vec![vec![bundle_item.clone()], vec![active_item.clone()]],
+            vec![vec![bundle_item()], vec![active_item()]],
             vec![stored.clone()],
             CursorFault::WrongStart,
         ),
         session(
-            vec![vec![bundle_item.clone()], vec![active_item.clone()]],
+            vec![vec![bundle_item()], vec![active_item()]],
             vec![stored.clone()],
             CursorFault::WrongEnd,
         ),
-        session(vec![vec![bundle_item]], vec![stored], CursorFault::None),
+        session(vec![vec![bundle_item()]], vec![stored], CursorFault::None),
     ];
 
     for mut invalid in cases {
@@ -804,7 +844,7 @@ fn startup_history_wires_the_exact_bundle_count_boundary() {
     let exact = validate_catalog_history(&mut exact_session)
         .expect("startup accepts exactly 4,096 lineage bundles");
     assert_eq!(
-        exact.history().evidence_count(),
+        ready_history(&exact).evidence_count(),
         u64::try_from(MAX_ACTIVE_LINEAGE_BUNDLES_V1 + 1).expect("bounded evidence count")
     );
     drop(exact);
@@ -828,6 +868,419 @@ fn startup_history_wires_the_exact_bundle_count_boundary() {
             .kind(),
         CatalogErrorKind::InvalidHistoricalEvidence
     );
+}
+
+#[test]
+fn index_rows_require_migration_for_v1_and_exact_historical_partition_for_v2() {
+    const INDEXED: &str = r#"
+contract IndexedMigration version 1 {
+  entity Row {
+    key (id: u64)
+    field name: string<8>
+    index ByName(name)
+  }
+  aggregate Rows {
+    root Row
+    partition_by id
+    conflict_key (id)
+  }
+}
+"#;
+    let bundle = ValidatedContractBundle::from_compiler_bundle(
+        compile_contract_source(INDEXED).expect("indexed migration contract"),
+    )
+    .expect("validated bundle");
+    let stored = stored_bundle(&bundle);
+    let (key, derived_partition) = migration_index_key_and_partition(&bundle);
+
+    let mut legacy = session(
+        vec![
+            vec![HistoricalSemanticEvidence::Bundle(stored.clone())],
+            vec![active(&bundle)],
+            vec![migration_v1_evidence(&bundle, key.clone())],
+        ],
+        vec![stored.clone()],
+        CursorFault::None,
+    );
+    let legacy = validate_catalog_history(&mut legacy).expect("valid V1 history");
+    let CatalogHistoryOutcome::MigrationRequired(context) = legacy.outcome() else {
+        panic!("a checked V1 row must not produce readiness");
+    };
+    assert_eq!(context.database_id(), database());
+    assert_eq!(
+        context.open_session_id(),
+        OpenSessionId::new(7).expect("session")
+    );
+    assert_eq!(context.evidence_count(), 3);
+
+    let mut current = session(
+        vec![
+            vec![HistoricalSemanticEvidence::Bundle(stored.clone())],
+            vec![active(&bundle)],
+            vec![migration_v2_evidence(
+                &bundle,
+                key.clone(),
+                derived_partition.clone(),
+            )],
+        ],
+        vec![stored.clone()],
+        CursorFault::None,
+    );
+    let current = validate_catalog_history(&mut current).expect("valid V2 history");
+    assert!(matches!(current.outcome(), CatalogHistoryOutcome::Ready(_)));
+
+    let mut wrong = PartitionKeyBuilder::new(AggregateTypeId::new(99).expect("aggregate"));
+    wrong.push_u64(42).expect("partition component");
+    let mut corrupt = session(
+        vec![
+            vec![HistoricalSemanticEvidence::Bundle(stored.clone())],
+            vec![active(&bundle)],
+            vec![migration_v2_evidence(
+                &bundle,
+                key,
+                wrong.finish().expect("wrong partition"),
+            )],
+        ],
+        vec![stored],
+        CursorFault::None,
+    );
+    assert_eq!(
+        validate_catalog_history(&mut corrupt)
+            .err()
+            .expect("wrong stored partition")
+            .kind(),
+        CatalogErrorKind::InvalidHistoricalEvidence
+    );
+}
+
+#[derive(Debug)]
+struct DriverOutput {
+    final_cursor: IndexMigrationCursor,
+    rewritten_partition: Option<PartitionKey>,
+    bundle_reads: usize,
+    apply_count: usize,
+    instruction_count: usize,
+}
+
+struct DriverBackend {
+    database_id: DatabaseId,
+    open_session_id: OpenSessionId,
+    pages: VecDeque<Vec<IndexMigrationRowEvidence>>,
+    bundle: HistoricalBundleEvidence,
+    next: IndexMigrationCursor,
+    rewritten_partition: Option<PartitionKey>,
+    bundle_reads: usize,
+    apply_count: usize,
+    instruction_count: usize,
+}
+
+impl StartupIndexMigrationPort for DriverBackend {
+    fn database_id(&self) -> DatabaseId {
+        self.database_id
+    }
+
+    fn open_session_id(&self) -> OpenSessionId {
+        self.open_session_id
+    }
+}
+
+impl CatalogIndexMigrationBackend for DriverBackend {
+    type Output = DriverOutput;
+
+    fn read_index_migration_page(
+        mut self,
+        request: CatalogIndexMigrationScanRequest<Self>,
+    ) -> Result<CatalogIndexMigrationScan<Self>, StorageError> {
+        if request.cursor() != self.next {
+            return Err(storage_error(StorageErrorKind::InvariantViolation));
+        }
+        let Some(rows) = self.pages.pop_front() else {
+            return request.exact_end(self).map_err(migration_value_error);
+        };
+        let next = request
+            .cursor()
+            .advanced(
+                u64::try_from(rows.len())
+                    .map_err(|_| storage_error(StorageErrorKind::LimitExceeded))?,
+            )
+            .map_err(migration_value_error)?;
+        self.next = next;
+        request
+            .page(self, rows, next)
+            .map_err(migration_value_error)
+    }
+
+    fn read_historical_bundle(
+        mut self,
+        request: CatalogIndexMigrationBundleRequest<Self>,
+    ) -> Result<CatalogIndexMigrationBundleResponse<Self>, StorageError> {
+        self.bundle_reads += 1;
+        let bundle = self.bundle.clone();
+        request.respond(self, bundle).map_err(migration_value_error)
+    }
+
+    fn apply_index_migration_batch(
+        mut self,
+        pending: CatalogIndexMigrationPendingBatch<Self>,
+    ) -> Result<CatalogIndexMigrationApplied<Self>, StorageError> {
+        if pending.batch().instructions().is_empty() {
+            return Err(storage_error(StorageErrorKind::InvariantViolation));
+        }
+        for instruction in pending.batch().instructions() {
+            let CatalogIndexMigrationInstruction::V1Rewrite(rewrite) = instruction else {
+                return Err(storage_error(StorageErrorKind::InvariantViolation));
+            };
+            self.rewritten_partition = Some(rewrite.replacement().partition_key().clone());
+            self.instruction_count += 1;
+        }
+        self.apply_count += 1;
+        pending.applied(self).map_err(migration_value_error)
+    }
+
+    fn finish_index_migration(
+        self,
+        completion: CatalogIndexMigrationCompletion<Self>,
+    ) -> Result<Self::Output, StorageError> {
+        if completion.final_cursor() != self.next {
+            return Err(storage_error(StorageErrorKind::InvariantViolation));
+        }
+        Ok(DriverOutput {
+            final_cursor: completion.final_cursor(),
+            rewritten_partition: self.rewritten_partition,
+            bundle_reads: self.bundle_reads,
+            apply_count: self.apply_count,
+            instruction_count: self.instruction_count,
+        })
+    }
+}
+
+fn migration_value_error(error: StorageValueError) -> StorageError {
+    let kind = match error {
+        StorageValueError::LimitExceeded | StorageValueError::SizeOverflow => {
+            StorageErrorKind::LimitExceeded
+        }
+        StorageValueError::Empty
+        | StorageValueError::NonCanonicalOrder
+        | StorageValueError::Duplicate
+        | StorageValueError::IdentityMismatch
+        | StorageValueError::InvalidShape => StorageErrorKind::InvariantViolation,
+    };
+    storage_error(kind)
+}
+
+fn migration_context(
+    bundle: &ValidatedContractBundle,
+    stored: &HistoricalBundleEvidence,
+    key: riffdb_types::IndexEntryKey,
+) -> CatalogIndexMigrationContext {
+    let mut startup = session(
+        vec![
+            vec![HistoricalSemanticEvidence::Bundle(stored.clone())],
+            vec![active(bundle)],
+            vec![migration_v1_evidence(bundle, key)],
+        ],
+        vec![stored.clone()],
+        CursorFault::None,
+    );
+    let validation = validate_catalog_history(&mut startup).expect("valid V1 history");
+    let (outcome, _) = validation.into_parts();
+    let CatalogHistoryOutcome::MigrationRequired(context) = outcome else {
+        panic!("V1 history requires migration");
+    };
+    context
+}
+
+#[test]
+fn catalog_driver_owns_scan_bundle_derivation_apply_and_completion() {
+    const INDEXED: &str = r#"
+contract IndexedMigrationLinear version 1 {
+  entity Row {
+    key (id: u64)
+    field name: string<8>
+    index ByName(name)
+  }
+  aggregate Rows {
+    root Row
+    partition_by id
+    conflict_key (id)
+  }
+}
+
+"#;
+    let bundle = ValidatedContractBundle::from_compiler_bundle(
+        compile_contract_source(INDEXED).expect("indexed migration contract"),
+    )
+    .expect("validated bundle");
+    let stored = stored_bundle(&bundle);
+    let (key, expected_partition) = migration_index_key_and_partition(&bundle);
+    let mut session = session(
+        vec![
+            vec![HistoricalSemanticEvidence::Bundle(stored.clone())],
+            vec![active(&bundle)],
+            vec![migration_v1_evidence(&bundle, key.clone())],
+        ],
+        vec![stored.clone()],
+        CursorFault::None,
+    );
+    let validation = validate_catalog_history(&mut session).expect("valid V1 history");
+    let (outcome, _) = validation.into_parts();
+    let CatalogHistoryOutcome::MigrationRequired(context) = outcome else {
+        panic!("V1 history requires migration");
+    };
+    let start = IndexMigrationCursor::start(database(), session.open_session_id);
+    assert_eq!(
+        start,
+        IndexMigrationCursor::start(database(), session.open_session_id)
+    );
+
+    let HistoricalSemanticEvidence::IndexMigrationRow(evidence) =
+        migration_v1_evidence(&bundle, key)
+    else {
+        unreachable!("helper returns migration evidence");
+    };
+    let next = start.advanced(1).expect("one-row continuation");
+    let backend = DriverBackend {
+        database_id: database(),
+        open_session_id: session.open_session_id,
+        pages: VecDeque::from([vec![evidence]]),
+        bundle: stored,
+        next: start,
+        rewritten_partition: None,
+        bundle_reads: 0,
+        apply_count: 0,
+        instruction_count: 0,
+    };
+    let output = CatalogIndexMigrationDriver::new(context, backend)
+        .expect("same-session driver")
+        .run()
+        .expect("complete catalog-owned migration");
+    assert_eq!(output.final_cursor, next);
+    assert_eq!(output.rewritten_partition, Some(expected_partition));
+    assert_eq!(output.bundle_reads, 1);
+    assert_eq!(output.apply_count, 1);
+    assert_eq!(output.instruction_count, 1);
+}
+
+#[test]
+fn catalog_driver_rejects_duplicate_and_reordered_keys_across_pages() {
+    const INDEXED: &str = r#"
+contract IndexedMigrationCrossPage version 1 {
+  entity Row {
+    key (id: u64)
+    field name: string<8>
+    index ByName(name)
+  }
+  aggregate Rows { root Row partition_by id conflict_key (id) }
+}
+"#;
+    let bundle = ValidatedContractBundle::from_compiler_bundle(
+        compile_contract_source(INDEXED).expect("indexed migration contract"),
+    )
+    .expect("validated bundle");
+    let stored = stored_bundle(&bundle);
+    let (lower, _) = migration_index_key_and_partition_for(&bundle, 1);
+    let (higher, _) = migration_index_key_and_partition_for(&bundle, 2);
+    assert!(lower.as_bytes() < higher.as_bytes());
+
+    for (second, label) in [(higher.clone(), "duplicate"), (lower.clone(), "reordered")] {
+        let context = migration_context(&bundle, &stored, lower.clone());
+        let start = IndexMigrationCursor::start(database(), context.open_session_id());
+        let backend = DriverBackend {
+            database_id: database(),
+            open_session_id: context.open_session_id(),
+            pages: VecDeque::from([
+                vec![migration_v1_row_evidence(&bundle, higher.clone())],
+                vec![migration_v1_row_evidence(&bundle, second)],
+            ]),
+            bundle: stored.clone(),
+            next: start,
+            rewritten_partition: None,
+            bundle_reads: 0,
+            apply_count: 0,
+            instruction_count: 0,
+        };
+        let error = CatalogIndexMigrationDriver::new(context, backend)
+            .expect("same-session driver")
+            .run()
+            .err()
+            .unwrap_or_else(|| panic!("{label} cross-page key must fail closed"));
+        let CatalogIndexMigrationDriveError::Storage(error) = error else {
+            panic!("{label} page shape is a backend invariant failure");
+        };
+        assert_eq!(error.kind(), StorageErrorKind::InvariantViolation);
+    }
+}
+
+#[test]
+fn catalog_driver_accepts_500_rows_and_rejects_501_before_bundle_reads() {
+    const INDEXED: &str = r#"
+contract IndexedMigrationPageBound version 1 {
+  entity Row {
+    key (id: u64)
+    field name: string<8>
+    index ByName(name)
+  }
+  aggregate Rows { root Row partition_by id conflict_key (id) }
+}
+"#;
+    let bundle = ValidatedContractBundle::from_compiler_bundle(
+        compile_contract_source(INDEXED).expect("indexed migration contract"),
+    )
+    .expect("validated bundle");
+    let stored = stored_bundle(&bundle);
+    let (context_key, _) = migration_index_key_and_partition_for(&bundle, 0);
+    let rows = |count: u64| {
+        (1..=count)
+            .map(|id| {
+                let (key, _) = migration_index_key_and_partition_for(&bundle, id);
+                migration_v1_row_evidence(&bundle, key)
+            })
+            .collect::<Vec<_>>()
+    };
+
+    let context = migration_context(&bundle, &stored, context_key.clone());
+    let start = IndexMigrationCursor::start(database(), context.open_session_id());
+    let backend = DriverBackend {
+        database_id: database(),
+        open_session_id: context.open_session_id(),
+        pages: VecDeque::from([rows(500)]),
+        bundle: stored.clone(),
+        next: start,
+        rewritten_partition: None,
+        bundle_reads: 0,
+        apply_count: 0,
+        instruction_count: 0,
+    };
+    let output = CatalogIndexMigrationDriver::new(context, backend)
+        .expect("same-session driver")
+        .run()
+        .expect("500-row page is accepted");
+    assert_eq!(output.final_cursor.position(), 500);
+    assert_eq!(output.bundle_reads, 500);
+    assert_eq!(output.apply_count, 1);
+    assert_eq!(output.instruction_count, 500);
+
+    let context = migration_context(&bundle, &stored, context_key);
+    let start = IndexMigrationCursor::start(database(), context.open_session_id());
+    let backend = DriverBackend {
+        database_id: database(),
+        open_session_id: context.open_session_id(),
+        pages: VecDeque::from([rows(501)]),
+        bundle: stored,
+        next: start,
+        rewritten_partition: None,
+        bundle_reads: 0,
+        apply_count: 0,
+        instruction_count: 0,
+    };
+    let error = CatalogIndexMigrationDriver::new(context, backend)
+        .expect("same-session driver")
+        .run()
+        .expect_err("501-row page must fail before row consumption");
+    let CatalogIndexMigrationDriveError::Storage(error) = error else {
+        panic!("page count is a backend shape failure");
+    };
+    assert_eq!(error.kind(), StorageErrorKind::LimitExceeded);
 }
 
 #[test]
@@ -943,6 +1396,92 @@ contract Indexed version 1 {
     }
 }
 
+fn migration_index_key_and_partition(
+    bundle: &ValidatedContractBundle,
+) -> (riffdb_types::IndexEntryKey, PartitionKey) {
+    migration_index_key_and_partition_for(bundle, 42)
+}
+
+fn migration_index_key_and_partition_for(
+    bundle: &ValidatedContractBundle,
+    id: u64,
+) -> (riffdb_types::IndexEntryKey, PartitionKey) {
+    let entity = bundle.bundle().schema().entities().first().expect("entity");
+    let entity_key = entity
+        .primary_key()
+        .encode_entity(&[CanonicalValue::U64(id)])
+        .expect("entity key");
+    let index = entity.indexes().first().expect("index");
+    let key = index
+        .key_schema()
+        .encode_index(
+            &[CanonicalValue::string("name").expect("index value")],
+            entity_key,
+        )
+        .expect("index key");
+    let aggregate = bundle
+        .bundle()
+        .schema()
+        .aggregate_for_entity(entity.id())
+        .expect("aggregate owner");
+    let partition = aggregate
+        .keys()
+        .partition_schema()
+        .encode_partition(&[CanonicalValue::U64(id)])
+        .expect("partition key");
+    (key, partition)
+}
+
+fn migration_v1_evidence(
+    bundle: &ValidatedContractBundle,
+    key: riffdb_types::IndexEntryKey,
+) -> HistoricalSemanticEvidence {
+    HistoricalSemanticEvidence::IndexMigrationRow(migration_v1_row_evidence(bundle, key))
+}
+
+fn migration_v1_row_evidence(
+    bundle: &ValidatedContractBundle,
+    key: riffdb_types::IndexEntryKey,
+) -> IndexMigrationRowEvidence {
+    let row = StoredIndexEntryV1::new(
+        key.clone(),
+        DurableKeySchemaBindingV1::new(
+            bundle.lineage().clone(),
+            bundle.contract_version(),
+            bundle.bundle_hash(),
+        ),
+        CanonicalRecord::new(Vec::new()).expect("covered values"),
+    )
+    .expect("V1 row");
+    let envelope =
+        riffdb_storage_api::encode_index_entry_v1_fixture(&row).expect("canonical V1 envelope");
+    riffdb_storage_api::decode_index_migration_row(&key, envelope.as_bytes())
+        .expect("checked V1 migration evidence")
+}
+
+fn migration_v2_evidence(
+    bundle: &ValidatedContractBundle,
+    key: riffdb_types::IndexEntryKey,
+    partition: PartitionKey,
+) -> HistoricalSemanticEvidence {
+    let row = StoredIndexEntryV2::new(
+        key.clone(),
+        DurableKeySchemaBindingV1::new(
+            bundle.lineage().clone(),
+            bundle.contract_version(),
+            bundle.bundle_hash(),
+        ),
+        CanonicalRecord::new(Vec::new()).expect("covered values"),
+        partition,
+    )
+    .expect("V2 row");
+    let envelope = riffdb_storage_api::encode_index_entry_v2(&row).expect("canonical V2 envelope");
+    HistoricalSemanticEvidence::IndexMigrationRow(
+        riffdb_storage_api::decode_index_migration_row(&key, envelope.as_bytes())
+            .expect("checked V2 migration evidence"),
+    )
+}
+
 fn entity_key_evidence(
     bundle: &ValidatedContractBundle,
     key: EntityKey,
@@ -1030,8 +1569,16 @@ contract StartupBoundary version 1 {
 fn evidence_pages(
     evidence: Vec<HistoricalSemanticEvidence>,
 ) -> Vec<Vec<HistoricalSemanticEvidence>> {
-    evidence
-        .chunks(500)
-        .map(<[HistoricalSemanticEvidence]>::to_vec)
-        .collect()
+    let mut pages = Vec::new();
+    let mut page = Vec::with_capacity(500);
+    for item in evidence {
+        page.push(item);
+        if page.len() == 500 {
+            pages.push(std::mem::replace(&mut page, Vec::with_capacity(500)));
+        }
+    }
+    if !page.is_empty() {
+        pages.push(page);
+    }
+    pages
 }

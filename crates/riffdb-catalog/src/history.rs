@@ -1,15 +1,25 @@
 //! Same-session exact-end historical catalog validation.
 
+use std::collections::VecDeque;
+use std::error::Error;
 use std::fmt;
+use std::marker::PhantomData;
 use std::sync::Arc;
 
-use riffdb_contract_ir::{CompatibilityClass, IndexSchema};
+use riffdb_contract_ir::{CompatibilityClass, EntitySchema, IndexSchema, KeyPurpose, SchemaIr};
+use riffdb_invariant::{EvaluationError, ExpressionValueSource, evaluate_expression};
 use riffdb_storage_api::{
     EvidencePageLimit, HistoricalBundleEvidence, HistoricalEvidenceCursor, HistoricalEvidenceEnd,
     HistoricalEvidencePage, HistoricalPersistedKeyEvidenceV1, HistoricalSemanticEvidence,
-    IrOpaquePersistedKeyV1, OpenSessionId, StructuralEvidenceSession,
+    IndexMigrationCursor, IndexMigrationRowEvidence, IndexMigrationSemanticRow,
+    IrOpaquePersistedKeyV1, MAX_INDEX_MIGRATION_PAGE_BYTES, MAX_INDEX_MIGRATION_PAGE_ENTRIES,
+    OpenSessionId, StartupIndexMigrationPort, StorageError, StorageValueError, StoredIndexEntryV2,
+    StructuralEvidenceSession,
 };
-use riffdb_types::{DatabaseId, IndexId};
+use riffdb_types::{
+    CanonicalValue, ContractBundleHash, ContractLineage, ContractVersion, DatabaseId, FieldId,
+    IndexId, PartitionKey,
+};
 
 use crate::lineage::{LineageBudget, LineageMaterializationProof};
 use crate::{
@@ -79,8 +89,776 @@ impl fmt::Debug for ValidatedCatalogHistory {
 
 /// Catalog proof paired with storage's unforgeable historical exact-end token.
 pub struct CatalogHistoryValidation<E> {
-    history: ValidatedCatalogHistory,
+    outcome: CatalogHistoryOutcome,
     historical_end: E,
+}
+
+/// Closed result of consuming the complete historical evidence stream.
+pub enum CatalogHistoryOutcome {
+    /// Every physical index row was current V2 and catalog-valid.
+    Ready(ValidatedCatalogHistory),
+    /// At least one checked V1 row exists; this value cannot become readiness.
+    MigrationRequired(CatalogIndexMigrationContext),
+}
+
+/// Non-readiness catalog state paired with storage's migration capability.
+pub struct CatalogIndexMigrationContext {
+    database_id: DatabaseId,
+    open_session_id: OpenSessionId,
+    bindings: Vec<HistoricalBindingRef>,
+    evidence_count: u64,
+    next: IndexMigrationCursor,
+    last_physical_key: Option<riffdb_types::IndexEntryKey>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct HistoricalBindingRef {
+    lineage: ContractLineage,
+    version: ContractVersion,
+    bundle_hash: ContractBundleHash,
+}
+
+type BackendBrand<B> = PhantomData<fn(B) -> B>;
+
+#[derive(Default)]
+struct IndexMigrationPageLedgers {
+    evidence: usize,
+    instructions: usize,
+}
+
+impl IndexMigrationPageLedgers {
+    fn push(
+        &mut self,
+        evidence_charge: usize,
+        instruction_charge: usize,
+    ) -> Result<(), StorageValueError> {
+        let evidence = self
+            .evidence
+            .checked_add(evidence_charge)
+            .ok_or(StorageValueError::SizeOverflow)?;
+        let instructions = self
+            .instructions
+            .checked_add(instruction_charge)
+            .ok_or(StorageValueError::SizeOverflow)?;
+        if evidence > MAX_INDEX_MIGRATION_PAGE_BYTES
+            || instructions > MAX_INDEX_MIGRATION_PAGE_BYTES
+        {
+            return Err(StorageValueError::LimitExceeded);
+        }
+        self.evidence = evidence;
+        self.instructions = instructions;
+        Ok(())
+    }
+}
+
+/// Concrete backend port consumed only by the catalog-owned migration driver.
+pub trait CatalogIndexMigrationBackend: StartupIndexMigrationPort + Sized {
+    /// Dormant storage value returned only after catalog and storage reach exact end.
+    type Output;
+
+    /// Consumes one catalog-minted request into a bounded page or explicit exact end.
+    fn read_index_migration_page(
+        self,
+        request: CatalogIndexMigrationScanRequest<Self>,
+    ) -> Result<CatalogIndexMigrationScan<Self>, StorageError>;
+
+    /// Consumes one catalog-minted row request into its exact retained bundle response.
+    fn read_historical_bundle(
+        self,
+        request: CatalogIndexMigrationBundleRequest<Self>,
+    ) -> Result<CatalogIndexMigrationBundleResponse<Self>, StorageError>;
+
+    /// Applies one complete catalog-owned page atomically and returns applied type-state.
+    fn apply_index_migration_batch(
+        self,
+        pending: CatalogIndexMigrationPendingBatch<Self>,
+    ) -> Result<CatalogIndexMigrationApplied<Self>, StorageError>;
+
+    /// Consumes exact catalog completion into the backend's dormant output.
+    fn finish_index_migration(
+        self,
+        completion: CatalogIndexMigrationCompletion<Self>,
+    ) -> Result<Self::Output, StorageError>;
+}
+
+/// Move-only catalog driver that is inseparably branded to one concrete backend type.
+pub struct CatalogIndexMigrationDriver<B> {
+    context: CatalogIndexMigrationContext,
+    backend: B,
+    _backend: BackendBrand<B>,
+}
+
+/// Catalog-only authority to request the next physical migration page.
+pub struct CatalogIndexMigrationScanRequest<B> {
+    cursor: IndexMigrationCursor,
+    after: Option<riffdb_types::IndexEntryKey>,
+    _backend: BackendBrand<B>,
+}
+
+/// Explicit consuming result of one catalog-authorized migration scan request.
+pub enum CatalogIndexMigrationScan<B> {
+    /// One nonempty bounded page retaining the concrete backend port.
+    Page(CatalogIndexMigrationPage<B>),
+    /// Exact physical end retaining the concrete backend port.
+    ExactEnd(CatalogIndexMigrationExactEnd<B>),
+}
+
+/// One nonempty codec-checked page bound to its request and concrete backend.
+pub struct CatalogIndexMigrationPage<B> {
+    backend: B,
+    start: IndexMigrationCursor,
+    next: IndexMigrationCursor,
+    rows: VecDeque<IndexMigrationRowEvidence>,
+    evidence_page_charge: usize,
+    instruction_page_charge: usize,
+    final_physical_key: riffdb_types::IndexEntryKey,
+    _backend: BackendBrand<B>,
+}
+
+/// Exact scan-end response that can only consume a catalog scan request.
+pub struct CatalogIndexMigrationExactEnd<B> {
+    backend: B,
+    cursor: IndexMigrationCursor,
+    _backend: BackendBrand<B>,
+}
+
+/// One catalog-minted request for the exact bundle bound to one codec-checked row.
+pub struct CatalogIndexMigrationBundleRequest<B> {
+    database_id: DatabaseId,
+    open_session_id: OpenSessionId,
+    row: IndexMigrationRowEvidence,
+    _backend: BackendBrand<B>,
+}
+
+/// Same-request bundle response retaining the row and concrete backend port.
+pub struct CatalogIndexMigrationBundleResponse<B> {
+    backend: B,
+    row: IndexMigrationRowEvidence,
+    bundle: HistoricalBundleEvidence,
+    _backend: BackendBrand<B>,
+}
+
+/// Closed catalog-derived action for one exact codec-checked migration row.
+///
+/// ```compile_fail
+/// use riffdb_catalog::{
+///     CatalogIndexMigrationInstruction, CatalogIndexMigrationV2Confirm,
+/// };
+/// let confirmation = CatalogIndexMigrationV2Confirm { expected: panic!() };
+/// let _ = CatalogIndexMigrationInstruction::V2Confirm(confirmation);
+/// ```
+pub enum CatalogIndexMigrationInstruction {
+    /// Compare the exact V1 envelope and replace it with the derived V2 row.
+    V1Rewrite(CatalogIndexMigrationV1Rewrite),
+    /// Compare and confirm an exact V2 envelope without writing it.
+    V2Confirm(CatalogIndexMigrationV2Confirm),
+}
+
+/// Field-private V1 rewrite material minted only after catalog derivation.
+pub struct CatalogIndexMigrationV1Rewrite {
+    expected: IndexMigrationRowEvidence,
+    replacement: StoredIndexEntryV2,
+}
+
+/// Field-private V2 confirmation material minted only after catalog derivation.
+pub struct CatalogIndexMigrationV2Confirm {
+    expected: IndexMigrationRowEvidence,
+}
+
+/// Complete catalog-owned instruction batch branded to exactly one backend type.
+///
+/// ```compile_fail
+/// use riffdb_catalog::CatalogIndexMigrationBatch;
+/// fn substitute<A, B>(batch: CatalogIndexMigrationBatch<A>)
+///     -> CatalogIndexMigrationBatch<B>
+/// {
+///     batch
+/// }
+/// ```
+///
+/// ```compile_fail
+/// use std::marker::PhantomData;
+/// use riffdb_catalog::CatalogIndexMigrationBatch;
+/// struct LocalBackend;
+/// let _batch: CatalogIndexMigrationBatch<LocalBackend> = CatalogIndexMigrationBatch {
+///     start: panic!(),
+///     next: panic!(),
+///     instructions: Vec::new(),
+///     evidence_page_charge: 0,
+///     instruction_page_charge: 0,
+///     final_physical_key: panic!(),
+///     _backend: PhantomData,
+/// };
+/// ```
+pub struct CatalogIndexMigrationBatch<B> {
+    start: IndexMigrationCursor,
+    next: IndexMigrationCursor,
+    instructions: Vec<CatalogIndexMigrationInstruction>,
+    evidence_page_charge: usize,
+    instruction_page_charge: usize,
+    final_physical_key: riffdb_types::IndexEntryKey,
+    _backend: BackendBrand<B>,
+}
+
+/// Catalog continuation and exact batch awaiting one atomic backend apply.
+///
+/// ```compile_fail
+/// use std::marker::PhantomData;
+/// use riffdb_catalog::CatalogIndexMigrationPendingBatch;
+/// struct LocalBackend;
+/// let _pending: CatalogIndexMigrationPendingBatch<LocalBackend> =
+///     CatalogIndexMigrationPendingBatch {
+///         context: panic!(),
+///         batch: panic!(),
+///         _backend: PhantomData,
+///     };
+/// ```
+pub struct CatalogIndexMigrationPendingBatch<B> {
+    context: CatalogIndexMigrationContext,
+    batch: CatalogIndexMigrationBatch<B>,
+    _backend: BackendBrand<B>,
+}
+
+/// Applied catalog continuation returned only by consuming its matching pending batch.
+///
+/// ```compile_fail
+/// use std::marker::PhantomData;
+/// use riffdb_catalog::CatalogIndexMigrationApplied;
+/// struct LocalBackend;
+/// let _applied: CatalogIndexMigrationApplied<LocalBackend> = CatalogIndexMigrationApplied {
+///     context: panic!(),
+///     backend: LocalBackend,
+///     _backend: PhantomData,
+/// };
+/// ```
+pub struct CatalogIndexMigrationApplied<B> {
+    context: CatalogIndexMigrationContext,
+    backend: B,
+    _backend: BackendBrand<B>,
+}
+
+/// Exact catalog completion branded to one concrete backend implementation.
+///
+/// ```compile_fail
+/// use std::marker::PhantomData;
+/// use riffdb_catalog::CatalogIndexMigrationCompletion;
+/// struct LocalBackend;
+/// let _completion: CatalogIndexMigrationCompletion<LocalBackend> =
+///     CatalogIndexMigrationCompletion {
+///         final_cursor: panic!(),
+///         _backend: PhantomData,
+///     };
+/// ```
+pub struct CatalogIndexMigrationCompletion<B> {
+    final_cursor: IndexMigrationCursor,
+    _backend: BackendBrand<B>,
+}
+
+/// Closed failure from the catalog-owned driver.
+#[derive(Clone, Eq, PartialEq)]
+pub enum CatalogIndexMigrationDriveError {
+    /// Historical contract interpretation or identity validation failed.
+    Catalog(CatalogError),
+    /// The concrete backend failed a requested storage transition.
+    Storage(StorageError),
+}
+
+impl CatalogIndexMigrationContext {
+    /// Returns the durable database bound to the consumed validation pass.
+    #[must_use]
+    pub const fn database_id(&self) -> DatabaseId {
+        self.database_id
+    }
+
+    /// Returns the process-local startup session bound to this context.
+    #[must_use]
+    pub const fn open_session_id(&self) -> OpenSessionId {
+        self.open_session_id
+    }
+
+    /// Returns the number of initial historical evidence items consumed.
+    #[must_use]
+    pub const fn evidence_count(&self) -> u64 {
+        self.evidence_count
+    }
+}
+
+impl<B> CatalogIndexMigrationScanRequest<B>
+where
+    B: StartupIndexMigrationPort,
+{
+    /// Returns the exact database/session/position catalog is requesting.
+    #[must_use]
+    pub const fn cursor(&self) -> IndexMigrationCursor {
+        self.cursor
+    }
+
+    /// Consumes this request into one checked nonempty physical-order page.
+    pub fn page(
+        self,
+        backend: B,
+        rows: Vec<IndexMigrationRowEvidence>,
+        next: IndexMigrationCursor,
+    ) -> Result<CatalogIndexMigrationScan<B>, StorageValueError> {
+        ensure_backend_identity(&backend, self.cursor)?;
+        if rows.is_empty() {
+            return Err(StorageValueError::Empty);
+        }
+        if rows.len() > MAX_INDEX_MIGRATION_PAGE_ENTRIES {
+            return Err(StorageValueError::LimitExceeded);
+        }
+        let count = u64::try_from(rows.len()).map_err(|_| StorageValueError::SizeOverflow)?;
+        if next.database_id() != self.cursor.database_id()
+            || next.open_session_id() != self.cursor.open_session_id()
+            || self.cursor.advanced(count)? != next
+        {
+            return Err(StorageValueError::IdentityMismatch);
+        }
+
+        let mut ledgers = IndexMigrationPageLedgers::default();
+        let mut prior = self.after.as_ref();
+        for row in &rows {
+            if prior.is_some_and(|key: &riffdb_types::IndexEntryKey| {
+                key.as_bytes() >= row.physical_key().as_bytes()
+            }) {
+                return Err(StorageValueError::NonCanonicalOrder);
+            }
+            ledgers.push(row.evidence_page_charge(), row.instruction_page_charge())?;
+            prior = Some(row.physical_key());
+        }
+        let final_physical_key = rows
+            .last()
+            .expect("nonempty migration page checked above")
+            .physical_key()
+            .clone();
+
+        Ok(CatalogIndexMigrationScan::Page(CatalogIndexMigrationPage {
+            backend,
+            start: self.cursor,
+            next,
+            rows: rows.into(),
+            evidence_page_charge: ledgers.evidence,
+            instruction_page_charge: ledgers.instructions,
+            final_physical_key,
+            _backend: PhantomData,
+        }))
+    }
+
+    /// Consumes this exact request into an explicit physical end response.
+    pub fn exact_end(self, backend: B) -> Result<CatalogIndexMigrationScan<B>, StorageValueError> {
+        ensure_backend_identity(&backend, self.cursor)?;
+        Ok(CatalogIndexMigrationScan::ExactEnd(
+            CatalogIndexMigrationExactEnd {
+                backend,
+                cursor: self.cursor,
+                _backend: PhantomData,
+            },
+        ))
+    }
+}
+
+impl<B> CatalogIndexMigrationBundleRequest<B>
+where
+    B: StartupIndexMigrationPort,
+{
+    /// Borrows the only codec-checked row this point read may resolve.
+    #[must_use]
+    pub const fn evidence(&self) -> &IndexMigrationRowEvidence {
+        &self.row
+    }
+
+    /// Consumes this request with the exact bundle and continuing backend port.
+    pub fn respond(
+        self,
+        backend: B,
+        bundle: HistoricalBundleEvidence,
+    ) -> Result<CatalogIndexMigrationBundleResponse<B>, StorageValueError> {
+        if backend.database_id() != self.database_id
+            || backend.open_session_id() != self.open_session_id
+        {
+            return Err(StorageValueError::IdentityMismatch);
+        }
+        Ok(CatalogIndexMigrationBundleResponse {
+            backend,
+            row: self.row,
+            bundle,
+            _backend: PhantomData,
+        })
+    }
+}
+
+impl CatalogIndexMigrationInstruction {
+    /// Borrows the exact physical key, semantic row, and observed envelope.
+    #[must_use]
+    pub const fn expected(&self) -> &IndexMigrationRowEvidence {
+        match self {
+            Self::V1Rewrite(rewrite) => &rewrite.expected,
+            Self::V2Confirm(confirm) => &confirm.expected,
+        }
+    }
+
+    /// Borrows the exact catalog-derived V2 post-image when this instruction writes.
+    #[must_use]
+    pub const fn replacement(&self) -> Option<&StoredIndexEntryV2> {
+        match self {
+            Self::V1Rewrite(rewrite) => Some(&rewrite.replacement),
+            Self::V2Confirm(_) => None,
+        }
+    }
+}
+
+impl CatalogIndexMigrationV1Rewrite {
+    /// Borrows the exact codec-checked V1 expectation.
+    #[must_use]
+    pub const fn expected(&self) -> &IndexMigrationRowEvidence {
+        &self.expected
+    }
+
+    /// Borrows the exact catalog-derived V2 replacement.
+    #[must_use]
+    pub const fn replacement(&self) -> &StoredIndexEntryV2 {
+        &self.replacement
+    }
+}
+
+impl CatalogIndexMigrationV2Confirm {
+    /// Borrows the exact codec-checked V2 expectation.
+    #[must_use]
+    pub const fn expected(&self) -> &IndexMigrationRowEvidence {
+        &self.expected
+    }
+}
+
+impl<B> CatalogIndexMigrationBatch<B> {
+    /// Returns the exact cursor that produced this page.
+    #[must_use]
+    pub const fn start(&self) -> IndexMigrationCursor {
+        self.start
+    }
+
+    /// Returns the continuation reached only after complete atomic apply.
+    #[must_use]
+    pub const fn next(&self) -> IndexMigrationCursor {
+        self.next
+    }
+
+    /// Borrows one catalog-derived instruction per row in physical order.
+    #[must_use]
+    pub fn instructions(&self) -> &[CatalogIndexMigrationInstruction] {
+        &self.instructions
+    }
+
+    /// Returns the exact checked evidence ledger charge.
+    #[must_use]
+    pub const fn evidence_page_charge(&self) -> usize {
+        self.evidence_page_charge
+    }
+
+    /// Returns the conservative checked instruction/write ledger charge.
+    #[must_use]
+    pub const fn instruction_page_charge(&self) -> usize {
+        self.instruction_page_charge
+    }
+}
+
+impl<B> CatalogIndexMigrationPendingBatch<B>
+where
+    B: StartupIndexMigrationPort,
+{
+    /// Borrows the complete read-only batch to compare and apply atomically.
+    #[must_use]
+    pub const fn batch(&self) -> &CatalogIndexMigrationBatch<B> {
+        &self.batch
+    }
+
+    /// Records successful atomic apply while consuming the exact pending state.
+    ///
+    /// A concrete backend must call this only after its all-or-none durable apply
+    /// succeeds. The returned applied state is accepted only by the catalog driver.
+    pub fn applied(
+        mut self,
+        backend: B,
+    ) -> Result<CatalogIndexMigrationApplied<B>, StorageValueError> {
+        ensure_backend_identity(&backend, self.batch.next)?;
+        if self.context.next != self.batch.start {
+            return Err(StorageValueError::IdentityMismatch);
+        }
+        self.context.next = self.batch.next;
+        self.context.last_physical_key = Some(self.batch.final_physical_key);
+        Ok(CatalogIndexMigrationApplied {
+            context: self.context,
+            backend,
+            _backend: PhantomData,
+        })
+    }
+}
+
+impl<B> CatalogIndexMigrationCompletion<B> {
+    /// Returns the final exact database/session/position consumed by catalog.
+    #[must_use]
+    pub const fn final_cursor(&self) -> IndexMigrationCursor {
+        self.final_cursor
+    }
+}
+
+impl<B> CatalogIndexMigrationDriver<B>
+where
+    B: CatalogIndexMigrationBackend,
+{
+    /// Binds an opaque catalog context to the one matching concrete backend port.
+    pub fn new(
+        context: CatalogIndexMigrationContext,
+        backend: B,
+    ) -> Result<Self, CatalogIndexMigrationDriveError> {
+        ensure_context_backend_identity(&context, &backend)?;
+        Ok(Self {
+            context,
+            backend,
+            _backend: PhantomData,
+        })
+    }
+
+    /// Consumes the complete page/bundle/apply/end protocol without exposing proofs.
+    pub fn run(self) -> Result<B::Output, CatalogIndexMigrationDriveError> {
+        let Self {
+            mut context,
+            mut backend,
+            _backend: _,
+        } = self;
+        ensure_context_backend_identity(&context, &backend)?;
+
+        loop {
+            let request = CatalogIndexMigrationScanRequest {
+                cursor: context.next,
+                after: context.last_physical_key.clone(),
+                _backend: PhantomData,
+            };
+            match backend.read_index_migration_page(request)? {
+                CatalogIndexMigrationScan::Page(page) => {
+                    let CatalogIndexMigrationPage {
+                        backend: page_backend,
+                        start,
+                        next,
+                        mut rows,
+                        evidence_page_charge,
+                        instruction_page_charge,
+                        final_physical_key,
+                        _backend: _,
+                    } = page;
+                    if start != context.next {
+                        return Err(invalid_migration_history().into());
+                    }
+                    backend = page_backend;
+                    let mut instructions = Vec::with_capacity(rows.len());
+                    while let Some(row) = rows.pop_front() {
+                        let request = CatalogIndexMigrationBundleRequest {
+                            database_id: context.database_id,
+                            open_session_id: context.open_session_id,
+                            row,
+                            _backend: PhantomData,
+                        };
+                        let response = backend.read_historical_bundle(request)?;
+                        let CatalogIndexMigrationBundleResponse {
+                            backend: response_backend,
+                            row,
+                            bundle,
+                            _backend: _,
+                        } = response;
+                        backend = response_backend;
+                        instructions
+                            .push(derive_index_migration_instruction(&context, row, bundle)?);
+                    }
+                    let batch = CatalogIndexMigrationBatch {
+                        start,
+                        next,
+                        instructions,
+                        evidence_page_charge,
+                        instruction_page_charge,
+                        final_physical_key,
+                        _backend: PhantomData,
+                    };
+                    let pending = CatalogIndexMigrationPendingBatch {
+                        context,
+                        batch,
+                        _backend: PhantomData,
+                    };
+                    let applied = backend.apply_index_migration_batch(pending)?;
+                    context = applied.context;
+                    backend = applied.backend;
+                }
+                CatalogIndexMigrationScan::ExactEnd(end) => {
+                    if end.cursor != context.next {
+                        return Err(invalid_migration_history().into());
+                    }
+                    let completion = CatalogIndexMigrationCompletion {
+                        final_cursor: end.cursor,
+                        _backend: PhantomData,
+                    };
+                    return end
+                        .backend
+                        .finish_index_migration(completion)
+                        .map_err(Into::into);
+                }
+            }
+        }
+    }
+}
+
+fn ensure_backend_identity<B>(
+    backend: &B,
+    cursor: IndexMigrationCursor,
+) -> Result<(), StorageValueError>
+where
+    B: StartupIndexMigrationPort,
+{
+    if backend.database_id() != cursor.database_id()
+        || backend.open_session_id() != cursor.open_session_id()
+    {
+        return Err(StorageValueError::IdentityMismatch);
+    }
+    Ok(())
+}
+
+fn ensure_context_backend_identity<B>(
+    context: &CatalogIndexMigrationContext,
+    backend: &B,
+) -> Result<(), CatalogIndexMigrationDriveError>
+where
+    B: StartupIndexMigrationPort,
+{
+    if backend.database_id() != context.database_id
+        || backend.open_session_id() != context.open_session_id
+        || context.next.database_id() != context.database_id
+        || context.next.open_session_id() != context.open_session_id
+    {
+        return Err(invalid_migration_history().into());
+    }
+    Ok(())
+}
+
+fn derive_index_migration_instruction(
+    context: &CatalogIndexMigrationContext,
+    row: IndexMigrationRowEvidence,
+    bundle_evidence: HistoricalBundleEvidence,
+) -> Result<CatalogIndexMigrationInstruction, CatalogError> {
+    let binding = row.row().schema_binding();
+    if !context.bindings.iter().any(|candidate| {
+        candidate.lineage == *binding.lineage()
+            && candidate.version == binding.contract_version()
+            && candidate.bundle_hash == binding.bundle_hash()
+    }) || bundle_evidence.lineage() != binding.lineage()
+        || bundle_evidence.version() != binding.contract_version()
+        || bundle_evidence.bundle_hash() != binding.bundle_hash()
+    {
+        return Err(invalid_migration_history());
+    }
+
+    let bundle = validate_bundle_evidence(&bundle_evidence)?;
+    let (entity, index) = find_index_owner(bundle.bundle().schema(), row.physical_key().index_id())
+        .ok_or_else(|| CatalogError::new(CatalogErrorKind::InvalidHistoricalKey))?;
+    let decoded = index
+        .key_schema()
+        .decode_index(row.physical_key())
+        .map_err(|_| CatalogError::new(CatalogErrorKind::InvalidHistoricalKey))?;
+    let partition =
+        derive_historical_partition(bundle.bundle().schema(), entity, decoded.entity_key())?;
+
+    match row.row() {
+        IndexMigrationSemanticRow::V1(source) => {
+            let replacement = StoredIndexEntryV2::new(
+                source.key().clone(),
+                source.schema_binding().clone(),
+                source.covered_values().clone(),
+                partition,
+            )
+            .map_err(|_| invalid_migration_history())?;
+            Ok(CatalogIndexMigrationInstruction::V1Rewrite(
+                CatalogIndexMigrationV1Rewrite {
+                    expected: row,
+                    replacement,
+                },
+            ))
+        }
+        IndexMigrationSemanticRow::V2(source) => {
+            if source.partition_key() != &partition {
+                return Err(invalid_migration_history());
+            }
+            Ok(CatalogIndexMigrationInstruction::V2Confirm(
+                CatalogIndexMigrationV2Confirm { expected: row },
+            ))
+        }
+    }
+}
+
+fn invalid_migration_history() -> CatalogError {
+    CatalogError::new(CatalogErrorKind::InvalidHistoricalEvidence)
+}
+
+impl From<CatalogError> for CatalogIndexMigrationDriveError {
+    fn from(error: CatalogError) -> Self {
+        Self::Catalog(error)
+    }
+}
+
+impl From<StorageError> for CatalogIndexMigrationDriveError {
+    fn from(error: StorageError) -> Self {
+        Self::Storage(error)
+    }
+}
+
+impl fmt::Debug for CatalogIndexMigrationDriveError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Catalog(error) => formatter.debug_tuple("Catalog").field(error).finish(),
+            Self::Storage(error) => formatter.debug_tuple("Storage").field(error).finish(),
+        }
+    }
+}
+
+impl fmt::Display for CatalogIndexMigrationDriveError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Catalog(error) => error.fmt(formatter),
+            Self::Storage(error) => error.fmt(formatter),
+        }
+    }
+}
+
+impl Error for CatalogIndexMigrationDriveError {}
+
+impl<B> fmt::Debug for CatalogIndexMigrationPendingBatch<B> {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("CatalogIndexMigrationPendingBatch")
+            .field("start", &self.batch.start)
+            .field("next", &self.batch.next)
+            .field("state", &"[PENDING]")
+            .finish()
+    }
+}
+
+impl fmt::Debug for CatalogIndexMigrationContext {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("CatalogIndexMigrationContext")
+            .field("database_id", &self.database_id)
+            .field("open_session_id", &self.open_session_id)
+            .field("binding_count", &self.bindings.len())
+            .field("evidence_count", &self.evidence_count)
+            .finish()
+    }
+}
+
+impl fmt::Debug for CatalogHistoryOutcome {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Ready(history) => formatter.debug_tuple("Ready").field(history).finish(),
+            Self::MigrationRequired(context) => formatter
+                .debug_tuple("MigrationRequired")
+                .field(context)
+                .finish(),
+        }
+    }
 }
 
 #[derive(Default)]
@@ -91,19 +869,20 @@ struct HistoricalValidationState {
     lineage_bundles: Vec<ValidatedContractBundle>,
     lineage_budget: LineageBudget,
     lineage_proof: Option<Arc<LineageMaterializationProof>>,
+    saw_v1_index: bool,
 }
 
 impl<E> CatalogHistoryValidation<E> {
-    /// Borrows the opaque catalog-owned proof.
+    /// Borrows the closed catalog outcome.
     #[must_use]
-    pub const fn history(&self) -> &ValidatedCatalogHistory {
-        &self.history
+    pub const fn outcome(&self) -> &CatalogHistoryOutcome {
+        &self.outcome
     }
 
-    /// Consumes the pair for WP-130's structural finish and readiness join.
+    /// Consumes the pair for WP-130's exact startup-outcome join.
     #[must_use]
-    pub fn into_parts(self) -> (ValidatedCatalogHistory, E) {
-        (self.history, self.historical_end)
+    pub fn into_parts(self) -> (CatalogHistoryOutcome, E) {
+        (self.outcome, self.historical_end)
     }
 }
 
@@ -143,8 +922,8 @@ pub fn validate_catalog_history<S: StructuralEvidenceSession>(
                     ));
                 }
 
-                for item in &evidence {
-                    let order_key = historical_order_key(item);
+                for item in evidence {
+                    let order_key = historical_order_key(&item);
                     if last_order_key
                         .as_ref()
                         .is_some_and(|prior| prior >= &order_key)
@@ -180,21 +959,43 @@ pub fn validate_catalog_history<S: StructuralEvidenceSession>(
         ));
     }
 
-    Ok(CatalogHistoryValidation {
-        history: ValidatedCatalogHistory {
+    let outcome = if state.saw_v1_index {
+        let bindings = state
+            .lineage_bundles
+            .iter()
+            .map(|bundle| HistoricalBindingRef {
+                lineage: bundle.lineage().clone(),
+                version: bundle.contract_version(),
+                bundle_hash: bundle.bundle_hash(),
+            })
+            .collect();
+        CatalogHistoryOutcome::MigrationRequired(CatalogIndexMigrationContext {
+            database_id,
+            open_session_id,
+            bindings,
+            evidence_count,
+            next: IndexMigrationCursor::start(database_id, open_session_id),
+            last_physical_key: None,
+        })
+    } else {
+        CatalogHistoryOutcome::Ready(ValidatedCatalogHistory {
             database_id,
             open_session_id,
             active: state.active,
             lineage_proof: state.lineage_proof,
             evidence_count,
-        },
+        })
+    };
+
+    Ok(CatalogHistoryValidation {
+        outcome,
         historical_end,
     })
 }
 
 fn validate_historical_item<S: StructuralEvidenceSession>(
     session: &mut S,
-    item: &HistoricalSemanticEvidence,
+    item: HistoricalSemanticEvidence,
     state: &mut HistoricalValidationState,
 ) -> Result<(), CatalogError> {
     match item {
@@ -208,7 +1009,7 @@ fn validate_historical_item<S: StructuralEvidenceSession>(
                 .lineage_budget
                 .push_bundle(evidence.bytes().as_bytes().len())
                 .map_err(map_history_lineage_error)?;
-            let bundle = validate_bundle_evidence(evidence)?;
+            let bundle = validate_bundle_evidence(&evidence)?;
             validate_historical_bundle_parent(&bundle, state.terminal_bundle.as_ref())?;
             state.lineage_bundles.push(bundle.clone());
             state.terminal_bundle = Some(bundle);
@@ -221,7 +1022,7 @@ fn validate_historical_item<S: StructuralEvidenceSession>(
                     reference.contract_bundle_hash(),
                 )
                 .ok_or_else(|| CatalogError::new(CatalogErrorKind::UnknownExecutablePlan))?;
-            bundle.resolve_plan_with_proof(reference, Arc::clone(proof), ordinal)?;
+            bundle.resolve_plan_with_proof(&reference, Arc::clone(proof), ordinal)?;
         }
         HistoricalSemanticEvidence::ActiveCatalog(observed) => {
             if state.active_seen {
@@ -255,7 +1056,11 @@ fn validate_historical_item<S: StructuralEvidenceSession>(
         }
         HistoricalSemanticEvidence::PersistedKey(evidence) => {
             let proof = ensure_lineage_proof(&state.lineage_bundles, &mut state.lineage_proof)?;
-            validate_persisted_key(session, proof, evidence)?;
+            validate_persisted_key(session, proof, &evidence)?;
+        }
+        HistoricalSemanticEvidence::IndexMigrationRow(evidence) => {
+            let proof = ensure_lineage_proof(&state.lineage_bundles, &mut state.lineage_proof)?;
+            state.saw_v1_index |= validate_index_migration_row(session, proof, &evidence)?;
         }
         HistoricalSemanticEvidence::CapabilityPartition(evidence) => {
             let active = state
@@ -267,6 +1072,108 @@ fn validate_historical_item<S: StructuralEvidenceSession>(
         }
     }
     Ok(())
+}
+
+fn validate_index_migration_row<S: StructuralEvidenceSession>(
+    session: &mut S,
+    lineage_proof: &LineageMaterializationProof,
+    evidence: &IndexMigrationRowEvidence,
+) -> Result<bool, CatalogError> {
+    let binding = evidence.row().schema_binding();
+    let bundle = load_historical_bundle(
+        session,
+        binding.lineage(),
+        binding.contract_version(),
+        binding.bundle_hash(),
+    )?;
+    if lineage_proof.exact_binding_member(binding).is_none() {
+        return Err(CatalogError::new(
+            CatalogErrorKind::InvalidHistoricalEvidence,
+        ));
+    }
+    let (entity, index) =
+        find_index_owner(bundle.bundle().schema(), evidence.physical_key().index_id())
+            .ok_or_else(|| CatalogError::new(CatalogErrorKind::InvalidHistoricalKey))?;
+    let decoded = index
+        .key_schema()
+        .decode_index(evidence.physical_key())
+        .map_err(|_| CatalogError::new(CatalogErrorKind::InvalidHistoricalKey))?;
+    let partition =
+        derive_historical_partition(bundle.bundle().schema(), entity, decoded.entity_key())?;
+    if evidence
+        .row()
+        .stored_partition()
+        .is_some_and(|stored| stored != &partition)
+    {
+        return Err(CatalogError::new(
+            CatalogErrorKind::InvalidHistoricalEvidence,
+        ));
+    }
+    Ok(evidence.row().is_v1())
+}
+
+fn derive_historical_partition(
+    schema: &SchemaIr,
+    entity: &EntitySchema,
+    key: &riffdb_types::EntityKey,
+) -> Result<PartitionKey, CatalogError> {
+    let key_values = entity
+        .primary_key()
+        .decode_entity(key)
+        .map_err(|_| CatalogError::new(CatalogErrorKind::InvalidHistoricalKey))?;
+    let aggregate = schema
+        .aggregate_for_entity(entity.id())
+        .ok_or_else(|| CatalogError::new(CatalogErrorKind::InvalidHistoricalEvidence))?;
+    let root = schema
+        .entity(aggregate.root())
+        .ok_or_else(|| CatalogError::new(CatalogErrorKind::InvalidHistoricalEvidence))?;
+    let root_count = root.primary_key_fields().len();
+    if key_values.len() < root_count {
+        return Err(CatalogError::new(CatalogErrorKind::InvalidHistoricalKey));
+    }
+    let values = HistoricalRootKeyValues {
+        entity_type: root.id(),
+        fields: root.primary_key_fields(),
+        values: &key_values[..root_count],
+    };
+    let component = evaluate_expression(
+        aggregate.keys().expressions(),
+        aggregate.keys().partition_expression(),
+        &values,
+    )
+    .map_err(|error| match error {
+        EvaluationError::Arithmetic | EvaluationError::Integrity => {
+            CatalogError::new(CatalogErrorKind::InvalidHistoricalEvidence)
+        }
+    })?;
+    aggregate
+        .keys()
+        .partition_schema()
+        .encode_partition(&[component])
+        .map_err(|_| CatalogError::new(CatalogErrorKind::InvalidHistoricalEvidence))
+}
+
+struct HistoricalRootKeyValues<'a> {
+    entity_type: riffdb_types::EntityTypeId,
+    fields: &'a [FieldId],
+    values: &'a [CanonicalValue],
+}
+
+impl ExpressionValueSource for HistoricalRootKeyValues<'_> {
+    fn schema_field(
+        &self,
+        entity_type: riffdb_types::EntityTypeId,
+        field: FieldId,
+    ) -> Option<CanonicalValue> {
+        if entity_type != self.entity_type {
+            return None;
+        }
+        self.fields
+            .iter()
+            .position(|candidate| *candidate == field)
+            .and_then(|position| self.values.get(position))
+            .cloned()
+    }
 }
 
 fn validate_historical_bundle_parent(
@@ -343,10 +1250,6 @@ fn validate_persisted_key<S: StructuralEvidenceSession>(
             .schema()
             .entity(*entity_type_id)
             .is_some_and(|entity| entity.primary_key().decode_entity(key).is_ok()),
-        IrOpaquePersistedKeyV1::IndexEntry { index_id, key } => {
-            find_index(bundle.bundle().schema().entities(), *index_id)
-                .is_some_and(|index| index.key_schema().decode_index(key).is_ok())
-        }
         IrOpaquePersistedKeyV1::IndexRangePrefix(prefix) => {
             find_index(bundle.bundle().schema().entities(), prefix.index_id()).is_some_and(
                 |index| {
@@ -390,6 +1293,23 @@ fn find_index(
         .iter()
         .flat_map(riffdb_contract_ir::EntitySchema::indexes)
         .find(|index| index.id() == index_id)
+}
+
+fn find_index_owner(schema: &SchemaIr, index_id: IndexId) -> Option<(&EntitySchema, &IndexSchema)> {
+    schema.entities().iter().find_map(|entity| {
+        entity.indexes().iter().find_map(|index| {
+            if index.id() != index_id {
+                return None;
+            }
+            match index.key_schema().purpose() {
+                KeyPurpose::Index {
+                    entity_type,
+                    index_id: owner,
+                } if entity_type == entity.id() && owner == index_id => Some((entity, index)),
+                _ => None,
+            }
+        })
+    })
 }
 
 fn load_historical_bundle<S: StructuralEvidenceSession>(
@@ -453,15 +1373,25 @@ fn historical_order_key(item: &HistoricalSemanticEvidence) -> Vec<u8> {
                     entity_type_id,
                     key,
                 } => (0x01, entity_type_id.to_be_bytes(), key.as_bytes()),
-                IrOpaquePersistedKeyV1::IndexEntry { index_id, key } => {
-                    (0x02, index_id.to_be_bytes(), key.as_bytes())
-                }
                 IrOpaquePersistedKeyV1::IndexRangePrefix(prefix) => {
                     (0x03, prefix.index_id().to_be_bytes(), prefix.as_bytes())
                 }
             };
             key.push(tag);
             key.extend_from_slice(&owner);
+            let length = u32::try_from(bytes.len()).unwrap_or(u32::MAX);
+            key.extend_from_slice(&length.to_be_bytes());
+            key.extend_from_slice(bytes);
+        }
+        HistoricalSemanticEvidence::IndexMigrationRow(evidence) => {
+            key.push(0x04);
+            let binding = evidence.row().schema_binding();
+            push_lineage(&mut key, binding.lineage());
+            key.extend_from_slice(&binding.contract_version().to_be_bytes());
+            key.extend_from_slice(binding.bundle_hash().as_bytes());
+            key.push(0x02);
+            key.extend_from_slice(&evidence.physical_key().index_id().to_be_bytes());
+            let bytes = evidence.physical_key().as_bytes();
             let length = u32::try_from(bytes.len()).unwrap_or(u32::MAX);
             key.extend_from_slice(&length.to_be_bytes());
             key.extend_from_slice(bytes);
@@ -505,6 +1435,38 @@ mod tests {
 
     use super::*;
     use crate::lineage::{MAX_ACTIVE_LINEAGE_BUNDLES_V1, MAX_ACTIVE_LINEAGE_CANONICAL_BYTES_V1};
+
+    #[test]
+    fn migration_page_ledgers_accept_equal_and_reject_equal_plus_one_independently() {
+        let mut equal = IndexMigrationPageLedgers::default();
+        equal
+            .push(
+                MAX_INDEX_MIGRATION_PAGE_BYTES,
+                MAX_INDEX_MIGRATION_PAGE_BYTES,
+            )
+            .expect("both ledgers accept exactly four MiB");
+        assert_eq!(equal.evidence, MAX_INDEX_MIGRATION_PAGE_BYTES);
+        assert_eq!(equal.instructions, MAX_INDEX_MIGRATION_PAGE_BYTES);
+
+        let mut evidence = IndexMigrationPageLedgers::default();
+        evidence
+            .push(MAX_INDEX_MIGRATION_PAGE_BYTES, 1)
+            .expect("evidence ledger accepts its exact bound");
+        assert_eq!(evidence.push(1, 1), Err(StorageValueError::LimitExceeded));
+        assert_eq!(evidence.evidence, MAX_INDEX_MIGRATION_PAGE_BYTES);
+        assert_eq!(evidence.instructions, 1);
+
+        let mut instructions = IndexMigrationPageLedgers::default();
+        instructions
+            .push(1, MAX_INDEX_MIGRATION_PAGE_BYTES)
+            .expect("instruction ledger accepts its exact bound");
+        assert_eq!(
+            instructions.push(1, 1),
+            Err(StorageValueError::LimitExceeded)
+        );
+        assert_eq!(instructions.evidence, 1);
+        assert_eq!(instructions.instructions, MAX_INDEX_MIGRATION_PAGE_BYTES);
+    }
 
     #[test]
     fn startup_maps_incremental_lineage_limits_to_invalid_history() {

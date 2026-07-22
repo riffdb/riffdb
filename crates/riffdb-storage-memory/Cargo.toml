@@ -9,10 +9,13 @@ publish.workspace = true
 default = []
 
 [dependencies]
+riffdb-catalog = { version = "0.1.0", path = "../riffdb-catalog", default-features = false }
 riffdb-storage-api = { version = "0.1.0", path = "../riffdb-storage-api", default-features = false }
 riffdb-types = { version = "0.1.0", path = "../riffdb-types", default-features = false }
 
 [dev-dependencies]
+riffdb-contract-compiler = { version = "0.1.0", path = "../riffdb-contract-compiler", default-features = false }
+riffdb-storage-api = { version = "0.1.0", path = "../riffdb-storage-api", default-features = false, features = ["test-fixtures"] }
 riffdb-testkit = { path = "../riffdb-testkit", version = "0.1.0" }
 
 [lints]

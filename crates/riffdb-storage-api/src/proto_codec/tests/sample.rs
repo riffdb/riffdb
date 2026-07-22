@@ -27,10 +27,11 @@ use crate::{
     PreEvaluationCommitContext, ReadSnapshot, ScopedPartitionV1, SnapshotRequest,
     StoredAdmittedProvenanceClaimsV1, StoredCapabilityAdministrationV1, StoredCapabilityRecordV1,
     StoredCatalogAdministrationV1, StoredCommitRecordV1, StoredContractBundleV1,
-    StoredDurableEventV1, StoredEntityRecordV1, StoredIndexEntryV1, StoredIndexEpochV1,
-    StoredOutboxIntentV1, StoredOutboxStatusV1, StoredOutcomeV1, StoredPendingAdmissionV1,
-    StoredProjectionApplyV1, StoredProjectionControlV1, StoredProjectionStateV1,
-    StoredProvenanceRecordV1, StoredReadDependenciesV1, StoredServiceAuditRecordV1,
+    StoredDurableEventV1, StoredEntityRecordV1, StoredIndexEntryV1, StoredIndexEntryV2,
+    StoredIndexEpochV1, StoredOutboxIntentV1, StoredOutboxStatusV1, StoredOutcomeV1,
+    StoredPendingAdmissionV1, StoredProjectionApplyV1, StoredProjectionControlV1,
+    StoredProjectionStateV1, StoredProvenanceRecordV1, StoredReadDependenciesV1,
+    StoredServiceAuditRecordV1,
 };
 
 use super::super::command_write_set_upper_bound_v1;
@@ -297,7 +298,12 @@ pub(super) fn atomic_record_set() -> AtomicCommandRecordSet {
     let affected_current =
         AffectedEpochCurrentState::new(&affected_targets, Vec::new()).expect("affected state");
     let encoded_upper_bound =
-        command_write_set_upper_bound_v1(&intent, &[], &[]).expect("encoded upper bound");
+        match command_write_set_upper_bound_v1(&intent, &[], &[]).expect("encoded upper bound") {
+            super::super::EncodedWriteSetUpperBoundResultV1::Fits(bound) => bound,
+            super::super::EncodedWriteSetUpperBoundResultV1::ExceedsAcceptedAggregateCap(_) => {
+                panic!("small sample must fit the aggregate cap")
+            }
+        };
     let write_plan = CommandWriteSetPlanV1::new(
         &intent,
         affected_targets,
@@ -320,7 +326,7 @@ pub(super) fn atomic_record_set() -> AtomicCommandRecordSet {
     .expect("atomic record set")
 }
 
-pub(super) fn index_records() -> (StoredIndexEntryV1, StoredIndexEpochV1) {
+pub(super) fn index_records() -> (StoredIndexEntryV2, StoredIndexEpochV1) {
     let plan = plan();
     let index_id = IndexId::first();
     let mut index_key = IndexEntryKeyBuilder::new(index_id);
@@ -328,10 +334,11 @@ pub(super) fn index_records() -> (StoredIndexEntryV1, StoredIndexEpochV1) {
     let index_key = index_key
         .finish(entity_target().key().clone())
         .expect("index key");
-    let entry = StoredIndexEntryV1::new(
+    let entry = StoredIndexEntryV2::new(
         index_key,
         DurableKeySchemaBindingV1::from_plan(&plan),
         canonical_record(0x44),
+        partition_key(),
     )
     .expect("index entry");
     let mut prefix = IndexRangePrefixBuilder::new(index_id);
@@ -343,6 +350,16 @@ pub(super) fn index_records() -> (StoredIndexEntryV1, StoredIndexEpochV1) {
         IndexEpoch::first(),
     );
     (entry, epoch)
+}
+
+pub(super) fn legacy_index_record() -> StoredIndexEntryV1 {
+    let (current, _) = index_records();
+    StoredIndexEntryV1::new(
+        current.key().clone(),
+        current.schema_binding().clone(),
+        current.covered_values().clone(),
+    )
+    .expect("legacy index entry")
 }
 
 pub(super) fn catalog_records() -> (

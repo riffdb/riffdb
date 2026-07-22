@@ -10,16 +10,18 @@ use riffdb_contract_ir::{
     BindingMode, EXECUTABLE_IR_VERSION_V1, ExecutionClass, GRAMMAR_VERSION_V1, IndexSchema,
 };
 use riffdb_storage_api::{
-    AffectedIndexEpochTargets, CommandCandidateAffectedEpochRead, CommandCandidateAwaitingCapacity,
-    CommandCandidateAwaitingValidation, CommandCandidateCapacityReserved,
-    CommandCandidateSequenceAssigned, CommandWriteSetPlanV1, CommitIntent,
-    DurableKeySchemaBindingV1, EntityObservation, EvaluatedCommand, IdempotencyLookupCandidatesV1,
-    IndexEntryMutationV1, IndexEpochAdvanceError, IndexEpochAdvanceV1, IndexRangePrefixBuilder,
-    IndexRangeTarget, MAX_AFFECTED_INDEX_EPOCH_TARGETS, MAX_INDEX_DELTAS, MAX_READ_SNAPSHOT_BYTES,
-    MAX_VALIDATION_TARGETS, StorageError, StoredIndexEntryV1, TransactionCurrentState,
-    command_write_set_upper_bound_v1,
+    AffectedEpochCurrentState, AffectedIndexEpochTargets, CommandCandidateAffectedEpochRead,
+    CommandCandidateAwaitingCapacity, CommandCandidateAwaitingValidation,
+    CommandCandidateCapacityReserved, CommandCandidateSequenceAssigned, CommandWriteSetPlanV1,
+    CommitIntent, DurableCodecError, DurableKeySchemaBindingV1, EncodedWriteSetUpperBound,
+    EncodedWriteSetUpperBoundResultV1, EntityObservation, EvaluatedCommand,
+    IdempotencyLookupCandidatesV1, IndexEntryMutationV1, IndexEpochAdvanceError,
+    IndexEpochAdvanceV1, IndexRangePrefixBuilder, IndexRangeTarget,
+    MAX_AFFECTED_INDEX_EPOCH_TARGETS, MAX_INDEX_DELTAS, MAX_READ_SNAPSHOT_BYTES,
+    MAX_VALIDATION_TARGETS, StorageError, StoredIndexEntryV2, TransactionCurrentState,
+    ValidatedCommandWriteSetShapeV1, command_write_set_upper_bound_v1,
 };
-use riffdb_types::{CanonicalRecord, CanonicalValue, IndexEntryKey};
+use riffdb_types::{CanonicalRecord, CanonicalValue, IndexEntryKey, PartitionKey};
 
 use crate::command_attempt::PendingCommandAttempts;
 #[cfg(test)]
@@ -99,6 +101,7 @@ where
             checked.evaluated(),
             checked.current(),
             checked.mutation_positions(),
+            checked.attempt().commit_intent().pending().partition_key(),
         )?
     };
     let checked = checked.plan_validated(derived.affected_targets.clone());
@@ -146,11 +149,70 @@ where
 /// Closed result of deriving and reserving the exact sequence-free write plan.
 pub(super) enum CheckedReserveDecision<C> {
     Reserved(CheckedCommitCandidate<C>),
+    CapacityUnavailable,
     BatchFull,
     ProvenanceIdCollision,
     EpochExhausted,
     StorageFailure(StorageError),
     Integrity,
+}
+
+enum SequenceFreeWriteSetSizing {
+    Fits(EncodedWriteSetUpperBound),
+    CapacityUnavailable,
+    Integrity,
+}
+
+enum SequenceFreeWriteSetPreparation {
+    Ready(Box<CommandWriteSetPlanV1>),
+    CapacityUnavailable,
+    Integrity,
+}
+
+fn classify_sequence_free_write_set_sizing(
+    result: Result<EncodedWriteSetUpperBoundResultV1, DurableCodecError>,
+) -> SequenceFreeWriteSetSizing {
+    match result {
+        Ok(EncodedWriteSetUpperBoundResultV1::Fits(bound)) => {
+            SequenceFreeWriteSetSizing::Fits(bound)
+        }
+        Ok(EncodedWriteSetUpperBoundResultV1::ExceedsAcceptedAggregateCap(_codec_origin)) => {
+            SequenceFreeWriteSetSizing::CapacityUnavailable
+        }
+        Err(_) => SequenceFreeWriteSetSizing::Integrity,
+    }
+}
+
+fn prepare_sequence_free_write_set(
+    intent: &CommitIntent,
+    affected_targets: AffectedIndexEpochTargets,
+    affected_current: AffectedEpochCurrentState,
+    index_entries: Vec<IndexEntryMutationV1>,
+    index_epochs: Vec<IndexEpochAdvanceV1>,
+) -> SequenceFreeWriteSetPreparation {
+    let shape = match ValidatedCommandWriteSetShapeV1::new(
+        intent,
+        affected_targets,
+        affected_current,
+        index_entries,
+        index_epochs,
+    ) {
+        Ok(shape) => shape,
+        Err(_) => return SequenceFreeWriteSetPreparation::Integrity,
+    };
+    match classify_sequence_free_write_set_sizing(command_write_set_upper_bound_v1(
+        shape.intent(),
+        shape.index_entries(),
+        shape.index_epochs(),
+    )) {
+        SequenceFreeWriteSetSizing::Fits(bound) => SequenceFreeWriteSetPreparation::Ready(
+            Box::new(CommandWriteSetPlanV1::from_validated_shape(shape, bound)),
+        ),
+        SequenceFreeWriteSetSizing::CapacityUnavailable => {
+            SequenceFreeWriteSetPreparation::CapacityUnavailable
+        }
+        SequenceFreeWriteSetSizing::Integrity => SequenceFreeWriteSetPreparation::Integrity,
+    }
 }
 
 impl<S> CheckedCommitCandidate<S>
@@ -198,27 +260,19 @@ where
             };
             epoch_advances.push(advance);
         }
-        let encoded_upper_bound = match command_write_set_upper_bound_v1(
-            checked.attempt().commit_intent(),
-            &entry_mutations,
-            &epoch_advances,
-        ) {
-            Ok(bound) => bound,
-            Err(_) => {
-                drop(checked);
-                return CheckedReserveDecision::Integrity;
-            }
-        };
-        let write_plan = match CommandWriteSetPlanV1::new(
+        let write_plan = match prepare_sequence_free_write_set(
             checked.attempt().commit_intent(),
             affected_targets.clone(),
             retained.affected_current().clone(),
             entry_mutations.clone(),
             epoch_advances,
-            encoded_upper_bound,
         ) {
-            Ok(write_plan) => write_plan,
-            Err(_) => {
+            SequenceFreeWriteSetPreparation::Ready(write_plan) => *write_plan,
+            SequenceFreeWriteSetPreparation::CapacityUnavailable => {
+                drop(checked);
+                return CheckedReserveDecision::CapacityUnavailable;
+            }
+            SequenceFreeWriteSetPreparation::Integrity => {
                 drop(checked);
                 return CheckedReserveDecision::Integrity;
             }
@@ -543,6 +597,7 @@ fn derive_grammar_v1_indexes(
     evaluated: &EvaluatedCommand,
     current: &TransactionCurrentState,
     mutation_positions: &[Option<usize>],
+    command_partition: &PartitionKey,
 ) -> Result<DerivedCommandIndexes, CommandIndexError> {
     let bundle = resolved.bundle().bundle();
     let plan = resolved.plan();
@@ -613,10 +668,11 @@ fn derive_grammar_v1_indexes(
             match current_record {
                 None => {
                     builder.push_entry(IndexEntryMutationV1::Put(
-                        StoredIndexEntryV1::new(
+                        StoredIndexEntryV2::new(
                             new_key,
                             schema_binding.clone(),
                             empty_covered.clone(),
+                            command_partition.clone(),
                         )
                         .map_err(|_| CommandIndexError::internal_defect())?,
                     ))?;
@@ -633,10 +689,11 @@ fn derive_grammar_v1_indexes(
                     }
                     builder.push_entry(IndexEntryMutationV1::Delete(old_key))?;
                     builder.push_entry(IndexEntryMutationV1::Put(
-                        StoredIndexEntryV1::new(
+                        StoredIndexEntryV2::new(
                             new_key,
                             schema_binding.clone(),
                             empty_covered.clone(),
+                            command_partition.clone(),
                         )
                         .map_err(|_| CommandIndexError::internal_defect())?,
                     ))?;
@@ -732,12 +789,16 @@ mod tests {
     use riffdb_invariant::derive_input_command_facts;
     use riffdb_runtime::{ExecutionResult, TransactionContext, execute_command};
     use riffdb_storage_api::{
-        EntityTarget, EvaluationBudget, ExecutablePlanRef, ReadSnapshot, SnapshotRequest,
-        StoredEntityRecordV1,
+        CommandWriteClassBreakdownV1, DurableCodecErrorKind, EntityTarget, EvaluationBudget,
+        ExecutablePlanRef, IdempotencyIdentity, IdempotencyKeyDigest, MAX_STAGED_WRITE_BYTES,
+        PreEvaluationCommitContext, ReadSnapshot, SnapshotRequest,
+        StoredAdmittedProvenanceClaimsV1, StoredEntityRecordV1, StoredPendingAdmissionV1,
     };
     use riffdb_types::{
-        ActorId, ActorKind, AdmittedActorContext, CanonicalValue, Date, EntityVersion, IndexId,
-        LogicalTime, RequestId, TenantScope, Timestamp,
+        ActorId, ActorKind, AdmittedActorContext, CanonicalInputHash, CanonicalValue, DatabaseId,
+        Date, DigestKeyId, EntityVersion, Environment, FieldId, IndexEntryKeyBuilder, IndexId,
+        LogicalTime, MAX_CANONICAL_DOCUMENT_BYTES, ProvenanceId, RequestId, TenantScope, Timestamp,
+        hash_partition_key,
     };
 
     use super::*;
@@ -804,7 +865,16 @@ contract ScalarPrefixes version 1 {
     struct Fixture {
         resolved: ResolvedExecutablePlan,
         evaluated: EvaluatedCommand,
+        intent: CommitIntent,
         current: TransactionCurrentState,
+        partition: PartitionKey,
+    }
+
+    fn uuid_bytes(fill: u8) -> [u8; 16] {
+        let mut bytes = [fill; 16];
+        bytes[6] = 0x70 | (fill & 0x0f);
+        bytes[8] = 0x80 | (fill & 0x3f);
+        bytes
     }
 
     fn fixture(
@@ -883,16 +953,18 @@ contract ScalarPrefixes version 1 {
             Vec::new(),
         )
         .expect("snapshot");
+        let actor = AdmittedActorContext::new(
+            ActorId::new("command-index-test").expect("actor"),
+            ActorKind::Service,
+            TenantScope::Global,
+            None,
+        );
+        let logical_time = LogicalTime::new(Timestamp::new(100, 2).expect("logical time"));
         let context = TransactionContext::new(
             RequestId::from_unix_milliseconds_and_random(1, [0x31; 10]).expect("request ID"),
-            AdmittedActorContext::new(
-                ActorId::new("command-index-test").expect("actor"),
-                ActorKind::Service,
-                TenantScope::Global,
-                None,
-            ),
+            actor.clone(),
             reference.clone(),
-            LogicalTime::new(Timestamp::new(100, 2).expect("logical time")),
+            logical_time,
             facts.partition_key().clone(),
         );
         let ExecutionResult::CommitRequired(evaluated) = execute_command(
@@ -912,11 +984,48 @@ contract ScalarPrefixes version 1 {
             Vec::new(),
         )
         .expect("transaction-current state");
+        let identity = IdempotencyIdentity::new(
+            DatabaseId::from_bytes(uuid_bytes(0x41)).expect("database ID"),
+            Environment::new("test").expect("environment"),
+            TenantScope::Global,
+            actor.principal_id().clone(),
+            reference.contract_lineage().clone(),
+            reference.command_id(),
+            IdempotencyKeyDigest::from_hmac_bytes(
+                DigestKeyId::new(1).expect("digest key ID"),
+                [0x42; 32],
+            ),
+        );
+        let pending = StoredPendingAdmissionV1::new(
+            identity,
+            CanonicalInputHash::from_bytes([0x43; 32]),
+            RequestId::from_bytes(uuid_bytes(0x44)).expect("admission request ID"),
+            reference.clone(),
+            logical_time,
+            actor,
+            facts.partition_key().clone(),
+            StoredAdmittedProvenanceClaimsV1::default(),
+        )
+        .expect("pending admission");
+        let pre_evaluation = PreEvaluationCommitContext::new(
+            pending,
+            hash_partition_key(facts.partition_key().as_bytes()),
+            Vec::new(),
+        )
+        .expect("pre-evaluation context");
+        let intent = CommitIntent::new(
+            pre_evaluation,
+            evaluated.clone(),
+            ProvenanceId::from_bytes(uuid_bytes(0x45)).expect("provenance ID"),
+        )
+        .expect("commit intent");
         Fixture {
             resolved: crate::test_support::resolve_genesis_plan(&bundle, &reference)
                 .expect("resolved plan"),
             evaluated,
+            intent,
             current,
+            partition: facts.partition_key().clone(),
         }
     }
 
@@ -1024,6 +1133,174 @@ contract ScalarPrefixes version 1 {
             .collect()
     }
 
+    fn synthetic_index_entries(
+        fixture: &Fixture,
+        count: u64,
+        covered_payload_bytes: usize,
+    ) -> Vec<IndexEntryMutationV1> {
+        let covered_values = CanonicalRecord::new(vec![(
+            FieldId::first(),
+            CanonicalValue::bytes(vec![0x5a; covered_payload_bytes])
+                .expect("bounded covered bytes"),
+        )])
+        .expect("bounded covered record");
+        let entity_key = fixture.intent.evaluated().mutations()[0]
+            .target()
+            .key()
+            .clone();
+        let mut entries = (0..count)
+            .map(|ordinal| {
+                let mut key = IndexEntryKeyBuilder::new(IndexId::new(17).expect("index ID"));
+                key.push_u64(ordinal).expect("unique index component");
+                let key = key.finish(entity_key.clone()).expect("synthetic index key");
+                StoredIndexEntryV2::new(
+                    key,
+                    DurableKeySchemaBindingV1::from_plan(fixture.intent.evaluated().plan()),
+                    covered_values.clone(),
+                    fixture.intent.pending().partition_key().clone(),
+                )
+                .map(IndexEntryMutationV1::Put)
+                .expect("synthetic index entry")
+            })
+            .collect::<Vec<_>>();
+        entries.sort_by(|left, right| left.key().as_bytes().cmp(right.key().as_bytes()));
+        entries
+    }
+
+    fn validate_synthetic_shape(
+        fixture: &Fixture,
+        entries: Vec<IndexEntryMutationV1>,
+    ) -> Result<ValidatedCommandWriteSetShapeV1, riffdb_storage_api::StorageValueError> {
+        let affected_targets =
+            AffectedIndexEpochTargets::new(Vec::new()).expect("empty affected targets");
+        let affected_current = AffectedEpochCurrentState::new(&affected_targets, Vec::new())
+            .expect("empty affected current");
+        ValidatedCommandWriteSetShapeV1::new(
+            &fixture.intent,
+            affected_targets,
+            affected_current,
+            entries,
+            Vec::new(),
+        )
+    }
+
+    fn prepare_synthetic_write_set(
+        fixture: &Fixture,
+        entries: Vec<IndexEntryMutationV1>,
+    ) -> SequenceFreeWriteSetPreparation {
+        let affected_targets =
+            AffectedIndexEpochTargets::new(Vec::new()).expect("empty affected targets");
+        let affected_current = AffectedEpochCurrentState::new(&affected_targets, Vec::new())
+            .expect("empty affected current");
+        prepare_sequence_free_write_set(
+            &fixture.intent,
+            affected_targets,
+            affected_current,
+            entries,
+            Vec::new(),
+        )
+    }
+
+    #[test]
+    fn semantic_aggregate_failure_preempts_encoded_capacity_classification() {
+        const CANONICAL_RECORD_OVERHEAD: usize = 16;
+
+        let fixture = fixture("CreateRow", "semantic-over", ([0x21; 16], "new", 10), None);
+        let pending_before = fixture.intent.pending().clone();
+        let entries = synthetic_index_entries(
+            &fixture,
+            17,
+            MAX_CANONICAL_DOCUMENT_BYTES - CANONICAL_RECORD_OVERHEAD,
+        );
+
+        assert_eq!(
+            validate_synthetic_shape(&fixture, entries.clone())
+                .expect_err("semantic aggregate must reject the complete valid shape"),
+            riffdb_storage_api::StorageValueError::LimitExceeded
+        );
+        assert!(matches!(
+            command_write_set_upper_bound_v1(&fixture.intent, &entries, &[]),
+            Ok(EncodedWriteSetUpperBoundResultV1::ExceedsAcceptedAggregateCap(_))
+        ));
+        assert!(matches!(
+            prepare_synthetic_write_set(&fixture, entries),
+            SequenceFreeWriteSetPreparation::Integrity
+        ));
+        assert_eq!(fixture.intent.pending(), &pending_before);
+    }
+
+    #[test]
+    fn only_semantic_fit_with_codec_proved_encoded_excess_is_capacity_unavailable() {
+        const ENTRY_COUNT: u64 = 17;
+        const CANONICAL_RECORD_OVERHEAD: usize = 16;
+
+        let fixture = fixture("CreateRow", "encoded-over", ([0x21; 16], "new", 10), None);
+        let maximum_payload = MAX_CANONICAL_DOCUMENT_BYTES - CANONICAL_RECORD_OVERHEAD;
+        let mut valid = 0usize;
+        let mut invalid = maximum_payload + 1;
+        while valid + 1 < invalid {
+            let candidate = valid + (invalid - valid) / 2;
+            if validate_synthetic_shape(
+                &fixture,
+                synthetic_index_entries(&fixture, ENTRY_COUNT, candidate),
+            )
+            .is_ok()
+            {
+                valid = candidate;
+            } else {
+                invalid = candidate;
+            }
+        }
+
+        let entries = synthetic_index_entries(&fixture, ENTRY_COUNT, valid);
+        let shape = validate_synthetic_shape(&fixture, entries.clone())
+            .expect("largest tuned semantic shape fits");
+        assert!(shape.semantic_classes().total().expect("checked total") <= MAX_STAGED_WRITE_BYTES);
+        assert!(matches!(
+            command_write_set_upper_bound_v1(
+                shape.intent(),
+                shape.index_entries(),
+                shape.index_epochs(),
+            ),
+            Ok(EncodedWriteSetUpperBoundResultV1::ExceedsAcceptedAggregateCap(_))
+        ));
+        drop(shape);
+
+        let pending_before = fixture.intent.pending().clone();
+        assert!(matches!(
+            prepare_synthetic_write_set(&fixture, entries),
+            SequenceFreeWriteSetPreparation::CapacityUnavailable
+        ));
+        assert_eq!(fixture.intent.pending(), &pending_before);
+    }
+
+    #[test]
+    fn fitting_sizing_is_retained_and_codec_errors_remain_integrity() {
+        let classes = CommandWriteClassBreakdownV1::new(1, 0, 0, 0, 0, 0, 0, 0, 0, 0)
+            .expect("one-byte class breakdown");
+        let bound = EncodedWriteSetUpperBound::new(classes).expect("nonzero bound");
+        let SequenceFreeWriteSetSizing::Fits(retained) = classify_sequence_free_write_set_sizing(
+            Ok(EncodedWriteSetUpperBoundResultV1::Fits(bound)),
+        ) else {
+            panic!("fitting bound must be retained")
+        };
+        assert_eq!(retained, bound);
+
+        for kind in [
+            DurableCodecErrorKind::IncompatibleFormat,
+            DurableCodecErrorKind::CorruptData,
+            DurableCodecErrorKind::LimitExceeded,
+            DurableCodecErrorKind::InvariantViolation,
+            DurableCodecErrorKind::ReservationExceeded,
+            DurableCodecErrorKind::UnexpectedRecordType,
+        ] {
+            assert!(matches!(
+                classify_sequence_free_write_set_sizing(Err(DurableCodecError::new(kind))),
+                SequenceFreeWriteSetSizing::Integrity
+            ));
+        }
+    }
+
     #[test]
     fn create_puts_each_index_with_empty_covered_values_and_all_new_prefixes() {
         let fixture = fixture("CreateRow", "create-1", ([0x21; 16], "new", 10), None);
@@ -1032,6 +1309,7 @@ contract ScalarPrefixes version 1 {
             &fixture.evaluated,
             &fixture.current,
             &[Some(0)],
+            &fixture.partition,
         )
         .expect("create indexes");
         assert_eq!(derived.entry_mutations.len(), 2);
@@ -1046,6 +1324,7 @@ contract ScalarPrefixes version 1 {
                 panic!("create must only put")
             };
             assert!(record.covered_values().is_empty());
+            assert_eq!(record.partition_key(), &fixture.partition);
             assert!(
                 record
                     .schema_binding()
@@ -1107,6 +1386,7 @@ contract ScalarPrefixes version 1 {
             &unchanged.evaluated,
             &unchanged.current,
             &[Some(0)],
+            &unchanged.partition,
         )
         .expect("unchanged indexes");
         assert!(unchanged.entry_mutations.is_empty());
@@ -1123,6 +1403,7 @@ contract ScalarPrefixes version 1 {
             &changed.evaluated,
             &changed.current,
             &[Some(0)],
+            &changed.partition,
         )
         .expect("changed indexes");
         assert_eq!(derived.entry_mutations.len(), 4);
@@ -1154,6 +1435,7 @@ contract ScalarPrefixes version 1 {
         for mutation in &derived.entry_mutations {
             if let IndexEntryMutationV1::Put(record) = mutation {
                 assert!(record.covered_values().is_empty());
+                assert_eq!(record.partition_key(), &changed.partition);
             }
         }
         assert_eq!(
@@ -1262,6 +1544,7 @@ contract ScalarPrefixes version 1 {
             &fixture.evaluated,
             &fixture.current,
             &[Some(0)],
+            &fixture.partition,
         )
         .expect("fixture indexes");
         let entry = derived.entry_mutations[0].clone();
@@ -1375,7 +1658,14 @@ contract ScalarPrefixes version 1 {
         )
         .expect("structural zero-mutation candidate");
         assert_eq!(
-            derive_grammar_v1_indexes(&fixture.resolved, &empty, &fixture.current, &[None]).err(),
+            derive_grammar_v1_indexes(
+                &fixture.resolved,
+                &empty,
+                &fixture.current,
+                &[None],
+                &fixture.partition,
+            )
+            .err(),
             Some(CommandIndexError::internal_defect())
         );
 

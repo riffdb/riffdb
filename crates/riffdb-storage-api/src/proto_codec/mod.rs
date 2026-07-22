@@ -15,7 +15,7 @@ use std::fmt;
 
 use prost::Message;
 use riffdb_proto::{
-    durable::{current_record_registry, current_record_schema},
+    durable::{current_record_schema, readable_record_registry},
     envelope,
 };
 
@@ -90,7 +90,7 @@ where
     M: Message + Default,
     F: FnOnce(M) -> Result<T, DurableCodecError>,
 {
-    let decoded = current_record_registry()
+    let decoded = readable_record_registry()
         .decode(encoded)
         .map_err(DurableCodecError::from_decode_envelope)?;
     if decoded.record_type() != record_type {

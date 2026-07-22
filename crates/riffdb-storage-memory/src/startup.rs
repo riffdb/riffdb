@@ -2,20 +2,28 @@
 
 use std::fmt;
 
+use riffdb_catalog::{
+    CatalogIndexMigrationApplied, CatalogIndexMigrationBackend, CatalogIndexMigrationBatch,
+    CatalogIndexMigrationBundleRequest, CatalogIndexMigrationBundleResponse,
+    CatalogIndexMigrationCompletion, CatalogIndexMigrationInstruction,
+    CatalogIndexMigrationPendingBatch, CatalogIndexMigrationScan, CatalogIndexMigrationScanRequest,
+};
 use riffdb_storage_api::{
     CapabilityLifecycleV1, DormantPortBundle, EvidencePageLimit, HistoricalActiveCatalogEvidence,
     HistoricalBundleBytes, HistoricalBundleEvidence, HistoricalCapabilityPartitionEvidenceV1,
     HistoricalEvidenceCursor, HistoricalEvidenceEnd, HistoricalEvidencePage,
-    HistoricalPersistedKeyEvidenceV1, HistoricalSemanticEvidence, OpenSessionId, ReadableDigestKey,
-    RetainedMetadataV1, StartupValidationInputs, StorageError, StorageErrorKind, StorageValueError,
-    StoredAdmissionStateV1, StructuralEvidenceCursor, StructuralEvidenceEnd,
+    HistoricalPersistedKeyEvidenceV1, HistoricalSemanticEvidence, IndexMigrationCursor,
+    IndexMigrationRowEvidence, OpenSessionId, ReadableDigestKey, RetainedMetadataV1,
+    StartupIndexMigrationPort, StartupValidationInputs, StorageError, StorageErrorKind,
+    StorageValueError, StoredAdmissionStateV1, StructuralEvidenceCursor, StructuralEvidenceEnd,
     StructuralEvidenceOpen, StructuralEvidencePage, StructuralEvidenceSession, StructuralFinding,
-    StructuralFindingCode, StructuralFindingScope, StructurallyOpened,
+    StructuralFindingCode, StructuralFindingScope, StructuralOpenOutcome, StructurallyOpened,
 };
 use riffdb_types::{ContractBundleHash, ContractLineage, ContractVersion, DatabaseId};
 
 use crate::state::{
-    MemoryMetadataSlot, MemoryState, bundle_evidence_order_key, bundle_identity_evidence_order_key,
+    MemoryIndexEntry, MemoryMetadataSlot, MemoryState, bundle_evidence_order_key,
+    bundle_identity_evidence_order_key, durable_codec_error_as_storage, memory_record_charge,
     plan_evidence_order_key,
 };
 use crate::store::{MemoryAccess, MemoryStore, storage_error};
@@ -32,6 +40,16 @@ pub struct MemoryDormantPorts {
 /// Memory-backend authority whose constructor is private to a finished session.
 pub struct MemoryCompletionAuthority {
     _private: (),
+}
+
+/// Exclusive startup-only memory migration capability.
+pub struct MemoryStartupIndexMigrationPort {
+    access: MemoryAccess,
+    database_id: DatabaseId,
+    open_session_id: OpenSessionId,
+    next_cursor: IndexMigrationCursor,
+    #[cfg(test)]
+    substitute_before_apply: Option<MemoryIndexEntry>,
 }
 
 /// Unforgeable exact-end token for the memory structural stream.
@@ -55,6 +73,7 @@ pub struct MemoryStructuralEvidenceSession {
     inputs: StartupValidationInputs,
     structural_total: u64,
     authoritative_finding_seen: bool,
+    saw_v1_index: bool,
     historical_position: HistoricalScanPosition,
     last_historical_key: Option<Vec<u8>>,
     next_structural: StructuralEvidenceCursor,
@@ -69,6 +88,18 @@ impl fmt::Debug for MemoryStructuralEvidenceSession {
             .debug_struct("MemoryStructuralEvidenceSession")
             .field("database_id", &self.database_id)
             .field("open_session_id", &self.open_session_id)
+            .field("state", &"[EXCLUSIVE]")
+            .finish()
+    }
+}
+
+impl fmt::Debug for MemoryStartupIndexMigrationPort {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("MemoryStartupIndexMigrationPort")
+            .field("database_id", &self.database_id)
+            .field("open_session_id", &self.open_session_id)
+            .field("next_cursor", &self.next_cursor)
             .field("state", &"[EXCLUSIVE]")
             .finish()
     }
@@ -118,6 +149,7 @@ impl StructuralEvidenceOpen for MemoryStore {
             inputs,
             structural_total: snapshot.structural_total,
             authoritative_finding_seen: false,
+            saw_v1_index: false,
             historical_position: HistoricalScanPosition::start(),
             last_historical_key: None,
             next_structural,
@@ -132,6 +164,7 @@ impl StructuralEvidenceSession for MemoryStructuralEvidenceSession {
     type DormantPorts = MemoryDormantPorts;
     type StructuralEnd = MemoryStructuralEvidenceEnd;
     type HistoricalEnd = MemoryHistoricalEvidenceEnd;
+    type MigrationPort = MemoryStartupIndexMigrationPort;
 
     fn database_id(&self) -> DatabaseId {
         self.database_id
@@ -225,6 +258,7 @@ impl StructuralEvidenceSession for MemoryStructuralEvidenceSession {
         let next = cursor.advanced(count).map_err(value_error_as_storage)?;
         let page = HistoricalEvidencePage::page(cursor, selected.evidence, next)
             .map_err(value_error_as_storage)?;
+        self.saw_v1_index |= selected.saw_v1_index;
         self.historical_position = selected.next_position;
         self.last_historical_key = selected.last_key;
         self.next_historical = next;
@@ -247,7 +281,7 @@ impl StructuralEvidenceSession for MemoryStructuralEvidenceSession {
         mut self,
         structural_end: Self::StructuralEnd,
         historical_end: Self::HistoricalEnd,
-    ) -> Result<StructurallyOpened<Self::DormantPorts>, StorageError> {
+    ) -> Result<StructuralOpenOutcome<Self::DormantPorts, Self::MigrationPort>, StorageError> {
         if !self.structural_finished
             || !self.historical_finished
             || structural_end.cursor != self.next_structural
@@ -262,14 +296,127 @@ impl StructuralEvidenceSession for MemoryStructuralEvidenceSession {
             .access
             .take()
             .ok_or_else(|| storage_error(StorageErrorKind::InvariantViolation))?;
+        if self.saw_v1_index {
+            return Ok(StructuralOpenOutcome::MigrationRequired(
+                MemoryStartupIndexMigrationPort {
+                    access,
+                    database_id: self.database_id,
+                    open_session_id: self.open_session_id,
+                    next_cursor: IndexMigrationCursor::start(
+                        self.database_id,
+                        self.open_session_id,
+                    ),
+                    #[cfg(test)]
+                    substitute_before_apply: None,
+                },
+            ));
+        }
         let store = access.into_store();
-        Ok(StructurallyOpened::from_finished_session(
-            self.database_id,
-            self.open_session_id,
-            self.retained_metadata,
-            MemoryDormantPorts { store },
-            MemoryCompletionAuthority { _private: () },
+        Ok(StructuralOpenOutcome::Clean(
+            StructurallyOpened::from_finished_session(
+                self.database_id,
+                self.open_session_id,
+                self.retained_metadata,
+                MemoryDormantPorts { store },
+                MemoryCompletionAuthority { _private: () },
+            ),
         ))
+    }
+}
+
+impl StartupIndexMigrationPort for MemoryStartupIndexMigrationPort {
+    fn database_id(&self) -> DatabaseId {
+        self.database_id
+    }
+
+    fn open_session_id(&self) -> OpenSessionId {
+        self.open_session_id
+    }
+}
+
+impl CatalogIndexMigrationBackend for MemoryStartupIndexMigrationPort {
+    type Output = MemoryStore;
+
+    fn read_index_migration_page(
+        self,
+        request: CatalogIndexMigrationScanRequest<Self>,
+    ) -> Result<CatalogIndexMigrationScan<Self>, StorageError> {
+        let cursor = request.cursor();
+        if cursor != self.next_cursor
+            || cursor.database_id() != self.database_id
+            || cursor.open_session_id() != self.open_session_id
+        {
+            return Err(storage_error(StorageErrorKind::InvariantViolation));
+        }
+        let evidence = self
+            .access
+            .read(|state| select_index_migration_page(state, cursor))?;
+        if evidence.is_empty() {
+            return request.exact_end(self).map_err(value_error_as_storage);
+        }
+        let count = u64::try_from(evidence.len())
+            .map_err(|_| storage_error(StorageErrorKind::LimitExceeded))?;
+        let next = cursor.advanced(count).map_err(value_error_as_storage)?;
+        let mut backend = self;
+        backend.next_cursor = next;
+        request
+            .page(backend, evidence, next)
+            .map_err(value_error_as_storage)
+    }
+
+    fn read_historical_bundle(
+        self,
+        request: CatalogIndexMigrationBundleRequest<Self>,
+    ) -> Result<CatalogIndexMigrationBundleResponse<Self>, StorageError> {
+        let binding = request.evidence().row().schema_binding();
+        let lineage = binding.lineage().clone();
+        let version = binding.contract_version();
+        let bundle_hash = binding.bundle_hash();
+        let bundle = self
+            .access
+            .read(|state| find_historical_bundle(state, &lineage, version, bundle_hash))?
+            .ok_or_else(|| storage_error(StorageErrorKind::CorruptData))?;
+        request
+            .respond(self, bundle)
+            .map_err(value_error_as_storage)
+    }
+
+    fn apply_index_migration_batch(
+        self,
+        pending: CatalogIndexMigrationPendingBatch<Self>,
+    ) -> Result<CatalogIndexMigrationApplied<Self>, StorageError> {
+        let batch = pending.batch();
+        if self.next_cursor != batch.next()
+            || batch.next().database_id() != self.database_id
+            || batch.next().open_session_id() != self.open_session_id
+        {
+            return Err(storage_error(StorageErrorKind::InvariantViolation));
+        }
+        #[cfg(test)]
+        if let Some(substitute) = &self.substitute_before_apply {
+            let key = substitute.key().clone();
+            self.access.write(|state| {
+                let existing = state
+                    .index_entries
+                    .iter_mut()
+                    .find(|entry| entry.key() == &key)
+                    .ok_or_else(|| storage_error(StorageErrorKind::CorruptData))?;
+                *existing = substitute.clone();
+                Ok(())
+            })?;
+        }
+        apply_index_migration_batch(&self.access, batch)?;
+        pending.applied(self).map_err(value_error_as_storage)
+    }
+
+    fn finish_index_migration(
+        self,
+        completion: CatalogIndexMigrationCompletion<Self>,
+    ) -> Result<MemoryStore, StorageError> {
+        if completion.final_cursor() != self.next_cursor {
+            return Err(storage_error(StorageErrorKind::InvariantViolation));
+        }
+        Ok(self.access.into_store())
     }
 }
 
@@ -600,23 +747,33 @@ fn inspect_entity(state: &MemoryState, index: usize) -> Option<StructuralFinding
 
 fn inspect_index_entry(state: &MemoryState, index: usize) -> Option<StructuralFinding> {
     let record = &state.index_entries[index];
-    if record.current_record().is_some() {
-        // The key-only historical stream cannot prove ADR-0038's stored V2
-        // partition. Fail closed until the row-bearing validation path lands.
+    let evidence = match decode_memory_index_evidence(record) {
+        Ok(evidence) => evidence,
+        Err(error) => {
+            let code = if error.kind() == StorageErrorKind::LimitExceeded {
+                StructuralFindingCode::LimitExceeded
+            } else {
+                StructuralFindingCode::MalformedRecord
+            };
+            return Some(authoritative_finding(code));
+        }
+    };
+    if !record.matches_migration_row(evidence.row())
+        || !bundle_exists_for_binding(state, evidence.row().schema_binding())
+        || (index > 0 && state.index_entries[index - 1].key().as_bytes() >= record.key().as_bytes())
+    {
         return Some(authoritative_finding(
             StructuralFindingCode::CrossLinkMismatch,
         ));
     }
-    let evidence = record.historical_evidence();
-    if !bundle_exists_for_binding(state, record.schema_binding())
-        || !historical_persisted_key_is_indexed(state, &evidence)
-        || (index > 0 && state.index_entries[index - 1].key().as_bytes() >= record.key().as_bytes())
-    {
-        return Some(authoritative_finding(
-            StructuralFindingCode::MissingCrossLink,
-        ));
-    }
     None
+}
+
+fn decode_memory_index_evidence(
+    record: &MemoryIndexEntry,
+) -> Result<IndexMigrationRowEvidence, StorageError> {
+    riffdb_storage_api::decode_index_migration_row(record.key(), record.observed_envelope())
+        .map_err(durable_codec_error_as_storage)
 }
 
 fn inspect_index_epoch(state: &MemoryState, index: usize) -> Option<StructuralFinding> {
@@ -894,17 +1051,6 @@ fn persisted_evidence_has_source(
             .is_some_and(|index| {
                 HistoricalPersistedKeyEvidenceV1::from_entity(&state.entities[index]) == *evidence
             }),
-        riffdb_storage_api::IrOpaquePersistedKeyV1::IndexEntry { index_id, key } => state
-            .index_entries
-            .binary_search_by(|record| {
-                record
-                    .key()
-                    .index_id()
-                    .cmp(index_id)
-                    .then_with(|| record.key().cmp(key))
-            })
-            .ok()
-            .is_some_and(|index| state.index_entries[index].historical_evidence() == *evidence),
         riffdb_storage_api::IrOpaquePersistedKeyV1::IndexRangePrefix(prefix) => state
             .index_epochs
             .binary_search_by(|record| record.target().cmp(prefix))
@@ -1104,7 +1250,7 @@ enum HistoricalNamespace {
     Bundles,
     Plans,
     Active,
-    PersistedKeys,
+    PersistedRows,
     CapabilityPartitions,
     End,
 }
@@ -1113,6 +1259,7 @@ enum HistoricalNamespace {
 struct HistoricalScanPosition {
     namespace: HistoricalNamespace,
     offset: usize,
+    index_rows_emitted: usize,
     capability_entry_ordinal: usize,
 }
 
@@ -1121,6 +1268,7 @@ impl HistoricalScanPosition {
         Self {
             namespace: HistoricalNamespace::Bundles,
             offset: 0,
+            index_rows_emitted: 0,
             capability_entry_ordinal: 0,
         }
     }
@@ -1129,13 +1277,14 @@ impl HistoricalScanPosition {
         self.namespace = match self.namespace {
             HistoricalNamespace::Bundles => HistoricalNamespace::Plans,
             HistoricalNamespace::Plans => HistoricalNamespace::Active,
-            HistoricalNamespace::Active => HistoricalNamespace::PersistedKeys,
-            HistoricalNamespace::PersistedKeys => HistoricalNamespace::CapabilityPartitions,
+            HistoricalNamespace::Active => HistoricalNamespace::PersistedRows,
+            HistoricalNamespace::PersistedRows => HistoricalNamespace::CapabilityPartitions,
             HistoricalNamespace::CapabilityPartitions | HistoricalNamespace::End => {
                 HistoricalNamespace::End
             }
         };
         self.offset = 0;
+        self.index_rows_emitted = 0;
         self.capability_entry_ordinal = 0;
     }
 
@@ -1148,17 +1297,29 @@ impl HistoricalScanPosition {
         Ok(())
     }
 
-    fn advance_emitted_item(&mut self) -> Result<(), StorageError> {
-        if self.namespace == HistoricalNamespace::CapabilityPartitions {
-            self.capability_entry_ordinal = self
-                .capability_entry_ordinal
-                .checked_add(1)
-                .ok_or_else(|| storage_error(StorageErrorKind::LimitExceeded))?;
-        } else {
-            self.offset = self
-                .offset
-                .checked_add(1)
-                .ok_or_else(|| storage_error(StorageErrorKind::LimitExceeded))?;
+    fn advance_emitted_item(
+        &mut self,
+        source: HistoricalCandidateSource,
+    ) -> Result<(), StorageError> {
+        match source {
+            HistoricalCandidateSource::CapabilityPartition => {
+                self.capability_entry_ordinal = self
+                    .capability_entry_ordinal
+                    .checked_add(1)
+                    .ok_or_else(|| storage_error(StorageErrorKind::LimitExceeded))?;
+            }
+            HistoricalCandidateSource::IndexMigrationRow => {
+                self.index_rows_emitted = self
+                    .index_rows_emitted
+                    .checked_add(1)
+                    .ok_or_else(|| storage_error(StorageErrorKind::LimitExceeded))?;
+            }
+            HistoricalCandidateSource::Default | HistoricalCandidateSource::PersistedKey => {
+                self.offset = self
+                    .offset
+                    .checked_add(1)
+                    .ok_or_else(|| storage_error(StorageErrorKind::LimitExceeded))?;
+            }
         }
         Ok(())
     }
@@ -1169,6 +1330,7 @@ struct SelectedHistoricalPage {
     next_position: HistoricalScanPosition,
     last_key: Option<Vec<u8>>,
     exhausted: bool,
+    saw_v1_index: bool,
 }
 
 enum HistoricalCandidate<'a> {
@@ -1176,12 +1338,25 @@ enum HistoricalCandidate<'a> {
     Plan(&'a riffdb_storage_api::ExecutablePlanRef),
     Active(Option<&'a riffdb_storage_api::ActiveCatalogPointerV1>),
     PersistedKey(&'a HistoricalPersistedKeyEvidenceV1),
+    IndexMigrationRow(IndexMigrationRowEvidence),
     CapabilityPartition(HistoricalCapabilityPartitionEvidenceV1),
+}
+
+#[derive(Clone, Copy)]
+enum HistoricalCandidateSource {
+    Default,
+    PersistedKey,
+    IndexMigrationRow,
+    CapabilityPartition,
 }
 
 struct HistoricalPageBuilder {
     maximum: usize,
     total_bytes: usize,
+    migration_rows: usize,
+    migration_evidence_bytes: usize,
+    migration_instruction_bytes: usize,
+    saw_v1_index: bool,
     evidence: Vec<HistoricalSemanticEvidence>,
     last_key: Option<Vec<u8>>,
 }
@@ -1193,6 +1368,10 @@ impl HistoricalPageBuilder {
         Ok(Self {
             maximum,
             total_bytes: 0,
+            migration_rows: 0,
+            migration_evidence_bytes: 0,
+            migration_instruction_bytes: 0,
+            saw_v1_index: false,
             evidence: Vec::with_capacity(maximum),
             last_key: None,
         })
@@ -1222,6 +1401,33 @@ impl HistoricalPageBuilder {
             }
             return Ok(false);
         }
+        if let HistoricalCandidate::IndexMigrationRow(row) = &candidate {
+            let next_rows = self
+                .migration_rows
+                .checked_add(1)
+                .ok_or_else(|| storage_error(StorageErrorKind::LimitExceeded))?;
+            let next_evidence = self
+                .migration_evidence_bytes
+                .checked_add(row.evidence_page_charge())
+                .ok_or_else(|| storage_error(StorageErrorKind::LimitExceeded))?;
+            let next_instructions = self
+                .migration_instruction_bytes
+                .checked_add(row.instruction_page_charge())
+                .ok_or_else(|| storage_error(StorageErrorKind::LimitExceeded))?;
+            if next_rows > riffdb_storage_api::MAX_INDEX_MIGRATION_PAGE_ENTRIES
+                || next_evidence > riffdb_storage_api::MAX_INDEX_MIGRATION_PAGE_BYTES
+                || next_instructions > riffdb_storage_api::MAX_INDEX_MIGRATION_PAGE_BYTES
+            {
+                if self.evidence.is_empty() {
+                    return Err(storage_error(StorageErrorKind::LimitExceeded));
+                }
+                return Ok(false);
+            }
+            self.migration_rows = next_rows;
+            self.migration_evidence_bytes = next_evidence;
+            self.migration_instruction_bytes = next_instructions;
+            self.saw_v1_index |= row.row().is_v1();
+        }
         self.total_bytes = next_total;
         self.evidence.push(candidate.into_evidence()?);
         self.last_key = Some(key);
@@ -1238,8 +1444,36 @@ impl HistoricalPageBuilder {
             next_position,
             last_key: self.last_key,
             exhausted,
+            saw_v1_index: self.saw_v1_index,
         }
     }
+}
+
+fn next_index_migration_evidence(
+    state: &MemoryState,
+    after: Option<&[u8]>,
+) -> Result<Option<IndexMigrationRowEvidence>, StorageError> {
+    let mut selected: Option<(Vec<u8>, IndexMigrationRowEvidence)> = None;
+    for (index, record) in state.index_entries.iter().enumerate() {
+        if index > 0 && state.index_entries[index - 1].key().as_bytes() >= record.key().as_bytes() {
+            return Err(storage_error(StorageErrorKind::CorruptData));
+        }
+        let evidence = decode_memory_index_evidence(record)?;
+        if !record.matches_migration_row(evidence.row()) {
+            return Err(storage_error(StorageErrorKind::CorruptData));
+        }
+        let key = index_migration_evidence_order_key(&evidence);
+        if after.is_some_and(|after| after >= key.as_slice()) {
+            continue;
+        }
+        if selected
+            .as_ref()
+            .is_none_or(|(selected_key, _)| key.as_slice() < selected_key.as_slice())
+        {
+            selected = Some((key, evidence));
+        }
+    }
+    Ok(selected.map(|(_, evidence)| evidence))
 }
 
 fn select_historical_page(
@@ -1296,18 +1530,40 @@ fn select_historical_page(
                 };
                 HistoricalCandidate::Active(active)
             }
-            HistoricalNamespace::PersistedKeys => {
-                match state.historical_persisted_keys.get(next.offset) {
-                    Some(row) => {
-                        let candidate = HistoricalCandidate::PersistedKey(&row.evidence);
-                        if candidate.order_key() != row.order_key {
+            HistoricalNamespace::PersistedRows => {
+                let persisted = state.historical_persisted_keys.get(next.offset).map(|row| {
+                    let candidate = HistoricalCandidate::PersistedKey(&row.evidence);
+                    (candidate, &row.order_key)
+                });
+                if persisted.as_ref().is_some_and(|(candidate, order_key)| {
+                    candidate.order_key().as_slice() != order_key.as_slice()
+                }) {
+                    return Err(storage_error(StorageErrorKind::CorruptData));
+                }
+                let after = page.last_key.as_deref().or(prior_page_key);
+                let index_row = next_index_migration_evidence(state, after)?
+                    .map(HistoricalCandidate::IndexMigrationRow);
+                match (persisted, index_row) {
+                    (None, None) => {
+                        if next.index_rows_emitted != state.index_entries.len() {
                             return Err(storage_error(StorageErrorKind::CorruptData));
                         }
-                        candidate
-                    }
-                    None => {
                         next.advance_namespace();
                         continue;
+                    }
+                    (Some((persisted, _)), None) => persisted,
+                    (None, Some(index_row)) => index_row,
+                    (Some((persisted, _)), Some(index_row)) => {
+                        let persisted_key = persisted.order_key();
+                        let index_key = index_row.order_key();
+                        if persisted_key == index_key {
+                            return Err(storage_error(StorageErrorKind::CorruptData));
+                        }
+                        if persisted_key < index_key {
+                            persisted
+                        } else {
+                            index_row
+                        }
                     }
                 }
             }
@@ -1338,15 +1594,151 @@ fn select_historical_page(
             },
             HistoricalNamespace::End => break,
         };
+        let source = candidate.source();
         if !page.push(candidate, prior_page_key)? {
             break;
         }
-        next.advance_emitted_item()?;
+        next.advance_emitted_item(source)?;
     }
     Ok(page.finish(next, next.namespace == HistoricalNamespace::End))
 }
 
+fn select_index_migration_page(
+    state: &MemoryState,
+    cursor: IndexMigrationCursor,
+) -> Result<Vec<IndexMigrationRowEvidence>, StorageError> {
+    let start = usize::try_from(cursor.position())
+        .map_err(|_| storage_error(StorageErrorKind::LimitExceeded))?;
+    if start > state.index_entries.len() {
+        return Err(storage_error(StorageErrorKind::InvariantViolation));
+    }
+    let mut evidence = Vec::new();
+    let mut evidence_bytes = 0usize;
+    let mut instruction_bytes = 0usize;
+    for index in start..state.index_entries.len() {
+        if evidence.len() == riffdb_storage_api::MAX_INDEX_MIGRATION_PAGE_ENTRIES {
+            break;
+        }
+        let record = &state.index_entries[index];
+        if index > 0 && state.index_entries[index - 1].key().as_bytes() >= record.key().as_bytes() {
+            return Err(storage_error(StorageErrorKind::CorruptData));
+        }
+        let row = decode_memory_index_evidence(record)?;
+        if !record.matches_migration_row(row.row()) {
+            return Err(storage_error(StorageErrorKind::CorruptData));
+        }
+        let next_evidence = evidence_bytes
+            .checked_add(row.evidence_page_charge())
+            .ok_or_else(|| storage_error(StorageErrorKind::LimitExceeded))?;
+        let next_instructions = instruction_bytes
+            .checked_add(row.instruction_page_charge())
+            .ok_or_else(|| storage_error(StorageErrorKind::LimitExceeded))?;
+        if next_evidence > riffdb_storage_api::MAX_INDEX_MIGRATION_PAGE_BYTES
+            || next_instructions > riffdb_storage_api::MAX_INDEX_MIGRATION_PAGE_BYTES
+        {
+            if evidence.is_empty() {
+                return Err(storage_error(StorageErrorKind::LimitExceeded));
+            }
+            break;
+        }
+        evidence_bytes = next_evidence;
+        instruction_bytes = next_instructions;
+        evidence.push(row);
+    }
+    Ok(evidence)
+}
+
+fn apply_index_migration_batch(
+    access: &MemoryAccess,
+    batch: &CatalogIndexMigrationBatch<MemoryStartupIndexMigrationPort>,
+) -> Result<(), StorageError> {
+    access.write(|state| {
+        let mut replacements = Vec::new();
+        let mut prior_key: Option<&[u8]> = None;
+        for instruction in batch.instructions() {
+            let expected = instruction.expected();
+            let key = expected.physical_key();
+            if prior_key.is_some_and(|prior| prior >= key.as_bytes()) {
+                return Err(storage_error(StorageErrorKind::InvariantViolation));
+            }
+            prior_key = Some(key.as_bytes());
+            let index = state
+                .index_entries
+                .binary_search_by(|record| record.key().as_bytes().cmp(key.as_bytes()))
+                .map_err(|_| storage_error(StorageErrorKind::CorruptData))?;
+            if (index > 0 && state.index_entries[index - 1].key() == key)
+                || (index + 1 < state.index_entries.len()
+                    && state.index_entries[index + 1].key() == key)
+            {
+                return Err(storage_error(StorageErrorKind::CorruptData));
+            }
+            let current = &state.index_entries[index];
+            match instruction {
+                CatalogIndexMigrationInstruction::V1Rewrite(rewrite) => {
+                    let encoded = riffdb_storage_api::encode_index_entry_v2(rewrite.replacement())
+                        .map_err(durable_codec_error_as_storage)?;
+                    if encoded.encoded_content_charge().get()
+                        > expected.conservative_v2_envelope_charge().get()
+                    {
+                        return Err(storage_error(StorageErrorKind::InvariantViolation));
+                    }
+                    if current.observed_envelope() == expected.canonical_envelope() {
+                        if !current.matches_migration_row(expected.row()) {
+                            return Err(storage_error(StorageErrorKind::CorruptData));
+                        }
+                        replacements.push((
+                            index,
+                            MemoryIndexEntry::current_from_encoded(
+                                rewrite.replacement().clone(),
+                                encoded.into_bytes(),
+                                memory_record_charge(),
+                            ),
+                        ));
+                    } else if current.observed_envelope() == encoded.as_bytes() {
+                        let replay = riffdb_storage_api::decode_index_migration_row(
+                            key,
+                            current.observed_envelope(),
+                        )
+                        .map_err(durable_codec_error_as_storage)?;
+                        if replay.row().stored_partition()
+                            != Some(rewrite.replacement().partition_key())
+                            || replay.row().schema_binding()
+                                != rewrite.replacement().schema_binding()
+                            || replay.row().covered_values()
+                                != rewrite.replacement().covered_values()
+                        {
+                            return Err(storage_error(StorageErrorKind::CorruptData));
+                        }
+                    } else {
+                        return Err(storage_error(StorageErrorKind::CorruptData));
+                    }
+                }
+                CatalogIndexMigrationInstruction::V2Confirm(_) => {
+                    if current.observed_envelope() != expected.canonical_envelope()
+                        || !current.matches_migration_row(expected.row())
+                    {
+                        return Err(storage_error(StorageErrorKind::CorruptData));
+                    }
+                }
+            }
+        }
+        for (index, replacement) in replacements {
+            state.index_entries[index] = replacement;
+        }
+        Ok(())
+    })
+}
+
 impl HistoricalCandidate<'_> {
+    const fn source(&self) -> HistoricalCandidateSource {
+        match self {
+            Self::PersistedKey(_) => HistoricalCandidateSource::PersistedKey,
+            Self::IndexMigrationRow(_) => HistoricalCandidateSource::IndexMigrationRow,
+            Self::CapabilityPartition(_) => HistoricalCandidateSource::CapabilityPartition,
+            Self::Bundle(_) | Self::Plan(_) | Self::Active(_) => HistoricalCandidateSource::Default,
+        }
+    }
+
     fn order_key(&self) -> Vec<u8> {
         let mut key = Vec::new();
         match self {
@@ -1364,6 +1756,9 @@ impl HistoricalCandidate<'_> {
                 key.extend_from_slice(active.bundle_hash().as_bytes());
             }
             Self::PersistedKey(evidence) => return persisted_evidence_order_key(evidence),
+            Self::IndexMigrationRow(evidence) => {
+                return index_migration_evidence_order_key(evidence);
+            }
             Self::CapabilityPartition(evidence) => return evidence.evidence_order_key(),
         }
         key
@@ -1383,6 +1778,7 @@ impl HistoricalCandidate<'_> {
                 (2 + 4 + active.lineage().as_bytes().len()).checked_add(8 + 32)
             }
             Self::PersistedKey(evidence) => persisted_evidence_semantic_bytes(evidence),
+            Self::IndexMigrationRow(evidence) => Some(evidence.evidence_page_charge()),
             Self::CapabilityPartition(evidence) => {
                 Some(evidence.semantic_bytes().map_err(value_error_as_storage)?)
             }
@@ -1417,6 +1813,9 @@ impl HistoricalCandidate<'_> {
             Self::PersistedKey(evidence) => {
                 Ok(HistoricalSemanticEvidence::PersistedKey(evidence.clone()))
             }
+            Self::IndexMigrationRow(evidence) => {
+                Ok(HistoricalSemanticEvidence::IndexMigrationRow(evidence))
+            }
             Self::CapabilityPartition(evidence) => {
                 Ok(HistoricalSemanticEvidence::CapabilityPartition(evidence))
             }
@@ -1443,17 +1842,20 @@ pub(crate) fn persisted_evidence_order_key(evidence: &HistoricalPersistedKeyEvid
             output.extend_from_slice(&entity_type_id.to_be_bytes());
             push_bytes(&mut output, key.as_bytes());
         }
-        riffdb_storage_api::IrOpaquePersistedKeyV1::IndexEntry { index_id, key } => {
-            push_persisted_binding_key(&mut output, evidence.schema(), 0x02);
-            output.extend_from_slice(&index_id.to_be_bytes());
-            push_bytes(&mut output, key.as_bytes());
-        }
         riffdb_storage_api::IrOpaquePersistedKeyV1::IndexRangePrefix(prefix) => {
             push_persisted_binding_key(&mut output, evidence.schema(), 0x03);
             output.extend_from_slice(&prefix.index_id().to_be_bytes());
             push_bytes(&mut output, prefix.as_bytes());
         }
     }
+    output
+}
+
+fn index_migration_evidence_order_key(evidence: &IndexMigrationRowEvidence) -> Vec<u8> {
+    let mut output = Vec::new();
+    push_persisted_binding_key(&mut output, evidence.row().schema_binding(), 0x02);
+    output.extend_from_slice(&evidence.physical_key().index_id().to_be_bytes());
+    push_bytes(&mut output, evidence.physical_key().as_bytes());
     output
 }
 
@@ -1472,7 +1874,6 @@ fn push_persisted_binding_key(
 fn persisted_evidence_semantic_bytes(evidence: &HistoricalPersistedKeyEvidenceV1) -> Option<usize> {
     let key_bytes = match evidence.key() {
         riffdb_storage_api::IrOpaquePersistedKeyV1::Entity { key, .. } => key.as_bytes().len(),
-        riffdb_storage_api::IrOpaquePersistedKeyV1::IndexEntry { key, .. } => key.as_bytes().len(),
         riffdb_storage_api::IrOpaquePersistedKeyV1::IndexRangePrefix(prefix) => {
             prefix.as_bytes().len()
         }
@@ -1511,11 +1912,18 @@ fn value_error_as_storage(error: StorageValueError) -> StorageError {
 #[cfg(test)]
 mod tests {
     use std::num::{NonZeroU16, NonZeroU32, NonZeroU64};
+    use std::sync::OnceLock;
 
+    use riffdb_catalog::{
+        CatalogHistoryOutcome, CatalogIndexMigrationDriveError, CatalogIndexMigrationDriver,
+        ValidatedContractBundle, validate_catalog_history,
+    };
+    use riffdb_contract_compiler::compile_contract_source;
     use riffdb_storage_api::{
         ActiveCatalogPointerV1, AdministrationSequenceAllocator, ApplicationSequenceAllocator,
-        CapabilityBootstrapMarkerV1, CapabilityGrantV1, CapabilityPermissionKindV1,
-        CapabilityPermissionV1, CapabilityPermissionsV1, CapabilityRequestedRecordV1,
+        AuditPrincipalV1, CapabilityBootstrapMarkerV1, CapabilityGrantV1,
+        CapabilityPermissionKindV1, CapabilityPermissionV1, CapabilityPermissionsV1,
+        CapabilityRequestedRecordV1, CatalogActivationIntentV1, CatalogAdministrationRepository,
         DatabaseIdentityProbe, DatabaseIdentityProbePort, DatabaseInitializationPort,
         DurableKeySchemaBindingV1, ExecutablePlanRef, HistoricalEvidencePage, IndexEpochAdvanceV1,
         IndexEpochPosition, IndexRangePrefixBuilder, IndexRangeTarget, IrOpaquePersistedKeyV1,
@@ -1528,14 +1936,91 @@ mod tests {
     };
     use riffdb_types::{
         ActorId, ActorKind, AdministrationSequence, AggregateTypeId, Audience, CanonicalRecord,
-        CapabilityId, CapabilityTokenDigest, CommandId, CommitSequence, ContractBundleHash,
-        ContractLineage, ContractVersion, DatabaseId, DigestKeyId, EntityKeyBuilder, EntityTypeId,
-        EntityVersion, Environment, IndexEntryKeyBuilder, IndexId, PartitionKeyBuilder, PlanHash,
-        ProjectionApplyHash, ProjectionApplyKey, ProjectionGeneration, ProjectionId,
-        ProjectionIdentity, ProjectionPlanHash, RequestId, TenantScope, Timestamp,
+        CanonicalValue, CapabilityId, CapabilityTokenDigest, CommandId, CommitSequence,
+        ContractBundleHash, ContractLineage, ContractVersion, DatabaseId, DigestKeyId,
+        EntityKeyBuilder, EntityTypeId, EntityVersion, Environment, FieldId, IndexEntryKeyBuilder,
+        IndexId, MAX_CANONICAL_DOCUMENT_BYTES, PartitionKeyBuilder, PlanHash, ProjectionApplyHash,
+        ProjectionApplyKey, ProjectionGeneration, ProjectionId, ProjectionIdentity,
+        ProjectionPlanHash, RequestId, TenantScope, Timestamp,
     };
 
     use super::*;
+
+    const MEMORY_MIGRATION_CONTRACT: &str = r#"
+contract MemoryMigration version 1 {
+  entity Row {
+    key (id: u64)
+    field value: u64
+    index ByValue(value)
+  }
+
+  aggregate Rows {
+    root Row
+    partition_by id
+    conflict_key (id)
+  }
+}
+"#;
+
+    fn validated_migration_bundle() -> &'static ValidatedContractBundle {
+        static BUNDLE: OnceLock<ValidatedContractBundle> = OnceLock::new();
+        BUNDLE.get_or_init(|| {
+            ValidatedContractBundle::from_compiler_bundle(
+                compile_contract_source(MEMORY_MIGRATION_CONTRACT)
+                    .expect("compile indexed memory migration contract"),
+            )
+            .expect("validate indexed memory migration bundle")
+        })
+    }
+
+    fn compiled_migration_legacy_row(
+        bundle: &ValidatedContractBundle,
+        value: u64,
+        covered_values: CanonicalRecord,
+    ) -> StoredIndexEntryV1 {
+        let entity_schema = bundle
+            .bundle()
+            .schema()
+            .entities()
+            .first()
+            .expect("migration entity");
+        let index_schema = entity_schema.indexes().first().expect("migration index");
+        let mut entity = EntityKeyBuilder::new(entity_schema.id());
+        entity.push_u64(value).expect("entity component");
+        let mut index = IndexEntryKeyBuilder::new(index_schema.id());
+        index.push_u64(value).expect("index component");
+        StoredIndexEntryV1::new(
+            index
+                .finish(entity.finish().expect("entity key"))
+                .expect("index key"),
+            DurableKeySchemaBindingV1::new(
+                bundle.lineage().clone(),
+                bundle.contract_version(),
+                bundle.bundle_hash(),
+            ),
+            covered_values,
+        )
+        .expect("legacy migration row")
+    }
+
+    fn scan_structural_end(
+        session: &mut MemoryStructuralEvidenceSession,
+    ) -> MemoryStructuralEvidenceEnd {
+        let mut cursor =
+            StructuralEvidenceCursor::start(session.database_id(), session.open_session_id());
+        loop {
+            match session
+                .read_structural_evidence(cursor, EvidencePageLimit::new(500).expect("page limit"))
+                .expect("structural page")
+            {
+                StructuralEvidencePage::Page { findings, next, .. } => {
+                    assert!(findings.is_empty());
+                    cursor = next;
+                }
+                StructuralEvidencePage::ExactEnd(end) => return end,
+            }
+        }
+    }
 
     fn database(byte: u8) -> DatabaseId {
         let mut bytes = [0; 16];
@@ -1563,6 +2048,53 @@ mod tests {
         let mut store = MemoryStore::new();
         store.initialize_database(id).expect("initialize database");
         store
+    }
+
+    fn deployed_store(id: DatabaseId, bundle: StoredContractBundleV1) -> MemoryStore {
+        let store = initialized_store(id);
+        let reopened = store.reopen();
+        let mut ports = MemoryDormantPorts { store }.into_operational();
+        let intent = CatalogActivationIntentV1::new(
+            None,
+            bundle,
+            RequestId::from_bytes(uuid_v7(0x70)).expect("request ID"),
+            AuditPrincipalV1::new(
+                ActorId::new("migration-operator").expect("actor ID"),
+                ActorKind::Human,
+                capability_id(0x71),
+                NonZeroU64::MIN,
+            ),
+            Timestamp::new(1, 0).expect("timestamp"),
+            None,
+        );
+        ports
+            .activate_catalog(&intent)
+            .expect("activate catalog fixture");
+        drop(ports);
+        reopened
+    }
+
+    fn migration_binding() -> DurableKeySchemaBindingV1 {
+        DurableKeySchemaBindingV1::new(
+            ContractLineage::new("migration-boundaries").expect("lineage"),
+            ContractVersion::new(1).expect("version"),
+            ContractBundleHash::from_bytes([0x74; 32]),
+        )
+    }
+
+    fn migration_legacy_row(value: u64, covered_values: CanonicalRecord) -> StoredIndexEntryV1 {
+        let mut entity = EntityKeyBuilder::new(EntityTypeId::first());
+        entity.push_u64(value).expect("entity component");
+        let mut index = IndexEntryKeyBuilder::new(IndexId::first());
+        index.push_u64(value).expect("index component");
+        StoredIndexEntryV1::new(
+            index
+                .finish(entity.finish().expect("entity key"))
+                .expect("index key"),
+            migration_binding(),
+            covered_values,
+        )
+        .expect("legacy migration row")
     }
 
     #[test]
@@ -2004,13 +2536,11 @@ mod tests {
     }
 
     #[test]
-    fn current_v2_index_row_cannot_pass_the_key_only_startup_path() {
+    fn current_v2_index_row_passes_the_codec_bound_startup_path() {
         let lineage = ContractLineage::new("v2-startup-guard").expect("lineage");
-        let binding = DurableKeySchemaBindingV1::new(
-            lineage,
-            ContractVersion::new(1).expect("version"),
-            ContractBundleHash::from_bytes([0x61; 32]),
-        );
+        let version = ContractVersion::new(1).expect("version");
+        let bundle_hash = ContractBundleHash::from_bytes([0x61; 32]);
+        let binding = DurableKeySchemaBindingV1::new(lineage.clone(), version, bundle_hash);
         let mut entity = EntityKeyBuilder::new(EntityTypeId::new(1).expect("entity type"));
         entity.push_u64(1).expect("entity component");
         let mut index = IndexEntryKeyBuilder::new(IndexId::new(1).expect("index ID"));
@@ -2030,18 +2560,22 @@ mod tests {
         .expect("V2 row");
         let mut state = MemoryState::default();
         state
-            .index_entries
-            .push(crate::state::MemoryIndexEntry::current(
-                row,
-                crate::state::memory_record_charge(),
+            .catalog_bundles
+            .push(crate::state::CatalogBundleRow::new(
+                StoredContractBundleV1::new(
+                    lineage,
+                    version,
+                    bundle_hash,
+                    b"checked bundle".to_vec(),
+                )
+                .expect("bundle"),
             ));
-
-        assert_eq!(
-            inspect_index_entry(&state, 0),
-            Some(authoritative_finding(
-                StructuralFindingCode::CrossLinkMismatch
-            ))
+        state.index_entries.push(
+            crate::state::MemoryIndexEntry::current(row, crate::state::memory_record_charge())
+                .expect("canonical V2 fixture"),
         );
+
+        assert_eq!(inspect_index_entry(&state, 0), None);
     }
 
     #[test]
@@ -2159,9 +2693,12 @@ mod tests {
             HistoricalEvidencePage::Page { .. } => panic!("unexpected historical page"),
         };
 
-        let opened = session
+        let outcome = session
             .finish(structural_end, historical_end)
             .expect("finish exact session");
+        let StructuralOpenOutcome::Clean(opened) = outcome else {
+            panic!("V2-only state must open cleanly");
+        };
         assert_eq!(opened.database_id(), id);
         assert_eq!(opened.retained_metadata(), &RetainedMetadataV1::initial(id));
         let (_, _, metadata, dormant) = opened.into_parts();
@@ -2538,9 +3075,12 @@ mod tests {
             }
         };
 
-        let opened = session
+        let outcome = session
             .finish(structural_end, historical_end)
             .expect("derived findings remain separately degradable");
+        let StructuralOpenOutcome::Clean(opened) = outcome else {
+            panic!("V2-only state must open cleanly");
+        };
         assert_eq!(opened.database_id(), id);
     }
 
@@ -2603,7 +3143,6 @@ mod tests {
             .write(|state| {
                 let mut persisted = [
                     HistoricalPersistedKeyEvidenceV1::from_entity(&entity),
-                    HistoricalPersistedKeyEvidenceV1::from_index_entry(&index_entry),
                     HistoricalPersistedKeyEvidenceV1::from_index_epoch(&epoch),
                 ]
                 .into_iter()
@@ -2651,16 +3190,304 @@ mod tests {
         let mut index_keys = 0;
         let mut epoch_keys = 0;
         for item in &evidence {
-            if let HistoricalSemanticEvidence::PersistedKey(persisted) = item {
-                assert_eq!(persisted.schema(), &binding);
-                match persisted.key() {
-                    IrOpaquePersistedKeyV1::Entity { .. } => entity_keys += 1,
-                    IrOpaquePersistedKeyV1::IndexEntry { .. } => index_keys += 1,
-                    IrOpaquePersistedKeyV1::IndexRangePrefix(_) => epoch_keys += 1,
+            match item {
+                HistoricalSemanticEvidence::PersistedKey(persisted) => {
+                    assert_eq!(persisted.schema(), &binding);
+                    match persisted.key() {
+                        IrOpaquePersistedKeyV1::Entity { .. } => entity_keys += 1,
+                        IrOpaquePersistedKeyV1::IndexRangePrefix(_) => epoch_keys += 1,
+                    }
                 }
+                HistoricalSemanticEvidence::IndexMigrationRow(row) => {
+                    assert_eq!(row.row().schema_binding(), &binding);
+                    assert!(row.row().is_v1());
+                    index_keys += 1;
+                }
+                HistoricalSemanticEvidence::Bundle(_)
+                | HistoricalSemanticEvidence::PlanReference(_)
+                | HistoricalSemanticEvidence::ActiveCatalog(_)
+                | HistoricalSemanticEvidence::CapabilityPartition(_) => {}
             }
         }
         assert_eq!((entity_keys, index_keys, epoch_keys), (1, 1, 1));
+    }
+
+    #[test]
+    fn migration_selection_splits_501_rows_without_skip_or_repeat() {
+        let state = MemoryState {
+            index_entries: (0..=riffdb_storage_api::MAX_INDEX_MIGRATION_PAGE_ENTRIES)
+                .map(|value| {
+                    MemoryIndexEntry::legacy(migration_legacy_row(
+                        u64::try_from(value).expect("bounded ordinal"),
+                        CanonicalRecord::new(Vec::new()).expect("covered values"),
+                    ))
+                })
+                .collect(),
+            ..MemoryState::default()
+        };
+        let cursor =
+            IndexMigrationCursor::start(database(0x70), OpenSessionId::new(70).expect("session"));
+        let first = select_index_migration_page(&state, cursor).expect("first migration page");
+        assert_eq!(
+            first.len(),
+            riffdb_storage_api::MAX_INDEX_MIGRATION_PAGE_ENTRIES
+        );
+        assert!(
+            first.windows(2).all(|rows| {
+                rows[0].physical_key().as_bytes() < rows[1].physical_key().as_bytes()
+            })
+        );
+        let next = cursor
+            .advanced(
+                u64::try_from(riffdb_storage_api::MAX_INDEX_MIGRATION_PAGE_ENTRIES)
+                    .expect("bounded count"),
+            )
+            .expect("next cursor");
+        let second = select_index_migration_page(&state, next).expect("second migration page");
+        assert_eq!(second.len(), 1);
+        assert_eq!(
+            first.last().expect("first page row").physical_key(),
+            state.index_entries[499].key()
+        );
+        assert_eq!(second[0].physical_key(), state.index_entries[500].key());
+        assert!(
+            first
+                .last()
+                .expect("first page row")
+                .physical_key()
+                .as_bytes()
+                < second[0].physical_key().as_bytes()
+        );
+        assert!(
+            select_index_migration_page(&state, next.advanced(1).expect("exact-end cursor"))
+                .expect("exact end")
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn migration_selection_stops_on_instruction_bytes_with_evidence_capacity_remaining() {
+        const CANONICAL_RECORD_OVERHEAD: usize = 16;
+        let covered_values = CanonicalRecord::new(vec![(
+            FieldId::first(),
+            CanonicalValue::bytes(vec![
+                0xa5;
+                MAX_CANONICAL_DOCUMENT_BYTES - CANONICAL_RECORD_OVERHEAD
+            ])
+            .expect("maximum bytes value"),
+        )])
+        .expect("maximum covered values");
+        let state = MemoryState {
+            index_entries: vec![
+                MemoryIndexEntry::legacy(migration_legacy_row(1, covered_values.clone())),
+                MemoryIndexEntry::legacy(migration_legacy_row(2, covered_values)),
+            ],
+            ..MemoryState::default()
+        };
+        let first_evidence =
+            decode_memory_index_evidence(&state.index_entries[0]).expect("first maximum valid row");
+        let second_evidence = decode_memory_index_evidence(&state.index_entries[1])
+            .expect("second maximum valid row");
+        assert!(
+            first_evidence.instruction_page_charge()
+                <= riffdb_storage_api::MAX_INDEX_MIGRATION_PAGE_BYTES,
+            "one maximum valid row must fit without chunking"
+        );
+        assert!(
+            first_evidence.evidence_page_charge() + second_evidence.evidence_page_charge()
+                <= riffdb_storage_api::MAX_INDEX_MIGRATION_PAGE_BYTES
+        );
+        assert!(
+            first_evidence.instruction_page_charge() + second_evidence.instruction_page_charge()
+                > riffdb_storage_api::MAX_INDEX_MIGRATION_PAGE_BYTES
+        );
+
+        let cursor =
+            IndexMigrationCursor::start(database(0x71), OpenSessionId::new(71).expect("session"));
+        let first = select_index_migration_page(&state, cursor).expect("first bounded page");
+        assert_eq!(first.len(), 1);
+        assert_eq!(first[0].physical_key(), state.index_entries[0].key());
+        let second =
+            select_index_migration_page(&state, cursor.advanced(1).expect("strict continuation"))
+                .expect("second bounded page");
+        assert_eq!(second.len(), 1);
+        assert_eq!(second[0].physical_key(), state.index_entries[1].key());
+    }
+
+    #[test]
+    fn migration_batch_mismatch_applies_none_and_drop_releases_the_gate() {
+        let id = database(0x72);
+        let bundle = validated_migration_bundle();
+        let store = deployed_store(id, bundle.to_stored().expect("stored migration bundle"));
+        let reopened = store.reopen();
+        let original = [
+            compiled_migration_legacy_row(
+                bundle,
+                1,
+                CanonicalRecord::new(Vec::new()).expect("covered values"),
+            ),
+            compiled_migration_legacy_row(
+                bundle,
+                2,
+                CanonicalRecord::new(Vec::new()).expect("covered values"),
+            ),
+        ];
+        store
+            .acquire()
+            .expect("migration access")
+            .write(|state| {
+                state.index_entries = original
+                    .iter()
+                    .cloned()
+                    .map(MemoryIndexEntry::legacy)
+                    .collect();
+                Ok(())
+            })
+            .expect("seed migration rows");
+        let first_before = riffdb_storage_api::encode_index_entry_v1_fixture(&original[0])
+            .expect("first V1 envelope")
+            .into_bytes();
+        let stale_second = StoredIndexEntryV1::new(
+            original[1].key().clone(),
+            original[1].schema_binding().clone(),
+            CanonicalRecord::new(vec![(FieldId::first(), CanonicalValue::U64(99))])
+                .expect("stale covered values"),
+        )
+        .expect("stale second row");
+        let stale_second = MemoryIndexEntry::legacy(stale_second);
+        let stale_second_bytes = stale_second.observed_envelope().to_vec();
+
+        let mut session = store
+            .begin_structural_evidence(inputs())
+            .expect("begin migration evidence");
+        let structural_end = scan_structural_end(&mut session);
+        let (catalog_outcome, historical_end) = validate_catalog_history(&mut session)
+            .expect("validate migration history")
+            .into_parts();
+        let CatalogHistoryOutcome::MigrationRequired(context) = catalog_outcome else {
+            panic!("checked V1 rows must require migration");
+        };
+        let StructuralOpenOutcome::MigrationRequired(mut port) = session
+            .finish(structural_end, historical_end)
+            .expect("finish migration evidence")
+        else {
+            panic!("storage must retain its migration capability");
+        };
+        port.substitute_before_apply = Some(stale_second);
+        let error = CatalogIndexMigrationDriver::new(context, port)
+            .expect("same-session migration driver")
+            .run()
+            .expect_err("one mismatch aborts the complete batch");
+        assert!(matches!(
+            error,
+            CatalogIndexMigrationDriveError::Storage(ref error)
+                if error.kind() == StorageErrorKind::CorruptData
+        ));
+
+        reopened
+            .acquire()
+            .expect("gate released after failed migration")
+            .read(|state| {
+                assert!(state.index_entries[0].current_record().is_none());
+                assert_eq!(state.index_entries[0].observed_envelope(), first_before);
+                assert!(state.index_entries[1].current_record().is_none());
+                assert_eq!(
+                    state.index_entries[1].observed_envelope(),
+                    stale_second_bytes
+                );
+                Ok(())
+            })
+            .expect("observe all-or-none state");
+        assert!(!reopened.gate_is_held());
+    }
+
+    #[test]
+    fn v1_startup_migration_is_linear_atomic_and_requires_a_fresh_clean_pass() {
+        let id = database(0x73);
+        let bundle = validated_migration_bundle();
+        let stored_bundle = bundle.to_stored().expect("stored migration bundle");
+        let store = deployed_store(id, stored_bundle);
+        let binding = DurableKeySchemaBindingV1::new(
+            bundle.lineage().clone(),
+            bundle.contract_version(),
+            bundle.bundle_hash(),
+        );
+        let entity_schema = bundle
+            .bundle()
+            .schema()
+            .entities()
+            .first()
+            .expect("migration entity");
+        let index_schema = entity_schema.indexes().first().expect("migration index");
+        let mut entity = EntityKeyBuilder::new(entity_schema.id());
+        entity.push_u64(7).expect("entity component");
+        let mut index = IndexEntryKeyBuilder::new(index_schema.id());
+        index.push_u64(9).expect("index component");
+        let index_key = index
+            .finish(entity.finish().expect("entity key"))
+            .expect("index key");
+        let legacy = StoredIndexEntryV1::new(
+            index_key.clone(),
+            binding,
+            CanonicalRecord::new(Vec::new()).expect("covered values"),
+        )
+        .expect("legacy row");
+        store
+            .acquire()
+            .expect("seed access")
+            .write(|state| {
+                state.index_entries.push(MemoryIndexEntry::legacy(legacy));
+                Ok(())
+            })
+            .expect("seed legacy row");
+
+        let mut session = store
+            .begin_structural_evidence(inputs())
+            .expect("begin initial evidence");
+        let initial_session_id = session.open_session_id();
+        let structural_end = scan_structural_end(&mut session);
+        let (catalog_outcome, historical_end) = validate_catalog_history(&mut session)
+            .expect("catalog validates the complete historical stream")
+            .into_parts();
+        let CatalogHistoryOutcome::MigrationRequired(context) = catalog_outcome else {
+            panic!("checked V1 must require catalog migration");
+        };
+        let StructuralOpenOutcome::MigrationRequired(port) = session
+            .finish(structural_end, historical_end)
+            .expect("finish initial pass")
+        else {
+            panic!("checked V1 must require migration");
+        };
+        let store = CatalogIndexMigrationDriver::new(context, port)
+            .expect("bind same-session catalog migration")
+            .run()
+            .expect("catalog-owned migration completes");
+        store
+            .acquire()
+            .expect("inspect migrated row")
+            .read(|state| {
+                let row = state.index_entries.first().expect("migrated row");
+                assert_eq!(row.key(), &index_key);
+                assert!(row.current_record().is_some());
+                Ok(())
+            })
+            .expect("migrated row is durable");
+
+        let mut fresh = store
+            .begin_structural_evidence(inputs())
+            .expect("begin fresh complete pass");
+        assert_ne!(fresh.open_session_id(), initial_session_id);
+        let structural_end = scan_structural_end(&mut fresh);
+        let (catalog_outcome, historical_end) = validate_catalog_history(&mut fresh)
+            .expect("fresh catalog validation")
+            .into_parts();
+        assert!(matches!(catalog_outcome, CatalogHistoryOutcome::Ready(_)));
+        assert!(matches!(
+            fresh
+                .finish(structural_end, historical_end)
+                .expect("fresh V2-only finish"),
+            StructuralOpenOutcome::Clean(_)
+        ));
     }
 
     #[test]
@@ -2754,6 +3581,7 @@ mod tests {
                 HistoricalSemanticEvidence::ActiveCatalog(None) => "active:none".to_owned(),
                 HistoricalSemanticEvidence::ActiveCatalog(Some(_))
                 | HistoricalSemanticEvidence::PersistedKey(_)
+                | HistoricalSemanticEvidence::IndexMigrationRow(_)
                 | HistoricalSemanticEvidence::CapabilityPartition(_) => {
                     panic!("unexpected historical evidence")
                 }

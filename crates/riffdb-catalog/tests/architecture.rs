@@ -11,6 +11,8 @@ const CATALOG_MATERIALIZATION: &str = include_str!("../src/materialization.rs");
 const STORAGE_MANIFEST: &str = include_str!("../../riffdb-storage-api/Cargo.toml");
 const STORAGE_CATALOG: &str = include_str!("../../riffdb-storage-api/src/catalog.rs");
 const STORAGE_LIB: &str = include_str!("../../riffdb-storage-api/src/lib.rs");
+const STORAGE_STARTUP: &str = include_str!("../../riffdb-storage-api/src/startup.rs");
+const INVARIANT_MANIFEST: &str = include_str!("../../riffdb-invariant/Cargo.toml");
 
 #[test]
 fn catalog_prepares_but_cannot_submit_storage_mutations() {
@@ -80,7 +82,14 @@ fn catalog_storage_module_remains_ir_opaque_and_history_proof_remains_catalog_ow
     assert!(CATALOG_HISTORY.contains("pub struct ValidatedCatalogHistory"));
     assert!(!CATALOG_HISTORY.contains("Serialize"));
     assert!(!CATALOG_HISTORY.contains("Deserialize"));
-    assert!(!CATALOG_HISTORY.contains("pub fn new("));
+    let validated_history_impl = CATALOG_HISTORY
+        .split_once("impl ValidatedCatalogHistory {")
+        .expect("validated history implementation")
+        .1
+        .split_once("impl fmt::Debug for ValidatedCatalogHistory")
+        .expect("validated history implementation boundary")
+        .0;
+    assert!(!validated_history_impl.contains("pub fn new("));
     assert!(CATALOG_LINEAGE.contains("pub(crate) struct LineageMaterializationProof"));
     assert!(!CATALOG_LINEAGE.contains("Serialize"));
     assert!(!CATALOG_LINEAGE.contains("Deserialize"));
@@ -113,6 +122,124 @@ fn catalog_storage_boundary_has_no_generic_semantic_validation_callback() {
     assert!(CATALOG_MANIFEST.contains("riffdb-storage-api"));
     assert!(!CATALOG_MANIFEST.contains("riffdb-service"));
     assert!(!STORAGE_MANIFEST.contains("riffdb-catalog"));
+}
+
+#[test]
+fn historical_partition_derivation_uses_only_the_pure_invariant_evaluator() {
+    assert!(
+        CATALOG_MANIFEST
+            .contains("riffdb-invariant = { version = \"0.1.0\", path = \"../riffdb-invariant\" }")
+    );
+    assert!(!INVARIANT_MANIFEST.contains("riffdb-catalog"));
+    assert!(CATALOG_HISTORY.contains(
+        "use riffdb_invariant::{EvaluationError, ExpressionValueSource, evaluate_expression};"
+    ));
+
+    let evaluator = CATALOG_HISTORY
+        .split_once("fn derive_historical_partition(")
+        .expect("historical partition evaluator")
+        .1
+        .split_once("fn validate_historical_bundle_parent(")
+        .expect("historical evaluator boundary")
+        .0;
+    assert_eq!(evaluator.matches("evaluate_expression(").count(), 1);
+    assert!(evaluator.contains("aggregate.keys().expressions()"));
+    assert!(evaluator.contains("aggregate.keys().partition_expression()"));
+    assert!(evaluator.contains("impl ExpressionValueSource for HistoricalRootKeyValues<'_>"));
+    assert!(evaluator.contains("fn schema_field("));
+
+    for forbidden in [
+        "StorageError",
+        "StructuralEvidenceSession",
+        "Repository",
+        "StorageEngine",
+        "Redb",
+        "MemoryStore",
+        "impl Fn",
+        "dyn Fn",
+        "FnOnce",
+        "SystemTime",
+        "Instant",
+        "thread_rng",
+        "getrandom",
+        "async fn",
+        ".await",
+        "CommandPlan",
+        "EvaluatedCommand",
+        "CommandRuntime",
+        "ExecutablePlan",
+        "transaction_time(",
+        "transaction_date(",
+    ] {
+        assert!(
+            !evaluator.contains(forbidden),
+            "historical partition evaluator acquired forbidden authority through `{forbidden}`"
+        );
+    }
+}
+
+#[test]
+fn catalog_exclusively_owns_consuming_migration_tracking_and_completion() {
+    for required in [
+        "type BackendBrand<B> = PhantomData<fn(B) -> B>;",
+        "pub trait CatalogIndexMigrationBackend: StartupIndexMigrationPort + Sized",
+        "request: CatalogIndexMigrationScanRequest<Self>",
+        "request: CatalogIndexMigrationBundleRequest<Self>",
+        "pending: CatalogIndexMigrationPendingBatch<Self>",
+        "completion: CatalogIndexMigrationCompletion<Self>",
+        "pub struct CatalogIndexMigrationBatch<B> {",
+        "pub struct CatalogIndexMigrationPendingBatch<B> {",
+        "pub struct CatalogIndexMigrationCompletion<B> {",
+        "pub fn run(self) -> Result<B::Output, CatalogIndexMigrationDriveError>",
+        "while let Some(row) = rows.pop_front()",
+        "derive_index_migration_instruction(&context, row, bundle)",
+        ".finish_index_migration(completion)",
+    ] {
+        assert!(
+            CATALOG_HISTORY.contains(required),
+            "catalog migration state omitted `{required}`"
+        );
+    }
+
+    for forbidden in [
+        "IndexMigrationCatalogAuthority",
+        "IndexMigrationCatalogTracker",
+        "IndexMigrationCatalogAdvance",
+        "IndexMigrationCatalogCompletion",
+        "IndexMigrationPageWork",
+        "IndexMigrationInstructionBatch",
+        "pub fn into_v1_rewrite",
+        "pub fn into_v2_confirm",
+    ] {
+        assert!(
+            !STORAGE_STARTUP.contains(forbidden),
+            "storage API retained forgeable migration authority through `{forbidden}`"
+        );
+    }
+
+    for proof in [
+        "CatalogIndexMigrationBatch<B>",
+        "CatalogIndexMigrationPendingBatch<B>",
+        "CatalogIndexMigrationApplied<B>",
+        "CatalogIndexMigrationCompletion<B>",
+    ] {
+        let declaration = CATALOG_HISTORY
+            .split_once(&format!("pub struct {proof}"))
+            .unwrap_or_else(|| panic!("missing proof declaration {proof}"))
+            .1
+            .split_once('}')
+            .expect("closed proof body")
+            .0;
+        assert!(
+            declaration.contains("_backend: BackendBrand<B>"),
+            "{proof} is not invariantly backend-branded"
+        );
+    }
+
+    assert!(CATALOG_HISTORY.contains("```compile_fail"));
+    assert!(CATALOG_HISTORY.contains("fn substitute<A, B>("));
+    assert!(!CATALOG_HISTORY.contains("pub fn derive_index_migration_instruction"));
+    assert!(!CATALOG_HISTORY.contains("pub fn new(\n        start: IndexMigrationCursor"));
 }
 
 #[test]

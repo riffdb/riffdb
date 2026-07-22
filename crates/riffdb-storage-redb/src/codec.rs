@@ -113,12 +113,19 @@ borrowed_codec!(
     decode_entity_record_v1
 );
 borrowed_codec!(
-    encode_index_entry_v1,
-    decode_index_entry_v1,
-    storage::StoredIndexEntryV1,
-    encode_index_entry_v1,
-    decode_index_entry_v1
+    encode_index_entry_v2,
+    decode_index_entry_v2,
+    storage::StoredIndexEntryV2,
+    encode_index_entry_v2,
+    decode_index_entry_v2
 );
+
+pub(crate) fn decode_index_migration_row(
+    physical_key: &riffdb_types::IndexEntryKey,
+    encoded: &[u8],
+) -> Result<storage::IndexMigrationRowEvidence, storage::StorageError> {
+    storage::decode_index_migration_row(physical_key, encoded).map_err(codec_error)
+}
 borrowed_codec!(
     encode_index_epoch_v1,
     decode_index_epoch_v1,

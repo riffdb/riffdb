@@ -2,13 +2,13 @@
 
 mod bounds;
 mod malformed_semantic;
+mod migration;
 mod relationships;
 mod sample;
 mod variants;
 
 use std::fmt::Debug;
 
-use riffdb_proto::durable::CURRENT_RECORD_SCHEMAS;
 use riffdb_types::{AdministrationSequence, CommitSequence, ExecutionFailureCode};
 
 use crate::EncodedPageItem;
@@ -91,7 +91,7 @@ fn semantic_wire_vectors() -> Vec<(&'static str, CanonicalStoredEnvelopeV1)> {
     ));
 
     let atomic = sample::atomic_record_set();
-    let (index_entry, index_epoch) = sample::index_records();
+    let (_, index_epoch) = sample::index_records();
     vectors.push((
         "riffdb.storage.v1.StoredEntityRecordV1",
         assert_round_trip(
@@ -102,7 +102,11 @@ fn semantic_wire_vectors() -> Vec<(&'static str, CanonicalStoredEnvelopeV1)> {
     ));
     vectors.push((
         "riffdb.storage.v1.StoredIndexEntryV1",
-        assert_round_trip(index_entry, encode_index_entry_v1, decode_index_entry_v1),
+        assert_round_trip(
+            sample::legacy_index_record(),
+            encode_index_entry_v1,
+            decode_index_entry_v1,
+        ),
     ));
     vectors.push((
         "riffdb.storage.v1.StoredIndexEpochV1",
@@ -247,10 +251,16 @@ fn semantic_wire_vectors() -> Vec<(&'static str, CanonicalStoredEnvelopeV1)> {
 #[test]
 fn every_registered_semantic_record_round_trips_in_registry_order() {
     let vectors = semantic_wire_vectors();
-    assert_eq!(vectors.len(), CURRENT_RECORD_SCHEMAS.len());
-    for ((name, _), schema) in vectors.iter().zip(CURRENT_RECORD_SCHEMAS.iter()) {
+    assert_eq!(vectors.len(), 26);
+    for ((name, _), schema) in vectors
+        .iter()
+        .zip(riffdb_proto::durable::READABLE_RECORD_SCHEMAS.iter())
+    {
         assert_eq!(*name, schema.record_type());
     }
+
+    let (current, _) = sample::index_records();
+    assert_round_trip(current, encode_index_entry_v2, decode_index_entry_v2);
 }
 
 #[test]
@@ -264,6 +274,13 @@ fn emit_semantic_wire_vectors_for_fixture_regeneration() {
         }
         std::fs::write(path, fixture).expect("write semantic wire fixture");
     }
+    if let Some(path) = std::env::var_os("RIFFDB_DURABLE_INDEX_V2_VECTOR_OUTPUT") {
+        let path = std::path::PathBuf::from(path);
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent).expect("create V2 vector parent directory");
+        }
+        std::fs::write(path, index_v2_wire_fixture()).expect("write V2 semantic wire fixture");
+    }
 }
 
 #[test]
@@ -272,12 +289,16 @@ fn checked_in_semantic_wire_vectors_are_current() {
         semantic_wire_fixture(),
         include_str!("../../../../../fixtures/proto/durable-wire-vectors.txt")
     );
+    assert_eq!(
+        index_v2_wire_fixture(),
+        include_str!("../../../../../fixtures/proto/durable-index-v2-wire-vector.txt")
+    );
 }
 
 fn semantic_wire_fixture() -> String {
     let mut fixture = String::from("riffdb-durable-wire-vectors-v1\nrecords\t26\n");
     for (name, envelope) in semantic_wire_vectors() {
-        let decoded = riffdb_proto::durable::current_record_registry()
+        let decoded = riffdb_proto::durable::readable_record_registry()
             .decode(envelope.as_bytes())
             .expect("sample envelope decodes");
         let line = format!(
@@ -288,6 +309,20 @@ fn semantic_wire_fixture() -> String {
         fixture.push_str(&line);
     }
     fixture
+}
+
+fn index_v2_wire_fixture() -> String {
+    let (value, _) = sample::index_records();
+    let envelope = assert_round_trip(value, encode_index_entry_v2, decode_index_entry_v2);
+    let decoded = riffdb_proto::durable::readable_record_registry()
+        .decode(envelope.as_bytes())
+        .expect("V2 sample envelope decodes");
+    format!(
+        "riffdb-durable-index-v2-wire-vector-v1\n{}\t{}\t{}\n",
+        decoded.record_type(),
+        hex(decoded.payload()),
+        hex(envelope.as_bytes())
+    )
 }
 
 fn hex(bytes: &[u8]) -> String {

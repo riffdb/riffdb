@@ -1,0 +1,12 @@
+syntax = "proto3";
+
+package riffdb.storage.v1;
+
+import "riffdb/storage/v1/application.proto";
+
+message StoredIndexEntryV2 {
+  bytes index_entry_key = 1;
+  DurableKeySchemaBindingV1 schema_binding = 2;
+  bytes canonical_covered_values = 3;
+  bytes partition_key = 4;
+}

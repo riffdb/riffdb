@@ -1,5 +1,6 @@
 //! Authoritative query, projection, and policy-filtered discovery orchestration.
 
+use std::collections::BTreeMap;
 use std::future::{Future, poll_fn};
 use std::pin::Pin;
 use std::sync::Arc;
@@ -33,20 +34,21 @@ use crate::wait::{ControlledWaitError, wait_with_control};
 use crate::{
     AuthoritativeEntityRequest, AuthoritativeEntitySnapshot, AuthoritativeIndexPage,
     AuthoritativeIndexRequest, AuthoritativeReadError, AuthoritativeReadinessFailure,
-    CommandDiscoveryCursorLookup, CommandDiscoveryCursorState, CommandToolDescriptor,
-    CommandToolDiscoveryItem, ContractSelection, DiscoverCommandToolsRequest,
-    DiscoverCommandToolsResult, DiscoverResourcesRequest, DiscoverResourcesResult,
-    DiscoveryCatalogFence, EntityView, FieldSelection, GetEntityRequest, GetEntityResult,
-    GetProjectionStatusRequest, GetProjectionStatusResult, IndexRowView, IndexScanCursorLookup,
-    IndexScanCursorPolicy, IndexScanCursorState, IndexScanFence, InternalDefect, Page, PageLimit,
-    PortAdmissionError, PortDriverStopped, ProjectionCursorLookup, ProjectionCursorPolicy,
-    ProjectionCursorState, ProjectionPageFence, ProjectionPortError, ProjectionPortReady,
-    ProjectionPortRequest, ProjectionPortResult, ProjectionStateFence, QueryApplication,
-    QueryProjectionReady, QueryProjectionRequest, QueryProjectionResult, RequestContext,
-    ResourceDescriptor, ResourceDiscoveryCursorLookup, ResourceDiscoveryCursorState,
-    ResourceDiscoveryCursorVisibility, RiffDbService, RiffDbServiceInner, ScanIndexRequest,
-    ScanIndexResult, ServiceAuditTargetMap, ServiceFailure, ServiceFuture, ServiceResult,
-    ServiceTelemetryEvent, SubmittedValue, ensure_response_budget, fit_page_items,
+    AuthoritativeSchemaBinding, CommandDiscoveryCursorLookup, CommandDiscoveryCursorState,
+    CommandToolDescriptor, CommandToolDiscoveryItem, ContractSelection,
+    DiscoverCommandToolsRequest, DiscoverCommandToolsResult, DiscoverResourcesRequest,
+    DiscoverResourcesResult, DiscoveryCatalogFence, EntityView, FieldSelection, GetEntityRequest,
+    GetEntityResult, GetProjectionStatusRequest, GetProjectionStatusResult, IndexRowView,
+    IndexScanCursorLookup, IndexScanCursorPolicy, IndexScanCursorState, IndexScanFence,
+    InternalDefect, Page, PageLimit, PortAdmissionError, PortDriverStopped, ProjectionCursorLookup,
+    ProjectionCursorPolicy, ProjectionCursorState, ProjectionPageFence, ProjectionPortError,
+    ProjectionPortReady, ProjectionPortRequest, ProjectionPortResult, ProjectionStateFence,
+    QueryApplication, QueryProjectionReady, QueryProjectionRequest, QueryProjectionResult,
+    RequestContext, ResourceDescriptor, ResourceDiscoveryCursorLookup,
+    ResourceDiscoveryCursorState, ResourceDiscoveryCursorVisibility, RiffDbService,
+    RiffDbServiceInner, ScanIndexRequest, ScanIndexResult, ServiceAuditTargetMap, ServiceFailure,
+    ServiceFuture, ServiceResult, ServiceTelemetryEvent, SubmittedValue, ensure_response_budget,
+    fit_page_items, fit_sparse_page_items,
 };
 use crate::{CursorAccessError, CursorContractIdentity};
 
@@ -499,6 +501,31 @@ async fn scan_index(
     {
         return Err(finish_failure(&service, &context, &begun, invalid_cursor_failure()).await);
     }
+    let derived_partitions = match validate_authoritative_index_rows(
+        &service,
+        &context,
+        &bundle,
+        &lineage,
+        entity.id(),
+        index.id(),
+        effective_policy.partition_constraint(),
+        &lower_page,
+    )
+    .await
+    {
+        Ok(partitions) => partitions,
+        Err(IndexRowValidationError::Controlled(error)) => {
+            return Err(finish_controlled_wait(&service, &context, &begun, error).await);
+        }
+        Err(IndexRowValidationError::Catalog(error)) => {
+            let failure = catalog_failure(&service, OPERATION, error);
+            return Err(finish_failure(&service, &context, &begun, failure).await);
+        }
+        Err(IndexRowValidationError::Integrity) => {
+            let failure = lower_integrity_failure(&service, OPERATION);
+            return Err(finish_failure(&service, &context, &begun, failure).await);
+        }
+    };
     let return_authorization = begun.reauthorize(&service, &context).await?;
     let Some(return_current_policy) = current_scan_policy(
         &service,
@@ -518,13 +545,12 @@ async fn scan_index(
     };
     let return_limit = return_policy.effective_limit();
     let mut rows = match index_views(
-        contract.schema(),
         &entity,
-        &index,
         &lineage,
         return_policy.partition_constraint(),
         return_policy.visible_fields().as_slice(),
         &lower_page,
+        &derived_partitions,
     ) {
         Ok(rows) => rows,
         Err(()) => {
@@ -535,24 +561,28 @@ async fn scan_index(
     let more_due_to_limit = rows.len() > usize::from(return_limit.get().get());
     rows.truncate(usize::from(return_limit.get().get()));
     let fence = IndexScanFence::new(lower_page.epoch());
-    let fit = match fit_page_items(
+    let fit = match fit_sparse_page_items(
         &rows,
         &fence,
-        more_due_to_limit || lower_page.next_after().is_some(),
+        more_due_to_limit || lower_page.scanned_through().is_some(),
     ) {
         Ok(fit) => fit,
         Err(failure) => {
             return Err(finish_failure(&service, &context, &begun, failure).await);
         }
     };
-    let continuation_after = if fit.has_more() {
-        if fit.item_count() < rows.len() || more_due_to_limit {
-            rows.get(fit.item_count() - 1).map(|row| row.key().clone())
-        } else {
-            lower_page.next_after().cloned()
+    let continuation_after = match index_continuation_after(
+        &rows,
+        fit.item_count(),
+        fit.has_more(),
+        more_due_to_limit,
+        lower_page.scanned_through(),
+    ) {
+        Ok(continuation) => continuation,
+        Err(()) => {
+            let failure = lower_integrity_failure(&service, OPERATION);
+            return Err(finish_failure(&service, &context, &begun, failure).await);
         }
-    } else {
-        None
     };
     rows.truncate(fit.item_count());
     let cursor_guard = match continuation_after {
@@ -575,7 +605,7 @@ async fn scan_index(
     let next_cursor = cursor_guard
         .as_ref()
         .map(crate::CursorPublicationGuard::token);
-    let public_page = match Page::new(return_limit, rows, next_cursor, fence) {
+    let public_page = match Page::new_sparse_progress(return_limit, rows, next_cursor, fence) {
         Ok(page) => page,
         Err(_) => {
             let failure = lower_integrity_failure(&service, OPERATION);
@@ -1924,6 +1954,89 @@ fn validate_field_selection(entity: &EntitySchema, fields: &[FieldId]) -> Servic
     Ok(())
 }
 
+enum IndexRowValidationError {
+    Controlled(ControlledWaitError),
+    Catalog(CatalogError),
+    Integrity,
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn validate_authoritative_index_rows(
+    service: &RiffDbServiceInner,
+    context: &RequestContext,
+    selected_bundle: &ValidatedContractBundle,
+    target_lineage: &ContractLineage,
+    expected_entity: riffdb_types::EntityTypeId,
+    index_id: riffdb_types::IndexId,
+    read_constraint: &PartitionConstraint,
+    page: &AuthoritativeIndexPage,
+) -> Result<Vec<PartitionKey>, IndexRowValidationError> {
+    if !matches!(read_constraint, PartitionConstraint::Filter(_)) {
+        return Err(IndexRowValidationError::Integrity);
+    }
+
+    let selected_binding = AuthoritativeSchemaBinding::new(
+        selected_bundle.lineage().clone(),
+        selected_bundle.contract_version(),
+        selected_bundle.bundle_hash(),
+    );
+    let mut bundles = BTreeMap::new();
+    bundles.insert(selected_binding, selected_bundle.clone());
+    let mut partitions = Vec::with_capacity(page.rows().len());
+
+    for row in page.rows() {
+        let binding = row.schema_binding();
+        if binding.lineage() != target_lineage {
+            return Err(IndexRowValidationError::Integrity);
+        }
+        if !bundles.contains_key(binding) {
+            let observed = wait_with_control(
+                context.control(),
+                service.providers.deadline_scheduler.as_ref(),
+                service.providers.catalog.prepare_contract_version(
+                    context.control(),
+                    binding.lineage().clone(),
+                    binding.contract_version(),
+                ),
+            )
+            .await
+            .map_err(IndexRowValidationError::Controlled)?
+            .map_err(IndexRowValidationError::Catalog)?;
+            let historical = observed.ok_or(IndexRowValidationError::Integrity)?;
+            if historical.lineage() != binding.lineage()
+                || historical.contract_version() != binding.contract_version()
+                || historical.bundle_hash() != binding.bundle_hash()
+            {
+                return Err(IndexRowValidationError::Integrity);
+            }
+            bundles.insert(binding.clone(), historical);
+        }
+
+        let historical = bundles
+            .get(binding)
+            .ok_or(IndexRowValidationError::Integrity)?;
+        let (entity, index) = find_index(historical.bundle().schema(), index_id)
+            .ok_or(IndexRowValidationError::Integrity)?;
+        if entity.id() != expected_entity {
+            return Err(IndexRowValidationError::Integrity);
+        }
+        let decoded = index
+            .key_schema()
+            .decode_index(row.key())
+            .map_err(|_| IndexRowValidationError::Integrity)?;
+        let partition =
+            derive_entity_partition(historical.bundle().schema(), &entity, decoded.entity_key())
+                .map_err(|_| IndexRowValidationError::Integrity)?;
+        if &partition != row.stored_partition()
+            || !partition_allowed(read_constraint, target_lineage, &partition)
+        {
+            return Err(IndexRowValidationError::Integrity);
+        }
+        partitions.push(partition);
+    }
+    Ok(partitions)
+}
+
 enum PreparationError {
     Invalid,
     Arithmetic,
@@ -2265,26 +2378,46 @@ fn entity_view(
 }
 
 fn index_views(
-    schema: &riffdb_contract_ir::SchemaIr,
     entity: &EntitySchema,
-    index: &IndexSchema,
     lineage: &ContractLineage,
     constraint: &PartitionConstraint,
     visible_fields: &[FieldId],
     page: &AuthoritativeIndexPage,
+    derived_partitions: &[PartitionKey],
 ) -> Result<Vec<IndexRowView>, ()> {
+    if page.rows().len() != derived_partitions.len() {
+        return Err(());
+    }
     let mut views = Vec::with_capacity(page.rows().len());
-    for row in page.rows() {
-        let decoded = index.key_schema().decode_index(row.key()).map_err(|_| ())?;
-        let partition =
-            derive_entity_partition(schema, entity, decoded.entity_key()).map_err(|_| ())?;
-        if !partition_allowed(constraint, lineage, &partition) {
-            return Err(());
+    for (row, partition) in page.rows().iter().zip(derived_partitions) {
+        if !partition_allowed(constraint, lineage, partition) {
+            continue;
         }
         let values = filter_record(entity.record(), row.values(), visible_fields)?;
         views.push(IndexRowView::new(row.key().clone(), values));
     }
     Ok(views)
+}
+
+fn index_continuation_after(
+    releasable_rows: &[IndexRowView],
+    emitted_count: usize,
+    has_more: bool,
+    more_due_to_limit: bool,
+    scanned_through: Option<&riffdb_types::IndexEntryKey>,
+) -> Result<Option<riffdb_types::IndexEntryKey>, ()> {
+    if emitted_count > releasable_rows.len() {
+        return Err(());
+    }
+    if !has_more {
+        return Ok(None);
+    }
+    if emitted_count < releasable_rows.len() || more_due_to_limit {
+        let emitted_index = emitted_count.checked_sub(1).ok_or(())?;
+        let row = releasable_rows.get(emitted_index).ok_or(())?;
+        return Ok(Some(row.key().clone()));
+    }
+    scanned_through.cloned().map(Some).ok_or(())
 }
 
 fn partition_allowed(
@@ -2654,8 +2787,9 @@ mod tests {
         RecordTypeRef, SchemaArtifactKey, SchemaIr, ValueType,
     };
     use riffdb_types::{
-        AggregateTypeId, CommitSequence, EntityTypeId, FrontierPosition, PartitionKeyBuilder,
-        ProjectionId, ProjectionIdentity, ProjectionPlanHash,
+        AggregateTypeId, CommitSequence, EntityKeyBuilder, EntityTypeId, FrontierPosition,
+        IndexEntryKeyBuilder, IndexId, PartitionKeyBuilder, ProjectionId, ProjectionIdentity,
+        ProjectionPlanHash,
     };
 
     use super::*;
@@ -2690,6 +2824,47 @@ mod tests {
 
     fn page_limit(value: u16) -> PageLimit {
         PageLimit::new(value).expect("test page limit")
+    }
+
+    fn index_view(component: u64) -> IndexRowView {
+        let mut entity_key = EntityKeyBuilder::new(EntityTypeId::first());
+        entity_key
+            .push_u64(component)
+            .expect("bounded entity component");
+        let mut index_key = IndexEntryKeyBuilder::new(IndexId::first());
+        index_key
+            .push_u64(component)
+            .expect("bounded index component");
+        IndexRowView::new(
+            index_key
+                .finish(entity_key.finish().expect("entity key"))
+                .expect("index key"),
+            CanonicalRecord::new(Vec::new()).expect("empty values"),
+        )
+    }
+
+    #[test]
+    fn index_continuation_uses_physical_progress_only_after_all_releasable_rows() {
+        let rows = vec![index_view(1), index_view(2)];
+        let scanned_through = index_view(3);
+        assert_eq!(
+            index_continuation_after(&rows, rows.len(), true, false, Some(scanned_through.key()),),
+            Ok(Some(scanned_through.key().clone()))
+        );
+        assert_eq!(
+            index_continuation_after(&rows, 1, true, true, Some(scanned_through.key())),
+            Ok(Some(rows[0].key().clone())),
+            "limit truncation must resume after the last emitted row"
+        );
+        assert_eq!(
+            index_continuation_after(&[], 0, true, false, Some(scanned_through.key())),
+            Ok(Some(scanned_through.key().clone())),
+            "an empty visible page still carries lower physical progress"
+        );
+        assert_eq!(
+            index_continuation_after(&rows, rows.len(), false, false, None),
+            Ok(None)
+        );
     }
 
     #[test]

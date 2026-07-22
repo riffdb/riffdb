@@ -2,8 +2,9 @@
 
 use riffdb_storage_api::{
     AdministrationSequenceRange, CapabilityTokenLookupV1, CommandWriteClassBreakdownV1,
-    EncodedContentCharge, EntityTarget, ExecutablePlanRef, HistoricalPersistedKeyEvidenceV1,
-    IdempotencyIdentityKey, OutboxStatusObservationV1, OutboxTransitionResultV1,
+    DurableCodecError, DurableCodecErrorKind, EncodedContentCharge, EntityTarget,
+    ExecutablePlanRef, HistoricalPersistedKeyEvidenceV1, IdempotencyIdentityKey,
+    IndexMigrationSemanticRow, OutboxStatusObservationV1, OutboxTransitionResultV1,
     RetainedMetadataV1, SequenceAllocationError, StorageError, StorageErrorKind,
     StoredAdministrationAuditRecordV1, StoredAdmissionStateV1, StoredCapabilityRecordV1,
     StoredCommitRecordV1, StoredContractBundleV1, StoredDurableEventV1, StoredEntityRecordV1,
@@ -367,74 +368,124 @@ pub(crate) struct HistoricalPlanReferenceRow {
 #[derive(Clone)]
 #[allow(dead_code)]
 pub(crate) enum MemoryIndexEntry {
-    LegacyV1(StoredIndexEntryV1),
+    LegacyV1 {
+        record: StoredIndexEntryV1,
+        observed_envelope: Box<[u8]>,
+    },
     CurrentV2 {
         record: StoredIndexEntryV2,
+        observed_envelope: Box<[u8]>,
         charge: EncodedContentCharge,
     },
 }
 
 impl MemoryIndexEntry {
+    #[cfg(test)]
     pub(crate) fn legacy(record: StoredIndexEntryV1) -> Self {
-        Self::LegacyV1(record)
+        let encoded = riffdb_storage_api::encode_index_entry_v1_fixture(&record)
+            .expect("checked V1 fixture must have a canonical envelope");
+        Self::LegacyV1 {
+            record,
+            observed_envelope: encoded.as_bytes().to_vec().into_boxed_slice(),
+        }
     }
 
     #[allow(dead_code)]
-    pub(crate) fn current(record: StoredIndexEntryV2, charge: EncodedContentCharge) -> Self {
-        Self::CurrentV2 { record, charge }
+    pub(crate) fn current(
+        record: StoredIndexEntryV2,
+        charge: EncodedContentCharge,
+    ) -> Result<Self, StorageError> {
+        let observed_envelope = riffdb_storage_api::encode_index_entry_v2(&record)
+            .map_err(durable_codec_error_as_storage)?
+            .into_bytes()
+            .into_boxed_slice();
+        Ok(Self::CurrentV2 {
+            record,
+            observed_envelope,
+            charge,
+        })
+    }
+
+    pub(crate) fn current_from_encoded(
+        record: StoredIndexEntryV2,
+        observed_envelope: Vec<u8>,
+        charge: EncodedContentCharge,
+    ) -> Self {
+        Self::CurrentV2 {
+            record,
+            observed_envelope: observed_envelope.into_boxed_slice(),
+            charge,
+        }
     }
 
     pub(crate) fn key(&self) -> &riffdb_types::IndexEntryKey {
         match self {
-            Self::LegacyV1(record) => record.key(),
+            Self::LegacyV1 { record, .. } => record.key(),
             Self::CurrentV2 { record, .. } => record.key(),
-        }
-    }
-
-    pub(crate) fn schema_binding(&self) -> &riffdb_storage_api::DurableKeySchemaBindingV1 {
-        match self {
-            Self::LegacyV1(record) => record.schema_binding(),
-            Self::CurrentV2 { record, .. } => record.schema_binding(),
         }
     }
 
     pub(crate) fn covered_values(&self) -> &riffdb_types::CanonicalRecord {
         match self {
-            Self::LegacyV1(record) => record.covered_values(),
+            Self::LegacyV1 { record, .. } => record.covered_values(),
             Self::CurrentV2 { record, .. } => record.covered_values(),
         }
     }
 
     pub(crate) fn current_record(&self) -> Option<&StoredIndexEntryV2> {
         match self {
-            Self::LegacyV1(_) => None,
+            Self::LegacyV1 { .. } => None,
             Self::CurrentV2 { record, .. } => Some(record),
         }
     }
 
     pub(crate) fn encoded_content_charge(&self) -> EncodedContentCharge {
         match self {
-            Self::LegacyV1(_) => memory_record_charge(),
+            Self::LegacyV1 {
+                observed_envelope, ..
+            } => EncodedContentCharge::new(observed_envelope.len())
+                .expect("canonical V1 fixture envelope is nonempty and bounded"),
             Self::CurrentV2 { charge, .. } => *charge,
         }
     }
 
-    pub(crate) fn historical_evidence(&self) -> HistoricalPersistedKeyEvidenceV1 {
+    pub(crate) fn observed_envelope(&self) -> &[u8] {
         match self {
-            Self::LegacyV1(record) => HistoricalPersistedKeyEvidenceV1::from_index_entry(record),
-            Self::CurrentV2 { record, .. } => {
-                HistoricalPersistedKeyEvidenceV1::from_index_entry_v2(record)
+            Self::LegacyV1 {
+                observed_envelope, ..
             }
+            | Self::CurrentV2 {
+                observed_envelope, ..
+            } => observed_envelope,
         }
     }
 
-    #[cfg(test)]
-    pub(crate) fn legacy_record(&self) -> Option<&StoredIndexEntryV1> {
-        match self {
-            Self::LegacyV1(record) => Some(record),
-            Self::CurrentV2 { .. } => None,
+    pub(crate) fn matches_migration_row(&self, row: &IndexMigrationSemanticRow) -> bool {
+        match (self, row) {
+            (Self::LegacyV1 { record, .. }, IndexMigrationSemanticRow::V1(decoded)) => {
+                record == decoded
+            }
+            (Self::CurrentV2 { record, .. }, IndexMigrationSemanticRow::V2(decoded)) => {
+                record == decoded
+            }
+            (Self::LegacyV1 { .. }, IndexMigrationSemanticRow::V2(_))
+            | (Self::CurrentV2 { .. }, IndexMigrationSemanticRow::V1(_)) => false,
         }
     }
+}
+
+pub(crate) const fn durable_codec_error_as_storage(error: DurableCodecError) -> StorageError {
+    let kind = match error.kind() {
+        DurableCodecErrorKind::IncompatibleFormat => StorageErrorKind::IncompatibleFormat,
+        DurableCodecErrorKind::CorruptData | DurableCodecErrorKind::UnexpectedRecordType => {
+            StorageErrorKind::CorruptData
+        }
+        DurableCodecErrorKind::LimitExceeded => StorageErrorKind::LimitExceeded,
+        DurableCodecErrorKind::InvariantViolation | DurableCodecErrorKind::ReservationExceeded => {
+            StorageErrorKind::InvariantViolation
+        }
+    };
+    StorageError::new(kind, None)
 }
 
 impl HistoricalPlanReferenceRow {

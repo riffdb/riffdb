@@ -39,6 +39,7 @@ const STORAGE_SOURCES: &[&str] = &[
     "riffdb/storage/v1/catalog.proto",
     "riffdb/storage/v1/common.proto",
     "riffdb/storage/v1/envelope.proto",
+    "riffdb/storage/v1/index_v2.proto",
     "riffdb/storage/v1/metadata.proto",
     "riffdb/storage/v1/outbox.proto",
     "riffdb/storage/v1/projection.proto",
@@ -50,6 +51,7 @@ const PRODUCTION_SOURCES: &[&str] = &[
     "riffdb/storage/v1/catalog.proto",
     "riffdb/storage/v1/common.proto",
     "riffdb/storage/v1/envelope.proto",
+    "riffdb/storage/v1/index_v2.proto",
     "riffdb/storage/v1/metadata.proto",
     "riffdb/storage/v1/outbox.proto",
     "riffdb/storage/v1/projection.proto",
@@ -211,7 +213,14 @@ const DURABLE_RECORDS: &[DurableRecord] = &[
         "StoredProjectionControlV1",
         PayloadBound::Tiny,
     ),
+    durable(
+        "index_v2.proto",
+        "StoredIndexEntryV2",
+        PayloadBound::Document,
+    ),
 ];
+
+const LEGACY_DURABLE_RECORD_COUNT: usize = 26;
 
 const fn durable(
     source: &'static str,
@@ -318,20 +327,46 @@ fn main() -> Result<(), Box<dyn Error>> {
         "fixtures/proto/public-response-charge-v1.tsv",
         public_response_charge_vectors()?.as_bytes(),
     )?;
+    let legacy_registry = durable_registry
+        .get(..LEGACY_DURABLE_RECORD_COUNT)
+        .ok_or_else(|| io::Error::other("durable registry lost its legacy prefix"))?;
+    let v2_record = durable_registry
+        .get(LEGACY_DURABLE_RECORD_COUNT)
+        .ok_or_else(|| io::Error::other("durable registry is missing StoredIndexEntryV2"))?;
     write_artifact(
         &output_root,
         "fixtures/proto/durable-registry.txt",
+        durable_registry_fixture(legacy_registry).as_bytes(),
+    )?;
+    write_artifact(
+        &output_root,
+        "fixtures/proto/durable-readable-registry.txt",
         durable_registry_fixture(&durable_registry).as_bytes(),
     )?;
     write_artifact(
         &output_root,
+        "fixtures/proto/durable-writable-registry.txt",
+        durable_writable_registry_fixture(&durable_registry)?.as_bytes(),
+    )?;
+    write_artifact(
+        &output_root,
         "fixtures/proto/durable-schema-hashes.bin",
-        &durable_schema_hashes(&durable_registry),
+        &durable_schema_hashes(legacy_registry),
+    )?;
+    write_artifact(
+        &output_root,
+        "fixtures/proto/durable-index-v2-schema-hash.bin",
+        &v2_record.schema_hash,
     )?;
     write_artifact(
         &output_root,
         "fixtures/proto/durable-record-bounds.bin",
-        &durable_record_bounds(&durable_registry),
+        &durable_record_bounds(legacy_registry),
+    )?;
+    write_artifact(
+        &output_root,
+        "fixtures/proto/durable-index-v2-record-bound.bin",
+        &durable_record_bounds(std::slice::from_ref(v2_record)),
     )?;
     write_artifact(
         &output_root,
@@ -394,8 +429,10 @@ struct BuiltDurableRecord {
 fn build_durable_registry(
     storage: &FileDescriptorSet,
 ) -> Result<Vec<BuiltDurableRecord>, Box<dyn Error>> {
-    if DURABLE_RECORDS.len() != 26 {
-        return Err(io::Error::other("durable registry must contain exactly 26 records").into());
+    if DURABLE_RECORDS.len() != 27 {
+        return Err(
+            io::Error::other("readable durable registry must contain exactly 27 records").into(),
+        );
     }
     if storage.file.len() != STORAGE_SOURCES.len()
         || storage
@@ -404,7 +441,7 @@ fn build_durable_registry(
             .any(|file| file.package() != "riffdb.storage.v1")
     {
         return Err(io::Error::other(
-            "storage descriptor must contain exactly the nine riffdb.storage.v1 sources",
+            "storage descriptor must contain exactly the ten riffdb.storage.v1 sources",
         )
         .into());
     }
@@ -418,9 +455,9 @@ fn build_durable_registry(
         .iter()
         .map(|file| file.enum_type.len())
         .sum::<usize>();
-    if message_count != 75 || enum_count != 12 {
+    if message_count != 76 || enum_count != 12 {
         return Err(io::Error::other(format!(
-            "storage schema must contain 74 semantic messages plus StoredEnvelope and 12 enums; found {message_count} messages and {enum_count} enums"
+            "storage schema must contain 75 semantic messages plus StoredEnvelope and 12 enums; found {message_count} messages and {enum_count} enums"
         ))
         .into());
     }
@@ -551,6 +588,32 @@ fn durable_registry_fixture(records: &[BuiltDurableRecord]) -> String {
         output.push('\n');
     }
     output
+}
+
+fn durable_writable_registry_fixture(
+    records: &[BuiltDurableRecord],
+) -> Result<String, Box<dyn Error>> {
+    let legacy = records
+        .get(..LEGACY_DURABLE_RECORD_COUNT)
+        .ok_or_else(|| io::Error::other("durable registry lost its legacy prefix"))?;
+    let v2 = records
+        .get(LEGACY_DURABLE_RECORD_COUNT)
+        .ok_or_else(|| io::Error::other("durable registry is missing StoredIndexEntryV2"))?;
+    let writable = legacy[..8]
+        .iter()
+        .chain(std::iter::once(v2))
+        .chain(legacy[9..].iter());
+
+    let mut output = String::from("riffdb-durable-writable-registry-v1\n");
+    let _ = writeln!(output, "records {LEGACY_DURABLE_RECORD_COUNT}");
+    for record in writable {
+        let _ = write!(output, "{} schema-hash=", record.record_type);
+        for byte in record.schema_hash {
+            let _ = write!(output, "{byte:02x}");
+        }
+        output.push('\n');
+    }
+    Ok(output)
 }
 
 fn durable_schema_hashes(records: &[BuiltDurableRecord]) -> Vec<u8> {

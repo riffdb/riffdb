@@ -531,13 +531,13 @@ mod tests {
 
     use riffdb_storage_api::{
         AffectedEpochCurrentState, AffectedIndexEpochTargets, CommandWriteSetPlanV1,
-        CurrentRangeObservation, DeclaredOutcome, EntityObservation, EntityPostImage,
-        EvaluatedCommand, EvaluationBudget, EventIntent, ExecutablePlanRef, IdempotencyIdentity,
-        IdempotencyKeyDigest, IndexEntryMutationV1, IndexEpochAdvanceV1, IndexEpochPosition,
-        IndexRangePrefixBuilder, IndexRangeTarget, PreEvaluationCommitContext, ReadSnapshot,
-        SnapshotRequest, StoredAdmittedProvenanceClaimsV1, StoredIndexEntryV1,
-        StoredPendingAdmissionV1, command_write_set_upper_bound_v1,
-        encode_atomic_command_record_set_v1,
+        CurrentRangeObservation, DeclaredOutcome, EncodedWriteSetUpperBoundResultV1,
+        EntityObservation, EntityPostImage, EvaluatedCommand, EvaluationBudget, EventIntent,
+        ExecutablePlanRef, IdempotencyIdentity, IdempotencyKeyDigest, IndexEntryMutationV1,
+        IndexEpochAdvanceV1, IndexEpochPosition, IndexRangePrefixBuilder, IndexRangeTarget,
+        PreEvaluationCommitContext, ReadSnapshot, SnapshotRequest,
+        StoredAdmittedProvenanceClaimsV1, StoredIndexEntryV2, StoredPendingAdmissionV1,
+        command_write_set_upper_bound_v1, encode_atomic_command_record_set_v1,
     };
     use riffdb_types::{
         ActorId, ActorKind, AdmittedActorContext, AggregateTypeId, CanonicalInputHash,
@@ -699,10 +699,11 @@ mod tests {
                 let entry_key = key
                     .finish(entity_target.key().clone())
                     .expect("index entry key");
-                let entry = StoredIndexEntryV1::new(
+                let entry = StoredIndexEntryV2::new(
                     entry_key,
                     DurableKeySchemaBindingV1::from_plan(intent.evaluated().plan()),
                     CanonicalRecord::new(Vec::new()).expect("empty covered values"),
+                    intent.pending().partition_key().clone(),
                 )
                 .expect("index entry");
                 let index_entries = vec![IndexEntryMutationV1::Put(entry)];
@@ -742,8 +743,14 @@ mod tests {
                 (Vec::new(), affected_targets, affected_current, Vec::new())
             };
         let encoded_upper_bound =
-            command_write_set_upper_bound_v1(&intent, &index_entries, &index_epochs)
-                .expect("encoded upper bound");
+            match command_write_set_upper_bound_v1(&intent, &index_entries, &index_epochs)
+                .expect("encoded upper bound")
+            {
+                EncodedWriteSetUpperBoundResultV1::Fits(bound) => bound,
+                EncodedWriteSetUpperBoundResultV1::ExceedsAcceptedAggregateCap(_) => {
+                    panic!("fixture write set must fit the accepted aggregate cap")
+                }
+            };
         let write_plan = CommandWriteSetPlanV1::new(
             &intent,
             affected_targets,

@@ -6,8 +6,10 @@ use prost::Message;
 use prost_types::{DescriptorProto, FileDescriptorSet, field_descriptor_proto::Type};
 use riffdb_proto::STORAGE_FILE_DESCRIPTOR_SET;
 use riffdb_proto::durable::{
-    CURRENT_RECORD_SCHEMA_COUNT, CURRENT_RECORD_SCHEMAS, current_record_registry,
-    current_record_schema,
+    CURRENT_RECORD_SCHEMA_COUNT, CURRENT_RECORD_SCHEMAS, READABLE_RECORD_SCHEMA_COUNT,
+    READABLE_RECORD_SCHEMAS, WRITABLE_RECORD_SCHEMA_COUNT, WRITABLE_RECORD_SCHEMAS,
+    current_record_registry, current_record_schema, readable_record_registry,
+    readable_record_schema, writable_record_schema,
 };
 use riffdb_proto::envelope::{
     EnvelopeError, MAX_STORED_ENVELOPE_BYTES, PayloadValidationError, encode,
@@ -17,7 +19,7 @@ use riffdb_proto::storage::v1::{
 };
 use riffdb_types::hash_schema;
 
-const RECORDS: &[(&str, &str)] = &[
+const LEGACY_RECORDS: &[(&str, &str)] = &[
     ("StoredStorageFormatVersionV1", "metadata.proto"),
     ("StoredDatabaseIdentityV1", "metadata.proto"),
     ("StoredApplicationSequenceAllocatorV1", "metadata.proto"),
@@ -46,9 +48,23 @@ const RECORDS: &[(&str, &str)] = &[
     ("StoredProjectionControlV1", "projection.proto"),
 ];
 
+const INDEX_V2_RECORD: (&str, &str) = ("StoredIndexEntryV2", "index_v2.proto");
+
 const DURABLE_WIRE_VECTORS: &str = include_str!(concat!(
     env!("CARGO_MANIFEST_DIR"),
     "/../../fixtures/proto/durable-wire-vectors.txt"
+));
+const LEGACY_REGISTRY_FIXTURE: &str = include_str!(concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/../../fixtures/proto/durable-registry.txt"
+));
+const READABLE_REGISTRY_FIXTURE: &str = include_str!(concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/../../fixtures/proto/durable-readable-registry.txt"
+));
+const WRITABLE_REGISTRY_FIXTURE: &str = include_str!(concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/../../fixtures/proto/durable-writable-registry.txt"
 ));
 
 fn decode_lower_hex(value: &str) -> Vec<u8> {
@@ -146,6 +162,10 @@ fn storage_source_import_and_type_inventory_is_exact() {
             ("riffdb/storage/v1/common.proto".to_owned(), vec![]),
             ("riffdb/storage/v1/envelope.proto".to_owned(), vec![]),
             (
+                "riffdb/storage/v1/index_v2.proto".to_owned(),
+                vec!["riffdb/storage/v1/application.proto"],
+            ),
+            (
                 "riffdb/storage/v1/metadata.proto".to_owned(),
                 vec!["riffdb/storage/v1/common.proto"],
             ),
@@ -175,8 +195,8 @@ fn storage_source_import_and_type_inventory_is_exact() {
             .iter()
             .map(|file| file.message_type.len())
             .sum::<usize>(),
-        75,
-        "74 ADR-0022 messages plus the unchanged StoredEnvelope"
+        76,
+        "75 semantic messages plus the unchanged StoredEnvelope"
     );
     assert_eq!(
         descriptors
@@ -206,32 +226,61 @@ fn storage_source_import_and_type_inventory_is_exact() {
 #[test]
 fn closed_registry_order_and_schema_hashes_are_exactly_derived() {
     assert_eq!(CURRENT_RECORD_SCHEMA_COUNT, 26);
-    assert_eq!(CURRENT_RECORD_SCHEMAS.len(), RECORDS.len());
-    let descriptors = descriptors();
-    let expected_names = RECORDS
-        .iter()
-        .map(|(name, _)| format!("riffdb.storage.v1.{name}"))
-        .collect::<Vec<_>>();
+    assert_eq!(READABLE_RECORD_SCHEMA_COUNT, 27);
+    assert_eq!(WRITABLE_RECORD_SCHEMA_COUNT, 26);
     assert_eq!(
         CURRENT_RECORD_SCHEMAS
             .iter()
+            .map(|schema| (schema.record_type(), schema.schema_hash()))
+            .collect::<Vec<_>>(),
+        WRITABLE_RECORD_SCHEMAS
+            .iter()
+            .map(|schema| (schema.record_type(), schema.schema_hash()))
+            .collect::<Vec<_>>()
+    );
+    let descriptors = descriptors();
+    let legacy_names = LEGACY_RECORDS
+        .iter()
+        .map(|(name, _)| format!("riffdb.storage.v1.{name}"))
+        .collect::<Vec<_>>();
+    let mut readable_names = legacy_names.clone();
+    readable_names.push(format!("riffdb.storage.v1.{}", INDEX_V2_RECORD.0));
+    let mut writable_names = legacy_names.clone();
+    writable_names[8] = format!("riffdb.storage.v1.{}", INDEX_V2_RECORD.0);
+    assert_eq!(
+        READABLE_RECORD_SCHEMAS
+            .iter()
             .map(|schema| schema.record_type())
             .collect::<Vec<_>>(),
-        expected_names
+        readable_names
             .iter()
             .map(String::as_str)
             .collect::<Vec<_>>()
     );
     assert_eq!(
-        CURRENT_RECORD_SCHEMAS
+        WRITABLE_RECORD_SCHEMAS
+            .iter()
+            .map(|schema| schema.record_type())
+            .collect::<Vec<_>>(),
+        writable_names
+            .iter()
+            .map(String::as_str)
+            .collect::<Vec<_>>()
+    );
+    assert_eq!(
+        READABLE_RECORD_SCHEMAS
             .iter()
             .map(|schema| schema.schema_hash())
             .collect::<BTreeSet<_>>()
             .len(),
-        CURRENT_RECORD_SCHEMA_COUNT
+        READABLE_RECORD_SCHEMA_COUNT
     );
 
-    for ((record_name, source), schema) in RECORDS.iter().zip(&CURRENT_RECORD_SCHEMAS) {
+    let readable_records = LEGACY_RECORDS
+        .iter()
+        .copied()
+        .chain(std::iter::once(INDEX_V2_RECORD));
+    for ((record_name, source), schema) in readable_records.zip(&READABLE_RECORD_SCHEMAS) {
         let root = format!("riffdb/storage/v1/{source}");
         let descriptor = descriptor_closure(&descriptors, &root).encode_to_vec();
         let record_type = format!("riffdb.storage.v1.{record_name}");
@@ -252,10 +301,10 @@ fn closed_registry_order_and_schema_hashes_are_exactly_derived() {
         assert!(schema.max_payload_bytes() < MAX_STORED_ENVELOPE_BYTES);
         assert!(schema.max_envelope_bytes() <= MAX_STORED_ENVELOPE_BYTES);
         assert!(schema.max_envelope_bytes() > schema.max_payload_bytes());
-        assert!(current_record_schema(&record_type).is_some());
+        assert!(readable_record_schema(&record_type).is_some());
     }
     assert_eq!(
-        CURRENT_RECORD_SCHEMAS
+        READABLE_RECORD_SCHEMAS
             .iter()
             .map(|schema| schema.max_payload_bytes())
             .collect::<BTreeSet<_>>()
@@ -263,6 +312,15 @@ fn closed_registry_order_and_schema_hashes_are_exactly_derived() {
         6,
         "four semantic classes plus three FQN-specific absolute maxima"
     );
+
+    let v1 = "riffdb.storage.v1.StoredIndexEntryV1";
+    let v2 = "riffdb.storage.v1.StoredIndexEntryV2";
+    assert!(readable_record_schema(v1).is_some());
+    assert!(readable_record_schema(v2).is_some());
+    assert!(writable_record_schema(v1).is_none());
+    assert!(current_record_schema(v1).is_none());
+    assert!(writable_record_schema(v2).is_some());
+    assert!(current_record_schema(v2).is_some());
 
     for unregistered in [
         "riffdb.storage.v1.StoredEnvelope",
@@ -275,10 +333,65 @@ fn closed_registry_order_and_schema_hashes_are_exactly_derived() {
         "riffdb.storage.v1.OutcomePointerV1",
     ] {
         assert!(
-            current_record_schema(unregistered).is_none(),
+            readable_record_schema(unregistered).is_none(),
             "{unregistered}"
         );
     }
+}
+
+#[test]
+fn generated_registry_fixtures_freeze_exact_membership_and_hashes() {
+    let legacy = registry_fixture_entries(LEGACY_REGISTRY_FIXTURE, 26);
+    let readable = registry_fixture_entries(READABLE_REGISTRY_FIXTURE, 27);
+    let writable = registry_fixture_entries(WRITABLE_REGISTRY_FIXTURE, 26);
+
+    assert_eq!(legacy, readable[..legacy.len()]);
+    assert_eq!(
+        readable,
+        READABLE_RECORD_SCHEMAS
+            .iter()
+            .map(|schema| (schema.record_type().to_owned(), schema_hash_hex(schema)))
+            .collect::<Vec<_>>()
+    );
+    assert_eq!(
+        writable,
+        WRITABLE_RECORD_SCHEMAS
+            .iter()
+            .map(|schema| (schema.record_type().to_owned(), schema_hash_hex(schema)))
+            .collect::<Vec<_>>()
+    );
+}
+
+fn registry_fixture_entries(fixture: &str, expected_count: usize) -> Vec<(String, String)> {
+    let mut lines = fixture.lines();
+    let _header = lines.next().expect("registry fixture header");
+    assert_eq!(
+        lines.next(),
+        Some(format!("records {expected_count}").as_str())
+    );
+    let entries = lines
+        .map(|line| {
+            let mut columns = line.split_ascii_whitespace();
+            let record_type = columns.next().expect("registry record type").to_owned();
+            let schema_hash = columns
+                .find_map(|column| column.strip_prefix("schema-hash="))
+                .expect("registry schema hash")
+                .to_owned();
+            (record_type, schema_hash)
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(entries.len(), expected_count);
+    entries
+}
+
+fn schema_hash_hex(schema: &riffdb_proto::envelope::RecordSchema<'_>) -> String {
+    use std::fmt::Write as _;
+
+    let mut output = String::with_capacity(64);
+    for byte in schema.schema_hash().as_bytes() {
+        write!(output, "{byte:02x}").expect("String writes are infallible");
+    }
+    output
 }
 
 #[test]
@@ -287,10 +400,13 @@ fn every_semantic_golden_payload_and_envelope_is_canonical() {
     assert_eq!(lines.next(), Some("riffdb-durable-wire-vectors-v1"));
     assert_eq!(lines.next(), Some("records\t26"));
     let vectors = lines.collect::<Vec<_>>();
-    assert_eq!(vectors.len(), CURRENT_RECORD_SCHEMA_COUNT);
+    assert_eq!(vectors.len(), LEGACY_RECORDS.len());
 
-    let registry = current_record_registry();
-    for (line, schema) in vectors.iter().zip(&CURRENT_RECORD_SCHEMAS) {
+    let registry = readable_record_registry();
+    for (line, schema) in vectors
+        .iter()
+        .zip(&READABLE_RECORD_SCHEMAS[..LEGACY_RECORDS.len()])
+    {
         let columns = line.split('\t').collect::<Vec<_>>();
         assert_eq!(columns.len(), 3, "one FQN, payload, and envelope per line");
         assert_eq!(columns[0], schema.record_type());

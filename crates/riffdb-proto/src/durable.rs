@@ -10,35 +10,60 @@ use crate::durable_wire::DurablePreflightError;
 use crate::envelope::{PayloadValidationError, RecordRegistry, RecordSchema};
 use crate::storage::v1;
 
-/// Number of durable semantic payload types in the accepted v1 registry.
-pub const CURRENT_RECORD_SCHEMA_COUNT: usize = 26;
+/// Number of durable semantic payload tuples accepted while opening or migrating storage.
+pub const READABLE_RECORD_SCHEMA_COUNT: usize = 27;
+/// Number of durable semantic roles accepted for current writes.
+pub const WRITABLE_RECORD_SCHEMA_COUNT: usize = 26;
+/// Number of durable semantic roles accepted for current writes.
+pub const CURRENT_RECORD_SCHEMA_COUNT: usize = WRITABLE_RECORD_SCHEMA_COUNT;
 
-const SCHEMA_HASH_BYTES: &[u8; CURRENT_RECORD_SCHEMA_COUNT * 32] = include_bytes!(concat!(
+const LEGACY_SCHEMA_HASH_BYTES: &[u8; WRITABLE_RECORD_SCHEMA_COUNT * 32] = include_bytes!(concat!(
     env!("CARGO_MANIFEST_DIR"),
     "/../../fixtures/proto/durable-schema-hashes.bin"
 ));
-const RECORD_BOUND_BYTES: &[u8; CURRENT_RECORD_SCHEMA_COUNT * 8] = include_bytes!(concat!(
+const LEGACY_RECORD_BOUND_BYTES: &[u8; WRITABLE_RECORD_SCHEMA_COUNT * 8] = include_bytes!(concat!(
     env!("CARGO_MANIFEST_DIR"),
     "/../../fixtures/proto/durable-record-bounds.bin"
 ));
+const INDEX_V2_SCHEMA_HASH_BYTES: &[u8; 32] = include_bytes!(concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/../../fixtures/proto/durable-index-v2-schema-hash.bin"
+));
+const INDEX_V2_RECORD_BOUND_BYTES: &[u8; 8] = include_bytes!(concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/../../fixtures/proto/durable-index-v2-record-bound.bin"
+));
 
-const fn schema_hash(index: usize) -> SchemaHash {
+const fn legacy_schema_hash(index: usize) -> SchemaHash {
     let mut bytes = [0_u8; 32];
     let mut offset = 0;
     while offset < bytes.len() {
-        bytes[offset] = SCHEMA_HASH_BYTES[index * 32 + offset];
+        bytes[offset] = LEGACY_SCHEMA_HASH_BYTES[index * 32 + offset];
         offset += 1;
     }
     SchemaHash::from_bytes(bytes)
 }
 
-const fn record_bound(index: usize, offset: usize) -> usize {
+const fn legacy_record_bound(index: usize, offset: usize) -> usize {
     let start = index * 8 + offset;
     u32::from_be_bytes([
-        RECORD_BOUND_BYTES[start],
-        RECORD_BOUND_BYTES[start + 1],
-        RECORD_BOUND_BYTES[start + 2],
-        RECORD_BOUND_BYTES[start + 3],
+        LEGACY_RECORD_BOUND_BYTES[start],
+        LEGACY_RECORD_BOUND_BYTES[start + 1],
+        LEGACY_RECORD_BOUND_BYTES[start + 2],
+        LEGACY_RECORD_BOUND_BYTES[start + 3],
+    ]) as usize
+}
+
+const fn index_v2_schema_hash() -> SchemaHash {
+    SchemaHash::from_bytes(*INDEX_V2_SCHEMA_HASH_BYTES)
+}
+
+const fn index_v2_record_bound(offset: usize) -> usize {
+    u32::from_be_bytes([
+        INDEX_V2_RECORD_BOUND_BYTES[offset],
+        INDEX_V2_RECORD_BOUND_BYTES[offset + 1],
+        INDEX_V2_RECORD_BOUND_BYTES[offset + 2],
+        INDEX_V2_RECORD_BOUND_BYTES[offset + 3],
     ]) as usize
 }
 
@@ -70,17 +95,16 @@ macro_rules! current_schema {
     ($index:literal, $name:literal, $message:ty) => {
         RecordSchema::new_current(
             concat!("riffdb.storage.v1.", $name),
-            schema_hash($index),
-            record_bound($index, 0),
-            record_bound($index, 4),
+            legacy_schema_hash($index),
+            legacy_record_bound($index, 0),
+            legacy_record_bound($index, 4),
             preflight_payload::<$index>,
             validate_payload::<$index, $message>,
         )
     };
 }
 
-/// Current durable schemas in the immutable ADR-0022 registry order.
-pub static CURRENT_RECORD_SCHEMAS: [RecordSchema<'static>; CURRENT_RECORD_SCHEMA_COUNT] = [
+const LEGACY_RECORD_SCHEMAS: [RecordSchema<'static>; WRITABLE_RECORD_SCHEMA_COUNT] = [
     current_schema!(
         0,
         "StoredStorageFormatVersionV1",
@@ -137,19 +161,120 @@ pub static CURRENT_RECORD_SCHEMAS: [RecordSchema<'static>; CURRENT_RECORD_SCHEMA
     ),
 ];
 
+const INDEX_V2_RECORD_SCHEMA: RecordSchema<'static> = RecordSchema::new_current(
+    "riffdb.storage.v1.StoredIndexEntryV2",
+    index_v2_schema_hash(),
+    index_v2_record_bound(0),
+    index_v2_record_bound(4),
+    preflight_payload::<26>,
+    validate_payload::<26, v1::StoredIndexEntryV2>,
+);
+
+/// Readable durable schemas in immutable compatibility order.
+pub static READABLE_RECORD_SCHEMAS: [RecordSchema<'static>; READABLE_RECORD_SCHEMA_COUNT] = [
+    LEGACY_RECORD_SCHEMAS[0],
+    LEGACY_RECORD_SCHEMAS[1],
+    LEGACY_RECORD_SCHEMAS[2],
+    LEGACY_RECORD_SCHEMAS[3],
+    LEGACY_RECORD_SCHEMAS[4],
+    LEGACY_RECORD_SCHEMAS[5],
+    LEGACY_RECORD_SCHEMAS[6],
+    LEGACY_RECORD_SCHEMAS[7],
+    LEGACY_RECORD_SCHEMAS[8],
+    LEGACY_RECORD_SCHEMAS[9],
+    LEGACY_RECORD_SCHEMAS[10],
+    LEGACY_RECORD_SCHEMAS[11],
+    LEGACY_RECORD_SCHEMAS[12],
+    LEGACY_RECORD_SCHEMAS[13],
+    LEGACY_RECORD_SCHEMAS[14],
+    LEGACY_RECORD_SCHEMAS[15],
+    LEGACY_RECORD_SCHEMAS[16],
+    LEGACY_RECORD_SCHEMAS[17],
+    LEGACY_RECORD_SCHEMAS[18],
+    LEGACY_RECORD_SCHEMAS[19],
+    LEGACY_RECORD_SCHEMAS[20],
+    LEGACY_RECORD_SCHEMAS[21],
+    LEGACY_RECORD_SCHEMAS[22],
+    LEGACY_RECORD_SCHEMAS[23],
+    LEGACY_RECORD_SCHEMAS[24],
+    LEGACY_RECORD_SCHEMAS[25],
+    INDEX_V2_RECORD_SCHEMA,
+];
+
+/// Writable durable schemas in immutable role order.
+pub static WRITABLE_RECORD_SCHEMAS: [RecordSchema<'static>; WRITABLE_RECORD_SCHEMA_COUNT] = [
+    LEGACY_RECORD_SCHEMAS[0],
+    LEGACY_RECORD_SCHEMAS[1],
+    LEGACY_RECORD_SCHEMAS[2],
+    LEGACY_RECORD_SCHEMAS[3],
+    LEGACY_RECORD_SCHEMAS[4],
+    LEGACY_RECORD_SCHEMAS[5],
+    LEGACY_RECORD_SCHEMAS[6],
+    LEGACY_RECORD_SCHEMAS[7],
+    INDEX_V2_RECORD_SCHEMA,
+    LEGACY_RECORD_SCHEMAS[9],
+    LEGACY_RECORD_SCHEMAS[10],
+    LEGACY_RECORD_SCHEMAS[11],
+    LEGACY_RECORD_SCHEMAS[12],
+    LEGACY_RECORD_SCHEMAS[13],
+    LEGACY_RECORD_SCHEMAS[14],
+    LEGACY_RECORD_SCHEMAS[15],
+    LEGACY_RECORD_SCHEMAS[16],
+    LEGACY_RECORD_SCHEMAS[17],
+    LEGACY_RECORD_SCHEMAS[18],
+    LEGACY_RECORD_SCHEMAS[19],
+    LEGACY_RECORD_SCHEMAS[20],
+    LEGACY_RECORD_SCHEMAS[21],
+    LEGACY_RECORD_SCHEMAS[22],
+    LEGACY_RECORD_SCHEMAS[23],
+    LEGACY_RECORD_SCHEMAS[24],
+    LEGACY_RECORD_SCHEMAS[25],
+];
+
+/// Current durable schemas. `current` is exactly synonymous with writable roles.
+pub static CURRENT_RECORD_SCHEMAS: [RecordSchema<'static>; CURRENT_RECORD_SCHEMA_COUNT] =
+    WRITABLE_RECORD_SCHEMAS;
+
+/// Returns the closed registry accepted while opening or migrating storage.
+#[must_use]
+pub fn readable_record_registry() -> RecordRegistry<'static> {
+    RecordRegistry::new(&READABLE_RECORD_SCHEMAS)
+        .expect("the generated readable durable registry is unique and bounded")
+}
+
+/// Finds one readable schema by its exact durable record-type FQN.
+#[must_use]
+pub fn readable_record_schema(record_type: &str) -> Option<&'static RecordSchema<'static>> {
+    READABLE_RECORD_SCHEMAS
+        .iter()
+        .find(|schema| schema.record_type() == record_type)
+}
+
+/// Returns the closed registry of current writable roles.
+#[must_use]
+pub fn writable_record_registry() -> RecordRegistry<'static> {
+    RecordRegistry::new(&WRITABLE_RECORD_SCHEMAS)
+        .expect("the generated writable durable registry is unique and bounded")
+}
+
+/// Finds one current writable schema by its exact durable record-type FQN.
+#[must_use]
+pub fn writable_record_schema(record_type: &str) -> Option<&'static RecordSchema<'static>> {
+    WRITABLE_RECORD_SCHEMAS
+        .iter()
+        .find(|schema| schema.record_type() == record_type)
+}
+
 /// Returns the current closed durable-record registry.
 #[must_use]
 pub fn current_record_registry() -> RecordRegistry<'static> {
-    RecordRegistry::new(&CURRENT_RECORD_SCHEMAS)
-        .expect("the generated current durable registry is unique and bounded")
+    writable_record_registry()
 }
 
 /// Finds one current schema by its exact durable record-type FQN.
 #[must_use]
 pub fn current_record_schema(record_type: &str) -> Option<&'static RecordSchema<'static>> {
-    CURRENT_RECORD_SCHEMAS
-        .iter()
-        .find(|schema| schema.record_type() == record_type)
+    writable_record_schema(record_type)
 }
 
 /// Returns the conservative maximum complete envelope size for a current type.

@@ -192,8 +192,9 @@ mod tests {
         DormantPortBundle, EvidencePageLimit, HistoricalBundleEvidence, HistoricalEvidenceCursor,
         HistoricalEvidenceEnd, HistoricalEvidencePage, OpenSessionId,
         ReadableCapabilityDigestInventory, ReadableDigestKey, ReadableIdempotencyDigestInventory,
-        StorageErrorKind, StructuralEvidenceCursor, StructuralEvidenceEnd, StructuralEvidencePage,
-        StructuralEvidenceSession,
+        StartupIndexMigrationPort, StorageErrorKind, StructuralEvidenceCursor,
+        StructuralEvidenceEnd, StructuralEvidencePage, StructuralEvidenceSession,
+        StructuralOpenOutcome,
     };
     use riffdb_types::{
         ContractBundleHash, ContractLineage, ContractVersion, DigestKeyId, Timestamp,
@@ -257,6 +258,21 @@ mod tests {
         }
     }
 
+    struct FakeMigrationPort {
+        database_id: DatabaseId,
+        open_session_id: OpenSessionId,
+    }
+
+    impl StartupIndexMigrationPort for FakeMigrationPort {
+        fn database_id(&self) -> DatabaseId {
+            self.database_id
+        }
+
+        fn open_session_id(&self) -> OpenSessionId {
+            self.open_session_id
+        }
+    }
+
     struct FakeStructuralSession {
         database_id: DatabaseId,
         open_session_id: OpenSessionId,
@@ -266,6 +282,7 @@ mod tests {
         type DormantPorts = FakeDormantPorts;
         type StructuralEnd = FakeStructuralEnd;
         type HistoricalEnd = FakeHistoricalEnd;
+        type MigrationPort = FakeMigrationPort;
 
         fn database_id(&self) -> DatabaseId {
             self.database_id
@@ -304,7 +321,7 @@ mod tests {
             self,
             _structural_end: Self::StructuralEnd,
             _historical_end: Self::HistoricalEnd,
-        ) -> Result<riffdb_storage_api::StructurallyOpened<Self::DormantPorts>, StorageError>
+        ) -> Result<StructuralOpenOutcome<Self::DormantPorts, Self::MigrationPort>, StorageError>
         {
             Err(unavailable())
         }

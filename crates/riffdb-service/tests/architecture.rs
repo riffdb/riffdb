@@ -11,6 +11,7 @@ const MANIFEST: &str = include_str!("../Cargo.toml");
 const ADMINISTRATION_SOURCE: &str = include_str!("../src/administration_operations.rs");
 const COMMIT_SOURCE: &str = include_str!("../src/commit_operations.rs");
 const CONTEXT_SOURCE: &str = include_str!("../src/context.rs");
+const DTO_SOURCE: &str = include_str!("../src/dto.rs");
 const QUERY_SOURCE: &str = include_str!("../src/query_discovery_operations.rs");
 const SERVICE_SOURCE: &str = include_str!("../src/service.rs");
 const TRAITS_SOURCE: &str = include_str!("../src/application.rs");
@@ -191,6 +192,35 @@ fn query_components_materialize_after_schema_selection_and_before_policy_or_lowe
         assert!(schema < materialization && materialization < policy && policy < lower);
         assert_eq!(operation.matches("request.leading_components()").count(), 1);
     }
+}
+
+#[test]
+fn index_scan_keeps_durable_types_out_and_performs_one_lower_scan() {
+    assert!(DTO_SOURCE.contains("pub struct AuthoritativeSchemaBinding"));
+    assert!(!DTO_SOURCE.contains("DurableKeySchemaBindingV1"));
+
+    let operation = QUERY_SOURCE
+        .split_once("async fn scan_index(")
+        .expect("index operation exists")
+        .1
+        .split_once("async fn query_projection(")
+        .expect("index operation has a closed source boundary")
+        .0;
+    assert_eq!(operation.matches(".reserve_scan_index(").count(), 1);
+    assert_eq!(operation.matches("permit.submit(lower_request)").count(), 1);
+    let lower = operation
+        .find("permit.submit(lower_request)")
+        .expect("one lower request is submitted");
+    let historical = operation
+        .find("validate_authoritative_index_rows(")
+        .expect("lower rows are checked under exact historical bindings");
+    let return_policy = operation
+        .find("let return_authorization =")
+        .expect("return-time authorization is present");
+    let shaping = operation
+        .find("let mut rows = match index_views(")
+        .expect("authorized rows are shaped after return policy");
+    assert!(lower < historical && historical < return_policy && return_policy < shaping);
 }
 
 #[test]

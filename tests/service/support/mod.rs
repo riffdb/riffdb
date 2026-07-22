@@ -13,9 +13,9 @@ use riffdb_auth::{
     RawCapabilityToken,
 };
 use riffdb_catalog::{
-    ActiveCatalogSnapshot, CatalogError, CatalogErrorKind, CatalogPreparationResult,
-    ResolvedExecutablePlan, ValidatedContractBundle, prepare_catalog_activation,
-    resolve_executable_plan, validate_catalog_history,
+    ActiveCatalogSnapshot, CatalogError, CatalogErrorKind, CatalogHistoryOutcome,
+    CatalogPreparationResult, ResolvedExecutablePlan, ValidatedContractBundle,
+    prepare_catalog_activation, resolve_executable_plan, validate_catalog_history,
 };
 use riffdb_commit::{
     AdministrationClock, AdministrationClockError, AdmissionClock, AdmissionClockError,
@@ -42,16 +42,17 @@ use riffdb_service::{
     AuthoritativeCommitPage, AuthoritativeCommitScanRequest, AuthoritativeCommitSnapshot,
     AuthoritativeCommitSubscriptionRequest, AuthoritativeEntityRequest,
     AuthoritativeEntitySnapshot, AuthoritativeIndexPage, AuthoritativeIndexRequest,
-    AuthoritativeJournaledOutcome, AuthoritativeOutcomeFacts, AuthoritativeOutcomeRequest,
-    AuthoritativeOutcomeSnapshot, AuthoritativeProvenanceSnapshot, AuthoritativeReadError,
-    AuthoritativeReadPort, AuthoritativeReadinessFailure, BootstrapCapabilityRequest,
-    BootstrapRequestContext, BuildInfo, CapabilityRevokeTargetSnapshot, CapabilityTokenIssueError,
-    CapabilityTokenIssuer, CatalogExecutablePlanRequest, CatalogReadPort, CommandDurability,
-    CommitNotificationSource, ComponentHealth, ContractSelection, ContractSource, CursorClockError,
-    CursorMonotonicClock, CursorTick, CursorTokenGenerationError, CursorTokenGenerator,
-    DeclaredOutcomeView, DeployContractRequest, DurableEventView, ExecuteCommandRequest,
-    FieldSelection, GetContractVersionRequest, GetEntityRequest, GetProjectionStatusRequest,
-    HealthComponentKind, HealthComponentStatus, HealthContext, JournaledCommandResult,
+    AuthoritativeIndexRow, AuthoritativeJournaledOutcome, AuthoritativeOutcomeFacts,
+    AuthoritativeOutcomeRequest, AuthoritativeOutcomeSnapshot, AuthoritativeProvenanceSnapshot,
+    AuthoritativeReadError, AuthoritativeReadPort, AuthoritativeReadinessFailure,
+    AuthoritativeSchemaBinding, BootstrapCapabilityRequest, BootstrapRequestContext, BuildInfo,
+    CapabilityRevokeTargetSnapshot, CapabilityTokenIssueError, CapabilityTokenIssuer,
+    CatalogExecutablePlanRequest, CatalogReadPort, CommandDurability, CommitNotificationSource,
+    ComponentHealth, ContractSelection, ContractSource, CursorClockError, CursorMonotonicClock,
+    CursorTick, CursorTokenGenerationError, CursorTokenGenerator, DeclaredOutcomeView,
+    DeployContractRequest, DurableEventView, ExecuteCommandRequest, FieldSelection,
+    GetContractVersionRequest, GetEntityRequest, GetProjectionStatusRequest, HealthComponentKind,
+    HealthComponentStatus, HealthContext, JournaledCommandResult,
     ListPendingOutboxDeliveriesRequest, NormalCreateCapabilityRequest, OperationalHealthSnapshot,
     OperationalStatisticsSnapshot, OperationalStatusError, OperationalStatusPort, OutboxStatusPort,
     OutboxStatusPortError, OutboxStatusRequest, OutboxStatusSnapshot, PageLimit, PageRequest,
@@ -74,7 +75,7 @@ use riffdb_storage_api::{
     ReadableCapabilityDigestInventory, ReadableDigestKey, ReadableIdempotencyDigestInventory,
     StartupValidationInputs, StorageScanLimit, StoredAdministrationAuditRecordV1,
     StructuralEvidenceCursor, StructuralEvidenceOpen, StructuralEvidencePage,
-    StructuralEvidenceSession,
+    StructuralEvidenceSession, StructuralOpenOutcome,
 };
 use riffdb_storage_redb::{RedbDormantPorts, RedbOperationalPorts, RedbStore};
 use riffdb_testkit::authorization::{
@@ -86,11 +87,12 @@ use riffdb_types::{
     CapabilityPermissionKindV1, CapabilityPermissionV1, CapabilityPermissionsV1, CommitSequence,
     ContractLineage, ContractVersion, DatabaseId, Decimal, DecimalSpec, DigestKeyId, EntityKey,
     EntityKeyBuilder, EntityVersion, Environment, EventId, FrontierPosition, IdempotencyKey,
-    IncidentId, IndexEpoch, IndexEpochPosition, LogicalTime, MAX_STRING_BYTES, OutcomeId,
-    PartitionKey, PartitionKeyBuilder, PartitionKeyHash, PartitionScopeV1, ProjectionGeneration,
-    ProjectionId, ProjectionIdentity, ProvenanceId, RequestId, RevocationReasonCodeV1,
-    ScopedPartitionV1, ServiceAuditPhaseV1, ServiceAuditTargetV1, ServiceAuditTargetsV1,
-    ServiceIngressKindV1, ServiceOperationV1, TenantId, TenantScope, Timestamp,
+    IncidentId, IndexEntryKey, IndexEntryKeyBuilder, IndexEpoch, IndexEpochPosition, LogicalTime,
+    MAX_STRING_BYTES, OutcomeId, PartitionKey, PartitionKeyBuilder, PartitionKeyHash,
+    PartitionScopeV1, ProjectionGeneration, ProjectionId, ProjectionIdentity, ProvenanceId,
+    RequestId, RevocationReasonCodeV1, ScopedPartitionV1, ServiceAuditPhaseV1,
+    ServiceAuditTargetV1, ServiceAuditTargetsV1, ServiceIngressKindV1, ServiceOperationV1,
+    TenantId, TenantScope, Timestamp,
 };
 use tokio::sync::Notify;
 
@@ -405,6 +407,13 @@ impl ServiceHarness {
     }
 
     pub(crate) fn index_request(&self) -> ScanIndexRequest {
+        self.index_request_with_cursor(None)
+    }
+
+    pub(crate) fn index_request_with_cursor(
+        &self,
+        cursor: Option<riffdb_service::CursorToken>,
+    ) -> ScanIndexRequest {
         let index = self
             .database
             .active_catalog
@@ -420,9 +429,75 @@ impl ServiceHarness {
             index.id(),
             Vec::new(),
             FieldSelection::new(Vec::new()).expect("empty field selection"),
-            PageRequest::new(PageLimit::new(10).expect("page limit"), None),
+            PageRequest::new(PageLimit::new(10).expect("page limit"), cursor),
         )
         .expect("checked index request")
+    }
+
+    pub(crate) fn primary_index_row(&self) -> AuthoritativeIndexRow {
+        self.index_row(ORGANIZATION_ID, self.database.partition.clone())
+    }
+
+    pub(crate) fn alternate_index_row(&self) -> AuthoritativeIndexRow {
+        self.index_row(
+            ALTERNATE_ORGANIZATION_ID,
+            self.database.alternate_partition.clone(),
+        )
+    }
+
+    pub(crate) fn primary_index_row_with_wrong_partition(&self) -> AuthoritativeIndexRow {
+        self.index_row(ORGANIZATION_ID, self.database.alternate_partition.clone())
+    }
+
+    fn index_row(
+        &self,
+        organization_id: [u8; 16],
+        stored_partition: PartitionKey,
+    ) -> AuthoritativeIndexRow {
+        let bundle = self.database.active_catalog.bundle().bundle();
+        let entity = bundle.schema().entities().first().expect("budget entity");
+        let index = entity.indexes().first().expect("operations harness index");
+        let mut entity_key = EntityKeyBuilder::new(entity.id());
+        entity_key
+            .push_uuid(&organization_id)
+            .expect("organization key component");
+        entity_key
+            .push_i64(FISCAL_YEAR)
+            .expect("year key component");
+        let mut index_key = IndexEntryKeyBuilder::new(index.id());
+        index_key
+            .push_i64(FISCAL_YEAR)
+            .expect("fiscal-year index component");
+        AuthoritativeIndexRow::new(
+            index_key
+                .finish(entity_key.finish().expect("budget entity key"))
+                .expect("budget index key"),
+            AuthoritativeSchemaBinding::new(
+                bundle.lineage().clone(),
+                bundle.contract_version(),
+                bundle.bundle_hash(),
+            ),
+            CanonicalRecord::new(Vec::new()).expect("empty covered values"),
+            stored_partition,
+        )
+    }
+
+    pub(crate) fn configure_index_pages(
+        &self,
+        pages: Vec<(Vec<AuthoritativeIndexRow>, Option<IndexEntryKey>)>,
+    ) {
+        self.ports.configure_index_pages(pages);
+    }
+
+    pub(crate) fn narrow_policy_after_next_index_submission(&self) {
+        let policy = Arc::clone(&self.policy);
+        self.ports
+            .set_index_submission_hook(Arc::new(move || policy.use_narrowed_once_now()));
+    }
+
+    pub(crate) fn use_compatible_successor_as_active(&self) {
+        self.ports
+            .replace_active_catalog(self.database.compatible_successor_snapshot());
     }
 
     pub(crate) fn projection_status_request(&self) -> GetProjectionStatusRequest {
@@ -1566,6 +1641,18 @@ fn open_operational(store: RedbStore) -> RedbOperationalPorts {
     let opened = session
         .finish(structural_end, historical_end)
         .expect("finish structural validation");
+    let history = match history {
+        CatalogHistoryOutcome::Ready(history) => history,
+        CatalogHistoryOutcome::MigrationRequired(_) => {
+            panic!("V2-only service harness cannot require index migration")
+        }
+    };
+    let opened = match opened {
+        StructuralOpenOutcome::Clean(opened) => opened,
+        StructuralOpenOutcome::MigrationRequired(_) => {
+            panic!("V2-only service harness cannot expose a migration port")
+        }
+    };
     assert!(
         history.matches(opened.database_id(), opened.open_session_id()),
         "catalog proof belongs to the structural-open session"
@@ -1859,6 +1946,12 @@ impl HarnessPolicy {
             .store(true, Ordering::Release);
     }
 
+    fn use_narrowed_once_now(&self) {
+        self.use_narrowed_fixture.store(true, Ordering::Release);
+        self.restore_after_narrowed_allow
+            .store(true, Ordering::Release);
+    }
+
     pub(crate) fn calls(&self) -> usize {
         self.calls.load(Ordering::Acquire)
     }
@@ -1950,6 +2043,8 @@ pub(crate) struct HarnessPorts {
 
 struct HarnessPortState {
     active_catalog: Mutex<ActiveCatalogSnapshot>,
+    historical_bundles:
+        Mutex<BTreeMap<(ContractLineage, ContractVersion), ValidatedContractBundle>>,
     executable_plan: ResolvedExecutablePlan,
     prepare_active_mode: AtomicU8,
     prepare_active_calls: AtomicUsize,
@@ -1966,6 +2061,10 @@ struct HarnessPortState {
     read_submissions: AtomicUsize,
     read_reservation_hook: Mutex<Option<Arc<dyn Fn() + Send + Sync>>>,
     read_commit_snapshot: Mutex<Option<AuthoritativeCommitSnapshot>>,
+    index_pages: Mutex<VecDeque<(Vec<AuthoritativeIndexRow>, Option<IndexEntryKey>)>>,
+    index_requests: Mutex<Vec<AuthoritativeIndexRequest>>,
+    index_submissions: AtomicUsize,
+    index_submission_hook: Mutex<Option<Arc<dyn Fn() + Send + Sync>>>,
     commit_scan_snapshots: Mutex<Vec<AuthoritativeCommitSnapshot>>,
     provenance_snapshot: Mutex<Option<AuthoritativeProvenanceSnapshot>>,
     pending_read: PendingReadState,
@@ -2005,9 +2104,19 @@ impl HarnessPorts {
         executable_plan: ResolvedExecutablePlan,
         capability_order: Arc<Mutex<Vec<&'static str>>>,
     ) -> Self {
+        let initial_bundle = active_catalog.bundle().clone();
+        let mut historical_bundles = BTreeMap::new();
+        historical_bundles.insert(
+            (
+                initial_bundle.lineage().clone(),
+                initial_bundle.contract_version(),
+            ),
+            initial_bundle,
+        );
         Self {
             shared: Arc::new(HarnessPortState {
                 active_catalog: Mutex::new(active_catalog),
+                historical_bundles: Mutex::new(historical_bundles),
                 executable_plan,
                 prepare_active_mode: AtomicU8::new(CATALOG_READY),
                 prepare_active_calls: AtomicUsize::new(0),
@@ -2024,6 +2133,10 @@ impl HarnessPorts {
                 read_submissions: AtomicUsize::new(0),
                 read_reservation_hook: Mutex::new(None),
                 read_commit_snapshot: Mutex::new(None),
+                index_pages: Mutex::new(VecDeque::new()),
+                index_requests: Mutex::new(Vec::new()),
+                index_submissions: AtomicUsize::new(0),
+                index_submission_hook: Mutex::new(None),
                 commit_scan_snapshots: Mutex::new(Vec::new()),
                 provenance_snapshot: Mutex::new(None),
                 pending_read: PendingReadState {
@@ -2066,6 +2179,50 @@ impl HarnessPorts {
             .expect("read reservation hook mutex") = Some(hook);
     }
 
+    fn configure_index_pages(
+        &self,
+        pages: Vec<(Vec<AuthoritativeIndexRow>, Option<IndexEntryKey>)>,
+    ) {
+        *self.shared.index_pages.lock().expect("index pages mutex") = pages.into();
+    }
+
+    fn set_index_submission_hook(&self, hook: Arc<dyn Fn() + Send + Sync>) {
+        *self
+            .shared
+            .index_submission_hook
+            .lock()
+            .expect("index submission hook mutex") = Some(hook);
+    }
+
+    pub(crate) fn index_submissions(&self) -> usize {
+        self.shared.index_submissions.load(Ordering::Acquire)
+    }
+
+    pub(crate) fn index_requests(&self) -> Vec<AuthoritativeIndexRequest> {
+        self.shared
+            .index_requests
+            .lock()
+            .expect("index requests mutex")
+            .clone()
+    }
+
+    fn replace_active_catalog(&self, successor: ActiveCatalogSnapshot) {
+        let bundle = successor.bundle().clone();
+        self.shared
+            .historical_bundles
+            .lock()
+            .expect("historical bundles mutex")
+            .insert(
+                (bundle.lineage().clone(), bundle.contract_version()),
+                bundle,
+            );
+        *self
+            .shared
+            .active_catalog
+            .lock()
+            .expect("active catalog mutex") = successor;
+    }
+
     fn set_prepare_active_mode(&self, mode: u8) {
         self.shared
             .prepare_active_mode
@@ -2094,11 +2251,7 @@ impl HarnessPorts {
             .expect("compatible activation mutex")
             .take()
             .expect("one pending compatible activation");
-        *self
-            .shared
-            .active_catalog
-            .lock()
-            .expect("active catalog mutex") = successor;
+        self.replace_active_catalog(successor);
         self.shared.compatible_activation_release.notify_one();
     }
 
@@ -2643,13 +2796,35 @@ impl PortCapacityPermit<AuthoritativeIndexRequest, AuthoritativeIndexPage, Autho
     ) -> Result<PortReceipt<AuthoritativeIndexPage, AuthoritativeReadError>, PortAdmissionError>
     {
         record_operation(&self.shared, "index");
+        self.shared.index_submissions.fetch_add(1, Ordering::AcqRel);
+        self.shared
+            .index_requests
+            .lock()
+            .expect("index requests mutex")
+            .push(request.clone());
+        let configured = self
+            .shared
+            .index_pages
+            .lock()
+            .expect("index pages mutex")
+            .pop_front();
+        let (rows, scanned_through) = configured.unwrap_or((Vec::new(), None));
         let page = AuthoritativeIndexPage::new(
             &request,
-            Vec::new(),
-            None,
+            rows,
+            scanned_through,
             IndexEpochPosition::Value(IndexEpoch::new(1).expect("index epoch")),
         )
-        .expect("empty authoritative index page");
+        .expect("configured authoritative index page");
+        let hook = self
+            .shared
+            .index_submission_hook
+            .lock()
+            .expect("index submission hook mutex")
+            .take();
+        if let Some(hook) = hook {
+            hook();
+        }
         let (sender, receipt) = port_completion_channel();
         sender.complete(Ok(page));
         Ok(receipt)
@@ -3059,17 +3234,12 @@ impl CatalogReadPort for HarnessPorts {
             .fetch_add(1, Ordering::AcqRel);
         let bundle = self
             .shared
-            .active_catalog
+            .historical_bundles
             .lock()
-            .expect("active catalog mutex")
-            .bundle()
-            .clone();
-        Box::pin(async move {
-            Ok(
-                (bundle.lineage() == &lineage && bundle.contract_version() == version)
-                    .then_some(bundle),
-            )
-        })
+            .expect("historical bundles mutex")
+            .get(&(lineage, version))
+            .cloned();
+        Box::pin(async move { Ok(bundle) })
     }
 
     fn reserve_active_catalog(
