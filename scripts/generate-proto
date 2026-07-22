@@ -66,6 +66,10 @@ artifacts=(
     fixtures/proto/durable-schema-hashes.bin
     fixtures/proto/durable-writable-registry.txt
     fixtures/proto/durable-wire-vectors.txt
+    fixtures/proto/operation-schema-catalog-full-v1.bin
+    fixtures/proto/operation-schema-catalog-identity-v1.bin
+    fixtures/proto/operation-schema-catalog-v1.txt
+    fixtures/proto/operation-schema-composition-allocate-budget-v1.schema.json
     fixtures/proto/public-client-vectors.txt
     fixtures/proto/public-key-envelope-vectors.txt
     fixtures/proto/public-response-charge-v1.tsv
