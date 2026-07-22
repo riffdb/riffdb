@@ -15,6 +15,12 @@ mod status;
 /// Boundaries implemented by contract-generated ergonomic modules.
 pub mod generated;
 
+/// Exact public wire types used by the typed transport client.
+///
+/// Re-exporting the generated package lets public-API consumers construct
+/// requests without taking a second direct dependency on the Proto owner.
+pub use riffdb_proto::v1;
+
 pub use client::{
     CommitNotificationStream, GeneratedExecution, GeneratedExecutionError, RiffDbClient,
 };
