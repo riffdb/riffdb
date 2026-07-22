@@ -9,6 +9,13 @@ publish.workspace = true
 default = []
 
 [dependencies]
+getrandom = { version = "=0.3.4", default-features = false }
+riffdb-api-grpc = { version = "0.1.0", path = "../riffdb-api-grpc", default-features = false, features = ["client"] }
+riffdb-errors = { version = "0.1.0", path = "../riffdb-errors", default-features = false }
+riffdb-proto = { version = "0.1.0", path = "../riffdb-proto", default-features = false }
+riffdb-types = { version = "0.1.0", path = "../riffdb-types", default-features = false }
+tonic = { version = "=0.14.6", default-features = false, features = ["channel", "codegen"] }
+tonic-prost = { version = "=0.14.6", default-features = false }
 
 [lints]
 workspace = true

@@ -1,0 +1,776 @@
+//! `@generated` fixture-derived WP-130 bindings for
+//! `contracts/examples/budget.riff`.
+//!
+//! Provenance is frozen by `fixtures/compiler/bundle-metadata.txt`,
+//! `fixtures/compiler/command-plans.txt`, and
+//! `fixtures/compiler/lineage-ledger.txt`. WP-130 owns this checked fixture
+//! only. A reusable emitter and generation command require a separately
+//! approved compiler-owned work package with matching path authority; WP-150
+//! owns neither. This module must stay synchronized with the compiler fixtures.
+//!
+//! Do not add database semantics here. Stable field and outcome identities are
+//! copied from the checked contract bundle and used only for wire ergonomics.
+
+use riffdb_proto::v1;
+use riffdb_types::{MAX_IDEMPOTENCY_KEY_BYTES, RequestId, Timestamp};
+
+use super::{GeneratedCommand, GeneratedCommandError};
+use crate::IdempotentCommand;
+
+/// Stable contract lineage compiled by this generated module.
+pub const CONTRACT_LINEAGE: &str = "LegalSpend";
+/// Exact contract version compiled by this generated module.
+pub const CONTRACT_VERSION: u64 = 1;
+/// Frozen plan hash for `CreateBudget` at contract version 1.
+pub const CREATE_BUDGET_PLAN_HASH: [u8; 32] = [
+    0xe1, 0x28, 0x28, 0x7f, 0xe0, 0xd5, 0x24, 0x5e, 0x6a, 0xaf, 0x36, 0xf3, 0xc6, 0x04, 0x51, 0x27,
+    0xe2, 0x48, 0x69, 0xe5, 0x2e, 0xe4, 0x0c, 0x7e, 0x1f, 0xdc, 0xc7, 0x6e, 0x5a, 0x3d, 0x74, 0xff,
+];
+/// Frozen plan hash for `AllocateBudget` at contract version 1.
+pub const ALLOCATE_BUDGET_PLAN_HASH: [u8; 32] = [
+    0x1f, 0xa0, 0x01, 0x10, 0x9c, 0x40, 0x05, 0xbe, 0x07, 0x8c, 0x1d, 0xe7, 0x42, 0xf4, 0x93, 0x65,
+    0xb9, 0x2a, 0x47, 0x18, 0xdd, 0x27, 0x7e, 0xcb, 0xff, 0x8f, 0x97, 0xd8, 0x71, 0x3b, 0x33, 0xbb,
+];
+const MAX_DECIMAL_COEFFICIENT: i128 = 9_999_999_999_999_999_999_999_999_999;
+
+/// Exact `decimal<28,2>` value represented in minor units.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct Amount(i128);
+
+impl Amount {
+    /// Constructs an amount from its exact scale-two coefficient.
+    #[must_use]
+    pub const fn from_minor_units(coefficient: i128) -> Option<Self> {
+        if coefficient >= -MAX_DECIMAL_COEFFICIENT && coefficient <= MAX_DECIMAL_COEFFICIENT {
+            Some(Self(coefficient))
+        } else {
+            None
+        }
+    }
+
+    /// Returns the exact scale-two coefficient.
+    #[must_use]
+    pub const fn minor_units(self) -> i128 {
+        self.0
+    }
+}
+
+/// Complete public Budget record.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct Budget {
+    /// Business organization UUID bytes.
+    pub organization_id: [u8; 16],
+    /// Fiscal year.
+    pub fiscal_year: i64,
+    /// Approved amount.
+    pub approved_amount: Amount,
+    /// Allocated amount.
+    pub allocated_amount: Amount,
+    /// Last command logical time.
+    pub updated_at: Timestamp,
+}
+
+/// Typed `CreateBudget` input.
+#[derive(Clone, Eq, PartialEq)]
+pub struct CreateBudget {
+    /// Caller-retained idempotency key.
+    pub idempotency_key: String,
+    /// Business organization UUID bytes.
+    pub organization_id: [u8; 16],
+    /// Fiscal year.
+    pub fiscal_year: i64,
+    /// Approved amount.
+    pub approved_amount: Amount,
+}
+
+/// Declared `CreateBudget` outcomes.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum CreateBudgetOutcome {
+    /// A new budget was created.
+    BudgetCreated {
+        /// The newly created complete budget.
+        budget: Budget,
+    },
+    /// The budget identity already existed.
+    BudgetAlreadyExists {
+        /// The existing business organization UUID bytes.
+        organization_id: [u8; 16],
+        /// The existing fiscal year.
+        fiscal_year: i64,
+    },
+    /// The requested approval was not positive.
+    InvalidApprovedAmount {
+        /// The minimum accepted approved amount.
+        minimum: Amount,
+    },
+}
+
+impl GeneratedCommand for CreateBudget {
+    type Outcome = CreateBudgetOutcome;
+
+    fn idempotent_command(&self) -> Result<IdempotentCommand, GeneratedCommandError> {
+        let idempotency_key = checked_idempotency_key(&self.idempotency_key)?;
+        IdempotentCommand::new(
+            "CreateBudget",
+            Some(CONTRACT_VERSION),
+            record(vec![
+                field(1, i64_value(self.fiscal_year)),
+                field(2, decimal_value(self.approved_amount)),
+                field(3, string_value(idempotency_key.to_owned())),
+                field(4, uuid_value(self.organization_id)),
+            ]),
+        )
+        .map_err(Into::into)
+    }
+
+    fn outcome_request(
+        &self,
+        request_id: RequestId,
+    ) -> Result<v1::GetOutcomeRequest, GeneratedCommandError> {
+        Ok(v1::GetOutcomeRequest {
+            request_id: request_id.into_bytes().to_vec(),
+            contract_lineage: CONTRACT_LINEAGE.to_owned(),
+            command_name: "CreateBudget".to_owned(),
+            idempotency_key: checked_idempotency_key(&self.idempotency_key)?.to_owned(),
+        })
+    }
+
+    fn decode_outcome(
+        &self,
+        response: &v1::ExecuteCommandResponse,
+    ) -> Result<Self::Outcome, GeneratedCommandError> {
+        let fields = outcome_fields(response, &CREATE_BUDGET_PLAN_HASH)?;
+        match response.outcome_type.as_str() {
+            "BudgetCreated" => {
+                require_field_ids(fields, &[1])?;
+                Ok(CreateBudgetOutcome::BudgetCreated {
+                    budget: decode_budget(record_field(fields, 1)?)?,
+                })
+            }
+            "BudgetAlreadyExists" => {
+                require_field_ids(fields, &[1, 2])?;
+                Ok(CreateBudgetOutcome::BudgetAlreadyExists {
+                    fiscal_year: i64_field(fields, 1)?,
+                    organization_id: uuid_field(fields, 2)?,
+                })
+            }
+            "InvalidApprovedAmount" => {
+                require_field_ids(fields, &[1])?;
+                Ok(CreateBudgetOutcome::InvalidApprovedAmount {
+                    minimum: minimum_field(fields, 1)?,
+                })
+            }
+            _ => Err(GeneratedCommandError::InvalidOutcomeShape),
+        }
+    }
+}
+
+/// Typed `AllocateBudget` input.
+#[derive(Clone, Eq, PartialEq)]
+pub struct AllocateBudget {
+    /// Caller-retained idempotency key.
+    pub idempotency_key: String,
+    /// Business organization UUID bytes.
+    pub organization_id: [u8; 16],
+    /// Fiscal year.
+    pub fiscal_year: i64,
+    /// Business matter UUID bytes.
+    pub matter_id: [u8; 16],
+    /// Amount to allocate.
+    pub amount: Amount,
+}
+
+/// Declared `AllocateBudget` outcomes.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum AllocateBudgetOutcome {
+    /// The amount was allocated.
+    Allocated {
+        /// The complete budget after allocation.
+        budget: Budget,
+        /// The exact amount remaining after allocation.
+        remaining: Amount,
+    },
+    /// The requested amount was not positive.
+    InvalidAmount {
+        /// The minimum accepted allocation amount.
+        minimum: Amount,
+    },
+    /// The budget identity did not exist.
+    BudgetNotFound {
+        /// The missing business organization UUID bytes.
+        organization_id: [u8; 16],
+        /// The missing fiscal year.
+        fiscal_year: i64,
+    },
+    /// The budget had insufficient remaining capacity.
+    InsufficientBudget {
+        /// The current approved amount.
+        approved: Amount,
+        /// The current allocated amount.
+        allocated: Amount,
+        /// The requested allocation amount.
+        requested: Amount,
+    },
+}
+
+impl GeneratedCommand for AllocateBudget {
+    type Outcome = AllocateBudgetOutcome;
+
+    fn idempotent_command(&self) -> Result<IdempotentCommand, GeneratedCommandError> {
+        let idempotency_key = checked_idempotency_key(&self.idempotency_key)?;
+        IdempotentCommand::new(
+            "AllocateBudget",
+            Some(CONTRACT_VERSION),
+            record(vec![
+                field(1, decimal_value(self.amount)),
+                field(2, uuid_value(self.matter_id)),
+                field(3, i64_value(self.fiscal_year)),
+                field(4, string_value(idempotency_key.to_owned())),
+                field(5, uuid_value(self.organization_id)),
+            ]),
+        )
+        .map_err(Into::into)
+    }
+
+    fn outcome_request(
+        &self,
+        request_id: RequestId,
+    ) -> Result<v1::GetOutcomeRequest, GeneratedCommandError> {
+        Ok(v1::GetOutcomeRequest {
+            request_id: request_id.into_bytes().to_vec(),
+            contract_lineage: CONTRACT_LINEAGE.to_owned(),
+            command_name: "AllocateBudget".to_owned(),
+            idempotency_key: checked_idempotency_key(&self.idempotency_key)?.to_owned(),
+        })
+    }
+
+    fn decode_outcome(
+        &self,
+        response: &v1::ExecuteCommandResponse,
+    ) -> Result<Self::Outcome, GeneratedCommandError> {
+        let fields = outcome_fields(response, &ALLOCATE_BUDGET_PLAN_HASH)?;
+        match response.outcome_type.as_str() {
+            "Allocated" => {
+                require_field_ids(fields, &[1, 2])?;
+                Ok(AllocateBudgetOutcome::Allocated {
+                    budget: decode_budget(record_field(fields, 1)?)?,
+                    remaining: decimal_field(fields, 2)?,
+                })
+            }
+            "InvalidAmount" => {
+                require_field_ids(fields, &[1])?;
+                Ok(AllocateBudgetOutcome::InvalidAmount {
+                    minimum: minimum_field(fields, 1)?,
+                })
+            }
+            "BudgetNotFound" => {
+                require_field_ids(fields, &[1, 2])?;
+                Ok(AllocateBudgetOutcome::BudgetNotFound {
+                    fiscal_year: i64_field(fields, 1)?,
+                    organization_id: uuid_field(fields, 2)?,
+                })
+            }
+            "InsufficientBudget" => {
+                require_field_ids(fields, &[1, 2, 3])?;
+                Ok(AllocateBudgetOutcome::InsufficientBudget {
+                    approved: decimal_field(fields, 1)?,
+                    allocated: decimal_field(fields, 2)?,
+                    requested: decimal_field(fields, 3)?,
+                })
+            }
+            _ => Err(GeneratedCommandError::InvalidOutcomeShape),
+        }
+    }
+}
+
+fn decode_budget(value: &v1::ValueRecord) -> Result<Budget, GeneratedCommandError> {
+    require_field_ids(value, &[1, 2, 3, 4, 5])?;
+    Ok(Budget {
+        updated_at: timestamp_field(value, 1)?,
+        fiscal_year: i64_field(value, 2)?,
+        approved_amount: decimal_field(value, 3)?,
+        organization_id: uuid_field(value, 4)?,
+        allocated_amount: decimal_field(value, 5)?,
+    })
+}
+
+fn checked_idempotency_key(value: &str) -> Result<&str, GeneratedCommandError> {
+    if value.is_empty() || value.len() > MAX_IDEMPOTENCY_KEY_BYTES {
+        return Err(GeneratedCommandError::InvalidInputShape);
+    }
+    Ok(value)
+}
+
+fn outcome_fields<'response>(
+    response: &'response v1::ExecuteCommandResponse,
+    plan_hash: &[u8; 32],
+) -> Result<&'response v1::ValueRecord, GeneratedCommandError> {
+    if response.contract_version != CONTRACT_VERSION
+        || response.plan_hash.as_slice() != plan_hash
+        || !matches!(
+            v1::execute_command_response::CompletionStatus::try_from(response.status),
+            Ok(v1::execute_command_response::CompletionStatus::Committed)
+                | Ok(v1::execute_command_response::CompletionStatus::Replayed)
+        )
+    {
+        return Err(GeneratedCommandError::InvalidOutcomeShape);
+    }
+    let Some(v1::Value {
+        kind: Some(v1::value::Kind::RecordValue(fields)),
+    }) = response.outcome.as_ref()
+    else {
+        return Err(GeneratedCommandError::InvalidOutcomeShape);
+    };
+    Ok(fields)
+}
+
+fn require_field_ids(
+    record: &v1::ValueRecord,
+    expected: &[u32],
+) -> Result<(), GeneratedCommandError> {
+    if record.fields.len() != expected.len()
+        || !record
+            .fields
+            .iter()
+            .zip(expected)
+            .all(|(field, expected)| field.field_id == Some(*expected))
+    {
+        return Err(GeneratedCommandError::InvalidOutcomeShape);
+    }
+    Ok(())
+}
+
+fn value_field(
+    record: &v1::ValueRecord,
+    field_id: u32,
+) -> Result<&v1::Value, GeneratedCommandError> {
+    record
+        .fields
+        .iter()
+        .find(|field| field.field_id == Some(field_id))
+        .and_then(|field| field.value.as_ref())
+        .ok_or(GeneratedCommandError::InvalidOutcomeShape)
+}
+
+fn record_field(
+    record: &v1::ValueRecord,
+    field_id: u32,
+) -> Result<&v1::ValueRecord, GeneratedCommandError> {
+    match value_field(record, field_id)?.kind.as_ref() {
+        Some(v1::value::Kind::RecordValue(value)) => Ok(value),
+        _ => Err(GeneratedCommandError::InvalidOutcomeShape),
+    }
+}
+
+fn i64_field(record: &v1::ValueRecord, field_id: u32) -> Result<i64, GeneratedCommandError> {
+    match value_field(record, field_id)?.kind.as_ref() {
+        Some(v1::value::Kind::I64Value(value)) => Ok(*value),
+        _ => Err(GeneratedCommandError::InvalidOutcomeShape),
+    }
+}
+
+fn uuid_field(record: &v1::ValueRecord, field_id: u32) -> Result<[u8; 16], GeneratedCommandError> {
+    match value_field(record, field_id)?.kind.as_ref() {
+        Some(v1::value::Kind::UuidValue(value)) => value
+            .as_slice()
+            .try_into()
+            .map_err(|_| GeneratedCommandError::InvalidOutcomeShape),
+        _ => Err(GeneratedCommandError::InvalidOutcomeShape),
+    }
+}
+
+fn timestamp_field(
+    record: &v1::ValueRecord,
+    field_id: u32,
+) -> Result<Timestamp, GeneratedCommandError> {
+    match value_field(record, field_id)?.kind.as_ref() {
+        Some(v1::value::Kind::TimestampValue(value)) => Timestamp::new(value.seconds, value.nanos)
+            .map_err(|_| GeneratedCommandError::InvalidOutcomeShape),
+        _ => Err(GeneratedCommandError::InvalidOutcomeShape),
+    }
+}
+
+fn decimal_field(record: &v1::ValueRecord, field_id: u32) -> Result<Amount, GeneratedCommandError> {
+    match value_field(record, field_id)?.kind.as_ref() {
+        Some(v1::value::Kind::DecimalValue(value)) if value.scale == 2 => {
+            let coefficient = decode_i128(&value.coefficient_twos_complement)?;
+            Amount::from_minor_units(coefficient).ok_or(GeneratedCommandError::InvalidOutcomeShape)
+        }
+        _ => Err(GeneratedCommandError::InvalidOutcomeShape),
+    }
+}
+
+fn minimum_field(record: &v1::ValueRecord, field_id: u32) -> Result<Amount, GeneratedCommandError> {
+    let amount = decimal_field(record, field_id)?;
+    if !(-99..=99).contains(&amount.minor_units()) {
+        return Err(GeneratedCommandError::InvalidOutcomeShape);
+    }
+    Ok(amount)
+}
+
+fn record(fields: Vec<v1::ValueField>) -> v1::Value {
+    v1::Value {
+        kind: Some(v1::value::Kind::RecordValue(v1::ValueRecord { fields })),
+    }
+}
+
+fn field(field_id: u32, value: v1::Value) -> v1::ValueField {
+    v1::ValueField {
+        field_id: Some(field_id),
+        name: String::new(),
+        value: Some(value),
+    }
+}
+
+fn i64_value(value: i64) -> v1::Value {
+    v1::Value {
+        kind: Some(v1::value::Kind::I64Value(value)),
+    }
+}
+
+fn string_value(value: String) -> v1::Value {
+    v1::Value {
+        kind: Some(v1::value::Kind::StringValue(value)),
+    }
+}
+
+fn uuid_value(value: [u8; 16]) -> v1::Value {
+    v1::Value {
+        kind: Some(v1::value::Kind::UuidValue(value.to_vec())),
+    }
+}
+
+fn decimal_value(value: Amount) -> v1::Value {
+    v1::Value {
+        kind: Some(v1::value::Kind::DecimalValue(v1::Decimal {
+            coefficient_twos_complement: encode_i128(value.minor_units()),
+            scale: 2,
+        })),
+    }
+}
+
+fn encode_i128(value: i128) -> Vec<u8> {
+    let bytes = value.to_be_bytes();
+    let mut first = 0;
+    while first < bytes.len() - 1 {
+        let redundant_zero = bytes[first] == 0 && bytes[first + 1] & 0x80 == 0;
+        let redundant_one = bytes[first] == 0xff && bytes[first + 1] & 0x80 != 0;
+        if !redundant_zero && !redundant_one {
+            break;
+        }
+        first += 1;
+    }
+    bytes[first..].to_vec()
+}
+
+fn decode_i128(bytes: &[u8]) -> Result<i128, GeneratedCommandError> {
+    if bytes.is_empty() || bytes.len() > 16 {
+        return Err(GeneratedCommandError::InvalidOutcomeShape);
+    }
+    if bytes.len() > 1
+        && ((bytes[0] == 0 && bytes[1] & 0x80 == 0) || (bytes[0] == 0xff && bytes[1] & 0x80 != 0))
+    {
+        return Err(GeneratedCommandError::InvalidOutcomeShape);
+    }
+    let mut full = if bytes[0] & 0x80 == 0 {
+        [0_u8; 16]
+    } else {
+        [0xff_u8; 16]
+    };
+    full[16 - bytes.len()..].copy_from_slice(bytes);
+    Ok(i128::from_be_bytes(full))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn generated_create_input_uses_frozen_field_ids_and_exact_decimal() {
+        let input = CreateBudget {
+            idempotency_key: "create-1".to_owned(),
+            organization_id: [0x11; 16],
+            fiscal_year: 2026,
+            approved_amount: Amount::from_minor_units(10_000).expect("amount"),
+        };
+        let command = input.idempotent_command().expect("command");
+        assert_eq!(command.command_name(), "CreateBudget");
+        let Some(v1::value::Kind::RecordValue(record)) = command.input().kind.as_ref() else {
+            panic!("record input")
+        };
+        assert_eq!(
+            record
+                .fields
+                .iter()
+                .map(|field| field.field_id.expect("ID"))
+                .collect::<Vec<_>>(),
+            [1, 2, 3, 4]
+        );
+        let Some(v1::value::Kind::DecimalValue(decimal)) = record.fields[1]
+            .value
+            .as_ref()
+            .and_then(|value| value.kind.as_ref())
+        else {
+            panic!("decimal")
+        };
+        assert_eq!(decimal.scale, 2);
+        assert_eq!(
+            decode_i128(&decimal.coefficient_twos_complement),
+            Ok(10_000)
+        );
+
+        let request_id =
+            RequestId::from_unix_milliseconds_and_random(1, [7; 10]).expect("request ID");
+        let recovery = input.outcome_request(request_id).expect("recovery request");
+        assert_eq!(recovery.request_id, request_id.into_bytes());
+        assert_eq!(recovery.contract_lineage, CONTRACT_LINEAGE);
+        assert_eq!(recovery.command_name, "CreateBudget");
+        assert_eq!(recovery.idempotency_key, "create-1");
+    }
+
+    #[test]
+    fn generated_allocate_input_uses_every_frozen_field_and_exact_value() {
+        let input = AllocateBudget {
+            idempotency_key: "allocate-1".to_owned(),
+            organization_id: [0x11; 16],
+            fiscal_year: 2026,
+            matter_id: [0x22; 16],
+            amount: Amount::from_minor_units(8_000).expect("amount"),
+        };
+        let command = input.idempotent_command().expect("command");
+        assert_eq!(command.command_name(), "AllocateBudget");
+        let Some(v1::value::Kind::RecordValue(record)) = command.input().kind.as_ref() else {
+            panic!("record input")
+        };
+        assert_eq!(
+            record
+                .fields
+                .iter()
+                .map(|field| field.field_id.expect("ID"))
+                .collect::<Vec<_>>(),
+            [1, 2, 3, 4, 5]
+        );
+        assert_eq!(decimal_field(record, 1), Ok(input.amount));
+        assert_eq!(uuid_field(record, 2), Ok(input.matter_id));
+        assert_eq!(i64_field(record, 3), Ok(input.fiscal_year));
+        assert!(matches!(
+            value_field(record, 4).and_then(|value| match value.kind.as_ref() {
+                Some(v1::value::Kind::StringValue(value)) => Ok(value.as_str()),
+                _ => Err(GeneratedCommandError::InvalidOutcomeShape),
+            }),
+            Ok("allocate-1")
+        ));
+        assert_eq!(uuid_field(record, 5), Ok(input.organization_id));
+
+        let request_id =
+            RequestId::from_unix_milliseconds_and_random(2, [8; 10]).expect("request ID");
+        let recovery = input.outcome_request(request_id).expect("recovery request");
+        assert_eq!(recovery.request_id, request_id.into_bytes());
+        assert_eq!(recovery.contract_lineage, CONTRACT_LINEAGE);
+        assert_eq!(recovery.command_name, "AllocateBudget");
+        assert_eq!(recovery.idempotency_key, "allocate-1");
+    }
+
+    #[test]
+    fn generated_happy_path_outcomes_decode_complete_budget_values() {
+        let budget = Budget {
+            organization_id: [0x11; 16],
+            fiscal_year: 2026,
+            approved_amount: Amount::from_minor_units(10_000).expect("approved"),
+            allocated_amount: Amount::from_minor_units(8_000).expect("allocated"),
+            updated_at: Timestamp::new(1_700_000_000, 123_456_789).expect("timestamp"),
+        };
+        let create = CreateBudget {
+            idempotency_key: "create-1".to_owned(),
+            organization_id: budget.organization_id,
+            fiscal_year: budget.fiscal_year,
+            approved_amount: budget.approved_amount,
+        };
+        let create_response = successful_response(
+            v1::execute_command_response::CompletionStatus::Committed,
+            &CREATE_BUDGET_PLAN_HASH,
+            "BudgetCreated",
+            record(vec![field(1, budget_value(budget))]),
+        );
+        assert_eq!(
+            create.decode_outcome(&create_response),
+            Ok(CreateBudgetOutcome::BudgetCreated { budget })
+        );
+
+        let allocate = AllocateBudget {
+            idempotency_key: "allocate-1".to_owned(),
+            organization_id: budget.organization_id,
+            fiscal_year: budget.fiscal_year,
+            matter_id: [0x22; 16],
+            amount: Amount::from_minor_units(8_000).expect("amount"),
+        };
+        let remaining = Amount::from_minor_units(2_000).expect("remaining");
+        let allocate_response = successful_response(
+            v1::execute_command_response::CompletionStatus::Replayed,
+            &ALLOCATE_BUDGET_PLAN_HASH,
+            "Allocated",
+            record(vec![
+                field(1, budget_value(budget)),
+                field(2, decimal_value(remaining)),
+            ]),
+        );
+        assert_eq!(
+            allocate.decode_outcome(&allocate_response),
+            Ok(AllocateBudgetOutcome::Allocated { budget, remaining })
+        );
+    }
+
+    #[test]
+    fn generated_idempotency_recovery_rejects_unbound_invalid_keys() {
+        let input = AllocateBudget {
+            idempotency_key: String::new(),
+            organization_id: [0x11; 16],
+            fiscal_year: 2026,
+            matter_id: [0x22; 16],
+            amount: Amount::from_minor_units(100).expect("amount"),
+        };
+        let request_id =
+            RequestId::from_unix_milliseconds_and_random(3, [9; 10]).expect("request ID");
+        assert_eq!(
+            input.idempotent_command(),
+            Err(GeneratedCommandError::InvalidInputShape)
+        );
+        assert_eq!(
+            input.outcome_request(request_id),
+            Err(GeneratedCommandError::InvalidInputShape)
+        );
+    }
+
+    #[test]
+    fn generated_values_never_wrap_decimal_coefficients() {
+        assert!(Amount::from_minor_units(MAX_DECIMAL_COEFFICIENT).is_some());
+        assert!(Amount::from_minor_units(-MAX_DECIMAL_COEFFICIENT).is_some());
+        assert!(Amount::from_minor_units(MAX_DECIMAL_COEFFICIENT + 1).is_none());
+        assert!(Amount::from_minor_units(-MAX_DECIMAL_COEFFICIENT - 1).is_none());
+        for value in [i128::MIN, -129, -128, -1, 0, 1, 127, 128, i128::MAX] {
+            assert_eq!(decode_i128(&encode_i128(value)), Ok(value));
+        }
+    }
+
+    #[test]
+    fn generated_plan_hashes_match_the_checked_compiler_fixture() {
+        let metadata = include_str!("../../../../fixtures/compiler/bundle-metadata.txt");
+        assert_eq!(fixture_value(metadata, "lineage"), CONTRACT_LINEAGE);
+        assert_eq!(
+            fixture_value(metadata, "contract_version"),
+            CONTRACT_VERSION.to_string()
+        );
+
+        let plans = include_str!("../../../../fixtures/compiler/command-plans.txt");
+        assert_plan_fixture(
+            plans,
+            "CreateBudget",
+            CONTRACT_VERSION,
+            &CREATE_BUDGET_PLAN_HASH,
+        );
+        assert_plan_fixture(
+            plans,
+            "AllocateBudget",
+            CONTRACT_VERSION,
+            &ALLOCATE_BUDGET_PLAN_HASH,
+        );
+    }
+
+    #[test]
+    fn generated_decoder_rejects_a_structurally_valid_wrong_plan() {
+        let command = CreateBudget {
+            idempotency_key: "create-1".to_owned(),
+            organization_id: [0x11; 16],
+            fiscal_year: 2026,
+            approved_amount: Amount::from_minor_units(10_000).expect("amount"),
+        };
+        let response = v1::ExecuteCommandResponse {
+            status: v1::execute_command_response::CompletionStatus::Committed as i32,
+            commit_sequence: 1,
+            contract_version: CONTRACT_VERSION,
+            plan_hash: vec![0; 32],
+            outcome_type: "BudgetCreated".to_owned(),
+            outcome: Some(record(Vec::new())),
+            provenance_uri: "riffdb://provenance/018f22e2-79b7-7cc3-a85f-250f0f80c78e".to_owned(),
+            durability_mode: "sync".to_owned(),
+        };
+        assert_eq!(
+            command.decode_outcome(&response),
+            Err(GeneratedCommandError::InvalidOutcomeShape)
+        );
+    }
+
+    fn budget_value(budget: Budget) -> v1::Value {
+        record(vec![
+            field(
+                1,
+                v1::Value {
+                    kind: Some(v1::value::Kind::TimestampValue(v1::Timestamp {
+                        seconds: budget.updated_at.seconds(),
+                        nanos: budget.updated_at.nanos(),
+                    })),
+                },
+            ),
+            field(2, i64_value(budget.fiscal_year)),
+            field(3, decimal_value(budget.approved_amount)),
+            field(4, uuid_value(budget.organization_id)),
+            field(5, decimal_value(budget.allocated_amount)),
+        ])
+    }
+
+    fn successful_response(
+        status: v1::execute_command_response::CompletionStatus,
+        plan_hash: &[u8; 32],
+        outcome_type: &str,
+        outcome: v1::Value,
+    ) -> v1::ExecuteCommandResponse {
+        v1::ExecuteCommandResponse {
+            status: status as i32,
+            commit_sequence: 1,
+            contract_version: CONTRACT_VERSION,
+            plan_hash: plan_hash.to_vec(),
+            outcome_type: outcome_type.to_owned(),
+            outcome: Some(outcome),
+            provenance_uri: "riffdb://provenance/018f22e2-79b7-7cc3-a85f-250f0f80c78e".to_owned(),
+            durability_mode: "sync".to_owned(),
+        }
+    }
+
+    fn fixture_value<'fixture>(fixture: &'fixture str, key: &str) -> &'fixture str {
+        fixture
+            .lines()
+            .find_map(|line| line.strip_prefix(key)?.strip_prefix('='))
+            .unwrap_or_else(|| panic!("missing compiler fixture key {key}"))
+    }
+
+    fn assert_plan_fixture(
+        fixture: &str,
+        command_name: &str,
+        contract_version: u64,
+        plan_hash: &[u8; 32],
+    ) {
+        let block = fixture
+            .split("\n[command ")
+            .find(|block| {
+                block
+                    .lines()
+                    .any(|line| line == format!("name={command_name}"))
+            })
+            .unwrap_or_else(|| panic!("missing compiler plan for {command_name}"));
+        assert_eq!(
+            fixture_value(block, "contract_version"),
+            contract_version.to_string()
+        );
+        assert_eq!(fixture_value(block, "plan_hash"), lowercase_hex(plan_hash));
+    }
+
+    fn lowercase_hex(bytes: &[u8]) -> String {
+        const DIGITS: &[u8; 16] = b"0123456789abcdef";
+        let mut output = String::with_capacity(bytes.len() * 2);
+        for byte in bytes {
+            output.push(char::from(DIGITS[usize::from(byte >> 4)]));
+            output.push(char::from(DIGITS[usize::from(byte & 0x0f)]));
+        }
+        output
+    }
+}

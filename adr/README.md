@@ -58,10 +58,11 @@ direction, merged draft, or implementation choice.
 | [0034](0034-staged-application-service-activation.md) | Staged Application-Service Activation | Accepted |
 | [0035](0035-atomic-authoritative-scan-fences.md) | Atomic Authoritative Scan Fences | Accepted |
 | [0036](0036-schema-directed-submitted-query-components.md) | Schema-Directed Submitted Query Components | Accepted |
+| [0037](0037-rust-sdk-foundational-type-dependencies.md) | Rust SDK Foundational Type Dependencies | Accepted |
 
 The human architecture review on 2026-07-12 approved the direction represented
 by ADR-0001 through ADR-0012. The human maintainer accepted ADR-0001 through
-ADR-0007, ADR-0009 through ADR-0036, and their recorded companion amendments by
+ADR-0007, ADR-0009 through ADR-0037, and their recorded companion amendments by
 2026-07-21. ADR-0008 remains Proposed for resource URIs other than the exact
 provenance locator, HTTP audience, stdio-over-gRPC transport, cursor
 presentation, and the remaining exact MCP fixtures; ADR-0020 separately accepts
@@ -98,7 +99,10 @@ boundary used while startup proofs are incomplete. ADR-0035 makes index and
 commit scan fences atomic and represents the untouched index state explicitly
 at storage, service, and public boundaries. ADR-0036 keeps public query
 components structurally submitted until the shared service materializes them
-against the selected schema.
+against the selected schema. ADR-0037 permits the Rust SDK's direct,
+default-feature-disabled dependency on the single owners of checked public
+errors and foundational public identifiers while continuing to forbid every
+authority-bearing server dependency.
 
 ## Workflow
 

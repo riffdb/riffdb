@@ -6,7 +6,7 @@
 **Tagline:** *Vibe fast. Commit safely.*  
 **Category:** Contract-first operational database for agent-built applications  
 
-**Version:** 0.26
+**Version:** 0.27
 **Status:** Architecture-approved implementation handoff
 **Date:** 21 July 2026
 **Audience:** Coding agents, database engineers, compiler engineers, security reviewers, and technical product leads  
@@ -62,6 +62,7 @@
 | 0.24 | 2026-07-21 | Applied accepted ADR-0031 and ADR-0032: transports preserve structurally checked pre-schema submitted command values for service-owned materialization under the exact selected plan, and the completed structural startup handoff carries the existing same-snapshot retained metadata needed for bootstrap lifecycle, active-pointer agreement, and allocator readiness. No public or durable format changed. |
 | 0.25 | 2026-07-21 | Applied accepted ADR-0033: the coordinator publishes only first-durable application commit sequences through an injected least-authority sink into the server-owned bounded subscription hub; replay, read-only, failed, audit, initialization, and control-plane paths never publish. Sink defects preserve the known committed result but stop coordinator admission and process readiness. No public or durable format changed. |
 | 0.26 | 2026-07-21 | Applied accepted ADR-0034 through ADR-0036: startup uses a Health-only initializing service plus move-only activation authority; authoritative index and commit scans return atomic frozen fences including an explicit before-first index position; and public query components remain structurally submitted until schema-directed service materialization. The not-yet-served public index-fence message is corrected and regenerated before WP-130. |
+| 0.27 | 2026-07-21 | Applied accepted ADR-0037: the Rust SDK may depend directly, with default features disabled, on `riffdb-errors` and `riffdb-types` for the single checked public-error and foundational public-identifier/value owners. This grants no dependency on authority-bearing server crates and changes no public or durable format. |
 
 ### Normative language
 
@@ -317,7 +318,7 @@ The binary targets are `riffdbd` from `riffdb-server`, `riffdb` from `riffdb-cli
 | `riffdb-policy` | Deny-by-default authorization, capability scopes, obligations, approvals, provenance validation, value-only authorized capability-mutation preparation and transaction-current facts, synchronous authorization clock, and pure transaction-current capability verification | Auth and types/errors only; no storage API, commit, service, transport, protocol, authoritative write handle, or concrete storage dependency |
 | `riffdb-service` | API-neutral command, contract, entity, commit, provenance, projection, discovery, administration, and health services, including capability-administration request/result semantics, checked pre-schema submitted command values, and schema-directed canonical command-input preparation | Foundational types/errors, contract/compiler/catalog semantics, the pure `riffdb-invariant` expression evaluator, auth and policy entry points, typed commit executors, and consumer-owned bounded read ports; no runtime execution API, transport, general storage engine, or concrete storage implementation |
 | `riffdb-api-grpc` | Tonic services, authentication interceptors, bounds checks, and wire conversions | Service, the auth-owned `CredentialAuthenticator` interface, proto, and Tonic; no policy, catalog, runtime, commit, storage API, or storage implementation |
-| `riffdb-client-rust` | Generic and generated Rust client APIs plus the approved system UUIDv7 request/capability/agent-session convenience source | Proto and Tonic client plus the exact ADR-0018 entropy dependency only; no semantic database implementation |
+| `riffdb-client-rust` | Generic and generated Rust client APIs plus the approved system UUIDv7 request/capability/agent-session convenience source | Proto and Tonic client, default-feature-disabled `riffdb-errors` and `riffdb-types`, plus the exact ADR-0018 entropy dependency only; no authority-bearing or semantic database implementation |
 | `riffdb-server` | `riffdbd` process composition, configuration, lifecycle, hosted gRPC/HTTP endpoints, startup proof composition, and concrete OS clock/UUIDv7/cursor/digest providers implementing the separate consumer ports | Service/API crates and concrete auth, clock/identifier, executor, storage, outbox, projection, and observability implementations solely for composition; no new policy, command, query, redaction, cursor, audit, or identifier semantics |
 | `riffdb-api-mcp` | MCP tool/resource catalogs, schema translation, authorization-aware discovery presentation, Streamable HTTP authentication/handling, and protocol adaptation | Service, the auth-owned `CredentialAuthenticator` interface, `rmcp`, and JSON Schema support; no direct policy, catalog, runtime, commit, storage API, or storage implementation |
 | `riffdb-mcp-stdio` | `riffdb-mcp` local stdio bridge that invokes the shared public service | MCP client/server transport glue only; no storage access |
