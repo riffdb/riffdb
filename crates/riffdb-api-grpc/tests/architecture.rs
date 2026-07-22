@@ -109,6 +109,72 @@ fn staged_route_does_not_require_a_full_service_at_construction() {
         .expect("GrpcApplication declaration");
     assert!(!application.contains("Arc<dyn ApplicationService>"));
     assert!(application.contains("Arc<dyn GrpcLifecycleRoute>"));
+    for deferred in [
+        "CredentialAuthenticator",
+        "AuthenticationContext",
+        "CapabilityDigestKeyProvider",
+        "CheckedGrpcSecurityContext",
+    ] {
+        assert!(
+            !application.contains(deferred),
+            "initializing adapter must not own deferred {deferred}"
+        );
+    }
+
+    let constructor = source
+        .split("impl GrpcApplication")
+        .nth(1)
+        .and_then(|tail| tail.split("pub fn new(").nth(1))
+        .and_then(|tail| tail.split(") -> Self").next())
+        .expect("GrpcApplication constructor");
+    assert!(constructor.contains("Arc<dyn GrpcLifecycleRoute>"));
+    assert!(constructor.contains("GrpcRequestLimits"));
+    assert!(!constructor.contains("CheckedGrpcSecurityContext"));
+}
+
+#[test]
+fn lifecycle_admission_precedes_security_fetch_and_bootstrap_transition() {
+    let source = include_str!("../src/server.rs");
+    let normal = source
+        .split("fn normal_admission(")
+        .nth(1)
+        .and_then(|tail| tail.split("fn bootstrap_context(").next())
+        .expect("normal admission helper");
+    assert!(
+        normal.find("admit_authenticated").expect("lifecycle gate")
+            < normal.find("security_context").expect("security fetch")
+    );
+
+    let bootstrap_security = source
+        .split("fn bootstrap_security(")
+        .nth(1)
+        .and_then(|tail| tail.split("struct BootstrapLifecycleGuard").next())
+        .expect("bootstrap security helper");
+    assert!(
+        bootstrap_security
+            .find("bootstrap_available")
+            .expect("non-mutating bootstrap preflight")
+            < bootstrap_security
+                .find("security_context")
+                .expect("security fetch")
+    );
+
+    let handler = source
+        .split("async fn create_capability(")
+        .nth(1)
+        .and_then(|tail| tail.split("async fn revoke_capability(").next())
+        .expect("create-capability handler");
+    let security = handler
+        .find("bootstrap_security")
+        .expect("preflighted security fetch");
+    let preparation = handler
+        .find("bootstrap_context")
+        .expect("bootstrap token preparation");
+    let begin = handler
+        .find("begin_bootstrap")
+        .expect("atomic bootstrap admission");
+    assert!(security < preparation);
+    assert!(preparation < begin);
 }
 
 #[test]
@@ -119,6 +185,13 @@ fn capability_cancellation_guard_outlives_invocation_construction() {
         .nth(1)
         .and_then(|tail| tail.split("async fn revoke_capability(").next())
         .expect("create-capability handler");
-    assert!(handler.contains("let (invocation, _cancellation) = match"));
-    assert!(!handler.contains("let (context, _cancellation)"));
+    assert_eq!(handler.matches("_cancellation").count(), 2);
+    assert_eq!(
+        handler
+            .matches("service.create_capability(invocation).await")
+            .count(),
+        2
+    );
+    assert!(handler.contains("BootstrapLifecycleGuard::new"));
+    assert!(handler.contains("lifecycle.complete(completion)"));
 }

@@ -31,5 +31,14 @@ prost = { version = "=0.14.4", default-features = false, features = ["std"] }
 prost-types = { version = "=0.14.4", default-features = false, features = ["std"] }
 tonic-prost-build = { version = "=0.14.6", default-features = false, features = ["transport"] }
 
+[dev-dependencies]
+riffdb-client-rust = { version = "0.1.0", path = "../riffdb-client-rust", default-features = false }
+riffdb-testkit = { version = "0.1.0", path = "../riffdb-testkit", default-features = false }
+tokio = { version = "=1.52.0", default-features = false, features = ["macros", "rt-multi-thread", "sync"] }
+
+[[test]]
+name = "grpc_end_to_end"
+path = "../../tests/grpc/grpc_end_to_end.rs"
+
 [lints]
 workspace = true

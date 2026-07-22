@@ -118,6 +118,11 @@ impl ProductionWallClocks {
     pub(crate) fn administration(&self) -> ServerAdministrationClock {
         ServerAdministrationClock(Arc::clone(&self.shared))
     }
+
+    /// Samples server-owned process metadata without borrowing a semantic consumer port.
+    pub(crate) fn process_time(&self) -> Result<Timestamp, ServerProcessClockError> {
+        self.shared.now().map_err(|_| ServerProcessClockError)
+    }
 }
 
 impl Default for ProductionWallClocks {
@@ -131,6 +136,24 @@ impl fmt::Debug for ProductionWallClocks {
         formatter.write_str("ProductionWallClocks([REDACTED])")
     }
 }
+
+/// Closed server-owned clock failure for immutable process metadata.
+#[derive(Clone, Copy, Eq, PartialEq)]
+pub(crate) struct ServerProcessClockError;
+
+impl fmt::Debug for ServerProcessClockError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("ServerProcessClockError([REDACTED])")
+    }
+}
+
+impl fmt::Display for ServerProcessClockError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("process wall-clock sample failed")
+    }
+}
+
+impl std::error::Error for ServerProcessClockError {}
 
 #[derive(Clone)]
 pub(crate) struct ServerAuthenticationClock(Arc<CanonicalWallClock>);
@@ -272,6 +295,26 @@ mod tests {
         assert_eq!(
             administration.now(),
             Ok(Timestamp::new(4, 4).expect("timestamp"))
+        );
+    }
+
+    #[test]
+    fn process_metadata_uses_a_server_owned_sample_and_error() {
+        let clocks = ProductionWallClocks {
+            shared: shared_clock([Ok(UNIX_EPOCH + Duration::new(9, 8))]),
+        };
+        assert_eq!(
+            clocks.process_time(),
+            Ok(Timestamp::new(9, 8).expect("timestamp"))
+        );
+
+        let failing = ProductionWallClocks {
+            shared: shared_clock([Err(CanonicalWallClockError)]),
+        };
+        assert_eq!(failing.process_time(), Err(ServerProcessClockError));
+        assert_eq!(
+            format!("{:?}", ServerProcessClockError),
+            "ServerProcessClockError([REDACTED])"
         );
     }
 

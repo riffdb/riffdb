@@ -11,13 +11,29 @@ default = []
 [dependencies]
 getrandom = { version = "=0.3.4", default-features = false }
 riffdb-auth = { version = "0.1.0", path = "../riffdb-auth", default-features = false }
+riffdb-api-grpc = { version = "0.1.0", path = "../riffdb-api-grpc", default-features = false, features = ["server"] }
+riffdb-catalog = { version = "0.1.0", path = "../riffdb-catalog", default-features = false }
 riffdb-commit = { version = "0.1.0", path = "../riffdb-commit", default-features = false }
+riffdb-conflict = { version = "0.1.0", path = "../riffdb-conflict", default-features = false }
+riffdb-contract-ir = { version = "0.1.0", path = "../riffdb-contract-ir", default-features = false }
 riffdb-errors = { version = "0.1.0", path = "../riffdb-errors", default-features = false }
+riffdb-idempotency = { version = "0.1.0", path = "../riffdb-idempotency", default-features = false }
 riffdb-policy = { version = "0.1.0", path = "../riffdb-policy", default-features = false }
 riffdb-service = { version = "0.1.0", path = "../riffdb-service", default-features = false }
 riffdb-storage-api = { version = "0.1.0", path = "../riffdb-storage-api", default-features = false }
 riffdb-storage-redb = { version = "0.1.0", path = "../riffdb-storage-redb", default-features = false }
 riffdb-types = { version = "0.1.0", path = "../riffdb-types", default-features = false }
+tokio = { version = "=1.52.0", default-features = false, features = ["macros", "rt-multi-thread", "sync", "time"] }
+tonic = { version = "=0.14.6", default-features = false, features = ["router", "server"] }
+
+[dev-dependencies]
+riffdb-client-rust = { version = "0.1.0", path = "../riffdb-client-rust", default-features = false }
+riffdb-proto = { version = "0.1.0", path = "../riffdb-proto", default-features = false }
+tokio = { version = "=1.52.0", default-features = false, features = ["macros", "rt-multi-thread", "sync", "test-util", "time"] }
+
+[[test]]
+name = "p1_riffdbd_restart"
+path = "../../tests/grpc/p1_riffdbd_restart.rs"
 
 [[bin]]
 name = "riffdbd"
