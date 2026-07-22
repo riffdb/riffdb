@@ -9,6 +9,31 @@ publish.workspace = true
 default = []
 
 [dependencies]
+riffdb-auth = { version = "0.1.0", path = "../riffdb-auth", default-features = false }
+riffdb-catalog = { version = "0.1.0", path = "../riffdb-catalog", default-features = false }
+riffdb-commit = { version = "0.1.0", path = "../riffdb-commit", default-features = false }
+riffdb-contract-compiler = { version = "0.1.0", path = "../riffdb-contract-compiler", default-features = false }
+riffdb-contract-ir = { version = "0.1.0", path = "../riffdb-contract-ir", default-features = false }
+riffdb-errors = { version = "0.1.0", path = "../riffdb-errors", default-features = false }
+riffdb-invariant = { version = "0.1.0", path = "../riffdb-invariant", default-features = false }
+riffdb-policy = { version = "0.1.0", path = "../riffdb-policy", default-features = false }
+riffdb-types = { version = "0.1.0", path = "../riffdb-types", default-features = false }
+
+[dev-dependencies]
+riffdb-conflict = { version = "0.1.0", path = "../riffdb-conflict", default-features = false }
+riffdb-idempotency = { version = "0.1.0", path = "../riffdb-idempotency", default-features = false }
+riffdb-storage-api = { version = "0.1.0", path = "../riffdb-storage-api", default-features = false }
+riffdb-storage-redb = { version = "0.1.0", path = "../riffdb-storage-redb", default-features = false }
+riffdb-testkit = { version = "0.1.0", path = "../riffdb-testkit", default-features = false }
+tokio = { version = "=1.52.0", default-features = false, features = ["rt-multi-thread", "sync", "time"] }
+
+[[test]]
+name = "service_end_to_end"
+path = "../../tests/service/service_end_to_end.rs"
+
+[[test]]
+name = "service_audit_orchestration"
+path = "../../tests/service/service_audit_orchestration.rs"
 
 [lints]
 workspace = true

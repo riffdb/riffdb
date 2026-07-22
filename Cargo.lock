@@ -1146,6 +1146,23 @@ version = "0.1.0"
 [[package]]
 name = "riffdb-service"
 version = "0.1.0"
+dependencies = [
+ "riffdb-auth",
+ "riffdb-catalog",
+ "riffdb-commit",
+ "riffdb-conflict",
+ "riffdb-contract-compiler",
+ "riffdb-contract-ir",
+ "riffdb-errors",
+ "riffdb-idempotency",
+ "riffdb-invariant",
+ "riffdb-policy",
+ "riffdb-storage-api",
+ "riffdb-storage-redb",
+ "riffdb-testkit",
+ "riffdb-types",
+ "tokio",
+]
 
 [[package]]
 name = "riffdb-storage-api"
