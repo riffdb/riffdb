@@ -7,6 +7,7 @@
 //! coordinator and observes only the coordinator's durable result.
 
 mod bundle;
+mod capability_partition;
 mod deployment;
 mod error;
 mod history;
@@ -15,6 +16,7 @@ mod materialization;
 mod notification;
 
 pub use bundle::*;
+pub use capability_partition::*;
 pub use deployment::*;
 pub use error::*;
 pub use history::*;

@@ -12,10 +12,10 @@ use redb::{
 use riffdb_storage_api::{
     ApplicationSequenceAllocator, CapabilityLifecycleV1, DormantPortBundle, EvidencePageLimit,
     HistoricalActiveCatalogEvidence, HistoricalBundleBytes, HistoricalBundleEvidence,
-    HistoricalEvidenceCursor, HistoricalEvidenceEnd, HistoricalEvidencePage,
-    HistoricalPersistedKeyEvidenceV1, HistoricalSemanticEvidence, OpenSessionId, ReadableDigestKey,
-    StartupValidationInputs, StorageError, StorageErrorKind, StorageValueError,
-    StructuralEvidenceCursor, StructuralEvidenceEnd, StructuralEvidenceOpen,
+    HistoricalCapabilityPartitionEvidenceV1, HistoricalEvidenceCursor, HistoricalEvidenceEnd,
+    HistoricalEvidencePage, HistoricalPersistedKeyEvidenceV1, HistoricalSemanticEvidence,
+    OpenSessionId, ReadableDigestKey, StartupValidationInputs, StorageError, StorageErrorKind,
+    StorageValueError, StructuralEvidenceCursor, StructuralEvidenceEnd, StructuralEvidenceOpen,
     StructuralEvidencePage, StructuralEvidenceSession, StructuralFinding, StructuralFindingCode,
     StructuralFindingScope, StructurallyOpened,
 };
@@ -213,7 +213,8 @@ impl StructuralEvidenceSession for RedbStructuralEvidenceSession {
         let mut last_key = self.last_historical_key.clone();
         let mut exhausted = false;
         while evidence.len() < requested {
-            let Some(candidate) = select_next_historical(self.transaction()?, last_key.as_deref())?
+            let Some(candidate) =
+                select_next_historical(self.transaction()?, &self.inputs, last_key.as_deref())?
             else {
                 exhausted = true;
                 break;
@@ -1206,6 +1207,7 @@ fn inspect_audit_row(
 
 fn select_next_historical(
     transaction: &ReadTransaction,
+    inputs: &StartupValidationInputs,
     after: Option<&[u8]>,
 ) -> Result<Option<HistoricalCandidate>, StorageError> {
     let mut selected = None;
@@ -1213,6 +1215,7 @@ fn select_next_historical(
     scan_plan_candidates(transaction, after, &mut selected)?;
     scan_active_candidate(transaction, after, &mut selected)?;
     scan_persisted_key_candidates(transaction, after, &mut selected)?;
+    scan_capability_partition_candidates(transaction, inputs, after, &mut selected)?;
     Ok(selected)
 }
 
@@ -1400,6 +1403,45 @@ fn scan_persisted_key_candidates(
     Ok(())
 }
 
+fn scan_capability_partition_candidates(
+    transaction: &ReadTransaction,
+    inputs: &StartupValidationInputs,
+    after: Option<&[u8]>,
+    selected: &mut Option<HistoricalCandidate>,
+) -> Result<(), StorageError> {
+    let capabilities = transaction.open_table(CAPABILITIES).map_err(table_error)?;
+    for entry in capabilities.iter().map_err(precommit_storage_error)? {
+        let (key, value) = entry.map_err(precommit_storage_error)?;
+        let physical = keys::decode_capability_key(key.value()).map_err(|_| corrupt())?;
+        let capability =
+            decoded(codec::decode_capability_record_v1(value.value())).map_err(|_| corrupt())?;
+        if capability.capability_id() != physical {
+            return Err(corrupt());
+        }
+        if !matches!(capability.lifecycle(), CapabilityLifecycleV1::Active)
+            || inputs.authorization_time() >= capability.expires_at()
+        {
+            continue;
+        }
+        let Some(entries) = capability.grant().partition_scope().explicit_entries() else {
+            continue;
+        };
+        for ordinal in 0..entries.len() {
+            let evidence = HistoricalCapabilityPartitionEvidenceV1::from_capability_entry(
+                &capability,
+                ordinal,
+            )
+            .map_err(value_error_as_storage)?;
+            consider_evidence(
+                selected,
+                after,
+                HistoricalSemanticEvidence::CapabilityPartition(evidence),
+            );
+        }
+    }
+    Ok(())
+}
+
 fn consider_plan(
     selected: &mut Option<HistoricalCandidate>,
     after: Option<&[u8]>,
@@ -1480,6 +1522,9 @@ fn historical_order_key(evidence: &HistoricalSemanticEvidence) -> Vec<u8> {
                 }
             }
         }
+        HistoricalSemanticEvidence::CapabilityPartition(evidence) => {
+            return evidence.evidence_order_key();
+        }
     }
     key
 }
@@ -1509,6 +1554,9 @@ fn historical_semantic_bytes(evidence: &HistoricalSemanticEvidence) -> Result<us
             (1 + 4 + persisted.schema().lineage().as_bytes().len())
                 .checked_add(8 + 32 + 1 + 4 + 4)
                 .and_then(|value| value.checked_add(key_bytes.len()))
+        }
+        HistoricalSemanticEvidence::CapabilityPartition(evidence) => {
+            Some(evidence.semantic_bytes().map_err(value_error_as_storage)?)
         }
     };
     bytes.ok_or_else(limit_exceeded)
@@ -2699,6 +2747,7 @@ fn value_error_as_storage(error: StorageValueError) -> StorageError {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::BTreeSet;
     use std::num::{NonZeroU16, NonZeroU32, NonZeroU64};
     use std::path::PathBuf;
     use std::sync::atomic::{AtomicU64, Ordering};
@@ -2717,11 +2766,12 @@ mod tests {
         StoredServiceAuditRecordV1, StructuralEvidenceEnd, StructuralEvidencePage,
     };
     use riffdb_types::{
-        ActorId, ActorKind, AdministrationSequence, Audience, CanonicalRecord, CapabilityId,
-        CapabilityTokenDigest, DigestKeyId, EntityKeyBuilder, EntityTypeId, EntityVersion,
-        Environment, ProjectionApplyHash, ProjectionApplyKey, ProjectionGeneration, ProjectionId,
-        ProjectionIdentity, ProjectionPlanHash, RequestId, ServiceAuditLinkV1, ServiceAuditPhaseV1,
-        ServiceAuditTargetsV1, ServiceIngressKindV1, ServiceOperationV1, TenantScope, Timestamp,
+        ActorId, ActorKind, AdministrationSequence, AggregateTypeId, Audience, CanonicalRecord,
+        CapabilityId, CapabilityTokenDigest, DigestKeyId, EntityKeyBuilder, EntityTypeId,
+        EntityVersion, Environment, PartitionKeyBuilder, ProjectionApplyHash, ProjectionApplyKey,
+        ProjectionGeneration, ProjectionId, ProjectionIdentity, ProjectionPlanHash, RequestId,
+        ScopedPartitionV1, ServiceAuditLinkV1, ServiceAuditPhaseV1, ServiceAuditTargetsV1,
+        ServiceIngressKindV1, ServiceOperationV1, TenantScope, Timestamp,
     };
 
     use super::*;
@@ -2776,9 +2826,13 @@ mod tests {
     }
 
     fn inputs() -> StartupValidationInputs {
+        inputs_at(1)
+    }
+
+    fn inputs_at(seconds: i64) -> StartupValidationInputs {
         let key = ReadableDigestKey::v1(DigestKeyId::new(1).expect("digest key"));
         StartupValidationInputs::new(
-            Timestamp::new(1, 0).expect("timestamp"),
+            Timestamp::new(seconds, 0).expect("timestamp"),
             ReadableCapabilityDigestInventory::new(vec![key]).expect("capability inventory"),
             ReadableIdempotencyDigestInventory::new(vec![key]).expect("idempotency inventory"),
         )
@@ -2801,6 +2855,13 @@ mod tests {
     }
 
     fn requested_capability(database_id: DatabaseId) -> CapabilityRequestedRecordV1 {
+        requested_capability_with_scope(database_id, PartitionScopeV1::All)
+    }
+
+    fn requested_capability_with_scope(
+        database_id: DatabaseId,
+        partition_scope: PartitionScopeV1,
+    ) -> CapabilityRequestedRecordV1 {
         let permissions = CapabilityPermissionsV1::new(vec![
             CapabilityPermissionV1::unparameterized(
                 CapabilityPermissionKindV1::AdministerCapabilities,
@@ -2810,7 +2871,7 @@ mod tests {
         .expect("permissions");
         let grant = CapabilityGrantV1::new(
             TenantScope::Global,
-            PartitionScopeV1::All,
+            partition_scope,
             permissions,
             Vec::new(),
             NonZeroU16::MIN,
@@ -2827,6 +2888,64 @@ mod tests {
             grant,
         )
         .expect("requested capability")
+    }
+
+    fn scoped_partition(lineage: &ContractLineage, value: u64) -> ScopedPartitionV1 {
+        let mut builder =
+            PartitionKeyBuilder::new(AggregateTypeId::new(0x0102_0304).expect("aggregate ID"));
+        builder.push_u64(value).expect("partition component");
+        ScopedPartitionV1::new(lineage.clone(), builder.finish().expect("partition key"))
+    }
+
+    fn explicit_scope(lineage: &ContractLineage, values: &[u64]) -> PartitionScopeV1 {
+        PartitionScopeV1::explicit(
+            values
+                .iter()
+                .map(|value| scoped_partition(lineage, *value))
+                .collect(),
+        )
+        .expect("explicit scope")
+    }
+
+    fn active_capability(
+        database_id: DatabaseId,
+        capability_id: CapabilityId,
+        partition_scope: PartitionScopeV1,
+        issued_at: i64,
+        request_seed: u8,
+    ) -> StoredCapabilityRecordV1 {
+        StoredCapabilityRecordV1::active(
+            capability_id,
+            CapabilityTokenDigest::from_hmac_bytes(
+                DigestKeyId::new(1).expect("digest key ID"),
+                [request_seed; 32],
+            ),
+            requested_capability_with_scope(database_id, partition_scope),
+            Timestamp::new(issued_at, 0).expect("issued at"),
+            Timestamp::new(issued_at + 60, 0).expect("expires at"),
+            AdministrationSequence::first(),
+            request_id(request_seed),
+        )
+        .expect("active capability")
+    }
+
+    fn insert_capabilities(store: &RedbStore, records: &[StoredCapabilityRecordV1]) {
+        let write = store
+            .shared
+            .database
+            .begin_write()
+            .expect("write transaction");
+        {
+            let mut capabilities = write.open_table(CAPABILITIES).expect("capability table");
+            for record in records {
+                let key = keys::encode_capability_key(record.capability_id());
+                let value = codec::encode_capability_record_v1(record).expect("encode capability");
+                capabilities
+                    .insert(key.as_slice(), value.as_bytes())
+                    .expect("insert capability");
+            }
+        }
+        write.commit().expect("commit capabilities");
     }
 
     fn projection_identity() -> ProjectionIdentity {
@@ -2872,12 +2991,33 @@ mod tests {
     }
 
     fn finish_historical(session: &mut RedbStructuralEvidenceSession) -> RedbHistoricalEvidenceEnd {
+        let (end, evidence, _) = collect_historical(session, 1);
+        assert!(
+            evidence
+                .iter()
+                .any(|item| { matches!(item, HistoricalSemanticEvidence::ActiveCatalog(None)) })
+        );
+        end
+    }
+
+    fn collect_historical(
+        session: &mut RedbStructuralEvidenceSession,
+        page_limit: u32,
+    ) -> (
+        RedbHistoricalEvidenceEnd,
+        Vec<HistoricalSemanticEvidence>,
+        Vec<usize>,
+    ) {
         let mut cursor =
             HistoricalEvidenceCursor::start(session.database_id(), session.open_session_id());
-        let mut saw_absent_active = false;
+        let mut collected = Vec::new();
+        let mut page_lengths = Vec::new();
         loop {
             match session
-                .read_historical_evidence(cursor, EvidencePageLimit::new(1).expect("page limit"))
+                .read_historical_evidence(
+                    cursor,
+                    EvidencePageLimit::new(page_limit).expect("page limit"),
+                )
                 .expect("historical page")
             {
                 HistoricalEvidencePage::Page {
@@ -2886,16 +3026,13 @@ mod tests {
                     next,
                 } => {
                     assert_eq!(start, cursor);
-                    saw_absent_active |= matches!(
-                        evidence.as_slice(),
-                        [HistoricalSemanticEvidence::ActiveCatalog(None)]
-                    );
+                    page_lengths.push(evidence.len());
+                    collected.extend(evidence);
                     cursor = next;
                 }
                 HistoricalEvidencePage::ExactEnd(end) => {
-                    assert!(saw_absent_active);
                     assert_eq!(end.cursor(), cursor);
-                    return end;
+                    return (end, collected, page_lengths);
                 }
             }
         }
@@ -2943,6 +3080,226 @@ mod tests {
             riffdb_storage_api::DatabaseIdentityProbePort::probe_database_identity(&reopened)
                 .expect("probe reopened"),
             riffdb_storage_api::DatabaseIdentityProbe::Existing(id)
+        );
+    }
+
+    #[test]
+    fn capability_partition_history_emits_exact_qualifying_inventory() {
+        let path = TestDatabasePath::new("capability-partition-inventory");
+        let database_id = database_id(0x12);
+        let store = initialized_store(&path, database_id);
+        let lineage = ContractLineage::new("budget").expect("lineage");
+        let active_first_id = capability_id(0x21);
+        let active_duplicate_id = capability_id(0x22);
+        let all_id = capability_id(0x23);
+        let expired_id = capability_id(0x24);
+        let exact_expiry_id = capability_id(0x25);
+        let future_issued_id = capability_id(0x26);
+        let revoked_id = capability_id(0x27);
+
+        let active_first = active_capability(
+            database_id,
+            active_first_id,
+            explicit_scope(&lineage, &[1, 2]),
+            20,
+            0x61,
+        );
+        let active_duplicate = active_capability(
+            database_id,
+            active_duplicate_id,
+            explicit_scope(&lineage, &[1]),
+            20,
+            0x62,
+        );
+        let all = active_capability(database_id, all_id, PartitionScopeV1::All, 20, 0x63);
+        let expired = active_capability(
+            database_id,
+            expired_id,
+            explicit_scope(&lineage, &[3]),
+            0,
+            0x64,
+        );
+        let exact_expiry = active_capability(
+            database_id,
+            exact_expiry_id,
+            explicit_scope(&lineage, &[4]),
+            10,
+            0x65,
+        );
+        let future_issued = active_capability(
+            database_id,
+            future_issued_id,
+            explicit_scope(&lineage, &[5]),
+            100,
+            0x66,
+        );
+        let revoked = active_capability(
+            database_id,
+            revoked_id,
+            explicit_scope(&lineage, &[6]),
+            20,
+            0x67,
+        )
+        .revoked(
+            NonZeroU64::MIN,
+            Timestamp::new(30, 0).expect("revoked at"),
+            AdministrationSequence::new(2).expect("revoke sequence"),
+            RevocationReasonCodeV1::Requested,
+        )
+        .expect("revoked capability");
+        insert_capabilities(
+            &store,
+            &[
+                active_first,
+                active_duplicate,
+                all,
+                expired,
+                exact_expiry,
+                future_issued,
+                revoked,
+            ],
+        );
+
+        let mut session = store
+            .begin_structural_evidence(inputs_at(70))
+            .expect("begin evidence");
+        let (_, evidence, page_lengths) = collect_historical(&mut session, 2);
+        assert_eq!(page_lengths, vec![2, 2, 1]);
+        assert!(matches!(
+            evidence.first(),
+            Some(HistoricalSemanticEvidence::ActiveCatalog(None))
+        ));
+        let partitions = evidence
+            .iter()
+            .filter_map(|item| match item {
+                HistoricalSemanticEvidence::CapabilityPartition(evidence) => Some(evidence),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        let observed = partitions
+            .iter()
+            .map(|evidence| (evidence.capability_id(), evidence.entry_ordinal()))
+            .collect::<BTreeSet<_>>();
+        let expected = BTreeSet::from([
+            (active_first_id, 0),
+            (active_first_id, 1),
+            (active_duplicate_id, 0),
+            (future_issued_id, 0),
+        ]);
+        assert_eq!(observed, expected);
+        let duplicated_first = partitions
+            .iter()
+            .find(|evidence| {
+                evidence.capability_id() == active_first_id && evidence.entry_ordinal() == 0
+            })
+            .expect("first duplicate");
+        let duplicated_second = partitions
+            .iter()
+            .find(|evidence| evidence.capability_id() == active_duplicate_id)
+            .expect("second duplicate");
+        assert_eq!(
+            duplicated_first.scoped_partition(),
+            duplicated_second.scoped_partition(),
+            "equal keys in distinct capabilities remain distinct evidence items"
+        );
+    }
+
+    #[test]
+    fn capability_partition_history_preserves_all_1024_ordinals_across_pages() {
+        let path = TestDatabasePath::new("capability-partition-pages");
+        let database_id = database_id(0x13);
+        let store = initialized_store(&path, database_id);
+        let lineage = ContractLineage::new("budget").expect("lineage");
+        let capability_id = capability_id(0x31);
+        let values = (0..1_024).collect::<Vec<u64>>();
+        let capability = active_capability(
+            database_id,
+            capability_id,
+            explicit_scope(&lineage, &values),
+            20,
+            0x71,
+        );
+        insert_capabilities(&store, &[capability]);
+
+        let mut session = store
+            .begin_structural_evidence(inputs_at(70))
+            .expect("begin evidence");
+        let (_, evidence, page_lengths) = collect_historical(&mut session, 500);
+        assert_eq!(page_lengths, vec![500, 500, 25]);
+        let partitions = evidence
+            .into_iter()
+            .filter_map(|item| match item {
+                HistoricalSemanticEvidence::CapabilityPartition(evidence) => Some(evidence),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(partitions.len(), 1_024);
+        assert!(
+            partitions
+                .iter()
+                .all(|evidence| evidence.capability_id() == capability_id)
+        );
+        assert_eq!(
+            partitions
+                .iter()
+                .map(|evidence| evidence.entry_ordinal())
+                .collect::<Vec<_>>(),
+            (0..1_024).collect::<Vec<u16>>()
+        );
+        assert!(
+            partitions
+                .windows(2)
+                .all(|pair| { pair[0].evidence_order_key() < pair[1].evidence_order_key() })
+        );
+    }
+
+    #[test]
+    fn capability_partition_history_matches_the_shared_golden_vector() {
+        let path = TestDatabasePath::new("capability-partition-golden");
+        let database_id = database_id(0x14);
+        let store = initialized_store(&path, database_id);
+        let capability_id = CapabilityId::from_bytes([
+            0x01, 0x8f, 0x00, 0x00, 0x00, 0x00, 0x70, 0x01, 0x80, 0x02, 0x11, 0x22, 0x33, 0x44,
+            0x55, 0x66,
+        ])
+        .expect("golden capability UUIDv7");
+        let budget = ContractLineage::new("budget").expect("lineage");
+        let scope = PartitionScopeV1::explicit(vec![
+            scoped_partition(&ContractLineage::new("a").expect("lineage"), 1),
+            scoped_partition(&budget, 2),
+            scoped_partition(&budget, 0x0102_0304_0506_0708),
+        ])
+        .expect("golden scope");
+        let capability = active_capability(database_id, capability_id, scope, 20, 0x72);
+        insert_capabilities(&store, &[capability]);
+
+        let mut session = store
+            .begin_structural_evidence(inputs_at(70))
+            .expect("begin evidence");
+        let (_, evidence, _) = collect_historical(&mut session, 500);
+        let golden = evidence
+            .into_iter()
+            .find_map(|item| match item {
+                HistoricalSemanticEvidence::CapabilityPartition(evidence)
+                    if evidence.entry_ordinal() == 2 =>
+                {
+                    Some(evidence)
+                }
+                _ => None,
+            })
+            .expect("golden capability evidence");
+        let expected = vec![
+            0x05, 0x01, 0x8f, 0x00, 0x00, 0x00, 0x00, 0x70, 0x01, 0x80, 0x02, 0x11, 0x22, 0x33,
+            0x44, 0x55, 0x66, 0x00, 0x02, 0x00, 0x00, 0x00, 0x06, b'b', b'u', b'd', b'g', b'e',
+            b't', 0x01, 0x02, 0x03, 0x04, 0x00, 0x00, 0x00, 0x0e, 0x50, 0x01, 0x01, 0x02, 0x03,
+            0x04, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08,
+        ];
+        assert_eq!(golden.capability_id(), capability_id);
+        assert_eq!(golden.semantic_bytes().expect("semantic charge"), 51);
+        assert_eq!(golden.evidence_order_key(), expected);
+        assert_eq!(
+            historical_order_key(&HistoricalSemanticEvidence::CapabilityPartition(golden)),
+            expected
         );
     }
 

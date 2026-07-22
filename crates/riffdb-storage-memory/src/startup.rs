@@ -4,13 +4,13 @@ use std::fmt;
 
 use riffdb_storage_api::{
     CapabilityLifecycleV1, DormantPortBundle, EvidencePageLimit, HistoricalActiveCatalogEvidence,
-    HistoricalBundleBytes, HistoricalBundleEvidence, HistoricalEvidenceCursor,
-    HistoricalEvidenceEnd, HistoricalEvidencePage, HistoricalPersistedKeyEvidenceV1,
-    HistoricalSemanticEvidence, OpenSessionId, ReadableDigestKey, StartupValidationInputs,
-    StorageError, StorageErrorKind, StorageValueError, StoredAdmissionStateV1,
-    StructuralEvidenceCursor, StructuralEvidenceEnd, StructuralEvidenceOpen,
-    StructuralEvidencePage, StructuralEvidenceSession, StructuralFinding, StructuralFindingCode,
-    StructuralFindingScope, StructurallyOpened,
+    HistoricalBundleBytes, HistoricalBundleEvidence, HistoricalCapabilityPartitionEvidenceV1,
+    HistoricalEvidenceCursor, HistoricalEvidenceEnd, HistoricalEvidencePage,
+    HistoricalPersistedKeyEvidenceV1, HistoricalSemanticEvidence, OpenSessionId, ReadableDigestKey,
+    StartupValidationInputs, StorageError, StorageErrorKind, StorageValueError,
+    StoredAdmissionStateV1, StructuralEvidenceCursor, StructuralEvidenceEnd,
+    StructuralEvidenceOpen, StructuralEvidencePage, StructuralEvidenceSession, StructuralFinding,
+    StructuralFindingCode, StructuralFindingScope, StructurallyOpened,
 };
 use riffdb_types::{ContractBundleHash, ContractLineage, ContractVersion, DatabaseId};
 
@@ -203,6 +203,7 @@ impl StructuralEvidenceSession for MemoryStructuralEvidenceSession {
                     state,
                     self.historical_position,
                     self.last_historical_key.as_deref(),
+                    &self.inputs,
                     limit,
                 )
             })?;
@@ -1095,6 +1096,7 @@ enum HistoricalNamespace {
     Plans,
     Active,
     PersistedKeys,
+    CapabilityPartitions,
     End,
 }
 
@@ -1102,6 +1104,7 @@ enum HistoricalNamespace {
 struct HistoricalScanPosition {
     namespace: HistoricalNamespace,
     offset: usize,
+    capability_entry_ordinal: usize,
 }
 
 impl HistoricalScanPosition {
@@ -1109,6 +1112,7 @@ impl HistoricalScanPosition {
         Self {
             namespace: HistoricalNamespace::Bundles,
             offset: 0,
+            capability_entry_ordinal: 0,
         }
     }
 
@@ -1117,11 +1121,37 @@ impl HistoricalScanPosition {
             HistoricalNamespace::Bundles => HistoricalNamespace::Plans,
             HistoricalNamespace::Plans => HistoricalNamespace::Active,
             HistoricalNamespace::Active => HistoricalNamespace::PersistedKeys,
-            HistoricalNamespace::PersistedKeys | HistoricalNamespace::End => {
+            HistoricalNamespace::PersistedKeys => HistoricalNamespace::CapabilityPartitions,
+            HistoricalNamespace::CapabilityPartitions | HistoricalNamespace::End => {
                 HistoricalNamespace::End
             }
         };
         self.offset = 0;
+        self.capability_entry_ordinal = 0;
+    }
+
+    fn advance_capability_record(&mut self) -> Result<(), StorageError> {
+        self.offset = self
+            .offset
+            .checked_add(1)
+            .ok_or_else(|| storage_error(StorageErrorKind::LimitExceeded))?;
+        self.capability_entry_ordinal = 0;
+        Ok(())
+    }
+
+    fn advance_emitted_item(&mut self) -> Result<(), StorageError> {
+        if self.namespace == HistoricalNamespace::CapabilityPartitions {
+            self.capability_entry_ordinal = self
+                .capability_entry_ordinal
+                .checked_add(1)
+                .ok_or_else(|| storage_error(StorageErrorKind::LimitExceeded))?;
+        } else {
+            self.offset = self
+                .offset
+                .checked_add(1)
+                .ok_or_else(|| storage_error(StorageErrorKind::LimitExceeded))?;
+        }
+        Ok(())
     }
 }
 
@@ -1132,12 +1162,12 @@ struct SelectedHistoricalPage {
     exhausted: bool,
 }
 
-#[derive(Clone, Copy)]
 enum HistoricalCandidate<'a> {
     Bundle(&'a riffdb_storage_api::StoredContractBundleV1),
     Plan(&'a riffdb_storage_api::ExecutablePlanRef),
     Active(Option<&'a riffdb_storage_api::ActiveCatalogPointerV1>),
     PersistedKey(&'a HistoricalPersistedKeyEvidenceV1),
+    CapabilityPartition(HistoricalCapabilityPartitionEvidenceV1),
 }
 
 struct HistoricalPageBuilder {
@@ -1184,7 +1214,7 @@ impl HistoricalPageBuilder {
             return Ok(false);
         }
         self.total_bytes = next_total;
-        self.evidence.push(candidate.to_evidence()?);
+        self.evidence.push(candidate.into_evidence()?);
         self.last_key = Some(key);
         Ok(true)
     }
@@ -1207,11 +1237,12 @@ fn select_historical_page(
     state: &MemoryState,
     position: HistoricalScanPosition,
     prior_page_key: Option<&[u8]>,
+    inputs: &StartupValidationInputs,
     limit: EvidencePageLimit,
 ) -> Result<SelectedHistoricalPage, StorageError> {
     let mut next = position;
     let mut page = HistoricalPageBuilder::new(limit)?;
-    while !page.is_full() {
+    'selection: while !page.is_full() {
         let candidate = match next.namespace {
             HistoricalNamespace::Bundles => match state.catalog_bundles.get(next.offset) {
                 Some(row) => {
@@ -1271,21 +1302,43 @@ fn select_historical_page(
                     }
                 }
             }
+            HistoricalNamespace::CapabilityPartitions => loop {
+                let Some(capability) = state.capabilities.get(next.offset) else {
+                    next.advance_namespace();
+                    continue 'selection;
+                };
+                if !capability_requires_partition_evidence(capability, inputs.authorization_time())
+                {
+                    next.advance_capability_record()?;
+                    continue;
+                }
+                let Some(entries) = capability.grant().partition_scope().explicit_entries() else {
+                    next.advance_capability_record()?;
+                    continue;
+                };
+                if next.capability_entry_ordinal >= entries.len() {
+                    next.advance_capability_record()?;
+                    continue;
+                }
+                let evidence = HistoricalCapabilityPartitionEvidenceV1::from_capability_entry(
+                    capability,
+                    next.capability_entry_ordinal,
+                )
+                .map_err(value_error_as_storage)?;
+                break HistoricalCandidate::CapabilityPartition(evidence);
+            },
             HistoricalNamespace::End => break,
         };
         if !page.push(candidate, prior_page_key)? {
             break;
         }
-        next.offset = next
-            .offset
-            .checked_add(1)
-            .ok_or_else(|| storage_error(StorageErrorKind::LimitExceeded))?;
+        next.advance_emitted_item()?;
     }
     Ok(page.finish(next, next.namespace == HistoricalNamespace::End))
 }
 
 impl HistoricalCandidate<'_> {
-    fn order_key(self) -> Vec<u8> {
+    fn order_key(&self) -> Vec<u8> {
         let mut key = Vec::new();
         match self {
             Self::Bundle(bundle) => {
@@ -1302,11 +1355,12 @@ impl HistoricalCandidate<'_> {
                 key.extend_from_slice(active.bundle_hash().as_bytes());
             }
             Self::PersistedKey(evidence) => return persisted_evidence_order_key(evidence),
+            Self::CapabilityPartition(evidence) => return evidence.evidence_order_key(),
         }
         key
     }
 
-    fn semantic_bytes(self) -> Result<usize, StorageError> {
+    fn semantic_bytes(&self) -> Result<usize, StorageError> {
         let bytes = match self {
             Self::Bundle(bundle) => bundle
                 .canonical_bytes()
@@ -1320,11 +1374,14 @@ impl HistoricalCandidate<'_> {
                 (2 + 4 + active.lineage().as_bytes().len()).checked_add(8 + 32)
             }
             Self::PersistedKey(evidence) => persisted_evidence_semantic_bytes(evidence),
+            Self::CapabilityPartition(evidence) => {
+                Some(evidence.semantic_bytes().map_err(value_error_as_storage)?)
+            }
         };
         bytes.ok_or_else(|| storage_error(StorageErrorKind::LimitExceeded))
     }
 
-    fn to_evidence(self) -> Result<HistoricalSemanticEvidence, StorageError> {
+    fn into_evidence(self) -> Result<HistoricalSemanticEvidence, StorageError> {
         match self {
             Self::Bundle(bundle) => {
                 let bytes = HistoricalBundleBytes::new(bundle.canonical_bytes().to_vec())
@@ -1351,8 +1408,19 @@ impl HistoricalCandidate<'_> {
             Self::PersistedKey(evidence) => {
                 Ok(HistoricalSemanticEvidence::PersistedKey(evidence.clone()))
             }
+            Self::CapabilityPartition(evidence) => {
+                Ok(HistoricalSemanticEvidence::CapabilityPartition(evidence))
+            }
         }
     }
+}
+
+fn capability_requires_partition_evidence(
+    capability: &riffdb_storage_api::StoredCapabilityRecordV1,
+    authorization_time: riffdb_types::Timestamp,
+) -> bool {
+    matches!(capability.lifecycle(), CapabilityLifecycleV1::Active)
+        && authorization_time < capability.expires_at()
 }
 
 pub(crate) fn persisted_evidence_order_key(evidence: &HistoricalPersistedKeyEvidenceV1) -> Vec<u8> {
@@ -1433,20 +1501,27 @@ fn value_error_as_storage(error: StorageValueError) -> StorageError {
 
 #[cfg(test)]
 mod tests {
+    use std::num::{NonZeroU16, NonZeroU32, NonZeroU64};
+
     use riffdb_storage_api::{
-        DatabaseIdentityProbe, DatabaseIdentityProbePort, DatabaseInitializationPort,
-        DurableKeySchemaBindingV1, ExecutablePlanRef, HistoricalEvidencePage, IndexEpochAdvanceV1,
-        IndexEpochPosition, IndexRangePrefixBuilder, IndexRangeTarget, IrOpaquePersistedKeyV1,
+        CapabilityGrantV1, CapabilityPermissionKindV1, CapabilityPermissionV1,
+        CapabilityPermissionsV1, CapabilityRequestedRecordV1, DatabaseIdentityProbe,
+        DatabaseIdentityProbePort, DatabaseInitializationPort, DurableKeySchemaBindingV1,
+        ExecutablePlanRef, HistoricalEvidencePage, IndexEpochAdvanceV1, IndexEpochPosition,
+        IndexRangePrefixBuilder, IndexRangeTarget, IrOpaquePersistedKeyV1, PartitionScopeV1,
         ReadableCapabilityDigestInventory, ReadableIdempotencyDigestInventory,
+        RevocationReasonCodeV1, ScopedPartitionV1, StoredCapabilityRecordV1,
         StoredContractBundleV1, StoredEntityRecordV1, StoredIndexEntryV1, StoredProjectionApplyV1,
         StoredProjectionControlV1, StructuralEvidenceOpen, StructuralEvidencePage,
         StructuralEvidenceSession, StructuralFindingCode, StructuralFindingScope,
     };
     use riffdb_types::{
-        CanonicalRecord, CommandId, CommitSequence, ContractBundleHash, ContractLineage,
-        ContractVersion, DatabaseId, DigestKeyId, EntityKeyBuilder, EntityTypeId, EntityVersion,
-        IndexEntryKeyBuilder, IndexId, PlanHash, ProjectionApplyHash, ProjectionApplyKey,
-        ProjectionGeneration, ProjectionId, ProjectionIdentity, ProjectionPlanHash, Timestamp,
+        ActorId, ActorKind, AdministrationSequence, AggregateTypeId, Audience, CanonicalRecord,
+        CapabilityId, CapabilityTokenDigest, CommandId, CommitSequence, ContractBundleHash,
+        ContractLineage, ContractVersion, DatabaseId, DigestKeyId, EntityKeyBuilder, EntityTypeId,
+        EntityVersion, Environment, IndexEntryKeyBuilder, IndexId, PartitionKeyBuilder, PlanHash,
+        ProjectionApplyHash, ProjectionApplyKey, ProjectionGeneration, ProjectionId,
+        ProjectionIdentity, ProjectionPlanHash, RequestId, TenantScope, Timestamp,
     };
 
     use super::*;
@@ -1459,9 +1534,13 @@ mod tests {
     }
 
     fn inputs() -> StartupValidationInputs {
+        inputs_at(1)
+    }
+
+    fn inputs_at(seconds: i64) -> StartupValidationInputs {
         let key_id = DigestKeyId::new(1).expect("digest key ID");
         StartupValidationInputs::new(
-            Timestamp::new(1, 0).expect("timestamp"),
+            Timestamp::new(seconds, 0).expect("timestamp"),
             ReadableCapabilityDigestInventory::new(vec![ReadableDigestKey::v1(key_id)])
                 .expect("capability inventory"),
             ReadableIdempotencyDigestInventory::new(vec![ReadableDigestKey::v1(key_id)])
@@ -1475,6 +1554,95 @@ mod tests {
         store
     }
 
+    fn uuid_v7(seed: u8) -> [u8; 16] {
+        let mut bytes = [seed; 16];
+        bytes[6] = 0x70 | (seed & 0x0f);
+        bytes[8] = 0x80 | (seed & 0x3f);
+        bytes
+    }
+
+    fn capability_id(seed: u8) -> CapabilityId {
+        CapabilityId::from_bytes(uuid_v7(seed)).expect("capability ID")
+    }
+
+    fn scoped_partition(lineage: &ContractLineage, value: u64) -> ScopedPartitionV1 {
+        let mut builder =
+            PartitionKeyBuilder::new(AggregateTypeId::new(0x0102_0304).expect("aggregate type ID"));
+        builder.push_u64(value).expect("partition component");
+        ScopedPartitionV1::new(lineage.clone(), builder.finish().expect("partition key"))
+    }
+
+    fn active_capability(
+        database_id: DatabaseId,
+        capability_id: CapabilityId,
+        scope: PartitionScopeV1,
+        issued_at: i64,
+        expires_at: i64,
+    ) -> StoredCapabilityRecordV1 {
+        let duration = u32::try_from(expires_at - issued_at).expect("positive bounded duration");
+        let permissions = CapabilityPermissionsV1::new(vec![
+            CapabilityPermissionV1::unparameterized(
+                CapabilityPermissionKindV1::AdministerCapabilities,
+            )
+            .expect("permission"),
+        ])
+        .expect("permissions");
+        let grant = CapabilityGrantV1::new(
+            TenantScope::Global,
+            scope,
+            permissions,
+            Vec::new(),
+            NonZeroU16::MIN,
+            Vec::new(),
+        )
+        .expect("grant");
+        let requested = CapabilityRequestedRecordV1::new(
+            database_id,
+            Environment::new("test").expect("environment"),
+            ActorId::new("subject").expect("actor ID"),
+            ActorKind::Human,
+            NonZeroU32::new(duration).expect("nonzero duration"),
+            vec![Audience::new("riffdb-test").expect("audience")],
+            grant,
+        )
+        .expect("requested capability");
+        StoredCapabilityRecordV1::active(
+            capability_id,
+            CapabilityTokenDigest::from_hmac_bytes(
+                DigestKeyId::new(1).expect("digest key ID"),
+                [capability_id.as_bytes()[15]; 32],
+            ),
+            requested,
+            Timestamp::new(issued_at, 0).expect("issued at"),
+            Timestamp::new(expires_at, 0).expect("expires at"),
+            AdministrationSequence::first(),
+            RequestId::from_bytes(uuid_v7(capability_id.as_bytes()[15].wrapping_add(1)))
+                .expect("request ID"),
+        )
+        .expect("active capability")
+    }
+
+    fn collect_historical(
+        store: MemoryStore,
+        inputs: StartupValidationInputs,
+        limit: EvidencePageLimit,
+    ) -> Vec<HistoricalSemanticEvidence> {
+        let mut session = store
+            .begin_structural_evidence(inputs)
+            .expect("begin evidence");
+        let mut cursor =
+            HistoricalEvidenceCursor::start(session.database_id(), session.open_session_id());
+        let mut collected = Vec::new();
+        while let HistoricalEvidencePage::Page { evidence, next, .. } = session
+            .read_historical_evidence(cursor, limit)
+            .expect("historical evidence")
+        {
+            collected.extend(evidence);
+            cursor = next;
+        }
+        collected
+    }
+
     #[test]
     fn active_unexpired_capability_digest_is_required_even_before_issue_time() {
         let authorization_time = Timestamp::new(10, 0).expect("authorization time");
@@ -1486,6 +1654,222 @@ mod tests {
             expires_at,
             authorization_time,
         ));
+    }
+
+    #[test]
+    fn historical_capability_inventory_filters_lifecycle_time_and_all_scope() {
+        let id = database(0x41);
+        let store = initialized_store(id);
+        let lineage = ContractLineage::new("budget").expect("lineage");
+        let shared_partition = scoped_partition(&lineage, 1);
+
+        let future_issued = active_capability(
+            id,
+            capability_id(0x10),
+            PartitionScopeV1::explicit(vec![
+                scoped_partition(&lineage, 3),
+                shared_partition.clone(),
+                scoped_partition(&lineage, 2),
+            ])
+            .expect("explicit scope"),
+            100,
+            160,
+        );
+        let exact_expiry = active_capability(
+            id,
+            capability_id(0x20),
+            PartitionScopeV1::explicit(vec![scoped_partition(&lineage, 4)])
+                .expect("explicit scope"),
+            10,
+            70,
+        );
+        let expired = active_capability(
+            id,
+            capability_id(0x30),
+            PartitionScopeV1::explicit(vec![scoped_partition(&lineage, 5)])
+                .expect("explicit scope"),
+            9,
+            69,
+        );
+        let all = active_capability(id, capability_id(0x40), PartitionScopeV1::All, 100, 160);
+        let revoked = active_capability(
+            id,
+            capability_id(0x50),
+            PartitionScopeV1::explicit(vec![scoped_partition(&lineage, 6)])
+                .expect("explicit scope"),
+            100,
+            160,
+        )
+        .revoked(
+            NonZeroU64::MIN,
+            Timestamp::new(101, 0).expect("revoked at"),
+            AdministrationSequence::new(2).expect("revoke sequence"),
+            RevocationReasonCodeV1::Requested,
+        )
+        .expect("revoked capability");
+        let repeated_in_other_capability = active_capability(
+            id,
+            capability_id(0x60),
+            PartitionScopeV1::explicit(vec![shared_partition.clone()]).expect("explicit scope"),
+            100,
+            160,
+        );
+
+        store
+            .acquire()
+            .expect("access")
+            .write(|state| {
+                state.capabilities = vec![
+                    future_issued,
+                    exact_expiry,
+                    expired,
+                    all,
+                    revoked,
+                    repeated_in_other_capability,
+                ];
+                Ok(())
+            })
+            .expect("install capabilities");
+
+        let evidence = collect_historical(
+            store,
+            inputs_at(70),
+            EvidencePageLimit::new(2).expect("page limit"),
+        );
+        assert!(matches!(
+            evidence.first(),
+            Some(HistoricalSemanticEvidence::ActiveCatalog(None))
+        ));
+        let partitions = evidence
+            .iter()
+            .filter_map(|item| match item {
+                HistoricalSemanticEvidence::CapabilityPartition(value) => Some(value),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(
+            partitions
+                .iter()
+                .map(|value| (value.capability_id(), value.entry_ordinal()))
+                .collect::<Vec<_>>(),
+            [
+                (capability_id(0x10), 0),
+                (capability_id(0x10), 1),
+                (capability_id(0x10), 2),
+                (capability_id(0x60), 0),
+            ]
+        );
+        assert_eq!(partitions[0].scoped_partition(), &shared_partition);
+        assert_eq!(partitions[3].scoped_partition(), &shared_partition);
+    }
+
+    #[test]
+    fn historical_capability_pages_preserve_all_1024_sibling_ordinals() {
+        let id = database(0x42);
+        let store = initialized_store(id);
+        let lineage = ContractLineage::new("maximum-siblings").expect("lineage");
+        let scope = PartitionScopeV1::explicit(
+            (0..riffdb_storage_api::MAX_CAPABILITY_PARTITIONS)
+                .map(|value| {
+                    scoped_partition(&lineage, u64::try_from(value).expect("bounded ordinal"))
+                })
+                .collect(),
+        )
+        .expect("maximum explicit scope");
+        let owner = capability_id(0x11);
+        let capability = active_capability(id, owner, scope, 100, 160);
+        store
+            .acquire()
+            .expect("access")
+            .write(|state| {
+                state.capabilities.push(capability);
+                Ok(())
+            })
+            .expect("install capability");
+
+        let mut session = store
+            .begin_structural_evidence(inputs_at(70))
+            .expect("begin evidence");
+        let mut cursor = HistoricalEvidenceCursor::start(id, session.open_session_id());
+        let limit = EvidencePageLimit::new(500).expect("maximum count page");
+        let mut page_lengths = Vec::new();
+        let mut ordinals = Vec::new();
+        while let HistoricalEvidencePage::Page { evidence, next, .. } = session
+            .read_historical_evidence(cursor, limit)
+            .expect("historical page")
+        {
+            page_lengths.push(evidence.len());
+            ordinals.extend(evidence.into_iter().filter_map(|item| match item {
+                HistoricalSemanticEvidence::CapabilityPartition(value) => {
+                    assert_eq!(value.capability_id(), owner);
+                    Some(value.entry_ordinal())
+                }
+                HistoricalSemanticEvidence::ActiveCatalog(None) => None,
+                _ => panic!("unexpected historical item"),
+            }));
+            cursor = next;
+        }
+        assert_eq!(page_lengths, [500, 500, 25]);
+        assert_eq!(ordinals.len(), 1024);
+        assert_eq!(
+            ordinals,
+            (0..=1023).map(|value| value as u16).collect::<Vec<_>>()
+        );
+        assert_eq!(cursor.position(), 1025);
+    }
+
+    #[test]
+    fn historical_capability_partition_matches_the_shared_golden_vector() {
+        let id = database(0x43);
+        let store = initialized_store(id);
+        let capability_id = CapabilityId::from_bytes([
+            0x01, 0x8f, 0x00, 0x00, 0x00, 0x00, 0x70, 0x01, 0x80, 0x02, 0x11, 0x22, 0x33, 0x44,
+            0x55, 0x66,
+        ])
+        .expect("golden capability ID");
+        let lineage = ContractLineage::new("budget").expect("lineage");
+        let scope = PartitionScopeV1::explicit(vec![
+            scoped_partition(&lineage, 1),
+            scoped_partition(&lineage, 2),
+            scoped_partition(&lineage, 0x0102_0304_0506_0708),
+        ])
+        .expect("explicit scope");
+        let capability = active_capability(id, capability_id, scope, 100, 160);
+        store
+            .acquire()
+            .expect("access")
+            .write(|state| {
+                state.capabilities.push(capability);
+                Ok(())
+            })
+            .expect("install capability");
+
+        let evidence = collect_historical(
+            store,
+            inputs_at(70),
+            EvidencePageLimit::new(8).expect("page limit"),
+        );
+        let golden = evidence
+            .iter()
+            .find_map(|item| match item {
+                HistoricalSemanticEvidence::CapabilityPartition(value)
+                    if value.entry_ordinal() == 2 =>
+                {
+                    Some(value)
+                }
+                _ => None,
+            })
+            .expect("golden evidence");
+        assert_eq!(
+            golden.evidence_order_key(),
+            vec![
+                0x05, 0x01, 0x8f, 0x00, 0x00, 0x00, 0x00, 0x70, 0x01, 0x80, 0x02, 0x11, 0x22, 0x33,
+                0x44, 0x55, 0x66, 0x00, 0x02, 0x00, 0x00, 0x00, 0x06, b'b', b'u', b'd', b'g', b'e',
+                b't', 0x01, 0x02, 0x03, 0x04, 0x00, 0x00, 0x00, 0x0e, 0x50, 0x01, 0x01, 0x02, 0x03,
+                0x04, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08,
+            ]
+        );
+        assert_eq!(golden.semantic_bytes(), Ok(51));
     }
 
     #[test]
@@ -2281,7 +2665,8 @@ mod tests {
                 }
                 HistoricalSemanticEvidence::ActiveCatalog(None) => "active:none".to_owned(),
                 HistoricalSemanticEvidence::ActiveCatalog(Some(_))
-                | HistoricalSemanticEvidence::PersistedKey(_) => {
+                | HistoricalSemanticEvidence::PersistedKey(_)
+                | HistoricalSemanticEvidence::CapabilityPartition(_) => {
                     panic!("unexpected historical evidence")
                 }
             });

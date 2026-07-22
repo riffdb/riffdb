@@ -64,6 +64,15 @@ fn startup_key_evidence_can_only_derive_schema_binding_from_durable_postimages()
 }
 
 #[test]
+fn startup_capability_evidence_can_only_derive_entries_from_durable_records() {
+    let source = include_str!("../src/startup.rs");
+    assert!(source.contains(
+        "pub fn from_capability_entry(\n        capability: &crate::StoredCapabilityRecordV1,"
+    ));
+    assert!(!source.contains("pub fn new(\n        capability_id: CapabilityId"));
+}
+
+#[test]
 fn command_staging_retains_and_checks_the_exact_candidate_graph() {
     let transaction = include_str!("../src/command_txn.rs");
     assert!(transaction.contains("fn intent(&self) -> &CommitIntent;"));
