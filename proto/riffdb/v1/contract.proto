@@ -1,0 +1,149 @@
+syntax = "proto3";
+
+package riffdb.v1;
+
+import "riffdb/v1/common.proto";
+
+message ContractDescriptor {
+  string contract_lineage = 1;
+  uint64 contract_version = 2;
+  bytes bundle_hash = 3;
+  bytes source_hash = 4;
+  bytes plan_root_hash = 5;
+}
+
+message SourceSpan {
+  uint32 start = 1;
+  uint32 end = 2;
+}
+
+message SyntaxDiagnostic {
+  string code = 1;
+  string summary = 2;
+  optional string help = 3;
+  SourceSpan span = 4;
+  repeated string expected = 5;
+}
+
+message SemanticDiagnostic {
+  string code = 1;
+  string summary = 2;
+  optional string help = 3;
+  SourceSpan primary_span = 4;
+  SourceSpan related_span = 5;
+}
+
+message SyntaxDiagnosticList {
+  repeated SyntaxDiagnostic diagnostics = 1;
+}
+
+message SemanticDiagnosticList {
+  repeated SemanticDiagnostic diagnostics = 1;
+}
+
+message CompilationDiagnostics {
+  oneof diagnostics {
+    SyntaxDiagnosticList syntax = 1;
+    SemanticDiagnosticList semantic = 2;
+  }
+}
+
+message SchemaArtifactKey {
+  oneof artifact {
+    uint32 entity_id = 1;
+    uint32 event_type_id = 2;
+    uint32 command_input_id = 3;
+    uint32 command_outcome_union_id = 4;
+    uint32 projection_result_id = 5;
+  }
+}
+
+message GeneratedSchemaArtifact {
+  SchemaArtifactKey key = 1;
+  string dialect = 2;
+  bytes schema_hash = 3;
+  string canonical_json = 4;
+}
+
+message BindingFieldRef {
+  uint32 binding_id = 1;
+  uint32 field_id = 2;
+}
+
+message CommandExplain {
+  uint32 command_id = 1;
+  ExecutionClass execution_class = 2;
+  uint32 partition_component_count = 3;
+  uint32 conflict_key_count = 4;
+  repeated uint32 binding_ids = 5;
+  repeated BindingFieldRef read_fields = 6;
+  repeated BindingFieldRef write_fields = 7;
+  repeated uint32 invariant_ids = 8;
+  repeated uint32 event_type_ids = 9;
+  repeated uint32 outcome_ids = 10;
+  string rendered_text = 11;
+}
+
+message ValidateContractRequest {
+  bytes request_id = 1;
+  string source = 2;
+}
+
+message ValidateContractResponse {
+  oneof result {
+    Unit valid = 1;
+    CompilationDiagnostics invalid = 2;
+  }
+}
+
+message ExplainCommandRequest {
+  bytes request_id = 1;
+  ContractSelection contract = 2;
+  string command_name = 3;
+}
+
+message ExplainedCommand {
+  ContractDescriptor contract = 1;
+  uint32 command_id = 2;
+  bytes plan_hash = 3;
+  CommandExplain explanation = 4;
+  GeneratedSchemaArtifact input_schema = 5;
+  GeneratedSchemaArtifact outcome_schema = 6;
+}
+
+message ExplainCommandResponse {
+  oneof result {
+    Unit not_found = 1;
+    ExplainedCommand found = 2;
+  }
+}
+
+message DeployContractRequest {
+  bytes request_id = 1;
+  string source = 2;
+  optional uint64 expected_active_version = 3;
+}
+
+message ExpectedActiveVersionMismatch {
+  optional uint64 actual_active_version = 1;
+}
+
+message DeployContractResponse {
+  oneof result {
+    ContractDescriptor activated = 1;
+    ContractDescriptor already_active = 2;
+    ExpectedActiveVersionMismatch expected_active_version_mismatch = 3;
+    Unit bundle_conflict = 4;
+  }
+}
+
+message GetActiveContractRequest {
+  bytes request_id = 1;
+}
+
+message GetActiveContractResponse {
+  oneof result {
+    Unit absent = 1;
+    ContractDescriptor present = 2;
+  }
+}

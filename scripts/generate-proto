@@ -60,6 +60,10 @@ artifacts=(
     fixtures/proto/durable-registry.txt
     fixtures/proto/durable-schema-hashes.bin
     fixtures/proto/durable-wire-vectors.txt
+    fixtures/proto/public-client-vectors.txt
+    fixtures/proto/public-key-envelope-vectors.txt
+    fixtures/proto/public-response-charge-v1.tsv
+    fixtures/proto/public-schema-hashes.txt
     fixtures/proto/schema-inventory.txt
     fixtures/proto/wire-vectors.txt
 )

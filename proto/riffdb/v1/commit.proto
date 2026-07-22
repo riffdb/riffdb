@@ -1,0 +1,98 @@
+syntax = "proto3";
+
+package riffdb.v1;
+
+import "riffdb/v1/common.proto";
+import "riffdb/v1/value.proto";
+
+message EventId {
+  uint64 commit_sequence = 1;
+  uint32 event_ordinal = 2;
+}
+
+message DurableEvent {
+  EventId event_id = 1;
+  uint32 event_type_id = 2;
+  ValueRecord payload = 3;
+}
+
+message AffectedEntity {
+  bytes entity_key = 1;
+  uint64 entity_version = 2;
+}
+
+message Commit {
+  uint64 commit_sequence = 1;
+  bytes admission_request_id = 2;
+  string contract_lineage = 3;
+  uint64 contract_version = 4;
+  uint32 command_id = 5;
+  bytes plan_hash = 6;
+  bytes canonical_input_hash = 7;
+  AdmittedActor actor = 8;
+  Timestamp logical_time = 9;
+  bytes partition_hash = 10;
+  repeated bytes conflict_hashes = 11;
+  repeated AffectedEntity affected_entities = 12;
+  repeated DurableEvent events = 13;
+  DeclaredOutcome outcome = 14;
+  string provenance_uri = 15;
+  CommandDurability durability = 16;
+}
+
+message GetCommitRequest {
+  bytes request_id = 1;
+  uint64 commit_sequence = 2;
+}
+
+message GetCommitResponse {
+  oneof result {
+    Unit not_found = 1;
+    Commit found = 2;
+  }
+}
+
+message CommitPage {
+  repeated Commit items = 1;
+  optional bytes next_cursor = 2;
+  FrontierPosition observed_fence = 3;
+}
+
+message ScanCommitsRequest {
+  bytes request_id = 1;
+  PageRequest page = 2;
+}
+
+message ScanCommitsResponse {
+  CommitPage page = 1;
+}
+
+enum CommitSubscriptionEndReason {
+  COMMIT_SUBSCRIPTION_END_REASON_UNSPECIFIED = 0;
+  COMMIT_SUBSCRIPTION_END_REASON_LIFETIME_ELAPSED = 1;
+  COMMIT_SUBSCRIPTION_END_REASON_LAGGED = 2;
+  COMMIT_SUBSCRIPTION_END_REASON_SCAN_GAP = 3;
+  COMMIT_SUBSCRIPTION_END_REASON_POLICY_DENIED = 4;
+  COMMIT_SUBSCRIPTION_END_REASON_CANCELLED = 5;
+  COMMIT_SUBSCRIPTION_END_REASON_DEADLINE_EXCEEDED = 6;
+  COMMIT_SUBSCRIPTION_END_REASON_SERVICE_SHUTDOWN = 7;
+  COMMIT_SUBSCRIPTION_END_REASON_UNAVAILABLE = 8;
+}
+
+message CommitSubscriptionTerminal {
+  CommitSubscriptionEndReason reason = 1;
+  FrontierPosition resume_after = 2;
+}
+
+message SubscribeCommitsRequest {
+  bytes request_id = 1;
+  optional uint64 after_sequence = 2;
+  uint64 maximum_lifetime_nanos = 3;
+}
+
+message CommitNotification {
+  oneof notification {
+    Commit commit = 1;
+    CommitSubscriptionTerminal terminal = 2;
+  }
+}

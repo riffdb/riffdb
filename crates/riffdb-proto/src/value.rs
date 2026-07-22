@@ -213,6 +213,10 @@ fn validate_money(value: &v1::Money) -> Result<(), ValueValidationError> {
     )
 }
 
+pub(crate) fn validate_value_record(value: &v1::ValueRecord) -> Result<(), ValueValidationError> {
+    validate_record(value, 0)
+}
+
 fn validate_record(value: &v1::ValueRecord, depth: usize) -> Result<(), ValueValidationError> {
     if value.fields.len() > MAX_RECORD_FIELDS {
         return Err(ValueValidationError::TooManyItems);

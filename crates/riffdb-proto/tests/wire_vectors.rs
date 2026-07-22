@@ -48,6 +48,8 @@ fn every_checked_in_wire_vector_decodes_through_its_strict_boundary() {
         "execute.request-active",
         "execute.request-versioned",
         "execute.response-committed",
+        "execute.response-read-only",
+        "execute.response-replayed",
         "value.bool-false",
         "value.bytes",
         "value.date",

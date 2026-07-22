@@ -19,7 +19,7 @@ use riffdb_errors::{
     ValidationPathSegment,
 };
 use riffdb_proto::{
-    canonical_value_to_proto,
+    canonical_value_to_proto, decode_public_message,
     envelope::{
         MAX_STORED_ENVELOPE_BYTES, STORAGE_FORMAT_VERSION_V1, maximum_encoded_envelope_bytes_for,
     },
@@ -53,8 +53,14 @@ const PRODUCTION_SOURCES: &[&str] = &[
     "riffdb/storage/v1/metadata.proto",
     "riffdb/storage/v1/outbox.proto",
     "riffdb/storage/v1/projection.proto",
+    "riffdb/v1/admin.proto",
     "riffdb/v1/command.proto",
+    "riffdb/v1/commit.proto",
+    "riffdb/v1/common.proto",
+    "riffdb/v1/contract.proto",
     "riffdb/v1/error.proto",
+    "riffdb/v1/projection.proto",
+    "riffdb/v1/query.proto",
     "riffdb/v1/services.proto",
     "riffdb/v1/value.proto",
 ];
@@ -240,6 +246,8 @@ const EXPECTED_METHODS: &[(&str, &str, bool)] = &[
     ("QueryService", "QueryProjection", false),
     ("QueryService", "ScanIndex", false),
 ];
+const SERVICE_RESPONSE_CHARGE_FIXTURE: &str =
+    include_str!("../../riffdb-service/fixtures/response-charge-v1.tsv");
 
 fn main() -> Result<(), Box<dyn Error>> {
     let output_root = parse_output_root()?;
@@ -289,6 +297,26 @@ fn main() -> Result<(), Box<dyn Error>> {
         &output_root,
         "fixtures/proto/schema-inventory.txt",
         inventory(&production).as_bytes(),
+    )?;
+    write_artifact(
+        &output_root,
+        "fixtures/proto/public-schema-hashes.txt",
+        public_schema_hashes(&production).as_bytes(),
+    )?;
+    write_artifact(
+        &output_root,
+        "fixtures/proto/public-key-envelope-vectors.txt",
+        public_key_envelope_vectors().as_bytes(),
+    )?;
+    write_artifact(
+        &output_root,
+        "fixtures/proto/public-client-vectors.txt",
+        public_client_vectors()?.as_bytes(),
+    )?;
+    write_artifact(
+        &output_root,
+        "fixtures/proto/public-response-charge-v1.tsv",
+        public_response_charge_vectors()?.as_bytes(),
     )?;
     write_artifact(
         &output_root,
@@ -863,12 +891,7 @@ fn inventory(descriptor_set: &FileDescriptorSet) -> String {
     }
     messages.sort_by(|left, right| left.0.cmp(&right.0));
     for (name, message) in messages {
-        let phase = if message.field.is_empty() && name.starts_with("riffdb.v1.") {
-            " phase-zero-shell"
-        } else {
-            ""
-        };
-        let _ = writeln!(output, "  {name} fields={}{phase}", message.field.len());
+        let _ = writeln!(output, "  {name} fields={}", message.field.len());
         for field in &message.field {
             let cardinality = match field.label() {
                 prost_types::field_descriptor_proto::Label::Optional => "optional",
@@ -947,6 +970,245 @@ fn inventory(descriptor_set: &FileDescriptorSet) -> String {
         }
     }
     output
+}
+
+fn public_schema_hashes(descriptor_set: &FileDescriptorSet) -> String {
+    let public_set = FileDescriptorSet {
+        file: descriptor_set
+            .file
+            .iter()
+            .filter(|file| file.package() == "riffdb.v1")
+            .cloned()
+            .collect(),
+    };
+    let mut entries = Vec::<(String, String, Vec<u8>)>::new();
+    entries.push((
+        "schema".to_owned(),
+        "riffdb.v1".to_owned(),
+        public_set.encode_to_vec(),
+    ));
+    for file in &public_set.file {
+        entries.push((
+            "file".to_owned(),
+            file.name().to_owned(),
+            file.encode_to_vec(),
+        ));
+        collect_public_message_hash_inputs(file.package(), &file.message_type, &mut entries);
+        for enumeration in &file.enum_type {
+            collect_public_enum_hash_inputs(
+                &format!("{}.{}", file.package(), enumeration.name()),
+                enumeration,
+                &mut entries,
+            );
+        }
+        for service in &file.service {
+            let name = format!("{}.{}", file.package(), service.name());
+            entries.push(("service".to_owned(), name.clone(), service.encode_to_vec()));
+            for method in &service.method {
+                entries.push((
+                    "rpc".to_owned(),
+                    format!("{name}.{}", method.name()),
+                    method.encode_to_vec(),
+                ));
+            }
+        }
+    }
+    entries.sort_by(|left, right| (&left.0, &left.1).cmp(&(&right.0, &right.1)));
+
+    let mut output = String::from("riffdb-public-schema-hashes-v1\n");
+    for (kind, name, descriptor) in entries {
+        let mut frame = Vec::with_capacity(kind.len() + name.len() + descriptor.len() + 2);
+        frame.extend_from_slice(kind.as_bytes());
+        frame.push(0);
+        frame.extend_from_slice(name.as_bytes());
+        frame.push(0);
+        frame.extend_from_slice(&descriptor);
+        let _ = write!(output, "{kind} {name} ");
+        for byte in hash_schema(&frame).as_bytes() {
+            let _ = write!(output, "{byte:02x}");
+        }
+        output.push('\n');
+    }
+    output
+}
+
+fn public_key_envelope_vectors() -> String {
+    let mut output = String::from(
+        "riffdb-public-key-envelope-vectors-v1\n# kind case envelope contextual separately-carried-owner hex\n",
+    );
+    for (kind, purpose, minimum) in [
+        ("entity", 0x45_u8, 6_usize),
+        ("index", 0x49_u8, 16_usize),
+        ("partition", 0x50_u8, 6_usize),
+    ] {
+        let mut minimum_bytes = vec![purpose, 0x01, 0, 0, 0, 7];
+        minimum_bytes.resize(minimum, 0);
+        append_key_vector(
+            &mut output,
+            kind,
+            "minimum",
+            "pass",
+            "pass",
+            7,
+            &minimum_bytes,
+        );
+
+        let mut maximum = minimum_bytes.clone();
+        maximum.resize(riffdb_types::MAX_KEY_BYTES, 0xa5);
+        append_key_vector(&mut output, kind, "maximum", "pass", "pass", 7, &maximum);
+
+        let mut one_over = maximum;
+        one_over.push(0);
+        append_key_vector(
+            &mut output,
+            kind,
+            "one-over",
+            "reject",
+            "reject",
+            7,
+            &one_over,
+        );
+
+        let mut wrong_purpose = minimum_bytes.clone();
+        wrong_purpose[0] = if purpose == 0x45 { 0x50 } else { 0x45 };
+        append_key_vector(
+            &mut output,
+            kind,
+            "wrong-purpose",
+            "reject",
+            "reject",
+            7,
+            &wrong_purpose,
+        );
+
+        let mut wrong_version = minimum_bytes.clone();
+        wrong_version[1] = 0x02;
+        append_key_vector(
+            &mut output,
+            kind,
+            "unsupported-version",
+            "reject",
+            "reject",
+            7,
+            &wrong_version,
+        );
+
+        let mut zero_owner = minimum_bytes.clone();
+        zero_owner[2..6].fill(0);
+        append_key_vector(
+            &mut output,
+            kind,
+            "zero-owner",
+            "reject",
+            "reject",
+            0,
+            &zero_owner,
+        );
+
+        let mut malformed_components = minimum_bytes.clone();
+        malformed_components.extend_from_slice(&[0xff, 0xff, 0xff]);
+        append_key_vector(
+            &mut output,
+            kind,
+            "malformed-components-schema-unproven",
+            "pass",
+            "pass",
+            7,
+            &malformed_components,
+        );
+
+        let mut trailing = minimum_bytes.clone();
+        trailing.push(0);
+        append_key_vector(
+            &mut output,
+            kind,
+            "trailing-schema-unproven",
+            "pass",
+            "pass",
+            7,
+            &trailing,
+        );
+    }
+    let mut mismatch = vec![0x45, 0x01];
+    mismatch.extend_from_slice(&7_u32.to_be_bytes());
+    append_key_vector(
+        &mut output,
+        "entity",
+        "separate-owner-mismatch",
+        "pass",
+        "reject",
+        8,
+        &mismatch,
+    );
+    output
+}
+
+fn append_key_vector(
+    output: &mut String,
+    kind: &str,
+    case: &str,
+    envelope: &str,
+    contextual: &str,
+    owner: u32,
+    bytes: &[u8],
+) {
+    let _ = write!(output, "{kind} {case} {envelope} {contextual} {owner} ");
+    for byte in bytes {
+        let _ = write!(output, "{byte:02x}");
+    }
+    output.push('\n');
+}
+
+fn collect_public_message_hash_inputs(
+    prefix: &str,
+    messages: &[DescriptorProto],
+    entries: &mut Vec<(String, String, Vec<u8>)>,
+) {
+    for message in messages {
+        let name = format!("{prefix}.{}", message.name());
+        entries.push(("message".to_owned(), name.clone(), message.encode_to_vec()));
+        for field in &message.field {
+            entries.push((
+                "field".to_owned(),
+                format!("{name}.{}", field.name()),
+                field.encode_to_vec(),
+            ));
+        }
+        for oneof in &message.oneof_decl {
+            entries.push((
+                "oneof".to_owned(),
+                format!("{name}.{}", oneof.name()),
+                oneof.encode_to_vec(),
+            ));
+        }
+        for enumeration in &message.enum_type {
+            collect_public_enum_hash_inputs(
+                &format!("{name}.{}", enumeration.name()),
+                enumeration,
+                entries,
+            );
+        }
+        collect_public_message_hash_inputs(&name, &message.nested_type, entries);
+    }
+}
+
+fn collect_public_enum_hash_inputs(
+    name: &str,
+    enumeration: &prost_types::EnumDescriptorProto,
+    entries: &mut Vec<(String, String, Vec<u8>)>,
+) {
+    entries.push((
+        "enum".to_owned(),
+        name.to_owned(),
+        enumeration.encode_to_vec(),
+    ));
+    for value in &enumeration.value {
+        entries.push((
+            "enum-value".to_owned(),
+            format!("{name}.{}", value.name()),
+            value.encode_to_vec(),
+        ));
+    }
 }
 
 fn wire_vectors() -> Result<String, Box<dyn Error>> {
@@ -1032,6 +1294,18 @@ fn wire_vectors() -> Result<String, Box<dyn Error>> {
             durability_mode: "sync".to_owned(),
         },
     );
+    append_wire_vector(
+        &mut output,
+        "execute.response-replayed",
+        &public_execute_response(v1::execute_command_response::CompletionStatus::Replayed as i32),
+    );
+    append_wire_vector(
+        &mut output,
+        "execute.response-read-only",
+        &public_execute_response(
+            v1::execute_command_response::CompletionStatus::ExecutedReadOnly as i32,
+        ),
+    );
 
     let incident_id = IncidentId::from_bytes(request_id)?;
     let path = ValidationPath::new(vec![
@@ -1074,6 +1348,1544 @@ fn wire_vectors() -> Result<String, Box<dyn Error>> {
         append_wire_vector(&mut output, name, &public_error_to_proto(&error));
     }
     Ok(output)
+}
+
+fn public_client_vectors() -> Result<String, Box<dyn Error>> {
+    let mut output = String::from("riffdb-public-client-vectors-v1\n");
+    let request_id = public_request_id();
+    let active = public_active_selection();
+    let page = v1::PageRequest {
+        limit: Some(50),
+        cursor: None,
+    };
+
+    append_client_vector(
+        &mut output,
+        "ContractService.ValidateContract",
+        "request",
+        "source",
+        "riffdb.v1.ValidateContractRequest",
+        &v1::ValidateContractRequest {
+            request_id: request_id.clone(),
+            source: "entity Budget { id: uuid }".to_owned(),
+        },
+    );
+    append_client_vector(
+        &mut output,
+        "ContractService.ValidateContract",
+        "response",
+        "valid",
+        "riffdb.v1.ValidateContractResponse",
+        &v1::ValidateContractResponse {
+            result: Some(v1::validate_contract_response::Result::Valid(v1::Unit {})),
+        },
+    );
+    append_client_vector(
+        &mut output,
+        "ContractService.ValidateContract",
+        "response",
+        "invalid-syntax",
+        "riffdb.v1.ValidateContractResponse",
+        &v1::ValidateContractResponse {
+            result: Some(v1::validate_contract_response::Result::Invalid(
+                v1::CompilationDiagnostics {
+                    diagnostics: Some(v1::compilation_diagnostics::Diagnostics::Syntax(
+                        v1::SyntaxDiagnosticList {
+                            diagnostics: vec![v1::SyntaxDiagnostic {
+                                code: "RDB-S004".to_owned(),
+                                summary: "contract source contains an unexpected token".to_owned(),
+                                help: Some(
+                                    "use the grammar-version-1 spelling shown in the language reference"
+                                        .to_owned(),
+                                ),
+                                span: Some(v1::SourceSpan { start: 0, end: 1 }),
+                                expected: vec!["entity".to_owned()],
+                            }],
+                        },
+                    )),
+                },
+            )),
+        },
+    );
+    append_client_vector(
+        &mut output,
+        "ContractService.ValidateContract",
+        "response",
+        "invalid-semantic",
+        "riffdb.v1.ValidateContractResponse",
+        &v1::ValidateContractResponse {
+            result: Some(v1::validate_contract_response::Result::Invalid(
+                v1::CompilationDiagnostics {
+                    diagnostics: Some(v1::compilation_diagnostics::Diagnostics::Semantic(
+                        v1::SemanticDiagnosticList {
+                            diagnostics: vec![v1::SemanticDiagnostic {
+                                code: "RDB-C004".to_owned(),
+                                summary: "a referenced declaration, field, or binding is unknown"
+                                    .to_owned(),
+                                help: Some(
+                                    "reference an exact case-sensitive declared name".to_owned(),
+                                ),
+                                primary_span: Some(v1::SourceSpan { start: 0, end: 1 }),
+                                related_span: None,
+                            }],
+                        },
+                    )),
+                },
+            )),
+        },
+    );
+
+    append_client_vector(
+        &mut output,
+        "ContractService.ExplainCommand",
+        "request",
+        "active",
+        "riffdb.v1.ExplainCommandRequest",
+        &v1::ExplainCommandRequest {
+            request_id: request_id.clone(),
+            contract: Some(active.clone()),
+            command_name: "budget.reserve".to_owned(),
+        },
+    );
+    append_client_vector(
+        &mut output,
+        "ContractService.ExplainCommand",
+        "response",
+        "not-found",
+        "riffdb.v1.ExplainCommandResponse",
+        &v1::ExplainCommandResponse {
+            result: Some(v1::explain_command_response::Result::NotFound(v1::Unit {})),
+        },
+    );
+    append_client_vector(
+        &mut output,
+        "ContractService.ExplainCommand",
+        "response",
+        "found",
+        "riffdb.v1.ExplainCommandResponse",
+        &v1::ExplainCommandResponse {
+            result: Some(v1::explain_command_response::Result::Found(
+                public_explained_command(),
+            )),
+        },
+    );
+
+    append_client_vector(
+        &mut output,
+        "ContractService.DeployContract",
+        "request",
+        "expect-absent",
+        "riffdb.v1.DeployContractRequest",
+        &v1::DeployContractRequest {
+            request_id: request_id.clone(),
+            source: "entity Budget { id: uuid }".to_owned(),
+            expected_active_version: None,
+        },
+    );
+    for (branch, result) in [
+        (
+            "activated",
+            v1::deploy_contract_response::Result::Activated(public_contract_descriptor()),
+        ),
+        (
+            "already-active",
+            v1::deploy_contract_response::Result::AlreadyActive(public_contract_descriptor()),
+        ),
+        (
+            "expected-version-mismatch-absent",
+            v1::deploy_contract_response::Result::ExpectedActiveVersionMismatch(
+                v1::ExpectedActiveVersionMismatch {
+                    actual_active_version: None,
+                },
+            ),
+        ),
+        (
+            "expected-version-mismatch-present",
+            v1::deploy_contract_response::Result::ExpectedActiveVersionMismatch(
+                v1::ExpectedActiveVersionMismatch {
+                    actual_active_version: Some(1),
+                },
+            ),
+        ),
+        (
+            "bundle-conflict",
+            v1::deploy_contract_response::Result::BundleConflict(v1::Unit {}),
+        ),
+    ] {
+        append_client_vector(
+            &mut output,
+            "ContractService.DeployContract",
+            "response",
+            branch,
+            "riffdb.v1.DeployContractResponse",
+            &v1::DeployContractResponse {
+                result: Some(result),
+            },
+        );
+    }
+
+    append_client_vector(
+        &mut output,
+        "ContractService.GetActiveContract",
+        "request",
+        "lookup",
+        "riffdb.v1.GetActiveContractRequest",
+        &v1::GetActiveContractRequest {
+            request_id: request_id.clone(),
+        },
+    );
+    for (branch, result) in [
+        (
+            "absent",
+            v1::get_active_contract_response::Result::Absent(v1::Unit {}),
+        ),
+        (
+            "present",
+            v1::get_active_contract_response::Result::Present(public_contract_descriptor()),
+        ),
+    ] {
+        append_client_vector(
+            &mut output,
+            "ContractService.GetActiveContract",
+            "response",
+            branch,
+            "riffdb.v1.GetActiveContractResponse",
+            &v1::GetActiveContractResponse {
+                result: Some(result),
+            },
+        );
+    }
+
+    let execute_request = v1::ExecuteCommandRequest {
+        request_id: request_id.clone(),
+        command_name: "budget.reserve".to_owned(),
+        expected_contract_version: Some(1),
+        input: Some(canonical_value_to_proto(&CanonicalValue::Null)?),
+    };
+    append_client_vector(
+        &mut output,
+        "CommandService.Execute",
+        "request",
+        "versioned",
+        "riffdb.v1.ExecuteCommandRequest",
+        &execute_request,
+    );
+    for (branch, response) in [
+        ("committed", public_execute_response(1)),
+        ("replayed", public_execute_response(2)),
+        ("executed-read-only", public_execute_response(3)),
+    ] {
+        append_client_vector(
+            &mut output,
+            "CommandService.Execute",
+            "response",
+            branch,
+            "riffdb.v1.ExecuteCommandResponse",
+            &response,
+        );
+    }
+
+    append_client_vector(
+        &mut output,
+        "CommandService.GetOutcome",
+        "request",
+        "resolve",
+        "riffdb.v1.GetOutcomeRequest",
+        &v1::GetOutcomeRequest {
+            request_id: request_id.clone(),
+            contract_lineage: "budget".to_owned(),
+            command_name: "budget.reserve".to_owned(),
+            idempotency_key: "client-operation-1".to_owned(),
+        },
+    );
+    for (branch, result) in [
+        (
+            "not-found",
+            v1::get_outcome_response::Result::NotFound(v1::Unit {}),
+        ),
+        (
+            "found-replayed",
+            v1::get_outcome_response::Result::Found(public_execute_response(2)),
+        ),
+    ] {
+        append_client_vector(
+            &mut output,
+            "CommandService.GetOutcome",
+            "response",
+            branch,
+            "riffdb.v1.GetOutcomeResponse",
+            &v1::GetOutcomeResponse {
+                result: Some(result),
+            },
+        );
+    }
+
+    append_client_vector(
+        &mut output,
+        "QueryService.GetEntity",
+        "request",
+        "active",
+        "riffdb.v1.GetEntityRequest",
+        &v1::GetEntityRequest {
+            request_id: request_id.clone(),
+            contract: Some(active.clone()),
+            entity_type_id: 1,
+            entity_key: public_entity_key(1),
+            fields: Some(v1::FieldSelection {
+                field_ids: Vec::new(),
+            }),
+        },
+    );
+    for (branch, result) in [
+        (
+            "not-found",
+            v1::get_entity_response::Result::NotFound(v1::Unit {}),
+        ),
+        (
+            "found",
+            v1::get_entity_response::Result::Found(v1::Entity {
+                entity_key: public_entity_key(1),
+                entity_version: 1,
+                written_by_contract_version: 1,
+                fields: Some(public_empty_record()),
+            }),
+        ),
+    ] {
+        append_client_vector(
+            &mut output,
+            "QueryService.GetEntity",
+            "response",
+            branch,
+            "riffdb.v1.GetEntityResponse",
+            &v1::GetEntityResponse {
+                result: Some(result),
+            },
+        );
+    }
+
+    append_client_vector(
+        &mut output,
+        "QueryService.ScanIndex",
+        "request",
+        "first-page",
+        "riffdb.v1.ScanIndexRequest",
+        &v1::ScanIndexRequest {
+            request_id: request_id.clone(),
+            contract: Some(active.clone()),
+            index_id: 1,
+            leading_components: Vec::new(),
+            fields: Some(v1::FieldSelection {
+                field_ids: Vec::new(),
+            }),
+            page: Some(page.clone()),
+        },
+    );
+    append_client_vector(
+        &mut output,
+        "QueryService.ScanIndex",
+        "response",
+        "page",
+        "riffdb.v1.ScanIndexResponse",
+        &v1::ScanIndexResponse {
+            page: Some(v1::IndexPage {
+                items: vec![v1::IndexRow {
+                    index_entry_key: public_index_key(1),
+                    values: Some(public_empty_record()),
+                }],
+                next_cursor: Some(vec![0x88; 16]),
+                observed_fence: Some(v1::IndexScanFence { index_epoch: 1 }),
+            }),
+        },
+    );
+
+    append_client_vector(
+        &mut output,
+        "QueryService.QueryProjection",
+        "request",
+        "first-page",
+        "riffdb.v1.QueryProjectionRequest",
+        &v1::QueryProjectionRequest {
+            request_id: request_id.clone(),
+            contract: Some(active),
+            projection_id: 1,
+            leading_components: Vec::new(),
+            required_sequence: None,
+            wait_nanos: 0,
+            page: Some(page.clone()),
+        },
+    );
+    for (branch, result) in public_projection_results() {
+        append_client_vector(
+            &mut output,
+            "QueryService.QueryProjection",
+            "response",
+            branch,
+            "riffdb.v1.QueryProjectionResponse",
+            &v1::QueryProjectionResponse {
+                result: Some(result),
+            },
+        );
+    }
+
+    append_client_vector(
+        &mut output,
+        "CommitService.GetCommit",
+        "request",
+        "sequence",
+        "riffdb.v1.GetCommitRequest",
+        &v1::GetCommitRequest {
+            request_id: request_id.clone(),
+            commit_sequence: 1,
+        },
+    );
+    for (branch, result) in [
+        (
+            "not-found",
+            v1::get_commit_response::Result::NotFound(v1::Unit {}),
+        ),
+        (
+            "found",
+            v1::get_commit_response::Result::Found(public_commit()),
+        ),
+    ] {
+        append_client_vector(
+            &mut output,
+            "CommitService.GetCommit",
+            "response",
+            branch,
+            "riffdb.v1.GetCommitResponse",
+            &v1::GetCommitResponse {
+                result: Some(result),
+            },
+        );
+    }
+
+    append_client_vector(
+        &mut output,
+        "CommitService.ScanCommits",
+        "request",
+        "first-page",
+        "riffdb.v1.ScanCommitsRequest",
+        &v1::ScanCommitsRequest {
+            request_id: request_id.clone(),
+            page: Some(page),
+        },
+    );
+    append_client_vector(
+        &mut output,
+        "CommitService.ScanCommits",
+        "response",
+        "page",
+        "riffdb.v1.ScanCommitsResponse",
+        &v1::ScanCommitsResponse {
+            page: Some(v1::CommitPage {
+                items: vec![public_commit()],
+                next_cursor: None,
+                observed_fence: Some(public_applied(1)),
+            }),
+        },
+    );
+
+    append_client_vector(
+        &mut output,
+        "CommitService.SubscribeCommits",
+        "request",
+        "from-head",
+        "riffdb.v1.SubscribeCommitsRequest",
+        &v1::SubscribeCommitsRequest {
+            request_id: request_id.clone(),
+            after_sequence: None,
+            maximum_lifetime_nanos: 900_000_000_000,
+        },
+    );
+    append_client_vector(
+        &mut output,
+        "CommitService.SubscribeCommits",
+        "stream",
+        "commit",
+        "riffdb.v1.CommitNotification",
+        &v1::CommitNotification {
+            notification: Some(v1::commit_notification::Notification::Commit(
+                public_commit(),
+            )),
+        },
+    );
+    for reason in 1..=8 {
+        append_client_vector(
+            &mut output,
+            "CommitService.SubscribeCommits",
+            "stream",
+            &format!("terminal-{reason}"),
+            "riffdb.v1.CommitNotification",
+            &v1::CommitNotification {
+                notification: Some(v1::commit_notification::Notification::Terminal(
+                    v1::CommitSubscriptionTerminal {
+                        reason,
+                        resume_after: Some(public_before_first()),
+                    },
+                )),
+            },
+        );
+    }
+
+    append_client_vector(
+        &mut output,
+        "AdminService.Health",
+        "request",
+        "authenticated",
+        "riffdb.v1.HealthRequest",
+        &v1::HealthRequest {
+            request_id: Some(request_id.clone()),
+        },
+    );
+    append_client_vector(
+        &mut output,
+        "AdminService.Health",
+        "response",
+        "pre-bootstrap",
+        "riffdb.v1.HealthResponse",
+        &public_pre_bootstrap_health(),
+    );
+    append_client_vector(
+        &mut output,
+        "AdminService.Health",
+        "response",
+        "authenticated",
+        "riffdb.v1.HealthResponse",
+        &public_authenticated_health(),
+    );
+
+    append_client_vector(
+        &mut output,
+        "AdminService.Stats",
+        "request",
+        "snapshot",
+        "riffdb.v1.StatsRequest",
+        &v1::StatsRequest {
+            request_id: request_id.clone(),
+        },
+    );
+    append_client_vector(
+        &mut output,
+        "AdminService.Stats",
+        "response",
+        "snapshot",
+        "riffdb.v1.StatsResponse",
+        &v1::StatsResponse {
+            active_cursors: 1,
+            active_commit_subscribers: 1,
+            last_commit_sequence: Some(1),
+            pending_outbox_deliveries: Some(0),
+            known_projections: Some(1),
+        },
+    );
+
+    for mode in [
+        v1::CapabilityCreateMode::Normal,
+        v1::CapabilityCreateMode::Bootstrap,
+    ] {
+        append_client_vector(
+            &mut output,
+            "AdminService.CreateCapability",
+            "request",
+            if mode == v1::CapabilityCreateMode::Normal {
+                "normal"
+            } else {
+                "bootstrap"
+            },
+            "riffdb.v1.CreateCapabilityRequest",
+            &public_create_capability_request(mode),
+        );
+    }
+    for (branch, response) in public_create_capability_results() {
+        append_client_vector(
+            &mut output,
+            "AdminService.CreateCapability",
+            "response",
+            branch,
+            "riffdb.v1.CreateCapabilityResponse",
+            &response,
+        );
+    }
+
+    append_client_vector(
+        &mut output,
+        "AdminService.RevokeCapability",
+        "request",
+        "requested",
+        "riffdb.v1.RevokeCapabilityRequest",
+        &v1::RevokeCapabilityRequest {
+            request_id,
+            capability_id: public_request_id(),
+            reason: v1::RevocationReason::Requested as i32,
+        },
+    );
+    for (branch, result) in [
+        (
+            "revoked",
+            v1::revoke_capability_response::Result::Revoked(public_capability_transition()),
+        ),
+        (
+            "already-revoked",
+            v1::revoke_capability_response::Result::AlreadyRevoked(public_capability_transition()),
+        ),
+        (
+            "not-found",
+            v1::revoke_capability_response::Result::CapabilityNotFound(v1::Unit {}),
+        ),
+    ] {
+        append_client_vector(
+            &mut output,
+            "AdminService.RevokeCapability",
+            "response",
+            branch,
+            "riffdb.v1.RevokeCapabilityResponse",
+            &v1::RevokeCapabilityResponse {
+                result: Some(result),
+            },
+        );
+    }
+
+    Ok(output)
+}
+
+fn append_client_vector(
+    output: &mut String,
+    rpc: &str,
+    direction: &str,
+    branch: &str,
+    message_type: &str,
+    message: &impl Message,
+) {
+    let _ = write!(output, "{rpc} {direction} {branch} {message_type} ");
+    for byte in message.encode_to_vec() {
+        let _ = write!(output, "{byte:02x}");
+    }
+    output.push('\n');
+}
+
+fn public_request_id() -> Vec<u8> {
+    vec![
+        0x01, 0x9b, 0xf6, 0xaa, 0xa6, 0x40, 0x7d, 0xe6, 0x89, 0xc9, 0x8a, 0x7f, 0x70, 0xbb, 0xbd,
+        0x23,
+    ]
+}
+
+fn public_active_selection() -> v1::ContractSelection {
+    v1::ContractSelection {
+        selection: Some(v1::contract_selection::Selection::Active(v1::Unit {})),
+    }
+}
+
+fn public_before_first() -> v1::FrontierPosition {
+    v1::FrontierPosition {
+        position: Some(v1::frontier_position::Position::BeforeFirst(v1::Unit {})),
+    }
+}
+
+fn public_applied(sequence: u64) -> v1::FrontierPosition {
+    v1::FrontierPosition {
+        position: Some(v1::frontier_position::Position::AppliedThrough(sequence)),
+    }
+}
+
+fn public_empty_record() -> v1::ValueRecord {
+    v1::ValueRecord { fields: Vec::new() }
+}
+
+fn public_contract_descriptor() -> v1::ContractDescriptor {
+    v1::ContractDescriptor {
+        contract_lineage: "budget".to_owned(),
+        contract_version: 1,
+        bundle_hash: vec![0x11; 32],
+        source_hash: vec![0x22; 32],
+        plan_root_hash: vec![0x33; 32],
+    }
+}
+
+fn public_schema_artifact(key: v1::schema_artifact_key::Artifact) -> v1::GeneratedSchemaArtifact {
+    let canonical_json = "{}".to_owned();
+    v1::GeneratedSchemaArtifact {
+        key: Some(v1::SchemaArtifactKey {
+            artifact: Some(key),
+        }),
+        dialect: "https://json-schema.org/draft/2020-12/schema".to_owned(),
+        schema_hash: hash_schema(canonical_json.as_bytes()).as_bytes().to_vec(),
+        canonical_json,
+    }
+}
+
+fn public_explained_command() -> v1::ExplainedCommand {
+    v1::ExplainedCommand {
+        contract: Some(public_contract_descriptor()),
+        command_id: 1,
+        plan_hash: vec![0x55; 32],
+        explanation: Some(v1::CommandExplain {
+            command_id: 1,
+            execution_class: v1::ExecutionClass::IdempotentMutation as i32,
+            partition_component_count: 1,
+            conflict_key_count: 1,
+            binding_ids: vec![0],
+            read_fields: vec![v1::BindingFieldRef {
+                binding_id: 0,
+                field_id: 1,
+            }],
+            write_fields: vec![v1::BindingFieldRef {
+                binding_id: 0,
+                field_id: 2,
+            }],
+            invariant_ids: vec![1],
+            event_type_ids: vec![1],
+            outcome_ids: vec![1],
+            rendered_text: "command budget.reserve".to_owned(),
+        }),
+        input_schema: Some(public_schema_artifact(
+            v1::schema_artifact_key::Artifact::CommandInputId(1),
+        )),
+        outcome_schema: Some(public_schema_artifact(
+            v1::schema_artifact_key::Artifact::CommandOutcomeUnionId(1),
+        )),
+    }
+}
+
+fn public_execute_response(status: i32) -> v1::ExecuteCommandResponse {
+    let read_only =
+        status == v1::execute_command_response::CompletionStatus::ExecutedReadOnly as i32;
+    v1::ExecuteCommandResponse {
+        status,
+        commit_sequence: if read_only { 0 } else { 1 },
+        contract_version: 1,
+        plan_hash: vec![0x66; 32],
+        outcome_type: "Reserved".to_owned(),
+        outcome: Some(v1::Value {
+            kind: Some(v1::value::Kind::NullValue(v1::NullValue::NullValue as i32)),
+        }),
+        provenance_uri: if read_only {
+            String::new()
+        } else {
+            "riffdb://provenance/019bf6aa-a640-7de6-89c9-8a7f70bbbd23".to_owned()
+        },
+        durability_mode: if read_only {
+            String::new()
+        } else {
+            "sync".to_owned()
+        },
+    }
+}
+
+fn public_entity_key(owner: u32) -> Vec<u8> {
+    let mut key = vec![0x45, 0x01];
+    key.extend_from_slice(&owner.to_be_bytes());
+    key
+}
+
+fn public_index_key(owner: u32) -> Vec<u8> {
+    let mut key = vec![0x49, 0x01];
+    key.extend_from_slice(&owner.to_be_bytes());
+    key.resize(16, 0);
+    key
+}
+
+fn public_projection_identity() -> v1::ProjectionIdentity {
+    v1::ProjectionIdentity {
+        contract_lineage: "budget".to_owned(),
+        projection_id: 1,
+        projection_plan_hash: vec![0x77; 32],
+    }
+}
+
+fn public_projection_results() -> Vec<(&'static str, v1::query_projection_response::Result)> {
+    let ready_frontier = public_applied(1);
+    let ready = v1::query_projection_response::Result::Ready(v1::QueryProjectionReady {
+        data: Some(v1::ProjectionPage {
+            items: Vec::new(),
+            next_cursor: None,
+            observed_fence: Some(v1::ProjectionPageFence {
+                identity: Some(public_projection_identity()),
+                generation: 1,
+                frontier: Some(ready_frontier),
+            }),
+        }),
+        frontier: Some(ready_frontier),
+    });
+    vec![
+        ("ready", ready),
+        (
+            "wait-timed-out",
+            v1::query_projection_response::Result::WaitTimedOut(v1::QueryProjectionWaitTimedOut {
+                required_sequence: 2,
+                current: Some(public_applied(1)),
+            }),
+        ),
+        (
+            "degraded-building",
+            v1::query_projection_response::Result::Degraded(v1::QueryProjectionDegraded {
+                current: Some(public_before_first()),
+                reason: Some(v1::ProjectionUnavailableReason {
+                    reason: Some(v1::projection_unavailable_reason::Reason::Building(
+                        v1::Unit {},
+                    )),
+                }),
+            }),
+        ),
+        (
+            "degraded-rebuilding",
+            v1::query_projection_response::Result::Degraded(v1::QueryProjectionDegraded {
+                current: Some(public_applied(1)),
+                reason: Some(v1::ProjectionUnavailableReason {
+                    reason: Some(v1::projection_unavailable_reason::Reason::Rebuilding(
+                        v1::Unit {},
+                    )),
+                }),
+            }),
+        ),
+        (
+            "degraded-failure",
+            v1::query_projection_response::Result::Degraded(v1::QueryProjectionDegraded {
+                current: Some(public_applied(1)),
+                reason: Some(v1::ProjectionUnavailableReason {
+                    reason: Some(v1::projection_unavailable_reason::Reason::Failure(
+                        v1::ProjectionFailureCode::MissingCommit as i32,
+                    )),
+                }),
+            }),
+        ),
+        (
+            "invalid",
+            v1::query_projection_response::Result::Invalid(v1::QueryProjectionInvalid {
+                reason: v1::ProjectionFailureCode::ProjectionStateIntegrity as i32,
+            }),
+        ),
+    ]
+}
+
+fn public_commit() -> v1::Commit {
+    v1::Commit {
+        commit_sequence: 1,
+        admission_request_id: public_request_id(),
+        contract_lineage: "budget".to_owned(),
+        contract_version: 1,
+        command_id: 1,
+        plan_hash: vec![0x11; 32],
+        canonical_input_hash: vec![0x22; 32],
+        actor: Some(v1::AdmittedActor {
+            principal_id: "operator".to_owned(),
+            actor_kind: v1::ActorKind::Human as i32,
+            tenant_scope: Some(v1::TenantScope {
+                scope: Some(v1::tenant_scope::Scope::Global(v1::Unit {})),
+            }),
+            agent_session_id: None,
+        }),
+        logical_time: Some(v1::Timestamp {
+            seconds: 1,
+            nanos: 2,
+        }),
+        partition_hash: vec![0x33; 32],
+        conflict_hashes: vec![vec![0x44; 32]],
+        affected_entities: vec![v1::AffectedEntity {
+            entity_key: public_entity_key(1),
+            entity_version: 1,
+        }],
+        events: vec![v1::DurableEvent {
+            event_id: Some(v1::EventId {
+                commit_sequence: 1,
+                event_ordinal: 0,
+            }),
+            event_type_id: 1,
+            payload: Some(public_empty_record()),
+        }],
+        outcome: Some(v1::DeclaredOutcome {
+            outcome_id: 1,
+            outcome_name: "Reserved".to_owned(),
+            value: Some(public_empty_record()),
+        }),
+        provenance_uri: "riffdb://provenance/019bf6aa-a640-7de6-89c9-8a7f70bbbd23".to_owned(),
+        durability: v1::CommandDurability::Synchronous as i32,
+    }
+}
+
+fn public_pre_bootstrap_health() -> v1::HealthResponse {
+    v1::HealthResponse {
+        result: Some(v1::health_response::Result::PreBootstrap(
+            v1::PreBootstrapHealth {
+                lifecycle: v1::PreBootstrapLifecycle::InitializingValidation as i32,
+                liveness: true,
+                readiness: false,
+            },
+        )),
+    }
+}
+
+fn public_authenticated_health() -> v1::HealthResponse {
+    v1::HealthResponse {
+        result: Some(v1::health_response::Result::Authenticated(
+            v1::AuthenticatedHealth {
+                status: v1::HealthStatus::Ready as i32,
+                active_contract_version: Some(1),
+                last_commit_sequence: Some(1),
+                components: vec![v1::HealthComponent {
+                    component: v1::HealthComponentKind::AuthoritativeStorage as i32,
+                    status: v1::HealthComponentStatus::Healthy as i32,
+                }],
+                started_at: Some(v1::Timestamp {
+                    seconds: 1,
+                    nanos: 0,
+                }),
+                build: Some(v1::BuildInfo {
+                    semantic_version: "0.1.0".to_owned(),
+                    git_revision: "0123456".to_owned(),
+                    rust_version: "1.97.0".to_owned(),
+                    enabled_features: vec!["default".to_owned()],
+                    storage_format_version: 1,
+                    contract_ir_version: 1,
+                    mcp_protocol_baseline: "2025-06-18".to_owned(),
+                }),
+            },
+        )),
+    }
+}
+
+fn public_capability_grant() -> v1::CapabilityGrant {
+    v1::CapabilityGrant {
+        tenant_scope: Some(v1::TenantScope {
+            scope: Some(v1::tenant_scope::Scope::Global(v1::Unit {})),
+        }),
+        partition_scope: Some(v1::PartitionScope {
+            scope: Some(v1::partition_scope::Scope::All(v1::Unit {})),
+        }),
+        permissions: vec![v1::CapabilityPermission {
+            permission: Some(
+                v1::capability_permission::Permission::AdministerCapabilities(v1::Unit {}),
+            ),
+        }],
+        field_visibility: Vec::new(),
+        max_scan_rows: 50,
+        approval_required: Vec::new(),
+    }
+}
+
+fn public_create_capability_request(mode: v1::CapabilityCreateMode) -> v1::CreateCapabilityRequest {
+    v1::CreateCapabilityRequest {
+        request_id: public_request_id(),
+        mode: mode as i32,
+        capability_id: public_request_id(),
+        principal_id: "operator".to_owned(),
+        actor_kind: v1::ActorKind::Human as i32,
+        requested_lifetime_seconds: 60,
+        audiences: vec!["riffdb-cli".to_owned()],
+        grant: Some(public_capability_grant()),
+    }
+}
+
+fn public_capability_transition() -> v1::CapabilityTransition {
+    v1::CapabilityTransition {
+        identity: Some(v1::CapabilityIdentity {
+            capability_id: public_request_id(),
+            revision: 1,
+        }),
+        administration_sequence: 1,
+    }
+}
+
+fn public_create_capability_results() -> Vec<(&'static str, v1::CreateCapabilityResponse)> {
+    vec![
+        (
+            "normal-created",
+            v1::CreateCapabilityResponse {
+                result: Some(v1::create_capability_response::Result::Normal(
+                    v1::NormalCreateCapabilityResult {
+                        result: Some(v1::normal_create_capability_result::Result::Created(
+                            v1::NormalCapabilityCreated {
+                                transition: Some(public_capability_transition()),
+                                token: "A".repeat(43),
+                            },
+                        )),
+                    },
+                )),
+            },
+        ),
+        (
+            "normal-already-created-token-unavailable",
+            v1::CreateCapabilityResponse {
+                result: Some(v1::create_capability_response::Result::Normal(
+                    v1::NormalCreateCapabilityResult {
+                        result: Some(
+                            v1::normal_create_capability_result::Result::AlreadyCreatedTokenUnavailable(
+                                v1::CapabilityIdentity {
+                                    capability_id: public_request_id(),
+                                    revision: 1,
+                                },
+                            ),
+                        ),
+                    },
+                )),
+            },
+        ),
+        (
+            "normal-capability-id-conflict",
+            v1::CreateCapabilityResponse {
+                result: Some(v1::create_capability_response::Result::Normal(
+                    v1::NormalCreateCapabilityResult {
+                        result: Some(
+                            v1::normal_create_capability_result::Result::CapabilityIdConflict(
+                                v1::Unit {},
+                            ),
+                        ),
+                    },
+                )),
+            },
+        ),
+        (
+            "bootstrap-created",
+            v1::CreateCapabilityResponse {
+                result: Some(v1::create_capability_response::Result::Bootstrap(
+                    v1::BootstrapCreateCapabilityResult {
+                        result: Some(v1::bootstrap_create_capability_result::Result::Created(
+                            public_capability_transition(),
+                        )),
+                    },
+                )),
+            },
+        ),
+        (
+            "bootstrap-replayed",
+            v1::CreateCapabilityResponse {
+                result: Some(v1::create_capability_response::Result::Bootstrap(
+                    v1::BootstrapCreateCapabilityResult {
+                        result: Some(v1::bootstrap_create_capability_result::Result::Replayed(
+                            public_capability_transition(),
+                        )),
+                    },
+                )),
+            },
+        ),
+        (
+            "bootstrap-conflict",
+            v1::CreateCapabilityResponse {
+                result: Some(v1::create_capability_response::Result::Bootstrap(
+                    v1::BootstrapCreateCapabilityResult {
+                        result: Some(
+                            v1::bootstrap_create_capability_result::Result::BootstrapConflict(
+                                v1::Unit {},
+                            ),
+                        ),
+                    },
+                )),
+            },
+        ),
+    ]
+}
+
+fn public_response_charge_vectors() -> Result<String, Box<dyn Error>> {
+    let mut output = String::from(
+        "riffdb_public_response_charge_fixture_version\t1\nservice_response_charge_version\t1\nceiling_bytes\t4194304\ncase_id\tresponse_family\tservice_charge_bytes\tprotobuf_encoded_bytes\tdisposition\n",
+    );
+    let mut lines = SERVICE_RESPONSE_CHARGE_FIXTURE.lines();
+    if lines.next() != Some("riffdb_response_charge_fixture_version\t1")
+        || lines.next() != Some("service_response_charge_version\t1")
+        || lines.next() != Some("ceiling_bytes\t4194304")
+        || lines.next()
+            != Some(
+                "case_id\tresponse_family\tresponse_variant\tshape_v1\tservice_charge_bytes\tdisposition",
+            )
+    {
+        return Err(io::Error::other("unexpected service response-charge fixture header").into());
+    }
+    for line in lines {
+        let columns = line.split('\t').collect::<Vec<_>>();
+        if columns.len() != 6 {
+            return Err(io::Error::other("invalid service response-charge fixture row").into());
+        }
+        let case_id = columns[0];
+        let family = columns[1];
+        let charge = columns[4].parse::<usize>()?;
+        let disposition = columns[5];
+        let encoded = response_charge_candidate(case_id)?;
+        if let Some(encoded) = &encoded {
+            if encoded.len() > charge {
+                return Err(io::Error::other(format!(
+                    "public encoding for {case_id} exceeds service charge: {} > {charge}",
+                    encoded.len()
+                ))
+                .into());
+            }
+            match disposition {
+                "release" if encoded.len() <= 4_194_304 => {
+                    validate_response_charge_candidate(case_id, encoded)?;
+                }
+                "response_too_large" if encoded.len() > 4_194_304 => {}
+                _ => {
+                    return Err(io::Error::other(format!(
+                        "public encoding for {case_id} disagrees with service disposition"
+                    ))
+                    .into());
+                }
+            }
+        } else if !case_id.starts_with("boundary.") {
+            return Err(io::Error::other(format!(
+                "missing public response-charge candidate for {case_id}"
+            ))
+            .into());
+        }
+        let encoded = encoded.map_or_else(|| "-".to_owned(), |bytes| bytes.len().to_string());
+        let _ = writeln!(
+            output,
+            "{case_id}\t{family}\t{charge}\t{encoded}\t{disposition}"
+        );
+    }
+    Ok(output)
+}
+
+fn validate_response_charge_candidate(case_id: &str, encoded: &[u8]) -> Result<(), io::Error> {
+    macro_rules! decode {
+        ($type:ty) => {
+            decode_public_message::<$type>(encoded).map(|_| ())
+        };
+    }
+    let result = match case_id {
+        "boundary.exact_ceiling"
+        | "contract_validation.invalid_empty_source"
+        | "contract_validation.valid" => decode!(v1::ValidateContractResponse),
+        value if value.starts_with("commit_notification.") => decode!(v1::CommitNotification),
+        value if value.starts_with("create_capability.") => decode!(v1::CreateCapabilityResponse),
+        value if value.starts_with("deploy_contract.") => decode!(v1::DeployContractResponse),
+        value if value.starts_with("execute_command.") => decode!(v1::ExecuteCommandResponse),
+        value if value.starts_with("explain_command.") => decode!(v1::ExplainCommandResponse),
+        value if value.starts_with("get_active_contract.") => {
+            decode!(v1::GetActiveContractResponse)
+        }
+        value if value.starts_with("get_commit.") => decode!(v1::GetCommitResponse),
+        value if value.starts_with("get_entity.") => decode!(v1::GetEntityResponse),
+        value if value.starts_with("get_outcome.") => decode!(v1::GetOutcomeResponse),
+        value if value.starts_with("health.") => decode!(v1::HealthResponse),
+        value if value.starts_with("projection_status.") => {
+            decode!(v1::GetProjectionStatusResponse)
+        }
+        value if value.starts_with("query_projection.") => {
+            decode!(v1::QueryProjectionResponse)
+        }
+        value if value.starts_with("revoke_capability.") => {
+            decode!(v1::RevokeCapabilityResponse)
+        }
+        value if value.starts_with("scan_commits.") => decode!(v1::ScanCommitsResponse),
+        value if value.starts_with("scan_index.") => decode!(v1::ScanIndexResponse),
+        value if value.starts_with("stats.") => decode!(v1::StatsResponse),
+        _ => {
+            return Err(io::Error::other(
+                "unknown releasable response-charge candidate",
+            ));
+        }
+    };
+    result.map_err(|_| io::Error::other(format!("invalid public response-charge case {case_id}")))
+}
+
+fn append_varint(output: &mut Vec<u8>, mut value: u64) {
+    loop {
+        let mut byte = u8::try_from(value & 0x7f).expect("seven-bit varint chunk");
+        value >>= 7;
+        if value != 0 {
+            byte |= 0x80;
+        }
+        output.push(byte);
+        if value == 0 {
+            return;
+        }
+    }
+}
+
+fn varint_length(mut value: usize) -> usize {
+    let mut length = 1;
+    while value >= 0x80 {
+        value >>= 7;
+        length += 1;
+    }
+    length
+}
+
+fn response_charge_boundary(total_length: usize) -> Vec<u8> {
+    let mut encoded = v1::ValidateContractResponse {
+        result: Some(v1::validate_contract_response::Result::Valid(v1::Unit {})),
+    }
+    .encode_to_vec();
+    append_varint(&mut encoded, (2_047_u64 << 3) | 2);
+    let fixed_length = encoded.len();
+    let payload_length = (1..=10)
+        .find_map(|length_bytes| {
+            total_length
+                .checked_sub(fixed_length + length_bytes)
+                .filter(|payload| varint_length(*payload) == length_bytes)
+        })
+        .expect("boundary fixture length can carry one unknown field");
+    append_varint(
+        &mut encoded,
+        u64::try_from(payload_length).expect("fixture length fits u64"),
+    );
+    encoded.resize(total_length, 0);
+    encoded
+}
+
+fn response_charge_candidate(case_id: &str) -> Result<Option<Vec<u8>>, Box<dyn Error>> {
+    let encoded = match case_id {
+        "boundary.exact_ceiling" => response_charge_boundary(4_194_304),
+        "boundary.one_over" => response_charge_boundary(4_194_305),
+        "commit_notification.commit_oversize" => v1::CommitNotification {
+            notification: Some(v1::commit_notification::Notification::Commit(
+                response_charge_commit(1_024, 4_096),
+            )),
+        }
+        .encode_to_vec(),
+        "commit_notification.commit_representative" => v1::CommitNotification {
+            notification: Some(v1::commit_notification::Notification::Commit(
+                response_charge_commit(2, 24),
+            )),
+        }
+        .encode_to_vec(),
+        "commit_notification.terminal" => v1::CommitNotification {
+            notification: Some(v1::commit_notification::Notification::Terminal(
+                v1::CommitSubscriptionTerminal {
+                    reason: v1::CommitSubscriptionEndReason::LifetimeElapsed as i32,
+                    resume_after: Some(public_applied(1)),
+                },
+            )),
+        }
+        .encode_to_vec(),
+        "contract_validation.invalid_empty_source" => v1::ValidateContractResponse {
+            result: Some(v1::validate_contract_response::Result::Invalid(
+                v1::CompilationDiagnostics {
+                    diagnostics: Some(v1::compilation_diagnostics::Diagnostics::Syntax(
+                        v1::SyntaxDiagnosticList {
+                            diagnostics: vec![v1::SyntaxDiagnostic {
+                                code: "RDB-S005".to_owned(),
+                                summary: "contract source ended before the declaration was complete"
+                                    .to_owned(),
+                                help: Some(
+                                    "use the grammar-version-1 spelling shown in the language reference"
+                                        .to_owned(),
+                                ),
+                                span: Some(v1::SourceSpan { start: 0, end: 0 }),
+                                expected: vec!["contract".to_owned()],
+                            }],
+                        },
+                    )),
+                },
+            )),
+        }
+        .encode_to_vec(),
+        "contract_validation.valid" => v1::ValidateContractResponse {
+            result: Some(v1::validate_contract_response::Result::Valid(v1::Unit {})),
+        }
+        .encode_to_vec(),
+        "create_capability.created" => public_create_capability_results()
+            .into_iter()
+            .find(|(branch, _)| *branch == "normal-created")
+            .expect("normal-created fixture")
+            .1
+            .encode_to_vec(),
+        "deploy_contract.activated" => v1::DeployContractResponse {
+            result: Some(v1::deploy_contract_response::Result::Activated(
+                public_contract_descriptor(),
+            )),
+        }
+        .encode_to_vec(),
+        "execute_command.journaled" => public_execute_response(
+            v1::execute_command_response::CompletionStatus::Committed as i32,
+        )
+        .encode_to_vec(),
+        "execute_command.read_only" => public_execute_response(
+            v1::execute_command_response::CompletionStatus::ExecutedReadOnly as i32,
+        )
+        .encode_to_vec(),
+        "explain_command.found_budget" => v1::ExplainCommandResponse {
+            result: Some(v1::explain_command_response::Result::Found(
+                response_charge_explained_command(),
+            )),
+        }
+        .encode_to_vec(),
+        "get_active_contract.present" => v1::GetActiveContractResponse {
+            result: Some(v1::get_active_contract_response::Result::Present(
+                public_contract_descriptor(),
+            )),
+        }
+        .encode_to_vec(),
+        "get_commit.found_oversize" => v1::GetCommitResponse {
+            result: Some(v1::get_commit_response::Result::Found(
+                response_charge_commit(1_024, 4_096),
+            )),
+        }
+        .encode_to_vec(),
+        "get_commit.found_representative" => v1::GetCommitResponse {
+            result: Some(v1::get_commit_response::Result::Found(
+                response_charge_commit(2, 24),
+            )),
+        }
+        .encode_to_vec(),
+        "get_entity.found_record" => v1::GetEntityResponse {
+            result: Some(v1::get_entity_response::Result::Found(v1::Entity {
+                entity_key: response_charge_entity_key(1, 24, 0),
+                entity_version: 1,
+                written_by_contract_version: 1,
+                fields: Some(response_charge_string_record(17)),
+            })),
+        }
+        .encode_to_vec(),
+        "get_outcome.found_replayed" => v1::GetOutcomeResponse {
+            result: Some(v1::get_outcome_response::Result::Found(
+                public_execute_response(
+                    v1::execute_command_response::CompletionStatus::Replayed as i32,
+                ),
+            )),
+        }
+        .encode_to_vec(),
+        "health.authenticated" => response_charge_authenticated_health().encode_to_vec(),
+        "health.prebootstrap" => v1::HealthResponse {
+            result: Some(v1::health_response::Result::PreBootstrap(
+                v1::PreBootstrapHealth {
+                    lifecycle: v1::PreBootstrapLifecycle::InitializingBootstrap as i32,
+                    liveness: true,
+                    readiness: false,
+                },
+            )),
+        }
+        .encode_to_vec(),
+        "projection_status.uninitialized" => v1::GetProjectionStatusResponse {
+            result: Some(v1::get_projection_status_response::Result::Found(
+                v1::ProjectionStatus {
+                    identity: Some(response_charge_projection_identity()),
+                    lifecycle: v1::ProjectionLifecycle::Building as i32,
+                    published: None,
+                    candidate: None,
+                    published_apply_mode: None,
+                    failure: None,
+                    authoritative_head: Some(public_applied(1)),
+                },
+            )),
+        }
+        .encode_to_vec(),
+        "query_projection.ready_page" => response_charge_projection_page().encode_to_vec(),
+        "revoke_capability.revoked" => v1::RevokeCapabilityResponse {
+            result: Some(v1::revoke_capability_response::Result::Revoked(
+                public_capability_transition(),
+            )),
+        }
+        .encode_to_vec(),
+        "scan_commits.page_with_cursor" => v1::ScanCommitsResponse {
+            page: Some(v1::CommitPage {
+                items: vec![response_charge_commit(2, 24)],
+                next_cursor: Some(vec![0x88; 16]),
+                observed_fence: Some(public_applied(1)),
+            }),
+        }
+        .encode_to_vec(),
+        "scan_index.page_with_cursor" => response_charge_index_page().encode_to_vec(),
+        "stats.populated" => v1::StatsResponse {
+            active_cursors: 7,
+            active_commit_subscribers: 3,
+            last_commit_sequence: Some(1),
+            pending_outbox_deliveries: Some(11),
+            known_projections: Some(2),
+        }
+        .encode_to_vec(),
+        _ => {
+            return Err(io::Error::other(format!(
+                "unknown service response-charge case {case_id}"
+            ))
+            .into());
+        }
+    };
+    Ok(Some(encoded))
+}
+
+fn response_charge_entity_key(owner: u32, length: usize, ordinal: u32) -> Vec<u8> {
+    let mut key = public_entity_key(owner);
+    key.resize(length, 0);
+    if length >= 10 {
+        key[length - 4..].copy_from_slice(&ordinal.to_be_bytes());
+    }
+    key
+}
+
+fn response_charge_string_record(length: usize) -> v1::ValueRecord {
+    v1::ValueRecord {
+        fields: vec![v1::ValueField {
+            field_id: Some(1),
+            name: String::new(),
+            value: Some(v1::Value {
+                kind: Some(v1::value::Kind::StringValue("x".repeat(length))),
+            }),
+        }],
+    }
+}
+
+fn response_charge_commit(entity_count: usize, key_length: usize) -> v1::Commit {
+    let mut commit = public_commit();
+    commit.contract_lineage = "budget1".to_owned();
+    commit.actor.as_mut().expect("fixture actor").principal_id = "service-actor".to_owned();
+    commit.conflict_hashes.clear();
+    commit.events.clear();
+    commit
+        .outcome
+        .as_mut()
+        .expect("fixture outcome")
+        .outcome_name = "Completed".to_owned();
+    commit.affected_entities = (0..entity_count)
+        .map(|ordinal| v1::AffectedEntity {
+            entity_key: response_charge_entity_key(
+                1,
+                key_length,
+                u32::try_from(ordinal).expect("fixture ordinal fits u32"),
+            ),
+            entity_version: 1,
+        })
+        .collect();
+    commit
+}
+
+fn response_charge_json(length: usize) -> String {
+    assert!(length >= 8);
+    format!("{{\"x\":\"{}\"}}", "x".repeat(length - 8))
+}
+
+fn response_charge_explained_command() -> v1::ExplainedCommand {
+    let mut explained = public_explained_command();
+    explained
+        .contract
+        .as_mut()
+        .expect("fixture descriptor")
+        .contract_lineage = "budget-led".to_owned();
+    let explanation = explained.explanation.as_mut().expect("fixture explain");
+    explanation.binding_ids = vec![0];
+    explanation.read_fields = vec![
+        v1::BindingFieldRef {
+            binding_id: 0,
+            field_id: 1,
+        },
+        v1::BindingFieldRef {
+            binding_id: 0,
+            field_id: 2,
+        },
+    ];
+    explanation.write_fields = vec![
+        v1::BindingFieldRef {
+            binding_id: 0,
+            field_id: 1,
+        },
+        v1::BindingFieldRef {
+            binding_id: 0,
+            field_id: 2,
+        },
+        v1::BindingFieldRef {
+            binding_id: 0,
+            field_id: 3,
+        },
+    ];
+    explanation.invariant_ids = vec![1, 2];
+    explanation.event_type_ids.clear();
+    explanation.outcome_ids = vec![1, 2, 3];
+    explanation.rendered_text = "x".repeat(1_984);
+    for (schema, length) in [
+        (explained.input_schema.as_mut().expect("input schema"), 649),
+        (
+            explained.outcome_schema.as_mut().expect("outcome schema"),
+            1_704,
+        ),
+    ] {
+        schema.canonical_json = response_charge_json(length);
+        schema.schema_hash = hash_schema(schema.canonical_json.as_bytes())
+            .as_bytes()
+            .to_vec();
+    }
+    explained
+}
+
+fn response_charge_authenticated_health() -> v1::HealthResponse {
+    v1::HealthResponse {
+        result: Some(v1::health_response::Result::Authenticated(
+            v1::AuthenticatedHealth {
+                status: v1::HealthStatus::Ready as i32,
+                active_contract_version: Some(1),
+                last_commit_sequence: Some(1),
+                components: vec![
+                    v1::HealthComponent {
+                        component: v1::HealthComponentKind::AuthoritativeStorage as i32,
+                        status: v1::HealthComponentStatus::Healthy as i32,
+                    },
+                    v1::HealthComponent {
+                        component: v1::HealthComponentKind::Catalog as i32,
+                        status: v1::HealthComponentStatus::Healthy as i32,
+                    },
+                    v1::HealthComponent {
+                        component: v1::HealthComponentKind::CommitCoordinator as i32,
+                        status: v1::HealthComponentStatus::Healthy as i32,
+                    },
+                ],
+                started_at: Some(v1::Timestamp {
+                    seconds: 1,
+                    nanos: 0,
+                }),
+                build: Some(v1::BuildInfo {
+                    semantic_version: "0.1.0".to_owned(),
+                    git_revision: "0123456789abcdef".to_owned(),
+                    rust_version: "1.97.0".to_owned(),
+                    enabled_features: vec!["abc".to_owned(), "defg".to_owned()],
+                    storage_format_version: 1,
+                    contract_ir_version: 1,
+                    mcp_protocol_baseline: "2025-06-18".to_owned(),
+                }),
+            },
+        )),
+    }
+}
+
+fn response_charge_projection_identity() -> v1::ProjectionIdentity {
+    v1::ProjectionIdentity {
+        contract_lineage: "budget1".to_owned(),
+        projection_id: 1,
+        projection_plan_hash: vec![0x77; 32],
+    }
+}
+
+fn response_charge_projection_page() -> v1::QueryProjectionResponse {
+    let frontier = public_applied(1);
+    v1::QueryProjectionResponse {
+        result: Some(v1::query_projection_response::Result::Ready(
+            v1::QueryProjectionReady {
+                data: Some(v1::ProjectionPage {
+                    items: vec![v1::ProjectionRow {
+                        group: vec![v1::Value {
+                            kind: Some(v1::value::Kind::StringValue("group".to_owned())),
+                        }],
+                        values: Some(response_charge_string_record(11)),
+                    }],
+                    next_cursor: Some(vec![0x88; 16]),
+                    observed_fence: Some(v1::ProjectionPageFence {
+                        identity: Some(response_charge_projection_identity()),
+                        generation: 1,
+                        frontier: Some(frontier),
+                    }),
+                }),
+                frontier: Some(frontier),
+            },
+        )),
+    }
+}
+
+fn response_charge_index_page() -> v1::ScanIndexResponse {
+    let row = |length, ordinal: u32| v1::IndexRow {
+        index_entry_key: {
+            let mut key = public_index_key(1);
+            key.resize(20, 0);
+            key[16..].copy_from_slice(&ordinal.to_be_bytes());
+            key
+        },
+        values: Some(response_charge_string_record(length)),
+    };
+    v1::ScanIndexResponse {
+        page: Some(v1::IndexPage {
+            items: vec![row(7, 0), row(13, 1)],
+            next_cursor: Some(vec![0x88; 16]),
+            observed_fence: Some(v1::IndexScanFence { index_epoch: 1 }),
+        }),
+    }
 }
 
 fn append_wire_vector(output: &mut String, name: &str, message: &impl Message) {
