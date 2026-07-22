@@ -60,6 +60,9 @@ direction, merged draft, or implementation choice.
 | [0036](0036-schema-directed-submitted-query-components.md) | Schema-Directed Submitted Query Components | Accepted |
 | [0037](0037-rust-sdk-foundational-type-dependencies.md) | Rust SDK Foundational Type Dependencies | Accepted |
 | [0038](0038-partition-filtered-authoritative-index-scans.md) | Partition-Filtered Authoritative Index Scans | Accepted |
+| [0039](0039-v2-index-migration-integration.md) | V2 Index Migration Integration | Proposed |
+| [0040](0040-public-grpc-mcp-parity-bridge.md) | Public gRPC MCP Parity Bridge | Proposed |
+| [0041](0041-cli-public-flow-and-output-contract.md) | CLI Public Flow and Output Contract | Proposed |
 
 The human architecture review on 2026-07-12 approved the direction represented
 by ADR-0001 through ADR-0012. The human maintainer accepted ADR-0001 through
@@ -107,6 +110,17 @@ authority-bearing server dependency. ADR-0038 adds exact partition identity to
 durable index rows, a restartable offline V1-to-V2 migration, and bounded sparse
 scan progress so explicit partition scopes reach storage without an unrestricted
 post-filter or a policy dependency in the storage layer.
+
+ADR-0039 remains Proposed for exact V2 descriptor isolation, codec-bound
+migration evidence, historical-evidence replacement and ordering, corrective
+package sequencing, linear startup migration, and narrow pre-sequence capacity
+classification. ADR-0040 remains Proposed for the six-RPC public parity bridge,
+conditional discovery, outcome-resource lookup, immutable operation-schema
+catalog, and WP-137 gate placement. ADR-0041 remains Proposed for WP-150's exact
+public-client dependency, credential, retry, configuration, and JSONL output
+contract; it reserves but does not register the separately reviewed WP-155
+backup/restore boundary. None of these proposals override current authority
+until their exact text and companion reconciliations receive human acceptance.
 
 ## Workflow
 
