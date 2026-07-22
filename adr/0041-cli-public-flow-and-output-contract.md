@@ -3,15 +3,16 @@
 - **Status:** Proposed
 - **Direction approved:** No
 - **Exact text accepted:** No
-- **Requires:** ADR-0006, ADR-0007, ADR-0009, ADR-0011, ADR-0018,
-  ADR-0028, ADR-0037, and ADR-0040
-- **Would amend:** SPEC Sections 5.2, 16.1, 16.2, and 16.6; ADR-0009's
+- **Requires:** ADR-0006, ADR-0007, ADR-0008, ADR-0009, ADR-0011, ADR-0018,
+  ADR-0028, ADR-0031, ADR-0037, and ADR-0040
+- **Would amend:** SPEC Sections 5.2, 5.4, 16.1, 16.2, and 16.6; ADR-0009's
   credential-delivery ownership and exact `base64`/`zeroize` direct-owner rows
   only as expressly described below, without broadening its isolated
   `riffdb_auth::bootstrap_secret` CLI exception; ADR-0037's exact public-client
   dependency allowlist only to add `zeroize`; ADR-0040's WP-137 SDK ownership
   and required ADRs; and WP-150's exact dependency, credential, configuration,
-  and output evidence; would add WP-135 and WP-137 as WP-150 predecessors and
+  and output evidence; would add WP-137 as a WP-135 predecessor, add WP-135 and
+  WP-137 as WP-150 predecessors, freeze a launchable WP-135 public runner, and
   reserve a separately reviewed WP-155 before WP-200 for the required public
   backup/restore flow
 - **Decision deadline:** Before WP-137 freezes the CLI-consumed
@@ -62,28 +63,33 @@ There are also three current boundary gaps:
 3. The public client's transport classification and checked public-error model
    are client-owned boundaries. WP-150 cannot safely copy their private logic,
    and its allowed paths cannot add the required client APIs. Proposed WP-137
-   must therefore land the narrow CLI-consumed retry dispositions and
-   serialization-neutral public-error views before WP-150 starts.
+   must therefore land the narrow operation-specific retry helpers and
+   serialization-neutral public-error views before WP-150 starts. Retry
+   classification remains private to the client.
 
 ## Proposed Decision
 
 ### Dependency and authority boundary
 
-WP-135 and WP-137 are required predecessors of WP-150. WP-135 first freezes the
-public comparison adapter and workload preflight that WP-150 may launch without
-editing comparison-owned sources. In addition to its public gRPC parity work,
-WP-137 owns the public Rust client's operation-specific retry helpers and
-dispositions for Execute, bootstrap capability create, and normal capability
-create. It also owns checked, serialization-neutral public-error views or
+WP-137 is additionally a required predecessor of WP-135 so the public comparison
+runner can load an exact protected normal credential without copying the
+filesystem boundary. WP-135 and WP-137 are required predecessors of WP-150.
+WP-135 freezes the public comparison adapter and workload preflight that WP-150
+may launch without editing comparison-owned sources. In addition to its public
+gRPC parity work, WP-137 owns the public Rust client's operation-specific retry
+helpers for Execute, bootstrap capability create, and normal capability create.
+Their closed classifications remain private to the helpers. It also owns
+checked, serialization-neutral public-error views or
 re-exports sufficient to render the accepted public code, safe message, recovery
 action, structured details, and optional incident ID. Those interfaces remain
 SDK-owned even though WP-150 owns its versioned CLI output DTOs.
 
 WP-137 exposes no generic arbitrary-RPC retry helper, callback-based retry
 engine, status-only retry predicate, raw generated error message, or unchecked
-transport detail. WP-150 consumes the three narrow helpers and the SDK-owned
-public-error surface. It neither duplicates their classification nor imports a
-private client module to reach it.
+transport detail. WP-150 consumes only the three helpers' checked terminal
+responses or `ClientError` values and the SDK-owned public-error surface. It
+neither receives nor duplicates their private classification and does not import
+a private client module to reach it.
 
 `riffdb-cli` remains a safe-Rust binary/library package and has exactly these
 direct production dependencies for WP-150:
@@ -106,7 +112,7 @@ purpose is added:
 
 | Dependency | Complete direct first-party owner set after acceptance | Added purpose |
 |---|---|---|
-| `base64` | `riffdb-auth`, `riffdb-cli` | CLI structural machine-output bytes only; never token decoding |
+| `base64` | `riffdb-auth`, `riffdb-proto`, `riffdb-service`, `riffdb-api-mcp`, `riffdb-cli` | Auth-only credential decoding; Proto structural outcome-locator validation; service-owned canonical outcome-locator tuple encoding/decoding; MCP locator/Value/opaque-byte presentation; and CLI structural machine input/output bytes |
 | `zeroize` | `riffdb-auth`, `riffdb-client-rust`, `riffdb-cli` | bounded public-delivery credential buffers only |
 
 ADR-0037's exact `riffdb-client-rust` allowlist gains only that same reviewed
@@ -115,12 +121,34 @@ dependency, and neither the client nor CLI gains token encoding or decoding
 ownership.
 
 Default features remain empty. The CLI has no direct Tonic dependency and uses
-`riffdb-client-rust` for every database request. It has no dependency on
+`riffdb-client-rust` for every database request. It has no direct dependency on
+or source import from
 `riffdb-api-grpc`, `riffdb-catalog`, `riffdb-commit`, `riffdb-conflict`,
 `riffdb-contract-*`, `riffdb-errors`, `riffdb-idempotency`, `riffdb-policy`,
 `riffdb-proto`, `riffdb-runtime`, `riffdb-server`, `riffdb-service`,
 `riffdb-storage-*`, or `riffdb-types`. A future direct foundational type edge
 requires its own review rather than being hidden behind this decision.
+The isolated `riffdb-auth` crate edge has existing transitive storage/type
+dependencies; that transitivity grants no CLI import or symbol access beyond
+the exact `bootstrap_secret` architecture boundary below.
+
+The exact 2026-07-22 scratch lock-graph review of this direct allowlist is
+relative to the then-current root lock, builds on Rust 1.97.0, passed
+`cargo deny check` for advisories, licenses, bans, and sources, and found no
+native `links`, `-sys`, `cc`, CMake, or bindgen edge. It adds no duplicate-
+version family; the existing `hashbrown` and `syn` duplicates remain. Newly
+resolved build scripts are limited to `serde`, `serde_json`, and `zmij` and
+perform no network or native-compiler work. The active third-party unsafe
+inventory added by this graph is in `anstyle`, `clap_lex`, `serde_json`,
+`winnow`, and `zmij`; enabling Tokio multithreading also expands already
+accepted Tokio unsafe code. `toml_parser`'s optional unsafe path is disabled and
+its active configuration conditionally forbids unsafe code. ADR-0008's rmcp
+scratch selected serde_json 1.0.151 while this exact CLI edge pins 1.0.150, so
+the combined WP-140/WP-150 graph is already known to require the fresh lock,
+feature, build-script, native, license, and unsafe review. Accepting this record
+accepts only the inventory above; every first-party crate remains
+`#![forbid(unsafe_code)]`, and any changed resolved graph requires fresh human
+review before the dependency or lockfile merges.
 
 The sole auth-crate access is the isolated
 `riffdb_auth::bootstrap_secret` module. Architecture tests reject every
@@ -263,6 +291,16 @@ tighter special cases. Readers enforce the applicable bound while reading and
 probe for one excess byte; they do not first buffer an unbounded file or stdin
 stream. UTF-8-required inputs reject invalid UTF-8 without lossy conversion.
 
+The 1,048,576-byte JSON limit is an intentional aggregate CLI presentation cap,
+not a claim that every value at an individual SDK scalar maximum has a JSON
+spelling below that cap. Base64 expansion and JSON escaping can make an SDK-
+valid byte or string value too large for this CLI input path. Such a document
+fails locally as `input_too_large` even though a caller using another bounded
+public SDK construction may represent the decoded value. Within the aggregate
+cap, the CLI applies exactly the SDK's per-field, depth, cardinality, and
+semantic validation and never tightens one silently. This presentation limit
+does not change a contract, service, gRPC, or canonical-value maximum.
+
 Recursive Values, records, lists, request collections, page limits, and string
 or byte fields use the same depth, cardinality, and scalar bounds as the
 corresponding checked public SDK validators. CLI parsing must reject a value
@@ -307,6 +345,28 @@ output path and completes the exact retained-file procedure below before the
 first RPC. A bootstrap request's public `CapabilityId` is the retained
 document's exact ID.
 
+`capability.bootstrap` additionally accepts optional
+`--bearer-output <path>`. When present, the CLI derives no new credential: it
+borrows the same retained canonical token presentation already needed for
+bootstrap metadata, constructs a redacted public-client `BearerCredential`, and
+durably writes the exact 43-byte presentation to a protected output file. In
+generation mode, the generated 132-byte bootstrap output and optional 43-byte
+bearer output are both created exclusively, file-synced, closed,
+directory-synced, and protected-reread before any bootstrap RPC. In existing-
+input mode, the bounded stdin document or existing ADR-0009 protected file is
+never recreated or overwritten; the CLI retains its parsed credential in
+memory for the complete helper call, and only the optional bearer output goes
+through exclusive durable creation and reread. A protected-file input is loaded
+through the existing auth-owned protected loader, while a stdin input is read
+through the existing exact bounded reader. The bearer reread uses only
+`riffdb_client_rust::load_protected_bearer_credential` and
+`has_same_presentation`; the CLI performs no base64 operation, decode, digest,
+or authentication. A failure leaves any already created file for explicit
+operator handling, performs no automatic overwrite/delete, and makes no RPC.
+This is the reviewed bridge from the retained bootstrap credential to later
+ordinary authenticated public calls; it does not reissue or transform the
+token. The acceptance demo always supplies this option.
+
 A normal `capability create` also requires an explicit credential output path.
 The token returned by the one successful normal-create response is never
 printed. The CLI retains it using the same procedure, adjusted to the exact
@@ -349,6 +409,96 @@ comparison flow. The CLI does not open a database file, instantiate a service,
 authenticate a principal, evaluate policy, compile or execute a command, or
 construct an internal semantic result.
 
+### WP-135 public runner handoff
+
+WP-135 creates the nested-workspace package
+`riffdb-budget-comparison-riffdb-grpc` and evidence binary
+`riffdb-budget-public` under
+`examples/budget-comparison/riffdb-grpc/`. It depends on WP-137 and uses only
+the public Rust client/protocol/foundational value surface plus the existing
+comparison core. Production code has no auth, service, server, policy, commit,
+catalog, runtime, conflict, idempotency, storage, or compiler dependency. The
+binary is a long-lived comparison/evidence runner, not a shipped RiffDB server
+or a private CLI library.
+
+The package exposes its adapter from `src/lib.rs`, its named runner from
+`src/bin/riffdb-budget-public.rs`, and has only these normal dependency owners:
+`riffdb-budget-comparison-core`, `riffdb-client-rust`, `riffdb-proto`,
+`riffdb-types`, and these exact third-party rows:
+
+```toml
+tokio = { version = "=1.52.0", default-features = false, features = ["macros", "rt-multi-thread"] }
+tonic = { version = "=0.14.6", default-features = false, features = ["channel", "codegen"] }
+```
+
+The root comparison process harness may use
+its existing test-only bootstrap dependencies; none becomes a normal dependency
+of the adapter package.
+
+The exact subprocess invocation is:
+
+```text
+riffdb-budget-public \
+  --protocol riffdb.budget.public-run/v1 \
+  --case sequential|contention|same_key_replay \
+  --endpoint http://<literal-loopback-ip>:<nonzero-port> \
+  --credential-file <protected-43-byte-file>
+```
+
+It accepts no stdin, TOML, raw-token argument, bootstrap document, ambient
+credential, database path, or internal service handle. Each case runs against a
+fresh already bootstrapped database with the exact Budget contract active. The
+adapter never resets storage or deploys a contract. A same-key replay test uses
+explicit commit-notification synchronization and deliberately discards the first
+response; final process-level post-commit connection-loss proof remains
+WP-190/WP-200 evidence rather than a WP-135 failpoint claim.
+
+After the executable name, argv is exactly the eight arguments shown above in
+that exact flag order. The first seven are exact UTF-8 flag/value arguments;
+the final credential path remains an `OsStr` and need not be UTF-8. Every flag
+occurs once. A missing, duplicate, unknown, reordered, combined
+`--flag=value`, positional, non-UTF-8 first-seven, empty, or additional argument
+is invalid invocation. The complete platform-byte argv payload is at most 8,192
+bytes. The protocol and case values must equal their shown closed spellings.
+The endpoint is at most 512 bytes and passes the exact literal-loopback HTTP
+grammar defined for the CLI. The credential path is nonempty, has no NUL, is at
+most 4,096 platform bytes, and is loaded only through WP-137's protected
+loader. The runner reads no environment variable and performs no configuration
+or path discovery.
+
+On success the runner writes exactly one compact JSON line, at most 4,096 bytes,
+with this closed shape and key order:
+
+```json
+{"schema":"riffdb.budget.public-run/v1","adapter":"riffdb-public-grpc-v1","case":"sequential","workload_version":1,"status":"passed"}
+```
+
+Only the checked `case` spelling varies. Exit `0` requires that exact object and
+shared-oracle success. Exit `1` is a checked API/oracle/preflight failure; exit
+`2` is invalid invocation/configuration. Both failure exits write no stdout.
+Exit `1` writes exactly `riffdb budget public run failed\n`; exit `2` writes
+exactly `riffdb budget public invocation invalid\n`. A signal or other code is
+invalid runner behavior. The three fixtures
+`public-run-v1-success.jsonl`, `public-run-v1-checked-error.txt`, and
+`public-run-v1-invalid-invocation.txt` under the package's `fixtures/` directory
+freeze those complete stdout/stderr bytes. WP-150 parses this closed protocol
+and never relays child stdout or stderr.
+
+The exact CLI command is
+`riffdb demo budget --runner <path> --case
+sequential|contention|same_key_replay`, whose machine identity remains
+`demo.budget`. The runner path is command-specific rather than configuration.
+This command requires the resolved normal `--credential-file`/configuration
+path; an environment-only bearer or bootstrap document returns fixed local
+error `demo_requires_credential_file`. WP-150 launches the path directly with
+no shell, clears the child environment, closes stdin, and passes only the exact
+protocol, case, endpoint, and normal credential-file path. It drains stdout and
+stderr concurrently with independent 4,096-byte limits, kills and reaps the
+child after a fixed 180-second deadline or either overflow, accepts only the
+exit/output combinations above, and renders its own checked
+`riffdb.cli.output/v1` result. Correctness tests inject process and deadline
+hooks rather than sleeping.
+
 SPEC Section 16.1's backup and restore CLI commands remain required for POC
 exit, but are not part of WP-150. Reserve a separately reviewed **WP-155: Public
 backup and restore administration** after WP-150 and before WP-200. Its later
@@ -370,9 +520,10 @@ commands.
 ### Retry and uncertainty identity
 
 The CLI invokes WP-137's three typed public-client retry helpers and consumes
-their closed operation-specific dispositions. It does not classify Tonic
-statuses, transport errors, or response text itself and never retries through a
-generic arbitrary-RPC loop. The helpers never retry a definitive validation,
+only their checked terminal response or `ClientError`. It does not observe the
+helpers' private dispositions, classify Tonic statuses, transport errors, or
+response text itself, and never retries through a generic arbitrary-RPC loop.
+The helpers never retry a definitive validation,
 authorization, contract, idempotency-reuse, or declared business outcome.
 `max_attempts` includes the initial call. Every transport attempt receives a
 fresh outer ADR-0018 `RequestId`; the CLI does not reuse one across attempts and
@@ -424,10 +575,55 @@ with keys serialized in the shown order:
 lowercase dotted clap command path. `ok` is a JSON Boolean. Exactly one of
 `result` or `error` is present. Each command owns one closed serializable output
 DTO rather than serializing generated Protobuf or arbitrary Rust debug values.
+
+WP-150 freezes exactly these command paths, in this order:
+
+```text
+contract.validate
+contract.deploy
+command.execute
+command.outcome
+entity.get
+commit.show
+projection.query
+capability.bootstrap
+capability.create
+capability.revoke
+server.health
+demo.budget
+```
+
+`capability.bootstrap` owns both the retained-document generation/input modes
+and the public bootstrap invocation; it is not split into an unreviewed second
+machine-output identity. `demo.budget` launches only the already owned checked
+budget-comparison flow. WP-150 adds no other v1 command path. The separately
+reviewed WP-155 decision will freeze its backup/restore paths before their
+fixtures or implementation merge.
+
+SPEC Section 16.1 requires `contract generate` only when needed. WP-150 deploys
+the checked-in POC Budget contract and uses the already generic/generated public
+SDK surface delivered upstream, so no CLI-side generation step is needed for
+this POC flow. Omitting that conditional path from the exact v1 registry neither
+drops an active acceptance operation nor authorizes later code generation under
+WP-150.
+
 The exact key set, presence rules, and representative success, public-error,
-local-error, and uncertainty objects for every WP-150 command must be checked
-in as reviewed golden fixtures before implementation of that command merges.
+local-error, and uncertainty objects for every applicable terminal branch of
+each WP-150 command must be checked in as reviewed golden fixtures before
+implementation of that command merges.
 No map, flattened catch-all, or arbitrary diagnostic text is permitted.
+
+WP-150 therefore begins with one interface-only PR. It contains the complete
+clap command/argument grammar, configuration examples, exit-code registry,
+closed result/error DTO declarations, and golden JSONL bytes for every
+applicable terminal branch of all 12 command identities, including the runner
+handoff. It contains no network call, credential read/write, subprocess launch,
+or command implementation. One explicit human acceptance covers that complete
+registry; only then may command implementations merge against it. Accepting
+this ADR selects the envelope and scalar rules but deliberately does not accept
+those not-yet-authored command-specific bytes or arguments. A later registry
+change repeats the compatibility review rather than being hidden in an
+implementation PR.
 
 The following scalar and RiffDB-value rules are part of v1 and apply to every
 command fixture:
@@ -562,7 +758,9 @@ source, IR, hashing rule, storage key, or database migration. It adds the
 source-additive Rust SDK functions
 `load_protected_bearer_credential` and
 `BearerCredential::has_same_presentation`, a new CLI configuration interface,
-and the `riffdb.cli.output/v1` machine-output surface. The loader's exact
+the `capability.bootstrap --bearer-output <path>` delivery option, the
+`riffdb.budget.public-run/v1` WP-135 child-process protocol, and the
+`riffdb.cli.output/v1` machine-output surface. The loader's exact
 presentation and protected-file behavior is a reviewed public SDK contract;
 it is not a token-decoding or authentication compatibility promise. Human
 output is additive and explicitly unstable.
@@ -572,12 +770,19 @@ ADR-0009's exact sole CLI auth access to
 `riffdb_auth::bootstrap_secret`, explicitly forbid the CLI and public client
 from calling the root auth normal-token loader, and amend only its
 credential-delivery ownership to permit the presentation-only public-client
-loader defined here and its exact `base64`/`zeroize` direct-owner rows as listed
-above; (2) amend ADR-0037 to add only the exact public-client `zeroize` edge;
+loader defined here; the public loader guarantees protected presentation bytes,
+while the server remains the sole owner of canonical decoded authentication,
+and `--bearer-output` is byte-for-byte canonical only because the auth-owned
+bootstrap helper produced those same bytes; the complete direct-owner table
+adds `riffdb-proto`, `riffdb-service`, `riffdb-api-mcp`, and `riffdb-cli` to the existing `riffdb-auth` `base64`
+owner and adds the exact public-client/CLI `zeroize` owners listed above; (2)
+amend ADR-0037 to add only the exact public-client `zeroize` edge;
 (3) amend ADR-0040 and WP-137 to require ADR-0009, ADR-0037, and this record and
 to own the exact loader, comparison, dependency, paths, and tests; (4) make
-WP-135 and WP-137 WP-150 predecessors and record WP-150's exact requirements,
-dependencies, and fixture evidence; and (5) reserve the separately reviewed
+WP-137 a WP-135 predecessor, name the WP-135 runner artifact and
+`riffdb.budget.public-run/v1` protocol, make WP-135 and WP-137 WP-150
+predecessors, and record the exact process fixtures, requirements,
+dependencies, and acceptance evidence for both packages; and (5) reserve the separately reviewed
 WP-155 before WP-200 without adding its registry entry or WP-200 edge until that
 later decision defines them completely. This is not an implied amendment: until
 that reconciliation is accepted, ADR-0009 and ADR-0037's existing dependency
@@ -601,7 +806,10 @@ fixtures obey all v1 rules.
   presentation loader with ADR-0009's exact Linux object checks; bootstrap
   reads remain inside `riffdb_auth::bootstrap_secret`. Generated files use
   exclusive mode-`0600` creation, file and directory synchronization, close,
-  protected reread, and exact non-exposing comparison.
+  protected reread, and exact non-exposing comparison. Generation mode durably
+  retains and rereads both requested outputs before the bootstrap RPC. Existing-
+  input mode never rewrites its stdin or protected-file source and durably
+  retains and rereads only the requested bearer output.
 - Loopback plaintext is a closed POC constraint. DNS, remote hosts, proxy
   inference, TLS ambiguity, and URI credentials fail before connecting.
 - JSON renders only checked public-safe or bounded local DTOs. It never renders
@@ -616,8 +824,15 @@ fixtures obey all v1 rules.
 - The public-client loader performs no base64 decode, digest, capability lookup,
   principal construction, or authorization. Presentation-valid but
   noncanonical token encodings still fail at the auth-owned server decoder.
-- `cargo deny`, feature-tree, license, build-script, and unsafe-inventory review
-  apply to the exact new dependency graph before acceptance.
+- `demo budget` requires a normal protected credential file, invokes its
+  reviewed runner path directly without a shell, clears inherited environment,
+  caps each child output stream at 4,096 bytes, and kills and reaps the child at
+  180 seconds. Child output is parsed as the closed runner protocol and is never
+  relayed as database or CLI authority.
+- The completed scratch `cargo deny`, feature-tree, license, build-script,
+  native-link, and unsafe-inventory review above is part of acceptance evidence.
+  The real workspace resolution must match it or stop for a fresh human review
+  before the dependency or lockfile merges.
 
 ## Testing
 
@@ -637,8 +852,10 @@ Before WP-150, WP-137 must provide:
   loader errors, `Display`, `Debug`, and source chains, proving that neither the
   path nor token is exposed;
 - exhaustive operation-specific Execute, bootstrap-create, and normal-create
-  retry/disposition schedules, including fresh RequestIds, stable semantic
-  identities, uncertain exhaustion, and token-unavailable behavior;
+  helper schedules, including private transport classification, fresh
+  RequestIds, stable semantic identities, uncertain exhaustion, and
+  token-unavailable behavior; callers observe only checked terminal
+  `Result`/`ClientError` values and never the helpers' private dispositions;
 - SDK public-error view/re-export tests proving every accepted public code,
   recovery action, structured-detail branch, optional incident ID, and safe
   bound is available without generated-message parsing or internal errors;
@@ -671,9 +888,12 @@ WP-150 must provide at least:
   proving no unbounded pre-read and no RPC on rejection;
 - recursive input tests at and beyond every public SDK depth, collection,
   string, byte, and page bound, proving the CLI and SDK accept and reject the
-  same structures without truncation;
-- fixed golden JSONL fixtures plus semantic assertions for every command's
-  success, public error, local error, and uncertainty result;
+  same per-field structures without truncation when their aggregate encoding is
+  within the CLI's 1,048,576-byte limit, and proving the CLI locally rejects an
+  aggregate that exceeds that intentionally stricter limit before any RPC;
+- fixed golden JSONL fixtures plus semantic assertions for every applicable
+  terminal success, public error, local error, and uncertainty branch of every
+  command;
 - equal/one-byte-over tests for the 4,194,304-byte checked output-model and
   rendered-output bounds in both modes, proving oversize and rendering failure
   leave stdout empty;
@@ -685,16 +905,22 @@ WP-150 must provide at least:
   failure messages, and `scripts/demo --dry-run`;
 - filesystem failpoint tests at create, partial write, file sync, close,
   directory open, directory sync, protected reread, and compare, proving no
-  bootstrap RPC occurs before durable revalidation, normal reread comparison
-  uses only `BearerCredential::has_same_presentation`, and no normal token is
-  returned to CLI code from the loader or printed;
+  bootstrap RPC occurs before durable revalidation of every newly created
+  output file, generation mode's bootstrap document and `--bearer-output`
+  retain byte-identical presentations of the one helper-produced token,
+  existing-input mode never recreates or overwrites its source, normal reread
+  comparison uses only `BearerCredential::has_same_presentation`, and no normal
+  token is returned to CLI code from the loader or printed;
 - retry tests proving fresh `RequestId` per attempt, byte-identical semantic
   input, retained command idempotency identity, retained bootstrap ID/token,
   retained normal-create `CapabilityId`, explicit
   `AlreadyCreatedTokenUnavailable`, and no automatic replacement;
 - public process integration for all WP-150 acceptance-demo operations against
-  `riffdbd`, with an architecture assertion that the CLI never opens the redb
-  data path; and
+  `riffdbd`, including direct launch of `riffdb-budget-public` for all three
+  cases, exact one-line runner JSON/exit-code validation, no-shell and
+  cleared-environment assertions, 4,096-byte stdout/stderr overflow cases, the
+  180-second kill-and-reap boundary, and an architecture assertion that the CLI
+  never opens the redb data path; and
 - `cargo test -p riffdb-cli` and `./scripts/demo --dry-run`, followed by the
   workspace formatting, Clippy, test, documentation, dependency-policy, and
   generated-artifact checks required by AGENTS.md.
@@ -706,47 +932,141 @@ POC backup/restore obligation has been completed.
 
 ## Requirements and Work Packages
 
-- **Requirements:** `API-001`, `ID-005`, `MCP-047`, `OUT-001`, `TXN-044`,
-  `POC-001`, `POC-004`, `POC-008`, and `POC-010`
+- **Requirements:** `API-001`, `ID-005`, `MCP-047`, `OUT-001`, `POC-001`,
+  `POC-008`, and `POC-010`
 - **Defines or blocks:** the proposed WP-135/WP-137-to-WP-150 dependencies,
   `WP-150`, and the reserved `WP-155` packaging boundary
 - **Consumed by:** `WP-137`, `WP-150`, proposed `WP-155`, and `WP-200`
 - **Final evidence:** `WP-150` public CLI integration, proposed `WP-155`
   backup/restore integration, and the `WP-200` POC acceptance/demo run
 
+The companion WP-135 reconciliation adds WP-137 as a hard dependency, removes
+`POC-004` from this evidence package because its required post-commit
+connection-loss failpoint becomes explicit WP-190/WP-200 evidence, adds `OUT-001` for the
+same-key replay it actually proves, and adds
+ADR-0005, ADR-0009, ADR-0011, ADR-0015, ADR-0018, ADR-0028, ADR-0031,
+ADR-0037, ADR-0040, and ADR-0041 to its existing ADR-0006 and ADR-0007
+requirements. It must add the nested-workspace package and process fixture:
+
+```text
+examples/budget-comparison/riffdb-grpc/Cargo.toml
+examples/budget-comparison/riffdb-grpc/src/lib.rs
+examples/budget-comparison/riffdb-grpc/src/bin/riffdb-budget-public.rs
+examples/budget-comparison/riffdb-grpc/fixtures/public-run-v1-success.jsonl
+examples/budget-comparison/riffdb-grpc/fixtures/public-run-v1-checked-error.txt
+examples/budget-comparison/riffdb-grpc/fixtures/public-run-v1-invalid-invocation.txt
+examples/budget-comparison/tests/public_comparison.rs
+```
+
+Its package is `riffdb-budget-comparison-riffdb-grpc`, its binary is
+`riffdb-budget-public`, the root nested-workspace manifest adds
+`riffdb-grpc` as an explicit member and declares the `public_comparison` test
+despite `autotests = false`, and its accepted process commands are:
+
+```bash
+cargo build -p riffdb-server --bin riffdbd --target-dir target/wp135-root
+cargo build --manifest-path examples/budget-comparison/Cargo.toml -p riffdb-budget-comparison-riffdb-grpc --bin riffdb-budget-public --target-dir target/wp135-comparison
+RIFFDB_BUDGET_RIFFDBD_BIN="$PWD/target/wp135-root/debug/riffdbd" RIFFDB_BUDGET_RUNNER_BIN="$PWD/target/wp135-comparison/debug/riffdb-budget-public" cargo test --manifest-path examples/budget-comparison/Cargo.toml -p riffdb-budget-comparison --test public_comparison --target-dir target/wp135-comparison -- --test-threads=1
+```
+
+This proves discarded-response uncertainty through the public runner. Actual
+post-commit TCP-loss and restart evidence remains owned by WP-190 and WP-200.
+
+The companion WP-190 reconciliation adds `POC-004` and `TXN-044` to its
+requirements and ADR-0040 and ADR-0041 to its `required_adrs`; it preserves all
+declared dependencies, allowed paths, acceptance commands, and other evidence.
+Its existing ignored `full_recovery_matrix` process test must include two named,
+explicitly synchronized cases. The first lets `riffdbd` durably commit one
+command and then loses the TCP response before a complete public response frame
+is received. The second terminates the server process after the same durable
+point and before response release, then restarts it. In each case a fresh public
+client invocation through ADR-0040's exact Execute retry helper retains the
+same command, raw idempotency key, canonical input, and capability, uses a fresh
+RequestId after reconnect or restart, and must return the original outcome with
+`replayed=true`, the original commit sequence/provenance identity, and no second
+authoritative mutation, event, outbox intent, provenance record, commit record,
+or sequence. Explicit hooks or barriers, not sleeps or socket timing guesses,
+establish the post-commit/pre-response point. The WP-190 exit gate must name
+both cases. WP-200 consumes that machine-readable evidence in its existing
+`POC-004` sign-off rather than reconstructing it in release scripts.
+
+The companion WP-200 reconciliation preserves every existing required ADR and
+adds ADR-0040 and ADR-0041 for the final public cross-transport, CLI, and release
+evidence. ADR-0039 separately requires its own addition. No existing WP-200
+dependency, allowed path, deliverable, acceptance command, or earlier required
+ADR is removed.
+
 The companion WP-137 reconciliation adds ADR-0009, ADR-0037, and ADR-0041 to its
-required ADRs and adds `ID-005` and `MCP-047` to its requirements. Its existing
-`crates/riffdb-client-rust/**` and `Cargo.lock` allowed paths are sufficient,
-but its required implementation-path evidence must name exactly:
+required ADRs and adds `ID-005` and `MCP-047` to its requirements. In addition
+to `crates/riffdb-client-rust/**` and `Cargo.lock`, its sole auth path is the
+test-only staged-owner assertion accepted in ADR-0040. Within its complete
+implementation-path evidence, the dependency/credential subset must name
+exactly:
 
 ```text
 Cargo.lock
+crates/riffdb-proto/Cargo.toml
+crates/riffdb-service/Cargo.toml
 crates/riffdb-client-rust/Cargo.toml
 crates/riffdb-client-rust/src/credential_file.rs
 crates/riffdb-client-rust/src/lib.rs
 crates/riffdb-client-rust/src/metadata.rs
 crates/riffdb-client-rust/tests/credential_file.rs
+crates/riffdb-auth/tests/architecture.rs
 ```
 
-No `riffdb-auth` path is added to WP-137. WP-150 retains its existing
+ADR-0040 separately freezes the exact cursor/generation subset and the complete
+allowed source, schema, fixture, fuzz, script, and integration-test inventory;
+this dependency/credential subset does not replace either list.
+
+No auth manifest or production-source path is added to WP-137. WP-150 retains its existing
 `crates/riffdb-cli/**` and `Cargo.lock` paths and may consume only the merged
 public-client surface plus the accepted isolated bootstrap module; it cannot
 edit either credential owner. WP-140 consumes the same public-client loader
 inside its already reviewed MCP paths and does not gain an auth dependency.
 
 The companion WP-150 reconciliation preserves `WP-130` and adds `WP-135` and
-`WP-137` as hard dependencies. It adds `ID-005`, `OUT-001`, `TXN-044`,
-`POC-004`, and `POC-008` to the existing `API-001`, `POC-001`, and `POC-010`
-requirements because the package's retry, public comparison, and integration
-fixtures directly claim those guarantees. No existing dependency, requirement,
-allowed path, deliverable, or acceptance command is removed.
+`WP-137` as hard dependencies. It adds `ID-005`, `OUT-001`, and `POC-008` to
+the existing `API-001`, `POC-001`, and `POC-010` requirements because the
+package's credential, same-key replay, public comparison, and architecture
+fixtures directly claim those guarantees. It deliberately does not add
+`TXN-044` or `POC-004`: actual post-commit process/TCP loss remains mandatory
+WP-190/WP-200 evidence under the exact reconciliation above. No existing
+dependency, allowed path, deliverable, or acceptance command is removed.
+
+WP-150's complete required ADR list becomes ADR-0005, ADR-0006, ADR-0007,
+ADR-0009, ADR-0011, ADR-0018, ADR-0028, ADR-0031, ADR-0037, ADR-0040, and
+ADR-0041. No other ADR is implied by the CLI's direct implementation surface.
+
+WP-150 treats `examples/budget-comparison/**` as a read-only upstream artifact.
+Its interface-only checkpoint and process proof live in already allowed paths:
+
+```text
+crates/riffdb-cli/fixtures/**
+crates/riffdb-cli/tests/public_process.rs
+scripts/demo
+```
+
+After the interface-only PR freezes the exact command grammar, configuration,
+exit codes, result DTOs, and golden JSONL bytes, WP-150 adds this process-level
+acceptance evidence without changing the runner protocol:
+
+```bash
+cargo test -p riffdb-cli
+./scripts/demo --dry-run
+cargo build -p riffdb-server --bin riffdbd --target-dir target/wp150-root
+cargo build --manifest-path examples/budget-comparison/Cargo.toml -p riffdb-budget-comparison-riffdb-grpc --bin riffdb-budget-public --target-dir target/wp150-comparison
+RIFFDB_TEST_RIFFDBD_BIN="$PWD/target/wp150-root/debug/riffdbd" RIFFDB_TEST_BUDGET_RUNNER_BIN="$PWD/target/wp150-comparison/debug/riffdb-budget-public" CARGO_TARGET_DIR=target/wp150-root cargo test -p riffdb-cli --test public_process -- --ignored --exact public_process_all_acceptance_operations
+```
 
 ## Decision Deadline
 
 The exact ADR text, dependency audit, unchanged bootstrap-only CLI auth
 exception, public-client normal-bearer loader and comparison, output shapes,
-input/output bounds, WP-137 SDK ownership, WP-150 dependency, and required
-WP-155 reservation must be accepted and reconciled into the authoritative files
+input/output bounds, WP-137 SDK ownership, dual bootstrap credential delivery,
+the WP-135 public-runner protocol and acceptance process, WP-150 dependency,
+the interface-only CLI fixture checkpoint, and required WP-155 reservation must
+be accepted and reconciled into the authoritative files
 before WP-137 freezes the CLI-facing credential/retry/error interface or WP-150
 changes `crates/riffdb-cli/Cargo.toml`, `Cargo.lock`, or any stable
 configuration/output behavior. WP-150 cannot be developed alongside a merged

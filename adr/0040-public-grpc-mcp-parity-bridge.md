@@ -7,12 +7,17 @@
   ADR-0020, ADR-0024, ADR-0026, ADR-0027, ADR-0028, ADR-0037, Proposed
   ADR-0008
 - **Paired proposal:** ADR-0041 defines the CLI-consumed WP-137 client surface;
-  WP-137 requires both records, but ADR-0041 does not become a prerequisite for
-  deciding this public bridge
+  this bridge can be reviewed independently, but WP-137 implementation and the
+  companion authoritative reconciliation are jointly gated on accepting both
+  records
 - **Would amend:** ADR-0006 and ADR-0028's exact 16-RPC inventory; the
   public/service/client portions of ADR-0007 and ADR-0026 for conditional
-  discovery and outcome-locator resolution; ADR-0009's exact credential-
-  delivery owner rows; and ADR-0037's exact public-client dependency allowlist
+  discovery and outcome-locator resolution; ADR-0027's response-charge
+  inventory and discovery-specific lower ceiling without raising its global
+  4,194,304-byte ceiling; ADR-0009's exact credential-
+  delivery and dependency-owner rows; ADR-0018 and ADR-0009's exact server
+  entropy-purpose set for one process generation; and ADR-0037's exact
+  public-client dependency allowlist
 - **Decision deadline:** Before WP-137 edits a public `.proto`, descriptor,
   generated fixture, gRPC service, or public SDK retry surface
 
@@ -42,19 +47,21 @@ service shortcut or a transport mismatch. Those alternatives violate the shared
 service boundary.
 
 WP-150 exposes a second public-client gap. Its bootstrap and normal capability-
-create uncertainty flows need operation-specific retry/disposition support, but
-the Rust client's retry classification is private and only Execute currently has
-a public retry helper. WP-150's allowed paths exclude the client crate, so that
-support must be supplied upstream rather than reimplemented in the CLI.
+create uncertainty flows need operation-specific retry helpers, but the Rust
+client's transport classification is private and only Execute currently has a
+public retry helper. WP-150's allowed paths exclude the client crate, so that
+support must be supplied upstream rather than reimplemented in the CLI. The
+helpers keep their dispositions private and expose only checked terminal
+`Result`/`ClientError` values.
 
 ## Proposed Decision
 
 ### Formal WP-137 bridge
 
 Add a formal **WP-137: Public gRPC MCP parity bridge** after WP-130 and before
-both WP-140 and WP-150. It depends on WP-130; WP-140 and WP-150 each depend on
-WP-137 without removing any existing dependency. WP-137 is a P1 gate member,
-alongside WP-130 and WP-150; it is not retroactively part of P0. Its narrow
+WP-135, WP-140, and WP-150. It depends on WP-130; WP-135, WP-140, and WP-150
+each depend on WP-137 without removing any existing dependency. WP-137 is a P1
+gate member, alongside WP-130 and WP-150; it is not retroactively part of P0. Its narrow
 purpose is to expose the six existing API-neutral operations through the
 existing public protocol and to publish exact operation-specific SDK helpers
 needed by stdio and WP-150.
@@ -298,10 +305,32 @@ message CommandToolDescriptor {
   GeneratedSchemaArtifact outcome_schema = 7;
 }
 
+message GeneratedSchemaIdentity {
+  SchemaArtifactKey key = 1;
+  bytes schema_hash = 2;
+}
+
+message CompactCommandToolDescriptor {
+  string tool_name = 1;
+  string source_command = 2;
+  string contract_lineage = 3;
+  uint64 contract_version = 4;
+  uint32 command_id = 5;
+  GeneratedSchemaIdentity input_schema = 6;
+  GeneratedSchemaIdentity outcome_schema = 7;
+}
+
 message CommandToolDiscoveryItem {
   oneof item {
     FixedToolKind fixed_tool = 1;
     CommandToolDescriptor command_tool = 2;
+  }
+}
+
+message CompactCommandToolDiscoveryItem {
+  oneof item {
+    FixedToolKind fixed_tool = 1;
+    CompactCommandToolDescriptor command_tool = 2;
   }
 }
 
@@ -317,6 +346,29 @@ message OperationSchemaCatalog {
   OperationSchemaArtifact command_get_outcome_result = 2;
 }
 
+message OperationSchemaIdentity {
+  string schema_id = 1;
+  bytes schema_hash = 2;
+}
+
+message OperationSchemaCatalogIdentity {
+  OperationSchemaIdentity command_operation_envelope = 1;
+  OperationSchemaIdentity command_get_outcome_result = 2;
+}
+
+enum DiscoveryRepresentation {
+  DISCOVERY_REPRESENTATION_UNSPECIFIED = 0;
+  DISCOVERY_REPRESENTATION_FULL = 1;
+  DISCOVERY_REPRESENTATION_COMPACT_OBSERVATION = 2;
+}
+
+enum ResourceDiscoveryKind {
+  RESOURCE_DISCOVERY_KIND_UNSPECIFIED = 0;
+  RESOURCE_DISCOVERY_KIND_ALL = 1;
+  RESOURCE_DISCOVERY_KIND_CONCRETE = 2;
+  RESOURCE_DISCOVERY_KIND_TEMPLATE = 3;
+}
+
 message ActiveDiscoveryCatalogFence {
   string contract_lineage = 1;
   uint64 contract_version = 2;
@@ -328,6 +380,8 @@ message DiscoveryCatalogFence {
     Unit no_active_contract = 1;
     ActiveDiscoveryCatalogFence active_contract = 2;
   }
+  bytes server_generation = 3;
+  OperationSchemaCatalogIdentity operation_schemas = 4;
 }
 
 message CommandToolDiscoveryPage {
@@ -337,16 +391,24 @@ message CommandToolDiscoveryPage {
   OperationSchemaCatalog operation_schemas = 4;
 }
 
+message CompactCommandToolDiscoveryPage {
+  repeated CompactCommandToolDiscoveryItem items = 1;
+  optional bytes next_cursor = 2;
+  DiscoveryCatalogFence observed_fence = 3;
+}
+
 message DiscoverCommandToolsRequest {
   bytes request_id = 1;
   PageRequest page = 2;
   DiscoveryCatalogFence prior_fence = 3;
+  DiscoveryRepresentation representation = 4;
 }
 
 message DiscoverCommandToolsResponse {
   oneof result {
     DiscoveryCatalogFence catalog_unchanged = 1;
     CommandToolDiscoveryPage page = 2;
+    CompactCommandToolDiscoveryPage compact_page = 3;
   }
 }
 
@@ -359,6 +421,12 @@ message EntitySchemaResource {
   string contract_lineage = 1;
   uint32 entity_type_id = 2;
   GeneratedSchemaArtifact schema = 3;
+}
+
+message CompactEntitySchemaResource {
+  string contract_lineage = 1;
+  uint32 entity_type_id = 2;
+  GeneratedSchemaIdentity schema = 3;
 }
 
 message CommandResource {
@@ -408,8 +476,29 @@ message ResourceDescriptor {
   }
 }
 
+message CompactResourceDescriptor {
+  oneof resource {
+    Unit active_contract = 1;
+    ContractVersionResource contract_version = 2;
+    CompactEntitySchemaResource entity_schema = 3;
+    CommandResource command_plan = 4;
+    CommandResource command_documentation = 5;
+    CommandOutcomeResource command_outcome = 6;
+    CommitResource commit = 7;
+    ProvenanceResource provenance = 8;
+    ProjectionStatusResource projection_status = 9;
+    Unit server_health = 10;
+  }
+}
+
 message ResourceDiscoveryPage {
   repeated ResourceDescriptor items = 1;
+  optional bytes next_cursor = 2;
+  DiscoveryCatalogFence observed_fence = 3;
+}
+
+message CompactResourceDiscoveryPage {
+  repeated CompactResourceDescriptor items = 1;
   optional bytes next_cursor = 2;
   DiscoveryCatalogFence observed_fence = 3;
 }
@@ -418,12 +507,15 @@ message DiscoverResourcesRequest {
   bytes request_id = 1;
   PageRequest page = 2;
   DiscoveryCatalogFence prior_fence = 3;
+  DiscoveryRepresentation representation = 4;
+  ResourceDiscoveryKind kind = 5;
 }
 
 message DiscoverResourcesResponse {
   oneof result {
     DiscoveryCatalogFence catalog_unchanged = 1;
     ResourceDiscoveryPage page = 2;
+    CompactResourceDiscoveryPage compact_page = 3;
   }
 }
 ```
@@ -451,51 +543,164 @@ bounded canonical UTF-8 source; and `schema_hash` is exactly 32 bytes and must
 equal the accepted `SchemaHash` of those bytes. Both artifact messages and the
 catalog message are required. Every `CommandToolDiscoveryPage`, including an
 empty page and every continuation, carries the same complete catalog in tag 4.
-`catalog_unchanged` has no page and therefore carries no schema catalog.
+Compact pages and `catalog_unchanged` carry no schema bodies; their required
+fence carries the matching catalog identity instead.
+
+Each operation schema source is at most 65,536 bytes and the two complete
+artifact charges together are at most 131,584 bytes. Full discovery pages use a
+stricter conservative service-response ceiling of 2,621,440 bytes. One dynamic
+descriptor with two maximum 1,048,576-byte compiler schemas, the complete
+operation catalog, semantic fence, and page framing must fit under that ceiling;
+an exact maximum-charge fixture proves the inequality. Other full items remain
+whole-item byte-fitting and a page may contain fewer than its requested count.
+
+The remaining 1,572,864 bytes below MCP's 4,194,304-byte outbound ceiling are
+partitioned exactly: at most 1,048,576 bytes for WP-140's complete local fixed-
+schema registry and at most 524,288 bytes for every additional MCP tool key,
+title, description, annotation, JSON-RPC field, array delimiter, link, and frame.
+The service charge already includes each dynamic schema source and the operation
+catalog; composition emits schema documents as JSON objects and does not charge
+the same source again merely because its container changes. WP-137 proves the
+service-side maximum dynamic case. WP-140's separately human-accepted fixed
+registry proves maximum fixed-only, dynamic-only, and mixed pages against the
+complete additive ledger before emitting a response.
 
 The corresponding API-neutral `OperationSchemaArtifact` and
 `OperationSchemaCatalog` have private fields and checked constructors. A
 `DiscoverCommandToolsResult::Page` carries both its command-tool page and the
-complete catalog; `CatalogUnchanged` carries only the equal discovery fence.
+complete catalog; `CompactPage` carries schema identities only; and
+`CatalogUnchanged` carries only the equal discovery fence.
 HTTP consumes this service DTO directly and stdio receives its identical public
 conversion. WP-140 owns one common MCP schema composer in `riffdb-api-mcp` and
 both transports call it; neither transport copies, reconstructs, or embeds a
 second schema source.
 
-The schema hashes are deliberately not part of `DiscoveryCatalogFence`. These
-v1 sources are immutable: any semantic schema revision requires a new versioned
-schema ID and separately reviewed field/catalog evolution. MCP sessions do not
-retain this catalog across an incompatible server transition or restart.
+`OperationSchemaCatalogIdentity` contains the same two schema IDs and hashes in
+the same field order, without dialect or bodies. It is required in every
+service-owned semantic discovery fence and participates in semantic fence
+equality. The complete catalog on a full page must match it exactly. These v1
+sources are immutable under one identity; any semantic revision requires a new
+versioned schema ID, new identity, and separately reviewed field/catalog
+evolution. A conforming client may retain a validated body across a byte-equal
+identity, including across processes, but never under a changed identity.
+
+The existing API-neutral `DiscoveryCatalogFence` becomes the **semantic fence**:
+it contains only the active/no-active catalog state and the ordered operation-
+schema identity. It contains no process generation, transport value, entropy,
+or adapter state. The public Protobuf `DiscoveryCatalogFence` is the
+**presentation fence**: its fields 1/2 carry the semantic state, field 4 carries
+the semantic operation-schema identity, and field 3 carries the checked process
+generation. Public fence equality requires both semantic equality and exact
+process-generation equality. The same split is used by the private common MCP
+presentation DTO; neither representation is a new authority proof.
+
+WP-137 adds private `ServerGenerationV1` and its injected entropy source in
+`crates/riffdb-server/src/server_generation.rs`. The value owns exactly
+`[u8; 16]`, is neither a UUID nor a cursor, and has no textual formatter. One
+production `riffdbd` process start performs one graph-activation attempt and
+that attempt performs exactly one
+`getrandom::fill` of that 16-byte array, with no clock sample, retry, fallback,
+derivation, truncation, counter, global state, or reuse of another source's
+buffer. Failure stops activation and readiness. The production graph samples
+before installing the activated lifecycle route; the lifecycle stores the one
+value and exposes a copy only to the gRPC adapter and, later, the hosted HTTP
+adapter. Both transports therefore join the same value. Tests inject a
+deterministic source and prove the one-call, one-fill, shared-value, and failure
+paths.
+
+This expressly amends ADR-0018, ADR-0009, and SPEC Section 5.4's exact server
+`getrandom` purpose list. It adds no dependency owner, version, feature, native
+edge, or first-party unsafe exception: `riffdb-server` remains the sole server
+entropy owner and gains only this nonsemantic process-generation purpose. The
+value is sampled independently on every production process graph activation and
+has 128 bits of collision resistance; it is not a mathematical uniqueness
+guarantee. Acceptance tolerates the negligible collision probability because
+the value gates only retained notification observations, while every read and
+invocation still authenticates and authorizes afresh. The bytes are public
+opaque comparison data but are redacted from telemetry and are never durable,
+a RiffDB identifier, cursor, request identity, clock, policy epoch, commit
+signal, or deterministic-runtime input.
+
+The gRPC adapter validates a prior public generation before calling the shared
+service. When it equals the lifecycle's current generation, the adapter passes
+only the converted semantic prior fence. When it differs, the adapter passes
+no prior fence, forcing the ordinary freshly authorized first page; it never
+fabricates `catalog_unchanged`. It joins the current generation onto every full,
+compact, or unchanged service result. Hosted HTTP applies the identical
+preprocessing and joining rule. Thus a normally differing generation on a
+transparent reconnect invalidates retained inference, while the API-neutral
+service remains free of process entropy and transport metadata.
 
 Every discovery page requires one known `DiscoveryCatalogFence.state` branch,
 including empty pages. `no_active_contract` is an explicit `Unit`, not absent
-fence data. An active fence has exact lineage/version/bundle identity. A present
+fence data. The public generation and semantic operation-schema identity are
+always required.
+An active fence has exact lineage/version/bundle identity. A present
 cursor is exactly 16 opaque bytes, the page is bounded by the effective limit,
 and an empty page cannot carry a cursor. Tool items retain fixed-then-command
 canonical order. Resource items retain their service-owned canonical identity
 order and are unique.
 
-`prior_fence` uses ordinary message presence and is legal only when the page
-request has no cursor. The request `page` message is always required. Each
+`representation` is required and must be one of `FULL` or
+`COMPACT_OBSERVATION`; zero and unknown values reject. `prior_fence` uses
+ordinary message presence and is legal only for an initial compact-observation
+request whose page request has no cursor. Full representation always returns a
+page and, for command discovery, the complete operation catalog. The request
+`page` message is always required. Each
 discovery response requires exactly one known result
-branch. When a supplied checked prior fence equals the transaction-current
-catalog fence, the service still performs the accepted invocation lifecycle:
+branch. After the adapter rule above, when a supplied checked semantic prior
+fence equals the transaction-current semantic catalog fence, the service still
+performs the accepted invocation lifecycle:
 current initial discovery authorization, any required durable `started` append,
 bounded permit acquisition, fresh exact-facts authorization at the synchronous
 acceptance safe point, and complete response validation and bounds. When a
 `started` record was required, the one matching terminal `succeeded` record is
 appended before release; an unaudited standard read does not fabricate either
-record. Only after that fresh authorization may the service return
+record. Only after that fresh authorization may a compact request return
 `catalog_unchanged` carrying that exact fence without
 materializing candidates, items, visibility masks, a page, or a cursor. When the
-fence differs, the service returns the ordinary first `page` under the current
-fence. A response `catalog_unchanged` must equal the request's present
-`prior_fence`; it is forbidden when the request omitted that field. A `page` is
-forbidden to repeat the supplied stale fence as its observed fence.
-Continuation requests omit `prior_fence` and remain governed by their
-server-side cursor fence.
+fence differs, the service returns the ordinary first full or compact page
+selected by the request under the current fence. A response
+`catalog_unchanged` must equal the request's present semantic
+`prior_fence`; the adapter then rejoins the already matched current generation,
+so the public result equals the complete public prior fence. The branch is
+forbidden when the request omitted that field. A `page` is forbidden to repeat
+the supplied stale semantic fence as its observed fence.
+Continuation requests omit `prior_fence` and must retain the representation
+bound into their server-side cursor state. `DiscoverResourcesRequest.kind` is
+also required: zero and unknown values reject; `ALL` retains the complete
+service inventory, `CONCRETE` retains exactly ADR-0008's `resources/list`
+branches, and `TEMPLATE` retains exactly its `resources/templates/list`
+branches. Kind selection is applied by the service before whole-item page
+accumulation and never by a transport adapter. It preserves the canonical
+relative order and current policy filtering of the selected subset. Resource
+cursor state binds kind alongside limit and representation, so a cursor cannot
+cross the two MCP list methods or an `ALL` watcher. Command discovery has no
+kind field. A response branch that does not match the requested representation
+or resource kind rejects.
 
-`catalog_unchanged` proves only equality of public catalog identity. It does not
+The compact representation is the policy-identical projection of the full
+ordered inventory. It retains every fixed-tool kind and every descriptor field
+except a generated schema's dialect and canonical JSON body; each omitted body
+is replaced by its exact `SchemaArtifactKey` and 32-byte `SchemaHash`. It adds no
+candidate, count, target, name, or authorization fact. A compact entity schema
+identity and compact command input/outcome identities must match the full
+artifact available under the same fence. Compact constructors prove a
+conservative `ServiceResponseCharge` of at most 4,096 bytes per item. The exact
+response-charge fixture proves 500 maximum-charge compact items plus page,
+cursor, and fence overhead remain below 4,194,304 bytes. Therefore an MCP
+compact observation of an inventory containing at most 1,024 visible items
+reaches exact end in at most three calls whose requests all use limit 500; an
+exactly 1,024-item inventory returns 500, 500, and 24 items. An over-limit
+inventory may return as many as 500 structurally checked items in call three;
+the MCP observer rejects on item 1,025 or on any continuation after 1,024 and
+never retains more than 1,024 fingerprints. Full representation remains byte-fitting and may
+legitimately return fewer than its requested item limit; it has no three-call
+claim.
+
+`catalog_unchanged` proves only equality of the checked public presentation
+fence after the adapter has matched generation and the service has matched
+semantic catalog identity. It does not
 prove that the caller previously observed the fence, that two discovery
 operations produced the same view, or that a policy-visible inventory is equal,
 and it grants no invocation or read authority. The service retains no session
@@ -511,7 +716,7 @@ immutable after creation; revocation or expiry makes fresh authentication fail
 and terminates the session; and the accepted visibility policy is static for
 that session's lifetime. The adapter must itself know that the prior fence came
 from the same operation's previously completed observation. A visibility-policy
-implementation change terminates affected sessions. Mutable grants or mutable
+implementation change requires a new server generation. Mutable grants or mutable
 policy are forbidden from reusing this optimization until an accepted design
 adds an authorization/visibility epoch to the public fence. Every
 authentication, reauthorization, audience, or transport failure discards the
@@ -524,14 +729,24 @@ poll loop, does not inherit the 32-observation/30-second progress-poll ceiling,
 and never keeps a service invocation, cursor, storage transaction, or catalog
 proof alive between calls.
 
-The corresponding API-neutral shapes are exact: each discovery request owns
-`PageRequest` plus `Option<DiscoveryCatalogFence>`. Resource discovery becomes
-the closed `CatalogUnchanged(DiscoveryCatalogFence) |
-Page(Page<ResourceDescriptor, DiscoveryCatalogFence>)` enum. Command discovery
-becomes `CatalogUnchanged(DiscoveryCatalogFence) | Page { page:
-Page<CommandToolDiscoveryItem, DiscoveryCatalogFence>, operation_schemas:
-OperationSchemaCatalog }`. Their fields remain private and constructors enforce
-the cursor/prior-fence exclusion and required schema catalog. This is
+The corresponding API-neutral shapes are exact and process-generation-free:
+each discovery request owns `PageRequest`, `DiscoveryRepresentation`, and
+`Option<DiscoveryCatalogFence>`, where `DiscoveryCatalogFence` is only the
+semantic state plus operation-schema identity. A resource request additionally
+owns the required closed `ResourceDiscoveryKind`; a command-tool request does
+not. Resource discovery becomes the closed
+`CatalogUnchanged(DiscoveryCatalogFence) |
+Page(Page<ResourceDescriptor, DiscoveryCatalogFence>) |
+CompactPage(Page<CompactResourceDescriptor, DiscoveryCatalogFence>)` enum.
+Command discovery becomes `CatalogUnchanged(DiscoveryCatalogFence) | Page {
+page: Page<CommandToolDiscoveryItem, DiscoveryCatalogFence>,
+operation_schemas: OperationSchemaCatalog } |
+CompactPage(Page<CompactCommandToolDiscoveryItem, DiscoveryCatalogFence>)`.
+Their fields remain private and constructors enforce representation matching,
+cursor/prior-fence exclusion, required identities, and the full-page schema
+catalog. `crates/riffdb-api-grpc` alone converts between that semantic fence and
+the generation-bearing public Protobuf fence; `riffdb-api-mcp` applies the same
+join for hosted HTTP. This is
 conditional evaluation of the same two operations, not two new service-
 operation or audit tags.
 
@@ -556,10 +771,13 @@ adapter-side command-tool join or then-current active-version substitution.
 The command-outcome descriptor is deliberately distinct from the other command
 targets: the service proves lineage, stable command ID, and compiler-owned tool
 name from one active-bundle snapshot before construction so either MCP transport
-can format the ADR-0008 template without an adapter-side discovery join. It is
-discoverability metadata only and cannot mint or resolve an actual outcome
-locator; minting remains tied to a resolved durable historical identity and
-terminal result. The API-neutral constructor becomes exactly
+can format ADR-0008's exact
+`riffdb://outcome/{principal}/<lineage>/<command-id>/<tool-name>/{key_hash}`
+RFC 6570 resource template without an adapter-side discovery join. It maps only
+to `resources/templates/list`, never to `resources/list`. It is discoverability
+metadata only and cannot mint or resolve an actual outcome locator; minting
+remains tied to a resolved durable historical identity and terminal result. The
+API-neutral constructor becomes exactly
 `ResourceDescriptor::command_outcome(lineage, command_id, tool_name)` with a
 private `McpCommandToolNameV1`; an independent string is not accepted.
 Descriptors otherwise carry semantic identity only;
@@ -761,7 +979,9 @@ resource-link content item.
 
 Neither operation artifact is added to a compiled bundle. WP-137 makes no
 compiler, IR, bundle-schema-artifact, bundle-encoding, bundle-hash, plan-hash,
-or discovery-fence hash change. A parallel per-command operation schema, a
+or catalog hash change. The additive public discovery fence carries only the
+schema identity and process generation described above. A parallel per-command
+operation schema, a
 compiler-owned copy, a transport-owned copy, or independent HTTP/stdio
 composition is forbidden.
 
@@ -823,14 +1043,24 @@ is no raw accessor, file-reader callback, decoded token, path-bearing error, or
 second loader.
 
 Acceptance applies Proposed ADR-0041's exact companion dependency amendments.
-ADR-0009's complete direct first-party owner set becomes `riffdb-auth` and
-`riffdb-cli` for exact `base64 = 0.22.1`, and `riffdb-auth`,
+ADR-0009's complete direct first-party owner set becomes `riffdb-auth`,
+`riffdb-proto`, `riffdb-service`, `riffdb-api-mcp`, and `riffdb-cli` for exact
+`base64 = 0.22.1`, and `riffdb-auth`,
 `riffdb-client-rust`, and `riffdb-cli` for exact `zeroize = 1.8.1`; their
-accepted default-feature and feature rows do not otherwise change. ADR-0037's
+accepted default-feature and feature rows do not otherwise change. MCP base64
+is for locator and structural Value/opaque-byte presentation; Proto base64 is
+only for canonical structural outcome-locator validation; service base64 is
+only for authoritative outcome-locator digest-tuple encoding/decoding; CLI
+base64 is for structural machine input/output bytes. Only auth's purpose
+includes credential or token decoding. `riffdb-proto` and `riffdb-service` add
+the exact row
+`base64 = { version = "=0.22.1", default-features = false, features = ["alloc"] }`
+in WP-137. ADR-0037's
 exact `riffdb-client-rust` allowlist gains only
 `zeroize = { version = "=1.8.1", default-features = false, features =
 ["alloc"] }`. The public client gains no direct `base64` or `riffdb-auth`
-dependency, and WP-137 adds no `riffdb-auth` path.
+dependency. WP-137 adds no `riffdb-auth` manifest or production-source path;
+its sole auth path is the staged direct-owner architecture test specified below.
 
 The three and only three automatic retry helpers are:
 
@@ -909,22 +1139,28 @@ does not duplicate transport classification.
 The proposed hard dependency is `WP-130`. Required ADRs are ADR-0005, ADR-0006,
 ADR-0007, ADR-0009, ADR-0013, ADR-0018, ADR-0020, ADR-0024, ADR-0026, ADR-0027,
 ADR-0028, ADR-0037, and accepted exact text for ADR-0008, ADR-0040, and ADR-0041.
-WP-137 is added to the P1 gate. Both WP-140 and WP-150 gain a hard dependency on
-WP-137. The exact allowed paths are:
+WP-137 is added to the P1 gate. WP-135, WP-140, and WP-150 gain a hard
+dependency on WP-137. The exact allowed paths are:
 
 ```text
 proto/riffdb/v1/**
 crates/riffdb-proto/**
 crates/riffdb-api-grpc/**
 crates/riffdb-client-rust/**
+crates/riffdb-auth/tests/architecture.rs
 crates/riffdb-service/schema/riffdb.command-operation-envelope-v1.schema.json
 crates/riffdb-service/schema/riffdb.command-get-outcome-result-v1.schema.json
+crates/riffdb-service/Cargo.toml
+crates/riffdb-service/src/cursor.rs
 crates/riffdb-service/src/dto.rs
 crates/riffdb-service/src/command_operations.rs
 crates/riffdb-service/src/query_discovery_operations.rs
 crates/riffdb-service/src/response.rs
+crates/riffdb-server/src/lib.rs
+crates/riffdb-server/src/lifecycle.rs
 crates/riffdb-server/src/read_adapters.rs
 crates/riffdb-server/src/process_graph.rs
+crates/riffdb-server/src/server_generation.rs
 tests/grpc/**
 tests/service/**
 fixtures/proto/**
@@ -935,24 +1171,54 @@ scripts/generate-proto
 Cargo.lock
 ```
 
-`work_packages.yaml` must enumerate those six exact service/server source files
-and two exact service schema files rather than granting crate-wide exceptions.
+`work_packages.yaml` must enumerate those exact service/server source files and
+two exact service schema files rather than granting crate-wide exceptions.
 Colocated unit tests in those same source files and the two exact integration-
 test directories above are allowed. Policy, storage, idempotency, commit,
-compiler, IR, auth, and MCP crate paths remain forbidden. The required WP-137
-implementation-path evidence must name exactly `Cargo.lock`,
+compiler, IR, auth production/manifest, and MCP crate paths remain forbidden.
+The sole auth path is the exact architecture-test file above. Within WP-137's
+complete implementation-path evidence, the dependency/credential subset must
+name exactly `Cargo.lock`,
+`crates/riffdb-proto/Cargo.toml`,
 `crates/riffdb-client-rust/Cargo.toml`,
 `crates/riffdb-client-rust/src/credential_file.rs`,
 `crates/riffdb-client-rust/src/lib.rs`,
-`crates/riffdb-client-rust/src/metadata.rs`, and
-`crates/riffdb-client-rust/tests/credential_file.rs`; no `riffdb-auth` path is
-added.
+`crates/riffdb-client-rust/src/metadata.rs`,
+`crates/riffdb-client-rust/tests/credential_file.rs`,
+`crates/riffdb-service/Cargo.toml`, and the sole test-only
+`crates/riffdb-auth/tests/architecture.rs` amendment. No auth manifest or
+production source is added. WP-137 changes that test once to encode the complete
+reviewed staged owner registry: `base64` permits only `riffdb-auth`,
+`riffdb-proto`, `riffdb-service`, `riffdb-api-mcp`, and `riffdb-cli`; `zeroize`
+permits only `riffdb-auth`, `riffdb-client-rust`, and `riffdb-cli`. At every stage the test derives the
+expected actual subset only from exact matching reviewed manifest rows, requires
+`riffdb-auth`, the newly added Proto/service base64 edges, and the newly added
+client zeroize edge immediately, and rejects every
+other owner or row. It therefore remains exact as WP-140 and WP-150 add their
+already accepted edges without another shared-test edit.
+
+Within that complete evidence, the cursor/generation subset names exactly
+`crates/riffdb-service/src/cursor.rs` for representation-bound discovery cursor
+state, `crates/riffdb-server/src/server_generation.rs`,
+`crates/riffdb-server/src/lib.rs`, `crates/riffdb-server/src/process_graph.rs`,
+and `crates/riffdb-server/src/lifecycle.rs` for the one private source and its
+shared adapter injection. UUID, cursor-source, daemon, storage, runtime, and
+service-composition files outside that list are not alternate hiding places.
 
 `fixtures/proto/operation-schema-catalog-v1.txt` freezes the two schema IDs in
 field order, canonical byte lengths, and exact hashes. `generate-proto --check`
 recomputes those values from the two service-owned sources and verifies the
 checked-in fixture. This fixture ownership does not authorize a compiler or
 bundle edit.
+
+WP-137 begins with an interface-only PR containing the two complete canonical
+sources, their exact IDs/lengths/hashes, the full-versus-identity catalog
+fixtures, and a normative golden that inserts a representative compiler-owned
+outcome union into the operation envelope. A human maintainer must accept those
+exact bytes and composition output before conversion, client, or consumer work
+proceeds. Equivalent-but-byte-different Draft 2020-12 spelling is a public
+compatibility change, not an implementation choice. Later source, hash, bound,
+or composition drift stops for the same review.
 
 The package acceptance commands are proposed as:
 
@@ -1028,18 +1294,49 @@ do not exist. The package remains `riffdb.v1`, so the additions follow its
 additive compatibility policy. Existing messages and fields are not renumbered
 or reinterpreted. Removed future fields reserve both number and name.
 
-Acceptance requires a same-change reconciliation of SPEC Sections 11.1 through
-11.3, 12.2, 12.5 through 12.6, 19.4, and 22.1; `work_packages.yaml` must add
-WP-137, its dependency edges, allowed paths, requirements, ADRs, deliverables,
-acceptance commands, and gate placement. WP-140 must depend on WP-137. WP-150
-must also depend on WP-137 and consume its public helpers rather than gaining
-client-internal paths. P1 must add WP-137 to its required set.
+Acceptance requires a same-change reconciliation of SPEC Sections 5.2, 5.4,
+11.1 through 11.3, 12.2, 12.5 through 12.6, 19.2 through 19.5, 20.3, and 22.1,
+plus Appendix B's repeated canonical public-service inventory;
+`work_packages.yaml` must add WP-137, its dependency edges, allowed paths,
+requirements, ADRs, deliverables, acceptance commands, and gate placement.
+WP-140 must depend on WP-137. WP-150 must also depend on WP-137 and consume its
+public helpers rather than gaining client-internal paths. P1 must add WP-137 to
+its required set. Section 19.2's exclusive schema-owner rule must add WP-137 as
+the one narrow additive public-protocol owner for these reviewed sources,
+generated artifacts, and compatibility fixtures; it grants no durable-schema,
+contract-schema, compiler-artifact, or unreviewed public-field ownership.
 
-The same reconciliation expressly amends ADR-0009's two dependency-owner rows
-and credential-delivery wording and ADR-0037's client allowlist exactly as
-listed above, and records ADR-0005, ADR-0009, ADR-0018, ADR-0020, ADR-0037,
-ADR-0040, and ADR-0041 in WP-137's required ADRs. No other dependency owner,
-feature, auth exception, or client-to-auth edge is implied.
+`diagrams/work_package_dag.dot` is part of that same governance change. It adds
+the WP-137 node and exact `WP-130 -> WP-137`, `WP-137 -> WP-140`, and
+`WP-137 -> WP-150` edges. Proposed ADR-0041 additionally requires
+`WP-137 -> WP-135` and `WP-135 -> WP-150`, while preserving the existing direct
+`WP-130 -> WP-150` edge. WP-155 remains reservation-only and receives no node or
+edge. The roadmap's existing P1 public-protocol label remains accurate and does
+not need a semantic change.
+
+The same reconciliation expressly amends ADR-0009's dependency-owner,
+credential-delivery, and server-entropy-purpose wording; ADR-0018's exact server
+source-purpose set; ADR-0027's variable-response inventory and charge fixtures;
+and ADR-0037's client allowlist exactly as listed above. ADR-0027 retains its
+charge version and global 4,194,304-byte ceiling while fixing 2,621,440 bytes as
+the lower full-discovery ceiling; every new branch still proves conservative
+service charge covers exact supported wire bytes. The reconciliation records
+ADR-0005, ADR-0009, ADR-0018, ADR-0020, ADR-0037, ADR-0040, and ADR-0041
+in WP-137's required ADRs. No other dependency owner, feature, auth exception,
+or client-to-auth edge is implied.
+
+WP-140 retains every existing required ADR and adds ADR-0024, ADR-0026,
+ADR-0027, ADR-0028, ADR-0037, ADR-0040, and ADR-0041. Those additions cover the
+provenance locator, authorization safe points, API-neutral discovery DTOs,
+public protocol, shared protected-credential loader, parity bridge, and CLI-
+shared credential boundary it directly consumes. No other WP-140 ADR is
+removed or implied.
+
+WP-200 retains every existing required ADR and adds ADR-0040 and ADR-0041 for
+its final public cross-transport, generated-artifact, CLI, and release evidence.
+ADR-0039 separately requires its own addition to that package. No WP-200
+dependency, allowed path, deliverable, acceptance command, or earlier required
+ADR is removed.
 
 No durable Protobuf message, storage envelope/key, contract grammar/IR, plan
 hash, canonical input hash, idempotency identity, commit sequence, atomicity, or
@@ -1067,23 +1364,38 @@ WP-137 must provide:
 - source-info-stripped descriptor and schema-hash fixtures proving exactly five
   services, 22 RPCs, six new unary shapes, and one total streaming RPC;
 - language-neutral request/response goldens for every new result branch, enum,
-  optional field, selector, resource kind, catalog fence, and page boundary;
+  optional field, selector, representation, full/compact resource kind,
+  generation/schema-bearing catalog fence, and page boundary;
 - compatibility checks proving every pre-WP-137 supported descriptor symbol,
   field number/type/presence, enum value, RPC name, and streaming shape remains;
-- deterministic generation checks and a clean `scripts/generate-proto --check`;
+- deterministic generation-source checks proving one exact 16-byte fill, no
+  clock/retry/fallback, one shared lifecycle value, startup failure on source
+  failure, adapter-only joining, public-generation mismatch forcing an ordinary
+  semantic first page, and a clean `scripts/generate-proto --check`;
 - malformed/unknown/duplicate/oversized wire and preflight fuzz cases;
 - total service-to-wire conversion tests for all six operations, including every
   projection lifecycle, provenance selector, outbox state, discovery kind,
-  empty/no-active catalog, operation-schema catalog, cursor, redaction, and
-  response-budget boundary;
+  empty/no-active catalog, operation-schema catalog and identity, compact schema
+  identity, cursor, redaction, 2,621,440-byte full-page boundary, one maximum
+  dynamic item, the reserved 1,048,576-byte fixed-schema and 524,288-byte MCP
+  allowances, 4,096-byte compact-item charge, and generic response-budget
+  boundary;
 - command-plan/documentation resource fixtures proving lineage/version/command/
   source binding comes from one catalog fence, and command-outcome resource
   fixtures proving lineage/command/tool-name binding comes from one fence, with
   no adapter-side tool/resource join;
-- conditional-discovery goldens for request field 3 and response branches 1/2,
-  prior-fence-plus-cursor rejection, exact `catalog_unchanged` equality, stale-
-  to-first-page transition, continuation omission, and active/absent/active
-  changes;
+- conditional-discovery goldens for request fields 3/4, resource request field 5,
+  and response branches 1/2/3; zero/unknown resource-kind rejection; exact
+  `ALL`/`CONCRETE`/`TEMPLATE` membership and pre-pagination filtering;
+  prior-fence-plus-cursor rejection; exact `catalog_unchanged` equality;
+  representation/kind/cursor binding; cross-kind and changed-limit rejection;
+  full/compact mismatch;
+  three limit-500 calls returning exactly 500/500/24 for the maximum accepted
+  1,024-item compact observation, a structurally bounded third response of up to
+  500 items for over-limit input, rejection on item 1,025 or a cursor after the
+  accepted 1,024, stale-to-
+  first-page transition, continuation omission, server-
+  generation/schema-identity change, and active/absent/active changes;
 - deterministic adapter/service schedules proving each `CatalogUnchanged`
   observation repeats transport authentication, initial authorization, required
   audit-obligation handling, bounded permit, fresh exact-facts authorization,
@@ -1097,8 +1409,9 @@ WP-137 must provide:
   crate or service shortcut;
 - `fixtures/proto/operation-schema-catalog-v1.txt` and mechanical per-command
   composition fixtures proving exact schema IDs/order/length/hash, required
-  catalog presence on every page, strict absence on `catalog_unchanged`, and
-  locator schema validity without changing a compiler artifact or bundle hash;
+  full-catalog presence on every full page, identity-only compact and
+  `catalog_unchanged` branches, and locator schema validity without changing a
+  compiler artifact or bundle hash;
 - protected-credential loader and `has_same_presentation` tests required by
   ADR-0041, plus architecture tests proving no public-client `riffdb-auth` or
   `base64` dependency and only the exact reviewed `zeroize` edge;
@@ -1127,7 +1440,7 @@ capability uncertainty evidence. WP-200 supplies final cross-transport proof.
   through `MCP-033`, `MCP-040`, `MCP-041`, `MCP-043`, `MCP-045`, `MCP-046`,
   `MCP-047`, `MCP-048`, `POC-001`, `POC-004`, `POC-007`, and `POC-008`
 - **Defines:** proposed P1 `WP-137`, depending on `WP-130`
-- **Blocks:** `WP-140` and `WP-150`
+- **Blocks:** `WP-135`, `WP-140`, and `WP-150`
 - **Final evidence:** `WP-200`
 
 ## Decision Deadline
@@ -1137,5 +1450,5 @@ catalog, outcome-locator companion, protected-credential API, and operation-
 specific SDK retry surface must be accepted before WP-137 changes any public
 source or generated artifact. WP-140 cannot implement production stdio until
 WP-137 merges. Acceptance must include authoritative SPEC/work-package,
-ADR-0006/ADR-0028, ADR-0009/ADR-0037, and ADR-0041 reconciliation; merging this
-Proposed file alone changes no authority.
+ADR-0006/ADR-0028, ADR-0009/ADR-0018/ADR-0037, ADR-0041, and work-package-DAG
+reconciliation; merging this Proposed file alone changes no authority.

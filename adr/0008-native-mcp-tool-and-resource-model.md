@@ -8,9 +8,12 @@
   for the exact provenance resource locator
 - **Paired proposal:** ADR-0040 for the public gRPC parity bridge required by
   production stdio
-- **Would amend:** ADR-0009's protected-file/direct-owner boundary and
-  ADR-0037's public-client dependency allowlist for the narrow client-owned
-  normal-bearer loader
+- **Would amend:** ADR-0009's protected-file/direct-owner boundary, including
+  the exact semantic, structural, and presentation-only `base64` owners added
+  here and in paired ADR-0040; ADR-0037's
+  public-client dependency allowlist for the narrow client-owned normal-bearer
+  loader; and, through paired ADR-0040, ADR-0018/ADR-0009's exact server
+  entropy-purpose set for one nonsemantic process generation
 - **Decision deadline:** Before WP-137 changes the public protocol or WP-140
   freezes an MCP compatibility fixture
 
@@ -52,9 +55,48 @@ or enables another protocol version.
 
 `riffdb-api-mcp` is the sole first-party owner of the MCP SDK boundary. The
 workspace pins `rmcp = "=2.2.0"`, disables its default features, and enables
-exactly `server`, `transport-io`, and `transport-streamable-http-server`. No
-client, sampling, roots, elicitation, task, OAuth, TLS, key-value, or unrelated
-transport feature is enabled merely for convenience.
+exactly `server`, `transport-io`, and `transport-streamable-http-server` across
+the complete WP-140 build. `server` is the sole unconditional rmcp feature. The
+crate feature `stdio` adds only `rmcp/transport-io`; `streamable-http` adds only
+the optional service/auth edges and
+`rmcp/transport-streamable-http-server`. Default crate features are empty. No
+rmcp client, sampling, roots, elicitation, task, OAuth, TLS, key-value, or
+unrelated transport feature is enabled merely for convenience.
+
+The feature-bearing manifest rows are exact; unrelated direct dependency rows
+are not implied by this excerpt:
+
+```toml
+[features]
+default = []
+stdio = ["rmcp/transport-io"]
+streamable-http = [
+  "dep:riffdb-auth",
+  "dep:riffdb-service",
+  "rmcp/transport-streamable-http-server",
+]
+
+[dependencies]
+base64 = { version = "=0.22.1", default-features = false, features = ["alloc"] }
+riffdb-auth = { version = "0.1.0", path = "../riffdb-auth", default-features = false, optional = true }
+riffdb-service = { version = "0.1.0", path = "../riffdb-service", default-features = false, optional = true }
+rmcp = { version = "=2.2.0", default-features = false, features = ["server"] }
+```
+
+Ungated `riffdb-api-mcp` common code owns protocol constants, bounded MCP
+presentation DTOs, schema/reference validation, canonical rendering,
+fingerprints, locators, cursors, result shaping, observer state, and the sole
+MCP-side canonical standard-base64/base64url presentation edge. Its exact
+`base64` dependency is presentation-only: it never decodes a bearer credential,
+authenticates a token, or receives digest-key material. That common slice has no
+`riffdb-service`, `riffdb-auth`, server, policy, runtime, commit, catalog, or
+storage dependency. HTTP-only modules are compiled solely by
+`streamable-http` and alone may use optional `riffdb-service` and
+`riffdb-auth::CredentialAuthenticator` edges. `riffdb-mcp-stdio` enables only
+`stdio`, uses `riffdb-client-rust` for public gRPC, and never enables the
+`riffdb-api-grpc` server feature. Both backends convert checked results into the
+same private bounded presentation DTOs and call the same renderer/validator;
+those DTOs carry no authority and are not API-neutral semantic types.
 
 Before the dependency or lockfile merges, a separate human-visible lock-graph
 review records exact direct and transitive versions, enabled features, duplicate
@@ -73,6 +115,41 @@ randomness, provenance identity, or commit-order signal. The reviewed 2.2.0
 source currently has no direct unsafe block, but the full transitive unsafe and
 native inventory remains required.
 
+The 2026-07-22 exact-root scratch resolution added 37 lock entries and built on
+Rust 1.97.0. Important active versions are Tokio 1.52.0, futures 0.3.33,
+schemars 1.2.1, serde 1.0.229, serde_json 1.0.151, chrono 0.4.45, rand 0.10.2,
+rand_core 0.10.1, getrandom 0.4.3, chacha20 0.10.1, UUID 1.24.0, and
+sse-stream 0.2.5. The root already contained the `syn` 2/3 family. This
+resolution adds the target-specific locked `r-efi` 6.0.0 beside 5.3.0 and adds
+third versions to the already duplicated `getrandom`, `rand`, and `rand_core`
+families. `cargo deny check` passed advisories, licenses, bans, and sources. No
+active Linux dependency declares a native `links` edge or invokes `cc`, CMake,
+or bindgen.
+
+Relative to the reviewed root lock, new or newly versioned custom-build targets
+are `getrandom 0.4.3`, `iana-time-zone-haiku 0.1.2`, `ref-cast 1.0.26`,
+`rmcp 2.2.0`, `serde 1.0.229`, `serde_json 1.0.151`, `wasm-bindgen 0.2.126`,
+`wasm-bindgen-shared 0.2.126`, and `zmij 1.0.23`; the Haiku, WASM, Windows, and
+`r-efi` entries are target-specific and do not enter the active Linux graph.
+The rmcp registry `build.rs` git-hook branch is inert outside an rmcp source
+checkout and was inert in the RiffDB scratch build.
+
+The added active dependency sources for which the conservative `cargo-geiger`
+inventory reports used unsafe code are exactly `chacha20 0.10.1`,
+`chrono 0.4.45`, `dyn-clone 1.0.20`, `getrandom 0.4.3`, `rand 0.10.2`,
+`ref-cast 1.0.26`, `serde_json 1.0.151`, `uuid 1.24.0`, and `zmij 1.0.23`;
+cfg-gated source can be counted even when a target does not compile that block.
+`rmcp 2.2.0` itself contains no unsafe block, and every first-party crate still
+forbids unsafe code. Chacha20 is reached only as rand's userspace RNG for MCP
+transport/session behavior and is not RiffDB token, digest, canonical-value,
+command-runtime, or durable-state cryptography. Accepting this record accepts
+that reviewed dependency unsafe/cryptographic footprint for the exact
+resolution only. ADR-0041's CLI graph pins serde_json 1.0.150, so a combined
+WP-140/WP-150 resolution is already known to differ from at least one scratch
+lock and must receive the required fresh human-visible lock review. Any real
+lockfile, feature tree, build-script report, or unsafe inventory difference
+likewise stops before merging the dependency.
+
 Both transports return the same initialization result. It has protocol version
 `2025-11-25`, server implementation name `riffdb`, and server implementation
 version equal to the exact workspace package version of `riffdb-api-mcp`
@@ -85,11 +162,24 @@ absent rather than emitted as empty or false-valued extensions. A release that
 changes the package version updates the initialization fixture; a transport may
 not report an SDK version or transport-binary version instead.
 
-The `rmcp` 2.2.0 registry knows protocol versions newer than this POC baseline,
-and its default server initializer would echo one of those versions. Each
+The `rmcp` 2.2.0 registry knows three older protocol versions and one newer
+version in addition to this POC baseline, and its default server initializer
+would echo any other known offer. A future separately reviewed SDK may know a
+different set. Each
 transport therefore owns a bounded typed negotiation wrapper outside
 `serve_server`; RiffDB does not fork or patch `rmcp`. The wrapper permits the
-lifecycle's pre-initialization ping. For an initialize request it validates the
+lifecycle's pre-initialization ping. Stdio passes that checked request to
+`serve_server`. In stateful HTTP, rmcp's outer tower rejects a no-session
+non-initialize POST before creating `serve_server`, so the RiffDB HTTP wrapper
+itself handles exactly one structurally valid pre-initialization JSON-RPC
+`ping` request after the ordinary route, Origin, authority, pre-authentication
+rate, credential, and bounded-body checks. It returns HTTP 200 with the same
+checked request ID and exact empty JSON object result, `Content-Type:
+application/json`, `Cache-Control: no-store`, and no MCP session ID. It creates
+no session, binding, observer, subscription, cancellation state, or service
+call and does not advance initialization. A notification, missing/invalid ID,
+extra ping parameter, batch, duplicate field, or other pre-initialization method
+does not enter this path. For an initialize request the wrapper validates the
 complete bounded JSON-RPC shape and requested protocol text. Exact
 `2025-11-25` passes unchanged. Any other syntactically valid requested version
 is replaced, only in the typed value delivered to `rmcp`, by one fixed private
@@ -104,6 +194,15 @@ tests assert the sentinel remains unknown and fallback behavior remains exact.
 After initialization, every HTTP POST, GET, or DELETE requires exactly one
 `MCP-Protocol-Version: 2025-11-25` header; absence, duplication, or another value
 rejects before `rmcp`.
+
+Streamable HTTP uses rmcp's stateful server mode. Stateless
+`serve_directly` mode is forbidden for the POC because it does not perform the
+same unsupported-offer negotiation and cannot support the accepted bounded
+session, subscription, observer, cancellation, or authentication-lifetime
+model. During stateful initialization rmcp checks equality of the wrapper's
+typed body and optional header before `serve_server` performs the sentinel
+fallback. Tests freeze that exact ordering; an SDK change that validates the
+private sentinel as an ordinary known header first stops for review.
 
 ### Transport topology and authentication
 
@@ -222,21 +321,45 @@ decoder or authentication cache. Missing or malformed credentials receive the
 same HTTP 401 response with `WWW-Authenticate: Bearer`,
 `Cache-Control: no-store`, no JSON-RPC body, and no token-format distinction.
 
+The default rmcp `LocalSessionManager` is forbidden: it inserts a UUIDv4 session
+ID with replacement semantics and has no RiffDB capacity, collision, lifetime,
+or capability-binding state. `riffdb-api-mcp` instead implements rmcp's public
+`SessionManager` trait with a private RiffDB-owned manager. One `create_session`
+call samples exactly one candidate through rmcp's reviewed `session_id()` source,
+validates it as nonempty visible ASCII of at most 128 bytes, and reserves it by
+insert-if-absent under one bounded map critical section before calling public
+`create_local_session` and starting its worker. It never retries, evicts,
+overwrites, or uses a second ID source. The 128-entry bound counts both Pending
+and Active states; capacity, invalid-ID, or collision failure creates no worker
+or live session. The manager clones the public local handle before awaiting and
+holds no map guard across `.await`.
+
 The adapter intercepts each successful initialization response before release
-and binds its returned `Mcp-Session-Id` to the authenticated `CapabilityId`.
+and atomically promotes that exact Pending ID to Active, binding it to the
+authenticated `CapabilityId` and injected creation/idle clock state. Only the
+one reserved initialization may initialize or promote an ID; `has_session` and
+every ordinary stream/message method treat Pending as absent. Initialization,
+response validation, or promotion failure removes the reservation, closes any
+started worker, and creates no binding. Close, expiry, DELETE, cancellation,
+transport/worker termination, or initialization abandonment removes either
+state exactly once.
+
 Every later POST, GET, or DELETE reauthenticates its presented credential and
-must match that binding; a different capability cannot reuse another session or
-SSE stream even when it resolves to the same principal. Each service call and
-each emitted notification obtains fresh authentication/current-policy evidence;
-a live SSE handler retains only its own bounded zeroizing credential for that
-purpose. Initialization failure creates no binding. The private session map uses
-the injected monotonic clock, the 128-session server bound, 300-second idle and
-900-second lifetime bounds, and exact-once deletion on expiry, DELETE, transport
-termination, or cancellation. Capacity exhaustion denies a new initialization
-without evicting a live session. Session IDs and credential material are absent
-from telemetry and public errors. An SDK-produced session ID must be nonempty
-visible ASCII of at most 128 bytes and unique among live bindings; an invalid or
-colliding ID fails initialization and leaves no binding.
+must match the Active binding; a different capability cannot reuse another
+session or SSE stream even when it resolves to the same principal. Each service
+call and each emitted notification obtains fresh authentication/current-policy
+evidence; a live SSE handler retains only its own bounded zeroizing credential
+for that purpose. The private manager uses the injected monotonic clock, the
+128-session server bound, 300-second idle and 900-second lifetime bounds.
+Capacity exhaustion denies a new initialization without evicting a live or
+pending session. Session IDs and credential material are absent from telemetry
+and public errors. An SDK-produced session ID must be unique among all Pending
+or Active reservations; failure leaves no reservation, worker, or binding.
+The local `SessionConfig` sets `keep_alive = None` and `sse_retry = None`, and
+the outer `StreamableHttpServerConfig` sets `sse_keep_alive = None` and
+`sse_retry = None`. RiffDB's injected clock and bounded observer own liveness;
+no SDK timer or priming/retry event creates an unreviewed frame, keeps a session
+alive, or substitutes for the accepted idle and lifetime bounds.
 
 An initialization request must not carry `Mcp-Session-Id`. Every later POST,
 GET, or DELETE carries exactly one canonical `Mcp-Session-Id` field equal to the
@@ -288,6 +411,76 @@ The version-one resource inventory is:
 | Projection status | `riffdb://projection/<lineage>/<projection-id>/status` |
 | Server health | `riffdb://server/health` |
 
+Discovery maps each service descriptor to exactly one MCP inventory surface.
+The structural registry is exact:
+
+| Service descriptor | MCP surface | Exact URI or RFC 6570 URI template | MIME type |
+|---|---|---|---|
+| `active_contract` | `resources/list` | `riffdb://contract/active` | `application/json` |
+| `contract_version` | `resources/list` | the canonical concrete contract-version locator above | `application/json` |
+| `entity_schema` | `resources/list` | the canonical concrete entity-schema locator above | `application/schema+json` |
+| `command_plan` | `resources/list` | the canonical concrete command-plan locator above | `application/json` |
+| `command_documentation` | `resources/list` | the canonical concrete command-documentation locator above | `text/markdown` |
+| `command_outcome` | `resources/templates/list` | `riffdb://outcome/{principal}/<lineage>/<command-id>/<tool-name>/{key_hash}` with the descriptor-owned segments encoded canonically | `application/json` |
+| `commit.class_template` | `resources/templates/list` | `riffdb://commit/{sequence}` | `application/json` |
+| `commit.commit_sequence` | `resources/list` | the canonical concrete commit locator above | `application/json` |
+| `provenance.class_template` | `resources/templates/list` | `riffdb://provenance/{provenance_id}` | `application/json` |
+| `provenance.provenance_id` | `resources/list` | the canonical concrete provenance locator above | `application/json` |
+| `projection_status` | `resources/list` | the canonical concrete projection-status locator above | `application/json` |
+| `server_health` | `resources/list` | `riffdb://server/health` | `application/json` |
+
+Template variable names and braces are literal compatibility bytes. Template
+expansion is not trusted: the resulting URI must pass the same complete
+canonical parser and semantic-owner checks as a directly supplied resource URI.
+`principal` must decode to a checked principal identifier, `key_hash` must be
+the exact 50-character digest tuple, `sequence` must be a nonzero canonical
+unsigned decimal, and `provenance_id` must be the exact lowercase UUIDv7 form.
+Unknown variables, partial expansion, alternate operators, query expansion,
+and extra path text reject. An unexpanded template is never a readable URI.
+
+`CommandOutcomeResource` is therefore template metadata only. It fixes the
+lineage, stable command ID, and compiler-owned tool-name segments but cannot
+choose a principal, key digest, or concrete outcome locator. Concrete outcome
+URIs enter MCP only as checked links returned by Execute/GetOutcome or as a
+caller-supplied fully expanded URI; neither `resources/list` nor
+`resources/templates/list` mints one. Commit and provenance class-template
+descriptors likewise authorize only their template records, while their exact-
+identity branches authorize only concrete list records. No descriptor appears
+in both list surfaces.
+
+MCP list pagination never filters a mixed service page. An initial or
+continuation `resources/list` call invokes full `DiscoverResources` with exact
+service page limit 500 and `ResourceDiscoveryKind::Concrete`; an initial or
+continuation `resources/templates/list` call uses the same limit with
+`ResourceDiscoveryKind::Template`. The lowercase 32-hex-character MCP cursor is
+only the canonical presentation of that call's exact 16-byte service cursor.
+The service binds kind, representation, and limit, so a cursor copied between
+the two MCP methods rejects and neither adapter decodes, wraps, skips, buffers,
+or synthesizes a transport page. Empty pages remain terminal and carry no
+cursor. Compact watcher refreshes instead use
+`ResourceDiscoveryKind::All`; they cannot lend their cursors to either public
+list method.
+
+Resource content remains service-mediated and uses this closed read registry:
+
+| Resource kind | Fresh API-neutral operation or algorithm |
+|---|---|
+| Active contract | `GetActiveContract` |
+| Contract version | `GetContractVersion` with the exact locator identity |
+| Entity schema | full `DiscoverResources` under fresh authorization, requiring one exact matching descriptor and fence |
+| Command plan or documentation | the exact fenced `DiscoverResources` plus `ExplainCommand` algorithm below |
+| Persisted outcome | `ResolveCommandOutcome` with the checked locator selector |
+| Commit | `GetCommit` |
+| Provenance | `TraceProvenance` |
+| Projection status | `GetProjectionStatus` |
+| Server health | `Health` |
+
+Inventory metadata and retained schema bytes are not content-release authority.
+Every read reruns the named shared-service path, current authorization, required
+audit lifecycle, obligations, bounds, and redaction before the common MCP
+renderer releases content. A missing or nonunique exact descriptor during a
+discovery-based read fails closed rather than substituting the active catalog.
+
 `<lineage>` and `<principal>` are the exact UTF-8 bytes of the checked typed
 identifier. Each byte outside RFC 3986's ASCII unreserved set
 `ALPHA / DIGIT / "-" / "." / "_" / "~"` is percent-encoded with an uppercase
@@ -321,8 +514,9 @@ The narrower ADR-0024 provenance bound still applies.
 A command-plan or command-documentation URI remains stable-ID-only, but the
 existing ExplainCommand operation selects by source name. Its read algorithm is
 therefore exact and service-mediated. First, rerun policy-filtered
-DiscoverResources to exact end within the same three-call/1,024-item bound and
-obtain the one visible command-resource descriptor plus its catalog fence. Under
+DiscoverResources in ADR-0040's compact-observation representation to exact end
+within the same three-call/1,024-item bound and obtain the one visible command-
+resource descriptor plus its catalog fence. Under
 ADR-0040/WP-137 that descriptor is self-contained with lineage, contract
 version, stable command ID, and exact source command from the same active bundle.
 Next call ExplainCommand with
@@ -443,10 +637,12 @@ the required `OperationSchemaCatalog` with both checked IDs, 32-byte schema
 hashes, and byte-identical canonical JSON. HTTP consumes the API-neutral catalog
 and stdio consumes its public gRPC conversion. WP-140 uses one common
 `riffdb-api-mcp` parser/composer for both transports and never maintains an MCP
-copy. A `catalog_unchanged` response carries no page or schema catalog because it
-follows an already validated page in the same MCP session.
-The two immutable v1 schema hashes are not folded into `DiscoveryCatalogFence`;
-any schema revision requires a new schema ID/version and compatibility review.
+copy. Each source is at most 65,536 bytes and their complete artifact charges
+together are at most 131,584 bytes. A full discovery page carries both bodies;
+a compact page or `catalog_unchanged` carries only the exact ordered IDs and
+hashes in its required fence. A changed identity cannot return
+`catalog_unchanged`. Any schema revision requires a new schema ID/version and
+compatibility review.
 
 The generic envelope schema is not embedded in or hashed into a compiled bundle.
 This proposal changes no compiler schema artifact, contract bundle
@@ -523,6 +719,83 @@ outcomes, or envelope semantics. Every input is structurally validated against
 the advertised schema before service conversion; the service still performs
 authoritative schema selection and semantic validation.
 
+The 14 fixed tools use one versioned `riffdb-api-mcp` registry; a transport may
+not derive their public contract from Rust debug output, generated Protobuf
+serialization, runtime `schemars`, or reflection. In exact `FixedToolKind` order
+the source mappings are:
+
+| Fixed tool | Public request/result mapping |
+|---|---|
+| `riffdb.contract.validate` | `ValidateContractRequest` / `ValidateContractResponse` |
+| `riffdb.contract.get_active` | `GetActiveContractRequest` / `GetActiveContractResponse` |
+| `riffdb.contract.explain_command` | `ExplainCommandRequest` / `ExplainCommandResponse` |
+| `riffdb.contract.deploy` | `DeployContractRequest` / `DeployContractResponse` |
+| `riffdb.command.get_outcome` | `GetOutcomeRequest` / `GetOutcomeResponse` |
+| `riffdb.entity.get` | `GetEntityRequest` / `GetEntityResponse` |
+| `riffdb.entity.scan_index` | `ScanIndexRequest` / `ScanIndexResponse` |
+| `riffdb.commit.get` | `GetCommitRequest` / `GetCommitResponse` |
+| `riffdb.commit.scan` | `ScanCommitsRequest` / `ScanCommitsResponse` |
+| `riffdb.provenance.trace` | `TraceProvenanceRequest` / `TraceProvenanceResponse` |
+| `riffdb.projection.query` | `QueryProjectionRequest` / `QueryProjectionResponse` |
+| `riffdb.projection.status` | `GetProjectionStatusRequest` / `GetProjectionStatusResponse` |
+| `riffdb.outbox.list_pending` | `ListPendingOutboxDeliveriesRequest` / `ListPendingOutboxDeliveriesResponse` |
+| `riffdb.server.health` | `HealthRequest` / `HealthResponse` |
+
+The complete operation/fixed manifest contains exactly 29 unique artifacts:
+the generic command envelope, the existing GetOutcome result, 14 fixed inputs,
+and 13 new fixed results.
+The GetOutcome result reuses the service-owned
+`riffdb.command-get-outcome-result/v1` artifact and is not copied. A fixed
+artifact ID is exactly
+`riffdb.fixed-tool/<exact-tool-name>/input/v1` or
+`riffdb.fixed-tool/<exact-tool-name>/result/v1`. Canonical manifest order is the
+generic command envelope, the reused GetOutcome result, then each fixed tool in
+enum order with input before result and the duplicate GetOutcome result omitted.
+Each fixed artifact is at most 65,536 canonical UTF-8 bytes; all 27 new fixed
+artifacts together are at most 1,048,576 bytes.
+
+Full MCP `tools/list` output uses one explicit additive budget ledger. The
+API-neutral full discovery response is at most 2,621,440 bytes; fixed-schema
+bodies materialized from local `FixedToolKind` entries add at most 1,048,576
+bytes; and every remaining MCP tool key, title, description, annotation,
+JSON-RPC field, array delimiter, link, and framing byte is charged to an exact
+524,288-byte adapter allowance. The three inclusive charges total 4,194,304
+bytes. Canonical schema sources are parsed and emitted as JSON objects rather
+than escaped JSON strings, and a body already charged in the service response
+is not charged a second time merely because composition changes its container.
+WP-137 freezes the lower service ceiling and a one-maximum-dynamic-item fixture;
+WP-140's separately accepted 27-artifact registry must prove the complete
+maximum fixed, dynamic, and mixed-page ledgers before any full list response is
+written. Exceeding any component or aggregate charge fails before serialization
+reaches a transport sink.
+
+Every fixed input omits transport `request_id`; the adapter supplies one fresh
+RiffDB RequestId through the accepted transport-specific source. Root objects
+and result branches are closed. `u32`/`i32` and narrower integers are JSON
+integers; `u64`/`i64` are canonical decimal strings. UUID bytes use canonical
+lowercase hyphenated UUID text, typed hashes use fixed lowercase hexadecimal,
+MCP cursors use 32 lowercase hexadecimal characters, and other opaque bytes use
+canonical padded RFC 4648 base64. `Value` and `ValueRecord` use this ADR's tagged
+representation. Optional absence omits the property. A closed oneof has exactly
+one explicitly named branch. Enums use a checked lowercase registry with no
+numeric fallback. Schema documents are JSON objects, not escaped JSON strings.
+Unknown properties, aliases, alternate number/byte spellings, unknown enums,
+lossy values, and response branches inconsistent with the request reject.
+
+The registry fixture freezes, for every fixed tool, its exact name, RPC/service
+operation, bounded title, description, annotations, input/result schema IDs,
+hashes, canonical lengths, source paths, and converter ID. WP-140 begins with an
+interface-only PR containing all 27 canonical sources, that fixture, and request-
+to-service plus service-to-structured-content goldens for every result branch.
+The same PR adds
+`crates/riffdb-api-mcp/fixtures/resource-registry-v1.json`, freezing every
+descriptor-to-list mapping, exact concrete/template URI, MIME type, stable
+presentation name, bounded title/description, subscription flag, content
+converter, and result-content golden in the structural order above. A human
+maintainer must accept those exact bytes and mappings before fixed-tool or
+resource presentation implementation proceeds. A later byte, field,
+annotation, converter, or mapping change is public MCP compatibility review.
+
 Declared business outcomes use `isError=false`. Transport, malformed-input,
 authorization, idempotency misuse, unavailability, and internal failures use
 the bounded protocol/tool-error layer appropriate to where they occur. Structured
@@ -566,12 +839,14 @@ disclosing why.
 
 WP-137 must add one conditional shape to each existing discovery operation, not
 a seventh semantic operation or generic resource read. An initial
-`DiscoverCommandTools` or `DiscoverResources` request may carry its prior exact
-`DiscoveryCatalogFence`; a cursor and prior fence are mutually exclusive. After
+compact-observation `DiscoverCommandTools` or `DiscoverResources` request may
+carry its prior exact `DiscoveryCatalogFence`; a cursor and prior fence are
+mutually exclusive. Full representation always returns a byte-fitted page and
+the complete operation catalog where applicable. After
 fresh authentication, initial discovery authorization, and a fresh
 `BegunInvocation::reauthorize` safe point, the result is either a closed
 `catalog_unchanged` branch carrying the equal current catalog fence and no
-items/cursor, or the ordinary first page for the new fence. Both branches run
+items/cursor/schema bodies, or the compact first page for the new fence. Both branches run
 normal terminal invocation completion, including durable audit when required.
 Continuations retain the existing cursor semantics.
 
@@ -589,19 +864,34 @@ across `catalog_unchanged`, and only under all POC invariants together: stdio
 loads one credential once and never reloads or switches it; HTTP binds the exact
 `CapabilityId` to the session; `CapabilityGrantV1` is immutable after creation;
 revocation or expiry makes fresh authentication fail and terminates the session;
-and the accepted visibility policy is static for that session's lifetime. A
-visibility-policy implementation change terminates affected sessions. Mutable
+and the accepted visibility policy is static for that server generation. A
+visibility-policy implementation change requires a freshly and independently
+sampled server generation.
+Mutable
 grants or mutable policy are forbidden from reusing this optimization until an
 accepted design adds an authorization/visibility epoch to the public fence.
 Every authentication, reauthorization, or transport failure discards the
-pending refresh and retained inference rather than emitting from it.
+pending refresh and retained inference rather than emitting from it. The
+required 16-byte process generation and ordered operation-schema identity are
+part of public fence equality. The generation is a fresh independent 128-bit
+sample, not a uniqueness proof; acceptance explicitly tolerates its negligible
+collision probability because retained observation state grants no read or
+invocation authority. On the ordinary differing-generation path, a transparent
+stdio gRPC reconnect to a restarted server discards old cursors/inference and
+performs a fresh compact scan before notifying.
 
 On a changed fence, either transport completely pages both policy-filtered
-discovery operations before notifying. The conditional initial request uses
-page limit 500; each continuation uses the lesser of 500 and the remaining
-1,024-item observation capacity, so the third request's maximum is 24. One
-inventory may inspect at most 1,024 visible items in at most three public calls
-and must reach an exact final page; a cursor after item 1,024 is overflow.
+discovery operations in compact-observation representation before notifying.
+The conditional initial request and every continuation use page limit 500, as
+required by the exact cursor-bound normalized query. One maximum-size inventory
+therefore yields exactly 500, 500, and 24 items in at most three public calls.
+An over-limit inventory may return up to 500 items in the third response. The
+adapter structurally validates the bounded response but rejects as soon as it
+encounters item 1,025, or when the accepted 1,024th item is followed by a
+cursor; it retains and fingerprints at most 1,024 visible items and requires
+exact end for acceptance. Representation is also bound into the
+server-side cursor state, so changing either the request limit or representation
+on continuation rejects.
 Expiry, authorization failure, mid-page fence change, or cursor failure
 discards the refresh without a partial
 notification; it retries only from a new initial request at the next five-second
@@ -641,8 +931,14 @@ The loop makes at most 180 ticks during the 900-second session lifetime and at
 most eight subscribed-resource reads per tick. An unchanged tick uses at most
 two conditional discovery calls plus those eight reads. A changed tick uses at
 most three calls for each discovery inventory plus at most eight reads total
-across all subscribed resource kinds. The absolute session bound is therefore
-2,520 service calls and 1,024 inspected items per inventory per tick. Calls are
+across all subscribed resource kinds. The absolute watcher-generated background
+bound is therefore
+2,520 watcher-generated background service calls, at most 1,500 service-
+returned and structurally validated compact items per inventory per tick, and
+at most 1,024 retained/fingerprinted items per inventory per tick. Client-
+initiated tool, resource, and invocation calls are
+not folded into that watcher count; they remain separately bounded by session
+lifetime, rate limits, and in-flight limits. Background calls are
 paced across the five-second tick under the same limiter and are sequentially
 bounded; each obtains a fresh RequestId and fresh authentication/current-policy
 decision, and invalid authentication closes the session. The adapter retains
@@ -710,28 +1006,51 @@ seconds. Rejected admission allocates no service request, progress task, cursor,
 or subscription; cancellation and termination release every count exactly once.
 
 These byte bounds are enforced by first-party transport wrappers on both sides
-of `rmcp`; the stock SDK I/O/body collectors and serializers are not accepted as
-the bound. The stdio wrapper reads one framed message into a capacity-limited
-buffer and detects one excess byte before JSON decoding. HTTP rejects an
-over-limit `Content-Length` before collection and counts chunk bytes into the
-same limit with a one-byte excess probe when length is absent or chunked. Neither
-path allocates from an untrusted declared length. Outbound JSON is serialized
-once into a capacity-limited staging buffer that includes the JSON-RPC and
-newline or SSE-event framing; exceeding 4,194,304 bytes fails before any stdout
-or response-body byte is written. SSE replay/event queues count the already
-bounded encoded frame and cannot concatenate an unbounded batch. Framing,
-decode, compression, and outbound-overhead boundary tests cover exact-limit and
-one-byte-over inputs; HTTP request compression is disabled in the POC.
+of `rmcp`; the stock SDK I/O/body collectors and serializers are not the sole
+bound. The stdio wrapper reads one framed message into a capacity-limited buffer
+and detects one excess byte before JSON decoding. HTTP rejects an over-limit
+`Content-Length` before collection and counts chunk bytes into the same limit
+with a one-byte excess probe when length is absent or chunked. Neither path
+allocates from an untrusted declared length.
+
+For stdio, the first-party `Transport` owns one capacity-limited JSON-plus-
+newline serialization and checks the complete frame before stdout. Stateful
+HTTP necessarily uses pinned rmcp 2.2.0's reviewed internal JSON-to-String and
+SSE-to-Bytes passes. The private SessionManager preflights the typed initialize
+response with its absent event ID before returning it. For every later stream
+item, after the public local worker has assigned the event ID and before its
+`ServerSseMessage` is yielded to rmcp's serializer, the private stream wrapper
+performs the same SDK-equivalent typed count/preflight of the exact JSON-RPC
+message and SSE `data`/`id` framing and rejects an excess. The wrapper-owned
+pre-initialize ping uses a first-party capacity-limited final serializer and
+does not enter this SDK path. The outer response-body gate then receives one
+complete SDK `Bytes` frame,
+requires its actual length to be at most 4,194,304 bytes, and only then yields
+that frame to the HTTP server. An excess closes the session before yielding any
+byte of that frame; previously admitted frames in the same stream are not
+rolled back. This deliberately performs two bounded JSON serializations on HTTP
+and does not claim sole serializer ownership. The pinned SDK's temporary String and
+Vec are bounded by the already checked typed message, while the complete-frame
+gate remains the authoritative network-write boundary. The disabled SDK
+keepalive/retry settings above make one admitted typed message correspond to
+one checked outbound SSE frame. SSE replay/event queues retain only bounded
+typed messages and cannot concatenate an unbounded batch. Tests require exact
+predicted-versus-actual frame equality for every output variant; any rmcp or
+sse-stream framing change stops an upgrade. Framing, decode, compression, and
+outbound-overhead boundary tests cover exact-limit and one-byte-over inputs;
+HTTP request compression is disabled in the POC.
 
 The reviewed SDK logs complete requests/results at some levels and logs raw
 Streamable HTTP session IDs in some transport paths. Both binaries install a
 non-overridable first-party tracing filter that discards every event whose
 metadata target is `rmcp` or begins `rmcp::`, regardless of user log directives.
 They emit only separately constructed bounded safe RiffDB transport events.
-The lock-graph source audit verifies that the pinned SDK has no direct stdout,
-stderr, or alternate logging sink that bypasses this filter; a changed finding
-stops an SDK upgrade. Protocol stdout remains owned exclusively by the bounded
-stdio writer.
+The `transport-io` feature intentionally supplies protocol stdin/stdout through
+Tokio. The lock-graph source audit verifies that the pinned SDK has no separate
+non-protocol stdout/stderr diagnostic sink that bypasses this filter; a changed
+finding stops an SDK upgrade. The first-party bounded transport owns the handles,
+frames, and write-before-limit check, while protocol stdout remains free of
+diagnostics.
 
 These constants and key fields require explicit review with this ADR. WP-140 may
 not substitute an unbounded middleware default, process-global ambient clock,
@@ -806,11 +1125,18 @@ ADR-0024. All other URI bytes, cursor text, fixed-tool names, schemas, structure
 result shapes, protocol version, route, and initialization metadata become
 public compatibility fixtures only when this record is accepted and generated.
 
-Acceptance requires companion amendments to SPEC Sections 11.1, 12.2 through
-12.6, 12.8 through 12.12, and Appendix D for the exact topology, initialization,
-authentication, locators, locator lookup, schemas, notifications, cursor
-spelling, bounds, protocol, and pin. It also requires the public/service
-amendments described in ADR-0040, including conditional discovery. No durable
+Acceptance requires companion amendments to SPEC Sections 5.4, 11.1, 12.2
+through 12.6, 12.8 through 12.12, and Appendix D for the exact dependency owner,
+topology, initialization, authentication, locators, locator lookup, schemas,
+notifications, cursor spelling, bounds, protocol, and pin. ADR-0009's complete
+direct-owner table must add `riffdb-proto`, `riffdb-service`, and
+`riffdb-api-mcp` for exact base64 0.22.1 with default features disabled and
+`alloc` enabled, respectively for structural outcome-locator validation,
+authoritative locator tuple encoding/decoding, and MCP presentation. Proposed
+ADR-0041 additionally adds the CLI structural-presentation owner. It
+also requires the public/service and server-generation amendments described in
+ADR-0040, including conditional discovery and the explicit ADR-0018/ADR-0009
+entropy-purpose change. No durable
 storage key, contract grammar, IR, plan hash, canonical input hash, commit
 ordering, or atomicity changes.
 
@@ -844,10 +1170,16 @@ escaped and bounded before model-facing output.
 WP-137 freezes the additive public descriptor/message/RPC inventory, outcome-
 locator wire fields, exact error carriage, and stdio client support. WP-140 adds:
 
-- initialization fixtures for the exact metadata/capabilities, pre-initialize
-  ping, exact and newer-known version offers, private-sentinel fallback, optional
-  matching initialize header, and mandatory post-initialize version header;
-- exact tool, schema, fixed-tool, URI, MIME, and lowercase-cursor goldens;
+- initialization fixtures for the exact metadata/capabilities, wrapper-owned
+  stateful-HTTP and rmcp-owned stdio pre-initialize ping paths, exact baseline,
+  all three older-known versions, the one newer-known version, and a
+  syntactically valid unknown-newer version offer, private-
+  sentinel fallback, optional matching initialize header, and mandatory post-
+  initialize version header;
+- exact tool, URI, MIME, and lowercase-cursor goldens plus the human-accepted
+  27-source fixed-tool registry and resource/template registry, all schema
+  IDs/lengths/hashes, annotations, list-surface mappings, subscription flags,
+  and every request/result/content converter branch;
 - malformed URI/percent/base64url/decimal/UUID/cursor tables and parser fuzzing;
 - raw-key-to-locator minting; exact 1,745-byte maximum; lineage/command/tool
   distinctness; locator lookup; stale tool/key ID; principal/stored-tenant
@@ -859,7 +1191,8 @@ locator wire fields, exact error carriage, and stdio client support. WP-140 adds
   server-authoritative malformed-token rejection without a stdio-to-auth edge;
 - stale/unknown/hidden tool denial and invocation-time reauthorization;
 - schema/result conformance, invocation-independent fixed GetOutcome schema,
-  tagged-Value round trips/bounds, and business-outcome `isError=false` cases;
+  fixed-schema 65,536-byte individual/1,048,576-byte aggregate bounds, tagged-
+  Value round trips/bounds, and business-outcome `isError=false` cases;
 - canonical generic-envelope schema and mechanical composition goldens for every
   command, all three status branches, outcome resource-link content, and fixed
   GetOutcome, with no compiler artifact or bundle-hash drift;
@@ -871,21 +1204,32 @@ locator wire fields, exact error carriage, and stdio client support. WP-140 adds
 - deterministic pre/post-auth rate-limit schedules, exact composite-key
   separation, bucket/session/in-flight exhaustion and recovery, monotonic clock
   faults, exact Host/Origin/Authorization/protocol/session-header matrices,
+  custom SessionManager Pending/Active state, one-candidate insert-if-absent,
+  invalid/collision/capacity rejection without overwrite or worker leakage,
+  no map guard across await, promotion/abandonment/exact-once cleanup,
   capability-to-session binding, source-header spoofing, and exact custom
   1 MiB/4 MiB transport boundaries;
 - list-change and resource-update schedules covering visible versus hidden-only
-  changes, 1,024/1,025-item discovery, three-call completion, cursor abort with
-  next-tick restart, eight-subscription/observer-semaphore exhaustion, idle
+  changes, compact/full representation separation, 4,096-byte compact item and
+  2,621,440-byte full-page limits, the complete
+  2,621,440 + 1,048,576 + 524,288 outbound ledger,
+  1,024/1,025-item compact discovery, an accepted three-limit-500 sequence of
+  exactly 500/500/24 items, over-limit third pages up to 500 items with rejection
+  at item 1,025 or a cursor after 1,024, full byte-fitting with fewer items, cursor
+  abort with next-tick restart, eight-subscription/observer-semaphore exhaustion, idle
   expiry unaffected by watcher output, coalescing/backpressure, and cancellation;
 - `catalog_unchanged` schedules covering fabricated and cross-operation fences,
   a different credential, revoke/expiry, fresh reauthorization and completion,
-  zero candidate/page/cursor allocation, and the prohibition on ordinary-client
-  visibility inference;
+  zero candidate/page/cursor allocation, process-generation and operation-schema
+  identity changes across transparent gRPC reconnect/restart, and the
+  prohibition on ordinary-client visibility inference;
 - secret and instruction-injection canaries across content, errors, and telemetry;
 - raw token, session-ID, request, result, and notification canaries proving the
   non-overridable `rmcp` tracing filter and protocol-only stdout;
-- architecture checks forbidding auth, storage, policy, runtime, commit, catalog,
-  server, and in-process service dependencies from production stdio; and
+- feature/differential architecture checks proving default-empty features,
+  byte-identical common rendering, and a production-stdio cargo tree with no
+  auth, service, storage, policy, runtime, commit, catalog, server, or
+  `riffdb-api-grpc` server-feature dependency; and
 - official MCP Inspector smoke tests over both transports.
 
 The lock-graph review and `cargo deny check` are acceptance evidence, not merely
