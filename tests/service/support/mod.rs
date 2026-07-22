@@ -86,11 +86,11 @@ use riffdb_types::{
     CapabilityPermissionKindV1, CapabilityPermissionV1, CapabilityPermissionsV1, CommitSequence,
     ContractLineage, ContractVersion, DatabaseId, Decimal, DecimalSpec, DigestKeyId, EntityKey,
     EntityKeyBuilder, EntityVersion, Environment, EventId, FrontierPosition, IdempotencyKey,
-    IncidentId, IndexEpoch, LogicalTime, MAX_STRING_BYTES, OutcomeId, PartitionKey,
-    PartitionKeyBuilder, PartitionKeyHash, PartitionScopeV1, ProjectionGeneration, ProjectionId,
-    ProjectionIdentity, ProvenanceId, RequestId, RevocationReasonCodeV1, ScopedPartitionV1,
-    ServiceAuditPhaseV1, ServiceAuditTargetV1, ServiceAuditTargetsV1, ServiceIngressKindV1,
-    ServiceOperationV1, TenantId, TenantScope, Timestamp,
+    IncidentId, IndexEpoch, IndexEpochPosition, LogicalTime, MAX_STRING_BYTES, OutcomeId,
+    PartitionKey, PartitionKeyBuilder, PartitionKeyHash, PartitionScopeV1, ProjectionGeneration,
+    ProjectionId, ProjectionIdentity, ProvenanceId, RequestId, RevocationReasonCodeV1,
+    ScopedPartitionV1, ServiceAuditPhaseV1, ServiceAuditTargetV1, ServiceAuditTargetsV1,
+    ServiceIngressKindV1, ServiceOperationV1, TenantId, TenantScope, Timestamp,
 };
 use tokio::sync::Notify;
 
@@ -820,6 +820,10 @@ impl ServiceHarness {
 
     pub(crate) fn commit_subscription_source_dropped(&self) -> bool {
         self.ports.commit_subscription_source_dropped()
+    }
+
+    pub(crate) fn commit_subscription_acknowledgements(&self) -> Vec<CommitSequence> {
+        self.ports.commit_subscription_acknowledgements()
     }
 
     pub(crate) fn control_stream_lifetime(&self) {
@@ -1972,6 +1976,7 @@ struct HarnessPortState {
     >,
     subscription_submitted: Notify,
     subscription_source_dropped: Arc<AtomicBool>,
+    subscription_acknowledgements: Arc<Mutex<Vec<CommitSequence>>>,
     subscription_stall_next: AtomicBool,
     subscription_next_waiting: Arc<AtomicBool>,
     commit_continuation_panic: Arc<AtomicU8>,
@@ -2030,6 +2035,7 @@ impl HarnessPorts {
                 pending_subscription: Mutex::new(None),
                 subscription_submitted: Notify::new(),
                 subscription_source_dropped: Arc::new(AtomicBool::new(false)),
+                subscription_acknowledgements: Arc::new(Mutex::new(Vec::new())),
                 subscription_stall_next: AtomicBool::new(false),
                 subscription_next_waiting: Arc::new(AtomicBool::new(false)),
                 commit_continuation_panic: Arc::new(AtomicU8::new(COMMIT_CONTINUATION_PANIC_NONE)),
@@ -2246,6 +2252,11 @@ impl HarnessPorts {
         self.shared
             .commit_continuation_panic
             .store(COMMIT_CONTINUATION_PANIC_NONE, Ordering::Release);
+        self.shared
+            .subscription_acknowledgements
+            .lock()
+            .expect("subscription acknowledgements mutex")
+            .clear();
     }
 
     fn stall_next_commit_notification(&self) {
@@ -2290,6 +2301,14 @@ impl HarnessPorts {
         self.shared
             .subscription_source_dropped
             .load(Ordering::Acquire)
+    }
+
+    fn commit_subscription_acknowledgements(&self) -> Vec<CommitSequence> {
+        self.shared
+            .subscription_acknowledgements
+            .lock()
+            .expect("subscription acknowledgements mutex")
+            .clone()
     }
 
     fn panic_commit_continuation_at(&self, point: CommitContinuationPanic) {
@@ -2403,6 +2422,7 @@ struct HarnessCommitNotificationSource {
     stall_next: bool,
     waiting: Arc<AtomicBool>,
     panic: Arc<AtomicU8>,
+    acknowledgements: Arc<Mutex<Vec<CommitSequence>>>,
 }
 
 impl CommitNotificationSource for HarnessCommitNotificationSource {
@@ -2444,6 +2464,17 @@ impl CommitNotificationSource for HarnessCommitNotificationSource {
             Ok(notification)
         })
     }
+
+    fn acknowledge(
+        &mut self,
+        delivered_through: CommitSequence,
+    ) -> Result<(), AuthoritativeReadError> {
+        self.acknowledgements
+            .lock()
+            .expect("subscription acknowledgements mutex")
+            .push(delivered_through);
+        Ok(())
+    }
 }
 
 impl Drop for HarnessCommitNotificationSource {
@@ -2476,6 +2507,7 @@ fn subscription_source(shared: &Arc<HarnessPortState>) -> Box<dyn CommitNotifica
         stall_next: shared.subscription_stall_next.swap(false, Ordering::AcqRel),
         waiting: Arc::clone(&shared.subscription_next_waiting),
         panic: Arc::clone(&shared.commit_continuation_panic),
+        acknowledgements: Arc::clone(&shared.subscription_acknowledgements),
     })
 }
 
@@ -2615,7 +2647,7 @@ impl PortCapacityPermit<AuthoritativeIndexRequest, AuthoritativeIndexPage, Autho
             &request,
             Vec::new(),
             None,
-            IndexEpoch::new(1).expect("index epoch"),
+            IndexEpochPosition::Value(IndexEpoch::new(1).expect("index epoch")),
         )
         .expect("empty authoritative index page");
         let (sender, receipt) = port_completion_channel();

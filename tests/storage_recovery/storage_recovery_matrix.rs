@@ -578,7 +578,10 @@ fn assert_precommit_command_state(ports: &RedbOperationalPorts, fixture: &Comman
         .expect("scan index");
     assert!(matches!(
         index,
-        AuthoritativeIndexScanPage::ExactEnd { entries } if entries.is_empty()
+        AuthoritativeIndexScanPage::ExactEnd {
+            entries,
+            epoch: IndexEpochPosition::BeforeFirst,
+        } if entries.is_empty()
     ));
     let outbox = ports
         .scan_pending_outbox(
@@ -674,9 +677,13 @@ fn assert_postcommit_command_state(ports: &RedbOperationalPorts, fixture: &Comma
                 .expect("index request"),
         )
         .expect("scan index");
-    let AuthoritativeIndexScanPage::ExactEnd { entries } = index else {
+    let AuthoritativeIndexScanPage::ExactEnd { entries, epoch } = index else {
         panic!("one index row must reach exact end");
     };
+    assert_eq!(
+        epoch,
+        IndexEpochPosition::Value(fixture.records.index_epochs()[0].next())
+    );
     assert_eq!(entries.len(), 1);
     assert_eq!(entries[0].value().key(), &fixture.index_key);
     assert_eq!(entries[0].value().covered_values(), &record(1));

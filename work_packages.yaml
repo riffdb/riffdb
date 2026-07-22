@@ -508,9 +508,11 @@ work_packages:
   - ADR-0021
   - ADR-0023
   - ADR-0030
+  - ADR-0035
   allowed_paths:
   - Cargo.lock
   - crates/riffdb-types/src/codec.rs
+  - crates/riffdb-types/src/ids.rs
   - crates/riffdb-storage-api/**
   - crates/riffdb-storage-memory/**
   - crates/riffdb-testkit/Cargo.toml
@@ -707,6 +709,7 @@ work_packages:
   - ADR-0021
   - ADR-0030
   - ADR-0032
+  - ADR-0035
   allowed_paths:
   - Cargo.lock
   - crates/riffdb-storage-api/src/startup.rs
@@ -1206,6 +1209,9 @@ work_packages:
   - ADR-0029
   - ADR-0030
   - ADR-0031
+  - ADR-0034
+  - ADR-0035
+  - ADR-0036
   allowed_paths:
   - Cargo.lock
   - crates/riffdb-service/**
@@ -1358,6 +1364,8 @@ work_packages:
   - ADR-0029
   - ADR-0030
   - ADR-0031
+  - ADR-0035
+  - ADR-0036
   allowed_paths:
   - Cargo.lock
   - proto/**
@@ -1440,6 +1448,9 @@ work_packages:
   - ADR-0031
   - ADR-0032
   - ADR-0033
+  - ADR-0034
+  - ADR-0035
+  - ADR-0036
   allowed_paths:
   - Cargo.lock
   - crates/riffdb-api-grpc/**

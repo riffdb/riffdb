@@ -1104,8 +1104,9 @@ mod tests {
         ActorId, ActorKind, AdministrationSequence, CanonicalInputHash, CanonicalString,
         CapabilityId, CommandId, CommitSequence, ContractBundleHash, ContractPlanRootHash,
         ContractVersion, EntityKey, EntityVersion, FieldId, FrontierPosition, IndexEntryKey,
-        IndexEpoch, LogicalTime, OutcomeId, PartitionKeyHash, PlanHash, ProjectionGeneration,
-        ProjectionId, ProjectionPlanHash, ProvenanceId, RequestId, SourceHash, Timestamp,
+        IndexEpochPosition, LogicalTime, OutcomeId, PartitionKeyHash, PlanHash,
+        ProjectionGeneration, ProjectionId, ProjectionPlanHash, ProvenanceId, RequestId,
+        SourceHash, Timestamp,
     };
 
     use super::*;
@@ -1918,7 +1919,7 @@ mod tests {
             PageLimit::new(2).expect("fixture page limit"),
             index_rows,
             Some(CursorToken::from_bytes([11; 16])),
-            IndexScanFence::new(IndexEpoch::first()),
+            IndexScanFence::new(IndexEpochPosition::BeforeFirst),
         )
         .expect("fixture index page is bounded");
         cases.push(FixtureCase::from_response(

@@ -755,7 +755,9 @@ fn exchange_validation_enforces_selected_contract_and_effective_page_limits() {
                 })
                 .collect(),
             next_cursor: None,
-            observed_fence: Some(v1::IndexScanFence { index_epoch: 1 }),
+            observed_fence: Some(v1::IndexScanFence {
+                position: Some(v1::index_scan_fence::Position::AppliedEpoch(1)),
+            }),
         }),
     };
     assert_eq!(
@@ -876,12 +878,48 @@ fn public_pages_and_commit_collections_preserve_canonical_order() {
                 },
             ],
             next_cursor: None,
-            observed_fence: Some(v1::IndexScanFence { index_epoch: 1 }),
+            observed_fence: Some(v1::IndexScanFence {
+                position: Some(v1::index_scan_fence::Position::AppliedEpoch(1)),
+            }),
         }),
     };
     assert_eq!(
         validate_public_message(&index),
         Err(PublicWireError::NonCanonical)
+    );
+}
+
+#[test]
+fn index_scan_fence_is_closed_and_preserves_before_first() {
+    let response = |position| v1::ScanIndexResponse {
+        page: Some(v1::IndexPage {
+            items: Vec::new(),
+            next_cursor: None,
+            observed_fence: Some(v1::IndexScanFence { position }),
+        }),
+    };
+
+    assert!(
+        validate_public_message(&response(Some(
+            v1::index_scan_fence::Position::BeforeFirst(v1::Unit {}),
+        )))
+        .is_ok()
+    );
+    assert!(
+        validate_public_message(&response(Some(
+            v1::index_scan_fence::Position::AppliedEpoch(1),
+        )))
+        .is_ok()
+    );
+    assert_eq!(
+        validate_public_message(&response(None)),
+        Err(PublicWireError::MissingRequiredField)
+    );
+    assert_eq!(
+        validate_public_message(&response(Some(
+            v1::index_scan_fence::Position::AppliedEpoch(0),
+        ))),
+        Err(PublicWireError::InvalidIdentity)
     );
 }
 

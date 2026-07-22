@@ -1234,8 +1234,16 @@ fn validate_index_page(page: Option<&v1::IndexPage>) -> Result<(), PublicWireErr
         .observed_fence
         .as_ref()
         .ok_or(PublicWireError::MissingRequiredField)?;
-    if fence.index_epoch == 0 {
-        return Err(PublicWireError::InvalidIdentity);
+    match fence
+        .position
+        .as_ref()
+        .ok_or(PublicWireError::MissingRequiredField)?
+    {
+        v1::index_scan_fence::Position::BeforeFirst(_) => {}
+        v1::index_scan_fence::Position::AppliedEpoch(0) => {
+            return Err(PublicWireError::InvalidIdentity);
+        }
+        v1::index_scan_fence::Position::AppliedEpoch(_) => {}
     }
     Ok(())
 }

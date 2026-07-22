@@ -126,7 +126,9 @@ fn contextual_result(kind: &str, bytes: Vec<u8>, owner: u32) -> bool {
                     values: Some(v1::ValueRecord { fields: Vec::new() }),
                 }],
                 next_cursor: None,
-                observed_fence: Some(v1::IndexScanFence { index_epoch: 1 }),
+                observed_fence: Some(v1::IndexScanFence {
+                    position: Some(v1::index_scan_fence::Position::AppliedEpoch(1)),
+                }),
             }),
         })
         .is_ok(),

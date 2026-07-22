@@ -2,6 +2,8 @@
 
 //! Engine-neutral semantic storage contracts for RiffDB.
 
+pub use riffdb_types::IndexEpochPosition;
+
 pub mod admission;
 pub mod audit;
 pub mod authoritative;

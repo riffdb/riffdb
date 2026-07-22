@@ -1923,8 +1923,18 @@ pub struct IndexRow {
 }
 #[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct IndexScanFence {
-    #[prost(uint64, tag = "1")]
-    pub index_epoch: u64,
+    #[prost(oneof = "index_scan_fence::Position", tags = "2, 3")]
+    pub position: ::core::option::Option<index_scan_fence::Position>,
+}
+/// Nested message and enum types in `IndexScanFence`.
+pub mod index_scan_fence {
+    #[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Oneof)]
+    pub enum Position {
+        #[prost(message, tag = "2")]
+        BeforeFirst(super::Unit),
+        #[prost(uint64, tag = "3")]
+        AppliedEpoch(u64),
+    }
 }
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct IndexPage {

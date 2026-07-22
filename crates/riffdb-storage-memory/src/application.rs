@@ -27,7 +27,7 @@ use riffdb_storage_api::{
     TransactionCurrentState, TransactionCurrentStateBuilder, ValidationReadRequest,
     derive_event_hash_v1,
 };
-use riffdb_types::{CommitSequence, EventId, ProvenanceId};
+use riffdb_types::{CommitSequence, EventId, FrontierPosition, ProvenanceId};
 
 use crate::startup::persisted_evidence_order_key;
 use crate::state::{
@@ -1437,6 +1437,7 @@ impl AuthoritativeScanReader for MemoryOperationalPorts {
         request: AuthoritativeIndexScanRequest,
     ) -> Result<AuthoritativeIndexScanPage, StorageError> {
         self.read(|state| {
+            let epoch = epoch_position(&state.index_epochs, request.target())?;
             let prefix = request.target().prefix().as_bytes();
             let start = match request.after() {
                 Some(after) => state
@@ -1478,23 +1479,40 @@ impl AuthoritativeScanReader for MemoryOperationalPorts {
                     .value()
                     .key()
                     .clone();
-                AuthoritativeIndexScanPage::page(&request, rows, next_after).map_err(corrupt_value)
+                AuthoritativeIndexScanPage::page(&request, epoch, rows, next_after)
+                    .map_err(corrupt_value)
             } else {
-                AuthoritativeIndexScanPage::exact_end(&request, rows).map_err(corrupt_value)
+                AuthoritativeIndexScanPage::exact_end(&request, epoch, rows).map_err(corrupt_value)
             }
         })
     }
 
     fn scan_commits(&self, request: CommitScanRequest) -> Result<CommitScanPageV1, StorageError> {
         self.read(|state| {
+            let inclusive_upper = request.inclusive_upper().map_or_else(
+                || {
+                    state
+                        .commits
+                        .last()
+                        .map_or(FrontierPosition::BeforeFirst, |record| {
+                            FrontierPosition::AppliedThrough(record.commit_sequence())
+                        })
+                },
+                FrontierPosition::AppliedThrough,
+            );
             let start = request.after().map_or(0, |after| {
                 state
                     .commits
                     .partition_point(|record| record.commit_sequence() <= after)
             });
+            let upper = match inclusive_upper {
+                FrontierPosition::BeforeFirst => None,
+                FrontierPosition::AppliedThrough(sequence) => Some(sequence),
+            };
             let wanted = usize::from(request.limit().get());
             let mut rows = state.commits[start..]
                 .iter()
+                .take_while(|record| upper.is_some_and(|upper| record.commit_sequence() <= upper))
                 .take(wanted.saturating_add(1))
                 .cloned()
                 .map(|record| EncodedPageItem::new(record, memory_record_charge()))
@@ -1516,9 +1534,10 @@ impl AuthoritativeScanReader for MemoryOperationalPorts {
                     .ok_or_else(|| storage_error(StorageErrorKind::CorruptData))?
                     .value()
                     .commit_sequence();
-                CommitScanPageV1::page(request, rows, next_after).map_err(corrupt_value)
+                CommitScanPageV1::page(request, inclusive_upper, rows, next_after)
+                    .map_err(corrupt_value)
             } else {
-                CommitScanPageV1::exact_end(request, rows).map_err(corrupt_value)
+                CommitScanPageV1::exact_end(request, inclusive_upper, rows).map_err(corrupt_value)
             }
         })
     }
@@ -1992,6 +2011,119 @@ mod tests {
     }
 
     #[test]
+    fn empty_authoritative_scans_report_before_first_positions() {
+        let ports = operational_ports(bundle());
+        let fixture = command_fixture(1, 1, None, IndexEpochPosition::BeforeFirst, 0x50);
+        let limit = StorageScanLimit::new(1).expect("scan limit");
+        let index = ports
+            .scan_index(
+                AuthoritativeIndexScanRequest::new(fixture.range, None, limit)
+                    .expect("index request"),
+            )
+            .expect("index scan");
+        assert!(matches!(
+            index,
+            AuthoritativeIndexScanPage::ExactEnd {
+                entries,
+                epoch: IndexEpochPosition::BeforeFirst,
+            } if entries.is_empty()
+        ));
+
+        let commits = ports
+            .scan_commits(CommitScanRequest::initial(limit))
+            .expect("commit scan");
+        assert!(matches!(
+            commits,
+            CommitScanPageV1::ExactEnd {
+                records,
+                inclusive_upper: FrontierPosition::BeforeFirst,
+            } if records.is_empty()
+        ));
+    }
+
+    #[test]
+    fn commit_page_values_enforce_fences_order_and_continuations() {
+        let first = command_fixture(1, 1, None, IndexEpochPosition::BeforeFirst, 0x48);
+        let first_entity = first.records.entities()[0].post_image().clone();
+        let first_epoch = IndexEpochPosition::Value(first.records.index_epochs()[0].next());
+        let second = command_fixture(2, 2, Some(first_entity), first_epoch, 0x49);
+        let sequence_one = CommitSequence::first();
+        let sequence_two = sequence_one.checked_next().expect("second sequence");
+        let limit = StorageScanLimit::new(2).expect("scan limit");
+        let initial = CommitScanRequest::initial(limit);
+        let first_row =
+            || EncodedPageItem::new(first.records.commit().clone(), memory_record_charge());
+        let second_row =
+            || EncodedPageItem::new(second.records.commit().clone(), memory_record_charge());
+
+        assert_eq!(
+            CommitScanRequest::continuing(sequence_two, sequence_one, limit),
+            Err(StorageValueError::InvalidShape)
+        );
+        assert_eq!(
+            CommitScanPageV1::exact_end(
+                CommitScanRequest::initial(StorageScanLimit::new(1).expect("one-row limit")),
+                FrontierPosition::AppliedThrough(sequence_two),
+                vec![first_row(), second_row()],
+            ),
+            Err(StorageValueError::LimitExceeded)
+        );
+        assert_eq!(
+            CommitScanPageV1::exact_end(initial, FrontierPosition::BeforeFirst, vec![first_row()],),
+            Err(StorageValueError::NonCanonicalOrder)
+        );
+        assert_eq!(
+            CommitScanPageV1::exact_end(
+                initial,
+                FrontierPosition::AppliedThrough(sequence_two),
+                vec![first_row()],
+            ),
+            Err(StorageValueError::InvalidShape)
+        );
+        assert_eq!(
+            CommitScanPageV1::page(
+                initial,
+                FrontierPosition::AppliedThrough(sequence_one),
+                vec![first_row()],
+                sequence_one,
+            ),
+            Err(StorageValueError::InvalidShape)
+        );
+        CommitScanPageV1::page(
+            initial,
+            FrontierPosition::AppliedThrough(sequence_two),
+            vec![first_row()],
+            sequence_one,
+        )
+        .expect("a row below the fence requires a continuation");
+        let continuing = CommitScanRequest::continuing(sequence_one, sequence_two, limit)
+            .expect("continuation request");
+        CommitScanPageV1::exact_end(
+            continuing,
+            FrontierPosition::AppliedThrough(sequence_two),
+            vec![second_row()],
+        )
+        .expect("the final contiguous row reaches the fence");
+        assert_eq!(
+            CommitScanPageV1::exact_end(
+                CommitScanRequest::continuing(sequence_one, sequence_one, limit)
+                    .expect("closed continuation"),
+                FrontierPosition::AppliedThrough(sequence_one),
+                vec![second_row()],
+            ),
+            Err(StorageValueError::NonCanonicalOrder)
+        );
+        assert_eq!(
+            CommitScanPageV1::exact_end(
+                initial,
+                FrontierPosition::AppliedThrough(sequence_two),
+                vec![second_row()],
+            ),
+            Err(StorageValueError::NonCanonicalOrder)
+        );
+    }
+
+    #[test]
     fn staged_history_is_private_atomic_contiguous_and_matches_the_reference_model() {
         let ports = operational_ports(bundle());
         let mut model = AuthoritativeCommandModel::new();
@@ -2128,15 +2260,14 @@ mod tests {
 
         let limit = StorageScanLimit::new(1).expect("scan limit");
         let first_page = ports
-            .scan_commits(CommitScanRequest::new(None, limit))
+            .scan_commits(CommitScanRequest::initial(limit))
             .expect("first commit page");
+        let FrontierPosition::AppliedThrough(inclusive_upper) = first_page.inclusive_upper() else {
+            panic!("two commits require a nonempty upper fence");
+        };
         let CommitScanPageV1::Page { next_after, .. } = first_page else {
             panic!("two commits require pagination");
         };
-        let final_page = ports
-            .scan_commits(CommitScanRequest::new(Some(next_after), limit))
-            .expect("final commit page");
-        assert!(matches!(final_page, CommitScanPageV1::ExactEnd { .. }));
         let index_page = ports
             .scan_index(
                 AuthoritativeIndexScanRequest::new(second.range.clone(), None, limit)
@@ -2144,6 +2275,10 @@ mod tests {
             )
             .expect("index scan");
         assert_eq!(index_page.entries().len(), 1);
+        assert_eq!(
+            index_page.epoch(),
+            IndexEpochPosition::Value(second.records.index_epochs()[0].next())
+        );
         let snapshot = ports
             .read_snapshot(
                 SnapshotRequest::new(
@@ -2167,6 +2302,35 @@ mod tests {
             snapshot.ranges()[0].epoch(),
             IndexEpochPosition::Value(second.records.index_epochs()[0].next())
         );
+
+        let third = command_fixture(
+            3,
+            3,
+            Some(second.records.entities()[0].post_image().clone()),
+            IndexEpochPosition::Value(second.records.index_epochs()[0].next()),
+            0x53,
+        );
+        admit(&ports, &mut model, &third);
+        stage_empty(&ports, &third)
+            .commit(DurabilityMode::Memory)
+            .expect("commit later command");
+        let final_page = ports
+            .scan_commits(
+                CommitScanRequest::continuing(next_after, inclusive_upper, limit)
+                    .expect("continuation request"),
+            )
+            .expect("frozen continuation page");
+        assert_eq!(
+            final_page.inclusive_upper(),
+            FrontierPosition::AppliedThrough(inclusive_upper)
+        );
+        assert!(matches!(
+            final_page,
+            CommitScanPageV1::ExactEnd { records, .. }
+                if records.len() == 1
+                    && records[0].value().commit_sequence()
+                        == CommitSequence::new(2).expect("second sequence")
+        ));
     }
 
     #[test]
@@ -2520,7 +2684,7 @@ mod tests {
             .expect("final page");
         assert!(matches!(
             final_page,
-            AuthoritativeIndexScanPage::ExactEnd { ref entries } if entries.len() == 1
+            AuthoritativeIndexScanPage::ExactEnd { ref entries, .. } if entries.len() == 1
         ));
     }
 }

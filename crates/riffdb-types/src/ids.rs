@@ -192,6 +192,16 @@ allocatable_nonzero_id!(
     u64,
     NonZeroU64
 );
+
+/// Empty or assigned state of one index-range epoch bucket.
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+pub enum IndexEpochPosition {
+    /// No mutation has affected this exact prefix bucket.
+    BeforeFirst,
+    /// The bucket has this nonzero assigned epoch.
+    Value(IndexEpoch),
+}
+
 allocatable_nonzero_id!(
     /// A sequence assigned to an administrative change.
     AdministrationSequence,

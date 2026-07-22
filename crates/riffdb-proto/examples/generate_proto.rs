@@ -1693,7 +1693,9 @@ fn public_client_vectors() -> Result<String, Box<dyn Error>> {
                     values: Some(public_empty_record()),
                 }],
                 next_cursor: Some(vec![0x88; 16]),
-                observed_fence: Some(v1::IndexScanFence { index_epoch: 1 }),
+                observed_fence: Some(v1::IndexScanFence {
+                    position: Some(v1::index_scan_fence::Position::AppliedEpoch(1)),
+                }),
             }),
         },
     );
@@ -2883,7 +2885,9 @@ fn response_charge_index_page() -> v1::ScanIndexResponse {
         page: Some(v1::IndexPage {
             items: vec![row(7, 0), row(13, 1)],
             next_cursor: Some(vec![0x88; 16]),
-            observed_fence: Some(v1::IndexScanFence { index_epoch: 1 }),
+            observed_fence: Some(v1::IndexScanFence {
+                position: Some(v1::index_scan_fence::Position::AppliedEpoch(1)),
+            }),
         }),
     }
 }

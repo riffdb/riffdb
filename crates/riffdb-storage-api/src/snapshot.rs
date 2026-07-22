@@ -4,10 +4,12 @@ use std::cmp::Ordering;
 use std::fmt;
 use std::hash::{Hash, Hasher};
 
+#[cfg(test)]
+use riffdb_types::IndexEpoch;
 use riffdb_types::{
     CanonicalRecord, CommitSequence, Date, EntityKey, EntityTypeId, EntityVersion, EnumVariantId,
-    IndexEntryKey, IndexEntryKeyBuilder, IndexEpoch, IndexId, KeyEncodingError, MAX_KEY_BYTES,
-    Timestamp, encode_canonical_record,
+    IndexEntryKey, IndexEntryKeyBuilder, IndexEpochPosition, IndexId, KeyEncodingError,
+    MAX_KEY_BYTES, Timestamp, encode_canonical_record,
 };
 
 use crate::{
@@ -15,15 +17,6 @@ use crate::{
     MAX_READ_SNAPSHOT_BYTES, MAX_SCAN_PAGE_BYTES, MAX_SCAN_PAGE_ENTRIES, StorageError,
     StorageValueError, StoredEntityRecordV1, canonical_codec_storage_error,
 };
-
-/// Empty or assigned state of one index-range epoch bucket.
-#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
-pub enum IndexEpochPosition {
-    /// No mutation has affected this exact prefix bucket.
-    BeforeFirst,
-    /// The bucket has this nonzero assigned epoch.
-    Value(IndexEpoch),
-}
 
 /// One complete canonical entity identity.
 #[derive(Clone, Eq, Hash, Ord, PartialEq, PartialOrd)]

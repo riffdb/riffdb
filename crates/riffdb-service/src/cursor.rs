@@ -11,7 +11,7 @@ use riffdb_contract_ir::IndexScanPrefix;
 use riffdb_policy::PartitionConstraint;
 use riffdb_types::{
     ActorId, CanonicalValue, CommitSequence, ContractBundleHash, ContractLineage, ContractVersion,
-    EntityTypeId, EventId, FieldId, IndexEntryKey, IndexEpoch, IndexId,
+    EntityTypeId, EventId, FieldId, IndexEntryKey, IndexEpochPosition, IndexId,
     MAX_CAPABILITY_FIELD_VISIBILITY, ProjectionIdentity, TenantScope,
 };
 
@@ -684,7 +684,7 @@ impl IndexScanCursorPolicy {
 #[derive(Clone, Eq, PartialEq)]
 pub(crate) struct IndexScanCursorState {
     after: IndexEntryKey,
-    epoch: IndexEpoch,
+    epoch: IndexEpochPosition,
     policy: IndexScanCursorPolicy,
 }
 
@@ -692,7 +692,7 @@ impl IndexScanCursorState {
     #[must_use]
     pub(crate) const fn new(
         after: IndexEntryKey,
-        epoch: IndexEpoch,
+        epoch: IndexEpochPosition,
         policy: IndexScanCursorPolicy,
     ) -> Self {
         Self {
@@ -708,7 +708,7 @@ impl IndexScanCursorState {
     }
 
     #[must_use]
-    pub(crate) const fn epoch(&self) -> IndexEpoch {
+    pub(crate) const fn epoch(&self) -> IndexEpochPosition {
         self.epoch
     }
 

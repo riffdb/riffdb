@@ -22,11 +22,13 @@ use crate::orchestration::{
 };
 use crate::{
     AuthoritativeReadPort, BuildInfo, CapabilityTokenIssuer, CatalogReadPort, CurrentPolicyPort,
-    CursorMonotonicClock, CursorTokenGenerator, OperationalStatusPort, OutboxStatusPort,
-    PortDriverStopped, PortReceipt, PreBootstrapHealthContextIssuer, ProjectionQueryPort,
+    CursorMonotonicClock, CursorTokenGenerator, HealthRequest, HealthResult, OperationalStatusPort,
+    OutboxStatusPort, PortDriverStopped, PortReceipt, PreBootstrapHealthContext,
+    PreBootstrapHealthContextIssuer, PreBootstrapHealthReport, ProjectionQueryPort,
     RequestDeadlineScheduler, ServiceCursorRegistries, ServiceDiagnostics, ServiceFailure,
     ServiceFuture, ServiceHealthHooks, ServiceJob, ServiceJobSpawner, ServiceResponseCharge,
-    ServiceResult, ServiceTelemetry, ServiceTelemetryEvent, port_completion_channel,
+    ServiceResult, ServiceTelemetry, ServiceTelemetryEvent, ensure_response_budget,
+    port_completion_channel,
 };
 
 /// Trusted immutable process facts displayed by authenticated health.
@@ -214,7 +216,82 @@ pub struct RiffDbService {
     pub(crate) inner: Arc<RiffDbServiceInner>,
 }
 
+/// Health-only application surface available while startup validation runs.
+///
+/// This type deliberately carries no executor, storage, catalog, policy, or
+/// authenticated application-service capability.
+pub struct InitializingRiffDbService {
+    admission: Arc<PreBootstrapHealthAdmission>,
+}
+
+impl InitializingRiffDbService {
+    /// Serves the restricted pre-bootstrap Health result.
+    pub fn health(
+        &self,
+        context: PreBootstrapHealthContext,
+        _request: HealthRequest,
+    ) -> ServiceFuture<'_, HealthResult> {
+        pre_bootstrap_health_result(&self.admission, context)
+    }
+}
+
+impl fmt::Debug for InitializingRiffDbService {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("InitializingRiffDbService([CAPABILITY])")
+    }
+}
+
+/// Move-only authority to activate the complete service after startup proofs join.
+pub struct RiffDbServiceActivator {
+    admission: Arc<PreBootstrapHealthAdmission>,
+}
+
+impl RiffDbServiceActivator {
+    /// Installs already validated dependencies without reopening health admission.
+    #[must_use]
+    pub fn activate(
+        self,
+        identity: ServiceIdentity,
+        process: ServiceProcessMetadata,
+        executors: ServiceExecutors,
+        providers: ServiceProviders,
+    ) -> RiffDbService {
+        RiffDbService::with_pre_bootstrap_health(
+            identity,
+            process,
+            executors,
+            providers,
+            self.admission,
+        )
+    }
+}
+
+impl fmt::Debug for RiffDbServiceActivator {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("RiffDbServiceActivator([CAPABILITY])")
+    }
+}
+
 impl RiffDbService {
+    /// Begins startup with only the restricted Health surface and one activation authority.
+    #[must_use]
+    pub fn begin_initialization() -> (
+        InitializingRiffDbService,
+        RiffDbServiceActivator,
+        PreBootstrapHealthContextIssuer,
+    ) {
+        let admission = Arc::new(PreBootstrapHealthAdmission::open());
+        (
+            InitializingRiffDbService {
+                admission: Arc::clone(&admission),
+            },
+            RiffDbServiceActivator {
+                admission: Arc::clone(&admission),
+            },
+            PreBootstrapHealthContextIssuer::new(admission),
+        )
+    }
+
     /// Composes the service and the sole authority for restricted pre-bootstrap health.
     #[must_use]
     pub fn compose(
@@ -223,10 +300,9 @@ impl RiffDbService {
         executors: ServiceExecutors,
         providers: ServiceProviders,
     ) -> (Self, PreBootstrapHealthContextIssuer) {
-        let admission = Arc::new(PreBootstrapHealthAdmission::open());
-        let issuer = PreBootstrapHealthContextIssuer::new(Arc::clone(&admission));
+        let (_initializing, activator, issuer) = Self::begin_initialization();
         (
-            Self::with_pre_bootstrap_health(identity, process, executors, providers, admission),
+            activator.activate(identity, process, executors, providers),
             issuer,
         )
     }
@@ -331,6 +407,21 @@ impl RiffDbService {
 
         Box::pin(trusted_service_job_completion(receipt))
     }
+}
+
+pub(crate) fn pre_bootstrap_health_result(
+    admission: &Arc<PreBootstrapHealthAdmission>,
+    context: PreBootstrapHealthContext,
+) -> ServiceFuture<'_, HealthResult> {
+    if !context.is_admitted_by(admission) {
+        return Box::pin(async { Err(PublicError::authorization_denied().into()) });
+    }
+    let result =
+        HealthResult::PreBootstrap(PreBootstrapHealthReport::new(context.lifecycle(), true));
+    Box::pin(async move {
+        ensure_response_budget(&result)?;
+        Ok(result)
+    })
 }
 
 fn spawn_trusted_service_job(spawner: &dyn ServiceJobSpawner, job: ServiceJob) {
@@ -532,6 +623,7 @@ mod tests {
     use std::task::{Context, Poll, Waker};
 
     use crate::orchestration::current_operation_audit_lifecycle;
+    use riffdb_errors::PublicErrorKind;
     use riffdb_types::{
         AdministrationSequence, CommitSequence, ProvenanceId, ServiceAuditLinkV1,
         ServiceAuditPhaseV1,
@@ -561,6 +653,47 @@ mod tests {
             let mut context = Context::from_waker(Waker::noop());
             assert!(matches!(job.as_mut().poll(&mut context), Poll::Pending));
         }
+    }
+
+    #[test]
+    fn initialization_surface_is_health_only_and_uses_one_revocable_admission() {
+        let (initializing, _activator, issuer) = RiffDbService::begin_initialization();
+        let admitted = issuer
+            .issue(crate::PreBootstrapLifecycle::InitializingValidation)
+            .expect("initial admission is open");
+        let revoked = issuer
+            .issue(crate::PreBootstrapLifecycle::InitializingBootstrap)
+            .expect("initial admission is open");
+
+        let mut health = initializing.health(admitted, HealthRequest);
+        let mut context = Context::from_waker(Waker::noop());
+        let result = match health.as_mut().poll(&mut context) {
+            Poll::Ready(Ok(result)) => result,
+            observed => panic!("restricted health must complete immediately: {observed:?}"),
+        };
+        assert_eq!(
+            result,
+            HealthResult::PreBootstrap(PreBootstrapHealthReport::new(
+                crate::PreBootstrapLifecycle::InitializingValidation,
+                true,
+            ))
+        );
+
+        issuer.close();
+        assert!(
+            issuer
+                .issue(crate::PreBootstrapLifecycle::InitializingBootstrap)
+                .is_none()
+        );
+        let mut denied = initializing.health(revoked, HealthRequest);
+        let failure = match denied.as_mut().poll(&mut context) {
+            Poll::Ready(Err(failure)) => failure,
+            observed => panic!("revoked health must fail immediately: {observed:?}"),
+        };
+        assert_eq!(
+            failure.public_error().map(PublicError::kind),
+            Some(PublicErrorKind::AuthorizationDenied)
+        );
     }
 
     #[test]
