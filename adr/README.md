@@ -63,10 +63,11 @@ direction, merged draft, or implementation choice.
 | [0039](0039-v2-index-migration-integration.md) | V2 Index Migration Integration | Accepted |
 | [0040](0040-public-grpc-mcp-parity-bridge.md) | Public gRPC MCP Parity Bridge | Accepted |
 | [0041](0041-cli-public-flow-and-output-contract.md) | CLI Public Flow and Output Contract | Accepted |
+| [0042](0042-sealed-catalog-owned-index-migration-driver.md) | Sealed Catalog-Owned Index Migration Driver | Accepted |
 
 The human architecture review on 2026-07-12 approved the direction represented
 by ADR-0001 through ADR-0012. The human maintainer accepted ADR-0001 through
-ADR-0041 and their recorded companion amendments by 2026-07-22. ADR-0008 now
+ADR-0042 and their recorded companion amendments by 2026-07-22. ADR-0008 now
 accepts the native MCP tool/resource model, policy-filtered HTTP and stdio-over-
 gRPC boundaries, canonical locators/cursors, and presentation rules; ADR-0020
 separately owns command tool-name normalization and its compiler/catalog
@@ -118,15 +119,23 @@ discovery, outcome-resource lookup, immutable operation-schema catalog, and
 WP-137 gate placement. ADR-0041 accepts WP-150's exact public-client dependency,
 credential, retry, configuration, and JSONL output contract; it reserves but
 does not register the separately reviewed WP-155 backup/restore boundary.
+ADR-0042 seals catalog-owned backend-branded migration instructions, progress,
+and completion; narrows storage API to evidence and identity-only contracts;
+and permits memory/redb's exact migration-only catalog edge with server-hidden
+backend helpers.
 
-The four records accepted on 2026-07-22 cite revision `21a8cfb` as their
-acceptance reference. Their separately named future exact-byte checkpoints
+The earlier four records ADR-0008, ADR-0039, ADR-0040, and ADR-0041 cite
+revision `21a8cfb` as their acceptance reference. Their separately named future exact-byte checkpoints
 remain mandatory: WP-137 operation-schema source, identity, and composition
 bytes; WP-140 fixed-tool-schema and resource-registry bytes; and WP-150 command
 grammar, versioned DTO, JSONL, and stderr goldens. Acceptance does not
 pre-accept WP-155 or waive separate review of any differing real or resolved
 dependency lock graph, feature set, unsafe inventory, or cryptographic or
 native edge.
+
+ADR-0042 has a separate acceptance reference: the human maintainer's explicit
+confirmation in the current Codex session on 2026-07-22. It does not claim the
+earlier four records' `21a8cfb` acceptance reference.
 
 ## Workflow
 
