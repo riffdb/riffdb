@@ -1,6 +1,6 @@
 //! Owned authoritative reads over short redb read transactions.
 
-use std::ops::Bound::{Excluded, Unbounded};
+use std::ops::Bound::{Excluded, Included, Unbounded};
 
 use redb::{ReadOnlyTable, ReadableTable};
 use riffdb_storage_api::{
@@ -12,7 +12,7 @@ use riffdb_storage_api::{
     StorageValueError, StoredCommitRecordV1, StoredDurableEventV1, StoredEntityRecordV1,
     StoredOutcomeV1, StoredProvenanceRecordV1,
 };
-use riffdb_types::{CommitSequence, EventId, ProvenanceId};
+use riffdb_types::{CommitSequence, EventId, FrontierPosition, ProvenanceId};
 
 use crate::codec::{
     IdempotencyRecordV1, decode_commit_record_v1, decode_durable_event_v1, decode_entity_record_v1,
@@ -200,6 +200,8 @@ impl AuthoritativeScanReader for RedbOperationalPorts {
         let table = transaction
             .open_table(SECONDARY_INDEXES)
             .map_err(table_error)?;
+        let index_epochs = transaction.open_table(INDEX_EPOCHS).map_err(table_error)?;
+        let epoch = read_epoch_position(&index_epochs, request.target())?;
         let prefix = request.target().prefix().as_bytes();
         let mut scan = match request.after() {
             Some(after) => table
@@ -245,24 +247,41 @@ impl AuthoritativeScanReader for RedbOperationalPorts {
 
         if has_more {
             let next_after = entries.last().ok_or_else(corrupt)?.value().key().clone();
-            AuthoritativeIndexScanPage::page(&request, entries, next_after).map_err(corrupt_value)
+            AuthoritativeIndexScanPage::page(&request, epoch, entries, next_after)
+                .map_err(corrupt_value)
         } else {
-            AuthoritativeIndexScanPage::exact_end(&request, entries).map_err(corrupt_value)
+            AuthoritativeIndexScanPage::exact_end(&request, epoch, entries).map_err(corrupt_value)
         }
     }
 
     fn scan_commits(&self, request: CommitScanRequest) -> Result<CommitScanPageV1, StorageError> {
+        let transaction = self.begin_read()?;
+        let table = transaction.open_table(COMMITS).map_err(table_error)?;
+        let inclusive_upper = match request.inclusive_upper() {
+            Some(sequence) => FrontierPosition::AppliedThrough(sequence),
+            None => read_commit_head(&table)?.map_or(FrontierPosition::BeforeFirst, |sequence| {
+                FrontierPosition::AppliedThrough(sequence)
+            }),
+        };
         let Some(first_expected) = request
             .after()
             .map_or(Some(CommitSequence::first()), CommitSequence::checked_next)
         else {
-            return CommitScanPageV1::exact_end(request, Vec::new()).map_err(corrupt_value);
+            return CommitScanPageV1::exact_end(request, inclusive_upper, Vec::new())
+                .map_err(corrupt_value);
         };
-        let transaction = self.begin_read()?;
-        let table = transaction.open_table(COMMITS).map_err(table_error)?;
+        let FrontierPosition::AppliedThrough(upper) = inclusive_upper else {
+            return CommitScanPageV1::exact_end(request, inclusive_upper, Vec::new())
+                .map_err(corrupt_value);
+        };
+        if first_expected > upper {
+            return CommitScanPageV1::exact_end(request, inclusive_upper, Vec::new())
+                .map_err(corrupt_value);
+        }
         let start = encode_application_sequence_key(first_expected);
+        let end = encode_application_sequence_key(upper);
         let mut scan = table
-            .range(start.as_slice()..)
+            .range::<&[u8]>((Included(start.as_slice()), Included(end.as_slice())))
             .map_err(precommit_storage_error)?;
         let wanted = usize::from(request.limit().get());
         let mut records = Vec::with_capacity(wanted);
@@ -306,9 +325,10 @@ impl AuthoritativeScanReader for RedbOperationalPorts {
                 .ok_or_else(corrupt)?
                 .value()
                 .commit_sequence();
-            CommitScanPageV1::page(request, records, next_after).map_err(corrupt_value)
+            CommitScanPageV1::page(request, inclusive_upper, records, next_after)
+                .map_err(corrupt_value)
         } else {
-            CommitScanPageV1::exact_end(request, records).map_err(corrupt_value)
+            CommitScanPageV1::exact_end(request, inclusive_upper, records).map_err(corrupt_value)
         }
     }
 }
@@ -400,19 +420,26 @@ mod tests {
     use std::sync::atomic::{AtomicU64, Ordering};
 
     use riffdb_storage_api::{
-        AuthoritativeIndexScanPage, DatabaseInitializationPort, DurableKeySchemaBindingV1,
-        ExecutablePlanRef, IdempotencyIdentity, IdempotencyKeyDigest, IndexRangePrefixBuilder,
-        StorageScanLimit, StoredIndexEntryV1,
+        AuthoritativeIndexScanPage, DatabaseInitializationPort, DeclaredOutcome, DurabilityMode,
+        DurableKeySchemaBindingV1, ExecutablePlanRef, IdempotencyIdentity, IdempotencyKeyDigest,
+        IndexRangePrefixBuilder, ReadDependencies, StorageScanLimit, StoredCommitRecordV1,
+        StoredIndexEntryV1, StoredIndexEpochV1, StoredReadDependenciesV1,
+        StructurallyDecodedIndexRangePrefixV1,
     };
     use riffdb_types::{
-        ActorId, CanonicalRecord, CommandId, ContractBundleHash, ContractLineage, ContractVersion,
+        ActorId, ActorKind, AdmittedActorContext, AggregateTypeId, CanonicalInputHash,
+        CanonicalRecord, CommandId, ContractBundleHash, ContractLineage, ContractVersion,
         DatabaseId, DigestKeyId, EntityKeyBuilder, EntityTypeId, EntityVersion, Environment,
-        IndexEntryKeyBuilder, IndexId, PlanHash, TenantScope,
+        IndexEntryKeyBuilder, IndexEpoch, IndexId, LogicalTime, OutcomeId, PartitionKeyBuilder,
+        PlanHash, ProvenanceId, RequestId, TenantScope, Timestamp, hash_partition_key,
     };
 
     use super::*;
-    use crate::codec::{encode_entity_record_v1, encode_index_entry_v1};
-    use crate::layout::{ENTITIES, SECONDARY_INDEXES};
+    use crate::codec::{
+        encode_commit_record_v1, encode_entity_record_v1, encode_index_entry_v1,
+        encode_index_epoch_v1,
+    };
+    use crate::layout::{COMMITS, ENTITIES, INDEX_EPOCHS, SECONDARY_INDEXES};
     use crate::store::RedbStore;
 
     static NEXT_TEST_PATH: AtomicU64 = AtomicU64::new(1);
@@ -438,6 +465,13 @@ mod tests {
     fn database_id() -> DatabaseId {
         DatabaseId::from_unix_milliseconds_and_random(1_700_000_000_000, [0x11; 10])
             .expect("database ID")
+    }
+
+    fn uuid_bytes(fill: u8) -> [u8; 16] {
+        let mut bytes = [fill; 16];
+        bytes[6] = 0x70 | (fill & 0x0f);
+        bytes[8] = 0x80 | (fill & 0x3f);
+        bytes
     }
 
     fn operational(label: &str) -> (TestDatabasePath, RedbOperationalPorts) {
@@ -489,6 +523,67 @@ mod tests {
         )
     }
 
+    fn stored_commit(sequence: CommitSequence) -> StoredCommitRecordV1 {
+        let actor = AdmittedActorContext::new(
+            ActorId::new("maintainer").expect("actor"),
+            ActorKind::Human,
+            TenantScope::Global,
+            None,
+        );
+        let mut partition = PartitionKeyBuilder::new(AggregateTypeId::first());
+        partition.push_u64(1).expect("partition component");
+        let partition_hash =
+            hash_partition_key(partition.finish().expect("partition key").as_bytes());
+        let sequence_byte = u8::try_from(sequence.get()).expect("small test sequence");
+        StoredCommitRecordV1::new(
+            sequence,
+            RequestId::from_bytes(uuid_bytes(sequence_byte.wrapping_add(0x20)))
+                .expect("request ID"),
+            plan(),
+            CanonicalInputHash::from_bytes([sequence_byte; 32]),
+            actor,
+            LogicalTime::new(Timestamp::new(i64::from(sequence_byte), 0).expect("timestamp")),
+            partition_hash,
+            Vec::new(),
+            StoredReadDependenciesV1::from_live(
+                &ReadDependencies::new(Vec::new()).expect("empty dependencies"),
+            )
+            .expect("stored dependencies"),
+            Vec::new(),
+            Vec::new(),
+            DeclaredOutcome::new(
+                OutcomeId::first(),
+                CanonicalRecord::new(Vec::new()).expect("outcome fields"),
+            )
+            .expect("outcome"),
+            ProvenanceId::from_bytes(uuid_bytes(sequence_byte.wrapping_add(0x40)))
+                .expect("provenance ID"),
+            Vec::new(),
+            DurabilityMode::Sync,
+        )
+        .expect("stored commit")
+    }
+
+    fn seed_commit(ports: &RedbOperationalPorts, sequence: CommitSequence) {
+        let encoded = encode_commit_record_v1(&stored_commit(sequence)).expect("encode commit");
+        let key = encode_application_sequence_key(sequence);
+        let access = ports.begin_write().expect("begin commit seed");
+        {
+            let mut table = access
+                .transaction()
+                .expect("seed transaction")
+                .open_table(COMMITS)
+                .expect("commit table");
+            assert!(
+                table
+                    .insert(key.as_slice(), encoded.as_bytes())
+                    .expect("insert commit")
+                    .is_none()
+            );
+        }
+        access.commit().expect("commit seed");
+    }
+
     #[test]
     fn empty_reads_return_absence_and_exact_end() {
         let (_path, ports) = operational("empty");
@@ -517,12 +612,71 @@ mod tests {
         assert_eq!(snapshot.observed_through(), None);
 
         let commits = ports
-            .scan_commits(CommitScanRequest::new(
-                None,
+            .scan_commits(CommitScanRequest::initial(
                 StorageScanLimit::new(10).expect("limit"),
             ))
             .expect("commit scan");
-        assert!(matches!(commits, CommitScanPageV1::ExactEnd { records } if records.is_empty()));
+        assert!(matches!(
+            commits,
+            CommitScanPageV1::ExactEnd {
+                records,
+                inclusive_upper: FrontierPosition::BeforeFirst,
+            } if records.is_empty()
+        ));
+    }
+
+    #[test]
+    fn commit_continuation_reuses_the_initial_frozen_head() {
+        let (_path, ports) = operational("commit-fence");
+        let first = CommitSequence::first();
+        let second = first.checked_next().expect("second sequence");
+        let third = second.checked_next().expect("third sequence");
+        seed_commit(&ports, first);
+        seed_commit(&ports, second);
+
+        let limit = StorageScanLimit::new(1).expect("limit");
+        let initial = ports
+            .scan_commits(CommitScanRequest::initial(limit))
+            .expect("initial commit page");
+        assert_eq!(
+            initial.inclusive_upper(),
+            FrontierPosition::AppliedThrough(second)
+        );
+        let CommitScanPageV1::Page { next_after, .. } = initial else {
+            panic!("the initial frozen range requires a continuation");
+        };
+        assert_eq!(next_after, first);
+
+        seed_commit(&ports, third);
+        let continuation = ports
+            .scan_commits(
+                CommitScanRequest::continuing(next_after, second, limit)
+                    .expect("continuation request"),
+            )
+            .expect("continued commit page");
+        assert_eq!(
+            continuation.inclusive_upper(),
+            FrontierPosition::AppliedThrough(second)
+        );
+        assert!(matches!(
+            continuation,
+            CommitScanPageV1::ExactEnd { records, .. }
+                if records.len() == 1 && records[0].value().commit_sequence() == second
+        ));
+
+        let fresh = ports
+            .scan_commits(CommitScanRequest::initial(
+                StorageScanLimit::new(3).expect("fresh limit"),
+            ))
+            .expect("fresh commit page");
+        assert_eq!(
+            fresh.inclusive_upper(),
+            FrontierPosition::AppliedThrough(third)
+        );
+        assert!(matches!(
+            fresh,
+            CommitScanPageV1::ExactEnd { records, .. } if records.len() == 3
+        ));
     }
 
     #[test]
@@ -534,6 +688,7 @@ mod tests {
         let key = index_key
             .finish(entity_target(1).key().clone())
             .expect("index key");
+        let target = IndexRangeTarget::new(IndexRangePrefixBuilder::new(index_id).finish());
         let stored = StoredIndexEntryV1::new(
             key.clone(),
             binding(),
@@ -541,6 +696,12 @@ mod tests {
         )
         .expect("stored index entry");
         let encoded = encode_index_entry_v1(&stored).expect("encode index entry");
+        let stored_epoch = StoredIndexEpochV1::new(
+            StructurallyDecodedIndexRangePrefixV1::from_live(target.prefix()),
+            binding(),
+            IndexEpoch::first(),
+        );
+        let encoded_epoch = encode_index_epoch_v1(&stored_epoch).expect("encode index epoch");
         let access = ports.begin_write().expect("begin write");
         {
             let mut table = access
@@ -552,9 +713,18 @@ mod tests {
                 .insert(key.as_bytes(), encoded.as_bytes())
                 .expect("insert index row");
         }
+        {
+            let mut table = access
+                .transaction()
+                .expect("transaction")
+                .open_table(INDEX_EPOCHS)
+                .expect("epoch table");
+            table
+                .insert(target.prefix().as_bytes(), encoded_epoch.as_bytes())
+                .expect("insert index epoch");
+        }
         access.commit().expect("commit index row");
 
-        let target = IndexRangeTarget::new(IndexRangePrefixBuilder::new(index_id).finish());
         let request = AuthoritativeIndexScanRequest::new(
             target.clone(),
             None,
@@ -562,9 +732,10 @@ mod tests {
         )
         .expect("scan request");
         let page = ports.scan_index(request).expect("scan index");
-        let AuthoritativeIndexScanPage::ExactEnd { entries } = page else {
+        let AuthoritativeIndexScanPage::ExactEnd { entries, epoch } = page else {
             panic!("one-row index is an exact-end page");
         };
+        assert_eq!(epoch, IndexEpochPosition::Value(IndexEpoch::first()));
         assert_eq!(entries.len(), 1);
         assert_eq!(entries[0].value().key(), &key);
         assert_eq!(
@@ -581,7 +752,7 @@ mod tests {
         assert_eq!(snapshot.ranges().len(), 1);
         assert_eq!(
             snapshot.ranges()[0].epoch(),
-            IndexEpochPosition::BeforeFirst
+            IndexEpochPosition::Value(IndexEpoch::first())
         );
         assert_eq!(snapshot.ranges()[0].entries()[0].key(), &key);
     }

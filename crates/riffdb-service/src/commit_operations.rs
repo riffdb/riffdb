@@ -1187,6 +1187,27 @@ impl CommitSubscription for ServiceCommitSubscription {
                     self.release_stream_resources();
                     return Err(failure);
                 }
+                if let CommitSubscriptionEvent::Commit(commit) = &event {
+                    let acknowledgement = self
+                        .source
+                        .as_mut()
+                        .map_or(Err(AuthoritativeReadError::Integrity), |source| {
+                            source.acknowledge(commit.as_snapshot().sequence())
+                        });
+                    if let Err(error) = acknowledgement {
+                        self.last_delivered = prior_last_delivered;
+                        self.pending_upper = prior_pending_upper;
+                        let terminal = match error {
+                            AuthoritativeReadError::Unavailable => {
+                                self.end(CommitSubscriptionEndReason::Unavailable)
+                            }
+                            AuthoritativeReadError::Integrity
+                            | AuthoritativeReadError::InvalidContinuation => self.end_integrity(),
+                        };
+                        ensure_response_budget(&terminal)?;
+                        return Ok(terminal);
+                    }
+                }
                 Ok(event)
             })
             .await;

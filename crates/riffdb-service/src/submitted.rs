@@ -268,7 +268,7 @@ impl SubmittedList {
         self.0.is_empty()
     }
 
-    fn structural_size(&self) -> Result<usize, ServiceDtoError> {
+    pub(crate) fn structural_size(&self) -> Result<usize, ServiceDtoError> {
         let mut size = COLLECTION_COUNT_BYTES;
         for value in &self.0 {
             checked_add(&mut size, value.structural_size()?)?;
@@ -437,7 +437,7 @@ impl SubmittedValue {
         }
     }
 
-    fn structural_size(&self) -> Result<usize, ServiceDtoError> {
+    pub(crate) fn structural_size(&self) -> Result<usize, ServiceDtoError> {
         let payload = match self {
             Self::Null => 0,
             Self::Bool(_) => 1,

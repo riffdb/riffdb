@@ -670,8 +670,9 @@ messages
   riffdb.v1.IndexRow fields=2
     1 index_entry_key optional bytes
     2 values optional .riffdb.v1.ValueRecord
-  riffdb.v1.IndexScanFence fields=1
-    1 index_epoch optional uint64
+  riffdb.v1.IndexScanFence fields=2
+    2 before_first optional .riffdb.v1.Unit oneof=position
+    3 applied_epoch optional uint64 oneof=position
   riffdb.v1.LineageScopedStableId fields=2
     1 contract_lineage optional string
     2 stable_id optional uint32

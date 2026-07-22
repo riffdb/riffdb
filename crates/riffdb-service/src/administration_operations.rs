@@ -33,10 +33,10 @@ use crate::{
     ListPendingOutboxDeliveriesResult, NormalCreateCapabilityRequest, NormalCreateCapabilityResult,
     OperationalStatusError, OutboxCursorLookup, OutboxCursorPolicy, OutboxCursorState,
     OutboxStatusPortError, OutboxStatusRequest, Page, PageLimit, PendingTerminalResponse,
-    PortAdmissionError, PortDriverStopped, PreBootstrapHealthReport, RequestContext,
-    RevokeCapabilityRequest, RevokeCapabilityResult, RiffDbService, RiffDbServiceInner,
-    ServiceAuditTargetMap, ServiceFailure, ServiceFuture, ServiceResult, ServiceTelemetryEvent,
-    StatisticsRequest, StatisticsResult, ensure_response_budget, fit_page_items,
+    PortAdmissionError, PortDriverStopped, RequestContext, RevokeCapabilityRequest,
+    RevokeCapabilityResult, RiffDbService, RiffDbServiceInner, ServiceAuditTargetMap,
+    ServiceFailure, ServiceFuture, ServiceResult, ServiceTelemetryEvent, StatisticsRequest,
+    StatisticsResult, ensure_response_budget, fit_page_items, pre_bootstrap_health_result,
 };
 
 const MAX_CAPABILITY_REVOKE_PREPARATION_ATTEMPTS: usize = 3;
@@ -49,17 +49,7 @@ impl AdministrationApplication for RiffDbService {
     ) -> ServiceFuture<'_, HealthResult> {
         match context {
             HealthContext::PreBootstrap(context) => {
-                if !context.is_admitted_by(&self.inner.pre_bootstrap_health) {
-                    return Box::pin(async { Err(PublicError::authorization_denied().into()) });
-                }
-                let result = HealthResult::PreBootstrap(PreBootstrapHealthReport::new(
-                    context.lifecycle(),
-                    true,
-                ));
-                Box::pin(async move {
-                    ensure_response_budget(&result)?;
-                    Ok(result)
-                })
+                pre_bootstrap_health_result(&self.inner.pre_bootstrap_health, context)
             }
             HealthContext::Authenticated(context) => {
                 let service = Arc::clone(&self.inner);

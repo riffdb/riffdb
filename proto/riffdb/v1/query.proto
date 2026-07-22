@@ -42,7 +42,12 @@ message IndexRow {
 }
 
 message IndexScanFence {
-  uint64 index_epoch = 1;
+  reserved 1;
+  reserved "index_epoch";
+  oneof position {
+    Unit before_first = 2;
+    uint64 applied_epoch = 3;
+  }
 }
 
 message IndexPage {

@@ -752,6 +752,11 @@ fn stale_wake_and_coalesced_frontier_deliver_every_contiguous_commit_once() {
         }
         assert_eq!(harness.ports.read_submissions(), 3);
         assert_eq!(
+            harness.commit_subscription_acknowledgements(),
+            [second, third, fourth],
+            "only response-budgeted contiguous commits advance the safe resume position"
+        );
+        assert_eq!(
             harness.policy.calls() - policy_calls_after_establishment,
             9,
             "each visible commit has all three current-policy safe points"
@@ -1010,6 +1015,10 @@ fn oversized_commit_stream_item_is_withheld_and_releases_resources() {
             subscription.next().await,
             Err(ServiceFailure::ResponseTooLarge)
         ));
+        assert!(
+            harness.commit_subscription_acknowledgements().is_empty(),
+            "a withheld item cannot advance the hub's safe resume position"
+        );
         assert!(harness.commit_subscription_source_dropped());
         assert_eq!(active_commit_subscribers(&harness, 0xb5).await, 0);
         assert!(matches!(

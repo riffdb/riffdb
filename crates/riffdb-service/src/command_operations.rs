@@ -1400,6 +1400,29 @@ enum MaterializationError {
     Integrity,
 }
 
+pub(crate) enum SubmittedValueMaterializationError {
+    Public(PublicError),
+    Integrity,
+}
+
+pub(crate) fn materialize_submitted_value(
+    schema: &SchemaIr,
+    value_type: &ValueType,
+    value: &SubmittedValue,
+    path: Vec<ValidationPathSegment>,
+) -> Result<CanonicalValue, SubmittedValueMaterializationError> {
+    let mut path = path;
+    match materialize_value(schema, value_type, value, &mut path) {
+        Ok(value) => Ok(value),
+        Err(MaterializationError::Public(code, path)) => {
+            Err(SubmittedValueMaterializationError::Public(
+                PublicError::validation(ValidationIssues::one(validation_issue(code, path))),
+            ))
+        }
+        Err(MaterializationError::Integrity) => Err(SubmittedValueMaterializationError::Integrity),
+    }
+}
+
 fn materialize_value(
     schema: &SchemaIr,
     value_type: &ValueType,
@@ -2696,6 +2719,44 @@ contract LargeDecimalInput version 1 {
                 &[ValidationPathSegment::Field(field)]
             );
         }
+    }
+
+    #[test]
+    fn query_component_materializer_reuses_declared_scalar_rules_and_paths() {
+        let bundle = compile_normalization_fixture();
+        let plan = command(&bundle);
+        let amount = plan
+            .input()
+            .record()
+            .field(field_id(plan, "amount"))
+            .expect("declared amount field");
+        let path = vec![ValidationPathSegment::ListIndex(2)];
+
+        let value = materialize_submitted_value(
+            bundle.schema(),
+            amount.value_type(),
+            &SubmittedValue::Decimal(SubmittedDecimal::new(1_234, 2).expect("submitted decimal")),
+            path.clone(),
+        )
+        .unwrap_or_else(|_| panic!("matching query component materializes"));
+        assert!(matches!(value, CanonicalValue::Decimal(_)));
+
+        let failure = materialize_submitted_value(
+            bundle.schema(),
+            amount.value_type(),
+            &SubmittedValue::Decimal(SubmittedDecimal::new(1_234, 3).expect("submitted decimal")),
+            path.clone(),
+        )
+        .expect_err("wrong decimal scale is caller-correctable");
+        let SubmittedValueMaterializationError::Public(error) = failure else {
+            panic!("wrong query scalar must not become an integrity failure");
+        };
+        let PublicErrorDetails::Validation(issues) = error.details() else {
+            panic!("query materialization uses validation details");
+        };
+        assert_eq!(issues.as_slice().len(), 1);
+        assert_eq!(issues.as_slice()[0].code(), ValidationCode::OutOfRange);
+        assert_eq!(issues.as_slice()[0].path().segments(), path);
     }
 
     #[test]

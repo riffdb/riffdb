@@ -11,6 +11,8 @@ const MANIFEST: &str = include_str!("../Cargo.toml");
 const ADMINISTRATION_SOURCE: &str = include_str!("../src/administration_operations.rs");
 const COMMIT_SOURCE: &str = include_str!("../src/commit_operations.rs");
 const CONTEXT_SOURCE: &str = include_str!("../src/context.rs");
+const QUERY_SOURCE: &str = include_str!("../src/query_discovery_operations.rs");
+const SERVICE_SOURCE: &str = include_str!("../src/service.rs");
 const TRAITS_SOURCE: &str = include_str!("../src/application.rs");
 
 fn assert_object_safe(
@@ -34,6 +36,35 @@ fn exhaust_create_invocation(invocation: CreateCapabilityInvocation) {
 fn six_service_traits_are_object_safe_and_create_mode_is_closed() {
     let _ = assert_object_safe;
     let _ = exhaust_create_invocation;
+}
+
+#[test]
+fn initializing_service_exposes_only_health_before_consuming_activation() {
+    let initialization = SERVICE_SOURCE
+        .split_once("impl InitializingRiffDbService")
+        .expect("initializing service implementation exists")
+        .1
+        .split_once("impl fmt::Debug for InitializingRiffDbService")
+        .expect("initializing service implementation has a closed boundary")
+        .0;
+
+    assert_eq!(initialization.matches("pub fn health(").count(), 1);
+    for forbidden in [
+        "execute_command",
+        "deploy_contract",
+        "get_entity",
+        "scan_index",
+        "create_capability",
+        "storage",
+        "catalog",
+        "policy",
+    ] {
+        assert!(
+            !initialization.contains(forbidden),
+            "initializing service acquired forbidden surface {forbidden}"
+        );
+    }
+    assert!(SERVICE_SOURCE.contains("pub fn activate(\n        self,"));
 }
 
 #[test]
@@ -127,6 +158,39 @@ fn catalog_owns_capability_partition_decoding_and_service_validates_output_keys(
 
     assert!(COMMIT_SOURCE.contains("prepare_contract_version("));
     assert!(COMMIT_SOURCE.contains(".decode_entity(affected.key())"));
+}
+
+#[test]
+fn query_components_materialize_after_schema_selection_and_before_policy_or_lower_access() {
+    for (start, end) in [
+        ("async fn scan_index(", "async fn query_projection("),
+        (
+            "async fn query_projection(",
+            "async fn get_projection_status(",
+        ),
+    ] {
+        let operation = QUERY_SOURCE
+            .split_once(start)
+            .expect("query operation exists")
+            .1
+            .split_once(end)
+            .expect("query operation has a closed source boundary")
+            .0;
+        let schema = operation
+            .find("prepare_selected_contract(")
+            .expect("selected contract is loaded");
+        let materialization = operation
+            .find("materialize_query_components(")
+            .expect("submitted components are materialized");
+        let policy = operation
+            .find(".begin_invocation(")
+            .expect("policy and audit invocation begins");
+        let lower = operation
+            .find(".reserve_")
+            .expect("lower-port capacity is eventually reserved");
+        assert!(schema < materialization && materialization < policy && policy < lower);
+        assert_eq!(operation.matches("request.leading_components()").count(), 1);
+    }
 }
 
 #[test]

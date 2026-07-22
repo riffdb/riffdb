@@ -9,10 +9,11 @@ use std::time::Instant;
 use riffdb_catalog::{CatalogError, CatalogErrorKind, ValidatedContractBundle};
 use riffdb_contract_ir::{
     BoundProjectionGroupSchema, EntitySchema, GeneratedSchemaArtifact, IndexSchema, RecordSchema,
-    SchemaArtifactKey,
+    SchemaArtifactKey, SchemaIr, ValueType,
 };
 use riffdb_errors::{
     PublicError, ValidationCode, ValidationIssue, ValidationIssues, ValidationPath,
+    ValidationPathSegment,
 };
 use riffdb_invariant::{EvaluationError, ExpressionValueSource, evaluate_expression};
 use riffdb_policy::{
@@ -26,6 +27,7 @@ use riffdb_types::{
     ServiceAuditPhaseV1, ServiceOperationV1, TenantScope,
 };
 
+use crate::command_operations::{SubmittedValueMaterializationError, materialize_submitted_value};
 use crate::orchestration::{AuditScope, BegunInvocation, BegunInvocationCompletion};
 use crate::wait::{ControlledWaitError, wait_with_control};
 use crate::{
@@ -44,7 +46,7 @@ use crate::{
     ResourceDescriptor, ResourceDiscoveryCursorLookup, ResourceDiscoveryCursorState,
     ResourceDiscoveryCursorVisibility, RiffDbService, RiffDbServiceInner, ScanIndexRequest,
     ScanIndexResult, ServiceAuditTargetMap, ServiceFailure, ServiceFuture, ServiceResult,
-    ServiceTelemetryEvent, ensure_response_budget, fit_page_items,
+    ServiceTelemetryEvent, SubmittedValue, ensure_response_budget, fit_page_items,
 };
 use crate::{CursorAccessError, CursorContractIdentity};
 
@@ -321,16 +323,27 @@ async fn scan_index(
     let (entity, index) = find_index(contract.schema(), request.index_id())
         .ok_or_else(|| validation_failure(ValidationCode::InvalidValue))?;
     validate_field_selection(&entity, request.fields().as_slice())?;
+    let leading_components = materialize_query_components(
+        &service,
+        OPERATION,
+        contract.schema(),
+        index
+            .key_schema()
+            .components()
+            .iter()
+            .map(|component| component.value_type()),
+        request.leading_components(),
+    )?;
     let prefix = index
         .key_schema()
-        .encode_index_prefix(request.leading_components())
+        .encode_index_prefix(&leading_components)
         .map_err(|_| validation_failure(ValidationCode::InvalidValue))?;
     let page_request = request.page();
     let cursor_lookup = IndexScanCursorLookup::new(
         CursorContractIdentity::new(lineage.clone(), version, bundle.bundle_hash()),
         index.id(),
         entity.id(),
-        request.leading_components().to_vec(),
+        leading_components.clone(),
         prefix.clone(),
         request.fields().clone(),
         page_request.limit(),
@@ -433,7 +446,7 @@ async fn scan_index(
         lineage.clone(),
         version,
         index.id(),
-        request.leading_components().to_vec(),
+        leading_components.clone(),
         prefix,
         effective_policy.partition_constraint().clone(),
         cursor_state
@@ -594,14 +607,25 @@ async fn query_projection(
     let schema = contract
         .bound_projection_group_schema(request.projection_id())
         .ok_or_else(|| validation_failure(ValidationCode::InvalidValue))?;
+    let leading_components = materialize_query_components(
+        &service,
+        OPERATION,
+        contract.schema(),
+        schema
+            .schema()
+            .group_components()
+            .iter()
+            .map(|component| component.value_type()),
+        request.leading_components(),
+    )?;
     schema
-        .group_prefix(ProjectionGeneration::first(), request.leading_components())
+        .group_prefix(ProjectionGeneration::first(), &leading_components)
         .map_err(|_| validation_failure(ValidationCode::InvalidValue))?;
     let page_request = request.page();
     let cursor_lookup = ProjectionCursorLookup::new(
         CursorContractIdentity::new(lineage.clone(), version, bundle.bundle_hash()),
         schema.identity().clone(),
-        request.leading_components().to_vec(),
+        leading_components.clone(),
         request.required_sequence(),
         request.wait(),
         page_request.limit(),
@@ -610,7 +634,7 @@ async fn query_projection(
     let policy_request = OperationRequest::query_projection(
         version,
         schema.identity().clone(),
-        request.leading_components().to_vec(),
+        leading_components.clone(),
         page_request.limit().get(),
     )
     .map_err(|_| validation_failure(ValidationCode::InvalidValue))?;
@@ -711,7 +735,7 @@ async fn query_projection(
         effective_policy = submission_policy;
         let lower_request = match ProjectionPortRequest::new(
             schema.identity().clone(),
-            request.leading_components().to_vec(),
+            leading_components.clone(),
             request.required_sequence(),
             wait_deadline,
             effective_policy.effective_limit(),
@@ -879,8 +903,7 @@ async fn query_projection(
                         let failure = lower_integrity_failure(&service, OPERATION);
                         return Err(finish_failure(&service, &context, &begun, failure).await);
                     };
-                    let prefix = match schema
-                        .group_prefix(ready.generation(), request.leading_components())
+                    let prefix = match schema.group_prefix(ready.generation(), &leading_components)
                     {
                         Ok(prefix) => prefix,
                         Err(_) => {
@@ -2402,6 +2425,38 @@ fn validation_failure(code: ValidationCode) -> ServiceFailure {
         ValidationPath::root(),
     )))
     .into()
+}
+
+fn materialize_query_components<'a>(
+    service: &RiffDbServiceInner,
+    operation: ServiceOperationV1,
+    schema: &SchemaIr,
+    component_types: impl IntoIterator<Item = &'a ValueType>,
+    submitted: &[SubmittedValue],
+) -> ServiceResult<Vec<CanonicalValue>> {
+    let component_types: Vec<_> = component_types.into_iter().collect();
+    if submitted.len() > component_types.len() {
+        return Err(validation_failure(ValidationCode::TooManyItems));
+    }
+
+    let mut canonical = Vec::with_capacity(submitted.len());
+    for (index, (value_type, value)) in component_types.iter().zip(submitted).enumerate() {
+        let index = u32::try_from(index)
+            .map_err(|_| service.internal_failure(operation, InternalDefect::ProofMismatch))?;
+        match materialize_submitted_value(
+            schema,
+            value_type,
+            value,
+            vec![ValidationPathSegment::ListIndex(index)],
+        ) {
+            Ok(value) => canonical.push(value),
+            Err(SubmittedValueMaterializationError::Public(error)) => return Err(error.into()),
+            Err(SubmittedValueMaterializationError::Integrity) => {
+                return Err(service.internal_failure(operation, InternalDefect::ProofMismatch));
+            }
+        }
+    }
+    Ok(canonical)
 }
 
 fn invalid_cursor_failure() -> ServiceFailure {

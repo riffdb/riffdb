@@ -6,7 +6,7 @@
 **Tagline:** *Vibe fast. Commit safely.*  
 **Category:** Contract-first operational database for agent-built applications  
 
-**Version:** 0.25
+**Version:** 0.26
 **Status:** Architecture-approved implementation handoff
 **Date:** 21 July 2026
 **Audience:** Coding agents, database engineers, compiler engineers, security reviewers, and technical product leads  
@@ -61,6 +61,7 @@
 | 0.23 | 2026-07-21 | Applied the maintainer-approved pre-bootstrap health clarification: the unchanged API-neutral Health operation may use a private principal-less read-only context only during startup validation/bootstrap and returns only bounded lifecycle, liveness, and readiness; after the bootstrap marker it requires authenticated current-policy handling, while bootstrap remains the sole principal-less mutation and durable-audit exception. |
 | 0.24 | 2026-07-21 | Applied accepted ADR-0031 and ADR-0032: transports preserve structurally checked pre-schema submitted command values for service-owned materialization under the exact selected plan, and the completed structural startup handoff carries the existing same-snapshot retained metadata needed for bootstrap lifecycle, active-pointer agreement, and allocator readiness. No public or durable format changed. |
 | 0.25 | 2026-07-21 | Applied accepted ADR-0033: the coordinator publishes only first-durable application commit sequences through an injected least-authority sink into the server-owned bounded subscription hub; replay, read-only, failed, audit, initialization, and control-plane paths never publish. Sink defects preserve the known committed result but stop coordinator admission and process readiness. No public or durable format changed. |
+| 0.26 | 2026-07-21 | Applied accepted ADR-0034 through ADR-0036: startup uses a Health-only initializing service plus move-only activation authority; authoritative index and commit scans return atomic frozen fences including an explicit before-first index position; and public query components remain structurally submitted until schema-directed service materialization. The not-yet-served public index-fence message is corrected and regenerated before WP-130. |
 
 ### Normative language
 
@@ -1823,6 +1824,15 @@ and proves conservative canonical `StoredEnvelope` upper bounds per record class
 and WP-070 recomputes actual canonical envelope bytes and rejects any excess
 before staging. Configuration may lower, but never raise, a hard ceiling.
 
+An authoritative index-scan page returns its rows and the exact closed
+`IndexEpochPosition::{BeforeFirst, Value(IndexEpoch)}` observed in one storage
+read view. An initial ordered commit scan similarly returns the page and the
+authoritative `FrontierPosition` upper bound from one read view; every
+continuation is bounded by that frozen inclusive upper position and ignores
+later commits. No storage transaction or snapshot handle crosses a page,
+service, policy, or transport boundary. Empty index and commit states remain
+explicit rather than being mapped to a fabricated nonzero value.
+
 The active-lineage count, canonical-byte sum, proof charge, and mask charge use
 the exact Section 8.5 definitions. They add no storage-engine allocation or
 envelope charge to canonical bytes; retained normalized snapshot semantic bytes
@@ -2206,10 +2216,13 @@ operation.
 Adapters own transport decode, credential extraction, structural conversion
 into checked pre-schema submitted DTOs, deadline/cancellation propagation, and
 total result mapping. They do not select schemas or construct canonical decimal,
-money, enum, or named-record values. After selecting the exact active or
-historical plan, the service resolves submitted names/IDs and recursively
-materializes the sole canonical command input before hashing, policy, or
-admission. The service owns semantic validation, current authorization,
+money, enum, or named-record values. This boundary applies both to command input
+and to the leading components of index and projection queries. After selecting
+the exact active or historical plan, the service resolves submitted names/IDs
+and recursively materializes command input and query components against the
+selected declared types. Only those canonical query components enter policy
+facts, cursor bindings, lower requests, projection waits, or response
+validation. The service owns semantic validation, current authorization,
 approved provenance, audit orchestration, obligations/redaction, and safe
 release. Typed WP-100 executors
 own all work after an authorized command/control-plane preparation is accepted.
@@ -3426,6 +3439,15 @@ and clean restart. WP-185 does not replace that gate. It extends the same
 component graph with MCP HTTP, outbox/projection workers, observability, and
 separate derived-health aggregation; a derived failure cannot retroactively
 invalidate the accepted authoritative startup proof.
+
+Construction begins with one Health-only `InitializingRiffDbService`, one
+move-only activation authority, and one issuer sharing the same pre-bootstrap
+admission. The initializing value owns no executor, storage, catalog, policy,
+audit, token, projection, outbox, cursor, or operational capability. The
+listener routes restricted Health through that API-neutral value while startup
+proofs run and atomically replaces it with the complete `RiffDbService` only
+after matching structural and catalog history validation. No transport may
+construct either Health result directly or activate dormant capabilities.
 
 ```rust
 pub enum HealthResult {

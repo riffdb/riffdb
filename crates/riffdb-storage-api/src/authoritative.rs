@@ -3,13 +3,13 @@
 use std::fmt;
 use std::num::NonZeroU16;
 
-use riffdb_types::{CommitSequence, EventId, IndexEntryKey, ProvenanceId};
+use riffdb_types::{CommitSequence, EventId, FrontierPosition, IndexEntryKey, ProvenanceId};
 
 use crate::{
-    EncodedPageItem, EntityTarget, IdempotencyIdentity, IndexRangeEntry, IndexRangeTarget,
-    MAX_COMMIT_SCAN_PAGE_BYTES, MAX_SCAN_PAGE_BYTES, MAX_SCAN_PAGE_ENTRIES, StorageError,
-    StorageValueError, StoredCommitRecordV1, StoredDurableEventV1, StoredEntityRecordV1,
-    StoredOutcomeV1, StoredProvenanceRecordV1, checked_encoded_page_content,
+    EncodedPageItem, EntityTarget, IdempotencyIdentity, IndexEpochPosition, IndexRangeEntry,
+    IndexRangeTarget, MAX_COMMIT_SCAN_PAGE_BYTES, MAX_SCAN_PAGE_BYTES, MAX_SCAN_PAGE_ENTRIES,
+    StorageError, StorageValueError, StoredCommitRecordV1, StoredDurableEventV1,
+    StoredEntityRecordV1, StoredOutcomeV1, StoredProvenanceRecordV1, checked_encoded_page_content,
 };
 
 /// A checked nonzero storage scan limit in `1..=500`.
@@ -92,11 +92,15 @@ pub enum AuthoritativeIndexScanPage {
         entries: Vec<EncodedPageItem<IndexRangeEntry>>,
         /// Exact last key returned on this page.
         next_after: IndexEntryKey,
+        /// Exact range epoch observed in the same read view as the rows.
+        epoch: IndexEpochPosition,
     },
     /// The exact range end, possibly with a final nonempty page.
     ExactEnd {
         /// Canonical final rows, or empty when no rows remain.
         entries: Vec<EncodedPageItem<IndexRangeEntry>>,
+        /// Exact range epoch observed in the same read view as the rows.
+        epoch: IndexEpochPosition,
     },
 }
 
@@ -104,6 +108,7 @@ impl AuthoritativeIndexScanPage {
     /// Checks one non-final page against its exact request.
     pub fn page(
         request: &AuthoritativeIndexScanRequest,
+        epoch: IndexEpochPosition,
         entries: Vec<EncodedPageItem<IndexRangeEntry>>,
         next_after: IndexEntryKey,
     ) -> Result<Self, StorageValueError> {
@@ -120,51 +125,105 @@ impl AuthoritativeIndexScanPage {
         Ok(Self::Page {
             entries,
             next_after,
+            epoch,
         })
     }
 
     /// Checks a final page, including an empty exact-end result.
     pub fn exact_end(
         request: &AuthoritativeIndexScanRequest,
+        epoch: IndexEpochPosition,
         entries: Vec<EncodedPageItem<IndexRangeEntry>>,
     ) -> Result<Self, StorageValueError> {
         validate_index_scan_entries(request, &entries)?;
-        Ok(Self::ExactEnd { entries })
+        Ok(Self::ExactEnd { entries, epoch })
     }
 
     /// Borrows rows in canonical complete-key order.
     #[must_use]
     pub fn entries(&self) -> &[EncodedPageItem<IndexRangeEntry>] {
         match self {
-            Self::Page { entries, .. } | Self::ExactEnd { entries } => entries,
+            Self::Page { entries, .. } | Self::ExactEnd { entries, .. } => entries,
+        }
+    }
+
+    /// Returns the exact range epoch observed atomically with this page.
+    #[must_use]
+    pub const fn epoch(&self) -> IndexEpochPosition {
+        match self {
+            Self::Page { epoch, .. } | Self::ExactEnd { epoch, .. } => *epoch,
         }
     }
 }
 
-/// One ordered application-commit scan after an optional sequence.
+/// One ordered application-commit scan that captures or reuses a frozen upper fence.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct CommitScanRequest {
-    after: Option<CommitSequence>,
-    limit: StorageScanLimit,
+pub enum CommitScanRequest {
+    /// First page; the storage read captures the current authoritative head.
+    Initial {
+        /// Bounded page limit.
+        limit: StorageScanLimit,
+    },
+    /// Later page bound to the exact first-page authoritative head.
+    Continue {
+        /// Exclusive lower continuation.
+        after: CommitSequence,
+        /// Frozen inclusive upper sequence.
+        inclusive_upper: CommitSequence,
+        /// Bounded page limit.
+        limit: StorageScanLimit,
+    },
 }
 
 impl CommitScanRequest {
-    /// Constructs an exclusive sequence scan request.
+    /// Constructs a first-page request that atomically captures the current head.
     #[must_use]
-    pub const fn new(after: Option<CommitSequence>, limit: StorageScanLimit) -> Self {
-        Self { after, limit }
+    pub const fn initial(limit: StorageScanLimit) -> Self {
+        Self::Initial { limit }
     }
 
-    /// Returns the exclusive prior sequence, or `None` for sequence one.
+    /// Constructs a continuation bound to the exact first-page upper sequence.
+    pub fn continuing(
+        after: CommitSequence,
+        inclusive_upper: CommitSequence,
+        limit: StorageScanLimit,
+    ) -> Result<Self, StorageValueError> {
+        if after > inclusive_upper {
+            return Err(StorageValueError::InvalidShape);
+        }
+        Ok(Self::Continue {
+            after,
+            inclusive_upper,
+            limit,
+        })
+    }
+
+    /// Returns the exclusive lower sequence, or `None` for an initial scan.
     #[must_use]
     pub const fn after(self) -> Option<CommitSequence> {
-        self.after
+        match self {
+            Self::Initial { .. } => None,
+            Self::Continue { after, .. } => Some(after),
+        }
+    }
+
+    /// Returns the frozen upper sequence, or `None` when storage must capture it.
+    #[must_use]
+    pub const fn inclusive_upper(self) -> Option<CommitSequence> {
+        match self {
+            Self::Initial { .. } => None,
+            Self::Continue {
+                inclusive_upper, ..
+            } => Some(inclusive_upper),
+        }
     }
 
     /// Returns the checked requested row count.
     #[must_use]
     pub const fn limit(self) -> StorageScanLimit {
-        self.limit
+        match self {
+            Self::Initial { limit } | Self::Continue { limit, .. } => limit,
+        }
     }
 }
 
@@ -177,11 +236,15 @@ pub enum CommitScanPageV1 {
         records: Vec<EncodedPageItem<StoredCommitRecordV1>>,
         /// Exact last sequence returned on this page.
         next_after: CommitSequence,
+        /// Frozen inclusive upper frontier captured by the initial read.
+        inclusive_upper: FrontierPosition,
     },
-    /// Exact current log end, possibly with a final nonempty page.
+    /// Exact frozen log end, possibly with a final nonempty page.
     ExactEnd {
         /// Complete final records, or empty when no commits remain.
         records: Vec<EncodedPageItem<StoredCommitRecordV1>>,
+        /// Frozen inclusive upper frontier captured by the initial read.
+        inclusive_upper: FrontierPosition,
     },
 }
 
@@ -189,39 +252,67 @@ impl CommitScanPageV1 {
     /// Checks a non-final page and its exclusive continuation.
     pub fn page(
         request: CommitScanRequest,
+        inclusive_upper: FrontierPosition,
         records: Vec<EncodedPageItem<StoredCommitRecordV1>>,
         next_after: CommitSequence,
     ) -> Result<Self, StorageValueError> {
-        validate_commit_scan_records(request, &records)?;
+        validate_commit_scan_records(request, inclusive_upper, &records)?;
         if records.is_empty()
             || records
                 .last()
                 .map(EncodedPageItem::value)
                 .map(StoredCommitRecordV1::commit_sequence)
                 != Some(next_after)
+            || !position_requires_continuation(inclusive_upper, next_after)
         {
             return Err(StorageValueError::InvalidShape);
         }
         Ok(Self::Page {
             records,
             next_after,
+            inclusive_upper,
         })
     }
 
     /// Checks a final page, including an empty exact-end result.
     pub fn exact_end(
         request: CommitScanRequest,
+        inclusive_upper: FrontierPosition,
         records: Vec<EncodedPageItem<StoredCommitRecordV1>>,
     ) -> Result<Self, StorageValueError> {
-        validate_commit_scan_records(request, &records)?;
-        Ok(Self::ExactEnd { records })
+        validate_commit_scan_records(request, inclusive_upper, &records)?;
+        let final_position = records
+            .last()
+            .map(EncodedPageItem::value)
+            .map(StoredCommitRecordV1::commit_sequence)
+            .or_else(|| request.after());
+        if !position_reaches_fence(inclusive_upper, final_position) {
+            return Err(StorageValueError::InvalidShape);
+        }
+        Ok(Self::ExactEnd {
+            records,
+            inclusive_upper,
+        })
     }
 
     /// Borrows complete commit records in sequence order.
     #[must_use]
     pub fn records(&self) -> &[EncodedPageItem<StoredCommitRecordV1>] {
         match self {
-            Self::Page { records, .. } | Self::ExactEnd { records } => records,
+            Self::Page { records, .. } | Self::ExactEnd { records, .. } => records,
+        }
+    }
+
+    /// Returns the inclusive upper frontier frozen by the initial scan.
+    #[must_use]
+    pub const fn inclusive_upper(&self) -> FrontierPosition {
+        match self {
+            Self::Page {
+                inclusive_upper, ..
+            }
+            | Self::ExactEnd {
+                inclusive_upper, ..
+            } => *inclusive_upper,
         }
     }
 }
@@ -261,13 +352,13 @@ pub trait AuthoritativePointReader {
 
 /// Narrow synchronous bounded scans over authoritative state.
 pub trait AuthoritativeScanReader {
-    /// Reads one exact-prefix index page from one consistent read transaction.
+    /// Reads one exact-prefix index page and its epoch from one consistent read transaction.
     fn scan_index(
         &self,
         request: AuthoritativeIndexScanRequest,
     ) -> Result<AuthoritativeIndexScanPage, StorageError>;
 
-    /// Reads one contiguous ordered commit page after an optional sequence.
+    /// Captures or reuses one upper fence and reads a contiguous commit page through that fence.
     fn scan_commits(&self, request: CommitScanRequest) -> Result<CommitScanPageV1, StorageError>;
 }
 
@@ -298,24 +389,55 @@ fn validate_index_scan_entries(
 
 fn validate_commit_scan_records(
     request: CommitScanRequest,
+    inclusive_upper: FrontierPosition,
     records: &[EncodedPageItem<StoredCommitRecordV1>],
 ) -> Result<(), StorageValueError> {
-    if records.len() > usize::from(request.limit.get()) {
+    if records.len() > usize::from(request.limit().get()) {
         return Err(StorageValueError::LimitExceeded);
     }
-    let mut expected = match request.after {
+    if request
+        .inclusive_upper()
+        .is_some_and(|expected| inclusive_upper != FrontierPosition::AppliedThrough(expected))
+    {
+        return Err(StorageValueError::InvalidShape);
+    }
+    let mut expected = match request.after() {
         None => Some(CommitSequence::first()),
         Some(sequence) => sequence.checked_next(),
     };
     checked_encoded_page_content(records, MAX_COMMIT_SCAN_PAGE_BYTES)?;
     for charged in records {
         let record = charged.value();
-        if expected != Some(record.commit_sequence()) {
+        if expected != Some(record.commit_sequence())
+            || !sequence_at_or_before(record.commit_sequence(), inclusive_upper)
+        {
             return Err(StorageValueError::NonCanonicalOrder);
         }
         expected = record.commit_sequence().checked_next();
     }
     Ok(())
+}
+
+fn sequence_at_or_before(sequence: CommitSequence, frontier: FrontierPosition) -> bool {
+    match frontier {
+        FrontierPosition::BeforeFirst => false,
+        FrontierPosition::AppliedThrough(upper) => sequence <= upper,
+    }
+}
+
+fn position_requires_continuation(frontier: FrontierPosition, position: CommitSequence) -> bool {
+    match frontier {
+        FrontierPosition::BeforeFirst => false,
+        FrontierPosition::AppliedThrough(upper) => position < upper,
+    }
+}
+
+fn position_reaches_fence(frontier: FrontierPosition, position: Option<CommitSequence>) -> bool {
+    match (frontier, position) {
+        (FrontierPosition::BeforeFirst, None) => true,
+        (FrontierPosition::AppliedThrough(upper), Some(position)) => position == upper,
+        (FrontierPosition::BeforeFirst | FrontierPosition::AppliedThrough(_), _) => false,
+    }
 }
 
 macro_rules! redacted_debug {

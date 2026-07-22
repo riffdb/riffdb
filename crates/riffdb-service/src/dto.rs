@@ -3,7 +3,7 @@
 use std::error::Error;
 use std::fmt;
 use std::future::Future;
-use std::num::NonZeroU64;
+use std::num::{NonZeroU32, NonZeroU64};
 use std::pin::Pin;
 use std::time::{Duration, Instant};
 
@@ -23,16 +23,15 @@ use riffdb_types::{
     CommandId, CommitSequence, ConflictKeyHash, ContractBundleHash, ContractLineage,
     ContractPlanRootHash, ContractVersion, DatabaseId, EntityKey, EntityTypeId, EntityVersion,
     Environment, EventId, EventTypeId, FieldId, FrontierPosition, IdempotencyKey, IndexEntryKey,
-    IndexEpoch, IndexId, LogicalTime, OutcomeId, PartitionKey, PartitionKeyHash, PlanHash,
+    IndexEpochPosition, IndexId, LogicalTime, OutcomeId, PartitionKey, PartitionKeyHash, PlanHash,
     ProjectionGeneration, ProjectionGroupKey, ProjectionGroupKeyBuilder, ProjectionGroupPrefix,
     ProjectionId, ProjectionIdentity, ProvenanceId, RequestId, RevocationReasonCodeV1,
     ServiceAuditTargetV1, SourceCommit, SourceHash, SourceRepository, TenantScope, Timestamp,
-    encode_canonical_value,
 };
 
 use crate::{
     BootstrapRequestContext, CursorToken, PageLimit, PreBootstrapLifecycle, RequestContext,
-    SubmittedRecord,
+    SubmittedRecord, SubmittedValue,
 };
 
 /// Maximum bytes accepted in one structurally decoded service request.
@@ -102,11 +101,10 @@ impl RequestCharge {
         )
     }
 
-    fn add_canonical_values(&mut self, values: &[CanonicalValue]) -> Result<(), ServiceDtoError> {
+    fn add_submitted_values(&mut self, values: &[SubmittedValue]) -> Result<(), ServiceDtoError> {
         self.add(STRUCTURAL_COLLECTION_COUNT_BYTES)?;
         for value in values {
-            let encoded = encode_canonical_value(value).map_err(|_| ServiceDtoError::TooLong)?;
-            self.add_framed_bytes(encoded.len())?;
+            self.add_framed_bytes(value.structural_size()?)?;
         }
         Ok(())
     }
@@ -1347,7 +1345,7 @@ pub enum GetEntityResult {
 pub struct ScanIndexRequest {
     contract: ContractSelection,
     index_id: IndexId,
-    leading_components: Vec<CanonicalValue>,
+    leading_components: Vec<SubmittedValue>,
     fields: FieldSelection,
     page: PageRequest,
 }
@@ -1357,7 +1355,7 @@ impl ScanIndexRequest {
     pub fn new(
         contract: ContractSelection,
         index_id: IndexId,
-        leading_components: Vec<CanonicalValue>,
+        leading_components: Vec<SubmittedValue>,
         fields: FieldSelection,
         page: PageRequest,
     ) -> Result<Self, ServiceDtoError> {
@@ -1387,9 +1385,9 @@ impl ScanIndexRequest {
         self.index_id
     }
 
-    /// Borrows leading canonical prefix components.
+    /// Borrows structurally checked components awaiting selected-schema materialization.
     #[must_use]
-    pub fn leading_components(&self) -> &[CanonicalValue] {
+    pub fn leading_components(&self) -> &[SubmittedValue] {
         &self.leading_components
     }
 
@@ -1448,20 +1446,20 @@ impl fmt::Debug for IndexRowView {
 /// Exact epoch fence observed by an authoritative index page.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct IndexScanFence {
-    epoch: IndexEpoch,
+    position: IndexEpochPosition,
 }
 
 impl IndexScanFence {
     /// Creates an exact range-epoch fence.
     #[must_use]
-    pub const fn new(epoch: IndexEpoch) -> Self {
-        Self { epoch }
+    pub const fn new(position: IndexEpochPosition) -> Self {
+        Self { position }
     }
 
     /// Returns the observed range epoch.
     #[must_use]
-    pub const fn epoch(self) -> IndexEpoch {
-        self.epoch
+    pub const fn position(self) -> IndexEpochPosition {
+        self.position
     }
 }
 
@@ -1490,7 +1488,7 @@ impl ScanIndexResult {
 pub struct QueryProjectionRequest {
     contract: ContractSelection,
     projection_id: ProjectionId,
-    leading_components: Vec<CanonicalValue>,
+    leading_components: Vec<SubmittedValue>,
     required_sequence: Option<CommitSequence>,
     wait: Duration,
     page: PageRequest,
@@ -1501,7 +1499,7 @@ impl QueryProjectionRequest {
     pub fn new(
         contract: ContractSelection,
         projection_id: ProjectionId,
-        leading_components: Vec<CanonicalValue>,
+        leading_components: Vec<SubmittedValue>,
         required_sequence: Option<CommitSequence>,
         wait: Duration,
         page: PageRequest,
@@ -1538,9 +1536,9 @@ impl QueryProjectionRequest {
         self.projection_id
     }
 
-    /// Borrows generation-neutral leading group components.
+    /// Borrows structurally checked components awaiting selected-schema materialization.
     #[must_use]
-    pub fn leading_components(&self) -> &[CanonicalValue] {
+    pub fn leading_components(&self) -> &[SubmittedValue] {
         &self.leading_components
     }
 
@@ -2312,7 +2310,7 @@ impl fmt::Debug for AuthoritativeIndexRow {
 pub struct AuthoritativeIndexPage {
     rows: Vec<AuthoritativeIndexRow>,
     next_after: Option<IndexEntryKey>,
-    epoch: IndexEpoch,
+    epoch: IndexEpochPosition,
 }
 
 impl AuthoritativeIndexPage {
@@ -2322,7 +2320,7 @@ impl AuthoritativeIndexPage {
         request: &AuthoritativeIndexRequest,
         rows: Vec<AuthoritativeIndexRow>,
         next_after: Option<IndexEntryKey>,
-        epoch: IndexEpoch,
+        epoch: IndexEpochPosition,
     ) -> Result<Self, ServiceDtoError> {
         if rows.len() > usize::from(request.limit().get().get()) {
             return Err(ServiceDtoError::TooManyItems);
@@ -2356,7 +2354,7 @@ impl AuthoritativeIndexPage {
 
     /// Returns the atomically observed range epoch.
     #[must_use]
-    pub const fn epoch(&self) -> IndexEpoch {
+    pub const fn epoch(&self) -> IndexEpochPosition {
         self.epoch
     }
 }
@@ -4038,6 +4036,33 @@ pub struct NormalCreateCapabilityRequest {
 }
 
 impl NormalCreateCapabilityRequest {
+    /// Constructs a request from checked transport fields without exposing the
+    /// policy-owned normalized replay type.
+    #[allow(clippy::too_many_arguments)]
+    pub fn from_parts(
+        capability_id: CapabilityId,
+        database_id: DatabaseId,
+        environment: Environment,
+        principal_id: ActorId,
+        actor_kind: ActorKind,
+        requested_lifetime_seconds: NonZeroU32,
+        audiences: Vec<Audience>,
+        grant: CapabilityGrantV1,
+    ) -> Result<Self, ServiceDtoError> {
+        Self::new(
+            capability_id,
+            normalize_capability_create_record(
+                database_id,
+                environment,
+                principal_id,
+                actor_kind,
+                requested_lifetime_seconds,
+                audiences,
+                grant,
+            )?,
+        )
+    }
+
     /// Joins stable create identity and policy-owned normalized replay content.
     pub fn new(
         capability_id: CapabilityId,
@@ -4076,6 +4101,33 @@ pub struct BootstrapCapabilityRequest {
 }
 
 impl BootstrapCapabilityRequest {
+    /// Constructs a bootstrap request from checked transport fields without
+    /// exposing the policy-owned normalized replay type.
+    #[allow(clippy::too_many_arguments)]
+    pub fn from_parts(
+        capability_id: CapabilityId,
+        database_id: DatabaseId,
+        environment: Environment,
+        principal_id: ActorId,
+        actor_kind: ActorKind,
+        requested_lifetime_seconds: NonZeroU32,
+        audiences: Vec<Audience>,
+        grant: CapabilityGrantV1,
+    ) -> Result<Self, ServiceDtoError> {
+        Self::new(
+            capability_id,
+            normalize_capability_create_record(
+                database_id,
+                environment,
+                principal_id,
+                actor_kind,
+                requested_lifetime_seconds,
+                audiences,
+                grant,
+            )?,
+        )
+    }
+
     /// Joins stable bootstrap identity and normalized replay content.
     pub fn new(
         capability_id: CapabilityId,
@@ -4104,6 +4156,43 @@ impl fmt::Debug for BootstrapCapabilityRequest {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter.write_str("BootstrapCapabilityRequest([REDACTED])")
     }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn normalize_capability_create_record(
+    database_id: DatabaseId,
+    environment: Environment,
+    principal_id: ActorId,
+    actor_kind: ActorKind,
+    requested_lifetime_seconds: NonZeroU32,
+    audiences: Vec<Audience>,
+    grant: CapabilityGrantV1,
+) -> Result<NormalizedCapabilityCreateRecord, ServiceDtoError> {
+    NormalizedCapabilityCreateRecord::new(
+        database_id,
+        environment,
+        principal_id,
+        actor_kind,
+        requested_lifetime_seconds,
+        audiences,
+        grant,
+    )
+    .map_err(|error| match error {
+        riffdb_policy::CapabilityMutationFactsError::EmptyAudiences => ServiceDtoError::Empty,
+        riffdb_policy::CapabilityMutationFactsError::TooManyAudiences => {
+            ServiceDtoError::TooManyItems
+        }
+        riffdb_policy::CapabilityMutationFactsError::DuplicateAudience => {
+            ServiceDtoError::Duplicate
+        }
+        riffdb_policy::CapabilityMutationFactsError::LifetimeLimitExceeded => {
+            ServiceDtoError::OutOfRange
+        }
+        riffdb_policy::CapabilityMutationFactsError::NonCanonicalAudiences
+        | riffdb_policy::CapabilityMutationFactsError::ConfiguredAudienceBytesExceeded => {
+            ServiceDtoError::InvalidShape
+        }
+    })
 }
 
 /// The one closed capability-create invocation accepted by the service.
@@ -5519,7 +5608,7 @@ impl ServiceRequestCharge for ScanIndexRequest {
         let mut charge = RequestCharge::default();
         charge.add_contract_selection(&self.contract)?;
         charge.add(4)?;
-        charge.add_canonical_values(&self.leading_components)?;
+        charge.add_submitted_values(&self.leading_components)?;
         charge.add_field_selection(&self.fields)?;
         charge.add_page(self.page)?;
         Ok(charge.finish())
@@ -5531,7 +5620,7 @@ impl ServiceRequestCharge for QueryProjectionRequest {
         let mut charge = RequestCharge::default();
         charge.add_contract_selection(&self.contract)?;
         charge.add(4)?;
-        charge.add_canonical_values(&self.leading_components)?;
+        charge.add_submitted_values(&self.leading_components)?;
         charge.add(STRUCTURAL_OPTION_BYTES)?;
         if self.required_sequence.is_some() {
             charge.add(8)?;
@@ -5979,15 +6068,15 @@ contract OutcomeShapes version 1 {
         );
     }
 
-    fn prefix_component(payload_bytes: usize) -> CanonicalValue {
-        CanonicalValue::bytes(vec![0x5a; payload_bytes]).expect("bounded prefix component")
+    fn prefix_component(payload_bytes: usize) -> SubmittedValue {
+        SubmittedValue::bytes(vec![0x5a; payload_bytes]).expect("bounded prefix component")
     }
 
     #[test]
     fn index_prefix_list_is_charged_as_one_complete_request() {
         // Active contract (1), index ID (4), list count (4), two framed
-        // canonical byte values (20), empty field count (4), and page (3).
-        const NON_PAYLOAD_BYTES: usize = 36;
+        // submitted byte values (18), empty field count (4), and page (3).
+        const NON_PAYLOAD_BYTES: usize = 34;
         let total_payload = MAX_SERVICE_REQUEST_BYTES - NON_PAYLOAD_BYTES;
         let first_payload = total_payload / 2;
         let second_payload = total_payload - first_payload;

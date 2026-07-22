@@ -425,6 +425,17 @@ pub const MAX_COMMIT_SUBSCRIPTION_BUFFER_ITEMS: usize = 256;
 pub trait CommitNotificationSource: Send {
     /// Waits for one notification without exposing a storage iterator or snapshot.
     fn next(&mut self) -> PortFuture<'_, AuthoritativeCommitNotification, AuthoritativeReadError>;
+
+    /// Records one contiguous commit only after the service has completed all
+    /// checks that can still withhold the item from its transport caller.
+    ///
+    /// Implementations use this exact position when a later bounded-buffer
+    /// overflow is reported. A successful acknowledgement must be monotonic
+    /// and durable only for the lifetime of this process-local source.
+    fn acknowledge(
+        &mut self,
+        delivered_through: riffdb_types::CommitSequence,
+    ) -> Result<(), AuthoritativeReadError>;
 }
 
 /// Authoritative entity, outcome, commit, provenance, and capability observations.
