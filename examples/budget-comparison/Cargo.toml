@@ -8,8 +8,9 @@ autotests = false
 
 [workspace]
 resolver = "3"
-# Cargo includes the in-tree `riffdb-service` path dependency as a member.
-members = ["core", "postgres"]
+# WP-045 established `members = ["core", "postgres"]`; WP-135 adds the
+# public-gRPC adapter explicitly. Other in-tree path dependencies are implicit.
+members = ["core", "postgres", "riffdb-grpc"]
 
 [workspace.package]
 version = "0.1.0"
@@ -33,6 +34,7 @@ riffdb-budget-comparison-postgres = { path = "postgres", version = "0.1.0" }
 riffdb-budget-comparison-riffdb-service = { path = "riffdb-service", version = "0.1.0" }
 riffdb-auth = { path = "../../crates/riffdb-auth", version = "0.1.0", default-features = false }
 riffdb-catalog = { path = "../../crates/riffdb-catalog", version = "0.1.0", default-features = false }
+riffdb-client-rust = { path = "../../crates/riffdb-client-rust", version = "0.1.0", default-features = false }
 riffdb-commit = { path = "../../crates/riffdb-commit", version = "0.1.0", default-features = false }
 riffdb-conflict = { path = "../../crates/riffdb-conflict", version = "0.1.0", default-features = false }
 riffdb-contract-compiler = { path = "../../crates/riffdb-contract-compiler", version = "0.1.0", default-features = false }
@@ -46,6 +48,7 @@ riffdb-storage-redb = { path = "../../crates/riffdb-storage-redb", version = "0.
 riffdb-testkit = { path = "../../crates/riffdb-testkit", version = "0.1.0", default-features = false }
 riffdb-types = { path = "../../crates/riffdb-types", version = "0.1.0", default-features = false }
 tokio = { version = "=1.52.0", default-features = false, features = ["rt-multi-thread", "time"] }
+tonic = { version = "=0.14.6", default-features = false, features = ["channel", "codegen"] }
 
 [[test]]
 name = "postgres_oracle"
@@ -62,6 +65,10 @@ path = "tests/postgres_live.rs"
 [[test]]
 name = "service_comparison"
 path = "tests/service_comparison.rs"
+
+[[test]]
+name = "public_comparison"
+path = "tests/public_comparison.rs"
 
 [lints]
 workspace = true
