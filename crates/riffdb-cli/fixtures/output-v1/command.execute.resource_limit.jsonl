@@ -1,0 +1,1 @@
+{"schema":"riffdb.cli.output/v1","command":"command.execute","ok":false,"error":{"type":"public","code":"command_execution_failed","message":"command execution failed","recovery_action":"contact_operator","details":{"type":"command_execution_failed","code":"resource_limit"}}}

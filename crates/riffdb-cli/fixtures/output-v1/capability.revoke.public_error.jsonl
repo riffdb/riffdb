@@ -1,0 +1,1 @@
+{"schema":"riffdb.cli.output/v1","command":"capability.revoke","ok":false,"error":{"type":"public","code":"authorization_denied","message":"operation is not authorized","recovery_action":"obtain_permission"}}

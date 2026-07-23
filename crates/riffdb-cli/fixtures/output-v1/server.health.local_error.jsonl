@@ -1,0 +1,1 @@
+{"schema":"riffdb.cli.output/v1","command":"server.health","ok":false,"error":{"type":"local","code":"configuration_invalid","message":"client configuration is invalid"}}

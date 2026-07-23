@@ -1,0 +1,1 @@
+{"schema":"riffdb.cli.output/v1","command":"projection.query","ok":true,"result":{"status":"degraded","current":{"type":"before_first"},"reason":{"type":"building"}}}

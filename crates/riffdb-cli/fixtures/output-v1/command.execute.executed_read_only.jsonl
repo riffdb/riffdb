@@ -1,0 +1,1 @@
+{"schema":"riffdb.cli.output/v1","command":"command.execute","ok":true,"result":{"status":"executed_read_only","contract_version":"1","plan_hash":"1fa001109c4005be078c1de742f49365b92a4718dd277ecbff8f97d8713b33bb","outcome_type":"Previewed","outcome":{"type":"record","fields":[]}}}

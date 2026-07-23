@@ -1,0 +1,545 @@
+// Review-only declarations. This file is not compiled.
+// Declaration field order is JSON object key order. All enums serialize to the
+// exact lowercase_snake_case spelling of the variant shown. Option::None omits
+// the key; it never emits JSON null. Vec order is semantic producer order.
+
+const OUTPUT_SCHEMA: &str = "riffdb.cli.output/v1";
+const MAX_INPUT_BYTES: usize = 1_048_576;
+const MAX_OUTPUT_MODEL_BYTES: usize = 4_194_304;
+const MAX_RENDERED_BYTES: usize = 4_194_304;
+
+// Custom envelope serialization emits one of these exact key orders.
+struct SuccessEnvelope<T> {
+    schema: Const<"riffdb.cli.output/v1">,
+    command: CommandIdentity,
+    ok: Const<true>,
+    result: T,
+}
+
+struct ErrorEnvelope<E> {
+    schema: Const<"riffdb.cli.output/v1">,
+    command: CommandIdentity,
+    ok: Const<false>,
+    error: E,
+}
+
+enum CommandIdentity {
+    ContractValidate,     // "contract.validate"
+    ContractDeploy,       // "contract.deploy"
+    CommandExecute,       // "command.execute"
+    CommandOutcome,       // "command.outcome"
+    EntityGet,            // "entity.get"
+    CommitShow,           // "commit.show"
+    ProjectionQuery,      // "projection.query"
+    CapabilityBootstrap,  // "capability.bootstrap"
+    CapabilityCreate,     // "capability.create"
+    CapabilityRevoke,     // "capability.revoke"
+    ServerHealth,         // "server.health"
+    DemoBudget,           // "demo.budget"
+}
+
+// ---------- Structural scalar and Value DTOs ----------
+
+type U64String = String;      // canonical 0|[1-9][0-9]*, bounded to u64
+type I64String = String;      // canonical 0|-?[1-9][0-9]*, bounded to i64
+type UuidText = String;       // canonical lowercase hyphenated UUID text
+type UuidV7Text = String;     // UuidText additionally requiring UUIDv7/variant
+type Hash256Hex = String;     // exactly 64 lowercase hexadecimal bytes
+type PaddedBase64 = String;   // RFC 4648 standard alphabet with required padding
+
+// Input and output are intentionally distinct recursive families. Submitted
+// records may use ID, source name, or both; service-produced record output may
+// use only stable field IDs. No output converter can emit an input-only name.
+enum CliInputValue {
+    Null { type: Const<"null"> },
+    Bool { type: Const<"bool">, value: bool },
+    I64 { type: Const<"i64">, value: I64String },
+    U64 { type: Const<"u64">, value: U64String },
+    Decimal {
+        type: Const<"decimal">,
+        coefficient_twos_complement: PaddedBase64,
+        scale: u32,
+    },
+    Money {
+        type: Const<"money">,
+        currency: String,
+        amount: CliDecimal,
+    },
+    String { type: Const<"string">, value: String },
+    Bytes { type: Const<"bytes">, value: PaddedBase64 },
+    Uuid { type: Const<"uuid">, value: UuidText },
+    Date { type: Const<"date">, days_since_unix_epoch: i32 },
+    Timestamp { type: Const<"timestamp">, seconds: I64String, nanos: u32 },
+    Enum {
+        type: Const<"enum">,
+        type_id: NonZeroU32,
+        variant_id: NonZeroU32,
+        name: Option<String>,
+    },
+    List { type: Const<"list">, values: Vec<CliInputValue> },
+    Record { type: Const<"record">, fields: Vec<CliInputField> },
+}
+
+enum CliOutputValue {
+    Null { type: Const<"null"> },
+    Bool { type: Const<"bool">, value: bool },
+    I64 { type: Const<"i64">, value: I64String },
+    U64 { type: Const<"u64">, value: U64String },
+    Decimal {
+        type: Const<"decimal">,
+        coefficient_twos_complement: PaddedBase64,
+        scale: u32,
+    },
+    Money {
+        type: Const<"money">,
+        currency: String,
+        amount: CliDecimal,
+    },
+    String { type: Const<"string">, value: String },
+    Bytes { type: Const<"bytes">, value: PaddedBase64 },
+    Uuid { type: Const<"uuid">, value: UuidText },
+    Date { type: Const<"date">, days_since_unix_epoch: i32 },
+    Timestamp { type: Const<"timestamp">, seconds: I64String, nanos: u32 },
+    Enum {
+        type: Const<"enum">,
+        type_id: NonZeroU32,
+        variant_id: NonZeroU32,
+        name: Option<String>,
+    },
+    List { type: Const<"list">, values: Vec<CliOutputValue> },
+    Record { type: Const<"record">, fields: Vec<CliOutputField> },
+}
+
+struct CliDecimal {
+    coefficient_twos_complement: PaddedBase64,
+    scale: u32,
+}
+
+// Input preserves order. At least one identity is present; both must resolve to
+// the same field. Output always uses CliOutputField instead.
+struct CliInputField {
+    field_id: Option<NonZeroU32>,
+    name: Option<String>,
+    value: CliInputValue,
+}
+
+struct CliRecordInput {
+    type: Const<"record">,
+    fields: Vec<CliInputField>,
+}
+
+// Service-produced canonical output is increasing by field_id and carries no
+// source-name identity.
+struct CliRecordOutput {
+    fields: Vec<CliOutputField>,
+}
+
+struct CliOutputField {
+    field_id: NonZeroU32,
+    value: CliOutputValue,
+}
+
+struct TimestampDto { seconds: I64String, nanos: u32 }
+
+// ---------- Closed CLI input documents ----------
+
+struct ProjectionQueryInput {
+    leading_components: Vec<CliInputValue>,
+}
+
+// capability.bootstrap and capability.create use identical request bodies.
+// Capability ID and create mode cannot be supplied in JSON; the CLI binds them.
+struct CapabilityCreateInput {
+    principal_id: String,
+    actor_kind: ActorKindDto,
+    requested_lifetime_seconds: u32,
+    audiences: Vec<String>,
+    grant: CapabilityGrantInput,
+}
+
+enum ActorKindDto { Human, Agent, Service }
+
+struct CapabilityGrantInput {
+    tenant_scope: TenantScopeDto,
+    partition_scope: PartitionScopeInput,
+    permissions: Vec<CapabilityPermissionInput>,
+    field_visibility: Vec<FieldVisibilityInput>,
+    max_scan_rows: u32,
+    approval_required: Vec<CapabilityPermissionKindDto>,
+}
+
+enum TenantScopeDto {
+    Global { type: Const<"global"> },
+    Tenant { type: Const<"tenant">, tenant_id: String },
+}
+
+enum PartitionScopeInput {
+    All { type: Const<"all"> },
+    Explicit { type: Const<"explicit">, partitions: Vec<ScopedPartitionInput> },
+}
+
+struct ScopedPartitionInput {
+    contract_lineage: String,
+    partition_key: PaddedBase64,
+}
+
+enum CapabilityPermissionInput {
+    ValidateContract { type: Const<"validate_contract"> },
+    ReadContract { type: Const<"read_contract"> },
+    ExplainCommand { type: Const<"explain_command">, contract_lineage: String, stable_id: NonZeroU32 },
+    DeployContract { type: Const<"deploy_contract"> },
+    InvokeCommand { type: Const<"invoke_command">, contract_lineage: String, stable_id: NonZeroU32 },
+    ReadEntity { type: Const<"read_entity">, contract_lineage: String, stable_id: NonZeroU32 },
+    ScanIndex { type: Const<"scan_index">, contract_lineage: String, stable_id: NonZeroU32 },
+    QueryProjection { type: Const<"query_projection">, contract_lineage: String, stable_id: NonZeroU32 },
+    ReadProjectionStatus { type: Const<"read_projection_status">, contract_lineage: String, stable_id: NonZeroU32 },
+    ReadCommit { type: Const<"read_commit"> },
+    ScanCommits { type: Const<"scan_commits"> },
+    SubscribeCommits { type: Const<"subscribe_commits"> },
+    ReadProvenance { type: Const<"read_provenance"> },
+    InspectOutbox { type: Const<"inspect_outbox"> },
+    ReadHealth { type: Const<"read_health"> },
+    ReadStatistics { type: Const<"read_statistics"> },
+    CreateCapability { type: Const<"create_capability"> },
+    RevokeCapability { type: Const<"revoke_capability"> },
+    AdministerCapabilities { type: Const<"administer_capabilities"> },
+}
+
+enum CapabilityPermissionKindDto {
+    ValidateContract, ReadContract, ExplainCommand, DeployContract,
+    InvokeCommand, ReadEntity, ScanIndex, QueryProjection,
+    ReadProjectionStatus, ReadCommit, ScanCommits, SubscribeCommits,
+    ReadProvenance, InspectOutbox, ReadHealth, ReadStatistics,
+    CreateCapability, RevokeCapability, AdministerCapabilities,
+}
+
+struct FieldVisibilityInput {
+    contract_lineage: String,
+    entity_type_id: NonZeroU32,
+    field_ids: Vec<NonZeroU32>,
+}
+
+// ---------- Shared checked output DTOs ----------
+
+struct ContractDescriptorDto {
+    contract_lineage: String,
+    contract_version: U64String,
+    bundle_hash: Hash256Hex,
+    source_hash: Hash256Hex,
+    plan_root_hash: Hash256Hex,
+}
+
+struct SourceSpanDto { start: u32, end: u32 }
+
+struct SyntaxDiagnosticDto {
+    code: String,
+    summary: String,
+    help: Option<String>,
+    span: SourceSpanDto,
+    expected: Vec<String>,
+}
+
+struct SemanticDiagnosticDto {
+    code: String,
+    summary: String,
+    help: Option<String>,
+    primary_span: SourceSpanDto,
+    related_span: Option<SourceSpanDto>,
+}
+
+enum FrontierDto {
+    BeforeFirst { type: Const<"before_first"> },
+    AppliedThrough { type: Const<"applied_through">, sequence: U64String },
+}
+
+struct ExecutionDto {
+    status: ExecutionStatusDto,
+    commit_sequence: Option<U64String>,
+    contract_version: U64String,
+    plan_hash: Hash256Hex,
+    outcome_type: String,
+    outcome: CliOutputValue,
+    provenance_uri: Option<String>,
+    durability_mode: Option<DurabilityDto>,
+    outcome_uri: Option<String>,
+}
+
+enum ExecutionStatusDto { Committed, Replayed, ExecutedReadOnly }
+enum DurabilityDto { Sync, Group }
+
+// ---------- Command result DTOs ----------
+
+enum ContractValidateResult {
+    Valid { status: Const<"valid"> },
+    InvalidSyntax { status: Const<"invalid_syntax">, diagnostics: Vec<SyntaxDiagnosticDto> },
+    InvalidSemantic { status: Const<"invalid_semantic">, diagnostics: Vec<SemanticDiagnosticDto> },
+}
+
+enum ContractDeployResult {
+    Activated { status: Const<"activated">, contract: ContractDescriptorDto },
+    AlreadyActive { status: Const<"already_active">, contract: ContractDescriptorDto },
+    ExpectedVersionMismatch { status: Const<"expected_version_mismatch">, actual_active_version: Option<U64String> },
+    BundleConflict { status: Const<"bundle_conflict"> },
+}
+
+type CommandExecuteResult = ExecutionDto;
+
+enum CommandOutcomeResult {
+    NotFound { status: Const<"not_found"> },
+    Found { status: Const<"found">, outcome: ExecutionDto }, // nested status is replayed
+}
+
+enum EntityGetResult {
+    NotFound { status: Const<"not_found"> },
+    Found {
+        status: Const<"found">,
+        entity_key: PaddedBase64,
+        entity_version: U64String,
+        written_by_contract_version: U64String,
+        fields: CliRecordOutput,
+    },
+}
+
+enum CommitShowResult {
+    NotFound { status: Const<"not_found"> },
+    Found { status: Const<"found">, commit: CommitDto },
+}
+
+struct CommitDto {
+    commit_sequence: U64String,
+    admission_request_id: UuidV7Text,
+    contract_lineage: String,
+    contract_version: U64String,
+    command_id: NonZeroU32,
+    plan_hash: Hash256Hex,
+    canonical_input_hash: Hash256Hex,
+    actor: AdmittedActorDto,
+    logical_time: TimestampDto,
+    partition_hash: Hash256Hex,
+    conflict_hashes: Vec<Hash256Hex>,
+    affected_entities: Vec<AffectedEntityDto>,
+    events: Vec<DurableEventDto>,
+    outcome: DeclaredOutcomeDto,
+    provenance_uri: String,
+    durability: DurabilityDto,
+}
+
+struct AdmittedActorDto {
+    principal_id: String,
+    actor_kind: ActorKindDto,
+    tenant_scope: TenantScopeDto,
+    agent_session_id: Option<UuidV7Text>,
+}
+
+struct AffectedEntityDto { entity_key: PaddedBase64, entity_version: U64String }
+struct EventIdDto { commit_sequence: U64String, event_ordinal: u32 }
+struct DurableEventDto { event_id: EventIdDto, event_type_id: NonZeroU32, payload: CliRecordOutput }
+struct DeclaredOutcomeDto { outcome_id: NonZeroU32, outcome_name: String, value: CliRecordOutput }
+
+enum ProjectionQueryResult {
+    Ready {
+        status: Const<"ready">,
+        rows: Vec<ProjectionRowDto>,
+        next_cursor: Option<PaddedBase64>,
+        observed_fence: ProjectionPageFenceDto,
+        frontier: FrontierDto,
+    },
+    WaitTimedOut {
+        status: Const<"wait_timed_out">,
+        required_sequence: U64String,
+        current: FrontierDto,
+    },
+    Degraded {
+        status: Const<"degraded">,
+        current: FrontierDto,
+        reason: ProjectionUnavailableReasonDto,
+    },
+    Invalid {
+        status: Const<"invalid">,
+        reason: ProjectionFailureCodeDto,
+    },
+}
+
+struct ProjectionRowDto { group: Vec<CliOutputValue>, values: CliRecordOutput }
+struct ProjectionIdentityDto { contract_lineage: String, projection_id: NonZeroU32, projection_plan_hash: Hash256Hex }
+struct ProjectionPageFenceDto { identity: ProjectionIdentityDto, generation: U64String, frontier: FrontierDto }
+
+enum ProjectionUnavailableReasonDto {
+    Building { type: Const<"building"> },
+    Rebuilding { type: Const<"rebuilding"> },
+    Failure { type: Const<"failure">, code: ProjectionFailureCodeDto },
+}
+
+enum ProjectionFailureCodeDto {
+    ArithmeticOverflow, MalformedDurableEvent, MissingCommit,
+    PlanOrSchemaUnavailable, ProjectionStateIntegrity, HardLimitExceeded,
+}
+
+enum CapabilityBootstrapResult {
+    Created { status: Const<"created">, transition: CapabilityTransitionDto, bearer_retained: bool },
+    Replayed { status: Const<"replayed">, transition: CapabilityTransitionDto, bearer_retained: bool },
+    BootstrapConflict { status: Const<"bootstrap_conflict"> },
+}
+
+enum CapabilityCreateResult {
+    Created {
+        status: Const<"created">,
+        transition: CapabilityTransitionDto,
+        credential_retained: Const<true>,
+    },
+    AlreadyCreatedTokenUnavailable {
+        status: Const<"already_created_token_unavailable">,
+        identity: CapabilityIdentityDto,
+    },
+    CapabilityIdConflict { status: Const<"capability_id_conflict"> },
+}
+
+struct CapabilityTransitionDto { identity: CapabilityIdentityDto, administration_sequence: U64String }
+struct CapabilityIdentityDto { capability_id: UuidV7Text, revision: U64String }
+
+enum CapabilityRevokeResult {
+    Revoked { status: Const<"revoked">, transition: CapabilityTransitionDto },
+    AlreadyRevoked { status: Const<"already_revoked">, transition: CapabilityTransitionDto },
+    CapabilityNotFound { status: Const<"capability_not_found"> },
+}
+
+enum ServerHealthResult {
+    PreBootstrap {
+        status: Const<"pre_bootstrap">,
+        lifecycle: PreBootstrapLifecycleDto,
+        liveness: bool,
+        readiness: bool,
+    },
+    Authenticated {
+        status: HealthStatusDto,
+        active_contract_version: Option<U64String>,
+        last_commit_sequence: Option<U64String>,
+        components: Vec<HealthComponentDto>,
+        started_at: TimestampDto,
+        build: BuildInfoDto,
+    },
+}
+
+enum PreBootstrapLifecycleDto { InitializingValidation, InitializingBootstrap }
+enum HealthStatusDto { Ready, NotReady, Degraded }
+enum HealthComponentKindDto { AuthoritativeStorage, Catalog, CommitCoordinator, Projection, Outbox }
+enum HealthComponentStatusDto { Healthy, Degraded, Unavailable }
+struct HealthComponentDto { component: HealthComponentKindDto, status: HealthComponentStatusDto }
+struct BuildInfoDto {
+    semantic_version: String,
+    git_revision: String,
+    rust_version: String,
+    enabled_features: Vec<String>,
+    storage_format_version: u32,
+    contract_ir_version: u32,
+    mcp_protocol_baseline: String,
+}
+
+struct DemoBudgetResult {
+    status: Const<"passed">,
+    adapter: Const<"riffdb-public-grpc-v1">,
+    case: BudgetCase,
+    workload_version: Const<1>,
+}
+
+enum BudgetCase { Sequential, Contention, SameKeyReplay }
+
+// ---------- Closed error DTOs ----------
+
+enum ErrorDto {
+    Public(PublicErrorDto),
+    Client(ClientErrorDto),
+    Local(LocalErrorDto),
+    Uncertain(UncertainErrorDto),
+}
+
+struct PublicErrorDto {
+    type: Const<"public">,
+    code: PublicErrorCode,
+    message: PublicSafeMessage,
+    recovery_action: RecoveryActionDto,
+    details: Option<PublicErrorDetailsDto>,
+    incident_id: Option<UuidV7Text>,
+}
+
+enum PublicErrorCode {
+    ValidationFailed, IdempotencyKeyReuse, AuthorizationDenied,
+    ConcurrencyDeadlineExceeded, ContractMismatch, StorageUnavailable,
+    OutcomeUnknown, InternalDefect, CommandExecutionFailed,
+}
+
+enum RecoveryActionDto {
+    CorrectRequest, Retry, ResolveWithSameIdempotencyKey,
+    ObtainPermission, RefreshContract, ContactOperator,
+}
+
+enum PublicErrorDetailsDto {
+    Validation { type: Const<"validation">, issues: Vec<ValidationIssueDto> },
+    ContractMismatch { type: Const<"contract_mismatch">, active_contract_version: U64String },
+    CommandExecutionFailed { type: Const<"command_execution_failed">, code: ExecutionFailureCodeDto },
+}
+
+struct ValidationIssueDto { code: ValidationCodeDto, path: Vec<ValidationPathSegmentDto> }
+enum ValidationCodeDto { MissingRequiredValue, TypeMismatch, InvalidValue, OutOfRange, TooLong, TooManyItems, UnknownField, DuplicateField }
+enum ValidationPathSegmentDto { Field { field_id: NonZeroU32 }, List { list_index: u32 } }
+enum ExecutionFailureCodeDto { ArithmeticFault, ResourceLimit }
+
+// Exact code/message pairs. These contain no peer-provided text.
+enum ClientErrorDto {
+    Unauthenticated { type: Const<"client">, code: Const<"authentication_failed">, message: Const<"authentication failed"> },
+    Cancelled { type: Const<"client">, code: Const<"request_cancelled">, message: Const<"request was cancelled"> },
+    Deadline { type: Const<"client">, code: Const<"request_deadline_elapsed">, message: Const<"request deadline elapsed"> },
+    ResponseTooLarge { type: Const<"client">, code: Const<"response_too_large">, message: Const<"response exceeds the service limit"> },
+    EmergencyInternal { type: Const<"client">, code: Const<"internal_failure">, message: Const<"an internal error occurred"> },
+    TransportUnavailable { type: Const<"client">, code: Const<"transport_unavailable">, message: Const<"the gRPC transport is unavailable"> },
+    ProtocolFailure { type: Const<"client">, code: Const<"protocol_failure">, message: Const<"the RiffDB gRPC peer returned an invalid protocol response"> },
+    IdentifierGeneration { type: Const<"client">, code: Const<"identifier_generation_failed">, message: Const<"request identifier generation failed"> },
+    ConnectionFailure { type: Const<"client">, code: Const<"connection_failed">, message: Const<"the gRPC channel could not connect"> },
+}
+
+// Exact local code/message pairs. No path, OS error, source chain, input, token,
+// child bytes, or arbitrary text is carried. OutputTooLarge and
+// OutputRenderFailed are terminal classifications but are never serialized in
+// ErrorEnvelope: they leave stdout empty and select the fixed emergency stderr
+// fixture because the normal renderer cannot safely produce an envelope.
+enum LocalErrorDto {
+    ConfigurationInvalid { type: Const<"local">, code: Const<"configuration_invalid">, message: Const<"client configuration is invalid"> },
+    CredentialRequired { type: Const<"local">, code: Const<"credential_required">, message: Const<"a capability credential is required"> },
+    CredentialSourcesConflict { type: Const<"local">, code: Const<"credential_sources_conflict">, message: Const<"multiple capability credential sources were supplied"> },
+    CredentialInvalid { type: Const<"local">, code: Const<"credential_invalid">, message: Const<"capability credential is invalid"> },
+    PathInvalid { type: Const<"local">, code: Const<"path_invalid">, message: Const<"an input path is invalid"> },
+    InputReadFailed { type: Const<"local">, code: Const<"input_read_failed">, message: Const<"input could not be read"> },
+    InputTooLarge { type: Const<"local">, code: Const<"input_too_large">, message: Const<"input exceeds the CLI limit"> },
+    InputInvalid { type: Const<"local">, code: Const<"input_invalid">, message: Const<"input is invalid"> },
+    BootstrapGenerationFailed { type: Const<"local">, code: Const<"bootstrap_generation_failed">, message: Const<"bootstrap credential generation failed"> },
+    BootstrapCredentialInvalid { type: Const<"local">, code: Const<"bootstrap_credential_invalid">, message: Const<"bootstrap credential is invalid"> },
+    CredentialRetentionFailed { type: Const<"local">, code: Const<"credential_retention_failed">, message: Const<"credential retention failed"> },
+    OutputTooLarge { type: Const<"local">, code: Const<"output_too_large">, message: Const<"output exceeds the CLI limit"> },
+    OutputRenderFailed { type: Const<"local">, code: Const<"output_render_failed">, message: Const<"output rendering failed"> },
+    DemoRequiresCredentialFile { type: Const<"local">, code: Const<"demo_requires_credential_file">, message: Const<"the budget demo requires a protected credential file"> },
+    RunnerStartFailed { type: Const<"local">, code: Const<"runner_start_failed">, message: Const<"the budget runner could not be started"> },
+    RunnerTimeout { type: Const<"local">, code: Const<"runner_timeout">, message: Const<"the budget runner timed out"> },
+    RunnerOutputTooLarge { type: Const<"local">, code: Const<"runner_output_too_large">, message: Const<"the budget runner output exceeded its limit">, stream: RunnerStreamDto },
+    RunnerInvocationInvalid { type: Const<"local">, code: Const<"runner_invocation_invalid">, message: Const<"the budget runner rejected its invocation"> },
+    RunnerProtocolInvalid { type: Const<"local">, code: Const<"runner_protocol_invalid">, message: Const<"the budget runner returned an invalid protocol result"> },
+    DemoFailed { type: Const<"local">, code: Const<"demo_failed">, message: Const<"the budget comparison did not pass">, case: BudgetCase },
+}
+
+enum RunnerStreamDto { Stdout, Stderr }
+
+enum UncertainErrorDto {
+    CommandOutcomeUnknown { type: Const<"uncertain">, code: Const<"outcome_unknown">, message: Const<"the command outcome remains unknown">, recovery_action: Const<"resolve_with_same_idempotency_key"> },
+    BootstrapOutcomeUnknown { type: Const<"uncertain">, code: Const<"bootstrap_outcome_unknown">, message: Const<"the bootstrap outcome remains unknown">, recovery_action: Const<"retry_with_retained_bootstrap_credential">, capability_id: UuidV7Text },
+    CapabilityCreateOutcomeUnknown { type: Const<"uncertain">, code: Const<"capability_create_outcome_unknown">, message: Const<"the capability-create outcome remains unknown">, recovery_action: Const<"retry_with_same_capability_id">, capability_id: UuidV7Text },
+}
+
+// PublicError exact code/message/recovery registry:
+// validation_failed | request validation failed | correct_request
+// idempotency_key_reuse | idempotency key was reused with different input | correct_request
+// authorization_denied | operation is not authorized | obtain_permission
+// concurrency_deadline_exceeded | concurrency deadline exceeded | retry
+// contract_mismatch | contract version or plan does not match | refresh_contract
+// storage_unavailable | storage is temporarily unavailable | retry
+// outcome_unknown | command outcome is not yet known | resolve_with_same_idempotency_key
+// internal_defect | an internal error occurred | contact_operator
+// command_execution_failed | command execution failed | contact_operator

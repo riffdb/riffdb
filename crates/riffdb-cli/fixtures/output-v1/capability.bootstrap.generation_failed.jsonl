@@ -1,0 +1,1 @@
+{"schema":"riffdb.cli.output/v1","command":"capability.bootstrap","ok":false,"error":{"type":"local","code":"bootstrap_generation_failed","message":"bootstrap credential generation failed"}}

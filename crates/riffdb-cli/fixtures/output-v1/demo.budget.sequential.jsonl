@@ -1,0 +1,1 @@
+{"schema":"riffdb.cli.output/v1","command":"demo.budget","ok":true,"result":{"status":"passed","adapter":"riffdb-public-grpc-v1","case":"sequential","workload_version":1}}

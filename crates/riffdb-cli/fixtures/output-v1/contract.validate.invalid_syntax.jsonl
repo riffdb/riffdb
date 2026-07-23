@@ -1,0 +1,1 @@
+{"schema":"riffdb.cli.output/v1","command":"contract.validate","ok":true,"result":{"status":"invalid_syntax","diagnostics":[{"code":"RDB-S004","summary":"contract source contains an unexpected token","help":"use the grammar-version-1 spelling shown in the language reference","span":{"start":0,"end":3},"expected":["contract"]}]}}

@@ -1,0 +1,4 @@
+[client]
+endpoint = "http://[::1]:7443"
+output = "json"
+max_attempts = 10

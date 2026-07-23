@@ -1,0 +1,1 @@
+{"schema":"riffdb.cli.output/v1","command":"contract.validate","ok":false,"error":{"type":"public","code":"validation_failed","message":"request validation failed","recovery_action":"correct_request","details":{"type":"validation","issues":[{"code":"invalid_value","path":[{"field_id":1},{"list_index":0}]}]}}}

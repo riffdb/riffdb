@@ -1,0 +1,1 @@
+{"schema":"riffdb.cli.output/v1","command":"projection.query","ok":true,"result":{"status":"wait_timed_out","required_sequence":"43","current":{"type":"applied_through","sequence":"42"}}}

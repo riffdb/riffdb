@@ -1,0 +1,1 @@
+{"schema":"riffdb.cli.output/v1","command":"demo.budget","ok":false,"error":{"type":"local","code":"runner_start_failed","message":"the budget runner could not be started"}}

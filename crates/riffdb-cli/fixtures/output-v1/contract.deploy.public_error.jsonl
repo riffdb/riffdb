@@ -1,0 +1,1 @@
+{"schema":"riffdb.cli.output/v1","command":"contract.deploy","ok":false,"error":{"type":"public","code":"contract_mismatch","message":"contract version or plan does not match","recovery_action":"refresh_contract","details":{"type":"contract_mismatch","active_contract_version":"1"}}}

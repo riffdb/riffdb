@@ -1,0 +1,1 @@
+{"schema":"riffdb.cli.output/v1","command":"command.execute","ok":false,"error":{"type":"local","code":"input_too_large","message":"input exceeds the CLI limit"}}

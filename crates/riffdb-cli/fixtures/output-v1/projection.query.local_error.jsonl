@@ -1,0 +1,1 @@
+{"schema":"riffdb.cli.output/v1","command":"projection.query","ok":false,"error":{"type":"local","code":"input_invalid","message":"input is invalid"}}

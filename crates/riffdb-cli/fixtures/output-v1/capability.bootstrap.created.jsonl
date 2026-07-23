@@ -1,0 +1,1 @@
+{"schema":"riffdb.cli.output/v1","command":"capability.bootstrap","ok":true,"result":{"status":"created","transition":{"identity":{"capability_id":"01234567-89ab-7def-8123-456789abcdef","revision":"1"},"administration_sequence":"1"},"bearer_retained":true}}

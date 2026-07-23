@@ -1,0 +1,1 @@
+{"schema":"riffdb.cli.output/v1","command":"server.health","ok":false,"error":{"type":"client","code":"transport_unavailable","message":"the gRPC transport is unavailable"}}

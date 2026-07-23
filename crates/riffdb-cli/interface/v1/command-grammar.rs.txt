@@ -1,0 +1,265 @@
+// Review-only clap-shaped declaration. This file is not compiled.
+// Value-taking long options accept both `--flag value` and `--flag=value`.
+// Boolean options use bare flags. Each option occurs at most once unless Vec
+// is shown. All use the exact lowercase spellings below. Global flags may
+// occur before or after a subcommand. No short aliases, visible aliases, or
+// hidden commands exist in v1.
+
+#[derive(Parser)]
+#[command(name = "riffdb", disable_help_subcommand = true)]
+struct CliV1 {
+    #[arg(long, global = true, value_name = "PATH")]
+    config: Option<OsString>,
+
+    #[arg(long, global = true, value_name = "LOOPBACK_HTTP_ENDPOINT")]
+    endpoint: Option<String>,
+
+    #[arg(long, global = true, value_enum, value_name = "human|json")]
+    output: Option<OutputMode>,
+
+    #[arg(long, global = true, value_name = "1..10")]
+    max_attempts: Option<String>,
+
+    #[arg(long, global = true, value_name = "PATH")]
+    credential_file: Option<OsString>,
+
+    #[command(subcommand)]
+    command: TopLevel,
+}
+
+#[derive(Subcommand)]
+enum TopLevel {
+    Contract { #[command(subcommand)] command: ContractCommand },
+    Command { #[command(subcommand)] command: CommandCommand },
+    Entity { #[command(subcommand)] command: EntityCommand },
+    Commit { #[command(subcommand)] command: CommitCommand },
+    Projection { #[command(subcommand)] command: ProjectionCommand },
+    Capability { #[command(subcommand)] command: CapabilityCommand },
+    Server { #[command(subcommand)] command: ServerCommand },
+    Demo { #[command(subcommand)] command: DemoCommand },
+}
+
+#[derive(Subcommand)]
+enum ContractCommand {
+    // Identity: contract.validate
+    Validate {
+        // PATH or the exact single-byte sentinel "-" for stdin.
+        #[arg(value_name = "SOURCE")]
+        source: OsString,
+    },
+
+    // Identity: contract.deploy
+    Deploy {
+        // PATH or the exact single-byte sentinel "-" for stdin.
+        #[arg(value_name = "SOURCE")]
+        source: OsString,
+
+        // Canonical u64 decimal. Zero means that no active version is expected.
+        #[arg(long, value_name = "VERSION")]
+        expected_version: Option<String>,
+    },
+}
+
+#[derive(Subcommand)]
+enum CommandCommand {
+    // Identity: command.execute
+    Execute {
+        #[arg(value_name = "COMMAND_NAME")]
+        command_name: String,
+
+        // PATH or "-"; document is one closed CliRecordInput.
+        #[arg(long, value_name = "JSON_INPUT")]
+        input: OsString,
+
+        // Canonical nonzero u64 decimal. Absence selects the active contract.
+        #[arg(long, value_name = "VERSION")]
+        expected_version: Option<String>,
+    },
+
+    // Identity: command.outcome
+    Outcome {
+        // Required only for raw-key form; forbidden for locator form.
+        #[arg(value_name = "COMMAND_NAME")]
+        command_name: Option<String>,
+
+        // Required only for raw-key form; forbidden for locator form.
+        #[arg(long, value_name = "CONTRACT_LINEAGE")]
+        lineage: Option<String>,
+
+        // Required only for raw-key form; forbidden for locator form.
+        #[arg(long, value_name = "IDEMPOTENCY_KEY")]
+        idempotency_key: Option<String>,
+
+        // Required only for locator form; mutually exclusive with all raw-key
+        // fields. Text must be one canonical outcome URI, at most 1,745 bytes.
+        #[arg(long, value_name = "OUTCOME_URI")]
+        outcome_uri: Option<String>,
+    },
+}
+
+#[derive(Args)]
+struct ContractSelectionArgs {
+    // Both absent selects active. Both present selects one exact contract.
+    #[arg(long, requires = "contract_version", value_name = "LINEAGE")]
+    contract_lineage: Option<String>,
+
+    #[arg(long, requires = "contract_lineage", value_name = "VERSION")]
+    contract_version: Option<String>,
+}
+
+#[derive(Subcommand)]
+enum EntityCommand {
+    // Identity: entity.get
+    Get {
+        // Canonical nonzero u32 decimal stable ID.
+        #[arg(value_name = "ENTITY_TYPE_ID")]
+        entity_type_id: String,
+
+        // Canonical RFC 4648 padded standard base64 of the complete entity key.
+        #[arg(long, value_name = "BASE64_ENTITY_KEY")]
+        entity_key: String,
+
+        #[command(flatten)]
+        contract: ContractSelectionArgs,
+
+        // Repeatable, strictly increasing, nonzero u32 stable field IDs. Empty
+        // means all fields visible under policy.
+        #[arg(long = "field", value_name = "FIELD_ID")]
+        fields: Vec<String>,
+    },
+}
+
+#[derive(Subcommand)]
+enum CommitCommand {
+    // Identity: commit.show
+    Show {
+        // Canonical nonzero u64 decimal.
+        #[arg(value_name = "COMMIT_SEQUENCE")]
+        commit_sequence: String,
+    },
+}
+
+#[derive(Subcommand)]
+enum ProjectionCommand {
+    // Identity: projection.query
+    Query {
+        // Canonical nonzero u32 decimal stable ID.
+        #[arg(value_name = "PROJECTION_ID")]
+        projection_id: String,
+
+        // PATH or "-"; document is one closed ProjectionQueryInput.
+        #[arg(long, value_name = "JSON_INPUT")]
+        input: OsString,
+
+        #[command(flatten)]
+        contract: ContractSelectionArgs,
+
+        // Canonical nonzero u64 decimal required frontier.
+        #[arg(long, value_name = "COMMIT_SEQUENCE")]
+        after: Option<String>,
+
+        // Canonical u64 decimal 0..=30,000,000,000. Requires --after;
+        // absence is zero. The server owns waiting.
+        #[arg(long, requires = "after", value_name = "NANOSECONDS")]
+        wait_nanos: Option<String>,
+
+        // Canonical u32 decimal 1..=500.
+        #[arg(long, value_name = "ROWS")]
+        limit: Option<String>,
+
+        // Canonical padded base64 opaque cursor. Never decoded semantically.
+        #[arg(long, value_name = "BASE64_CURSOR")]
+        cursor: Option<String>,
+    },
+}
+
+#[derive(Subcommand)]
+enum CapabilityCommand {
+    // Identity: capability.bootstrap
+    Bootstrap {
+        // A filesystem PATH only (not "-") containing BootstrapCreateInput.
+        #[arg(long, value_name = "JSON_REQUEST")]
+        request: OsString,
+
+        // Exactly one mode is required:
+        // --generate creates and retains a new 132-byte document at PATH;
+        // --bootstrap-file reads an existing protected 132-byte document; or
+        // --bootstrap-stdin reads exactly 132 bytes from stdin.
+        #[arg(long, group = "bootstrap_source", value_name = "PATH")]
+        generate: Option<OsString>,
+
+        #[arg(long, group = "bootstrap_source", value_name = "PATH")]
+        bootstrap_file: Option<OsString>,
+
+        #[arg(long, group = "bootstrap_source")]
+        bootstrap_stdin: bool,
+
+        // Optional exclusive retained copy of the same 43-byte presentation.
+        #[arg(long, value_name = "PATH")]
+        bearer_output: Option<OsString>,
+    },
+
+    // Identity: capability.create
+    Create {
+        // PATH or "-"; document is one NormalCreateInput. The CLI chooses one
+        // CapabilityId before the first helper call and retains it for retries.
+        #[arg(long, value_name = "JSON_REQUEST")]
+        request: OsString,
+
+        // Optional caller-selected UUIDv7. Absence generates one before the
+        // first helper call. Either value is retained unchanged across retry.
+        #[arg(long, value_name = "CAPABILITY_UUIDV7")]
+        capability_id: Option<String>,
+
+        // Required exclusive protected 43-byte output. Token is never printed.
+        #[arg(long, value_name = "PATH")]
+        credential_output: OsString,
+    },
+
+    // Identity: capability.revoke
+    Revoke {
+        #[arg(value_name = "CAPABILITY_UUIDV7")]
+        capability_id: String,
+
+        #[arg(long, value_enum, value_name = "REASON")]
+        reason: RevocationReason,
+    },
+}
+
+#[derive(Subcommand)]
+enum ServerCommand {
+    // Identity: server.health
+    Health,
+}
+
+#[derive(Subcommand)]
+enum DemoCommand {
+    // Identity: demo.budget
+    Budget {
+        // Direct executable path; no shell or lookup is used.
+        #[arg(long, value_name = "PATH")]
+        runner: OsString,
+
+        #[arg(long, value_enum, value_name = "CASE")]
+        case: BudgetCase,
+    },
+}
+
+#[derive(ValueEnum)]
+enum OutputMode { Human, Json }
+
+#[derive(ValueEnum)]
+enum RevocationReason { Requested, Replaced, SuspectedCompromise, PolicyChange }
+
+#[derive(ValueEnum)]
+enum BudgetCase { Sequential, Contention, SameKeyReplay }
+
+// Post-clap closed cross-field validation:
+// - Outcome is exactly locator form OR complete raw-key form.
+// - Bootstrap has exactly one bootstrap_source member.
+// - Every path is nonempty, NUL-free, and <=4,096 platform bytes.
+// - SOURCE/JSON_INPUT "-" is the only stdin sentinel.
+// - Bootstrap --request and --generate/--bootstrap-file are real paths, not "-".
+// - No invocation reads stdin more than once.
+// - Contract/protocol names and all numbers pass their upstream public bounds.
+// - No token or bootstrap document exists in argv.

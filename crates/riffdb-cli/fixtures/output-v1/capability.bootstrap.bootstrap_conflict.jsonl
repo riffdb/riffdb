@@ -1,0 +1,1 @@
+{"schema":"riffdb.cli.output/v1","command":"capability.bootstrap","ok":true,"result":{"status":"bootstrap_conflict"}}
