@@ -1,0 +1,364 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+repo_root="$(git rev-parse --show-toplevel)"
+cd "$repo_root"
+
+schema_root="crates/riffdb-api-mcp/schema/fixed-tool/v1"
+fixture_root="crates/riffdb-api-mcp/fixtures"
+fixed_registry="$fixture_root/fixed-tool-registry-v1.json"
+conversion_goldens="$fixture_root/fixed-tool-conversion-goldens-v1.json"
+resource_registry="$fixture_root/resource-registry-v1.json"
+inventory="$fixture_root/wp140-interface-checkpoint-v1.txt"
+
+for command in jq perl sha256sum xxd; do
+    command -v "$command" >/dev/null || {
+        printf 'required checkpoint command is unavailable: %s\n' "$command" >&2
+        exit 1
+    }
+done
+
+canonical_json() {
+    local file="$1" canonical
+    canonical="$(mktemp)"
+    jq -cS . "$file" > "$canonical"
+    perl -pi -e 'chomp if eof' "$canonical"
+    if ! cmp --silent -- "$file" "$canonical"; then
+        printf 'JSON artifact is not compact canonical JSON: %s\n' "$file" >&2
+        rm -f "$canonical"
+        return 1
+    fi
+    rm -f "$canonical"
+}
+
+schema_hash() {
+    local file="$1" length
+    length="$(wc -c < "$file" | tr -d ' ')"
+    {
+        printf 'RIFFDB-HASH\0'
+        printf '\001\000\020riffdb.schema/v1'
+        printf '%016x' "$length" | xxd -r -p
+        cat "$file"
+    } | sha256sum | awk '{print $1}'
+}
+
+generate_inventory() {
+    local output="$1" file bytes digest
+    {
+        printf 'riffdb-wp140-interface-checkpoint-v1\n'
+        printf 'compatibility-status=proposal-for-required-wp140-human-acceptance\n'
+        printf 'plain-digest=sha256-of-exact-file-bytes\n'
+        printf 'schema-digest=RIFFDB-HASH-v1 domain riffdb.schema/v1 (recorded in fixed-tool-registry-v1.json)\n'
+        printf 'schema-sources=27\n'
+        printf 'registry-and-golden-files=3\n'
+        printf 'artifacts=30\n'
+        while IFS= read -r file; do
+            bytes="$(wc -c < "$file" | tr -d ' ')"
+            digest="$(sha256sum "$file" | awk '{print $1}')"
+            printf 'path=%s bytes=%s plain_sha256=%s\n' "$file" "$bytes" "$digest"
+        done < <(
+            {
+                find "$schema_root" -maxdepth 1 -type f -name '*.schema.json' -print
+                printf '%s\n' "$fixed_registry" "$conversion_goldens" "$resource_registry"
+            } | LC_ALL=C sort
+        )
+    } > "$output"
+}
+
+mapfile -t schemas < <(find "$schema_root" -maxdepth 1 -type f -name '*.schema.json' -print | LC_ALL=C sort)
+if [[ "${#schemas[@]}" -ne 27 ]]; then
+    printf 'expected exactly 27 fixed schema sources, found %s\n' "${#schemas[@]}" >&2
+    exit 1
+fi
+
+for file in "${schemas[@]}" "$fixed_registry" "$conversion_goldens" "$resource_registry"; do
+    canonical_json "$file"
+done
+
+aggregate=0
+for file in "${schemas[@]}"; do
+    bytes="$(wc -c < "$file" | tr -d ' ')"
+    if (( bytes > 65536 )); then
+        printf 'fixed schema source exceeds 65536 bytes: %s\n' "$file" >&2
+        exit 1
+    fi
+    if grep -Fq '"request_id"' "$file"; then
+        printf 'fixed schema source contains forbidden transport request_id: %s\n' "$file" >&2
+        exit 1
+    fi
+    if ! jq -e '
+        .["$schema"] == "https://json-schema.org/draft/2020-12/schema" and
+        if has("oneOf") then
+            (.oneOf | length) > 0 and
+            all(.oneOf[]; .type == "object" and .additionalProperties == false)
+        else
+            .type == "object" and .additionalProperties == false
+        end
+    ' "$file" >/dev/null; then
+        printf 'fixed schema root is not a closed object or closed object oneOf: %s\n' "$file" >&2
+        exit 1
+    fi
+    aggregate=$((aggregate + bytes))
+done
+if (( aggregate > 1048576 )); then
+    printf 'fixed schema aggregate exceeds 1048576 bytes: %s\n' "$aggregate" >&2
+    exit 1
+fi
+registry_aggregate="$(jq -r '.fixed_schema_ledger.canonical_source_bytes' "$fixed_registry")"
+[[ "$aggregate" == "$registry_aggregate" ]] || {
+    printf 'fixed schema aggregate differs: files=%s registry=%s\n' "$aggregate" "$registry_aggregate" >&2
+    exit 1
+}
+
+jq -e '
+    .schema == "riffdb.mcp.fixed-tool-registry/v1" and
+    .compatibility_checkpoint == "proposal-for-required-wp140-human-acceptance" and
+    .schema_hashing.scheme == 1 and
+    .schema_hashing.domain == "riffdb.schema/v1" and
+    .counts.fixed_tools == 14 and
+    .counts.new_fixed_schema_sources == 27 and
+    .counts.unique_operation_and_fixed_artifacts == 29 and
+    .counts.top_level_result_branches == 29 and
+    (.artifact_manifest | length) == 29 and
+    (.artifact_manifest | unique | length) == 29 and
+    (.tools | length) == 14 and
+    ([.tools[].fixed_tool_kind] == [1,2,3,4,5,6,7,8,9,10,11,12,13,14]) and
+    ([.tools[].result_branches[]] | length) == 29 and
+    ([.tools[] | select(.annotations.readOnlyHint == false) | .name] == ["riffdb.contract.deploy"]) and
+    ([.tools[] | select(.annotations.destructiveHint == true) | .name] == ["riffdb.contract.deploy"]) and
+    ([.tools[] | select(.annotations.openWorldHint != false)] | length) == 0 and
+    .fixed_schema_ledger.component_ceiling_bytes == 1048576 and
+    .fixed_schema_ledger.service_discovery_ceiling_bytes == 2621440 and
+    .fixed_schema_ledger.remaining_adapter_ceiling_bytes == 524288 and
+    .fixed_schema_ledger.aggregate_response_ceiling_bytes == 4194304 and
+    .validation_boundary.draft_2020_12 != "" and
+    .validation_boundary.drift_control != "" and
+    [.fixed_schema_ledger.boundary_witnesses[].page_kind] == ["fixed_only","dynamic_only","mixed"] and
+    [.fixed_schema_ledger.boundary_witnesses[].charge_basis] == [
+      "complete full-page reservation at all applicable inclusive component ceilings",
+      "complete full-page reservation at all applicable inclusive component ceilings",
+      "complete full-page reservation at all applicable inclusive component ceilings"
+    ] and
+    all(.fixed_schema_ledger.boundary_witnesses[];
+      .evidence.service_discovery != "" and
+      .evidence.fixed_schemas != "" and
+      .evidence.adapter != "" and
+      .total_bytes == (.service_discovery_bytes + .fixed_schema_bytes + .remaining_adapter_bytes)
+    ) and
+    [.fixed_schema_ledger.boundary_witnesses[] |
+      [.service_discovery_bytes,.fixed_schema_bytes,.remaining_adapter_bytes,.total_bytes]
+    ] == [
+      [2621440,1048576,524288,4194304],
+      [2621440,0,524288,3145728],
+      [2621440,1048576,524288,4194304]
+    ]
+' "$fixed_registry" >/dev/null
+
+expected_tool_tuples="$(mktemp)"
+actual_tool_tuples="$(mktemp)"
+printf '%s\n' \
+    '1|riffdb.contract.validate|ContractService|ValidateContract|ValidateContract' \
+    '2|riffdb.contract.get_active|ContractService|GetActiveContract|GetActiveContract' \
+    '3|riffdb.contract.explain_command|ContractService|ExplainCommand|ExplainCommand' \
+    '4|riffdb.contract.deploy|ContractService|DeployContract|DeployContract' \
+    '5|riffdb.command.get_outcome|CommandService|GetOutcome|ResolveCommandOutcome' \
+    '6|riffdb.entity.get|QueryService|GetEntity|GetEntity' \
+    '7|riffdb.entity.scan_index|QueryService|ScanIndex|ScanIndex' \
+    '8|riffdb.commit.get|CommitService|GetCommit|GetCommit' \
+    '9|riffdb.commit.scan|CommitService|ScanCommits|ScanCommits' \
+    '10|riffdb.provenance.trace|CommitService|TraceProvenance|TraceProvenance' \
+    '11|riffdb.projection.query|QueryService|QueryProjection|QueryProjection' \
+    '12|riffdb.projection.status|QueryService|GetProjectionStatus|GetProjectionStatus' \
+    '13|riffdb.outbox.list_pending|AdminService|ListPendingOutboxDeliveries|ListPendingOutboxDeliveries' \
+    '14|riffdb.server.health|AdminService|Health|Health' \
+    > "$expected_tool_tuples"
+jq -r '
+    .tools[] |
+    [
+      (.fixed_tool_kind|tostring),
+      .name,
+      .grpc_service,
+      .grpc_method,
+      .service_operation
+    ] | join("|")
+' "$fixed_registry" > "$actual_tool_tuples"
+if ! cmp --silent -- "$expected_tool_tuples" "$actual_tool_tuples"; then
+    printf 'fixed-tool service/RPC/operation tuples differ from the accepted registry\n' >&2
+    rm -f "$expected_tool_tuples" "$actual_tool_tuples"
+    exit 1
+fi
+rm -f "$expected_tool_tuples" "$actual_tool_tuples"
+
+jq -e '
+    .operation_schemas == [
+      {
+        "canonical_bytes":2545,
+        "owner":"riffdb-service",
+        "schema_hash":"f1847c1cd869562a11a6e67c7954e4b5c6b06f73c37f68c2a439d7359f2b9cf7",
+        "schema_id":"riffdb.command-operation-envelope/v1",
+        "source_path":"crates/riffdb-service/schema/riffdb.command-operation-envelope-v1.schema.json"
+      },
+      {
+        "canonical_bytes":4729,
+        "owner":"riffdb-service",
+        "schema_hash":"cbf5cb3d869f5b157c62e37c2d0704269cbf0a7c317fee4757f13bd0012b7f96",
+        "schema_id":"riffdb.command-get-outcome-result/v1",
+        "source_path":"crates/riffdb-service/schema/riffdb.command-get-outcome-result-v1.schema.json"
+      }
+    ] and
+    all(.tools[];
+      .input_schema.schema_id == ("riffdb.fixed-tool/" + .name + "/input/v1") and
+      .input_schema.source_path == ("crates/riffdb-api-mcp/schema/fixed-tool/v1/" + .name + ".input.schema.json") and
+      if .name == "riffdb.command.get_outcome" then
+        .result_schema.schema_id == "riffdb.command-get-outcome-result/v1" and
+        .result_schema.source_path == "crates/riffdb-service/schema/riffdb.command-get-outcome-result-v1.schema.json"
+      else
+        .result_schema.schema_id == ("riffdb.fixed-tool/" + .name + "/result/v1") and
+        .result_schema.source_path == ("crates/riffdb-api-mcp/schema/fixed-tool/v1/" + .name + ".result.schema.json")
+      end
+    )
+' "$fixed_registry" >/dev/null
+
+while IFS=$'\t' read -r source expected_bytes expected_hash; do
+    actual_bytes="$(wc -c < "$source" | tr -d ' ')"
+    actual_hash="$(schema_hash "$source")"
+    if [[ "$actual_bytes" != "$expected_bytes" || "$actual_hash" != "$expected_hash" ]]; then
+        printf 'schema identity mismatch: %s\n' "$source" >&2
+        printf '  bytes actual=%s expected=%s\n' "$actual_bytes" "$expected_bytes" >&2
+        printf '  hash  actual=%s expected=%s\n' "$actual_hash" "$expected_hash" >&2
+        exit 1
+    fi
+done < <(
+    jq -r '
+        .operation_schemas[],
+        (.tools[] | .input_schema),
+        (.tools[] | .result_schema)
+        | [.source_path, (.canonical_bytes|tostring), .schema_hash]
+        | @tsv
+    ' "$fixed_registry" | LC_ALL=C sort -u
+)
+
+jq -e '
+    .schema == "riffdb.mcp.fixed-tool-conversion-goldens/v1" and
+    (.request_cases | length) == 22 and
+    (.result_cases | length) == 29 and
+    ([.result_cases[] | select(.is_error != false)] | length) == 0 and
+    (.supplemental_nested_cases | length) == 4
+' "$conversion_goldens" >/dev/null
+
+unknown_references="$(jq -r '
+    . as $root |
+    [paths(scalars) as $path |
+      getpath($path) |
+      select(type == "string" and startswith("@value:")) |
+      ltrimstr("@value:") as $reference |
+      select(($root.values | has($reference)) | not) |
+      $reference
+    ] | unique | .[]
+' "$conversion_goldens")"
+if [[ -n "$unknown_references" ]]; then
+    printf 'conversion golden contains unknown @value references:\n%s\n' "$unknown_references" >&2
+    exit 1
+fi
+
+expected_pairs="$(mktemp)"
+actual_pairs="$(mktemp)"
+jq -r '.tools[] | .name as $tool | .result_branches[] | [$tool,.] | @tsv' \
+    "$fixed_registry" | LC_ALL=C sort > "$expected_pairs"
+jq -r '.result_cases[] | [.tool,.result_branch] | @tsv' \
+    "$conversion_goldens" | LC_ALL=C sort > "$actual_pairs"
+if ! cmp --silent -- "$expected_pairs" "$actual_pairs"; then
+    printf 'result golden coverage differs from the fixed-tool branch registry\n' >&2
+    rm -f "$expected_pairs" "$actual_pairs"
+    exit 1
+fi
+rm -f "$expected_pairs" "$actual_pairs"
+
+uncovered_tools="$(jq -n --slurpfile registry "$fixed_registry" --slurpfile goldens "$conversion_goldens" '
+    ($registry[0].tools | map(.name) | unique) - ($goldens[0].request_cases | map(.tool) | unique) | .[]
+')"
+if [[ -n "$uncovered_tools" ]]; then
+    printf 'fixed tool lacks a request conversion golden: %s\n' "$uncovered_tools" >&2
+    exit 1
+fi
+
+jq -e '
+    .schema == "riffdb.mcp.resource-registry/v1" and
+    .compatibility_checkpoint == "proposal-for-required-wp140-human-acceptance" and
+    .counts == {"concrete":9,"content_goldens":12,"entries":12,"subscribable":4,"templates":3} and
+    (.entries | length) == 12 and
+    ([.entries[].descriptor_branch] == [
+      "active_contract",
+      "contract_version",
+      "entity_schema",
+      "command_plan",
+      "command_documentation",
+      "command_outcome",
+      "commit.class_template",
+      "commit.commit_sequence",
+      "provenance.class_template",
+      "provenance.provenance_id",
+      "projection_status",
+      "server_health"
+    ]) and
+    ([.entries[] | select(.surface == "resources/list")] | length) == 9 and
+    ([.entries[] | select(.surface == "resources/templates/list")] | length) == 3 and
+    ([.entries[] | select(.subscribable) | .descriptor_branch] == ["active_contract","command_plan","projection_status","server_health"]) and
+    ([.entries[] | select(.content_golden.uri != .golden_uri or .content_golden.mimeType != .mime_type)] | length) == 0
+' "$resource_registry" >/dev/null
+
+expected_resource_tuples="$(mktemp)"
+actual_resource_tuples="$(mktemp)"
+printf '%s\n' \
+    'active_contract|resources/list|riffdb://contract/active|application/json|true' \
+    'contract_version|resources/list|riffdb://contract/<lineage>/<version>|application/json|false' \
+    'entity_schema|resources/list|riffdb://entity/<lineage>/<entity-id>/schema|application/schema+json|false' \
+    'command_plan|resources/list|riffdb://command/<lineage>/<command-id>/plan|application/json|true' \
+    'command_documentation|resources/list|riffdb://command/<lineage>/<command-id>/docs|text/markdown|false' \
+    'command_outcome|resources/templates/list|riffdb://outcome/{principal}/LegalSpend/2/riffdb.cmd.legalspend.allocatebudget/{key_hash}|application/json|false' \
+    'commit.class_template|resources/templates/list|riffdb://commit/{sequence}|application/json|false' \
+    'commit.commit_sequence|resources/list|riffdb://commit/<sequence>|application/json|false' \
+    'provenance.class_template|resources/templates/list|riffdb://provenance/{provenance_id}|application/json|false' \
+    'provenance.provenance_id|resources/list|riffdb://provenance/<provenance-id>|application/json|false' \
+    'projection_status|resources/list|riffdb://projection/<lineage>/<projection-id>/status|application/json|true' \
+    'server_health|resources/list|riffdb://server/health|application/json|true' \
+    > "$expected_resource_tuples"
+jq -r '
+    .entries[] |
+    [
+      .descriptor_branch,
+      .surface,
+      .uri,
+      .mime_type,
+      (.subscribable|tostring)
+    ] | join("|")
+' "$resource_registry" > "$actual_resource_tuples"
+if ! cmp --silent -- "$expected_resource_tuples" "$actual_resource_tuples"; then
+    printf 'resource URI/MIME/surface/subscription tuples differ from the accepted registry\n' >&2
+    rm -f "$expected_resource_tuples" "$actual_resource_tuples"
+    exit 1
+fi
+rm -f "$expected_resource_tuples" "$actual_resource_tuples"
+
+mode="${1:---check}"
+case "$mode" in
+    --write-inventory)
+        generate_inventory "$inventory"
+        ;;
+    --check)
+        generated="$(mktemp)"
+        generate_inventory "$generated"
+        if ! cmp --silent -- "$inventory" "$generated"; then
+            printf 'WP-140 checkpoint inventory is stale; run %s --write-inventory\n' "$0" >&2
+            rm -f "$generated"
+            exit 1
+        fi
+        rm -f "$generated"
+        ;;
+    *)
+        printf 'usage: %s [--check|--write-inventory]\n' "$0" >&2
+        exit 2
+        ;;
+esac
+
+printf 'WP-140 interface checkpoint is internally consistent.\n'

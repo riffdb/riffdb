@@ -1,0 +1,1 @@
+{"$schema":"https://json-schema.org/draft/2020-12/schema","additionalProperties":false,"properties":{"expected_active_version":{"maxLength":20,"pattern":"^[1-9][0-9]*$","type":"string","x-riffdb-integerType":"u64"},"source":{"type":"string","x-riffdb-maxUtf8Bytes":1048576}},"required":["source"],"type":"object"}
