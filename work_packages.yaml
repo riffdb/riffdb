@@ -1,4 +1,4 @@
-spec_version: '0.29'
+spec_version: '0.31'
 product: RiffDB
 repository: riffdb
 status: implementation-handoff
@@ -1817,6 +1817,7 @@ work_packages:
   objective: Expose authorized contract commands as dynamic MCP tools and database context as policy-filtered resources
     through stdio and Streamable HTTP.
   requirements:
+  - API-001
   - MCP-001
   - MCP-010
   - MCP-011
@@ -1860,12 +1861,15 @@ work_packages:
   - ADR-0040
   - ADR-0041
   - ADR-0043
+  - ADR-0044
   allowed_paths:
   - Cargo.lock
   - crates/riffdb-api-mcp/**
   - crates/riffdb-mcp-stdio/**
   - crates/riffdb-auth/src/authenticator.rs
   - crates/riffdb-auth/tests/architecture.rs
+  - crates/riffdb-service/src/context.rs
+  - crates/riffdb-service/tests/architecture.rs
   - tests/mcp/**
   - scripts/mcp-inspector-smoke
   deliverables:
@@ -1876,8 +1880,14 @@ work_packages:
   - Resources, subscriptions, list-change notifications
   - Progress, cancellation, pagination, security limits
   - Hosted MCP RequestId creation through the injected server source, distinct from MCP JSON-RPC identifiers and
-    progress tokens; externally supplied AgentSessionId validation follows the shared UUIDv7 contract
+    progress tokens; v1 has no AgentSessionId carrier, and any future externally supplied value requires a reviewed
+    carrier plus the shared UUIDv7 validation contract
+  - Service-owned hosted-MCP RequestContext construction with fixed McpHttp ingress, exactly five absent claims, no
+    policy vocabulary exposed to the adapter, and no MCP/session-derived request, agent-session, claim, or trace
+    identity
   - Redaction-safe protocol telemetry and server registration hooks
+  - One ungated hard tracing-target predicate, closed safe-event vocabulary, non-reloadable stdio installation, and
+    hosted registration hook that suppress exact rmcp and rmcp descendant targets regardless of user directives
   - Auth-owned non-Clone/nonserializable redacted RetainedOpaqueCredential in the exact approved auth source, backed
     by the existing Zeroizing 43-byte buffer, accepting any at-most-43-byte bearer-stripped slice by bounded copy
     only, and exposing credential data solely as an OpaqueCredential borrow
@@ -1891,6 +1901,8 @@ work_packages:
   - Exact MCP 2025-11-25 initialization and pinned rmcp 2.2.0 boundary with default-empty crate features, common
     protocol/presentation code, stdio-only transport-io, HTTP-only optional auth/service edges, and no client, TLS,
     OAuth, sampling, roots, elicitation, task, prompt, or unrelated transport feature
+  - Exact unconditional foundational types/errors and tracing rows, one checked RequestId source and common
+    PublicError renderer, exact fmt-only stdio subscriber row, and a current-thread stdio Tokio runtime
   - One common MCP schema composer and renderer for HTTP service DTOs and stdio public-gRPC DTOs, proving byte-
     identical authorized catalogs/results while stdio has no auth, service, server, storage, policy, runtime, commit,
     catalog, or gRPC-server dependency
@@ -1908,8 +1920,11 @@ work_packages:
   - Progress, cancellation, observer/subscription bounds, list-change/resource-update coalescing, five-second polling,
     idle/lifetime expiry, reconnect/restart fences, redaction canaries, and protocol-only stdout
   acceptance_commands:
-  - cargo test -p riffdb-auth -p riffdb-api-mcp -p riffdb-mcp-stdio
-  - cargo test -p riffdb-api-mcp --test mcp_conformance
+  - cargo test -p riffdb-api-mcp --no-default-features
+  - cargo test -p riffdb-api-mcp --no-default-features --features stdio
+  - cargo test -p riffdb-api-mcp --no-default-features --features streamable-http
+  - cargo test -p riffdb-service -p riffdb-auth -p riffdb-api-mcp -p riffdb-mcp-stdio --all-features
+  - cargo test -p riffdb-api-mcp --all-features --test mcp_conformance
   - ./scripts/mcp-inspector-smoke
   - cargo deny check
   external_test_targets:
@@ -1918,10 +1933,11 @@ work_packages:
     manifest: crates/riffdb-api-mcp/Cargo.toml
     path: ../../tests/mcp/mcp_conformance.rs
   exit_gate: Auth architecture tests freeze the exact retained-credential ownership, zeroizing bound, opaque-only
-    accessor, and unchanged dependency-owner set; authorized dynamic tool catalogs expose only exact compiled
-    ADR-0020 names; structured results, resource reads, stale-name denial, progress, cancellation, and both adapter
-    transports pass against the shared service harness with every HTTP authentication decision delegated to
-    CredentialAuthenticator.
+    accessor, and unchanged dependency-owner set; service architecture tests freeze closed hosted-MCP context
+    construction with truthful ingress and empty claims; authorized dynamic tool catalogs expose only exact compiled
+    ADR-0020 names; structured results, resource reads, stale-name denial, progress, cancellation, hard telemetry
+    suppression, and both adapter transports pass against the shared service harness with every HTTP authentication
+    decision delegated to CredentialAuthenticator.
   human_review_triggers: *id001
 - id: WP-150
   name: CLI and local developer flow
