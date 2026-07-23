@@ -14,6 +14,10 @@ const PUBLIC_SCHEMA_HASHES: &str = include_str!(concat!(
     env!("CARGO_MANIFEST_DIR"),
     "/../../fixtures/proto/public-schema-hashes.txt"
 ));
+const PRE_WP137_PUBLIC_SCHEMA_HASHES: &str = include_str!(concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/../../fixtures/proto/pre-wp137-public-schema-hashes.txt"
+));
 
 fn descriptors() -> FileDescriptorSet {
     FileDescriptorSet::decode(PRODUCTION_FILE_DESCRIPTOR_SET).expect("checked descriptor fixture")
@@ -142,6 +146,17 @@ fn exact_value_execute_error_and_envelope_fields_are_frozen() {
                 ("outcome", 6),
                 ("provenance_uri", 7),
                 ("durability_mode", 8),
+                ("outcome_uri", 9),
+            ],
+        ),
+        (
+            "riffdb.v1.GetOutcomeRequest",
+            vec![
+                ("request_id", 1),
+                ("contract_lineage", 2),
+                ("command_name", 3),
+                ("idempotency_key", 4),
+                ("outcome_uri", 5),
             ],
         ),
         (
@@ -317,7 +332,66 @@ fn service_inventory_and_completed_phase_zero_messages_are_exact() {
         }
     }
     methods.sort();
-    assert_eq!(methods.len(), 16);
+    assert_eq!(methods.len(), 22);
+    let descriptor_order = descriptors
+        .file
+        .iter()
+        .flat_map(|file| &file.service)
+        .map(|service| {
+            (
+                service.name(),
+                service
+                    .method
+                    .iter()
+                    .map(|method| method.name())
+                    .collect::<Vec<_>>(),
+            )
+        })
+        .collect::<BTreeMap<_, _>>();
+    assert_eq!(
+        descriptor_order["ContractService"],
+        vec![
+            "ValidateContract",
+            "ExplainCommand",
+            "DeployContract",
+            "GetActiveContract",
+            "GetContractVersion",
+            "DiscoverCommandTools",
+            "DiscoverResources",
+        ]
+    );
+    assert_eq!(
+        descriptor_order["CommandService"],
+        vec!["Execute", "GetOutcome"]
+    );
+    assert_eq!(
+        descriptor_order["QueryService"],
+        vec![
+            "GetEntity",
+            "ScanIndex",
+            "QueryProjection",
+            "GetProjectionStatus",
+        ]
+    );
+    assert_eq!(
+        descriptor_order["CommitService"],
+        vec![
+            "GetCommit",
+            "ScanCommits",
+            "SubscribeCommits",
+            "TraceProvenance",
+        ]
+    );
+    assert_eq!(
+        descriptor_order["AdminService"],
+        vec![
+            "Health",
+            "Stats",
+            "CreateCapability",
+            "RevokeCapability",
+            "ListPendingOutboxDeliveries",
+        ]
+    );
     assert_eq!(
         methods
             .iter()
@@ -352,12 +426,20 @@ fn service_inventory_and_completed_phase_zero_messages_are_exact() {
         "ExplainCommandResponse",
         "GetActiveContractRequest",
         "GetActiveContractResponse",
+        "GetContractVersionRequest",
+        "GetContractVersionResponse",
+        "DiscoverCommandToolsRequest",
+        "DiscoverCommandToolsResponse",
+        "DiscoverResourcesRequest",
+        "DiscoverResourcesResponse",
         "GetCommitRequest",
         "GetCommitResponse",
         "GetEntityRequest",
         "GetEntityResponse",
         "GetOutcomeRequest",
         "GetOutcomeResponse",
+        "GetProjectionStatusRequest",
+        "GetProjectionStatusResponse",
         "HealthRequest",
         "HealthResponse",
         "QueryProjectionRequest",
@@ -371,6 +453,10 @@ fn service_inventory_and_completed_phase_zero_messages_are_exact() {
         "StatsRequest",
         "StatsResponse",
         "SubscribeCommitsRequest",
+        "TraceProvenanceRequest",
+        "TraceProvenanceResponse",
+        "ListPendingOutboxDeliveriesRequest",
+        "ListPendingOutboxDeliveriesResponse",
         "ValidateContractRequest",
         "ValidateContractResponse",
     ];
@@ -384,7 +470,7 @@ fn service_inventory_and_completed_phase_zero_messages_are_exact() {
             .keys()
             .filter(|name| name.starts_with("riffdb.v1."))
             .count(),
-        109
+        149
     );
     assert_eq!(
         messages
@@ -456,6 +542,48 @@ fn collect_hash_enum_inputs(
             ("enum-value".to_owned(), format!("{name}.{}", value.name())),
             value.encode_to_vec(),
         );
+    }
+}
+
+fn parse_schema_hash_fixture(source: &str) -> BTreeMap<(String, String), String> {
+    let mut lines = source.lines();
+    assert_eq!(lines.next(), Some("riffdb-public-schema-hashes-v1"));
+    lines
+        .map(|line| {
+            let mut fields = line.split_whitespace();
+            let kind = fields.next().expect("descriptor kind").to_owned();
+            let name = fields.next().expect("descriptor name").to_owned();
+            let hash = fields.next().expect("descriptor hash").to_owned();
+            assert!(fields.next().is_none());
+            ((kind, name), hash)
+        })
+        .collect()
+}
+
+#[test]
+fn pre_wp137_public_descriptor_surface_is_additively_compatible() {
+    let baseline = parse_schema_hash_fixture(PRE_WP137_PUBLIC_SCHEMA_HASHES);
+    let current = parse_schema_hash_fixture(PUBLIC_SCHEMA_HASHES);
+
+    for ((kind, name), baseline_hash) in baseline {
+        let current_hash = current
+            .get(&(kind.clone(), name.clone()))
+            .unwrap_or_else(|| panic!("pre-WP-137 {kind} symbol was removed: {name}"));
+        match kind.as_str() {
+            // These rows isolate every compatibility-sensitive leaf. Their
+            // encoded descriptors include field presence/type/number, enum
+            // number, and RPC input/output/streaming shape respectively.
+            "field" | "enum-value" | "oneof" | "rpc" => {
+                assert_eq!(
+                    current_hash, &baseline_hash,
+                    "pre-WP-137 {kind} changed: {name}"
+                );
+            }
+            // Container hashes may change when an additive child is appended,
+            // but every pre-existing container must remain addressable.
+            "schema" | "file" | "message" | "enum" | "service" => {}
+            _ => panic!("unknown descriptor fixture kind: {kind}"),
+        }
     }
 }
 

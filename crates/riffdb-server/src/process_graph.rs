@@ -25,6 +25,9 @@ use riffdb_service::{
     ServiceExecutors, ServiceHealthHooks, ServiceIdentity, ServiceJobSpawner,
     ServiceProcessMetadata, ServiceProviders, ServiceTelemetry,
 };
+use riffdb_storage_api::{
+    ReadableDigestKey, ReadableIdempotencyDigestInventory, StorageValueError,
+};
 use riffdb_types::{Audience, Environment, Timestamp};
 
 use crate::auth_adapters::{
@@ -47,6 +50,7 @@ use crate::runtime_support::{
     ProductionServiceDiagnostics, ProductionServiceTelemetry, RuntimeSupportError,
     SupervisedServiceJobSpawner, TokioRequestDeadlineScheduler,
 };
+use crate::server_generation::{ProductionServerGenerationSource, ServerGenerationSourceError};
 use crate::startup::CheckedRedbStartup;
 use crate::storage::SharedRedbOperationalPorts;
 
@@ -63,6 +67,7 @@ pub(crate) struct ProductionGraphBuilder {
     process: ServiceProcessMetadata,
     identifiers: ProductionIdentifierSources,
     clocks: ProductionWallClocks,
+    server_generation: ProductionServerGenerationSource,
     lifecycle: Arc<ProductionLifecycleRoute>,
 }
 
@@ -89,6 +94,7 @@ impl ProductionGraphBuilder {
             process: ServiceProcessMetadata::new(started_at, build),
             identifiers,
             clocks,
+            server_generation: ProductionServerGenerationSource::new(),
             lifecycle,
         }
     }
@@ -104,8 +110,13 @@ impl ProductionGraphBuilder {
             process,
             identifiers,
             clocks,
+            server_generation,
             lifecycle,
         } = self;
+
+        let server_generation = server_generation
+            .next_generation()
+            .map_err(ProductionGraphBuildError::ServerGeneration)?;
 
         let (
             database_id,
@@ -115,6 +126,14 @@ impl ProductionGraphBuilder {
             allocator_capacity,
             operational_ports,
         ) = startup.into_parts();
+        let (capability_keys, idempotency_keys) = digest_keys.into_parts();
+        let readable_idempotency_digests = ReadableIdempotencyDigestInventory::new(
+            idempotency_keys
+                .readable_key_ids()
+                .map(ReadableDigestKey::v1)
+                .collect(),
+        )
+        .map_err(ProductionGraphBuildError::ReadableIdempotencyDigests)?;
         let trusted_audiences = TrustedAudienceCatalog::new(vec![audience.clone()])
             .map_err(ProductionGraphBuildError::TrustedAudience)?;
         let runtime = lifecycle.runtime_routing();
@@ -129,7 +148,6 @@ impl ProductionGraphBuilder {
             runtime.clone(),
         );
 
-        let (capability_keys, idempotency_keys) = digest_keys.into_parts();
         let capability_keys = Arc::new(capability_keys);
         let idempotency_keys = Arc::new(idempotency_keys);
         let idempotency_digests: Arc<dyn IdempotencyDigestProvider> = Arc::new(
@@ -170,6 +188,7 @@ impl ProductionGraphBuilder {
             Arc::new(ServerAuthoritativeReadPort::new(
                 storage.clone(),
                 Arc::clone(&idempotency_digests),
+                readable_idempotency_digests,
                 database_id,
                 environment.clone(),
                 notifications.clone(),
@@ -260,9 +279,13 @@ impl ProductionGraphBuilder {
         let service: Arc<dyn ApplicationService> =
             Arc::new(activator.activate(identity, process, executors, providers));
 
-        if let Err(source) =
-            lifecycle.install_activated(service, security, startup_lifecycle, allocator_capacity)
-        {
+        if let Err(source) = lifecycle.install_activated(
+            service,
+            security,
+            server_generation,
+            startup_lifecycle,
+            allocator_capacity,
+        ) {
             lifecycle.stop();
             let cleanup = cleanup_unpublished_graph(coordinator, blocking, &notifications);
             return Err(ProductionGraphBuildError::Activation { source, cleanup });
@@ -396,6 +419,8 @@ fn shutdown_result(
 
 /// Closed construction failure with cleanup evidence for any started owner.
 pub(crate) enum ProductionGraphBuildError {
+    ServerGeneration(ServerGenerationSourceError),
+    ReadableIdempotencyDigests(StorageValueError),
     TrustedAudience(CapabilityMutationFactsError),
     Runtime(RuntimeSupportError),
     BlockingDriver(BlockingPortDriverStartError),
@@ -425,7 +450,11 @@ impl fmt::Display for ProductionGraphBuildError {
             Self::ConflictManager { cleanup, .. }
             | Self::Coordinator { cleanup, .. }
             | Self::Activation { cleanup, .. } => cleanup.is_some(),
-            Self::TrustedAudience(_) | Self::Runtime(_) | Self::BlockingDriver(_) => false,
+            Self::ServerGeneration(_)
+            | Self::ReadableIdempotencyDigests(_)
+            | Self::TrustedAudience(_)
+            | Self::Runtime(_)
+            | Self::BlockingDriver(_) => false,
         };
         if cleanup_failed {
             formatter
@@ -439,6 +468,8 @@ impl fmt::Display for ProductionGraphBuildError {
 impl Error for ProductionGraphBuildError {
     fn source(&self) -> Option<&(dyn Error + 'static)> {
         match self {
+            Self::ServerGeneration(source) => Some(source),
+            Self::ReadableIdempotencyDigests(source) => Some(source),
             Self::TrustedAudience(source) => Some(source),
             Self::Runtime(source) => Some(source),
             Self::BlockingDriver(source) => Some(source),
@@ -505,6 +536,29 @@ mod tests {
                 "unexpected construction count for {constructor}"
             );
         }
+    }
+
+    #[test]
+    fn process_generation_is_sampled_once_before_service_publication() {
+        let source = production_source();
+        assert_eq!(
+            source
+                .matches("ProductionServerGenerationSource::new()")
+                .count(),
+            1
+        );
+        assert_eq!(source.matches(".next_generation()").count(), 1);
+        let sample = source
+            .find(".next_generation()")
+            .expect("one generation sample");
+        let activate = source
+            .find("activator.activate(")
+            .expect("service activation");
+        let install = source
+            .find("lifecycle.install_activated(")
+            .expect("route publication");
+        assert!(sample < activate);
+        assert!(activate < install);
     }
 
     #[test]

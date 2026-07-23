@@ -1076,6 +1076,76 @@ pub enum Decision {
     Deny(PolicyCode),
 }
 
+/// Why a test-only discovery audit obligation could not be attached.
+#[cfg(feature = "test-fixtures")]
+#[doc(hidden)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum DiscoveryAuditFixtureError {
+    /// A denied decision cannot be converted into an allow proof.
+    Denied,
+    /// A capability-mutation preparation is not a discovery allow proof.
+    CapabilityMutationPreparation,
+    /// The allow proof belongs to an operation other than discovery.
+    NonDiscoveryOperation,
+    /// The allow proof does not carry the capability grant needed for filtering.
+    MissingDiscoveryAuthority,
+    /// The allow proof already carries an audit obligation.
+    ExistingAuditObligation,
+}
+
+#[cfg(feature = "test-fixtures")]
+impl fmt::Display for DiscoveryAuditFixtureError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(match self {
+            Self::Denied => "the policy decision denied the request",
+            Self::CapabilityMutationPreparation => {
+                "the policy decision prepared a capability mutation"
+            }
+            Self::NonDiscoveryOperation => "the allow proof is not for discovery",
+            Self::MissingDiscoveryAuthority => "the allow proof lacks discovery authority",
+            Self::ExistingAuditObligation => "the allow proof already has an audit obligation",
+        })
+    }
+}
+
+#[cfg(feature = "test-fixtures")]
+impl std::error::Error for DiscoveryAuditFixtureError {}
+
+impl Decision {
+    /// Adds the standard-read audit obligation to one valid discovery allow proof.
+    ///
+    /// This transformation exists only for service audit fixtures. It cannot
+    /// create authority, replace another audit classification, or convert any
+    /// non-allow decision.
+    #[cfg(feature = "test-fixtures")]
+    #[doc(hidden)]
+    pub fn with_test_standard_read_discovery_audit(
+        self,
+    ) -> Result<Self, DiscoveryAuditFixtureError> {
+        let mut authorized = match self {
+            Self::Allow(authorized) => authorized,
+            Self::PrepareCapabilityMutation(_) => {
+                return Err(DiscoveryAuditFixtureError::CapabilityMutationPreparation);
+            }
+            Self::Deny(_) => return Err(DiscoveryAuditFixtureError::Denied),
+        };
+        if !matches!(
+            authorized.request.operation(),
+            ServiceOperationV1::DiscoverCommandTools | ServiceOperationV1::DiscoverResources
+        ) {
+            return Err(DiscoveryAuditFixtureError::NonDiscoveryOperation);
+        }
+        if authorized.discovery_authority.is_none() {
+            return Err(DiscoveryAuditFixtureError::MissingDiscoveryAuthority);
+        }
+        if authorized.obligations.audit_class.is_some() {
+            return Err(DiscoveryAuditFixtureError::ExistingAuditObligation);
+        }
+        authorized.obligations.audit_class = Some(AuditClass::StandardRead);
+        Ok(Self::Allow(authorized))
+    }
+}
+
 impl fmt::Debug for Decision {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
@@ -1092,10 +1162,18 @@ impl fmt::Debug for Decision {
 mod tests {
     use std::num::NonZeroU16;
 
+    #[cfg(feature = "test-fixtures")]
+    use riffdb_testkit::authorization::{
+        AuthorizationFixture, AuthorizationFixtureConfig, AuthorizationFixtureTimes,
+    };
     use riffdb_types::{
         AggregateTypeId, CapabilityPermissionKindV1, CapabilityPermissionsV1, CommandId,
         EntityFieldVisibilityV1, PartitionKeyBuilder,
     };
+    #[cfg(feature = "test-fixtures")]
+    use riffdb_types::{Audience, RequestId, Timestamp};
+    #[cfg(feature = "test-fixtures")]
+    use std::num::NonZeroU32;
 
     use super::*;
 
@@ -1122,34 +1200,130 @@ mod tests {
     }
 
     fn obligations() -> Obligations {
+        obligations_with_audit(None)
+    }
+
+    fn obligations_with_audit(audit_class: Option<AuditClass>) -> Obligations {
         Obligations::new(
             TenantScope::Global,
             None,
             None,
             None,
             None,
-            None,
+            audit_class,
             OutputClassification::PublicMetadata,
         )
     }
 
-    fn discovery(request: OperationRequest, grant: CapabilityGrantV1) -> AuthorizedDiscovery {
-        AuthorizedOperation::new_discovery(
-            DatabaseId::from_unix_milliseconds_and_random(1, [0x51; 10]).expect("valid UUIDv7"),
-            Environment::new("discovery-test").expect("bounded environment"),
-            request,
-            obligations(),
-            grant,
-            CurrentAuthorizationIdentity::new(
-                CapabilityId::from_unix_milliseconds_and_random(2, [0x52; 10])
-                    .expect("valid UUIDv7"),
-                NonZeroU64::MIN,
-                ActorId::new("discovery-principal").expect("bounded principal"),
-                ActorKind::Service,
-            ),
+    fn authorization_identity() -> CurrentAuthorizationIdentity {
+        CurrentAuthorizationIdentity::new(
+            CapabilityId::from_unix_milliseconds_and_random(2, [0x52; 10]).expect("valid UUIDv7"),
+            NonZeroU64::MIN,
+            ActorId::new("discovery-principal").expect("bounded principal"),
+            ActorKind::Service,
         )
-        .into_discovery()
-        .expect("discovery proof")
+    }
+
+    fn authorized_operation(
+        request: OperationRequest,
+        obligations: Obligations,
+        discovery_grant: Option<CapabilityGrantV1>,
+    ) -> AuthorizedOperation {
+        let database_id =
+            DatabaseId::from_unix_milliseconds_and_random(1, [0x51; 10]).expect("valid UUIDv7");
+        let environment = Environment::new("discovery-test").expect("bounded environment");
+        match discovery_grant {
+            Some(grant) => AuthorizedOperation::new_discovery(
+                database_id,
+                environment,
+                request,
+                obligations,
+                grant,
+                authorization_identity(),
+            ),
+            None => AuthorizedOperation::new(
+                database_id,
+                environment,
+                request,
+                obligations,
+                authorization_identity(),
+            ),
+        }
+    }
+
+    fn discovery(request: OperationRequest, grant: CapabilityGrantV1) -> AuthorizedDiscovery {
+        authorized_operation(request, obligations(), Some(grant))
+            .into_discovery()
+            .expect("discovery proof")
+    }
+
+    #[cfg(feature = "test-fixtures")]
+    #[test]
+    fn test_discovery_audit_fixture_only_transforms_fresh_discovery_allows() {
+        let discovery_grant = || {
+            grant(
+                TenantScope::Global,
+                PartitionScopeV1::All,
+                Vec::new(),
+                Vec::new(),
+                Vec::new(),
+            )
+        };
+        for request in [
+            OperationRequest::discover_command_tools(),
+            OperationRequest::discover_resources(),
+        ] {
+            let decision = Decision::Allow(Box::new(authorized_operation(
+                request,
+                obligations(),
+                Some(discovery_grant()),
+            )))
+            .with_test_standard_read_discovery_audit()
+            .expect("fresh discovery allow accepts the fixture audit class");
+            let Decision::Allow(authorized) = decision else {
+                panic!("the fixture preserves the allow decision");
+            };
+            assert_eq!(
+                authorized.obligations().audit_class(),
+                Some(AuditClass::StandardRead)
+            );
+            assert_eq!(
+                Decision::Allow(authorized).with_test_standard_read_discovery_audit(),
+                Err(DiscoveryAuditFixtureError::ExistingAuditObligation)
+            );
+        }
+
+        assert_eq!(
+            Decision::Deny(PolicyCode::MissingPermission).with_test_standard_read_discovery_audit(),
+            Err(DiscoveryAuditFixtureError::Denied)
+        );
+        assert_eq!(
+            Decision::Allow(Box::new(authorized_operation(
+                OperationRequest::get_health(),
+                obligations(),
+                Some(discovery_grant()),
+            )))
+            .with_test_standard_read_discovery_audit(),
+            Err(DiscoveryAuditFixtureError::NonDiscoveryOperation)
+        );
+        assert_eq!(
+            Decision::Allow(Box::new(authorized_operation(
+                OperationRequest::discover_command_tools(),
+                obligations(),
+                None,
+            )))
+            .with_test_standard_read_discovery_audit(),
+            Err(DiscoveryAuditFixtureError::MissingDiscoveryAuthority)
+        );
+        assert_eq!(
+            Decision::Allow(Box::new(authorized_operation(
+                OperationRequest::discover_resources(),
+                obligations_with_audit(Some(AuditClass::AdministrativeRead)),
+                Some(discovery_grant()),
+            )))
+            .with_test_standard_read_discovery_audit(),
+            Err(DiscoveryAuditFixtureError::ExistingAuditObligation)
+        );
     }
 
     fn explicit_partition() -> PartitionScopeV1 {
@@ -1158,6 +1332,94 @@ mod tests {
         let partition = builder.finish().expect("valid partition");
         PartitionScopeV1::explicit(vec![ScopedPartitionV1::new(lineage(), partition)])
             .expect("explicit scope")
+    }
+
+    #[cfg(feature = "test-fixtures")]
+    #[test]
+    fn test_discovery_audit_fixture_rejects_capability_mutation_preparation() {
+        struct FixedClock(Timestamp);
+
+        impl crate::AuthorizationClock for FixedClock {
+            fn now(&self) -> Result<Timestamp, crate::AuthorizationClockError> {
+                Ok(self.0)
+            }
+        }
+
+        let timestamp = |seconds| Timestamp::new(seconds, 0).expect("valid timestamp");
+        let database_id =
+            DatabaseId::from_unix_milliseconds_and_random(3, [0x53; 10]).expect("valid UUIDv7");
+        let environment = Environment::new("fixture-test").expect("bounded environment");
+        let audience = Audience::new("fixture-grpc").expect("bounded audience");
+        let parent_grant = grant(
+            TenantScope::Global,
+            PartitionScopeV1::All,
+            vec![
+                CapabilityPermissionV1::unparameterized(
+                    CapabilityPermissionKindV1::CreateCapability,
+                )
+                .expect("unparameterized create permission"),
+                CapabilityPermissionV1::unparameterized(CapabilityPermissionKindV1::ReadHealth)
+                    .expect("unparameterized health permission"),
+            ],
+            Vec::new(),
+            Vec::new(),
+        );
+        let fixture = AuthorizationFixture::new(AuthorizationFixtureConfig::new(
+            database_id,
+            environment.clone(),
+            ActorId::new("fixture-parent").expect("bounded principal"),
+            ActorKind::Service,
+            audience.clone(),
+            AuthorizationFixtureTimes::new(timestamp(100), timestamp(1_000), timestamp(150)),
+            parent_grant,
+        ))
+        .expect("valid authorization fixture");
+        let target_grant = grant(
+            TenantScope::Global,
+            PartitionScopeV1::All,
+            vec![
+                CapabilityPermissionV1::unparameterized(CapabilityPermissionKindV1::ReadHealth)
+                    .expect("unparameterized health permission"),
+            ],
+            Vec::new(),
+            Vec::new(),
+        );
+        let requested_record = crate::NormalizedCapabilityCreateRecord::new(
+            database_id,
+            environment.clone(),
+            ActorId::new("fixture-child").expect("bounded principal"),
+            ActorKind::Agent,
+            NonZeroU32::new(60).expect("nonzero lifetime"),
+            vec![audience.clone()],
+            target_grant,
+        )
+        .expect("valid requested capability");
+        let target = crate::CapabilityCreateTargetFacts::new(
+            RequestId::from_unix_milliseconds_and_random(4, [0x54; 10]).expect("valid UUIDv7"),
+            CapabilityId::from_unix_milliseconds_and_random(5, [0x55; 10]).expect("valid UUIDv7"),
+            requested_record,
+        );
+        let trusted_audiences =
+            crate::TrustedAudienceCatalog::new(vec![audience]).expect("one trusted audience");
+        let resolver = fixture.current_capability_resolver();
+        let decision = crate::CurrentAuthorizer::new(
+            &resolver,
+            &FixedClock(timestamp(200)),
+            &crate::NoopAuthorizationTelemetry,
+            database_id,
+            environment,
+        )
+        .with_trusted_audience_catalog(&trusted_audiences)
+        .authorize(
+            fixture.authenticated_principal(),
+            OperationRequest::create_capability(target),
+        )
+        .expect("policy decision");
+        assert!(matches!(&decision, Decision::PrepareCapabilityMutation(_)));
+        assert_eq!(
+            decision.with_test_standard_read_discovery_audit(),
+            Err(DiscoveryAuditFixtureError::CapabilityMutationPreparation)
+        );
     }
 
     #[test]

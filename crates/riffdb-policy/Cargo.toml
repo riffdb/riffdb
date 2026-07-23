@@ -7,6 +7,7 @@ publish.workspace = true
 
 [features]
 default = []
+test-fixtures = []
 
 [dependencies]
 riffdb-auth = { version = "0.1.0", path = "../riffdb-auth", default-features = false }

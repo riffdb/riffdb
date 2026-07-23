@@ -198,6 +198,18 @@ impl ServiceHarness {
         )
     }
 
+    pub(crate) fn discovery_inventory(additional_commands: usize) -> Self {
+        Self::compose_with_additional_commands(
+            ReadCommitMode::ImmediateNotFound,
+            true,
+            false,
+            false,
+            true,
+            false,
+            additional_commands,
+        )
+    }
+
     pub(crate) fn restricted_operations() -> Self {
         Self::compose(
             ReadCommitMode::ImmediateNotFound,
@@ -228,13 +240,35 @@ impl ServiceHarness {
         broad_operations: bool,
         pre_bootstrap: bool,
     ) -> Self {
+        Self::compose_with_additional_commands(
+            read_mode,
+            allow_read_commit,
+            restrict_command_partition,
+            fail_incident_source,
+            broad_operations,
+            pre_bootstrap,
+            0,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn compose_with_additional_commands(
+        read_mode: ReadCommitMode,
+        allow_read_commit: bool,
+        restrict_command_partition: bool,
+        fail_incident_source: bool,
+        broad_operations: bool,
+        pre_bootstrap: bool,
+        additional_commands: usize,
+    ) -> Self {
         let database = if pre_bootstrap {
             AuditDatabase::create_pre_bootstrap(broad_operations)
         } else {
-            AuditDatabase::create(broad_operations)
+            AuditDatabase::create_with_additional_commands(broad_operations, additional_commands)
         };
         let command_reference = database.executable_plan.reference();
         let capability_order = Arc::new(Mutex::new(Vec::new()));
+        let discovery_order = Arc::new(Mutex::new(Vec::new()));
         let partition_scope = if restrict_command_partition {
             PartitionScopeV1::explicit(vec![ScopedPartitionV1::new(
                 command_reference.contract_lineage().clone(),
@@ -259,13 +293,16 @@ impl ServiceHarness {
             broad_operations,
             database.active_catalog.bundle().bundle(),
             database.alternate_partition.clone(),
+            additional_commands != 0,
             Arc::clone(&capability_order),
+            Arc::clone(&discovery_order),
         ));
         let ports = Arc::new(HarnessPorts::new(
             read_mode,
             database.active_catalog.clone(),
             database.executable_plan.clone(),
             capability_order,
+            discovery_order,
         ));
         let coordinator = start_coordinator(database.open());
         let executors = ServiceExecutors::new(
@@ -748,6 +785,23 @@ impl ServiceHarness {
         self.ports.active_catalog_version()
     }
 
+    pub(crate) fn activate_compatible_successor_on_active_catalog_reservation(&self) {
+        let ports = Arc::clone(&self.ports);
+        let successor = self.database.compatible_successor_snapshot();
+        self.ports
+            .set_active_catalog_reservation_hook(Arc::new(move || {
+                ports.replace_active_catalog(successor.clone());
+            }));
+    }
+
+    pub(crate) fn clear_discovery_order(&self) {
+        self.ports.clear_discovery_order();
+    }
+
+    pub(crate) fn discovery_order(&self) -> Vec<&'static str> {
+        self.ports.discovery_order()
+    }
+
     pub(crate) fn fail_deployment_preparation(&self) {
         self.ports
             .set_prepare_deployment_mode(CATALOG_STORAGE_ERROR);
@@ -771,6 +825,10 @@ impl ServiceHarness {
 
     pub(crate) fn revoke_policy(&self) {
         self.policy.revoke();
+    }
+
+    pub(crate) fn audit_discovery_operations(&self) {
+        self.policy.audit_discovery_operations();
     }
 
     pub(crate) fn panic_executable_plan_resolution(&self) {
@@ -847,6 +905,10 @@ impl ServiceHarness {
 
     pub(crate) fn cursor_token_calls(&self) -> u64 {
         self.cursor_tokens.calls()
+    }
+
+    pub(crate) fn deny_after_next_policy_allows(&self, allow_count: usize) {
+        self.policy.deny_after_next_allows(allow_count);
     }
 
     pub(crate) async fn wait_for_stalled_projection(&self) {
@@ -1151,6 +1213,7 @@ impl ServiceHarness {
             owner_principal_id,
             owner_tenant_scope,
             partition,
+            result.outcome_locator().digest_evidence().clone(),
         );
         let stored = AuthoritativeJournaledOutcome::new(
             result.commit_sequence(),
@@ -1223,6 +1286,10 @@ struct AuditDatabase {
 
 impl AuditDatabase {
     fn create(with_index: bool) -> Self {
+        Self::create_with_additional_commands(with_index, 0)
+    }
+
+    fn create_with_additional_commands(with_index: bool, additional_commands: usize) -> Self {
         let path = next_database_path();
         let mut store = RedbStore::open(&path).expect("create service harness database");
         assert_eq!(
@@ -1231,7 +1298,7 @@ impl AuditDatabase {
                 .expect("initialize service harness database"),
             DatabaseInitializationResult::Installed(database_id())
         );
-        let source = if with_index {
+        let mut source = if with_index {
             BUDGET_SOURCE.replacen(
                 "    invariant non_negative:",
                 "    index by_fiscal_year (fiscal_year)\n\n    invariant non_negative:",
@@ -1240,6 +1307,19 @@ impl AuditDatabase {
         } else {
             BUDGET_SOURCE.to_owned()
         };
+        if additional_commands != 0 {
+            let mut declarations = String::new();
+            for ordinal in 0..additional_commands {
+                declarations.push_str(&format!(
+                    "  command ObserveBudget{ordinal:04} {{\n    input organization_id: uuid\n    input fiscal_year: i64\n    read Budget(organization_id, fiscal_year) as budget\n      else BudgetNotFound {{}}\n    return BudgetObserved {{ budget: budget }}\n  }}\n\n"
+                ));
+            }
+            source = source.replacen(
+                "  projection BudgetUtilizationDaily {",
+                &format!("{declarations}  projection BudgetUtilizationDaily {{"),
+                1,
+            );
+        }
         let checked_bundle = ValidatedContractBundle::from_compiler_bundle(
             compile_contract_source(&source).expect("compile budget contract"),
         )
@@ -1775,9 +1855,12 @@ pub(crate) struct HarnessPolicy {
     restore_after_narrowed_allow: AtomicBool,
     calls: AtomicUsize,
     allowed_calls: AtomicUsize,
+    revoke_after_allowed_call: AtomicUsize,
+    audit_discovery_operations: AtomicBool,
     partition_constraints: Mutex<Vec<Option<PartitionConstraint>>>,
     panic_next: AtomicBool,
     capability_order: Arc<Mutex<Vec<&'static str>>>,
+    discovery_order: Arc<Mutex<Vec<&'static str>>>,
 }
 
 impl HarnessPolicy {
@@ -1790,7 +1873,9 @@ impl HarnessPolicy {
         broad_operations: bool,
         contract: &ContractBundle,
         narrow_partition: PartitionKey,
+        authorize_all_commands: bool,
         capability_order: Arc<Mutex<Vec<&'static str>>>,
+        discovery_order: Arc<Mutex<Vec<&'static str>>>,
     ) -> Self {
         let mut permissions = vec![
             CapabilityPermissionV1::InvokeCommand(
@@ -1839,6 +1924,13 @@ impl HarnessPolicy {
                     contract.lineage().clone(),
                     command.command_id(),
                 ));
+                if authorize_all_commands && command.command_id() != command_reference.command_id()
+                {
+                    permissions.push(CapabilityPermissionV1::InvokeCommand(
+                        contract.lineage().clone(),
+                        command.command_id(),
+                    ));
+                }
             }
             for entity in contract.schema().entities() {
                 permissions.push(CapabilityPermissionV1::ReadEntity(
@@ -1921,9 +2013,12 @@ impl HarnessPolicy {
             restore_after_narrowed_allow: AtomicBool::new(false),
             calls: AtomicUsize::new(0),
             allowed_calls: AtomicUsize::new(0),
+            revoke_after_allowed_call: AtomicUsize::new(0),
+            audit_discovery_operations: AtomicBool::new(false),
             partition_constraints: Mutex::new(Vec::new()),
             panic_next: AtomicBool::new(false),
             capability_order,
+            discovery_order,
         }
     }
 
@@ -1949,6 +2044,25 @@ impl HarnessPolicy {
     fn use_narrowed_once_now(&self) {
         self.use_narrowed_fixture.store(true, Ordering::Release);
         self.restore_after_narrowed_allow
+            .store(true, Ordering::Release);
+    }
+
+    fn deny_after_next_allows(&self, allow_count: usize) {
+        assert!(
+            allow_count != 0,
+            "revocation needs a future allow safe point"
+        );
+        self.revoke_after_allowed_call.store(
+            self.allowed_calls
+                .load(Ordering::Acquire)
+                .checked_add(allow_count)
+                .expect("bounded policy-call count"),
+            Ordering::Release,
+        );
+    }
+
+    fn audit_discovery_operations(&self) {
+        self.audit_discovery_operations
             .store(true, Ordering::Release);
     }
 
@@ -1978,7 +2092,17 @@ impl riffdb_service::CurrentPolicyPort for HarnessPolicy {
         principal: &AuthenticatedPrincipal,
         request: OperationRequest,
     ) -> Result<Decision, AuthorizationError> {
-        if request.operation() == ServiceOperationV1::CreateCapability {
+        let operation = request.operation();
+        if matches!(
+            operation,
+            ServiceOperationV1::DiscoverCommandTools | ServiceOperationV1::DiscoverResources
+        ) {
+            self.discovery_order
+                .lock()
+                .expect("discovery-order mutex")
+                .push("policy");
+        }
+        if operation == ServiceOperationV1::CreateCapability {
             self.capability_order
                 .lock()
                 .expect("capability-order mutex")
@@ -2004,8 +2128,21 @@ impl riffdb_service::CurrentPolicyPort for HarnessPolicy {
         )
         .with_trusted_audience_catalog(&self.trusted_audiences)
         .authorize(principal, request)?;
+        let decision = if self.audit_discovery_operations.load(Ordering::Acquire)
+            && matches!(
+                operation,
+                ServiceOperationV1::DiscoverCommandTools | ServiceOperationV1::DiscoverResources
+            )
+            && matches!(&decision, Decision::Allow(_))
+        {
+            decision
+                .with_test_standard_read_discovery_audit()
+                .expect("current discovery allow accepts the test-only audit fixture")
+        } else {
+            decision
+        };
         if let Decision::Allow(authorized) = &decision {
-            self.allowed_calls.fetch_add(1, Ordering::AcqRel);
+            let allowed_call = self.allowed_calls.fetch_add(1, Ordering::AcqRel) + 1;
             self.partition_constraints
                 .lock()
                 .expect("policy partition-constraint mutex")
@@ -2017,6 +2154,13 @@ impl riffdb_service::CurrentPolicyPort for HarnessPolicy {
                 .swap(false, Ordering::AcqRel)
             {
                 self.use_narrowed_fixture.store(false, Ordering::Release);
+            }
+            if self
+                .revoke_after_allowed_call
+                .compare_exchange(allowed_call, 0, Ordering::AcqRel, Ordering::Acquire)
+                .is_ok()
+            {
+                self.revoke();
             }
         }
         Ok(decision)
@@ -2048,6 +2192,9 @@ struct HarnessPortState {
     executable_plan: ResolvedExecutablePlan,
     prepare_active_mode: AtomicU8,
     prepare_active_calls: AtomicUsize,
+    active_catalog_reservations: AtomicUsize,
+    active_catalog_submissions: AtomicUsize,
+    active_catalog_reservation_hook: Mutex<Option<Arc<dyn Fn() + Send + Sync>>>,
     prepare_contract_version_calls: AtomicUsize,
     prepare_active_started: Notify,
     compatible_activation: Mutex<Option<ActiveCatalogSnapshot>>,
@@ -2095,6 +2242,7 @@ struct HarnessPortState {
     operation_calls: Mutex<Vec<&'static str>>,
     token_issue_calls: AtomicUsize,
     capability_order: Arc<Mutex<Vec<&'static str>>>,
+    discovery_order: Arc<Mutex<Vec<&'static str>>>,
 }
 
 impl HarnessPorts {
@@ -2103,6 +2251,7 @@ impl HarnessPorts {
         active_catalog: ActiveCatalogSnapshot,
         executable_plan: ResolvedExecutablePlan,
         capability_order: Arc<Mutex<Vec<&'static str>>>,
+        discovery_order: Arc<Mutex<Vec<&'static str>>>,
     ) -> Self {
         let initial_bundle = active_catalog.bundle().clone();
         let mut historical_bundles = BTreeMap::new();
@@ -2120,6 +2269,9 @@ impl HarnessPorts {
                 executable_plan,
                 prepare_active_mode: AtomicU8::new(CATALOG_READY),
                 prepare_active_calls: AtomicUsize::new(0),
+                active_catalog_reservations: AtomicUsize::new(0),
+                active_catalog_submissions: AtomicUsize::new(0),
+                active_catalog_reservation_hook: Mutex::new(None),
                 prepare_contract_version_calls: AtomicUsize::new(0),
                 prepare_active_started: Notify::new(),
                 compatible_activation: Mutex::new(None),
@@ -2167,8 +2319,17 @@ impl HarnessPorts {
                 operation_calls: Mutex::new(Vec::new()),
                 token_issue_calls: AtomicUsize::new(0),
                 capability_order,
+                discovery_order,
             }),
         }
+    }
+
+    fn set_active_catalog_reservation_hook(&self, hook: Arc<dyn Fn() + Send + Sync>) {
+        *self
+            .shared
+            .active_catalog_reservation_hook
+            .lock()
+            .expect("active-catalog reservation hook mutex") = Some(hook);
     }
 
     fn set_read_reservation_hook(&self, hook: Arc<dyn Fn() + Send + Sync>) {
@@ -2268,6 +2429,18 @@ impl HarnessPorts {
         self.shared.prepare_active_calls.load(Ordering::Acquire)
     }
 
+    pub(crate) fn active_catalog_reservations(&self) -> usize {
+        self.shared
+            .active_catalog_reservations
+            .load(Ordering::Acquire)
+    }
+
+    pub(crate) fn active_catalog_submissions(&self) -> usize {
+        self.shared
+            .active_catalog_submissions
+            .load(Ordering::Acquire)
+    }
+
     pub(crate) fn prepare_contract_version_calls(&self) -> usize {
         self.shared
             .prepare_contract_version_calls
@@ -2283,6 +2456,22 @@ impl HarnessPorts {
             .capability_order
             .lock()
             .expect("capability-order mutex")
+            .clone()
+    }
+
+    fn clear_discovery_order(&self) {
+        self.shared
+            .discovery_order
+            .lock()
+            .expect("discovery-order mutex")
+            .clear();
+    }
+
+    fn discovery_order(&self) -> Vec<&'static str> {
+        self.shared
+            .discovery_order
+            .lock()
+            .expect("discovery-order mutex")
             .clone()
     }
 
@@ -2725,6 +2914,14 @@ impl PortCapacityPermit<(), Option<ActiveCatalogSnapshot>, CatalogError> for Act
         self: Box<Self>,
         (): (),
     ) -> Result<PortReceipt<Option<ActiveCatalogSnapshot>, CatalogError>, PortAdmissionError> {
+        self.shared
+            .active_catalog_submissions
+            .fetch_add(1, Ordering::AcqRel);
+        self.shared
+            .discovery_order
+            .lock()
+            .expect("discovery-order mutex")
+            .push("catalog_submit");
         record_operation(&self.shared, "active_catalog");
         let (sender, receipt) = port_completion_channel();
         let active = self
@@ -3250,6 +3447,23 @@ impl CatalogReadPort for HarnessPorts {
         riffdb_service::BoxPortCapacityPermit<(), Option<ActiveCatalogSnapshot>, CatalogError>,
         PortAdmissionError,
     > {
+        self.shared
+            .active_catalog_reservations
+            .fetch_add(1, Ordering::AcqRel);
+        self.shared
+            .discovery_order
+            .lock()
+            .expect("discovery-order mutex")
+            .push("catalog_reserve");
+        let hook = self
+            .shared
+            .active_catalog_reservation_hook
+            .lock()
+            .expect("active-catalog reservation hook mutex")
+            .take();
+        if let Some(hook) = hook {
+            hook();
+        }
         let shared = Arc::clone(&self.shared);
         Box::pin(async move { Ok(Box::new(ActiveCatalogPermit { shared }) as _) })
     }

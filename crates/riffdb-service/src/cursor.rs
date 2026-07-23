@@ -7,8 +7,8 @@ use std::num::NonZeroU16;
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::Duration;
 
-use riffdb_contract_ir::IndexScanPrefix;
-use riffdb_policy::PartitionConstraint;
+use riffdb_contract_ir::{IndexScanPrefix, MAX_DECLARATIONS_PER_KIND};
+use riffdb_policy::{FixedToolCandidate, PartitionConstraint};
 use riffdb_types::{
     ActorId, CanonicalValue, CommitSequence, ContractBundleHash, ContractLineage, ContractVersion,
     EntityTypeId, EventId, FieldId, IndexEntryKey, IndexEpochPosition, IndexId,
@@ -16,8 +16,8 @@ use riffdb_types::{
 };
 
 use crate::dto::{
-    DiscoveryCatalogFence, FieldSelection, MAX_PROJECTION_COMPONENTS, MAX_PROJECTION_WAIT,
-    ProjectionContinuation, ProjectionPageFence,
+    DiscoveryCatalogFence, DiscoveryRepresentation, FieldSelection, MAX_PROJECTION_COMPONENTS,
+    MAX_PROJECTION_WAIT, ProjectionContinuation, ProjectionPageFence, ResourceDiscoveryKind,
 };
 
 /// Maximum number of items in one service page.
@@ -928,18 +928,39 @@ impl OutboxCursorState {
     }
 }
 
-const MAX_DISCOVERY_CURSOR_CANDIDATES: usize = 1_024;
+// The complete command catalog is the closed fixed-tool inventory followed by
+// at most one tool for each command declaration in the active bundle.
+const MAX_COMMAND_DISCOVERY_CURSOR_CANDIDATES: usize =
+    FixedToolCandidate::ALL.len() + MAX_DECLARATIONS_PER_KIND;
+// Resource discovery contributes four process-wide resources plus, for an
+// active bundle, one contract version, one schema per entity, three artifacts
+// per command, and one status resource per projection.
+const FIXED_RESOURCE_DISCOVERY_CANDIDATES: usize = 4;
+const CONTRACT_VERSION_RESOURCE_CANDIDATES: usize = 1;
+const RESOURCE_CANDIDATES_PER_COMMAND: usize = 3;
+const MAX_RESOURCE_DISCOVERY_CURSOR_CANDIDATES: usize = FIXED_RESOURCE_DISCOVERY_CANDIDATES
+    + CONTRACT_VERSION_RESOURCE_CANDIDATES
+    + MAX_DECLARATIONS_PER_KIND
+    + (RESOURCE_CANDIDATES_PER_COMMAND * MAX_DECLARATIONS_PER_KIND)
+    + MAX_DECLARATIONS_PER_KIND;
 
 /// Caller-reconstructible identity for one command-tool discovery page.
 #[derive(Clone, Copy, Eq, PartialEq)]
 pub(crate) struct CommandDiscoveryCursorLookup {
     requested_limit: PageLimit,
+    representation: DiscoveryRepresentation,
 }
 
 impl CommandDiscoveryCursorLookup {
     #[must_use]
-    pub(crate) const fn new(requested_limit: PageLimit) -> Self {
-        Self { requested_limit }
+    pub(crate) const fn new(
+        requested_limit: PageLimit,
+        representation: DiscoveryRepresentation,
+    ) -> Self {
+        Self {
+            requested_limit,
+            representation,
+        }
     }
 
     #[must_use]
@@ -964,7 +985,8 @@ impl CommandDiscoveryCursorState {
         visibility: Vec<bool>,
         effective_limit: PageLimit,
     ) -> Result<Self, CursorBindingError> {
-        if visibility.len() > MAX_DISCOVERY_CURSOR_CANDIDATES || after_candidate >= visibility.len()
+        if visibility.len() > MAX_COMMAND_DISCOVERY_CURSOR_CANDIDATES
+            || after_candidate >= visibility.len()
         {
             return Err(CursorBindingError);
         }
@@ -1001,12 +1023,22 @@ impl CommandDiscoveryCursorState {
 #[derive(Clone, Copy, Eq, PartialEq)]
 pub(crate) struct ResourceDiscoveryCursorLookup {
     requested_limit: PageLimit,
+    representation: DiscoveryRepresentation,
+    kind: ResourceDiscoveryKind,
 }
 
 impl ResourceDiscoveryCursorLookup {
     #[must_use]
-    pub(crate) const fn new(requested_limit: PageLimit) -> Self {
-        Self { requested_limit }
+    pub(crate) const fn new(
+        requested_limit: PageLimit,
+        representation: DiscoveryRepresentation,
+        kind: ResourceDiscoveryKind,
+    ) -> Self {
+        Self {
+            requested_limit,
+            representation,
+            kind,
+        }
     }
 
     #[must_use]
@@ -1047,7 +1079,7 @@ impl ResourceDiscoveryCursorState {
             };
             total.checked_add(count)
         });
-        if visibility.len() > MAX_DISCOVERY_CURSOR_CANDIDATES
+        if visibility.len() > MAX_RESOURCE_DISCOVERY_CURSOR_CANDIDATES
             || after_candidate >= visibility.len()
             || fields.is_none_or(|fields| fields > MAX_CAPABILITY_FIELD_VISIBILITY)
         {
@@ -1903,8 +1935,11 @@ mod tests {
         );
         let principal = ActorId::new("operator-1").expect("bounded principal");
         let limit = PageLimit::new(2).expect("bounded limit");
-        let lookup = CommandDiscoveryCursorLookup::new(limit);
-        let fence = DiscoveryCatalogFence::no_active_contract();
+        let lookup = CommandDiscoveryCursorLookup::new(limit, DiscoveryRepresentation::Full);
+        let operation_schemas = crate::OperationSchemaCatalog::accepted()
+            .expect("accepted operation schemas")
+            .identity();
+        let fence = DiscoveryCatalogFence::no_active_contract(operation_schemas);
         let state =
             CommandDiscoveryCursorState::new(1, fence.clone(), vec![true, false, true], limit)
                 .expect("bounded discovery state");
@@ -1922,7 +1957,11 @@ mod tests {
             registry.resolve_resource_discovery(
                 token,
                 &principal,
-                &ResourceDiscoveryCursorLookup::new(limit),
+                &ResourceDiscoveryCursorLookup::new(
+                    limit,
+                    DiscoveryRepresentation::Full,
+                    ResourceDiscoveryKind::All,
+                ),
             ),
             Err(CursorAccessError::InvalidCursor)
         ));
@@ -1932,9 +1971,139 @@ mod tests {
                 &principal,
                 &CommandDiscoveryCursorLookup::new(
                     PageLimit::new(3).expect("different bounded limit"),
+                    DiscoveryRepresentation::Full,
                 ),
             ),
             Err(CursorAccessError::InvalidCursor)
+        ));
+        assert!(matches!(
+            registry.resolve_command_discovery(
+                token,
+                &principal,
+                &CommandDiscoveryCursorLookup::new(
+                    limit,
+                    DiscoveryRepresentation::CompactObservation,
+                ),
+            ),
+            Err(CursorAccessError::InvalidCursor)
+        ));
+
+        let resource_lookup = ResourceDiscoveryCursorLookup::new(
+            limit,
+            DiscoveryRepresentation::Full,
+            ResourceDiscoveryKind::All,
+        );
+        let resource_state = ResourceDiscoveryCursorState::new(
+            1,
+            fence,
+            vec![
+                ResourceDiscoveryCursorVisibility::Visible,
+                ResourceDiscoveryCursorVisibility::Hidden,
+                ResourceDiscoveryCursorVisibility::Visible,
+            ],
+            limit,
+        )
+        .expect("bounded resource discovery state");
+        let resource_token = registry
+            .register_resource_discovery_unpublished(&principal, resource_lookup, resource_state)
+            .expect("resource cursor reservation")
+            .publish();
+        assert!(
+            registry
+                .resolve_resource_discovery(resource_token, &principal, &resource_lookup)
+                .is_ok()
+        );
+        assert!(matches!(
+            registry.resolve_resource_discovery(
+                resource_token,
+                &principal,
+                &ResourceDiscoveryCursorLookup::new(
+                    limit,
+                    DiscoveryRepresentation::CompactObservation,
+                    ResourceDiscoveryKind::All,
+                ),
+            ),
+            Err(CursorAccessError::InvalidCursor)
+        ));
+        assert!(matches!(
+            registry.resolve_resource_discovery(
+                resource_token,
+                &principal,
+                &ResourceDiscoveryCursorLookup::new(
+                    limit,
+                    DiscoveryRepresentation::Full,
+                    ResourceDiscoveryKind::Concrete,
+                ),
+            ),
+            Err(CursorAccessError::InvalidCursor)
+        ));
+    }
+
+    #[test]
+    fn command_discovery_cursor_accepts_only_the_structural_candidate_bound() {
+        assert_eq!(MAX_COMMAND_DISCOVERY_CURSOR_CANDIDATES, 4_110);
+        let operation_schemas = crate::OperationSchemaCatalog::accepted()
+            .expect("accepted operation schemas")
+            .identity();
+        let fence = DiscoveryCatalogFence::no_active_contract(operation_schemas);
+        let limit = PageLimit::new(MAX_PAGE_ITEMS).expect("maximum page limit");
+
+        let state = CommandDiscoveryCursorState::new(
+            1_024,
+            fence.clone(),
+            vec![true; MAX_COMMAND_DISCOVERY_CURSOR_CANDIDATES],
+            limit,
+        )
+        .expect("item 1025 remains a legal continuation within the structural maximum");
+        assert_eq!(
+            state.visibility().len(),
+            MAX_COMMAND_DISCOVERY_CURSOR_CANDIDATES
+        );
+        assert!(matches!(
+            CommandDiscoveryCursorState::new(
+                1_024,
+                fence,
+                vec![true; MAX_COMMAND_DISCOVERY_CURSOR_CANDIDATES + 1],
+                limit,
+            ),
+            Err(CursorBindingError)
+        ));
+    }
+
+    #[test]
+    fn resource_discovery_cursor_accepts_only_the_structural_candidate_bound() {
+        assert_eq!(MAX_RESOURCE_DISCOVERY_CURSOR_CANDIDATES, 20_485);
+        let operation_schemas = crate::OperationSchemaCatalog::accepted()
+            .expect("accepted operation schemas")
+            .identity();
+        let fence = DiscoveryCatalogFence::no_active_contract(operation_schemas);
+        let limit = PageLimit::new(MAX_PAGE_ITEMS).expect("maximum page limit");
+
+        let state = ResourceDiscoveryCursorState::new(
+            1_024,
+            fence.clone(),
+            vec![
+                ResourceDiscoveryCursorVisibility::Visible;
+                MAX_RESOURCE_DISCOVERY_CURSOR_CANDIDATES
+            ],
+            limit,
+        )
+        .expect("item 1025 remains a legal continuation within the structural maximum");
+        assert_eq!(
+            state.visibility().len(),
+            MAX_RESOURCE_DISCOVERY_CURSOR_CANDIDATES
+        );
+        assert!(matches!(
+            ResourceDiscoveryCursorState::new(
+                1_024,
+                fence,
+                vec![
+                    ResourceDiscoveryCursorVisibility::Visible;
+                    MAX_RESOURCE_DISCOVERY_CURSOR_CANDIDATES + 1
+                ],
+                limit,
+            ),
+            Err(CursorBindingError)
         ));
     }
 }

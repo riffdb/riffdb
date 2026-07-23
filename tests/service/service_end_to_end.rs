@@ -7,14 +7,17 @@ mod support;
 use riffdb_errors::PublicErrorKind;
 use riffdb_policy::PartitionConstraint;
 use riffdb_service::{
-    AdministrationApplication, AuthoritativeReadinessFailure, CommandApplication,
-    CommandDurability, CommitApplication, ContractApplication, ContractValidationResult,
-    CreateCapabilityInvocation, DiscoverCommandToolsRequest, DiscoverResourcesRequest,
-    DiscoveryApplication, ExecuteCommandResult, ExplainCommandResult, GetActiveContractRequest,
+    AdministrationApplication, AuthoritativeOutcomeSelectorRef, AuthoritativeReadinessFailure,
+    CommandApplication, CommandDurability, CommitApplication, CompactResourceDescriptorRef,
+    ContractApplication, ContractValidationResult, CreateCapabilityInvocation,
+    DiscoverCommandToolsRequest, DiscoverCommandToolsResultRef, DiscoverResourcesRequest,
+    DiscoverResourcesResultRef, DiscoveryApplication, DiscoveryCatalogStateRef,
+    DiscoveryRepresentation, ExecuteCommandResult, ExplainCommandResult, GetActiveContractRequest,
     GetActiveContractResult, GetCommitRequest, GetCommitResult, GetContractVersionResult,
     GetEntityResult, GetProjectionStatusResult, HealthContext, HealthRequest, HealthResult,
-    HealthStatus, JournaledCompletion, PreBootstrapLifecycle, QueryApplication,
-    ResolveCommandOutcomeResult, StatisticsRequest, TraceProvenanceResult,
+    HealthStatus, JournaledCompletion, PageLimit, PageRequest, PreBootstrapLifecycle,
+    QueryApplication, ResolveCommandOutcomeRequest, ResolveCommandOutcomeResult,
+    ResourceDescriptorRef, ResourceDiscoveryKind, StatisticsRequest, TraceProvenanceResult,
 };
 use riffdb_types::{
     PartitionScopeV1, ServiceAuditLinkV1, ServiceAuditPhaseV1, ServiceAuditTargetV1,
@@ -161,6 +164,7 @@ fn real_coordinator_command_and_outcome_resolution_share_the_api_neutral_service
     run_async(async move {
         const COMMAND_REQUEST: u8 = 0x32;
         const RESOLVE_REQUEST: u8 = 0x33;
+        const LOCATOR_REQUEST: u8 = 0x34;
         let mut harness = ServiceHarness::command();
         let (command_context, _command_cancellation) = harness.context(COMMAND_REQUEST);
 
@@ -196,19 +200,54 @@ fn real_coordinator_command_and_outcome_resolution_share_the_api_neutral_service
         assert_eq!(replayed.outcome().outcome_name().as_str(), "BudgetCreated");
         assert_eq!(replayed.provenance_id(), committed.provenance_id());
         assert_eq!(replayed.durability(), committed.durability());
-        assert_eq!(harness.policy.calls(), 5);
-        assert_eq!(harness.ports.outcome_reservations(), 1);
-        assert_eq!(harness.ports.outcome_submissions(), 1);
+        assert_eq!(replayed.outcome_locator(), committed.outcome_locator());
         let lower_request = harness
             .ports
             .last_outcome_request()
             .expect("outcome lookup was synchronously submitted");
+        let AuthoritativeOutcomeSelectorRef::RawKey(lower_request) = lower_request.selector()
+        else {
+            panic!("legacy uncertainty recovery must use the raw-key selector");
+        };
         assert_eq!(lower_request.lineage(), committed.lineage());
         assert_eq!(lower_request.command_id(), committed.command_id());
         assert_eq!(
             lower_request.tenant_scope(),
             &riffdb_types::TenantScope::Global
         );
+
+        let requested_locator = committed.outcome_locator().clone();
+        harness.set_actual_outcome(&committed);
+        let (locator_context, _locator_cancellation) = harness.context(LOCATOR_REQUEST);
+        let locator_resolution = harness
+            .service
+            .resolve_command_outcome(
+                locator_context,
+                ResolveCommandOutcomeRequest::locator(requested_locator.clone()),
+            )
+            .await
+            .expect("the canonical locator resolves through the shared service");
+        let ResolveCommandOutcomeResult::Found(locator_replay) = locator_resolution else {
+            panic!("the exact locator must resolve");
+        };
+        assert_eq!(
+            locator_replay.outcome_locator().canonical_uri(),
+            requested_locator.canonical_uri(),
+            "locator-form recovery echoes the exact canonical request URI"
+        );
+        let lower_request = harness
+            .ports
+            .last_outcome_request()
+            .expect("locator lookup was synchronously submitted");
+        let AuthoritativeOutcomeSelectorRef::Digested(lower_request) = lower_request.selector()
+        else {
+            panic!("locator recovery must use one digested point selector");
+        };
+        assert_eq!(lower_request.lineage(), committed.lineage());
+        assert_eq!(lower_request.command_id(), committed.command_id());
+        assert_eq!(harness.policy.calls(), 8);
+        assert_eq!(harness.ports.outcome_reservations(), 2);
+        assert_eq!(harness.ports.outcome_submissions(), 2);
 
         harness.stop_coordinator();
         assert_eq!(
@@ -220,6 +259,7 @@ fn real_coordinator_command_and_outcome_resolution_share_the_api_neutral_service
             [],
             "an allowed standard read emits no durable audit without a policy audit obligation"
         );
+        assert!(harness.audit_phases(LOCATOR_REQUEST).is_empty());
         let expected_link = ServiceAuditLinkV1::Command {
             commit_sequence: committed.commit_sequence(),
             provenance_id: committed.provenance_id(),
@@ -378,7 +418,10 @@ fn contract_and_discovery_operations_share_current_policy_and_checked_catalog_me
             .discover_command_tools(tools_context, DiscoverCommandToolsRequest::default())
             .await
             .expect("policy-filtered command discovery");
-        assert!(tools.page().items().iter().any(|item| {
+        let DiscoverCommandToolsResultRef::Page { page: tools, .. } = tools.result() else {
+            panic!("default command discovery must return a full page");
+        };
+        assert!(tools.items().iter().any(|item| {
             matches!(
                 item,
                 riffdb_service::CommandToolDiscoveryItem::Command(command)
@@ -392,13 +435,22 @@ fn contract_and_discovery_operations_share_current_policy_and_checked_catalog_me
             .discover_resources(resources_context, DiscoverResourcesRequest::default())
             .await
             .expect("policy-filtered semantic-resource discovery");
-        assert!(!resources.page().items().is_empty());
+        let DiscoverResourcesResultRef::Page(resources) = resources.result() else {
+            panic!("default resource discovery must return a full page");
+        };
+        assert!(!resources.items().is_empty());
 
         assert!(harness.policy.calls() >= 12);
         assert_eq!(
             harness.ports.operation_calls(),
-            ["active_catalog", "active_catalog", "contract_version"],
-            "explain, active lookup, and historical lookup use checked catalog paths"
+            [
+                "active_catalog",
+                "active_catalog",
+                "contract_version",
+                "active_catalog",
+                "active_catalog"
+            ],
+            "contract reads and both discovery operations use checked catalog paths"
         );
         harness.stop_coordinator();
         for request_seed in 0x70..=0x75 {
@@ -407,6 +459,435 @@ fn contract_and_discovery_operations_share_current_policy_and_checked_catalog_me
                 "allowed standard reads are unaudited without an audit obligation"
             );
         }
+    });
+}
+
+#[test]
+fn unchanged_command_discovery_observations_repeat_the_authorized_current_catalog_safe_point() {
+    run_async(async move {
+        const INITIAL_REQUEST: u8 = 0xff;
+        const OBSERVATIONS: usize = 180;
+        let mut harness = ServiceHarness::operations();
+        let compact_page = PageRequest::new(PageLimit::default(), None);
+
+        let (initial_context, _cancellation) = harness.context(INITIAL_REQUEST);
+        let initial = harness
+            .service
+            .discover_command_tools(
+                initial_context,
+                DiscoverCommandToolsRequest::with_options(
+                    compact_page,
+                    DiscoveryRepresentation::CompactObservation,
+                    None,
+                )
+                .expect("valid initial compact discovery request"),
+            )
+            .await
+            .expect("initial compact discovery returns the current fence");
+        let DiscoverCommandToolsResultRef::CompactPage(initial_page) = initial.result() else {
+            panic!("an initial compact discovery must return a page");
+        };
+        let prior_fence = initial_page.observed_fence().clone();
+
+        let policy_calls = harness.policy.calls();
+        let prepare_calls = harness.ports.prepare_active_calls();
+        let reservations = harness.ports.active_catalog_reservations();
+        let submissions = harness.ports.active_catalog_submissions();
+        let cursor_tokens = harness.cursor_token_calls();
+        harness.clear_discovery_order();
+
+        for request_seed in 0..OBSERVATIONS as u8 {
+            let (unchanged_context, _cancellation) = harness.context(request_seed);
+            let unchanged = harness
+                .service
+                .discover_command_tools(
+                    unchanged_context,
+                    DiscoverCommandToolsRequest::with_options(
+                        compact_page,
+                        DiscoveryRepresentation::CompactObservation,
+                        Some(prior_fence.clone()),
+                    )
+                    .expect("valid conditional compact discovery request"),
+                )
+                .await
+                .expect("an equal current fence returns CatalogUnchanged");
+            let DiscoverCommandToolsResultRef::CatalogUnchanged(observed_fence) =
+                unchanged.result()
+            else {
+                panic!("an equal compact prior fence must not materialize a page");
+            };
+            assert_eq!(observed_fence, &prior_fence);
+        }
+
+        assert_eq!(harness.policy.calls() - policy_calls, 2 * OBSERVATIONS);
+        assert_eq!(harness.ports.prepare_active_calls(), prepare_calls);
+        assert_eq!(
+            harness.ports.active_catalog_reservations() - reservations,
+            OBSERVATIONS
+        );
+        assert_eq!(
+            harness.ports.active_catalog_submissions() - submissions,
+            OBSERVATIONS
+        );
+        let discovery_order = harness.discovery_order();
+        assert_eq!(discovery_order.len(), 4 * OBSERVATIONS);
+        assert!(
+            discovery_order
+                .chunks_exact(4)
+                .all(|events| events == ["policy", "catalog_reserve", "policy", "catalog_submit"])
+        );
+        assert_eq!(
+            harness.cursor_token_calls(),
+            cursor_tokens,
+            "CatalogUnchanged publishes no continuation cursor"
+        );
+
+        harness.stop_coordinator();
+        for request_seed in 0..OBSERVATIONS as u8 {
+            assert!(
+                harness.audit_phases(request_seed).is_empty(),
+                "unaudited standard discovery must not fabricate Started or Succeeded"
+            );
+        }
+    });
+}
+
+#[test]
+fn stale_resource_discovery_fence_returns_the_catalog_activated_at_reservation() {
+    run_async(async move {
+        const INITIAL_REQUEST: u8 = 0x92;
+        const STALE_REQUEST: u8 = 0x93;
+        let mut harness = ServiceHarness::operations();
+        let compact_page = PageRequest::new(PageLimit::default(), None);
+
+        let (initial_context, _cancellation) = harness.context(INITIAL_REQUEST);
+        let initial = harness
+            .service
+            .discover_resources(
+                initial_context,
+                DiscoverResourcesRequest::with_options(
+                    compact_page,
+                    DiscoveryRepresentation::CompactObservation,
+                    None,
+                    ResourceDiscoveryKind::All,
+                )
+                .expect("valid initial compact resource discovery request"),
+            )
+            .await
+            .expect("initial compact resource discovery returns the current fence");
+        let DiscoverResourcesResultRef::CompactPage(initial_page) = initial.result() else {
+            panic!("an initial compact resource discovery must return a page");
+        };
+        let stale_fence = initial_page.observed_fence().clone();
+
+        harness.activate_compatible_successor_on_active_catalog_reservation();
+        let policy_calls = harness.policy.calls();
+        let prepare_calls = harness.ports.prepare_active_calls();
+        let reservations = harness.ports.active_catalog_reservations();
+        let submissions = harness.ports.active_catalog_submissions();
+        harness.clear_discovery_order();
+
+        let (stale_context, _cancellation) = harness.context(STALE_REQUEST);
+        let changed = harness
+            .service
+            .discover_resources(
+                stale_context,
+                DiscoverResourcesRequest::with_options(
+                    compact_page,
+                    DiscoveryRepresentation::CompactObservation,
+                    Some(stale_fence.clone()),
+                    ResourceDiscoveryKind::All,
+                )
+                .expect("valid stale conditional resource discovery request"),
+            )
+            .await
+            .expect("a stale fence returns the current first page");
+        let DiscoverResourcesResultRef::CompactPage(current_page) = changed.result() else {
+            panic!("a stale prior fence must return a compact page");
+        };
+        let DiscoveryCatalogStateRef::ActiveContract { version, .. } =
+            current_page.observed_fence().state()
+        else {
+            panic!("the compatible successor remains active");
+        };
+
+        assert_ne!(current_page.observed_fence(), &stale_fence);
+        assert_eq!(version, harness.prepared_active_catalog_version());
+        assert_eq!(harness.policy.calls() - policy_calls, 2);
+        assert_eq!(harness.ports.prepare_active_calls(), prepare_calls);
+        assert_eq!(
+            harness.ports.active_catalog_reservations() - reservations,
+            1
+        );
+        assert_eq!(harness.ports.active_catalog_submissions() - submissions, 1);
+        assert_eq!(
+            harness.discovery_order(),
+            ["policy", "catalog_reserve", "policy", "catalog_submit"]
+        );
+
+        harness.stop_coordinator();
+        assert!(harness.audit_phases(STALE_REQUEST).is_empty());
+    });
+}
+
+#[test]
+fn large_discovery_catalogs_batch_authorization_and_page_before_the_mcp_limit() {
+    run_async(async move {
+        const ADDITIONAL_COMMANDS: usize = 499;
+        const COMMAND_CANDIDATES: usize = 501;
+        const COMMAND_ITEMS: usize = 14 + COMMAND_CANDIDATES;
+        const RESOURCE_ITEMS: usize = 4 + 1 + 1 + (3 * COMMAND_CANDIDATES) + 1;
+        let limit = PageLimit::new(500).expect("maximum discovery page limit");
+        let mut harness = ServiceHarness::discovery_inventory(ADDITIONAL_COMMANDS);
+
+        let policy_calls = harness.policy.calls();
+        let (first_tools_context, _cancellation) = harness.context(0xa0);
+        let first_tools = harness
+            .service
+            .discover_command_tools(
+                first_tools_context,
+                DiscoverCommandToolsRequest::with_options(
+                    PageRequest::new(limit, None),
+                    DiscoveryRepresentation::CompactObservation,
+                    None,
+                )
+                .expect("valid compact command discovery request"),
+            )
+            .await
+            .expect("more than 500 command candidates filter in bounded batches");
+        let DiscoverCommandToolsResultRef::CompactPage(first_tools) = first_tools.result() else {
+            panic!("compact command discovery returns a compact page");
+        };
+        assert_eq!(first_tools.items().len(), 500);
+        let command_cursor = first_tools
+            .next_cursor()
+            .expect("the first 500 of 515 visible tools require continuation");
+        assert_eq!(
+            harness.policy.calls() - policy_calls,
+            3,
+            "initial authorization, acceptance authorization, and one second-batch authorization"
+        );
+
+        let (final_tools_context, _cancellation) = harness.context(0xa1);
+        let final_tools = harness
+            .service
+            .discover_command_tools(
+                final_tools_context,
+                DiscoverCommandToolsRequest::with_options(
+                    PageRequest::new(limit, Some(command_cursor)),
+                    DiscoveryRepresentation::CompactObservation,
+                    None,
+                )
+                .expect("valid compact command continuation"),
+            )
+            .await
+            .expect("command continuation reaches exact end");
+        let DiscoverCommandToolsResultRef::CompactPage(final_tools) = final_tools.result() else {
+            panic!("compact command continuation returns a compact page");
+        };
+        assert_eq!(
+            first_tools.items().len() + final_tools.items().len(),
+            COMMAND_ITEMS
+        );
+        assert!(final_tools.next_cursor().is_none());
+
+        let mut request_seed = 0xa2_u8;
+        for (kind, expected_pages, expected_policy_calls, expected_items) in [
+            (
+                ResourceDiscoveryKind::All,
+                vec![500, 500, 500, 10],
+                5,
+                RESOURCE_ITEMS,
+            ),
+            (ResourceDiscoveryKind::Concrete, vec![500, 500, 7], 4, 1_007),
+            (ResourceDiscoveryKind::Template, vec![500, 3], 3, 503),
+        ] {
+            let policy_calls = harness.policy.calls();
+            let mut cursor = None;
+            let mut page_counts = Vec::new();
+            let mut observed = 0;
+            let mut membership = [0_usize; 10];
+            loop {
+                let (context, _cancellation) = harness.context(request_seed);
+                request_seed = request_seed.wrapping_add(1);
+                let result = harness
+                    .service
+                    .discover_resources(
+                        context,
+                        DiscoverResourcesRequest::with_options(
+                            PageRequest::new(limit, cursor),
+                            DiscoveryRepresentation::CompactObservation,
+                            None,
+                            kind,
+                        )
+                        .expect("valid compact resource discovery request"),
+                    )
+                    .await
+                    .expect("large resource discovery remains bounded");
+                let DiscoverResourcesResultRef::CompactPage(page) = result.result() else {
+                    panic!("compact resource discovery returns a compact page");
+                };
+                for item in page.items() {
+                    let template = matches!(
+                        item.resource(),
+                        CompactResourceDescriptorRef::CommandOutcome { .. }
+                            | CompactResourceDescriptorRef::Commit { sequence: None }
+                            | CompactResourceDescriptorRef::Provenance {
+                                provenance_id: None
+                            }
+                    );
+                    assert!(match kind {
+                        ResourceDiscoveryKind::All => true,
+                        ResourceDiscoveryKind::Concrete => !template,
+                        ResourceDiscoveryKind::Template => template,
+                    });
+                    let member = match item.resource() {
+                        CompactResourceDescriptorRef::ActiveContract => 0,
+                        CompactResourceDescriptorRef::ContractVersion { .. } => 1,
+                        CompactResourceDescriptorRef::EntitySchema { .. } => 2,
+                        CompactResourceDescriptorRef::CommandPlan { .. } => 3,
+                        CompactResourceDescriptorRef::CommandDocumentation { .. } => 4,
+                        CompactResourceDescriptorRef::CommandOutcome { .. } => 5,
+                        CompactResourceDescriptorRef::Commit { .. } => 6,
+                        CompactResourceDescriptorRef::Provenance { .. } => 7,
+                        CompactResourceDescriptorRef::ProjectionStatus { .. } => 8,
+                        CompactResourceDescriptorRef::ServerHealth => 9,
+                    };
+                    membership[member] += 1;
+                }
+                observed += page.items().len();
+                page_counts.push(page.items().len());
+                cursor = page.next_cursor();
+                if cursor.is_none() {
+                    break;
+                }
+            }
+            assert_eq!(page_counts, expected_pages);
+            assert_eq!(observed, expected_items);
+            assert_eq!(
+                membership,
+                match kind {
+                    ResourceDiscoveryKind::All => [1, 1, 1, 501, 501, 501, 1, 1, 1, 1],
+                    ResourceDiscoveryKind::Concrete => [1, 1, 1, 501, 501, 0, 0, 0, 1, 1],
+                    ResourceDiscoveryKind::Template => [0, 0, 0, 0, 0, 501, 1, 1, 0, 0],
+                },
+                "resource kind membership is exact"
+            );
+            assert_eq!(
+                harness.policy.calls() - policy_calls,
+                expected_policy_calls * page_counts.len(),
+                "kind selection happens before bounded policy batching and pagination"
+            );
+        }
+
+        let mut cursor = None;
+        let mut full_items = 0;
+        let mut full_pages = 0;
+        loop {
+            let (context, _cancellation) = harness.context(request_seed);
+            request_seed = request_seed.wrapping_add(1);
+            let result = harness
+                .service
+                .discover_resources(
+                    context,
+                    DiscoverResourcesRequest::with_options(
+                        PageRequest::new(limit, cursor),
+                        DiscoveryRepresentation::Full,
+                        None,
+                        ResourceDiscoveryKind::All,
+                    )
+                    .expect("valid full resource discovery request"),
+                )
+                .await
+                .expect("full discovery walks the complete large inventory");
+            let DiscoverResourcesResultRef::Page(page) = result.result() else {
+                panic!("full resource discovery returns a full page");
+            };
+            assert!(page.items().iter().any(|item| {
+                matches!(
+                    item.resource(),
+                    ResourceDescriptorRef::CommandPlan { .. }
+                        | ResourceDescriptorRef::CommandDocumentation { .. }
+                        | ResourceDescriptorRef::CommandOutcome { .. }
+                )
+            }));
+            full_items += page.items().len();
+            full_pages += 1;
+            cursor = page.next_cursor();
+            if cursor.is_none() {
+                break;
+            }
+            assert!(full_pages < 20, "full discovery must make bounded progress");
+        }
+        assert_eq!(full_items, RESOURCE_ITEMS);
+        assert!(full_items > 1_024);
+        assert!(full_pages >= 4);
+
+        let cursor_calls = harness.cursor_token_calls();
+        harness.deny_after_next_policy_allows(2);
+        let (denied_context, _cancellation) = harness.context(0xf0);
+        let denied = harness
+            .service
+            .discover_command_tools(
+                denied_context,
+                DiscoverCommandToolsRequest::with_options(
+                    PageRequest::new(limit, None),
+                    DiscoveryRepresentation::CompactObservation,
+                    None,
+                )
+                .expect("valid command discovery request"),
+            )
+            .await
+            .expect_err("revocation before the second candidate batch denies the whole result");
+        assert_eq!(
+            denied.public_error().map(|error| error.kind()),
+            Some(PublicErrorKind::AuthorizationDenied)
+        );
+        assert_eq!(
+            harness.cursor_token_calls(),
+            cursor_calls,
+            "later-batch denial cannot publish a partial result cursor"
+        );
+
+        harness.stop_coordinator();
+    });
+}
+
+#[test]
+fn compact_discovery_of_exactly_1024_items_returns_500_500_24_and_stops() {
+    run_async(async move {
+        const ADDITIONAL_COMMANDS: usize = 337;
+        let limit = PageLimit::new(500).expect("maximum discovery page limit");
+        let mut harness = ServiceHarness::discovery_inventory(ADDITIONAL_COMMANDS);
+        let mut cursor = None;
+        let mut page_counts = Vec::new();
+
+        for request_seed in 0xd0_u8..=0xd2 {
+            let (context, _cancellation) = harness.context(request_seed);
+            let result = harness
+                .service
+                .discover_resources(
+                    context,
+                    DiscoverResourcesRequest::with_options(
+                        PageRequest::new(limit, cursor),
+                        DiscoveryRepresentation::CompactObservation,
+                        None,
+                        ResourceDiscoveryKind::All,
+                    )
+                    .expect("valid compact discovery request"),
+                )
+                .await
+                .expect("the maximum MCP-accepted inventory remains service-readable");
+            let DiscoverResourcesResultRef::CompactPage(page) = result.result() else {
+                panic!("compact resource discovery returns a compact page");
+            };
+            page_counts.push(page.items().len());
+            cursor = page.next_cursor();
+        }
+
+        assert_eq!(page_counts, [500, 500, 24]);
+        assert!(cursor.is_none(), "the exact 1,024th item is the end");
+        harness.stop_coordinator();
     });
 }
 

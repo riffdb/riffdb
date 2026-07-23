@@ -12,8 +12,8 @@ use riffdb_commit::{
     CoordinatorDurability, ReadOnlyExecutionPreparation, ReadOnlyExecutionResult,
 };
 use riffdb_contract_ir::{
-    CommandPlan, ExecutionClass, OutcomeSchema, RecordSchema, RecordTypeRef, SchemaIr, ValueType,
-    ValueTypeTag,
+    CommandPlan, ExecutionClass, McpCommandToolNameV1, OutcomeSchema, RecordSchema, RecordTypeRef,
+    SchemaIr, ValueType, ValueTypeTag,
 };
 use riffdb_errors::{
     MAX_VALIDATION_ISSUES, MAX_VALIDATION_PATH_SEGMENTS, PublicError, ValidationCode,
@@ -37,12 +37,12 @@ use crate::{
     AuthoritativeOutcomeRequest, AuthoritativeOutcomeSnapshot, AuthoritativeReadError,
     AuthoritativeReadinessFailure, CatalogExecutablePlanRequest, CommandApplication,
     CommandDurability, DeclaredOutcomeView, ExecuteCommandRequest, ExecuteCommandResult,
-    InternalDefect, JournaledCommandResult, JournaledCompletion, OutcomePlanBinding,
-    PendingTerminalResponse, PortAdmissionError, PortDriverStopped, ReadOnlyCommandResult,
-    RecoveredJournaledCommandResult, RequestContext, ResolveCommandOutcomeRequest,
-    ResolveCommandOutcomeResult, RiffDbService, RiffDbServiceInner, ServiceAuditTargetMap,
-    ServiceFailure, ServiceFuture, ServiceResult, SubmittedFieldIdentity, SubmittedRecord,
-    SubmittedValue, ensure_response_budget,
+    InternalDefect, JournaledCommandResult, JournaledCompletion, OutcomeLocatorDigestEvidence,
+    OutcomePlanBinding, OutcomeResourceLocator, PendingTerminalResponse, PortAdmissionError,
+    PortDriverStopped, ReadOnlyCommandResult, RecoveredJournaledCommandResult, RequestContext,
+    ResolveCommandOutcomeRequest, ResolveCommandOutcomeResult, ResolveCommandOutcomeSelectorRef,
+    RiffDbService, RiffDbServiceInner, ServiceAuditTargetMap, ServiceFailure, ServiceFuture,
+    ServiceResult, SubmittedFieldIdentity, SubmittedRecord, SubmittedValue, ensure_response_budget,
 };
 
 impl CommandApplication for RiffDbService {
@@ -79,6 +79,7 @@ struct CheckedOutcomeCatalog {
     plan: OutcomePlanBinding,
     contract_schema: SchemaIr,
     outcomes: Vec<OutcomeSchema>,
+    tool_name: Option<McpCommandToolNameV1>,
 }
 
 impl CheckedOutcomeCatalog {
@@ -94,6 +95,12 @@ impl CheckedOutcomeCatalog {
             ),
             contract_schema: resolved.bundle().bundle().schema().clone(),
             outcomes: resolved.plan().outcomes().to_vec(),
+            tool_name: resolved
+                .bundle()
+                .bundle()
+                .mcp_command_names()
+                .get(reference.command_id())
+                .map(|entry| entry.tool_name().clone()),
         }
     }
 }
@@ -833,6 +840,7 @@ async fn execute_mutation(
                 let (result, link) = match map_committed_outcome(
                     outcome,
                     &selected_request,
+                    outcome_catalog.tool_name.as_ref(),
                     |defect| service.internal_failure(ServiceOperationV1::ExecuteCommand, defect),
                     |outcome_id, value| {
                         declared_outcome_view(
@@ -926,40 +934,52 @@ async fn resolve_command_outcome(
     context: RequestContext,
     request: ResolveCommandOutcomeRequest,
 ) -> ServiceResult<ResolveCommandOutcomeResult> {
-    let active = wait_with_control(
-        context.control(),
-        service.providers.deadline_scheduler.as_ref(),
-        service
-            .providers
-            .catalog
-            .prepare_active_catalog(context.control()),
-    )
-    .await
-    .map_err(map_controlled_wait)?
-    .map_err(|error| map_catalog_error(service, ServiceOperationV1::ResolveCommandOutcome, error))?
-    .ok_or_else(|| invalid_root(ValidationCode::InvalidValue))?;
-    if active.pointer().lineage() != request.lineage() {
-        return Err(invalid_root(ValidationCode::InvalidValue).into());
-    }
-    let command = active
-        .bundle()
-        .bundle()
-        .commands()
-        .iter()
-        .find(|plan| plan.name() == request.command().as_str())
-        .filter(|plan| plan.execution_class() == ExecutionClass::IdempotentMutation)
-        .ok_or_else(|| invalid_root(ValidationCode::InvalidValue))?;
-    let command_id = command.command_id();
-    let targets =
-        ServiceAuditTargetMap::resolve_command_outcome(request.lineage().clone(), command_id)
-            .map_err(|_| {
-                service.internal_failure(
-                    ServiceOperationV1::ResolveCommandOutcome,
-                    InternalDefect::ProofMismatch,
-                )
-            })?;
+    let (lineage, command_id) = match request.selector() {
+        ResolveCommandOutcomeSelectorRef::RawKey {
+            lineage,
+            source_command,
+            idempotency_key: _,
+        } => {
+            let active = wait_with_control(
+                context.control(),
+                service.providers.deadline_scheduler.as_ref(),
+                service
+                    .providers
+                    .catalog
+                    .prepare_active_catalog(context.control()),
+            )
+            .await
+            .map_err(map_controlled_wait)?
+            .map_err(|error| {
+                map_catalog_error(service, ServiceOperationV1::ResolveCommandOutcome, error)
+            })?
+            .ok_or_else(|| invalid_root(ValidationCode::InvalidValue))?;
+            if active.pointer().lineage() != lineage {
+                return Err(invalid_root(ValidationCode::InvalidValue).into());
+            }
+            let command = active
+                .bundle()
+                .bundle()
+                .commands()
+                .iter()
+                .find(|plan| plan.name() == source_command.as_str())
+                .filter(|plan| plan.execution_class() == ExecutionClass::IdempotentMutation)
+                .ok_or_else(|| invalid_root(ValidationCode::InvalidValue))?;
+            (lineage.clone(), command.command_id())
+        }
+        ResolveCommandOutcomeSelectorRef::Locator(locator) => {
+            (locator.lineage().clone(), locator.command_id())
+        }
+    };
+    let targets = ServiceAuditTargetMap::resolve_command_outcome(lineage.clone(), command_id)
+        .map_err(|_| {
+            service.internal_failure(
+                ServiceOperationV1::ResolveCommandOutcome,
+                InternalDefect::ProofMismatch,
+            )
+        })?;
     let policy_request =
-        OperationRequest::resolve_command_outcome_pre_lookup(request.lineage().clone(), command_id);
+        OperationRequest::resolve_command_outcome_pre_lookup(lineage.clone(), command_id);
     let begun = service
         .begin_invocation(
             &context,
@@ -1002,15 +1022,39 @@ async fn resolve_command_outcome(
             finish_failure(service, &context, &begun, failure, TerminalKind::Ordinary).await,
         );
     }
-    let lower_request = AuthoritativeOutcomeRequest::new(
-        request.lineage().clone(),
-        command_id,
-        context.principal().principal_id().clone(),
-        OperationTenantScope::grammar_v1_global()
-            .tenant_scope()
-            .clone(),
-        request.idempotency_key().clone(),
-    );
+    if matches!(
+        request.selector(),
+        ResolveCommandOutcomeSelectorRef::Locator(locator)
+            if locator.owner_principal_id() != context.principal().principal_id()
+    ) {
+        return finish_outcome_not_found(service, &context, &begun).await;
+    }
+    let lower_request = match request.selector() {
+        ResolveCommandOutcomeSelectorRef::RawKey {
+            lineage,
+            source_command: _,
+            idempotency_key,
+        } => AuthoritativeOutcomeRequest::raw_key(
+            lineage.clone(),
+            command_id,
+            context.principal().principal_id().clone(),
+            OperationTenantScope::grammar_v1_global()
+                .tenant_scope()
+                .clone(),
+            idempotency_key.clone(),
+        ),
+        ResolveCommandOutcomeSelectorRef::Locator(locator) => {
+            AuthoritativeOutcomeRequest::digested(
+                locator.lineage().clone(),
+                locator.command_id(),
+                context.principal().principal_id().clone(),
+                OperationTenantScope::grammar_v1_global()
+                    .tenant_scope()
+                    .clone(),
+                locator.digest_evidence().clone(),
+            )
+        }
+    };
     let receipt = match permit.submit(lower_request) {
         Ok(receipt) => receipt,
         Err(error) => {
@@ -1053,21 +1097,22 @@ async fn resolve_command_outcome(
     };
 
     let Some(snapshot) = snapshot else {
-        let result = ResolveCommandOutcomeResult::NotFound;
-        if let Err(failure) = ensure_response_budget(&result) {
-            return Err(
-                finish_failure(service, &context, &begun, failure, TerminalKind::Ordinary).await,
-            );
-        }
-        finish_success(service, &context, &begun, ServiceAuditLinkV1::None, false).await?;
-        return Ok(result);
+        return finish_outcome_not_found(service, &context, &begun).await;
     };
-    let facts = snapshot.facts();
-    if facts.lineage() != request.lineage()
+    let facts = snapshot.facts().clone();
+    let facts_mismatch = facts.lineage() != &lineage
         || facts.command_id() != command_id
         || facts.owner_principal_id() != context.principal().principal_id()
-        || facts.owner_tenant_scope() != &TenantScope::Global
+        || facts.owner_tenant_scope() != &TenantScope::Global;
+    if facts_mismatch
+        && matches!(
+            request.selector(),
+            ResolveCommandOutcomeSelectorRef::Locator(_)
+        )
     {
+        return finish_outcome_not_found(service, &context, &begun).await;
+    }
+    if facts_mismatch {
         let failure = service.internal_failure(
             ServiceOperationV1::ResolveCommandOutcome,
             InternalDefect::LowerIntegrity,
@@ -1076,39 +1121,58 @@ async fn resolve_command_outcome(
             finish_failure(service, &context, &begun, failure, TerminalKind::Ordinary).await,
         );
     }
-    let recovered_outcome_catalog =
-        if matches!(&snapshot, AuthoritativeOutcomeSnapshot::Journaled { .. }) {
-            let plan_request = CatalogExecutablePlanRequest::new(
-                facts.lineage().clone(),
-                facts.contract_version(),
-                facts.bundle_hash(),
-                facts.command_id(),
-                facts.plan_hash(),
-            );
-            let resolved = match load_plan(
+    if matches!(request.selector(), ResolveCommandOutcomeSelectorRef::Locator(locator)
+        if locator.digest_evidence() != facts.locator_digest())
+    {
+        return finish_outcome_not_found(service, &context, &begun).await;
+    }
+    let plan_request = CatalogExecutablePlanRequest::new(
+        facts.lineage().clone(),
+        facts.contract_version(),
+        facts.bundle_hash(),
+        facts.command_id(),
+        facts.plan_hash(),
+    );
+    let resolved = match load_plan(
+        service,
+        &context,
+        ServiceOperationV1::ResolveCommandOutcome,
+        plan_request,
+    )
+    .await
+    {
+        Ok(resolved) => resolved,
+        Err(failure) => {
+            return Err(finish_failure(
                 service,
                 &context,
-                ServiceOperationV1::ResolveCommandOutcome,
-                plan_request,
+                &begun,
+                failure,
+                TerminalKind::KnownCommitMappingFailure,
             )
-            .await
-            {
-                Ok(resolved) => resolved,
-                Err(failure) => {
-                    return Err(finish_failure(
-                        service,
-                        &context,
-                        &begun,
-                        failure,
-                        TerminalKind::KnownCommitMappingFailure,
-                    )
-                    .await);
-                }
-            };
-            Some(CheckedOutcomeCatalog::from_resolved(&resolved))
-        } else {
-            None
-        };
+            .await);
+        }
+    };
+    let recovered_outcome_catalog = CheckedOutcomeCatalog::from_resolved(&resolved);
+    let Some(historical_tool_name) = recovered_outcome_catalog.tool_name.as_ref() else {
+        let failure = service.internal_failure(
+            ServiceOperationV1::ResolveCommandOutcome,
+            InternalDefect::LowerIntegrity,
+        );
+        return Err(finish_failure(
+            service,
+            &context,
+            &begun,
+            failure,
+            TerminalKind::KnownCommitMappingFailure,
+        )
+        .await);
+    };
+    if matches!(request.selector(), ResolveCommandOutcomeSelectorRef::Locator(locator)
+        if locator.tool_name() != historical_tool_name.as_str())
+    {
+        return finish_outcome_not_found(service, &context, &begun).await;
+    }
     let full_request = OperationRequest::resolve_command_outcome(
         facts.lineage().clone(),
         facts.contract_version(),
@@ -1149,24 +1213,10 @@ async fn resolve_command_outcome(
             .await)
         }
         AuthoritativeOutcomeSnapshot::Journaled { facts: _, result } => {
-            let Some(outcome_catalog) = recovered_outcome_catalog.as_ref() else {
-                let failure = service.internal_failure(
-                    ServiceOperationV1::ResolveCommandOutcome,
-                    InternalDefect::ProofMismatch,
-                );
-                return Err(finish_failure(
-                    service,
-                    &context,
-                    &begun,
-                    failure,
-                    TerminalKind::KnownCommitMappingFailure,
-                )
-                .await);
-            };
             let outcome = match declared_outcome_view(
                 service,
                 ServiceOperationV1::ResolveCommandOutcome,
-                outcome_catalog,
+                &recovered_outcome_catalog,
                 result.outcome_id(),
                 result.value().clone(),
             ) {
@@ -1182,12 +1232,41 @@ async fn resolve_command_outcome(
                     .await);
                 }
             };
+            let outcome_locator = match request.selector() {
+                ResolveCommandOutcomeSelectorRef::RawKey { .. } => {
+                    match OutcomeResourceLocator::mint(
+                        facts.owner_principal_id().clone(),
+                        facts.lineage().clone(),
+                        facts.command_id(),
+                        historical_tool_name,
+                        facts.locator_digest().clone(),
+                    ) {
+                        Ok(locator) => locator,
+                        Err(_) => {
+                            let failure = service.internal_failure(
+                                ServiceOperationV1::ResolveCommandOutcome,
+                                InternalDefect::ProofMismatch,
+                            );
+                            return Err(finish_failure(
+                                service,
+                                &context,
+                                &begun,
+                                failure,
+                                TerminalKind::KnownCommitMappingFailure,
+                            )
+                            .await);
+                        }
+                    }
+                }
+                ResolveCommandOutcomeSelectorRef::Locator(locator) => locator.clone(),
+            };
             let result = match JournaledCommandResult::new(
                 JournaledCompletion::Replayed,
                 result.commit_sequence(),
                 outcome,
                 result.provenance_id(),
                 result.durability(),
+                outcome_locator,
             ) {
                 Ok(result) => result,
                 Err(_) => {
@@ -1242,6 +1321,19 @@ async fn resolve_command_outcome(
             .await)
         }
     }
+}
+
+async fn finish_outcome_not_found(
+    service: &RiffDbServiceInner,
+    context: &RequestContext,
+    begun: &BegunInvocation,
+) -> ServiceResult<ResolveCommandOutcomeResult> {
+    let result = ResolveCommandOutcomeResult::NotFound;
+    if let Err(failure) = ensure_response_budget(&result) {
+        return Err(finish_failure(service, context, begun, failure, TerminalKind::Ordinary).await);
+    }
+    finish_success(service, context, begun, ServiceAuditLinkV1::None, false).await?;
+    Ok(result)
 }
 
 async fn load_plan(
@@ -1755,6 +1847,7 @@ fn extract_idempotency_key(
 fn map_committed_outcome(
     outcome: CommittedOutcome,
     expected_plan: &CatalogExecutablePlanRequest,
+    tool_name: Option<&McpCommandToolNameV1>,
     internal_failure: impl Fn(InternalDefect) -> ServiceFailure,
     map_declared_outcome: impl FnOnce(OutcomeId, CanonicalRecord) -> ServiceResult<DeclaredOutcomeView>,
 ) -> ServiceResult<(JournaledCommandResult, ServiceAuditLinkV1)> {
@@ -1776,12 +1869,26 @@ fn map_committed_outcome(
         stored.declared_outcome().outcome_id(),
         stored.declared_outcome().value().clone(),
     )?;
+    let tool_name = tool_name.ok_or_else(|| internal_failure(InternalDefect::ProofMismatch))?;
+    let digest = stored.identity().caller_key_digest();
+    let digest =
+        OutcomeLocatorDigestEvidence::new(digest.scheme(), digest.key_id(), *digest.as_bytes())
+            .map_err(|_| internal_failure(InternalDefect::ProofMismatch))?;
+    let outcome_locator = OutcomeResourceLocator::mint(
+        stored.identity().principal_id().clone(),
+        stored.plan().contract_lineage().clone(),
+        stored.plan().command_id(),
+        tool_name,
+        digest,
+    )
+    .map_err(|_| internal_failure(InternalDefect::ProofMismatch))?;
     let result = JournaledCommandResult::new(
         completion,
         stored.commit_sequence(),
         declared_outcome,
         stored.provenance_id(),
         durability,
+        outcome_locator,
     )
     .map_err(|_| internal_failure(InternalDefect::ProofMismatch))?;
     let link = ServiceAuditLinkV1::Command {
@@ -2286,6 +2393,7 @@ mod tests {
         let failure = map_committed_outcome(
             outcome,
             &expected_plan,
+            None,
             |defect| {
                 crate::service::contained_internal_failure(
                     &telemetry,

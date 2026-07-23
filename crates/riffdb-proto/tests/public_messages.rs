@@ -450,6 +450,7 @@ fn read_only_and_outcome_replay_shapes_are_closed() {
         outcome: Some(null_value()),
         provenance_uri: String::new(),
         durability_mode: String::new(),
+        outcome_uri: None,
     };
     validate_public_message(&read_only).expect("exact read-only sentinels");
     let mut invalid = read_only.clone();

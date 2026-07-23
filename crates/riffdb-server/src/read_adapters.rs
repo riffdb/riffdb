@@ -20,20 +20,23 @@ use riffdb_service::{
     AuthoritativeCommitSubscriptionRequest, AuthoritativeEntityRequest,
     AuthoritativeEntitySnapshot, AuthoritativeIndexPage, AuthoritativeIndexRequest,
     AuthoritativeIndexRow, AuthoritativeJournaledOutcome, AuthoritativeOutcomeFacts,
-    AuthoritativeOutcomeRequest, AuthoritativeOutcomeSnapshot, AuthoritativeProvenanceSnapshot,
-    AuthoritativeReadError, AuthoritativeReadPort, AuthoritativeSchemaBinding,
-    BoxPortCapacityPermit, CapabilityRevokeTargetSnapshot, CatalogExecutablePlanRequest,
-    CatalogReadPort, CommandDurability, CommitNotificationSource, ContractVersionReadPermit,
-    DeclaredOutcomeView, DurableEventView, PortAdmissionError, PortDriverStopped, PortFuture,
-    PresentCapabilityRevokeTargetSnapshot, ProvenanceClaimsView, RequestControl,
+    AuthoritativeOutcomeRequest, AuthoritativeOutcomeSelectorRef, AuthoritativeOutcomeSnapshot,
+    AuthoritativeProvenanceSnapshot, AuthoritativeReadError, AuthoritativeReadPort,
+    AuthoritativeSchemaBinding, BoxPortCapacityPermit, CapabilityRevokeTargetSnapshot,
+    CatalogExecutablePlanRequest, CatalogReadPort, CommandDurability, CommitNotificationSource,
+    ContractVersionReadPermit, DeclaredOutcomeView, DurableEventView, OutcomeLocatorDigestEvidence,
+    PortAdmissionError, PortDriverStopped, PortFuture, PresentCapabilityRevokeTargetSnapshot,
+    ProvenanceClaimsView, RequestControl,
 };
 use riffdb_storage_api::{
     AdmissionLookupResultV1, AdmissionRepository, AuthoritativePointReader,
     AuthoritativeScanReader, CapabilityLifecycleV1, CapabilityReader, CatalogRepository,
     CommitScanPageV1, CommitScanRequest, DurabilityMode, EntityTarget, ExecutablePlanRef,
     FilteredAuthoritativeIndexScanPage, FilteredAuthoritativeIndexScanRequest,
-    FilteredAuthoritativeScanReader, IndexPartitionFilter, IndexPartitionFilterScope,
-    IndexRangePrefixBuilder, IndexRangeTarget, StorageError, StorageErrorKind, StorageScanLimit,
+    FilteredAuthoritativeScanReader, IdempotencyIdentity, IdempotencyKeyDigest,
+    IdempotencyLookupCandidatesV1, IndexPartitionFilter, IndexPartitionFilterScope,
+    IndexRangePrefixBuilder, IndexRangeTarget, ReadableDigestKey,
+    ReadableIdempotencyDigestInventory, StorageError, StorageErrorKind, StorageScanLimit,
     StoredAdmissionStateV1, StoredCommitRecordV1, StoredPendingAdmissionV1,
     StoredProvenanceRecordV1,
 };
@@ -214,6 +217,7 @@ impl ServerAuthoritativeReadPort {
     pub(crate) fn new(
         storage: SharedRedbOperationalPorts,
         digest_provider: Arc<dyn IdempotencyDigestProvider>,
+        readable_digests: ReadableIdempotencyDigestInventory,
         database_id: DatabaseId,
         environment: Environment,
         notifications: FirstCommitNotificationHub,
@@ -232,6 +236,7 @@ impl ServerAuthoritativeReadPort {
             read_outcome(
                 &outcome_storage,
                 digest_provider.as_ref(),
+                &readable_digests,
                 outcome_database_id,
                 &outcome_environment,
                 request,
@@ -648,27 +653,61 @@ fn push_index_component(
 fn read_outcome(
     storage: &impl AdmissionRepository,
     digest_provider: &dyn IdempotencyDigestProvider,
+    readable_digests: &ReadableIdempotencyDigestInventory,
     database_id: DatabaseId,
     environment: &Environment,
     request: AuthoritativeOutcomeRequest,
 ) -> Result<Option<AuthoritativeOutcomeSnapshot>, AuthoritativeReadError> {
-    let scope = CommandIdempotencyScopeV1::new(
-        database_id,
-        environment.clone(),
-        request.tenant_scope().clone(),
-        request.principal_id().clone(),
-        request.lineage().clone(),
-        request.command_id(),
-    );
-    let lookup = prepare_idempotency_lookup(&scope, request.idempotency_key(), digest_provider)
-        .map_err(map_idempotency_preparation)?;
+    let candidates = match request.selector() {
+        AuthoritativeOutcomeSelectorRef::RawKey(lookup) => {
+            let scope = CommandIdempotencyScopeV1::new(
+                database_id,
+                environment.clone(),
+                lookup.tenant_scope().clone(),
+                lookup.principal_id().clone(),
+                lookup.lineage().clone(),
+                lookup.command_id(),
+            );
+            prepare_idempotency_lookup(&scope, lookup.idempotency_key(), digest_provider)
+                .map_err(map_idempotency_preparation)?
+                .lookup_candidates()
+                .clone()
+        }
+        AuthoritativeOutcomeSelectorRef::Digested(lookup) => {
+            let evidence = lookup.digest_evidence();
+            let readable =
+                ReadableDigestKey::new(evidence.digest_scheme(), evidence.digest_key_id())
+                    .map_err(|_| AuthoritativeReadError::Integrity)?;
+            if !readable_digests.as_slice().contains(&readable) {
+                return Ok(None);
+            }
+            let digest =
+                IdempotencyKeyDigest::from_hmac_bytes(evidence.digest_key_id(), *evidence.digest());
+            let identity = IdempotencyIdentity::new(
+                database_id,
+                environment.clone(),
+                lookup.tenant_scope().clone(),
+                lookup.principal_id().clone(),
+                lookup.lineage().clone(),
+                lookup.command_id(),
+                digest,
+            );
+            IdempotencyLookupCandidatesV1::new(vec![identity])
+                .map_err(|_| AuthoritativeReadError::Integrity)?
+        }
+    };
     match storage
-        .lookup_admission(lookup.lookup_candidates().clone())
+        .lookup_admission(candidates.clone())
         .map_err(map_storage_error)?
     {
         AdmissionLookupResultV1::NotFound => Ok(None),
         AdmissionLookupResultV1::MultipleMatches => Err(AuthoritativeReadError::Integrity),
-        AdmissionLookupResultV1::Found(state) => map_admission_state(*state).map(Some),
+        AdmissionLookupResultV1::Found(state) => {
+            if !candidates.contains(state.identity()) {
+                return Err(AuthoritativeReadError::Integrity);
+            }
+            map_admission_state(*state).map(Some)
+        }
     }
 }
 
@@ -691,7 +730,7 @@ fn map_admission_state(
 ) -> Result<AuthoritativeOutcomeSnapshot, AuthoritativeReadError> {
     match state {
         StoredAdmissionStateV1::Pending(pending) => Ok(AuthoritativeOutcomeSnapshot::Pending(
-            outcome_facts(&pending),
+            outcome_facts(&pending)?,
         )),
         StoredAdmissionStateV1::StoredOutcome(outcome) => {
             let facts = AuthoritativeOutcomeFacts::new(
@@ -703,6 +742,7 @@ fn map_admission_state(
                 outcome.identity().principal_id().clone(),
                 outcome.identity().tenant_scope().clone(),
                 outcome.partition_key().clone(),
+                outcome_locator_digest(outcome.identity())?,
             );
             let result = AuthoritativeJournaledOutcome::new(
                 outcome.commit_sequence(),
@@ -715,15 +755,17 @@ fn map_admission_state(
         }
         StoredAdmissionStateV1::ExecutionFailed(failure) => {
             Ok(AuthoritativeOutcomeSnapshot::ExecutionFailed {
-                facts: outcome_facts(failure.pending()),
+                facts: outcome_facts(failure.pending())?,
                 code: failure.code(),
             })
         }
     }
 }
 
-fn outcome_facts(pending: &StoredPendingAdmissionV1) -> AuthoritativeOutcomeFacts {
-    AuthoritativeOutcomeFacts::new(
+fn outcome_facts(
+    pending: &StoredPendingAdmissionV1,
+) -> Result<AuthoritativeOutcomeFacts, AuthoritativeReadError> {
+    Ok(AuthoritativeOutcomeFacts::new(
         pending.plan().contract_lineage().clone(),
         pending.plan().contract_version(),
         pending.plan().contract_bundle_hash(),
@@ -732,7 +774,16 @@ fn outcome_facts(pending: &StoredPendingAdmissionV1) -> AuthoritativeOutcomeFact
         pending.identity().principal_id().clone(),
         pending.identity().tenant_scope().clone(),
         pending.partition_key().clone(),
-    )
+        outcome_locator_digest(pending.identity())?,
+    ))
+}
+
+fn outcome_locator_digest(
+    identity: &IdempotencyIdentity,
+) -> Result<OutcomeLocatorDigestEvidence, AuthoritativeReadError> {
+    let digest = identity.caller_key_digest();
+    OutcomeLocatorDigestEvidence::new(digest.scheme(), digest.key_id(), *digest.as_bytes())
+        .map_err(|_| AuthoritativeReadError::Integrity)
 }
 
 fn read_commit(
@@ -965,15 +1016,18 @@ mod tests {
     use std::sync::Mutex;
 
     use riffdb_contract_ir::{KeyComponentSchema, KeyPurpose, KeySchema, ValueType};
+    use riffdb_idempotency::{IdempotencyDigestCandidatesV1, IdempotencyDigestError};
     use riffdb_policy::PartitionConstraint;
     use riffdb_storage_api::{
-        AuthoritativeIndexScanPage, AuthoritativeIndexScanRequest, DurableKeySchemaBindingV1,
-        EncodedContentCharge, EncodedPageItem, StoredIndexEntryV2,
+        AdmissionRequestV1, AdmissionResultV1, AuthoritativeIndexScanPage,
+        AuthoritativeIndexScanRequest, DurableKeySchemaBindingV1, EncodedContentCharge,
+        EncodedPageItem, StoredIndexEntryV2,
     };
     use riffdb_types::{
-        AggregateTypeId, CanonicalRecord, CanonicalString, ContractBundleHash, EntityKeyBuilder,
-        EntityTypeId, EventId, IndexEntryKey, IndexEntryKeyBuilder, IndexEpoch, IndexId,
-        PartitionKey, PartitionKeyBuilder, PartitionScopeV1, ProvenanceId, ScopedPartitionV1,
+        ActorId, AggregateTypeId, CanonicalRecord, CanonicalString, CommandId, ContractBundleHash,
+        DigestKeyId, EntityKeyBuilder, EntityTypeId, EventId, IdempotencyKey, IndexEntryKey,
+        IndexEntryKeyBuilder, IndexEpoch, IndexId, PartitionKey, PartitionKeyBuilder,
+        PartitionScopeV1, ProvenanceId, ScopedPartitionV1, TenantScope,
     };
 
     use super::*;
@@ -1071,6 +1125,48 @@ mod tests {
             _candidates: &[riffdb_types::CapabilityTokenDigest],
         ) -> Result<riffdb_storage_api::CapabilityLookupResult, StorageError> {
             Ok(riffdb_storage_api::CapabilityLookupResult::NotFound)
+        }
+    }
+
+    struct FixedIdempotencyDigests(IdempotencyKeyDigest);
+
+    impl IdempotencyDigestProvider for FixedIdempotencyDigests {
+        fn digest_candidates(
+            &self,
+            _caller_key: &IdempotencyKey,
+        ) -> Result<IdempotencyDigestCandidatesV1, IdempotencyDigestError> {
+            IdempotencyDigestCandidatesV1::new(vec![self.0])
+        }
+    }
+
+    #[derive(Default)]
+    struct RecordingAdmissionRepository {
+        lookups: Mutex<Vec<IdempotencyLookupCandidatesV1>>,
+    }
+
+    impl RecordingAdmissionRepository {
+        fn lookups(&self) -> Vec<IdempotencyLookupCandidatesV1> {
+            self.lookups.lock().expect("admission lookups").clone()
+        }
+    }
+
+    impl AdmissionRepository for RecordingAdmissionRepository {
+        fn admit_or_resolve(
+            &self,
+            _request: AdmissionRequestV1,
+        ) -> Result<AdmissionResultV1, StorageError> {
+            panic!("read adapter must never create admission state")
+        }
+
+        fn lookup_admission(
+            &self,
+            candidates: IdempotencyLookupCandidatesV1,
+        ) -> Result<AdmissionLookupResultV1, StorageError> {
+            self.lookups
+                .lock()
+                .expect("admission lookups")
+                .push(candidates);
+            Ok(AdmissionLookupResultV1::NotFound)
         }
     }
 
@@ -1244,6 +1340,93 @@ mod tests {
                 .expect("empty entity read")
                 .is_none()
         );
+    }
+
+    #[test]
+    fn raw_key_and_locator_digest_share_one_exact_point_lookup_identity() {
+        let database_id =
+            DatabaseId::from_unix_milliseconds_and_random(1, [1; 10]).expect("database UUIDv7");
+        let environment = Environment::new("test").expect("environment");
+        let principal_id = ActorId::new("outcome-owner").expect("principal");
+        let lineage = ContractLineage::new("outcome-lookup").expect("lineage");
+        let command_id = CommandId::new(7).expect("command ID");
+        let key_id = DigestKeyId::new(9).expect("digest key ID");
+        let digest = IdempotencyKeyDigest::from_hmac_bytes(key_id, [0x5a; 32]);
+        let provider = FixedIdempotencyDigests(digest);
+        let readable = ReadableIdempotencyDigestInventory::new(vec![ReadableDigestKey::v1(key_id)])
+            .expect("readable digest inventory");
+        let storage = RecordingAdmissionRepository::default();
+
+        let raw = AuthoritativeOutcomeRequest::raw_key(
+            lineage.clone(),
+            command_id,
+            principal_id.clone(),
+            TenantScope::Global,
+            IdempotencyKey::new("same-outcome-key").expect("idempotency key"),
+        );
+        assert!(
+            read_outcome(
+                &storage,
+                &provider,
+                &readable,
+                database_id,
+                &environment,
+                raw,
+            )
+            .expect("raw-key lookup")
+            .is_none()
+        );
+
+        let locator = AuthoritativeOutcomeRequest::digested(
+            lineage,
+            command_id,
+            principal_id,
+            TenantScope::Global,
+            OutcomeLocatorDigestEvidence::new(digest.scheme(), key_id, *digest.as_bytes())
+                .expect("locator digest"),
+        );
+        assert!(
+            read_outcome(
+                &storage,
+                &provider,
+                &readable,
+                database_id,
+                &environment,
+                locator,
+            )
+            .expect("locator lookup")
+            .is_none()
+        );
+
+        let lookups = storage.lookups();
+        assert_eq!(lookups.len(), 2);
+        assert_eq!(lookups[0], lookups[1]);
+
+        let unreadable = ReadableIdempotencyDigestInventory::new(vec![ReadableDigestKey::v1(
+            DigestKeyId::new(10).expect("different key ID"),
+        )])
+        .expect("different readable inventory");
+        let unreadable_locator = AuthoritativeOutcomeRequest::digested(
+            ContractLineage::new("outcome-lookup").expect("lineage"),
+            command_id,
+            ActorId::new("outcome-owner").expect("principal"),
+            TenantScope::Global,
+            OutcomeLocatorDigestEvidence::new(digest.scheme(), key_id, *digest.as_bytes())
+                .expect("locator digest"),
+        );
+        assert!(
+            read_outcome(
+                &storage,
+                &provider,
+                &unreadable,
+                database_id,
+                &environment,
+                unreadable_locator,
+            )
+            .expect("unreadable locator is nondisclosing absence")
+            .is_none()
+        );
+        assert_eq!(storage.lookups().len(), 2);
     }
 
     #[test]

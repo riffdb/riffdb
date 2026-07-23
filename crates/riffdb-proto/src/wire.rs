@@ -8,7 +8,8 @@ use riffdb_types::{
 
 use crate::{
     MAX_DURABILITY_MODE_BYTES, MAX_EXECUTE_REQUEST_BYTES, MAX_EXECUTE_RESPONSE_BYTES,
-    MAX_PROTOCOL_NAME_BYTES, MAX_PROVENANCE_URI_BYTES, MAX_PUBLIC_ERROR_BYTES,
+    MAX_OUTCOME_RESOURCE_LOCATOR_BYTES, MAX_PROTOCOL_NAME_BYTES, MAX_PROVENANCE_URI_BYTES,
+    MAX_PUBLIC_ERROR_BYTES,
 };
 
 const PROST_RECURSION_LIMIT: usize = 100;
@@ -439,6 +440,7 @@ pub(crate) fn execute_response(input: &[u8]) -> Result<(), PreflightError> {
             (5, MAX_PROTOCOL_NAME_BYTES),
             (7, MAX_PROVENANCE_URI_BYTES),
             (8, MAX_DURABILITY_MODE_BYTES),
+            (9, MAX_OUTCOME_RESOURCE_LOCATOR_BYTES),
         ],
     )
 }
@@ -459,7 +461,7 @@ fn execute(
         .max()
         .unwrap_or(value_field_number)
         .max(value_field_number);
-    let mut seen = [false; 8];
+    let mut seen = [false; 9];
     while let Some(field) = cursor.next()? {
         if (1..=maximum_known_field).contains(&field.number) {
             let index = usize::try_from(field.number - 1).map_err(|_| PreflightError::Malformed)?;

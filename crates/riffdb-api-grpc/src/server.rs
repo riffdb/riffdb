@@ -56,6 +56,12 @@ pub trait GrpcLifecycleRoute: Send + Sync {
     /// admissible. Initializing and stopped routes return no context.
     fn security_context(&self) -> Option<CheckedGrpcSecurityContext>;
 
+    /// Returns the one opaque process generation installed with the activated route.
+    ///
+    /// The bytes are presentation-only and carry no semantic or authorization
+    /// meaning. Initializing and stopped routes must not expose them.
+    fn server_generation(&self) -> Option<[u8; 16]>;
+
     /// Routes restricted Health through the current API-neutral service stage.
     fn restricted_health(&self, request: HealthRequest) -> Option<ServiceFuture<'_, HealthResult>>;
 
@@ -527,6 +533,60 @@ impl ContractService for GrpcApplication {
         let result = map_service(service.get_active_contract(context, request).await)?;
         Ok(Response::new(get_active_contract_result_to_proto(&result)))
     }
+
+    async fn get_contract_version(
+        &self,
+        request: Request<v1::GetContractVersionRequest>,
+    ) -> Result<Response<v1::GetContractVersionResponse>, Status> {
+        let (metadata, _peer, message) = split_request(request);
+        let (request_id, request) = get_contract_version_request_from_proto(message)?;
+        let (service, context, _cancellation) = self.normal_invocation(
+            ServiceOperationV1::GetContractVersion,
+            &metadata,
+            request_id,
+        )?;
+        let result = map_service(service.get_contract_version(context, request).await)?;
+        Ok(Response::new(get_contract_version_result_to_proto(&result)))
+    }
+
+    async fn discover_command_tools(
+        &self,
+        request: Request<v1::DiscoverCommandToolsRequest>,
+    ) -> Result<Response<v1::DiscoverCommandToolsResponse>, Status> {
+        let generation = self
+            .lifecycle
+            .server_generation()
+            .ok_or_else(service_not_ready)?;
+        let (metadata, _peer, message) = split_request(request);
+        let (request_id, request) = discover_command_tools_request_from_proto(message, generation)?;
+        let (service, context, _cancellation) = self.normal_invocation(
+            ServiceOperationV1::DiscoverCommandTools,
+            &metadata,
+            request_id,
+        )?;
+        let result = map_service(service.discover_command_tools(context, request).await)?;
+        Ok(Response::new(discover_command_tools_result_to_proto(
+            &result, generation,
+        )?))
+    }
+
+    async fn discover_resources(
+        &self,
+        request: Request<v1::DiscoverResourcesRequest>,
+    ) -> Result<Response<v1::DiscoverResourcesResponse>, Status> {
+        let generation = self
+            .lifecycle
+            .server_generation()
+            .ok_or_else(service_not_ready)?;
+        let (metadata, _peer, message) = split_request(request);
+        let (request_id, request) = discover_resources_request_from_proto(message, generation)?;
+        let (service, context, _cancellation) =
+            self.normal_invocation(ServiceOperationV1::DiscoverResources, &metadata, request_id)?;
+        let result = map_service(service.discover_resources(context, request).await)?;
+        Ok(Response::new(discover_resources_result_to_proto(
+            &result, generation,
+        )?))
+    }
 }
 
 #[tonic::async_trait]
@@ -596,6 +656,23 @@ impl QueryService for GrpcApplication {
         let result = map_service(service.query_projection(context, request).await)?;
         Ok(Response::new(query_projection_result_to_proto(&result)?))
     }
+
+    async fn get_projection_status(
+        &self,
+        request: Request<v1::GetProjectionStatusRequest>,
+    ) -> Result<Response<v1::GetProjectionStatusResponse>, Status> {
+        let (metadata, _peer, message) = split_request(request);
+        let (request_id, request) = get_projection_status_request_from_proto(message)?;
+        let (service, context, _cancellation) = self.normal_invocation(
+            ServiceOperationV1::GetProjectionStatus,
+            &metadata,
+            request_id,
+        )?;
+        let result = map_service(service.get_projection_status(context, request).await)?;
+        Ok(Response::new(get_projection_status_result_to_proto(
+            &result,
+        )))
+    }
 }
 
 #[tonic::async_trait]
@@ -642,6 +719,18 @@ impl CommitService for GrpcApplication {
             result.into_subscription(),
             cancellation,
         )))
+    }
+
+    async fn trace_provenance(
+        &self,
+        request: Request<v1::TraceProvenanceRequest>,
+    ) -> Result<Response<v1::TraceProvenanceResponse>, Status> {
+        let (metadata, _peer, message) = split_request(request);
+        let (request_id, request) = trace_provenance_request_from_proto(message)?;
+        let (service, context, _cancellation) =
+            self.normal_invocation(ServiceOperationV1::TraceProvenance, &metadata, request_id)?;
+        let result = map_service(service.trace_provenance(context, request).await)?;
+        Ok(Response::new(trace_provenance_result_to_proto(&result)?))
     }
 }
 
@@ -740,6 +829,27 @@ impl AdminService for GrpcApplication {
             self.normal_invocation(ServiceOperationV1::RevokeCapability, &metadata, request_id)?;
         let result = map_service(service.revoke_capability(context, request).await)?;
         Ok(Response::new(revoke_capability_result_to_proto(result)))
+    }
+
+    async fn list_pending_outbox_deliveries(
+        &self,
+        request: Request<v1::ListPendingOutboxDeliveriesRequest>,
+    ) -> Result<Response<v1::ListPendingOutboxDeliveriesResponse>, Status> {
+        let (metadata, _peer, message) = split_request(request);
+        let (request_id, request) = list_pending_outbox_deliveries_request_from_proto(message)?;
+        let (service, context, _cancellation) = self.normal_invocation(
+            ServiceOperationV1::ListPendingOutboxDeliveries,
+            &metadata,
+            request_id,
+        )?;
+        let result = map_service(
+            service
+                .list_pending_outbox_deliveries(context, request)
+                .await,
+        )?;
+        Ok(Response::new(
+            list_pending_outbox_deliveries_result_to_proto(&result),
+        ))
     }
 }
 
@@ -894,6 +1004,10 @@ mod tests {
             self.security.clone()
         }
 
+        fn server_generation(&self) -> Option<[u8; 16]> {
+            None
+        }
+
         fn restricted_health(
             &self,
             _request: HealthRequest,
@@ -950,6 +1064,10 @@ mod tests {
         }
 
         fn security_context(&self) -> Option<CheckedGrpcSecurityContext> {
+            None
+        }
+
+        fn server_generation(&self) -> Option<[u8; 16]> {
             None
         }
 

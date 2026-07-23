@@ -10,8 +10,8 @@ use riffdb_types::{
     MAX_CAPABILITY_AUDIENCES, MAX_CAPABILITY_FIELD_VISIBILITY, MAX_CAPABILITY_LIFETIME_SECONDS,
     MAX_CAPABILITY_PARTITIONS, MAX_CAPABILITY_PAYLOAD_BYTES, MAX_CAPABILITY_PERMISSIONS,
     MAX_COMMAND_CONFLICT_KEYS_V1, MAX_CONTRACT_LINEAGE_BYTES, MAX_IDEMPOTENCY_KEY_BYTES,
-    MAX_KEY_BYTES, MAX_PROJECTION_GROUP_COMPONENTS, MAX_TENANT_ID_BYTES, PartitionKey, RequestId,
-    Timestamp, hash_schema,
+    MAX_KEY_BYTES, MAX_PROJECTION_GROUP_COMPONENTS, MAX_TENANT_ID_BYTES, PartitionKey,
+    ProvenanceId, RequestId, Timestamp, hash_schema,
 };
 
 use crate::command::validate_provenance_uri;
@@ -32,9 +32,23 @@ const MAX_EXPECTED_TOKENS: usize = 16;
 const MAX_BUILD_FEATURES: usize = 64;
 const MAX_BUILD_STRING_BYTES: usize = 128;
 const MAX_COMMAND_EXPLAIN_ITEMS: usize = 4_096;
+const MAX_DISCOVERY_PAGE_BYTES: usize = 2_621_440;
+const MAX_OPERATION_SCHEMA_BYTES: usize = 65_536;
+const MAX_PROVENANCE_LINKS: usize = 4_096;
+const MAX_SOURCE_REPOSITORY_BYTES: usize = 512;
+const MAX_SOURCE_COMMIT_BYTES: usize = 128;
+const MAX_PROVENANCE_REASON_BYTES: usize = 1_024;
+const MAX_APPROVAL_ID_BYTES: usize = 256;
+const MAX_MCP_COMMAND_TOOL_NAME_BYTES: usize = 128;
 const MAX_PROJECTION_WAIT_NANOS: u64 = 30_000_000_000;
 const MAX_SUBSCRIPTION_LIFETIME_NANOS: u64 = 900_000_000_000;
 const JSON_SCHEMA_DIALECT: &str = "https://json-schema.org/draft/2020-12/schema";
+const OPERATION_ENVELOPE_SCHEMA_ID: &str = "riffdb.command-operation-envelope/v1";
+const GET_OUTCOME_RESULT_SCHEMA_ID: &str = "riffdb.command-get-outcome-result/v1";
+const OPERATION_ENVELOPE_SCHEMA_HASH: &str =
+    "f1847c1cd869562a11a6e67c7954e4b5c6b06f73c37f68c2a439d7359f2b9cf7";
+const GET_OUTCOME_RESULT_SCHEMA_HASH: &str =
+    "cbf5cb3d869f5b157c62e37c2d0704269cbf0a7c317fee4757f13bd0012b7f96";
 
 type DiagnosticRegistryEntry = (&'static str, Option<&'static str>);
 type DiagnosticRegistry = fn(&str) -> Option<DiagnosticRegistryEntry>;
@@ -315,6 +329,221 @@ pub fn validate_scan_commits_exchange(
     validate_effective_page_count(item_count, limit)
 }
 
+/// Validates request/response identity relations for an exact contract lookup.
+pub fn validate_get_contract_version_exchange(
+    request: &v1::GetContractVersionRequest,
+    response: &v1::GetContractVersionResponse,
+) -> Result<(), PublicWireError> {
+    validate_public_message(request)?;
+    validate_public_message(response)?;
+    if let Some(v1::get_contract_version_response::Result::Found(found)) = &response.result
+        && (found.contract_lineage != request.contract_lineage
+            || found.contract_version != request.contract_version)
+    {
+        return Err(PublicWireError::InconsistentFields);
+    }
+    Ok(())
+}
+
+/// Validates request/response identity relations for a projection-status lookup.
+pub fn validate_get_projection_status_exchange(
+    request: &v1::GetProjectionStatusRequest,
+    response: &v1::GetProjectionStatusResponse,
+) -> Result<(), PublicWireError> {
+    validate_public_message(request)?;
+    validate_public_message(response)?;
+    let Some(v1::get_projection_status_response::Result::Found(found)) = &response.result else {
+        return Ok(());
+    };
+    let identity = found
+        .identity
+        .as_ref()
+        .ok_or(PublicWireError::MissingRequiredField)?;
+    if identity.projection_id != request.projection_id {
+        return Err(PublicWireError::InconsistentFields);
+    }
+    if let Some(v1::contract_selection::Selection::Exact(exact)) = request
+        .contract
+        .as_ref()
+        .and_then(|contract| contract.selection.as_ref())
+        && identity.contract_lineage != exact.contract_lineage
+    {
+        return Err(PublicWireError::InconsistentFields);
+    }
+    Ok(())
+}
+
+/// Validates request/response selector relations for one provenance trace.
+pub fn validate_trace_provenance_exchange(
+    request: &v1::TraceProvenanceRequest,
+    response: &v1::TraceProvenanceResponse,
+) -> Result<(), PublicWireError> {
+    validate_public_message(request)?;
+    validate_public_message(response)?;
+    let Some(v1::trace_provenance_response::Result::Found(found)) = &response.result else {
+        return Ok(());
+    };
+    let selection = request
+        .selector
+        .as_ref()
+        .and_then(|selector| selector.selection.as_ref())
+        .ok_or(PublicWireError::MissingRequiredField)?;
+    let matches = match selection {
+        v1::provenance_selection::Selection::CommitSequence(sequence) => {
+            *sequence == found.commit_sequence
+        }
+        v1::provenance_selection::Selection::ProvenanceId(id) => id == &found.provenance_id,
+    };
+    if matches {
+        Ok(())
+    } else {
+        Err(PublicWireError::InconsistentFields)
+    }
+}
+
+/// Validates the effective page limit for pending-outbox discovery.
+pub fn validate_list_pending_outbox_deliveries_exchange(
+    request: &v1::ListPendingOutboxDeliveriesRequest,
+    response: &v1::ListPendingOutboxDeliveriesResponse,
+) -> Result<(), PublicWireError> {
+    validate_public_message(request)?;
+    validate_public_message(response)?;
+    let limit = effective_page_limit(request.page.as_ref())?;
+    let count = response
+        .page
+        .as_ref()
+        .ok_or(PublicWireError::MissingRequiredField)?
+        .items
+        .len();
+    validate_effective_page_count(count, limit)
+}
+
+/// Validates raw-key/locator exclusivity and locator echoing for GetOutcome.
+pub fn validate_get_outcome_exchange(
+    request: &v1::GetOutcomeRequest,
+    response: &v1::GetOutcomeResponse,
+) -> Result<(), PublicWireError> {
+    validate_public_message(request)?;
+    validate_public_message(response)?;
+    let Some(request_locator) = request.outcome_uri.as_deref() else {
+        return Ok(());
+    };
+    let Some(v1::get_outcome_response::Result::Found(found)) = &response.result else {
+        return Ok(());
+    };
+    if found.outcome_uri.as_deref() == Some(request_locator) {
+        Ok(())
+    } else {
+        Err(PublicWireError::InconsistentFields)
+    }
+}
+
+/// Validates representation, fence, and page relations for command discovery.
+pub fn validate_discover_command_tools_exchange(
+    request: &v1::DiscoverCommandToolsRequest,
+    response: &v1::DiscoverCommandToolsResponse,
+) -> Result<(), PublicWireError> {
+    validate_public_message(request)?;
+    validate_public_message(response)?;
+    validate_discovery_exchange(
+        request.representation,
+        request.page.as_ref(),
+        request.prior_fence.as_ref(),
+        response.result.as_ref().map(|result| match result {
+            v1::discover_command_tools_response::Result::CatalogUnchanged(fence) => {
+                DiscoveryExchangeResult::Unchanged(fence)
+            }
+            v1::discover_command_tools_response::Result::Page(page) => {
+                DiscoveryExchangeResult::Full(&page.items, &page.observed_fence)
+            }
+            v1::discover_command_tools_response::Result::CompactPage(page) => {
+                DiscoveryExchangeResult::Compact(&page.items, &page.observed_fence)
+            }
+        }),
+    )
+}
+
+/// Validates representation, kind, fence, and page relations for resource discovery.
+pub fn validate_discover_resources_exchange(
+    request: &v1::DiscoverResourcesRequest,
+    response: &v1::DiscoverResourcesResponse,
+) -> Result<(), PublicWireError> {
+    validate_public_message(request)?;
+    validate_public_message(response)?;
+    let result = response
+        .result
+        .as_ref()
+        .ok_or(PublicWireError::MissingRequiredField)?;
+    match result {
+        v1::discover_resources_response::Result::Page(page) => {
+            validate_resource_kind(request.kind, &page.items)?;
+        }
+        v1::discover_resources_response::Result::CompactPage(page) => {
+            validate_compact_resource_kind(request.kind, &page.items)?;
+        }
+        v1::discover_resources_response::Result::CatalogUnchanged(_) => {}
+    }
+    validate_discovery_exchange(
+        request.representation,
+        request.page.as_ref(),
+        request.prior_fence.as_ref(),
+        Some(match result {
+            v1::discover_resources_response::Result::CatalogUnchanged(fence) => {
+                DiscoveryExchangeResult::Unchanged(fence)
+            }
+            v1::discover_resources_response::Result::Page(page) => {
+                DiscoveryExchangeResult::Full(&page.items, &page.observed_fence)
+            }
+            v1::discover_resources_response::Result::CompactPage(page) => {
+                DiscoveryExchangeResult::Compact(&page.items, &page.observed_fence)
+            }
+        }),
+    )
+}
+
+enum DiscoveryExchangeResult<'a, T, C> {
+    Unchanged(&'a v1::DiscoveryCatalogFence),
+    Full(&'a [T], &'a Option<v1::DiscoveryCatalogFence>),
+    Compact(&'a [C], &'a Option<v1::DiscoveryCatalogFence>),
+}
+
+fn validate_discovery_exchange<T, C>(
+    representation: i32,
+    page: Option<&v1::PageRequest>,
+    prior: Option<&v1::DiscoveryCatalogFence>,
+    result: Option<DiscoveryExchangeResult<'_, T, C>>,
+) -> Result<(), PublicWireError> {
+    let limit = effective_page_limit(page)?;
+    let result = result.ok_or(PublicWireError::MissingRequiredField)?;
+    match result {
+        DiscoveryExchangeResult::Unchanged(fence)
+            if representation == v1::DiscoveryRepresentation::CompactObservation as i32
+                && prior == Some(fence) =>
+        {
+            Ok(())
+        }
+        DiscoveryExchangeResult::Full(items, observed)
+            if representation == v1::DiscoveryRepresentation::Full as i32 =>
+        {
+            validate_effective_page_count(items.len(), limit)?;
+            if prior.is_some_and(|prior| observed.as_ref() == Some(prior)) {
+                return Err(PublicWireError::InconsistentFields);
+            }
+            Ok(())
+        }
+        DiscoveryExchangeResult::Compact(items, observed)
+            if representation == v1::DiscoveryRepresentation::CompactObservation as i32 =>
+        {
+            validate_effective_page_count(items.len(), limit)?;
+            if prior.is_some_and(|prior| observed.as_ref() == Some(prior)) {
+                return Err(PublicWireError::InconsistentFields);
+            }
+            Ok(())
+        }
+        _ => Err(PublicWireError::InconsistentFields),
+    }
+}
+
 /// A bounded, non-secret structural failure at the public wire boundary.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum PublicWireError {
@@ -440,6 +669,14 @@ fn capability_id(bytes: &[u8]) -> Result<(), PublicWireError> {
 
 fn agent_session_id(bytes: &[u8]) -> Result<(), PublicWireError> {
     if valid_uuid(bytes, AgentSessionId::from_bytes) {
+        Ok(())
+    } else {
+        Err(PublicWireError::InvalidUuidV7)
+    }
+}
+
+fn provenance_id(bytes: &[u8]) -> Result<(), PublicWireError> {
+    if valid_uuid(bytes, ProvenanceId::from_bytes) {
         Ok(())
     } else {
         Err(PublicWireError::InvalidUuidV7)
@@ -1145,7 +1382,15 @@ fn validate_get_active_contract_response(
 
 fn validate_get_outcome_request(message: &v1::GetOutcomeRequest) -> Result<(), PublicWireError> {
     request_id(&message.request_id)?;
-    if !valid_bounded_text(&message.contract_lineage, MAX_CONTRACT_LINEAGE_BYTES)
+    if let Some(locator) = message.outcome_uri.as_deref() {
+        if !message.contract_lineage.is_empty()
+            || !message.command_name.is_empty()
+            || !message.idempotency_key.is_empty()
+            || crate::validate_outcome_resource_locator(locator).is_err()
+        {
+            return Err(PublicWireError::InconsistentFields);
+        }
+    } else if !valid_bounded_text(&message.contract_lineage, MAX_CONTRACT_LINEAGE_BYTES)
         || !valid_name(&message.command_name)
         || !valid_bounded_text(&message.idempotency_key, MAX_IDEMPOTENCY_KEY_BYTES)
     {
@@ -2129,6 +2374,34 @@ fn validate_create_capability_request(
     message: &v1::CreateCapabilityRequest,
 ) -> Result<(), PublicWireError> {
     request_id(&message.request_id)?;
+    validate_create_capability_body(message)
+}
+
+/// Validates a capability-create retry template before a fresh request ID is assigned.
+///
+/// The template must use the exact empty request-ID sentinel. Every other
+/// structural rule and the public request-size ceiling are identical to a
+/// submitted [`v1::CreateCapabilityRequest`].
+pub fn validate_create_capability_template(
+    message: &v1::CreateCapabilityRequest,
+) -> Result<(), PublicWireError> {
+    if !message.request_id.is_empty() {
+        return Err(PublicWireError::InconsistentFields);
+    }
+    validate_create_capability_body(message)?;
+    if message
+        .encoded_len()
+        .checked_add(18)
+        .is_none_or(|submitted_len| submitted_len > MAX_PUBLIC_REQUEST_BYTES)
+    {
+        return Err(PublicWireError::MessageTooLarge);
+    }
+    Ok(())
+}
+
+fn validate_create_capability_body(
+    message: &v1::CreateCapabilityRequest,
+) -> Result<(), PublicWireError> {
     if !matches!(
         v1::CapabilityCreateMode::try_from(message.mode),
         Ok(v1::CapabilityCreateMode::Normal | v1::CapabilityCreateMode::Bootstrap)
@@ -2236,6 +2509,970 @@ fn validate_revoke_capability_response(
             validate_capability_transition(Some(transition))
         }
         v1::revoke_capability_response::Result::CapabilityNotFound(_) => Ok(()),
+    }
+}
+
+fn validate_get_contract_version_request(
+    message: &v1::GetContractVersionRequest,
+) -> Result<(), PublicWireError> {
+    request_id(&message.request_id)?;
+    if valid_bounded_text(&message.contract_lineage, MAX_CONTRACT_LINEAGE_BYTES)
+        && message.contract_version != 0
+    {
+        Ok(())
+    } else {
+        Err(PublicWireError::InvalidIdentity)
+    }
+}
+
+fn validate_get_contract_version_response(
+    message: &v1::GetContractVersionResponse,
+) -> Result<(), PublicWireError> {
+    match message
+        .result
+        .as_ref()
+        .ok_or(PublicWireError::MissingRequiredField)?
+    {
+        v1::get_contract_version_response::Result::NotFound(_) => Ok(()),
+        v1::get_contract_version_response::Result::Found(found) => {
+            validate_contract_descriptor(Some(found))
+        }
+    }
+}
+
+fn validate_event_id_value(event_id: Option<&v1::EventId>) -> Result<(u64, u32), PublicWireError> {
+    let event_id = event_id.ok_or(PublicWireError::MissingRequiredField)?;
+    if event_id.commit_sequence == 0 {
+        Err(PublicWireError::InvalidIdentity)
+    } else {
+        Ok((event_id.commit_sequence, event_id.event_ordinal))
+    }
+}
+
+fn validate_provenance_claims(
+    claims: Option<&v1::ProvenanceClaims>,
+) -> Result<(), PublicWireError> {
+    let claims = claims.ok_or(PublicWireError::MissingRequiredField)?;
+    if claims
+        .source_repository
+        .as_deref()
+        .is_some_and(|value| !valid_bounded_text(value, MAX_SOURCE_REPOSITORY_BYTES))
+        || claims.source_commit.as_deref().is_some_and(|value| {
+            !valid_ascii(value, MAX_SOURCE_COMMIT_BYTES)
+                || value.bytes().any(|byte| !(0x21..=0x7e).contains(&byte))
+        })
+        || claims
+            .reason
+            .as_deref()
+            .is_some_and(|value| !valid_bounded_text(value, MAX_PROVENANCE_REASON_BYTES))
+        || claims.approval_id.as_deref().is_some_and(|value| {
+            !valid_ascii(value, MAX_APPROVAL_ID_BYTES)
+                || value.bytes().any(|byte| !(0x21..=0x7e).contains(&byte))
+        })
+    {
+        Err(PublicWireError::InvalidBytes)
+    } else {
+        Ok(())
+    }
+}
+
+fn validate_provenance(message: &v1::Provenance) -> Result<(), PublicWireError> {
+    provenance_id(&message.provenance_id)?;
+    request_id(&message.admission_request_id)?;
+    if message.commit_sequence == 0
+        || !valid_bounded_text(&message.contract_lineage, MAX_CONTRACT_LINEAGE_BYTES)
+        || message.contract_version == 0
+        || message.command_id == 0
+        || message.outcome_id == 0
+        || message.affected_entities.len() > MAX_PROVENANCE_LINKS
+        || message.event_ids.len() > MAX_PROVENANCE_LINKS
+    {
+        return Err(PublicWireError::InvalidIdentity);
+    }
+    hash(&message.plan_hash)?;
+    validate_actor(message.actor.as_ref())?;
+    validate_timestamp(message.logical_time.as_ref())?;
+    validate_provenance_claims(message.claims.as_ref())?;
+    for entity in &message.affected_entities {
+        validate_entity_key(&entity.entity_key, None)?;
+        if entity.entity_version == 0 {
+            return Err(PublicWireError::InvalidIdentity);
+        }
+    }
+    for event_id in &message.event_ids {
+        validate_event_id_value(Some(event_id))?;
+    }
+    Ok(())
+}
+
+fn validate_trace_provenance_request(
+    message: &v1::TraceProvenanceRequest,
+) -> Result<(), PublicWireError> {
+    request_id(&message.request_id)?;
+    match message
+        .selector
+        .as_ref()
+        .and_then(|selector| selector.selection.as_ref())
+        .ok_or(PublicWireError::MissingRequiredField)?
+    {
+        v1::provenance_selection::Selection::CommitSequence(0) => {
+            Err(PublicWireError::InvalidIdentity)
+        }
+        v1::provenance_selection::Selection::CommitSequence(_) => Ok(()),
+        v1::provenance_selection::Selection::ProvenanceId(value) => provenance_id(value),
+    }
+}
+
+fn validate_trace_provenance_response(
+    message: &v1::TraceProvenanceResponse,
+) -> Result<(), PublicWireError> {
+    match message
+        .result
+        .as_ref()
+        .ok_or(PublicWireError::MissingRequiredField)?
+    {
+        v1::trace_provenance_response::Result::NotFound(_) => Ok(()),
+        v1::trace_provenance_response::Result::Found(found) => validate_provenance(found),
+    }
+}
+
+fn validate_outbox_summary(summary: &v1::OutboxDeliverySummary) -> Result<(), PublicWireError> {
+    validate_event_id_value(summary.event_id.as_ref())?;
+    if !matches!(
+        v1::OutboxDeliveryState::try_from(summary.state),
+        Ok(v1::OutboxDeliveryState::Pending
+            | v1::OutboxDeliveryState::RetryScheduled
+            | v1::OutboxDeliveryState::Delivering
+            | v1::OutboxDeliveryState::DeadLetter)
+    ) {
+        return Err(PublicWireError::InvalidEnum);
+    }
+    if summary.next_attempt_at.is_some() {
+        validate_timestamp(summary.next_attempt_at.as_ref())?;
+    }
+    Ok(())
+}
+
+fn validate_outbox_page(page: Option<&v1::OutboxDeliveryPage>) -> Result<(), PublicWireError> {
+    let page = page.ok_or(PublicWireError::MissingRequiredField)?;
+    if page.items.len() > MAX_PAGE_ITEMS {
+        return Err(PublicWireError::TooManyItems);
+    }
+    cursor(&page.next_cursor)?;
+    if page.items.is_empty() && page.next_cursor.is_some() {
+        return Err(PublicWireError::InconsistentFields);
+    }
+    let mut prior = None;
+    for item in &page.items {
+        validate_outbox_summary(item)?;
+        let key = validate_event_id_value(item.event_id.as_ref())?;
+        if prior.is_some_and(|prior| prior >= key) {
+            return Err(PublicWireError::NonCanonical);
+        }
+        prior = Some(key);
+    }
+    Ok(())
+}
+
+fn validate_list_pending_outbox_deliveries_request(
+    message: &v1::ListPendingOutboxDeliveriesRequest,
+) -> Result<(), PublicWireError> {
+    request_id(&message.request_id)?;
+    validate_page_request(message.page.as_ref())
+}
+
+fn validate_list_pending_outbox_deliveries_response(
+    message: &v1::ListPendingOutboxDeliveriesResponse,
+) -> Result<(), PublicWireError> {
+    validate_outbox_page(message.page.as_ref())
+}
+
+fn schema_key(key: Option<&v1::SchemaArtifactKey>) -> Result<(u8, u32), PublicWireError> {
+    let (kind, owner) = match key
+        .and_then(|key| key.artifact.as_ref())
+        .ok_or(PublicWireError::MissingRequiredField)?
+    {
+        v1::schema_artifact_key::Artifact::EntityId(value) => (1, *value),
+        v1::schema_artifact_key::Artifact::EventTypeId(value) => (2, *value),
+        v1::schema_artifact_key::Artifact::CommandInputId(value) => (3, *value),
+        v1::schema_artifact_key::Artifact::CommandOutcomeUnionId(value) => (4, *value),
+        v1::schema_artifact_key::Artifact::ProjectionResultId(value) => (5, *value),
+    };
+    if owner == 0 {
+        Err(PublicWireError::InvalidIdentity)
+    } else {
+        Ok((kind, owner))
+    }
+}
+
+fn validate_generated_schema_identity(
+    identity: Option<&v1::GeneratedSchemaIdentity>,
+) -> Result<(u8, u32), PublicWireError> {
+    let identity = identity.ok_or(PublicWireError::MissingRequiredField)?;
+    let key = schema_key(identity.key.as_ref())?;
+    hash(&identity.schema_hash)?;
+    Ok(key)
+}
+
+fn valid_mcp_tool_name(value: &str) -> bool {
+    let Some((contract, command)) = mcp_tool_name_segments(value) else {
+        return false;
+    };
+    let valid_segment = |segment: &str| {
+        segment
+            .as_bytes()
+            .first()
+            .is_some_and(u8::is_ascii_lowercase)
+            && segment
+                .bytes()
+                .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'_')
+    };
+    value.len() <= MAX_MCP_COMMAND_TOOL_NAME_BYTES
+        && valid_segment(contract)
+        && valid_segment(command)
+}
+
+fn mcp_tool_name_segments(value: &str) -> Option<(&str, &str)> {
+    let mut segments = value.strip_prefix("riffdb.cmd.")?.split('.');
+    let contract = segments.next()?;
+    let command = segments.next()?;
+    segments.next().is_none().then_some((contract, command))
+}
+
+fn normalized_mcp_segment_matches(source: &str, normalized: &str) -> bool {
+    source.is_ascii()
+        && source
+            .bytes()
+            .map(|byte| byte.to_ascii_lowercase())
+            .eq(normalized.bytes())
+}
+
+fn mcp_tool_name_matches_declared_source(
+    value: &str,
+    contract_source: &str,
+    command_source: Option<&str>,
+) -> bool {
+    let Some((contract, command)) = mcp_tool_name_segments(value) else {
+        return false;
+    };
+    normalized_mcp_segment_matches(contract_source, contract)
+        && command_source.is_none_or(|source| normalized_mcp_segment_matches(source, command))
+}
+
+fn validate_command_tool_descriptor(
+    descriptor: &v1::CommandToolDescriptor,
+) -> Result<(), PublicWireError> {
+    if !valid_mcp_tool_name(&descriptor.tool_name)
+        || !valid_name(&descriptor.source_command)
+        || !valid_bounded_text(&descriptor.contract_lineage, MAX_CONTRACT_LINEAGE_BYTES)
+        || descriptor.contract_version == 0
+        || descriptor.command_id == 0
+    {
+        return Err(PublicWireError::InvalidIdentity);
+    }
+    if !mcp_tool_name_matches_declared_source(
+        &descriptor.tool_name,
+        &descriptor.contract_lineage,
+        Some(&descriptor.source_command),
+    ) {
+        return Err(PublicWireError::InconsistentFields);
+    }
+    if validate_schema_artifact(descriptor.input_schema.as_ref())? != (3, descriptor.command_id)
+        || validate_schema_artifact(descriptor.outcome_schema.as_ref())?
+            != (4, descriptor.command_id)
+    {
+        return Err(PublicWireError::InconsistentFields);
+    }
+    Ok(())
+}
+
+fn validate_compact_command_tool_descriptor(
+    descriptor: &v1::CompactCommandToolDescriptor,
+) -> Result<(), PublicWireError> {
+    if !valid_mcp_tool_name(&descriptor.tool_name)
+        || !valid_name(&descriptor.source_command)
+        || !valid_bounded_text(&descriptor.contract_lineage, MAX_CONTRACT_LINEAGE_BYTES)
+        || descriptor.contract_version == 0
+        || descriptor.command_id == 0
+    {
+        return Err(PublicWireError::InvalidIdentity);
+    }
+    if !mcp_tool_name_matches_declared_source(
+        &descriptor.tool_name,
+        &descriptor.contract_lineage,
+        Some(&descriptor.source_command),
+    ) {
+        return Err(PublicWireError::InconsistentFields);
+    }
+    if validate_generated_schema_identity(descriptor.input_schema.as_ref())?
+        != (3, descriptor.command_id)
+        || validate_generated_schema_identity(descriptor.outcome_schema.as_ref())?
+            != (4, descriptor.command_id)
+    {
+        return Err(PublicWireError::InconsistentFields);
+    }
+    Ok(())
+}
+
+fn hash_matches_hex(bytes: &[u8], expected: &str) -> bool {
+    bytes.len() == 32
+        && expected.len() == 64
+        && bytes.iter().enumerate().all(|(index, byte)| {
+            u8::from_str_radix(&expected[index * 2..index * 2 + 2], 16) == Ok(*byte)
+        })
+}
+
+fn validate_operation_schema_artifact(
+    artifact: Option<&v1::OperationSchemaArtifact>,
+    schema_id: &str,
+    expected_hash: &str,
+) -> Result<(), PublicWireError> {
+    let artifact = artifact.ok_or(PublicWireError::MissingRequiredField)?;
+    if artifact.schema_id != schema_id
+        || artifact.dialect != JSON_SCHEMA_DIALECT
+        || artifact.canonical_json.is_empty()
+        || artifact.canonical_json.len() > MAX_OPERATION_SCHEMA_BYTES
+        || artifact.canonical_json.as_bytes().last() != Some(&b'}')
+        || artifact
+            .canonical_json
+            .bytes()
+            .any(|byte| matches!(byte, b'\r' | b'\n'))
+        || !hash_matches_hex(&artifact.schema_hash, expected_hash)
+        || artifact.schema_hash != hash_schema(artifact.canonical_json.as_bytes()).as_bytes()
+    {
+        Err(PublicWireError::InconsistentFields)
+    } else {
+        Ok(())
+    }
+}
+
+fn validate_operation_schema_catalog(
+    catalog: Option<&v1::OperationSchemaCatalog>,
+) -> Result<(), PublicWireError> {
+    let catalog = catalog.ok_or(PublicWireError::MissingRequiredField)?;
+    validate_operation_schema_artifact(
+        catalog.command_operation_envelope.as_ref(),
+        OPERATION_ENVELOPE_SCHEMA_ID,
+        OPERATION_ENVELOPE_SCHEMA_HASH,
+    )?;
+    validate_operation_schema_artifact(
+        catalog.command_get_outcome_result.as_ref(),
+        GET_OUTCOME_RESULT_SCHEMA_ID,
+        GET_OUTCOME_RESULT_SCHEMA_HASH,
+    )
+}
+
+fn validate_operation_schema_identity(
+    identity: Option<&v1::OperationSchemaIdentity>,
+    schema_id: &str,
+    expected_hash: &str,
+) -> Result<(), PublicWireError> {
+    let identity = identity.ok_or(PublicWireError::MissingRequiredField)?;
+    if identity.schema_id == schema_id && hash_matches_hex(&identity.schema_hash, expected_hash) {
+        Ok(())
+    } else {
+        Err(PublicWireError::InconsistentFields)
+    }
+}
+
+fn validate_operation_schema_catalog_identity(
+    identity: Option<&v1::OperationSchemaCatalogIdentity>,
+) -> Result<(), PublicWireError> {
+    let identity = identity.ok_or(PublicWireError::MissingRequiredField)?;
+    validate_operation_schema_identity(
+        identity.command_operation_envelope.as_ref(),
+        OPERATION_ENVELOPE_SCHEMA_ID,
+        OPERATION_ENVELOPE_SCHEMA_HASH,
+    )?;
+    validate_operation_schema_identity(
+        identity.command_get_outcome_result.as_ref(),
+        GET_OUTCOME_RESULT_SCHEMA_ID,
+        GET_OUTCOME_RESULT_SCHEMA_HASH,
+    )
+}
+
+fn operation_catalog_matches_fence(
+    catalog: &v1::OperationSchemaCatalog,
+    fence: &v1::DiscoveryCatalogFence,
+) -> bool {
+    let Some(identity) = fence.operation_schemas.as_ref() else {
+        return false;
+    };
+    let Some(envelope) = catalog.command_operation_envelope.as_ref() else {
+        return false;
+    };
+    let Some(get_outcome) = catalog.command_get_outcome_result.as_ref() else {
+        return false;
+    };
+    identity
+        .command_operation_envelope
+        .as_ref()
+        .is_some_and(|value| {
+            value.schema_id == envelope.schema_id && value.schema_hash == envelope.schema_hash
+        })
+        && identity
+            .command_get_outcome_result
+            .as_ref()
+            .is_some_and(|value| {
+                value.schema_id == get_outcome.schema_id
+                    && value.schema_hash == get_outcome.schema_hash
+            })
+}
+
+fn validate_discovery_fence(
+    fence: Option<&v1::DiscoveryCatalogFence>,
+) -> Result<(), PublicWireError> {
+    let fence = fence.ok_or(PublicWireError::MissingRequiredField)?;
+    match fence
+        .state
+        .as_ref()
+        .ok_or(PublicWireError::MissingRequiredField)?
+    {
+        v1::discovery_catalog_fence::State::NoActiveContract(_) => {}
+        v1::discovery_catalog_fence::State::ActiveContract(active) => {
+            if !valid_bounded_text(&active.contract_lineage, MAX_CONTRACT_LINEAGE_BYTES)
+                || active.contract_version == 0
+            {
+                return Err(PublicWireError::InvalidIdentity);
+            }
+            hash(&active.bundle_hash)?;
+        }
+    }
+    if fence.server_generation.len() != 16 {
+        return Err(PublicWireError::InvalidBytes);
+    }
+    validate_operation_schema_catalog_identity(fence.operation_schemas.as_ref())
+}
+
+fn validate_fixed_tool(value: i32) -> Result<u8, PublicWireError> {
+    match v1::FixedToolKind::try_from(value) {
+        Ok(v1::FixedToolKind::Unspecified) | Err(_) => Err(PublicWireError::InvalidEnum),
+        Ok(value) => u8::try_from(value as i32).map_err(|_| PublicWireError::InvalidEnum),
+    }
+}
+
+fn validate_command_tool_items(
+    items: &[v1::CommandToolDiscoveryItem],
+) -> Result<(), PublicWireError> {
+    let mut prior_fixed = None;
+    let mut prior_command: Option<&str> = None;
+    for item in items {
+        match item
+            .item
+            .as_ref()
+            .ok_or(PublicWireError::MissingRequiredField)?
+        {
+            v1::command_tool_discovery_item::Item::FixedTool(value) if prior_command.is_none() => {
+                let value = validate_fixed_tool(*value)?;
+                if prior_fixed.is_some_and(|prior| prior >= value) {
+                    return Err(PublicWireError::NonCanonical);
+                }
+                prior_fixed = Some(value);
+            }
+            v1::command_tool_discovery_item::Item::CommandTool(descriptor) => {
+                validate_command_tool_descriptor(descriptor)?;
+                if prior_command.is_some_and(|prior| prior >= descriptor.tool_name.as_str()) {
+                    return Err(PublicWireError::NonCanonical);
+                }
+                prior_command = Some(&descriptor.tool_name);
+            }
+            v1::command_tool_discovery_item::Item::FixedTool(_) => {
+                return Err(PublicWireError::NonCanonical);
+            }
+        }
+    }
+    Ok(())
+}
+
+fn validate_compact_command_tool_items(
+    items: &[v1::CompactCommandToolDiscoveryItem],
+) -> Result<(), PublicWireError> {
+    let mut prior_fixed = None;
+    let mut prior_command: Option<&str> = None;
+    for item in items {
+        match item
+            .item
+            .as_ref()
+            .ok_or(PublicWireError::MissingRequiredField)?
+        {
+            v1::compact_command_tool_discovery_item::Item::FixedTool(value)
+                if prior_command.is_none() =>
+            {
+                let value = validate_fixed_tool(*value)?;
+                if prior_fixed.is_some_and(|prior| prior >= value) {
+                    return Err(PublicWireError::NonCanonical);
+                }
+                prior_fixed = Some(value);
+            }
+            v1::compact_command_tool_discovery_item::Item::CommandTool(descriptor) => {
+                validate_compact_command_tool_descriptor(descriptor)?;
+                if prior_command.is_some_and(|prior| prior >= descriptor.tool_name.as_str()) {
+                    return Err(PublicWireError::NonCanonical);
+                }
+                prior_command = Some(&descriptor.tool_name);
+            }
+            v1::compact_command_tool_discovery_item::Item::FixedTool(_) => {
+                return Err(PublicWireError::NonCanonical);
+            }
+        }
+    }
+    Ok(())
+}
+
+fn validate_discovery_page_shape<T>(
+    items: &[T],
+    cursor_value: &Option<Vec<u8>>,
+    fence: Option<&v1::DiscoveryCatalogFence>,
+) -> Result<(), PublicWireError> {
+    if items.len() > MAX_PAGE_ITEMS {
+        return Err(PublicWireError::TooManyItems);
+    }
+    cursor(cursor_value)?;
+    if items.is_empty() && cursor_value.is_some() {
+        return Err(PublicWireError::InconsistentFields);
+    }
+    validate_discovery_fence(fence)
+}
+
+fn validate_discover_command_tools_request(
+    message: &v1::DiscoverCommandToolsRequest,
+) -> Result<(), PublicWireError> {
+    request_id(&message.request_id)?;
+    validate_page_request(message.page.as_ref())?;
+    let representation = v1::DiscoveryRepresentation::try_from(message.representation)
+        .map_err(|_| PublicWireError::InvalidEnum)?;
+    if !matches!(
+        representation,
+        v1::DiscoveryRepresentation::Full | v1::DiscoveryRepresentation::CompactObservation
+    ) {
+        return Err(PublicWireError::InvalidEnum);
+    }
+    if let Some(prior) = message.prior_fence.as_ref() {
+        validate_discovery_fence(Some(prior))?;
+        if representation != v1::DiscoveryRepresentation::CompactObservation
+            || message
+                .page
+                .as_ref()
+                .is_some_and(|page| page.cursor.is_some())
+        {
+            return Err(PublicWireError::InconsistentFields);
+        }
+    }
+    Ok(())
+}
+
+fn validate_discover_command_tools_response(
+    message: &v1::DiscoverCommandToolsResponse,
+) -> Result<(), PublicWireError> {
+    match message
+        .result
+        .as_ref()
+        .ok_or(PublicWireError::MissingRequiredField)?
+    {
+        v1::discover_command_tools_response::Result::CatalogUnchanged(fence) => {
+            validate_discovery_fence(Some(fence))
+        }
+        v1::discover_command_tools_response::Result::Page(page) => {
+            validate_discovery_page_shape(
+                &page.items,
+                &page.next_cursor,
+                page.observed_fence.as_ref(),
+            )?;
+            validate_command_tool_items(&page.items)?;
+            validate_operation_schema_catalog(page.operation_schemas.as_ref())?;
+            if !operation_catalog_matches_fence(
+                page.operation_schemas
+                    .as_ref()
+                    .ok_or(PublicWireError::MissingRequiredField)?,
+                page.observed_fence
+                    .as_ref()
+                    .ok_or(PublicWireError::MissingRequiredField)?,
+            ) {
+                return Err(PublicWireError::InconsistentFields);
+            }
+            if message.encoded_len() > MAX_DISCOVERY_PAGE_BYTES {
+                return Err(PublicWireError::MessageTooLarge);
+            }
+            Ok(())
+        }
+        v1::discover_command_tools_response::Result::CompactPage(page) => {
+            validate_discovery_page_shape(
+                &page.items,
+                &page.next_cursor,
+                page.observed_fence.as_ref(),
+            )?;
+            validate_compact_command_tool_items(&page.items)
+        }
+    }
+}
+
+fn validate_contract_version_resource(
+    resource: &v1::ContractVersionResource,
+) -> Result<Vec<u8>, PublicWireError> {
+    if !valid_bounded_text(&resource.contract_lineage, MAX_CONTRACT_LINEAGE_BYTES)
+        || resource.contract_version == 0
+    {
+        return Err(PublicWireError::InvalidIdentity);
+    }
+    let mut key = resource.contract_lineage.as_bytes().to_vec();
+    key.push(0);
+    key.extend_from_slice(&resource.contract_version.to_be_bytes());
+    Ok(key)
+}
+
+fn validate_entity_schema_resource(
+    resource: &v1::EntitySchemaResource,
+) -> Result<Vec<u8>, PublicWireError> {
+    if !valid_bounded_text(&resource.contract_lineage, MAX_CONTRACT_LINEAGE_BYTES)
+        || resource.entity_type_id == 0
+    {
+        return Err(PublicWireError::InvalidIdentity);
+    }
+    if validate_schema_artifact(resource.schema.as_ref())? != (1, resource.entity_type_id) {
+        return Err(PublicWireError::InconsistentFields);
+    }
+    let mut key = resource.contract_lineage.as_bytes().to_vec();
+    key.push(0);
+    key.extend_from_slice(&resource.entity_type_id.to_be_bytes());
+    Ok(key)
+}
+
+fn validate_compact_entity_schema_resource(
+    resource: &v1::CompactEntitySchemaResource,
+) -> Result<Vec<u8>, PublicWireError> {
+    if !valid_bounded_text(&resource.contract_lineage, MAX_CONTRACT_LINEAGE_BYTES)
+        || resource.entity_type_id == 0
+    {
+        return Err(PublicWireError::InvalidIdentity);
+    }
+    if validate_generated_schema_identity(resource.schema.as_ref())? != (1, resource.entity_type_id)
+    {
+        return Err(PublicWireError::InconsistentFields);
+    }
+    let mut key = resource.contract_lineage.as_bytes().to_vec();
+    key.push(0);
+    key.extend_from_slice(&resource.entity_type_id.to_be_bytes());
+    Ok(key)
+}
+
+fn validate_command_resource(resource: &v1::CommandResource) -> Result<Vec<u8>, PublicWireError> {
+    if !valid_bounded_text(&resource.contract_lineage, MAX_CONTRACT_LINEAGE_BYTES)
+        || resource.command_id == 0
+        || resource.contract_version == 0
+        || !valid_name(&resource.source_command)
+    {
+        return Err(PublicWireError::InvalidIdentity);
+    }
+    let mut key = resource.contract_lineage.as_bytes().to_vec();
+    key.push(0);
+    key.extend_from_slice(&resource.command_id.to_be_bytes());
+    Ok(key)
+}
+
+fn validate_command_outcome_resource(
+    resource: &v1::CommandOutcomeResource,
+) -> Result<Vec<u8>, PublicWireError> {
+    if !valid_bounded_text(&resource.contract_lineage, MAX_CONTRACT_LINEAGE_BYTES)
+        || resource.command_id == 0
+        || !valid_mcp_tool_name(&resource.tool_name)
+    {
+        return Err(PublicWireError::InvalidIdentity);
+    }
+    if !mcp_tool_name_matches_declared_source(&resource.tool_name, &resource.contract_lineage, None)
+    {
+        return Err(PublicWireError::InconsistentFields);
+    }
+    let mut key = resource.contract_lineage.as_bytes().to_vec();
+    key.push(0);
+    key.extend_from_slice(&resource.command_id.to_be_bytes());
+    Ok(key)
+}
+
+fn validate_commit_resource(resource: &v1::CommitResource) -> Result<Vec<u8>, PublicWireError> {
+    match resource
+        .target
+        .as_ref()
+        .ok_or(PublicWireError::MissingRequiredField)?
+    {
+        v1::commit_resource::Target::ClassTemplate(_) => Ok(vec![0]),
+        v1::commit_resource::Target::CommitSequence(0) => Err(PublicWireError::InvalidIdentity),
+        v1::commit_resource::Target::CommitSequence(value) => {
+            let mut key = vec![1];
+            key.extend_from_slice(&value.to_be_bytes());
+            Ok(key)
+        }
+    }
+}
+
+fn validate_provenance_resource(
+    resource: &v1::ProvenanceResource,
+) -> Result<Vec<u8>, PublicWireError> {
+    match resource
+        .target
+        .as_ref()
+        .ok_or(PublicWireError::MissingRequiredField)?
+    {
+        v1::provenance_resource::Target::ClassTemplate(_) => Ok(vec![0]),
+        v1::provenance_resource::Target::ProvenanceId(value) => {
+            provenance_id(value)?;
+            let mut key = vec![1];
+            key.extend_from_slice(value);
+            Ok(key)
+        }
+    }
+}
+
+fn validate_projection_status_resource(
+    resource: &v1::ProjectionStatusResource,
+) -> Result<Vec<u8>, PublicWireError> {
+    if !valid_bounded_text(&resource.contract_lineage, MAX_CONTRACT_LINEAGE_BYTES)
+        || resource.projection_id == 0
+    {
+        return Err(PublicWireError::InvalidIdentity);
+    }
+    let mut key = resource.contract_lineage.as_bytes().to_vec();
+    key.push(0);
+    key.extend_from_slice(&resource.projection_id.to_be_bytes());
+    Ok(key)
+}
+
+fn validate_resource_descriptor(
+    descriptor: &v1::ResourceDescriptor,
+) -> Result<Vec<u8>, PublicWireError> {
+    let (tag, tail) = match descriptor
+        .resource
+        .as_ref()
+        .ok_or(PublicWireError::MissingRequiredField)?
+    {
+        v1::resource_descriptor::Resource::ActiveContract(_) => (1, Vec::new()),
+        v1::resource_descriptor::Resource::ContractVersion(value) => {
+            (2, validate_contract_version_resource(value)?)
+        }
+        v1::resource_descriptor::Resource::EntitySchema(value) => {
+            (3, validate_entity_schema_resource(value)?)
+        }
+        v1::resource_descriptor::Resource::CommandPlan(value) => {
+            (4, validate_command_resource(value)?)
+        }
+        v1::resource_descriptor::Resource::CommandDocumentation(value) => {
+            (5, validate_command_resource(value)?)
+        }
+        v1::resource_descriptor::Resource::CommandOutcome(value) => {
+            (6, validate_command_outcome_resource(value)?)
+        }
+        v1::resource_descriptor::Resource::Commit(value) => (7, validate_commit_resource(value)?),
+        v1::resource_descriptor::Resource::Provenance(value) => {
+            (8, validate_provenance_resource(value)?)
+        }
+        v1::resource_descriptor::Resource::ProjectionStatus(value) => {
+            (9, validate_projection_status_resource(value)?)
+        }
+        v1::resource_descriptor::Resource::ServerHealth(_) => (10, Vec::new()),
+    };
+    let mut key = vec![tag];
+    key.extend_from_slice(&tail);
+    Ok(key)
+}
+
+fn validate_compact_resource_descriptor(
+    descriptor: &v1::CompactResourceDescriptor,
+) -> Result<Vec<u8>, PublicWireError> {
+    let (tag, tail) = match descriptor
+        .resource
+        .as_ref()
+        .ok_or(PublicWireError::MissingRequiredField)?
+    {
+        v1::compact_resource_descriptor::Resource::ActiveContract(_) => (1, Vec::new()),
+        v1::compact_resource_descriptor::Resource::ContractVersion(value) => {
+            (2, validate_contract_version_resource(value)?)
+        }
+        v1::compact_resource_descriptor::Resource::EntitySchema(value) => {
+            (3, validate_compact_entity_schema_resource(value)?)
+        }
+        v1::compact_resource_descriptor::Resource::CommandPlan(value) => {
+            (4, validate_command_resource(value)?)
+        }
+        v1::compact_resource_descriptor::Resource::CommandDocumentation(value) => {
+            (5, validate_command_resource(value)?)
+        }
+        v1::compact_resource_descriptor::Resource::CommandOutcome(value) => {
+            (6, validate_command_outcome_resource(value)?)
+        }
+        v1::compact_resource_descriptor::Resource::Commit(value) => {
+            (7, validate_commit_resource(value)?)
+        }
+        v1::compact_resource_descriptor::Resource::Provenance(value) => {
+            (8, validate_provenance_resource(value)?)
+        }
+        v1::compact_resource_descriptor::Resource::ProjectionStatus(value) => {
+            (9, validate_projection_status_resource(value)?)
+        }
+        v1::compact_resource_descriptor::Resource::ServerHealth(_) => (10, Vec::new()),
+    };
+    let mut key = vec![tag];
+    key.extend_from_slice(&tail);
+    Ok(key)
+}
+
+fn validate_resource_items(items: &[v1::ResourceDescriptor]) -> Result<(), PublicWireError> {
+    let mut prior: Option<Vec<u8>> = None;
+    for item in items {
+        let key = validate_resource_descriptor(item)?;
+        if prior.as_ref().is_some_and(|prior| prior >= &key) {
+            return Err(PublicWireError::NonCanonical);
+        }
+        prior = Some(key);
+    }
+    Ok(())
+}
+
+fn validate_compact_resource_items(
+    items: &[v1::CompactResourceDescriptor],
+) -> Result<(), PublicWireError> {
+    let mut prior: Option<Vec<u8>> = None;
+    for item in items {
+        let key = validate_compact_resource_descriptor(item)?;
+        if prior.as_ref().is_some_and(|prior| prior >= &key) {
+            return Err(PublicWireError::NonCanonical);
+        }
+        prior = Some(key);
+    }
+    Ok(())
+}
+
+fn resource_is_template(resource: &v1::ResourceDescriptor) -> bool {
+    matches!(
+        resource.resource.as_ref(),
+        Some(v1::resource_descriptor::Resource::CommandOutcome(_))
+            | Some(v1::resource_descriptor::Resource::Commit(
+                v1::CommitResource {
+                    target: Some(v1::commit_resource::Target::ClassTemplate(_)),
+                }
+            ))
+            | Some(v1::resource_descriptor::Resource::Provenance(
+                v1::ProvenanceResource {
+                    target: Some(v1::provenance_resource::Target::ClassTemplate(_)),
+                }
+            ))
+    )
+}
+
+fn compact_resource_is_template(resource: &v1::CompactResourceDescriptor) -> bool {
+    matches!(
+        resource.resource.as_ref(),
+        Some(v1::compact_resource_descriptor::Resource::CommandOutcome(_))
+            | Some(v1::compact_resource_descriptor::Resource::Commit(
+                v1::CommitResource {
+                    target: Some(v1::commit_resource::Target::ClassTemplate(_)),
+                }
+            ))
+            | Some(v1::compact_resource_descriptor::Resource::Provenance(
+                v1::ProvenanceResource {
+                    target: Some(v1::provenance_resource::Target::ClassTemplate(_)),
+                }
+            ))
+    )
+}
+
+fn validate_resource_kind(
+    kind: i32,
+    items: &[v1::ResourceDescriptor],
+) -> Result<(), PublicWireError> {
+    match v1::ResourceDiscoveryKind::try_from(kind) {
+        Ok(v1::ResourceDiscoveryKind::All) => Ok(()),
+        Ok(v1::ResourceDiscoveryKind::Concrete)
+            if items.iter().all(|item| !resource_is_template(item)) =>
+        {
+            Ok(())
+        }
+        Ok(v1::ResourceDiscoveryKind::Template) if items.iter().all(resource_is_template) => Ok(()),
+        _ => Err(PublicWireError::InconsistentFields),
+    }
+}
+
+fn validate_compact_resource_kind(
+    kind: i32,
+    items: &[v1::CompactResourceDescriptor],
+) -> Result<(), PublicWireError> {
+    match v1::ResourceDiscoveryKind::try_from(kind) {
+        Ok(v1::ResourceDiscoveryKind::All) => Ok(()),
+        Ok(v1::ResourceDiscoveryKind::Concrete)
+            if items.iter().all(|item| !compact_resource_is_template(item)) =>
+        {
+            Ok(())
+        }
+        Ok(v1::ResourceDiscoveryKind::Template)
+            if items.iter().all(compact_resource_is_template) =>
+        {
+            Ok(())
+        }
+        _ => Err(PublicWireError::InconsistentFields),
+    }
+}
+
+fn validate_discover_resources_request(
+    message: &v1::DiscoverResourcesRequest,
+) -> Result<(), PublicWireError> {
+    request_id(&message.request_id)?;
+    validate_page_request(message.page.as_ref())?;
+    let representation = v1::DiscoveryRepresentation::try_from(message.representation)
+        .map_err(|_| PublicWireError::InvalidEnum)?;
+    if !matches!(
+        representation,
+        v1::DiscoveryRepresentation::Full | v1::DiscoveryRepresentation::CompactObservation
+    ) || !matches!(
+        v1::ResourceDiscoveryKind::try_from(message.kind),
+        Ok(v1::ResourceDiscoveryKind::All
+            | v1::ResourceDiscoveryKind::Concrete
+            | v1::ResourceDiscoveryKind::Template)
+    ) {
+        return Err(PublicWireError::InvalidEnum);
+    }
+    if let Some(prior) = message.prior_fence.as_ref() {
+        validate_discovery_fence(Some(prior))?;
+        if representation != v1::DiscoveryRepresentation::CompactObservation
+            || message
+                .page
+                .as_ref()
+                .is_some_and(|page| page.cursor.is_some())
+        {
+            return Err(PublicWireError::InconsistentFields);
+        }
+    }
+    Ok(())
+}
+
+fn validate_discover_resources_response(
+    message: &v1::DiscoverResourcesResponse,
+) -> Result<(), PublicWireError> {
+    match message
+        .result
+        .as_ref()
+        .ok_or(PublicWireError::MissingRequiredField)?
+    {
+        v1::discover_resources_response::Result::CatalogUnchanged(fence) => {
+            validate_discovery_fence(Some(fence))
+        }
+        v1::discover_resources_response::Result::Page(page) => {
+            validate_discovery_page_shape(
+                &page.items,
+                &page.next_cursor,
+                page.observed_fence.as_ref(),
+            )?;
+            validate_resource_items(&page.items)?;
+            if message.encoded_len() > MAX_DISCOVERY_PAGE_BYTES {
+                return Err(PublicWireError::MessageTooLarge);
+            }
+            Ok(())
+        }
+        v1::discover_resources_response::Result::CompactPage(page) => {
+            validate_discovery_page_shape(
+                &page.items,
+                &page.next_cursor,
+                page.observed_fence.as_ref(),
+            )?;
+            validate_compact_resource_items(&page.items)
+        }
     }
 }
 
@@ -3918,6 +5155,699 @@ fn preflight_revoke_capability_response(input: &[u8]) -> Result<(), PublicWireEr
     )
 }
 
+fn preflight_get_contract_version_response(input: &[u8]) -> Result<(), PublicWireError> {
+    preflight_nested_message(
+        input,
+        2,
+        &[],
+        &[&[1, 2]],
+        &[
+            NestedRule {
+                field: 1,
+                preflight: preflight_unit,
+            },
+            NestedRule {
+                field: 2,
+                preflight: preflight_contract_descriptor,
+            },
+        ],
+        &[],
+    )
+}
+
+fn preflight_provenance_selection(input: &[u8]) -> Result<(), PublicWireError> {
+    preflight_nested_message(input, 2, &[], &[&[1, 2]], &[], &[])
+}
+
+fn preflight_provenance_claims(input: &[u8]) -> Result<(), PublicWireError> {
+    preflight_nested_message(input, 4, &[], &[], &[], &[])
+}
+
+fn preflight_provenance(input: &[u8]) -> Result<(), PublicWireError> {
+    preflight_nested_message(
+        input,
+        13,
+        &[11, 12],
+        &[],
+        &[
+            NestedRule {
+                field: 8,
+                preflight: preflight_actor,
+            },
+            NestedRule {
+                field: 9,
+                preflight: preflight_timestamp,
+            },
+            NestedRule {
+                field: 11,
+                preflight: preflight_affected_entity,
+            },
+            NestedRule {
+                field: 12,
+                preflight: preflight_event_id,
+            },
+            NestedRule {
+                field: 13,
+                preflight: preflight_provenance_claims,
+            },
+        ],
+        &[
+            RepeatedRule {
+                field: 11,
+                maximum: MAX_PROVENANCE_LINKS,
+                wire: RepeatedWire::LengthDelimited,
+            },
+            RepeatedRule {
+                field: 12,
+                maximum: MAX_PROVENANCE_LINKS,
+                wire: RepeatedWire::LengthDelimited,
+            },
+        ],
+    )
+}
+
+fn preflight_trace_provenance_request(input: &[u8]) -> Result<(), PublicWireError> {
+    preflight_nested_message(
+        input,
+        2,
+        &[],
+        &[],
+        &[NestedRule {
+            field: 2,
+            preflight: preflight_provenance_selection,
+        }],
+        &[],
+    )
+}
+
+fn preflight_trace_provenance_response(input: &[u8]) -> Result<(), PublicWireError> {
+    preflight_nested_message(
+        input,
+        2,
+        &[],
+        &[&[1, 2]],
+        &[
+            NestedRule {
+                field: 1,
+                preflight: preflight_unit,
+            },
+            NestedRule {
+                field: 2,
+                preflight: preflight_provenance,
+            },
+        ],
+        &[],
+    )
+}
+
+fn preflight_outbox_summary(input: &[u8]) -> Result<(), PublicWireError> {
+    preflight_nested_message(
+        input,
+        4,
+        &[],
+        &[],
+        &[
+            NestedRule {
+                field: 1,
+                preflight: preflight_event_id,
+            },
+            NestedRule {
+                field: 4,
+                preflight: preflight_timestamp,
+            },
+        ],
+        &[],
+    )
+}
+
+fn preflight_outbox_page(input: &[u8]) -> Result<(), PublicWireError> {
+    preflight_nested_message(
+        input,
+        2,
+        &[1],
+        &[],
+        &[NestedRule {
+            field: 1,
+            preflight: preflight_outbox_summary,
+        }],
+        &[RepeatedRule {
+            field: 1,
+            maximum: MAX_PAGE_ITEMS,
+            wire: RepeatedWire::LengthDelimited,
+        }],
+    )
+}
+
+fn preflight_list_outbox_request(input: &[u8]) -> Result<(), PublicWireError> {
+    preflight_nested_message(
+        input,
+        2,
+        &[],
+        &[],
+        &[NestedRule {
+            field: 2,
+            preflight: preflight_page_request,
+        }],
+        &[],
+    )
+}
+
+fn preflight_list_outbox_response(input: &[u8]) -> Result<(), PublicWireError> {
+    preflight_nested_message(
+        input,
+        1,
+        &[],
+        &[],
+        &[NestedRule {
+            field: 1,
+            preflight: preflight_outbox_page,
+        }],
+        &[],
+    )
+}
+
+fn preflight_generated_schema_identity(input: &[u8]) -> Result<(), PublicWireError> {
+    preflight_nested_message(
+        input,
+        2,
+        &[],
+        &[],
+        &[NestedRule {
+            field: 1,
+            preflight: preflight_schema_artifact_key,
+        }],
+        &[],
+    )
+}
+
+fn preflight_command_tool_descriptor(input: &[u8]) -> Result<(), PublicWireError> {
+    preflight_nested_message(
+        input,
+        7,
+        &[],
+        &[],
+        &[
+            NestedRule {
+                field: 6,
+                preflight: preflight_schema_artifact,
+            },
+            NestedRule {
+                field: 7,
+                preflight: preflight_schema_artifact,
+            },
+        ],
+        &[],
+    )
+}
+
+fn preflight_compact_command_tool_descriptor(input: &[u8]) -> Result<(), PublicWireError> {
+    preflight_nested_message(
+        input,
+        7,
+        &[],
+        &[],
+        &[
+            NestedRule {
+                field: 6,
+                preflight: preflight_generated_schema_identity,
+            },
+            NestedRule {
+                field: 7,
+                preflight: preflight_generated_schema_identity,
+            },
+        ],
+        &[],
+    )
+}
+
+fn preflight_command_tool_item(input: &[u8]) -> Result<(), PublicWireError> {
+    preflight_nested_message(
+        input,
+        2,
+        &[],
+        &[&[1, 2]],
+        &[NestedRule {
+            field: 2,
+            preflight: preflight_command_tool_descriptor,
+        }],
+        &[],
+    )
+}
+
+fn preflight_compact_command_tool_item(input: &[u8]) -> Result<(), PublicWireError> {
+    preflight_nested_message(
+        input,
+        2,
+        &[],
+        &[&[1, 2]],
+        &[NestedRule {
+            field: 2,
+            preflight: preflight_compact_command_tool_descriptor,
+        }],
+        &[],
+    )
+}
+
+fn preflight_operation_schema_artifact(input: &[u8]) -> Result<(), PublicWireError> {
+    preflight_nested_message(input, 4, &[], &[], &[], &[])
+}
+
+fn preflight_operation_schema_catalog(input: &[u8]) -> Result<(), PublicWireError> {
+    preflight_nested_message(
+        input,
+        2,
+        &[],
+        &[],
+        &[
+            NestedRule {
+                field: 1,
+                preflight: preflight_operation_schema_artifact,
+            },
+            NestedRule {
+                field: 2,
+                preflight: preflight_operation_schema_artifact,
+            },
+        ],
+        &[],
+    )
+}
+
+fn preflight_operation_schema_identity(input: &[u8]) -> Result<(), PublicWireError> {
+    preflight_nested_message(input, 2, &[], &[], &[], &[])
+}
+
+fn preflight_operation_schema_catalog_identity(input: &[u8]) -> Result<(), PublicWireError> {
+    preflight_nested_message(
+        input,
+        2,
+        &[],
+        &[],
+        &[
+            NestedRule {
+                field: 1,
+                preflight: preflight_operation_schema_identity,
+            },
+            NestedRule {
+                field: 2,
+                preflight: preflight_operation_schema_identity,
+            },
+        ],
+        &[],
+    )
+}
+
+fn preflight_active_discovery_fence(input: &[u8]) -> Result<(), PublicWireError> {
+    preflight_nested_message(input, 3, &[], &[], &[], &[])
+}
+
+fn preflight_discovery_fence(input: &[u8]) -> Result<(), PublicWireError> {
+    preflight_nested_message(
+        input,
+        4,
+        &[],
+        &[&[1, 2]],
+        &[
+            NestedRule {
+                field: 1,
+                preflight: preflight_unit,
+            },
+            NestedRule {
+                field: 2,
+                preflight: preflight_active_discovery_fence,
+            },
+            NestedRule {
+                field: 4,
+                preflight: preflight_operation_schema_catalog_identity,
+            },
+        ],
+        &[],
+    )
+}
+
+fn preflight_command_tool_page(input: &[u8]) -> Result<(), PublicWireError> {
+    preflight_nested_message(
+        input,
+        4,
+        &[1],
+        &[],
+        &[
+            NestedRule {
+                field: 1,
+                preflight: preflight_command_tool_item,
+            },
+            NestedRule {
+                field: 3,
+                preflight: preflight_discovery_fence,
+            },
+            NestedRule {
+                field: 4,
+                preflight: preflight_operation_schema_catalog,
+            },
+        ],
+        &[RepeatedRule {
+            field: 1,
+            maximum: MAX_PAGE_ITEMS,
+            wire: RepeatedWire::LengthDelimited,
+        }],
+    )
+}
+
+fn preflight_compact_command_tool_page(input: &[u8]) -> Result<(), PublicWireError> {
+    preflight_nested_message(
+        input,
+        3,
+        &[1],
+        &[],
+        &[
+            NestedRule {
+                field: 1,
+                preflight: preflight_compact_command_tool_item,
+            },
+            NestedRule {
+                field: 3,
+                preflight: preflight_discovery_fence,
+            },
+        ],
+        &[RepeatedRule {
+            field: 1,
+            maximum: MAX_PAGE_ITEMS,
+            wire: RepeatedWire::LengthDelimited,
+        }],
+    )
+}
+
+fn preflight_discover_command_tools_request(input: &[u8]) -> Result<(), PublicWireError> {
+    preflight_nested_message(
+        input,
+        4,
+        &[],
+        &[],
+        &[
+            NestedRule {
+                field: 2,
+                preflight: preflight_page_request,
+            },
+            NestedRule {
+                field: 3,
+                preflight: preflight_discovery_fence,
+            },
+        ],
+        &[],
+    )
+}
+
+fn preflight_discover_command_tools_response(input: &[u8]) -> Result<(), PublicWireError> {
+    preflight_nested_message(
+        input,
+        3,
+        &[],
+        &[&[1, 2, 3]],
+        &[
+            NestedRule {
+                field: 1,
+                preflight: preflight_discovery_fence,
+            },
+            NestedRule {
+                field: 2,
+                preflight: preflight_command_tool_page,
+            },
+            NestedRule {
+                field: 3,
+                preflight: preflight_compact_command_tool_page,
+            },
+        ],
+        &[],
+    )
+}
+
+fn preflight_contract_version_resource(input: &[u8]) -> Result<(), PublicWireError> {
+    preflight_nested_message(input, 2, &[], &[], &[], &[])
+}
+
+fn preflight_entity_schema_resource(input: &[u8]) -> Result<(), PublicWireError> {
+    preflight_nested_message(
+        input,
+        3,
+        &[],
+        &[],
+        &[NestedRule {
+            field: 3,
+            preflight: preflight_schema_artifact,
+        }],
+        &[],
+    )
+}
+
+fn preflight_compact_entity_schema_resource(input: &[u8]) -> Result<(), PublicWireError> {
+    preflight_nested_message(
+        input,
+        3,
+        &[],
+        &[],
+        &[NestedRule {
+            field: 3,
+            preflight: preflight_generated_schema_identity,
+        }],
+        &[],
+    )
+}
+
+fn preflight_command_resource(input: &[u8]) -> Result<(), PublicWireError> {
+    preflight_nested_message(input, 4, &[], &[], &[], &[])
+}
+
+fn preflight_command_outcome_resource(input: &[u8]) -> Result<(), PublicWireError> {
+    preflight_nested_message(input, 3, &[], &[], &[], &[])
+}
+
+fn preflight_commit_resource(input: &[u8]) -> Result<(), PublicWireError> {
+    preflight_nested_message(
+        input,
+        2,
+        &[],
+        &[&[1, 2]],
+        &[NestedRule {
+            field: 1,
+            preflight: preflight_unit,
+        }],
+        &[],
+    )
+}
+
+fn preflight_provenance_resource(input: &[u8]) -> Result<(), PublicWireError> {
+    preflight_nested_message(
+        input,
+        2,
+        &[],
+        &[&[1, 2]],
+        &[NestedRule {
+            field: 1,
+            preflight: preflight_unit,
+        }],
+        &[],
+    )
+}
+
+fn preflight_projection_status_resource(input: &[u8]) -> Result<(), PublicWireError> {
+    preflight_nested_message(input, 2, &[], &[], &[], &[])
+}
+
+fn preflight_resource_descriptor(input: &[u8]) -> Result<(), PublicWireError> {
+    preflight_nested_message(
+        input,
+        10,
+        &[],
+        &[&[1, 2, 3, 4, 5, 6, 7, 8, 9, 10]],
+        &[
+            NestedRule {
+                field: 1,
+                preflight: preflight_unit,
+            },
+            NestedRule {
+                field: 2,
+                preflight: preflight_contract_version_resource,
+            },
+            NestedRule {
+                field: 3,
+                preflight: preflight_entity_schema_resource,
+            },
+            NestedRule {
+                field: 4,
+                preflight: preflight_command_resource,
+            },
+            NestedRule {
+                field: 5,
+                preflight: preflight_command_resource,
+            },
+            NestedRule {
+                field: 6,
+                preflight: preflight_command_outcome_resource,
+            },
+            NestedRule {
+                field: 7,
+                preflight: preflight_commit_resource,
+            },
+            NestedRule {
+                field: 8,
+                preflight: preflight_provenance_resource,
+            },
+            NestedRule {
+                field: 9,
+                preflight: preflight_projection_status_resource,
+            },
+            NestedRule {
+                field: 10,
+                preflight: preflight_unit,
+            },
+        ],
+        &[],
+    )
+}
+
+fn preflight_compact_resource_descriptor(input: &[u8]) -> Result<(), PublicWireError> {
+    preflight_nested_message(
+        input,
+        10,
+        &[],
+        &[&[1, 2, 3, 4, 5, 6, 7, 8, 9, 10]],
+        &[
+            NestedRule {
+                field: 1,
+                preflight: preflight_unit,
+            },
+            NestedRule {
+                field: 2,
+                preflight: preflight_contract_version_resource,
+            },
+            NestedRule {
+                field: 3,
+                preflight: preflight_compact_entity_schema_resource,
+            },
+            NestedRule {
+                field: 4,
+                preflight: preflight_command_resource,
+            },
+            NestedRule {
+                field: 5,
+                preflight: preflight_command_resource,
+            },
+            NestedRule {
+                field: 6,
+                preflight: preflight_command_outcome_resource,
+            },
+            NestedRule {
+                field: 7,
+                preflight: preflight_commit_resource,
+            },
+            NestedRule {
+                field: 8,
+                preflight: preflight_provenance_resource,
+            },
+            NestedRule {
+                field: 9,
+                preflight: preflight_projection_status_resource,
+            },
+            NestedRule {
+                field: 10,
+                preflight: preflight_unit,
+            },
+        ],
+        &[],
+    )
+}
+
+fn preflight_resource_page(input: &[u8]) -> Result<(), PublicWireError> {
+    preflight_nested_message(
+        input,
+        3,
+        &[1],
+        &[],
+        &[
+            NestedRule {
+                field: 1,
+                preflight: preflight_resource_descriptor,
+            },
+            NestedRule {
+                field: 3,
+                preflight: preflight_discovery_fence,
+            },
+        ],
+        &[RepeatedRule {
+            field: 1,
+            maximum: MAX_PAGE_ITEMS,
+            wire: RepeatedWire::LengthDelimited,
+        }],
+    )
+}
+
+fn preflight_compact_resource_page(input: &[u8]) -> Result<(), PublicWireError> {
+    preflight_nested_message(
+        input,
+        3,
+        &[1],
+        &[],
+        &[
+            NestedRule {
+                field: 1,
+                preflight: preflight_compact_resource_descriptor,
+            },
+            NestedRule {
+                field: 3,
+                preflight: preflight_discovery_fence,
+            },
+        ],
+        &[RepeatedRule {
+            field: 1,
+            maximum: MAX_PAGE_ITEMS,
+            wire: RepeatedWire::LengthDelimited,
+        }],
+    )
+}
+
+fn preflight_discover_resources_request(input: &[u8]) -> Result<(), PublicWireError> {
+    preflight_nested_message(
+        input,
+        5,
+        &[],
+        &[],
+        &[
+            NestedRule {
+                field: 2,
+                preflight: preflight_page_request,
+            },
+            NestedRule {
+                field: 3,
+                preflight: preflight_discovery_fence,
+            },
+        ],
+        &[],
+    )
+}
+
+fn preflight_discover_resources_response(input: &[u8]) -> Result<(), PublicWireError> {
+    preflight_nested_message(
+        input,
+        3,
+        &[],
+        &[&[1, 2, 3]],
+        &[
+            NestedRule {
+                field: 1,
+                preflight: preflight_discovery_fence,
+            },
+            NestedRule {
+                field: 2,
+                preflight: preflight_resource_page,
+            },
+            NestedRule {
+                field: 3,
+                preflight: preflight_compact_resource_page,
+            },
+        ],
+        &[],
+    )
+}
+
 fn preflight_get_outcome_response(input: &[u8]) -> Result<(), PublicWireError> {
     preflight_nested_message(
         input,
@@ -4028,9 +5958,63 @@ impl_public_message!(
     validate_get_active_contract_response
 );
 impl_public_message!(
-    v1::GetOutcomeRequest,
+    v1::GetContractVersionRequest,
+    MAX_PUBLIC_REQUEST_BYTES,
+    3,
+    &[],
+    &[],
+    preflight_noop,
+    validate_get_contract_version_request
+);
+impl_public_message!(
+    v1::GetContractVersionResponse,
+    MAX_PUBLIC_RESPONSE_BYTES,
+    2,
+    &[],
+    &[&[1, 2]],
+    preflight_get_contract_version_response,
+    validate_get_contract_version_response
+);
+impl_public_message!(
+    v1::DiscoverCommandToolsRequest,
     MAX_PUBLIC_REQUEST_BYTES,
     4,
+    &[],
+    &[],
+    preflight_discover_command_tools_request,
+    validate_discover_command_tools_request
+);
+impl_public_message!(
+    v1::DiscoverCommandToolsResponse,
+    MAX_PUBLIC_RESPONSE_BYTES,
+    3,
+    &[],
+    &[&[1, 2, 3]],
+    preflight_discover_command_tools_response,
+    validate_discover_command_tools_response
+);
+impl_public_message!(
+    v1::DiscoverResourcesRequest,
+    MAX_PUBLIC_REQUEST_BYTES,
+    5,
+    &[],
+    &[],
+    preflight_discover_resources_request,
+    validate_discover_resources_request
+);
+impl_public_message!(
+    v1::DiscoverResourcesResponse,
+    MAX_PUBLIC_RESPONSE_BYTES,
+    3,
+    &[],
+    &[&[1, 2, 3]],
+    preflight_discover_resources_response,
+    validate_discover_resources_response
+);
+impl_public_message!(
+    v1::GetOutcomeRequest,
+    MAX_PUBLIC_REQUEST_BYTES,
+    5,
     &[],
     &[],
     preflight_noop,
@@ -4181,6 +6165,24 @@ impl_public_message!(
     validate_commit_notification
 );
 impl_public_message!(
+    v1::TraceProvenanceRequest,
+    MAX_PUBLIC_REQUEST_BYTES,
+    2,
+    &[],
+    &[],
+    preflight_trace_provenance_request,
+    validate_trace_provenance_request
+);
+impl_public_message!(
+    v1::TraceProvenanceResponse,
+    MAX_PUBLIC_RESPONSE_BYTES,
+    2,
+    &[],
+    &[&[1, 2]],
+    preflight_trace_provenance_response,
+    validate_trace_provenance_response
+);
+impl_public_message!(
     v1::HealthRequest,
     MAX_PUBLIC_REQUEST_BYTES,
     1,
@@ -4252,6 +6254,24 @@ impl_public_message!(
     preflight_revoke_capability_response,
     validate_revoke_capability_response
 );
+impl_public_message!(
+    v1::ListPendingOutboxDeliveriesRequest,
+    MAX_PUBLIC_REQUEST_BYTES,
+    2,
+    &[],
+    &[],
+    preflight_list_outbox_request,
+    validate_list_pending_outbox_deliveries_request
+);
+impl_public_message!(
+    v1::ListPendingOutboxDeliveriesResponse,
+    MAX_PUBLIC_RESPONSE_BYTES,
+    1,
+    &[],
+    &[],
+    preflight_list_outbox_response,
+    validate_list_pending_outbox_deliveries_response
+);
 
 impl PublicMessage for v1::ExecuteCommandRequest {
     const MAX_ENCODED_BYTES: usize = crate::MAX_EXECUTE_REQUEST_BYTES;
@@ -4270,7 +6290,7 @@ impl PublicMessage for v1::ExecuteCommandResponse {
     const MAX_ENCODED_BYTES: usize = crate::MAX_EXECUTE_RESPONSE_BYTES;
 
     fn preflight(input: &[u8]) -> Result<(), PublicWireError> {
-        preflight_root(input, Self::MAX_ENCODED_BYTES, 8, &[], &[])?;
+        preflight_root(input, Self::MAX_ENCODED_BYTES, 9, &[], &[])?;
         preflight_execute_response(input)
     }
 

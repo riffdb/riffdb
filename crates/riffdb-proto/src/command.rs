@@ -3,8 +3,12 @@
 use std::error::Error;
 use std::fmt;
 
+use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
 use prost::Message;
-use riffdb_types::{CommitSequence, ContractVersion, ProvenanceId, RequestId};
+use riffdb_types::{
+    CommitSequence, ContractVersion, MAX_ACTOR_ID_BYTES, MAX_CONTRACT_LINEAGE_BYTES, ProvenanceId,
+    RequestId,
+};
 
 use crate::v1;
 use crate::value::{MAX_PROTOCOL_NAME_BYTES, validate_value};
@@ -21,6 +25,9 @@ pub const MAX_PROVENANCE_URI_BYTES: usize = 2 * 1024;
 
 /// Maximum accepted byte length of a durability-mode identifier.
 pub const MAX_DURABILITY_MODE_BYTES: usize = 64;
+
+/// Exact maximum byte length of a canonical outcome resource locator.
+pub const MAX_OUTCOME_RESOURCE_LOCATOR_BYTES: usize = 1_745;
 
 /// Decodes and structurally validates a bounded Execute request.
 pub fn decode_execute_request(input: &[u8]) -> Result<v1::ExecuteCommandRequest, ExecuteWireError> {
@@ -101,9 +108,13 @@ pub fn validate_execute_response(
         ) {
             return Err(ExecuteWireError::InvalidDurabilityMode);
         }
+        if let Some(locator) = response.outcome_uri.as_deref() {
+            validate_outcome_resource_locator(locator)?;
+        }
     } else if response.commit_sequence != 0
         || !response.provenance_uri.is_empty()
         || !response.durability_mode.is_empty()
+        || response.outcome_uri.is_some()
     {
         return Err(ExecuteWireError::InvalidReadOnlySentinel);
     }
@@ -124,6 +135,132 @@ pub fn validate_execute_response(
         return Err(ExecuteWireError::MessageTooLarge);
     }
     Ok(())
+}
+
+/// Validates the complete canonical public shape of an outcome resource locator.
+///
+/// This check is deliberately structural. It does not grant access, resolve a
+/// durable identity, or expose any decoded locator component.
+pub fn validate_outcome_resource_locator(uri: &str) -> Result<(), ExecuteWireError> {
+    const PREFIX: &str = "riffdb://outcome/";
+    if uri.len() > MAX_OUTCOME_RESOURCE_LOCATOR_BYTES {
+        return Err(ExecuteWireError::InvalidOutcomeUri);
+    }
+    let path = uri
+        .strip_prefix(PREFIX)
+        .ok_or(ExecuteWireError::InvalidOutcomeUri)?;
+    let mut segments = path.split('/');
+    let principal = segments.next().ok_or(ExecuteWireError::InvalidOutcomeUri)?;
+    let lineage = segments.next().ok_or(ExecuteWireError::InvalidOutcomeUri)?;
+    let command_id = segments.next().ok_or(ExecuteWireError::InvalidOutcomeUri)?;
+    let tool_name = segments.next().ok_or(ExecuteWireError::InvalidOutcomeUri)?;
+    let digest = segments.next().ok_or(ExecuteWireError::InvalidOutcomeUri)?;
+    if segments.next().is_some() {
+        return Err(ExecuteWireError::InvalidOutcomeUri);
+    }
+
+    decode_percent_encoded_id(principal, MAX_ACTOR_ID_BYTES)?;
+    let lineage = decode_percent_encoded_id(lineage, MAX_CONTRACT_LINEAGE_BYTES)?;
+    if command_id.starts_with('0')
+        || command_id
+            .parse::<u32>()
+            .ok()
+            .is_none_or(|value| value == 0)
+    {
+        return Err(ExecuteWireError::InvalidOutcomeUri);
+    }
+    let tool_contract = validate_mcp_command_tool_name(tool_name)?;
+    if !lineage.is_ascii()
+        || lineage
+            .iter()
+            .copied()
+            .map(|byte| byte.to_ascii_lowercase())
+            .ne(tool_contract.bytes())
+    {
+        return Err(ExecuteWireError::InvalidOutcomeUri);
+    }
+    if digest.len() != 50 {
+        return Err(ExecuteWireError::InvalidOutcomeUri);
+    }
+    let tuple = URL_SAFE_NO_PAD
+        .decode(digest)
+        .map_err(|_| ExecuteWireError::InvalidOutcomeUri)?;
+    if tuple.len() != 37
+        || tuple[0] != 1
+        || u32::from_be_bytes(
+            tuple[1..5]
+                .try_into()
+                .map_err(|_| ExecuteWireError::InvalidOutcomeUri)?,
+        ) == 0
+        || URL_SAFE_NO_PAD.encode(&tuple) != digest
+    {
+        return Err(ExecuteWireError::InvalidOutcomeUri);
+    }
+    Ok(())
+}
+
+fn decode_percent_encoded_id(value: &str, maximum: usize) -> Result<Vec<u8>, ExecuteWireError> {
+    let mut decoded = Vec::with_capacity(value.len().min(maximum));
+    let bytes = value.as_bytes();
+    let mut index = 0usize;
+    while index < bytes.len() {
+        match bytes[index] {
+            byte if byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'.' | b'_' | b'~') => {
+                decoded.push(byte);
+                index += 1;
+            }
+            b'%' if index + 2 < bytes.len() => {
+                let high = uppercase_hex(bytes[index + 1])?;
+                let low = uppercase_hex(bytes[index + 2])?;
+                let byte = (high << 4) | low;
+                if byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'.' | b'_' | b'~') {
+                    return Err(ExecuteWireError::InvalidOutcomeUri);
+                }
+                decoded.push(byte);
+                index += 3;
+            }
+            _ => return Err(ExecuteWireError::InvalidOutcomeUri),
+        }
+        if decoded.len() > maximum {
+            return Err(ExecuteWireError::InvalidOutcomeUri);
+        }
+    }
+    if decoded.is_empty() || std::str::from_utf8(&decoded).is_err() {
+        return Err(ExecuteWireError::InvalidOutcomeUri);
+    }
+    Ok(decoded)
+}
+
+fn uppercase_hex(byte: u8) -> Result<u8, ExecuteWireError> {
+    match byte {
+        b'0'..=b'9' => Ok(byte - b'0'),
+        b'A'..=b'F' => Ok(byte - b'A' + 10),
+        _ => Err(ExecuteWireError::InvalidOutcomeUri),
+    }
+}
+
+fn validate_mcp_command_tool_name(value: &str) -> Result<&str, ExecuteWireError> {
+    let suffix = value
+        .strip_prefix("riffdb.cmd.")
+        .ok_or(ExecuteWireError::InvalidOutcomeUri)?;
+    let mut segments = suffix.split('.');
+    let contract = segments.next().ok_or(ExecuteWireError::InvalidOutcomeUri)?;
+    let command = segments.next().ok_or(ExecuteWireError::InvalidOutcomeUri)?;
+    if value.len() > 128
+        || segments.next().is_some()
+        || !valid_mcp_segment(contract)
+        || !valid_mcp_segment(command)
+    {
+        return Err(ExecuteWireError::InvalidOutcomeUri);
+    }
+    Ok(contract)
+}
+
+fn valid_mcp_segment(value: &str) -> bool {
+    value.as_bytes().first().is_some_and(u8::is_ascii_lowercase)
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'_')
 }
 
 fn preflight_result(result: Result<(), PreflightError>) -> Result<(), ExecuteWireError> {
@@ -210,6 +347,8 @@ pub enum ExecuteWireError {
     InvalidPlanHash,
     /// The provenance URI is absent, oversized, or not in the RiffDB namespace.
     InvalidProvenanceUri,
+    /// The optional outcome locator is not the exact canonical v1 resource URI.
+    InvalidOutcomeUri,
     /// The durability-mode identifier is absent or malformed.
     InvalidDurabilityMode,
     /// A read-only result does not carry the exact zero/empty journal sentinels.
@@ -295,6 +434,7 @@ mod tests {
             ),
             provenance_uri: "riffdb://provenance/019bf6aa-a640-7de6-89c9-8a7f70bbbd23".to_owned(),
             durability_mode: "sync".to_owned(),
+            outcome_uri: None,
         };
         validate_execute_response(&response).expect("valid response");
 
@@ -358,6 +498,7 @@ mod tests {
             outcome: Some(canonical_value_to_proto(&CanonicalValue::Null).expect("valid outcome")),
             provenance_uri: "riffdb://provenance/019bf6aa-a640-7de6-89c9-8a7f70bbbd23".to_owned(),
             durability_mode: String::new(),
+            outcome_uri: None,
         };
 
         for mode in ["sync", "group", "memory"] {

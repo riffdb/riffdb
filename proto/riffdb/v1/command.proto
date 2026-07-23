@@ -28,6 +28,7 @@ message ExecuteCommandResponse {
   Value outcome = 6;
   string provenance_uri = 7;
   string durability_mode = 8;
+  optional string outcome_uri = 9;
 }
 
 message GetOutcomeRequest {
@@ -35,6 +36,7 @@ message GetOutcomeRequest {
   string contract_lineage = 2;
   string command_name = 3;
   string idempotency_key = 4;
+  optional string outcome_uri = 5;
 }
 
 message GetOutcomeResponse {

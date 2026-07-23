@@ -23,6 +23,7 @@ files
   riffdb/v1/admin.proto
     import riffdb/v1/common.proto
     import riffdb/v1/value.proto
+    import riffdb/v1/commit.proto
   riffdb/v1/command.proto
     import riffdb/v1/common.proto
     import riffdb/v1/value.proto
@@ -33,6 +34,9 @@ files
     import riffdb/v1/value.proto
   riffdb/v1/contract.proto
     import riffdb/v1/common.proto
+  riffdb/v1/discovery.proto
+    import riffdb/v1/common.proto
+    import riffdb/v1/contract.proto
   riffdb/v1/error.proto
   riffdb/v1/projection.proto
     import riffdb/v1/common.proto
@@ -45,6 +49,7 @@ files
     import riffdb/v1/command.proto
     import riffdb/v1/commit.proto
     import riffdb/v1/contract.proto
+    import riffdb/v1/discovery.proto
     import riffdb/v1/projection.proto
     import riffdb/v1/query.proto
   riffdb/v1/value.proto
@@ -414,6 +419,10 @@ messages
     1 seconds optional sint64
     2 nanos optional uint32
   riffdb.storage.v1.UnitV1 fields=0
+  riffdb.v1.ActiveDiscoveryCatalogFence fields=3
+    1 contract_lineage optional string
+    2 contract_version optional uint64
+    3 bundle_hash optional bytes
   riffdb.v1.AdmittedActor fields=4
     1 principal_id optional string
     2 actor_kind optional .riffdb.v1.ActorKind
@@ -491,6 +500,31 @@ messages
     9 event_type_ids repeated uint32
     10 outcome_ids repeated uint32
     11 rendered_text optional string
+  riffdb.v1.CommandOutcomeResource fields=3
+    1 contract_lineage optional string
+    2 command_id optional uint32
+    3 tool_name optional string
+  riffdb.v1.CommandResource fields=4
+    1 contract_lineage optional string
+    2 command_id optional uint32
+    3 contract_version optional uint64
+    4 source_command optional string
+  riffdb.v1.CommandToolDescriptor fields=7
+    1 tool_name optional string
+    2 source_command optional string
+    3 contract_lineage optional string
+    4 contract_version optional uint64
+    5 command_id optional uint32
+    6 input_schema optional .riffdb.v1.GeneratedSchemaArtifact
+    7 outcome_schema optional .riffdb.v1.GeneratedSchemaArtifact
+  riffdb.v1.CommandToolDiscoveryItem fields=2
+    1 fixed_tool optional .riffdb.v1.FixedToolKind oneof=item
+    2 command_tool optional .riffdb.v1.CommandToolDescriptor oneof=item
+  riffdb.v1.CommandToolDiscoveryPage fields=4
+    1 items repeated .riffdb.v1.CommandToolDiscoveryItem
+    2 next_cursor optional bytes proto3-optional oneof=_next_cursor
+    3 observed_fence optional .riffdb.v1.DiscoveryCatalogFence
+    4 operation_schemas optional .riffdb.v1.OperationSchemaCatalog
   riffdb.v1.Commit fields=16
     1 commit_sequence optional uint64
     2 admission_request_id optional bytes
@@ -515,9 +549,46 @@ messages
     1 items repeated .riffdb.v1.Commit
     2 next_cursor optional bytes proto3-optional oneof=_next_cursor
     3 observed_fence optional .riffdb.v1.FrontierPosition
+  riffdb.v1.CommitResource fields=2
+    1 class_template optional .riffdb.v1.Unit oneof=target
+    2 commit_sequence optional uint64 oneof=target
   riffdb.v1.CommitSubscriptionTerminal fields=2
     1 reason optional .riffdb.v1.CommitSubscriptionEndReason
     2 resume_after optional .riffdb.v1.FrontierPosition
+  riffdb.v1.CompactCommandToolDescriptor fields=7
+    1 tool_name optional string
+    2 source_command optional string
+    3 contract_lineage optional string
+    4 contract_version optional uint64
+    5 command_id optional uint32
+    6 input_schema optional .riffdb.v1.GeneratedSchemaIdentity
+    7 outcome_schema optional .riffdb.v1.GeneratedSchemaIdentity
+  riffdb.v1.CompactCommandToolDiscoveryItem fields=2
+    1 fixed_tool optional .riffdb.v1.FixedToolKind oneof=item
+    2 command_tool optional .riffdb.v1.CompactCommandToolDescriptor oneof=item
+  riffdb.v1.CompactCommandToolDiscoveryPage fields=3
+    1 items repeated .riffdb.v1.CompactCommandToolDiscoveryItem
+    2 next_cursor optional bytes proto3-optional oneof=_next_cursor
+    3 observed_fence optional .riffdb.v1.DiscoveryCatalogFence
+  riffdb.v1.CompactEntitySchemaResource fields=3
+    1 contract_lineage optional string
+    2 entity_type_id optional uint32
+    3 schema optional .riffdb.v1.GeneratedSchemaIdentity
+  riffdb.v1.CompactResourceDescriptor fields=10
+    1 active_contract optional .riffdb.v1.Unit oneof=resource
+    2 contract_version optional .riffdb.v1.ContractVersionResource oneof=resource
+    3 entity_schema optional .riffdb.v1.CompactEntitySchemaResource oneof=resource
+    4 command_plan optional .riffdb.v1.CommandResource oneof=resource
+    5 command_documentation optional .riffdb.v1.CommandResource oneof=resource
+    6 command_outcome optional .riffdb.v1.CommandOutcomeResource oneof=resource
+    7 commit optional .riffdb.v1.CommitResource oneof=resource
+    8 provenance optional .riffdb.v1.ProvenanceResource oneof=resource
+    9 projection_status optional .riffdb.v1.ProjectionStatusResource oneof=resource
+    10 server_health optional .riffdb.v1.Unit oneof=resource
+  riffdb.v1.CompactResourceDiscoveryPage fields=3
+    1 items repeated .riffdb.v1.CompactResourceDescriptor
+    2 next_cursor optional bytes proto3-optional oneof=_next_cursor
+    3 observed_fence optional .riffdb.v1.DiscoveryCatalogFence
   riffdb.v1.CompilationDiagnostics fields=2
     1 syntax optional .riffdb.v1.SyntaxDiagnosticList oneof=diagnostics
     2 semantic optional .riffdb.v1.SemanticDiagnosticList oneof=diagnostics
@@ -532,6 +603,9 @@ messages
   riffdb.v1.ContractSelection fields=2
     1 active optional .riffdb.v1.Unit oneof=selection
     2 exact optional .riffdb.v1.ExactContractSelection oneof=selection
+  riffdb.v1.ContractVersionResource fields=2
+    1 contract_lineage optional string
+    2 contract_version optional uint64
   riffdb.v1.CreateCapabilityRequest fields=8
     1 request_id optional bytes
     2 mode optional .riffdb.v1.CapabilityCreateMode
@@ -562,6 +636,30 @@ messages
     2 already_active optional .riffdb.v1.ContractDescriptor oneof=result
     3 expected_active_version_mismatch optional .riffdb.v1.ExpectedActiveVersionMismatch oneof=result
     4 bundle_conflict optional .riffdb.v1.Unit oneof=result
+  riffdb.v1.DiscoverCommandToolsRequest fields=4
+    1 request_id optional bytes
+    2 page optional .riffdb.v1.PageRequest
+    3 prior_fence optional .riffdb.v1.DiscoveryCatalogFence
+    4 representation optional .riffdb.v1.DiscoveryRepresentation
+  riffdb.v1.DiscoverCommandToolsResponse fields=3
+    1 catalog_unchanged optional .riffdb.v1.DiscoveryCatalogFence oneof=result
+    2 page optional .riffdb.v1.CommandToolDiscoveryPage oneof=result
+    3 compact_page optional .riffdb.v1.CompactCommandToolDiscoveryPage oneof=result
+  riffdb.v1.DiscoverResourcesRequest fields=5
+    1 request_id optional bytes
+    2 page optional .riffdb.v1.PageRequest
+    3 prior_fence optional .riffdb.v1.DiscoveryCatalogFence
+    4 representation optional .riffdb.v1.DiscoveryRepresentation
+    5 kind optional .riffdb.v1.ResourceDiscoveryKind
+  riffdb.v1.DiscoverResourcesResponse fields=3
+    1 catalog_unchanged optional .riffdb.v1.DiscoveryCatalogFence oneof=result
+    2 page optional .riffdb.v1.ResourceDiscoveryPage oneof=result
+    3 compact_page optional .riffdb.v1.CompactResourceDiscoveryPage oneof=result
+  riffdb.v1.DiscoveryCatalogFence fields=4
+    1 no_active_contract optional .riffdb.v1.Unit oneof=state
+    2 active_contract optional .riffdb.v1.ActiveDiscoveryCatalogFence oneof=state
+    3 server_generation optional bytes
+    4 operation_schemas optional .riffdb.v1.OperationSchemaCatalogIdentity
   riffdb.v1.DurableEvent fields=3
     1 event_id optional .riffdb.v1.EventId
     2 event_type_id optional uint32
@@ -575,6 +673,10 @@ messages
     1 contract_lineage optional string
     2 entity_type_id optional uint32
     3 field_ids repeated uint32
+  riffdb.v1.EntitySchemaResource fields=3
+    1 contract_lineage optional string
+    2 entity_type_id optional uint32
+    3 schema optional .riffdb.v1.GeneratedSchemaArtifact
   riffdb.v1.EnumValue fields=3
     1 type_id optional uint32
     2 variant_id optional uint32
@@ -590,7 +692,7 @@ messages
     2 command_name optional string
     3 expected_contract_version optional uint64 proto3-optional oneof=_expected_contract_version
     4 input optional .riffdb.v1.Value
-  riffdb.v1.ExecuteCommandResponse fields=8
+  riffdb.v1.ExecuteCommandResponse fields=9
     1 status optional .riffdb.v1.ExecuteCommandResponse.CompletionStatus
     2 commit_sequence optional uint64
     3 contract_version optional uint64
@@ -599,6 +701,7 @@ messages
     6 outcome optional .riffdb.v1.Value
     7 provenance_uri optional string
     8 durability_mode optional string
+    9 outcome_uri optional string proto3-optional oneof=_outcome_uri
   riffdb.v1.ExpectedActiveVersionMismatch fields=1
     1 actual_active_version optional uint64 proto3-optional oneof=_actual_active_version
   riffdb.v1.ExplainCommandRequest fields=3
@@ -627,6 +730,9 @@ messages
     2 dialect optional string
     3 schema_hash optional bytes
     4 canonical_json optional string
+  riffdb.v1.GeneratedSchemaIdentity fields=2
+    1 key optional .riffdb.v1.SchemaArtifactKey
+    2 schema_hash optional bytes
   riffdb.v1.GetActiveContractRequest fields=1
     1 request_id optional bytes
   riffdb.v1.GetActiveContractResponse fields=2
@@ -638,6 +744,13 @@ messages
   riffdb.v1.GetCommitResponse fields=2
     1 not_found optional .riffdb.v1.Unit oneof=result
     2 found optional .riffdb.v1.Commit oneof=result
+  riffdb.v1.GetContractVersionRequest fields=3
+    1 request_id optional bytes
+    2 contract_lineage optional string
+    3 contract_version optional uint64
+  riffdb.v1.GetContractVersionResponse fields=2
+    1 not_found optional .riffdb.v1.Unit oneof=result
+    2 found optional .riffdb.v1.ContractDescriptor oneof=result
   riffdb.v1.GetEntityRequest fields=5
     1 request_id optional bytes
     2 contract optional .riffdb.v1.ContractSelection
@@ -647,11 +760,12 @@ messages
   riffdb.v1.GetEntityResponse fields=2
     1 not_found optional .riffdb.v1.Unit oneof=result
     2 found optional .riffdb.v1.Entity oneof=result
-  riffdb.v1.GetOutcomeRequest fields=4
+  riffdb.v1.GetOutcomeRequest fields=5
     1 request_id optional bytes
     2 contract_lineage optional string
     3 command_name optional string
     4 idempotency_key optional string
+    5 outcome_uri optional string proto3-optional oneof=_outcome_uri
   riffdb.v1.GetOutcomeResponse fields=2
     1 not_found optional .riffdb.v1.Unit oneof=result
     2 found optional .riffdb.v1.ExecuteCommandResponse oneof=result
@@ -683,6 +797,11 @@ messages
   riffdb.v1.LineageScopedStableId fields=2
     1 contract_lineage optional string
     2 stable_id optional uint32
+  riffdb.v1.ListPendingOutboxDeliveriesRequest fields=2
+    1 request_id optional bytes
+    2 page optional .riffdb.v1.PageRequest
+  riffdb.v1.ListPendingOutboxDeliveriesResponse fields=1
+    1 page optional .riffdb.v1.OutboxDeliveryPage
   riffdb.v1.Money fields=2
     1 currency optional string
     2 amount optional .riffdb.v1.Decimal
@@ -693,6 +812,28 @@ messages
     1 created optional .riffdb.v1.NormalCapabilityCreated oneof=result
     2 already_created_token_unavailable optional .riffdb.v1.CapabilityIdentity oneof=result
     3 capability_id_conflict optional .riffdb.v1.Unit oneof=result
+  riffdb.v1.OperationSchemaArtifact fields=4
+    1 schema_id optional string
+    2 dialect optional string
+    3 schema_hash optional bytes
+    4 canonical_json optional string
+  riffdb.v1.OperationSchemaCatalog fields=2
+    1 command_operation_envelope optional .riffdb.v1.OperationSchemaArtifact
+    2 command_get_outcome_result optional .riffdb.v1.OperationSchemaArtifact
+  riffdb.v1.OperationSchemaCatalogIdentity fields=2
+    1 command_operation_envelope optional .riffdb.v1.OperationSchemaIdentity
+    2 command_get_outcome_result optional .riffdb.v1.OperationSchemaIdentity
+  riffdb.v1.OperationSchemaIdentity fields=2
+    1 schema_id optional string
+    2 schema_hash optional bytes
+  riffdb.v1.OutboxDeliveryPage fields=2
+    1 items repeated .riffdb.v1.OutboxDeliverySummary
+    2 next_cursor optional bytes proto3-optional oneof=_next_cursor
+  riffdb.v1.OutboxDeliverySummary fields=4
+    1 event_id optional .riffdb.v1.EventId
+    2 state optional .riffdb.v1.OutboxDeliveryState
+    3 attempts optional uint32
+    4 next_attempt_at optional .riffdb.v1.Timestamp
   riffdb.v1.PageRequest fields=2
     1 limit optional uint32 proto3-optional oneof=_limit
     2 cursor optional bytes proto3-optional oneof=_cursor
@@ -733,10 +874,38 @@ messages
     5 published_apply_mode optional .riffdb.v1.PublishedApplyMode proto3-optional oneof=_published_apply_mode
     6 failure optional .riffdb.v1.ProjectionFailure
     7 authoritative_head optional .riffdb.v1.FrontierPosition
+  riffdb.v1.ProjectionStatusResource fields=2
+    1 contract_lineage optional string
+    2 projection_id optional uint32
   riffdb.v1.ProjectionUnavailableReason fields=3
     1 building optional .riffdb.v1.Unit oneof=reason
     2 rebuilding optional .riffdb.v1.Unit oneof=reason
     3 failure optional .riffdb.v1.ProjectionFailureCode oneof=reason
+  riffdb.v1.Provenance fields=13
+    1 provenance_id optional bytes
+    2 commit_sequence optional uint64
+    3 admission_request_id optional bytes
+    4 contract_lineage optional string
+    5 contract_version optional uint64
+    6 command_id optional uint32
+    7 plan_hash optional bytes
+    8 actor optional .riffdb.v1.AdmittedActor
+    9 logical_time optional .riffdb.v1.Timestamp
+    10 outcome_id optional uint32
+    11 affected_entities repeated .riffdb.v1.AffectedEntity
+    12 event_ids repeated .riffdb.v1.EventId
+    13 claims optional .riffdb.v1.ProvenanceClaims
+  riffdb.v1.ProvenanceClaims fields=4
+    1 source_repository optional string proto3-optional oneof=_source_repository
+    2 source_commit optional string proto3-optional oneof=_source_commit
+    3 reason optional string proto3-optional oneof=_reason
+    4 approval_id optional string proto3-optional oneof=_approval_id
+  riffdb.v1.ProvenanceResource fields=2
+    1 class_template optional .riffdb.v1.Unit oneof=target
+    2 provenance_id optional bytes oneof=target
+  riffdb.v1.ProvenanceSelection fields=2
+    1 commit_sequence optional uint64 oneof=selection
+    2 provenance_id optional bytes oneof=selection
   riffdb.v1.PublicError fields=8
     1 kind optional .riffdb.v1.PublicErrorKind
     2 code optional string
@@ -770,6 +939,21 @@ messages
   riffdb.v1.QueryProjectionWaitTimedOut fields=2
     1 required_sequence optional uint64
     2 current optional .riffdb.v1.FrontierPosition
+  riffdb.v1.ResourceDescriptor fields=10
+    1 active_contract optional .riffdb.v1.Unit oneof=resource
+    2 contract_version optional .riffdb.v1.ContractVersionResource oneof=resource
+    3 entity_schema optional .riffdb.v1.EntitySchemaResource oneof=resource
+    4 command_plan optional .riffdb.v1.CommandResource oneof=resource
+    5 command_documentation optional .riffdb.v1.CommandResource oneof=resource
+    6 command_outcome optional .riffdb.v1.CommandOutcomeResource oneof=resource
+    7 commit optional .riffdb.v1.CommitResource oneof=resource
+    8 provenance optional .riffdb.v1.ProvenanceResource oneof=resource
+    9 projection_status optional .riffdb.v1.ProjectionStatusResource oneof=resource
+    10 server_health optional .riffdb.v1.Unit oneof=resource
+  riffdb.v1.ResourceDiscoveryPage fields=3
+    1 items repeated .riffdb.v1.ResourceDescriptor
+    2 next_cursor optional bytes proto3-optional oneof=_next_cursor
+    3 observed_fence optional .riffdb.v1.DiscoveryCatalogFence
   riffdb.v1.RevokeCapabilityRequest fields=3
     1 request_id optional bytes
     2 capability_id optional bytes
@@ -838,6 +1022,12 @@ messages
   riffdb.v1.Timestamp fields=2
     1 seconds optional sint64
     2 nanos optional uint32
+  riffdb.v1.TraceProvenanceRequest fields=2
+    1 request_id optional bytes
+    2 selector optional .riffdb.v1.ProvenanceSelection
+  riffdb.v1.TraceProvenanceResponse fields=2
+    1 not_found optional .riffdb.v1.Unit oneof=result
+    2 found optional .riffdb.v1.Provenance oneof=result
   riffdb.v1.Unit fields=0
   riffdb.v1.ValidateContractRequest fields=2
     1 request_id optional bytes
@@ -1025,6 +1215,10 @@ enums
     6 COMMIT_SUBSCRIPTION_END_REASON_DEADLINE_EXCEEDED
     7 COMMIT_SUBSCRIPTION_END_REASON_SERVICE_SHUTDOWN
     8 COMMIT_SUBSCRIPTION_END_REASON_UNAVAILABLE
+  riffdb.v1.DiscoveryRepresentation values=3
+    0 DISCOVERY_REPRESENTATION_UNSPECIFIED
+    1 DISCOVERY_REPRESENTATION_FULL
+    2 DISCOVERY_REPRESENTATION_COMPACT_OBSERVATION
   riffdb.v1.ExecuteCommandResponse.CompletionStatus values=4
     0 COMPLETION_STATUS_UNSPECIFIED
     1 COMMITTED
@@ -1038,6 +1232,22 @@ enums
     0 EXECUTION_FAILURE_CODE_UNSPECIFIED
     1 EXECUTION_FAILURE_CODE_ARITHMETIC_FAULT
     2 EXECUTION_FAILURE_CODE_RESOURCE_LIMIT
+  riffdb.v1.FixedToolKind values=15
+    0 FIXED_TOOL_KIND_UNSPECIFIED
+    1 FIXED_TOOL_KIND_VALIDATE_CONTRACT
+    2 FIXED_TOOL_KIND_GET_ACTIVE_CONTRACT
+    3 FIXED_TOOL_KIND_EXPLAIN_COMMAND
+    4 FIXED_TOOL_KIND_DEPLOY_CONTRACT
+    5 FIXED_TOOL_KIND_RESOLVE_COMMAND_OUTCOME
+    6 FIXED_TOOL_KIND_GET_ENTITY
+    7 FIXED_TOOL_KIND_SCAN_INDEX
+    8 FIXED_TOOL_KIND_GET_COMMIT
+    9 FIXED_TOOL_KIND_SCAN_COMMITS
+    10 FIXED_TOOL_KIND_TRACE_PROVENANCE
+    11 FIXED_TOOL_KIND_QUERY_PROJECTION
+    12 FIXED_TOOL_KIND_GET_PROJECTION_STATUS
+    13 FIXED_TOOL_KIND_LIST_PENDING_OUTBOX_DELIVERIES
+    14 FIXED_TOOL_KIND_GET_HEALTH
   riffdb.v1.HealthComponentKind values=6
     0 HEALTH_COMPONENT_KIND_UNSPECIFIED
     1 HEALTH_COMPONENT_KIND_AUTHORITATIVE_STORAGE
@@ -1057,6 +1267,12 @@ enums
     3 HEALTH_STATUS_DEGRADED
   riffdb.v1.NullValue values=1
     0 NULL_VALUE
+  riffdb.v1.OutboxDeliveryState values=5
+    0 OUTBOX_DELIVERY_STATE_UNSPECIFIED
+    1 OUTBOX_DELIVERY_STATE_PENDING
+    2 OUTBOX_DELIVERY_STATE_RETRY_SCHEDULED
+    3 OUTBOX_DELIVERY_STATE_DELIVERING
+    4 OUTBOX_DELIVERY_STATE_DEAD_LETTER
   riffdb.v1.PreBootstrapLifecycle values=3
     0 PRE_BOOTSTRAP_LIFECYCLE_UNSPECIFIED
     1 PRE_BOOTSTRAP_LIFECYCLE_INITIALIZING_VALIDATION
@@ -1100,6 +1316,11 @@ enums
     4 RECOVERY_ACTION_OBTAIN_PERMISSION
     5 RECOVERY_ACTION_REFRESH_CONTRACT
     6 RECOVERY_ACTION_CONTACT_OPERATOR
+  riffdb.v1.ResourceDiscoveryKind values=4
+    0 RESOURCE_DISCOVERY_KIND_UNSPECIFIED
+    1 RESOURCE_DISCOVERY_KIND_ALL
+    2 RESOURCE_DISCOVERY_KIND_CONCRETE
+    3 RESOURCE_DISCOVERY_KIND_TEMPLATE
   riffdb.v1.RevocationReason values=5
     0 REVOCATION_REASON_UNSPECIFIED
     1 REVOCATION_REASON_REQUESTED
@@ -1123,6 +1344,7 @@ services
     Stats .riffdb.v1.StatsRequest -> .riffdb.v1.StatsResponse (unary)
     CreateCapability .riffdb.v1.CreateCapabilityRequest -> .riffdb.v1.CreateCapabilityResponse (unary)
     RevokeCapability .riffdb.v1.RevokeCapabilityRequest -> .riffdb.v1.RevokeCapabilityResponse (unary)
+    ListPendingOutboxDeliveries .riffdb.v1.ListPendingOutboxDeliveriesRequest -> .riffdb.v1.ListPendingOutboxDeliveriesResponse (unary)
   riffdb.v1.CommandService
     Execute .riffdb.v1.ExecuteCommandRequest -> .riffdb.v1.ExecuteCommandResponse (unary)
     GetOutcome .riffdb.v1.GetOutcomeRequest -> .riffdb.v1.GetOutcomeResponse (unary)
@@ -1130,12 +1352,17 @@ services
     GetCommit .riffdb.v1.GetCommitRequest -> .riffdb.v1.GetCommitResponse (unary)
     ScanCommits .riffdb.v1.ScanCommitsRequest -> .riffdb.v1.ScanCommitsResponse (unary)
     SubscribeCommits .riffdb.v1.SubscribeCommitsRequest -> .riffdb.v1.CommitNotification (server-streaming)
+    TraceProvenance .riffdb.v1.TraceProvenanceRequest -> .riffdb.v1.TraceProvenanceResponse (unary)
   riffdb.v1.ContractService
     ValidateContract .riffdb.v1.ValidateContractRequest -> .riffdb.v1.ValidateContractResponse (unary)
     ExplainCommand .riffdb.v1.ExplainCommandRequest -> .riffdb.v1.ExplainCommandResponse (unary)
     DeployContract .riffdb.v1.DeployContractRequest -> .riffdb.v1.DeployContractResponse (unary)
     GetActiveContract .riffdb.v1.GetActiveContractRequest -> .riffdb.v1.GetActiveContractResponse (unary)
+    GetContractVersion .riffdb.v1.GetContractVersionRequest -> .riffdb.v1.GetContractVersionResponse (unary)
+    DiscoverCommandTools .riffdb.v1.DiscoverCommandToolsRequest -> .riffdb.v1.DiscoverCommandToolsResponse (unary)
+    DiscoverResources .riffdb.v1.DiscoverResourcesRequest -> .riffdb.v1.DiscoverResourcesResponse (unary)
   riffdb.v1.QueryService
     GetEntity .riffdb.v1.GetEntityRequest -> .riffdb.v1.GetEntityResponse (unary)
     ScanIndex .riffdb.v1.ScanIndexRequest -> .riffdb.v1.ScanIndexResponse (unary)
     QueryProjection .riffdb.v1.QueryProjectionRequest -> .riffdb.v1.QueryProjectionResponse (unary)
+    GetProjectionStatus .riffdb.v1.GetProjectionStatusRequest -> .riffdb.v1.GetProjectionStatusResponse (unary)

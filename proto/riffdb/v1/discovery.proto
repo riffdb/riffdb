@@ -1,0 +1,248 @@
+syntax = "proto3";
+
+package riffdb.v1;
+
+import "riffdb/v1/common.proto";
+import "riffdb/v1/contract.proto";
+
+enum FixedToolKind {
+  FIXED_TOOL_KIND_UNSPECIFIED = 0;
+  FIXED_TOOL_KIND_VALIDATE_CONTRACT = 1;
+  FIXED_TOOL_KIND_GET_ACTIVE_CONTRACT = 2;
+  FIXED_TOOL_KIND_EXPLAIN_COMMAND = 3;
+  FIXED_TOOL_KIND_DEPLOY_CONTRACT = 4;
+  FIXED_TOOL_KIND_RESOLVE_COMMAND_OUTCOME = 5;
+  FIXED_TOOL_KIND_GET_ENTITY = 6;
+  FIXED_TOOL_KIND_SCAN_INDEX = 7;
+  FIXED_TOOL_KIND_GET_COMMIT = 8;
+  FIXED_TOOL_KIND_SCAN_COMMITS = 9;
+  FIXED_TOOL_KIND_TRACE_PROVENANCE = 10;
+  FIXED_TOOL_KIND_QUERY_PROJECTION = 11;
+  FIXED_TOOL_KIND_GET_PROJECTION_STATUS = 12;
+  FIXED_TOOL_KIND_LIST_PENDING_OUTBOX_DELIVERIES = 13;
+  FIXED_TOOL_KIND_GET_HEALTH = 14;
+}
+
+message CommandToolDescriptor {
+  string tool_name = 1;
+  string source_command = 2;
+  string contract_lineage = 3;
+  uint64 contract_version = 4;
+  uint32 command_id = 5;
+  GeneratedSchemaArtifact input_schema = 6;
+  GeneratedSchemaArtifact outcome_schema = 7;
+}
+
+message GeneratedSchemaIdentity {
+  SchemaArtifactKey key = 1;
+  bytes schema_hash = 2;
+}
+
+message CompactCommandToolDescriptor {
+  string tool_name = 1;
+  string source_command = 2;
+  string contract_lineage = 3;
+  uint64 contract_version = 4;
+  uint32 command_id = 5;
+  GeneratedSchemaIdentity input_schema = 6;
+  GeneratedSchemaIdentity outcome_schema = 7;
+}
+
+message CommandToolDiscoveryItem {
+  oneof item {
+    FixedToolKind fixed_tool = 1;
+    CommandToolDescriptor command_tool = 2;
+  }
+}
+
+message CompactCommandToolDiscoveryItem {
+  oneof item {
+    FixedToolKind fixed_tool = 1;
+    CompactCommandToolDescriptor command_tool = 2;
+  }
+}
+
+message OperationSchemaArtifact {
+  string schema_id = 1;
+  string dialect = 2;
+  bytes schema_hash = 3;
+  string canonical_json = 4;
+}
+
+message OperationSchemaCatalog {
+  OperationSchemaArtifact command_operation_envelope = 1;
+  OperationSchemaArtifact command_get_outcome_result = 2;
+}
+
+message OperationSchemaIdentity {
+  string schema_id = 1;
+  bytes schema_hash = 2;
+}
+
+message OperationSchemaCatalogIdentity {
+  OperationSchemaIdentity command_operation_envelope = 1;
+  OperationSchemaIdentity command_get_outcome_result = 2;
+}
+
+enum DiscoveryRepresentation {
+  DISCOVERY_REPRESENTATION_UNSPECIFIED = 0;
+  DISCOVERY_REPRESENTATION_FULL = 1;
+  DISCOVERY_REPRESENTATION_COMPACT_OBSERVATION = 2;
+}
+
+enum ResourceDiscoveryKind {
+  RESOURCE_DISCOVERY_KIND_UNSPECIFIED = 0;
+  RESOURCE_DISCOVERY_KIND_ALL = 1;
+  RESOURCE_DISCOVERY_KIND_CONCRETE = 2;
+  RESOURCE_DISCOVERY_KIND_TEMPLATE = 3;
+}
+
+message ActiveDiscoveryCatalogFence {
+  string contract_lineage = 1;
+  uint64 contract_version = 2;
+  bytes bundle_hash = 3;
+}
+
+message DiscoveryCatalogFence {
+  oneof state {
+    Unit no_active_contract = 1;
+    ActiveDiscoveryCatalogFence active_contract = 2;
+  }
+  bytes server_generation = 3;
+  OperationSchemaCatalogIdentity operation_schemas = 4;
+}
+
+message CommandToolDiscoveryPage {
+  repeated CommandToolDiscoveryItem items = 1;
+  optional bytes next_cursor = 2;
+  DiscoveryCatalogFence observed_fence = 3;
+  OperationSchemaCatalog operation_schemas = 4;
+}
+
+message CompactCommandToolDiscoveryPage {
+  repeated CompactCommandToolDiscoveryItem items = 1;
+  optional bytes next_cursor = 2;
+  DiscoveryCatalogFence observed_fence = 3;
+}
+
+message DiscoverCommandToolsRequest {
+  bytes request_id = 1;
+  PageRequest page = 2;
+  DiscoveryCatalogFence prior_fence = 3;
+  DiscoveryRepresentation representation = 4;
+}
+
+message DiscoverCommandToolsResponse {
+  oneof result {
+    DiscoveryCatalogFence catalog_unchanged = 1;
+    CommandToolDiscoveryPage page = 2;
+    CompactCommandToolDiscoveryPage compact_page = 3;
+  }
+}
+
+message ContractVersionResource {
+  string contract_lineage = 1;
+  uint64 contract_version = 2;
+}
+
+message EntitySchemaResource {
+  string contract_lineage = 1;
+  uint32 entity_type_id = 2;
+  GeneratedSchemaArtifact schema = 3;
+}
+
+message CompactEntitySchemaResource {
+  string contract_lineage = 1;
+  uint32 entity_type_id = 2;
+  GeneratedSchemaIdentity schema = 3;
+}
+
+message CommandResource {
+  string contract_lineage = 1;
+  uint32 command_id = 2;
+  uint64 contract_version = 3;
+  string source_command = 4;
+}
+
+message CommandOutcomeResource {
+  string contract_lineage = 1;
+  uint32 command_id = 2;
+  string tool_name = 3;
+}
+
+message CommitResource {
+  oneof target {
+    Unit class_template = 1;
+    uint64 commit_sequence = 2;
+  }
+}
+
+message ProvenanceResource {
+  oneof target {
+    Unit class_template = 1;
+    bytes provenance_id = 2;
+  }
+}
+
+message ProjectionStatusResource {
+  string contract_lineage = 1;
+  uint32 projection_id = 2;
+}
+
+message ResourceDescriptor {
+  oneof resource {
+    Unit active_contract = 1;
+    ContractVersionResource contract_version = 2;
+    EntitySchemaResource entity_schema = 3;
+    CommandResource command_plan = 4;
+    CommandResource command_documentation = 5;
+    CommandOutcomeResource command_outcome = 6;
+    CommitResource commit = 7;
+    ProvenanceResource provenance = 8;
+    ProjectionStatusResource projection_status = 9;
+    Unit server_health = 10;
+  }
+}
+
+message CompactResourceDescriptor {
+  oneof resource {
+    Unit active_contract = 1;
+    ContractVersionResource contract_version = 2;
+    CompactEntitySchemaResource entity_schema = 3;
+    CommandResource command_plan = 4;
+    CommandResource command_documentation = 5;
+    CommandOutcomeResource command_outcome = 6;
+    CommitResource commit = 7;
+    ProvenanceResource provenance = 8;
+    ProjectionStatusResource projection_status = 9;
+    Unit server_health = 10;
+  }
+}
+
+message ResourceDiscoveryPage {
+  repeated ResourceDescriptor items = 1;
+  optional bytes next_cursor = 2;
+  DiscoveryCatalogFence observed_fence = 3;
+}
+
+message CompactResourceDiscoveryPage {
+  repeated CompactResourceDescriptor items = 1;
+  optional bytes next_cursor = 2;
+  DiscoveryCatalogFence observed_fence = 3;
+}
+
+message DiscoverResourcesRequest {
+  bytes request_id = 1;
+  PageRequest page = 2;
+  DiscoveryCatalogFence prior_fence = 3;
+  DiscoveryRepresentation representation = 4;
+  ResourceDiscoveryKind kind = 5;
+}
+
+message DiscoverResourcesResponse {
+  oneof result {
+    DiscoveryCatalogFence catalog_unchanged = 1;
+    ResourceDiscoveryPage page = 2;
+    CompactResourceDiscoveryPage compact_page = 3;
+  }
+}

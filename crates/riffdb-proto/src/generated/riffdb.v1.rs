@@ -310,6 +310,36 @@ pub mod revoke_capability_response {
         CapabilityNotFound(super::Unit),
     }
 }
+#[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct OutboxDeliverySummary {
+    #[prost(message, optional, tag = "1")]
+    pub event_id: ::core::option::Option<EventId>,
+    #[prost(enumeration = "OutboxDeliveryState", tag = "2")]
+    pub state: i32,
+    #[prost(uint32, tag = "3")]
+    pub attempts: u32,
+    #[prost(message, optional, tag = "4")]
+    pub next_attempt_at: ::core::option::Option<Timestamp>,
+}
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct OutboxDeliveryPage {
+    #[prost(message, repeated, tag = "1")]
+    pub items: ::prost::alloc::vec::Vec<OutboxDeliverySummary>,
+    #[prost(bytes = "vec", optional, tag = "2")]
+    pub next_cursor: ::core::option::Option<::prost::alloc::vec::Vec<u8>>,
+}
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct ListPendingOutboxDeliveriesRequest {
+    #[prost(bytes = "vec", tag = "1")]
+    pub request_id: ::prost::alloc::vec::Vec<u8>,
+    #[prost(message, optional, tag = "2")]
+    pub page: ::core::option::Option<PageRequest>,
+}
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct ListPendingOutboxDeliveriesResponse {
+    #[prost(message, optional, tag = "1")]
+    pub page: ::core::option::Option<OutboxDeliveryPage>,
+}
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, ::prost::Enumeration)]
 #[repr(i32)]
 pub enum PreBootstrapLifecycle {
@@ -611,6 +641,41 @@ impl RevocationReason {
         }
     }
 }
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, ::prost::Enumeration)]
+#[repr(i32)]
+pub enum OutboxDeliveryState {
+    Unspecified = 0,
+    Pending = 1,
+    RetryScheduled = 2,
+    Delivering = 3,
+    DeadLetter = 4,
+}
+impl OutboxDeliveryState {
+    /// String value of the enum field names used in the ProtoBuf definition.
+    ///
+    /// The values are not transformed in any way and thus are considered stable
+    /// (if the ProtoBuf definition does not change) and safe for programmatic use.
+    pub fn as_str_name(&self) -> &'static str {
+        match self {
+            Self::Unspecified => "OUTBOX_DELIVERY_STATE_UNSPECIFIED",
+            Self::Pending => "OUTBOX_DELIVERY_STATE_PENDING",
+            Self::RetryScheduled => "OUTBOX_DELIVERY_STATE_RETRY_SCHEDULED",
+            Self::Delivering => "OUTBOX_DELIVERY_STATE_DELIVERING",
+            Self::DeadLetter => "OUTBOX_DELIVERY_STATE_DEAD_LETTER",
+        }
+    }
+    /// Creates an enum from field names used in the ProtoBuf definition.
+    pub fn from_str_name(value: &str) -> ::core::option::Option<Self> {
+        match value {
+            "OUTBOX_DELIVERY_STATE_UNSPECIFIED" => Some(Self::Unspecified),
+            "OUTBOX_DELIVERY_STATE_PENDING" => Some(Self::Pending),
+            "OUTBOX_DELIVERY_STATE_RETRY_SCHEDULED" => Some(Self::RetryScheduled),
+            "OUTBOX_DELIVERY_STATE_DELIVERING" => Some(Self::Delivering),
+            "OUTBOX_DELIVERY_STATE_DEAD_LETTER" => Some(Self::DeadLetter),
+            _ => None,
+        }
+    }
+}
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct ExecuteCommandRequest {
     #[prost(bytes = "vec", tag = "1")]
@@ -640,6 +705,8 @@ pub struct ExecuteCommandResponse {
     pub provenance_uri: ::prost::alloc::string::String,
     #[prost(string, tag = "8")]
     pub durability_mode: ::prost::alloc::string::String,
+    #[prost(string, optional, tag = "9")]
+    pub outcome_uri: ::core::option::Option<::prost::alloc::string::String>,
 }
 /// Nested message and enum types in `ExecuteCommandResponse`.
 pub mod execute_command_response {
@@ -696,6 +763,8 @@ pub struct GetOutcomeRequest {
     pub command_name: ::prost::alloc::string::String,
     #[prost(string, tag = "4")]
     pub idempotency_key: ::prost::alloc::string::String,
+    #[prost(string, optional, tag = "5")]
+    pub outcome_uri: ::core::option::Option<::prost::alloc::string::String>,
 }
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct GetOutcomeResponse {
@@ -842,6 +911,83 @@ pub mod commit_notification {
         Commit(super::Commit),
         #[prost(message, tag = "2")]
         Terminal(super::CommitSubscriptionTerminal),
+    }
+}
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct ProvenanceSelection {
+    #[prost(oneof = "provenance_selection::Selection", tags = "1, 2")]
+    pub selection: ::core::option::Option<provenance_selection::Selection>,
+}
+/// Nested message and enum types in `ProvenanceSelection`.
+pub mod provenance_selection {
+    #[derive(Clone, PartialEq, Eq, Hash, ::prost::Oneof)]
+    pub enum Selection {
+        #[prost(uint64, tag = "1")]
+        CommitSequence(u64),
+        #[prost(bytes, tag = "2")]
+        ProvenanceId(::prost::alloc::vec::Vec<u8>),
+    }
+}
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct ProvenanceClaims {
+    #[prost(string, optional, tag = "1")]
+    pub source_repository: ::core::option::Option<::prost::alloc::string::String>,
+    #[prost(string, optional, tag = "2")]
+    pub source_commit: ::core::option::Option<::prost::alloc::string::String>,
+    #[prost(string, optional, tag = "3")]
+    pub reason: ::core::option::Option<::prost::alloc::string::String>,
+    #[prost(string, optional, tag = "4")]
+    pub approval_id: ::core::option::Option<::prost::alloc::string::String>,
+}
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct Provenance {
+    #[prost(bytes = "vec", tag = "1")]
+    pub provenance_id: ::prost::alloc::vec::Vec<u8>,
+    #[prost(uint64, tag = "2")]
+    pub commit_sequence: u64,
+    #[prost(bytes = "vec", tag = "3")]
+    pub admission_request_id: ::prost::alloc::vec::Vec<u8>,
+    #[prost(string, tag = "4")]
+    pub contract_lineage: ::prost::alloc::string::String,
+    #[prost(uint64, tag = "5")]
+    pub contract_version: u64,
+    #[prost(uint32, tag = "6")]
+    pub command_id: u32,
+    #[prost(bytes = "vec", tag = "7")]
+    pub plan_hash: ::prost::alloc::vec::Vec<u8>,
+    #[prost(message, optional, tag = "8")]
+    pub actor: ::core::option::Option<AdmittedActor>,
+    #[prost(message, optional, tag = "9")]
+    pub logical_time: ::core::option::Option<Timestamp>,
+    #[prost(uint32, tag = "10")]
+    pub outcome_id: u32,
+    #[prost(message, repeated, tag = "11")]
+    pub affected_entities: ::prost::alloc::vec::Vec<AffectedEntity>,
+    #[prost(message, repeated, tag = "12")]
+    pub event_ids: ::prost::alloc::vec::Vec<EventId>,
+    #[prost(message, optional, tag = "13")]
+    pub claims: ::core::option::Option<ProvenanceClaims>,
+}
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct TraceProvenanceRequest {
+    #[prost(bytes = "vec", tag = "1")]
+    pub request_id: ::prost::alloc::vec::Vec<u8>,
+    #[prost(message, optional, tag = "2")]
+    pub selector: ::core::option::Option<ProvenanceSelection>,
+}
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct TraceProvenanceResponse {
+    #[prost(oneof = "trace_provenance_response::Result", tags = "1, 2")]
+    pub result: ::core::option::Option<trace_provenance_response::Result>,
+}
+/// Nested message and enum types in `TraceProvenanceResponse`.
+pub mod trace_provenance_response {
+    #[derive(Clone, PartialEq, ::prost::Oneof)]
+    pub enum Result {
+        #[prost(message, tag = "1")]
+        NotFound(super::Unit),
+        #[prost(message, tag = "2")]
+        Found(super::Provenance),
     }
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, ::prost::Enumeration)]
@@ -1320,6 +1466,541 @@ pub mod get_active_contract_response {
         Absent(super::Unit),
         #[prost(message, tag = "2")]
         Present(super::ContractDescriptor),
+    }
+}
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct GetContractVersionRequest {
+    #[prost(bytes = "vec", tag = "1")]
+    pub request_id: ::prost::alloc::vec::Vec<u8>,
+    #[prost(string, tag = "2")]
+    pub contract_lineage: ::prost::alloc::string::String,
+    #[prost(uint64, tag = "3")]
+    pub contract_version: u64,
+}
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct GetContractVersionResponse {
+    #[prost(oneof = "get_contract_version_response::Result", tags = "1, 2")]
+    pub result: ::core::option::Option<get_contract_version_response::Result>,
+}
+/// Nested message and enum types in `GetContractVersionResponse`.
+pub mod get_contract_version_response {
+    #[derive(Clone, PartialEq, Eq, Hash, ::prost::Oneof)]
+    pub enum Result {
+        #[prost(message, tag = "1")]
+        NotFound(super::Unit),
+        #[prost(message, tag = "2")]
+        Found(super::ContractDescriptor),
+    }
+}
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct CommandToolDescriptor {
+    #[prost(string, tag = "1")]
+    pub tool_name: ::prost::alloc::string::String,
+    #[prost(string, tag = "2")]
+    pub source_command: ::prost::alloc::string::String,
+    #[prost(string, tag = "3")]
+    pub contract_lineage: ::prost::alloc::string::String,
+    #[prost(uint64, tag = "4")]
+    pub contract_version: u64,
+    #[prost(uint32, tag = "5")]
+    pub command_id: u32,
+    #[prost(message, optional, tag = "6")]
+    pub input_schema: ::core::option::Option<GeneratedSchemaArtifact>,
+    #[prost(message, optional, tag = "7")]
+    pub outcome_schema: ::core::option::Option<GeneratedSchemaArtifact>,
+}
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct GeneratedSchemaIdentity {
+    #[prost(message, optional, tag = "1")]
+    pub key: ::core::option::Option<SchemaArtifactKey>,
+    #[prost(bytes = "vec", tag = "2")]
+    pub schema_hash: ::prost::alloc::vec::Vec<u8>,
+}
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct CompactCommandToolDescriptor {
+    #[prost(string, tag = "1")]
+    pub tool_name: ::prost::alloc::string::String,
+    #[prost(string, tag = "2")]
+    pub source_command: ::prost::alloc::string::String,
+    #[prost(string, tag = "3")]
+    pub contract_lineage: ::prost::alloc::string::String,
+    #[prost(uint64, tag = "4")]
+    pub contract_version: u64,
+    #[prost(uint32, tag = "5")]
+    pub command_id: u32,
+    #[prost(message, optional, tag = "6")]
+    pub input_schema: ::core::option::Option<GeneratedSchemaIdentity>,
+    #[prost(message, optional, tag = "7")]
+    pub outcome_schema: ::core::option::Option<GeneratedSchemaIdentity>,
+}
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct CommandToolDiscoveryItem {
+    #[prost(oneof = "command_tool_discovery_item::Item", tags = "1, 2")]
+    pub item: ::core::option::Option<command_tool_discovery_item::Item>,
+}
+/// Nested message and enum types in `CommandToolDiscoveryItem`.
+pub mod command_tool_discovery_item {
+    #[derive(Clone, PartialEq, Eq, Hash, ::prost::Oneof)]
+    pub enum Item {
+        #[prost(enumeration = "super::FixedToolKind", tag = "1")]
+        FixedTool(i32),
+        #[prost(message, tag = "2")]
+        CommandTool(super::CommandToolDescriptor),
+    }
+}
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct CompactCommandToolDiscoveryItem {
+    #[prost(oneof = "compact_command_tool_discovery_item::Item", tags = "1, 2")]
+    pub item: ::core::option::Option<compact_command_tool_discovery_item::Item>,
+}
+/// Nested message and enum types in `CompactCommandToolDiscoveryItem`.
+pub mod compact_command_tool_discovery_item {
+    #[derive(Clone, PartialEq, Eq, Hash, ::prost::Oneof)]
+    pub enum Item {
+        #[prost(enumeration = "super::FixedToolKind", tag = "1")]
+        FixedTool(i32),
+        #[prost(message, tag = "2")]
+        CommandTool(super::CompactCommandToolDescriptor),
+    }
+}
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct OperationSchemaArtifact {
+    #[prost(string, tag = "1")]
+    pub schema_id: ::prost::alloc::string::String,
+    #[prost(string, tag = "2")]
+    pub dialect: ::prost::alloc::string::String,
+    #[prost(bytes = "vec", tag = "3")]
+    pub schema_hash: ::prost::alloc::vec::Vec<u8>,
+    #[prost(string, tag = "4")]
+    pub canonical_json: ::prost::alloc::string::String,
+}
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct OperationSchemaCatalog {
+    #[prost(message, optional, tag = "1")]
+    pub command_operation_envelope: ::core::option::Option<OperationSchemaArtifact>,
+    #[prost(message, optional, tag = "2")]
+    pub command_get_outcome_result: ::core::option::Option<OperationSchemaArtifact>,
+}
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct OperationSchemaIdentity {
+    #[prost(string, tag = "1")]
+    pub schema_id: ::prost::alloc::string::String,
+    #[prost(bytes = "vec", tag = "2")]
+    pub schema_hash: ::prost::alloc::vec::Vec<u8>,
+}
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct OperationSchemaCatalogIdentity {
+    #[prost(message, optional, tag = "1")]
+    pub command_operation_envelope: ::core::option::Option<OperationSchemaIdentity>,
+    #[prost(message, optional, tag = "2")]
+    pub command_get_outcome_result: ::core::option::Option<OperationSchemaIdentity>,
+}
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct ActiveDiscoveryCatalogFence {
+    #[prost(string, tag = "1")]
+    pub contract_lineage: ::prost::alloc::string::String,
+    #[prost(uint64, tag = "2")]
+    pub contract_version: u64,
+    #[prost(bytes = "vec", tag = "3")]
+    pub bundle_hash: ::prost::alloc::vec::Vec<u8>,
+}
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct DiscoveryCatalogFence {
+    #[prost(bytes = "vec", tag = "3")]
+    pub server_generation: ::prost::alloc::vec::Vec<u8>,
+    #[prost(message, optional, tag = "4")]
+    pub operation_schemas: ::core::option::Option<OperationSchemaCatalogIdentity>,
+    #[prost(oneof = "discovery_catalog_fence::State", tags = "1, 2")]
+    pub state: ::core::option::Option<discovery_catalog_fence::State>,
+}
+/// Nested message and enum types in `DiscoveryCatalogFence`.
+pub mod discovery_catalog_fence {
+    #[derive(Clone, PartialEq, Eq, Hash, ::prost::Oneof)]
+    pub enum State {
+        #[prost(message, tag = "1")]
+        NoActiveContract(super::Unit),
+        #[prost(message, tag = "2")]
+        ActiveContract(super::ActiveDiscoveryCatalogFence),
+    }
+}
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct CommandToolDiscoveryPage {
+    #[prost(message, repeated, tag = "1")]
+    pub items: ::prost::alloc::vec::Vec<CommandToolDiscoveryItem>,
+    #[prost(bytes = "vec", optional, tag = "2")]
+    pub next_cursor: ::core::option::Option<::prost::alloc::vec::Vec<u8>>,
+    #[prost(message, optional, tag = "3")]
+    pub observed_fence: ::core::option::Option<DiscoveryCatalogFence>,
+    #[prost(message, optional, tag = "4")]
+    pub operation_schemas: ::core::option::Option<OperationSchemaCatalog>,
+}
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct CompactCommandToolDiscoveryPage {
+    #[prost(message, repeated, tag = "1")]
+    pub items: ::prost::alloc::vec::Vec<CompactCommandToolDiscoveryItem>,
+    #[prost(bytes = "vec", optional, tag = "2")]
+    pub next_cursor: ::core::option::Option<::prost::alloc::vec::Vec<u8>>,
+    #[prost(message, optional, tag = "3")]
+    pub observed_fence: ::core::option::Option<DiscoveryCatalogFence>,
+}
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct DiscoverCommandToolsRequest {
+    #[prost(bytes = "vec", tag = "1")]
+    pub request_id: ::prost::alloc::vec::Vec<u8>,
+    #[prost(message, optional, tag = "2")]
+    pub page: ::core::option::Option<PageRequest>,
+    #[prost(message, optional, tag = "3")]
+    pub prior_fence: ::core::option::Option<DiscoveryCatalogFence>,
+    #[prost(enumeration = "DiscoveryRepresentation", tag = "4")]
+    pub representation: i32,
+}
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct DiscoverCommandToolsResponse {
+    #[prost(oneof = "discover_command_tools_response::Result", tags = "1, 2, 3")]
+    pub result: ::core::option::Option<discover_command_tools_response::Result>,
+}
+/// Nested message and enum types in `DiscoverCommandToolsResponse`.
+pub mod discover_command_tools_response {
+    #[derive(Clone, PartialEq, ::prost::Oneof)]
+    pub enum Result {
+        #[prost(message, tag = "1")]
+        CatalogUnchanged(super::DiscoveryCatalogFence),
+        #[prost(message, tag = "2")]
+        Page(super::CommandToolDiscoveryPage),
+        #[prost(message, tag = "3")]
+        CompactPage(super::CompactCommandToolDiscoveryPage),
+    }
+}
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct ContractVersionResource {
+    #[prost(string, tag = "1")]
+    pub contract_lineage: ::prost::alloc::string::String,
+    #[prost(uint64, tag = "2")]
+    pub contract_version: u64,
+}
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct EntitySchemaResource {
+    #[prost(string, tag = "1")]
+    pub contract_lineage: ::prost::alloc::string::String,
+    #[prost(uint32, tag = "2")]
+    pub entity_type_id: u32,
+    #[prost(message, optional, tag = "3")]
+    pub schema: ::core::option::Option<GeneratedSchemaArtifact>,
+}
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct CompactEntitySchemaResource {
+    #[prost(string, tag = "1")]
+    pub contract_lineage: ::prost::alloc::string::String,
+    #[prost(uint32, tag = "2")]
+    pub entity_type_id: u32,
+    #[prost(message, optional, tag = "3")]
+    pub schema: ::core::option::Option<GeneratedSchemaIdentity>,
+}
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct CommandResource {
+    #[prost(string, tag = "1")]
+    pub contract_lineage: ::prost::alloc::string::String,
+    #[prost(uint32, tag = "2")]
+    pub command_id: u32,
+    #[prost(uint64, tag = "3")]
+    pub contract_version: u64,
+    #[prost(string, tag = "4")]
+    pub source_command: ::prost::alloc::string::String,
+}
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct CommandOutcomeResource {
+    #[prost(string, tag = "1")]
+    pub contract_lineage: ::prost::alloc::string::String,
+    #[prost(uint32, tag = "2")]
+    pub command_id: u32,
+    #[prost(string, tag = "3")]
+    pub tool_name: ::prost::alloc::string::String,
+}
+#[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct CommitResource {
+    #[prost(oneof = "commit_resource::Target", tags = "1, 2")]
+    pub target: ::core::option::Option<commit_resource::Target>,
+}
+/// Nested message and enum types in `CommitResource`.
+pub mod commit_resource {
+    #[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Oneof)]
+    pub enum Target {
+        #[prost(message, tag = "1")]
+        ClassTemplate(super::Unit),
+        #[prost(uint64, tag = "2")]
+        CommitSequence(u64),
+    }
+}
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct ProvenanceResource {
+    #[prost(oneof = "provenance_resource::Target", tags = "1, 2")]
+    pub target: ::core::option::Option<provenance_resource::Target>,
+}
+/// Nested message and enum types in `ProvenanceResource`.
+pub mod provenance_resource {
+    #[derive(Clone, PartialEq, Eq, Hash, ::prost::Oneof)]
+    pub enum Target {
+        #[prost(message, tag = "1")]
+        ClassTemplate(super::Unit),
+        #[prost(bytes, tag = "2")]
+        ProvenanceId(::prost::alloc::vec::Vec<u8>),
+    }
+}
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct ProjectionStatusResource {
+    #[prost(string, tag = "1")]
+    pub contract_lineage: ::prost::alloc::string::String,
+    #[prost(uint32, tag = "2")]
+    pub projection_id: u32,
+}
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct ResourceDescriptor {
+    #[prost(
+        oneof = "resource_descriptor::Resource",
+        tags = "1, 2, 3, 4, 5, 6, 7, 8, 9, 10"
+    )]
+    pub resource: ::core::option::Option<resource_descriptor::Resource>,
+}
+/// Nested message and enum types in `ResourceDescriptor`.
+pub mod resource_descriptor {
+    #[derive(Clone, PartialEq, Eq, Hash, ::prost::Oneof)]
+    pub enum Resource {
+        #[prost(message, tag = "1")]
+        ActiveContract(super::Unit),
+        #[prost(message, tag = "2")]
+        ContractVersion(super::ContractVersionResource),
+        #[prost(message, tag = "3")]
+        EntitySchema(super::EntitySchemaResource),
+        #[prost(message, tag = "4")]
+        CommandPlan(super::CommandResource),
+        #[prost(message, tag = "5")]
+        CommandDocumentation(super::CommandResource),
+        #[prost(message, tag = "6")]
+        CommandOutcome(super::CommandOutcomeResource),
+        #[prost(message, tag = "7")]
+        Commit(super::CommitResource),
+        #[prost(message, tag = "8")]
+        Provenance(super::ProvenanceResource),
+        #[prost(message, tag = "9")]
+        ProjectionStatus(super::ProjectionStatusResource),
+        #[prost(message, tag = "10")]
+        ServerHealth(super::Unit),
+    }
+}
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct CompactResourceDescriptor {
+    #[prost(
+        oneof = "compact_resource_descriptor::Resource",
+        tags = "1, 2, 3, 4, 5, 6, 7, 8, 9, 10"
+    )]
+    pub resource: ::core::option::Option<compact_resource_descriptor::Resource>,
+}
+/// Nested message and enum types in `CompactResourceDescriptor`.
+pub mod compact_resource_descriptor {
+    #[derive(Clone, PartialEq, Eq, Hash, ::prost::Oneof)]
+    pub enum Resource {
+        #[prost(message, tag = "1")]
+        ActiveContract(super::Unit),
+        #[prost(message, tag = "2")]
+        ContractVersion(super::ContractVersionResource),
+        #[prost(message, tag = "3")]
+        EntitySchema(super::CompactEntitySchemaResource),
+        #[prost(message, tag = "4")]
+        CommandPlan(super::CommandResource),
+        #[prost(message, tag = "5")]
+        CommandDocumentation(super::CommandResource),
+        #[prost(message, tag = "6")]
+        CommandOutcome(super::CommandOutcomeResource),
+        #[prost(message, tag = "7")]
+        Commit(super::CommitResource),
+        #[prost(message, tag = "8")]
+        Provenance(super::ProvenanceResource),
+        #[prost(message, tag = "9")]
+        ProjectionStatus(super::ProjectionStatusResource),
+        #[prost(message, tag = "10")]
+        ServerHealth(super::Unit),
+    }
+}
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct ResourceDiscoveryPage {
+    #[prost(message, repeated, tag = "1")]
+    pub items: ::prost::alloc::vec::Vec<ResourceDescriptor>,
+    #[prost(bytes = "vec", optional, tag = "2")]
+    pub next_cursor: ::core::option::Option<::prost::alloc::vec::Vec<u8>>,
+    #[prost(message, optional, tag = "3")]
+    pub observed_fence: ::core::option::Option<DiscoveryCatalogFence>,
+}
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct CompactResourceDiscoveryPage {
+    #[prost(message, repeated, tag = "1")]
+    pub items: ::prost::alloc::vec::Vec<CompactResourceDescriptor>,
+    #[prost(bytes = "vec", optional, tag = "2")]
+    pub next_cursor: ::core::option::Option<::prost::alloc::vec::Vec<u8>>,
+    #[prost(message, optional, tag = "3")]
+    pub observed_fence: ::core::option::Option<DiscoveryCatalogFence>,
+}
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct DiscoverResourcesRequest {
+    #[prost(bytes = "vec", tag = "1")]
+    pub request_id: ::prost::alloc::vec::Vec<u8>,
+    #[prost(message, optional, tag = "2")]
+    pub page: ::core::option::Option<PageRequest>,
+    #[prost(message, optional, tag = "3")]
+    pub prior_fence: ::core::option::Option<DiscoveryCatalogFence>,
+    #[prost(enumeration = "DiscoveryRepresentation", tag = "4")]
+    pub representation: i32,
+    #[prost(enumeration = "ResourceDiscoveryKind", tag = "5")]
+    pub kind: i32,
+}
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct DiscoverResourcesResponse {
+    #[prost(oneof = "discover_resources_response::Result", tags = "1, 2, 3")]
+    pub result: ::core::option::Option<discover_resources_response::Result>,
+}
+/// Nested message and enum types in `DiscoverResourcesResponse`.
+pub mod discover_resources_response {
+    #[derive(Clone, PartialEq, ::prost::Oneof)]
+    pub enum Result {
+        #[prost(message, tag = "1")]
+        CatalogUnchanged(super::DiscoveryCatalogFence),
+        #[prost(message, tag = "2")]
+        Page(super::ResourceDiscoveryPage),
+        #[prost(message, tag = "3")]
+        CompactPage(super::CompactResourceDiscoveryPage),
+    }
+}
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, ::prost::Enumeration)]
+#[repr(i32)]
+pub enum FixedToolKind {
+    Unspecified = 0,
+    ValidateContract = 1,
+    GetActiveContract = 2,
+    ExplainCommand = 3,
+    DeployContract = 4,
+    ResolveCommandOutcome = 5,
+    GetEntity = 6,
+    ScanIndex = 7,
+    GetCommit = 8,
+    ScanCommits = 9,
+    TraceProvenance = 10,
+    QueryProjection = 11,
+    GetProjectionStatus = 12,
+    ListPendingOutboxDeliveries = 13,
+    GetHealth = 14,
+}
+impl FixedToolKind {
+    /// String value of the enum field names used in the ProtoBuf definition.
+    ///
+    /// The values are not transformed in any way and thus are considered stable
+    /// (if the ProtoBuf definition does not change) and safe for programmatic use.
+    pub fn as_str_name(&self) -> &'static str {
+        match self {
+            Self::Unspecified => "FIXED_TOOL_KIND_UNSPECIFIED",
+            Self::ValidateContract => "FIXED_TOOL_KIND_VALIDATE_CONTRACT",
+            Self::GetActiveContract => "FIXED_TOOL_KIND_GET_ACTIVE_CONTRACT",
+            Self::ExplainCommand => "FIXED_TOOL_KIND_EXPLAIN_COMMAND",
+            Self::DeployContract => "FIXED_TOOL_KIND_DEPLOY_CONTRACT",
+            Self::ResolveCommandOutcome => "FIXED_TOOL_KIND_RESOLVE_COMMAND_OUTCOME",
+            Self::GetEntity => "FIXED_TOOL_KIND_GET_ENTITY",
+            Self::ScanIndex => "FIXED_TOOL_KIND_SCAN_INDEX",
+            Self::GetCommit => "FIXED_TOOL_KIND_GET_COMMIT",
+            Self::ScanCommits => "FIXED_TOOL_KIND_SCAN_COMMITS",
+            Self::TraceProvenance => "FIXED_TOOL_KIND_TRACE_PROVENANCE",
+            Self::QueryProjection => "FIXED_TOOL_KIND_QUERY_PROJECTION",
+            Self::GetProjectionStatus => "FIXED_TOOL_KIND_GET_PROJECTION_STATUS",
+            Self::ListPendingOutboxDeliveries => {
+                "FIXED_TOOL_KIND_LIST_PENDING_OUTBOX_DELIVERIES"
+            }
+            Self::GetHealth => "FIXED_TOOL_KIND_GET_HEALTH",
+        }
+    }
+    /// Creates an enum from field names used in the ProtoBuf definition.
+    pub fn from_str_name(value: &str) -> ::core::option::Option<Self> {
+        match value {
+            "FIXED_TOOL_KIND_UNSPECIFIED" => Some(Self::Unspecified),
+            "FIXED_TOOL_KIND_VALIDATE_CONTRACT" => Some(Self::ValidateContract),
+            "FIXED_TOOL_KIND_GET_ACTIVE_CONTRACT" => Some(Self::GetActiveContract),
+            "FIXED_TOOL_KIND_EXPLAIN_COMMAND" => Some(Self::ExplainCommand),
+            "FIXED_TOOL_KIND_DEPLOY_CONTRACT" => Some(Self::DeployContract),
+            "FIXED_TOOL_KIND_RESOLVE_COMMAND_OUTCOME" => {
+                Some(Self::ResolveCommandOutcome)
+            }
+            "FIXED_TOOL_KIND_GET_ENTITY" => Some(Self::GetEntity),
+            "FIXED_TOOL_KIND_SCAN_INDEX" => Some(Self::ScanIndex),
+            "FIXED_TOOL_KIND_GET_COMMIT" => Some(Self::GetCommit),
+            "FIXED_TOOL_KIND_SCAN_COMMITS" => Some(Self::ScanCommits),
+            "FIXED_TOOL_KIND_TRACE_PROVENANCE" => Some(Self::TraceProvenance),
+            "FIXED_TOOL_KIND_QUERY_PROJECTION" => Some(Self::QueryProjection),
+            "FIXED_TOOL_KIND_GET_PROJECTION_STATUS" => Some(Self::GetProjectionStatus),
+            "FIXED_TOOL_KIND_LIST_PENDING_OUTBOX_DELIVERIES" => {
+                Some(Self::ListPendingOutboxDeliveries)
+            }
+            "FIXED_TOOL_KIND_GET_HEALTH" => Some(Self::GetHealth),
+            _ => None,
+        }
+    }
+}
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, ::prost::Enumeration)]
+#[repr(i32)]
+pub enum DiscoveryRepresentation {
+    Unspecified = 0,
+    Full = 1,
+    CompactObservation = 2,
+}
+impl DiscoveryRepresentation {
+    /// String value of the enum field names used in the ProtoBuf definition.
+    ///
+    /// The values are not transformed in any way and thus are considered stable
+    /// (if the ProtoBuf definition does not change) and safe for programmatic use.
+    pub fn as_str_name(&self) -> &'static str {
+        match self {
+            Self::Unspecified => "DISCOVERY_REPRESENTATION_UNSPECIFIED",
+            Self::Full => "DISCOVERY_REPRESENTATION_FULL",
+            Self::CompactObservation => "DISCOVERY_REPRESENTATION_COMPACT_OBSERVATION",
+        }
+    }
+    /// Creates an enum from field names used in the ProtoBuf definition.
+    pub fn from_str_name(value: &str) -> ::core::option::Option<Self> {
+        match value {
+            "DISCOVERY_REPRESENTATION_UNSPECIFIED" => Some(Self::Unspecified),
+            "DISCOVERY_REPRESENTATION_FULL" => Some(Self::Full),
+            "DISCOVERY_REPRESENTATION_COMPACT_OBSERVATION" => {
+                Some(Self::CompactObservation)
+            }
+            _ => None,
+        }
+    }
+}
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, ::prost::Enumeration)]
+#[repr(i32)]
+pub enum ResourceDiscoveryKind {
+    Unspecified = 0,
+    All = 1,
+    Concrete = 2,
+    Template = 3,
+}
+impl ResourceDiscoveryKind {
+    /// String value of the enum field names used in the ProtoBuf definition.
+    ///
+    /// The values are not transformed in any way and thus are considered stable
+    /// (if the ProtoBuf definition does not change) and safe for programmatic use.
+    pub fn as_str_name(&self) -> &'static str {
+        match self {
+            Self::Unspecified => "RESOURCE_DISCOVERY_KIND_UNSPECIFIED",
+            Self::All => "RESOURCE_DISCOVERY_KIND_ALL",
+            Self::Concrete => "RESOURCE_DISCOVERY_KIND_CONCRETE",
+            Self::Template => "RESOURCE_DISCOVERY_KIND_TEMPLATE",
+        }
+    }
+    /// Creates an enum from field names used in the ProtoBuf definition.
+    pub fn from_str_name(value: &str) -> ::core::option::Option<Self> {
+        match value {
+            "RESOURCE_DISCOVERY_KIND_UNSPECIFIED" => Some(Self::Unspecified),
+            "RESOURCE_DISCOVERY_KIND_ALL" => Some(Self::All),
+            "RESOURCE_DISCOVERY_KIND_CONCRETE" => Some(Self::Concrete),
+            "RESOURCE_DISCOVERY_KIND_TEMPLATE" => Some(Self::Template),
+            _ => None,
+        }
     }
 }
 #[derive(Clone, PartialEq, ::prost::Message)]
