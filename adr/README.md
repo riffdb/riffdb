@@ -64,10 +64,12 @@ direction, merged draft, or implementation choice.
 | [0040](0040-public-grpc-mcp-parity-bridge.md) | Public gRPC MCP Parity Bridge | Accepted |
 | [0041](0041-cli-public-flow-and-output-contract.md) | CLI Public Flow and Output Contract | Accepted |
 | [0042](0042-sealed-catalog-owned-index-migration-driver.md) | Sealed Catalog-Owned Index Migration Driver | Accepted |
+| [0043](0043-auth-owned-retained-mcp-credential.md) | Auth-Owned Retained MCP Credential | Accepted |
 
 The human architecture review on 2026-07-12 approved the direction represented
 by ADR-0001 through ADR-0012. The human maintainer accepted ADR-0001 through
-ADR-0042 and their recorded companion amendments by 2026-07-22. ADR-0008 now
+ADR-0042 and their recorded companion amendments by 2026-07-22, and accepted
+ADR-0043 on 2026-07-23. ADR-0008 now
 accepts the native MCP tool/resource model, policy-filtered HTTP and stdio-over-
 gRPC boundaries, canonical locators/cursors, and presentation rules; ADR-0020
 separately owns command tool-name normalization and its compiler/catalog
@@ -123,6 +125,12 @@ ADR-0042 seals catalog-owned backend-branded migration instructions, progress,
 and completion; narrows storage API to evidence and identity-only contracts;
 and permits memory/redb's exact migration-only catalog edge with server-hidden
 backend helpers.
+ADR-0043 adds one auth-owned non-cloneable, nonserializable, redacted,
+zeroizing 43-byte retained opaque credential helper for WP-140. Streamable HTTP
+may only bound and copy bearer-stripped bytes into that helper and borrow
+`OpaqueCredential` for the unchanged `CredentialAuthenticator`; it receives no
+token parser, authentication decision, session credential cache, or new
+dependency owner.
 
 The earlier four records ADR-0008, ADR-0039, ADR-0040, and ADR-0041 cite
 revision `21a8cfb` as their acceptance reference. Their separately named future exact-byte checkpoints
@@ -136,6 +144,8 @@ native edge.
 ADR-0042 has a separate acceptance reference: the human maintainer's explicit
 confirmation in the current Codex session on 2026-07-22. It does not claim the
 earlier four records' `21a8cfb` acceptance reference.
+ADR-0043 likewise has a separate acceptance reference: the human maintainer's
+explicit confirmation in the current Codex session on 2026-07-23.
 
 ## Workflow
 

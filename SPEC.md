@@ -6,9 +6,9 @@
 **Tagline:** *Vibe fast. Commit safely.*  
 **Category:** Contract-first operational database for agent-built applications  
 
-**Version:** 0.29
+**Version:** 0.30
 **Status:** Architecture-approved implementation handoff
-**Date:** 22 July 2026
+**Date:** 23 July 2026
 **Audience:** Coding agents, database engineers, compiler engineers, security reviewers, and technical product leads  
 **Working binaries:** `riffdbd`, `riffdb`, `riffdb-mcp`  
 **Working URI scheme:** `riffdb://`  
@@ -65,6 +65,7 @@
 | 0.27 | 2026-07-21 | Applied accepted ADR-0037: the Rust SDK may depend directly, with default features disabled, on `riffdb-errors` and `riffdb-types` for the single checked public-error and foundational public-identifier/value owners. This grants no dependency on authority-bearing server crates and changes no public or durable format. |
 | 0.28 | 2026-07-22 | Applied accepted ADR-0008, ADR-0039, ADR-0040, and ADR-0041: exact native-MCP transport, resource, schema, and bounded-session behavior; an isolated V2 index descriptor with a 27-readable/26-writable registry and restartable linear migration; the six-operation public gRPC parity bridge and WP-137 gate; and the public-only CLI, comparison-runner, credential, retry, configuration, and versioned JSONL boundaries, while reserving WP-155 for separately reviewed public backup/restore administration. |
 | 0.29 | 2026-07-22 | Applied accepted ADR-0042: catalog now owns the sealed, backend-branded index-migration instruction and driver chain; storage API retains only semantic evidence and identity-only startup contracts; memory/redb use one narrow migration-only catalog edge with private backend transitions; and server only joins and drives matching outcomes. No durable or public protocol format changed. |
+| 0.30 | 2026-07-23 | Applied accepted ADR-0043: auth owns one non-cloneable, nonserializable, redacted, zeroizing 43-byte retained opaque credential helper; Streamable HTTP may bound and copy bearer-stripped bytes only to borrow `OpaqueCredential` for the unchanged `CredentialAuthenticator`, while all authentication and authorization decisions remain on their existing shared paths. No dependency owner, wire format, durable format, or MCP registry changed. |
 
 ### Normative language
 
@@ -316,13 +317,13 @@ The binary targets are `riffdbd` from `riffdb-server`, `riffdb` from `riffdb-cli
 | `riffdb-conflict` | Canonical conflict keys, exclusive logical capabilities, wait queues, cancellation, and hot-key diagnostics | Types and synchronization primitives; no storage engine |
 | `riffdb-idempotency` | Canonical command identity, input hashing, persisted outcome lookup, duplicate detection, and uncertain-result recovery | Types and storage API |
 | `riffdb-commit` | Database-initialization executor, admission, capability acquisition, orchestration of catalog-owned snapshot readiness/resource evidence and current rechecks, deterministic evaluation orchestration, exact historical-plan matching, final `CommitIntent` assembly, transaction-current commit-check orchestration, revalidation, sequencing, authoritative commit, typed control-plane operations, ordered audit execution, and consumer-owned `AdmissionClock`, `AdministrationClock`, `ProvenanceIdSource`, and `AdministrationAuditInputView` ports | Runtime, conflict, idempotency, catalog, `riffdb-contract-ir`, `riffdb-invariant`, storage API, and policy-owned authorized-preparation/provenance/facts values plus only `TransactionCurrentCapabilityVerifier` and `AuthorizationClock`; direct IR/invariant use is limited to exact plan matching, grammar-v1 index derivation, and pure transaction-current commit-check evaluation; no syntax/compiler, service, transport, protocol, general policy authorizer, obligations/redaction engine, policy-owned storage reader, or concrete clock/entropy implementation |
-| `riffdb-auth` | Principal authentication, local development capability tokens, expiry, credential resolution, narrow synchronous authentication clock, and `CredentialAuthenticator` entry point | Types, errors, and storage-owned capability readers; no policy, command execution, service, or transport dependency |
+| `riffdb-auth` | Principal authentication, local development capability tokens, expiry, credential resolution, the non-cloneable/nonserializable redacted `RetainedOpaqueCredential` bounded-copy helper, narrow synchronous authentication clock, and `CredentialAuthenticator` entry point | Types, errors, existing auth-owned `zeroize`, and storage-owned capability readers; no policy, command execution, service, or transport dependency |
 | `riffdb-policy` | Deny-by-default authorization, capability scopes, obligations, approvals, provenance validation, value-only authorized capability-mutation preparation and transaction-current facts, synchronous authorization clock, and pure transaction-current capability verification | Auth and types/errors only; no storage API, commit, service, transport, protocol, authoritative write handle, or concrete storage dependency |
 | `riffdb-service` | API-neutral command, contract, entity, commit, provenance, projection, conditional discovery, administration, and health services, including capability-administration request/result semantics, checked pre-schema submitted command values, schema-directed canonical command-input preparation, the immutable operation-schema catalog, and authoritative outcome-locator tuple encoding/decoding | Foundational types/errors, contract/compiler/catalog semantics, the pure `riffdb-invariant` expression evaluator, auth and policy entry points, typed commit executors, consumer-owned bounded read ports, and exact presentation-only `base64`; no runtime execution API, transport, general storage engine, or concrete storage implementation |
 | `riffdb-api-grpc` | Tonic services, authentication interceptors, bounds checks, presentation-fence process-generation joining, and sole total service-to-wire conversion for all 22 public RPCs | Service, the auth-owned `CredentialAuthenticator` interface, proto, and Tonic; no policy, catalog, runtime, commit, storage API, or storage implementation |
 | `riffdb-client-rust` | Generic and generated Rust client APIs, the approved system UUIDv7 request/capability/agent-session convenience source, six parity-bridge methods, three operation-specific retry helpers, public-error re-exports, and one protected presentation-only bearer-file loader/comparison | Proto and Tonic client, default-feature-disabled `riffdb-errors` and `riffdb-types`, exact ADR-0018 entropy, and exact `zeroize`; no `base64`, `riffdb-auth`, authority-bearing, or semantic database implementation dependency |
 | `riffdb-server` | `riffdbd` process composition, configuration, lifecycle, hosted gRPC/HTTP endpoints, startup proof composition, and concrete OS clock/UUIDv7/cursor/digest/server-generation providers implementing the separate consumer ports | Service/API crates and concrete auth, clock/identifier, executor, storage, outbox, projection, and observability implementations solely for composition; no new policy, command, query, redaction, cursor, audit, or identifier semantics |
-| `riffdb-api-mcp` | The sole MCP SDK boundary: common bounded presentation DTOs/rendering, exact tool/resource/schema registries, locators, cursors, observers and structural base64 presentation; plus feature-gated Streamable HTTP authentication/session handling and stdio transport support | Ungated common code has no service/auth/server/policy/runtime/commit/catalog/storage edge; `streamable-http` alone may add optional service and auth-owned `CredentialAuthenticator` edges; no direct policy, catalog, runtime, commit, storage API, or storage implementation |
+| `riffdb-api-mcp` | The sole MCP SDK boundary: common bounded presentation DTOs/rendering, exact tool/resource/schema registries, locators, cursors, observers and structural base64 presentation; plus feature-gated Streamable HTTP authentication/session handling and stdio transport support | Ungated common code has no service/auth/server/policy/runtime/commit/catalog/storage edge; `streamable-http` alone may add optional service and auth-owned `RetainedOpaqueCredential`/`CredentialAuthenticator` edges; the retained helper grants only bounded copy and an opaque borrow, never token parsing or an auth decision; no direct policy, catalog, runtime, commit, storage API, or storage implementation |
 | `riffdb-mcp-stdio` | `riffdb-mcp` local stdio bridge that uses the public Rust client and public gRPC only | Client plus MCP stdio transport glue; no auth, service, server, policy, runtime, commit, catalog, or storage access and no gRPC server feature |
 | `riffdb-cli` | `riffdb` operator and developer CLI using only public Rust-client operations, bounded local configuration/credential retention/rendering, and the checked budget-comparison runner | Exact ADR-0041 direct dependency allowlist; the sole auth-crate symbol boundary is isolated `riffdb_auth::bootstrap_secret`, never the root normal-token loader, authenticator, policy, storage, service, server, proto, or semantic internals |
 | `riffdb-outbox` | Durable event dispatch state machine, leases, retries, deduplication metadata, and connectors | Storage API and Tokio; outside command execution |
@@ -338,6 +339,18 @@ The binary targets are `riffdbd` from `riffdb-server`, `riffdb` from `riffdb-cli
 - Storage implementations MUST NOT depend on gRPC or MCP.
 - API crates MUST NOT access storage implementations directly.
 - MCP and gRPC MUST share the `riffdb-service` authorization and execution entry points.
+- MCP Streamable HTTP MAY construct the auth-owned
+  `RetainedOpaqueCredential` only from an already bearer-stripped byte slice of
+  at most 43 bytes and MAY use only its `borrow()` result as the
+  `OpaqueCredential` passed to `CredentialAuthenticator`. Construction only
+  bounds and copies; it performs no syntax check, decode, authentication, or
+  authorization. The helper is non-`Clone`, nonserializable, redacted, backed
+  by `Zeroizing<[u8; 43]>`, and exposes no raw data accessor. MCP session state
+  MUST NOT retain it or its borrowed view. A live SSE response handler MAY own
+  exactly one retained value for the handler lifetime and MAY borrow it only to
+  perform the required fresh `CredentialAuthenticator` call before each
+  emitted notification; the handler MUST release it on close and MUST NOT cache
+  a principal, policy decision, obligation, or authorization result.
 - `riffdb-proto` MUST NOT depend on `riffdb-storage-api`; only the narrowly scoped storage-owned `proto_codec` bridge may map semantic durable DTOs to generated messages.
 - `riffdb-storage-api` MAY consume only the two immutable checked ADR-0017 projection schema values from `riffdb-contract-ir`; it MUST NOT consume `CommandPlan` or compiler/runtime services, and `riffdb-contract-ir` MUST NOT depend on storage.
 - `riffdb-catalog` MAY consume `riffdb-invariant` only to evaluate one selected
@@ -401,6 +414,10 @@ build-script, native, license, advisory, cryptographic, and unsafe inventory.
 The real WP-140 lock and feature graph MUST receive a fresh human-visible review
 and stop on any difference; in particular, the accepted scratch graph selected
 `serde_json` 1.0.151 while ADR-0041 pins 1.0.150 for the CLI.
+ADR-0043 adds no dependency owner: `RetainedOpaqueCredential` uses
+`riffdb-auth`'s existing exact `zeroize` edge as
+`Zeroizing<[u8; 43]>`. The direct `zeroize` owner set remains exactly
+`riffdb-auth`, `riffdb-client-rust`, and `riffdb-cli`.
 
 For WP-150, `riffdb-cli` has empty default features and exactly these direct
 production dependencies: `base64 = 0.22.1` (`alloc`), `clap = 4.6.3`
@@ -2827,7 +2844,16 @@ Every POST, GET, or DELETE carries exactly one canonical `Authorization` value:
 case-sensitive `Bearer ` plus the exact 43-byte token. The adapter strips the
 scheme, calls only the auth-owned `CredentialAuthenticator` with trusted
 database/environment/audience, removes the header before rmcp, and owns no token
-decoder or auth cache. Stateful rmcp mode is mandatory; stateless
+decoder or auth cache. For the ordered adapter handoff it may copy the
+bearer-stripped slice into auth-owned `RetainedOpaqueCredential`, whose
+constructor accepts any length through 43 without syntax validation and whose
+sole public data accessor `borrow()` returns `OpaqueCredential<'_>`. It passes
+that borrow only to `CredentialAuthenticator`; it never stores the retained
+value or borrow in session state, exposes raw bytes, or treats construction as
+authentication. A live SSE response handler owns exactly one retained value for
+its lifetime, uses it only to freshly authenticate each emitted notification,
+and releases it on close; it caches no authentication or authorization result.
+Stateful rmcp mode is mandatory; stateless
 `serve_directly` is forbidden. The private RiffDB `SessionManager` reserves one
 validated SDK-produced ID by insert-if-absent before worker start, counts Pending
 and Active states against 128, never retries/evicts/overwrites, holds no map guard
@@ -2853,7 +2879,11 @@ allowlist, and response rules apply.
 `MCP-011` Transport-specific authentication MUST call the same auth-owned
 `CredentialAuthenticator`, produce the same privately constructed
 `AuthenticatedPrincipal`, and enter the same service-owned authorization and
-obligation path. MCP adapters MUST NOT construct an actor or capability decision.
+obligation path. MCP adapters MUST NOT construct an actor or capability
+decision. Streamable HTTP may only bound and copy the bearer-stripped
+presentation into auth-owned `RetainedOpaqueCredential` and pass its
+`OpaqueCredential` borrow to that authenticator; helper construction is not
+credential syntax validation, authentication evidence, or authorization.
 
 ## 12.3 Advertised capabilities
 

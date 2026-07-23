@@ -8,8 +8,11 @@ use riffdb_storage_api::{
 use riffdb_types::{
     ActorId, ActorKind, Audience, CapabilityId, DatabaseId, Environment, TenantScope, Timestamp,
 };
+use zeroize::Zeroizing;
 
 use crate::{CapabilityDigestKeyProvider, RawCapabilityToken};
+
+const RETAINED_OPAQUE_CREDENTIAL_BYTES: usize = 43;
 
 /// A borrowed opaque credential supplied by a transport adapter.
 ///
@@ -43,6 +46,61 @@ impl fmt::Display for OpaqueCredential<'_> {
         formatter.write_str("opaque credential [REDACTED]")
     }
 }
+
+/// Auth-owned bounded retention for an opaque credential presentation.
+///
+/// Construction only copies an already transport-extracted byte slice. It does
+/// not validate credential syntax or establish an authentication result.
+pub struct RetainedOpaqueCredential {
+    bytes: Zeroizing<[u8; RETAINED_OPAQUE_CREDENTIAL_BYTES]>,
+    len: u8,
+}
+
+impl RetainedOpaqueCredential {
+    /// Copies an opaque credential when it fits the retained presentation bound.
+    pub fn new(bytes: &[u8]) -> Result<Self, RetainedOpaqueCredentialError> {
+        if bytes.len() > RETAINED_OPAQUE_CREDENTIAL_BYTES {
+            return Err(RetainedOpaqueCredentialError);
+        }
+
+        let mut retained = Zeroizing::new([0; RETAINED_OPAQUE_CREDENTIAL_BYTES]);
+        retained[..bytes.len()].copy_from_slice(bytes);
+        Ok(Self {
+            bytes: retained,
+            len: u8::try_from(bytes.len()).map_err(|_| RetainedOpaqueCredentialError)?,
+        })
+    }
+
+    /// Borrows the exact retained prefix for [`CredentialAuthenticator`].
+    #[must_use]
+    pub fn borrow(&self) -> OpaqueCredential<'_> {
+        OpaqueCredential::new(&self.bytes[..usize::from(self.len)])
+    }
+}
+
+impl fmt::Debug for RetainedOpaqueCredential {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("RetainedOpaqueCredential([REDACTED])")
+    }
+}
+
+impl fmt::Display for RetainedOpaqueCredential {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("retained opaque credential [REDACTED]")
+    }
+}
+
+/// Safe failure to retain an over-bound opaque credential.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct RetainedOpaqueCredentialError;
+
+impl fmt::Display for RetainedOpaqueCredentialError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("credential exceeds the retained presentation limit")
+    }
+}
+
+impl Error for RetainedOpaqueCredentialError {}
 
 /// Trusted configured identity against which one credential is resolved.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -837,6 +895,7 @@ mod tests {
     #[test]
     fn formatting_never_exposes_the_credential_or_key_material() {
         let credential = OpaqueCredential::new(TOKEN);
+        let retained = RetainedOpaqueCredential::new(TOKEN).expect("bounded retained credential");
         let keys = key_provider();
         let record = active_record(
             digest_for_key(&keys, 0),
@@ -851,7 +910,7 @@ mod tests {
             .authenticate(OpaqueCredential::new(TOKEN), &context())
             .expect("credential authenticates");
         let rendered = format!(
-            "{credential:?} {credential} {principal:?} {:?} {} {keys:?}",
+            "{credential:?} {credential} {retained:?} {retained} {principal:?} {:?} {} {keys:?}",
             AuthenticationFailure::Unauthenticated,
             AuthenticationFailure::Unauthenticated,
         );
@@ -860,5 +919,49 @@ mod tests {
         assert!(!rendered.contains(KEY_ONE));
         assert!(!rendered.contains(KEY_TWO));
         assert!(rendered.contains("[REDACTED]"));
+    }
+
+    #[test]
+    fn retained_credential_bounds_and_copies_without_validating_syntax() {
+        struct BorrowCheckingAuthenticator {
+            expected: Vec<u8>,
+        }
+
+        impl CredentialAuthenticator for BorrowCheckingAuthenticator {
+            fn authenticate(
+                &self,
+                credential: OpaqueCredential<'_>,
+                _context: &AuthenticationContext,
+            ) -> Result<AuthenticatedPrincipal, AuthenticationFailure> {
+                assert_eq!(credential.as_bytes(), self.expected);
+                Err(AuthenticationFailure::Unauthenticated)
+            }
+        }
+
+        for len in 0..=RETAINED_OPAQUE_CREDENTIAL_BYTES {
+            let mut source = vec![b'!'; len];
+            let retained =
+                RetainedOpaqueCredential::new(&source).expect("at-bound input is retained");
+            source.fill(b'?');
+
+            let authenticator = BorrowCheckingAuthenticator {
+                expected: vec![b'!'; len],
+            };
+            assert_eq!(
+                authenticator.authenticate(retained.borrow(), &context()),
+                Err(AuthenticationFailure::Unauthenticated)
+            );
+        }
+
+        let over_bound = vec![b'x'; RETAINED_OPAQUE_CREDENTIAL_BYTES + 1];
+        assert_eq!(
+            RetainedOpaqueCredential::new(&over_bound).unwrap_err(),
+            RetainedOpaqueCredentialError
+        );
+        assert_eq!(
+            RetainedOpaqueCredentialError.to_string(),
+            "credential exceeds the retained presentation limit"
+        );
+        assert!(std::mem::needs_drop::<RetainedOpaqueCredential>());
     }
 }

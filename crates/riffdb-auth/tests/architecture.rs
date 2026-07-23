@@ -7,6 +7,7 @@ use std::{fs, path::PathBuf};
 const MANIFEST: &str = include_str!("../Cargo.toml");
 const LOCKFILE: &str = include_str!("../../../Cargo.lock");
 const LIB_ROOT: &str = include_str!("../src/lib.rs");
+const AUTHENTICATOR_SOURCE: &str = include_str!("../src/authenticator.rs");
 const BOOTSTRAP_SOURCE: &str = include_str!("../src/bootstrap_secret.rs");
 
 fn crate_root() -> PathBuf {
@@ -195,4 +196,81 @@ fn bootstrap_module_remains_an_isolated_secret_helper() {
     assert!(BOOTSTRAP_SOURCE.contains("load_bootstrap_credential_file"));
     assert!(BOOTSTRAP_SOURCE.contains("read_bootstrap_credential"));
     assert!(BOOTSTRAP_SOURCE.contains("CapabilityId::from_unix_milliseconds_and_random"));
+}
+
+#[test]
+fn retained_opaque_credential_stays_auth_owned_and_non_exposing() {
+    for required in [
+        "const RETAINED_OPAQUE_CREDENTIAL_BYTES: usize = 43;",
+        "pub struct RetainedOpaqueCredential",
+        "Zeroizing<[u8; RETAINED_OPAQUE_CREDENTIAL_BYTES]>",
+        "pub fn borrow(&self) -> OpaqueCredential<'_>",
+        "RetainedOpaqueCredential([REDACTED])",
+    ] {
+        assert!(
+            AUTHENTICATOR_SOURCE.contains(required),
+            "retained credential boundary changed: {required}"
+        );
+    }
+    for forbidden in [
+        "impl Clone for RetainedOpaqueCredential",
+        "impl serde::Serialize for RetainedOpaqueCredential",
+        "impl Serialize for RetainedOpaqueCredential",
+        "impl AsRef<",
+        "impl std::ops::Deref for RetainedOpaqueCredential",
+        "impl Borrow<",
+        "impl From<RetainedOpaqueCredential",
+        "impl Into<",
+    ] {
+        assert!(
+            !AUTHENTICATOR_SOURCE.contains(forbidden),
+            "retained credential exposes an unreviewed capability: {forbidden}"
+        );
+    }
+    let declaration = AUTHENTICATOR_SOURCE
+        .find("pub struct RetainedOpaqueCredential")
+        .expect("retained credential declaration");
+    let declaration_attributes = AUTHENTICATOR_SOURCE[..declaration]
+        .rsplit_once("\n\n")
+        .map_or(&AUTHENTICATOR_SOURCE[..declaration], |(_, suffix)| suffix);
+    assert!(
+        !declaration_attributes.contains("Clone")
+            && !declaration_attributes.contains("Serialize")
+            && !declaration_attributes.contains("serde"),
+        "retained credential gained a clone or serialization attribute"
+    );
+    let fields = AUTHENTICATOR_SOURCE
+        .split_once("pub struct RetainedOpaqueCredential {")
+        .and_then(|(_, suffix)| suffix.split_once("\n}\n\nimpl RetainedOpaqueCredential"))
+        .map(|(fields, _)| fields)
+        .expect("retained credential fields");
+    assert_eq!(
+        fields, "\n    bytes: Zeroizing<[u8; RETAINED_OPAQUE_CREDENTIAL_BYTES]>,\n    len: u8,",
+        "retained credential fields or visibility changed"
+    );
+    let implementation = AUTHENTICATOR_SOURCE
+        .split_once("impl RetainedOpaqueCredential {")
+        .and_then(|(_, suffix)| suffix.split_once("\n}\n\nimpl fmt::Debug"))
+        .map(|(implementation, _)| implementation)
+        .expect("retained credential implementation");
+    assert_eq!(
+        implementation.matches("pub fn ").count(),
+        2,
+        "retained credential gained a public method"
+    );
+    assert!(implementation.contains("pub fn new(bytes: &[u8])"));
+    assert!(implementation.contains("pub fn borrow(&self) -> OpaqueCredential<'_>"));
+    let zeroize_row =
+        "zeroize = { version = \"=1.8.1\", default-features = false, features = [\"alloc\"] }";
+    let allowed = ["riffdb-auth", "riffdb-cli", "riffdb-client-rust"];
+    let actual = production_dependency_owners("zeroize");
+    assert_eq!(
+        actual,
+        owners_with_reviewed_row(&allowed, zeroize_row),
+        "retained credentials must not add a new direct zeroize owner"
+    );
+    assert!(
+        !actual.iter().any(|owner| owner == "riffdb-api-mcp"),
+        "MCP must retain credentials through the auth-owned wrapper"
+    );
 }

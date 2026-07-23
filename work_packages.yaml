@@ -1859,10 +1859,13 @@ work_packages:
   - ADR-0037
   - ADR-0040
   - ADR-0041
+  - ADR-0043
   allowed_paths:
   - Cargo.lock
   - crates/riffdb-api-mcp/**
   - crates/riffdb-mcp-stdio/**
+  - crates/riffdb-auth/src/authenticator.rs
+  - crates/riffdb-auth/tests/architecture.rs
   - tests/mcp/**
   - scripts/mcp-inspector-smoke
   deliverables:
@@ -1875,7 +1878,12 @@ work_packages:
   - Hosted MCP RequestId creation through the injected server source, distinct from MCP JSON-RPC identifiers and
     progress tokens; externally supplied AgentSessionId validation follows the shared UUIDv7 contract
   - Redaction-safe protocol telemetry and server registration hooks
-  - MCP HTTP credential handoff only through CredentialAuthenticator and stdio-over-gRPC semantic parity
+  - Auth-owned non-Clone/nonserializable redacted RetainedOpaqueCredential in the exact approved auth source, backed
+    by the existing Zeroizing 43-byte buffer, accepting any at-most-43-byte bearer-stripped slice by bounded copy
+    only, and exposing credential data solely as an OpaqueCredential borrow
+  - MCP HTTP credential handoff using RetainedOpaqueCredential only to borrow into CredentialAuthenticator, with no
+    helper syntax/decode/auth decision, retained session credential, local authentication authority, or change to
+    stdio-over-gRPC semantic parity
   - Service-only invocation and discovery with no bootstrap discovery/invocation and durable authorization/audit
     conformance evidence
   - Discovery and invocation dispatch using the compiler-owned ADR-0020 command tool name verbatim, with no adapter
@@ -1900,7 +1908,7 @@ work_packages:
   - Progress, cancellation, observer/subscription bounds, list-change/resource-update coalescing, five-second polling,
     idle/lifetime expiry, reconnect/restart fences, redaction canaries, and protocol-only stdout
   acceptance_commands:
-  - cargo test -p riffdb-api-mcp -p riffdb-mcp-stdio
+  - cargo test -p riffdb-auth -p riffdb-api-mcp -p riffdb-mcp-stdio
   - cargo test -p riffdb-api-mcp --test mcp_conformance
   - ./scripts/mcp-inspector-smoke
   - cargo deny check
@@ -1909,9 +1917,11 @@ work_packages:
     owner_crate: riffdb-api-mcp
     manifest: crates/riffdb-api-mcp/Cargo.toml
     path: ../../tests/mcp/mcp_conformance.rs
-  exit_gate: Authorized dynamic tool catalogs expose only exact compiled ADR-0020 names; structured results, resource
-    reads, stale-name denial, progress, cancellation, and both adapter transports pass against the shared service
-    harness.
+  exit_gate: Auth architecture tests freeze the exact retained-credential ownership, zeroizing bound, opaque-only
+    accessor, and unchanged dependency-owner set; authorized dynamic tool catalogs expose only exact compiled
+    ADR-0020 names; structured results, resource reads, stale-name denial, progress, cancellation, and both adapter
+    transports pass against the shared service harness with every HTTP authentication decision delegated to
+    CredentialAuthenticator.
   human_review_triggers: *id001
 - id: WP-150
   name: CLI and local developer flow
