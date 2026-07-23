@@ -6,6 +6,7 @@ import "riffdb/v1/admin.proto";
 import "riffdb/v1/command.proto";
 import "riffdb/v1/commit.proto";
 import "riffdb/v1/contract.proto";
+import "riffdb/v1/discovery.proto";
 import "riffdb/v1/projection.proto";
 import "riffdb/v1/query.proto";
 service ContractService {
@@ -13,6 +14,9 @@ service ContractService {
   rpc ExplainCommand(ExplainCommandRequest) returns (ExplainCommandResponse);
   rpc DeployContract(DeployContractRequest) returns (DeployContractResponse);
   rpc GetActiveContract(GetActiveContractRequest) returns (GetActiveContractResponse);
+  rpc GetContractVersion(GetContractVersionRequest) returns (GetContractVersionResponse);
+  rpc DiscoverCommandTools(DiscoverCommandToolsRequest) returns (DiscoverCommandToolsResponse);
+  rpc DiscoverResources(DiscoverResourcesRequest) returns (DiscoverResourcesResponse);
 }
 
 service CommandService {
@@ -24,12 +28,14 @@ service QueryService {
   rpc GetEntity(GetEntityRequest) returns (GetEntityResponse);
   rpc ScanIndex(ScanIndexRequest) returns (ScanIndexResponse);
   rpc QueryProjection(QueryProjectionRequest) returns (QueryProjectionResponse);
+  rpc GetProjectionStatus(GetProjectionStatusRequest) returns (GetProjectionStatusResponse);
 }
 
 service CommitService {
   rpc GetCommit(GetCommitRequest) returns (GetCommitResponse);
   rpc ScanCommits(ScanCommitsRequest) returns (ScanCommitsResponse);
   rpc SubscribeCommits(SubscribeCommitsRequest) returns (stream CommitNotification);
+  rpc TraceProvenance(TraceProvenanceRequest) returns (TraceProvenanceResponse);
 }
 
 service AdminService {
@@ -37,4 +43,5 @@ service AdminService {
   rpc Stats(StatsRequest) returns (StatsResponse);
   rpc CreateCapability(CreateCapabilityRequest) returns (CreateCapabilityResponse);
   rpc RevokeCapability(RevokeCapabilityRequest) returns (RevokeCapabilityResponse);
+  rpc ListPendingOutboxDeliveries(ListPendingOutboxDeliveriesRequest) returns (ListPendingOutboxDeliveriesResponse);
 }

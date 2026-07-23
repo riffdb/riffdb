@@ -1302,6 +1302,7 @@ dependencies = [
  "riffdb-types",
  "tonic",
  "tonic-prost",
+ "zeroize",
 ]
 
 [[package]]
@@ -1416,6 +1417,7 @@ version = "0.1.0"
 name = "riffdb-proto"
 version = "0.1.0"
 dependencies = [
+ "base64",
  "crc",
  "proptest",
  "prost",
@@ -1465,6 +1467,7 @@ dependencies = [
 name = "riffdb-service"
 version = "0.1.0"
 dependencies = [
+ "base64",
  "riffdb-auth",
  "riffdb-catalog",
  "riffdb-commit",

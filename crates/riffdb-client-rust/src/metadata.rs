@@ -6,6 +6,7 @@ use std::str::FromStr;
 
 use tonic::Request;
 use tonic::metadata::{Ascii, Binary, MetadataValue};
+use zeroize::Zeroizing;
 
 const CAPABILITY_TOKEN_BYTES: usize = 43;
 const MAX_TRACE_PARENT_BYTES: usize = 512;
@@ -48,9 +49,21 @@ impl BearerCredential {
         if !valid_token_presentation(token.as_bytes()) {
             return Err(MetadataError::InvalidCapabilityToken);
         }
-        let authorization = MetadataValue::from_str(&format!("Bearer {token}"))
+        let mut presentation = Zeroizing::new(String::with_capacity("Bearer ".len() + token.len()));
+        presentation.push_str("Bearer ");
+        presentation.push_str(token);
+        let authorization = MetadataValue::from_str(presentation.as_str())
             .map_err(|_| MetadataError::InvalidCapabilityToken)?;
         Ok(Self { authorization })
+    }
+
+    /// Reports whether two checked credentials have the same presentation.
+    ///
+    /// This is a non-exposing equality check for delivery verification, not a
+    /// constant-time authentication primitive.
+    #[must_use]
+    pub fn has_same_presentation(&self, other: &Self) -> bool {
+        self.authorization == other.authorization
     }
 }
 

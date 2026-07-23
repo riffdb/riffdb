@@ -11,21 +11,30 @@ use riffdb_types::{
 
 use crate::{
     BuildInfo, CommandToolDescriptor, CommandToolDiscoveryItem, CommitScanFence,
-    CommitSubscriptionEvent, CommitView, ContractDescriptor, ContractValidationResult,
-    CreateCapabilityResult, CursorToken, DeclaredOutcomeView, DeployContractResult,
-    DiscoverCommandToolsResult, DiscoverResourcesResult, DiscoveryCatalogFence, DurableEventView,
-    EntityView, ExecuteCommandResult, ExplainCommandResult, GetActiveContractResult,
+    CommitSubscriptionEvent, CommitView, CompactCommandToolDescriptor,
+    CompactCommandToolDiscoveryItem, CompactResourceDescriptor, CompactResourceDescriptorRef,
+    ContractDescriptor, ContractValidationResult, CreateCapabilityResult, CursorToken,
+    DeclaredOutcomeView, DeployContractResult, DiscoverCommandToolsResult,
+    DiscoverCommandToolsResultRef, DiscoverResourcesResult, DiscoverResourcesResultRef,
+    DiscoveryCatalogFence, DiscoveryCatalogStateRef, DurableEventView, EntityView,
+    ExecuteCommandResult, ExplainCommandResult, GeneratedSchemaIdentity, GetActiveContractResult,
     GetCommitResult, GetContractVersionResult, GetEntityResult, GetProjectionStatusResult,
     HealthReport, HealthResult, IndexRowView, IndexScanFence, JournaledCommandResult,
-    ListPendingOutboxDeliveriesResult, NormalCreateCapabilityResult, OutboxDeliverySummary, Page,
-    ProjectionPageFence, ProjectionRow, ProjectionStatusSnapshot, ProvenanceClaimsView,
-    ProvenanceView, QueryProjectionResult, ReadOnlyCommandResult, ResolveCommandOutcomeResult,
-    ResourceDescriptor, RevokeCapabilityResult, ScanCommitsResult, ScanIndexResult, ServiceFailure,
-    StatisticsResult, SubscribeToCommitsResult, TraceProvenanceResult,
+    ListPendingOutboxDeliveriesResult, NormalCreateCapabilityResult, OperationSchemaArtifact,
+    OperationSchemaCatalog, OperationSchemaCatalogIdentity, OperationSchemaIdentity,
+    OutboxDeliverySummary, Page, ProjectionPageFence, ProjectionRow, ProjectionStatusSnapshot,
+    ProvenanceClaimsView, ProvenanceView, QueryProjectionResult, ReadOnlyCommandResult,
+    ResolveCommandOutcomeResult, ResourceDescriptor, ResourceDescriptorRef, RevokeCapabilityResult,
+    ScanCommitsResult, ScanIndexResult, ServiceFailure, StatisticsResult, SubscribeToCommitsResult,
+    TraceProvenanceResult,
 };
 
 /// Exact POC ceiling for one API-neutral unary result or visible stream item.
 pub const MAX_SERVICE_RESPONSE_BYTES: usize = 4_194_304;
+/// Exact stricter ceiling for one full discovery result.
+pub const MAX_FULL_DISCOVERY_RESPONSE_BYTES: usize = 2_621_440;
+/// Exact conservative ceiling for one compact discovery item.
+pub const MAX_COMPACT_DISCOVERY_ITEM_BYTES: usize = 4_096;
 
 /// Version of the conservative service-owned response charge.
 pub const SERVICE_RESPONSE_CHARGE_VERSION: u16 = 1;
@@ -54,9 +63,17 @@ impl ServiceResponseChargeV1 {
     pub const fn fits(self) -> bool {
         self.0 <= MAX_SERVICE_RESPONSE_BYTES
     }
+
+    const fn fits_limit(self, limit: usize) -> bool {
+        self.0 <= limit
+    }
 }
 
-/// Checked response-charge arithmetic could not represent the complete result.
+/// A complete result has no releasable response charge under accounting v1.
+///
+/// This covers checked-arithmetic overflow and a type-local invariant ceiling,
+/// such as the stricter full-discovery or compact-item bound. Both conditions
+/// fail closed through the same existing service disposition.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct ServiceResponseChargeOverflow;
 
@@ -77,7 +94,8 @@ mod sealed {
 /// The private supertrait keeps the service crate as the sole accounting owner.
 /// Downstream crates can inspect charges but cannot publish an alternate rule.
 pub trait ServiceResponseCharge: sealed::Sealed {
-    /// Computes the deterministic conservative v1 charge.
+    /// Computes the deterministic conservative v1 charge when the complete
+    /// result also satisfies every type-local response ceiling.
     fn service_response_charge_v1(
         &self,
     ) -> Result<ServiceResponseChargeV1, ServiceResponseChargeOverflow>;
@@ -166,6 +184,17 @@ fn fixed_charge(fields: usize) -> Result<ServiceResponseChargeV1, ServiceRespons
     Ok(charge.finish())
 }
 
+fn apply_type_local_charge_limit(
+    charge: ServiceResponseChargeV1,
+    limit: usize,
+) -> Result<ServiceResponseChargeV1, ServiceResponseChargeOverflow> {
+    if charge.fits_limit(limit) {
+        Ok(charge)
+    } else {
+        Err(ServiceResponseChargeOverflow)
+    }
+}
+
 fn charge_lineage(
     charge: &mut ChargeAccumulator,
     lineage: &ContractLineage,
@@ -189,11 +218,112 @@ fn charge_schema(
     charge: &mut ChargeAccumulator,
     schema: &GeneratedSchemaArtifact,
 ) -> Result<(), ServiceResponseChargeOverflow> {
+    charge_schema_shape(charge, schema.canonical_json().len())
+}
+
+fn charge_schema_shape(
+    charge: &mut ChargeAccumulator,
+    canonical_json_bytes: usize,
+) -> Result<(), ServiceResponseChargeOverflow> {
     // Key, fixed dialect identifier, schema hash, and exact canonical JSON.
     charge.fields(2)?;
     charge.bytes("https://json-schema.org/draft/2020-12/schema".len())?;
     charge.bytes(32)?;
-    charge.bytes(schema.canonical_json().len())
+    charge.bytes(canonical_json_bytes)
+}
+
+fn charge_command_tool_identity_shape(
+    charge: &mut ChargeAccumulator,
+    tool_name_bytes: usize,
+    source_command_bytes: usize,
+    lineage_bytes: usize,
+) -> Result<(), ServiceResponseChargeOverflow> {
+    charge.bytes(tool_name_bytes)?;
+    charge.bytes(source_command_bytes)?;
+    charge.bytes(lineage_bytes)?;
+    charge.fields(2)
+}
+
+fn raw_command_tool_descriptor_charge(
+    tool_name_bytes: usize,
+    source_command_bytes: usize,
+    lineage_bytes: usize,
+    input_schema_json_bytes: usize,
+    outcome_schema_json_bytes: usize,
+) -> Result<ServiceResponseChargeV1, ServiceResponseChargeOverflow> {
+    let mut charge = ChargeAccumulator::message();
+    charge_command_tool_identity_shape(
+        &mut charge,
+        tool_name_bytes,
+        source_command_bytes,
+        lineage_bytes,
+    )?;
+    charge_schema_shape(&mut charge, input_schema_json_bytes)?;
+    charge_schema_shape(&mut charge, outcome_schema_json_bytes)?;
+    Ok(charge.finish())
+}
+
+fn raw_command_tool_discovery_item_charge(
+    descriptor: Option<ServiceResponseChargeV1>,
+) -> Result<ServiceResponseChargeV1, ServiceResponseChargeOverflow> {
+    let mut charge = ChargeAccumulator::message();
+    charge.fields(1)?;
+    if let Some(descriptor) = descriptor {
+        charge.fields(1)?;
+        charge.add(descriptor.bytes())?;
+    }
+    Ok(charge.finish())
+}
+
+fn raw_generated_schema_identity_charge(
+    key_bytes: usize,
+    hash_bytes: usize,
+) -> Result<ServiceResponseChargeV1, ServiceResponseChargeOverflow> {
+    let mut charge = ChargeAccumulator::message();
+    charge.bytes(key_bytes)?;
+    charge.bytes(hash_bytes)?;
+    Ok(charge.finish())
+}
+
+fn raw_compact_command_tool_descriptor_charge(
+    tool_name_bytes: usize,
+    source_command_bytes: usize,
+    lineage_bytes: usize,
+    input_schema: ServiceResponseChargeV1,
+    outcome_schema: ServiceResponseChargeV1,
+) -> Result<ServiceResponseChargeV1, ServiceResponseChargeOverflow> {
+    let mut charge = ChargeAccumulator::message();
+    charge_command_tool_identity_shape(
+        &mut charge,
+        tool_name_bytes,
+        source_command_bytes,
+        lineage_bytes,
+    )?;
+    for schema in [input_schema, outcome_schema] {
+        charge.fields(1)?;
+        charge.add(schema.bytes())?;
+    }
+    Ok(charge.finish())
+}
+
+fn charge_entity_schema_resource_shape(
+    charge: &mut ChargeAccumulator,
+    lineage_bytes: usize,
+    schema_json_bytes: usize,
+) -> Result<(), ServiceResponseChargeOverflow> {
+    charge.bytes(lineage_bytes)?;
+    charge.fields(1)?;
+    charge_schema_shape(charge, schema_json_bytes)
+}
+
+fn charge_command_resource_shape(
+    charge: &mut ChargeAccumulator,
+    lineage_bytes: usize,
+    source_command_bytes: usize,
+) -> Result<(), ServiceResponseChargeOverflow> {
+    charge.bytes(lineage_bytes)?;
+    charge.fields(2)?;
+    charge.bytes(source_command_bytes)
 }
 
 fn charge_command_explain(
@@ -249,12 +379,13 @@ fn charge_journaled(
     charge: &mut ChargeAccumulator,
     result: &JournaledCommandResult,
 ) -> Result<(), ServiceResponseChargeOverflow> {
-    charge.fields(6)?;
+    charge.fields(7)?;
     charge_lineage(charge, result.lineage())?;
     charge.bytes(32)?;
     charge_declared_outcome(charge, result.outcome())?;
     // Reserve the fixed canonical provenance locator produced by WP-130.
-    charge.bytes(56)
+    charge.bytes(56)?;
+    charge.bytes(result.outcome_locator().canonical_uri().len())
 }
 
 fn charge_read_only(
@@ -817,13 +948,82 @@ impl ServiceResponseCharge for CommandToolDescriptor {
     fn service_response_charge_v1(
         &self,
     ) -> Result<ServiceResponseChargeV1, ServiceResponseChargeOverflow> {
+        raw_command_tool_descriptor_charge(
+            self.name().as_str().len(),
+            self.source_command().as_str().len(),
+            self.lineage().as_bytes().len(),
+            self.input_schema().canonical_json().len(),
+            self.outcome_schema().canonical_json().len(),
+        )
+    }
+}
+
+impl ServiceResponseCharge for GeneratedSchemaIdentity {
+    fn service_response_charge_v1(
+        &self,
+    ) -> Result<ServiceResponseChargeV1, ServiceResponseChargeOverflow> {
+        raw_generated_schema_identity_charge(
+            self.key().to_bytes().len(),
+            self.schema_hash().as_bytes().len(),
+        )
+    }
+}
+
+impl ServiceResponseCharge for CompactCommandToolDescriptor {
+    fn service_response_charge_v1(
+        &self,
+    ) -> Result<ServiceResponseChargeV1, ServiceResponseChargeOverflow> {
+        raw_compact_command_tool_descriptor_charge(
+            self.name().as_str().len(),
+            self.source_command().as_str().len(),
+            self.lineage().as_bytes().len(),
+            self.input_schema().service_response_charge_v1()?,
+            self.outcome_schema().service_response_charge_v1()?,
+        )
+    }
+}
+
+impl ServiceResponseCharge for OperationSchemaIdentity {
+    fn service_response_charge_v1(
+        &self,
+    ) -> Result<ServiceResponseChargeV1, ServiceResponseChargeOverflow> {
         let mut charge = ChargeAccumulator::message();
-        charge.bytes(self.name().as_str().len())?;
-        charge.bytes(self.source_command().as_str().len())?;
-        charge_lineage(&mut charge, self.lineage())?;
-        charge.fields(2)?;
-        charge_schema(&mut charge, self.input_schema())?;
-        charge_schema(&mut charge, self.outcome_schema())?;
+        charge.bytes(self.schema_id().len())?;
+        charge.bytes(self.schema_hash().as_bytes().len())?;
+        Ok(charge.finish())
+    }
+}
+
+impl ServiceResponseCharge for OperationSchemaArtifact {
+    fn service_response_charge_v1(
+        &self,
+    ) -> Result<ServiceResponseChargeV1, ServiceResponseChargeOverflow> {
+        let mut charge = ChargeAccumulator::message();
+        charge.nested(self.identity())?;
+        charge.bytes(self.dialect().len())?;
+        charge.bytes(self.canonical_json().len())?;
+        Ok(charge.finish())
+    }
+}
+
+impl ServiceResponseCharge for OperationSchemaCatalogIdentity {
+    fn service_response_charge_v1(
+        &self,
+    ) -> Result<ServiceResponseChargeV1, ServiceResponseChargeOverflow> {
+        let mut charge = ChargeAccumulator::message();
+        charge.nested(self.command_operation_envelope())?;
+        charge.nested(self.command_get_outcome_result())?;
+        Ok(charge.finish())
+    }
+}
+
+impl ServiceResponseCharge for OperationSchemaCatalog {
+    fn service_response_charge_v1(
+        &self,
+    ) -> Result<ServiceResponseChargeV1, ServiceResponseChargeOverflow> {
+        let mut charge = ChargeAccumulator::message();
+        charge.nested(self.command_operation_envelope())?;
+        charge.nested(self.command_get_outcome_result())?;
         Ok(charge.finish())
     }
 }
@@ -834,16 +1034,17 @@ impl ServiceResponseCharge for DiscoveryCatalogFence {
     ) -> Result<ServiceResponseChargeV1, ServiceResponseChargeOverflow> {
         let mut charge = ChargeAccumulator::message();
         charge.fields(1)?;
-        if let Self::ActiveContract {
+        if let DiscoveryCatalogStateRef::ActiveContract {
             lineage,
             bundle_hash: _,
             version: _,
-        } = self
+        } = self.state()
         {
             charge.fields(2)?;
             charge_lineage(&mut charge, lineage)?;
             charge.bytes(32)?;
         }
+        charge.nested(self.operation_schemas())?;
         Ok(charge.finish())
     }
 }
@@ -852,22 +1053,68 @@ impl ServiceResponseCharge for CommandToolDiscoveryItem {
     fn service_response_charge_v1(
         &self,
     ) -> Result<ServiceResponseChargeV1, ServiceResponseChargeOverflow> {
-        let mut charge = ChargeAccumulator::message();
-        charge.fields(1)?;
-        if let Self::Command(descriptor) = self {
-            charge.nested(descriptor.as_ref())?;
-        }
-        Ok(charge.finish())
+        let descriptor = match self {
+            Self::Fixed(_) => None,
+            Self::Command(descriptor) => Some(descriptor.service_response_charge_v1()?),
+        };
+        raw_command_tool_discovery_item_charge(descriptor)
     }
+}
+
+impl ServiceResponseCharge for CompactCommandToolDiscoveryItem {
+    fn service_response_charge_v1(
+        &self,
+    ) -> Result<ServiceResponseChargeV1, ServiceResponseChargeOverflow> {
+        let descriptor = match self {
+            Self::Fixed(_) => None,
+            Self::Command(descriptor) => Some(descriptor.service_response_charge_v1()?),
+        };
+        let result = raw_command_tool_discovery_item_charge(descriptor)?;
+        if result.bytes() > MAX_COMPACT_DISCOVERY_ITEM_BYTES {
+            return Err(ServiceResponseChargeOverflow);
+        }
+        Ok(result)
+    }
+}
+
+fn raw_discovery_page_response_charge<T, F>(
+    page: &Page<T, F>,
+    additional_nested: Option<&dyn ServiceResponseCharge>,
+) -> Result<ServiceResponseChargeV1, ServiceResponseChargeOverflow>
+where
+    T: ServiceResponseCharge,
+    F: ServiceResponseCharge,
+{
+    let mut charge = ChargeAccumulator::message();
+    charge.nested(page)?;
+    if let Some(additional_nested) = additional_nested {
+        charge.nested(additional_nested)?;
+    }
+    Ok(charge.finish())
 }
 
 impl ServiceResponseCharge for DiscoverCommandToolsResult {
     fn service_response_charge_v1(
         &self,
     ) -> Result<ServiceResponseChargeV1, ServiceResponseChargeOverflow> {
-        let mut charge = ChargeAccumulator::message();
-        charge.nested(self.page())?;
-        Ok(charge.finish())
+        let result = match self.result() {
+            DiscoverCommandToolsResultRef::CatalogUnchanged(fence) => {
+                let mut charge = ChargeAccumulator::message();
+                charge.nested(fence)?;
+                charge.finish()
+            }
+            DiscoverCommandToolsResultRef::Page {
+                page,
+                operation_schemas,
+            } => apply_type_local_charge_limit(
+                raw_discovery_page_response_charge(page, Some(operation_schemas))?,
+                MAX_FULL_DISCOVERY_RESPONSE_BYTES,
+            )?,
+            DiscoverCommandToolsResultRef::CompactPage(page) => {
+                raw_discovery_page_response_charge(page, None)?
+            }
+        };
+        Ok(result)
     }
 }
 
@@ -876,21 +1123,112 @@ impl ServiceResponseCharge for ResourceDescriptor {
         &self,
     ) -> Result<ServiceResponseChargeV1, ServiceResponseChargeOverflow> {
         let mut charge = ChargeAccumulator::message();
-        charge.fields(3)?;
-        // URI and MIME/class text are deterministic functions of this identity.
-        // Four times the canonical key dominates their accepted textual forms.
-        if let Some(target) = self.target() {
-            let key = target.canonical_key();
-            charge.bytes(
-                key.len()
-                    .checked_mul(4)
-                    .ok_or(ServiceResponseChargeOverflow)?,
-            )?;
-        }
-        if let Some(schema) = self.schema() {
-            charge_schema(&mut charge, schema)?;
+        charge.fields(1)?;
+        match self.resource() {
+            ResourceDescriptorRef::ActiveContract | ResourceDescriptorRef::ServerHealth => {}
+            ResourceDescriptorRef::ContractVersion { lineage, .. } => {
+                charge_lineage(&mut charge, lineage)?;
+                charge.fields(1)?;
+            }
+            ResourceDescriptorRef::EntitySchema {
+                lineage, schema, ..
+            } => {
+                charge_entity_schema_resource_shape(
+                    &mut charge,
+                    lineage.as_bytes().len(),
+                    schema.canonical_json().len(),
+                )?;
+            }
+            ResourceDescriptorRef::CommandPlan {
+                lineage,
+                source_command,
+                ..
+            }
+            | ResourceDescriptorRef::CommandDocumentation {
+                lineage,
+                source_command,
+                ..
+            } => {
+                charge_command_resource_shape(
+                    &mut charge,
+                    lineage.as_bytes().len(),
+                    source_command.as_str().len(),
+                )?;
+            }
+            ResourceDescriptorRef::CommandOutcome {
+                lineage, tool_name, ..
+            } => {
+                charge_lineage(&mut charge, lineage)?;
+                charge.fields(1)?;
+                charge.bytes(tool_name.as_str().len())?;
+            }
+            ResourceDescriptorRef::Commit { .. } | ResourceDescriptorRef::Provenance { .. } => {
+                charge.fields(1)?
+            }
+            ResourceDescriptorRef::ProjectionStatus { lineage, .. } => {
+                charge_lineage(&mut charge, lineage)?;
+                charge.fields(1)?;
+            }
         }
         Ok(charge.finish())
+    }
+}
+
+impl ServiceResponseCharge for CompactResourceDescriptor {
+    fn service_response_charge_v1(
+        &self,
+    ) -> Result<ServiceResponseChargeV1, ServiceResponseChargeOverflow> {
+        let mut charge = ChargeAccumulator::message();
+        charge.fields(1)?;
+        match self.resource() {
+            CompactResourceDescriptorRef::ActiveContract
+            | CompactResourceDescriptorRef::ServerHealth => {}
+            CompactResourceDescriptorRef::ContractVersion { lineage, .. } => {
+                charge_lineage(&mut charge, lineage)?;
+                charge.fields(1)?;
+            }
+            CompactResourceDescriptorRef::EntitySchema {
+                lineage, schema, ..
+            } => {
+                charge.bytes(lineage.as_bytes().len())?;
+                charge.fields(1)?;
+                charge.nested(schema)?;
+            }
+            CompactResourceDescriptorRef::CommandPlan {
+                lineage,
+                source_command,
+                ..
+            }
+            | CompactResourceDescriptorRef::CommandDocumentation {
+                lineage,
+                source_command,
+                ..
+            } => {
+                charge_command_resource_shape(
+                    &mut charge,
+                    lineage.as_bytes().len(),
+                    source_command.as_str().len(),
+                )?;
+            }
+            CompactResourceDescriptorRef::CommandOutcome {
+                lineage, tool_name, ..
+            } => {
+                charge_lineage(&mut charge, lineage)?;
+                charge.fields(1)?;
+                charge.bytes(tool_name.as_str().len())?;
+            }
+            CompactResourceDescriptorRef::Commit { .. }
+            | CompactResourceDescriptorRef::Provenance { .. } => charge.fields(1)?,
+            CompactResourceDescriptorRef::ProjectionStatus { lineage, .. } => {
+                charge_lineage(&mut charge, lineage)?;
+                charge.fields(1)?;
+            }
+        }
+        let result = charge.finish();
+        if result.bytes() > MAX_COMPACT_DISCOVERY_ITEM_BYTES {
+            return Err(ServiceResponseChargeOverflow);
+        }
+        Ok(result)
     }
 }
 
@@ -898,9 +1236,21 @@ impl ServiceResponseCharge for DiscoverResourcesResult {
     fn service_response_charge_v1(
         &self,
     ) -> Result<ServiceResponseChargeV1, ServiceResponseChargeOverflow> {
-        let mut charge = ChargeAccumulator::message();
-        charge.nested(self.page())?;
-        Ok(charge.finish())
+        let result = match self.result() {
+            DiscoverResourcesResultRef::CatalogUnchanged(fence) => {
+                let mut charge = ChargeAccumulator::message();
+                charge.nested(fence)?;
+                charge.finish()
+            }
+            DiscoverResourcesResultRef::Page(page) => apply_type_local_charge_limit(
+                raw_discovery_page_response_charge(page, None)?,
+                MAX_FULL_DISCOVERY_RESPONSE_BYTES,
+            )?,
+            DiscoverResourcesResultRef::CompactPage(page) => {
+                raw_discovery_page_response_charge(page, None)?
+            }
+        };
+        Ok(result)
     }
 }
 
@@ -955,10 +1305,18 @@ seal_response_types!(
     OutboxDeliverySummary,
     ListPendingOutboxDeliveriesResult,
     CommandToolDescriptor,
+    CompactCommandToolDescriptor,
     CommandToolDiscoveryItem,
+    CompactCommandToolDiscoveryItem,
+    GeneratedSchemaIdentity,
+    OperationSchemaIdentity,
+    OperationSchemaArtifact,
+    OperationSchemaCatalogIdentity,
+    OperationSchemaCatalog,
     DiscoveryCatalogFence,
     DiscoverCommandToolsResult,
     ResourceDescriptor,
+    CompactResourceDescriptor,
     DiscoverResourcesResult,
     ServiceAuditTargetV1,
 );
@@ -1016,7 +1374,61 @@ where
     T: ServiceResponseCharge,
     F: ServiceResponseCharge,
 {
-    fit_page_items_with_empty_progress(items, fence, lower_has_more, false)
+    fit_page_items_with_budget(
+        items,
+        fence,
+        lower_has_more,
+        false,
+        0,
+        MAX_SERVICE_RESPONSE_BYTES,
+    )
+}
+
+/// Fits a full command-discovery page including its mandatory operation catalog.
+pub(crate) fn fit_full_command_discovery_page_items<T, F>(
+    items: &[T],
+    fence: &F,
+    operation_schemas: &OperationSchemaCatalog,
+    lower_has_more: bool,
+) -> Result<PageFit, ServiceFailure>
+where
+    T: ServiceResponseCharge,
+    F: ServiceResponseCharge,
+{
+    let catalog_charge = operation_schemas
+        .service_response_charge_v1()
+        .map_err(|_| ServiceFailure::ResponseTooLarge)?
+        .bytes()
+        .checked_add(FIELD_RESERVE)
+        .ok_or(ServiceFailure::ResponseTooLarge)?;
+    fit_page_items_with_budget(
+        items,
+        fence,
+        lower_has_more,
+        false,
+        catalog_charge,
+        MAX_FULL_DISCOVERY_RESPONSE_BYTES,
+    )
+}
+
+/// Fits a full resource-discovery page under the stricter discovery ceiling.
+pub(crate) fn fit_full_resource_discovery_page_items<T, F>(
+    items: &[T],
+    fence: &F,
+    lower_has_more: bool,
+) -> Result<PageFit, ServiceFailure>
+where
+    T: ServiceResponseCharge,
+    F: ServiceResponseCharge,
+{
+    fit_page_items_with_budget(
+        items,
+        fence,
+        lower_has_more,
+        false,
+        0,
+        MAX_FULL_DISCOVERY_RESPONSE_BYTES,
+    )
 }
 
 /// Selects a bounded index prefix while retaining lower physical progress for
@@ -1030,14 +1442,23 @@ where
     T: ServiceResponseCharge,
     F: ServiceResponseCharge,
 {
-    fit_page_items_with_empty_progress(items, fence, lower_has_more, true)
+    fit_page_items_with_budget(
+        items,
+        fence,
+        lower_has_more,
+        true,
+        0,
+        MAX_SERVICE_RESPONSE_BYTES,
+    )
 }
 
-fn fit_page_items_with_empty_progress<T, F>(
+fn fit_page_items_with_budget<T, F>(
     items: &[T],
     fence: &F,
     lower_has_more: bool,
     permit_empty_progress: bool,
+    extra_charge: usize,
+    ceiling: usize,
 ) -> Result<PageFit, ServiceFailure>
 where
     T: ServiceResponseCharge,
@@ -1055,6 +1476,9 @@ where
         .add(PAGE_WRAPPER_RESERVE)
         .map_err(|_| ServiceFailure::ResponseTooLarge)?;
     base_without_cursor
+        .add(extra_charge)
+        .map_err(|_| ServiceFailure::ResponseTooLarge)?;
+    base_without_cursor
         .nested(fence)
         .map_err(|_| ServiceFailure::ResponseTooLarge)?;
 
@@ -1062,7 +1486,7 @@ where
         let mut exact_end = base_without_cursor;
         let all_fit = items
             .iter()
-            .all(|item| exact_end.nested(item).is_ok() && exact_end.finish().fits());
+            .all(|item| exact_end.nested(item).is_ok() && exact_end.finish().fits_limit(ceiling));
         if all_fit {
             return Ok(PageFit {
                 item_count: items.len(),
@@ -1084,7 +1508,7 @@ where
     let mut charge = base_with_cursor;
     for item in items {
         let mut candidate = charge;
-        if candidate.nested(item).is_err() || !candidate.finish().fits() {
+        if candidate.nested(item).is_err() || !candidate.finish().fits_limit(ceiling) {
             break;
         }
         charge = candidate;
@@ -1125,51 +1549,64 @@ mod tests {
     use riffdb_auth::CapabilityTokenText;
     use riffdb_contract_compiler::{compile_contract_source, validate_contract_source};
     use riffdb_contract_ir::{
-        ExecutionClass, OutcomeSchema, RecordSchema, RecordTypeRef, SchemaArtifactKey, SchemaIr,
+        ExecutionClass, MAX_JSON_SCHEMA_ARTIFACT_BYTES, MAX_MCP_COMMAND_TOOL_NAME_BYTES,
+        OutcomeSchema, RecordSchema, RecordTypeRef, SchemaArtifactKey, SchemaIr,
     };
     use riffdb_types::{
-        ActorId, ActorKind, AdministrationSequence, CanonicalInputHash, CanonicalString,
-        CapabilityId, CommandId, CommitSequence, ContractBundleHash, ContractPlanRootHash,
-        ContractVersion, EntityKey, EntityVersion, FieldId, FrontierPosition, IndexEntryKey,
-        IndexEpochPosition, LogicalTime, OutcomeId, PartitionKeyHash, PlanHash,
-        ProjectionGeneration, ProjectionId, ProjectionPlanHash, ProvenanceId, RequestId,
-        SourceHash, Timestamp,
+        ActorId, ActorKind, AdministrationSequence, ApprovalId, CanonicalInputHash,
+        CanonicalString, CapabilityId, CommandId, CommitSequence, ContractBundleHash,
+        ContractPlanRootHash, ContractVersion, DIGEST_SCHEME_V1, DigestKeyId, EntityKey,
+        EntityVersion, EventId, FieldId, FrontierPosition, IndexEntryKey, IndexEpochPosition,
+        LogicalTime, MAX_APPROVAL_ID_BYTES, MAX_CONTRACT_LINEAGE_BYTES,
+        MAX_PROVENANCE_REASON_BYTES, MAX_SOURCE_COMMIT_BYTES, MAX_SOURCE_REPOSITORY_BYTES,
+        OutcomeId, PartitionKeyHash, PlanHash, ProjectionGeneration, ProjectionId,
+        ProjectionPlanHash, ProvenanceId, ProvenanceReason, RequestId, SourceCommit, SourceHash,
+        SourceRepository, Timestamp,
     };
 
     use super::*;
     use crate::{
-        AffectedEntityView, AuthoritativeCommitSnapshot, CapabilityIdentityView,
-        CapabilityTransitionView, CommandDurability, CommitScanFence, CommitSubscriptionEndReason,
-        CommitSubscriptionTerminal, ComponentHealth, ExplainedCommand, HealthComponentKind,
-        HealthComponentStatus, IndexScanFence, JournaledCommandResult, JournaledCompletion,
-        OperationalHealthSnapshot, OperationalStatisticsSnapshot, OutcomePlanBinding, PageLimit,
-        PreBootstrapHealthReport, PreBootstrapLifecycle, QueryProjectionReady,
-        ReadOnlyCommandResult, RecoveredJournaledCommandResult,
+        AffectedEntityView, AuthoritativeCommitSnapshot, AuthoritativeProvenanceSnapshot,
+        CapabilityIdentityView, CapabilityTransitionView, CommandDurability, CommitScanFence,
+        CommitSubscriptionEndReason, CommitSubscriptionTerminal, ComponentHealth,
+        DiscoverCommandToolsRequest, DiscoverResourcesRequest, ExplainedCommand,
+        HealthComponentKind, HealthComponentStatus, IndexScanFence, JournaledCommandResult,
+        JournaledCompletion, OperationalHealthSnapshot, OperationalStatisticsSnapshot,
+        OutboxDeliveryState, OutcomePlanBinding, PageLimit, PageRequest, PreBootstrapHealthReport,
+        PreBootstrapLifecycle, ProjectionFailure, ProjectionFailureCode,
+        ProjectionGenerationFrontier, ProjectionLifecycle, PublishedApplyMode,
+        QueryProjectionReady, ReadOnlyCommandResult, RecoveredJournaledCommandResult, SourceName,
     };
 
     const RESPONSE_CHARGE_FIXTURE: &str = include_str!("../fixtures/response-charge-v1.tsv");
     const RESPONSE_CHARGE_FIXTURE_VERSION: u16 = 1;
 
-    // These are the sixteen public gRPC response/item families in WP-127 plus
-    // the public ProjectionStatus message embedded by projection responses.
-    const WP127_RESPONSE_FAMILIES: [&str; 17] = [
+    // This registry freezes every public gRPC response/item family with a
+    // variable-size or nested public encoding covered by the v1 charge ledger.
+    const CHECKED_RESPONSE_FAMILIES: [&str; 23] = [
         "commit_notification",
         "contract_validation",
         "create_capability",
         "deploy_contract",
+        "discover_command_tools",
+        "discover_resources",
         "execute_command",
         "explain_command",
         "get_active_contract",
         "get_commit",
+        "get_contract_version",
         "get_entity",
         "get_outcome",
         "health",
+        "list_pending_outbox_deliveries",
+        "operation_schema_catalog",
         "projection_status",
         "query_projection",
         "revoke_capability",
         "scan_commits",
         "scan_index",
         "stats",
+        "trace_provenance",
     ];
 
     #[derive(Clone, Copy)]
@@ -1185,6 +1622,138 @@ mod tests {
         }
     }
 
+    #[derive(Clone, Copy)]
+    struct CommandDiscoveryItemCharge {
+        tool_name_bytes: usize,
+        source_command_bytes: usize,
+        lineage_bytes: usize,
+        input_schema_json_bytes: usize,
+        outcome_schema_json_bytes: usize,
+    }
+
+    impl sealed::Sealed for CommandDiscoveryItemCharge {}
+
+    impl ServiceResponseCharge for CommandDiscoveryItemCharge {
+        fn service_response_charge_v1(
+            &self,
+        ) -> Result<ServiceResponseChargeV1, ServiceResponseChargeOverflow> {
+            let descriptor = raw_command_tool_descriptor_charge(
+                self.tool_name_bytes,
+                self.source_command_bytes,
+                self.lineage_bytes,
+                self.input_schema_json_bytes,
+                self.outcome_schema_json_bytes,
+            )?;
+            raw_command_tool_discovery_item_charge(Some(descriptor))
+        }
+    }
+
+    const MAXIMUM_COMMAND_DISCOVERY_ITEM_CHARGE: CommandDiscoveryItemCharge =
+        CommandDiscoveryItemCharge {
+            tool_name_bytes: MAX_MCP_COMMAND_TOOL_NAME_BYTES,
+            source_command_bytes: 1,
+            lineage_bytes: 115,
+            input_schema_json_bytes: MAX_JSON_SCHEMA_ARTIFACT_BYTES,
+            outcome_schema_json_bytes: MAX_JSON_SCHEMA_ARTIFACT_BYTES,
+        };
+
+    #[derive(Clone, Copy)]
+    struct ResourceDiscoveryItemCharge {
+        lineage_bytes: usize,
+        schema_json_bytes: usize,
+    }
+
+    impl sealed::Sealed for ResourceDiscoveryItemCharge {}
+
+    impl ServiceResponseCharge for ResourceDiscoveryItemCharge {
+        fn service_response_charge_v1(
+            &self,
+        ) -> Result<ServiceResponseChargeV1, ServiceResponseChargeOverflow> {
+            let mut descriptor = ChargeAccumulator::message();
+            descriptor.fields(1)?;
+            charge_entity_schema_resource_shape(
+                &mut descriptor,
+                self.lineage_bytes,
+                self.schema_json_bytes,
+            )?;
+            Ok(descriptor.finish())
+        }
+    }
+
+    const MAXIMUM_RESOURCE_DISCOVERY_ITEM_CHARGE: ResourceDiscoveryItemCharge =
+        ResourceDiscoveryItemCharge {
+            lineage_bytes: MAX_CONTRACT_LINEAGE_BYTES,
+            schema_json_bytes: MAX_JSON_SCHEMA_ARTIFACT_BYTES,
+        };
+
+    #[derive(Clone, Copy)]
+    struct CompactCommandDiscoveryItemCharge {
+        tool_name_bytes: usize,
+        source_command_bytes: usize,
+        lineage_bytes: usize,
+    }
+
+    impl sealed::Sealed for CompactCommandDiscoveryItemCharge {}
+
+    impl ServiceResponseCharge for CompactCommandDiscoveryItemCharge {
+        fn service_response_charge_v1(
+            &self,
+        ) -> Result<ServiceResponseChargeV1, ServiceResponseChargeOverflow> {
+            let identity = raw_generated_schema_identity_charge(5, 32)?;
+            let descriptor = raw_compact_command_tool_descriptor_charge(
+                self.tool_name_bytes,
+                self.source_command_bytes,
+                self.lineage_bytes,
+                identity,
+                identity,
+            )?;
+            raw_command_tool_discovery_item_charge(Some(descriptor))
+        }
+    }
+
+    const MAXIMUM_COMPACT_COMMAND_DISCOVERY_ITEM_CHARGE: CompactCommandDiscoveryItemCharge =
+        CompactCommandDiscoveryItemCharge {
+            tool_name_bytes: MAX_MCP_COMMAND_TOOL_NAME_BYTES,
+            source_command_bytes: 1,
+            lineage_bytes: 115,
+        };
+
+    const COMPACT_COMMAND_DISCOVERY_PAGE_ITEM_CHARGE: CompactCommandDiscoveryItemCharge =
+        CompactCommandDiscoveryItemCharge {
+            tool_name_bytes: MAX_MCP_COMMAND_TOOL_NAME_BYTES,
+            source_command_bytes: 3,
+            lineage_bytes: 113,
+        };
+
+    #[derive(Clone, Copy)]
+    struct MaximumCompactResourceDiscoveryItemCharge;
+
+    impl sealed::Sealed for MaximumCompactResourceDiscoveryItemCharge {}
+
+    impl ServiceResponseCharge for MaximumCompactResourceDiscoveryItemCharge {
+        fn service_response_charge_v1(
+            &self,
+        ) -> Result<ServiceResponseChargeV1, ServiceResponseChargeOverflow> {
+            let mut item = ChargeAccumulator::message();
+            item.fields(1)?;
+            charge_command_resource_shape(&mut item, MAX_CONTRACT_LINEAGE_BYTES, 256)?;
+            Ok(item.finish())
+        }
+    }
+
+    #[derive(Clone, Copy)]
+    struct MaximumCompactDiscoveryItemCharge;
+
+    impl sealed::Sealed for MaximumCompactDiscoveryItemCharge {}
+
+    impl ServiceResponseCharge for MaximumCompactDiscoveryItemCharge {
+        fn service_response_charge_v1(
+            &self,
+        ) -> Result<ServiceResponseChargeV1, ServiceResponseChargeOverflow> {
+            Ok(ServiceResponseChargeV1(MAX_COMPACT_DISCOVERY_ITEM_BYTES))
+        }
+    }
+
     #[derive(Clone, Copy, Debug, Eq, PartialEq)]
     enum FixtureDisposition {
         Release,
@@ -1192,14 +1761,6 @@ mod tests {
     }
 
     impl FixtureDisposition {
-        const fn from_charge(charge: ServiceResponseChargeV1) -> Self {
-            if charge.fits() {
-                Self::Release
-            } else {
-                Self::ResponseTooLarge
-            }
-        }
-
         const fn as_str(self) -> &'static str {
             match self {
                 Self::Release => "release",
@@ -1226,16 +1787,49 @@ mod tests {
             shape: String,
             response: &T,
         ) -> Self {
+            Self::from_response_with_limit(
+                case_id,
+                family,
+                variant,
+                shape,
+                response,
+                MAX_SERVICE_RESPONSE_BYTES,
+            )
+        }
+
+        fn from_response_with_limit<T: ServiceResponseCharge>(
+            case_id: &'static str,
+            family: &'static str,
+            variant: &'static str,
+            shape: String,
+            response: &T,
+            limit: usize,
+        ) -> Self {
             let charge = response
                 .service_response_charge_v1()
                 .expect("fixture response charge must be representable");
+            Self::from_raw_charge_with_limit(case_id, family, variant, shape, charge, limit)
+        }
+
+        fn from_raw_charge_with_limit(
+            case_id: &'static str,
+            family: &'static str,
+            variant: &'static str,
+            shape: String,
+            charge: ServiceResponseChargeV1,
+            limit: usize,
+        ) -> Self {
             Self {
                 case_id,
                 family,
                 variant,
                 shape,
                 charge_bytes: charge.bytes(),
-                disposition: FixtureDisposition::from_charge(charge),
+                disposition: if charge.bytes() <= limit {
+                    FixtureDisposition::Release
+                } else {
+                    FixtureDisposition::ResponseTooLarge
+                },
             }
         }
     }
@@ -1312,6 +1906,25 @@ mod tests {
     }
 
     fn fixture_journaled(completion: JournaledCompletion) -> JournaledCommandResult {
+        let tool_name = riffdb_contract_ir::McpCommandToolNameV1::new_checked(
+            "fixture",
+            "complete",
+            "riffdb.cmd.fixture.complete",
+        )
+        .expect("fixture tool name");
+        let locator = crate::OutcomeResourceLocator::mint(
+            ActorId::new("fixture-principal").expect("bounded principal"),
+            fixture_lineage(),
+            CommandId::first(),
+            &tool_name,
+            crate::OutcomeLocatorDigestEvidence::new(
+                DIGEST_SCHEME_V1,
+                DigestKeyId::new(7).expect("nonzero digest key"),
+                [0x5a; 32],
+            )
+            .expect("v1 digest evidence"),
+        )
+        .expect("canonical outcome locator");
         JournaledCommandResult::new(
             completion,
             CommitSequence::first(),
@@ -1319,6 +1932,7 @@ mod tests {
             ProvenanceId::from_unix_milliseconds_and_random(1, [2; 10])
                 .expect("fixture provenance UUIDv7"),
             CommandDurability::Synchronous,
+            locator,
         )
         .expect("fixture journaled result has a mutating outcome")
     }
@@ -1545,10 +2159,295 @@ mod tests {
         CapabilityTransitionView::new(identity, AdministrationSequence::first())
     }
 
+    fn maximum_discovery_fence(
+        operation_schemas: &OperationSchemaCatalog,
+    ) -> DiscoveryCatalogFence {
+        DiscoveryCatalogFence::active_contract(
+            ContractLineage::new("a".repeat(115)).expect("maximum tool-compatible lineage"),
+            fixture_contract_version(),
+            ContractBundleHash::from_bytes([0x11; 32]),
+            operation_schemas.identity(),
+        )
+    }
+
+    fn maximum_resource_discovery_fence(
+        operation_schemas: &OperationSchemaCatalog,
+    ) -> DiscoveryCatalogFence {
+        DiscoveryCatalogFence::active_contract(
+            ContractLineage::new("r".repeat(MAX_CONTRACT_LINEAGE_BYTES))
+                .expect("maximum resource lineage is bounded"),
+            fixture_contract_version(),
+            ContractBundleHash::from_bytes([0x11; 32]),
+            operation_schemas.identity(),
+        )
+    }
+
+    fn representative_resource_discovery_fixture(
+        operation_schemas: &OperationSchemaCatalog,
+    ) -> DiscoverResourcesResult {
+        let page = Page::new(
+            PageLimit::new(1).expect("one-item resource page"),
+            vec![ResourceDescriptor::active_contract()],
+            None,
+            maximum_discovery_fence(operation_schemas),
+        )
+        .expect("representative resource page is bounded");
+        let request = DiscoverResourcesRequest::new(PageRequest::new(
+            PageLimit::new(1).expect("one-item resource request"),
+            None,
+        ));
+        DiscoverResourcesResult::page(&request, page)
+            .expect("representative resource discovery is consistent")
+    }
+
+    fn fixture_provenance() -> ProvenanceView {
+        fixture_provenance_with_claims(ProvenanceClaimsView::new(None, None, None, None))
+    }
+
+    fn maximum_claims_provenance() -> ProvenanceView {
+        fixture_provenance_with_claims(ProvenanceClaimsView::new(
+            Some(
+                SourceRepository::new("r".repeat(MAX_SOURCE_REPOSITORY_BYTES))
+                    .expect("maximum repository claim is bounded"),
+            ),
+            Some(
+                SourceCommit::new("c".repeat(MAX_SOURCE_COMMIT_BYTES))
+                    .expect("maximum source-commit claim is bounded"),
+            ),
+            Some(
+                ProvenanceReason::new("p".repeat(MAX_PROVENANCE_REASON_BYTES))
+                    .expect("maximum provenance reason is bounded"),
+            ),
+            Some(
+                ApprovalId::new("a".repeat(MAX_APPROVAL_ID_BYTES))
+                    .expect("maximum approval ID is bounded"),
+            ),
+        ))
+    }
+
+    fn fixture_provenance_with_claims(claims: ProvenanceClaimsView) -> ProvenanceView {
+        let snapshot = AuthoritativeProvenanceSnapshot::new(
+            ProvenanceId::from_unix_milliseconds_and_random(1, [2; 10])
+                .expect("fixture provenance UUIDv7"),
+            CommitSequence::first(),
+            RequestId::from_unix_milliseconds_and_random(1, [1; 10])
+                .expect("fixture request UUIDv7"),
+            fixture_lineage(),
+            fixture_contract_version(),
+            CommandId::first(),
+            PlanHash::from_bytes([4; 32]),
+            AdmittedActorContext::new(
+                ActorId::new("fixture-actor").expect("fixture actor is bounded"),
+                ActorKind::Human,
+                TenantScope::Global,
+                None,
+            ),
+            LogicalTime::new(Timestamp::new(1, 0).expect("canonical fixture timestamp")),
+            OutcomeId::first(),
+            vec![AffectedEntityView::new(
+                fixture_entity_key(24, 0),
+                EntityVersion::first(),
+            )],
+            vec![EventId::new(CommitSequence::first(), 0)],
+            claims,
+        )
+        .expect("fixture provenance is bounded");
+        ProvenanceView::new(snapshot)
+    }
+
+    fn representative_command_discovery_fixture() -> (DiscoverCommandToolsResult, String) {
+        let bundle =
+            compile_contract_source(include_str!("../../../contracts/examples/budget.riff"))
+                .expect("checked-in budget example compiles");
+        let command = bundle.commands().first().expect("budget has commands");
+        let command_name = bundle
+            .mcp_command_names()
+            .get(command.command_id())
+            .expect("budget command has a checked MCP name");
+        let input_schema = bundle
+            .schema_artifacts()
+            .iter()
+            .find(|artifact| {
+                artifact.key() == SchemaArtifactKey::CommandInput(command.command_id())
+            })
+            .cloned()
+            .expect("budget command input schema");
+        let outcome_schema = bundle
+            .schema_artifacts()
+            .iter()
+            .find(|artifact| {
+                artifact.key() == SchemaArtifactKey::CommandOutcomeUnion(command.command_id())
+            })
+            .cloned()
+            .expect("budget command outcome schema");
+        let descriptor = CommandToolDescriptor::new(
+            command_name.tool_name().clone(),
+            SourceName::new(command_name.source_command_name())
+                .expect("compiler command source is checked"),
+            bundle.lineage().clone(),
+            bundle.contract_version(),
+            command.command_id(),
+            input_schema.clone(),
+            outcome_schema.clone(),
+        )
+        .expect("compiler descriptor identities agree");
+        let operation_schemas = OperationSchemaCatalog::accepted()
+            .expect("accepted operation schemas remain self-consistent");
+        let operation_envelope_bytes = operation_schemas
+            .command_operation_envelope()
+            .canonical_json()
+            .len();
+        let get_outcome_result_bytes = operation_schemas
+            .command_get_outcome_result()
+            .canonical_json()
+            .len();
+        let fence = DiscoveryCatalogFence::active_contract(
+            bundle.lineage().clone(),
+            bundle.contract_version(),
+            bundle.bundle_hash(),
+            operation_schemas.identity(),
+        );
+        let page = Page::new(
+            PageLimit::new(1).expect("one-item discovery page"),
+            vec![CommandToolDiscoveryItem::Command(Box::new(descriptor))],
+            None,
+            fence,
+        )
+        .expect("representative discovery page is bounded");
+        let request = DiscoverCommandToolsRequest::new(PageRequest::new(
+            PageLimit::new(1).expect("one-item discovery request"),
+            None,
+        ));
+        let result = DiscoverCommandToolsResult::page(&request, page, operation_schemas)
+            .expect("representative discovery result is consistent");
+        let shape = fixture_shape! {
+            "catalog_get_outcome_schema_bytes" => get_outcome_result_bytes,
+            "catalog_operation_envelope_schema_bytes" => operation_envelope_bytes,
+            "cursor_present" => "false",
+            "input_schema_json_bytes" => input_schema.canonical_json().len(),
+            "item_count" => 1,
+            "outcome_schema_json_bytes" => outcome_schema.canonical_json().len(),
+            "representation" => "full"
+        };
+        (result, shape)
+    }
+
     #[allow(clippy::too_many_lines)]
     fn response_fixture_cases() -> Vec<FixtureCase> {
         let small_commit = fixture_commit(2, 24);
         let oversized_commit = fixture_commit(1_024, 4_096);
+        let operation_schemas = OperationSchemaCatalog::accepted()
+            .expect("accepted operation schemas remain self-consistent");
+        let maximum_fence = maximum_discovery_fence(&operation_schemas);
+        let maximum_resource_fence = maximum_resource_discovery_fence(&operation_schemas);
+        let command_exact_items = [
+            MAXIMUM_COMMAND_DISCOVERY_ITEM_CHARGE,
+            CommandDiscoveryItemCharge {
+                tool_name_bytes: MAX_MCP_COMMAND_TOOL_NAME_BYTES,
+                source_command_bytes: 1,
+                lineage_bytes: 115,
+                input_schema_json_bytes: 257_097,
+                outcome_schema_json_bytes: 257_098,
+            },
+        ];
+        let command_one_over_items = [
+            MAXIMUM_COMMAND_DISCOVERY_ITEM_CHARGE,
+            CommandDiscoveryItemCharge {
+                outcome_schema_json_bytes: 257_099,
+                ..command_exact_items[1]
+            },
+        ];
+        let resource_exact_items = [
+            MAXIMUM_RESOURCE_DISCOVERY_ITEM_CHARGE,
+            MAXIMUM_RESOURCE_DISCOVERY_ITEM_CHARGE,
+            ResourceDiscoveryItemCharge {
+                lineage_bytes: MAX_CONTRACT_LINEAGE_BYTES,
+                schema_json_bytes: 521_892,
+            },
+        ];
+        let resource_one_over_items = [
+            MAXIMUM_RESOURCE_DISCOVERY_ITEM_CHARGE,
+            MAXIMUM_RESOURCE_DISCOVERY_ITEM_CHARGE,
+            ResourceDiscoveryItemCharge {
+                schema_json_bytes: 521_893,
+                ..resource_exact_items[2]
+            },
+        ];
+        let command_exact_page = Page::new(
+            PageLimit::new(2).expect("exact command fixture page limit"),
+            command_exact_items.to_vec(),
+            Some(CursorToken::from_bytes([0x55; crate::CURSOR_TOKEN_BYTES])),
+            maximum_fence.clone(),
+        )
+        .expect("exact command fixture page is bounded");
+        let command_one_over_page = Page::new(
+            PageLimit::new(2).expect("one-over command fixture page limit"),
+            command_one_over_items.to_vec(),
+            Some(CursorToken::from_bytes([0x55; crate::CURSOR_TOKEN_BYTES])),
+            maximum_fence.clone(),
+        )
+        .expect("one-over command fixture page is bounded");
+        let maximum_command_page = Page::new(
+            PageLimit::new(1).expect("maximum command fixture page limit"),
+            vec![MAXIMUM_COMMAND_DISCOVERY_ITEM_CHARGE],
+            Some(CursorToken::from_bytes([0x55; crate::CURSOR_TOKEN_BYTES])),
+            maximum_fence.clone(),
+        )
+        .expect("maximum command fixture page is bounded");
+        let compact_command_item_page = Page::new(
+            PageLimit::new(1).expect("compact command-item fixture page limit"),
+            vec![MAXIMUM_COMPACT_COMMAND_DISCOVERY_ITEM_CHARGE],
+            None,
+            maximum_fence.clone(),
+        )
+        .expect("compact command-item fixture page is bounded");
+        let compact_command_page = Page::new(
+            PageLimit::new(500).expect("compact command fixture page limit"),
+            vec![COMPACT_COMMAND_DISCOVERY_PAGE_ITEM_CHARGE; 500],
+            Some(CursorToken::from_bytes([0x55; crate::CURSOR_TOKEN_BYTES])),
+            DiscoveryCatalogFence::active_contract(
+                ContractLineage::new("a".repeat(113)).expect("compact-page lineage is bounded"),
+                fixture_contract_version(),
+                ContractBundleHash::from_bytes([0x11; 32]),
+                operation_schemas.identity(),
+            ),
+        )
+        .expect("compact command fixture page is bounded");
+        let resource_exact_page = Page::new(
+            PageLimit::new(3).expect("exact resource fixture page limit"),
+            resource_exact_items.to_vec(),
+            Some(CursorToken::from_bytes([0x55; crate::CURSOR_TOKEN_BYTES])),
+            maximum_resource_fence.clone(),
+        )
+        .expect("exact resource fixture page is bounded");
+        let resource_one_over_page = Page::new(
+            PageLimit::new(3).expect("one-over resource fixture page limit"),
+            resource_one_over_items.to_vec(),
+            Some(CursorToken::from_bytes([0x55; crate::CURSOR_TOKEN_BYTES])),
+            maximum_resource_fence.clone(),
+        )
+        .expect("one-over resource fixture page is bounded");
+        let maximum_resource_page = Page::new(
+            PageLimit::new(1).expect("maximum resource fixture page limit"),
+            vec![MAXIMUM_RESOURCE_DISCOVERY_ITEM_CHARGE],
+            Some(CursorToken::from_bytes([0x55; crate::CURSOR_TOKEN_BYTES])),
+            maximum_resource_fence.clone(),
+        )
+        .expect("maximum resource fixture page is bounded");
+        let compact_resource_item_page = Page::new(
+            PageLimit::new(1).expect("compact resource-item fixture page limit"),
+            vec![MaximumCompactResourceDiscoveryItemCharge],
+            None,
+            maximum_resource_fence.clone(),
+        )
+        .expect("compact resource-item fixture page is bounded");
+        let compact_resource_page = Page::new(
+            PageLimit::new(500).expect("compact resource fixture page limit"),
+            vec![MaximumCompactResourceDiscoveryItemCharge; 500],
+            Some(CursorToken::from_bytes([0x55; crate::CURSOR_TOKEN_BYTES])),
+            maximum_resource_fence.clone(),
+        )
+        .expect("compact resource fixture page is bounded");
         let mut cases = Vec::new();
 
         cases.push(FixtureCase::from_response(
@@ -1564,6 +2463,277 @@ mod tests {
             "one_over",
             fixture_shape! { "synthetic_charge_bytes" => MAX_SERVICE_RESPONSE_BYTES + 1 },
             &ExactCharge(MAX_SERVICE_RESPONSE_BYTES + 1),
+        ));
+        cases.push(FixtureCase::from_raw_charge_with_limit(
+            "discover_command_tools.full_exact_ceiling",
+            "discover_command_tools",
+            "full_exact_ceiling",
+            fixture_shape! {
+                "cursor_bytes" => crate::CURSOR_TOKEN_BYTES,
+                "item_0_input_schema_json_bytes" => MAX_JSON_SCHEMA_ARTIFACT_BYTES,
+                "item_0_outcome_schema_json_bytes" => MAX_JSON_SCHEMA_ARTIFACT_BYTES,
+                "item_1_input_schema_json_bytes" => 257_097,
+                "item_1_outcome_schema_json_bytes" => 257_098,
+                "item_count" => 2,
+                "lineage_bytes" => 115,
+                "representation" => "full",
+                "source_command_bytes_per_item" => 1,
+                "tool_name_bytes_per_item" => MAX_MCP_COMMAND_TOOL_NAME_BYTES
+            },
+            raw_discovery_page_response_charge(&command_exact_page, Some(&operation_schemas))
+                .expect("exact command discovery charge is representable"),
+            MAX_FULL_DISCOVERY_RESPONSE_BYTES,
+        ));
+        cases.push(FixtureCase::from_raw_charge_with_limit(
+            "discover_command_tools.full_one_over",
+            "discover_command_tools",
+            "full_one_over",
+            fixture_shape! {
+                "cursor_bytes" => crate::CURSOR_TOKEN_BYTES,
+                "item_0_input_schema_json_bytes" => MAX_JSON_SCHEMA_ARTIFACT_BYTES,
+                "item_0_outcome_schema_json_bytes" => MAX_JSON_SCHEMA_ARTIFACT_BYTES,
+                "item_1_input_schema_json_bytes" => 257_097,
+                "item_1_outcome_schema_json_bytes" => 257_099,
+                "item_count" => 2,
+                "lineage_bytes" => 115,
+                "representation" => "full",
+                "source_command_bytes_per_item" => 1,
+                "tool_name_bytes_per_item" => MAX_MCP_COMMAND_TOOL_NAME_BYTES
+            },
+            raw_discovery_page_response_charge(&command_one_over_page, Some(&operation_schemas))
+                .expect("one-over command discovery charge is representable"),
+            MAX_FULL_DISCOVERY_RESPONSE_BYTES,
+        ));
+
+        cases.push(FixtureCase::from_raw_charge_with_limit(
+            "discover_command_tools.compact_item_max",
+            "discover_command_tools",
+            "compact_item_max",
+            fixture_shape! {
+                "command_id" => u32::MAX,
+                "contract_version" => u64::MAX,
+                "cursor_present" => false,
+                "item_charge_bytes" => MAXIMUM_COMPACT_COMMAND_DISCOVERY_ITEM_CHARGE.service_response_charge_v1().expect("maximum compact command charge").bytes(),
+                "item_count" => 1,
+                "lineage_bytes" => 115,
+                "representation" => "compact_observation",
+                "source_command_bytes" => 1,
+                "tool_name_bytes" => MAX_MCP_COMMAND_TOOL_NAME_BYTES
+            },
+            raw_discovery_page_response_charge(&compact_command_item_page, None)
+                .expect("compact command-item response charge is representable"),
+            MAX_SERVICE_RESPONSE_BYTES,
+        ));
+        cases.push(FixtureCase::from_raw_charge_with_limit(
+            "discover_command_tools.compact_page_max",
+            "discover_command_tools",
+            "compact_page_max",
+            fixture_shape! {
+                "command_id_first" => u32::MAX - 499,
+                "command_id_last" => u32::MAX,
+                "contract_version" => u64::MAX,
+                "cursor_bytes" => crate::CURSOR_TOKEN_BYTES,
+                "item_charge_bytes" => COMPACT_COMMAND_DISCOVERY_PAGE_ITEM_CHARGE.service_response_charge_v1().expect("maximum compact command charge").bytes(),
+                "item_count" => 500,
+                "lineage_bytes" => 113,
+                "representation" => "compact_observation",
+                "source_command_bytes" => 3
+            },
+            raw_discovery_page_response_charge(&compact_command_page, None)
+                .expect("compact command response charge is representable"),
+            MAX_SERVICE_RESPONSE_BYTES,
+        ));
+        cases.push(FixtureCase::from_raw_charge_with_limit(
+            "discover_command_tools.full_max_dynamic",
+            "discover_command_tools",
+            "full_max_dynamic",
+            fixture_shape! {
+                "command_tool_name_bytes" => MAX_MCP_COMMAND_TOOL_NAME_BYTES,
+                "command_id" => u32::MAX,
+                "contract_version" => u64::MAX,
+                "cursor_bytes" => crate::CURSOR_TOKEN_BYTES,
+                "input_schema_json_bytes" => MAX_JSON_SCHEMA_ARTIFACT_BYTES,
+                "item_count" => 1,
+                "lineage_bytes" => 115,
+                "outcome_schema_json_bytes" => MAX_JSON_SCHEMA_ARTIFACT_BYTES,
+                "representation" => "full",
+                "source_command_bytes" => 1
+            },
+            raw_discovery_page_response_charge(&maximum_command_page, Some(&operation_schemas))
+                .expect("maximum command discovery charge is representable"),
+            MAX_FULL_DISCOVERY_RESPONSE_BYTES,
+        ));
+        let (representative_discovery, representative_discovery_shape) =
+            representative_command_discovery_fixture();
+        cases.push(FixtureCase::from_response(
+            "discover_command_tools.full_representative",
+            "discover_command_tools",
+            "full_representative",
+            representative_discovery_shape,
+            &representative_discovery,
+        ));
+        let unchanged_command_request = DiscoverCommandToolsRequest::with_options(
+            PageRequest::new(PageLimit::new(1).expect("one-item request"), None),
+            crate::DiscoveryRepresentation::CompactObservation,
+            Some(maximum_fence.clone()),
+        )
+        .expect("conditional compact command request");
+        cases.push(FixtureCase::from_response(
+            "discover_command_tools.catalog_unchanged",
+            "discover_command_tools",
+            "catalog_unchanged",
+            fixture_shape! {
+                "catalog_state" => "active_contract",
+                "lineage_bytes" => 115,
+                "representation" => "compact_observation"
+            },
+            &DiscoverCommandToolsResult::catalog_unchanged(
+                &unchanged_command_request,
+                maximum_fence.clone(),
+            )
+            .expect("matching compact command fence"),
+        ));
+        cases.push(FixtureCase::from_raw_charge_with_limit(
+            "discover_resources.compact_item_max",
+            "discover_resources",
+            "compact_item_max",
+            fixture_shape! {
+                "command_id" => u32::MAX,
+                "contract_version" => u64::MAX,
+                "cursor_present" => false,
+                "item_charge_bytes" => MaximumCompactResourceDiscoveryItemCharge.service_response_charge_v1().expect("maximum compact resource charge").bytes(),
+                "item_count" => 1,
+                "lineage_bytes" => MAX_CONTRACT_LINEAGE_BYTES,
+                "representation" => "compact_observation",
+                "resource_kind" => "command_plan",
+                "source_command_bytes" => 256
+            },
+            raw_discovery_page_response_charge(&compact_resource_item_page, None)
+                .expect("compact resource-item response charge is representable"),
+            MAX_SERVICE_RESPONSE_BYTES,
+        ));
+        cases.push(FixtureCase::from_raw_charge_with_limit(
+            "discover_resources.compact_page_max",
+            "discover_resources",
+            "compact_page_max",
+            fixture_shape! {
+                "command_id_first" => u32::MAX - 499,
+                "command_id_last" => u32::MAX,
+                "contract_version" => u64::MAX,
+                "cursor_bytes" => crate::CURSOR_TOKEN_BYTES,
+                "item_charge_bytes" => MaximumCompactResourceDiscoveryItemCharge.service_response_charge_v1().expect("maximum compact resource charge").bytes(),
+                "item_count" => 500,
+                "lineage_bytes" => MAX_CONTRACT_LINEAGE_BYTES,
+                "representation" => "compact_observation",
+                "resource_kind" => "command_plan",
+                "source_command_bytes" => 256
+            },
+            raw_discovery_page_response_charge(&compact_resource_page, None)
+                .expect("compact resource response charge is representable"),
+            MAX_SERVICE_RESPONSE_BYTES,
+        ));
+        cases.push(FixtureCase::from_raw_charge_with_limit(
+            "discover_resources.full_exact_ceiling",
+            "discover_resources",
+            "full_exact_ceiling",
+            fixture_shape! {
+                "cursor_bytes" => crate::CURSOR_TOKEN_BYTES,
+                "item_0_schema_json_bytes" => MAX_JSON_SCHEMA_ARTIFACT_BYTES,
+                "item_1_schema_json_bytes" => MAX_JSON_SCHEMA_ARTIFACT_BYTES,
+                "item_2_schema_json_bytes" => 521_892,
+                "item_count" => 3,
+                "lineage_bytes" => MAX_CONTRACT_LINEAGE_BYTES,
+                "representation" => "full",
+                "resource_kind" => "entity_schema"
+            },
+            raw_discovery_page_response_charge(&resource_exact_page, None)
+                .expect("exact resource discovery charge is representable"),
+            MAX_FULL_DISCOVERY_RESPONSE_BYTES,
+        ));
+        cases.push(FixtureCase::from_raw_charge_with_limit(
+            "discover_resources.full_one_over",
+            "discover_resources",
+            "full_one_over",
+            fixture_shape! {
+                "cursor_bytes" => crate::CURSOR_TOKEN_BYTES,
+                "item_0_schema_json_bytes" => MAX_JSON_SCHEMA_ARTIFACT_BYTES,
+                "item_1_schema_json_bytes" => MAX_JSON_SCHEMA_ARTIFACT_BYTES,
+                "item_2_schema_json_bytes" => 521_893,
+                "item_count" => 3,
+                "lineage_bytes" => MAX_CONTRACT_LINEAGE_BYTES,
+                "representation" => "full",
+                "resource_kind" => "entity_schema"
+            },
+            raw_discovery_page_response_charge(&resource_one_over_page, None)
+                .expect("one-over resource discovery charge is representable"),
+            MAX_FULL_DISCOVERY_RESPONSE_BYTES,
+        ));
+        cases.push(FixtureCase::from_raw_charge_with_limit(
+            "discover_resources.full_max_dynamic",
+            "discover_resources",
+            "full_max_dynamic",
+            fixture_shape! {
+                "contract_version" => u64::MAX,
+                "cursor_bytes" => crate::CURSOR_TOKEN_BYTES,
+                "entity_schema_json_bytes" => MAX_JSON_SCHEMA_ARTIFACT_BYTES,
+                "entity_type_id" => u32::MAX,
+                "item_count" => 1,
+                "lineage_bytes" => MAX_CONTRACT_LINEAGE_BYTES,
+                "representation" => "full",
+                "resource_kind" => "entity_schema"
+            },
+            raw_discovery_page_response_charge(&maximum_resource_page, None)
+                .expect("maximum resource discovery charge is representable"),
+            MAX_FULL_DISCOVERY_RESPONSE_BYTES,
+        ));
+        let representative_resources =
+            representative_resource_discovery_fixture(&operation_schemas);
+        cases.push(FixtureCase::from_response_with_limit(
+            "discover_resources.full_representative",
+            "discover_resources",
+            "full_representative",
+            fixture_shape! {
+                "cursor_present" => "false",
+                "item_count" => 1,
+                "representation" => "full",
+                "resource_kind" => "active_contract"
+            },
+            &representative_resources,
+            MAX_FULL_DISCOVERY_RESPONSE_BYTES,
+        ));
+        let unchanged_resource_request = DiscoverResourcesRequest::with_options(
+            PageRequest::new(PageLimit::new(1).expect("one-item request"), None),
+            crate::DiscoveryRepresentation::CompactObservation,
+            Some(maximum_resource_fence.clone()),
+            crate::ResourceDiscoveryKind::All,
+        )
+        .expect("conditional compact resource request");
+        cases.push(FixtureCase::from_response(
+            "discover_resources.catalog_unchanged",
+            "discover_resources",
+            "catalog_unchanged",
+            fixture_shape! {
+                "catalog_state" => "active_contract",
+                "lineage_bytes" => MAX_CONTRACT_LINEAGE_BYTES,
+                "representation" => "compact_observation",
+                "resource_kind" => "all"
+            },
+            &DiscoverResourcesResult::catalog_unchanged(
+                &unchanged_resource_request,
+                maximum_resource_fence.clone(),
+            )
+            .expect("matching compact resource fence"),
+        ));
+        cases.push(FixtureCase::from_response(
+            "operation_schema_catalog.accepted",
+            "operation_schema_catalog",
+            "accepted",
+            fixture_shape! {
+                "artifact_count" => 2,
+                "get_outcome_schema_bytes" => operation_schemas.command_get_outcome_result().canonical_json().len(),
+                "operation_envelope_schema_bytes" => operation_schemas.command_operation_envelope().canonical_json().len()
+            },
+            &operation_schemas,
         ));
 
         cases.push(FixtureCase::from_response(
@@ -1675,6 +2845,7 @@ mod tests {
                 "durability" => "synchronous",
                 "lineage_bytes" => 7,
                 "outcome_field_count" => 0,
+                "outcome_locator_bytes" => 107,
                 "outcome_name_bytes" => 9,
                 "plan_hash_bytes" => 32,
                 "provenance_locator_bytes" => 56
@@ -1718,6 +2889,27 @@ mod tests {
                 "source_hash_bytes" => 32
             },
             &GetActiveContractResult::Present(fixture_contract_descriptor()),
+        ));
+
+        cases.push(FixtureCase::from_response(
+            "get_contract_version.found",
+            "get_contract_version",
+            "found",
+            fixture_shape! {
+                "bundle_hash_bytes" => 32,
+                "contract_version" => 1,
+                "lineage_bytes" => 7,
+                "plan_root_hash_bytes" => 32,
+                "source_hash_bytes" => 32
+            },
+            &GetContractVersionResult::Found(fixture_contract_descriptor()),
+        ));
+        cases.push(FixtureCase::from_response(
+            "get_contract_version.not_found",
+            "get_contract_version",
+            "not_found",
+            "none".to_owned(),
+            &GetContractVersionResult::NotFound,
         ));
 
         cases.push(FixtureCase::from_response(
@@ -1790,6 +2982,7 @@ mod tests {
                 "durability" => "synchronous",
                 "lineage_bytes" => 7,
                 "outcome_field_count" => 0,
+                "outcome_locator_bytes" => 107,
                 "outcome_name_bytes" => 9,
                 "plan_hash_bytes" => 32,
                 "provenance_locator_bytes" => 56
@@ -1832,6 +3025,68 @@ mod tests {
             )),
         ));
 
+        let retry_timestamp = Timestamp::new(2, 0).expect("fixture retry timestamp");
+        for (case_id, variant, state_name, state, attempts, next_attempt_at) in [
+            (
+                "list_pending_outbox_deliveries.pending",
+                "pending",
+                "pending",
+                OutboxDeliveryState::Pending,
+                0,
+                None,
+            ),
+            (
+                "list_pending_outbox_deliveries.retry_scheduled",
+                "retry_scheduled",
+                "retry_scheduled",
+                OutboxDeliveryState::RetryScheduled,
+                1,
+                Some(retry_timestamp),
+            ),
+            (
+                "list_pending_outbox_deliveries.delivering",
+                "delivering",
+                "delivering",
+                OutboxDeliveryState::Delivering,
+                1,
+                None,
+            ),
+            (
+                "list_pending_outbox_deliveries.dead_letter",
+                "dead_letter",
+                "dead_letter",
+                OutboxDeliveryState::DeadLetter,
+                3,
+                None,
+            ),
+        ] {
+            let outbox_page = Page::new(
+                PageLimit::new(1).expect("fixture outbox page limit"),
+                vec![OutboxDeliverySummary::new(
+                    EventId::new(CommitSequence::first(), 0),
+                    state,
+                    attempts,
+                    next_attempt_at,
+                )],
+                Some(CursorToken::from_bytes([0x44; crate::CURSOR_TOKEN_BYTES])),
+                (),
+            )
+            .expect("fixture outbox page is bounded");
+            cases.push(FixtureCase::from_response(
+                case_id,
+                "list_pending_outbox_deliveries",
+                variant,
+                fixture_shape! {
+                    "attempts" => attempts,
+                    "cursor_bytes" => crate::CURSOR_TOKEN_BYTES,
+                    "item_count" => 1,
+                    "next_attempt_present" => next_attempt_at.is_some(),
+                    "state" => state_name
+                },
+                &ListPendingOutboxDeliveriesResult::new(outbox_page),
+            ));
+        }
+
         let projection_status = ProjectionStatusSnapshot::uninitialized(
             fixture_projection_identity(),
             FrontierPosition::AppliedThrough(CommitSequence::first()),
@@ -1853,6 +3108,143 @@ mod tests {
             },
             &GetProjectionStatusResult::Found(projection_status),
         ));
+        cases.push(FixtureCase::from_response(
+            "projection_status.not_found",
+            "projection_status",
+            "not_found",
+            "none".to_owned(),
+            &GetProjectionStatusResult::NotFound,
+        ));
+
+        let first_generation = ProjectionGeneration::first();
+        let second_generation = first_generation.checked_next().expect("second generation");
+        let first_sequence = CommitSequence::first();
+        let second_sequence = first_sequence.checked_next().expect("second sequence");
+        let before_first =
+            ProjectionGenerationFrontier::new(first_generation, FrontierPosition::BeforeFirst);
+        let published = ProjectionGenerationFrontier::new(
+            first_generation,
+            FrontierPosition::AppliedThrough(first_sequence),
+        );
+        let candidate_second = ProjectionGenerationFrontier::new(
+            second_generation,
+            FrontierPosition::AppliedThrough(first_sequence),
+        );
+        let authoritative_head = FrontierPosition::AppliedThrough(second_sequence);
+        let initialized_status = |highest, lifecycle, published, candidate, mode, failure| {
+            ProjectionStatusSnapshot::from_initialized_control(
+                fixture_projection_identity(),
+                highest,
+                lifecycle,
+                published,
+                candidate,
+                mode,
+                failure,
+                authoritative_head,
+            )
+            .expect("fixture projection lifecycle is valid")
+        };
+        let initialized_cases = [
+            (
+                "projection_status.building",
+                "building",
+                initialized_status(
+                    first_generation,
+                    ProjectionLifecycle::Building,
+                    None,
+                    Some(before_first),
+                    None,
+                    None,
+                ),
+            ),
+            (
+                "projection_status.catching_up",
+                "catching_up",
+                initialized_status(
+                    first_generation,
+                    ProjectionLifecycle::CatchingUp,
+                    None,
+                    Some(published),
+                    None,
+                    None,
+                ),
+            ),
+            (
+                "projection_status.ready",
+                "ready",
+                initialized_status(
+                    first_generation,
+                    ProjectionLifecycle::Ready,
+                    Some(published),
+                    None,
+                    Some(PublishedApplyMode::Enabled),
+                    None,
+                ),
+            ),
+            (
+                "projection_status.rebuilding",
+                "rebuilding",
+                initialized_status(
+                    second_generation,
+                    ProjectionLifecycle::Rebuilding,
+                    Some(published),
+                    Some(candidate_second),
+                    Some(PublishedApplyMode::Enabled),
+                    None,
+                ),
+            ),
+            (
+                "projection_status.degraded",
+                "degraded",
+                initialized_status(
+                    first_generation,
+                    ProjectionLifecycle::Degraded,
+                    Some(published),
+                    None,
+                    Some(PublishedApplyMode::Suspended),
+                    Some(ProjectionFailure::new(
+                        first_generation,
+                        ProjectionFailureCode::MalformedDurableEvent,
+                        Some(second_sequence),
+                    )),
+                ),
+            ),
+            (
+                "projection_status.invalid",
+                "invalid",
+                initialized_status(
+                    first_generation,
+                    ProjectionLifecycle::Invalid,
+                    None,
+                    Some(published),
+                    None,
+                    Some(ProjectionFailure::new(
+                        first_generation,
+                        ProjectionFailureCode::StateIntegrityFailure,
+                        Some(second_sequence),
+                    )),
+                ),
+            ),
+        ];
+        for (case_id, lifecycle, status) in initialized_cases {
+            cases.push(FixtureCase::from_response(
+                case_id,
+                "projection_status",
+                lifecycle,
+                fixture_shape! {
+                    "authoritative_frontier" => "applied_through",
+                    "authoritative_sequence" => 2,
+                    "candidate_present" => status.candidate().is_some(),
+                    "failure_present" => status.failure().is_some(),
+                    "lifecycle" => lifecycle,
+                    "lineage_bytes" => 7,
+                    "plan_hash_bytes" => 32,
+                    "projection_id" => 1,
+                    "published_present" => status.published().is_some()
+                },
+                &GetProjectionStatusResult::Found(status),
+            ));
+        }
 
         let projection_frontier = FrontierPosition::AppliedThrough(CommitSequence::first());
         let projection_row = ProjectionRow::new(
@@ -1987,6 +3379,48 @@ mod tests {
             &statistics,
         ));
 
+        cases.push(FixtureCase::from_response(
+            "trace_provenance.found",
+            "trace_provenance",
+            "found",
+            fixture_shape! {
+                "actor_id_bytes" => 13,
+                "affected_entity_count" => 1,
+                "claim_count" => 0,
+                "entity_key_bytes" => 24,
+                "event_count" => 1,
+                "lineage_bytes" => 7,
+                "tenant_scope" => "global"
+            },
+            &TraceProvenanceResult::Found(Box::new(fixture_provenance())),
+        ));
+        cases.push(FixtureCase::from_response(
+            "trace_provenance.found_max_claims",
+            "trace_provenance",
+            "found",
+            fixture_shape! {
+                "actor_id_bytes" => 13,
+                "affected_entity_count" => 1,
+                "approval_id_bytes" => MAX_APPROVAL_ID_BYTES,
+                "claim_count" => 4,
+                "entity_key_bytes" => 24,
+                "event_count" => 1,
+                "lineage_bytes" => 7,
+                "reason_bytes" => MAX_PROVENANCE_REASON_BYTES,
+                "source_commit_bytes" => MAX_SOURCE_COMMIT_BYTES,
+                "source_repository_bytes" => MAX_SOURCE_REPOSITORY_BYTES,
+                "tenant_scope" => "global"
+            },
+            &TraceProvenanceResult::Found(Box::new(maximum_claims_provenance())),
+        ));
+        cases.push(FixtureCase::from_response(
+            "trace_provenance.not_found",
+            "trace_provenance",
+            "not_found",
+            "none".to_owned(),
+            &TraceProvenanceResult::NotFound,
+        ));
+
         cases.sort_unstable_by_key(|case| case.case_id);
         assert!(
             cases
@@ -2066,6 +3500,16 @@ mod tests {
             "fixture integer is not canonical"
         );
         parsed
+    }
+
+    fn fixture_case_limit(case_id: &str) -> usize {
+        if case_id.starts_with("discover_command_tools.full_")
+            || case_id.starts_with("discover_resources.full_")
+        {
+            MAX_FULL_DISCOVERY_RESPONSE_BYTES
+        } else {
+            MAX_SERVICE_RESPONSE_BYTES
+        }
     }
 
     fn assert_fixture_shape(shape: &str) {
@@ -2158,7 +3602,7 @@ mod tests {
             assert_lower_snake_token(variant);
             assert_fixture_shape(shape);
             let charge = parse_canonical_usize(charge);
-            let expected_disposition = if charge <= MAX_SERVICE_RESPONSE_BYTES {
+            let expected_disposition = if charge <= fixture_case_limit(case_id) {
                 "release"
             } else {
                 "response_too_large"
@@ -2189,14 +3633,48 @@ mod tests {
     }
 
     #[test]
-    fn response_charge_fixture_covers_the_complete_wp127_response_registry() {
+    fn raw_discovery_page_charge_matches_checked_public_dtos() {
+        let (commands, _) = representative_command_discovery_fixture();
+        let DiscoverCommandToolsResultRef::Page {
+            page,
+            operation_schemas,
+        } = commands.result()
+        else {
+            panic!("representative command discovery must be a full page");
+        };
+        assert_eq!(
+            raw_discovery_page_response_charge(page, Some(operation_schemas))
+                .expect("raw command discovery charge"),
+            commands
+                .service_response_charge_v1()
+                .expect("checked command discovery charge")
+        );
+
+        let operation_schemas =
+            OperationSchemaCatalog::accepted().expect("accepted operation schemas");
+        let resources = representative_resource_discovery_fixture(&operation_schemas);
+        let DiscoverResourcesResultRef::Page(page) = resources.result() else {
+            panic!("representative resource discovery must be a full page");
+        };
+        assert_eq!(
+            raw_discovery_page_response_charge(page, None).expect("raw resource discovery charge"),
+            resources
+                .service_response_charge_v1()
+                .expect("checked resource discovery charge")
+        );
+    }
+
+    #[test]
+    fn response_charge_fixture_covers_the_complete_checked_response_registry() {
         let parsed = parse_response_charge_fixture(RESPONSE_CHARGE_FIXTURE);
         let actual_families = parsed
             .iter()
             .filter(|row| row.family != "boundary")
             .map(|row| row.family)
             .collect::<BTreeSet<_>>();
-        let expected_families = WP127_RESPONSE_FAMILIES.into_iter().collect::<BTreeSet<_>>();
+        let expected_families = CHECKED_RESPONSE_FAMILIES
+            .into_iter()
+            .collect::<BTreeSet<_>>();
         assert_eq!(actual_families, expected_families);
         assert!(
             parsed
@@ -2204,6 +3682,14 @@ mod tests {
                 .any(|row| row.case_id == "boundary.exact_ceiling")
         );
         assert!(parsed.iter().any(|row| row.case_id == "boundary.one_over"));
+        for case_id in [
+            "discover_command_tools.full_exact_ceiling",
+            "discover_command_tools.full_one_over",
+            "discover_resources.full_exact_ceiling",
+            "discover_resources.full_one_over",
+        ] {
+            assert!(parsed.iter().any(|row| row.case_id == case_id));
+        }
     }
 
     #[test]
@@ -2213,6 +3699,161 @@ mod tests {
             ensure_response_budget(&ExactCharge(MAX_SERVICE_RESPONSE_BYTES + 1)),
             Err(ServiceFailure::ResponseTooLarge)
         ));
+    }
+
+    #[test]
+    fn full_discovery_ceiling_is_inclusive_and_whole_item_fitting_stops_before_overflow() {
+        let operation_schemas = OperationSchemaCatalog::accepted().expect("accepted catalog");
+        let fence = maximum_discovery_fence(&operation_schemas);
+        let mut base_with_cursor = ChargeAccumulator::message();
+        base_with_cursor
+            .add(PAGE_WRAPPER_RESERVE)
+            .expect("page framing is representable");
+        base_with_cursor
+            .nested(&operation_schemas)
+            .expect("catalog charge is representable");
+        base_with_cursor
+            .nested(&fence)
+            .expect("fence charge is representable");
+        base_with_cursor
+            .bytes(crate::CURSOR_TOKEN_BYTES)
+            .expect("cursor charge is representable");
+        let maximum_item_charge = MAX_FULL_DISCOVERY_RESPONSE_BYTES
+            .checked_sub(base_with_cursor.finish().bytes() + FIELD_RESERVE)
+            .expect("full discovery framing leaves item capacity");
+
+        let exact = fit_full_command_discovery_page_items(
+            &[ExactCharge(maximum_item_charge)],
+            &fence,
+            &operation_schemas,
+            true,
+        )
+        .expect("one exact-ceiling item fits whole");
+        assert_eq!(exact.item_count(), 1);
+        assert!(exact.has_more());
+        assert!(matches!(
+            fit_full_command_discovery_page_items(
+                &[ExactCharge(maximum_item_charge + 1)],
+                &fence,
+                &operation_schemas,
+                true,
+            ),
+            Err(ServiceFailure::ResponseTooLarge)
+        ));
+
+        let first_only = fit_full_command_discovery_page_items(
+            &[ExactCharge(maximum_item_charge), ExactCharge(17)],
+            &fence,
+            &operation_schemas,
+            false,
+        )
+        .expect("the first whole item fits with a continuation");
+        assert_eq!(first_only.item_count(), 1);
+        assert!(first_only.has_more());
+    }
+
+    #[test]
+    fn discovery_maximum_charges_leave_the_accepted_headroom() {
+        let operation_schemas = OperationSchemaCatalog::accepted().expect("accepted catalog");
+        assert_eq!(
+            operation_schemas
+                .service_response_charge_v1()
+                .expect("catalog charge")
+                .bytes(),
+            7_850
+        );
+        let fence = maximum_discovery_fence(&operation_schemas);
+        assert_eq!(
+            MAXIMUM_COMMAND_DISCOVERY_ITEM_CHARGE
+                .service_response_charge_v1()
+                .expect("maximum dynamic item charge")
+                .bytes(),
+            2_097_884
+        );
+        let maximum_dynamic_page = Page::new(
+            PageLimit::new(1).expect("maximum command page limit"),
+            vec![MAXIMUM_COMMAND_DISCOVERY_ITEM_CHARGE],
+            Some(CursorToken::from_bytes([0x55; crate::CURSOR_TOKEN_BYTES])),
+            fence.clone(),
+        )
+        .expect("maximum command page is bounded");
+        let maximum_dynamic =
+            raw_discovery_page_response_charge(&maximum_dynamic_page, Some(&operation_schemas))
+                .expect("maximum dynamic response charge");
+        assert_eq!(maximum_dynamic.bytes(), 2_106_497);
+        assert!(maximum_dynamic.bytes() <= MAX_FULL_DISCOVERY_RESPONSE_BYTES);
+        let maximum_dynamic_fit = fit_full_command_discovery_page_items(
+            &[MAXIMUM_COMMAND_DISCOVERY_ITEM_CHARGE],
+            &fence,
+            &operation_schemas,
+            true,
+        )
+        .expect("one maximum dynamic item fits whole");
+        assert_eq!(maximum_dynamic_fit.item_count(), 1);
+        assert!(maximum_dynamic_fit.has_more());
+
+        let maximum_resource_fence = maximum_resource_discovery_fence(&operation_schemas);
+        assert_eq!(
+            MAXIMUM_RESOURCE_DISCOVERY_ITEM_CHARGE
+                .service_response_charge_v1()
+                .expect("maximum resource item charge")
+                .bytes(),
+            1_049_068
+        );
+        let maximum_resource_page = Page::new(
+            PageLimit::new(1).expect("maximum resource page limit"),
+            vec![MAXIMUM_RESOURCE_DISCOVERY_ITEM_CHARGE],
+            Some(CursorToken::from_bytes([0x55; crate::CURSOR_TOKEN_BYTES])),
+            maximum_resource_fence.clone(),
+        )
+        .expect("maximum resource page is bounded");
+        let maximum_resource = raw_discovery_page_response_charge(&maximum_resource_page, None)
+            .expect("maximum resource response charge");
+        assert_eq!(maximum_resource.bytes(), 1_049_956);
+        assert!(maximum_resource.bytes() <= MAX_FULL_DISCOVERY_RESPONSE_BYTES);
+
+        assert_eq!(
+            MaximumCompactDiscoveryItemCharge
+                .service_response_charge_v1()
+                .expect("maximum compact item charge")
+                .bytes(),
+            MAX_COMPACT_DISCOVERY_ITEM_BYTES
+        );
+        let compact_items = vec![MaximumCompactDiscoveryItemCharge; 500];
+        let maximum_compact_page = Page::new(
+            PageLimit::new(500).expect("maximum compact page limit"),
+            compact_items.clone(),
+            Some(CursorToken::from_bytes([0x55; crate::CURSOR_TOKEN_BYTES])),
+            fence.clone(),
+        )
+        .expect("maximum compact page is bounded");
+        let maximum_compact_page = raw_discovery_page_response_charge(&maximum_compact_page, None)
+            .expect("maximum compact page charge");
+        assert_eq!(maximum_compact_page.bytes(), 2_056_731);
+        assert!(maximum_compact_page.bytes() < MAX_SERVICE_RESPONSE_BYTES);
+        let maximum_compact_fit = fit_page_items(&compact_items, &fence, true)
+            .expect("500 maximum compact items fit with a continuation");
+        assert_eq!(maximum_compact_fit.item_count(), 500);
+        assert!(maximum_compact_fit.has_more());
+
+        let maximum_resource_compact_page = Page::new(
+            PageLimit::new(500).expect("maximum compact resource page limit"),
+            compact_items,
+            Some(CursorToken::from_bytes([0x55; crate::CURSOR_TOKEN_BYTES])),
+            maximum_resource_fence,
+        )
+        .expect("maximum compact resource page is bounded");
+        let maximum_resource_compact_page =
+            raw_discovery_page_response_charge(&maximum_resource_compact_page, None)
+                .expect("maximum compact resource page charge");
+        assert_eq!(maximum_resource_compact_page.bytes(), 2_056_872);
+        assert!(maximum_resource_compact_page.bytes() < MAX_SERVICE_RESPONSE_BYTES);
+
+        let (representative, _) = representative_command_discovery_fixture();
+        let representative_charge = representative
+            .service_response_charge_v1()
+            .expect("representative full page charge");
+        assert!(representative_charge.bytes() <= MAX_FULL_DISCOVERY_RESPONSE_BYTES);
     }
 
     #[test]

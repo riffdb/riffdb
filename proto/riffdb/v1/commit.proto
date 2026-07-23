@@ -96,3 +96,45 @@ message CommitNotification {
     CommitSubscriptionTerminal terminal = 2;
   }
 }
+
+message ProvenanceSelection {
+  oneof selection {
+    uint64 commit_sequence = 1;
+    bytes provenance_id = 2;
+  }
+}
+
+message ProvenanceClaims {
+  optional string source_repository = 1;
+  optional string source_commit = 2;
+  optional string reason = 3;
+  optional string approval_id = 4;
+}
+
+message Provenance {
+  bytes provenance_id = 1;
+  uint64 commit_sequence = 2;
+  bytes admission_request_id = 3;
+  string contract_lineage = 4;
+  uint64 contract_version = 5;
+  uint32 command_id = 6;
+  bytes plan_hash = 7;
+  AdmittedActor actor = 8;
+  Timestamp logical_time = 9;
+  uint32 outcome_id = 10;
+  repeated AffectedEntity affected_entities = 11;
+  repeated EventId event_ids = 12;
+  ProvenanceClaims claims = 13;
+}
+
+message TraceProvenanceRequest {
+  bytes request_id = 1;
+  ProvenanceSelection selector = 2;
+}
+
+message TraceProvenanceResponse {
+  oneof result {
+    Unit not_found = 1;
+    Provenance found = 2;
+  }
+}

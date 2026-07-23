@@ -40,6 +40,24 @@ fn production_dependency_owners(dependency: &str) -> Vec<String> {
     owners
 }
 
+fn owners_with_reviewed_row(allowed: &[&str], row: &str) -> Vec<String> {
+    let auth_crate = crate_root();
+    let crates = auth_crate.parent().expect("workspace crates directory");
+    let mut owners = allowed
+        .iter()
+        .filter_map(|owner| {
+            let manifest = fs::read_to_string(crates.join(owner).join("Cargo.toml"))
+                .expect("read reviewed owner manifest");
+            manifest
+                .lines()
+                .any(|line| line == row)
+                .then(|| (*owner).to_owned())
+        })
+        .collect::<Vec<_>>();
+    owners.sort();
+    owners
+}
+
 #[test]
 fn direct_dependency_slice_is_exact() {
     let dependency_lines = MANIFEST
@@ -77,12 +95,40 @@ fn direct_dependency_slice_is_exact() {
 
 #[test]
 fn reviewed_dependency_owners_and_lock_entries_are_frozen() {
-    for dependency in ["base64", "zeroize"] {
+    let registries = [
+        (
+            "base64",
+            "base64 = { version = \"=0.22.1\", default-features = false, features = [\"alloc\"] }",
+            [
+                "riffdb-api-mcp",
+                "riffdb-auth",
+                "riffdb-cli",
+                "riffdb-proto",
+                "riffdb-service",
+            ]
+            .as_slice(),
+            ["riffdb-auth", "riffdb-proto", "riffdb-service"].as_slice(),
+        ),
+        (
+            "zeroize",
+            "zeroize = { version = \"=1.8.1\", default-features = false, features = [\"alloc\"] }",
+            ["riffdb-auth", "riffdb-cli", "riffdb-client-rust"].as_slice(),
+            ["riffdb-auth", "riffdb-client-rust"].as_slice(),
+        ),
+    ];
+    for (dependency, row, allowed, required_now) in registries {
+        let actual = production_dependency_owners(dependency);
         assert_eq!(
-            production_dependency_owners(dependency),
-            ["riffdb-auth"],
-            "WP-110 direct owner changed for {dependency}"
+            actual,
+            owners_with_reviewed_row(allowed, row),
+            "direct owner or exact reviewed row changed for {dependency}"
         );
+        for required in required_now {
+            assert!(
+                actual.iter().any(|owner| owner == required),
+                "WP-137 requires the reviewed {dependency} edge in {required}"
+            );
+        }
     }
     assert_eq!(
         production_dependency_owners("getrandom"),

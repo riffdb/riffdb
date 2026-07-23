@@ -7,6 +7,8 @@ use std::num::{NonZeroU32, NonZeroU64};
 use std::pin::Pin;
 use std::time::{Duration, Instant};
 
+use base64::Engine as _;
+use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use riffdb_auth::CapabilityTokenText;
 use riffdb_catalog::ValidatedContractBundle;
 use riffdb_contract_compiler::CompilationError;
@@ -21,12 +23,13 @@ use riffdb_types::{
     ActorId, ActorKind, AdministrationSequence, AdmittedActorContext, ApprovalId, Audience,
     CanonicalInputHash, CanonicalRecord, CanonicalValue, CapabilityGrantV1, CapabilityId,
     CommandId, CommitSequence, ConflictKeyHash, ContractBundleHash, ContractLineage,
-    ContractPlanRootHash, ContractVersion, DatabaseId, EntityKey, EntityTypeId, EntityVersion,
-    Environment, EventId, EventTypeId, FieldId, FrontierPosition, IdempotencyKey, IndexEntryKey,
-    IndexEpochPosition, IndexId, LogicalTime, OutcomeId, PartitionKey, PartitionKeyHash, PlanHash,
-    ProjectionGeneration, ProjectionGroupKey, ProjectionGroupKeyBuilder, ProjectionGroupPrefix,
-    ProjectionId, ProjectionIdentity, ProvenanceId, RequestId, RevocationReasonCodeV1,
-    ServiceAuditTargetV1, SourceCommit, SourceHash, SourceRepository, TenantScope, Timestamp,
+    ContractPlanRootHash, ContractVersion, DIGEST_SCHEME_V1, DatabaseId, DigestKeyId, EntityKey,
+    EntityTypeId, EntityVersion, Environment, EventId, EventTypeId, FieldId, FrontierPosition,
+    IdempotencyKey, IndexEntryKey, IndexEpochPosition, IndexId, LogicalTime, OutcomeId,
+    PartitionKey, PartitionKeyHash, PlanHash, ProjectionGeneration, ProjectionGroupKey,
+    ProjectionGroupKeyBuilder, ProjectionGroupPrefix, ProjectionId, ProjectionIdentity,
+    ProvenanceId, RequestId, RevocationReasonCodeV1, SchemaHash, SourceCommit, SourceHash,
+    SourceRepository, TenantScope, Timestamp, hash_schema,
 };
 
 use crate::{
@@ -86,6 +89,26 @@ impl RequestCharge {
         self.add(STRUCTURAL_OPTION_BYTES)?;
         if let Some(cursor) = page.cursor() {
             self.add(cursor.as_bytes().len())?;
+        }
+        Ok(())
+    }
+
+    fn add_discovery_fence(
+        &mut self,
+        fence: &DiscoveryCatalogFence,
+    ) -> Result<(), ServiceDtoError> {
+        self.add(STRUCTURAL_ENUM_TAG_BYTES)?;
+        if let DiscoveryCatalogStateRef::ActiveContract { lineage, .. } = fence.state() {
+            self.add_framed_bytes(lineage.as_bytes().len())?;
+            self.add(8)?;
+            self.add(32)?;
+        }
+        for identity in [
+            fence.operation_schemas().command_operation_envelope(),
+            fence.operation_schemas().command_get_outcome_result(),
+        ] {
+            self.add_framed_bytes(identity.schema_id().len())?;
+            self.add(32)?;
         }
         Ok(())
     }
@@ -939,6 +962,361 @@ impl fmt::Debug for DeclaredOutcomeView {
     }
 }
 
+/// Maximum bytes in one canonical persisted-outcome resource locator.
+pub const MAX_OUTCOME_RESOURCE_LOCATOR_BYTES: usize = 1_745;
+
+const OUTCOME_RESOURCE_LOCATOR_PREFIX: &str = "riffdb://outcome/";
+const OUTCOME_LOCATOR_DIGEST_BYTES: usize = 32;
+const OUTCOME_LOCATOR_TUPLE_BYTES: usize = 37;
+const OUTCOME_LOCATOR_DIGEST_TEXT_BYTES: usize = 50;
+
+/// Checked digest tuple copied from one exact durable idempotency identity.
+///
+/// This value deliberately contains no raw idempotency key, database,
+/// environment, tenant, principal, lineage, or command component. Formatting
+/// is redacted because the digest is sensitive correlation data.
+#[derive(Clone, Eq, PartialEq)]
+pub struct OutcomeLocatorDigestEvidence {
+    digest_scheme: u8,
+    digest_key_id: DigestKeyId,
+    digest: [u8; OUTCOME_LOCATOR_DIGEST_BYTES],
+}
+
+impl OutcomeLocatorDigestEvidence {
+    /// Checks the exact v1 scheme and retains one complete digest tuple.
+    pub const fn new(
+        digest_scheme: u8,
+        digest_key_id: DigestKeyId,
+        digest: [u8; OUTCOME_LOCATOR_DIGEST_BYTES],
+    ) -> Result<Self, ServiceDtoError> {
+        if digest_scheme != DIGEST_SCHEME_V1 {
+            return Err(ServiceDtoError::InvalidShape);
+        }
+        Ok(Self {
+            digest_scheme,
+            digest_key_id,
+            digest,
+        })
+    }
+
+    /// Returns the checked digest scheme.
+    #[must_use]
+    pub const fn digest_scheme(&self) -> u8 {
+        self.digest_scheme
+    }
+
+    /// Returns the nonsecret digest-key identifier.
+    #[must_use]
+    pub const fn digest_key_id(&self) -> DigestKeyId {
+        self.digest_key_id
+    }
+
+    /// Borrows the exact digest bytes for the reviewed point lookup or locator.
+    #[must_use]
+    pub const fn digest(&self) -> &[u8; OUTCOME_LOCATOR_DIGEST_BYTES] {
+        &self.digest
+    }
+}
+
+impl fmt::Debug for OutcomeLocatorDigestEvidence {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("OutcomeLocatorDigestEvidence([REDACTED])")
+    }
+}
+
+/// One canonical service-owned persisted-outcome resource locator.
+///
+/// The locator is public comparison data, not authority or a storage key. Its
+/// semantic components are retained only so the shared service can perform the
+/// two accepted authorization phases and one authoritative point lookup.
+#[derive(Clone, Eq, PartialEq)]
+pub struct OutcomeResourceLocator {
+    canonical_uri: String,
+    owner_principal_id: ActorId,
+    lineage: ContractLineage,
+    command_id: CommandId,
+    tool_name: String,
+    digest: OutcomeLocatorDigestEvidence,
+}
+
+impl OutcomeResourceLocator {
+    /// Mints one canonical locator from an already resolved durable identity.
+    pub(crate) fn mint(
+        owner_principal_id: ActorId,
+        lineage: ContractLineage,
+        command_id: CommandId,
+        tool_name: &McpCommandToolNameV1,
+        digest: OutcomeLocatorDigestEvidence,
+    ) -> Result<Self, ServiceDtoError> {
+        validate_locator_tool_name(&lineage, tool_name.as_str())?;
+        let canonical_uri = format_outcome_locator(
+            &owner_principal_id,
+            &lineage,
+            command_id,
+            tool_name.as_str(),
+            &digest,
+        )?;
+        Ok(Self {
+            canonical_uri,
+            owner_principal_id,
+            lineage,
+            command_id,
+            tool_name: tool_name.as_str().to_owned(),
+            digest,
+        })
+    }
+
+    /// Parses only the exact canonical v1 URI spelling without normalization.
+    pub fn parse(value: impl Into<String>) -> Result<Self, ServiceDtoError> {
+        let canonical_uri = value.into();
+        if canonical_uri.len() > MAX_OUTCOME_RESOURCE_LOCATOR_BYTES
+            || !canonical_uri.starts_with(OUTCOME_RESOURCE_LOCATOR_PREFIX)
+        {
+            return Err(ServiceDtoError::InvalidShape);
+        }
+        let segments = canonical_uri[OUTCOME_RESOURCE_LOCATOR_PREFIX.len()..]
+            .split('/')
+            .collect::<Vec<_>>();
+        let [principal, lineage, command, tool_name, digest_text] = segments.as_slice() else {
+            return Err(ServiceDtoError::InvalidShape);
+        };
+        let owner_principal_id = ActorId::new(decode_uri_identity(principal)?)
+            .map_err(|_| ServiceDtoError::InvalidShape)?;
+        let lineage = ContractLineage::new(decode_uri_identity(lineage)?)
+            .map_err(|_| ServiceDtoError::InvalidShape)?;
+        let command_id = parse_nonzero_u32(command).and_then(|value| {
+            CommandId::try_from(value).map_err(|_| ServiceDtoError::InvalidShape)
+        })?;
+        validate_locator_tool_name(&lineage, tool_name)?;
+        let digest = decode_outcome_locator_digest(digest_text)?;
+        let expected = format_outcome_locator(
+            &owner_principal_id,
+            &lineage,
+            command_id,
+            tool_name,
+            &digest,
+        )?;
+        if expected != canonical_uri {
+            return Err(ServiceDtoError::InvalidShape);
+        }
+        let tool_name = (*tool_name).to_owned();
+        Ok(Self {
+            canonical_uri,
+            owner_principal_id,
+            lineage,
+            command_id,
+            tool_name,
+            digest,
+        })
+    }
+
+    /// Borrows the exact canonical public URI.
+    #[must_use]
+    pub fn canonical_uri(&self) -> &str {
+        &self.canonical_uri
+    }
+
+    /// Borrows the stable owner principal used for existence-blind checks.
+    #[must_use]
+    pub const fn owner_principal_id(&self) -> &ActorId {
+        &self.owner_principal_id
+    }
+
+    /// Borrows the checked lineage named by the locator.
+    #[must_use]
+    pub const fn lineage(&self) -> &ContractLineage {
+        &self.lineage
+    }
+
+    /// Returns the stable command identity named by the locator.
+    #[must_use]
+    pub const fn command_id(&self) -> CommandId {
+        self.command_id
+    }
+
+    /// Borrows the compiler-name spelling that must match historical catalog state.
+    #[must_use]
+    pub fn tool_name(&self) -> &str {
+        &self.tool_name
+    }
+
+    /// Borrows the exact checked digest tuple for the one point lookup.
+    #[must_use]
+    pub const fn digest_evidence(&self) -> &OutcomeLocatorDigestEvidence {
+        &self.digest
+    }
+}
+
+impl fmt::Debug for OutcomeResourceLocator {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("OutcomeResourceLocator([REDACTED])")
+    }
+}
+
+fn format_outcome_locator(
+    principal: &ActorId,
+    lineage: &ContractLineage,
+    command_id: CommandId,
+    tool_name: &str,
+    digest: &OutcomeLocatorDigestEvidence,
+) -> Result<String, ServiceDtoError> {
+    let mut tuple = [0_u8; OUTCOME_LOCATOR_TUPLE_BYTES];
+    tuple[0] = digest.digest_scheme();
+    tuple[1..5].copy_from_slice(&digest.digest_key_id().get().to_be_bytes());
+    tuple[5..].copy_from_slice(digest.digest());
+    let digest_text = URL_SAFE_NO_PAD.encode(tuple);
+    if digest_text.len() != OUTCOME_LOCATOR_DIGEST_TEXT_BYTES {
+        return Err(ServiceDtoError::InvalidShape);
+    }
+    let value = format!(
+        "{OUTCOME_RESOURCE_LOCATOR_PREFIX}{}/{}/{}/{}/{}",
+        encode_uri_identity(principal.as_str().as_bytes()),
+        encode_uri_identity(lineage.as_bytes()),
+        command_id.get(),
+        tool_name,
+        digest_text,
+    );
+    if value.len() > MAX_OUTCOME_RESOURCE_LOCATOR_BYTES {
+        return Err(ServiceDtoError::TooLong);
+    }
+    Ok(value)
+}
+
+fn decode_outcome_locator_digest(
+    value: &str,
+) -> Result<OutcomeLocatorDigestEvidence, ServiceDtoError> {
+    if value.len() != OUTCOME_LOCATOR_DIGEST_TEXT_BYTES
+        || value
+            .bytes()
+            .any(|byte| matches!(byte, b'=' | b'+' | b'/') || byte.is_ascii_whitespace())
+    {
+        return Err(ServiceDtoError::InvalidShape);
+    }
+    let decoded = URL_SAFE_NO_PAD
+        .decode(value)
+        .map_err(|_| ServiceDtoError::InvalidShape)?;
+    let tuple: [u8; OUTCOME_LOCATOR_TUPLE_BYTES] = decoded
+        .try_into()
+        .map_err(|_| ServiceDtoError::InvalidShape)?;
+    let key_id = DigestKeyId::try_from(u32::from_be_bytes(
+        tuple[1..5]
+            .try_into()
+            .map_err(|_| ServiceDtoError::InvalidShape)?,
+    ))
+    .map_err(|_| ServiceDtoError::InvalidShape)?;
+    let digest = tuple[5..]
+        .try_into()
+        .map_err(|_| ServiceDtoError::InvalidShape)?;
+    let evidence = OutcomeLocatorDigestEvidence::new(tuple[0], key_id, digest)?;
+    if URL_SAFE_NO_PAD.encode(tuple) != value {
+        return Err(ServiceDtoError::InvalidShape);
+    }
+    Ok(evidence)
+}
+
+fn parse_nonzero_u32(value: &str) -> Result<u32, ServiceDtoError> {
+    if value.is_empty()
+        || value.starts_with('0')
+        || value.bytes().any(|byte| !byte.is_ascii_digit())
+    {
+        return Err(ServiceDtoError::InvalidShape);
+    }
+    value
+        .parse::<u32>()
+        .ok()
+        .filter(|value| *value != 0)
+        .ok_or(ServiceDtoError::InvalidShape)
+}
+
+fn validate_locator_tool_name(
+    lineage: &ContractLineage,
+    tool_name: &str,
+) -> Result<(), ServiceDtoError> {
+    if tool_name.len() > riffdb_contract_ir::MAX_MCP_COMMAND_TOOL_NAME_BYTES
+        || !tool_name.bytes().all(|byte| {
+            byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'_' || byte == b'.'
+        })
+    {
+        return Err(ServiceDtoError::InvalidShape);
+    }
+    let mut segments = tool_name
+        .strip_prefix("riffdb.cmd.")
+        .ok_or(ServiceDtoError::InvalidShape)?
+        .split('.');
+    let contract = segments.next().ok_or(ServiceDtoError::InvalidShape)?;
+    let command = segments.next().ok_or(ServiceDtoError::InvalidShape)?;
+    if segments.next().is_some()
+        || !valid_normalized_mcp_segment(contract)
+        || !valid_normalized_mcp_segment(command)
+        || !lineage.as_str().is_ascii()
+        || lineage.as_str().to_ascii_lowercase() != contract
+    {
+        return Err(ServiceDtoError::InvalidShape);
+    }
+    Ok(())
+}
+
+fn valid_normalized_mcp_segment(value: &str) -> bool {
+    value.as_bytes().first().is_some_and(u8::is_ascii_lowercase)
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'_')
+}
+
+fn encode_uri_identity(value: &[u8]) -> String {
+    const HEX: &[u8; 16] = b"0123456789ABCDEF";
+    let mut encoded = String::with_capacity(value.len());
+    for byte in value {
+        if byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'.' | b'_' | b'~') {
+            encoded.push(char::from(*byte));
+        } else {
+            encoded.push('%');
+            encoded.push(char::from(HEX[usize::from(byte >> 4)]));
+            encoded.push(char::from(HEX[usize::from(byte & 0x0f)]));
+        }
+    }
+    encoded
+}
+
+fn decode_uri_identity(value: &str) -> Result<String, ServiceDtoError> {
+    let bytes = value.as_bytes();
+    let mut decoded = Vec::with_capacity(bytes.len());
+    let mut index = 0;
+    while index < bytes.len() {
+        let byte = bytes[index];
+        if byte == b'%' {
+            let high = *bytes.get(index + 1).ok_or(ServiceDtoError::InvalidShape)?;
+            let low = *bytes.get(index + 2).ok_or(ServiceDtoError::InvalidShape)?;
+            let decoded_byte = decode_upper_hex(high)?
+                .checked_mul(16)
+                .and_then(|value| value.checked_add(decode_upper_hex(low).ok()?))
+                .ok_or(ServiceDtoError::InvalidShape)?;
+            if decoded_byte.is_ascii_alphanumeric()
+                || matches!(decoded_byte, b'-' | b'.' | b'_' | b'~')
+            {
+                return Err(ServiceDtoError::InvalidShape);
+            }
+            decoded.push(decoded_byte);
+            index += 3;
+        } else {
+            if !(byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'.' | b'_' | b'~')) {
+                return Err(ServiceDtoError::InvalidShape);
+            }
+            decoded.push(byte);
+            index += 1;
+        }
+    }
+    String::from_utf8(decoded).map_err(|_| ServiceDtoError::InvalidShape)
+}
+
+fn decode_upper_hex(value: u8) -> Result<u8, ServiceDtoError> {
+    match value {
+        b'0'..=b'9' => Ok(value - b'0'),
+        b'A'..=b'F' => Ok(value - b'A' + 10),
+        _ => Err(ServiceDtoError::InvalidShape),
+    }
+}
+
 /// Production durability acknowledged for a journaled command.
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub enum CommandDurability {
@@ -969,6 +1347,7 @@ pub struct JournaledCommandResult {
     outcome: DeclaredOutcomeView,
     provenance_id: ProvenanceId,
     durability: CommandDurability,
+    outcome_locator: OutcomeResourceLocator,
 }
 
 impl JournaledCommandResult {
@@ -979,8 +1358,12 @@ impl JournaledCommandResult {
         outcome: DeclaredOutcomeView,
         provenance_id: ProvenanceId,
         durability: CommandDurability,
+        outcome_locator: OutcomeResourceLocator,
     ) -> Result<Self, ServiceDtoError> {
-        if outcome.plan.execution_class != ExecutionClass::IdempotentMutation {
+        if outcome.plan.execution_class != ExecutionClass::IdempotentMutation
+            || outcome_locator.lineage() != &outcome.plan.lineage
+            || outcome_locator.command_id() != outcome.plan.command_id
+        {
             return Err(ServiceDtoError::InvalidShape);
         }
         let lineage = outcome.plan.lineage.clone();
@@ -997,6 +1380,7 @@ impl JournaledCommandResult {
             outcome,
             provenance_id,
             durability,
+            outcome_locator,
         })
     }
 
@@ -1052,6 +1436,12 @@ impl JournaledCommandResult {
     #[must_use]
     pub const fn durability(&self) -> CommandDurability {
         self.durability
+    }
+
+    /// Borrows the canonical locator bound to this exact durable result.
+    #[must_use]
+    pub const fn outcome_locator(&self) -> &OutcomeResourceLocator {
+        &self.outcome_locator
     }
 }
 
@@ -1136,12 +1526,36 @@ pub enum ExecuteCommandResult {
     ReadOnlyExecuted(ReadOnlyCommandResult),
 }
 
-/// Request to resolve one prior durable command result.
+#[derive(Clone, Eq, PartialEq)]
+enum ResolveCommandOutcomeSelector {
+    RawKey {
+        lineage: ContractLineage,
+        source_command: SourceName,
+        idempotency_key: IdempotencyKey,
+    },
+    Locator(OutcomeResourceLocator),
+}
+
+/// Borrowed view of the closed uncertainty-recovery selector.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ResolveCommandOutcomeSelectorRef<'a> {
+    /// Legacy raw-key lookup resolved through the active command catalog.
+    RawKey {
+        /// Exact contract lineage.
+        lineage: &'a ContractLineage,
+        /// Exact grammar-v1 source command.
+        source_command: &'a SourceName,
+        /// Caller-provided raw uncertainty-recovery key.
+        idempotency_key: &'a IdempotencyKey,
+    },
+    /// Checked canonical locator lookup with no raw key.
+    Locator(&'a OutcomeResourceLocator),
+}
+
+/// Request to resolve one prior durable command result through one checked selector.
 #[derive(Clone, Eq, PartialEq)]
 pub struct ResolveCommandOutcomeRequest {
-    lineage: ContractLineage,
-    command: SourceName,
-    idempotency_key: IdempotencyKey,
+    selector: ResolveCommandOutcomeSelector,
 }
 
 impl ResolveCommandOutcomeRequest {
@@ -1153,28 +1567,39 @@ impl ResolveCommandOutcomeRequest {
         idempotency_key: IdempotencyKey,
     ) -> Self {
         Self {
-            lineage,
-            command,
-            idempotency_key,
+            selector: ResolveCommandOutcomeSelector::RawKey {
+                lineage,
+                source_command: command,
+                idempotency_key,
+            },
         }
     }
 
-    /// Borrows the exact lineage.
+    /// Creates one canonical locator-form lookup without accepting a raw key.
     #[must_use]
-    pub const fn lineage(&self) -> &ContractLineage {
-        &self.lineage
+    pub const fn locator(locator: OutcomeResourceLocator) -> Self {
+        Self {
+            selector: ResolveCommandOutcomeSelector::Locator(locator),
+        }
     }
 
-    /// Borrows the source command name.
+    /// Borrows the exact closed selector.
     #[must_use]
-    pub const fn command(&self) -> &SourceName {
-        &self.command
-    }
-
-    /// Borrows the caller's original uncertainty-recovery key.
-    #[must_use]
-    pub const fn idempotency_key(&self) -> &IdempotencyKey {
-        &self.idempotency_key
+    pub const fn selector(&self) -> ResolveCommandOutcomeSelectorRef<'_> {
+        match &self.selector {
+            ResolveCommandOutcomeSelector::RawKey {
+                lineage,
+                source_command,
+                idempotency_key,
+            } => ResolveCommandOutcomeSelectorRef::RawKey {
+                lineage,
+                source_command,
+                idempotency_key,
+            },
+            ResolveCommandOutcomeSelector::Locator(locator) => {
+                ResolveCommandOutcomeSelectorRef::Locator(locator)
+            }
+        }
     }
 }
 
@@ -2484,9 +2909,9 @@ impl fmt::Debug for AuthoritativeIndexPage {
     }
 }
 
-/// Exact durable outcome identity passed to the authoritative read port.
+/// Checked raw-key selector passed only to the authoritative point-lookup adapter.
 #[derive(Clone, Eq, PartialEq)]
-pub struct AuthoritativeOutcomeRequest {
+pub struct RawKeyOutcomeLookup {
     lineage: ContractLineage,
     command_id: CommandId,
     principal_id: ActorId,
@@ -2494,10 +2919,8 @@ pub struct AuthoritativeOutcomeRequest {
     idempotency_key: IdempotencyKey,
 }
 
-impl AuthoritativeOutcomeRequest {
-    /// Joins complete service-owned uncertainty-recovery identity.
-    #[must_use]
-    pub const fn new(
+impl RawKeyOutcomeLookup {
+    const fn new(
         lineage: ContractLineage,
         command_id: CommandId,
         principal_id: ActorId,
@@ -2544,6 +2967,152 @@ impl AuthoritativeOutcomeRequest {
     }
 }
 
+impl fmt::Debug for RawKeyOutcomeLookup {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("RawKeyOutcomeLookup([REDACTED])")
+    }
+}
+
+/// Checked digest selector passed only to the authoritative point-lookup adapter.
+#[derive(Clone, Eq, PartialEq)]
+pub struct DigestedOutcomeLookup {
+    lineage: ContractLineage,
+    command_id: CommandId,
+    principal_id: ActorId,
+    tenant_scope: TenantScope,
+    digest: OutcomeLocatorDigestEvidence,
+}
+
+impl DigestedOutcomeLookup {
+    const fn new(
+        lineage: ContractLineage,
+        command_id: CommandId,
+        principal_id: ActorId,
+        tenant_scope: TenantScope,
+        digest: OutcomeLocatorDigestEvidence,
+    ) -> Self {
+        Self {
+            lineage,
+            command_id,
+            principal_id,
+            tenant_scope,
+            digest,
+        }
+    }
+
+    /// Borrows the lineage.
+    #[must_use]
+    pub const fn lineage(&self) -> &ContractLineage {
+        &self.lineage
+    }
+
+    /// Returns the stable command ID.
+    #[must_use]
+    pub const fn command_id(&self) -> CommandId {
+        self.command_id
+    }
+
+    /// Borrows the stable owner principal.
+    #[must_use]
+    pub const fn principal_id(&self) -> &ActorId {
+        &self.principal_id
+    }
+
+    /// Borrows the owner tenant scope.
+    #[must_use]
+    pub const fn tenant_scope(&self) -> &TenantScope {
+        &self.tenant_scope
+    }
+
+    /// Borrows the exact checked digest tuple.
+    #[must_use]
+    pub const fn digest_evidence(&self) -> &OutcomeLocatorDigestEvidence {
+        &self.digest
+    }
+}
+
+impl fmt::Debug for DigestedOutcomeLookup {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("DigestedOutcomeLookup([REDACTED])")
+    }
+}
+
+#[derive(Clone, Eq, PartialEq)]
+enum AuthoritativeOutcomeSelector {
+    RawKey(RawKeyOutcomeLookup),
+    Digested(DigestedOutcomeLookup),
+}
+
+/// Borrowed view of one checked authoritative point-lookup selector.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum AuthoritativeOutcomeSelectorRef<'a> {
+    /// Lookup that permits the adapter to calculate bounded readable-key HMACs.
+    RawKey(&'a RawKeyOutcomeLookup),
+    /// Lookup that supplies one already checked digest tuple and no raw key.
+    Digested(&'a DigestedOutcomeLookup),
+}
+
+/// Exact durable outcome identity passed to the unchanged authoritative read port.
+#[derive(Clone, Eq, PartialEq)]
+pub struct AuthoritativeOutcomeRequest {
+    selector: AuthoritativeOutcomeSelector,
+}
+
+impl AuthoritativeOutcomeRequest {
+    /// Joins complete service-owned raw-key uncertainty-recovery identity.
+    #[must_use]
+    pub const fn raw_key(
+        lineage: ContractLineage,
+        command_id: CommandId,
+        principal_id: ActorId,
+        tenant_scope: TenantScope,
+        idempotency_key: IdempotencyKey,
+    ) -> Self {
+        Self {
+            selector: AuthoritativeOutcomeSelector::RawKey(RawKeyOutcomeLookup::new(
+                lineage,
+                command_id,
+                principal_id,
+                tenant_scope,
+                idempotency_key,
+            )),
+        }
+    }
+
+    /// Joins one complete digest-tuple lookup without accepting a raw key.
+    #[must_use]
+    pub const fn digested(
+        lineage: ContractLineage,
+        command_id: CommandId,
+        principal_id: ActorId,
+        tenant_scope: TenantScope,
+        digest: OutcomeLocatorDigestEvidence,
+    ) -> Self {
+        Self {
+            selector: AuthoritativeOutcomeSelector::Digested(DigestedOutcomeLookup::new(
+                lineage,
+                command_id,
+                principal_id,
+                tenant_scope,
+                digest,
+            )),
+        }
+    }
+
+    /// Borrows the exact closed lower selector.
+    #[must_use]
+    pub const fn selector(&self) -> AuthoritativeOutcomeSelectorRef<'_> {
+        match &self.selector {
+            AuthoritativeOutcomeSelector::RawKey(lookup) => {
+                AuthoritativeOutcomeSelectorRef::RawKey(lookup)
+            }
+            AuthoritativeOutcomeSelector::Digested(lookup) => {
+                AuthoritativeOutcomeSelectorRef::Digested(lookup)
+            }
+        }
+    }
+}
+
 impl fmt::Debug for AuthoritativeOutcomeRequest {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter.write_str("AuthoritativeOutcomeRequest([REDACTED])")
@@ -2561,6 +3130,7 @@ pub struct AuthoritativeOutcomeFacts {
     owner_principal_id: ActorId,
     owner_tenant_scope: TenantScope,
     partition: PartitionKey,
+    locator_digest: OutcomeLocatorDigestEvidence,
 }
 
 impl AuthoritativeOutcomeFacts {
@@ -2576,6 +3146,7 @@ impl AuthoritativeOutcomeFacts {
         owner_principal_id: ActorId,
         owner_tenant_scope: TenantScope,
         partition: PartitionKey,
+        locator_digest: OutcomeLocatorDigestEvidence,
     ) -> Self {
         Self {
             lineage,
@@ -2586,6 +3157,7 @@ impl AuthoritativeOutcomeFacts {
             owner_principal_id,
             owner_tenant_scope,
             partition,
+            locator_digest,
         }
     }
 
@@ -2635,6 +3207,12 @@ impl AuthoritativeOutcomeFacts {
     #[must_use]
     pub const fn partition(&self) -> &PartitionKey {
         &self.partition
+    }
+
+    /// Borrows digest evidence copied from the exact matched durable identity.
+    #[must_use]
+    pub const fn locator_digest(&self) -> &OutcomeLocatorDigestEvidence {
+        &self.locator_digest
     }
 }
 
@@ -5138,15 +5716,215 @@ pub enum ProjectionPortResult {
     ContinuationInvalidated,
 }
 
-/// Exact active-catalog identity observed while shaping one discovery page.
+/// Immutable Draft 2020-12 dialect for service-owned operation schemas.
+pub const OPERATION_SCHEMA_DIALECT: &str = "https://json-schema.org/draft/2020-12/schema";
+/// Immutable command-operation envelope schema identity.
+pub const COMMAND_OPERATION_ENVELOPE_SCHEMA_ID: &str = "riffdb.command-operation-envelope/v1";
+/// Immutable GetOutcome result schema identity.
+pub const COMMAND_GET_OUTCOME_RESULT_SCHEMA_ID: &str = "riffdb.command-get-outcome-result/v1";
+/// Maximum canonical bytes in one operation schema source.
+pub const MAX_OPERATION_SCHEMA_SOURCE_BYTES: usize = 65_536;
+/// Maximum exact response charge for the complete two-schema catalog.
+pub const MAX_OPERATION_SCHEMA_CATALOG_SOURCE_CHARGE: usize = 131_584;
+
+const COMMAND_OPERATION_ENVELOPE_SCHEMA: &str =
+    include_str!("../schema/riffdb.command-operation-envelope-v1.schema.json");
+const COMMAND_GET_OUTCOME_RESULT_SCHEMA: &str =
+    include_str!("../schema/riffdb.command-get-outcome-result-v1.schema.json");
+const COMMAND_OPERATION_ENVELOPE_SCHEMA_HASH: SchemaHash = SchemaHash::from_bytes([
+    0xf1, 0x84, 0x7c, 0x1c, 0xd8, 0x69, 0x56, 0x2a, 0x11, 0xa6, 0xe6, 0x7c, 0x79, 0x54, 0xe4, 0xb5,
+    0xc6, 0xb0, 0x6f, 0x73, 0xc3, 0x7f, 0x68, 0xc2, 0xa4, 0x39, 0xd7, 0x35, 0x9f, 0x2b, 0x9c, 0xf7,
+]);
+const COMMAND_GET_OUTCOME_RESULT_SCHEMA_HASH: SchemaHash = SchemaHash::from_bytes([
+    0xcb, 0xf5, 0xcb, 0x3d, 0x86, 0x9f, 0x5b, 0x15, 0x7c, 0x62, 0xe3, 0x7c, 0x2d, 0x07, 0x04, 0x26,
+    0x9c, 0xbf, 0x0a, 0x7c, 0x31, 0x7f, 0xee, 0x47, 0x57, 0xf1, 0x3b, 0xd0, 0x01, 0x2b, 0x7f, 0x96,
+]);
+
+/// Body-free identity of one versioned operation schema.
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub enum DiscoveryCatalogFence {
-    /// No contract was active when the candidate catalog was materialized.
+pub struct OperationSchemaIdentity {
+    schema_id: String,
+    schema_hash: SchemaHash,
+}
+
+impl OperationSchemaIdentity {
+    /// Checks one forward-compatible operation-schema identity.
+    pub fn new(
+        schema_id: impl Into<String>,
+        schema_hash: SchemaHash,
+    ) -> Result<Self, ServiceDtoError> {
+        let schema_id = schema_id.into();
+        if schema_id.is_empty() {
+            return Err(ServiceDtoError::Empty);
+        }
+        if schema_id.len() > 256 {
+            return Err(ServiceDtoError::TooLong);
+        }
+        if !schema_id.is_ascii() || schema_id.bytes().any(|byte| byte.is_ascii_whitespace()) {
+            return Err(ServiceDtoError::InvalidShape);
+        }
+        Ok(Self {
+            schema_id,
+            schema_hash,
+        })
+    }
+
+    /// Borrows the exact versioned schema ID.
+    #[must_use]
+    pub fn schema_id(&self) -> &str {
+        &self.schema_id
+    }
+
+    /// Returns the exact typed hash of the canonical source.
+    #[must_use]
+    pub const fn schema_hash(&self) -> SchemaHash {
+        self.schema_hash
+    }
+}
+
+/// One immutable service-owned operation schema artifact.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct OperationSchemaArtifact {
+    identity: OperationSchemaIdentity,
+    dialect: &'static str,
+    canonical_json: &'static str,
+}
+
+impl OperationSchemaArtifact {
+    fn accepted(
+        schema_id: &'static str,
+        canonical_json: &'static str,
+        expected_hash: SchemaHash,
+    ) -> Result<Self, ServiceDtoError> {
+        if canonical_json.len() > MAX_OPERATION_SCHEMA_SOURCE_BYTES
+            || hash_schema(canonical_json.as_bytes()) != expected_hash
+        {
+            return Err(ServiceDtoError::IdentityMismatch);
+        }
+        Ok(Self {
+            identity: OperationSchemaIdentity::new(schema_id, expected_hash)?,
+            dialect: OPERATION_SCHEMA_DIALECT,
+            canonical_json,
+        })
+    }
+
+    /// Borrows the checked body-free identity.
+    #[must_use]
+    pub const fn identity(&self) -> &OperationSchemaIdentity {
+        &self.identity
+    }
+
+    /// Returns the exact JSON Schema dialect.
+    #[must_use]
+    pub const fn dialect(&self) -> &'static str {
+        self.dialect
+    }
+
+    /// Returns the exact accepted canonical UTF-8 source.
+    #[must_use]
+    pub const fn canonical_json(&self) -> &'static str {
+        self.canonical_json
+    }
+}
+
+/// Ordered identity of the complete service-owned operation-schema catalog.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct OperationSchemaCatalogIdentity {
+    command_operation_envelope: OperationSchemaIdentity,
+    command_get_outcome_result: OperationSchemaIdentity,
+}
+
+impl OperationSchemaCatalogIdentity {
+    /// Creates one ordered catalog identity from two checked schema identities.
+    #[must_use]
+    pub const fn new(
+        command_operation_envelope: OperationSchemaIdentity,
+        command_get_outcome_result: OperationSchemaIdentity,
+    ) -> Self {
+        Self {
+            command_operation_envelope,
+            command_get_outcome_result,
+        }
+    }
+
+    /// Borrows the command-operation envelope identity.
+    #[must_use]
+    pub const fn command_operation_envelope(&self) -> &OperationSchemaIdentity {
+        &self.command_operation_envelope
+    }
+
+    /// Borrows the GetOutcome result identity.
+    #[must_use]
+    pub const fn command_get_outcome_result(&self) -> &OperationSchemaIdentity {
+        &self.command_get_outcome_result
+    }
+}
+
+/// Complete ordered immutable operation-schema catalog.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct OperationSchemaCatalog {
+    command_operation_envelope: OperationSchemaArtifact,
+    command_get_outcome_result: OperationSchemaArtifact,
+}
+
+impl OperationSchemaCatalog {
+    /// Loads and verifies the two human-accepted immutable v1 sources.
+    pub fn accepted() -> Result<Self, ServiceDtoError> {
+        Ok(Self {
+            command_operation_envelope: OperationSchemaArtifact::accepted(
+                COMMAND_OPERATION_ENVELOPE_SCHEMA_ID,
+                COMMAND_OPERATION_ENVELOPE_SCHEMA,
+                COMMAND_OPERATION_ENVELOPE_SCHEMA_HASH,
+            )?,
+            command_get_outcome_result: OperationSchemaArtifact::accepted(
+                COMMAND_GET_OUTCOME_RESULT_SCHEMA_ID,
+                COMMAND_GET_OUTCOME_RESULT_SCHEMA,
+                COMMAND_GET_OUTCOME_RESULT_SCHEMA_HASH,
+            )?,
+        })
+    }
+
+    /// Borrows the command-operation envelope artifact.
+    #[must_use]
+    pub const fn command_operation_envelope(&self) -> &OperationSchemaArtifact {
+        &self.command_operation_envelope
+    }
+
+    /// Borrows the GetOutcome result artifact.
+    #[must_use]
+    pub const fn command_get_outcome_result(&self) -> &OperationSchemaArtifact {
+        &self.command_get_outcome_result
+    }
+
+    /// Returns the ordered body-free identity represented by this catalog.
+    #[must_use]
+    pub fn identity(&self) -> OperationSchemaCatalogIdentity {
+        OperationSchemaCatalogIdentity::new(
+            self.command_operation_envelope.identity.clone(),
+            self.command_get_outcome_result.identity.clone(),
+        )
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+enum DiscoveryCatalogState {
     NoActiveContract,
-    /// One exact immutable active bundle supplied the dynamic candidates.
+    ActiveContract {
+        lineage: ContractLineage,
+        version: ContractVersion,
+        bundle_hash: ContractBundleHash,
+    },
+}
+
+/// Borrowed semantic active-catalog state.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum DiscoveryCatalogStateRef<'a> {
+    /// No contract was active.
+    NoActiveContract,
+    /// One exact immutable active bundle supplied the catalog.
     ActiveContract {
         /// Stable contract lineage.
-        lineage: ContractLineage,
+        lineage: &'a ContractLineage,
         /// Exact active version.
         version: ContractVersion,
         /// Exact immutable bundle hash.
@@ -5154,49 +5932,145 @@ pub enum DiscoveryCatalogFence {
     },
 }
 
+/// Process-neutral semantic fence for one discovery catalog.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct DiscoveryCatalogFence {
+    state: DiscoveryCatalogState,
+    operation_schemas: OperationSchemaCatalogIdentity,
+}
+
 impl DiscoveryCatalogFence {
-    /// Creates the fence for a catalog without an active contract.
+    /// Creates a no-active-contract fence with an explicit schema-catalog identity.
     #[must_use]
-    pub const fn no_active_contract() -> Self {
-        Self::NoActiveContract
+    pub const fn no_active_contract(operation_schemas: OperationSchemaCatalogIdentity) -> Self {
+        Self {
+            state: DiscoveryCatalogState::NoActiveContract,
+            operation_schemas,
+        }
     }
 
-    /// Creates the fence for one exact active immutable bundle.
+    /// Creates an active-contract fence with an explicit schema-catalog identity.
     #[must_use]
     pub const fn active_contract(
         lineage: ContractLineage,
         version: ContractVersion,
         bundle_hash: ContractBundleHash,
+        operation_schemas: OperationSchemaCatalogIdentity,
     ) -> Self {
-        Self::ActiveContract {
-            lineage,
-            version,
-            bundle_hash,
+        Self {
+            state: DiscoveryCatalogState::ActiveContract {
+                lineage,
+                version,
+                bundle_hash,
+            },
+            operation_schemas,
         }
+    }
+
+    /// Borrows the active/no-active semantic state.
+    #[must_use]
+    pub const fn state(&self) -> DiscoveryCatalogStateRef<'_> {
+        match &self.state {
+            DiscoveryCatalogState::NoActiveContract => DiscoveryCatalogStateRef::NoActiveContract,
+            DiscoveryCatalogState::ActiveContract {
+                lineage,
+                version,
+                bundle_hash,
+            } => DiscoveryCatalogStateRef::ActiveContract {
+                lineage,
+                version: *version,
+                bundle_hash: *bundle_hash,
+            },
+        }
+    }
+
+    /// Borrows the ordered operation-schema catalog identity.
+    #[must_use]
+    pub const fn operation_schemas(&self) -> &OperationSchemaCatalogIdentity {
+        &self.operation_schemas
     }
 }
 
+/// Required discovery representation.
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+pub enum DiscoveryRepresentation {
+    /// Complete generated schema bodies.
+    Full,
+    /// Identity-only observation suitable for bounded watchers.
+    CompactObservation,
+}
+
+/// Required semantic resource inventory surface.
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+pub enum ResourceDiscoveryKind {
+    /// Complete resource and template inventory.
+    All,
+    /// Concrete readable resources only.
+    Concrete,
+    /// Resource templates only.
+    Template,
+}
+
 /// One bounded page request for policy-filtered command-tool discovery.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct DiscoverCommandToolsRequest(PageRequest);
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct DiscoverCommandToolsRequest {
+    page: PageRequest,
+    representation: DiscoveryRepresentation,
+    prior_fence: Option<DiscoveryCatalogFence>,
+}
 
 impl DiscoverCommandToolsRequest {
-    /// Creates one initial or continuation request.
+    /// Creates a full initial or continuation request.
     #[must_use]
     pub const fn new(page: PageRequest) -> Self {
-        Self(page)
+        Self {
+            page,
+            representation: DiscoveryRepresentation::Full,
+            prior_fence: None,
+        }
+    }
+
+    /// Checks representation and conditional-observation shape.
+    pub fn with_options(
+        page: PageRequest,
+        representation: DiscoveryRepresentation,
+        prior_fence: Option<DiscoveryCatalogFence>,
+    ) -> Result<Self, ServiceDtoError> {
+        if prior_fence.is_some()
+            && (page.cursor().is_some()
+                || representation != DiscoveryRepresentation::CompactObservation)
+        {
+            return Err(ServiceDtoError::InvalidShape);
+        }
+        Ok(Self {
+            page,
+            representation,
+            prior_fence,
+        })
     }
 
     /// Returns the checked page request.
     #[must_use]
-    pub const fn page(self) -> PageRequest {
-        self.0
+    pub const fn page(&self) -> PageRequest {
+        self.page
+    }
+
+    /// Returns the required representation.
+    #[must_use]
+    pub const fn representation(&self) -> DiscoveryRepresentation {
+        self.representation
+    }
+
+    /// Borrows the optional initial compact semantic prior fence.
+    #[must_use]
+    pub const fn prior_fence(&self) -> Option<&DiscoveryCatalogFence> {
+        self.prior_fence.as_ref()
     }
 }
 
 impl Default for DiscoverCommandToolsRequest {
     fn default() -> Self {
-        Self(PageRequest::new(PageLimit::default(), None))
+        Self::new(PageRequest::new(PageLimit::default(), None))
     }
 }
 
@@ -5225,6 +6099,12 @@ impl CommandToolDescriptor {
     ) -> Result<Self, ServiceDtoError> {
         if input_schema.key() != SchemaArtifactKey::CommandInput(command_id)
             || outcome_schema.key() != SchemaArtifactKey::CommandOutcomeUnion(command_id)
+            || McpCommandToolNameV1::new_checked(
+                lineage.as_str(),
+                source_command.as_str(),
+                name.as_str(),
+            )
+            .is_err()
         {
             return Err(ServiceDtoError::IdentityMismatch);
         }
@@ -5273,168 +6153,566 @@ impl CommandToolDescriptor {
     pub const fn outcome_schema(&self) -> &GeneratedSchemaArtifact {
         &self.outcome_schema
     }
+
+    fn compact(&self) -> CompactCommandToolDescriptor {
+        CompactCommandToolDescriptor {
+            name: self.name.clone(),
+            source_command: self.source_command.clone(),
+            lineage: self.lineage.clone(),
+            version: self.version,
+            command_id: self.command_id,
+            input_schema: GeneratedSchemaIdentity::from_artifact(&self.input_schema),
+            outcome_schema: GeneratedSchemaIdentity::from_artifact(&self.outcome_schema),
+        }
+    }
+}
+
+/// Service-owned exact fixed-tool presentation registry.
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+pub enum FixedToolKind {
+    /// Contract validation.
+    ValidateContract,
+    /// Active-contract read.
+    GetActiveContract,
+    /// Command explanation.
+    ExplainCommand,
+    /// Contract deployment.
+    DeployContract,
+    /// Durable outcome resolution.
+    ResolveCommandOutcome,
+    /// Entity point read.
+    GetEntity,
+    /// Index scan.
+    ScanIndex,
+    /// Commit point read.
+    GetCommit,
+    /// Commit scan.
+    ScanCommits,
+    /// Provenance trace.
+    TraceProvenance,
+    /// Projection query.
+    QueryProjection,
+    /// Projection status read.
+    GetProjectionStatus,
+    /// Pending-outbox discovery.
+    ListPendingOutboxDeliveries,
+    /// Server health read.
+    GetHealth,
+}
+
+impl FixedToolKind {
+    pub(crate) const fn from_policy(candidate: FixedToolCandidate) -> Self {
+        match candidate {
+            FixedToolCandidate::ValidateContract => Self::ValidateContract,
+            FixedToolCandidate::GetActiveContract => Self::GetActiveContract,
+            FixedToolCandidate::ExplainCommand => Self::ExplainCommand,
+            FixedToolCandidate::DeployContract => Self::DeployContract,
+            FixedToolCandidate::ResolveCommandOutcome => Self::ResolveCommandOutcome,
+            FixedToolCandidate::GetEntity => Self::GetEntity,
+            FixedToolCandidate::ScanIndex => Self::ScanIndex,
+            FixedToolCandidate::GetCommit => Self::GetCommit,
+            FixedToolCandidate::ScanCommits => Self::ScanCommits,
+            FixedToolCandidate::TraceProvenance => Self::TraceProvenance,
+            FixedToolCandidate::QueryProjection => Self::QueryProjection,
+            FixedToolCandidate::GetProjectionStatus => Self::GetProjectionStatus,
+            FixedToolCandidate::ListPendingOutboxDeliveries => Self::ListPendingOutboxDeliveries,
+            FixedToolCandidate::GetHealth => Self::GetHealth,
+        }
+    }
+
+    /// Returns the exact accepted nonzero Protobuf presentation tag.
+    #[must_use]
+    pub const fn tag(self) -> u8 {
+        match self {
+            Self::ValidateContract => 1,
+            Self::GetActiveContract => 2,
+            Self::ExplainCommand => 3,
+            Self::DeployContract => 4,
+            Self::ResolveCommandOutcome => 5,
+            Self::GetEntity => 6,
+            Self::ScanIndex => 7,
+            Self::GetCommit => 8,
+            Self::ScanCommits => 9,
+            Self::TraceProvenance => 10,
+            Self::QueryProjection => 11,
+            Self::GetProjectionStatus => 12,
+            Self::ListPendingOutboxDeliveries => 13,
+            Self::GetHealth => 14,
+        }
+    }
 }
 
 /// One item in the canonical fixed-then-compiled tool catalog.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum CommandToolDiscoveryItem {
     /// One fixed service tool.
-    Fixed(FixedToolCandidate),
+    Fixed(FixedToolKind),
     /// One compiler-owned dynamic command tool.
     Command(Box<CommandToolDescriptor>),
 }
 
-/// One bounded policy-visible command tool page.
+/// Body-free identity of one generated compiler schema.
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct DiscoverCommandToolsResult {
-    page: Page<CommandToolDiscoveryItem, DiscoveryCatalogFence>,
+pub struct GeneratedSchemaIdentity {
+    key: SchemaArtifactKey,
+    schema_hash: SchemaHash,
 }
 
-impl DiscoverCommandToolsResult {
-    /// Checks canonical fixed-tool and compiler-name ordering within this page.
-    pub fn new(
-        page: Page<CommandToolDiscoveryItem, DiscoveryCatalogFence>,
-    ) -> Result<Self, ServiceDtoError> {
-        let mut last_fixed: Option<FixedToolCandidate> = None;
-        let mut last_command: Option<&McpCommandToolNameV1> = None;
-        for item in page.items() {
-            match item {
-                CommandToolDiscoveryItem::Fixed(candidate) if last_command.is_none() => {
-                    if let Some(prior) = last_fixed {
-                        match prior.cmp(candidate) {
-                            std::cmp::Ordering::Less => {}
-                            std::cmp::Ordering::Equal => {
-                                return Err(ServiceDtoError::Duplicate);
-                            }
-                            std::cmp::Ordering::Greater => {
-                                return Err(ServiceDtoError::InvalidShape);
-                            }
-                        }
-                    }
-                    last_fixed = Some(*candidate);
-                }
-                CommandToolDiscoveryItem::Command(descriptor) => {
-                    if let Some(prior) = last_command {
-                        match prior.cmp(descriptor.name()) {
-                            std::cmp::Ordering::Less => {}
-                            std::cmp::Ordering::Equal => {
-                                return Err(ServiceDtoError::Duplicate);
-                            }
-                            std::cmp::Ordering::Greater => {
-                                return Err(ServiceDtoError::InvalidShape);
-                            }
-                        }
-                    }
-                    last_command = Some(descriptor.name());
-                }
-                CommandToolDiscoveryItem::Fixed(_) => {
-                    return Err(ServiceDtoError::InvalidShape);
-                }
-            }
+impl GeneratedSchemaIdentity {
+    /// Projects the exact identity of one checked compiler artifact.
+    #[must_use]
+    pub const fn from_artifact(artifact: &GeneratedSchemaArtifact) -> Self {
+        Self {
+            key: artifact.key(),
+            schema_hash: artifact.hash(),
         }
-        Ok(Self { page })
     }
 
-    /// Borrows the bounded page and its catalog fence.
+    /// Returns the exact typed artifact key.
     #[must_use]
-    pub const fn page(&self) -> &Page<CommandToolDiscoveryItem, DiscoveryCatalogFence> {
-        &self.page
+    pub const fn key(&self) -> SchemaArtifactKey {
+        self.key
+    }
+
+    /// Returns the exact typed schema hash.
+    #[must_use]
+    pub const fn schema_hash(&self) -> SchemaHash {
+        self.schema_hash
+    }
+}
+
+/// Identity-only projection of one dynamic command tool.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct CompactCommandToolDescriptor {
+    name: McpCommandToolNameV1,
+    source_command: SourceName,
+    lineage: ContractLineage,
+    version: ContractVersion,
+    command_id: CommandId,
+    input_schema: GeneratedSchemaIdentity,
+    outcome_schema: GeneratedSchemaIdentity,
+}
+
+impl CompactCommandToolDescriptor {
+    /// Borrows the compiler-owned tool name.
+    #[must_use]
+    pub const fn name(&self) -> &McpCommandToolNameV1 {
+        &self.name
+    }
+    /// Borrows the exact source command.
+    #[must_use]
+    pub const fn source_command(&self) -> &SourceName {
+        &self.source_command
+    }
+    /// Borrows contract lineage.
+    #[must_use]
+    pub const fn lineage(&self) -> &ContractLineage {
+        &self.lineage
+    }
+    /// Returns exact contract version.
+    #[must_use]
+    pub const fn version(&self) -> ContractVersion {
+        self.version
+    }
+    /// Returns stable command ID.
+    #[must_use]
+    pub const fn command_id(&self) -> CommandId {
+        self.command_id
+    }
+    /// Borrows input-schema identity.
+    #[must_use]
+    pub const fn input_schema(&self) -> &GeneratedSchemaIdentity {
+        &self.input_schema
+    }
+    /// Borrows outcome-schema identity.
+    #[must_use]
+    pub const fn outcome_schema(&self) -> &GeneratedSchemaIdentity {
+        &self.outcome_schema
+    }
+}
+
+/// One compact item in canonical fixed-then-compiled order.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum CompactCommandToolDiscoveryItem {
+    /// One fixed service tool.
+    Fixed(FixedToolKind),
+    /// One identity-only dynamic command tool.
+    Command(Box<CompactCommandToolDescriptor>),
+}
+
+impl CommandToolDiscoveryItem {
+    pub(crate) fn compact(&self) -> CompactCommandToolDiscoveryItem {
+        match self {
+            Self::Fixed(candidate) => CompactCommandToolDiscoveryItem::Fixed(*candidate),
+            Self::Command(descriptor) => {
+                CompactCommandToolDiscoveryItem::Command(Box::new(descriptor.compact()))
+            }
+        }
+    }
+
+    /// Returns the exact nonzero fixed-tool presentation tag, when fixed.
+    #[must_use]
+    pub const fn fixed_tool_tag(&self) -> Option<u8> {
+        match self {
+            Self::Fixed(kind) => Some(kind.tag()),
+            Self::Command(_) => None,
+        }
+    }
+}
+
+impl CompactCommandToolDiscoveryItem {
+    /// Returns the exact nonzero fixed-tool presentation tag, when fixed.
+    #[must_use]
+    pub const fn fixed_tool_tag(&self) -> Option<u8> {
+        match self {
+            Self::Fixed(kind) => Some(kind.tag()),
+            Self::Command(_) => None,
+        }
+    }
+}
+
+fn validate_command_tool_order(items: &[CommandToolDiscoveryItem]) -> Result<(), ServiceDtoError> {
+    let mut last_fixed = None;
+    let mut last_command: Option<&McpCommandToolNameV1> = None;
+    for item in items {
+        match item {
+            CommandToolDiscoveryItem::Fixed(fixed) if last_command.is_none() => {
+                if last_fixed.is_some_and(|prior| prior >= *fixed) {
+                    return Err(if last_fixed == Some(*fixed) {
+                        ServiceDtoError::Duplicate
+                    } else {
+                        ServiceDtoError::InvalidShape
+                    });
+                }
+                last_fixed = Some(*fixed);
+            }
+            CommandToolDiscoveryItem::Fixed(_) => return Err(ServiceDtoError::InvalidShape),
+            CommandToolDiscoveryItem::Command(descriptor) => {
+                let name = descriptor.name();
+                if last_command.is_some_and(|prior| prior >= name) {
+                    return Err(if last_command == Some(name) {
+                        ServiceDtoError::Duplicate
+                    } else {
+                        ServiceDtoError::InvalidShape
+                    });
+                }
+                last_command = Some(name);
+            }
+        }
+    }
+    Ok(())
+}
+
+fn validate_compact_command_tool_order(
+    items: &[CompactCommandToolDiscoveryItem],
+) -> Result<(), ServiceDtoError> {
+    let mut last_fixed = None;
+    let mut last_command: Option<&McpCommandToolNameV1> = None;
+    for item in items {
+        match item {
+            CompactCommandToolDiscoveryItem::Fixed(fixed) if last_command.is_none() => {
+                if last_fixed.is_some_and(|prior| prior >= *fixed) {
+                    return Err(if last_fixed == Some(*fixed) {
+                        ServiceDtoError::Duplicate
+                    } else {
+                        ServiceDtoError::InvalidShape
+                    });
+                }
+                last_fixed = Some(*fixed);
+            }
+            CompactCommandToolDiscoveryItem::Fixed(_) => return Err(ServiceDtoError::InvalidShape),
+            CompactCommandToolDiscoveryItem::Command(descriptor) => {
+                let name = descriptor.name();
+                if last_command.is_some_and(|prior| prior >= name) {
+                    return Err(if last_command == Some(name) {
+                        ServiceDtoError::Duplicate
+                    } else {
+                        ServiceDtoError::InvalidShape
+                    });
+                }
+                last_command = Some(name);
+            }
+        }
+    }
+    Ok(())
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+enum DiscoverCommandToolsResultInner {
+    CatalogUnchanged(DiscoveryCatalogFence),
+    Page {
+        page: Page<CommandToolDiscoveryItem, DiscoveryCatalogFence>,
+        operation_schemas: OperationSchemaCatalog,
+    },
+    CompactPage(Page<CompactCommandToolDiscoveryItem, DiscoveryCatalogFence>),
+}
+
+/// Borrowed branch of a checked command-tool discovery result.
+#[derive(Clone, Copy, Debug)]
+pub enum DiscoverCommandToolsResultRef<'a> {
+    /// Equal conditional semantic catalog observation.
+    CatalogUnchanged(&'a DiscoveryCatalogFence),
+    /// Full page with the complete immutable operation catalog.
+    Page {
+        /// Policy-filtered full page.
+        page: &'a Page<CommandToolDiscoveryItem, DiscoveryCatalogFence>,
+        /// Complete operation-schema catalog.
+        operation_schemas: &'a OperationSchemaCatalog,
+    },
+    /// Identity-only compact page.
+    CompactPage(&'a Page<CompactCommandToolDiscoveryItem, DiscoveryCatalogFence>),
+}
+
+/// One checked policy-visible command-tool discovery result.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct DiscoverCommandToolsResult(DiscoverCommandToolsResultInner);
+
+impl DiscoverCommandToolsResult {
+    /// Checks a full page and its complete matching operation catalog.
+    pub fn page(
+        request: &DiscoverCommandToolsRequest,
+        page: Page<CommandToolDiscoveryItem, DiscoveryCatalogFence>,
+        operation_schemas: OperationSchemaCatalog,
+    ) -> Result<Self, ServiceDtoError> {
+        if request.representation != DiscoveryRepresentation::Full
+            || page.observed_fence().operation_schemas() != &operation_schemas.identity()
+            || request.prior_fence.is_some()
+        {
+            return Err(ServiceDtoError::IdentityMismatch);
+        }
+        validate_command_tool_order(page.items())?;
+        Ok(Self(DiscoverCommandToolsResultInner::Page {
+            page,
+            operation_schemas,
+        }))
+    }
+
+    /// Checks an identity-only compact page.
+    pub fn compact_page(
+        request: &DiscoverCommandToolsRequest,
+        page: Page<CompactCommandToolDiscoveryItem, DiscoveryCatalogFence>,
+    ) -> Result<Self, ServiceDtoError> {
+        if request.representation != DiscoveryRepresentation::CompactObservation
+            || request
+                .prior_fence
+                .as_ref()
+                .is_some_and(|prior| prior == page.observed_fence())
+        {
+            return Err(ServiceDtoError::InvalidShape);
+        }
+        validate_compact_command_tool_order(page.items())?;
+        Ok(Self(DiscoverCommandToolsResultInner::CompactPage(page)))
+    }
+
+    /// Checks the conditional equal-catalog branch.
+    pub fn catalog_unchanged(
+        request: &DiscoverCommandToolsRequest,
+        fence: DiscoveryCatalogFence,
+    ) -> Result<Self, ServiceDtoError> {
+        if request.representation != DiscoveryRepresentation::CompactObservation
+            || request.page.cursor().is_some()
+            || request.prior_fence.as_ref() != Some(&fence)
+        {
+            return Err(ServiceDtoError::InvalidShape);
+        }
+        Ok(Self(DiscoverCommandToolsResultInner::CatalogUnchanged(
+            fence,
+        )))
+    }
+
+    /// Borrows the checked result branch.
+    #[must_use]
+    pub const fn result(&self) -> DiscoverCommandToolsResultRef<'_> {
+        match &self.0 {
+            DiscoverCommandToolsResultInner::CatalogUnchanged(fence) => {
+                DiscoverCommandToolsResultRef::CatalogUnchanged(fence)
+            }
+            DiscoverCommandToolsResultInner::Page {
+                page,
+                operation_schemas,
+            } => DiscoverCommandToolsResultRef::Page {
+                page,
+                operation_schemas,
+            },
+            DiscoverCommandToolsResultInner::CompactPage(page) => {
+                DiscoverCommandToolsResultRef::CompactPage(page)
+            }
+        }
     }
 }
 
 /// One bounded page request for policy-filtered semantic resource discovery.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct DiscoverResourcesRequest(PageRequest);
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct DiscoverResourcesRequest {
+    page: PageRequest,
+    representation: DiscoveryRepresentation,
+    prior_fence: Option<DiscoveryCatalogFence>,
+    kind: ResourceDiscoveryKind,
+}
 
 impl DiscoverResourcesRequest {
-    /// Creates one initial or continuation request.
+    /// Creates a full request over the complete inventory.
     #[must_use]
     pub const fn new(page: PageRequest) -> Self {
-        Self(page)
+        Self {
+            page,
+            representation: DiscoveryRepresentation::Full,
+            prior_fence: None,
+            kind: ResourceDiscoveryKind::All,
+        }
+    }
+
+    /// Checks representation, kind, and conditional-observation shape.
+    pub fn with_options(
+        page: PageRequest,
+        representation: DiscoveryRepresentation,
+        prior_fence: Option<DiscoveryCatalogFence>,
+        kind: ResourceDiscoveryKind,
+    ) -> Result<Self, ServiceDtoError> {
+        if prior_fence.is_some()
+            && (page.cursor().is_some()
+                || representation != DiscoveryRepresentation::CompactObservation)
+        {
+            return Err(ServiceDtoError::InvalidShape);
+        }
+        Ok(Self {
+            page,
+            representation,
+            prior_fence,
+            kind,
+        })
     }
 
     /// Returns the checked page request.
     #[must_use]
-    pub const fn page(self) -> PageRequest {
-        self.0
+    pub const fn page(&self) -> PageRequest {
+        self.page
+    }
+    /// Returns the required representation.
+    #[must_use]
+    pub const fn representation(&self) -> DiscoveryRepresentation {
+        self.representation
+    }
+    /// Borrows the optional initial compact semantic prior fence.
+    #[must_use]
+    pub const fn prior_fence(&self) -> Option<&DiscoveryCatalogFence> {
+        self.prior_fence.as_ref()
+    }
+    /// Returns the required inventory kind.
+    #[must_use]
+    pub const fn kind(&self) -> ResourceDiscoveryKind {
+        self.kind
     }
 }
 
 impl Default for DiscoverResourcesRequest {
     fn default() -> Self {
-        Self(PageRequest::new(PageLimit::default(), None))
+        Self::new(PageRequest::new(PageLimit::default(), None))
     }
 }
 
-/// Closed protocol-neutral resource descriptor class.
-#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
-pub enum ResourceDescriptorKind {
-    /// Active contract metadata.
+#[derive(Clone, Debug, Eq, PartialEq)]
+enum ResourceDescriptorInner {
     ActiveContract,
-    /// One immutable contract version.
-    ContractVersion,
-    /// One entity schema.
-    EntitySchema,
-    /// One command plan.
-    CommandPlan,
-    /// Generated command documentation.
-    CommandDocumentation,
-    /// One authorized durable outcome.
-    CommandOutcome,
-    /// One application commit.
-    Commit,
-    /// One durable provenance record.
-    Provenance,
-    /// One projection status.
-    ProjectionStatus,
-    /// Server health.
+    ContractVersion {
+        lineage: ContractLineage,
+        version: ContractVersion,
+    },
+    EntitySchema {
+        lineage: ContractLineage,
+        entity_type_id: EntityTypeId,
+        schema: GeneratedSchemaArtifact,
+    },
+    CommandPlan {
+        lineage: ContractLineage,
+        version: ContractVersion,
+        command_id: CommandId,
+        source_command: SourceName,
+    },
+    CommandDocumentation {
+        lineage: ContractLineage,
+        version: ContractVersion,
+        command_id: CommandId,
+        source_command: SourceName,
+    },
+    CommandOutcome {
+        lineage: ContractLineage,
+        command_id: CommandId,
+        tool_name: McpCommandToolNameV1,
+    },
+    Commit {
+        sequence: Option<CommitSequence>,
+    },
+    Provenance {
+        provenance_id: Option<ProvenanceId>,
+    },
+    ProjectionStatus {
+        lineage: ContractLineage,
+        projection_id: ProjectionId,
+    },
     ServerHealth,
 }
 
-impl ResourceDescriptorKind {
-    const fn canonical_order_tag(self) -> u8 {
-        match self {
-            Self::ActiveContract => 0x01,
-            Self::ContractVersion => 0x02,
-            Self::EntitySchema => 0x03,
-            Self::CommandPlan => 0x04,
-            Self::CommandDocumentation => 0x05,
-            Self::CommandOutcome => 0x06,
-            Self::Commit => 0x07,
-            Self::Provenance => 0x08,
-            Self::ProjectionStatus => 0x09,
-            Self::ServerHealth => 0x0a,
-        }
-    }
+/// Borrowed closed resource descriptor branch.
+#[derive(Clone, Copy, Debug)]
+#[allow(missing_docs)]
+pub enum ResourceDescriptorRef<'a> {
+    ActiveContract,
+    ContractVersion {
+        lineage: &'a ContractLineage,
+        version: ContractVersion,
+    },
+    EntitySchema {
+        lineage: &'a ContractLineage,
+        entity_type_id: EntityTypeId,
+        schema: &'a GeneratedSchemaArtifact,
+    },
+    CommandPlan {
+        lineage: &'a ContractLineage,
+        version: ContractVersion,
+        command_id: CommandId,
+        source_command: &'a SourceName,
+    },
+    CommandDocumentation {
+        lineage: &'a ContractLineage,
+        version: ContractVersion,
+        command_id: CommandId,
+        source_command: &'a SourceName,
+    },
+    CommandOutcome {
+        lineage: &'a ContractLineage,
+        command_id: CommandId,
+        tool_name: &'a McpCommandToolNameV1,
+    },
+    Commit {
+        sequence: Option<CommitSequence>,
+    },
+    Provenance {
+        provenance_id: Option<ProvenanceId>,
+    },
+    ProjectionStatus {
+        lineage: &'a ContractLineage,
+        projection_id: ProjectionId,
+    },
+    ServerHealth,
 }
 
 /// One protocol-neutral visible resource identity.
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct ResourceDescriptor {
-    kind: ResourceDescriptorKind,
-    target: Option<ServiceAuditTargetV1>,
-    schema: Option<GeneratedSchemaArtifact>,
-}
+pub struct ResourceDescriptor(ResourceDescriptorInner);
 
 impl ResourceDescriptor {
-    /// Creates the singleton active-contract resource candidate.
+    /// Creates the singleton active-contract resource.
     #[must_use]
     pub const fn active_contract() -> Self {
-        Self {
-            kind: ResourceDescriptorKind::ActiveContract,
-            target: None,
-            schema: None,
-        }
+        Self(ResourceDescriptorInner::ActiveContract)
     }
-    /// Creates one immutable contract-version resource candidate.
+    /// Creates one exact immutable contract-version resource.
     #[must_use]
     pub const fn contract_version(lineage: ContractLineage, version: ContractVersion) -> Self {
-        Self::targeted(
-            ResourceDescriptorKind::ContractVersion,
-            ServiceAuditTargetV1::ContractVersion { lineage, version },
-        )
+        Self(ResourceDescriptorInner::ContractVersion { lineage, version })
     }
-    /// Creates one entity-schema candidate with its exact compiler artifact.
+    /// Checks and creates one entity-schema resource.
     pub fn entity_schema(
         lineage: ContractLineage,
         entity_type_id: EntityTypeId,
@@ -5443,163 +6721,714 @@ impl ResourceDescriptor {
         if schema.key() != SchemaArtifactKey::Entity(entity_type_id) {
             return Err(ServiceDtoError::IdentityMismatch);
         }
-        Ok(Self {
-            kind: ResourceDescriptorKind::EntitySchema,
-            target: Some(ServiceAuditTargetV1::EntityType {
-                lineage,
-                entity_type_id,
-            }),
-            schema: Some(schema),
+        Ok(Self(ResourceDescriptorInner::EntitySchema {
+            lineage,
+            entity_type_id,
+            schema,
+        }))
+    }
+    /// Creates one self-contained command-plan resource.
+    #[must_use]
+    pub const fn command_plan(
+        lineage: ContractLineage,
+        version: ContractVersion,
+        command_id: CommandId,
+        source_command: SourceName,
+    ) -> Self {
+        Self(ResourceDescriptorInner::CommandPlan {
+            lineage,
+            version,
+            command_id,
+            source_command,
         })
     }
-    /// Creates one generated command-plan resource candidate.
+    /// Creates one self-contained command-documentation resource.
     #[must_use]
-    pub const fn command_plan(lineage: ContractLineage, command_id: CommandId) -> Self {
-        Self::command_target(ResourceDescriptorKind::CommandPlan, lineage, command_id)
-    }
-    /// Creates one generated command-documentation resource candidate.
-    #[must_use]
-    pub const fn command_documentation(lineage: ContractLineage, command_id: CommandId) -> Self {
-        Self::command_target(
-            ResourceDescriptorKind::CommandDocumentation,
+    pub const fn command_documentation(
+        lineage: ContractLineage,
+        version: ContractVersion,
+        command_id: CommandId,
+        source_command: SourceName,
+    ) -> Self {
+        Self(ResourceDescriptorInner::CommandDocumentation {
             lineage,
+            version,
             command_id,
-        )
+            source_command,
+        })
     }
-    /// Creates one authorized durable-outcome resource candidate.
-    #[must_use]
-    pub const fn command_outcome(lineage: ContractLineage, command_id: CommandId) -> Self {
-        Self::command_target(ResourceDescriptorKind::CommandOutcome, lineage, command_id)
-    }
-    /// Creates the discoverable application-commit resource class.
-    #[must_use]
-    pub const fn commit_class() -> Self {
-        Self::untargeted(ResourceDescriptorKind::Commit)
-    }
-    /// Creates one application-commit resource candidate.
-    #[must_use]
-    pub const fn commit(sequence: CommitSequence) -> Self {
-        Self::targeted(
-            ResourceDescriptorKind::Commit,
-            ServiceAuditTargetV1::Commit(sequence),
-        )
-    }
-    /// Creates the discoverable durable-provenance resource class.
-    #[must_use]
-    pub const fn provenance_class() -> Self {
-        Self::untargeted(ResourceDescriptorKind::Provenance)
-    }
-    /// Creates one durable-provenance resource candidate.
-    #[must_use]
-    pub const fn provenance(provenance_id: ProvenanceId) -> Self {
-        Self::targeted(
-            ResourceDescriptorKind::Provenance,
-            ServiceAuditTargetV1::Provenance(provenance_id),
-        )
-    }
-    /// Creates one projection-status resource candidate.
-    #[must_use]
-    pub const fn projection_status(lineage: ContractLineage, projection_id: ProjectionId) -> Self {
-        Self::targeted(
-            ResourceDescriptorKind::ProjectionStatus,
-            ServiceAuditTargetV1::Projection {
-                lineage,
-                projection_id,
-            },
-        )
-    }
-    /// Creates the singleton server-health resource candidate.
-    #[must_use]
-    pub const fn server_health() -> Self {
-        Self {
-            kind: ResourceDescriptorKind::ServerHealth,
-            target: None,
-            schema: None,
-        }
-    }
-    /// Returns the closed resource class.
-    #[must_use]
-    pub const fn kind(&self) -> ResourceDescriptorKind {
-        self.kind
-    }
-    /// Borrows its semantic target, when object-scoped.
-    #[must_use]
-    pub const fn target(&self) -> Option<&ServiceAuditTargetV1> {
-        self.target.as_ref()
-    }
-    /// Borrows a compiler-owned schema artifact, when applicable.
-    #[must_use]
-    pub const fn schema(&self) -> Option<&GeneratedSchemaArtifact> {
-        self.schema.as_ref()
-    }
-
-    const fn command_target(
-        kind: ResourceDescriptorKind,
+    /// Creates one compiler-name-bound outcome resource template.
+    pub fn command_outcome(
         lineage: ContractLineage,
         command_id: CommandId,
-    ) -> Self {
-        Self::targeted(
-            kind,
-            ServiceAuditTargetV1::Command {
-                lineage,
-                command_id,
-            },
-        )
+        tool_name: McpCommandToolNameV1,
+    ) -> Result<Self, ServiceDtoError> {
+        let source_command = tool_name
+            .as_str()
+            .rsplit_once('.')
+            .map(|(_, source_command)| source_command)
+            .ok_or(ServiceDtoError::IdentityMismatch)?;
+        McpCommandToolNameV1::new_checked(lineage.as_str(), source_command, tool_name.as_str())
+            .map_err(|_| ServiceDtoError::IdentityMismatch)?;
+        Ok(Self(ResourceDescriptorInner::CommandOutcome {
+            lineage,
+            command_id,
+            tool_name,
+        }))
+    }
+    /// Creates the commit class template.
+    #[must_use]
+    pub const fn commit_class() -> Self {
+        Self(ResourceDescriptorInner::Commit { sequence: None })
+    }
+    /// Creates one concrete commit resource.
+    #[must_use]
+    pub const fn commit(sequence: CommitSequence) -> Self {
+        Self(ResourceDescriptorInner::Commit {
+            sequence: Some(sequence),
+        })
+    }
+    /// Creates the provenance class template.
+    #[must_use]
+    pub const fn provenance_class() -> Self {
+        Self(ResourceDescriptorInner::Provenance {
+            provenance_id: None,
+        })
+    }
+    /// Creates one concrete provenance resource.
+    #[must_use]
+    pub const fn provenance(provenance_id: ProvenanceId) -> Self {
+        Self(ResourceDescriptorInner::Provenance {
+            provenance_id: Some(provenance_id),
+        })
+    }
+    /// Creates one projection-status resource.
+    #[must_use]
+    pub const fn projection_status(lineage: ContractLineage, projection_id: ProjectionId) -> Self {
+        Self(ResourceDescriptorInner::ProjectionStatus {
+            lineage,
+            projection_id,
+        })
+    }
+    /// Creates the singleton server-health resource.
+    #[must_use]
+    pub const fn server_health() -> Self {
+        Self(ResourceDescriptorInner::ServerHealth)
     }
 
-    const fn targeted(kind: ResourceDescriptorKind, target: ServiceAuditTargetV1) -> Self {
-        Self {
-            kind,
-            target: Some(target),
-            schema: None,
+    /// Borrows the exact closed semantic branch.
+    #[must_use]
+    pub const fn resource(&self) -> ResourceDescriptorRef<'_> {
+        match &self.0 {
+            ResourceDescriptorInner::ActiveContract => ResourceDescriptorRef::ActiveContract,
+            ResourceDescriptorInner::ContractVersion { lineage, version } => {
+                ResourceDescriptorRef::ContractVersion {
+                    lineage,
+                    version: *version,
+                }
+            }
+            ResourceDescriptorInner::EntitySchema {
+                lineage,
+                entity_type_id,
+                schema,
+            } => ResourceDescriptorRef::EntitySchema {
+                lineage,
+                entity_type_id: *entity_type_id,
+                schema,
+            },
+            ResourceDescriptorInner::CommandPlan {
+                lineage,
+                version,
+                command_id,
+                source_command,
+            } => ResourceDescriptorRef::CommandPlan {
+                lineage,
+                version: *version,
+                command_id: *command_id,
+                source_command,
+            },
+            ResourceDescriptorInner::CommandDocumentation {
+                lineage,
+                version,
+                command_id,
+                source_command,
+            } => ResourceDescriptorRef::CommandDocumentation {
+                lineage,
+                version: *version,
+                command_id: *command_id,
+                source_command,
+            },
+            ResourceDescriptorInner::CommandOutcome {
+                lineage,
+                command_id,
+                tool_name,
+            } => ResourceDescriptorRef::CommandOutcome {
+                lineage,
+                command_id: *command_id,
+                tool_name,
+            },
+            ResourceDescriptorInner::Commit { sequence } => ResourceDescriptorRef::Commit {
+                sequence: *sequence,
+            },
+            ResourceDescriptorInner::Provenance { provenance_id } => {
+                ResourceDescriptorRef::Provenance {
+                    provenance_id: *provenance_id,
+                }
+            }
+            ResourceDescriptorInner::ProjectionStatus {
+                lineage,
+                projection_id,
+            } => ResourceDescriptorRef::ProjectionStatus {
+                lineage,
+                projection_id: *projection_id,
+            },
+            ResourceDescriptorInner::ServerHealth => ResourceDescriptorRef::ServerHealth,
         }
     }
 
-    const fn untargeted(kind: ResourceDescriptorKind) -> Self {
-        Self {
-            kind,
-            target: None,
-            schema: None,
+    pub(crate) const fn matches_discovery_kind(&self, kind: ResourceDiscoveryKind) -> bool {
+        let template = matches!(
+            self.0,
+            ResourceDescriptorInner::CommandOutcome { .. }
+                | ResourceDescriptorInner::Commit { sequence: None }
+                | ResourceDescriptorInner::Provenance {
+                    provenance_id: None
+                }
+        );
+        match kind {
+            ResourceDiscoveryKind::All => true,
+            ResourceDiscoveryKind::Concrete => !template,
+            ResourceDiscoveryKind::Template => template,
         }
     }
 
     pub(crate) fn canonical_identity_key(&self) -> Vec<u8> {
-        let mut key = vec![self.kind.canonical_order_tag()];
-        if let Some(target) = &self.target {
-            key.extend_from_slice(&target.canonical_key());
+        let mut key = Vec::new();
+        match &self.0 {
+            ResourceDescriptorInner::ActiveContract => key.push(1),
+            ResourceDescriptorInner::ContractVersion { lineage, version } => {
+                key.push(2);
+                key.extend_from_slice(lineage.as_bytes());
+                key.extend_from_slice(&version.to_be_bytes());
+            }
+            ResourceDescriptorInner::EntitySchema {
+                lineage,
+                entity_type_id,
+                ..
+            } => {
+                key.push(3);
+                key.extend_from_slice(lineage.as_bytes());
+                key.extend_from_slice(&entity_type_id.to_be_bytes());
+            }
+            ResourceDescriptorInner::CommandPlan {
+                lineage,
+                version,
+                command_id,
+                source_command,
+            } => {
+                key.push(4);
+                append_command_resource_key(
+                    &mut key,
+                    lineage,
+                    *version,
+                    *command_id,
+                    source_command,
+                );
+            }
+            ResourceDescriptorInner::CommandDocumentation {
+                lineage,
+                version,
+                command_id,
+                source_command,
+            } => {
+                key.push(5);
+                append_command_resource_key(
+                    &mut key,
+                    lineage,
+                    *version,
+                    *command_id,
+                    source_command,
+                );
+            }
+            ResourceDescriptorInner::CommandOutcome {
+                lineage,
+                command_id,
+                tool_name,
+            } => {
+                key.push(6);
+                key.extend_from_slice(lineage.as_bytes());
+                key.extend_from_slice(&command_id.to_be_bytes());
+                key.extend_from_slice(tool_name.as_str().as_bytes());
+            }
+            ResourceDescriptorInner::Commit { sequence } => {
+                key.push(7);
+                if let Some(sequence) = sequence {
+                    key.extend_from_slice(&sequence.to_be_bytes());
+                }
+            }
+            ResourceDescriptorInner::Provenance { provenance_id } => {
+                key.push(8);
+                if let Some(id) = provenance_id {
+                    key.extend_from_slice(id.as_bytes());
+                }
+            }
+            ResourceDescriptorInner::ProjectionStatus {
+                lineage,
+                projection_id,
+            } => {
+                key.push(9);
+                key.extend_from_slice(lineage.as_bytes());
+                key.extend_from_slice(&projection_id.to_be_bytes());
+            }
+            ResourceDescriptorInner::ServerHealth => key.push(10),
         }
         key
     }
+
+    pub(crate) fn compact(&self) -> CompactResourceDescriptor {
+        CompactResourceDescriptor(match &self.0 {
+            ResourceDescriptorInner::ActiveContract => {
+                CompactResourceDescriptorInner::ActiveContract
+            }
+            ResourceDescriptorInner::ContractVersion { lineage, version } => {
+                CompactResourceDescriptorInner::ContractVersion {
+                    lineage: lineage.clone(),
+                    version: *version,
+                }
+            }
+            ResourceDescriptorInner::EntitySchema {
+                lineage,
+                entity_type_id,
+                schema,
+            } => CompactResourceDescriptorInner::EntitySchema {
+                lineage: lineage.clone(),
+                entity_type_id: *entity_type_id,
+                schema: GeneratedSchemaIdentity::from_artifact(schema),
+            },
+            ResourceDescriptorInner::CommandPlan {
+                lineage,
+                version,
+                command_id,
+                source_command,
+            } => CompactResourceDescriptorInner::CommandPlan {
+                lineage: lineage.clone(),
+                version: *version,
+                command_id: *command_id,
+                source_command: source_command.clone(),
+            },
+            ResourceDescriptorInner::CommandDocumentation {
+                lineage,
+                version,
+                command_id,
+                source_command,
+            } => CompactResourceDescriptorInner::CommandDocumentation {
+                lineage: lineage.clone(),
+                version: *version,
+                command_id: *command_id,
+                source_command: source_command.clone(),
+            },
+            ResourceDescriptorInner::CommandOutcome {
+                lineage,
+                command_id,
+                tool_name,
+            } => CompactResourceDescriptorInner::CommandOutcome {
+                lineage: lineage.clone(),
+                command_id: *command_id,
+                tool_name: tool_name.clone(),
+            },
+            ResourceDescriptorInner::Commit { sequence } => {
+                CompactResourceDescriptorInner::Commit {
+                    sequence: *sequence,
+                }
+            }
+            ResourceDescriptorInner::Provenance { provenance_id } => {
+                CompactResourceDescriptorInner::Provenance {
+                    provenance_id: *provenance_id,
+                }
+            }
+            ResourceDescriptorInner::ProjectionStatus {
+                lineage,
+                projection_id,
+            } => CompactResourceDescriptorInner::ProjectionStatus {
+                lineage: lineage.clone(),
+                projection_id: *projection_id,
+            },
+            ResourceDescriptorInner::ServerHealth => CompactResourceDescriptorInner::ServerHealth,
+        })
+    }
 }
 
-/// Bounded policy-visible resource page.
+fn append_command_resource_key(
+    key: &mut Vec<u8>,
+    lineage: &ContractLineage,
+    version: ContractVersion,
+    command_id: CommandId,
+    source_command: &SourceName,
+) {
+    key.extend_from_slice(lineage.as_bytes());
+    key.extend_from_slice(&version.to_be_bytes());
+    key.extend_from_slice(&command_id.to_be_bytes());
+    key.extend_from_slice(source_command.as_str().as_bytes());
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct DiscoverResourcesResult {
-    page: Page<ResourceDescriptor, DiscoveryCatalogFence>,
+enum CompactResourceDescriptorInner {
+    ActiveContract,
+    ContractVersion {
+        lineage: ContractLineage,
+        version: ContractVersion,
+    },
+    EntitySchema {
+        lineage: ContractLineage,
+        entity_type_id: EntityTypeId,
+        schema: GeneratedSchemaIdentity,
+    },
+    CommandPlan {
+        lineage: ContractLineage,
+        version: ContractVersion,
+        command_id: CommandId,
+        source_command: SourceName,
+    },
+    CommandDocumentation {
+        lineage: ContractLineage,
+        version: ContractVersion,
+        command_id: CommandId,
+        source_command: SourceName,
+    },
+    CommandOutcome {
+        lineage: ContractLineage,
+        command_id: CommandId,
+        tool_name: McpCommandToolNameV1,
+    },
+    Commit {
+        sequence: Option<CommitSequence>,
+    },
+    Provenance {
+        provenance_id: Option<ProvenanceId>,
+    },
+    ProjectionStatus {
+        lineage: ContractLineage,
+        projection_id: ProjectionId,
+    },
+    ServerHealth,
 }
 
-impl DiscoverResourcesResult {
-    /// Checks canonical ordering and rejects duplicate resource identities.
-    pub fn new(
-        page: Page<ResourceDescriptor, DiscoveryCatalogFence>,
-    ) -> Result<Self, ServiceDtoError> {
-        for pair in page.items().windows(2) {
-            match pair[0]
-                .canonical_identity_key()
-                .cmp(&pair[1].canonical_identity_key())
-            {
-                std::cmp::Ordering::Less => {}
-                std::cmp::Ordering::Equal => return Err(ServiceDtoError::Duplicate),
-                std::cmp::Ordering::Greater => return Err(ServiceDtoError::InvalidShape),
+/// Borrowed closed compact resource descriptor branch.
+#[derive(Clone, Copy, Debug)]
+#[allow(missing_docs)]
+pub enum CompactResourceDescriptorRef<'a> {
+    ActiveContract,
+    ContractVersion {
+        lineage: &'a ContractLineage,
+        version: ContractVersion,
+    },
+    EntitySchema {
+        lineage: &'a ContractLineage,
+        entity_type_id: EntityTypeId,
+        schema: &'a GeneratedSchemaIdentity,
+    },
+    CommandPlan {
+        lineage: &'a ContractLineage,
+        version: ContractVersion,
+        command_id: CommandId,
+        source_command: &'a SourceName,
+    },
+    CommandDocumentation {
+        lineage: &'a ContractLineage,
+        version: ContractVersion,
+        command_id: CommandId,
+        source_command: &'a SourceName,
+    },
+    CommandOutcome {
+        lineage: &'a ContractLineage,
+        command_id: CommandId,
+        tool_name: &'a McpCommandToolNameV1,
+    },
+    Commit {
+        sequence: Option<CommitSequence>,
+    },
+    Provenance {
+        provenance_id: Option<ProvenanceId>,
+    },
+    ProjectionStatus {
+        lineage: &'a ContractLineage,
+        projection_id: ProjectionId,
+    },
+    ServerHealth,
+}
+
+/// Identity-only projection of one resource descriptor.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct CompactResourceDescriptor(CompactResourceDescriptorInner);
+
+impl CompactResourceDescriptor {
+    /// Borrows the exact closed identity-only semantic branch.
+    #[must_use]
+    pub const fn resource(&self) -> CompactResourceDescriptorRef<'_> {
+        match &self.0 {
+            CompactResourceDescriptorInner::ActiveContract => {
+                CompactResourceDescriptorRef::ActiveContract
+            }
+            CompactResourceDescriptorInner::ContractVersion { lineage, version } => {
+                CompactResourceDescriptorRef::ContractVersion {
+                    lineage,
+                    version: *version,
+                }
+            }
+            CompactResourceDescriptorInner::EntitySchema {
+                lineage,
+                entity_type_id,
+                schema,
+            } => CompactResourceDescriptorRef::EntitySchema {
+                lineage,
+                entity_type_id: *entity_type_id,
+                schema,
+            },
+            CompactResourceDescriptorInner::CommandPlan {
+                lineage,
+                version,
+                command_id,
+                source_command,
+            } => CompactResourceDescriptorRef::CommandPlan {
+                lineage,
+                version: *version,
+                command_id: *command_id,
+                source_command,
+            },
+            CompactResourceDescriptorInner::CommandDocumentation {
+                lineage,
+                version,
+                command_id,
+                source_command,
+            } => CompactResourceDescriptorRef::CommandDocumentation {
+                lineage,
+                version: *version,
+                command_id: *command_id,
+                source_command,
+            },
+            CompactResourceDescriptorInner::CommandOutcome {
+                lineage,
+                command_id,
+                tool_name,
+            } => CompactResourceDescriptorRef::CommandOutcome {
+                lineage,
+                command_id: *command_id,
+                tool_name,
+            },
+            CompactResourceDescriptorInner::Commit { sequence } => {
+                CompactResourceDescriptorRef::Commit {
+                    sequence: *sequence,
+                }
+            }
+            CompactResourceDescriptorInner::Provenance { provenance_id } => {
+                CompactResourceDescriptorRef::Provenance {
+                    provenance_id: *provenance_id,
+                }
+            }
+            CompactResourceDescriptorInner::ProjectionStatus {
+                lineage,
+                projection_id,
+            } => CompactResourceDescriptorRef::ProjectionStatus {
+                lineage,
+                projection_id: *projection_id,
+            },
+            CompactResourceDescriptorInner::ServerHealth => {
+                CompactResourceDescriptorRef::ServerHealth
             }
         }
-        Ok(Self { page })
     }
 
-    /// Borrows the bounded page and its catalog fence.
+    const fn matches_discovery_kind(&self, kind: ResourceDiscoveryKind) -> bool {
+        let template = matches!(
+            self.0,
+            CompactResourceDescriptorInner::CommandOutcome { .. }
+                | CompactResourceDescriptorInner::Commit { sequence: None }
+                | CompactResourceDescriptorInner::Provenance {
+                    provenance_id: None
+                }
+        );
+        match kind {
+            ResourceDiscoveryKind::All => true,
+            ResourceDiscoveryKind::Concrete => !template,
+            ResourceDiscoveryKind::Template => template,
+        }
+    }
+
+    fn canonical_identity_key(&self) -> Vec<u8> {
+        ResourceDescriptor(match &self.0 {
+            CompactResourceDescriptorInner::ActiveContract => {
+                ResourceDescriptorInner::ActiveContract
+            }
+            CompactResourceDescriptorInner::ContractVersion { lineage, version } => {
+                ResourceDescriptorInner::ContractVersion {
+                    lineage: lineage.clone(),
+                    version: *version,
+                }
+            }
+            CompactResourceDescriptorInner::EntitySchema {
+                lineage,
+                entity_type_id,
+                ..
+            } => {
+                let mut key = vec![3];
+                key.extend_from_slice(lineage.as_bytes());
+                key.extend_from_slice(&entity_type_id.to_be_bytes());
+                return key;
+            }
+            CompactResourceDescriptorInner::CommandPlan {
+                lineage,
+                version,
+                command_id,
+                source_command,
+            } => ResourceDescriptorInner::CommandPlan {
+                lineage: lineage.clone(),
+                version: *version,
+                command_id: *command_id,
+                source_command: source_command.clone(),
+            },
+            CompactResourceDescriptorInner::CommandDocumentation {
+                lineage,
+                version,
+                command_id,
+                source_command,
+            } => ResourceDescriptorInner::CommandDocumentation {
+                lineage: lineage.clone(),
+                version: *version,
+                command_id: *command_id,
+                source_command: source_command.clone(),
+            },
+            CompactResourceDescriptorInner::CommandOutcome {
+                lineage,
+                command_id,
+                tool_name,
+            } => ResourceDescriptorInner::CommandOutcome {
+                lineage: lineage.clone(),
+                command_id: *command_id,
+                tool_name: tool_name.clone(),
+            },
+            CompactResourceDescriptorInner::Commit { sequence } => {
+                ResourceDescriptorInner::Commit {
+                    sequence: *sequence,
+                }
+            }
+            CompactResourceDescriptorInner::Provenance { provenance_id } => {
+                ResourceDescriptorInner::Provenance {
+                    provenance_id: *provenance_id,
+                }
+            }
+            CompactResourceDescriptorInner::ProjectionStatus {
+                lineage,
+                projection_id,
+            } => ResourceDescriptorInner::ProjectionStatus {
+                lineage: lineage.clone(),
+                projection_id: *projection_id,
+            },
+            CompactResourceDescriptorInner::ServerHealth => ResourceDescriptorInner::ServerHealth,
+        })
+        .canonical_identity_key()
+    }
+}
+
+fn validate_resource_order<T>(
+    items: &[T],
+    key: impl Fn(&T) -> Vec<u8>,
+) -> Result<(), ServiceDtoError> {
+    for pair in items.windows(2) {
+        match key(&pair[0]).cmp(&key(&pair[1])) {
+            std::cmp::Ordering::Less => {}
+            std::cmp::Ordering::Equal => return Err(ServiceDtoError::Duplicate),
+            std::cmp::Ordering::Greater => return Err(ServiceDtoError::InvalidShape),
+        }
+    }
+    Ok(())
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+enum DiscoverResourcesResultInner {
+    CatalogUnchanged(DiscoveryCatalogFence),
+    Page(Page<ResourceDescriptor, DiscoveryCatalogFence>),
+    CompactPage(Page<CompactResourceDescriptor, DiscoveryCatalogFence>),
+}
+
+/// Borrowed branch of a checked resource discovery result.
+#[derive(Clone, Copy, Debug)]
+#[allow(missing_docs)]
+pub enum DiscoverResourcesResultRef<'a> {
+    CatalogUnchanged(&'a DiscoveryCatalogFence),
+    Page(&'a Page<ResourceDescriptor, DiscoveryCatalogFence>),
+    CompactPage(&'a Page<CompactResourceDescriptor, DiscoveryCatalogFence>),
+}
+
+/// One checked policy-visible resource discovery result.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct DiscoverResourcesResult(DiscoverResourcesResultInner);
+
+impl DiscoverResourcesResult {
+    /// Checks a full resource page against request representation and kind.
+    pub fn page(
+        request: &DiscoverResourcesRequest,
+        page: Page<ResourceDescriptor, DiscoveryCatalogFence>,
+    ) -> Result<Self, ServiceDtoError> {
+        if request.representation != DiscoveryRepresentation::Full
+            || request.prior_fence.is_some()
+            || page
+                .items()
+                .iter()
+                .any(|item| !item.matches_discovery_kind(request.kind))
+        {
+            return Err(ServiceDtoError::InvalidShape);
+        }
+        validate_resource_order(page.items(), ResourceDescriptor::canonical_identity_key)?;
+        Ok(Self(DiscoverResourcesResultInner::Page(page)))
+    }
+    /// Checks an identity-only compact resource page.
+    pub fn compact_page(
+        request: &DiscoverResourcesRequest,
+        page: Page<CompactResourceDescriptor, DiscoveryCatalogFence>,
+    ) -> Result<Self, ServiceDtoError> {
+        if request.representation != DiscoveryRepresentation::CompactObservation
+            || request
+                .prior_fence
+                .as_ref()
+                .is_some_and(|prior| prior == page.observed_fence())
+            || page
+                .items()
+                .iter()
+                .any(|item| !item.matches_discovery_kind(request.kind))
+        {
+            return Err(ServiceDtoError::InvalidShape);
+        }
+        validate_resource_order(
+            page.items(),
+            CompactResourceDescriptor::canonical_identity_key,
+        )?;
+        Ok(Self(DiscoverResourcesResultInner::CompactPage(page)))
+    }
+    /// Checks an equal conditional semantic-catalog observation.
+    pub fn catalog_unchanged(
+        request: &DiscoverResourcesRequest,
+        fence: DiscoveryCatalogFence,
+    ) -> Result<Self, ServiceDtoError> {
+        if request.representation != DiscoveryRepresentation::CompactObservation
+            || request.page.cursor().is_some()
+            || request.prior_fence.as_ref() != Some(&fence)
+        {
+            return Err(ServiceDtoError::InvalidShape);
+        }
+        Ok(Self(DiscoverResourcesResultInner::CatalogUnchanged(fence)))
+    }
+    /// Borrows the checked result branch.
     #[must_use]
-    pub const fn page(&self) -> &Page<ResourceDescriptor, DiscoveryCatalogFence> {
-        &self.page
+    pub const fn result(&self) -> DiscoverResourcesResultRef<'_> {
+        match &self.0 {
+            DiscoverResourcesResultInner::CatalogUnchanged(fence) => {
+                DiscoverResourcesResultRef::CatalogUnchanged(fence)
+            }
+            DiscoverResourcesResultInner::Page(page) => DiscoverResourcesResultRef::Page(page),
+            DiscoverResourcesResultInner::CompactPage(page) => {
+                DiscoverResourcesResultRef::CompactPage(page)
+            }
+        }
     }
 }
 
@@ -5685,9 +7514,21 @@ impl ServiceRequestCharge for ExecuteCommandRequest {
 impl ServiceRequestCharge for ResolveCommandOutcomeRequest {
     fn structural_charge(&self) -> Result<usize, ServiceDtoError> {
         let mut charge = RequestCharge::default();
-        charge.add_framed_bytes(self.lineage.as_bytes().len())?;
-        charge.add_framed_bytes(self.command.as_str().len())?;
-        charge.add_framed_bytes(self.idempotency_key.expose_secret().len())?;
+        charge.add(STRUCTURAL_ENUM_TAG_BYTES)?;
+        match self.selector() {
+            ResolveCommandOutcomeSelectorRef::RawKey {
+                lineage,
+                source_command,
+                idempotency_key,
+            } => {
+                charge.add_framed_bytes(lineage.as_bytes().len())?;
+                charge.add_framed_bytes(source_command.as_str().len())?;
+                charge.add_framed_bytes(idempotency_key.expose_secret().len())?;
+            }
+            ResolveCommandOutcomeSelectorRef::Locator(locator) => {
+                charge.add_framed_bytes(locator.canonical_uri().len())?;
+            }
+        }
         Ok(charge.finish())
     }
 }
@@ -5825,7 +7666,12 @@ impl ServiceRequestCharge for ListPendingOutboxDeliveriesRequest {
 impl ServiceRequestCharge for DiscoverCommandToolsRequest {
     fn structural_charge(&self) -> Result<usize, ServiceDtoError> {
         let mut charge = RequestCharge::default();
-        charge.add_page(self.0)?;
+        charge.add_page(self.page)?;
+        charge.add(STRUCTURAL_ENUM_TAG_BYTES)?;
+        charge.add(STRUCTURAL_OPTION_BYTES)?;
+        if let Some(fence) = &self.prior_fence {
+            charge.add_discovery_fence(fence)?;
+        }
         Ok(charge.finish())
     }
 }
@@ -5833,7 +7679,13 @@ impl ServiceRequestCharge for DiscoverCommandToolsRequest {
 impl ServiceRequestCharge for DiscoverResourcesRequest {
     fn structural_charge(&self) -> Result<usize, ServiceDtoError> {
         let mut charge = RequestCharge::default();
-        charge.add_page(self.0)?;
+        charge.add_page(self.page)?;
+        charge.add(STRUCTURAL_ENUM_TAG_BYTES)?;
+        charge.add(STRUCTURAL_ENUM_TAG_BYTES)?;
+        charge.add(STRUCTURAL_OPTION_BYTES)?;
+        if let Some(fence) = &self.prior_fence {
+            charge.add_discovery_fence(fence)?;
+        }
         Ok(charge.finish())
     }
 }
@@ -6428,18 +8280,82 @@ contract OutcomeShapes version 1 {
             Err(ServiceDtoError::InvalidShape)
         );
 
+        let name = bundle
+            .bundle()
+            .mcp_command_names()
+            .get(change.command_id())
+            .expect("fixture command name");
+        let locator = OutcomeResourceLocator::mint(
+            ActorId::new("fixture-principal").expect("bounded principal"),
+            bundle.lineage().clone(),
+            change.command_id(),
+            name.tool_name(),
+            OutcomeLocatorDigestEvidence::new(
+                DIGEST_SCHEME_V1,
+                DigestKeyId::new(7).expect("nonzero digest key"),
+                [0x5a; 32],
+            )
+            .expect("v1 digest evidence"),
+        )
+        .expect("canonical outcome locator");
+
         let committed = JournaledCommandResult::new(
             JournaledCompletion::Committed,
             CommitSequence::first(),
             declared,
             ProvenanceId::from_bytes(fixture_uuid_v7(0x41)).expect("UUIDv7 provenance"),
             CommandDurability::Synchronous,
+            locator,
         )
         .expect("journaled mutation result");
         assert_eq!(
             RecoveredJournaledCommandResult::new(committed),
             Err(ServiceDtoError::InvalidShape)
         );
+    }
+
+    #[test]
+    fn every_authoritative_outcome_state_carries_exact_locator_digest_evidence() {
+        let mut partition = PartitionKeyBuilder::new(AggregateTypeId::first());
+        partition.push_u64(7).expect("bounded partition component");
+        let digest = OutcomeLocatorDigestEvidence::new(
+            DIGEST_SCHEME_V1,
+            DigestKeyId::new(3).expect("nonzero digest key"),
+            [0x5a; 32],
+        )
+        .expect("v1 digest evidence");
+        let facts = AuthoritativeOutcomeFacts::new(
+            ContractLineage::new("outcome-state").expect("bounded lineage"),
+            ContractVersion::new(1).expect("nonzero contract version"),
+            ContractBundleHash::from_bytes([0x11; 32]),
+            CommandId::first(),
+            PlanHash::from_bytes([0x22; 32]),
+            ActorId::new("fixture-principal").expect("bounded principal"),
+            TenantScope::Global,
+            partition.finish().expect("bounded partition key"),
+            digest.clone(),
+        );
+        let states = [
+            AuthoritativeOutcomeSnapshot::Pending(facts.clone()),
+            AuthoritativeOutcomeSnapshot::journaled(
+                facts.clone(),
+                AuthoritativeJournaledOutcome::new(
+                    CommitSequence::first(),
+                    OutcomeId::first(),
+                    CanonicalRecord::new(Vec::new()).expect("empty canonical record"),
+                    ProvenanceId::from_bytes(fixture_uuid_v7(0x41)).expect("UUIDv7 provenance"),
+                    CommandDurability::Synchronous,
+                ),
+            ),
+            AuthoritativeOutcomeSnapshot::ExecutionFailed {
+                facts,
+                code: riffdb_types::ExecutionFailureCode::ArithmeticFault,
+            },
+        ];
+
+        for state in states {
+            assert_eq!(state.facts().locator_digest(), &digest);
+        }
     }
 
     #[test]
@@ -6665,22 +8581,27 @@ contract OutcomeShapes version 1 {
             entity_schema_artifact(entity_type_id),
         )
         .expect("matching schema identity");
-        assert_eq!(entity.kind(), ResourceDescriptorKind::EntitySchema);
         assert!(matches!(
-            entity.target(),
-            Some(ServiceAuditTargetV1::EntityType {
+            entity.resource(),
+            ResourceDescriptorRef::EntitySchema {
                 lineage: target_lineage,
                 entity_type_id: target_id,
-            }) if target_lineage == &lineage && *target_id == entity_type_id
+                schema: _,
+            } if target_lineage == &lineage && target_id == entity_type_id
         ));
-        assert!(entity.schema().is_some());
 
         let commit_class = ResourceDescriptor::commit_class();
-        assert_eq!(commit_class.kind(), ResourceDescriptorKind::Commit);
-        assert_eq!(commit_class.target(), None);
+        assert!(matches!(
+            commit_class.resource(),
+            ResourceDescriptorRef::Commit { sequence: None }
+        ));
         let provenance_class = ResourceDescriptor::provenance_class();
-        assert_eq!(provenance_class.kind(), ResourceDescriptorKind::Provenance);
-        assert_eq!(provenance_class.target(), None);
+        assert!(matches!(
+            provenance_class.resource(),
+            ResourceDescriptorRef::Provenance {
+                provenance_id: None
+            }
+        ));
 
         let mismatched_id = entity_type_id.checked_next().expect("second entity type");
         assert_eq!(
@@ -6694,6 +8615,10 @@ contract OutcomeShapes version 1 {
 
         let first = CommitSequence::first();
         let second = first.checked_next().expect("second sequence");
+        let request = DiscoverResourcesRequest::default();
+        let operation_schemas = OperationSchemaCatalog::accepted()
+            .expect("accepted operation schemas")
+            .identity();
         let page = Page::new(
             PageLimit::default(),
             vec![
@@ -6704,25 +8629,62 @@ contract OutcomeShapes version 1 {
                 ResourceDescriptor::server_health(),
             ],
             None,
-            DiscoveryCatalogFence::no_active_contract(),
+            DiscoveryCatalogFence::no_active_contract(operation_schemas.clone()),
         )
         .expect("bounded discovery page");
-        let result = DiscoverResourcesResult::new(page).expect("unique resource identities");
-        assert_eq!(
-            result
-                .page()
-                .items()
-                .iter()
-                .map(ResourceDescriptor::kind)
-                .collect::<Vec<_>>(),
-            vec![
-                ResourceDescriptorKind::ActiveContract,
-                ResourceDescriptorKind::Commit,
-                ResourceDescriptorKind::Commit,
-                ResourceDescriptorKind::Commit,
-                ResourceDescriptorKind::ServerHealth,
-            ]
+        let result =
+            DiscoverResourcesResult::page(&request, page).expect("unique resource identities");
+        let DiscoverResourcesResultRef::Page(page) = result.result() else {
+            panic!("expected full resource page");
+        };
+        assert_eq!(page.items().len(), 5);
+        assert!(matches!(
+            page.items()[0].resource(),
+            ResourceDescriptorRef::ActiveContract
+        ));
+        assert!(matches!(
+            page.items()[1].resource(),
+            ResourceDescriptorRef::Commit { sequence: None }
+        ));
+        assert!(
+            matches!(page.items()[2].resource(), ResourceDescriptorRef::Commit { sequence: Some(value) } if value == first)
         );
+        assert!(
+            matches!(page.items()[3].resource(), ResourceDescriptorRef::Commit { sequence: Some(value) } if value == second)
+        );
+        assert!(matches!(
+            page.items()[4].resource(),
+            ResourceDescriptorRef::ServerHealth
+        ));
+        for (kind, item) in [
+            (
+                ResourceDiscoveryKind::Template,
+                ResourceDescriptor::active_contract().compact(),
+            ),
+            (
+                ResourceDiscoveryKind::Concrete,
+                ResourceDescriptor::commit_class().compact(),
+            ),
+        ] {
+            let request = DiscoverResourcesRequest::with_options(
+                PageRequest::new(PageLimit::default(), None),
+                DiscoveryRepresentation::CompactObservation,
+                None,
+                kind,
+            )
+            .expect("compact resource request");
+            let page = Page::new(
+                PageLimit::default(),
+                vec![item],
+                None,
+                DiscoveryCatalogFence::no_active_contract(operation_schemas.clone()),
+            )
+            .expect("bounded compact resource page");
+            assert_eq!(
+                DiscoverResourcesResult::compact_page(&request, page),
+                Err(ServiceDtoError::InvalidShape)
+            );
+        }
         let duplicate_page = Page::new(
             PageLimit::default(),
             vec![
@@ -6730,12 +8692,95 @@ contract OutcomeShapes version 1 {
                 ResourceDescriptor::active_contract(),
             ],
             None,
-            DiscoveryCatalogFence::no_active_contract(),
+            DiscoveryCatalogFence::no_active_contract(operation_schemas),
         )
         .expect("bounded duplicate page");
         assert_eq!(
-            DiscoverResourcesResult::new(duplicate_page),
+            DiscoverResourcesResult::page(&request, duplicate_page),
             Err(ServiceDtoError::Duplicate)
+        );
+    }
+
+    #[test]
+    fn discovery_descriptors_bind_compiler_names_to_lineage_and_source_command() {
+        let bundle = outcome_shapes_bundle();
+        let contract = bundle.bundle();
+        let command = fixture_command(&bundle, "Inspect");
+        let name = contract
+            .mcp_command_names()
+            .get(command.command_id())
+            .expect("compiled command name");
+        let source_command = SourceName::new(name.source_command_name())
+            .expect("compiler source command is grammar checked");
+        let input_schema = contract
+            .schema_artifacts()
+            .iter()
+            .find(|artifact| {
+                artifact.key() == SchemaArtifactKey::CommandInput(command.command_id())
+            })
+            .expect("compiled input schema")
+            .clone();
+        let outcome_schema = contract
+            .schema_artifacts()
+            .iter()
+            .find(|artifact| {
+                artifact.key() == SchemaArtifactKey::CommandOutcomeUnion(command.command_id())
+            })
+            .expect("compiled outcome schema")
+            .clone();
+        assert!(
+            CommandToolDescriptor::new(
+                name.tool_name().clone(),
+                source_command.clone(),
+                contract.lineage().clone(),
+                contract.contract_version(),
+                command.command_id(),
+                input_schema.clone(),
+                outcome_schema.clone(),
+            )
+            .is_ok()
+        );
+
+        let wrong_source_name = McpCommandToolNameV1::new_checked(
+            contract.lineage().as_str(),
+            "Other",
+            "riffdb.cmd.outcomeshapes.other",
+        )
+        .expect("independently valid wrong command binding");
+        assert_eq!(
+            CommandToolDescriptor::new(
+                wrong_source_name,
+                source_command,
+                contract.lineage().clone(),
+                contract.contract_version(),
+                command.command_id(),
+                input_schema,
+                outcome_schema,
+            ),
+            Err(ServiceDtoError::IdentityMismatch)
+        );
+
+        let wrong_lineage_name = McpCommandToolNameV1::new_checked(
+            "Other",
+            name.source_command_name(),
+            "riffdb.cmd.other.inspect",
+        )
+        .expect("independently valid wrong lineage binding");
+        assert_eq!(
+            ResourceDescriptor::command_outcome(
+                contract.lineage().clone(),
+                command.command_id(),
+                wrong_lineage_name,
+            ),
+            Err(ServiceDtoError::IdentityMismatch)
+        );
+        assert!(
+            ResourceDescriptor::command_outcome(
+                contract.lineage().clone(),
+                command.command_id(),
+                name.tool_name().clone(),
+            )
+            .is_ok()
         );
     }
 

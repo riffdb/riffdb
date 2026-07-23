@@ -83,7 +83,7 @@ impl fmt::Display for ProtocolFailure {
 
 impl Error for ProtocolFailure {}
 
-/// The public client's explicit unresolved command disposition.
+/// The public client's explicit unresolved idempotent-operation disposition.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct OutcomeUnknown;
 

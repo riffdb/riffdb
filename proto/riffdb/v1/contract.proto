@@ -147,3 +147,16 @@ message GetActiveContractResponse {
     ContractDescriptor present = 2;
   }
 }
+
+message GetContractVersionRequest {
+  bytes request_id = 1;
+  string contract_lineage = 2;
+  uint64 contract_version = 3;
+}
+
+message GetContractVersionResponse {
+  oneof result {
+    Unit not_found = 1;
+    ContractDescriptor found = 2;
+  }
+}

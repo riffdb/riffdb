@@ -9,6 +9,7 @@ publish.workspace = true
 default = []
 
 [dependencies]
+base64 = { version = "=0.22.1", default-features = false, features = ["alloc"] }
 crc = { version = "3.4.0", default-features = false }
 prost = { version = "0.14.4", default-features = false, features = ["derive", "std"] }
 riffdb-errors = { version = "0.1.0", path = "../riffdb-errors" }

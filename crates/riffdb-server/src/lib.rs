@@ -16,6 +16,7 @@ mod process_graph;
 mod projection_adapter;
 mod read_adapters;
 mod runtime_support;
+mod server_generation;
 mod startup;
 mod storage;
 

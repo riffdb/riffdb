@@ -9,6 +9,7 @@ publish.workspace = true
 default = []
 
 [dependencies]
+base64 = { version = "=0.22.1", default-features = false, features = ["alloc"] }
 riffdb-auth = { version = "0.1.0", path = "../riffdb-auth", default-features = false }
 riffdb-catalog = { version = "0.1.0", path = "../riffdb-catalog", default-features = false }
 riffdb-commit = { version = "0.1.0", path = "../riffdb-commit", default-features = false }
@@ -22,6 +23,7 @@ riffdb-types = { version = "0.1.0", path = "../riffdb-types", default-features =
 [dev-dependencies]
 riffdb-conflict = { version = "0.1.0", path = "../riffdb-conflict", default-features = false }
 riffdb-idempotency = { version = "0.1.0", path = "../riffdb-idempotency", default-features = false }
+riffdb-policy = { version = "0.1.0", path = "../riffdb-policy", default-features = false, features = ["test-fixtures"] }
 riffdb-storage-api = { version = "0.1.0", path = "../riffdb-storage-api", default-features = false }
 riffdb-storage-redb = { version = "0.1.0", path = "../riffdb-storage-redb", default-features = false }
 riffdb-testkit = { version = "0.1.0", path = "../riffdb-testkit", default-features = false }

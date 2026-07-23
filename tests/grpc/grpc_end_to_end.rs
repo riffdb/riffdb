@@ -3,38 +3,52 @@
 #![cfg(all(feature = "server", feature = "client"))]
 #![forbid(unsafe_code)]
 
+use std::collections::BTreeSet;
 use std::num::NonZeroU16;
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
+use riffdb_api_grpc::generated::contract_service_client::ContractServiceClient;
 use riffdb_api_grpc::generated::query_service_client::QueryServiceClient;
 use riffdb_api_grpc::{
-    CheckedGrpcSecurityContext, GrpcApplication, GrpcBootstrapCompletion, GrpcDeploymentCompletion,
-    GrpcLifecycleRoute, GrpcRequestLimits,
+    CheckedGrpcSecurityContext, DEADLINE_EXCEEDED_MESSAGE, GrpcApplication,
+    GrpcBootstrapCompletion, GrpcDeploymentCompletion, GrpcLifecycleRoute, GrpcRequestLimits,
+    UNAUTHENTICATED_MESSAGE,
 };
 use riffdb_auth::{
     AuthenticatedPrincipal, AuthenticationContext, AuthenticationFailure,
-    CapabilityDigestKeyProvider, CredentialAuthenticator, OpaqueCredential,
+    CapabilityDigestKeyProvider, CredentialAuthenticator, CurrentCapabilityActivity,
+    CurrentCapabilityResolver, OpaqueCredential,
 };
 use riffdb_client_rust::{BearerCredential, CallMetadata, RiffDbClient};
-use riffdb_errors::PublicError;
+use riffdb_errors::{
+    PublicError, ValidationCode, ValidationIssue, ValidationIssues, ValidationPath,
+};
 use riffdb_proto::v1;
 use riffdb_proto::{MAX_PUBLIC_ERROR_BYTES, decode_public_error};
 use riffdb_service::{
-    AdministrationApplication, ApplicationService, CommitApplication, ContractApplication,
-    CreateCapabilityInvocation, CreateCapabilityResult, DiscoveryApplication, HealthContext,
-    HealthRequest, HealthResult, Page, PageLimit, ProjectionFailureCode, ProjectionPageFence,
-    ProjectionRow, ProjectionUnavailableReason, QueryApplication, QueryProjectionReady,
-    QueryProjectionRequest, QueryProjectionResult, RequestContext, ServiceFailure, ServiceFuture,
+    AdministrationApplication, ApplicationService, CommandToolDiscoveryItem, CommitApplication,
+    CompactCommandToolDiscoveryItem, CompactResourceDescriptor, ContractApplication,
+    ContractDescriptor, CreateCapabilityInvocation, CreateCapabilityResult, CursorToken,
+    DiscoverCommandToolsRequest, DiscoverCommandToolsResult, DiscoverResourcesRequest,
+    DiscoverResourcesResult, DiscoveryApplication, DiscoveryCatalogFence, DiscoveryRepresentation,
+    FixedToolKind, GetContractVersionResult, GetProjectionStatusResult, HealthContext,
+    HealthRequest, HealthResult, ListPendingOutboxDeliveriesResult, OperationSchemaCatalog, Page,
+    PageLimit, ProjectionFailureCode, ProjectionPageFence, ProjectionRow, ProjectionStatusSnapshot,
+    ProjectionUnavailableReason, QueryApplication, QueryProjectionReady, QueryProjectionRequest,
+    QueryProjectionResult, RequestContext, ResolveCommandOutcomeResult,
+    ResolveCommandOutcomeSelectorRef, ResourceDescriptor, ServiceFailure, ServiceFuture,
+    TraceProvenanceResult,
 };
 use riffdb_testkit::authorization::{
     AuthorizationFixture, AuthorizationFixtureConfig, AuthorizationFixtureTimes,
 };
 use riffdb_types::{
     ActorId, ActorKind, Audience, CapabilityGrantV1, CapabilityPermissionsV1, CommitSequence,
-    ContractLineage, DatabaseId, Environment, FrontierPosition, PartitionScopeV1,
-    ProjectionGeneration, ProjectionId, ProjectionIdentity, ProjectionPlanHash, RequestId,
-    ServiceIngressKindV1, ServiceOperationV1, TenantScope, Timestamp,
+    ContractBundleHash, ContractLineage, ContractPlanRootHash, ContractVersion, DatabaseId,
+    Environment, FrontierPosition, PartitionScopeV1, ProjectionGeneration, ProjectionId,
+    ProjectionIdentity, ProjectionPlanHash, RequestId, ServiceIngressKindV1, ServiceOperationV1,
+    SourceHash, TenantScope, Timestamp,
 };
 use tokio::sync::oneshot;
 use tonic::metadata::MetadataValue;
@@ -45,6 +59,8 @@ use tonic::{Code, Request};
 const CAPABILITY_TOKEN: &str = "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8";
 const CAPABILITY_KEYS: &[u8] = b"riffdb-capability-digest-keys-v1\n1:000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f\n";
 const LINEAGE: &str = "grpc-projection";
+const SERVER_GENERATION: [u8; 16] = [0xa5; 16];
+const OUTCOME_LOCATOR: &str = "riffdb://outcome/agent_01/legalspend/2/riffdb.cmd.legalspend.allocatebudget/AQAAAAEAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA";
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 struct ObservedInvocation {
@@ -52,16 +68,47 @@ struct ObservedInvocation {
     capability_id: riffdb_types::CapabilityId,
     principal_id: ActorId,
     ingress: ServiceIngressKindV1,
+    operation: ServiceOperationV1,
 }
 
 struct ProjectionService {
     observed: Mutex<Vec<ObservedInvocation>>,
+    command_discovery_prior: Mutex<Vec<bool>>,
+    outcome_locators: Mutex<Vec<String>>,
+    shortened_deadline_observed: Mutex<bool>,
+    pending_probe: Mutex<Option<PendingProbe>>,
+    current_authority: Option<Arc<AuthorizationFixture>>,
+    resource_cursors: Mutex<ResourceCursorState>,
+}
+
+struct PendingProbe {
+    started: oneshot::Sender<()>,
+    cancelled: oneshot::Sender<()>,
+}
+
+#[derive(Default)]
+struct ResourceCursorState {
+    next_ordinal: u8,
+    valid: BTreeSet<CursorToken>,
 }
 
 impl ProjectionService {
     fn new() -> Self {
         Self {
             observed: Mutex::new(Vec::new()),
+            command_discovery_prior: Mutex::new(Vec::new()),
+            outcome_locators: Mutex::new(Vec::new()),
+            shortened_deadline_observed: Mutex::new(false),
+            pending_probe: Mutex::new(None),
+            current_authority: None,
+            resource_cursors: Mutex::new(ResourceCursorState::default()),
+        }
+    }
+
+    fn with_current_authority(current_authority: Arc<AuthorizationFixture>) -> Self {
+        Self {
+            current_authority: Some(current_authority),
+            ..Self::new()
         }
     }
 
@@ -70,6 +117,114 @@ impl ProjectionService {
             .lock()
             .expect("observation lock remains available")
             .clone()
+    }
+
+    fn observe(&self, context: &RequestContext, operation: ServiceOperationV1) {
+        self.observed
+            .lock()
+            .expect("observation lock remains available")
+            .push(ObservedInvocation {
+                request_id: context.request_id(),
+                capability_id: context.principal().capability_id(),
+                principal_id: context.principal().principal_id().clone(),
+                ingress: context.ingress(),
+                operation,
+            });
+    }
+
+    fn command_discovery_prior(&self) -> Vec<bool> {
+        self.command_discovery_prior
+            .lock()
+            .expect("discovery observation lock remains available")
+            .clone()
+    }
+
+    fn outcome_locators(&self) -> Vec<String> {
+        self.outcome_locators
+            .lock()
+            .expect("outcome observation lock remains available")
+            .clone()
+    }
+
+    fn shortened_deadline_observed(&self) -> bool {
+        *self
+            .shortened_deadline_observed
+            .lock()
+            .expect("deadline observation lock remains available")
+    }
+
+    fn prepare_pending_probe(&self) -> (oneshot::Receiver<()>, oneshot::Receiver<()>) {
+        let (started_sender, started_receiver) = oneshot::channel();
+        let (cancelled_sender, cancelled_receiver) = oneshot::channel();
+        let previous = self
+            .pending_probe
+            .lock()
+            .expect("pending-probe lock remains available")
+            .replace(PendingProbe {
+                started: started_sender,
+                cancelled: cancelled_sender,
+            });
+        assert!(previous.is_none(), "only one pending probe may be armed");
+        (started_receiver, cancelled_receiver)
+    }
+
+    fn take_pending_probe(&self) -> PendingProbe {
+        self.pending_probe
+            .lock()
+            .expect("pending-probe lock remains available")
+            .take()
+            .expect("pending request must have an armed probe")
+    }
+
+    fn current_authority_allows(&self, context: &RequestContext) -> bool {
+        let Some(fixture) = &self.current_authority else {
+            return true;
+        };
+        fixture
+            .current_capability_resolver()
+            .resolve_current(context.principal())
+            .is_ok_and(|current| current.activity() == CurrentCapabilityActivity::Active)
+    }
+
+    fn issue_resource_cursor(&self) -> CursorToken {
+        let mut state = self
+            .resource_cursors
+            .lock()
+            .expect("resource-cursor lock remains available");
+        state.next_ordinal = state
+            .next_ordinal
+            .checked_add(1)
+            .expect("the conformance test issues only bounded cursor tokens");
+        let token = CursorToken::from_bytes([state.next_ordinal; 16]);
+        assert!(
+            state.valid.insert(token),
+            "issued cursor token must be unique"
+        );
+        token
+    }
+
+    fn resource_cursor_is_valid(&self, token: CursorToken) -> bool {
+        self.resource_cursors
+            .lock()
+            .expect("resource-cursor lock remains available")
+            .valid
+            .contains(&token)
+    }
+
+    fn invalidate_resource_cursor(&self, bytes: &[u8]) {
+        let token = CursorToken::from_bytes(
+            bytes
+                .try_into()
+                .expect("public cursor has the exact 16-byte representation"),
+        );
+        assert!(
+            self.resource_cursors
+                .lock()
+                .expect("resource-cursor lock remains available")
+                .valid
+                .remove(&token),
+            "only an issued cursor may be invalidated"
+        );
     }
 }
 
@@ -110,12 +265,14 @@ impl ContractApplication for ProjectionService {
         riffdb_service::GetActiveContractRequest,
         riffdb_service::GetActiveContractResult
     );
-    denied_operation!(
-        get_contract_version,
-        RequestContext,
-        riffdb_service::GetContractVersionRequest,
-        riffdb_service::GetContractVersionResult
-    );
+    fn get_contract_version(
+        &self,
+        context: RequestContext,
+        _request: riffdb_service::GetContractVersionRequest,
+    ) -> ServiceFuture<'_, GetContractVersionResult> {
+        self.observe(&context, ServiceOperationV1::GetContractVersion);
+        Box::pin(async { Ok(GetContractVersionResult::Found(contract_descriptor())) })
+    }
 }
 
 impl riffdb_service::CommandApplication for ProjectionService {
@@ -125,12 +282,20 @@ impl riffdb_service::CommandApplication for ProjectionService {
         riffdb_service::ExecuteCommandRequest,
         riffdb_service::ExecuteCommandResult
     );
-    denied_operation!(
-        resolve_command_outcome,
-        RequestContext,
-        riffdb_service::ResolveCommandOutcomeRequest,
-        riffdb_service::ResolveCommandOutcomeResult
-    );
+    fn resolve_command_outcome(
+        &self,
+        context: RequestContext,
+        request: riffdb_service::ResolveCommandOutcomeRequest,
+    ) -> ServiceFuture<'_, ResolveCommandOutcomeResult> {
+        self.observe(&context, ServiceOperationV1::ResolveCommandOutcome);
+        if let ResolveCommandOutcomeSelectorRef::Locator(locator) = request.selector() {
+            self.outcome_locators
+                .lock()
+                .expect("outcome observation lock remains available")
+                .push(locator.canonical_uri().to_owned());
+        }
+        Box::pin(async { Ok(ResolveCommandOutcomeResult::NotFound) })
+    }
 }
 
 impl QueryApplication for ProjectionService {
@@ -152,15 +317,37 @@ impl QueryApplication for ProjectionService {
         context: RequestContext,
         request: QueryProjectionRequest,
     ) -> ServiceFuture<'_, QueryProjectionResult> {
-        self.observed
-            .lock()
-            .expect("observation lock remains available")
-            .push(ObservedInvocation {
-                request_id: context.request_id(),
-                capability_id: context.principal().capability_id(),
-                principal_id: context.principal().principal_id().clone(),
-                ingress: context.ingress(),
-            });
+        self.observe(&context, ServiceOperationV1::QueryProjection);
+
+        if matches!(request.projection_id().get(), 6 | 7) {
+            let probe = self.take_pending_probe();
+            if request.projection_id().get() == 6 {
+                *self
+                    .shortened_deadline_observed
+                    .lock()
+                    .expect("deadline observation lock remains available") = context
+                    .control()
+                    .deadline()
+                    .saturating_duration_since(Instant::now())
+                    <= Duration::from_secs(1);
+                return Box::pin(async move {
+                    let _ = probe.started.send(());
+                    tokio::time::sleep_until(tokio::time::Instant::from_std(
+                        context.control().deadline(),
+                    ))
+                    .await;
+                    assert!(context.control().is_deadline_exceeded());
+                    let _ = probe.cancelled.send(());
+                    Err(ServiceFailure::DeadlineExceeded)
+                });
+            }
+            drop(tokio::spawn(async move {
+                let _ = probe.started.send(());
+                context.control().cancelled().await;
+                let _ = probe.cancelled.send(());
+            }));
+            return Box::pin(std::future::pending());
+        }
 
         let result = match request.projection_id().get() {
             1 => Ok(ready_projection()),
@@ -180,12 +367,21 @@ impl QueryApplication for ProjectionService {
         Box::pin(async move { result })
     }
 
-    denied_operation!(
-        get_projection_status,
-        RequestContext,
-        riffdb_service::GetProjectionStatusRequest,
-        riffdb_service::GetProjectionStatusResult
-    );
+    fn get_projection_status(
+        &self,
+        context: RequestContext,
+        _request: riffdb_service::GetProjectionStatusRequest,
+    ) -> ServiceFuture<'_, GetProjectionStatusResult> {
+        self.observe(&context, ServiceOperationV1::GetProjectionStatus);
+        Box::pin(async {
+            Ok(GetProjectionStatusResult::Found(
+                ProjectionStatusSnapshot::uninitialized(
+                    projection_identity(),
+                    FrontierPosition::AppliedThrough(CommitSequence::first()),
+                ),
+            ))
+        })
+    }
 }
 
 impl CommitApplication for ProjectionService {
@@ -207,12 +403,14 @@ impl CommitApplication for ProjectionService {
         riffdb_service::SubscribeToCommitsRequest,
         riffdb_service::SubscribeToCommitsResult
     );
-    denied_operation!(
-        trace_provenance,
-        RequestContext,
-        riffdb_service::TraceProvenanceRequest,
-        riffdb_service::TraceProvenanceResult
-    );
+    fn trace_provenance(
+        &self,
+        context: RequestContext,
+        _request: riffdb_service::TraceProvenanceRequest,
+    ) -> ServiceFuture<'_, TraceProvenanceResult> {
+        self.observe(&context, ServiceOperationV1::TraceProvenance);
+        Box::pin(async { Ok(TraceProvenanceResult::NotFound) })
+    }
 }
 
 impl AdministrationApplication for ProjectionService {
@@ -237,27 +435,123 @@ impl AdministrationApplication for ProjectionService {
         riffdb_service::RevokeCapabilityRequest,
         riffdb_service::RevokeCapabilityResult
     );
-    denied_operation!(
-        list_pending_outbox_deliveries,
-        RequestContext,
-        riffdb_service::ListPendingOutboxDeliveriesRequest,
-        riffdb_service::ListPendingOutboxDeliveriesResult
-    );
+    fn list_pending_outbox_deliveries(
+        &self,
+        context: RequestContext,
+        request: riffdb_service::ListPendingOutboxDeliveriesRequest,
+    ) -> ServiceFuture<'_, ListPendingOutboxDeliveriesResult> {
+        self.observe(&context, ServiceOperationV1::ListPendingOutboxDeliveries);
+        let page = Page::new(request.page().limit(), Vec::new(), None, ())
+            .expect("valid empty outbox page");
+        Box::pin(async move { Ok(ListPendingOutboxDeliveriesResult::new(page)) })
+    }
 }
 
 impl DiscoveryApplication for ProjectionService {
-    denied_operation!(
-        discover_command_tools,
-        RequestContext,
-        riffdb_service::DiscoverCommandToolsRequest,
-        riffdb_service::DiscoverCommandToolsResult
-    );
-    denied_operation!(
-        discover_resources,
-        RequestContext,
-        riffdb_service::DiscoverResourcesRequest,
-        riffdb_service::DiscoverResourcesResult
-    );
+    fn discover_command_tools(
+        &self,
+        context: RequestContext,
+        request: DiscoverCommandToolsRequest,
+    ) -> ServiceFuture<'_, DiscoverCommandToolsResult> {
+        self.observe(&context, ServiceOperationV1::DiscoverCommandTools);
+        self.command_discovery_prior
+            .lock()
+            .expect("discovery observation lock remains available")
+            .push(request.prior_fence().is_some());
+
+        let operation_schemas = OperationSchemaCatalog::accepted().expect("accepted test schemas");
+        let fence = DiscoveryCatalogFence::no_active_contract(operation_schemas.identity());
+        let result = match (request.representation(), request.prior_fence()) {
+            (DiscoveryRepresentation::Full, None) => {
+                let page = Page::new(
+                    request.page().limit(),
+                    vec![CommandToolDiscoveryItem::Fixed(FixedToolKind::GetHealth)],
+                    None,
+                    fence,
+                )
+                .expect("valid full command discovery page");
+                DiscoverCommandToolsResult::page(&request, page, operation_schemas)
+                    .expect("matching full command discovery result")
+            }
+            (DiscoveryRepresentation::CompactObservation, Some(prior)) => {
+                DiscoverCommandToolsResult::catalog_unchanged(&request, prior.clone())
+                    .expect("matching conditional discovery result")
+            }
+            (DiscoveryRepresentation::CompactObservation, None) => {
+                let page = Page::<CompactCommandToolDiscoveryItem, _>::new(
+                    request.page().limit(),
+                    Vec::new(),
+                    None,
+                    fence,
+                )
+                .expect("valid compact command discovery page");
+                DiscoverCommandToolsResult::compact_page(&request, page)
+                    .expect("matching compact command discovery result")
+            }
+            (DiscoveryRepresentation::Full, Some(_)) => {
+                unreachable!("service request DTO rejects a prior fence for full discovery")
+            }
+        };
+        Box::pin(async move { Ok(result) })
+    }
+
+    fn discover_resources(
+        &self,
+        context: RequestContext,
+        request: DiscoverResourcesRequest,
+    ) -> ServiceFuture<'_, DiscoverResourcesResult> {
+        self.observe(&context, ServiceOperationV1::DiscoverResources);
+        if !self.current_authority_allows(&context) {
+            return Box::pin(async {
+                Err(ServiceFailure::from(PublicError::authorization_denied()))
+            });
+        }
+        let continuation = request.page().cursor();
+        if continuation.is_some_and(|cursor| !self.resource_cursor_is_valid(cursor)) {
+            let failure = PublicError::validation(ValidationIssues::one(ValidationIssue::new(
+                ValidationCode::InvalidValue,
+                ValidationPath::root(),
+            )));
+            return Box::pin(async move { Err(ServiceFailure::from(failure)) });
+        }
+        let next_cursor = (self.current_authority.is_some()
+            && request.representation() == DiscoveryRepresentation::Full
+            && continuation.is_none())
+        .then(|| self.issue_resource_cursor());
+        let fence = discovery_fence();
+        let result = match (request.representation(), request.prior_fence()) {
+            (DiscoveryRepresentation::Full, None) => {
+                let page = Page::new(
+                    request.page().limit(),
+                    vec![ResourceDescriptor::server_health()],
+                    next_cursor,
+                    fence,
+                )
+                .expect("valid full resource discovery page");
+                DiscoverResourcesResult::page(&request, page)
+                    .expect("matching full resource discovery result")
+            }
+            (DiscoveryRepresentation::CompactObservation, Some(prior)) => {
+                DiscoverResourcesResult::catalog_unchanged(&request, prior.clone())
+                    .expect("matching conditional resource discovery result")
+            }
+            (DiscoveryRepresentation::CompactObservation, None) => {
+                let page = Page::<CompactResourceDescriptor, _>::new(
+                    request.page().limit(),
+                    Vec::new(),
+                    None,
+                    fence,
+                )
+                .expect("valid compact resource discovery page");
+                DiscoverResourcesResult::compact_page(&request, page)
+                    .expect("matching compact resource discovery result")
+            }
+            (DiscoveryRepresentation::Full, Some(_)) => {
+                unreachable!("service request DTO rejects a prior fence for full discovery")
+            }
+        };
+        Box::pin(async move { Ok(result) })
+    }
 }
 
 #[derive(Clone)]
@@ -285,11 +579,26 @@ impl GrpcLifecycleRoute for ActiveRoute {
         &self,
         operation: ServiceOperationV1,
     ) -> Option<Arc<dyn ApplicationService>> {
-        (operation == ServiceOperationV1::QueryProjection).then(|| Arc::clone(&self.service))
+        matches!(
+            operation,
+            ServiceOperationV1::QueryProjection
+                | ServiceOperationV1::GetContractVersion
+                | ServiceOperationV1::ResolveCommandOutcome
+                | ServiceOperationV1::GetProjectionStatus
+                | ServiceOperationV1::TraceProvenance
+                | ServiceOperationV1::ListPendingOutboxDeliveries
+                | ServiceOperationV1::DiscoverCommandTools
+                | ServiceOperationV1::DiscoverResources
+        )
+        .then(|| Arc::clone(&self.service))
     }
 
     fn security_context(&self) -> Option<CheckedGrpcSecurityContext> {
         Some(self.security.clone())
+    }
+
+    fn server_generation(&self) -> Option<[u8; 16]> {
+        Some(SERVER_GENERATION)
     }
 
     fn restricted_health(
@@ -425,11 +734,584 @@ async fn projection_variants_and_public_error_cross_real_grpc() {
         .expect("server shut down cleanly");
 }
 
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn grpc_failure_boundaries_remain_fail_closed_and_exact() {
+    let database_id =
+        DatabaseId::from_unix_milliseconds_and_random(3, [3; 10]).expect("valid database ID");
+    let environment = Environment::new("grpc-failures").expect("valid environment");
+    let audience = Audience::new("grpc-loopback").expect("valid audience");
+    let current_authority = Arc::new(authorization_fixture(
+        database_id,
+        environment.clone(),
+        audience.clone(),
+    ));
+    let principal = current_authority.authenticated_principal().clone();
+
+    let service = Arc::new(ProjectionService::with_current_authority(Arc::clone(
+        &current_authority,
+    )));
+    let application_service: Arc<dyn ApplicationService> = service.clone();
+    let authenticator: Arc<dyn CredentialAuthenticator> =
+        Arc::new(AcceptingAuthenticator { principal });
+    let capability_keys = Arc::new(
+        CapabilityDigestKeyProvider::parse_document(CAPABILITY_KEYS)
+            .expect("valid capability key fixture"),
+    );
+    let security = CheckedGrpcSecurityContext::new(
+        authenticator,
+        AuthenticationContext::new(database_id, environment, audience),
+        capability_keys,
+    );
+    let route: Arc<dyn GrpcLifecycleRoute> = Arc::new(ActiveRoute {
+        service: application_service,
+        security,
+    });
+    let application = GrpcApplication::new(
+        route,
+        GrpcRequestLimits::new(Duration::from_millis(100)).expect("bounded request duration"),
+    );
+
+    let incoming = TcpIncoming::bind("127.0.0.1:0".parse().expect("loopback address"))
+        .expect("bind loopback listener");
+    let address = incoming.local_addr().expect("bound loopback address");
+    let (shutdown_sender, shutdown_receiver) = oneshot::channel();
+    let server = tokio::spawn(
+        Server::builder()
+            .add_service(application.contract_server())
+            .add_service(application.query_server())
+            .serve_with_incoming_shutdown(incoming, async move {
+                let _ = shutdown_receiver.await;
+            }),
+    );
+
+    let endpoint =
+        Endpoint::from_shared(format!("http://{address}")).expect("valid loopback endpoint");
+    let channel = endpoint.connect().await.expect("connect loopback client");
+    let mut query_client = QueryServiceClient::new(channel.clone());
+
+    let status = query_client
+        .query_projection(Request::new(projection_request(request_id(30), 1, false)))
+        .await
+        .expect_err("missing authentication must fail before service admission");
+    assert_eq!(status.code(), Code::Unauthenticated);
+    assert_eq!(status.message(), UNAUTHENTICATED_MESSAGE);
+    assert!(status.details().is_empty());
+    assert!(service.observed().is_empty());
+
+    let (deadline_started, deadline_cancelled) = service.prepare_pending_probe();
+    let mut deadline_request = Request::new(projection_request(request_id(31), 6, false));
+    authorize(&mut deadline_request);
+    deadline_request
+        .metadata_mut()
+        .insert("grpc-timeout", MetadataValue::from_static("10S"));
+    let mut deadline_client = query_client.clone();
+    let deadline_call =
+        tokio::spawn(async move { deadline_client.query_projection(deadline_request).await });
+    await_probe(deadline_started, "deadline request reached the service").await;
+    let status = deadline_call
+        .await
+        .expect("deadline client task did not panic")
+        .expect_err("in-flight request must observe its gRPC deadline");
+    assert_eq!(status.code(), Code::DeadlineExceeded);
+    assert_eq!(status.message(), DEADLINE_EXCEEDED_MESSAGE);
+    assert!(status.details().is_empty());
+    assert!(service.shortened_deadline_observed());
+    await_probe(
+        deadline_cancelled,
+        "deadline dropped the server future and cancelled RequestControl",
+    )
+    .await;
+
+    let (cancellation_started, cancellation_observed) = service.prepare_pending_probe();
+    let mut cancellation_request = Request::new(projection_request(request_id(32), 7, false));
+    authorize(&mut cancellation_request);
+    let mut cancellation_client = query_client.clone();
+    let cancellation_call = tokio::spawn(async move {
+        cancellation_client
+            .query_projection(cancellation_request)
+            .await
+    });
+    await_probe(
+        cancellation_started,
+        "cancellable request reached the service",
+    )
+    .await;
+    cancellation_call.abort();
+    assert!(
+        cancellation_call
+            .await
+            .expect_err("aborted client call must not complete")
+            .is_cancelled()
+    );
+    await_probe(
+        cancellation_observed,
+        "dropping the client RPC cancelled RequestControl",
+    )
+    .await;
+
+    let mut contract_client = ContractServiceClient::new(channel);
+    // Full policy/cursor orchestration remains covered in tests/service. This
+    // adapter schedule uses the production current-capability resolver and a
+    // stateful issue/invalidate lifecycle so transport errors are not fabricated.
+    let mut issued_cursors = Vec::new();
+    for ordinal in [33, 34] {
+        let mut first_page = Request::new(resource_first_page_request(ordinal));
+        authorize(&mut first_page);
+        let response = contract_client
+            .discover_resources(first_page)
+            .await
+            .expect("active current authority may discover one resource")
+            .into_inner();
+        let Some(v1::discover_resources_response::Result::Page(page)) = response.result else {
+            panic!("full resource discovery must return a page");
+        };
+        issued_cursors.push(
+            page.next_cursor
+                .expect("nonterminal conformance page cursor"),
+        );
+    }
+
+    service.invalidate_resource_cursor(&issued_cursors[0]);
+    let mut invalid_cursor_request =
+        Request::new(resource_continuation_request(35, issued_cursors[0].clone()));
+    authorize(&mut invalid_cursor_request);
+    let status = contract_client
+        .discover_resources(invalid_cursor_request)
+        .await
+        .expect_err("an invalidated issued cursor must fail closed");
+    let invalid_cursor = PublicError::validation(ValidationIssues::one(ValidationIssue::new(
+        ValidationCode::InvalidValue,
+        ValidationPath::root(),
+    )));
+    assert_eq!(status.code(), Code::InvalidArgument);
+    assert_eq!(status.message(), invalid_cursor.safe_message());
+    assert_eq!(decode_public_error(status.details()), Ok(invalid_cursor));
+
+    current_authority
+        .revoke_current(timestamp(160))
+        .expect("current test capability revokes exactly once");
+    let mut stale_policy_request =
+        Request::new(resource_continuation_request(36, issued_cursors[1].clone()));
+    authorize(&mut stale_policy_request);
+    let status = contract_client
+        .discover_resources(stale_policy_request)
+        .await
+        .expect_err("fresh current-authority denial must discard the valid continuation");
+    let denied = PublicError::authorization_denied();
+    assert_eq!(status.code(), Code::PermissionDenied);
+    assert_eq!(status.message(), denied.safe_message());
+    assert_eq!(decode_public_error(status.details()), Ok(denied));
+
+    let operations = service
+        .observed()
+        .into_iter()
+        .map(|observation| observation.operation)
+        .collect::<Vec<_>>();
+    assert_eq!(
+        operations,
+        vec![
+            ServiceOperationV1::QueryProjection,
+            ServiceOperationV1::QueryProjection,
+            ServiceOperationV1::DiscoverResources,
+            ServiceOperationV1::DiscoverResources,
+            ServiceOperationV1::DiscoverResources,
+            ServiceOperationV1::DiscoverResources,
+        ]
+    );
+
+    drop(contract_client);
+    drop(query_client);
+    shutdown_sender.send(()).expect("server still running");
+    server
+        .await
+        .expect("server task did not panic")
+        .expect("server shut down cleanly");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn wp137_unary_surface_crosses_authenticated_loopback_grpc() {
+    let database_id =
+        DatabaseId::from_unix_milliseconds_and_random(2, [2; 10]).expect("valid database ID");
+    let environment = Environment::new("grpc-wp137").expect("valid environment");
+    let audience = Audience::new("grpc-loopback").expect("valid audience");
+    let principal = authenticated_principal(database_id, environment.clone(), audience.clone());
+    let expected_capability = principal.capability_id();
+    let expected_actor = principal.principal_id().clone();
+
+    let service = Arc::new(ProjectionService::new());
+    let application_service: Arc<dyn ApplicationService> = service.clone();
+    let authenticator: Arc<dyn CredentialAuthenticator> =
+        Arc::new(AcceptingAuthenticator { principal });
+    let capability_keys = Arc::new(
+        CapabilityDigestKeyProvider::parse_document(CAPABILITY_KEYS)
+            .expect("valid capability key fixture"),
+    );
+    let security = CheckedGrpcSecurityContext::new(
+        authenticator,
+        AuthenticationContext::new(database_id, environment, audience),
+        capability_keys,
+    );
+    let route: Arc<dyn GrpcLifecycleRoute> = Arc::new(ActiveRoute {
+        service: application_service,
+        security,
+    });
+    let application = GrpcApplication::new(
+        route,
+        GrpcRequestLimits::new(Duration::from_secs(30)).expect("bounded request duration"),
+    );
+
+    let incoming = TcpIncoming::bind("127.0.0.1:0".parse().expect("loopback address"))
+        .expect("bind loopback listener");
+    let address = incoming.local_addr().expect("bound loopback address");
+    let (shutdown_sender, shutdown_receiver) = oneshot::channel();
+    let server = tokio::spawn(
+        Server::builder()
+            .add_service(application.contract_server())
+            .add_service(application.command_server())
+            .add_service(application.query_server())
+            .add_service(application.commit_server())
+            .add_service(application.admin_server())
+            .serve_with_incoming_shutdown(incoming, async move {
+                let _ = shutdown_receiver.await;
+            }),
+    );
+
+    let endpoint =
+        Endpoint::from_shared(format!("http://{address}")).expect("valid loopback endpoint");
+    let channel = endpoint.connect().await.expect("connect loopback client");
+    let mut client = RiffDbClient::from_channel(channel);
+    let metadata = CallMetadata::authenticated(
+        BearerCredential::new(CAPABILITY_TOKEN).expect("valid credential presentation"),
+    );
+    let request_ids = (10_u8..=18).map(request_id).collect::<Vec<_>>();
+
+    let contract = client
+        .get_contract_version(
+            v1::GetContractVersionRequest {
+                request_id: request_ids[0].into_bytes().to_vec(),
+                contract_lineage: LINEAGE.to_owned(),
+                contract_version: 1,
+            },
+            &metadata,
+        )
+        .await
+        .expect("historical contract response");
+    let Some(v1::get_contract_version_response::Result::Found(contract)) = contract.result else {
+        panic!("expected historical contract");
+    };
+    assert_eq!(contract.contract_lineage, LINEAGE);
+    assert_eq!(contract.contract_version, 1);
+    assert_eq!(contract.bundle_hash, vec![0x11; 32]);
+
+    let projection = client
+        .get_projection_status(
+            v1::GetProjectionStatusRequest {
+                request_id: request_ids[1].into_bytes().to_vec(),
+                contract: Some(exact_contract_selection()),
+                projection_id: 1,
+            },
+            &metadata,
+        )
+        .await
+        .expect("projection status response");
+    let Some(v1::get_projection_status_response::Result::Found(projection)) = projection.result
+    else {
+        panic!("expected projection status");
+    };
+    assert_eq!(
+        projection.lifecycle,
+        v1::ProjectionLifecycle::Building as i32
+    );
+    assert_eq!(
+        projection
+            .identity
+            .expect("projection identity")
+            .contract_lineage,
+        LINEAGE
+    );
+    assert_applied_through(projection.authoritative_head, 1);
+
+    let provenance = client
+        .trace_provenance(
+            v1::TraceProvenanceRequest {
+                request_id: request_ids[2].into_bytes().to_vec(),
+                selector: Some(v1::ProvenanceSelection {
+                    selection: Some(v1::provenance_selection::Selection::CommitSequence(1)),
+                }),
+            },
+            &metadata,
+        )
+        .await
+        .expect("provenance response");
+    assert!(matches!(
+        provenance.result,
+        Some(v1::trace_provenance_response::Result::NotFound(_))
+    ));
+
+    let outbox = client
+        .list_pending_outbox_deliveries(
+            v1::ListPendingOutboxDeliveriesRequest {
+                request_id: request_ids[3].into_bytes().to_vec(),
+                page: Some(wire_page(2)),
+            },
+            &metadata,
+        )
+        .await
+        .expect("outbox response");
+    let outbox_page = outbox.page.expect("outbox page");
+    assert!(outbox_page.items.is_empty());
+    assert!(outbox_page.next_cursor.is_none());
+
+    let resources = client
+        .discover_resources(
+            v1::DiscoverResourcesRequest {
+                request_id: request_ids[4].into_bytes().to_vec(),
+                page: Some(wire_page(2)),
+                prior_fence: None,
+                representation: v1::DiscoveryRepresentation::Full as i32,
+                kind: v1::ResourceDiscoveryKind::Concrete as i32,
+            },
+            &metadata,
+        )
+        .await
+        .expect("resource discovery response");
+    let Some(v1::discover_resources_response::Result::Page(resources)) = resources.result else {
+        panic!("expected full resource page");
+    };
+    assert!(matches!(
+        resources.items.as_slice(),
+        [v1::ResourceDescriptor {
+            resource: Some(v1::resource_descriptor::Resource::ServerHealth(_))
+        }]
+    ));
+    assert_eq!(
+        resources
+            .observed_fence
+            .expect("resource discovery fence")
+            .server_generation,
+        SERVER_GENERATION
+    );
+
+    let full_tools = client
+        .discover_command_tools(
+            v1::DiscoverCommandToolsRequest {
+                request_id: request_ids[5].into_bytes().to_vec(),
+                page: Some(wire_page(2)),
+                prior_fence: None,
+                representation: v1::DiscoveryRepresentation::Full as i32,
+            },
+            &metadata,
+        )
+        .await
+        .expect("full command discovery response");
+    let Some(v1::discover_command_tools_response::Result::Page(full_tools)) = full_tools.result
+    else {
+        panic!("expected full command-tool page");
+    };
+    assert!(full_tools.operation_schemas.is_some());
+    assert!(matches!(
+        full_tools.items.as_slice(),
+        [v1::CommandToolDiscoveryItem {
+            item: Some(v1::command_tool_discovery_item::Item::FixedTool(kind))
+        }] if *kind == v1::FixedToolKind::GetHealth as i32
+    ));
+    let current_fence = full_tools.observed_fence.expect("command discovery fence");
+    assert_eq!(current_fence.server_generation, SERVER_GENERATION);
+
+    let unchanged = client
+        .discover_command_tools(
+            v1::DiscoverCommandToolsRequest {
+                request_id: request_ids[6].into_bytes().to_vec(),
+                page: Some(wire_page(2)),
+                prior_fence: Some(current_fence.clone()),
+                representation: v1::DiscoveryRepresentation::CompactObservation as i32,
+            },
+            &metadata,
+        )
+        .await
+        .expect("unchanged command discovery response");
+    let Some(v1::discover_command_tools_response::Result::CatalogUnchanged(unchanged)) =
+        unchanged.result
+    else {
+        panic!("expected unchanged command catalog");
+    };
+    assert_eq!(unchanged.server_generation, SERVER_GENERATION);
+
+    let mut stale_fence = current_fence;
+    stale_fence.server_generation = vec![0x5a; 16];
+    let refreshed = client
+        .discover_command_tools(
+            v1::DiscoverCommandToolsRequest {
+                request_id: request_ids[7].into_bytes().to_vec(),
+                page: Some(wire_page(2)),
+                prior_fence: Some(stale_fence),
+                representation: v1::DiscoveryRepresentation::CompactObservation as i32,
+            },
+            &metadata,
+        )
+        .await
+        .expect("refreshed command discovery response");
+    let Some(v1::discover_command_tools_response::Result::CompactPage(refreshed)) =
+        refreshed.result
+    else {
+        panic!("stale generation must force a normal compact page");
+    };
+    assert_eq!(
+        refreshed
+            .observed_fence
+            .expect("refreshed command discovery fence")
+            .server_generation,
+        SERVER_GENERATION
+    );
+
+    let outcome = client
+        .get_outcome(
+            v1::GetOutcomeRequest {
+                request_id: request_ids[8].into_bytes().to_vec(),
+                contract_lineage: String::new(),
+                command_name: String::new(),
+                idempotency_key: String::new(),
+                outcome_uri: Some(OUTCOME_LOCATOR.to_owned()),
+            },
+            &metadata,
+        )
+        .await
+        .expect("locator-form outcome response");
+    assert!(matches!(
+        outcome.result,
+        Some(v1::get_outcome_response::Result::NotFound(_))
+    ));
+
+    assert_eq!(service.command_discovery_prior(), vec![false, true, false]);
+    assert_eq!(service.outcome_locators(), vec![OUTCOME_LOCATOR]);
+    let expected_operations = [
+        ServiceOperationV1::GetContractVersion,
+        ServiceOperationV1::GetProjectionStatus,
+        ServiceOperationV1::TraceProvenance,
+        ServiceOperationV1::ListPendingOutboxDeliveries,
+        ServiceOperationV1::DiscoverResources,
+        ServiceOperationV1::DiscoverCommandTools,
+        ServiceOperationV1::DiscoverCommandTools,
+        ServiceOperationV1::DiscoverCommandTools,
+        ServiceOperationV1::ResolveCommandOutcome,
+    ];
+    let observed = service.observed();
+    assert_eq!(observed.len(), expected_operations.len());
+    for ((observation, expected_operation), expected_request_id) in
+        observed.iter().zip(expected_operations).zip(request_ids)
+    {
+        assert_eq!(observation.request_id, expected_request_id);
+        assert_eq!(observation.operation, expected_operation);
+        assert_eq!(observation.capability_id, expected_capability);
+        assert_eq!(observation.principal_id, expected_actor);
+        assert_eq!(observation.ingress, ServiceIngressKindV1::Grpc);
+    }
+
+    drop(client);
+    shutdown_sender.send(()).expect("server still running");
+    server
+        .await
+        .expect("server task did not panic")
+        .expect("server shut down cleanly");
+}
+
+fn contract_descriptor() -> ContractDescriptor {
+    ContractDescriptor::new(
+        ContractLineage::new(LINEAGE).expect("valid contract lineage"),
+        ContractVersion::new(1).expect("nonzero contract version"),
+        ContractBundleHash::from_bytes([0x11; 32]),
+        SourceHash::from_bytes([0x22; 32]),
+        ContractPlanRootHash::from_bytes([0x33; 32]),
+    )
+}
+
+fn projection_identity() -> ProjectionIdentity {
+    ProjectionIdentity::new(
+        ContractLineage::new(LINEAGE).expect("valid projection lineage"),
+        ProjectionId::first(),
+        ProjectionPlanHash::from_bytes([7; 32]),
+    )
+}
+
+fn discovery_fence() -> DiscoveryCatalogFence {
+    let operation_schemas = OperationSchemaCatalog::accepted().expect("accepted test schemas");
+    DiscoveryCatalogFence::no_active_contract(operation_schemas.identity())
+}
+
+fn exact_contract_selection() -> v1::ContractSelection {
+    v1::ContractSelection {
+        selection: Some(v1::contract_selection::Selection::Exact(
+            v1::ExactContractSelection {
+                contract_lineage: LINEAGE.to_owned(),
+                contract_version: 1,
+            },
+        )),
+    }
+}
+
+fn wire_page(limit: u32) -> v1::PageRequest {
+    v1::PageRequest {
+        limit: Some(limit),
+        cursor: None,
+    }
+}
+
+fn resource_first_page_request(ordinal: u8) -> v1::DiscoverResourcesRequest {
+    v1::DiscoverResourcesRequest {
+        request_id: request_id(ordinal).into_bytes().to_vec(),
+        page: Some(v1::PageRequest {
+            limit: Some(1),
+            cursor: None,
+        }),
+        prior_fence: None,
+        representation: v1::DiscoveryRepresentation::Full as i32,
+        kind: v1::ResourceDiscoveryKind::All as i32,
+    }
+}
+
+fn resource_continuation_request(ordinal: u8, cursor: Vec<u8>) -> v1::DiscoverResourcesRequest {
+    v1::DiscoverResourcesRequest {
+        request_id: request_id(ordinal).into_bytes().to_vec(),
+        page: Some(v1::PageRequest {
+            limit: Some(1),
+            cursor: Some(cursor),
+        }),
+        prior_fence: None,
+        representation: v1::DiscoveryRepresentation::Full as i32,
+        kind: v1::ResourceDiscoveryKind::All as i32,
+    }
+}
+
+async fn await_probe(receiver: oneshot::Receiver<()>, expectation: &'static str) {
+    tokio::time::timeout(Duration::from_secs(2), receiver)
+        .await
+        .unwrap_or_else(|_| panic!("timed out: {expectation}"))
+        .unwrap_or_else(|_| panic!("probe sender dropped: {expectation}"));
+}
+
+fn authorize<T>(request: &mut Request<T>) {
+    request.metadata_mut().insert(
+        "authorization",
+        MetadataValue::try_from(format!("Bearer {CAPABILITY_TOKEN}"))
+            .expect("valid authorization metadata"),
+    );
+}
+
 fn authenticated_principal(
     database_id: DatabaseId,
     environment: Environment,
     audience: Audience,
 ) -> AuthenticatedPrincipal {
+    authorization_fixture(database_id, environment, audience)
+        .authenticated_principal()
+        .clone()
+}
+
+fn authorization_fixture(
+    database_id: DatabaseId,
+    environment: Environment,
+    audience: Audience,
+) -> AuthorizationFixture {
     let grant = CapabilityGrantV1::new(
         TenantScope::Global,
         PartitionScopeV1::All,
@@ -439,7 +1321,7 @@ fn authenticated_principal(
         Vec::new(),
     )
     .expect("valid test grant");
-    let fixture = AuthorizationFixture::new(AuthorizationFixtureConfig::new(
+    AuthorizationFixture::new(AuthorizationFixtureConfig::new(
         database_id,
         environment,
         ActorId::new("grpc-principal").expect("valid principal"),
@@ -448,8 +1330,7 @@ fn authenticated_principal(
         AuthorizationFixtureTimes::new(timestamp(100), timestamp(200), timestamp(150)),
         grant,
     ))
-    .expect("valid authorization fixture");
-    fixture.authenticated_principal().clone()
+    .expect("valid authorization fixture")
 }
 
 fn timestamp(seconds: i64) -> Timestamp {

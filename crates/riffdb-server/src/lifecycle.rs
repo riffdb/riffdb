@@ -18,6 +18,7 @@ use riffdb_service::{
 use riffdb_types::ServiceOperationV1;
 
 use crate::runtime_support::RuntimeRoutingState;
+use crate::server_generation::{SERVER_GENERATION_BYTES, ServerGenerationV1};
 use crate::startup::{ValidatedAllocatorCapacity, ValidatedStartupLifecycle};
 
 /// Server-owned lifecycle route shared by every in-process transport adapter.
@@ -25,6 +26,7 @@ pub(crate) struct ProductionLifecycleRoute {
     initializing: InitializingRiffDbService,
     activated: OnceLock<Arc<dyn ApplicationService>>,
     security: OnceLock<CheckedGrpcSecurityContext>,
+    server_generation: OnceLock<ServerGenerationV1>,
     runtime: RuntimeRoutingState,
     state: Mutex<RouteState>,
 }
@@ -40,6 +42,7 @@ impl ProductionLifecycleRoute {
             initializing,
             activated: OnceLock::new(),
             security: OnceLock::new(),
+            server_generation: OnceLock::new(),
             runtime,
             state: Mutex::new(RouteState {
                 model: LifecycleModel::initializing(),
@@ -53,6 +56,7 @@ impl ProductionLifecycleRoute {
         &self,
         service: Arc<dyn ApplicationService>,
         security: CheckedGrpcSecurityContext,
+        server_generation: ServerGenerationV1,
         lifecycle: ValidatedStartupLifecycle,
         capacity: ValidatedAllocatorCapacity,
     ) -> Result<(), LifecycleInstallError> {
@@ -61,7 +65,10 @@ impl ProductionLifecycleRoute {
         if state.model.stage != LifecycleStage::InitializingValidation {
             return Err(LifecycleInstallError::AlreadyInstalled);
         }
-        if self.activated.get().is_some() || self.security.get().is_some() {
+        if self.activated.get().is_some()
+            || self.security.get().is_some()
+            || self.server_generation.get().is_some()
+        {
             return Err(LifecycleInstallError::AlreadyInstalled);
         }
         self.activated
@@ -69,6 +76,9 @@ impl ProductionLifecycleRoute {
             .map_err(|_| LifecycleInstallError::AlreadyInstalled)?;
         self.security
             .set(security)
+            .map_err(|_| LifecycleInstallError::AlreadyInstalled)?;
+        self.server_generation
+            .set(server_generation)
             .map_err(|_| LifecycleInstallError::AlreadyInstalled)?;
 
         if lifecycle != ValidatedStartupLifecycle::BootstrapRequired {
@@ -130,6 +140,17 @@ impl GrpcLifecycleRoute for ProductionLifecycleRoute {
             return None;
         }
         self.security.get().cloned()
+    }
+
+    fn server_generation(&self) -> Option<[u8; SERVER_GENERATION_BYTES]> {
+        let state = self.lock_state();
+        if matches!(
+            state.model.stage,
+            LifecycleStage::InitializingValidation | LifecycleStage::Stopped
+        ) {
+            return None;
+        }
+        self.server_generation.get().map(ServerGenerationV1::bytes)
     }
 
     fn restricted_health(&self, request: HealthRequest) -> Option<ServiceFuture<'_, HealthResult>> {
@@ -618,6 +639,10 @@ mod tests {
         )
     }
 
+    fn test_server_generation() -> ServerGenerationV1 {
+        ServerGenerationV1::for_test([0xa5; SERVER_GENERATION_BYTES])
+    }
+
     fn installed_route(
         lifecycle: ValidatedStartupLifecycle,
     ) -> (Arc<ProductionLifecycleRoute>, Arc<dyn ApplicationService>) {
@@ -633,6 +658,7 @@ mod tests {
             .install_activated(
                 Arc::clone(&service),
                 test_security_context(),
+                test_server_generation(),
                 lifecycle,
                 ValidatedAllocatorCapacity::Available,
             )
@@ -843,6 +869,7 @@ mod tests {
             .expect("initializing Health result");
         assert!(matches!(initial, HealthResult::PreBootstrap(_)));
         assert!(route.security_context().is_none());
+        assert!(route.server_generation().is_none());
         assert!(
             route
                 .admit_authenticated(ServiceOperationV1::GetEntity)
@@ -854,6 +881,7 @@ mod tests {
             .install_activated(
                 Arc::clone(&activated),
                 test_security_context(),
+                test_server_generation(),
                 ValidatedStartupLifecycle::ActiveContract,
                 ValidatedAllocatorCapacity::Available,
             )
@@ -861,6 +889,10 @@ mod tests {
 
         assert!(route.restricted_health(HealthRequest).is_none());
         assert!(route.security_context().is_some());
+        assert_eq!(
+            route.server_generation(),
+            Some([0xa5; SERVER_GENERATION_BYTES])
+        );
         let admitted = route
             .admit_authenticated(ServiceOperationV1::GetEntity)
             .expect("ready target admits entity reads");
@@ -869,6 +901,7 @@ mod tests {
             route.install_activated(
                 Arc::new(ClosedApplicationService),
                 test_security_context(),
+                test_server_generation(),
                 ValidatedStartupLifecycle::ActiveContract,
                 ValidatedAllocatorCapacity::Available,
             ),
@@ -923,6 +956,7 @@ mod tests {
             .install_activated(
                 Arc::clone(&activated),
                 test_security_context(),
+                test_server_generation(),
                 ValidatedStartupLifecycle::ActiveContract,
                 ValidatedAllocatorCapacity::Available,
             )

@@ -19,13 +19,13 @@ use riffdb_errors::{
 use riffdb_invariant::{EvaluationError, ExpressionValueSource, evaluate_expression};
 use riffdb_policy::{
     AuthorizedOperation, CommandToolCandidate, DiscoveryResource, DiscoveryVisibility,
-    EntitySchemaCandidate, FixedToolCandidate, OperationRequest, OperationTenantScope,
-    OutputClassification, PartitionConstraint, ResourceDiscoveryVisibility,
+    EntitySchemaCandidate, FixedToolCandidate, MAX_DISCOVERY_PAGE_ITEMS, OperationRequest,
+    OperationTenantScope, OutputClassification, PartitionConstraint, ResourceDiscoveryVisibility,
 };
 use riffdb_types::{
-    CanonicalRecord, CanonicalValue, ContractLineage, EntityKey, FieldId, PartitionKey,
-    PartitionScopeV1, ProjectionGeneration, ScopedPartitionV1, ServiceAuditLinkV1,
-    ServiceAuditPhaseV1, ServiceOperationV1, TenantScope,
+    CanonicalRecord, CanonicalValue, ContractLineage, EntityKey, FieldId,
+    MAX_CAPABILITY_FIELD_VISIBILITY, PartitionKey, PartitionScopeV1, ProjectionGeneration,
+    ScopedPartitionV1, ServiceAuditLinkV1, ServiceAuditPhaseV1, ServiceOperationV1, TenantScope,
 };
 
 use crate::command_operations::{SubmittedValueMaterializationError, materialize_submitted_value};
@@ -37,18 +37,20 @@ use crate::{
     AuthoritativeSchemaBinding, CommandDiscoveryCursorLookup, CommandDiscoveryCursorState,
     CommandToolDescriptor, CommandToolDiscoveryItem, ContractSelection,
     DiscoverCommandToolsRequest, DiscoverCommandToolsResult, DiscoverResourcesRequest,
-    DiscoverResourcesResult, DiscoveryCatalogFence, EntityView, FieldSelection, GetEntityRequest,
-    GetEntityResult, GetProjectionStatusRequest, GetProjectionStatusResult, IndexRowView,
-    IndexScanCursorLookup, IndexScanCursorPolicy, IndexScanCursorState, IndexScanFence,
-    InternalDefect, Page, PageLimit, PortAdmissionError, PortDriverStopped, ProjectionCursorLookup,
-    ProjectionCursorPolicy, ProjectionCursorState, ProjectionPageFence, ProjectionPortError,
-    ProjectionPortReady, ProjectionPortRequest, ProjectionPortResult, ProjectionStateFence,
-    QueryApplication, QueryProjectionReady, QueryProjectionRequest, QueryProjectionResult,
-    RequestContext, ResourceDescriptor, ResourceDiscoveryCursorLookup,
-    ResourceDiscoveryCursorState, ResourceDiscoveryCursorVisibility, RiffDbService,
-    RiffDbServiceInner, ScanIndexRequest, ScanIndexResult, ServiceAuditTargetMap, ServiceFailure,
-    ServiceFuture, ServiceResult, ServiceTelemetryEvent, SubmittedValue, ensure_response_budget,
-    fit_page_items, fit_sparse_page_items,
+    DiscoverResourcesResult, DiscoveryCatalogFence, DiscoveryRepresentation, EntityView,
+    FieldSelection, FixedToolKind, GetEntityRequest, GetEntityResult, GetProjectionStatusRequest,
+    GetProjectionStatusResult, IndexRowView, IndexScanCursorLookup, IndexScanCursorPolicy,
+    IndexScanCursorState, IndexScanFence, InternalDefect, OperationSchemaCatalog, Page, PageLimit,
+    PortAdmissionError, PortDriverStopped, ProjectionCursorLookup, ProjectionCursorPolicy,
+    ProjectionCursorState, ProjectionPageFence, ProjectionPortError, ProjectionPortReady,
+    ProjectionPortRequest, ProjectionPortResult, ProjectionStateFence, QueryApplication,
+    QueryProjectionReady, QueryProjectionRequest, QueryProjectionResult, RequestContext,
+    ResourceDescriptor, ResourceDiscoveryCursorLookup, ResourceDiscoveryCursorState,
+    ResourceDiscoveryCursorVisibility, RiffDbService, RiffDbServiceInner, ScanIndexRequest,
+    ScanIndexResult, ServiceAuditTargetMap, ServiceFailure, ServiceFuture, ServiceResult,
+    ServiceTelemetryEvent, SubmittedValue, ensure_response_budget,
+    fit_full_command_discovery_page_items, fit_full_resource_discovery_page_items, fit_page_items,
+    fit_sparse_page_items,
 };
 use crate::{CursorAccessError, CursorContractIdentity};
 
@@ -1230,29 +1232,80 @@ async fn discover_command_tools(
 ) -> ServiceResult<DiscoverCommandToolsResult> {
     const OPERATION: ServiceOperationV1 = ServiceOperationV1::DiscoverCommandTools;
     let page_request = request.page();
-    let active = prepare_active_contract(&service, &context, OPERATION).await?;
-    let fence = discovery_catalog_fence(active.as_ref());
+    let begun = service
+        .begin_invocation(
+            &context,
+            OperationRequest::discover_command_tools(),
+            ServiceAuditTargetMap::discover_command_tools(),
+            AuditScope::StandardRead,
+        )
+        .await?;
+    let (active, authorization) =
+        read_current_discovery_catalog(&service, &context, &begun, OPERATION).await?;
+    let operation_schemas = match OperationSchemaCatalog::accepted() {
+        Ok(operation_schemas) => operation_schemas,
+        Err(_) => {
+            let failure = service.internal_failure(OPERATION, InternalDefect::LowerIntegrity);
+            return Err(finish_failure(&service, &context, &begun, failure).await);
+        }
+    };
+    let fence = discovery_catalog_fence(active.as_ref(), operation_schemas.identity());
+    if request.prior_fence() == Some(&fence) {
+        drop(authorization);
+        let result = match DiscoverCommandToolsResult::catalog_unchanged(&request, fence) {
+            Ok(result) => result,
+            Err(_) => {
+                let failure = service.internal_failure(OPERATION, InternalDefect::ProofMismatch);
+                return Err(finish_failure(&service, &context, &begun, failure).await);
+            }
+        };
+        if let Err(failure) = ensure_response_budget(&result) {
+            return Err(finish_failure(&service, &context, &begun, failure).await);
+        }
+        finish_success(&service, &context, &begun).await?;
+        return Ok(result);
+    }
+
     let mut command_entries = Vec::new();
     if let Some(bundle) = active.as_ref() {
         let contract = bundle.bundle();
         for command in contract.commands() {
-            let name = contract
-                .mcp_command_names()
-                .get(command.command_id())
-                .ok_or_else(|| lower_integrity_failure(&service, OPERATION))?;
-            let source_command = crate::SourceName::new(name.source_command_name().to_owned())
-                .map_err(|_| lower_integrity_failure(&service, OPERATION))?;
-            let input_schema = schema_artifact(
+            let name = match contract.mcp_command_names().get(command.command_id()) {
+                Some(name) => name,
+                None => {
+                    let failure = lower_integrity_failure(&service, OPERATION);
+                    return Err(finish_failure(&service, &context, &begun, failure).await);
+                }
+            };
+            let source_command = match crate::SourceName::new(name.source_command_name().to_owned())
+            {
+                Ok(source_command) => source_command,
+                Err(_) => {
+                    let failure = lower_integrity_failure(&service, OPERATION);
+                    return Err(finish_failure(&service, &context, &begun, failure).await);
+                }
+            };
+            let input_schema = match schema_artifact(
                 contract.schema_artifacts(),
                 SchemaArtifactKey::CommandInput(command.command_id()),
-            )
-            .ok_or_else(|| lower_integrity_failure(&service, OPERATION))?;
-            let outcome_schema = schema_artifact(
+            ) {
+                Some(schema) => schema,
+                None => {
+                    let failure = lower_integrity_failure(&service, OPERATION);
+                    return Err(finish_failure(&service, &context, &begun, failure).await);
+                }
+            };
+            let outcome_schema = match schema_artifact(
                 contract.schema_artifacts(),
                 SchemaArtifactKey::CommandOutcomeUnion(command.command_id()),
-            )
-            .ok_or_else(|| lower_integrity_failure(&service, OPERATION))?;
-            let descriptor = CommandToolDescriptor::new(
+            ) {
+                Some(schema) => schema,
+                None => {
+                    let failure = lower_integrity_failure(&service, OPERATION);
+                    return Err(finish_failure(&service, &context, &begun, failure).await);
+                }
+            };
+            let descriptor = match CommandToolDescriptor::new(
                 name.tool_name().clone(),
                 source_command,
                 contract.lineage().clone(),
@@ -1260,8 +1313,13 @@ async fn discover_command_tools(
                 command.command_id(),
                 input_schema.clone(),
                 outcome_schema.clone(),
-            )
-            .map_err(|_| lower_integrity_failure(&service, OPERATION))?;
+            ) {
+                Ok(descriptor) => descriptor,
+                Err(_) => {
+                    let failure = lower_integrity_failure(&service, OPERATION);
+                    return Err(finish_failure(&service, &context, &begun, failure).await);
+                }
+            };
             command_entries.push((
                 CommandToolCandidate::new(bundle.lineage().clone(), command.command_id()),
                 descriptor,
@@ -1273,57 +1331,34 @@ async fn discover_command_tools(
         .iter()
         .map(|(candidate, _)| candidate.clone())
         .collect::<Vec<_>>();
-    let begun = service
-        .begin_invocation(
-            &context,
-            OperationRequest::discover_command_tools(),
-            ServiceAuditTargetMap::discover_command_tools(),
-            AuditScope::StandardRead,
-        )
-        .await?;
-    if !valid_discovery_authorization(&service, begun.initial_authorization(), OPERATION) {
-        let failure = service.internal_failure(OPERATION, InternalDefect::ProofMismatch);
-        return Err(finish_failure(&service, &context, &begun, failure).await);
-    }
-    let lookup = CommandDiscoveryCursorLookup::new(page_request.limit());
-    let prior_state = match page_request.cursor() {
-        Some(cursor) => match service.cursors.resolve_command_discovery(
-            cursor,
-            context.principal().principal_id(),
-            &lookup,
-        ) {
-            Ok(state) if state.fence() == &fence => Some(state),
-            Ok(_) | Err(CursorAccessError::InvalidCursor) => {
-                return Err(
-                    finish_failure(&service, &context, &begun, invalid_cursor_failure()).await,
-                );
-            }
-            Err(CursorAccessError::Unavailable) => {
-                let failure = cursor_unavailable_failure(&service);
-                return Err(finish_failure(&service, &context, &begun, failure).await);
-            }
-        },
-        None => None,
-    };
-    let (authorization, completion) = begun.into_initial_authorization_and_completion();
+    let current_visibility = filter_command_discovery_visibility(
+        &service,
+        &context,
+        &begun,
+        authorization,
+        &command_candidates,
+    )
+    .await?;
+    let (_, completion) = begun.into_initial_authorization_and_completion();
     let shaped = (|| {
-        let discovery = authorization
-            .into_discovery()
-            .map_err(|_| service.internal_failure(OPERATION, InternalDefect::ProofMismatch))?;
-        let visibility = discovery
-            .tool_catalog(FixedToolCandidate::ALL.as_slice(), &command_candidates)
-            .map_err(|_| service.internal_failure(OPERATION, InternalDefect::ProofMismatch))?;
-        let mut current_visibility = FixedToolCandidate::ALL
-            .iter()
-            .zip(visibility.fixed_tools())
-            .map(|(_, visibility)| *visibility == DiscoveryVisibility::Visible)
-            .collect::<Vec<_>>();
-        current_visibility.extend(
-            visibility
-                .command_tools()
-                .iter()
-                .map(|visibility| *visibility == DiscoveryVisibility::Visible),
-        );
+        let lookup =
+            CommandDiscoveryCursorLookup::new(page_request.limit(), request.representation());
+        let prior_state = match page_request.cursor() {
+            Some(cursor) => match service.cursors.resolve_command_discovery(
+                cursor,
+                context.principal().principal_id(),
+                &lookup,
+            ) {
+                Ok(state) if state.fence() == &fence => Some(state),
+                Ok(_) | Err(CursorAccessError::InvalidCursor) => {
+                    return Err(invalid_cursor_failure());
+                }
+                Err(CursorAccessError::Unavailable) => {
+                    return Err(cursor_unavailable_failure(&service));
+                }
+            },
+            None => None,
+        };
         let effective_visibility = constrain_command_discovery_visibility(
             current_visibility,
             prior_state
@@ -1339,6 +1374,7 @@ async fn discover_command_tools(
         let mut catalog = FixedToolCandidate::ALL
             .iter()
             .copied()
+            .map(FixedToolKind::from_policy)
             .map(CommandToolDiscoveryItem::Fixed)
             .collect::<Vec<_>>();
         catalog.extend(
@@ -1369,7 +1405,22 @@ async fn discover_command_tools(
         let more_due_to_limit = items.len() > usize::from(effective_limit.get().get());
         items.truncate(usize::from(effective_limit.get().get()));
         raw_indices.truncate(items.len());
-        let fit = fit_page_items(&items, &fence, more_due_to_limit)?;
+        let compact_items =
+            (request.representation() == DiscoveryRepresentation::CompactObservation).then(|| {
+                items
+                    .iter()
+                    .map(CommandToolDiscoveryItem::compact)
+                    .collect::<Vec<_>>()
+            });
+        let fit = match compact_items.as_ref() {
+            Some(items) => fit_page_items(items, &fence, more_due_to_limit)?,
+            None => fit_full_command_discovery_page_items(
+                &items,
+                &fence,
+                &operation_schemas,
+                more_due_to_limit,
+            )?,
+        };
         let continuation_after = if fit.has_more() {
             Some(
                 raw_indices
@@ -1383,6 +1434,10 @@ async fn discover_command_tools(
             None
         };
         items.truncate(fit.item_count());
+        let compact_items = compact_items.map(|mut items| {
+            items.truncate(fit.item_count());
+            items
+        });
         let cursor_guard = match continuation_after {
             Some(after_candidate) => {
                 let state = CommandDiscoveryCursorState::new(
@@ -1408,10 +1463,21 @@ async fn discover_command_tools(
         let next_cursor = cursor_guard
             .as_ref()
             .map(crate::CursorPublicationGuard::token);
-        let page = Page::new(effective_limit, items, next_cursor, fence)
-            .map_err(|_| service.internal_failure(OPERATION, InternalDefect::ProofMismatch))?;
-        let result = DiscoverCommandToolsResult::new(page)
-            .map_err(|_| service.internal_failure(OPERATION, InternalDefect::ProofMismatch))?;
+        let result = match compact_items {
+            Some(items) => {
+                let page = Page::new(effective_limit, items, next_cursor, fence).map_err(|_| {
+                    service.internal_failure(OPERATION, InternalDefect::ProofMismatch)
+                })?;
+                DiscoverCommandToolsResult::compact_page(&request, page)
+            }
+            None => {
+                let page = Page::new(effective_limit, items, next_cursor, fence).map_err(|_| {
+                    service.internal_failure(OPERATION, InternalDefect::ProofMismatch)
+                })?;
+                DiscoverCommandToolsResult::page(&request, page, operation_schemas)
+            }
+        }
+        .map_err(|_| service.internal_failure(OPERATION, InternalDefect::ProofMismatch))?;
         ensure_response_budget(&result)?;
         Ok((result, cursor_guard))
     })();
@@ -1430,16 +1496,51 @@ async fn discover_resources(
 ) -> ServiceResult<DiscoverResourcesResult> {
     const OPERATION: ServiceOperationV1 = ServiceOperationV1::DiscoverResources;
     let page_request = request.page();
-    let active = prepare_active_contract(&service, &context, OPERATION).await?;
-    let fence = discovery_catalog_fence(active.as_ref());
+    let begun = service
+        .begin_invocation(
+            &context,
+            OperationRequest::discover_resources(),
+            ServiceAuditTargetMap::discover_resources(),
+            AuditScope::StandardRead,
+        )
+        .await?;
+    let (active, authorization) =
+        read_current_discovery_catalog(&service, &context, &begun, OPERATION).await?;
+    let operation_schemas = match OperationSchemaCatalog::accepted() {
+        Ok(operation_schemas) => operation_schemas,
+        Err(_) => {
+            let failure = service.internal_failure(OPERATION, InternalDefect::LowerIntegrity);
+            return Err(finish_failure(&service, &context, &begun, failure).await);
+        }
+    };
+    let fence = discovery_catalog_fence(active.as_ref(), operation_schemas.identity());
+    if request.prior_fence() == Some(&fence) {
+        drop(authorization);
+        let result = match DiscoverResourcesResult::catalog_unchanged(&request, fence) {
+            Ok(result) => result,
+            Err(_) => {
+                let failure = service.internal_failure(OPERATION, InternalDefect::ProofMismatch);
+                return Err(finish_failure(&service, &context, &begun, failure).await);
+            }
+        };
+        if let Err(failure) = ensure_response_budget(&result) {
+            return Err(finish_failure(&service, &context, &begun, failure).await);
+        }
+        finish_success(&service, &context, &begun).await?;
+        return Ok(result);
+    }
+
     let mut candidates = Vec::new();
     push_resource(
         &mut candidates,
         DiscoveryResource::ActiveContract,
         ResourceDescriptor::active_contract(),
     );
-    if let Some(bundle) = active.as_ref() {
-        append_contract_resources(&service, OPERATION, bundle, &mut candidates)?;
+    if let Some(bundle) = active.as_ref()
+        && let Err(failure) =
+            append_contract_resources(&service, OPERATION, bundle, &mut candidates)
+    {
+        return Err(finish_failure(&service, &context, &begun, failure).await);
     }
     push_resource(
         &mut candidates,
@@ -1456,54 +1557,40 @@ async fn discover_resources(
         DiscoveryResource::Health,
         ResourceDescriptor::server_health(),
     );
+    candidates.retain(|candidate| candidate.descriptor.matches_discovery_kind(request.kind()));
     candidates.sort_unstable_by_key(|candidate| candidate.descriptor.canonical_identity_key());
-    let policy_candidates = candidates
-        .iter()
-        .map(|candidate| candidate.policy_candidate.clone())
-        .collect::<Vec<_>>();
-    let begun = service
-        .begin_invocation(
-            &context,
-            OperationRequest::discover_resources(),
-            ServiceAuditTargetMap::discover_resources(),
-            AuditScope::StandardRead,
-        )
-        .await?;
-    if !valid_discovery_authorization(&service, begun.initial_authorization(), OPERATION) {
-        let failure = service.internal_failure(OPERATION, InternalDefect::ProofMismatch);
-        return Err(finish_failure(&service, &context, &begun, failure).await);
-    }
-    let lookup = ResourceDiscoveryCursorLookup::new(page_request.limit());
-    let prior_state = match page_request.cursor() {
-        Some(cursor) => match service.cursors.resolve_resource_discovery(
-            cursor,
-            context.principal().principal_id(),
-            &lookup,
-        ) {
-            Ok(state) if state.fence() == &fence => Some(state),
-            Ok(_) | Err(CursorAccessError::InvalidCursor) => {
-                return Err(
-                    finish_failure(&service, &context, &begun, invalid_cursor_failure()).await,
-                );
-            }
-            Err(CursorAccessError::Unavailable) => {
-                let failure = cursor_unavailable_failure(&service);
-                return Err(finish_failure(&service, &context, &begun, failure).await);
-            }
-        },
-        None => None,
-    };
-    let (authorization, completion) = begun.into_initial_authorization_and_completion();
+    let current_visibility = filter_resource_discovery_visibility(
+        &service,
+        &context,
+        &begun,
+        authorization,
+        active.as_ref(),
+        &candidates,
+    )
+    .await?;
+    let (_, completion) = begun.into_initial_authorization_and_completion();
     let shaped = (|| {
-        let discovery = authorization
-            .into_discovery()
-            .map_err(|_| service.internal_failure(OPERATION, InternalDefect::ProofMismatch))?;
-        let visibility = discovery
-            .resource_catalog(&policy_candidates)
-            .map_err(|_| service.internal_failure(OPERATION, InternalDefect::ProofMismatch))?;
-        let current_visibility =
-            normalize_resource_discovery_visibility(active.as_ref(), &candidates, visibility)
-                .map_err(|_| service.internal_failure(OPERATION, InternalDefect::ProofMismatch))?;
+        let lookup = ResourceDiscoveryCursorLookup::new(
+            page_request.limit(),
+            request.representation(),
+            request.kind(),
+        );
+        let prior_state = match page_request.cursor() {
+            Some(cursor) => match service.cursors.resolve_resource_discovery(
+                cursor,
+                context.principal().principal_id(),
+                &lookup,
+            ) {
+                Ok(state) if state.fence() == &fence => Some(state),
+                Ok(_) | Err(CursorAccessError::InvalidCursor) => {
+                    return Err(invalid_cursor_failure());
+                }
+                Err(CursorAccessError::Unavailable) => {
+                    return Err(cursor_unavailable_failure(&service));
+                }
+            },
+            None => None,
+        };
         let effective_visibility = constrain_resource_discovery_visibility(
             current_visibility,
             prior_state
@@ -1562,7 +1649,17 @@ async fn discover_resources(
         let more_due_to_limit = resources.len() > usize::from(effective_limit.get().get());
         resources.truncate(usize::from(effective_limit.get().get()));
         raw_indices.truncate(resources.len());
-        let fit = fit_page_items(&resources, &fence, more_due_to_limit)?;
+        let compact_resources =
+            (request.representation() == DiscoveryRepresentation::CompactObservation).then(|| {
+                resources
+                    .iter()
+                    .map(ResourceDescriptor::compact)
+                    .collect::<Vec<_>>()
+            });
+        let fit = match compact_resources.as_ref() {
+            Some(resources) => fit_page_items(resources, &fence, more_due_to_limit)?,
+            None => fit_full_resource_discovery_page_items(&resources, &fence, more_due_to_limit)?,
+        };
         let continuation_after = if fit.has_more() {
             Some(
                 raw_indices
@@ -1576,6 +1673,10 @@ async fn discover_resources(
             None
         };
         resources.truncate(fit.item_count());
+        let compact_resources = compact_resources.map(|mut resources| {
+            resources.truncate(fit.item_count());
+            resources
+        });
         let cursor_guard = match continuation_after {
             Some(after_candidate) => {
                 let state = ResourceDiscoveryCursorState::new(
@@ -1601,9 +1702,21 @@ async fn discover_resources(
         let next_cursor = cursor_guard
             .as_ref()
             .map(crate::CursorPublicationGuard::token);
-        let page = Page::new(effective_limit, resources, next_cursor, fence)
-            .map_err(|_| service.internal_failure(OPERATION, InternalDefect::ProofMismatch))?;
-        let result = DiscoverResourcesResult::new(page)
+        let result =
+            match compact_resources {
+                Some(resources) => {
+                    let page = Page::new(effective_limit, resources, next_cursor, fence).map_err(
+                        |_| service.internal_failure(OPERATION, InternalDefect::ProofMismatch),
+                    )?;
+                    DiscoverResourcesResult::compact_page(&request, page)
+                }
+                None => {
+                    let page = Page::new(effective_limit, resources, next_cursor, fence).map_err(
+                        |_| service.internal_failure(OPERATION, InternalDefect::ProofMismatch),
+                    )?;
+                    DiscoverResourcesResult::page(&request, page)
+                }
+            }
             .map_err(|_| service.internal_failure(OPERATION, InternalDefect::ProofMismatch))?;
         ensure_response_budget(&result)?;
         Ok((result, cursor_guard))
@@ -1621,6 +1734,220 @@ struct ResourceCandidate {
     policy_candidate: DiscoveryResource,
     descriptor: ResourceDescriptor,
     entity_schema: Option<EntitySchema>,
+}
+
+async fn read_current_discovery_catalog(
+    service: &RiffDbServiceInner,
+    context: &RequestContext,
+    begun: &BegunInvocation,
+    operation: ServiceOperationV1,
+) -> ServiceResult<(Option<ValidatedContractBundle>, Box<AuthorizedOperation>)> {
+    if !valid_discovery_authorization(service, begun.initial_authorization(), operation) {
+        let failure = service.internal_failure(operation, InternalDefect::ProofMismatch);
+        return Err(finish_failure(service, context, begun, failure).await);
+    }
+    let permit = match wait_with_control(
+        context.control(),
+        service.providers.deadline_scheduler.as_ref(),
+        service
+            .providers
+            .catalog
+            .reserve_active_catalog(context.control()),
+    )
+    .await
+    {
+        Ok(Ok(permit)) => permit,
+        Ok(Err(error)) => {
+            return Err(finish_admission_failure(service, context, begun, error).await);
+        }
+        Err(error) => {
+            return Err(finish_controlled_wait(service, context, begun, error).await);
+        }
+    };
+    let authorization = begun.reauthorize(service, context).await?;
+    if !valid_discovery_authorization(service, &authorization, operation) {
+        let failure = service.internal_failure(operation, InternalDefect::ProofMismatch);
+        return Err(finish_failure(service, context, begun, failure).await);
+    }
+    let receipt = match permit.submit(()) {
+        Ok(receipt) => receipt,
+        Err(error) => {
+            return Err(finish_admission_failure(service, context, begun, error).await);
+        }
+    };
+    let active = match wait_with_control(
+        context.control(),
+        service.providers.deadline_scheduler.as_ref(),
+        receipt,
+    )
+    .await
+    {
+        Ok(Ok(Ok(active))) => active.map(|snapshot| snapshot.bundle().clone()),
+        Ok(Ok(Err(error))) => {
+            let failure = catalog_failure(service, operation, error);
+            return Err(finish_failure(service, context, begun, failure).await);
+        }
+        Ok(Err(PortDriverStopped)) => {
+            let failure = lower_integrity_failure(service, operation);
+            return Err(finish_failure(service, context, begun, failure).await);
+        }
+        Err(error) => {
+            return Err(finish_controlled_wait(service, context, begun, error).await);
+        }
+    };
+    Ok((active, authorization))
+}
+
+async fn filter_command_discovery_visibility(
+    service: &RiffDbServiceInner,
+    context: &RequestContext,
+    begun: &BegunInvocation,
+    first_authorization: Box<AuthorizedOperation>,
+    candidates: &[CommandToolCandidate],
+) -> ServiceResult<Vec<bool>> {
+    const OPERATION: ServiceOperationV1 = ServiceOperationV1::DiscoverCommandTools;
+    let batch_count = candidates.len().div_ceil(MAX_DISCOVERY_PAGE_ITEMS).max(1);
+    let mut first_authorization = Some(first_authorization);
+    let mut fixed_visibility = None;
+    let mut command_visibility = Vec::with_capacity(candidates.len());
+    for batch_index in 0..batch_count {
+        let start = batch_index * MAX_DISCOVERY_PAGE_ITEMS;
+        let end = (start + MAX_DISCOVERY_PAGE_ITEMS).min(candidates.len());
+        let batch = &candidates[start..end];
+        let authorization = match first_authorization.take() {
+            Some(authorization) => authorization,
+            None => begun.reauthorize(service, context).await?,
+        };
+        if !valid_discovery_authorization(service, &authorization, OPERATION) {
+            let failure = service.internal_failure(OPERATION, InternalDefect::ProofMismatch);
+            return Err(finish_failure(service, context, begun, failure).await);
+        }
+        let discovery = match authorization.into_discovery() {
+            Ok(discovery) => discovery,
+            Err(_) => {
+                let failure = service.internal_failure(OPERATION, InternalDefect::ProofMismatch);
+                return Err(finish_failure(service, context, begun, failure).await);
+            }
+        };
+        let visibility = match discovery.tool_catalog(FixedToolCandidate::ALL.as_slice(), batch) {
+            Ok(visibility) => visibility,
+            Err(_) => {
+                let failure = service.internal_failure(OPERATION, InternalDefect::ProofMismatch);
+                return Err(finish_failure(service, context, begun, failure).await);
+            }
+        };
+        if visibility.fixed_tools().len() != FixedToolCandidate::ALL.len()
+            || visibility.command_tools().len() != batch.len()
+        {
+            let failure = service.internal_failure(OPERATION, InternalDefect::ProofMismatch);
+            return Err(finish_failure(service, context, begun, failure).await);
+        }
+        let batch_fixed_visibility = visibility
+            .fixed_tools()
+            .iter()
+            .map(|visibility| *visibility == DiscoveryVisibility::Visible)
+            .collect::<Vec<_>>();
+        if fixed_visibility
+            .as_ref()
+            .is_some_and(|prior| prior != &batch_fixed_visibility)
+        {
+            let failure = service.internal_failure(OPERATION, InternalDefect::ProofMismatch);
+            return Err(finish_failure(service, context, begun, failure).await);
+        }
+        fixed_visibility.get_or_insert(batch_fixed_visibility);
+        command_visibility.extend(
+            visibility
+                .command_tools()
+                .iter()
+                .map(|visibility| *visibility == DiscoveryVisibility::Visible),
+        );
+    }
+    let Some(mut visibility) = fixed_visibility else {
+        let failure = service.internal_failure(OPERATION, InternalDefect::ProofMismatch);
+        return Err(finish_failure(service, context, begun, failure).await);
+    };
+    visibility.extend(command_visibility);
+    Ok(visibility)
+}
+
+async fn filter_resource_discovery_visibility(
+    service: &RiffDbServiceInner,
+    context: &RequestContext,
+    begun: &BegunInvocation,
+    first_authorization: Box<AuthorizedOperation>,
+    active: Option<&ValidatedContractBundle>,
+    candidates: &[ResourceCandidate],
+) -> ServiceResult<Vec<ResourceDiscoveryCursorVisibility>> {
+    const OPERATION: ServiceOperationV1 = ServiceOperationV1::DiscoverResources;
+    let mut first_authorization = Some(first_authorization);
+    let mut visibility = Vec::with_capacity(candidates.len());
+    let mut start = 0;
+    loop {
+        let Some(end) = resource_discovery_batch_end(candidates, start) else {
+            let failure = service.internal_failure(OPERATION, InternalDefect::ProofMismatch);
+            return Err(finish_failure(service, context, begun, failure).await);
+        };
+        let batch = &candidates[start..end];
+        let authorization = match first_authorization.take() {
+            Some(authorization) => authorization,
+            None => begun.reauthorize(service, context).await?,
+        };
+        if !valid_discovery_authorization(service, &authorization, OPERATION) {
+            let failure = service.internal_failure(OPERATION, InternalDefect::ProofMismatch);
+            return Err(finish_failure(service, context, begun, failure).await);
+        }
+        let discovery = match authorization.into_discovery() {
+            Ok(discovery) => discovery,
+            Err(_) => {
+                let failure = service.internal_failure(OPERATION, InternalDefect::ProofMismatch);
+                return Err(finish_failure(service, context, begun, failure).await);
+            }
+        };
+        let policy_candidates = batch
+            .iter()
+            .map(|candidate| candidate.policy_candidate.clone())
+            .collect::<Vec<_>>();
+        let batch_visibility = match discovery.resource_catalog(&policy_candidates) {
+            Ok(visibility) if visibility.len() == batch.len() => visibility,
+            Ok(_) | Err(_) => {
+                let failure = service.internal_failure(OPERATION, InternalDefect::ProofMismatch);
+                return Err(finish_failure(service, context, begun, failure).await);
+            }
+        };
+        visibility.extend(batch_visibility);
+        if end == candidates.len() {
+            break;
+        }
+        start = end;
+    }
+    match normalize_resource_discovery_visibility(active, candidates, visibility) {
+        Ok(visibility) => Ok(visibility),
+        Err(()) => {
+            let failure = service.internal_failure(OPERATION, InternalDefect::ProofMismatch);
+            Err(finish_failure(service, context, begun, failure).await)
+        }
+    }
+}
+
+fn resource_discovery_batch_end(candidates: &[ResourceCandidate], start: usize) -> Option<usize> {
+    if start > candidates.len() {
+        return None;
+    }
+    let mut end = start;
+    let mut candidate_fields = 0usize;
+    while end < candidates.len() && end - start < MAX_DISCOVERY_PAGE_ITEMS {
+        let fields = match &candidates[end].policy_candidate {
+            DiscoveryResource::EntitySchema(candidate) => candidate.non_key_fields().len(),
+            _ => 0,
+        };
+        let next_fields = candidate_fields.checked_add(fields)?;
+        if next_fields > MAX_CAPABILITY_FIELD_VISIBILITY {
+            break;
+        }
+        candidate_fields = next_fields;
+        end += 1;
+    }
+    (start == candidates.len() || end != start).then_some(end)
 }
 
 fn push_resource(
@@ -1682,27 +2009,49 @@ fn append_contract_resources(
         });
     }
     for command in contract.commands() {
+        let name = contract
+            .mcp_command_names()
+            .get(command.command_id())
+            .ok_or_else(|| lower_integrity_failure(service, operation))?;
+        let source_command = crate::SourceName::new(name.source_command_name().to_owned())
+            .map_err(|_| lower_integrity_failure(service, operation))?;
+        let outcome_descriptor = ResourceDescriptor::command_outcome(
+            lineage.clone(),
+            command.command_id(),
+            name.tool_name().clone(),
+        )
+        .map_err(|_| lower_integrity_failure(service, operation))?;
         for (candidate, descriptor) in [
             (
                 DiscoveryResource::CommandPlan {
                     lineage: lineage.clone(),
                     command_id: command.command_id(),
                 },
-                ResourceDescriptor::command_plan(lineage.clone(), command.command_id()),
+                ResourceDescriptor::command_plan(
+                    lineage.clone(),
+                    contract.contract_version(),
+                    command.command_id(),
+                    source_command.clone(),
+                ),
             ),
             (
                 DiscoveryResource::CommandDocumentation {
                     lineage: lineage.clone(),
                     command_id: command.command_id(),
                 },
-                ResourceDescriptor::command_documentation(lineage.clone(), command.command_id()),
+                ResourceDescriptor::command_documentation(
+                    lineage.clone(),
+                    contract.contract_version(),
+                    command.command_id(),
+                    source_command.clone(),
+                ),
             ),
             (
                 DiscoveryResource::CommandOutcome {
                     lineage: lineage.clone(),
                     command_id: command.command_id(),
                 },
-                ResourceDescriptor::command_outcome(lineage.clone(), command.command_id()),
+                outcome_descriptor,
             ),
         ] {
             push_resource(candidates, candidate, descriptor);
@@ -1721,14 +2070,19 @@ fn append_contract_resources(
     Ok(())
 }
 
-fn discovery_catalog_fence(active: Option<&ValidatedContractBundle>) -> DiscoveryCatalogFence {
-    active.map_or_else(DiscoveryCatalogFence::no_active_contract, |bundle| {
-        DiscoveryCatalogFence::active_contract(
+fn discovery_catalog_fence(
+    active: Option<&ValidatedContractBundle>,
+    operation_schemas: crate::OperationSchemaCatalogIdentity,
+) -> DiscoveryCatalogFence {
+    match active {
+        None => DiscoveryCatalogFence::no_active_contract(operation_schemas),
+        Some(bundle) => DiscoveryCatalogFence::active_contract(
             bundle.lineage().clone(),
             bundle.contract_version(),
             bundle.bundle_hash(),
-        )
-    })
+            operation_schemas,
+        ),
+    }
 }
 
 fn constrain_command_discovery_visibility(
@@ -2351,8 +2705,6 @@ fn valid_discovery_authorization(
         && obligations.partition_constraint().is_none()
         && obligations.field_mask().is_none()
         && obligations.row_limit().is_none()
-        && obligations.validated_approval().is_none()
-        && obligations.audit_class().is_none()
         && obligations.output_classification() == OutputClassification::PublicMetadata
 }
 
@@ -3227,6 +3579,54 @@ mod tests {
         assert!(artifact.canonical_json().contains("visible_value"));
         assert!(!artifact.canonical_json().contains("hidden_value"));
         assert!(filtered_entity_schema_artifact(&entity, &schema, &[key_field]).is_err());
+    }
+
+    fn resource_candidate_with_fields(entity: u32, field_count: u32) -> ResourceCandidate {
+        let entity_type_id = EntityTypeId::new(entity).expect("nonzero entity ID");
+        let fields = (1..=field_count)
+            .map(|field| FieldId::new(field).expect("nonzero field ID"))
+            .collect();
+        ResourceCandidate {
+            policy_candidate: DiscoveryResource::EntitySchema(
+                EntitySchemaCandidate::new(
+                    ContractLineage::new("batch_test").expect("bounded lineage"),
+                    entity_type_id,
+                    fields,
+                )
+                .expect("bounded entity-schema candidate"),
+            ),
+            descriptor: ResourceDescriptor::active_contract(),
+            entity_schema: None,
+        }
+    }
+
+    #[test]
+    fn resource_discovery_batches_bound_candidates_and_aggregate_fields() {
+        let count_limited = (0..501)
+            .map(|_| ResourceCandidate {
+                policy_candidate: DiscoveryResource::Health,
+                descriptor: ResourceDescriptor::server_health(),
+                entity_schema: None,
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(resource_discovery_batch_end(&count_limited, 0), Some(500));
+        assert_eq!(resource_discovery_batch_end(&count_limited, 500), Some(501));
+
+        let mut field_limited = (1..=15)
+            .map(|entity| resource_candidate_with_fields(entity, 4_096))
+            .collect::<Vec<_>>();
+        field_limited.push(resource_candidate_with_fields(16, 4_095));
+        field_limited.push(resource_candidate_with_fields(17, 1));
+        assert_eq!(
+            resource_discovery_batch_end(&field_limited, 0),
+            Some(16),
+            "the exact 65,535-field aggregate remains in one policy batch"
+        );
+        assert_eq!(
+            resource_discovery_batch_end(&field_limited, 16),
+            Some(17),
+            "the next field starts a separately authorized batch"
+        );
     }
 
     #[test]

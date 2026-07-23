@@ -7,29 +7,42 @@ use riffdb_auth::AuthenticationContext;
 use riffdb_proto::{canonical_value_to_proto, v1};
 use riffdb_service::{
     BootstrapCapabilityRequest, BootstrapCapabilityResult, CapabilityIdentityView,
-    CapabilityTransitionView, CommandDurability, CommitSubscriptionEndReason,
-    CommitSubscriptionEvent, CommitView, ContractDescriptor, ContractSelection, ContractSource,
-    ContractValidationResult, CreateCapabilityResult, CursorToken, DeployContractRequest,
-    DeployContractResult, ExecuteCommandRequest, ExecuteCommandResult, ExplainCommandRequest,
-    ExplainCommandResult, FieldSelection, GetActiveContractRequest, GetActiveContractResult,
-    GetCommitRequest, GetCommitResult, GetEntityRequest, GetEntityResult, HealthComponentKind,
-    HealthComponentStatus, HealthRequest, HealthResult, HealthStatus, JournaledCommandResult,
-    JournaledCompletion, NormalCreateCapabilityRequest, NormalCreateCapabilityResult, PageLimit,
-    PageRequest, PreBootstrapLifecycle, ProjectionFailureCode, ProjectionUnavailableReason,
-    QueryProjectionRequest, QueryProjectionResult, ResolveCommandOutcomeRequest,
-    ResolveCommandOutcomeResult, RevokeCapabilityRequest, RevokeCapabilityResult,
+    CapabilityTransitionView, CommandDurability, CommandToolDescriptor, CommandToolDiscoveryItem,
+    CommitSubscriptionEndReason, CommitSubscriptionEvent, CommitView, CompactCommandToolDescriptor,
+    CompactCommandToolDiscoveryItem, CompactResourceDescriptor, CompactResourceDescriptorRef,
+    ContractDescriptor, ContractSelection, ContractSource, ContractValidationResult,
+    CreateCapabilityResult, CursorToken, DeployContractRequest, DeployContractResult,
+    DiscoverCommandToolsRequest, DiscoverCommandToolsResult, DiscoverCommandToolsResultRef,
+    DiscoverResourcesRequest, DiscoverResourcesResult, DiscoverResourcesResultRef,
+    DiscoveryCatalogFence, DiscoveryCatalogStateRef, DiscoveryRepresentation,
+    ExecuteCommandRequest, ExecuteCommandResult, ExplainCommandRequest, ExplainCommandResult,
+    FieldSelection, FixedToolKind, GeneratedSchemaIdentity, GetActiveContractRequest,
+    GetActiveContractResult, GetCommitRequest, GetCommitResult, GetContractVersionRequest,
+    GetContractVersionResult, GetEntityRequest, GetEntityResult, GetProjectionStatusRequest,
+    GetProjectionStatusResult, HealthComponentKind, HealthComponentStatus, HealthRequest,
+    HealthResult, HealthStatus, JournaledCommandResult, JournaledCompletion,
+    ListPendingOutboxDeliveriesRequest, ListPendingOutboxDeliveriesResult,
+    NormalCreateCapabilityRequest, NormalCreateCapabilityResult, OperationSchemaArtifact,
+    OperationSchemaCatalog, OperationSchemaCatalogIdentity, OperationSchemaIdentity,
+    OutboxDeliveryState, OutcomeResourceLocator, PageLimit, PageRequest, PreBootstrapLifecycle,
+    ProjectionFailureCode, ProjectionLifecycle, ProjectionUnavailableReason, ProvenanceSelection,
+    PublishedApplyMode, QueryProjectionRequest, QueryProjectionResult,
+    ResolveCommandOutcomeRequest, ResolveCommandOutcomeResult, ResourceDescriptor,
+    ResourceDescriptorRef, ResourceDiscoveryKind, RevokeCapabilityRequest, RevokeCapabilityResult,
     ScanCommitsRequest, ScanCommitsResult, ScanIndexRequest, ScanIndexResult, SourceName,
     StatisticsRequest, StatisticsResult, SubmittedDecimal, SubmittedEnum, SubmittedField,
     SubmittedFieldIdentity, SubmittedMoney, SubmittedRecord, SubmittedValue,
-    SubscribeToCommitsRequest, ValidateContractRequest,
+    SubscribeToCommitsRequest, TraceProvenanceRequest, TraceProvenanceResult,
+    ValidateContractRequest,
 };
 use riffdb_types::{
     ActorId, ActorKind, AdmittedActorContext, Audience, CapabilityGrantV1, CapabilityId,
     CapabilityPermissionKindV1, CapabilityPermissionV1, CapabilityPermissionsV1, CommandId,
-    CommitSequence, ContractLineage, ContractVersion, CurrencyCode, Date, EntityFieldVisibilityV1,
-    EntityKey, EntityTypeId, EnumTypeId, EnumVariantId, FieldId, FrontierPosition, IdempotencyKey,
-    IndexEpochPosition, IndexId, PartitionKey, PartitionScopeV1, ProjectionId, RequestId,
-    RevocationReasonCodeV1, ScopedPartitionV1, TenantId, TenantScope, Timestamp,
+    CommitSequence, ContractBundleHash, ContractLineage, ContractVersion, CurrencyCode, Date,
+    EntityFieldVisibilityV1, EntityKey, EntityTypeId, EnumTypeId, EnumVariantId, FieldId,
+    FrontierPosition, IdempotencyKey, IndexEpochPosition, IndexId, PartitionKey, PartitionScopeV1,
+    ProjectionId, ProvenanceId, RequestId, RevocationReasonCodeV1, SchemaHash, ScopedPartitionV1,
+    TenantId, TenantScope, Timestamp,
 };
 use tonic::Status;
 
@@ -135,6 +148,71 @@ pub fn get_active_contract_request_from_proto(
     ))
 }
 
+/// Converts one exact immutable contract-version lookup.
+pub fn get_contract_version_request_from_proto(
+    request: v1::GetContractVersionRequest,
+) -> Result<(RequestId, GetContractVersionRequest), Status> {
+    let request_id = request_id_from_bytes(&request.request_id)?;
+    let lineage = ContractLineage::new(request.contract_lineage).map_err(|_| invalid_request())?;
+    let version = ContractVersion::new(request.contract_version).ok_or_else(invalid_request)?;
+    Ok((request_id, GetContractVersionRequest::new(lineage, version)))
+}
+
+/// Converts command-tool discovery and strips only a stale presentation generation.
+pub fn discover_command_tools_request_from_proto(
+    request: v1::DiscoverCommandToolsRequest,
+    current_generation: [u8; 16],
+) -> Result<(RequestId, DiscoverCommandToolsRequest), Status> {
+    let request_id = request_id_from_bytes(&request.request_id)?;
+    let page = page_request_from_proto(request.page.ok_or_else(invalid_request)?)?;
+    let representation = discovery_representation_from_proto(request.representation)?;
+    if request.prior_fence.is_some()
+        && (representation != DiscoveryRepresentation::CompactObservation
+            || page.cursor().is_some())
+    {
+        return Err(invalid_request());
+    }
+    let prior_fence = request
+        .prior_fence
+        .map(|fence| semantic_discovery_fence_from_proto(fence, current_generation))
+        .transpose()?
+        .flatten();
+    let request = DiscoverCommandToolsRequest::with_options(page, representation, prior_fence)
+        .map_err(|_| invalid_request())?;
+    Ok((request_id, request))
+}
+
+/// Converts resource discovery and strips only a stale presentation generation.
+pub fn discover_resources_request_from_proto(
+    request: v1::DiscoverResourcesRequest,
+    current_generation: [u8; 16],
+) -> Result<(RequestId, DiscoverResourcesRequest), Status> {
+    let request_id = request_id_from_bytes(&request.request_id)?;
+    let page = page_request_from_proto(request.page.ok_or_else(invalid_request)?)?;
+    let representation = discovery_representation_from_proto(request.representation)?;
+    let kind =
+        match v1::ResourceDiscoveryKind::try_from(request.kind).map_err(|_| invalid_request())? {
+            v1::ResourceDiscoveryKind::All => ResourceDiscoveryKind::All,
+            v1::ResourceDiscoveryKind::Concrete => ResourceDiscoveryKind::Concrete,
+            v1::ResourceDiscoveryKind::Template => ResourceDiscoveryKind::Template,
+            v1::ResourceDiscoveryKind::Unspecified => return Err(invalid_request()),
+        };
+    if request.prior_fence.is_some()
+        && (representation != DiscoveryRepresentation::CompactObservation
+            || page.cursor().is_some())
+    {
+        return Err(invalid_request());
+    }
+    let prior_fence = request
+        .prior_fence
+        .map(|fence| semantic_discovery_fence_from_proto(fence, current_generation))
+        .transpose()?
+        .flatten();
+    let request = DiscoverResourcesRequest::with_options(page, representation, prior_fence, kind)
+        .map_err(|_| invalid_request())?;
+    Ok((request_id, request))
+}
+
 /// Converts Execute input mechanically and leaves schema resolution to the service.
 pub fn execute_command_request_from_proto(
     request: v1::ExecuteCommandRequest,
@@ -159,14 +237,27 @@ pub fn resolve_outcome_request_from_proto(
     request: v1::GetOutcomeRequest,
 ) -> Result<(RequestId, ResolveCommandOutcomeRequest), Status> {
     let request_id = request_id_from_bytes(&request.request_id)?;
-    let lineage = ContractLineage::new(request.contract_lineage).map_err(|_| invalid_request())?;
-    let command = SourceName::new(request.command_name).map_err(|_| invalid_request())?;
-    let idempotency_key =
-        IdempotencyKey::new(request.idempotency_key).map_err(|_| invalid_request())?;
-    Ok((
-        request_id,
-        ResolveCommandOutcomeRequest::new(lineage, command, idempotency_key),
-    ))
+    let service_request = match request.outcome_uri {
+        Some(locator)
+            if request.contract_lineage.is_empty()
+                && request.command_name.is_empty()
+                && request.idempotency_key.is_empty() =>
+        {
+            ResolveCommandOutcomeRequest::locator(
+                OutcomeResourceLocator::parse(locator).map_err(|_| invalid_request())?,
+            )
+        }
+        None => {
+            let lineage =
+                ContractLineage::new(request.contract_lineage).map_err(|_| invalid_request())?;
+            let command = SourceName::new(request.command_name).map_err(|_| invalid_request())?;
+            let idempotency_key =
+                IdempotencyKey::new(request.idempotency_key).map_err(|_| invalid_request())?;
+            ResolveCommandOutcomeRequest::new(lineage, command, idempotency_key)
+        }
+        Some(_) => return Err(invalid_request()),
+    };
+    Ok((request_id, service_request))
 }
 
 /// Converts one exact entity lookup after stage-one key-envelope validation.
@@ -226,6 +317,19 @@ pub fn query_projection_request_from_proto(
     )
     .map_err(|_| invalid_request())?;
     Ok((request_id, request))
+}
+
+/// Converts one exact projection-status selector.
+pub fn get_projection_status_request_from_proto(
+    request: v1::GetProjectionStatusRequest,
+) -> Result<(RequestId, GetProjectionStatusRequest), Status> {
+    let request_id = request_id_from_bytes(&request.request_id)?;
+    let contract = contract_selection_from_proto(request.contract.ok_or_else(invalid_request)?)?;
+    let projection_id = ProjectionId::new(request.projection_id).ok_or_else(invalid_request)?;
+    Ok((
+        request_id,
+        GetProjectionStatusRequest::new(contract, projection_id),
+    ))
 }
 
 /// Converts a filtered entity result without reintroducing hidden fields.
@@ -352,6 +456,55 @@ pub fn query_projection_result_to_proto(
     })
 }
 
+/// Converts one closed projection status result without reconstructing lifecycle state.
+#[must_use]
+pub fn get_projection_status_result_to_proto(
+    result: &GetProjectionStatusResult,
+) -> v1::GetProjectionStatusResponse {
+    let result = match result {
+        GetProjectionStatusResult::NotFound => {
+            v1::get_projection_status_response::Result::NotFound(v1::Unit {})
+        }
+        GetProjectionStatusResult::Found(status) => {
+            let lifecycle = match status.lifecycle() {
+                ProjectionLifecycle::Building => v1::ProjectionLifecycle::Building,
+                ProjectionLifecycle::CatchingUp => v1::ProjectionLifecycle::CatchingUp,
+                ProjectionLifecycle::Ready => v1::ProjectionLifecycle::Ready,
+                ProjectionLifecycle::Rebuilding => v1::ProjectionLifecycle::Rebuilding,
+                ProjectionLifecycle::Degraded => v1::ProjectionLifecycle::Degraded,
+                ProjectionLifecycle::Invalid => v1::ProjectionLifecycle::Invalid,
+            };
+            let generation_frontier = |value: riffdb_service::ProjectionGenerationFrontier| {
+                v1::ProjectionGenerationFrontier {
+                    generation: value.generation().get(),
+                    frontier: Some(frontier_to_proto(value.frontier())),
+                }
+            };
+            let failure = status.failure().map(|failure| v1::ProjectionFailure {
+                generation: failure.generation().get(),
+                code: projection_failure_code(failure.code()) as i32,
+                at_sequence: failure.at_sequence().map(CommitSequence::get),
+            });
+            let published_apply_mode = status.published_apply_mode().map(|mode| match mode {
+                PublishedApplyMode::Enabled => v1::PublishedApplyMode::Enabled as i32,
+                PublishedApplyMode::Suspended => v1::PublishedApplyMode::Suspended as i32,
+            });
+            v1::get_projection_status_response::Result::Found(v1::ProjectionStatus {
+                identity: Some(projection_identity_to_proto(status.identity())),
+                lifecycle: lifecycle as i32,
+                published: status.published().map(generation_frontier),
+                candidate: status.candidate().map(generation_frontier),
+                published_apply_mode,
+                failure,
+                authoritative_head: Some(frontier_to_proto(status.authoritative_head())),
+            })
+        }
+    };
+    v1::GetProjectionStatusResponse {
+        result: Some(result),
+    }
+}
+
 /// Converts an exact projection identity without accepting a caller hash.
 #[must_use]
 pub fn projection_identity_to_proto(
@@ -392,6 +545,30 @@ pub fn subscribe_commits_request_from_proto(
         SubscribeToCommitsRequest::new(after, Duration::from_nanos(request.maximum_lifetime_nanos))
             .map_err(|_| invalid_request())?;
     Ok((request_id, request))
+}
+
+/// Converts one exact provenance root selector.
+pub fn trace_provenance_request_from_proto(
+    request: v1::TraceProvenanceRequest,
+) -> Result<(RequestId, TraceProvenanceRequest), Status> {
+    let request_id = request_id_from_bytes(&request.request_id)?;
+    let selector = match request
+        .selector
+        .ok_or_else(invalid_request)?
+        .selection
+        .ok_or_else(invalid_request)?
+    {
+        v1::provenance_selection::Selection::CommitSequence(sequence) => {
+            ProvenanceSelection::Commit(CommitSequence::new(sequence).ok_or_else(invalid_request)?)
+        }
+        v1::provenance_selection::Selection::ProvenanceId(bytes) => {
+            let bytes: [u8; 16] = bytes.try_into().map_err(|_| invalid_request())?;
+            ProvenanceSelection::Provenance(
+                ProvenanceId::from_bytes(bytes).map_err(|_| invalid_request())?,
+            )
+        }
+    };
+    Ok((request_id, TraceProvenanceRequest::new(selector)))
 }
 
 /// Converts one filtered commit lookup result.
@@ -467,6 +644,66 @@ pub fn commit_subscription_event_to_proto(
     };
     Ok(v1::CommitNotification {
         notification: Some(notification),
+    })
+}
+
+/// Converts one already-redacted provenance trace without expanding graph links.
+pub fn trace_provenance_result_to_proto(
+    result: &TraceProvenanceResult,
+) -> Result<v1::TraceProvenanceResponse, Status> {
+    let result = match result {
+        TraceProvenanceResult::NotFound => {
+            v1::trace_provenance_response::Result::NotFound(v1::Unit {})
+        }
+        TraceProvenanceResult::Found(provenance) => {
+            let provenance = provenance.as_snapshot();
+            let logical_time = provenance.logical_time().timestamp();
+            let claims = provenance.claims();
+            v1::trace_provenance_response::Result::Found(v1::Provenance {
+                provenance_id: provenance.provenance_id().as_bytes().to_vec(),
+                commit_sequence: provenance.commit_sequence().get(),
+                admission_request_id: provenance.admission_request_id().as_bytes().to_vec(),
+                contract_lineage: provenance.lineage().as_str().to_owned(),
+                contract_version: provenance.contract_version().get(),
+                command_id: provenance.command_id().get(),
+                plan_hash: provenance.plan_hash().as_bytes().to_vec(),
+                actor: Some(admitted_actor_to_proto(provenance.actor())),
+                logical_time: Some(v1::Timestamp {
+                    seconds: logical_time.seconds(),
+                    nanos: logical_time.nanoseconds(),
+                }),
+                outcome_id: provenance.outcome_id().get(),
+                affected_entities: provenance
+                    .affected_entities()
+                    .iter()
+                    .map(|entity| v1::AffectedEntity {
+                        entity_key: entity.key().as_bytes().to_vec(),
+                        entity_version: entity.entity_version().get(),
+                    })
+                    .collect(),
+                event_ids: provenance
+                    .event_ids()
+                    .iter()
+                    .map(|event_id| v1::EventId {
+                        commit_sequence: event_id.commit_sequence().get(),
+                        event_ordinal: event_id.event_ordinal(),
+                    })
+                    .collect(),
+                claims: Some(v1::ProvenanceClaims {
+                    source_repository: claims
+                        .source_repository()
+                        .map(|value| value.as_str().to_owned()),
+                    source_commit: claims
+                        .source_commit()
+                        .map(|value| value.as_str().to_owned()),
+                    reason: claims.reason().map(|value| value.as_str().to_owned()),
+                    approval_id: claims.approval_id().map(|value| value.as_str().to_owned()),
+                }),
+            })
+        }
+    };
+    Ok(v1::TraceProvenanceResponse {
+        result: Some(result),
     })
 }
 
@@ -592,6 +829,7 @@ pub fn execute_command_result_to_proto(
                 outcome: Some(record_as_public_value(outcome.value())?),
                 provenance_uri: String::new(),
                 durability_mode: String::new(),
+                outcome_uri: None,
             })
         }
     }
@@ -619,6 +857,7 @@ pub fn journaled_command_result_to_proto(
         outcome: Some(record_as_public_value(outcome.value())?),
         provenance_uri: format!("riffdb://provenance/{}", result.provenance_id()),
         durability_mode: durability_mode.to_owned(),
+        outcome_uri: Some(result.outcome_locator().canonical_uri().to_owned()),
     })
 }
 
@@ -862,6 +1101,421 @@ pub fn get_active_contract_result_to_proto(
     }
 }
 
+/// Converts one exact historical contract lookup result.
+#[must_use]
+pub fn get_contract_version_result_to_proto(
+    result: &GetContractVersionResult,
+) -> v1::GetContractVersionResponse {
+    let result = match result {
+        GetContractVersionResult::NotFound => {
+            v1::get_contract_version_response::Result::NotFound(v1::Unit {})
+        }
+        GetContractVersionResult::Found(descriptor) => {
+            v1::get_contract_version_response::Result::Found(contract_descriptor_to_proto(
+                descriptor,
+            ))
+        }
+    };
+    v1::GetContractVersionResponse {
+        result: Some(result),
+    }
+}
+
+/// Converts every full, compact, and unchanged command-discovery result.
+pub fn discover_command_tools_result_to_proto(
+    result: &DiscoverCommandToolsResult,
+    current_generation: [u8; 16],
+) -> Result<v1::DiscoverCommandToolsResponse, Status> {
+    let result = match result.result() {
+        DiscoverCommandToolsResultRef::CatalogUnchanged(fence) => {
+            v1::discover_command_tools_response::Result::CatalogUnchanged(discovery_fence_to_proto(
+                fence,
+                current_generation,
+            )?)
+        }
+        DiscoverCommandToolsResultRef::Page {
+            page,
+            operation_schemas,
+        } => {
+            let items = page
+                .items()
+                .iter()
+                .map(command_tool_discovery_item_to_proto)
+                .collect::<Result<Vec<_>, _>>()?;
+            v1::discover_command_tools_response::Result::Page(v1::CommandToolDiscoveryPage {
+                items,
+                next_cursor: page.next_cursor().map(|cursor| cursor.as_bytes().to_vec()),
+                observed_fence: Some(discovery_fence_to_proto(
+                    page.observed_fence(),
+                    current_generation,
+                )?),
+                operation_schemas: Some(operation_schema_catalog_to_proto(operation_schemas)),
+            })
+        }
+        DiscoverCommandToolsResultRef::CompactPage(page) => {
+            let items = page
+                .items()
+                .iter()
+                .map(compact_command_tool_discovery_item_to_proto)
+                .collect::<Result<Vec<_>, _>>()?;
+            v1::discover_command_tools_response::Result::CompactPage(
+                v1::CompactCommandToolDiscoveryPage {
+                    items,
+                    next_cursor: page.next_cursor().map(|cursor| cursor.as_bytes().to_vec()),
+                    observed_fence: Some(discovery_fence_to_proto(
+                        page.observed_fence(),
+                        current_generation,
+                    )?),
+                },
+            )
+        }
+    };
+    Ok(v1::DiscoverCommandToolsResponse {
+        result: Some(result),
+    })
+}
+
+/// Converts every full, compact, and unchanged resource-discovery result.
+pub fn discover_resources_result_to_proto(
+    result: &DiscoverResourcesResult,
+    current_generation: [u8; 16],
+) -> Result<v1::DiscoverResourcesResponse, Status> {
+    let result = match result.result() {
+        DiscoverResourcesResultRef::CatalogUnchanged(fence) => {
+            v1::discover_resources_response::Result::CatalogUnchanged(discovery_fence_to_proto(
+                fence,
+                current_generation,
+            )?)
+        }
+        DiscoverResourcesResultRef::Page(page) => {
+            let items = page
+                .items()
+                .iter()
+                .map(resource_descriptor_to_proto)
+                .collect::<Result<Vec<_>, _>>()?;
+            v1::discover_resources_response::Result::Page(v1::ResourceDiscoveryPage {
+                items,
+                next_cursor: page.next_cursor().map(|cursor| cursor.as_bytes().to_vec()),
+                observed_fence: Some(discovery_fence_to_proto(
+                    page.observed_fence(),
+                    current_generation,
+                )?),
+            })
+        }
+        DiscoverResourcesResultRef::CompactPage(page) => {
+            let items = page
+                .items()
+                .iter()
+                .map(compact_resource_descriptor_to_proto)
+                .collect::<Result<Vec<_>, _>>()?;
+            v1::discover_resources_response::Result::CompactPage(v1::CompactResourceDiscoveryPage {
+                items,
+                next_cursor: page.next_cursor().map(|cursor| cursor.as_bytes().to_vec()),
+                observed_fence: Some(discovery_fence_to_proto(
+                    page.observed_fence(),
+                    current_generation,
+                )?),
+            })
+        }
+    };
+    Ok(v1::DiscoverResourcesResponse {
+        result: Some(result),
+    })
+}
+
+fn command_tool_discovery_item_to_proto(
+    item: &CommandToolDiscoveryItem,
+) -> Result<v1::CommandToolDiscoveryItem, Status> {
+    let item = match item {
+        CommandToolDiscoveryItem::Fixed(kind) => {
+            v1::command_tool_discovery_item::Item::FixedTool(fixed_tool_to_proto(*kind) as i32)
+        }
+        CommandToolDiscoveryItem::Command(descriptor) => {
+            v1::command_tool_discovery_item::Item::CommandTool(command_tool_descriptor_to_proto(
+                descriptor,
+            )?)
+        }
+    };
+    Ok(v1::CommandToolDiscoveryItem { item: Some(item) })
+}
+
+fn compact_command_tool_discovery_item_to_proto(
+    item: &CompactCommandToolDiscoveryItem,
+) -> Result<v1::CompactCommandToolDiscoveryItem, Status> {
+    let item = match item {
+        CompactCommandToolDiscoveryItem::Fixed(kind) => {
+            v1::compact_command_tool_discovery_item::Item::FixedTool(
+                fixed_tool_to_proto(*kind) as i32
+            )
+        }
+        CompactCommandToolDiscoveryItem::Command(descriptor) => {
+            v1::compact_command_tool_discovery_item::Item::CommandTool(
+                compact_command_tool_descriptor_to_proto(descriptor)?,
+            )
+        }
+    };
+    Ok(v1::CompactCommandToolDiscoveryItem { item: Some(item) })
+}
+
+const fn fixed_tool_to_proto(kind: FixedToolKind) -> v1::FixedToolKind {
+    match kind {
+        FixedToolKind::ValidateContract => v1::FixedToolKind::ValidateContract,
+        FixedToolKind::GetActiveContract => v1::FixedToolKind::GetActiveContract,
+        FixedToolKind::ExplainCommand => v1::FixedToolKind::ExplainCommand,
+        FixedToolKind::DeployContract => v1::FixedToolKind::DeployContract,
+        FixedToolKind::ResolveCommandOutcome => v1::FixedToolKind::ResolveCommandOutcome,
+        FixedToolKind::GetEntity => v1::FixedToolKind::GetEntity,
+        FixedToolKind::ScanIndex => v1::FixedToolKind::ScanIndex,
+        FixedToolKind::GetCommit => v1::FixedToolKind::GetCommit,
+        FixedToolKind::ScanCommits => v1::FixedToolKind::ScanCommits,
+        FixedToolKind::TraceProvenance => v1::FixedToolKind::TraceProvenance,
+        FixedToolKind::QueryProjection => v1::FixedToolKind::QueryProjection,
+        FixedToolKind::GetProjectionStatus => v1::FixedToolKind::GetProjectionStatus,
+        FixedToolKind::ListPendingOutboxDeliveries => {
+            v1::FixedToolKind::ListPendingOutboxDeliveries
+        }
+        FixedToolKind::GetHealth => v1::FixedToolKind::GetHealth,
+    }
+}
+
+fn command_tool_descriptor_to_proto(
+    descriptor: &CommandToolDescriptor,
+) -> Result<v1::CommandToolDescriptor, Status> {
+    let input = descriptor.input_schema();
+    let input_key = input.key();
+    let outcome = descriptor.outcome_schema();
+    let outcome_key = outcome.key();
+    Ok(v1::CommandToolDescriptor {
+        tool_name: descriptor.name().as_str().to_owned(),
+        source_command: descriptor.source_command().as_str().to_owned(),
+        contract_lineage: descriptor.lineage().as_str().to_owned(),
+        contract_version: descriptor.version().get(),
+        command_id: descriptor.command_id().get(),
+        input_schema: Some(generated_schema_to_proto(
+            input_key.tag(),
+            input_key.stable_id(),
+            input.hash().as_bytes(),
+            input.canonical_json(),
+        )?),
+        outcome_schema: Some(generated_schema_to_proto(
+            outcome_key.tag(),
+            outcome_key.stable_id(),
+            outcome.hash().as_bytes(),
+            outcome.canonical_json(),
+        )?),
+    })
+}
+
+fn compact_command_tool_descriptor_to_proto(
+    descriptor: &CompactCommandToolDescriptor,
+) -> Result<v1::CompactCommandToolDescriptor, Status> {
+    Ok(v1::CompactCommandToolDescriptor {
+        tool_name: descriptor.name().as_str().to_owned(),
+        source_command: descriptor.source_command().as_str().to_owned(),
+        contract_lineage: descriptor.lineage().as_str().to_owned(),
+        contract_version: descriptor.version().get(),
+        command_id: descriptor.command_id().get(),
+        input_schema: Some(generated_schema_identity_to_proto(
+            descriptor.input_schema(),
+        )?),
+        outcome_schema: Some(generated_schema_identity_to_proto(
+            descriptor.outcome_schema(),
+        )?),
+    })
+}
+
+fn resource_descriptor_to_proto(
+    descriptor: &ResourceDescriptor,
+) -> Result<v1::ResourceDescriptor, Status> {
+    use v1::resource_descriptor::Resource;
+
+    let resource = match descriptor.resource() {
+        ResourceDescriptorRef::ActiveContract => Resource::ActiveContract(v1::Unit {}),
+        ResourceDescriptorRef::ContractVersion { lineage, version } => {
+            Resource::ContractVersion(contract_version_resource(lineage, version))
+        }
+        ResourceDescriptorRef::EntitySchema {
+            lineage,
+            entity_type_id,
+            schema,
+        } => {
+            let key = schema.key();
+            Resource::EntitySchema(v1::EntitySchemaResource {
+                contract_lineage: lineage.as_str().to_owned(),
+                entity_type_id: entity_type_id.get(),
+                schema: Some(generated_schema_to_proto(
+                    key.tag(),
+                    key.stable_id(),
+                    schema.hash().as_bytes(),
+                    schema.canonical_json(),
+                )?),
+            })
+        }
+        ResourceDescriptorRef::CommandPlan {
+            lineage,
+            version,
+            command_id,
+            source_command,
+        } => Resource::CommandPlan(command_resource(
+            lineage,
+            version,
+            command_id,
+            source_command,
+        )),
+        ResourceDescriptorRef::CommandDocumentation {
+            lineage,
+            version,
+            command_id,
+            source_command,
+        } => Resource::CommandDocumentation(command_resource(
+            lineage,
+            version,
+            command_id,
+            source_command,
+        )),
+        ResourceDescriptorRef::CommandOutcome {
+            lineage,
+            command_id,
+            tool_name,
+        } => Resource::CommandOutcome(v1::CommandOutcomeResource {
+            contract_lineage: lineage.as_str().to_owned(),
+            command_id: command_id.get(),
+            tool_name: tool_name.as_str().to_owned(),
+        }),
+        ResourceDescriptorRef::Commit { sequence } => Resource::Commit(commit_resource(sequence)),
+        ResourceDescriptorRef::Provenance { provenance_id } => {
+            Resource::Provenance(provenance_resource(provenance_id))
+        }
+        ResourceDescriptorRef::ProjectionStatus {
+            lineage,
+            projection_id,
+        } => Resource::ProjectionStatus(v1::ProjectionStatusResource {
+            contract_lineage: lineage.as_str().to_owned(),
+            projection_id: projection_id.get(),
+        }),
+        ResourceDescriptorRef::ServerHealth => Resource::ServerHealth(v1::Unit {}),
+    };
+    Ok(v1::ResourceDescriptor {
+        resource: Some(resource),
+    })
+}
+
+fn compact_resource_descriptor_to_proto(
+    descriptor: &CompactResourceDescriptor,
+) -> Result<v1::CompactResourceDescriptor, Status> {
+    use v1::compact_resource_descriptor::Resource;
+
+    let resource = match descriptor.resource() {
+        CompactResourceDescriptorRef::ActiveContract => Resource::ActiveContract(v1::Unit {}),
+        CompactResourceDescriptorRef::ContractVersion { lineage, version } => {
+            Resource::ContractVersion(contract_version_resource(lineage, version))
+        }
+        CompactResourceDescriptorRef::EntitySchema {
+            lineage,
+            entity_type_id,
+            schema,
+        } => Resource::EntitySchema(v1::CompactEntitySchemaResource {
+            contract_lineage: lineage.as_str().to_owned(),
+            entity_type_id: entity_type_id.get(),
+            schema: Some(generated_schema_identity_to_proto(schema)?),
+        }),
+        CompactResourceDescriptorRef::CommandPlan {
+            lineage,
+            version,
+            command_id,
+            source_command,
+        } => Resource::CommandPlan(command_resource(
+            lineage,
+            version,
+            command_id,
+            source_command,
+        )),
+        CompactResourceDescriptorRef::CommandDocumentation {
+            lineage,
+            version,
+            command_id,
+            source_command,
+        } => Resource::CommandDocumentation(command_resource(
+            lineage,
+            version,
+            command_id,
+            source_command,
+        )),
+        CompactResourceDescriptorRef::CommandOutcome {
+            lineage,
+            command_id,
+            tool_name,
+        } => Resource::CommandOutcome(v1::CommandOutcomeResource {
+            contract_lineage: lineage.as_str().to_owned(),
+            command_id: command_id.get(),
+            tool_name: tool_name.as_str().to_owned(),
+        }),
+        CompactResourceDescriptorRef::Commit { sequence } => {
+            Resource::Commit(commit_resource(sequence))
+        }
+        CompactResourceDescriptorRef::Provenance { provenance_id } => {
+            Resource::Provenance(provenance_resource(provenance_id))
+        }
+        CompactResourceDescriptorRef::ProjectionStatus {
+            lineage,
+            projection_id,
+        } => Resource::ProjectionStatus(v1::ProjectionStatusResource {
+            contract_lineage: lineage.as_str().to_owned(),
+            projection_id: projection_id.get(),
+        }),
+        CompactResourceDescriptorRef::ServerHealth => Resource::ServerHealth(v1::Unit {}),
+    };
+    Ok(v1::CompactResourceDescriptor {
+        resource: Some(resource),
+    })
+}
+
+fn contract_version_resource(
+    lineage: &ContractLineage,
+    version: ContractVersion,
+) -> v1::ContractVersionResource {
+    v1::ContractVersionResource {
+        contract_lineage: lineage.as_str().to_owned(),
+        contract_version: version.get(),
+    }
+}
+
+fn command_resource(
+    lineage: &ContractLineage,
+    version: ContractVersion,
+    command_id: CommandId,
+    source_command: &SourceName,
+) -> v1::CommandResource {
+    v1::CommandResource {
+        contract_lineage: lineage.as_str().to_owned(),
+        command_id: command_id.get(),
+        contract_version: version.get(),
+        source_command: source_command.as_str().to_owned(),
+    }
+}
+
+fn commit_resource(sequence: Option<CommitSequence>) -> v1::CommitResource {
+    let target = match sequence {
+        Some(sequence) => v1::commit_resource::Target::CommitSequence(sequence.get()),
+        None => v1::commit_resource::Target::ClassTemplate(v1::Unit {}),
+    };
+    v1::CommitResource {
+        target: Some(target),
+    }
+}
+
+fn provenance_resource(provenance_id: Option<ProvenanceId>) -> v1::ProvenanceResource {
+    let target = match provenance_id {
+        Some(provenance_id) => {
+            v1::provenance_resource::Target::ProvenanceId(provenance_id.as_bytes().to_vec())
+        }
+        None => v1::provenance_resource::Target::ClassTemplate(v1::Unit {}),
+    };
+    v1::ProvenanceResource {
+        target: Some(target),
+    }
+}
+
 /// Separates the optional Health request identity from its empty service DTO.
 pub fn health_request_from_proto(
     request: v1::HealthRequest,
@@ -882,6 +1536,15 @@ pub fn statistics_request_from_proto(
         request_id_from_bytes(&request.request_id)?,
         StatisticsRequest,
     ))
+}
+
+/// Converts one required bounded outbox page request.
+pub fn list_pending_outbox_deliveries_request_from_proto(
+    request: v1::ListPendingOutboxDeliveriesRequest,
+) -> Result<(RequestId, ListPendingOutboxDeliveriesRequest), Status> {
+    let request_id = request_id_from_bytes(&request.request_id)?;
+    let page = page_request_from_proto(request.page.ok_or_else(invalid_request)?)?;
+    Ok((request_id, ListPendingOutboxDeliveriesRequest::new(page)))
 }
 
 /// Converts the restricted or authenticated Health result without widening it.
@@ -974,6 +1637,45 @@ pub fn statistics_result_to_proto(result: StatisticsResult) -> v1::StatsResponse
         last_commit_sequence: result.last_commit_sequence().map(CommitSequence::get),
         pending_outbox_deliveries: result.pending_outbox_deliveries(),
         known_projections: result.known_projections(),
+    }
+}
+
+/// Converts one payload-free outbox page without adding a consistency fence.
+#[must_use]
+pub fn list_pending_outbox_deliveries_result_to_proto(
+    result: &ListPendingOutboxDeliveriesResult,
+) -> v1::ListPendingOutboxDeliveriesResponse {
+    let page = result.page();
+    let items = page
+        .items()
+        .iter()
+        .map(|item| {
+            let event_id = item.event_id();
+            let state = match item.state() {
+                OutboxDeliveryState::Pending => v1::OutboxDeliveryState::Pending,
+                OutboxDeliveryState::RetryScheduled => v1::OutboxDeliveryState::RetryScheduled,
+                OutboxDeliveryState::Delivering => v1::OutboxDeliveryState::Delivering,
+                OutboxDeliveryState::DeadLetter => v1::OutboxDeliveryState::DeadLetter,
+            };
+            v1::OutboxDeliverySummary {
+                event_id: Some(v1::EventId {
+                    commit_sequence: event_id.commit_sequence().get(),
+                    event_ordinal: event_id.event_ordinal(),
+                }),
+                state: state as i32,
+                attempts: item.attempts(),
+                next_attempt_at: item.next_attempt_at().map(|timestamp| v1::Timestamp {
+                    seconds: timestamp.seconds(),
+                    nanos: timestamp.nanoseconds(),
+                }),
+            }
+        })
+        .collect();
+    v1::ListPendingOutboxDeliveriesResponse {
+        page: Some(v1::OutboxDeliveryPage {
+            items,
+            next_cursor: page.next_cursor().map(|cursor| cursor.as_bytes().to_vec()),
+        }),
     }
 }
 
@@ -1302,6 +2004,199 @@ pub fn frontier_to_proto(frontier: FrontierPosition) -> v1::FrontierPosition {
     }
 }
 
+fn discovery_representation_from_proto(
+    representation: i32,
+) -> Result<DiscoveryRepresentation, Status> {
+    match v1::DiscoveryRepresentation::try_from(representation).map_err(|_| invalid_request())? {
+        v1::DiscoveryRepresentation::Full => Ok(DiscoveryRepresentation::Full),
+        v1::DiscoveryRepresentation::CompactObservation => {
+            Ok(DiscoveryRepresentation::CompactObservation)
+        }
+        v1::DiscoveryRepresentation::Unspecified => Err(invalid_request()),
+    }
+}
+
+fn semantic_discovery_fence_from_proto(
+    fence: v1::DiscoveryCatalogFence,
+    current_generation: [u8; 16],
+) -> Result<Option<DiscoveryCatalogFence>, Status> {
+    let supplied_generation: [u8; 16] = fence
+        .server_generation
+        .try_into()
+        .map_err(|_| invalid_request())?;
+    let operation_schemas = operation_schema_catalog_identity_from_proto(
+        fence.operation_schemas.ok_or_else(invalid_request)?,
+    )?;
+    let semantic = match fence.state.ok_or_else(invalid_request)? {
+        v1::discovery_catalog_fence::State::NoActiveContract(_) => {
+            DiscoveryCatalogFence::no_active_contract(operation_schemas)
+        }
+        v1::discovery_catalog_fence::State::ActiveContract(active) => {
+            let lineage =
+                ContractLineage::new(active.contract_lineage).map_err(|_| invalid_request())?;
+            let version =
+                ContractVersion::new(active.contract_version).ok_or_else(invalid_request)?;
+            let bundle_hash = ContractBundleHash::from_bytes(exact_hash(&active.bundle_hash)?);
+            DiscoveryCatalogFence::active_contract(lineage, version, bundle_hash, operation_schemas)
+        }
+    };
+    Ok((supplied_generation == current_generation).then_some(semantic))
+}
+
+fn operation_schema_catalog_identity_from_proto(
+    identity: v1::OperationSchemaCatalogIdentity,
+) -> Result<OperationSchemaCatalogIdentity, Status> {
+    let envelope = operation_schema_identity_from_proto(
+        identity
+            .command_operation_envelope
+            .ok_or_else(invalid_request)?,
+    )?;
+    let get_outcome = operation_schema_identity_from_proto(
+        identity
+            .command_get_outcome_result
+            .ok_or_else(invalid_request)?,
+    )?;
+    let identity = OperationSchemaCatalogIdentity::new(envelope, get_outcome);
+    let accepted = OperationSchemaCatalog::accepted()
+        .map_err(|_| invalid_service_response())?
+        .identity();
+    if identity != accepted {
+        return Err(invalid_request());
+    }
+    Ok(identity)
+}
+
+fn operation_schema_identity_from_proto(
+    identity: v1::OperationSchemaIdentity,
+) -> Result<OperationSchemaIdentity, Status> {
+    OperationSchemaIdentity::new(
+        identity.schema_id,
+        SchemaHash::from_bytes(exact_hash(&identity.schema_hash)?),
+    )
+    .map_err(|_| invalid_request())
+}
+
+fn exact_hash(bytes: &[u8]) -> Result<[u8; 32], Status> {
+    bytes.try_into().map_err(|_| invalid_request())
+}
+
+fn discovery_fence_to_proto(
+    fence: &DiscoveryCatalogFence,
+    current_generation: [u8; 16],
+) -> Result<v1::DiscoveryCatalogFence, Status> {
+    let accepted = OperationSchemaCatalog::accepted()
+        .map_err(|_| invalid_service_response())?
+        .identity();
+    if fence.operation_schemas() != &accepted {
+        return Err(invalid_service_response());
+    }
+    let state = match fence.state() {
+        DiscoveryCatalogStateRef::NoActiveContract => {
+            v1::discovery_catalog_fence::State::NoActiveContract(v1::Unit {})
+        }
+        DiscoveryCatalogStateRef::ActiveContract {
+            lineage,
+            version,
+            bundle_hash,
+        } => v1::discovery_catalog_fence::State::ActiveContract(v1::ActiveDiscoveryCatalogFence {
+            contract_lineage: lineage.as_str().to_owned(),
+            contract_version: version.get(),
+            bundle_hash: bundle_hash.as_bytes().to_vec(),
+        }),
+    };
+    Ok(v1::DiscoveryCatalogFence {
+        state: Some(state),
+        server_generation: current_generation.to_vec(),
+        operation_schemas: Some(operation_schema_catalog_identity_to_proto(
+            fence.operation_schemas(),
+        )),
+    })
+}
+
+fn operation_schema_catalog_identity_to_proto(
+    identity: &OperationSchemaCatalogIdentity,
+) -> v1::OperationSchemaCatalogIdentity {
+    v1::OperationSchemaCatalogIdentity {
+        command_operation_envelope: Some(operation_schema_identity_to_proto(
+            identity.command_operation_envelope(),
+        )),
+        command_get_outcome_result: Some(operation_schema_identity_to_proto(
+            identity.command_get_outcome_result(),
+        )),
+    }
+}
+
+fn operation_schema_identity_to_proto(
+    identity: &OperationSchemaIdentity,
+) -> v1::OperationSchemaIdentity {
+    v1::OperationSchemaIdentity {
+        schema_id: identity.schema_id().to_owned(),
+        schema_hash: identity.schema_hash().as_bytes().to_vec(),
+    }
+}
+
+fn operation_schema_catalog_to_proto(
+    catalog: &OperationSchemaCatalog,
+) -> v1::OperationSchemaCatalog {
+    v1::OperationSchemaCatalog {
+        command_operation_envelope: Some(operation_schema_artifact_to_proto(
+            catalog.command_operation_envelope(),
+        )),
+        command_get_outcome_result: Some(operation_schema_artifact_to_proto(
+            catalog.command_get_outcome_result(),
+        )),
+    }
+}
+
+fn operation_schema_artifact_to_proto(
+    artifact: &OperationSchemaArtifact,
+) -> v1::OperationSchemaArtifact {
+    v1::OperationSchemaArtifact {
+        schema_id: artifact.identity().schema_id().to_owned(),
+        dialect: artifact.dialect().to_owned(),
+        schema_hash: artifact.identity().schema_hash().as_bytes().to_vec(),
+        canonical_json: artifact.canonical_json().to_owned(),
+    }
+}
+
+fn schema_artifact_key_to_proto(tag: u8, stable_id: u32) -> Result<v1::SchemaArtifactKey, Status> {
+    let artifact = match tag {
+        1 => v1::schema_artifact_key::Artifact::EntityId(stable_id),
+        2 => v1::schema_artifact_key::Artifact::EventTypeId(stable_id),
+        3 => v1::schema_artifact_key::Artifact::CommandInputId(stable_id),
+        4 => v1::schema_artifact_key::Artifact::CommandOutcomeUnionId(stable_id),
+        5 => v1::schema_artifact_key::Artifact::ProjectionResultId(stable_id),
+        _ => return Err(invalid_service_response()),
+    };
+    Ok(v1::SchemaArtifactKey {
+        artifact: Some(artifact),
+    })
+}
+
+fn generated_schema_to_proto(
+    tag: u8,
+    stable_id: u32,
+    hash: &[u8; 32],
+    canonical_json: &str,
+) -> Result<v1::GeneratedSchemaArtifact, Status> {
+    Ok(v1::GeneratedSchemaArtifact {
+        key: Some(schema_artifact_key_to_proto(tag, stable_id)?),
+        dialect: "https://json-schema.org/draft/2020-12/schema".to_owned(),
+        schema_hash: hash.to_vec(),
+        canonical_json: canonical_json.to_owned(),
+    })
+}
+
+fn generated_schema_identity_to_proto(
+    identity: &GeneratedSchemaIdentity,
+) -> Result<v1::GeneratedSchemaIdentity, Status> {
+    let key = identity.key();
+    Ok(v1::GeneratedSchemaIdentity {
+        key: Some(schema_artifact_key_to_proto(key.tag(), key.stable_id())?),
+        schema_hash: identity.schema_hash().as_bytes().to_vec(),
+    })
+}
+
 /// Converts bounded explicit nanoseconds into a platform-independent duration.
 #[must_use]
 pub const fn duration_from_nanos(nanos: u64) -> Duration {
@@ -1587,6 +2482,19 @@ mod tests {
         }
     }
 
+    fn discovery_fence(generation: [u8; 16]) -> v1::DiscoveryCatalogFence {
+        let identity = OperationSchemaCatalog::accepted()
+            .expect("accepted operation schemas")
+            .identity();
+        v1::DiscoveryCatalogFence {
+            state: Some(v1::discovery_catalog_fence::State::NoActiveContract(
+                v1::Unit {},
+            )),
+            server_generation: generation.to_vec(),
+            operation_schemas: Some(operation_schema_catalog_identity_to_proto(&identity)),
+        }
+    }
+
     #[test]
     fn submitted_record_preserves_redundant_identity_until_service_resolution() {
         let record = v1::ValueRecord {
@@ -1685,6 +2593,201 @@ mod tests {
         assert_eq!(value.type_id().get(), 5);
         assert_eq!(value.variant_id().get(), 6);
         assert_eq!(value.name().map(SourceName::as_str), Some("approved"));
+    }
+
+    #[test]
+    fn additive_lookup_requests_preserve_exact_selectors() {
+        let expected_request_id = request_id();
+        let (actual_request_id, contract) =
+            get_contract_version_request_from_proto(v1::GetContractVersionRequest {
+                request_id: expected_request_id.as_bytes().to_vec(),
+                contract_lineage: "budget".to_owned(),
+                contract_version: 7,
+            })
+            .expect("valid contract version request");
+        assert_eq!(actual_request_id, expected_request_id);
+        assert_eq!(contract.lineage().as_str(), "budget");
+        assert_eq!(contract.version().get(), 7);
+
+        let (_, projection) =
+            get_projection_status_request_from_proto(v1::GetProjectionStatusRequest {
+                request_id: expected_request_id.as_bytes().to_vec(),
+                contract: Some(active_contract()),
+                projection_id: 9,
+            })
+            .expect("valid projection status request");
+        assert_eq!(projection.projection_id().get(), 9);
+
+        let (_, provenance) = trace_provenance_request_from_proto(v1::TraceProvenanceRequest {
+            request_id: expected_request_id.as_bytes().to_vec(),
+            selector: Some(v1::ProvenanceSelection {
+                selection: Some(v1::provenance_selection::Selection::CommitSequence(11)),
+            }),
+        })
+        .expect("valid provenance request");
+        assert_eq!(
+            provenance.selector(),
+            ProvenanceSelection::Commit(CommitSequence::new(11).expect("nonzero"))
+        );
+
+        let (_, outbox) = list_pending_outbox_deliveries_request_from_proto(
+            v1::ListPendingOutboxDeliveriesRequest {
+                request_id: expected_request_id.as_bytes().to_vec(),
+                page: Some(first_page()),
+            },
+        )
+        .expect("valid outbox request");
+        assert_eq!(outbox.page().limit().get().get(), 5);
+    }
+
+    #[test]
+    fn locator_outcome_request_is_exclusive_and_never_recovers_a_raw_key() {
+        let uri = concat!(
+            "riffdb://outcome/principal/budget/1/riffdb.cmd.budget.reserve/",
+            "AQAAAAF3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3dw"
+        );
+        let request = v1::GetOutcomeRequest {
+            request_id: request_id().as_bytes().to_vec(),
+            contract_lineage: String::new(),
+            command_name: String::new(),
+            idempotency_key: String::new(),
+            outcome_uri: Some(uri.to_owned()),
+        };
+        let (_, request) =
+            resolve_outcome_request_from_proto(request).expect("canonical locator request");
+        assert!(matches!(
+            request.selector(),
+            riffdb_service::ResolveCommandOutcomeSelectorRef::Locator(locator)
+                if locator.canonical_uri() == uri
+        ));
+
+        let mixed = v1::GetOutcomeRequest {
+            request_id: request_id().as_bytes().to_vec(),
+            contract_lineage: "budget".to_owned(),
+            command_name: String::new(),
+            idempotency_key: String::new(),
+            outcome_uri: Some(uri.to_owned()),
+        };
+        assert!(resolve_outcome_request_from_proto(mixed).is_err());
+    }
+
+    #[test]
+    fn discovery_generation_is_adapter_only_and_stale_values_force_a_first_page() {
+        let current = [0x33; 16];
+        let matching = v1::DiscoverCommandToolsRequest {
+            request_id: request_id().as_bytes().to_vec(),
+            page: Some(first_page()),
+            prior_fence: Some(discovery_fence(current)),
+            representation: v1::DiscoveryRepresentation::CompactObservation as i32,
+        };
+        let (_, matching) = discover_command_tools_request_from_proto(matching, current)
+            .expect("matching presentation fence");
+        assert!(matching.prior_fence().is_some());
+
+        let stale = v1::DiscoverCommandToolsRequest {
+            request_id: request_id().as_bytes().to_vec(),
+            page: Some(first_page()),
+            prior_fence: Some(discovery_fence([0x44; 16])),
+            representation: v1::DiscoveryRepresentation::CompactObservation as i32,
+        };
+        let (_, stale) = discover_command_tools_request_from_proto(stale, current)
+            .expect("stale generation is a normal first page");
+        assert!(stale.prior_fence().is_none());
+    }
+
+    #[test]
+    fn unchanged_discovery_rejoins_the_current_generation() {
+        let generation = [0x51; 16];
+        let wire = v1::DiscoverCommandToolsRequest {
+            request_id: request_id().as_bytes().to_vec(),
+            page: Some(first_page()),
+            prior_fence: Some(discovery_fence(generation)),
+            representation: v1::DiscoveryRepresentation::CompactObservation as i32,
+        };
+        let (_, request) = discover_command_tools_request_from_proto(wire, generation)
+            .expect("matching presentation fence");
+        let semantic = request.prior_fence().expect("semantic prior").clone();
+        let result = DiscoverCommandToolsResult::catalog_unchanged(&request, semantic)
+            .expect("equal semantic catalog");
+        let response = discover_command_tools_result_to_proto(&result, generation)
+            .expect("join presentation generation");
+        let Some(v1::discover_command_tools_response::Result::CatalogUnchanged(fence)) =
+            response.result
+        else {
+            panic!("expected catalog unchanged")
+        };
+        assert_eq!(fence.server_generation, generation);
+    }
+
+    #[test]
+    fn fixed_tool_mapping_is_the_exact_nonzero_registry() {
+        let service = [
+            FixedToolKind::ValidateContract,
+            FixedToolKind::GetActiveContract,
+            FixedToolKind::ExplainCommand,
+            FixedToolKind::DeployContract,
+            FixedToolKind::ResolveCommandOutcome,
+            FixedToolKind::GetEntity,
+            FixedToolKind::ScanIndex,
+            FixedToolKind::GetCommit,
+            FixedToolKind::ScanCommits,
+            FixedToolKind::TraceProvenance,
+            FixedToolKind::QueryProjection,
+            FixedToolKind::GetProjectionStatus,
+            FixedToolKind::ListPendingOutboxDeliveries,
+            FixedToolKind::GetHealth,
+        ];
+        let actual = service.map(|kind| fixed_tool_to_proto(kind) as i32);
+        assert_eq!(actual, [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14]);
+    }
+
+    #[test]
+    fn outbox_conversion_preserves_every_closed_state_and_optional_time() {
+        let states = [
+            OutboxDeliveryState::Pending,
+            OutboxDeliveryState::RetryScheduled,
+            OutboxDeliveryState::Delivering,
+            OutboxDeliveryState::DeadLetter,
+        ];
+        let items = states
+            .into_iter()
+            .enumerate()
+            .map(|(index, state)| {
+                riffdb_service::OutboxDeliverySummary::new(
+                    riffdb_types::EventId::new(
+                        CommitSequence::new(index as u64 + 1).expect("nonzero sequence"),
+                        index as u32,
+                    ),
+                    state,
+                    index as u32,
+                    (index == 1).then(|| Timestamp::new(17, 23).expect("valid timestamp")),
+                )
+            })
+            .collect();
+        let page = riffdb_service::Page::new(
+            PageLimit::new(4).expect("nonzero bounded limit"),
+            items,
+            Some(CursorToken::from_bytes([0x17; 16])),
+            (),
+        )
+        .expect("bounded outbox page");
+
+        let response = list_pending_outbox_deliveries_result_to_proto(
+            &ListPendingOutboxDeliveriesResult::new(page),
+        );
+        riffdb_proto::validate_public_message(&response).expect("valid public response");
+        let page = response.page.expect("required page");
+        let actual = page.items.iter().map(|item| item.state).collect::<Vec<_>>();
+        assert_eq!(actual, [1, 2, 3, 4]);
+        assert!(page.items[0].next_attempt_at.is_none());
+        assert_eq!(
+            page.items[1].next_attempt_at,
+            Some(v1::Timestamp {
+                seconds: 17,
+                nanos: 23,
+            })
+        );
+        assert_eq!(page.next_cursor, Some(vec![0x17; 16]));
     }
 
     #[test]

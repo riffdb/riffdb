@@ -12,11 +12,14 @@ use riffdb_service::{
     AdministrationApplication, AuthoritativeCommitNotification, AuthoritativeReadinessFailure,
     BootstrapCapabilityResult, CommandApplication, CommitApplication, CommitSubscriptionEndReason,
     CommitSubscriptionEvent, ContractApplication, CreateCapabilityInvocation,
-    CreateCapabilityResult, DeployContractResult, ExecuteCommandResult, GetCommitRequest,
+    CreateCapabilityResult, DeployContractResult, DiscoverCommandToolsRequest,
+    DiscoverCommandToolsResultRef, DiscoverResourcesRequest, DiscoverResourcesResultRef,
+    DiscoveryApplication, DiscoveryRepresentation, ExecuteCommandResult, GetCommitRequest,
     JournaledCommandResult, JournaledCompletion, MAX_COMMIT_SUBSCRIPTION_BUFFER_ITEMS,
-    MAX_LIVE_COMMIT_SUBSCRIBERS, NormalCreateCapabilityRequest, ProjectionPageFence,
-    QueryApplication, QueryProjectionResult, ResolveCommandOutcomeResult, ServiceFailure,
-    ServiceTelemetryEvent, StatisticsRequest, SubscribeToCommitsRequest,
+    MAX_LIVE_COMMIT_SUBSCRIBERS, NormalCreateCapabilityRequest, OutcomeResourceLocator, PageLimit,
+    PageRequest, ProjectionPageFence, QueryApplication, QueryProjectionResult,
+    ResolveCommandOutcomeRequest, ResolveCommandOutcomeResult, ResourceDiscoveryKind,
+    ServiceFailure, ServiceTelemetryEvent, StatisticsRequest, SubscribeToCommitsRequest,
 };
 use riffdb_types::{
     FrontierPosition, ProjectionGeneration, ProjectionIdentity, ProjectionPlanHash,
@@ -41,6 +44,21 @@ async fn execute_journaled(harness: &ServiceHarness, request_seed: u8) -> Journa
     result
 }
 
+fn locator_with_segment(
+    locator: &OutcomeResourceLocator,
+    segment_index: usize,
+    replacement: String,
+) -> OutcomeResourceLocator {
+    let path = locator
+        .canonical_uri()
+        .strip_prefix("riffdb://outcome/")
+        .expect("service locator namespace");
+    let mut segments = path.split('/').map(str::to_owned).collect::<Vec<_>>();
+    segments[segment_index] = replacement;
+    OutcomeResourceLocator::parse(format!("riffdb://outcome/{}", segments.join("/")))
+        .expect("canonical modified locator")
+}
+
 async fn active_commit_subscribers(harness: &ServiceHarness, request_seed: u8) -> u16 {
     let (context, _cancellation) = harness.context(request_seed);
     harness
@@ -54,6 +72,143 @@ async fn active_commit_subscribers(harness: &ServiceHarness, request_seed: u8) -
             )
         })
         .active_commit_subscribers()
+}
+
+#[test]
+fn audited_discovery_full_compact_and_unchanged_results_close_exactly_once() {
+    run_async(async move {
+        const COMMAND_FULL: u8 = 0xa0;
+        const COMMAND_COMPACT: u8 = 0xa1;
+        const COMMAND_UNCHANGED: u8 = 0xa2;
+        const RESOURCE_FULL: u8 = 0xa3;
+        const RESOURCE_COMPACT: u8 = 0xa4;
+        const RESOURCE_UNCHANGED: u8 = 0xa5;
+
+        let mut harness = ServiceHarness::operations();
+        harness.audit_discovery_operations();
+        let page = PageRequest::new(PageLimit::default(), None);
+
+        let (context, _cancellation) = harness.context(COMMAND_FULL);
+        let full_commands = harness
+            .service
+            .discover_command_tools(context, DiscoverCommandToolsRequest::default())
+            .await
+            .expect("audited full command discovery");
+        assert!(matches!(
+            full_commands.result(),
+            DiscoverCommandToolsResultRef::Page { .. }
+        ));
+
+        let (context, _cancellation) = harness.context(COMMAND_COMPACT);
+        let compact_commands = harness
+            .service
+            .discover_command_tools(
+                context,
+                DiscoverCommandToolsRequest::with_options(
+                    page,
+                    DiscoveryRepresentation::CompactObservation,
+                    None,
+                )
+                .expect("valid compact command-discovery request"),
+            )
+            .await
+            .expect("audited compact command discovery");
+        let DiscoverCommandToolsResultRef::CompactPage(compact_commands) =
+            compact_commands.result()
+        else {
+            panic!("compact command discovery returns a compact page");
+        };
+        let command_fence = compact_commands.observed_fence().clone();
+
+        let (context, _cancellation) = harness.context(COMMAND_UNCHANGED);
+        let unchanged_commands = harness
+            .service
+            .discover_command_tools(
+                context,
+                DiscoverCommandToolsRequest::with_options(
+                    page,
+                    DiscoveryRepresentation::CompactObservation,
+                    Some(command_fence.clone()),
+                )
+                .expect("valid conditional command-discovery request"),
+            )
+            .await
+            .expect("audited unchanged command discovery");
+        let DiscoverCommandToolsResultRef::CatalogUnchanged(observed) = unchanged_commands.result()
+        else {
+            panic!("equal command fence returns CatalogUnchanged");
+        };
+        assert_eq!(observed, &command_fence);
+
+        let (context, _cancellation) = harness.context(RESOURCE_FULL);
+        let full_resources = harness
+            .service
+            .discover_resources(context, DiscoverResourcesRequest::default())
+            .await
+            .expect("audited full resource discovery");
+        assert!(matches!(
+            full_resources.result(),
+            DiscoverResourcesResultRef::Page(_)
+        ));
+
+        let (context, _cancellation) = harness.context(RESOURCE_COMPACT);
+        let compact_resources = harness
+            .service
+            .discover_resources(
+                context,
+                DiscoverResourcesRequest::with_options(
+                    page,
+                    DiscoveryRepresentation::CompactObservation,
+                    None,
+                    ResourceDiscoveryKind::All,
+                )
+                .expect("valid compact resource-discovery request"),
+            )
+            .await
+            .expect("audited compact resource discovery");
+        let DiscoverResourcesResultRef::CompactPage(compact_resources) = compact_resources.result()
+        else {
+            panic!("compact resource discovery returns a compact page");
+        };
+        let resource_fence = compact_resources.observed_fence().clone();
+
+        let (context, _cancellation) = harness.context(RESOURCE_UNCHANGED);
+        let unchanged_resources = harness
+            .service
+            .discover_resources(
+                context,
+                DiscoverResourcesRequest::with_options(
+                    page,
+                    DiscoveryRepresentation::CompactObservation,
+                    Some(resource_fence.clone()),
+                    ResourceDiscoveryKind::All,
+                )
+                .expect("valid conditional resource-discovery request"),
+            )
+            .await
+            .expect("audited unchanged resource discovery");
+        let DiscoverResourcesResultRef::CatalogUnchanged(observed) = unchanged_resources.result()
+        else {
+            panic!("equal resource fence returns CatalogUnchanged");
+        };
+        assert_eq!(observed, &resource_fence);
+
+        harness.stop_coordinator();
+        for request_seed in [
+            COMMAND_FULL,
+            COMMAND_COMPACT,
+            COMMAND_UNCHANGED,
+            RESOURCE_FULL,
+            RESOURCE_COMPACT,
+            RESOURCE_UNCHANGED,
+        ] {
+            assert_eq!(
+                harness.audit_phases(request_seed),
+                [ServiceAuditPhaseV1::Started, ServiceAuditPhaseV1::Succeeded],
+                "each audited discovery result closes one exact lifecycle"
+            );
+        }
+    });
 }
 
 async fn assert_explicit_scope_validation_rejection(
@@ -1917,6 +2072,84 @@ fn missing_outcome_returns_bounded_absence_after_pre_lookup_authorization() {
         assert_eq!(harness.ports.outcome_submissions(), 1);
         harness.stop_coordinator();
         assert!(harness.audit_phases(0x51).is_empty());
+    });
+}
+
+#[test]
+fn locator_owner_digest_and_tool_mismatches_are_nondisclosing_absence() {
+    run_async(async move {
+        let mut owner_harness = ServiceHarness::command();
+        let owner_result = execute_journaled(&owner_harness, 0x71).await;
+        let wrong_owner = locator_with_segment(
+            owner_result.outcome_locator(),
+            0,
+            "different-outcome-owner".to_owned(),
+        );
+        let owner_calls = owner_harness.policy.calls();
+        let (context, _cancellation) = owner_harness.context(0x72);
+        let owner_resolution = owner_harness
+            .service
+            .resolve_command_outcome(context, ResolveCommandOutcomeRequest::locator(wrong_owner))
+            .await
+            .expect("a locator-owner mismatch is existence-blind absence");
+        assert_eq!(owner_resolution, ResolveCommandOutcomeResult::NotFound);
+        assert_eq!(owner_harness.policy.calls() - owner_calls, 2);
+        assert_eq!(owner_harness.ports.outcome_reservations(), 1);
+        assert_eq!(owner_harness.ports.outcome_submissions(), 0);
+        owner_harness.stop_coordinator();
+
+        let mut digest_harness = ServiceHarness::command();
+        let digest_result = execute_journaled(&digest_harness, 0x73).await;
+        digest_harness.set_actual_outcome(&digest_result);
+        let digest_text = digest_result
+            .outcome_locator()
+            .canonical_uri()
+            .rsplit('/')
+            .next()
+            .expect("digest segment");
+        let mut wrong_digest_text = digest_text.to_owned();
+        let replacement = if wrong_digest_text.ends_with('A') {
+            'Q'
+        } else {
+            'A'
+        };
+        wrong_digest_text.pop();
+        wrong_digest_text.push(replacement);
+        let wrong_digest =
+            locator_with_segment(digest_result.outcome_locator(), 4, wrong_digest_text);
+        let digest_calls = digest_harness.policy.calls();
+        let (context, _cancellation) = digest_harness.context(0x74);
+        let digest_resolution = digest_harness
+            .service
+            .resolve_command_outcome(context, ResolveCommandOutcomeRequest::locator(wrong_digest))
+            .await
+            .expect("a locator-digest mismatch is existence-blind absence");
+        assert_eq!(digest_resolution, ResolveCommandOutcomeResult::NotFound);
+        assert_eq!(digest_harness.policy.calls() - digest_calls, 2);
+        assert_eq!(digest_harness.ports.outcome_submissions(), 1);
+        digest_harness.stop_coordinator();
+
+        let mut tool_harness = ServiceHarness::command();
+        let tool_result = execute_journaled(&tool_harness, 0x75).await;
+        tool_harness.set_actual_outcome(&tool_result);
+        let tool_name = tool_result
+            .outcome_locator()
+            .tool_name()
+            .rsplit_once('.')
+            .map(|(prefix, _)| format!("{prefix}.other"))
+            .expect("compiler tool-name segments");
+        let wrong_tool = locator_with_segment(tool_result.outcome_locator(), 3, tool_name);
+        let tool_calls = tool_harness.policy.calls();
+        let (context, _cancellation) = tool_harness.context(0x76);
+        let tool_resolution = tool_harness
+            .service
+            .resolve_command_outcome(context, ResolveCommandOutcomeRequest::locator(wrong_tool))
+            .await
+            .expect("a locator-tool mismatch is existence-blind absence");
+        assert_eq!(tool_resolution, ResolveCommandOutcomeResult::NotFound);
+        assert_eq!(tool_harness.policy.calls() - tool_calls, 2);
+        assert_eq!(tool_harness.ports.outcome_submissions(), 1);
+        tool_harness.stop_coordinator();
     });
 }
 
