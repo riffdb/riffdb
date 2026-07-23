@@ -110,6 +110,42 @@ fn grpc_context_construction_fixes_ingress_and_hides_policy_claim_vocabulary() {
 }
 
 #[test]
+fn hosted_mcp_context_construction_fixes_ingress_and_hides_policy_claim_vocabulary() {
+    let remainder = CONTEXT_SOURCE
+        .split_once("pub const fn from_authenticated_mcp_http(")
+        .map(|(_, remainder)| remainder)
+        .expect("bounded authenticated hosted MCP constructor");
+    let parameters = remainder
+        .split_once(") -> Self {")
+        .map(|(parameters, _)| parameters)
+        .expect("hosted MCP constructor has a concrete return type");
+    let compact_parameters: String = parameters
+        .chars()
+        .filter(|character| !character.is_whitespace())
+        .collect();
+    assert_eq!(
+        compact_parameters,
+        "request_id:RequestId,principal:AuthenticatedPrincipal,control:RequestControl,trace:Option<TraceContext>,"
+    );
+
+    let constructor = remainder
+        .split_once("\n    }")
+        .map(|(body, _)| body)
+        .expect("bounded authenticated hosted MCP constructor body");
+    assert!(constructor.contains("request_id: RequestId"));
+    assert!(constructor.contains("principal: AuthenticatedPrincipal"));
+    assert!(constructor.contains("control: RequestControl"));
+    assert!(constructor.contains("trace: Option<TraceContext>"));
+    assert!(constructor.contains("ServiceIngressKindV1::McpHttp"));
+    assert!(constructor.contains("UntrustedInvocationClaims::new(None, None, None, None, None)"));
+    assert!(!constructor.contains("claims:"));
+    assert!(!constructor.contains("ingress:"));
+    assert!(!constructor.contains("credential"));
+    assert!(!constructor.contains("session"));
+    assert!(!constructor.contains("&[u8]"));
+}
+
+#[test]
 fn catalog_owns_capability_partition_decoding_and_service_validates_output_keys() {
     assert!(ADMINISTRATION_SOURCE.contains("validate_capability_partition_scope("));
     assert!(!ADMINISTRATION_SOURCE.contains(".decode_partition("));

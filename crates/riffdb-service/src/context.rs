@@ -274,6 +274,28 @@ impl RequestContext {
         )
     }
 
+    /// Constructs an ordinary authenticated hosted MCP HTTP invocation with
+    /// the POC's empty caller-claim set.
+    ///
+    /// Initial authentication does not authorize the request; every operation
+    /// still passes through the shared current-policy safe points.
+    #[must_use]
+    pub const fn from_authenticated_mcp_http(
+        request_id: RequestId,
+        principal: AuthenticatedPrincipal,
+        control: RequestControl,
+        trace: Option<TraceContext>,
+    ) -> Self {
+        Self::new(
+            request_id,
+            principal,
+            ServiceIngressKindV1::McpHttp,
+            UntrustedInvocationClaims::new(None, None, None, None, None),
+            control,
+            trace,
+        )
+    }
+
     /// Returns the transport-submission identity.
     #[must_use]
     pub const fn request_id(&self) -> RequestId {
