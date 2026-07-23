@@ -1,0 +1,1 @@
+{"schema":"riffdb.cli.output/v1","command":"contract.validate","ok":true,"result":{"status":"invalid_semantic","diagnostics":[{"code":"RDB-C001","summary":"contract version must be a supported nonzero integer","help":"use a base-10 application version in 1..=u64::MAX","primary_span":{"start":32,"end":33}}]}}

@@ -1,0 +1,1 @@
+{"schema":"riffdb.cli.output/v1","command":"projection.query","ok":true,"result":{"status":"degraded","current":{"type":"applied_through","sequence":"42"},"reason":{"type":"rebuilding"}}}

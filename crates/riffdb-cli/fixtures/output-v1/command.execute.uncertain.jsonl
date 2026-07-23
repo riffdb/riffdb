@@ -1,0 +1,1 @@
+{"schema":"riffdb.cli.output/v1","command":"command.execute","ok":false,"error":{"type":"uncertain","code":"outcome_unknown","message":"the command outcome remains unknown","recovery_action":"resolve_with_same_idempotency_key"}}

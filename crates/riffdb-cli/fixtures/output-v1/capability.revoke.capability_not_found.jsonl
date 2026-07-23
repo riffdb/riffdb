@@ -1,0 +1,1 @@
+{"schema":"riffdb.cli.output/v1","command":"capability.revoke","ok":true,"result":{"status":"capability_not_found"}}

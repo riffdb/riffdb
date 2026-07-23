@@ -1,0 +1,1 @@
+{"schema":"riffdb.cli.output/v1","command":"capability.bootstrap","ok":false,"error":{"type":"local","code":"credential_retention_failed","message":"credential retention failed"}}

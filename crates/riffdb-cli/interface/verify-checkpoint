@@ -1,0 +1,330 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+export LC_ALL=C
+export TZ=UTC
+
+script_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
+crate_root="$(cd -- "$script_dir/.." && pwd -P)"
+repo_root="$(cd -- "$crate_root/../.." && pwd -P)"
+fixture_root="$script_dir/../fixtures/output-v1"
+manifest="$fixture_root/manifest.tsv"
+inventory="$script_dir/v1/checkpoint-inventory-v1.tsv"
+mode="${1:---check}"
+
+commands=(
+    contract.validate
+    contract.deploy
+    command.execute
+    command.outcome
+    entity.get
+    commit.show
+    projection.query
+    capability.bootstrap
+    capability.create
+    capability.revoke
+    server.health
+    demo.budget
+)
+
+declare -A expected_command_counts=(
+    [contract.validate]=11
+    [contract.deploy]=7
+    [command.execute]=8
+    [command.outcome]=4
+    [entity.get]=4
+    [commit.show]=4
+    [projection.query]=9
+    [capability.bootstrap]=8
+    [capability.create]=6
+    [capability.revoke]=5
+    [server.health]=16
+    [demo.budget]=11
+)
+
+fail() {
+    printf 'WP-150 interface checkpoint invalid: %s\n' "$1" >&2
+    exit 1
+}
+
+usage() {
+    printf 'usage: %s [--check|--print-manifest|--print-inventory]\n' "$0" >&2
+    exit 2
+}
+
+case "$mode" in
+    --check | --print-manifest | --print-inventory) ;;
+    *) usage ;;
+esac
+
+command -v sha256sum >/dev/null 2>&1 ||
+    fail 'sha256sum is required to verify accepted SHA-256 fixture identities'
+command -v jq >/dev/null 2>&1 ||
+    fail 'jq is required to verify exact compact JSONL structure'
+
+fixture_identity() {
+    local file="$1"
+    local candidate
+    local matches=0
+    FIXTURE_COMMAND=
+    for candidate in "${commands[@]}"; do
+        if [[ "$file" == "$candidate."* ]]; then
+            FIXTURE_COMMAND="$candidate"
+            ((matches += 1))
+        fi
+    done
+    [[ "$matches" == 1 ]] ||
+        fail "fixture does not map to exactly one closed command identity: $file"
+}
+
+validate_common_bytes() {
+    local path="$1"
+    local file="$2"
+    local final_byte
+    local lines
+
+    [[ -s "$path" ]] || fail "fixture is empty: $file"
+    final_byte="$(tail -c 1 -- "$path" | od -An -tu1 | tr -d ' ')"
+    [[ "$final_byte" == 10 ]] || fail "fixture is not LF-terminated: $file"
+    lines="$(wc -l <"$path" | tr -d ' ')"
+    [[ "$lines" == 1 ]] || fail "fixture is not exactly one line: $file"
+    if grep -q $'\r' -- "$path"; then
+        fail "fixture contains CR bytes: $file"
+    fi
+    if grep -q '[^ -~]' -- "$path"; then
+        fail "fixture contains non-ASCII or control bytes: $file"
+    fi
+}
+
+classify_jsonl() {
+    local path="$1"
+    local file="$2"
+    local command="$3"
+    local line
+    local prefix
+    local error_prefix
+    local compact
+
+    IFS= read -r line <"$path"
+    if ! compact="$(jq -c . "$path")"; then
+        fail "JSONL is not valid JSON: $file"
+    fi
+    [[ "$compact" == "$line" ]] ||
+        fail "JSONL is not the exact compact representation: $file"
+    if ! jq -e --arg command "$command" '
+        (type == "object")
+        and (.schema == "riffdb.cli.output/v1")
+        and (.command == $command)
+        and ((.ok | type) == "boolean")
+        and (
+            if .ok
+            then
+                (keys_unsorted == ["schema", "command", "ok", "result"])
+                and ((.result | type) == "object")
+            else
+                (keys_unsorted == ["schema", "command", "ok", "error"])
+                and ((.error | type) == "object")
+            end
+        )
+    ' "$path" >/dev/null; then
+        fail "JSONL top-level schema, command, key order, or branch is invalid: $file"
+    fi
+
+    prefix="{\"schema\":\"riffdb.cli.output/v1\",\"command\":\"$command\",\"ok\":"
+    if [[ "$line" == "$prefix"'true,"result":'*'}' ]]; then
+        FIXTURE_EXIT=0
+        return
+    fi
+
+    error_prefix="$prefix"'false,"error":{"type":"'
+    case "$line" in
+        "$error_prefix"'public"'*'}')
+            if [[ "$line" == *'"code":"outcome_unknown"'* ]]; then
+                FIXTURE_EXIT=3
+            else
+                FIXTURE_EXIT=1
+            fi
+            ;;
+        "$error_prefix"'client"'*'}')
+            FIXTURE_EXIT=1
+            ;;
+        "$error_prefix"'local"'*'}')
+            if [[ "$line" == *'"code":"demo_failed"'* ]]; then
+                FIXTURE_EXIT=1
+            else
+                FIXTURE_EXIT=2
+            fi
+            ;;
+        "$error_prefix"'uncertain"'*'}')
+            FIXTURE_EXIT=3
+            ;;
+        *)
+            fail "JSONL envelope, key order, Boolean, or error type is invalid: $file"
+            ;;
+    esac
+}
+
+classify_stderr() {
+    local path="$1"
+    local file="$2"
+    local command="$3"
+    local branch="$4"
+    local expected
+
+    case "$command/$branch" in
+        contract.validate/output_too_large)
+            expected='contract.validate: output_too_large: output exceeds the CLI limit'
+            ;;
+        contract.validate/output_render_failed)
+            expected='contract.validate: output_render_failed: output rendering failed'
+            ;;
+        *)
+            fail "unregistered emergency stderr fixture: $file"
+            ;;
+    esac
+    [[ "$(tr -d '\n' <"$path")" == "$expected" ]] ||
+        fail "emergency stderr bytes differ from the closed registry: $file"
+    FIXTURE_EXIT=2
+}
+
+generate_manifest() {
+    local command
+    local path
+    local file
+    local stem
+    local branch
+    local stream
+    local bytes
+    local hash
+    local found
+    local expected
+    local total=0
+    local stdout_count=0
+    local stderr_count=0
+
+    printf 'file\tcommand\tbranch\tstream\texit\tbytes\tsha256\n'
+    for command in "${commands[@]}"; do
+        found=0
+        while IFS= read -r -d '' path; do
+            file="${path##*/}"
+            validate_common_bytes "$path" "$file"
+            case "$file" in
+                *.jsonl)
+                    stream=stdout
+                    ((stdout_count += 1))
+                    stem="${file%.jsonl}"
+                    classify_jsonl "$path" "$file" "$command"
+                    ;;
+                *.stderr)
+                    stream=stderr
+                    ((stderr_count += 1))
+                    stem="${file%.stderr}"
+                    branch="${stem#"$command."}"
+                    classify_stderr "$path" "$file" "$command" "$branch"
+                    ;;
+                *)
+                    fail "unsupported fixture extension: $file"
+                    ;;
+            esac
+            branch="${stem#"$command."}"
+            [[ -n "$branch" && "$branch" != "$stem" ]] ||
+                fail "fixture has no terminal branch: $file"
+            bytes="$(wc -c <"$path" | tr -d ' ')"
+            hash="$(sha256sum -- "$path")"
+            hash="${hash%% *}"
+            printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
+                "$file" "$command" "$branch" "$stream" "$FIXTURE_EXIT" "$bytes" "$hash"
+            ((found += 1))
+            ((total += 1))
+        done < <(
+            find "$fixture_root" -maxdepth 1 -type f \
+                \( -name "$command.*.jsonl" -o -name "$command.*.stderr" \) \
+                -print0 | sort -z
+        )
+        expected="${expected_command_counts[$command]}"
+        [[ "$found" == "$expected" ]] ||
+            fail "command fixture count is $found, expected $expected: $command"
+    done
+    [[ "$total" == 93 ]] || fail "terminal fixture total is $total, expected 93"
+    [[ "$stdout_count" == 91 ]] ||
+        fail "stdout fixture total is $stdout_count, expected 91"
+    [[ "$stderr_count" == 2 ]] ||
+        fail "stderr fixture total is $stderr_count, expected 2"
+}
+
+generate_checkpoint_inventory() {
+    local path
+    local relative
+    local bytes
+    local hash
+    local count=0
+
+    printf 'path\tbytes\tsha256\n'
+    while IFS= read -r -d '' path; do
+        relative="${path#"$repo_root/"}"
+        [[ "$relative" != "$path" ]] ||
+            fail "checkpoint path is outside the repository: $path"
+        bytes="$(wc -c <"$path" | tr -d ' ')"
+        hash="$(sha256sum -- "$path")"
+        hash="${hash%% *}"
+        printf '%s\t%s\t%s\n' "$relative" "$bytes" "$hash"
+        ((count += 1))
+    done < <(
+        find "$crate_root/fixtures" "$crate_root/interface" -type f \
+            ! -path "$inventory" -print0 | sort -z
+    )
+    [[ "$count" == 104 ]] ||
+        fail "checkpoint inventory contains $count artifacts, expected 104"
+}
+
+while IFS= read -r -d '' path; do
+    file="${path##*/}"
+    [[ "$file" != manifest.tsv ]] || continue
+    case "$file" in
+        *.jsonl | *.stderr) ;;
+        *) fail "stale or unsupported fixture file: $file" ;;
+    esac
+    fixture_identity "$file"
+done < <(find "$fixture_root" -maxdepth 1 -type f -print0 | sort -z)
+
+if [[ "$mode" == --print-manifest ]]; then
+    generate_manifest
+    exit 0
+fi
+
+if [[ "$mode" == --print-inventory ]]; then
+    generate_checkpoint_inventory
+    exit 0
+fi
+
+[[ -f "$manifest" ]] || fail 'manifest.tsv is missing'
+[[ -f "$inventory" ]] || fail 'checkpoint-inventory-v1.tsv is missing'
+generated_manifest="$(mktemp)"
+generated_inventory="$(mktemp)"
+trap 'rm -f -- "$generated_manifest" "$generated_inventory"' EXIT
+generate_manifest >"$generated_manifest"
+if ! cmp -s -- "$manifest" "$generated_manifest"; then
+    diff -u -- "$manifest" "$generated_manifest" >&2 || true
+    fail 'manifest.tsv is stale, incomplete, or out of closed command order'
+fi
+generate_checkpoint_inventory >"$generated_inventory"
+if ! cmp -s -- "$inventory" "$generated_inventory"; then
+    diff -u -- "$inventory" "$generated_inventory" >&2 || true
+    fail 'checkpoint-inventory-v1.tsv is stale or incomplete'
+fi
+
+entries="$(tail -n +2 "$manifest" | wc -l | tr -d ' ')"
+artifacts="$(
+    find "$fixture_root" -maxdepth 1 -type f ! -name manifest.tsv -print |
+        wc -l |
+        tr -d ' '
+)"
+[[ "$entries" == "$artifacts" ]] ||
+    fail 'manifest and fixture inventories have different sizes'
+
+inventory_entries="$(tail -n +2 "$inventory" | wc -l | tr -d ' ')"
+[[ "$inventory_entries" == 104 ]] ||
+    fail 'checkpoint inventory does not freeze exactly 104 artifacts'
+
+printf 'WP-150 interface checkpoint verified: %s commands, %s fixtures, %s frozen artifacts.\n' \
+    "${#commands[@]}" "$entries" "$inventory_entries"

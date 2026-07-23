@@ -1,0 +1,1 @@
+{"schema":"riffdb.cli.output/v1","command":"capability.bootstrap","ok":false,"error":{"type":"public","code":"concurrency_deadline_exceeded","message":"concurrency deadline exceeded","recovery_action":"retry"}}

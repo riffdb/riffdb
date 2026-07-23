@@ -1,0 +1,1 @@
+{"schema":"riffdb.cli.output/v1","command":"command.execute","ok":false,"error":{"type":"public","code":"idempotency_key_reuse","message":"idempotency key was reused with different input","recovery_action":"correct_request"}}

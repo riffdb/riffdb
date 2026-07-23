@@ -1,0 +1,1 @@
+{"schema":"riffdb.cli.output/v1","command":"server.health","ok":false,"error":{"type":"client","code":"protocol_failure","message":"the RiffDB gRPC peer returned an invalid protocol response"}}

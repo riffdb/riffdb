@@ -1,0 +1,1 @@
+{"schema":"riffdb.cli.output/v1","command":"server.health","ok":false,"error":{"type":"client","code":"request_deadline_elapsed","message":"request deadline elapsed"}}

@@ -1,0 +1,1 @@
+{"schema":"riffdb.cli.output/v1","command":"server.health","ok":false,"error":{"type":"client","code":"response_too_large","message":"response exceeds the service limit"}}

@@ -1,0 +1,1 @@
+{"schema":"riffdb.cli.output/v1","command":"demo.budget","ok":false,"error":{"type":"local","code":"demo_failed","message":"the budget comparison did not pass","case":"sequential"}}

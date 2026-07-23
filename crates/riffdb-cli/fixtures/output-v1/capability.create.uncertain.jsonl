@@ -1,0 +1,1 @@
+{"schema":"riffdb.cli.output/v1","command":"capability.create","ok":false,"error":{"type":"uncertain","code":"capability_create_outcome_unknown","message":"the capability-create outcome remains unknown","recovery_action":"retry_with_same_capability_id","capability_id":"01234567-89ab-7def-8123-456789abcdef"}}

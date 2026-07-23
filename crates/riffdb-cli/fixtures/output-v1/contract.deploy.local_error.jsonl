@@ -1,0 +1,1 @@
+{"schema":"riffdb.cli.output/v1","command":"contract.deploy","ok":false,"error":{"type":"local","code":"input_read_failed","message":"input could not be read"}}

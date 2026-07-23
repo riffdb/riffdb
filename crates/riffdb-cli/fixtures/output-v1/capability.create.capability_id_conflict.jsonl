@@ -1,0 +1,1 @@
+{"schema":"riffdb.cli.output/v1","command":"capability.create","ok":true,"result":{"status":"capability_id_conflict"}}
