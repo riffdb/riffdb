@@ -7,8 +7,32 @@ publish.workspace = true
 
 [features]
 default = []
+stdio = ["rmcp/transport-io"]
+streamable-http = [
+    "dep:riffdb-auth",
+    "dep:riffdb-service",
+    "rmcp/transport-streamable-http-server",
+]
 
 [dependencies]
+base64 = { version = "=0.22.1", default-features = false, features = ["alloc"] }
+bytes = { version = "=1.12.1", default-features = false, features = ["std"] }
+futures = { version = "=0.3.33", default-features = false, features = ["std"] }
+http = { version = "=1.4.2", default-features = false, features = ["std"] }
+http-body = { version = "=1.1.0", default-features = false }
+http-body-util = { version = "=0.1.4", default-features = false }
+riffdb-auth = { version = "0.1.0", path = "../riffdb-auth", default-features = false, optional = true }
+riffdb-errors = { version = "0.1.0", path = "../riffdb-errors", default-features = false }
+riffdb-service = { version = "0.1.0", path = "../riffdb-service", default-features = false, optional = true }
+riffdb-types = { version = "0.1.0", path = "../riffdb-types", default-features = false }
+rmcp = { version = "=2.2.0", default-features = false, features = ["server"] }
+serde = { version = "=1.0.229", default-features = false, features = ["derive", "std"] }
+serde_json = { version = "=1.0.150", default-features = false, features = ["std"] }
+tokio = { version = "=1.52.0", default-features = false, features = ["rt", "sync", "time"] }
+tokio-stream = { version = "=0.1.18", default-features = false, features = ["sync"] }
+tokio-util = { version = "=0.7.19", default-features = false, features = ["rt"] }
+tower-service = { version = "=0.3.3", default-features = false }
+tracing = { version = "=0.1.44", default-features = false, features = ["std"] }
 
 [lints]
 workspace = true

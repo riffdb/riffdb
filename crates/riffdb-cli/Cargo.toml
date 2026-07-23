@@ -9,6 +9,15 @@ publish.workspace = true
 default = []
 
 [dependencies]
+base64 = { version = "=0.22.1", default-features = false, features = ["alloc"] }
+clap = { version = "=4.6.3", default-features = false, features = ["derive", "std", "help", "usage", "error-context"] }
+riffdb-auth = { version = "0.1.0", path = "../riffdb-auth", default-features = false }
+riffdb-client-rust = { version = "0.1.0", path = "../riffdb-client-rust", default-features = false }
+serde = { version = "=1.0.229", default-features = false, features = ["derive", "std"] }
+serde_json = { version = "=1.0.150", default-features = false, features = ["std"] }
+tokio = { version = "=1.52.0", default-features = false, features = ["macros", "rt-multi-thread"] }
+toml = { version = "=1.1.3", default-features = false, features = ["parse", "serde", "std"] }
+zeroize = { version = "=1.8.1", default-features = false, features = ["alloc"] }
 
 [[bin]]
 name = "riffdb"
