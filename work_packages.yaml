@@ -1,4 +1,4 @@
-spec_version: '0.31'
+spec_version: '0.34'
 product: RiffDB
 repository: riffdb
 status: implementation-handoff
@@ -1742,6 +1742,7 @@ work_packages:
   - ADR-0037
   - ADR-0040
   - ADR-0041
+  - ADR-0046
   allowed_paths:
   - proto/riffdb/v1/**
   - crates/riffdb-proto/**
@@ -1752,10 +1753,12 @@ work_packages:
   - crates/riffdb-service/schema/riffdb.command-get-outcome-result-v1.schema.json
   - crates/riffdb-service/Cargo.toml
   - crates/riffdb-service/src/cursor.rs
+  - crates/riffdb-service/src/contract_operations.rs
   - crates/riffdb-service/src/dto.rs
   - crates/riffdb-service/src/command_operations.rs
   - crates/riffdb-service/src/query_discovery_operations.rs
   - crates/riffdb-service/src/response.rs
+  - crates/riffdb-service/src/submitted.rs
   - crates/riffdb-server/src/lib.rs
   - crates/riffdb-server/src/lifecycle.rs
   - crates/riffdb-server/src/read_adapters.rs
@@ -1772,6 +1775,11 @@ work_packages:
   deliverables:
   - Additive five-service, 22-RPC public descriptor with exactly six new unary operations and one total streaming RPC,
     preserving every prior symbol, field number/type/presence, enum value, RPC name, and streaming shape
+  - ADR-0046 additive Decimal precision and bounded ContractCompatibilitySummary fields, exact old/new presence
+    compatibility, generated fixtures, decoder fuzzing, and total public-client conversion without durable or
+    compiler-format changes
+  - Exact name-only enum submitted form plus service-owned schema-bound declared-outcome presentation, with public
+    field/enum names populated only from the exact checked historical schema and no adapter-side inference
   - Language-neutral messages, tags, enums, full/compact representations, ResourceDiscoveryKind, conditional catalog
     fences, bounded pages/cursors, exact PublicError carriage, compatibility goldens, and decoder fuzz coverage
   - API-neutral policy-filtered command, contract/resource, provenance, outbox, and projection discovery/read DTOs,
@@ -1806,6 +1814,94 @@ work_packages:
     public clients within bounds; raw-key and locator outcome lookup share one authorized point path; operation-
     specific retry and protected-credential evidence passes; and architecture checks prove stdio needs no private,
     authority-bearing, or server dependency.
+  human_review_triggers: *id001
+- id: WP-139
+  name: Budget safety counterexample evidence
+  depends_on:
+  - WP-045
+  - WP-135
+  objective: Make the contract-first enforcement value executable by contrasting four isolated PostgreSQL negative
+    controls with the same Budget behavior through the public RiffDB Rust SDK and gRPC path, without contaminating
+    the correct comparison or benchmark baseline.
+  requirements:
+  - SYS-004
+  - DSL-009
+  - OUT-001
+  - OUT-002
+  - OUT-004
+  - TXN-001
+  - API-001
+  - POC-002
+  - POC-003
+  - POC-005
+  - POC-008
+  required_adrs:
+  - ADR-0001
+  - ADR-0002
+  - ADR-0003
+  - ADR-0005
+  - ADR-0006
+  - ADR-0007
+  - ADR-0009
+  - ADR-0011
+  - ADR-0015
+  - ADR-0018
+  - ADR-0024
+  - ADR-0027
+  - ADR-0028
+  - ADR-0031
+  - ADR-0033
+  - ADR-0035
+  - ADR-0037
+  - ADR-0040
+  - ADR-0041
+  - ADR-0045
+  allowed_paths:
+  - examples/budget-comparison/Cargo.toml
+  - examples/budget-comparison/Cargo.lock
+  - examples/budget-comparison/README.md
+  - examples/budget-comparison/safety-evidence/**
+  - examples/budget-comparison/fixtures/safety/**
+  - examples/budget-comparison/riffdb-grpc/src/lib.rs
+  - examples/budget-comparison/tests/safety_*
+  - examples/budget-comparison/tests/postgres_isolation.rs
+  - .github/workflows/budget-comparison.yml
+  - scripts/budget-safety-demo
+  deliverables:
+  - Separate safe Rust package riffdb-budget-safety-evidence and non-shipped riffdb-budget-safety runner
+  - Exact riffdb.budget.safety-evidence/v1 typed report, pretty fixture, compact JSONL fixture, invocation grammar,
+    bounds, exit codes, and redaction-safe failure bytes from ADR-0045
+  - Deterministically scheduled PostgreSQL lost-update negative control plus direct-DML precondition bypass,
+    duplicate discarded-response retry, and same-key/different-input negative controls
+  - Public RiffDB contrasts using only normal Rust SDK/gRPC application operations after the existing bounded WP-135
+    test-only bootstrap provisioning exception
+  - Exact commit observations for declared outcomes, affected entities, durable events, replay identity, outcome
+    resolution, mismatch error shape, and exact-end post-mismatch application frontier
+  - Architecture evidence that the canonical PostgreSQL adapter/profile and frozen riffdb.budget.public-run/v1
+    runner remain unchanged, unsafe controls cannot enter a benchmark target, and PostgreSQL remains outside the
+    production workspace
+  - Corrected actual-membership assertion replacing the existing comment-matching false positive
+  - Required-live PostgreSQL 18.4 and fresh-riffdbd process evidence plus fail-closed scripts/budget-safety-demo
+  acceptance_commands:
+  - cargo test --manifest-path examples/budget-comparison/Cargo.toml --workspace
+  - cargo run --manifest-path examples/budget-comparison/Cargo.toml -p riffdb-budget-safety-evidence --bin
+    budget-safety-fixtures -- --check
+  - cargo build -p riffdb-server --bin riffdbd --target-dir target/wp139-root
+  - cargo build --manifest-path examples/budget-comparison/Cargo.toml -p riffdb-budget-safety-evidence --bin
+    riffdb-budget-safety --target-dir target/wp139-comparison
+  - RIFFDB_BUDGET_POSTGRES_REQUIRED=1 RIFFDB_BUDGET_RIFFDBD_BIN="$PWD/target/wp139-root/debug/riffdbd"
+    RIFFDB_BUDGET_SAFETY_BIN="$PWD/target/wp139-comparison/debug/riffdb-budget-safety" cargo test
+    --manifest-path examples/budget-comparison/Cargo.toml -p riffdb-budget-comparison --test safety_evidence
+    --target-dir target/wp139-comparison -- --test-threads=1
+  - cargo fmt --manifest-path examples/budget-comparison/Cargo.toml --all -- --check
+  - cargo clippy --manifest-path examples/budget-comparison/Cargo.toml --workspace --all-targets --all-features --
+    -D warnings
+  - RUSTDOCFLAGS="-D warnings" cargo doc --manifest-path examples/budget-comparison/Cargo.toml --workspace --no-deps
+  - cargo deny --manifest-path examples/budget-comparison/Cargo.toml check
+  exit_gate: All four exact live contrasts and report fixtures pass; PostgreSQL negative controls are isolated from
+    the correct adapter and every benchmark path; the existing public runner remains byte-stable; skipped live
+    evidence fails required mode; and no product binary, production dependency, contract, public/durable interface,
+    or P0/P1/P2 gate membership changes.
   human_review_triggers: *id001
 - id: WP-140
   name: Native MCP interface
@@ -1862,6 +1958,9 @@ work_packages:
   - ADR-0041
   - ADR-0043
   - ADR-0044
+  - ADR-0046
+  - ADR-0047
+  - ADR-0048
   allowed_paths:
   - Cargo.lock
   - crates/riffdb-api-mcp/**
@@ -1879,6 +1978,8 @@ work_packages:
   - Fixed admin/read tools
   - Resources, subscriptions, list-change notifications
   - Progress, cancellation, pagination, security limits
+  - Correct active-version links, bounded compatibility metadata, command-plan schemas, projection lag, and factual
+    generated command documentation/examples validated against the compiler-owned schemas
   - Hosted MCP RequestId creation through the injected server source, distinct from MCP JSON-RPC identifiers and
     progress tokens; v1 has no AgentSessionId carrier, and any future externally supplied value requires a reviewed
     carrier plus the shared UUIDv7 validation contract
@@ -1915,6 +2016,8 @@ work_packages:
   - Stateful loopback-only Streamable HTTP route with strict authority/origin/protocol/auth/session ordering, wrapper-
     owned pre-initialize ping, custom bounded Pending/Active SessionManager, capability binding, rate/in-flight limits,
     and exact 1-MiB request/4-MiB response boundaries
+  - Hosted-only post-authentication rate admission keyed by authenticated principal, policy tenant, and exact target;
+    stdio derives no local principal/tenant and remains subject to normal gRPC/service admission
   - Production stdio credential-file flow through WP-137's protected public-client loader and HTTP credential handoff
     only through CredentialAuthenticator, with no local bearer decode, raw credential exposure, or policy bypass
   - Progress, cancellation, observer/subscription bounds, list-change/resource-update coalescing, five-second polling,
@@ -2314,6 +2417,7 @@ work_packages:
   - WP-075
   - WP-130
   - WP-135
+  - WP-139
   - WP-140
   - WP-150
   - WP-160
@@ -2363,6 +2467,7 @@ work_packages:
   - ADR-0040
   - ADR-0041
   - ADR-0042
+  - ADR-0045
   allowed_paths:
   - scripts/demo*
   - scripts/release*
@@ -2376,9 +2481,11 @@ work_packages:
   - Benchmark report
   - Threat model and dependency inventory
   - Release binaries, checksums, SBOM, examples, known limitations
-  - Existing WP-075 Fjall and WP-045/WP-125/WP-135 comparison sources are read-only evidence inputs; WP-200 may add
-    scenarios, reports, and release packaging under its broad paths but may not rewrite their manifests, lockfiles,
-    adapters, fixtures, or guarantee profiles without a separately approved owner-package amendment
+  - Machine-readable consumption of WP-139's checked safety report with its exact claim qualifier and every
+    deliberately unsafe PostgreSQL variant excluded from performance results
+  - Existing WP-075 Fjall and WP-045/WP-125/WP-135/WP-139 comparison sources are read-only evidence inputs; WP-200
+    may add scenarios, reports, and release packaging under its broad paths but may not rewrite their manifests,
+    lockfiles, adapters, fixtures, or guarantee profiles without a separately approved owner-package amendment
   - Cross-transport semantic and durable-audit parity plus generated durable/public artifact evidence in the final
     requirement report
   - Final transaction-order evidence from current validation through mutation-affected epoch reads, sequence-free

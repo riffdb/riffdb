@@ -66,11 +66,15 @@ direction, merged draft, or implementation choice.
 | [0042](0042-sealed-catalog-owned-index-migration-driver.md) | Sealed Catalog-Owned Index Migration Driver | Accepted |
 | [0043](0043-auth-owned-retained-mcp-credential.md) | Auth-Owned Retained MCP Credential | Accepted |
 | [0044](0044-hosted-mcp-context-and-dependency-completion.md) | Hosted MCP Context and Dependency Completion | Accepted |
+| [0045](0045-budget-safety-counterexample-evidence.md) | Budget Safety Counterexample Evidence and Claim Boundary | Accepted |
+| [0046](0046-wp140-public-presentation-and-resource-conformance.md) | WP-140 Public Presentation and Resource Conformance | Accepted |
+| [0047](0047-mcp-object-root-schema-conformance.md) | MCP Object-Root Schema Conformance | Accepted |
+| [0048](0048-mcp-observer-physical-call-accounting.md) | MCP Observer Physical-Call Accounting | Accepted |
 
 The human architecture review on 2026-07-12 approved the direction represented
 by ADR-0001 through ADR-0012. The human maintainer accepted ADR-0001 through
 ADR-0042 and their recorded companion amendments by 2026-07-22, and accepted
-ADR-0043 and ADR-0044 on 2026-07-23. ADR-0008 now
+ADR-0043 through ADR-0048 on 2026-07-23. ADR-0008 now
 accepts the native MCP tool/resource model, policy-filtered HTTP and stdio-over-
 gRPC boundaries, canonical locators/cursors, and presentation rules; ADR-0020
 separately owns command tool-name normalization and its compiler/catalog
@@ -137,6 +141,24 @@ the foundational types/errors and narrow tracing owners required by the common
 adapter, the current-thread stdio runtime, and the non-reloadable rmcp telemetry
 filter. It adds no policy edge, request-context claim carrier, transport
 authority, wire field, or durable field.
+ADR-0045 adds one isolated, non-gating WP-139 budget-safety evidence track with
+four exact PostgreSQL negative controls and public-RiffDB contrasts, a bounded
+versioned report/runner, a strict claim qualifier, and a WP-200 dependency. It
+changes no product binary, production dependency, contract, public protocol,
+durable format, storage boundary, or P0/P1/P2 membership.
+ADR-0046 corrects the WP-137/WP-140 public presentation boundary with additive
+decimal precision and bounded contract-compatibility metadata, service-owned
+schema-bound outcome names, exact name-only enum submission, factual generated
+command documentation, complete resource content, and hosted-only
+post-authentication MCP limiting. It changes no durable, IR, bundle, plan-hash,
+storage, URI, RPC, or dependency boundary.
+ADR-0047 makes one pre-release in-place correction to thirteen canonical MCP
+schema documents by adding the required redundant object-root type, with no
+instance-shape, converter, compiler, public Protobuf, or durable-format change.
+ADR-0048 separates fourteen-per-tick logical observer operations from the
+physical service calls they contain, enforces exact one/five-call operation
+handles and a 46-per-tick/8,280-per-session physical ceiling, and removes the
+redundant stdio parity probe.
 
 The earlier four records ADR-0008, ADR-0039, ADR-0040, and ADR-0041 cite
 revision `21a8cfb` as their acceptance reference. Their separately named future exact-byte checkpoints
@@ -153,6 +175,14 @@ earlier four records' `21a8cfb` acceptance reference.
 ADR-0043 likewise has a separate acceptance reference: the human maintainer's
 explicit confirmation in the current Codex session on 2026-07-23.
 ADR-0044 likewise has a separate acceptance reference: the human maintainer's
+explicit confirmation in the current Codex session on 2026-07-23.
+ADR-0045 likewise has a separate acceptance reference: the human maintainer's
+explicit confirmation in the current Codex session on 2026-07-23.
+ADR-0046 likewise has a separate acceptance reference: the human maintainer's
+explicit confirmation in the current Codex session on 2026-07-23.
+ADR-0047 likewise has a separate acceptance reference: the human maintainer's
+explicit confirmation in the current Codex session on 2026-07-23.
+ADR-0048 likewise has a separate acceptance reference: the human maintainer's
 explicit confirmation in the current Codex session on 2026-07-23.
 
 ## Workflow

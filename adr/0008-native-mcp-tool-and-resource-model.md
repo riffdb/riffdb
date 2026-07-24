@@ -10,6 +10,9 @@
   for the exact provenance resource locator
 - **Paired accepted record:** ADR-0040 for the public gRPC parity bridge required by
   production stdio
+- **Amended by:** ADR-0046 for additive decimal precision, name-only enum
+  submission, schema-bound outcome presentation, corrected resource content,
+  and hosted-only post-authentication rate limiting
 - **Amends:** ADR-0009's protected-file/direct-owner boundary, including
   the exact semantic, structural, and presentation-only `base64` owners added
   here and in paired ADR-0040; ADR-0037's
@@ -978,6 +981,12 @@ releases every nondurable observation, cursor, and subscription handle exactly
 once.
 
 ### Adapter limits and rate limiting
+
+ADR-0046 supersedes only the sentence below that assigns the second
+post-authentication adapter-owned bucket to both transports. That bucket is
+hosted-HTTP-only; production stdio remains an ordinary authenticated gRPC
+client and does not possess principal or policy-tenant facts locally. All other
+bounds in this section remain unchanged.
 
 `riffdb-api-mcp` owns an injected monotonic `McpRateLimiter`; it does not reuse a
 semantic wall clock or service cursor clock. Streamable HTTP performs one
