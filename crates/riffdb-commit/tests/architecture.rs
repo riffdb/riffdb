@@ -1375,7 +1375,13 @@ fn command_driver_maps_caught_runtime_panics_to_the_public_internal_defect() {
 fn reviewed_tokio_owner_and_lock_graph_are_frozen() {
     assert_eq!(
         production_dependency_owners("tokio"),
-        ["riffdb-commit", "riffdb-server"],
+        [
+            "riffdb-api-mcp",
+            "riffdb-cli",
+            "riffdb-commit",
+            "riffdb-mcp-stdio",
+            "riffdb-server",
+        ],
         "a new production Tokio owner requires dependency and feature-unification review"
     );
     for exact_entry in [

@@ -1,0 +1,4060 @@
+//! Hosted Streamable-HTTP backend over the API-neutral application service.
+
+use std::{
+    collections::BTreeSet,
+    fmt,
+    sync::{Arc, Mutex},
+    time::{Duration, Instant},
+};
+
+use riffdb_service::{
+    ApplicationService, CommandToolDescriptor, CommandToolDiscoveryItem,
+    CompactCommandToolDiscoveryItem, CompactResourceDescriptor, CompactResourceDescriptorRef,
+    ContractSelection, ContractSource, CursorToken, DeployContractRequest, DeployContractResult,
+    DiscoverCommandToolsRequest, DiscoverCommandToolsResult, DiscoverCommandToolsResultRef,
+    DiscoverResourcesRequest, DiscoverResourcesResult, DiscoverResourcesResultRef,
+    DiscoveryCatalogFence, DiscoveryRepresentation, ExecuteCommandRequest, ExplainCommandRequest,
+    ExplainCommandResult, ExplainedCommand, FieldSelection, GetActiveContractRequest,
+    GetActiveContractResult, GetCommitRequest, GetContractVersionRequest, GetContractVersionResult,
+    GetEntityRequest, GetProjectionStatusRequest, GetProjectionStatusResult, HealthContext,
+    HealthRequest, HealthResult, ListPendingOutboxDeliveriesRequest, OperationSchemaCatalog,
+    PageLimit, PageRequest, ProvenanceSelection, QueryProjectionRequest, RequestCancellationHandle,
+    RequestContext, RequestControl, ResolveCommandOutcomeRequest, ResourceDescriptorRef,
+    ResourceDiscoveryKind, ScanCommitsRequest, ScanIndexRequest, ServiceFailure, SourceName,
+    SubmittedDecimal, SubmittedField, SubmittedFieldIdentity, SubmittedList, SubmittedMoney,
+    SubmittedRecord, SubmittedValue, TraceProvenanceRequest, ValidateContractRequest,
+};
+use riffdb_types::{
+    CanonicalRecord, CanonicalValue, CommandId, CommitSequence, ContractLineage, ContractVersion,
+    CurrencyCode, Date, EntityKey, EntityTypeId, EnumTypeId, EnumVariantId, FieldId,
+    FrontierPosition, IdempotencyKey, IndexEpochPosition, IndexId, ProjectionId, ProvenanceId,
+    ServiceOperationV1, Timestamp,
+};
+use serde::Serialize;
+
+use crate::{
+    McpBackend, McpBackendError, McpBackendFuture, McpBackendRequest,
+    McpBindingFieldReferencePresentation, McpCancellationSignal, McpCommandDurability,
+    McpCommandExecutionClass, McpCommandExplanationFields, McpCommandExplanationPresentation,
+    McpCompactObservationPage, McpCompactObservationRequest, McpCompactObservationResult,
+    McpCompatibilityCodeCount, McpContractCompatibilityClass, McpContractCompatibilityPresentation,
+    McpContractDescriptorPresentation, McpContractSelection, McpDiscoveryRequest,
+    McpDynamicCommandCompletion, McpDynamicToolDefinition, McpExplainedCommandPresentation,
+    McpFixedResultBranch, McpFixedResultPayload, McpFixedToolRequest, McpFrontierPresentation,
+    McpGeneratedSchemaKind, McpInvocationTarget, McpJournaledCommandResultParts,
+    McpJournaledCommandStatus, McpNaturalOutcome, McpObservedInventory, McpObserverBackendError,
+    McpPageRequest, McpPostAuthenticationAdmission, McpPresentedBytes, McpPresentedField,
+    McpPresentedHash, McpPresentedI64, McpPresentedTimestamp, McpPresentedU64, McpPresentedUuid,
+    McpPresentedValue, McpProjectionFailureCode, McpProjectionFailurePresentation,
+    McpProjectionGenerationFrontierPresentation, McpProjectionIdentityPresentation,
+    McpProjectionLifecycle, McpProjectionStatusParts, McpProjectionStatusPresentation,
+    McpProvenanceSelector, McpPublishedApplyMode, McpRateTarget, McpReadOnlyCommandResultParts,
+    McpRequestId, McpResourceBody, McpResourceContent, McpResourceDescriptor,
+    McpResourceDiscoveryRequest, McpResourceDiscoverySurface, McpResourceJson, McpResourceLocator,
+    McpResourcePage, McpResourceReadRequest, McpSchemaBoundField, McpSchemaBoundOutcome,
+    McpSchemaBoundValue, McpSubmittedFieldIdentity, McpSubmittedValue,
+    McpSubscribedResourceObservation, McpSubscriptionRequest, McpToolDiscoveryItem,
+    McpToolInvocation, McpToolPage, McpToolResult, McpTransportKind, McpVisibleFingerprint,
+    RequestIdSource, RequestIdSourceError, SchemaDocument, compose_dynamic_command_result,
+    compose_fixed_tool_result, decode_dynamic_command_input, decode_fixed_tool_request,
+    fixed_tool_registry, format_active_contract_locator, format_command_documentation_locator,
+    format_command_plan_locator, format_commit_locator, format_commit_template_locator,
+    format_contract_version_locator, format_entity_schema_locator, format_outcome_locator,
+    format_outcome_template_locator_from_public, format_projection_status_locator,
+    format_provenance_locator, format_provenance_template_locator, format_server_health_locator,
+};
+
+const HOSTED_SERVICE_CALL_TIMEOUT: Duration = Duration::from_secs(30);
+const MAX_RESOLUTION_DISCOVERY_PAGES: usize = 3;
+const MAX_RESOLUTION_DISCOVERY_ITEMS: usize = 1_024;
+const MAX_FULL_CONCRETE_RESOURCE_ITEMS: usize = 16_387;
+
+pub(crate) enum HostedObserverServiceRequest {
+    DiscoverCommandTools(DiscoverCommandToolsRequest),
+    DiscoverResources(DiscoverResourcesRequest),
+    ExplainCommand(ExplainCommandRequest),
+    GetActiveContract,
+    GetProjectionStatus(GetProjectionStatusRequest),
+    Health,
+}
+
+pub(crate) enum HostedObserverServiceResponse {
+    DiscoverCommandTools(DiscoverCommandToolsResult),
+    DiscoverResources(DiscoverResourcesResult),
+    ExplainCommand(ExplainCommandResult),
+    GetActiveContract(GetActiveContractResult),
+    GetProjectionStatus(GetProjectionStatusResult),
+    Health(HealthResult),
+}
+
+pub(crate) trait HostedObserverServiceCaller: Send + Sync {
+    fn call<'a>(
+        &'a self,
+        request: HostedObserverServiceRequest,
+    ) -> McpBackendFuture<'a, HostedObserverServiceResponse>;
+}
+
+/// Hosted MCP backend that invokes only the shared API-neutral service.
+pub struct HostedServiceMcpBackend {
+    service: Arc<dyn ApplicationService>,
+    request_ids: Arc<dyn RequestIdSource>,
+}
+
+impl HostedServiceMcpBackend {
+    /// Creates one hosted backend over the process's shared service graph.
+    #[must_use]
+    pub fn new(
+        service: Arc<dyn ApplicationService>,
+        request_ids: Arc<dyn RequestIdSource>,
+    ) -> Self {
+        Self {
+            service,
+            request_ids,
+        }
+    }
+
+    fn prepare_call(
+        &self,
+        invocation: &HostedServiceInvocation,
+        target: McpRateTarget,
+    ) -> Result<PreparedServiceCall, McpBackendError> {
+        invocation
+            .admission
+            .admit(target)
+            .map_err(|_| McpBackendError::RateLimited)?;
+        if invocation
+            .cancellation
+            .as_ref()
+            .is_some_and(McpCancellationSignal::is_cancelled)
+        {
+            return Err(McpBackendError::Cancelled);
+        }
+        let request_id = invocation
+            .initial_request_id
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .take()
+            .map_or_else(
+                || self.request_ids.next_request_id(),
+                Result::<_, RequestIdSourceError>::Ok,
+            )
+            .map_err(|_| McpBackendError::InvalidResponse)?;
+        let deadline = Instant::now()
+            .checked_add(HOSTED_SERVICE_CALL_TIMEOUT)
+            .ok_or(McpBackendError::InvalidResponse)?;
+        let (control, cancellation) = RequestControl::new(deadline);
+        if invocation
+            .cancellation
+            .as_ref()
+            .is_some_and(McpCancellationSignal::is_cancelled)
+        {
+            cancellation.cancel();
+            return Err(McpBackendError::Cancelled);
+        }
+        let context = invocation
+            .principal
+            .request_context(request_id.into_riffdb(), control);
+        Ok(PreparedServiceCall {
+            context: Some(context),
+            cancellation: Some(cancellation),
+        })
+    }
+
+    async fn discover_tool_page(
+        &self,
+        invocation: &HostedServiceInvocation,
+        request: McpDiscoveryRequest,
+    ) -> Result<McpToolPage, McpBackendError> {
+        self.discover_tool_page_parts(invocation, request.cursor(), request.limit())
+            .await
+    }
+
+    async fn discover_tool_page_parts(
+        &self,
+        invocation: &HostedServiceInvocation,
+        cursor: Option<[u8; 16]>,
+        limit: u16,
+    ) -> Result<McpToolPage, McpBackendError> {
+        let service_request = full_tool_discovery_request(cursor, limit)?;
+        let mut call = self.prepare_call(
+            invocation,
+            McpRateTarget::Service(ServiceOperationV1::DiscoverCommandTools),
+        )?;
+        let result = self
+            .service
+            .discover_command_tools(call.take_context()?, service_request)
+            .await
+            .map_err(map_service_failure)?;
+        call.complete();
+        tool_page_from_service(&result)
+    }
+
+    async fn discover_resource_page(
+        &self,
+        invocation: &HostedServiceInvocation,
+        request: McpResourceDiscoveryRequest,
+    ) -> Result<McpResourcePage, McpBackendError> {
+        let surface = request.surface();
+        let service_request = full_resource_discovery_request(request)?;
+        let mut call = self.prepare_call(
+            invocation,
+            McpRateTarget::Service(ServiceOperationV1::DiscoverResources),
+        )?;
+        let result = self
+            .service
+            .discover_resources(call.take_context()?, service_request)
+            .await
+            .map_err(map_service_failure)?;
+        call.complete();
+        resource_page_from_service(&result, surface)
+    }
+
+    async fn resolve_dynamic(
+        &self,
+        invocation: &HostedServiceInvocation,
+        exact_name: &str,
+    ) -> Result<McpDynamicToolDefinition, McpBackendError> {
+        let mut cursor = None;
+        let mut observed = 0_usize;
+        for page_index in 0..MAX_RESOLUTION_DISCOVERY_PAGES {
+            let page = self
+                .discover_tool_page_parts(invocation, cursor, 500)
+                .await
+                .map_err(collapse_dynamic_resolution_error)?;
+            observed = observed
+                .checked_add(page.items().len())
+                .ok_or(McpBackendError::TargetUnavailable)?;
+            if observed > MAX_RESOLUTION_DISCOVERY_ITEMS {
+                return Err(McpBackendError::TargetUnavailable);
+            }
+            for item in page.items() {
+                if let McpToolDiscoveryItem::Dynamic(tool) = item
+                    && tool.name() == exact_name
+                {
+                    return Ok((**tool).clone());
+                }
+            }
+            cursor = page.next_cursor();
+            if cursor.is_none() {
+                return Err(McpBackendError::TargetUnavailable);
+            }
+            if observed == MAX_RESOLUTION_DISCOVERY_ITEMS
+                || page_index + 1 == MAX_RESOLUTION_DISCOVERY_PAGES
+            {
+                return Err(McpBackendError::TargetUnavailable);
+            }
+        }
+        Err(McpBackendError::TargetUnavailable)
+    }
+
+    async fn resolve_service_command(
+        &self,
+        invocation: &HostedServiceInvocation,
+        exact_name: &str,
+    ) -> Result<CommandToolDescriptor, McpBackendError> {
+        let mut cursor = None;
+        let mut observed = 0_usize;
+        for page_index in 0..MAX_RESOLUTION_DISCOVERY_PAGES {
+            let request = full_tool_discovery_request(cursor, 500)?;
+            let mut call = self.prepare_call(
+                invocation,
+                McpRateTarget::Service(ServiceOperationV1::DiscoverCommandTools),
+            )?;
+            let result = self
+                .service
+                .discover_command_tools(call.take_context()?, request)
+                .await
+                .map_err(|error| collapse_dynamic_resolution_error(map_service_failure(error)))?;
+            call.complete();
+            let DiscoverCommandToolsResultRef::Page {
+                page,
+                operation_schemas,
+            } = result.result()
+            else {
+                return Err(McpBackendError::TargetUnavailable);
+            };
+            validate_operation_catalog(operation_schemas)
+                .map_err(collapse_dynamic_resolution_error)?;
+            observed = observed
+                .checked_add(page.items().len())
+                .ok_or(McpBackendError::TargetUnavailable)?;
+            if observed > MAX_RESOLUTION_DISCOVERY_ITEMS {
+                return Err(McpBackendError::TargetUnavailable);
+            }
+            for item in page.items() {
+                if let CommandToolDiscoveryItem::Command(descriptor) = item
+                    && descriptor.name().as_str() == exact_name
+                {
+                    return Ok((**descriptor).clone());
+                }
+            }
+            cursor = page.next_cursor().map(|cursor| *cursor.as_bytes());
+            if cursor.is_none() {
+                return Err(McpBackendError::TargetUnavailable);
+            }
+            if observed == MAX_RESOLUTION_DISCOVERY_ITEMS
+                || page_index + 1 == MAX_RESOLUTION_DISCOVERY_PAGES
+            {
+                return Err(McpBackendError::TargetUnavailable);
+            }
+        }
+        Err(McpBackendError::TargetUnavailable)
+    }
+
+    async fn read_entity_schema(
+        &self,
+        invocation: &HostedServiceInvocation,
+        expected_lineage: &ContractLineage,
+        expected_entity_id: EntityTypeId,
+    ) -> Result<McpResourceJson, McpBackendError> {
+        let mut cursor = None;
+        let mut observed_fence = None;
+        let mut seen_items = 0_usize;
+        let mut seen_uris = BTreeSet::new();
+        let mut matched_schema = None;
+
+        loop {
+            let request = DiscoverResourcesRequest::with_options(
+                page_request_parts(cursor, 500)?,
+                DiscoveryRepresentation::Full,
+                None,
+                ResourceDiscoveryKind::Concrete,
+            )
+            .map_err(invalid_response)?;
+            let mut call = self.prepare_call(
+                invocation,
+                McpRateTarget::Service(ServiceOperationV1::DiscoverResources),
+            )?;
+            let result = self
+                .service
+                .discover_resources(call.take_context()?, request)
+                .await
+                .map_err(map_service_failure)?;
+            call.complete();
+            let DiscoverResourcesResultRef::Page(page) = result.result() else {
+                return Err(McpBackendError::InvalidResponse);
+            };
+            if observed_fence
+                .as_ref()
+                .is_some_and(|observed| observed != page.observed_fence())
+            {
+                return Err(McpBackendError::InvalidResponse);
+            }
+            observed_fence.get_or_insert_with(|| page.observed_fence().clone());
+            seen_items = seen_items
+                .checked_add(page.items().len())
+                .ok_or(McpBackendError::InvalidResponse)?;
+            if seen_items > MAX_FULL_CONCRETE_RESOURCE_ITEMS {
+                return Err(McpBackendError::InvalidResponse);
+            }
+            for descriptor in page.items() {
+                if let ResourceDescriptorRef::EntitySchema {
+                    lineage,
+                    entity_type_id,
+                    schema,
+                } = descriptor.resource()
+                    && lineage == expected_lineage
+                    && entity_type_id == expected_entity_id
+                {
+                    if matched_schema.is_some() {
+                        return Err(McpBackendError::InvalidResponse);
+                    }
+                    matched_schema = Some(
+                        SchemaDocument::from_public_generated(
+                            McpGeneratedSchemaKind::Entity,
+                            expected_entity_id.get(),
+                            schema.hash().as_bytes(),
+                            schema.canonical_json(),
+                        )
+                        .map_err(invalid_response)?,
+                    );
+                }
+                let descriptor = resource_descriptor_from_service(descriptor)?;
+                if !seen_uris.insert(descriptor.uri().to_owned()) {
+                    return Err(McpBackendError::InvalidResponse);
+                }
+            }
+            cursor = page.next_cursor().map(|cursor| *cursor.as_bytes());
+            if cursor.is_none() {
+                return matched_schema
+                    .ok_or(McpBackendError::TargetUnavailable)?
+                    .to_resource_json()
+                    .map_err(invalid_response);
+            }
+            if seen_items == MAX_FULL_CONCRETE_RESOURCE_ITEMS {
+                return Err(McpBackendError::InvalidResponse);
+            }
+        }
+    }
+
+    async fn authorize_command_resource(
+        &self,
+        invocation: &HostedServiceInvocation,
+        expected_lineage: &ContractLineage,
+        expected_command_id: CommandId,
+        kind: CommandResourceKind,
+    ) -> Result<AuthorizedCommandResource, McpBackendError> {
+        let caller = DirectHostedObserverServiceCaller {
+            backend: self,
+            invocation,
+        };
+        self.authorize_command_resource_with(&caller, expected_lineage, expected_command_id, kind)
+            .await
+    }
+
+    async fn authorize_command_resource_with(
+        &self,
+        caller: &dyn HostedObserverServiceCaller,
+        expected_lineage: &ContractLineage,
+        expected_command_id: CommandId,
+        kind: CommandResourceKind,
+    ) -> Result<AuthorizedCommandResource, McpBackendError> {
+        let mut cursor = None;
+        let mut observed_fence: Option<DiscoveryCatalogFence> = None;
+        let mut observed = 0_usize;
+        let mut seen_uris = BTreeSet::new();
+        let mut matched = None;
+
+        for page_index in 0..MAX_RESOLUTION_DISCOVERY_PAGES {
+            let request = DiscoverResourcesRequest::with_options(
+                page_request_parts(cursor, 500)?,
+                DiscoveryRepresentation::CompactObservation,
+                None,
+                ResourceDiscoveryKind::Concrete,
+            )
+            .map_err(invalid_response)?;
+            let HostedObserverServiceResponse::DiscoverResources(result) = caller
+                .call(HostedObserverServiceRequest::DiscoverResources(request))
+                .await?
+            else {
+                return Err(McpBackendError::InvalidResponse);
+            };
+            let DiscoverResourcesResultRef::CompactPage(page) = result.result() else {
+                return Err(McpBackendError::InvalidResponse);
+            };
+            if observed_fence
+                .as_ref()
+                .is_some_and(|observed| observed != page.observed_fence())
+            {
+                return Err(McpBackendError::InvalidResponse);
+            }
+            observed_fence.get_or_insert_with(|| page.observed_fence().clone());
+            observed = observed
+                .checked_add(page.items().len())
+                .ok_or(McpBackendError::InvalidResponse)?;
+            if observed > MAX_RESOLUTION_DISCOVERY_ITEMS {
+                return Err(McpBackendError::InvalidResponse);
+            }
+            for descriptor in page.items() {
+                if let Some(candidate) = command_resource_candidate(
+                    descriptor,
+                    kind,
+                    expected_lineage,
+                    expected_command_id,
+                ) && matched.replace(candidate).is_some()
+                {
+                    return Err(McpBackendError::InvalidResponse);
+                }
+                let descriptor = compact_resource_descriptor_from_service(descriptor)?;
+                if !seen_uris.insert(descriptor.uri().to_owned()) {
+                    return Err(McpBackendError::InvalidResponse);
+                }
+            }
+            cursor = page.next_cursor().map(|cursor| *cursor.as_bytes());
+            if cursor.is_none() {
+                break;
+            }
+            if observed == MAX_RESOLUTION_DISCOVERY_ITEMS
+                || page_index + 1 == MAX_RESOLUTION_DISCOVERY_PAGES
+            {
+                return Err(McpBackendError::InvalidResponse);
+            }
+        }
+
+        let descriptor = matched.ok_or(McpBackendError::TargetUnavailable)?;
+        let fence = observed_fence.ok_or(McpBackendError::InvalidResponse)?;
+        let request = ExplainCommandRequest::new(
+            ContractSelection::Exact {
+                lineage: descriptor.lineage.clone(),
+                version: descriptor.version,
+            },
+            descriptor.source_command.clone(),
+        );
+        let HostedObserverServiceResponse::ExplainCommand(result) = caller
+            .call(HostedObserverServiceRequest::ExplainCommand(request))
+            .await?
+        else {
+            return Err(McpBackendError::InvalidResponse);
+        };
+        let ExplainCommandResult::Found(explained) = result else {
+            return Err(McpBackendError::TargetUnavailable);
+        };
+        if explained.contract().lineage() != expected_lineage
+            || explained.contract().version() != descriptor.version
+            || explained.command_id() != expected_command_id
+        {
+            return Err(McpBackendError::InvalidResponse);
+        }
+
+        let request = DiscoverResourcesRequest::with_options(
+            page_request_parts(None, 500)?,
+            DiscoveryRepresentation::CompactObservation,
+            Some(fence.clone()),
+            ResourceDiscoveryKind::Concrete,
+        )
+        .map_err(invalid_response)?;
+        let HostedObserverServiceResponse::DiscoverResources(result) = caller
+            .call(HostedObserverServiceRequest::DiscoverResources(request))
+            .await?
+        else {
+            return Err(McpBackendError::InvalidResponse);
+        };
+        match result.result() {
+            DiscoverResourcesResultRef::CatalogUnchanged(returned) if returned == &fence => {
+                Ok(AuthorizedCommandResource {
+                    source_command: descriptor.source_command,
+                    explained: *explained,
+                })
+            }
+            DiscoverResourcesResultRef::CatalogUnchanged(_)
+            | DiscoverResourcesResultRef::Page(_)
+            | DiscoverResourcesResultRef::CompactPage(_) => Err(McpBackendError::InvalidResponse),
+        }
+    }
+
+    async fn read_resource_locator(
+        &self,
+        invocation: &HostedServiceInvocation,
+        locator: McpResourceLocator,
+    ) -> Result<McpResourceContent, McpBackendError> {
+        match locator {
+            McpResourceLocator::ActiveContract => {
+                let mut call = self.prepare_call(
+                    invocation,
+                    McpRateTarget::Service(ServiceOperationV1::GetActiveContract),
+                )?;
+                let result = self
+                    .service
+                    .get_active_contract(call.take_context()?, GetActiveContractRequest)
+                    .await
+                    .map_err(map_service_failure)?;
+                call.complete();
+                let GetActiveContractResult::Present(contract) = result else {
+                    return Err(McpBackendError::TargetUnavailable);
+                };
+                active_contract_resource(&contract)
+            }
+            McpResourceLocator::ContractVersion { lineage, version } => {
+                let uri = format_contract_version_locator(&lineage, version);
+                let mut call = self.prepare_call(
+                    invocation,
+                    McpRateTarget::Service(ServiceOperationV1::GetContractVersion),
+                )?;
+                let result = self
+                    .service
+                    .get_contract_version(
+                        call.take_context()?,
+                        GetContractVersionRequest::new(lineage.clone(), version),
+                    )
+                    .await
+                    .map_err(map_service_failure)?;
+                call.complete();
+                let GetContractVersionResult::Found(contract) = result else {
+                    return Err(McpBackendError::TargetUnavailable);
+                };
+                if contract.lineage() != &lineage || contract.version() != version {
+                    return Err(McpBackendError::InvalidResponse);
+                }
+                contract_version_resource(uri, &contract)
+            }
+            McpResourceLocator::EntitySchema { lineage, entity_id } => {
+                let uri = format_entity_schema_locator(&lineage, entity_id);
+                let schema = self
+                    .read_entity_schema(invocation, &lineage, entity_id)
+                    .await?;
+                json_resource("entity_schema", uri, schema)
+            }
+            McpResourceLocator::CommandPlan {
+                lineage,
+                command_id,
+            } => {
+                let authorized = self
+                    .authorize_command_resource(
+                        invocation,
+                        &lineage,
+                        command_id,
+                        CommandResourceKind::Plan,
+                    )
+                    .await?;
+                command_plan_resource(lineage, command_id, authorized)
+            }
+            McpResourceLocator::CommandDocumentation {
+                lineage,
+                command_id,
+            } => {
+                let authorized = self
+                    .authorize_command_resource(
+                        invocation,
+                        &lineage,
+                        command_id,
+                        CommandResourceKind::Documentation,
+                    )
+                    .await?;
+                command_documentation_resource(lineage, command_id, authorized)
+            }
+            McpResourceLocator::Outcome {
+                principal,
+                lineage,
+                command_id,
+                tool_name,
+                key_hash,
+            } => {
+                let uri =
+                    format_outcome_locator(&principal, &lineage, command_id, &tool_name, key_hash)
+                        .map_err(invalid_response)?;
+                let request = ResolveCommandOutcomeRequest::locator(
+                    riffdb_service::OutcomeResourceLocator::parse(uri.clone())
+                        .map_err(invalid_response)?,
+                );
+                let mut call = self.prepare_call(
+                    invocation,
+                    McpRateTarget::Service(ServiceOperationV1::ResolveCommandOutcome),
+                )?;
+                let result = self
+                    .service
+                    .resolve_command_outcome(call.take_context()?, request)
+                    .await
+                    .map_err(map_service_failure)?;
+                call.complete();
+                let riffdb_service::ResolveCommandOutcomeResult::Found(found) = result else {
+                    return Err(McpBackendError::TargetUnavailable);
+                };
+                let journaled = found.journaled();
+                if journaled.completion() != riffdb_service::JournaledCompletion::Replayed
+                    || journaled.outcome_locator().canonical_uri() != uri
+                {
+                    return Err(McpBackendError::InvalidResponse);
+                }
+                json_resource(
+                    "command_outcome",
+                    uri,
+                    McpResourceJson::from_serializable(&replayed_execution_payload(journaled)?)
+                        .map_err(invalid_response)?,
+                )
+            }
+            McpResourceLocator::Commit(sequence) => {
+                let uri = format_commit_locator(sequence);
+                let mut call = self.prepare_call(
+                    invocation,
+                    McpRateTarget::Service(ServiceOperationV1::GetCommit),
+                )?;
+                let result = self
+                    .service
+                    .get_commit(call.take_context()?, GetCommitRequest::new(sequence))
+                    .await
+                    .map_err(map_service_failure)?;
+                call.complete();
+                let riffdb_service::GetCommitResult::Found(commit) = result else {
+                    return Err(McpBackendError::TargetUnavailable);
+                };
+                let payload = commit_payload(commit.as_snapshot())?;
+                if payload.commit_sequence.get() != sequence.get() {
+                    return Err(McpBackendError::InvalidResponse);
+                }
+                json_resource(
+                    "commit.commit_sequence",
+                    uri,
+                    McpResourceJson::from_serializable(&payload).map_err(invalid_response)?,
+                )
+            }
+            McpResourceLocator::Provenance(provenance_id) => {
+                let uri = format_provenance_locator(provenance_id);
+                let mut call = self.prepare_call(
+                    invocation,
+                    McpRateTarget::Service(ServiceOperationV1::TraceProvenance),
+                )?;
+                let result = self
+                    .service
+                    .trace_provenance(
+                        call.take_context()?,
+                        TraceProvenanceRequest::new(ProvenanceSelection::Provenance(provenance_id)),
+                    )
+                    .await
+                    .map_err(map_service_failure)?;
+                call.complete();
+                let riffdb_service::TraceProvenanceResult::Found(provenance) = result else {
+                    return Err(McpBackendError::TargetUnavailable);
+                };
+                let snapshot = provenance.as_snapshot();
+                if snapshot.provenance_id() != provenance_id {
+                    return Err(McpBackendError::InvalidResponse);
+                }
+                json_resource(
+                    "provenance.provenance_id",
+                    uri,
+                    McpResourceJson::from_serializable(&provenance_payload(snapshot)?)
+                        .map_err(invalid_response)?,
+                )
+            }
+            McpResourceLocator::ProjectionStatus {
+                lineage,
+                projection_id,
+            } => {
+                let uri = format_projection_status_locator(&lineage, projection_id);
+                let request =
+                    GetProjectionStatusRequest::new(ContractSelection::Active, projection_id);
+                let mut call = self.prepare_call(
+                    invocation,
+                    McpRateTarget::Service(ServiceOperationV1::GetProjectionStatus),
+                )?;
+                let result = self
+                    .service
+                    .get_projection_status(call.take_context()?, request)
+                    .await
+                    .map_err(map_service_failure)?;
+                call.complete();
+                let riffdb_service::GetProjectionStatusResult::Found(status) = result else {
+                    return Err(McpBackendError::TargetUnavailable);
+                };
+                if status.identity().contract_lineage() != &lineage
+                    || status.identity().projection_id() != projection_id
+                {
+                    return Err(McpBackendError::InvalidResponse);
+                }
+                projection_status_resource(uri, &status)
+            }
+            McpResourceLocator::ServerHealth => {
+                let mut call = self.prepare_call(
+                    invocation,
+                    McpRateTarget::Service(ServiceOperationV1::GetHealth),
+                )?;
+                let result = self
+                    .service
+                    .health(
+                        HealthContext::authenticated(call.take_context()?),
+                        HealthRequest,
+                    )
+                    .await
+                    .map_err(map_service_failure)?;
+                call.complete();
+                let HealthResult::Authenticated(report) = result else {
+                    return Err(McpBackendError::TargetUnavailable);
+                };
+                health_resource(report)
+            }
+        }
+    }
+
+    async fn invoke_fixed(
+        &self,
+        invocation: &HostedServiceInvocation,
+        _tag: u8,
+        request: McpFixedToolRequest,
+    ) -> Result<McpToolResult, McpBackendError> {
+        match request {
+            McpFixedToolRequest::ValidateContract { source } => {
+                let request = ValidateContractRequest::new(
+                    ContractSource::new(source).map_err(invalid_response)?,
+                )
+                .map_err(invalid_response)?;
+                let mut call = self.prepare_call(
+                    invocation,
+                    McpRateTarget::Service(ServiceOperationV1::ValidateContract),
+                )?;
+                let result = self
+                    .service
+                    .validate_contract(call.take_context()?, request)
+                    .await
+                    .map_err(map_service_failure)?;
+                call.complete();
+                render_validation_result(result)
+            }
+            McpFixedToolRequest::GetActiveContract => {
+                let mut call = self.prepare_call(
+                    invocation,
+                    McpRateTarget::Service(ServiceOperationV1::GetActiveContract),
+                )?;
+                let result = self
+                    .service
+                    .get_active_contract(call.take_context()?, GetActiveContractRequest)
+                    .await
+                    .map_err(map_service_failure)?;
+                call.complete();
+                render_active_contract_result(result)
+            }
+            McpFixedToolRequest::ExplainCommand {
+                contract,
+                command_name,
+            } => {
+                let request = ExplainCommandRequest::new(
+                    service_contract_selection(contract)?,
+                    SourceName::new(command_name).map_err(invalid_response)?,
+                );
+                let mut call = self.prepare_call(
+                    invocation,
+                    McpRateTarget::Service(ServiceOperationV1::ExplainCommand),
+                )?;
+                let result = self
+                    .service
+                    .explain_command(call.take_context()?, request)
+                    .await
+                    .map_err(map_service_failure)?;
+                call.complete();
+                render_explain_result(result)
+            }
+            McpFixedToolRequest::DeployContract {
+                source,
+                expected_active_version,
+            } => {
+                let request = DeployContractRequest::new(
+                    ContractSource::new(source).map_err(invalid_response)?,
+                    optional_contract_version(expected_active_version)?,
+                )
+                .map_err(invalid_response)?;
+                let mut call = self.prepare_call(
+                    invocation,
+                    McpRateTarget::Service(ServiceOperationV1::DeployContract),
+                )?;
+                let result = self
+                    .service
+                    .deploy_contract(call.take_context()?, request)
+                    .await
+                    .map_err(map_service_failure)?;
+                call.complete();
+                render_deploy_result(result)
+            }
+            McpFixedToolRequest::Health => {
+                let mut call = self.prepare_call(
+                    invocation,
+                    McpRateTarget::Service(ServiceOperationV1::GetHealth),
+                )?;
+                let result = self
+                    .service
+                    .health(
+                        HealthContext::authenticated(call.take_context()?),
+                        HealthRequest,
+                    )
+                    .await
+                    .map_err(map_service_failure)?;
+                call.complete();
+                render_health_result(result)
+            }
+            McpFixedToolRequest::GetOutcomeIdentity {
+                contract_lineage,
+                command_name,
+                idempotency_key,
+            } => {
+                let request = ResolveCommandOutcomeRequest::new(
+                    ContractLineage::new(contract_lineage).map_err(invalid_response)?,
+                    SourceName::new(command_name).map_err(invalid_response)?,
+                    IdempotencyKey::new(idempotency_key).map_err(invalid_response)?,
+                );
+                let mut call = self.prepare_call(
+                    invocation,
+                    McpRateTarget::Service(ServiceOperationV1::ResolveCommandOutcome),
+                )?;
+                let result = self
+                    .service
+                    .resolve_command_outcome(call.take_context()?, request)
+                    .await
+                    .map_err(map_service_failure)?;
+                call.complete();
+                render_outcome_result(result)
+            }
+            McpFixedToolRequest::GetOutcomeLocator { outcome_uri } => {
+                let request = ResolveCommandOutcomeRequest::locator(
+                    riffdb_service::OutcomeResourceLocator::parse(outcome_uri)
+                        .map_err(invalid_response)?,
+                );
+                let mut call = self.prepare_call(
+                    invocation,
+                    McpRateTarget::Service(ServiceOperationV1::ResolveCommandOutcome),
+                )?;
+                let result = self
+                    .service
+                    .resolve_command_outcome(call.take_context()?, request)
+                    .await
+                    .map_err(map_service_failure)?;
+                call.complete();
+                render_outcome_result(result)
+            }
+            McpFixedToolRequest::GetEntity {
+                contract,
+                entity_type_id,
+                entity_key,
+                fields,
+            } => {
+                let request = GetEntityRequest::new(
+                    service_contract_selection(contract)?,
+                    EntityTypeId::try_from(entity_type_id).map_err(invalid_response)?,
+                    EntityKey::from_bytes(entity_key).map_err(invalid_response)?,
+                    field_selection(fields)?,
+                )
+                .map_err(invalid_response)?;
+                let mut call = self.prepare_call(
+                    invocation,
+                    McpRateTarget::Service(ServiceOperationV1::GetEntity),
+                )?;
+                let result = self
+                    .service
+                    .get_entity(call.take_context()?, request)
+                    .await
+                    .map_err(map_service_failure)?;
+                call.complete();
+                render_entity_result(result)
+            }
+            McpFixedToolRequest::ScanIndex {
+                contract,
+                index_id,
+                leading_components,
+                fields,
+                page,
+            } => {
+                let request = ScanIndexRequest::new(
+                    service_contract_selection(contract)?,
+                    IndexId::try_from(index_id).map_err(invalid_response)?,
+                    leading_components
+                        .into_iter()
+                        .map(submitted_value_from_mcp)
+                        .collect::<Result<Vec<_>, _>>()?,
+                    field_selection(fields)?,
+                    service_page_request(page)?,
+                )
+                .map_err(invalid_response)?;
+                let mut call = self.prepare_call(
+                    invocation,
+                    McpRateTarget::Service(ServiceOperationV1::ScanIndex),
+                )?;
+                let result = self
+                    .service
+                    .scan_index(call.take_context()?, request)
+                    .await
+                    .map_err(map_service_failure)?;
+                call.complete();
+                render_index_result(result)
+            }
+            McpFixedToolRequest::GetCommit { commit_sequence } => {
+                let sequence =
+                    CommitSequence::new(commit_sequence).ok_or(McpBackendError::InvalidResponse)?;
+                let mut call = self.prepare_call(
+                    invocation,
+                    McpRateTarget::Service(ServiceOperationV1::GetCommit),
+                )?;
+                let result = self
+                    .service
+                    .get_commit(call.take_context()?, GetCommitRequest::new(sequence))
+                    .await
+                    .map_err(map_service_failure)?;
+                call.complete();
+                render_commit_result(result, sequence)
+            }
+            McpFixedToolRequest::ScanCommits { page } => {
+                let mut call = self.prepare_call(
+                    invocation,
+                    McpRateTarget::Service(ServiceOperationV1::ScanCommits),
+                )?;
+                let result = self
+                    .service
+                    .scan_commits(
+                        call.take_context()?,
+                        ScanCommitsRequest::new(service_page_request(page)?),
+                    )
+                    .await
+                    .map_err(map_service_failure)?;
+                call.complete();
+                render_commit_scan_result(result)
+            }
+            McpFixedToolRequest::TraceProvenance { selector } => {
+                let selector = match selector {
+                    McpProvenanceSelector::CommitSequence(sequence) => ProvenanceSelection::Commit(
+                        CommitSequence::new(sequence).ok_or(McpBackendError::InvalidResponse)?,
+                    ),
+                    McpProvenanceSelector::ProvenanceId(id) => ProvenanceSelection::Provenance(
+                        ProvenanceId::from_bytes(id).map_err(invalid_response)?,
+                    ),
+                };
+                let mut call = self.prepare_call(
+                    invocation,
+                    McpRateTarget::Service(ServiceOperationV1::TraceProvenance),
+                )?;
+                let result = self
+                    .service
+                    .trace_provenance(call.take_context()?, TraceProvenanceRequest::new(selector))
+                    .await
+                    .map_err(map_service_failure)?;
+                call.complete();
+                render_provenance_result(result)
+            }
+            McpFixedToolRequest::QueryProjection {
+                contract,
+                projection_id,
+                leading_components,
+                required_sequence,
+                wait_nanos,
+                page,
+            } => {
+                let request = QueryProjectionRequest::new(
+                    service_contract_selection(contract)?,
+                    ProjectionId::try_from(projection_id).map_err(invalid_response)?,
+                    leading_components
+                        .into_iter()
+                        .map(submitted_value_from_mcp)
+                        .collect::<Result<Vec<_>, _>>()?,
+                    required_sequence
+                        .map(|sequence| {
+                            CommitSequence::new(sequence).ok_or(McpBackendError::InvalidResponse)
+                        })
+                        .transpose()?,
+                    Duration::from_nanos(wait_nanos),
+                    service_page_request(page)?,
+                )
+                .map_err(invalid_response)?;
+                let mut call = self.prepare_call(
+                    invocation,
+                    McpRateTarget::Service(ServiceOperationV1::QueryProjection),
+                )?;
+                let result = self
+                    .service
+                    .query_projection(call.take_context()?, request)
+                    .await
+                    .map_err(map_service_failure)?;
+                call.complete();
+                render_projection_result(result)
+            }
+            McpFixedToolRequest::GetProjectionStatus {
+                contract,
+                projection_id,
+            } => {
+                let request = GetProjectionStatusRequest::new(
+                    service_contract_selection(contract)?,
+                    ProjectionId::try_from(projection_id).map_err(invalid_response)?,
+                );
+                let mut call = self.prepare_call(
+                    invocation,
+                    McpRateTarget::Service(ServiceOperationV1::GetProjectionStatus),
+                )?;
+                let result = self
+                    .service
+                    .get_projection_status(call.take_context()?, request)
+                    .await
+                    .map_err(map_service_failure)?;
+                call.complete();
+                render_projection_status_result(result)
+            }
+            McpFixedToolRequest::ListPendingOutboxDeliveries { page } => {
+                let mut call = self.prepare_call(
+                    invocation,
+                    McpRateTarget::Service(ServiceOperationV1::ListPendingOutboxDeliveries),
+                )?;
+                let result = self
+                    .service
+                    .list_pending_outbox_deliveries(
+                        call.take_context()?,
+                        ListPendingOutboxDeliveriesRequest::new(service_page_request(page)?),
+                    )
+                    .await
+                    .map_err(map_service_failure)?;
+                call.complete();
+                render_outbox_result(result)
+            }
+        }
+    }
+
+    async fn invoke_dynamic(
+        &self,
+        invocation: &HostedServiceInvocation,
+        exact_name: &str,
+        request: &McpToolInvocation,
+    ) -> Result<McpToolResult, McpBackendError> {
+        let descriptor = self.resolve_service_command(invocation, exact_name).await?;
+        let command_id = descriptor.command_id().get();
+        let input_artifact = descriptor.input_schema();
+        let input_schema = SchemaDocument::from_public_parts(
+            format!("riffdb.generated-schema/command-input/{command_id}/v1"),
+            input_artifact.hash().as_bytes(),
+            input_artifact.canonical_json(),
+        )
+        .map_err(invalid_response)?;
+        let outcome_artifact = descriptor.outcome_schema();
+        let outcome_schema = SchemaDocument::from_public_parts(
+            format!("riffdb.generated-schema/command-outcome-union/{command_id}/v1"),
+            outcome_artifact.hash().as_bytes(),
+            outcome_artifact.canonical_json(),
+        )
+        .map_err(invalid_response)?;
+        let definition = McpDynamicToolDefinition::from_discovered_command(
+            exact_name,
+            input_schema,
+            outcome_schema,
+        )
+        .map_err(invalid_response)?;
+        let input = decode_dynamic_command_input(request.arguments(), definition.input_schema())
+            .map_err(invalid_response)?;
+        let input = submitted_record_from_mcp(McpSubmittedValue::Record(input))?;
+        let request = ExecuteCommandRequest::new(
+            descriptor.source_command().clone(),
+            Some(descriptor.version()),
+            input,
+        )
+        .map_err(invalid_response)?;
+        let target =
+            McpRateTarget::command_tool(exact_name.to_owned()).map_err(invalid_response)?;
+        let mut call = self.prepare_call(invocation, target)?;
+        let result = self
+            .service
+            .execute_command(call.take_context()?, request)
+            .await
+            .map_err(map_service_failure)?;
+        if !execute_result_matches_descriptor(&result, &descriptor) {
+            return Err(McpBackendError::InvalidResponse);
+        }
+        call.complete();
+        render_execute_result(
+            result,
+            definition.outcome_schema(),
+            definition.result_schema(),
+        )
+    }
+
+    pub(crate) async fn invoke_observer_service(
+        &self,
+        invocation: &HostedServiceInvocation,
+        request: HostedObserverServiceRequest,
+    ) -> Result<HostedObserverServiceResponse, McpBackendError> {
+        match request {
+            HostedObserverServiceRequest::DiscoverCommandTools(request) => {
+                let mut call = self.prepare_call(
+                    invocation,
+                    McpRateTarget::Service(ServiceOperationV1::DiscoverCommandTools),
+                )?;
+                let result = self
+                    .service
+                    .discover_command_tools(call.take_context()?, request)
+                    .await
+                    .map_err(map_service_failure)?;
+                call.complete();
+                Ok(HostedObserverServiceResponse::DiscoverCommandTools(result))
+            }
+            HostedObserverServiceRequest::DiscoverResources(request) => {
+                let mut call = self.prepare_call(
+                    invocation,
+                    McpRateTarget::Service(ServiceOperationV1::DiscoverResources),
+                )?;
+                let result = self
+                    .service
+                    .discover_resources(call.take_context()?, request)
+                    .await
+                    .map_err(map_service_failure)?;
+                call.complete();
+                Ok(HostedObserverServiceResponse::DiscoverResources(result))
+            }
+            HostedObserverServiceRequest::ExplainCommand(request) => {
+                let mut call = self.prepare_call(
+                    invocation,
+                    McpRateTarget::Service(ServiceOperationV1::ExplainCommand),
+                )?;
+                let result = self
+                    .service
+                    .explain_command(call.take_context()?, request)
+                    .await
+                    .map_err(map_service_failure)?;
+                call.complete();
+                Ok(HostedObserverServiceResponse::ExplainCommand(result))
+            }
+            HostedObserverServiceRequest::GetActiveContract => {
+                let mut call = self.prepare_call(
+                    invocation,
+                    McpRateTarget::Service(ServiceOperationV1::GetActiveContract),
+                )?;
+                let result = self
+                    .service
+                    .get_active_contract(call.take_context()?, GetActiveContractRequest)
+                    .await
+                    .map_err(map_service_failure)?;
+                call.complete();
+                Ok(HostedObserverServiceResponse::GetActiveContract(result))
+            }
+            HostedObserverServiceRequest::GetProjectionStatus(request) => {
+                let mut call = self.prepare_call(
+                    invocation,
+                    McpRateTarget::Service(ServiceOperationV1::GetProjectionStatus),
+                )?;
+                let result = self
+                    .service
+                    .get_projection_status(call.take_context()?, request)
+                    .await
+                    .map_err(map_service_failure)?;
+                call.complete();
+                Ok(HostedObserverServiceResponse::GetProjectionStatus(result))
+            }
+            HostedObserverServiceRequest::Health => {
+                let mut call = self.prepare_call(
+                    invocation,
+                    McpRateTarget::Service(ServiceOperationV1::GetHealth),
+                )?;
+                let result = self
+                    .service
+                    .health(
+                        HealthContext::authenticated(call.take_context()?),
+                        HealthRequest,
+                    )
+                    .await
+                    .map_err(map_service_failure)?;
+                call.complete();
+                Ok(HostedObserverServiceResponse::Health(result))
+            }
+        }
+    }
+
+    pub(crate) async fn observe_compact_with(
+        &self,
+        caller: &dyn HostedObserverServiceCaller,
+        inventory: McpObservedInventory,
+        request: McpCompactObservationRequest<'_, DiscoveryCatalogFence>,
+    ) -> Result<McpCompactObservationResult<DiscoveryCatalogFence>, McpObserverBackendError> {
+        let page = page_request_parts(request.cursor(), request.limit()).map_err(observer_retry)?;
+        let prior_fence = request.prior_fence().cloned();
+        match inventory {
+            McpObservedInventory::Tools => {
+                let request = DiscoverCommandToolsRequest::with_options(
+                    page,
+                    DiscoveryRepresentation::CompactObservation,
+                    prior_fence,
+                )
+                .map_err(observer_retry)?;
+                let response = caller
+                    .call(HostedObserverServiceRequest::DiscoverCommandTools(request))
+                    .await
+                    .map_err(observer_backend_error)?;
+                let HostedObserverServiceResponse::DiscoverCommandTools(result) = response else {
+                    return Err(McpObserverBackendError::RetryNextTick);
+                };
+                compact_tool_observation_result(&result)
+            }
+            McpObservedInventory::Resources => {
+                let request = DiscoverResourcesRequest::with_options(
+                    page,
+                    DiscoveryRepresentation::CompactObservation,
+                    prior_fence,
+                    ResourceDiscoveryKind::All,
+                )
+                .map_err(observer_retry)?;
+                let response = caller
+                    .call(HostedObserverServiceRequest::DiscoverResources(request))
+                    .await
+                    .map_err(observer_backend_error)?;
+                let HostedObserverServiceResponse::DiscoverResources(result) = response else {
+                    return Err(McpObserverBackendError::RetryNextTick);
+                };
+                compact_resource_observation_result(&result)
+            }
+        }
+    }
+
+    pub(crate) async fn observe_subscribed_resource_with(
+        &self,
+        caller: &dyn HostedObserverServiceCaller,
+        uri: &str,
+    ) -> Result<McpSubscribedResourceObservation, McpObserverBackendError> {
+        let locator = crate::parse_resource_locator(uri)
+            .map_err(|_| McpObserverBackendError::RetryNextTick)?;
+        let content = match locator {
+            McpResourceLocator::ActiveContract => {
+                let response = caller
+                    .call(HostedObserverServiceRequest::GetActiveContract)
+                    .await;
+                match response {
+                    Ok(HostedObserverServiceResponse::GetActiveContract(
+                        GetActiveContractResult::Present(contract),
+                    )) => active_contract_resource(&contract),
+                    Ok(HostedObserverServiceResponse::GetActiveContract(
+                        GetActiveContractResult::Absent,
+                    )) => Err(McpBackendError::TargetUnavailable),
+                    Ok(_) => Err(McpBackendError::InvalidResponse),
+                    Err(error) => Err(error),
+                }
+            }
+            McpResourceLocator::CommandPlan {
+                lineage,
+                command_id,
+            } => {
+                let authorized = match self
+                    .authorize_command_resource_with(
+                        caller,
+                        &lineage,
+                        command_id,
+                        CommandResourceKind::Plan,
+                    )
+                    .await
+                {
+                    Ok(authorized) => authorized,
+                    Err(McpBackendError::Public(_) | McpBackendError::TargetUnavailable) => {
+                        return Ok(McpSubscribedResourceObservation::Hidden);
+                    }
+                    Err(error) => return Err(observer_backend_error(error)),
+                };
+                return command_plan_observation(lineage, command_id, authorized);
+            }
+            McpResourceLocator::ProjectionStatus {
+                lineage,
+                projection_id,
+            } => {
+                let uri = format_projection_status_locator(&lineage, projection_id);
+                let request =
+                    GetProjectionStatusRequest::new(ContractSelection::Active, projection_id);
+                let response = caller
+                    .call(HostedObserverServiceRequest::GetProjectionStatus(request))
+                    .await;
+                match response {
+                    Ok(HostedObserverServiceResponse::GetProjectionStatus(
+                        GetProjectionStatusResult::Found(status),
+                    )) if status.identity().contract_lineage() == &lineage
+                        && status.identity().projection_id() == projection_id =>
+                    {
+                        projection_status_resource(uri, &status)
+                    }
+                    Ok(HostedObserverServiceResponse::GetProjectionStatus(
+                        GetProjectionStatusResult::NotFound,
+                    )) => Err(McpBackendError::TargetUnavailable),
+                    Ok(HostedObserverServiceResponse::GetProjectionStatus(
+                        GetProjectionStatusResult::Found(_),
+                    ))
+                    | Ok(_) => Err(McpBackendError::InvalidResponse),
+                    Err(error) => Err(error),
+                }
+            }
+            McpResourceLocator::ServerHealth => {
+                let response = caller.call(HostedObserverServiceRequest::Health).await;
+                match response {
+                    Ok(HostedObserverServiceResponse::Health(HealthResult::Authenticated(
+                        report,
+                    ))) => health_resource(report),
+                    Ok(HostedObserverServiceResponse::Health(HealthResult::PreBootstrap(_))) => {
+                        Err(McpBackendError::InvalidResponse)
+                    }
+                    Ok(_) => Err(McpBackendError::InvalidResponse),
+                    Err(error) => Err(error),
+                }
+            }
+            _ => Err(McpBackendError::TargetUnavailable),
+        };
+
+        match content {
+            Ok(content) => content
+                .visible_fingerprint()
+                .map(McpSubscribedResourceObservation::Visible)
+                .map_err(|_| McpObserverBackendError::RetryNextTick),
+            Err(McpBackendError::Public(_) | McpBackendError::TargetUnavailable) => {
+                Ok(McpSubscribedResourceObservation::Hidden)
+            }
+            Err(McpBackendError::AuthenticationLost) => {
+                Err(McpObserverBackendError::AuthenticationLost)
+            }
+            Err(McpBackendError::Cancelled) => Err(McpObserverBackendError::Cancelled),
+            Err(McpBackendError::InvalidResponse | McpBackendError::RateLimited) => {
+                Err(McpObserverBackendError::RetryNextTick)
+            }
+        }
+    }
+}
+
+impl fmt::Debug for HostedServiceMcpBackend {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("HostedServiceMcpBackend([REDACTED])")
+    }
+}
+
+/// Per-operation authenticated state. It contains no reusable authorization decision.
+pub struct HostedServiceInvocation {
+    principal: super::hosted_http::HostedAuthenticatedPrincipal,
+    admission: McpPostAuthenticationAdmission,
+    initial_request_id: Mutex<Option<McpRequestId>>,
+    cancellation: Option<McpCancellationSignal>,
+}
+
+impl HostedServiceInvocation {
+    pub(crate) fn fresh_observer(
+        principal: super::hosted_http::HostedAuthenticatedPrincipal,
+        admission: McpPostAuthenticationAdmission,
+    ) -> Self {
+        Self {
+            principal,
+            admission,
+            initial_request_id: Mutex::new(None),
+            cancellation: None,
+        }
+    }
+}
+
+impl fmt::Debug for HostedServiceInvocation {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("HostedServiceInvocation([REDACTED])")
+    }
+}
+
+struct DirectHostedObserverServiceCaller<'a> {
+    backend: &'a HostedServiceMcpBackend,
+    invocation: &'a HostedServiceInvocation,
+}
+
+impl HostedObserverServiceCaller for DirectHostedObserverServiceCaller<'_> {
+    fn call<'a>(
+        &'a self,
+        request: HostedObserverServiceRequest,
+    ) -> McpBackendFuture<'a, HostedObserverServiceResponse> {
+        Box::pin(
+            self.backend
+                .invoke_observer_service(self.invocation, request),
+        )
+    }
+}
+
+impl McpBackend for HostedServiceMcpBackend {
+    type Invocation = HostedServiceInvocation;
+
+    fn next_request_id(&self) -> Result<McpRequestId, RequestIdSourceError> {
+        self.request_ids.next_request_id()
+    }
+
+    fn begin_invocation(
+        &self,
+        request: McpBackendRequest<'_>,
+    ) -> Result<Self::Invocation, riffdb_errors::PublicError> {
+        if request.source() != McpTransportKind::StreamableHttp {
+            return Err(riffdb_errors::PublicError::authorization_denied());
+        }
+        let parts = request
+            .extension::<http::request::Parts>()
+            .ok_or_else(riffdb_errors::PublicError::authorization_denied)?;
+        let principal = parts
+            .extensions
+            .get::<super::hosted_http::HostedAuthenticatedPrincipal>()
+            .cloned()
+            .ok_or_else(riffdb_errors::PublicError::authorization_denied)?;
+        let admission = request
+            .post_authentication_admission()
+            .cloned()
+            .ok_or_else(riffdb_errors::PublicError::authorization_denied)?;
+        Ok(HostedServiceInvocation {
+            principal,
+            admission,
+            initial_request_id: Mutex::new(Some(request.request_id())),
+            cancellation: request.cancellation().cloned(),
+        })
+    }
+
+    fn discover_tools<'a>(
+        &'a self,
+        invocation: &'a Self::Invocation,
+        request: McpDiscoveryRequest,
+    ) -> McpBackendFuture<'a, McpToolPage> {
+        Box::pin(async move { self.discover_tool_page(invocation, request).await })
+    }
+
+    fn resolve_dynamic_tool<'a>(
+        &'a self,
+        invocation: &'a Self::Invocation,
+        exact_name: String,
+    ) -> McpBackendFuture<'a, McpDynamicToolDefinition> {
+        Box::pin(async move { self.resolve_dynamic(invocation, &exact_name).await })
+    }
+
+    fn invoke_tool<'a>(
+        &'a self,
+        invocation: &'a Self::Invocation,
+        request: McpToolInvocation,
+    ) -> McpBackendFuture<'a, McpToolResult> {
+        Box::pin(async move {
+            match request.target() {
+                McpInvocationTarget::Fixed { tag, .. } => {
+                    let decoded = decode_fixed_tool_request(*tag, request.arguments())
+                        .map_err(invalid_response)?;
+                    self.invoke_fixed(invocation, *tag, decoded).await
+                }
+                McpInvocationTarget::Dynamic(name) => {
+                    self.invoke_dynamic(invocation, name, &request).await
+                }
+            }
+        })
+    }
+
+    fn discover_resources<'a>(
+        &'a self,
+        invocation: &'a Self::Invocation,
+        request: McpResourceDiscoveryRequest,
+    ) -> McpBackendFuture<'a, McpResourcePage> {
+        Box::pin(async move { self.discover_resource_page(invocation, request).await })
+    }
+
+    fn read_resource<'a>(
+        &'a self,
+        invocation: &'a Self::Invocation,
+        request: McpResourceReadRequest,
+    ) -> McpBackendFuture<'a, McpResourceContent> {
+        Box::pin(async move {
+            self.read_resource_locator(invocation, request.locator().clone())
+                .await
+        })
+    }
+
+    fn authorize_subscription<'a>(
+        &'a self,
+        invocation: &'a Self::Invocation,
+        request: McpSubscriptionRequest,
+    ) -> McpBackendFuture<'a, ()> {
+        Box::pin(async move {
+            match request.locator() {
+                McpResourceLocator::ActiveContract
+                | McpResourceLocator::CommandPlan { .. }
+                | McpResourceLocator::ProjectionStatus { .. }
+                | McpResourceLocator::ServerHealth => {
+                    self.read_resource_locator(invocation, request.locator().clone())
+                        .await?;
+                    Ok(())
+                }
+                McpResourceLocator::ContractVersion { .. }
+                | McpResourceLocator::EntitySchema { .. }
+                | McpResourceLocator::CommandDocumentation { .. }
+                | McpResourceLocator::Outcome { .. }
+                | McpResourceLocator::Commit(_)
+                | McpResourceLocator::Provenance(_) => Err(McpBackendError::TargetUnavailable),
+            }
+        })
+    }
+}
+
+struct PreparedServiceCall {
+    context: Option<RequestContext>,
+    cancellation: Option<RequestCancellationHandle>,
+}
+
+#[derive(Clone, Copy)]
+enum CommandResourceKind {
+    Plan,
+    Documentation,
+}
+
+struct CommandResourceDescriptor {
+    lineage: ContractLineage,
+    version: ContractVersion,
+    source_command: SourceName,
+}
+
+struct AuthorizedCommandResource {
+    source_command: SourceName,
+    explained: ExplainedCommand,
+}
+
+impl PreparedServiceCall {
+    fn take_context(&mut self) -> Result<RequestContext, McpBackendError> {
+        self.context.take().ok_or(McpBackendError::InvalidResponse)
+    }
+
+    fn complete(&mut self) {
+        self.cancellation = None;
+    }
+}
+
+impl Drop for PreparedServiceCall {
+    fn drop(&mut self) {
+        if let Some(cancellation) = self.cancellation.take() {
+            cancellation.cancel();
+        }
+    }
+}
+
+fn full_tool_discovery_request(
+    cursor: Option<[u8; 16]>,
+    limit: u16,
+) -> Result<DiscoverCommandToolsRequest, McpBackendError> {
+    DiscoverCommandToolsRequest::with_options(
+        page_request_parts(cursor, limit)?,
+        DiscoveryRepresentation::Full,
+        None,
+    )
+    .map_err(|_| McpBackendError::InvalidResponse)
+}
+
+fn full_resource_discovery_request(
+    request: McpResourceDiscoveryRequest,
+) -> Result<DiscoverResourcesRequest, McpBackendError> {
+    let kind = match request.surface() {
+        McpResourceDiscoverySurface::Concrete => ResourceDiscoveryKind::Concrete,
+        McpResourceDiscoverySurface::Template => ResourceDiscoveryKind::Template,
+    };
+    DiscoverResourcesRequest::with_options(
+        page_request(request.page())?,
+        DiscoveryRepresentation::Full,
+        None,
+        kind,
+    )
+    .map_err(|_| McpBackendError::InvalidResponse)
+}
+
+fn page_request(request: McpDiscoveryRequest) -> Result<PageRequest, McpBackendError> {
+    page_request_parts(request.cursor(), request.limit())
+}
+
+fn page_request_parts(
+    cursor: Option<[u8; 16]>,
+    limit: u16,
+) -> Result<PageRequest, McpBackendError> {
+    let limit = PageLimit::new(limit).map_err(|_| McpBackendError::InvalidResponse)?;
+    Ok(PageRequest::new(limit, cursor.map(CursorToken::from_bytes)))
+}
+
+fn tool_page_from_service(
+    result: &riffdb_service::DiscoverCommandToolsResult,
+) -> Result<McpToolPage, McpBackendError> {
+    let DiscoverCommandToolsResultRef::Page {
+        page,
+        operation_schemas,
+    } = result.result()
+    else {
+        return Err(McpBackendError::InvalidResponse);
+    };
+    validate_operation_catalog(operation_schemas)?;
+    let items = page
+        .items()
+        .iter()
+        .map(tool_item_from_service)
+        .collect::<Result<Vec<_>, _>>()?;
+    McpToolPage::new(items, page.next_cursor().map(|cursor| *cursor.as_bytes()))
+        .map_err(|_| McpBackendError::InvalidResponse)
+}
+
+fn compact_tool_observation_result(
+    result: &DiscoverCommandToolsResult,
+) -> Result<McpCompactObservationResult<DiscoveryCatalogFence>, McpObserverBackendError> {
+    match result.result() {
+        DiscoverCommandToolsResultRef::CatalogUnchanged(fence) => {
+            validate_observer_fence(fence)?;
+            Ok(McpCompactObservationResult::CatalogUnchanged(fence.clone()))
+        }
+        DiscoverCommandToolsResultRef::CompactPage(page) => {
+            validate_observer_fence(page.observed_fence())?;
+            let mut names = BTreeSet::new();
+            let mut fingerprints = Vec::with_capacity(page.items().len());
+            for item in page.items() {
+                let fingerprint = match item {
+                    CompactCommandToolDiscoveryItem::Fixed(kind) => {
+                        let definition = fixed_tool_registry()
+                            .map_err(|_| McpObserverBackendError::RetryNextTick)?
+                            .tools()
+                            .iter()
+                            .find(|definition| definition.kind() == kind.tag())
+                            .ok_or(McpObserverBackendError::RetryNextTick)?;
+                        if !names.insert(definition.name().to_owned()) {
+                            return Err(McpObserverBackendError::RetryNextTick);
+                        }
+                        McpVisibleFingerprint::fixed_tool(kind.tag())
+                            .map_err(|_| McpObserverBackendError::RetryNextTick)?
+                    }
+                    CompactCommandToolDiscoveryItem::Command(descriptor) => {
+                        if !names.insert(descriptor.name().as_str().to_owned()) {
+                            return Err(McpObserverBackendError::RetryNextTick);
+                        }
+                        McpVisibleFingerprint::command_tool(
+                            descriptor.name().as_str(),
+                            descriptor.source_command().as_str(),
+                            descriptor.lineage().as_str(),
+                            descriptor.version().get(),
+                            descriptor.command_id().get(),
+                            descriptor.input_schema().schema_hash().as_bytes(),
+                            descriptor.outcome_schema().schema_hash().as_bytes(),
+                        )
+                        .map_err(|_| McpObserverBackendError::RetryNextTick)?
+                    }
+                };
+                fingerprints.push(fingerprint);
+            }
+            McpCompactObservationPage::new(
+                fingerprints,
+                page.next_cursor().map(|cursor| *cursor.as_bytes()),
+                page.observed_fence().clone(),
+            )
+            .map(McpCompactObservationResult::Page)
+            .map_err(|_| McpObserverBackendError::RetryNextTick)
+        }
+        DiscoverCommandToolsResultRef::Page { .. } => Err(McpObserverBackendError::RetryNextTick),
+    }
+}
+
+fn compact_resource_observation_result(
+    result: &DiscoverResourcesResult,
+) -> Result<McpCompactObservationResult<DiscoveryCatalogFence>, McpObserverBackendError> {
+    match result.result() {
+        DiscoverResourcesResultRef::CatalogUnchanged(fence) => {
+            validate_observer_fence(fence)?;
+            Ok(McpCompactObservationResult::CatalogUnchanged(fence.clone()))
+        }
+        DiscoverResourcesResultRef::CompactPage(page) => {
+            validate_observer_fence(page.observed_fence())?;
+            let mut uris = BTreeSet::new();
+            let mut fingerprints = Vec::with_capacity(page.items().len());
+            for item in page.items() {
+                let descriptor = compact_resource_descriptor_from_service(item)
+                    .map_err(observer_backend_error)?;
+                if !uris.insert(descriptor.uri().to_owned()) {
+                    return Err(McpObserverBackendError::RetryNextTick);
+                }
+                fingerprints.push(
+                    McpVisibleFingerprint::resource_descriptor(&descriptor)
+                        .map_err(|_| McpObserverBackendError::RetryNextTick)?,
+                );
+            }
+            McpCompactObservationPage::new(
+                fingerprints,
+                page.next_cursor().map(|cursor| *cursor.as_bytes()),
+                page.observed_fence().clone(),
+            )
+            .map(McpCompactObservationResult::Page)
+            .map_err(|_| McpObserverBackendError::RetryNextTick)
+        }
+        DiscoverResourcesResultRef::Page(_) => Err(McpObserverBackendError::RetryNextTick),
+    }
+}
+
+fn validate_observer_fence(fence: &DiscoveryCatalogFence) -> Result<(), McpObserverBackendError> {
+    let registry = fixed_tool_registry().map_err(|_| McpObserverBackendError::RetryNextTick)?;
+    let expected = registry.operation_schemas();
+    if expected.len() != 2 {
+        return Err(McpObserverBackendError::RetryNextTick);
+    }
+    for (actual, expected) in [
+        fence.operation_schemas().command_operation_envelope(),
+        fence.operation_schemas().command_get_outcome_result(),
+    ]
+    .into_iter()
+    .zip(expected)
+    {
+        if actual.schema_id() != expected.schema_id()
+            || actual.schema_hash().as_bytes() != &expected.schema_hash_bytes()
+        {
+            return Err(McpObserverBackendError::RetryNextTick);
+        }
+    }
+    Ok(())
+}
+
+fn validate_operation_catalog(catalog: &OperationSchemaCatalog) -> Result<(), McpBackendError> {
+    let registry = fixed_tool_registry().map_err(|_| McpBackendError::InvalidResponse)?;
+    let expected = registry.operation_schemas();
+    if expected.len() != 2 {
+        return Err(McpBackendError::InvalidResponse);
+    }
+    for (artifact, expected) in [
+        catalog.command_operation_envelope(),
+        catalog.command_get_outcome_result(),
+    ]
+    .into_iter()
+    .zip(expected)
+    {
+        if artifact.identity().schema_id() != expected.schema_id()
+            || artifact.dialect() != "https://json-schema.org/draft/2020-12/schema"
+            || artifact.identity().schema_hash().as_bytes() != &expected.schema_hash_bytes()
+            || artifact.canonical_json() != expected.canonical_json()
+        {
+            return Err(McpBackendError::InvalidResponse);
+        }
+        SchemaDocument::from_public_parts(
+            artifact.identity().schema_id(),
+            artifact.identity().schema_hash().as_bytes(),
+            artifact.canonical_json(),
+        )
+        .map_err(|_| McpBackendError::InvalidResponse)?;
+    }
+    Ok(())
+}
+
+fn tool_item_from_service(
+    item: &CommandToolDiscoveryItem,
+) -> Result<McpToolDiscoveryItem, McpBackendError> {
+    match item {
+        CommandToolDiscoveryItem::Fixed(kind) => Ok(McpToolDiscoveryItem::Fixed(kind.tag())),
+        CommandToolDiscoveryItem::Command(descriptor) => {
+            let command_id = descriptor.command_id().get();
+            let input = descriptor.input_schema();
+            let outcome = descriptor.outcome_schema();
+            let input_schema = SchemaDocument::from_public_parts(
+                format!("riffdb.generated-schema/command-input/{command_id}/v1"),
+                input.hash().as_bytes(),
+                input.canonical_json(),
+            )
+            .map_err(|_| McpBackendError::InvalidResponse)?;
+            let outcome_schema = SchemaDocument::from_public_parts(
+                format!("riffdb.generated-schema/command-outcome-union/{command_id}/v1"),
+                outcome.hash().as_bytes(),
+                outcome.canonical_json(),
+            )
+            .map_err(|_| McpBackendError::InvalidResponse)?;
+            McpDynamicToolDefinition::from_discovered_command(
+                descriptor.name().as_str(),
+                input_schema,
+                outcome_schema,
+            )
+            .map(Box::new)
+            .map(McpToolDiscoveryItem::Dynamic)
+            .map_err(|_| McpBackendError::InvalidResponse)
+        }
+    }
+}
+
+fn resource_page_from_service(
+    result: &riffdb_service::DiscoverResourcesResult,
+    surface: McpResourceDiscoverySurface,
+) -> Result<McpResourcePage, McpBackendError> {
+    let DiscoverResourcesResultRef::Page(page) = result.result() else {
+        return Err(McpBackendError::InvalidResponse);
+    };
+    let items = page
+        .items()
+        .iter()
+        .map(resource_descriptor_from_service)
+        .collect::<Result<Vec<_>, _>>()?;
+    McpResourcePage::new(
+        surface,
+        items,
+        page.next_cursor().map(|cursor| *cursor.as_bytes()),
+    )
+    .map_err(|_| McpBackendError::InvalidResponse)
+}
+
+fn resource_descriptor_from_service(
+    descriptor: &riffdb_service::ResourceDescriptor,
+) -> Result<McpResourceDescriptor, McpBackendError> {
+    let (branch, uri) = match descriptor.resource() {
+        ResourceDescriptorRef::ActiveContract => (
+            "active_contract",
+            format_active_contract_locator().to_owned(),
+        ),
+        ResourceDescriptorRef::ContractVersion { lineage, version } => (
+            "contract_version",
+            format_contract_version_locator(lineage, version),
+        ),
+        ResourceDescriptorRef::EntitySchema {
+            lineage,
+            entity_type_id,
+            ..
+        } => (
+            "entity_schema",
+            format_entity_schema_locator(lineage, entity_type_id),
+        ),
+        ResourceDescriptorRef::CommandPlan {
+            lineage,
+            command_id,
+            ..
+        } => (
+            "command_plan",
+            format_command_plan_locator(lineage, command_id),
+        ),
+        ResourceDescriptorRef::CommandDocumentation {
+            lineage,
+            command_id,
+            ..
+        } => (
+            "command_documentation",
+            format_command_documentation_locator(lineage, command_id),
+        ),
+        ResourceDescriptorRef::CommandOutcome {
+            lineage,
+            command_id,
+            tool_name,
+        } => (
+            "command_outcome",
+            format_outcome_template_locator_from_public(
+                lineage.as_str(),
+                command_id.get(),
+                tool_name.as_str(),
+            )
+            .map_err(|_| McpBackendError::InvalidResponse)?,
+        ),
+        ResourceDescriptorRef::Commit {
+            sequence: Some(sequence),
+        } => ("commit.commit_sequence", format_commit_locator(sequence)),
+        ResourceDescriptorRef::Commit { sequence: None } => (
+            "commit.class_template",
+            format_commit_template_locator().to_owned(),
+        ),
+        ResourceDescriptorRef::Provenance {
+            provenance_id: Some(provenance_id),
+        } => (
+            "provenance.provenance_id",
+            format_provenance_locator(provenance_id),
+        ),
+        ResourceDescriptorRef::Provenance {
+            provenance_id: None,
+        } => (
+            "provenance.class_template",
+            format_provenance_template_locator().to_owned(),
+        ),
+        ResourceDescriptorRef::ProjectionStatus {
+            lineage,
+            projection_id,
+        } => (
+            "projection_status",
+            format_projection_status_locator(lineage, projection_id),
+        ),
+        ResourceDescriptorRef::ServerHealth => {
+            ("server_health", format_server_health_locator().to_owned())
+        }
+    };
+    McpResourceDescriptor::new(branch, uri).map_err(|_| McpBackendError::InvalidResponse)
+}
+
+fn compact_resource_descriptor_from_service(
+    descriptor: &CompactResourceDescriptor,
+) -> Result<McpResourceDescriptor, McpBackendError> {
+    let (branch, uri) = match descriptor.resource() {
+        CompactResourceDescriptorRef::ActiveContract => (
+            "active_contract",
+            format_active_contract_locator().to_owned(),
+        ),
+        CompactResourceDescriptorRef::ContractVersion { lineage, version } => (
+            "contract_version",
+            format_contract_version_locator(lineage, version),
+        ),
+        CompactResourceDescriptorRef::EntitySchema {
+            lineage,
+            entity_type_id,
+            ..
+        } => (
+            "entity_schema",
+            format_entity_schema_locator(lineage, entity_type_id),
+        ),
+        CompactResourceDescriptorRef::CommandPlan {
+            lineage,
+            command_id,
+            ..
+        } => (
+            "command_plan",
+            format_command_plan_locator(lineage, command_id),
+        ),
+        CompactResourceDescriptorRef::CommandDocumentation {
+            lineage,
+            command_id,
+            ..
+        } => (
+            "command_documentation",
+            format_command_documentation_locator(lineage, command_id),
+        ),
+        CompactResourceDescriptorRef::CommandOutcome {
+            lineage,
+            command_id,
+            tool_name,
+        } => (
+            "command_outcome",
+            format_outcome_template_locator_from_public(
+                lineage.as_str(),
+                command_id.get(),
+                tool_name.as_str(),
+            )
+            .map_err(invalid_response)?,
+        ),
+        CompactResourceDescriptorRef::Commit {
+            sequence: Some(sequence),
+        } => ("commit.commit_sequence", format_commit_locator(sequence)),
+        CompactResourceDescriptorRef::Commit { sequence: None } => (
+            "commit.class_template",
+            format_commit_template_locator().to_owned(),
+        ),
+        CompactResourceDescriptorRef::Provenance {
+            provenance_id: Some(provenance_id),
+        } => (
+            "provenance.provenance_id",
+            format_provenance_locator(provenance_id),
+        ),
+        CompactResourceDescriptorRef::Provenance {
+            provenance_id: None,
+        } => (
+            "provenance.class_template",
+            format_provenance_template_locator().to_owned(),
+        ),
+        CompactResourceDescriptorRef::ProjectionStatus {
+            lineage,
+            projection_id,
+        } => (
+            "projection_status",
+            format_projection_status_locator(lineage, projection_id),
+        ),
+        CompactResourceDescriptorRef::ServerHealth => {
+            ("server_health", format_server_health_locator().to_owned())
+        }
+    };
+    McpResourceDescriptor::new(branch, uri).map_err(invalid_response)
+}
+
+fn command_resource_candidate(
+    descriptor: &CompactResourceDescriptor,
+    kind: CommandResourceKind,
+    expected_lineage: &ContractLineage,
+    expected_command_id: CommandId,
+) -> Option<CommandResourceDescriptor> {
+    let (lineage, version, command_id, source_command) = match (kind, descriptor.resource()) {
+        (
+            CommandResourceKind::Plan,
+            CompactResourceDescriptorRef::CommandPlan {
+                lineage,
+                version,
+                command_id,
+                source_command,
+            },
+        )
+        | (
+            CommandResourceKind::Documentation,
+            CompactResourceDescriptorRef::CommandDocumentation {
+                lineage,
+                version,
+                command_id,
+                source_command,
+            },
+        ) => (lineage, version, command_id, source_command),
+        _ => return None,
+    };
+    (lineage == expected_lineage && command_id == expected_command_id).then(|| {
+        CommandResourceDescriptor {
+            lineage: lineage.clone(),
+            version,
+            source_command: source_command.clone(),
+        }
+    })
+}
+
+fn service_contract_selection(
+    selection: McpContractSelection,
+) -> Result<ContractSelection, McpBackendError> {
+    match selection {
+        McpContractSelection::Active => Ok(ContractSelection::Active),
+        McpContractSelection::Exact {
+            contract_lineage,
+            contract_version,
+        } => Ok(ContractSelection::Exact {
+            lineage: ContractLineage::new(contract_lineage).map_err(invalid_response)?,
+            version: contract_version_from_u64(contract_version)?,
+        }),
+    }
+}
+
+fn contract_version_from_u64(value: u64) -> Result<ContractVersion, McpBackendError> {
+    ContractVersion::new(value).ok_or(McpBackendError::InvalidResponse)
+}
+
+fn optional_contract_version(
+    value: Option<u64>,
+) -> Result<Option<ContractVersion>, McpBackendError> {
+    value.map(contract_version_from_u64).transpose()
+}
+
+fn service_page_request(page: McpPageRequest) -> Result<PageRequest, McpBackendError> {
+    page_request_parts(page.cursor(), page.limit())
+}
+
+fn field_selection(fields: Vec<u32>) -> Result<FieldSelection, McpBackendError> {
+    FieldSelection::new(
+        fields
+            .into_iter()
+            .map(|field| FieldId::try_from(field).map_err(invalid_response))
+            .collect::<Result<Vec<_>, _>>()?,
+    )
+    .map_err(invalid_response)
+}
+
+fn submitted_record_from_mcp(value: McpSubmittedValue) -> Result<SubmittedRecord, McpBackendError> {
+    let McpSubmittedValue::Record(fields) = value else {
+        return Err(McpBackendError::InvalidResponse);
+    };
+    let fields = fields
+        .into_iter()
+        .map(|field| {
+            let identity = match field.identity {
+                McpSubmittedFieldIdentity::Id(id) => {
+                    SubmittedFieldIdentity::Id(FieldId::try_from(id).map_err(invalid_response)?)
+                }
+                McpSubmittedFieldIdentity::Name(name) => {
+                    SubmittedFieldIdentity::Name(SourceName::new(name).map_err(invalid_response)?)
+                }
+            };
+            Ok(SubmittedField::new(
+                identity,
+                submitted_value_from_mcp(field.value)?,
+            ))
+        })
+        .collect::<Result<Vec<_>, McpBackendError>>()?;
+    SubmittedRecord::new(fields).map_err(invalid_response)
+}
+
+fn submitted_value_from_mcp(value: McpSubmittedValue) -> Result<SubmittedValue, McpBackendError> {
+    match value {
+        McpSubmittedValue::Null => Ok(SubmittedValue::Null),
+        McpSubmittedValue::Bool(value) => Ok(SubmittedValue::Bool(value)),
+        McpSubmittedValue::I64(value) => Ok(SubmittedValue::I64(value)),
+        McpSubmittedValue::U64(value) => Ok(SubmittedValue::U64(value)),
+        McpSubmittedValue::Decimal {
+            coefficient,
+            precision,
+            scale,
+        } => SubmittedDecimal::with_precision(coefficient, scale, Some(precision))
+            .map(SubmittedValue::Decimal)
+            .map_err(invalid_response),
+        McpSubmittedValue::Money {
+            currency,
+            coefficient,
+            precision,
+            scale,
+        } => {
+            let currency = CurrencyCode::new(&currency).map_err(invalid_response)?;
+            let amount = SubmittedDecimal::with_precision(coefficient, scale, Some(precision))
+                .map_err(invalid_response)?;
+            Ok(SubmittedValue::Money(SubmittedMoney::new(currency, amount)))
+        }
+        McpSubmittedValue::String(value) => SubmittedValue::string(value).map_err(invalid_response),
+        McpSubmittedValue::Bytes(value) => SubmittedValue::bytes(value).map_err(invalid_response),
+        McpSubmittedValue::Timestamp { seconds, nanos } => Timestamp::new(seconds, nanos)
+            .map(SubmittedValue::Timestamp)
+            .map_err(invalid_response),
+        McpSubmittedValue::Date(value) => Ok(SubmittedValue::Date(Date::new(value))),
+        McpSubmittedValue::Uuid(value) => Ok(SubmittedValue::Uuid(value)),
+        McpSubmittedValue::EnumIdentity {
+            type_id,
+            variant_id,
+        } => Ok(SubmittedValue::Enum(riffdb_service::SubmittedEnum::new(
+            EnumTypeId::try_from(type_id).map_err(invalid_response)?,
+            EnumVariantId::try_from(variant_id).map_err(invalid_response)?,
+            None,
+        ))),
+        McpSubmittedValue::EnumName(name) => Ok(SubmittedValue::Enum(
+            riffdb_service::SubmittedEnum::name_only(
+                SourceName::new(name).map_err(invalid_response)?,
+            ),
+        )),
+        McpSubmittedValue::List(values) => SubmittedList::new(
+            values
+                .into_iter()
+                .map(submitted_value_from_mcp)
+                .collect::<Result<Vec<_>, _>>()?,
+        )
+        .map(SubmittedValue::List)
+        .map_err(invalid_response),
+        McpSubmittedValue::Record(fields) => {
+            let fields = fields
+                .into_iter()
+                .map(|field| {
+                    let identity = match field.identity {
+                        McpSubmittedFieldIdentity::Id(id) => SubmittedFieldIdentity::Id(
+                            FieldId::try_from(id).map_err(invalid_response)?,
+                        ),
+                        McpSubmittedFieldIdentity::Name(name) => SubmittedFieldIdentity::Name(
+                            SourceName::new(name).map_err(invalid_response)?,
+                        ),
+                    };
+                    Ok(SubmittedField::new(
+                        identity,
+                        submitted_value_from_mcp(field.value)?,
+                    ))
+                })
+                .collect::<Result<Vec<_>, McpBackendError>>()?;
+            SubmittedRecord::new(fields)
+                .map(SubmittedValue::Record)
+                .map_err(invalid_response)
+        }
+    }
+}
+
+fn render_validation_result(
+    result: riffdb_service::ContractValidationResult,
+) -> Result<McpToolResult, McpBackendError> {
+    match result {
+        riffdb_service::ContractValidationResult::Valid => {
+            compose(1, McpFixedResultBranch::ValidateValid, None)
+        }
+        riffdb_service::ContractValidationResult::Invalid(error) => {
+            let payload = if let Some(diagnostics) = error.syntax() {
+                InvalidDiagnostics::Syntax {
+                    diagnostics: diagnostics
+                        .as_slice()
+                        .iter()
+                        .map(|diagnostic| {
+                            Ok(SyntaxDiagnostic {
+                                code: diagnostic.code().as_str().to_owned(),
+                                summary: diagnostic.code().summary().to_owned(),
+                                help: diagnostic.code().help().map(str::to_owned),
+                                span: SourceSpanPayload {
+                                    start: diagnostic.span().start(),
+                                    end: diagnostic.span().end(),
+                                },
+                                expected: diagnostic
+                                    .expected()
+                                    .iter()
+                                    .map(|value| (*value).to_owned())
+                                    .collect(),
+                            })
+                        })
+                        .collect::<Result<Vec<_>, McpBackendError>>()?,
+                }
+            } else if let Some(diagnostics) = error.semantic() {
+                InvalidDiagnostics::Semantic {
+                    diagnostics: diagnostics
+                        .as_slice()
+                        .iter()
+                        .map(|diagnostic| {
+                            Ok(SemanticDiagnostic {
+                                code: diagnostic.code().as_str().to_owned(),
+                                summary: diagnostic.code().summary().to_owned(),
+                                help: diagnostic.code().help().map(str::to_owned),
+                                primary_span: SourceSpanPayload {
+                                    start: diagnostic.primary_span().start(),
+                                    end: diagnostic.primary_span().end(),
+                                },
+                                related_span: diagnostic
+                                    .related_span()
+                                    .map(|span| {
+                                        Ok(SourceSpanPayload {
+                                            start: span.start(),
+                                            end: span.end(),
+                                        })
+                                    })
+                                    .transpose()?,
+                            })
+                        })
+                        .collect::<Result<Vec<_>, McpBackendError>>()?,
+                }
+            } else {
+                return Err(McpBackendError::InvalidResponse);
+            };
+            compose(
+                1,
+                McpFixedResultBranch::ValidateInvalid,
+                Some(payload_from(&payload)?),
+            )
+        }
+    }
+}
+
+fn render_active_contract_result(
+    result: GetActiveContractResult,
+) -> Result<McpToolResult, McpBackendError> {
+    match result {
+        GetActiveContractResult::Absent => compose(2, McpFixedResultBranch::GetActiveAbsent, None),
+        GetActiveContractResult::Present(contract) => compose(
+            2,
+            McpFixedResultBranch::GetActivePresent,
+            Some(payload_from(&contract_descriptor(&contract)?)?),
+        ),
+    }
+}
+
+fn render_explain_result(result: ExplainCommandResult) -> Result<McpToolResult, McpBackendError> {
+    match result {
+        ExplainCommandResult::NotFound => compose(3, McpFixedResultBranch::ExplainNotFound, None),
+        ExplainCommandResult::Found(explained) => {
+            let command_id = explained.command_id().get();
+            let input_artifact = explained.input_schema();
+            if input_artifact.key().stable_id() != command_id {
+                return Err(McpBackendError::InvalidResponse);
+            }
+            let input_schema = GeneratedSchemaPayload {
+                key: GeneratedSchemaKey::CommandInputId(command_id),
+                dialect: "https://json-schema.org/draft/2020-12/schema",
+                schema_hash: presented_hash(input_artifact.hash().as_bytes())?,
+                schema: SchemaDocument::from_public_parts(
+                    format!("riffdb.generated-schema/command-input/{command_id}/v1"),
+                    input_artifact.hash().as_bytes(),
+                    input_artifact.canonical_json(),
+                )
+                .map_err(invalid_response)?,
+            };
+            let outcome_artifact = explained.outcome_schema();
+            if outcome_artifact.key().stable_id() != command_id {
+                return Err(McpBackendError::InvalidResponse);
+            }
+            let outcome_schema = GeneratedSchemaPayload {
+                key: GeneratedSchemaKey::CommandOutcomeUnionId(command_id),
+                dialect: "https://json-schema.org/draft/2020-12/schema",
+                schema_hash: presented_hash(outcome_artifact.hash().as_bytes())?,
+                schema: SchemaDocument::from_public_parts(
+                    format!("riffdb.generated-schema/command-outcome-union/{command_id}/v1"),
+                    outcome_artifact.hash().as_bytes(),
+                    outcome_artifact.canonical_json(),
+                )
+                .map_err(invalid_response)?,
+            };
+            let explanation = explained.explanation();
+            let payload = ExplainedCommandPayload {
+                contract: contract_descriptor(explained.contract())?,
+                command_id,
+                plan_hash: presented_hash(explained.plan_hash().as_bytes())?,
+                explanation: CommandExplainPayload {
+                    command_id: explanation.command_id().get(),
+                    execution_class: match explanation.execution_class() as u8 {
+                        1 => "read_only",
+                        2 => "idempotent_mutation",
+                        _ => return Err(McpBackendError::InvalidResponse),
+                    },
+                    partition_component_count: u32::try_from(
+                        explanation.partition_component_count(),
+                    )
+                    .map_err(invalid_response)?,
+                    conflict_key_count: u32::try_from(explanation.conflict_key_count())
+                        .map_err(invalid_response)?,
+                    binding_ids: explanation.bindings().iter().map(|id| id.get()).collect(),
+                    read_fields: explanation
+                        .read_fields()
+                        .iter()
+                        .map(|(binding, field)| BindingFieldRefPayload {
+                            binding_id: binding.get(),
+                            field_id: field.get(),
+                        })
+                        .collect(),
+                    write_fields: explanation
+                        .write_fields()
+                        .iter()
+                        .map(|(binding, field)| BindingFieldRefPayload {
+                            binding_id: binding.get(),
+                            field_id: field.get(),
+                        })
+                        .collect(),
+                    invariant_ids: explanation.invariants().iter().map(|id| id.get()).collect(),
+                    event_type_ids: explanation.events().iter().map(|id| id.get()).collect(),
+                    outcome_ids: explanation.outcomes().iter().map(|id| id.get()).collect(),
+                    rendered_text: explanation.render_text(),
+                },
+                input_schema,
+                outcome_schema,
+            };
+            compose(
+                3,
+                McpFixedResultBranch::ExplainFound,
+                Some(payload_from(&payload)?),
+            )
+        }
+    }
+}
+
+fn render_deploy_result(result: DeployContractResult) -> Result<McpToolResult, McpBackendError> {
+    match result {
+        DeployContractResult::Activated(contract) => compose(
+            4,
+            McpFixedResultBranch::DeployActivated,
+            Some(payload_from(&contract_descriptor(&contract)?)?),
+        ),
+        DeployContractResult::AlreadyActive(contract) => compose(
+            4,
+            McpFixedResultBranch::DeployAlreadyActive,
+            Some(payload_from(&contract_descriptor(&contract)?)?),
+        ),
+        DeployContractResult::ExpectedActiveVersionMismatch { actual } => compose(
+            4,
+            McpFixedResultBranch::DeployExpectedActiveVersionMismatch,
+            Some(payload_from(&ExpectedActiveVersionMismatchPayload {
+                actual_active_version: actual.map(|value| McpPresentedU64::new(value.get())),
+            })?),
+        ),
+        DeployContractResult::BundleConflict => {
+            compose(4, McpFixedResultBranch::DeployBundleConflict, None)
+        }
+    }
+}
+
+fn render_health_result(result: HealthResult) -> Result<McpToolResult, McpBackendError> {
+    match result {
+        HealthResult::PreBootstrap(report) => compose(
+            14,
+            McpFixedResultBranch::HealthPreBootstrap,
+            Some(payload_from(&PreBootstrapHealthPayload {
+                lifecycle: match report.lifecycle() {
+                    riffdb_service::PreBootstrapLifecycle::InitializingValidation => {
+                        "initializing_validation"
+                    }
+                    riffdb_service::PreBootstrapLifecycle::InitializingBootstrap => {
+                        "initializing_bootstrap"
+                    }
+                },
+                liveness: report.liveness(),
+                readiness: report.readiness(),
+            })?),
+        ),
+        HealthResult::Authenticated(report) => {
+            let payload = authenticated_health_payload(&report);
+            compose(
+                14,
+                McpFixedResultBranch::HealthAuthenticated,
+                Some(payload_from(&payload)?),
+            )
+        }
+    }
+}
+
+fn render_outcome_result(
+    result: riffdb_service::ResolveCommandOutcomeResult,
+) -> Result<McpToolResult, McpBackendError> {
+    match result {
+        riffdb_service::ResolveCommandOutcomeResult::NotFound => {
+            compose(5, McpFixedResultBranch::GetOutcomeNotFound, None)
+        }
+        riffdb_service::ResolveCommandOutcomeResult::Found(result) => {
+            let journaled = result.journaled();
+            if journaled.completion() != riffdb_service::JournaledCompletion::Replayed {
+                return Err(McpBackendError::InvalidResponse);
+            }
+            let payload = replayed_execution_payload(journaled)?;
+            compose(
+                5,
+                McpFixedResultBranch::GetOutcomeReplayed,
+                Some(payload_from(&payload)?),
+            )
+        }
+    }
+}
+
+fn render_entity_result(
+    result: riffdb_service::GetEntityResult,
+) -> Result<McpToolResult, McpBackendError> {
+    match result {
+        riffdb_service::GetEntityResult::NotFound => {
+            compose(6, McpFixedResultBranch::EntityNotFound, None)
+        }
+        riffdb_service::GetEntityResult::Found(entity) => {
+            let payload = EntityPayload {
+                entity_key: McpPresentedBytes::new(entity.key().as_bytes().to_vec()),
+                entity_version: McpPresentedU64::new(entity.entity_version().get()),
+                written_by_contract_version: McpPresentedU64::new(
+                    entity.written_by_contract().get(),
+                ),
+                fields: presented_record(entity.fields())?,
+            };
+            compose(
+                6,
+                McpFixedResultBranch::EntityFound,
+                Some(payload_from(&payload)?),
+            )
+        }
+    }
+}
+
+fn render_index_result(
+    result: riffdb_service::ScanIndexResult,
+) -> Result<McpToolResult, McpBackendError> {
+    let page = result.page();
+    let observed_fence = match page.observed_fence().position() {
+        IndexEpochPosition::BeforeFirst => IndexFencePayload::BeforeFirst(UnitPayload {}),
+        IndexEpochPosition::Value(epoch) => {
+            IndexFencePayload::AppliedEpoch(McpPresentedU64::new(epoch.get()))
+        }
+    };
+    let payload = IndexPagePayload {
+        items: page
+            .items()
+            .iter()
+            .map(|row| {
+                Ok(IndexRowPayload {
+                    index_entry_key: McpPresentedBytes::new(row.key().as_bytes().to_vec()),
+                    values: presented_record(row.values())?,
+                })
+            })
+            .collect::<Result<Vec<_>, McpBackendError>>()?,
+        next_cursor: page
+            .next_cursor()
+            .map(|cursor| crate::encode_mcp_cursor(*cursor.as_bytes())),
+        observed_fence,
+    };
+    compose(
+        7,
+        McpFixedResultBranch::ScanIndexPage,
+        Some(payload_from(&payload)?),
+    )
+}
+
+fn render_commit_result(
+    result: riffdb_service::GetCommitResult,
+    expected_sequence: CommitSequence,
+) -> Result<McpToolResult, McpBackendError> {
+    match result {
+        riffdb_service::GetCommitResult::NotFound => {
+            compose(8, McpFixedResultBranch::CommitNotFound, None)
+        }
+        riffdb_service::GetCommitResult::Found(commit) => {
+            let payload = commit_payload(commit.as_snapshot())?;
+            if payload.commit_sequence.get() != expected_sequence.get() {
+                return Err(McpBackendError::InvalidResponse);
+            }
+            compose(
+                8,
+                McpFixedResultBranch::CommitFound,
+                Some(payload_from(&payload)?),
+            )
+        }
+    }
+}
+
+fn render_commit_scan_result(
+    result: riffdb_service::ScanCommitsResult,
+) -> Result<McpToolResult, McpBackendError> {
+    let page = result.page();
+    let payload = CommitPagePayload {
+        items: page
+            .items()
+            .iter()
+            .map(|commit| commit_payload(commit.as_snapshot()))
+            .collect::<Result<Vec<_>, _>>()?,
+        next_cursor: page
+            .next_cursor()
+            .map(|cursor| crate::encode_mcp_cursor(*cursor.as_bytes())),
+        observed_fence: frontier_payload(page.observed_fence().position()),
+    };
+    compose(
+        9,
+        McpFixedResultBranch::CommitScanPage,
+        Some(payload_from(&payload)?),
+    )
+}
+
+fn render_provenance_result(
+    result: riffdb_service::TraceProvenanceResult,
+) -> Result<McpToolResult, McpBackendError> {
+    match result {
+        riffdb_service::TraceProvenanceResult::NotFound => {
+            compose(10, McpFixedResultBranch::ProvenanceNotFound, None)
+        }
+        riffdb_service::TraceProvenanceResult::Found(provenance) => {
+            let payload = provenance_payload(provenance.as_snapshot())?;
+            compose(
+                10,
+                McpFixedResultBranch::ProvenanceFound,
+                Some(payload_from(&payload)?),
+            )
+        }
+    }
+}
+
+fn render_projection_result(
+    result: riffdb_service::QueryProjectionResult,
+) -> Result<McpToolResult, McpBackendError> {
+    match result {
+        riffdb_service::QueryProjectionResult::Ready(ready) => {
+            let page = ready.data();
+            let payload = ProjectionReadyPayload {
+                data: ProjectionPagePayload {
+                    items: page
+                        .items()
+                        .iter()
+                        .map(|row| {
+                            Ok(ProjectionRowPayload {
+                                group: row
+                                    .group()
+                                    .iter()
+                                    .map(presented_value)
+                                    .collect::<Result<Vec<_>, _>>()?,
+                                values: presented_record(row.values())?,
+                            })
+                        })
+                        .collect::<Result<Vec<_>, McpBackendError>>()?,
+                    next_cursor: page
+                        .next_cursor()
+                        .map(|cursor| crate::encode_mcp_cursor(*cursor.as_bytes())),
+                    observed_fence: projection_fence_payload(page.observed_fence())?,
+                },
+                frontier: frontier_payload(ready.frontier()),
+            };
+            compose(
+                11,
+                McpFixedResultBranch::ProjectionReady,
+                Some(payload_from(&payload)?),
+            )
+        }
+        riffdb_service::QueryProjectionResult::WaitTimedOut { required, current } => compose(
+            11,
+            McpFixedResultBranch::ProjectionWaitTimedOut,
+            Some(payload_from(&ProjectionWaitTimedOutPayload {
+                required_sequence: McpPresentedU64::new(required.get()),
+                current: frontier_payload(current),
+            })?),
+        ),
+        riffdb_service::QueryProjectionResult::Degraded { current, reason } => compose(
+            11,
+            McpFixedResultBranch::ProjectionDegraded,
+            Some(payload_from(&ProjectionDegradedPayload {
+                current: frontier_payload(current),
+                reason: projection_unavailable_reason_payload(reason),
+            })?),
+        ),
+        riffdb_service::QueryProjectionResult::Invalid { reason } => compose(
+            11,
+            McpFixedResultBranch::ProjectionInvalid,
+            Some(payload_from(&ProjectionInvalidPayload {
+                reason: projection_failure_name(reason),
+            })?),
+        ),
+    }
+}
+
+fn render_projection_status_result(
+    result: riffdb_service::GetProjectionStatusResult,
+) -> Result<McpToolResult, McpBackendError> {
+    match result {
+        riffdb_service::GetProjectionStatusResult::NotFound => {
+            compose(12, McpFixedResultBranch::ProjectionStatusNotFound, None)
+        }
+        riffdb_service::GetProjectionStatusResult::Found(status) => compose(
+            12,
+            McpFixedResultBranch::ProjectionStatusFound,
+            Some(payload_from(&projection_status_payload(&status)?)?),
+        ),
+    }
+}
+
+fn render_outbox_result(
+    result: riffdb_service::ListPendingOutboxDeliveriesResult,
+) -> Result<McpToolResult, McpBackendError> {
+    let page = result.page();
+    let payload = OutboxPagePayload {
+        items: page
+            .items()
+            .iter()
+            .map(|item| OutboxItemPayload {
+                event_id: event_id_payload(item.event_id()),
+                state: match item.state() {
+                    riffdb_service::OutboxDeliveryState::Pending => "pending",
+                    riffdb_service::OutboxDeliveryState::RetryScheduled => "retry_scheduled",
+                    riffdb_service::OutboxDeliveryState::Delivering => "delivering",
+                    riffdb_service::OutboxDeliveryState::DeadLetter => "dead_letter",
+                },
+                attempts: item.attempts(),
+                next_attempt_at: item.next_attempt_at().map(presented_timestamp),
+            })
+            .collect(),
+        next_cursor: page
+            .next_cursor()
+            .map(|cursor| crate::encode_mcp_cursor(*cursor.as_bytes())),
+    };
+    compose(
+        13,
+        McpFixedResultBranch::OutboxPage,
+        Some(payload_from(&payload)?),
+    )
+}
+
+fn render_execute_result(
+    result: riffdb_service::ExecuteCommandResult,
+    outcome_schema: &SchemaDocument,
+    result_schema: &SchemaDocument,
+) -> Result<McpToolResult, McpBackendError> {
+    let completion = match result {
+        riffdb_service::ExecuteCommandResult::Journaled(result) => {
+            let outcome = natural_outcome(result.outcome(), outcome_schema)?;
+            let status = match result.completion() {
+                riffdb_service::JournaledCompletion::Committed => {
+                    McpJournaledCommandStatus::Committed
+                }
+                riffdb_service::JournaledCompletion::Replayed => {
+                    McpJournaledCommandStatus::Replayed
+                }
+            };
+            let durability = match result.durability() {
+                riffdb_service::CommandDurability::Synchronous => McpCommandDurability::Synchronous,
+                riffdb_service::CommandDurability::Group => McpCommandDurability::Group,
+            };
+            McpDynamicCommandCompletion::journaled(
+                status,
+                McpJournaledCommandResultParts {
+                    commit_sequence: result.commit_sequence().get(),
+                    contract_version: result.contract_version().get(),
+                    plan_hash: *result.plan_hash().as_bytes(),
+                    outcome,
+                    provenance_uri: format_provenance_locator(result.provenance_id()),
+                    durability,
+                    outcome_uri: result.outcome_locator().canonical_uri().to_owned(),
+                },
+            )
+            .map_err(invalid_response)?
+        }
+        riffdb_service::ExecuteCommandResult::ReadOnlyExecuted(result) => {
+            let outcome = natural_outcome(result.outcome(), outcome_schema)?;
+            McpDynamicCommandCompletion::read_only(McpReadOnlyCommandResultParts {
+                contract_version: result.contract_version().get(),
+                plan_hash: *result.plan_hash().as_bytes(),
+                outcome,
+            })
+            .map_err(invalid_response)?
+        }
+    };
+    compose_dynamic_command_result(&completion, outcome_schema, result_schema)
+        .map_err(invalid_response)
+}
+
+fn natural_outcome(
+    outcome: &riffdb_service::DeclaredOutcomeView,
+    outcome_schema: &SchemaDocument,
+) -> Result<McpNaturalOutcome, McpBackendError> {
+    let payload = schema_bound_record(outcome.schema_bound_value())?;
+    let bound = McpSchemaBoundOutcome::new(
+        outcome.outcome_id().get(),
+        outcome.outcome_name().as_str(),
+        McpSchemaBoundValue::Record(payload),
+    )
+    .map_err(invalid_response)?;
+    McpNaturalOutcome::from_schema_bound(&bound, outcome_schema).map_err(invalid_response)
+}
+
+fn schema_bound_record(
+    record: riffdb_service::SchemaBoundOutcomeRecord<'_>,
+) -> Result<Vec<McpSchemaBoundField>, McpBackendError> {
+    (0..record.len())
+        .map(|index| {
+            let field = record
+                .field(index)
+                .ok_or(McpBackendError::InvalidResponse)?;
+            let value = field.value().ok_or(McpBackendError::InvalidResponse)?;
+            McpSchemaBoundField::new(
+                field.field_id().get(),
+                field.field_name().as_str(),
+                schema_bound_value(value)?,
+            )
+            .map_err(invalid_response)
+        })
+        .collect()
+}
+
+fn schema_bound_value(
+    value: riffdb_service::SchemaBoundOutcomeValue<'_>,
+) -> Result<McpSchemaBoundValue, McpBackendError> {
+    match value {
+        riffdb_service::SchemaBoundOutcomeValue::Null => Ok(McpSchemaBoundValue::Null),
+        riffdb_service::SchemaBoundOutcomeValue::Scalar(value) => schema_bound_scalar(value),
+        riffdb_service::SchemaBoundOutcomeValue::Enum {
+            type_id,
+            variant_id,
+            variant_name,
+        } => Ok(McpSchemaBoundValue::Enum {
+            type_id: type_id.get(),
+            variant_id: variant_id.get(),
+            variant_name: variant_name.as_str().to_owned(),
+        }),
+        riffdb_service::SchemaBoundOutcomeValue::List(values) => (0..values.len())
+            .map(|index| {
+                values
+                    .value(index)
+                    .ok_or(McpBackendError::InvalidResponse)
+                    .and_then(schema_bound_value)
+            })
+            .collect::<Result<Vec<_>, _>>()
+            .map(McpSchemaBoundValue::List),
+        riffdb_service::SchemaBoundOutcomeValue::Record(record) => {
+            schema_bound_record(record).map(McpSchemaBoundValue::Record)
+        }
+    }
+}
+
+fn schema_bound_scalar(value: &CanonicalValue) -> Result<McpSchemaBoundValue, McpBackendError> {
+    match value {
+        CanonicalValue::Bool(value) => Ok(McpSchemaBoundValue::Bool(*value)),
+        CanonicalValue::I64(value) => Ok(McpSchemaBoundValue::I64(*value)),
+        CanonicalValue::U64(value) => Ok(McpSchemaBoundValue::U64(*value)),
+        CanonicalValue::Decimal(value) => Ok(McpSchemaBoundValue::Decimal {
+            coefficient: value.coefficient(),
+            precision: value.spec().precision(),
+            scale: value.spec().scale(),
+        }),
+        CanonicalValue::Money(value) => Ok(McpSchemaBoundValue::Money {
+            currency: value.currency().to_string(),
+            coefficient: value.amount().coefficient(),
+            precision: value.amount().spec().precision(),
+            scale: value.amount().spec().scale(),
+        }),
+        CanonicalValue::String(value) => Ok(McpSchemaBoundValue::String(value.as_str().to_owned())),
+        CanonicalValue::Bytes(value) => Ok(McpSchemaBoundValue::Bytes(value.as_bytes().to_vec())),
+        CanonicalValue::Timestamp(value) => Ok(McpSchemaBoundValue::Timestamp {
+            seconds: value.seconds(),
+            nanos: value.nanos(),
+        }),
+        CanonicalValue::Date(value) => Ok(McpSchemaBoundValue::Date(value.days_since_unix_epoch())),
+        CanonicalValue::Uuid(value) => Ok(McpSchemaBoundValue::Uuid(*value)),
+        CanonicalValue::Null
+        | CanonicalValue::Enum { .. }
+        | CanonicalValue::List(_)
+        | CanonicalValue::Record(_) => Err(McpBackendError::InvalidResponse),
+    }
+}
+
+fn execute_result_matches_descriptor(
+    result: &riffdb_service::ExecuteCommandResult,
+    descriptor: &CommandToolDescriptor,
+) -> bool {
+    let (lineage, version, command_id) = match result {
+        riffdb_service::ExecuteCommandResult::Journaled(result) => (
+            result.lineage(),
+            result.contract_version(),
+            result.command_id(),
+        ),
+        riffdb_service::ExecuteCommandResult::ReadOnlyExecuted(result) => (
+            result.lineage(),
+            result.contract_version(),
+            result.command_id(),
+        ),
+    };
+    lineage == descriptor.lineage()
+        && version == descriptor.version()
+        && command_id == descriptor.command_id()
+}
+
+fn replayed_execution_payload(
+    journaled: &riffdb_service::JournaledCommandResult,
+) -> Result<ReplayedExecutionPayload, McpBackendError> {
+    Ok(ReplayedExecutionPayload {
+        status: "replayed",
+        commit_sequence: McpPresentedU64::new(journaled.commit_sequence().get()),
+        contract_version: journaled.contract_version().get(),
+        plan_hash: presented_hash(journaled.plan_hash().as_bytes())?,
+        outcome_type: journaled.outcome().outcome_name().as_str().to_owned(),
+        outcome: presented_record(journaled.outcome().value())?,
+        provenance_uri: format_provenance_locator(journaled.provenance_id()),
+        durability_mode: durability_name(journaled.durability()),
+        outcome_uri: journaled.outcome_locator().canonical_uri().to_owned(),
+    })
+}
+
+fn provenance_payload(
+    snapshot: &riffdb_service::AuthoritativeProvenanceSnapshot,
+) -> Result<ProvenancePayload, McpBackendError> {
+    let claims = snapshot.claims();
+    Ok(ProvenancePayload {
+        provenance_id: McpPresentedUuid::new(snapshot.provenance_id().into_bytes()),
+        commit_sequence: McpPresentedU64::new(snapshot.commit_sequence().get()),
+        admission_request_id: McpPresentedUuid::new(snapshot.admission_request_id().into_bytes()),
+        contract_lineage: snapshot.lineage().as_str().to_owned(),
+        contract_version: McpPresentedU64::new(snapshot.contract_version().get()),
+        command_id: snapshot.command_id().get(),
+        plan_hash: presented_hash(snapshot.plan_hash().as_bytes())?,
+        actor: actor_payload(snapshot.actor()),
+        logical_time: presented_timestamp(snapshot.logical_time().timestamp()),
+        outcome_id: snapshot.outcome_id().get(),
+        affected_entities: snapshot
+            .affected_entities()
+            .iter()
+            .map(|entity| AffectedEntityPayload {
+                entity_key: McpPresentedBytes::new(entity.key().as_bytes().to_vec()),
+                entity_version: McpPresentedU64::new(entity.entity_version().get()),
+            })
+            .collect(),
+        event_ids: snapshot
+            .event_ids()
+            .iter()
+            .copied()
+            .map(event_id_payload)
+            .collect(),
+        claims: ProvenanceClaimsPayload {
+            source_repository: claims
+                .source_repository()
+                .map(|value| value.as_str().to_owned()),
+            source_commit: claims
+                .source_commit()
+                .map(|value| value.as_str().to_owned()),
+            reason: claims.reason().map(|value| value.as_str().to_owned()),
+            approval_id: claims.approval_id().map(|value| value.as_str().to_owned()),
+        },
+    })
+}
+
+fn authenticated_health_payload(
+    report: &riffdb_service::HealthReport,
+) -> AuthenticatedHealthPayload {
+    AuthenticatedHealthPayload {
+        status: match report.status() {
+            riffdb_service::HealthStatus::Ready => "ready",
+            riffdb_service::HealthStatus::NotReady => "not_ready",
+            riffdb_service::HealthStatus::Degraded => "degraded",
+        },
+        active_contract_version: report
+            .active_contract_version()
+            .map(|value| McpPresentedU64::new(value.get())),
+        last_commit_sequence: report
+            .last_commit_sequence()
+            .map(|value| McpPresentedU64::new(value.get())),
+        components: report
+            .components()
+            .iter()
+            .map(|component| HealthComponentPayload {
+                component: match component.component() {
+                    riffdb_service::HealthComponentKind::AuthoritativeStorage => {
+                        "authoritative_storage"
+                    }
+                    riffdb_service::HealthComponentKind::Catalog => "catalog",
+                    riffdb_service::HealthComponentKind::CommitCoordinator => "commit_coordinator",
+                    riffdb_service::HealthComponentKind::Projection => "projection",
+                    riffdb_service::HealthComponentKind::Outbox => "outbox",
+                },
+                status: match component.status() {
+                    riffdb_service::HealthComponentStatus::Healthy => "healthy",
+                    riffdb_service::HealthComponentStatus::Degraded => "degraded",
+                    riffdb_service::HealthComponentStatus::Unavailable => "unavailable",
+                },
+            })
+            .collect(),
+        started_at: presented_timestamp(report.started_at()),
+        build: BuildInfoPayload {
+            semantic_version: report.build().semantic_version().to_owned(),
+            git_revision: report.build().git_revision().to_owned(),
+            rust_version: report.build().rust_version().to_owned(),
+            enabled_features: report.build().enabled_features().to_vec(),
+            storage_format_version: report.build().storage_format_version(),
+            contract_ir_version: report.build().contract_ir_version(),
+            mcp_protocol_baseline: report.build().mcp_protocol_baseline().to_owned(),
+        },
+    }
+}
+
+fn presented_record(record: &CanonicalRecord) -> Result<McpPresentedValue, McpBackendError> {
+    let fields = record
+        .fields()
+        .iter()
+        .map(|(field_id, value)| {
+            Ok(McpPresentedField {
+                field_id: field_id.get(),
+                value: presented_value(value)?,
+            })
+        })
+        .collect::<Result<Vec<_>, McpBackendError>>()?;
+    Ok(McpPresentedValue::Record { fields })
+}
+
+fn presented_value(value: &CanonicalValue) -> Result<McpPresentedValue, McpBackendError> {
+    match value {
+        CanonicalValue::Null => Ok(McpPresentedValue::Null),
+        CanonicalValue::Bool(value) => Ok(McpPresentedValue::Bool { value: *value }),
+        CanonicalValue::I64(value) => Ok(McpPresentedValue::I64 {
+            value: McpPresentedI64::new(*value),
+        }),
+        CanonicalValue::U64(value) => Ok(McpPresentedValue::U64 {
+            value: McpPresentedU64::new(*value),
+        }),
+        CanonicalValue::Decimal(value) => Ok(McpPresentedValue::Decimal {
+            precision: value.spec().precision(),
+            scale: value.spec().scale(),
+            coefficient: value.coefficient().to_string(),
+        }),
+        CanonicalValue::Money(value) => Ok(McpPresentedValue::Money {
+            currency: value.currency().to_string(),
+            precision: value.amount().spec().precision(),
+            scale: value.amount().spec().scale(),
+            coefficient: value.amount().coefficient().to_string(),
+        }),
+        CanonicalValue::String(value) => Ok(McpPresentedValue::String {
+            value: value.as_str().to_owned(),
+        }),
+        CanonicalValue::Bytes(value) => Ok(McpPresentedValue::Bytes {
+            value: McpPresentedBytes::new(value.as_bytes().to_vec()),
+        }),
+        CanonicalValue::Timestamp(value) => Ok(McpPresentedValue::Timestamp {
+            seconds: McpPresentedI64::new(value.seconds()),
+            nanos: value.nanos(),
+        }),
+        CanonicalValue::Date(value) => Ok(McpPresentedValue::Date {
+            days_since_unix_epoch: value.days_since_unix_epoch(),
+        }),
+        CanonicalValue::Uuid(value) => Ok(McpPresentedValue::Uuid {
+            value: McpPresentedUuid::new(*value),
+        }),
+        CanonicalValue::Enum {
+            type_id,
+            variant_id,
+        } => Ok(McpPresentedValue::Enum {
+            type_id: type_id.get(),
+            variant_id: variant_id.get(),
+        }),
+        CanonicalValue::List(values) => Ok(McpPresentedValue::List {
+            values: values
+                .values()
+                .iter()
+                .map(presented_value)
+                .collect::<Result<Vec<_>, _>>()?,
+        }),
+        CanonicalValue::Record(record) => presented_record(record),
+    }
+}
+
+fn frontier_payload(frontier: FrontierPosition) -> FrontierPayload {
+    match frontier {
+        FrontierPosition::BeforeFirst => FrontierPayload::BeforeFirst(UnitPayload {}),
+        FrontierPosition::AppliedThrough(sequence) => {
+            FrontierPayload::AppliedThrough(McpPresentedU64::new(sequence.get()))
+        }
+    }
+}
+
+fn projection_identity_payload(
+    identity: &riffdb_types::ProjectionIdentity,
+) -> Result<ProjectionIdentityPayload, McpBackendError> {
+    Ok(ProjectionIdentityPayload {
+        contract_lineage: identity.contract_lineage().as_str().to_owned(),
+        projection_id: identity.projection_id().get(),
+        projection_plan_hash: presented_hash(identity.plan_hash().as_bytes())?,
+    })
+}
+
+fn projection_fence_payload(
+    fence: &riffdb_service::ProjectionPageFence,
+) -> Result<ProjectionFencePayload, McpBackendError> {
+    Ok(ProjectionFencePayload {
+        identity: projection_identity_payload(fence.identity())?,
+        generation: McpPresentedU64::new(fence.generation().get()),
+        frontier: frontier_payload(fence.frontier()),
+    })
+}
+
+fn projection_generation_frontier_payload(
+    position: riffdb_service::ProjectionGenerationFrontier,
+) -> ProjectionGenerationFrontierPayload {
+    ProjectionGenerationFrontierPayload {
+        generation: McpPresentedU64::new(position.generation().get()),
+        frontier: frontier_payload(position.frontier()),
+    }
+}
+
+fn projection_failure_payload(
+    failure: riffdb_service::ProjectionFailure,
+) -> ProjectionFailurePayload {
+    ProjectionFailurePayload {
+        generation: McpPresentedU64::new(failure.generation().get()),
+        code: projection_failure_name(failure.code()),
+        at_sequence: failure
+            .at_sequence()
+            .map(|sequence| McpPresentedU64::new(sequence.get())),
+    }
+}
+
+fn projection_failure_name(code: riffdb_service::ProjectionFailureCode) -> &'static str {
+    match code {
+        riffdb_service::ProjectionFailureCode::ArithmeticOverflow => "arithmetic_overflow",
+        riffdb_service::ProjectionFailureCode::MalformedDurableEvent => "malformed_durable_event",
+        riffdb_service::ProjectionFailureCode::MissingCommit => "missing_commit",
+        riffdb_service::ProjectionFailureCode::PlanOrSchemaUnavailable => {
+            "plan_or_schema_unavailable"
+        }
+        riffdb_service::ProjectionFailureCode::StateIntegrityFailure => {
+            "projection_state_integrity"
+        }
+        riffdb_service::ProjectionFailureCode::HardLimitExceeded => "hard_limit_exceeded",
+    }
+}
+
+fn projection_unavailable_reason_payload(
+    reason: riffdb_service::ProjectionUnavailableReason,
+) -> ProjectionUnavailableReasonPayload {
+    match reason {
+        riffdb_service::ProjectionUnavailableReason::Building => {
+            ProjectionUnavailableReasonPayload::Building(UnitPayload {})
+        }
+        riffdb_service::ProjectionUnavailableReason::Rebuilding => {
+            ProjectionUnavailableReasonPayload::Rebuilding(UnitPayload {})
+        }
+        riffdb_service::ProjectionUnavailableReason::Failure(code) => {
+            ProjectionUnavailableReasonPayload::Failure(projection_failure_name(code))
+        }
+    }
+}
+
+fn projection_status_payload(
+    status: &riffdb_service::ProjectionStatusSnapshot,
+) -> Result<ProjectionStatusPayload, McpBackendError> {
+    Ok(ProjectionStatusPayload {
+        identity: projection_identity_payload(status.identity())?,
+        lifecycle: match status.lifecycle() {
+            riffdb_service::ProjectionLifecycle::Building => "building",
+            riffdb_service::ProjectionLifecycle::CatchingUp => "catching_up",
+            riffdb_service::ProjectionLifecycle::Ready => "ready",
+            riffdb_service::ProjectionLifecycle::Rebuilding => "rebuilding",
+            riffdb_service::ProjectionLifecycle::Degraded => "degraded",
+            riffdb_service::ProjectionLifecycle::Invalid => "invalid",
+        },
+        published: status
+            .published()
+            .map(projection_generation_frontier_payload),
+        candidate: status
+            .candidate()
+            .map(projection_generation_frontier_payload),
+        published_apply_mode: status.published_apply_mode().map(|mode| match mode {
+            riffdb_service::PublishedApplyMode::Enabled => "enabled",
+            riffdb_service::PublishedApplyMode::Suspended => "suspended",
+        }),
+        failure: status.failure().map(projection_failure_payload),
+        authoritative_head: frontier_payload(status.authoritative_head()),
+    })
+}
+
+fn event_id_payload(event_id: riffdb_types::EventId) -> EventIdPayload {
+    EventIdPayload {
+        commit_sequence: McpPresentedU64::new(event_id.commit_sequence().get()),
+        event_ordinal: event_id.event_ordinal(),
+    }
+}
+
+fn durability_name(durability: riffdb_service::CommandDurability) -> &'static str {
+    match durability {
+        riffdb_service::CommandDurability::Synchronous => "sync",
+        riffdb_service::CommandDurability::Group => "group",
+    }
+}
+
+fn commit_payload(
+    commit: &riffdb_service::AuthoritativeCommitSnapshot,
+) -> Result<CommitPayload, McpBackendError> {
+    Ok(CommitPayload {
+        commit_sequence: McpPresentedU64::new(commit.sequence().get()),
+        admission_request_id: McpPresentedUuid::new(commit.admission_request_id().into_bytes()),
+        contract_lineage: commit.lineage().as_str().to_owned(),
+        contract_version: McpPresentedU64::new(commit.contract_version().get()),
+        command_id: commit.command_id().get(),
+        plan_hash: presented_hash(commit.plan_hash().as_bytes())?,
+        canonical_input_hash: presented_hash(commit.canonical_input_hash().as_bytes())?,
+        actor: actor_payload(commit.actor()),
+        logical_time: presented_timestamp(commit.logical_time().timestamp()),
+        partition_hash: presented_hash(commit.partition_hash().as_bytes())?,
+        conflict_hashes: commit
+            .conflict_hashes()
+            .iter()
+            .map(|hash| presented_hash(hash.as_bytes()))
+            .collect::<Result<Vec<_>, _>>()?,
+        affected_entities: commit
+            .affected_entities()
+            .iter()
+            .map(|entity| AffectedEntityPayload {
+                entity_key: McpPresentedBytes::new(entity.key().as_bytes().to_vec()),
+                entity_version: McpPresentedU64::new(entity.entity_version().get()),
+            })
+            .collect(),
+        events: commit
+            .events()
+            .iter()
+            .map(|event| {
+                Ok(DurableEventPayload {
+                    event_id: event_id_payload(event.event_id()),
+                    event_type_id: event.event_type_id().get(),
+                    payload: presented_record(event.payload())?,
+                })
+            })
+            .collect::<Result<Vec<_>, McpBackendError>>()?,
+        outcome: DeclaredOutcomePayload {
+            outcome_id: commit.outcome().outcome_id().get(),
+            outcome_name: commit.outcome().outcome_name().as_str().to_owned(),
+            value: presented_record(commit.outcome().value())?,
+        },
+        provenance_uri: format_provenance_locator(commit.provenance_id()),
+        durability: durability_name(commit.durability()),
+    })
+}
+
+fn actor_payload(actor: &riffdb_types::AdmittedActorContext) -> ActorPayload {
+    ActorPayload {
+        principal_id: actor.principal_id().as_str().to_owned(),
+        actor_kind: match actor.actor_kind() {
+            riffdb_types::ActorKind::Human => "human",
+            riffdb_types::ActorKind::Agent => "agent",
+            riffdb_types::ActorKind::Service => "service",
+        },
+        tenant_scope: match actor.tenant_scope() {
+            riffdb_types::TenantScope::Global => TenantScopePayload::Global(UnitPayload {}),
+            riffdb_types::TenantScope::Tenant(tenant) => {
+                TenantScopePayload::TenantId(tenant.as_str().to_owned())
+            }
+        },
+        agent_session_id: actor
+            .agent_session_id()
+            .map(|id| McpPresentedUuid::new(id.into_bytes())),
+    }
+}
+
+fn compose(
+    tag: u8,
+    branch: McpFixedResultBranch,
+    payload: Option<McpFixedResultPayload>,
+) -> Result<McpToolResult, McpBackendError> {
+    compose_fixed_tool_result(tag, branch, payload).map_err(invalid_response)
+}
+
+fn payload_from<T: Serialize>(value: &T) -> Result<McpFixedResultPayload, McpBackendError> {
+    McpFixedResultPayload::from_serializable(value).map_err(invalid_response)
+}
+
+fn contract_descriptor(
+    contract: &riffdb_service::ContractDescriptor,
+) -> Result<McpContractDescriptorPresentation, McpBackendError> {
+    let compatibility = contract.compatibility();
+    let code_counts = compatibility
+        .code_counts()
+        .iter()
+        .map(|count| McpCompatibilityCodeCount::new(count.code(), count.count().get()))
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(invalid_response)?;
+    let overall = match compatibility.overall() {
+        riffdb_service::ContractCompatibilityClass::Compatible => {
+            McpContractCompatibilityClass::Compatible
+        }
+        riffdb_service::ContractCompatibilityClass::RequiresExplicitVersion => {
+            McpContractCompatibilityClass::RequiresExplicitVersion
+        }
+        riffdb_service::ContractCompatibilityClass::Incompatible => {
+            McpContractCompatibilityClass::Incompatible
+        }
+    };
+    let compatibility = match compatibility.parent() {
+        None if overall == McpContractCompatibilityClass::Compatible && code_counts.is_empty() => {
+            McpContractCompatibilityPresentation::genesis()
+        }
+        None => return Err(McpBackendError::InvalidResponse),
+        Some((version, hash)) => McpContractCompatibilityPresentation::successor(
+            version.get(),
+            *hash.as_bytes(),
+            overall,
+            code_counts,
+        )
+        .map_err(invalid_response)?,
+    };
+    McpContractDescriptorPresentation::new(
+        contract.lineage().as_str(),
+        contract.version().get(),
+        *contract.bundle_hash().as_bytes(),
+        *contract.source_hash().as_bytes(),
+        *contract.plan_root_hash().as_bytes(),
+        compatibility,
+    )
+    .map_err(invalid_response)
+}
+
+fn explained_command_presentation(
+    source_command: &SourceName,
+    explained: &ExplainedCommand,
+) -> Result<McpExplainedCommandPresentation, McpBackendError> {
+    let command_id = explained.command_id().get();
+    let input = explained.input_schema();
+    let input_schema = SchemaDocument::from_public_generated(
+        McpGeneratedSchemaKind::CommandInput,
+        command_id,
+        input.hash().as_bytes(),
+        input.canonical_json(),
+    )
+    .map_err(invalid_response)?;
+    let outcome = explained.outcome_schema();
+    let outcome_schema = SchemaDocument::from_public_generated(
+        McpGeneratedSchemaKind::CommandOutcomeUnion,
+        command_id,
+        outcome.hash().as_bytes(),
+        outcome.canonical_json(),
+    )
+    .map_err(invalid_response)?;
+    let explanation = explained.explanation();
+    let execution_class = match explanation.execution_class() as u8 {
+        1 => McpCommandExecutionClass::ReadOnly,
+        2 => McpCommandExecutionClass::IdempotentMutation,
+        _ => return Err(McpBackendError::InvalidResponse),
+    };
+    let read_fields = explanation
+        .read_fields()
+        .iter()
+        .map(|(binding, field)| {
+            McpBindingFieldReferencePresentation::new(binding.get(), field.get())
+        })
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(invalid_response)?;
+    let write_fields = explanation
+        .write_fields()
+        .iter()
+        .map(|(binding, field)| {
+            McpBindingFieldReferencePresentation::new(binding.get(), field.get())
+        })
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(invalid_response)?;
+    let explanation = McpCommandExplanationPresentation::from_fields(McpCommandExplanationFields {
+        command_id: explanation.command_id().get(),
+        execution_class,
+        partition_component_count: u32::try_from(explanation.partition_component_count())
+            .map_err(invalid_response)?,
+        conflict_key_count: u32::try_from(explanation.conflict_key_count())
+            .map_err(invalid_response)?,
+        binding_ids: explanation.bindings().iter().map(|id| id.get()).collect(),
+        read_fields,
+        write_fields,
+        invariant_ids: explanation.invariants().iter().map(|id| id.get()).collect(),
+        event_type_ids: explanation.events().iter().map(|id| id.get()).collect(),
+        outcome_ids: explanation.outcomes().iter().map(|id| id.get()).collect(),
+        rendered_text: explanation.render_text(),
+    })
+    .map_err(invalid_response)?;
+    McpExplainedCommandPresentation::new(
+        contract_descriptor(explained.contract())?,
+        source_command.as_str(),
+        *explained.plan_hash().as_bytes(),
+        explanation,
+        input_schema,
+        outcome_schema,
+    )
+    .map_err(invalid_response)
+}
+
+fn projection_status_presentation(
+    status: &riffdb_service::ProjectionStatusSnapshot,
+) -> Result<McpProjectionStatusPresentation, McpBackendError> {
+    let identity = status.identity();
+    let identity = McpProjectionIdentityPresentation::new(
+        identity.contract_lineage().as_str(),
+        identity.projection_id().get(),
+        *identity.plan_hash().as_bytes(),
+    )
+    .map_err(invalid_response)?;
+    let lifecycle = match status.lifecycle() {
+        riffdb_service::ProjectionLifecycle::Building => McpProjectionLifecycle::Building,
+        riffdb_service::ProjectionLifecycle::CatchingUp => McpProjectionLifecycle::CatchingUp,
+        riffdb_service::ProjectionLifecycle::Ready => McpProjectionLifecycle::Ready,
+        riffdb_service::ProjectionLifecycle::Rebuilding => McpProjectionLifecycle::Rebuilding,
+        riffdb_service::ProjectionLifecycle::Degraded => McpProjectionLifecycle::Degraded,
+        riffdb_service::ProjectionLifecycle::Invalid => McpProjectionLifecycle::Invalid,
+    };
+    let published = status
+        .published()
+        .map(mcp_projection_generation_frontier)
+        .transpose()?;
+    let candidate = status
+        .candidate()
+        .map(mcp_projection_generation_frontier)
+        .transpose()?;
+    let published_apply_mode = status.published_apply_mode().map(|mode| match mode {
+        riffdb_service::PublishedApplyMode::Enabled => McpPublishedApplyMode::Enabled,
+        riffdb_service::PublishedApplyMode::Suspended => McpPublishedApplyMode::Suspended,
+    });
+    let failure = status
+        .failure()
+        .map(|failure| {
+            McpProjectionFailurePresentation::new(
+                failure.generation().get(),
+                mcp_projection_failure_code(failure.code()),
+                failure.at_sequence().map(|sequence| sequence.get()),
+            )
+        })
+        .transpose()
+        .map_err(invalid_response)?;
+    McpProjectionStatusPresentation::from_parts(McpProjectionStatusParts {
+        identity,
+        lifecycle,
+        published,
+        candidate,
+        published_apply_mode,
+        failure,
+        authoritative_head: mcp_frontier(status.authoritative_head()),
+    })
+    .map_err(invalid_response)
+}
+
+fn mcp_projection_generation_frontier(
+    position: riffdb_service::ProjectionGenerationFrontier,
+) -> Result<McpProjectionGenerationFrontierPresentation, McpBackendError> {
+    McpProjectionGenerationFrontierPresentation::new(
+        position.generation().get(),
+        mcp_frontier(position.frontier()),
+    )
+    .map_err(invalid_response)
+}
+
+fn mcp_frontier(frontier: FrontierPosition) -> McpFrontierPresentation {
+    match frontier {
+        FrontierPosition::BeforeFirst => McpFrontierPresentation::BeforeFirst,
+        FrontierPosition::AppliedThrough(sequence) => {
+            McpFrontierPresentation::AppliedThrough(sequence.get())
+        }
+    }
+}
+
+fn mcp_projection_failure_code(
+    code: riffdb_service::ProjectionFailureCode,
+) -> McpProjectionFailureCode {
+    match code {
+        riffdb_service::ProjectionFailureCode::ArithmeticOverflow => {
+            McpProjectionFailureCode::ArithmeticOverflow
+        }
+        riffdb_service::ProjectionFailureCode::MalformedDurableEvent => {
+            McpProjectionFailureCode::MalformedDurableEvent
+        }
+        riffdb_service::ProjectionFailureCode::MissingCommit => {
+            McpProjectionFailureCode::MissingCommit
+        }
+        riffdb_service::ProjectionFailureCode::PlanOrSchemaUnavailable => {
+            McpProjectionFailureCode::PlanOrSchemaUnavailable
+        }
+        riffdb_service::ProjectionFailureCode::StateIntegrityFailure => {
+            McpProjectionFailureCode::ProjectionStateIntegrity
+        }
+        riffdb_service::ProjectionFailureCode::HardLimitExceeded => {
+            McpProjectionFailureCode::HardLimitExceeded
+        }
+    }
+}
+
+fn presented_hash(bytes: &[u8]) -> Result<McpPresentedHash, McpBackendError> {
+    McpPresentedHash::from_slice(bytes).map_err(invalid_response)
+}
+
+fn presented_timestamp(value: Timestamp) -> McpPresentedTimestamp {
+    McpPresentedTimestamp {
+        seconds: McpPresentedI64::new(value.seconds()),
+        nanos: value.nanos(),
+    }
+}
+
+fn invalid_response<T>(_: T) -> McpBackendError {
+    McpBackendError::InvalidResponse
+}
+
+fn observer_retry<T>(_: T) -> McpObserverBackendError {
+    McpObserverBackendError::RetryNextTick
+}
+
+fn observer_backend_error(error: McpBackendError) -> McpObserverBackendError {
+    match error {
+        McpBackendError::AuthenticationLost => McpObserverBackendError::AuthenticationLost,
+        McpBackendError::Cancelled => McpObserverBackendError::Cancelled,
+        McpBackendError::Public(_)
+        | McpBackendError::TargetUnavailable
+        | McpBackendError::InvalidResponse
+        | McpBackendError::RateLimited => McpObserverBackendError::RetryNextTick,
+    }
+}
+
+fn json_resource(
+    branch: &'static str,
+    uri: String,
+    json: McpResourceJson,
+) -> Result<McpResourceContent, McpBackendError> {
+    McpResourceContent::new(branch, uri, McpResourceBody::Json(json)).map_err(invalid_response)
+}
+
+fn active_contract_resource(
+    contract: &riffdb_service::ContractDescriptor,
+) -> Result<McpResourceContent, McpBackendError> {
+    let descriptor = contract_descriptor(contract)?;
+    json_resource(
+        "active_contract",
+        format_active_contract_locator().to_owned(),
+        crate::render_active_contract_resource(&descriptor).map_err(invalid_response)?,
+    )
+}
+
+fn contract_version_resource(
+    uri: String,
+    contract: &riffdb_service::ContractDescriptor,
+) -> Result<McpResourceContent, McpBackendError> {
+    let descriptor = contract_descriptor(contract)?;
+    json_resource(
+        "contract_version",
+        uri,
+        crate::render_contract_version_resource(&descriptor).map_err(invalid_response)?,
+    )
+}
+
+fn command_plan_resource(
+    lineage: ContractLineage,
+    command_id: CommandId,
+    authorized: AuthorizedCommandResource,
+) -> Result<McpResourceContent, McpBackendError> {
+    let AuthorizedCommandResource {
+        source_command,
+        explained,
+    } = authorized;
+    let presentation = explained_command_presentation(&source_command, &explained)?;
+    if presentation.contract().contract_lineage() != lineage.as_str()
+        || presentation.explanation().command_id() != command_id.get()
+    {
+        return Err(McpBackendError::InvalidResponse);
+    }
+    json_resource(
+        "command_plan",
+        format_command_plan_locator(&lineage, command_id),
+        crate::render_command_plan_resource(&presentation).map_err(invalid_response)?,
+    )
+}
+
+fn command_plan_observation(
+    lineage: ContractLineage,
+    command_id: CommandId,
+    authorized: AuthorizedCommandResource,
+) -> Result<McpSubscribedResourceObservation, McpObserverBackendError> {
+    let AuthorizedCommandResource {
+        source_command,
+        explained,
+    } = authorized;
+    let presentation = explained_command_presentation(&source_command, &explained)
+        .map_err(observer_backend_error)?;
+    if presentation.contract().contract_lineage() != lineage.as_str()
+        || presentation.explanation().command_id() != command_id.get()
+    {
+        return Err(McpObserverBackendError::RetryNextTick);
+    }
+    let uri = format_command_plan_locator(&lineage, command_id);
+    McpVisibleFingerprint::command_plan_resource(&uri, &presentation)
+        .map(McpSubscribedResourceObservation::Visible)
+        .map_err(|_| McpObserverBackendError::RetryNextTick)
+}
+
+fn command_documentation_resource(
+    lineage: ContractLineage,
+    command_id: CommandId,
+    authorized: AuthorizedCommandResource,
+) -> Result<McpResourceContent, McpBackendError> {
+    let AuthorizedCommandResource {
+        source_command,
+        explained,
+    } = authorized;
+    let presentation = explained_command_presentation(&source_command, &explained)?;
+    if presentation.contract().contract_lineage() != lineage.as_str()
+        || presentation.explanation().command_id() != command_id.get()
+    {
+        return Err(McpBackendError::InvalidResponse);
+    }
+    let document = crate::render_command_documentation(&presentation).map_err(invalid_response)?;
+    McpResourceContent::new(
+        "command_documentation",
+        format_command_documentation_locator(&lineage, command_id),
+        McpResourceBody::Markdown(document),
+    )
+    .map_err(invalid_response)
+}
+
+fn projection_status_resource(
+    uri: String,
+    status: &riffdb_service::ProjectionStatusSnapshot,
+) -> Result<McpResourceContent, McpBackendError> {
+    let presentation = projection_status_presentation(status)?;
+    json_resource(
+        "projection_status",
+        uri,
+        crate::render_projection_status_resource(&presentation).map_err(invalid_response)?,
+    )
+}
+
+fn health_resource(
+    report: riffdb_service::HealthReport,
+) -> Result<McpResourceContent, McpBackendError> {
+    json_resource(
+        "server_health",
+        format_server_health_locator().to_owned(),
+        McpResourceJson::from_serializable(&authenticated_health_payload(&report))
+            .map_err(invalid_response)?,
+    )
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "lowercase")]
+enum InvalidDiagnostics {
+    Syntax {
+        diagnostics: Vec<SyntaxDiagnostic>,
+    },
+    Semantic {
+        diagnostics: Vec<SemanticDiagnostic>,
+    },
+}
+
+#[derive(Serialize)]
+struct SourceSpanPayload {
+    start: u32,
+    end: u32,
+}
+
+#[derive(Serialize)]
+struct SyntaxDiagnostic {
+    code: String,
+    summary: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    help: Option<String>,
+    span: SourceSpanPayload,
+    expected: Vec<String>,
+}
+
+#[derive(Serialize)]
+struct SemanticDiagnostic {
+    code: String,
+    summary: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    help: Option<String>,
+    primary_span: SourceSpanPayload,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    related_span: Option<SourceSpanPayload>,
+}
+
+#[derive(Serialize)]
+struct ExpectedActiveVersionMismatchPayload {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    actual_active_version: Option<McpPresentedU64>,
+}
+
+#[derive(Serialize)]
+struct ExplainedCommandPayload {
+    contract: McpContractDescriptorPresentation,
+    command_id: u32,
+    plan_hash: McpPresentedHash,
+    explanation: CommandExplainPayload,
+    input_schema: GeneratedSchemaPayload,
+    outcome_schema: GeneratedSchemaPayload,
+}
+
+#[derive(Serialize)]
+struct CommandExplainPayload {
+    command_id: u32,
+    execution_class: &'static str,
+    partition_component_count: u32,
+    conflict_key_count: u32,
+    binding_ids: Vec<u32>,
+    read_fields: Vec<BindingFieldRefPayload>,
+    write_fields: Vec<BindingFieldRefPayload>,
+    invariant_ids: Vec<u32>,
+    event_type_ids: Vec<u32>,
+    outcome_ids: Vec<u32>,
+    rendered_text: String,
+}
+
+#[derive(Serialize)]
+struct BindingFieldRefPayload {
+    binding_id: u32,
+    field_id: u32,
+}
+
+#[derive(Serialize)]
+struct GeneratedSchemaPayload {
+    key: GeneratedSchemaKey,
+    dialect: &'static str,
+    schema_hash: McpPresentedHash,
+    schema: SchemaDocument,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "snake_case")]
+enum GeneratedSchemaKey {
+    CommandInputId(u32),
+    CommandOutcomeUnionId(u32),
+}
+
+#[derive(Serialize)]
+struct PreBootstrapHealthPayload {
+    lifecycle: &'static str,
+    liveness: bool,
+    readiness: bool,
+}
+
+#[derive(Serialize)]
+struct AuthenticatedHealthPayload {
+    status: &'static str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    active_contract_version: Option<McpPresentedU64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    last_commit_sequence: Option<McpPresentedU64>,
+    components: Vec<HealthComponentPayload>,
+    started_at: McpPresentedTimestamp,
+    build: BuildInfoPayload,
+}
+
+#[derive(Serialize)]
+struct HealthComponentPayload {
+    component: &'static str,
+    status: &'static str,
+}
+
+#[derive(Serialize)]
+struct BuildInfoPayload {
+    semantic_version: String,
+    git_revision: String,
+    rust_version: String,
+    enabled_features: Vec<String>,
+    storage_format_version: u32,
+    contract_ir_version: u32,
+    mcp_protocol_baseline: String,
+}
+
+#[derive(Serialize)]
+struct UnitPayload {}
+
+#[derive(Serialize)]
+struct ReplayedExecutionPayload {
+    status: &'static str,
+    commit_sequence: McpPresentedU64,
+    contract_version: u64,
+    plan_hash: McpPresentedHash,
+    outcome_type: String,
+    outcome: McpPresentedValue,
+    provenance_uri: String,
+    durability_mode: &'static str,
+    outcome_uri: String,
+}
+
+#[derive(Serialize)]
+struct EntityPayload {
+    entity_key: McpPresentedBytes,
+    entity_version: McpPresentedU64,
+    written_by_contract_version: McpPresentedU64,
+    fields: McpPresentedValue,
+}
+
+#[derive(Serialize)]
+struct IndexPagePayload {
+    items: Vec<IndexRowPayload>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    next_cursor: Option<String>,
+    observed_fence: IndexFencePayload,
+}
+
+#[derive(Serialize)]
+struct IndexRowPayload {
+    index_entry_key: McpPresentedBytes,
+    values: McpPresentedValue,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "snake_case")]
+enum IndexFencePayload {
+    BeforeFirst(UnitPayload),
+    AppliedEpoch(McpPresentedU64),
+}
+
+#[derive(Serialize)]
+struct CommitPagePayload {
+    items: Vec<CommitPayload>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    next_cursor: Option<String>,
+    observed_fence: FrontierPayload,
+}
+
+#[derive(Serialize)]
+struct CommitPayload {
+    commit_sequence: McpPresentedU64,
+    admission_request_id: McpPresentedUuid,
+    contract_lineage: String,
+    contract_version: McpPresentedU64,
+    command_id: u32,
+    plan_hash: McpPresentedHash,
+    canonical_input_hash: McpPresentedHash,
+    actor: ActorPayload,
+    logical_time: McpPresentedTimestamp,
+    partition_hash: McpPresentedHash,
+    conflict_hashes: Vec<McpPresentedHash>,
+    affected_entities: Vec<AffectedEntityPayload>,
+    events: Vec<DurableEventPayload>,
+    outcome: DeclaredOutcomePayload,
+    provenance_uri: String,
+    durability: &'static str,
+}
+
+#[derive(Serialize)]
+struct ActorPayload {
+    principal_id: String,
+    actor_kind: &'static str,
+    tenant_scope: TenantScopePayload,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    agent_session_id: Option<McpPresentedUuid>,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "snake_case")]
+enum TenantScopePayload {
+    Global(UnitPayload),
+    TenantId(String),
+}
+
+#[derive(Serialize)]
+struct AffectedEntityPayload {
+    entity_key: McpPresentedBytes,
+    entity_version: McpPresentedU64,
+}
+
+#[derive(Serialize)]
+struct DurableEventPayload {
+    event_id: EventIdPayload,
+    event_type_id: u32,
+    payload: McpPresentedValue,
+}
+
+#[derive(Serialize)]
+struct EventIdPayload {
+    commit_sequence: McpPresentedU64,
+    event_ordinal: u32,
+}
+
+#[derive(Serialize)]
+struct DeclaredOutcomePayload {
+    outcome_id: u32,
+    outcome_name: String,
+    value: McpPresentedValue,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "snake_case")]
+enum FrontierPayload {
+    BeforeFirst(UnitPayload),
+    AppliedThrough(McpPresentedU64),
+}
+
+#[derive(Serialize)]
+struct OutboxPagePayload {
+    items: Vec<OutboxItemPayload>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    next_cursor: Option<String>,
+}
+
+#[derive(Serialize)]
+struct OutboxItemPayload {
+    event_id: EventIdPayload,
+    state: &'static str,
+    attempts: u32,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    next_attempt_at: Option<McpPresentedTimestamp>,
+}
+
+#[derive(Serialize)]
+struct ProvenancePayload {
+    provenance_id: McpPresentedUuid,
+    commit_sequence: McpPresentedU64,
+    admission_request_id: McpPresentedUuid,
+    contract_lineage: String,
+    contract_version: McpPresentedU64,
+    command_id: u32,
+    plan_hash: McpPresentedHash,
+    actor: ActorPayload,
+    logical_time: McpPresentedTimestamp,
+    outcome_id: u32,
+    affected_entities: Vec<AffectedEntityPayload>,
+    event_ids: Vec<EventIdPayload>,
+    claims: ProvenanceClaimsPayload,
+}
+
+#[derive(Serialize)]
+struct ProvenanceClaimsPayload {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    source_repository: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    source_commit: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    reason: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    approval_id: Option<String>,
+}
+
+#[derive(Serialize)]
+struct ProjectionReadyPayload {
+    data: ProjectionPagePayload,
+    frontier: FrontierPayload,
+}
+
+#[derive(Serialize)]
+struct ProjectionPagePayload {
+    items: Vec<ProjectionRowPayload>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    next_cursor: Option<String>,
+    observed_fence: ProjectionFencePayload,
+}
+
+#[derive(Serialize)]
+struct ProjectionRowPayload {
+    group: Vec<McpPresentedValue>,
+    values: McpPresentedValue,
+}
+
+#[derive(Serialize)]
+struct ProjectionFencePayload {
+    identity: ProjectionIdentityPayload,
+    generation: McpPresentedU64,
+    frontier: FrontierPayload,
+}
+
+#[derive(Serialize)]
+struct ProjectionIdentityPayload {
+    contract_lineage: String,
+    projection_id: u32,
+    projection_plan_hash: McpPresentedHash,
+}
+
+#[derive(Serialize)]
+struct ProjectionWaitTimedOutPayload {
+    required_sequence: McpPresentedU64,
+    current: FrontierPayload,
+}
+
+#[derive(Serialize)]
+struct ProjectionDegradedPayload {
+    current: FrontierPayload,
+    reason: ProjectionUnavailableReasonPayload,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "snake_case")]
+enum ProjectionUnavailableReasonPayload {
+    Building(UnitPayload),
+    Rebuilding(UnitPayload),
+    Failure(&'static str),
+}
+
+#[derive(Serialize)]
+struct ProjectionInvalidPayload {
+    reason: &'static str,
+}
+
+#[derive(Serialize)]
+struct ProjectionStatusPayload {
+    identity: ProjectionIdentityPayload,
+    lifecycle: &'static str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    published: Option<ProjectionGenerationFrontierPayload>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    candidate: Option<ProjectionGenerationFrontierPayload>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    published_apply_mode: Option<&'static str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    failure: Option<ProjectionFailurePayload>,
+    authoritative_head: FrontierPayload,
+}
+
+#[derive(Serialize)]
+struct ProjectionGenerationFrontierPayload {
+    generation: McpPresentedU64,
+    frontier: FrontierPayload,
+}
+
+#[derive(Serialize)]
+struct ProjectionFailurePayload {
+    generation: McpPresentedU64,
+    code: &'static str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    at_sequence: Option<McpPresentedU64>,
+}
+
+fn map_service_failure(error: ServiceFailure) -> McpBackendError {
+    match error {
+        ServiceFailure::Public(error) => McpBackendError::Public(error),
+        ServiceFailure::Cancelled => McpBackendError::Cancelled,
+        ServiceFailure::DeadlineExceeded
+        | ServiceFailure::ResponseTooLarge
+        | ServiceFailure::EmergencyInternal(_) => McpBackendError::InvalidResponse,
+    }
+}
+
+fn collapse_dynamic_resolution_error(error: McpBackendError) -> McpBackendError {
+    match error {
+        McpBackendError::Cancelled => McpBackendError::Cancelled,
+        McpBackendError::RateLimited => McpBackendError::RateLimited,
+        McpBackendError::AuthenticationLost => McpBackendError::AuthenticationLost,
+        McpBackendError::Public(_)
+        | McpBackendError::TargetUnavailable
+        | McpBackendError::InvalidResponse => McpBackendError::TargetUnavailable,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn natural_enum_submission_retains_only_the_checked_source_name() {
+        let submitted =
+            submitted_value_from_mcp(McpSubmittedValue::EnumName("Approved".to_owned()))
+                .expect("checked enum source name");
+        let SubmittedValue::Enum(submitted) = submitted else {
+            panic!("enum submission");
+        };
+        assert_eq!(submitted.type_id(), None);
+        assert_eq!(submitted.variant_id(), None);
+        assert_eq!(submitted.name().map(SourceName::as_str), Some("Approved"));
+    }
+
+    #[test]
+    fn decimal_and_money_submission_preserve_precision_evidence() {
+        let decimal = submitted_value_from_mcp(McpSubmittedValue::Decimal {
+            coefficient: 123,
+            precision: 4,
+            scale: 2,
+        })
+        .expect("checked decimal");
+        let SubmittedValue::Decimal(decimal) = decimal else {
+            panic!("decimal submission");
+        };
+        assert_eq!(decimal.precision(), Some(4));
+        assert_eq!(decimal.scale(), 2);
+
+        let money = submitted_value_from_mcp(McpSubmittedValue::Money {
+            currency: "USD".to_owned(),
+            coefficient: 123,
+            precision: 4,
+            scale: 2,
+        })
+        .expect("checked money");
+        let SubmittedValue::Money(money) = money else {
+            panic!("money submission");
+        };
+        assert_eq!(money.amount().precision(), Some(4));
+        assert_eq!(money.amount().scale(), 2);
+    }
+
+    #[test]
+    fn dropping_an_incomplete_service_call_propagates_cancellation() {
+        let (control, cancellation) = RequestControl::new(Instant::now() + Duration::from_secs(1));
+        {
+            let _call = PreparedServiceCall {
+                context: None,
+                cancellation: Some(cancellation),
+            };
+        }
+        assert!(control.is_cancelled());
+    }
+
+    #[test]
+    fn completing_a_service_call_disarms_drop_cancellation() {
+        let (control, cancellation) = RequestControl::new(Instant::now() + Duration::from_secs(1));
+        {
+            let mut call = PreparedServiceCall {
+                context: None,
+                cancellation: Some(cancellation),
+            };
+            call.complete();
+        }
+        assert!(!control.is_cancelled());
+    }
+
+    #[test]
+    fn dynamic_resolution_preserves_only_cancellation_and_rate_limit() {
+        assert!(matches!(
+            collapse_dynamic_resolution_error(McpBackendError::Cancelled),
+            McpBackendError::Cancelled
+        ));
+        assert!(matches!(
+            collapse_dynamic_resolution_error(McpBackendError::RateLimited),
+            McpBackendError::RateLimited
+        ));
+        assert!(matches!(
+            collapse_dynamic_resolution_error(McpBackendError::AuthenticationLost),
+            McpBackendError::AuthenticationLost
+        ));
+        assert!(matches!(
+            collapse_dynamic_resolution_error(McpBackendError::InvalidResponse),
+            McpBackendError::TargetUnavailable
+        ));
+    }
+
+    #[test]
+    fn hosted_tool_discovery_accepts_only_the_local_operation_catalog() {
+        let catalog = OperationSchemaCatalog::accepted().expect("accepted service catalog");
+        validate_operation_catalog(&catalog).expect("byte-identical MCP catalog");
+    }
+
+    #[test]
+    fn hosted_contract_descriptor_includes_genesis_compatibility() {
+        let contract = riffdb_service::ContractDescriptor::genesis(
+            ContractLineage::new("LegalSpend").expect("lineage"),
+            ContractVersion::new(1).expect("version"),
+            riffdb_types::ContractBundleHash::from_bytes([1; 32]),
+            riffdb_types::SourceHash::from_bytes([2; 32]),
+            riffdb_types::ContractPlanRootHash::from_bytes([3; 32]),
+        );
+        let value = serde_json::to_value(contract_descriptor(&contract).expect("presentation"))
+            .expect("serialize");
+        assert_eq!(
+            value["compatibility"],
+            serde_json::json!({
+                "code_counts": [],
+                "overall": "compatible",
+                "parent": null
+            })
+        );
+        assert_eq!(value["contract_version"], "1");
+    }
+}

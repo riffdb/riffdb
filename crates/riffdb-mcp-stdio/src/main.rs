@@ -1,5 +1,16 @@
 #![forbid(unsafe_code)]
 
-//! Bootstrap target for the future `riffdb-mcp` stdio bridge.
+//! Process entry point for the public-client MCP stdio bridge.
 
-fn main() {}
+use std::process::ExitCode;
+
+#[tokio::main(flavor = "current_thread")]
+async fn main() -> ExitCode {
+    match riffdb_mcp_stdio::run().await {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(error) => {
+            eprintln!("{error}");
+            ExitCode::FAILURE
+        }
+    }
+}

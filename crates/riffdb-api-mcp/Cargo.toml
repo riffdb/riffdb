@@ -4,6 +4,7 @@ version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 publish.workspace = true
+autoexamples = false
 
 [features]
 default = []
@@ -33,6 +34,33 @@ tokio-stream = { version = "=0.1.18", default-features = false, features = ["syn
 tokio-util = { version = "=0.7.19", default-features = false, features = ["rt"] }
 tower-service = { version = "=0.3.3", default-features = false }
 tracing = { version = "=0.1.44", default-features = false, features = ["std"] }
+
+[dev-dependencies]
+axum = { version = "=0.8.9", default-features = false, features = ["http1", "tokio"] }
+riffdb-storage-api = { version = "0.1.0", path = "../riffdb-storage-api", default-features = false }
+tokio = { version = "=1.52.0", default-features = false, features = [
+    "io-util",
+    "macros",
+    "net",
+] }
+
+[[bin]]
+name = "riffdb-mcp-conformance-stdio"
+path = "examples/mcp_conformance_stdio.rs"
+required-features = ["stdio"]
+test = false
+bench = false
+doc = false
+
+[[example]]
+name = "riffdb-mcp-conformance-http"
+path = "examples/mcp_conformance_http.rs"
+required-features = ["streamable-http"]
+
+[[test]]
+name = "mcp_conformance"
+path = "../../tests/mcp/mcp_conformance.rs"
+required-features = ["stdio", "streamable-http"]
 
 [lints]
 workspace = true
