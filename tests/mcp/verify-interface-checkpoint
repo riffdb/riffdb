@@ -46,7 +46,7 @@ generate_inventory() {
     local output="$1" file bytes digest
     {
         printf 'riffdb-wp140-interface-checkpoint-v1\n'
-        printf 'compatibility-status=proposal-for-required-wp140-human-acceptance\n'
+        printf 'compatibility-status=accepted-by-human-maintainer-2026-07-23\n'
         printf 'plain-digest=sha256-of-exact-file-bytes\n'
         printf 'schema-digest=RIFFDB-HASH-v1 domain riffdb.schema/v1 (recorded in fixed-tool-registry-v1.json)\n'
         printf 'schema-sources=27\n'
@@ -88,6 +88,7 @@ for file in "${schemas[@]}"; do
     fi
     if ! jq -e '
         .["$schema"] == "https://json-schema.org/draft/2020-12/schema" and
+        .type == "object" and
         if has("oneOf") then
             (.oneOf | length) > 0 and
             all(.oneOf[]; .type == "object" and .additionalProperties == false)
@@ -112,7 +113,7 @@ registry_aggregate="$(jq -r '.fixed_schema_ledger.canonical_source_bytes' "$fixe
 
 jq -e '
     .schema == "riffdb.mcp.fixed-tool-registry/v1" and
-    .compatibility_checkpoint == "proposal-for-required-wp140-human-acceptance" and
+    .compatibility_checkpoint == "accepted-by-human-maintainer-2026-07-23" and
     .schema_hashing.scheme == 1 and
     .schema_hashing.domain == "riffdb.schema/v1" and
     .counts.fixed_tools == 14 and
@@ -192,16 +193,16 @@ rm -f "$expected_tool_tuples" "$actual_tool_tuples"
 jq -e '
     .operation_schemas == [
       {
-        "canonical_bytes":2545,
+        "canonical_bytes":2561,
         "owner":"riffdb-service",
-        "schema_hash":"f1847c1cd869562a11a6e67c7954e4b5c6b06f73c37f68c2a439d7359f2b9cf7",
+        "schema_hash":"781ff93c2dbfd2ee2bec286f7810300a0fec0a170548b1405cb8ba2ac8d90398",
         "schema_id":"riffdb.command-operation-envelope/v1",
         "source_path":"crates/riffdb-service/schema/riffdb.command-operation-envelope-v1.schema.json"
       },
       {
-        "canonical_bytes":4729,
+        "canonical_bytes":4745,
         "owner":"riffdb-service",
-        "schema_hash":"cbf5cb3d869f5b157c62e37c2d0704269cbf0a7c317fee4757f13bd0012b7f96",
+        "schema_hash":"4056f01c297120b06ac905f33482132a9085865975ada36e2396a61ebf19fc0d",
         "schema_id":"riffdb.command-get-outcome-result/v1",
         "source_path":"crates/riffdb-service/schema/riffdb.command-get-outcome-result-v1.schema.json"
       }
@@ -218,6 +219,17 @@ jq -e '
       end
     )
 ' "$fixed_registry" >/dev/null
+
+while IFS= read -r source; do
+    if ! jq -e '
+        .type == "object" and
+        (.oneOf | length) > 0 and
+        all(.oneOf[]; .type == "object" and .additionalProperties == false)
+    ' "$source" >/dev/null; then
+        printf 'operation schema lacks the MCP-required object root: %s\n' "$source" >&2
+        exit 1
+    fi
+done < <(jq -r '.operation_schemas[].source_path' "$fixed_registry")
 
 while IFS=$'\t' read -r source expected_bytes expected_hash; do
     actual_bytes="$(wc -c < "$source" | tr -d ' ')"
@@ -284,7 +296,7 @@ fi
 
 jq -e '
     .schema == "riffdb.mcp.resource-registry/v1" and
-    .compatibility_checkpoint == "proposal-for-required-wp140-human-acceptance" and
+    .compatibility_checkpoint == "accepted-by-human-maintainer-2026-07-23" and
     .counts == {"concrete":9,"content_goldens":12,"entries":12,"subscribable":4,"templates":3} and
     (.entries | length) == 12 and
     ([.entries[].descriptor_branch] == [

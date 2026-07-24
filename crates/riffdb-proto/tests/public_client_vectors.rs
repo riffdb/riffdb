@@ -128,7 +128,7 @@ fn every_client_vector_passes_its_strict_public_boundary() {
         }
         count += 1;
     }
-    assert_eq!(count, 114);
+    assert_eq!(count, 117);
     assert_eq!(rpcs.len(), 22);
     assert_eq!(request_rpcs, rpcs);
     assert_eq!(visible_rpcs, rpcs);
@@ -268,6 +268,26 @@ fn descriptor_delta() -> (BTreeSet<String>, BTreeSet<String>) {
 fn expected_enum_values() -> BTreeSet<String> {
     [
         (
+            "riffdb.v1.ContractCompatibilityClass",
+            0,
+            "CONTRACT_COMPATIBILITY_CLASS_UNSPECIFIED",
+        ),
+        (
+            "riffdb.v1.ContractCompatibilityClass",
+            1,
+            "CONTRACT_COMPATIBILITY_CLASS_COMPATIBLE",
+        ),
+        (
+            "riffdb.v1.ContractCompatibilityClass",
+            2,
+            "CONTRACT_COMPATIBILITY_CLASS_REQUIRES_EXPLICIT_VERSION",
+        ),
+        (
+            "riffdb.v1.ContractCompatibilityClass",
+            3,
+            "CONTRACT_COMPATIBILITY_CLASS_INCOMPATIBLE",
+        ),
+        (
             "riffdb.v1.DiscoveryRepresentation",
             0,
             "DISCOVERY_REPRESENTATION_UNSPECIFIED",
@@ -402,6 +422,21 @@ fn expected_optional_registry() -> BTreeSet<String> {
             "ContractService.DiscoverResources:response:compact-boundary-limit-500-continuation",
         ),
         (
+            "riffdb.v1.ContractCompatibilitySummary.parent_bundle_hash",
+            "ContractService.GetActiveContract:response:present",
+            "ContractService.GetActiveContract:response:present-successor",
+        ),
+        (
+            "riffdb.v1.ContractCompatibilitySummary.parent_contract_version",
+            "ContractService.GetActiveContract:response:present",
+            "ContractService.GetActiveContract:response:present-successor",
+        ),
+        (
+            "riffdb.v1.Decimal.precision",
+            "CommandService.Execute:request:decimal-legacy-no-precision",
+            "CommandService.Execute:request:decimal-with-precision",
+        ),
+        (
             "riffdb.v1.ExecuteCommandResponse.outcome_uri",
             "CommandService.Execute:response:committed-legacy-no-locator",
             "CommandService.Execute:response:committed",
@@ -495,6 +530,40 @@ fn strict_decode<M: PublicMessage>(vector: &FixtureVector<'_>, message_type: &st
 
 fn optional_field_present(field: &str, vector: &FixtureVector<'_>) -> bool {
     match field {
+        field if field.starts_with("riffdb.v1.ContractCompatibilitySummary.") => {
+            let response = strict_decode::<v1::GetActiveContractResponse>(
+                vector,
+                "riffdb.v1.GetActiveContractResponse",
+            );
+            let v1::get_active_contract_response::Result::Present(descriptor) =
+                response.result.expect("registered active-contract result")
+            else {
+                panic!("compatibility fixture must contain an active contract");
+            };
+            let compatibility = descriptor
+                .compatibility
+                .expect("new server fixture supplies compatibility");
+            match field {
+                "riffdb.v1.ContractCompatibilitySummary.parent_bundle_hash" => {
+                    compatibility.parent_bundle_hash.is_some()
+                }
+                "riffdb.v1.ContractCompatibilitySummary.parent_contract_version" => {
+                    compatibility.parent_contract_version.is_some()
+                }
+                _ => unreachable!("closed compatibility optional registry"),
+            }
+        }
+        "riffdb.v1.Decimal.precision" => {
+            let request = strict_decode::<v1::ExecuteCommandRequest>(
+                vector,
+                "riffdb.v1.ExecuteCommandRequest",
+            );
+            let value = request.input.expect("registered command input");
+            let Some(v1::value::Kind::DecimalValue(decimal)) = value.kind else {
+                panic!("registered decimal fixture must contain a decimal");
+            };
+            decimal.precision.is_some()
+        }
         "riffdb.v1.ExecuteCommandResponse.outcome_uri" => {
             strict_decode::<v1::ExecuteCommandResponse>(vector, "riffdb.v1.ExecuteCommandResponse")
                 .outcome_uri
@@ -712,8 +781,8 @@ fn assert_unspecified_enum_rejected(enumeration: &str, message_type: &str, bytes
 #[test]
 fn wp137_enum_optional_and_page_registry_is_complete() {
     let (vectors, registry) = fixture_sections();
-    assert_eq!(vectors.len(), 114);
-    assert_eq!(registry.len(), 58);
+    assert_eq!(vectors.len(), 117);
+    assert_eq!(registry.len(), 65);
 
     let expected_enums = expected_enum_values();
     let expected_optionals = expected_optional_registry();

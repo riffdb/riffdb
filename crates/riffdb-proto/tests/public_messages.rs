@@ -145,6 +145,12 @@ fn contract_descriptor() -> v1::ContractDescriptor {
         bundle_hash: vec![0x11; 32],
         source_hash: vec![0x22; 32],
         plan_root_hash: vec![0x33; 32],
+        compatibility: Some(v1::ContractCompatibilitySummary {
+            parent_contract_version: None,
+            parent_bundle_hash: None,
+            overall: v1::ContractCompatibilityClass::Compatible as i32,
+            code_counts: Vec::new(),
+        }),
     }
 }
 

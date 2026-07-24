@@ -1216,7 +1216,7 @@ async fn wp137_unary_surface_crosses_authenticated_loopback_grpc() {
 }
 
 fn contract_descriptor() -> ContractDescriptor {
-    ContractDescriptor::new(
+    ContractDescriptor::genesis(
         ContractLineage::new(LINEAGE).expect("valid contract lineage"),
         ContractVersion::new(1).expect("nonzero contract version"),
         ContractBundleHash::from_bytes([0x11; 32]),

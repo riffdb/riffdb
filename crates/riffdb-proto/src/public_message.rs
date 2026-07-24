@@ -46,9 +46,9 @@ const JSON_SCHEMA_DIALECT: &str = "https://json-schema.org/draft/2020-12/schema"
 const OPERATION_ENVELOPE_SCHEMA_ID: &str = "riffdb.command-operation-envelope/v1";
 const GET_OUTCOME_RESULT_SCHEMA_ID: &str = "riffdb.command-get-outcome-result/v1";
 const OPERATION_ENVELOPE_SCHEMA_HASH: &str =
-    "f1847c1cd869562a11a6e67c7954e4b5c6b06f73c37f68c2a439d7359f2b9cf7";
+    "781ff93c2dbfd2ee2bec286f7810300a0fec0a170548b1405cb8ba2ac8d90398";
 const GET_OUTCOME_RESULT_SCHEMA_HASH: &str =
-    "cbf5cb3d869f5b157c62e37c2d0704269cbf0a7c317fee4757f13bd0012b7f96";
+    "4056f01c297120b06ac905f33482132a9085865975ada36e2396a61ebf19fc0d";
 
 type DiagnosticRegistryEntry = (&'static str, Option<&'static str>);
 type DiagnosticRegistry = fn(&str) -> Option<DiagnosticRegistryEntry>;
@@ -907,7 +907,84 @@ fn validate_contract_descriptor(
     }
     hash(&descriptor.bundle_hash)?;
     hash(&descriptor.source_hash)?;
-    hash(&descriptor.plan_root_hash)
+    hash(&descriptor.plan_root_hash)?;
+    if let Some(compatibility) = descriptor.compatibility.as_ref() {
+        validate_contract_compatibility(compatibility, descriptor.contract_version)?;
+    }
+    Ok(())
+}
+
+fn validate_contract_compatibility(
+    compatibility: &v1::ContractCompatibilitySummary,
+    contract_version: u64,
+) -> Result<(), PublicWireError> {
+    let parent = match (
+        compatibility.parent_contract_version,
+        compatibility.parent_bundle_hash.as_deref(),
+    ) {
+        (None, None) => None,
+        (Some(version), Some(bundle_hash)) if version != 0 && version < contract_version => {
+            hash(bundle_hash)?;
+            Some(version)
+        }
+        _ => return Err(PublicWireError::InconsistentFields),
+    };
+    let overall = v1::ContractCompatibilityClass::try_from(compatibility.overall)
+        .map_err(|_| PublicWireError::InvalidEnum)?;
+    if overall == v1::ContractCompatibilityClass::Unspecified {
+        return Err(PublicWireError::InvalidEnum);
+    }
+    if compatibility.code_counts.len() > 20 {
+        return Err(PublicWireError::TooManyItems);
+    }
+    if parent.is_none() {
+        return if overall == v1::ContractCompatibilityClass::Compatible
+            && compatibility.code_counts.is_empty()
+        {
+            Ok(())
+        } else {
+            Err(PublicWireError::InconsistentFields)
+        };
+    }
+    if compatibility.code_counts.is_empty() {
+        return Err(PublicWireError::InconsistentFields);
+    }
+
+    let mut previous = None;
+    let mut total = 0_u32;
+    let mut derived = v1::ContractCompatibilityClass::Compatible;
+    for entry in &compatibility.code_counts {
+        if entry.count == 0 || previous.is_some_and(|code: &str| code >= entry.code.as_str()) {
+            return Err(PublicWireError::InconsistentFields);
+        }
+        let class =
+            public_compatibility_code_class(&entry.code).ok_or(PublicWireError::InvalidIdentity)?;
+        derived = derived.max(class);
+        total = total
+            .checked_add(entry.count)
+            .ok_or(PublicWireError::TooManyItems)?;
+        if total > 4_096 {
+            return Err(PublicWireError::TooManyItems);
+        }
+        previous = Some(entry.code.as_str());
+    }
+    if derived != overall {
+        return Err(PublicWireError::InconsistentFields);
+    }
+    Ok(())
+}
+
+fn public_compatibility_code_class(code: &str) -> Option<v1::ContractCompatibilityClass> {
+    match code {
+        "RDB-K001" | "RDB-K010" | "RDB-K011" | "RDB-K012" | "RDB-K013" => {
+            Some(v1::ContractCompatibilityClass::Compatible)
+        }
+        "RDB-K020" | "RDB-K021" => Some(v1::ContractCompatibilityClass::RequiresExplicitVersion),
+        "RDB-K100" | "RDB-K101" | "RDB-K102" | "RDB-K103" | "RDB-K104" | "RDB-K105"
+        | "RDB-K106" | "RDB-K107" | "RDB-K108" | "RDB-K109" | "RDB-K110" | "RDB-K111"
+        | "RDB-K112" => Some(v1::ContractCompatibilityClass::Incompatible),
+        _ => None,
+    }
 }
 
 fn validate_span(span: Option<&v1::SourceSpan>) -> Result<(), PublicWireError> {
@@ -3697,7 +3774,39 @@ fn preflight_timestamp(input: &[u8]) -> Result<(), PublicWireError> {
 }
 
 fn preflight_contract_descriptor(input: &[u8]) -> Result<(), PublicWireError> {
-    preflight_nested_message(input, 5, &[], &[], &[], &[])
+    preflight_nested_message(
+        input,
+        6,
+        &[],
+        &[],
+        &[NestedRule {
+            field: 6,
+            preflight: preflight_contract_compatibility_summary,
+        }],
+        &[],
+    )
+}
+
+fn preflight_contract_compatibility_summary(input: &[u8]) -> Result<(), PublicWireError> {
+    preflight_nested_message(
+        input,
+        4,
+        &[4],
+        &[],
+        &[NestedRule {
+            field: 4,
+            preflight: preflight_contract_compatibility_code_count,
+        }],
+        &[RepeatedRule {
+            field: 4,
+            maximum: 20,
+            wire: RepeatedWire::LengthDelimited,
+        }],
+    )
+}
+
+fn preflight_contract_compatibility_code_count(input: &[u8]) -> Result<(), PublicWireError> {
+    preflight_nested_message(input, 2, &[], &[], &[], &[])
 }
 
 fn preflight_source_span(input: &[u8]) -> Result<(), PublicWireError> {

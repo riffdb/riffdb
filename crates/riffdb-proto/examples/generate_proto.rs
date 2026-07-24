@@ -276,7 +276,7 @@ const DISCOVERY_PAGE_BOUNDARIES: [(&str, usize, bool, &str); 4] = [
     ("limit-500-exact-end", 500, false, "exact_end"),
 ];
 
-const WP137_OPTIONAL_COVERAGE: [(&str, &str, &str); 11] = [
+const WP137_OPTIONAL_COVERAGE: [(&str, &str, &str); 14] = [
     (
         "riffdb.v1.CommandToolDiscoveryPage.next_cursor",
         "ContractService.DiscoverCommandTools:response:full-boundary-empty-exact-end",
@@ -296,6 +296,11 @@ const WP137_OPTIONAL_COVERAGE: [(&str, &str, &str); 11] = [
         "riffdb.v1.ExecuteCommandResponse.outcome_uri",
         "CommandService.Execute:response:committed-legacy-no-locator",
         "CommandService.Execute:response:committed",
+    ),
+    (
+        "riffdb.v1.Decimal.precision",
+        "CommandService.Execute:request:decimal-legacy-no-precision",
+        "CommandService.Execute:request:decimal-with-precision",
     ),
     (
         "riffdb.v1.GetOutcomeRequest.outcome_uri",
@@ -332,6 +337,16 @@ const WP137_OPTIONAL_COVERAGE: [(&str, &str, &str); 11] = [
         "ContractService.DiscoverResources:response:full-boundary-empty-exact-end",
         "ContractService.DiscoverResources:response:full-boundary-limit-500-continuation",
     ),
+    (
+        "riffdb.v1.ContractCompatibilitySummary.parent_bundle_hash",
+        "ContractService.GetActiveContract:response:present",
+        "ContractService.GetActiveContract:response:present-successor",
+    ),
+    (
+        "riffdb.v1.ContractCompatibilitySummary.parent_contract_version",
+        "ContractService.GetActiveContract:response:present",
+        "ContractService.GetActiveContract:response:present-successor",
+    ),
 ];
 
 const OPERATION_SCHEMA_DIALECT: &str = "https://json-schema.org/draft/2020-12/schema";
@@ -341,19 +356,19 @@ const OPERATION_ENVELOPE_SCHEMA_PATH: &str =
     "crates/riffdb-service/schema/riffdb.command-operation-envelope-v1.schema.json";
 const GET_OUTCOME_RESULT_SCHEMA_PATH: &str =
     "crates/riffdb-service/schema/riffdb.command-get-outcome-result-v1.schema.json";
-const OPERATION_ENVELOPE_SCHEMA_BYTES: usize = 2_545;
-const GET_OUTCOME_RESULT_SCHEMA_BYTES: usize = 4_729;
+const OPERATION_ENVELOPE_SCHEMA_BYTES: usize = 2_561;
+const GET_OUTCOME_RESULT_SCHEMA_BYTES: usize = 4_745;
 const OPERATION_ENVELOPE_SCHEMA_HASH: &str =
-    "f1847c1cd869562a11a6e67c7954e4b5c6b06f73c37f68c2a439d7359f2b9cf7";
+    "781ff93c2dbfd2ee2bec286f7810300a0fec0a170548b1405cb8ba2ac8d90398";
 const GET_OUTCOME_RESULT_SCHEMA_HASH: &str =
-    "cbf5cb3d869f5b157c62e37c2d0704269cbf0a7c317fee4757f13bd0012b7f96";
+    "4056f01c297120b06ac905f33482132a9085865975ada36e2396a61ebf19fc0d";
 const OPERATION_SCHEMA_SOURCE_MAX_BYTES: usize = 65_536;
 const OPERATION_SCHEMA_AGGREGATE_CHARGE_MAX_BYTES: usize = 131_584;
-const OPERATION_SCHEMA_FULL_CATALOG_BYTES: usize = 7_522;
+const OPERATION_SCHEMA_FULL_CATALOG_BYTES: usize = 7_554;
 const OPERATION_SCHEMA_IDENTITY_CATALOG_BYTES: usize = 148;
-const OPERATION_SCHEMA_COMPOSITION_BYTES: usize = 4_876;
+const OPERATION_SCHEMA_COMPOSITION_BYTES: usize = 4_892;
 const OPERATION_SCHEMA_COMPOSITION_HASH: &str =
-    "623026e5bdd2cd311faff031a5a775d7b045b6821a67b56ca1dfc172ffd32da4";
+    "7133befc751d1a60d08ab993f2d03e98a73e75accf1963ace0e636c6e55b5c77";
 const REPRESENTATIVE_OUTCOME_SCHEMA_PATH: &str = "fixtures/compiler/schemas/04-00000002.json";
 const REPRESENTATIVE_OUTCOME_SCHEMA_BYTES: usize = 2_393;
 const REPRESENTATIVE_OUTCOME_SCHEMA_HASH: &str =
@@ -1945,6 +1960,12 @@ fn public_client_vectors(descriptors: &FileDescriptorSet) -> Result<String, Box<
             "present",
             v1::get_active_contract_response::Result::Present(public_contract_descriptor()),
         ),
+        (
+            "present-successor",
+            v1::get_active_contract_response::Result::Present(
+                public_successor_contract_descriptor(),
+            ),
+        ),
     ] {
         append_client_vector(
             &mut output,
@@ -1972,6 +1993,30 @@ fn public_client_vectors(descriptors: &FileDescriptorSet) -> Result<String, Box<
         "riffdb.v1.ExecuteCommandRequest",
         &execute_request,
     );
+    for (branch, precision) in [
+        ("decimal-legacy-no-precision", None),
+        ("decimal-with-precision", Some(3)),
+    ] {
+        append_client_vector(
+            &mut output,
+            "CommandService.Execute",
+            "request",
+            branch,
+            "riffdb.v1.ExecuteCommandRequest",
+            &v1::ExecuteCommandRequest {
+                request_id: request_id.clone(),
+                command_name: "budget.reserve".to_owned(),
+                expected_contract_version: Some(1),
+                input: Some(v1::Value {
+                    kind: Some(v1::value::Kind::DecimalValue(v1::Decimal {
+                        coefficient_twos_complement: vec![123],
+                        scale: 2,
+                        precision,
+                    })),
+                }),
+            },
+        );
+    }
     for (branch, response) in [
         ("committed", public_execute_response(1)),
         ("replayed", public_execute_response(2)),
@@ -3305,6 +3350,31 @@ fn response_charge_contract_descriptor(lineage: &str) -> v1::ContractDescriptor 
         bundle_hash: vec![0x11; 32],
         source_hash: vec![0x22; 32],
         plan_root_hash: vec![0x33; 32],
+        compatibility: Some(v1::ContractCompatibilitySummary {
+            parent_contract_version: None,
+            parent_bundle_hash: None,
+            overall: v1::ContractCompatibilityClass::Compatible as i32,
+            code_counts: Vec::new(),
+        }),
+    }
+}
+
+fn public_successor_contract_descriptor() -> v1::ContractDescriptor {
+    v1::ContractDescriptor {
+        contract_lineage: "budget".to_owned(),
+        contract_version: 2,
+        bundle_hash: vec![0x44; 32],
+        source_hash: vec![0x55; 32],
+        plan_root_hash: vec![0x66; 32],
+        compatibility: Some(v1::ContractCompatibilitySummary {
+            parent_contract_version: Some(1),
+            parent_bundle_hash: Some(vec![0x11; 32]),
+            overall: v1::ContractCompatibilityClass::Compatible as i32,
+            code_counts: vec![v1::ContractCompatibilityCodeCount {
+                code: "RDB-K010".to_owned(),
+                count: 1,
+            }],
+        }),
     }
 }
 
@@ -3329,14 +3399,22 @@ fn public_schema_identity(key: v1::schema_artifact_key::Artifact) -> v1::Generat
 }
 
 fn public_operation_schema_catalog() -> v1::OperationSchemaCatalog {
-    v1::OperationSchemaCatalog::decode(
-        include_bytes!(concat!(
-            env!("CARGO_MANIFEST_DIR"),
-            "/../../fixtures/proto/operation-schema-catalog-full-v1.bin"
-        ))
-        .as_slice(),
-    )
-    .expect("accepted operation schema catalog")
+    let artifact = |schema_id: &str, canonical_json: &str| v1::OperationSchemaArtifact {
+        schema_id: schema_id.to_owned(),
+        dialect: OPERATION_SCHEMA_DIALECT.to_owned(),
+        schema_hash: hash_schema(canonical_json.as_bytes()).as_bytes().to_vec(),
+        canonical_json: canonical_json.to_owned(),
+    };
+    let envelope = include_str!(
+        "../../riffdb-service/schema/riffdb.command-operation-envelope-v1.schema.json"
+    );
+    let get_outcome = include_str!(
+        "../../riffdb-service/schema/riffdb.command-get-outcome-result-v1.schema.json"
+    );
+    v1::OperationSchemaCatalog {
+        command_operation_envelope: Some(artifact(OPERATION_ENVELOPE_SCHEMA_ID, envelope)),
+        command_get_outcome_result: Some(artifact(GET_OUTCOME_RESULT_SCHEMA_ID, get_outcome)),
+    }
 }
 
 fn public_operation_schema_identity() -> v1::OperationSchemaCatalogIdentity {

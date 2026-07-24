@@ -1,5 +1,6 @@
 //! Checked transport-neutral requests, results, and consumer-port values.
 
+use std::collections::BTreeMap;
 use std::error::Error;
 use std::fmt;
 use std::future::Future;
@@ -13,8 +14,9 @@ use riffdb_auth::CapabilityTokenText;
 use riffdb_catalog::ValidatedContractBundle;
 use riffdb_contract_compiler::CompilationError;
 use riffdb_contract_ir::{
-    CommandExplain, ExecutionClass, GeneratedSchemaArtifact, IndexScanPrefix, McpCommandToolNameV1,
-    OutcomeSchema, RecordSchema, RecordTypeRef, SchemaArtifactKey, SchemaIr, ValueType,
+    CommandExplain, CompatibilityClass, ContractBundle, ExecutionClass, GeneratedSchemaArtifact,
+    IndexScanPrefix, McpCommandToolNameV1, OutcomeSchema, RecordSchema, RecordTypeRef,
+    SchemaArtifactKey, SchemaIr, ValueType,
 };
 use riffdb_policy::{
     CapabilityActivity, FixedToolCandidate, NormalizedCapabilityCreateRecord, PartitionConstraint,
@@ -24,12 +26,12 @@ use riffdb_types::{
     CanonicalInputHash, CanonicalRecord, CanonicalValue, CapabilityGrantV1, CapabilityId,
     CommandId, CommitSequence, ConflictKeyHash, ContractBundleHash, ContractLineage,
     ContractPlanRootHash, ContractVersion, DIGEST_SCHEME_V1, DatabaseId, DigestKeyId, EntityKey,
-    EntityTypeId, EntityVersion, Environment, EventId, EventTypeId, FieldId, FrontierPosition,
-    IdempotencyKey, IndexEntryKey, IndexEpochPosition, IndexId, LogicalTime, OutcomeId,
-    PartitionKey, PartitionKeyHash, PlanHash, ProjectionGeneration, ProjectionGroupKey,
-    ProjectionGroupKeyBuilder, ProjectionGroupPrefix, ProjectionId, ProjectionIdentity,
-    ProvenanceId, RequestId, RevocationReasonCodeV1, SchemaHash, SourceCommit, SourceHash,
-    SourceRepository, TenantScope, Timestamp, hash_schema,
+    EntityTypeId, EntityVersion, EnumTypeId, EnumVariantId, Environment, EventId, EventTypeId,
+    FieldId, FrontierPosition, IdempotencyKey, IndexEntryKey, IndexEpochPosition, IndexId,
+    LogicalTime, OutcomeId, PartitionKey, PartitionKeyHash, PlanHash, ProjectionGeneration,
+    ProjectionGroupKey, ProjectionGroupKeyBuilder, ProjectionGroupPrefix, ProjectionId,
+    ProjectionIdentity, ProvenanceId, RequestId, RevocationReasonCodeV1, SchemaHash, SourceCommit,
+    SourceHash, SourceRepository, TenantScope, Timestamp, hash_schema,
 };
 
 use crate::{
@@ -419,6 +421,112 @@ impl<T, F> fmt::Debug for Page<T, F> {
     }
 }
 
+/// Public-safe compatibility class for one immutable contract version.
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+pub enum ContractCompatibilityClass {
+    /// Safe under the active POC additive policy.
+    Compatible,
+    /// Requires callers to select the new version explicitly.
+    RequiresExplicitVersion,
+    /// Not activatable under the POC policy.
+    Incompatible,
+}
+
+impl From<CompatibilityClass> for ContractCompatibilityClass {
+    fn from(value: CompatibilityClass) -> Self {
+        match value {
+            CompatibilityClass::Compatible => Self::Compatible,
+            CompatibilityClass::RequiresExplicitVersion => Self::RequiresExplicitVersion,
+            CompatibilityClass::Incompatible => Self::Incompatible,
+        }
+    }
+}
+
+/// One nonzero count for a compiler-owned compatibility code.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ContractCompatibilityCodeCount {
+    code: String,
+    count: NonZeroU32,
+}
+
+impl ContractCompatibilityCodeCount {
+    /// Borrows the exact stable compiler compatibility code.
+    #[must_use]
+    pub fn code(&self) -> &str {
+        &self.code
+    }
+
+    /// Returns the nonzero finding count.
+    #[must_use]
+    pub const fn count(&self) -> NonZeroU32 {
+        self.count
+    }
+}
+
+/// Bounded public-safe summary of an immutable bundle compatibility report.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ContractCompatibilitySummary {
+    parent: Option<(ContractVersion, ContractBundleHash)>,
+    overall: ContractCompatibilityClass,
+    code_counts: Vec<ContractCompatibilityCodeCount>,
+}
+
+impl ContractCompatibilitySummary {
+    /// Defined summary for a genesis bundle.
+    #[must_use]
+    pub const fn genesis() -> Self {
+        Self {
+            parent: None,
+            overall: ContractCompatibilityClass::Compatible,
+            code_counts: Vec::new(),
+        }
+    }
+
+    fn from_bundle(bundle: &ContractBundle) -> Self {
+        let parent = bundle
+            .parent()
+            .map(|parent| (parent.contract_version(), parent.bundle_hash()));
+        let mut counts = BTreeMap::<&str, u32>::new();
+        for entry in bundle.compatibility().entries() {
+            let count = counts.entry(entry.code().as_str()).or_default();
+            *count = count
+                .checked_add(1)
+                .expect("validated compatibility report has at most 4,096 entries");
+        }
+        let code_counts = counts
+            .into_iter()
+            .map(|(code, count)| ContractCompatibilityCodeCount {
+                code: code.to_owned(),
+                count: NonZeroU32::new(count)
+                    .expect("compatibility summary omits zero-count codes"),
+            })
+            .collect();
+        Self {
+            parent,
+            overall: bundle.compatibility().overall().into(),
+            code_counts,
+        }
+    }
+
+    /// Returns the exact checked parent version and bundle hash together.
+    #[must_use]
+    pub const fn parent(&self) -> Option<(ContractVersion, ContractBundleHash)> {
+        self.parent
+    }
+
+    /// Returns the report's most restrictive class.
+    #[must_use]
+    pub const fn overall(&self) -> ContractCompatibilityClass {
+        self.overall
+    }
+
+    /// Borrows nonzero counts in exact compiler-code order.
+    #[must_use]
+    pub fn code_counts(&self) -> &[ContractCompatibilityCodeCount] {
+        &self.code_counts
+    }
+}
+
 /// Public-safe immutable contract metadata.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ContractDescriptor {
@@ -427,12 +535,13 @@ pub struct ContractDescriptor {
     bundle_hash: ContractBundleHash,
     source_hash: SourceHash,
     plan_root_hash: ContractPlanRootHash,
+    compatibility: ContractCompatibilitySummary,
 }
 
 impl ContractDescriptor {
-    /// Joins the complete checked immutable contract identity.
+    /// Joins a complete checked genesis contract identity.
     #[must_use]
-    pub const fn new(
+    pub const fn genesis(
         lineage: ContractLineage,
         version: ContractVersion,
         bundle_hash: ContractBundleHash,
@@ -445,6 +554,18 @@ impl ContractDescriptor {
             bundle_hash,
             source_hash,
             plan_root_hash,
+            compatibility: ContractCompatibilitySummary::genesis(),
+        }
+    }
+
+    pub(crate) fn from_bundle(bundle: &ContractBundle) -> Self {
+        Self {
+            lineage: bundle.lineage().clone(),
+            version: bundle.contract_version(),
+            bundle_hash: bundle.bundle_hash(),
+            source_hash: bundle.source_hash(),
+            plan_root_hash: bundle.plan_root_hash(),
+            compatibility: ContractCompatibilitySummary::from_bundle(bundle),
         }
     }
 
@@ -476,6 +597,12 @@ impl ContractDescriptor {
     #[must_use]
     pub const fn plan_root_hash(&self) -> ContractPlanRootHash {
         self.plan_root_hash
+    }
+
+    /// Borrows the bounded immutable compatibility summary.
+    #[must_use]
+    pub const fn compatibility(&self) -> &ContractCompatibilitySummary {
+        &self.compatibility
     }
 }
 
@@ -774,6 +901,32 @@ pub struct DeclaredOutcomeView {
     outcome_id: OutcomeId,
     outcome_name: SourceName,
     value: CanonicalRecord,
+    presentation: OutcomeRecordPresentationPlan,
+}
+
+#[derive(Clone, Eq, PartialEq)]
+struct OutcomeRecordPresentationPlan {
+    fields: Vec<OutcomeFieldPresentationPlan>,
+}
+
+#[derive(Clone, Eq, PartialEq)]
+struct OutcomeFieldPresentationPlan {
+    field_id: FieldId,
+    field_name: SourceName,
+    value: OutcomeValuePresentationPlan,
+}
+
+#[derive(Clone, Eq, PartialEq)]
+enum OutcomeValuePresentationPlan {
+    Null,
+    Scalar,
+    Enum {
+        type_id: EnumTypeId,
+        variant_id: EnumVariantId,
+        variant_name: SourceName,
+    },
+    List(Vec<Self>),
+    Record(OutcomeRecordPresentationPlan),
 }
 
 #[derive(Clone, Eq, PartialEq)]
@@ -843,7 +996,7 @@ impl DeclaredOutcomeView {
         schema: &OutcomeSchema,
         value: CanonicalRecord,
     ) -> Result<Self, ServiceDtoError> {
-        validate_outcome_record(contract_schema, schema.payload(), &value, 0)?;
+        let presentation = bind_outcome_record(contract_schema, schema.payload(), &value, 0)?;
         let outcome_name =
             SourceName::new(schema.name().to_owned()).map_err(|_| ServiceDtoError::InvalidShape)?;
         Ok(Self {
@@ -851,6 +1004,7 @@ impl DeclaredOutcomeView {
             outcome_id: schema.id(),
             outcome_name,
             value,
+            presentation,
         })
     }
 
@@ -871,42 +1025,58 @@ impl DeclaredOutcomeView {
     pub const fn value(&self) -> &CanonicalRecord {
         &self.value
     }
+
+    /// Returns a read-only traversal that joins the validated canonical value to
+    /// exact field and enum names from its historical compiler schema.
+    #[must_use]
+    pub const fn schema_bound_value(&self) -> SchemaBoundOutcomeRecord<'_> {
+        SchemaBoundOutcomeRecord {
+            plan: &self.presentation,
+            value: &self.value,
+        }
+    }
 }
 
 const MAX_OUTCOME_VALIDATION_DEPTH: usize = 64;
 
-fn validate_outcome_record(
+fn bind_outcome_record(
     contract_schema: &SchemaIr,
     schema: &RecordSchema,
     value: &CanonicalRecord,
     depth: usize,
-) -> Result<(), ServiceDtoError> {
+) -> Result<OutcomeRecordPresentationPlan, ServiceDtoError> {
     if depth >= MAX_OUTCOME_VALIDATION_DEPTH || schema.fields().len() != value.fields().len() {
         return Err(ServiceDtoError::InvalidShape);
     }
+    let mut fields = Vec::with_capacity(schema.fields().len());
     for (expected, (actual_id, actual)) in schema.fields().iter().zip(value.fields()) {
         if expected.id() != *actual_id {
             return Err(ServiceDtoError::InvalidShape);
         }
-        validate_outcome_value(contract_schema, expected.value_type(), actual, depth + 1)?;
+        fields.push(OutcomeFieldPresentationPlan {
+            field_id: expected.id(),
+            field_name: SourceName::new(expected.name().to_owned())
+                .map_err(|_| ServiceDtoError::InvalidShape)?,
+            value: bind_outcome_value(contract_schema, expected.value_type(), actual, depth + 1)?,
+        });
     }
-    Ok(())
+    Ok(OutcomeRecordPresentationPlan { fields })
 }
 
-fn validate_outcome_value(
+fn bind_outcome_value(
     contract_schema: &SchemaIr,
     value_type: &ValueType,
     value: &CanonicalValue,
     depth: usize,
-) -> Result<(), ServiceDtoError> {
+) -> Result<OutcomeValuePresentationPlan, ServiceDtoError> {
     if depth >= MAX_OUTCOME_VALIDATION_DEPTH || value_type.validate_value(value).is_err() {
         return Err(ServiceDtoError::InvalidShape);
     }
     if matches!(value, CanonicalValue::Null) {
-        return Ok(());
+        return Ok(OutcomeValuePresentationPlan::Null);
     }
     if let Some(inner) = value_type.optional_inner() {
-        return validate_outcome_value(contract_schema, inner, value, depth + 1);
+        return bind_outcome_value(contract_schema, inner, value, depth + 1);
     }
     if let Some(enum_id) = value_type.enum_type_id() {
         let CanonicalValue::Enum {
@@ -916,23 +1086,38 @@ fn validate_outcome_value(
         else {
             return Err(ServiceDtoError::InvalidShape);
         };
-        if *type_id != enum_id
-            || contract_schema
-                .enumeration(enum_id)
-                .is_none_or(|enumeration| !enumeration.contains_variant(*variant_id))
-        {
+        let enumeration = contract_schema
+            .enumeration(enum_id)
+            .ok_or(ServiceDtoError::InvalidShape)?;
+        let variant = enumeration
+            .variants()
+            .iter()
+            .find(|variant| variant.id() == *variant_id)
+            .ok_or(ServiceDtoError::InvalidShape)?;
+        if *type_id != enum_id {
             return Err(ServiceDtoError::InvalidShape);
         }
-        return Ok(());
+        return Ok(OutcomeValuePresentationPlan::Enum {
+            type_id: enum_id,
+            variant_id: *variant_id,
+            variant_name: SourceName::new(variant.name().to_owned())
+                .map_err(|_| ServiceDtoError::InvalidShape)?,
+        });
     }
     if let Some((element, _)) = value_type.list_parts() {
         let CanonicalValue::List(values) = value else {
             return Err(ServiceDtoError::InvalidShape);
         };
+        let mut plans = Vec::with_capacity(values.len());
         for value in values.values() {
-            validate_outcome_value(contract_schema, element, value, depth + 1)?;
+            plans.push(bind_outcome_value(
+                contract_schema,
+                element,
+                value,
+                depth + 1,
+            )?);
         }
-        return Ok(());
+        return Ok(OutcomeValuePresentationPlan::List(plans));
     }
     if let Some(record_ref) = value_type.record_ref() {
         let CanonicalValue::Record(value) = value else {
@@ -946,9 +1131,173 @@ fn validate_outcome_value(
             | RecordTypeRef::ProjectionResult(_) => None,
         }
         .ok_or(ServiceDtoError::InvalidShape)?;
-        return validate_outcome_record(contract_schema, record, value, depth + 1);
+        return bind_outcome_record(contract_schema, record, value, depth + 1)
+            .map(OutcomeValuePresentationPlan::Record);
     }
-    Ok(())
+    Ok(OutcomeValuePresentationPlan::Scalar)
+}
+
+/// A borrowed, schema-bound declared-outcome record.
+#[derive(Clone, Copy)]
+pub struct SchemaBoundOutcomeRecord<'a> {
+    plan: &'a OutcomeRecordPresentationPlan,
+    value: &'a CanonicalRecord,
+}
+
+impl<'a> SchemaBoundOutcomeRecord<'a> {
+    /// Returns the exact number of fields in the historical schema.
+    #[must_use]
+    pub fn len(self) -> usize {
+        self.plan.fields.len()
+    }
+
+    /// Returns whether the record contains no fields.
+    #[must_use]
+    pub fn is_empty(self) -> bool {
+        self.plan.fields.is_empty()
+    }
+
+    /// Returns one field by canonical schema order.
+    ///
+    /// `None` is fail-closed evidence of an out-of-range position or an
+    /// impossible mismatch between the retained plan and canonical value.
+    #[must_use]
+    pub fn field(self, index: usize) -> Option<SchemaBoundOutcomeField<'a>> {
+        let plan = self.plan.fields.get(index)?;
+        let (field_id, value) = self.value.fields().get(index)?;
+        (*field_id == plan.field_id).then_some(SchemaBoundOutcomeField { plan, value })
+    }
+}
+
+/// One borrowed field in a schema-bound declared outcome.
+#[derive(Clone, Copy)]
+pub struct SchemaBoundOutcomeField<'a> {
+    plan: &'a OutcomeFieldPresentationPlan,
+    value: &'a CanonicalValue,
+}
+
+impl<'a> SchemaBoundOutcomeField<'a> {
+    /// Returns the stable field identifier.
+    #[must_use]
+    pub const fn field_id(self) -> FieldId {
+        self.plan.field_id
+    }
+
+    /// Returns the exact historical source name.
+    #[must_use]
+    pub const fn field_name(self) -> &'a SourceName {
+        &self.plan.field_name
+    }
+
+    /// Returns the canonical value joined to its retained presentation shape.
+    #[must_use]
+    pub fn value(self) -> Option<SchemaBoundOutcomeValue<'a>> {
+        bind_schema_bound_value(&self.plan.value, self.value)
+    }
+}
+
+/// One borrowed list in a schema-bound declared outcome.
+#[derive(Clone, Copy)]
+pub struct SchemaBoundOutcomeList<'a> {
+    plans: &'a [OutcomeValuePresentationPlan],
+    values: &'a [CanonicalValue],
+}
+
+impl<'a> SchemaBoundOutcomeList<'a> {
+    /// Returns the number of list elements.
+    #[must_use]
+    pub fn len(self) -> usize {
+        self.plans.len()
+    }
+
+    /// Returns whether the list contains no elements.
+    #[must_use]
+    pub fn is_empty(self) -> bool {
+        self.plans.is_empty()
+    }
+
+    /// Returns one element in canonical list order.
+    #[must_use]
+    pub fn value(self, index: usize) -> Option<SchemaBoundOutcomeValue<'a>> {
+        bind_schema_bound_value(self.plans.get(index)?, self.values.get(index)?)
+    }
+}
+
+/// One schema-bound value in a declared outcome.
+pub enum SchemaBoundOutcomeValue<'a> {
+    /// Explicit optional absence.
+    Null,
+    /// A scalar whose complete public representation is canonical.
+    Scalar(&'a CanonicalValue),
+    /// A stable enum identity joined to its exact historical variant name.
+    Enum {
+        /// Stable enum type identifier.
+        type_id: EnumTypeId,
+        /// Stable variant identifier.
+        variant_id: EnumVariantId,
+        /// Exact source name declared by the historical schema.
+        variant_name: &'a SourceName,
+    },
+    /// A bounded ordered list with a presentation plan for every element.
+    List(SchemaBoundOutcomeList<'a>),
+    /// A complete nested record with exact field names.
+    Record(SchemaBoundOutcomeRecord<'a>),
+}
+
+fn bind_schema_bound_value<'a>(
+    plan: &'a OutcomeValuePresentationPlan,
+    value: &'a CanonicalValue,
+) -> Option<SchemaBoundOutcomeValue<'a>> {
+    match (plan, value) {
+        (OutcomeValuePresentationPlan::Null, CanonicalValue::Null) => {
+            Some(SchemaBoundOutcomeValue::Null)
+        }
+        (
+            OutcomeValuePresentationPlan::Enum {
+                type_id,
+                variant_id,
+                variant_name,
+            },
+            CanonicalValue::Enum {
+                type_id: actual_type,
+                variant_id: actual_variant,
+            },
+        ) if type_id == actual_type && variant_id == actual_variant => {
+            Some(SchemaBoundOutcomeValue::Enum {
+                type_id: *type_id,
+                variant_id: *variant_id,
+                variant_name,
+            })
+        }
+        (OutcomeValuePresentationPlan::List(plans), CanonicalValue::List(values))
+            if plans.len() == values.len() =>
+        {
+            Some(SchemaBoundOutcomeValue::List(SchemaBoundOutcomeList {
+                plans,
+                values: values.values(),
+            }))
+        }
+        (OutcomeValuePresentationPlan::Record(plan), CanonicalValue::Record(value)) => {
+            Some(SchemaBoundOutcomeValue::Record(SchemaBoundOutcomeRecord {
+                plan,
+                value,
+            }))
+        }
+        (
+            OutcomeValuePresentationPlan::Scalar,
+            value @ (CanonicalValue::Bool(_)
+            | CanonicalValue::I64(_)
+            | CanonicalValue::U64(_)
+            | CanonicalValue::Decimal(_)
+            | CanonicalValue::Money(_)
+            | CanonicalValue::String(_)
+            | CanonicalValue::Bytes(_)
+            | CanonicalValue::Timestamp(_)
+            | CanonicalValue::Date(_)
+            | CanonicalValue::Uuid(_)),
+        ) => Some(SchemaBoundOutcomeValue::Scalar(value)),
+        _ => None,
+    }
 }
 
 impl fmt::Debug for DeclaredOutcomeView {
@@ -5732,12 +6081,12 @@ const COMMAND_OPERATION_ENVELOPE_SCHEMA: &str =
 const COMMAND_GET_OUTCOME_RESULT_SCHEMA: &str =
     include_str!("../schema/riffdb.command-get-outcome-result-v1.schema.json");
 const COMMAND_OPERATION_ENVELOPE_SCHEMA_HASH: SchemaHash = SchemaHash::from_bytes([
-    0xf1, 0x84, 0x7c, 0x1c, 0xd8, 0x69, 0x56, 0x2a, 0x11, 0xa6, 0xe6, 0x7c, 0x79, 0x54, 0xe4, 0xb5,
-    0xc6, 0xb0, 0x6f, 0x73, 0xc3, 0x7f, 0x68, 0xc2, 0xa4, 0x39, 0xd7, 0x35, 0x9f, 0x2b, 0x9c, 0xf7,
+    0x78, 0x1f, 0xf9, 0x3c, 0x2d, 0xbf, 0xd2, 0xee, 0x2b, 0xec, 0x28, 0x6f, 0x78, 0x10, 0x30, 0x0a,
+    0x0f, 0xec, 0x0a, 0x17, 0x05, 0x48, 0xb1, 0x40, 0x5c, 0xb8, 0xba, 0x2a, 0xc8, 0xd9, 0x03, 0x98,
 ]);
 const COMMAND_GET_OUTCOME_RESULT_SCHEMA_HASH: SchemaHash = SchemaHash::from_bytes([
-    0xcb, 0xf5, 0xcb, 0x3d, 0x86, 0x9f, 0x5b, 0x15, 0x7c, 0x62, 0xe3, 0x7c, 0x2d, 0x07, 0x04, 0x26,
-    0x9c, 0xbf, 0x0a, 0x7c, 0x31, 0x7f, 0xee, 0x47, 0x57, 0xf1, 0x3b, 0xd0, 0x01, 0x2b, 0x7f, 0x96,
+    0x40, 0x56, 0xf0, 0x1c, 0x29, 0x71, 0x20, 0xb0, 0x6a, 0xc9, 0x05, 0xf3, 0x34, 0x82, 0x13, 0x2a,
+    0x90, 0x85, 0x86, 0x59, 0x75, 0xad, 0xa3, 0x6e, 0x23, 0x96, 0xa6, 0x1e, 0xbf, 0x19, 0xfc, 0x0d,
 ]);
 
 /// Body-free identity of one versioned operation schema.
@@ -7696,7 +8045,7 @@ mod tests {
 
     use super::*;
     use riffdb_catalog::ValidatedContractBundle;
-    use riffdb_contract_compiler::compile_contract_source;
+    use riffdb_contract_compiler::{compile_contract_source, compile_contract_successor};
     use riffdb_contract_ir::{
         CommandPlan, FieldSchema, KeyComponentSchema, KeyPurpose, KeySchema, OutcomeSchema,
         RecordSchema, RecordTypeRef, SchemaIr, ValueType,
@@ -8230,6 +8579,78 @@ contract OutcomeShapes version 1 {
             ),
             Err(ServiceDtoError::InvalidShape)
         );
+    }
+
+    #[test]
+    fn declared_outcomes_retain_exact_nested_field_and_enum_names() {
+        let bundle = outcome_shapes_bundle();
+        let change = fixture_command(&bundle, "Change");
+        let changed = fixture_outcome(change, "Changed");
+        let closed = fixture_variant(&bundle, "Closed");
+        let declared = DeclaredOutcomeView::from_bundle(
+            &bundle,
+            change.command_id(),
+            changed.id(),
+            fixture_nested_outcome(changed, fixture_row(&bundle, closed)),
+        )
+        .expect("compiler-declared outcome");
+
+        let root = declared.schema_bound_value();
+        assert_eq!(root.len(), 1);
+        let row_field = root.field(0).expect("schema-bound row field");
+        assert_eq!(row_field.field_name().as_str(), "row");
+        assert_eq!(row_field.field_id(), changed.payload().fields()[0].id());
+        let SchemaBoundOutcomeValue::Record(row) =
+            row_field.value().expect("schema-bound row value")
+        else {
+            panic!("row must remain a nested record")
+        };
+        let status = (0..row.len())
+            .filter_map(|index| row.field(index))
+            .find(|field| field.field_name().as_str() == "status")
+            .expect("schema-bound status field");
+        let SchemaBoundOutcomeValue::Enum {
+            type_id,
+            variant_id,
+            variant_name,
+        } = status.value().expect("schema-bound status value")
+        else {
+            panic!("status must remain an enum")
+        };
+        let state = bundle
+            .bundle()
+            .schema()
+            .enums()
+            .iter()
+            .find(|enumeration| enumeration.name() == "State")
+            .expect("fixture State enum");
+        assert_eq!(type_id, state.id());
+        assert_eq!(variant_id, closed);
+        assert_eq!(variant_name.as_str(), "Closed");
+    }
+
+    #[test]
+    fn successor_contract_descriptor_summarizes_exact_parent_and_codes() {
+        let genesis =
+            compile_contract_source(OUTCOME_SHAPES_SOURCE).expect("genesis fixture compiles");
+        let successor_source = OUTCOME_SHAPES_SOURCE.replacen("version 1", "version 2", 1);
+        let successor = compile_contract_successor(&successor_source, &genesis)
+            .expect("unchanged successor compiles");
+        let descriptor = ContractDescriptor::from_bundle(&successor);
+
+        assert_eq!(
+            descriptor.compatibility().parent(),
+            Some((genesis.contract_version(), genesis.bundle_hash()))
+        );
+        assert_eq!(
+            descriptor.compatibility().overall(),
+            ContractCompatibilityClass::Compatible
+        );
+        let [entry] = descriptor.compatibility().code_counts() else {
+            panic!("unchanged successor has one compatibility code")
+        };
+        assert_eq!(entry.code(), "RDB-K001");
+        assert_eq!(entry.count().get(), 1);
     }
 
     #[test]

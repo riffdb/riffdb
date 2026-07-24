@@ -4,12 +4,32 @@ package riffdb.v1;
 
 import "riffdb/v1/common.proto";
 
+enum ContractCompatibilityClass {
+  CONTRACT_COMPATIBILITY_CLASS_UNSPECIFIED = 0;
+  CONTRACT_COMPATIBILITY_CLASS_COMPATIBLE = 1;
+  CONTRACT_COMPATIBILITY_CLASS_REQUIRES_EXPLICIT_VERSION = 2;
+  CONTRACT_COMPATIBILITY_CLASS_INCOMPATIBLE = 3;
+}
+
+message ContractCompatibilityCodeCount {
+  string code = 1;
+  uint32 count = 2;
+}
+
+message ContractCompatibilitySummary {
+  optional uint64 parent_contract_version = 1;
+  optional bytes parent_bundle_hash = 2;
+  ContractCompatibilityClass overall = 3;
+  repeated ContractCompatibilityCodeCount code_counts = 4;
+}
+
 message ContractDescriptor {
   string contract_lineage = 1;
   uint64 contract_version = 2;
   bytes bundle_hash = 3;
   bytes source_hash = 4;
   bytes plan_root_hash = 5;
+  ContractCompatibilitySummary compatibility = 6;
 }
 
 message SourceSpan {

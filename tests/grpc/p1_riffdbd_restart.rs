@@ -204,6 +204,7 @@ async fn real_riffdbd_restart_preserves_budget_and_bootstrap_replay() -> TestRes
     );
     assert_eq!(allocated.response().commit_sequence, 2);
     assert_eq!(allocated.response().durability_mode, "sync");
+    assert_schema_bound_allocated_outcome(allocated.response())?;
     let AllocateBudgetOutcome::Allocated { budget, remaining } = allocated.outcome() else {
         return Err(test_failure("AllocateBudget did not return Allocated"));
     };
@@ -242,6 +243,7 @@ async fn real_riffdbd_restart_preserves_budget_and_bootstrap_replay() -> TestRes
         outcome_before_restart.status,
         v1::execute_command_response::CompletionStatus::Replayed as i32
     );
+    assert_schema_bound_allocated_outcome(&outcome_before_restart)?;
     assert_eq!(
         allocate.decode_outcome(&outcome_before_restart)?,
         AllocateBudgetOutcome::Allocated {
@@ -905,6 +907,60 @@ fn decimal_minor_units(record: &v1::ValueRecord, field_id: u32) -> TestResult<i1
     };
     let spec = DecimalSpec::new(28, 2)?;
     Ok(decimal_from_proto(value, spec)?.coefficient())
+}
+
+fn assert_schema_bound_allocated_outcome(response: &v1::ExecuteCommandResponse) -> TestResult<()> {
+    let Some(v1::Value {
+        kind: Some(v1::value::Kind::RecordValue(outcome)),
+    }) = response.outcome.as_ref()
+    else {
+        return Err(test_failure("allocated outcome was not a record"));
+    };
+    let outcome_fields = outcome
+        .fields
+        .iter()
+        .map(|field| (field.field_id, field.name.as_str()))
+        .collect::<Vec<_>>();
+    if outcome_fields != [(Some(1), "budget"), (Some(2), "remaining")] {
+        return Err(test_failure(
+            "allocated outcome omitted its exact schema-bound field names",
+        ));
+    }
+
+    let Some(v1::value::Kind::RecordValue(budget)) = value_field(outcome, 1)?.kind.as_ref() else {
+        return Err(test_failure("allocated budget was not a record"));
+    };
+    let budget_fields = budget
+        .fields
+        .iter()
+        .map(|field| (field.field_id, field.name.as_str()))
+        .collect::<Vec<_>>();
+    if budget_fields
+        != [
+            (Some(1), "updated_at"),
+            (Some(2), "fiscal_year"),
+            (Some(3), "approved_amount"),
+            (Some(4), "organization_id"),
+            (Some(5), "allocated_amount"),
+        ]
+    {
+        return Err(test_failure(
+            "allocated budget omitted its exact schema-bound field names",
+        ));
+    }
+    for (record, field_id) in [(budget, 3), (budget, 5), (outcome, 2)] {
+        let Some(v1::value::Kind::DecimalValue(decimal)) =
+            value_field(record, field_id)?.kind.as_ref()
+        else {
+            return Err(test_failure("schema-bound amount was not decimal"));
+        };
+        if decimal.precision != Some(28) || decimal.scale != 2 {
+            return Err(test_failure(
+                "schema-bound amount omitted exact public decimal evidence",
+            ));
+        }
+    }
+    Ok(())
 }
 
 fn found_outcome(response: v1::GetOutcomeResponse) -> TestResult<v1::ExecuteCommandResponse> {

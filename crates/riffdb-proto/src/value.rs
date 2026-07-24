@@ -6,9 +6,9 @@ use std::fmt;
 
 use prost::Message;
 use riffdb_types::{
-    CanonicalValue, CurrencyCode, Decimal as CanonicalDecimal, DecimalSpec, EnumTypeId,
-    EnumVariantId, FieldId, MAX_BYTES_VALUE_BYTES, MAX_CANONICAL_DOCUMENT_BYTES, MAX_LIST_ENTRIES,
-    MAX_NESTING_DEPTH, MAX_RECORD_FIELDS, MAX_STRING_BYTES, Money as CanonicalMoney, Timestamp,
+    CanonicalValue, CurrencyCode, Decimal as CanonicalDecimal, DecimalSpec, FieldId,
+    MAX_BYTES_VALUE_BYTES, MAX_CANONICAL_DOCUMENT_BYTES, MAX_LIST_ENTRIES, MAX_NESTING_DEPTH,
+    MAX_RECORD_FIELDS, MAX_STRING_BYTES, Money as CanonicalMoney, Timestamp,
 };
 
 use crate::v1;
@@ -19,9 +19,9 @@ pub const MAX_PROTOCOL_NAME_BYTES: usize = 256;
 
 /// Decodes and structurally validates one public `Value` message.
 ///
-/// This check is deliberately schema-independent. Decimal precision, record
-/// name resolution, and enum display-name agreement require compiled contract
-/// context and are not claimed by this function.
+/// This check is deliberately schema-independent. Decimal type agreement,
+/// record name resolution, and enum display-name agreement require compiled
+/// contract context and are not claimed by this function.
 pub fn decode_value(input: &[u8]) -> Result<v1::Value, ValueValidationError> {
     if input.len() > MAX_CANONICAL_DOCUMENT_BYTES {
         return Err(ValueValidationError::DocumentTooLarge);
@@ -113,7 +113,11 @@ pub fn decimal_from_proto(
     expected: DecimalSpec,
 ) -> Result<CanonicalDecimal, ValueValidationError> {
     validate_decimal(value)?;
-    if value.scale != u32::from(expected.scale()) {
+    if value.scale != u32::from(expected.scale())
+        || value
+            .precision
+            .is_some_and(|precision| precision != u32::from(expected.precision()))
+    {
         return Err(ValueValidationError::DecimalTypeMismatch);
     }
     let coefficient = decode_minimal_i128(&value.coefficient_twos_complement)?;
@@ -176,8 +180,8 @@ fn validate_value_at_depth(value: &v1::Value, depth: usize) -> Result<(), ValueV
             Err(ValueValidationError::NameTooLong)
         }
         Kind::EnumValue(value)
-            if EnumTypeId::new(value.type_id).is_none()
-                || EnumVariantId::new(value.variant_id).is_none() =>
+            if (value.type_id == 0) != (value.variant_id == 0)
+                || (value.type_id == 0 && value.name.is_empty()) =>
         {
             Err(ValueValidationError::InvalidEnumIdentity)
         }
@@ -199,7 +203,19 @@ fn validate_decimal(value: &v1::Decimal) -> Result<(), ValueValidationError> {
     if value.scale > 38 {
         return Err(ValueValidationError::DecimalScaleOutOfRange);
     }
-    decode_minimal_i128(&value.coefficient_twos_complement).map(|_| ())
+    let coefficient = decode_minimal_i128(&value.coefficient_twos_complement)?;
+    let Some(precision) = value.precision else {
+        return Ok(());
+    };
+    let precision =
+        u8::try_from(precision).map_err(|_| ValueValidationError::DecimalPrecisionOutOfRange)?;
+    let scale =
+        u8::try_from(value.scale).map_err(|_| ValueValidationError::DecimalScaleOutOfRange)?;
+    let spec = DecimalSpec::new(precision, scale)
+        .map_err(|_| ValueValidationError::DecimalPrecisionOutOfRange)?;
+    CanonicalDecimal::new(spec, coefficient)
+        .map(|_| ())
+        .map_err(|_| ValueValidationError::DecimalOutOfRange)
 }
 
 fn validate_money(value: &v1::Money) -> Result<(), ValueValidationError> {
@@ -274,6 +290,7 @@ fn decimal_to_proto(value: CanonicalDecimal) -> v1::Decimal {
     v1::Decimal {
         coefficient_twos_complement: encode_minimal_i128(value.coefficient()),
         scale: u32::from(value.spec().scale()),
+        precision: Some(u32::from(value.spec().precision())),
     }
 }
 
@@ -357,7 +374,9 @@ pub enum ValueValidationError {
     NonCanonicalDecimalCoefficient,
     /// A wire decimal scale exceeds the structural maximum.
     DecimalScaleOutOfRange,
-    /// A wire decimal does not have the expected compiled scale.
+    /// A present wire decimal precision is not a valid fixed-point precision.
+    DecimalPrecisionOutOfRange,
+    /// A wire decimal does not have the expected compiled precision and scale.
     DecimalTypeMismatch,
     /// A decimal coefficient exceeds the compiled precision.
     DecimalOutOfRange,
@@ -416,15 +435,42 @@ mod tests {
     }
 
     #[test]
-    fn context_supplies_decimal_precision() {
+    fn absent_precision_uses_context_and_output_is_explicit() {
         let spec = DecimalSpec::new(3, 2).expect("valid decimal type");
         let wire = v1::Decimal {
             coefficient_twos_complement: vec![0x7b],
             scale: 2,
+            precision: None,
         };
         let value = decimal_from_proto(&wire, spec).expect("valid typed decimal");
         assert_eq!(value.coefficient(), 123);
-        assert_eq!(decimal_to_proto(value), wire);
+        assert_eq!(
+            decimal_to_proto(value),
+            v1::Decimal {
+                precision: Some(3),
+                ..wire
+            }
+        );
+    }
+
+    #[test]
+    fn present_precision_is_checked_as_schema_assertion() {
+        let spec = DecimalSpec::new(3, 2).expect("valid decimal type");
+        let matching = v1::Decimal {
+            coefficient_twos_complement: vec![0x7b],
+            scale: 2,
+            precision: Some(3),
+        };
+        assert!(decimal_from_proto(&matching, spec).is_ok());
+
+        let mismatched = v1::Decimal {
+            precision: Some(4),
+            ..matching
+        };
+        assert_eq!(
+            decimal_from_proto(&mismatched, spec),
+            Err(ValueValidationError::DecimalTypeMismatch)
+        );
     }
 
     #[test]
@@ -437,6 +483,7 @@ mod tests {
             amount: Some(v1::Decimal {
                 coefficient_twos_complement: vec![1],
                 scale: 2,
+                precision: Some(6),
             }),
         };
         assert!(money_from_proto(&wire, spec, usd).is_ok());
@@ -489,7 +536,7 @@ mod tests {
     }
 
     #[test]
-    fn assigned_schema_id_zero_sentinels_are_rejected() {
+    fn enum_identity_forms_are_structurally_exact() {
         let enum_value = v1::Value {
             kind: Some(v1::value::Kind::EnumValue(v1::EnumValue {
                 type_id: 0,
@@ -519,6 +566,31 @@ mod tests {
         );
         assert_eq!(
             decode_value(&enum_variant.encode_to_vec()),
+            Err(ValueValidationError::InvalidEnumIdentity)
+        );
+
+        let name_only = v1::Value {
+            kind: Some(v1::value::Kind::EnumValue(v1::EnumValue {
+                type_id: 0,
+                variant_id: 0,
+                name: "Approved".to_owned(),
+            })),
+        };
+        assert_eq!(validate_value(&name_only), Ok(()));
+        assert_eq!(
+            decode_value(&name_only.encode_to_vec()),
+            Ok(name_only.clone())
+        );
+
+        let empty = v1::Value {
+            kind: Some(v1::value::Kind::EnumValue(v1::EnumValue {
+                type_id: 0,
+                variant_id: 0,
+                name: String::new(),
+            })),
+        };
+        assert_eq!(
+            validate_value(&empty),
             Err(ValueValidationError::InvalidEnumIdentity)
         );
 

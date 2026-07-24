@@ -3,8 +3,8 @@ value.null 0800
 value.bool-false 1000
 value.i64-minus-one 1801
 value.u64-max 20ffffffffffffffffff01
-value.decimal 2a060a02ff7f1002
-value.money 320d0a0355534412060a0204d21002
+value.decimal 2a080a02ff7f10021806
+value.money 320f0a0355534412080a0204d210021806
 value.string 3a0472696666
 value.bytes 420200ff
 value.uuid 4a1011111111111111111111111111111111

@@ -1220,6 +1220,24 @@ impl CommandDurability {
     }
 }
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct ContractCompatibilityCodeCount {
+    #[prost(string, tag = "1")]
+    pub code: ::prost::alloc::string::String,
+    #[prost(uint32, tag = "2")]
+    pub count: u32,
+}
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct ContractCompatibilitySummary {
+    #[prost(uint64, optional, tag = "1")]
+    pub parent_contract_version: ::core::option::Option<u64>,
+    #[prost(bytes = "vec", optional, tag = "2")]
+    pub parent_bundle_hash: ::core::option::Option<::prost::alloc::vec::Vec<u8>>,
+    #[prost(enumeration = "ContractCompatibilityClass", tag = "3")]
+    pub overall: i32,
+    #[prost(message, repeated, tag = "4")]
+    pub code_counts: ::prost::alloc::vec::Vec<ContractCompatibilityCodeCount>,
+}
+#[derive(Clone, PartialEq, ::prost::Message)]
 pub struct ContractDescriptor {
     #[prost(string, tag = "1")]
     pub contract_lineage: ::prost::alloc::string::String,
@@ -1231,6 +1249,8 @@ pub struct ContractDescriptor {
     pub source_hash: ::prost::alloc::vec::Vec<u8>,
     #[prost(bytes = "vec", tag = "5")]
     pub plan_root_hash: ::prost::alloc::vec::Vec<u8>,
+    #[prost(message, optional, tag = "6")]
+    pub compatibility: ::core::option::Option<ContractCompatibilitySummary>,
 }
 #[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct SourceSpan {
@@ -1429,14 +1449,14 @@ pub struct ExpectedActiveVersionMismatch {
     #[prost(uint64, optional, tag = "1")]
     pub actual_active_version: ::core::option::Option<u64>,
 }
-#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+#[derive(Clone, PartialEq, ::prost::Message)]
 pub struct DeployContractResponse {
     #[prost(oneof = "deploy_contract_response::Result", tags = "1, 2, 3, 4")]
     pub result: ::core::option::Option<deploy_contract_response::Result>,
 }
 /// Nested message and enum types in `DeployContractResponse`.
 pub mod deploy_contract_response {
-    #[derive(Clone, PartialEq, Eq, Hash, ::prost::Oneof)]
+    #[derive(Clone, PartialEq, ::prost::Oneof)]
     pub enum Result {
         #[prost(message, tag = "1")]
         Activated(super::ContractDescriptor),
@@ -1453,14 +1473,14 @@ pub struct GetActiveContractRequest {
     #[prost(bytes = "vec", tag = "1")]
     pub request_id: ::prost::alloc::vec::Vec<u8>,
 }
-#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+#[derive(Clone, PartialEq, ::prost::Message)]
 pub struct GetActiveContractResponse {
     #[prost(oneof = "get_active_contract_response::Result", tags = "1, 2")]
     pub result: ::core::option::Option<get_active_contract_response::Result>,
 }
 /// Nested message and enum types in `GetActiveContractResponse`.
 pub mod get_active_contract_response {
-    #[derive(Clone, PartialEq, Eq, Hash, ::prost::Oneof)]
+    #[derive(Clone, PartialEq, ::prost::Oneof)]
     pub enum Result {
         #[prost(message, tag = "1")]
         Absent(super::Unit),
@@ -1477,19 +1497,55 @@ pub struct GetContractVersionRequest {
     #[prost(uint64, tag = "3")]
     pub contract_version: u64,
 }
-#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+#[derive(Clone, PartialEq, ::prost::Message)]
 pub struct GetContractVersionResponse {
     #[prost(oneof = "get_contract_version_response::Result", tags = "1, 2")]
     pub result: ::core::option::Option<get_contract_version_response::Result>,
 }
 /// Nested message and enum types in `GetContractVersionResponse`.
 pub mod get_contract_version_response {
-    #[derive(Clone, PartialEq, Eq, Hash, ::prost::Oneof)]
+    #[derive(Clone, PartialEq, ::prost::Oneof)]
     pub enum Result {
         #[prost(message, tag = "1")]
         NotFound(super::Unit),
         #[prost(message, tag = "2")]
         Found(super::ContractDescriptor),
+    }
+}
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, ::prost::Enumeration)]
+#[repr(i32)]
+pub enum ContractCompatibilityClass {
+    Unspecified = 0,
+    Compatible = 1,
+    RequiresExplicitVersion = 2,
+    Incompatible = 3,
+}
+impl ContractCompatibilityClass {
+    /// String value of the enum field names used in the ProtoBuf definition.
+    ///
+    /// The values are not transformed in any way and thus are considered stable
+    /// (if the ProtoBuf definition does not change) and safe for programmatic use.
+    pub fn as_str_name(&self) -> &'static str {
+        match self {
+            Self::Unspecified => "CONTRACT_COMPATIBILITY_CLASS_UNSPECIFIED",
+            Self::Compatible => "CONTRACT_COMPATIBILITY_CLASS_COMPATIBLE",
+            Self::RequiresExplicitVersion => {
+                "CONTRACT_COMPATIBILITY_CLASS_REQUIRES_EXPLICIT_VERSION"
+            }
+            Self::Incompatible => "CONTRACT_COMPATIBILITY_CLASS_INCOMPATIBLE",
+        }
+    }
+    /// Creates an enum from field names used in the ProtoBuf definition.
+    pub fn from_str_name(value: &str) -> ::core::option::Option<Self> {
+        match value {
+            "CONTRACT_COMPATIBILITY_CLASS_UNSPECIFIED" => Some(Self::Unspecified),
+            "CONTRACT_COMPATIBILITY_CLASS_COMPATIBLE" => Some(Self::Compatible),
+            "CONTRACT_COMPATIBILITY_CLASS_REQUIRES_EXPLICIT_VERSION" => {
+                Some(Self::RequiresExplicitVersion)
+            }
+            "CONTRACT_COMPATIBILITY_CLASS_INCOMPATIBLE" => Some(Self::Incompatible),
+            _ => None,
+        }
     }
 }
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
@@ -2679,6 +2735,8 @@ pub struct Decimal {
     pub coefficient_twos_complement: ::prost::alloc::vec::Vec<u8>,
     #[prost(uint32, tag = "2")]
     pub scale: u32,
+    #[prost(uint32, optional, tag = "3")]
+    pub precision: ::core::option::Option<u32>,
 }
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct Money {
