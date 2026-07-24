@@ -24,6 +24,7 @@ digraph G {
   wp130 [label="WP-130\ngRPC + Rust SDK", fillcolor="#E4F0F2"];
   wp135 [label="WP-135\nPublic SDK comparison adapter", style="rounded,filled,dashed", fillcolor="#FAFAFA"];
   wp137 [label="WP-137\nPublic gRPC MCP parity bridge", fillcolor="#E4F0F2"];
+  wp139 [label="WP-139\nBudget safety counterexamples", style="rounded,filled,dashed", fillcolor="#FAFAFA"];
   wp140 [label="WP-140\nNative MCP", fillcolor="#CFE6E8"];
   wp150 [label="WP-150\nCLI", fillcolor="#E4F0F2"];
   wp160 [label="WP-160\nOutbox dispatch", fillcolor="#CFE6E8"];
@@ -55,6 +56,7 @@ digraph G {
   {wp125 wp130} -> wp135;
   wp130 -> wp137;
   wp137 -> wp135;
+  {wp045 wp135} -> wp139;
   {wp040 wp120 wp130} -> wp140;
   wp137 -> wp140;
   wp130 -> wp150;
@@ -64,6 +66,6 @@ digraph G {
   wp120 -> wp180;
   {wp130 wp140 wp160 wp170 wp180} -> wp185;
   {wp070 wp100 wp160 wp170 wp185} -> wp190;
-  {wp050 wp075 wp130 wp135 wp140 wp150 wp160 wp170 wp180 wp185 wp190} -> wp200;
+  {wp050 wp075 wp130 wp135 wp139 wp140 wp150 wp160 wp170 wp180 wp185 wp190} -> wp200;
   wp200 -> key [style=invis];
 }

@@ -12,6 +12,9 @@
   this bridge can be reviewed independently, but WP-137 implementation and the
   companion authoritative reconciliation are jointly gated on accepting both
   records
+- **Amended by:** ADR-0046 for the corrective additive public decimal,
+  compatibility-summary, enum-submission, and schema-bound outcome-presentation
+  bridge
 - **Amends:** ADR-0006 and ADR-0028's exact 16-RPC inventory; the
   public/service/client portions of ADR-0007 and ADR-0026 for conditional
   discovery and outcome-locator resolution; ADR-0027's response-charge

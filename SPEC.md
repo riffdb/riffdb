@@ -6,7 +6,7 @@
 **Tagline:** *Vibe fast. Commit safely.*  
 **Category:** Contract-first operational database for agent-built applications  
 
-**Version:** 0.31
+**Version:** 0.34
 **Status:** Architecture-approved implementation handoff
 **Date:** 23 July 2026
 **Audience:** Coding agents, database engineers, compiler engineers, security reviewers, and technical product leads  
@@ -67,6 +67,9 @@
 | 0.29 | 2026-07-22 | Applied accepted ADR-0042: catalog now owns the sealed, backend-branded index-migration instruction and driver chain; storage API retains only semantic evidence and identity-only startup contracts; memory/redb use one narrow migration-only catalog edge with private backend transitions; and server only joins and drives matching outcomes. No durable or public protocol format changed. |
 | 0.30 | 2026-07-23 | Applied accepted ADR-0043: auth owns one non-cloneable, nonserializable, redacted, zeroizing 43-byte retained opaque credential helper; Streamable HTTP may bound and copy bearer-stripped bytes only to borrow `OpaqueCredential` for the unchanged `CredentialAuthenticator`, while all authentication and authorization decisions remain on their existing shared paths. No dependency owner, wire format, durable format, or MCP registry changed. |
 | 0.31 | 2026-07-23 | Applied accepted ADR-0044: the service owns a closed hosted-MCP request-context constructor with fixed MCP HTTP ingress and empty claims; the MCP adapter directly consumes only foundational types/errors plus narrow tracing; stdio uses a current-thread runtime and a non-reloadable rmcp telemetry filter. No policy edge, request-context claim carrier, wire field, durable field, or MCP registry changed. |
+| 0.32 | 2026-07-23 | Applied accepted ADR-0045: added the isolated non-gating WP-139 budget-safety counterexample track, four exact PostgreSQL-negative-control/public-RiffDB contrasts, a bounded non-shipped evidence runner/report, and a WP-200 dependency while preserving the canonical PostgreSQL benchmark adapter, the frozen public runner, product binaries, production dependencies, contracts, and public/durable formats. |
+| 0.33 | 2026-07-23 | Applied accepted ADR-0046: corrected the WP-137/WP-140 public presentation boundary with additive decimal precision and bounded contract-compatibility metadata, exact name-only enum submission, service-owned schema-bound outcome names, complete resource content and factual generated examples, plus hosted-only post-authentication MCP limiting. No durable, IR, bundle, plan-hash, URI, RPC, storage, or dependency boundary changed. |
+| 0.34 | 2026-07-23 | Applied accepted ADR-0047 and ADR-0048: corrected thirteen pre-release MCP schemas to advertise their required object root without changing accepted instance shapes, and separated the existing 14-per-tick logical observer-operation bound from an enforced 46-per-tick/8,280-per-session physical service-call bound while removing the redundant stdio parity probe. No durable, IR, compiler, contract, public Protobuf, URI, or storage boundary changed. |
 
 ### Normative language
 
@@ -293,6 +296,7 @@ riffdb/
       postgres/              # PostgreSQL comparison implementation
       riffdb-service/        # in-process service adapter added after WP-120
       riffdb-grpc/           # WP-135 package riffdb-budget-comparison-riffdb-grpc and riffdb-budget-public runner
+      safety-evidence/       # WP-139 non-shipped counterexample report and runner
   scripts/
   docs/
 ```
@@ -576,6 +580,12 @@ POC transactional expressions support:
 | `enum` | Closed set in a contract version |
 | `optional<T>` | Explicit nullability |
 | `list<T,N>` | Bounded list only |
+
+Public Protobuf decimal input may carry additive optional precision evidence.
+When present it MUST equal the exact selected `decimal<P,S>` precision, while
+scale always equals `S`; when absent the selected schema supplies precision.
+Every new-server public decimal output carries its canonical checked precision.
+This wire evidence never changes the canonical decimal or durable encoding.
 
 `VAL-001` POC command evaluation MUST NOT support unbounded strings, bytes, collections, recursion, maps, or floating-point arithmetic.
 
@@ -2635,6 +2645,7 @@ enum NullValue { NULL_VALUE = 0; }
 message Decimal {
   bytes coefficient_twos_complement = 1; // canonical minimal big-endian encoding
   uint32 scale = 2;
+  optional uint32 precision = 3; // assertion on input; mandatory from a new server
 }
 
 message Money {
@@ -2674,7 +2685,35 @@ catalog substitution, or adapter-constructible storage key. A WP-137 server
 returns a found raw-key result with a locator minted from matched durable digest
 evidence; a found locator result returns a byte-for-byte equal URI.
 
-The custom `Value` family is required; `google.protobuf.Struct` is forbidden at exact business-value boundaries because it cannot preserve all signed/unsigned integer and decimal values. Lists, records, strings, and bytes inherit compiled or protocol bounds. Record fields MUST be unique and canonically ordered by stable field ID where available, then by UTF-8 name. Decimal coefficient, scale, currency, UUID, date, and timestamp encodings MUST be validated and canonical before hashing or persistence.
+The custom `Value` family is required; `google.protobuf.Struct` is forbidden at exact business-value boundaries because it cannot preserve all signed/unsigned integer and decimal values. Lists, records, strings, and bytes inherit compiled or protocol bounds. Record fields MUST be unique and canonically ordered by stable field ID where available, then by UTF-8 name. Decimal coefficient, scale, optional precision, currency, UUID, date, and timestamp encodings MUST be validated and canonical before hashing or persistence.
+
+Decimal precision is optional only for compatibility and pre-schema submission:
+it is in `1..=38` when present, scale may not exceed it, and service
+materialization requires supplied precision/scale to equal the selected schema.
+A new server emits precision for every decimal and money amount. General new
+clients may accept legacy absence, but MCP stdio fails closed if it would
+otherwise have to invent precision.
+
+`EnumValue` accepts either both nonzero stable IDs with an optional redundant
+exact name, or both IDs zero with one nonempty exact source name. Mixed zero and
+nonzero IDs and an all-empty form reject structurally. The latter form is
+resolved only within the enum type required at that exact position in the
+selected operation schema. Resolution is case-sensitive and performs no
+normalization.
+
+The service retains a private bounded schema-bound presentation plan inside
+each validated `DeclaredOutcomeView`. Execute and found GetOutcome public
+responses use it to populate both stable IDs and exact field/enum names; hosted
+MCP consumes the same view. Generic fixed tagged-value conversion remains
+ID-based. No adapter may infer names from record position or rediscover a
+then-active bundle.
+
+ADR-0046 also appends `ContractDescriptor.compatibility = 6` as a
+`ContractCompatibilitySummary`: optional paired parent version/hash, a closed
+three-class overall result, and at most 20 strictly code-ordered nonzero
+`CompatibilityCode` counts totaling at most 4,096. A new server always emits
+the summary; genesis has no parent and no counts. Full affected paths remain in
+the authoritative bundle report and are not copied into the public descriptor.
 
 `riffdb-proto` is the single owner of all checked-in `.proto` sources and
 generated compatibility fixtures. WP-020 freezes package/version rules, common
@@ -2693,8 +2732,10 @@ No package may invent a competing schema, persist an ad hoc encoding, or guess
 field numbers before its proto-owner package.
 
 WP-137 is the sole narrow additive public-protocol owner after WP-127. It owns
-only ADR-0040's six RPCs/messages, two outcome-locator fields, exact descriptor
-and compatibility fixtures, and total conversions. The shared service owns the
+ADR-0040's six RPCs/messages and two outcome-locator fields plus ADR-0046's
+decimal-precision field, contract-compatibility summary, schema-bound public
+outcome presentation, exact descriptor/compatibility fixtures, and total
+conversions. The shared service owns the
 immutable canonical Draft 2020-12 sources
 `riffdb.command-operation-envelope/v1` and
 `riffdb.command-get-outcome-result/v1`; each is at most 65,536 bytes and the
@@ -3026,6 +3067,14 @@ encoded/scalar bounds remain authoritative even when JSON Schema cannot express
 them. No floating point, display alias, map, lossy integer, alternate base64, or
 unknown property is accepted.
 
+Natural dynamic command input enums are exact compiler-schema strings. The
+common MCP converter represents them as ADR-0046's name-only public submitted
+form; the shared service resolves them under the selected schema. Dynamic
+declared outcomes are rendered from the service-owned schema-bound
+`DeclaredOutcomeView`, so record properties and enum strings use exact
+historical compiler names without an adapter-side catalog lookup. Hosted and
+stdio adapters use the same common renderer.
+
 `MCP-020` Generated schemas MUST come from the compiled contract bundle, not hand-maintained MCP code.
 
 `MCP-021` Structured tool results MUST conform to `outputSchema` and SHOULD also include a compact JSON text content block for client compatibility.
@@ -3091,6 +3140,29 @@ MCP resources provide application-controlled context. Resources are redacted by 
 | `riffdb://provenance/<provenance-id>` | `application/json` | Actor, agent session, source, approval, contract, and affected aggregates |
 | `riffdb://projection/<lineage>/<projection-id>/status` | `application/json` | Lifecycle, frontier, lag, and error state |
 | `riffdb://server/health` | `application/json` | Health and readiness information |
+
+The active-contract JSON includes
+`links.contract_version` for its exact canonical version URI. The immutable
+version JSON includes ADR-0046's bounded compatibility summary, with JSON
+`null` genesis parent or an exact parent version/hash object. Command-plan JSON
+includes the complete checked explanation and the exact compiler-owned input
+and outcome schema objects returned by fenced `ExplainCommand`.
+
+Command-documentation Markdown contains only escaped factual descriptor/explain
+fields, the compiler-rendered explanation, one deterministic minimal input
+example, and one deterministic example per declared-outcome schema branch. The
+common generator supports only the accepted compiler JSON Schema subset,
+validates every generated example with the same Draft 2020-12 validator before
+release, and fails the whole bounded resource on unsupported or unsatisfied
+shape. For an idempotent-mutation execution class it also includes the fixed
+safety notice: `Cancellation after command submission may not prevent commit.
+Resolve an uncertain result with the same idempotency key or the returned
+outcome URI.` It invents no business prose.
+
+Projection-status JSON always includes `lag`: a canonical unsigned-decimal
+string measuring published frontier distance to authoritative head, treating
+`before_first` as ordinal zero, or JSON `null` when no published frontier
+exists. Lag is derived presentation and never a second stored frontier.
 
 Concrete active-contract, contract-version, entity-schema, command-plan,
 command-documentation, exact commit, exact provenance, projection-status, and
@@ -3207,7 +3279,9 @@ retains at most one tools-list marker, one resources-list marker, and one latest
 marker for each of eight subscribed URIs. Output backpressure replaces markers
 rather than blocking or growing a queue, and current authorization/content is
 rerun before emission. Watcher work never refreshes idle time. Across one
-session, watcher work is bounded to 180 ticks, 2,520 background service calls,
+session, watcher work is bounded to 180 ticks, 2,520 logical observer
+operations, 8,280 physical service calls, and at most 46 physical calls in one
+tick,
 at most 1,500 returned/structurally validated compact items per inventory/tick,
 and at most 1,024 retained items per inventory/tick. It retains no snapshot,
 storage transaction, capability proof, cursor between ticks, or unrestricted
@@ -3267,15 +3341,22 @@ MCP list and scan operations use opaque cursor pagination.
 | `MCP-048` | HTTP deployment MUST reject tokens not audience-bound to the canonical MCP resource server. |
 | `MCP-049` | The server MUST sanitize user-controlled strings included in Markdown or text results to prevent misleading instruction injection in generated operational summaries. |
 
-The injected monotonic rate limiter has two exact default token buckets:
-pre-authentication HTTP peer-IP burst 32/refill 8 per second, and
-post-authentication `(transport source, principal, policy tenant, operation or
-compiler-owned tool)` burst 16/refill 4 per second. At most 4,096 total buckets
-are retained; only keys idle at least 300 seconds may be removed, and capacity
-exhaustion denies rather than evicts an active key. Monotonic regression,
-arithmetic/provider failure, and capacity exhaustion fail closed. Forwarding
-headers never select the peer key. Configuration may lower but not raise these
-limits.
+The injected monotonic hosted-HTTP rate limiter has two exact default token
+buckets: pre-authentication trusted peer-IP burst 32/refill 8 per second, and
+post-authentication `(McpHttp, principal, policy tenant, operation or
+compiler-owned tool)` burst 16/refill 4 per second. At most 4,096
+total buckets are retained; only keys idle at least 300 seconds may be removed,
+and capacity exhaustion denies rather than evicts an active key. Monotonic
+regression, arithmetic/provider failure, and capacity exhaustion fail closed.
+Forwarding headers never select the peer key. Configuration may lower but not
+raise these limits.
+
+Production stdio does not recreate the post-authentication bucket from a bearer
+presentation or model input because that public-client process owns no
+authenticated principal or policy tenant. Its calls remain subject to ordinary
+gRPC authentication/admission, shared service authorization and limits, durable
+audit, and server-wide resource bounds. `MCP-010` transport equivalence does not
+require duplicate ingress throttling at a different trust boundary.
 
 One inbound MCP message is at most 1,048,576 bytes. One complete outbound
 JSON-RPC/SSE message, structured result, resource, or error including all
@@ -3918,11 +3999,12 @@ query/status/frontier/lifecycle/page messages; WP-130 owns total wire conversion
 | `riffdb-mcp` | Stdio MCP bridge that forwards one checked bearer presentation through the public gRPC client; `riffdbd` performs authentication. It contains no local authentication, storage, or command semantics. |
 
 The POC ships exactly these three binaries. WP-135's nested-workspace
-`riffdb-budget-public` is a long-lived comparison/evidence runner and is not a
-shipped RiffDB product binary. Deterministic code generation, when needed, is a
-`riffdb contract generate` subcommand. Replay, durable inspection, and recovery
-helpers remain test-harness code in the POC; a privileged offline repair binary
-is deferred to Stage A and requires a separate authorization and audit design.
+`riffdb-budget-public` and WP-139's nested-workspace `riffdb-budget-safety` are
+long-lived comparison/evidence runners and are not shipped RiffDB product
+binaries. Deterministic code generation, when needed, is a `riffdb contract
+generate` subcommand. Replay, durable inspection, and recovery helpers remain
+test-harness code in the POC; a privileged offline repair binary is deferred to
+Stage A and requires a separate authorization and audit design.
 
 WP-150 implements exactly the 12 public command identities
 `contract.validate`, `contract.deploy`, `command.execute`, `command.outcome`,
@@ -4387,6 +4469,16 @@ The repository maintains one long-lived budget comparison application beginning 
 
 Correctness preflight MUST pass before comparative performance results are reported. Reports MUST distinguish matched semantics from weaker or stronger guarantee profiles, including isolation, durability, idempotency, outbox, and projection behavior. PostgreSQL client libraries, SQL, and migration tooling MUST NOT become dependencies of RiffDB production crates. WP-045 establishes the workload, oracle, and PostgreSQL baseline; WP-125 adds the service adapter; WP-135 makes SDK/gRPC canonical; WP-150 packages the demo; and WP-200 reuses the same runner for reproducible comparison evidence.
 
+WP-139 adds a separate correctness-only safety report after WP-135. It preserves
+the canonical PostgreSQL adapter and frozen `riffdb.budget.public-run/v1`
+runner, never benchmarks deliberately unsafe variants, and qualifies every
+claim: PostgreSQL supports safe implementations, while the counterexamples show
+that the corresponding hazard is absent or rejected through RiffDB's supported
+application mutation and compiled-contract surfaces. Its exact four scenarios
+are unlocked lost update, direct-DML precondition bypass, duplicate allocation
+after a deliberately discarded response, and same-key/different-input reuse.
+Real TCP-loss/restart evidence remains WP-190/WP-200.
+
 The Fjall comparison is likewise isolated in a nested non-production workspace with its own lockfile. WP-075 runs the unchanged storage semantic conformance suite against that adapter. WP-200 publishes the resulting correctness, recovery, and performance evidence for the POC-exit engine review; Fjall MUST NOT be linked into `riffdbd` during the POC.
 
 ## 17.9 POC acceptance test
@@ -4591,6 +4683,7 @@ The graph uses hard dependencies. Parallel work is encouraged only after shared 
 | `WP-130` | gRPC server and Rust SDK | WP-020, WP-120, WP-127 | Tonic services/client plus minimal production composition, matching-outcome invocation of the catalog-owned migration driver without instruction/backend-helper access, V2-only post-migration startup join, concrete ID/clock/cursor/digest providers, explicit code-level `sync`, staged lifecycle, and real restart proof | Public API/component-graph conformance plus child-process temporary-redb V1-migration/bootstrap/deploy/budget/restart pass |
 | `WP-137` | Public gRPC MCP parity bridge | WP-130 | Exact six-RPC/22-RPC public extension, conditional discovery and operation schemas, locator-form outcome parity, process generation, public-client methods/retries/error view/protected loader, and compatibility artifacts | Human-accepted schema bytes; descriptor/wire generation, all conversions/client round trips, locator parity, retry/credential, fuzz, and architecture tests pass |
 | `WP-135` | Public SDK comparison adapter | WP-125, WP-130, WP-137 | Public gRPC budget adapter plus exact `riffdb-budget-public` runner and `riffdb.budget.public-run/v1` process protocol | Shared oracle and isolated public-runner process fixtures pass through the canonical client path |
+| `WP-139` | Budget safety counterexample evidence | WP-045, WP-135 | Isolated PostgreSQL negative controls, public-RiffDB contrasts, exact `riffdb.budget.safety-evidence/v1` report, and non-shipped runner | Four live scenarios, exact fixtures, architecture boundaries, and fail-closed demo pass without benchmark contamination |
 | `WP-140` | Native MCP interface | WP-040, WP-120, WP-130, WP-137 | Pinned-rmcp stdio-over-gRPC and hosted-HTTP adapters, exact dynamic/fixed tools and resources, schemas, sessions, observers, rate/bounds, progress/cancellation | Separately accepted fixed/resource fixture bytes, MCP conformance, parity, authorization, generated-tool, limit, and dependency tests pass |
 | `WP-150` | CLI and local developer flow | WP-130, WP-135, WP-137 | Public-only `riffdb`, exact bounded configuration/credentials/retries, checked budget runner, and reviewed JSONL/human output | Interface-only fixture acceptance and all public acceptance operations execute without internal APIs |
 | `WP-160` | Durable outbox | WP-100, WP-120 | Event scanner, delivery state, test connector, retry and duplicate simulations | Crash and duplicate-delivery tests pass |
@@ -4600,7 +4693,11 @@ The graph uses hard dependencies. Parallel work is encouraged only after shared 
 | `WP-190` | Integrated crash harness | WP-070, WP-100, WP-160, WP-170, WP-185 | Named failpoints, process controller, recovery assertions including synchronized post-commit/pre-response TCP loss and process termination/restart | Full cross-component failpoint matrix and same-key public replay identity/uniqueness assertions pass |
 | `WP-200` | POC acceptance and release | All POC packages | One-command demo, benchmark report, security notes, release artifacts | POC-001 through POC-010 signed off |
 
-WP-045, WP-075, WP-125, and WP-135 are evidence tracks rather than dependencies of the production semantic kernel. They may not add PostgreSQL or Fjall dependencies to the main workspace. WP-200 consumes their reports and runner, but a failure in a comparison implementation does not weaken or redefine RiffDB semantics.
+WP-045, WP-075, WP-125, WP-135, and WP-139 are evidence tracks rather than
+dependencies of the production semantic kernel. They may not add PostgreSQL or
+Fjall dependencies to the main workspace. WP-200 consumes their reports and
+runners, but a failure in a comparison implementation does not weaken or
+redefine RiffDB semantics.
 
 ## 19.5 Recommended parallelization waves
 
@@ -4622,7 +4719,7 @@ These are dependency waves, not schedule commitments.
 | L | WP-130 |
 | M | WP-137 |
 | N | WP-135, WP-140 |
-| O | WP-150 |
+| O | WP-139, WP-150 |
 | P | WP-185 |
 | Q | WP-190 |
 | R | WP-200 |
@@ -4724,7 +4821,12 @@ Do not weaken a correctness or security requirement to make a test pass. Add a f
 
 **P0 work-package members:** WP-030, WP-040, WP-060, and WP-080.
 
-The long-lived budget comparison workload, deterministic oracle, and PostgreSQL baseline begin after the compiler as a non-production evidence track. They are not P0 gate members, but their public-adapter and benchmark evidence must be complete before WP-200 closes P2.
+The long-lived budget comparison workload, deterministic oracle, and PostgreSQL
+baseline begin after the compiler as a non-production evidence track. They are
+not P0 gate members. After the public adapter exists, WP-139 adds correctness-
+only counterexample evidence without becoming a P1 or P2 gate member. Their
+public-adapter, safety-report, and benchmark evidence must be complete before
+WP-200 closes P2.
 
 ## 20.3 Stage P1 — durable standalone POC
 
@@ -4774,6 +4876,9 @@ WP-110, WP-120, WP-127, WP-130, WP-137, and WP-150. WP-065, WP-127, and
 WP-137 are explicit gate members as well as hard dependencies of later packages;
 they do not replace any previously listed member.
 
+WP-139 begins only after WP-135 and remains a non-gating comparison track. Its
+operational pause does not add a semantic dependency to WP-140 or WP-150.
+
 ## 20.4 Stage P2 — native agent interface and projection proof
 
 **Objective:** Demonstrate that agents can safely discover and invoke contracts as dynamic MCP tools and reason about durable outcomes and derived state.
@@ -4788,6 +4893,8 @@ they do not replace any previously listed member.
 - Projection filter/count/sum engine with a durable frontier.
 - Extension of the runnable P1 `riffdbd` graph with MCP HTTP, derived workers,
   observability/derived health, and the full cross-component crash matrix.
+- Consumption of WP-139's checked safety report with deliberately unsafe
+  PostgreSQL variants excluded from every performance result.
 - Full POC demo and handoff documentation.
 
 **Gate P2 / POC exit:** `POC-001` through `POC-010` pass; known limitations are explicit; architecture review confirms the semantics are worth productizing.
@@ -4954,6 +5061,12 @@ earlier deadline governs unless a reviewed reconciliation changes both sources.
 | `ADR-0040` | Accepted | Six-RPC public parity bridge, conditional discovery/fences, operation schemas, locator outcome parity, server generation, public-client helpers, and WP-137 | WP-137 before WP-135/WP-140/WP-150 |
 | `ADR-0041` | Accepted | Public-only CLI dependencies/credentials/retries/configuration/JSONL, exact budget runner, package sequencing, and separately reviewed WP-155 reservation | WP-135, WP-137, and WP-150 interfaces |
 | `ADR-0042` | Accepted | Sealed catalog-owned, concrete-backend-branded index migration driver with identity-only storage API and private backend helpers | WP-050 through WP-130 correction and WP-190/WP-200 evidence |
+| `ADR-0043` | Accepted | Auth-owned retained opaque MCP credential with bounded zeroizing copy and authentication-only borrow | WP-140 hosted HTTP credential handoff |
+| `ADR-0044` | Accepted | Hosted MCP context construction, foundational adapter dependencies, current-thread stdio runtime, and hard rmcp telemetry suppression | WP-140 implementation and WP-185 composition |
+| `ADR-0045` | Accepted | Isolated four-scenario budget safety counterexamples, qualified claim boundary, exact non-shipped report/runner, and WP-139 ownership | WP-139 and WP-200 evidence |
+| `ADR-0046` | Accepted | Decimal precision, schema-bound names, compatibility metadata, complete resources, and hosted-only MCP limiting | WP-137 and WP-140 public presentation |
+| `ADR-0047` | Accepted | Pre-release object-root correction for thirteen canonical MCP schemas | WP-140 schema fixtures and conformance |
+| `ADR-0048` | Accepted | Separate logical observer operations from metered physical service calls and remove the stdio parity probe | WP-140 observer bounds and conformance |
 
 ## 22.2 Decisions to resolve before implementation reaches the named gate
 
@@ -5201,6 +5314,10 @@ The demo MUST make failure behavior visible, not only the success path. It shows
 - A read-after-sequence query.
 - A provenance trace and capability decision.
 - An unauthorized agent seeing a smaller tool catalog.
+- The four WP-139 counterexamples beside the preserved correct PostgreSQL
+  control, with every "impossible" claim qualified to RiffDB's supported
+  application mutation surface and every unsafe variant excluded from
+  benchmarks.
 
 The demo script exits non-zero when any assertion fails and writes a JSON report containing requirement IDs, command sequences, outcome types, and integrity status.
 
