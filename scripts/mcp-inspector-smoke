@@ -1,0 +1,216 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+ROOT="$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)"
+cd "$ROOT"
+
+for command in node npm jq timeout; do
+    if ! command -v "$command" >/dev/null 2>&1; then
+        printf 'required command is unavailable: %s\n' "$command" >&2
+        exit 1
+    fi
+done
+
+node -e '
+const [major, minor, patch] = process.versions.node.split(".").map(Number);
+if (major < 22 || (major === 22 && (minor < 7 || (minor === 7 && patch < 5)))) {
+  console.error("Node >=22.7.5 is required");
+  process.exit(1);
+}
+'
+
+if [[ -x "${HOME}/.cargo/bin/cargo" ]]; then
+    CARGO_BIN="${CARGO:-${HOME}/.cargo/bin/cargo}"
+else
+    CARGO_BIN="${CARGO:-cargo}"
+fi
+
+"$CARGO_BIN" build \
+    -p riffdb-api-mcp \
+    --all-features \
+    --bin riffdb-mcp-conformance-stdio \
+    --example riffdb-mcp-conformance-http
+
+TARGET_DIRECTORY="$(
+    "$CARGO_BIN" metadata --no-deps --format-version 1 |
+        jq -er '.target_directory'
+)"
+STDIO_SERVER="${TARGET_DIRECTORY}/debug/riffdb-mcp-conformance-stdio"
+HTTP_SERVER="${TARGET_DIRECTORY}/debug/examples/riffdb-mcp-conformance-http"
+for server in "$STDIO_SERVER" "$HTTP_SERVER"; do
+    if [[ ! -x "$server" ]]; then
+        printf 'conformance server was not built: %s\n' "$server" >&2
+        exit 1
+    fi
+done
+
+WORK_DIRECTORY="$(mktemp -d "${TMPDIR:-/tmp}/riffdb-mcp-inspector.XXXXXX")"
+NPM_CACHE="${TMPDIR:-/tmp}/riffdb-mcp-inspector-npm-${UID:-user}"
+mkdir -p "$NPM_CACHE"
+chmod 700 "$NPM_CACHE"
+export npm_config_cache="$NPM_CACHE"
+export npm_config_loglevel=error
+
+HTTP_PID=""
+cleanup() {
+    if [[ -n "$HTTP_PID" ]] && kill -0 "$HTTP_PID" 2>/dev/null; then
+        kill -TERM "$HTTP_PID" 2>/dev/null || true
+        for _ in {1..50}; do
+            if ! kill -0 "$HTTP_PID" 2>/dev/null; then
+                break
+            fi
+            sleep 0.1
+        done
+        if kill -0 "$HTTP_PID" 2>/dev/null; then
+            kill -KILL "$HTTP_PID" 2>/dev/null || true
+        fi
+    fi
+    if [[ -n "$HTTP_PID" ]]; then
+        wait "$HTTP_PID" 2>/dev/null || true
+    fi
+    rm -rf "$WORK_DIRECTORY"
+}
+trap cleanup EXIT INT TERM
+
+INSPECTOR=(
+    npm exec
+    --yes
+    --prefer-offline
+    --package=@modelcontextprotocol/inspector@0.21.2
+    --package=@modelcontextprotocol/inspector-cli@0.21.2
+    --package=@modelcontextprotocol/sdk@1.25.2
+    --
+    mcp-inspector
+)
+
+timeout --signal=TERM --kill-after=5s 180s \
+    "${INSPECTOR[@]}" --help >/dev/null
+
+"$HTTP_SERVER" \
+    >"$WORK_DIRECTORY/http-server.stdout" \
+    2>"$WORK_DIRECTORY/http-server.stderr" &
+HTTP_PID=$!
+
+HTTP_URL=""
+for _ in {1..100}; do
+    if ! kill -0 "$HTTP_PID" 2>/dev/null; then
+        cat "$WORK_DIRECTORY/http-server.stderr" >&2
+        printf 'hosted MCP conformance server exited during startup\n' >&2
+        exit 1
+    fi
+    HTTP_URL="$(
+        sed -n 's/^RIFFDB_MCP_CONFORMANCE_URL=//p' \
+            "$WORK_DIRECTORY/http-server.stdout" |
+            head -n 1
+    )"
+    if [[ -n "$HTTP_URL" ]]; then
+        break
+    fi
+    sleep 0.1
+done
+if [[ -z "$HTTP_URL" ]]; then
+    printf 'hosted MCP conformance server did not publish its endpoint\n' >&2
+    exit 1
+fi
+
+run_inspector() {
+    local output=$1
+    shift
+    timeout --signal=TERM --kill-after=5s 75s \
+        "${INSPECTOR[@]}" "$@" >"$output"
+}
+
+run_inspector \
+    "$WORK_DIRECTORY/stdio-tools.json" \
+    --cli "$STDIO_SERVER" \
+    --method tools/list
+run_inspector \
+    "$WORK_DIRECTORY/stdio-resources.json" \
+    --cli "$STDIO_SERVER" \
+    --method resources/list
+
+# This is a fixed public conformance credential, never a production secret.
+CAPABILITY_TOKEN="AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8"
+run_inspector \
+    "$WORK_DIRECTORY/http-tools.json" \
+    --cli "$HTTP_URL" \
+    --transport http \
+    --header "Authorization: Bearer ${CAPABILITY_TOKEN}" \
+    --method tools/list
+run_inspector \
+    "$WORK_DIRECTORY/http-resources.json" \
+    --cli "$HTTP_URL" \
+    --transport http \
+    --header "Authorization: Bearer ${CAPABILITY_TOKEN}" \
+    --method resources/list
+
+EXPECTED_TOOL_NAMES='[
+    "riffdb.contract.validate",
+    "riffdb.contract.get_active",
+    "riffdb.contract.explain_command",
+    "riffdb.contract.deploy",
+    "riffdb.command.get_outcome",
+    "riffdb.entity.get",
+    "riffdb.entity.scan_index",
+    "riffdb.commit.get",
+    "riffdb.commit.scan",
+    "riffdb.provenance.trace",
+    "riffdb.projection.query",
+    "riffdb.projection.status",
+    "riffdb.outbox.list_pending",
+    "riffdb.server.health",
+    "riffdb.cmd.legalspend.allocatebudget",
+    "riffdb.cmd.legalspend.retiredbudget"
+]'
+EXPECTED_RESOURCE_URIS='[
+    "riffdb://contract/active",
+    "riffdb://contract/LegalSpend/2",
+    "riffdb://entity/LegalSpend/1/schema",
+    "riffdb://command/LegalSpend/2/plan",
+    "riffdb://command/LegalSpend/2/docs",
+    "riffdb://projection/LegalSpend/1/status",
+    "riffdb://server/health"
+]'
+
+assert_tools() {
+    jq -e \
+        --argjson expected "$EXPECTED_TOOL_NAMES" \
+        '([.tools[].name] == $expected)' \
+        "$1" >/dev/null
+}
+
+assert_resources() {
+    jq -e \
+        --argjson expected "$EXPECTED_RESOURCE_URIS" \
+        '([.resources[].uri] == $expected)' \
+        "$1" >/dev/null
+}
+
+assert_tools "$WORK_DIRECTORY/stdio-tools.json"
+assert_tools "$WORK_DIRECTORY/http-tools.json"
+assert_resources "$WORK_DIRECTORY/stdio-resources.json"
+assert_resources "$WORK_DIRECTORY/http-resources.json"
+
+jq -S '[.tools[].name]' "$WORK_DIRECTORY/stdio-tools.json" \
+    >"$WORK_DIRECTORY/stdio-tool-names.json"
+jq -S '[.tools[].name]' "$WORK_DIRECTORY/http-tools.json" \
+    >"$WORK_DIRECTORY/http-tool-names.json"
+cmp "$WORK_DIRECTORY/stdio-tool-names.json" \
+    "$WORK_DIRECTORY/http-tool-names.json"
+
+jq -S '[.resources[].uri]' "$WORK_DIRECTORY/stdio-resources.json" \
+    >"$WORK_DIRECTORY/stdio-resource-uris.json"
+jq -S '[.resources[].uri]' "$WORK_DIRECTORY/http-resources.json" \
+    >"$WORK_DIRECTORY/http-resource-uris.json"
+cmp "$WORK_DIRECTORY/stdio-resource-uris.json" \
+    "$WORK_DIRECTORY/http-resource-uris.json"
+
+if grep -R -F \
+    -e "$CAPABILITY_TOKEN" \
+    -e "riffdb-internal-canary-never-public" \
+    "$WORK_DIRECTORY"/*.json >/dev/null; then
+    printf 'Inspector output exposed a conformance credential or internal canary\n' >&2
+    exit 1
+fi
+
+printf 'MCP Inspector 0.21.2 stdio/HTTP tools and resources smoke passed\n'
