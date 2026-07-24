@@ -93,7 +93,7 @@ crates/riffdb-cli/fixtures/output-v1/server.health.public_error.jsonl	205	bb60e8
 crates/riffdb-cli/fixtures/output-v1/server.health.ready.jsonl	682	47e8155cc0efca6db0be5e6c461e50799dcd50d1daad92671881679ee0abb9b9
 crates/riffdb-cli/fixtures/output-v1/server.health.response_too_large.jsonl	172	8f089e49bc1a7ada259cef541b68248514818d294924d8b37f20499363f1f7fc
 crates/riffdb-cli/fixtures/output-v1/server.health.transport_unavailable.jsonl	174	0f2079295daca0fc23a1d5bfde30766da8ae5df0e0c8bd9f9186cb475ac5fd81
-crates/riffdb-cli/interface/v1/README.md	3508	b5366d735e82142cfc498ed8a0eac815b77ca40627d37e9cf5a7551520df3d63
+crates/riffdb-cli/interface/v1/README.md	3491	1f8fd4e6c8bf77803110bddfaa8459344d8c246e88f94f9c7252eef606045159
 crates/riffdb-cli/interface/v1/client-complete.toml	134	662fcf6be346a49893e7a5aac0dfe5a031a2e4f0f66564cdd2d84a240993c7f7
 crates/riffdb-cli/interface/v1/client-ipv6-json.toml	74	958542c00f82540ed4f3e8cd4b566abc1442ef2688af693c3fc87fefa25acfbf
 crates/riffdb-cli/interface/v1/client-minimal.toml	9	cb9f32ed2e7005500c36c8dce91f5b7baaa43ca0bd735eb20c259de23ee1b4c9

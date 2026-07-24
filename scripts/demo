@@ -1,0 +1,28 @@
+#!/bin/sh
+set -eu
+
+if [ "${1-}" = "--dry-run" ]; then
+    if [ "$#" -ne 1 ]; then
+        exit 2
+    fi
+    printf '%s\n' \
+        'riffdb-demo-v1: WP-150 dry-run checks the packaged public comparison handoff' \
+        'riffdb-demo-v1: live mode requires an already prepared loopback RiffDB server' \
+        'riffdb-demo-v1: live mode requires RIFFDB_DEMO_RUNNER and RIFFDB_CREDENTIAL_FILE' \
+        'riffdb-demo-v1: live mode runs the checked sequential public comparison' \
+        'riffdb-demo-v1: child output is validated and never relayed' \
+        'riffdb-demo-v1: full one-command POC orchestration remains owned by WP-200'
+    exit 0
+fi
+
+if [ "$#" -ne 0 ]; then
+    exit 2
+fi
+
+: "${RIFFDB_DEMO_RUNNER:?set RIFFDB_DEMO_RUNNER to riffdb-budget-public}"
+: "${RIFFDB_CREDENTIAL_FILE:?set RIFFDB_CREDENTIAL_FILE to a protected normal credential}"
+
+exec cargo run --quiet -p riffdb-cli --bin riffdb -- \
+    demo budget \
+    --runner "$RIFFDB_DEMO_RUNNER" \
+    --case sequential
