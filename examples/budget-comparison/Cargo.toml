@@ -8,9 +8,10 @@ autotests = false
 
 [workspace]
 resolver = "3"
-# WP-045 established `members = ["core", "postgres"]`; WP-135 adds the
-# public-gRPC adapter explicitly. Other in-tree path dependencies are implicit.
-members = ["core", "postgres", "riffdb-grpc"]
+# WP-045 established `members = ["core", "postgres"]`; WP-135 added the
+# public-gRPC adapter, and WP-139 adds isolated safety evidence. Other in-tree
+# path dependencies are implicit.
+members = ["core", "postgres", "riffdb-grpc", "safety-evidence"]
 
 [workspace.package]
 version = "0.1.0"
@@ -69,6 +70,14 @@ path = "tests/service_comparison.rs"
 [[test]]
 name = "public_comparison"
 path = "tests/public_comparison.rs"
+
+[[test]]
+name = "safety_evidence"
+path = "tests/safety_evidence.rs"
+
+[[test]]
+name = "safety_architecture"
+path = "tests/safety_architecture.rs"
 
 [lints]
 workspace = true

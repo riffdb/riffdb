@@ -10,6 +10,7 @@ on:
       - "Cargo.toml"
       - "deny.toml"
       - "rust-toolchain.toml"
+      - "scripts/budget-safety-demo"
       - "scripts/tool-versions"
   pull_request:
     paths:
@@ -20,6 +21,7 @@ on:
       - "Cargo.toml"
       - "deny.toml"
       - "rust-toolchain.toml"
+      - "scripts/budget-safety-demo"
       - "scripts/tool-versions"
   workflow_dispatch:
 
@@ -83,9 +85,11 @@ jobs:
           cargo fmt --manifest-path examples/budget-comparison/Cargo.toml
           --all -- --check
       - name: Check generated fixtures
-        run: >-
-          cargo run --locked --manifest-path examples/budget-comparison/Cargo.toml
-          -p riffdb-budget-comparison-core --bin budget-fixtures -- --check
+        run: |
+          cargo run --locked --manifest-path examples/budget-comparison/Cargo.toml \
+            -p riffdb-budget-comparison-core --bin budget-fixtures -- --check
+          cargo run --locked --manifest-path examples/budget-comparison/Cargo.toml \
+            -p riffdb-budget-safety-evidence --bin budget-safety-fixtures -- --check
       - name: Check dependency surface
         run: |
           cargo tree --locked --manifest-path examples/budget-comparison/Cargo.toml --workspace
@@ -94,9 +98,7 @@ jobs:
             exit 1
           fi
       - name: Check dependency policy
-        run: >-
-          cargo deny --manifest-path examples/budget-comparison/Cargo.toml
-          --workspace --locked check --config deny.toml
+        run: cargo deny --manifest-path examples/budget-comparison/Cargo.toml check
       - name: Audit advisories
         run: cargo audit --file examples/budget-comparison/Cargo.lock
       - name: Check unused dependencies
@@ -105,8 +107,26 @@ jobs:
         run: >-
           cargo clippy --locked --manifest-path examples/budget-comparison/Cargo.toml
           --workspace --all-targets --all-features -- -D warnings
+      - name: Build RiffDB safety process binaries
+        run: |
+          cargo build --locked -p riffdb-server --bin riffdbd \
+            --target-dir target/wp139-root
+          cargo build --locked --manifest-path examples/budget-comparison/Cargo.toml \
+            -p riffdb-budget-safety-evidence --bin riffdb-budget-safety \
+            --target-dir target/wp139-comparison
       - name: Run mandatory live acceptance
+        env:
+          RIFFDB_BUDGET_POSTGRES_REQUIRED: "0"
         run: cargo test --manifest-path examples/budget-comparison/Cargo.toml --workspace
+      - name: Run required budget safety evidence
+        env:
+          RIFFDB_BUDGET_POSTGRES_REQUIRED: "1"
+          RIFFDB_BUDGET_RIFFDBD_BIN: ${{ github.workspace }}/target/wp139-root/debug/riffdbd
+          RIFFDB_BUDGET_SAFETY_BIN: ${{ github.workspace }}/target/wp139-comparison/debug/riffdb-budget-safety
+        run: >-
+          cargo test --locked --manifest-path examples/budget-comparison/Cargo.toml
+          -p riffdb-budget-comparison --test safety_evidence
+          --target-dir target/wp139-comparison -- --test-threads=1
       - name: Build documentation
         env:
           RUSTDOCFLAGS: -D warnings

@@ -27,11 +27,42 @@ fn postgres_baseline_is_structurally_isolated_from_production() {
     let nested_manifest = include_str!("../Cargo.toml");
     let adapter_manifest = include_str!("../postgres/Cargo.toml");
     let core_manifest = include_str!("../core/Cargo.toml");
-    assert!(nested_manifest.contains("members = [\"core\", \"postgres\"]"));
+    assert_eq!(
+        workspace_members(nested_manifest),
+        ["core", "postgres", "riffdb-grpc", "safety-evidence"]
+    );
     assert!(adapter_manifest.contains("version = \"=0.19.14\""));
     assert!(adapter_manifest.contains("default-features = false"));
     assert!(core_manifest.contains("version = \"=1.0.150\""));
     assert!(core_manifest.contains("features = [\"std\"]"));
+}
+
+fn workspace_members(manifest: &str) -> Vec<&str> {
+    let workspace = manifest
+        .split_once("[workspace]\n")
+        .expect("comparison manifest has a workspace section")
+        .1
+        .split_once("\n[workspace.package]")
+        .expect("workspace section has an exact end")
+        .0;
+    let assignment = workspace
+        .lines()
+        .map(str::trim)
+        .find(|line| line.starts_with("members = "))
+        .expect("workspace has an actual members assignment");
+    assignment
+        .strip_prefix("members = [")
+        .and_then(|value| value.strip_suffix(']'))
+        .expect("workspace members use one bounded array")
+        .split(',')
+        .map(str::trim)
+        .map(|member| {
+            member
+                .strip_prefix('"')
+                .and_then(|value| value.strip_suffix('"'))
+                .expect("workspace member is a quoted path")
+        })
+        .collect()
 }
 
 #[test]
