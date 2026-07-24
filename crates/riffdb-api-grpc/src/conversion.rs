@@ -10,18 +10,18 @@ use riffdb_service::{
     CapabilityTransitionView, CommandDurability, CommandToolDescriptor, CommandToolDiscoveryItem,
     CommitSubscriptionEndReason, CommitSubscriptionEvent, CommitView, CompactCommandToolDescriptor,
     CompactCommandToolDiscoveryItem, CompactResourceDescriptor, CompactResourceDescriptorRef,
-    ContractDescriptor, ContractSelection, ContractSource, ContractValidationResult,
-    CreateCapabilityResult, CursorToken, DeployContractRequest, DeployContractResult,
-    DiscoverCommandToolsRequest, DiscoverCommandToolsResult, DiscoverCommandToolsResultRef,
-    DiscoverResourcesRequest, DiscoverResourcesResult, DiscoverResourcesResultRef,
-    DiscoveryCatalogFence, DiscoveryCatalogStateRef, DiscoveryRepresentation,
-    ExecuteCommandRequest, ExecuteCommandResult, ExplainCommandRequest, ExplainCommandResult,
-    FieldSelection, FixedToolKind, GeneratedSchemaIdentity, GetActiveContractRequest,
-    GetActiveContractResult, GetCommitRequest, GetCommitResult, GetContractVersionRequest,
-    GetContractVersionResult, GetEntityRequest, GetEntityResult, GetProjectionStatusRequest,
-    GetProjectionStatusResult, HealthComponentKind, HealthComponentStatus, HealthRequest,
-    HealthResult, HealthStatus, JournaledCommandResult, JournaledCompletion,
-    ListPendingOutboxDeliveriesRequest, ListPendingOutboxDeliveriesResult,
+    ContractCompatibilityClass, ContractDescriptor, ContractSelection, ContractSource,
+    ContractValidationResult, CreateCapabilityResult, CursorToken, DeclaredOutcomeView,
+    DeployContractRequest, DeployContractResult, DiscoverCommandToolsRequest,
+    DiscoverCommandToolsResult, DiscoverCommandToolsResultRef, DiscoverResourcesRequest,
+    DiscoverResourcesResult, DiscoverResourcesResultRef, DiscoveryCatalogFence,
+    DiscoveryCatalogStateRef, DiscoveryRepresentation, ExecuteCommandRequest, ExecuteCommandResult,
+    ExplainCommandRequest, ExplainCommandResult, FieldSelection, FixedToolKind,
+    GeneratedSchemaIdentity, GetActiveContractRequest, GetActiveContractResult, GetCommitRequest,
+    GetCommitResult, GetContractVersionRequest, GetContractVersionResult, GetEntityRequest,
+    GetEntityResult, GetProjectionStatusRequest, GetProjectionStatusResult, HealthComponentKind,
+    HealthComponentStatus, HealthRequest, HealthResult, HealthStatus, JournaledCommandResult,
+    JournaledCompletion, ListPendingOutboxDeliveriesRequest, ListPendingOutboxDeliveriesResult,
     NormalCreateCapabilityRequest, NormalCreateCapabilityResult, OperationSchemaArtifact,
     OperationSchemaCatalog, OperationSchemaCatalogIdentity, OperationSchemaIdentity,
     OutboxDeliveryState, OutcomeResourceLocator, PageLimit, PageRequest, PreBootstrapLifecycle,
@@ -29,11 +29,11 @@ use riffdb_service::{
     PublishedApplyMode, QueryProjectionRequest, QueryProjectionResult,
     ResolveCommandOutcomeRequest, ResolveCommandOutcomeResult, ResourceDescriptor,
     ResourceDescriptorRef, ResourceDiscoveryKind, RevokeCapabilityRequest, RevokeCapabilityResult,
-    ScanCommitsRequest, ScanCommitsResult, ScanIndexRequest, ScanIndexResult, SourceName,
-    StatisticsRequest, StatisticsResult, SubmittedDecimal, SubmittedEnum, SubmittedField,
-    SubmittedFieldIdentity, SubmittedMoney, SubmittedRecord, SubmittedValue,
-    SubscribeToCommitsRequest, TraceProvenanceRequest, TraceProvenanceResult,
-    ValidateContractRequest,
+    ScanCommitsRequest, ScanCommitsResult, ScanIndexRequest, ScanIndexResult,
+    SchemaBoundOutcomeRecord, SchemaBoundOutcomeValue, SourceName, StatisticsRequest,
+    StatisticsResult, SubmittedDecimal, SubmittedEnum, SubmittedField, SubmittedFieldIdentity,
+    SubmittedMoney, SubmittedRecord, SubmittedValue, SubscribeToCommitsRequest,
+    TraceProvenanceRequest, TraceProvenanceResult, ValidateContractRequest,
 };
 use riffdb_types::{
     ActorId, ActorKind, AdmittedActorContext, Audience, CapabilityGrantV1, CapabilityId,
@@ -826,7 +826,7 @@ pub fn execute_command_result_to_proto(
                 contract_version: result.contract_version().get(),
                 plan_hash: result.plan_hash().as_bytes().to_vec(),
                 outcome_type: outcome.outcome_name().as_str().to_owned(),
-                outcome: Some(record_as_public_value(outcome.value())?),
+                outcome: Some(schema_bound_outcome_as_public_value(outcome)?),
                 provenance_uri: String::new(),
                 durability_mode: String::new(),
                 outcome_uri: None,
@@ -854,7 +854,7 @@ pub fn journaled_command_result_to_proto(
         contract_version: result.contract_version().get(),
         plan_hash: result.plan_hash().as_bytes().to_vec(),
         outcome_type: outcome.outcome_name().as_str().to_owned(),
-        outcome: Some(record_as_public_value(outcome.value())?),
+        outcome: Some(schema_bound_outcome_as_public_value(outcome)?),
         provenance_uri: format!("riffdb://provenance/{}", result.provenance_id()),
         durability_mode: durability_mode.to_owned(),
         outcome_uri: Some(result.outcome_locator().canonical_uri().to_owned()),
@@ -1874,12 +1874,39 @@ pub fn revoke_capability_result_to_proto(
 /// Converts immutable contract metadata mechanically.
 #[must_use]
 pub fn contract_descriptor_to_proto(descriptor: &ContractDescriptor) -> v1::ContractDescriptor {
+    let (parent_contract_version, parent_bundle_hash) = descriptor
+        .compatibility()
+        .parent()
+        .map_or((None, None), |(version, bundle_hash)| {
+            (Some(version.get()), Some(bundle_hash.as_bytes().to_vec()))
+        });
+    let overall = match descriptor.compatibility().overall() {
+        ContractCompatibilityClass::Compatible => v1::ContractCompatibilityClass::Compatible,
+        ContractCompatibilityClass::RequiresExplicitVersion => {
+            v1::ContractCompatibilityClass::RequiresExplicitVersion
+        }
+        ContractCompatibilityClass::Incompatible => v1::ContractCompatibilityClass::Incompatible,
+    };
     v1::ContractDescriptor {
         contract_lineage: descriptor.lineage().as_str().to_owned(),
         contract_version: descriptor.version().get(),
         bundle_hash: descriptor.bundle_hash().as_bytes().to_vec(),
         source_hash: descriptor.source_hash().as_bytes().to_vec(),
         plan_root_hash: descriptor.plan_root_hash().as_bytes().to_vec(),
+        compatibility: Some(v1::ContractCompatibilitySummary {
+            parent_contract_version,
+            parent_bundle_hash,
+            overall: overall as i32,
+            code_counts: descriptor
+                .compatibility()
+                .code_counts()
+                .iter()
+                .map(|entry| v1::ContractCompatibilityCodeCount {
+                    code: entry.code().to_owned(),
+                    count: entry.count().get(),
+                })
+                .collect(),
+        }),
     }
 }
 
@@ -1919,11 +1946,18 @@ pub fn submitted_value_from_proto(value: v1::Value) -> Result<SubmittedValue, St
                 .then(|| SourceName::new(value.name))
                 .transpose()
                 .map_err(|_| invalid_request())?;
-            Ok(SubmittedValue::Enum(SubmittedEnum::new(
-                EnumTypeId::new(value.type_id).ok_or_else(invalid_request)?,
-                EnumVariantId::new(value.variant_id).ok_or_else(invalid_request)?,
+            let submitted = match (
+                EnumTypeId::new(value.type_id),
+                EnumVariantId::new(value.variant_id),
                 name,
-            )))
+            ) {
+                (Some(type_id), Some(variant_id), name) => {
+                    SubmittedEnum::new(type_id, variant_id, name)
+                }
+                (None, None, Some(name)) => SubmittedEnum::name_only(name),
+                _ => return Err(invalid_request()),
+            };
+            Ok(SubmittedValue::Enum(submitted))
         }
         Kind::ListValue(value) => SubmittedValue::list(
             value
@@ -1982,12 +2016,64 @@ pub fn canonical_record_to_public(
     }
 }
 
-fn record_as_public_value(record: &riffdb_types::CanonicalRecord) -> Result<v1::Value, Status> {
+fn schema_bound_outcome_as_public_value(
+    outcome: &DeclaredOutcomeView,
+) -> Result<v1::Value, Status> {
     Ok(v1::Value {
-        kind: Some(v1::value::Kind::RecordValue(canonical_record_to_public(
-            record,
+        kind: Some(v1::value::Kind::RecordValue(schema_bound_record_to_public(
+            outcome.schema_bound_value(),
         )?)),
     })
+}
+
+fn schema_bound_record_to_public(
+    record: SchemaBoundOutcomeRecord<'_>,
+) -> Result<v1::ValueRecord, Status> {
+    let mut fields = Vec::with_capacity(record.len());
+    for index in 0..record.len() {
+        let field = record.field(index).ok_or_else(invalid_service_response)?;
+        fields.push(v1::ValueField {
+            field_id: Some(field.field_id().get()),
+            name: field.field_name().as_str().to_owned(),
+            value: Some(schema_bound_value_to_public(
+                field.value().ok_or_else(invalid_service_response)?,
+            )?),
+        });
+    }
+    Ok(v1::ValueRecord { fields })
+}
+
+fn schema_bound_value_to_public(value: SchemaBoundOutcomeValue<'_>) -> Result<v1::Value, Status> {
+    let kind = match value {
+        SchemaBoundOutcomeValue::Null => {
+            v1::value::Kind::NullValue(v1::NullValue::NullValue as i32)
+        }
+        SchemaBoundOutcomeValue::Scalar(value) => {
+            return canonical_value_to_public(value);
+        }
+        SchemaBoundOutcomeValue::Enum {
+            type_id,
+            variant_id,
+            variant_name,
+        } => v1::value::Kind::EnumValue(v1::EnumValue {
+            type_id: type_id.get(),
+            variant_id: variant_id.get(),
+            name: variant_name.as_str().to_owned(),
+        }),
+        SchemaBoundOutcomeValue::List(values) => {
+            let mut output = Vec::with_capacity(values.len());
+            for index in 0..values.len() {
+                output.push(schema_bound_value_to_public(
+                    values.value(index).ok_or_else(invalid_service_response)?,
+                )?);
+            }
+            v1::value::Kind::ListValue(v1::ValueList { values: output })
+        }
+        SchemaBoundOutcomeValue::Record(record) => {
+            v1::value::Kind::RecordValue(schema_bound_record_to_public(record)?)
+        }
+    };
+    Ok(v1::Value { kind: Some(kind) })
 }
 
 /// Converts one exact application frontier, preserving the before-first sentinel.
@@ -2457,8 +2543,17 @@ fn capability_transition_to_proto(
 
 fn submitted_decimal(value: &v1::Decimal) -> Result<SubmittedDecimal, Status> {
     let scale = u8::try_from(value.scale).map_err(|_| invalid_request())?;
-    SubmittedDecimal::from_minimal_twos_complement(&value.coefficient_twos_complement, scale)
-        .map_err(|_| invalid_request())
+    let precision = value
+        .precision
+        .map(u8::try_from)
+        .transpose()
+        .map_err(|_| invalid_request())?;
+    SubmittedDecimal::from_minimal_twos_complement_with_precision(
+        &value.coefficient_twos_complement,
+        scale,
+        precision,
+    )
+    .map_err(|_| invalid_request())
 }
 
 #[cfg(test)]
@@ -2529,6 +2624,7 @@ mod tests {
             kind: Some(v1::value::Kind::DecimalValue(v1::Decimal {
                 coefficient_twos_complement: vec![123],
                 scale: 2,
+                precision: None,
             })),
         })
         .expect("structurally valid decimal");
@@ -2537,6 +2633,25 @@ mod tests {
         };
         assert_eq!(decimal.coefficient(), 123);
         assert_eq!(decimal.scale(), 2);
+        assert_eq!(decimal.precision(), None);
+    }
+
+    #[test]
+    fn decimal_conversion_preserves_supplied_precision() {
+        let submitted = submitted_value_from_proto(v1::Value {
+            kind: Some(v1::value::Kind::DecimalValue(v1::Decimal {
+                coefficient_twos_complement: vec![123],
+                scale: 2,
+                precision: Some(8),
+            })),
+        })
+        .expect("structurally valid decimal");
+        let SubmittedValue::Decimal(decimal) = submitted else {
+            panic!("expected submitted decimal")
+        };
+        assert_eq!(decimal.coefficient(), 123);
+        assert_eq!(decimal.scale(), 2);
+        assert_eq!(decimal.precision(), Some(8));
     }
 
     #[test]
@@ -2550,6 +2665,7 @@ mod tests {
                 kind: Some(v1::value::Kind::DecimalValue(v1::Decimal {
                     coefficient_twos_complement: vec![123],
                     scale: 2,
+                    precision: None,
                 })),
             }],
             fields: Some(v1::FieldSelection { field_ids: vec![1] }),
@@ -2590,9 +2706,50 @@ mod tests {
         let SubmittedValue::Enum(value) = &request.leading_components()[0] else {
             panic!("expected submitted enum")
         };
-        assert_eq!(value.type_id().get(), 5);
-        assert_eq!(value.variant_id().get(), 6);
+        assert_eq!(value.type_id().map(EnumTypeId::get), Some(5));
+        assert_eq!(value.variant_id().map(EnumVariantId::get), Some(6));
         assert_eq!(value.name().map(SourceName::as_str), Some("approved"));
+    }
+
+    #[test]
+    fn projection_query_preserves_name_only_enum_until_service_materialization() {
+        let (_, request) = query_projection_request_from_proto(v1::QueryProjectionRequest {
+            request_id: request_id().as_bytes().to_vec(),
+            contract: Some(active_contract()),
+            projection_id: 4,
+            leading_components: vec![v1::Value {
+                kind: Some(v1::value::Kind::EnumValue(v1::EnumValue {
+                    type_id: 0,
+                    variant_id: 0,
+                    name: "approved".to_owned(),
+                })),
+            }],
+            required_sequence: None,
+            wait_nanos: 0,
+            page: Some(first_page()),
+        })
+        .expect("valid name-only enum");
+
+        let SubmittedValue::Enum(value) = &request.leading_components()[0] else {
+            panic!("expected submitted enum")
+        };
+        assert_eq!(value.type_id(), None);
+        assert_eq!(value.variant_id(), None);
+        assert_eq!(value.name().map(SourceName::as_str), Some("approved"));
+    }
+
+    #[test]
+    fn submitted_enum_rejects_mixed_zero_and_nonzero_ids() {
+        let status = submitted_value_from_proto(v1::Value {
+            kind: Some(v1::value::Kind::EnumValue(v1::EnumValue {
+                type_id: 5,
+                variant_id: 0,
+                name: "approved".to_owned(),
+            })),
+        })
+        .expect_err("mixed enum identity must fail closed");
+
+        assert_eq!(status.code(), tonic::Code::InvalidArgument);
     }
 
     #[test]

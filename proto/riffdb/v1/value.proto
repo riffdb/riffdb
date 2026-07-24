@@ -30,6 +30,8 @@ message Decimal {
   // Minimal, big-endian two's-complement coefficient (1 through 16 bytes).
   bytes coefficient_twos_complement = 1;
   uint32 scale = 2;
+  // Optional caller assertion; new servers always emit canonical precision.
+  optional uint32 precision = 3;
 }
 
 message Money {

@@ -1084,13 +1084,7 @@ fn compile_deployment_candidate(
 }
 
 fn contract_descriptor(bundle: &ContractBundle) -> ContractDescriptor {
-    ContractDescriptor::new(
-        bundle.lineage().clone(),
-        bundle.contract_version(),
-        bundle.bundle_hash(),
-        bundle.source_hash(),
-        bundle.plan_root_hash(),
-    )
+    ContractDescriptor::from_bundle(bundle)
 }
 
 fn shape_deployment_outcome(

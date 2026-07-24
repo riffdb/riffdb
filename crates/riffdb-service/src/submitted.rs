@@ -3,9 +3,9 @@
 use std::fmt;
 
 use riffdb_types::{
-    CanonicalBytes, CanonicalRecord, CanonicalString, CanonicalValue, CurrencyCode, Date,
-    EnumTypeId, EnumVariantId, FieldId, MAX_DECIMAL_PRECISION, MAX_LIST_ENTRIES, MAX_NESTING_DEPTH,
-    MAX_RECORD_FIELDS, Money, Timestamp,
+    CanonicalBytes, CanonicalRecord, CanonicalString, CanonicalValue, CurrencyCode, Date, Decimal,
+    DecimalSpec, EnumTypeId, EnumVariantId, FieldId, MAX_DECIMAL_PRECISION, MAX_LIST_ENTRIES,
+    MAX_NESTING_DEPTH, MAX_RECORD_FIELDS, Money, Timestamp,
 };
 
 use crate::{MAX_SERVICE_REQUEST_BYTES, ServiceDtoError, SourceName};
@@ -15,20 +15,43 @@ const COLLECTION_COUNT_BYTES: usize = 4;
 const OPTION_BYTES: usize = 1;
 const TAG_BYTES: usize = 1;
 
-/// A decimal submitted before the selected command schema supplies precision.
+/// A decimal submitted before the selected command schema confirms its type.
 #[derive(Clone, Copy, Eq, PartialEq)]
 pub struct SubmittedDecimal {
     coefficient: i128,
     scale: u8,
+    precision: Option<u8>,
 }
 
 impl SubmittedDecimal {
-    /// Creates a structurally valid decimal without inventing its precision.
+    /// Creates a structurally valid legacy decimal without inventing precision.
     pub const fn new(coefficient: i128, scale: u8) -> Result<Self, ServiceDtoError> {
         if scale > MAX_DECIMAL_PRECISION {
             return Err(ServiceDtoError::OutOfRange);
         }
-        Ok(Self { coefficient, scale })
+        Ok(Self {
+            coefficient,
+            scale,
+            precision: None,
+        })
+    }
+
+    /// Creates a decimal with optional caller-supplied precision evidence.
+    pub fn with_precision(
+        coefficient: i128,
+        scale: u8,
+        precision: Option<u8>,
+    ) -> Result<Self, ServiceDtoError> {
+        let value = Self::new(coefficient, scale)?;
+        let Some(precision) = precision else {
+            return Ok(value);
+        };
+        let spec = DecimalSpec::new(precision, scale).map_err(|_| ServiceDtoError::OutOfRange)?;
+        Decimal::new(spec, coefficient).map_err(|_| ServiceDtoError::OutOfRange)?;
+        Ok(Self {
+            precision: Some(precision),
+            ..value
+        })
     }
 
     /// Decodes a minimal big-endian two's-complement coefficient without schema context.
@@ -38,6 +61,15 @@ impl SubmittedDecimal {
     pub fn from_minimal_twos_complement(
         coefficient: &[u8],
         scale: u8,
+    ) -> Result<Self, ServiceDtoError> {
+        Self::from_minimal_twos_complement_with_precision(coefficient, scale, None)
+    }
+
+    /// Decodes a minimal coefficient and retains optional precision evidence.
+    pub fn from_minimal_twos_complement_with_precision(
+        coefficient: &[u8],
+        scale: u8,
+        precision: Option<u8>,
     ) -> Result<Self, ServiceDtoError> {
         if coefficient.is_empty() {
             return Err(ServiceDtoError::Empty);
@@ -56,7 +88,7 @@ impl SubmittedDecimal {
         let mut decoded = [fill; size_of::<i128>()];
         let offset = decoded.len() - coefficient.len();
         decoded[offset..].copy_from_slice(coefficient);
-        Self::new(i128::from_be_bytes(decoded), scale)
+        Self::with_precision(i128::from_be_bytes(decoded), scale, precision)
     }
 
     /// Returns the signed fixed-scale coefficient.
@@ -69,6 +101,12 @@ impl SubmittedDecimal {
     #[must_use]
     pub const fn scale(self) -> u8 {
         self.scale
+    }
+
+    /// Returns optional caller-supplied precision evidence.
+    #[must_use]
+    pub const fn precision(self) -> Option<u8> {
+        self.precision
     }
 }
 
@@ -114,8 +152,8 @@ impl fmt::Debug for SubmittedMoney {
 /// An enum identity submitted before membership and display-name resolution.
 #[derive(Clone, Eq, PartialEq)]
 pub struct SubmittedEnum {
-    type_id: EnumTypeId,
-    variant_id: EnumVariantId,
+    type_id: Option<EnumTypeId>,
+    variant_id: Option<EnumVariantId>,
     name: Option<SourceName>,
 }
 
@@ -128,21 +166,31 @@ impl SubmittedEnum {
         name: Option<SourceName>,
     ) -> Self {
         Self {
-            type_id,
-            variant_id,
+            type_id: Some(type_id),
+            variant_id: Some(variant_id),
             name,
+        }
+    }
+
+    /// Creates the exact name-only form resolved under the selected schema.
+    #[must_use]
+    pub const fn name_only(name: SourceName) -> Self {
+        Self {
+            type_id: None,
+            variant_id: None,
+            name: Some(name),
         }
     }
 
     /// Returns the submitted enum type identity.
     #[must_use]
-    pub const fn type_id(&self) -> EnumTypeId {
+    pub const fn type_id(&self) -> Option<EnumTypeId> {
         self.type_id
     }
 
     /// Returns the submitted enum variant identity.
     #[must_use]
-    pub const fn variant_id(&self) -> EnumVariantId {
+    pub const fn variant_id(&self) -> Option<EnumVariantId> {
         self.variant_id
     }
 
@@ -442,15 +490,21 @@ impl SubmittedValue {
             Self::Null => 0,
             Self::Bool(_) => 1,
             Self::I64(_) | Self::U64(_) => 8,
-            Self::Decimal(_) => 17,
-            Self::Money(_) => 20,
+            Self::Decimal(value) => 18 + usize::from(value.precision().is_some()),
+            Self::Money(value) => 21 + usize::from(value.amount().precision().is_some()),
             Self::String(value) => framed_size(value.len())?,
             Self::Bytes(value) => framed_size(value.len())?,
             Self::Timestamp(_) => 12,
             Self::Date(_) => 4,
             Self::Uuid(_) => 16,
             Self::Enum(value) => {
-                let mut size = 8usize;
+                let mut size = 2 * OPTION_BYTES;
+                if value.type_id().is_some() {
+                    checked_add(&mut size, 4)?;
+                }
+                if value.variant_id().is_some() {
+                    checked_add(&mut size, 4)?;
+                }
                 checked_add(&mut size, OPTION_BYTES)?;
                 if let Some(name) = value.name() {
                     checked_add(&mut size, framed_size(name.as_str().len())?)?;
@@ -478,6 +532,7 @@ impl TryFrom<CanonicalValue> for SubmittedValue {
             CanonicalValue::Decimal(value) => Self::Decimal(SubmittedDecimal {
                 coefficient: value.coefficient(),
                 scale: value.spec().scale(),
+                precision: Some(value.spec().precision()),
             }),
             CanonicalValue::Money(value) => Self::Money(submitted_money_from_canonical(value)),
             CanonicalValue::String(value) => Self::String(value),
@@ -540,6 +595,7 @@ fn submitted_money_from_canonical(value: Money) -> SubmittedMoney {
         SubmittedDecimal {
             coefficient: value.amount().coefficient(),
             scale: value.amount().spec().scale(),
+            precision: Some(value.amount().spec().precision()),
         },
     )
 }

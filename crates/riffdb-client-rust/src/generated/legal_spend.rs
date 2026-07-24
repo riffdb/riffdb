@@ -447,6 +447,7 @@ fn decimal_value(value: Amount) -> v1::Value {
         kind: Some(v1::value::Kind::DecimalValue(v1::Decimal {
             coefficient_twos_complement: encode_i128(value.minor_units()),
             scale: 2,
+            precision: Some(28),
         })),
     }
 }

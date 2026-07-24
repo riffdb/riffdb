@@ -222,7 +222,7 @@ fn operation_catalog_checkpoint_is_encoded_by_the_public_types() {
     let identity = schema_identity();
     assert_eq!(full.encode_to_vec(), FULL_CATALOG);
     assert_eq!(identity.encode_to_vec(), IDENTITY_CATALOG);
-    assert_eq!(FULL_CATALOG.len(), 7_522);
+    assert_eq!(FULL_CATALOG.len(), 7_554);
     assert_eq!(IDENTITY_CATALOG.len(), 148);
 }
 
@@ -569,6 +569,12 @@ fn exact_contract_and_outbox_exchange_relations_are_closed() {
         bundle_hash: vec![1; 32],
         source_hash: vec![2; 32],
         plan_root_hash: vec![3; 32],
+        compatibility: Some(v1::ContractCompatibilitySummary {
+            parent_contract_version: None,
+            parent_bundle_hash: None,
+            overall: v1::ContractCompatibilityClass::Compatible as i32,
+            code_counts: Vec::new(),
+        }),
     };
     let response = |descriptor| v1::GetContractVersionResponse {
         result: Some(v1::get_contract_version_response::Result::Found(descriptor)),

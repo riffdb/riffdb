@@ -25,8 +25,8 @@ use crate::{
     OutboxDeliverySummary, Page, ProjectionPageFence, ProjectionRow, ProjectionStatusSnapshot,
     ProvenanceClaimsView, ProvenanceView, QueryProjectionResult, ReadOnlyCommandResult,
     ResolveCommandOutcomeResult, ResourceDescriptor, ResourceDescriptorRef, RevokeCapabilityResult,
-    ScanCommitsResult, ScanIndexResult, ServiceFailure, StatisticsResult, SubscribeToCommitsResult,
-    TraceProvenanceResult,
+    ScanCommitsResult, ScanIndexResult, SchemaBoundOutcomeRecord, SchemaBoundOutcomeValue,
+    ServiceFailure, StatisticsResult, SubscribeToCommitsResult, TraceProvenanceResult,
 };
 
 /// Exact POC ceiling for one API-neutral unary result or visible stream item.
@@ -211,7 +211,23 @@ fn charge_contract_descriptor(
     charge.fields(1)?;
     charge.bytes(32)?;
     charge.bytes(32)?;
-    charge.bytes(32)
+    charge.bytes(32)?;
+
+    let compatibility = descriptor.compatibility();
+    charge.fields(1)?;
+    charge.add(MESSAGE_RESERVE)?;
+    charge.fields(1)?;
+    if let Some((_, parent_hash)) = compatibility.parent() {
+        charge.fields(1)?;
+        charge.bytes(parent_hash.as_bytes().len())?;
+    }
+    for entry in compatibility.code_counts() {
+        charge.fields(1)?;
+        charge.add(MESSAGE_RESERVE)?;
+        charge.bytes(entry.code().len())?;
+        charge.fields(1)?;
+    }
+    Ok(())
 }
 
 fn charge_schema(
@@ -372,7 +388,45 @@ fn charge_declared_outcome(
 ) -> Result<(), ServiceResponseChargeOverflow> {
     charge.fields(2)?;
     charge.bytes(outcome.outcome_name().as_str().len())?;
-    charge.nested(outcome.value())
+    charge.nested(outcome.value())?;
+    charge_schema_bound_names(charge, outcome.schema_bound_value())
+}
+
+fn charge_schema_bound_names(
+    charge: &mut ChargeAccumulator,
+    record: SchemaBoundOutcomeRecord<'_>,
+) -> Result<(), ServiceResponseChargeOverflow> {
+    for index in 0..record.len() {
+        let field = record.field(index).ok_or(ServiceResponseChargeOverflow)?;
+        charge.bytes(field.field_name().as_str().len())?;
+        charge_schema_bound_value_names(
+            charge,
+            field.value().ok_or(ServiceResponseChargeOverflow)?,
+        )?;
+    }
+    Ok(())
+}
+
+fn charge_schema_bound_value_names(
+    charge: &mut ChargeAccumulator,
+    value: SchemaBoundOutcomeValue<'_>,
+) -> Result<(), ServiceResponseChargeOverflow> {
+    match value {
+        SchemaBoundOutcomeValue::Null | SchemaBoundOutcomeValue::Scalar(_) => Ok(()),
+        SchemaBoundOutcomeValue::Enum { variant_name, .. } => {
+            charge.bytes(variant_name.as_str().len())
+        }
+        SchemaBoundOutcomeValue::List(values) => {
+            for index in 0..values.len() {
+                charge_schema_bound_value_names(
+                    charge,
+                    values.value(index).ok_or(ServiceResponseChargeOverflow)?,
+                )?;
+            }
+            Ok(())
+        }
+        SchemaBoundOutcomeValue::Record(record) => charge_schema_bound_names(charge, record),
+    }
 }
 
 fn charge_journaled(
@@ -1866,7 +1920,7 @@ mod tests {
     }
 
     fn fixture_contract_descriptor() -> ContractDescriptor {
-        ContractDescriptor::new(
+        ContractDescriptor::genesis(
             fixture_lineage(),
             fixture_contract_version(),
             ContractBundleHash::from_bytes([1; 32]),
@@ -2077,6 +2131,9 @@ mod tests {
         let shape = fixture_shape! {
             "binding_count" => explanation.bindings().len(),
             "command_id" => command_id.get(),
+            "compatibility_class" => "compatible",
+            "compatibility_code_count" => 0,
+            "compatibility_parent_present" => false,
             "contract_version" => bundle.contract_version().get(),
             "event_count" => explanation.events().len(),
             "input_schema_json_bytes" => input_schema.canonical_json().len(),
@@ -2090,7 +2147,7 @@ mod tests {
             "schema_hash_bytes" => 32,
             "write_field_count" => explanation.write_fields().len()
         };
-        let descriptor = ContractDescriptor::new(
+        let descriptor = ContractDescriptor::genesis(
             bundle.lineage().clone(),
             bundle.contract_version(),
             bundle.bundle_hash(),
@@ -2347,13 +2404,13 @@ mod tests {
                 source_command_bytes: 1,
                 lineage_bytes: 115,
                 input_schema_json_bytes: 257_097,
-                outcome_schema_json_bytes: 257_098,
+                outcome_schema_json_bytes: 257_066,
             },
         ];
         let command_one_over_items = [
             MAXIMUM_COMMAND_DISCOVERY_ITEM_CHARGE,
             CommandDiscoveryItemCharge {
-                outcome_schema_json_bytes: 257_099,
+                outcome_schema_json_bytes: 257_067,
                 ..command_exact_items[1]
             },
         ];
@@ -2473,7 +2530,7 @@ mod tests {
                 "item_0_input_schema_json_bytes" => MAX_JSON_SCHEMA_ARTIFACT_BYTES,
                 "item_0_outcome_schema_json_bytes" => MAX_JSON_SCHEMA_ARTIFACT_BYTES,
                 "item_1_input_schema_json_bytes" => 257_097,
-                "item_1_outcome_schema_json_bytes" => 257_098,
+                "item_1_outcome_schema_json_bytes" => 257_066,
                 "item_count" => 2,
                 "lineage_bytes" => 115,
                 "representation" => "full",
@@ -2493,7 +2550,7 @@ mod tests {
                 "item_0_input_schema_json_bytes" => MAX_JSON_SCHEMA_ARTIFACT_BYTES,
                 "item_0_outcome_schema_json_bytes" => MAX_JSON_SCHEMA_ARTIFACT_BYTES,
                 "item_1_input_schema_json_bytes" => 257_097,
-                "item_1_outcome_schema_json_bytes" => 257_099,
+                "item_1_outcome_schema_json_bytes" => 257_067,
                 "item_count" => 2,
                 "lineage_bytes" => 115,
                 "representation" => "full",
@@ -2826,6 +2883,9 @@ mod tests {
             "activated",
             fixture_shape! {
                 "bundle_hash_bytes" => 32,
+                "compatibility_class" => "compatible",
+                "compatibility_code_count" => 0,
+                "compatibility_parent_present" => false,
                 "contract_version" => 1,
                 "lineage_bytes" => 7,
                 "plan_root_hash_bytes" => 32,
@@ -2883,6 +2943,9 @@ mod tests {
             "present",
             fixture_shape! {
                 "bundle_hash_bytes" => 32,
+                "compatibility_class" => "compatible",
+                "compatibility_code_count" => 0,
+                "compatibility_parent_present" => false,
                 "contract_version" => 1,
                 "lineage_bytes" => 7,
                 "plan_root_hash_bytes" => 32,
@@ -2897,6 +2960,9 @@ mod tests {
             "found",
             fixture_shape! {
                 "bundle_hash_bytes" => 32,
+                "compatibility_class" => "compatible",
+                "compatibility_code_count" => 0,
+                "compatibility_parent_present" => false,
                 "contract_version" => 1,
                 "lineage_bytes" => 7,
                 "plan_root_hash_bytes" => 32,
@@ -3760,7 +3826,7 @@ mod tests {
                 .service_response_charge_v1()
                 .expect("catalog charge")
                 .bytes(),
-            7_850
+            7_882
         );
         let fence = maximum_discovery_fence(&operation_schemas);
         assert_eq!(
@@ -3780,7 +3846,7 @@ mod tests {
         let maximum_dynamic =
             raw_discovery_page_response_charge(&maximum_dynamic_page, Some(&operation_schemas))
                 .expect("maximum dynamic response charge");
-        assert_eq!(maximum_dynamic.bytes(), 2_106_497);
+        assert_eq!(maximum_dynamic.bytes(), 2_106_529);
         assert!(maximum_dynamic.bytes() <= MAX_FULL_DISCOVERY_RESPONSE_BYTES);
         let maximum_dynamic_fit = fit_full_command_discovery_page_items(
             &[MAXIMUM_COMMAND_DISCOVERY_ITEM_CHARGE],

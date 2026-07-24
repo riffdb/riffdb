@@ -267,6 +267,7 @@ fn decimal(input: &[u8]) -> Result<(), PreflightError> {
     let mut cursor = Cursor::new(input);
     let mut saw_coefficient = false;
     let mut saw_scale = false;
+    let mut saw_precision = false;
     while let Some(field) = cursor.next()? {
         if field.number == 1 {
             claim_singular(&mut saw_coefficient)?;
@@ -276,6 +277,9 @@ fn decimal(input: &[u8]) -> Result<(), PreflightError> {
             }
         } else if field.number == 2 {
             claim_singular(&mut saw_scale)?;
+            field.require_wire(0)?;
+        } else if field.number == 3 {
+            claim_singular(&mut saw_precision)?;
             field.require_wire(0)?;
         }
     }

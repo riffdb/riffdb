@@ -1544,7 +1544,11 @@ fn materialize_value(
             let spec = value_type
                 .decimal_spec()
                 .ok_or(MaterializationError::Integrity)?;
-            if actual.scale() != spec.scale() {
+            if actual.scale() != spec.scale()
+                || actual
+                    .precision()
+                    .is_some_and(|precision| precision != spec.precision())
+            {
                 return Err(public_materialization(ValidationCode::OutOfRange, path));
             }
             Decimal::new(spec, actual.coefficient())
@@ -1560,7 +1564,12 @@ fn materialize_value(
             }
             let spec = DecimalSpec::new(MAX_DECIMAL_PRECISION, 2)
                 .map_err(|_| MaterializationError::Integrity)?;
-            if actual.amount().scale() != spec.scale() {
+            if actual.amount().scale() != spec.scale()
+                || actual
+                    .amount()
+                    .precision()
+                    .is_some_and(|precision| precision != spec.precision())
+            {
                 return Err(public_materialization(ValidationCode::OutOfRange, path));
             }
             let amount = Decimal::new(spec, actual.amount().coefficient())
@@ -1591,28 +1600,41 @@ fn materialize_value(
             let expected_type = value_type
                 .enum_type_id()
                 .ok_or(MaterializationError::Integrity)?;
-            if actual.type_id() != expected_type {
-                return Err(public_materialization(ValidationCode::TypeMismatch, path));
-            }
             let enumeration = schema
                 .enumeration(expected_type)
                 .ok_or(MaterializationError::Integrity)?;
-            let Some(variant) = enumeration
-                .variants()
-                .iter()
-                .find(|variant| variant.id() == actual.variant_id())
-            else {
-                return Err(public_materialization(ValidationCode::InvalidValue, path));
+            let variant = match (actual.type_id(), actual.variant_id(), actual.name()) {
+                (Some(type_id), Some(variant_id), name) => {
+                    if type_id != expected_type {
+                        return Err(public_materialization(ValidationCode::TypeMismatch, path));
+                    }
+                    let Some(variant) = enumeration
+                        .variants()
+                        .iter()
+                        .find(|variant| variant.id() == variant_id)
+                    else {
+                        return Err(public_materialization(ValidationCode::InvalidValue, path));
+                    };
+                    if name.is_some_and(|name| name.as_str() != variant.name()) {
+                        return Err(public_materialization(ValidationCode::InvalidValue, path));
+                    }
+                    variant
+                }
+                (None, None, Some(name)) => {
+                    let Some(variant) = enumeration
+                        .variants()
+                        .iter()
+                        .find(|variant| variant.name() == name.as_str())
+                    else {
+                        return Err(public_materialization(ValidationCode::InvalidValue, path));
+                    };
+                    variant
+                }
+                _ => return Err(MaterializationError::Integrity),
             };
-            if actual
-                .name()
-                .is_some_and(|name| name.as_str() != variant.name())
-            {
-                return Err(public_materialization(ValidationCode::InvalidValue, path));
-            }
             Ok(CanonicalValue::Enum {
                 type_id: expected_type,
-                variant_id: actual.variant_id(),
+                variant_id: variant.id(),
             })
         }
         (ValueTypeTag::List, SubmittedValue::List(values)) => {

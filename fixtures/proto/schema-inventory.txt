@@ -592,12 +592,21 @@ messages
   riffdb.v1.CompilationDiagnostics fields=2
     1 syntax optional .riffdb.v1.SyntaxDiagnosticList oneof=diagnostics
     2 semantic optional .riffdb.v1.SemanticDiagnosticList oneof=diagnostics
-  riffdb.v1.ContractDescriptor fields=5
+  riffdb.v1.ContractCompatibilityCodeCount fields=2
+    1 code optional string
+    2 count optional uint32
+  riffdb.v1.ContractCompatibilitySummary fields=4
+    1 parent_contract_version optional uint64 proto3-optional oneof=_parent_contract_version
+    2 parent_bundle_hash optional bytes proto3-optional oneof=_parent_bundle_hash
+    3 overall optional .riffdb.v1.ContractCompatibilityClass
+    4 code_counts repeated .riffdb.v1.ContractCompatibilityCodeCount
+  riffdb.v1.ContractDescriptor fields=6
     1 contract_lineage optional string
     2 contract_version optional uint64
     3 bundle_hash optional bytes
     4 source_hash optional bytes
     5 plan_root_hash optional bytes
+    6 compatibility optional .riffdb.v1.ContractCompatibilitySummary
   riffdb.v1.ContractMismatchDetails fields=1
     1 active_contract_version optional uint64
   riffdb.v1.ContractSelection fields=2
@@ -620,9 +629,10 @@ messages
     2 bootstrap optional .riffdb.v1.BootstrapCreateCapabilityResult oneof=result
   riffdb.v1.Date fields=1
     1 days_since_unix_epoch optional sint32
-  riffdb.v1.Decimal fields=2
+  riffdb.v1.Decimal fields=3
     1 coefficient_twos_complement optional bytes
     2 scale optional uint32
+    3 precision optional uint32 proto3-optional oneof=_precision
   riffdb.v1.DeclaredOutcome fields=3
     1 outcome_id optional uint32
     2 outcome_name optional string
@@ -1215,6 +1225,11 @@ enums
     6 COMMIT_SUBSCRIPTION_END_REASON_DEADLINE_EXCEEDED
     7 COMMIT_SUBSCRIPTION_END_REASON_SERVICE_SHUTDOWN
     8 COMMIT_SUBSCRIPTION_END_REASON_UNAVAILABLE
+  riffdb.v1.ContractCompatibilityClass values=4
+    0 CONTRACT_COMPATIBILITY_CLASS_UNSPECIFIED
+    1 CONTRACT_COMPATIBILITY_CLASS_COMPATIBLE
+    2 CONTRACT_COMPATIBILITY_CLASS_REQUIRES_EXPLICIT_VERSION
+    3 CONTRACT_COMPATIBILITY_CLASS_INCOMPATIBLE
   riffdb.v1.DiscoveryRepresentation values=3
     0 DISCOVERY_REPRESENTATION_UNSPECIFIED
     1 DISCOVERY_REPRESENTATION_FULL
