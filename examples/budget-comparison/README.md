@@ -12,8 +12,12 @@ the RiffDB production workspace.
   generation.
 - `postgres`: synchronous `postgres`/`NoTls` adapter using explicit SQL
   transactions.
+- `safety-evidence`: correctness-only PostgreSQL negative controls and public
+  RiffDB contrasts. It is never a benchmark adapter or shipped product.
+- `riffdb-grpc`: the canonical public Rust SDK/gRPC adapter and the frozen
+  `riffdb-budget-public` runner.
 - `fixtures`: canonical JSON workload, reference observations, and the exact
-  PostgreSQL guarantee profile.
+  PostgreSQL guarantee profile, plus the separately versioned safety report.
 - `tests`: offline oracle/isolation checks and the optional-local,
   mandatory-in-CI live correctness preflight.
 
@@ -49,6 +53,39 @@ contract enforcement, or deterministic logical time. PostgreSQL
 backend observations. The exact machine-readable profile is
 `fixtures/postgres-guarantees-v1.json`.
 
+## Safety Counterexamples
+
+PostgreSQL supports safe implementations, including the canonical comparison
+adapter. The counterexamples show that hazardous patterns remain expressible
+through general SQL and host transaction code, while the corresponding patterns
+are absent or rejected through RiffDB's supported application mutation and
+compiled-contract surfaces.
+
+The shorter statement that a pattern is "impossible in RiffDB" means only that
+it is not expressible through RiffDB's supported application mutation surface.
+It does not cover a malicious contract or administrator, operating-system or
+database-file compromise, implementation defects, or features outside the POC.
+
+The checked `riffdb.budget.safety-evidence/v1` report contains exactly four
+correctness scenarios:
+
+1. `lost_update_without_lock` contrasts a deterministic PostgreSQL
+   read/check/absolute-write lost update with the compiled RiffDB conflict
+   domain.
+2. `direct_dml_precondition_bypass` shows that direct PostgreSQL DML can omit
+   the command precondition while RiffDB returns the declared `InvalidAmount`
+   outcome without mutation.
+3. `duplicate_retry_after_discarded_response` contrasts two PostgreSQL
+   mutations with one RiffDB mutation and an identity-preserving replay.
+4. `same_key_different_input` contrasts PostgreSQL ignoring the key with
+   RiffDB's safe `idempotency_key_reuse` rejection.
+
+The canonical PostgreSQL adapter remains unchanged beside these negative
+controls and demonstrates the safe `FOR UPDATE` remedy. The safety package does
+not implement the normal `BudgetBackend` trait, emit timing results, or enter a
+benchmark target. It also does not claim real TCP response loss or restart
+recovery; those remain WP-190/WP-200 evidence.
+
 ## Commands
 
 Offline acceptance (the live test reports a skip unless configured):
@@ -57,9 +94,10 @@ Offline acceptance (the live test reports a skip unless configured):
 cargo test --manifest-path examples/budget-comparison/Cargo.toml --workspace
 cargo run --manifest-path examples/budget-comparison/Cargo.toml \
   -p riffdb-budget-comparison-core --bin budget-fixtures -- --check
+cargo run --manifest-path examples/budget-comparison/Cargo.toml \
+  -p riffdb-budget-safety-evidence --bin budget-safety-fixtures -- --check
 cargo fmt --manifest-path examples/budget-comparison/Cargo.toml \
-  -p riffdb-budget-comparison-core -p riffdb-budget-comparison-postgres \
-  -p riffdb-budget-comparison -- --check
+  --all -- --check
 cargo clippy --manifest-path examples/budget-comparison/Cargo.toml \
   --workspace --all-targets --all-features -- -D warnings
 RUSTDOCFLAGS='-D warnings' cargo doc \
@@ -83,7 +121,8 @@ Then run the exact acceptance command in fail-closed mode:
 ```bash
 RIFFDB_BUDGET_POSTGRES_REQUIRED=1 \
 RIFFDB_BUDGET_POSTGRES_URL=postgres://riffdb:riffdb@127.0.0.1:55432/riffdb_budget \
-cargo test --manifest-path examples/budget-comparison/Cargo.toml --workspace
+cargo test --manifest-path examples/budget-comparison/Cargo.toml \
+  -p riffdb-budget-comparison --test postgres_live -- --test-threads=1
 ```
 
 The live test drops and recreates `riffdb_wp045_budget_v1`; the configured
@@ -92,6 +131,22 @@ database must be dedicated to this preflight. Required-live evidence checks
 `full_page_writes=on` in addition to transaction isolation and wait bounds. CI
 always sets required mode and uses the digest-pinned service. A skipped local
 test is not WP-045 exit evidence.
+
+To build a fresh `riffdbd`, provision only the accepted normal public
+capability, run all four live contrasts, and print the exact checked JSONL
+report:
+
+```bash
+RIFFDB_BUDGET_POSTGRES_URL=postgres://riffdb:riffdb@127.0.0.1:55432/riffdb_budget \
+./scripts/budget-safety-demo --assert
+```
+
+This command is fail-closed. The PostgreSQL database must be dedicated to the
+destructive comparison, and unavailable PostgreSQL, failed RiffDB readiness,
+missing evidence binaries, a skipped test, or any report mismatch is an error.
+The URL, bearer and bootstrap credentials, and temporary paths are never
+printed. `riffdb-budget-safety` is a non-shipped evidence runner, not a fourth
+RiffDB product binary.
 
 Correctness preflight is mandatory before later benchmark work. WP-125 adds the
 in-process RiffDB service adapter and WP-135 adds the canonical public gRPC/SDK

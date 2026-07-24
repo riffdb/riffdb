@@ -24,7 +24,8 @@ use riffdb_client_rust::generated::legal_spend::{
 use riffdb_client_rust::generated::{GeneratedCommand, GeneratedCommandError};
 use riffdb_client_rust::{
     AttemptBudget, BearerCredential, CallMetadata, ClientError, GeneratedExecution,
-    GeneratedExecutionError, RiffDbClient, generate_request_id,
+    GeneratedExecutionError, PublicErrorDetails, PublicErrorKind, RiffDbClient,
+    generate_request_id,
 };
 use riffdb_proto::{decimal_from_proto, v1};
 use riffdb_types::{CommitSequence, ContractVersion, DecimalSpec, EntityKeyBuilder, EntityTypeId};
@@ -35,6 +36,9 @@ const BUDGET_UPDATED_AT_FIELD_ID: u32 = 1;
 const BUDGET_APPROVED_AMOUNT_FIELD_ID: u32 = 3;
 const BUDGET_ALLOCATED_AMOUNT_FIELD_ID: u32 = 5;
 const CREATE_BUDGET_COMMAND_ID: u32 = 1;
+const ALLOCATE_BUDGET_COMMAND_ID: u32 = 2;
+const BUDGET_ALLOCATED_EVENT_TYPE_ID: u32 = 1;
+const COMMIT_SCAN_LIMIT: u32 = 500;
 const SUBSCRIPTION_LIFETIME_NANOS: u64 = 30_000_000_000;
 
 /// A closed comparison case understood by the public evidence runner.
@@ -104,6 +108,91 @@ pub struct SameKeyReplayEvidence {
     pub notified_commit_sequence: CommitSequence,
     /// Metadata returned by the second, same-key submission.
     pub replay_metadata: PublicCommandMetadata,
+}
+
+/// Publicly observable facts retained from one checked Budget command commit.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct PublicCommitFacts {
+    /// Exact nonzero authoritative commit sequence.
+    pub commit_sequence: CommitSequence,
+    /// Stable declared outcome name stored in the commit.
+    pub outcome_name: String,
+    /// Number of authoritative entities changed by the command.
+    pub affected_entity_count: usize,
+    /// Number of durable events emitted by the command.
+    pub event_count: usize,
+}
+
+/// Public evidence for two contending allocations in one conflict domain.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct PublicContentionSafetyEvidence {
+    /// Oracle-checked terminal outcomes and final Budget state.
+    pub observation: ContentionObservation,
+    /// Commit facts for the one successful allocation.
+    pub allocated_commit: PublicCommitFacts,
+    /// Commit facts for the one checked insufficient-budget outcome.
+    pub insufficient_budget_commit: PublicCommitFacts,
+    /// Number of committed declared outcomes returned to the two callers.
+    pub terminal_declared_outcome_count: usize,
+}
+
+/// Public evidence for a checked command precondition rejection.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct PublicInvalidAmountSafetyEvidence {
+    /// Checked `InvalidAmount` outcome and journal metadata.
+    pub rejection: PublicCommandObservation,
+    /// Exact zero-mutation commit facts for the rejection.
+    pub rejection_commit: PublicCommitFacts,
+    /// Budget state after the rejected allocation.
+    pub final_budget: BudgetState,
+}
+
+/// Public evidence for discarded-response allocation replay and recovery.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct PublicAllocationReplaySafetyEvidence {
+    /// Checked `Allocated` outcome returned by the replay.
+    pub observation: CommandObservation,
+    /// Metadata returned by the replayed submission.
+    pub replay_metadata: PublicCommandMetadata,
+    /// Exact facts from the one matching allocation commit.
+    pub allocation_commit: PublicCommitFacts,
+    /// Number of matching allocation commits in the exact-end scan.
+    pub matching_allocation_commit_count: usize,
+    /// Whether locator-based `GetOutcome` matched the replay response.
+    pub outcome_lookup_matches: bool,
+    /// Whether the replay and notified commit used the same sequence.
+    pub same_commit_sequence: bool,
+    /// Whether replay, lookup, and commit retained the same declared outcome.
+    pub same_declared_outcome: bool,
+    /// Whether the replay and notified commit used the same plan hash.
+    pub same_plan_hash: bool,
+    /// Whether the replay and notified commit used the same provenance locator.
+    pub same_provenance_uri: bool,
+    /// Budget state after the replay.
+    pub final_budget: BudgetState,
+}
+
+/// Public evidence for rejection of one idempotency identity with new input.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct PublicIdempotencyMismatchSafetyEvidence {
+    /// Checked first `Allocated` outcome and journal metadata.
+    pub first: PublicCommandObservation,
+    /// Exact public-safe mismatch kind.
+    pub mismatch_error_kind: PublicErrorKind,
+    /// Whether the public error carried the required details-free shape.
+    pub mismatch_error_details_none: bool,
+    /// Whether the public mismatch unexpectedly carried an incident identifier.
+    pub mismatch_incident_id_present: bool,
+    /// Whether exact-end scans before and after rejection had the same frontier.
+    pub application_frontier_unchanged: bool,
+    /// Number of matching allocation commits after the rejection.
+    pub matching_allocation_commit_count: usize,
+    /// Exact facts from the one matching allocation commit.
+    pub allocation_commit: PublicCommitFacts,
+    /// Whether public error presentation omitted both submitted secret keys.
+    pub public_error_canary_absent: bool,
+    /// Budget state after the rejected mismatched submission.
+    pub final_budget: BudgetState,
 }
 
 /// Checked evidence returned by one complete public comparison case.
@@ -258,6 +347,500 @@ impl RiffDbPublicBudgetAdapter {
             observation: replay.observation,
             notified_commit_sequence: notified_sequence,
             replay_metadata: replay.metadata,
+        })
+    }
+
+    /// Proves that both contending callers receive committed declared outcomes
+    /// while only the successful allocation mutates state and emits an event.
+    pub async fn prove_contention_commit_facts(
+        &mut self,
+        workload: &ContentionWorkload,
+    ) -> Result<PublicContentionSafetyEvidence, RiffDbPublicAdapterError> {
+        let seed = self.execute_fresh_seed(&workload.seed).await?;
+        let mut subscription = self.subscribe_after(seed.metadata.commit_sequence).await?;
+
+        let barrier = AsyncStartBarrier::new(2);
+        let first_barrier = barrier.clone();
+        let second_barrier = barrier;
+        let mut first_client = self.client.clone();
+        let mut second_client = self.client.clone();
+        let metadata = self.metadata.clone();
+        let first_metadata = metadata.clone();
+        let first_operation = BudgetOperation::Allocate(workload.contenders[0].clone());
+        let second_operation = BudgetOperation::Allocate(workload.contenders[1].clone());
+        let first = async move {
+            first_barrier.wait().await?;
+            execute_operation(&mut first_client, &first_metadata, &first_operation).await
+        };
+        let second = async move {
+            second_barrier.wait().await?;
+            execute_operation(&mut second_client, &metadata, &second_operation).await
+        };
+        let (first, second) = tokio::join!(first, second);
+        let first = first?;
+        let second = second?;
+        if first.metadata.completion != PublicCommandCompletion::Committed
+            || second.metadata.completion != PublicCommandCompletion::Committed
+            || first.metadata.commit_sequence == second.metadata.commit_sequence
+        {
+            return Err(RiffDbPublicAdapterError::FreshDatabaseRequired);
+        }
+
+        let commits = [
+            next_matching_allocate_commit(&mut subscription).await?,
+            next_matching_allocate_commit(&mut subscription).await?,
+        ];
+        let entity_key = budget_entity_key(workload.seed.key)?;
+        let first_commit = commit_for_sequence(&commits, first.metadata.commit_sequence)?;
+        let second_commit = commit_for_sequence(&commits, second.metadata.commit_sequence)?;
+        if !commit_matches_response_metadata(first_commit, &first.metadata)
+            || !commit_matches_response_metadata(second_commit, &second.metadata)
+        {
+            return Err(RiffDbPublicAdapterError::InvalidResponse);
+        }
+        let first_facts = checked_allocate_commit(
+            first_commit,
+            &entity_key,
+            &workload.contenders[0],
+            &first.observation.outcome,
+        )?;
+        let second_facts = checked_allocate_commit(
+            second_commit,
+            &entity_key,
+            &workload.contenders[1],
+            &second.observation.outcome,
+        )?;
+
+        let (allocated_commit, insufficient_budget_commit) =
+            match (&first.observation.outcome, &second.observation.outcome) {
+                (BudgetOutcome::Allocated { .. }, BudgetOutcome::InsufficientBudget { .. }) => {
+                    (first_facts, second_facts)
+                }
+                (BudgetOutcome::InsufficientBudget { .. }, BudgetOutcome::Allocated { .. }) => {
+                    (second_facts, first_facts)
+                }
+                _ => return Err(RiffDbPublicAdapterError::InvalidResponse),
+            };
+
+        let mut outcomes = vec![first.observation.outcome, second.observation.outcome];
+        outcomes.sort();
+        let observation = ContentionObservation {
+            case_id: workload.case_id.clone(),
+            outcomes,
+            final_budget: self.read_budget(workload.seed.key).await?,
+        };
+        let expected = expected_contention_observation(workload)
+            .map_err(|_| RiffDbPublicAdapterError::InvalidWorkload)?;
+        verify_contention(&expected, &observation).map_err(map_oracle_mismatch)?;
+
+        Ok(PublicContentionSafetyEvidence {
+            observation,
+            allocated_commit,
+            insufficient_budget_commit,
+            terminal_declared_outcome_count: 2,
+        })
+    }
+
+    /// Proves that a declared `InvalidAmount` result commits provenance and an
+    /// outcome without mutating an entity or emitting an event.
+    pub async fn prove_committed_invalid_amount(
+        &mut self,
+        seed: &WorkloadCreateBudget,
+        initial: &WorkloadAllocateBudget,
+        invalid: &WorkloadAllocateBudget,
+    ) -> Result<PublicInvalidAmountSafetyEvidence, RiffDbPublicAdapterError> {
+        if seed.key != initial.key || initial.key != invalid.key {
+            return Err(RiffDbPublicAdapterError::InvalidWorkload);
+        }
+        self.execute_fresh_seed(seed).await?;
+        let initial = execute_operation(
+            &mut self.client,
+            &self.metadata,
+            &BudgetOperation::Allocate(initial.clone()),
+        )
+        .await?;
+        let BudgetOutcome::Allocated {
+            budget: expected_final,
+            ..
+        } = &initial.observation.outcome
+        else {
+            return Err(RiffDbPublicAdapterError::InvalidResponse);
+        };
+        if initial.metadata.completion != PublicCommandCompletion::Committed {
+            return Err(RiffDbPublicAdapterError::FreshDatabaseRequired);
+        }
+        let expected_final = expected_final.clone();
+
+        let mut subscription = self
+            .subscribe_after(initial.metadata.commit_sequence)
+            .await?;
+        let rejection = execute_operation(
+            &mut self.client,
+            &self.metadata,
+            &BudgetOperation::Allocate(invalid.clone()),
+        )
+        .await?;
+        if rejection.metadata.completion != PublicCommandCompletion::Committed
+            || !matches!(
+                rejection.observation.outcome,
+                BudgetOutcome::InvalidAmount { .. }
+            )
+        {
+            return Err(RiffDbPublicAdapterError::InvalidResponse);
+        }
+        let commit = next_matching_allocate_commit(&mut subscription).await?;
+        if !commit_matches_response_metadata(&commit, &rejection.metadata) {
+            return Err(RiffDbPublicAdapterError::InvalidResponse);
+        }
+        let entity_key = budget_entity_key(seed.key)?;
+        let rejection_commit = checked_allocate_commit(
+            &commit,
+            &entity_key,
+            invalid,
+            &rejection.observation.outcome,
+        )?;
+        let final_budget = self
+            .read_budget(seed.key)
+            .await?
+            .ok_or(RiffDbPublicAdapterError::InvalidResponse)?;
+        if final_budget != expected_final {
+            return Err(RiffDbPublicAdapterError::InvalidResponse);
+        }
+
+        Ok(PublicInvalidAmountSafetyEvidence {
+            rejection,
+            rejection_commit,
+            final_budget,
+        })
+    }
+
+    /// Proves allocation replay after deliberately discarding the first
+    /// application response, including public outcome lookup and commit facts.
+    pub async fn prove_allocate_discarded_response_replay(
+        &mut self,
+        seed: &WorkloadCreateBudget,
+        allocation: &WorkloadAllocateBudget,
+    ) -> Result<PublicAllocationReplaySafetyEvidence, RiffDbPublicAdapterError> {
+        if seed.key != allocation.key {
+            return Err(RiffDbPublicAdapterError::InvalidWorkload);
+        }
+        let seed_observation = self.execute_fresh_seed(seed).await?;
+        let generated = generated_allocate(allocation)?;
+        let immutable = generated
+            .idempotent_command()
+            .map_err(map_generated_command_error)?;
+        let mut subscription = self
+            .subscribe_after(seed_observation.metadata.commit_sequence)
+            .await?;
+        let ignored_response = self
+            .client
+            .execute_with_retry(&immutable, one_attempt(), &self.metadata)
+            .await
+            .map_err(map_client_error)?;
+        drop(ignored_response);
+
+        let notified_commit = next_matching_allocate_commit(&mut subscription).await?;
+        let notified_sequence = CommitSequence::new(notified_commit.commit_sequence)
+            .ok_or(RiffDbPublicAdapterError::InvalidResponse)?;
+        let replay_execution = self
+            .client
+            .execute_generated(&generated, one_attempt(), &self.metadata)
+            .await
+            .map_err(map_generated_execution_error)?;
+        let replay_response = replay_execution.response().clone();
+        let replay_generated_outcome = *replay_execution.outcome();
+        let replay = map_allocate_execution(allocation, replay_execution)?;
+        let notified_outcome = decode_notified_allocate_outcome(&generated, &notified_commit)?;
+
+        let lookup = self
+            .client
+            .get_outcome(
+                v1::GetOutcomeRequest {
+                    request_id: fresh_request_id_bytes()?,
+                    contract_lineage: String::new(),
+                    command_name: String::new(),
+                    idempotency_key: String::new(),
+                    outcome_uri: Some(replay.metadata.outcome_uri.clone()),
+                },
+                &self.metadata,
+            )
+            .await
+            .map_err(map_client_error)?;
+        let Some(v1::get_outcome_response::Result::Found(lookup_response)) = lookup.result else {
+            return Err(RiffDbPublicAdapterError::ReplayEvidenceMismatch);
+        };
+        let lookup_outcome = generated
+            .decode_outcome(&lookup_response)
+            .map_err(|_| RiffDbPublicAdapterError::InvalidResponse)?;
+        let notified_declared_outcome = notified_commit
+            .outcome
+            .as_ref()
+            .ok_or(RiffDbPublicAdapterError::InvalidResponse)?;
+        let same_commit_sequence = replay.metadata.commit_sequence == notified_sequence;
+        // Commit values stay ID-based while Execute/GetOutcome values are schema-bound.
+        let same_declared_outcome = replay_generated_outcome == notified_outcome
+            && lookup_outcome == replay_generated_outcome
+            && lookup_response.outcome_type == replay_response.outcome_type
+            && lookup_response.outcome == replay_response.outcome
+            && notified_declared_outcome.outcome_name == replay_response.outcome_type;
+        let same_plan_hash = replay.metadata.plan_hash.as_slice() == notified_commit.plan_hash;
+        let same_provenance_uri = replay.metadata.provenance_uri == notified_commit.provenance_uri;
+        let outcome_lookup_matches = lookup_response == replay_response;
+        if replay.metadata.completion != PublicCommandCompletion::Replayed
+            || !same_commit_sequence
+            || !same_declared_outcome
+            || !same_plan_hash
+            || !same_provenance_uri
+            || !outcome_lookup_matches
+            || !matches!(replay.observation.outcome, BudgetOutcome::Allocated { .. })
+        {
+            return Err(RiffDbPublicAdapterError::ReplayEvidenceMismatch);
+        }
+
+        let entity_key = budget_entity_key(seed.key)?;
+        let allocation_commit = checked_allocate_commit(
+            &notified_commit,
+            &entity_key,
+            allocation,
+            &replay.observation.outcome,
+        )?;
+        let scan = self.scan_commits_exact_end().await?;
+        if scan.frontier != notified_sequence {
+            return Err(RiffDbPublicAdapterError::ReplayEvidenceMismatch);
+        }
+        let matching_allocation_commit_count =
+            matching_successful_allocation_commits(&scan.commits, &entity_key);
+        if matching_allocation_commit_count != 1 {
+            return Err(RiffDbPublicAdapterError::ReplayEvidenceMismatch);
+        }
+        let final_budget = self
+            .read_budget(seed.key)
+            .await?
+            .ok_or(RiffDbPublicAdapterError::ReplayEvidenceMismatch)?;
+        let BudgetOutcome::Allocated { budget, .. } = &replay.observation.outcome else {
+            return Err(RiffDbPublicAdapterError::ReplayEvidenceMismatch);
+        };
+        if &final_budget != budget {
+            return Err(RiffDbPublicAdapterError::ReplayEvidenceMismatch);
+        }
+
+        Ok(PublicAllocationReplaySafetyEvidence {
+            observation: replay.observation,
+            replay_metadata: replay.metadata,
+            allocation_commit,
+            matching_allocation_commit_count,
+            outcome_lookup_matches,
+            same_commit_sequence,
+            same_declared_outcome,
+            same_plan_hash,
+            same_provenance_uri,
+            final_budget,
+        })
+    }
+
+    /// Proves that equal idempotency identity with different command input is
+    /// rejected without advancing the exact public application frontier.
+    pub async fn prove_same_key_different_input(
+        &mut self,
+        seed: &WorkloadCreateBudget,
+        first: &WorkloadAllocateBudget,
+        mismatch: &WorkloadAllocateBudget,
+    ) -> Result<PublicIdempotencyMismatchSafetyEvidence, RiffDbPublicAdapterError> {
+        if first.idempotency_key != mismatch.idempotency_key
+            || seed.key != first.key
+            || first.key != mismatch.key
+            || first.matter_id != mismatch.matter_id
+            || first.amount == mismatch.amount
+        {
+            return Err(RiffDbPublicAdapterError::InvalidWorkload);
+        }
+        self.execute_fresh_seed(seed).await?;
+        let first_observation = execute_operation(
+            &mut self.client,
+            &self.metadata,
+            &BudgetOperation::Allocate(first.clone()),
+        )
+        .await?;
+        let BudgetOutcome::Allocated {
+            budget: expected_final,
+            ..
+        } = &first_observation.observation.outcome
+        else {
+            return Err(RiffDbPublicAdapterError::InvalidResponse);
+        };
+        if first_observation.metadata.completion != PublicCommandCompletion::Committed {
+            return Err(RiffDbPublicAdapterError::FreshDatabaseRequired);
+        }
+        let expected_final = expected_final.clone();
+        let before = self.scan_commits_exact_end().await?;
+        if before.frontier != first_observation.metadata.commit_sequence {
+            return Err(RiffDbPublicAdapterError::InvalidResponse);
+        }
+
+        let generated = generated_allocate(mismatch)?;
+        let mismatch_error = match self
+            .client
+            .execute_generated(&generated, one_attempt(), &self.metadata)
+            .await
+        {
+            Err(GeneratedExecutionError::Client(ClientError::Public(error))) => error,
+            Err(GeneratedExecutionError::Client(_))
+            | Err(GeneratedExecutionError::CommandShape(_))
+            | Ok(_) => return Err(RiffDbPublicAdapterError::InvalidResponse),
+        };
+        let mismatch_error_kind = mismatch_error.kind();
+        let mismatch_error_details_none =
+            matches!(mismatch_error.details(), PublicErrorDetails::None);
+        let mismatch_incident_id_present = mismatch_error.incident_id().is_some();
+        if mismatch_error_kind != PublicErrorKind::IdempotencyKeyReuse
+            || !mismatch_error_details_none
+            || mismatch_incident_id_present
+        {
+            return Err(RiffDbPublicAdapterError::InvalidResponse);
+        }
+        let error_display = mismatch_error.to_string();
+        let error_debug = format!("{mismatch_error:?}");
+        let public_input_canaries = [
+            first.idempotency_key.as_str().to_owned(),
+            first.operation_id.as_str().to_owned(),
+            first.key.organization_id.to_string(),
+            first.key.fiscal_year.to_string(),
+            first.matter_id.to_string(),
+            first.amount.to_string(),
+            mismatch.operation_id.as_str().to_owned(),
+            mismatch.matter_id.to_string(),
+            mismatch.amount.to_string(),
+        ];
+        let public_error_canary_absent = public_input_canaries
+            .iter()
+            .all(|canary| !error_display.contains(canary) && !error_debug.contains(canary));
+        if !public_error_canary_absent {
+            return Err(RiffDbPublicAdapterError::InvalidResponse);
+        }
+
+        let after = self.scan_commits_exact_end().await?;
+        let application_frontier_unchanged =
+            before.frontier == after.frontier && before.commits == after.commits;
+        if !application_frontier_unchanged {
+            return Err(RiffDbPublicAdapterError::InvalidResponse);
+        }
+        let entity_key = budget_entity_key(seed.key)?;
+        let matching_allocation_commit_count =
+            matching_successful_allocation_commits(&after.commits, &entity_key);
+        if matching_allocation_commit_count != 1 {
+            return Err(RiffDbPublicAdapterError::InvalidResponse);
+        }
+        let commit = after
+            .commits
+            .iter()
+            .find(|commit| {
+                commit.commit_sequence == first_observation.metadata.commit_sequence.get()
+            })
+            .ok_or(RiffDbPublicAdapterError::InvalidResponse)?;
+        if !commit_matches_response_metadata(commit, &first_observation.metadata) {
+            return Err(RiffDbPublicAdapterError::InvalidResponse);
+        }
+        let allocation_commit = checked_allocate_commit(
+            commit,
+            &entity_key,
+            first,
+            &first_observation.observation.outcome,
+        )?;
+        let final_budget = self
+            .read_budget(seed.key)
+            .await?
+            .ok_or(RiffDbPublicAdapterError::InvalidResponse)?;
+        if final_budget != expected_final {
+            return Err(RiffDbPublicAdapterError::InvalidResponse);
+        }
+
+        Ok(PublicIdempotencyMismatchSafetyEvidence {
+            first: first_observation,
+            mismatch_error_kind,
+            mismatch_error_details_none,
+            mismatch_incident_id_present,
+            application_frontier_unchanged,
+            matching_allocation_commit_count,
+            allocation_commit,
+            public_error_canary_absent,
+            final_budget,
+        })
+    }
+
+    async fn execute_fresh_seed(
+        &mut self,
+        seed: &WorkloadCreateBudget,
+    ) -> Result<PublicCommandObservation, RiffDbPublicAdapterError> {
+        let observation = execute_operation(
+            &mut self.client,
+            &self.metadata,
+            &BudgetOperation::Create(seed.clone()),
+        )
+        .await?;
+        if observation.metadata.completion != PublicCommandCompletion::Committed {
+            return Err(RiffDbPublicAdapterError::FreshDatabaseRequired);
+        }
+        if !matches!(
+            observation.observation.outcome,
+            BudgetOutcome::BudgetCreated { .. }
+        ) {
+            return Err(RiffDbPublicAdapterError::InvalidResponse);
+        }
+        Ok(observation)
+    }
+
+    async fn subscribe_after(
+        &self,
+        sequence: CommitSequence,
+    ) -> Result<riffdb_client_rust::CommitNotificationStream, RiffDbPublicAdapterError> {
+        let mut client = self.client.clone();
+        client
+            .subscribe_commits(
+                v1::SubscribeCommitsRequest {
+                    request_id: fresh_request_id_bytes()?,
+                    after_sequence: Some(sequence.get()),
+                    maximum_lifetime_nanos: SUBSCRIPTION_LIFETIME_NANOS,
+                },
+                &self.metadata,
+            )
+            .await
+            .map_err(map_client_error)
+    }
+
+    async fn scan_commits_exact_end(
+        &mut self,
+    ) -> Result<ExactEndCommitScan, RiffDbPublicAdapterError> {
+        let response = self
+            .client
+            .scan_commits(
+                v1::ScanCommitsRequest {
+                    request_id: fresh_request_id_bytes()?,
+                    page: Some(v1::PageRequest {
+                        limit: Some(COMMIT_SCAN_LIMIT),
+                        cursor: None,
+                    }),
+                },
+                &self.metadata,
+            )
+            .await
+            .map_err(map_client_error)?;
+        let page = response
+            .page
+            .ok_or(RiffDbPublicAdapterError::InvalidResponse)?;
+        if page.next_cursor.is_some() {
+            return Err(RiffDbPublicAdapterError::InvalidResponse);
+        }
+        let frontier = match page.observed_fence.and_then(|frontier| frontier.position) {
+            Some(v1::frontier_position::Position::AppliedThrough(sequence)) => {
+                CommitSequence::new(sequence).ok_or(RiffDbPublicAdapterError::InvalidResponse)?
+            }
+            Some(v1::frontier_position::Position::BeforeFirst(_)) | None => {
+                return Err(RiffDbPublicAdapterError::InvalidResponse);
+            }
+        };
+        Ok(ExactEndCommitScan {
+            commits: page.items,
+            frontier,
         })
     }
 
@@ -486,6 +1069,19 @@ fn map_allocate_execution(
     execution: GeneratedExecution<AllocateBudgetOutcome>,
 ) -> Result<PublicCommandObservation, RiffDbPublicAdapterError> {
     let (outcome, response) = execution.into_parts();
+    let outcome = map_allocate_outcome(outcome)?;
+    Ok(PublicCommandObservation {
+        observation: CommandObservation {
+            operation_id: command.operation_id.clone(),
+            outcome,
+        },
+        metadata: response_metadata(response, &ALLOCATE_BUDGET_PLAN_HASH)?,
+    })
+}
+
+fn map_allocate_outcome(
+    outcome: AllocateBudgetOutcome,
+) -> Result<BudgetOutcome, RiffDbPublicAdapterError> {
     let outcome = match outcome {
         AllocateBudgetOutcome::Allocated { budget, remaining } => BudgetOutcome::Allocated {
             budget: map_budget(budget)?,
@@ -515,13 +1111,7 @@ fn map_allocate_execution(
             requested: workload_amount(requested)?,
         },
     };
-    Ok(PublicCommandObservation {
-        observation: CommandObservation {
-            operation_id: command.operation_id.clone(),
-            outcome,
-        },
-        metadata: response_metadata(response, &ALLOCATE_BUDGET_PLAN_HASH)?,
-    })
+    Ok(outcome)
 }
 
 fn map_budget(budget: Budget) -> Result<BudgetState, RiffDbPublicAdapterError> {
@@ -669,6 +1259,131 @@ fn value_field(
         .ok_or(RiffDbPublicAdapterError::InvalidResponse)
 }
 
+struct ExactEndCommitScan {
+    commits: Vec<v1::Commit>,
+    frontier: CommitSequence,
+}
+
+fn commit_for_sequence(
+    commits: &[v1::Commit],
+    sequence: CommitSequence,
+) -> Result<&v1::Commit, RiffDbPublicAdapterError> {
+    let mut matching = commits
+        .iter()
+        .filter(|commit| commit.commit_sequence == sequence.get());
+    let commit = matching
+        .next()
+        .ok_or(RiffDbPublicAdapterError::InvalidResponse)?;
+    if matching.next().is_some() {
+        return Err(RiffDbPublicAdapterError::InvalidResponse);
+    }
+    Ok(commit)
+}
+
+fn commit_matches_response_metadata(commit: &v1::Commit, metadata: &PublicCommandMetadata) -> bool {
+    commit.commit_sequence == metadata.commit_sequence.get()
+        && commit.contract_version == metadata.contract_version.get()
+        && commit.plan_hash.as_slice() == metadata.plan_hash
+        && commit.provenance_uri == metadata.provenance_uri
+}
+
+fn checked_allocate_commit(
+    commit: &v1::Commit,
+    expected_entity_key: &[u8],
+    command: &WorkloadAllocateBudget,
+    expected_outcome: &BudgetOutcome,
+) -> Result<PublicCommitFacts, RiffDbPublicAdapterError> {
+    let outcome = commit
+        .outcome
+        .as_ref()
+        .ok_or(RiffDbPublicAdapterError::InvalidResponse)?;
+    if commit.commit_sequence == 0
+        || commit.contract_lineage != CONTRACT_LINEAGE
+        || commit.contract_version != CONTRACT_VERSION
+        || commit.command_id != ALLOCATE_BUDGET_COMMAND_ID
+        || commit.plan_hash.as_slice() != ALLOCATE_BUDGET_PLAN_HASH
+        || commit.provenance_uri.is_empty()
+        || commit.durability != v1::CommandDurability::Synchronous as i32
+    {
+        return Err(RiffDbPublicAdapterError::InvalidResponse);
+    }
+    let generated = generated_allocate(command)?;
+    let decoded = decode_notified_allocate_outcome(&generated, commit)?;
+    if map_allocate_outcome(decoded)? != *expected_outcome {
+        return Err(RiffDbPublicAdapterError::InvalidResponse);
+    }
+
+    let (expected_outcome_id, expected_outcome_name, expected_mutation) = match expected_outcome {
+        BudgetOutcome::Allocated { .. } => (1, "Allocated", true),
+        BudgetOutcome::InvalidAmount { .. } => (2, "InvalidAmount", false),
+        BudgetOutcome::BudgetNotFound { .. } => (3, "BudgetNotFound", false),
+        BudgetOutcome::InsufficientBudget { .. } => (4, "InsufficientBudget", false),
+        BudgetOutcome::BudgetCreated { .. }
+        | BudgetOutcome::BudgetAlreadyExists { .. }
+        | BudgetOutcome::InvalidApprovedAmount { .. } => {
+            return Err(RiffDbPublicAdapterError::InvalidResponse);
+        }
+    };
+    if outcome.outcome_id != expected_outcome_id || outcome.outcome_name != expected_outcome_name {
+        return Err(RiffDbPublicAdapterError::InvalidResponse);
+    }
+
+    if expected_mutation {
+        let [affected] = commit.affected_entities.as_slice() else {
+            return Err(RiffDbPublicAdapterError::InvalidResponse);
+        };
+        let [event] = commit.events.as_slice() else {
+            return Err(RiffDbPublicAdapterError::InvalidResponse);
+        };
+        let event_id = event
+            .event_id
+            .as_ref()
+            .ok_or(RiffDbPublicAdapterError::InvalidResponse)?;
+        if affected.entity_key != expected_entity_key
+            || affected.entity_version == 0
+            || event.event_type_id != BUDGET_ALLOCATED_EVENT_TYPE_ID
+            || event_id.commit_sequence != commit.commit_sequence
+            || event_id.event_ordinal != 0
+        {
+            return Err(RiffDbPublicAdapterError::InvalidResponse);
+        }
+    } else if !commit.affected_entities.is_empty() || !commit.events.is_empty() {
+        return Err(RiffDbPublicAdapterError::InvalidResponse);
+    }
+
+    let commit_sequence = CommitSequence::new(commit.commit_sequence)
+        .ok_or(RiffDbPublicAdapterError::InvalidResponse)?;
+    Ok(PublicCommitFacts {
+        commit_sequence,
+        outcome_name: outcome.outcome_name.clone(),
+        affected_entity_count: commit.affected_entities.len(),
+        event_count: commit.events.len(),
+    })
+}
+
+fn matching_successful_allocation_commits(commits: &[v1::Commit], entity_key: &[u8]) -> usize {
+    commits
+        .iter()
+        .filter(|commit| {
+            commit.contract_lineage == CONTRACT_LINEAGE
+                && commit.contract_version == CONTRACT_VERSION
+                && commit.command_id == ALLOCATE_BUDGET_COMMAND_ID
+                && commit.plan_hash.as_slice() == ALLOCATE_BUDGET_PLAN_HASH
+                && commit.outcome.as_ref().is_some_and(|outcome| {
+                    outcome.outcome_id == 1 && outcome.outcome_name == "Allocated"
+                })
+                && matches!(
+                    commit.affected_entities.as_slice(),
+                    [affected] if affected.entity_key == entity_key
+                )
+                && matches!(
+                    commit.events.as_slice(),
+                    [event] if event.event_type_id == BUDGET_ALLOCATED_EVENT_TYPE_ID
+                )
+        })
+        .count()
+}
+
 async fn next_matching_create_commit(
     subscription: &mut riffdb_client_rust::CommitNotificationStream,
 ) -> Result<v1::Commit, RiffDbPublicAdapterError> {
@@ -695,6 +1410,32 @@ async fn next_matching_create_commit(
     }
 }
 
+async fn next_matching_allocate_commit(
+    subscription: &mut riffdb_client_rust::CommitNotificationStream,
+) -> Result<v1::Commit, RiffDbPublicAdapterError> {
+    loop {
+        let notification = subscription
+            .message()
+            .await
+            .map_err(map_client_error)?
+            .ok_or(RiffDbPublicAdapterError::CommitNotificationEnded)?;
+        match notification.notification {
+            Some(v1::commit_notification::Notification::Commit(commit))
+                if commit.contract_lineage == CONTRACT_LINEAGE
+                    && commit.contract_version == CONTRACT_VERSION
+                    && commit.command_id == ALLOCATE_BUDGET_COMMAND_ID
+                    && commit.plan_hash.as_slice() == ALLOCATE_BUDGET_PLAN_HASH =>
+            {
+                return Ok(commit);
+            }
+            Some(v1::commit_notification::Notification::Commit(_)) => {}
+            Some(v1::commit_notification::Notification::Terminal(_)) | None => {
+                return Err(RiffDbPublicAdapterError::CommitNotificationEnded);
+            }
+        }
+    }
+}
+
 fn decode_notified_create_outcome(
     command: &CreateBudget,
     commit: &v1::Commit,
@@ -706,6 +1447,31 @@ fn decode_notified_create_outcome(
     if outcome.outcome_id != 1 {
         return Err(RiffDbPublicAdapterError::InvalidResponse);
     }
+    command
+        .decode_outcome(&v1::ExecuteCommandResponse {
+            status: v1::execute_command_response::CompletionStatus::Replayed as i32,
+            commit_sequence: commit.commit_sequence,
+            contract_version: commit.contract_version,
+            plan_hash: commit.plan_hash.clone(),
+            outcome_type: outcome.outcome_name.clone(),
+            outcome: Some(v1::Value {
+                kind: outcome.value.clone().map(v1::value::Kind::RecordValue),
+            }),
+            provenance_uri: commit.provenance_uri.clone(),
+            durability_mode: "sync".to_owned(),
+            outcome_uri: None,
+        })
+        .map_err(|_| RiffDbPublicAdapterError::InvalidResponse)
+}
+
+fn decode_notified_allocate_outcome(
+    command: &AllocateBudget,
+    commit: &v1::Commit,
+) -> Result<AllocateBudgetOutcome, RiffDbPublicAdapterError> {
+    let outcome = commit
+        .outcome
+        .as_ref()
+        .ok_or(RiffDbPublicAdapterError::InvalidResponse)?;
     command
         .decode_outcome(&v1::ExecuteCommandResponse {
             status: v1::execute_command_response::CompletionStatus::Replayed as i32,
@@ -965,5 +1731,72 @@ mod tests {
             first_wait.as_mut().poll(&mut context),
             Poll::Ready(Ok(()))
         ));
+    }
+
+    #[test]
+    fn safety_commit_scan_counts_only_exact_successful_allocation_commits() {
+        let entity_key = vec![0x41; 30];
+        let matching = v1::Commit {
+            commit_sequence: 2,
+            contract_lineage: CONTRACT_LINEAGE.to_owned(),
+            contract_version: CONTRACT_VERSION,
+            command_id: ALLOCATE_BUDGET_COMMAND_ID,
+            plan_hash: ALLOCATE_BUDGET_PLAN_HASH.to_vec(),
+            affected_entities: vec![v1::AffectedEntity {
+                entity_key: entity_key.clone(),
+                entity_version: 2,
+            }],
+            events: vec![v1::DurableEvent {
+                event_id: Some(v1::EventId {
+                    commit_sequence: 2,
+                    event_ordinal: 0,
+                }),
+                event_type_id: BUDGET_ALLOCATED_EVENT_TYPE_ID,
+                payload: Some(v1::ValueRecord { fields: Vec::new() }),
+            }],
+            outcome: Some(v1::DeclaredOutcome {
+                outcome_id: 1,
+                outcome_name: "Allocated".to_owned(),
+                value: Some(v1::ValueRecord { fields: Vec::new() }),
+            }),
+            ..v1::Commit::default()
+        };
+        let mut wrong_key = matching.clone();
+        wrong_key.affected_entities[0].entity_key = vec![0x42; 30];
+        let mut checked_rejection = matching.clone();
+        checked_rejection.commit_sequence = 3;
+        checked_rejection.outcome = Some(v1::DeclaredOutcome {
+            outcome_id: 4,
+            outcome_name: "InsufficientBudget".to_owned(),
+            value: Some(v1::ValueRecord { fields: Vec::new() }),
+        });
+        checked_rejection.affected_entities.clear();
+        checked_rejection.events.clear();
+
+        assert_eq!(
+            matching_successful_allocation_commits(
+                &[matching, wrong_key, checked_rejection],
+                &entity_key,
+            ),
+            1
+        );
+    }
+
+    #[test]
+    fn safety_commit_sequence_lookup_rejects_missing_and_duplicate_sequences() {
+        let commit = v1::Commit {
+            commit_sequence: 7,
+            ..v1::Commit::default()
+        };
+        let sequence = CommitSequence::new(7).expect("nonzero sequence");
+        assert!(commit_for_sequence(std::slice::from_ref(&commit), sequence).is_ok());
+        assert_eq!(
+            commit_for_sequence(&[], sequence),
+            Err(RiffDbPublicAdapterError::InvalidResponse)
+        );
+        assert_eq!(
+            commit_for_sequence(&[commit.clone(), commit], sequence),
+            Err(RiffDbPublicAdapterError::InvalidResponse)
+        );
     }
 }

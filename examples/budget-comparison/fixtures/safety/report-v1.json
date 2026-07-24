@@ -1,0 +1,96 @@
+{
+  "benchmark_eligible": false,
+  "claim_scope": "supported_application_mutation_surface",
+  "postgres_control": "canonical_adapter_preserved",
+  "riffdb_surface": "public_rust_sdk_over_grpc",
+  "scenarios": [
+    {
+      "claim": "callers_cannot_select_weaker_conflict_handling",
+      "postgres_negative_control": {
+        "accepted_count": 2,
+        "canonical_adapter_oracle_passed": true,
+        "final_allocated_amount": "80.00",
+        "logical_accepted_amount": "160.00",
+        "row_checks_hold": true
+      },
+      "riffdb_public": {
+        "allocated_commit_affected_entity_count": 1,
+        "allocated_commit_event_count": 1,
+        "allocated_count": 1,
+        "final_allocated_amount": "80.00",
+        "insufficient_budget_commit_affected_entity_count": 0,
+        "insufficient_budget_commit_event_count": 0,
+        "insufficient_budget_count": 1,
+        "terminal_declared_outcome_count": 2
+      },
+      "scenario": "lost_update_without_lock"
+    },
+    {
+      "claim": "declared_precondition_cannot_be_omitted_or_bypassed",
+      "postgres_negative_control": {
+        "direct_dml_committed": true,
+        "final_allocated_amount": "20.00",
+        "requested_amount": "-10.00",
+        "row_checks_hold": true,
+        "safe_adapter_outcome": "InvalidAmount",
+        "starting_allocated_amount": "30.00"
+      },
+      "riffdb_public": {
+        "completion": "Committed",
+        "final_allocated_amount": "30.00",
+        "generic_application_dml_rpc_present": false,
+        "outcome": "InvalidAmount",
+        "rejection_commit_affected_entity_count": 0,
+        "rejection_commit_event_count": 0,
+        "rejection_has_commit_sequence": true,
+        "rejection_has_provenance_uri": true
+      },
+      "scenario": "direct_dml_precondition_bypass"
+    },
+    {
+      "claim": "same_request_replays_without_duplicate_mutation",
+      "postgres_negative_control": {
+        "committed_allocation_count": 2,
+        "final_allocated_amount": "60.00",
+        "first_outcome": "Allocated",
+        "second_outcome": "Allocated"
+      },
+      "riffdb_public": {
+        "allocation_commit_affected_entity_count": 1,
+        "allocation_commit_event_count": 1,
+        "final_allocated_amount": "30.00",
+        "matching_allocation_commit_count": 1,
+        "replay_completion": "Replayed",
+        "replay_outcome_lookup_matches": true,
+        "replay_same_commit_sequence": true,
+        "replay_same_declared_outcome": true,
+        "replay_same_plan_hash": true,
+        "replay_same_provenance_uri": true
+      },
+      "scenario": "duplicate_retry_after_discarded_response"
+    },
+    {
+      "claim": "same_identity_different_input_fails_without_execution",
+      "postgres_negative_control": {
+        "committed_allocation_count": 2,
+        "final_allocated_amount": "70.00",
+        "first_amount": "30.00",
+        "second_amount": "40.00"
+      },
+      "riffdb_public": {
+        "allocation_commit_affected_entity_count": 1,
+        "allocation_commit_event_count": 1,
+        "final_allocated_amount": "30.00",
+        "matching_allocation_commit_count": 1,
+        "mismatch_error_details": "none",
+        "mismatch_error_kind": "idempotency_key_reuse",
+        "mismatch_incident_id_present": false,
+        "post_mismatch_application_frontier_unchanged": true,
+        "secret_canary_absent": true
+      },
+      "scenario": "same_key_different_input"
+    }
+  ],
+  "schema": "riffdb.budget.safety-evidence/v1",
+  "workload_version": 1
+}

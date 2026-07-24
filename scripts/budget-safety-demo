@@ -1,0 +1,33 @@
+#!/bin/sh
+set -eu
+
+if [ "$#" -ne 1 ] || [ "$1" != "--assert" ]; then
+    printf '%s\n' 'usage: scripts/budget-safety-demo --assert' >&2
+    exit 2
+fi
+
+: "${RIFFDB_BUDGET_POSTGRES_URL:?set RIFFDB_BUDGET_POSTGRES_URL to a dedicated PostgreSQL database}"
+
+repository=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
+cd "$repository"
+
+cargo build --locked \
+    -p riffdb-server \
+    --bin riffdbd \
+    --target-dir target/wp139-root
+
+cargo build --locked \
+    --manifest-path examples/budget-comparison/Cargo.toml \
+    -p riffdb-budget-safety-evidence \
+    --bin riffdb-budget-safety \
+    --target-dir target/wp139-comparison
+
+RIFFDB_BUDGET_POSTGRES_REQUIRED=1 \
+RIFFDB_BUDGET_RIFFDBD_BIN="$repository/target/wp139-root/debug/riffdbd" \
+RIFFDB_BUDGET_SAFETY_BIN="$repository/target/wp139-comparison/debug/riffdb-budget-safety" \
+cargo test --locked \
+    --manifest-path examples/budget-comparison/Cargo.toml \
+    -p riffdb-budget-comparison \
+    --test safety_evidence \
+    --target-dir target/wp139-comparison \
+    -- --test-threads=1 --nocapture

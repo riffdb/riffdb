@@ -1084,6 +1084,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "riffdb-budget-safety-evidence"
+version = "0.1.0"
+dependencies = [
+ "postgres",
+ "riffdb-budget-comparison-core",
+ "riffdb-budget-comparison-postgres",
+ "riffdb-budget-comparison-riffdb-grpc",
+ "riffdb-client-rust",
+ "serde_json",
+ "tokio",
+ "tonic",
+]
+
+[[package]]
 name = "riffdb-catalog"
 version = "0.1.0"
 dependencies = [
