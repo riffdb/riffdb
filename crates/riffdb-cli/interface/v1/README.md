@@ -1,10 +1,10 @@
 # RiffDB CLI v1 Interface Checkpoint
 
-Status: **Proposed for human acceptance. Not implemented.**
+Status: **Accepted and implemented by WP-150.**
 
-This directory freezes the interface proposed for the WP-150 implementation
-PR. It is deliberately outside `src/`: no file here is production Rust and no
-runtime behavior is authorized by this checkpoint.
+This directory freezes the accepted interface implemented by WP-150. It is
+deliberately outside `src/`: no file here is production Rust and no runtime
+behavior is authorized by this checkpoint alone.
 
 The checkpoint consists of:
 

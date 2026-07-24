@@ -1,5 +1,10 @@
 #![forbid(unsafe_code)]
 
-//! Bootstrap target for the future `riffdb` command-line client.
+//! `riffdb` public command-line client.
 
-fn main() {}
+use std::process::ExitCode;
+
+#[tokio::main]
+async fn main() -> ExitCode {
+    riffdb_cli::run().await
+}
