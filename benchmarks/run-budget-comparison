@@ -50,7 +50,7 @@ if [[ -n "$(git status --porcelain=v1)" ]]; then
     printf '%s\n' 'budget benchmark publication requires a clean checkout' >&2
     exit 1
 fi
-for tool in awk cargo docker findmnt git jq rustc sha256sum stat uname; do
+for tool in awk cargo docker env findmnt git jq rustc sha256sum stat uname; do
     command -v "$tool" >/dev/null 2>&1 || {
         printf 'required benchmark tool is missing: %s\n' "$tool" >&2
         exit 1
@@ -62,6 +62,7 @@ root_target="$target_root/root-target"
 comparison_target="$target_root/comparison-target"
 database_root="$target_root/database-roots"
 riffdb_database_root="$database_root/riffdb"
+riffdb_process_cwd="$riffdb_database_root/process-cwd"
 postgres_database_root="$database_root/postgresql"
 postgres_timer_root="$database_root/postgresql-timer"
 published_root=benchmarks/reports/budget-comparison
@@ -75,6 +76,7 @@ done
 rm -rf "$database_root"
 mkdir -p \
     "$riffdb_database_root" \
+    "$riffdb_process_cwd" \
     "$postgres_database_root" \
     "$postgres_timer_root" \
     "$published_root"
@@ -203,9 +205,10 @@ run_postgres() {
 }
 
 run_riffdb() {
-    RIFFDB_BUDGET_RIFFDBD_BIN="$riffdbd" \
-    RIFFDB_BUDGET_RUNNER_BIN="$public_runner" \
-    TMPDIR="$repo_root/$riffdb_database_root" \
+    env --chdir="$repo_root/$riffdb_process_cwd" \
+        RIFFDB_BUDGET_RIFFDBD_BIN="$riffdbd" \
+        RIFFDB_BUDGET_RUNNER_BIN="$public_runner" \
+        TMPDIR="$repo_root/$riffdb_database_root" \
         "$public_test" \
         --exact public_comparison_process_runner_matches_the_shared_oracle \
         --test-threads=1 >"$command_log" 2>&1
@@ -313,6 +316,7 @@ for ((iteration = 1; iteration <= samples; iteration++)); do
         "$riffdb_database_root" \
         riffdb \
         env \
+        --chdir="$repo_root/$riffdb_process_cwd" \
         RIFFDB_BUDGET_RIFFDBD_BIN="$riffdbd" \
         RIFFDB_BUDGET_RUNNER_BIN="$public_runner" \
         TMPDIR="$repo_root/$riffdb_database_root" \
@@ -342,27 +346,10 @@ jq -Rn \
     --arg analysis_command "$analysis_command" \
     -f benchmarks/budget-report-v1.jq \
     <"$raw" >"$report"
-jq -e '
-    .schema == "riffdb.benchmark-report/v1"
-    and .report_id == "budget-postgresql-riffdb"
-    and .dirty == false
-    and .correctness_status == "passed"
-    and .performance_status == "measured"
-    and .unsafe_postgresql_variants_included == false
-    and ([.results[].workload_id] == [
-      "postgres_canonical_sequential_contention",
-      "riffdb_public_sequential_contention_replay"
-    ])
-    and all(.results[];
-            .sample_count >= 3
-            and (.samples_ns | length == .sample_count)
-            and (.database_size_samples_bytes | length == .sample_count)
-            and .database_size_bytes > 0
-            and .min_ns <= .p50_ns
-            and .p50_ns <= .p95_ns
-            and .p95_ns <= .p99_ns
-            and .p99_ns <= .max_ns)
-' "$report" >/dev/null
+jq -e \
+    --arg report_id budget-postgresql-riffdb \
+    -f benchmarks/validate-benchmark-report-v1.jq \
+    "$report" >/dev/null
 install -m 0644 "$report" "$published_report"
 
 printf 'budget comparison benchmark captured: %s\n' "$published_report"

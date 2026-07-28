@@ -124,21 +124,10 @@ jq -Rn \
     --argjson configured_warmup "$warmup" \
     -f benchmarks/storage-report-v1.jq \
     <"$capture" >"$report"
-jq -e '
-    .schema == "riffdb.benchmark-report/v1"
-    and .report_id == "storage-redb"
-    and .dirty == false
-    and .correctness_status == "passed"
-    and .performance_status == "measured"
-    and (.results | length == 4)
-    and all(.results[];
-            .sample_count > 0
-            and (.samples_ns | length) == .sample_count
-            and .min_ns <= .p50_ns
-            and .p50_ns <= .p95_ns
-            and .p95_ns <= .p99_ns
-            and .p99_ns <= .max_ns)
-' "$report" >/dev/null
+jq -e \
+    --arg report_id storage-redb \
+    -f benchmarks/validate-benchmark-report-v1.jq \
+    "$report" >/dev/null
 install -m 0644 "$report" "$published_report"
 
 printf 'storage-redb benchmark captured: %s\n' "$published_report"
