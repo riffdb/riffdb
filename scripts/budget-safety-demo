@@ -6,10 +6,17 @@ if [ "$#" -ne 1 ] || [ "$1" != "--assert" ]; then
     exit 2
 fi
 
+umask 077
+
 : "${RIFFDB_BUDGET_POSTGRES_URL:?set RIFFDB_BUDGET_POSTGRES_URL to a dedicated PostgreSQL database}"
 
 repository=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
 cd "$repository"
+
+report_root=$(mktemp -d "${TMPDIR:-/tmp}/riffdb-budget-safety-demo.XXXXXX")
+trap 'rm -rf "$report_root"' EXIT HUP INT TERM
+report_path="$report_root/report-v1.jsonl"
+expected_report="$repository/examples/budget-comparison/fixtures/safety/report-v1.jsonl"
 
 cargo build --locked \
     -p riffdb-server \
@@ -25,9 +32,16 @@ cargo build --locked \
 RIFFDB_BUDGET_POSTGRES_REQUIRED=1 \
 RIFFDB_BUDGET_RIFFDBD_BIN="$repository/target/wp139-root/debug/riffdbd" \
 RIFFDB_BUDGET_SAFETY_BIN="$repository/target/wp139-comparison/debug/riffdb-budget-safety" \
+RIFFDB_BUDGET_SAFETY_REPORT_PATH="$report_path" \
 cargo test --locked \
     --manifest-path examples/budget-comparison/Cargo.toml \
     -p riffdb-budget-comparison \
     --test safety_evidence \
     --target-dir target/wp139-comparison \
-    -- --test-threads=1 --nocapture
+    -- --test-threads=1 >&2
+
+if ! cmp -s "$report_path" "$expected_report"; then
+    printf '%s\n' 'safety evidence did not match the checked report' >&2
+    exit 1
+fi
+cat "$expected_report"

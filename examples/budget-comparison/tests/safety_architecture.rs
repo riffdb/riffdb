@@ -247,7 +247,14 @@ fn safety_ci_and_process_contract_are_registered() {
     assert!(script.contains("RIFFDB_BUDGET_POSTGRES_REQUIRED=1"));
     assert!(script.contains("RIFFDB_BUDGET_RIFFDBD_BIN="));
     assert!(script.contains("RIFFDB_BUDGET_SAFETY_BIN="));
+    assert!(script.contains("RIFFDB_BUDGET_SAFETY_REPORT_PATH="));
     assert!(script.contains("--test safety_evidence"));
+    assert!(script.contains("cmp -s \"$report_path\" \"$expected_report\""));
+    assert!(script.contains("cat \"$expected_report\""));
+    assert!(!script.contains("--nocapture"));
+
+    let process_test = include_str!("safety_evidence.rs");
+    assert!(process_test.contains(".arg(\"--backup-root\")"));
 }
 
 fn dependency_names(manifest: &str) -> Result<BTreeSet<&str>, &'static str> {
