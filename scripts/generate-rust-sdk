@@ -1,0 +1,25 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+repo_root="$(git rev-parse --show-toplevel)"
+cd "$repo_root"
+
+mode="${1:-}"
+case "$mode" in
+    "")
+        renderer_mode="--write"
+        ;;
+    --check)
+        renderer_mode="--check"
+        ;;
+    *)
+        printf 'usage: %s [--check]\n' "$0" >&2
+        exit 2
+        ;;
+esac
+
+# The compiler owns the typed contract-to-fixture proof. The client renderer
+# consumes that checked text inventory without gaining an IR dependency.
+LC_ALL=C TZ=UTC ./scripts/generate-contract-fixtures --check
+LC_ALL=C TZ=UTC cargo run --quiet --locked -p riffdb-client-rust \
+    --example generate_legal_spend -- "$renderer_mode"

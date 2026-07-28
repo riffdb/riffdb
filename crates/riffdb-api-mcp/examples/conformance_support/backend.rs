@@ -1,33 +1,40 @@
 use std::sync::{
     Arc,
-    atomic::{AtomicU64, AtomicUsize, Ordering},
+    atomic::{AtomicBool, AtomicU8, AtomicU64, AtomicUsize, Ordering},
 };
 
 use riffdb_api_mcp::{
-    McpBackend, McpBackendError, McpBackendFuture, McpBackendRequest, McpCompactObservationRequest,
-    McpCompactObservationResult, McpDiscoveryRequest, McpDynamicToolDefinition,
-    McpInvocationTarget, McpMarkdownBuilder, McpObservedInventory, McpObserverBackend,
-    McpObserverBackendError, McpObserverBackendFuture, McpPostAuthenticationAdmission,
-    McpRateTarget, McpRequestId, McpResourceBody, McpResourceContent, McpResourceDescriptor,
-    McpResourceDiscoveryRequest, McpResourceDiscoverySurface, McpResourceJson, McpResourceLocator,
-    McpResourcePage, McpResourceReadRequest, McpSubscribedResourceObservation,
-    McpSubscriptionRequest, McpToolDiscoveryItem, McpToolInvocation, McpToolPage, McpToolResult,
-    McpTransportKind, RequestIdSourceError, SchemaDocument, format_command_documentation_locator,
-    format_command_plan_locator, format_contract_version_locator, format_entity_schema_locator,
+    McpBackend, McpBackendError, McpBackendFuture, McpBackendRequest, McpCompactObservationPage,
+    McpCompactObservationRequest, McpCompactObservationResult, McpDiscoveryRequest,
+    McpDynamicToolDefinition, McpInvocationTarget, McpMarkdownBuilder, McpObservedInventory,
+    McpObserverBackend, McpObserverBackendError, McpObserverBackendFuture,
+    McpPostAuthenticationAdmission, McpRateTarget, McpRequestId, McpResourceBody,
+    McpResourceContent, McpResourceDescriptor, McpResourceDiscoveryRequest,
+    McpResourceDiscoverySurface, McpResourceJson, McpResourceLocator, McpResourcePage,
+    McpResourceReadRequest, McpSubscribedResourceObservation, McpSubscriptionRequest,
+    McpToolDiscoveryItem, McpToolInvocation, McpToolPage, McpToolResult, McpTransportKind,
+    McpVisibleFingerprint, RequestIdSourceError, SchemaDocument,
+    format_command_documentation_locator, format_command_plan_locator,
+    format_contract_version_locator, format_entity_schema_locator,
     format_projection_status_locator,
 };
 use riffdb_errors::PublicError;
 use riffdb_types::{RequestId, ServiceOperationV1, hash_schema};
 use serde_json::{Value, json};
+use tokio::sync::Notify;
 
 pub(crate) const CAPABILITY_TOKEN: &str = "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8";
 pub(crate) const STABLE_TOOL: &str = "riffdb.cmd.legalspend.allocatebudget";
 pub(crate) const STALE_TOOL: &str = "riffdb.cmd.legalspend.retiredbudget";
+pub(crate) const DEPLOYED_TOOL: &str = "riffdb.cmd.legalspend.reviewbudget";
 pub(crate) const UNKNOWN_TOOL: &str = "riffdb.cmd.legalspend.unknown";
 pub(crate) const ACTIVE_CONTRACT_URI: &str = "riffdb://contract/active";
 pub(crate) const COMMAND_PLAN_URI: &str = "riffdb://command/LegalSpend/2/plan";
 pub(crate) const PROJECTION_STATUS_URI: &str = "riffdb://projection/LegalSpend/1/status";
 pub(crate) const INTERNAL_CANARY: &str = "riffdb-internal-canary-never-public";
+const BASELINE_TOOLS_OBSERVED: u8 = 1;
+const BASELINE_RESOURCES_OBSERVED: u8 = 2;
+const COMPLETE_BASELINE: u8 = BASELINE_TOOLS_OBSERVED | BASELINE_RESOURCES_OBSERVED;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct BackendCounts {
@@ -50,6 +57,9 @@ struct BackendState {
     invocation: AtomicUsize,
     resource_discovery: AtomicUsize,
     resource_read: AtomicUsize,
+    deployed: AtomicBool,
+    baseline_observed: AtomicU8,
+    baseline_ready: Notify,
 }
 
 #[derive(Clone, Default)]
@@ -72,6 +82,34 @@ impl ConformanceBackend {
             invocation: self.state.invocation.load(Ordering::Acquire),
             resource_discovery: self.state.resource_discovery.load(Ordering::Acquire),
             resource_read: self.state.resource_read.load(Ordering::Acquire),
+        }
+    }
+
+    fn deployed(&self) -> bool {
+        self.state.deployed.load(Ordering::Acquire)
+    }
+
+    fn record_baseline_observation(&self, inventory: McpObservedInventory) {
+        if self.deployed() {
+            return;
+        }
+        let bit = match inventory {
+            McpObservedInventory::Tools => BASELINE_TOOLS_OBSERVED,
+            McpObservedInventory::Resources => BASELINE_RESOURCES_OBSERVED,
+        };
+        let previous = self.state.baseline_observed.fetch_or(bit, Ordering::AcqRel);
+        if previous | bit == COMPLETE_BASELINE {
+            self.state.baseline_ready.notify_waiters();
+        }
+    }
+
+    async fn wait_for_baseline(&self) {
+        loop {
+            let notified = self.state.baseline_ready.notified();
+            if self.state.baseline_observed.load(Ordering::Acquire) == COMPLETE_BASELINE {
+                return;
+            }
+            notified.await;
         }
     }
 }
@@ -157,12 +195,16 @@ impl McpBackend for ConformanceBackend {
                 ServiceOperationV1::DiscoverCommandTools,
             ))?;
             let stable = dynamic_tool(STABLE_TOOL)?;
-            let stale = dynamic_tool(STALE_TOOL)?;
+            let version_specific = dynamic_tool(if self.deployed() {
+                DEPLOYED_TOOL
+            } else {
+                STALE_TOOL
+            })?;
             McpToolPage::new(
                 (1..=14)
                     .map(McpToolDiscoveryItem::Fixed)
                     .chain(
-                        [stable, stale]
+                        [stable, version_specific]
                             .into_iter()
                             .map(Box::new)
                             .map(McpToolDiscoveryItem::Dynamic),
@@ -185,8 +227,8 @@ impl McpBackend for ConformanceBackend {
                 McpRateTarget::command_tool(exact_name.clone())
                     .map_err(|_| McpBackendError::InvalidResponse)?,
             )?;
-            if exact_name == STABLE_TOOL {
-                dynamic_tool(STABLE_TOOL)
+            if exact_name == STABLE_TOOL || (self.deployed() && exact_name == DEPLOYED_TOOL) {
+                dynamic_tool(&exact_name)
             } else {
                 Err(McpBackendError::TargetUnavailable)
             }
@@ -200,15 +242,47 @@ impl McpBackend for ConformanceBackend {
     ) -> McpBackendFuture<'a, McpToolResult> {
         self.state.invocation.fetch_add(1, Ordering::AcqRel);
         Box::pin(async move {
-            let McpInvocationTarget::Dynamic(name) = request.target() else {
-                return Err(McpBackendError::TargetUnavailable);
-            };
-            invocation.admit(
-                McpRateTarget::command_tool(name.clone())
-                    .map_err(|_| McpBackendError::InvalidResponse)?,
-            )?;
-            if name != STABLE_TOOL {
-                return Err(McpBackendError::TargetUnavailable);
+            match request.target() {
+                McpInvocationTarget::Fixed { tag: 4, name } if name == "riffdb.contract.deploy" => {
+                    invocation.admit(McpRateTarget::Service(ServiceOperationV1::DeployContract))?;
+                    let arguments: Value = request
+                        .arguments()
+                        .deserialize()
+                        .map_err(|_| McpBackendError::InvalidResponse)?;
+                    if arguments
+                        .get("source")
+                        .and_then(Value::as_str)
+                        .is_none_or(str::is_empty)
+                    {
+                        return Err(McpBackendError::InvalidResponse);
+                    }
+                    self.wait_for_baseline().await;
+                    if self.state.deployed.swap(true, Ordering::AcqRel) {
+                        return Err(McpBackendError::TargetUnavailable);
+                    }
+                    return McpToolResult::from_serializable(&json!({
+                        "activated": {
+                            "bundle_hash": "5555555555555555555555555555555555555555555555555555555555555555",
+                            "contract_lineage": "LegalSpend",
+                            "contract_version": "3",
+                            "plan_root_hash": "6666666666666666666666666666666666666666666666666666666666666666",
+                            "source_hash": "7777777777777777777777777777777777777777777777777777777777777777"
+                        }
+                    }))
+                    .map_err(|_| McpBackendError::InvalidResponse);
+                }
+                McpInvocationTarget::Dynamic(name) => {
+                    invocation.admit(
+                        McpRateTarget::command_tool(name.clone())
+                            .map_err(|_| McpBackendError::InvalidResponse)?,
+                    )?;
+                    if name != STABLE_TOOL {
+                        return Err(McpBackendError::TargetUnavailable);
+                    }
+                }
+                McpInvocationTarget::Fixed { .. } => {
+                    return Err(McpBackendError::TargetUnavailable);
+                }
             }
             let arguments: Value = request
                 .arguments()
@@ -254,7 +328,7 @@ impl McpBackend for ConformanceBackend {
                 ServiceOperationV1::DiscoverResources,
             ))?;
             let items = match request.surface() {
-                McpResourceDiscoverySurface::Concrete => concrete_resources(),
+                McpResourceDiscoverySurface::Concrete => concrete_resources(self.deployed()),
                 McpResourceDiscoverySurface::Template => template_resources(),
             }?;
             McpResourcePage::new(request.surface(), items, None)
@@ -270,7 +344,7 @@ impl McpBackend for ConformanceBackend {
         self.state.resource_read.fetch_add(1, Ordering::AcqRel);
         Box::pin(async move {
             invocation.admit(resource_rate_target(request.locator()))?;
-            resource_content(request.locator())
+            resource_content(request.locator(), self.deployed())
         })
     }
 
@@ -292,10 +366,27 @@ impl McpObserverBackend for ConformanceBackend {
 
     fn discover_compact<'a>(
         &'a self,
-        _inventory: McpObservedInventory,
-        _request: McpCompactObservationRequest<'a, Self::Fence>,
+        inventory: McpObservedInventory,
+        request: McpCompactObservationRequest<'a, Self::Fence>,
     ) -> McpObserverBackendFuture<'a, McpCompactObservationResult<Self::Fence>> {
-        Box::pin(async { Err(McpObserverBackendError::RetryNextTick) })
+        Box::pin(async move {
+            if request.cursor().is_some() {
+                return Err(McpObserverBackendError::RetryNextTick);
+            }
+            let deployed = self.deployed();
+            let fence = if deployed { 2 } else { 1 };
+            if request.prior_fence() == Some(&fence) {
+                return Ok(McpCompactObservationResult::CatalogUnchanged(fence));
+            }
+            let fingerprints = compact_fingerprints(inventory, deployed)
+                .map_err(|_| McpObserverBackendError::RetryNextTick)?;
+            let page = McpCompactObservationPage::new(fingerprints, None, fence)
+                .map_err(|_| McpObserverBackendError::RetryNextTick)?;
+            if !deployed {
+                self.record_baseline_observation(inventory);
+            }
+            Ok(McpCompactObservationResult::Page(page))
+        })
     }
 
     fn observe_subscribed_resource<'a>(
@@ -383,10 +474,63 @@ fn checked_schema(id: &str, value: Value) -> Result<SchemaDocument, McpBackendEr
         .map_err(|_| McpBackendError::InvalidResponse)
 }
 
-fn concrete_resources() -> Result<Vec<McpResourceDescriptor>, McpBackendError> {
+fn compact_fingerprints(
+    inventory: McpObservedInventory,
+    deployed: bool,
+) -> Result<Vec<McpVisibleFingerprint>, McpBackendError> {
+    match inventory {
+        McpObservedInventory::Tools => {
+            let input = input_schema()?;
+            let outcome = outcome_schema()?;
+            let version = if deployed { 3 } else { 2 };
+            let version_specific = if deployed {
+                (DEPLOYED_TOOL, "ReviewBudget", 3)
+            } else {
+                (STALE_TOOL, "RetiredBudget", 3)
+            };
+            (1..=14)
+                .map(|tag| {
+                    McpVisibleFingerprint::fixed_tool(tag)
+                        .map_err(|_| McpBackendError::InvalidResponse)
+                })
+                .chain(
+                    [(STABLE_TOOL, "AllocateBudget", 2), version_specific]
+                        .into_iter()
+                        .map(|(name, source_command, command_id)| {
+                            McpVisibleFingerprint::command_tool(
+                                name,
+                                source_command,
+                                "LegalSpend",
+                                version,
+                                command_id,
+                                &input.schema_hash_bytes(),
+                                &outcome.schema_hash_bytes(),
+                            )
+                            .map_err(|_| McpBackendError::InvalidResponse)
+                        }),
+                )
+                .collect()
+        }
+        McpObservedInventory::Resources => concrete_resources(deployed)?
+            .into_iter()
+            .chain(template_resources()?)
+            .map(|descriptor| {
+                McpVisibleFingerprint::resource_descriptor(&descriptor)
+                    .map_err(|_| McpBackendError::InvalidResponse)
+            })
+            .collect(),
+    }
+}
+
+fn concrete_resources(deployed: bool) -> Result<Vec<McpResourceDescriptor>, McpBackendError> {
+    let contract_version_uri = if deployed {
+        "riffdb://contract/LegalSpend/3"
+    } else {
+        "riffdb://contract/LegalSpend/2"
+    };
     [
         ("active_contract", ACTIVE_CONTRACT_URI),
-        ("contract_version", "riffdb://contract/LegalSpend/2"),
+        ("contract_version", contract_version_uri),
         ("entity_schema", "riffdb://entity/LegalSpend/1/schema"),
         ("command_plan", COMMAND_PLAN_URI),
         (
@@ -441,7 +585,11 @@ fn resource_rate_target(locator: &McpResourceLocator) -> McpRateTarget {
     })
 }
 
-fn resource_content(locator: &McpResourceLocator) -> Result<McpResourceContent, McpBackendError> {
+fn resource_content(
+    locator: &McpResourceLocator,
+    deployed: bool,
+) -> Result<McpResourceContent, McpBackendError> {
+    let active_version = if deployed { "3" } else { "2" };
     let (branch, uri, body) = match locator {
         McpResourceLocator::ActiveContract => (
             "active_contract",
@@ -454,7 +602,7 @@ fn resource_content(locator: &McpResourceLocator) -> Result<McpResourceContent, 
                     "parent": null
                 },
                 "contract_lineage": "LegalSpend",
-                "contract_version": "2",
+                "contract_version": active_version,
                 "plan_root_hash": "2222222222222222222222222222222222222222222222222222222222222222",
                 "source_hash": "1111111111111111111111111111111111111111111111111111111111111111"
             }))?,
@@ -498,7 +646,7 @@ fn resource_content(locator: &McpResourceLocator) -> Result<McpResourceContent, 
             json_body(json!({
                 "command_id": command_id.get(),
                 "contract_lineage": lineage.as_str(),
-                "contract_version": "2",
+                "contract_version": active_version,
                 "explanation": {
                     "conflict_domains": ["budget"],
                     "effects": ["budget_allocated"],

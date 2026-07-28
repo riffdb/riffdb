@@ -14,10 +14,11 @@ fn main() {
         .enable_all()
         .build()
         .expect("conformance stdio runtime");
+    let backend = ConformanceBackend::default();
     runtime
         .block_on(serve_mcp_stdio(
-            ConformanceBackend::default(),
-            ConformanceBackend::default(),
+            backend.clone(),
+            backend,
             McpStdioClientActivity::new(),
         ))
         .expect("conformance stdio server");

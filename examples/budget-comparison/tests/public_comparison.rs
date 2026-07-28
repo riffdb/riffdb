@@ -133,6 +133,12 @@ fn public_comparison_adapter_dependency_boundary_is_frozen() {
 }
 
 #[test]
+fn public_comparison_server_uses_an_explicit_backup_root() {
+    let process_source = include_str!("public_comparison.rs");
+    assert!(process_source.contains(".arg(\"--backup-root\")"));
+}
+
+#[test]
 fn public_comparison_process_runner_matches_the_shared_oracle() -> TestResult<()> {
     let Some(binaries) = ProcessBinaries::from_environment()? else {
         return Ok(());
@@ -153,6 +159,7 @@ fn public_comparison_process_runner_matches_the_shared_oracle() -> TestResult<()
 async fn run_fresh_case(binaries: &ProcessBinaries, case: &'static str) -> TestResult<()> {
     let temporary = TemporaryDirectory::new()?;
     let database_path = temporary.path().join("riffdb.redb");
+    let backup_root = temporary.path().join("backups");
     let capability_keys_path = temporary.path().join("capability.keys");
     let idempotency_keys_path = temporary.path().join("idempotency.keys");
     let bootstrap_path = temporary.path().join("bootstrap.credential");
@@ -169,6 +176,7 @@ async fn run_fresh_case(binaries: &ProcessBinaries, case: &'static str) -> TestR
     let mut process = ServerProcess::spawn(
         &binaries.riffdbd,
         &database_path,
+        &backup_root,
         &capability_keys_path,
         &idempotency_keys_path,
     )?;
@@ -723,6 +731,7 @@ impl ServerProcess {
     fn spawn(
         binary: &Path,
         database_path: &Path,
+        backup_root: &Path,
         capability_keys_path: &Path,
         idempotency_keys_path: &Path,
     ) -> io::Result<Self> {
@@ -730,6 +739,8 @@ impl ServerProcess {
         command
             .arg("--database")
             .arg(database_path)
+            .arg("--backup-root")
+            .arg(backup_root)
             .arg("--listen")
             .arg("127.0.0.1:0")
             .arg("--environment")
