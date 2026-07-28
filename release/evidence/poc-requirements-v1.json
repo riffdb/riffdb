@@ -1,0 +1,527 @@
+{
+  "schema": "riffdb.poc-evidence-manifest/v1",
+  "attestation": "candidate_not_executed",
+  "requirements": [
+    {
+      "id": "POC-001",
+      "status": "requires_execution",
+      "evidence": [
+        {
+          "path": "scripts/demo",
+          "command": "./scripts/demo --assert",
+          "assertion": "fresh public command.execute calls and the CLI handoff execute the budget workload through the Rust SDK and gRPC"
+        },
+        {
+          "path": "tests/server_composition/server_composition.rs",
+          "command": "cargo test -p riffdb-server --test server_composition",
+          "assertion": "the compiled budget command and projection are exercised through gRPC and hosted MCP"
+        },
+        {
+          "path": "tests/mcp/mcp_conformance.rs",
+          "command": "cargo test -p riffdb-api-mcp --features stdio,streamable-http --test mcp_conformance",
+          "assertion": "stdio and Streamable HTTP MCP protocol behavior is conformant"
+        }
+      ]
+    },
+    {
+      "id": "POC-002",
+      "status": "requires_execution",
+      "evidence": [
+        {
+          "path": "tests/command_semantics/command_concurrency.rs",
+          "command": "cargo test -p riffdb-commit --test command_concurrency",
+          "assertion": "two concurrent 80.00 allocations against 100.00 cannot both allocate"
+        },
+        {
+          "path": "examples/budget-comparison/fixtures/safety/report-v1.json",
+          "command": "./scripts/budget-safety-demo --assert",
+          "assertion": "the public RiffDB result has one Allocated and one InsufficientBudget"
+        }
+      ]
+    },
+    {
+      "id": "POC-003",
+      "status": "requires_execution",
+      "evidence": [
+        {
+          "path": "crates/riffdb-testkit/src/histories",
+          "command": "cargo test -p riffdb-testkit generated_histories",
+          "assertion": "generated command histories match the single-threaded reference model"
+        },
+        {
+          "path": "examples/budget-comparison/tests/public_comparison.rs",
+          "command": "cargo test --manifest-path examples/budget-comparison/Cargo.toml --workspace",
+          "assertion": "normalized public observations match the shared budget oracle"
+        }
+      ]
+    },
+    {
+      "id": "POC-004",
+      "status": "requires_execution",
+      "evidence": [
+        {
+          "path": "tests/recovery/full_recovery_matrix.rs",
+          "command": "cargo test -p riffdb-testkit --test full_recovery_matrix -- --ignored",
+          "assertion": "synchronized TCP loss and process restart recover the original outcome with a fresh RequestId"
+        },
+        {
+          "path": "tests/command_semantics/lost_response_replay.rs",
+          "command": "cargo test -p riffdb-commit --test lost_response_replay",
+          "assertion": "same-key replay returns the original terminal identity"
+        }
+      ]
+    },
+    {
+      "id": "POC-005",
+      "status": "requires_execution",
+      "evidence": [
+        {
+          "path": "tests/recovery/full_recovery_matrix.rs",
+          "command": "cargo test -p riffdb-testkit --test full_recovery_matrix -- --ignored",
+          "assertion": "recovery exposes no second mutation, event, outbox intent, provenance, commit, or sequence"
+        },
+        {
+          "path": "examples/budget-comparison/fixtures/safety/report-v1.json",
+          "command": "./scripts/budget-safety-demo --assert",
+          "assertion": "same identity replays and different input rejects without a second mutation"
+        }
+      ]
+    },
+    {
+      "id": "POC-006",
+      "status": "requires_execution",
+      "evidence": [
+        {
+          "path": "tests/projection/projection_prefix_and_recovery.rs",
+          "command": "cargo test -p riffdb-projection --test projection_prefix_and_recovery",
+          "assertion": "projection frontiers are monotonic across apply and recovery"
+        },
+        {
+          "path": "tests/server_composition/server_composition.rs",
+          "command": "cargo test -p riffdb-server --test server_composition",
+          "assertion": "gRPC and MCP read-after-sequence queries include the required commit"
+        }
+      ]
+    },
+    {
+      "id": "POC-007",
+      "status": "requires_execution",
+      "evidence": [
+        {
+          "path": "tests/mcp/mcp_conformance.rs",
+          "command": "cargo test -p riffdb-api-mcp --features stdio,streamable-http --test mcp_conformance",
+          "assertion": "contract activation changes the authorized tool catalog and list notification"
+        },
+        {
+          "path": "tests/server_composition/server_composition.rs",
+          "command": "cargo test -p riffdb-server --test server_composition",
+          "assertion": "hosted composition preserves the compiler-owned command tool name"
+        }
+      ]
+    },
+    {
+      "id": "POC-008",
+      "status": "requires_execution",
+      "evidence": [
+        {
+          "path": "tests/authorization/authorization_non_bypass.rs",
+          "command": "cargo test -p riffdb-policy --test authorization_non_bypass",
+          "assertion": "mutation paths cannot bypass current authorization"
+        },
+        {
+          "path": "examples/budget-comparison/tests/safety_architecture.rs",
+          "command": "cargo test --manifest-path examples/budget-comparison/Cargo.toml --test safety_architecture",
+          "assertion": "public comparison and unsafe controls remain outside production and benchmark paths"
+        }
+      ]
+    },
+    {
+      "id": "POC-009",
+      "status": "requires_execution",
+      "evidence": [
+        {
+          "path": "release/evidence/wp190-recovery-consumption-v1.json",
+          "command": "./scripts/release-evidence --verify",
+          "assertion": "the complete checked failpoint inventory has no unresolved production gap"
+        },
+        {
+          "path": "tests/recovery/full_recovery_matrix.rs",
+          "command": "cargo test -p riffdb-testkit --test full_recovery_matrix -- --ignored",
+          "assertion": "the synchronized public response-loss cases recover the one original durable graph"
+        },
+        {
+          "path": "tests/recovery/offline_maintenance_matrix.rs",
+          "command": "cargo test -p riffdb-testkit --test offline_maintenance_matrix -- --ignored",
+          "assertion": "offline maintenance reconciles exact receipt and filesystem evidence"
+        },
+        {
+          "path": "tests/maintenance/offline_maintenance_recovery.rs",
+          "command": "cargo test -p riffdb-server --test offline_maintenance_recovery -- --ignored",
+          "assertion": "public backup and restore preserve lifecycle, authorization, and DatabaseId semantics"
+        }
+      ]
+    },
+    {
+      "id": "POC-010",
+      "status": "requires_execution",
+      "evidence": [
+        {
+          "path": "scripts/ci-all",
+          "command": "./scripts/ci-all",
+          "assertion": "format, lint, tests, docs, policy, audit, unused dependencies, requirements, and generation pass"
+        },
+        {
+          "path": "scripts/release-poc",
+          "command": "./scripts/release-poc --verify",
+          "assertion": "three binaries expose the exact release build metadata and their SBOM, checksums, documentation, systemd behavior, and reproducibility verify"
+        },
+        {
+          "path": "benchmarks/storage-fjall",
+          "command": "cargo test --manifest-path benchmarks/storage-fjall/Cargo.toml --workspace",
+          "assertion": "the unchanged engine-comparison semantic suite has an explicit result"
+        }
+      ]
+    }
+  ],
+  "guarantees": [
+    {
+      "id": "WP200-G001-cross-transport-audit-parity",
+      "status": "requires_execution",
+      "requirement_ids": [
+        "POC-001",
+        "POC-008",
+        "POC-010"
+      ],
+      "evidence": [
+        {
+          "path": "tests/server_composition/server_composition.rs",
+          "command": "cargo test -p riffdb-server --test server_composition",
+          "assertion": "gRPC and hosted MCP traverse the same policy-filtered service and produce the same command semantics"
+        },
+        {
+          "path": "tests/service_audit/service_audit_ordering.rs",
+          "command": "cargo test -p riffdb-commit --test service_audit_ordering",
+          "assertion": "shared-service starts and terminals preserve exact durable audit ordering across operation classes"
+        }
+      ]
+    },
+    {
+      "id": "WP200-G002-transaction-order-event-hash",
+      "status": "requires_execution",
+      "requirement_ids": [
+        "POC-002",
+        "POC-003",
+        "POC-005",
+        "POC-009"
+      ],
+      "evidence": [
+        {
+          "path": "crates/riffdb-commit/tests/architecture.rs",
+          "command": "cargo test -p riffdb-commit",
+          "assertion": "validation, mutation-affected epoch reads, sequence-free reservation, assignment, staging, durability, and recovery remain coordinator ordered"
+        },
+        {
+          "path": "fixtures/proto/durable-relationship-vectors.txt",
+          "command": "cargo test -p riffdb-proto --test durable_relationship_vectors",
+          "assertion": "the exact EventHash preimage and golden hash are reproduced across standalone, commit, and outbox copies"
+        },
+        {
+          "path": "tests/storage_recovery/storage_recovery_matrix.rs",
+          "command": "cargo test -p riffdb-storage-redb --test storage_recovery_matrix",
+          "assertion": "crash and reopen preserve the complete reciprocal authoritative graph and canonical event hash"
+        }
+      ]
+    },
+    {
+      "id": "WP200-G003-startup-integrity-retained-metadata",
+      "status": "requires_execution",
+      "requirement_ids": [
+        "POC-009",
+        "POC-010"
+      ],
+      "evidence": [
+        {
+          "path": "tests/storage_recovery/storage_recovery_matrix.rs",
+          "command": "cargo test -p riffdb-storage-redb --test storage_recovery_matrix",
+          "assertion": "every authoritative open completes structural and catalog integrity validation before operational access"
+        },
+        {
+          "path": "crates/riffdb-proto/tests/durable_schema.rs",
+          "command": "cargo test -p riffdb-proto --test durable_schema",
+          "assertion": "the readable and writable durable registries contain only reviewed versioned records"
+        },
+        {
+          "path": "tests/server_composition/server_composition.rs",
+          "command": "cargo test -p riffdb-server --test server_composition",
+          "assertion": "graceful shutdown and restart do not require or create a deferred operational record"
+        }
+      ]
+    },
+    {
+      "id": "WP200-G004-compiler-owned-mcp-name",
+      "status": "requires_execution",
+      "requirement_ids": [
+        "POC-001",
+        "POC-007",
+        "POC-008"
+      ],
+      "evidence": [
+        {
+          "path": "crates/riffdb-contract-compiler/src/mcp_name.rs",
+          "command": "cargo test -p riffdb-contract-compiler",
+          "assertion": "the compiler derives the exact ADR-0020 command tool name and rejects collisions"
+        },
+        {
+          "path": "crates/riffdb-catalog/tests/catalog_semantics.rs",
+          "command": "cargo test -p riffdb-catalog",
+          "assertion": "collision checks complete before catalog activation"
+        },
+        {
+          "path": "tests/mcp/mcp_conformance.rs",
+          "command": "cargo test -p riffdb-api-mcp --features stdio,streamable-http --test mcp_conformance",
+          "assertion": "MCP consumes the compiler-owned name verbatim and authorization filters both discovery and invocation"
+        }
+      ]
+    },
+    {
+      "id": "WP200-G005-service-audit-targets",
+      "status": "requires_execution",
+      "requirement_ids": [
+        "POC-008",
+        "POC-009"
+      ],
+      "evidence": [
+        {
+          "path": "crates/riffdb-types/src/service.rs",
+          "command": "cargo test -p riffdb-types",
+          "assertion": "the exact ADR-0021 target registry and canonical key order are closed and bounded"
+        },
+        {
+          "path": "tests/service/service_audit_orchestration.rs",
+          "command": "cargo test -p riffdb-service --test service_audit_orchestration",
+          "assertion": "the shared service constructs targets from request-selected objects only"
+        },
+        {
+          "path": "crates/riffdb-proto/tests/durable_schema.rs",
+          "command": "cargo test -p riffdb-proto --test durable_schema",
+          "assertion": "durable target conversion preserves the closed registry and canonical order without repair"
+        }
+      ]
+    },
+    {
+      "id": "WP200-G006-coordinator-edge-semantics",
+      "status": "requires_execution",
+      "requirement_ids": [
+        "POC-002",
+        "POC-003",
+        "POC-004",
+        "POC-005",
+        "POC-008",
+        "POC-009"
+      ],
+      "evidence": [
+        {
+          "path": "crates/riffdb-commit/tests/architecture.rs",
+          "command": "cargo test -p riffdb-commit",
+          "assertion": "three-attempt reevaluation, proven abort versus uncertain recovery, canonical empty covered values, and transaction-current evaluation remain coordinator owned"
+        },
+        {
+          "path": "tests/service_audit/control_plane_execution.rs",
+          "command": "cargo test -p riffdb-commit --test control_plane_execution",
+          "assertion": "late terminalization, absent revoke, audit-input inversion, and known no-transition classifications are exact"
+        }
+      ]
+    },
+    {
+      "id": "WP200-G007-v2-index-migration",
+      "status": "requires_execution",
+      "requirement_ids": [
+        "POC-003",
+        "POC-009",
+        "POC-010"
+      ],
+      "evidence": [
+        {
+          "path": "fixtures/proto/durable-readable-registry.txt",
+          "command": "cargo test -p riffdb-proto --test durable_schema",
+          "assertion": "generated registries freeze exactly 27 readable and 26 writable record schemas"
+        },
+        {
+          "path": "crates/riffdb-catalog/tests/history_validation.rs",
+          "command": "cargo test -p riffdb-catalog --test history_validation",
+          "assertion": "catalog owns sealed migration derivation and backend authority"
+        },
+        {
+          "path": "tests/storage_recovery/storage_recovery_matrix.rs",
+          "command": "cargo test -p riffdb-storage-redb --test storage_recovery_matrix",
+          "assertion": "V1 rows migrate to exact V2 through crash and restart with no post-migration V1 record"
+        },
+        {
+          "path": "tests/grpc/p1_riffdbd_restart.rs",
+          "command": "cargo test -p riffdb-server --test p1_riffdbd_restart",
+          "assertion": "migration completes before public readiness and the public index read remains authorized"
+        }
+      ]
+    },
+    {
+      "id": "WP200-G008-wp190-uncertain-recovery",
+      "status": "requires_execution",
+      "requirement_ids": [
+        "POC-004",
+        "POC-005",
+        "POC-009"
+      ],
+      "evidence": [
+        {
+          "path": "release/evidence/wp190-recovery-consumption-v1.json",
+          "command": "./scripts/release-evidence --verify",
+          "assertion": "WP-200 pins the exact checked WP-190 report, case order, acceptance commands, and complete inventory disposition"
+        },
+        {
+          "path": "tests/recovery/fixtures/wp190-report-v1.json",
+          "command": "./scripts/release-evidence --verify",
+          "assertion": "WP-200 consumes the exact checked WP-190 synchronized response-loss inventory"
+        },
+        {
+          "path": "tests/recovery/full_recovery_matrix.rs",
+          "command": "cargo test -p riffdb-testkit --test full_recovery_matrix -- --ignored",
+          "assertion": "partial HTTP/2 response loss and process termination recover one original outcome with a fresh RequestId"
+        }
+      ]
+    },
+    {
+      "id": "WP200-G009-generated-public-conformance",
+      "status": "requires_execution",
+      "requirement_ids": [
+        "POC-001",
+        "POC-007",
+        "POC-008",
+        "POC-010"
+      ],
+      "evidence": [
+        {
+          "path": "scripts/check-generated",
+          "command": "./scripts/check-generated",
+          "assertion": "durable, public Protobuf, Rust SDK, CLI, and MCP generated artifacts reproduce byte for byte"
+        },
+        {
+          "path": "tests/grpc/grpc_end_to_end.rs",
+          "command": "cargo test -p riffdb-api-grpc --all-features --test grpc_end_to_end",
+          "assertion": "the public gRPC schema crosses the shared service without a privileged path"
+        },
+        {
+          "path": "crates/riffdb-cli/tests/architecture.rs",
+          "command": "cargo test -p riffdb-cli --all-features --test architecture",
+          "assertion": "the frozen CLI grammar and output checkpoint remain exact"
+        }
+      ]
+    },
+    {
+      "id": "WP200-G010-offline-maintenance",
+      "status": "requires_execution",
+      "requirement_ids": [
+        "POC-009",
+        "POC-010"
+      ],
+      "evidence": [
+        {
+          "path": "tests/maintenance/offline_maintenance_recovery.rs",
+          "command": "cargo test -p riffdb-server --test offline_maintenance_recovery -- --ignored",
+          "assertion": "public backup and restore preserve receipt identity, authorization phases, lifecycle, and DatabaseId"
+        },
+        {
+          "path": "tests/recovery/offline_maintenance_matrix.rs",
+          "command": "cargo test -p riffdb-testkit --test offline_maintenance_matrix -- --ignored",
+          "assertion": "process loss reconciles exact receipt and filesystem evidence without exposing maintenance through MCP"
+        },
+        {
+          "path": "docs/backup-restore.md",
+          "command": "./scripts/release-evidence --verify",
+          "assertion": "destroyed-suffix locator, idempotency, and sequence limitations remain prominent release evidence"
+        }
+      ]
+    },
+    {
+      "id": "WP200-G011-systemd-boundaries",
+      "status": "requires_execution",
+      "requirement_ids": [
+        "POC-008",
+        "POC-010"
+      ],
+      "evidence": [
+        {
+          "path": "release/systemd/riffdbd.service",
+          "command": "./scripts/release-systemd-smoke --binary target/debug/riffdbd --mcp-binary target/debug/riffdb-mcp",
+          "assertion": "riffdbd starts with closed stdin, stops by SIGTERM within the bounded drain, and uses explicit restricted state, configuration, and backup roots"
+        },
+        {
+          "path": "release/systemd/riffdb-mcp@.service",
+          "command": "./scripts/release-systemd-smoke --binary target/debug/riffdbd --mcp-binary target/debug/riffdb-mcp",
+          "assertion": "the optional MCP bridge is only a public gRPC client and has no direct storage path"
+        }
+      ]
+    },
+    {
+      "id": "WP200-G012-qualified-safety-comparison",
+      "status": "requires_execution",
+      "requirement_ids": [
+        "POC-002",
+        "POC-003",
+        "POC-004",
+        "POC-005",
+        "POC-008"
+      ],
+      "evidence": [
+        {
+          "path": "release/evidence/safety-evidence-consumption-v1.json",
+          "command": "./scripts/release-evidence --verify",
+          "assertion": "the exact WP-139 report hash and supported-application-mutation-surface qualifier are consumed"
+        },
+        {
+          "path": "examples/budget-comparison/fixtures/safety/report-v1.json",
+          "command": "./scripts/budget-safety-demo --assert",
+          "assertion": "the correct PostgreSQL adapter and public RiffDB surface match while four unsafe controls demonstrate distinct failure modes"
+        }
+      ]
+    },
+    {
+      "id": "WP200-G013-engine-comparison",
+      "status": "requires_execution",
+      "requirement_ids": [
+        "POC-003",
+        "POC-010"
+      ],
+      "evidence": [
+        {
+          "path": "benchmarks/reports/status-v1.json",
+          "command": "./scripts/release-evidence --verify",
+          "assertion": "redb, Fjall, canonical PostgreSQL-versus-public-RiffDB, and six-family POC semantic reports identify exact raw artifacts and make only supported claims"
+        },
+        {
+          "path": "benchmarks/storage-fjall",
+          "command": "cargo test --manifest-path benchmarks/storage-fjall/Cargo.toml --workspace",
+          "assertion": "the unchanged WP-075 engine-comparison semantic suite records an explicit pass or conformance-failure disposition"
+        }
+      ]
+    },
+    {
+      "id": "WP200-G014-server-configuration",
+      "status": "requires_execution",
+      "requirement_ids": [
+        "POC-010"
+      ],
+      "evidence": [
+        {
+          "path": "tests/server_configuration/server_configuration.rs",
+          "command": "cargo test -p riffdb-server --test server_configuration",
+          "assertion": "server flags, RIFFDB-prefixed environment, strict TOML, and safe defaults follow the exact precedence and reject every invalid higher-precedence or unknown value"
+        },
+        {
+          "path": "docs/configuration.md",
+          "command": "./scripts/release-evidence --verify",
+          "assertion": "every server setting documents restart and correctness, compatibility, security, or performance impact"
+        }
+      ]
+    }
+  ]
+}

@@ -35,7 +35,54 @@ enum CommandIdentity {
     CapabilityCreate,     // "capability.create"
     CapabilityRevoke,     // "capability.revoke"
     ServerHealth,         // "server.health"
+    BackupCreate,         // "backup.create"
+    BackupRestore,        // "backup.restore"
+    BackupOperation,      // "backup.operation"
     DemoBudget,           // "demo.budget"
+}
+
+struct MaintenanceOperationResult {
+    status: MaintenanceResultStatus,
+    maintenance_operation_id: UuidV7Text,
+    kind: MaintenanceOperationKind,
+    backup_name: String,
+    input_hash: Hash256Hex,
+    phase: MaintenancePhase,
+    failure: Option<MaintenanceFailureClass>,
+}
+
+enum MaintenanceResultStatus { Accepted, AlreadyAccepted, Terminal, Found }
+enum MaintenanceOperationKind { CreateBackup, RestoreBackup }
+enum MaintenancePhase {
+    Accepted,
+    Draining,
+    Offline,
+    ArtifactPublished,
+    Validating,
+    Succeeded,
+    FailedClosed,
+}
+enum MaintenanceFailureClass {
+    QuiescenceFailed,
+    ArtifactUnavailable,
+    ArtifactInvalid,
+    StagedAuthorizationFailed,
+    StorageUnavailable,
+    ValidationFailed,
+    ReceiptUnavailable,
+    InternalFailure,
+}
+
+struct MaintenanceNotFoundResult {
+    status: Const<"not_found">,
+}
+
+struct MaintenanceUncertainError {
+    type: Const<"uncertain">,
+    code: Const<"outcome_unknown">,
+    message: Const<"the maintenance operation outcome remains unknown">,
+    recovery_action: Const<"poll_maintenance_operation">,
+    maintenance_operation_id: UuidV7Text,
 }
 
 // ---------- Structural scalar and Value DTOs ----------

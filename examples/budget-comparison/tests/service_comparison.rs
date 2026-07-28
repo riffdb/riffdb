@@ -10,6 +10,8 @@ use std::sync::atomic::{AtomicI64, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
+mod performance_support;
+
 use riffdb_auth::{AuthenticatedPrincipal, NewlyIssuedCapabilityToken};
 use riffdb_budget_comparison_core::{
     BudgetOperation, ContentionObservation, ContentionWorkload, SequentialObservation,
@@ -304,6 +306,14 @@ struct BudgetServiceHarness {
 
 impl BudgetServiceHarness {
     fn new() -> Self {
+        Self::with_configuration(CoordinatorDurability::Sync, 16)
+    }
+
+    fn with_durability(durability: CoordinatorDurability) -> Self {
+        Self::with_configuration(durability, 256)
+    }
+
+    fn with_configuration(durability: CoordinatorDurability, workload_capacity: u16) -> Self {
         let database = BudgetDatabase::create();
         let catalog = Arc::new(BudgetCatalog::new(
             database.active.clone(),
@@ -315,7 +325,7 @@ impl BudgetServiceHarness {
             entities: Arc::clone(&entities),
         });
         let unavailable = Arc::new(UnavailableProviders);
-        let coordinator = start_coordinator(database.open());
+        let coordinator = start_coordinator(database.open(), durability, workload_capacity);
         let executors = ServiceExecutors::new(
             coordinator.administration_audit_executor(),
             coordinator.control_plane_executor(),
@@ -1361,14 +1371,18 @@ fn startup_inputs() -> StartupValidationInputs {
     )
 }
 
-fn start_coordinator(ports: RedbOperationalPorts) -> RunningCommandCoordinator {
+fn start_coordinator(
+    ports: RedbOperationalPorts,
+    durability: CoordinatorDurability,
+    workload_capacity: u16,
+) -> RunningCommandCoordinator {
     let conflicts: Arc<dyn ConflictManager> = Arc::new(
         ShardedConflictManager::new(ConflictManagerConfig::default())
             .expect("comparison conflict manager"),
     );
     RunningCommandCoordinator::start(
-        CoordinatorWorkloadCapacity::new(16).expect("coordinator capacity"),
-        CoordinatorDurability::Sync,
+        CoordinatorWorkloadCapacity::new(workload_capacity).expect("coordinator capacity"),
+        durability,
         ports,
         conflicts,
         Arc::new(FixedAdmissionClock),

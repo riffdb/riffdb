@@ -1,0 +1,17 @@
+{
+  "schema": "riffdb.safety-evidence-consumption/v1",
+  "source": "examples/budget-comparison/fixtures/safety/report-v1.json",
+  "source_sha256": "07a00f8162b8eb4a0156dc02e5ee7046712263d72ef5dc8cfe4b55f31f2c5973",
+  "source_schema": "riffdb.budget.safety-evidence/v1",
+  "required_claim_scope": "supported_application_mutation_surface",
+  "postgres_control": "canonical_adapter_preserved",
+  "riffdb_surface": "public_rust_sdk_over_grpc",
+  "required_scenarios": [
+    "lost_update_without_lock",
+    "direct_dml_precondition_bypass",
+    "duplicate_retry_after_discarded_response",
+    "same_key_different_input"
+  ],
+  "benchmark_eligible": false,
+  "performance_exclusion": "all_postgresql_negative_controls"
+}

@@ -4,7 +4,9 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::ops::Bound::{Excluded, Unbounded};
 
 use redb::{ReadTransaction, ReadableTable};
-use riffdb_storage_api::{StorageError, StorageErrorKind, StoredAdministrationAuditRecordV1};
+use riffdb_storage_api::{
+    OutboxDeliveryStateV1, StorageError, StorageErrorKind, StoredAdministrationAuditRecordV1,
+};
 use riffdb_types::{AdministrationSequence, EventId, RequestId};
 
 use crate::codec::{decode_administration_audit_record_v1, decode_outbox_status_v1};
@@ -17,6 +19,12 @@ const MAX_SERVICE_AUDIT_RECORDS_PER_REQUEST: usize = 2;
 pub(crate) struct TransientIndexes {
     service_audit_sequences: Option<BTreeMap<RequestId, Vec<AdministrationSequence>>>,
     pending_outbox: Option<BTreeSet<EventId>>,
+    undelivered_outbox: Option<BTreeSet<EventId>>,
+}
+
+struct RebuiltOutboxIndexes {
+    pending: Option<BTreeSet<EventId>>,
+    undelivered: Option<BTreeSet<EventId>>,
 }
 
 #[derive(Default)]
@@ -35,16 +43,29 @@ pub(crate) enum TransientIndexDelta {
     PendingOutboxInserted(Vec<EventId>),
     PendingOutboxMembership {
         event_id: EventId,
+        was_pending: bool,
         pending: bool,
+        was_undelivered: bool,
+        undelivered: bool,
     },
 }
 
 impl TransientIndexes {
     pub(crate) fn rebuild(transaction: &ReadTransaction) -> Result<Self, StorageError> {
+        let rebuilt_outbox = rebuild_outbox_indexes(transaction)?;
         Ok(Self {
             service_audit_sequences: Some(rebuild_service_audit(transaction)?),
-            pending_outbox: rebuild_pending_outbox(transaction)?,
+            pending_outbox: rebuilt_outbox.pending,
+            undelivered_outbox: rebuilt_outbox.undelivered,
         })
+    }
+
+    pub(crate) fn undelivered_outbox_page(
+        &self,
+        after: Option<EventId>,
+        limit: usize,
+    ) -> Option<(Vec<EventId>, bool)> {
+        page_event_index(self.undelivered_outbox.as_ref()?, after, limit)
     }
 
     pub(crate) fn service_audit_sequences(
@@ -92,27 +113,50 @@ impl TransientIndexes {
                 }
             }
             TransientIndexDelta::PendingOutboxInserted(events) => {
-                let Some(index) = self.pending_outbox.as_mut() else {
+                let (Some(pending), Some(undelivered)) = (
+                    self.pending_outbox.as_mut(),
+                    self.undelivered_outbox.as_mut(),
+                ) else {
                     return;
                 };
                 for event_id in events {
-                    if !index.insert(event_id) {
-                        self.pending_outbox = None;
+                    if !pending.insert(event_id) || !undelivered.insert(event_id) {
+                        self.invalidate_outbox();
                         return;
                     }
                 }
             }
-            TransientIndexDelta::PendingOutboxMembership { event_id, pending } => {
-                let Some(index) = self.pending_outbox.as_mut() else {
+            TransientIndexDelta::PendingOutboxMembership {
+                event_id,
+                was_pending,
+                pending,
+                was_undelivered,
+                undelivered,
+            } => {
+                let (Some(pending_index), Some(undelivered_index)) = (
+                    self.pending_outbox.as_mut(),
+                    self.undelivered_outbox.as_mut(),
+                ) else {
                     return;
                 };
-                if pending {
-                    index.insert(event_id);
-                } else {
-                    index.remove(&event_id);
+                if update_event_membership(pending_index, event_id, was_pending, pending).is_err()
+                    || update_event_membership(
+                        undelivered_index,
+                        event_id,
+                        was_undelivered,
+                        undelivered,
+                    )
+                    .is_err()
+                {
+                    self.invalidate_outbox();
                 }
             }
         }
+    }
+
+    fn invalidate_outbox(&mut self) {
+        self.pending_outbox = None;
+        self.undelivered_outbox = None;
     }
 }
 
@@ -121,6 +165,7 @@ impl Default for TransientIndexes {
         Self {
             service_audit_sequences: Some(BTreeMap::new()),
             pending_outbox: Some(BTreeSet::new()),
+            undelivered_outbox: Some(BTreeSet::new()),
         }
     }
 }
@@ -147,10 +192,11 @@ fn rebuild_service_audit(
     Ok(index)
 }
 
-fn rebuild_pending_outbox(
+fn rebuild_outbox_indexes(
     transaction: &ReadTransaction,
-) -> Result<Option<BTreeSet<EventId>>, StorageError> {
-    let mut index = BTreeSet::new();
+) -> Result<RebuiltOutboxIndexes, StorageError> {
+    let mut pending = BTreeSet::new();
+    let mut undelivered = BTreeSet::new();
     let intents = transaction.open_table(OUTBOX).map_err(table_error)?;
     let statuses = transaction.open_table(OUTBOX_STATUS).map_err(table_error)?;
     for entry in intents.iter().map_err(precommit_storage_error)? {
@@ -158,39 +204,106 @@ fn rebuild_pending_outbox(
         let event_id = decode_event_key(key.value()).map_err(|_| corrupt())?;
         let status = statuses.get(key.value()).map_err(precommit_storage_error)?;
         let Some(status) = status else {
-            index.insert(event_id);
+            pending.insert(event_id);
+            undelivered.insert(event_id);
             continue;
         };
         let Ok(status) = decode_outbox_status_v1(status.value()) else {
-            return Ok(None);
+            return Ok(RebuiltOutboxIndexes {
+                pending: None,
+                undelivered: None,
+            });
         };
         if status.value().event_id() != event_id {
-            return Ok(None);
+            return Ok(RebuiltOutboxIndexes {
+                pending: None,
+                undelivered: None,
+            });
         }
         if status.value().state().is_pending() {
-            index.insert(event_id);
+            pending.insert(event_id);
+        }
+        if !matches!(
+            status.value().state(),
+            OutboxDeliveryStateV1::Delivered { .. }
+        ) {
+            undelivered.insert(event_id);
         }
     }
     for entry in statuses.iter().map_err(precommit_storage_error)? {
         let (key, value) = entry.map_err(precommit_storage_error)?;
         let Ok(event_id) = decode_event_key(key.value()) else {
-            return Ok(None);
+            return Ok(RebuiltOutboxIndexes {
+                pending: None,
+                undelivered: None,
+            });
         };
         if intents
             .get(key.value())
             .map_err(precommit_storage_error)?
             .is_none()
         {
-            return Ok(None);
+            return Ok(RebuiltOutboxIndexes {
+                pending: None,
+                undelivered: None,
+            });
         }
         let Ok(status) = decode_outbox_status_v1(value.value()) else {
-            return Ok(None);
+            return Ok(RebuiltOutboxIndexes {
+                pending: None,
+                undelivered: None,
+            });
         };
         if status.value().event_id() != event_id {
-            return Ok(None);
+            return Ok(RebuiltOutboxIndexes {
+                pending: None,
+                undelivered: None,
+            });
         }
     }
-    Ok(Some(index))
+    Ok(RebuiltOutboxIndexes {
+        pending: Some(pending),
+        undelivered: Some(undelivered),
+    })
+}
+
+fn page_event_index(
+    index: &BTreeSet<EventId>,
+    after: Option<EventId>,
+    limit: usize,
+) -> Option<(Vec<EventId>, bool)> {
+    let mut events = match after {
+        Some(after) => index
+            .range((Excluded(after), Unbounded))
+            .copied()
+            .take(limit.saturating_add(1))
+            .collect::<Vec<_>>(),
+        None => index
+            .iter()
+            .copied()
+            .take(limit.saturating_add(1))
+            .collect::<Vec<_>>(),
+    };
+    let has_more = events.len() > limit;
+    events.truncate(limit);
+    Some((events, has_more))
+}
+
+fn update_event_membership(
+    index: &mut BTreeSet<EventId>,
+    event_id: EventId,
+    expected: bool,
+    updated: bool,
+) -> Result<(), ()> {
+    if index.contains(&event_id) != expected {
+        return Err(());
+    }
+    if updated {
+        index.insert(event_id);
+    } else {
+        index.remove(&event_id);
+    }
+    Ok(())
 }
 
 fn insert_service_audit(
@@ -267,11 +380,18 @@ mod tests {
         );
         indexes.apply(TransientIndexDelta::PendingOutboxMembership {
             event_id: second,
+            was_pending: true,
             pending: false,
+            was_undelivered: true,
+            undelivered: true,
         });
         assert_eq!(
             indexes.pending_outbox_page(Some(first), 2),
             Some((vec![third], false))
+        );
+        assert_eq!(
+            indexes.undelivered_outbox_page(Some(first), 2),
+            Some((vec![second, third], false))
         );
     }
 }

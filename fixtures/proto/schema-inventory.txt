@@ -627,6 +627,13 @@ messages
   riffdb.v1.CreateCapabilityResponse fields=2
     1 normal optional .riffdb.v1.NormalCreateCapabilityResult oneof=result
     2 bootstrap optional .riffdb.v1.BootstrapCreateCapabilityResult oneof=result
+  riffdb.v1.CreateOfflineBackupRequest fields=3
+    1 request_id optional bytes
+    2 operation_id optional bytes
+    3 backup_name optional string
+  riffdb.v1.CreateOfflineBackupResponse fields=2
+    1 disposition optional .riffdb.v1.OfflineMaintenanceStartDisposition
+    2 operation optional .riffdb.v1.OfflineMaintenanceOperation
   riffdb.v1.Date fields=1
     1 days_since_unix_epoch optional sint32
   riffdb.v1.Decimal fields=3
@@ -770,6 +777,12 @@ messages
   riffdb.v1.GetEntityResponse fields=2
     1 not_found optional .riffdb.v1.Unit oneof=result
     2 found optional .riffdb.v1.Entity oneof=result
+  riffdb.v1.GetOfflineMaintenanceOperationRequest fields=2
+    1 request_id optional bytes
+    2 operation_id optional bytes
+  riffdb.v1.GetOfflineMaintenanceOperationResponse fields=2
+    1 not_found optional .riffdb.v1.Unit oneof=result
+    2 found optional .riffdb.v1.OfflineMaintenanceOperation oneof=result
   riffdb.v1.GetOutcomeRequest fields=5
     1 request_id optional bytes
     2 contract_lineage optional string
@@ -822,6 +835,13 @@ messages
     1 created optional .riffdb.v1.NormalCapabilityCreated oneof=result
     2 already_created_token_unavailable optional .riffdb.v1.CapabilityIdentity oneof=result
     3 capability_id_conflict optional .riffdb.v1.Unit oneof=result
+  riffdb.v1.OfflineMaintenanceOperation fields=6
+    1 operation_id optional bytes
+    2 kind optional .riffdb.v1.OfflineMaintenanceOperationKind
+    3 backup_name optional string
+    4 input_hash optional bytes
+    5 phase optional .riffdb.v1.OfflineMaintenancePhase
+    6 failure optional .riffdb.v1.OfflineMaintenanceFailureClass
   riffdb.v1.OperationSchemaArtifact fields=4
     1 schema_id optional string
     2 dialect optional string
@@ -964,6 +984,14 @@ messages
     1 items repeated .riffdb.v1.ResourceDescriptor
     2 next_cursor optional bytes proto3-optional oneof=_next_cursor
     3 observed_fence optional .riffdb.v1.DiscoveryCatalogFence
+  riffdb.v1.RestoreOfflineBackupRequest fields=4
+    1 request_id optional bytes
+    2 operation_id optional bytes
+    3 backup_name optional string
+    4 replacement_confirmation optional .riffdb.v1.OfflineMaintenanceReplacementConfirmation
+  riffdb.v1.RestoreOfflineBackupResponse fields=2
+    1 disposition optional .riffdb.v1.OfflineMaintenanceStartDisposition
+    2 operation optional .riffdb.v1.OfflineMaintenanceOperation
   riffdb.v1.RevokeCapabilityRequest fields=3
     1 request_id optional bytes
     2 capability_id optional bytes
@@ -1282,6 +1310,37 @@ enums
     3 HEALTH_STATUS_DEGRADED
   riffdb.v1.NullValue values=1
     0 NULL_VALUE
+  riffdb.v1.OfflineMaintenanceFailureClass values=9
+    0 OFFLINE_MAINTENANCE_FAILURE_CLASS_UNSPECIFIED
+    1 OFFLINE_MAINTENANCE_FAILURE_CLASS_QUIESCENCE_FAILED
+    2 OFFLINE_MAINTENANCE_FAILURE_CLASS_ARTIFACT_UNAVAILABLE
+    3 OFFLINE_MAINTENANCE_FAILURE_CLASS_ARTIFACT_INVALID
+    4 OFFLINE_MAINTENANCE_FAILURE_CLASS_STAGED_AUTHORIZATION_FAILED
+    5 OFFLINE_MAINTENANCE_FAILURE_CLASS_STORAGE_UNAVAILABLE
+    6 OFFLINE_MAINTENANCE_FAILURE_CLASS_VALIDATION_FAILED
+    7 OFFLINE_MAINTENANCE_FAILURE_CLASS_RECEIPT_UNAVAILABLE
+    8 OFFLINE_MAINTENANCE_FAILURE_CLASS_INTERNAL_FAILURE
+  riffdb.v1.OfflineMaintenanceOperationKind values=3
+    0 OFFLINE_MAINTENANCE_OPERATION_KIND_UNSPECIFIED
+    1 OFFLINE_MAINTENANCE_OPERATION_KIND_CREATE_BACKUP
+    2 OFFLINE_MAINTENANCE_OPERATION_KIND_RESTORE_BACKUP
+  riffdb.v1.OfflineMaintenancePhase values=8
+    0 OFFLINE_MAINTENANCE_PHASE_UNSPECIFIED
+    1 OFFLINE_MAINTENANCE_PHASE_ACCEPTED
+    2 OFFLINE_MAINTENANCE_PHASE_DRAINING
+    3 OFFLINE_MAINTENANCE_PHASE_OFFLINE
+    4 OFFLINE_MAINTENANCE_PHASE_ARTIFACT_PUBLISHED
+    5 OFFLINE_MAINTENANCE_PHASE_VALIDATING
+    6 OFFLINE_MAINTENANCE_PHASE_SUCCEEDED
+    7 OFFLINE_MAINTENANCE_PHASE_FAILED_CLOSED
+  riffdb.v1.OfflineMaintenanceReplacementConfirmation values=2
+    0 OFFLINE_MAINTENANCE_REPLACEMENT_CONFIRMATION_UNSPECIFIED
+    1 OFFLINE_MAINTENANCE_REPLACEMENT_CONFIRMATION_ALLOW_REPLACE_NONEMPTY_TARGET
+  riffdb.v1.OfflineMaintenanceStartDisposition values=4
+    0 OFFLINE_MAINTENANCE_START_DISPOSITION_UNSPECIFIED
+    1 OFFLINE_MAINTENANCE_START_DISPOSITION_ACCEPTED
+    2 OFFLINE_MAINTENANCE_START_DISPOSITION_ALREADY_ACCEPTED
+    3 OFFLINE_MAINTENANCE_START_DISPOSITION_TERMINAL
   riffdb.v1.OutboxDeliveryState values=5
     0 OUTBOX_DELIVERY_STATE_UNSPECIFIED
     1 OUTBOX_DELIVERY_STATE_PENDING
@@ -1360,6 +1419,9 @@ services
     CreateCapability .riffdb.v1.CreateCapabilityRequest -> .riffdb.v1.CreateCapabilityResponse (unary)
     RevokeCapability .riffdb.v1.RevokeCapabilityRequest -> .riffdb.v1.RevokeCapabilityResponse (unary)
     ListPendingOutboxDeliveries .riffdb.v1.ListPendingOutboxDeliveriesRequest -> .riffdb.v1.ListPendingOutboxDeliveriesResponse (unary)
+    CreateOfflineBackup .riffdb.v1.CreateOfflineBackupRequest -> .riffdb.v1.CreateOfflineBackupResponse (unary)
+    RestoreOfflineBackup .riffdb.v1.RestoreOfflineBackupRequest -> .riffdb.v1.RestoreOfflineBackupResponse (unary)
+    GetOfflineMaintenanceOperation .riffdb.v1.GetOfflineMaintenanceOperationRequest -> .riffdb.v1.GetOfflineMaintenanceOperationResponse (unary)
   riffdb.v1.CommandService
     Execute .riffdb.v1.ExecuteCommandRequest -> .riffdb.v1.ExecuteCommandResponse (unary)
     GetOutcome .riffdb.v1.GetOutcomeRequest -> .riffdb.v1.GetOutcomeResponse (unary)

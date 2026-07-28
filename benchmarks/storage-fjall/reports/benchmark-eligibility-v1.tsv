@@ -1,0 +1,12 @@
+schema	riffdb.storage-fjall-benchmark-eligibility/v1
+engine	fjall
+engine_version	3.1.8
+default_features	false
+harness	benches/storage_comparison.rs
+report_format	riffdb_storage_benchmark_format=1
+reference_harness	crates/riffdb-storage-redb/benches/storage_baseline.rs
+correctness_preflight	substrate_only_passed
+semantic_conformance	failed
+performance_eligibility	not_publishable_conformance_failure
+decision_evidence	false
+reason	unchanged semantic and projection conformance cases are not implemented

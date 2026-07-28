@@ -8,7 +8,9 @@ use riffdb_contract_ir::ExecutionClass;
 use riffdb_idempotency::PreparedIdempotencyRecheckV1;
 use riffdb_invariant::InputDerivedCommandFacts;
 use riffdb_policy::{AuthorizedCommandExecution, CommandExecutionClass};
-use riffdb_types::{CanonicalRecord, DatabaseId, Environment, RequestId};
+use riffdb_types::{
+    CanonicalRecord, CommandId, DatabaseId, Environment, RequestId, ServiceIngressKindV1,
+};
 
 /// Cloneable process-local authority to cancel one command request.
 ///
@@ -138,6 +140,7 @@ pub struct CommandExecutionPreparation {
     input_facts: InputDerivedCommandFacts,
     authorization: AuthorizedCommandExecution,
     request_id: RequestId,
+    ingress: ServiceIngressKindV1,
     control: CommandRequestControl,
 }
 
@@ -159,6 +162,7 @@ impl CommandExecutionPreparation {
         input_facts: InputDerivedCommandFacts,
         authorization: AuthorizedCommandExecution,
         request_id: RequestId,
+        ingress: ServiceIngressKindV1,
         control: CommandRequestControl,
     ) -> Result<Self, CommandExecutionPreparationError> {
         let reference = resolved_plan.reference();
@@ -209,8 +213,13 @@ impl CommandExecutionPreparation {
             input_facts,
             authorization,
             request_id,
+            ingress,
             control,
         })
+    }
+
+    pub(crate) fn telemetry_identity(&self) -> (CommandId, ServiceIngressKindV1) {
+        (self.resolved_plan.reference().command_id(), self.ingress)
     }
 
     #[allow(dead_code)] // Consumed by the next coordinator admission slice.

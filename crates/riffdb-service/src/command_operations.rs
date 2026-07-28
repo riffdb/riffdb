@@ -52,7 +52,8 @@ impl CommandApplication for RiffDbService {
         request: ExecuteCommandRequest,
     ) -> ServiceFuture<'_, ExecuteCommandResult> {
         let service = Arc::clone(&self.inner);
-        self.spawn_operation(ServiceOperationV1::ExecuteCommand, async move {
+        let ingress = context.ingress();
+        self.spawn_operation(ServiceOperationV1::ExecuteCommand, ingress, async move {
             execute_command(service.as_ref(), context, request).await
         })
     }
@@ -63,9 +64,12 @@ impl CommandApplication for RiffDbService {
         request: ResolveCommandOutcomeRequest,
     ) -> ServiceFuture<'_, ResolveCommandOutcomeResult> {
         let service = Arc::clone(&self.inner);
-        self.spawn_operation(ServiceOperationV1::ResolveCommandOutcome, async move {
-            resolve_command_outcome(service.as_ref(), context, request).await
-        })
+        let ingress = context.ingress();
+        self.spawn_operation(
+            ServiceOperationV1::ResolveCommandOutcome,
+            ingress,
+            async move { resolve_command_outcome(service.as_ref(), context, request).await },
+        )
     }
 }
 
@@ -312,6 +316,7 @@ async fn execute_read_only(
         facts,
         authorization,
         context.request_id(),
+        context.ingress(),
         control,
     ) {
         Ok(preparation) => preparation,
@@ -803,6 +808,7 @@ async fn execute_mutation(
             facts,
             authorization,
             context.request_id(),
+            context.ingress(),
             control,
         ) {
             Ok(preparation) => preparation,

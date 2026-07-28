@@ -8,6 +8,8 @@ const CATALOG_HISTORY: &str = include_str!("../src/history.rs");
 const CATALOG_LINEAGE: &str = include_str!("../src/lineage.rs");
 const CATALOG_LIB: &str = include_str!("../src/lib.rs");
 const CATALOG_MATERIALIZATION: &str = include_str!("../src/materialization.rs");
+const CATALOG_PROJECTION_MATERIALIZATION: &str =
+    include_str!("../src/projection_materialization.rs");
 const STORAGE_MANIFEST: &str = include_str!("../../riffdb-storage-api/Cargo.toml");
 const STORAGE_CATALOG: &str = include_str!("../../riffdb-storage-api/src/catalog.rs");
 const STORAGE_LIB: &str = include_str!("../../riffdb-storage-api/src/lib.rs");
@@ -68,6 +70,46 @@ fn command_materialization_authority_has_no_serializable_or_cloneable_escape() {
     assert!(!production.contains("raw_snapshot: ReadSnapshot,\n    masks:"));
     assert!(production.contains("state.bindings() != self.snapshot.bindings()"));
     assert!(production.contains("state.root_validations() != self.snapshot.root_validations()"));
+}
+
+#[test]
+fn projection_materialization_view_is_move_only_and_hides_the_durable_event() {
+    assert!(
+        CATALOG_PROJECTION_MATERIALIZATION
+            .contains("pub struct ProjectionEventMaterializationView<'plan, 'event> {")
+    );
+    assert!(
+        !CATALOG_PROJECTION_MATERIALIZATION
+            .contains("#[derive(Clone)]\npub struct ProjectionEventMaterializationView")
+    );
+    for forbidden in [
+        "Serialize",
+        "Deserialize",
+        "pub fn source_event(",
+        "pub fn raw_payload(",
+        "pub fn event_hash(",
+        "pub fn event_id(",
+        "pub fn into_payload(",
+    ] {
+        assert!(
+            !CATALOG_PROJECTION_MATERIALIZATION.contains(forbidden),
+            "projection materialization authority escaped through {forbidden}"
+        );
+    }
+    for required in [
+        "_source_event: &'event StoredDurableEventV1,",
+        "pub const fn known_payload(&self) -> &CanonicalRecord",
+        "pub const fn projection_plan(&self) -> &ProjectionPlan",
+        "Instruction::EmitEvent(construction)",
+        "DurableKeySchemaBindingV1::from_plan(writer)",
+    ] {
+        assert!(
+            CATALOG_PROJECTION_MATERIALIZATION.contains(required),
+            "projection materialization omitted `{required}`"
+        );
+    }
+    assert!(!STORAGE_LIB.contains("ProjectionEventMaterializationView"));
+    assert!(!STORAGE_CATALOG.contains("ProjectionEventMaterializationView"));
 }
 
 #[test]

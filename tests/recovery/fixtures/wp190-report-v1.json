@@ -1,0 +1,140 @@
+{
+  "schema": "riffdb.wp190.recovery-report.v1",
+  "acceptance_commands": [
+    "cargo test -p riffdb-testkit --test full_recovery_matrix -- --ignored",
+    "cargo test -p riffdb-testkit --test offline_maintenance_matrix -- --ignored"
+  ],
+  "coverage": {
+    "inventory_cases": 38,
+    "executed_cases": 18,
+    "production_gap_cases": []
+  },
+  "cases": [
+    {
+      "id": "cli.bootstrap.after-credential-file-sync",
+      "evidence_kind": "dedicated-crash-child",
+      "evidence_target": "full_recovery_matrix::bootstrap_retention_failpoints",
+      "requirements": ["REC-001", "REC-002", "TEST-001"],
+      "guarantee": "Injected CLI controller aborts after file sync; restart uses the protected credential for the first public RPC."
+    },
+    {
+      "id": "cli.bootstrap.after-parent-directory-sync",
+      "evidence_kind": "dedicated-crash-child",
+      "evidence_target": "full_recovery_matrix::bootstrap_retention_failpoints",
+      "requirements": ["REC-001", "REC-002", "TEST-001"],
+      "guarantee": "Injected CLI controller aborts after parent sync; restart uses the protected credential for the first public RPC."
+    },
+    {
+      "id": "command.public-response.kill-riffdbd",
+      "evidence_kind": "integrated-riffdbd",
+      "evidence_target": "full_recovery_matrix::kill_after_response_frame",
+      "requirements": ["POC-004", "REC-001", "REC-002", "TXN-044", "TEST-001"],
+      "guarantee": "A response frame is held, riffdbd is killed, and the immutable SDK command is replayed."
+    },
+    {
+      "id": "command.public-response.partial-frame",
+      "evidence_kind": "integrated-riffdbd",
+      "evidence_target": "full_recovery_matrix::lose_incomplete_response_frame",
+      "requirements": ["POC-004", "REC-001", "REC-002", "TXN-044", "TEST-001"],
+      "guarantee": "Only an incomplete HTTP/2 response-frame prefix reaches the client before disconnect."
+    },
+    {
+      "id": "maintenance.backup.after-publication",
+      "evidence_kind": "dedicated-crash-child",
+      "evidence_target": "offline_maintenance_matrix::adapter_failpoints",
+      "requirements": ["REC-001", "REC-002", "TEST-001"],
+      "guarantee": "Closed maintenance controller abort after immutable named backup publication."
+    },
+    {
+      "id": "maintenance.daemon.after-database-close",
+      "evidence_kind": "integrated-riffdbd",
+      "evidence_target": "full_recovery_matrix::maintenance_daemon_failpoints",
+      "requirements": ["REC-001", "REC-002", "TEST-001"],
+      "guarantee": "Public maintenance aborts after graph destruction and restarts through exact receipt reconciliation."
+    },
+    {
+      "id": "maintenance.daemon.after-drain",
+      "evidence_kind": "integrated-riffdbd",
+      "evidence_target": "full_recovery_matrix::maintenance_daemon_failpoints",
+      "requirements": ["REC-001", "REC-002", "TEST-001"],
+      "guarantee": "Public maintenance aborts after accepted work and workers drain but before storage ports close."
+    },
+    {
+      "id": "maintenance.daemon.after-fresh-validation",
+      "evidence_kind": "integrated-riffdbd",
+      "evidence_target": "full_recovery_matrix::maintenance_daemon_failpoints",
+      "requirements": ["REC-001", "REC-002", "TEST-001"],
+      "guarantee": "Public maintenance aborts after fresh startup validation and completes its terminal receipt on restart."
+    },
+    {
+      "id": "maintenance.daemon.after-staged-authorization",
+      "evidence_kind": "integrated-riffdbd",
+      "evidence_target": "full_recovery_matrix::maintenance_daemon_failpoints",
+      "requirements": ["REC-001", "REC-002", "TEST-001"],
+      "guarantee": "Public restore aborts after staged authorization and resumes only with the same operation and credential."
+    },
+    {
+      "id": "maintenance.receipt.after-file-sync",
+      "evidence_kind": "dedicated-crash-child",
+      "evidence_target": "offline_maintenance_matrix::adapter_failpoints",
+      "requirements": ["REC-001", "REC-002", "TEST-001"],
+      "guarantee": "Process abort after replacement receipt bytes are synchronized."
+    },
+    {
+      "id": "maintenance.receipt.after-parent-sync",
+      "evidence_kind": "dedicated-crash-child",
+      "evidence_target": "offline_maintenance_matrix::adapter_failpoints",
+      "requirements": ["REC-001", "REC-002", "TEST-001"],
+      "guarantee": "Process abort after receipt and containing directory are synchronized."
+    },
+    {
+      "id": "maintenance.receipt.after-rename",
+      "evidence_kind": "dedicated-crash-child",
+      "evidence_target": "offline_maintenance_matrix::adapter_failpoints",
+      "requirements": ["REC-001", "REC-002", "TEST-001"],
+      "guarantee": "Process abort after atomic receipt rename but before directory synchronization."
+    },
+    {
+      "id": "maintenance.receipt.before-file-sync",
+      "evidence_kind": "dedicated-crash-child",
+      "evidence_target": "offline_maintenance_matrix::adapter_failpoints",
+      "requirements": ["REC-001", "REC-002", "TEST-001"],
+      "guarantee": "Process abort before replacement receipt synchronization."
+    },
+    {
+      "id": "maintenance.receipt.before-rename",
+      "evidence_kind": "dedicated-crash-child",
+      "evidence_target": "offline_maintenance_matrix::adapter_failpoints",
+      "requirements": ["REC-001", "REC-002", "TEST-001"],
+      "guarantee": "Process abort immediately before receipt rename."
+    },
+    {
+      "id": "maintenance.restore.after-stage",
+      "evidence_kind": "dedicated-crash-child",
+      "evidence_target": "offline_maintenance_matrix::adapter_failpoints",
+      "requirements": ["REC-001", "REC-002", "TEST-001"],
+      "guarantee": "Process abort after exact staged restore materialization."
+    },
+    {
+      "id": "maintenance.restore.after-target-parent-sync",
+      "evidence_kind": "dedicated-crash-child",
+      "evidence_target": "offline_maintenance_matrix::adapter_failpoints",
+      "requirements": ["REC-001", "REC-002", "TEST-001"],
+      "guarantee": "Process abort after destructive target publication and parent synchronization."
+    },
+    {
+      "id": "maintenance.restore.after-target-publication",
+      "evidence_kind": "dedicated-crash-child",
+      "evidence_target": "offline_maintenance_matrix::adapter_failpoints",
+      "requirements": ["REC-001", "REC-002", "TEST-001"],
+      "guarantee": "Process abort after destructive rename but before parent synchronization."
+    },
+    {
+      "id": "maintenance.restore.before-target-publication",
+      "evidence_kind": "dedicated-crash-child",
+      "evidence_target": "offline_maintenance_matrix::adapter_failpoints",
+      "requirements": ["REC-001", "REC-002", "TEST-001"],
+      "guarantee": "Process abort before destructive target publication."
+    }
+  ]
+}

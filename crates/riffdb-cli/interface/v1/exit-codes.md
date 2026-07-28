@@ -33,3 +33,9 @@ server result, not exit `3`: the original capability exists but its one-time
 token cannot be recovered. Any checked public `outcome_unknown` is exit `3`, as
 are the SDK helper uncertainty branches for execute, bootstrap, and normal
 create.
+
+Offline maintenance start uncertainty is also exit `3` and includes only the
+caller-stable maintenance operation ID plus the exact
+`poll_maintenance_operation` recovery action. The operator resolves it with
+`riffdb backup operation <maintenance-operation-id>`; the CLI never emits a
+filesystem path.

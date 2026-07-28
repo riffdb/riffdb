@@ -1,0 +1,195 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+usage() {
+    printf '%s\n' 'usage: demo --check-layout|--assert' >&2
+}
+
+if [[ $# -ne 1 ]]; then
+    usage
+    exit 2
+fi
+case "$1" in
+    --check-layout|--assert) mode="$1" ;;
+    *)
+        usage
+        exit 2
+        ;;
+esac
+
+script_root="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
+asset_root="${RIFFDB_DEMO_ASSET_ROOT:-$script_root}"
+if [[ -n "${RIFFDB_DEMO_BIN_DIR-}" ]]; then
+    bin_root="$RIFFDB_DEMO_BIN_DIR"
+elif [[ -x "$asset_root/bin/riffdbd" ]]; then
+    bin_root="$asset_root/bin"
+else
+    bin_root=/usr/bin
+fi
+
+riffdbd="$bin_root/riffdbd"
+riffdb="$bin_root/riffdb"
+riffdb_mcp="$bin_root/riffdb-mcp"
+bootstrap_request="$asset_root/release/config/bootstrap-budget-demo.json"
+create_input="$asset_root/release/config/budget-create-v1.json"
+allocate_input="$asset_root/release/config/budget-allocate-v1.json"
+contract="$asset_root/examples/contracts/budget.riff"
+
+for binary in "$riffdbd" "$riffdb" "$riffdb_mcp"; do
+    if [[ ! -f "$binary" || -L "$binary" || ! -x "$binary" ]]; then
+        printf 'release demo binary is missing, linked, or not executable: %s\n' \
+            "$binary" >&2
+        exit 1
+    fi
+done
+for asset in "$bootstrap_request" "$create_input" "$allocate_input" "$contract"; do
+    if [[ ! -f "$asset" || -L "$asset" || ! -r "$asset" ]]; then
+        printf 'release demo asset is missing, linked, or unreadable: %s\n' \
+            "$asset" >&2
+        exit 1
+    fi
+done
+
+if [[ "$mode" == "--check-layout" ]]; then
+    printf '%s\n' 'riffdb-release-demo-v1: layout verified'
+    exit 0
+fi
+
+for tool in jq mkfifo mktemp od tail timeout tr; do
+    if ! command -v "$tool" >/dev/null 2>&1; then
+        printf 'required release demo tool is missing: %s\n' "$tool" >&2
+        exit 1
+    fi
+done
+
+work_root="$(mktemp -d "${TMPDIR:-/tmp}/riffdb-release-demo.XXXXXX")"
+server_pid=
+cleanup() {
+    if [[ -n "$server_pid" ]] && kill -0 "$server_pid" 2>/dev/null; then
+        kill -KILL "$server_pid" 2>/dev/null || true
+        wait "$server_pid" 2>/dev/null || true
+    fi
+    rm -rf "$work_root"
+}
+trap cleanup EXIT INT TERM
+
+random_hex_32() {
+    od -An -tx1 -N32 /dev/urandom | tr -d ' \n'
+}
+
+mkdir -p "$work_root/backups"
+mkfifo "$work_root/ready.fifo"
+(
+    umask 077
+    capability_key="$(random_hex_32)"
+    idempotency_key="$(random_hex_32)"
+    while [[ "$idempotency_key" == "$capability_key" ]]; do
+        idempotency_key="$(random_hex_32)"
+    done
+    printf 'riffdb-capability-digest-keys-v1\n1:%s\n' "$capability_key" \
+        >"$work_root/capability.keys"
+    printf 'riffdb-idempotency-digest-keys-v1\n1:%s\n' "$idempotency_key" \
+        >"$work_root/idempotency.keys"
+)
+
+"$riffdbd" \
+    --database "$work_root/riffdb.redb" \
+    --listen 127.0.0.1:0 \
+    --environment release-bundle-demo \
+    --audience riffdb-grpc-loopback \
+    --backup-root "$work_root/backups" \
+    --capability-keys "$work_root/capability.keys" \
+    --idempotency-keys "$work_root/idempotency.keys" \
+    </dev/null >"$work_root/ready.fifo" 2>"$work_root/riffdbd.stderr" &
+server_pid=$!
+
+exec {ready_fd}<"$work_root/ready.fifo"
+if ! IFS= read -r -t 30 ready_line <&"$ready_fd"; then
+    printf '%s\n' 'release demo server did not publish readiness' >&2
+    exit 1
+fi
+exec {ready_fd}<&-
+case "$ready_line" in
+    riffdbd-ready-v1$'\t'*) address="${ready_line#*$'\t'}" ;;
+    *)
+        printf '%s\n' 'release demo server published an invalid readiness line' >&2
+        exit 1
+        ;;
+esac
+if ! kill -0 "$server_pid" 2>/dev/null; then
+    printf '%s\n' 'release demo server exited after closed stdin' >&2
+    exit 1
+fi
+
+"$riffdb" --endpoint "http://$address" --output json \
+    capability bootstrap \
+    --request "$bootstrap_request" \
+    --generate "$work_root/bootstrap.credential" \
+    --bearer-output "$work_root/operator.credential" \
+    >"$work_root/bootstrap.json"
+jq -e '
+  .schema == "riffdb.cli.output/v1"
+  and .command == "capability.bootstrap"
+  and .ok == true
+' "$work_root/bootstrap.json" >/dev/null
+
+client=(
+    "$riffdb"
+    --endpoint "http://$address"
+    --output json
+    --credential-file "$work_root/operator.credential"
+)
+"${client[@]}" contract deploy "$contract" >"$work_root/deploy.json"
+jq -e '
+  .schema == "riffdb.cli.output/v1"
+  and .command == "contract.deploy"
+  and .ok == true
+' "$work_root/deploy.json" >/dev/null
+
+"${client[@]}" command execute CreateBudget \
+    --input "$create_input" >"$work_root/create.json"
+jq -e '
+  .schema == "riffdb.cli.output/v1"
+  and .command == "command.execute"
+  and .ok == true
+  and .result.status == "committed"
+  and .result.outcome_type == "BudgetCreated"
+' "$work_root/create.json" >/dev/null
+
+"${client[@]}" command execute AllocateBudget \
+    --input "$allocate_input" >"$work_root/allocate.json"
+jq -e '
+  .schema == "riffdb.cli.output/v1"
+  and .command == "command.execute"
+  and .ok == true
+  and .result.status == "committed"
+  and .result.outcome_type == "Allocated"
+' "$work_root/allocate.json" >/dev/null
+commit_sequence="$(
+    jq -er '
+      .result.commit_sequence
+      | select(type == "string" and test("^[1-9][0-9]*$"))
+    ' "$work_root/allocate.json"
+)"
+
+"${client[@]}" commit show "$commit_sequence" >"$work_root/commit.json"
+jq -e '
+  .schema == "riffdb.cli.output/v1"
+  and .command == "commit.show"
+  and .ok == true
+  and .result.status == "found"
+' "$work_root/commit.json" >/dev/null
+
+kill -TERM "$server_pid"
+if ! timeout 80s tail --pid="$server_pid" -f /dev/null; then
+    printf '%s\n' 'release demo server did not finish its SIGTERM drain' >&2
+    exit 1
+fi
+if ! wait "$server_pid"; then
+    printf '%s\n' 'release demo server returned failure after SIGTERM' >&2
+    exit 1
+fi
+server_pid=
+
+printf 'riffdb-release-demo-v1: write and commit query verified at sequence %s\n' \
+    "$commit_sequence"

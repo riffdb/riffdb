@@ -1,0 +1,173 @@
+#!/usr/bin/env bash
+set -euo pipefail
+export LC_ALL=C
+export TZ=UTC
+
+usage() {
+    printf '%s\n' \
+        'usage: benchmarks/run-storage-fjall --storage-medium DESCRIPTION' >&2
+    exit 2
+}
+
+repo_root="$(git rev-parse --show-toplevel)"
+cd "$repo_root"
+
+storage_medium=
+while (($#)); do
+    case "$1" in
+        --storage-medium)
+            (($# >= 2)) || usage
+            storage_medium="$2"
+            shift 2
+            ;;
+        *)
+            usage
+            ;;
+    esac
+done
+[[ -n "$storage_medium" && ${#storage_medium} -le 256 ]] || usage
+
+if [[ -n "$(git status --porcelain=v1)" ]]; then
+    printf '%s\n' 'Fjall conformance publication requires a clean checkout' >&2
+    exit 1
+fi
+for tool in awk cargo cat findmnt git grep install jq rustc sha256sum uname; do
+    command -v "$tool" >/dev/null 2>&1 || {
+        printf 'required benchmark tool is missing: %s\n' "$tool" >&2
+        exit 1
+    }
+done
+
+target_root=target/wp200/benchmarks/storage-fjall
+published_root=benchmarks/reports/storage-fjall
+mkdir -p "$target_root" "$published_root"
+raw="$target_root/raw-v1.txt"
+report="$target_root/report-v1.json"
+published_raw="$published_root/raw-v1.txt"
+published_report="$published_root/report-v1.json"
+
+test_log="$target_root/conformance-test.log"
+cargo test --locked \
+    --manifest-path benchmarks/storage-fjall/Cargo.toml \
+    --workspace >"$test_log" 2>&1
+cargo bench --locked \
+    --manifest-path benchmarks/storage-fjall/Cargo.toml \
+    --no-run >>"$test_log" 2>&1
+
+conformance=benchmarks/storage-fjall/reports/conformance-v1.tsv
+eligibility=benchmarks/storage-fjall/reports/benchmark-eligibility-v1.tsv
+grep -Fxq $'overall\tconformance_failure' "$conformance"
+grep -Fxq \
+    $'performance_eligibility\tnot_run_due_to_conformance_failure' \
+    "$conformance"
+grep -Fxq $'decision_evidence\tfalse' "$eligibility"
+
+mount_options="$(findmnt -T "$target_root" -n -o OPTIONS)"
+filesystem="$(findmnt -T "$target_root" -n -o FSTYPE,SOURCE)"
+rust_verbose="$(rustc -vV)"
+{
+    printf '%s\n' 'riffdb_fjall_conformance_capture_format=1'
+    printf 'git_revision=%s\n' "$(git rev-parse HEAD)"
+    printf '%s\n' 'git_dirty=false'
+    printf 'rust_version=%s\n' "$(awk '/^release:/ {print $2}' <<<"$rust_verbose")"
+    printf 'rust_target=%s\n' "$(awk '/^host:/ {print $2}' <<<"$rust_verbose")"
+    printf 'cpu=%s\n' \
+        "$(awk -F: '/^model name/ {sub(/^ /, "", $2); print $2; exit}' /proc/cpuinfo)"
+    printf 'memory=%s\n' \
+        "$(awk -F: '/^MemTotal/ {sub(/^ /, "", $2); print $2; exit}' /proc/meminfo)"
+    printf 'storage_medium=%s\n' "$storage_medium"
+    printf 'operating_system=%s\n' "$(uname -srmo)"
+    printf 'filesystem=%s\n' "$filesystem"
+    printf 'mount_options=%s\n' "$mount_options"
+    printf '%s\n' 'engine=fjall'
+    printf '%s\n' 'engine_version=3.1.8'
+    printf '%s\n' 'default_features=false'
+    printf '%s\n' 'correctness_status=conformance_failure'
+    printf '%s\n' 'performance_status=not_run_due_to_conformance_failure'
+    printf '%s\n' 'unsafe_postgresql_variants_included=false'
+    printf '%s\n' '--- conformance-v1.tsv ---'
+    cat "$conformance"
+    printf '%s\n' '--- benchmark-eligibility-v1.tsv ---'
+    cat "$eligibility"
+    printf '%s\n' '--- acceptance output ---'
+    cat "$test_log"
+} >"$raw"
+
+install -m 0644 "$raw" "$published_raw"
+raw_hash="$(sha256sum "$published_raw" | awk '{print $1}')"
+analysis_command="$(jq -cn \
+    --arg storage_medium "$storage_medium" \
+    '[
+      "benchmarks/run-storage-fjall",
+      "--storage-medium",
+      $storage_medium
+    ]')"
+jq -n \
+    --arg revision "$(git rev-parse HEAD)" \
+    --arg rust_version "$(awk '/^release:/ {print $2}' <<<"$rust_verbose")" \
+    --arg target "$(awk '/^host:/ {print $2}' <<<"$rust_verbose")" \
+    --arg cpu \
+        "$(awk -F: '/^model name/ {sub(/^ /, "", $2); print $2; exit}' /proc/cpuinfo)" \
+    --arg memory \
+        "$(awk -F: '/^MemTotal/ {sub(/^ /, "", $2); print $2; exit}' /proc/meminfo)" \
+    --arg storage_medium "$storage_medium" \
+    --arg operating_system "$(uname -srmo)" \
+    --arg filesystem "$filesystem" \
+    --arg mount_options "$mount_options" \
+    --arg raw_path "$published_raw" \
+    --arg raw_hash "$raw_hash" \
+    --arg analysis_command "$analysis_command" '
+    {
+      schema: "riffdb.benchmark-report/v1",
+      report_id: "storage-fjall",
+      source_revision: $revision,
+      dirty: false,
+      rust_version: $rust_version,
+      target: $target,
+      environment: {
+        cpu: $cpu,
+        memory: $memory,
+        storage_medium: $storage_medium,
+        operating_system: $operating_system,
+        kernel: $operating_system,
+        filesystem: $filesystem,
+        mount_options: $mount_options
+      },
+      methodology: {
+        build_profile: "test and benchmark compile only; no timed workload",
+        features: ["fjall 3.1.8 default-features=false"],
+        database_size: "not measured because semantic conformance failed",
+        contract_version: "accepted V2 registry: 27 readable, 26 writable",
+        workload_distribution:
+          "unchanged semantic, projection, migration, and crash suite",
+        durability_modes: ["not measured"],
+        warmup_runs: 0,
+        sample_count: 0,
+        distribution_method:
+          "no performance distribution after failed correctness preflight",
+        analysis_command: $analysis_command
+      },
+      correctness_status: "conformance_failure",
+      performance_status: "not_run_due_to_conformance_failure",
+      failure_classification:
+        "Fjall adapter lacks the unchanged semantic, projection, migration, and crash-recovery ports; substrate timings are excluded.",
+      raw_artifact: $raw_path,
+      raw_sha256: $raw_hash,
+      unsafe_postgresql_variants_included: false,
+      results: []
+    }
+  ' >"$report"
+
+jq -e '
+    .schema == "riffdb.benchmark-report/v1"
+    and .report_id == "storage-fjall"
+    and .dirty == false
+    and .correctness_status == "conformance_failure"
+    and .performance_status == "not_run_due_to_conformance_failure"
+    and .methodology.sample_count == 0
+    and (.results | length == 0)
+    and .unsafe_postgresql_variants_included == false
+' "$report" >/dev/null
+install -m 0644 "$report" "$published_report"
+
+printf 'storage-fjall conformance captured: %s\n' "$published_report"

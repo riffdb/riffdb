@@ -8,13 +8,14 @@ use riffdb_types::{
     MAX_PROJECTION_APPLY_SEMANTIC_BYTES, MAX_PROJECTION_APPLY_SNAPSHOT_BYTES,
     MAX_PROJECTION_QUERY_CONTENT_BYTES, MAX_PROJECTION_QUERY_ROWS, MAX_PROJECTION_ROW_UPDATES,
     MAX_PROJECTION_STATE_SEMANTIC_BYTES, MAX_PROJECTION_WRITE_SET_BYTES, ProjectionApplyHash,
-    ProjectionApplyKey, ProjectionGeneration, ProjectionGroupKey, ProjectionGroupKeyBuilder,
-    ProjectionIdentity, ProjectionKeyError, encode_canonical_record, hash_projection_apply,
+    ProjectionApplyKey, ProjectionFrontierKey, ProjectionGeneration, ProjectionGroupKey,
+    ProjectionGroupKeyBuilder, ProjectionIdentity, ProjectionKeyError, encode_canonical_record,
+    hash_projection_apply,
 };
 
 use crate::{
-    CheckedProjectionSchema, EncodedPageItem, StorageError, StorageValueError,
-    canonical_codec_storage_error, checked_encoded_page_content,
+    CheckedProjectionSchema, EncodedPageItem, MAX_SCAN_PAGE_BYTES, MAX_SCAN_PAGE_ENTRIES,
+    StorageError, StorageValueError, canonical_codec_storage_error, checked_encoded_page_content,
 };
 
 const APPLY_PAYLOAD_PREFIX: &[u8] = b"RIFFDB-PROJECTION-APPLY\0";
@@ -1374,6 +1375,8 @@ pub enum ProjectionQueryResult {
     },
     /// No rows are exposed while the lifecycle is unavailable.
     Degraded {
+        /// Exact affected generation, or `None` only when no control exists.
+        generation: Option<ProjectionGeneration>,
         /// Visible affected-generation position.
         current: FrontierPosition,
         /// Closed safe reason.
@@ -1381,6 +1384,10 @@ pub enum ProjectionQueryResult {
     },
     /// Rebuild is impossible from retained authoritative history.
     Invalid {
+        /// Exact failed retained generation.
+        generation: ProjectionGeneration,
+        /// Frontier of the failed retained generation.
+        current: FrontierPosition,
         /// Closed safe failure reason.
         reason: ProjectionFailureCodeV1,
     },
@@ -1545,6 +1552,520 @@ impl ProjectionStatus {
     pub const fn authoritative_head(&self) -> FrontierPosition {
         self.authoritative_head
     }
+}
+
+/// Checked nonzero page limit for projection recovery scans.
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+pub struct ProjectionRecoveryPageLimit(NonZeroU16);
+
+impl ProjectionRecoveryPageLimit {
+    /// Rejects limits above the shared bounded storage page ceiling.
+    pub fn new(value: NonZeroU16) -> Result<Self, StorageValueError> {
+        if usize::from(value.get()) > MAX_SCAN_PAGE_ENTRIES {
+            return Err(StorageValueError::LimitExceeded);
+        }
+        Ok(Self(value))
+    }
+
+    /// Returns the checked nonzero row limit.
+    #[must_use]
+    pub const fn get(self) -> NonZeroU16 {
+        self.0
+    }
+}
+
+/// Exact-end bounded enumeration of stored projection controls.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum ProjectionControlScanV1 {
+    /// More controls follow this page.
+    Page {
+        /// Complete controls in physical durable-key order.
+        controls: Vec<EncodedPageItem<StoredProjectionControlV1>>,
+        /// Exclusive lower identity for the next page.
+        next_after: ProjectionIdentity,
+    },
+    /// The scan reached the exact end, including an empty result.
+    ExactEnd {
+        /// Final complete controls in physical durable-key order.
+        controls: Vec<EncodedPageItem<StoredProjectionControlV1>>,
+    },
+}
+
+impl ProjectionControlScanV1 {
+    /// Checks page bounds, physical key order, and exact-end shape.
+    pub fn page(
+        controls: Vec<EncodedPageItem<StoredProjectionControlV1>>,
+        has_more: bool,
+    ) -> Result<Self, StorageValueError> {
+        if controls.len() > MAX_SCAN_PAGE_ENTRIES {
+            return Err(StorageValueError::LimitExceeded);
+        }
+        if controls.windows(2).any(|pair| {
+            projection_control_order_key(pair[0].value())
+                >= projection_control_order_key(pair[1].value())
+        }) {
+            return Err(StorageValueError::NonCanonicalOrder);
+        }
+        checked_encoded_page_content(&controls, MAX_SCAN_PAGE_BYTES)?;
+        if has_more {
+            let next_after = controls
+                .last()
+                .ok_or(StorageValueError::InvalidShape)?
+                .value()
+                .identity()
+                .clone();
+            Ok(Self::Page {
+                controls,
+                next_after,
+            })
+        } else {
+            Ok(Self::ExactEnd { controls })
+        }
+    }
+
+    /// Borrows complete controls in canonical physical order.
+    #[must_use]
+    pub fn controls(&self) -> &[EncodedPageItem<StoredProjectionControlV1>] {
+        match self {
+            Self::Page { controls, .. } | Self::ExactEnd { controls } => controls,
+        }
+    }
+
+    /// Returns the exclusive continuation only when more controls exist.
+    #[must_use]
+    pub const fn next_after(&self) -> Option<&ProjectionIdentity> {
+        match self {
+            Self::Page { next_after, .. } => Some(next_after),
+            Self::ExactEnd { .. } => None,
+        }
+    }
+}
+
+fn projection_control_order_key(control: &StoredProjectionControlV1) -> Vec<u8> {
+    ProjectionFrontierKey::new(control.identity().clone())
+        .as_bytes()
+        .to_vec()
+}
+
+/// Stage and lower fence for one continued generation-validation page.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum ProjectionRecoveryContinuationV1 {
+    /// Continue marker comparison after this exact sequence.
+    Markers {
+        /// Last marker already validated.
+        after: CommitSequence,
+    },
+    /// Compare final state rows after this optional complete key.
+    Rows {
+        /// Last state key already validated, or `None` at the stage boundary.
+        after: Option<ProjectionGroupKey>,
+        /// Number of state rows validated by prior pages.
+        validated_rows: u64,
+    },
+}
+
+impl ProjectionRecoveryContinuationV1 {
+    /// Creates the next marker page fence.
+    #[must_use]
+    pub const fn markers(after: CommitSequence) -> Self {
+        Self::Markers { after }
+    }
+
+    /// Creates a state-row page fence.
+    #[must_use]
+    pub const fn rows(after: Option<ProjectionGroupKey>, validated_rows: u64) -> Self {
+        Self::Rows {
+            after,
+            validated_rows,
+        }
+    }
+}
+
+/// Canonical replay evidence supplied by the projection owner for one page.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum ProjectionRecoveryExpectedPageV1 {
+    /// Exact apply markers, including replay-computed apply hashes.
+    Markers(Vec<StoredProjectionApplyV1>),
+    /// Exact final state rows after replay through the generation frontier.
+    Rows(Vec<StoredProjectionStateV1>),
+}
+
+impl ProjectionRecoveryExpectedPageV1 {
+    /// Retains one bounded canonical marker page.
+    #[must_use]
+    pub fn markers(markers: Vec<StoredProjectionApplyV1>) -> Self {
+        Self::Markers(markers)
+    }
+
+    /// Retains one bounded canonical final-state page.
+    #[must_use]
+    pub fn rows(rows: Vec<StoredProjectionStateV1>) -> Self {
+        Self::Rows(rows)
+    }
+
+    /// Borrows marker expectations when this is the marker stage.
+    #[must_use]
+    pub fn as_markers(&self) -> Option<&[StoredProjectionApplyV1]> {
+        match self {
+            Self::Markers(markers) => Some(markers),
+            Self::Rows(_) => None,
+        }
+    }
+
+    /// Borrows row expectations when this is the row stage.
+    #[must_use]
+    pub fn as_rows(&self) -> Option<&[StoredProjectionStateV1]> {
+        match self {
+            Self::Rows(rows) => Some(rows),
+            Self::Markers(_) => None,
+        }
+    }
+}
+
+/// One fenced, bounded expected-evidence comparison request.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ProjectionRecoveryValidationRequestV1 {
+    schema: CheckedProjectionSchema,
+    expected_control: StoredProjectionControlV1,
+    expected_authoritative_head: FrontierPosition,
+    generation: ProjectionGeneration,
+    position: ProjectionGenerationPosition,
+    limit: ProjectionRecoveryPageLimit,
+    continuation: Option<ProjectionRecoveryContinuationV1>,
+    expected_page: ProjectionRecoveryExpectedPageV1,
+}
+
+impl ProjectionRecoveryValidationRequestV1 {
+    /// Checks identity, retained generation, stage, order, and hard bounds.
+    pub fn new(
+        schema: CheckedProjectionSchema,
+        expected_control: StoredProjectionControlV1,
+        expected_authoritative_head: FrontierPosition,
+        generation: ProjectionGeneration,
+        limit: ProjectionRecoveryPageLimit,
+        continuation: Option<ProjectionRecoveryContinuationV1>,
+        expected_page: ProjectionRecoveryExpectedPageV1,
+    ) -> Result<Self, StorageValueError> {
+        if expected_control.identity() != schema.identity() {
+            return Err(StorageValueError::IdentityMismatch);
+        }
+        let position = expected_control
+            .published()
+            .filter(|position| position.generation() == generation)
+            .or_else(|| {
+                expected_control
+                    .candidate()
+                    .filter(|position| position.generation() == generation)
+            })
+            .ok_or(StorageValueError::IdentityMismatch)?;
+        if position.frontier() == FrontierPosition::BeforeFirst
+            && !matches!(
+                (&continuation, &expected_page),
+                (None, ProjectionRecoveryExpectedPageV1::Markers(markers)) if markers.is_empty()
+            )
+        {
+            return Err(StorageValueError::InvalidShape);
+        }
+        let maximum = usize::from(limit.get().get());
+        match (&continuation, &expected_page) {
+            (
+                None | Some(ProjectionRecoveryContinuationV1::Markers { .. }),
+                ProjectionRecoveryExpectedPageV1::Markers(markers),
+            ) => validate_expected_recovery_markers(
+                &expected_control,
+                generation,
+                continuation.as_ref(),
+                markers,
+                maximum,
+            )?,
+            (
+                Some(ProjectionRecoveryContinuationV1::Rows { after, .. }),
+                ProjectionRecoveryExpectedPageV1::Rows(rows),
+            ) => validate_expected_recovery_rows(
+                &schema,
+                generation,
+                position.frontier(),
+                after.as_ref(),
+                rows,
+                maximum,
+            )?,
+            _ => return Err(StorageValueError::InvalidShape),
+        }
+        Ok(Self {
+            schema,
+            expected_control,
+            expected_authoritative_head,
+            generation,
+            position,
+            limit,
+            continuation,
+            expected_page,
+        })
+    }
+
+    /// Returns the exact checked projection schema.
+    #[must_use]
+    pub const fn schema(&self) -> &CheckedProjectionSchema {
+        &self.schema
+    }
+
+    /// Returns the complete expected control fence.
+    #[must_use]
+    pub const fn expected_control(&self) -> &StoredProjectionControlV1 {
+        &self.expected_control
+    }
+
+    /// Returns the expected transaction-current authoritative head.
+    #[must_use]
+    pub const fn expected_authoritative_head(&self) -> FrontierPosition {
+        self.expected_authoritative_head
+    }
+
+    /// Returns the retained generation being validated.
+    #[must_use]
+    pub const fn generation(&self) -> ProjectionGeneration {
+        self.generation
+    }
+
+    /// Returns the checked page limit.
+    #[must_use]
+    pub const fn limit(&self) -> ProjectionRecoveryPageLimit {
+        self.limit
+    }
+
+    /// Borrows the optional prior-page continuation.
+    #[must_use]
+    pub const fn continuation(&self) -> Option<&ProjectionRecoveryContinuationV1> {
+        self.continuation.as_ref()
+    }
+
+    /// Borrows canonical replay expectations for this page.
+    #[must_use]
+    pub const fn expected_page(&self) -> &ProjectionRecoveryExpectedPageV1 {
+        &self.expected_page
+    }
+
+    /// Returns the exact retained generation position.
+    #[must_use]
+    pub const fn expected_position(&self) -> ProjectionGenerationPosition {
+        self.position
+    }
+}
+
+fn validate_expected_recovery_markers(
+    control: &StoredProjectionControlV1,
+    generation: ProjectionGeneration,
+    continuation: Option<&ProjectionRecoveryContinuationV1>,
+    markers: &[StoredProjectionApplyV1],
+    maximum: usize,
+) -> Result<(), StorageValueError> {
+    if markers.len() > maximum {
+        return Err(StorageValueError::LimitExceeded);
+    }
+    let expected_bytes = markers.iter().try_fold(0usize, |total, marker| {
+        total
+            .checked_add(framed_bytes(marker.key().as_bytes().len())?)
+            .and_then(|value| value.checked_add(32))
+            .ok_or(StorageValueError::SizeOverflow)
+    })?;
+    if expected_bytes > MAX_SCAN_PAGE_BYTES {
+        return Err(StorageValueError::LimitExceeded);
+    }
+    let frontier = control
+        .frontier_for(generation)
+        .ok_or(StorageValueError::IdentityMismatch)?;
+    let first_expected = match continuation {
+        None => Some(CommitSequence::first()),
+        Some(ProjectionRecoveryContinuationV1::Markers { after }) => after.checked_next(),
+        Some(ProjectionRecoveryContinuationV1::Rows { .. }) => {
+            return Err(StorageValueError::InvalidShape);
+        }
+    };
+    let mut next = first_expected;
+    for marker in markers {
+        if marker.key().identity() != control.identity()
+            || marker.key().generation() != generation
+            || Some(marker.key().commit_sequence()) != next
+            || !sequence_at_or_before(marker.key().commit_sequence(), frontier)
+        {
+            return Err(StorageValueError::IdentityMismatch);
+        }
+        next = marker.key().commit_sequence().checked_next();
+    }
+    if frontier == FrontierPosition::BeforeFirst && !markers.is_empty() {
+        return Err(StorageValueError::InvalidShape);
+    }
+    Ok(())
+}
+
+fn validate_expected_recovery_rows(
+    schema: &CheckedProjectionSchema,
+    generation: ProjectionGeneration,
+    frontier: FrontierPosition,
+    after: Option<&ProjectionGroupKey>,
+    rows: &[StoredProjectionStateV1],
+    maximum: usize,
+) -> Result<(), StorageValueError> {
+    if rows.len() > maximum {
+        return Err(StorageValueError::LimitExceeded);
+    }
+    let expected_bytes = rows.iter().try_fold(0usize, |total, row| {
+        total
+            .checked_add(projection_state_semantic_bytes(row.key(), row.measures())?)
+            .ok_or(StorageValueError::SizeOverflow)
+    })?;
+    if expected_bytes > MAX_SCAN_PAGE_BYTES {
+        return Err(StorageValueError::LimitExceeded);
+    }
+    let mut previous = after;
+    for row in rows {
+        schema.validate_group_key(row.key())?;
+        schema.validate_measure_record(row.measures())?;
+        if row.identity() != schema.identity()
+            || row.generation() != generation
+            || !sequence_at_or_before(row.last_changed_sequence(), frontier)
+            || previous.is_some_and(|prior| prior >= row.key())
+        {
+            return Err(StorageValueError::IdentityMismatch);
+        }
+        previous = Some(row.key());
+    }
+    Ok(())
+}
+
+/// Closed identity-scoped derived recovery finding.
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+pub enum ProjectionRecoveryFindingCodeV1 {
+    /// A projection record could not be decoded or did not match its physical key.
+    MalformedDerivedRecord,
+    /// Stored marker identity, sequence, or replay-computed hash differed.
+    MarkerMismatch,
+    /// Markers were not a unique contiguous prefix through the exact frontier.
+    MarkerSequenceMismatch,
+    /// A marker existed above the retained generation frontier.
+    MarkerAboveFrontier,
+    /// Final replayed state rows differed from stored rows.
+    StateMismatch,
+    /// A row failed schema, marker, sequence, or generation linkage.
+    StateLinkMismatch,
+    /// A before-first retained generation had rows or markers.
+    BeforeFirstNotEmpty,
+}
+
+/// One safe derived finding scoped to an exact identity and generation.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ProjectionRecoveryFindingV1 {
+    identity: ProjectionIdentity,
+    generation: ProjectionGeneration,
+    code: ProjectionRecoveryFindingCodeV1,
+}
+
+impl ProjectionRecoveryFindingV1 {
+    /// Constructs one closed finding.
+    #[must_use]
+    pub const fn new(
+        identity: ProjectionIdentity,
+        generation: ProjectionGeneration,
+        code: ProjectionRecoveryFindingCodeV1,
+    ) -> Self {
+        Self {
+            identity,
+            generation,
+            code,
+        }
+    }
+
+    /// Returns the exact projection identity.
+    #[must_use]
+    pub const fn identity(&self) -> &ProjectionIdentity {
+        &self.identity
+    }
+
+    /// Returns the affected generation.
+    #[must_use]
+    pub const fn generation(&self) -> ProjectionGeneration {
+        self.generation
+    }
+
+    /// Returns the closed finding code.
+    #[must_use]
+    pub const fn code(&self) -> ProjectionRecoveryFindingCodeV1 {
+        self.code
+    }
+}
+
+/// Sealed clean result after marker and final-state exact ends were validated.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct CleanProjectionGenerationV1 {
+    identity: ProjectionIdentity,
+    position: ProjectionGenerationPosition,
+    state_rows: u64,
+}
+
+impl CleanProjectionGenerationV1 {
+    /// Constructs engine-validated clean evidence.
+    #[must_use]
+    pub const fn new(
+        identity: ProjectionIdentity,
+        position: ProjectionGenerationPosition,
+        state_rows: u64,
+    ) -> Self {
+        Self {
+            identity,
+            position,
+            state_rows,
+        }
+    }
+
+    /// Returns the exact projection identity.
+    #[must_use]
+    pub const fn identity(&self) -> &ProjectionIdentity {
+        &self.identity
+    }
+
+    /// Returns the validated generation and frontier.
+    #[must_use]
+    pub const fn position(&self) -> ProjectionGenerationPosition {
+        self.position
+    }
+
+    /// Returns the exact number of validated final state rows.
+    #[must_use]
+    pub const fn state_rows(&self) -> u64 {
+        self.state_rows
+    }
+}
+
+/// Result of one fenced expected-evidence comparison page.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum ProjectionRecoveryValidationResultV1 {
+    /// More validation work remains under this exact lower fence.
+    Page {
+        /// Engine-issued continuation for the next expected-evidence page.
+        continuation: ProjectionRecoveryContinuationV1,
+    },
+    /// Marker and state namespaces reached exact end and matched replay.
+    ExactEnd(CleanProjectionGenerationV1),
+    /// Projection-owned derived state differed from replay or structural rules.
+    Finding(ProjectionRecoveryFindingV1),
+    /// The control or authoritative head changed; the caller must restart validation.
+    FenceChanged,
+}
+
+/// Specialized synchronous projection recovery repository.
+pub trait ProjectionRecoveryRepository {
+    /// Enumerates complete projection controls in bounded physical-key order.
+    fn scan_projection_controls(
+        &self,
+        after: Option<&ProjectionIdentity>,
+        limit: ProjectionRecoveryPageLimit,
+    ) -> Result<ProjectionControlScanV1, StorageError>;
+
+    /// Compares one bounded replay-evidence page under exact control/head fences.
+    fn validate_projection_recovery_page(
+        &self,
+        request: &ProjectionRecoveryValidationRequestV1,
+    ) -> Result<ProjectionRecoveryValidationResultV1, StorageError>;
 }
 
 /// One exact specialized projection control operation.
@@ -2197,6 +2718,122 @@ mod tests {
         head: FrontierPosition,
     ) -> Result<ProjectionControlResult, StorageValueError> {
         evaluate_projection_control_operation(Some(current), &operation, head)
+    }
+
+    #[test]
+    fn projection_recovery_requests_freeze_retained_generation_stage_order_and_bounds() {
+        assert!(
+            ProjectionRecoveryPageLimit::new(
+                NonZeroU16::new(
+                    u16::try_from(MAX_SCAN_PAGE_ENTRIES).expect("page limit fits u16"),
+                )
+                .expect("nonzero"),
+            )
+            .is_ok()
+        );
+        assert_eq!(
+            ProjectionRecoveryPageLimit::new(
+                NonZeroU16::new(
+                    u16::try_from(MAX_SCAN_PAGE_ENTRIES + 1).expect("one over fits u16"),
+                )
+                .expect("nonzero"),
+            ),
+            Err(StorageValueError::LimitExceeded)
+        );
+
+        let schema = maximum_key_projection_schema();
+        let retained = generation(1);
+        let control = StoredProjectionControlV1::new(
+            schema.identity().clone(),
+            retained,
+            Some(position(1, applied(2))),
+            None,
+            Some(PublishedApplyModeV1::Enabled),
+            ProjectionLifecycleV1::Ready,
+            None,
+        )
+        .expect("ready retained generation");
+        let marker = |value| {
+            StoredProjectionApplyV1::new(
+                ProjectionApplyKey::new(schema.identity().clone(), retained, sequence(value)),
+                ProjectionApplyHash::from_bytes([u8::try_from(value).expect("small value"); 32]),
+            )
+        };
+        let one = ProjectionRecoveryPageLimit::new(NonZeroU16::MIN).expect("one-row limit");
+        assert_eq!(
+            ProjectionRecoveryValidationRequestV1::new(
+                schema.clone(),
+                control.clone(),
+                applied(2),
+                retained,
+                one,
+                None,
+                ProjectionRecoveryExpectedPageV1::markers(vec![marker(1), marker(2)]),
+            ),
+            Err(StorageValueError::LimitExceeded)
+        );
+        assert_eq!(
+            ProjectionRecoveryValidationRequestV1::new(
+                schema.clone(),
+                control.clone(),
+                applied(2),
+                retained,
+                one,
+                None,
+                ProjectionRecoveryExpectedPageV1::rows(Vec::new()),
+            ),
+            Err(StorageValueError::InvalidShape)
+        );
+
+        let retired_control = StoredProjectionControlV1::new(
+            schema.identity().clone(),
+            generation(2),
+            Some(position(2, applied(2))),
+            None,
+            Some(PublishedApplyModeV1::Enabled),
+            ProjectionLifecycleV1::Ready,
+            None,
+        )
+        .expect("generation one retired");
+        assert_eq!(
+            ProjectionRecoveryValidationRequestV1::new(
+                schema.clone(),
+                retired_control,
+                applied(2),
+                retained,
+                one,
+                None,
+                ProjectionRecoveryExpectedPageV1::markers(vec![marker(1)]),
+            ),
+            Err(StorageValueError::IdentityMismatch)
+        );
+
+        let charge = crate::EncodedContentCharge::new(1).expect("nonzero charge");
+        let mut controls = vec![
+            EncodedPageItem::new(
+                StoredProjectionControlV1::initial(projection_identity()),
+                charge,
+            ),
+            EncodedPageItem::new(
+                StoredProjectionControlV1::initial(other_projection_identity()),
+                charge,
+            ),
+        ];
+        controls.sort_by(|left, right| {
+            projection_control_order_key(left.value())
+                .cmp(&projection_control_order_key(right.value()))
+        });
+        assert!(matches!(
+            ProjectionControlScanV1::page(controls.clone(), true)
+                .expect("physically ordered control page"),
+            ProjectionControlScanV1::Page { next_after, .. }
+                if &next_after == controls[1].value().identity()
+        ));
+        controls.reverse();
+        assert_eq!(
+            ProjectionControlScanV1::page(controls, false),
+            Err(StorageValueError::NonCanonicalOrder)
+        );
     }
 
     #[test]

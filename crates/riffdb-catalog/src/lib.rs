@@ -15,6 +15,7 @@ mod history;
 mod lineage;
 mod materialization;
 mod notification;
+mod projection_materialization;
 
 pub use bundle::*;
 pub use capability_partition::*;
@@ -23,3 +24,4 @@ pub use error::*;
 pub use history::*;
 pub use materialization::*;
 pub use notification::*;
+pub use projection_materialization::*;

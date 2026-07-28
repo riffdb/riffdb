@@ -41,7 +41,8 @@ impl ContractApplication for RiffDbService {
         request: ValidateContractRequest,
     ) -> ServiceFuture<'_, ContractValidationResult> {
         let inner = Arc::clone(&self.inner);
-        self.spawn_operation(ServiceOperationV1::ValidateContract, async move {
+        let ingress = context.ingress();
+        self.spawn_operation(ServiceOperationV1::ValidateContract, ingress, async move {
             validate_contract(&inner, context, request).await
         })
     }
@@ -52,7 +53,8 @@ impl ContractApplication for RiffDbService {
         request: ExplainCommandRequest,
     ) -> ServiceFuture<'_, ExplainCommandResult> {
         let inner = Arc::clone(&self.inner);
-        self.spawn_operation(ServiceOperationV1::ExplainCommand, async move {
+        let ingress = context.ingress();
+        self.spawn_operation(ServiceOperationV1::ExplainCommand, ingress, async move {
             explain_command(&inner, context, request).await
         })
     }
@@ -63,7 +65,8 @@ impl ContractApplication for RiffDbService {
         request: DeployContractRequest,
     ) -> ServiceFuture<'_, DeployContractResult> {
         let inner = Arc::clone(&self.inner);
-        self.spawn_operation(ServiceOperationV1::DeployContract, async move {
+        let ingress = context.ingress();
+        self.spawn_operation(ServiceOperationV1::DeployContract, ingress, async move {
             deploy_contract(&inner, context, request).await
         })
     }
@@ -74,7 +77,8 @@ impl ContractApplication for RiffDbService {
         request: GetActiveContractRequest,
     ) -> ServiceFuture<'_, GetActiveContractResult> {
         let inner = Arc::clone(&self.inner);
-        self.spawn_operation(ServiceOperationV1::GetActiveContract, async move {
+        let ingress = context.ingress();
+        self.spawn_operation(ServiceOperationV1::GetActiveContract, ingress, async move {
             get_active_contract(&inner, context, request).await
         })
     }
@@ -85,9 +89,12 @@ impl ContractApplication for RiffDbService {
         request: GetContractVersionRequest,
     ) -> ServiceFuture<'_, GetContractVersionResult> {
         let inner = Arc::clone(&self.inner);
-        self.spawn_operation(ServiceOperationV1::GetContractVersion, async move {
-            get_contract_version(&inner, context, request).await
-        })
+        let ingress = context.ingress();
+        self.spawn_operation(
+            ServiceOperationV1::GetContractVersion,
+            ingress,
+            async move { get_contract_version(&inner, context, request).await },
+        )
     }
 }
 

@@ -1,0 +1,568 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+if [[ $# -ne 1 || "$1" != "--verify" ]]; then
+    printf '%s\n' 'usage: scripts/release-evidence --verify' >&2
+    exit 2
+fi
+
+repo_root="$(git rev-parse --show-toplevel)"
+cd "$repo_root"
+
+for tool in awk git grep jq sha256sum sort wc; do
+    if ! command -v "$tool" >/dev/null 2>&1; then
+        printf 'required release tool is missing: %s\n' "$tool" >&2
+        exit 1
+    fi
+done
+
+manifest=release/evidence/poc-requirements-v1.json
+safety=examples/budget-comparison/fixtures/safety/report-v1.json
+consumption=release/evidence/safety-evidence-consumption-v1.json
+recovery=tests/recovery/fixtures/wp190-report-v1.json
+recovery_checksum=tests/recovery/fixtures/wp190-report-v1.sha256
+recovery_consumption=release/evidence/wp190-recovery-consumption-v1.json
+benchmark=benchmarks/reports/status-v1.json
+
+jq -e '
+  .schema == "riffdb.poc-evidence-manifest/v1"
+  and .attestation == "candidate_not_executed"
+  and (.requirements | length == 10)
+  and ([.requirements[].id]
+       == ["POC-001", "POC-002", "POC-003", "POC-004", "POC-005",
+           "POC-006", "POC-007", "POC-008", "POC-009", "POC-010"])
+  and (.guarantees | length == 14)
+  and ([.guarantees[].id]
+       == ["WP200-G001-cross-transport-audit-parity",
+           "WP200-G002-transaction-order-event-hash",
+           "WP200-G003-startup-integrity-retained-metadata",
+           "WP200-G004-compiler-owned-mcp-name",
+           "WP200-G005-service-audit-targets",
+           "WP200-G006-coordinator-edge-semantics",
+           "WP200-G007-v2-index-migration",
+           "WP200-G008-wp190-uncertain-recovery",
+           "WP200-G009-generated-public-conformance",
+           "WP200-G010-offline-maintenance",
+           "WP200-G011-systemd-boundaries",
+           "WP200-G012-qualified-safety-comparison",
+           "WP200-G013-engine-comparison",
+           "WP200-G014-server-configuration"])
+  and all(.requirements[];
+          .status == "requires_execution"
+          and (.evidence | length > 0)
+          and all(.evidence[]; (.path | length > 0)
+                              and (.command | length > 0)
+                              and (.assertion | length > 0)))
+  and all(.guarantees[];
+          .status == "requires_execution"
+          and (.requirement_ids | length > 0)
+          and all(.requirement_ids[];
+                  . == "POC-001" or . == "POC-002" or . == "POC-003"
+                  or . == "POC-004" or . == "POC-005" or . == "POC-006"
+                  or . == "POC-007" or . == "POC-008" or . == "POC-009"
+                  or . == "POC-010")
+          and (.evidence | length > 0)
+          and all(.evidence[]; (.path | length > 0)
+                              and (.command | length > 0)
+                              and (.assertion | length > 0)))
+' "$manifest" >/dev/null
+
+expected_safety_hash="$(jq -er '.source_sha256' "$consumption")"
+actual_safety_hash="$(sha256sum "$safety" | awk '{print $1}')"
+if [[ "$actual_safety_hash" != "$expected_safety_hash" ]]; then
+    printf '%s\n' 'checked safety report hash does not match the WP-200 consumption record' >&2
+    exit 1
+fi
+
+jq -e --slurpfile consumed "$consumption" '
+  .schema == $consumed[0].source_schema
+  and .claim_scope == $consumed[0].required_claim_scope
+  and .postgres_control == $consumed[0].postgres_control
+  and .riffdb_surface == $consumed[0].riffdb_surface
+  and .benchmark_eligible == false
+  and ([.scenarios[].scenario] == $consumed[0].required_scenarios)
+' "$safety" >/dev/null
+
+jq -e '
+  .schema == "riffdb.safety-evidence-consumption/v1"
+  and .required_claim_scope == "supported_application_mutation_surface"
+  and .benchmark_eligible == false
+  and .performance_exclusion == "all_postgresql_negative_controls"
+' "$consumption" >/dev/null
+
+expected_recovery_hash="$(jq -er '.source_sha256' "$recovery_consumption")"
+actual_recovery_hash="$(sha256sum "$recovery" | awk '{print $1}')"
+adjacent_recovery_hash="$(awk 'NF == 2 { print $1 }' "$recovery_checksum")"
+adjacent_recovery_name="$(awk 'NF == 2 { print $2 }' "$recovery_checksum")"
+if [[ "$actual_recovery_hash" != "$expected_recovery_hash" \
+   || "$adjacent_recovery_hash" != "$expected_recovery_hash" \
+   || "$adjacent_recovery_name" != "wp190-report-v1.json" ]]; then
+    printf '%s\n' \
+        'checked WP-190 report hash does not match its source and WP-200 consumption records' >&2
+    exit 1
+fi
+if (( $(wc -c <"$recovery") > 1048576 )); then
+    printf '%s\n' 'checked WP-190 report exceeds its release bound' >&2
+    exit 1
+fi
+
+jq -e '
+  .schema == "riffdb.wp190-recovery-consumption/v1"
+  and .source == "tests/recovery/fixtures/wp190-report-v1.json"
+  and .source_schema == "riffdb.wp190.recovery-report.v1"
+  and .source_checksum
+      == "tests/recovery/fixtures/wp190-report-v1.sha256"
+  and .coverage.inventory_source
+      == "crates/riffdb-testkit/src/failpoint.rs"
+  and (.required_acceptance_commands | length == 2)
+  and (.required_case_ids | length == 18)
+  and (.cli_retention_case_ids | length == 2)
+  and (.poc004_case_ids | length == 2)
+  and (.maintenance_daemon_case_ids | length == 4)
+  and (.maintenance_adapter_case_ids | length == 10)
+  and ((.cli_retention_case_ids
+        + .poc004_case_ids
+        + .maintenance_daemon_case_ids
+        + .maintenance_adapter_case_ids
+        | sort) == .required_case_ids)
+  and ((.required_case_ids | unique | length) == 18)
+  and (.coverage.inventory_cases
+       | type == "number" and floor == . and . >= 0)
+  and (.coverage.executed_cases
+       | type == "number" and floor == . and . >= 0)
+  and (.coverage.complete | type == "boolean")
+  and (.coverage.unresolved_production_gaps | type == "array")
+' "$recovery_consumption" >/dev/null
+
+jq -e --slurpfile consumed "$recovery_consumption" '
+  .schema == $consumed[0].source_schema
+  and .acceptance_commands == $consumed[0].required_acceptance_commands
+  and ([.cases[].id] == $consumed[0].required_case_ids)
+  and .coverage.inventory_cases == $consumed[0].coverage.inventory_cases
+  and .coverage.executed_cases == $consumed[0].coverage.executed_cases
+  and .coverage.executed_cases == (.cases | length)
+  and .coverage.production_gap_cases
+      == $consumed[0].coverage.unresolved_production_gaps
+  and $consumed[0].coverage.complete
+      == (.coverage.production_gap_cases | length == 0)
+  and all(.cases[];
+          (.id | type == "string" and length > 0 and length <= 96)
+          and (.evidence_target
+               | type == "string" and length > 0 and length <= 256)
+          and (.requirements | type == "array" and length > 0)
+          and all(.requirements[];
+                  type == "string" and length > 0 and length <= 32)
+          and (.guarantee
+               | type == "string" and length > 0 and length <= 256))
+  and all(.cases[]
+          | select(.id as $id
+                   | $consumed[0].cli_retention_case_ids
+                     | index($id) != null);
+          .evidence_kind == "dedicated-crash-child"
+          and (.requirements | index("REC-001") != null)
+          and (.requirements | index("REC-002") != null)
+          and (.requirements | index("TEST-001") != null))
+  and all(.cases[]
+          | select(.id as $id
+                   | $consumed[0].poc004_case_ids
+                     | index($id) != null);
+          .evidence_kind == "integrated-riffdbd"
+          and (.requirements | index("POC-004") != null))
+  and all(.cases[]
+          | select(.id as $id
+                   | $consumed[0].maintenance_daemon_case_ids
+                     | index($id) != null);
+          .evidence_kind == "integrated-riffdbd"
+          and (.requirements | index("TEST-001") != null))
+  and all(.cases[]
+          | select(.id as $id
+                   | $consumed[0].maintenance_adapter_case_ids
+                     | index($id) != null);
+          .evidence_kind == "dedicated-crash-child")
+' "$recovery" >/dev/null
+
+if ! jq -e '
+    .coverage.complete == true
+    and (.coverage.unresolved_production_gaps | length == 0)
+' "$recovery_consumption" >/dev/null; then
+    printf '%s\n' \
+        'WP-190 records unresolved production failpoint gaps; POC-009 cannot be attested' >&2
+    exit 1
+fi
+
+jq -e '
+  .schema == "riffdb.benchmark-status/v1"
+  and .revision_scope == "source_checkout"
+  and (.performance_claim == "none"
+       or .performance_claim
+          == "qualified_poc_semantic_storage_and_budget_comparison"
+       or .performance_claim
+          == "qualified_poc_semantic_and_budget_comparison_with_fjall_conformance_failure")
+  and .redb_report.report_id == "storage-redb"
+  and .fjall_report.report_id == "storage-fjall"
+  and .budget_comparison_report.report_id == "budget-postgresql-riffdb"
+  and .poc_semantic_report.report_id == "poc-semantic-workloads"
+  and .unsafe_postgresql_variants.benchmark_eligible == false
+' "$benchmark" >/dev/null
+
+if [[ ! -f benchmarks/storage-fjall/Cargo.toml ]]; then
+    printf '%s\n' 'WP-075 storage-fjall workspace is absent; POC release evidence is incomplete' >&2
+    exit 1
+fi
+if ! jq -e '
+    .redb_report.status == "verified"
+    and .redb_report.report
+        == "benchmarks/reports/storage-redb/report-v1.json"
+    and (.redb_report.report | type == "string" and length > 0)
+    and (.redb_report.report_sha256 | test("^[0-9a-f]{64}$"))
+    and (.redb_report.raw_artifact | type == "string" and length > 0)
+    and .redb_report.raw_artifact
+        == "benchmarks/reports/storage-redb/raw-v1.txt"
+    and (.redb_report.raw_sha256 | test("^[0-9a-f]{64}$"))
+    and .fjall_report.status == "verified"
+    and .fjall_report.report
+        == "benchmarks/reports/storage-fjall/report-v1.json"
+    and (.fjall_report.report | type == "string" and length > 0)
+    and (.fjall_report.report_sha256 | test("^[0-9a-f]{64}$"))
+    and (.fjall_report.raw_artifact | type == "string" and length > 0)
+    and .fjall_report.raw_artifact
+        == "benchmarks/reports/storage-fjall/raw-v1.txt"
+    and (.fjall_report.raw_sha256 | test("^[0-9a-f]{64}$"))
+    and .budget_comparison_report.status == "verified"
+    and .budget_comparison_report.report
+        == "benchmarks/reports/budget-comparison/report-v1.json"
+    and (.budget_comparison_report.report
+         | type == "string" and length > 0)
+    and (.budget_comparison_report.report_sha256
+         | test("^[0-9a-f]{64}$"))
+    and (.budget_comparison_report.raw_artifact
+         | type == "string" and length > 0)
+    and .budget_comparison_report.raw_artifact
+        == "benchmarks/reports/budget-comparison/raw-v1.tsv"
+    and (.budget_comparison_report.raw_sha256
+         | test("^[0-9a-f]{64}$"))
+    and .poc_semantic_report.status == "verified"
+    and .poc_semantic_report.report
+        == "benchmarks/reports/poc-semantic-workloads/report-v1.json"
+    and (.poc_semantic_report.report
+         | type == "string" and length > 0)
+    and (.poc_semantic_report.report_sha256
+         | test("^[0-9a-f]{64}$"))
+    and (.poc_semantic_report.raw_artifact
+         | type == "string" and length > 0)
+    and .poc_semantic_report.raw_artifact
+        == "benchmarks/reports/poc-semantic-workloads/raw-v1.jsonl"
+    and (.poc_semantic_report.raw_sha256
+         | test("^[0-9a-f]{64}$"))
+    and .poc_exit_ready == true
+' "$benchmark" >/dev/null; then
+    printf '%s\n' \
+        'redb, Fjall, canonical budget, and POC semantic reports are not all verified for POC exit' >&2
+    exit 1
+fi
+
+benchmarks/verify-evidence --release-revision HEAD
+
+verify_benchmark_report() {
+    local key="$1"
+    local report_id="$2"
+    local required_correctness="$3"
+    local report_path report_hash raw_path raw_hash
+    local actual_report_hash actual_raw_hash report_bytes raw_bytes
+
+    report_path="$(jq -er --arg key "$key" '.[$key].report' "$benchmark")"
+    report_hash="$(jq -er --arg key "$key" '.[$key].report_sha256' "$benchmark")"
+    raw_path="$(jq -er --arg key "$key" '.[$key].raw_artifact' "$benchmark")"
+    raw_hash="$(jq -er --arg key "$key" '.[$key].raw_sha256' "$benchmark")"
+
+    if ! jq -en --arg report "$report_path" --arg raw "$raw_path" '
+        ($report | test("^benchmarks/reports/[A-Za-z0-9._/-]+$")
+                   and (contains("..") | not))
+        and ($raw | test("^benchmarks/reports/[A-Za-z0-9._/-]+$")
+                and (contains("..") | not))
+    ' >/dev/null; then
+        printf 'benchmark evidence path is outside its checked root: %s\n' "$key" >&2
+        exit 1
+    fi
+    if [[ ! -f "$report_path" || ! -f "$raw_path" ]]; then
+        printf 'benchmark report or raw artifact is missing: %s\n' "$key" >&2
+        exit 1
+    fi
+    report_bytes="$(wc -c <"$report_path")"
+    raw_bytes="$(wc -c <"$raw_path")"
+    if (( report_bytes > 1048576 || raw_bytes > 67108864 )); then
+        printf 'benchmark evidence exceeds its release bound: %s\n' "$key" >&2
+        exit 1
+    fi
+    actual_report_hash="$(sha256sum "$report_path" | awk '{print $1}')"
+    actual_raw_hash="$(sha256sum "$raw_path" | awk '{print $1}')"
+    if [[ "$actual_report_hash" != "$report_hash" \
+       || "$actual_raw_hash" != "$raw_hash" ]]; then
+        printf 'benchmark evidence hash mismatch: %s\n' "$key" >&2
+        exit 1
+    fi
+
+    if ! jq -e \
+        --arg report_id "$report_id" \
+        --arg raw_path "$raw_path" \
+        --arg raw_hash "$raw_hash" \
+        --arg required_correctness "$required_correctness" '
+        .schema == "riffdb.benchmark-report/v1"
+        and .report_id == $report_id
+        and (.source_revision | test("^[0-9a-f]{40,64}$"))
+        and .dirty == false
+        and (.rust_version | type == "string" and length > 0)
+        and (.target | type == "string" and length > 0)
+        and ([
+          .environment.cpu,
+          .environment.memory,
+          .environment.storage_medium,
+          .environment.operating_system,
+          .environment.kernel,
+          .environment.filesystem,
+          .environment.mount_options
+        ] | all(.[]; type == "string" and length > 0))
+        and (.methodology.build_profile | type == "string" and length > 0)
+        and (.methodology.features
+             | type == "array" and all(.[]; type == "string"))
+        and (.methodology.database_size | type == "string" and length > 0)
+        and (.methodology.contract_version | type == "string" and length > 0)
+        and (.methodology.workload_distribution
+             | type == "string" and length > 0)
+        and (.methodology.durability_modes
+             | type == "array" and length > 0
+               and all(.[]; type == "string" and length > 0))
+        and (.methodology.warmup_runs
+             | type == "number" and floor == . and . >= 0)
+        and (.methodology.sample_count
+             | type == "number" and floor == . and . >= 0)
+        and (.methodology.distribution_method
+             | type == "string" and length > 0)
+        and (.methodology.analysis_command
+             | type == "string" and length > 0)
+        and .raw_artifact == $raw_path
+        and .raw_sha256 == $raw_hash
+        and .unsafe_postgresql_variants_included == false
+        and (
+          if $required_correctness == "passed"
+          then .correctness_status == "passed"
+               and .performance_status == "measured"
+               and .methodology.sample_count > 0
+               and (.results | type == "array" and length > 0)
+          else (.correctness_status == "passed"
+                and .performance_status == "measured"
+                and .methodology.sample_count > 0
+                and (.results | type == "array" and length > 0))
+               or (.correctness_status == "conformance_failure"
+                   and .performance_status
+                       == "not_run_due_to_conformance_failure"
+                   and .methodology.sample_count == 0
+                   and (.results | type == "array" and length == 0)
+                   and (.failure_classification
+                        | type == "string"
+                          and length > 0
+                          and length <= 256))
+          end
+        )
+    ' "$report_path" >/dev/null; then
+        printf 'benchmark report schema or claim is invalid: %s\n' "$key" >&2
+        exit 1
+    fi
+}
+
+verify_benchmark_report redb_report storage-redb passed
+verify_benchmark_report fjall_report storage-fjall pass_or_conformance_failure
+verify_benchmark_report \
+    budget_comparison_report budget-postgresql-riffdb passed
+
+poc_semantic_report_path="$(
+    jq -er '.poc_semantic_report.report' "$benchmark"
+)"
+poc_semantic_report_hash="$(
+    jq -er '.poc_semantic_report.report_sha256' "$benchmark"
+)"
+poc_semantic_raw_path="$(
+    jq -er '.poc_semantic_report.raw_artifact' "$benchmark"
+)"
+poc_semantic_raw_hash="$(
+    jq -er '.poc_semantic_report.raw_sha256' "$benchmark"
+)"
+if ! jq -en \
+    --arg report "$poc_semantic_report_path" \
+    --arg raw "$poc_semantic_raw_path" '
+    ($report | test("^benchmarks/reports/[A-Za-z0-9._/-]+$")
+               and (contains("..") | not))
+    and ($raw | test("^benchmarks/reports/[A-Za-z0-9._/-]+$")
+            and (contains("..") | not))
+' >/dev/null; then
+    printf '%s\n' \
+        'POC semantic benchmark evidence path is outside its checked root' >&2
+    exit 1
+fi
+if [[ ! -f "$poc_semantic_report_path" \
+   || ! -f "$poc_semantic_raw_path" ]]; then
+    printf '%s\n' 'POC semantic benchmark evidence is missing' >&2
+    exit 1
+fi
+if (( $(wc -c <"$poc_semantic_report_path") > 1048576 \
+   || $(wc -c <"$poc_semantic_raw_path") > 67108864 )); then
+    printf '%s\n' 'POC semantic benchmark evidence exceeds its release bound' >&2
+    exit 1
+fi
+if [[ "$(sha256sum "$poc_semantic_report_path" | awk '{print $1}')" \
+      != "$poc_semantic_report_hash" \
+   || "$(sha256sum "$poc_semantic_raw_path" | awk '{print $1}')" \
+      != "$poc_semantic_raw_hash" ]]; then
+    printf '%s\n' 'POC semantic benchmark evidence hash mismatch' >&2
+    exit 1
+fi
+
+if ! jq -e \
+    --arg raw_path "$poc_semantic_raw_path" \
+    --arg raw_hash "$poc_semantic_raw_hash" '
+    def positive_integer:
+      type == "number" and floor == . and . > 0;
+    def nonnegative_integer:
+      type == "number" and floor == . and . >= 0;
+    def positive_number:
+      type == "number" and . > 0;
+    def distribution:
+      (.sample_count | positive_integer)
+      and (.samples_ns | type == "array")
+      and ((.samples_ns | length) == .sample_count)
+      and (.samples_ns == (.samples_ns | sort))
+      and all(.samples_ns[]; positive_integer)
+      and (.p50_ns | positive_integer)
+      and (.p95_ns | positive_integer)
+      and (.p99_ns | positive_integer)
+      and .samples_ns[0] <= .p50_ns
+      and .p50_ns <= .p95_ns
+      and .p95_ns <= .p99_ns
+      and .p99_ns <= .samples_ns[-1];
+    def rows($family):
+      [.workloads[] | select(.family == $family)];
+    .schema == "riffdb.poc-semantic-benchmark-report/v1"
+    and .report_id == "poc-semantic-workloads"
+    and .publication_status == "measured_after_correctness_preflight"
+    and (.source.revision | test("^[0-9a-f]{40,64}$"))
+    and .source.dirty == false
+    and (.source.rust_version | type == "string" and length > 0)
+    and (.source.target | type == "string" and length > 0)
+    and .source.raw_artifact == $raw_path
+    and .source.raw_sha256 == $raw_hash
+    and ([
+      .environment.cpu,
+      .environment.memory,
+      .environment.storage_medium,
+      .environment.operating_system,
+      .environment.kernel,
+      .environment.filesystem,
+      .environment.mount_options
+    ] | all(.[]; type == "string" and length > 0))
+    and (.configuration.build_profile
+         | type == "string" and length > 0)
+    and (.configuration.features
+         | type == "array" and all(.[]; type == "string"))
+    and (.configuration.contract_version
+         | type == "string" and length > 0)
+    and (.configuration.workload_distribution
+         | type == "string" and length > 0)
+    and .configuration.durability_modes
+        == ["group_commit", "synchronous"]
+    and (.configuration.warmup_runs | nonnegative_integer)
+    and (.configuration.sample_count
+         == ([.workloads[].sample_count] | add))
+    and (.configuration.distribution_method
+         | type == "string" and length > 0)
+    and (.configuration.analysis_command
+         | type == "string" and length > 0)
+    and (.limitations
+         | type == "array" and length > 0 and length <= 32
+           and all(.[];
+                   type == "string" and length > 0 and length <= 256))
+    and (.workloads | type == "array" and length > 0)
+    and all(.workloads[];
+            (.workload_id
+             | type == "string" and length > 0 and length <= 96)
+            and (.family
+                 | type == "string" and length > 0 and length <= 64)
+            and distribution)
+    and (([.workloads[].workload_id] | unique | length)
+         == (.workloads | length))
+    and ([.workloads[].family] | unique) == [
+      "commit_log_scan",
+      "conflict_free_command",
+      "durability_mode",
+      "hot_key_contention",
+      "idempotent_replay",
+      "projection_catch_up",
+      "restart_recovery"
+    ]
+    and (rows("conflict_free_command") | length == 1)
+    and all(rows("conflict_free_command")[];
+            (.concurrency | positive_integer))
+    and (rows("hot_key_contention") | length == 4)
+    and ([rows("hot_key_contention")[].concurrency]
+         == [1, 8, 32, 128])
+    and (rows("idempotent_replay") | length == 1)
+    and (rows("commit_log_scan") | length == 1)
+    and (rows("projection_catch_up") | length == 1)
+    and (rows("restart_recovery") | length >= 3)
+    and all(rows("restart_recovery")[];
+            (.database_size_bytes | positive_integer))
+    and (([rows("restart_recovery")[].database_size_bytes]
+          | unique | length)
+         == (rows("restart_recovery") | length))
+    and (rows("durability_mode") | length == 2)
+    and ([rows("durability_mode")[].durability_mode] | sort)
+        == ["group_commit", "synchronous"]
+    and all(
+      .workloads[]
+      | select(.family == "conflict_free_command"
+               or .family == "hot_key_contention"
+               or .family == "durability_mode");
+      (.ops_per_second | positive_number)
+    )
+    and all(
+      .workloads[]
+      | select(.family == "commit_log_scan"
+               or .family == "projection_catch_up");
+      (.records_per_second | positive_number)
+    )
+' "$poc_semantic_report_path" >/dev/null; then
+    printf '%s\n' \
+        'POC semantic benchmark does not cover the exact SPEC 2.3 workload families' >&2
+    exit 1
+fi
+
+fjall_report_path="$(jq -er '.fjall_report.report' "$benchmark")"
+fjall_correctness="$(jq -er '.correctness_status' "$fjall_report_path")"
+if [[ "$fjall_correctness" == "passed" ]]; then
+    required_performance_claim=qualified_poc_semantic_storage_and_budget_comparison
+else
+    required_performance_claim=qualified_poc_semantic_and_budget_comparison_with_fjall_conformance_failure
+fi
+if [[ "$(jq -er '.performance_claim' "$benchmark")" != "$required_performance_claim" ]]; then
+    printf '%s\n' \
+        'benchmark performance claim does not match Fjall conformance evidence' >&2
+    exit 1
+fi
+
+while IFS= read -r evidence_path; do
+    if [[ ! -e "$evidence_path" ]]; then
+        printf 'declared POC evidence path is missing: %s\n' "$evidence_path" >&2
+        exit 1
+    fi
+done < <(
+    jq -r '(.requirements[] | .evidence[].path),
+           (.guarantees[] | .evidence[].path)' "$manifest" \
+        | sort -u
+)
+
+if grep -Fq '## Release Blockers in This Checkout' release/RELEASE_NOTES.md; then
+    printf '%s\n' \
+        'release notes still contain checkout-specific blockers after evidence passed' >&2
+    exit 1
+fi
+
+printf '%s\n' 'riffdb-release-evidence-v1: verified'

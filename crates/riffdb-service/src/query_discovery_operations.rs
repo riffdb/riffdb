@@ -111,7 +111,8 @@ impl QueryApplication for RiffDbService {
         request: GetEntityRequest,
     ) -> ServiceFuture<'_, GetEntityResult> {
         let service = Arc::clone(&self.inner);
-        self.spawn_operation(ServiceOperationV1::GetEntity, async move {
+        let ingress = context.ingress();
+        self.spawn_operation(ServiceOperationV1::GetEntity, ingress, async move {
             get_entity(service, context, request).await
         })
     }
@@ -122,7 +123,8 @@ impl QueryApplication for RiffDbService {
         request: ScanIndexRequest,
     ) -> ServiceFuture<'_, ScanIndexResult> {
         let service = Arc::clone(&self.inner);
-        self.spawn_operation(ServiceOperationV1::ScanIndex, async move {
+        let ingress = context.ingress();
+        self.spawn_operation(ServiceOperationV1::ScanIndex, ingress, async move {
             scan_index(service, context, request).await
         })
     }
@@ -133,7 +135,8 @@ impl QueryApplication for RiffDbService {
         request: QueryProjectionRequest,
     ) -> ServiceFuture<'_, QueryProjectionResult> {
         let service = Arc::clone(&self.inner);
-        self.spawn_operation(ServiceOperationV1::QueryProjection, async move {
+        let ingress = context.ingress();
+        self.spawn_operation(ServiceOperationV1::QueryProjection, ingress, async move {
             query_projection(service, context, request).await
         })
     }
@@ -144,9 +147,12 @@ impl QueryApplication for RiffDbService {
         request: GetProjectionStatusRequest,
     ) -> ServiceFuture<'_, GetProjectionStatusResult> {
         let service = Arc::clone(&self.inner);
-        self.spawn_operation(ServiceOperationV1::GetProjectionStatus, async move {
-            get_projection_status(service, context, request).await
-        })
+        let ingress = context.ingress();
+        self.spawn_operation(
+            ServiceOperationV1::GetProjectionStatus,
+            ingress,
+            async move { get_projection_status(service, context, request).await },
+        )
     }
 }
 
@@ -157,9 +163,12 @@ impl crate::DiscoveryApplication for RiffDbService {
         request: DiscoverCommandToolsRequest,
     ) -> ServiceFuture<'_, DiscoverCommandToolsResult> {
         let service = Arc::clone(&self.inner);
-        self.spawn_operation(ServiceOperationV1::DiscoverCommandTools, async move {
-            discover_command_tools(service, context, request).await
-        })
+        let ingress = context.ingress();
+        self.spawn_operation(
+            ServiceOperationV1::DiscoverCommandTools,
+            ingress,
+            async move { discover_command_tools(service, context, request).await },
+        )
     }
 
     fn discover_resources(
@@ -168,7 +177,8 @@ impl crate::DiscoveryApplication for RiffDbService {
         request: DiscoverResourcesRequest,
     ) -> ServiceFuture<'_, DiscoverResourcesResult> {
         let service = Arc::clone(&self.inner);
-        self.spawn_operation(ServiceOperationV1::DiscoverResources, async move {
+        let ingress = context.ingress();
+        self.spawn_operation(ServiceOperationV1::DiscoverResources, ingress, async move {
             discover_resources(service, context, request).await
         })
     }

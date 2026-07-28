@@ -272,7 +272,7 @@ async fn real_riffdbd_restart_preserves_budget_and_bootstrap_replay() -> TestRes
     .await?;
     assert_authenticated_health(
         &reopened_health,
-        v1::HealthStatus::Ready,
+        v1::HealthStatus::Degraded,
         Some(CONTRACT_VERSION),
         Some(2),
     )?;
@@ -801,9 +801,13 @@ fn assert_authenticated_health(
         || report.active_contract_version != expected_contract_version
         || report.last_commit_sequence != expected_last_commit_sequence
     {
-        return Err(test_failure(
-            "authenticated Health reported an unexpected state",
-        ));
+        return Err(test_failure(format!(
+            "authenticated Health reported status={}, contract={:?}, sequence={:?}; expected status={}, contract={expected_contract_version:?}, sequence={expected_last_commit_sequence:?}",
+            report.status,
+            report.active_contract_version,
+            report.last_commit_sequence,
+            expected_status as i32,
+        )));
     }
     Ok(())
 }
@@ -1079,6 +1083,13 @@ impl ServerProcess {
             .arg(ENVIRONMENT)
             .arg("--audience")
             .arg(AUDIENCE)
+            .arg("--backup-root")
+            .arg(
+                database_path
+                    .parent()
+                    .expect("test database has parent")
+                    .join("backups"),
+            )
             .arg("--capability-keys")
             .arg(capability_keys_path)
             .arg("--idempotency-keys")

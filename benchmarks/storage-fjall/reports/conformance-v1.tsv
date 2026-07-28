@@ -1,0 +1,28 @@
+schema	riffdb.storage-fjall-conformance/v1
+engine	fjall
+engine_version	3.1.8
+default_features	false
+semantic_contract	unchanged
+overall	conformance_failure
+performance_eligibility	not_run_due_to_conformance_failure
+case_id	class	status	detail
+architecture.nested-workspace-isolation	architecture	passed	separate workspace and lockfile; no root workspace member
+architecture.fjall-pin-and-features	architecture	passed	fjall exactly 3.1.8 with default features disabled
+architecture.v2-registry-shape	architecture	passed	27 readable; 26 writable; V1 decode-only; V2 writable
+architecture.identity-only-migration-contract	architecture	passed	accepted StartupIndexMigrationPort exposes identity only
+substrate.cross-keyspace-atomic-commit	substrate	passed	bounded canonical multi-keyspace commit and reopen
+substrate.owned-read-snapshot	substrate	passed	snapshot retains one consistent pre-write view
+substrate.bounded-physical-range-page	substrate	passed	strict physical order, lower continuation, explicit exact end
+substrate.migration-dual-ledger-pagination	substrate	passed	500 rows and independent 4 MiB evidence/instruction ledgers
+semantic.complete-storage-port-set	semantic	failed	adapter does not implement the unchanged semantic persistence traits
+semantic.command-candidate-type-state-and-atomic-graph	semantic	failed	not implemented; no sequence or atomic-command conformance claim
+semantic.snapshot-observations-and-dependencies	semantic	failed	not implemented; physical snapshots are not ReadSnapshot evidence
+semantic.idempotency-outcome-commit-event-provenance-reciprocity	semantic	failed	not implemented; substrate transactions are not semantic records
+semantic.catalog-capability-audit-and-bootstrap	semantic	failed	not implemented
+semantic.outbox-transitions-and-recovery-scan	semantic	failed	not implemented
+semantic.projection-identity-generation-lifecycle-frontier	semantic	failed	PRJ-001 through PRJ-004 unchanged suite not implemented
+semantic.projection-marker-hash-and-atomic-apply	semantic	failed	not implemented; no frontier monotonicity claim
+semantic.structural-and-historical-exact-end-session	semantic	failed	StructuralEvidenceOpen and session-bound exact-end scan not implemented
+semantic.sealed-catalog-migration-backend	semantic	failed	CatalogIndexMigrationBackend and fresh post-migration validation not implemented
+semantic.v1-v2-compare-rewrite-and-restart	semantic	failed	no V1-to-V2 rewrite or mixed-state recovery claim
+semantic.process-crash-failpoint-matrix	semantic	failed	named semantic failpoints not implemented

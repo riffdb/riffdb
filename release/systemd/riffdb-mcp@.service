@@ -1,0 +1,47 @@
+[Unit]
+Description=RiffDB public-client MCP bridge for connection %I
+Documentation=file:/usr/share/doc/riffdb/docs/installation.md
+Requires=riffdb-mcp.socket
+After=riffdbd.service
+
+[Service]
+Type=exec
+User=riffdb-mcp
+Group=riffdb-mcp
+ExecStart=/usr/bin/riffdb-mcp --config /etc/riffdb-mcp/config.toml
+StateDirectory=riffdb-mcp
+StateDirectoryMode=0700
+UMask=0077
+
+StandardInput=socket
+StandardOutput=socket
+StandardError=journal
+TimeoutStopSec=10s
+KillMode=mixed
+SendSIGKILL=yes
+
+NoNewPrivileges=yes
+CapabilityBoundingSet=
+AmbientCapabilities=
+PrivateDevices=yes
+PrivateTmp=yes
+ProtectClock=yes
+ProtectControlGroups=yes
+ProtectHome=yes
+ProtectHostname=yes
+ProtectKernelLogs=yes
+ProtectKernelModules=yes
+ProtectKernelTunables=yes
+ProtectSystem=strict
+InaccessiblePaths=/var/lib/riffdb /etc/riffdb
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+RemoveIPC=yes
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+RestrictNamespaces=yes
+RestrictRealtime=yes
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallErrorNumber=EPERM
+IPAddressDeny=any
+IPAddressAllow=localhost

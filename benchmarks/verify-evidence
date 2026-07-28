@@ -1,0 +1,400 @@
+#!/usr/bin/env bash
+set -euo pipefail
+export LC_ALL=C
+
+usage() {
+    printf '%s\n' \
+        'usage: benchmarks/verify-evidence [--kind all|redb|fjall|budget|semantic] [--reports-root PATH] [--release-revision REVISION]' >&2
+    exit 2
+}
+
+repo_root="$(git rev-parse --show-toplevel)"
+kind=all
+reports_root="$repo_root/benchmarks/reports"
+release_revision=HEAD
+while (($#)); do
+    case "$1" in
+        --kind)
+            (($# >= 2)) || usage
+            kind="$2"
+            shift 2
+            ;;
+        --reports-root)
+            (($# >= 2)) || usage
+            reports_root="$2"
+            shift 2
+            ;;
+        --release-revision)
+            (($# >= 2)) || usage
+            release_revision="$2"
+            shift 2
+            ;;
+        *)
+            usage
+            ;;
+    esac
+done
+case "$kind" in
+    all | redb | fjall | budget | semantic) ;;
+    *) usage ;;
+esac
+
+cd "$repo_root"
+for tool in awk cmp git grep jq mktemp sed sha256sum wc; do
+    command -v "$tool" >/dev/null 2>&1 || {
+        printf 'required benchmark evidence tool is missing: %s\n' "$tool" >&2
+        exit 1
+    }
+done
+
+if [[ ! -d "$reports_root" || -L "$reports_root" ]]; then
+    printf '%s\n' 'benchmark reports root is absent or symbolic' >&2
+    exit 1
+fi
+release_commit="$(
+    git rev-parse --verify "${release_revision}^{commit}" 2>/dev/null
+)" || {
+    printf 'release revision is not an available commit: %s\n' \
+        "$release_revision" >&2
+    exit 1
+}
+
+temporary_root="$(mktemp -d "${TMPDIR:-/tmp}/riffdb-benchmark-evidence.XXXXXX")"
+trap 'rm -rf "$temporary_root"' EXIT HUP INT TERM
+
+fail() {
+    printf '%s\n' "$1" >&2
+    exit 1
+}
+
+artifact() {
+    local path="$1"
+    local maximum="$2"
+    local label="$3"
+    if [[ ! -f "$path" || -L "$path" ]]; then
+        fail "$label is absent, not regular, or symbolic"
+    fi
+    if (( $(wc -c <"$path") > maximum )); then
+        fail "$label exceeds its release size bound"
+    fi
+}
+
+sha256() {
+    sha256sum "$1" | awk '{print $1}'
+}
+
+metadata_value() {
+    local key="$1"
+    local path="$2"
+    awk -F= -v key="$key" '
+      $1 == key {
+        count += 1
+        value = substr($0, length(key) + 2)
+      }
+      END {
+        if (count != 1) {
+          exit 1
+        }
+        print value
+      }
+    ' "$path"
+}
+
+verify_source_revision() {
+    local revision="$1"
+    local label="$2"
+    local resolved
+    if [[ ! "$revision" =~ ^[0-9a-f]{40,64}$ ]]; then
+        fail "$label source revision is not a canonical full object ID"
+    fi
+    resolved="$(git rev-parse --verify "${revision}^{commit}" 2>/dev/null)" || {
+        fail "$label source revision is not available as a commit"
+    }
+    if [[ "$resolved" != "$revision" ]]; then
+        fail "$label source revision does not equal its resolved full commit ID"
+    fi
+    if ! git merge-base --is-ancestor "$revision" "$release_commit"; then
+        fail "$label source revision is not an ancestor of the release revision"
+    fi
+}
+
+verify_redb() {
+    local directory="$reports_root/storage-redb"
+    local report="$directory/report-v1.json"
+    local raw="$directory/raw-v1.txt"
+    local logical_raw=benchmarks/reports/storage-redb/raw-v1.txt
+    local rebuilt="$temporary_root/storage-redb-report.json"
+    local raw_hash iterations warmup history storage_medium analysis revision
+
+    [[ ! -L "$directory" ]] || fail 'redb benchmark directory is symbolic'
+    artifact "$report" 1048576 'redb benchmark report'
+    artifact "$raw" 67108864 'redb benchmark raw artifact'
+    raw_hash="$(sha256 "$raw")"
+
+    jq -Rs -e -f benchmarks/validate-storage-redb-raw-v1.jq \
+        "$raw" >/dev/null \
+        || fail 'redb benchmark raw artifact is not canonical'
+    iterations="$(metadata_value iterations "$raw")" \
+        || fail 'redb raw iterations metadata is not unique'
+    warmup="$(metadata_value warmup_iterations "$raw")" \
+        || fail 'redb raw warmup metadata is not unique'
+    history="$(metadata_value populated_history_records "$raw")" \
+        || fail 'redb raw history metadata is not unique'
+    storage_medium="$(metadata_value storage_medium "$raw")" \
+        || fail 'redb raw storage-medium metadata is not unique'
+    analysis="$(jq -cn \
+        --arg storage_medium "$storage_medium" \
+        --arg iterations "$iterations" \
+        --arg warmup "$warmup" \
+        --arg history "$history" \
+        '[
+          "benchmarks/run-storage-redb",
+          "--storage-medium",
+          $storage_medium,
+          "--iterations",
+          $iterations,
+          "--warmup",
+          $warmup,
+          "--history-records",
+          $history
+        ]')"
+    jq -Rn \
+        --arg raw_path "$logical_raw" \
+        --arg raw_hash "$raw_hash" \
+        --arg analysis_command "$analysis" \
+        --argjson configured_warmup "$warmup" \
+        -f benchmarks/storage-report-v1.jq \
+        <"$raw" >"$rebuilt"
+    jq -e \
+        --arg report_id storage-redb \
+        -f benchmarks/validate-benchmark-report-v1.jq \
+        "$report" >/dev/null \
+        || fail 'redb benchmark report is not canonical'
+    jq -e --slurpfile rebuilt "$rebuilt" \
+        '. == $rebuilt[0]' "$report" >/dev/null \
+        || fail 'redb benchmark summary does not recompute from its raw artifact'
+    revision="$(jq -er '.source_revision' "$report")" \
+        || fail 'redb source revision is absent'
+    verify_source_revision "$revision" 'redb benchmark'
+}
+
+verify_budget() {
+    local directory="$reports_root/budget-comparison"
+    local report="$directory/report-v1.json"
+    local raw="$directory/raw-v1.tsv"
+    local logical_raw=benchmarks/reports/budget-comparison/raw-v1.tsv
+    local rebuilt="$temporary_root/budget-report.json"
+    local raw_hash samples warmup storage_medium analysis revision
+
+    [[ ! -L "$directory" ]] || fail 'budget benchmark directory is symbolic'
+    artifact "$report" 1048576 'budget benchmark report'
+    artifact "$raw" 67108864 'budget benchmark raw artifact'
+    raw_hash="$(sha256 "$raw")"
+
+    jq -Rs -e -f benchmarks/validate-budget-raw-v1.jq \
+        "$raw" >/dev/null \
+        || fail 'budget benchmark raw artifact is not canonical'
+    samples="$(metadata_value sample_count_per_workload "$raw")" \
+        || fail 'budget raw sample metadata is not unique'
+    warmup="$(metadata_value warmup_runs "$raw")" \
+        || fail 'budget raw warmup metadata is not unique'
+    storage_medium="$(metadata_value storage_medium "$raw")" \
+        || fail 'budget raw storage-medium metadata is not unique'
+    analysis="$(jq -cn \
+        --arg storage_medium "$storage_medium" \
+        --arg samples "$samples" \
+        --arg warmup "$warmup" \
+        '[
+          "benchmarks/run-budget-comparison",
+          "--storage-medium",
+          $storage_medium,
+          "--samples",
+          $samples,
+          "--warmup",
+          $warmup
+        ]')"
+    jq -Rn \
+        --arg raw_path "$logical_raw" \
+        --arg raw_hash "$raw_hash" \
+        --arg analysis_command "$analysis" \
+        -f benchmarks/budget-report-v1.jq \
+        <"$raw" >"$rebuilt"
+    jq -e \
+        --arg report_id budget-postgresql-riffdb \
+        -f benchmarks/validate-benchmark-report-v1.jq \
+        "$report" >/dev/null \
+        || fail 'budget benchmark report is not canonical'
+    jq -e --slurpfile rebuilt "$rebuilt" \
+        '. == $rebuilt[0]' "$report" >/dev/null \
+        || fail 'budget benchmark summary does not recompute from its raw artifact'
+    revision="$(jq -er '.source_revision' "$report")" \
+        || fail 'budget source revision is absent'
+    verify_source_revision "$revision" 'budget benchmark'
+}
+
+verify_fjall() {
+    local directory="$reports_root/storage-fjall"
+    local report="$directory/report-v1.json"
+    local raw="$directory/raw-v1.txt"
+    local logical_raw=benchmarks/reports/storage-fjall/raw-v1.txt
+    local metadata="$temporary_root/fjall-metadata.json"
+    local captured_conformance="$temporary_root/fjall-conformance.tsv"
+    local captured_eligibility="$temporary_root/fjall-eligibility.tsv"
+    local raw_hash revision
+
+    [[ ! -L "$directory" ]] || fail 'Fjall benchmark directory is symbolic'
+    artifact "$report" 1048576 'Fjall benchmark report'
+    artifact "$raw" 67108864 'Fjall benchmark raw artifact'
+    raw_hash="$(sha256 "$raw")"
+
+    sed -n '1,17p' "$raw" \
+        | jq -Rn '
+            reduce inputs as $line
+              ({};
+               ($line | capture("^(?<key>[^=]+)=(?<value>.*)$")) as $pair
+               | .[$pair.key] = $pair.value)
+          ' >"$metadata" \
+        || fail 'Fjall raw metadata cannot be decoded'
+    jq -e '
+        (keys | sort) == ([
+          "correctness_status",
+          "cpu",
+          "default_features",
+          "engine",
+          "engine_version",
+          "filesystem",
+          "git_dirty",
+          "git_revision",
+          "memory",
+          "mount_options",
+          "operating_system",
+          "performance_status",
+          "riffdb_fjall_conformance_capture_format",
+          "rust_target",
+          "rust_version",
+          "storage_medium",
+          "unsafe_postgresql_variants_included"
+        ] | sort)
+        and .riffdb_fjall_conformance_capture_format == "1"
+        and (.git_revision | test("^[0-9a-f]{40,64}$"))
+        and .git_dirty == "false"
+        and .engine == "fjall"
+        and .engine_version == "3.1.8"
+        and .default_features == "false"
+        and .correctness_status == "conformance_failure"
+        and .performance_status == "not_run_due_to_conformance_failure"
+        and .unsafe_postgresql_variants_included == "false"
+        and all(
+          .rust_version,
+          .rust_target,
+          .cpu,
+          .memory,
+          .storage_medium,
+          .operating_system,
+          .filesystem,
+          .mount_options;
+          type == "string" and length > 0 and length <= 4096
+        )
+    ' "$metadata" >/dev/null \
+        || fail 'Fjall benchmark raw metadata is not canonical'
+    if [[ "$(sed -n '18p' "$raw")" != '--- conformance-v1.tsv ---' ]]; then
+        fail 'Fjall raw conformance marker is not canonical'
+    fi
+    if [[ "$(grep -Fxc -- '--- conformance-v1.tsv ---' "$raw")" != 1 \
+       || "$(grep -Fxc -- '--- benchmark-eligibility-v1.tsv ---' "$raw")" != 1 \
+       || "$(grep -Fxc -- '--- acceptance output ---' "$raw")" != 1 ]]; then
+        fail 'Fjall raw section markers are missing or duplicated'
+    fi
+    awk '
+      $0 == "--- conformance-v1.tsv ---" { section = "conformance"; next }
+      $0 == "--- benchmark-eligibility-v1.tsv ---" {
+        section = "eligibility"
+        next
+      }
+      $0 == "--- acceptance output ---" { section = "acceptance"; next }
+      section == "conformance" { print }
+    ' "$raw" >"$captured_conformance"
+    awk '
+      $0 == "--- benchmark-eligibility-v1.tsv ---" {
+        section = "eligibility"
+        next
+      }
+      $0 == "--- acceptance output ---" { section = "acceptance"; next }
+      section == "eligibility" { print }
+    ' "$raw" >"$captured_eligibility"
+    cmp -s \
+        benchmarks/storage-fjall/reports/conformance-v1.tsv \
+        "$captured_conformance" \
+        || fail 'Fjall raw conformance section differs from checked evidence'
+    cmp -s \
+        benchmarks/storage-fjall/reports/benchmark-eligibility-v1.tsv \
+        "$captured_eligibility" \
+        || fail 'Fjall raw eligibility section differs from checked evidence'
+    if ! awk '
+        $0 == "--- acceptance output ---" { section = 1; next }
+        section && length($0) > 0 { found = 1 }
+        END { exit(found ? 0 : 1) }
+    ' "$raw"; then
+        fail 'Fjall raw acceptance output is empty'
+    fi
+
+    jq -e \
+        --arg raw_path "$logical_raw" \
+        --arg raw_hash "$raw_hash" \
+        --slurpfile metadata "$metadata" \
+        -f benchmarks/validate-fjall-report-v1.jq \
+        "$report" >/dev/null \
+        || fail 'Fjall benchmark report is not canonical'
+    revision="$(jq -er '.source_revision' "$report")" \
+        || fail 'Fjall source revision is absent'
+    verify_source_revision "$revision" 'Fjall benchmark'
+}
+
+verify_semantic() {
+    local directory="$reports_root/poc-semantic-workloads"
+    local report="$directory/report-v1.json"
+    local raw="$directory/raw-v1.jsonl"
+    local logical_raw=benchmarks/reports/poc-semantic-workloads/raw-v1.jsonl
+    local raw_hash revision
+
+    [[ ! -L "$directory" ]] || fail 'semantic benchmark directory is symbolic'
+    artifact "$report" 1048576 'semantic benchmark report'
+    artifact "$raw" 67108864 'semantic benchmark raw artifact'
+    raw_hash="$(sha256 "$raw")"
+
+    jq -e -f benchmarks/poc-semantic-workloads/validate-report-v1.jq \
+        "$report" >/dev/null \
+        || fail 'semantic benchmark report is not canonical'
+    jq -e \
+        --arg raw_path "$logical_raw" \
+        --arg raw_hash "$raw_hash" '
+        .publication_status == "measured_after_correctness_preflight"
+        and .source.dirty == false
+        and .source.raw_artifact == $raw_path
+        and .source.raw_sha256 == $raw_hash
+    ' "$report" >/dev/null \
+        || fail 'semantic benchmark publication metadata is invalid'
+    jq -s -e \
+        --slurpfile report "$report" \
+        -f benchmarks/poc-semantic-workloads/validate-raw-v1.jq \
+        "$raw" >/dev/null \
+        || fail 'semantic benchmark raw samples do not reproduce the summary'
+    revision="$(jq -er '.source.revision' "$report")" \
+        || fail 'semantic source revision is absent'
+    verify_source_revision "$revision" 'semantic benchmark'
+}
+
+case "$kind" in
+    all)
+        verify_redb
+        verify_fjall
+        verify_budget
+        verify_semantic
+        ;;
+    redb) verify_redb ;;
+    fjall) verify_fjall ;;
+    budget) verify_budget ;;
+    semantic) verify_semantic ;;
+esac
+
+printf 'riffdb-benchmark-evidence-v1: verified (%s)\n' "$kind"

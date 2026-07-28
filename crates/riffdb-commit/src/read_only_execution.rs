@@ -535,6 +535,7 @@ contract ReadOnlyRows version 1 {
                 facts,
                 self.authorization(),
                 request_id(2),
+                riffdb_types::ServiceIngressKindV1::Grpc,
                 control,
             )
             .expect("exact read-only preparation");
@@ -766,6 +767,7 @@ contract ReadOnlyRows version 1 {
             facts,
             fixture.authorization(),
             request_id(2),
+            riffdb_types::ServiceIngressKindV1::Grpc,
             control,
         )
         .expect_err("trusted database mismatch must reject");

@@ -1,0 +1,339 @@
+#!/usr/bin/env bash
+set -euo pipefail
+export LC_ALL=C
+
+if (($# != 0)); then
+    printf '%s\n' 'usage: benchmarks/test-evidence-validation' >&2
+    exit 2
+fi
+
+repo_root="$(git rev-parse --show-toplevel)"
+cd "$repo_root"
+fixture_root=target/wp200/benchmark-evidence-contract
+rm -rf "$fixture_root"
+mkdir -p \
+    "$fixture_root/storage-redb" \
+    "$fixture_root/storage-fjall" \
+    "$fixture_root/budget-comparison"
+trap 'rm -rf "$fixture_root"' EXIT HUP INT TERM
+
+revision="$(git rev-parse HEAD)"
+
+timer="$repo_root/$fixture_root/process-timer"
+timer_root="$repo_root/$fixture_root/process-timer-root"
+timer_result="$repo_root/$fixture_root/process-timer-result.tsv"
+mkdir -p "$timer_root"
+rustc +1.97.0 \
+    --edition=2024 \
+    -D warnings \
+    benchmarks/process-timer.rs \
+    -o "$timer"
+"$timer" \
+    "$timer_result" \
+    "$timer_root" \
+    fixture.bin \
+    sh -c 'printf fixture >"$1"' sh "$timer_root/fixture.bin"
+if ! awk -F'\t' '
+    NR == 1 && NF == 2 && $1 ~ /^[1-9][0-9]*$/ && $2 == 7 {
+        valid = 1
+      }
+    END {
+      exit(valid ? 0 : 1)
+    }
+' "$timer_result"; then
+    printf '%s\n' 'benchmark process timer contract is invalid' >&2
+    exit 1
+fi
+
+expect_failure() {
+    local label="$1"
+    shift
+    if "$@" >"$fixture_root/unexpected-success.log" 2>&1; then
+        printf 'benchmark evidence validator accepted: %s\n' "$label" >&2
+        exit 1
+    fi
+}
+
+redb_raw="$fixture_root/storage-redb/raw-v1.txt"
+redb_report="$fixture_root/storage-redb/report-v1.json"
+write_redb_report() {
+    local analysis_command raw_hash warmup
+    raw_hash="$(sha256sum "$redb_raw" | awk '{print $1}')"
+    warmup="$(sed -n 's/^warmup_iterations=//p' "$redb_raw")"
+    analysis_command="$(jq -cn --arg warmup "$warmup" '[
+      "benchmarks/run-storage-redb",
+      "--storage-medium",
+      "fixture",
+      "--iterations",
+      "3",
+      "--warmup",
+      $warmup,
+      "--history-records",
+      "2"
+    ]')"
+    jq -Rn \
+        --arg raw_path benchmarks/reports/storage-redb/raw-v1.txt \
+        --arg raw_hash "$raw_hash" \
+        --arg analysis_command "$analysis_command" \
+        --argjson configured_warmup "$warmup" \
+        -f benchmarks/storage-report-v1.jq \
+        <"$redb_raw" >"$redb_report"
+}
+write_redb_result() {
+    local id="$1"
+    local description="$2"
+    local size="$3"
+    {
+        printf 'benchmark=%s\n' "$id"
+        printf 'workload=%s\n' "$description"
+        printf '%s\n' \
+            'workload_distribution=deterministic single-operation component samples'
+        printf '%s\n' \
+            'contract_version=none (storage-only WP-070 fixture)'
+        printf '%s\n' 'durability_mode=redb immediate, two-phase commit'
+        printf 'database_size_bytes=%s\n' "$size"
+        printf '%s\n' 'sample_count=3'
+        printf '%s\n' 'sample_ns=[10,20,30]'
+        printf '%s\n' 'min_ns=10'
+        printf '%s\n' 'p50_ns=20'
+        printf '%s\n' 'p95_ns=30'
+        printf '%s\n' 'p99_ns=30'
+        printf '%s\n' 'max_ns=30'
+        printf '%s\n' 'mean_ns=20'
+    } >>"$redb_raw"
+}
+{
+    printf '%s\n' 'riffdb_benchmark_capture_format=1'
+    printf '%s\n' 'database_root=/fixture/redb'
+    printf '%s\n' 'mount_options=rw'
+    printf '%s\n' 'riffdb_storage_benchmark_format=1'
+    printf 'git_revision=%s\n' "$revision"
+    printf '%s\n' 'git_dirty=false'
+    printf '%s\n' 'rust_version=fixture'
+    printf '%s\n' 'rust_target=fixture'
+    printf '%s\n' 'build_profile=bench'
+    printf '%s\n' 'enabled_features=default (empty)'
+    printf '%s\n' 'operating_system=fixture'
+    printf '%s\n' 'cpu=fixture'
+    printf '%s\n' 'memory=fixture'
+    printf '%s\n' 'storage_medium=fixture'
+    printf '%s\n' 'filesystem=fixture'
+    printf '%s\n' 'correctness_preflight=passed'
+    printf '%s\n' 'iterations=3'
+    printf '%s\n' 'warmup_iterations=1'
+    printf '%s\n' 'populated_history_records=2'
+    printf '%s\n' 'populated_history_total_audit_records=4'
+} >"$redb_raw"
+write_redb_result initialized_open_probe 'fixture initialized open' 100
+write_redb_result full_startup_evidence 'fixture startup' 100
+write_redb_result populated_history_full_startup 'fixture populated startup' 200
+write_redb_result durable_capability_bootstrap 'fixture bootstrap' 300
+write_redb_report
+
+benchmarks/verify-evidence \
+    --kind redb \
+    --reports-root "$fixture_root" \
+    --release-revision HEAD >/dev/null
+
+expect_failure 'a source revision outside the release revision ancestry' \
+    benchmarks/verify-evidence \
+    --kind redb \
+    --reports-root "$fixture_root" \
+    --release-revision HEAD^
+
+sed -i 's/^warmup_iterations=1$/warmup_iterations=0/' "$redb_raw"
+write_redb_report
+expect_failure 'zero-warmup redb evidence whose argv the runner rejects' \
+    benchmarks/verify-evidence \
+    --kind redb \
+    --reports-root "$fixture_root" \
+    --release-revision HEAD
+sed -i 's/^warmup_iterations=0$/warmup_iterations=1/' "$redb_raw"
+write_redb_report
+
+cp "$redb_report" "$fixture_root/redb-valid.json"
+jq '.results[0].p50_ns += 1' \
+    "$fixture_root/redb-valid.json" >"$redb_report"
+expect_failure 'a redb summary that does not match raw samples' \
+    benchmarks/verify-evidence \
+    --kind redb \
+    --reports-root "$fixture_root" \
+    --release-revision HEAD
+cp "$fixture_root/redb-valid.json" "$redb_report"
+
+sed -i \
+    's/^git_revision=.*/git_revision=0000000000000000000000000000000000000000/' \
+    "$redb_raw"
+write_redb_report
+expect_failure 'a source revision that is not an available commit' \
+    benchmarks/verify-evidence \
+    --kind redb \
+    --reports-root "$fixture_root" \
+    --release-revision HEAD
+sed -i "s/^git_revision=.*/git_revision=$revision/" "$redb_raw"
+write_redb_report
+
+budget_raw="$fixture_root/budget-comparison/raw-v1.tsv"
+budget_report="$fixture_root/budget-comparison/report-v1.json"
+write_budget_report() {
+    local raw_hash
+    raw_hash="$(sha256sum "$budget_raw" | awk '{print $1}')"
+    jq -Rn \
+        --arg raw_path benchmarks/reports/budget-comparison/raw-v1.tsv \
+        --arg raw_hash "$raw_hash" \
+        --arg analysis_command \
+            '["benchmarks/run-budget-comparison","--storage-medium","fixture","--samples","3","--warmup","1"]' \
+        -f benchmarks/budget-report-v1.jq \
+        <"$budget_raw" >"$budget_report"
+}
+{
+    printf '%s\n' 'riffdb_budget_benchmark_capture_format=1'
+    printf 'git_revision=%s\n' "$revision"
+    printf '%s\n' 'git_dirty=false'
+    printf '%s\n' 'rust_version=fixture'
+    printf '%s\n' 'rust_target=fixture'
+    printf '%s\n' 'cpu=fixture'
+    printf '%s\n' 'memory=fixture'
+    printf '%s\n' 'storage_medium=fixture'
+    printf '%s\n' 'operating_system=fixture'
+    printf '%s\n' 'database_root=/fixture/budget'
+    printf '%s\n' 'filesystem=fixture'
+    printf '%s\n' 'mount_options=rw'
+    printf '%s\n' \
+        'postgres_image=postgres:18.4-bookworm@sha256:d9c83446333daec3f0588cc709adb80c26090b7f9f0f7ec8d43c243385d79818'
+    printf '%s\n' \
+        'postgres_image_id=sha256:1111111111111111111111111111111111111111111111111111111111111111'
+    printf '%s\n' 'postgres_server_version_num=180004'
+    printf '%s\n' 'postgres_synchronous_commit=on'
+    printf '%s\n' 'postgres_fsync=on'
+    printf '%s\n' 'postgres_full_page_writes=on'
+    printf '%s\n' 'postgres_filesystem=fixture'
+    printf '%s\n' 'postgres_mount_options=rw'
+    printf '%s\n' \
+        'postgres_network=loopback-only ephemeral Docker publication'
+    printf '%s\n' 'correctness_preflight=passed'
+    printf '%s\n' 'warmup_runs=1'
+    printf '%s\n' 'sample_count_per_workload=3'
+    printf '%s\n' \
+        $'sample\tpostgres_canonical_sequential_contention\t1\t10\t100'
+    printf '%s\n' \
+        $'sample\triffdb_public_sequential_contention_replay\t1\t20\t200'
+    printf '%s\n' \
+        $'sample\tpostgres_canonical_sequential_contention\t2\t30\t110'
+    printf '%s\n' \
+        $'sample\triffdb_public_sequential_contention_replay\t2\t40\t210'
+    printf '%s\n' \
+        $'sample\tpostgres_canonical_sequential_contention\t3\t50\t120'
+    printf '%s\n' \
+        $'sample\triffdb_public_sequential_contention_replay\t3\t60\t220'
+} >"$budget_raw"
+write_budget_report
+
+benchmarks/verify-evidence \
+    --kind budget \
+    --reports-root "$fixture_root" \
+    --release-revision HEAD >/dev/null
+
+cp "$budget_report" "$fixture_root/budget-valid.json"
+jq '.results[1].samples_ns[0] += 1' \
+    "$fixture_root/budget-valid.json" >"$budget_report"
+expect_failure 'a budget summary with a fabricated sample' \
+    benchmarks/verify-evidence \
+    --kind budget \
+    --reports-root "$fixture_root" \
+    --release-revision HEAD
+cp "$fixture_root/budget-valid.json" "$budget_report"
+
+fjall_raw="$fixture_root/storage-fjall/raw-v1.txt"
+fjall_report="$fixture_root/storage-fjall/report-v1.json"
+{
+    printf '%s\n' 'riffdb_fjall_conformance_capture_format=1'
+    printf 'git_revision=%s\n' "$revision"
+    printf '%s\n' 'git_dirty=false'
+    printf '%s\n' 'rust_version=fixture'
+    printf '%s\n' 'rust_target=fixture'
+    printf '%s\n' 'cpu=fixture'
+    printf '%s\n' 'memory=fixture'
+    printf '%s\n' 'storage_medium=fixture'
+    printf '%s\n' 'operating_system=fixture'
+    printf '%s\n' 'filesystem=fixture'
+    printf '%s\n' 'mount_options=rw'
+    printf '%s\n' 'engine=fjall'
+    printf '%s\n' 'engine_version=3.1.8'
+    printf '%s\n' 'default_features=false'
+    printf '%s\n' 'correctness_status=conformance_failure'
+    printf '%s\n' \
+        'performance_status=not_run_due_to_conformance_failure'
+    printf '%s\n' 'unsafe_postgresql_variants_included=false'
+    printf '%s\n' '--- conformance-v1.tsv ---'
+    cat benchmarks/storage-fjall/reports/conformance-v1.tsv
+    printf '%s\n' '--- benchmark-eligibility-v1.tsv ---'
+    cat benchmarks/storage-fjall/reports/benchmark-eligibility-v1.tsv
+    printf '%s\n' '--- acceptance output ---'
+    printf '%s\n' 'fixture acceptance passed'
+} >"$fjall_raw"
+fjall_hash="$(sha256sum "$fjall_raw" | awk '{print $1}')"
+jq -n \
+    --arg revision "$revision" \
+    --arg raw_hash "$fjall_hash" '
+    {
+      schema: "riffdb.benchmark-report/v1",
+      report_id: "storage-fjall",
+      source_revision: $revision,
+      dirty: false,
+      rust_version: "fixture",
+      target: "fixture",
+      environment: {
+        cpu: "fixture",
+        memory: "fixture",
+        storage_medium: "fixture",
+        operating_system: "fixture",
+        kernel: "fixture",
+        filesystem: "fixture",
+        mount_options: "rw"
+      },
+      methodology: {
+        build_profile: "test and benchmark compile only; no timed workload",
+        features: ["fjall 3.1.8 default-features=false"],
+        database_size: "not measured because semantic conformance failed",
+        contract_version: "accepted V2 registry: 27 readable, 26 writable",
+        workload_distribution:
+          "unchanged semantic, projection, migration, and crash suite",
+        durability_modes: ["not measured"],
+        warmup_runs: 0,
+        sample_count: 0,
+        distribution_method:
+          "no performance distribution after failed correctness preflight",
+        analysis_command:
+          "[\"benchmarks/run-storage-fjall\",\"--storage-medium\",\"fixture\"]"
+      },
+      correctness_status: "conformance_failure",
+      performance_status: "not_run_due_to_conformance_failure",
+      failure_classification:
+        "Fjall adapter lacks the unchanged semantic, projection, migration, and crash-recovery ports; substrate timings are excluded.",
+      raw_artifact: "benchmarks/reports/storage-fjall/raw-v1.txt",
+      raw_sha256: $raw_hash,
+      unsafe_postgresql_variants_included: false,
+      results: []
+    }
+  ' >"$fjall_report"
+
+benchmarks/verify-evidence \
+    --kind fjall \
+    --reports-root "$fixture_root" \
+    --release-revision HEAD >/dev/null
+
+sed -i 's/overall\tconformance_failure/overall\tpassed/' "$fjall_raw"
+fjall_hash="$(sha256sum "$fjall_raw" | awk '{print $1}')"
+jq --arg raw_hash "$fjall_hash" '.raw_sha256 = $raw_hash' \
+    "$fjall_report" >"$fixture_root/fjall-mutated.json"
+mv "$fixture_root/fjall-mutated.json" "$fjall_report"
+expect_failure 'Fjall raw evidence that differs from the checked conformance record' \
+    benchmarks/verify-evidence \
+    --kind fjall \
+    --reports-root "$fixture_root" \
+    --release-revision HEAD
+
+benchmarks/poc-semantic-workloads/test-contract >/dev/null
+
+printf '%s\n' 'riffdb-benchmark-evidence-contract-v1: passed'

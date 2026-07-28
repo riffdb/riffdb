@@ -281,6 +281,14 @@ impl RedbOperationalPorts {
     ) -> Result<(Vec<riffdb_types::EventId>, bool), StorageError> {
         self.shared.pending_outbox_page(after, limit)
     }
+
+    pub(crate) fn undelivered_outbox_page(
+        &self,
+        after: Option<riffdb_types::EventId>,
+        limit: usize,
+    ) -> Result<(Vec<riffdb_types::EventId>, bool), StorageError> {
+        self.shared.undelivered_outbox_page(after, limit)
+    }
 }
 
 impl RedbWriteAccess {
@@ -355,8 +363,9 @@ impl RedbWriteAccess {
         self.shared.service_audit_sequences(request_id)
     }
 
-    pub(crate) fn ensure_pending_outbox_available(&self) -> Result<(), StorageError> {
-        self.shared.pending_outbox_page(None, 0).map(|_| ())
+    pub(crate) fn ensure_outbox_indexes_available(&self) -> Result<(), StorageError> {
+        self.shared.pending_outbox_page(None, 0)?;
+        self.shared.undelivered_outbox_page(None, 0).map(|_| ())
     }
 }
 
@@ -392,6 +401,25 @@ impl SharedRedb {
         match &*state {
             TransientIndexState::Ready(indexes) => indexes
                 .pending_outbox_page(after, limit)
+                .ok_or_else(|| storage_error(StorageErrorKind::Unavailable)),
+            TransientIndexState::Dormant | TransientIndexState::Invalid => {
+                Err(storage_error(StorageErrorKind::Unavailable))
+            }
+        }
+    }
+
+    fn undelivered_outbox_page(
+        &self,
+        after: Option<riffdb_types::EventId>,
+        limit: usize,
+    ) -> Result<(Vec<riffdb_types::EventId>, bool), StorageError> {
+        let state = self
+            .transient_indexes
+            .lock()
+            .map_err(|_| storage_error(StorageErrorKind::InvariantViolation))?;
+        match &*state {
+            TransientIndexState::Ready(indexes) => indexes
+                .undelivered_outbox_page(after, limit)
                 .ok_or_else(|| storage_error(StorageErrorKind::Unavailable)),
             TransientIndexState::Dormant | TransientIndexState::Invalid => {
                 Err(storage_error(StorageErrorKind::Unavailable))

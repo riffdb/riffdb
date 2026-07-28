@@ -1,0 +1,368 @@
+#!/usr/bin/env bash
+set -euo pipefail
+export LC_ALL=C
+export TZ=UTC
+
+usage() {
+    printf '%s\n' \
+        'usage: benchmarks/run-budget-comparison --storage-medium DESCRIPTION [--samples N] [--warmup N]' >&2
+    exit 2
+}
+
+repo_root="$(git rev-parse --show-toplevel)"
+cd "$repo_root"
+
+storage_medium=
+samples=12
+warmup=2
+while (($#)); do
+    case "$1" in
+        --storage-medium)
+            (($# >= 2)) || usage
+            storage_medium="$2"
+            shift 2
+            ;;
+        --samples)
+            (($# >= 2)) || usage
+            samples="$2"
+            shift 2
+            ;;
+        --warmup)
+            (($# >= 2)) || usage
+            warmup="$2"
+            shift 2
+            ;;
+        *)
+            usage
+            ;;
+    esac
+done
+
+canonical_count() {
+    [[ "$1" =~ ^(0|[1-9][0-9]*)$ ]]
+}
+[[ -n "$storage_medium" ]] || usage
+canonical_count "$samples" && ((samples >= 3 && samples <= 1000)) || usage
+canonical_count "$warmup" && ((warmup <= 100)) || usage
+[[ ${#storage_medium} -le 256 ]] || usage
+
+if [[ -n "$(git status --porcelain=v1)" ]]; then
+    printf '%s\n' 'budget benchmark publication requires a clean checkout' >&2
+    exit 1
+fi
+for tool in awk cargo docker findmnt git jq rustc sha256sum stat uname; do
+    command -v "$tool" >/dev/null 2>&1 || {
+        printf 'required benchmark tool is missing: %s\n' "$tool" >&2
+        exit 1
+    }
+done
+
+target_root=target/wp200/benchmarks/budget-comparison
+root_target="$target_root/root-target"
+comparison_target="$target_root/comparison-target"
+database_root="$target_root/database-roots"
+riffdb_database_root="$database_root/riffdb"
+postgres_database_root="$database_root/postgresql"
+postgres_timer_root="$database_root/postgresql-timer"
+published_root=benchmarks/reports/budget-comparison
+for path in "$target_root" "$database_root" "$riffdb_database_root" \
+    "$postgres_database_root" "$postgres_timer_root"; do
+    [[ ! -L "$path" ]] || {
+        printf 'benchmark path must not be a symbolic link: %s\n' "$path" >&2
+        exit 1
+    }
+done
+rm -rf "$database_root"
+mkdir -p \
+    "$riffdb_database_root" \
+    "$postgres_database_root" \
+    "$postgres_timer_root" \
+    "$published_root"
+raw="$target_root/raw-v1.tsv"
+report="$target_root/report-v1.json"
+published_raw="$published_root/raw-v1.tsv"
+published_report="$published_root/report-v1.json"
+command_log="$target_root/last-command.log"
+timer_result="$target_root/process-timer-result.tsv"
+process_timer="$target_root/process-timer"
+
+rustc +1.97.0 \
+    --edition=2024 \
+    -C opt-level=3 \
+    benchmarks/process-timer.rs \
+    -o "$process_timer"
+
+postgres_image='postgres:18.4-bookworm@sha256:d9c83446333daec3f0588cc709adb80c26090b7f9f0f7ec8d43c243385d79818'
+postgres_container="riffdb-wp200-budget-benchmark-$$"
+cleanup() {
+    docker exec "$postgres_container" \
+        chmod -R a+rwx /var/lib/postgresql >/dev/null 2>&1 || true
+    docker rm -f "$postgres_container" >/dev/null 2>&1 || true
+    rm -rf "$postgres_database_root" || true
+}
+trap cleanup EXIT INT TERM
+docker run --detach --rm --name "$postgres_container" \
+    --env POSTGRES_USER=riffdb \
+    --env POSTGRES_PASSWORD=riffdb-benchmark-local \
+    --env POSTGRES_DB=riffdb_budget \
+    --mount "type=bind,source=$repo_root/$postgres_database_root,target=/var/lib/postgresql" \
+    --publish 127.0.0.1::5432 \
+    "$postgres_image" >/dev/null
+for _ in {1..60}; do
+    if docker exec "$postgres_container" \
+        pg_isready -U riffdb -d riffdb_budget >/dev/null 2>&1; then
+        break
+    fi
+    sleep 1
+done
+if ! docker exec "$postgres_container" \
+    pg_isready -U riffdb -d riffdb_budget >/dev/null 2>&1; then
+    printf '%s\n' 'local pinned PostgreSQL did not become ready' >&2
+    exit 1
+fi
+postgres_port="$(
+    docker port "$postgres_container" 5432/tcp \
+        | awk -F: 'NR == 1 {print $NF}'
+)"
+[[ "$postgres_port" =~ ^[0-9]+$ ]] || {
+    printf '%s\n' 'Docker returned an invalid PostgreSQL loopback port' >&2
+    exit 1
+}
+postgres_url="postgres://riffdb:riffdb-benchmark-local@127.0.0.1:$postgres_port/riffdb_budget"
+postgres_image_id="$(docker inspect --format '{{.Image}}' "$postgres_container")"
+postgres_settings="$(
+    docker exec "$postgres_container" \
+        psql -X -A -t -F $'\t' -U riffdb -d riffdb_budget \
+        -c "SELECT current_setting('server_version_num'), current_setting('synchronous_commit'), current_setting('fsync'), current_setting('full_page_writes')"
+)"
+IFS=$'\t' read -r \
+    postgres_version_num \
+    postgres_synchronous_commit \
+    postgres_fsync \
+    postgres_full_page_writes <<<"$postgres_settings"
+if [[ "$postgres_version_num" != 180004 \
+   || "$postgres_synchronous_commit" != on \
+   || "$postgres_fsync" != on \
+   || "$postgres_full_page_writes" != on ]]; then
+    printf '%s\n' 'local PostgreSQL durability settings do not match the frozen guarantee profile' >&2
+    exit 1
+fi
+
+cargo build --locked -p riffdb-server --bin riffdbd --target-dir "$root_target"
+cargo build --locked \
+    --manifest-path examples/budget-comparison/Cargo.toml \
+    -p riffdb-budget-comparison-riffdb-grpc \
+    --bin riffdb-budget-public \
+    --target-dir "$comparison_target"
+
+postgres_artifacts="$target_root/postgres-artifacts.jsonl"
+public_artifacts="$target_root/public-artifacts.jsonl"
+cargo test --locked \
+    --manifest-path examples/budget-comparison/Cargo.toml \
+    -p riffdb-budget-comparison \
+    --test postgres_live \
+    --no-run \
+    --message-format=json \
+    --target-dir "$comparison_target" >"$postgres_artifacts"
+cargo test --locked \
+    --manifest-path examples/budget-comparison/Cargo.toml \
+    -p riffdb-budget-comparison \
+    --test public_comparison \
+    --no-run \
+    --message-format=json \
+    --target-dir "$comparison_target" >"$public_artifacts"
+
+postgres_test="$(jq -er '
+    select(.reason == "compiler-artifact"
+           and .target.name == "postgres_live"
+           and .executable != null)
+    | .executable
+' "$postgres_artifacts" | tail -n 1)"
+public_test="$(jq -er '
+    select(.reason == "compiler-artifact"
+           and .target.name == "public_comparison"
+           and .executable != null)
+    | .executable
+' "$public_artifacts" | tail -n 1)"
+riffdbd="$repo_root/$root_target/debug/riffdbd"
+public_runner="$repo_root/$comparison_target/debug/riffdb-budget-public"
+for executable in "$postgres_test" "$public_test" "$riffdbd" "$public_runner"; do
+    [[ -x "$executable" ]] || {
+        printf 'benchmark executable is absent: %s\n' "$executable" >&2
+        exit 1
+    }
+done
+
+run_postgres() {
+    RIFFDB_BUDGET_POSTGRES_REQUIRED=1 \
+    RIFFDB_BUDGET_POSTGRES_URL="$postgres_url" \
+    TMPDIR="$repo_root/$postgres_timer_root" \
+        "$postgres_test" \
+        --exact postgres_live_adapter_matches_sequential_and_contention_oracles \
+        --test-threads=1 >"$command_log" 2>&1
+}
+
+run_riffdb() {
+    RIFFDB_BUDGET_RIFFDBD_BIN="$riffdbd" \
+    RIFFDB_BUDGET_RUNNER_BIN="$public_runner" \
+    TMPDIR="$repo_root/$riffdb_database_root" \
+        "$public_test" \
+        --exact public_comparison_process_runner_matches_the_shared_oracle \
+        --test-threads=1 >"$command_log" 2>&1
+}
+
+postgres_database_size() {
+    docker exec "$postgres_container" \
+        psql -X -A -t -U riffdb -d riffdb_budget \
+        -c 'SELECT pg_database_size(current_database())'
+}
+
+measure_process() {
+    local workload="$1"
+    local iteration="$2"
+    local measured_root="$3"
+    local database_kind="$4"
+    shift 4
+    local elapsed_ns peak_size_bytes database_size_bytes size_file_name
+    if [[ "$database_kind" == riffdb ]]; then
+        size_file_name=riffdb.redb
+    else
+        size_file_name=-
+    fi
+    rm -f "$timer_result"
+    if ! "$process_timer" \
+        "$repo_root/$timer_result" \
+        "$repo_root/$measured_root" \
+        "$size_file_name" \
+        "$@" >"$command_log" 2>&1; then
+        printf 'benchmark workload failed: %s\n' "$workload" >&2
+        sed -n '1,160p' "$command_log" >&2
+        exit 1
+    fi
+    IFS=$'\t' read -r elapsed_ns peak_size_bytes <"$timer_result"
+    if [[ "$database_kind" == postgres ]]; then
+        database_size_bytes="$(postgres_database_size)"
+    else
+        database_size_bytes="$peak_size_bytes"
+    fi
+    if [[ ! "$elapsed_ns" =~ ^[1-9][0-9]*$ \
+       || ! "$database_size_bytes" =~ ^[1-9][0-9]*$ ]]; then
+        printf 'benchmark measurement was invalid: %s\n' "$workload" >&2
+        exit 1
+    fi
+    printf 'sample\t%s\t%s\t%s\t%s\n' \
+        "$workload" "$iteration" "$elapsed_ns" "$database_size_bytes" >>"$raw"
+}
+
+# Both canonical adapters must pass before any timed sample is retained.
+run_postgres
+run_riffdb
+
+riffdb_mount_options="$(findmnt -T "$riffdb_database_root" -n -o OPTIONS)"
+riffdb_filesystem="$(findmnt -T "$riffdb_database_root" -n -o FSTYPE,SOURCE)"
+postgres_mount_options="$(findmnt -T "$postgres_database_root" -n -o OPTIONS)"
+postgres_filesystem="$(findmnt -T "$postgres_database_root" -n -o FSTYPE,SOURCE)"
+rust_verbose="$(rustc -vV)"
+{
+    printf '%s\n' 'riffdb_budget_benchmark_capture_format=1'
+    printf 'git_revision=%s\n' "$(git rev-parse HEAD)"
+    printf '%s\n' 'git_dirty=false'
+    printf 'rust_version=%s\n' "$(awk '/^release:/ {print $2}' <<<"$rust_verbose")"
+    printf 'rust_target=%s\n' "$(awk '/^host:/ {print $2}' <<<"$rust_verbose")"
+    printf 'cpu=%s\n' "$(awk -F: '/^model name/ {sub(/^ /, "", $2); print $2; exit}' /proc/cpuinfo)"
+    printf 'memory=%s\n' "$(awk -F: '/^MemTotal/ {sub(/^ /, "", $2); print $2; exit}' /proc/meminfo)"
+    printf 'storage_medium=%s\n' "$storage_medium"
+    printf 'operating_system=%s\n' "$(uname -srmo)"
+    printf 'database_root=%s\n' "$repo_root/$database_root"
+    printf 'filesystem=%s\n' "$riffdb_filesystem"
+    printf 'mount_options=%s\n' "$riffdb_mount_options"
+    printf 'postgres_image=%s\n' "$postgres_image"
+    printf 'postgres_image_id=%s\n' "$postgres_image_id"
+    printf 'postgres_server_version_num=%s\n' "$postgres_version_num"
+    printf 'postgres_synchronous_commit=%s\n' "$postgres_synchronous_commit"
+    printf 'postgres_fsync=%s\n' "$postgres_fsync"
+    printf 'postgres_full_page_writes=%s\n' "$postgres_full_page_writes"
+    printf 'postgres_filesystem=%s\n' "$postgres_filesystem"
+    printf 'postgres_mount_options=%s\n' "$postgres_mount_options"
+    printf '%s\n' 'postgres_network=loopback-only ephemeral Docker publication'
+    printf '%s\n' 'correctness_preflight=passed'
+    printf 'warmup_runs=%s\n' "$warmup"
+    printf 'sample_count_per_workload=%s\n' "$samples"
+} >"$raw"
+
+for ((iteration = 1; iteration <= warmup; iteration++)); do
+    run_postgres
+    run_riffdb
+done
+for ((iteration = 1; iteration <= samples; iteration++)); do
+    measure_process \
+        postgres_canonical_sequential_contention \
+        "$iteration" \
+        "$postgres_timer_root" \
+        postgres \
+        env \
+        RIFFDB_BUDGET_POSTGRES_REQUIRED=1 \
+        RIFFDB_BUDGET_POSTGRES_URL="$postgres_url" \
+        TMPDIR="$repo_root/$postgres_timer_root" \
+        "$postgres_test" \
+        --exact postgres_live_adapter_matches_sequential_and_contention_oracles \
+        --test-threads=1
+    measure_process \
+        riffdb_public_sequential_contention_replay \
+        "$iteration" \
+        "$riffdb_database_root" \
+        riffdb \
+        env \
+        RIFFDB_BUDGET_RIFFDBD_BIN="$riffdbd" \
+        RIFFDB_BUDGET_RUNNER_BIN="$public_runner" \
+        TMPDIR="$repo_root/$riffdb_database_root" \
+        "$public_test" \
+        --exact public_comparison_process_runner_matches_the_shared_oracle \
+        --test-threads=1
+done
+
+install -m 0644 "$raw" "$published_raw"
+raw_hash="$(sha256sum "$published_raw" | awk '{print $1}')"
+analysis_command="$(jq -cn \
+    --arg storage_medium "$storage_medium" \
+    --arg samples "$samples" \
+    --arg warmup "$warmup" \
+    '[
+      "benchmarks/run-budget-comparison",
+      "--storage-medium",
+      $storage_medium,
+      "--samples",
+      $samples,
+      "--warmup",
+      $warmup
+    ]')"
+jq -Rn \
+    --arg raw_path "$published_raw" \
+    --arg raw_hash "$raw_hash" \
+    --arg analysis_command "$analysis_command" \
+    -f benchmarks/budget-report-v1.jq \
+    <"$raw" >"$report"
+jq -e '
+    .schema == "riffdb.benchmark-report/v1"
+    and .report_id == "budget-postgresql-riffdb"
+    and .dirty == false
+    and .correctness_status == "passed"
+    and .performance_status == "measured"
+    and .unsafe_postgresql_variants_included == false
+    and ([.results[].workload_id] == [
+      "postgres_canonical_sequential_contention",
+      "riffdb_public_sequential_contention_replay"
+    ])
+    and all(.results[];
+            .sample_count >= 3
+            and (.samples_ns | length == .sample_count)
+            and (.database_size_samples_bytes | length == .sample_count)
+            and .database_size_bytes > 0
+            and .min_ns <= .p50_ns
+            and .p50_ns <= .p95_ns
+            and .p95_ns <= .p99_ns
+            and .p99_ns <= .max_ns)
+' "$report" >/dev/null
+install -m 0644 "$report" "$published_report"
+
+printf 'budget comparison benchmark captured: %s\n' "$published_report"

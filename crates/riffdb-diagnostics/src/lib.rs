@@ -1,3 +1,7 @@
 #![forbid(unsafe_code)]
 
-//! Non-semantic bootstrap root for the `riffdb-diagnostics` crate.
+//! Bounded, value-free operator diagnostics.
+
+mod render;
+
+pub use render::*;

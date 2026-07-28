@@ -18,15 +18,17 @@ use crate::{
     DiscoverCommandToolsResultRef, DiscoverResourcesResult, DiscoverResourcesResultRef,
     DiscoveryCatalogFence, DiscoveryCatalogStateRef, DurableEventView, EntityView,
     ExecuteCommandResult, ExplainCommandResult, GeneratedSchemaIdentity, GetActiveContractResult,
-    GetCommitResult, GetContractVersionResult, GetEntityResult, GetProjectionStatusResult,
-    HealthReport, HealthResult, IndexRowView, IndexScanFence, JournaledCommandResult,
-    ListPendingOutboxDeliveriesResult, NormalCreateCapabilityResult, OperationSchemaArtifact,
-    OperationSchemaCatalog, OperationSchemaCatalogIdentity, OperationSchemaIdentity,
-    OutboxDeliverySummary, Page, ProjectionPageFence, ProjectionRow, ProjectionStatusSnapshot,
-    ProvenanceClaimsView, ProvenanceView, QueryProjectionResult, ReadOnlyCommandResult,
-    ResolveCommandOutcomeResult, ResourceDescriptor, ResourceDescriptorRef, RevokeCapabilityResult,
-    ScanCommitsResult, ScanIndexResult, SchemaBoundOutcomeRecord, SchemaBoundOutcomeValue,
-    ServiceFailure, StatisticsResult, SubscribeToCommitsResult, TraceProvenanceResult,
+    GetCommitResult, GetContractVersionResult, GetEntityResult,
+    GetOfflineMaintenanceOperationResult, GetProjectionStatusResult, HealthReport, HealthResult,
+    IndexRowView, IndexScanFence, JournaledCommandResult, ListPendingOutboxDeliveriesResult,
+    NormalCreateCapabilityResult, OfflineMaintenanceOperationObservation,
+    OfflineMaintenanceStartResult, OperationSchemaArtifact, OperationSchemaCatalog,
+    OperationSchemaCatalogIdentity, OperationSchemaIdentity, OutboxDeliverySummary, Page,
+    ProjectionPageFence, ProjectionRow, ProjectionStatusSnapshot, ProvenanceClaimsView,
+    ProvenanceView, QueryProjectionResult, ReadOnlyCommandResult, ResolveCommandOutcomeResult,
+    ResourceDescriptor, ResourceDescriptorRef, RevokeCapabilityResult, ScanCommitsResult,
+    ScanIndexResult, SchemaBoundOutcomeRecord, SchemaBoundOutcomeValue, ServiceFailure,
+    StatisticsResult, SubscribeToCommitsResult, TraceProvenanceResult,
 };
 
 /// Exact POC ceiling for one API-neutral unary result or visible stream item.
@@ -980,6 +982,47 @@ impl ServiceResponseCharge for RevokeCapabilityResult {
     }
 }
 
+impl ServiceResponseCharge for OfflineMaintenanceOperationObservation {
+    fn service_response_charge_v1(
+        &self,
+    ) -> Result<ServiceResponseChargeV1, ServiceResponseChargeOverflow> {
+        let mut charge = ChargeAccumulator::message();
+        charge.bytes(self.operation_id().as_bytes().len())?;
+        charge.fields(1)?;
+        charge.bytes(self.backup_name().as_bytes().len())?;
+        charge.bytes(self.input_hash().as_bytes().len())?;
+        charge.fields(1)?;
+        if self.failure().is_some() {
+            charge.fields(1)?;
+        }
+        Ok(charge.finish())
+    }
+}
+
+impl ServiceResponseCharge for OfflineMaintenanceStartResult {
+    fn service_response_charge_v1(
+        &self,
+    ) -> Result<ServiceResponseChargeV1, ServiceResponseChargeOverflow> {
+        let mut charge = ChargeAccumulator::message();
+        charge.fields(1)?;
+        charge.nested(self.operation())?;
+        Ok(charge.finish())
+    }
+}
+
+impl ServiceResponseCharge for GetOfflineMaintenanceOperationResult {
+    fn service_response_charge_v1(
+        &self,
+    ) -> Result<ServiceResponseChargeV1, ServiceResponseChargeOverflow> {
+        let mut charge = ChargeAccumulator::message();
+        charge.fields(1)?;
+        if let Self::Found(operation) = self {
+            charge.nested(operation)?;
+        }
+        Ok(charge.finish())
+    }
+}
+
 impl ServiceResponseCharge for OutboxDeliverySummary {
     fn service_response_charge_v1(
         &self,
@@ -1356,6 +1399,9 @@ seal_response_types!(
     StatisticsResult,
     CreateCapabilityResult,
     RevokeCapabilityResult,
+    OfflineMaintenanceOperationObservation,
+    OfflineMaintenanceStartResult,
+    GetOfflineMaintenanceOperationResult,
     OutboxDeliverySummary,
     ListPendingOutboxDeliveriesResult,
     CommandToolDescriptor,
@@ -1607,15 +1653,17 @@ mod tests {
         OutcomeSchema, RecordSchema, RecordTypeRef, SchemaArtifactKey, SchemaIr,
     };
     use riffdb_types::{
-        ActorId, ActorKind, AdministrationSequence, ApprovalId, CanonicalInputHash,
+        ActorId, ActorKind, AdministrationSequence, ApprovalId, BackupNameV1, CanonicalInputHash,
         CanonicalString, CapabilityId, CommandId, CommitSequence, ContractBundleHash,
         ContractPlanRootHash, ContractVersion, DIGEST_SCHEME_V1, DigestKeyId, EntityKey,
         EntityVersion, EventId, FieldId, FrontierPosition, IndexEntryKey, IndexEpochPosition,
         LogicalTime, MAX_APPROVAL_ID_BYTES, MAX_CONTRACT_LINEAGE_BYTES,
         MAX_PROVENANCE_REASON_BYTES, MAX_SOURCE_COMMIT_BYTES, MAX_SOURCE_REPOSITORY_BYTES,
-        OutcomeId, PartitionKeyHash, PlanHash, ProjectionGeneration, ProjectionId,
-        ProjectionPlanHash, ProvenanceId, ProvenanceReason, RequestId, SourceCommit, SourceHash,
-        SourceRepository, Timestamp,
+        OfflineMaintenanceOperationId, OfflineMaintenanceOperationKind,
+        OfflineMaintenanceReplacementConfirmation, OutcomeId, PartitionKeyHash, PlanHash,
+        ProjectionGeneration, ProjectionId, ProjectionPlanHash, ProvenanceId, ProvenanceReason,
+        RequestId, SourceCommit, SourceHash, SourceRepository, Timestamp,
+        offline_maintenance_input_hash,
     };
 
     use super::*;
@@ -1637,7 +1685,7 @@ mod tests {
 
     // This registry freezes every public gRPC response/item family with a
     // variable-size or nested public encoding covered by the v1 charge ledger.
-    const CHECKED_RESPONSE_FAMILIES: [&str; 23] = [
+    const CHECKED_RESPONSE_FAMILIES: [&str; 25] = [
         "commit_notification",
         "contract_validation",
         "create_capability",
@@ -1653,6 +1701,8 @@ mod tests {
         "get_outcome",
         "health",
         "list_pending_outbox_deliveries",
+        "offline_maintenance_get",
+        "offline_maintenance_start",
         "operation_schema_catalog",
         "projection_status",
         "query_projection",
@@ -2791,6 +2841,95 @@ mod tests {
                 "operation_envelope_schema_bytes" => operation_schemas.command_operation_envelope().canonical_json().len()
             },
             &operation_schemas,
+        ));
+
+        let maintenance_backup_name =
+            BackupNameV1::new("before-upgrade").expect("fixture backup name");
+        let maintenance_input_hash = offline_maintenance_input_hash(
+            OfflineMaintenanceOperationKind::CreateBackup,
+            &maintenance_backup_name,
+            OfflineMaintenanceReplacementConfirmation::NotProvided,
+        );
+        let maintenance_operation = OfflineMaintenanceOperationObservation::new(
+            OfflineMaintenanceOperationId::from_unix_milliseconds_and_random(1, [0x31; 10])
+                .expect("fixture maintenance operation UUIDv7"),
+            OfflineMaintenanceOperationKind::CreateBackup,
+            maintenance_backup_name.clone(),
+            maintenance_input_hash,
+            crate::OfflineMaintenanceObservationPhase::Accepted,
+            None,
+        )
+        .expect("fixture maintenance observation is valid");
+        cases.push(FixtureCase::from_response(
+            "offline_maintenance_get.found",
+            "offline_maintenance_get",
+            "found",
+            fixture_shape! {
+                "backup_name_bytes" => maintenance_backup_name.as_bytes().len(),
+                "failure_present" => "false",
+                "input_hash_bytes" => maintenance_input_hash.as_bytes().len(),
+                "operation_id_bytes" => maintenance_operation.operation_id().as_bytes().len(),
+                "operation_kind" => "create_backup",
+                "phase" => "accepted"
+            },
+            &GetOfflineMaintenanceOperationResult::Found(maintenance_operation.clone()),
+        ));
+        cases.push(FixtureCase::from_response(
+            "offline_maintenance_get.not_found",
+            "offline_maintenance_get",
+            "not_found",
+            "none".to_owned(),
+            &GetOfflineMaintenanceOperationResult::NotFound,
+        ));
+        cases.push(FixtureCase::from_response(
+            "offline_maintenance_start.accepted",
+            "offline_maintenance_start",
+            "accepted",
+            fixture_shape! {
+                "backup_name_bytes" => maintenance_backup_name.as_bytes().len(),
+                "failure_present" => "false",
+                "input_hash_bytes" => maintenance_input_hash.as_bytes().len(),
+                "operation_id_bytes" => maintenance_operation.operation_id().as_bytes().len(),
+                "operation_kind" => "create_backup",
+                "phase" => "accepted"
+            },
+            &OfflineMaintenanceStartResult::new(
+                crate::OfflineMaintenanceStartDisposition::Accepted,
+                maintenance_operation,
+            )
+            .expect("accepted maintenance start is nonterminal"),
+        ));
+        let failed_maintenance_operation = OfflineMaintenanceOperationObservation::new(
+            OfflineMaintenanceOperationId::from_unix_milliseconds_and_random(2, [0x32; 10])
+                .expect("fixture failed maintenance operation UUIDv7"),
+            OfflineMaintenanceOperationKind::RestoreBackup,
+            maintenance_backup_name.clone(),
+            offline_maintenance_input_hash(
+                OfflineMaintenanceOperationKind::RestoreBackup,
+                &maintenance_backup_name,
+                OfflineMaintenanceReplacementConfirmation::AllowReplaceNonemptyTarget,
+            ),
+            crate::OfflineMaintenanceObservationPhase::FailedClosed,
+            Some(crate::OfflineMaintenanceObservationFailure::ValidationFailed),
+        )
+        .expect("fixture failed maintenance observation is valid");
+        cases.push(FixtureCase::from_response(
+            "offline_maintenance_start.terminal_failed_closed",
+            "offline_maintenance_start",
+            "terminal",
+            fixture_shape! {
+                "backup_name_bytes" => maintenance_backup_name.as_bytes().len(),
+                "failure_present" => "true",
+                "input_hash_bytes" => failed_maintenance_operation.input_hash().as_bytes().len(),
+                "operation_id_bytes" => failed_maintenance_operation.operation_id().as_bytes().len(),
+                "operation_kind" => "restore_backup",
+                "phase" => "failed_closed"
+            },
+            &OfflineMaintenanceStartResult::new(
+                crate::OfflineMaintenanceStartDisposition::Terminal,
+                failed_maintenance_operation,
+            )
+            .expect("terminal maintenance start has a terminal observation"),
         ));
 
         cases.push(FixtureCase::from_response(
@@ -4110,6 +4249,8 @@ mod tests {
         assert_charge::<StatisticsResult>();
         assert_charge::<CreateCapabilityResult>();
         assert_charge::<RevokeCapabilityResult>();
+        assert_charge::<OfflineMaintenanceStartResult>();
+        assert_charge::<GetOfflineMaintenanceOperationResult>();
         assert_charge::<ListPendingOutboxDeliveriesResult>();
         assert_charge::<DiscoverCommandToolsResult>();
         assert_charge::<DiscoverResourcesResult>();

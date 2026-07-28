@@ -1,0 +1,14 @@
+[server]
+database = "/var/lib/riffdb/data/riffdb.redb"
+grpc_listen = "127.0.0.1:7443"
+environment = "local"
+audience = "riffdb-grpc-loopback"
+capability_keys = "/etc/riffdb/capability.keys"
+idempotency_keys = "/etc/riffdb/idempotency.keys"
+
+# Hosted MCP is disabled when mcp_listen is absent.
+# mcp_listen = "127.0.0.1:7444"
+# mcp_origins = ["http://127.0.0.1:3000"]
+
+[maintenance]
+backup_root = "/var/lib/riffdb/backups"

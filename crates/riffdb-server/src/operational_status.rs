@@ -15,8 +15,17 @@ use riffdb_service::{
 };
 
 use crate::notifications::{FirstCommitNotificationHub, NotificationStatusError};
+use crate::outbox_adapter::{NoDestinationOutboxHealth, OutboxDerivedReadiness};
+use crate::projection_worker::{ProjectionWorkerReadiness, ProjectionWorkerStatus};
 use crate::runtime_support::{RuntimeRoutingState, RuntimeStopReason};
 use crate::startup::ValidatedAllocatorCapacity;
+
+/// Startup recovery state retained separately from authoritative readiness.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum OutboxRecoveryReadiness {
+    Ready,
+    Degraded,
+}
 
 /// Process-local status assembled from checked startup and monotonic routing state.
 #[derive(Clone)]
@@ -24,6 +33,8 @@ pub(crate) struct ProductionOperationalStatusPort {
     allocator_capacity: ValidatedAllocatorCapacity,
     runtime: RuntimeRoutingState,
     notifications: FirstCommitNotificationHub,
+    outbox: NoDestinationOutboxHealth,
+    projection: ProjectionWorkerStatus,
 }
 
 impl ProductionOperationalStatusPort {
@@ -31,11 +42,15 @@ impl ProductionOperationalStatusPort {
         allocator_capacity: ValidatedAllocatorCapacity,
         runtime: RuntimeRoutingState,
         notifications: FirstCommitNotificationHub,
+        outbox: NoDestinationOutboxHealth,
+        projection: ProjectionWorkerStatus,
     ) -> Self {
         Self {
             allocator_capacity,
             runtime,
             notifications,
+            outbox,
+            projection,
         }
     }
 }
@@ -53,6 +68,8 @@ impl OperationalStatusPort for ProductionOperationalStatusPort {
             Box::new(OperationalHealthPermit {
                 allocator_capacity: self.allocator_capacity,
                 runtime: self.runtime.clone(),
+                outbox: self.outbox.clone(),
+                projection: self.projection.clone(),
             })
                 as BoxPortCapacityPermit<(), OperationalHealthSnapshot, OperationalStatusError>
         });
@@ -96,6 +113,8 @@ fn checked_control(control: &RequestControl) -> Result<(), PortAdmissionError> {
 struct OperationalHealthPermit {
     allocator_capacity: ValidatedAllocatorCapacity,
     runtime: RuntimeRoutingState,
+    outbox: NoDestinationOutboxHealth,
+    projection: ProjectionWorkerStatus,
 }
 
 impl PortCapacityPermit<(), OperationalHealthSnapshot, OperationalStatusError>
@@ -106,7 +125,12 @@ impl PortCapacityPermit<(), OperationalHealthSnapshot, OperationalStatusError>
         (): (),
     ) -> Result<PortReceipt<OperationalHealthSnapshot, OperationalStatusError>, PortAdmissionError>
     {
-        let result = required_health_snapshot(self.allocator_capacity, self.runtime.stop_reason());
+        let result = required_health_snapshot(
+            self.allocator_capacity,
+            self.runtime.stop_reason(),
+            self.outbox.readiness(),
+            self.projection.readiness(),
+        );
         let (completion, receipt) = port_completion_channel();
         completion.complete(result);
         Ok(receipt)
@@ -116,6 +140,8 @@ impl PortCapacityPermit<(), OperationalHealthSnapshot, OperationalStatusError>
 fn required_health_snapshot(
     allocator_capacity: ValidatedAllocatorCapacity,
     runtime_stop: Option<RuntimeStopReason>,
+    outbox: OutboxDerivedReadiness,
+    projection: ProjectionWorkerReadiness,
 ) -> Result<OperationalHealthSnapshot, OperationalStatusError> {
     let runtime_running = runtime_stop.is_none();
     let storage_status = required_component_status(runtime_running);
@@ -123,11 +149,29 @@ fn required_health_snapshot(
     let coordinator_status = required_component_status(
         runtime_running && allocator_capacity == ValidatedAllocatorCapacity::Available,
     );
+    let outbox_status = if !runtime_running {
+        HealthComponentStatus::Unavailable
+    } else if outbox == OutboxDerivedReadiness::Ready {
+        HealthComponentStatus::Healthy
+    } else {
+        HealthComponentStatus::Degraded
+    };
+    let projection_status = match (runtime_running, projection) {
+        (false, _) | (true, ProjectionWorkerReadiness::Stopped) => {
+            HealthComponentStatus::Unavailable
+        }
+        (true, ProjectionWorkerReadiness::Ready) => HealthComponentStatus::Healthy,
+        (true, ProjectionWorkerReadiness::Starting | ProjectionWorkerReadiness::Degraded) => {
+            HealthComponentStatus::Degraded
+        }
+    };
 
     OperationalHealthSnapshot::new(vec![
         ComponentHealth::new(HealthComponentKind::AuthoritativeStorage, storage_status),
         ComponentHealth::new(HealthComponentKind::Catalog, catalog_status),
         ComponentHealth::new(HealthComponentKind::CommitCoordinator, coordinator_status),
+        ComponentHealth::new(HealthComponentKind::Outbox, outbox_status),
+        ComponentHealth::new(HealthComponentKind::Projection, projection_status),
     ])
     .map_err(|_| OperationalStatusError::Integrity)
 }
@@ -210,6 +254,16 @@ mod tests {
             .status()
     }
 
+    fn ready_projection() -> ProjectionWorkerStatus {
+        let status = ProjectionWorkerStatus::new();
+        status.publish(ProjectionWorkerReadiness::Ready);
+        status
+    }
+
+    fn ready_outbox() -> NoDestinationOutboxHealth {
+        NoDestinationOutboxHealth::new(OutboxRecoveryReadiness::Ready)
+    }
+
     #[test]
     fn every_allocator_state_has_the_required_canonical_health_shape() {
         for (capacity, coordinator_status) in [
@@ -230,8 +284,14 @@ mod tests {
                 HealthComponentStatus::Unavailable,
             ),
         ] {
-            let snapshot = required_health_snapshot(capacity, None).expect("fixed health shape");
-            assert_eq!(snapshot.components().len(), 3);
+            let snapshot = required_health_snapshot(
+                capacity,
+                None,
+                OutboxDerivedReadiness::Ready,
+                ProjectionWorkerReadiness::Ready,
+            )
+            .expect("fixed health shape");
+            assert_eq!(snapshot.components().len(), 5);
             assert_eq!(
                 snapshot.components()[0].component(),
                 HealthComponentKind::AuthoritativeStorage
@@ -245,6 +305,14 @@ mod tests {
                 HealthComponentKind::CommitCoordinator
             );
             assert_eq!(
+                snapshot.components()[3].component(),
+                HealthComponentKind::Projection
+            );
+            assert_eq!(
+                snapshot.components()[4].component(),
+                HealthComponentKind::Outbox
+            );
+            assert_eq!(
                 status(&snapshot, HealthComponentKind::AuthoritativeStorage),
                 HealthComponentStatus::Healthy
             );
@@ -255,6 +323,14 @@ mod tests {
             assert_eq!(
                 status(&snapshot, HealthComponentKind::CommitCoordinator),
                 coordinator_status
+            );
+            assert_eq!(
+                status(&snapshot, HealthComponentKind::Outbox),
+                HealthComponentStatus::Healthy
+            );
+            assert_eq!(
+                status(&snapshot, HealthComponentKind::Projection),
+                HealthComponentStatus::Healthy
             );
         }
     }
@@ -270,9 +346,13 @@ mod tests {
             RuntimeStopReason::SupervisionStateCorrupted,
             RuntimeStopReason::DiagnosticCapacityExceeded,
         ] {
-            let snapshot =
-                required_health_snapshot(ValidatedAllocatorCapacity::Available, Some(reason))
-                    .expect("fixed health shape");
+            let snapshot = required_health_snapshot(
+                ValidatedAllocatorCapacity::Available,
+                Some(reason),
+                OutboxDerivedReadiness::Ready,
+                ProjectionWorkerReadiness::Ready,
+            )
+            .expect("fixed health shape");
             assert!(
                 snapshot
                     .components()
@@ -290,6 +370,8 @@ mod tests {
             ValidatedAllocatorCapacity::Available,
             runtime.clone(),
             FirstCommitNotificationHub::new(None, runtime.clone()),
+            ready_outbox(),
+            ready_projection(),
         );
         let permit = port
             .reserve_health(&live_control())
@@ -334,6 +416,8 @@ mod tests {
             ValidatedAllocatorCapacity::Available,
             runtime.clone(),
             FirstCommitNotificationHub::new(None, runtime),
+            ready_outbox(),
+            ready_projection(),
         );
         let permit = port
             .reserve_statistics(&live_control())
@@ -359,6 +443,8 @@ mod tests {
             ValidatedAllocatorCapacity::Available,
             runtime,
             notifications.clone(),
+            ready_outbox(),
+            ready_projection(),
         );
         let permit = port
             .reserve_statistics(&live_control())
@@ -398,6 +484,8 @@ mod tests {
             ValidatedAllocatorCapacity::Available,
             runtime,
             notifications.clone(),
+            ready_outbox(),
+            ready_projection(),
         );
         let permit = port
             .reserve_statistics(&live_control())
@@ -421,6 +509,8 @@ mod tests {
             ValidatedAllocatorCapacity::Available,
             runtime.clone(),
             FirstCommitNotificationHub::new(None, runtime),
+            ready_outbox(),
+            ready_projection(),
         );
         let (cancelled, cancellation) =
             RequestControl::new(Instant::now() + Duration::from_secs(30));
@@ -459,6 +549,8 @@ mod tests {
             ValidatedAllocatorCapacity::BothExhausted,
             runtime.clone(),
             FirstCommitNotificationHub::new(None, runtime),
+            ready_outbox(),
+            ready_projection(),
         );
         assert_eq!(
             format!("{port:?}"),

@@ -46,6 +46,7 @@ pub use hosted_http::{
     HostedMcpHttpConfiguration, HostedMcpHttpConfigurationError, HostedMcpHttpConnection,
     HostedMcpHttpPeerError, HostedMcpHttpRegistration, HostedMcpHttpResponseBody,
     HostedMcpHttpResponseBodyError, HostedMcpInvocationError, HostedMcpSessionMaintenanceError,
+    MAX_ALLOWED_ORIGIN_AGGREGATE_BYTES, MAX_ALLOWED_ORIGINS, MAX_ORIGIN_BYTES,
     hosted_mcp_request_context, register_hosted_mcp_http, register_hosted_service_mcp_http,
 };
 #[cfg(feature = "streamable-http")]
@@ -89,8 +90,10 @@ pub use stdio_transport::{
     McpStdioClientActivity, McpStdioServeError, McpStdioTransportError, serve_mcp_stdio,
 };
 pub use telemetry::{
-    MCP_SAFE_TRANSPORT_TRACE_TARGET, McpSafeTransportEvent, McpTransportKind,
-    McpTransportRejection, is_safe_transport_trace_target, record_safe_transport_event,
+    MCP_SAFE_TRANSPORT_TRACE_TARGET, McpListChangeKind, McpRiskClass, McpSafeTransportEvent,
+    McpSchemaFailurePhase, McpTelemetry, McpTelemetryEvent, McpTransportKind,
+    McpTransportRejection, NoopMcpTelemetry, is_safe_transport_trace_target,
+    record_safe_transport_event,
 };
 
 /// Returns whether a tracing target may pass the mandatory MCP SDK suppression boundary.

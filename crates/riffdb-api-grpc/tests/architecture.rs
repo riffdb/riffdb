@@ -195,3 +195,154 @@ fn capability_cancellation_guard_outlives_invocation_construction() {
     assert!(handler.contains("BootstrapLifecycleGuard::new"));
     assert!(handler.contains("lifecycle.complete(completion)"));
 }
+
+#[test]
+fn maintenance_is_exactly_three_additive_rpcs_and_never_an_mcp_surface() {
+    let services = include_str!("../../../proto/riffdb/v1/services.proto");
+    assert_eq!(
+        services
+            .lines()
+            .filter(|line| line.starts_with("service "))
+            .count(),
+        5
+    );
+    assert_eq!(
+        services
+            .lines()
+            .filter(|line| line.trim_start().starts_with("rpc "))
+            .count(),
+        25
+    );
+    for rpc in [
+        "rpc CreateOfflineBackup(",
+        "rpc RestoreOfflineBackup(",
+        "rpc GetOfflineMaintenanceOperation(",
+    ] {
+        assert_eq!(services.matches(rpc).count(), 1, "missing exact {rpc}");
+    }
+
+    let mcp_registry = include_str!("../../riffdb-api-mcp/fixtures/fixed-tool-registry-v1.json");
+    let normalized = mcp_registry.to_ascii_lowercase();
+    assert!(!normalized.contains("backup"));
+    assert!(!normalized.contains("maintenance"));
+
+    let server = include_str!("../src/server.rs");
+    let registry = server
+        .split("pub enum GrpcOfflineMaintenanceOperation")
+        .nth(1)
+        .and_then(|tail| tail.split("pub enum GrpcBootstrapCompletion").next())
+        .expect("closed process-local maintenance registry");
+    assert_eq!(registry.matches("CreateBackup").count(), 1);
+    assert_eq!(registry.matches("RestoreBackup").count(), 1);
+    assert_eq!(registry.matches("GetOperation").count(), 1);
+    assert!(registry.contains("RestoreBackup {"));
+    assert!(registry.contains("operation_id: OfflineMaintenanceOperationId"));
+    assert!(registry.contains("input_hash: OfflineMaintenanceInputHash"));
+    assert!(!registry.contains("ServiceOperationV1::"));
+}
+
+#[test]
+fn restore_handoffs_keep_ready_retry_and_recovery_authority_disjoint() {
+    let source = include_str!("../src/server.rs");
+    let route = source
+        .split("pub trait GrpcLifecycleRoute")
+        .nth(1)
+        .and_then(|tail| {
+            tail.split("pub enum GrpcOfflineMaintenanceOperation")
+                .next()
+        })
+        .expect("lifecycle route");
+    assert!(route.contains(
+        "fn admit_offline_maintenance(\n        &self,\n        operation: GrpcOfflineMaintenanceOperation,\n    ) -> Option<Arc<dyn ApplicationService>>"
+    ));
+    assert!(route.contains(
+        "fn admit_restore_retry(\n        &self,\n        operation_id: OfflineMaintenanceOperationId,\n        input_hash: OfflineMaintenanceInputHash,\n    ) -> Option<Arc<dyn RestoreRetryOfflineMaintenanceApplication>>"
+    ));
+    assert!(route.contains(
+        "fn admit_recovery_restore(\n        &self,\n        operation_id: OfflineMaintenanceOperationId,\n        input_hash: OfflineMaintenanceInputHash,\n    ) -> Option<Arc<dyn RecoveryOfflineMaintenanceApplication>>"
+    ));
+
+    let handler = source
+        .split("async fn restore_offline_backup(")
+        .nth(1)
+        .and_then(|tail| {
+            tail.split("async fn get_offline_maintenance_operation(")
+                .next()
+        })
+        .expect("restore handler");
+    let decode = handler
+        .find("restore_offline_backup_request_from_proto(message)")
+        .expect("restore is structurally decoded");
+    let checked_identity = handler
+        .find("let operation_id = request.operation_id()")
+        .expect("checked operation identity is extracted");
+    let checked_input = handler
+        .find("let input_hash = request.input_hash()")
+        .expect("checked semantic input identity is extracted");
+    let current_admission = handler
+        .find("GrpcOfflineMaintenanceOperation::RestoreBackup {")
+        .expect("current route receives exact operation and input identity");
+    let recovery_admission = handler
+        .find("admit_recovery_restore(operation_id, input_hash)")
+        .expect("recovery route receives exact operation and input identity");
+    let retry_admission = handler
+        .find("admit_restore_retry(operation_id, input_hash)")
+        .expect("retry route receives exact operation and input identity");
+    let current_authentication = handler
+        .find("self.restore_context(")
+        .expect("current authentication follows admission");
+    let recovery_credential = handler
+        .find("self.recovery_restore_context(")
+        .expect("recovery credential handoff follows admission");
+    let retry_authentication = handler
+        .find("self.restore_retry_context(")
+        .expect("retry current authentication follows exact admission");
+    assert!(decode < checked_identity);
+    assert!(checked_identity < checked_input);
+    assert!(checked_identity < current_admission);
+    assert!(checked_identity < recovery_admission);
+    assert!(checked_identity < retry_admission);
+    assert!(current_admission < current_authentication);
+    assert!(retry_admission < retry_authentication);
+    assert!(recovery_admission < recovery_credential);
+
+    let ready = source
+        .split("fn restore_context(")
+        .nth(1)
+        .and_then(|tail| tail.split("fn restore_retry_context(").next())
+        .expect("ready restore context");
+    assert_eq!(
+        ready
+            .matches("authenticate_and_retain_normal_request")
+            .count(),
+        1
+    );
+    assert!(ready.contains("riffdb_auth::RetainedOpaqueCredential"));
+
+    let retry = source
+        .split("fn restore_retry_context(")
+        .nth(1)
+        .and_then(|tail| tail.split("fn recovery_restore_context(").next())
+        .expect("retry restore context");
+    assert_eq!(
+        retry
+            .matches("authenticate_and_retain_normal_request")
+            .count(),
+        1
+    );
+    assert!(retry.contains("CheckedGrpcRestoreRetrySecurityContext"));
+    assert!(!retry.contains("bootstrap_keys"));
+
+    let recovery = source
+        .split("fn recovery_restore_context(")
+        .nth(1)
+        .and_then(|tail| tail.split("fn bootstrap_context(").next())
+        .expect("recovery restore context");
+    assert_eq!(
+        recovery.matches("retain_normal_request_credential").count(),
+        1
+    );
+    assert!(!recovery.contains("authenticate_normal_request"));
+    assert!(!recovery.contains("authenticate_and_retain_normal_request"));
+    assert!(!recovery.contains("RequestContext::from_authenticated_grpc"));
+}

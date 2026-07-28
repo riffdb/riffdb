@@ -1,0 +1,34 @@
+{
+  "type": "record",
+  "fields": [
+    {
+      "name": "approved_amount",
+      "value": {
+        "type": "decimal",
+        "coefficient_twos_complement": "JxA=",
+        "scale": 2
+      }
+    },
+    {
+      "name": "fiscal_year",
+      "value": {
+        "type": "i64",
+        "value": "2026"
+      }
+    },
+    {
+      "name": "idempotency_key",
+      "value": {
+        "type": "string",
+        "value": "wp200-cli-create"
+      }
+    },
+    {
+      "name": "organization_id",
+      "value": {
+        "type": "uuid",
+        "value": "11111111-1111-4111-8111-111111111111"
+      }
+    }
+  ]
+}

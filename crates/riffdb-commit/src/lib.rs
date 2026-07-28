@@ -25,6 +25,7 @@ mod outcome;
 mod provenance;
 mod read_only_execution;
 mod read_only_preparation;
+mod telemetry;
 #[cfg(test)]
 mod test_support;
 
@@ -74,3 +75,7 @@ pub use outcome::{CommittedOutcome, CommittedOutcomeDisposition, CommittedOutcom
 pub use provenance::{ProvenanceIdSource, ProvenanceIdSourceError};
 pub use read_only_execution::{ReadOnlyExecuted, ReadOnlyExecutionResult};
 pub use read_only_preparation::{ReadOnlyExecutionPreparation, ReadOnlyExecutionPreparationError};
+pub use telemetry::{
+    CommitCallTerminal, CommitCommandTerminal, CommitIdempotencyObservation, CommitTelemetry,
+    CommitTelemetryEvent, CommitUncertaintyResolution, CommitUncertaintyStage, NoopCommitTelemetry,
+};

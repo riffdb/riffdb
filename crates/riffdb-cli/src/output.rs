@@ -2,8 +2,8 @@ use std::io::{self, Write};
 use std::process::ExitCode;
 
 use riffdb_client_rust::{
-    ClientError, DetailsFreeStatus, PublicError, PublicErrorDetails, RecoveryAction,
-    ValidationPathSegment, v1,
+    ClientError, DetailsFreeStatus, OfflineMaintenanceOperationId, PublicError, PublicErrorDetails,
+    RecoveryAction, ValidationPathSegment, v1,
 };
 use serde::de::{MapAccess, SeqAccess, Visitor};
 use serde::ser::{Error as _, SerializeMap, SerializeSeq};
@@ -34,6 +34,9 @@ pub(crate) enum CommandIdentity {
     CapabilityCreate,
     CapabilityRevoke,
     ServerHealth,
+    BackupCreate,
+    BackupRestore,
+    BackupOperation,
     DemoBudget,
 }
 
@@ -51,6 +54,9 @@ impl CommandIdentity {
             Self::CapabilityCreate => "capability.create",
             Self::CapabilityRevoke => "capability.revoke",
             Self::ServerHealth => "server.health",
+            Self::BackupCreate => "backup.create",
+            Self::BackupRestore => "backup.restore",
+            Self::BackupOperation => "backup.operation",
             Self::DemoBudget => "demo.budget",
         }
     }
@@ -117,6 +123,25 @@ pub(crate) fn uncertain(
         capability_id: id.as_deref(),
     };
     error_with_exit(command, &error, code, message, 3)
+}
+
+pub(crate) fn maintenance_uncertain(
+    command: CommandIdentity,
+    operation_id: OfflineMaintenanceOperationId,
+) -> Terminal {
+    let operation_id = operation_id.to_string();
+    error_with_exit(
+        command,
+        &MaintenanceUncertainError {
+            code: "outcome_unknown",
+            message: "the maintenance operation outcome remains unknown",
+            recovery_action: "poll_maintenance_operation",
+            operation_id: &operation_id,
+        },
+        "outcome_unknown",
+        "the maintenance operation outcome remains unknown",
+        3,
+    )
 }
 
 pub(crate) fn client_error(command: CommandIdentity, error: &ClientError) -> Terminal {
@@ -557,6 +582,68 @@ pub(crate) fn render_revoke(response: &v1::RevokeCapabilityResponse) -> Terminal
             },
         ),
         None => rendering_failure(CommandIdentity::CapabilityRevoke),
+    }
+}
+
+pub(crate) fn render_create_maintenance_start(
+    response: &v1::CreateOfflineBackupResponse,
+) -> Terminal {
+    render_maintenance_start(
+        CommandIdentity::BackupCreate,
+        response.disposition,
+        response.operation.as_ref(),
+    )
+}
+
+pub(crate) fn render_restore_maintenance_start(
+    response: &v1::RestoreOfflineBackupResponse,
+) -> Terminal {
+    render_maintenance_start(
+        CommandIdentity::BackupRestore,
+        response.disposition,
+        response.operation.as_ref(),
+    )
+}
+
+fn render_maintenance_start(
+    command: CommandIdentity,
+    disposition: i32,
+    operation: Option<&v1::OfflineMaintenanceOperation>,
+) -> Terminal {
+    let status = match v1::OfflineMaintenanceStartDisposition::try_from(disposition) {
+        Ok(v1::OfflineMaintenanceStartDisposition::Accepted) => "accepted",
+        Ok(v1::OfflineMaintenanceStartDisposition::AlreadyAccepted) => "already_accepted",
+        Ok(v1::OfflineMaintenanceStartDisposition::Terminal) => "terminal",
+        _ => return rendering_failure(command),
+    };
+    let Some(operation) = operation else {
+        return rendering_failure(command);
+    };
+    let Some(operation) = MaintenanceOperationDto::new(status, operation) else {
+        return rendering_failure(command);
+    };
+    success(command, status, &operation)
+}
+
+pub(crate) fn render_maintenance_operation(
+    response: &v1::GetOfflineMaintenanceOperationResponse,
+) -> Terminal {
+    use v1::get_offline_maintenance_operation_response::Result;
+    match response.result.as_ref() {
+        Some(Result::NotFound(_)) => success(
+            CommandIdentity::BackupOperation,
+            "not_found",
+            &StatusResult {
+                status: "not_found",
+            },
+        ),
+        Some(Result::Found(operation)) => {
+            let Some(operation) = MaintenanceOperationDto::new("found", operation) else {
+                return rendering_failure(CommandIdentity::BackupOperation);
+            };
+            success(CommandIdentity::BackupOperation, "found", &operation)
+        }
+        None => rendering_failure(CommandIdentity::BackupOperation),
     }
 }
 
@@ -1106,6 +1193,25 @@ struct UncertainError<'a> {
     message: &'static str,
     recovery_action: &'static str,
     capability_id: Option<&'a str>,
+}
+
+struct MaintenanceUncertainError<'a> {
+    code: &'static str,
+    message: &'static str,
+    recovery_action: &'static str,
+    operation_id: &'a str,
+}
+
+impl Serialize for MaintenanceUncertainError<'_> {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        let mut map = serializer.serialize_map(Some(5))?;
+        map.serialize_entry("type", "uncertain")?;
+        map.serialize_entry("code", self.code)?;
+        map.serialize_entry("message", self.message)?;
+        map.serialize_entry("recovery_action", self.recovery_action)?;
+        map.serialize_entry("maintenance_operation_id", self.operation_id)?;
+        map.end()
+    }
 }
 
 impl Serialize for UncertainError<'_> {
@@ -1789,6 +1895,63 @@ impl Serialize for CapabilityIdentityDto<'_> {
 }
 
 #[derive(Serialize)]
+struct MaintenanceOperationDto<'a> {
+    status: &'a str,
+    maintenance_operation_id: String,
+    kind: &'static str,
+    backup_name: &'a str,
+    input_hash: LowerHex<'a>,
+    phase: &'static str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    failure: Option<&'static str>,
+}
+
+impl<'a> MaintenanceOperationDto<'a> {
+    fn new(status: &'a str, operation: &'a v1::OfflineMaintenanceOperation) -> Option<Self> {
+        let kind = match v1::OfflineMaintenanceOperationKind::try_from(operation.kind).ok()? {
+            v1::OfflineMaintenanceOperationKind::CreateBackup => "create_backup",
+            v1::OfflineMaintenanceOperationKind::RestoreBackup => "restore_backup",
+            v1::OfflineMaintenanceOperationKind::Unspecified => return None,
+        };
+        let phase = match v1::OfflineMaintenancePhase::try_from(operation.phase).ok()? {
+            v1::OfflineMaintenancePhase::Accepted => "accepted",
+            v1::OfflineMaintenancePhase::Draining => "draining",
+            v1::OfflineMaintenancePhase::Offline => "offline",
+            v1::OfflineMaintenancePhase::ArtifactPublished => "artifact_published",
+            v1::OfflineMaintenancePhase::Validating => "validating",
+            v1::OfflineMaintenancePhase::Succeeded => "succeeded",
+            v1::OfflineMaintenancePhase::FailedClosed => "failed_closed",
+            v1::OfflineMaintenancePhase::Unspecified => return None,
+        };
+        let failure = match v1::OfflineMaintenanceFailureClass::try_from(operation.failure).ok()? {
+            v1::OfflineMaintenanceFailureClass::Unspecified => None,
+            v1::OfflineMaintenanceFailureClass::QuiescenceFailed => Some("quiescence_failed"),
+            v1::OfflineMaintenanceFailureClass::ArtifactUnavailable => Some("artifact_unavailable"),
+            v1::OfflineMaintenanceFailureClass::ArtifactInvalid => Some("artifact_invalid"),
+            v1::OfflineMaintenanceFailureClass::StagedAuthorizationFailed => {
+                Some("staged_authorization_failed")
+            }
+            v1::OfflineMaintenanceFailureClass::StorageUnavailable => Some("storage_unavailable"),
+            v1::OfflineMaintenanceFailureClass::ValidationFailed => Some("validation_failed"),
+            v1::OfflineMaintenanceFailureClass::ReceiptUnavailable => Some("receipt_unavailable"),
+            v1::OfflineMaintenanceFailureClass::InternalFailure => Some("internal_failure"),
+        };
+        if operation.input_hash.len() != 32 || (phase == "failed_closed") != failure.is_some() {
+            return None;
+        }
+        Some(Self {
+            status,
+            maintenance_operation_id: format_uuid(&operation.operation_id)?,
+            kind,
+            backup_name: &operation.backup_name,
+            input_hash: LowerHex(&operation.input_hash),
+            phase,
+            failure,
+        })
+    }
+}
+
+#[derive(Serialize)]
 struct PreBootstrapHealth<'a> {
     status: &'a str,
     lifecycle: &'a str,
@@ -2006,6 +2169,10 @@ mod tests {
         "server.health.ready.jsonl",
         "server.health.not_ready.jsonl",
         "server.health.degraded.jsonl",
+        "backup.create.accepted.jsonl",
+        "backup.restore.terminal.jsonl",
+        "backup.operation.not_found.jsonl",
+        "backup.operation.found.jsonl",
         "demo.budget.sequential.jsonl",
         "demo.budget.contention.jsonl",
         "demo.budget.same_key_replay.jsonl",
@@ -2071,7 +2238,7 @@ mod tests {
             );
             covered.insert(name);
         }
-        assert_eq!(covered.len(), 93);
+        assert_eq!(covered.len(), 98);
     }
 
     #[test]
@@ -2270,6 +2437,32 @@ mod tests {
         if name.starts_with("server.health.") {
             return render_health(&health_response(result));
         }
+        if name.starts_with("backup.create.") {
+            return render_create_maintenance_start(&v1::CreateOfflineBackupResponse {
+                disposition: maintenance_disposition(status),
+                operation: Some(maintenance_operation(result)),
+            });
+        }
+        if name.starts_with("backup.restore.") {
+            return render_restore_maintenance_start(&v1::RestoreOfflineBackupResponse {
+                disposition: maintenance_disposition(status),
+                operation: Some(maintenance_operation(result)),
+            });
+        }
+        if name.starts_with("backup.operation.") {
+            let result = match status {
+                "not_found" => {
+                    v1::get_offline_maintenance_operation_response::Result::NotFound(v1::Unit {})
+                }
+                "found" => v1::get_offline_maintenance_operation_response::Result::Found(
+                    maintenance_operation(result),
+                ),
+                _ => panic!("unexpected maintenance operation status {status}"),
+            };
+            return render_maintenance_operation(&v1::GetOfflineMaintenanceOperationResponse {
+                result: Some(result),
+            });
+        }
         if name.starts_with("demo.budget.") {
             return success(
                 CommandIdentity::DemoBudget,
@@ -2381,6 +2574,9 @@ mod tests {
             "capability.create" => CommandIdentity::CapabilityCreate,
             "capability.revoke" => CommandIdentity::CapabilityRevoke,
             "server.health" => CommandIdentity::ServerHealth,
+            "backup.create" => CommandIdentity::BackupCreate,
+            "backup.restore" => CommandIdentity::BackupRestore,
+            "backup.operation" => CommandIdentity::BackupOperation,
             "demo.budget" => CommandIdentity::DemoBudget,
             _ => panic!("unknown command {command}"),
         }
@@ -2452,6 +2648,46 @@ mod tests {
         parse_uuid(value[key].as_str().expect(key))
             .expect("UUID")
             .to_vec()
+    }
+
+    fn maintenance_disposition(value: &str) -> i32 {
+        match value {
+            "accepted" => v1::OfflineMaintenanceStartDisposition::Accepted as i32,
+            "already_accepted" => v1::OfflineMaintenanceStartDisposition::AlreadyAccepted as i32,
+            "terminal" => v1::OfflineMaintenanceStartDisposition::Terminal as i32,
+            _ => panic!("unknown maintenance disposition {value}"),
+        }
+    }
+
+    fn maintenance_operation(value: &JsonValue) -> v1::OfflineMaintenanceOperation {
+        let kind = match value["kind"].as_str().expect("maintenance kind") {
+            "create_backup" => v1::OfflineMaintenanceOperationKind::CreateBackup,
+            "restore_backup" => v1::OfflineMaintenanceOperationKind::RestoreBackup,
+            other => panic!("unknown maintenance kind {other}"),
+        };
+        let phase = match value["phase"].as_str().expect("maintenance phase") {
+            "accepted" => v1::OfflineMaintenancePhase::Accepted,
+            "draining" => v1::OfflineMaintenancePhase::Draining,
+            "offline" => v1::OfflineMaintenancePhase::Offline,
+            "artifact_published" => v1::OfflineMaintenancePhase::ArtifactPublished,
+            "validating" => v1::OfflineMaintenancePhase::Validating,
+            "succeeded" => v1::OfflineMaintenancePhase::Succeeded,
+            "failed_closed" => v1::OfflineMaintenancePhase::FailedClosed,
+            other => panic!("unknown maintenance phase {other}"),
+        };
+        let failure = match value.get("failure").and_then(JsonValue::as_str) {
+            None => v1::OfflineMaintenanceFailureClass::Unspecified,
+            Some("validation_failed") => v1::OfflineMaintenanceFailureClass::ValidationFailed,
+            Some(other) => panic!("unknown maintenance failure {other}"),
+        };
+        v1::OfflineMaintenanceOperation {
+            operation_id: uuid_bytes(value, "maintenance_operation_id"),
+            kind: kind as i32,
+            backup_name: text(value, "backup_name"),
+            input_hash: hex_bytes(value, "input_hash"),
+            phase: phase as i32,
+            failure: failure as i32,
+        }
     }
 
     fn span(value: &JsonValue) -> v1::SourceSpan {

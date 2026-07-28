@@ -1,0 +1,44 @@
+[package]
+name = "riffdb-storage-fjall-comparison"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+license.workspace = true
+
+[workspace]
+resolver = "3"
+members = ["."]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.97.0"
+publish = false
+license = "MIT OR Apache-2.0"
+
+[workspace.lints.rust]
+unsafe_code = "forbid"
+unused_must_use = "deny"
+missing_docs = "warn"
+unreachable_pub = "warn"
+
+[workspace.lints.clippy]
+correctness = { level = "warn", priority = -1 }
+await_holding_lock = "deny"
+
+[dependencies]
+fjall = { version = "=3.1.8", default-features = false }
+riffdb-storage-api = { version = "0.1.0", path = "../../crates/riffdb-storage-api", default-features = false }
+riffdb-types = { version = "0.1.0", path = "../../crates/riffdb-types", default-features = false }
+
+[dev-dependencies]
+riffdb-catalog = { version = "0.1.0", path = "../../crates/riffdb-catalog", default-features = false }
+riffdb-proto = { version = "0.1.0", path = "../../crates/riffdb-proto", default-features = false }
+
+[[bench]]
+name = "storage_comparison"
+harness = false
+
+[lints]
+workspace = true

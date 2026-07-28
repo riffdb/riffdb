@@ -44,4 +44,7 @@ service AdminService {
   rpc CreateCapability(CreateCapabilityRequest) returns (CreateCapabilityResponse);
   rpc RevokeCapability(RevokeCapabilityRequest) returns (RevokeCapabilityResponse);
   rpc ListPendingOutboxDeliveries(ListPendingOutboxDeliveriesRequest) returns (ListPendingOutboxDeliveriesResponse);
+  rpc CreateOfflineBackup(CreateOfflineBackupRequest) returns (CreateOfflineBackupResponse);
+  rpc RestoreOfflineBackup(RestoreOfflineBackupRequest) returns (RestoreOfflineBackupResponse);
+  rpc GetOfflineMaintenanceOperation(GetOfflineMaintenanceOperationRequest) returns (GetOfflineMaintenanceOperationResponse);
 }

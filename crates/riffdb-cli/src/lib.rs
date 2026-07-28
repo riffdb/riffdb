@@ -12,3 +12,13 @@ mod runner;
 mod value;
 
 pub use app::run;
+
+#[cfg(feature = "test-fixtures")]
+pub mod test_fixtures {
+    //! Closed credential-retention fixtures unavailable to normal builds.
+
+    pub use crate::credential::{
+        BootstrapRetentionFixtureError, BootstrapRetentionTestPoint,
+        run_bootstrap_retention_fixture,
+    };
+}

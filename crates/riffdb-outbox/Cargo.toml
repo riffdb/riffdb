@@ -3,12 +3,20 @@ name = "riffdb-outbox"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
+license.workspace = true
 publish.workspace = true
 
 [features]
 default = []
+http-webhook = []
 
 [dependencies]
+riffdb-storage-api = { version = "0.1.0", path = "../riffdb-storage-api", default-features = false }
+riffdb-types = { version = "0.1.0", path = "../riffdb-types", default-features = false }
+
+[[test]]
+name = "outbox_crash_and_duplicate"
+path = "../../tests/outbox/outbox_crash_and_duplicate.rs"
 
 [lints]
 workspace = true

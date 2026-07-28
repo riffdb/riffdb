@@ -198,6 +198,7 @@ impl BudgetDatabase {
             facts,
             authorization,
             request_id(request_seed),
+            riffdb_types::ServiceIngressKindV1::Grpc,
             control,
         )
         .expect("join exact command preparation proofs")

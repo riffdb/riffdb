@@ -1,0 +1,5 @@
+[client]
+endpoint = "http://127.0.0.1:7443"
+output = "human"
+max_attempts = 3
+credential_file = "/home/operator/.config/riffdb/operator.credential"

@@ -276,3 +276,88 @@ message ListPendingOutboxDeliveriesRequest {
 message ListPendingOutboxDeliveriesResponse {
   OutboxDeliveryPage page = 1;
 }
+
+enum OfflineMaintenanceOperationKind {
+  OFFLINE_MAINTENANCE_OPERATION_KIND_UNSPECIFIED = 0;
+  OFFLINE_MAINTENANCE_OPERATION_KIND_CREATE_BACKUP = 1;
+  OFFLINE_MAINTENANCE_OPERATION_KIND_RESTORE_BACKUP = 2;
+}
+
+enum OfflineMaintenanceReplacementConfirmation {
+  OFFLINE_MAINTENANCE_REPLACEMENT_CONFIRMATION_UNSPECIFIED = 0;
+  OFFLINE_MAINTENANCE_REPLACEMENT_CONFIRMATION_ALLOW_REPLACE_NONEMPTY_TARGET = 1;
+}
+
+enum OfflineMaintenanceStartDisposition {
+  OFFLINE_MAINTENANCE_START_DISPOSITION_UNSPECIFIED = 0;
+  OFFLINE_MAINTENANCE_START_DISPOSITION_ACCEPTED = 1;
+  OFFLINE_MAINTENANCE_START_DISPOSITION_ALREADY_ACCEPTED = 2;
+  OFFLINE_MAINTENANCE_START_DISPOSITION_TERMINAL = 3;
+}
+
+enum OfflineMaintenancePhase {
+  OFFLINE_MAINTENANCE_PHASE_UNSPECIFIED = 0;
+  OFFLINE_MAINTENANCE_PHASE_ACCEPTED = 1;
+  OFFLINE_MAINTENANCE_PHASE_DRAINING = 2;
+  OFFLINE_MAINTENANCE_PHASE_OFFLINE = 3;
+  OFFLINE_MAINTENANCE_PHASE_ARTIFACT_PUBLISHED = 4;
+  OFFLINE_MAINTENANCE_PHASE_VALIDATING = 5;
+  OFFLINE_MAINTENANCE_PHASE_SUCCEEDED = 6;
+  OFFLINE_MAINTENANCE_PHASE_FAILED_CLOSED = 7;
+}
+
+enum OfflineMaintenanceFailureClass {
+  OFFLINE_MAINTENANCE_FAILURE_CLASS_UNSPECIFIED = 0;
+  OFFLINE_MAINTENANCE_FAILURE_CLASS_QUIESCENCE_FAILED = 1;
+  OFFLINE_MAINTENANCE_FAILURE_CLASS_ARTIFACT_UNAVAILABLE = 2;
+  OFFLINE_MAINTENANCE_FAILURE_CLASS_ARTIFACT_INVALID = 3;
+  OFFLINE_MAINTENANCE_FAILURE_CLASS_STAGED_AUTHORIZATION_FAILED = 4;
+  OFFLINE_MAINTENANCE_FAILURE_CLASS_STORAGE_UNAVAILABLE = 5;
+  OFFLINE_MAINTENANCE_FAILURE_CLASS_VALIDATION_FAILED = 6;
+  OFFLINE_MAINTENANCE_FAILURE_CLASS_RECEIPT_UNAVAILABLE = 7;
+  OFFLINE_MAINTENANCE_FAILURE_CLASS_INTERNAL_FAILURE = 8;
+}
+
+message OfflineMaintenanceOperation {
+  bytes operation_id = 1;
+  OfflineMaintenanceOperationKind kind = 2;
+  string backup_name = 3;
+  bytes input_hash = 4;
+  OfflineMaintenancePhase phase = 5;
+  OfflineMaintenanceFailureClass failure = 6;
+}
+
+message CreateOfflineBackupRequest {
+  bytes request_id = 1;
+  bytes operation_id = 2;
+  string backup_name = 3;
+}
+
+message CreateOfflineBackupResponse {
+  OfflineMaintenanceStartDisposition disposition = 1;
+  OfflineMaintenanceOperation operation = 2;
+}
+
+message RestoreOfflineBackupRequest {
+  bytes request_id = 1;
+  bytes operation_id = 2;
+  string backup_name = 3;
+  OfflineMaintenanceReplacementConfirmation replacement_confirmation = 4;
+}
+
+message RestoreOfflineBackupResponse {
+  OfflineMaintenanceStartDisposition disposition = 1;
+  OfflineMaintenanceOperation operation = 2;
+}
+
+message GetOfflineMaintenanceOperationRequest {
+  bytes request_id = 1;
+  bytes operation_id = 2;
+}
+
+message GetOfflineMaintenanceOperationResponse {
+  oneof result {
+    Unit not_found = 1;
+    OfflineMaintenanceOperation found = 2;
+  }
+}

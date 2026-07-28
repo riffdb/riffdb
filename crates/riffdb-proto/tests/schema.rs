@@ -291,6 +291,124 @@ fn exact_closed_enum_registries_are_frozen() {
 }
 
 #[test]
+fn offline_maintenance_surface_is_exact_and_additive() {
+    let descriptors = descriptors();
+    let messages = message_map(&descriptors);
+    for (name, expected) in [
+        (
+            "riffdb.v1.OfflineMaintenanceOperation",
+            vec![
+                ("operation_id", 1),
+                ("kind", 2),
+                ("backup_name", 3),
+                ("input_hash", 4),
+                ("phase", 5),
+                ("failure", 6),
+            ],
+        ),
+        (
+            "riffdb.v1.CreateOfflineBackupRequest",
+            vec![("request_id", 1), ("operation_id", 2), ("backup_name", 3)],
+        ),
+        (
+            "riffdb.v1.CreateOfflineBackupResponse",
+            vec![("disposition", 1), ("operation", 2)],
+        ),
+        (
+            "riffdb.v1.RestoreOfflineBackupRequest",
+            vec![
+                ("request_id", 1),
+                ("operation_id", 2),
+                ("backup_name", 3),
+                ("replacement_confirmation", 4),
+            ],
+        ),
+        (
+            "riffdb.v1.RestoreOfflineBackupResponse",
+            vec![("disposition", 1), ("operation", 2)],
+        ),
+        (
+            "riffdb.v1.GetOfflineMaintenanceOperationRequest",
+            vec![("request_id", 1), ("operation_id", 2)],
+        ),
+        (
+            "riffdb.v1.GetOfflineMaintenanceOperationResponse",
+            vec![("not_found", 1), ("found", 2)],
+        ),
+    ] {
+        assert_eq!(field_numbers(messages[name]), expected, "{name}");
+    }
+    for (name, expected) in [
+        (
+            "OfflineMaintenanceOperationKind",
+            vec![
+                ("OFFLINE_MAINTENANCE_OPERATION_KIND_UNSPECIFIED", 0),
+                ("OFFLINE_MAINTENANCE_OPERATION_KIND_CREATE_BACKUP", 1),
+                ("OFFLINE_MAINTENANCE_OPERATION_KIND_RESTORE_BACKUP", 2),
+            ],
+        ),
+        (
+            "OfflineMaintenanceReplacementConfirmation",
+            vec![
+                (
+                    "OFFLINE_MAINTENANCE_REPLACEMENT_CONFIRMATION_UNSPECIFIED",
+                    0,
+                ),
+                (
+                    "OFFLINE_MAINTENANCE_REPLACEMENT_CONFIRMATION_ALLOW_REPLACE_NONEMPTY_TARGET",
+                    1,
+                ),
+            ],
+        ),
+        (
+            "OfflineMaintenanceStartDisposition",
+            vec![
+                ("OFFLINE_MAINTENANCE_START_DISPOSITION_UNSPECIFIED", 0),
+                ("OFFLINE_MAINTENANCE_START_DISPOSITION_ACCEPTED", 1),
+                ("OFFLINE_MAINTENANCE_START_DISPOSITION_ALREADY_ACCEPTED", 2),
+                ("OFFLINE_MAINTENANCE_START_DISPOSITION_TERMINAL", 3),
+            ],
+        ),
+        (
+            "OfflineMaintenancePhase",
+            vec![
+                ("OFFLINE_MAINTENANCE_PHASE_UNSPECIFIED", 0),
+                ("OFFLINE_MAINTENANCE_PHASE_ACCEPTED", 1),
+                ("OFFLINE_MAINTENANCE_PHASE_DRAINING", 2),
+                ("OFFLINE_MAINTENANCE_PHASE_OFFLINE", 3),
+                ("OFFLINE_MAINTENANCE_PHASE_ARTIFACT_PUBLISHED", 4),
+                ("OFFLINE_MAINTENANCE_PHASE_VALIDATING", 5),
+                ("OFFLINE_MAINTENANCE_PHASE_SUCCEEDED", 6),
+                ("OFFLINE_MAINTENANCE_PHASE_FAILED_CLOSED", 7),
+            ],
+        ),
+        (
+            "OfflineMaintenanceFailureClass",
+            vec![
+                ("OFFLINE_MAINTENANCE_FAILURE_CLASS_UNSPECIFIED", 0),
+                ("OFFLINE_MAINTENANCE_FAILURE_CLASS_QUIESCENCE_FAILED", 1),
+                ("OFFLINE_MAINTENANCE_FAILURE_CLASS_ARTIFACT_UNAVAILABLE", 2),
+                ("OFFLINE_MAINTENANCE_FAILURE_CLASS_ARTIFACT_INVALID", 3),
+                (
+                    "OFFLINE_MAINTENANCE_FAILURE_CLASS_STAGED_AUTHORIZATION_FAILED",
+                    4,
+                ),
+                ("OFFLINE_MAINTENANCE_FAILURE_CLASS_STORAGE_UNAVAILABLE", 5),
+                ("OFFLINE_MAINTENANCE_FAILURE_CLASS_VALIDATION_FAILED", 6),
+                ("OFFLINE_MAINTENANCE_FAILURE_CLASS_RECEIPT_UNAVAILABLE", 7),
+                ("OFFLINE_MAINTENANCE_FAILURE_CLASS_INTERNAL_FAILURE", 8),
+            ],
+        ),
+    ] {
+        assert_eq!(
+            enum_values(top_level_enum(&descriptors, "riffdb.v1", name)),
+            expected,
+            "{name}"
+        );
+    }
+}
+
+#[test]
 fn service_inventory_and_completed_phase_zero_messages_are_exact() {
     let descriptors = descriptors();
     let services = descriptors
@@ -332,7 +450,7 @@ fn service_inventory_and_completed_phase_zero_messages_are_exact() {
         }
     }
     methods.sort();
-    assert_eq!(methods.len(), 22);
+    assert_eq!(methods.len(), 25);
     let descriptor_order = descriptors
         .file
         .iter()
@@ -390,6 +508,9 @@ fn service_inventory_and_completed_phase_zero_messages_are_exact() {
             "CreateCapability",
             "RevokeCapability",
             "ListPendingOutboxDeliveries",
+            "CreateOfflineBackup",
+            "RestoreOfflineBackup",
+            "GetOfflineMaintenanceOperation",
         ]
     );
     assert_eq!(
@@ -457,6 +578,13 @@ fn service_inventory_and_completed_phase_zero_messages_are_exact() {
         "TraceProvenanceResponse",
         "ListPendingOutboxDeliveriesRequest",
         "ListPendingOutboxDeliveriesResponse",
+        "OfflineMaintenanceOperation",
+        "CreateOfflineBackupRequest",
+        "CreateOfflineBackupResponse",
+        "RestoreOfflineBackupRequest",
+        "RestoreOfflineBackupResponse",
+        "GetOfflineMaintenanceOperationRequest",
+        "GetOfflineMaintenanceOperationResponse",
         "ValidateContractRequest",
         "ValidateContractResponse",
     ];
@@ -470,7 +598,7 @@ fn service_inventory_and_completed_phase_zero_messages_are_exact() {
             .keys()
             .filter(|name| name.starts_with("riffdb.v1."))
             .count(),
-        151
+        158
     );
     assert_eq!(
         messages

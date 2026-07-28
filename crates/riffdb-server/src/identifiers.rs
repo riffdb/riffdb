@@ -163,6 +163,16 @@ impl ServerRequestIdSource {
     }
 }
 
+impl riffdb_api_mcp::RequestIdSource for ServerRequestIdSource {
+    fn next_request_id(
+        &self,
+    ) -> Result<riffdb_api_mcp::McpRequestId, riffdb_api_mcp::RequestIdSourceError> {
+        let request_id = ServerRequestIdSource::next_request_id(self)
+            .map_err(|_| riffdb_api_mcp::RequestIdSourceError)?;
+        riffdb_api_mcp::McpRequestId::from_public_bytes(&request_id.into_bytes())
+    }
+}
+
 impl fmt::Debug for ServerRequestIdSource {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter.write_str("ServerRequestIdSource([REDACTED])")

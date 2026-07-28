@@ -5,6 +5,7 @@ use std::num::NonZeroU16;
 use std::pin::Pin;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU8, AtomicUsize, Ordering};
+use std::time::Instant;
 use std::{error::Error, fmt, panic, thread};
 
 use riffdb_storage_api::{
@@ -23,7 +24,8 @@ use riffdb_policy::AuthorizationClock;
 
 use crate::{
     AdministrationAuditInputView, AdministrationClock, AdministrationClockError, AdmissionClock,
-    ApplicationCommitNotificationSink, CommandExecutionPreparation, CommittedOutcomeDisposition,
+    ApplicationCommitNotificationSink, CommandExecutionPreparation, CommitCommandTerminal,
+    CommitTelemetry, CommitTelemetryEvent, CommittedOutcomeDisposition, NoopCommitTelemetry,
     ProvenanceIdSource,
     command_execution::{
         CommandExecutionError, CommandExecutionLifecycle, CommandExecutionResult,
@@ -705,8 +707,12 @@ impl CommandExecutionCapacityPermit {
             .permit
             .take()
             .expect("move-only command capacity permit is consumed once");
+        let (command_id, ingress) = preparation.telemetry_identity();
         let _sender = permit.send(CoordinatorMessage::Command {
             preparation: Box::new(preparation),
+            command_id,
+            ingress,
+            enqueued_at: Instant::now(),
             completion,
         });
         drop(submission);
@@ -732,8 +738,12 @@ impl CommandExecutionCapacityPermit {
             .permit
             .take()
             .expect("move-only command capacity permit is consumed once");
+        let (command_id, ingress) = preparation.telemetry_identity();
         let _sender = permit.send(CoordinatorMessage::ReadOnlyCommand {
             preparation: Box::new(preparation),
+            command_id,
+            ingress,
+            enqueued_at: Instant::now(),
             completion,
         });
         drop(submission);
@@ -901,23 +911,71 @@ impl RunningCommandCoordinator {
             + Send
             + 'static,
     {
-        Self::spawn_with_operations(workload_capacity, notifications, move |lifecycle| {
-            Box::new(ProductionCoordinatorOperations {
-                repository,
-                conflicts,
-                admission_clock,
-                administration_clock,
-                authorization_clock,
-                provenance_source,
-                durability,
-                lifecycle,
-            })
-        })
+        Self::start_with_telemetry(
+            workload_capacity,
+            durability,
+            repository,
+            conflicts,
+            admission_clock,
+            administration_clock,
+            authorization_clock,
+            provenance_source,
+            notifications,
+            Arc::new(NoopCommitTelemetry),
+        )
+    }
+
+    /// Starts the coordinator with one least-authority semantic telemetry sink.
+    #[allow(clippy::too_many_arguments)]
+    pub fn start_with_telemetry<Repository>(
+        workload_capacity: CoordinatorWorkloadCapacity,
+        durability: CoordinatorDurability,
+        repository: Repository,
+        conflicts: Arc<dyn ConflictManager>,
+        admission_clock: Arc<dyn AdmissionClock>,
+        administration_clock: Arc<dyn AdministrationClock>,
+        authorization_clock: Arc<dyn AuthorizationClock>,
+        provenance_source: Arc<dyn ProvenanceIdSource>,
+        notifications: Arc<dyn ApplicationCommitNotificationSink>,
+        telemetry: Arc<dyn CommitTelemetry>,
+    ) -> Result<Self, CoordinatorStartError>
+    where
+        Repository: AdmissionRepository
+            + SnapshotReader
+            + ApplicationCommandTransactionPort
+            + ExecutionFailureTransitionPort
+            + ServiceAuditAppendRepository
+            + CatalogAdministrationRepository
+            + CapabilityAdministrationTransactionPort
+            + CapabilityBootstrapAdministrationRepository
+            + Send
+            + 'static,
+    {
+        let operations_telemetry = Arc::clone(&telemetry);
+        Self::spawn_with_operations(
+            workload_capacity,
+            notifications,
+            telemetry,
+            move |lifecycle| {
+                Box::new(ProductionCoordinatorOperations {
+                    repository,
+                    conflicts,
+                    admission_clock,
+                    administration_clock,
+                    authorization_clock,
+                    provenance_source,
+                    durability,
+                    lifecycle,
+                    telemetry: operations_telemetry,
+                })
+            },
+        )
     }
 
     fn spawn_with_operations(
         workload_capacity: CoordinatorWorkloadCapacity,
         notifications: Arc<dyn ApplicationCommitNotificationSink>,
+        telemetry: Arc<dyn CommitTelemetry>,
         operations: impl FnOnce(ActorLifecyclePublisher) -> Box<dyn CoordinatorActorOperations>,
     ) -> Result<Self, CoordinatorStartError> {
         let channel_capacity = usize::from(workload_capacity.get()) + 1;
@@ -941,6 +999,7 @@ impl RunningCommandCoordinator {
             receiver,
             operations: operations(lifecycle_publisher.clone()),
             notifications,
+            telemetry,
             lifecycle: lifecycle_publisher,
         };
         let actor_thread = thread::Builder::new()
@@ -989,6 +1048,7 @@ impl RunningCommandCoordinator {
         Self::spawn_with_operations(
             workload_capacity,
             Arc::new(DiscardApplicationCommitNotifications),
+            Arc::new(NoopCommitTelemetry),
             move |_| Box::new(AuditOnlyCoordinatorOperations { repository, clock }),
         )
     }
@@ -1083,10 +1143,16 @@ enum CoordinatorMessage {
     },
     Command {
         preparation: Box<CommandExecutionPreparation>,
+        command_id: riffdb_types::CommandId,
+        ingress: riffdb_types::ServiceIngressKindV1,
+        enqueued_at: Instant,
         completion: oneshot::Sender<Result<CommandExecutionResult, CommandExecutionError>>,
     },
     ReadOnlyCommand {
         preparation: Box<ReadOnlyExecutionPreparation>,
+        command_id: riffdb_types::CommandId,
+        ingress: riffdb_types::ServiceIngressKindV1,
+        enqueued_at: Instant,
         completion: oneshot::Sender<Result<ReadOnlyExecutionResult, CommandExecutionError>>,
     },
     IdempotencyInspection {
@@ -1177,6 +1243,7 @@ struct ProductionCoordinatorOperations<Repository> {
     provenance_source: Arc<dyn ProvenanceIdSource>,
     durability: CoordinatorDurability,
     lifecycle: ActorLifecyclePublisher,
+    telemetry: Arc<dyn CommitTelemetry>,
 }
 
 impl<Repository> CoordinatorActorOperations for ProductionCoordinatorOperations<Repository>
@@ -1213,6 +1280,7 @@ where
             self.provenance_source.as_ref(),
             self.durability,
             &self.lifecycle,
+            self.telemetry.as_ref(),
             preparation,
         ))
     }
@@ -1424,6 +1492,7 @@ struct CommandCoordinatorActor {
     receiver: mpsc::Receiver<CoordinatorMessage>,
     operations: Box<dyn CoordinatorActorOperations>,
     notifications: Arc<dyn ApplicationCommitNotificationSink>,
+    telemetry: Arc<dyn CommitTelemetry>,
     lifecycle: ActorLifecyclePublisher,
 }
 
@@ -1442,18 +1511,37 @@ impl CommandCoordinatorActor {
                 }
                 CoordinatorMessage::Command {
                     preparation,
+                    command_id,
+                    ingress,
+                    enqueued_at,
                     completion,
                 } => {
-                    self.execute_command(*preparation, completion).await;
+                    self.execute_command(
+                        *preparation,
+                        command_id,
+                        ingress,
+                        enqueued_at,
+                        completion,
+                    )
+                    .await;
                     if self.reject_after_published_terminal_state().await {
                         break;
                     }
                 }
                 CoordinatorMessage::ReadOnlyCommand {
                     preparation,
+                    command_id,
+                    ingress,
+                    enqueued_at,
                     completion,
                 } => {
-                    self.execute_read_only(*preparation, completion);
+                    self.execute_read_only(
+                        *preparation,
+                        command_id,
+                        ingress,
+                        enqueued_at,
+                        completion,
+                    );
                     if self.reject_after_published_terminal_state().await {
                         break;
                     }
@@ -1526,18 +1614,37 @@ impl CommandCoordinatorActor {
                             }
                             CoordinatorMessage::Command {
                                 preparation,
+                                command_id,
+                                ingress,
+                                enqueued_at,
                                 completion,
                             } => {
-                                self.execute_command(*preparation, completion).await;
+                                self.execute_command(
+                                    *preparation,
+                                    command_id,
+                                    ingress,
+                                    enqueued_at,
+                                    completion,
+                                )
+                                .await;
                                 if self.reject_after_published_terminal_state().await {
                                     return;
                                 }
                             }
                             CoordinatorMessage::ReadOnlyCommand {
                                 preparation,
+                                command_id,
+                                ingress,
+                                enqueued_at,
                                 completion,
                             } => {
-                                self.execute_read_only(*preparation, completion);
+                                self.execute_read_only(
+                                    *preparation,
+                                    command_id,
+                                    ingress,
+                                    enqueued_at,
+                                    completion,
+                                );
                                 if self.reject_after_published_terminal_state().await {
                                     return;
                                 }
@@ -1629,8 +1736,17 @@ impl CommandCoordinatorActor {
     async fn execute_command(
         &mut self,
         preparation: CommandExecutionPreparation,
+        command_id: riffdb_types::CommandId,
+        ingress: riffdb_types::ServiceIngressKindV1,
+        enqueued_at: Instant,
         completion: oneshot::Sender<Result<CommandExecutionResult, CommandExecutionError>>,
     ) {
+        self.telemetry
+            .record(CommitTelemetryEvent::StorageQueueCompleted {
+                command_id,
+                ingress,
+                elapsed: enqueued_at.elapsed(),
+            });
         let result = self.operations.drive_command(preparation).await;
         if let Ok(CommandExecutionResult::Committed(outcome)) = &result
             && outcome.disposition() == CommittedOutcomeDisposition::FirstCommit
@@ -1643,15 +1759,41 @@ impl CommandCoordinatorActor {
                 self.lifecycle.stop();
             }
         }
+        self.telemetry
+            .record(CommitTelemetryEvent::CommandTerminal {
+                command_id,
+                ingress,
+                terminal: commit_command_terminal(&result),
+                elapsed: enqueued_at.elapsed(),
+            });
         let _receiver_may_be_dropped = completion.send(result);
     }
 
     fn execute_read_only(
         &mut self,
         preparation: ReadOnlyExecutionPreparation,
+        command_id: riffdb_types::CommandId,
+        ingress: riffdb_types::ServiceIngressKindV1,
+        enqueued_at: Instant,
         completion: oneshot::Sender<Result<ReadOnlyExecutionResult, CommandExecutionError>>,
     ) {
+        self.telemetry
+            .record(CommitTelemetryEvent::StorageQueueCompleted {
+                command_id,
+                ingress,
+                elapsed: enqueued_at.elapsed(),
+            });
         let result = self.operations.drive_read_only(preparation);
+        self.telemetry
+            .record(CommitTelemetryEvent::CommandTerminal {
+                command_id,
+                ingress,
+                terminal: match &result {
+                    Ok(_) => CommitCommandTerminal::ReadOnlySucceeded,
+                    Err(error) => CommitCommandTerminal::Failed(error.kind()),
+                },
+                elapsed: enqueued_at.elapsed(),
+            });
         let _receiver_may_be_dropped = completion.send(result);
     }
 
@@ -1819,6 +1961,21 @@ impl CommandCoordinatorActor {
                 CoordinatorMessage::Shutdown => {}
             }
         }
+    }
+}
+
+fn commit_command_terminal(
+    result: &Result<CommandExecutionResult, CommandExecutionError>,
+) -> CommitCommandTerminal {
+    match result {
+        Ok(CommandExecutionResult::Committed(outcome)) => match outcome.disposition() {
+            CommittedOutcomeDisposition::FirstCommit => CommitCommandTerminal::FirstCommit,
+            CommittedOutcomeDisposition::Replay => CommitCommandTerminal::OutcomeReplay,
+        },
+        Ok(CommandExecutionResult::ExecutionFailed(_)) => CommitCommandTerminal::ExecutionFailed,
+        Ok(CommandExecutionResult::PreparationChanged) => CommitCommandTerminal::PreparationChanged,
+        Ok(CommandExecutionResult::InputMismatch) => CommitCommandTerminal::InputMismatch,
+        Err(error) => CommitCommandTerminal::Failed(error.kind()),
     }
 }
 

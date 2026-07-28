@@ -14,6 +14,7 @@ use std::task::{Context, Poll};
 use std::time::Instant;
 
 use riffdb_errors::InternalError;
+use riffdb_observability::Observability;
 use riffdb_service::{
     AuthoritativeReadinessFailure, RequestDeadlineFuture, RequestDeadlineScheduler,
     ServiceDiagnostics, ServiceHealthHooks, ServiceJob, ServiceJobSpawner, ServiceTelemetry,
@@ -422,9 +423,68 @@ impl RequestDeadlineScheduler for TokioRequestDeadlineScheduler {
     }
 }
 
+/// Fans authoritative health failures into routing and bounded observability.
+pub(crate) struct ProductionObservabilityHealthHooks {
+    routing: RuntimeRoutingState,
+    observability: Arc<Observability>,
+}
+
+impl ProductionObservabilityHealthHooks {
+    pub(crate) fn new(routing: RuntimeRoutingState, observability: Arc<Observability>) -> Self {
+        Self {
+            routing,
+            observability,
+        }
+    }
+}
+
+impl ServiceHealthHooks for ProductionObservabilityHealthHooks {
+    fn fail_authoritative_readiness(&self, reason: AuthoritativeReadinessFailure) {
+        ServiceHealthHooks::fail_authoritative_readiness(self.observability.as_ref(), reason);
+        ServiceHealthHooks::fail_authoritative_readiness(&self.routing, reason);
+    }
+}
+
+impl fmt::Debug for ProductionObservabilityHealthHooks {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("ProductionObservabilityHealthHooks([REDACTED])")
+    }
+}
+
+/// Sends trusted internal incidents to observability and preserves routing failure.
+pub(crate) struct ProductionObservabilityDiagnostics {
+    routing: RuntimeRoutingState,
+    observability: Arc<Observability>,
+}
+
+impl ProductionObservabilityDiagnostics {
+    pub(crate) fn new(routing: RuntimeRoutingState, observability: Arc<Observability>) -> Self {
+        Self {
+            routing,
+            observability,
+        }
+    }
+}
+
+impl ServiceDiagnostics for ProductionObservabilityDiagnostics {
+    fn record_internal(&self, error: InternalError) {
+        ServiceDiagnostics::record_internal(self.observability.as_ref(), error);
+        if !self.observability.health().snapshot().authoritative_ready() {
+            self.routing.stop(RuntimeStopReason::Integrity);
+        }
+    }
+}
+
+impl fmt::Debug for ProductionObservabilityDiagnostics {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("ProductionObservabilityDiagnostics([REDACTED])")
+    }
+}
+
 /// Aggregate payload-free service telemetry retained until WP-185 observation.
 #[derive(Default)]
 pub(crate) struct ProductionServiceTelemetry {
+    operation_terminal: AtomicU64,
     audit_unavailable: AtomicU64,
     internal_integrity: AtomicU64,
     cursor_unavailable: AtomicU64,
@@ -434,6 +494,7 @@ pub(crate) struct ProductionServiceTelemetry {
 impl ProductionServiceTelemetry {
     pub(crate) fn snapshot(&self) -> ServiceTelemetrySnapshot {
         ServiceTelemetrySnapshot {
+            operation_terminal: self.operation_terminal.load(Ordering::Relaxed),
             audit_unavailable: self.audit_unavailable.load(Ordering::Relaxed),
             internal_integrity: self.internal_integrity.load(Ordering::Relaxed),
             cursor_unavailable: self.cursor_unavailable.load(Ordering::Relaxed),
@@ -445,6 +506,7 @@ impl ProductionServiceTelemetry {
 impl ServiceTelemetry for ProductionServiceTelemetry {
     fn record(&self, event: ServiceTelemetryEvent) {
         let counter = match event {
+            ServiceTelemetryEvent::OperationTerminal { .. } => &self.operation_terminal,
             ServiceTelemetryEvent::AuditUnavailable { .. } => &self.audit_unavailable,
             ServiceTelemetryEvent::InternalIntegrity { .. } => &self.internal_integrity,
             ServiceTelemetryEvent::CursorUnavailable => &self.cursor_unavailable,
@@ -463,6 +525,7 @@ impl fmt::Debug for ProductionServiceTelemetry {
 /// Fixed-shape redaction-safe telemetry counters.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct ServiceTelemetrySnapshot {
+    pub(crate) operation_terminal: u64,
     pub(crate) audit_unavailable: u64,
     pub(crate) internal_integrity: u64,
     pub(crate) cursor_unavailable: u64,
@@ -547,8 +610,10 @@ mod tests {
     use std::sync::Arc;
     use std::time::Duration;
 
-    use riffdb_service::{ServiceHealthHooks, ServiceJobSpawner, ServiceTelemetry};
-    use riffdb_types::{IncidentId, ServiceOperationV1};
+    use riffdb_service::{
+        ServiceHealthHooks, ServiceJobSpawner, ServiceTelemetry, ServiceTerminalClass,
+    };
+    use riffdb_types::{IncidentId, ServiceIngressKindV1, ServiceOperationV1};
     use tokio::sync::Barrier;
 
     use super::*;
@@ -770,6 +835,12 @@ mod tests {
     #[test]
     fn telemetry_retains_only_closed_payload_free_counts() {
         let telemetry = ProductionServiceTelemetry::default();
+        telemetry.record(ServiceTelemetryEvent::OperationTerminal {
+            operation: ServiceOperationV1::GetHealth,
+            ingress: ServiceIngressKindV1::Grpc,
+            terminal: ServiceTerminalClass::Succeeded,
+            elapsed: Duration::from_millis(1),
+        });
         telemetry.record(ServiceTelemetryEvent::AuditUnavailable {
             operation: ServiceOperationV1::ExecuteCommand,
         });
@@ -782,6 +853,7 @@ mod tests {
         assert_eq!(
             telemetry.snapshot(),
             ServiceTelemetrySnapshot {
+                operation_terminal: 1,
                 audit_unavailable: 1,
                 internal_integrity: 1,
                 cursor_unavailable: 1,

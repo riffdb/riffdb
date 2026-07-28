@@ -1,0 +1,144 @@
+#!/usr/bin/env bash
+set -euo pipefail
+export LC_ALL=C
+export TZ=UTC
+
+usage() {
+    printf '%s\n' \
+        'usage: benchmarks/run-storage-redb --storage-medium DESCRIPTION [--iterations N] [--warmup N] [--history-records N]' >&2
+    exit 2
+}
+
+repo_root="$(git rev-parse --show-toplevel)"
+cd "$repo_root"
+
+iterations=40
+warmup=5
+history_records=256
+storage_medium=
+while (($#)); do
+    case "$1" in
+        --iterations)
+            (($# >= 2)) || usage
+            iterations="$2"
+            shift 2
+            ;;
+        --warmup)
+            (($# >= 2)) || usage
+            warmup="$2"
+            shift 2
+            ;;
+        --history-records)
+            (($# >= 2)) || usage
+            history_records="$2"
+            shift 2
+            ;;
+        --storage-medium)
+            (($# >= 2)) || usage
+            storage_medium="$2"
+            shift 2
+            ;;
+        *)
+            usage
+            ;;
+    esac
+done
+
+canonical_count() {
+    [[ "$1" =~ ^(0|[1-9][0-9]*)$ ]]
+}
+canonical_count "$iterations" && ((iterations >= 1 && iterations <= 10000)) || usage
+canonical_count "$warmup" && ((warmup >= 1 && warmup <= 10000)) || usage
+canonical_count "$history_records" \
+    && ((history_records >= 1 && history_records <= 1000)) || usage
+[[ -n "$storage_medium" && ${#storage_medium} -le 256 ]] || usage
+
+if [[ -n "$(git status --porcelain=v1)" ]]; then
+    printf '%s\n' 'storage benchmark publication requires a clean checkout' >&2
+    exit 1
+fi
+for tool in cargo findmnt git jq sha256sum; do
+    command -v "$tool" >/dev/null 2>&1 || {
+        printf 'required benchmark tool is missing: %s\n' "$tool" >&2
+        exit 1
+    }
+done
+
+target_root=target/wp200/benchmarks/storage-redb
+published_root=benchmarks/reports/storage-redb
+database_root="$target_root/database-roots"
+for path in "$target_root" "$database_root"; do
+    [[ ! -L "$path" ]] || {
+        printf 'benchmark path must not be a symbolic link: %s\n' "$path" >&2
+        exit 1
+    }
+done
+rm -rf "$database_root"
+mkdir -p "$database_root" "$published_root"
+capture="$target_root/raw-v1.txt"
+report="$target_root/report-v1.json"
+published_raw="$published_root/raw-v1.txt"
+published_report="$published_root/report-v1.json"
+
+mount_options="$(findmnt -T "$database_root" -n -o OPTIONS)"
+{
+    printf '%s\n' 'riffdb_benchmark_capture_format=1'
+    printf 'database_root=%s\n' "$repo_root/$database_root"
+    printf 'mount_options=%s\n' "$mount_options"
+    RIFFDB_BENCH_STORAGE_MEDIUM="$storage_medium" \
+    RIFFDB_STORAGE_BENCH_ITERATIONS="$iterations" \
+    RIFFDB_STORAGE_BENCH_WARMUP="$warmup" \
+    RIFFDB_STORAGE_BENCH_HISTORY_RECORDS="$history_records" \
+    TMPDIR="$repo_root/$database_root" \
+        cargo bench --locked -p riffdb-storage-redb --bench storage_baseline
+} >"$capture"
+
+if ! grep -Fxq 'correctness_preflight=passed' "$capture" \
+    || ! grep -Fxq 'git_dirty=false' "$capture"; then
+    printf '%s\n' 'redb benchmark did not produce clean correctness evidence' >&2
+    exit 1
+fi
+
+install -m 0644 "$capture" "$published_raw"
+raw_hash="$(sha256sum "$published_raw" | awk '{print $1}')"
+analysis_command="$(jq -cn \
+    --arg storage_medium "$storage_medium" \
+    --arg iterations "$iterations" \
+    --arg warmup "$warmup" \
+    --arg history_records "$history_records" \
+    '[
+      "benchmarks/run-storage-redb",
+      "--storage-medium",
+      $storage_medium,
+      "--iterations",
+      $iterations,
+      "--warmup",
+      $warmup,
+      "--history-records",
+      $history_records
+    ]')"
+jq -Rn \
+    --arg raw_path "$published_raw" \
+    --arg raw_hash "$raw_hash" \
+    --arg analysis_command "$analysis_command" \
+    --argjson configured_warmup "$warmup" \
+    -f benchmarks/storage-report-v1.jq \
+    <"$capture" >"$report"
+jq -e '
+    .schema == "riffdb.benchmark-report/v1"
+    and .report_id == "storage-redb"
+    and .dirty == false
+    and .correctness_status == "passed"
+    and .performance_status == "measured"
+    and (.results | length == 4)
+    and all(.results[];
+            .sample_count > 0
+            and (.samples_ns | length == .sample_count)
+            and .min_ns <= .p50_ns
+            and .p50_ns <= .p95_ns
+            and .p95_ns <= .p99_ns
+            and .p99_ns <= .max_ns)
+' "$report" >/dev/null
+install -m 0644 "$report" "$published_report"
+
+printf 'storage-redb benchmark captured: %s\n' "$published_report"

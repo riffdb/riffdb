@@ -523,6 +523,280 @@ impl PendingOutboxScanV1 {
     }
 }
 
+/// One source-validated outbox status that has not reached delivered state.
+///
+/// Storage constructs this value only after proving the authoritative event,
+/// outbox intent, and enclosing commit are reciprocal. Event and intent payloads
+/// deliberately do not cross this recovery and administration boundary.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct UndeliveredOutboxStatusV1 {
+    event_id: EventId,
+    status: OutboxStatusObservationV1,
+}
+
+impl UndeliveredOutboxStatusV1 {
+    /// Checks event identity and rejects already delivered status.
+    pub fn new(
+        event_id: EventId,
+        status: OutboxStatusObservationV1,
+    ) -> Result<Self, StorageValueError> {
+        status.validate_event_id(event_id)?;
+        if matches!(
+            status,
+            OutboxStatusObservationV1::Present(StoredOutboxStatusV1 {
+                state: OutboxDeliveryStateV1::Delivered { .. },
+                ..
+            })
+        ) {
+            return Err(StorageValueError::InvalidShape);
+        }
+        Ok(Self { event_id, status })
+    }
+
+    /// Returns the stable event identity.
+    #[must_use]
+    pub const fn event_id(&self) -> EventId {
+        self.event_id
+    }
+
+    /// Borrows the exact absent-or-present status observation.
+    #[must_use]
+    pub const fn status(&self) -> &OutboxStatusObservationV1 {
+        &self.status
+    }
+}
+
+/// Frozen upper fence for one complete undelivered-outbox recovery scan.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum OutboxRecoveryUpperFenceV1 {
+    /// No reciprocal authoritative event and intent existed at the initial read.
+    BeforeFirst,
+    /// Greatest reciprocal authoritative event visible at the initial read.
+    Inclusive(EventId),
+}
+
+/// Opaque continuation for one frozen undelivered-outbox recovery scan.
+///
+/// Only a checked non-final storage result can construct this value. Consumers
+/// pass it back unchanged so a continuation cannot silently recapture a newer
+/// upper fence.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct UndeliveredOutboxStatusContinuationV1 {
+    after: EventId,
+    inclusive_upper: EventId,
+}
+
+impl UndeliveredOutboxStatusContinuationV1 {
+    /// Returns the exclusive lower event bound.
+    #[must_use]
+    pub const fn after(self) -> EventId {
+        self.after
+    }
+
+    /// Returns the frozen inclusive upper event bound.
+    #[must_use]
+    pub const fn inclusive_upper(self) -> EventId {
+        self.inclusive_upper
+    }
+}
+
+/// Checked request for one page of a frozen undelivered-outbox recovery scan.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum UndeliveredOutboxStatusScanRequestV1 {
+    /// First page; storage captures the greatest reciprocal event identity.
+    Initial {
+        /// Optional exclusive lower event bound for a fresh bounded status page.
+        after: Option<EventId>,
+        /// Bounded page limit.
+        limit: OutboxPageLimit,
+    },
+    /// Later page; the opaque continuation retains the original upper fence.
+    Continue {
+        /// Continuation returned by the preceding non-final page.
+        continuation: UndeliveredOutboxStatusContinuationV1,
+        /// Bounded page limit.
+        limit: OutboxPageLimit,
+    },
+}
+
+impl UndeliveredOutboxStatusScanRequestV1 {
+    /// Constructs a first-page request.
+    #[must_use]
+    pub const fn initial(after: Option<EventId>, limit: OutboxPageLimit) -> Self {
+        Self::Initial { after, limit }
+    }
+
+    /// Constructs a continuation request from the preceding checked page.
+    #[must_use]
+    pub const fn continuing(
+        continuation: UndeliveredOutboxStatusContinuationV1,
+        limit: OutboxPageLimit,
+    ) -> Self {
+        Self::Continue {
+            continuation,
+            limit,
+        }
+    }
+
+    /// Returns the exclusive lower event bound, when continuing.
+    #[must_use]
+    pub const fn after(self) -> Option<EventId> {
+        match self {
+            Self::Initial { after, .. } => after,
+            Self::Continue { continuation, .. } => Some(continuation.after),
+        }
+    }
+
+    /// Returns the frozen inclusive upper event bound, when continuing.
+    #[must_use]
+    pub const fn inclusive_upper(self) -> Option<EventId> {
+        match self {
+            Self::Initial { .. } => None,
+            Self::Continue { continuation, .. } => Some(continuation.inclusive_upper),
+        }
+    }
+
+    /// Returns the checked requested row count.
+    #[must_use]
+    pub const fn limit(self) -> OutboxPageLimit {
+        match self {
+            Self::Initial { limit, .. } | Self::Continue { limit, .. } => limit,
+        }
+    }
+}
+
+/// Exact-end bounded undelivered scan in increasing `EventId` order.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum UndeliveredOutboxStatusScanV1 {
+    /// A non-final page bound to the first read's frozen upper fence.
+    Page {
+        /// Payload-free statuses with their complete source-record charge.
+        items: Vec<EncodedPageItem<UndeliveredOutboxStatusV1>>,
+        /// Opaque exclusive continuation retaining the frozen upper fence.
+        continuation: UndeliveredOutboxStatusContinuationV1,
+    },
+    /// The frozen scan reached exact end, including an empty result.
+    ExactEnd {
+        /// Final payload-free statuses with their complete source-record charge.
+        items: Vec<EncodedPageItem<UndeliveredOutboxStatusV1>>,
+        /// Upper fence captured by the initial read.
+        inclusive_upper: OutboxRecoveryUpperFenceV1,
+    },
+}
+
+impl UndeliveredOutboxStatusScanV1 {
+    /// Checks a non-final page and constructs its opaque continuation.
+    pub fn page(
+        request: UndeliveredOutboxStatusScanRequestV1,
+        inclusive_upper: EventId,
+        items: Vec<EncodedPageItem<UndeliveredOutboxStatusV1>>,
+    ) -> Result<Self, StorageValueError> {
+        validate_undelivered_scan_items(request, inclusive_upper, &items)?;
+        let after = items
+            .last()
+            .ok_or(StorageValueError::InvalidShape)?
+            .value()
+            .event_id();
+        if after >= inclusive_upper {
+            return Err(StorageValueError::InvalidShape);
+        }
+        Ok(Self::Page {
+            items,
+            continuation: UndeliveredOutboxStatusContinuationV1 {
+                after,
+                inclusive_upper,
+            },
+        })
+    }
+
+    /// Checks a final page, including an empty before-first result.
+    pub fn exact_end(
+        request: UndeliveredOutboxStatusScanRequestV1,
+        inclusive_upper: OutboxRecoveryUpperFenceV1,
+        items: Vec<EncodedPageItem<UndeliveredOutboxStatusV1>>,
+    ) -> Result<Self, StorageValueError> {
+        match inclusive_upper {
+            OutboxRecoveryUpperFenceV1::BeforeFirst => {
+                if !matches!(
+                    request,
+                    UndeliveredOutboxStatusScanRequestV1::Initial { .. }
+                ) || !items.is_empty()
+                {
+                    return Err(StorageValueError::InvalidShape);
+                }
+            }
+            OutboxRecoveryUpperFenceV1::Inclusive(upper) => {
+                validate_undelivered_scan_items(request, upper, &items)?;
+            }
+        }
+        Ok(Self::ExactEnd {
+            items,
+            inclusive_upper,
+        })
+    }
+
+    /// Borrows the statuses in this page.
+    #[must_use]
+    pub fn items(&self) -> &[EncodedPageItem<UndeliveredOutboxStatusV1>] {
+        match self {
+            Self::Page { items, .. } | Self::ExactEnd { items, .. } => items,
+        }
+    }
+
+    /// Returns the opaque continuation only when more source rows remain.
+    #[must_use]
+    pub const fn continuation(&self) -> Option<UndeliveredOutboxStatusContinuationV1> {
+        match self {
+            Self::Page { continuation, .. } => Some(*continuation),
+            Self::ExactEnd { .. } => None,
+        }
+    }
+
+    /// Returns the frozen upper fence.
+    #[must_use]
+    pub const fn inclusive_upper(&self) -> OutboxRecoveryUpperFenceV1 {
+        match self {
+            Self::Page { continuation, .. } => {
+                OutboxRecoveryUpperFenceV1::Inclusive(continuation.inclusive_upper)
+            }
+            Self::ExactEnd {
+                inclusive_upper, ..
+            } => *inclusive_upper,
+        }
+    }
+}
+
+fn validate_undelivered_scan_items(
+    request: UndeliveredOutboxStatusScanRequestV1,
+    inclusive_upper: EventId,
+    items: &[EncodedPageItem<UndeliveredOutboxStatusV1>],
+) -> Result<(), StorageValueError> {
+    if request
+        .inclusive_upper()
+        .is_some_and(|expected| expected != inclusive_upper)
+    {
+        return Err(StorageValueError::IdentityMismatch);
+    }
+    if items.len() > usize::from(request.limit().get().get()) {
+        return Err(StorageValueError::LimitExceeded);
+    }
+    if items
+        .windows(2)
+        .any(|pair| pair[0].value().event_id() >= pair[1].value().event_id())
+    {
+        return Err(StorageValueError::NonCanonicalOrder);
+    }
+    if items.iter().any(|item| {
+        request
+            .after()
+            .is_some_and(|after| item.value().event_id() <= after)
+            || item.value().event_id() > inclusive_upper
+    }) {
+        return Err(StorageValueError::InvalidShape);
+    }
+    checked_encoded_page_content(items, MAX_SCAN_PAGE_BYTES).map(|_| ())
+}
+
 /// Checked pending-to-delivering transition request.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct OutboxClaimV1 {
@@ -770,6 +1044,16 @@ pub trait OutboxRepository {
         limit: OutboxPageLimit,
     ) -> Result<PendingOutboxScanV1, StorageError>;
 
+    /// Scans every reciprocal authoritative tuple whose effective state has not
+    /// reached `Delivered`, without exposing event or intent payloads.
+    ///
+    /// Implementations use strict increasing event order, an exclusive lower
+    /// continuation, full source-record byte charging, and exact-end semantics.
+    fn scan_undelivered_outbox_statuses(
+        &self,
+        request: UndeliveredOutboxStatusScanRequestV1,
+    ) -> Result<UndeliveredOutboxStatusScanV1, StorageError>;
+
     /// Atomically claims the exact absent or explicit pending observation.
     fn claim_outbox(
         &mut self,
@@ -867,6 +1151,74 @@ mod tests {
             OutboxPageLimit::new(NonZeroU16::new(501).expect("nonzero")),
             Err(StorageValueError::LimitExceeded)
         );
+    }
+
+    #[test]
+    fn undelivered_status_rejects_delivered_and_scan_freezes_exact_order() {
+        let delivered = StoredOutboxStatusV1::delivered(
+            event_id(),
+            NonZeroU32::MIN,
+            destination(),
+            timestamp(1),
+        );
+        assert_eq!(
+            UndeliveredOutboxStatusV1::new(
+                event_id(),
+                OutboxStatusObservationV1::Present(delivered),
+            ),
+            Err(StorageValueError::InvalidShape)
+        );
+
+        let second_id = EventId::new(CommitSequence::first(), 1);
+        let charge = crate::EncodedContentCharge::new(1).expect("nonzero charge");
+        let first = EncodedPageItem::new(
+            UndeliveredOutboxStatusV1::new(
+                event_id(),
+                OutboxStatusObservationV1::AbsentInitialPending,
+            )
+            .expect("initial pending"),
+            charge,
+        );
+        let second = EncodedPageItem::new(
+            UndeliveredOutboxStatusV1::new(
+                second_id,
+                OutboxStatusObservationV1::AbsentInitialPending,
+            )
+            .expect("initial pending"),
+            charge,
+        );
+        let limit = OutboxPageLimit::new(NonZeroU16::new(2).expect("nonzero")).expect("limit");
+        let upper = EventId::new(CommitSequence::new(2).expect("second commit"), 0);
+        let request = UndeliveredOutboxStatusScanRequestV1::initial(None, limit);
+        let page = UndeliveredOutboxStatusScanV1::page(
+            request,
+            upper,
+            vec![first.clone(), second.clone()],
+        )
+        .expect("ordered page");
+        let continuation = page.continuation().expect("continued page");
+        assert_eq!(continuation.after(), second_id);
+        assert_eq!(continuation.inclusive_upper(), upper);
+        assert_eq!(
+            UndeliveredOutboxStatusScanV1::exact_end(
+                request,
+                OutboxRecoveryUpperFenceV1::Inclusive(upper),
+                vec![second, first],
+            ),
+            Err(StorageValueError::NonCanonicalOrder)
+        );
+        assert!(matches!(
+            UndeliveredOutboxStatusScanV1::exact_end(
+                request,
+                OutboxRecoveryUpperFenceV1::BeforeFirst,
+                Vec::new(),
+            )
+            .expect("empty exact end"),
+            UndeliveredOutboxStatusScanV1::ExactEnd {
+                inclusive_upper: OutboxRecoveryUpperFenceV1::BeforeFirst,
+                ..
+            }
+        ));
     }
 
     #[test]

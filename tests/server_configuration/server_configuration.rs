@@ -1,0 +1,306 @@
+#![cfg(target_os = "linux")]
+#![forbid(unsafe_code)]
+
+//! Process-level precedence and strictness checks for `riffdbd` configuration.
+
+use std::error::Error;
+use std::fs::{self, OpenOptions};
+use std::io::{BufRead, BufReader, Write};
+use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
+use std::path::{Path, PathBuf};
+use std::process::{Command, Stdio};
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::mpsc;
+use std::time::Duration;
+
+const READY_PREFIX: &str = "riffdbd-ready-v1\t";
+const START_TIMEOUT: Duration = Duration::from_secs(20);
+const CAPABILITY_KEYS: &[u8] = b"riffdb-capability-digest-keys-v1\n1:000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f\n";
+const IDEMPOTENCY_KEYS: &[u8] = b"riffdb-idempotency-digest-keys-v1\n1:202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f\n";
+
+static NEXT_ROOT: AtomicU64 = AtomicU64::new(1);
+
+type TestResult<T> = Result<T, Box<dyn Error + Send + Sync>>;
+
+#[test]
+fn toml_environment_and_cli_precedence_start_real_riffdbd() -> TestResult<()> {
+    let root = TestRoot::new("precedence")?;
+    let paths = ProcessPaths::new(root.path())?;
+    let config = paths.write_config("toml.redb", "127.0.0.1:1", "toml", "toml-audience")?;
+
+    let mut command = Command::new(env!("CARGO_BIN_EXE_riffdbd"));
+    clear_server_environment(&mut command);
+    command
+        .arg("--config")
+        .arg(&config)
+        .arg("--listen")
+        .arg("127.0.0.1:0")
+        .arg("--environment")
+        .arg("cli")
+        .arg("--audience")
+        .arg("cli-audience")
+        .env("RIFFDB_DATABASE", &paths.environment_database)
+        .env("RIFFDB_LISTEN", "0.0.0.0:2")
+        .env("RIFFDB_ENVIRONMENT", "environment")
+        .env("RIFFDB_AUDIENCE", "environment-audience");
+    run_to_readiness_and_shutdown(command)?;
+
+    if !paths.environment_database.is_file() || paths.toml_database.exists() {
+        return Err("per-field precedence selected the wrong database path".into());
+    }
+    Ok(())
+}
+
+#[test]
+fn explicitly_selected_toml_can_supply_every_server_field() -> TestResult<()> {
+    let root = TestRoot::new("toml-only")?;
+    let paths = ProcessPaths::new(root.path())?;
+    let config = paths.write_config(
+        "toml.redb",
+        "127.0.0.1:0",
+        "toml-only",
+        "riffdb-grpc-loopback",
+    )?;
+
+    let mut command = Command::new(env!("CARGO_BIN_EXE_riffdbd"));
+    clear_server_environment(&mut command);
+    command.arg("--config").arg(config);
+    run_to_readiness_and_shutdown(command)?;
+    if !paths.toml_database.is_file() {
+        return Err("TOML-selected database was not opened".into());
+    }
+    Ok(())
+}
+
+#[test]
+fn safe_defaults_start_from_an_explicit_working_directory() -> TestResult<()> {
+    let root = TestRoot::new("defaults")?;
+    let config_root = root.path().join("config");
+    fs::create_dir_all(root.path().join("data"))?;
+    fs::create_dir_all(root.path().join("backups"))?;
+    fs::create_dir_all(&config_root)?;
+    write_protected(&config_root.join("capability.keys"), CAPABILITY_KEYS)?;
+    write_protected(&config_root.join("idempotency.keys"), IDEMPOTENCY_KEYS)?;
+
+    let mut command = Command::new(env!("CARGO_BIN_EXE_riffdbd"));
+    clear_server_environment(&mut command);
+    command.current_dir(root.path());
+    run_to_readiness_and_shutdown(command)?;
+    if !root.path().join("data/riffdb.redb").is_file() {
+        return Err("default database path was not opened".into());
+    }
+    Ok(())
+}
+
+#[test]
+fn unknown_duplicate_wrong_type_oversize_and_invalid_higher_values_reject() -> TestResult<()> {
+    let root = TestRoot::new("strict")?;
+    let cases = [
+        "[server]\nunknown = true\n".as_bytes().to_vec(),
+        "[server]\ndatabase = \"a\"\ndatabase = \"b\"\n"
+            .as_bytes()
+            .to_vec(),
+        "[server]\ngrpc_listen = 7443\n".as_bytes().to_vec(),
+        "[unknown]\nvalue = true\n".as_bytes().to_vec(),
+        vec![b'x'; 65_537],
+    ];
+    for (index, bytes) in cases.into_iter().enumerate() {
+        let path = root.path().join(format!("invalid-{index}.toml"));
+        fs::write(&path, bytes)?;
+        assert_config_rejected(["--config", path.to_str().ok_or("non-UTF-8 test path")?])?;
+    }
+
+    let paths = ProcessPaths::new(root.path())?;
+    let valid = paths.write_config("toml.redb", "127.0.0.1:0", "toml", "riffdb-grpc-loopback")?;
+    let mut command = Command::new(env!("CARGO_BIN_EXE_riffdbd"));
+    clear_server_environment(&mut command);
+    let output = command
+        .arg("--config")
+        .arg(valid)
+        .env("RIFFDB_LISTEN", "")
+        .output()?;
+    if output.status.success()
+        || !output.stdout.is_empty()
+        || String::from_utf8_lossy(&output.stderr).contains("127.0.0.1")
+    {
+        return Err("invalid higher-precedence environment value did not fail closed".into());
+    }
+    Ok(())
+}
+
+fn assert_config_rejected<const N: usize>(arguments: [&str; N]) -> TestResult<()> {
+    let mut command = Command::new(env!("CARGO_BIN_EXE_riffdbd"));
+    clear_server_environment(&mut command);
+    let output = command.args(arguments).output()?;
+    if output.status.success() || !output.stdout.is_empty() {
+        return Err("invalid configuration reached process readiness".into());
+    }
+    let stderr = String::from_utf8(output.stderr)?;
+    if stderr != "riffdbd terminated without reaching a clean process boundary\n" {
+        return Err("invalid configuration did not return one bounded safe diagnostic".into());
+    }
+    Ok(())
+}
+
+fn clear_server_environment(command: &mut Command) {
+    for name in [
+        "RIFFDB_CONFIG",
+        "RIFFDB_DATABASE",
+        "RIFFDB_LISTEN",
+        "RIFFDB_ENVIRONMENT",
+        "RIFFDB_AUDIENCE",
+        "RIFFDB_MCP_LISTEN",
+        "RIFFDB_MCP_ORIGINS",
+        "RIFFDB_BACKUP_ROOT",
+        "RIFFDB_CAPABILITY_KEYS",
+        "RIFFDB_IDEMPOTENCY_KEYS",
+    ] {
+        command.env_remove(name);
+    }
+}
+
+fn run_to_readiness_and_shutdown(mut command: Command) -> TestResult<()> {
+    command
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    let mut child = command.spawn()?;
+    let stdout = child.stdout.take().ok_or("missing child stdout")?;
+    let stderr = child.stderr.take().ok_or("missing child stderr")?;
+    let (ready_sender, ready_receiver) = mpsc::sync_channel(1);
+    let stdout_thread = std::thread::spawn(move || {
+        let mut line = String::new();
+        let result = BufReader::new(stdout).read_line(&mut line).map(|_| line);
+        let _ = ready_sender.send(result);
+    });
+    let stderr_thread = std::thread::spawn(move || {
+        let mut reader = BufReader::new(stderr);
+        let mut bytes = Vec::new();
+        let _ = std::io::Read::read_to_end(&mut reader, &mut bytes);
+        bytes
+    });
+
+    let line = ready_receiver
+        .recv_timeout(START_TIMEOUT)
+        .map_err(|_| "riffdbd readiness timed out")??;
+    if !line.starts_with(READY_PREFIX) || line.len() > 256 {
+        let _ = child.kill();
+        return Err("riffdbd emitted an invalid readiness line".into());
+    }
+    let mut stdin = child.stdin.take().ok_or("missing child stdin")?;
+    stdin.write_all(b"shutdown\n")?;
+    stdin.flush()?;
+    drop(stdin);
+
+    let status = child.wait()?;
+    stdout_thread.join().map_err(|_| "stdout reader panicked")?;
+    let stderr = stderr_thread.join().map_err(|_| "stderr reader panicked")?;
+    if !status.success() {
+        return Err(format!(
+            "riffdbd did not shut down cleanly: {}",
+            String::from_utf8_lossy(&stderr)
+        )
+        .into());
+    }
+    Ok(())
+}
+
+struct ProcessPaths {
+    root: PathBuf,
+    toml_database: PathBuf,
+    environment_database: PathBuf,
+    capability_keys: PathBuf,
+    idempotency_keys: PathBuf,
+    backup_root: PathBuf,
+}
+
+impl ProcessPaths {
+    fn new(root: &Path) -> TestResult<Self> {
+        let capability_keys = root.join("capability.keys");
+        let idempotency_keys = root.join("idempotency.keys");
+        let backup_root = root.join("backups");
+        fs::create_dir_all(&backup_root)?;
+        write_protected(&capability_keys, CAPABILITY_KEYS)?;
+        write_protected(&idempotency_keys, IDEMPOTENCY_KEYS)?;
+        Ok(Self {
+            root: root.to_path_buf(),
+            toml_database: root.join("toml.redb"),
+            environment_database: root.join("environment.redb"),
+            capability_keys,
+            idempotency_keys,
+            backup_root,
+        })
+    }
+
+    fn write_config(
+        &self,
+        database_name: &str,
+        listen: &str,
+        environment: &str,
+        audience: &str,
+    ) -> TestResult<PathBuf> {
+        let database = self.root.join(database_name);
+        let document = format!(
+            "[server]\n\
+             database = {database:?}\n\
+             grpc_listen = {listen:?}\n\
+             environment = {environment:?}\n\
+             audience = {audience:?}\n\
+             capability_keys = {capability_keys:?}\n\
+             idempotency_keys = {idempotency_keys:?}\n\
+             \n\
+             [maintenance]\n\
+             backup_root = {backup_root:?}\n",
+            database = database.to_str().ok_or("non-UTF-8 database path")?,
+            capability_keys = self
+                .capability_keys
+                .to_str()
+                .ok_or("non-UTF-8 capability path")?,
+            idempotency_keys = self
+                .idempotency_keys
+                .to_str()
+                .ok_or("non-UTF-8 idempotency path")?,
+            backup_root = self.backup_root.to_str().ok_or("non-UTF-8 backup path")?,
+        );
+        let path = self.root.join("riffdb.toml");
+        fs::write(&path, document)?;
+        Ok(path)
+    }
+}
+
+struct TestRoot(PathBuf);
+
+impl TestRoot {
+    fn new(label: &str) -> TestResult<Self> {
+        let id = NEXT_ROOT.fetch_add(1, Ordering::Relaxed);
+        let path = std::env::temp_dir().join(format!(
+            "riffdb-server-config-{label}-{}-{id}",
+            std::process::id()
+        ));
+        fs::create_dir_all(&path)?;
+        Ok(Self(path))
+    }
+
+    fn path(&self) -> &Path {
+        &self.0
+    }
+}
+
+impl Drop for TestRoot {
+    fn drop(&mut self) {
+        let _ = fs::remove_dir_all(&self.0);
+    }
+}
+
+fn write_protected(path: &Path, bytes: &[u8]) -> TestResult<()> {
+    let mut file = OpenOptions::new()
+        .create_new(true)
+        .write(true)
+        .mode(0o600)
+        .open(path)?;
+    file.write_all(bytes)?;
+    file.sync_all()?;
+    drop(file);
+    fs::set_permissions(path, fs::Permissions::from_mode(0o600))?;
+    Ok(())
+}

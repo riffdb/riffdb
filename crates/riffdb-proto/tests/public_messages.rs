@@ -3,11 +3,16 @@
 use prost::Message;
 use riffdb_proto::{
     PublicWireError, decode_public_message, v1, validate_contract_validation_exchange,
-    validate_create_capability_exchange, validate_explain_command_exchange,
-    validate_public_message, validate_query_projection_exchange, validate_scan_commits_exchange,
+    validate_create_capability_exchange, validate_create_offline_backup_exchange,
+    validate_explain_command_exchange, validate_get_offline_maintenance_operation_exchange,
+    validate_public_message, validate_query_projection_exchange,
+    validate_restore_offline_backup_exchange, validate_scan_commits_exchange,
     validate_scan_index_exchange,
 };
-use riffdb_types::hash_schema;
+use riffdb_types::{
+    BackupNameV1, OfflineMaintenanceOperationKind, OfflineMaintenanceReplacementConfirmation,
+    hash_schema, offline_maintenance_input_hash,
+};
 
 fn uuid_v7() -> Vec<u8> {
     vec![
@@ -1089,5 +1094,117 @@ fn health_and_subscription_closed_bounds_are_checked() {
     assert_eq!(
         validate_public_message(&subscribe),
         Err(PublicWireError::InvalidIdentity)
+    );
+}
+
+#[test]
+fn offline_maintenance_identity_phase_and_exchange_are_closed() {
+    let name = BackupNameV1::new("before-upgrade").expect("name");
+    let operation = v1::OfflineMaintenanceOperation {
+        operation_id: uuid_v7(),
+        kind: v1::OfflineMaintenanceOperationKind::CreateBackup as i32,
+        backup_name: name.as_str().to_owned(),
+        input_hash: offline_maintenance_input_hash(
+            OfflineMaintenanceOperationKind::CreateBackup,
+            &name,
+            OfflineMaintenanceReplacementConfirmation::NotProvided,
+        )
+        .into_bytes()
+        .to_vec(),
+        phase: v1::OfflineMaintenancePhase::Accepted as i32,
+        failure: v1::OfflineMaintenanceFailureClass::Unspecified as i32,
+    };
+    let request = v1::CreateOfflineBackupRequest {
+        request_id: uuid_v7(),
+        operation_id: operation.operation_id.clone(),
+        backup_name: operation.backup_name.clone(),
+    };
+    let response = v1::CreateOfflineBackupResponse {
+        disposition: v1::OfflineMaintenanceStartDisposition::Accepted as i32,
+        operation: Some(operation.clone()),
+    };
+    validate_create_offline_backup_exchange(&request, &response).expect("exact create exchange");
+
+    let mut terminal_nonterminal = response.clone();
+    terminal_nonterminal.disposition = v1::OfflineMaintenanceStartDisposition::Terminal as i32;
+    assert_eq!(
+        validate_public_message(&terminal_nonterminal),
+        Err(PublicWireError::InconsistentFields)
+    );
+
+    let mut failed_without_class = operation.clone();
+    failed_without_class.phase = v1::OfflineMaintenancePhase::FailedClosed as i32;
+    assert_eq!(
+        validate_public_message(&v1::CreateOfflineBackupResponse {
+            disposition: v1::OfflineMaintenanceStartDisposition::Terminal as i32,
+            operation: Some(failed_without_class),
+        }),
+        Err(PublicWireError::InconsistentFields)
+    );
+
+    for invalid_name in [".maintenance", "../backup", "Upper", ""] {
+        let mut invalid = request.clone();
+        invalid.backup_name = invalid_name.to_owned();
+        assert_eq!(
+            validate_public_message(&invalid),
+            Err(PublicWireError::InvalidIdentity)
+        );
+    }
+
+    let restore_request = v1::RestoreOfflineBackupRequest {
+        request_id: uuid_v7(),
+        operation_id: uuid_v7(),
+        backup_name: name.as_str().to_owned(),
+        replacement_confirmation:
+            v1::OfflineMaintenanceReplacementConfirmation::AllowReplaceNonemptyTarget as i32,
+    };
+    let restore_operation = v1::OfflineMaintenanceOperation {
+        operation_id: restore_request.operation_id.clone(),
+        kind: v1::OfflineMaintenanceOperationKind::RestoreBackup as i32,
+        backup_name: name.as_str().to_owned(),
+        input_hash: offline_maintenance_input_hash(
+            OfflineMaintenanceOperationKind::RestoreBackup,
+            &name,
+            OfflineMaintenanceReplacementConfirmation::AllowReplaceNonemptyTarget,
+        )
+        .into_bytes()
+        .to_vec(),
+        phase: v1::OfflineMaintenancePhase::Succeeded as i32,
+        failure: v1::OfflineMaintenanceFailureClass::Unspecified as i32,
+    };
+    validate_restore_offline_backup_exchange(
+        &restore_request,
+        &v1::RestoreOfflineBackupResponse {
+            disposition: v1::OfflineMaintenanceStartDisposition::Terminal as i32,
+            operation: Some(restore_operation),
+        },
+    )
+    .expect("exact restore exchange");
+
+    let poll_request = v1::GetOfflineMaintenanceOperationRequest {
+        request_id: uuid_v7(),
+        operation_id: uuid_v7(),
+    };
+    validate_get_offline_maintenance_operation_exchange(
+        &poll_request,
+        &v1::GetOfflineMaintenanceOperationResponse {
+            result: Some(
+                v1::get_offline_maintenance_operation_response::Result::NotFound(v1::Unit {}),
+            ),
+        },
+    )
+    .expect("not-found carries no operation data");
+    let mut mismatched = operation;
+    mismatched.operation_id[15] ^= 1;
+    assert_eq!(
+        validate_get_offline_maintenance_operation_exchange(
+            &poll_request,
+            &v1::GetOfflineMaintenanceOperationResponse {
+                result: Some(
+                    v1::get_offline_maintenance_operation_response::Result::Found(mismatched),
+                ),
+            },
+        ),
+        Err(PublicWireError::InconsistentFields)
     );
 }

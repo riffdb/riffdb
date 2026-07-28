@@ -39,6 +39,7 @@ fn without_whitespace(source: &str) -> String {
 #[test]
 fn dependency_surface_keeps_redb_private_and_excludes_infrastructure_assemblies() {
     let manifest = read(crate_root().join("Cargo.toml"));
+    assert!(manifest.contains("cap-std = { version = \"=4.0.2\", default-features = false }"));
     assert!(manifest.contains("redb = { version = \"=4.1.0\", default-features = false }"));
     assert!(manifest.contains("sha2 = { version = \"=0.11.0\", default-features = false }"));
     assert!(manifest.contains(
@@ -66,6 +67,7 @@ fn dependency_surface_keeps_redb_private_and_excludes_infrastructure_assemblies(
     }
 
     let public_root = read(crate_root().join("src/lib.rs"));
+    assert!(!public_root.contains("pub use cap_std"));
     assert!(!public_root.contains("pub use redb"));
     assert!(!public_root.contains("extern crate redb"));
 }

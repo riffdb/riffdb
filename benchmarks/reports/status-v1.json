@@ -1,0 +1,42 @@
+{
+  "schema": "riffdb.benchmark-status/v1",
+  "revision_scope": "source_checkout",
+  "performance_claim": "none",
+  "redb_report": {
+    "report_id": "storage-redb",
+    "status": "not_published",
+    "report": null,
+    "report_sha256": null,
+    "raw_artifact": null,
+    "raw_sha256": null
+  },
+  "fjall_report": {
+    "report_id": "storage-fjall",
+    "status": "conformance_failure_not_published",
+    "report": null,
+    "report_sha256": null,
+    "raw_artifact": null,
+    "raw_sha256": null
+  },
+  "budget_comparison_report": {
+    "report_id": "budget-postgresql-riffdb",
+    "status": "not_published",
+    "report": null,
+    "report_sha256": null,
+    "raw_artifact": null,
+    "raw_sha256": null
+  },
+  "poc_semantic_report": {
+    "report_id": "poc-semantic-workloads",
+    "status": "not_published",
+    "report": null,
+    "report_sha256": null,
+    "raw_artifact": null,
+    "raw_sha256": null
+  },
+  "unsafe_postgresql_variants": {
+    "benchmark_eligible": false,
+    "reason": "correctness_negative_controls_only"
+  },
+  "poc_exit_ready": false
+}

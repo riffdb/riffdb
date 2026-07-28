@@ -29,9 +29,11 @@ use riffdb_proto::{
     v1, validate_public_message,
 };
 use riffdb_types::{
-    CanonicalValue, ContractVersion, CurrencyCode, Date, Decimal, DecimalSpec, EnumTypeId,
-    EnumVariantId, ExecutionFailureCode, FieldId, IncidentId, MAX_CONTRACT_LINEAGE_BYTES, Money,
-    Timestamp, hash_schema,
+    BackupNameV1, CanonicalValue, ContractVersion, CurrencyCode, Date, Decimal, DecimalSpec,
+    EnumTypeId, EnumVariantId, ExecutionFailureCode, FieldId, IncidentId,
+    MAX_CONTRACT_LINEAGE_BYTES, Money, OfflineMaintenanceOperationKind,
+    OfflineMaintenanceReplacementConfirmation, Timestamp, hash_schema,
+    offline_maintenance_input_hash,
 };
 
 const STORAGE_SOURCES: &[&str] = &[
@@ -242,8 +244,11 @@ const PROBE_PAYLOAD: &[u8] = &[0x08, 0x2a];
 const CRC_32C: Crc<u32> = Crc::<u32>::new(&CRC_32_ISCSI);
 const EXPECTED_METHODS: &[(&str, &str, bool)] = &[
     ("AdminService", "CreateCapability", false),
+    ("AdminService", "CreateOfflineBackup", false),
+    ("AdminService", "GetOfflineMaintenanceOperation", false),
     ("AdminService", "Health", false),
     ("AdminService", "ListPendingOutboxDeliveries", false),
+    ("AdminService", "RestoreOfflineBackup", false),
     ("AdminService", "RevokeCapability", false),
     ("AdminService", "Stats", false),
     ("CommandService", "Execute", false),
@@ -1257,9 +1262,9 @@ fn validate_service_inventory(descriptor_set: &FileDescriptorSet) -> Result<(), 
         .collect::<Vec<_>>();
 
     if actual != expected {
-        return Err(io::Error::other(
-            "service inventory differs from the accepted five-service, twenty-two-RPC baseline",
-        )
+        return Err(io::Error::other(format!(
+            "service inventory differs from the accepted five-service, twenty-five-RPC baseline: expected {expected:?}, found {actual:?}"
+        ))
         .into());
     }
     Ok(())
@@ -2720,6 +2725,128 @@ fn public_client_vectors(descriptors: &FileDescriptorSet) -> Result<String, Box<
         );
     }
 
+    let create_operation = public_maintenance_operation(
+        OfflineMaintenanceOperationKind::CreateBackup,
+        "before-upgrade",
+        OfflineMaintenanceReplacementConfirmation::NotProvided,
+        v1::OfflineMaintenancePhase::Accepted,
+        v1::OfflineMaintenanceFailureClass::Unspecified,
+    );
+    append_client_vector(
+        &mut output,
+        "AdminService.CreateOfflineBackup",
+        "request",
+        "start",
+        "riffdb.v1.CreateOfflineBackupRequest",
+        &v1::CreateOfflineBackupRequest {
+            request_id: public_request_id(),
+            operation_id: public_request_id(),
+            backup_name: "before-upgrade".to_owned(),
+        },
+    );
+    for (branch, disposition) in [
+        ("accepted", v1::OfflineMaintenanceStartDisposition::Accepted),
+        (
+            "already-accepted",
+            v1::OfflineMaintenanceStartDisposition::AlreadyAccepted,
+        ),
+    ] {
+        append_client_vector(
+            &mut output,
+            "AdminService.CreateOfflineBackup",
+            "response",
+            branch,
+            "riffdb.v1.CreateOfflineBackupResponse",
+            &v1::CreateOfflineBackupResponse {
+                disposition: disposition as i32,
+                operation: Some(create_operation.clone()),
+            },
+        );
+    }
+
+    let restore_operation = public_maintenance_operation(
+        OfflineMaintenanceOperationKind::RestoreBackup,
+        "before-upgrade",
+        OfflineMaintenanceReplacementConfirmation::AllowReplaceNonemptyTarget,
+        v1::OfflineMaintenancePhase::FailedClosed,
+        v1::OfflineMaintenanceFailureClass::ValidationFailed,
+    );
+    append_client_vector(
+        &mut output,
+        "AdminService.RestoreOfflineBackup",
+        "request",
+        "confirmed",
+        "riffdb.v1.RestoreOfflineBackupRequest",
+        &v1::RestoreOfflineBackupRequest {
+            request_id: public_request_id(),
+            operation_id: public_request_id(),
+            backup_name: "before-upgrade".to_owned(),
+            replacement_confirmation:
+                v1::OfflineMaintenanceReplacementConfirmation::AllowReplaceNonemptyTarget as i32,
+        },
+    );
+    append_client_vector(
+        &mut output,
+        "AdminService.RestoreOfflineBackup",
+        "request",
+        "unconfirmed",
+        "riffdb.v1.RestoreOfflineBackupRequest",
+        &v1::RestoreOfflineBackupRequest {
+            request_id: public_request_id(),
+            operation_id: public_request_id(),
+            backup_name: "before-upgrade".to_owned(),
+            replacement_confirmation: v1::OfflineMaintenanceReplacementConfirmation::Unspecified
+                as i32,
+        },
+    );
+    append_client_vector(
+        &mut output,
+        "AdminService.RestoreOfflineBackup",
+        "response",
+        "terminal",
+        "riffdb.v1.RestoreOfflineBackupResponse",
+        &v1::RestoreOfflineBackupResponse {
+            disposition: v1::OfflineMaintenanceStartDisposition::Terminal as i32,
+            operation: Some(restore_operation.clone()),
+        },
+    );
+
+    append_client_vector(
+        &mut output,
+        "AdminService.GetOfflineMaintenanceOperation",
+        "request",
+        "by-id",
+        "riffdb.v1.GetOfflineMaintenanceOperationRequest",
+        &v1::GetOfflineMaintenanceOperationRequest {
+            request_id: public_request_id(),
+            operation_id: public_request_id(),
+        },
+    );
+    append_client_vector(
+        &mut output,
+        "AdminService.GetOfflineMaintenanceOperation",
+        "response",
+        "not-found",
+        "riffdb.v1.GetOfflineMaintenanceOperationResponse",
+        &v1::GetOfflineMaintenanceOperationResponse {
+            result: Some(
+                v1::get_offline_maintenance_operation_response::Result::NotFound(v1::Unit {}),
+            ),
+        },
+    );
+    append_client_vector(
+        &mut output,
+        "AdminService.GetOfflineMaintenanceOperation",
+        "response",
+        "found",
+        "riffdb.v1.GetOfflineMaintenanceOperationResponse",
+        &v1::GetOfflineMaintenanceOperationResponse {
+            result: Some(
+                v1::get_offline_maintenance_operation_response::Result::Found(restore_operation),
+            ),
+        },
+    );
+
     append_discover_resource_vectors(&mut output, &full_fence, &compact_fence);
     append_discovery_page_boundary_vectors(&mut output, &full_fence);
     append_wp137_public_client_registry(&mut output, descriptors)?;
@@ -3315,6 +3442,34 @@ fn public_request_id() -> Vec<u8> {
         0x01, 0x9b, 0xf6, 0xaa, 0xa6, 0x40, 0x7d, 0xe6, 0x89, 0xc9, 0x8a, 0x7f, 0x70, 0xbb, 0xbd,
         0x23,
     ]
+}
+
+fn public_maintenance_operation(
+    kind: OfflineMaintenanceOperationKind,
+    backup_name: &str,
+    confirmation: OfflineMaintenanceReplacementConfirmation,
+    phase: v1::OfflineMaintenancePhase,
+    failure: v1::OfflineMaintenanceFailureClass,
+) -> v1::OfflineMaintenanceOperation {
+    let backup_name = BackupNameV1::new(backup_name).expect("fixture backup name");
+    let wire_kind = match kind {
+        OfflineMaintenanceOperationKind::CreateBackup => {
+            v1::OfflineMaintenanceOperationKind::CreateBackup
+        }
+        OfflineMaintenanceOperationKind::RestoreBackup => {
+            v1::OfflineMaintenanceOperationKind::RestoreBackup
+        }
+    };
+    v1::OfflineMaintenanceOperation {
+        operation_id: public_request_id(),
+        kind: wire_kind as i32,
+        backup_name: backup_name.as_str().to_owned(),
+        input_hash: offline_maintenance_input_hash(kind, &backup_name, confirmation)
+            .into_bytes()
+            .to_vec(),
+        phase: phase as i32,
+        failure: failure as i32,
+    }
 }
 
 fn public_active_selection() -> v1::ContractSelection {
@@ -4348,6 +4503,7 @@ fn response_charge_expected_variant(case_id: &str) -> Option<&str> {
         "get_commit.found_oversize" | "get_commit.found_representative" => Some("found"),
         "get_entity.found_record" => Some("found"),
         "get_outcome.found_replayed" => Some("found"),
+        "offline_maintenance_start.terminal_failed_closed" => Some("terminal"),
         "projection_status.uninitialized" => Some("found"),
         "query_projection.ready_page" => Some("ready"),
         "scan_commits.page_with_cursor" | "scan_index.page_with_cursor" => Some("page"),
@@ -4424,6 +4580,12 @@ fn validate_response_charge_candidate(
         value if value.starts_with("health.") => decode!(v1::HealthResponse),
         value if value.starts_with("list_pending_outbox_deliveries.") => {
             decode!(v1::ListPendingOutboxDeliveriesResponse)
+        }
+        value if value.starts_with("offline_maintenance_get.") => {
+            decode!(v1::GetOfflineMaintenanceOperationResponse)
+        }
+        value if value.starts_with("offline_maintenance_start.") => {
+            decode!(v1::CreateOfflineBackupResponse)
         }
         value if value.starts_with("projection_status.") => {
             decode!(v1::GetProjectionStatusResponse)
@@ -5199,6 +5361,51 @@ fn response_charge_candidate(
             }
             .encode_to_vec()
         }
+        "offline_maintenance_get.found" => {
+            v1::GetOfflineMaintenanceOperationResponse {
+                result: Some(
+                    v1::get_offline_maintenance_operation_response::Result::Found(
+                        response_charge_offline_maintenance_operation(shape)?,
+                    ),
+                ),
+            }
+            .encode_to_vec()
+        }
+        "offline_maintenance_get.not_found" => {
+            if !shape.is_empty() {
+                return Err(io::Error::other(
+                    "not-found maintenance response must have an empty shape",
+                )
+                .into());
+            }
+            v1::GetOfflineMaintenanceOperationResponse {
+                result: Some(
+                    v1::get_offline_maintenance_operation_response::Result::NotFound(v1::Unit {}),
+                ),
+            }
+            .encode_to_vec()
+        }
+        value if value.starts_with("offline_maintenance_start.") => {
+            let disposition = match value {
+                "offline_maintenance_start.accepted" => {
+                    v1::OfflineMaintenanceStartDisposition::Accepted
+                }
+                "offline_maintenance_start.terminal_failed_closed" => {
+                    v1::OfflineMaintenanceStartDisposition::Terminal
+                }
+                _ => {
+                    return Err(io::Error::other(
+                        "unknown offline-maintenance start disposition",
+                    )
+                    .into());
+                }
+            };
+            v1::CreateOfflineBackupResponse {
+                disposition: disposition as i32,
+                operation: Some(response_charge_offline_maintenance_operation(shape)?),
+            }
+            .encode_to_vec()
+        }
         "operation_schema_catalog.accepted" => public_operation_schema_catalog().encode_to_vec(),
         "projection_status.not_found" => {
             if !shape.is_empty() {
@@ -5389,6 +5596,59 @@ fn response_charge_entity_key(owner: u32, length: usize, ordinal: u32) -> Vec<u8
         key[length - 4..].copy_from_slice(&ordinal.to_be_bytes());
     }
     key
+}
+
+fn response_charge_offline_maintenance_operation(
+    shape: &BTreeMap<String, String>,
+) -> Result<v1::OfflineMaintenanceOperation, Box<dyn Error>> {
+    require_response_shape_keys(
+        shape,
+        &[
+            "backup_name_bytes",
+            "failure_present",
+            "input_hash_bytes",
+            "operation_id_bytes",
+            "operation_kind",
+            "phase",
+        ],
+    )?;
+    require_response_shape_usize(shape, "operation_id_bytes", 16)?;
+    require_response_shape_usize(shape, "input_hash_bytes", 32)?;
+    let kind = match response_shape_value(shape, "operation_kind")? {
+        "create_backup" => OfflineMaintenanceOperationKind::CreateBackup,
+        "restore_backup" => OfflineMaintenanceOperationKind::RestoreBackup,
+        _ => return Err(io::Error::other("unknown maintenance operation kind").into()),
+    };
+    let phase = match response_shape_value(shape, "phase")? {
+        "accepted" => v1::OfflineMaintenancePhase::Accepted,
+        "failed_closed" => v1::OfflineMaintenancePhase::FailedClosed,
+        _ => return Err(io::Error::other("unknown maintenance receipt phase").into()),
+    };
+    let failure = match response_shape_value(shape, "failure_present")? {
+        "false" if phase == v1::OfflineMaintenancePhase::Accepted => {
+            v1::OfflineMaintenanceFailureClass::Unspecified
+        }
+        "true" if phase == v1::OfflineMaintenancePhase::FailedClosed => {
+            v1::OfflineMaintenanceFailureClass::ValidationFailed
+        }
+        _ => return Err(io::Error::other("maintenance failure and phase disagree").into()),
+    };
+    let confirmation = match kind {
+        OfflineMaintenanceOperationKind::CreateBackup => {
+            OfflineMaintenanceReplacementConfirmation::NotProvided
+        }
+        OfflineMaintenanceOperationKind::RestoreBackup => {
+            OfflineMaintenanceReplacementConfirmation::AllowReplaceNonemptyTarget
+        }
+    };
+    let backup_name = "b".repeat(response_shape_usize(shape, "backup_name_bytes")?);
+    Ok(public_maintenance_operation(
+        kind,
+        &backup_name,
+        confirmation,
+        phase,
+        failure,
+    ))
 }
 
 fn response_charge_string_record(length: usize) -> v1::ValueRecord {

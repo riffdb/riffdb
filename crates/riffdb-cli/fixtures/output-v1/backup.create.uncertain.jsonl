@@ -1,0 +1,1 @@
+{"schema":"riffdb.cli.output/v1","command":"backup.create","ok":false,"error":{"type":"uncertain","code":"outcome_unknown","message":"the maintenance operation outcome remains unknown","recovery_action":"poll_maintenance_operation","maintenance_operation_id":"019bf6aa-a640-7de6-89c9-8a7f70bbbd23"}}

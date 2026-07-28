@@ -6,6 +6,7 @@ use std::collections::BTreeSet;
 use std::error::Error;
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 
 const POSTGRES_IMAGE: &str = "postgres:18.4-bookworm@sha256:d9c83446333daec3f0588cc709adb80c26090b7f9f0f7ec8d43c243385d79818";
 const PUBLIC_RUN_SUCCESS: &[u8] =
@@ -86,6 +87,35 @@ fn safety_package_is_nonproduction_and_cannot_enter_benchmarks() -> TestResult<(
             "safety source contains performance measurement {performance_measurement}"
         );
     }
+    Ok(())
+}
+
+#[test]
+fn benchmark_manifest_scan_ignores_generated_target_trees() -> TestResult<()> {
+    static NEXT_DIRECTORY: AtomicU64 = AtomicU64::new(1);
+
+    let root = std::env::temp_dir().join(format!(
+        "riffdb-wp139-target-scan-{}-{}",
+        std::process::id(),
+        NEXT_DIRECTORY.fetch_add(1, Ordering::Relaxed)
+    ));
+    fs::create_dir(&root)?;
+    let cleanup = TestDirectory(root.clone());
+    fs::create_dir(root.join("source"))?;
+    fs::write(
+        root.join("source/Cargo.toml"),
+        "[package]\nname = \"source\"\n",
+    )?;
+    fs::create_dir(root.join("target"))?;
+    for index in 0..256 {
+        fs::write(root.join("target").join(format!("artifact-{index}")), [])?;
+    }
+
+    assert_eq!(
+        files_named(&root, "Cargo.toml", 8)?,
+        [root.join("source/Cargo.toml")]
+    );
+    drop(cleanup);
     Ok(())
 }
 
@@ -263,7 +293,9 @@ fn files_named(root: &Path, name: &str, maximum: usize) -> TestResult<Vec<PathBu
             }
             let file_type = entry.file_type()?;
             if file_type.is_dir() {
-                pending.push(entry.path());
+                if entry.file_name() != "target" {
+                    pending.push(entry.path());
+                }
             } else if file_type.is_file() && entry.file_name() == name {
                 matches.push(entry.path());
             }
@@ -271,6 +303,14 @@ fn files_named(root: &Path, name: &str, maximum: usize) -> TestResult<Vec<PathBu
     }
     matches.sort();
     Ok(matches)
+}
+
+struct TestDirectory(PathBuf);
+
+impl Drop for TestDirectory {
+    fn drop(&mut self) {
+        let _ = fs::remove_dir_all(&self.0);
+    }
 }
 
 fn rust_source_tree(root: &Path, maximum: usize) -> TestResult<String> {

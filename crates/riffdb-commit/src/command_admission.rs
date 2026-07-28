@@ -1243,6 +1243,7 @@ mod tests {
             facts,
             authorized(command),
             invocation_request_id,
+            riffdb_types::ServiceIngressKindV1::Grpc,
             control,
         )
         .expect("exact command preparation")

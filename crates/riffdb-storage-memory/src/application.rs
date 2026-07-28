@@ -57,6 +57,7 @@ struct ApplicationOverlay {
     events: Vec<StoredDurableEventV1>,
     outbox_intents: Vec<riffdb_storage_api::StoredOutboxIntentV1>,
     pending_outbox_events: Vec<EventId>,
+    undelivered_outbox_events: Vec<EventId>,
     command_charges: Vec<(CommitSequence, SyntheticCommandClassCharges)>,
 }
 
@@ -81,6 +82,7 @@ impl ApplicationOverlay {
             events: state.events.clone(),
             outbox_intents: state.outbox_intents.clone(),
             pending_outbox_events: state.pending_outbox_events.clone(),
+            undelivered_outbox_events: state.undelivered_outbox_events.clone(),
             command_charges: state.synthetic_charges.command_classes.clone(),
         })
     }
@@ -101,6 +103,7 @@ impl ApplicationOverlay {
         state.events = self.events;
         state.outbox_intents = self.outbox_intents;
         state.pending_outbox_events = self.pending_outbox_events;
+        state.undelivered_outbox_events = self.undelivered_outbox_events;
         state.synthetic_charges.command_classes = self.command_charges;
     }
 }
@@ -1279,9 +1282,15 @@ fn apply_events(
         let pending_position = overlay
             .pending_outbox_events
             .binary_search(&event.event_id());
-        let (Err(event_index), Err(intent_index), Err(pending_index)) =
-            (event_position, intent_position, pending_position)
-        else {
+        let undelivered_position = overlay
+            .undelivered_outbox_events
+            .binary_search(&event.event_id());
+        let (Err(event_index), Err(intent_index), Err(pending_index), Err(undelivered_index)) = (
+            event_position,
+            intent_position,
+            pending_position,
+            undelivered_position,
+        ) else {
             return Err(storage_error(StorageErrorKind::InvariantViolation));
         };
         overlay.events.insert(event_index, event.clone());
@@ -1289,6 +1298,9 @@ fn apply_events(
         overlay
             .pending_outbox_events
             .insert(pending_index, event.event_id());
+        overlay
+            .undelivered_outbox_events
+            .insert(undelivered_index, event.event_id());
     }
     Ok(())
 }

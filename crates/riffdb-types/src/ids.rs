@@ -358,6 +358,10 @@ hash_id!(
     /// The hash of a public or durable schema.
     SchemaHash
 );
+hash_id!(
+    /// The stable semantic-input hash of one offline maintenance operation.
+    OfflineMaintenanceInputHash
+);
 
 /// A validation failure for a UUIDv7 identifier.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -534,6 +538,10 @@ uuid_v7_id!(
 uuid_v7_id!(
     /// The identifier of a durable provenance record.
     ProvenanceId
+);
+uuid_v7_id!(
+    /// The caller-stable identifier of one offline maintenance operation.
+    OfflineMaintenanceOperationId
 );
 
 /// A safe validation failure for a bounded textual identifier.

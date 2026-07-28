@@ -1,0 +1,64 @@
+{
+  "schema": "riffdb.wp190-recovery-consumption/v1",
+  "source": "tests/recovery/fixtures/wp190-report-v1.json",
+  "source_sha256": "b27ffecc391a48acd9d89533113dcaa113ad41a34a868c1dda40c74d934cab9d",
+  "source_schema": "riffdb.wp190.recovery-report.v1",
+  "source_checksum": "tests/recovery/fixtures/wp190-report-v1.sha256",
+  "required_acceptance_commands": [
+    "cargo test -p riffdb-testkit --test full_recovery_matrix -- --ignored",
+    "cargo test -p riffdb-testkit --test offline_maintenance_matrix -- --ignored"
+  ],
+  "required_case_ids": [
+    "cli.bootstrap.after-credential-file-sync",
+    "cli.bootstrap.after-parent-directory-sync",
+    "command.public-response.kill-riffdbd",
+    "command.public-response.partial-frame",
+    "maintenance.backup.after-publication",
+    "maintenance.daemon.after-database-close",
+    "maintenance.daemon.after-drain",
+    "maintenance.daemon.after-fresh-validation",
+    "maintenance.daemon.after-staged-authorization",
+    "maintenance.receipt.after-file-sync",
+    "maintenance.receipt.after-parent-sync",
+    "maintenance.receipt.after-rename",
+    "maintenance.receipt.before-file-sync",
+    "maintenance.receipt.before-rename",
+    "maintenance.restore.after-stage",
+    "maintenance.restore.after-target-parent-sync",
+    "maintenance.restore.after-target-publication",
+    "maintenance.restore.before-target-publication"
+  ],
+  "cli_retention_case_ids": [
+    "cli.bootstrap.after-credential-file-sync",
+    "cli.bootstrap.after-parent-directory-sync"
+  ],
+  "poc004_case_ids": [
+    "command.public-response.kill-riffdbd",
+    "command.public-response.partial-frame"
+  ],
+  "maintenance_daemon_case_ids": [
+    "maintenance.daemon.after-database-close",
+    "maintenance.daemon.after-drain",
+    "maintenance.daemon.after-fresh-validation",
+    "maintenance.daemon.after-staged-authorization"
+  ],
+  "maintenance_adapter_case_ids": [
+    "maintenance.backup.after-publication",
+    "maintenance.receipt.after-file-sync",
+    "maintenance.receipt.after-parent-sync",
+    "maintenance.receipt.after-rename",
+    "maintenance.receipt.before-file-sync",
+    "maintenance.receipt.before-rename",
+    "maintenance.restore.after-stage",
+    "maintenance.restore.after-target-parent-sync",
+    "maintenance.restore.after-target-publication",
+    "maintenance.restore.before-target-publication"
+  ],
+  "coverage": {
+    "inventory_source": "crates/riffdb-testkit/src/failpoint.rs",
+    "inventory_cases": 38,
+    "executed_cases": 18,
+    "complete": true,
+    "unresolved_production_gaps": []
+  }
+}
