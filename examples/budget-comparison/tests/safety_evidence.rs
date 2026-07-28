@@ -9,7 +9,8 @@ use std::fs::{self, File, OpenOptions};
 use std::future::Future;
 use std::io::{self, BufReader, Read, Write};
 use std::net::SocketAddr;
-use std::os::unix::fs::OpenOptionsExt;
+use std::os::unix::ffi::OsStrExt;
+use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStderr, ChildStdin, ChildStdout, Command, ExitStatus, Stdio};
 use std::str;
@@ -32,6 +33,7 @@ use tonic::transport::Endpoint;
 
 const RIFFDBD_ENV: &str = "RIFFDB_BUDGET_RIFFDBD_BIN";
 const RUNNER_ENV: &str = "RIFFDB_BUDGET_SAFETY_BIN";
+const REPORT_PATH_ENV: &str = "RIFFDB_BUDGET_SAFETY_REPORT_PATH";
 const PROTOCOL: &str = "riffdb.budget.safety-evidence/v1";
 const AUDIENCE: &str = "riffdb-grpc-loopback";
 const ENVIRONMENT: &str = "wp139-safety-evidence";
@@ -41,6 +43,7 @@ const READY_PREFIX: &str = "riffdbd-ready-v1\t";
 const SHUTDOWN_COMMAND: &[u8] = b"shutdown\n";
 const MAX_READY_LINE_BYTES: usize = 256;
 const MAX_RUNNER_OUTPUT_BYTES: usize = 32_768;
+const MAX_REPORT_PATH_BYTES: usize = 4_096;
 const PROCESS_START_TIMEOUT: Duration = Duration::from_secs(15);
 const PROCESS_STOP_TIMEOUT: Duration = Duration::from_secs(10);
 const PROCESS_KILL_TIMEOUT: Duration = Duration::from_secs(5);
@@ -80,6 +83,7 @@ fn safety_evidence_runner_proves_all_four_live_contrasts() -> TestResult<()> {
 async fn run_live_evidence(inputs: LiveInputs) -> TestResult<()> {
     let temporary = TemporaryDirectory::new()?;
     let database_path = temporary.path().join("riffdb.redb");
+    let backup_root = temporary.path().join("backups");
     let capability_keys_path = temporary.path().join("capability.keys");
     let idempotency_keys_path = temporary.path().join("idempotency.keys");
     let bootstrap_path = temporary.path().join("bootstrap.credential");
@@ -97,6 +101,7 @@ async fn run_live_evidence(inputs: LiveInputs) -> TestResult<()> {
     let mut process = ServerProcess::spawn(
         &inputs.riffdbd,
         &database_path,
+        &backup_root,
         &capability_keys_path,
         &idempotency_keys_path,
     )?;
@@ -127,7 +132,11 @@ async fn run_live_evidence(inputs: LiveInputs) -> TestResult<()> {
         "checked safety evidence failure",
     )?;
 
-    io::stdout().lock().write_all(&output.stdout)?;
+    if let Some(report_path) = inputs.report_path.as_deref() {
+        write_protected_file(report_path, &output.stdout)?;
+    } else {
+        io::stdout().lock().write_all(&output.stdout)?;
+    }
     Ok(())
 }
 
@@ -135,6 +144,7 @@ struct LiveInputs {
     postgres_url: String,
     riffdbd: PathBuf,
     runner: PathBuf,
+    report_path: Option<PathBuf>,
 }
 
 impl LiveInputs {
@@ -165,8 +175,130 @@ impl LiveInputs {
             postgres_url,
             riffdbd: checked_binary_path(riffdbd, RIFFDBD_ENV)?,
             runner: checked_binary_path(runner, RUNNER_ENV)?,
+            report_path: checked_report_path(std::env::var_os(REPORT_PATH_ENV))?,
         }))
     }
+}
+
+fn checked_report_path(candidate: Option<OsString>) -> TestResult<Option<PathBuf>> {
+    let Some(candidate) = candidate else {
+        return Ok(None);
+    };
+    let path = PathBuf::from(candidate);
+    if path.as_os_str().as_bytes().len() > MAX_REPORT_PATH_BYTES
+        || !path.is_absolute()
+        || path.file_name().is_none()
+        || !path.parent().is_some_and(Path::is_dir)
+        || path.exists()
+    {
+        return Err(test_failure(
+            "WP-139 safety report path must be a new file in an existing absolute directory",
+        ));
+    }
+    Ok(Some(path))
+}
+
+fn assert_authoritatively_ready(report: &v1::AuthenticatedHealth) -> TestResult<()> {
+    if report.active_contract_version != Some(CONTRACT_VERSION) {
+        return Err(test_failure(
+            "fresh database reported the wrong active Budget contract",
+        ));
+    }
+    let expected_kinds = [
+        v1::HealthComponentKind::AuthoritativeStorage,
+        v1::HealthComponentKind::Catalog,
+        v1::HealthComponentKind::CommitCoordinator,
+        v1::HealthComponentKind::Projection,
+        v1::HealthComponentKind::Outbox,
+    ];
+    let actual_kinds = report
+        .components
+        .iter()
+        .map(|component| v1::HealthComponentKind::try_from(component.component))
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|_| test_failure("Health reported an unknown component kind"))?;
+    if actual_kinds != expected_kinds {
+        return Err(test_failure(
+            "Health omitted or reordered its authoritative and derived components",
+        ));
+    }
+    for component in &report.components[..3] {
+        if v1::HealthComponentStatus::try_from(component.status)
+            != Ok(v1::HealthComponentStatus::Healthy)
+        {
+            return Err(test_failure(
+                "fresh database reported an unhealthy authoritative component",
+            ));
+        }
+    }
+
+    let mut derived_degraded = false;
+    for component in &report.components[3..] {
+        match v1::HealthComponentStatus::try_from(component.status) {
+            Ok(v1::HealthComponentStatus::Healthy) => {}
+            Ok(v1::HealthComponentStatus::Degraded) => derived_degraded = true,
+            _ => {
+                return Err(test_failure(
+                    "fresh database reported an unavailable derived component",
+                ));
+            }
+        }
+    }
+    let expected_status = if derived_degraded {
+        v1::HealthStatus::Degraded
+    } else {
+        v1::HealthStatus::Ready
+    };
+    if v1::HealthStatus::try_from(report.status) != Ok(expected_status) {
+        return Err(test_failure(
+            "aggregate Health did not match its authoritative and derived components",
+        ));
+    }
+    Ok(())
+}
+
+#[test]
+fn report_path_is_new_absolute_bounded_and_non_overwriting() -> TestResult<()> {
+    let root = TemporaryDirectory::new()?;
+    let report_path = root.path().join("report-v1.jsonl");
+    assert_eq!(
+        checked_report_path(Some(report_path.clone().into_os_string()))?,
+        Some(report_path.clone())
+    );
+    assert!(checked_report_path(Some(OsString::from("relative-report.jsonl"))).is_err());
+    assert!(
+        checked_report_path(Some(
+            root.path()
+                .join("x".repeat(MAX_REPORT_PATH_BYTES))
+                .into_os_string()
+        ))
+        .is_err()
+    );
+    assert!(
+        checked_report_path(Some(
+            root.path()
+                .join("missing")
+                .join("report.jsonl")
+                .into_os_string()
+        ))
+        .is_err()
+    );
+
+    write_protected_file(&report_path, b"existing")?;
+    assert!(
+        checked_report_path(Some(report_path.clone().into_os_string())).is_err(),
+        "an existing report must be rejected before execution"
+    );
+    assert!(
+        write_protected_file(&report_path, b"replacement").is_err(),
+        "create_new must remain the overwrite boundary"
+    );
+    assert_eq!(fs::read(&report_path)?, b"existing");
+    assert_eq!(
+        fs::metadata(&report_path)?.permissions().mode() & 0o777,
+        0o600
+    );
+    Ok(())
 }
 
 fn required_live_mode() -> TestResult<bool> {
@@ -244,13 +376,7 @@ async fn bootstrap_deploy_and_issue(
     let Some(v1::health_response::Result::Authenticated(report)) = health.result else {
         return Err(test_failure("Health did not use the authenticated result"));
     };
-    if report.status != v1::HealthStatus::Ready as i32
-        || report.active_contract_version != Some(CONTRACT_VERSION)
-    {
-        return Err(test_failure(
-            "fresh database did not become ready with the Budget contract",
-        ));
-    }
+    assert_authoritatively_ready(&report)?;
 
     let response = bounded_rpc(
         "normal safety capability creation",
@@ -622,6 +748,7 @@ impl ServerProcess {
     fn spawn(
         binary: &Path,
         database_path: &Path,
+        backup_root: &Path,
         capability_keys_path: &Path,
         idempotency_keys_path: &Path,
     ) -> io::Result<Self> {
@@ -629,6 +756,8 @@ impl ServerProcess {
         command
             .arg("--database")
             .arg(database_path)
+            .arg("--backup-root")
+            .arg(backup_root)
             .arg("--listen")
             .arg("127.0.0.1:0")
             .arg("--environment")
