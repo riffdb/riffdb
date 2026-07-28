@@ -148,6 +148,14 @@ impl std::fmt::Debug for RedbMaintenanceStorage {
     }
 }
 
+impl Drop for RedbMaintenanceStorage {
+    fn drop(&mut self) {
+        // A fork may briefly retain a duplicate descriptor. Explicitly releasing
+        // ownership prevents that descriptor from extending this owner's lifetime.
+        let _ = self.ownership_lock.unlock();
+    }
+}
+
 impl RedbMaintenanceStorage {
     /// Opens, validates, and reconciles the complete reserved maintenance subtree.
     pub fn open(
@@ -1139,4 +1147,57 @@ fn limit_exceeded() -> StorageError {
 
 fn unknown() -> StorageError {
     storage_error(StorageErrorKind::CommitStatusUnknown)
+}
+
+#[cfg(all(test, unix))]
+mod tests {
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    use super::*;
+
+    static NEXT_TEST_PATH: AtomicU64 = AtomicU64::new(1);
+
+    struct TestRoot(PathBuf);
+
+    impl TestRoot {
+        fn new() -> Self {
+            let ordinal = NEXT_TEST_PATH.fetch_add(1, Ordering::Relaxed);
+            let path = std::env::temp_dir().join(format!(
+                "riffdb-redb-maintenance-drop-lock-{}-{ordinal}",
+                std::process::id()
+            ));
+            let _ = fs::remove_dir_all(&path);
+            fs::create_dir(&path).expect("create test root");
+            Self(path)
+        }
+
+        fn join(&self, value: &str) -> PathBuf {
+            self.0.join(value)
+        }
+    }
+
+    impl Drop for TestRoot {
+        fn drop(&mut self) {
+            let _ = fs::remove_dir_all(&self.0);
+        }
+    }
+
+    #[test]
+    fn drop_releases_ownership_shared_with_an_inherited_descriptor() {
+        let root = TestRoot::new();
+        let database = root.join("database.redb");
+        let backup_root = root.join("backups");
+        let (storage, _) =
+            RedbMaintenanceStorage::open(&database, &backup_root).expect("open maintenance");
+        let inherited = storage
+            .ownership_lock
+            .try_clone()
+            .expect("model inherited lock descriptor");
+
+        drop(storage);
+        let (reopened, _) = RedbMaintenanceStorage::open(&database, &backup_root)
+            .expect("drop must release ownership despite an inherited descriptor");
+        drop(reopened);
+        drop(inherited);
+    }
 }
