@@ -3,6 +3,7 @@ set -euo pipefail
 export LC_ALL=C
 export TZ=UTC
 export CARGO_TERM_COLOR=never
+unset RUSTFLAGS CARGO_ENCODED_RUSTFLAGS
 umask 022
 
 if [[ $# -ne 1 || "$1" != "--verify" ]]; then
@@ -207,18 +208,23 @@ benchmarks/test-evidence-validation
 ./scripts/release-evidence --verify
 ./scripts/ci-all
 
+release_target="$repo_root/target"
+repro_target="$repo_root/target/wp200/repro-build"
+release_rustflags="--remap-path-prefix=$release_target=/riffdb-build"
+release_rustflags+=" --remap-path-prefix=$repro_target=/riffdb-build"
+rm -rf "$repro_target"
 CARGO_INCREMENTAL=0 \
 RIFFDB_GIT_REVISION="$revision" \
+RUSTFLAGS="$release_rustflags" \
     cargo build --locked --release \
         -p riffdb-server --bin riffdbd \
         -p riffdb-cli --bin riffdb \
         -p riffdb-mcp-stdio --bin riffdb-mcp
 
-repro_target="$repo_root/target/wp200/repro-build"
-rm -rf "$repro_target"
 CARGO_INCREMENTAL=0 \
 RIFFDB_GIT_REVISION="$revision" \
 CARGO_TARGET_DIR="$repro_target" \
+RUSTFLAGS="$release_rustflags" \
     cargo build --locked --release \
         -p riffdb-server --bin riffdbd \
         -p riffdb-cli --bin riffdb \
