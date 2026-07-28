@@ -306,6 +306,7 @@ impl Harness {
         let process = ServerProcess::spawn(
             &binaries.server,
             &temporary.path().join("database"),
+            &temporary.path().join("backups"),
             &capability_keys,
             &idempotency_keys,
         )?;
@@ -642,12 +643,15 @@ impl ServerProcess {
     fn spawn(
         binary: &Path,
         database: &Path,
+        backup_root: &Path,
         capability_keys: &Path,
         idempotency_keys: &Path,
     ) -> io::Result<Self> {
         let mut child = Command::new(binary)
             .arg("--database")
             .arg(database)
+            .arg("--backup-root")
+            .arg(backup_root)
             .arg("--listen")
             .arg("127.0.0.1:0")
             .arg("--environment")
@@ -828,6 +832,12 @@ fn process_test_source_never_passes_a_database_path_to_the_cli() {
     assert!(!cli_launcher.contains("--database"));
     assert!(!cli_launcher.contains("database"));
     assert!(cli_launcher.contains("CARGO_BIN_EXE_riffdb"));
+}
+
+#[test]
+fn process_server_uses_an_explicit_backup_root() {
+    let source = include_str!("public_process.rs");
+    assert!(source.contains(".arg(\"--backup-root\")"));
 }
 
 #[test]

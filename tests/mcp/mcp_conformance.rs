@@ -13,6 +13,7 @@ mod backend;
 mod hosted;
 
 use std::{
+    collections::VecDeque,
     io::{BufRead, BufReader, Write},
     process::{Child, ChildStdin, Command, Stdio},
     sync::mpsc::{self, Receiver},
@@ -21,8 +22,8 @@ use std::{
 };
 
 use backend::{
-    ACTIVE_CONTRACT_URI, CAPABILITY_TOKEN, COMMAND_PLAN_URI, ConformanceBackend, INTERNAL_CANARY,
-    PROJECTION_STATUS_URI, STABLE_TOOL, STALE_TOOL, UNKNOWN_TOOL,
+    ACTIVE_CONTRACT_URI, CAPABILITY_TOKEN, COMMAND_PLAN_URI, ConformanceBackend, DEPLOYED_TOOL,
+    INTERNAL_CANARY, PROJECTION_STATUS_URI, STABLE_TOOL, STALE_TOOL, UNKNOWN_TOOL,
 };
 use bytes::Bytes;
 use hosted::{HostedConformanceConnection, hosted_registration};
@@ -59,6 +60,7 @@ struct StdioClient {
     input: Option<ChildStdin>,
     output: Option<Receiver<String>>,
     reader: Option<thread::JoinHandle<()>>,
+    pending_notifications: VecDeque<Value>,
 }
 
 impl StdioClient {
@@ -85,6 +87,7 @@ impl StdioClient {
             input: Some(input),
             output: Some(receiver),
             reader: Some(reader),
+            pending_notifications: VecDeque::new(),
         }
     }
 
@@ -113,6 +116,28 @@ impl StdioClient {
                 serde_json::from_str(&line).expect("stdout contains only JSON-RPC messages");
             if response.get("id") == Some(&json!(id)) {
                 return response;
+            }
+            if response.get("id").is_none() && response.get("method").is_some() {
+                self.pending_notifications.push_back(response);
+            }
+        }
+    }
+
+    fn notification(&mut self) -> Value {
+        if let Some(notification) = self.pending_notifications.pop_front() {
+            return notification;
+        }
+        loop {
+            let line = self
+                .output
+                .as_ref()
+                .expect("open child stdout")
+                .recv_timeout(IO_TIMEOUT)
+                .expect("bounded stdio notification");
+            let message: Value =
+                serde_json::from_str(&line).expect("stdout contains only JSON-RPC messages");
+            if message.get("id").is_none() && message.get("method").is_some() {
+                return message;
             }
         }
     }
@@ -596,6 +621,73 @@ fn resource_json(response: &Value) -> Value {
 fn stdio_uses_exact_protocol_and_policy_filtered_common_handler() {
     let transcript = stdio_transcript();
     assert_transcript_semantics(&transcript);
+}
+
+#[test]
+fn contract_deploy_changes_active_session_catalog_and_emits_list_notifications() {
+    let mut client = StdioClient::spawn();
+    let initialized = client.request(
+        1,
+        "initialize",
+        Some(json!({
+            "capabilities": {},
+            "clientInfo": {"name": "riffdb-deploy-conformance", "version": "1"},
+            "protocolVersion": MCP_PROTOCOL_VERSION
+        })),
+    );
+    assert_eq!(
+        result(&initialized)["protocolVersion"],
+        MCP_PROTOCOL_VERSION
+    );
+    client.notify("notifications/initialized", None);
+
+    // The conformance deployment backend waits for both initial compact
+    // inventories before advancing its catalog fence. This is an explicit
+    // observer/deployment barrier, not time-based synchronization.
+    let deployed = client.request(
+        2,
+        "tools/call",
+        Some(json!({
+            "name": "riffdb.contract.deploy",
+            "arguments": {
+                "source": "contract LegalSpend version 3 {}"
+            }
+        })),
+    );
+    assert_eq!(
+        result(&deployed)["structuredContent"]["activated"]["contract_version"],
+        "3"
+    );
+
+    let notifications = [client.notification(), client.notification()];
+    assert_eq!(
+        notifications.map(|notification| notification["method"].clone()),
+        [
+            json!("notifications/tools/list_changed"),
+            json!("notifications/resources/list_changed"),
+        ]
+    );
+
+    let tools = client.request(3, "tools/list", None);
+    let tool_names = result(&tools)["tools"]
+        .as_array()
+        .expect("post-deploy tool array")
+        .iter()
+        .map(|tool| tool["name"].as_str().expect("post-deploy tool name"))
+        .collect::<Vec<_>>();
+    assert!(tool_names.contains(&STABLE_TOOL));
+    assert!(tool_names.contains(&DEPLOYED_TOOL));
+    assert!(!tool_names.contains(&STALE_TOOL));
+
+    let resources = client.request(4, "resources/list", None);
+    let resource_uris = result(&resources)["resources"]
+        .as_array()
+        .expect("post-deploy resource array")
+        .iter()
+        .map(|resource| resource["uri"].as_str().expect("resource URI"))
+        .collect::<Vec<_>>();
+    assert!(resource_uris.contains(&"riffdb://contract/LegalSpend/3"));
+    assert!(!resource_uris.contains(&"riffdb://contract/LegalSpend/2"));
 }
 
 #[tokio::test(flavor = "current_thread")]
