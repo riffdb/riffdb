@@ -1,0 +1,166 @@
+#!/usr/bin/env bash
+set -euo pipefail
+umask 022
+
+usage() {
+    printf '%s\n' \
+        'usage: scripts/release-install-smoke --bundle-root PATH' >&2
+}
+
+if [[ $# -ne 2 || "$1" != "--bundle-root" || -z "$2" ]]; then
+    usage
+    exit 2
+fi
+if [[ ! -d "$2" || -L "$2" ]]; then
+    printf '%s\n' 'release install smoke bundle root is missing or linked' >&2
+    exit 1
+fi
+bundle_root="$(cd -- "$2" && pwd -P)"
+if [[ -n "$(find "$bundle_root" -type l -print -quit)" ]]; then
+    printf '%s\n' 'release bundle contains a symbolic link' >&2
+    exit 1
+fi
+
+for tool in cmp find install mktemp rm sort stat; do
+    if ! command -v "$tool" >/dev/null 2>&1; then
+        printf 'required release install smoke tool is missing: %s\n' "$tool" >&2
+        exit 1
+    fi
+done
+
+expected_bins=$'riffdb\nriffdb-mcp\nriffdbd'
+actual_bins="$(
+    find "$bundle_root/bin" -mindepth 1 -maxdepth 1 -printf '%f\n' | sort
+)"
+if [[ "$actual_bins" != "$expected_bins" ]]; then
+    printf '%s\n' 'release bundle must contain exactly three product binaries' >&2
+    exit 1
+fi
+expected_units=$'riffdb-mcp.socket\nriffdb-mcp@.service\nriffdbd.service'
+actual_units="$(
+    find "$bundle_root/systemd" -mindepth 1 -maxdepth 1 -printf '%f\n' | sort
+)"
+if [[ "$actual_units" != "$expected_units" ]]; then
+    printf '%s\n' 'release bundle contains an unexpected systemd unit set' >&2
+    exit 1
+fi
+expected_docs=$'backup-restore.md\ncompatibility.md\nconfiguration.md\ninstallation.md\nknown-limitations.md\nrelease.md\nsecurity.md\nupgrade-removal.md'
+actual_docs="$(
+    find "$bundle_root/docs" -mindepth 1 -maxdepth 1 -printf '%f\n' | sort
+)"
+if [[ "$actual_docs" != "$expected_docs" ]]; then
+    printf '%s\n' 'release bundle contains an unexpected documentation set' >&2
+    exit 1
+fi
+expected_configs=$'bootstrap-budget-demo.json\nbootstrap-operator.json.example\nbudget-allocate-v1.json\nbudget-create-v1.json\nclient.toml.example\nmcp.toml.example\nriffdbd.toml.example'
+actual_configs="$(
+    find "$bundle_root/release/config" \
+        -mindepth 1 -maxdepth 1 -printf '%f\n' | sort
+)"
+if [[ "$actual_configs" != "$expected_configs" ]]; then
+    printf '%s\n' 'release bundle contains an unexpected configuration set' >&2
+    exit 1
+fi
+if [[ "$(
+    find "$bundle_root/sysusers.d" \
+        -mindepth 1 -maxdepth 1 -printf '%f\n' | sort
+)" != "riffdb.conf" || "$(
+    find "$bundle_root/tmpfiles.d" \
+        -mindepth 1 -maxdepth 1 -printf '%f\n' | sort
+)" != "riffdb.conf" ]]; then
+    printf '%s\n' 'release bundle contains an unexpected account-layout set' >&2
+    exit 1
+fi
+
+install_root="$(mktemp -d "${TMPDIR:-/tmp}/riffdb-install-smoke.XXXXXX")"
+cleanup() {
+    rm -rf "$install_root"
+}
+trap cleanup EXIT INT TERM
+doc_root="$install_root/usr/share/doc/riffdb"
+
+install_one() {
+    local mode="$1"
+    local source="$2"
+    local destination="$3"
+    local source_mode="${4:-$mode}"
+    local actual_mode
+    if [[ ! -f "$source" || -L "$source" ]]; then
+        printf 'release install source is missing, not regular, or linked: %s\n' \
+            "$source" >&2
+        exit 1
+    fi
+    actual_mode="$(stat -c '%a' "$source")"
+    if [[ "$actual_mode" != "${source_mode#0}" ]]; then
+        printf 'bundle mode mismatch for %s: expected %s, found %s\n' \
+            "$source" "${source_mode#0}" "$actual_mode" >&2
+        exit 1
+    fi
+    install -D -m "$mode" "$source" "$destination"
+    cmp "$source" "$destination"
+    actual_mode="$(stat -c '%a' "$destination")"
+    if [[ "$actual_mode" != "${mode#0}" ]]; then
+        printf 'installed mode mismatch for %s: expected %s, found %s\n' \
+            "$destination" "${mode#0}" "$actual_mode" >&2
+        exit 1
+    fi
+}
+
+for binary in riffdb riffdb-mcp riffdbd; do
+    install_one 0755 \
+        "$bundle_root/bin/$binary" \
+        "$install_root/usr/bin/$binary"
+done
+for unit in riffdbd.service riffdb-mcp.socket riffdb-mcp@.service; do
+    install_one 0644 \
+        "$bundle_root/systemd/$unit" \
+        "$install_root/usr/lib/systemd/system/$unit"
+done
+install_one 0644 \
+    "$bundle_root/sysusers.d/riffdb.conf" \
+    "$install_root/usr/lib/sysusers.d/riffdb.conf"
+install_one 0644 \
+    "$bundle_root/tmpfiles.d/riffdb.conf" \
+    "$install_root/usr/lib/tmpfiles.d/riffdb.conf"
+install_one 0640 \
+    "$bundle_root/release/config/riffdbd.toml.example" \
+    "$install_root/etc/riffdb/riffdbd.toml" \
+    0644
+
+install_one 0644 "$bundle_root/README.md" "$doc_root/README.md"
+install_one 0755 "$bundle_root/demo" "$doc_root/demo"
+install_one 0644 \
+    "$bundle_root/release/README.md" \
+    "$doc_root/release/README.md"
+install_one 0644 \
+    "$bundle_root/release/RELEASE_NOTES.md" \
+    "$doc_root/release/RELEASE_NOTES.md"
+install_one 0644 \
+    "$bundle_root/examples/contracts/budget.riff" \
+    "$doc_root/examples/contracts/budget.riff"
+for license in LICENSE-MIT LICENSE-APACHE; do
+    install_one 0644 "$bundle_root/$license" "$doc_root/$license"
+done
+while IFS= read -r document; do
+    install_one 0644 "$document" "$doc_root/docs/${document##*/}"
+done < <(find "$bundle_root/docs" -mindepth 1 -maxdepth 1 -type f | sort)
+while IFS= read -r config; do
+    install_one 0644 \
+        "$config" \
+        "$doc_root/release/config/${config##*/}"
+done < <(
+    find "$bundle_root/release/config" \
+        -mindepth 1 -maxdepth 1 -type f | sort
+)
+
+if [[ -n "$(find "$install_root" -type l -print -quit)" ]]; then
+    printf '%s\n' 'release install smoke created a symbolic link' >&2
+    exit 1
+fi
+
+"$bundle_root/demo" --check-layout >/dev/null
+RIFFDB_DEMO_ASSET_ROOT="$doc_root" \
+RIFFDB_DEMO_BIN_DIR="$install_root/usr/bin" \
+    "$doc_root/demo" --assert >/dev/null
+
+printf '%s\n' 'riffdb-release-install-smoke-v1: verified'

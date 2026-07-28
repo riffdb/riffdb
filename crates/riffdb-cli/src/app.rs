@@ -6,14 +6,18 @@ use base64::Engine as _;
 use base64::engine::general_purpose::STANDARD;
 use clap::Parser;
 use riffdb_client_rust::{
-    AttemptBudget, BootstrapCapabilityCreateTemplate, CallMetadata, ClientError, IdempotentCommand,
-    NormalCapabilityCreateTemplate, RiffDbClient, generate_capability_id, generate_request_id, v1,
+    AttemptBudget, BackupNameV1, BootstrapCapabilityCreateTemplate, CallMetadata, ClientError,
+    CreateOfflineBackup, IdempotentCommand, NormalCapabilityCreateTemplate,
+    OfflineMaintenanceOperationId, OfflineMaintenanceReplacementConfirmation, RestoreOfflineBackup,
+    RiffDbClient, generate_capability_id, generate_offline_maintenance_operation_id,
+    generate_request_id, v1,
 };
 use serde::{Deserialize, Serialize};
 
 use crate::cli::{
-    CapabilityCommand, Cli, CommandCommand, CommitCommand, ContractCommand, ContractSelectionArgs,
-    DemoCommand, EntityCommand, ProjectionCommand, RevocationReason, ServerCommand, TopLevel,
+    BackupCommand, CapabilityCommand, Cli, CommandCommand, CommitCommand, ContractCommand,
+    ContractSelectionArgs, DemoCommand, EntityCommand, ProjectionCommand, RevocationReason,
+    ServerCommand, TopLevel,
 };
 use crate::config::{EffectiveConfig, Environment, ProcessEnvironment, resolve};
 use crate::credential::{
@@ -22,10 +26,11 @@ use crate::credential::{
 use crate::input::{InputError, MAX_INPUT_BYTES, read_path_or_stdin, utf8, validate_path};
 use crate::output::{
     CommandIdentity, NormalCreateDisposition, Terminal, client_error, local_error,
-    local_error_with, render_bootstrap, render_commit, render_contract_deploy,
-    render_contract_validation, render_entity, render_execution, render_health,
-    render_normal_create, render_outcome, render_projection, render_revoke, success,
-    take_normal_create_disposition, uncertain,
+    local_error_with, maintenance_uncertain, render_bootstrap, render_commit,
+    render_contract_deploy, render_contract_validation, render_create_maintenance_start,
+    render_entity, render_execution, render_health, render_maintenance_operation,
+    render_normal_create, render_outcome, render_projection, render_restore_maintenance_start,
+    render_revoke, success, take_normal_create_disposition, uncertain,
 };
 use crate::runner::{RunnerError, RunnerStream, run_budget};
 use crate::value::{InputValue, RecordInput, ValueError, parse_uuid};
@@ -164,7 +169,124 @@ async fn dispatch(
             capability_command(command, config, environment, stdin).await
         }
         TopLevel::Server { command } => server_command(command, config, environment).await,
+        TopLevel::Backup { command } => backup_command(command, config, environment).await,
         TopLevel::Demo { command } => demo_command(command, config, environment),
+    }
+}
+
+async fn backup_command(
+    command: BackupCommand,
+    config: &EffectiveConfig,
+    environment: &dyn Environment,
+) -> Terminal {
+    let identity = match command {
+        BackupCommand::Create { .. } => CommandIdentity::BackupCreate,
+        BackupCommand::Restore { .. } => CommandIdentity::BackupRestore,
+        BackupCommand::Operation { .. } => CommandIdentity::BackupOperation,
+    };
+    match command {
+        BackupCommand::Create { name } => {
+            let name = match BackupNameV1::new(name) {
+                Ok(name) => name,
+                Err(_) => return invalid_input(identity),
+            };
+            let operation_id = match generate_offline_maintenance_operation_id() {
+                Ok(operation_id) => operation_id,
+                Err(error) => {
+                    return client_error(identity, &ClientError::IdentifierGeneration(error));
+                }
+            };
+            let metadata = match required_metadata(identity, config, environment) {
+                Ok(metadata) => metadata,
+                Err(terminal) => return terminal,
+            };
+            let mut client = match connect(config).await {
+                Ok(client) => client,
+                Err(error) => return client_error(identity, &error),
+            };
+            let create = CreateOfflineBackup::new(operation_id, name);
+            let attempts = AttemptBudget::new(config.max_attempts).expect("configuration bound");
+            match client
+                .create_offline_backup_with_retry(&create, attempts, &metadata)
+                .await
+            {
+                Ok(response) => render_create_maintenance_start(&response),
+                Err(ClientError::OutcomeUnknown(_)) => {
+                    maintenance_uncertain(identity, operation_id)
+                }
+                Err(error) => client_error(identity, &error),
+            }
+        }
+        BackupCommand::Restore {
+            name,
+            confirm_replace_current_database,
+        } => {
+            let name = match BackupNameV1::new(name) {
+                Ok(name) => name,
+                Err(_) => return invalid_input(identity),
+            };
+            let operation_id = match generate_offline_maintenance_operation_id() {
+                Ok(operation_id) => operation_id,
+                Err(error) => {
+                    return client_error(identity, &ClientError::IdentifierGeneration(error));
+                }
+            };
+            let confirmation = restore_confirmation(confirm_replace_current_database);
+            let metadata = match required_metadata(identity, config, environment) {
+                Ok(metadata) => metadata,
+                Err(terminal) => return terminal,
+            };
+            let mut client = match connect(config).await {
+                Ok(client) => client,
+                Err(error) => return client_error(identity, &error),
+            };
+            let restore = RestoreOfflineBackup::new(operation_id, name, confirmation);
+            let attempts = AttemptBudget::new(config.max_attempts).expect("configuration bound");
+            match client
+                .restore_offline_backup_with_retry(&restore, attempts, &metadata)
+                .await
+            {
+                Ok(response) => render_restore_maintenance_start(&response),
+                Err(ClientError::OutcomeUnknown(_)) => {
+                    maintenance_uncertain(identity, operation_id)
+                }
+                Err(error) => client_error(identity, &error),
+            }
+        }
+        BackupCommand::Operation {
+            maintenance_operation_id,
+        } => {
+            let Some(bytes) = parse_uuid_v7(&maintenance_operation_id) else {
+                return invalid_input(identity);
+            };
+            let operation_id = match OfflineMaintenanceOperationId::from_bytes(bytes) {
+                Ok(operation_id) => operation_id,
+                Err(_) => return invalid_input(identity),
+            };
+            let metadata = match required_metadata(identity, config, environment) {
+                Ok(metadata) => metadata,
+                Err(terminal) => return terminal,
+            };
+            let mut client = match connect(config).await {
+                Ok(client) => client,
+                Err(error) => return client_error(identity, &error),
+            };
+            let request_id = match request_id() {
+                Ok(request_id) => request_id,
+                Err(error) => return client_error(identity, &error),
+            };
+            let request = v1::GetOfflineMaintenanceOperationRequest {
+                request_id,
+                operation_id: operation_id.into_bytes().to_vec(),
+            };
+            match client
+                .get_offline_maintenance_operation(request, &metadata)
+                .await
+            {
+                Ok(response) => render_maintenance_operation(&response),
+                Err(error) => client_error(identity, &error),
+            }
+        }
     }
 }
 
@@ -1416,6 +1538,14 @@ fn parse_uuid_v7(value: &str) -> Option<[u8; 16]> {
     ((bytes[6] >> 4 == 7) && (bytes[8] & 0xc0 == 0x80)).then_some(bytes)
 }
 
+const fn restore_confirmation(confirmed: bool) -> OfflineMaintenanceReplacementConfirmation {
+    if confirmed {
+        OfflineMaintenanceReplacementConfirmation::AllowReplaceNonemptyTarget
+    } else {
+        OfflineMaintenanceReplacementConfirmation::NotProvided
+    }
+}
+
 const fn command_identity(command: &TopLevel) -> CommandIdentity {
     match command {
         TopLevel::Contract {
@@ -1443,6 +1573,15 @@ const fn command_identity(command: &TopLevel) -> CommandIdentity {
             command: CapabilityCommand::Revoke { .. },
         } => CommandIdentity::CapabilityRevoke,
         TopLevel::Server { .. } => CommandIdentity::ServerHealth,
+        TopLevel::Backup {
+            command: BackupCommand::Create { .. },
+        } => CommandIdentity::BackupCreate,
+        TopLevel::Backup {
+            command: BackupCommand::Restore { .. },
+        } => CommandIdentity::BackupRestore,
+        TopLevel::Backup {
+            command: BackupCommand::Operation { .. },
+        } => CommandIdentity::BackupOperation,
         TopLevel::Demo { .. } => CommandIdentity::DemoBudget,
     }
 }
@@ -1474,6 +1613,18 @@ mod tests {
             max_attempts: 3,
             credential_file: None,
         }
+    }
+
+    #[test]
+    fn destructive_restore_confirmation_has_one_exact_cli_source() {
+        assert_eq!(
+            restore_confirmation(false),
+            OfflineMaintenanceReplacementConfirmation::NotProvided
+        );
+        assert_eq!(
+            restore_confirmation(true),
+            OfflineMaintenanceReplacementConfirmation::AllowReplaceNonemptyTarget
+        );
     }
 
     fn assert_terminal_omits(terminal: Terminal, needle: &[u8], mode: crate::cli::OutputMode) {

@@ -244,6 +244,10 @@ impl LineageMaterializationProof {
         self.bundles.len()
     }
 
+    pub(crate) fn bundles(&self) -> &[ValidatedContractBundle] {
+        &self.bundles
+    }
+
     pub(crate) fn terminal(&self) -> &ValidatedContractBundle {
         self.bundles
             .last()

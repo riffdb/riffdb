@@ -88,6 +88,24 @@ pub(crate) fn bootstrap_material(
     bearer_output: Option<&OsString>,
     stdin: &mut dyn Read,
 ) -> Result<BootstrapMaterial, CredentialError> {
+    bootstrap_material_with_recovery(
+        generate,
+        bootstrap_file,
+        bootstrap_stdin,
+        bearer_output,
+        stdin,
+        RetentionRecoveryController::disabled(),
+    )
+}
+
+fn bootstrap_material_with_recovery(
+    generate: Option<&OsString>,
+    bootstrap_file: Option<&OsString>,
+    bootstrap_stdin: bool,
+    bearer_output: Option<&OsString>,
+    stdin: &mut dyn Read,
+    recovery: RetentionRecoveryController,
+) -> Result<BootstrapMaterial, CredentialError> {
     let selected = usize::from(generate.is_some())
         + usize::from(bootstrap_file.is_some())
         + usize::from(bootstrap_stdin);
@@ -105,10 +123,11 @@ pub(crate) fn bootstrap_material(
         let credential = generate_bootstrap_credential(milliseconds, &SystemEntropy)
             .map_err(|_| CredentialError::BootstrapGeneration)?;
         let document = credential.render_document();
-        let _retained = retain_and_revalidate(
+        let _retained = retain_and_revalidate_with_recovery(
             &path,
             document.expose_secret(),
             &mut SystemRetention::default(),
+            recovery,
             || load_bootstrap_credential_file(&path).map_err(|_| CredentialError::Retention),
             |retained| retained.render_document().expose_secret() == document.expose_secret(),
         )?;
@@ -126,10 +145,11 @@ pub(crate) fn bootstrap_material(
             .map_err(|_| CredentialError::BootstrapInvalid)?;
         let expected =
             BearerCredential::new(text).map_err(|_| CredentialError::BootstrapInvalid)?;
-        let _reread = retain_and_revalidate(
+        let _reread = retain_and_revalidate_with_recovery(
             &path,
             credential.token().expose_secret(),
             &mut SystemRetention::default(),
+            recovery,
             || load_protected_bearer_credential(&path).map_err(|_| CredentialError::Retention),
             |reread| reread.has_same_presentation(&expected),
         )?;
@@ -181,7 +201,25 @@ fn retain_and_revalidate<T>(
     load: impl FnOnce() -> Result<T, CredentialError>,
     matches: impl FnOnce(&T) -> bool,
 ) -> Result<T, CredentialError> {
-    retain_bytes_with(path, bytes, retention)?;
+    retain_and_revalidate_with_recovery(
+        path,
+        bytes,
+        retention,
+        RetentionRecoveryController::disabled(),
+        load,
+        matches,
+    )
+}
+
+fn retain_and_revalidate_with_recovery<T>(
+    path: &Path,
+    bytes: &[u8],
+    retention: &mut dyn RetentionBackend,
+    recovery: RetentionRecoveryController,
+    load: impl FnOnce() -> Result<T, CredentialError>,
+    matches: impl FnOnce(&T) -> bool,
+) -> Result<T, CredentialError> {
+    retain_bytes_with_recovery(path, bytes, retention, recovery)?;
     let retained = load()?;
     if !matches(&retained) {
         return Err(CredentialError::Retention);
@@ -189,15 +227,31 @@ fn retain_and_revalidate<T>(
     Ok(retained)
 }
 
+#[cfg(test)]
 fn retain_bytes_with(
     path: &Path,
     bytes: &[u8],
     retention: &mut dyn RetentionBackend,
 ) -> Result<(), CredentialError> {
+    retain_bytes_with_recovery(
+        path,
+        bytes,
+        retention,
+        RetentionRecoveryController::disabled(),
+    )
+}
+
+fn retain_bytes_with_recovery(
+    path: &Path,
+    bytes: &[u8],
+    retention: &mut dyn RetentionBackend,
+    recovery: RetentionRecoveryController,
+) -> Result<(), CredentialError> {
     validate_path(path.as_os_str()).map_err(|_| CredentialError::Retention)?;
     retention.create(path)?;
     retention.write_all(bytes)?;
     retention.sync_file()?;
+    recovery.reached(RetentionRecoveryBoundary::CredentialFileSynced);
     retention.close_file()?;
 
     let parent = path
@@ -206,7 +260,91 @@ fn retain_bytes_with(
         .unwrap_or_else(|| Path::new("."));
     retention.open_directory(parent)?;
     retention.sync_directory()?;
+    recovery.reached(RetentionRecoveryBoundary::ParentDirectorySynced);
     retention.close_directory()
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum RetentionRecoveryBoundary {
+    CredentialFileSynced,
+    ParentDirectorySynced,
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+struct RetentionRecoveryController {
+    #[cfg(feature = "test-fixtures")]
+    armed: Option<RetentionRecoveryBoundary>,
+}
+
+impl RetentionRecoveryController {
+    const fn disabled() -> Self {
+        Self {
+            #[cfg(feature = "test-fixtures")]
+            armed: None,
+        }
+    }
+
+    #[cfg(feature = "test-fixtures")]
+    const fn armed(boundary: RetentionRecoveryBoundary) -> Self {
+        Self {
+            armed: Some(boundary),
+        }
+    }
+
+    fn reached(self, boundary: RetentionRecoveryBoundary) {
+        #[cfg(not(feature = "test-fixtures"))]
+        let _ = boundary;
+
+        #[cfg(feature = "test-fixtures")]
+        if self.armed == Some(boundary) {
+            std::process::abort();
+        }
+    }
+}
+
+#[cfg(feature = "test-fixtures")]
+/// Closed process boundary for generated bootstrap retention.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum BootstrapRetentionTestPoint {
+    /// Abort after the generated credential file has been synchronized.
+    CredentialFileSynced,
+    /// Abort after the containing directory has been synchronized.
+    ParentDirectorySynced,
+}
+
+#[cfg(feature = "test-fixtures")]
+/// Safe failure returned only when an armed fixture fails before aborting.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct BootstrapRetentionFixtureError;
+
+#[cfg(feature = "test-fixtures")]
+/// Runs the exact generated-bootstrap retention path with one injected abort.
+///
+/// A successful return means the armed abort was not reached and is therefore
+/// a fixture failure. Normal CLI construction cannot call this function.
+pub fn run_bootstrap_retention_fixture(
+    path: &Path,
+    point: BootstrapRetentionTestPoint,
+) -> Result<(), BootstrapRetentionFixtureError> {
+    let generate = path.as_os_str().to_os_string();
+    let recovery = RetentionRecoveryController::armed(match point {
+        BootstrapRetentionTestPoint::CredentialFileSynced => {
+            RetentionRecoveryBoundary::CredentialFileSynced
+        }
+        BootstrapRetentionTestPoint::ParentDirectorySynced => {
+            RetentionRecoveryBoundary::ParentDirectorySynced
+        }
+    });
+    bootstrap_material_with_recovery(
+        Some(&generate),
+        None,
+        false,
+        None,
+        &mut std::io::empty(),
+        recovery,
+    )
+    .map(|_| ())
+    .map_err(|_| BootstrapRetentionFixtureError)
 }
 
 trait RetentionBackend {

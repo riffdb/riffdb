@@ -11,6 +11,7 @@ use riffdb_auth::{AuthenticationClock, AuthenticationClockError};
 use riffdb_commit::{
     AdministrationClock, AdministrationClockError, AdmissionClock, AdmissionClockError,
 };
+use riffdb_outbox::{OutboxClock, OutboxClockError};
 use riffdb_policy::{AuthorizationClock, AuthorizationClockError};
 use riffdb_types::Timestamp;
 
@@ -91,7 +92,7 @@ fn negative_timestamp_seconds(
     }
 }
 
-/// Four type-distinct clocks backed by one stateless canonical wall-clock implementation.
+/// Type-distinct clocks backed by one stateless canonical wall-clock implementation.
 pub(crate) struct ProductionWallClocks {
     shared: Arc<CanonicalWallClock>,
 }
@@ -117,6 +118,10 @@ impl ProductionWallClocks {
 
     pub(crate) fn administration(&self) -> ServerAdministrationClock {
         ServerAdministrationClock(Arc::clone(&self.shared))
+    }
+
+    pub(crate) fn outbox(&self) -> ServerOutboxClock {
+        ServerOutboxClock(Arc::clone(&self.shared))
     }
 
     /// Samples server-owned process metadata without borrowing a semantic consumer port.
@@ -212,6 +217,20 @@ impl AdministrationClock for ServerAdministrationClock {
 impl fmt::Debug for ServerAdministrationClock {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter.write_str("ServerAdministrationClock([REDACTED])")
+    }
+}
+
+pub(crate) struct ServerOutboxClock(Arc<CanonicalWallClock>);
+
+impl OutboxClock for ServerOutboxClock {
+    fn now(&mut self) -> Result<Timestamp, OutboxClockError> {
+        self.0.now().map_err(|_| OutboxClockError::Unavailable)
+    }
+}
+
+impl fmt::Debug for ServerOutboxClock {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("ServerOutboxClock([REDACTED])")
     }
 }
 

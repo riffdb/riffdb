@@ -5,7 +5,7 @@ use std::net::SocketAddr;
 use riffdb_auth::{
     AuthenticatedPrincipal, AuthenticationContext, AuthenticationFailure,
     BootstrapDigestCandidates, CAPABILITY_TOKEN_TEXT_BYTES, CapabilityDigestKeyProvider,
-    CredentialAuthenticator, OpaqueCredential, RawCapabilityToken,
+    CredentialAuthenticator, OpaqueCredential, RawCapabilityToken, RetainedOpaqueCredential,
 };
 use tonic::metadata::MetadataMap;
 use tonic::{Code, Status};
@@ -29,6 +29,42 @@ pub fn authenticate_normal_request(
     authenticator: &dyn CredentialAuthenticator,
     context: &AuthenticationContext,
 ) -> Result<AuthenticatedPrincipal, Status> {
+    let credential = extract_normal_credential(metadata)?;
+    authenticator
+        .authenticate(OpaqueCredential::new(credential), context)
+        .map_err(authentication_failure)
+}
+
+/// Authenticates and retains the same exact ordinary bearer for staged restore.
+///
+/// Retention occurs only after protocol framing and the exact POC presentation
+/// bound have been checked. The returned auth-owned value exposes only a
+/// borrowed [`OpaqueCredential`] and is never serializable or cloneable.
+pub fn authenticate_and_retain_normal_request(
+    metadata: &MetadataMap,
+    authenticator: &dyn CredentialAuthenticator,
+    context: &AuthenticationContext,
+) -> Result<(AuthenticatedPrincipal, RetainedOpaqueCredential), Status> {
+    let credential = extract_normal_credential(metadata)?;
+    let principal = authenticator
+        .authenticate(OpaqueCredential::new(credential), context)
+        .map_err(authentication_failure)?;
+    let retained = RetainedOpaqueCredential::new(credential).map_err(|_| unauthenticated())?;
+    Ok((principal, retained))
+}
+
+/// Retains one structurally valid bearer for recovery-only staged authentication.
+///
+/// This performs no authentication and must be used only after the server
+/// lifecycle has returned its restricted recovery-service capability.
+pub fn retain_normal_request_credential(
+    metadata: &MetadataMap,
+) -> Result<RetainedOpaqueCredential, Status> {
+    let credential = extract_normal_credential(metadata)?;
+    RetainedOpaqueCredential::new(credential).map_err(|_| unauthenticated())
+}
+
+fn extract_normal_credential(metadata: &MetadataMap) -> Result<&[u8], Status> {
     if metadata
         .get_all_bin(BOOTSTRAP_TOKEN_METADATA_KEY)
         .iter()
@@ -48,10 +84,7 @@ pub fn authenticate_normal_request(
     if credential.len() != CAPABILITY_TOKEN_TEXT_BYTES {
         return Err(unauthenticated());
     }
-
-    authenticator
-        .authenticate(OpaqueCredential::new(credential.as_bytes()), context)
-        .map_err(authentication_failure)
+    Ok(credential.as_bytes())
 }
 
 /// Extracts and consumes the one canonical retained loopback bootstrap token.
@@ -200,6 +233,29 @@ mod tests {
         assert_eq!(status.code(), Code::Internal);
         assert_eq!(status.message(), crate::EMERGENCY_INTERNAL_MESSAGE);
         assert!(status.details().is_empty());
+    }
+
+    #[test]
+    fn restore_extracts_one_exact_presentation_for_auth_owned_retention() {
+        const TOKEN: &str = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA";
+        let mut metadata = MetadataMap::new();
+        metadata.insert(
+            AUTHORIZATION_METADATA_KEY,
+            format!("Bearer {TOKEN}")
+                .parse()
+                .expect("valid ASCII metadata value"),
+        );
+        let retained =
+            retain_normal_request_credential(&metadata).expect("exact presentation is bounded");
+
+        assert_eq!(
+            format!("{retained:?}"),
+            "RetainedOpaqueCredential([REDACTED])"
+        );
+        assert_eq!(
+            format!("{}", retained.borrow()),
+            "opaque credential [REDACTED]"
+        );
     }
 
     #[test]

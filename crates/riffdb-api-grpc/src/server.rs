@@ -16,17 +16,22 @@ use riffdb_service::{
     ApplicationService, BootstrapCapabilityResult, BootstrapRequestContext, CommitSubscription,
     CommitSubscriptionEvent, CreateCapabilityInvocation, CreateCapabilityResult,
     DeployContractResult, HealthContext, HealthRequest, HealthResult,
-    MAX_COMMIT_SUBSCRIPTION_LIFETIME, RequestCancellationHandle, RequestContext, RequestControl,
+    MAX_COMMIT_SUBSCRIPTION_LIFETIME, RecoveryOfflineMaintenanceApplication,
+    RecoveryRestoreOfflineBackupInvocation, RequestCancellationHandle, RequestContext,
+    RequestControl, RestoreOfflineBackupInvocation, RestoreRetryOfflineMaintenanceApplication,
     ServiceFuture, ServiceResult,
 };
-use riffdb_types::{RequestId, ServiceOperationV1};
+use riffdb_types::{
+    OfflineMaintenanceInputHash, OfflineMaintenanceOperationId, RequestId, ServiceOperationV1,
+};
 use tonic::codegen::tokio_stream::Stream;
 use tonic::metadata::MetadataMap;
 use tonic::{Request, Response, Status};
 
 use crate::authentication::{
     AUTHORIZATION_METADATA_KEY, BOOTSTRAP_TOKEN_METADATA_KEY, UNAUTHENTICATED_MESSAGE,
-    authenticate_normal_request, prepare_loopback_bootstrap_token,
+    authenticate_and_retain_normal_request, authenticate_normal_request,
+    prepare_loopback_bootstrap_token, retain_normal_request_credential,
 };
 use crate::conversion::*;
 use crate::error::status_from_service_failure;
@@ -50,11 +55,45 @@ pub trait GrpcLifecycleRoute: Send + Sync {
         operation: ServiceOperationV1,
     ) -> Option<Arc<dyn ApplicationService>>;
 
+    /// Atomically admits one current-database maintenance action.
+    ///
+    /// This separate process-local registry must never be converted into a
+    /// durable [`ServiceOperationV1`] value. Restore admission carries the
+    /// structurally checked operation identity so retry-only lifecycle stages
+    /// reject unrelated requests before credential authentication.
+    fn admit_offline_maintenance(
+        &self,
+        operation: GrpcOfflineMaintenanceOperation,
+    ) -> Option<Arc<dyn ApplicationService>>;
+
+    /// Returns the sole current-database restore retry service for exact input.
+    ///
+    /// This capability is disjoint from the ordinary application service and
+    /// cannot create a backup, observe a receipt, or invoke another operation.
+    fn admit_restore_retry(
+        &self,
+        operation_id: OfflineMaintenanceOperationId,
+        input_hash: OfflineMaintenanceInputHash,
+    ) -> Option<Arc<dyn RestoreRetryOfflineMaintenanceApplication>>;
+
+    /// Returns the sole restricted staged-only restore service for exact input.
+    ///
+    /// Recovery mode exposes no normal application service, backup creation,
+    /// receipt polling, or current-database security context.
+    fn admit_recovery_restore(
+        &self,
+        operation_id: OfflineMaintenanceOperationId,
+        input_hash: OfflineMaintenanceInputHash,
+    ) -> Option<Arc<dyn RecoveryOfflineMaintenanceApplication>>;
+
     /// Returns the checked transport security installed after startup validation.
     ///
     /// Callers must first establish that the exact lifecycle operation is
     /// admissible. Initializing and stopped routes return no context.
     fn security_context(&self) -> Option<CheckedGrpcSecurityContext>;
+
+    /// Returns current-database authentication scoped only to an admitted retry.
+    fn restore_retry_security_context(&self) -> Option<CheckedGrpcRestoreRetrySecurityContext>;
 
     /// Returns the one opaque process generation installed with the activated route.
     ///
@@ -84,6 +123,22 @@ pub trait GrpcLifecycleRoute: Send + Sync {
 
     /// Applies the terminal lifecycle disposition for an admitted first deployment.
     fn finish_deployment(&self, completion: GrpcDeploymentCompletion);
+}
+
+/// Closed transport-local offline-maintenance admission registry.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum GrpcOfflineMaintenanceOperation {
+    /// Start or resolve immutable backup creation.
+    CreateBackup,
+    /// Start or resolve staged restore with its checked receipt and semantic-input identity.
+    RestoreBackup {
+        /// Caller-stable receipt identity.
+        operation_id: OfflineMaintenanceOperationId,
+        /// Canonical operation kind, name, and replacement-confirmation identity.
+        input_hash: OfflineMaintenanceInputHash,
+    },
+    /// Observe one protected external receipt.
+    GetOperation,
 }
 
 /// Transport-observed terminal classification for one admitted bootstrap attempt.
@@ -185,6 +240,36 @@ impl CheckedGrpcSecurityContext {
 impl fmt::Debug for CheckedGrpcSecurityContext {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter.write_str("CheckedGrpcSecurityContext([CAPABILITY])")
+    }
+}
+
+/// Cloneable current-database authentication scoped to exact restore retry.
+///
+/// Unlike [`CheckedGrpcSecurityContext`], this capability carries no bootstrap
+/// digest-key custody and is never used by an ordinary application operation.
+#[derive(Clone)]
+pub struct CheckedGrpcRestoreRetrySecurityContext {
+    authenticator: Arc<dyn CredentialAuthenticator>,
+    authentication: AuthenticationContext,
+}
+
+impl CheckedGrpcRestoreRetrySecurityContext {
+    /// Packages the validated current-database authentication boundary.
+    #[must_use]
+    pub fn new(
+        authenticator: Arc<dyn CredentialAuthenticator>,
+        authentication: AuthenticationContext,
+    ) -> Self {
+        Self {
+            authenticator,
+            authentication,
+        }
+    }
+}
+
+impl fmt::Debug for CheckedGrpcRestoreRetrySecurityContext {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("CheckedGrpcRestoreRetrySecurityContext([CAPABILITY])")
     }
 }
 
@@ -294,6 +379,92 @@ impl GrpcApplication {
         Ok((service, security))
     }
 
+    fn ready_maintenance_admission(
+        &self,
+        operation: GrpcOfflineMaintenanceOperation,
+    ) -> Result<(Arc<dyn ApplicationService>, CheckedGrpcSecurityContext), Status> {
+        let service = self
+            .lifecycle
+            .admit_offline_maintenance(operation)
+            .ok_or_else(service_not_ready)?;
+        let security = self
+            .lifecycle
+            .security_context()
+            .ok_or_else(service_not_ready)?;
+        Ok((service, security))
+    }
+
+    fn restore_context(
+        &self,
+        metadata: &MetadataMap,
+        request_id: RequestId,
+        security: &CheckedGrpcSecurityContext,
+    ) -> Result<
+        (
+            RequestContext,
+            riffdb_auth::RetainedOpaqueCredential,
+            CancellationGuard,
+        ),
+        Status,
+    > {
+        let deadline = self.limits.deadline(metadata)?;
+        let (principal, credential) = authenticate_and_retain_normal_request(
+            metadata,
+            security.authenticator.as_ref(),
+            &security.authentication,
+        )?;
+        let (control, cancellation) = RequestControl::new(deadline);
+        Ok((
+            RequestContext::from_authenticated_grpc(request_id, principal, control, None),
+            credential,
+            CancellationGuard(cancellation),
+        ))
+    }
+
+    fn restore_retry_context(
+        &self,
+        metadata: &MetadataMap,
+        request_id: RequestId,
+        security: &CheckedGrpcRestoreRetrySecurityContext,
+    ) -> Result<
+        (
+            RequestContext,
+            riffdb_auth::RetainedOpaqueCredential,
+            CancellationGuard,
+        ),
+        Status,
+    > {
+        let deadline = self.limits.deadline(metadata)?;
+        let (principal, credential) = authenticate_and_retain_normal_request(
+            metadata,
+            security.authenticator.as_ref(),
+            &security.authentication,
+        )?;
+        let (control, cancellation) = RequestControl::new(deadline);
+        Ok((
+            RequestContext::from_authenticated_grpc(request_id, principal, control, None),
+            credential,
+            CancellationGuard(cancellation),
+        ))
+    }
+
+    fn recovery_restore_context(
+        &self,
+        metadata: &MetadataMap,
+        request_id: RequestId,
+        request: riffdb_service::RestoreOfflineBackupRequest,
+    ) -> Result<(RecoveryRestoreOfflineBackupInvocation, CancellationGuard), Status> {
+        let deadline = self.limits.deadline(metadata)?;
+        let credential = retain_normal_request_credential(metadata)?;
+        let (control, cancellation) = RequestControl::new(deadline);
+        Ok((
+            RecoveryRestoreOfflineBackupInvocation::from_restricted_grpc(
+                request_id, control, request, credential,
+            ),
+            CancellationGuard(cancellation),
+        ))
+    }
+
     fn bootstrap_context(
         &self,
         metadata: &MetadataMap,
@@ -400,7 +571,12 @@ fn classify_bootstrap_completion(
     }
 }
 
-fn classify_deployment_completion(
+/// Classifies one API-neutral deployment result for the shared server lifecycle.
+///
+/// Every in-process transport must use this exact classifier so activation,
+/// definite non-activation, and uncertain completion cannot diverge by adapter.
+#[must_use]
+pub fn classify_grpc_deployment_completion(
     result: &ServiceResult<DeployContractResult>,
 ) -> GrpcDeploymentCompletion {
     match result {
@@ -516,7 +692,7 @@ impl ContractService for GrpcApplication {
             self.normal_invocation(ServiceOperationV1::DeployContract, &metadata, request_id)?;
         let lifecycle = DeploymentLifecycleGuard::new(self.lifecycle.as_ref());
         let result = service.deploy_contract(context, request).await;
-        let completion = classify_deployment_completion(&result);
+        let completion = classify_grpc_deployment_completion(&result);
         lifecycle.complete(completion);
         let result = map_service(result)?;
         Ok(Response::new(deploy_contract_result_to_proto(&result)))
@@ -851,6 +1027,101 @@ impl AdminService for GrpcApplication {
             list_pending_outbox_deliveries_result_to_proto(&result),
         ))
     }
+
+    async fn create_offline_backup(
+        &self,
+        request: Request<v1::CreateOfflineBackupRequest>,
+    ) -> Result<Response<v1::CreateOfflineBackupResponse>, Status> {
+        let (service, security) =
+            self.ready_maintenance_admission(GrpcOfflineMaintenanceOperation::CreateBackup)?;
+        let (metadata, _peer, message) = split_request(request);
+        let (request_id, request) = create_offline_backup_request_from_proto(message)?;
+        let (context, _cancellation) = self.normal_context(&metadata, request_id, &security)?;
+        let result = map_service(service.create_offline_backup(context, request).await)?;
+        let (disposition, operation) = offline_maintenance_start_result_to_proto(&result);
+        Ok(Response::new(v1::CreateOfflineBackupResponse {
+            disposition,
+            operation,
+        }))
+    }
+
+    async fn restore_offline_backup(
+        &self,
+        request: Request<v1::RestoreOfflineBackupRequest>,
+    ) -> Result<Response<v1::RestoreOfflineBackupResponse>, Status> {
+        let (metadata, _peer, message) = split_request(request);
+        let (request_id, request) = restore_offline_backup_request_from_proto(message)?;
+        let operation_id = request.operation_id();
+        let input_hash = request.input_hash();
+        let ready = self.lifecycle.admit_offline_maintenance(
+            GrpcOfflineMaintenanceOperation::RestoreBackup {
+                operation_id,
+                input_hash,
+            },
+        );
+        let retry = ready
+            .is_none()
+            .then(|| self.lifecycle.admit_restore_retry(operation_id, input_hash))
+            .flatten();
+        let recovery = (ready.is_none() && retry.is_none())
+            .then(|| {
+                self.lifecycle
+                    .admit_recovery_restore(operation_id, input_hash)
+            })
+            .flatten();
+        let result = match (ready, retry, recovery) {
+            (Some(service), None, None) => {
+                let security = self
+                    .lifecycle
+                    .security_context()
+                    .ok_or_else(service_not_ready)?;
+                let (context, credential, _cancellation) =
+                    self.restore_context(&metadata, request_id, &security)?;
+                let invocation = RestoreOfflineBackupInvocation::new(context, request, credential);
+                map_service(service.restore_offline_backup(invocation).await)?
+            }
+            (None, Some(service), None) => {
+                let security = self
+                    .lifecycle
+                    .restore_retry_security_context()
+                    .ok_or_else(service_not_ready)?;
+                let (context, credential, _cancellation) =
+                    self.restore_retry_context(&metadata, request_id, &security)?;
+                let invocation = RestoreOfflineBackupInvocation::new(context, request, credential);
+                map_service(service.restore_offline_backup(invocation).await)?
+            }
+            (None, None, Some(service)) => {
+                let (invocation, _cancellation) =
+                    self.recovery_restore_context(&metadata, request_id, request)?;
+                map_service(service.restore_offline_backup(invocation).await)?
+            }
+            _ => return Err(service_not_ready()),
+        };
+        let (disposition, operation) = offline_maintenance_start_result_to_proto(&result);
+        Ok(Response::new(v1::RestoreOfflineBackupResponse {
+            disposition,
+            operation,
+        }))
+    }
+
+    async fn get_offline_maintenance_operation(
+        &self,
+        request: Request<v1::GetOfflineMaintenanceOperationRequest>,
+    ) -> Result<Response<v1::GetOfflineMaintenanceOperationResponse>, Status> {
+        let (service, security) =
+            self.ready_maintenance_admission(GrpcOfflineMaintenanceOperation::GetOperation)?;
+        let (metadata, _peer, message) = split_request(request);
+        let (request_id, request) = get_offline_maintenance_operation_request_from_proto(message)?;
+        let (context, _cancellation) = self.normal_context(&metadata, request_id, &security)?;
+        let result = map_service(
+            service
+                .get_offline_maintenance_operation(context, request)
+                .await,
+        )?;
+        Ok(Response::new(
+            get_offline_maintenance_operation_result_to_proto(&result),
+        ))
+    }
 }
 
 fn has_normal_or_bootstrap_credentials(metadata: &MetadataMap) -> bool {
@@ -949,7 +1220,9 @@ mod tests {
     use riffdb_errors::PublicError;
     use riffdb_service::{CapabilityIdentityView, CapabilityTransitionView};
     use riffdb_types::{
-        AdministrationSequence, Audience, CapabilityId, DatabaseId, Environment, RequestId,
+        AdministrationSequence, Audience, BackupNameV1, CapabilityId, DatabaseId, Environment,
+        OfflineMaintenanceOperationKind, OfflineMaintenanceReplacementConfirmation, RequestId,
+        offline_maintenance_input_hash,
     };
     use std::num::NonZeroU64;
     use std::sync::atomic::{AtomicBool, AtomicU8, AtomicUsize, Ordering};
@@ -999,9 +1272,36 @@ mod tests {
             None
         }
 
+        fn admit_offline_maintenance(
+            &self,
+            _operation: GrpcOfflineMaintenanceOperation,
+        ) -> Option<Arc<dyn ApplicationService>> {
+            None
+        }
+
+        fn admit_restore_retry(
+            &self,
+            _operation_id: OfflineMaintenanceOperationId,
+            _input_hash: OfflineMaintenanceInputHash,
+        ) -> Option<Arc<dyn RestoreRetryOfflineMaintenanceApplication>> {
+            None
+        }
+
+        fn admit_recovery_restore(
+            &self,
+            _operation_id: OfflineMaintenanceOperationId,
+            _input_hash: OfflineMaintenanceInputHash,
+        ) -> Option<Arc<dyn RecoveryOfflineMaintenanceApplication>> {
+            None
+        }
+
         fn security_context(&self) -> Option<CheckedGrpcSecurityContext> {
             self.security_fetches.fetch_add(1, Ordering::SeqCst);
             self.security.clone()
+        }
+
+        fn restore_retry_security_context(&self) -> Option<CheckedGrpcRestoreRetrySecurityContext> {
+            None
         }
 
         fn server_generation(&self) -> Option<[u8; 16]> {
@@ -1063,7 +1363,34 @@ mod tests {
             None
         }
 
+        fn admit_offline_maintenance(
+            &self,
+            _operation: GrpcOfflineMaintenanceOperation,
+        ) -> Option<Arc<dyn ApplicationService>> {
+            None
+        }
+
+        fn admit_restore_retry(
+            &self,
+            _operation_id: OfflineMaintenanceOperationId,
+            _input_hash: OfflineMaintenanceInputHash,
+        ) -> Option<Arc<dyn RestoreRetryOfflineMaintenanceApplication>> {
+            None
+        }
+
+        fn admit_recovery_restore(
+            &self,
+            _operation_id: OfflineMaintenanceOperationId,
+            _input_hash: OfflineMaintenanceInputHash,
+        ) -> Option<Arc<dyn RecoveryOfflineMaintenanceApplication>> {
+            None
+        }
+
         fn security_context(&self) -> Option<CheckedGrpcSecurityContext> {
+            None
+        }
+
+        fn restore_retry_security_context(&self) -> Option<CheckedGrpcRestoreRetrySecurityContext> {
             None
         }
 
@@ -1101,6 +1428,110 @@ mod tests {
             };
             self.phase.store(phase, Ordering::Release);
         }
+
+        fn finish_deployment(&self, _completion: GrpcDeploymentCompletion) {}
+    }
+
+    struct RejectingMaintenanceRoute {
+        ready_admissions: Mutex<Vec<GrpcOfflineMaintenanceOperation>>,
+        retry_admissions: Mutex<Vec<(OfflineMaintenanceOperationId, OfflineMaintenanceInputHash)>>,
+        recovery_admissions:
+            Mutex<Vec<(OfflineMaintenanceOperationId, OfflineMaintenanceInputHash)>>,
+        security_fetches: AtomicUsize,
+        security: CheckedGrpcSecurityContext,
+        retry_security: CheckedGrpcRestoreRetrySecurityContext,
+    }
+
+    impl RejectingMaintenanceRoute {
+        fn new(security: CheckedGrpcSecurityContext) -> Self {
+            let retry_security = CheckedGrpcRestoreRetrySecurityContext::new(
+                Arc::clone(&security.authenticator),
+                security.authentication.clone(),
+            );
+            Self {
+                ready_admissions: Mutex::new(Vec::new()),
+                retry_admissions: Mutex::new(Vec::new()),
+                recovery_admissions: Mutex::new(Vec::new()),
+                security_fetches: AtomicUsize::new(0),
+                security,
+                retry_security,
+            }
+        }
+    }
+
+    impl GrpcLifecycleRoute for RejectingMaintenanceRoute {
+        fn admit_authenticated(
+            &self,
+            _operation: ServiceOperationV1,
+        ) -> Option<Arc<dyn ApplicationService>> {
+            None
+        }
+
+        fn admit_restore_retry(
+            &self,
+            operation_id: OfflineMaintenanceOperationId,
+            input_hash: OfflineMaintenanceInputHash,
+        ) -> Option<Arc<dyn RestoreRetryOfflineMaintenanceApplication>> {
+            self.retry_admissions
+                .lock()
+                .expect("retry admission recorder")
+                .push((operation_id, input_hash));
+            None
+        }
+
+        fn admit_offline_maintenance(
+            &self,
+            operation: GrpcOfflineMaintenanceOperation,
+        ) -> Option<Arc<dyn ApplicationService>> {
+            self.ready_admissions
+                .lock()
+                .expect("ready admission recorder")
+                .push(operation);
+            None
+        }
+
+        fn admit_recovery_restore(
+            &self,
+            operation_id: OfflineMaintenanceOperationId,
+            input_hash: OfflineMaintenanceInputHash,
+        ) -> Option<Arc<dyn RecoveryOfflineMaintenanceApplication>> {
+            self.recovery_admissions
+                .lock()
+                .expect("recovery admission recorder")
+                .push((operation_id, input_hash));
+            None
+        }
+
+        fn security_context(&self) -> Option<CheckedGrpcSecurityContext> {
+            self.security_fetches.fetch_add(1, Ordering::SeqCst);
+            Some(self.security.clone())
+        }
+
+        fn restore_retry_security_context(&self) -> Option<CheckedGrpcRestoreRetrySecurityContext> {
+            self.security_fetches.fetch_add(1, Ordering::SeqCst);
+            Some(self.retry_security.clone())
+        }
+
+        fn server_generation(&self) -> Option<[u8; 16]> {
+            None
+        }
+
+        fn restricted_health(
+            &self,
+            _request: HealthRequest,
+        ) -> Option<ServiceFuture<'_, HealthResult>> {
+            None
+        }
+
+        fn bootstrap_available(&self) -> bool {
+            false
+        }
+
+        fn begin_bootstrap(&self) -> Option<Arc<dyn ApplicationService>> {
+            None
+        }
+
+        fn finish_bootstrap(&self, _completion: GrpcBootstrapCompletion) {}
 
         fn finish_deployment(&self, _completion: GrpcDeploymentCompletion) {}
     }
@@ -1181,6 +1612,135 @@ mod tests {
             };
 
         assert_eq!(status.code(), tonic::Code::Unavailable);
+        assert_eq!(route.security_fetches.load(Ordering::SeqCst), 0);
+        assert_eq!(authenticator.0.load(Ordering::SeqCst), 0);
+    }
+
+    #[tokio::test]
+    async fn restore_decodes_before_all_three_exact_admission_routes() {
+        let authenticator = Arc::new(CountingAuthenticator(AtomicUsize::new(0)));
+        let security = CheckedGrpcSecurityContext::new(
+            authenticator.clone(),
+            test_authentication_context(),
+            Arc::new(test_bootstrap_keys()),
+        );
+        let route = Arc::new(RejectingMaintenanceRoute::new(security));
+        let adapter = GrpcApplication::new(
+            route.clone(),
+            GrpcRequestLimits::new(Duration::from_secs(30)).expect("valid request limit"),
+        );
+        let operation_id =
+            OfflineMaintenanceOperationId::from_unix_milliseconds_and_random(3, [9; 10])
+                .expect("valid maintenance operation ID");
+        let input_hash = offline_maintenance_input_hash(
+            OfflineMaintenanceOperationKind::RestoreBackup,
+            &BackupNameV1::new("nightly").expect("valid backup name"),
+            OfflineMaintenanceReplacementConfirmation::AllowReplaceNonemptyTarget,
+        );
+        let mut request = Request::new(v1::RestoreOfflineBackupRequest {
+            request_id: request_id().into_bytes().to_vec(),
+            operation_id: operation_id.into_bytes().to_vec(),
+            backup_name: "nightly".to_owned(),
+            replacement_confirmation:
+                v1::OfflineMaintenanceReplacementConfirmation::AllowReplaceNonemptyTarget as i32,
+        });
+        request.metadata_mut().insert(
+            AUTHORIZATION_METADATA_KEY,
+            MetadataValue::try_from(format!("Bearer {}", "A".repeat(43)))
+                .expect("bounded bearer metadata"),
+        );
+
+        let status = AdminService::restore_offline_backup(&adapter, request)
+            .await
+            .expect_err("closed exact routes reject the restore");
+
+        assert_eq!(status.code(), tonic::Code::Unavailable);
+        assert_eq!(
+            route
+                .ready_admissions
+                .lock()
+                .expect("ready admission recorder")
+                .as_slice(),
+            &[GrpcOfflineMaintenanceOperation::RestoreBackup {
+                operation_id,
+                input_hash,
+            }]
+        );
+        assert_eq!(
+            route
+                .retry_admissions
+                .lock()
+                .expect("retry admission recorder")
+                .as_slice(),
+            &[(operation_id, input_hash)]
+        );
+        assert_eq!(
+            route
+                .recovery_admissions
+                .lock()
+                .expect("recovery admission recorder")
+                .as_slice(),
+            &[(operation_id, input_hash)]
+        );
+        assert_eq!(route.security_fetches.load(Ordering::SeqCst), 0);
+        assert_eq!(authenticator.0.load(Ordering::SeqCst), 0);
+    }
+
+    #[tokio::test]
+    async fn malformed_restore_input_reaches_neither_admission_nor_authentication() {
+        let authenticator = Arc::new(CountingAuthenticator(AtomicUsize::new(0)));
+        let security = CheckedGrpcSecurityContext::new(
+            authenticator.clone(),
+            test_authentication_context(),
+            Arc::new(test_bootstrap_keys()),
+        );
+        let route = Arc::new(RejectingMaintenanceRoute::new(security));
+        let adapter = GrpcApplication::new(
+            route.clone(),
+            GrpcRequestLimits::new(Duration::from_secs(30)).expect("valid request limit"),
+        );
+        let operation_id =
+            OfflineMaintenanceOperationId::from_unix_milliseconds_and_random(3, [10; 10])
+                .expect("valid maintenance operation ID");
+        let mut request = Request::new(v1::RestoreOfflineBackupRequest {
+            request_id: request_id().into_bytes().to_vec(),
+            operation_id: operation_id.into_bytes().to_vec(),
+            backup_name: "../nightly".to_owned(),
+            replacement_confirmation:
+                v1::OfflineMaintenanceReplacementConfirmation::AllowReplaceNonemptyTarget as i32,
+        });
+        request.metadata_mut().insert(
+            AUTHORIZATION_METADATA_KEY,
+            MetadataValue::try_from(format!("Bearer {}", "A".repeat(43)))
+                .expect("bounded bearer metadata"),
+        );
+
+        let status = AdminService::restore_offline_backup(&adapter, request)
+            .await
+            .expect_err("malformed input is rejected structurally");
+
+        assert_eq!(status.code(), tonic::Code::InvalidArgument);
+        assert!(
+            route
+                .ready_admissions
+                .lock()
+                .expect("ready admission recorder")
+                .is_empty()
+        );
+        assert!(
+            route
+                .retry_admissions
+                .lock()
+                .expect("retry admission recorder")
+                .is_empty()
+        );
+        assert!(
+            route
+                .recovery_admissions
+                .lock()
+                .expect("recovery admission recorder")
+                .is_empty()
+        );
         assert_eq!(route.security_fetches.load(Ordering::SeqCst), 0);
         assert_eq!(authenticator.0.load(Ordering::SeqCst), 0);
     }

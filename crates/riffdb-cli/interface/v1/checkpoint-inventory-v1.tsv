@@ -1,4 +1,9 @@
 path	bytes	sha256
+crates/riffdb-cli/fixtures/output-v1/backup.create.accepted.jsonl	320	5d287f7c5f78fdad85d9372fc4cade12a0dbee62eabdf845dfc9d3eab6c965ce
+crates/riffdb-cli/fixtures/output-v1/backup.create.uncertain.jsonl	300	2ca60cc8c6a0d9c6591af0a49dace11b0e7780dd6435646c678963a1a66d66db
+crates/riffdb-cli/fixtures/output-v1/backup.operation.found.jsonl	321	0f3a43fa6d75f190d7e3696ba8d18a5443b5a087f25b619a45821776ca50e3a9
+crates/riffdb-cli/fixtures/output-v1/backup.operation.not_found.jsonl	105	15ff2bdc2cfd056597886723c5385f484f687885e5fb97cb237f96d87401714f
+crates/riffdb-cli/fixtures/output-v1/backup.restore.terminal.jsonl	357	190f96d2254dcf89022a22db5ac223de90ba31166dea9a6331a2582e2fada955
 crates/riffdb-cli/fixtures/output-v1/capability.bootstrap.bootstrap_conflict.jsonl	118	04b23827c81b6bc695e357a002ee15e984aa38f70e4f1ca743ed6b2c3a6e4e76
 crates/riffdb-cli/fixtures/output-v1/capability.bootstrap.created.jsonl	258	46d292cd3275acf49bfef8f3a77692b595b46cfa2b326fe332ffcb513ca358dc
 crates/riffdb-cli/fixtures/output-v1/capability.bootstrap.credential_invalid.jsonl	185	20905151d3e8ae9e496fe9518773975587b2a1c7605fcdbc78a962ec38b35c8f
@@ -67,7 +72,7 @@ crates/riffdb-cli/fixtures/output-v1/entity.get.found.jsonl	622	9027474f6a287ce7
 crates/riffdb-cli/fixtures/output-v1/entity.get.local_error.jsonl	145	d88b06cc8b7f3d02be1f9f7564d45baafe4a1a74cc8c3f37b57f1f814e7c82ee
 crates/riffdb-cli/fixtures/output-v1/entity.get.not_found.jsonl	99	195c2316f07179364c00d2f848e6cc2aa7306c09c17d36d6f0970bf75027839d
 crates/riffdb-cli/fixtures/output-v1/entity.get.public_error.jsonl	202	c23eece00c05f8dd3bdb6766d0cbab2735fd803ebadddab9f369dd0f749659b6
-crates/riffdb-cli/fixtures/output-v1/manifest.tsv	13621	e933f419c1c1454315ba0eaeced9d6230a3ba45a68c1a3ec4da4745f62ea8709
+crates/riffdb-cli/fixtures/output-v1/manifest.tsv	14283	4e2b33b07a7c22fc8ecbc1e89d2261075255892a5cbec820c1e80dc68ec09849
 crates/riffdb-cli/fixtures/output-v1/projection.query.degraded_building.jsonl	167	8b96941a007010de63185d5b6723e1a9b9826166b6707c9019bbec0f914038f2
 crates/riffdb-cli/fixtures/output-v1/projection.query.degraded_failure.jsonl	209	b73987a5e2a31fceef5f3fe8508f5065b00bc5f5e0b4fd62b61d3854f3434870
 crates/riffdb-cli/fixtures/output-v1/projection.query.degraded_rebuilding.jsonl	188	9fe8a36440e47635fd32536406c7d7677cc3d340773d5ccc9383df05dd5ed54c
@@ -93,13 +98,13 @@ crates/riffdb-cli/fixtures/output-v1/server.health.public_error.jsonl	205	bb60e8
 crates/riffdb-cli/fixtures/output-v1/server.health.ready.jsonl	682	47e8155cc0efca6db0be5e6c461e50799dcd50d1daad92671881679ee0abb9b9
 crates/riffdb-cli/fixtures/output-v1/server.health.response_too_large.jsonl	172	8f089e49bc1a7ada259cef541b68248514818d294924d8b37f20499363f1f7fc
 crates/riffdb-cli/fixtures/output-v1/server.health.transport_unavailable.jsonl	174	0f2079295daca0fc23a1d5bfde30766da8ae5df0e0c8bd9f9186cb475ac5fd81
-crates/riffdb-cli/interface/v1/README.md	3491	1f8fd4e6c8bf77803110bddfaa8459344d8c246e88f94f9c7252eef606045159
+crates/riffdb-cli/interface/v1/README.md	3522	1b5bc17f20f341747c4faa4260d05d370867090f32e7fcd93e8fe7d0aae18c46
 crates/riffdb-cli/interface/v1/client-complete.toml	134	662fcf6be346a49893e7a5aac0dfe5a031a2e4f0f66564cdd2d84a240993c7f7
 crates/riffdb-cli/interface/v1/client-ipv6-json.toml	74	958542c00f82540ed4f3e8cd4b566abc1442ef2688af693c3fc87fefa25acfbf
 crates/riffdb-cli/interface/v1/client-minimal.toml	9	cb9f32ed2e7005500c36c8dce91f5b7baaa43ca0bd735eb20c259de23ee1b4c9
-crates/riffdb-cli/interface/v1/command-grammar.rs.txt	8849	40ba66a4c801095a3f951aec31e8a3a487259d125cf9bf62eb7fd52db9033818
+crates/riffdb-cli/interface/v1/command-grammar.rs.txt	9404	80af2567bc73faff8187dfe27f71fcddf5c8b37945b46f02eaab944e0707d1b8
 crates/riffdb-cli/interface/v1/configuration.md	2243	0d880c516bb4cdd63f6d926d913742b88fa76402c29c4d748baf3892bf480bfa
-crates/riffdb-cli/interface/v1/dto-declarations.rs.txt	22788	30b272c459993f5abdb7c4d8941c04afdb1d8d42bd1efa3193b0a4366c9f7908
-crates/riffdb-cli/interface/v1/exit-codes.md	2211	0a08713f5b7115154b25258f2586e0d2be554e0983a62e37f9193160f8bd7203
+crates/riffdb-cli/interface/v1/dto-declarations.rs.txt	24057	2d90e62f95fae8df4d0ef1b896785926834dc13e91bcb41c5faf32f0abd442b8
+crates/riffdb-cli/interface/v1/exit-codes.md	2512	4f6882575aebde169c35ed75895fac020e1f1da415f6b67a16878eb1b3c7bac9
 crates/riffdb-cli/interface/v1/human-output.md	1843	2d3f10e5fc51a0224ed95cc7ed2a6c666cb3d61f2b8cf184e7b4f366d81bd734
-crates/riffdb-cli/interface/verify-checkpoint	10164	2b2ca6607453304158d0af9101fa7d13ddba1ede93358508698c359b7f80456d
+crates/riffdb-cli/interface/verify-checkpoint	10292	cc2ea0c6edd73c11d0f3a834f5f44b290216047d94a8c94d6a5ea90791250b33

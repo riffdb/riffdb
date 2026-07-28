@@ -70,9 +70,12 @@ const UNSUPPORTED_PROTOCOL_SENTINEL: &str = "riffdb-unsupported";
 const AUTHORIZATION_PREFIX: &[u8] = b"Bearer ";
 const CAPABILITY_PRESENTATION_BYTES: usize = 43;
 const AUTHORIZATION_VALUE_BYTES: usize = AUTHORIZATION_PREFIX.len() + CAPABILITY_PRESENTATION_BYTES;
-const MAX_ALLOWED_ORIGINS: usize = 16;
-const MAX_ORIGIN_BYTES: usize = 512;
-const MAX_ALLOWED_ORIGIN_AGGREGATE_BYTES: usize = 8_192;
+/// Maximum number of configured browser origins for one hosted endpoint.
+pub const MAX_ALLOWED_ORIGINS: usize = 16;
+/// Maximum canonical bytes in one configured browser origin.
+pub const MAX_ORIGIN_BYTES: usize = 512;
+/// Maximum aggregate bytes across one hosted endpoint's origin allowlist.
+pub const MAX_ALLOWED_ORIGIN_AGGREGATE_BYTES: usize = 8_192;
 
 /// Validated registration configuration for the POC loopback endpoint.
 pub struct HostedMcpHttpConfiguration {

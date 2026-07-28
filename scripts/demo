@@ -1,8 +1,11 @@
-#!/bin/sh
-set -eu
+#!/usr/bin/env bash
+set -euo pipefail
 
-if [ "${1-}" = "--dry-run" ]; then
-    if [ "$#" -ne 1 ]; then
+repo_root="$(git rev-parse --show-toplevel)"
+cd "$repo_root"
+
+if [[ "${1-}" == "--dry-run" ]]; then
+    if [[ $# -ne 1 ]]; then
         exit 2
     fi
     printf '%s\n' \
@@ -15,14 +18,867 @@ if [ "${1-}" = "--dry-run" ]; then
     exit 0
 fi
 
-if [ "$#" -ne 0 ]; then
+if [[ $# -eq 0 ]]; then
+    : "${RIFFDB_DEMO_RUNNER:?set RIFFDB_DEMO_RUNNER to riffdb-budget-public}"
+    : "${RIFFDB_CREDENTIAL_FILE:?set RIFFDB_CREDENTIAL_FILE to a protected normal credential}"
+
+    exec cargo run --quiet -p riffdb-cli --bin riffdb -- \
+        demo budget \
+        --runner "$RIFFDB_DEMO_RUNNER" \
+        --case sequential
+fi
+
+if [[ $# -ne 1 || "$1" != "--assert" ]]; then
     exit 2
 fi
 
-: "${RIFFDB_DEMO_RUNNER:?set RIFFDB_DEMO_RUNNER to riffdb-budget-public}"
-: "${RIFFDB_CREDENTIAL_FILE:?set RIFFDB_CREDENTIAL_FILE to a protected normal credential}"
+report_root="$repo_root/target/wp200"
+mkdir -p "$report_root"
+rm -f "$report_root/demo-report.json" "$report_root/demo-report.json.tmp"
 
-exec cargo run --quiet -p riffdb-cli --bin riffdb -- \
-    demo budget \
-    --runner "$RIFFDB_DEMO_RUNNER" \
-    --case sequential
+for tool in awk cargo cmp git jq mkfifo od seq sha256sum tail timeout tr; do
+    if ! command -v "$tool" >/dev/null 2>&1; then
+        printf 'required demo tool is missing: %s\n' "$tool" >&2
+        exit 1
+    fi
+done
+
+if [[ -n "$(git status --porcelain=v1)" ]]; then
+    printf '%s\n' 'the complete POC demo requires a clean checkout' >&2
+    exit 1
+fi
+if [[ ! -f benchmarks/storage-fjall/Cargo.toml ]]; then
+    printf '%s\n' \
+        'WP-075 storage-fjall workspace is required before the POC demo can verify its engine-comparison guarantee' >&2
+    exit 1
+fi
+if [[ ! -f tests/recovery/full_recovery_matrix.rs \
+   || ! -f tests/recovery/offline_maintenance_matrix.rs ]]; then
+    printf '%s\n' 'WP-190 recovery matrices are required before the POC demo can attest POC-004/POC-009' >&2
+    exit 1
+fi
+
+work_root="$repo_root/target/wp200/demo-work"
+artifact_root="$report_root/demo-artifacts"
+rm -rf "$work_root"
+rm -rf "$artifact_root"
+mkdir -p "$work_root" "$report_root" "$artifact_root"
+
+postgres_container=
+active_server_pid=
+cleanup() {
+    if [[ -n "$active_server_pid" ]] && kill -0 "$active_server_pid" 2>/dev/null; then
+        kill -TERM "$active_server_pid" 2>/dev/null || true
+        wait "$active_server_pid" 2>/dev/null || true
+    fi
+    if [[ -n "$postgres_container" ]]; then
+        docker rm -f "$postgres_container" >/dev/null 2>&1 || true
+    fi
+    rm -rf "$work_root"
+}
+trap cleanup EXIT INT TERM
+
+./scripts/release-evidence --verify
+
+cargo build --locked \
+    -p riffdb-server --bin riffdbd \
+    -p riffdb-cli --bin riffdb \
+    -p riffdb-mcp-stdio --bin riffdb-mcp
+cargo build --locked \
+    --manifest-path examples/budget-comparison/Cargo.toml \
+    -p riffdb-budget-comparison-riffdb-grpc \
+    --bin riffdb-budget-public
+
+riffdbd="$repo_root/target/debug/riffdbd"
+riffdb="$repo_root/target/debug/riffdb"
+riffdb_mcp="$repo_root/target/debug/riffdb-mcp"
+budget_runner="$repo_root/examples/budget-comparison/target/debug/riffdb-budget-public"
+
+random_hex_32() {
+    od -An -tx1 -N32 /dev/urandom | tr -d ' \n'
+}
+
+run_public_budget_case() {
+    local case="$1"
+    local case_root="$work_root/public-$case"
+    local ready_fifo="$case_root/ready.fifo"
+    local ready_line address
+
+    mkdir -p "$case_root/backups"
+    mkfifo "$ready_fifo"
+    (
+        umask 077
+        capability_key="$(random_hex_32)"
+        idempotency_key="$(random_hex_32)"
+        while [[ "$idempotency_key" == "$capability_key" ]]; do
+            idempotency_key="$(random_hex_32)"
+        done
+        printf 'riffdb-capability-digest-keys-v1\n1:%s\n' "$capability_key" \
+            > "$case_root/capability.keys"
+        printf 'riffdb-idempotency-digest-keys-v1\n1:%s\n' "$idempotency_key" \
+            > "$case_root/idempotency.keys"
+    )
+
+    "$riffdbd" \
+        --database "$case_root/riffdb.redb" \
+        --listen 127.0.0.1:0 \
+        --environment wp200-demo \
+        --audience riffdb-grpc-loopback \
+        --backup-root "$case_root/backups" \
+        --capability-keys "$case_root/capability.keys" \
+        --idempotency-keys "$case_root/idempotency.keys" \
+        </dev/null >"$ready_fifo" 2>"$case_root/riffdbd.stderr" &
+    active_server_pid=$!
+
+    exec {ready_fd}<"$ready_fifo"
+    if ! IFS= read -r -t 30 ready_line <&"$ready_fd"; then
+        printf 'riffdbd did not publish readiness for case %s\n' "$case" >&2
+        return 1
+    fi
+    exec {ready_fd}<&-
+    case "$ready_line" in
+        riffdbd-ready-v1$'\t'*) address="${ready_line#*$'\t'}" ;;
+        *)
+            printf 'riffdbd readiness protocol was invalid for case %s\n' "$case" >&2
+            return 1
+            ;;
+    esac
+
+    "$riffdb" --endpoint "http://$address" --output json \
+        capability bootstrap \
+        --request release/config/bootstrap-budget-demo.json \
+        --generate "$case_root/bootstrap.credential" \
+        --bearer-output "$case_root/bearer.credential" \
+        >"$case_root/bootstrap.json"
+    "$riffdb" --endpoint "http://$address" --output json \
+        --credential-file "$case_root/bearer.credential" \
+        contract deploy contracts/examples/budget.riff \
+        >"$case_root/deploy.json"
+    if [[ "$case" == "cli" ]]; then
+        "$riffdb" --endpoint "http://$address" --output json \
+            --credential-file "$case_root/bearer.credential" \
+            command execute CreateBudget \
+            --input release/config/budget-create-v1.json \
+            >"$case_root/create.json"
+        jq -e '
+            .schema == "riffdb.cli.output/v1"
+            and .command == "command.execute"
+            and .ok == true
+            and .result.status == "committed"
+            and .result.outcome_type == "BudgetCreated"
+        ' "$case_root/create.json" >/dev/null
+        "$riffdb" --endpoint "http://$address" --output json \
+            --credential-file "$case_root/bearer.credential" \
+            command execute AllocateBudget \
+            --input release/config/budget-allocate-v1.json \
+            >"$case_root/allocate.json"
+        jq -e '
+            .schema == "riffdb.cli.output/v1"
+            and .command == "command.execute"
+            and .ok == true
+            and .result.status == "committed"
+            and .result.outcome_type == "Allocated"
+        ' "$case_root/allocate.json" >/dev/null
+    elif [[ "$case" == "mcp" ]]; then
+        jq -cn '{
+          jsonrpc: "2.0",
+          id: 1,
+          method: "initialize",
+          params: {
+            protocolVersion: "2025-11-25",
+            capabilities: {},
+            clientInfo: {name: "riffdb-poc-demo", version: "1"}
+          }
+        }' >"$case_root/mcp-input.jsonl"
+        jq -cn '{
+          jsonrpc: "2.0",
+          method: "notifications/initialized"
+        }' >>"$case_root/mcp-input.jsonl"
+        jq -cn '{
+          jsonrpc: "2.0",
+          id: 2,
+          method: "tools/list"
+        }' >>"$case_root/mcp-input.jsonl"
+        jq -cn '{
+          jsonrpc: "2.0",
+          id: 3,
+          method: "tools/call",
+          params: {
+            name: "riffdb.contract.explain_command",
+            arguments: {
+              contract: {active: {}},
+              command_name: "AllocateBudget"
+            }
+          }
+        }' >>"$case_root/mcp-input.jsonl"
+        jq -cn '{
+          jsonrpc: "2.0",
+          id: 4,
+          method: "tools/call",
+          params: {
+            name: "riffdb.cmd.legalspend.createbudget",
+            arguments: {
+              approved_amount: "100.00",
+              fiscal_year: 2026,
+              idempotency_key: "wp200-mcp-create",
+              organization_id: "11111111-1111-4111-8111-111111111111"
+            }
+          }
+        }' >>"$case_root/mcp-input.jsonl"
+        jq -cn '{
+          jsonrpc: "2.0",
+          id: 5,
+          method: "tools/call",
+          params: {
+            name: "riffdb.cmd.legalspend.allocatebudget",
+            arguments: {
+              amount: "25.00",
+              fiscal_year: 2026,
+              idempotency_key: "wp200-mcp-allocate",
+              matter_id: "22222222-2222-4222-8222-222222222222",
+              organization_id: "11111111-1111-4111-8111-111111111111"
+            }
+          }
+        }' >>"$case_root/mcp-input.jsonl"
+        jq -cn '{
+          jsonrpc: "2.0",
+          id: 6,
+          method: "tools/call",
+          params: {
+            name: "riffdb.provenance.trace",
+            arguments: {selector: {commit_sequence: "2"}}
+          }
+        }' >>"$case_root/mcp-input.jsonl"
+        jq -cn '{
+          jsonrpc: "2.0",
+          id: 7,
+          method: "tools/call",
+          params: {
+            name: "riffdb.projection.query",
+            arguments: {
+              contract: {active: {}},
+              leading_components: [],
+              page: {limit: 10},
+              projection_id: 1,
+              required_sequence: "2",
+              wait_nanos: "5000000000"
+            }
+          }
+        }' >>"$case_root/mcp-input.jsonl"
+        jq -cn '{
+          jsonrpc: "2.0",
+          id: 8,
+          method: "tools/call",
+          params: {
+            name: "riffdb.server.health",
+            arguments: {}
+          }
+        }' >>"$case_root/mcp-input.jsonl"
+
+        RIFFDB_MCP_ENDPOINT="http://$address" \
+        RIFFDB_MCP_CREDENTIAL_FILE="$case_root/bearer.credential" \
+            timeout 45s "$riffdb_mcp" \
+            <"$case_root/mcp-input.jsonl" \
+            >"$case_root/mcp-output.jsonl" \
+            2>"$case_root/mcp.stderr"
+        jq -s -e '
+          def response($id): first(.[] | select(.id == $id));
+          response(1).result.protocolVersion == "2025-11-25"
+          and any(response(2).result.tools[];
+                  .name == "riffdb.cmd.legalspend.createbudget")
+          and any(response(2).result.tools[];
+                  .name == "riffdb.cmd.legalspend.allocatebudget")
+          and (response(3).result.structuredContent.found.plan_hash
+               | test("^[0-9a-f]{64}$"))
+          and response(4).result.structuredContent.status == "committed"
+          and response(4).result.structuredContent.commit_sequence == "1"
+          and response(4).result.structuredContent.outcome.type
+              == "BudgetCreated"
+          and response(5).result.structuredContent.status == "committed"
+          and response(5).result.structuredContent.commit_sequence == "2"
+          and response(5).result.structuredContent.outcome.type == "Allocated"
+          and response(6).result.structuredContent.found.commit_sequence == "2"
+          and (response(6).result.structuredContent.found.provenance_id
+               | test("^[0-9a-f-]{36}$"))
+          and response(7).result.structuredContent.ready.frontier.applied_through
+              == "2"
+          and response(8).result.structuredContent.authenticated
+              .last_commit_sequence == "2"
+        ' "$case_root/mcp-output.jsonl" >/dev/null
+
+        jq -n '{
+          principal_id: "wp200-restricted-agent",
+          actor_kind: "agent",
+          requested_lifetime_seconds: 3600,
+          audiences: ["riffdb-grpc-loopback"],
+          grant: {
+            tenant_scope: {type: "global"},
+            partition_scope: {type: "all"},
+            permissions: [{type: "read_health"}],
+            field_visibility: [],
+            max_scan_rows: 1,
+            approval_required: []
+          }
+        }' >"$case_root/restricted-capability.json"
+        "$riffdb" --endpoint "http://$address" --output json \
+            --credential-file "$case_root/bearer.credential" \
+            capability create \
+            --request "$case_root/restricted-capability.json" \
+            --credential-output "$case_root/restricted.credential" \
+            >"$case_root/restricted-create.json"
+        jq -e '
+          .schema == "riffdb.cli.output/v1"
+          and .command == "capability.create"
+          and .ok == true
+          and .result.status == "created"
+        ' "$case_root/restricted-create.json" >/dev/null
+
+        jq -cn '{
+          jsonrpc: "2.0",
+          id: 1,
+          method: "initialize",
+          params: {
+            protocolVersion: "2025-11-25",
+            capabilities: {},
+            clientInfo: {name: "riffdb-restricted-demo", version: "1"}
+          }
+        }' >"$case_root/restricted-input.jsonl"
+        jq -cn '{
+          jsonrpc: "2.0",
+          method: "notifications/initialized"
+        }' >>"$case_root/restricted-input.jsonl"
+        jq -cn '{
+          jsonrpc: "2.0",
+          id: 2,
+          method: "tools/list"
+        }' >>"$case_root/restricted-input.jsonl"
+        RIFFDB_MCP_ENDPOINT="http://$address" \
+        RIFFDB_MCP_CREDENTIAL_FILE="$case_root/restricted.credential" \
+            timeout 45s "$riffdb_mcp" \
+            <"$case_root/restricted-input.jsonl" \
+            >"$case_root/restricted-output.jsonl" \
+            2>"$case_root/restricted-mcp.stderr"
+        jq -s -e '
+          def response($id): first(.[] | select(.id == $id));
+          response(1).result.protocolVersion == "2025-11-25"
+          and ([response(2).result.tools[]
+                | select(.name | startswith("riffdb.cmd."))]
+               | length) == 0
+          and ([response(2).result.tools[]
+                | select(.name == "riffdb.server.health")]
+               | length) == 1
+        ' "$case_root/restricted-output.jsonl" >/dev/null
+    else
+        "$riffdb" --endpoint "http://$address" --output json \
+            --credential-file "$case_root/bearer.credential" \
+            demo budget --runner "$budget_runner" --case "$case" \
+            >"$case_root/result.json"
+        jq -e --arg case "$case" '
+          . == {
+            schema: "riffdb.cli.output/v1",
+            command: "demo.budget",
+            ok: true,
+            result: {
+              status: "passed",
+              adapter: "riffdb-public-grpc-v1",
+              case: $case,
+              workload_version: 1
+            }
+          }
+        ' "$case_root/result.json" >/dev/null
+    fi
+
+    kill -TERM "$active_server_pid"
+    if ! timeout 80s tail --pid="$active_server_pid" -f /dev/null; then
+        printf 'riffdbd did not stop within the bounded drain for case %s\n' "$case" >&2
+        return 1
+    fi
+    wait "$active_server_pid"
+    active_server_pid=
+}
+
+run_public_budget_case cli
+run_public_budget_case sequential
+run_public_budget_case contention
+run_public_budget_case same_key_replay
+run_public_budget_case mcp
+
+install -m 0600 "$work_root/public-cli/create.json" \
+    "$artifact_root/cli-create.json"
+install -m 0600 "$work_root/public-cli/allocate.json" \
+    "$artifact_root/cli-allocate.json"
+install -m 0600 "$work_root/public-sequential/result.json" \
+    "$artifact_root/rust-sdk-sequential.json"
+install -m 0600 "$work_root/public-contention/result.json" \
+    "$artifact_root/rust-sdk-contention.json"
+install -m 0600 "$work_root/public-same_key_replay/result.json" \
+    "$artifact_root/rust-sdk-same-key-replay.json"
+install -m 0600 "$work_root/public-mcp/mcp-output.jsonl" \
+    "$artifact_root/mcp-transcript.jsonl"
+install -m 0600 "$work_root/public-mcp/restricted-output.jsonl" \
+    "$artifact_root/restricted-mcp-transcript.jsonl"
+
+./scripts/check-generated
+cargo test --locked --all-features \
+    -p riffdb-types \
+    -p riffdb-proto \
+    -p riffdb-contract-compiler \
+    -p riffdb-catalog \
+    -p riffdb-storage-api \
+    -p riffdb-storage-redb \
+    -p riffdb-commit \
+    -p riffdb-service \
+    -p riffdb-api-grpc \
+    -p riffdb-api-mcp \
+    -p riffdb-client-rust \
+    -p riffdb-cli \
+    -p riffdb-projection \
+    -p riffdb-policy \
+    -p riffdb-server \
+    -p riffdb-testkit
+cargo test --locked -p riffdb-server --test server_configuration
+cargo test --locked -p riffdb-server \
+    --test offline_maintenance_recovery -- --ignored
+cargo test --locked -p riffdb-testkit \
+    --test full_recovery_matrix -- --ignored
+cargo test --locked -p riffdb-testkit \
+    --test offline_maintenance_matrix -- --ignored
+cargo test --locked \
+    --manifest-path benchmarks/storage-fjall/Cargo.toml --workspace
+
+cargo test --locked \
+    --manifest-path examples/budget-comparison/Cargo.toml --workspace
+cargo run --locked \
+    --manifest-path examples/budget-comparison/Cargo.toml \
+    -p riffdb-budget-safety-evidence --bin budget-safety-fixtures -- --check
+(
+    cargo test --locked -p riffdb-server --test server_composition \
+        real_process_hosts_policy_filtered_mcp_and_stops_on_sigterm -- --exact
+) >"$artifact_root/hosted-mcp-process-test.log" 2>&1
+(
+    cargo test --locked -p riffdb-api-mcp \
+        --features stdio,streamable-http \
+        --test mcp_conformance \
+        hosted_http_matches_stdio_and_rejects_authentication_bypasses -- --exact
+) >"$artifact_root/mcp-conformance-test.log" 2>&1
+
+./scripts/release-systemd-smoke \
+    --binary target/debug/riffdbd \
+    --mcp-binary target/debug/riffdb-mcp
+
+if [[ -z "${RIFFDB_BUDGET_POSTGRES_URL-}" ]]; then
+    if ! command -v docker >/dev/null 2>&1; then
+        printf '%s\n' \
+            'set RIFFDB_BUDGET_POSTGRES_URL or install Docker for the required live PostgreSQL evidence' >&2
+        exit 1
+    fi
+    postgres_container="riffdb-wp200-demo-$$"
+    docker run --detach --rm --name "$postgres_container" \
+        --env POSTGRES_USER=riffdb \
+        --env POSTGRES_PASSWORD=riffdb \
+        --env POSTGRES_DB=riffdb_budget \
+        --publish 127.0.0.1::5432 \
+        postgres:18.4-bookworm@sha256:d9c83446333daec3f0588cc709adb80c26090b7f9f0f7ec8d43c243385d79818 \
+        >/dev/null
+    for _ in $(seq 1 60); do
+        if docker exec "$postgres_container" \
+            pg_isready -U riffdb -d riffdb_budget >/dev/null 2>&1; then
+            break
+        fi
+        sleep 1
+    done
+    if ! docker exec "$postgres_container" \
+        pg_isready -U riffdb -d riffdb_budget >/dev/null 2>&1; then
+        printf '%s\n' 'ephemeral PostgreSQL did not become ready' >&2
+        exit 1
+    fi
+    postgres_port="$(docker port "$postgres_container" 5432/tcp | awk -F: 'NR == 1 {print $NF}')"
+    case "$postgres_port" in
+        ''|*[!0-9]*)
+            printf '%s\n' 'Docker returned an invalid PostgreSQL port' >&2
+            exit 1
+            ;;
+    esac
+    export RIFFDB_BUDGET_POSTGRES_URL="postgres://riffdb:riffdb@127.0.0.1:$postgres_port/riffdb_budget"
+fi
+
+./scripts/budget-safety-demo --assert >"$work_root/safety-report.jsonl"
+cmp "$work_root/safety-report.jsonl" \
+    examples/budget-comparison/fixtures/safety/report-v1.jsonl
+install -m 0600 "$work_root/safety-report.jsonl" \
+    "$artifact_root/safety-report.jsonl"
+
+revision="$(git rev-parse HEAD)"
+contract_hash="$(sha256sum contracts/examples/budget.riff | awk '{print $1}')"
+cli_create_hash="$(
+    sha256sum "$artifact_root/cli-create.json" | awk '{print $1}'
+)"
+cli_allocate_hash="$(
+    sha256sum "$artifact_root/cli-allocate.json" | awk '{print $1}'
+)"
+rust_sequential_hash="$(
+    sha256sum "$artifact_root/rust-sdk-sequential.json" | awk '{print $1}'
+)"
+rust_contention_hash="$(
+    sha256sum "$artifact_root/rust-sdk-contention.json" | awk '{print $1}'
+)"
+rust_replay_hash="$(
+    sha256sum "$artifact_root/rust-sdk-same-key-replay.json" | awk '{print $1}'
+)"
+mcp_hash="$(
+    sha256sum "$artifact_root/mcp-transcript.jsonl" | awk '{print $1}'
+)"
+restricted_mcp_hash="$(
+    sha256sum "$artifact_root/restricted-mcp-transcript.jsonl" | awk '{print $1}'
+)"
+safety_hash="$(
+    sha256sum "$artifact_root/safety-report.jsonl" | awk '{print $1}'
+)"
+hosted_mcp_test_hash="$(
+    sha256sum "$artifact_root/hosted-mcp-process-test.log" | awk '{print $1}'
+)"
+mcp_conformance_hash="$(
+    sha256sum "$artifact_root/mcp-conformance-test.log" | awk '{print $1}'
+)"
+recovery_hash="$(
+    sha256sum tests/recovery/fixtures/wp190-report-v1.json | awk '{print $1}'
+)"
+
+jq -S \
+    --arg revision "$revision" \
+    --arg contract_hash "$contract_hash" \
+    --arg cli_create_hash "$cli_create_hash" \
+    --arg cli_allocate_hash "$cli_allocate_hash" \
+    --arg rust_sequential_hash "$rust_sequential_hash" \
+    --arg rust_contention_hash "$rust_contention_hash" \
+    --arg rust_replay_hash "$rust_replay_hash" \
+    --arg mcp_hash "$mcp_hash" \
+    --arg restricted_mcp_hash "$restricted_mcp_hash" \
+    --arg safety_hash "$safety_hash" \
+    --arg hosted_mcp_test_hash "$hosted_mcp_test_hash" \
+    --arg mcp_conformance_hash "$mcp_conformance_hash" \
+    --arg recovery_hash "$recovery_hash" \
+    --slurpfile cli_create "$artifact_root/cli-create.json" \
+    --slurpfile cli_allocate "$artifact_root/cli-allocate.json" \
+    --slurpfile rust_sequential "$artifact_root/rust-sdk-sequential.json" \
+    --slurpfile rust_contention "$artifact_root/rust-sdk-contention.json" \
+    --slurpfile rust_replay "$artifact_root/rust-sdk-same-key-replay.json" \
+    --slurpfile mcp "$artifact_root/mcp-transcript.jsonl" \
+    --slurpfile restricted "$artifact_root/restricted-mcp-transcript.jsonl" \
+    --slurpfile safety "$artifact_root/safety-report.jsonl" \
+    --slurpfile recovery tests/recovery/fixtures/wp190-report-v1.json '
+  def mcp_response($id):
+    first($mcp[] | select(.id == $id));
+  def restricted_response($id):
+    first($restricted[] | select(.id == $id));
+  def artifact($path; $hash; $kind):
+    {
+      path: $path,
+      sha256: $hash,
+      evidence_kind: $kind,
+      integrity_status: "verified"
+    };
+  def safety_scenario($id):
+    first($safety[0].scenarios[] | select(.scenario == $id));
+  .attestation = "demo_verified"
+  | .requirements |= map(
+      if .id == "POC-010"
+      then .status = "requires_release_verification"
+      else .status = "verified"
+      end
+    )
+  | .guarantees |= map(.status = "verified")
+  | .run = {
+      source_revision: $revision,
+      command: "./scripts/demo --assert",
+      integrity_status: "verified",
+      generated_histories: "reference_model_equal",
+      unsafe_postgresql_variants_benchmark_eligible: false
+    }
+  | .run.offline_recovery_case_ids = [
+      $recovery[0].cases[]
+      | select(.id | startswith("maintenance."))
+      | .id
+    ]
+  | .run.artifacts = [
+      artifact(
+        "contracts/examples/budget.riff";
+        $contract_hash;
+        "contract_source"
+      ),
+      artifact(
+        "target/wp200/demo-artifacts/cli-create.json";
+        $cli_create_hash;
+        "live_cli_response"
+      ),
+      artifact(
+        "target/wp200/demo-artifacts/cli-allocate.json";
+        $cli_allocate_hash;
+        "live_cli_response"
+      ),
+      artifact(
+        "target/wp200/demo-artifacts/rust-sdk-sequential.json";
+        $rust_sequential_hash;
+        "live_rust_sdk_result"
+      ),
+      artifact(
+        "target/wp200/demo-artifacts/rust-sdk-contention.json";
+        $rust_contention_hash;
+        "live_rust_sdk_result"
+      ),
+      artifact(
+        "target/wp200/demo-artifacts/rust-sdk-same-key-replay.json";
+        $rust_replay_hash;
+        "live_rust_sdk_result"
+      ),
+      artifact(
+        "target/wp200/demo-artifacts/mcp-transcript.jsonl";
+        $mcp_hash;
+        "live_mcp_transcript"
+      ),
+      artifact(
+        "target/wp200/demo-artifacts/restricted-mcp-transcript.jsonl";
+        $restricted_mcp_hash;
+        "live_restricted_catalog_transcript"
+      ),
+      artifact(
+        "target/wp200/demo-artifacts/safety-report.jsonl";
+        $safety_hash;
+        "checked_safety_report"
+      ),
+      artifact(
+        "target/wp200/demo-artifacts/hosted-mcp-process-test.log";
+        $hosted_mcp_test_hash;
+        "live_hosted_mcp_process_test"
+      ),
+      artifact(
+        "target/wp200/demo-artifacts/mcp-conformance-test.log";
+        $mcp_conformance_hash;
+        "mcp_transport_conformance_test"
+      ),
+      artifact(
+        "tests/recovery/fixtures/wp190-report-v1.json";
+        $recovery_hash;
+        "checked_process_recovery_report"
+      )
+    ]
+  | .command_sequences = [
+      {
+        ordinal: 1,
+        transport: "cli_over_grpc",
+        command: "CreateBudget",
+        completion: $cli_create[0].result.status,
+        commit_sequence: $cli_create[0].result.commit_sequence,
+        outcome_type: $cli_create[0].result.outcome_type,
+        plan_hash: $cli_create[0].result.plan_hash,
+        provenance_uri: $cli_create[0].result.provenance_uri,
+        artifact_sha256: $cli_create_hash
+      },
+      {
+        ordinal: 2,
+        transport: "cli_over_grpc",
+        command: "AllocateBudget",
+        completion: $cli_allocate[0].result.status,
+        commit_sequence: $cli_allocate[0].result.commit_sequence,
+        outcome_type: $cli_allocate[0].result.outcome_type,
+        plan_hash: $cli_allocate[0].result.plan_hash,
+        provenance_uri: $cli_allocate[0].result.provenance_uri,
+        artifact_sha256: $cli_allocate_hash
+      },
+      {
+        ordinal: 3,
+        transport: "rust_sdk_over_grpc",
+        command: "canonical sequential workload",
+        completion: $rust_sequential[0].result.status,
+        adapter: $rust_sequential[0].result.adapter,
+        case: $rust_sequential[0].result.case,
+        workload_version: $rust_sequential[0].result.workload_version,
+        oracle_status: "passed",
+        artifact_sha256: $rust_sequential_hash
+      },
+      {
+        ordinal: 4,
+        transport: "rust_sdk_over_grpc",
+        command: "canonical contention workload",
+        completion: $rust_contention[0].result.status,
+        adapter: $rust_contention[0].result.adapter,
+        case: $rust_contention[0].result.case,
+        workload_version: $rust_contention[0].result.workload_version,
+        oracle_status: "passed",
+        artifact_sha256: $rust_contention_hash
+      },
+      {
+        ordinal: 5,
+        transport: "rust_sdk_over_grpc",
+        command: "canonical same-key replay workload",
+        completion: $rust_replay[0].result.status,
+        adapter: $rust_replay[0].result.adapter,
+        case: $rust_replay[0].result.case,
+        workload_version: $rust_replay[0].result.workload_version,
+        oracle_status: "passed",
+        artifact_sha256: $rust_replay_hash
+      },
+      {
+        ordinal: 6,
+        transport: "mcp_stdio_over_public_grpc",
+        command: "ExplainCommand AllocateBudget",
+        completion: "found",
+        command_id:
+          mcp_response(3).result.structuredContent.found.command_id,
+        plan_hash:
+          mcp_response(3).result.structuredContent.found.plan_hash,
+        artifact_sha256: $mcp_hash
+      },
+      {
+        ordinal: 7,
+        transport: "mcp_stdio_over_public_grpc",
+        command: "riffdb.cmd.legalspend.createbudget",
+        completion: mcp_response(4).result.structuredContent.status,
+        commit_sequence:
+          mcp_response(4).result.structuredContent.commit_sequence,
+        outcome_type:
+          mcp_response(4).result.structuredContent.outcome.type,
+        plan_hash: mcp_response(4).result.structuredContent.plan_hash,
+        provenance_uri:
+          mcp_response(4).result.structuredContent.provenance_uri,
+        artifact_sha256: $mcp_hash
+      },
+      {
+        ordinal: 8,
+        transport: "mcp_stdio_over_public_grpc",
+        command: "riffdb.cmd.legalspend.allocatebudget",
+        completion: mcp_response(5).result.structuredContent.status,
+        commit_sequence:
+          mcp_response(5).result.structuredContent.commit_sequence,
+        outcome_type:
+          mcp_response(5).result.structuredContent.outcome.type,
+        plan_hash: mcp_response(5).result.structuredContent.plan_hash,
+        provenance_uri:
+          mcp_response(5).result.structuredContent.provenance_uri,
+        artifact_sha256: $mcp_hash
+      },
+      {
+        ordinal: 9,
+        transport: "mcp_stdio_over_public_grpc",
+        command: "riffdb.provenance.trace",
+        completion: "found",
+        commit_sequence:
+          mcp_response(6).result.structuredContent.found.commit_sequence,
+        provenance_id:
+          mcp_response(6).result.structuredContent.found.provenance_id,
+        artifact_sha256: $mcp_hash
+      },
+      {
+        ordinal: 10,
+        transport: "mcp_stdio_over_public_grpc",
+        command: "riffdb.projection.query",
+        completion: "ready",
+        required_sequence: "2",
+        applied_through:
+          mcp_response(7).result.structuredContent.ready.frontier
+          .applied_through,
+        artifact_sha256: $mcp_hash
+      },
+      {
+        ordinal: 11,
+        transport: "mcp_stdio_over_public_grpc",
+        command: "tools/list as restricted agent",
+        completion: "policy_filtered",
+        visible_dynamic_tool_count:
+          ([restricted_response(2).result.tools[]
+            | select(.name | startswith("riffdb.cmd."))]
+           | length),
+        full_dynamic_tool_count:
+          ([mcp_response(2).result.tools[]
+            | select(.name | startswith("riffdb.cmd."))]
+           | length),
+        artifact_sha256: $restricted_mcp_hash
+      }
+    ]
+  | .observations = {
+      budget_contention: {
+        approved_amount: "100.00",
+        requested_amounts: ["80.00", "80.00"],
+        outcome_counts: {
+          Allocated:
+            safety_scenario("lost_update_without_lock")
+            .riffdb_public.allocated_count,
+          InsufficientBudget:
+            safety_scenario("lost_update_without_lock")
+            .riffdb_public.insufficient_budget_count
+        },
+        final_allocated_amount:
+          safety_scenario("lost_update_without_lock")
+          .riffdb_public.final_allocated_amount
+      },
+      same_key_recovery: {
+        completion:
+          safety_scenario("duplicate_retry_after_discarded_response")
+          .riffdb_public.replay_completion,
+        duplicate_mutation_count:
+          (safety_scenario("duplicate_retry_after_discarded_response")
+           .riffdb_public.matching_allocation_commit_count - 1),
+        duplicate_event_count:
+          (safety_scenario("duplicate_retry_after_discarded_response")
+           .riffdb_public.allocation_commit_event_count - 1)
+      },
+      offline_restore: {
+        database_id: "preserved",
+        destroyed_suffix: "invalidated"
+      }
+    }
+' release/evidence/poc-requirements-v1.json \
+    >"$report_root/demo-report.json.tmp"
+
+jq -e '
+  .schema == "riffdb.poc-evidence-manifest/v1"
+  and .attestation == "demo_verified"
+  and (.run.artifacts | length == 12)
+  and ([.run.artifacts[] | [.path, .evidence_kind]] == [
+    ["contracts/examples/budget.riff", "contract_source"],
+    ["target/wp200/demo-artifacts/cli-create.json", "live_cli_response"],
+    ["target/wp200/demo-artifacts/cli-allocate.json", "live_cli_response"],
+    ["target/wp200/demo-artifacts/rust-sdk-sequential.json", "live_rust_sdk_result"],
+    ["target/wp200/demo-artifacts/rust-sdk-contention.json", "live_rust_sdk_result"],
+    ["target/wp200/demo-artifacts/rust-sdk-same-key-replay.json", "live_rust_sdk_result"],
+    ["target/wp200/demo-artifacts/mcp-transcript.jsonl", "live_mcp_transcript"],
+    ["target/wp200/demo-artifacts/restricted-mcp-transcript.jsonl", "live_restricted_catalog_transcript"],
+    ["target/wp200/demo-artifacts/safety-report.jsonl", "checked_safety_report"],
+    ["target/wp200/demo-artifacts/hosted-mcp-process-test.log", "live_hosted_mcp_process_test"],
+    ["target/wp200/demo-artifacts/mcp-conformance-test.log", "mcp_transport_conformance_test"],
+    ["tests/recovery/fixtures/wp190-report-v1.json", "checked_process_recovery_report"]
+  ])
+  and all(.run.artifacts[];
+          .integrity_status == "verified"
+          and (.sha256 | test("^[0-9a-f]{64}$")))
+  and ([.command_sequences[].ordinal] == [1,2,3,4,5,6,7,8,9,10,11])
+  and .command_sequences[0].outcome_type == "BudgetCreated"
+  and .command_sequences[1].outcome_type == "Allocated"
+  and ([.command_sequences[2:5][] | .case]
+       == ["sequential", "contention", "same_key_replay"])
+  and all(.command_sequences[2:5][];
+          .completion == "passed"
+          and .adapter == "riffdb-public-grpc-v1"
+          and .workload_version == 1
+          and .oracle_status == "passed")
+  and .command_sequences[6].outcome_type == "BudgetCreated"
+  and .command_sequences[7].outcome_type == "Allocated"
+  and .command_sequences[8].commit_sequence == "2"
+  and .command_sequences[9].applied_through == "2"
+  and .command_sequences[10].full_dynamic_tool_count == 2
+  and .command_sequences[10].visible_dynamic_tool_count == 0
+  and .observations.budget_contention.outcome_counts
+      == {Allocated: 1, InsufficientBudget: 1}
+  and .observations.same_key_recovery
+      == {
+        completion: "Replayed",
+        duplicate_mutation_count: 0,
+        duplicate_event_count: 0
+      }
+  and (.run.offline_recovery_case_ids | length) == 14
+' "$report_root/demo-report.json.tmp" >/dev/null
+mv "$report_root/demo-report.json.tmp" "$report_root/demo-report.json"
+
+printf '%s\n' \
+    'riffdb-demo-v1: all assertions passed' \
+    'riffdb-demo-v1: report target/wp200/demo-report.json'

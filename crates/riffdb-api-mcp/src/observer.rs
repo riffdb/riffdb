@@ -18,7 +18,10 @@ use futures::task::AtomicWaker;
 #[cfg(feature = "stdio")]
 use tokio::time::Instant;
 
-use crate::{McpAdmissionError, McpObserverSemaphore, McpResourceLocator, parse_resource_locator};
+use crate::{
+    McpAdmissionError, McpListChangeKind, McpObserverSemaphore, McpResourceLocator, McpTelemetry,
+    McpTelemetryEvent, NoopMcpTelemetry, parse_resource_locator,
+};
 
 /// Maximum distinct subscribed resource locators per MCP session.
 pub const MAX_MCP_SUBSCRIPTIONS: usize = 8;
@@ -1020,15 +1023,21 @@ struct ObserverInner {
 }
 
 /// One session's bounded subscriptions, fingerprints, and coalesced markers.
-#[derive(Default)]
 pub struct McpObserverState {
     inner: Mutex<ObserverInner>,
+    telemetry: Arc<dyn McpTelemetry>,
 }
 
 impl McpObserverState {
     /// Creates empty observer state with no authority or background task.
     #[must_use]
-    pub const fn new() -> Self {
+    pub fn new() -> Self {
+        Self::with_telemetry(Arc::new(NoopMcpTelemetry))
+    }
+
+    /// Creates empty observer state with one closed semantic telemetry sink.
+    #[must_use]
+    pub fn with_telemetry(telemetry: Arc<dyn McpTelemetry>) -> Self {
         Self {
             inner: Mutex::new(ObserverInner {
                 subscriptions: BTreeMap::new(),
@@ -1044,6 +1053,7 @@ impl McpObserverState {
                 cancelled: false,
                 notification_mailbox: None,
             }),
+            telemetry,
         }
     }
 
@@ -1455,6 +1465,12 @@ impl McpObserverState {
     }
 }
 
+impl Default for McpObserverState {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl Drop for McpObserverState {
     fn drop(&mut self) {
         let mailbox = self
@@ -1797,7 +1813,23 @@ where
                 .notification_sink
                 .try_emit(notifications[index].clone())
             {
-                Ok(()) => {}
+                Ok(()) => match &notifications[index] {
+                    McpObserverNotification::ToolsListChanged => {
+                        self.state
+                            .telemetry
+                            .record(McpTelemetryEvent::ListChangeNotification {
+                                kind: McpListChangeKind::Tools,
+                            });
+                    }
+                    McpObserverNotification::ResourcesListChanged => {
+                        self.state
+                            .telemetry
+                            .record(McpTelemetryEvent::ListChangeNotification {
+                                kind: McpListChangeKind::Resources,
+                            });
+                    }
+                    McpObserverNotification::ResourceUpdated(_) => {}
+                },
                 Err(McpObserverNotificationError::Backpressured) => {
                     self.state
                         .restore_pending(pending_from_notifications(&notifications[index..]))
@@ -2035,6 +2067,27 @@ mod tests {
     };
 
     use super::*;
+
+    #[derive(Default)]
+    struct RecordingTelemetry(Mutex<Vec<McpTelemetryEvent>>);
+
+    impl McpTelemetry for RecordingTelemetry {
+        fn record(&self, event: McpTelemetryEvent) {
+            self.0
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .push(event);
+        }
+    }
+
+    impl RecordingTelemetry {
+        fn snapshot(&self) -> Vec<McpTelemetryEvent> {
+            self.0
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .clone()
+        }
+    }
 
     fn fingerprint(value: u16) -> McpVisibleFingerprint {
         McpVisibleFingerprint::new(value.to_be_bytes().to_vec()).expect("bounded fingerprint")
@@ -3300,7 +3353,8 @@ mod tests {
             Ok(McpSubscribedResourceObservation::Visible(fingerprint(2))),
         );
 
-        let state = Arc::new(McpObserverState::new());
+        let telemetry = Arc::new(RecordingTelemetry::default());
+        let state = Arc::new(McpObserverState::with_telemetry(telemetry.clone()));
         state.subscribe(active).expect("supported subscription");
         let sink = Arc::new(RecordingSink::default());
         let notification_sink: Arc<dyn McpObserverNotificationSink> = sink.clone();
@@ -3339,6 +3393,17 @@ mod tests {
                 .expect("all markers accepted")
                 .marker_count(),
             0
+        );
+        assert_eq!(
+            telemetry.snapshot(),
+            [
+                McpTelemetryEvent::ListChangeNotification {
+                    kind: McpListChangeKind::Tools,
+                },
+                McpTelemetryEvent::ListChangeNotification {
+                    kind: McpListChangeKind::Resources,
+                },
+            ]
         );
     }
 

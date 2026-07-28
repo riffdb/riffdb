@@ -12,6 +12,7 @@ mod contract_operations;
 mod cursor;
 mod dto;
 mod failure;
+mod maintenance_operations;
 mod orchestration;
 mod ports;
 mod query_discovery_operations;
@@ -26,6 +27,9 @@ pub use context::*;
 pub use cursor::*;
 pub use dto::*;
 pub use failure::*;
+pub use maintenance_operations::{
+    RecoveryOfflineMaintenanceService, RestoreRetryOfflineMaintenanceService,
+};
 pub use ports::*;
 pub use response::*;
 pub use service::*;

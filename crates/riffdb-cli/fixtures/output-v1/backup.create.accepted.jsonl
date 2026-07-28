@@ -1,0 +1,1 @@
+{"schema":"riffdb.cli.output/v1","command":"backup.create","ok":true,"result":{"status":"accepted","maintenance_operation_id":"019bf6aa-a640-7de6-89c9-8a7f70bbbd23","kind":"create_backup","backup_name":"before-upgrade","input_hash":"1111111111111111111111111111111111111111111111111111111111111111","phase":"accepted"}}

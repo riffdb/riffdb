@@ -3,12 +3,25 @@ name = "riffdb-projection"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
+license.workspace = true
 publish.workspace = true
 
 [features]
 default = []
 
 [dependencies]
+riffdb-catalog = { version = "0.1.0", path = "../riffdb-catalog", default-features = false }
+riffdb-contract-ir = { version = "0.1.0", path = "../riffdb-contract-ir", default-features = false }
+riffdb-invariant = { version = "0.1.0", path = "../riffdb-invariant", default-features = false }
+riffdb-storage-api = { version = "0.1.0", path = "../riffdb-storage-api", default-features = false }
+riffdb-types = { version = "0.1.0", path = "../riffdb-types", default-features = false }
+
+[dev-dependencies]
+riffdb-contract-compiler = { version = "0.1.0", path = "../riffdb-contract-compiler", default-features = false }
+
+[[test]]
+name = "projection_prefix_and_recovery"
+path = "../../tests/projection/projection_prefix_and_recovery.rs"
 
 [lints]
 workspace = true

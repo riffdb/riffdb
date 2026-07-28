@@ -1,0 +1,16 @@
+[Unit]
+Description=RiffDB public-client MCP bridge socket
+Documentation=file:/usr/share/doc/riffdb/docs/installation.md
+
+[Socket]
+ListenStream=/run/riffdb-mcp.sock
+Accept=yes
+SocketUser=riffdb-mcp
+SocketGroup=riffdb-mcp
+SocketMode=0660
+DirectoryMode=0755
+RemoveOnStop=yes
+MaxConnections=32
+
+[Install]
+WantedBy=sockets.target

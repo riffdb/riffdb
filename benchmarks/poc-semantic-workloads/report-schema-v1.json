@@ -1,0 +1,616 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://riffdb.dev/schemas/poc-semantic-benchmark-report-v1.json",
+  "title": "RiffDB POC Semantic Benchmark Report v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "report_id",
+    "publication_status",
+    "source",
+    "environment",
+    "configuration",
+    "workloads",
+    "limitations"
+  ],
+  "properties": {
+    "schema": {
+      "const": "riffdb.poc-semantic-benchmark-report/v1"
+    },
+    "report_id": {
+      "const": "poc-semantic-workloads"
+    },
+    "publication_status": {
+      "enum": [
+        "smoke_after_correctness_preflight",
+        "measured_after_correctness_preflight"
+      ]
+    },
+    "source": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "revision",
+        "dirty",
+        "rust_version",
+        "target",
+        "raw_artifact",
+        "raw_sha256"
+      ],
+      "properties": {
+        "revision": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{40,64}$"
+        },
+        "dirty": {
+          "type": "boolean"
+        },
+        "rust_version": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 4096
+        },
+        "target": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 512
+        },
+        "raw_artifact": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 512
+        },
+        "raw_sha256": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        }
+      }
+    },
+    "environment": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "cpu",
+        "memory",
+        "storage_medium",
+        "operating_system",
+        "kernel",
+        "database_root",
+        "filesystem",
+        "mount_options"
+      ],
+      "properties": {
+        "cpu": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 4096
+        },
+        "memory": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 4096
+        },
+        "storage_medium": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 4096
+        },
+        "operating_system": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 4096
+        },
+        "kernel": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 4096
+        },
+        "database_root": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 4096
+        },
+        "filesystem": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 4096
+        },
+        "mount_options": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 4096
+        }
+      }
+    },
+    "configuration": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "build_profile",
+        "features",
+        "contract_version",
+        "workload_distribution",
+        "durability_modes",
+        "warmup_runs",
+        "sample_count",
+        "distribution_method",
+        "analysis_command",
+        "mode",
+        "measured_iterations",
+        "commands_per_iteration",
+        "scan_records",
+        "projection_records",
+        "restart_commit_counts"
+      ],
+      "properties": {
+        "build_profile": {
+          "const": "release"
+        },
+        "features": {
+          "const": []
+        },
+        "contract_version": {
+          "const": "LegalSpend/1"
+        },
+        "workload_distribution": {
+          "const": "deterministic generated LegalSpend commands"
+        },
+        "durability_modes": {
+          "const": [
+            "group_commit",
+            "synchronous"
+          ]
+        },
+        "warmup_runs": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "sample_count": {
+          "$ref": "#/$defs/positiveInteger"
+        },
+        "distribution_method": {
+          "const": "raw samples with nearest-rank p50/p95/p99"
+        },
+        "analysis_command": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 1024
+        },
+        "mode": {
+          "enum": [
+            "smoke",
+            "full"
+          ]
+        },
+        "measured_iterations": {
+          "$ref": "#/$defs/positiveInteger"
+        },
+        "commands_per_iteration": {
+          "$ref": "#/$defs/positiveInteger"
+        },
+        "scan_records": {
+          "$ref": "#/$defs/positiveInteger"
+        },
+        "projection_records": {
+          "$ref": "#/$defs/positiveInteger"
+        },
+        "restart_commit_counts": {
+          "type": "array",
+          "minItems": 3,
+          "maxItems": 3,
+          "uniqueItems": true,
+          "items": {
+            "$ref": "#/$defs/positiveInteger"
+          }
+        }
+      }
+    },
+    "workloads": {
+      "type": "array",
+      "minItems": 13,
+      "maxItems": 13,
+      "items": {
+        "$ref": "#/$defs/workload"
+      }
+    },
+    "limitations": {
+      "type": "array",
+      "minItems": 4,
+      "maxItems": 4,
+      "items": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 256
+      }
+    }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "publication_status": {
+            "const": "measured_after_correctness_preflight"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "source": {
+            "properties": {
+              "dirty": {
+                "const": false
+              }
+            }
+          },
+          "configuration": {
+            "properties": {
+              "mode": {
+                "const": "full"
+              },
+              "measured_iterations": {
+                "minimum": 3
+              }
+            }
+          }
+        }
+      },
+      "else": {
+        "properties": {
+          "configuration": {
+            "properties": {
+              "mode": {
+                "const": "smoke"
+              },
+              "measured_iterations": {
+                "const": 1
+              }
+            }
+          }
+        }
+      }
+    }
+  ],
+  "$defs": {
+    "positiveInteger": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "workload": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "family",
+        "workload_id",
+        "sample_count",
+        "samples_ns",
+        "p50_ns",
+        "p95_ns",
+        "p99_ns",
+        "correctness"
+      ],
+      "properties": {
+        "family": {
+          "enum": [
+            "conflict_free_command",
+            "hot_key_contention",
+            "idempotent_replay",
+            "commit_log_scan",
+            "projection_catch_up",
+            "restart_recovery",
+            "durability_mode"
+          ]
+        },
+        "workload_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 96
+        },
+        "sample_count": {
+          "$ref": "#/$defs/positiveInteger"
+        },
+        "samples_ns": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "$ref": "#/$defs/positiveInteger"
+          }
+        },
+        "p50_ns": {
+          "$ref": "#/$defs/positiveInteger"
+        },
+        "p95_ns": {
+          "$ref": "#/$defs/positiveInteger"
+        },
+        "p99_ns": {
+          "$ref": "#/$defs/positiveInteger"
+        },
+        "ops_per_second": {
+          "$ref": "#/$defs/positiveInteger"
+        },
+        "records_per_second": {
+          "$ref": "#/$defs/positiveInteger"
+        },
+        "concurrency": {
+          "$ref": "#/$defs/positiveInteger"
+        },
+        "durability_mode": {
+          "enum": [
+            "synchronous",
+            "group_commit"
+          ]
+        },
+        "database_size_bytes": {
+          "$ref": "#/$defs/positiveInteger"
+        },
+        "commands_per_iteration": {
+          "$ref": "#/$defs/positiveInteger"
+        },
+        "record_count": {
+          "$ref": "#/$defs/positiveInteger"
+        },
+        "source_event_count": {
+          "$ref": "#/$defs/positiveInteger"
+        },
+        "commit_record_count": {
+          "$ref": "#/$defs/positiveInteger"
+        },
+        "authoritative_commit_count": {
+          "$ref": "#/$defs/positiveInteger"
+        },
+        "scope": {
+          "type": "string",
+          "minLength": 1
+        },
+        "correctness": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 512
+        }
+      },
+      "oneOf": [
+        {
+          "properties": {
+            "family": {
+              "const": "conflict_free_command"
+            },
+            "workload_id": {
+              "const": "conflict-free-command-v1"
+            },
+            "concurrency": {
+              "const": 1
+            },
+            "durability_mode": {
+              "const": "synchronous"
+            },
+            "records_per_second": false,
+            "database_size_bytes": false,
+            "record_count": false,
+            "source_event_count": false,
+            "commit_record_count": false,
+            "authoritative_commit_count": false,
+            "scope": false
+          },
+          "required": [
+            "ops_per_second",
+            "concurrency",
+            "durability_mode",
+            "commands_per_iteration"
+          ]
+        },
+        {
+          "properties": {
+            "family": {
+              "const": "hot_key_contention"
+            },
+            "durability_mode": {
+              "const": "synchronous"
+            },
+            "records_per_second": false,
+            "database_size_bytes": false,
+            "commands_per_iteration": false,
+            "record_count": false,
+            "source_event_count": false,
+            "commit_record_count": false,
+            "authoritative_commit_count": false,
+            "scope": false
+          },
+          "required": [
+            "ops_per_second",
+            "concurrency",
+            "durability_mode"
+          ],
+          "oneOf": [
+            {
+              "properties": {
+                "workload_id": {
+                  "const": "hot-key-contention-1-v1"
+                },
+                "concurrency": {
+                  "const": 1
+                }
+              }
+            },
+            {
+              "properties": {
+                "workload_id": {
+                  "const": "hot-key-contention-8-v1"
+                },
+                "concurrency": {
+                  "const": 8
+                }
+              }
+            },
+            {
+              "properties": {
+                "workload_id": {
+                  "const": "hot-key-contention-32-v1"
+                },
+                "concurrency": {
+                  "const": 32
+                }
+              }
+            },
+            {
+              "properties": {
+                "workload_id": {
+                  "const": "hot-key-contention-128-v1"
+                },
+                "concurrency": {
+                  "const": 128
+                }
+              }
+            }
+          ]
+        },
+        {
+          "properties": {
+            "family": {
+              "const": "idempotent_replay"
+            },
+            "workload_id": {
+              "const": "idempotent-replay-v1"
+            },
+            "durability_mode": {
+              "const": "synchronous"
+            },
+            "records_per_second": false,
+            "concurrency": false,
+            "database_size_bytes": false,
+            "commands_per_iteration": false,
+            "record_count": false,
+            "source_event_count": false,
+            "commit_record_count": false,
+            "authoritative_commit_count": false,
+            "scope": false
+          },
+          "required": [
+            "ops_per_second",
+            "durability_mode"
+          ]
+        },
+        {
+          "properties": {
+            "family": {
+              "const": "commit_log_scan"
+            },
+            "workload_id": {
+              "const": "commit-log-scan-v1"
+            },
+            "ops_per_second": false,
+            "concurrency": false,
+            "durability_mode": false,
+            "database_size_bytes": false,
+            "commands_per_iteration": false,
+            "source_event_count": false,
+            "commit_record_count": false,
+            "authoritative_commit_count": false,
+            "scope": false
+          },
+          "required": [
+            "records_per_second",
+            "record_count"
+          ]
+        },
+        {
+          "properties": {
+            "family": {
+              "const": "projection_catch_up"
+            },
+            "workload_id": {
+              "const": "projection-catch-up-v1"
+            },
+            "ops_per_second": false,
+            "concurrency": false,
+            "durability_mode": false,
+            "database_size_bytes": false,
+            "commands_per_iteration": false,
+            "record_count": false,
+            "authoritative_commit_count": false,
+            "scope": false
+          },
+          "required": [
+            "records_per_second",
+            "source_event_count",
+            "commit_record_count"
+          ]
+        },
+        {
+          "properties": {
+            "family": {
+              "const": "restart_recovery"
+            },
+            "workload_id": {
+              "enum": [
+                "restart-recovery-size-1-v1",
+                "restart-recovery-size-2-v1",
+                "restart-recovery-size-3-v1"
+              ]
+            },
+            "ops_per_second": false,
+            "records_per_second": false,
+            "concurrency": false,
+            "durability_mode": false,
+            "commands_per_iteration": false,
+            "record_count": false,
+            "source_event_count": false,
+            "commit_record_count": false,
+            "scope": false
+          },
+          "required": [
+            "database_size_bytes",
+            "authoritative_commit_count"
+          ]
+        },
+        {
+          "properties": {
+            "family": {
+              "const": "durability_mode"
+            },
+            "records_per_second": false,
+            "concurrency": false,
+            "database_size_bytes": false,
+            "record_count": false,
+            "source_event_count": false,
+            "commit_record_count": false,
+            "authoritative_commit_count": false
+          },
+          "required": [
+            "ops_per_second",
+            "durability_mode",
+            "commands_per_iteration"
+          ],
+          "oneOf": [
+            {
+              "properties": {
+                "workload_id": {
+                  "const": "durability-synchronous-v1"
+                },
+                "durability_mode": {
+                  "const": "synchronous"
+                },
+                "scope": false
+              }
+            },
+            {
+              "properties": {
+                "workload_id": {
+                  "const": "durability-group_commit-v1"
+                },
+                "durability_mode": {
+                  "const": "group_commit"
+                },
+                "scope": {
+                  "const": "current single-command group durability semantics; no batching or scheduling claim"
+                }
+              },
+              "required": [
+                "scope"
+              ]
+            }
+          ]
+        }
+      ]
+    }
+  }
+}

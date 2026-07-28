@@ -1,0 +1,315 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+usage() {
+    printf '%s\n' \
+        'usage: scripts/release-systemd-smoke --binary PATH [--mcp-binary PATH] [--cli-binary PATH --expected-revision HEX]' >&2
+}
+
+riffdbd=
+riffdb_mcp=
+riffdb_cli=
+expected_revision=
+while [[ $# -gt 0 ]]; do
+    if [[ $# -lt 2 || -z "$2" ]]; then
+        usage
+        exit 2
+    fi
+    case "$1" in
+        --binary)
+            [[ -z "$riffdbd" ]] || {
+                usage
+                exit 2
+            }
+            riffdbd="$2"
+            ;;
+        --mcp-binary)
+            [[ -z "$riffdb_mcp" ]] || {
+                usage
+                exit 2
+            }
+            riffdb_mcp="$2"
+            ;;
+        --cli-binary)
+            [[ -z "$riffdb_cli" ]] || {
+                usage
+                exit 2
+            }
+            riffdb_cli="$2"
+            ;;
+        --expected-revision)
+            [[ -z "$expected_revision" ]] || {
+                usage
+                exit 2
+            }
+            expected_revision="$2"
+            ;;
+        *)
+            usage
+            exit 2
+            ;;
+    esac
+    shift 2
+done
+if [[ -z "$riffdbd" \
+   || ( -n "$riffdb_cli" && -z "$expected_revision" ) \
+   || ( -z "$riffdb_cli" && -n "$expected_revision" ) ]]; then
+    usage
+    exit 2
+fi
+if [[ ! -x "$riffdbd" \
+   || ( -n "$riffdb_mcp" && ! -x "$riffdb_mcp" ) \
+   || ( -n "$riffdb_cli" && ! -x "$riffdb_cli" ) ]]; then
+    printf '%s\n' 'release smoke binary is missing or not executable' >&2
+    exit 1
+fi
+if [[ -n "$expected_revision" \
+   && ! "$expected_revision" =~ ^[0-9a-f]{40,64}$ ]]; then
+    printf '%s\n' 'expected release revision is not canonical lowercase hexadecimal' >&2
+    exit 1
+fi
+
+repo_root="$(git rev-parse --show-toplevel)"
+cd "$repo_root"
+
+for unit in \
+    release/systemd/riffdbd.service \
+    release/systemd/riffdb-mcp.socket \
+    release/systemd/riffdb-mcp@.service
+do
+    test -f "$unit"
+done
+
+grep -Fx 'StandardInput=null' release/systemd/riffdbd.service >/dev/null
+grep -Fx 'KillSignal=SIGTERM' release/systemd/riffdbd.service >/dev/null
+grep -Fx 'User=riffdb' release/systemd/riffdbd.service >/dev/null
+grep -Fx 'ExecStart=/usr/bin/riffdbd --config /etc/riffdb/riffdbd.toml' \
+    release/systemd/riffdbd.service >/dev/null
+grep -Fx 'ReadOnlyPaths=/etc/riffdb' release/systemd/riffdbd.service >/dev/null
+grep -Fx 'ReadWritePaths=/var/lib/riffdb' release/systemd/riffdbd.service >/dev/null
+grep -Fx 'database = "/var/lib/riffdb/data/riffdb.redb"' \
+    release/config/riffdbd.toml.example >/dev/null
+grep -Fx 'grpc_listen = "127.0.0.1:7443"' \
+    release/config/riffdbd.toml.example >/dev/null
+grep -Fx 'backup_root = "/var/lib/riffdb/backups"' \
+    release/config/riffdbd.toml.example >/dev/null
+grep -Fx 'capability_keys = "/etc/riffdb/capability.keys"' \
+    release/config/riffdbd.toml.example >/dev/null
+grep -Fx 'idempotency_keys = "/etc/riffdb/idempotency.keys"' \
+    release/config/riffdbd.toml.example >/dev/null
+grep -Fx 'd /etc/riffdb 0750 root riffdb -' \
+    release/tmpfiles.d/riffdb.conf >/dev/null
+grep -Fx 'StandardInput=socket' release/systemd/riffdb-mcp@.service >/dev/null
+grep -Fx 'StandardOutput=socket' release/systemd/riffdb-mcp@.service >/dev/null
+grep -Fx 'InaccessiblePaths=/var/lib/riffdb /etc/riffdb' \
+    release/systemd/riffdb-mcp@.service >/dev/null
+if grep -E -- '--database|/var/lib/riffdb/data|redb' \
+    release/systemd/riffdb-mcp@.service >/dev/null; then
+    printf '%s\n' 'MCP bridge unit contains a forbidden storage path' >&2
+    exit 1
+fi
+
+if command -v systemd-analyze >/dev/null 2>&1; then
+    verify_output="$(mktemp "${TMPDIR:-/tmp}/riffdb-systemd-verify.XXXXXX")"
+    if ! systemd-analyze verify \
+        release/systemd/riffdbd.service \
+        release/systemd/riffdb-mcp.socket \
+        release/systemd/riffdb-mcp@.service \
+        >"$verify_output" 2>&1
+    then
+        remaining="$(
+            sed \
+                -e '\|riffdbd.service: Command /usr/bin/riffdbd is not executable: No such file or directory|d' \
+                -e '\|riffdb-mcp@test_instance.service: Command /usr/bin/riffdb-mcp is not executable: No such file or directory|d' \
+                "$verify_output"
+        )"
+        if [[ -n "$remaining" ]]; then
+            printf '%s\n' "$remaining" >&2
+            rm "$verify_output"
+            exit 1
+        fi
+    fi
+    rm "$verify_output"
+fi
+
+work_root="$(mktemp -d "${TMPDIR:-/tmp}/riffdb-systemd-smoke.XXXXXX")"
+server_pid=
+cleanup() {
+    if [[ -n "$server_pid" ]] && kill -0 "$server_pid" 2>/dev/null; then
+        kill -KILL "$server_pid" 2>/dev/null || true
+        wait "$server_pid" 2>/dev/null || true
+    fi
+    rm -rf "$work_root"
+}
+trap cleanup EXIT INT TERM
+
+mkdir -p "$work_root/backups"
+mkfifo "$work_root/ready.fifo"
+(
+    umask 077
+    printf '%s\n' \
+        'riffdb-capability-digest-keys-v1' \
+        '1:000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f' \
+        >"$work_root/capability.keys"
+    printf '%s\n' \
+        'riffdb-idempotency-digest-keys-v1' \
+        '1:202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f' \
+        >"$work_root/idempotency.keys"
+    printf '%s\n' \
+        '[server]' \
+        "database = \"$work_root/riffdb.redb\"" \
+        'grpc_listen = "127.0.0.1:0"' \
+        'environment = "release-smoke"' \
+        'audience = "riffdb-grpc-loopback"' \
+        "capability_keys = \"$work_root/capability.keys\"" \
+        "idempotency_keys = \"$work_root/idempotency.keys\"" \
+        '' \
+        '[maintenance]' \
+        "backup_root = \"$work_root/backups\"" \
+        >"$work_root/riffdbd.toml"
+)
+
+"$riffdbd" --config "$work_root/riffdbd.toml" \
+    </dev/null >"$work_root/ready.fifo" 2>"$work_root/stderr" &
+server_pid=$!
+
+exec {ready_fd}<"$work_root/ready.fifo"
+if ! IFS= read -r -t 30 ready_line <&"$ready_fd"; then
+    printf '%s\n' 'closed-stdin riffdbd did not publish readiness' >&2
+    exit 1
+fi
+exec {ready_fd}<&-
+case "$ready_line" in
+    riffdbd-ready-v1$'\t'*) address="${ready_line#*$'\t'}" ;;
+    *)
+        printf '%s\n' 'closed-stdin riffdbd published an invalid readiness line' >&2
+        exit 1
+        ;;
+esac
+if ! kill -0 "$server_pid" 2>/dev/null; then
+    printf '%s\n' 'riffdbd exited after stdin EOF instead of remaining supervised' >&2
+    exit 1
+fi
+
+if [[ -n "$riffdb_cli" ]]; then
+    for tool in awk jq rustc; do
+        if ! command -v "$tool" >/dev/null 2>&1; then
+            printf 'required release metadata tool is missing: %s\n' "$tool" >&2
+            exit 1
+        fi
+    done
+    semantic_version="$(awk -F' *= *' '
+        $0 == "[workspace.package]" { in_package = 1; next }
+        in_package && $1 == "version" {
+            gsub(/"/, "", $2)
+            print $2
+            exit
+        }
+    ' Cargo.toml)"
+    rust_version="rustc-$(rustc --version | awk '{print $2}')"
+    if [[ -z "$semantic_version" || "$rust_version" == "rustc-" ]]; then
+        printf '%s\n' 'release metadata expectation could not be resolved' >&2
+        exit 1
+    fi
+
+    "$riffdb_cli" --endpoint "http://$address" --output json \
+        capability bootstrap \
+        --request release/config/bootstrap-operator.json.example \
+        --generate "$work_root/bootstrap.credential" \
+        --bearer-output "$work_root/operator.credential" \
+        >"$work_root/bootstrap.json"
+    jq -e '
+        .schema == "riffdb.cli.output/v1"
+        and .command == "capability.bootstrap"
+        and .ok == true
+    ' "$work_root/bootstrap.json" >/dev/null
+
+    "$riffdb_cli" --endpoint "http://$address" --output json \
+        --credential-file "$work_root/operator.credential" \
+        server health >"$work_root/health.json"
+    if ! jq -e \
+        --arg semantic_version "$semantic_version" \
+        --arg revision "$expected_revision" \
+        --arg rust_version "$rust_version" '
+        .schema == "riffdb.cli.output/v1"
+        and .command == "server.health"
+        and .ok == true
+        and .result.status == "ready"
+        and .result.build == {
+          semantic_version: $semantic_version,
+          git_revision: $revision,
+          rust_version: $rust_version,
+          enabled_features: [],
+          storage_format_version: 1,
+          contract_ir_version: 1,
+          mcp_protocol_baseline: "2025-11-25"
+        }
+    ' "$work_root/health.json" >/dev/null; then
+        printf '%s\n' \
+            'release binary did not expose the exact reviewed build metadata' >&2
+        exit 1
+    fi
+
+    if [[ -n "$riffdb_mcp" ]]; then
+        jq -cn '{
+          jsonrpc: "2.0",
+          id: 1,
+          method: "initialize",
+          params: {
+            protocolVersion: "2025-11-25",
+            capabilities: {},
+            clientInfo: {name: "riffdb-release-smoke", version: "1"}
+          }
+        }' >"$work_root/mcp-input.jsonl"
+        jq -cn '{
+          jsonrpc: "2.0",
+          method: "notifications/initialized"
+        }' >>"$work_root/mcp-input.jsonl"
+        jq -cn '{
+          jsonrpc: "2.0",
+          id: 2,
+          method: "tools/list"
+        }' >>"$work_root/mcp-input.jsonl"
+        jq -cn '{
+          jsonrpc: "2.0",
+          id: 3,
+          method: "tools/call",
+          params: {
+            name: "riffdb.server.health",
+            arguments: {}
+          }
+        }' >>"$work_root/mcp-input.jsonl"
+        RIFFDB_MCP_ENDPOINT="http://$address" \
+        RIFFDB_MCP_CREDENTIAL_FILE="$work_root/operator.credential" \
+            timeout 45s "$riffdb_mcp" \
+            <"$work_root/mcp-input.jsonl" \
+            >"$work_root/mcp-output.jsonl" \
+            2>"$work_root/mcp.stderr"
+        if ! jq -s -e '
+          def response($id): first(.[] | select(.id == $id));
+          response(1).result.protocolVersion == "2025-11-25"
+          and (response(2).result.tools | type == "array" and length > 0)
+          and any(response(2).result.tools[];
+                  .name == "riffdb.server.health")
+          and response(3).result.structuredContent.authenticated.status
+              == "ready"
+        ' "$work_root/mcp-output.jsonl" >/dev/null; then
+            printf '%s\n' \
+                'riffdb-mcp did not preserve authenticated socket-style stdio framing' >&2
+            exit 1
+        fi
+    fi
+fi
+
+kill -TERM "$server_pid"
+if ! timeout 80s tail --pid="$server_pid" -f /dev/null; then
+    printf '%s\n' 'riffdbd did not finish its bounded SIGTERM drain' >&2
+    exit 1
+fi
+if ! wait "$server_pid"; then
+    printf '%s\n' 'riffdbd returned failure after SIGTERM' >&2
+    exit 1
+fi
+server_pid=
+
+printf '%s\n' 'riffdb-systemd-smoke-v1: verified'

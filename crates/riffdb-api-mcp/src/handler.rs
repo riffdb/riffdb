@@ -7,7 +7,7 @@ use std::pin::Pin;
 use std::sync::Arc;
 
 use futures::future::{Either, select};
-use riffdb_errors::PublicError;
+use riffdb_errors::{PublicError, PublicErrorKind};
 use rmcp::ErrorData as McpError;
 use rmcp::handler::server::ServerHandler;
 use rmcp::model::{
@@ -35,7 +35,8 @@ use crate::schema::{RiffDbSchemaValidator, compose_command_result_schema};
 use crate::{
     McpAdmissionSessionKey, McpCancellationRegistry, McpCancellationSignal, McpInflightLimiter,
     McpInflightPermit, McpObserverError, McpObserverState, McpPostAuthenticationAdmission,
-    McpProgressTracker, McpRequestId, McpResourceLocator, McpTransportKind, RegistryError,
+    McpProgressTracker, McpRequestId, McpResourceLocator, McpRiskClass, McpSchemaFailurePhase,
+    McpTelemetry, McpTelemetryEvent, McpTransportKind, NoopMcpTelemetry, RegistryError,
     ResourceDefinition, ResourceSurface, SchemaDocument, decode_mcp_cursor, encode_mcp_cursor,
     fixed_tool_registry, initialization_result, parse_resource_locator, resource_registry,
     validate_command_tool_name,
@@ -1180,10 +1181,35 @@ impl fmt::Display for McpHandlerContractError {
 
 impl Error for McpHandlerContractError {}
 
+struct McpSessionTelemetryLease {
+    telemetry: Arc<dyn McpTelemetry>,
+    transport: McpTransportKind,
+}
+
+impl McpSessionTelemetryLease {
+    fn new(telemetry: Arc<dyn McpTelemetry>, transport: McpTransportKind) -> Self {
+        telemetry.record(McpTelemetryEvent::SessionOpened { transport });
+        Self {
+            telemetry,
+            transport,
+        }
+    }
+}
+
+impl Drop for McpSessionTelemetryLease {
+    fn drop(&mut self) {
+        self.telemetry.record(McpTelemetryEvent::SessionClosed {
+            transport: self.transport,
+        });
+    }
+}
+
 /// One transport-neutral MCP server over an API-neutral policy-filtered backend.
 pub struct RiffDbMcpServer<B> {
     backend: B,
     source: McpTransportKind,
+    telemetry: Arc<dyn McpTelemetry>,
+    _session_telemetry: McpSessionTelemetryLease,
     observer: Arc<McpObserverState>,
     cancellations: Arc<McpCancellationRegistry>,
     inflight: Arc<McpInflightLimiter>,
@@ -1197,11 +1223,18 @@ where
     /// Creates the sole stdio session with private bounded process state.
     #[must_use]
     pub fn new_stdio(backend: B) -> Self {
-        Self::with_shared_admission(
+        Self::new_stdio_with_telemetry(backend, Arc::new(NoopMcpTelemetry))
+    }
+
+    /// Creates the sole stdio session with a closed semantic telemetry sink.
+    #[must_use]
+    pub fn new_stdio_with_telemetry(backend: B, telemetry: Arc<dyn McpTelemetry>) -> Self {
+        Self::with_shared_admission_and_telemetry(
             backend,
             McpTransportKind::Stdio,
             Arc::new(McpInflightLimiter::new()),
             McpAdmissionSessionKey::stdio(),
+            telemetry,
         )
     }
 
@@ -1213,13 +1246,33 @@ where
         inflight: Arc<McpInflightLimiter>,
         admission_session: McpAdmissionSessionKey,
     ) -> Self {
-        Self::with_session_state(
+        Self::with_shared_admission_and_telemetry(
             backend,
             source,
-            Arc::new(McpObserverState::new()),
+            inflight,
+            admission_session,
+            Arc::new(NoopMcpTelemetry),
+        )
+    }
+
+    /// Creates one session with server-wide admission and semantic telemetry.
+    #[must_use]
+    pub fn with_shared_admission_and_telemetry(
+        backend: B,
+        source: McpTransportKind,
+        inflight: Arc<McpInflightLimiter>,
+        admission_session: McpAdmissionSessionKey,
+        telemetry: Arc<dyn McpTelemetry>,
+    ) -> Self {
+        let observer = Arc::new(McpObserverState::with_telemetry(Arc::clone(&telemetry)));
+        Self::with_session_state_and_telemetry(
+            backend,
+            source,
+            observer,
             Arc::new(McpCancellationRegistry::new()),
             inflight,
             admission_session,
+            telemetry,
         )
     }
 
@@ -1233,9 +1286,33 @@ where
         inflight: Arc<McpInflightLimiter>,
         admission_session: McpAdmissionSessionKey,
     ) -> Self {
+        Self::with_session_state_and_telemetry(
+            backend,
+            source,
+            observer,
+            cancellations,
+            inflight,
+            admission_session,
+            Arc::new(NoopMcpTelemetry),
+        )
+    }
+
+    /// Creates one server over transport-owned state and semantic telemetry.
+    #[must_use]
+    pub fn with_session_state_and_telemetry(
+        backend: B,
+        source: McpTransportKind,
+        observer: Arc<McpObserverState>,
+        cancellations: Arc<McpCancellationRegistry>,
+        inflight: Arc<McpInflightLimiter>,
+        admission_session: McpAdmissionSessionKey,
+        telemetry: Arc<dyn McpTelemetry>,
+    ) -> Self {
         Self {
             backend,
             source,
+            telemetry: Arc::clone(&telemetry),
+            _session_telemetry: McpSessionTelemetryLease::new(telemetry, source),
             observer,
             cancellations,
             inflight,
@@ -1300,6 +1377,9 @@ where
         cancellation: Option<McpCancellationSignal>,
     ) -> Result<CallToolResult, McpError> {
         if request.task.is_some() || request.name.len() > 128 {
+            self.telemetry.record(McpTelemetryEvent::SchemaFailure {
+                phase: McpSchemaFailurePhase::Input,
+            });
             return Err(invalid_tool_arguments());
         }
         ensure_request_not_cancelled(cancellation.as_ref())?;
@@ -1308,7 +1388,7 @@ where
         let arguments = Value::Object(request.arguments.unwrap_or_default());
         let registry = fixed_tool_registry().map_err(|_| internal_error())?;
 
-        let (target, input_schema, result_schema) =
+        let (target, input_schema, result_schema, risk) =
             if let Some(definition) = registry.by_name(&exact_name) {
                 (
                     McpInvocationTarget::Fixed {
@@ -1317,6 +1397,7 @@ where
                     },
                     definition.input_schema().clone(),
                     definition.result_schema().clone(),
+                    McpRiskClass::from_fixed(definition.risk_class()).ok_or_else(internal_error)?,
                 )
             } else {
                 validate_command_tool_name(&exact_name).map_err(|_| unavailable_tool())?;
@@ -1333,9 +1414,12 @@ where
                 {
                     Ok(resolved) => resolved,
                     Err(McpBackendError::Cancelled) => return Err(cancelled_request()),
+                    Err(McpBackendError::Public(error)) => {
+                        self.record_authorization_denial(&error);
+                        return Err(unavailable_tool());
+                    }
                     Err(
-                        McpBackendError::Public(_)
-                        | McpBackendError::AuthenticationLost
+                        McpBackendError::AuthenticationLost
                         | McpBackendError::TargetUnavailable
                         | McpBackendError::InvalidResponse,
                     ) => return Err(unavailable_tool()),
@@ -1348,12 +1432,20 @@ where
                     McpInvocationTarget::Dynamic(exact_name),
                     resolved.input_schema().clone(),
                     resolved.result_schema().clone(),
+                    McpRiskClass::DynamicCommand,
                 )
             };
 
-        RiffDbSchemaValidator
+        self.telemetry.record(McpTelemetryEvent::ToolCall { risk });
+        if RiffDbSchemaValidator
             .validate(&input_schema, &arguments)
-            .map_err(|_| invalid_tool_arguments())?;
+            .is_err()
+        {
+            self.telemetry.record(McpTelemetryEvent::SchemaFailure {
+                phase: McpSchemaFailurePhase::Input,
+            });
+            return Err(invalid_tool_arguments());
+        }
 
         let request = McpToolInvocation {
             target,
@@ -1374,6 +1466,7 @@ where
         {
             Ok(output) => output,
             Err(McpBackendError::Public(error)) => {
+                self.record_authorization_denial(&error);
                 return render_public_error(&error).map_err(|_| internal_error());
             }
             Err(McpBackendError::AuthenticationLost) => return Err(unavailable_tool()),
@@ -1387,7 +1480,12 @@ where
             output.into_value(),
             &RiffDbSchemaValidator,
         )
-        .map_err(|_| internal_error())?;
+        .map_err(|_| {
+            self.telemetry.record(McpTelemetryEvent::SchemaFailure {
+                phase: McpSchemaFailurePhase::Output,
+            });
+            internal_error()
+        })?;
         let result = render_business_result(bounded);
         enforce_outbound_bound(&result)?;
         ensure_request_not_cancelled(cancellation.as_ref())?;
@@ -1604,16 +1702,22 @@ where
         #[cfg(feature = "streamable-http")]
         let post_authentication_admission = match self.source {
             McpTransportKind::Stdio => None,
-            McpTransportKind::StreamableHttp => Some(
-                crate::hosted_http::hosted_mcp_post_authentication_admission(extensions)
-                    .ok_or_else(PublicError::authorization_denied)?,
-            ),
+            McpTransportKind::StreamableHttp => {
+                match crate::hosted_http::hosted_mcp_post_authentication_admission(extensions) {
+                    Some(admission) => Some(admission),
+                    None => {
+                        self.telemetry
+                            .record(McpTelemetryEvent::AuthorizationDenied);
+                        return Err(PublicError::authorization_denied());
+                    }
+                }
+            }
         };
         #[cfg(not(feature = "streamable-http"))]
         let post_authentication_admission = None;
         #[cfg(not(feature = "streamable-http"))]
         let _ = extensions;
-        self.backend.begin_invocation(McpBackendRequest {
+        let result = self.backend.begin_invocation(McpBackendRequest {
             request_id,
             source: self.source,
             #[cfg(feature = "streamable-http")]
@@ -1622,13 +1726,24 @@ where
             _extensions: std::marker::PhantomData,
             post_authentication_admission,
             cancellation,
-        })
+        });
+        if let Err(error) = &result {
+            self.record_authorization_denial(error);
+        }
+        result
     }
 
     fn admit(&self) -> Result<McpInflightPermit, McpError> {
         self.inflight
             .try_acquire(self.admission_session.clone())
             .map_err(|_| internal_error())
+    }
+
+    fn record_authorization_denial(&self, error: &PublicError) {
+        if error.kind() == PublicErrorKind::AuthorizationDenied {
+            self.telemetry
+                .record(McpTelemetryEvent::AuthorizationDenied);
+        }
     }
 }
 
@@ -2092,6 +2207,27 @@ mod tests {
     use serde_json::{Value, json};
 
     use super::*;
+
+    #[derive(Default)]
+    struct RecordingMcpTelemetry(Mutex<Vec<McpTelemetryEvent>>);
+
+    impl McpTelemetry for RecordingMcpTelemetry {
+        fn record(&self, event: McpTelemetryEvent) {
+            self.0
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .push(event);
+        }
+    }
+
+    impl RecordingMcpTelemetry {
+        fn snapshot(&self) -> Vec<McpTelemetryEvent> {
+            self.0
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .clone()
+        }
+    }
 
     #[test]
     fn initialization_accepts_only_the_baseline_and_wrapper_sentinel() {
@@ -2857,11 +2993,13 @@ mod tests {
     #[test]
     fn missing_per_request_carrier_denies_before_discovery() {
         let backend = FakeBackend::new();
-        let server = RiffDbMcpServer::with_shared_admission(
+        let telemetry = Arc::new(RecordingMcpTelemetry::default());
+        let server = RiffDbMcpServer::with_shared_admission_and_telemetry(
             backend.clone(),
             McpTransportKind::StreamableHttp,
             Arc::new(McpInflightLimiter::new()),
             McpAdmissionSessionKey::new("hosted-test").expect("session"),
+            telemetry.clone(),
         );
         let error = block_on(server.handle_list_tools(None, &Extensions::new(), None))
             .expect_err("missing carrier");
@@ -2869,6 +3007,11 @@ mod tests {
         assert_eq!(error.code, ErrorCode::INVALID_PARAMS);
         assert_eq!(backend.state().discover_tool_calls, 0);
         assert!(backend.state().begin_ids.is_empty());
+        assert!(
+            telemetry
+                .snapshot()
+                .contains(&McpTelemetryEvent::AuthorizationDenied)
+        );
     }
 
     #[test]
@@ -2924,7 +3067,8 @@ mod tests {
     #[test]
     fn fixed_input_validation_happens_before_begin_or_invoke() {
         let backend = FakeBackend::new();
-        let server = RiffDbMcpServer::new_stdio(backend.clone());
+        let telemetry = Arc::new(RecordingMcpTelemetry::default());
+        let server = RiffDbMcpServer::new_stdio_with_telemetry(backend.clone(), telemetry.clone());
         let request = CallToolRequestParams::new("riffdb.server.health")
             .with_arguments(json!({"unexpected": true}).as_object().unwrap().clone());
         let error =
@@ -2934,6 +3078,27 @@ mod tests {
         assert_eq!(error.code, ErrorCode::INVALID_PARAMS);
         assert_eq!(backend.state().invoke_calls, 0);
         assert!(backend.state().begin_ids.is_empty());
+        assert_eq!(
+            telemetry.snapshot(),
+            vec![
+                McpTelemetryEvent::SessionOpened {
+                    transport: McpTransportKind::Stdio,
+                },
+                McpTelemetryEvent::ToolCall {
+                    risk: McpRiskClass::ReadOnly,
+                },
+                McpTelemetryEvent::SchemaFailure {
+                    phase: McpSchemaFailurePhase::Input,
+                },
+            ]
+        );
+        drop(server);
+        assert_eq!(
+            telemetry.snapshot().last(),
+            Some(&McpTelemetryEvent::SessionClosed {
+                transport: McpTransportKind::Stdio,
+            })
+        );
     }
 
     #[test]
@@ -2975,7 +3140,8 @@ mod tests {
     fn public_errors_use_only_the_common_redacted_tool_error_view() {
         let backend = FakeBackend::new();
         backend.state().invoke_mode = InvokeMode::PublicAuthorization;
-        let server = RiffDbMcpServer::new_stdio(backend);
+        let telemetry = Arc::new(RecordingMcpTelemetry::default());
+        let server = RiffDbMcpServer::new_stdio_with_telemetry(backend, telemetry.clone());
         let request = CallToolRequestParams::new("riffdb.cmd.orders.place")
             .with_arguments(json!({"value": "one"}).as_object().unwrap().clone());
         let result =
@@ -2989,6 +3155,14 @@ mod tests {
         assert!(encoded.contains("authorization_denied"));
         assert!(!encoded.contains("AuthenticatedMarker"));
         assert!(!encoded.contains("riffdb.cmd.orders.place"));
+        assert!(telemetry.snapshot().contains(&McpTelemetryEvent::ToolCall {
+            risk: McpRiskClass::DynamicCommand,
+        }));
+        assert!(
+            telemetry
+                .snapshot()
+                .contains(&McpTelemetryEvent::AuthorizationDenied)
+        );
     }
 
     #[test]

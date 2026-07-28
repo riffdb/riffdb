@@ -1,0 +1,507 @@
+#!/usr/bin/env bash
+set -euo pipefail
+export LC_ALL=C
+export TZ=UTC
+export CARGO_TERM_COLOR=never
+umask 022
+
+if [[ $# -ne 1 || "$1" != "--verify" ]]; then
+    printf '%s\n' 'usage: scripts/release-poc --verify' >&2
+    exit 2
+fi
+
+repo_root="$(git rev-parse --show-toplevel)"
+cd "$repo_root"
+source scripts/tool-versions
+
+for tool in awk cargo cmp cp find git gzip install jq mkdir mv rm rustc sha256sum sort tar xargs; do
+    if ! command -v "$tool" >/dev/null 2>&1; then
+        printf 'required release tool is missing: %s\n' "$tool" >&2
+        exit 1
+    fi
+done
+
+require_tool_version() {
+    local label="$1"
+    local expected="$2"
+    shift 2
+    local actual
+    actual="$("$@" --version)"
+    if [[ " $actual " != *" $expected "* ]]; then
+        printf '%s must be version %s, found: %s\n' \
+            "$label" "$expected" "$actual" >&2
+        exit 1
+    fi
+}
+
+require_tool_version cargo-deny "$RIFFDB_CARGO_DENY_VERSION" cargo deny
+require_tool_version cargo-audit "$RIFFDB_CARGO_AUDIT_VERSION" cargo audit
+require_tool_version cargo-machete "$RIFFDB_CARGO_MACHETE_VERSION" cargo machete
+
+if [[ -n "$(git status --porcelain=v1)" ]]; then
+    printf '%s\n' 'release verification requires a clean checkout' >&2
+    exit 1
+fi
+workspace_license="$(awk -F' *= *' '
+    $0 == "[workspace.package]" { in_package = 1; next }
+    in_package && /^\[/ { exit }
+    in_package && $1 == "license" {
+        gsub(/"/, "", $2)
+        print $2
+        exit
+    }
+' Cargo.toml)"
+license_files=()
+for license_file in \
+    LICENSE \
+    LICENSE.md \
+    LICENSE.txt \
+    LICENSE-MIT \
+    LICENSE-APACHE
+do
+    if [[ -f "$license_file" ]]; then
+        license_files+=("$license_file")
+    fi
+done
+if [[ -z "$workspace_license" || ${#license_files[@]} -eq 0 ]]; then
+    printf '%s\n' \
+        'release verification requires maintainer-selected workspace license metadata and root license text' >&2
+    exit 1
+fi
+if [[ "$workspace_license" == "MIT OR Apache-2.0" \
+   && ( ! -f LICENSE-MIT || ! -f LICENSE-APACHE ) ]]; then
+    printf '%s\n' \
+        'the selected MIT OR Apache-2.0 license requires LICENSE-MIT and LICENSE-APACHE' >&2
+    exit 1
+fi
+
+# Regenerate ignored live evidence at this exact clean revision. Never promote
+# caller-supplied or stale target artifacts into a release attestation.
+./scripts/demo --assert
+if [[ ! -f target/wp200/demo-report.json ]]; then
+    printf '%s\n' 'the live demo did not publish its requirement report' >&2
+    exit 1
+fi
+
+revision="$(git rev-parse HEAD)"
+version="$(awk -F' *= *' '
+    $0 == "[workspace.package]" { in_package = 1; next }
+    in_package && $1 == "version" {
+        gsub(/"/, "", $2)
+        print $2
+        exit
+    }
+' Cargo.toml)"
+host="$(rustc -vV | awk '/^host:/ {print $2}')"
+if [[ -z "$version" || -z "$host" ]]; then
+    printf '%s\n' 'release version or host triple could not be resolved' >&2
+    exit 1
+fi
+if ! jq -e --arg revision "$revision" \
+    --slurpfile candidate release/evidence/poc-requirements-v1.json '
+    .schema == "riffdb.poc-evidence-manifest/v1"
+    and .attestation == "demo_verified"
+    and .run.source_revision == $revision
+    and .run.command == "./scripts/demo --assert"
+    and .run.integrity_status == "verified"
+    and .run.generated_histories == "reference_model_equal"
+    and .run.unsafe_postgresql_variants_benchmark_eligible == false
+    and (.run.offline_recovery_case_ids | length) == 14
+    and (.run.artifacts | length == 12)
+    and all(.run.artifacts[];
+            .integrity_status == "verified"
+            and (.path | type == "string" and length > 0 and length <= 256)
+            and (.sha256 | test("^[0-9a-f]{64}$")))
+    and ([.run.artifacts[] | [.path, .evidence_kind]] == [
+      ["contracts/examples/budget.riff", "contract_source"],
+      ["target/wp200/demo-artifacts/cli-create.json", "live_cli_response"],
+      ["target/wp200/demo-artifacts/cli-allocate.json", "live_cli_response"],
+      ["target/wp200/demo-artifacts/rust-sdk-sequential.json", "live_rust_sdk_result"],
+      ["target/wp200/demo-artifacts/rust-sdk-contention.json", "live_rust_sdk_result"],
+      ["target/wp200/demo-artifacts/rust-sdk-same-key-replay.json", "live_rust_sdk_result"],
+      ["target/wp200/demo-artifacts/mcp-transcript.jsonl", "live_mcp_transcript"],
+      ["target/wp200/demo-artifacts/restricted-mcp-transcript.jsonl", "live_restricted_catalog_transcript"],
+      ["target/wp200/demo-artifacts/safety-report.jsonl", "checked_safety_report"],
+      ["target/wp200/demo-artifacts/hosted-mcp-process-test.log", "live_hosted_mcp_process_test"],
+      ["target/wp200/demo-artifacts/mcp-conformance-test.log", "mcp_transport_conformance_test"],
+      ["tests/recovery/fixtures/wp190-report-v1.json", "checked_process_recovery_report"]
+    ])
+    and ([.command_sequences[].ordinal] == [1,2,3,4,5,6,7,8,9,10,11])
+    and .command_sequences[0].outcome_type == "BudgetCreated"
+    and .command_sequences[1].outcome_type == "Allocated"
+    and ([.command_sequences[2:5][] | .case]
+         == ["sequential", "contention", "same_key_replay"])
+    and all(.command_sequences[2:5][];
+            .completion == "passed"
+            and .adapter == "riffdb-public-grpc-v1"
+            and .workload_version == 1
+            and .oracle_status == "passed")
+    and .command_sequences[6].outcome_type == "BudgetCreated"
+    and .command_sequences[7].outcome_type == "Allocated"
+    and .command_sequences[8].commit_sequence == "2"
+    and .command_sequences[9].applied_through == "2"
+    and .command_sequences[10].full_dynamic_tool_count == 2
+    and .command_sequences[10].visible_dynamic_tool_count == 0
+    and all(.requirements[] | select(.id != "POC-010");
+            .status == "verified")
+    and (.requirements[]
+         | select(.id == "POC-010")
+         | .status) == "requires_release_verification"
+    and all(.guarantees[]; .status == "verified")
+    and ((.requirements | map(del(.status)))
+         == ($candidate[0].requirements | map(del(.status))))
+    and ((.guarantees | map(del(.status)))
+         == ($candidate[0].guarantees | map(del(.status))))
+    and .observations.budget_contention == {
+      approved_amount: "100.00",
+      requested_amounts: ["80.00", "80.00"],
+      outcome_counts: {Allocated: 1, InsufficientBudget: 1},
+      final_allocated_amount: "80.00"
+    }
+    and .observations.same_key_recovery == {
+      completion: "Replayed",
+      duplicate_mutation_count: 0,
+      duplicate_event_count: 0
+    }
+    and .observations.offline_restore == {
+      database_id: "preserved",
+      destroyed_suffix: "invalidated"
+    }
+' target/wp200/demo-report.json >/dev/null; then
+    printf '%s\n' 'demo report does not attest this exact source revision' >&2
+    exit 1
+fi
+while IFS=$'\t' read -r artifact_path expected_hash; do
+    case "$artifact_path" in
+        contracts/examples/budget.riff|\
+        target/wp200/demo-artifacts/cli-create.json|\
+        target/wp200/demo-artifacts/cli-allocate.json|\
+        target/wp200/demo-artifacts/rust-sdk-sequential.json|\
+        target/wp200/demo-artifacts/rust-sdk-contention.json|\
+        target/wp200/demo-artifacts/rust-sdk-same-key-replay.json|\
+        target/wp200/demo-artifacts/mcp-transcript.jsonl|\
+        target/wp200/demo-artifacts/restricted-mcp-transcript.jsonl|\
+        target/wp200/demo-artifacts/safety-report.jsonl|\
+        target/wp200/demo-artifacts/hosted-mcp-process-test.log|\
+        target/wp200/demo-artifacts/mcp-conformance-test.log|\
+        tests/recovery/fixtures/wp190-report-v1.json)
+            ;;
+        *)
+            printf 'demo artifact path is outside its checked roots: %s\n' \
+                "$artifact_path" >&2
+            exit 1
+            ;;
+    esac
+    if [[ ! -f "$artifact_path" || -L "$artifact_path" \
+       || "$(sha256sum "$artifact_path" | awk '{print $1}')" != "$expected_hash" ]]; then
+        printf 'demo artifact is missing or has changed: %s\n' \
+            "$artifact_path" >&2
+        exit 1
+    fi
+done < <(
+    jq -r '.run.artifacts[] | [.path, .sha256] | @tsv' \
+        target/wp200/demo-report.json
+)
+
+benchmarks/test-evidence-validation
+./scripts/release-evidence --verify
+./scripts/ci-all
+
+CARGO_INCREMENTAL=0 \
+RIFFDB_GIT_REVISION="$revision" \
+    cargo build --locked --release \
+        -p riffdb-server --bin riffdbd \
+        -p riffdb-cli --bin riffdb \
+        -p riffdb-mcp-stdio --bin riffdb-mcp
+
+repro_target="$repo_root/target/wp200/repro-build"
+rm -rf "$repro_target"
+CARGO_INCREMENTAL=0 \
+RIFFDB_GIT_REVISION="$revision" \
+CARGO_TARGET_DIR="$repro_target" \
+    cargo build --locked --release \
+        -p riffdb-server --bin riffdbd \
+        -p riffdb-cli --bin riffdb \
+        -p riffdb-mcp-stdio --bin riffdb-mcp
+for binary in riffdbd riffdb riffdb-mcp; do
+    cmp "target/release/$binary" "$repro_target/release/$binary"
+done
+rm -rf "$repro_target"
+
+./scripts/release-systemd-smoke \
+    --binary target/release/riffdbd \
+    --mcp-binary target/release/riffdb-mcp \
+    --cli-binary target/release/riffdb \
+    --expected-revision "$revision"
+
+publish_root="$repo_root/target/wp200/release"
+release_root="$repo_root/target/wp200/.release-poc-staging"
+bundle_name="riffdb-$version-$host"
+stage="$release_root/$bundle_name"
+archive="$release_root/$bundle_name.tar.gz"
+second_archive="$release_root/$bundle_name.repro.tar.gz"
+rm -rf "$publish_root" "$release_root"
+cleanup() {
+    rm -rf "$release_root"
+}
+trap cleanup EXIT INT TERM
+mkdir -p \
+    "$stage/bin" \
+    "$stage/docs" \
+    "$stage/examples" \
+    "$stage/release/benchmarks" \
+    "$stage/release/demo-artifacts" \
+    "$stage/release" \
+    "$stage/systemd" \
+    "$stage/sysusers.d" \
+    "$stage/tmpfiles.d"
+
+install -m 0755 target/release/riffdbd "$stage/bin/riffdbd"
+install -m 0755 target/release/riffdb "$stage/bin/riffdb"
+install -m 0755 target/release/riffdb-mcp "$stage/bin/riffdb-mcp"
+install -m 0644 README.md "$stage/README.md"
+for license_file in "${license_files[@]}"; do
+    install -m 0644 "$license_file" "$stage/${license_file##*/}"
+done
+cp -R docs/. "$stage/docs/"
+cp -R release/config "$stage/release/config"
+cp -R release/evidence "$stage/release/evidence"
+install -m 0644 release/README.md "$stage/release/README.md"
+install -m 0644 release/RELEASE_NOTES.md "$stage/release/RELEASE_NOTES.md"
+install -m 0755 release/demo "$stage/demo"
+install -m 0644 release/systemd/* "$stage/systemd/"
+install -m 0644 release/sysusers.d/* "$stage/sysusers.d/"
+install -m 0644 release/tmpfiles.d/* "$stage/tmpfiles.d/"
+install -D -m 0644 contracts/examples/budget.riff \
+    "$stage/examples/contracts/budget.riff"
+while IFS= read -r -d '' example_source; do
+    install -D -m 0644 "$example_source" "$stage/$example_source"
+done < <(git ls-files -z examples/budget-comparison)
+cp -R benchmarks/reports/. "$stage/release/benchmarks/"
+cp -R target/wp200/demo-artifacts/. "$stage/release/demo-artifacts/"
+install -m 0644 contracts/examples/budget.riff \
+    "$stage/release/demo-artifacts/budget.riff"
+install -m 0644 tests/recovery/fixtures/wp190-report-v1.json \
+    "$stage/release/demo-artifacts/wp190-report-v1.json"
+
+printf '%s\n' "$version" >"$stage/VERSION"
+printf '%s\n' "$revision" >"$stage/REVISION"
+
+find "$stage" -type d -exec chmod 0755 {} +
+find "$stage" -type f \
+    ! -path "$stage/bin/*" \
+    ! -path "$stage/demo" \
+    -exec chmod 0644 {} +
+
+metadata="$release_root/cargo-metadata.json"
+example_metadata="$release_root/budget-comparison-cargo-metadata.json"
+fjall_metadata="$release_root/storage-fjall-cargo-metadata.json"
+cargo metadata --locked --format-version 1 >"$metadata"
+jq -S \
+    --arg component_name riffdb \
+    --arg version "$version" \
+    --arg revision "$revision" \
+    --arg lockfile Cargo.lock \
+    --arg component_license "$workspace_license" \
+    -f release/cyclonedx-1.5.jq "$metadata" >"$stage/release/sbom.cdx.json"
+for sbom in \
+    "$stage/release/sbom.cdx.json" \
+    "$stage/release/budget-comparison-sbom.cdx.json" \
+    "$stage/release/storage-fjall-sbom.cdx.json"
+do
+    expected_component=riffdb
+    expected_lockfile=Cargo.lock
+    if [[ "$sbom" == *budget-comparison* ]]; then
+        cargo metadata --locked --format-version 1 \
+            --manifest-path examples/budget-comparison/Cargo.toml \
+            >"$example_metadata"
+        expected_component=riffdb-budget-comparison
+        expected_lockfile=examples/budget-comparison/Cargo.lock
+        jq -S \
+            --arg component_name "$expected_component" \
+            --arg version "$version" \
+            --arg revision "$revision" \
+            --arg lockfile "$expected_lockfile" \
+            --arg component_license "$workspace_license" \
+            -f release/cyclonedx-1.5.jq "$example_metadata" >"$sbom"
+    elif [[ "$sbom" == *storage-fjall* ]]; then
+        cargo metadata --locked --format-version 1 \
+            --manifest-path benchmarks/storage-fjall/Cargo.toml \
+            >"$fjall_metadata"
+        expected_component=riffdb-storage-fjall-comparison
+        expected_lockfile=benchmarks/storage-fjall/Cargo.lock
+        jq -S \
+            --arg component_name "$expected_component" \
+            --arg version "$version" \
+            --arg revision "$revision" \
+            --arg lockfile "$expected_lockfile" \
+            --arg component_license "$workspace_license" \
+            -f release/cyclonedx-1.5.jq "$fjall_metadata" >"$sbom"
+    fi
+    jq -e \
+        --arg component "$expected_component" \
+        --arg lockfile "$expected_lockfile" \
+        --arg component_license "$workspace_license" '
+    . as $bom
+    | (
+    .bomFormat == "CycloneDX"
+    and .specVersion == "1.5"
+    and .metadata.component.name == $component
+    and .metadata.component.licenses
+        == [{expression: $component_license}]
+    and any(.metadata.component.properties[];
+            .name == "riffdb:lockfile" and .value == $lockfile)
+    and (.components | length > 0)
+    and all(.components[];
+            (.licenses | length > 0)
+            and all(.licenses[];
+                    (.expression | type == "string" and length > 0)))
+    and (.dependencies | length > 0)
+    and any(.dependencies[];
+            .ref == $bom.metadata.component."bom-ref"
+            and (.dependsOn | length > 0))
+    )
+' "$sbom" >/dev/null
+done
+write_dependency_inventory() {
+    local destination="$1"
+    shift
+    "$@" | while IFS= read -r line; do
+        printf '%s\n' "${line//"$repo_root"/.}"
+    done >"$destination"
+    if grep -F ' (/' "$destination" >/dev/null; then
+        printf 'dependency inventory contains an external path: %s\n' \
+            "$destination" >&2
+        exit 1
+    fi
+}
+
+write_dependency_inventory \
+    "$stage/release/DEPENDENCIES.txt" \
+    cargo tree --locked --workspace --edges normal,build
+write_dependency_inventory \
+    "$stage/release/BUDGET_COMPARISON_DEPENDENCIES.txt" \
+    cargo tree --locked --workspace --edges normal,build \
+        --manifest-path examples/budget-comparison/Cargo.toml
+write_dependency_inventory \
+    "$stage/release/STORAGE_FJALL_DEPENDENCIES.txt" \
+    cargo tree --locked --workspace --edges normal,build \
+        --manifest-path benchmarks/storage-fjall/Cargo.toml
+
+jq -S \
+    --arg revision "$revision" \
+    --arg version "$version" \
+    --arg target "$host" '
+  .attestation = "locally_verified"
+  | .requirements |= map(
+      if .id == "POC-010"
+      then .status = "verified"
+      else .
+      end
+    )
+  | .run.ci_command = "./scripts/ci-all"
+  | .run.release_command = "./scripts/release-poc --verify"
+  | .run.release_integrity_status = "verified_by_atomic_publication"
+  | .run.release_artifact = {
+      version: $version,
+      target: $target,
+      source_revision: $revision,
+      product_binaries: ["riffdb", "riffdb-mcp", "riffdbd"]
+    }
+  | .run.artifacts |= map(
+      .path = ("release/demo-artifacts/" + (.path | split("/")[-1]))
+    )
+' target/wp200/demo-report.json \
+    >"$stage/release/poc-requirements-v1.json"
+if ! jq -e \
+    --arg revision "$revision" \
+    --arg version "$version" \
+    --arg target "$host" '
+  .attestation == "locally_verified"
+  and all(.requirements[]; .status == "verified")
+  and all(.guarantees[]; .status == "verified")
+  and .run.ci_command == "./scripts/ci-all"
+  and .run.release_command == "./scripts/release-poc --verify"
+  and .run.release_integrity_status
+      == "verified_by_atomic_publication"
+  and .run.release_artifact == {
+    version: $version,
+    target: $target,
+    source_revision: $revision,
+    product_binaries: ["riffdb", "riffdb-mcp", "riffdbd"]
+  }
+  and (.run.artifacts | length == 12)
+  and ([.run.artifacts[] | [.path, .evidence_kind]] == [
+    ["release/demo-artifacts/budget.riff", "contract_source"],
+    ["release/demo-artifacts/cli-create.json", "live_cli_response"],
+    ["release/demo-artifacts/cli-allocate.json", "live_cli_response"],
+    ["release/demo-artifacts/rust-sdk-sequential.json", "live_rust_sdk_result"],
+    ["release/demo-artifacts/rust-sdk-contention.json", "live_rust_sdk_result"],
+    ["release/demo-artifacts/rust-sdk-same-key-replay.json", "live_rust_sdk_result"],
+    ["release/demo-artifacts/mcp-transcript.jsonl", "live_mcp_transcript"],
+    ["release/demo-artifacts/restricted-mcp-transcript.jsonl", "live_restricted_catalog_transcript"],
+    ["release/demo-artifacts/safety-report.jsonl", "checked_safety_report"],
+    ["release/demo-artifacts/hosted-mcp-process-test.log", "live_hosted_mcp_process_test"],
+    ["release/demo-artifacts/mcp-conformance-test.log", "mcp_transport_conformance_test"],
+    ["release/demo-artifacts/wp190-report-v1.json", "checked_process_recovery_report"]
+  ])
+  and all(.run.artifacts[];
+          (.path | startswith("release/demo-artifacts/"))
+          and (.sha256 | test("^[0-9a-f]{64}$")))
+' "$stage/release/poc-requirements-v1.json" >/dev/null; then
+    printf '%s\n' 'final POC requirement report is invalid' >&2
+    exit 1
+fi
+while IFS=$'\t' read -r artifact_path expected_hash; do
+    if [[ ! -f "$stage/$artifact_path" || -L "$stage/$artifact_path" \
+       || "$(sha256sum "$stage/$artifact_path" | awk '{print $1}')" \
+          != "$expected_hash" ]]; then
+        printf 'packaged demo artifact is missing or has changed: %s\n' \
+            "$artifact_path" >&2
+        exit 1
+    fi
+done < <(
+    jq -r '.run.artifacts[] | [.path, .sha256] | @tsv' \
+        "$stage/release/poc-requirements-v1.json"
+)
+
+./scripts/release-install-smoke --bundle-root "$stage"
+
+(
+    cd "$stage"
+    find . -type f ! -name SHA256SUMS -print0 \
+        | sort -z \
+        | xargs -0 sha256sum \
+        >SHA256SUMS
+    sha256sum -c SHA256SUMS
+)
+
+make_archive() {
+    local destination="$1"
+    (
+        cd "$release_root"
+        tar --sort=name \
+            --mtime='@0' \
+            --owner=0 \
+            --group=0 \
+            --numeric-owner \
+            -cf - "$bundle_name" \
+            | gzip -n >"$destination"
+    )
+}
+
+make_archive "$archive"
+make_archive "$second_archive"
+cmp "$archive" "$second_archive"
+rm "$second_archive" "$metadata" "$example_metadata" "$fjall_metadata"
+(
+    cd "$release_root"
+    sha256sum "$bundle_name.tar.gz" >"$bundle_name.tar.gz.sha256"
+    sha256sum -c "$bundle_name.tar.gz.sha256"
+)
+
+mv "$release_root" "$publish_root"
+trap - EXIT INT TERM
+
+printf 'riffdb-release-poc-v1: verified %s\n' \
+    "$publish_root/$bundle_name.tar.gz"

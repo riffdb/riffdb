@@ -44,7 +44,8 @@ impl CommitApplication for RiffDbService {
         request: GetCommitRequest,
     ) -> ServiceFuture<'_, GetCommitResult> {
         let service = Arc::clone(&self.inner);
-        self.spawn_operation(ServiceOperationV1::GetCommit, async move {
+        let ingress = context.ingress();
+        self.spawn_operation(ServiceOperationV1::GetCommit, ingress, async move {
             get_commit(service, context, request).await
         })
     }
@@ -55,7 +56,8 @@ impl CommitApplication for RiffDbService {
         request: ScanCommitsRequest,
     ) -> ServiceFuture<'_, ScanCommitsResult> {
         let service = Arc::clone(&self.inner);
-        self.spawn_operation(ServiceOperationV1::ScanCommits, async move {
+        let ingress = context.ingress();
+        self.spawn_operation(ServiceOperationV1::ScanCommits, ingress, async move {
             scan_commits(service, context, request).await
         })
     }
@@ -66,9 +68,12 @@ impl CommitApplication for RiffDbService {
         request: SubscribeToCommitsRequest,
     ) -> ServiceFuture<'_, SubscribeToCommitsResult> {
         let service = Arc::clone(&self.inner);
-        self.spawn_operation(ServiceOperationV1::SubscribeToCommits, async move {
-            subscribe_to_commits(service, context, request).await
-        })
+        let ingress = context.ingress();
+        self.spawn_operation(
+            ServiceOperationV1::SubscribeToCommits,
+            ingress,
+            async move { subscribe_to_commits(service, context, request).await },
+        )
     }
 
     fn trace_provenance(
@@ -77,7 +82,8 @@ impl CommitApplication for RiffDbService {
         request: TraceProvenanceRequest,
     ) -> ServiceFuture<'_, TraceProvenanceResult> {
         let service = Arc::clone(&self.inner);
-        self.spawn_operation(ServiceOperationV1::TraceProvenance, async move {
+        let ingress = context.ingress();
+        self.spawn_operation(ServiceOperationV1::TraceProvenance, ingress, async move {
             trace_provenance(service, context, request).await
         })
     }

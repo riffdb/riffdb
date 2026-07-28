@@ -5,18 +5,21 @@ use std::pin::Pin;
 
 use crate::{
     ContractValidationResult, CreateCapabilityInvocation, CreateCapabilityResult,
-    DeployContractRequest, DeployContractResult, DiscoverCommandToolsRequest,
-    DiscoverCommandToolsResult, DiscoverResourcesRequest, DiscoverResourcesResult,
-    ExecuteCommandRequest, ExecuteCommandResult, ExplainCommandRequest, ExplainCommandResult,
-    GetActiveContractRequest, GetActiveContractResult, GetCommitRequest, GetCommitResult,
-    GetContractVersionRequest, GetContractVersionResult, GetEntityRequest, GetEntityResult,
+    CreateOfflineBackupRequest, DeployContractRequest, DeployContractResult,
+    DiscoverCommandToolsRequest, DiscoverCommandToolsResult, DiscoverResourcesRequest,
+    DiscoverResourcesResult, ExecuteCommandRequest, ExecuteCommandResult, ExplainCommandRequest,
+    ExplainCommandResult, GetActiveContractRequest, GetActiveContractResult, GetCommitRequest,
+    GetCommitResult, GetContractVersionRequest, GetContractVersionResult, GetEntityRequest,
+    GetEntityResult, GetOfflineMaintenanceOperationRequest, GetOfflineMaintenanceOperationResult,
     GetProjectionStatusRequest, GetProjectionStatusResult, HealthContext, HealthRequest,
     HealthResult, ListPendingOutboxDeliveriesRequest, ListPendingOutboxDeliveriesResult,
-    QueryProjectionRequest, QueryProjectionResult, RequestContext, ResolveCommandOutcomeRequest,
-    ResolveCommandOutcomeResult, RevokeCapabilityRequest, RevokeCapabilityResult,
-    ScanCommitsRequest, ScanCommitsResult, ScanIndexRequest, ScanIndexResult, ServiceResult,
-    StatisticsRequest, StatisticsResult, SubscribeToCommitsRequest, SubscribeToCommitsResult,
-    TraceProvenanceRequest, TraceProvenanceResult, ValidateContractRequest,
+    OfflineMaintenanceStartResult, QueryProjectionRequest, QueryProjectionResult,
+    RecoveryRestoreOfflineBackupInvocation, RequestContext, ResolveCommandOutcomeRequest,
+    ResolveCommandOutcomeResult, RestoreOfflineBackupInvocation, RevokeCapabilityRequest,
+    RevokeCapabilityResult, ScanCommitsRequest, ScanCommitsResult, ScanIndexRequest,
+    ScanIndexResult, ServiceResult, StatisticsRequest, StatisticsResult, SubscribeToCommitsRequest,
+    SubscribeToCommitsResult, TraceProvenanceRequest, TraceProvenanceResult,
+    ValidateContractRequest,
 };
 
 /// One boxed, sendable operation future used to keep service traits object-safe.
@@ -176,6 +179,61 @@ pub trait AdministrationApplication: Send + Sync {
     ) -> ServiceFuture<'_, ListPendingOutboxDeliveriesResult>;
 }
 
+/// Policy-filtered offline maintenance with receipt-backed uncertainty recovery.
+///
+/// This surface is separate from [`AdministrationApplication`] because its
+/// external maintenance receipt is the accepted audit exception. Its methods
+/// never enter the durable `ServiceOperationV1` audit lifecycle.
+pub trait OfflineMaintenanceApplication: Send + Sync {
+    /// Admits or resolves one immutable offline-backup operation.
+    fn create_offline_backup(
+        &self,
+        context: RequestContext,
+        request: CreateOfflineBackupRequest,
+    ) -> ServiceFuture<'_, OfflineMaintenanceStartResult>;
+
+    /// Admits or resolves one staged, independently authorized restore.
+    fn restore_offline_backup(
+        &self,
+        invocation: RestoreOfflineBackupInvocation,
+    ) -> ServiceFuture<'_, OfflineMaintenanceStartResult>;
+
+    /// Reads one bounded receipt-derived maintenance observation.
+    fn get_offline_maintenance_operation(
+        &self,
+        context: RequestContext,
+        request: GetOfflineMaintenanceOperationRequest,
+    ) -> ServiceFuture<'_, GetOfflineMaintenanceOperationResult>;
+}
+
+/// Recovery-only restore capability exposed while no current database is trusted.
+///
+/// This trait is intentionally not a supertrait of [`ApplicationService`].
+/// The server lifecycle may expose it only for an empty, unreadable, or corrupt
+/// target. Its one operation delegates complete staging validation plus fresh
+/// staged authentication and authorization to the recovery coordinator.
+pub trait RecoveryOfflineMaintenanceApplication: Send + Sync {
+    /// Stages, validates, freshly authorizes, and then admits one restore.
+    fn restore_offline_backup(
+        &self,
+        invocation: RecoveryRestoreOfflineBackupInvocation,
+    ) -> ServiceFuture<'_, OfflineMaintenanceStartResult>;
+}
+
+/// Exact current-database restore retry after an interrupted healthy restore.
+///
+/// This trait is intentionally not a supertrait of [`ApplicationService`] or
+/// [`OfflineMaintenanceApplication`]. It can neither create a backup nor
+/// observe a receipt, and one instance is frozen to a single operation
+/// identity before it is published by the server lifecycle.
+pub trait RestoreRetryOfflineMaintenanceApplication: Send + Sync {
+    /// Reauthorizes and reacquires the one frozen restore operation.
+    fn restore_offline_backup(
+        &self,
+        invocation: RestoreOfflineBackupInvocation,
+    ) -> ServiceFuture<'_, OfflineMaintenanceStartResult>;
+}
+
 /// Current-policy-filtered command-tool and resource discovery.
 pub trait DiscoveryApplication: Send + Sync {
     /// Lists visible command descriptors with compiler-owned names verbatim.
@@ -193,13 +251,14 @@ pub trait DiscoveryApplication: Send + Sync {
     ) -> ServiceFuture<'_, DiscoverResourcesResult>;
 }
 
-/// Marker trait grouping the six coherent object-safe surfaces.
+/// Marker trait grouping the seven coherent object-safe surfaces.
 pub trait ApplicationService:
     ContractApplication
     + CommandApplication
     + QueryApplication
     + CommitApplication
     + AdministrationApplication
+    + OfflineMaintenanceApplication
     + DiscoveryApplication
 {
 }
@@ -210,6 +269,7 @@ impl<T> ApplicationService for T where
         + QueryApplication
         + CommitApplication
         + AdministrationApplication
+        + OfflineMaintenanceApplication
         + DiscoveryApplication
 {
 }

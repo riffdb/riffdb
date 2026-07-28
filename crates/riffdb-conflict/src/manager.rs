@@ -1056,12 +1056,14 @@ impl Inner {
 
     fn emit_many(&self, waiter: &Waiter, kind: ConflictEventKind, depths: &[usize]) {
         let duration = Instant::now().saturating_duration_since(waiter.started_at);
+        let total_queue_depth = self.queued_waiters.load(Ordering::Acquire);
         for (index, wait_key) in waiter.keys.iter().enumerate() {
             let event = ConflictEvent::new(
                 kind,
                 wait_key.hash,
                 duration,
                 depths.get(index).copied().unwrap_or(0),
+                total_queue_depth,
                 waiter.keys.len(),
             );
             self.telemetry.emit(event);

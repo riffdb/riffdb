@@ -7,7 +7,9 @@ use riffdb_conflict::CancellationToken;
 use riffdb_contract_ir::ExecutionClass;
 use riffdb_invariant::InputDerivedCommandFacts;
 use riffdb_policy::{AuthorizedCommandExecution, CommandExecutionClass};
-use riffdb_types::{CanonicalRecord, DatabaseId, Environment, RequestId};
+use riffdb_types::{
+    CanonicalRecord, CommandId, DatabaseId, Environment, RequestId, ServiceIngressKindV1,
+};
 
 use crate::command_preparation::CommandRequestControl;
 
@@ -62,6 +64,7 @@ pub struct ReadOnlyExecutionPreparation {
     input_facts: InputDerivedCommandFacts,
     authorization: AuthorizedCommandExecution,
     request_id: RequestId,
+    ingress: ServiceIngressKindV1,
     control: CommandRequestControl,
 }
 
@@ -80,6 +83,7 @@ impl ReadOnlyExecutionPreparation {
         input_facts: InputDerivedCommandFacts,
         authorization: AuthorizedCommandExecution,
         request_id: RequestId,
+        ingress: ServiceIngressKindV1,
         control: CommandRequestControl,
     ) -> Result<Self, ReadOnlyExecutionPreparationError> {
         let reference = resolved_plan.reference();
@@ -107,8 +111,13 @@ impl ReadOnlyExecutionPreparation {
             input_facts,
             authorization,
             request_id,
+            ingress,
             control,
         })
+    }
+
+    pub(crate) fn telemetry_identity(&self) -> (CommandId, ServiceIngressKindV1) {
+        (self.resolved_plan.reference().command_id(), self.ingress)
     }
 
     pub(crate) fn into_parts(self) -> ReadOnlyExecutionPreparationParts {

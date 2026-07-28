@@ -1,25 +1,31 @@
 //! Durable outbox and projection ports over the frozen redb layout.
 
-use std::ops::Bound::{Excluded, Unbounded};
+use std::ops::Bound::{Excluded, Included, Unbounded};
 
 use redb::ReadableTable;
 use riffdb_storage_api::{
-    CanonicalStoredEnvelopeV1, EncodedContentCharge, EncodedPageItem, OutboxClaimV1,
-    OutboxDeadLetterV1, OutboxPageLimit, OutboxRenewV1, OutboxRepository, OutboxRetryV1,
-    OutboxStatusObservationV1, OutboxStatusReadResultV1, OutboxSucceedV1, OutboxTransitionResultV1,
-    PendingOutboxItemV1, PendingOutboxScanV1, ProjectionApplyRequestV1, ProjectionApplyResult,
-    ProjectionApplyRowObservation, ProjectionApplySnapshot, ProjectionApplySnapshotBuilder,
-    ProjectionApplySnapshotReader, ProjectionApplySnapshotRequest, ProjectionControlOperation,
-    ProjectionControlResult, ProjectionLifecycleV1, ProjectionLowerContinuation,
+    CanonicalStoredEnvelopeV1, CleanProjectionGenerationV1, EncodedContentCharge, EncodedPageItem,
+    OutboxClaimV1, OutboxDeadLetterV1, OutboxPageLimit, OutboxRecoveryUpperFenceV1, OutboxRenewV1,
+    OutboxRepository, OutboxRetryV1, OutboxStatusObservationV1, OutboxStatusReadResultV1,
+    OutboxSucceedV1, OutboxTransitionResultV1, PendingOutboxItemV1, PendingOutboxScanV1,
+    ProjectionApplyRequestV1, ProjectionApplyResult, ProjectionApplyRowObservation,
+    ProjectionApplySnapshot, ProjectionApplySnapshotBuilder, ProjectionApplySnapshotReader,
+    ProjectionApplySnapshotRequest, ProjectionControlOperation, ProjectionControlResult,
+    ProjectionControlScanV1, ProjectionLifecycleV1, ProjectionLowerContinuation,
     ProjectionMutationRepository, ProjectionQueryReader, ProjectionQueryRequest,
-    ProjectionQueryResult, ProjectionRowPrior, ProjectionStatus, ProjectionUnavailableReason,
-    StorageError, StorageErrorKind, StorageValueError, StoredCommitRecordV1, StoredDurableEventV1,
-    StoredOutboxIntentV1, StoredOutboxStatusV1, StoredProjectionApplyV1, StoredProjectionControlV1,
-    StoredProjectionStateV1, evaluate_projection_control_operation,
+    ProjectionQueryResult, ProjectionRecoveryContinuationV1, ProjectionRecoveryExpectedPageV1,
+    ProjectionRecoveryFindingCodeV1, ProjectionRecoveryFindingV1, ProjectionRecoveryPageLimit,
+    ProjectionRecoveryRepository, ProjectionRecoveryValidationRequestV1,
+    ProjectionRecoveryValidationResultV1, ProjectionRowPrior, ProjectionStatus,
+    ProjectionUnavailableReason, StorageError, StorageErrorKind, StorageValueError,
+    StoredCommitRecordV1, StoredDurableEventV1, StoredOutboxIntentV1, StoredOutboxStatusV1,
+    StoredProjectionApplyV1, StoredProjectionControlV1, StoredProjectionStateV1,
+    UndeliveredOutboxStatusScanRequestV1, UndeliveredOutboxStatusScanV1, UndeliveredOutboxStatusV1,
+    evaluate_projection_control_operation,
 };
 use riffdb_types::{
     CommitSequence, EventId, FrontierPosition, MAX_PROJECTION_WRITE_SET_BYTES, ProjectionApplyKey,
-    ProjectionFrontierKey, ProjectionGroupKey, ProjectionIdentity,
+    ProjectionFrontierKey, ProjectionGeneration, ProjectionGroupKey, ProjectionIdentity,
 };
 
 use crate::codec::{
@@ -31,9 +37,9 @@ use crate::codec::{
 use crate::error::{precommit_storage_error, storage_error, table_error};
 use crate::hooks::RedbTestOperation;
 use crate::keys::{
-    decode_application_sequence_key, decode_projection_group_key, encode_application_sequence_key,
-    encode_event_key, encode_projection_apply_key, encode_projection_frontier_key,
-    encode_projection_group_key,
+    decode_application_sequence_key, decode_event_key, decode_projection_frontier_key,
+    decode_projection_group_key, encode_application_sequence_key, encode_event_key,
+    encode_projection_apply_key, encode_projection_frontier_key, encode_projection_group_key,
 };
 use crate::layout::{
     COMMITS, EVENTS, OUTBOX, OUTBOX_STATUS, PROJECTION_APPLIED, PROJECTION_FRONTIER,
@@ -100,6 +106,97 @@ impl OutboxRepository for RedbOperationalPorts {
         }
 
         PendingOutboxScanV1::page(items, has_more).map_err(stored_value_error)
+    }
+
+    fn scan_undelivered_outbox_statuses(
+        &self,
+        request: UndeliveredOutboxStatusScanRequestV1,
+    ) -> Result<UndeliveredOutboxStatusScanV1, StorageError> {
+        let _lease = self.acquire_indexed_read_lease()?;
+        // The transient index gates derived-component availability only. The
+        // recovery page itself is always read and proven from durable tables.
+        let _ = self.undelivered_outbox_page(None, 0)?;
+        let transaction = self.begin_read()?;
+        let events = transaction.open_table(EVENTS).map_err(table_error)?;
+        let intents = transaction.open_table(OUTBOX).map_err(table_error)?;
+        let statuses = transaction.open_table(OUTBOX_STATUS).map_err(table_error)?;
+        let commits = transaction.open_table(COMMITS).map_err(table_error)?;
+        let inclusive_upper = match request.inclusive_upper() {
+            Some(upper) => Some(upper),
+            None => intents
+                .last()
+                .map_err(precommit_storage_error)?
+                .map(|(physical_key, _)| {
+                    decode_event_key(physical_key.value()).map_err(|_| corrupt())
+                })
+                .transpose()?,
+        };
+        let Some(inclusive_upper) = inclusive_upper else {
+            if events.last().map_err(precommit_storage_error)?.is_some()
+                || statuses.last().map_err(precommit_storage_error)?.is_some()
+            {
+                return Err(corrupt());
+            }
+            return UndeliveredOutboxStatusScanV1::exact_end(
+                request,
+                OutboxRecoveryUpperFenceV1::BeforeFirst,
+                Vec::new(),
+            )
+            .map_err(stored_value_error);
+        };
+        if request.after().is_some_and(|after| after > inclusive_upper) {
+            return Err(storage_error(StorageErrorKind::InvariantViolation));
+        }
+
+        let lower_key = request.after().map(encode_event_key);
+        let upper_key = encode_event_key(inclusive_upper);
+        let lower = lower_key
+            .as_ref()
+            .map_or(Unbounded, |key| Excluded(key.as_slice()));
+        let mut source = intents
+            .range::<&[u8]>((lower, Included(upper_key.as_slice())))
+            .map_err(precommit_storage_error)?;
+        let wanted = usize::from(request.limit().get().get());
+        let mut items = Vec::with_capacity(wanted);
+        let mut encoded_bytes = 0usize;
+        let mut has_more = false;
+
+        for entry in &mut source {
+            let (physical_key, _) = entry.map_err(precommit_storage_error)?;
+            let event_id = decode_event_key(physical_key.value()).map_err(|_| corrupt())?;
+            let item = reciprocal_outbox_item(&events, &intents, &statuses, &commits, event_id)?
+                .ok_or_else(corrupt)?;
+            if !status_is_undelivered(&item.status) {
+                continue;
+            }
+            let next_bytes = encoded_bytes
+                .checked_add(item.encoded_bytes)
+                .ok_or_else(corrupt)?;
+            if items.len() == wanted || next_bytes > riffdb_storage_api::MAX_SCAN_PAGE_BYTES {
+                if items.is_empty() {
+                    return Err(storage_error(StorageErrorKind::LimitExceeded));
+                }
+                has_more = true;
+                break;
+            }
+            let charge = EncodedContentCharge::new(item.encoded_bytes).ok_or_else(corrupt)?;
+            let status = UndeliveredOutboxStatusV1::new(event_id, item.status)
+                .map_err(stored_value_error)?;
+            items.push(EncodedPageItem::new(status, charge));
+            encoded_bytes = next_bytes;
+        }
+
+        if has_more {
+            UndeliveredOutboxStatusScanV1::page(request, inclusive_upper, items)
+                .map_err(stored_value_error)
+        } else {
+            UndeliveredOutboxStatusScanV1::exact_end(
+                request,
+                OutboxRecoveryUpperFenceV1::Inclusive(inclusive_upper),
+                items,
+            )
+            .map_err(stored_value_error)
+        }
     }
 
     fn claim_outbox(
@@ -169,7 +266,7 @@ impl RedbOperationalPorts {
             return Err(storage_error(StorageErrorKind::InvariantViolation));
         }
         let access = self.begin_write()?;
-        access.ensure_pending_outbox_available()?;
+        access.ensure_outbox_indexes_available()?;
         let current = {
             let transaction = access.transaction()?;
             let events = transaction.open_table(EVENTS).map_err(table_error)?;
@@ -215,11 +312,28 @@ impl RedbOperationalPorts {
             RedbTestOperation::OutboxTransition,
             Some(TransientIndexDelta::PendingOutboxMembership {
                 event_id,
+                was_pending: expected.is_pending(),
                 pending: updated.state().is_pending(),
+                was_undelivered: status_is_undelivered(expected),
+                undelivered: !matches!(
+                    updated.state(),
+                    riffdb_storage_api::OutboxDeliveryStateV1::Delivered { .. }
+                ),
             }),
         )?;
         Ok(OutboxTransitionResultV1::Applied(updated.clone()))
     }
+}
+
+fn status_is_undelivered(status: &OutboxStatusObservationV1) -> bool {
+    !matches!(
+        status,
+        OutboxStatusObservationV1::Present(stored)
+            if matches!(
+                stored.state(),
+                riffdb_storage_api::OutboxDeliveryStateV1::Delivered { .. }
+            )
+    )
 }
 
 struct ReciprocalOutboxItem {
@@ -630,34 +744,47 @@ impl ProjectionQueryReader for RedbOperationalPorts {
         let Some(control) = read_projection_control(&controls, request.selector().identity())?
         else {
             return Ok(ProjectionQueryResult::Degraded {
+                generation: None,
                 current: FrontierPosition::BeforeFirst,
                 reason: ProjectionUnavailableReason::Building,
             });
         };
         match control.lifecycle() {
             ProjectionLifecycleV1::Building | ProjectionLifecycleV1::CatchingUp => {
+                let candidate = control.candidate().ok_or_else(corrupt)?;
                 Ok(ProjectionQueryResult::Degraded {
-                    current: control.candidate().ok_or_else(corrupt)?.frontier(),
+                    generation: Some(candidate.generation()),
+                    current: candidate.frontier(),
                     reason: ProjectionUnavailableReason::Building,
                 })
             }
-            ProjectionLifecycleV1::Rebuilding => Ok(ProjectionQueryResult::Degraded {
-                current: control.published().ok_or_else(corrupt)?.frontier(),
-                reason: ProjectionUnavailableReason::Rebuilding,
-            }),
+            ProjectionLifecycleV1::Rebuilding => {
+                let published = control.published().ok_or_else(corrupt)?;
+                Ok(ProjectionQueryResult::Degraded {
+                    generation: Some(published.generation()),
+                    current: published.frontier(),
+                    reason: ProjectionUnavailableReason::Rebuilding,
+                })
+            }
             ProjectionLifecycleV1::Degraded => {
                 let failure = control.failure().ok_or_else(corrupt)?;
                 let current = control
                     .frontier_for(failure.generation())
                     .ok_or_else(corrupt)?;
                 Ok(ProjectionQueryResult::Degraded {
+                    generation: Some(failure.generation()),
                     current,
                     reason: ProjectionUnavailableReason::Failure(failure.code()),
                 })
             }
             ProjectionLifecycleV1::Invalid => {
                 let failure = control.failure().ok_or_else(corrupt)?;
+                let current = control
+                    .frontier_for(failure.generation())
+                    .ok_or_else(corrupt)?;
                 Ok(ProjectionQueryResult::Invalid {
+                    generation: failure.generation(),
+                    current,
                     reason: failure.code(),
                 })
             }
@@ -680,6 +807,503 @@ impl ProjectionQueryReader for RedbOperationalPorts {
             |control| ProjectionStatus::from_control(&control, head),
         ))
     }
+}
+
+impl ProjectionRecoveryRepository for RedbOperationalPorts {
+    fn scan_projection_controls(
+        &self,
+        after: Option<&ProjectionIdentity>,
+        limit: ProjectionRecoveryPageLimit,
+    ) -> Result<ProjectionControlScanV1, StorageError> {
+        let transaction = self.begin_read()?;
+        let controls = transaction
+            .open_table(PROJECTION_FRONTIER)
+            .map_err(table_error)?;
+        let lower = after.map(|identity| {
+            ProjectionFrontierKey::new(identity.clone())
+                .as_bytes()
+                .to_vec()
+        });
+        let bounds = lower
+            .as_deref()
+            .map_or((Unbounded, Unbounded), |lower| (Excluded(lower), Unbounded));
+        let mut scan = controls
+            .range::<&[u8]>(bounds)
+            .map_err(precommit_storage_error)?;
+        let maximum = usize::from(limit.get().get());
+        let mut result = Vec::with_capacity(maximum);
+        let mut bytes = 0usize;
+        let mut has_more = false;
+        for entry in &mut scan {
+            let (physical_key, encoded) = entry.map_err(precommit_storage_error)?;
+            if result.len() == maximum {
+                has_more = true;
+                break;
+            }
+            let key =
+                decode_projection_frontier_key(physical_key.value()).map_err(|_| corrupt())?;
+            let decoded = decode_projection_control_v1(encoded.value())?;
+            if decoded.value().identity() != key.identity() {
+                return Err(corrupt());
+            }
+            let next = bytes
+                .checked_add(decoded.encoded_content_charge().get())
+                .ok_or_else(corrupt)?;
+            if next > riffdb_storage_api::MAX_SCAN_PAGE_BYTES {
+                if result.is_empty() {
+                    return Err(storage_error(StorageErrorKind::LimitExceeded));
+                }
+                has_more = true;
+                break;
+            }
+            bytes = next;
+            result.push(decoded);
+        }
+        ProjectionControlScanV1::page(result, has_more).map_err(stored_value_error)
+    }
+
+    fn validate_projection_recovery_page(
+        &self,
+        request: &ProjectionRecoveryValidationRequestV1,
+    ) -> Result<ProjectionRecoveryValidationResultV1, StorageError> {
+        let transaction = self.begin_read()?;
+        let controls = transaction
+            .open_table(PROJECTION_FRONTIER)
+            .map_err(table_error)?;
+        let commits = transaction.open_table(COMMITS).map_err(table_error)?;
+        let markers = transaction
+            .open_table(PROJECTION_APPLIED)
+            .map_err(table_error)?;
+        let rows = transaction
+            .open_table(PROJECTION_STATE)
+            .map_err(table_error)?;
+        let control = match read_projection_control(&controls, request.schema().identity()) {
+            Ok(control) => control,
+            Err(error) if error.kind() == StorageErrorKind::CorruptData => {
+                return Ok(redb_projection_recovery_finding(
+                    request,
+                    ProjectionRecoveryFindingCodeV1::MalformedDerivedRecord,
+                ));
+            }
+            Err(error) => return Err(error),
+        };
+        if control.as_ref() != Some(request.expected_control())
+            || authoritative_head(&commits)? != request.expected_authoritative_head()
+        {
+            return Ok(ProjectionRecoveryValidationResultV1::FenceChanged);
+        }
+
+        if request.expected_position().frontier() == FrontierPosition::BeforeFirst {
+            if projection_marker_namespace_has_any(
+                &markers,
+                request.schema().identity(),
+                request.generation(),
+            )? || projection_state_namespace_has_any(
+                &rows,
+                request.schema().identity(),
+                request.generation(),
+            )? {
+                return Ok(redb_projection_recovery_finding(
+                    request,
+                    ProjectionRecoveryFindingCodeV1::BeforeFirstNotEmpty,
+                ));
+            }
+            return Ok(ProjectionRecoveryValidationResultV1::ExactEnd(
+                CleanProjectionGenerationV1::new(
+                    request.schema().identity().clone(),
+                    request.expected_position(),
+                    0,
+                ),
+            ));
+        }
+
+        match request.expected_page() {
+            ProjectionRecoveryExpectedPageV1::Markers(expected) => {
+                validate_redb_projection_marker_page(&markers, &commits, request, expected)
+            }
+            ProjectionRecoveryExpectedPageV1::Rows(expected) => {
+                validate_redb_projection_state_page(&rows, &markers, &commits, request, expected)
+            }
+        }
+    }
+}
+
+fn validate_redb_projection_marker_page<M, C>(
+    markers: &M,
+    commits: &C,
+    request: &ProjectionRecoveryValidationRequestV1,
+    expected: &[StoredProjectionApplyV1],
+) -> Result<ProjectionRecoveryValidationResultV1, StorageError>
+where
+    M: ReadableTable<&'static [u8], &'static [u8]>,
+    C: ReadableTable<&'static [u8], &'static [u8]>,
+{
+    let after = match request.continuation() {
+        None => None,
+        Some(ProjectionRecoveryContinuationV1::Markers { after }) => Some(*after),
+        Some(ProjectionRecoveryContinuationV1::Rows { .. }) => {
+            return Err(storage_error(StorageErrorKind::InvariantViolation));
+        }
+    };
+    let prefix =
+        projection_marker_namespace_prefix(request.schema().identity(), request.generation());
+    let lower = after.map(|sequence| {
+        ProjectionApplyKey::new(
+            request.schema().identity().clone(),
+            request.generation(),
+            sequence,
+        )
+        .as_bytes()
+        .to_vec()
+    });
+    let bounds = lower.as_deref().map_or(
+        (std::ops::Bound::Included(prefix.as_slice()), Unbounded),
+        |lower| (Excluded(lower), Unbounded),
+    );
+    let mut scan = markers
+        .range::<&[u8]>(bounds)
+        .map_err(precommit_storage_error)?;
+    let maximum = usize::from(request.limit().get().get());
+    let mut actual = Vec::with_capacity(maximum);
+    let mut bytes = 0usize;
+    let mut has_more = false;
+    let mut first_extra = None;
+    for entry in &mut scan {
+        let (physical_key, encoded) = entry.map_err(precommit_storage_error)?;
+        if !physical_key.value().starts_with(&prefix) {
+            break;
+        }
+        let key = match riffdb_types::ProjectionApplyKey::from_bytes(physical_key.value().to_vec())
+        {
+            Ok(key) => key,
+            Err(_) => {
+                return Ok(redb_projection_recovery_finding(
+                    request,
+                    ProjectionRecoveryFindingCodeV1::MalformedDerivedRecord,
+                ));
+            }
+        };
+        if actual.len() == maximum {
+            has_more = true;
+            first_extra = Some(key.commit_sequence());
+            break;
+        }
+        let decoded = match decode_projection_apply_v1(encoded.value()) {
+            Ok(decoded) => decoded,
+            Err(_) => {
+                return Ok(redb_projection_recovery_finding(
+                    request,
+                    ProjectionRecoveryFindingCodeV1::MalformedDerivedRecord,
+                ));
+            }
+        };
+        if decoded.value().key() != &key {
+            return Ok(redb_projection_recovery_finding(
+                request,
+                ProjectionRecoveryFindingCodeV1::MalformedDerivedRecord,
+            ));
+        }
+        let next = bytes
+            .checked_add(decoded.encoded_content_charge().get())
+            .ok_or_else(corrupt)?;
+        if next > riffdb_storage_api::MAX_SCAN_PAGE_BYTES {
+            if actual.is_empty() {
+                return Err(storage_error(StorageErrorKind::LimitExceeded));
+            }
+            has_more = true;
+            first_extra = Some(key.commit_sequence());
+            break;
+        }
+        bytes = next;
+        actual.push(decoded.into_parts().0);
+    }
+    if actual.len() != expected.len() {
+        return Ok(redb_projection_recovery_finding(
+            request,
+            ProjectionRecoveryFindingCodeV1::MarkerMismatch,
+        ));
+    }
+    let mut next_sequence =
+        after.map_or(Some(CommitSequence::first()), CommitSequence::checked_next);
+    let frontier = request.expected_position().frontier();
+    for (actual, expected) in actual.iter().zip(expected) {
+        let sequence = actual.key().commit_sequence();
+        if actual.key().identity() != request.schema().identity()
+            || actual.key().generation() != request.generation()
+            || Some(sequence) != next_sequence
+        {
+            return Ok(redb_projection_recovery_finding(
+                request,
+                ProjectionRecoveryFindingCodeV1::MarkerSequenceMismatch,
+            ));
+        }
+        if !sequence_is_at_or_before(sequence, frontier) {
+            return Ok(redb_projection_recovery_finding(
+                request,
+                ProjectionRecoveryFindingCodeV1::MarkerAboveFrontier,
+            ));
+        }
+        if read_commit(commits, sequence)?.is_none() {
+            return Err(corrupt());
+        }
+        if actual != expected {
+            return Ok(redb_projection_recovery_finding(
+                request,
+                ProjectionRecoveryFindingCodeV1::MarkerMismatch,
+            ));
+        }
+        next_sequence = sequence.checked_next();
+    }
+    if has_more {
+        if first_extra.is_some_and(|sequence| !sequence_is_at_or_before(sequence, frontier)) {
+            return Ok(redb_projection_recovery_finding(
+                request,
+                ProjectionRecoveryFindingCodeV1::MarkerAboveFrontier,
+            ));
+        }
+        let Some(last) = actual.last() else {
+            return Ok(redb_projection_recovery_finding(
+                request,
+                ProjectionRecoveryFindingCodeV1::MarkerMismatch,
+            ));
+        };
+        return Ok(ProjectionRecoveryValidationResultV1::Page {
+            continuation: ProjectionRecoveryContinuationV1::markers(last.key().commit_sequence()),
+        });
+    }
+    let validated_through = actual
+        .last()
+        .map(|marker| marker.key().commit_sequence())
+        .or(after);
+    if !matches!(
+        frontier,
+        FrontierPosition::AppliedThrough(frontier) if validated_through == Some(frontier)
+    ) {
+        return Ok(redb_projection_recovery_finding(
+            request,
+            ProjectionRecoveryFindingCodeV1::MarkerSequenceMismatch,
+        ));
+    }
+    Ok(ProjectionRecoveryValidationResultV1::Page {
+        continuation: ProjectionRecoveryContinuationV1::rows(None, 0),
+    })
+}
+
+fn validate_redb_projection_state_page<S, M, C>(
+    rows: &S,
+    markers: &M,
+    commits: &C,
+    request: &ProjectionRecoveryValidationRequestV1,
+    expected: &[StoredProjectionStateV1],
+) -> Result<ProjectionRecoveryValidationResultV1, StorageError>
+where
+    S: ReadableTable<&'static [u8], &'static [u8]>,
+    M: ReadableTable<&'static [u8], &'static [u8]>,
+    C: ReadableTable<&'static [u8], &'static [u8]>,
+{
+    let (after, validated_rows) = match request.continuation() {
+        Some(ProjectionRecoveryContinuationV1::Rows {
+            after,
+            validated_rows,
+        }) => (after.as_ref(), *validated_rows),
+        None | Some(ProjectionRecoveryContinuationV1::Markers { .. }) => {
+            return Err(storage_error(StorageErrorKind::InvariantViolation));
+        }
+    };
+    let prefix = riffdb_types::ProjectionGroupPrefixBuilder::new(
+        request.schema().identity().clone(),
+        request.generation(),
+    )
+    .finish();
+    let bounds = after.map_or(
+        (std::ops::Bound::Included(prefix.as_bytes()), Unbounded),
+        |after| (Excluded(after.as_bytes()), Unbounded),
+    );
+    let mut scan = rows
+        .range::<&[u8]>(bounds)
+        .map_err(precommit_storage_error)?;
+    let maximum = usize::from(request.limit().get().get());
+    let mut actual = Vec::with_capacity(maximum);
+    let mut bytes = 0usize;
+    let mut has_more = false;
+    for entry in &mut scan {
+        let (physical_key, encoded) = entry.map_err(precommit_storage_error)?;
+        if !physical_key.value().starts_with(prefix.as_bytes()) {
+            break;
+        }
+        if actual.len() == maximum {
+            has_more = true;
+            break;
+        }
+        let key = match decode_projection_group_key(physical_key.value()) {
+            Ok(key) => key,
+            Err(_) => {
+                return Ok(redb_projection_recovery_finding(
+                    request,
+                    ProjectionRecoveryFindingCodeV1::MalformedDerivedRecord,
+                ));
+            }
+        };
+        let decoded = match decode_projection_state_v1(encoded.value(), request.schema()) {
+            Ok(decoded) => decoded,
+            Err(_) => {
+                return Ok(redb_projection_recovery_finding(
+                    request,
+                    ProjectionRecoveryFindingCodeV1::MalformedDerivedRecord,
+                ));
+            }
+        };
+        if decoded.value().key() != &key {
+            return Ok(redb_projection_recovery_finding(
+                request,
+                ProjectionRecoveryFindingCodeV1::MalformedDerivedRecord,
+            ));
+        }
+        let next = bytes
+            .checked_add(decoded.encoded_content_charge().get())
+            .ok_or_else(corrupt)?;
+        if next > riffdb_storage_api::MAX_SCAN_PAGE_BYTES {
+            if actual.is_empty() {
+                return Err(storage_error(StorageErrorKind::LimitExceeded));
+            }
+            has_more = true;
+            break;
+        }
+        bytes = next;
+        actual.push(decoded.into_parts().0);
+    }
+    if actual.len() != expected.len() {
+        return Ok(redb_projection_recovery_finding(
+            request,
+            ProjectionRecoveryFindingCodeV1::StateMismatch,
+        ));
+    }
+    let frontier = request.expected_position().frontier();
+    for (actual, expected) in actual.iter().zip(expected) {
+        if actual.identity() != request.schema().identity()
+            || actual.generation() != request.generation()
+            || !sequence_is_at_or_before(actual.last_changed_sequence(), frontier)
+        {
+            return Ok(redb_projection_recovery_finding(
+                request,
+                ProjectionRecoveryFindingCodeV1::StateLinkMismatch,
+            ));
+        }
+        let marker_key = ProjectionApplyKey::new(
+            request.schema().identity().clone(),
+            request.generation(),
+            actual.last_changed_sequence(),
+        );
+        match read_projection_marker(markers, &marker_key) {
+            Ok(Some(_)) => {}
+            Ok(None) => {
+                return Ok(redb_projection_recovery_finding(
+                    request,
+                    ProjectionRecoveryFindingCodeV1::StateLinkMismatch,
+                ));
+            }
+            Err(error) if error.kind() == StorageErrorKind::CorruptData => {
+                return Ok(redb_projection_recovery_finding(
+                    request,
+                    ProjectionRecoveryFindingCodeV1::MalformedDerivedRecord,
+                ));
+            }
+            Err(error) => return Err(error),
+        }
+        if read_commit(commits, actual.last_changed_sequence())?.is_none() {
+            return Err(corrupt());
+        }
+        if actual != expected {
+            return Ok(redb_projection_recovery_finding(
+                request,
+                ProjectionRecoveryFindingCodeV1::StateMismatch,
+            ));
+        }
+    }
+    let observed =
+        u64::try_from(actual.len()).map_err(|_| storage_error(StorageErrorKind::LimitExceeded))?;
+    let validated_rows = validated_rows
+        .checked_add(observed)
+        .ok_or_else(|| storage_error(StorageErrorKind::LimitExceeded))?;
+    if has_more {
+        let Some(last) = actual.last() else {
+            return Ok(redb_projection_recovery_finding(
+                request,
+                ProjectionRecoveryFindingCodeV1::StateMismatch,
+            ));
+        };
+        return Ok(ProjectionRecoveryValidationResultV1::Page {
+            continuation: ProjectionRecoveryContinuationV1::rows(
+                Some(last.key().clone()),
+                validated_rows,
+            ),
+        });
+    }
+    Ok(ProjectionRecoveryValidationResultV1::ExactEnd(
+        CleanProjectionGenerationV1::new(
+            request.schema().identity().clone(),
+            request.expected_position(),
+            validated_rows,
+        ),
+    ))
+}
+
+fn projection_marker_namespace_prefix(
+    identity: &ProjectionIdentity,
+    generation: ProjectionGeneration,
+) -> Vec<u8> {
+    let first = ProjectionApplyKey::new(identity.clone(), generation, CommitSequence::first());
+    first.as_bytes()[..first.as_bytes().len() - std::mem::size_of::<u64>()].to_vec()
+}
+
+fn projection_marker_namespace_has_any<T>(
+    table: &T,
+    identity: &ProjectionIdentity,
+    generation: ProjectionGeneration,
+) -> Result<bool, StorageError>
+where
+    T: ReadableTable<&'static [u8], &'static [u8]>,
+{
+    let prefix = projection_marker_namespace_prefix(identity, generation);
+    let mut scan = table
+        .range::<&[u8]>(prefix.as_slice()..)
+        .map_err(precommit_storage_error)?;
+    let Some(entry) = scan.next() else {
+        return Ok(false);
+    };
+    let (key, _) = entry.map_err(precommit_storage_error)?;
+    Ok(key.value().starts_with(&prefix))
+}
+
+fn projection_state_namespace_has_any<T>(
+    table: &T,
+    identity: &ProjectionIdentity,
+    generation: ProjectionGeneration,
+) -> Result<bool, StorageError>
+where
+    T: ReadableTable<&'static [u8], &'static [u8]>,
+{
+    let prefix =
+        riffdb_types::ProjectionGroupPrefixBuilder::new(identity.clone(), generation).finish();
+    let mut scan = table
+        .range::<&[u8]>(prefix.as_bytes()..)
+        .map_err(precommit_storage_error)?;
+    let Some(entry) = scan.next() else {
+        return Ok(false);
+    };
+    let (key, _) = entry.map_err(precommit_storage_error)?;
+    Ok(key.value().starts_with(prefix.as_bytes()))
+}
+
+fn redb_projection_recovery_finding(
+    request: &ProjectionRecoveryValidationRequestV1,
+    code: ProjectionRecoveryFindingCodeV1,
+) -> ProjectionRecoveryValidationResultV1 {
+    ProjectionRecoveryValidationResultV1::Finding(ProjectionRecoveryFindingV1::new(
+        request.schema().identity().clone(),
+        request.generation(),
+        code,
+    ))
 }
 
 fn query_ready_projection<T>(
@@ -934,17 +1558,18 @@ mod tests {
     use std::sync::atomic::{AtomicU64, Ordering};
 
     use redb::ReadableTableMetadata;
+    use riffdb_contract_compiler::compile_contract_source;
     use riffdb_storage_api::{
         DatabaseInitializationPort, DeclaredOutcome, DurabilityMode, ExecutablePlanRef,
-        OutboxDeliveryStateV1, OutboxDestinationIdV1, OutboxRetryV1, ReadDependencies,
-        StoredReadDependenciesV1, derive_event_hash_v1,
+        OutboxDeliveryStateV1, OutboxDestinationIdV1, OutboxRetryV1, ProjectionQuerySelector,
+        ProjectionRowUpdateV1, ReadDependencies, StoredReadDependenciesV1, derive_event_hash_v1,
     };
     use riffdb_types::{
         ActorId, ActorKind, AdmittedActorContext, AggregateTypeId, CanonicalInputHash,
-        CanonicalRecord, CommandId, ContractBundleHash, ContractLineage, ContractVersion,
-        DatabaseId, EventTypeId, LogicalTime, OutcomeId, PartitionKeyBuilder, PlanHash,
-        ProjectionId, ProjectionPlanHash, ProvenanceId, RequestId, TenantScope, Timestamp,
-        hash_partition_key,
+        CanonicalRecord, CanonicalValue, CommandId, ContractBundleHash, ContractLineage,
+        ContractVersion, DatabaseId, EventTypeId, FieldId, LogicalTime, OutcomeId,
+        PartitionKeyBuilder, PlanHash, ProjectionId, ProjectionPlanHash, ProvenanceId, RequestId,
+        TenantScope, Timestamp, hash_partition_key,
     };
 
     use super::*;
@@ -1016,6 +1641,31 @@ mod tests {
             ProjectionId::first(),
             ProjectionPlanHash::from_bytes([seed; 32]),
         )
+    }
+
+    fn recovery_projection_schema() -> riffdb_storage_api::CheckedProjectionSchema {
+        let source = "\
+contract Recovery version 1 {
+  event Source { group: string<16> }
+  projection Totals {
+    source event Source
+    key (group)
+    measure total = count()
+    frontier transactionally_ordered
+  }
+}
+";
+        riffdb_storage_api::CheckedProjectionSchema::new(
+            compile_contract_source(source)
+                .expect("recovery contract")
+                .bound_projection_group_schema(ProjectionId::first())
+                .expect("recovery projection"),
+        )
+    }
+
+    fn recovery_measures(count: u64) -> CanonicalRecord {
+        CanonicalRecord::new(vec![(FieldId::first(), CanonicalValue::U64(count))])
+            .expect("recovery measures")
     }
 
     fn command_graph_at(
@@ -1263,13 +1913,73 @@ mod tests {
     }
 
     #[test]
-    fn pending_outbox_accelerator_rebuilds_from_durable_rows_after_reopen() {
-        let (path, ports) = operational("outbox-index-rebuild");
-        let events = seed_command(&ports, CommitSequence::first(), 2);
-        let expected = events
+    fn outbox_accelerators_rebuild_every_undelivered_state_after_reopen() {
+        let (path, mut ports) = operational("outbox-index-rebuild");
+        let events = seed_command(&ports, CommitSequence::first(), 5);
+        let event_ids = events
             .iter()
             .map(StoredDurableEventV1::event_id)
             .collect::<Vec<_>>();
+        let claim = |event_id, started, deadline| {
+            OutboxClaimV1::new(
+                event_id,
+                OutboxStatusObservationV1::AbsentInitialPending,
+                destination(),
+                timestamp(started),
+                timestamp(deadline),
+            )
+            .expect("claim")
+        };
+        let delivered = match ports
+            .claim_outbox(&claim(event_ids[0], 10, 20))
+            .expect("claim")
+        {
+            OutboxTransitionResultV1::Applied(status) => status,
+            result => panic!("unexpected claim result: {result:?}"),
+        };
+        assert!(matches!(
+            ports
+                .succeed_outbox(&OutboxSucceedV1::new(delivered, timestamp(21)).expect("success"))
+                .expect("success result"),
+            OutboxTransitionResultV1::Applied(_)
+        ));
+        assert!(matches!(
+            ports
+                .claim_outbox(&claim(event_ids[1], 30, 40))
+                .expect("delivering claim"),
+            OutboxTransitionResultV1::Applied(_)
+        ));
+        assert!(matches!(
+            ports
+                .dead_letter_outbox(
+                    &OutboxDeadLetterV1::new(
+                        event_ids[2],
+                        OutboxStatusObservationV1::AbsentInitialPending,
+                        Some(destination()),
+                        timestamp(50),
+                        None,
+                    )
+                    .expect("dead letter")
+                )
+                .expect("dead-letter result"),
+            OutboxTransitionResultV1::Applied(_)
+        ));
+        let explicit_pending = match ports
+            .claim_outbox(&claim(event_ids[3], 60, 70))
+            .expect("claim")
+        {
+            OutboxTransitionResultV1::Applied(status) => status,
+            result => panic!("unexpected claim result: {result:?}"),
+        };
+        assert!(matches!(
+            ports
+                .retry_outbox(
+                    &OutboxRetryV1::new(explicit_pending, Some(timestamp(80)), None)
+                        .expect("retry")
+                )
+                .expect("retry result"),
+            OutboxTransitionResultV1::Applied(_)
+        ));
         drop(ports);
 
         let store = RedbStore::open(&path.0).expect("reopen store");
@@ -1279,20 +1989,34 @@ mod tests {
         let reopened = dormant
             .into_operational_after_catalog_validation()
             .expect("rebuild transient indexes");
-        let limit = OutboxPageLimit::new(NonZeroU16::new(2).expect("nonzero")).expect("limit");
+        let limit = OutboxPageLimit::new(NonZeroU16::new(5).expect("nonzero")).expect("limit");
         let PendingOutboxScanV1::ExactEnd { items } = reopened
             .scan_pending_outbox(None, limit)
             .expect("scan rebuilt pending index")
         else {
-            panic!("two durable pending rows reach exact end");
+            panic!("explicit and absent pending rows reach exact end");
         };
         assert_eq!(
             items
                 .iter()
                 .map(|item| item.value().event_id())
                 .collect::<Vec<_>>(),
-            expected
+            vec![event_ids[3], event_ids[4]]
         );
+        let undelivered = reopened
+            .scan_undelivered_outbox_statuses(UndeliveredOutboxStatusScanRequestV1::initial(
+                None, limit,
+            ))
+            .expect("scan rebuilt undelivered index");
+        assert_eq!(
+            undelivered
+                .items()
+                .iter()
+                .map(|item| item.value().event_id())
+                .collect::<Vec<_>>(),
+            event_ids[1..].to_vec()
+        );
+        assert_eq!(undelivered.continuation(), None);
     }
 
     #[test]
@@ -1333,6 +2057,15 @@ mod tests {
             reopened
                 .scan_pending_outbox(None, limit)
                 .expect_err("degraded outbox index is unavailable")
+                .kind(),
+            StorageErrorKind::Unavailable
+        );
+        assert_eq!(
+            reopened
+                .scan_undelivered_outbox_statuses(UndeliveredOutboxStatusScanRequestV1::initial(
+                    None, limit
+                ),)
+                .expect_err("degraded undelivered index is unavailable")
                 .kind(),
             StorageErrorKind::Unavailable
         );
@@ -1457,6 +2190,183 @@ mod tests {
                 .expect_err("physical and repeated identities must agree")
                 .kind(),
             StorageErrorKind::CorruptData
+        );
+    }
+
+    #[test]
+    fn projection_recovery_survives_reopen_and_fails_closed_on_corruption_or_fence_change() {
+        let (path, mut ports) = operational("projection-recovery");
+        let sequence = CommitSequence::first();
+        seed_command(&ports, sequence, 0);
+        let schema = recovery_projection_schema();
+        let generation = ProjectionGeneration::first();
+        let initial = StoredProjectionControlV1::new(
+            schema.identity().clone(),
+            generation,
+            None,
+            Some(riffdb_storage_api::ProjectionGenerationPosition::new(
+                generation,
+                FrontierPosition::BeforeFirst,
+            )),
+            None,
+            ProjectionLifecycleV1::CatchingUp,
+            None,
+        )
+        .expect("catching-up control");
+        install_control(&ports, schema.identity(), &initial);
+        let key = schema
+            .group_key(
+                generation,
+                &[CanonicalValue::string("group-a").expect("group value")],
+            )
+            .expect("projection group key");
+        let measures = recovery_measures(1);
+        let apply = ProjectionApplyRequestV1::new(
+            schema.clone(),
+            generation,
+            sequence,
+            FrontierPosition::BeforeFirst,
+            vec![
+                ProjectionRowUpdateV1::new(
+                    &schema,
+                    key.clone(),
+                    ProjectionRowPrior::Absent,
+                    measures.clone(),
+                )
+                .expect("projection update"),
+            ],
+        )
+        .expect("projection apply");
+        let ProjectionApplyResult::Applied { marker, control } =
+            ports.apply_projection(&apply).expect("apply projection")
+        else {
+            panic!("projection apply must advance the retained candidate");
+        };
+        let expected_row =
+            StoredProjectionStateV1::new(&schema, key, measures, sequence).expect("expected row");
+        let other_control = StoredProjectionControlV1::initial(projection_identity(0x52));
+        install_control(&ports, other_control.identity(), &other_control);
+        drop(ports);
+
+        let store = RedbStore::open(&path.0).expect("reopen store");
+        let dormant = crate::store::RedbDormantPorts {
+            shared: store.shared,
+        };
+        let reopened = dormant
+            .into_operational_after_catalog_validation()
+            .expect("activate reopened projection store");
+        let one = ProjectionRecoveryPageLimit::new(NonZeroU16::MIN).expect("one-row limit");
+        let mut ordered = [control.clone(), other_control];
+        ordered.sort_by(|left, right| {
+            ProjectionFrontierKey::new(left.identity().clone())
+                .as_bytes()
+                .cmp(ProjectionFrontierKey::new(right.identity().clone()).as_bytes())
+        });
+        let ProjectionControlScanV1::Page {
+            controls,
+            next_after,
+        } = reopened
+            .scan_projection_controls(None, one)
+            .expect("first control page")
+        else {
+            panic!("two controls at limit one must page");
+        };
+        assert_eq!(controls[0].value(), &ordered[0]);
+        assert_eq!(&next_after, ordered[0].identity());
+        let ProjectionControlScanV1::ExactEnd { controls } = reopened
+            .scan_projection_controls(Some(&next_after), one)
+            .expect("final control page")
+        else {
+            panic!("second control must reach exact end");
+        };
+        assert_eq!(controls[0].value(), &ordered[1]);
+
+        let head = FrontierPosition::AppliedThrough(sequence);
+        let marker_request = ProjectionRecoveryValidationRequestV1::new(
+            schema.clone(),
+            control.clone(),
+            head,
+            generation,
+            one,
+            None,
+            ProjectionRecoveryExpectedPageV1::markers(vec![marker.clone()]),
+        )
+        .expect("marker request");
+        let ProjectionRecoveryValidationResultV1::Page { continuation } = reopened
+            .validate_projection_recovery_page(&marker_request)
+            .expect("validate persisted marker")
+        else {
+            panic!("marker exact end must advance to state validation");
+        };
+        let row_request = ProjectionRecoveryValidationRequestV1::new(
+            schema.clone(),
+            control.clone(),
+            head,
+            generation,
+            one,
+            Some(continuation),
+            ProjectionRecoveryExpectedPageV1::rows(vec![expected_row]),
+        )
+        .expect("row request");
+        let ProjectionRecoveryValidationResultV1::ExactEnd(clean) = reopened
+            .validate_projection_recovery_page(&row_request)
+            .expect("validate persisted row")
+        else {
+            panic!("matching replay evidence must reach exact end");
+        };
+        assert_eq!(clean.position(), control.candidate().expect("candidate"));
+        assert_eq!(clean.state_rows(), 1);
+
+        let selector =
+            ProjectionQuerySelector::new(schema.clone(), Vec::new()).expect("query selector");
+        let query =
+            ProjectionQueryRequest::new(selector, NonZeroU16::MIN, None).expect("projection query");
+        assert_eq!(
+            reopened
+                .query_projection(&query)
+                .expect("query retained catching-up projection"),
+            ProjectionQueryResult::Degraded {
+                generation: Some(generation),
+                current: head,
+                reason: ProjectionUnavailableReason::Building,
+            }
+        );
+
+        let access = reopened
+            .begin_write()
+            .expect("begin derived corruption transaction");
+        {
+            let mut markers = access
+                .transaction()
+                .expect("corruption transaction")
+                .open_table(PROJECTION_APPLIED)
+                .expect("marker table");
+            markers
+                .insert(
+                    encode_projection_apply_key(marker.key()),
+                    b"malformed-projection-marker".as_slice(),
+                )
+                .expect("corrupt marker");
+        }
+        access.commit().expect("commit derived corruption");
+        assert!(matches!(
+            reopened
+                .validate_projection_recovery_page(&marker_request)
+                .expect("malformed marker is a derived finding"),
+            ProjectionRecoveryValidationResultV1::Finding(finding)
+                if finding.code() == ProjectionRecoveryFindingCodeV1::MalformedDerivedRecord
+        ));
+
+        seed_command(
+            &reopened,
+            CommitSequence::new(2).expect("second sequence"),
+            0,
+        );
+        assert_eq!(
+            reopened
+                .validate_projection_recovery_page(&marker_request)
+                .expect("stale head fence"),
+            ProjectionRecoveryValidationResultV1::FenceChanged
         );
     }
 

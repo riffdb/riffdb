@@ -189,8 +189,10 @@ fn checked_details_free_status(code: Code, message: &str, has_local_source: bool
         (Code::ResourceExhausted, RESPONSE_TOO_LARGE) => DetailsFreeStatus::ResponseTooLarge,
         (Code::Internal, EMERGENCY_INTERNAL) => DetailsFreeStatus::EmergencyInternal,
         // Tonic attaches a source only to locally synthesized transport errors.
-        // A peer-originated UNAVAILABLE without PublicError details fails closed.
-        (Code::Unavailable, _) if has_local_source => DetailsFreeStatus::TransportUnavailable,
+        // H2 may surface an incomplete response as INTERNAL rather than
+        // UNAVAILABLE. A peer-originated status has no local source and still
+        // fails closed below.
+        (_, _) if has_local_source => DetailsFreeStatus::TransportUnavailable,
         (
             _,
             AUTHENTICATION_FAILED
@@ -326,6 +328,24 @@ mod tests {
         assert!(is_retryable(&error));
         assert!(carries_uncertainty(&error));
         assert!(!error.to_string().contains(canary));
+    }
+
+    #[test]
+    fn source_bearing_local_h2_protocol_failure_is_transport_loss() {
+        let canary = "local h2 response-frame diagnostic";
+        let mut status = Status::new(Code::Internal, canary);
+        status.set_source(Arc::new(LocalTransportFailure));
+        let error = checked_status(status);
+        assert!(matches!(
+            &error,
+            ClientError::DetailsFree(DetailsFreeStatus::TransportUnavailable)
+        ));
+        assert!(is_retryable(&error));
+        assert!(carries_uncertainty(&error));
+        assert!(!error.to_string().contains(canary));
+
+        let source_free = checked_status(Status::new(Code::Internal, canary));
+        assert_protocol_kind(source_free, ProtocolFailureKind::MissingPublicErrorDetails);
     }
 
     #[test]

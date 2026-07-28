@@ -8,7 +8,7 @@ fuzz_target!(|input: &[u8]| {
     let Some((&selector, payload)) = input.split_first() else {
         return;
     };
-    match selector % 46 {
+    match selector % 52 {
         0 => {
             let _ = decode_value(payload);
         }
@@ -62,6 +62,12 @@ fuzz_target!(|input: &[u8]| {
         43 => decode::<v1::TraceProvenanceResponse>(payload),
         44 => decode::<v1::ListPendingOutboxDeliveriesRequest>(payload),
         45 => decode::<v1::ListPendingOutboxDeliveriesResponse>(payload),
+        46 => decode::<v1::CreateOfflineBackupRequest>(payload),
+        47 => decode::<v1::CreateOfflineBackupResponse>(payload),
+        48 => decode::<v1::RestoreOfflineBackupRequest>(payload),
+        49 => decode::<v1::RestoreOfflineBackupResponse>(payload),
+        50 => decode::<v1::GetOfflineMaintenanceOperationRequest>(payload),
+        51 => decode::<v1::GetOfflineMaintenanceOperationResponse>(payload),
         _ => unreachable!(),
     }
 });

@@ -1,6 +1,6 @@
 //! Actor-owned completion of admitted command attempts.
 
-use std::{error::Error, fmt};
+use std::{error::Error, fmt, time::Instant};
 
 use riffdb_conflict::{ConflictError, ConflictManager};
 use riffdb_idempotency::IdempotencyRecheckError;
@@ -11,8 +11,10 @@ use riffdb_storage_api::{
 use riffdb_types::ExecutionFailureCode;
 
 use crate::{
-    AdmissionClock, AdmissionClockError, CommandExecutionPreparation, CommittedOutcome,
-    ProvenanceIdSource, ProvenanceIdSourceError,
+    AdmissionClock, AdmissionClockError, CommandExecutionPreparation, CommitCallTerminal,
+    CommitIdempotencyObservation, CommitTelemetry, CommitTelemetryEvent,
+    CommitUncertaintyResolution, CommitUncertaintyStage, CommittedOutcome, ProvenanceIdSource,
+    ProvenanceIdSourceError,
     command_admission::{
         CommandAdmissionError, CommandAdmissionResult, UncertainCommandAdmissionResolution,
         reduce_command_admission, resolve_uncertain_command_admission,
@@ -88,7 +90,7 @@ impl fmt::Debug for CommandExecutionResult {
 }
 
 /// Redacted closed failure kind for one accepted command submission.
-#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub enum CommandExecutionErrorKind {
     /// Cancellation was observed at an accepted pre-transaction safe point.
     Cancelled,
@@ -234,6 +236,7 @@ pub(super) enum CommandDriverContinuation {
 }
 
 /// Owns admission and every bounded attempt until one accepted command completes.
+#[allow(clippy::too_many_arguments)]
 pub(super) async fn drive_command_execution<P>(
     port: &P,
     conflicts: &dyn ConflictManager,
@@ -241,6 +244,7 @@ pub(super) async fn drive_command_execution<P>(
     provenance: &dyn ProvenanceIdSource,
     durability: CoordinatorDurability,
     lifecycle: &dyn CommandExecutionLifecycle,
+    telemetry: &dyn CommitTelemetry,
     preparation: CommandExecutionPreparation,
 ) -> Result<CommandExecutionResult, CommandExecutionError>
 where
@@ -252,21 +256,38 @@ where
     let candidate = match reduce_command_admission(port, admission_clock, preparation) {
         Ok(CommandAdmissionResult::Execute(candidate)) => candidate,
         Ok(CommandAdmissionResult::Outcome(outcome)) => {
+            telemetry.record(CommitTelemetryEvent::IdempotencyObserved {
+                observation: CommitIdempotencyObservation::Hit,
+            });
             return terminal_continuation(committed_replay(outcome), lifecycle);
         }
         Ok(CommandAdmissionResult::ExecutionFailed(failure)) => {
+            telemetry.record(CommitTelemetryEvent::IdempotencyObserved {
+                observation: CommitIdempotencyObservation::Hit,
+            });
             return terminal_continuation(execution_failure(failure.code()), lifecycle);
         }
         Ok(CommandAdmissionResult::PreparationChanged) => {
+            telemetry.record(CommitTelemetryEvent::IdempotencyObserved {
+                observation: CommitIdempotencyObservation::Hit,
+            });
             return Ok(CommandExecutionResult::PreparationChanged);
         }
         Ok(CommandAdmissionResult::InputMismatch) => {
+            telemetry.record(CommitTelemetryEvent::IdempotencyObserved {
+                observation: CommitIdempotencyObservation::Mismatch,
+            });
             return Ok(CommandExecutionResult::InputMismatch);
         }
         Err(CommandAdmissionError::AdmissionStatusUnknown(uncertain)) => {
             let write = uncertain.cause().clone();
             lifecycle.fence();
-            return match resolve_uncertain_command_admission(port, *uncertain) {
+            let resolution = resolve_uncertain_command_admission(port, *uncertain);
+            telemetry.record(CommitTelemetryEvent::UncertaintyResolved {
+                stage: CommitUncertaintyStage::Admission,
+                resolution: admission_uncertainty_resolution(&resolution),
+            });
+            return match resolution {
                 UncertainCommandAdmissionResolution::ProvenPending(candidate) => {
                     drop(candidate);
                     Err(CommandExecutionError::with_storage(
@@ -306,7 +327,10 @@ where
 
     let state = PendingCommandAttempts::from_admission(candidate)
         .map_err(|error| command_attempt_failure(error, lifecycle))?;
-    drive_pending_command_attempts(port, conflicts, provenance, durability, lifecycle, state).await
+    drive_pending_command_attempts(
+        port, conflicts, provenance, durability, lifecycle, telemetry, state,
+    )
+    .await
 }
 
 async fn drive_pending_command_attempts<P>(
@@ -315,6 +339,7 @@ async fn drive_pending_command_attempts<P>(
     provenance: &dyn ProvenanceIdSource,
     durability: CoordinatorDurability,
     lifecycle: &dyn CommandExecutionLifecycle,
+    telemetry: &dyn CommitTelemetry,
     mut state: PendingCommandAttempts,
 ) -> Result<CommandExecutionResult, CommandExecutionError>
 where
@@ -328,14 +353,22 @@ where
             .await
             .map_err(|error| command_attempt_failure(error, lifecycle))?;
         let continuation = match resolution {
-            CommandAttemptResolution::Evaluated(attempt) => {
-                continue_evaluated_command(port, provenance, durability, lifecycle, attempt)
-            }
+            CommandAttemptResolution::Evaluated(attempt) => continue_evaluated_command(
+                port, provenance, durability, lifecycle, telemetry, attempt,
+            ),
             CommandAttemptResolution::ExecutionFault(attempt) => {
-                continue_execution_fault(port, lifecycle, attempt)
+                continue_execution_fault(port, lifecycle, telemetry, attempt)
             }
-            CommandAttemptResolution::OutcomeReplay(outcome) => committed_replay(outcome),
+            CommandAttemptResolution::OutcomeReplay(outcome) => {
+                telemetry.record(CommitTelemetryEvent::IdempotencyObserved {
+                    observation: CommitIdempotencyObservation::Hit,
+                });
+                committed_replay(outcome)
+            }
             CommandAttemptResolution::ExecutionFailureReplay(failure) => {
+                telemetry.record(CommitTelemetryEvent::IdempotencyObserved {
+                    observation: CommitIdempotencyObservation::Hit,
+                });
                 execution_failure(failure.code())
             }
         };
@@ -364,12 +397,76 @@ fn terminal_continuation(
     }
 }
 
+const fn admission_uncertainty_resolution(
+    resolution: &UncertainCommandAdmissionResolution,
+) -> CommitUncertaintyResolution {
+    match resolution {
+        UncertainCommandAdmissionResolution::ProvenPending(_) => {
+            CommitUncertaintyResolution::ProvenPending
+        }
+        UncertainCommandAdmissionResolution::Outcome(_) => CommitUncertaintyResolution::Outcome,
+        UncertainCommandAdmissionResolution::ExecutionFailed(_) => {
+            CommitUncertaintyResolution::ExecutionFailure
+        }
+        UncertainCommandAdmissionResolution::OutcomeUnknown(_) => {
+            CommitUncertaintyResolution::StillUnknown
+        }
+        UncertainCommandAdmissionResolution::Integrity => CommitUncertaintyResolution::Integrity,
+    }
+}
+
+const fn commit_call_terminal(result: &CheckedCommandCommitResult) -> CommitCallTerminal {
+    match result {
+        CheckedCommandCommitResult::Committed(_) => CommitCallTerminal::Committed,
+        CheckedCommandCommitResult::ProvenAbort(_) => CommitCallTerminal::ProvenAbort,
+        CheckedCommandCommitResult::StatusUnknown(_) => CommitCallTerminal::StatusUnknown,
+        CheckedCommandCommitResult::Integrity => CommitCallTerminal::Integrity,
+    }
+}
+
+const fn command_uncertainty_resolution(
+    resolution: &UncertainCommandCommitResolution,
+) -> CommitUncertaintyResolution {
+    match resolution {
+        UncertainCommandCommitResolution::Committed(_) => CommitUncertaintyResolution::Outcome,
+        UncertainCommandCommitResolution::ExecutionFailureReplay(_) => {
+            CommitUncertaintyResolution::ExecutionFailure
+        }
+        UncertainCommandCommitResolution::ProvenNotCommitted(_) => {
+            CommitUncertaintyResolution::ProvenPending
+        }
+        UncertainCommandCommitResolution::OutcomeUnknown { .. } => {
+            CommitUncertaintyResolution::StillUnknown
+        }
+        UncertainCommandCommitResolution::Integrity => CommitUncertaintyResolution::Integrity,
+    }
+}
+
+const fn execution_failure_uncertainty_resolution(
+    resolution: &UncertainExecutionFailureResolution,
+) -> CommitUncertaintyResolution {
+    match resolution {
+        UncertainExecutionFailureResolution::ExecutionFailureReplay(_) => {
+            CommitUncertaintyResolution::ExecutionFailure
+        }
+        UncertainExecutionFailureResolution::OutcomeReplay(_) => {
+            CommitUncertaintyResolution::Outcome
+        }
+        UncertainExecutionFailureResolution::Retry(_) => CommitUncertaintyResolution::ProvenPending,
+        UncertainExecutionFailureResolution::OutcomeUnknown { .. } => {
+            CommitUncertaintyResolution::StillUnknown
+        }
+        UncertainExecutionFailureResolution::Integrity => CommitUncertaintyResolution::Integrity,
+    }
+}
+
 /// Carries a successfully evaluated attempt through the complete storage chain.
 pub(super) fn continue_evaluated_command<P>(
     port: &P,
     provenance: &dyn ProvenanceIdSource,
     durability: CoordinatorDurability,
     lifecycle: &dyn CommandExecutionLifecycle,
+    telemetry: &dyn CommitTelemetry,
     attempt: EvaluatedCommandAttempt,
 ) -> CommandDriverContinuation
 where
@@ -409,7 +506,12 @@ where
     let current = match bound.read_transaction_current() {
         TransactionCurrentAttemptDecision::Ready(current) => current,
         TransactionCurrentAttemptDecision::DependencyChanged(changed) => {
-            return after_rollback(port, lifecycle, changed.reject_storage_and_rollback());
+            return after_rollback(
+                port,
+                lifecycle,
+                telemetry,
+                changed.reject_storage_and_rollback(),
+            );
         }
         TransactionCurrentAttemptDecision::StorageFailure(error) => {
             return proven_storage_failure(error, lifecycle);
@@ -419,7 +521,12 @@ where
     let validated = match validate_checked_transaction_current(current) {
         Ok(CheckedCandidateDecision::Validated(validated)) => validated,
         Ok(CheckedCandidateDecision::Rejected(rejected)) => {
-            return after_rollback(port, lifecycle, rejected.reject_storage_and_rollback());
+            return after_rollback(
+                port,
+                lifecycle,
+                telemetry,
+                rejected.reject_storage_and_rollback(),
+            );
         }
         Err(_) => return internal_defect(lifecycle),
     };
@@ -451,7 +558,15 @@ where
         }
         Err(CheckedCommandStageError::InternalDefect(_)) => return internal_defect(lifecycle),
     };
-    match staged.commit() {
+    let commit_started_at = Instant::now();
+    let commit_result = staged.commit();
+    telemetry.record(CommitTelemetryEvent::CommitCallCompleted {
+        terminal: commit_call_terminal(&commit_result),
+        elapsed: commit_started_at.elapsed(),
+        batch_size: 1,
+        synchronous: durability == CoordinatorDurability::Sync,
+    });
+    match commit_result {
         CheckedCommandCommitResult::Committed(outcome) => {
             CommandDriverContinuation::Complete(CommandExecutionResult::Committed(*outcome))
         }
@@ -459,7 +574,12 @@ where
         CheckedCommandCommitResult::StatusUnknown(uncertain) => {
             let write = uncertain.cause().clone();
             lifecycle.fence();
-            match resolve_uncertain_command_commit(port, uncertain) {
+            let resolution = resolve_uncertain_command_commit(port, uncertain);
+            telemetry.record(CommitTelemetryEvent::UncertaintyResolved {
+                stage: CommitUncertaintyStage::CommandCommit,
+                resolution: command_uncertainty_resolution(&resolution),
+            });
+            match resolution {
                 UncertainCommandCommitResolution::Committed(outcome) => {
                     CommandDriverContinuation::Complete(CommandExecutionResult::Committed(outcome))
                 }
@@ -512,6 +632,7 @@ fn resolve_checked_reserve_decision<C>(
 pub(super) fn continue_execution_fault<P>(
     port: &P,
     lifecycle: &dyn CommandExecutionLifecycle,
+    telemetry: &dyn CommitTelemetry,
     attempt: ExecutionFaultAttempt,
 ) -> CommandDriverContinuation
 where
@@ -553,7 +674,12 @@ where
         ExecutionFailureTerminalizeResult::StatusUnknown(uncertain) => {
             let write = uncertain.cause().clone();
             lifecycle.fence();
-            match resolve_uncertain_execution_failure(port, uncertain) {
+            let resolution = resolve_uncertain_execution_failure(port, uncertain);
+            telemetry.record(CommitTelemetryEvent::UncertaintyResolved {
+                stage: CommitUncertaintyStage::ExecutionFailure,
+                resolution: execution_failure_uncertainty_resolution(&resolution),
+            });
+            match resolution {
                 UncertainExecutionFailureResolution::ExecutionFailureReplay(failure) => {
                     execution_failure(failure.code())
                 }
@@ -587,6 +713,7 @@ where
 fn after_rollback<P>(
     port: &P,
     lifecycle: &dyn CommandExecutionLifecycle,
+    telemetry: &dyn CommitTelemetry,
     disposition: RolledBackCandidateDisposition,
 ) -> CommandDriverContinuation
 where
@@ -597,7 +724,7 @@ where
             CommandDriverContinuation::Retry(state)
         }
         RolledBackCandidateDisposition::ExecutionFault(fault) => {
-            continue_execution_fault(port, lifecycle, *fault)
+            continue_execution_fault(port, lifecycle, telemetry, *fault)
         }
         RolledBackCandidateDisposition::Integrity => internal_defect(lifecycle),
     }

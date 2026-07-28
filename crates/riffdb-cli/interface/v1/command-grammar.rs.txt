@@ -36,6 +36,7 @@ enum TopLevel {
     Projection { #[command(subcommand)] command: ProjectionCommand },
     Capability { #[command(subcommand)] command: CapabilityCommand },
     Server { #[command(subcommand)] command: ServerCommand },
+    Backup { #[command(subcommand)] command: BackupCommand },
     Demo { #[command(subcommand)] command: DemoCommand },
 }
 
@@ -230,6 +231,30 @@ enum CapabilityCommand {
 enum ServerCommand {
     // Identity: server.health
     Health,
+}
+
+#[derive(Subcommand)]
+enum BackupCommand {
+    // Identity: backup.create
+    Create {
+        #[arg(value_name = "NAME")]
+        name: String,
+    },
+
+    // Identity: backup.restore
+    Restore {
+        #[arg(value_name = "NAME")]
+        name: String,
+
+        #[arg(long)]
+        confirm_replace_current_database: bool,
+    },
+
+    // Identity: backup.operation
+    Operation {
+        #[arg(value_name = "MAINTENANCE_OPERATION_ID")]
+        maintenance_operation_id: String,
+    },
 }
 
 #[derive(Subcommand)]

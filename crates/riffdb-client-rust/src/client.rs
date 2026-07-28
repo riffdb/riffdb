@@ -12,12 +12,14 @@ use riffdb_api_grpc::generated::{
 use riffdb_proto::v1;
 use riffdb_proto::{
     PublicMessage, validate_contract_validation_exchange, validate_create_capability_exchange,
-    validate_discover_command_tools_exchange, validate_discover_resources_exchange,
-    validate_explain_command_exchange, validate_get_contract_version_exchange,
+    validate_create_offline_backup_exchange, validate_discover_command_tools_exchange,
+    validate_discover_resources_exchange, validate_explain_command_exchange,
+    validate_get_contract_version_exchange, validate_get_offline_maintenance_operation_exchange,
     validate_get_outcome_exchange, validate_get_projection_status_exchange,
     validate_list_pending_outbox_deliveries_exchange, validate_public_message,
-    validate_query_projection_exchange, validate_scan_commits_exchange,
-    validate_scan_index_exchange, validate_trace_provenance_exchange,
+    validate_query_projection_exchange, validate_restore_offline_backup_exchange,
+    validate_scan_commits_exchange, validate_scan_index_exchange,
+    validate_trace_provenance_exchange,
 };
 use riffdb_types::{CommitSequence, RequestId};
 use tonic::transport::{Channel, Endpoint};
@@ -28,7 +30,8 @@ use crate::generated::{GeneratedCommand, GeneratedCommandError};
 use crate::status::{ClientError, ProtocolFailure, ProtocolFailureKind, checked_status};
 use crate::{
     AttemptBudget, BootstrapCallMetadata, BootstrapCapabilityCreateTemplate, CallMetadata,
-    IdempotentCommand, NormalCapabilityCreateTemplate, SystemIdSource,
+    CreateOfflineBackup, IdempotentCommand, NormalCapabilityCreateTemplate, RestoreOfflineBackup,
+    SystemIdSource,
 };
 
 trait RetryRequestIdSource {
@@ -304,6 +307,30 @@ impl RiffDbClient {
         v1::ListPendingOutboxDeliveriesResponse,
         validate_list_pending_outbox_deliveries_exchange
     );
+    unary_exchange!(
+        create_offline_backup,
+        admin,
+        create_offline_backup,
+        v1::CreateOfflineBackupRequest,
+        v1::CreateOfflineBackupResponse,
+        validate_create_offline_backup_exchange
+    );
+    unary_exchange!(
+        restore_offline_backup,
+        admin,
+        restore_offline_backup,
+        v1::RestoreOfflineBackupRequest,
+        v1::RestoreOfflineBackupResponse,
+        validate_restore_offline_backup_exchange
+    );
+    unary_exchange!(
+        get_offline_maintenance_operation,
+        admin,
+        get_offline_maintenance_operation,
+        v1::GetOfflineMaintenanceOperationRequest,
+        v1::GetOfflineMaintenanceOperationResponse,
+        validate_get_offline_maintenance_operation_exchange
+    );
 
     /// Performs normal authenticated capability creation.
     pub async fn create_capability(
@@ -416,6 +443,64 @@ impl RiffDbClient {
             &mut request_ids,
         )
         .await
+    }
+
+    /// Starts or resolves one immutable backup-create operation with bounded retry.
+    pub async fn create_offline_backup_with_retry(
+        &mut self,
+        create: &CreateOfflineBackup,
+        attempt_budget: AttemptBudget,
+        metadata: &CallMetadata,
+    ) -> Result<v1::CreateOfflineBackupResponse, ClientError> {
+        let mut request_ids = SystemIdSource::new();
+        let mut retry = RetryState::new(attempt_budget);
+        loop {
+            if !retry.begin_submission() {
+                return Err(ClientError::OutcomeUnknown(crate::OutcomeUnknown));
+            }
+            let request_id = request_ids
+                .next_request_id()
+                .map_err(|error| retry.request_id_failure(error))?;
+            match self
+                .create_offline_backup(create.request(request_id), metadata)
+                .await
+            {
+                Ok(response) => return Ok(response),
+                Err(error) => match retry.handle_failure(error) {
+                    RetryDecision::Retry => {}
+                    RetryDecision::Return(error) => return Err(error),
+                },
+            }
+        }
+    }
+
+    /// Starts or resolves one immutable restore operation with bounded retry.
+    pub async fn restore_offline_backup_with_retry(
+        &mut self,
+        restore: &RestoreOfflineBackup,
+        attempt_budget: AttemptBudget,
+        metadata: &CallMetadata,
+    ) -> Result<v1::RestoreOfflineBackupResponse, ClientError> {
+        let mut request_ids = SystemIdSource::new();
+        let mut retry = RetryState::new(attempt_budget);
+        loop {
+            if !retry.begin_submission() {
+                return Err(ClientError::OutcomeUnknown(crate::OutcomeUnknown));
+            }
+            let request_id = request_ids
+                .next_request_id()
+                .map_err(|error| retry.request_id_failure(error))?;
+            match self
+                .restore_offline_backup(restore.request(request_id), metadata)
+                .await
+            {
+                Ok(response) => return Ok(response),
+                Err(error) => match retry.handle_failure(error) {
+                    RetryDecision::Retry => {}
+                    RetryDecision::Return(error) => return Err(error),
+                },
+            }
+        }
     }
 
     /// Builds, submits, and decodes one generated command shape.

@@ -6,13 +6,14 @@ use std::future::{Future, poll_fn};
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::pin::Pin;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU16, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU16, Ordering};
 use std::task::Poll;
+use std::time::Instant;
 
 use riffdb_commit::{
     AdministrationAuditExecutor, CommandExecutor, CommandIdempotencyInspector, ControlPlaneExecutor,
 };
-use riffdb_errors::{IncidentIdSource, InternalError, PublicError};
+use riffdb_errors::{IncidentIdSource, InternalError, PublicError, PublicErrorKind};
 use riffdb_policy::AgentSessionAdmissionPolicy;
 use riffdb_types::{DatabaseId, Environment, ServiceOperationV1, Timestamp};
 
@@ -22,13 +23,13 @@ use crate::orchestration::{
 };
 use crate::{
     AuthoritativeReadPort, BuildInfo, CapabilityTokenIssuer, CatalogReadPort, CurrentPolicyPort,
-    CursorMonotonicClock, CursorTokenGenerator, HealthRequest, HealthResult, OperationalStatusPort,
-    OutboxStatusPort, PortDriverStopped, PortReceipt, PreBootstrapHealthContext,
-    PreBootstrapHealthContextIssuer, PreBootstrapHealthReport, ProjectionQueryPort,
-    RequestDeadlineScheduler, ServiceCursorRegistries, ServiceDiagnostics, ServiceFailure,
-    ServiceFuture, ServiceHealthHooks, ServiceJob, ServiceJobSpawner, ServiceResponseCharge,
-    ServiceResult, ServiceTelemetry, ServiceTelemetryEvent, ensure_response_budget,
-    port_completion_channel,
+    CursorMonotonicClock, CursorTokenGenerator, HealthRequest, HealthResult,
+    OfflineMaintenanceCoordinatorPort, OperationalStatusPort, OutboxStatusPort, PortDriverStopped,
+    PortReceipt, PreBootstrapHealthContext, PreBootstrapHealthContextIssuer,
+    PreBootstrapHealthReport, ProjectionQueryPort, RequestDeadlineScheduler,
+    ServiceCursorRegistries, ServiceDiagnostics, ServiceFailure, ServiceFuture, ServiceHealthHooks,
+    ServiceJob, ServiceJobSpawner, ServiceResponseCharge, ServiceResult, ServiceTelemetry,
+    ServiceTelemetryEvent, ensure_response_budget, port_completion_channel,
 };
 
 /// Trusted immutable process facts displayed by authenticated health.
@@ -141,6 +142,7 @@ pub struct ServiceProviders {
     pub(crate) authoritative: Arc<dyn AuthoritativeReadPort>,
     pub(crate) projection: Arc<dyn ProjectionQueryPort>,
     pub(crate) outbox: Option<Arc<dyn OutboxStatusPort>>,
+    pub(crate) maintenance: Option<Arc<dyn OfflineMaintenanceCoordinatorPort>>,
     pub(crate) operational: Arc<dyn OperationalStatusPort>,
     pub(crate) token_issuer: Arc<dyn CapabilityTokenIssuer>,
     pub(crate) incident_ids: Arc<dyn IncidentIdSource>,
@@ -180,6 +182,7 @@ impl ServiceProviders {
             authoritative,
             projection,
             outbox,
+            maintenance: None,
             operational,
             token_issuer,
             incident_ids,
@@ -191,6 +194,16 @@ impl ServiceProviders {
             cursor_tokens,
             cursor_clock,
         }
+    }
+
+    /// Installs the server-private offline-maintenance lifecycle controller.
+    #[must_use]
+    pub fn with_offline_maintenance(
+        mut self,
+        maintenance: Arc<dyn OfflineMaintenanceCoordinatorPort>,
+    ) -> Self {
+        self.maintenance = Some(maintenance);
+        self
     }
 }
 
@@ -351,6 +364,7 @@ impl RiffDbService {
     pub(crate) fn spawn_operation<T, F>(
         &self,
         operation: ServiceOperationV1,
+        ingress: riffdb_types::ServiceIngressKindV1,
         future: F,
     ) -> ServiceFuture<'static, T>
     where
@@ -361,6 +375,7 @@ impl RiffDbService {
         let job_inner = Arc::clone(&self.inner);
         let lifecycle = Arc::new(OperationAuditLifecycle::new(operation));
         let job = Box::pin(async move {
+            let started_at = Instant::now();
             let observed = catch_future_panic(future, &lifecycle).await;
             let result = match observed {
                 Ok(result) if !lifecycle.normal_completion_requires_containment(result.is_ok()) => {
@@ -400,12 +415,109 @@ impl RiffDbService {
                     }
                 }
             };
+            job_inner
+                .providers
+                .telemetry
+                .record(ServiceTelemetryEvent::OperationTerminal {
+                    operation,
+                    ingress,
+                    terminal: service_terminal_class(&result),
+                    elapsed: started_at.elapsed(),
+                });
             sender.complete(result);
         });
 
         spawn_trusted_service_job(self.inner.providers.spawner.as_ref(), job);
 
         Box::pin(trusted_service_job_completion(receipt))
+    }
+
+    pub(crate) fn spawn_maintenance_operation<T, F>(&self, future: F) -> ServiceFuture<'static, T>
+    where
+        T: ServiceResponseCharge + Send + 'static,
+        F: Future<Output = ServiceResult<T>> + Send + 'static,
+    {
+        self.spawn_tracked_maintenance_operation(
+            Arc::new(MaintenanceSubmissionState::new()),
+            future,
+        )
+    }
+
+    pub(crate) fn spawn_tracked_maintenance_operation<T, F>(
+        &self,
+        submission: Arc<MaintenanceSubmissionState>,
+        future: F,
+    ) -> ServiceFuture<'static, T>
+    where
+        T: ServiceResponseCharge + Send + 'static,
+        F: Future<Output = ServiceResult<T>> + Send + 'static,
+    {
+        let (sender, receipt) = port_completion_channel();
+        let job_inner = Arc::clone(&self.inner);
+        let job = Box::pin(async move {
+            let result = match catch_maintenance_future_panic(future).await {
+                Ok(result) => result,
+                Err(()) if submission.may_have_been_submitted() => {
+                    Err(PublicError::outcome_unknown().into())
+                }
+                Err(()) => {
+                    Err(job_inner.maintenance_internal_failure(MaintenanceInternalDefect::Panic))
+                }
+            };
+            sender.complete(result);
+        });
+
+        spawn_trusted_service_job(self.inner.providers.spawner.as_ref(), job);
+        Box::pin(trusted_service_job_completion(receipt))
+    }
+}
+
+pub(crate) struct MaintenanceSubmissionState(AtomicBool);
+
+impl MaintenanceSubmissionState {
+    pub(crate) const fn new() -> Self {
+        Self(AtomicBool::new(false))
+    }
+
+    pub(crate) fn mark_submit_in_flight(&self) {
+        self.0.store(true, Ordering::Release);
+    }
+
+    pub(crate) fn mark_submit_rejected(&self) {
+        self.0.store(false, Ordering::Release);
+    }
+
+    pub(crate) fn may_have_been_submitted(&self) -> bool {
+        self.0.load(Ordering::Acquire)
+    }
+}
+
+const fn service_terminal_class<T>(result: &ServiceResult<T>) -> crate::ServiceTerminalClass {
+    match result {
+        Ok(_) => crate::ServiceTerminalClass::Succeeded,
+        Err(ServiceFailure::Public(error)) => match error.kind() {
+            PublicErrorKind::Validation => crate::ServiceTerminalClass::Validation,
+            PublicErrorKind::IdempotencyKeyReuse => {
+                crate::ServiceTerminalClass::IdempotencyMismatch
+            }
+            PublicErrorKind::AuthorizationDenied => {
+                crate::ServiceTerminalClass::AuthorizationDenied
+            }
+            PublicErrorKind::ConcurrencyDeadlineExceeded => {
+                crate::ServiceTerminalClass::ConcurrencyDeadlineExceeded
+            }
+            PublicErrorKind::ContractMismatch => crate::ServiceTerminalClass::ContractMismatch,
+            PublicErrorKind::StorageUnavailable => crate::ServiceTerminalClass::StorageUnavailable,
+            PublicErrorKind::OutcomeUnknown => crate::ServiceTerminalClass::OutcomeUnknown,
+            PublicErrorKind::InternalDefect => crate::ServiceTerminalClass::InternalDefect,
+            PublicErrorKind::CommandExecutionFailed => {
+                crate::ServiceTerminalClass::CommandExecutionFailed
+            }
+        },
+        Err(ServiceFailure::Cancelled) => crate::ServiceTerminalClass::Cancelled,
+        Err(ServiceFailure::DeadlineExceeded) => crate::ServiceTerminalClass::DeadlineExceeded,
+        Err(ServiceFailure::ResponseTooLarge) => crate::ServiceTerminalClass::ResponseTooLarge,
+        Err(ServiceFailure::EmergencyInternal(_)) => crate::ServiceTerminalClass::EmergencyInternal,
     }
 }
 
@@ -471,6 +583,31 @@ impl RiffDbServiceInner {
             operation,
             defect,
         )
+    }
+
+    pub(crate) fn maintenance_internal_failure(
+        &self,
+        defect: MaintenanceInternalDefect,
+    ) -> ServiceFailure {
+        if matches!(defect, MaintenanceInternalDefect::LowerIntegrity) {
+            self.providers
+                .health
+                .fail_authoritative_readiness(crate::AuthoritativeReadinessFailure::Integrity);
+        }
+        match self.providers.incident_ids.next_incident_id() {
+            Ok(incident_id) => {
+                self.providers
+                    .diagnostics
+                    .record_internal(InternalError::new(incident_id, defect));
+                PublicError::internal_defect(incident_id).into()
+            }
+            Err(error) => {
+                self.providers
+                    .health
+                    .fail_authoritative_readiness(crate::AuthoritativeReadinessFailure::Integrity);
+                riffdb_errors::EmergencyInternalFailure::from(error).into()
+            }
+        }
     }
 }
 
@@ -568,6 +705,25 @@ impl fmt::Display for InternalDefect {
 
 impl Error for InternalDefect {}
 
+#[derive(Clone, Copy, Debug)]
+pub(crate) enum MaintenanceInternalDefect {
+    Panic,
+    ProofMismatch,
+    LowerIntegrity,
+}
+
+impl fmt::Display for MaintenanceInternalDefect {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(match self {
+            Self::Panic => "contained offline-maintenance service panic",
+            Self::ProofMismatch => "offline-maintenance service proof mismatch",
+            Self::LowerIntegrity => "offline-maintenance lower state failed integrity",
+        })
+    }
+}
+
+impl Error for MaintenanceInternalDefect {}
+
 fn contained_audit_failure(failure: ContainedAuditFailure) -> ServiceFailure {
     match failure {
         ContainedAuditFailure::StorageUnavailable => PublicError::storage_unavailable().into(),
@@ -587,6 +743,21 @@ where
         match catch_unwind(AssertUnwindSafe(|| {
             with_operation_audit_lifecycle(lifecycle, || Pin::as_mut(&mut future).poll(context))
         })) {
+            Ok(Poll::Ready(value)) => Poll::Ready(Ok(value)),
+            Ok(Poll::Pending) => Poll::Pending,
+            Err(_) => Poll::Ready(Err(())),
+        }
+    })
+    .await
+}
+
+pub(crate) async fn catch_maintenance_future_panic<F>(future: F) -> Result<F::Output, ()>
+where
+    F: Future,
+{
+    let mut future = Box::pin(future);
+    poll_fn(move |context| {
+        match catch_unwind(AssertUnwindSafe(|| Pin::as_mut(&mut future).poll(context))) {
             Ok(Poll::Ready(value)) => Poll::Ready(Ok(value)),
             Ok(Poll::Pending) => Poll::Pending,
             Err(_) => Poll::Ready(Err(())),

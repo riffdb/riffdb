@@ -124,12 +124,30 @@ fn every_client_vector_passes_its_strict_public_boundary() {
             "riffdb.v1.ListPendingOutboxDeliveriesResponse" => {
                 decode::<v1::ListPendingOutboxDeliveriesResponse>(&bytes)
             }
+            "riffdb.v1.CreateOfflineBackupRequest" => {
+                decode::<v1::CreateOfflineBackupRequest>(&bytes)
+            }
+            "riffdb.v1.CreateOfflineBackupResponse" => {
+                decode::<v1::CreateOfflineBackupResponse>(&bytes)
+            }
+            "riffdb.v1.RestoreOfflineBackupRequest" => {
+                decode::<v1::RestoreOfflineBackupRequest>(&bytes)
+            }
+            "riffdb.v1.RestoreOfflineBackupResponse" => {
+                decode::<v1::RestoreOfflineBackupResponse>(&bytes)
+            }
+            "riffdb.v1.GetOfflineMaintenanceOperationRequest" => {
+                decode::<v1::GetOfflineMaintenanceOperationRequest>(&bytes)
+            }
+            "riffdb.v1.GetOfflineMaintenanceOperationResponse" => {
+                decode::<v1::GetOfflineMaintenanceOperationResponse>(&bytes)
+            }
             other => panic!("unexpected client fixture type: {other}"),
         }
         count += 1;
     }
-    assert_eq!(count, 117);
-    assert_eq!(rpcs.len(), 22);
+    assert_eq!(count, 126);
+    assert_eq!(rpcs.len(), 25);
     assert_eq!(request_rpcs, rpcs);
     assert_eq!(visible_rpcs, rpcs);
 }
@@ -266,7 +284,7 @@ fn descriptor_delta() -> (BTreeSet<String>, BTreeSet<String>) {
 }
 
 fn expected_enum_values() -> BTreeSet<String> {
-    [
+    let mut values = [
         (
             "riffdb.v1.ContractCompatibilityClass",
             0,
@@ -401,7 +419,65 @@ fn expected_enum_values() -> BTreeSet<String> {
     ]
     .into_iter()
     .map(|(enumeration, number, name)| format!("enum-value {enumeration} {number} {name}"))
-    .collect()
+    .collect::<BTreeSet<_>>();
+    for (enumeration, names) in [
+        (
+            "riffdb.v1.OfflineMaintenanceOperationKind",
+            &[
+                "OFFLINE_MAINTENANCE_OPERATION_KIND_UNSPECIFIED",
+                "OFFLINE_MAINTENANCE_OPERATION_KIND_CREATE_BACKUP",
+                "OFFLINE_MAINTENANCE_OPERATION_KIND_RESTORE_BACKUP",
+            ][..],
+        ),
+        (
+            "riffdb.v1.OfflineMaintenanceReplacementConfirmation",
+            &[
+                "OFFLINE_MAINTENANCE_REPLACEMENT_CONFIRMATION_UNSPECIFIED",
+                "OFFLINE_MAINTENANCE_REPLACEMENT_CONFIRMATION_ALLOW_REPLACE_NONEMPTY_TARGET",
+            ][..],
+        ),
+        (
+            "riffdb.v1.OfflineMaintenanceStartDisposition",
+            &[
+                "OFFLINE_MAINTENANCE_START_DISPOSITION_UNSPECIFIED",
+                "OFFLINE_MAINTENANCE_START_DISPOSITION_ACCEPTED",
+                "OFFLINE_MAINTENANCE_START_DISPOSITION_ALREADY_ACCEPTED",
+                "OFFLINE_MAINTENANCE_START_DISPOSITION_TERMINAL",
+            ][..],
+        ),
+        (
+            "riffdb.v1.OfflineMaintenancePhase",
+            &[
+                "OFFLINE_MAINTENANCE_PHASE_UNSPECIFIED",
+                "OFFLINE_MAINTENANCE_PHASE_ACCEPTED",
+                "OFFLINE_MAINTENANCE_PHASE_DRAINING",
+                "OFFLINE_MAINTENANCE_PHASE_OFFLINE",
+                "OFFLINE_MAINTENANCE_PHASE_ARTIFACT_PUBLISHED",
+                "OFFLINE_MAINTENANCE_PHASE_VALIDATING",
+                "OFFLINE_MAINTENANCE_PHASE_SUCCEEDED",
+                "OFFLINE_MAINTENANCE_PHASE_FAILED_CLOSED",
+            ][..],
+        ),
+        (
+            "riffdb.v1.OfflineMaintenanceFailureClass",
+            &[
+                "OFFLINE_MAINTENANCE_FAILURE_CLASS_UNSPECIFIED",
+                "OFFLINE_MAINTENANCE_FAILURE_CLASS_QUIESCENCE_FAILED",
+                "OFFLINE_MAINTENANCE_FAILURE_CLASS_ARTIFACT_UNAVAILABLE",
+                "OFFLINE_MAINTENANCE_FAILURE_CLASS_ARTIFACT_INVALID",
+                "OFFLINE_MAINTENANCE_FAILURE_CLASS_STAGED_AUTHORIZATION_FAILED",
+                "OFFLINE_MAINTENANCE_FAILURE_CLASS_STORAGE_UNAVAILABLE",
+                "OFFLINE_MAINTENANCE_FAILURE_CLASS_VALIDATION_FAILED",
+                "OFFLINE_MAINTENANCE_FAILURE_CLASS_RECEIPT_UNAVAILABLE",
+                "OFFLINE_MAINTENANCE_FAILURE_CLASS_INTERNAL_FAILURE",
+            ][..],
+        ),
+    ] {
+        for (number, name) in names.iter().enumerate() {
+            assert!(values.insert(format!("enum-value {enumeration} {number} {name}")));
+        }
+    }
+    values
 }
 
 fn expected_optional_registry() -> BTreeSet<String> {
@@ -781,8 +857,7 @@ fn assert_unspecified_enum_rejected(enumeration: &str, message_type: &str, bytes
 #[test]
 fn wp137_enum_optional_and_page_registry_is_complete() {
     let (vectors, registry) = fixture_sections();
-    assert_eq!(vectors.len(), 117);
-    assert_eq!(registry.len(), 65);
+    assert_eq!(vectors.len(), 126);
 
     let expected_enums = expected_enum_values();
     let expected_optionals = expected_optional_registry();

@@ -1,0 +1,252 @@
+#!/bin/sh
+set -eu
+export LC_ALL=C
+
+SCRIPT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+REPOSITORY_ROOT=$(CDPATH= cd -- "$SCRIPT_DIR/../.." && pwd)
+MANIFEST="$REPOSITORY_ROOT/examples/budget-comparison/Cargo.toml"
+VALIDATOR="$SCRIPT_DIR/validate-report-v1.jq"
+RAW_VALIDATOR="$SCRIPT_DIR/validate-raw-v1.jq"
+MODE=smoke
+PUBLICATION_STATUS=smoke_after_correctness_preflight
+STORAGE_MEDIUM=
+PUBLISH=false
+
+usage() {
+    printf '%s\n' \
+        "usage: $0 (--smoke | --publish) --storage-medium DESCRIPTION"
+}
+
+while [ "$#" -gt 0 ]; do
+    case "$1" in
+        --smoke)
+            MODE=smoke
+            PUBLICATION_STATUS=smoke_after_correctness_preflight
+            PUBLISH=false
+            shift
+            ;;
+        --publish)
+            MODE=full
+            PUBLICATION_STATUS=measured_after_correctness_preflight
+            PUBLISH=true
+            shift
+            ;;
+        --storage-medium)
+            [ "$#" -ge 2 ] || {
+                usage >&2
+                exit 2
+            }
+            STORAGE_MEDIUM=$2
+            shift 2
+            ;;
+        --help|-h)
+            usage
+            exit 0
+            ;;
+        *)
+            usage >&2
+            exit 2
+            ;;
+    esac
+done
+
+[ -n "$STORAGE_MEDIUM" ] || {
+    printf '%s\n' "--storage-medium is required" >&2
+    exit 2
+}
+
+command -v git >/dev/null 2>&1 || {
+    printf '%s\n' "git is required" >&2
+    exit 1
+}
+command -v jq >/dev/null 2>&1 || {
+    printf '%s\n' "jq is required" >&2
+    exit 1
+}
+command -v findmnt >/dev/null 2>&1 || {
+    printf '%s\n' "findmnt is required" >&2
+    exit 1
+}
+command -v sha256sum >/dev/null 2>&1 || {
+    printf '%s\n' "sha256sum is required" >&2
+    exit 1
+}
+command -v rustc >/dev/null 2>&1 || {
+    printf '%s\n' "rustc is required" >&2
+    exit 1
+}
+
+mkdir -p "$SCRIPT_DIR/target"
+DATABASE_ROOT="$SCRIPT_DIR/target/database-roots"
+[ ! -L "$DATABASE_ROOT" ] || {
+    printf '%s\n' "benchmark database root must not be a symbolic link" >&2
+    exit 1
+}
+rm -rf "$DATABASE_ROOT"
+mkdir -p "$DATABASE_ROOT"
+WORK_CANDIDATE="$SCRIPT_DIR/target/candidate-v1.$$.json"
+WORK_REPORT="$SCRIPT_DIR/target/report-v1.$$.json"
+WORK_RAW="$SCRIPT_DIR/target/raw-v1.$$.jsonl"
+trap 'rm -f "$WORK_CANDIDATE" "$WORK_REPORT" "$WORK_RAW"' EXIT HUP INT TERM
+
+GIT_REVISION=$(git -C "$REPOSITORY_ROOT" rev-parse --verify HEAD)
+if [ -n "$(git -C "$REPOSITORY_ROOT" status --porcelain --untracked-files=normal)" ]; then
+    GIT_DIRTY=true
+else
+    GIT_DIRTY=false
+fi
+if [ "$PUBLISH" = true ] && [ "$GIT_DIRTY" != false ]; then
+    printf '%s\n' "publication requires a committed clean checkout" >&2
+    exit 1
+fi
+
+RUST_VERSION=$(rustc +1.97.0 --version --verbose | tr '\n' ';')
+RUST_TARGET=$(rustc +1.97.0 --version --verbose | sed -n 's/^host: //p')
+OPERATING_SYSTEM=$(uname -srm)
+CPU_DESCRIPTION=$(sed -n 's/^model name[[:space:]]*: //p' /proc/cpuinfo | head -n 1)
+[ -n "$CPU_DESCRIPTION" ] || CPU_DESCRIPTION=$(uname -m)
+MEMORY_BYTES=$(awk '/^MemTotal:/ { print $2 * 1024; exit }' /proc/meminfo)
+FILESYSTEM=$(findmnt -n -o FSTYPE,SOURCE -T "$DATABASE_ROOT")
+MOUNT_OPTIONS=$(findmnt -n -o OPTIONS -T "$DATABASE_ROOT")
+KERNEL=$(uname -r)
+
+if [ "$PUBLISH" = true ]; then
+    RAW_ARTIFACT=benchmarks/reports/poc-semantic-workloads/raw-v1.jsonl
+    ANALYSIS_MODE=--publish
+else
+    RAW_ARTIFACT=benchmarks/poc-semantic-workloads/target/smoke-raw-v1.jsonl
+    ANALYSIS_MODE=--smoke
+fi
+ANALYSIS_COMMAND=$(jq -cn \
+    --arg mode "$ANALYSIS_MODE" \
+    --arg storage_medium "$STORAGE_MEDIUM" \
+    '[
+      "benchmarks/poc-semantic-workloads/run",
+      $mode,
+      "--storage-medium",
+      $storage_medium
+    ]')
+
+RIFFDB_POC_BENCHMARK_OUTPUT="$WORK_CANDIDATE" \
+RIFFDB_POC_BENCHMARK_MODE="$MODE" \
+RIFFDB_POC_BENCHMARK_ANALYSIS_COMMAND="$ANALYSIS_COMMAND" \
+RIFFDB_POC_BENCHMARK_PUBLICATION_STATUS="$PUBLICATION_STATUS" \
+RIFFDB_POC_BENCHMARK_GIT_REVISION="$GIT_REVISION" \
+RIFFDB_POC_BENCHMARK_GIT_DIRTY="$GIT_DIRTY" \
+RIFFDB_POC_BENCHMARK_RUST_VERSION="$RUST_VERSION" \
+RIFFDB_POC_BENCHMARK_TARGET="$RUST_TARGET" \
+RIFFDB_POC_BENCHMARK_RAW_ARTIFACT="$RAW_ARTIFACT" \
+RIFFDB_POC_BENCHMARK_RAW_SHA256=0000000000000000000000000000000000000000000000000000000000000000 \
+RIFFDB_POC_BENCHMARK_CPU="$CPU_DESCRIPTION" \
+RIFFDB_POC_BENCHMARK_MEMORY="$MEMORY_BYTES bytes" \
+RIFFDB_POC_BENCHMARK_STORAGE_MEDIUM="$STORAGE_MEDIUM" \
+RIFFDB_POC_BENCHMARK_OS="$OPERATING_SYSTEM" \
+RIFFDB_POC_BENCHMARK_KERNEL="$KERNEL" \
+RIFFDB_POC_BENCHMARK_DATABASE_ROOT="$DATABASE_ROOT" \
+RIFFDB_POC_BENCHMARK_FILESYSTEM="$FILESYSTEM" \
+RIFFDB_POC_BENCHMARK_MOUNT_OPTIONS="$MOUNT_OPTIONS" \
+TMPDIR="$DATABASE_ROOT" \
+cargo +1.97.0 test \
+    --manifest-path "$MANIFEST" \
+    --locked \
+    --release \
+    -p riffdb-budget-comparison \
+    --test service_comparison \
+    performance_support::poc_semantic_performance_report \
+    -- \
+    --exact \
+    --ignored \
+    --nocapture \
+    --test-threads=1
+
+jq -c '
+  . as $report
+  | (
+      $report.workloads[] as $workload
+      | range(0; ($workload.samples_ns | length)) as $ordinal
+      | {
+          schema: "riffdb.poc-semantic-benchmark-raw/v1",
+          record_type: "latency_sample",
+          report_id: $report.report_id,
+          workload_id: $workload.workload_id,
+          family: $workload.family,
+          sample_ordinal: $ordinal,
+          elapsed_ns: $workload.samples_ns[$ordinal]
+        }
+    ),
+    (
+      $report.workloads[]
+      | select(has("rate_total_work") and has("rate_total_wall_ns"))
+      | {
+          schema: "riffdb.poc-semantic-benchmark-raw/v1",
+          record_type: "rate_aggregate",
+          report_id: $report.report_id,
+          workload_id: .workload_id,
+          family: .family,
+          work_units: .rate_total_work,
+          elapsed_ns: .rate_total_wall_ns,
+          rate_kind:
+            (if has("ops_per_second")
+             then "operations_per_second"
+             else "records_per_second"
+             end),
+          reported_per_second:
+            (.ops_per_second // .records_per_second)
+        }
+    )
+' "$WORK_CANDIDATE" >"$WORK_RAW"
+
+RAW_SHA256=$(sha256sum "$WORK_RAW" | awk '{print $1}')
+jq \
+    --arg raw "$RAW_ARTIFACT" \
+    --arg raw_sha256 "$RAW_SHA256" \
+    '.source.raw_artifact = $raw
+     | .source.raw_sha256 = $raw_sha256
+     | .workloads |= map(del(.rate_total_work, .rate_total_wall_ns))' \
+    "$WORK_CANDIDATE" >"$WORK_REPORT"
+
+jq -e -f "$VALIDATOR" "$WORK_REPORT" >/dev/null
+jq -s -e \
+    --slurpfile report "$WORK_REPORT" \
+    -f "$RAW_VALIDATOR" \
+    "$WORK_RAW" >/dev/null
+RAW_SAMPLE_COUNT=$(jq -s '
+  [.[] | select(.record_type == "latency_sample")] | length
+' "$WORK_RAW")
+REPORT_SAMPLE_COUNT=$(jq -er '.configuration.sample_count' "$WORK_REPORT")
+[ "$RAW_SAMPLE_COUNT" = "$REPORT_SAMPLE_COUNT" ] || {
+    printf '%s\n' "raw sample count does not match the summary" >&2
+    exit 1
+}
+[ "$(wc -c <"$WORK_REPORT")" -le 1048576 ] || {
+    printf '%s\n' "summary report exceeds the 1 MiB release bound" >&2
+    exit 1
+}
+[ "$(wc -c <"$WORK_RAW")" -le 67108864 ] || {
+    printf '%s\n' "raw report exceeds the 64 MiB release bound" >&2
+    exit 1
+}
+
+if [ "$PUBLISH" = true ]; then
+    REPORT_ROOT="$REPOSITORY_ROOT/benchmarks/reports"
+    PUBLISH_ROOT="$REPORT_ROOT/poc-semantic-workloads"
+    FINAL_REPORT="$PUBLISH_ROOT/report-v1.json"
+    FINAL_RAW="$PUBLISH_ROOT/raw-v1.jsonl"
+    if [ -L "$REPORT_ROOT" ] || [ -L "$PUBLISH_ROOT" ] \
+        || [ -L "$FINAL_REPORT" ] || [ -L "$FINAL_RAW" ]; then
+        printf '%s\n' "publication paths must not be symbolic links" >&2
+        exit 1
+    fi
+    mkdir -p "$PUBLISH_ROOT"
+    cp "$WORK_REPORT" "$FINAL_REPORT"
+    cp "$WORK_RAW" "$FINAL_RAW"
+    printf '%s\n' "$FINAL_REPORT"
+    printf '%s\n' "$FINAL_RAW"
+else
+    FINAL_REPORT="$SCRIPT_DIR/target/smoke-report-v1.json"
+    FINAL_RAW="$SCRIPT_DIR/target/smoke-raw-v1.jsonl"
+    cp "$WORK_REPORT" "$FINAL_REPORT"
+    cp "$WORK_RAW" "$FINAL_RAW"
+    printf '%s\n' "$FINAL_REPORT"
+    printf '%s\n' "$FINAL_RAW"
+fi

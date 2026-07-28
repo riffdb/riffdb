@@ -1,0 +1,14 @@
+format=riffdb-operator-command-explain-v1
+command_id=1
+execution_class=idempotent_mutation
+partition=expression:0 components:1 purpose:partition:1
+conflict_key_count=1
+conflict.0=purpose:conflict:1 expressions:0,1
+bindings=0
+reads=0:3,0:5
+writes=0:1,0:3,0:5
+invariants=1,2
+events=
+outcomes=1,2,3
+root_validation_reads=0
+commit_checks=2

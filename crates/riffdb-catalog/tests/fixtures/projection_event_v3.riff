@@ -1,0 +1,35 @@
+contract ProjectionEventEvolution version 3 {
+  entity Row {
+    key (id: uuid)
+    field value: i64
+  }
+
+  event Changed {
+    id: uuid
+    note: optional<string<8>>
+    tag: optional<i64>
+  }
+
+  aggregate Rows {
+    root Row
+    partition_by id
+    conflict_key (id)
+  }
+
+  command Change {
+    input idempotency_key: string<128>
+    input id: uuid
+    idempotency_key idempotency_key
+    mutate Row(id) as changed_row else Missing { id: id }
+    set changed_row.value = 1
+    emit Changed { id: id }
+    return ChangedOutcome { row: changed_row }
+  }
+
+  projection Changes {
+    source event Changed
+    key (id)
+    measure item_count = count()
+    frontier transactionally_ordered
+  }
+}

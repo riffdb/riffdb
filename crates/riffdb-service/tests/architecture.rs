@@ -4,7 +4,9 @@
 
 use riffdb_service::{
     AdministrationApplication, CommandApplication, CommitApplication, ContractApplication,
-    CreateCapabilityInvocation, DiscoveryApplication, QueryApplication,
+    CreateCapabilityInvocation, DiscoveryApplication, OfflineMaintenanceApplication,
+    QueryApplication, RecoveryOfflineMaintenanceApplication,
+    RestoreRetryOfflineMaintenanceApplication,
 };
 
 const MANIFEST: &str = include_str!("../Cargo.toml");
@@ -12,6 +14,8 @@ const ADMINISTRATION_SOURCE: &str = include_str!("../src/administration_operatio
 const COMMIT_SOURCE: &str = include_str!("../src/commit_operations.rs");
 const CONTEXT_SOURCE: &str = include_str!("../src/context.rs");
 const DTO_SOURCE: &str = include_str!("../src/dto.rs");
+const MAINTENANCE_SOURCE: &str = include_str!("../src/maintenance_operations.rs");
+const PORTS_SOURCE: &str = include_str!("../src/ports.rs");
 const QUERY_SOURCE: &str = include_str!("../src/query_discovery_operations.rs");
 const SERVICE_SOURCE: &str = include_str!("../src/service.rs");
 const TRAITS_SOURCE: &str = include_str!("../src/application.rs");
@@ -22,9 +26,14 @@ fn assert_object_safe(
     _query: &dyn QueryApplication,
     _commit: &dyn CommitApplication,
     _administration: &dyn AdministrationApplication,
+    _maintenance: &dyn OfflineMaintenanceApplication,
     _discovery: &dyn DiscoveryApplication,
 ) {
 }
+
+fn assert_recovery_object_safe(_recovery: &dyn RecoveryOfflineMaintenanceApplication) {}
+
+fn assert_restore_retry_object_safe(_retry: &dyn RestoreRetryOfflineMaintenanceApplication) {}
 
 fn exhaust_create_invocation(invocation: CreateCapabilityInvocation) {
     match invocation {
@@ -34,8 +43,10 @@ fn exhaust_create_invocation(invocation: CreateCapabilityInvocation) {
 }
 
 #[test]
-fn six_service_traits_are_object_safe_and_create_mode_is_closed() {
+fn seven_service_traits_are_object_safe_and_create_mode_is_closed() {
     let _ = assert_object_safe;
+    let _ = assert_recovery_object_safe;
+    let _ = assert_restore_retry_object_safe;
     let _ = exhaust_create_invocation;
 }
 
@@ -260,7 +271,7 @@ fn index_scan_keeps_durable_types_out_and_performs_one_lower_scan() {
 }
 
 #[test]
-fn operation_specific_traits_expose_the_closed_twenty_two_method_inventory() {
+fn operation_specific_traits_expose_the_closed_twenty_five_method_inventory() {
     let methods = [
         "fn validate_contract(",
         "fn explain_command(",
@@ -282,6 +293,8 @@ fn operation_specific_traits_expose_the_closed_twenty_two_method_inventory() {
         "fn create_capability(",
         "fn revoke_capability(",
         "fn list_pending_outbox_deliveries(",
+        "fn create_offline_backup(",
+        "fn get_offline_maintenance_operation(",
         "fn discover_command_tools(",
         "fn discover_resources(",
     ];
@@ -293,8 +306,141 @@ fn operation_specific_traits_expose_the_closed_twenty_two_method_inventory() {
             "service method inventory drifted for {method}"
         );
     }
+    assert_eq!(
+        TRAITS_SOURCE.matches("fn restore_offline_backup(").count(),
+        3,
+        "normal, current retry, and staged recovery restore methods must exist"
+    );
 
     assert!(!TRAITS_SOURCE.contains("fn execute("));
     assert!(!TRAITS_SOURCE.contains("fn generic_read("));
     assert!(!TRAITS_SOURCE.contains("fn generic_mutation("));
+}
+
+#[test]
+fn maintenance_is_api_neutral_and_disjoint_from_durable_service_audit() {
+    assert!(TRAITS_SOURCE.contains("pub trait OfflineMaintenanceApplication"));
+    assert!(TRAITS_SOURCE.contains("pub trait RecoveryOfflineMaintenanceApplication"));
+    assert!(TRAITS_SOURCE.contains("pub trait RestoreRetryOfflineMaintenanceApplication"));
+    let application_service = TRAITS_SOURCE
+        .split_once("pub trait ApplicationService:")
+        .expect("application service marker")
+        .1
+        .split_once("impl<T> ApplicationService")
+        .expect("application service marker has a closed boundary")
+        .0;
+    assert!(!application_service.contains("RecoveryOfflineMaintenanceApplication"));
+    assert!(!application_service.contains("RestoreRetryOfflineMaintenanceApplication"));
+    assert!(MAINTENANCE_SOURCE.contains(".authorize_offline_maintenance("));
+    assert!(MAINTENANCE_SOURCE.contains(".reserve_start("));
+    assert!(MAINTENANCE_SOURCE.contains(".reserve_observation("));
+    assert!(MAINTENANCE_SOURCE.contains("ensure_response_budget(&result)"));
+    for forbidden in [
+        "ServiceOperationV1",
+        "begin_invocation",
+        "append_audit",
+        "StoredServiceAuditRecordV1",
+        "riffdb_storage",
+        "redb",
+        "tonic",
+        "prost",
+    ] {
+        assert!(
+            !MAINTENANCE_SOURCE.contains(forbidden),
+            "maintenance acquired forbidden boundary {forbidden}"
+        );
+    }
+}
+
+#[test]
+fn recovery_maintenance_is_restore_only_and_capability_separated() {
+    let trait_source = TRAITS_SOURCE
+        .split_once("pub trait RecoveryOfflineMaintenanceApplication")
+        .expect("recovery maintenance trait")
+        .1
+        .split_once("/// Exact current-database restore retry")
+        .expect("recovery trait has a closed boundary")
+        .0;
+    assert_eq!(
+        trait_source.matches("fn restore_offline_backup(").count(),
+        1
+    );
+    for forbidden in [
+        "create_offline_backup",
+        "get_offline_maintenance_operation",
+        "RequestContext",
+        "AuthenticatedPrincipal",
+    ] {
+        assert!(!trait_source.contains(forbidden), "{forbidden}");
+    }
+
+    let port = PORTS_SOURCE
+        .split_once("pub trait RecoveryOfflineMaintenanceCoordinatorPort")
+        .expect("recovery coordinator port")
+        .1
+        .split_once("/// Closed operational-state")
+        .expect("recovery coordinator port has a closed boundary")
+        .0;
+    assert_eq!(port.matches("fn reserve_restore(").count(), 1);
+    assert!(!port.contains("reserve_start"));
+    assert!(!port.contains("reserve_observation"));
+
+    let service = MAINTENANCE_SOURCE
+        .split_once("struct RecoveryOfflineMaintenanceServiceInner")
+        .expect("recovery service type")
+        .1
+        .split_once("async fn start_create_backup(")
+        .expect("recovery service implementation has a closed boundary")
+        .0;
+    assert!(service.contains("RecoveryOfflineMaintenanceCoordinatorPort"));
+    assert!(service.contains("RecoveryRestoreOfflineBackupInvocation"));
+    assert!(!service.contains("authorize_current("));
+    assert!(!service.contains("OfflineMaintenanceDecision"));
+    assert!(!service.contains("RequestContext"));
+}
+
+#[test]
+fn current_restore_retry_is_exact_and_has_no_broader_maintenance_surface() {
+    let trait_source = TRAITS_SOURCE
+        .split_once("pub trait RestoreRetryOfflineMaintenanceApplication")
+        .expect("restore-retry trait")
+        .1
+        .split_once("/// Current-policy-filtered")
+        .expect("restore-retry trait has a closed boundary")
+        .0;
+    assert_eq!(
+        trait_source.matches("fn restore_offline_backup(").count(),
+        1
+    );
+    for forbidden in [
+        "create_offline_backup",
+        "get_offline_maintenance_operation",
+        "RecoveryRestoreOfflineBackupInvocation",
+    ] {
+        assert!(!trait_source.contains(forbidden), "{forbidden}");
+    }
+
+    let port = PORTS_SOURCE
+        .split_once("pub trait RestoreRetryOfflineMaintenanceCoordinatorPort")
+        .expect("restore-retry coordinator port")
+        .1
+        .split_once("/// Recovery-only restore command")
+        .expect("retry coordinator port has a closed boundary")
+        .0;
+    assert_eq!(port.matches("fn reserve_restore(").count(), 1);
+    assert!(!port.contains("reserve_start"));
+    assert!(!port.contains("reserve_observation"));
+
+    let service = MAINTENANCE_SOURCE
+        .split_once("struct RestoreRetryOfflineMaintenanceServiceInner")
+        .expect("restore-retry service")
+        .1
+        .split_once("async fn start_create_backup(")
+        .expect("retry service implementation has a closed boundary")
+        .0;
+    assert!(service.contains("RestoreRetryOfflineMaintenanceCoordinatorPort"));
+    assert!(service.contains("OfflineMaintenanceOperationId"));
+    assert!(service.contains("OfflineMaintenanceInputHash"));
+    assert!(!service.contains("RiffDbServiceInner"));
+    assert!(!service.contains("ServiceExecutors"));
 }

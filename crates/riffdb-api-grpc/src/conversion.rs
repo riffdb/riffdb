@@ -11,24 +11,28 @@ use riffdb_service::{
     CommitSubscriptionEndReason, CommitSubscriptionEvent, CommitView, CompactCommandToolDescriptor,
     CompactCommandToolDiscoveryItem, CompactResourceDescriptor, CompactResourceDescriptorRef,
     ContractCompatibilityClass, ContractDescriptor, ContractSelection, ContractSource,
-    ContractValidationResult, CreateCapabilityResult, CursorToken, DeclaredOutcomeView,
-    DeployContractRequest, DeployContractResult, DiscoverCommandToolsRequest,
+    ContractValidationResult, CreateCapabilityResult, CreateOfflineBackupRequest, CursorToken,
+    DeclaredOutcomeView, DeployContractRequest, DeployContractResult, DiscoverCommandToolsRequest,
     DiscoverCommandToolsResult, DiscoverCommandToolsResultRef, DiscoverResourcesRequest,
     DiscoverResourcesResult, DiscoverResourcesResultRef, DiscoveryCatalogFence,
     DiscoveryCatalogStateRef, DiscoveryRepresentation, ExecuteCommandRequest, ExecuteCommandResult,
     ExplainCommandRequest, ExplainCommandResult, FieldSelection, FixedToolKind,
     GeneratedSchemaIdentity, GetActiveContractRequest, GetActiveContractResult, GetCommitRequest,
     GetCommitResult, GetContractVersionRequest, GetContractVersionResult, GetEntityRequest,
-    GetEntityResult, GetProjectionStatusRequest, GetProjectionStatusResult, HealthComponentKind,
+    GetEntityResult, GetOfflineMaintenanceOperationRequest, GetOfflineMaintenanceOperationResult,
+    GetProjectionStatusRequest, GetProjectionStatusResult, HealthComponentKind,
     HealthComponentStatus, HealthRequest, HealthResult, HealthStatus, JournaledCommandResult,
     JournaledCompletion, ListPendingOutboxDeliveriesRequest, ListPendingOutboxDeliveriesResult,
-    NormalCreateCapabilityRequest, NormalCreateCapabilityResult, OperationSchemaArtifact,
-    OperationSchemaCatalog, OperationSchemaCatalogIdentity, OperationSchemaIdentity,
-    OutboxDeliveryState, OutcomeResourceLocator, PageLimit, PageRequest, PreBootstrapLifecycle,
-    ProjectionFailureCode, ProjectionLifecycle, ProjectionUnavailableReason, ProvenanceSelection,
-    PublishedApplyMode, QueryProjectionRequest, QueryProjectionResult,
-    ResolveCommandOutcomeRequest, ResolveCommandOutcomeResult, ResourceDescriptor,
-    ResourceDescriptorRef, ResourceDiscoveryKind, RevokeCapabilityRequest, RevokeCapabilityResult,
+    NormalCreateCapabilityRequest, NormalCreateCapabilityResult,
+    OfflineMaintenanceObservationFailure, OfflineMaintenanceObservationPhase,
+    OfflineMaintenanceOperationObservation, OfflineMaintenanceStartDisposition,
+    OfflineMaintenanceStartResult, OperationSchemaArtifact, OperationSchemaCatalog,
+    OperationSchemaCatalogIdentity, OperationSchemaIdentity, OutboxDeliveryState,
+    OutcomeResourceLocator, PageLimit, PageRequest, PreBootstrapLifecycle, ProjectionFailureCode,
+    ProjectionLifecycle, ProjectionUnavailableReason, ProvenanceSelection, PublishedApplyMode,
+    QueryProjectionRequest, QueryProjectionResult, ResolveCommandOutcomeRequest,
+    ResolveCommandOutcomeResult, ResourceDescriptor, ResourceDescriptorRef, ResourceDiscoveryKind,
+    RestoreOfflineBackupRequest, RevokeCapabilityRequest, RevokeCapabilityResult,
     ScanCommitsRequest, ScanCommitsResult, ScanIndexRequest, ScanIndexResult,
     SchemaBoundOutcomeRecord, SchemaBoundOutcomeValue, SourceName, StatisticsRequest,
     StatisticsResult, SubmittedDecimal, SubmittedEnum, SubmittedField, SubmittedFieldIdentity,
@@ -36,13 +40,14 @@ use riffdb_service::{
     TraceProvenanceRequest, TraceProvenanceResult, ValidateContractRequest,
 };
 use riffdb_types::{
-    ActorId, ActorKind, AdmittedActorContext, Audience, CapabilityGrantV1, CapabilityId,
-    CapabilityPermissionKindV1, CapabilityPermissionV1, CapabilityPermissionsV1, CommandId,
-    CommitSequence, ContractBundleHash, ContractLineage, ContractVersion, CurrencyCode, Date,
-    EntityFieldVisibilityV1, EntityKey, EntityTypeId, EnumTypeId, EnumVariantId, FieldId,
-    FrontierPosition, IdempotencyKey, IndexEpochPosition, IndexId, PartitionKey, PartitionScopeV1,
-    ProjectionId, ProvenanceId, RequestId, RevocationReasonCodeV1, SchemaHash, ScopedPartitionV1,
-    TenantId, TenantScope, Timestamp,
+    ActorId, ActorKind, AdmittedActorContext, Audience, BackupNameV1, CapabilityGrantV1,
+    CapabilityId, CapabilityPermissionKindV1, CapabilityPermissionV1, CapabilityPermissionsV1,
+    CommandId, CommitSequence, ContractBundleHash, ContractLineage, ContractVersion, CurrencyCode,
+    Date, EntityFieldVisibilityV1, EntityKey, EntityTypeId, EnumTypeId, EnumVariantId, FieldId,
+    FrontierPosition, IdempotencyKey, IndexEpochPosition, IndexId, OfflineMaintenanceOperationId,
+    OfflineMaintenanceOperationKind, OfflineMaintenanceReplacementConfirmation, PartitionKey,
+    PartitionScopeV1, ProjectionId, ProvenanceId, RequestId, RevocationReasonCodeV1, SchemaHash,
+    ScopedPartitionV1, TenantId, TenantScope, Timestamp,
 };
 use tonic::Status;
 
@@ -1547,6 +1552,60 @@ pub fn list_pending_outbox_deliveries_request_from_proto(
     Ok((request_id, ListPendingOutboxDeliveriesRequest::new(page)))
 }
 
+/// Converts one checked immutable-backup start request.
+pub fn create_offline_backup_request_from_proto(
+    request: v1::CreateOfflineBackupRequest,
+) -> Result<(RequestId, CreateOfflineBackupRequest), Status> {
+    let request_id = request_id_from_bytes(&request.request_id)?;
+    let operation_id = offline_maintenance_operation_id_from_bytes(&request.operation_id)?;
+    let backup_name = BackupNameV1::new(request.backup_name).map_err(|_| invalid_request())?;
+    let request = CreateOfflineBackupRequest::new(operation_id, backup_name)
+        .map_err(|_| invalid_request())?;
+    Ok((request_id, request))
+}
+
+/// Converts one checked staged-restore start request.
+pub fn restore_offline_backup_request_from_proto(
+    request: v1::RestoreOfflineBackupRequest,
+) -> Result<(RequestId, RestoreOfflineBackupRequest), Status> {
+    let request_id = request_id_from_bytes(&request.request_id)?;
+    let operation_id = offline_maintenance_operation_id_from_bytes(&request.operation_id)?;
+    let backup_name = BackupNameV1::new(request.backup_name).map_err(|_| invalid_request())?;
+    let confirmation = match v1::OfflineMaintenanceReplacementConfirmation::try_from(
+        request.replacement_confirmation,
+    )
+    .map_err(|_| invalid_request())?
+    {
+        v1::OfflineMaintenanceReplacementConfirmation::Unspecified => {
+            OfflineMaintenanceReplacementConfirmation::NotProvided
+        }
+        v1::OfflineMaintenanceReplacementConfirmation::AllowReplaceNonemptyTarget => {
+            OfflineMaintenanceReplacementConfirmation::AllowReplaceNonemptyTarget
+        }
+    };
+    let request = RestoreOfflineBackupRequest::new(operation_id, backup_name, confirmation)
+        .map_err(|_| invalid_request())?;
+    Ok((request_id, request))
+}
+
+/// Converts one protected receipt-observation request.
+pub fn get_offline_maintenance_operation_request_from_proto(
+    request: v1::GetOfflineMaintenanceOperationRequest,
+) -> Result<(RequestId, GetOfflineMaintenanceOperationRequest), Status> {
+    let request_id = request_id_from_bytes(&request.request_id)?;
+    let operation_id = offline_maintenance_operation_id_from_bytes(&request.operation_id)?;
+    let request =
+        GetOfflineMaintenanceOperationRequest::new(operation_id).map_err(|_| invalid_request())?;
+    Ok((request_id, request))
+}
+
+fn offline_maintenance_operation_id_from_bytes(
+    bytes: &[u8],
+) -> Result<OfflineMaintenanceOperationId, Status> {
+    let bytes: [u8; 16] = bytes.try_into().map_err(|_| invalid_request())?;
+    OfflineMaintenanceOperationId::from_bytes(bytes).map_err(|_| invalid_request())
+}
+
 /// Converts the restricted or authenticated Health result without widening it.
 #[must_use]
 pub fn health_result_to_proto(result: &HealthResult) -> v1::HealthResponse {
@@ -1676,6 +1735,109 @@ pub fn list_pending_outbox_deliveries_result_to_proto(
             items,
             next_cursor: page.next_cursor().map(|cursor| cursor.as_bytes().to_vec()),
         }),
+    }
+}
+
+/// Converts one receipt-derived start result without adding filesystem detail.
+#[must_use]
+pub fn offline_maintenance_start_result_to_proto(
+    result: &OfflineMaintenanceStartResult,
+) -> (i32, Option<v1::OfflineMaintenanceOperation>) {
+    let disposition = match result.disposition() {
+        OfflineMaintenanceStartDisposition::Accepted => {
+            v1::OfflineMaintenanceStartDisposition::Accepted
+        }
+        OfflineMaintenanceStartDisposition::AlreadyAccepted => {
+            v1::OfflineMaintenanceStartDisposition::AlreadyAccepted
+        }
+        OfflineMaintenanceStartDisposition::Terminal => {
+            v1::OfflineMaintenanceStartDisposition::Terminal
+        }
+    };
+    (
+        disposition as i32,
+        Some(offline_maintenance_operation_to_proto(result.operation())),
+    )
+}
+
+/// Converts one protected receipt lookup.
+#[must_use]
+pub fn get_offline_maintenance_operation_result_to_proto(
+    result: &GetOfflineMaintenanceOperationResult,
+) -> v1::GetOfflineMaintenanceOperationResponse {
+    let result = match result {
+        GetOfflineMaintenanceOperationResult::NotFound => {
+            v1::get_offline_maintenance_operation_response::Result::NotFound(v1::Unit {})
+        }
+        GetOfflineMaintenanceOperationResult::Found(operation) => {
+            v1::get_offline_maintenance_operation_response::Result::Found(
+                offline_maintenance_operation_to_proto(operation),
+            )
+        }
+    };
+    v1::GetOfflineMaintenanceOperationResponse {
+        result: Some(result),
+    }
+}
+
+fn offline_maintenance_operation_to_proto(
+    operation: &OfflineMaintenanceOperationObservation,
+) -> v1::OfflineMaintenanceOperation {
+    let kind = match operation.kind() {
+        OfflineMaintenanceOperationKind::CreateBackup => {
+            v1::OfflineMaintenanceOperationKind::CreateBackup
+        }
+        OfflineMaintenanceOperationKind::RestoreBackup => {
+            v1::OfflineMaintenanceOperationKind::RestoreBackup
+        }
+    };
+    let phase = match operation.phase() {
+        OfflineMaintenanceObservationPhase::Accepted => v1::OfflineMaintenancePhase::Accepted,
+        OfflineMaintenanceObservationPhase::Draining => v1::OfflineMaintenancePhase::Draining,
+        OfflineMaintenanceObservationPhase::Offline => v1::OfflineMaintenancePhase::Offline,
+        OfflineMaintenanceObservationPhase::ArtifactPublished => {
+            v1::OfflineMaintenancePhase::ArtifactPublished
+        }
+        OfflineMaintenanceObservationPhase::Validating => v1::OfflineMaintenancePhase::Validating,
+        OfflineMaintenanceObservationPhase::Succeeded => v1::OfflineMaintenancePhase::Succeeded,
+        OfflineMaintenanceObservationPhase::FailedClosed => {
+            v1::OfflineMaintenancePhase::FailedClosed
+        }
+    };
+    let failure = match operation.failure() {
+        None => v1::OfflineMaintenanceFailureClass::Unspecified,
+        Some(OfflineMaintenanceObservationFailure::QuiescenceFailed) => {
+            v1::OfflineMaintenanceFailureClass::QuiescenceFailed
+        }
+        Some(OfflineMaintenanceObservationFailure::ArtifactUnavailable) => {
+            v1::OfflineMaintenanceFailureClass::ArtifactUnavailable
+        }
+        Some(OfflineMaintenanceObservationFailure::ArtifactInvalid) => {
+            v1::OfflineMaintenanceFailureClass::ArtifactInvalid
+        }
+        Some(OfflineMaintenanceObservationFailure::StagedAuthorizationFailed) => {
+            v1::OfflineMaintenanceFailureClass::StagedAuthorizationFailed
+        }
+        Some(OfflineMaintenanceObservationFailure::StorageUnavailable) => {
+            v1::OfflineMaintenanceFailureClass::StorageUnavailable
+        }
+        Some(OfflineMaintenanceObservationFailure::ValidationFailed) => {
+            v1::OfflineMaintenanceFailureClass::ValidationFailed
+        }
+        Some(OfflineMaintenanceObservationFailure::ReceiptUnavailable) => {
+            v1::OfflineMaintenanceFailureClass::ReceiptUnavailable
+        }
+        Some(OfflineMaintenanceObservationFailure::InternalFailure) => {
+            v1::OfflineMaintenanceFailureClass::InternalFailure
+        }
+    };
+    v1::OfflineMaintenanceOperation {
+        operation_id: operation.operation_id().into_bytes().to_vec(),
+        kind: kind as i32,
+        backup_name: operation.backup_name().as_str().to_owned(),
+        input_hash: operation.input_hash().into_bytes().to_vec(),
+        phase: phase as i32,
+        failure: failure as i32,
     }
 }
 
@@ -2945,6 +3107,219 @@ mod tests {
             })
         );
         assert_eq!(page.next_cursor, Some(vec![0x17; 16]));
+    }
+
+    #[test]
+    fn offline_maintenance_structural_invalidity_is_generic_and_closed() {
+        let operation_id =
+            OfflineMaintenanceOperationId::from_unix_milliseconds_and_random(1, [9; 10])
+                .expect("valid maintenance operation ID");
+        let assert_invalid = |status: Status| {
+            assert_eq!(status.code(), tonic::Code::InvalidArgument);
+            assert_eq!(status.message(), INVALID_REQUEST_MESSAGE);
+            assert!(status.details().is_empty());
+        };
+
+        assert_invalid(
+            create_offline_backup_request_from_proto(v1::CreateOfflineBackupRequest {
+                request_id: vec![0; 16],
+                operation_id: operation_id.into_bytes().to_vec(),
+                backup_name: "nightly".to_owned(),
+            })
+            .expect_err("nil request identity must not be repaired"),
+        );
+        assert_invalid(
+            create_offline_backup_request_from_proto(v1::CreateOfflineBackupRequest {
+                request_id: request_id().into_bytes().to_vec(),
+                operation_id: vec![0; 16],
+                backup_name: "nightly".to_owned(),
+            })
+            .expect_err("non-v7 operation identity must not be repaired"),
+        );
+        assert_invalid(
+            create_offline_backup_request_from_proto(v1::CreateOfflineBackupRequest {
+                request_id: request_id().into_bytes().to_vec(),
+                operation_id: operation_id.into_bytes().to_vec(),
+                backup_name: "../nightly".to_owned(),
+            })
+            .expect_err("public backup names cannot address a path"),
+        );
+        assert_invalid(
+            restore_offline_backup_request_from_proto(v1::RestoreOfflineBackupRequest {
+                request_id: request_id().into_bytes().to_vec(),
+                operation_id: operation_id.into_bytes().to_vec(),
+                backup_name: "nightly".to_owned(),
+                replacement_confirmation: i32::MAX,
+            })
+            .expect_err("unknown replacement confirmation must fail closed"),
+        );
+        assert_invalid(
+            get_offline_maintenance_operation_request_from_proto(
+                v1::GetOfflineMaintenanceOperationRequest {
+                    request_id: request_id().into_bytes().to_vec(),
+                    operation_id: vec![7; 15],
+                },
+            )
+            .expect_err("truncated operation identity must fail closed"),
+        );
+    }
+
+    #[test]
+    fn offline_maintenance_conversion_covers_every_closed_public_state() {
+        let operation_id =
+            OfflineMaintenanceOperationId::from_unix_milliseconds_and_random(2, [8; 10])
+                .expect("valid maintenance operation ID");
+        let backup_name = BackupNameV1::new("nightly").expect("valid backup name");
+        let input_hash = riffdb_types::offline_maintenance_input_hash(
+            OfflineMaintenanceOperationKind::RestoreBackup,
+            &backup_name,
+            OfflineMaintenanceReplacementConfirmation::AllowReplaceNonemptyTarget,
+        );
+
+        let phases = [
+            (
+                OfflineMaintenanceObservationPhase::Accepted,
+                v1::OfflineMaintenancePhase::Accepted,
+            ),
+            (
+                OfflineMaintenanceObservationPhase::Draining,
+                v1::OfflineMaintenancePhase::Draining,
+            ),
+            (
+                OfflineMaintenanceObservationPhase::Offline,
+                v1::OfflineMaintenancePhase::Offline,
+            ),
+            (
+                OfflineMaintenanceObservationPhase::ArtifactPublished,
+                v1::OfflineMaintenancePhase::ArtifactPublished,
+            ),
+            (
+                OfflineMaintenanceObservationPhase::Validating,
+                v1::OfflineMaintenancePhase::Validating,
+            ),
+            (
+                OfflineMaintenanceObservationPhase::Succeeded,
+                v1::OfflineMaintenancePhase::Succeeded,
+            ),
+        ];
+        for (phase, expected) in phases {
+            let operation = OfflineMaintenanceOperationObservation::new(
+                operation_id,
+                OfflineMaintenanceOperationKind::RestoreBackup,
+                backup_name.clone(),
+                input_hash,
+                phase,
+                None,
+            )
+            .expect("valid nonfailed observation");
+            let wire = offline_maintenance_operation_to_proto(&operation);
+            assert_eq!(wire.phase, expected as i32);
+            assert_eq!(
+                wire.failure,
+                v1::OfflineMaintenanceFailureClass::Unspecified as i32
+            );
+        }
+
+        let failures = [
+            (
+                OfflineMaintenanceObservationFailure::QuiescenceFailed,
+                v1::OfflineMaintenanceFailureClass::QuiescenceFailed,
+            ),
+            (
+                OfflineMaintenanceObservationFailure::ArtifactUnavailable,
+                v1::OfflineMaintenanceFailureClass::ArtifactUnavailable,
+            ),
+            (
+                OfflineMaintenanceObservationFailure::ArtifactInvalid,
+                v1::OfflineMaintenanceFailureClass::ArtifactInvalid,
+            ),
+            (
+                OfflineMaintenanceObservationFailure::StagedAuthorizationFailed,
+                v1::OfflineMaintenanceFailureClass::StagedAuthorizationFailed,
+            ),
+            (
+                OfflineMaintenanceObservationFailure::StorageUnavailable,
+                v1::OfflineMaintenanceFailureClass::StorageUnavailable,
+            ),
+            (
+                OfflineMaintenanceObservationFailure::ValidationFailed,
+                v1::OfflineMaintenanceFailureClass::ValidationFailed,
+            ),
+            (
+                OfflineMaintenanceObservationFailure::ReceiptUnavailable,
+                v1::OfflineMaintenanceFailureClass::ReceiptUnavailable,
+            ),
+            (
+                OfflineMaintenanceObservationFailure::InternalFailure,
+                v1::OfflineMaintenanceFailureClass::InternalFailure,
+            ),
+        ];
+        for (failure, expected) in failures {
+            let operation = OfflineMaintenanceOperationObservation::new(
+                operation_id,
+                OfflineMaintenanceOperationKind::RestoreBackup,
+                backup_name.clone(),
+                input_hash,
+                OfflineMaintenanceObservationPhase::FailedClosed,
+                Some(failure),
+            )
+            .expect("valid failed-closed observation");
+            let wire = offline_maintenance_operation_to_proto(&operation);
+            assert_eq!(wire.phase, v1::OfflineMaintenancePhase::FailedClosed as i32);
+            assert_eq!(wire.failure, expected as i32);
+        }
+
+        let accepted = OfflineMaintenanceOperationObservation::new(
+            operation_id,
+            OfflineMaintenanceOperationKind::RestoreBackup,
+            backup_name.clone(),
+            input_hash,
+            OfflineMaintenanceObservationPhase::Accepted,
+            None,
+        )
+        .expect("valid accepted observation");
+        for (disposition, expected) in [
+            (
+                OfflineMaintenanceStartDisposition::Accepted,
+                v1::OfflineMaintenanceStartDisposition::Accepted,
+            ),
+            (
+                OfflineMaintenanceStartDisposition::AlreadyAccepted,
+                v1::OfflineMaintenanceStartDisposition::AlreadyAccepted,
+            ),
+        ] {
+            let result = OfflineMaintenanceStartResult::new(disposition, accepted.clone())
+                .expect("matching nonterminal disposition");
+            assert_eq!(
+                offline_maintenance_start_result_to_proto(&result).0,
+                expected as i32
+            );
+        }
+        let terminal = OfflineMaintenanceOperationObservation::new(
+            operation_id,
+            OfflineMaintenanceOperationKind::RestoreBackup,
+            backup_name,
+            input_hash,
+            OfflineMaintenanceObservationPhase::Succeeded,
+            None,
+        )
+        .expect("valid terminal observation");
+        let terminal = OfflineMaintenanceStartResult::new(
+            OfflineMaintenanceStartDisposition::Terminal,
+            terminal,
+        )
+        .expect("matching terminal disposition");
+        assert_eq!(
+            offline_maintenance_start_result_to_proto(&terminal).0,
+            v1::OfflineMaintenanceStartDisposition::Terminal as i32
+        );
+        assert!(matches!(
+            get_offline_maintenance_operation_result_to_proto(
+                &GetOfflineMaintenanceOperationResult::NotFound
+            )
+            .result,
+            Some(v1::get_offline_maintenance_operation_response::Result::NotFound(_))
+        ));
     }
 
     #[test]

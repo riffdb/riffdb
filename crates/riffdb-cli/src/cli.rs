@@ -49,6 +49,10 @@ pub(crate) enum TopLevel {
         #[command(subcommand)]
         command: ServerCommand,
     },
+    Backup {
+        #[command(subcommand)]
+        command: BackupCommand,
+    },
     Demo {
         #[command(subcommand)]
         command: DemoCommand,
@@ -177,6 +181,24 @@ pub(crate) enum ServerCommand {
 }
 
 #[derive(Debug, Subcommand)]
+pub(crate) enum BackupCommand {
+    Create {
+        #[arg(value_name = "NAME")]
+        name: String,
+    },
+    Restore {
+        #[arg(value_name = "NAME")]
+        name: String,
+        #[arg(long)]
+        confirm_replace_current_database: bool,
+    },
+    Operation {
+        #[arg(value_name = "MAINTENANCE_OPERATION_ID")]
+        maintenance_operation_id: String,
+    },
+}
+
+#[derive(Debug, Subcommand)]
 pub(crate) enum DemoCommand {
     Budget {
         #[arg(long, value_name = "PATH")]
@@ -253,6 +275,10 @@ mod tests {
     #[test]
     fn aliases_and_extra_commands_fail_closed() {
         assert!(Cli::try_parse_from(["riffdb", "backup"]).is_err());
+        assert!(
+            Cli::try_parse_from(["riffdb", "backup", "create", ".maintenance"]).is_ok(),
+            "clap leaves semantic backup-name validation to the checked type"
+        );
         assert!(
             Cli::try_parse_from([
                 "riffdb",

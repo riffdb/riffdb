@@ -542,6 +542,11 @@ pub(crate) struct MemoryState {
     /// Writers maintain it atomically with command events and status changes.
     /// It is neither a durable semantic record nor startup evidence.
     pub(crate) pending_outbox_events: Vec<EventId>,
+    /// Memory-only ordered accelerator for every non-delivered outbox row.
+    ///
+    /// This includes canonical and explicit pending, delivering, and dead-letter
+    /// observations. Like the pending accelerator, it is not semantic state.
+    pub(crate) undelivered_outbox_events: Vec<EventId>,
     pub(crate) capabilities: Vec<StoredCapabilityRecordV1>,
     pub(crate) capability_lookups: Vec<CapabilityLookupRow>,
     pub(crate) projection_controls: Vec<StoredProjectionControlV1>,
@@ -580,6 +585,13 @@ pub(crate) fn plan_evidence_order_key(plan: &ExecutablePlanRef) -> Vec<u8> {
     key.extend_from_slice(&plan.command_id().to_be_bytes());
     key.extend_from_slice(plan.command_plan_hash().as_bytes());
     key
+}
+
+pub(crate) fn compare_projection_identity_storage_order(
+    left: &ProjectionIdentity,
+    right: &ProjectionIdentity,
+) -> std::cmp::Ordering {
+    left.to_canonical_bytes().cmp(&right.to_canonical_bytes())
 }
 
 fn push_lineage(output: &mut Vec<u8>, lineage: &ContractLineage) {
@@ -637,11 +649,11 @@ impl MemoryState {
             return Err(storage_error(StorageErrorKind::InvariantViolation));
         }
         let position = unique_binary_search_by(&self.projection_controls, |row| {
-            row.identity().cmp(identity)
+            compare_projection_identity_storage_order(row.identity(), identity)
         })?;
         let charge_position =
             unique_binary_search_by(&self.synthetic_charges.projection_controls, |row| {
-                row.key.cmp(identity)
+                compare_projection_identity_storage_order(&row.key, identity)
             })?;
         if position.is_ok() != charge_position.is_ok() {
             return Err(storage_error(StorageErrorKind::CorruptData));
@@ -789,6 +801,7 @@ impl MemoryState {
             && self.outbox_intents.is_empty()
             && self.outbox_statuses.is_empty()
             && self.pending_outbox_events.is_empty()
+            && self.undelivered_outbox_events.is_empty()
             && self.capabilities.is_empty()
             && self.capability_lookups.is_empty()
             && self.projection_controls.is_empty()

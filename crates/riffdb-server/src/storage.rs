@@ -15,10 +15,19 @@ use riffdb_storage_api::{
     ExecutionFailureTransitionPort, ExecutionFailureTransitionRequestV1,
     FilteredAuthoritativeIndexScanPage, FilteredAuthoritativeIndexScanRequest,
     FilteredAuthoritativeScanReader, IdempotencyIdentity, IdempotencyLookupCandidatesV1,
+    OutboxClaimV1, OutboxDeadLetterV1, OutboxPageLimit, OutboxRenewV1, OutboxRepository,
+    OutboxRetryV1, OutboxStatusReadResultV1, OutboxSucceedV1, OutboxTransitionResultV1,
+    PendingOutboxScanV1, ProjectionApplyRequestV1, ProjectionApplyResult, ProjectionApplySnapshot,
+    ProjectionApplySnapshotReader, ProjectionApplySnapshotRequest, ProjectionControlOperation,
+    ProjectionControlResult, ProjectionControlScanV1, ProjectionMutationRepository,
+    ProjectionQueryReader, ProjectionQueryRequest, ProjectionQueryResult,
+    ProjectionRecoveryPageLimit, ProjectionRecoveryRepository,
+    ProjectionRecoveryValidationRequestV1, ProjectionRecoveryValidationResultV1, ProjectionStatus,
     ReadSnapshot, ServiceAuditAppendIntentV1, ServiceAuditAppendRepository,
     ServiceAuditAppendResult, SnapshotReader, SnapshotRequest, StorageError, StorageErrorKind,
     StoredCommitRecordV1, StoredContractBundleV1, StoredDurableEventV1, StoredEntityRecordV1,
-    StoredOutcomeV1, StoredProvenanceRecordV1,
+    StoredOutcomeV1, StoredProvenanceRecordV1, UndeliveredOutboxStatusScanRequestV1,
+    UndeliveredOutboxStatusScanV1,
 };
 use riffdb_storage_redb::RedbOperationalPorts;
 use riffdb_types::{
@@ -325,6 +334,141 @@ impl FilteredAuthoritativeScanReader for SharedRedbOperationalPorts {
     }
 }
 
+impl OutboxRepository for SharedRedbOperationalPorts {
+    fn read_outbox_status(
+        &self,
+        event_id: EventId,
+    ) -> Result<OutboxStatusReadResultV1, StorageError> {
+        self.cell
+            .with_ref(|ports| OutboxRepository::read_outbox_status(ports, event_id))
+    }
+
+    fn scan_pending_outbox(
+        &self,
+        after: Option<EventId>,
+        limit: OutboxPageLimit,
+    ) -> Result<PendingOutboxScanV1, StorageError> {
+        self.cell
+            .with_ref(|ports| OutboxRepository::scan_pending_outbox(ports, after, limit))
+    }
+
+    fn scan_undelivered_outbox_statuses(
+        &self,
+        request: UndeliveredOutboxStatusScanRequestV1,
+    ) -> Result<UndeliveredOutboxStatusScanV1, StorageError> {
+        self.cell
+            .with_ref(|ports| OutboxRepository::scan_undelivered_outbox_statuses(ports, request))
+    }
+
+    fn claim_outbox(
+        &mut self,
+        transition: &OutboxClaimV1,
+    ) -> Result<OutboxTransitionResultV1, StorageError> {
+        self.cell
+            .with_mut(|ports| OutboxRepository::claim_outbox(ports, transition))
+    }
+
+    fn renew_outbox(
+        &mut self,
+        transition: &OutboxRenewV1,
+    ) -> Result<OutboxTransitionResultV1, StorageError> {
+        self.cell
+            .with_mut(|ports| OutboxRepository::renew_outbox(ports, transition))
+    }
+
+    fn succeed_outbox(
+        &mut self,
+        transition: &OutboxSucceedV1,
+    ) -> Result<OutboxTransitionResultV1, StorageError> {
+        self.cell
+            .with_mut(|ports| OutboxRepository::succeed_outbox(ports, transition))
+    }
+
+    fn retry_outbox(
+        &mut self,
+        transition: &OutboxRetryV1,
+    ) -> Result<OutboxTransitionResultV1, StorageError> {
+        self.cell
+            .with_mut(|ports| OutboxRepository::retry_outbox(ports, transition))
+    }
+
+    fn dead_letter_outbox(
+        &mut self,
+        transition: &OutboxDeadLetterV1,
+    ) -> Result<OutboxTransitionResultV1, StorageError> {
+        self.cell
+            .with_mut(|ports| OutboxRepository::dead_letter_outbox(ports, transition))
+    }
+}
+
+impl ProjectionApplySnapshotReader for SharedRedbOperationalPorts {
+    fn read_apply_snapshot(
+        &self,
+        request: &ProjectionApplySnapshotRequest,
+    ) -> Result<ProjectionApplySnapshot, StorageError> {
+        self.cell
+            .with_ref(|ports| ProjectionApplySnapshotReader::read_apply_snapshot(ports, request))
+    }
+}
+
+impl ProjectionMutationRepository for SharedRedbOperationalPorts {
+    fn apply_projection(
+        &mut self,
+        request: &ProjectionApplyRequestV1,
+    ) -> Result<ProjectionApplyResult, StorageError> {
+        self.cell
+            .with_mut(|ports| ProjectionMutationRepository::apply_projection(ports, request))
+    }
+
+    fn transition_projection_control(
+        &mut self,
+        operation: ProjectionControlOperation,
+    ) -> Result<ProjectionControlResult, StorageError> {
+        self.cell.with_mut(|ports| {
+            ProjectionMutationRepository::transition_projection_control(ports, operation)
+        })
+    }
+}
+
+impl ProjectionQueryReader for SharedRedbOperationalPorts {
+    fn query_projection(
+        &self,
+        request: &ProjectionQueryRequest,
+    ) -> Result<ProjectionQueryResult, StorageError> {
+        self.cell
+            .with_ref(|ports| ProjectionQueryReader::query_projection(ports, request))
+    }
+
+    fn read_projection_status(
+        &self,
+        identity: &riffdb_types::ProjectionIdentity,
+    ) -> Result<ProjectionStatus, StorageError> {
+        self.cell
+            .with_ref(|ports| ProjectionQueryReader::read_projection_status(ports, identity))
+    }
+}
+
+impl ProjectionRecoveryRepository for SharedRedbOperationalPorts {
+    fn scan_projection_controls(
+        &self,
+        after: Option<&riffdb_types::ProjectionIdentity>,
+        limit: ProjectionRecoveryPageLimit,
+    ) -> Result<ProjectionControlScanV1, StorageError> {
+        self.cell.with_ref(|ports| {
+            ProjectionRecoveryRepository::scan_projection_controls(ports, after, limit)
+        })
+    }
+
+    fn validate_projection_recovery_page(
+        &self,
+        request: &ProjectionRecoveryValidationRequestV1,
+    ) -> Result<ProjectionRecoveryValidationResultV1, StorageError> {
+        self.cell.with_ref(|ports| {
+            ProjectionRecoveryRepository::validate_projection_recovery_page(ports, request)
+        })
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use std::sync::Barrier;
@@ -458,6 +602,11 @@ mod tests {
                 + CapabilityReader
                 + AuthoritativePointReader
                 + AuthoritativeScanReader
+                + OutboxRepository
+                + ProjectionApplySnapshotReader
+                + ProjectionMutationRepository
+                + ProjectionQueryReader
+                + ProjectionRecoveryRepository
                 + Clone
                 + Send
                 + Sync,

@@ -43,6 +43,12 @@ EXPECTED_BINS = {
   "riffdb-mcp" => "riffdb-mcp-stdio",
   "riffdbd" => "riffdb-server"
 }.freeze
+EXPECTED_FIXTURE_BINS = {
+  "riffdb-mcp-conformance-stdio" => {
+    "package" => "riffdb-api-mcp",
+    "required_features" => ["stdio"]
+  }
+}.freeze
 
 stdout, stderr, status = Open3.capture3(
   "cargo", "metadata", "--locked", "--no-deps", "--format-version", "1",
@@ -65,6 +71,7 @@ errors << "missing workspace packages: #{missing.join(', ')}" unless missing.emp
 errors << "unexpected workspace packages: #{unexpected.join(', ')}" unless unexpected.empty?
 
 actual_bins = {}
+actual_fixture_bins = {}
 packages.each do |package|
   name = package.fetch("name")
   manifest_path = Pathname.new(package.fetch("manifest_path")).realpath
@@ -86,7 +93,18 @@ packages.each do |package|
   errors << "#{name} must expose exactly one library target" unless lib_targets.length == 1
   package.fetch("targets").each do |target|
     target.fetch("kind").each do |kind|
-      actual_bins[target.fetch("name")] = name if kind == "bin"
+      next unless kind == "bin"
+
+      target_name = target.fetch("name")
+      required_features = target.fetch("required-features", [])
+      if required_features.empty?
+        actual_bins[target_name] = name
+      else
+        actual_fixture_bins[target_name] = {
+          "package" => name,
+          "required_features" => required_features.sort
+        }
+      end
     end
     next unless (target.fetch("kind") & %w[lib bin]).any?
 
@@ -98,10 +116,17 @@ packages.each do |package|
 end
 
 errors << "binary inventory is #{actual_bins.inspect}, expected #{EXPECTED_BINS.inspect}" unless actual_bins == EXPECTED_BINS
+unless actual_fixture_bins == EXPECTED_FIXTURE_BINS
+  errors << "fixture binary inventory is #{actual_fixture_bins.inspect}, expected #{EXPECTED_FIXTURE_BINS.inspect}"
+end
 
 unless errors.empty?
   warn errors.sort.join("\n")
   exit 1
 end
 
-puts "Workspace policy is valid: #{packages.length} private libraries and #{actual_bins.length} approved binaries."
+puts(
+  "Workspace policy is valid: #{packages.length} private libraries, " \
+  "#{actual_bins.length} approved product binaries, and " \
+  "#{actual_fixture_bins.length} approved feature-gated fixture binary."
+)

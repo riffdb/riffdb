@@ -7,7 +7,10 @@
 use std::num::NonZeroU32;
 
 use riffdb_types::{
-    CommitSequence, ContractBundleHash, ContractLineage, ContractVersion, DatabaseId,
+    ActorId, ActorKind, ApprovalId, BackupNameV1, CapabilityId, CommitSequence, ContractBundleHash,
+    ContractLineage, ContractVersion, DatabaseId, OfflineMaintenanceInputHash,
+    OfflineMaintenanceOperationId, OfflineMaintenanceOperationKind,
+    OfflineMaintenanceReplacementConfirmation, offline_maintenance_input_hash,
 };
 
 use crate::{ActiveCatalogPointerV1, StorageError, StorageFormatVersion, StorageValueError};
@@ -24,6 +27,637 @@ pub const MAX_BACKUP_CATALOG_BUNDLES: usize = 65_535;
 pub const MAX_BACKUP_ARTIFACT_CHECKSUMS: usize = 65_535;
 /// Maximum opaque adapter-owned bytes in one integrity checksum value.
 pub const MAX_BACKUP_INTEGRITY_CHECKSUM_BYTES: usize = 256;
+/// Maximum phase-history entries in one external maintenance receipt.
+pub const MAX_OFFLINE_MAINTENANCE_RECEIPT_TRANSITIONS_V1: usize = 16;
+/// Maximum receipts accepted in one bounded startup inventory.
+pub const MAX_OFFLINE_MAINTENANCE_RECEIPTS_V1: usize = 65_535;
+
+/// The admitted identity retained by one external maintenance receipt.
+///
+/// This is the narrow redacted audit identity required by ADR-0050. It contains
+/// no bearer, token digest, policy object, filesystem path, or reusable
+/// authorization decision.
+#[derive(Clone, Eq, PartialEq)]
+pub struct OfflineMaintenanceAdmissionV1 {
+    principal_id: ActorId,
+    actor_kind: ActorKind,
+    capability_id: CapabilityId,
+    approval_id: Option<ApprovalId>,
+}
+
+impl OfflineMaintenanceAdmissionV1 {
+    /// Captures the exact admitted principal, capability, and applicable approval.
+    #[must_use]
+    pub const fn new(
+        principal_id: ActorId,
+        actor_kind: ActorKind,
+        capability_id: CapabilityId,
+        approval_id: Option<ApprovalId>,
+    ) -> Self {
+        Self {
+            principal_id,
+            actor_kind,
+            capability_id,
+            approval_id,
+        }
+    }
+
+    /// Borrows the admitted principal identity.
+    #[must_use]
+    pub const fn principal_id(&self) -> &ActorId {
+        &self.principal_id
+    }
+
+    /// Returns the admitted actor classification.
+    #[must_use]
+    pub const fn actor_kind(&self) -> ActorKind {
+        self.actor_kind
+    }
+
+    /// Returns the authorizing capability identity.
+    #[must_use]
+    pub const fn capability_id(&self) -> CapabilityId {
+        self.capability_id
+    }
+
+    /// Borrows the validated approval identity, when applicable.
+    #[must_use]
+    pub const fn approval_id(&self) -> Option<&ApprovalId> {
+        self.approval_id.as_ref()
+    }
+}
+
+impl std::fmt::Debug for OfflineMaintenanceAdmissionV1 {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("OfflineMaintenanceAdmissionV1([REDACTED])")
+    }
+}
+
+/// The SHA-256 identity of one exact WP-070 manifest and its semantic frontier.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct OfflineBackupManifestIdentityV1 {
+    manifest_checksum: BackupIntegrityChecksumV1,
+    database_id: DatabaseId,
+    included_application_frontier: Option<CommitSequence>,
+}
+
+impl OfflineBackupManifestIdentityV1 {
+    /// Binds exact manifest bytes to the database identity and included frontier.
+    #[must_use]
+    pub const fn new(
+        manifest_checksum: BackupIntegrityChecksumV1,
+        database_id: DatabaseId,
+        included_application_frontier: Option<CommitSequence>,
+    ) -> Self {
+        Self {
+            manifest_checksum,
+            database_id,
+            included_application_frontier,
+        }
+    }
+
+    /// Borrows the concrete adapter-owned manifest checksum.
+    #[must_use]
+    pub const fn manifest_checksum(&self) -> &BackupIntegrityChecksumV1 {
+        &self.manifest_checksum
+    }
+
+    /// Returns the database identity encoded by the manifest.
+    #[must_use]
+    pub const fn database_id(&self) -> DatabaseId {
+        self.database_id
+    }
+
+    /// Returns the last included application commit, when any.
+    #[must_use]
+    pub const fn included_application_frontier(&self) -> Option<CommitSequence> {
+        self.included_application_frontier
+    }
+}
+
+/// Closed durable phase of one external offline-maintenance receipt.
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+pub enum OfflineMaintenanceReceiptPhaseV1 {
+    /// The operation identity and admitted actor are durable.
+    Accepted,
+    /// Ordinary work is being drained under the fixed deadline.
+    Draining,
+    /// The database and all protected ports are offline.
+    Offline,
+    /// The immutable backup or restored target has been published.
+    ArtifactPublished,
+    /// Authoritative post-publication validation is in progress.
+    Validating,
+    /// Validation completed and the terminal receipt is durable.
+    Succeeded,
+    /// The operation stopped without claiming success.
+    FailedClosed,
+}
+
+impl OfflineMaintenanceReceiptPhaseV1 {
+    /// Returns the stable receipt-v1 encoding tag.
+    #[must_use]
+    pub const fn tag(self) -> u8 {
+        match self {
+            Self::Accepted => 0x01,
+            Self::Draining => 0x02,
+            Self::Offline => 0x03,
+            Self::ArtifactPublished => 0x04,
+            Self::Validating => 0x05,
+            Self::Succeeded => 0x06,
+            Self::FailedClosed => 0x07,
+        }
+    }
+
+    /// Decodes one receipt-v1 tag, rejecting zero and unknown values.
+    #[must_use]
+    pub const fn from_tag(tag: u8) -> Option<Self> {
+        match tag {
+            0x01 => Some(Self::Accepted),
+            0x02 => Some(Self::Draining),
+            0x03 => Some(Self::Offline),
+            0x04 => Some(Self::ArtifactPublished),
+            0x05 => Some(Self::Validating),
+            0x06 => Some(Self::Succeeded),
+            0x07 => Some(Self::FailedClosed),
+            _ => None,
+        }
+    }
+
+    /// Returns whether this phase closes the operation.
+    #[must_use]
+    pub const fn is_terminal(self) -> bool {
+        matches!(self, Self::Succeeded | Self::FailedClosed)
+    }
+}
+
+/// Closed safe failure retained by a failed-closed maintenance receipt.
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+pub enum OfflineMaintenanceReceiptFailureV1 {
+    /// Accepted work did not quiesce under the fixed drain deadline.
+    QuiescenceFailed,
+    /// A required immutable artifact could not be read or published.
+    ArtifactUnavailable,
+    /// Artifact inventory, checksum, manifest, or semantic identity was invalid.
+    ArtifactInvalid,
+    /// Fresh authorization against the staged database failed.
+    StagedAuthorizationFailed,
+    /// The concrete storage operation was unavailable.
+    StorageUnavailable,
+    /// Complete authoritative validation failed.
+    ValidationFailed,
+    /// Receipt durability could not be established.
+    ReceiptUnavailable,
+    /// A closed internal failure prevented safe continuation.
+    InternalFailure,
+}
+
+impl OfflineMaintenanceReceiptFailureV1 {
+    /// Returns the stable receipt-v1 encoding tag.
+    #[must_use]
+    pub const fn tag(self) -> u8 {
+        match self {
+            Self::QuiescenceFailed => 0x01,
+            Self::ArtifactUnavailable => 0x02,
+            Self::ArtifactInvalid => 0x03,
+            Self::StagedAuthorizationFailed => 0x04,
+            Self::StorageUnavailable => 0x05,
+            Self::ValidationFailed => 0x06,
+            Self::ReceiptUnavailable => 0x07,
+            Self::InternalFailure => 0x08,
+        }
+    }
+
+    /// Decodes one receipt-v1 tag, rejecting zero and unknown values.
+    #[must_use]
+    pub const fn from_tag(tag: u8) -> Option<Self> {
+        match tag {
+            0x01 => Some(Self::QuiescenceFailed),
+            0x02 => Some(Self::ArtifactUnavailable),
+            0x03 => Some(Self::ArtifactInvalid),
+            0x04 => Some(Self::StagedAuthorizationFailed),
+            0x05 => Some(Self::StorageUnavailable),
+            0x06 => Some(Self::ValidationFailed),
+            0x07 => Some(Self::ReceiptUnavailable),
+            0x08 => Some(Self::InternalFailure),
+            _ => None,
+        }
+    }
+}
+
+/// One checked append-only phase-history entry.
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+pub struct OfflineMaintenanceReceiptTransitionV1 {
+    phase: OfflineMaintenanceReceiptPhaseV1,
+    failure: Option<OfflineMaintenanceReceiptFailureV1>,
+}
+
+impl OfflineMaintenanceReceiptTransitionV1 {
+    /// Constructs a nonterminal or successful transition.
+    #[must_use]
+    pub const fn phase(phase: OfflineMaintenanceReceiptPhaseV1) -> Self {
+        Self {
+            phase,
+            failure: None,
+        }
+    }
+
+    /// Constructs the one terminal failed-closed transition.
+    #[must_use]
+    pub const fn failed(failure: OfflineMaintenanceReceiptFailureV1) -> Self {
+        Self {
+            phase: OfflineMaintenanceReceiptPhaseV1::FailedClosed,
+            failure: Some(failure),
+        }
+    }
+
+    /// Returns the closed phase.
+    #[must_use]
+    pub const fn receipt_phase(self) -> OfflineMaintenanceReceiptPhaseV1 {
+        self.phase
+    }
+
+    /// Returns the safe terminal failure, when failed closed.
+    #[must_use]
+    pub const fn failure(self) -> Option<OfflineMaintenanceReceiptFailureV1> {
+        self.failure
+    }
+
+    fn has_valid_shape(self) -> bool {
+        matches!(
+            (self.phase, self.failure),
+            (OfflineMaintenanceReceiptPhaseV1::FailedClosed, Some(_))
+                | (
+                    OfflineMaintenanceReceiptPhaseV1::Accepted
+                        | OfflineMaintenanceReceiptPhaseV1::Draining
+                        | OfflineMaintenanceReceiptPhaseV1::Offline
+                        | OfflineMaintenanceReceiptPhaseV1::ArtifactPublished
+                        | OfflineMaintenanceReceiptPhaseV1::Validating
+                        | OfflineMaintenanceReceiptPhaseV1::Succeeded,
+                    None
+                )
+        )
+    }
+}
+
+/// One complete checked semantic maintenance receipt.
+///
+/// The concrete adapter owns its external encoding and checksum. This value
+/// owns only receipt semantics and can never contain a path or credential.
+#[derive(Clone, Eq, PartialEq)]
+pub struct OfflineMaintenanceReceiptV1 {
+    operation_id: OfflineMaintenanceOperationId,
+    operation_kind: OfflineMaintenanceOperationKind,
+    backup_name: BackupNameV1,
+    input_hash: OfflineMaintenanceInputHash,
+    replacement_confirmation: OfflineMaintenanceReplacementConfirmation,
+    admission: OfflineMaintenanceAdmissionV1,
+    source_database_id: Option<DatabaseId>,
+    staged_database_id: Option<DatabaseId>,
+    manifest_identity: Option<OfflineBackupManifestIdentityV1>,
+    transitions: Vec<OfflineMaintenanceReceiptTransitionV1>,
+}
+
+impl OfflineMaintenanceReceiptV1 {
+    /// Creates the first accepted receipt after checking its semantic input.
+    pub fn accepted(
+        operation_id: OfflineMaintenanceOperationId,
+        operation_kind: OfflineMaintenanceOperationKind,
+        backup_name: BackupNameV1,
+        input_hash: OfflineMaintenanceInputHash,
+        replacement_confirmation: OfflineMaintenanceReplacementConfirmation,
+        admission: OfflineMaintenanceAdmissionV1,
+    ) -> Result<Self, StorageValueError> {
+        Self::from_canonical_parts(
+            operation_id,
+            operation_kind,
+            backup_name,
+            input_hash,
+            replacement_confirmation,
+            admission,
+            None,
+            None,
+            None,
+            vec![OfflineMaintenanceReceiptTransitionV1::phase(
+                OfflineMaintenanceReceiptPhaseV1::Accepted,
+            )],
+        )
+    }
+
+    /// Reconstructs one complete receipt through the same semantic validator.
+    #[allow(clippy::too_many_arguments)]
+    pub fn from_canonical_parts(
+        operation_id: OfflineMaintenanceOperationId,
+        operation_kind: OfflineMaintenanceOperationKind,
+        backup_name: BackupNameV1,
+        input_hash: OfflineMaintenanceInputHash,
+        replacement_confirmation: OfflineMaintenanceReplacementConfirmation,
+        admission: OfflineMaintenanceAdmissionV1,
+        source_database_id: Option<DatabaseId>,
+        staged_database_id: Option<DatabaseId>,
+        manifest_identity: Option<OfflineBackupManifestIdentityV1>,
+        transitions: Vec<OfflineMaintenanceReceiptTransitionV1>,
+    ) -> Result<Self, StorageValueError> {
+        if offline_maintenance_input_hash(operation_kind, &backup_name, replacement_confirmation)
+            != input_hash
+        {
+            return Err(StorageValueError::IdentityMismatch);
+        }
+        if operation_kind == OfflineMaintenanceOperationKind::CreateBackup
+            && replacement_confirmation != OfflineMaintenanceReplacementConfirmation::NotProvided
+        {
+            return Err(StorageValueError::InvalidShape);
+        }
+        validate_receipt_history(operation_kind, source_database_id, &transitions)?;
+        validate_receipt_evidence(
+            operation_kind,
+            source_database_id,
+            staged_database_id,
+            manifest_identity.as_ref(),
+            transitions
+                .last()
+                .copied()
+                .ok_or(StorageValueError::Empty)?
+                .receipt_phase(),
+        )?;
+        Ok(Self {
+            operation_id,
+            operation_kind,
+            backup_name,
+            input_hash,
+            replacement_confirmation,
+            admission,
+            source_database_id,
+            staged_database_id,
+            manifest_identity,
+            transitions,
+        })
+    }
+
+    /// Returns the caller-stable operation identity.
+    #[must_use]
+    pub const fn operation_id(&self) -> OfflineMaintenanceOperationId {
+        self.operation_id
+    }
+
+    /// Returns the closed operation kind.
+    #[must_use]
+    pub const fn operation_kind(&self) -> OfflineMaintenanceOperationKind {
+        self.operation_kind
+    }
+
+    /// Borrows the checked immutable backup name.
+    #[must_use]
+    pub const fn backup_name(&self) -> &BackupNameV1 {
+        &self.backup_name
+    }
+
+    /// Returns the stable canonical semantic-input hash.
+    #[must_use]
+    pub const fn input_hash(&self) -> OfflineMaintenanceInputHash {
+        self.input_hash
+    }
+
+    /// Returns the caller's exact replacement confirmation.
+    #[must_use]
+    pub const fn replacement_confirmation(&self) -> OfflineMaintenanceReplacementConfirmation {
+        self.replacement_confirmation
+    }
+
+    /// Borrows the narrow admitted audit identity.
+    #[must_use]
+    pub const fn admission(&self) -> &OfflineMaintenanceAdmissionV1 {
+        &self.admission
+    }
+
+    /// Returns the healthy source database identity, when one was established.
+    #[must_use]
+    pub const fn source_database_id(&self) -> Option<DatabaseId> {
+        self.source_database_id
+    }
+
+    /// Returns the independently validated staged database identity, when any.
+    #[must_use]
+    pub const fn staged_database_id(&self) -> Option<DatabaseId> {
+        self.staged_database_id
+    }
+
+    /// Borrows the exact immutable backup-manifest evidence, when known.
+    #[must_use]
+    pub const fn manifest_identity(&self) -> Option<&OfflineBackupManifestIdentityV1> {
+        self.manifest_identity.as_ref()
+    }
+
+    /// Returns the complete bounded append-only history.
+    #[must_use]
+    pub fn transitions(&self) -> &[OfflineMaintenanceReceiptTransitionV1] {
+        &self.transitions
+    }
+
+    /// Returns the current closed phase.
+    #[must_use]
+    pub fn current_phase(&self) -> OfflineMaintenanceReceiptPhaseV1 {
+        self.transitions
+            .last()
+            .map_or(OfflineMaintenanceReceiptPhaseV1::Accepted, |entry| {
+                entry.receipt_phase()
+            })
+    }
+
+    /// Records the source identity once without changing it on retries.
+    pub fn record_source_database_id(
+        &mut self,
+        database_id: DatabaseId,
+    ) -> Result<(), StorageValueError> {
+        let prior = self.source_database_id;
+        record_once(&mut self.source_database_id, database_id)?;
+        if let Err(error) = self.validate_current() {
+            self.source_database_id = prior;
+            return Err(error);
+        }
+        Ok(())
+    }
+
+    /// Records the staged identity once without changing it on retries.
+    pub fn record_staged_database_id(
+        &mut self,
+        database_id: DatabaseId,
+    ) -> Result<(), StorageValueError> {
+        if self.operation_kind != OfflineMaintenanceOperationKind::RestoreBackup {
+            return Err(StorageValueError::InvalidShape);
+        }
+        let prior = self.staged_database_id;
+        record_once(&mut self.staged_database_id, database_id)?;
+        if let Err(error) = self.validate_current() {
+            self.staged_database_id = prior;
+            return Err(error);
+        }
+        Ok(())
+    }
+
+    /// Records exact immutable manifest evidence once.
+    pub fn record_manifest_identity(
+        &mut self,
+        identity: OfflineBackupManifestIdentityV1,
+    ) -> Result<(), StorageValueError> {
+        let prior = self.manifest_identity.clone();
+        match &self.manifest_identity {
+            None => self.manifest_identity = Some(identity),
+            Some(existing) if existing == &identity => {}
+            Some(_) => return Err(StorageValueError::IdentityMismatch),
+        }
+        if let Err(error) = self.validate_current() {
+            self.manifest_identity = prior;
+            return Err(error);
+        }
+        Ok(())
+    }
+
+    /// Appends one legal forward transition.
+    pub fn advance(
+        &mut self,
+        transition: OfflineMaintenanceReceiptTransitionV1,
+    ) -> Result<(), StorageValueError> {
+        if self.transitions.len() == MAX_OFFLINE_MAINTENANCE_RECEIPT_TRANSITIONS_V1 {
+            return Err(StorageValueError::LimitExceeded);
+        }
+        let prior = self
+            .transitions
+            .last()
+            .copied()
+            .ok_or(StorageValueError::Empty)?;
+        if !valid_receipt_transition(
+            self.operation_kind,
+            self.source_database_id,
+            prior.receipt_phase(),
+            transition,
+        ) {
+            return Err(StorageValueError::InvalidShape);
+        }
+        self.transitions.push(transition);
+        if let Err(error) = self.validate_current() {
+            self.transitions.pop();
+            return Err(error);
+        }
+        Ok(())
+    }
+
+    /// Returns whether this value is the same receipt or a valid monotonic extension.
+    #[must_use]
+    pub fn monotonically_extends(&self, prior: &Self) -> bool {
+        self.operation_id == prior.operation_id
+            && self.operation_kind == prior.operation_kind
+            && self.backup_name == prior.backup_name
+            && self.input_hash == prior.input_hash
+            && self.replacement_confirmation == prior.replacement_confirmation
+            && self.admission == prior.admission
+            && option_extends(prior.source_database_id, self.source_database_id)
+            && option_extends(prior.staged_database_id, self.staged_database_id)
+            && option_ref_extends(
+                prior.manifest_identity.as_ref(),
+                self.manifest_identity.as_ref(),
+            )
+            && self.transitions.starts_with(&prior.transitions)
+    }
+
+    fn validate_current(&self) -> Result<(), StorageValueError> {
+        validate_receipt_history(
+            self.operation_kind,
+            self.source_database_id,
+            &self.transitions,
+        )?;
+        validate_receipt_evidence(
+            self.operation_kind,
+            self.source_database_id,
+            self.staged_database_id,
+            self.manifest_identity.as_ref(),
+            self.current_phase(),
+        )
+    }
+}
+
+impl std::fmt::Debug for OfflineMaintenanceReceiptV1 {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("OfflineMaintenanceReceiptV1")
+            .field("operation_id", &self.operation_id)
+            .field("operation_kind", &self.operation_kind)
+            .field("phase", &self.current_phase())
+            .field("details", &"[REDACTED]")
+            .finish()
+    }
+}
+
+/// Bounded canonical startup inventory of all external maintenance receipts.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct OfflineMaintenanceReceiptInventoryV1(Vec<OfflineMaintenanceReceiptV1>);
+
+impl OfflineMaintenanceReceiptInventoryV1 {
+    /// Sorts by operation ID and rejects duplicate or excessive receipts.
+    pub fn new(mut receipts: Vec<OfflineMaintenanceReceiptV1>) -> Result<Self, StorageValueError> {
+        if receipts.len() > MAX_OFFLINE_MAINTENANCE_RECEIPTS_V1 {
+            return Err(StorageValueError::LimitExceeded);
+        }
+        receipts.sort_by_key(OfflineMaintenanceReceiptV1::operation_id);
+        if receipts
+            .windows(2)
+            .any(|pair| pair[0].operation_id == pair[1].operation_id)
+        {
+            return Err(StorageValueError::Duplicate);
+        }
+        Ok(Self(receipts))
+    }
+
+    /// Borrows receipts in canonical operation-ID order.
+    #[must_use]
+    pub fn receipts(&self) -> &[OfflineMaintenanceReceiptV1] {
+        &self.0
+    }
+}
+
+/// Result of atomically creating one operation receipt.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum OfflineMaintenanceReceiptCreateResultV1 {
+    /// The candidate became the first durable receipt for this operation.
+    Created,
+    /// A checked receipt with the same operation ID already exists.
+    Existing(Box<OfflineMaintenanceReceiptV1>),
+}
+
+/// Result of atomically replacing one receipt with a monotonic extension.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum OfflineMaintenanceReceiptReplaceResultV1 {
+    /// The exact candidate was already durable.
+    AlreadyCurrent,
+    /// The monotonic extension replaced its predecessor.
+    Replaced,
+}
+
+/// Engine-neutral semantics for the private external maintenance receipt ledger.
+pub trait OfflineMaintenanceReceiptPersistencePort {
+    /// Creates the accepted receipt or returns the existing checked value.
+    fn create_or_read_receipt(
+        &mut self,
+        receipt: &OfflineMaintenanceReceiptV1,
+    ) -> Result<OfflineMaintenanceReceiptCreateResultV1, StorageError>;
+
+    /// Atomically installs one checked monotonic extension.
+    fn replace_receipt(
+        &mut self,
+        receipt: &OfflineMaintenanceReceiptV1,
+    ) -> Result<OfflineMaintenanceReceiptReplaceResultV1, StorageError>;
+
+    /// Reads one complete receipt by caller-stable operation identity.
+    fn read_receipt(
+        &mut self,
+        operation_id: OfflineMaintenanceOperationId,
+    ) -> Result<Option<OfflineMaintenanceReceiptV1>, StorageError>;
+
+    /// Validates and returns the complete bounded receipt inventory.
+    fn validate_receipt_inventory(
+        &mut self,
+    ) -> Result<OfflineMaintenanceReceiptInventoryV1, StorageError>;
+}
 
 /// Nonzero semantic version of the offline backup manifest.
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
@@ -449,6 +1083,138 @@ pub trait OfflineRestorePersistencePort {
     ) -> Result<OfflineRestoreResultV1, StorageError>;
 }
 
+fn validate_receipt_history(
+    operation_kind: OfflineMaintenanceOperationKind,
+    source_database_id: Option<DatabaseId>,
+    transitions: &[OfflineMaintenanceReceiptTransitionV1],
+) -> Result<(), StorageValueError> {
+    if transitions.is_empty() {
+        return Err(StorageValueError::Empty);
+    }
+    if transitions.len() > MAX_OFFLINE_MAINTENANCE_RECEIPT_TRANSITIONS_V1 {
+        return Err(StorageValueError::LimitExceeded);
+    }
+    if transitions[0]
+        != OfflineMaintenanceReceiptTransitionV1::phase(OfflineMaintenanceReceiptPhaseV1::Accepted)
+    {
+        return Err(StorageValueError::InvalidShape);
+    }
+    if transitions.iter().any(|entry| !entry.has_valid_shape())
+        || transitions.windows(2).any(|pair| {
+            !valid_receipt_transition(
+                operation_kind,
+                source_database_id,
+                pair[0].receipt_phase(),
+                pair[1],
+            )
+        })
+    {
+        return Err(StorageValueError::InvalidShape);
+    }
+    Ok(())
+}
+
+fn valid_receipt_transition(
+    operation_kind: OfflineMaintenanceOperationKind,
+    source_database_id: Option<DatabaseId>,
+    prior: OfflineMaintenanceReceiptPhaseV1,
+    next: OfflineMaintenanceReceiptTransitionV1,
+) -> bool {
+    if !next.has_valid_shape() || prior.is_terminal() {
+        return false;
+    }
+    if next.receipt_phase() == OfflineMaintenanceReceiptPhaseV1::FailedClosed {
+        return true;
+    }
+    (prior == OfflineMaintenanceReceiptPhaseV1::Accepted
+        && next.receipt_phase() == OfflineMaintenanceReceiptPhaseV1::Offline
+        && operation_kind == OfflineMaintenanceOperationKind::RestoreBackup
+        && source_database_id.is_none())
+        || matches!(
+            (prior, next.receipt_phase()),
+            (
+                OfflineMaintenanceReceiptPhaseV1::Accepted,
+                OfflineMaintenanceReceiptPhaseV1::Draining
+            ) | (
+                OfflineMaintenanceReceiptPhaseV1::Draining,
+                OfflineMaintenanceReceiptPhaseV1::Offline
+            ) | (
+                OfflineMaintenanceReceiptPhaseV1::Offline,
+                OfflineMaintenanceReceiptPhaseV1::ArtifactPublished
+            ) | (
+                OfflineMaintenanceReceiptPhaseV1::ArtifactPublished,
+                OfflineMaintenanceReceiptPhaseV1::Validating
+            ) | (
+                OfflineMaintenanceReceiptPhaseV1::Validating,
+                OfflineMaintenanceReceiptPhaseV1::Succeeded
+            )
+        )
+}
+
+fn validate_receipt_evidence(
+    operation_kind: OfflineMaintenanceOperationKind,
+    source_database_id: Option<DatabaseId>,
+    staged_database_id: Option<DatabaseId>,
+    manifest_identity: Option<&OfflineBackupManifestIdentityV1>,
+    current_phase: OfflineMaintenanceReceiptPhaseV1,
+) -> Result<(), StorageValueError> {
+    if operation_kind == OfflineMaintenanceOperationKind::CreateBackup
+        && staged_database_id.is_some()
+    {
+        return Err(StorageValueError::InvalidShape);
+    }
+    if let (Some(source), Some(manifest)) = (source_database_id, manifest_identity)
+        && operation_kind == OfflineMaintenanceOperationKind::CreateBackup
+        && source != manifest.database_id()
+    {
+        return Err(StorageValueError::IdentityMismatch);
+    }
+    if let (Some(staged), Some(manifest)) = (staged_database_id, manifest_identity)
+        && staged != manifest.database_id()
+    {
+        return Err(StorageValueError::IdentityMismatch);
+    }
+    if matches!(
+        current_phase,
+        OfflineMaintenanceReceiptPhaseV1::ArtifactPublished
+            | OfflineMaintenanceReceiptPhaseV1::Validating
+            | OfflineMaintenanceReceiptPhaseV1::Succeeded
+    ) && manifest_identity.is_none()
+    {
+        return Err(StorageValueError::InvalidShape);
+    }
+    if current_phase == OfflineMaintenanceReceiptPhaseV1::Succeeded {
+        match operation_kind {
+            OfflineMaintenanceOperationKind::CreateBackup if source_database_id.is_none() => {
+                return Err(StorageValueError::InvalidShape);
+            }
+            OfflineMaintenanceOperationKind::RestoreBackup if staged_database_id.is_none() => {
+                return Err(StorageValueError::InvalidShape);
+            }
+            OfflineMaintenanceOperationKind::CreateBackup
+            | OfflineMaintenanceOperationKind::RestoreBackup => {}
+        }
+    }
+    Ok(())
+}
+
+fn record_once<T: Copy + Eq>(slot: &mut Option<T>, value: T) -> Result<(), StorageValueError> {
+    match *slot {
+        None => *slot = Some(value),
+        Some(existing) if existing == value => {}
+        Some(_) => return Err(StorageValueError::IdentityMismatch),
+    }
+    Ok(())
+}
+
+fn option_extends<T: Eq>(prior: Option<T>, next: Option<T>) -> bool {
+    prior.is_none() || prior == next
+}
+
+fn option_ref_extends<T: Eq>(prior: Option<&T>, next: Option<&T>) -> bool {
+    prior.is_none() || prior == next
+}
+
 fn checked_build_value(value: String) -> Result<String, StorageValueError> {
     if value.is_empty() {
         return Err(StorageValueError::Empty);
@@ -560,6 +1326,42 @@ fn checked_backup_sum(parts: impl IntoIterator<Item = usize>) -> Result<usize, S
 mod tests {
     use super::*;
 
+    fn operation_id(seed: u8) -> OfflineMaintenanceOperationId {
+        OfflineMaintenanceOperationId::from_unix_milliseconds_and_random(1, [seed; 10])
+            .expect("operation ID")
+    }
+
+    fn database_id(seed: u8) -> DatabaseId {
+        DatabaseId::from_unix_milliseconds_and_random(2, [seed; 10]).expect("database ID")
+    }
+
+    fn admission() -> OfflineMaintenanceAdmissionV1 {
+        OfflineMaintenanceAdmissionV1::new(
+            ActorId::new("maintenance-operator").expect("actor ID"),
+            ActorKind::Human,
+            CapabilityId::from_unix_milliseconds_and_random(3, [0x33; 10]).expect("capability ID"),
+            Some(ApprovalId::new("change-42").expect("approval ID")),
+        )
+    }
+
+    fn accepted_restore_receipt() -> OfflineMaintenanceReceiptV1 {
+        let backup_name = BackupNameV1::new("before-upgrade").expect("backup name");
+        let confirmation = OfflineMaintenanceReplacementConfirmation::AllowReplaceNonemptyTarget;
+        OfflineMaintenanceReceiptV1::accepted(
+            operation_id(0x11),
+            OfflineMaintenanceOperationKind::RestoreBackup,
+            backup_name.clone(),
+            offline_maintenance_input_hash(
+                OfflineMaintenanceOperationKind::RestoreBackup,
+                &backup_name,
+                confirmation,
+            ),
+            confirmation,
+            admission(),
+        )
+        .expect("accepted receipt")
+    }
+
     #[test]
     fn checksum_artifact_identity_is_opaque_and_one_based() {
         let value = BackupIntegrityChecksumV1::new(vec![0x55; 32]).expect("checksum");
@@ -607,6 +1409,166 @@ mod tests {
                 Some(CommitSequence::first()),
                 vec![checksum],
                 build,
+            ),
+            Err(StorageValueError::InvalidShape)
+        );
+    }
+
+    #[test]
+    fn receipt_history_is_closed_append_only_and_evidence_bound() {
+        let mut receipt = accepted_restore_receipt();
+        receipt
+            .record_source_database_id(database_id(0x43))
+            .expect("healthy source");
+        assert_eq!(
+            receipt.advance(OfflineMaintenanceReceiptTransitionV1::phase(
+                OfflineMaintenanceReceiptPhaseV1::Offline
+            )),
+            Err(StorageValueError::InvalidShape)
+        );
+        receipt
+            .advance(OfflineMaintenanceReceiptTransitionV1::phase(
+                OfflineMaintenanceReceiptPhaseV1::Draining,
+            ))
+            .expect("draining");
+        receipt
+            .advance(OfflineMaintenanceReceiptTransitionV1::phase(
+                OfflineMaintenanceReceiptPhaseV1::Offline,
+            ))
+            .expect("offline");
+        assert_eq!(
+            receipt.advance(OfflineMaintenanceReceiptTransitionV1::phase(
+                OfflineMaintenanceReceiptPhaseV1::ArtifactPublished
+            )),
+            Err(StorageValueError::InvalidShape),
+            "publication requires exact manifest evidence"
+        );
+
+        let staged_id = database_id(0x44);
+        receipt
+            .record_staged_database_id(staged_id)
+            .expect("staged identity");
+        assert_eq!(
+            receipt.record_manifest_identity(OfflineBackupManifestIdentityV1::new(
+                BackupIntegrityChecksumV1::new(vec![0x44; 32]).expect("checksum"),
+                database_id(0x45),
+                None,
+            )),
+            Err(StorageValueError::IdentityMismatch)
+        );
+        assert!(
+            receipt.manifest_identity().is_none(),
+            "a rejected evidence update must not poison the receipt"
+        );
+        receipt
+            .record_manifest_identity(OfflineBackupManifestIdentityV1::new(
+                BackupIntegrityChecksumV1::new(vec![0x55; 32]).expect("checksum"),
+                staged_id,
+                Some(CommitSequence::first()),
+            ))
+            .expect("manifest identity");
+        for phase in [
+            OfflineMaintenanceReceiptPhaseV1::ArtifactPublished,
+            OfflineMaintenanceReceiptPhaseV1::Validating,
+            OfflineMaintenanceReceiptPhaseV1::Succeeded,
+        ] {
+            receipt
+                .advance(OfflineMaintenanceReceiptTransitionV1::phase(phase))
+                .expect("forward transition");
+        }
+        assert!(receipt.current_phase().is_terminal());
+        assert_eq!(
+            receipt.advance(OfflineMaintenanceReceiptTransitionV1::failed(
+                OfflineMaintenanceReceiptFailureV1::InternalFailure
+            )),
+            Err(StorageValueError::InvalidShape)
+        );
+    }
+
+    #[test]
+    fn source_less_recovery_restore_can_enter_offline_without_inventing_a_drain() {
+        let mut recovery = accepted_restore_receipt();
+        recovery
+            .advance(OfflineMaintenanceReceiptTransitionV1::phase(
+                OfflineMaintenanceReceiptPhaseV1::Offline,
+            ))
+            .expect("recovery target is already offline");
+        assert_eq!(
+            recovery.record_source_database_id(database_id(0x46)),
+            Err(StorageValueError::InvalidShape)
+        );
+        assert_eq!(
+            recovery.source_database_id(),
+            None,
+            "a recovery receipt cannot retroactively claim a healthy source"
+        );
+    }
+
+    #[test]
+    fn receipt_successor_preserves_all_immutable_and_prior_evidence() {
+        let prior = accepted_restore_receipt();
+        let mut next = prior.clone();
+        next.advance(OfflineMaintenanceReceiptTransitionV1::phase(
+            OfflineMaintenanceReceiptPhaseV1::Draining,
+        ))
+        .expect("draining");
+        assert!(next.monotonically_extends(&prior));
+        assert!(!prior.monotonically_extends(&next));
+
+        let different_name = BackupNameV1::new("different").expect("backup name");
+        let confirmation = OfflineMaintenanceReplacementConfirmation::AllowReplaceNonemptyTarget;
+        let different = OfflineMaintenanceReceiptV1::accepted(
+            prior.operation_id(),
+            OfflineMaintenanceOperationKind::RestoreBackup,
+            different_name.clone(),
+            offline_maintenance_input_hash(
+                OfflineMaintenanceOperationKind::RestoreBackup,
+                &different_name,
+                confirmation,
+            ),
+            confirmation,
+            admission(),
+        )
+        .expect("different receipt");
+        assert!(!different.monotonically_extends(&prior));
+    }
+
+    #[test]
+    fn receipt_reconstruction_rejects_hash_mismatch_and_phase_regression() {
+        let receipt = accepted_restore_receipt();
+        assert_eq!(
+            OfflineMaintenanceReceiptV1::accepted(
+                receipt.operation_id(),
+                receipt.operation_kind(),
+                receipt.backup_name().clone(),
+                OfflineMaintenanceInputHash::from_bytes([0x99; 32]),
+                receipt.replacement_confirmation(),
+                admission(),
+            ),
+            Err(StorageValueError::IdentityMismatch)
+        );
+        assert_eq!(
+            OfflineMaintenanceReceiptV1::from_canonical_parts(
+                receipt.operation_id(),
+                receipt.operation_kind(),
+                receipt.backup_name().clone(),
+                receipt.input_hash(),
+                receipt.replacement_confirmation(),
+                admission(),
+                None,
+                None,
+                None,
+                vec![
+                    OfflineMaintenanceReceiptTransitionV1::phase(
+                        OfflineMaintenanceReceiptPhaseV1::Accepted,
+                    ),
+                    OfflineMaintenanceReceiptTransitionV1::phase(
+                        OfflineMaintenanceReceiptPhaseV1::Draining,
+                    ),
+                    OfflineMaintenanceReceiptTransitionV1::phase(
+                        OfflineMaintenanceReceiptPhaseV1::Accepted,
+                    ),
+                ],
             ),
             Err(StorageValueError::InvalidShape)
         );

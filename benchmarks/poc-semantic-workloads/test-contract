@@ -1,0 +1,283 @@
+#!/bin/sh
+set -eu
+
+SCRIPT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+VALIDATOR="$SCRIPT_DIR/validate-report-v1.jq"
+RAW_VALIDATOR="$SCRIPT_DIR/validate-raw-v1.jq"
+TMP_REPORT="$SCRIPT_DIR/target/contract-report.$$.json"
+TMP_INVALID="$SCRIPT_DIR/target/invalid-report.$$.json"
+TMP_RAW="$SCRIPT_DIR/target/contract-raw.$$.jsonl"
+TMP_INVALID_RAW="$SCRIPT_DIR/target/invalid-raw.$$.jsonl"
+trap 'rm -f "$TMP_REPORT" "$TMP_INVALID" "$TMP_RAW" "$TMP_INVALID_RAW"' \
+    EXIT HUP INT TERM
+mkdir -p "$SCRIPT_DIR/target"
+
+jq -n '
+  def samples($count): [range(1; $count + 1)];
+  def percentile($samples; $percent):
+    (((($samples | length) * $percent / 100) | ceil) - 1) as $index
+    | $samples[$index];
+  def row($family; $id; $count):
+    (samples($count)) as $samples
+    | {
+      family: $family,
+      workload_id: $id,
+      sample_count: $count,
+      samples_ns: $samples,
+      p50_ns: percentile($samples; 50),
+      p95_ns: percentile($samples; 95),
+      p99_ns: percentile($samples; 99),
+      correctness: "contract fixture"
+    };
+  {
+    schema: "riffdb.poc-semantic-benchmark-report/v1",
+    report_id: "poc-semantic-workloads",
+    publication_status: "smoke_after_correctness_preflight",
+    source: {
+      revision: "0000000000000000000000000000000000000000",
+      dirty: true,
+      rust_version: "contract-fixture",
+      target: "contract-fixture",
+      raw_artifact: "benchmarks/poc-semantic-workloads/target/contract-raw-v1.jsonl",
+      raw_sha256: "0000000000000000000000000000000000000000000000000000000000000000"
+    },
+    environment: {
+      cpu: "contract-fixture",
+      memory: "1 byte",
+      storage_medium: "contract-fixture",
+      operating_system: "contract-fixture",
+      kernel: "contract-fixture",
+      database_root: "/contract-fixture",
+      filesystem: "contract-fixture",
+      mount_options: "contract-fixture"
+    },
+    configuration: {
+      build_profile: "release",
+      features: [],
+      contract_version: "LegalSpend/1",
+      workload_distribution: "deterministic generated LegalSpend commands",
+      durability_modes: ["group_commit", "synchronous"],
+      warmup_runs: 0,
+      sample_count: 178,
+      distribution_method: "raw samples with nearest-rank p50/p95/p99",
+      analysis_command:
+        ([
+          "benchmarks/poc-semantic-workloads/run",
+          "--smoke",
+          "--storage-medium",
+          "contract-fixture"
+        ] | tojson),
+      mode: "smoke",
+      measured_iterations: 1,
+      commands_per_iteration: 1,
+      scan_records: 1,
+      projection_records: 1,
+      restart_commit_counts: [1, 2, 3]
+    },
+    workloads: [
+      (row("conflict_free_command"; "conflict-free-command-v1"; 1) + {
+        concurrency: 1,
+        ops_per_second: 1,
+        durability_mode: "synchronous",
+        commands_per_iteration: 1
+      }),
+      (row("hot_key_contention"; "hot-key-contention-1-v1"; 1) + {
+        concurrency: 1,
+        ops_per_second: 1,
+        durability_mode: "synchronous"
+      }),
+      (row("hot_key_contention"; "hot-key-contention-8-v1"; 8) + {
+        concurrency: 8,
+        ops_per_second: 1,
+        durability_mode: "synchronous"
+      }),
+      (row("hot_key_contention"; "hot-key-contention-32-v1"; 32) + {
+        concurrency: 32,
+        ops_per_second: 1,
+        durability_mode: "synchronous"
+      }),
+      (row("hot_key_contention"; "hot-key-contention-128-v1"; 128) + {
+        concurrency: 128,
+        ops_per_second: 1,
+        durability_mode: "synchronous"
+      }),
+      (row("idempotent_replay"; "idempotent-replay-v1"; 1) + {
+        ops_per_second: 1,
+        durability_mode: "synchronous"
+      }),
+      (row("commit_log_scan"; "commit-log-scan-v1"; 1) + {
+        records_per_second: 1,
+        record_count: 1
+      }),
+      (row("projection_catch_up"; "projection-catch-up-v1"; 1) + {
+        records_per_second: 1,
+        source_event_count: 1,
+        commit_record_count: 2
+      }),
+      (row("restart_recovery"; "restart-recovery-size-1-v1"; 1) + {
+        database_size_bytes: 1,
+        authoritative_commit_count: 1
+      }),
+      (row("restart_recovery"; "restart-recovery-size-2-v1"; 1) + {
+        database_size_bytes: 2,
+        authoritative_commit_count: 2
+      }),
+      (row("restart_recovery"; "restart-recovery-size-3-v1"; 1) + {
+        database_size_bytes: 3,
+        authoritative_commit_count: 3
+      }),
+      (row("durability_mode"; "durability-synchronous-v1"; 1) + {
+        durability_mode: "synchronous",
+        ops_per_second: 1,
+        commands_per_iteration: 1
+      }),
+      (row("durability_mode"; "durability-group_commit-v1"; 1) + {
+        durability_mode: "group_commit",
+        ops_per_second: 1,
+        commands_per_iteration: 1,
+        scope: "current single-command group durability semantics; no batching or scheduling claim"
+      })
+    ],
+    limitations: [
+      "contract fixture, not a performance result",
+      "contract fixture, not a performance result",
+      "contract fixture, not a performance result",
+      "contract fixture, not a performance result"
+    ]
+  }
+' >"$TMP_REPORT"
+
+jq -e -f "$VALIDATOR" "$TMP_REPORT" >/dev/null
+
+jq -c '
+  . as $report
+  | (
+      $report.workloads[] as $workload
+      | range(0; ($workload.samples_ns | length)) as $ordinal
+      | {
+          schema: "riffdb.poc-semantic-benchmark-raw/v1",
+          record_type: "latency_sample",
+          report_id: $report.report_id,
+          workload_id: $workload.workload_id,
+          family: $workload.family,
+          sample_ordinal: $ordinal,
+          elapsed_ns: $workload.samples_ns[$ordinal]
+        }
+    ),
+    (
+      [
+        {
+          index: 0,
+          work: 1,
+          rate_kind: "operations_per_second"
+        },
+        {
+          index: 1,
+          work: 1,
+          rate_kind: "operations_per_second"
+        },
+        {
+          index: 2,
+          work: 8,
+          rate_kind: "operations_per_second"
+        },
+        {
+          index: 3,
+          work: 32,
+          rate_kind: "operations_per_second"
+        },
+        {
+          index: 4,
+          work: 128,
+          rate_kind: "operations_per_second"
+        },
+        {
+          index: 5,
+          work: 1,
+          rate_kind: "operations_per_second"
+        },
+        {
+          index: 6,
+          work: 1,
+          rate_kind: "records_per_second"
+        },
+        {
+          index: 7,
+          work: 2,
+          rate_kind: "records_per_second"
+        },
+        {
+          index: 11,
+          work: 1,
+          rate_kind: "operations_per_second"
+        },
+        {
+          index: 12,
+          work: 1,
+          rate_kind: "operations_per_second"
+        }
+      ][]
+      | . as $rate
+      | $report.workloads[$rate.index] as $workload
+      | {
+          schema: "riffdb.poc-semantic-benchmark-raw/v1",
+          record_type: "rate_aggregate",
+          report_id: $report.report_id,
+          workload_id: $workload.workload_id,
+          family: $workload.family,
+          work_units: $rate.work,
+          elapsed_ns: ($rate.work * 1000000000),
+          rate_kind: $rate.rate_kind,
+          reported_per_second: 1
+        }
+    )
+' "$TMP_REPORT" >"$TMP_RAW"
+jq -s -e \
+    --slurpfile report "$TMP_REPORT" \
+    -f "$RAW_VALIDATOR" \
+    "$TMP_RAW" >/dev/null
+
+jq '.workloads |= map(
+  if .family == "hot_key_contention" and .concurrency == 128
+  then .concurrency = 64
+  else .
+  end
+)' "$TMP_REPORT" >"$TMP_INVALID"
+
+if jq -e -f "$VALIDATOR" "$TMP_INVALID" >/dev/null 2>&1; then
+    printf '%s\n' "validator accepted an invalid hot-key inventory" >&2
+    exit 1
+fi
+
+jq -c '
+  if input_line_number == 1
+  then .sample_ordinal = 1
+  else .
+  end
+' "$TMP_RAW" >"$TMP_INVALID_RAW"
+if jq -s -e \
+    --slurpfile report "$TMP_REPORT" \
+    -f "$RAW_VALIDATOR" \
+    "$TMP_INVALID_RAW" >/dev/null 2>&1
+then
+    printf '%s\n' "raw validator accepted a noncanonical ordinal" >&2
+    exit 1
+fi
+
+jq -c '
+  if .record_type == "rate_aggregate"
+     and .workload_id == "conflict-free-command-v1"
+  then .reported_per_second = 2
+  else .
+  end
+' "$TMP_RAW" >"$TMP_INVALID_RAW"
+if jq -s -e \
+    --slurpfile report "$TMP_REPORT" \
+    -f "$RAW_VALIDATOR" \
+    "$TMP_INVALID_RAW" >/dev/null 2>&1
+then
+    printf '%s\n' "raw validator accepted a fabricated throughput rate" >&2
+    exit 1
+fi
+
+printf '%s\n' "POC semantic report contract passed"

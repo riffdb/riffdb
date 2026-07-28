@@ -1,4 +1,4 @@
-spec_version: '0.34'
+spec_version: '0.35'
 product: RiffDB
 repository: riffdb
 status: implementation-handoff
@@ -52,6 +52,7 @@ gates:
   - WP-170
   - WP-180
   - WP-185
+  - WP-155
   - WP-190
   - WP-200
 work_packages:
@@ -393,6 +394,7 @@ work_packages:
   - ADR-0038
   - ADR-0039
   - ADR-0042
+  - ADR-0049
   allowed_paths:
   - Cargo.lock
   - crates/riffdb-catalog/**
@@ -530,6 +532,7 @@ work_packages:
   - ADR-0038
   - ADR-0039
   - ADR-0042
+  - ADR-0049
   allowed_paths:
   - Cargo.lock
   - crates/riffdb-types/src/codec.rs
@@ -752,6 +755,7 @@ work_packages:
   - ADR-0038
   - ADR-0039
   - ADR-0042
+  - ADR-0049
   allowed_paths:
   - Cargo.lock
   - crates/riffdb-storage-api/src/startup.rs
@@ -1045,6 +1049,7 @@ work_packages:
   - ADR-0038
   - ADR-0039
   - ADR-0042
+  - ADR-0049
   allowed_paths:
   - Cargo.lock
   - crates/riffdb-commit/**
@@ -1287,6 +1292,7 @@ work_packages:
   - ADR-0038
   - ADR-0039
   - ADR-0042
+  - ADR-0049
   allowed_paths:
   - Cargo.lock
   - crates/riffdb-service/**
@@ -1961,6 +1967,7 @@ work_packages:
   - ADR-0046
   - ADR-0047
   - ADR-0048
+  - ADR-0049
   allowed_paths:
   - Cargo.lock
   - crates/riffdb-api-mcp/**
@@ -2130,12 +2137,23 @@ work_packages:
   - ADR-0005
   - ADR-0006
   - ADR-0007
+  - ADR-0049
   allowed_paths:
   - Cargo.lock
+  - crates/riffdb-storage-api/src/lib.rs
+  - crates/riffdb-storage-api/src/outbox.rs
+  - crates/riffdb-storage-memory/src/derived.rs
+  - crates/riffdb-storage-memory/src/lib.rs
+  - crates/riffdb-storage-redb/src/derived.rs
+  - crates/riffdb-storage-redb/src/lib.rs
   - crates/riffdb-outbox/**
   - tests/outbox/**
   deliverables:
-  - Pending-event scanner
+  - Complete bounded outbox-recovery scanner with one frozen upper EventId fence, strict exclusive continuation,
+    500-item/4-MiB page limits, explicit exact end, and source observations for absent Pending, explicit Pending,
+    Delivering, DeadLetter, and Delivered
+  - Ordinary pending-event scanner that may use a rebuilt process-local accelerator but never treats that accelerator
+    as recovery evidence
   - Delivery state and backoff
   - Deterministic test connector
   - Optional disabled HTTP webhook connector
@@ -2146,7 +2164,10 @@ work_packages:
     rows, and preservation of retry metadata when an explicit Pending row exists
   - Idempotent recovery normalization of interrupted Delivering rows before the worker is declared ready, with
     bounded findings reported separately from WP-070 structural evidence and WP-130 authoritative readiness
+  - No-destination behavior that leaves committed intent Pending without inventing a delivery attempt and reports a
+    bounded derived degradation
   acceptance_commands:
+  - cargo test -p riffdb-storage-api -p riffdb-storage-memory -p riffdb-storage-redb
   - cargo test -p riffdb-outbox
   - cargo test -p riffdb-outbox --test outbox_crash_and_duplicate
   external_test_targets:
@@ -2154,7 +2175,9 @@ work_packages:
     owner_crate: riffdb-outbox
     manifest: crates/riffdb-outbox/Cargo.toml
     path: ../../tests/outbox/outbox_crash_and_duplicate.rs
-  exit_gate: No committed event is lost; duplicate dispatch scenarios are visible and policy-controlled.
+  exit_gate: Every interrupted Delivering row at the frozen recovery fence is normalized through exact end before
+    worker readiness; no committed event is lost, no-destination configuration preserves Pending intent, and
+    duplicate dispatch scenarios are visible and policy-controlled.
   human_review_triggers: *id001
 - id: WP-170
   name: Projection core
@@ -2178,8 +2201,19 @@ work_packages:
   - ADR-0013
   - ADR-0014
   - ADR-0017
+  - ADR-0049
   allowed_paths:
   - Cargo.lock
+  - crates/riffdb-catalog/src/lib.rs
+  - crates/riffdb-catalog/src/projection_materialization.rs
+  - crates/riffdb-catalog/tests/architecture.rs
+  - crates/riffdb-catalog/tests/projection_event_materialization.rs
+  - crates/riffdb-storage-api/src/lib.rs
+  - crates/riffdb-storage-api/src/projection.rs
+  - crates/riffdb-storage-memory/src/derived.rs
+  - crates/riffdb-storage-memory/src/lib.rs
+  - crates/riffdb-storage-redb/src/derived.rs
+  - crates/riffdb-storage-redb/src/lib.rs
   - crates/riffdb-projection/**
   - tests/projection/**
   deliverables:
@@ -2197,9 +2231,14 @@ work_packages:
   - Named state/frontier failpoints and redaction-safe telemetry hooks
   - Bounded query, status, and wait source using exact projection identity, generation, FrontierPosition, lower
     continuation, one-snapshot pagination, marker-hash equality, retirement, and lifecycle semantics
+  - Atomic internal degraded/invalid query fences carrying the exact identity, optional or failed generation,
+    FrontierPosition, and closed reason from one storage read transaction, with no service-side status join
+  - Narrow default-feature-disabled projection dependencies on riffdb-contract-ir and riffdb-invariant solely for
+    checked filter, key/group, and measure execution over the catalog-owned opaque materialization view
   - Projection fixtures proving ancestor optional event-field materialization, foreign-writer and descendant/required
     omission rejection, unknown-field preservation, raw-event immutability, and identical rebuilt state/frontier
   acceptance_commands:
+  - cargo test -p riffdb-catalog -p riffdb-storage-api -p riffdb-storage-memory -p riffdb-storage-redb
   - cargo test -p riffdb-projection
   - cargo test -p riffdb-projection --test projection_prefix_and_recovery
   external_test_targets:
@@ -2216,6 +2255,9 @@ work_packages:
   name: Observability and diagnostics
   depends_on:
   - WP-120
+  - WP-140
+  - WP-160
+  - WP-170
   objective: Add structured traces, bounded metrics, health, redaction, and explain diagnostics across the public
     and transaction paths.
   requirements:
@@ -2227,14 +2269,39 @@ work_packages:
   - ADR-0008
   - ADR-0009
   - ADR-0018
+  - ADR-0043
+  - ADR-0044
+  - ADR-0049
   allowed_paths:
   - Cargo.lock
+  - crates/riffdb-service/src/lib.rs
+  - crates/riffdb-service/src/telemetry.rs
+  - crates/riffdb-service/tests/architecture.rs
+  - crates/riffdb-commit/src/lib.rs
+  - crates/riffdb-commit/src/telemetry.rs
+  - crates/riffdb-commit/tests/architecture.rs
+  - crates/riffdb-conflict/src/telemetry.rs
+  - crates/riffdb-storage-api/src/lib.rs
+  - crates/riffdb-storage-api/src/telemetry.rs
+  - crates/riffdb-storage-api/tests/architecture.rs
+  - crates/riffdb-storage-redb/src/hooks.rs
+  - crates/riffdb-storage-redb/src/lib.rs
+  - crates/riffdb-storage-redb/tests/architecture.rs
+  - crates/riffdb-api-mcp/src/lib.rs
+  - crates/riffdb-api-mcp/src/telemetry.rs
+  - crates/riffdb-api-mcp/tests/hosted_architecture.rs
   - crates/riffdb-observability/**
   - crates/riffdb-diagnostics/**
   - tests/observability/**
   deliverables:
-  - Tracing layers and span fields
-  - Metrics registry
+  - Closed owner-defined least-authority telemetry sink traits and event enums for service, commit, conflict,
+    storage, MCP, outbox, and projection, accepting no arbitrary text, map, business value, credential, raw
+    identifier, entity key, event payload, or Debug rendering
+  - Pre-subscriber validation and redaction, including a permissive sibling-subscriber canary proving that sensitive
+    input cannot reach any tracing layer
+  - Tracing layers and frozen span fields
+  - In-process metrics registry with closed labels, checked cardinality/capacity, explicit overflow/drop counters,
+    and no network listener or exporter
   - Health model
   - Health classification that preserves authoritative readiness while reporting bounded outbox/projection findings
     and worker readiness as separate derived Degraded state
@@ -2245,6 +2312,8 @@ work_packages:
   - Explain output and snapshots
   - Integration over telemetry and health hooks owned by upstream packages
   acceptance_commands:
+  - cargo test -p riffdb-service -p riffdb-commit -p riffdb-conflict -p riffdb-storage-api -p riffdb-storage-redb
+    -p riffdb-api-mcp
   - cargo test -p riffdb-observability -p riffdb-diagnostics
   - cargo test -p riffdb-observability --test telemetry_redaction
   external_test_targets:
@@ -2252,7 +2321,8 @@ work_packages:
     owner_crate: riffdb-observability
     manifest: crates/riffdb-observability/Cargo.toml
     path: ../../tests/observability/telemetry_redaction.rs
-  exit_gate: Required telemetry is present, bounded, and free of prohibited raw values.
+  exit_gate: The frozen owner-event and metric inventory is present, bounded, and free of prohibited raw values even
+    with a permissive sibling subscriber; no network metrics exporter is configured.
   human_review_triggers: *id001
 - id: WP-185
   name: Server composition
@@ -2284,13 +2354,21 @@ work_packages:
   - ADR-0018
   - ADR-0019
   - ADR-0020
+  - ADR-0043
+  - ADR-0044
+  - ADR-0049
   allowed_paths:
   - Cargo.lock
   - crates/riffdb-server/**
   - tests/server_composition/**
+  - tests/grpc/p1_riffdbd_restart.rs
   deliverables:
   - P2 extension of the existing WP-130 riffdbd component graph and bounded lifecycle
   - Existing gRPC plus loopback MCP HTTP endpoint composition
+  - Optional repeatable --mcp-origin plus --mcp-listen flags with literal loopback/nonzero-port validation, an exact
+    derived http://<canonical-listen-authority>/mcp audience, and no operator-supplied audience
+  - Exact default-disabled Axum 0.8.9 http1/tokio server edge plus Tokio net/signal features, with no TLS, HTTP/2,
+    proxy trust, remote bind, OAuth, alternate route, or network metrics endpoint
   - Outbox and projection worker startup and shutdown
   - Authoritative versus derived health aggregation
   - Authoritative readiness preserved when only derived outbox or projection recovery is degraded, with bounded
@@ -2302,8 +2380,13 @@ work_packages:
     active lifecycle, and graceful/crash authoritative validation; WP-185 defines no replacement provider or gate
   - MCP registration and dispatch composition that preserves compiler-owned ADR-0020 command names without an
     alternate derivation, normalization, or repair path
+  - Shared lifecycle proxy for gRPC and hosted MCP, SIGINT/SIGTERM and exact test-control shutdown handling, stdin EOF
+    that disables only the watcher, and bounded shutdown ordering across admission, MCP, workers, service/coordinator,
+    providers, and storage
+  - No-destination composition that installs no discarding connector, leaves outbox intent Pending, and reports the
+    derived degradation without weakening authoritative readiness
   acceptance_commands:
-  - cargo test -p riffdb-server
+  - cargo test -p riffdb-server --all-features
   - cargo test -p riffdb-server --test p1_riffdbd_restart
   - cargo test -p riffdb-server --test server_composition
   external_test_targets:
@@ -2311,16 +2394,160 @@ work_packages:
     owner_crate: riffdb-server
     manifest: crates/riffdb-server/Cargo.toml
     path: ../../tests/server_composition/server_composition.rs
-  exit_gate: The same riffdbd graph accepted in WP-130 still passes its P1 restart sequence while also serving loopback
-    MCP HTTP with exact compiled command names, running both workers, preserving the startup/lifecycle gate, reporting
-    separate authoritative and derived health, and proving real read-after-sequence projection behavior through public
-    APIs.
+  exit_gate: The same riffdbd graph accepted in WP-130 still passes its P1 restart sequence while also serving optional
+    loopback MCP HTTP with exact audience/origin policy and compiled command names, running both workers, preserving
+    the startup/lifecycle gate, reporting separate authoritative and derived health, surviving stdin EOF, draining on
+    SIGTERM in the accepted order, preserving Pending intent without a destination, and proving real
+    read-after-sequence projection behavior through public APIs.
+  human_review_triggers: *id001
+- id: WP-155
+  name: Public offline backup and restore maintenance
+  depends_on:
+  - WP-070
+  - WP-120
+  - WP-137
+  - WP-150
+  - WP-185
+  objective: Expose WP-070's immutable offline backup and restore mechanics through three public, policy-filtered,
+    uncertainty-recoverable operations without creating a privileged CLI, MCP, storage, or durable-audit path.
+  requirements:
+  - SYS-001
+  - API-001
+  - ID-001
+  - ID-005
+  - STO-020
+  - STO-021
+  - STO-022
+  - REC-001
+  - REC-002
+  - SEC-001
+  - SEC-002
+  - SEC-003
+  - POC-008
+  - POC-009
+  - POC-010
+  required_adrs:
+  - ADR-0004
+  - ADR-0005
+  - ADR-0006
+  - ADR-0007
+  - ADR-0009
+  - ADR-0018
+  - ADR-0019
+  - ADR-0021
+  - ADR-0025
+  - ADR-0026
+  - ADR-0027
+  - ADR-0028
+  - ADR-0032
+  - ADR-0034
+  - ADR-0037
+  - ADR-0040
+  - ADR-0041
+  - ADR-0049
+  - ADR-0050
+  allowed_paths:
+  - Cargo.lock
+  - proto/riffdb/v1/admin.proto
+  - proto/riffdb/v1/common.proto
+  - proto/riffdb/v1/services.proto
+  - crates/riffdb-proto/**
+  - fixtures/proto/**
+  - scripts/generate-proto*
+  - fuzz/Cargo.toml
+  - fuzz/Cargo.lock
+  - fuzz/fuzz_targets/proto_public.rs
+  - fuzz/fuzz_targets/maintenance_receipt.rs
+  - crates/riffdb-types/**
+  - crates/riffdb-auth/**
+  - crates/riffdb-policy/**
+  - crates/riffdb-storage-api/src/backup.rs
+  - crates/riffdb-storage-api/src/lib.rs
+  - crates/riffdb-storage-redb/Cargo.toml
+  - crates/riffdb-storage-redb/src/backup.rs
+  - crates/riffdb-storage-redb/src/error.rs
+  - crates/riffdb-storage-redb/src/lib.rs
+  - crates/riffdb-storage-redb/src/maintenance/**
+  - crates/riffdb-storage-redb/tests/architecture.rs
+  - crates/riffdb-storage-redb/tests/maintenance.rs
+  - crates/riffdb-service/**
+  - crates/riffdb-api-grpc/**
+  - crates/riffdb-client-rust/**
+  - crates/riffdb-server/**
+  - crates/riffdb-cli/**
+  - tests/maintenance/**
+  - docs/backup-restore.md
+  deliverables:
+  - Exact additive AdminService RPCs CreateOfflineBackup, RestoreOfflineBackup, and
+    GetOfflineMaintenanceOperation, bringing the public inventory to five services and 25 RPCs without changing an
+    existing field, service, RPC, durable message, contract/IR value, or MCP schema/resource/tool
+  - Checked caller-stable UUIDv7 OfflineMaintenanceOperationId, exact 1..=64-byte BackupNameV1 grammar, stable
+    semantic input hash, fresh transport RequestId per retry, input-mismatch rejection, and bounded closed operation
+    observations
+  - Exact public-client and CLI identities backup.create, backup.restore, and backup.operation with grammar
+    riffdb backup create|restore|operation; no CLI path resolution or direct redb access
+  - Exact wire confirmation ALLOW_REPLACE_NONEMPTY_TARGET emitted only by
+    --confirm-replace-current-database and required for every healthy, unreadable, or corrupt nonempty target, with no
+    expected-database-id input and no implication that confirmation grants authority
+  - API-neutral maintenance service and narrow policy decision reusing the existing global AdministerCapabilities
+    permission, ordinary approval obligations, and deny-by-default current facts without adding a durable permission
+    or ServiceOperationV1 variant
+  - No StoredServiceAuditRecordV1 Started or terminal row for an offline maintenance operation; the external receipt
+    is the sole narrow audit and uncertainty-recovery exception and never synthesizes a terminal after reopen
+  - Auth-owned non-Clone, nonserializable, redacted, bounded zeroizing ordinary-bearer handoff used only to borrow
+    OpaqueCredential for staged authentication, never logged or persisted, and dropped before publication or terminal
+    receipt persistence
+  - Healthy overwrite authorization against the current database before drain plus a fresh independent
+    authentication and authorization of the same bearer against the fully validated staged backup; empty/corrupt
+    recovery performs staged authorization only, and no prior principal or decision can satisfy the staged check
+  - Private exclusive Ready -> Draining -> Offline -> Validating -> Ready/FailedClosed lifecycle with a fixed drain
+    deadline, no protected request or polling while offline, restricted recovery-mode restore admission only when
+    ordinary readiness cannot validate the target, and derived-worker restart only after authoritative readiness
+  - Service-owned backup_root resolution and reserved, caller-inaccessible .maintenance subtree disjoint from named
+    immutable artifacts and the database path, with no public filesystem path or URI
+  - One versioned, checksummed, canonically encoded, atomically replaced and parent-synced receipt per operation ID,
+    with immutable semantic input, at most 16 monotonic phase transitions, bounded safe failures, exact goldens, and
+    fail-closed startup reconciliation from receipt plus filesystem checksum evidence
+  - Backup close/publish/reopen and restore private-stage/manifest-check/full-validation/staged-authorization/
+    destructive-publication/fresh-validation orchestration using WP-070 mechanics, with no second backup format and
+    no readiness before the terminal receipt is durable
+  - Restore preservation of DatabaseId and explicit invalidation of every post-backup observation, locator,
+    idempotency assumption, audit assumption, capability fact, cursor, session, and projection/outbox state; destroyed
+    application and administration sequence suffixes may be reused and no incarnation/history-epoch claim is made
+  - Descriptor, wire, SDK, CLI JSONL, receipt, authorization, redaction, parser-fuzz, process-failpoint, quiescence,
+    crash/retry, empty/corrupt recovery, identity-preservation, and rewind fixtures
+  acceptance_commands:
+  - cargo test -p riffdb-types -p riffdb-auth -p riffdb-policy -p riffdb-storage-api -p riffdb-storage-redb -p
+    riffdb-service
+  - cargo test -p riffdb-proto -p riffdb-api-grpc -p riffdb-client-rust -p riffdb-server -p riffdb-cli --all-features
+  - cargo test -p riffdb-server --test offline_maintenance_recovery -- --ignored
+  - ./scripts/generate-proto --check
+  - cargo +nightly-2026-07-12 fuzz run proto_public -- -max_len=4194304 -max_total_time=30
+  - cargo +nightly-2026-07-12 fuzz run maintenance_receipt -- -max_len=1048576 -max_total_time=30
+  - cargo fmt --all -- --check
+  - cargo clippy -p riffdb-types -p riffdb-auth -p riffdb-policy -p riffdb-storage-api -p riffdb-storage-redb -p
+    riffdb-service -p riffdb-proto -p riffdb-api-grpc -p riffdb-client-rust -p riffdb-server -p riffdb-cli
+    --all-targets --all-features -- -D warnings
+  - RUSTDOCFLAGS="-D warnings" cargo doc -p riffdb-types -p riffdb-auth -p riffdb-policy -p riffdb-storage-api -p
+    riffdb-storage-redb -p riffdb-service -p riffdb-proto -p riffdb-api-grpc -p riffdb-client-rust -p riffdb-server -p
+    riffdb-cli --all-features --no-deps
+  - cargo deny check
+  external_test_targets:
+  - name: offline_maintenance_recovery
+    owner_crate: riffdb-server
+    manifest: crates/riffdb-server/Cargo.toml
+    path: ../../tests/maintenance/offline_maintenance_recovery.rs
+  exit_gate: All three public operations pass only through gRPC, the shared service/policy boundary, and the private
+    exclusive lifecycle; receipt and process failpoints resolve uncertain retries without inventing success; staged
+    authorization and destructive confirmation fail closed; restored readiness reproves the complete database; and
+    exact fixtures document DatabaseId-preserving history rewind and possible suffix reuse.
   human_review_triggers: *id001
 - id: WP-190
   name: Integrated crash harness
   depends_on:
   - WP-070
   - WP-100
+  - WP-155
   - WP-160
   - WP-170
   - WP-185
@@ -2356,9 +2583,22 @@ work_packages:
   - ADR-0040
   - ADR-0041
   - ADR-0042
+  - ADR-0049
+  - ADR-0050
   allowed_paths:
   - Cargo.lock
   - crates/riffdb-testkit/**
+  - crates/riffdb-cli/Cargo.toml
+  - crates/riffdb-cli/src/credential.rs
+  - crates/riffdb-cli/src/lib.rs
+  - crates/riffdb-cli/tests/architecture.rs
+  - crates/riffdb-server/Cargo.toml
+  - crates/riffdb-server/src/daemon.rs
+  - crates/riffdb-server/src/lib.rs
+  - crates/riffdb-server/src/maintenance_driver.rs
+  - crates/riffdb-server/src/maintenance_recovery_controller.rs
+  - crates/riffdb-server/src/process_graph.rs
+  - crates/riffdb-server/tests/architecture.rs
   - tests/recovery/**
   - scripts/recovery_*
   deliverables:
@@ -2391,24 +2631,38 @@ work_packages:
     rewrite commit, proving restart from a complete fresh scan, no partial batch, catalog-owned branded completion,
     dormant-only backend finish, V2-only completion, and full fresh structural/catalog exact-end validation before
     readiness without exposing driver states to the process harness
+  - Maintainer-approved narrow owner-package fixture hooks in riffdb-cli and riffdb-server expose only synchronized
+    child-process crash boundaries to riffdb-testkit; they add no public API, durable record, or production bypass
   - Two explicitly synchronized post-commit/pre-response public Execute cases, one losing TCP response bytes before a
     complete frame and one kills then restarts riffdbd; each retries through WP-137 with the same command, raw key,
     canonical input, and capability but a fresh RequestId, returning the original replayed outcome, sequence, and
     provenance with no second mutation, event, outbox intent, provenance, commit record, or sequence
+  - Process failpoints before and after maintenance receipt sync, drain, database close, immutable backup publication,
+    staged restore, staged validation/authorization, destructive target publication, fresh post-publication
+    validation, and terminal receipt persistence, including kill/restart reconciliation by exact checksum evidence
+  - Healthy current-plus-staged and empty/corrupt staged-only authorization recovery, credential-loss retry, protected
+    polling unavailability while offline, DatabaseId preservation, process-state invalidation, destroyed-suffix
+    idempotency and sequence reuse, and no invented service-audit terminal
   acceptance_commands:
   - cargo test -p riffdb-testkit
   - cargo test -p riffdb-testkit --test full_recovery_matrix -- --ignored
+  - cargo test -p riffdb-testkit --test offline_maintenance_matrix -- --ignored
   external_test_targets:
   - name: full_recovery_matrix
     owner_crate: riffdb-testkit
     manifest: crates/riffdb-testkit/Cargo.toml
     path: ../../tests/recovery/full_recovery_matrix.rs
+  - name: offline_maintenance_matrix
+    owner_crate: riffdb-testkit
+    manifest: crates/riffdb-testkit/Cargo.toml
+    path: ../../tests/recovery/offline_maintenance_matrix.rs
   exit_gate: Every failpoint produces exactly the allowed pre-commit or post-commit state with no sequence consumed by
     failed capacity/envelope checks and exact durable event-hash recomputation; migration failpoints restart through
     the complete V2-only validation path; synchronized TCP-response loss and post-commit process termination both
-    recover the original result through a fresh public-client request without a second authoritative graph; every
-    reopen performs complete authoritative integrity validation; and repeated recovery is stable without deferred
-    metadata writes.
+    recover the original result through a fresh public-client request without a second authoritative graph; offline
+    maintenance failpoints reconcile only from exact receipt/filesystem evidence and preserve the accepted rewind
+    semantics; every reopen performs complete authoritative integrity validation; and repeated recovery is stable
+    without deferred metadata writes.
   human_review_triggers: *id001
 - id: WP-200
   name: POC acceptance and release
@@ -2420,6 +2674,7 @@ work_packages:
   - WP-139
   - WP-140
   - WP-150
+  - WP-155
   - WP-160
   - WP-170
   - WP-180
@@ -2468,7 +2723,10 @@ work_packages:
   - ADR-0041
   - ADR-0042
   - ADR-0045
+  - ADR-0049
+  - ADR-0050
   allowed_paths:
+  - README.md
   - scripts/demo*
   - scripts/release*
   - docs/**
@@ -2481,11 +2739,16 @@ work_packages:
   - Benchmark report
   - Threat model and dependency inventory
   - Release binaries, checksums, SBOM, examples, known limitations
+  - Root README with architecture and quick-start boundaries, installation/upgrade/removal instructions, configuration
+    reference, and hardened systemd units for riffdbd and the optional public-client riffdb-mcp bridge
   - Machine-readable consumption of WP-139's checked safety report with its exact claim qualifier and every
     deliberately unsafe PostgreSQL variant excluded from performance results
   - Existing WP-075 Fjall and WP-045/WP-125/WP-135/WP-139 comparison sources are read-only evidence inputs; WP-200
     may add scenarios, reports, and release packaging under its broad paths but may not rewrite their manifests,
     lockfiles, adapters, fixtures, or guarantee profiles without a separately approved owner-package amendment
+  - The maintainer-approved WP-200 owner-package amendment is limited to the nested comparison manifests/lockfile,
+    safety architecture scanner, and performance-support harness needed for dependency-free semantic benchmark
+    evidence; it does not change an adapter, frozen fixture, public-run protocol, or guarantee profile
   - Cross-transport semantic and durable-audit parity plus generated durable/public artifact evidence in the final
     requirement report
   - Final transaction-order evidence from current validation through mutation-affected epoch reads, sequence-free
@@ -2506,6 +2769,12 @@ work_packages:
     post-migration V1 record
   - Machine-readable consumption of WP-190's synchronized TCP-loss and process-restart same-key replay evidence for
     POC-004, plus final WP-137/WP-140/WP-150 public protocol, MCP, CLI, generated-artifact, and release conformance
+  - Final WP-155 public-schema, receipt, current/staged authorization, offline lifecycle, process recovery, and
+    DatabaseId-preserving rewind evidence, with destroyed-suffix locator/idempotency/sequence limitations prominent in
+    README, backup/restore instructions, CLI confirmation, and release notes
+  - Systemd verification that riffdbd starts with closed stdin, stops by SIGTERM through the bounded graceful drain,
+    uses explicit state/config/backup roots and restrictive permissions, and never introduces a direct storage path
+    for riffdb, riffdb-mcp, or an MCP transport
   acceptance_commands:
   - ./scripts/ci-all
   - ./scripts/demo --assert

@@ -3,16 +3,17 @@
 use std::{fmt, sync::Arc};
 
 use riffdb_auth::{
-    AuthenticatedPrincipal, AuthenticationContext, AuthenticationFailure, CapabilityAuthenticator,
-    CapabilityDigestKeyProvider, CapabilityReaderCurrentResolver, CredentialAuthenticator,
-    IdempotencyDigestKeyProvider, IssueCapabilityTokenError, NewlyIssuedCapabilityToken,
-    NoopAuthenticationTelemetry, OpaqueCredential, SystemEntropy, issue_capability_token,
+    AuthenticatedPrincipal, AuthenticationContext, AuthenticationFailure, AuthenticationTelemetry,
+    CapabilityAuthenticator, CapabilityDigestKeyProvider, CapabilityReaderCurrentResolver,
+    CredentialAuthenticator, IdempotencyDigestKeyProvider, IssueCapabilityTokenError,
+    NewlyIssuedCapabilityToken, OpaqueCredential, SystemEntropy, issue_capability_token,
 };
 use riffdb_idempotency::{
     IdempotencyDigestCandidatesV1, IdempotencyDigestError, IdempotencyDigestProvider,
 };
 use riffdb_policy::{
-    AuthorizationError, CurrentAuthorizer, Decision, NoopAuthorizationTelemetry, OperationRequest,
+    AuthorizationError, AuthorizationTelemetry, CurrentAuthorizer, Decision,
+    OfflineMaintenanceAuthorizationRequest, OfflineMaintenanceDecision, OperationRequest,
     TrustedAudienceCatalog,
 };
 use riffdb_service::{CapabilityTokenIssueError, CapabilityTokenIssuer, CurrentPolicyPort};
@@ -27,7 +28,7 @@ pub(crate) struct ServerCredentialAuthenticator {
     storage: SharedRedbOperationalPorts,
     keys: Arc<CapabilityDigestKeyProvider>,
     clock: ServerAuthenticationClock,
-    telemetry: NoopAuthenticationTelemetry,
+    telemetry: Arc<dyn AuthenticationTelemetry>,
 }
 
 impl ServerCredentialAuthenticator {
@@ -39,12 +40,13 @@ impl ServerCredentialAuthenticator {
         storage: SharedRedbOperationalPorts,
         keys: Arc<CapabilityDigestKeyProvider>,
         clock: ServerAuthenticationClock,
+        telemetry: Arc<dyn AuthenticationTelemetry>,
     ) -> Self {
         Self {
             storage,
             keys,
             clock,
-            telemetry: NoopAuthenticationTelemetry,
+            telemetry,
         }
     }
 }
@@ -59,7 +61,7 @@ impl CredentialAuthenticator for ServerCredentialAuthenticator {
             &self.storage,
             self.keys.as_ref(),
             &self.clock,
-            &self.telemetry,
+            self.telemetry.as_ref(),
         );
         CredentialAuthenticator::authenticate(&authenticator, credential, context)
     }
@@ -78,7 +80,7 @@ pub(crate) struct ServerCurrentPolicyPort {
     database_id: DatabaseId,
     environment: Environment,
     trusted_audiences: TrustedAudienceCatalog,
-    telemetry: NoopAuthorizationTelemetry,
+    telemetry: Arc<dyn AuthorizationTelemetry>,
 }
 
 impl ServerCurrentPolicyPort {
@@ -92,6 +94,7 @@ impl ServerCurrentPolicyPort {
         database_id: DatabaseId,
         environment: Environment,
         trusted_audiences: TrustedAudienceCatalog,
+        telemetry: Arc<dyn AuthorizationTelemetry>,
     ) -> Self {
         Self {
             storage,
@@ -99,7 +102,7 @@ impl ServerCurrentPolicyPort {
             database_id,
             environment,
             trusted_audiences,
-            telemetry: NoopAuthorizationTelemetry,
+            telemetry,
         }
     }
 }
@@ -114,12 +117,29 @@ impl CurrentPolicyPort for ServerCurrentPolicyPort {
         let authorizer = CurrentAuthorizer::new(
             &resolver,
             &self.clock,
-            &self.telemetry,
+            self.telemetry.as_ref(),
             self.database_id,
             self.environment.clone(),
         )
         .with_trusted_audience_catalog(&self.trusted_audiences);
         authorizer.authorize(principal, request)
+    }
+
+    fn authorize_offline_maintenance(
+        &self,
+        principal: &AuthenticatedPrincipal,
+        request: OfflineMaintenanceAuthorizationRequest,
+    ) -> Result<OfflineMaintenanceDecision, AuthorizationError> {
+        let resolver = CapabilityReaderCurrentResolver::new(&self.storage);
+        let authorizer = CurrentAuthorizer::new(
+            &resolver,
+            &self.clock,
+            self.telemetry.as_ref(),
+            self.database_id,
+            self.environment.clone(),
+        )
+        .with_trusted_audience_catalog(&self.trusted_audiences);
+        authorizer.authorize_offline_maintenance(principal, request)
     }
 }
 

@@ -432,6 +432,7 @@ fn attempt(
         facts,
         authorization,
         request(1),
+        riffdb_types::ServiceIngressKindV1::Grpc,
         control,
     )
 }
@@ -470,6 +471,7 @@ fn exact_proofs_accept_past_cancelled_control_and_distinct_request_ids() {
             facts,
             exact_authorization(&command),
             request_id,
+            riffdb_types::ServiceIngressKindV1::Grpc,
             control,
         )
         .expect("control state and request identity do not alter proof joins");
@@ -709,6 +711,7 @@ fn checked_read_only_plan_with_matching_read_only_authorization_cannot_enter_mut
             command.partition.clone(),
         ),
         request(9),
+        riffdb_types::ServiceIngressKindV1::Grpc,
         control,
     )
     .expect_err("a checked read-only plan has no mutation-admission authority");

@@ -70,11 +70,14 @@ direction, merged draft, or implementation choice.
 | [0046](0046-wp140-public-presentation-and-resource-conformance.md) | WP-140 Public Presentation and Resource Conformance | Accepted |
 | [0047](0047-mcp-object-root-schema-conformance.md) | MCP Object-Root Schema Conformance | Accepted |
 | [0048](0048-mcp-observer-physical-call-accounting.md) | MCP Observer Physical-Call Accounting | Accepted |
+| [0049](0049-p2-derived-recovery-telemetry-and-hosted-composition.md) | P2 Derived Recovery, Telemetry, and Hosted Composition | Accepted |
+| [0050](0050-public-offline-backup-and-restore-maintenance.md) | Public Offline Backup and Restore Maintenance | Accepted |
 
 The human architecture review on 2026-07-12 approved the direction represented
 by ADR-0001 through ADR-0012. The human maintainer accepted ADR-0001 through
 ADR-0042 and their recorded companion amendments by 2026-07-22, and accepted
-ADR-0043 through ADR-0048 on 2026-07-23. ADR-0008 now
+ADR-0043 through ADR-0048 on 2026-07-23, then ADR-0049 and ADR-0050
+on 2026-07-24. ADR-0008 now
 accepts the native MCP tool/resource model, policy-filtered HTTP and stdio-over-
 gRPC boundaries, canonical locators/cursors, and presentation rules; ADR-0020
 separately owns command tool-name normalization and its compiler/catalog
@@ -124,8 +127,9 @@ linear startup migration, and the narrow pre-sequence aggregate-capacity
 classification. ADR-0040 accepts the six-RPC public parity bridge, conditional
 discovery, outcome-resource lookup, immutable operation-schema catalog, and
 WP-137 gate placement. ADR-0041 accepts WP-150's exact public-client dependency,
-credential, retry, configuration, and JSONL output contract; it reserves but
-does not register the separately reviewed WP-155 backup/restore boundary.
+credential, retry, configuration, and JSONL output contract; at that checkpoint
+it reserved but did not register WP-155. ADR-0050 now resolves that separately
+reviewed backup/restore boundary.
 ADR-0042 seals catalog-owned backend-branded migration instructions, progress,
 and completion; narrows storage API to evidence and identity-only contracts;
 and permits memory/redb's exact migration-only catalog edge with server-hidden
@@ -159,15 +163,25 @@ ADR-0048 separates fourteen-per-tick logical observer operations from the
 physical service calls they contain, enforces exact one/five-call operation
 handles and a 46-per-tick/8,280-per-session physical ceiling, and removes the
 redundant stdio parity probe.
+ADR-0049 completes P2's derived-worker and process-composition boundaries:
+bounded exact-end outbox recovery observations, atomic internal projection
+fences, catalog-owned event materialization, narrow projection expression
+execution, closed owner telemetry before arbitrary subscribers, and optional
+loopback hosted MCP with exact audience and lifecycle behavior.
+ADR-0050 activates WP-155 after WP-185 with exactly three public offline
+maintenance operations, current and staged authorization, one external
+checksummed receipt ledger, exclusive drain/offline/validation lifecycle, and
+the explicit DatabaseId-preserving restore-rewind limitation.
 
 The earlier four records ADR-0008, ADR-0039, ADR-0040, and ADR-0041 cite
 revision `21a8cfb` as their acceptance reference. Their separately named future exact-byte checkpoints
 remain mandatory: WP-137 operation-schema source, identity, and composition
 bytes; WP-140 fixed-tool-schema and resource-registry bytes; and WP-150 command
 grammar, versioned DTO, JSONL, and stderr goldens. Acceptance does not
-pre-accept WP-155 or waive separate review of any differing real or resolved
-dependency lock graph, feature set, unsafe inventory, or cryptographic or
-native edge.
+waive separate review of any differing real or resolved dependency lock graph,
+feature set, unsafe inventory, or cryptographic or native edge. At that earlier
+checkpoint it did not pre-accept WP-155; ADR-0050 now separately activates the
+exact reviewed boundary.
 
 ADR-0042 has a separate acceptance reference: the human maintainer's explicit
 confirmation in the current Codex session on 2026-07-22. It does not claim the
@@ -184,6 +198,10 @@ ADR-0047 likewise has a separate acceptance reference: the human maintainer's
 explicit confirmation in the current Codex session on 2026-07-23.
 ADR-0048 likewise has a separate acceptance reference: the human maintainer's
 explicit confirmation in the current Codex session on 2026-07-23.
+ADR-0049 likewise has a separate acceptance reference: the human maintainer's
+explicit confirmation in the current Codex session on 2026-07-24.
+ADR-0050 likewise has a separate acceptance reference: the human maintainer's
+explicit confirmation in the current Codex session on 2026-07-24.
 
 ## Workflow
 

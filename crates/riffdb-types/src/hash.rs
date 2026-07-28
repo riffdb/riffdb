@@ -8,7 +8,8 @@ use sha2::{Digest, Sha256};
 use crate::{
     CanonicalInputHash, CanonicalValueHash, CapabilityTokenDigest, ConflictKeyHash,
     ContractBundleHash, ContractPlanRootHash, DigestKey, DigestKeyId, EntityKeyHash, EventHash,
-    PartitionKeyHash, PlanHash, ProjectionApplyHash, ProjectionPlanHash, SchemaHash, SourceHash,
+    OfflineMaintenanceInputHash, PartitionKeyHash, PlanHash, ProjectionApplyHash,
+    ProjectionPlanHash, SchemaHash, SourceHash,
 };
 
 /// Hash framing and algorithm scheme defined by ADR-0011.
@@ -46,11 +47,13 @@ pub enum HashDomain {
     Schema,
     /// One complete checked projection apply request.
     ProjectionApply,
+    /// One checked offline-maintenance semantic input.
+    OfflineMaintenanceInput,
 }
 
 impl HashDomain {
     /// Every registered unkeyed domain, for compatibility and collision checks.
-    pub const ALL: [Self; 13] = [
+    pub const ALL: [Self; 14] = [
         Self::CanonicalValue,
         Self::Source,
         Self::ContractBundle,
@@ -64,6 +67,7 @@ impl HashDomain {
         Self::PartitionKey,
         Self::Schema,
         Self::ProjectionApply,
+        Self::OfflineMaintenanceInput,
     ];
 
     /// Returns the immutable ASCII v1 domain label.
@@ -82,6 +86,7 @@ impl HashDomain {
             Self::PartitionKey => "riffdb.partition-key/v1",
             Self::Schema => "riffdb.schema/v1",
             Self::ProjectionApply => "riffdb.projection-apply/v1",
+            Self::OfflineMaintenanceInput => "riffdb.offline-maintenance-input/v1",
         }
     }
 }
@@ -295,6 +300,12 @@ typed_hash_function!(
     hash_projection_apply,
     ProjectionApply,
     ProjectionApplyHash
+);
+typed_hash_function!(
+    /// Hashes one canonical offline-maintenance semantic input.
+    hash_offline_maintenance_input,
+    OfflineMaintenanceInput,
+    OfflineMaintenanceInputHash
 );
 
 /// Computes a domain-separated v1 HMAC-SHA-256 lookup digest.

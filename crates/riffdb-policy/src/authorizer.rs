@@ -6,17 +6,19 @@ use riffdb_auth::{
     AuthenticatedPrincipal, CurrentCapability, CurrentCapabilityActivity, CurrentCapabilityResolver,
 };
 use riffdb_types::{
-    ActorId, ActorKind, Audience, CapabilityGrantV1, CapabilityId, DatabaseId, Environment,
-    PartitionScopeV1, ServiceOperationV1, TenantScope, Timestamp,
+    ActorId, ActorKind, Audience, CapabilityGrantV1, CapabilityId, CapabilityPermissionKindV1,
+    DatabaseId, Environment, PartitionScopeV1, ServiceOperationV1, TenantScope, Timestamp,
 };
 
 use crate::decision::{PermissionCheck, check_permission, derive_field_mask};
 use crate::operation::PartitionRequirement;
 use crate::{
     AuthorizationClock, AuthorizationDefect, AuthorizationTelemetry, AuthorizationTelemetryEvent,
-    AuthorizedCapabilityMutationPreparation, AuthorizedOperation, CapabilityActivity,
-    CapabilityMutationRequest, CurrentAuthorizationIdentity, Decision, Obligations,
-    OperationRequest, PolicyCode, TransactionCurrentCapabilityFacts, TrustedAudienceCatalog,
+    AuthorizedCapabilityMutationPreparation, AuthorizedOfflineMaintenance, AuthorizedOperation,
+    CapabilityActivity, CapabilityMutationRequest, CurrentAuthorizationIdentity, Decision,
+    Obligations, OfflineMaintenanceAuthorizationRequest, OfflineMaintenanceDecision,
+    OperationRequest, OutputClassification, PolicyCode, TransactionCurrentCapabilityFacts,
+    TrustedAudienceCatalog,
 };
 
 /// A redaction-safe internal failure before policy could decide.
@@ -92,6 +94,58 @@ where
     C: AuthorizationClock + ?Sized,
     T: AuthorizationTelemetry + ?Sized,
 {
+    /// Reloads current state and evaluates one offline-maintenance safe point.
+    ///
+    /// Restore callers must invoke this independently against the healthy
+    /// current database and the fully validated staged database. An earlier
+    /// proof is neither cached nor accepted as input to this method.
+    pub fn authorize_offline_maintenance(
+        &self,
+        principal: &AuthenticatedPrincipal,
+        request: OfflineMaintenanceAuthorizationRequest,
+    ) -> Result<OfflineMaintenanceDecision, AuthorizationError> {
+        let current = self.resolver.resolve_current(principal).map_err(|_| {
+            self.telemetry.record(AuthorizationTelemetryEvent::Defect(
+                AuthorizationDefect::CurrentCapabilityUnavailable,
+            ));
+            AuthorizationError::CurrentCapabilityUnavailable
+        })?;
+        let now = self.clock.now().map_err(|_| {
+            self.telemetry.record(AuthorizationTelemetryEvent::Defect(
+                AuthorizationDefect::ClockUnavailable,
+            ));
+            AuthorizationError::ClockUnavailable
+        })?;
+
+        let principal_facts = PrincipalFacts::from(principal);
+        let current_facts = CurrentFacts::from(&current);
+        match evaluate_offline_maintenance(
+            &principal_facts,
+            &current_facts,
+            self.expected_database_id,
+            &self.expected_environment,
+            now,
+        ) {
+            Ok(obligations) => Ok(OfflineMaintenanceDecision::Allow(Box::new(
+                AuthorizedOfflineMaintenance::new(
+                    self.expected_database_id,
+                    self.expected_environment.clone(),
+                    request,
+                    obligations,
+                    current_facts.capability_id,
+                    current_facts.revision,
+                    principal_facts.principal_id,
+                    principal_facts.actor_kind,
+                ),
+            ))),
+            Err(code) => {
+                self.telemetry
+                    .record(AuthorizationTelemetryEvent::Denied(code));
+                Ok(OfflineMaintenanceDecision::Deny(code))
+            }
+        }
+    }
+
     /// Reloads current state, samples fresh time once, and evaluates one request.
     pub fn authorize(
         &self,
@@ -235,6 +289,44 @@ where
             }
         }
     }
+}
+
+fn evaluate_offline_maintenance(
+    principal: &PrincipalFacts,
+    current: &CurrentFacts,
+    expected_database_id: DatabaseId,
+    expected_environment: &Environment,
+    now: Timestamp,
+) -> Result<Obligations, PolicyCode> {
+    validate_current(
+        principal,
+        current,
+        expected_database_id,
+        expected_environment,
+        now,
+    )?;
+    if current.grant.tenant_scope() != &TenantScope::Global {
+        return Err(PolicyCode::TenantScopeMismatch);
+    }
+
+    let requirement = crate::operation::PermissionRequirement::Kind(
+        CapabilityPermissionKindV1::AdministerCapabilities,
+    );
+    match check_permission(&current.grant, &requirement) {
+        PermissionCheck::Missing => return Err(PolicyCode::MissingPermission),
+        PermissionCheck::ApprovalRequired => return Err(PolicyCode::ApprovalRequired),
+        PermissionCheck::Allowed => {}
+    }
+
+    Ok(Obligations::new(
+        TenantScope::Global,
+        None,
+        None,
+        None,
+        None,
+        None,
+        OutputClassification::AdministrativeRedactedData,
+    ))
 }
 
 fn transaction_current_facts(
@@ -461,6 +553,15 @@ mod tests {
 
     fn capability_id() -> CapabilityId {
         CapabilityId::from_unix_milliseconds_and_random(2, [2; 10]).expect("valid UUIDv7")
+    }
+
+    fn maintenance_operation_id() -> riffdb_types::OfflineMaintenanceOperationId {
+        riffdb_types::OfflineMaintenanceOperationId::from_unix_milliseconds_and_random(3, [3; 10])
+            .expect("valid UUIDv7")
+    }
+
+    fn maintenance_input_hash() -> riffdb_types::OfflineMaintenanceInputHash {
+        riffdb_types::OfflineMaintenanceInputHash::from_bytes([4; 32])
     }
 
     fn lineage() -> ContractLineage {
@@ -1102,6 +1203,196 @@ mod tests {
                 &environment,
                 timestamp(15),
                 &OperationRequest::get_health(),
+            ),
+            Err(PolicyCode::InactiveOrStaleCapability)
+        );
+    }
+
+    #[test]
+    fn offline_maintenance_requires_global_current_administrator_authority() {
+        let database_id = database_id();
+        let environment = Environment::new("dev").expect("valid environment");
+        let audience = Audience::new("grpc").expect("valid audience");
+        let admin_permission = CapabilityPermissionV1::unparameterized(
+            CapabilityPermissionKindV1::AdministerCapabilities,
+        )
+        .expect("valid administrative permission");
+        let fixture = AuthorizationFixture::new(AuthorizationFixtureConfig::new(
+            database_id,
+            environment.clone(),
+            ActorId::new("maintenance-principal").expect("valid actor"),
+            ActorKind::Human,
+            audience,
+            AuthorizationFixtureTimes::new(timestamp(100), timestamp(1_000), timestamp(150)),
+            grant(
+                TenantScope::Global,
+                explicit_partition(),
+                vec![admin_permission],
+                Vec::new(),
+                5,
+                Vec::new(),
+            ),
+        ))
+        .expect("valid fixture");
+        let resolver = fixture.current_capability_resolver();
+        let clock = FixedAuthorizationClock(timestamp(200));
+        let authorizer = CurrentAuthorizer::new(
+            &resolver,
+            &clock,
+            &crate::NoopAuthorizationTelemetry,
+            database_id,
+            environment.clone(),
+        );
+
+        for (request, operation, input_hash) in [
+            (
+                OfflineMaintenanceAuthorizationRequest::create_backup(
+                    maintenance_operation_id(),
+                    maintenance_input_hash(),
+                ),
+                crate::OfflineMaintenancePolicyOperation::Start(
+                    riffdb_types::OfflineMaintenanceOperationKind::CreateBackup,
+                ),
+                Some(maintenance_input_hash()),
+            ),
+            (
+                OfflineMaintenanceAuthorizationRequest::restore_backup(
+                    maintenance_operation_id(),
+                    maintenance_input_hash(),
+                ),
+                crate::OfflineMaintenancePolicyOperation::Start(
+                    riffdb_types::OfflineMaintenanceOperationKind::RestoreBackup,
+                ),
+                Some(maintenance_input_hash()),
+            ),
+            (
+                OfflineMaintenanceAuthorizationRequest::get_operation(maintenance_operation_id()),
+                crate::OfflineMaintenancePolicyOperation::GetOperation,
+                None,
+            ),
+        ] {
+            let decision = authorizer
+                .authorize_offline_maintenance(fixture.authenticated_principal(), request)
+                .expect("policy decision");
+            let rendered_decision = format!("{decision:?}");
+            let OfflineMaintenanceDecision::Allow(proof) = decision else {
+                panic!("expected maintenance allow proof");
+            };
+            assert_eq!(proof.database_id(), database_id);
+            assert_eq!(proof.environment(), &environment);
+            assert_eq!(proof.request().operation_id(), maintenance_operation_id());
+            assert_eq!(proof.operation(), operation);
+            assert_eq!(proof.request().input_hash(), input_hash);
+            assert_eq!(
+                proof.authorizing_capability_id(),
+                fixture.authenticated_principal().capability_id()
+            );
+            assert_eq!(
+                proof.authorizing_capability_revision(),
+                fixture.authenticated_principal().capability_revision()
+            );
+            assert_eq!(
+                proof.principal_id(),
+                fixture.authenticated_principal().principal_id()
+            );
+            assert_eq!(proof.actor_kind(), ActorKind::Human);
+            assert_eq!(
+                proof.obligations().effective_tenant_scope(),
+                &TenantScope::Global
+            );
+            assert_eq!(proof.obligations().partition_constraint(), None);
+            assert_eq!(proof.obligations().validated_approval(), None);
+            assert_eq!(
+                proof.obligations().output_classification(),
+                OutputClassification::AdministrativeRedactedData
+            );
+            let rendered = format!("{rendered_decision} {proof:?}");
+            assert!(rendered.contains("[REDACTED]"));
+            assert!(!rendered.contains("maintenance-principal"));
+        }
+    }
+
+    #[test]
+    fn offline_maintenance_denies_missing_scope_approval_and_stale_state() {
+        let admin_permission = CapabilityPermissionV1::unparameterized(
+            CapabilityPermissionKindV1::AdministerCapabilities,
+        )
+        .expect("valid administrative permission");
+        let read_permission =
+            CapabilityPermissionV1::unparameterized(CapabilityPermissionKindV1::ReadHealth)
+                .expect("valid read permission");
+        let tenant = TenantScope::Tenant(TenantId::new("tenant-a").expect("valid tenant"));
+        let cases = [
+            (
+                grant(
+                    TenantScope::Global,
+                    PartitionScopeV1::All,
+                    vec![read_permission],
+                    Vec::new(),
+                    5,
+                    Vec::new(),
+                ),
+                PolicyCode::MissingPermission,
+            ),
+            (
+                grant(
+                    tenant,
+                    PartitionScopeV1::All,
+                    vec![admin_permission.clone()],
+                    Vec::new(),
+                    5,
+                    Vec::new(),
+                ),
+                PolicyCode::TenantScopeMismatch,
+            ),
+            (
+                grant(
+                    TenantScope::Global,
+                    PartitionScopeV1::All,
+                    vec![admin_permission],
+                    Vec::new(),
+                    5,
+                    vec![CapabilityPermissionKindV1::AdministerCapabilities],
+                ),
+                PolicyCode::ApprovalRequired,
+            ),
+        ];
+
+        for (grant, expected) in cases {
+            let (principal, current, environment) = facts(grant);
+            assert_eq!(
+                evaluate_offline_maintenance(
+                    &principal,
+                    &current,
+                    current.database_id,
+                    &environment,
+                    timestamp(15),
+                ),
+                Err(expected)
+            );
+        }
+
+        let (principal, mut current, environment) = facts(grant(
+            TenantScope::Global,
+            PartitionScopeV1::All,
+            vec![
+                CapabilityPermissionV1::unparameterized(
+                    CapabilityPermissionKindV1::AdministerCapabilities,
+                )
+                .expect("valid administrative permission"),
+            ],
+            Vec::new(),
+            5,
+            Vec::new(),
+        ));
+        current.activity = CurrentCapabilityActivity::Revoked;
+        assert_eq!(
+            evaluate_offline_maintenance(
+                &principal,
+                &current,
+                current.database_id,
+                &environment,
+                timestamp(15),
             ),
             Err(PolicyCode::InactiveOrStaleCapability)
         );

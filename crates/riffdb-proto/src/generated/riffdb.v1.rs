@@ -340,6 +340,79 @@ pub struct ListPendingOutboxDeliveriesResponse {
     #[prost(message, optional, tag = "1")]
     pub page: ::core::option::Option<OutboxDeliveryPage>,
 }
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct OfflineMaintenanceOperation {
+    #[prost(bytes = "vec", tag = "1")]
+    pub operation_id: ::prost::alloc::vec::Vec<u8>,
+    #[prost(enumeration = "OfflineMaintenanceOperationKind", tag = "2")]
+    pub kind: i32,
+    #[prost(string, tag = "3")]
+    pub backup_name: ::prost::alloc::string::String,
+    #[prost(bytes = "vec", tag = "4")]
+    pub input_hash: ::prost::alloc::vec::Vec<u8>,
+    #[prost(enumeration = "OfflineMaintenancePhase", tag = "5")]
+    pub phase: i32,
+    #[prost(enumeration = "OfflineMaintenanceFailureClass", tag = "6")]
+    pub failure: i32,
+}
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct CreateOfflineBackupRequest {
+    #[prost(bytes = "vec", tag = "1")]
+    pub request_id: ::prost::alloc::vec::Vec<u8>,
+    #[prost(bytes = "vec", tag = "2")]
+    pub operation_id: ::prost::alloc::vec::Vec<u8>,
+    #[prost(string, tag = "3")]
+    pub backup_name: ::prost::alloc::string::String,
+}
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct CreateOfflineBackupResponse {
+    #[prost(enumeration = "OfflineMaintenanceStartDisposition", tag = "1")]
+    pub disposition: i32,
+    #[prost(message, optional, tag = "2")]
+    pub operation: ::core::option::Option<OfflineMaintenanceOperation>,
+}
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct RestoreOfflineBackupRequest {
+    #[prost(bytes = "vec", tag = "1")]
+    pub request_id: ::prost::alloc::vec::Vec<u8>,
+    #[prost(bytes = "vec", tag = "2")]
+    pub operation_id: ::prost::alloc::vec::Vec<u8>,
+    #[prost(string, tag = "3")]
+    pub backup_name: ::prost::alloc::string::String,
+    #[prost(enumeration = "OfflineMaintenanceReplacementConfirmation", tag = "4")]
+    pub replacement_confirmation: i32,
+}
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct RestoreOfflineBackupResponse {
+    #[prost(enumeration = "OfflineMaintenanceStartDisposition", tag = "1")]
+    pub disposition: i32,
+    #[prost(message, optional, tag = "2")]
+    pub operation: ::core::option::Option<OfflineMaintenanceOperation>,
+}
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct GetOfflineMaintenanceOperationRequest {
+    #[prost(bytes = "vec", tag = "1")]
+    pub request_id: ::prost::alloc::vec::Vec<u8>,
+    #[prost(bytes = "vec", tag = "2")]
+    pub operation_id: ::prost::alloc::vec::Vec<u8>,
+}
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct GetOfflineMaintenanceOperationResponse {
+    #[prost(oneof = "get_offline_maintenance_operation_response::Result", tags = "1, 2")]
+    pub result: ::core::option::Option<
+        get_offline_maintenance_operation_response::Result,
+    >,
+}
+/// Nested message and enum types in `GetOfflineMaintenanceOperationResponse`.
+pub mod get_offline_maintenance_operation_response {
+    #[derive(Clone, PartialEq, Eq, Hash, ::prost::Oneof)]
+    pub enum Result {
+        #[prost(message, tag = "1")]
+        NotFound(super::Unit),
+        #[prost(message, tag = "2")]
+        Found(super::OfflineMaintenanceOperation),
+    }
+}
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, ::prost::Enumeration)]
 #[repr(i32)]
 pub enum PreBootstrapLifecycle {
@@ -672,6 +745,232 @@ impl OutboxDeliveryState {
             "OUTBOX_DELIVERY_STATE_RETRY_SCHEDULED" => Some(Self::RetryScheduled),
             "OUTBOX_DELIVERY_STATE_DELIVERING" => Some(Self::Delivering),
             "OUTBOX_DELIVERY_STATE_DEAD_LETTER" => Some(Self::DeadLetter),
+            _ => None,
+        }
+    }
+}
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, ::prost::Enumeration)]
+#[repr(i32)]
+pub enum OfflineMaintenanceOperationKind {
+    Unspecified = 0,
+    CreateBackup = 1,
+    RestoreBackup = 2,
+}
+impl OfflineMaintenanceOperationKind {
+    /// String value of the enum field names used in the ProtoBuf definition.
+    ///
+    /// The values are not transformed in any way and thus are considered stable
+    /// (if the ProtoBuf definition does not change) and safe for programmatic use.
+    pub fn as_str_name(&self) -> &'static str {
+        match self {
+            Self::Unspecified => "OFFLINE_MAINTENANCE_OPERATION_KIND_UNSPECIFIED",
+            Self::CreateBackup => "OFFLINE_MAINTENANCE_OPERATION_KIND_CREATE_BACKUP",
+            Self::RestoreBackup => "OFFLINE_MAINTENANCE_OPERATION_KIND_RESTORE_BACKUP",
+        }
+    }
+    /// Creates an enum from field names used in the ProtoBuf definition.
+    pub fn from_str_name(value: &str) -> ::core::option::Option<Self> {
+        match value {
+            "OFFLINE_MAINTENANCE_OPERATION_KIND_UNSPECIFIED" => Some(Self::Unspecified),
+            "OFFLINE_MAINTENANCE_OPERATION_KIND_CREATE_BACKUP" => {
+                Some(Self::CreateBackup)
+            }
+            "OFFLINE_MAINTENANCE_OPERATION_KIND_RESTORE_BACKUP" => {
+                Some(Self::RestoreBackup)
+            }
+            _ => None,
+        }
+    }
+}
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, ::prost::Enumeration)]
+#[repr(i32)]
+pub enum OfflineMaintenanceReplacementConfirmation {
+    Unspecified = 0,
+    AllowReplaceNonemptyTarget = 1,
+}
+impl OfflineMaintenanceReplacementConfirmation {
+    /// String value of the enum field names used in the ProtoBuf definition.
+    ///
+    /// The values are not transformed in any way and thus are considered stable
+    /// (if the ProtoBuf definition does not change) and safe for programmatic use.
+    pub fn as_str_name(&self) -> &'static str {
+        match self {
+            Self::Unspecified => {
+                "OFFLINE_MAINTENANCE_REPLACEMENT_CONFIRMATION_UNSPECIFIED"
+            }
+            Self::AllowReplaceNonemptyTarget => {
+                "OFFLINE_MAINTENANCE_REPLACEMENT_CONFIRMATION_ALLOW_REPLACE_NONEMPTY_TARGET"
+            }
+        }
+    }
+    /// Creates an enum from field names used in the ProtoBuf definition.
+    pub fn from_str_name(value: &str) -> ::core::option::Option<Self> {
+        match value {
+            "OFFLINE_MAINTENANCE_REPLACEMENT_CONFIRMATION_UNSPECIFIED" => {
+                Some(Self::Unspecified)
+            }
+            "OFFLINE_MAINTENANCE_REPLACEMENT_CONFIRMATION_ALLOW_REPLACE_NONEMPTY_TARGET" => {
+                Some(Self::AllowReplaceNonemptyTarget)
+            }
+            _ => None,
+        }
+    }
+}
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, ::prost::Enumeration)]
+#[repr(i32)]
+pub enum OfflineMaintenanceStartDisposition {
+    Unspecified = 0,
+    Accepted = 1,
+    AlreadyAccepted = 2,
+    Terminal = 3,
+}
+impl OfflineMaintenanceStartDisposition {
+    /// String value of the enum field names used in the ProtoBuf definition.
+    ///
+    /// The values are not transformed in any way and thus are considered stable
+    /// (if the ProtoBuf definition does not change) and safe for programmatic use.
+    pub fn as_str_name(&self) -> &'static str {
+        match self {
+            Self::Unspecified => "OFFLINE_MAINTENANCE_START_DISPOSITION_UNSPECIFIED",
+            Self::Accepted => "OFFLINE_MAINTENANCE_START_DISPOSITION_ACCEPTED",
+            Self::AlreadyAccepted => {
+                "OFFLINE_MAINTENANCE_START_DISPOSITION_ALREADY_ACCEPTED"
+            }
+            Self::Terminal => "OFFLINE_MAINTENANCE_START_DISPOSITION_TERMINAL",
+        }
+    }
+    /// Creates an enum from field names used in the ProtoBuf definition.
+    pub fn from_str_name(value: &str) -> ::core::option::Option<Self> {
+        match value {
+            "OFFLINE_MAINTENANCE_START_DISPOSITION_UNSPECIFIED" => {
+                Some(Self::Unspecified)
+            }
+            "OFFLINE_MAINTENANCE_START_DISPOSITION_ACCEPTED" => Some(Self::Accepted),
+            "OFFLINE_MAINTENANCE_START_DISPOSITION_ALREADY_ACCEPTED" => {
+                Some(Self::AlreadyAccepted)
+            }
+            "OFFLINE_MAINTENANCE_START_DISPOSITION_TERMINAL" => Some(Self::Terminal),
+            _ => None,
+        }
+    }
+}
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, ::prost::Enumeration)]
+#[repr(i32)]
+pub enum OfflineMaintenancePhase {
+    Unspecified = 0,
+    Accepted = 1,
+    Draining = 2,
+    Offline = 3,
+    ArtifactPublished = 4,
+    Validating = 5,
+    Succeeded = 6,
+    FailedClosed = 7,
+}
+impl OfflineMaintenancePhase {
+    /// String value of the enum field names used in the ProtoBuf definition.
+    ///
+    /// The values are not transformed in any way and thus are considered stable
+    /// (if the ProtoBuf definition does not change) and safe for programmatic use.
+    pub fn as_str_name(&self) -> &'static str {
+        match self {
+            Self::Unspecified => "OFFLINE_MAINTENANCE_PHASE_UNSPECIFIED",
+            Self::Accepted => "OFFLINE_MAINTENANCE_PHASE_ACCEPTED",
+            Self::Draining => "OFFLINE_MAINTENANCE_PHASE_DRAINING",
+            Self::Offline => "OFFLINE_MAINTENANCE_PHASE_OFFLINE",
+            Self::ArtifactPublished => "OFFLINE_MAINTENANCE_PHASE_ARTIFACT_PUBLISHED",
+            Self::Validating => "OFFLINE_MAINTENANCE_PHASE_VALIDATING",
+            Self::Succeeded => "OFFLINE_MAINTENANCE_PHASE_SUCCEEDED",
+            Self::FailedClosed => "OFFLINE_MAINTENANCE_PHASE_FAILED_CLOSED",
+        }
+    }
+    /// Creates an enum from field names used in the ProtoBuf definition.
+    pub fn from_str_name(value: &str) -> ::core::option::Option<Self> {
+        match value {
+            "OFFLINE_MAINTENANCE_PHASE_UNSPECIFIED" => Some(Self::Unspecified),
+            "OFFLINE_MAINTENANCE_PHASE_ACCEPTED" => Some(Self::Accepted),
+            "OFFLINE_MAINTENANCE_PHASE_DRAINING" => Some(Self::Draining),
+            "OFFLINE_MAINTENANCE_PHASE_OFFLINE" => Some(Self::Offline),
+            "OFFLINE_MAINTENANCE_PHASE_ARTIFACT_PUBLISHED" => {
+                Some(Self::ArtifactPublished)
+            }
+            "OFFLINE_MAINTENANCE_PHASE_VALIDATING" => Some(Self::Validating),
+            "OFFLINE_MAINTENANCE_PHASE_SUCCEEDED" => Some(Self::Succeeded),
+            "OFFLINE_MAINTENANCE_PHASE_FAILED_CLOSED" => Some(Self::FailedClosed),
+            _ => None,
+        }
+    }
+}
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, ::prost::Enumeration)]
+#[repr(i32)]
+pub enum OfflineMaintenanceFailureClass {
+    Unspecified = 0,
+    QuiescenceFailed = 1,
+    ArtifactUnavailable = 2,
+    ArtifactInvalid = 3,
+    StagedAuthorizationFailed = 4,
+    StorageUnavailable = 5,
+    ValidationFailed = 6,
+    ReceiptUnavailable = 7,
+    InternalFailure = 8,
+}
+impl OfflineMaintenanceFailureClass {
+    /// String value of the enum field names used in the ProtoBuf definition.
+    ///
+    /// The values are not transformed in any way and thus are considered stable
+    /// (if the ProtoBuf definition does not change) and safe for programmatic use.
+    pub fn as_str_name(&self) -> &'static str {
+        match self {
+            Self::Unspecified => "OFFLINE_MAINTENANCE_FAILURE_CLASS_UNSPECIFIED",
+            Self::QuiescenceFailed => {
+                "OFFLINE_MAINTENANCE_FAILURE_CLASS_QUIESCENCE_FAILED"
+            }
+            Self::ArtifactUnavailable => {
+                "OFFLINE_MAINTENANCE_FAILURE_CLASS_ARTIFACT_UNAVAILABLE"
+            }
+            Self::ArtifactInvalid => "OFFLINE_MAINTENANCE_FAILURE_CLASS_ARTIFACT_INVALID",
+            Self::StagedAuthorizationFailed => {
+                "OFFLINE_MAINTENANCE_FAILURE_CLASS_STAGED_AUTHORIZATION_FAILED"
+            }
+            Self::StorageUnavailable => {
+                "OFFLINE_MAINTENANCE_FAILURE_CLASS_STORAGE_UNAVAILABLE"
+            }
+            Self::ValidationFailed => {
+                "OFFLINE_MAINTENANCE_FAILURE_CLASS_VALIDATION_FAILED"
+            }
+            Self::ReceiptUnavailable => {
+                "OFFLINE_MAINTENANCE_FAILURE_CLASS_RECEIPT_UNAVAILABLE"
+            }
+            Self::InternalFailure => "OFFLINE_MAINTENANCE_FAILURE_CLASS_INTERNAL_FAILURE",
+        }
+    }
+    /// Creates an enum from field names used in the ProtoBuf definition.
+    pub fn from_str_name(value: &str) -> ::core::option::Option<Self> {
+        match value {
+            "OFFLINE_MAINTENANCE_FAILURE_CLASS_UNSPECIFIED" => Some(Self::Unspecified),
+            "OFFLINE_MAINTENANCE_FAILURE_CLASS_QUIESCENCE_FAILED" => {
+                Some(Self::QuiescenceFailed)
+            }
+            "OFFLINE_MAINTENANCE_FAILURE_CLASS_ARTIFACT_UNAVAILABLE" => {
+                Some(Self::ArtifactUnavailable)
+            }
+            "OFFLINE_MAINTENANCE_FAILURE_CLASS_ARTIFACT_INVALID" => {
+                Some(Self::ArtifactInvalid)
+            }
+            "OFFLINE_MAINTENANCE_FAILURE_CLASS_STAGED_AUTHORIZATION_FAILED" => {
+                Some(Self::StagedAuthorizationFailed)
+            }
+            "OFFLINE_MAINTENANCE_FAILURE_CLASS_STORAGE_UNAVAILABLE" => {
+                Some(Self::StorageUnavailable)
+            }
+            "OFFLINE_MAINTENANCE_FAILURE_CLASS_VALIDATION_FAILED" => {
+                Some(Self::ValidationFailed)
+            }
+            "OFFLINE_MAINTENANCE_FAILURE_CLASS_RECEIPT_UNAVAILABLE" => {
+                Some(Self::ReceiptUnavailable)
+            }
+            "OFFLINE_MAINTENANCE_FAILURE_CLASS_INTERNAL_FAILURE" => {
+                Some(Self::InternalFailure)
+            }
             _ => None,
         }
     }

@@ -166,6 +166,29 @@ fn bootstrap_durability_and_demo_process_boundaries_are_structural() {
 }
 
 #[test]
+fn retention_abort_controller_is_closed_and_absent_from_riffdb_entrypoint() {
+    let main = fs::read_to_string(root().join("src/main.rs")).expect("main");
+    let library = fs::read_to_string(root().join("src/lib.rs")).expect("library");
+    let credential = fs::read_to_string(root().join("src/credential.rs")).expect("credential");
+
+    assert!(main.contains("riffdb_cli::run().await"));
+    for forbidden in [
+        "test_fixtures",
+        "BootstrapRetentionTestPoint",
+        "RIFFDB_WP190",
+        "std::env",
+    ] {
+        assert!(
+            !main.contains(forbidden),
+            "normal riffdb entrypoint acquired retention fixture trigger `{forbidden}`"
+        );
+    }
+    assert!(library.contains("#[cfg(feature = \"test-fixtures\")]"));
+    assert!(credential.contains("RetentionRecoveryController::disabled()"));
+    assert!(!credential.contains("RIFFDB_WP190"));
+}
+
+#[test]
 fn accepted_interface_checkpoint_still_verifies_byte_for_byte() {
     let status = Command::new(root().join("interface/verify-checkpoint"))
         .arg("--check")

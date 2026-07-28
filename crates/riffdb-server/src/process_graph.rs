@@ -2,22 +2,37 @@
 
 use std::error::Error;
 use std::fmt;
+use std::num::{NonZeroU16, NonZeroU32};
 use std::sync::Arc;
 
 use riffdb_api_grpc::CheckedGrpcSecurityContext;
-use riffdb_auth::{AuthenticationContext, DigestKeyProviders};
+use riffdb_api_mcp::McpTelemetry;
+use riffdb_auth::{
+    AuthenticationContext, AuthenticationTelemetry, CapabilityDigestKeyProvider,
+    CredentialAuthenticator, DigestKeyProviders, IdempotencyDigestKeyProvider,
+};
 use riffdb_commit::{
-    CoordinatorDurability, CoordinatorShutdownError, CoordinatorStartError,
+    CommitTelemetry, CoordinatorDurability, CoordinatorShutdownError, CoordinatorStartError,
     CoordinatorWorkloadCapacity, RunningCommandCoordinator,
 };
 use riffdb_conflict::{
-    ConflictManager, ConflictManagerBuildError, ConflictManagerConfig, ShardedConflictManager,
+    ConflictManager, ConflictManagerBuildError, ConflictManagerConfig, ConflictObserver,
+    ShardedConflictManager,
 };
 use riffdb_errors::IncidentIdSource;
 use riffdb_idempotency::IdempotencyDigestProvider;
-use riffdb_policy::{
-    AgentSessionAdmissionPolicy, CapabilityMutationFactsError, TrustedAudienceCatalog,
+use riffdb_observability::{
+    AuthoritativeComponent, AuthoritativeCondition, MAX_TRACE_RECORDS, Observability,
+    ObservabilityBuildError,
 };
+use riffdb_outbox::{
+    DeliveryPolicy, NoOutboxFailpoints, NoOutboxTelemetry, OutboxRecoveryResult, RecoveringOutbox,
+};
+use riffdb_policy::{
+    AgentSessionAdmissionPolicy, AuthorizationTelemetry, CapabilityMutationFactsError,
+    TrustedAudienceCatalog,
+};
+use riffdb_projection::{ProjectionNotifier, ProjectionSchemaRegistry};
 use riffdb_service::{
     ApplicationService, AuthoritativeReadPort, BuildInfo, CapabilityTokenIssuer, CatalogReadPort,
     CurrentPolicyPort, CursorMonotonicClock, CursorTokenGenerator, OperationalStatusPort,
@@ -26,7 +41,8 @@ use riffdb_service::{
     ServiceProcessMetadata, ServiceProviders, ServiceTelemetry,
 };
 use riffdb_storage_api::{
-    ReadableDigestKey, ReadableIdempotencyDigestInventory, StorageValueError,
+    OutboxDestinationIdV1, OutboxPageLimit, ReadableDigestKey, ReadableIdempotencyDigestInventory,
+    StorageValueError,
 };
 use riffdb_types::{Audience, Environment, Timestamp};
 
@@ -39,15 +55,23 @@ use crate::config::ServerConfig;
 use crate::cursor::{ProductionCursorMonotonicClock, ProductionCursorTokenGenerator};
 use crate::identifiers::{ProductionIdentifierSources, ServerRequestIdSource};
 use crate::lifecycle::{LifecycleInstallError, ProductionLifecycleRoute};
+use crate::lifecycle_service::LifecycleApplicationService;
+use crate::maintenance_adapter::MaintenanceController;
 use crate::notifications::{FirstCommitNotificationHub, NotificationHubError};
-use crate::operational_status::ProductionOperationalStatusPort;
+use crate::operational_status::{OutboxRecoveryReadiness, ProductionOperationalStatusPort};
+use crate::outbox_adapter::{
+    NoDestinationOutboxHealth, ServerCommitNotificationSink, ServerOutboxStatusPort,
+};
 use crate::port_driver::{
     BlockingPortDriver, BlockingPortDriverShutdownError, BlockingPortDriverStartError,
 };
-use crate::projection_adapter::UnavailableProjectionPort;
+use crate::projection_adapter::ServerProjectionQueryPort;
+use crate::projection_worker::{
+    ProjectionWorkerShutdownError, ProjectionWorkerStartError, RunningProjectionWorker,
+};
 use crate::read_adapters::{ServerAuthoritativeReadPort, ServerCatalogReadPort};
 use crate::runtime_support::{
-    ProductionServiceDiagnostics, ProductionServiceTelemetry, RuntimeSupportError,
+    ProductionObservabilityDiagnostics, ProductionObservabilityHealthHooks, RuntimeSupportError,
     SupervisedServiceJobSpawner, TokioRequestDeadlineScheduler,
 };
 use crate::server_generation::{ProductionServerGenerationSource, ServerGenerationSourceError};
@@ -57,18 +81,68 @@ use crate::storage::SharedRedbOperationalPorts;
 /// Fixed P1 coordinator admission bound, independent of transport and port-driver bounds.
 const P1_COORDINATOR_WORKLOAD_CAPACITY: u16 = 32;
 
+/// One checked secret-key snapshot shared by startup, maintenance, and a graph generation.
+pub(crate) struct ProductionDigestKeys {
+    capability: Arc<CapabilityDigestKeyProvider>,
+    idempotency: Arc<IdempotencyDigestKeyProvider>,
+}
+
+impl ProductionDigestKeys {
+    /// Shares the exact providers parsed and namespace-checked in one file load.
+    pub(crate) fn new(providers: DigestKeyProviders) -> Self {
+        let (capability, idempotency) = providers.into_parts();
+        Self {
+            capability: Arc::new(capability),
+            idempotency: Arc::new(idempotency),
+        }
+    }
+
+    /// Borrows capability keys for startup inventory construction.
+    pub(crate) fn capability(&self) -> &CapabilityDigestKeyProvider {
+        &self.capability
+    }
+
+    /// Borrows idempotency keys for startup inventory construction.
+    pub(crate) fn idempotency(&self) -> &IdempotencyDigestKeyProvider {
+        &self.idempotency
+    }
+
+    /// Shares capability keys with the private staged-authorization driver.
+    pub(crate) fn shared_capability(&self) -> Arc<CapabilityDigestKeyProvider> {
+        Arc::clone(&self.capability)
+    }
+
+    fn into_parts(
+        self,
+    ) -> (
+        Arc<CapabilityDigestKeyProvider>,
+        Arc<IdempotencyDigestKeyProvider>,
+    ) {
+        (self.capability, self.idempotency)
+    }
+}
+
+impl fmt::Debug for ProductionDigestKeys {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("ProductionDigestKeys([REDACTED])")
+    }
+}
+
 /// Complete move-only input set for the one production graph construction.
 pub(crate) struct ProductionGraphBuilder {
     startup: CheckedRedbStartup,
     activator: RiffDbServiceActivator,
-    digest_keys: DigestKeyProviders,
+    digest_keys: ProductionDigestKeys,
     environment: Environment,
-    audience: Audience,
+    grpc_audience: Audience,
+    mcp_audience: Option<Audience>,
+    trusted_audiences: Vec<Audience>,
     process: ServiceProcessMetadata,
     identifiers: ProductionIdentifierSources,
     clocks: ProductionWallClocks,
     server_generation: ProductionServerGenerationSource,
     lifecycle: Arc<ProductionLifecycleRoute>,
+    maintenance: MaintenanceController,
 }
 
 impl ProductionGraphBuilder {
@@ -77,25 +151,33 @@ impl ProductionGraphBuilder {
     pub(crate) fn new(
         startup: CheckedRedbStartup,
         activator: RiffDbServiceActivator,
-        digest_keys: DigestKeyProviders,
+        digest_keys: ProductionDigestKeys,
         config: &ServerConfig,
         started_at: Timestamp,
         build: BuildInfo,
         identifiers: ProductionIdentifierSources,
         clocks: ProductionWallClocks,
         lifecycle: Arc<ProductionLifecycleRoute>,
+        maintenance: MaintenanceController,
     ) -> Self {
+        let grpc_audience = config.audience().clone();
+        let mcp_audience = config.mcp_audience().cloned();
+        let mut trusted_audiences = vec![grpc_audience.clone()];
+        trusted_audiences.extend(mcp_audience.clone());
         Self {
             startup,
             activator,
             digest_keys,
             environment: config.environment().clone(),
-            audience: config.audience().clone(),
+            grpc_audience,
+            mcp_audience,
+            trusted_audiences,
             process: ServiceProcessMetadata::new(started_at, build),
             identifiers,
             clocks,
             server_generation: ProductionServerGenerationSource::new(),
             lifecycle,
+            maintenance,
         }
     }
 
@@ -106,12 +188,15 @@ impl ProductionGraphBuilder {
             activator,
             digest_keys,
             environment,
-            audience,
+            grpc_audience,
+            mcp_audience,
+            trusted_audiences,
             process,
             identifiers,
             clocks,
             server_generation,
             lifecycle,
+            maintenance,
         } = self;
 
         let server_generation = server_generation
@@ -134,22 +219,28 @@ impl ProductionGraphBuilder {
                 .collect(),
         )
         .map_err(ProductionGraphBuildError::ReadableIdempotencyDigests)?;
-        let trusted_audiences = TrustedAudienceCatalog::new(vec![audience.clone()])
+        let trusted_audiences = TrustedAudienceCatalog::new(trusted_audiences)
             .map_err(ProductionGraphBuildError::TrustedAudience)?;
         let runtime = lifecycle.runtime_routing();
         let spawner = SupervisedServiceJobSpawner::from_current_runtime(runtime.clone())
             .map_err(ProductionGraphBuildError::Runtime)?;
 
         let storage = SharedRedbOperationalPorts::new(operational_ports);
+        let outbox_recovery = recover_outbox(storage.clone(), clocks.outbox());
+        let outbox_health = NoDestinationOutboxHealth::new(outbox_recovery);
+        outbox_health.refresh(&storage);
         let blocking = BlockingPortDriver::new(runtime.clone())
             .map_err(ProductionGraphBuildError::BlockingDriver)?;
         let notifications = FirstCommitNotificationHub::from_retained_application_sequence(
             retained_metadata.application_sequence(),
             runtime.clone(),
         );
+        let commit_notifications = ServerCommitNotificationSink::new(
+            notifications.clone(),
+            storage.clone(),
+            outbox_health.clone(),
+        );
 
-        let capability_keys = Arc::new(capability_keys);
-        let idempotency_keys = Arc::new(idempotency_keys);
         let idempotency_digests: Arc<dyn IdempotencyDigestProvider> = Arc::new(
             ServerIdempotencyDigestProvider::new(Arc::clone(&idempotency_keys)),
         );
@@ -159,15 +250,39 @@ impl ProductionGraphBuilder {
         let admission_clock = clocks.admission();
         let administration_clock = clocks.administration();
         let hosted_request_ids = identifiers.request_ids();
+        let incident_ids: Arc<dyn IncidentIdSource> = Arc::new(identifiers.incident_ids());
+        let observability = Arc::new(
+            Observability::new(Arc::clone(&incident_ids), MAX_TRACE_RECORDS)
+                .map_err(ProductionGraphBuildError::Observability)?,
+        );
+        for component in [
+            AuthoritativeComponent::Storage,
+            AuthoritativeComponent::Catalog,
+            AuthoritativeComponent::CommitCoordinator,
+        ] {
+            observability
+                .health()
+                .set_authoritative(component, AuthoritativeCondition::Healthy);
+        }
+        let authentication_telemetry: Arc<dyn AuthenticationTelemetry> = observability.clone();
+        let authorization_telemetry: Arc<dyn AuthorizationTelemetry> = observability.clone();
+        let conflict_observer: Arc<dyn ConflictObserver> = observability.clone();
+        let commit_telemetry: Arc<dyn CommitTelemetry> = observability.clone();
+        let mcp_telemetry: Arc<dyn McpTelemetry> = observability.clone();
 
-        let authenticator = Arc::new(ServerCredentialAuthenticator::new(
-            storage.clone(),
-            Arc::clone(&capability_keys),
-            authentication_clock,
-        ));
-        let authentication = AuthenticationContext::new(database_id, environment.clone(), audience);
+        let authenticator: Arc<dyn CredentialAuthenticator> =
+            Arc::new(ServerCredentialAuthenticator::new(
+                storage.clone(),
+                Arc::clone(&capability_keys),
+                authentication_clock,
+                authentication_telemetry,
+            ));
+        let authentication =
+            AuthenticationContext::new(database_id, environment.clone(), grpc_audience);
+        let hosted_authentication = mcp_audience
+            .map(|audience| AuthenticationContext::new(database_id, environment.clone(), audience));
         let security = CheckedGrpcSecurityContext::new(
-            authenticator,
+            Arc::clone(&authenticator),
             authentication,
             Arc::clone(&capability_keys),
         );
@@ -178,6 +293,7 @@ impl ProductionGraphBuilder {
             database_id,
             environment.clone(),
             trusted_audiences,
+            authorization_telemetry,
         ));
         let token_issuer: Arc<dyn CapabilityTokenIssuer> = Arc::new(
             ServerCapabilityTokenIssuer::new(Arc::clone(&capability_keys)),
@@ -195,30 +311,33 @@ impl ProductionGraphBuilder {
                 &blocking,
             ));
 
-        let conflicts: Arc<dyn ConflictManager> =
-            match ShardedConflictManager::new(ConflictManagerConfig::default()) {
-                Ok(conflicts) => Arc::new(conflicts),
-                Err(source) => {
-                    return Err(cleanup_after_conflict_start_failure(
-                        source,
-                        blocking,
-                        &notifications,
-                    ));
-                }
-            };
+        let conflicts: Arc<dyn ConflictManager> = match ShardedConflictManager::with_observer(
+            ConflictManagerConfig::default(),
+            conflict_observer,
+        ) {
+            Ok(conflicts) => Arc::new(conflicts),
+            Err(source) => {
+                return Err(cleanup_after_conflict_start_failure(
+                    source,
+                    blocking,
+                    &notifications,
+                ));
+            }
+        };
         let coordinator_capacity =
             CoordinatorWorkloadCapacity::new(P1_COORDINATOR_WORKLOAD_CAPACITY)
                 .expect("the fixed P1 coordinator workload capacity is nonzero");
-        let coordinator = match RunningCommandCoordinator::start(
+        let coordinator = match RunningCommandCoordinator::start_with_telemetry(
             coordinator_capacity,
             CoordinatorDurability::Sync,
-            storage,
+            storage.clone(),
             conflicts,
             Arc::new(admission_clock),
             Arc::new(administration_clock),
             Arc::new(authorization_clock),
             Arc::new(identifiers.provenance_ids()),
-            Arc::new(notifications.clone()),
+            Arc::new(commit_notifications),
+            commit_telemetry,
         ) {
             Ok(coordinator) => coordinator,
             Err(source) => {
@@ -229,6 +348,22 @@ impl ProductionGraphBuilder {
                 ));
             }
         };
+        let empty_projection_registry = ProjectionSchemaRegistry::new(Vec::new())
+            .expect("the empty checked projection registry is valid");
+        let projection_notifier = ProjectionNotifier::from_registry(&empty_projection_registry);
+        let projection_worker =
+            match RunningProjectionWorker::start(storage.clone(), projection_notifier.clone()) {
+                Ok(worker) => worker,
+                Err(source) => {
+                    return Err(cleanup_after_projection_start_failure(
+                        source,
+                        coordinator,
+                        blocking,
+                        &notifications,
+                    ));
+                }
+            };
+        let projection_status = projection_worker.status();
 
         let executors = ServiceExecutors::new(
             coordinator.administration_audit_executor(),
@@ -236,17 +371,27 @@ impl ProductionGraphBuilder {
             coordinator.command_executor(),
             coordinator.command_idempotency_inspector(idempotency_digests),
         );
-        let telemetry = Arc::new(ProductionServiceTelemetry::default());
-        let diagnostics = Arc::new(ProductionServiceDiagnostics::new(runtime.clone()));
-        let incident_ids: Arc<dyn IncidentIdSource> = Arc::new(identifiers.incident_ids());
-        let projection: Arc<dyn ProjectionQueryPort> = Arc::new(UnavailableProjectionPort);
+        let diagnostics = Arc::new(ProductionObservabilityDiagnostics::new(
+            runtime.clone(),
+            observability.clone(),
+        ));
+        let projection: Arc<dyn ProjectionQueryPort> = Arc::new(ServerProjectionQueryPort::new(
+            storage.clone(),
+            projection_notifier,
+            &blocking,
+        ));
+        let outbox = Arc::new(ServerOutboxStatusPort::new(storage, &blocking));
         let operational: Arc<dyn OperationalStatusPort> =
             Arc::new(ProductionOperationalStatusPort::new(
                 allocator_capacity,
                 runtime.clone(),
                 notifications.clone(),
+                outbox_health,
+                projection_status,
             ));
-        let health: Arc<dyn ServiceHealthHooks> = Arc::new(runtime.clone());
+        let health: Arc<dyn ServiceHealthHooks> = Arc::new(
+            ProductionObservabilityHealthHooks::new(runtime.clone(), observability.clone()),
+        );
         let service_spawner: Arc<dyn ServiceJobSpawner> = Arc::new(spawner.clone());
         let deadline_scheduler: Arc<dyn RequestDeadlineScheduler> =
             Arc::new(TokioRequestDeadlineScheduler);
@@ -254,23 +399,25 @@ impl ProductionGraphBuilder {
             Arc::new(ProductionCursorTokenGenerator::new());
         let cursor_clock: Arc<dyn CursorMonotonicClock> =
             Arc::new(ProductionCursorMonotonicClock::new());
+        let maintenance = maintenance.coordinator(&blocking);
         let providers = ServiceProviders::new(
             catalog,
             policy,
             authoritative,
             projection,
-            None,
+            Some(outbox),
             operational,
             token_issuer,
             incident_ids,
             Arc::clone(&diagnostics) as Arc<dyn ServiceDiagnostics>,
-            Arc::clone(&telemetry) as Arc<dyn ServiceTelemetry>,
+            observability.clone() as Arc<dyn ServiceTelemetry>,
             health,
             service_spawner,
             deadline_scheduler,
             cursor_tokens,
             cursor_clock,
-        );
+        )
+        .with_offline_maintenance(maintenance);
         let identity = ServiceIdentity::new(
             database_id,
             environment,
@@ -287,19 +434,66 @@ impl ProductionGraphBuilder {
             allocator_capacity,
         ) {
             lifecycle.stop();
-            let cleanup = cleanup_unpublished_graph(coordinator, blocking, &notifications);
+            let cleanup =
+                cleanup_unpublished_graph(projection_worker, coordinator, blocking, &notifications);
             return Err(ProductionGraphBuildError::Activation { source, cleanup });
         }
+        let lifecycle_for_hosted: Arc<dyn riffdb_api_grpc::GrpcLifecycleRoute> = lifecycle.clone();
+        let hosted_service: Arc<dyn ApplicationService> =
+            Arc::new(LifecycleApplicationService::new(lifecycle_for_hosted));
 
         Ok(RunningProductionGraph {
             lifecycle,
             spawner,
             notifications,
-            _hosted_request_ids: hosted_request_ids,
+            hosted_authenticator: authenticator,
+            hosted_authentication,
+            hosted_service,
+            hosted_request_ids,
+            mcp_telemetry,
+            projection_worker: Some(projection_worker),
             coordinator: Some(coordinator),
             blocking: Some(blocking),
         })
     }
+}
+
+fn recover_outbox(
+    storage: SharedRedbOperationalPorts,
+    mut clock: crate::clocks::ServerOutboxClock,
+) -> OutboxRecoveryReadiness {
+    let mut failpoints = NoOutboxFailpoints;
+    let mut telemetry = NoOutboxTelemetry;
+    match RecoveringOutbox::after_authoritative_readiness(storage).recover(
+        &server_outbox_recovery_policy(),
+        &mut clock,
+        &mut failpoints,
+        &mut telemetry,
+    ) {
+        OutboxRecoveryResult::Ready { .. } => OutboxRecoveryReadiness::Ready,
+        OutboxRecoveryResult::Degraded { .. } => OutboxRecoveryReadiness::Degraded,
+    }
+}
+
+fn server_outbox_recovery_policy() -> DeliveryPolicy {
+    let destination = OutboxDestinationIdV1::new("server/no-destination-recovery")
+        .expect("static recovery destination identity is valid");
+    let timeout = NonZeroU32::new(5).expect("static timeout is nonzero");
+    let lease = NonZeroU32::new(10).expect("static lease is nonzero");
+    let attempts = NonZeroU32::new(32).expect("static attempt bound is nonzero");
+    let retry_delays = vec![NonZeroU32::MIN; 31];
+    let scan_limit =
+        OutboxPageLimit::new(NonZeroU16::new(500).expect("static page limit is nonzero"))
+            .expect("static page limit is bounded");
+    DeliveryPolicy::new(
+        destination,
+        timeout,
+        lease,
+        attempts,
+        retry_delays,
+        scan_limit,
+    )
+    .expect("static recovery policy is valid")
 }
 
 impl fmt::Debug for ProductionGraphBuilder {
@@ -314,13 +508,28 @@ pub(crate) struct RunningProductionGraph {
     lifecycle: Arc<ProductionLifecycleRoute>,
     spawner: SupervisedServiceJobSpawner,
     notifications: FirstCommitNotificationHub,
-    // WP-185 injects this retained wrapper into the hosted MCP consumer port.
-    _hosted_request_ids: ServerRequestIdSource,
+    hosted_authenticator: Arc<dyn CredentialAuthenticator>,
+    hosted_authentication: Option<AuthenticationContext>,
+    hosted_service: Arc<dyn ApplicationService>,
+    hosted_request_ids: ServerRequestIdSource,
+    mcp_telemetry: Arc<dyn McpTelemetry>,
+    projection_worker: Option<RunningProjectionWorker>,
     coordinator: Option<RunningCommandCoordinator>,
     blocking: Option<BlockingPortDriver>,
 }
 
 impl RunningProductionGraph {
+    /// Returns the optional hosted-MCP dependencies over the shared lifecycle.
+    pub(crate) fn hosted_mcp_dependencies(&self) -> Option<HostedMcpDependencies> {
+        Some(HostedMcpDependencies {
+            authenticator: Arc::clone(&self.hosted_authenticator),
+            authentication: self.hosted_authentication.clone()?,
+            service: Arc::clone(&self.hosted_service),
+            request_ids: self.hosted_request_ids.clone(),
+            telemetry: Arc::clone(&self.mcp_telemetry),
+        })
+    }
+
     /// Stops new RPC admission and terminalizes live commit streams.
     ///
     /// The remaining graph stays alive so handlers admitted before closure can
@@ -341,6 +550,12 @@ impl RunningProductionGraph {
         self.lifecycle.stop();
         self.spawner.wait_for_idle().await;
 
+        let projection = self
+            .projection_worker
+            .take()
+            .expect("a running graph retains one projection worker")
+            .shutdown()
+            .err();
         let notification_failed = self.notifications.shutdown().is_err();
         let coordinator = self
             .coordinator
@@ -354,7 +569,56 @@ impl RunningProductionGraph {
             .expect("a running graph retains one blocking driver")
             .shutdown_and_drain()
             .err();
-        shutdown_result(notification_failed, coordinator, blocking)
+        shutdown_result(projection, notification_failed, coordinator, blocking)
+    }
+
+    /// Maintenance-only shutdown with a closed boundary between fully drained
+    /// workers and closing the final blocking storage ports.
+    pub(crate) async fn shutdown_for_maintenance(
+        mut self,
+        recovery: &crate::maintenance_recovery_controller::MaintenanceRecoveryController,
+    ) -> Result<(), ProductionGraphShutdownError> {
+        self.lifecycle.stop();
+        self.spawner.wait_for_idle().await;
+
+        let projection = self
+            .projection_worker
+            .take()
+            .expect("a running graph retains one projection worker")
+            .shutdown()
+            .err();
+        let notification_failed = self.notifications.shutdown().is_err();
+        let coordinator = self
+            .coordinator
+            .take()
+            .expect("a running graph retains one coordinator")
+            .shutdown()
+            .err();
+        recovery.reached(
+            crate::maintenance_recovery_controller::MaintenanceRecoveryBoundary::DrainComplete,
+        );
+        let blocking = self
+            .blocking
+            .take()
+            .expect("a running graph retains one blocking driver")
+            .shutdown_and_drain()
+            .err();
+        shutdown_result(projection, notification_failed, coordinator, blocking)
+    }
+}
+
+/// Cloned least-authority inputs for the optional loopback MCP transport.
+pub(crate) struct HostedMcpDependencies {
+    pub(crate) authenticator: Arc<dyn CredentialAuthenticator>,
+    pub(crate) authentication: AuthenticationContext,
+    pub(crate) service: Arc<dyn ApplicationService>,
+    pub(crate) request_ids: ServerRequestIdSource,
+    pub(crate) telemetry: Arc<dyn McpTelemetry>,
+}
+
+impl fmt::Debug for HostedMcpDependencies {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("HostedMcpDependencies([CAPABILITIES])")
     }
 }
 
@@ -373,7 +637,7 @@ fn cleanup_after_conflict_start_failure(
     let blocking = blocking.shutdown_and_drain().err();
     ProductionGraphBuildError::ConflictManager {
         source,
-        cleanup: shutdown_result(notification_failed, None, blocking).err(),
+        cleanup: shutdown_result(None, notification_failed, None, blocking).err(),
     }
 }
 
@@ -386,30 +650,49 @@ fn cleanup_after_coordinator_start_failure(
     let blocking = blocking.shutdown_and_drain().err();
     ProductionGraphBuildError::Coordinator {
         source,
-        cleanup: shutdown_result(notification_failed, None, blocking).err(),
+        cleanup: shutdown_result(None, notification_failed, None, blocking).err(),
+    }
+}
+
+fn cleanup_after_projection_start_failure(
+    source: ProjectionWorkerStartError,
+    coordinator: RunningCommandCoordinator,
+    blocking: BlockingPortDriver,
+    notifications: &FirstCommitNotificationHub,
+) -> ProductionGraphBuildError {
+    let notification_failed = notifications.shutdown().is_err();
+    let coordinator = coordinator.shutdown().err();
+    let blocking = blocking.shutdown_and_drain().err();
+    ProductionGraphBuildError::ProjectionWorker {
+        source,
+        cleanup: shutdown_result(None, notification_failed, coordinator, blocking).err(),
     }
 }
 
 fn cleanup_unpublished_graph(
+    projection_worker: RunningProjectionWorker,
     coordinator: RunningCommandCoordinator,
     blocking: BlockingPortDriver,
     notifications: &FirstCommitNotificationHub,
 ) -> Option<ProductionGraphShutdownError> {
+    let projection = projection_worker.shutdown().err();
     let notification_failed = notifications.shutdown().is_err();
     let coordinator = coordinator.shutdown().err();
     let blocking = blocking.shutdown_and_drain().err();
-    shutdown_result(notification_failed, coordinator, blocking).err()
+    shutdown_result(projection, notification_failed, coordinator, blocking).err()
 }
 
 fn shutdown_result(
+    projection: Option<ProjectionWorkerShutdownError>,
     notification_failed: bool,
     coordinator: Option<CoordinatorShutdownError>,
     blocking: Option<BlockingPortDriverShutdownError>,
 ) -> Result<(), ProductionGraphShutdownError> {
-    if !notification_failed && coordinator.is_none() && blocking.is_none() {
+    if projection.is_none() && !notification_failed && coordinator.is_none() && blocking.is_none() {
         Ok(())
     } else {
         Err(ProductionGraphShutdownError {
+            projection,
             notification_failed,
             coordinator,
             blocking,
@@ -423,6 +706,7 @@ pub(crate) enum ProductionGraphBuildError {
     ReadableIdempotencyDigests(StorageValueError),
     TrustedAudience(CapabilityMutationFactsError),
     Runtime(RuntimeSupportError),
+    Observability(ObservabilityBuildError),
     BlockingDriver(BlockingPortDriverStartError),
     ConflictManager {
         source: ConflictManagerBuildError,
@@ -430,6 +714,10 @@ pub(crate) enum ProductionGraphBuildError {
     },
     Coordinator {
         source: CoordinatorStartError,
+        cleanup: Option<ProductionGraphShutdownError>,
+    },
+    ProjectionWorker {
+        source: ProjectionWorkerStartError,
         cleanup: Option<ProductionGraphShutdownError>,
     },
     Activation {
@@ -449,11 +737,13 @@ impl fmt::Display for ProductionGraphBuildError {
         let cleanup_failed = match self {
             Self::ConflictManager { cleanup, .. }
             | Self::Coordinator { cleanup, .. }
+            | Self::ProjectionWorker { cleanup, .. }
             | Self::Activation { cleanup, .. } => cleanup.is_some(),
             Self::ServerGeneration(_)
             | Self::ReadableIdempotencyDigests(_)
             | Self::TrustedAudience(_)
             | Self::Runtime(_)
+            | Self::Observability(_)
             | Self::BlockingDriver(_) => false,
         };
         if cleanup_failed {
@@ -472,9 +762,11 @@ impl Error for ProductionGraphBuildError {
             Self::ReadableIdempotencyDigests(source) => Some(source),
             Self::TrustedAudience(source) => Some(source),
             Self::Runtime(source) => Some(source),
+            Self::Observability(source) => Some(source),
             Self::BlockingDriver(source) => Some(source),
             Self::ConflictManager { source, .. } => Some(source),
             Self::Coordinator { source, .. } => Some(source),
+            Self::ProjectionWorker { source, .. } => Some(source),
             Self::Activation { source, .. } => Some(source),
         }
     }
@@ -483,6 +775,7 @@ impl Error for ProductionGraphBuildError {
 /// Aggregate evidence that every shutdown stage was attempted in order.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct ProductionGraphShutdownError {
+    projection: Option<ProjectionWorkerShutdownError>,
     notification_failed: bool,
     coordinator: Option<CoordinatorShutdownError>,
     blocking: Option<BlockingPortDriverShutdownError>,
@@ -490,7 +783,8 @@ pub(crate) struct ProductionGraphShutdownError {
 
 impl fmt::Display for ProductionGraphShutdownError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let _failed_stages = usize::from(self.notification_failed)
+        let _failed_stages = usize::from(self.projection.is_some())
+            + usize::from(self.notification_failed)
             + usize::from(self.coordinator.is_some())
             + usize::from(self.blocking.is_some());
         formatter.write_str("the production component graph did not shut down cleanly")
@@ -525,8 +819,10 @@ mod tests {
             "SharedRedbOperationalPorts::new(",
             "BlockingPortDriver::new(",
             "FirstCommitNotificationHub::from_retained_application_sequence(",
-            "ShardedConflictManager::new(",
-            "RunningCommandCoordinator::start(",
+            "Observability::new(",
+            "ShardedConflictManager::with_observer(",
+            "RunningCommandCoordinator::start_with_telemetry(",
+            "RunningProjectionWorker::start(",
             "CheckedGrpcSecurityContext::new(",
             "activator.activate(",
         ] {
@@ -566,13 +862,14 @@ mod tests {
         let source = production_source();
         assert_eq!(source.matches("identifiers.request_ids()").count(), 1);
         assert!(source.contains("let hosted_request_ids = identifiers.request_ids();"));
-        assert!(source.contains("_hosted_request_ids: ServerRequestIdSource,"));
-        assert!(source.contains("_hosted_request_ids: hosted_request_ids,"));
+        assert!(source.contains("hosted_request_ids: ServerRequestIdSource,"));
+        assert!(source.contains("hosted_request_ids,"));
+        assert!(source.contains("request_ids: self.hosted_request_ids.clone(),"));
         assert!(!source.contains("next_request_id("));
     }
 
     #[test]
-    fn shutdown_order_is_route_jobs_notifications_coordinator_then_ports() {
+    fn shutdown_order_is_route_jobs_workers_notifications_coordinator_then_ports() {
         let source = production_source();
         let body = source
             .split_once("pub(crate) async fn shutdown")
@@ -580,13 +877,17 @@ mod tests {
             .1;
         let route = body.find("self.lifecycle.stop()").expect("route close");
         let jobs = body.find("wait_for_idle().await").expect("job drain");
+        let projection = body
+            .find("let projection = self")
+            .expect("projection worker drain");
         let notifications = body.find("notifications.shutdown()").expect("hub stop");
         let coordinator = body
             .find("let coordinator = self")
             .expect("coordinator drain");
         let ports = body.find("let blocking = self").expect("port drain");
         assert!(route < jobs);
-        assert!(jobs < notifications);
+        assert!(jobs < projection);
+        assert!(projection < notifications);
         assert!(notifications < coordinator);
         assert!(coordinator < ports);
     }

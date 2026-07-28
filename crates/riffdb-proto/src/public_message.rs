@@ -6,12 +6,13 @@ use std::fmt;
 
 use prost::Message;
 use riffdb_types::{
-    AgentSessionId, Audience, CapabilityId, EntityKey, IndexEntryKey, MAX_ACTOR_ID_BYTES,
-    MAX_CAPABILITY_AUDIENCES, MAX_CAPABILITY_FIELD_VISIBILITY, MAX_CAPABILITY_LIFETIME_SECONDS,
-    MAX_CAPABILITY_PARTITIONS, MAX_CAPABILITY_PAYLOAD_BYTES, MAX_CAPABILITY_PERMISSIONS,
-    MAX_COMMAND_CONFLICT_KEYS_V1, MAX_CONTRACT_LINEAGE_BYTES, MAX_IDEMPOTENCY_KEY_BYTES,
-    MAX_KEY_BYTES, MAX_PROJECTION_GROUP_COMPONENTS, MAX_TENANT_ID_BYTES, PartitionKey,
-    ProvenanceId, RequestId, Timestamp, hash_schema,
+    AgentSessionId, Audience, BackupNameV1, CapabilityId, EntityKey, IndexEntryKey,
+    MAX_ACTOR_ID_BYTES, MAX_CAPABILITY_AUDIENCES, MAX_CAPABILITY_FIELD_VISIBILITY,
+    MAX_CAPABILITY_LIFETIME_SECONDS, MAX_CAPABILITY_PARTITIONS, MAX_CAPABILITY_PAYLOAD_BYTES,
+    MAX_CAPABILITY_PERMISSIONS, MAX_COMMAND_CONFLICT_KEYS_V1, MAX_CONTRACT_LINEAGE_BYTES,
+    MAX_IDEMPOTENCY_KEY_BYTES, MAX_KEY_BYTES, MAX_PROJECTION_GROUP_COMPONENTS, MAX_TENANT_ID_BYTES,
+    OfflineMaintenanceOperationId, PartitionKey, ProvenanceId, RequestId, Timestamp, hash_schema,
+    offline_maintenance_input_hash,
 };
 
 use crate::command::validate_provenance_uri;
@@ -180,6 +181,101 @@ pub fn validate_create_capability_exchange(
         Some(v1::create_capability_response::Result::Normal(_))
     );
     if normal_request != normal_response {
+        return Err(PublicWireError::InconsistentFields);
+    }
+    Ok(())
+}
+
+/// Validates create-backup request/response semantic identity.
+pub fn validate_create_offline_backup_exchange(
+    request: &v1::CreateOfflineBackupRequest,
+    response: &v1::CreateOfflineBackupResponse,
+) -> Result<(), PublicWireError> {
+    validate_public_message(request)?;
+    validate_public_message(response)?;
+    validate_offline_maintenance_exchange(
+        &request.operation_id,
+        &request.backup_name,
+        riffdb_types::OfflineMaintenanceOperationKind::CreateBackup,
+        riffdb_types::OfflineMaintenanceReplacementConfirmation::NotProvided,
+        response
+            .operation
+            .as_ref()
+            .ok_or(PublicWireError::MissingRequiredField)?,
+    )
+}
+
+/// Validates restore-backup request/response semantic identity.
+pub fn validate_restore_offline_backup_exchange(
+    request: &v1::RestoreOfflineBackupRequest,
+    response: &v1::RestoreOfflineBackupResponse,
+) -> Result<(), PublicWireError> {
+    validate_public_message(request)?;
+    validate_public_message(response)?;
+    let confirmation = match v1::OfflineMaintenanceReplacementConfirmation::try_from(
+        request.replacement_confirmation,
+    )
+    .map_err(|_| PublicWireError::InvalidEnum)?
+    {
+        v1::OfflineMaintenanceReplacementConfirmation::Unspecified => {
+            riffdb_types::OfflineMaintenanceReplacementConfirmation::NotProvided
+        }
+        v1::OfflineMaintenanceReplacementConfirmation::AllowReplaceNonemptyTarget => {
+            riffdb_types::OfflineMaintenanceReplacementConfirmation::AllowReplaceNonemptyTarget
+        }
+    };
+    validate_offline_maintenance_exchange(
+        &request.operation_id,
+        &request.backup_name,
+        riffdb_types::OfflineMaintenanceOperationKind::RestoreBackup,
+        confirmation,
+        response
+            .operation
+            .as_ref()
+            .ok_or(PublicWireError::MissingRequiredField)?,
+    )
+}
+
+/// Validates maintenance-poll request/response identity without expanding `not_found`.
+pub fn validate_get_offline_maintenance_operation_exchange(
+    request: &v1::GetOfflineMaintenanceOperationRequest,
+    response: &v1::GetOfflineMaintenanceOperationResponse,
+) -> Result<(), PublicWireError> {
+    validate_public_message(request)?;
+    validate_public_message(response)?;
+    if let Some(v1::get_offline_maintenance_operation_response::Result::Found(operation)) =
+        &response.result
+        && operation.operation_id != request.operation_id
+    {
+        return Err(PublicWireError::InconsistentFields);
+    }
+    Ok(())
+}
+
+fn validate_offline_maintenance_exchange(
+    operation_id: &[u8],
+    backup_name: &str,
+    expected_kind: riffdb_types::OfflineMaintenanceOperationKind,
+    confirmation: riffdb_types::OfflineMaintenanceReplacementConfirmation,
+    operation: &v1::OfflineMaintenanceOperation,
+) -> Result<(), PublicWireError> {
+    let checked_name =
+        BackupNameV1::new(backup_name.to_owned()).map_err(|_| PublicWireError::InvalidIdentity)?;
+    let wire_kind = match expected_kind {
+        riffdb_types::OfflineMaintenanceOperationKind::CreateBackup => {
+            v1::OfflineMaintenanceOperationKind::CreateBackup
+        }
+        riffdb_types::OfflineMaintenanceOperationKind::RestoreBackup => {
+            v1::OfflineMaintenanceOperationKind::RestoreBackup
+        }
+    };
+    let expected_hash =
+        offline_maintenance_input_hash(expected_kind, &checked_name, confirmation).into_bytes();
+    if operation.operation_id != operation_id
+        || operation.kind != wire_kind as i32
+        || operation.backup_name != backup_name
+        || operation.input_hash != expected_hash
+    {
         return Err(PublicWireError::InconsistentFields);
     }
     Ok(())
@@ -2762,6 +2858,132 @@ fn validate_list_pending_outbox_deliveries_response(
     message: &v1::ListPendingOutboxDeliveriesResponse,
 ) -> Result<(), PublicWireError> {
     validate_outbox_page(message.page.as_ref())
+}
+
+fn offline_maintenance_operation_id(bytes: &[u8]) -> Result<(), PublicWireError> {
+    let bytes: [u8; 16] = bytes
+        .try_into()
+        .map_err(|_| PublicWireError::InvalidIdentity)?;
+    OfflineMaintenanceOperationId::from_bytes(bytes)
+        .map(|_| ())
+        .map_err(|_| PublicWireError::InvalidIdentity)
+}
+
+fn validate_backup_name_v1(value: &str) -> Result<(), PublicWireError> {
+    BackupNameV1::new(value.to_owned())
+        .map(|_| ())
+        .map_err(|_| PublicWireError::InvalidIdentity)
+}
+
+fn validate_offline_maintenance_operation(
+    operation: &v1::OfflineMaintenanceOperation,
+) -> Result<(), PublicWireError> {
+    offline_maintenance_operation_id(&operation.operation_id)?;
+    if !matches!(
+        v1::OfflineMaintenanceOperationKind::try_from(operation.kind),
+        Ok(v1::OfflineMaintenanceOperationKind::CreateBackup
+            | v1::OfflineMaintenanceOperationKind::RestoreBackup)
+    ) {
+        return Err(PublicWireError::InvalidEnum);
+    }
+    validate_backup_name_v1(&operation.backup_name)?;
+    hash(&operation.input_hash)?;
+    let phase = v1::OfflineMaintenancePhase::try_from(operation.phase)
+        .map_err(|_| PublicWireError::InvalidEnum)?;
+    if phase == v1::OfflineMaintenancePhase::Unspecified {
+        return Err(PublicWireError::InvalidEnum);
+    }
+    let failure = v1::OfflineMaintenanceFailureClass::try_from(operation.failure)
+        .map_err(|_| PublicWireError::InvalidEnum)?;
+    if (phase == v1::OfflineMaintenancePhase::FailedClosed)
+        != (failure != v1::OfflineMaintenanceFailureClass::Unspecified)
+    {
+        return Err(PublicWireError::InconsistentFields);
+    }
+    Ok(())
+}
+
+fn validate_offline_maintenance_start(
+    disposition: i32,
+    operation: Option<&v1::OfflineMaintenanceOperation>,
+) -> Result<(), PublicWireError> {
+    let operation = operation.ok_or(PublicWireError::MissingRequiredField)?;
+    validate_offline_maintenance_operation(operation)?;
+    let disposition = v1::OfflineMaintenanceStartDisposition::try_from(disposition)
+        .map_err(|_| PublicWireError::InvalidEnum)?;
+    let terminal_phase = matches!(
+        v1::OfflineMaintenancePhase::try_from(operation.phase),
+        Ok(v1::OfflineMaintenancePhase::Succeeded | v1::OfflineMaintenancePhase::FailedClosed)
+    );
+    match disposition {
+        v1::OfflineMaintenanceStartDisposition::Accepted
+        | v1::OfflineMaintenanceStartDisposition::AlreadyAccepted
+            if !terminal_phase =>
+        {
+            Ok(())
+        }
+        v1::OfflineMaintenanceStartDisposition::Terminal if terminal_phase => Ok(()),
+        _ => Err(PublicWireError::InconsistentFields),
+    }
+}
+
+fn validate_create_offline_backup_request(
+    message: &v1::CreateOfflineBackupRequest,
+) -> Result<(), PublicWireError> {
+    request_id(&message.request_id)?;
+    offline_maintenance_operation_id(&message.operation_id)?;
+    validate_backup_name_v1(&message.backup_name)
+}
+
+fn validate_create_offline_backup_response(
+    message: &v1::CreateOfflineBackupResponse,
+) -> Result<(), PublicWireError> {
+    validate_offline_maintenance_start(message.disposition, message.operation.as_ref())
+}
+
+fn validate_restore_offline_backup_request(
+    message: &v1::RestoreOfflineBackupRequest,
+) -> Result<(), PublicWireError> {
+    request_id(&message.request_id)?;
+    offline_maintenance_operation_id(&message.operation_id)?;
+    validate_backup_name_v1(&message.backup_name)?;
+    if matches!(
+        v1::OfflineMaintenanceReplacementConfirmation::try_from(message.replacement_confirmation),
+        Ok(v1::OfflineMaintenanceReplacementConfirmation::Unspecified
+            | v1::OfflineMaintenanceReplacementConfirmation::AllowReplaceNonemptyTarget)
+    ) {
+        Ok(())
+    } else {
+        Err(PublicWireError::InvalidEnum)
+    }
+}
+
+fn validate_restore_offline_backup_response(
+    message: &v1::RestoreOfflineBackupResponse,
+) -> Result<(), PublicWireError> {
+    validate_offline_maintenance_start(message.disposition, message.operation.as_ref())
+}
+
+fn validate_get_offline_maintenance_operation_request(
+    message: &v1::GetOfflineMaintenanceOperationRequest,
+) -> Result<(), PublicWireError> {
+    request_id(&message.request_id)?;
+    offline_maintenance_operation_id(&message.operation_id)
+}
+
+fn validate_get_offline_maintenance_operation_response(
+    message: &v1::GetOfflineMaintenanceOperationResponse,
+) -> Result<(), PublicWireError> {
+    match message
+        .result
+        .as_ref()
+        .ok_or(PublicWireError::MissingRequiredField)?
+    {
+        v1::get_offline_maintenance_operation_response::Result::NotFound(_) => Ok(()),
+        v1::get_offline_maintenance_operation_response::Result::Found(operation) => {
+            validate_offline_maintenance_operation(operation)
+        }
+    }
 }
 
 fn schema_key(key: Option<&v1::SchemaArtifactKey>) -> Result<(u8, u32), PublicWireError> {
@@ -5435,6 +5657,46 @@ fn preflight_list_outbox_response(input: &[u8]) -> Result<(), PublicWireError> {
     )
 }
 
+fn preflight_offline_maintenance_operation(input: &[u8]) -> Result<(), PublicWireError> {
+    preflight_nested_message(input, 6, &[], &[], &[], &[])
+}
+
+fn preflight_offline_maintenance_start_response(input: &[u8]) -> Result<(), PublicWireError> {
+    preflight_nested_message(
+        input,
+        2,
+        &[],
+        &[],
+        &[NestedRule {
+            field: 2,
+            preflight: preflight_offline_maintenance_operation,
+        }],
+        &[],
+    )
+}
+
+fn preflight_get_offline_maintenance_operation_response(
+    input: &[u8],
+) -> Result<(), PublicWireError> {
+    preflight_nested_message(
+        input,
+        2,
+        &[],
+        &[&[1, 2]],
+        &[
+            NestedRule {
+                field: 1,
+                preflight: preflight_unit,
+            },
+            NestedRule {
+                field: 2,
+                preflight: preflight_offline_maintenance_operation,
+            },
+        ],
+        &[],
+    )
+}
+
 fn preflight_generated_schema_identity(input: &[u8]) -> Result<(), PublicWireError> {
     preflight_nested_message(
         input,
@@ -6380,6 +6642,60 @@ impl_public_message!(
     &[],
     preflight_list_outbox_response,
     validate_list_pending_outbox_deliveries_response
+);
+impl_public_message!(
+    v1::CreateOfflineBackupRequest,
+    MAX_PUBLIC_REQUEST_BYTES,
+    3,
+    &[],
+    &[],
+    preflight_noop,
+    validate_create_offline_backup_request
+);
+impl_public_message!(
+    v1::CreateOfflineBackupResponse,
+    MAX_PUBLIC_RESPONSE_BYTES,
+    2,
+    &[],
+    &[],
+    preflight_offline_maintenance_start_response,
+    validate_create_offline_backup_response
+);
+impl_public_message!(
+    v1::RestoreOfflineBackupRequest,
+    MAX_PUBLIC_REQUEST_BYTES,
+    4,
+    &[],
+    &[],
+    preflight_noop,
+    validate_restore_offline_backup_request
+);
+impl_public_message!(
+    v1::RestoreOfflineBackupResponse,
+    MAX_PUBLIC_RESPONSE_BYTES,
+    2,
+    &[],
+    &[],
+    preflight_offline_maintenance_start_response,
+    validate_restore_offline_backup_response
+);
+impl_public_message!(
+    v1::GetOfflineMaintenanceOperationRequest,
+    MAX_PUBLIC_REQUEST_BYTES,
+    2,
+    &[],
+    &[],
+    preflight_noop,
+    validate_get_offline_maintenance_operation_request
+);
+impl_public_message!(
+    v1::GetOfflineMaintenanceOperationResponse,
+    MAX_PUBLIC_RESPONSE_BYTES,
+    2,
+    &[],
+    &[&[1, 2]],
+    preflight_get_offline_maintenance_operation_response,
+    validate_get_offline_maintenance_operation_response
 );
 
 impl PublicMessage for v1::ExecuteCommandRequest {

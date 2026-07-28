@@ -609,7 +609,7 @@ fn analyze_record(
     })
 }
 
-fn validate_static_value(
+pub(crate) fn validate_static_value(
     schema: &SchemaIr,
     value_type: &ValueType,
     value: &CanonicalValue,

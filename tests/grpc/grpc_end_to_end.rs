@@ -5,15 +5,17 @@
 
 use std::collections::BTreeSet;
 use std::num::NonZeroU16;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
+use riffdb_api_grpc::generated::admin_service_client::AdminServiceClient;
 use riffdb_api_grpc::generated::contract_service_client::ContractServiceClient;
 use riffdb_api_grpc::generated::query_service_client::QueryServiceClient;
 use riffdb_api_grpc::{
-    CheckedGrpcSecurityContext, DEADLINE_EXCEEDED_MESSAGE, GrpcApplication,
-    GrpcBootstrapCompletion, GrpcDeploymentCompletion, GrpcLifecycleRoute, GrpcRequestLimits,
-    UNAUTHENTICATED_MESSAGE,
+    CheckedGrpcRestoreRetrySecurityContext, CheckedGrpcSecurityContext, DEADLINE_EXCEEDED_MESSAGE,
+    GrpcApplication, GrpcBootstrapCompletion, GrpcDeploymentCompletion, GrpcLifecycleRoute,
+    GrpcOfflineMaintenanceOperation, GrpcRequestLimits, UNAUTHENTICATED_MESSAGE,
 };
 use riffdb_auth::{
     AuthenticatedPrincipal, AuthenticationContext, AuthenticationFailure,
@@ -32,23 +34,30 @@ use riffdb_service::{
     ContractDescriptor, CreateCapabilityInvocation, CreateCapabilityResult, CursorToken,
     DiscoverCommandToolsRequest, DiscoverCommandToolsResult, DiscoverResourcesRequest,
     DiscoverResourcesResult, DiscoveryApplication, DiscoveryCatalogFence, DiscoveryRepresentation,
-    FixedToolKind, GetContractVersionResult, GetProjectionStatusResult, HealthContext,
-    HealthRequest, HealthResult, ListPendingOutboxDeliveriesResult, OperationSchemaCatalog, Page,
-    PageLimit, ProjectionFailureCode, ProjectionPageFence, ProjectionRow, ProjectionStatusSnapshot,
-    ProjectionUnavailableReason, QueryApplication, QueryProjectionReady, QueryProjectionRequest,
-    QueryProjectionResult, RequestContext, ResolveCommandOutcomeResult,
-    ResolveCommandOutcomeSelectorRef, ResourceDescriptor, ServiceFailure, ServiceFuture,
+    FixedToolKind, GetContractVersionResult, GetOfflineMaintenanceOperationResult,
+    GetProjectionStatusResult, HealthContext, HealthRequest, HealthResult,
+    ListPendingOutboxDeliveriesResult, OfflineMaintenanceApplication,
+    OfflineMaintenanceObservationPhase, OfflineMaintenanceOperationObservation,
+    OfflineMaintenanceStartDisposition, OfflineMaintenanceStartResult, OperationSchemaCatalog,
+    Page, PageLimit, ProjectionFailureCode, ProjectionPageFence, ProjectionRow,
+    ProjectionStatusSnapshot, ProjectionUnavailableReason, QueryApplication, QueryProjectionReady,
+    QueryProjectionRequest, QueryProjectionResult, RecoveryOfflineMaintenanceApplication,
+    RecoveryRestoreOfflineBackupInvocation, RequestContext, ResolveCommandOutcomeResult,
+    ResolveCommandOutcomeSelectorRef, ResourceDescriptor, RestoreOfflineBackupInvocation,
+    RestoreRetryOfflineMaintenanceApplication, ServiceFailure, ServiceFuture,
     TraceProvenanceResult,
 };
 use riffdb_testkit::authorization::{
     AuthorizationFixture, AuthorizationFixtureConfig, AuthorizationFixtureTimes,
 };
 use riffdb_types::{
-    ActorId, ActorKind, Audience, CapabilityGrantV1, CapabilityPermissionsV1, CommitSequence,
-    ContractBundleHash, ContractLineage, ContractPlanRootHash, ContractVersion, DatabaseId,
-    Environment, FrontierPosition, PartitionScopeV1, ProjectionGeneration, ProjectionId,
-    ProjectionIdentity, ProjectionPlanHash, RequestId, ServiceIngressKindV1, ServiceOperationV1,
-    SourceHash, TenantScope, Timestamp,
+    ActorId, ActorKind, Audience, BackupNameV1, CapabilityGrantV1, CapabilityPermissionsV1,
+    CommitSequence, ContractBundleHash, ContractLineage, ContractPlanRootHash, ContractVersion,
+    DatabaseId, Environment, FrontierPosition, OfflineMaintenanceInputHash,
+    OfflineMaintenanceOperationId, OfflineMaintenanceOperationKind,
+    OfflineMaintenanceReplacementConfirmation, PartitionScopeV1, ProjectionGeneration,
+    ProjectionId, ProjectionIdentity, ProjectionPlanHash, RequestId, ServiceIngressKindV1,
+    ServiceOperationV1, SourceHash, TenantScope, Timestamp, offline_maintenance_input_hash,
 };
 use tokio::sync::oneshot;
 use tonic::metadata::MetadataValue;
@@ -79,6 +88,7 @@ struct ProjectionService {
     pending_probe: Mutex<Option<PendingProbe>>,
     current_authority: Option<Arc<AuthorizationFixture>>,
     resource_cursors: Mutex<ResourceCursorState>,
+    maintenance_invocations: Mutex<Vec<ObservedMaintenanceInvocation>>,
 }
 
 struct PendingProbe {
@@ -92,6 +102,22 @@ struct ResourceCursorState {
     valid: BTreeSet<CursorToken>,
 }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+enum ObservedMaintenanceInvocation {
+    Create {
+        request_id: RequestId,
+        operation_id: OfflineMaintenanceOperationId,
+        backup_name: String,
+    },
+    Restore {
+        redacted_invocation: String,
+    },
+    Get {
+        request_id: RequestId,
+        operation_id: OfflineMaintenanceOperationId,
+    },
+}
+
 impl ProjectionService {
     fn new() -> Self {
         Self {
@@ -102,6 +128,7 @@ impl ProjectionService {
             pending_probe: Mutex::new(None),
             current_authority: None,
             resource_cursors: Mutex::new(ResourceCursorState::default()),
+            maintenance_invocations: Mutex::new(Vec::new()),
         }
     }
 
@@ -116,6 +143,13 @@ impl ProjectionService {
         self.observed
             .lock()
             .expect("observation lock remains available")
+            .clone()
+    }
+
+    fn maintenance_invocations(&self) -> Vec<ObservedMaintenanceInvocation> {
+        self.maintenance_invocations
+            .lock()
+            .expect("maintenance observation lock remains available")
             .clone()
     }
 
@@ -447,6 +481,69 @@ impl AdministrationApplication for ProjectionService {
     }
 }
 
+impl OfflineMaintenanceApplication for ProjectionService {
+    fn create_offline_backup(
+        &self,
+        context: RequestContext,
+        request: riffdb_service::CreateOfflineBackupRequest,
+    ) -> ServiceFuture<'_, OfflineMaintenanceStartResult> {
+        self.maintenance_invocations
+            .lock()
+            .expect("maintenance observation lock remains available")
+            .push(ObservedMaintenanceInvocation::Create {
+                request_id: context.request_id(),
+                operation_id: request.operation_id(),
+                backup_name: request.backup_name().as_str().to_owned(),
+            });
+        let observation = OfflineMaintenanceOperationObservation::new(
+            request.operation_id(),
+            OfflineMaintenanceOperationKind::CreateBackup,
+            request.backup_name().clone(),
+            request.input_hash(),
+            OfflineMaintenanceObservationPhase::Accepted,
+            None,
+        )
+        .expect("matching backup-create observation");
+        let result = OfflineMaintenanceStartResult::new(
+            OfflineMaintenanceStartDisposition::Accepted,
+            observation,
+        )
+        .expect("matching accepted start result");
+        Box::pin(async move { Ok(result) })
+    }
+
+    fn restore_offline_backup(
+        &self,
+        invocation: RestoreOfflineBackupInvocation,
+    ) -> ServiceFuture<'_, OfflineMaintenanceStartResult> {
+        self.maintenance_invocations
+            .lock()
+            .expect("maintenance observation lock remains available")
+            .push(ObservedMaintenanceInvocation::Restore {
+                redacted_invocation: format!("{invocation:?}"),
+            });
+        Box::pin(async { Ok(maintenance_restore_start_result()) })
+    }
+
+    fn get_offline_maintenance_operation(
+        &self,
+        context: RequestContext,
+        request: riffdb_service::GetOfflineMaintenanceOperationRequest,
+    ) -> ServiceFuture<'_, GetOfflineMaintenanceOperationResult> {
+        self.maintenance_invocations
+            .lock()
+            .expect("maintenance observation lock remains available")
+            .push(ObservedMaintenanceInvocation::Get {
+                request_id: context.request_id(),
+                operation_id: request.operation_id(),
+            });
+        let result = GetOfflineMaintenanceOperationResult::Found(maintenance_create_observation(
+            request.operation_id(),
+        ));
+        Box::pin(async move { Ok(result) })
+    }
+}
+
 impl DiscoveryApplication for ProjectionService {
     fn discover_command_tools(
         &self,
@@ -569,6 +666,163 @@ impl CredentialAuthenticator for AcceptingAuthenticator {
     }
 }
 
+struct CountingAcceptingAuthenticator {
+    principal: AuthenticatedPrincipal,
+    calls: AtomicUsize,
+}
+
+impl CountingAcceptingAuthenticator {
+    fn calls(&self) -> usize {
+        self.calls.load(Ordering::SeqCst)
+    }
+}
+
+impl CredentialAuthenticator for CountingAcceptingAuthenticator {
+    fn authenticate(
+        &self,
+        _credential: OpaqueCredential<'_>,
+        _context: &AuthenticationContext,
+    ) -> Result<AuthenticatedPrincipal, AuthenticationFailure> {
+        self.calls.fetch_add(1, Ordering::SeqCst);
+        Ok(self.principal.clone())
+    }
+}
+
+struct RecordingRecoveryService {
+    invocations: Mutex<Vec<String>>,
+}
+
+impl RecordingRecoveryService {
+    fn new() -> Self {
+        Self {
+            invocations: Mutex::new(Vec::new()),
+        }
+    }
+
+    fn invocations(&self) -> Vec<String> {
+        self.invocations
+            .lock()
+            .expect("recovery invocation lock remains available")
+            .clone()
+    }
+}
+
+impl RecoveryOfflineMaintenanceApplication for RecordingRecoveryService {
+    fn restore_offline_backup(
+        &self,
+        invocation: RecoveryRestoreOfflineBackupInvocation,
+    ) -> ServiceFuture<'_, OfflineMaintenanceStartResult> {
+        self.invocations
+            .lock()
+            .expect("recovery invocation lock remains available")
+            .push(format!("{invocation:?}"));
+        Box::pin(async { Ok(maintenance_restore_start_result()) })
+    }
+}
+
+struct MaintenanceRoute {
+    ready: Option<Arc<dyn ApplicationService>>,
+    recovery: Option<Arc<dyn RecoveryOfflineMaintenanceApplication>>,
+    security: Option<CheckedGrpcSecurityContext>,
+    ready_admissions: Mutex<Vec<GrpcOfflineMaintenanceOperation>>,
+    recovery_admissions: Mutex<Vec<(OfflineMaintenanceOperationId, OfflineMaintenanceInputHash)>>,
+    security_fetches: AtomicUsize,
+}
+
+impl MaintenanceRoute {
+    fn ready_admissions(&self) -> Vec<GrpcOfflineMaintenanceOperation> {
+        self.ready_admissions
+            .lock()
+            .expect("maintenance admission lock remains available")
+            .clone()
+    }
+
+    fn recovery_admissions(
+        &self,
+    ) -> Vec<(OfflineMaintenanceOperationId, OfflineMaintenanceInputHash)> {
+        self.recovery_admissions
+            .lock()
+            .expect("recovery admission lock remains available")
+            .clone()
+    }
+
+    fn security_fetches(&self) -> usize {
+        self.security_fetches.load(Ordering::SeqCst)
+    }
+}
+
+impl GrpcLifecycleRoute for MaintenanceRoute {
+    fn admit_authenticated(
+        &self,
+        _operation: ServiceOperationV1,
+    ) -> Option<Arc<dyn ApplicationService>> {
+        None
+    }
+
+    fn admit_offline_maintenance(
+        &self,
+        operation: GrpcOfflineMaintenanceOperation,
+    ) -> Option<Arc<dyn ApplicationService>> {
+        self.ready_admissions
+            .lock()
+            .expect("maintenance admission lock remains available")
+            .push(operation);
+        self.ready.clone()
+    }
+
+    fn admit_restore_retry(
+        &self,
+        _operation_id: OfflineMaintenanceOperationId,
+        _input_hash: OfflineMaintenanceInputHash,
+    ) -> Option<Arc<dyn RestoreRetryOfflineMaintenanceApplication>> {
+        None
+    }
+
+    fn admit_recovery_restore(
+        &self,
+        operation_id: OfflineMaintenanceOperationId,
+        input_hash: OfflineMaintenanceInputHash,
+    ) -> Option<Arc<dyn RecoveryOfflineMaintenanceApplication>> {
+        self.recovery_admissions
+            .lock()
+            .expect("recovery admission lock remains available")
+            .push((operation_id, input_hash));
+        self.recovery.clone()
+    }
+
+    fn security_context(&self) -> Option<CheckedGrpcSecurityContext> {
+        self.security_fetches.fetch_add(1, Ordering::SeqCst);
+        self.security.clone()
+    }
+
+    fn restore_retry_security_context(&self) -> Option<CheckedGrpcRestoreRetrySecurityContext> {
+        None
+    }
+
+    fn server_generation(&self) -> Option<[u8; 16]> {
+        None
+    }
+
+    fn restricted_health(
+        &self,
+        _request: HealthRequest,
+    ) -> Option<ServiceFuture<'_, HealthResult>> {
+        None
+    }
+
+    fn bootstrap_available(&self) -> bool {
+        false
+    }
+
+    fn begin_bootstrap(&self) -> Option<Arc<dyn ApplicationService>> {
+        None
+    }
+
+    fn finish_bootstrap(&self, _completion: GrpcBootstrapCompletion) {}
+
+    fn finish_deployment(&self, _completion: GrpcDeploymentCompletion) {}
+}
+
 struct ActiveRoute {
     service: Arc<dyn ApplicationService>,
     security: CheckedGrpcSecurityContext,
@@ -593,8 +847,35 @@ impl GrpcLifecycleRoute for ActiveRoute {
         .then(|| Arc::clone(&self.service))
     }
 
+    fn admit_offline_maintenance(
+        &self,
+        _operation: riffdb_api_grpc::GrpcOfflineMaintenanceOperation,
+    ) -> Option<Arc<dyn ApplicationService>> {
+        None
+    }
+
+    fn admit_restore_retry(
+        &self,
+        _operation_id: OfflineMaintenanceOperationId,
+        _input_hash: OfflineMaintenanceInputHash,
+    ) -> Option<Arc<dyn RestoreRetryOfflineMaintenanceApplication>> {
+        None
+    }
+
+    fn admit_recovery_restore(
+        &self,
+        _operation_id: OfflineMaintenanceOperationId,
+        _input_hash: OfflineMaintenanceInputHash,
+    ) -> Option<Arc<dyn riffdb_service::RecoveryOfflineMaintenanceApplication>> {
+        None
+    }
+
     fn security_context(&self) -> Option<CheckedGrpcSecurityContext> {
         Some(self.security.clone())
+    }
+
+    fn restore_retry_security_context(&self) -> Option<CheckedGrpcRestoreRetrySecurityContext> {
+        None
     }
 
     fn server_generation(&self) -> Option<[u8; 16]> {
@@ -619,6 +900,293 @@ impl GrpcLifecycleRoute for ActiveRoute {
     fn finish_bootstrap(&self, _completion: GrpcBootstrapCompletion) {}
 
     fn finish_deployment(&self, _completion: GrpcDeploymentCompletion) {}
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn ready_offline_maintenance_uses_one_shared_service_and_exact_current_authentication() {
+    let database_id =
+        DatabaseId::from_unix_milliseconds_and_random(21, [0x21; 10]).expect("valid database ID");
+    let environment = Environment::new("grpc-maintenance").expect("valid environment");
+    let audience = Audience::new("grpc-loopback").expect("valid audience");
+    let principal = authenticated_principal(database_id, environment.clone(), audience.clone());
+    let authenticator = Arc::new(CountingAcceptingAuthenticator {
+        principal,
+        calls: AtomicUsize::new(0),
+    });
+    let security = CheckedGrpcSecurityContext::new(
+        authenticator.clone(),
+        AuthenticationContext::new(database_id, environment, audience),
+        Arc::new(
+            CapabilityDigestKeyProvider::parse_document(CAPABILITY_KEYS)
+                .expect("valid capability key fixture"),
+        ),
+    );
+    let service = Arc::new(ProjectionService::new());
+    let shared_service: Arc<dyn ApplicationService> = service.clone();
+    let route = Arc::new(MaintenanceRoute {
+        ready: Some(shared_service),
+        recovery: None,
+        security: Some(security),
+        ready_admissions: Mutex::new(Vec::new()),
+        recovery_admissions: Mutex::new(Vec::new()),
+        security_fetches: AtomicUsize::new(0),
+    });
+    let application = GrpcApplication::new(
+        route.clone(),
+        GrpcRequestLimits::new(Duration::from_secs(30)).expect("bounded request duration"),
+    );
+
+    let incoming = TcpIncoming::bind("127.0.0.1:0".parse().expect("loopback address"))
+        .expect("bind loopback listener");
+    let address = incoming.local_addr().expect("bound loopback address");
+    let (shutdown_sender, shutdown_receiver) = oneshot::channel();
+    let server = tokio::spawn(
+        Server::builder()
+            .add_service(application.admin_server())
+            .serve_with_incoming_shutdown(incoming, async move {
+                let _ = shutdown_receiver.await;
+            }),
+    );
+    let endpoint =
+        Endpoint::from_shared(format!("http://{address}")).expect("valid loopback endpoint");
+    let channel = endpoint.connect().await.expect("connect loopback client");
+    let mut client = AdminServiceClient::new(channel);
+
+    let create_operation_id = maintenance_operation_id(1);
+    let mut create = Request::new(v1::CreateOfflineBackupRequest {
+        request_id: request_id(21).into_bytes().to_vec(),
+        operation_id: create_operation_id.into_bytes().to_vec(),
+        backup_name: "nightly".to_owned(),
+    });
+    authorize(&mut create);
+    let create = client
+        .create_offline_backup(create)
+        .await
+        .expect("ready create reaches shared service")
+        .into_inner();
+    assert_eq!(
+        create.disposition,
+        v1::OfflineMaintenanceStartDisposition::Accepted as i32
+    );
+    assert_eq!(
+        create.operation.expect("create observation").operation_id,
+        create_operation_id.as_bytes()
+    );
+    assert_eq!(authenticator.calls(), 1);
+
+    let restore_operation_id = maintenance_operation_id(2);
+    let mut restore = Request::new(v1::RestoreOfflineBackupRequest {
+        request_id: request_id(22).into_bytes().to_vec(),
+        operation_id: restore_operation_id.into_bytes().to_vec(),
+        backup_name: "restore".to_owned(),
+        replacement_confirmation:
+            v1::OfflineMaintenanceReplacementConfirmation::AllowReplaceNonemptyTarget as i32,
+    });
+    authorize(&mut restore);
+    let restore = client
+        .restore_offline_backup(restore)
+        .await
+        .expect("ready restore reaches shared service")
+        .into_inner();
+    assert_eq!(
+        restore.disposition,
+        v1::OfflineMaintenanceStartDisposition::Accepted as i32
+    );
+    assert_eq!(
+        restore.operation.expect("restore observation").operation_id,
+        restore_operation_id.as_bytes()
+    );
+    assert_eq!(
+        authenticator.calls(),
+        2,
+        "ready restore authenticates the current database exactly once"
+    );
+
+    let mut poll = Request::new(v1::GetOfflineMaintenanceOperationRequest {
+        request_id: request_id(23).into_bytes().to_vec(),
+        operation_id: create_operation_id.into_bytes().to_vec(),
+    });
+    authorize(&mut poll);
+    let poll = client
+        .get_offline_maintenance_operation(poll)
+        .await
+        .expect("ready poll reaches shared service")
+        .into_inner();
+    assert!(matches!(
+        poll.result,
+        Some(v1::get_offline_maintenance_operation_response::Result::Found(_))
+    ));
+    assert_eq!(authenticator.calls(), 3);
+
+    assert_eq!(
+        route.ready_admissions(),
+        vec![
+            GrpcOfflineMaintenanceOperation::CreateBackup,
+            GrpcOfflineMaintenanceOperation::RestoreBackup {
+                operation_id: restore_operation_id,
+                input_hash: restore_input_hash("restore"),
+            },
+            GrpcOfflineMaintenanceOperation::GetOperation,
+        ]
+    );
+    assert!(route.recovery_admissions().is_empty());
+    assert_eq!(route.security_fetches(), 3);
+    assert_eq!(
+        service.maintenance_invocations(),
+        vec![
+            ObservedMaintenanceInvocation::Create {
+                request_id: request_id(21),
+                operation_id: create_operation_id,
+                backup_name: "nightly".to_owned(),
+            },
+            ObservedMaintenanceInvocation::Restore {
+                redacted_invocation: "RestoreOfflineBackupInvocation([REDACTED])".to_owned(),
+            },
+            ObservedMaintenanceInvocation::Get {
+                request_id: request_id(23),
+                operation_id: create_operation_id,
+            },
+        ]
+    );
+
+    drop(client);
+    shutdown_sender.send(()).expect("server still running");
+    server
+        .await
+        .expect("server task did not panic")
+        .expect("server shut down cleanly");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn recovery_mode_exposes_only_restore_and_performs_no_current_authentication() {
+    let database_id =
+        DatabaseId::from_unix_milliseconds_and_random(31, [0x31; 10]).expect("valid database ID");
+    let environment = Environment::new("grpc-recovery").expect("valid environment");
+    let audience = Audience::new("grpc-loopback").expect("valid audience");
+    let principal = authenticated_principal(database_id, environment.clone(), audience.clone());
+    let authenticator = Arc::new(CountingAcceptingAuthenticator {
+        principal,
+        calls: AtomicUsize::new(0),
+    });
+    let security = CheckedGrpcSecurityContext::new(
+        authenticator.clone(),
+        AuthenticationContext::new(database_id, environment, audience),
+        Arc::new(
+            CapabilityDigestKeyProvider::parse_document(CAPABILITY_KEYS)
+                .expect("valid capability key fixture"),
+        ),
+    );
+    let recovery = Arc::new(RecordingRecoveryService::new());
+    let recovery_service: Arc<dyn RecoveryOfflineMaintenanceApplication> = recovery.clone();
+    let route = Arc::new(MaintenanceRoute {
+        ready: None,
+        recovery: Some(recovery_service),
+        security: Some(security),
+        ready_admissions: Mutex::new(Vec::new()),
+        recovery_admissions: Mutex::new(Vec::new()),
+        security_fetches: AtomicUsize::new(0),
+    });
+    let application = GrpcApplication::new(
+        route.clone(),
+        GrpcRequestLimits::new(Duration::from_secs(30)).expect("bounded request duration"),
+    );
+
+    let incoming = TcpIncoming::bind("127.0.0.1:0".parse().expect("loopback address"))
+        .expect("bind loopback listener");
+    let address = incoming.local_addr().expect("bound loopback address");
+    let (shutdown_sender, shutdown_receiver) = oneshot::channel();
+    let server = tokio::spawn(
+        Server::builder()
+            .add_service(application.admin_server())
+            .serve_with_incoming_shutdown(incoming, async move {
+                let _ = shutdown_receiver.await;
+            }),
+    );
+    let endpoint =
+        Endpoint::from_shared(format!("http://{address}")).expect("valid loopback endpoint");
+    let channel = endpoint.connect().await.expect("connect loopback client");
+    let mut client = AdminServiceClient::new(channel);
+
+    let operation_id = maintenance_operation_id(2);
+    let mut create = Request::new(v1::CreateOfflineBackupRequest {
+        request_id: request_id(31).into_bytes().to_vec(),
+        operation_id: operation_id.into_bytes().to_vec(),
+        backup_name: "restore".to_owned(),
+    });
+    authorize(&mut create);
+    assert_eq!(
+        client
+            .create_offline_backup(create)
+            .await
+            .expect_err("recovery mode cannot create a backup")
+            .code(),
+        Code::Unavailable
+    );
+
+    let mut poll = Request::new(v1::GetOfflineMaintenanceOperationRequest {
+        request_id: request_id(32).into_bytes().to_vec(),
+        operation_id: operation_id.into_bytes().to_vec(),
+    });
+    authorize(&mut poll);
+    assert_eq!(
+        client
+            .get_offline_maintenance_operation(poll)
+            .await
+            .expect_err("recovery mode cannot poll receipts")
+            .code(),
+        Code::Unavailable
+    );
+
+    let mut restore = Request::new(v1::RestoreOfflineBackupRequest {
+        request_id: request_id(33).into_bytes().to_vec(),
+        operation_id: operation_id.into_bytes().to_vec(),
+        backup_name: "restore".to_owned(),
+        replacement_confirmation:
+            v1::OfflineMaintenanceReplacementConfirmation::AllowReplaceNonemptyTarget as i32,
+    });
+    authorize(&mut restore);
+    let restore = client
+        .restore_offline_backup(restore)
+        .await
+        .expect("restricted recovery restore reaches recovery service")
+        .into_inner();
+    assert_eq!(
+        restore.disposition,
+        v1::OfflineMaintenanceStartDisposition::Accepted as i32
+    );
+    assert_eq!(
+        authenticator.calls(),
+        0,
+        "recovery restore must not authenticate against current state"
+    );
+    assert_eq!(route.security_fetches(), 0);
+    assert_eq!(
+        route.recovery_admissions(),
+        vec![(operation_id, restore_input_hash("restore"))],
+        "recovery admission receives the structurally checked receipt identity"
+    );
+    assert_eq!(
+        route.ready_admissions(),
+        vec![
+            GrpcOfflineMaintenanceOperation::CreateBackup,
+            GrpcOfflineMaintenanceOperation::GetOperation,
+            GrpcOfflineMaintenanceOperation::RestoreBackup {
+                operation_id,
+                input_hash: restore_input_hash("restore"),
+            },
+        ]
+    );
+    assert_eq!(
+        recovery.invocations(),
+        vec!["RecoveryRestoreOfflineBackupInvocation([REDACTED])"]
+    );
+
+    drop(client);
+    shutdown_sender.send(()).expect("server still running");
+    server
+        .await
+        .expect("server task did not panic")
+        .expect("server shut down cleanly");
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -1335,6 +1903,62 @@ fn authorization_fixture(
 
 fn timestamp(seconds: i64) -> Timestamp {
     Timestamp::new(seconds, 0).expect("canonical timestamp")
+}
+
+fn maintenance_operation_id(ordinal: u8) -> OfflineMaintenanceOperationId {
+    OfflineMaintenanceOperationId::from_unix_milliseconds_and_random(
+        u64::from(ordinal),
+        [ordinal; 10],
+    )
+    .expect("valid maintenance operation ID")
+}
+
+fn restore_input_hash(name: &str) -> OfflineMaintenanceInputHash {
+    offline_maintenance_input_hash(
+        OfflineMaintenanceOperationKind::RestoreBackup,
+        &BackupNameV1::new(name).expect("valid backup name"),
+        OfflineMaintenanceReplacementConfirmation::AllowReplaceNonemptyTarget,
+    )
+}
+
+fn maintenance_create_observation(
+    operation_id: OfflineMaintenanceOperationId,
+) -> OfflineMaintenanceOperationObservation {
+    let backup_name = BackupNameV1::new("nightly").expect("valid backup name");
+    let request =
+        riffdb_service::CreateOfflineBackupRequest::new(operation_id, backup_name.clone())
+            .expect("valid create request");
+    OfflineMaintenanceOperationObservation::new(
+        operation_id,
+        OfflineMaintenanceOperationKind::CreateBackup,
+        backup_name,
+        request.input_hash(),
+        OfflineMaintenanceObservationPhase::Accepted,
+        None,
+    )
+    .expect("valid create observation")
+}
+
+fn maintenance_restore_start_result() -> OfflineMaintenanceStartResult {
+    let operation_id = maintenance_operation_id(2);
+    let backup_name = BackupNameV1::new("restore").expect("valid backup name");
+    let request = riffdb_service::RestoreOfflineBackupRequest::new(
+        operation_id,
+        backup_name.clone(),
+        OfflineMaintenanceReplacementConfirmation::AllowReplaceNonemptyTarget,
+    )
+    .expect("valid restore request");
+    let observation = OfflineMaintenanceOperationObservation::new(
+        operation_id,
+        OfflineMaintenanceOperationKind::RestoreBackup,
+        backup_name,
+        request.input_hash(),
+        OfflineMaintenanceObservationPhase::Accepted,
+        None,
+    )
+    .expect("valid restore observation");
+    OfflineMaintenanceStartResult::new(OfflineMaintenanceStartDisposition::Accepted, observation)
+        .expect("valid restore start result")
 }
 
 fn request_id(ordinal: u8) -> RequestId {

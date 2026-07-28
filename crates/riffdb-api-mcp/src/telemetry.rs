@@ -54,6 +54,118 @@ impl McpTransportRejection {
     }
 }
 
+/// Closed risk classes for MCP tool-call accounting.
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+pub enum McpRiskClass {
+    /// A fixed tool that mutates administrative state.
+    AdministrativeMutation,
+    /// A fixed administrative read.
+    AdministrativeRead,
+    /// A bounded fixed administrative read.
+    BoundedAdministrativeRead,
+    /// A bounded data read.
+    BoundedRead,
+    /// A read-only operation.
+    ReadOnly,
+    /// A read-only compute operation.
+    ReadOnlyCompute,
+    /// A read-only data operation.
+    ReadOnlyData,
+    /// A compiler-owned dynamic command tool.
+    DynamicCommand,
+}
+
+impl McpRiskClass {
+    /// Every closed risk class in stable metric order.
+    pub const ALL: [Self; 8] = [
+        Self::AdministrativeMutation,
+        Self::AdministrativeRead,
+        Self::BoundedAdministrativeRead,
+        Self::BoundedRead,
+        Self::ReadOnly,
+        Self::ReadOnlyCompute,
+        Self::ReadOnlyData,
+        Self::DynamicCommand,
+    ];
+
+    pub(crate) fn from_fixed(value: &str) -> Option<Self> {
+        match value {
+            "administrative_mutation" => Some(Self::AdministrativeMutation),
+            "administrative_read" => Some(Self::AdministrativeRead),
+            "bounded_administrative_read" => Some(Self::BoundedAdministrativeRead),
+            "bounded_read" => Some(Self::BoundedRead),
+            "read_only" => Some(Self::ReadOnly),
+            "read_only_compute" => Some(Self::ReadOnlyCompute),
+            "read_only_data" => Some(Self::ReadOnlyData),
+            _ => None,
+        }
+    }
+}
+
+/// Closed schema-validation phase.
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+pub enum McpSchemaFailurePhase {
+    /// Caller-supplied structured tool input failed its checked schema.
+    Input,
+    /// Backend output failed its checked result schema.
+    Output,
+}
+
+/// Closed list-change notification kind.
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+pub enum McpListChangeKind {
+    /// The policy-filtered tool inventory changed.
+    Tools,
+    /// The policy-filtered resource inventory changed.
+    Resources,
+}
+
+/// Closed semantic MCP observations emitted before any telemetry subscriber.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum McpTelemetryEvent {
+    /// One transport-neutral MCP server session opened.
+    SessionOpened {
+        /// Transport owning the session.
+        transport: McpTransportKind,
+    },
+    /// One transport-neutral MCP server session closed.
+    SessionClosed {
+        /// Transport that owned the session.
+        transport: McpTransportKind,
+    },
+    /// One resolved fixed or dynamic tool call reached schema validation.
+    ToolCall {
+        /// Closed risk class; tool names are deliberately absent.
+        risk: McpRiskClass,
+    },
+    /// Checked tool input or output schema validation failed.
+    SchemaFailure {
+        /// Input or output phase only.
+        phase: McpSchemaFailurePhase,
+    },
+    /// Current authorization denied one MCP operation.
+    AuthorizationDenied,
+    /// One coalesced list-change notification entered the bounded transport sink.
+    ListChangeNotification {
+        /// Tool or resource list only.
+        kind: McpListChangeKind,
+    },
+}
+
+/// Least-authority sink for closed MCP semantic events.
+pub trait McpTelemetry: Send + Sync {
+    /// Records one event without protocol content, identities, credentials, or text.
+    fn record(&self, event: McpTelemetryEvent);
+}
+
+/// No-op sink for isolated adapters and tests.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct NoopMcpTelemetry;
+
+impl McpTelemetry for NoopMcpTelemetry {
+    fn record(&self, _event: McpTelemetryEvent) {}
+}
+
 /// Closed first-party MCP events that carry no request, session, or credential data.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum McpSafeTransportEvent {
@@ -119,6 +231,12 @@ mod tests {
         assert_eq!(events.len(), 3);
         assert_eq!(McpTransportKind::Stdio.as_str(), "stdio");
         assert_eq!(McpTransportRejection::Limit.as_str(), "limit");
+        assert_eq!(McpRiskClass::ALL.len(), 8);
+        assert_eq!(
+            McpRiskClass::from_fixed("administrative_mutation"),
+            Some(McpRiskClass::AdministrativeMutation)
+        );
+        assert_eq!(McpRiskClass::from_fixed("caller-controlled"), None);
     }
 
     #[test]

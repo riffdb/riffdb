@@ -1,0 +1,54 @@
+{
+  "principal_id": "local-operator",
+  "actor_kind": "human",
+  "requested_lifetime_seconds": 86400,
+  "audiences": [
+    "riffdb-grpc-loopback"
+  ],
+  "grant": {
+    "tenant_scope": {
+      "type": "global"
+    },
+    "partition_scope": {
+      "type": "all"
+    },
+    "permissions": [
+      {
+        "type": "validate_contract"
+      },
+      {
+        "type": "read_contract"
+      },
+      {
+        "type": "deploy_contract"
+      },
+      {
+        "type": "read_commit"
+      },
+      {
+        "type": "scan_commits"
+      },
+      {
+        "type": "read_provenance"
+      },
+      {
+        "type": "read_health"
+      },
+      {
+        "type": "read_statistics"
+      },
+      {
+        "type": "create_capability"
+      },
+      {
+        "type": "revoke_capability"
+      },
+      {
+        "type": "administer_capabilities"
+      }
+    ],
+    "field_visibility": [],
+    "max_scan_rows": 50,
+    "approval_required": []
+  }
+}

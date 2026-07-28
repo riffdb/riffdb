@@ -3,6 +3,7 @@ name = "riffdb-testkit"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
+license.workspace = true
 publish.workspace = true
 
 [features]
@@ -10,12 +11,32 @@ default = []
 
 [dependencies]
 riffdb-auth = { path = "../riffdb-auth", version = "0.1.0", default-features = false }
+riffdb-catalog = { path = "../riffdb-catalog", version = "0.1.0", default-features = false }
 riffdb-contract-compiler = { path = "../riffdb-contract-compiler", version = "0.1.0" }
 riffdb-contract-ir = { path = "../riffdb-contract-ir", version = "0.1.0", default-features = false }
 riffdb-invariant = { path = "../riffdb-invariant", version = "0.1.0", default-features = false }
 riffdb-runtime = { path = "../riffdb-runtime", version = "0.1.0", default-features = false }
 riffdb-storage-api = { path = "../riffdb-storage-api", version = "0.1.0" }
+riffdb-storage-redb = { path = "../riffdb-storage-redb", version = "0.1.0", default-features = false }
 riffdb-types = { path = "../riffdb-types", version = "0.1.0" }
+
+[dev-dependencies]
+riffdb-cli = { path = "../riffdb-cli", version = "0.1.0", default-features = false, features = ["test-fixtures"] }
+riffdb-client-rust = { path = "../riffdb-client-rust", version = "0.1.0", default-features = false }
+riffdb-proto = { path = "../riffdb-proto", version = "0.1.0", default-features = false }
+riffdb-server = { path = "../riffdb-server", version = "0.1.0", default-features = false, features = ["test-fixtures"] }
+tokio = { version = "=1.52.0", default-features = false, features = ["macros", "rt-multi-thread", "time"] }
+tonic = { version = "=0.14.6", default-features = false, features = ["channel"] }
+
+[[test]]
+name = "full_recovery_matrix"
+path = "../../tests/recovery/full_recovery_matrix.rs"
+harness = false
+
+[[test]]
+name = "offline_maintenance_matrix"
+path = "../../tests/recovery/offline_maintenance_matrix.rs"
+harness = false
 
 [lints]
 workspace = true

@@ -6,7 +6,10 @@ use std::sync::{Arc, Mutex};
 use std::task::{Context, Poll, Waker};
 use std::time::Instant;
 
-use riffdb_auth::{AuthenticatedPrincipal, CurrentCapabilityResolver, NewlyIssuedCapabilityToken};
+use riffdb_auth::{
+    AuthenticatedPrincipal, CurrentCapabilityResolver, NewlyIssuedCapabilityToken,
+    RetainedOpaqueCredential,
+};
 use riffdb_catalog::{
     ActiveCatalogSnapshot, CatalogError, CatalogPreparationResult, ResolvedExecutablePlan,
     ValidatedContractBundle,
@@ -14,12 +17,13 @@ use riffdb_catalog::{
 use riffdb_contract_ir::ContractBundle;
 use riffdb_errors::InternalError;
 use riffdb_policy::{
-    AuthorizationClock, AuthorizationError, AuthorizationTelemetry, CurrentAuthorizer, Decision,
-    OperationRequest, ProvenanceSelector,
+    AuthorizationClock, AuthorizationError, AuthorizationTelemetry, AuthorizedOfflineMaintenance,
+    CurrentAuthorizer, Decision, OfflineMaintenanceAuthorizationRequest,
+    OfflineMaintenanceDecision, OperationRequest, ProvenanceSelector,
 };
 use riffdb_types::{
     CapabilityId, CommandId, ContractBundleHash, ContractLineage, ContractVersion,
-    FrontierPosition, PlanHash,
+    FrontierPosition, PlanHash, RequestId,
 };
 
 use crate::{
@@ -27,9 +31,11 @@ use crate::{
     AuthoritativeCommitSubscriptionRequest, AuthoritativeEntityRequest,
     AuthoritativeEntitySnapshot, AuthoritativeIndexPage, AuthoritativeIndexRequest,
     AuthoritativeOutcomeRequest, AuthoritativeOutcomeSnapshot, AuthoritativeProvenanceSnapshot,
-    CapabilityRevokeTargetSnapshot, OperationalHealthSnapshot, OperationalStatisticsSnapshot,
+    CapabilityRevokeTargetSnapshot, CreateOfflineBackupRequest,
+    GetOfflineMaintenanceOperationRequest, OfflineMaintenanceOperationObservation,
+    OfflineMaintenanceStartResult, OperationalHealthSnapshot, OperationalStatisticsSnapshot,
     OutboxStatusRequest, OutboxStatusSnapshot, ProjectionPortRequest, ProjectionPortResult,
-    ProjectionStatusSnapshot, RequestControl,
+    ProjectionStatusSnapshot, RequestControl, RestoreOfflineBackupRequest,
 };
 
 /// One boxed, sendable future returned by a service consumer port.
@@ -232,6 +238,15 @@ pub trait CurrentPolicyPort: Send + Sync {
         principal: &AuthenticatedPrincipal,
         request: OperationRequest,
     ) -> Result<Decision, AuthorizationError>;
+
+    /// Reloads current capability state and decides one maintenance safe point.
+    fn authorize_offline_maintenance(
+        &self,
+        _principal: &AuthenticatedPrincipal,
+        _request: OfflineMaintenanceAuthorizationRequest,
+    ) -> Result<OfflineMaintenanceDecision, AuthorizationError> {
+        Err(AuthorizationError::CurrentCapabilityUnavailable)
+    }
 }
 
 impl<R, C, T> CurrentPolicyPort for CurrentAuthorizer<'_, R, C, T>
@@ -246,6 +261,14 @@ where
         request: OperationRequest,
     ) -> Result<Decision, AuthorizationError> {
         CurrentAuthorizer::authorize(self, principal, request)
+    }
+
+    fn authorize_offline_maintenance(
+        &self,
+        principal: &AuthenticatedPrincipal,
+        request: OfflineMaintenanceAuthorizationRequest,
+    ) -> Result<OfflineMaintenanceDecision, AuthorizationError> {
+        CurrentAuthorizer::authorize_offline_maintenance(self, principal, request)
     }
 }
 
@@ -611,6 +634,306 @@ pub trait OutboxStatusPort: Send + Sync {
     >;
 }
 
+/// One fully authorized start command transferred to the maintenance controller.
+///
+/// The service constructs this only after its final current-policy safe point.
+/// Restore retains the same ordinary bearer solely so the controller can
+/// independently authenticate and authorize it against validated staging.
+pub enum AuthorizedOfflineMaintenanceStart {
+    /// Publish one immutable backup from the ready current database.
+    CreateBackup {
+        /// Checked semantic input and caller-stable receipt identity.
+        request: CreateOfflineBackupRequest,
+        /// Fresh current-database policy proof for this exact input hash.
+        authorization: Box<AuthorizedOfflineMaintenance>,
+    },
+    /// Restore one immutable backup through independently authorized staging.
+    RestoreBackup {
+        /// Checked semantic input, confirmation, and receipt identity.
+        request: RestoreOfflineBackupRequest,
+        /// Fresh current-database policy proof for this exact input hash.
+        authorization: Box<AuthorizedOfflineMaintenance>,
+        /// Move-only bearer retained for fresh staged authentication.
+        credential: RetainedOpaqueCredential,
+    },
+}
+
+impl std::fmt::Debug for AuthorizedOfflineMaintenanceStart {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(match self {
+            Self::CreateBackup { .. } => {
+                "AuthorizedOfflineMaintenanceStart::CreateBackup([REDACTED])"
+            }
+            Self::RestoreBackup { .. } => {
+                "AuthorizedOfflineMaintenanceStart::RestoreBackup([REDACTED])"
+            }
+        })
+    }
+}
+
+/// One fully authorized receipt observation request.
+pub struct AuthorizedOfflineMaintenanceObservation {
+    request: GetOfflineMaintenanceOperationRequest,
+    authorization: Box<AuthorizedOfflineMaintenance>,
+}
+
+impl AuthorizedOfflineMaintenanceObservation {
+    pub(crate) const fn new(
+        request: GetOfflineMaintenanceOperationRequest,
+        authorization: Box<AuthorizedOfflineMaintenance>,
+    ) -> Self {
+        Self {
+            request,
+            authorization,
+        }
+    }
+
+    /// Returns the checked caller-stable operation selector.
+    #[must_use]
+    pub const fn request(&self) -> GetOfflineMaintenanceOperationRequest {
+        self.request
+    }
+
+    /// Borrows the fresh current-policy proof.
+    #[must_use]
+    pub const fn authorization(&self) -> &AuthorizedOfflineMaintenance {
+        &self.authorization
+    }
+
+    /// Separates the checked request from the move-only proof.
+    #[must_use]
+    pub fn into_parts(
+        self,
+    ) -> (
+        GetOfflineMaintenanceOperationRequest,
+        Box<AuthorizedOfflineMaintenance>,
+    ) {
+        (self.request, self.authorization)
+    }
+}
+
+impl std::fmt::Debug for AuthorizedOfflineMaintenanceObservation {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("AuthorizedOfflineMaintenanceObservation([REDACTED])")
+    }
+}
+
+/// Closed failure after a maintenance start was submitted.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum OfflineMaintenanceStartPortError {
+    /// The caller-stable operation ID names different semantic input.
+    InputMismatch,
+    /// The controller proved no durable receipt or work was admitted.
+    Unavailable,
+    /// The start may have been durably accepted but no result is known.
+    OutcomeUnknown,
+    /// Receipt-derived state violated a checked semantic invariant.
+    Integrity,
+}
+
+/// Closed failure while reading one maintenance observation.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum OfflineMaintenanceObservationPortError {
+    /// Receipt state could not be accessed safely.
+    Unavailable,
+    /// Receipt-derived state violated a checked semantic invariant.
+    Integrity,
+}
+
+/// Permit to start or resolve one exact offline-maintenance operation.
+pub type OfflineMaintenanceStartPermit = BoxPortCapacityPermit<
+    AuthorizedOfflineMaintenanceStart,
+    OfflineMaintenanceStartResult,
+    OfflineMaintenanceStartPortError,
+>;
+
+/// Permit to read one exact receipt-backed operation observation.
+pub type OfflineMaintenanceObservationPermit = BoxPortCapacityPermit<
+    AuthorizedOfflineMaintenanceObservation,
+    Option<OfflineMaintenanceOperationObservation>,
+    OfflineMaintenanceObservationPortError,
+>;
+
+/// Server-private lifecycle and durable-receipt coordination boundary.
+///
+/// A successful start completion is published only after the external receipt
+/// was durably created or exact-input-resolved. `Accepted` transfers ownership
+/// of the newly admitted driver to this port's implementation; the service
+/// never owns or launches that driver. Terminal results are derived only from
+/// a validated terminal receipt. Restore must independently validate staging,
+/// freshly authenticate and authorize the retained bearer there, and drop it
+/// before publication or terminal receipt persistence; the current proof
+/// cannot satisfy that staged safe point.
+pub trait OfflineMaintenanceCoordinatorPort: Send + Sync {
+    /// Reserves bounded capacity for one authorized receipt start/resolution.
+    fn reserve_start(
+        &self,
+        control: &RequestControl,
+    ) -> PortFuture<'_, OfflineMaintenanceStartPermit, PortAdmissionError>;
+
+    /// Reserves bounded capacity for one protected receipt observation.
+    fn reserve_observation(
+        &self,
+        control: &RequestControl,
+    ) -> PortFuture<'_, OfflineMaintenanceObservationPermit, PortAdmissionError>;
+}
+
+/// One freshly authorized retry of an already-durable restore receipt.
+///
+/// This move-only command is distinct from [`AuthorizedOfflineMaintenanceStart`]
+/// so a credential-retry host cannot submit backup creation or observe a
+/// maintenance receipt through its coordinator capability.
+pub struct AuthorizedRestoreRetryStart {
+    request: RestoreOfflineBackupRequest,
+    authorization: Box<AuthorizedOfflineMaintenance>,
+    credential: RetainedOpaqueCredential,
+}
+
+impl AuthorizedRestoreRetryStart {
+    pub(crate) const fn new(
+        request: RestoreOfflineBackupRequest,
+        authorization: Box<AuthorizedOfflineMaintenance>,
+        credential: RetainedOpaqueCredential,
+    ) -> Self {
+        Self {
+            request,
+            authorization,
+            credential,
+        }
+    }
+
+    /// Returns the exact immutable restore input.
+    #[must_use]
+    pub const fn request(&self) -> &RestoreOfflineBackupRequest {
+        &self.request
+    }
+
+    /// Separates the restore input, fresh current-policy proof, and retained bearer.
+    #[must_use]
+    pub fn into_parts(
+        self,
+    ) -> (
+        RestoreOfflineBackupRequest,
+        Box<AuthorizedOfflineMaintenance>,
+        RetainedOpaqueCredential,
+    ) {
+        (self.request, self.authorization, self.credential)
+    }
+}
+
+impl std::fmt::Debug for AuthorizedRestoreRetryStart {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("AuthorizedRestoreRetryStart([REDACTED])")
+    }
+}
+
+/// Permit for one exact, previously admitted restore retry.
+pub type RestoreRetryOfflineMaintenancePermit = BoxPortCapacityPermit<
+    AuthorizedRestoreRetryStart,
+    OfflineMaintenanceStartResult,
+    OfflineMaintenanceStartPortError,
+>;
+
+/// Least-authority coordinator capability for a frozen current-database retry.
+pub trait RestoreRetryOfflineMaintenanceCoordinatorPort: Send + Sync {
+    /// Reserves bounded capacity for the one exact restore operation.
+    fn reserve_restore(
+        &self,
+        control: &RequestControl,
+    ) -> PortFuture<'_, RestoreRetryOfflineMaintenancePermit, PortAdmissionError>;
+}
+
+/// Recovery-only restore command with no current principal or policy proof.
+///
+/// The distinct recovery controller is responsible for private staging,
+/// complete validation, fresh authentication of the retained bearer, and
+/// fresh staged authorization before it may admit a receipt or publish.
+pub struct RecoveryOfflineMaintenanceRestore {
+    request_id: RequestId,
+    request: RestoreOfflineBackupRequest,
+    credential: RetainedOpaqueCredential,
+}
+
+impl RecoveryOfflineMaintenanceRestore {
+    pub(crate) const fn new(
+        request_id: RequestId,
+        request: RestoreOfflineBackupRequest,
+        credential: RetainedOpaqueCredential,
+    ) -> Self {
+        Self {
+            request_id,
+            request,
+            credential,
+        }
+    }
+
+    /// Returns the fresh transport request identity.
+    #[must_use]
+    pub const fn request_id(&self) -> RequestId {
+        self.request_id
+    }
+
+    /// Borrows the checked restore semantic input.
+    #[must_use]
+    pub const fn request(&self) -> &RestoreOfflineBackupRequest {
+        &self.request
+    }
+
+    /// Separates the request from the move-only staged-auth credential.
+    #[must_use]
+    pub fn into_parts(
+        self,
+    ) -> (
+        RequestId,
+        RestoreOfflineBackupRequest,
+        RetainedOpaqueCredential,
+    ) {
+        (self.request_id, self.request, self.credential)
+    }
+}
+
+impl std::fmt::Debug for RecoveryOfflineMaintenanceRestore {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("RecoveryOfflineMaintenanceRestore([REDACTED])")
+    }
+}
+
+/// Closed recovery-controller failure before a receipt-derived result exists.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum RecoveryOfflineMaintenancePortError {
+    /// The caller-stable operation ID names different semantic input.
+    InputMismatch,
+    /// Fresh staged authentication or authorization denied the bearer.
+    AuthorizationDenied,
+    /// The controller proved no receipt, publication, or work was admitted.
+    Unavailable,
+    /// The restore may have been admitted but no result is known.
+    OutcomeUnknown,
+    /// Recovery state violated a checked semantic invariant.
+    Integrity,
+}
+
+/// Permit for the sole restricted recovery-mode restore operation.
+pub type RecoveryOfflineMaintenanceRestorePermit = BoxPortCapacityPermit<
+    RecoveryOfflineMaintenanceRestore,
+    OfflineMaintenanceStartResult,
+    RecoveryOfflineMaintenancePortError,
+>;
+
+/// Server-private staged-only recovery controller boundary.
+///
+/// The implementation must validate the immutable backup and complete staged
+/// database before borrowing the retained credential for fresh authentication
+/// and authorization. It must drop the credential before target publication
+/// or terminal receipt persistence. It exposes no create or observation method.
+pub trait RecoveryOfflineMaintenanceCoordinatorPort: Send + Sync {
+    /// Reserves bounded capacity for one staged-only recovery restore.
+    fn reserve_restore(
+        &self,
+        control: &RequestControl,
+    ) -> PortFuture<'_, RecoveryOfflineMaintenanceRestorePermit, PortAdmissionError>;
+}
+
 /// Closed operational-state source failure.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum OperationalStatusError {
@@ -646,6 +969,17 @@ pub trait OperationalStatusPort: Send + Sync {
 /// Redaction-safe service orchestration telemetry.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ServiceTelemetryEvent {
+    /// One API-neutral operation reached its final caller-visible disposition.
+    OperationTerminal {
+        /// Closed service operation.
+        operation: riffdb_types::ServiceOperationV1,
+        /// Trusted transport classification fixed by the request context.
+        ingress: riffdb_types::ServiceIngressKindV1,
+        /// Closed caller-visible terminal class.
+        terminal: ServiceTerminalClass,
+        /// Process-local elapsed time for the complete contained operation.
+        elapsed: std::time::Duration,
+    },
     /// A required service-audit operation was unavailable or uncertain.
     AuditUnavailable {
         /// Closed operation whose audit lifecycle failed.
@@ -660,6 +994,59 @@ pub enum ServiceTelemetryEvent {
     CursorUnavailable,
     /// A post-establishment stream was closed at a current-policy safe point.
     StreamClosedByPolicy,
+}
+
+/// Closed terminal classes for API-neutral service telemetry.
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+pub enum ServiceTerminalClass {
+    /// A complete result was released.
+    Succeeded,
+    /// Bounded request validation failed.
+    Validation,
+    /// An idempotency identity was reused with different input.
+    IdempotencyMismatch,
+    /// Current authorization denied the operation.
+    AuthorizationDenied,
+    /// Conflict acquisition or the retry budget reached its deadline.
+    ConcurrencyDeadlineExceeded,
+    /// The requested contract or plan was not current.
+    ContractMismatch,
+    /// A required authoritative dependency was unavailable.
+    StorageUnavailable,
+    /// Authoritative completion could not yet be determined.
+    OutcomeUnknown,
+    /// A checked internal invariant failed.
+    InternalDefect,
+    /// Deterministic command evaluation reached a declared failure.
+    CommandExecutionFailed,
+    /// Cancellation was proven at a safe point.
+    Cancelled,
+    /// The request deadline elapsed at a safe point.
+    DeadlineExceeded,
+    /// The complete response exceeded the service ceiling.
+    ResponseTooLarge,
+    /// Internal containment could not obtain an incident identity.
+    EmergencyInternal,
+}
+
+impl ServiceTerminalClass {
+    /// Every terminal class in stable metric order.
+    pub const ALL: [Self; 14] = [
+        Self::Succeeded,
+        Self::Validation,
+        Self::IdempotencyMismatch,
+        Self::AuthorizationDenied,
+        Self::ConcurrencyDeadlineExceeded,
+        Self::ContractMismatch,
+        Self::StorageUnavailable,
+        Self::OutcomeUnknown,
+        Self::InternalDefect,
+        Self::CommandExecutionFailed,
+        Self::Cancelled,
+        Self::DeadlineExceeded,
+        Self::ResponseTooLarge,
+        Self::EmergencyInternal,
+    ];
 }
 
 /// Trusted sink that receives only closed, payload-free service events.

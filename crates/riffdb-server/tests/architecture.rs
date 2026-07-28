@@ -52,10 +52,16 @@ fn production_transport_features_are_exact_and_default_disabled() {
         "riffdb-api-grpc = { version = \"0.1.0\", path = \"../riffdb-api-grpc\", default-features = false, features = [\"server\"] }"
     ));
     assert!(production.contains(
-        "tokio = { version = \"=1.52.0\", default-features = false, features = [\"macros\", \"rt-multi-thread\", \"sync\", \"time\"] }"
+        "tokio = { version = \"=1.52.0\", default-features = false, features = [\"macros\", \"net\", \"rt-multi-thread\", \"signal\", \"sync\", \"time\"] }"
     ));
     assert!(production.contains(
         "tonic = { version = \"=0.14.6\", default-features = false, features = [\"router\", \"server\"] }"
+    ));
+    assert!(production.contains(
+        "axum = { version = \"=0.8.9\", default-features = false, features = [\"http1\", \"tokio\"] }"
+    ));
+    assert!(production.contains(
+        "riffdb-api-mcp = { version = \"0.1.0\", path = \"../riffdb-api-mcp\", default-features = false, features = [\"streamable-http\"] }"
     ));
 
     for forbidden in [
@@ -146,4 +152,31 @@ fn server_source_cannot_receive_catalog_branded_migration_states() {
     let startup = std::fs::read_to_string(source_root.join("startup.rs"))
         .expect("read server startup source");
     assert!(startup.contains("CatalogIndexMigrationDriver::new(context, port)"));
+}
+
+#[test]
+fn recovery_abort_controller_is_closed_and_absent_from_riffdbd_entrypoint() {
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+    let main = std::fs::read_to_string(root.join("main.rs")).expect("read riffdbd main");
+    let daemon = std::fs::read_to_string(root.join("daemon.rs")).expect("read daemon");
+    let controller = std::fs::read_to_string(root.join("maintenance_recovery_controller.rs"))
+        .expect("read recovery controller");
+
+    assert!(main.contains("riffdb_server::riffdbd_main()"));
+    for forbidden in [
+        "test_fixtures",
+        "MaintenanceRecoveryTestPoint",
+        "RIFFDB_WP190",
+        "std::env",
+    ] {
+        assert!(
+            !main.contains(forbidden),
+            "normal riffdbd entrypoint acquired recovery fixture trigger `{forbidden}`"
+        );
+    }
+    assert!(daemon.contains("run_from_process(MaintenanceRecoveryController::disabled())"));
+    assert!(daemon.contains("#[cfg(feature = \"test-fixtures\")]"));
+    assert!(!controller.contains("std::env"));
+    assert!(!controller.contains("args_os"));
+    assert!(!controller.contains("RIFFDB_"));
 }

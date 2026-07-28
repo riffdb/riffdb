@@ -8,15 +8,17 @@ use std::fmt;
 use std::sync::{Arc, Mutex, MutexGuard, OnceLock};
 
 use riffdb_api_grpc::{
-    CheckedGrpcSecurityContext, GrpcBootstrapCompletion, GrpcDeploymentCompletion,
-    GrpcLifecycleRoute,
+    CheckedGrpcRestoreRetrySecurityContext, CheckedGrpcSecurityContext, GrpcBootstrapCompletion,
+    GrpcDeploymentCompletion, GrpcLifecycleRoute, GrpcOfflineMaintenanceOperation,
 };
 use riffdb_service::{
     ApplicationService, HealthContext, HealthRequest, HealthResult, InitializingRiffDbService,
-    PreBootstrapHealthContextIssuer, PreBootstrapLifecycle, ServiceFuture,
+    PreBootstrapHealthContextIssuer, PreBootstrapLifecycle, RecoveryOfflineMaintenanceApplication,
+    RestoreRetryOfflineMaintenanceApplication, ServiceFuture,
 };
-use riffdb_types::ServiceOperationV1;
+use riffdb_types::{OfflineMaintenanceOperationId, ServiceOperationV1};
 
+use crate::maintenance_lifecycle::MaintenanceLifecycle;
 use crate::runtime_support::RuntimeRoutingState;
 use crate::server_generation::{SERVER_GENERATION_BYTES, ServerGenerationV1};
 use crate::startup::{ValidatedAllocatorCapacity, ValidatedStartupLifecycle};
@@ -27,7 +29,11 @@ pub(crate) struct ProductionLifecycleRoute {
     activated: OnceLock<Arc<dyn ApplicationService>>,
     security: OnceLock<CheckedGrpcSecurityContext>,
     server_generation: OnceLock<ServerGenerationV1>,
+    recovery: OnceLock<Arc<dyn RecoveryOfflineMaintenanceApplication>>,
+    restore_retry: OnceLock<Arc<dyn RestoreRetryOfflineMaintenanceApplication>>,
+    restore_retry_security: OnceLock<CheckedGrpcRestoreRetrySecurityContext>,
     runtime: RuntimeRoutingState,
+    maintenance: Arc<MaintenanceLifecycle>,
     state: Mutex<RouteState>,
 }
 
@@ -38,12 +44,31 @@ impl ProductionLifecycleRoute {
         issuer: PreBootstrapHealthContextIssuer,
         runtime: RuntimeRoutingState,
     ) -> Self {
+        Self::new_with_maintenance(
+            initializing,
+            issuer,
+            runtime,
+            Arc::new(MaintenanceLifecycle::ready()),
+        )
+    }
+
+    /// Begins with one process-wide private maintenance admission authority.
+    pub(crate) fn new_with_maintenance(
+        initializing: InitializingRiffDbService,
+        issuer: PreBootstrapHealthContextIssuer,
+        runtime: RuntimeRoutingState,
+        maintenance: Arc<MaintenanceLifecycle>,
+    ) -> Self {
         Self {
             initializing,
             activated: OnceLock::new(),
             security: OnceLock::new(),
             server_generation: OnceLock::new(),
+            recovery: OnceLock::new(),
+            restore_retry: OnceLock::new(),
+            restore_retry_security: OnceLock::new(),
             runtime,
+            maintenance,
             state: Mutex::new(RouteState {
                 model: LifecycleModel::initializing(),
                 issuer: Some(issuer),
@@ -88,6 +113,53 @@ impl ProductionLifecycleRoute {
         Ok(())
     }
 
+    /// Installs the least-authority restore-only service for failed startup.
+    pub(crate) fn install_recovery(
+        &self,
+        recovery: Arc<dyn RecoveryOfflineMaintenanceApplication>,
+    ) -> Result<(), LifecycleInstallError> {
+        if !self.maintenance.recovery_restore_available() {
+            return Err(LifecycleInstallError::InvalidRecoveryStage);
+        }
+        self.recovery
+            .set(recovery)
+            .map_err(|_| LifecycleInstallError::AlreadyInstalled)
+    }
+
+    /// Installs one exact current-database retry without activating a full service.
+    pub(crate) fn install_restore_retry(
+        &self,
+        operation_id: OfflineMaintenanceOperationId,
+        input_hash: riffdb_types::OfflineMaintenanceInputHash,
+        service: Arc<dyn RestoreRetryOfflineMaintenanceApplication>,
+        security: CheckedGrpcRestoreRetrySecurityContext,
+    ) -> Result<(), LifecycleInstallError> {
+        if !self
+            .maintenance
+            .credential_retry_restore_matches(operation_id, input_hash)
+        {
+            return Err(LifecycleInstallError::InvalidRestoreRetryStage);
+        }
+        let mut state = self.lock_state();
+        if self.activated.get().is_some()
+            || self.security.get().is_some()
+            || self.server_generation.get().is_some()
+            || self.recovery.get().is_some()
+            || self.restore_retry.get().is_some()
+            || self.restore_retry_security.get().is_some()
+        {
+            return Err(LifecycleInstallError::AlreadyInstalled);
+        }
+        self.restore_retry
+            .set(service)
+            .map_err(|_| LifecycleInstallError::AlreadyInstalled)?;
+        self.restore_retry_security
+            .set(security)
+            .map_err(|_| LifecycleInstallError::AlreadyInstalled)?;
+        close_issuer(&mut state.issuer);
+        Ok(())
+    }
+
     /// Irreversibly stops every lifecycle route, including restricted Health.
     pub(crate) fn stop(&self) {
         let mut state = self.lock_state();
@@ -122,6 +194,9 @@ impl GrpcLifecycleRoute for ProductionLifecycleRoute {
         &self,
         operation: ServiceOperationV1,
     ) -> Option<Arc<dyn ApplicationService>> {
+        if !self.maintenance.ordinary_admission_available() {
+            return None;
+        }
         let runtime_ready = self.runtime.is_routing_allowed();
         let state = self.lock_state();
         state
@@ -131,7 +206,49 @@ impl GrpcLifecycleRoute for ProductionLifecycleRoute {
             .flatten()
     }
 
+    fn admit_offline_maintenance(
+        &self,
+        operation: GrpcOfflineMaintenanceOperation,
+    ) -> Option<Arc<dyn ApplicationService>> {
+        if !self.maintenance.ordinary_admission_available() {
+            return None;
+        }
+        let _operation = operation;
+        let runtime_ready = self.runtime.is_routing_allowed();
+        let state = self.lock_state();
+        state
+            .model
+            .allows_offline_maintenance(runtime_ready)
+            .then(|| self.activated_service())
+            .flatten()
+    }
+
+    fn admit_restore_retry(
+        &self,
+        operation_id: OfflineMaintenanceOperationId,
+        input_hash: riffdb_types::OfflineMaintenanceInputHash,
+    ) -> Option<Arc<dyn RestoreRetryOfflineMaintenanceApplication>> {
+        self.maintenance
+            .credential_retry_restore_matches(operation_id, input_hash)
+            .then(|| self.restore_retry.get().cloned())
+            .flatten()
+    }
+
+    fn admit_recovery_restore(
+        &self,
+        operation_id: OfflineMaintenanceOperationId,
+        input_hash: riffdb_types::OfflineMaintenanceInputHash,
+    ) -> Option<Arc<dyn RecoveryOfflineMaintenanceApplication>> {
+        self.maintenance
+            .recovery_restore_matches(operation_id, input_hash)
+            .then(|| self.recovery.get().cloned())
+            .flatten()
+    }
+
     fn security_context(&self) -> Option<CheckedGrpcSecurityContext> {
+        if !self.maintenance.ordinary_admission_available() {
+            return None;
+        }
         let state = self.lock_state();
         if matches!(
             state.model.stage,
@@ -142,7 +259,17 @@ impl GrpcLifecycleRoute for ProductionLifecycleRoute {
         self.security.get().cloned()
     }
 
+    fn restore_retry_security_context(&self) -> Option<CheckedGrpcRestoreRetrySecurityContext> {
+        self.maintenance
+            .credential_retry_restore_available()
+            .then(|| self.restore_retry_security.get().cloned())
+            .flatten()
+    }
+
     fn server_generation(&self) -> Option<[u8; SERVER_GENERATION_BYTES]> {
+        if !self.maintenance.ordinary_admission_available() {
+            return None;
+        }
         let state = self.lock_state();
         if matches!(
             state.model.stage,
@@ -154,6 +281,9 @@ impl GrpcLifecycleRoute for ProductionLifecycleRoute {
     }
 
     fn restricted_health(&self, request: HealthRequest) -> Option<ServiceFuture<'_, HealthResult>> {
+        if !self.maintenance.ordinary_admission_available() {
+            return None;
+        }
         let state = self.lock_state();
         let lifecycle = state.model.restricted_health_lifecycle()?;
         let context = state.issuer.as_ref()?.issue(lifecycle)?;
@@ -175,11 +305,13 @@ impl GrpcLifecycleRoute for ProductionLifecycleRoute {
     }
 
     fn bootstrap_available(&self) -> bool {
-        self.runtime.is_routing_allowed() && self.lock_state().model.bootstrap_available()
+        self.maintenance.ordinary_admission_available()
+            && self.runtime.is_routing_allowed()
+            && self.lock_state().model.bootstrap_available()
     }
 
     fn begin_bootstrap(&self) -> Option<Arc<dyn ApplicationService>> {
-        if !self.runtime.is_routing_allowed() {
+        if !self.maintenance.ordinary_admission_available() || !self.runtime.is_routing_allowed() {
             return None;
         }
         let mut state = self.lock_state();
@@ -337,6 +469,10 @@ impl LifecycleModel {
         }
     }
 
+    const fn allows_offline_maintenance(self, runtime_ready: bool) -> bool {
+        runtime_ready && matches!(self.stage, LifecycleStage::Ready)
+    }
+
     fn begin_bootstrap(&mut self) -> bool {
         if !self.bootstrap_available() {
             return false;
@@ -414,6 +550,10 @@ pub(crate) enum LifecycleInstallError {
     MarkerAbsentAllocatorExhausted,
     /// The one activated service or startup classification was already installed.
     AlreadyInstalled,
+    /// A recovery service was installed outside the failed-closed recovery stage.
+    InvalidRecoveryStage,
+    /// A current-database retry service did not match the frozen receipt.
+    InvalidRestoreRetryStage,
 }
 
 impl fmt::Display for LifecycleInstallError {
@@ -423,6 +563,12 @@ impl fmt::Display for LifecycleInstallError {
                 "marker-absent startup cannot install exhausted authoritative allocators"
             }
             Self::AlreadyInstalled => "the activated application service is already installed",
+            Self::InvalidRecoveryStage => {
+                "the recovery application was installed outside recovery mode"
+            }
+            Self::InvalidRestoreRetryStage => {
+                "the restore-retry application did not match the frozen receipt"
+            }
         })
     }
 }
@@ -442,8 +588,9 @@ mod tests {
     use riffdb_errors::PublicError;
     use riffdb_service::{
         AdministrationApplication, CommandApplication, CommitApplication, ContractApplication,
-        CreateCapabilityInvocation, CreateCapabilityResult, DiscoveryApplication, QueryApplication,
-        RequestContext, ServiceFailure,
+        CreateCapabilityInvocation, CreateCapabilityResult, DiscoveryApplication,
+        OfflineMaintenanceApplication, QueryApplication, RecoveryOfflineMaintenanceApplication,
+        RequestContext, RestoreRetryOfflineMaintenanceApplication, ServiceFailure,
     };
     use riffdb_types::{Audience, DatabaseId, Environment};
 
@@ -607,6 +754,47 @@ mod tests {
         );
     }
 
+    impl OfflineMaintenanceApplication for ClosedApplicationService {
+        denied_operation!(
+            create_offline_backup,
+            RequestContext,
+            riffdb_service::CreateOfflineBackupRequest,
+            riffdb_service::OfflineMaintenanceStartResult
+        );
+
+        fn restore_offline_backup(
+            &self,
+            _invocation: riffdb_service::RestoreOfflineBackupInvocation,
+        ) -> ServiceFuture<'_, riffdb_service::OfflineMaintenanceStartResult> {
+            denied()
+        }
+
+        denied_operation!(
+            get_offline_maintenance_operation,
+            RequestContext,
+            riffdb_service::GetOfflineMaintenanceOperationRequest,
+            riffdb_service::GetOfflineMaintenanceOperationResult
+        );
+    }
+
+    impl RecoveryOfflineMaintenanceApplication for ClosedApplicationService {
+        fn restore_offline_backup(
+            &self,
+            _invocation: riffdb_service::RecoveryRestoreOfflineBackupInvocation,
+        ) -> ServiceFuture<'_, riffdb_service::OfflineMaintenanceStartResult> {
+            denied()
+        }
+    }
+
+    impl RestoreRetryOfflineMaintenanceApplication for ClosedApplicationService {
+        fn restore_offline_backup(
+            &self,
+            _invocation: riffdb_service::RestoreOfflineBackupInvocation,
+        ) -> ServiceFuture<'_, riffdb_service::OfflineMaintenanceStartResult> {
+            denied()
+        }
+    }
+
     impl DiscoveryApplication for ClosedApplicationService {
         denied_operation!(
             discover_command_tools,
@@ -639,8 +827,24 @@ mod tests {
         )
     }
 
+    fn test_restore_retry_security_context() -> CheckedGrpcRestoreRetrySecurityContext {
+        CheckedGrpcRestoreRetrySecurityContext::new(
+            Arc::new(RejectingAuthenticator),
+            AuthenticationContext::new(
+                DatabaseId::from_unix_milliseconds_and_random(1, [0; 10])
+                    .expect("valid database ID"),
+                Environment::new("lifecycle-test").expect("valid environment"),
+                Audience::new("lifecycle-grpc").expect("valid audience"),
+            ),
+        )
+    }
+
     fn test_server_generation() -> ServerGenerationV1 {
         ServerGenerationV1::for_test([0xa5; SERVER_GENERATION_BYTES])
+    }
+
+    fn maintenance_input_hash(byte: u8) -> riffdb_types::OfflineMaintenanceInputHash {
+        riffdb_types::OfflineMaintenanceInputHash::from_bytes([byte; 32])
     }
 
     fn installed_route(
@@ -907,6 +1111,197 @@ mod tests {
             ),
             Err(LifecycleInstallError::AlreadyInstalled)
         );
+    }
+
+    #[test]
+    fn credential_retry_route_exposes_only_narrow_exact_restore_and_current_security() {
+        let (initializing, _activator, issuer) =
+            riffdb_service::RiffDbService::begin_initialization();
+        let maintenance = Arc::new(MaintenanceLifecycle::ready());
+        let route = ProductionLifecycleRoute::new_with_maintenance(
+            initializing,
+            issuer,
+            RuntimeRoutingState::new(),
+            Arc::clone(&maintenance),
+        );
+        let operation =
+            riffdb_types::OfflineMaintenanceOperationId::from_unix_milliseconds_and_random(
+                1, [0x5a; 10],
+            )
+            .expect("valid maintenance operation ID");
+        let unrelated =
+            riffdb_types::OfflineMaintenanceOperationId::from_unix_milliseconds_and_random(
+                1, [0x6b; 10],
+            )
+            .expect("valid unrelated maintenance operation ID");
+        let input_hash = maintenance_input_hash(0x31);
+        maintenance
+            .await_restore_retry(operation, input_hash)
+            .expect("install exact restore retry");
+        let retry: Arc<dyn RestoreRetryOfflineMaintenanceApplication> =
+            Arc::new(ClosedApplicationService);
+        route
+            .install_restore_retry(
+                operation,
+                input_hash,
+                Arc::clone(&retry),
+                test_restore_retry_security_context(),
+            )
+            .expect("exact current-database retry installs");
+
+        for service_operation in ServiceOperationV1::ALL {
+            assert!(
+                route.admit_authenticated(service_operation).is_none(),
+                "ordinary operation {service_operation:?} must remain closed"
+            );
+        }
+        assert!(
+            route
+                .admit_offline_maintenance(GrpcOfflineMaintenanceOperation::CreateBackup)
+                .is_none()
+        );
+        assert!(
+            route
+                .admit_offline_maintenance(GrpcOfflineMaintenanceOperation::GetOperation)
+                .is_none()
+        );
+        assert!(
+            route
+                .admit_offline_maintenance(GrpcOfflineMaintenanceOperation::RestoreBackup {
+                    operation_id: unrelated,
+                    input_hash,
+                })
+                .is_none(),
+            "an unrelated operation ID must not cross the current-target authentication boundary"
+        );
+        assert!(
+            route
+                .admit_offline_maintenance(GrpcOfflineMaintenanceOperation::RestoreBackup {
+                    operation_id: operation,
+                    input_hash,
+                })
+                .is_none(),
+            "the broad application service must remain unavailable"
+        );
+        let restore = route
+            .admit_restore_retry(operation, input_hash)
+            .expect("exact restore transport identity is admitted");
+        assert!(Arc::ptr_eq(&restore, &retry));
+        assert!(
+            route.admit_restore_retry(unrelated, input_hash).is_none(),
+            "an unrelated operation ID must not cross the current-target authentication boundary"
+        );
+        assert!(
+            route
+                .admit_restore_retry(operation, maintenance_input_hash(0x32))
+                .is_none(),
+            "mismatched immutable input must not cross the authentication boundary"
+        );
+        assert!(
+            route
+                .admit_offline_maintenance(GrpcOfflineMaintenanceOperation::RestoreBackup {
+                    operation_id: unrelated,
+                    input_hash: maintenance_input_hash(0x32),
+                })
+                .is_none()
+        );
+        assert!(route.security_context().is_none());
+        assert!(route.restore_retry_security_context().is_some());
+        assert!(route.server_generation().is_none());
+        assert!(route.restricted_health(HealthRequest).is_none());
+        assert!(!route.bootstrap_available());
+        assert!(route.begin_bootstrap().is_none());
+        assert!(
+            route
+                .admit_recovery_restore(operation, input_hash)
+                .is_none()
+        );
+        assert!(
+            route
+                .admit_recovery_restore(unrelated, input_hash)
+                .is_none()
+        );
+
+        assert_eq!(
+            maintenance.claim_nonterminal_receipt(operation),
+            Ok(crate::maintenance_lifecycle::MaintenanceReceiptClaim::Reacquired)
+        );
+        assert!(route.admit_restore_retry(operation, input_hash).is_none());
+        assert!(route.security_context().is_none());
+        assert!(route.restore_retry_security_context().is_none());
+    }
+
+    #[test]
+    fn recovery_route_fences_staged_authentication_by_checked_operation_id() {
+        let (initializing, _activator, issuer) =
+            riffdb_service::RiffDbService::begin_initialization();
+        let generic_maintenance = Arc::new(MaintenanceLifecycle::ready());
+        generic_maintenance
+            .enter_recovery_mode()
+            .expect("generic recovery mode starts from closed ordinary readiness");
+        let generic_route = ProductionLifecycleRoute::new_with_maintenance(
+            initializing,
+            issuer,
+            RuntimeRoutingState::new(),
+            Arc::clone(&generic_maintenance),
+        );
+        let recovery: Arc<dyn RecoveryOfflineMaintenanceApplication> =
+            Arc::new(ClosedApplicationService);
+        generic_route
+            .install_recovery(Arc::clone(&recovery))
+            .expect("restricted recovery service installs");
+        let operation =
+            riffdb_types::OfflineMaintenanceOperationId::from_unix_milliseconds_and_random(
+                1, [0x7c; 10],
+            )
+            .expect("valid maintenance operation ID");
+        let unrelated =
+            riffdb_types::OfflineMaintenanceOperationId::from_unix_milliseconds_and_random(
+                1, [0x8d; 10],
+            )
+            .expect("valid unrelated maintenance operation ID");
+        let input_hash = maintenance_input_hash(0x41);
+
+        let admitted = generic_route
+            .admit_recovery_restore(operation, input_hash)
+            .expect("generic recovery admits one structurally checked identity");
+        assert!(Arc::ptr_eq(&admitted, &recovery));
+        let admitted = generic_route
+            .admit_recovery_restore(unrelated, maintenance_input_hash(0x42))
+            .expect("generic recovery has no preexisting receipt identity");
+        assert!(Arc::ptr_eq(&admitted, &recovery));
+
+        let (initializing, _activator, issuer) =
+            riffdb_service::RiffDbService::begin_initialization();
+        let exact_maintenance = Arc::new(MaintenanceLifecycle::ready());
+        exact_maintenance
+            .await_recovery_retry(operation, input_hash)
+            .expect("recovered receipt freezes the exact identity");
+        let exact_route = ProductionLifecycleRoute::new_with_maintenance(
+            initializing,
+            issuer,
+            RuntimeRoutingState::new(),
+            exact_maintenance,
+        );
+        exact_route
+            .install_recovery(Arc::clone(&recovery))
+            .expect("exact restricted recovery service installs");
+        assert!(
+            exact_route
+                .admit_recovery_restore(unrelated, input_hash)
+                .is_none(),
+            "unrelated identity must not reach staged authentication"
+        );
+        assert!(
+            exact_route
+                .admit_recovery_restore(operation, maintenance_input_hash(0x43))
+                .is_none(),
+            "mismatched immutable input must not reach staged authentication"
+        );
+        let admitted = exact_route
+            .admit_recovery_restore(operation, input_hash)
+            .expect("the frozen recovery identity remains retryable");
+        assert!(Arc::ptr_eq(&admitted, &recovery));
     }
 
     #[derive(Debug, Eq, PartialEq)]

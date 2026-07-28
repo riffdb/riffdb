@@ -1,0 +1,176 @@
+#!/usr/bin/env bash
+set -euo pipefail
+export LC_ALL=C
+
+if (($# != 0)); then
+    printf '%s\n' 'usage: benchmarks/update-status' >&2
+    exit 2
+fi
+
+repo_root="$(git rev-parse --show-toplevel)"
+cd "$repo_root"
+for tool in awk git install jq mkdir sha256sum; do
+    command -v "$tool" >/dev/null 2>&1 || {
+        printf 'required benchmark tool is missing: %s\n' "$tool" >&2
+        exit 1
+    }
+done
+
+redb_report=benchmarks/reports/storage-redb/report-v1.json
+redb_raw=benchmarks/reports/storage-redb/raw-v1.txt
+fjall_report=benchmarks/reports/storage-fjall/report-v1.json
+fjall_raw=benchmarks/reports/storage-fjall/raw-v1.txt
+budget_report=benchmarks/reports/budget-comparison/report-v1.json
+budget_raw=benchmarks/reports/budget-comparison/raw-v1.tsv
+semantic_report=benchmarks/reports/poc-semantic-workloads/report-v1.json
+semantic_raw=benchmarks/reports/poc-semantic-workloads/raw-v1.jsonl
+
+for artifact in \
+    "$redb_report" "$redb_raw" \
+    "$fjall_report" "$fjall_raw" \
+    "$budget_report" "$budget_raw" \
+    "$semantic_report" "$semantic_raw"
+do
+    if [[ ! -f "$artifact" || -L "$artifact" ]]; then
+        printf 'benchmark artifact is missing or symlinked: %s\n' "$artifact" >&2
+        exit 1
+    fi
+done
+
+benchmarks/verify-evidence --release-revision HEAD
+
+jq -e \
+    --arg raw "$redb_raw" \
+    '.schema == "riffdb.benchmark-report/v1"
+     and .report_id == "storage-redb"
+     and .correctness_status == "passed"
+     and .performance_status == "measured"
+     and .raw_artifact == $raw' \
+    "$redb_report" >/dev/null
+jq -e \
+    --arg raw "$fjall_raw" \
+    '.schema == "riffdb.benchmark-report/v1"
+     and .report_id == "storage-fjall"
+     and .raw_artifact == $raw
+     and (
+       (.correctness_status == "passed"
+        and .performance_status == "measured")
+       or
+       (.correctness_status == "conformance_failure"
+        and .performance_status == "not_run_due_to_conformance_failure")
+     )' \
+    "$fjall_report" >/dev/null
+jq -e \
+    --arg raw "$budget_raw" \
+    '.schema == "riffdb.benchmark-report/v1"
+     and .report_id == "budget-postgresql-riffdb"
+     and .correctness_status == "passed"
+     and .performance_status == "measured"
+     and .raw_artifact == $raw
+     and .unsafe_postgresql_variants_included == false' \
+    "$budget_report" >/dev/null
+jq -e \
+    --arg raw "$semantic_raw" \
+    '.schema == "riffdb.poc-semantic-benchmark-report/v1"
+     and .report_id == "poc-semantic-workloads"
+     and .publication_status == "measured_after_correctness_preflight"
+     and .source.raw_artifact == $raw' \
+    "$semantic_report" >/dev/null
+
+fjall_correctness="$(jq -er '.correctness_status' "$fjall_report")"
+case "$fjall_correctness" in
+    passed)
+        performance_claim=qualified_poc_semantic_storage_and_budget_comparison
+        ;;
+    conformance_failure)
+        performance_claim=qualified_poc_semantic_and_budget_comparison_with_fjall_conformance_failure
+        ;;
+    *)
+        printf '%s\n' 'Fjall report has an unsupported correctness status' >&2
+        exit 1
+        ;;
+esac
+
+target_root=target/wp200/benchmarks
+mkdir -p "$target_root"
+candidate="$target_root/status-v1.json"
+jq -n \
+    --arg performance_claim "$performance_claim" \
+    --arg redb_report "$redb_report" \
+    --arg redb_report_sha256 "$(sha256sum "$redb_report" | awk '{print $1}')" \
+    --arg redb_raw "$redb_raw" \
+    --arg redb_raw_sha256 "$(sha256sum "$redb_raw" | awk '{print $1}')" \
+    --arg fjall_report "$fjall_report" \
+    --arg fjall_report_sha256 "$(sha256sum "$fjall_report" | awk '{print $1}')" \
+    --arg fjall_raw "$fjall_raw" \
+    --arg fjall_raw_sha256 "$(sha256sum "$fjall_raw" | awk '{print $1}')" \
+    --arg budget_report "$budget_report" \
+    --arg budget_report_sha256 "$(sha256sum "$budget_report" | awk '{print $1}')" \
+    --arg budget_raw "$budget_raw" \
+    --arg budget_raw_sha256 "$(sha256sum "$budget_raw" | awk '{print $1}')" \
+    --arg semantic_report "$semantic_report" \
+    --arg semantic_report_sha256 "$(sha256sum "$semantic_report" | awk '{print $1}')" \
+    --arg semantic_raw "$semantic_raw" \
+    --arg semantic_raw_sha256 "$(sha256sum "$semantic_raw" | awk '{print $1}')" '
+    {
+      schema: "riffdb.benchmark-status/v1",
+      revision_scope: "source_checkout",
+      performance_claim: $performance_claim,
+      redb_report: {
+        report_id: "storage-redb",
+        status: "verified",
+        report: $redb_report,
+        report_sha256: $redb_report_sha256,
+        raw_artifact: $redb_raw,
+        raw_sha256: $redb_raw_sha256
+      },
+      fjall_report: {
+        report_id: "storage-fjall",
+        status: "verified",
+        report: $fjall_report,
+        report_sha256: $fjall_report_sha256,
+        raw_artifact: $fjall_raw,
+        raw_sha256: $fjall_raw_sha256
+      },
+      budget_comparison_report: {
+        report_id: "budget-postgresql-riffdb",
+        status: "verified",
+        report: $budget_report,
+        report_sha256: $budget_report_sha256,
+        raw_artifact: $budget_raw,
+        raw_sha256: $budget_raw_sha256
+      },
+      poc_semantic_report: {
+        report_id: "poc-semantic-workloads",
+        status: "verified",
+        report: $semantic_report,
+        report_sha256: $semantic_report_sha256,
+        raw_artifact: $semantic_raw,
+        raw_sha256: $semantic_raw_sha256
+      },
+      unsafe_postgresql_variants: {
+        benchmark_eligible: false,
+        reason: "correctness_negative_controls_only"
+      },
+      poc_exit_ready: true
+    }
+  ' >"$candidate"
+
+jq -e '
+    .schema == "riffdb.benchmark-status/v1"
+    and .revision_scope == "source_checkout"
+    and .poc_exit_ready == true
+    and all(
+      .redb_report,
+      .fjall_report,
+      .budget_comparison_report,
+      .poc_semantic_report;
+      .status == "verified"
+      and (.report_sha256 | test("^[0-9a-f]{64}$"))
+      and (.raw_sha256 | test("^[0-9a-f]{64}$"))
+    )
+    and .unsafe_postgresql_variants.benchmark_eligible == false
+' "$candidate" >/dev/null
+install -m 0644 "$candidate" benchmarks/reports/status-v1.json
+
+printf '%s\n' 'benchmark status updated: benchmarks/reports/status-v1.json'

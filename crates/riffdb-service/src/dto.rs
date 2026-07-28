@@ -10,7 +10,7 @@ use std::time::{Duration, Instant};
 
 use base64::Engine as _;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
-use riffdb_auth::CapabilityTokenText;
+use riffdb_auth::{CapabilityTokenText, RetainedOpaqueCredential};
 use riffdb_catalog::ValidatedContractBundle;
 use riffdb_contract_compiler::CompilationError;
 use riffdb_contract_ir::{
@@ -23,15 +23,17 @@ use riffdb_policy::{
 };
 use riffdb_types::{
     ActorId, ActorKind, AdministrationSequence, AdmittedActorContext, ApprovalId, Audience,
-    CanonicalInputHash, CanonicalRecord, CanonicalValue, CapabilityGrantV1, CapabilityId,
-    CommandId, CommitSequence, ConflictKeyHash, ContractBundleHash, ContractLineage,
+    BackupNameV1, CanonicalInputHash, CanonicalRecord, CanonicalValue, CapabilityGrantV1,
+    CapabilityId, CommandId, CommitSequence, ConflictKeyHash, ContractBundleHash, ContractLineage,
     ContractPlanRootHash, ContractVersion, DIGEST_SCHEME_V1, DatabaseId, DigestKeyId, EntityKey,
     EntityTypeId, EntityVersion, EnumTypeId, EnumVariantId, Environment, EventId, EventTypeId,
     FieldId, FrontierPosition, IdempotencyKey, IndexEntryKey, IndexEpochPosition, IndexId,
-    LogicalTime, OutcomeId, PartitionKey, PartitionKeyHash, PlanHash, ProjectionGeneration,
-    ProjectionGroupKey, ProjectionGroupKeyBuilder, ProjectionGroupPrefix, ProjectionId,
-    ProjectionIdentity, ProvenanceId, RequestId, RevocationReasonCodeV1, SchemaHash, SourceCommit,
-    SourceHash, SourceRepository, TenantScope, Timestamp, hash_schema,
+    LogicalTime, OfflineMaintenanceInputHash, OfflineMaintenanceOperationId,
+    OfflineMaintenanceOperationKind, OfflineMaintenanceReplacementConfirmation, OutcomeId,
+    PartitionKey, PartitionKeyHash, PlanHash, ProjectionGeneration, ProjectionGroupKey,
+    ProjectionGroupKeyBuilder, ProjectionGroupPrefix, ProjectionId, ProjectionIdentity,
+    ProvenanceId, RequestId, RevocationReasonCodeV1, SchemaHash, SourceCommit, SourceHash,
+    SourceRepository, TenantScope, Timestamp, hash_schema, offline_maintenance_input_hash,
 };
 
 use crate::{
@@ -5394,6 +5396,458 @@ pub enum RevokeCapabilityResult {
     CapabilityNotFound,
 }
 
+/// Checked request to publish one immutable offline backup.
+#[derive(Clone, Eq, PartialEq)]
+pub struct CreateOfflineBackupRequest {
+    operation_id: OfflineMaintenanceOperationId,
+    backup_name: BackupNameV1,
+    input_hash: OfflineMaintenanceInputHash,
+}
+
+impl CreateOfflineBackupRequest {
+    /// Joins checked input and computes its stable semantic identity.
+    pub fn new(
+        operation_id: OfflineMaintenanceOperationId,
+        backup_name: BackupNameV1,
+    ) -> Result<Self, ServiceDtoError> {
+        let input_hash = offline_maintenance_input_hash(
+            OfflineMaintenanceOperationKind::CreateBackup,
+            &backup_name,
+            OfflineMaintenanceReplacementConfirmation::NotProvided,
+        );
+        let request = Self {
+            operation_id,
+            backup_name,
+            input_hash,
+        };
+        ensure_service_request_bound(&request)?;
+        Ok(request)
+    }
+
+    /// Returns the caller-stable receipt identity.
+    #[must_use]
+    pub const fn operation_id(&self) -> OfflineMaintenanceOperationId {
+        self.operation_id
+    }
+
+    /// Borrows the checked server-relative backup name.
+    #[must_use]
+    pub const fn backup_name(&self) -> &BackupNameV1 {
+        &self.backup_name
+    }
+
+    /// Returns the canonical semantic-input identity.
+    #[must_use]
+    pub const fn input_hash(&self) -> OfflineMaintenanceInputHash {
+        self.input_hash
+    }
+}
+
+impl fmt::Debug for CreateOfflineBackupRequest {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("CreateOfflineBackupRequest([REDACTED])")
+    }
+}
+
+/// Checked request to restore one immutable offline backup.
+#[derive(Clone, Eq, PartialEq)]
+pub struct RestoreOfflineBackupRequest {
+    operation_id: OfflineMaintenanceOperationId,
+    backup_name: BackupNameV1,
+    confirmation: OfflineMaintenanceReplacementConfirmation,
+    input_hash: OfflineMaintenanceInputHash,
+}
+
+impl RestoreOfflineBackupRequest {
+    /// Joins checked input and computes its stable semantic identity.
+    pub fn new(
+        operation_id: OfflineMaintenanceOperationId,
+        backup_name: BackupNameV1,
+        confirmation: OfflineMaintenanceReplacementConfirmation,
+    ) -> Result<Self, ServiceDtoError> {
+        let input_hash = offline_maintenance_input_hash(
+            OfflineMaintenanceOperationKind::RestoreBackup,
+            &backup_name,
+            confirmation,
+        );
+        let request = Self {
+            operation_id,
+            backup_name,
+            confirmation,
+            input_hash,
+        };
+        ensure_service_request_bound(&request)?;
+        Ok(request)
+    }
+
+    /// Returns the caller-stable receipt identity.
+    #[must_use]
+    pub const fn operation_id(&self) -> OfflineMaintenanceOperationId {
+        self.operation_id
+    }
+
+    /// Borrows the checked server-relative backup name.
+    #[must_use]
+    pub const fn backup_name(&self) -> &BackupNameV1 {
+        &self.backup_name
+    }
+
+    /// Returns the caller's exact destructive-replacement confirmation.
+    #[must_use]
+    pub const fn confirmation(&self) -> OfflineMaintenanceReplacementConfirmation {
+        self.confirmation
+    }
+
+    /// Returns the canonical semantic-input identity.
+    #[must_use]
+    pub const fn input_hash(&self) -> OfflineMaintenanceInputHash {
+        self.input_hash
+    }
+}
+
+impl fmt::Debug for RestoreOfflineBackupRequest {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("RestoreOfflineBackupRequest([REDACTED])")
+    }
+}
+
+/// Move-only restore invocation retaining the ordinary bearer for staged auth.
+///
+/// The credential is auth-owned, bounded, zeroizing, nonserializable, and
+/// exposed to the maintenance controller only after current authorization.
+pub struct RestoreOfflineBackupInvocation {
+    context: RequestContext,
+    request: RestoreOfflineBackupRequest,
+    credential: RetainedOpaqueCredential,
+}
+
+impl RestoreOfflineBackupInvocation {
+    /// Joins the ready-service context, checked restore input, and retained bearer.
+    #[must_use]
+    pub const fn new(
+        context: RequestContext,
+        request: RestoreOfflineBackupRequest,
+        credential: RetainedOpaqueCredential,
+    ) -> Self {
+        Self {
+            context,
+            request,
+            credential,
+        }
+    }
+
+    /// Returns the checked receipt identity without exposing retained authority.
+    #[must_use]
+    pub const fn operation_id(&self) -> OfflineMaintenanceOperationId {
+        self.request.operation_id()
+    }
+
+    /// Returns the canonical semantic input identity without exposing retained authority.
+    #[must_use]
+    pub const fn input_hash(&self) -> OfflineMaintenanceInputHash {
+        self.request.input_hash()
+    }
+
+    pub(crate) fn into_parts(
+        self,
+    ) -> (
+        RequestContext,
+        RestoreOfflineBackupRequest,
+        RetainedOpaqueCredential,
+    ) {
+        (self.context, self.request, self.credential)
+    }
+}
+
+impl fmt::Debug for RestoreOfflineBackupInvocation {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("RestoreOfflineBackupInvocation([REDACTED])")
+    }
+}
+
+/// Move-only restore invocation accepted only by the recovery-only service.
+///
+/// It deliberately has no authenticated principal or current-policy proof.
+/// Possession of a recovery service trait object is the server lifecycle
+/// capability; the distinct controller port must fully validate staging and
+/// freshly authenticate and authorize this retained bearer before admission.
+pub struct RecoveryRestoreOfflineBackupInvocation {
+    request_id: RequestId,
+    control: crate::RequestControl,
+    request: RestoreOfflineBackupRequest,
+    credential: RetainedOpaqueCredential,
+}
+
+impl RecoveryRestoreOfflineBackupInvocation {
+    /// Constructs the restricted public-gRPC recovery invocation.
+    ///
+    /// This context cannot invoke normal service operations, create a backup,
+    /// poll a receipt, or claim an authenticated principal.
+    #[must_use]
+    pub const fn from_restricted_grpc(
+        request_id: RequestId,
+        control: crate::RequestControl,
+        request: RestoreOfflineBackupRequest,
+        credential: RetainedOpaqueCredential,
+    ) -> Self {
+        Self {
+            request_id,
+            control,
+            request,
+            credential,
+        }
+    }
+
+    pub(crate) fn into_parts(
+        self,
+    ) -> (
+        RequestId,
+        crate::RequestControl,
+        RestoreOfflineBackupRequest,
+        RetainedOpaqueCredential,
+    ) {
+        (self.request_id, self.control, self.request, self.credential)
+    }
+}
+
+impl fmt::Debug for RecoveryRestoreOfflineBackupInvocation {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("RecoveryRestoreOfflineBackupInvocation([REDACTED])")
+    }
+}
+
+/// Checked request to observe one receipt-backed maintenance operation.
+#[derive(Clone, Copy, Eq, PartialEq)]
+pub struct GetOfflineMaintenanceOperationRequest {
+    operation_id: OfflineMaintenanceOperationId,
+}
+
+impl fmt::Debug for GetOfflineMaintenanceOperationRequest {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("GetOfflineMaintenanceOperationRequest([REDACTED])")
+    }
+}
+
+impl GetOfflineMaintenanceOperationRequest {
+    /// Creates one exact operation lookup.
+    pub fn new(operation_id: OfflineMaintenanceOperationId) -> Result<Self, ServiceDtoError> {
+        let request = Self { operation_id };
+        ensure_service_request_bound(&request)?;
+        Ok(request)
+    }
+
+    /// Returns the caller-stable receipt identity.
+    #[must_use]
+    pub const fn operation_id(self) -> OfflineMaintenanceOperationId {
+        self.operation_id
+    }
+}
+
+/// Non-durable public observation of a maintenance receipt phase.
+///
+/// The storage owner maps its versioned receipt registry into this closed view;
+/// this enum has no tag, codec, or persistence contract.
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+pub enum OfflineMaintenanceObservationPhase {
+    /// The exact semantic input and admission were durably recorded.
+    Accepted,
+    /// New protected work is closed and accepted work is draining.
+    Draining,
+    /// The authoritative database is closed for exclusive maintenance.
+    Offline,
+    /// The immutable backup artifact has been durably published.
+    ArtifactPublished,
+    /// Authoritative validation is in progress.
+    Validating,
+    /// The operation completed and its terminal receipt is durable.
+    Succeeded,
+    /// The operation failed closed and its terminal receipt is durable.
+    FailedClosed,
+}
+
+impl OfflineMaintenanceObservationPhase {
+    /// Returns whether this receipt-derived observation is terminal.
+    #[must_use]
+    pub const fn is_terminal(self) -> bool {
+        matches!(self, Self::Succeeded | Self::FailedClosed)
+    }
+}
+
+/// Non-durable safe failure class exposed by a failed-closed receipt.
+///
+/// This is an API-neutral view, not the storage receipt's persisted registry.
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+pub enum OfflineMaintenanceObservationFailure {
+    /// Already accepted work did not quiesce within the fixed deadline.
+    QuiescenceFailed,
+    /// The selected or published artifact could not be accessed.
+    ArtifactUnavailable,
+    /// Artifact inventory, manifest, or checksum validation failed.
+    ArtifactInvalid,
+    /// Fresh authentication or authorization against staging failed.
+    StagedAuthorizationFailed,
+    /// Required storage or filesystem work was unavailable.
+    StorageUnavailable,
+    /// Complete authoritative validation failed.
+    ValidationFailed,
+    /// The external receipt could not be safely persisted or resolved.
+    ReceiptUnavailable,
+    /// A redacted internal integrity failure was contained.
+    InternalFailure,
+}
+
+/// One bounded API-neutral receipt observation.
+#[derive(Clone, Eq, PartialEq)]
+pub struct OfflineMaintenanceOperationObservation {
+    operation_id: OfflineMaintenanceOperationId,
+    kind: OfflineMaintenanceOperationKind,
+    backup_name: BackupNameV1,
+    input_hash: OfflineMaintenanceInputHash,
+    phase: OfflineMaintenanceObservationPhase,
+    failure: Option<OfflineMaintenanceObservationFailure>,
+}
+
+impl OfflineMaintenanceOperationObservation {
+    /// Checks the closed phase/failure relationship.
+    pub fn new(
+        operation_id: OfflineMaintenanceOperationId,
+        kind: OfflineMaintenanceOperationKind,
+        backup_name: BackupNameV1,
+        input_hash: OfflineMaintenanceInputHash,
+        phase: OfflineMaintenanceObservationPhase,
+        failure: Option<OfflineMaintenanceObservationFailure>,
+    ) -> Result<Self, ServiceDtoError> {
+        if matches!(phase, OfflineMaintenanceObservationPhase::FailedClosed) != failure.is_some()
+            || (kind == OfflineMaintenanceOperationKind::CreateBackup
+                && failure == Some(OfflineMaintenanceObservationFailure::StagedAuthorizationFailed))
+        {
+            return Err(ServiceDtoError::InvalidShape);
+        }
+        Ok(Self {
+            operation_id,
+            kind,
+            backup_name,
+            input_hash,
+            phase,
+            failure,
+        })
+    }
+
+    /// Returns the caller-stable receipt identity.
+    #[must_use]
+    pub const fn operation_id(&self) -> OfflineMaintenanceOperationId {
+        self.operation_id
+    }
+
+    /// Returns the closed operation kind.
+    #[must_use]
+    pub const fn kind(&self) -> OfflineMaintenanceOperationKind {
+        self.kind
+    }
+
+    /// Borrows the checked backup name.
+    #[must_use]
+    pub const fn backup_name(&self) -> &BackupNameV1 {
+        &self.backup_name
+    }
+
+    /// Returns the immutable semantic-input identity.
+    #[must_use]
+    pub const fn input_hash(&self) -> OfflineMaintenanceInputHash {
+        self.input_hash
+    }
+
+    /// Returns the current receipt-derived phase.
+    #[must_use]
+    pub const fn phase(&self) -> OfflineMaintenanceObservationPhase {
+        self.phase
+    }
+
+    /// Returns the safe terminal failure, when failed closed.
+    #[must_use]
+    pub const fn failure(&self) -> Option<OfflineMaintenanceObservationFailure> {
+        self.failure
+    }
+}
+
+impl fmt::Debug for OfflineMaintenanceOperationObservation {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("OfflineMaintenanceOperationObservation([REDACTED])")
+    }
+}
+
+/// Closed disposition after one exact start request resolves its receipt.
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+pub enum OfflineMaintenanceStartDisposition {
+    /// A new durable receipt was accepted and driver ownership was transferred.
+    Accepted,
+    /// The same semantic input already has a nonterminal receipt.
+    AlreadyAccepted,
+    /// The same semantic input already has a terminal receipt.
+    Terminal,
+}
+
+/// Receipt-derived result of starting or resolving offline maintenance.
+#[derive(Clone, Eq, PartialEq)]
+pub struct OfflineMaintenanceStartResult {
+    disposition: OfflineMaintenanceStartDisposition,
+    operation: OfflineMaintenanceOperationObservation,
+}
+
+impl OfflineMaintenanceStartResult {
+    /// Checks that the disposition agrees with the observation's terminality.
+    pub fn new(
+        disposition: OfflineMaintenanceStartDisposition,
+        operation: OfflineMaintenanceOperationObservation,
+    ) -> Result<Self, ServiceDtoError> {
+        if matches!(disposition, OfflineMaintenanceStartDisposition::Terminal)
+            != operation.phase().is_terminal()
+        {
+            return Err(ServiceDtoError::InvalidShape);
+        }
+        Ok(Self {
+            disposition,
+            operation,
+        })
+    }
+
+    /// Returns whether this request admitted work or resolved prior work.
+    #[must_use]
+    pub const fn disposition(&self) -> OfflineMaintenanceStartDisposition {
+        self.disposition
+    }
+
+    /// Borrows the complete receipt-derived observation.
+    #[must_use]
+    pub const fn operation(&self) -> &OfflineMaintenanceOperationObservation {
+        &self.operation
+    }
+}
+
+impl fmt::Debug for OfflineMaintenanceStartResult {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("OfflineMaintenanceStartResult([REDACTED])")
+    }
+}
+
+/// Closed result of one protected maintenance-operation lookup.
+#[derive(Clone, Eq, PartialEq)]
+pub enum GetOfflineMaintenanceOperationResult {
+    /// No receipt exists for this caller-stable operation identity.
+    NotFound,
+    /// One bounded validated receipt observation exists.
+    Found(OfflineMaintenanceOperationObservation),
+}
+
+impl fmt::Debug for GetOfflineMaintenanceOperationResult {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(match self {
+            Self::NotFound => "GetOfflineMaintenanceOperationResult::NotFound",
+            Self::Found(_) => "GetOfflineMaintenanceOperationResult::Found([REDACTED])",
+        })
+    }
+}
+
 /// Digest-free absent capability observation for revoke authorization.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct AbsentCapabilityRevokeTargetSnapshot {
@@ -8004,6 +8458,33 @@ impl ServiceRequestCharge for RevokeCapabilityRequest {
     }
 }
 
+impl ServiceRequestCharge for CreateOfflineBackupRequest {
+    fn structural_charge(&self) -> Result<usize, ServiceDtoError> {
+        let mut charge = RequestCharge::default();
+        charge.add(self.operation_id.as_bytes().len())?;
+        charge.add_framed_bytes(self.backup_name.as_bytes().len())?;
+        charge.add(self.input_hash.as_bytes().len())?;
+        Ok(charge.finish())
+    }
+}
+
+impl ServiceRequestCharge for RestoreOfflineBackupRequest {
+    fn structural_charge(&self) -> Result<usize, ServiceDtoError> {
+        let mut charge = RequestCharge::default();
+        charge.add(self.operation_id.as_bytes().len())?;
+        charge.add_framed_bytes(self.backup_name.as_bytes().len())?;
+        charge.add(STRUCTURAL_ENUM_TAG_BYTES)?;
+        charge.add(self.input_hash.as_bytes().len())?;
+        Ok(charge.finish())
+    }
+}
+
+impl ServiceRequestCharge for GetOfflineMaintenanceOperationRequest {
+    fn structural_charge(&self) -> Result<usize, ServiceDtoError> {
+        Ok(self.operation_id.as_bytes().len())
+    }
+}
+
 impl ServiceRequestCharge for ListPendingOutboxDeliveriesRequest {
     fn structural_charge(&self) -> Result<usize, ServiceDtoError> {
         let mut charge = RequestCharge::default();
@@ -8491,6 +8972,9 @@ contract OutcomeShapes version 1 {
         assert_charge::<NormalCreateCapabilityRequest>();
         assert_charge::<BootstrapCapabilityRequest>();
         assert_charge::<RevokeCapabilityRequest>();
+        assert_charge::<CreateOfflineBackupRequest>();
+        assert_charge::<RestoreOfflineBackupRequest>();
+        assert_charge::<GetOfflineMaintenanceOperationRequest>();
         assert_charge::<ListPendingOutboxDeliveriesRequest>();
         assert_charge::<DiscoverCommandToolsRequest>();
         assert_charge::<DiscoverResourcesRequest>();

@@ -31,6 +31,7 @@ digraph G {
   wp170 [label="WP-170\nProjection core", fillcolor="#CFE6E8"];
   wp180 [label="WP-180\nObservability", fillcolor="#CFE6E8"];
   wp185 [label="WP-185\nServer composition", fillcolor="#CFE6E8", penwidth=1.6];
+  wp155 [label="WP-155\nOffline maintenance", fillcolor="#CFE6E8", penwidth=1.6];
   wp190 [label="WP-190\nIntegrated crash harness", fillcolor="#CFE6E8"];
   wp200 [label="WP-200\nAcceptance + release", fillcolor="#CFE6E8", penwidth=1.8];
 
@@ -63,9 +64,10 @@ digraph G {
   {wp135 wp137} -> wp150;
   {wp100 wp120} -> {wp160 wp170};
   wp050 -> wp170;
-  wp120 -> wp180;
+  {wp120 wp140 wp160 wp170} -> wp180;
   {wp130 wp140 wp160 wp170 wp180} -> wp185;
-  {wp070 wp100 wp160 wp170 wp185} -> wp190;
-  {wp050 wp075 wp130 wp135 wp139 wp140 wp150 wp160 wp170 wp180 wp185 wp190} -> wp200;
+  {wp070 wp120 wp137 wp150 wp185} -> wp155;
+  {wp070 wp100 wp155 wp160 wp170 wp185} -> wp190;
+  {wp050 wp075 wp130 wp135 wp139 wp140 wp150 wp155 wp160 wp170 wp180 wp185 wp190} -> wp200;
   wp200 -> key [style=invis];
 }

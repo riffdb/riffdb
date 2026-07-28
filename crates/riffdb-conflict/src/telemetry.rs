@@ -31,6 +31,7 @@ pub struct ConflictEvent {
     conflict_key_hash: ConflictKeyHash,
     wait_duration: Duration,
     queue_depth: usize,
+    total_queue_depth: usize,
     key_count: usize,
 }
 
@@ -40,6 +41,7 @@ impl ConflictEvent {
         conflict_key_hash: ConflictKeyHash,
         wait_duration: Duration,
         queue_depth: usize,
+        total_queue_depth: usize,
         key_count: usize,
     ) -> Self {
         Self {
@@ -47,6 +49,7 @@ impl ConflictEvent {
             conflict_key_hash,
             wait_duration,
             queue_depth,
+            total_queue_depth,
             key_count,
         }
     }
@@ -75,6 +78,12 @@ impl ConflictEvent {
         self.queue_depth
     }
 
+    /// Returns the bounded total number of queued acquisitions.
+    #[must_use]
+    pub const fn total_queue_depth(&self) -> usize {
+        self.total_queue_depth
+    }
+
     /// Returns the number of canonical keys in the acquisition.
     #[must_use]
     pub const fn key_count(&self) -> usize {
@@ -90,6 +99,7 @@ impl fmt::Debug for ConflictEvent {
             .field("conflict_key_hash", &self.conflict_key_hash)
             .field("wait_duration", &self.wait_duration)
             .field("queue_depth", &self.queue_depth)
+            .field("total_queue_depth", &self.total_queue_depth)
             .field("key_count", &self.key_count)
             .finish()
     }

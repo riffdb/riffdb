@@ -12,9 +12,9 @@ use riffdb_storage_api::{
     BackupBuildMetadataV1, BackupCatalogBundleV1, BackupIntegrityChecksumV1, BackupManifestVersion,
     BackupSnapshotKindV1, MAX_BACKUP_BUILD_FEATURE_BYTES, MAX_BACKUP_BUILD_FEATURES,
     MAX_BACKUP_BUILD_VALUE_BYTES, MAX_BACKUP_CATALOG_BUNDLES, MAX_BACKUP_INTEGRITY_CHECKSUM_BYTES,
-    OfflineBackupManifestV1, OfflineBackupPersistencePort, OfflineRestoreOverwritePolicyV1,
-    OfflineRestorePersistencePort, OfflineRestoreResultV1, StorageError, StorageErrorKind,
-    StorageFormatVersion, StorageValueError,
+    OfflineBackupManifestIdentityV1, OfflineBackupManifestV1, OfflineBackupPersistencePort,
+    OfflineRestoreOverwritePolicyV1, OfflineRestorePersistencePort, OfflineRestoreResultV1,
+    StorageError, StorageErrorKind, StorageFormatVersion, StorageValueError,
 };
 use riffdb_types::{
     CommitSequence, ContractBundleHash, ContractLineage, ContractVersion, DatabaseId,
@@ -33,8 +33,8 @@ use crate::layout::{
     META_DATABASE_ID, META_FORMAT_VERSION,
 };
 
-const MANIFEST_FILE_NAME: &str = "manifest.riffdb";
-const DATABASE_ARTIFACT_FILE_NAME: &str = "database.redb";
+pub(crate) const MANIFEST_FILE_NAME: &str = "manifest.riffdb";
+pub(crate) const DATABASE_ARTIFACT_FILE_NAME: &str = "database.redb";
 const MANIFEST_MAGIC: &[u8; 16] = b"RIFFDB-BACKUP\0\0\0";
 const MANIFEST_MAX_BYTES: usize = 32 * 1024 * 1024;
 const COPY_BUFFER_BYTES: usize = 64 * 1024;
@@ -354,6 +354,41 @@ fn validate_artifact(
     Ok(database)
 }
 
+pub(crate) fn validate_immutable_backup(
+    directory: &Path,
+) -> Result<(OfflineBackupManifestV1, OfflineBackupManifestIdentityV1), StorageError> {
+    validate_backup_inventory(directory)?;
+    let manifest_bytes =
+        read_bounded_file(&directory.join(MANIFEST_FILE_NAME), MANIFEST_MAX_BYTES)?;
+    let manifest = decode_manifest(&manifest_bytes)?;
+    let artifact = directory.join(DATABASE_ARTIFACT_FILE_NAME);
+    if sha256_file(&artifact)? != manifest_checksum(&manifest)? {
+        return Err(corrupt());
+    }
+    let manifest_checksum =
+        BackupIntegrityChecksumV1::new(Sha256::digest(&manifest_bytes).to_vec())
+            .map_err(value_error)?;
+    let identity = OfflineBackupManifestIdentityV1::new(
+        manifest_checksum,
+        manifest.database_id(),
+        manifest.last_commit_sequence(),
+    );
+    Ok((manifest, identity))
+}
+
+pub(crate) fn validate_database_semantics(
+    artifact: &Path,
+    manifest: &OfflineBackupManifestV1,
+) -> Result<Database, StorageError> {
+    let expected_checksum = manifest_checksum(manifest)?;
+    let (database, facts) = open_database_with_facts(artifact)?;
+    let reconstructed = facts.into_manifest(expected_checksum, manifest.build().clone())?;
+    if &reconstructed != manifest {
+        return Err(corrupt());
+    }
+    Ok(database)
+}
+
 fn manifest_checksum(
     manifest: &OfflineBackupManifestV1,
 ) -> Result<BackupIntegrityChecksumV1, StorageError> {
@@ -661,12 +696,18 @@ impl<'a> ManifestDecoder<'a> {
     }
 }
 
-fn sha256_file(path: &Path) -> Result<BackupIntegrityChecksumV1, StorageError> {
-    let mut file = File::open(path).map_err(io_unavailable)?;
+pub(crate) fn sha256_file(path: &Path) -> Result<BackupIntegrityChecksumV1, StorageError> {
+    let file = File::open(path).map_err(io_unavailable)?;
+    sha256_reader(file)
+}
+
+pub(crate) fn sha256_reader(
+    mut reader: impl Read,
+) -> Result<BackupIntegrityChecksumV1, StorageError> {
     let mut hasher = Sha256::new();
     let mut buffer = [0u8; COPY_BUFFER_BYTES];
     loop {
-        let read = file.read(&mut buffer).map_err(io_unavailable)?;
+        let read = reader.read(&mut buffer).map_err(io_unavailable)?;
         if read == 0 {
             break;
         }
@@ -675,7 +716,7 @@ fn sha256_file(path: &Path) -> Result<BackupIntegrityChecksumV1, StorageError> {
     BackupIntegrityChecksumV1::new(hasher.finalize().to_vec()).map_err(value_error)
 }
 
-fn copy_and_sync(source: &Path, destination: &Path) -> Result<(), StorageError> {
+pub(crate) fn copy_and_sync(source: &Path, destination: &Path) -> Result<(), StorageError> {
     fs::copy(source, destination).map_err(io_unavailable)?;
     File::open(destination)
         .and_then(|file| file.sync_all())
@@ -764,7 +805,7 @@ fn target_directory_state(path: &Path) -> Result<TargetDirectoryState, StorageEr
     }
 }
 
-fn lock_existing_target(path: &Path) -> Result<Option<Database>, StorageError> {
+pub(crate) fn lock_existing_target(path: &Path) -> Result<Option<Database>, StorageError> {
     match fs::symlink_metadata(path) {
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
         Err(error) => Err(io_unavailable(error)),
@@ -773,6 +814,14 @@ fn lock_existing_target(path: &Path) -> Result<Option<Database>, StorageError> {
         }
         Ok(_) => match Database::open(path) {
             Ok(database) => Ok(Some(database)),
+            Err(redb::DatabaseError::Storage(redb::StorageError::Io(error)))
+                if matches!(
+                    error.kind(),
+                    std::io::ErrorKind::UnexpectedEof | std::io::ErrorKind::InvalidData
+                ) =>
+            {
+                Ok(None)
+            }
             // An explicit destructive restore may replace a corrupt or old-
             // format target, but never one whose offline status is uncertain.
             Err(error) => {
@@ -893,11 +942,11 @@ fn staging_name(stem: &OsStr, label: &str, ordinal: u16) -> OsString {
     name
 }
 
-fn sync_parent(path: &Path) -> Result<(), StorageError> {
+pub(crate) fn sync_parent(path: &Path) -> Result<(), StorageError> {
     sync_directory(path.parent().unwrap_or_else(|| Path::new(".")))
 }
 
-fn sync_directory(path: &Path) -> Result<(), StorageError> {
+pub(crate) fn sync_directory(path: &Path) -> Result<(), StorageError> {
     File::open(path)
         .and_then(|directory| directory.sync_all())
         .map_err(io_unavailable)

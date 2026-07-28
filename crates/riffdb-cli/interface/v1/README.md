@@ -1,6 +1,6 @@
 # RiffDB CLI v1 Interface Checkpoint
 
-Status: **Accepted and implemented by WP-150.**
+Status: **Accepted and implemented by WP-150, additively extended by WP-155.**
 
 This directory freezes the accepted interface implemented by WP-150. It is
 deliberately outside `src/`: no file here is production Rust and no runtime
@@ -9,7 +9,7 @@ behavior is authorized by this checkpoint alone.
 The checkpoint consists of:
 
 - `command-grammar.rs.txt`: the complete clap-shaped command and argument
-  grammar for the 12 `riffdb.cli.output/v1` command identities;
+  grammar for the 15 `riffdb.cli.output/v1` command identities;
 - `configuration.md` and the `client-*.toml` fixtures: configuration sources,
   precedence, bounds, and a complete valid example;
 - `exit-codes.md`: the complete process-exit registry and stream rules;
@@ -25,7 +25,7 @@ The checkpoint consists of:
   and plain SHA-256 for every other checkpoint artifact.
 
 `../verify-checkpoint --check` deterministically rebuilds the manifest in the
-accepted 12-command order, parses each JSONL with `jq`, and checks both exact
+accepted 15-command order, parses each JSONL with `jq`, and checks both exact
 inventories, stream, LF, compact JSON, envelope/key-order, exit-code,
 byte-count, and SHA-256 rules. It adds no Cargo dependency and executes no CLI
 or database behavior. `--print-manifest` and `--print-inventory` print the
