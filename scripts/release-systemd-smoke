@@ -226,6 +226,23 @@ if [[ -n "$riffdb_cli" ]]; then
 
     "$riffdb_cli" --endpoint "http://$address" --output json \
         --credential-file "$work_root/operator.credential" \
+        contract deploy contracts/examples/budget.riff \
+        >"$work_root/deploy.json"
+    if ! jq -e '
+        .schema == "riffdb.cli.output/v1"
+        and .command == "contract.deploy"
+        and .ok == true
+        and .result.status == "activated"
+        and .result.contract.contract_lineage == "LegalSpend"
+        and .result.contract.contract_version == "1"
+    ' "$work_root/deploy.json" >/dev/null; then
+        printf '%s\n' \
+            'release binary did not activate the canonical smoke contract' >&2
+        exit 1
+    fi
+
+    "$riffdb_cli" --endpoint "http://$address" --output json \
+        --credential-file "$work_root/operator.credential" \
         server health >"$work_root/health.json"
     if ! jq -e \
         --arg semantic_version "$semantic_version" \
@@ -234,7 +251,17 @@ if [[ -n "$riffdb_cli" ]]; then
         .schema == "riffdb.cli.output/v1"
         and .command == "server.health"
         and .ok == true
-        and .result.status == "ready"
+        and (.result.status == "ready" or .result.status == "degraded")
+        and .result.active_contract_version == "1"
+        and ([.result.components[]
+              | select(.component == "authoritative_storage"
+                       or .component == "catalog"
+                       or .component == "commit_coordinator")]
+             == [
+               {component: "authoritative_storage", status: "healthy"},
+               {component: "catalog", status: "healthy"},
+               {component: "commit_coordinator", status: "healthy"}
+             ])
         and .result.build == {
           semantic_version: $semantic_version,
           git_revision: $revision,
@@ -291,8 +318,18 @@ if [[ -n "$riffdb_cli" ]]; then
           and (response(2).result.tools | type == "array" and length > 0)
           and any(response(2).result.tools[];
                   .name == "riffdb.server.health")
-          and response(3).result.structuredContent.authenticated.status
-              == "ready"
+          and (response(3).result.structuredContent.authenticated as $health
+               | ($health.status == "ready" or $health.status == "degraded")
+               and $health.active_contract_version == "1"
+               and ([$health.components[]
+                     | select(.component == "authoritative_storage"
+                              or .component == "catalog"
+                              or .component == "commit_coordinator")]
+                    == [
+                      {component: "authoritative_storage", status: "healthy"},
+                      {component: "catalog", status: "healthy"},
+                      {component: "commit_coordinator", status: "healthy"}
+                    ]))
         ' "$work_root/mcp-output.jsonl" >/dev/null; then
             printf '%s\n' \
                 'riffdb-mcp did not preserve authenticated socket-style stdio framing' >&2
