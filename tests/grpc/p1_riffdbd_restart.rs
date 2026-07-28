@@ -158,12 +158,7 @@ async fn real_riffdbd_restart_preserves_budget_and_bootstrap_replay() -> TestRes
         first_client.health(authenticated_health_request()?, &authenticated),
     )
     .await?;
-    assert_authenticated_health(
-        &ready_health,
-        v1::HealthStatus::Ready,
-        Some(CONTRACT_VERSION),
-        None,
-    )?;
+    assert_authoritatively_ready_health(&ready_health, Some(CONTRACT_VERSION), None)?;
 
     let created = bounded_rpc(
         "CreateBudget",
@@ -447,12 +442,7 @@ async fn real_riffdbd_migrates_v1_index_before_public_readiness() -> TestResult<
         migrated_client.health(authenticated_health_request()?, &restricted_metadata),
     )
     .await?;
-    assert_authenticated_health(
-        &health,
-        v1::HealthStatus::Ready,
-        Some(CONTRACT_VERSION),
-        Some(1),
-    )?;
+    assert_authoritatively_ready_health(&health, Some(CONTRACT_VERSION), Some(1))?;
 
     let scan = bounded_rpc(
         "partition-filtered scan after V1 index migration",
@@ -808,6 +798,75 @@ fn assert_authenticated_health(
             report.last_commit_sequence,
             expected_status as i32,
         )));
+    }
+    Ok(())
+}
+
+fn assert_authoritatively_ready_health(
+    response: &v1::HealthResponse,
+    expected_contract_version: Option<u64>,
+    expected_last_commit_sequence: Option<u64>,
+) -> TestResult<()> {
+    let Some(v1::health_response::Result::Authenticated(report)) = response.result.as_ref() else {
+        return Err(test_failure("Health did not use the authenticated result"));
+    };
+    if report.active_contract_version != expected_contract_version
+        || report.last_commit_sequence != expected_last_commit_sequence
+    {
+        return Err(test_failure(
+            "authoritatively ready Health reported the wrong contract or sequence",
+        ));
+    }
+
+    let expected_kinds = [
+        v1::HealthComponentKind::AuthoritativeStorage,
+        v1::HealthComponentKind::Catalog,
+        v1::HealthComponentKind::CommitCoordinator,
+        v1::HealthComponentKind::Projection,
+        v1::HealthComponentKind::Outbox,
+    ];
+    let actual_kinds = report
+        .components
+        .iter()
+        .map(|component| v1::HealthComponentKind::try_from(component.component))
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|_| test_failure("Health reported an unknown component kind"))?;
+    if actual_kinds != expected_kinds {
+        return Err(test_failure(
+            "Health omitted or reordered the authoritative/derived component shape",
+        ));
+    }
+    for component in &report.components[..3] {
+        if v1::HealthComponentStatus::try_from(component.status)
+            != Ok(v1::HealthComponentStatus::Healthy)
+        {
+            return Err(test_failure(
+                "authoritatively ready Health reported an unhealthy authoritative component",
+            ));
+        }
+    }
+
+    let mut derived_degraded = false;
+    for component in &report.components[3..] {
+        match v1::HealthComponentStatus::try_from(component.status) {
+            Ok(v1::HealthComponentStatus::Healthy) => {}
+            Ok(v1::HealthComponentStatus::Degraded) => derived_degraded = true,
+            _ => {
+                return Err(test_failure(
+                    "authoritatively ready Health reported an unavailable derived component",
+                ));
+            }
+        }
+    }
+    let expected_status = if derived_degraded {
+        v1::HealthStatus::Degraded
+    } else {
+        v1::HealthStatus::Ready
+    };
+    if v1::HealthStatus::try_from(report.status) != Ok(expected_status) {
+        return Err(test_failure(
+            "aggregate Health did not match its authoritative and derived components",
+        ));
     }
     Ok(())
 }
