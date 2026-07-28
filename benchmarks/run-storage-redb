@@ -133,7 +133,7 @@ jq -e '
     and (.results | length == 4)
     and all(.results[];
             .sample_count > 0
-            and (.samples_ns | length == .sample_count)
+            and (.samples_ns | length) == .sample_count
             and .min_ns <= .p50_ns
             and .p50_ns <= .p95_ns
             and .p95_ns <= .p99_ns
