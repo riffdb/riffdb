@@ -1,0 +1,40 @@
+{
+  "schema": "riffdb.benchmark-report/v1",
+  "report_id": "storage-fjall",
+  "source_revision": "7a910946bbd21f8949eba317896990fb02dfce48",
+  "dirty": false,
+  "rust_version": "1.97.0",
+  "target": "x86_64-unknown-linux-gnu",
+  "environment": {
+    "cpu": "AMD Ryzen 9 7950X 16-Core Processor",
+    "memory": "      65206396 kB",
+    "storage_medium": "local Samsung SSD 990 PRO NVMe, ext4, noatime",
+    "operating_system": "Linux 7.0.12-gentoo-r1-x86_64 x86_64 GNU/Linux",
+    "kernel": "Linux 7.0.12-gentoo-r1-x86_64 x86_64 GNU/Linux",
+    "filesystem": "ext4 /dev/nvme0n1p2[/home/user/dev/riffdb]",
+    "mount_options": "rw,nosuid,nodev,noatime"
+  },
+  "methodology": {
+    "build_profile": "test and benchmark compile only; no timed workload",
+    "features": [
+      "fjall 3.1.8 default-features=false"
+    ],
+    "database_size": "not measured because semantic conformance failed",
+    "contract_version": "accepted V2 registry: 27 readable, 26 writable",
+    "workload_distribution": "unchanged semantic, projection, migration, and crash suite",
+    "durability_modes": [
+      "not measured"
+    ],
+    "warmup_runs": 0,
+    "sample_count": 0,
+    "distribution_method": "no performance distribution after failed correctness preflight",
+    "analysis_command": "[\"benchmarks/run-storage-fjall\",\"--storage-medium\",\"local Samsung SSD 990 PRO NVMe, ext4, noatime\"]"
+  },
+  "correctness_status": "conformance_failure",
+  "performance_status": "not_run_due_to_conformance_failure",
+  "failure_classification": "Fjall adapter lacks the unchanged semantic, projection, migration, and crash-recovery ports; substrate timings are excluded.",
+  "raw_artifact": "benchmarks/reports/storage-fjall/raw-v1.txt",
+  "raw_sha256": "449a16d36a5dc6aca418aa9117265fcb36a7e1eeb2ea31a3958fe51bf973ab7d",
+  "unsafe_postgresql_variants_included": false,
+  "results": []
+}

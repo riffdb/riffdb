@@ -1,0 +1,130 @@
+riffdb_fjall_conformance_capture_format=1
+git_revision=7a910946bbd21f8949eba317896990fb02dfce48
+git_dirty=false
+rust_version=1.97.0
+rust_target=x86_64-unknown-linux-gnu
+cpu=AMD Ryzen 9 7950X 16-Core Processor
+memory=      65206396 kB
+storage_medium=local Samsung SSD 990 PRO NVMe, ext4, noatime
+operating_system=Linux 7.0.12-gentoo-r1-x86_64 x86_64 GNU/Linux
+filesystem=ext4 /dev/nvme0n1p2[/home/user/dev/riffdb]
+mount_options=rw,nosuid,nodev,noatime
+engine=fjall
+engine_version=3.1.8
+default_features=false
+correctness_status=conformance_failure
+performance_status=not_run_due_to_conformance_failure
+unsafe_postgresql_variants_included=false
+--- conformance-v1.tsv ---
+schema	riffdb.storage-fjall-conformance/v1
+engine	fjall
+engine_version	3.1.8
+default_features	false
+semantic_contract	unchanged
+overall	conformance_failure
+performance_eligibility	not_run_due_to_conformance_failure
+case_id	class	status	detail
+architecture.nested-workspace-isolation	architecture	passed	separate workspace and lockfile; no root workspace member
+architecture.fjall-pin-and-features	architecture	passed	fjall exactly 3.1.8 with default features disabled
+architecture.v2-registry-shape	architecture	passed	27 readable; 26 writable; V1 decode-only; V2 writable
+architecture.identity-only-migration-contract	architecture	passed	accepted StartupIndexMigrationPort exposes identity only
+substrate.cross-keyspace-atomic-commit	substrate	passed	bounded canonical multi-keyspace commit and reopen
+substrate.owned-read-snapshot	substrate	passed	snapshot retains one consistent pre-write view
+substrate.bounded-physical-range-page	substrate	passed	strict physical order, lower continuation, explicit exact end
+substrate.migration-dual-ledger-pagination	substrate	passed	500 rows and independent 4 MiB evidence/instruction ledgers
+semantic.complete-storage-port-set	semantic	failed	adapter does not implement the unchanged semantic persistence traits
+semantic.command-candidate-type-state-and-atomic-graph	semantic	failed	not implemented; no sequence or atomic-command conformance claim
+semantic.snapshot-observations-and-dependencies	semantic	failed	not implemented; physical snapshots are not ReadSnapshot evidence
+semantic.idempotency-outcome-commit-event-provenance-reciprocity	semantic	failed	not implemented; substrate transactions are not semantic records
+semantic.catalog-capability-audit-and-bootstrap	semantic	failed	not implemented
+semantic.outbox-transitions-and-recovery-scan	semantic	failed	not implemented
+semantic.projection-identity-generation-lifecycle-frontier	semantic	failed	PRJ-001 through PRJ-004 unchanged suite not implemented
+semantic.projection-marker-hash-and-atomic-apply	semantic	failed	not implemented; no frontier monotonicity claim
+semantic.structural-and-historical-exact-end-session	semantic	failed	StructuralEvidenceOpen and session-bound exact-end scan not implemented
+semantic.sealed-catalog-migration-backend	semantic	failed	CatalogIndexMigrationBackend and fresh post-migration validation not implemented
+semantic.v1-v2-compare-rewrite-and-restart	semantic	failed	no V1-to-V2 rewrite or mixed-state recovery claim
+semantic.process-crash-failpoint-matrix	semantic	failed	named semantic failpoints not implemented
+--- benchmark-eligibility-v1.tsv ---
+schema	riffdb.storage-fjall-benchmark-eligibility/v1
+engine	fjall
+engine_version	3.1.8
+default_features	false
+harness	benches/storage_comparison.rs
+report_format	riffdb_storage_benchmark_format=1
+reference_harness	crates/riffdb-storage-redb/benches/storage_baseline.rs
+correctness_preflight	substrate_only_passed
+semantic_conformance	failed
+performance_eligibility	not_publishable_conformance_failure
+decision_evidence	false
+reason	unchanged semantic and projection conformance cases are not implemented
+--- acceptance output ---
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.04s
+     Running unittests src/lib.rs (benchmarks/storage-fjall/target/debug/deps/riffdb_storage_fjall_comparison-53f2d00f5b3c4144)
+
+running 6 tests
+test adapter::tests::accepted_startup_migration_contract_is_identity_only ... ok
+test adapter::tests::batch_requires_strict_canonical_target_order ... ok
+test adapter::tests::table_inventory_matches_the_accepted_physical_names ... ok
+test migration_ledger::tests::instruction_ledger_can_stop_before_smaller_evidence_ledger ... ok
+test conformance::tests::semantic_failure_cannot_be_hidden_by_substrate_passes ... ok
+test migration_ledger::tests::one_complete_row_is_never_split ... ok
+
+test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/architecture.rs (benchmarks/storage-fjall/target/debug/deps/architecture-c46f1eeab6a00a64)
+
+running 3 tests
+test workspace_is_isolated_and_fjall_is_exactly_pinned_without_defaults ... ok
+test lockfile_excludes_the_disabled_lz4_feature_and_records_the_exact_engine ... ok
+test first_party_comparison_code_forbids_unsafe_and_does_not_claim_semantic_impls ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/conformance.rs (benchmarks/storage-fjall/target/debug/deps/conformance-568fb05a268bec8a)
+
+running 3 tests
+test accepted_registry_is_exactly_twenty_seven_readable_and_twenty_six_writable ... ok
+test comparison_compiles_against_the_current_sealed_trait_names ... ok
+test frozen_report_is_current_and_fail_closed ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/dependency_inventory.rs (benchmarks/storage-fjall/target/debug/deps/dependency_inventory-d5bbb704c0b693a6)
+
+running 3 tests
+test benchmark_eligibility_is_frozen_fail_closed ... ok
+test inventory_discloses_unsafe_and_build_boundaries ... ok
+test linux_normal_dependency_inventory_is_exact_and_unique ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/migration_bounds.rs (benchmarks/storage-fjall/target/debug/deps/migration_bounds-7214e8ff9a83feb1)
+
+running 4 tests
+test an_oversized_complete_row_fails_instead_of_splitting_or_looping ... ok
+test either_independent_ledger_can_limit_the_page ... ok
+test equal_four_mib_fits_and_one_byte_over_stays_unconsumed ... ok
+test five_hundred_rows_fit_and_five_hundred_first_is_the_exact_continuation ... ok
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/substrate.rs (benchmarks/storage-fjall/target/debug/deps/substrate-efc6fcca5a465efa)
+
+running 5 tests
+test exact_table_inventory_is_created_without_extra_riffdb_tables ... ok
+test bounded_range_pages_have_strict_continuations_and_exact_end ... ok
+test owned_snapshot_retains_one_consistent_prewrite_view ... ok
+test cross_keyspace_commit_is_atomic_and_survives_reopen ... ok
+test buffered_commits_become_group_durable_at_explicit_flush ... ok
+
+test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.03s
+
+   Doc-tests riffdb_storage_fjall_comparison
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+    Finished `bench` profile [optimized] target(s) in 0.02s
+  Executable benches src/lib.rs (benchmarks/storage-fjall/target/release/deps/riffdb_storage_fjall_comparison-8dab1e802e9cbc83)
+  Executable benches/storage_comparison.rs (benchmarks/storage-fjall/target/release/deps/storage_comparison-776aa2e1ebe58e81)
