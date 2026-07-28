@@ -1,42 +1,42 @@
 {
   "schema": "riffdb.benchmark-status/v1",
   "revision_scope": "source_checkout",
-  "performance_claim": "none",
+  "performance_claim": "qualified_poc_semantic_and_budget_comparison_with_fjall_conformance_failure",
   "redb_report": {
     "report_id": "storage-redb",
-    "status": "not_published",
-    "report": null,
-    "report_sha256": null,
-    "raw_artifact": null,
-    "raw_sha256": null
+    "status": "verified",
+    "report": "benchmarks/reports/storage-redb/report-v1.json",
+    "report_sha256": "778a9399008bbf83a99865bfa1216b261fcd71c1400b5c7a8b323ed95984420c",
+    "raw_artifact": "benchmarks/reports/storage-redb/raw-v1.txt",
+    "raw_sha256": "a8b79fdcddf12ca19b04257b5b8e2df4518f07a5e805640110851140bbfd2c10"
   },
   "fjall_report": {
     "report_id": "storage-fjall",
-    "status": "conformance_failure_not_published",
-    "report": null,
-    "report_sha256": null,
-    "raw_artifact": null,
-    "raw_sha256": null
+    "status": "verified",
+    "report": "benchmarks/reports/storage-fjall/report-v1.json",
+    "report_sha256": "3f53fe54183358459ada5a87cd66ea04f2c6afb19e145b5850094f9654d9de5c",
+    "raw_artifact": "benchmarks/reports/storage-fjall/raw-v1.txt",
+    "raw_sha256": "449a16d36a5dc6aca418aa9117265fcb36a7e1eeb2ea31a3958fe51bf973ab7d"
   },
   "budget_comparison_report": {
     "report_id": "budget-postgresql-riffdb",
-    "status": "not_published",
-    "report": null,
-    "report_sha256": null,
-    "raw_artifact": null,
-    "raw_sha256": null
+    "status": "verified",
+    "report": "benchmarks/reports/budget-comparison/report-v1.json",
+    "report_sha256": "d8543f4d276d88670aa1e9bad5c34f4c53280737c6e1c19c0e2c022d4727a024",
+    "raw_artifact": "benchmarks/reports/budget-comparison/raw-v1.tsv",
+    "raw_sha256": "c56b50e8e8dff871d9c4ccc3ba6fb21c76281ce8d796509577be1659cb09e5a0"
   },
   "poc_semantic_report": {
     "report_id": "poc-semantic-workloads",
-    "status": "not_published",
-    "report": null,
-    "report_sha256": null,
-    "raw_artifact": null,
-    "raw_sha256": null
+    "status": "verified",
+    "report": "benchmarks/reports/poc-semantic-workloads/report-v1.json",
+    "report_sha256": "6b7140845ce70c93536ba4c61dd483bbeea52da4a7deaa781c83ac94275506eb",
+    "raw_artifact": "benchmarks/reports/poc-semantic-workloads/raw-v1.jsonl",
+    "raw_sha256": "9def19bc8c85ace4cf746089d434abe6a6db393e8d226bed5385f1c765c1609e"
   },
   "unsafe_postgresql_variants": {
     "benchmark_eligible": false,
     "reason": "correctness_negative_controls_only"
   },
-  "poc_exit_ready": false
+  "poc_exit_ready": true
 }
