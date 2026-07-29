@@ -15,6 +15,8 @@ use riffdb_client_rust::{
 pub use generated::{
     AddProjectMemberInput, AttachLabelInput, CreateCommentInput, CreateLabelInput,
     CreateOrganizationInput, CreateProjectInput, CreateTicketInput, CreateUserInput,
+    GetTicketParams, GetTicketResult, GetUserParams, GetUserResult, ListCommentsParams,
+    ListCommentsResult, ListTicketsByAssigneeParams, ListTicketsByAssigneeResult,
     ListTicketsParams, ListTicketsResult, ProjectMembersParams, ProjectMembersResult,
     ProjectSummaryParams, ProjectSummaryResult, TicketPageParams, TicketPageResult,
 };
@@ -30,6 +32,59 @@ impl TicketDeskClient {
     #[must_use]
     pub const fn new(client: RiffDbClient, metadata: CallMetadata) -> Self {
         Self { client, metadata }
+    }
+
+    /// Point-gets one ticket with one symbolic request.
+    pub async fn get_ticket(
+        &mut self,
+        input: GetTicketParams,
+    ) -> Result<GetTicketResult, ApplicationClientError> {
+        let result = self
+            .query(
+                "GetTicket",
+                parameters([
+                    ("organization_id", uuid(input.organization_id)),
+                    ("ticket_id", uuid(input.ticket_id)),
+                ]),
+            )
+            .await?;
+        decode::get_ticket_result(result)
+    }
+
+    /// Point-gets one user with one symbolic request.
+    pub async fn get_user(
+        &mut self,
+        input: GetUserParams,
+    ) -> Result<GetUserResult, ApplicationClientError> {
+        let result = self
+            .query(
+                "GetUser",
+                parameters([
+                    ("organization_id", uuid(input.organization_id)),
+                    ("user_id", uuid(input.user_id)),
+                ]),
+            )
+            .await?;
+        decode::get_user_result(result)
+    }
+
+    /// Lists comments for one ticket with one symbolic request.
+    pub async fn list_comments(
+        &mut self,
+        input: ListCommentsParams,
+    ) -> Result<ListCommentsResult, ApplicationClientError> {
+        let result = self
+            .query(
+                "ListComments",
+                parameters([
+                    ("organization_id", uuid(input.organization_id)),
+                    ("ticket_id", uuid(input.ticket_id)),
+                    ("after", optional_text(input.after)),
+                    ("limit", ApplicationValue::U64(input.limit)),
+                ]),
+            )
+            .await?;
+        decode::list_comments_result(result)
     }
 
     /// Lists one bounded project/status page with one symbolic request.
@@ -55,6 +110,31 @@ impl TicketDeskClient {
             )
             .await?;
         decode::list_tickets_result(result)
+    }
+
+    /// Lists tickets for one assignee/status page with one symbolic request.
+    pub async fn list_tickets_by_assignee(
+        &mut self,
+        input: ListTicketsByAssigneeParams,
+    ) -> Result<ListTicketsByAssigneeResult, ApplicationClientError> {
+        let result = self
+            .query(
+                "ListTicketsByAssignee",
+                parameters([
+                    ("organization_id", uuid(input.organization_id)),
+                    ("assignee_id", uuid(input.assignee_id)),
+                    (
+                        "statuses",
+                        ApplicationValue::List(
+                            input.statuses.into_iter().map(enum_variant).collect(),
+                        ),
+                    ),
+                    ("after", optional_text(input.after)),
+                    ("limit", ApplicationValue::U64(input.limit)),
+                ]),
+            )
+            .await?;
+        decode::list_tickets_by_assignee_result(result)
     }
 
     /// Returns a project-members page with one symbolic request.

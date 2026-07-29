@@ -13,10 +13,26 @@ use riffdb_query_module::{
 };
 
 const CONTRACT: &str = include_str!("../../../examples/app-baseline/contracts/ticketdesk.riff");
-const QUERIES: [(&str, &str); 4] = [
+const QUERIES: [(&str, &str); 8] = [
+    (
+        "GetTicket",
+        include_str!("../../../queries/ticketdesk/get_ticket.riffq"),
+    ),
+    (
+        "GetUser",
+        include_str!("../../../queries/ticketdesk/get_user.riffq"),
+    ),
+    (
+        "ListComments",
+        include_str!("../../../queries/ticketdesk/list_comments.riffq"),
+    ),
     (
         "ListTickets",
         include_str!("../../../queries/ticketdesk/list_tickets.riffq"),
+    ),
+    (
+        "ListTicketsByAssignee",
+        include_str!("../../../queries/ticketdesk/list_tickets_by_assignee.riffq"),
     ),
     (
         "ProjectMembers",

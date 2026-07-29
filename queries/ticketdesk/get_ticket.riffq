@@ -1,0 +1,22 @@
+query GetTicket(
+    $organization_id: Organization.organization_id,
+    $ticket_id: Ticket.ticket_id,
+) {
+    one ticket from Ticket
+        where organization_id == $organization_id
+            && ticket_id == $ticket_id
+        else NotFound
+
+    return Found {
+        ticket: ticket {
+            ticket_id
+            project_id
+            title
+            status
+            reporter_id
+            assignee_id
+        }
+    }
+
+    outcomes Found | NotFound
+}

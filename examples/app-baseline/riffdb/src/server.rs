@@ -17,12 +17,11 @@ use riffdb_auth::bootstrap_secret::{
 };
 use riffdb_client_rust::{
     BearerCredential, BootstrapCallMetadata, BootstrapCredential as TransportBootstrapCredential,
-    CallMetadata, RiffDbClient, generate_capability_id, generate_request_id, v1,
+    CallMetadata, RiffDbClient, app_v1, generate_capability_id, generate_request_id, v1,
 };
 use tokio::time::timeout;
 use tonic::transport::Endpoint;
 
-use crate::schema::{CONTRACT_LINEAGE, CONTRACT_VERSION, TICKETDESK_CONTRACT, entity};
 use crate::{RiffDbError, RiffDbPublicBackend};
 
 const AUDIENCE: &str = "riffdb-grpc-loopback";
@@ -33,6 +32,45 @@ const PROCESS_STOP_TIMEOUT: Duration = Duration::from_secs(15);
 const RPC_TIMEOUT: Duration = Duration::from_secs(30);
 const BOOTSTRAP_UNIX_MILLISECONDS: u64 = 1_700_000_000_000;
 const CAPABILITY_LIFETIME_SECONDS: u32 = 3_600;
+const CONTRACT_LINEAGE: &str = "TicketDesk";
+const CONTRACT_VERSION: u64 = 1;
+const TICKETDESK_CONTRACT: &str = include_str!("../../contracts/ticketdesk.riff");
+const MODULE_NAME: &str = "ticketdesk";
+const MODULE_VERSION: u64 = 1;
+const QUERY_SOURCES: &[(&str, &str)] = &[
+    (
+        "GetTicket",
+        include_str!("../../../../queries/ticketdesk/get_ticket.riffq"),
+    ),
+    (
+        "GetUser",
+        include_str!("../../../../queries/ticketdesk/get_user.riffq"),
+    ),
+    (
+        "ListComments",
+        include_str!("../../../../queries/ticketdesk/list_comments.riffq"),
+    ),
+    (
+        "ListTickets",
+        include_str!("../../../../queries/ticketdesk/list_tickets.riffq"),
+    ),
+    (
+        "ListTicketsByAssignee",
+        include_str!("../../../../queries/ticketdesk/list_tickets_by_assignee.riffq"),
+    ),
+    (
+        "ProjectMembers",
+        include_str!("../../../../queries/ticketdesk/project_members.riffq"),
+    ),
+    (
+        "ProjectSummary",
+        include_str!("../../../../queries/ticketdesk/project_summary.riffq"),
+    ),
+    (
+        "TicketPage",
+        include_str!("../../../../queries/ticketdesk/ticket_page.riffq"),
+    ),
+];
 const CAPABILITY_KEY_DOCUMENT: &[u8] =
     b"riffdb-capability-digest-keys-v1\n7:000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f\n";
 const IDEMPOTENCY_KEY_DOCUMENT: &[u8] =
@@ -49,7 +87,7 @@ pub struct RiffDbServerSession {
 }
 
 impl RiffDbServerSession {
-    /// Spawns `riffdbd`, bootstraps, deploys TicketDesk, and issues a runner capability.
+    /// Spawns `riffdbd`, bootstraps, deploys TicketDesk + query module, issues a runner capability.
     pub async fn start(riffdbd_bin: &Path) -> Result<Self, RiffDbError> {
         let temporary = TemporaryDirectory::new().map_err(|_| RiffDbError::Io)?;
         let database_path = temporary.path().join("riffdb.redb");
@@ -153,6 +191,40 @@ async fn bootstrap_deploy_and_issue(
         )));
     }
 
+    let module = bounded_rpc(
+        "deploy_query_module",
+        client.deploy_query_module(
+            app_v1::DeployQueryModuleRequest {
+                contract: Some(app_v1::ContractSelector {
+                    lineage: CONTRACT_LINEAGE.to_owned(),
+                    version: CONTRACT_VERSION,
+                    bundle_hash: Vec::new(),
+                }),
+                module_name: MODULE_NAME.to_owned(),
+                module_version: MODULE_VERSION,
+                queries: QUERY_SOURCES
+                    .iter()
+                    .map(|(name, source)| app_v1::NamedQuerySource {
+                        name: (*name).to_owned(),
+                        source: (*source).to_owned(),
+                    })
+                    .collect(),
+                request_id: fresh_request_id_bytes()?,
+                expected_active: Some(
+                    app_v1::deploy_query_module_request::ExpectedActive::AnyActive(true),
+                ),
+            },
+            &authenticated,
+        ),
+    )
+    .await
+    .map_err(|error| RiffDbError::Rpc(format!("deploy_query_module: {error}")))?;
+    if module.module.is_none() {
+        return Err(RiffDbError::Rpc(format!(
+            "deploy_query_module did not activate: {module:?}"
+        )));
+    }
+
     let response = bounded_rpc(
         "create_runner_capability",
         client.create_capability(normal_capability_request()?, &authenticated),
@@ -190,8 +262,6 @@ fn bootstrap_request(
             partition_scope: Some(v1::PartitionScope {
                 scope: Some(v1::partition_scope::Scope::All(v1::Unit {})),
             }),
-            // Canonical permission order: DeployContract(4), ReadHealth(15),
-            // AdministerCapabilities(19).
             permissions: vec![
                 v1::CapabilityPermission {
                     permission: Some(Permission::DeployContract(v1::Unit {})),
@@ -216,12 +286,17 @@ fn normal_capability_request() -> Result<v1::CreateCapabilityRequest, RiffDbErro
         contract_lineage: CONTRACT_LINEAGE.to_owned(),
         stable_id,
     };
-    // Canonical permission order: InvokeCommand(5), ReadEntity(6), ScanIndex(7).
-    let mut permissions = (1_u32..=8)
-        .map(|stable_id| v1::CapabilityPermission {
+    // Named RiffQL execute requires ReadContract; entity/index grants authorize
+    // the compiled access plan. Canonical permission order:
+    // ReadContract(3), InvokeCommand(5), ReadEntity(6), ScanIndex(7).
+    let mut permissions = vec![v1::CapabilityPermission {
+        permission: Some(Permission::ReadContract(v1::Unit {})),
+    }];
+    for stable_id in 1_u32..=8 {
+        permissions.push(v1::CapabilityPermission {
             permission: Some(Permission::InvokeCommand(scoped(stable_id))),
-        })
-        .collect::<Vec<_>>();
+        });
+    }
     for entity_id in 1_u32..=8 {
         permissions.push(v1::CapabilityPermission {
             permission: Some(Permission::ReadEntity(scoped(entity_id))),
@@ -233,17 +308,16 @@ fn normal_capability_request() -> Result<v1::CreateCapabilityRequest, RiffDbErro
         });
     }
 
-    // field_visibility must be sorted by entity_type_id and list NON-KEY fields only
-    // (same pattern as LegalSpend budget comparison: grant exactly what GetEntity requests).
+    // Non-key field visibility required for policy-filtered application data.
     let field_visibility = vec![
-        field_visibility(entity::LABEL, &[1, 3]), // name, created_at
-        field_visibility(entity::TICKET, &[1, 2, 4, 5, 6, 7, 8]), // all non-key
-        field_visibility(entity::APP_USER, &[1, 3, 4]), // email, created_at, display_name
-        field_visibility(entity::COMMENT, &[1, 2, 3, 5]), // body, author, ticket, created_at
-        field_visibility(entity::PROJECT, &[1, 2]), // name, created_at
-        field_visibility(entity::TICKET_LABEL, &[3]), // created_at only non-key
-        field_visibility(entity::ORGANIZATION, &[1, 2]), // name, created_at
-        field_visibility(entity::PROJECT_MEMBER, &[1, 3]), // role, created_at
+        field_visibility(1, &[1, 3]),
+        field_visibility(2, &[1, 2, 4, 5, 6, 7, 8]),
+        field_visibility(3, &[1, 3, 4]),
+        field_visibility(4, &[1, 2, 3, 5]),
+        field_visibility(5, &[1, 2]),
+        field_visibility(6, &[3]),
+        field_visibility(7, &[1, 2]),
+        field_visibility(8, &[1, 3]),
     ];
 
     Ok(v1::CreateCapabilityRequest {
@@ -266,7 +340,7 @@ fn normal_capability_request() -> Result<v1::CreateCapabilityRequest, RiffDbErro
             }),
             permissions,
             field_visibility,
-            max_scan_rows: 128,
+            max_scan_rows: 500,
             approval_required: Vec::new(),
         }),
     })

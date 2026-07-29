@@ -4,8 +4,24 @@ use riffdb_riffql_syntax::{DiagnosticCode, format_query, parse_query};
 
 const CORPUS: &[(&str, &str)] = &[
     (
+        "get_ticket",
+        include_str!("../../../queries/ticketdesk/get_ticket.riffq"),
+    ),
+    (
+        "get_user",
+        include_str!("../../../queries/ticketdesk/get_user.riffq"),
+    ),
+    (
+        "list_comments",
+        include_str!("../../../queries/ticketdesk/list_comments.riffq"),
+    ),
+    (
         "list_tickets",
         include_str!("../../../queries/ticketdesk/list_tickets.riffq"),
+    ),
+    (
+        "list_tickets_by_assignee",
+        include_str!("../../../queries/ticketdesk/list_tickets_by_assignee.riffq"),
     ),
     (
         "ticket_page",

@@ -104,12 +104,12 @@ fn run() -> Result<(), String> {
         .map_err(|error| error.to_string())?;
         backends.push(BackendReport {
             backend_id: "riffdb_public_grpc",
-            description: "Live riffdbd over public gRPC (commands + GetEntity + ScanIndex)"
+            description: "Live riffdbd over public gRPC (symbolic commands + named RiffQL)"
                 .to_owned(),
             guarantee_notes: vec![
-                "Compiled TicketDesk contract commands for seed/writes".to_owned(),
-                "Reads via public GetEntity and ScanIndex RPCs".to_owned(),
-                "ticket_detail_page is multi-RPC application composition, not SQL join".to_owned(),
+                "Symbolic TicketDesk commands for seed/writes".to_owned(),
+                "Reads via named RiffQL queries (one public RPC per page)".to_owned(),
+                "ticket_detail_page is one TicketPage query with dependent key batches".to_owned(),
                 "Synchronous durable command commits".to_owned(),
             ],
             seed_ns,

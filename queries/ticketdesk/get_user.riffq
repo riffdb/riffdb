@@ -1,0 +1,19 @@
+query GetUser(
+    $organization_id: Organization.organization_id,
+    $user_id: AppUser.user_id,
+) {
+    one user from AppUser
+        where organization_id == $organization_id
+            && user_id == $user_id
+        else NotFound
+
+    return Found {
+        user: user {
+            user_id
+            email
+            display_name
+        }
+    }
+
+    outcomes Found | NotFound
+}

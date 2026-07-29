@@ -6,14 +6,58 @@ use riffdb_client_rust::{
 };
 
 use crate::generated::{
-    ListTicketsFound, ListTicketsFoundTickets, ListTicketsResult, ProjectMembersFound,
-    ProjectMembersFoundMembers, ProjectMembersResult, ProjectSummaryFound,
+    GetTicketFound, GetTicketFoundTicket, GetTicketNotFound, GetTicketResult, GetUserFound,
+    GetUserFoundUser, GetUserNotFound, GetUserResult, ListCommentsFound, ListCommentsFoundComments,
+    ListCommentsResult, ListTicketsByAssigneeFound, ListTicketsByAssigneeFoundTickets,
+    ListTicketsByAssigneeResult, ListTicketsFound, ListTicketsFoundTickets, ListTicketsResult,
+    ProjectMembersFound, ProjectMembersFoundMembers, ProjectMembersResult, ProjectSummaryFound,
     ProjectSummaryFoundProject, ProjectSummaryFoundRecentTickets, ProjectSummaryNotFound,
     ProjectSummaryResult, TicketPageFound, TicketPageFoundAssignee, TicketPageFoundComments,
     TicketPageFoundLabels, TicketPageFoundOrganization, TicketPageFoundProject,
     TicketPageFoundReporter, TicketPageFoundTicket, TicketPageIntegrityFailure, TicketPageNotFound,
     TicketPageResult,
 };
+
+/// Decodes a `GetTicket` named-query response.
+pub(crate) fn get_ticket_result(
+    result: NamedQueryResult,
+) -> Result<GetTicketResult, ApplicationClientError> {
+    match result.outcome.as_str() {
+        "Found" => Ok(GetTicketResult::Found(Box::new(GetTicketFound {
+            ticket: one_record(&result, "ticket").and_then(get_ticket)?,
+        }))),
+        "NotFound" => Ok(GetTicketResult::NotFound(Box::new(GetTicketNotFound {}))),
+        _ => Err(ApplicationClientError::InvalidResponse),
+    }
+}
+
+/// Decodes a `GetUser` named-query response.
+pub(crate) fn get_user_result(
+    result: NamedQueryResult,
+) -> Result<GetUserResult, ApplicationClientError> {
+    match result.outcome.as_str() {
+        "Found" => Ok(GetUserResult::Found(Box::new(GetUserFound {
+            user: one_record(&result, "user").and_then(get_user)?,
+        }))),
+        "NotFound" => Ok(GetUserResult::NotFound(Box::new(GetUserNotFound {}))),
+        _ => Err(ApplicationClientError::InvalidResponse),
+    }
+}
+
+/// Decodes a `ListComments` named-query response.
+pub(crate) fn list_comments_result(
+    result: NamedQueryResult,
+) -> Result<ListCommentsResult, ApplicationClientError> {
+    match result.outcome.as_str() {
+        "Found" => Ok(ListCommentsResult::Found(Box::new(ListCommentsFound {
+            comments: many_records(&result, "comments")?
+                .into_iter()
+                .map(list_comment)
+                .collect::<Result<Vec<_>, _>>()?,
+        }))),
+        _ => Err(ApplicationClientError::InvalidResponse),
+    }
+}
 
 /// Decodes a `ListTickets` named-query response.
 pub(crate) fn list_tickets_result(
@@ -26,6 +70,23 @@ pub(crate) fn list_tickets_result(
                 .map(list_ticket)
                 .collect::<Result<Vec<_>, _>>()?,
         }))),
+        _ => Err(ApplicationClientError::InvalidResponse),
+    }
+}
+
+/// Decodes a `ListTicketsByAssignee` named-query response.
+pub(crate) fn list_tickets_by_assignee_result(
+    result: NamedQueryResult,
+) -> Result<ListTicketsByAssigneeResult, ApplicationClientError> {
+    match result.outcome.as_str() {
+        "Found" => Ok(ListTicketsByAssigneeResult::Found(Box::new(
+            ListTicketsByAssigneeFound {
+                tickets: many_records(&result, "tickets")?
+                    .into_iter()
+                    .map(list_ticket_by_assignee)
+                    .collect::<Result<Vec<_>, _>>()?,
+            },
+        ))),
         _ => Err(ApplicationClientError::InvalidResponse),
     }
 }
@@ -94,11 +155,56 @@ pub(crate) fn ticket_page_result(
     }
 }
 
+fn get_ticket(record: ApplicationRecord) -> Result<GetTicketFoundTicket, ApplicationClientError> {
+    Ok(GetTicketFoundTicket {
+        ticket_id: require_uuid(&record, "ticket_id")?,
+        project_id: require_uuid(&record, "project_id")?,
+        title: require_string(&record, "title")?,
+        status: require_enum(&record, "status")?,
+        reporter_id: require_uuid(&record, "reporter_id")?,
+        assignee_id: require_uuid(&record, "assignee_id")?,
+    })
+}
+
+fn get_user(record: ApplicationRecord) -> Result<GetUserFoundUser, ApplicationClientError> {
+    Ok(GetUserFoundUser {
+        user_id: require_uuid(&record, "user_id")?,
+        email: require_string(&record, "email")?,
+        display_name: require_string(&record, "display_name")?,
+    })
+}
+
+fn list_comment(
+    record: ApplicationRecord,
+) -> Result<ListCommentsFoundComments, ApplicationClientError> {
+    Ok(ListCommentsFoundComments {
+        comment_id: require_uuid(&record, "comment_id")?,
+        body: require_string(&record, "body")?,
+        author_id: require_uuid(&record, "author_id")?,
+        created_at: require_timestamp_text(&record, "created_at")?,
+    })
+}
+
 fn list_ticket(
     record: ApplicationRecord,
 ) -> Result<ListTicketsFoundTickets, ApplicationClientError> {
     Ok(ListTicketsFoundTickets {
         ticket_id: require_uuid(&record, "ticket_id")?,
+        project_id: require_uuid(&record, "project_id")?,
+        title: require_string(&record, "title")?,
+        status: require_enum(&record, "status")?,
+        updated_at: require_timestamp_text(&record, "updated_at")?,
+        reporter_id: require_uuid(&record, "reporter_id")?,
+        assignee_id: require_uuid(&record, "assignee_id")?,
+    })
+}
+
+fn list_ticket_by_assignee(
+    record: ApplicationRecord,
+) -> Result<ListTicketsByAssigneeFoundTickets, ApplicationClientError> {
+    Ok(ListTicketsByAssigneeFoundTickets {
+        ticket_id: require_uuid(&record, "ticket_id")?,
+        project_id: require_uuid(&record, "project_id")?,
         title: require_string(&record, "title")?,
         status: require_enum(&record, "status")?,
         updated_at: require_timestamp_text(&record, "updated_at")?,

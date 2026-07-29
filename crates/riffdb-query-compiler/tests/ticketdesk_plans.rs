@@ -6,10 +6,34 @@ use riffdb_query_ir::{QueryAccessKind, QueryPredicateValue, SymbolicCatalog};
 use riffdb_riffql_syntax::parse_query;
 
 const CONTRACT: &str = include_str!("../../../examples/app-baseline/contracts/ticketdesk.riff");
+
+fn query(name: &str) -> &'static str {
+    QUERIES
+        .iter()
+        .find_map(|(query_name, source)| (*query_name == name).then_some(*source))
+        .unwrap_or_else(|| panic!("missing query fixture {name}"))
+}
+
 const QUERIES: &[(&str, &str)] = &[
+    (
+        "get_ticket",
+        include_str!("../../../queries/ticketdesk/get_ticket.riffq"),
+    ),
+    (
+        "get_user",
+        include_str!("../../../queries/ticketdesk/get_user.riffq"),
+    ),
+    (
+        "list_comments",
+        include_str!("../../../queries/ticketdesk/list_comments.riffq"),
+    ),
     (
         "list_tickets",
         include_str!("../../../queries/ticketdesk/list_tickets.riffq"),
+    ),
+    (
+        "list_tickets_by_assignee",
+        include_str!("../../../queries/ticketdesk/list_tickets_by_assignee.riffq"),
     ),
     (
         "ticket_page",
@@ -53,7 +77,11 @@ fn every_ticketdesk_query_has_one_stable_bounded_same_partition_program() {
 fn list_and_detail_choose_expected_physical_accesses() {
     let bundle = compile_contract_source(CONTRACT).expect("contract");
     let catalog = SymbolicCatalog::from_bundle(&bundle).expect("catalog");
-    let list = compile_query(&parse_query(QUERIES[0].1).expect("parse"), &catalog).expect("plan");
+    let list = compile_query(
+        &parse_query(query("list_tickets")).expect("parse"),
+        &catalog,
+    )
+    .expect("plan");
     assert_eq!(
         format!("{}\n", list.explain().lines().join("\n")),
         include_str!("../../../fixtures/riffql/list_tickets.plan")
@@ -63,7 +91,8 @@ fn list_and_detail_choose_expected_physical_accesses() {
         QueryAccessKind::Index { index, .. } if index == "by_project_status"
     ));
 
-    let detail = compile_query(&parse_query(QUERIES[1].1).expect("parse"), &catalog).expect("plan");
+    let detail =
+        compile_query(&parse_query(query("ticket_page")).expect("parse"), &catalog).expect("plan");
     let step = |binding: &str| {
         detail
             .steps()
@@ -111,7 +140,8 @@ fn list_and_detail_choose_expected_physical_accesses() {
 fn collection_dependencies_are_not_implicitly_scalar_or_unbounded() {
     let bundle = compile_contract_source(CONTRACT).expect("contract");
     let catalog = SymbolicCatalog::from_bundle(&bundle).expect("catalog");
-    let scalar = QUERIES[1].1.replace(
+    let ticket_page = query("ticket_page");
+    let scalar = ticket_page.replace(
         "label_id in ticket_labels.label_id",
         "label_id == ticket_labels.label_id",
     );
@@ -139,7 +169,7 @@ fn collection_dependencies_are_not_implicitly_scalar_or_unbounded() {
         include_str!("../../../fixtures/riffql/cardinality.snapshot")
     );
 
-    let singular_set = QUERIES[1].1.replace(
+    let singular_set = ticket_page.replace(
         "label_id in ticket_labels.label_id",
         "label_id in ticket.ticket_id",
     );
@@ -150,7 +180,7 @@ fn collection_dependencies_are_not_implicitly_scalar_or_unbounded() {
         riffdb_query_compiler::PlannerDiagnosticCode::Cardinality
     );
 
-    let no_outcome = QUERIES[1].1.replace(
+    let no_outcome = ticket_page.replace(
         "        take 50\n        else IntegrityFailure\n\n    return Found",
         "        take 50\n\n    return Found",
     );
@@ -161,7 +191,7 @@ fn collection_dependencies_are_not_implicitly_scalar_or_unbounded() {
         riffdb_query_compiler::PlannerDiagnosticCode::Cardinality
     );
 
-    let target_exceeds_source = QUERIES[1].1.replacen(
+    let target_exceeds_source = ticket_page.replacen(
         "        take 50\n\n    many labels",
         "        take 25\n\n    many labels",
         1,
@@ -176,7 +206,7 @@ fn collection_dependencies_are_not_implicitly_scalar_or_unbounded() {
         riffdb_query_compiler::PlannerDiagnosticCode::Cardinality
     );
 
-    let noncanonical_source = QUERIES[1].1.replace(
+    let noncanonical_source = ticket_page.replace(
         "order by label_id asc\n        take 50\n\n    many labels",
         "order by label_id desc\n        take 50\n\n    many labels",
     );
@@ -192,7 +222,7 @@ fn collection_dependencies_are_not_implicitly_scalar_or_unbounded() {
 fn predicate_inputs_are_closed_and_participate_in_plan_identity() {
     let bundle = compile_contract_source(CONTRACT).expect("contract");
     let catalog = SymbolicCatalog::from_bundle(&bundle).expect("catalog");
-    let open = QUERIES[3].1;
+    let open = query("project_summary");
     let closed = open.replace("status == $status", "status == TicketStatus.Closed");
     let open = compile_query(&parse_query(open).expect("parse"), &catalog).expect("plan");
     let closed = compile_query(&parse_query(&closed).expect("parse"), &catalog).expect("plan");

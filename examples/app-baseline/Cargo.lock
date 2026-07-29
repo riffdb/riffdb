@@ -873,8 +873,7 @@ dependencies = [
  "riffdb-app-baseline-core",
  "riffdb-auth",
  "riffdb-client-rust",
- "riffdb-proto",
- "riffdb-types",
+ "riffdb-ticketdesk",
  "tokio",
  "tonic",
 ]
@@ -937,6 +936,15 @@ dependencies = [
  "riffdb-contract-ir",
  "riffdb-proto",
  "riffdb-types",
+]
+
+[[package]]
+name = "riffdb-ticketdesk"
+version = "0.1.0"
+dependencies = [
+ "riffdb-client-rust",
+ "tokio",
+ "tonic",
 ]
 
 [[package]]

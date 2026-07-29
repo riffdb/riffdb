@@ -1,0 +1,23 @@
+query ListComments(
+    $organization_id: Organization.organization_id,
+    $ticket_id: Ticket.ticket_id,
+    $after: Cursor?,
+    $limit: Limit = 50,
+) {
+    many comments from Comment
+        where organization_id == $organization_id
+            && ticket_id == $ticket_id
+        order by created_at asc, comment_id asc
+        take $limit after $after
+
+    return Found {
+        comments: comments {
+            comment_id
+            body
+            author_id
+            created_at
+        }
+    }
+
+    outcomes Found
+}
