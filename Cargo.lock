@@ -1859,6 +1859,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "riffdb-query-module"
+version = "0.1.0"
+dependencies = [
+ "riffdb-contract-compiler",
+ "riffdb-contract-ir",
+ "riffdb-query-compiler",
+ "riffdb-query-ir",
+ "riffdb-riffql-syntax",
+ "riffdb-types",
+]
+
+[[package]]
 name = "riffdb-riffql-syntax"
 version = "0.1.0"
 

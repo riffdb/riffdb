@@ -9,7 +9,8 @@ use crate::{
     CanonicalInputHash, CanonicalValueHash, CapabilityTokenDigest, ConflictKeyHash,
     ContractBundleHash, ContractPlanRootHash, DigestKey, DigestKeyId, EntityKeyHash, EventHash,
     OfflineMaintenanceInputHash, PartitionKeyHash, PlanHash, ProjectionApplyHash,
-    ProjectionPlanHash, QueryParameterHash, QueryPlanHash, SchemaHash, SourceHash,
+    ProjectionPlanHash, QueryModuleHash, QueryParameterHash, QueryPlanHash, QuerySourceHash,
+    SchemaHash, SourceHash,
 };
 
 /// Hash framing and algorithm scheme defined by ADR-0011.
@@ -33,6 +34,10 @@ pub enum HashDomain {
     ProjectionPlan,
     /// Closed RiffQL query access program.
     QueryPlan,
+    /// Canonical immutable query module.
+    QueryModule,
+    /// Exact RiffQL source document.
+    QuerySource,
     /// Canonical name-addressed RiffQL parameter set.
     QueryParameters,
     /// Ordered semantic plan set for one contract bundle.
@@ -57,13 +62,15 @@ pub enum HashDomain {
 
 impl HashDomain {
     /// Every registered unkeyed domain, for compatibility and collision checks.
-    pub const ALL: [Self; 16] = [
+    pub const ALL: [Self; 18] = [
         Self::CanonicalValue,
         Self::Source,
         Self::ContractBundle,
         Self::Plan,
         Self::ProjectionPlan,
         Self::QueryPlan,
+        Self::QueryModule,
+        Self::QuerySource,
         Self::QueryParameters,
         Self::ContractPlanRoot,
         Self::CommandInput,
@@ -85,6 +92,8 @@ impl HashDomain {
             Self::Plan => "riffdb.plan/v1",
             Self::ProjectionPlan => "riffdb.projection-plan/v1",
             Self::QueryPlan => "riffdb.query-plan/v1",
+            Self::QueryModule => "riffdb.query-module/v1",
+            Self::QuerySource => "riffdb.query-source/v1",
             Self::QueryParameters => "riffdb.query-parameters/v1",
             Self::ContractPlanRoot => "riffdb.contract-plan-root/v1",
             Self::CommandInput => "riffdb.command-input/v1",
@@ -263,6 +272,18 @@ typed_hash_function!(
     hash_query_plan,
     QueryPlan,
     QueryPlanHash
+);
+typed_hash_function!(
+    /// Hashes a canonical immutable query module in its immutable v1 domain.
+    hash_query_module,
+    QueryModule,
+    QueryModuleHash
+);
+typed_hash_function!(
+    /// Hashes one exact RiffQL source document in its immutable v1 domain.
+    hash_query_source,
+    QuerySource,
+    QuerySourceHash
 );
 typed_hash_function!(
     /// Hashes one canonical name-addressed RiffQL parameter set.

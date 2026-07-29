@@ -1,0 +1,23 @@
+[package]
+name = "riffdb-query-module"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[features]
+default = []
+
+[dependencies]
+riffdb-contract-ir = { path = "../riffdb-contract-ir" }
+riffdb-query-compiler = { path = "../riffdb-query-compiler" }
+riffdb-query-ir = { path = "../riffdb-query-ir" }
+riffdb-riffql-syntax = { path = "../riffdb-riffql-syntax" }
+riffdb-types = { path = "../riffdb-types" }
+
+[dev-dependencies]
+riffdb-contract-compiler = { path = "../riffdb-contract-compiler" }
+
+[lints]
+workspace = true
