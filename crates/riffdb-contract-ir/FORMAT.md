@@ -437,6 +437,17 @@ Fields below are listed in exact byte order. A collection field includes its cou
 | 2 | `events` | u32 count + EventSchema[] |
 | 3 | `enums` | u32 count + EnumSchema[] |
 | 4 | `aggregates` | u32 count + AggregateSchema[] |
+| 5 | `relationships` | optional u32 marker 0xfffffffe + u32 count + RelationshipSchema[]; omitted when empty |
+
+### RelationshipSchema
+
+| # | Field | Encoding |
+|---:|---|---|
+| 1 | `name` | string |
+| 2 | `source_entity` | EntityTypeId |
+| 3 | `source_fields` | u32 count + FieldId[] |
+| 4 | `target_entity` | EntityTypeId |
+| 5 | `target_fields` | u32 count + FieldId[] |
 
 ### EntitySchema
 
@@ -574,15 +585,16 @@ Fields below are listed in exact byte order. A collection field includes its cou
 | 7 | `expressions` | ExpressionArena |
 | 8 | `bindings` | u32 count + BindingPlan[] |
 | 9 | `root_validation_reads` | u32 count + RootValidationReadPlan[] |
-| 10 | `locality` | LocalityPlan |
-| 11 | `commit_checks` | u32 count + CommitCheckPlan[] |
-| 12 | `instructions` | u32 count + Instruction[] |
-| 13 | `execution_class` | Execution class tag |
-| 14 | `retry_policy` | Retry policy tag |
-| 15 | `required_capability` | CapabilityRequirement tag plus exact selected payload |
-| 16 | `entity_closure` | u32 count + EntitySchema[] |
-| 17 | `aggregate_closure` | AggregateSchema |
-| 18 | `event_closure` | u32 count + EventSchema[] |
+| 10 | `relationship_checks` | u32 count + RelationshipCheckPlan[] when StructuralSchema declares any relationship; otherwise omitted |
+| 11 | `locality` | LocalityPlan |
+| 12 | `commit_checks` | u32 count + CommitCheckPlan[] |
+| 13 | `instructions` | u32 count + Instruction[] |
+| 14 | `execution_class` | Execution class tag |
+| 15 | `retry_policy` | Retry policy tag |
+| 16 | `required_capability` | CapabilityRequirement tag plus exact selected payload |
+| 17 | `entity_closure` | u32 count + EntitySchema[] |
+| 18 | `aggregate_closure` | AggregateSchema |
+| 19 | `event_closure` | u32 count + EventSchema[] |
 
 ### OutcomeSchema
 
@@ -616,6 +628,14 @@ Fields below are listed in exact byte order. A collection field includes its cou
 | 4 | `key_schema` | KeySchema |
 | 5 | `key_expressions` | u32 count + ExprId[] |
 | 6 | `accessed_fields` | u32 count + FieldId[] |
+
+### RelationshipCheckPlan
+
+| # | Field | Encoding |
+|---:|---|---|
+| 1 | `relationship_name` | string |
+| 2 | `source_binding` | BindingId |
+| 3 | `target_binding` | BindingId |
 
 ### LocalityPlan
 

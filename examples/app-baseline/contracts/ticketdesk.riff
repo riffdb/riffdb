@@ -13,6 +13,7 @@ contract TicketDesk version 1 {
     field display_name: string<64>
     field created_at: timestamp
     index by_organization (organization_id, user_id)
+    reference organization (organization_id) -> Organization(organization_id)
   }
 
   entity Project {
@@ -20,6 +21,7 @@ contract TicketDesk version 1 {
     field name: string<64>
     field created_at: timestamp
     index by_organization (organization_id, project_id)
+    reference organization (organization_id) -> Organization(organization_id)
   }
 
   entity ProjectMember {
@@ -28,6 +30,8 @@ contract TicketDesk version 1 {
     field created_at: timestamp
     index by_user (organization_id, user_id, project_id)
     index by_project (organization_id, project_id, user_id)
+    reference project (organization_id, project_id) -> Project(organization_id, project_id)
+    reference member (organization_id, user_id) -> AppUser(organization_id, user_id)
   }
 
   entity Ticket {
@@ -41,6 +45,9 @@ contract TicketDesk version 1 {
     field updated_at: timestamp
     index by_project_status (organization_id, project_id, status, ticket_id)
     index by_assignee_status (organization_id, assignee_id, status, ticket_id)
+    reference project (organization_id, project_id) -> Project(organization_id, project_id)
+    reference reporter (organization_id, reporter_id) -> AppUser(organization_id, user_id)
+    reference assignee (organization_id, assignee_id) -> AppUser(organization_id, user_id)
   }
 
   entity Comment {
@@ -50,12 +57,15 @@ contract TicketDesk version 1 {
     field body: string<256>
     field created_at: timestamp
     index by_ticket (organization_id, ticket_id, created_at, comment_id)
+    reference ticket (organization_id, ticket_id) -> Ticket(organization_id, ticket_id)
+    reference author (organization_id, author_id) -> AppUser(organization_id, user_id)
   }
 
   entity Label {
     key (organization_id: uuid, label_id: uuid)
     field name: string<32>
     field created_at: timestamp
+    reference organization (organization_id) -> Organization(organization_id)
   }
 
   entity TicketLabel {
@@ -63,54 +73,21 @@ contract TicketDesk version 1 {
     field created_at: timestamp
     index by_label (organization_id, label_id, ticket_id)
     index by_ticket (organization_id, ticket_id, label_id)
+    reference ticket (organization_id, ticket_id) -> Ticket(organization_id, ticket_id)
+    reference label (organization_id, label_id) -> Label(organization_id, label_id)
   }
 
   aggregate OrganizationRoot {
     root Organization
+    child AppUser
+    child Project
+    child ProjectMember
+    child Ticket
+    child Comment
+    child Label
+    child TicketLabel
     partition_by organization_id
     conflict_key (organization_id)
-  }
-
-  aggregate AppUserRoot {
-    root AppUser
-    partition_by organization_id
-    conflict_key (organization_id, user_id)
-  }
-
-  aggregate ProjectRoot {
-    root Project
-    partition_by organization_id
-    conflict_key (organization_id, project_id)
-  }
-
-  aggregate ProjectMemberRoot {
-    root ProjectMember
-    partition_by organization_id
-    conflict_key (organization_id, project_id, user_id)
-  }
-
-  aggregate TicketRoot {
-    root Ticket
-    partition_by organization_id
-    conflict_key (organization_id, ticket_id)
-  }
-
-  aggregate CommentRoot {
-    root Comment
-    partition_by organization_id
-    conflict_key (organization_id, comment_id)
-  }
-
-  aggregate LabelRoot {
-    root Label
-    partition_by organization_id
-    conflict_key (organization_id, label_id)
-  }
-
-  aggregate TicketLabelRoot {
-    root TicketLabel
-    partition_by organization_id
-    conflict_key (organization_id, ticket_id, label_id)
   }
 
   command CreateOrganization {
@@ -132,6 +109,8 @@ contract TicketDesk version 1 {
     input email: string<128>
     input display_name: string<64>
     idempotency_key idempotency_key
+    read Organization(organization_id) as organization
+      else OrganizationMissing { organization_id: organization_id }
     create AppUser(organization_id, user_id) as user
       else UserExists { user_id: user_id }
     set user.email = email
@@ -146,6 +125,8 @@ contract TicketDesk version 1 {
     input project_id: uuid
     input name: string<64>
     idempotency_key idempotency_key
+    read Organization(organization_id) as organization
+      else OrganizationMissing { organization_id: organization_id }
     create Project(organization_id, project_id) as project
       else ProjectExists { project_id: project_id }
     set project.name = name
@@ -160,6 +141,10 @@ contract TicketDesk version 1 {
     input user_id: uuid
     input role: string<32>
     idempotency_key idempotency_key
+    read Project(organization_id, project_id) as project
+      else ProjectMissing { project_id: project_id }
+    read AppUser(organization_id, user_id) as user
+      else UserMissing { user_id: user_id }
     create ProjectMember(organization_id, project_id, user_id) as member
       else MemberExists { project_id: project_id, user_id: user_id }
     set member.role = role
@@ -177,6 +162,12 @@ contract TicketDesk version 1 {
     input title: string<128>
     input status: TicketStatus
     idempotency_key idempotency_key
+    read Project(organization_id, project_id) as project
+      else ProjectMissing { project_id: project_id }
+    read AppUser(organization_id, reporter_id) as reporter
+      else ReporterMissing { user_id: reporter_id }
+    read AppUser(organization_id, assignee_id) as assignee
+      else AssigneeMissing { user_id: assignee_id }
     create Ticket(organization_id, ticket_id) as ticket
       else TicketExists { ticket_id: ticket_id }
     set ticket.project_id = project_id
@@ -197,6 +188,10 @@ contract TicketDesk version 1 {
     input author_id: uuid
     input body: string<256>
     idempotency_key idempotency_key
+    read Ticket(organization_id, ticket_id) as ticket
+      else TicketMissing { ticket_id: ticket_id }
+    read AppUser(organization_id, author_id) as author
+      else AuthorMissing { user_id: author_id }
     create Comment(organization_id, comment_id) as comment
       else CommentExists { comment_id: comment_id }
     set comment.ticket_id = ticket_id
@@ -212,6 +207,8 @@ contract TicketDesk version 1 {
     input label_id: uuid
     input name: string<32>
     idempotency_key idempotency_key
+    read Organization(organization_id) as organization
+      else OrganizationMissing { organization_id: organization_id }
     create Label(organization_id, label_id) as label
       else LabelExists { label_id: label_id }
     set label.name = name
@@ -225,6 +222,10 @@ contract TicketDesk version 1 {
     input ticket_id: uuid
     input label_id: uuid
     idempotency_key idempotency_key
+    read Ticket(organization_id, ticket_id) as ticket
+      else TicketMissing { ticket_id: ticket_id }
+    read Label(organization_id, label_id) as label
+      else LabelMissing { label_id: label_id }
     create TicketLabel(organization_id, ticket_id, label_id) as link
       else LinkExists { ticket_id: ticket_id, label_id: label_id }
     set link.created_at = tx.time

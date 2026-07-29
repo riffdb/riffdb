@@ -7,7 +7,7 @@ use riffdb_types::{CommandId, EventTypeId, FieldId, InvariantId, OutcomeId};
 use crate::{
     BindingId, BindingPlan, CommandPlan, CommitCheckPlan, ConflictDerivationPlan,
     EventConstruction, ExecutionClass, ExprId, ExpressionArena, ExpressionKind, KeySchema,
-    OutcomeSchema, RootValidationReadPlan,
+    OutcomeSchema, RelationshipCheckPlan, RootValidationReadPlan,
 };
 
 /// A bounded stable-ID-only command explanation.
@@ -27,6 +27,7 @@ pub struct CommandExplain {
     partition_expression: ExprId,
     conflict_derivations: Vec<ConflictDerivationPlan>,
     binding_plans: Vec<BindingPlan>,
+    relationship_checks: Vec<RelationshipCheckPlan>,
     root_validation_reads: Vec<RootValidationReadPlan>,
     commit_checks: Vec<CommitCheckPlan>,
     event_constructions: Vec<EventConstruction>,
@@ -96,6 +97,7 @@ impl CommandExplain {
             partition_expression: plan.locality().partition_expression(),
             conflict_derivations: plan.locality().conflict_keys().to_vec(),
             binding_plans: plan.bindings().to_vec(),
+            relationship_checks: plan.relationship_checks().to_vec(),
             root_validation_reads: plan.root_validation_reads().to_vec(),
             commit_checks: plan.commit_checks().to_vec(),
             event_constructions,
@@ -177,6 +179,12 @@ impl CommandExplain {
     #[must_use]
     pub fn binding_plans(&self) -> &[BindingPlan] {
         &self.binding_plans
+    }
+
+    /// Required relationship changes and the exact reads proving their targets.
+    #[must_use]
+    pub fn relationship_checks(&self) -> &[RelationshipCheckPlan] {
+        &self.relationship_checks
     }
 
     /// Internal aggregate-root read templates in dense ID order.
@@ -286,6 +294,15 @@ impl CommandExplain {
                 binding.entity_type().get(),
                 binding.complete_record_access(),
                 fields
+            );
+        }
+        for check in &self.relationship_checks {
+            let _ = writeln!(
+                output,
+                "relationship:{} source-binding:{} exact-target-read:{} commit-revalidated:true",
+                check.relationship_name(),
+                check.source_binding().get(),
+                check.target_binding().get()
             );
         }
         for read in &self.root_validation_reads {

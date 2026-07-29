@@ -55,6 +55,38 @@ contract CrossDomain version 1 {
 }
 "#;
 
+const RELATIONSHIP_SOURCE: &str = r#"
+contract Relationships version 1 {
+  entity Tenant { key (tenant_id: uuid) }
+  entity Parent { key (tenant_id: uuid, parent_id: uuid) }
+  entity Child {
+    key (tenant_id: uuid, child_id: uuid)
+    field parent_id: uuid
+    reference parent_ref (tenant_id, parent_id) -> Parent(tenant_id, parent_id)
+  }
+  aggregate Family {
+    root Tenant
+    child Parent
+    child Child
+    partition_by tenant_id
+    conflict_key (tenant_id)
+  }
+  command CreateChild {
+    input idempotency_key: string<128>
+    input tenant_id: uuid
+    input parent_id: uuid
+    input child_id: uuid
+    idempotency_key idempotency_key
+    read Parent(tenant_id, parent_id) as parent
+      else ParentMissing { parent_id: parent_id }
+    create Child(tenant_id, child_id) as row
+      else ChildExists { child_id: child_id }
+    set row.parent_id = parent_id
+    return Created { record: row }
+  }
+}
+"#;
+
 const READ_ONLY_SOURCE: &str = r#"
 contract ReadOnlyRows version 1 {
   entity Row {
@@ -840,6 +872,73 @@ fn one_partition_cross_domain_read_preserves_every_influential_dependency() {
             .as_slice()
             .iter()
             .all(|dependency| matches!(dependency, ReadDependency::EntityObservation { .. }))
+    );
+}
+
+#[test]
+fn relationship_target_read_remains_an_ordinary_commit_dependency() {
+    let bundle = compile_contract_source(RELATIONSHIP_SOURCE).expect("relationship contract");
+    let plan = command(&bundle, "CreateChild");
+    assert_eq!(plan.relationship_checks().len(), 1);
+    let input = input_record(
+        plan.input().record(),
+        [
+            (
+                "idempotency_key",
+                CanonicalValue::string("child-1").expect("string"),
+            ),
+            ("tenant_id", CanonicalValue::Uuid([0x11; 16])),
+            ("parent_id", CanonicalValue::Uuid([0x22; 16])),
+            ("child_id", CanonicalValue::Uuid([0x33; 16])),
+        ],
+    );
+    let parent_target = derive_binding_target(plan, &input, 0);
+    let parent_entity = bundle
+        .schema()
+        .entity(plan.bindings()[0].entity_type())
+        .expect("parent schema");
+    let parent_fields = input_record(
+        parent_entity.record(),
+        [
+            ("tenant_id", CanonicalValue::Uuid([0x11; 16])),
+            ("parent_id", CanonicalValue::Uuid([0x22; 16])),
+        ],
+    );
+    let child_target = derive_binding_target(plan, &input, 1);
+    let snapshot = snapshot(
+        plan_ref(&bundle, plan),
+        vec![
+            EntityObservation::Present(stored_record(
+                &bundle,
+                plan,
+                parent_target.clone(),
+                parent_fields,
+            )),
+            EntityObservation::Absent(child_target),
+        ],
+    );
+    let context = context(
+        &bundle,
+        plan,
+        &input,
+        LogicalTime::new(Timestamp::new(51, 0).expect("timestamp")),
+    );
+    let ExecutionResult::CommitRequired(evaluated) =
+        execute_command(&bundle, &input, &snapshot, &context, EvaluationBudget::v1())
+            .expect("relationship command evaluates")
+    else {
+        panic!("create requires commit");
+    };
+    assert_eq!(evaluated.read_dependencies().as_slice().len(), 2);
+    assert!(
+        evaluated
+            .read_dependencies()
+            .as_slice()
+            .iter()
+            .any(|dependency| matches!(
+                dependency,
+                ReadDependency::EntityObservation { target, .. } if target == &parent_target
+            ))
     );
 }
 

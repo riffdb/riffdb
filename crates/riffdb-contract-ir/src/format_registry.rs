@@ -820,6 +820,14 @@ layout!(SCHEMA_LAYOUT, "StructuralSchema", {
     "events" => "u32 count + EventSchema[]",
     "enums" => "u32 count + EnumSchema[]",
     "aggregates" => "u32 count + AggregateSchema[]",
+    "relationships" => "optional u32 marker 0xfffffffe + u32 count + RelationshipSchema[]; omitted when empty",
+});
+layout!(RELATIONSHIP_LAYOUT, "RelationshipSchema", {
+    "name" => "string",
+    "source_entity" => "EntityTypeId",
+    "source_fields" => "u32 count + FieldId[]",
+    "target_entity" => "EntityTypeId",
+    "target_fields" => "u32 count + FieldId[]",
 });
 layout!(ENTITY_LAYOUT, "EntitySchema", {
     "id" => "u32",
@@ -912,6 +920,7 @@ layout!(COMMAND_SEMANTICS_LAYOUT, "CommandSemantics", {
     "expressions" => "ExpressionArena",
     "bindings" => "u32 count + BindingPlan[]",
     "root_validation_reads" => "u32 count + RootValidationReadPlan[]",
+    "relationship_checks" => "u32 count + RelationshipCheckPlan[] when StructuralSchema declares any relationship; otherwise omitted",
     "locality" => "LocalityPlan",
     "commit_checks" => "u32 count + CommitCheckPlan[]",
     "instructions" => "u32 count + Instruction[]",
@@ -921,6 +930,11 @@ layout!(COMMAND_SEMANTICS_LAYOUT, "CommandSemantics", {
     "entity_closure" => "u32 count + EntitySchema[]",
     "aggregate_closure" => "AggregateSchema",
     "event_closure" => "u32 count + EventSchema[]",
+});
+layout!(RELATIONSHIP_CHECK_LAYOUT, "RelationshipCheckPlan", {
+    "relationship_name" => "string",
+    "source_binding" => "BindingId",
+    "target_binding" => "BindingId",
 });
 layout!(OUTCOME_SCHEMA_LAYOUT, "OutcomeSchema", {
     "id" => "OutcomeId",
@@ -1047,6 +1061,7 @@ pub(crate) const FORMAT_LAYOUTS: &[FormatLayout] = &[
     ALLOCATION_LAYOUT,
     LEDGER_ENTRY_LAYOUT,
     SCHEMA_LAYOUT,
+    RELATIONSHIP_LAYOUT,
     ENTITY_LAYOUT,
     EVENT_LAYOUT,
     ENUM_LAYOUT,
@@ -1065,6 +1080,7 @@ pub(crate) const FORMAT_LAYOUTS: &[FormatLayout] = &[
     OUTCOME_SCHEMA_LAYOUT,
     BINDING_LAYOUT,
     ROOT_READ_LAYOUT,
+    RELATIONSHIP_CHECK_LAYOUT,
     LOCALITY_LAYOUT,
     CONFLICT_LAYOUT,
     COMMIT_CHECK_LAYOUT,
@@ -1903,7 +1919,7 @@ mod tests {
     #[test]
     fn ordered_layout_registry_is_complete_and_canonical() {
         assert_eq!(FORMAT_LAYOUTS.first(), Some(&BUNDLE_LAYOUT));
-        assert_eq!(FORMAT_LAYOUTS.len(), 40);
+        assert_eq!(FORMAT_LAYOUTS.len(), 42);
         for layout in FORMAT_LAYOUTS {
             assert!(!layout.fields.is_empty(), "{}", layout.name);
             assert!(

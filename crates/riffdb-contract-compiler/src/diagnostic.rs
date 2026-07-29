@@ -45,6 +45,8 @@ pub enum CompilerDiagnosticCode {
     ConflictNotInputComputable,
     /// `RDB-C017`: command bindings cannot be proved to use one logical partition.
     CrossPartitionMutation,
+    /// `RDB-C018`: a required relationship is incomplete, mistyped, or crosses a partition.
+    InvalidRelationship,
     /// `RDB-C019`: a projection operator, filter, key, or measure is unsupported.
     InvalidProjection,
     /// `RDB-C020`: a key, row, schema, or plan maximum exceeds a fixed bound.
@@ -55,6 +57,8 @@ pub enum CompilerDiagnosticCode {
     InvalidParent,
     /// `RDB-C023`: checked IR construction rejected compiler output.
     InvalidIr,
+    /// `RDB-C024`: a relationship-changing command lacks a dominating exact target read.
+    MissingRelationshipRead,
     /// `RDB-C201`: an identifier cannot form an ADR-0020 command tool-name segment.
     InvalidCommandToolName,
     /// `RDB-C202`: a complete ADR-0020 command tool name exceeds 128 bytes.
@@ -65,7 +69,7 @@ pub enum CompilerDiagnosticCode {
 
 impl CompilerDiagnosticCode {
     /// Complete pre-freeze public semantic diagnostic registry in code order.
-    pub const ALL: [Self; 25] = [
+    pub const ALL: [Self; 27] = [
         Self::InvalidContractVersion,
         Self::DuplicateName,
         Self::MissingDeclaration,
@@ -83,11 +87,13 @@ impl CompilerDiagnosticCode {
         Self::InvalidEvent,
         Self::ConflictNotInputComputable,
         Self::CrossPartitionMutation,
+        Self::InvalidRelationship,
         Self::InvalidProjection,
         Self::BoundExceeded,
         Self::StableIdAllocation,
         Self::InvalidParent,
         Self::InvalidIr,
+        Self::MissingRelationshipRead,
         Self::InvalidCommandToolName,
         Self::CommandToolNameTooLong,
         Self::CommandToolNameCollision,
@@ -114,11 +120,13 @@ impl CompilerDiagnosticCode {
             Self::InvalidEvent => "RDB-C015",
             Self::ConflictNotInputComputable => "RDB-C016",
             Self::CrossPartitionMutation => "RDB-C017",
+            Self::InvalidRelationship => "RDB-C018",
             Self::InvalidProjection => "RDB-C019",
             Self::BoundExceeded => "RDB-C020",
             Self::StableIdAllocation => "RDB-C021",
             Self::InvalidParent => "RDB-C022",
             Self::InvalidIr => "RDB-C023",
+            Self::MissingRelationshipRead => "RDB-C024",
             Self::InvalidCommandToolName => "RDB-C201",
             Self::CommandToolNameTooLong => "RDB-C202",
             Self::CommandToolNameCollision => "RDB-C203",
@@ -152,6 +160,9 @@ impl CompilerDiagnosticCode {
             Self::CrossPartitionMutation => {
                 "all command bindings must be statically colocated in one partition"
             }
+            Self::InvalidRelationship => {
+                "a required relationship must map stored fields to one complete same-partition target key"
+            }
             Self::InvalidProjection => "the projection uses an unsupported or invalid operation",
             Self::BoundExceeded => "a compiled artifact exceeds a fixed semantic bound",
             Self::StableIdAllocation => {
@@ -159,6 +170,9 @@ impl CompilerDiagnosticCode {
             }
             Self::InvalidParent => "the parent bundle is not a valid predecessor",
             Self::InvalidIr => "checked executable IR construction rejected the compiled plan",
+            Self::MissingRelationshipRead => {
+                "a relationship change lacks a dominating exact target read and missing-target outcome"
+            }
             Self::InvalidCommandToolName => {
                 "an identifier cannot form a valid MCP command tool-name segment"
             }
@@ -210,6 +224,9 @@ impl CompilerDiagnosticCode {
             Self::CrossPartitionMutation => {
                 Some("make all bindings use the same structural partition derivation")
             }
+            Self::InvalidRelationship => Some(
+                "map required non-optional fields to the complete target key in canonical order",
+            ),
             Self::InvalidProjection => {
                 Some("use equality/conjunction filters and bounded count or sum aggregation")
             }
@@ -221,6 +238,9 @@ impl CompilerDiagnosticCode {
             }
             Self::InvalidParent => Some("compile against the exact validated predecessor bundle"),
             Self::InvalidIr => None,
+            Self::MissingRelationshipRead => Some(
+                "read the complete referenced key before the mutable binding and declare its missing-target outcome",
+            ),
             Self::InvalidCommandToolName => {
                 Some("start contract and command identifiers with an ASCII letter")
             }
@@ -395,7 +415,7 @@ mod tests {
 
     #[test]
     fn public_diagnostic_registry_is_complete_unique_and_code_ordered() {
-        assert_eq!(CompilerDiagnosticCode::ALL.len(), 25);
+        assert_eq!(CompilerDiagnosticCode::ALL.len(), 27);
         let codes = CompilerDiagnosticCode::ALL.map(CompilerDiagnosticCode::as_str);
         assert!(codes.windows(2).all(|pair| pair[0] < pair[1]));
         assert!(CompilerDiagnosticCode::ALL.iter().all(|code| {

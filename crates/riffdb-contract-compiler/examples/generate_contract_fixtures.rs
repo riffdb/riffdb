@@ -25,6 +25,32 @@ use riffdb_types::{
 };
 
 const BUDGET_SOURCE: &str = include_str!("../../../contracts/examples/budget.riff");
+const RELATIONSHIP_FIXTURES: &[(&str, &str)] = &[
+    (
+        "cross-partition.riff",
+        include_str!("../../../fixtures/compiler/relationships/cross-partition.riff"),
+    ),
+    (
+        "dangling-create.riff",
+        include_str!("../../../fixtures/compiler/relationships/dangling-create.riff"),
+    ),
+    (
+        "late-read.riff",
+        include_str!("../../../fixtures/compiler/relationships/late-read.riff"),
+    ),
+    (
+        "optional-source.riff",
+        include_str!("../../../fixtures/compiler/relationships/optional-source.riff"),
+    ),
+    (
+        "partial-target.riff",
+        include_str!("../../../fixtures/compiler/relationships/partial-target.riff"),
+    ),
+    (
+        "type-mismatch.riff",
+        include_str!("../../../fixtures/compiler/relationships/type-mismatch.riff"),
+    ),
+];
 
 const OPTIONAL_ARITHMETIC_SOURCE: &str = r#"
 contract OptionalArithmetic version 1 {
@@ -196,8 +222,20 @@ fn main() -> Result<(), Box<dyn Error>> {
         optional_context_snapshot()?,
     )?;
     fs::write(fixture_root.join("late-bounds.txt"), late_bound_snapshot()?)?;
+    generate_relationship_source_fixtures(&fixture_root)?;
     generate_root_validation_fixtures(&fixture_root)?;
     generate_mcp_evolution_fixture(&fixture_root)?;
+    Ok(())
+}
+
+fn generate_relationship_source_fixtures(
+    fixture_root: &std::path::Path,
+) -> Result<(), Box<dyn Error>> {
+    let root = fixture_root.join("relationships");
+    fs::create_dir_all(&root)?;
+    for (name, source) in RELATIONSHIP_FIXTURES {
+        fs::write(root.join(name), source)?;
+    }
     Ok(())
 }
 
@@ -1858,6 +1896,11 @@ fn diagnostic_snapshots() -> Result<String, Box<dyn Error>> {
         .to_owned(),
     )?;
         source_case(
+            "RDB-C018-invalid-relationship",
+            CompilerDiagnosticCode::InvalidRelationship,
+            include_str!("../../../fixtures/compiler/relationships/partial-target.riff").to_owned(),
+        )?;
+        source_case(
         "RDB-C019-invalid-projection",
         CompilerDiagnosticCode::InvalidProjection,
         concat!(
@@ -1918,6 +1961,16 @@ fn diagnostic_snapshots() -> Result<String, Box<dyn Error>> {
             synthetic_span,
         ))),
     ));
+
+    {
+        let name = "RDB-C024-missing-relationship-read";
+        let code = CompilerDiagnosticCode::MissingRelationshipRead;
+        let source = include_str!("../../../fixtures/compiler/relationships/dangling-create.riff");
+        let error =
+            validate_contract_source(source).expect_err("dangling relationship must reject");
+        require_semantic_code(name, code, &error)?;
+        cases.push((name, code, error));
+    }
 
     for (name, code, source) in [
         (

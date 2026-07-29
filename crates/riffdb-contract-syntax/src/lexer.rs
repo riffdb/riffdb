@@ -44,6 +44,8 @@ pub(crate) enum Token {
     Invariant,
     #[token("index")]
     Index,
+    #[token("reference")]
+    Reference,
     #[token("event")]
     Event,
     #[token("enum")]
@@ -143,6 +145,8 @@ pub(crate) enum Token {
     LessEqual,
     #[token(">=")]
     GreaterEqual,
+    #[token("->")]
+    Arrow,
     #[token("==")]
     EqualEqual,
     #[token("!=")]

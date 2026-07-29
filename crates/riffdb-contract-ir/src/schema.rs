@@ -662,6 +662,81 @@ impl AggregateSchema {
     }
 }
 
+/// One required relationship between stored source fields and a complete target key.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct RelationshipSchema {
+    name: String,
+    source_entity: EntityTypeId,
+    source_fields: Vec<FieldId>,
+    target_entity: EntityTypeId,
+    target_fields: Vec<FieldId>,
+}
+
+impl RelationshipSchema {
+    /// Creates a bounded relationship. `SchemaIr` validates ownership, key
+    /// completeness, component types, and the shared partition route.
+    pub fn new(
+        name: impl Into<String>,
+        source_entity: EntityTypeId,
+        source_fields: Vec<FieldId>,
+        target_entity: EntityTypeId,
+        target_fields: Vec<FieldId>,
+    ) -> Result<Self, IrValidationError> {
+        let name = name.into();
+        validate_source_name(&name, "relationship")?;
+        if source_fields.is_empty()
+            || source_fields.len() != target_fields.len()
+            || source_fields.len() > 1_024
+        {
+            return Err(IrValidationError::InvalidReference {
+                kind: "relationship component arity",
+            });
+        }
+        let has_duplicate = |fields: &[FieldId]| {
+            let mut seen = BTreeSet::new();
+            fields.iter().any(|field| !seen.insert(*field))
+        };
+        if has_duplicate(&source_fields) || has_duplicate(&target_fields) {
+            return Err(IrValidationError::InvalidReference {
+                kind: "relationship duplicate component",
+            });
+        }
+        Ok(Self {
+            name,
+            source_entity,
+            source_fields,
+            target_entity,
+            target_fields,
+        })
+    }
+
+    /// Exact source name.
+    #[must_use]
+    pub fn name(&self) -> &str {
+        &self.name
+    }
+    /// Referencing entity.
+    #[must_use]
+    pub const fn source_entity(&self) -> EntityTypeId {
+        self.source_entity
+    }
+    /// Stored source components in target-key order.
+    #[must_use]
+    pub fn source_fields(&self) -> &[FieldId] {
+        &self.source_fields
+    }
+    /// Referenced entity.
+    #[must_use]
+    pub const fn target_entity(&self) -> EntityTypeId {
+        self.target_entity
+    }
+    /// Complete target key in canonical order.
+    #[must_use]
+    pub fn target_fields(&self) -> &[FieldId] {
+        &self.target_fields
+    }
+}
+
 /// Complete structural schema for one contract version.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct SchemaIr {
@@ -669,21 +744,34 @@ pub struct SchemaIr {
     events: Vec<EventSchema>,
     enums: Vec<EnumSchema>,
     aggregates: Vec<AggregateSchema>,
+    relationships: Vec<RelationshipSchema>,
 }
 
 impl SchemaIr {
     /// Creates a checked canonical schema and verifies aggregate ownership.
     pub fn new(
+        entities: Vec<EntitySchema>,
+        events: Vec<EventSchema>,
+        enums: Vec<EnumSchema>,
+        aggregates: Vec<AggregateSchema>,
+    ) -> Result<Self, IrValidationError> {
+        Self::with_relationships(entities, events, enums, aggregates, vec![])
+    }
+
+    /// Creates a checked canonical schema including required relationships.
+    pub fn with_relationships(
         mut entities: Vec<EntitySchema>,
         mut events: Vec<EventSchema>,
         mut enums: Vec<EnumSchema>,
         mut aggregates: Vec<AggregateSchema>,
+        mut relationships: Vec<RelationshipSchema>,
     ) -> Result<Self, IrValidationError> {
         for (kind, count) in [
             ("entities", entities.len()),
             ("events", events.len()),
             ("enums", enums.len()),
             ("aggregates", aggregates.len()),
+            ("relationships", relationships.len()),
         ] {
             checked_len(kind, count, MAX_DECLARATIONS_PER_KIND)?;
         }
@@ -691,6 +779,11 @@ impl SchemaIr {
         events.sort_unstable_by_key(EventSchema::id);
         enums.sort_unstable_by_key(EnumSchema::id);
         aggregates.sort_unstable_by_key(AggregateSchema::id);
+        relationships.sort_unstable_by(|left, right| {
+            left.source_entity
+                .cmp(&right.source_entity)
+                .then_with(|| left.name.cmp(&right.name))
+        });
         reject_adjacent_id(&entities, EntitySchema::id, "entities")?;
         reject_adjacent_id(&events, EventSchema::id, "events")?;
         reject_adjacent_id(&enums, EnumSchema::id, "enums")?;
@@ -699,6 +792,13 @@ impl SchemaIr {
         reject_duplicate_names(events.iter().map(EventSchema::name), "events")?;
         reject_duplicate_names(enums.iter().map(EnumSchema::name), "enums")?;
         reject_duplicate_names(aggregates.iter().map(AggregateSchema::name), "aggregates")?;
+        if relationships.windows(2).any(|pair| {
+            pair[0].source_entity == pair[1].source_entity && pair[0].name == pair[1].name
+        }) {
+            return Err(IrValidationError::InvalidName {
+                kind: "duplicate relationship",
+            });
+        }
 
         let mut global_indexes = BTreeSet::new();
         if entities
@@ -772,11 +872,15 @@ impl SchemaIr {
                 }
             }
         }
+        for relationship in &relationships {
+            validate_relationship(relationship, &entity_map, &aggregates, &ownership)?;
+        }
         let result = Self {
             entities,
             events,
             enums,
             aggregates,
+            relationships,
         };
         result.validate_enum_references()?;
         result.validate_schema_enum_registries_and_constants()?;
@@ -802,6 +906,11 @@ impl SchemaIr {
     #[must_use]
     pub fn aggregates(&self) -> &[AggregateSchema] {
         &self.aggregates
+    }
+    /// Required relationships in canonical source-entity/name order.
+    #[must_use]
+    pub fn relationships(&self) -> &[RelationshipSchema] {
+        &self.relationships
     }
     /// Resolves an entity.
     #[must_use]
@@ -1091,6 +1200,82 @@ pub(crate) fn validate_payload_field_type(
     }
     if let Some((element, _)) = value_type.list_parts() {
         validate_payload_field_type(element, schema)?;
+    }
+    Ok(())
+}
+
+fn validate_relationship(
+    relationship: &RelationshipSchema,
+    entities: &BTreeMap<EntityTypeId, &EntitySchema>,
+    aggregates: &[AggregateSchema],
+    ownership: &BTreeMap<EntityTypeId, AggregateTypeId>,
+) -> Result<(), IrValidationError> {
+    let source =
+        entities
+            .get(&relationship.source_entity)
+            .ok_or(IrValidationError::InvalidReference {
+                kind: "relationship source entity",
+            })?;
+    let target =
+        entities
+            .get(&relationship.target_entity)
+            .ok_or(IrValidationError::InvalidReference {
+                kind: "relationship target entity",
+            })?;
+    if target.primary_key_fields() != relationship.target_fields {
+        return Err(IrValidationError::InvalidReference {
+            kind: "relationship target must be complete primary key",
+        });
+    }
+    let source_owner = ownership.get(&source.id()).copied();
+    if source_owner.is_none() || source_owner != ownership.get(&target.id()).copied() {
+        return Err(IrValidationError::InvalidReference {
+            kind: "relationship crosses partition owner",
+        });
+    }
+    for (source_field, target_field) in relationship
+        .source_fields
+        .iter()
+        .zip(&relationship.target_fields)
+    {
+        let source_field =
+            source
+                .record()
+                .field(*source_field)
+                .ok_or(IrValidationError::InvalidReference {
+                    kind: "relationship source field",
+                })?;
+        let target_field =
+            target
+                .record()
+                .field(*target_field)
+                .ok_or(IrValidationError::InvalidReference {
+                    kind: "relationship target field",
+                })?;
+        if source_field.value_type().is_optional()
+            || source_field.value_type() != target_field.value_type()
+        {
+            return Err(IrValidationError::TypeMismatch {
+                context: "required relationship component",
+            });
+        }
+    }
+    let owner = aggregates
+        .iter()
+        .find(|aggregate| Some(aggregate.id()) == source_owner)
+        .ok_or(IrValidationError::InvalidReference {
+            kind: "relationship aggregate",
+        })?;
+    let root = entities
+        .get(&owner.root())
+        .ok_or(IrValidationError::InvalidReference {
+            kind: "relationship aggregate root",
+        })?;
+    let route_len = root.primary_key_fields().len();
+    if relationship.source_fields.get(..route_len) != source.primary_key_fields().get(..route_len) {
+        return Err(IrValidationError::InvalidReference {
+            kind: "relationship partition route",
+        });
     }
     Ok(())
 }

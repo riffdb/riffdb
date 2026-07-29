@@ -44,6 +44,8 @@ pub const BUNDLE_FORMAT_VERSION_V1: u32 = 1;
 pub const GRAMMAR_VERSION_V1: u32 = 1;
 /// Executable IR version represented by a bundle.
 pub const EXECUTABLE_IR_VERSION_V1: u32 = 1;
+
+const RELATIONSHIP_SCHEMA_EXTENSION: u32 = 0xffff_fffe;
 /// Immutable stable-ID lineage-ledger format version.
 pub const LINEAGE_LEDGER_VERSION_V1: u32 = 1;
 /// Maximum canonical bundle bytes below the durable envelope limit.
@@ -1858,6 +1860,23 @@ fn encode_schema(writer: &mut Writer, schema: &SchemaIr) -> Result<(), IrValidat
     for aggregate in schema.aggregates() {
         encode_aggregate_schema(writer, aggregate, true)?;
     }
+    if !schema.relationships().is_empty() {
+        writer.u32(RELATIONSHIP_SCHEMA_EXTENSION)?;
+        writer.u32(schema.relationships().len() as u32)?;
+        for relationship in schema.relationships() {
+            writer.string(relationship.name())?;
+            writer.u32(relationship.source_entity().get())?;
+            writer.u32(relationship.source_fields().len() as u32)?;
+            for field in relationship.source_fields() {
+                writer.u32(field.get())?;
+            }
+            writer.u32(relationship.target_entity().get())?;
+            writer.u32(relationship.target_fields().len() as u32)?;
+            for field in relationship.target_fields() {
+                writer.u32(field.get())?;
+            }
+        }
+    }
     Ok(())
 }
 
@@ -2166,6 +2185,14 @@ fn encode_command_semantics(
         writer.u32(read.accessed_fields().len() as u32)?;
         for field in read.accessed_fields() {
             writer.u32(field.get())?;
+        }
+    }
+    if !schema.relationships().is_empty() {
+        writer.u32(command.relationship_checks().len() as u32)?;
+        for check in command.relationship_checks() {
+            writer.string(check.relationship_name())?;
+            writer.u32(check.source_binding().get())?;
+            writer.u32(check.target_binding().get())?;
         }
     }
     encode_locality(writer, command.locality())?;
@@ -2779,7 +2806,36 @@ fn decode_schema(reader: &mut Reader<'_>) -> Result<SchemaIr, IrValidationError>
     for _ in 0..aggregate_count {
         aggregates.push(decode_aggregate_schema(reader)?);
     }
-    SchemaIr::new(entities, events, enums, aggregates)
+    let mut relationships = Vec::new();
+    if reader.remaining() >= 4 && reader.peek_u32()? == RELATIONSHIP_SCHEMA_EXTENSION {
+        let _marker = reader.u32()?;
+        let relationship_count =
+            decode_len(reader, "relationships", crate::MAX_DECLARATIONS_PER_KIND)?;
+        relationships.reserve(relationship_count);
+        for _ in 0..relationship_count {
+            let name = reader.string(256)?;
+            let source_entity = decode_entity_id(reader)?;
+            let source_count = decode_len(reader, "relationship source fields", 1_024)?;
+            let mut source_fields = Vec::with_capacity(source_count);
+            for _ in 0..source_count {
+                source_fields.push(decode_field_id(reader)?);
+            }
+            let target_entity = decode_entity_id(reader)?;
+            let target_count = decode_len(reader, "relationship target fields", 1_024)?;
+            let mut target_fields = Vec::with_capacity(target_count);
+            for _ in 0..target_count {
+                target_fields.push(decode_field_id(reader)?);
+            }
+            relationships.push(crate::RelationshipSchema::new(
+                name,
+                source_entity,
+                source_fields,
+                target_entity,
+                target_fields,
+            )?);
+        }
+    }
+    SchemaIr::with_relationships(entities, events, enums, aggregates, relationships)
 }
 
 fn decode_entity_schema(reader: &mut Reader<'_>) -> Result<EntitySchema, IrValidationError> {
@@ -3418,6 +3474,22 @@ fn decode_command(
             accessed_fields,
         )?);
     }
+    let mut encoded_relationship_checks = Vec::new();
+    if !schema.relationships().is_empty() {
+        let count = decode_len(
+            reader,
+            "command relationship checks",
+            crate::MAX_COMMAND_ITEMS,
+        )?;
+        encoded_relationship_checks.reserve(count);
+        for _ in 0..count {
+            encoded_relationship_checks.push((
+                reader.string(256)?,
+                BindingId::new(reader.u32()?),
+                BindingId::new(reader.u32()?),
+            ));
+        }
+    }
     let locality = decode_locality(reader)?;
     let check_count = decode_len(reader, "commit checks", crate::MAX_COMMAND_ITEMS)?;
     let mut commit_checks = Vec::with_capacity(check_count);
@@ -3493,6 +3565,23 @@ fn decode_command(
         execution_class,
         schema,
     )?;
+    if encoded_relationship_checks
+        != plan
+            .relationship_checks()
+            .iter()
+            .map(|check| {
+                (
+                    check.relationship_name().to_owned(),
+                    check.source_binding(),
+                    check.target_binding(),
+                )
+            })
+            .collect::<Vec<_>>()
+    {
+        return Err(IrValidationError::InvalidDependency {
+            reason: "relationship proof does not match the derived command plan",
+        });
+    }
     if plan.plan_hash() != stored_plan_hash {
         return Err(IrValidationError::HashMismatch {
             kind: "command plan",

@@ -30,6 +30,11 @@ name-only view of the same program. An absent compatible index produces
 RiffQL v1 does not perform an unbounded fallback scan, client-side sort,
 cross-partition join, or optimizer-dependent plan choice.
 
+Declared relationship metadata may justify symbolic navigation only when it
+lowers to the target's complete primary-key point read or an already bounded
+dependent-key batch. It cannot infer colocation, omit a partition predicate,
+introduce a hidden scan, or accept an otherwise unsupported join.
+
 Dependent batches execute as ordered point reads inside the same engine-owned
 snapshot as the source scan. They do not become public N+1 requests. Null,
 duplicate, noncanonical, over-bound, or missing dependent keys fail closed

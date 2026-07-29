@@ -39,6 +39,42 @@ step, projected-value, and encoded-result-byte maxima into the plan. The
 executor decrements matching fuel and treats inconsistent backend work reports
 as a closed failure. Fuel exhaustion cannot publish a partial result or cursor.
 
+## Required same-partition relationships
+
+A required relationship is declared on the referencing entity using stored
+fields and one complete target primary key:
+
+```riff
+reference project
+  (organization_id, project_id)
+  -> Project(organization_id, project_id)
+```
+
+This is an integrity declaration, not query shorthand. Compilation rejects the
+declaration unless the target list is the complete primary key in canonical
+order, source and target types match exactly, every source component is
+required, and both entities have the same aggregate-scoped partition identity.
+Names, matching field spellings, equal runtime bytes, and a shared tenant UUID
+do not establish colocation.
+
+A command that creates a referencing record, or sets any relationship
+component, must contain an earlier source-declared `read` of the exact resulting
+target key. Target expressions are compared structurally after type resolution.
+A partial key, different input, later read, `mutate` binding, or runtime equality
+does not count. The read's `else` branch is the declared missing-target business
+outcome.
+
+The compiler records this proof as a `RelationshipCheckPlan` naming the
+relationship, source binding, and target read. Command explain renders the
+link. No hidden read is injected: the ordinary read observation remains in the
+dependency set and the commit coordinator rechecks it before authoritative
+mutation. Missing evidence, a changed target, or a plan mismatch fails closed
+without a commit sequence.
+
+Only required same-partition relationships are supported. Optional,
+cross-partition, polymorphic, cascading, deferred, and inferred relationships
+are rejected rather than approximated.
+
 ## Bug classes made unavailable
 
 The stable application profile must prevent:

@@ -82,3 +82,9 @@ contract declarations rather than RiffQL predicates. RiffQL may navigate a
 declared relationship only when it still lowers to the bounded complete-key
 accesses described above. A query never creates a missing integrity guarantee
 by convention or inference.
+
+The symbolic catalog exposes each relationship by source name, ordered source
+fields, target entity, and complete ordered target key. That metadata grants no
+new join operator. Current RiffQL must still spell an accepted point read or
+bounded dependent batch; future navigation syntax must compile to those same
+plans.

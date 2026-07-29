@@ -96,6 +96,20 @@ impl<'a> Reader<'a> {
         Ok(u32::from_be_bytes(self.array()?))
     }
 
+    pub(crate) fn peek_u32(&self) -> Result<u32, IrValidationError> {
+        let end = self
+            .position
+            .checked_add(4)
+            .ok_or(IrValidationError::UnexpectedEnd)?;
+        Ok(u32::from_be_bytes(
+            self.bytes
+                .get(self.position..end)
+                .ok_or(IrValidationError::UnexpectedEnd)?
+                .try_into()
+                .map_err(|_| IrValidationError::UnexpectedEnd)?,
+        ))
+    }
+
     pub(crate) fn u64(&mut self) -> Result<u64, IrValidationError> {
         Ok(u64::from_be_bytes(self.array()?))
     }

@@ -1,6 +1,6 @@
 //! Checked forward-only executable command plans.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 use riffdb_types::{
     AggregateTypeId, CommandId, ContractLineage, ContractVersion, EntityTypeId, EventTypeId,
@@ -300,6 +300,32 @@ impl BindingPlan {
     #[must_use]
     pub const fn failure(&self) -> &OutcomeConstruction {
         &self.failure
+    }
+}
+
+/// One compiler-proved relationship change backed by a source-declared exact read.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct RelationshipCheckPlan {
+    relationship_name: String,
+    source_binding: BindingId,
+    target_binding: BindingId,
+}
+
+impl RelationshipCheckPlan {
+    /// Exact relationship symbol.
+    #[must_use]
+    pub fn relationship_name(&self) -> &str {
+        &self.relationship_name
+    }
+    /// Mutable binding establishing or changing the relationship.
+    #[must_use]
+    pub const fn source_binding(&self) -> BindingId {
+        self.source_binding
+    }
+    /// Earlier source-declared exact read that supplies commit-revalidated evidence.
+    #[must_use]
+    pub const fn target_binding(&self) -> BindingId {
+        self.target_binding
     }
 }
 
@@ -672,6 +698,7 @@ pub struct CommandPlan {
     idempotency_input: Option<FieldId>,
     expressions: ExpressionArena,
     bindings: Vec<BindingPlan>,
+    relationship_checks: Vec<RelationshipCheckPlan>,
     root_validation_reads: Vec<RootValidationReadPlan>,
     locality: LocalityPlan,
     commit_checks: Vec<CommitCheckPlan>,
@@ -895,6 +922,8 @@ impl CommandPlan {
             locality.partition_schema().maximum_encoded_bytes(),
             contract_schema,
         )?;
+        let relationship_checks =
+            derive_relationship_checks(&expressions, &bindings, &instructions, contract_schema)?;
 
         let mut plan = Self {
             command_id,
@@ -906,6 +935,7 @@ impl CommandPlan {
             idempotency_input,
             expressions,
             bindings,
+            relationship_checks,
             root_validation_reads,
             locality,
             commit_checks,
@@ -967,6 +997,11 @@ impl CommandPlan {
     pub fn bindings(&self) -> &[BindingPlan] {
         &self.bindings
     }
+    /// Declared relationship changes and their ordinary exact-read dependencies.
+    #[must_use]
+    pub fn relationship_checks(&self) -> &[RelationshipCheckPlan] {
+        &self.relationship_checks
+    }
     /// Internal aggregate-root validation reads in dense ID order.
     #[must_use]
     pub fn root_validation_reads(&self) -> &[RootValidationReadPlan] {
@@ -1019,6 +1054,111 @@ const MAX_INDEX_EPOCH_POSITION_SEMANTIC_BYTES_V1: usize = 9;
 const INDEX_ENTRY_V2_PARTITION_LENGTH_SEMANTIC_BYTES: usize = 4;
 const MAX_INDEX_ENTRY_V2_PARTITION_SEMANTIC_BYTES: usize =
     MAX_COMMAND_INDEX_DELTAS_V1 * (INDEX_ENTRY_V2_PARTITION_LENGTH_SEMANTIC_BYTES + MAX_KEY_BYTES);
+
+fn derive_relationship_checks(
+    expressions: &ExpressionArena,
+    bindings: &[BindingPlan],
+    instructions: &[Instruction],
+    schema: &SchemaIr,
+) -> Result<Vec<RelationshipCheckPlan>, IrValidationError> {
+    let writes = instructions
+        .iter()
+        .filter_map(|instruction| match instruction {
+            Instruction::SetField {
+                binding,
+                field,
+                value,
+            } => Some(((*binding, *field), *value)),
+            Instruction::Require { .. } | Instruction::EmitEvent(_) | Instruction::Return(_) => {
+                None
+            }
+        })
+        .collect::<BTreeMap<_, _>>();
+    let mut checks = Vec::new();
+    for source_binding in bindings
+        .iter()
+        .filter(|binding| matches!(binding.mode(), BindingMode::Create | BindingMode::Mutate))
+    {
+        let source_entity = schema.entity(source_binding.entity_type()).ok_or(
+            IrValidationError::InvalidReference {
+                kind: "relationship source entity",
+            },
+        )?;
+        for relationship in schema
+            .relationships()
+            .iter()
+            .filter(|relationship| relationship.source_entity() == source_binding.entity_type())
+        {
+            let changes = source_binding.mode() == BindingMode::Create
+                || relationship
+                    .source_fields()
+                    .iter()
+                    .any(|field| writes.contains_key(&(source_binding.id(), *field)));
+            if !changes {
+                continue;
+            }
+            let resulting = relationship
+                .source_fields()
+                .iter()
+                .map(|field| {
+                    writes
+                        .get(&(source_binding.id(), *field))
+                        .copied()
+                        .or_else(|| {
+                            source_entity
+                                .primary_key_fields()
+                                .iter()
+                                .position(|key| key == field)
+                                .and_then(|position| {
+                                    source_binding.key_expressions().get(position).copied()
+                                })
+                        })
+                })
+                .collect::<Option<Vec<_>>>()
+                .ok_or(IrValidationError::InvalidDependency {
+                    reason: "relationship target key is not statically visible",
+                })?;
+            let mut matching = None;
+            for target in bindings {
+                if target.id() >= source_binding.id()
+                    || target.mode() != BindingMode::Read
+                    || target.entity_type() != relationship.target_entity()
+                    || target.key_expressions().len() != resulting.len()
+                {
+                    continue;
+                }
+                let exact = target
+                    .key_expressions()
+                    .iter()
+                    .zip(&resulting)
+                    .map(|(left, right)| {
+                        expression_trees_equal(expressions, *left, expressions, *right)
+                    })
+                    .collect::<Result<Vec<_>, _>>()?
+                    .into_iter()
+                    .all(|equal| equal);
+                if exact {
+                    matching = Some(target.id());
+                    break;
+                }
+            }
+            let target_binding = matching.ok_or(IrValidationError::InvalidDependency {
+                reason: "relationship change lacks dominating exact target read",
+            })?;
+            checks.push(RelationshipCheckPlan {
+                relationship_name: relationship.name().to_owned(),
+                source_binding: source_binding.id(),
+                target_binding,
+            });
+        }
+    }
+    checks.sort_unstable_by(|left, right| {
+        left.source_binding
+            .cmp(&right.source_binding)
+            .then_with(|| left.relationship_name.cmp(&right.relationship_name))
+    });
+    Ok(checks)
+}
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 struct WorstCaseIndexDerivation {

@@ -72,7 +72,9 @@ pub(crate) fn resolve_declared_types(
                                 entity_fields.insert((entity_id, field_id), value_type);
                             }
                         }
-                        EntityItem::Invariant(_) | EntityItem::Index(_) => {}
+                        EntityItem::Invariant(_)
+                        | EntityItem::Index(_)
+                        | EntityItem::Reference(_) => {}
                     }
                 }
             }
