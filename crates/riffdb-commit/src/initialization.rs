@@ -317,6 +317,20 @@ mod tests {
             Err(unavailable())
         }
 
+        fn read_integrity_entity(
+            &mut self,
+            _target: &riffdb_storage_api::EntityTarget,
+        ) -> Result<Option<riffdb_storage_api::StoredEntityRecordV1>, StorageError> {
+            Err(unavailable())
+        }
+
+        fn read_integrity_unique_occupancy(
+            &mut self,
+            _target: &riffdb_storage_api::UniqueIndexTarget,
+        ) -> Result<riffdb_storage_api::UniqueOccupancyKind, StorageError> {
+            Err(unavailable())
+        }
+
         fn finish(
             self,
             _structural_end: Self::StructuralEnd,

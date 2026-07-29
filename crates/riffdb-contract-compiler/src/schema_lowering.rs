@@ -3,7 +3,7 @@
 use riffdb_contract_ir::{
     AggregateKeyPlan, AggregateSchema, EntitySchema, EnumSchema, EnumVariantSchema, EventSchema,
     FieldSchema, IndexSchema, InvariantPlan, KeyComponentSchema, KeyPurpose, KeySchema,
-    RecordSchema, RecordTypeRef, RelationshipSchema, SchemaIr, ValueType,
+    RecordSchema, RecordTypeRef, RelationshipSchema, SchemaIr, UniqueKeySchema, ValueType,
 };
 use riffdb_contract_syntax::Span;
 use riffdb_types::{EnumTypeId, EnumVariantId};
@@ -15,16 +15,71 @@ use crate::hir::{HirInvariant, TypedContractHir};
 pub(crate) fn lower_schema(hir: &TypedContractHir) -> Result<SchemaIr, CompilerDiagnostics> {
     let mut diagnostics = Vec::new();
     validate_relationship_declarations(hir)?;
+    validate_unique_declarations(hir)?;
     let enums = lower_enums(hir, &mut diagnostics);
     let entities = lower_entities(hir, &mut diagnostics);
     let events = lower_events(hir, &mut diagnostics);
     let aggregates = lower_aggregates(hir, &mut diagnostics);
     let relationships = lower_relationships(hir, &mut diagnostics);
+    let unique_keys = lower_unique_keys(hir, &mut diagnostics);
     if !diagnostics.is_empty() {
         return Err(CompilerDiagnostics::new(diagnostics).expect("nonempty diagnostics"));
     }
-    SchemaIr::with_relationships(entities, events, enums, aggregates, relationships)
-        .map_err(|_| CompilerDiagnostics::single(ir_diagnostic(hir.span)))
+    SchemaIr::with_integrity(
+        entities,
+        events,
+        enums,
+        aggregates,
+        relationships,
+        unique_keys,
+    )
+    .map_err(|_| CompilerDiagnostics::single(ir_diagnostic(hir.span)))
+}
+
+pub(crate) fn validate_unique_declarations(
+    hir: &TypedContractHir,
+) -> Result<(), CompilerDiagnostics> {
+    let mut diagnostics = Vec::new();
+    for entity in &hir.entities {
+        let Some(owner) = hir.aggregate_for_entity(entity.id) else {
+            continue;
+        };
+        let Some(root) = hir.entity(owner.root) else {
+            continue;
+        };
+        let route_len = root.key_fields.len();
+        for unique in entity.indexes.iter().filter(|index| index.unique) {
+            let fields = unique
+                .fields
+                .iter()
+                .map(|field| field.0)
+                .collect::<Vec<_>>();
+            let canonical_route = fields
+                .get(..route_len)
+                .is_some_and(|prefix| prefix == &entity.key_fields[..route_len]);
+            let required_key_types = unique.fields.iter().all(|(field_id, _)| {
+                entity
+                    .fields
+                    .iter()
+                    .find(|field| field.id == *field_id)
+                    .is_some_and(|field| {
+                        !field.value_type.is_optional()
+                            && key_component(field.value_type.clone(), hir).is_ok()
+                    })
+            });
+            if !canonical_route || !required_key_types {
+                diagnostics.push(CompilerDiagnostic::new(
+                    CompilerDiagnosticCode::InvalidUniqueKey,
+                    unique.span,
+                ));
+            }
+        }
+    }
+    if diagnostics.is_empty() {
+        Ok(())
+    } else {
+        Err(CompilerDiagnostics::new(diagnostics).expect("nonempty diagnostics"))
+    }
 }
 
 pub(crate) fn validate_relationship_declarations(
@@ -124,6 +179,27 @@ fn lower_relationships(
             ) {
                 Ok(relationship) => lowered.push(relationship),
                 Err(_) => diagnostics.push(ir_diagnostic(relationship.name_span)),
+            }
+        }
+    }
+    lowered
+}
+
+fn lower_unique_keys(
+    hir: &TypedContractHir,
+    diagnostics: &mut Vec<CompilerDiagnostic>,
+) -> Vec<UniqueKeySchema> {
+    let mut lowered = Vec::new();
+    for entity in &hir.entities {
+        for unique in entity.indexes.iter().filter(|index| index.unique) {
+            match UniqueKeySchema::new(
+                unique.name.clone(),
+                entity.id,
+                unique.id,
+                unique.fields.iter().map(|field| field.0).collect(),
+            ) {
+                Ok(unique) => lowered.push(unique),
+                Err(_) => diagnostics.push(ir_diagnostic(unique.span)),
             }
         }
     }

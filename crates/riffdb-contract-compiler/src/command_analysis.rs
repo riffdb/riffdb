@@ -39,6 +39,7 @@ fn validate_command(
 ) {
     validate_binding_ownership(command, diagnostics);
     validate_relationship_reads(hir, command, diagnostics);
+    validate_unique_conflicts(hir, command, diagnostics);
     let secret_input = validate_idempotency(command, diagnostics);
     let mut states = command
         .bindings
@@ -165,6 +166,75 @@ fn validate_command(
     }
     validate_outcome_shapes(&outcomes, diagnostics);
     validate_secret_taint(secret_input, command, &influential_roots, diagnostics);
+}
+
+fn validate_unique_conflicts(
+    hir: &TypedContractHir,
+    command: &HirCommand,
+    diagnostics: &mut Vec<CompilerDiagnostic>,
+) {
+    let assignments = command
+        .effects
+        .iter()
+        .filter_map(|effect| match effect {
+            HirEffect::Set {
+                binding,
+                field,
+                value,
+                ..
+            } => Some(((*binding, *field), value)),
+            HirEffect::Emit { .. } => None,
+        })
+        .collect::<BTreeMap<_, _>>();
+    for binding in command
+        .bindings
+        .iter()
+        .filter(|binding| matches!(binding.mode, BindingMode::Create | BindingMode::Mutate))
+    {
+        let Some(entity) = hir.entity(binding.entity_id) else {
+            continue;
+        };
+        for unique in entity.indexes.iter().filter(|index| index.unique) {
+            let changes = binding.mode == BindingMode::Create
+                || unique
+                    .fields
+                    .iter()
+                    .any(|field| assignments.contains_key(&(binding.id, field.0)));
+            if !changes {
+                continue;
+            }
+            let values = unique
+                .fields
+                .iter()
+                .map(|field| {
+                    assignments
+                        .get(&(binding.id, field.0))
+                        .copied()
+                        .or_else(|| {
+                            entity
+                                .key_fields
+                                .iter()
+                                .position(|key| *key == field.0)
+                                .and_then(|position| binding.arguments.get(position))
+                        })
+                })
+                .collect::<Option<Vec<_>>>();
+            let input_computable = values.is_some_and(|values| {
+                values.iter().all(|value| {
+                    command
+                        .expressions
+                        .dependencies(value.id, value.span)
+                        .is_ok_and(|dependencies| dependencies.is_input_computable())
+                })
+            });
+            if !input_computable {
+                diagnostics.push(CompilerDiagnostic::new(
+                    CompilerDiagnosticCode::UniqueKeyNotInputComputable,
+                    unique.span,
+                ));
+            }
+        }
+    }
 }
 
 fn validate_relationship_reads(

@@ -536,6 +536,9 @@ where
     };
     let indexed = match indexed.read_affected_epoch_current() {
         CheckedAffectedEpochDecision::Ready(indexed) => indexed,
+        CheckedAffectedEpochDecision::Rejected(rejected) => {
+            return after_rollback(port, lifecycle, telemetry, rejected);
+        }
         CheckedAffectedEpochDecision::StorageFailure(error) => {
             return proven_storage_failure(error, lifecycle);
         }

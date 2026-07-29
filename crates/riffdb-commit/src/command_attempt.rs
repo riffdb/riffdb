@@ -265,6 +265,22 @@ impl ProvenanceBoundCommandAttempt {
         self.finish_after_candidate_rollback(intent_matches, reason)
     }
 
+    pub(super) fn reject_after_index_read_and_rollback<C>(
+        self,
+        candidate: C,
+        reason: CandidateValidationRejection,
+    ) -> RolledBackCandidateDisposition
+    where
+        C: riffdb_storage_api::CommandCandidateAwaitingCapacity,
+    {
+        let abandoned = candidate.reject(reason);
+        let (prior, storage_intent) = abandoned.into_parts();
+        let intent_matches = *storage_intent == self.intent;
+        drop(prior);
+        drop(storage_intent);
+        self.finish_after_candidate_rollback(intent_matches, reason)
+    }
+
     /// Discards one unpersisted provenance attempt only after storage proved
     /// that its uncertain commit did not replace the exact Pending admission.
     pub(super) fn into_pending_after_proven_noncommit(self) -> PendingCommandAttempts {
@@ -307,6 +323,15 @@ impl ProvenanceBoundCommandAttempt {
             CandidateValidationRejection::CommitCheckArithmeticFault => {
                 RolledBackCandidateDisposition::ExecutionFault(Box::new(
                     ExecutionFaultAttempt::Arithmetic {
+                        state,
+                        lease,
+                        snapshot,
+                    },
+                ))
+            }
+            CandidateValidationRejection::UniqueConflict => {
+                RolledBackCandidateDisposition::ExecutionFault(Box::new(
+                    ExecutionFaultAttempt::UniqueConflict {
                         state,
                         lease,
                         snapshot,
@@ -386,6 +411,11 @@ pub(crate) enum ExecutionFaultAttempt {
         lease: MutationLease,
         evidence: ResourceLimitFaultEvidence,
     },
+    UniqueConflict {
+        state: PendingCommandAttempts,
+        lease: MutationLease,
+        snapshot: MaterializedCommandSnapshot,
+    },
 }
 
 /// Closed result of catalog-owned current evidence revalidation for one fault.
@@ -418,6 +448,9 @@ impl ExecutionFaultAttempt {
                 evidence: ResourceLimitFaultEvidence::Materialization(evidence),
                 ..
             } => (evidence.raw_snapshot(), ExecutionFailureCode::ResourceLimit),
+            Self::UniqueConflict { snapshot, .. } => {
+                (snapshot.snapshot(), ExecutionFailureCode::UniqueConflict)
+            }
         };
         ExecutionFailureTransitionRequestV1::new(
             self.state().commit_context.pending().clone(),
@@ -449,6 +482,7 @@ impl ExecutionFaultAttempt {
                 evidence: ResourceLimitFaultEvidence::Materialization(evidence),
                 ..
             } => evidence.raw_snapshot().read_dependencies(),
+            Self::UniqueConflict { snapshot, .. } => snapshot.snapshot().read_dependencies(),
         }
     }
 
@@ -464,6 +498,7 @@ impl ExecutionFaultAttempt {
     ) -> ExecutionFaultCurrentRecheck {
         match self {
             Self::Arithmetic { snapshot, .. }
+            | Self::UniqueConflict { snapshot, .. }
             | Self::ResourceLimit {
                 evidence: ResourceLimitFaultEvidence::Runtime(snapshot),
                 ..
@@ -508,6 +543,14 @@ impl ExecutionFaultAttempt {
                 drop(evidence);
                 (state, lease)
             }
+            Self::UniqueConflict {
+                state,
+                lease,
+                snapshot,
+            } => {
+                drop(snapshot);
+                (state, lease)
+            }
         };
         drop(lease);
         state
@@ -515,7 +558,9 @@ impl ExecutionFaultAttempt {
 
     const fn state(&self) -> &PendingCommandAttempts {
         match self {
-            Self::Arithmetic { state, .. } | Self::ResourceLimit { state, .. } => state,
+            Self::Arithmetic { state, .. }
+            | Self::ResourceLimit { state, .. }
+            | Self::UniqueConflict { state, .. } => state,
         }
     }
 }
@@ -1660,6 +1705,10 @@ contract AttemptMaterialization version {version} {{
 
         fn affected_current(&self) -> &AffectedEpochCurrentState {
             panic!("unreachable affected current state")
+        }
+
+        fn reject(self, _reason: CandidateValidationRejection) -> AbandonedCandidate<Self::Prior> {
+            panic!("unreachable affected-index rejection")
         }
 
         fn reserve_capacity(

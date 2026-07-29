@@ -1974,6 +1974,31 @@ fn diagnostic_snapshots() -> Result<String, Box<dyn Error>> {
 
     for (name, code, source) in [
         (
+            "RDB-C025-invalid-unique-key",
+            CompilerDiagnosticCode::InvalidUniqueKey,
+            concat!(
+                "contract InvalidUnique version 1 { ",
+                "entity Organization { key (organization_id: uuid) } ",
+                "entity User { key (organization_id: uuid, user_id: uuid) ",
+                "field email: string<128> unique user_email (email) } ",
+                "aggregate OrganizationRoot { root Organization child User ",
+                "partition_by organization_id conflict_key (organization_id) } }",
+            )
+            .to_owned(),
+        ),
+        (
+            "RDB-C026-unique-key-not-input-computable",
+            CompilerDiagnosticCode::UniqueKeyNotInputComputable,
+            diagnostic_unique_non_input_source(),
+        ),
+    ] {
+        let error = validate_contract_source(&source).expect_err("invalid uniqueness fixture");
+        require_semantic_code(name, code, &error)?;
+        cases.push((name, code, error));
+    }
+
+    for (name, code, source) in [
+        (
             "RDB-C201-invalid-command-tool-name",
             CompilerDiagnosticCode::InvalidCommandToolName,
             diagnostic_read_contract("_InvalidTool", "Find"),
@@ -2096,6 +2121,22 @@ fn diagnostic_collision_source() -> String {
         "return FoundOne { id: id } } ",
         "command ALLOCATE { input id: uuid read Row(id) as row else MissingTwo { id: id } ",
         "return FoundTwo { id: id } } }",
+    )
+    .to_owned()
+}
+
+fn diagnostic_unique_non_input_source() -> String {
+    concat!(
+        "contract InvalidUniqueChange version 1 { ",
+        "entity Organization { key (organization_id: uuid) } ",
+        "entity User { key (organization_id: uuid, user_id: uuid) ",
+        "field email: string<128> unique user_email (organization_id, email) } ",
+        "aggregate OrganizationRoot { root Organization child User ",
+        "partition_by organization_id conflict_key (organization_id) } ",
+        "command ChangeEmail { input request: string<128> input organization_id: uuid ",
+        "input user_id: uuid idempotency_key request ",
+        "mutate User(organization_id, user_id) as user else UserMissing {} ",
+        "set user.email = user.email return Changed { user: user } } }",
     )
     .to_owned()
 }

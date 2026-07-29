@@ -44,6 +44,8 @@ pub(crate) enum Token {
     Invariant,
     #[token("index")]
     Index,
+    #[token("unique")]
+    Unique,
     #[token("reference")]
     Reference,
     #[token("event")]

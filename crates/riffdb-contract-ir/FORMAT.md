@@ -438,6 +438,7 @@ Fields below are listed in exact byte order. A collection field includes its cou
 | 3 | `enums` | u32 count + EnumSchema[] |
 | 4 | `aggregates` | u32 count + AggregateSchema[] |
 | 5 | `relationships` | optional u32 marker 0xfffffffe + u32 count + RelationshipSchema[]; omitted when empty |
+| 6 | `unique_keys` | optional u32 marker 0xfffffffd + u32 count + UniqueKeySchema[]; omitted when empty |
 
 ### RelationshipSchema
 
@@ -448,6 +449,15 @@ Fields below are listed in exact byte order. A collection field includes its cou
 | 3 | `source_fields` | u32 count + FieldId[] |
 | 4 | `target_entity` | EntityTypeId |
 | 5 | `target_fields` | u32 count + FieldId[] |
+
+### UniqueKeySchema
+
+| # | Field | Encoding |
+|---:|---|---|
+| 1 | `name` | string |
+| 2 | `source_entity` | EntityTypeId |
+| 3 | `index_id` | IndexId |
+| 4 | `fields` | u32 count + FieldId[] |
 
 ### EntitySchema
 

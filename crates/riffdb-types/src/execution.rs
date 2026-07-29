@@ -14,11 +14,17 @@ pub enum ExecutionFailureCode {
     ArithmeticFault = 1,
     /// A fixed deterministic execution budget was exhausted.
     ResourceLimit = 2,
+    /// Another entity already owns one exact declared unique value.
+    UniqueConflict = 3,
 }
 
 impl ExecutionFailureCode {
     /// Every valid v1 execution-failure code.
-    pub const ALL: [Self; 2] = [Self::ArithmeticFault, Self::ResourceLimit];
+    pub const ALL: [Self; 3] = [
+        Self::ArithmeticFault,
+        Self::ResourceLimit,
+        Self::UniqueConflict,
+    ];
 
     /// Returns the stable v1 numeric code.
     #[must_use]
@@ -40,6 +46,7 @@ impl TryFrom<u32> for ExecutionFailureCode {
         match value {
             1 => Ok(Self::ArithmeticFault),
             2 => Ok(Self::ResourceLimit),
+            3 => Ok(Self::UniqueConflict),
             _ => Err(ExecutionFailureCodeError { value }),
         }
     }
@@ -84,10 +91,10 @@ mod tests {
             0
         );
         assert_eq!(
-            ExecutionFailureCode::try_from(3)
+            ExecutionFailureCode::try_from(4)
                 .expect_err("unknown values fail closed")
                 .value(),
-            3
+            4
         );
         assert_eq!(
             ExecutionFailureCode::try_from(u32::MAX)

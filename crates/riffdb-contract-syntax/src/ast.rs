@@ -57,6 +57,8 @@ pub enum EntityItem {
     Invariant(InvariantDeclaration),
     /// An exact-prefix index declaration.
     Index(IndexDeclaration),
+    /// A required same-partition unique key.
+    Unique(UniqueDeclaration),
     /// A required same-partition relationship.
     Reference(ReferenceDeclaration),
 }
@@ -92,6 +94,15 @@ pub struct IndexDeclaration {
     /// The index identifier.
     pub name: Spanned<String>,
     /// Indexed field names in declared order.
+    pub fields: Vec<Spanned<String>>,
+}
+
+/// A named same-partition unique key over stored required fields.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct UniqueDeclaration {
+    /// The unique-key identifier.
+    pub name: Spanned<String>,
+    /// Unique field names in canonical declared order.
     pub fields: Vec<Spanned<String>>,
 }
 

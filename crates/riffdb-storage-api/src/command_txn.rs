@@ -246,6 +246,9 @@ pub trait CommandCandidateAwaitingCapacity: Sized {
     /// Borrows the exact transaction-current epoch positions retained by this state.
     fn affected_current(&self) -> &AffectedEpochCurrentState;
 
+    /// Abandons the post-index-read candidate before sequence assignment.
+    fn reject(self, reason: CandidateValidationRejection) -> AbandonedCandidate<Self::Prior>;
+
     /// Reserves exact semantic and conservative encoded batch capacity.
     ///
     /// A conforming implementation must reject and abort if the supplied plan's
@@ -288,6 +291,8 @@ pub enum CandidateValidationRejection {
     CommitCheckArithmeticFault,
     /// A mutation or secondary-index precondition changed.
     MutationPreconditionChanged,
+    /// Another entity occupies one exact declared unique key.
+    UniqueConflict,
 }
 
 /// Candidate state available only after exact pre-sequence capacity reservation.

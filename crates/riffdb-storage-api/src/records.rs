@@ -1942,6 +1942,7 @@ fn validate_affected_epoch_coverage(
 ) -> Result<(), StorageValueError> {
     validate_affected_target_coverage(targets, epochs)?;
     if current.observations().len() != epochs.len()
+        || current.unique_occupancies().len() != targets.unique_targets().len()
         || current
             .observations()
             .iter()

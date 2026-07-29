@@ -1,0 +1,16 @@
+contract UniqueKeys version 1 {
+  entity Organization {
+    key (organization_id: uuid)
+  }
+  entity User {
+    key (organization_id: uuid, user_id: uuid)
+    field email: string<128>
+    unique user_email (organization_id, email)
+  }
+  aggregate OrganizationRoot {
+    root Organization
+    child User
+    partition_by organization_id
+    conflict_key (organization_id)
+  }
+}

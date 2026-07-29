@@ -1,6 +1,7 @@
 //! Redb application admission and atomic command transactions.
 
 use std::num::NonZeroU8;
+use std::ops::Bound::{Excluded, Included};
 
 use redb::ReadableTable;
 use riffdb_storage_api::{
@@ -21,7 +22,8 @@ use riffdb_storage_api::{
     ProvenanceIdCollision, ReadDependencies, ReadDependency, StagedBatchMetrics, StorageError,
     StorageErrorKind, StorageValueError, StoredAdmissionStateV1, StoredExecutionFailedV1,
     StoredPendingAdmissionV1, TransactionCurrentState, TransactionCurrentStateBuilder,
-    ValidationReadRequest, derive_event_hash_v1, encode_atomic_command_record_set_v1,
+    UniqueIndexOccupancy, UniqueOccupancyKind, ValidationReadRequest, derive_event_hash_v1,
+    encode_atomic_command_record_set_v1,
 };
 use riffdb_types::ProvenanceId;
 
@@ -515,6 +517,13 @@ macro_rules! impl_candidate_chain {
 
             fn affected_current(&self) -> &AffectedEpochCurrentState {
                 &self.affected_current
+            }
+
+            fn reject(
+                self,
+                _reason: CandidateValidationRejection,
+            ) -> AbandonedCandidate<Self::Prior> {
+                AbandonedCandidate::new(self.prior, self.intent)
             }
 
             fn reserve_capacity(
@@ -1029,7 +1038,43 @@ fn affected_current_state(
             ))
             .map_err(materialization_value)?;
     }
+    let table = transaction
+        .open_table(SECONDARY_INDEXES)
+        .map_err(table_error)?;
+    for target in targets.unique_targets() {
+        let prefix = target.prefix().prefix().as_bytes();
+        let upper = exclusive_prefix_end(prefix)
+            .ok_or_else(|| storage_error(StorageErrorKind::CorruptData))?;
+        let mut range = table
+            .range::<&[u8]>((Included(prefix), Excluded(upper.as_slice())))
+            .map_err(precommit_storage_error)?;
+        let first = range
+            .next()
+            .transpose()
+            .map_err(precommit_storage_error)?
+            .map(|(key, _)| key.value().to_vec());
+        let second = range.next().transpose().map_err(precommit_storage_error)?;
+        let kind = match (first, second) {
+            (None, None) => UniqueOccupancyKind::Vacant,
+            (Some(key), None) if key.as_slice() == target.expected_entry().as_bytes() => {
+                UniqueOccupancyKind::Owned
+            }
+            (Some(_), None) => UniqueOccupancyKind::Conflict,
+            _ => return Err(storage_error(StorageErrorKind::CorruptData)),
+        };
+        builder
+            .push_unique(UniqueIndexOccupancy::new(target.clone(), kind))
+            .map_err(materialization_value)?;
+    }
     builder.finish().map_err(materialization_value)
+}
+
+fn exclusive_prefix_end(prefix: &[u8]) -> Option<Vec<u8>> {
+    let mut end = prefix.to_vec();
+    let position = end.iter().rposition(|byte| *byte != u8::MAX)?;
+    end[position] = end[position].checked_add(1)?;
+    end.truncate(position + 1);
+    Some(end)
 }
 
 fn entity_observation(

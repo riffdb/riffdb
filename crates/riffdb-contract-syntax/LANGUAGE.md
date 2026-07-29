@@ -58,6 +58,8 @@ EntityItem: Spanned<EntityItem> = {
         => parser::spanned(EntityItem::Invariant(invariant), lo, hi),
     <lo:@L> "index" <name:Identifier> "(" <fields:IdentifierList> ")" <hi:@R>
         => parser::spanned(EntityItem::Index(IndexDeclaration { name, fields }), lo, hi),
+    <lo:@L> "unique" <name:Identifier> "(" <fields:IdentifierList> ")" <hi:@R>
+        => parser::spanned(EntityItem::Unique(UniqueDeclaration { name, fields }), lo, hi),
     <lo:@L> "reference" <name:Identifier> "(" <source_fields:IdentifierList> ")"
         "->" <target_entity:Identifier> "(" <target_fields:IdentifierList> ")" <hi:@R>
         => parser::spanned(EntityItem::Reference(ReferenceDeclaration {
@@ -412,6 +414,7 @@ extern {
         "field" => Token::Field,
         "invariant" => Token::Invariant,
         "index" => Token::Index,
+        "unique" => Token::Unique,
         "reference" => Token::Reference,
         "event" => Token::Event,
         "enum" => Token::Enum,

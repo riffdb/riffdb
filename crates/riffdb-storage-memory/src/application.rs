@@ -26,8 +26,8 @@ use riffdb_storage_api::{
     SnapshotRequest, StagedBatchMetrics, StorageError, StorageErrorKind, StorageValueError,
     StoredAdmissionStateV1, StoredCommitRecordV1, StoredDurableEventV1, StoredEntityRecordV1,
     StoredIndexEpochV1, StoredOutcomeV1, StoredPendingAdmissionV1, StoredProvenanceRecordV1,
-    TransactionCurrentState, TransactionCurrentStateBuilder, ValidationReadRequest,
-    derive_event_hash_v1,
+    TransactionCurrentState, TransactionCurrentStateBuilder, UniqueIndexOccupancy,
+    UniqueOccupancyKind, ValidationReadRequest, derive_event_hash_v1,
 };
 use riffdb_types::{CommitSequence, EventId, FrontierPosition, ProvenanceId};
 
@@ -399,6 +399,7 @@ fn current_state(
 
 fn affected_current_state(
     epochs: &[StoredIndexEpochV1],
+    index_entries: &[MemoryIndexEntry],
     targets: &AffectedIndexEpochTargets,
 ) -> Result<AffectedEpochCurrentState, StorageError> {
     let mut builder = AffectedEpochCurrentStateBuilder::new(targets);
@@ -408,6 +409,28 @@ fn affected_current_state(
                 target.clone(),
                 epoch_position(epochs, target)?,
             ))
+            .map_err(materialization_value)?;
+    }
+    for target in targets.unique_targets() {
+        let prefix = target.prefix().prefix().as_bytes();
+        let start = index_entries.partition_point(|row| row.key().as_bytes() < prefix);
+        let matching = index_entries[start..]
+            .iter()
+            .take(2)
+            .take_while(|row| row.key().as_bytes().starts_with(prefix))
+            .collect::<Vec<_>>();
+        let kind = match matching.as_slice() {
+            [] => UniqueOccupancyKind::Vacant,
+            [entry]
+                if entry.current_record().is_some() && entry.key() == target.expected_entry() =>
+            {
+                UniqueOccupancyKind::Owned
+            }
+            [entry] if entry.current_record().is_some() => UniqueOccupancyKind::Conflict,
+            _ => return Err(storage_error(StorageErrorKind::CorruptData)),
+        };
+        builder
+            .push_unique(UniqueIndexOccupancy::new(target.clone(), kind))
             .map_err(materialization_value)?;
     }
     builder.finish().map_err(materialization_value)
@@ -926,6 +949,7 @@ macro_rules! impl_candidate_chain {
             fn read_affected_epoch_current(self) -> Result<Self::AwaitingCapacity, StorageError> {
                 let affected_current = affected_current_state(
                     &self.prior.core.overlay.index_epochs,
+                    &self.prior.core.overlay.index_entries,
                     &self.affected_targets,
                 )?;
                 Ok(MemoryCandidateAwaitingCapacity {
@@ -951,6 +975,13 @@ macro_rules! impl_candidate_chain {
 
             fn affected_current(&self) -> &AffectedEpochCurrentState {
                 &self.affected_current
+            }
+
+            fn reject(
+                self,
+                _reason: CandidateValidationRejection,
+            ) -> AbandonedCandidate<Self::Prior> {
+                AbandonedCandidate::new(self.prior, self.intent)
             }
 
             fn reserve_capacity(
@@ -1648,7 +1679,7 @@ mod tests {
         IndexPartitionFilter, IndexPartitionFilterScope, IndexRangeObservation,
         IndexRangePrefixBuilder, PreEvaluationCommitContext, StorageScanLimit,
         StoredAdmittedProvenanceClaimsV1, StoredContractBundleV1, StoredIndexEntryV1,
-        StoredIndexEntryV2, StoredOutboxIntentV1, StoredReadDependenciesV1,
+        StoredIndexEntryV2, StoredOutboxIntentV1, StoredReadDependenciesV1, UniqueIndexTarget,
     };
     use riffdb_testkit::model::AuthoritativeCommandModel;
     use riffdb_types::{
@@ -1660,7 +1691,7 @@ mod tests {
     };
 
     use super::*;
-    use crate::state::CatalogBundleRow;
+    use crate::state::{CatalogBundleRow, MemoryIndexEntry, memory_record_charge};
     use crate::store::MemoryStore;
 
     #[derive(Clone)]
@@ -2213,6 +2244,74 @@ mod tests {
                 inclusive_upper: FrontierPosition::BeforeFirst,
             } if records.is_empty()
         ));
+    }
+
+    #[test]
+    fn unique_occupancy_is_exact_and_duplicate_prefixes_are_corruption() {
+        let (target, expected_key, range) = target_and_index();
+        let unique = UniqueIndexTarget::new(range.clone(), expected_key.clone())
+            .expect("unique occupancy target");
+        let targets = AffectedIndexEpochTargets::with_unique(Vec::new(), vec![unique])
+            .expect("unique target set");
+        assert_eq!(
+            affected_current_state(&[], &[], &targets)
+                .expect("vacant occupancy")
+                .unique_occupancies()[0]
+                .kind(),
+            UniqueOccupancyKind::Vacant
+        );
+
+        let partition = {
+            let mut builder = PartitionKeyBuilder::new(AggregateTypeId::new(1).expect("aggregate"));
+            builder.push_u64(7).expect("partition component");
+            builder.finish().expect("partition")
+        };
+        let stored = |key| {
+            MemoryIndexEntry::current(
+                StoredIndexEntryV2::new(
+                    key,
+                    DurableKeySchemaBindingV1::from_plan(&plan()),
+                    CanonicalRecord::new(Vec::new()).expect("covered values"),
+                    partition.clone(),
+                )
+                .expect("stored index"),
+                memory_record_charge(),
+            )
+            .expect("memory index")
+        };
+        let owned = stored(expected_key.clone());
+        assert_eq!(
+            affected_current_state(&[], std::slice::from_ref(&owned), &targets)
+                .expect("owned occupancy")
+                .unique_occupancies()[0]
+                .kind(),
+            UniqueOccupancyKind::Owned
+        );
+
+        let mut other_entity = EntityKeyBuilder::new(target.entity_type_id());
+        other_entity.push_u64(8).expect("other entity component");
+        let mut other_key = IndexEntryKeyBuilder::new(expected_key.index_id());
+        other_key.push_u64(10).expect("same unique component");
+        let conflicting_key = other_key
+            .finish(other_entity.finish().expect("other entity"))
+            .expect("conflicting index key");
+        let conflict = stored(conflicting_key);
+        assert_eq!(
+            affected_current_state(&[], std::slice::from_ref(&conflict), &targets)
+                .expect("conflicting occupancy")
+                .unique_occupancies()[0]
+                .kind(),
+            UniqueOccupancyKind::Conflict
+        );
+
+        let mut duplicate = vec![owned, conflict];
+        duplicate.sort_unstable_by(|left, right| left.key().cmp(right.key()));
+        assert_eq!(
+            affected_current_state(&[], &duplicate, &targets)
+                .expect_err("duplicate unique prefix is corrupt")
+                .kind(),
+            StorageErrorKind::CorruptData
+        );
     }
 
     #[test]

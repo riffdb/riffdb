@@ -177,6 +177,10 @@ fn allocate_symbols(
                             indexes.insert(&index.name, &mut diagnostics);
                             validate_unique_spanned_names(&index.fields, &mut diagnostics);
                         }
+                        EntityItem::Unique(unique) => {
+                            indexes.insert(&unique.name, &mut diagnostics);
+                            validate_unique_spanned_names(&unique.fields, &mut diagnostics);
+                        }
                         EntityItem::Reference(reference) => {
                             validate_unique_spanned_names(
                                 &reference.source_fields,

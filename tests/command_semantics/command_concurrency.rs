@@ -10,12 +10,13 @@ use riffdb_commit::{
     ApplicationCommitNotificationSink, CommandExecutionAdmissionError, CommandExecutionResult,
     CommittedOutcomeDisposition, CoordinatorLifecycleState,
 };
-use riffdb_types::CommitSequence;
+use riffdb_storage_api::AuthoritativePointReader;
+use riffdb_types::{CommitSequence, ExecutionFailureCode};
 
 use support::{
     BudgetDatabase, CountingProvenanceSource, FailingApplicationCommitNotifications,
-    FixedAdmissionClock, PanickingApplicationCommitNotifications,
-    RecordingApplicationCommitNotifications, command_timestamp, runtime,
+    FixedAdmissionClock, IncrementingProvenanceSource, PanickingApplicationCommitNotifications,
+    RecordingApplicationCommitNotifications, UniqueUserDatabase, command_timestamp, runtime,
     start_coordinator_with_notifications,
 };
 
@@ -121,6 +122,220 @@ fn notification_failure_or_panic_preserves_commit_and_stops_admission() {
         "notification-panic",
         0x32,
         Arc::new(PanickingApplicationCommitNotifications),
+    );
+}
+
+#[test]
+fn equal_scoped_unique_values_commit_once_and_loser_replays_without_sequence() {
+    let database = UniqueUserDatabase::create("same-email");
+    let ports = database.open();
+    let organization = database.prepare_organization(&ports);
+    let first_user = [0x41; 16];
+    let second_user = [0x42; 16];
+    let first = database.prepare(
+        &ports,
+        first_user,
+        "same@example.test",
+        "create-first",
+        0x61,
+        0x51,
+    );
+    let second = database.prepare(
+        &ports,
+        second_user,
+        "same@example.test",
+        "create-second",
+        0x62,
+        0x52,
+    );
+    let second_replay = database.prepare(
+        &ports,
+        second_user,
+        "same@example.test",
+        "create-second",
+        0x62,
+        0x53,
+    );
+    let admission_clock = Arc::new(FixedAdmissionClock::new(command_timestamp()));
+    let provenance_source = Arc::new(IncrementingProvenanceSource::new(0x71));
+    let notifications = Arc::new(RecordingApplicationCommitNotifications::default());
+    let coordinator = start_coordinator_with_notifications(
+        ports,
+        admission_clock,
+        provenance_source,
+        notifications.clone(),
+    );
+    let executor = coordinator.command_executor();
+
+    let (winner, loser, replay) = runtime().block_on(async {
+        let organization = executor
+            .reserve_capacity()
+            .await
+            .expect("reserve organization")
+            .submit(organization)
+            .expect("submit organization")
+            .completion()
+            .await
+            .expect("complete organization");
+        assert!(matches!(organization, CommandExecutionResult::Committed(_)));
+        let winner_permit = executor
+            .reserve_capacity()
+            .await
+            .expect("reserve unique winner");
+        let loser_permit = executor
+            .reserve_capacity()
+            .await
+            .expect("reserve concurrent unique loser");
+        let winner_receipt = winner_permit.submit(first).expect("submit unique winner");
+        let loser_receipt = loser_permit
+            .submit(second)
+            .expect("submit concurrent unique loser");
+        let winner = winner_receipt
+            .completion()
+            .await
+            .expect("complete unique winner");
+        let loser = loser_receipt
+            .completion()
+            .await
+            .expect("complete unique loser");
+        let replay = executor
+            .reserve_capacity()
+            .await
+            .expect("reserve unique loser replay")
+            .submit(second_replay)
+            .expect("submit unique loser replay")
+            .completion()
+            .await
+            .expect("complete unique loser replay");
+        (winner, loser, replay)
+    });
+
+    assert!(matches!(winner, CommandExecutionResult::Committed(_)));
+    assert_eq!(
+        loser,
+        CommandExecutionResult::ExecutionFailed(ExecutionFailureCode::UniqueConflict)
+    );
+    assert_eq!(replay, loser);
+    assert_eq!(
+        notifications.sequences(),
+        vec![
+            CommitSequence::first(),
+            CommitSequence::new(2).expect("second sequence")
+        ]
+    );
+
+    drop(executor);
+    coordinator.shutdown().expect("drain unique coordinator");
+    let ports = database.open();
+    database.assert_user_exists(&ports, first_user, true);
+    database.assert_user_exists(&ports, second_user, false);
+    assert!(
+        ports
+            .read_commit(CommitSequence::new(3).expect("third sequence"))
+            .expect("read second sequence")
+            .is_none(),
+        "unique collision and replay must not allocate a commit sequence"
+    );
+}
+
+#[test]
+fn changing_to_an_owned_unique_value_preserves_the_original_entity_and_replays() {
+    let database = UniqueUserDatabase::create("change-email");
+    let ports = database.open();
+    let first_user = [0x43; 16];
+    let second_user = [0x44; 16];
+    let preparations = [
+        database.prepare_organization(&ports),
+        database.prepare(
+            &ports,
+            first_user,
+            "first@example.test",
+            "create-first-change-test",
+            0x63,
+            0x54,
+        ),
+        database.prepare(
+            &ports,
+            second_user,
+            "second@example.test",
+            "create-second-change-test",
+            0x64,
+            0x55,
+        ),
+    ];
+    let change = database.prepare_email_change(
+        &ports,
+        second_user,
+        "first@example.test",
+        "change-second-to-first",
+        0x65,
+        0x56,
+    );
+    let replay = database.prepare_email_change(
+        &ports,
+        second_user,
+        "first@example.test",
+        "change-second-to-first",
+        0x65,
+        0x57,
+    );
+    let coordinator = start_coordinator_with_notifications(
+        ports,
+        Arc::new(FixedAdmissionClock::new(command_timestamp())),
+        Arc::new(IncrementingProvenanceSource::new(0x75)),
+        Arc::new(RecordingApplicationCommitNotifications::default()),
+    );
+    let executor = coordinator.command_executor();
+    let (failure, replayed) = runtime().block_on(async {
+        for preparation in preparations {
+            let result = executor
+                .reserve_capacity()
+                .await
+                .expect("reserve uniqueness setup")
+                .submit(preparation)
+                .expect("submit uniqueness setup")
+                .completion()
+                .await
+                .expect("complete uniqueness setup");
+            assert!(matches!(result, CommandExecutionResult::Committed(_)));
+        }
+        let failure = executor
+            .reserve_capacity()
+            .await
+            .expect("reserve conflicting change")
+            .submit(change)
+            .expect("submit conflicting change")
+            .completion()
+            .await
+            .expect("complete conflicting change");
+        let replayed = executor
+            .reserve_capacity()
+            .await
+            .expect("reserve conflicting change replay")
+            .submit(replay)
+            .expect("submit conflicting change replay")
+            .completion()
+            .await
+            .expect("complete conflicting change replay");
+        (failure, replayed)
+    });
+    assert_eq!(
+        failure,
+        CommandExecutionResult::ExecutionFailed(ExecutionFailureCode::UniqueConflict)
+    );
+    assert_eq!(replayed, failure);
+
+    drop(executor);
+    coordinator.shutdown().expect("drain change coordinator");
+    let ports = database.open();
+    database.assert_user_email(&ports, first_user, "first@example.test");
+    database.assert_user_email(&ports, second_user, "second@example.test");
+    assert!(
+        ports
+            .read_commit(CommitSequence::new(4).expect("fourth sequence"))
+            .expect("read fourth sequence")
+            .is_none(),
+        "failed change and replay must not allocate a sequence"
     );
 }
 

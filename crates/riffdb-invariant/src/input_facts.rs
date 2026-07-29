@@ -135,6 +135,18 @@ pub fn derive_input_command_facts(
                 .map_err(|_| EvaluationError::Integrity)?;
             declared_conflict_keys.push(key);
         }
+        for derivation in plan.unique_conflicts() {
+            let components = derivation
+                .expressions()
+                .iter()
+                .map(|expression| evaluation.evaluate(*expression))
+                .collect::<Result<Vec<_>, _>>()?;
+            let key = derivation
+                .schema()
+                .encode_conflict(&components)
+                .map_err(|_| EvaluationError::Integrity)?;
+            declared_conflict_keys.push(key);
+        }
 
         let binding_entity_keys = plan
             .bindings()

@@ -421,6 +421,24 @@ where
         &self.candidate
     }
 
+    /// Rejects an exact transaction-current uniqueness collision before any
+    /// capacity or sequence is assigned.
+    pub(super) fn reject_unique_conflict(self) -> RolledBackCandidateDisposition {
+        let Self {
+            seal: _,
+            attempt,
+            candidate,
+            current,
+            mutation_positions,
+        } = self;
+        drop(current);
+        drop(mutation_positions);
+        attempt.reject_after_index_read_and_rollback(
+            candidate,
+            CandidateValidationRejection::UniqueConflict,
+        )
+    }
+
     pub(super) fn reserve_capacity(
         self,
         write_plan: CommandWriteSetPlanV1,

@@ -18,7 +18,7 @@ use riffdb_storage_api::{
     StorageErrorKind, StorageValueError, StoredAdmissionStateV1, StructuralEvidenceCursor,
     StructuralEvidenceEnd, StructuralEvidenceOpen, StructuralEvidencePage,
     StructuralEvidenceSession, StructuralFinding, StructuralFindingCode, StructuralFindingScope,
-    StructuralOpenOutcome, StructurallyOpened,
+    StructuralOpenOutcome, StructurallyOpened, UniqueIndexTarget, UniqueOccupancyKind,
 };
 use riffdb_types::{ContractBundleHash, ContractLineage, ContractVersion, DatabaseId};
 
@@ -276,6 +276,65 @@ impl StructuralEvidenceSession for MemoryStructuralEvidenceSession {
             .as_ref()
             .ok_or_else(|| storage_error(StorageErrorKind::InvariantViolation))?
             .read(|state| find_historical_bundle(state, lineage, contract_version, bundle_hash))
+    }
+
+    fn read_integrity_entity(
+        &mut self,
+        target: &riffdb_storage_api::EntityTarget,
+    ) -> Result<Option<riffdb_storage_api::StoredEntityRecordV1>, StorageError> {
+        self.access
+            .as_ref()
+            .ok_or_else(|| storage_error(StorageErrorKind::InvariantViolation))?
+            .read(|state| {
+                let position = state.entities.partition_point(|row| row.target() < target);
+                let Some(record) = state.entities.get(position) else {
+                    return Ok(None);
+                };
+                if record.target() != target {
+                    return Ok(None);
+                }
+                if state
+                    .entities
+                    .get(position + 1)
+                    .is_some_and(|next| next.target() == target)
+                {
+                    return Err(storage_error(StorageErrorKind::CorruptData));
+                }
+                Ok(Some(record.clone()))
+            })
+    }
+
+    fn read_integrity_unique_occupancy(
+        &mut self,
+        target: &UniqueIndexTarget,
+    ) -> Result<UniqueOccupancyKind, StorageError> {
+        self.access
+            .as_ref()
+            .ok_or_else(|| storage_error(StorageErrorKind::InvariantViolation))?
+            .read(|state| {
+                let prefix = target.prefix().prefix().as_bytes();
+                let start = state
+                    .index_entries
+                    .partition_point(|row| row.key().as_bytes() < prefix);
+                let matching = state.index_entries[start..]
+                    .iter()
+                    .take(2)
+                    .take_while(|row| row.key().as_bytes().starts_with(prefix))
+                    .collect::<Vec<_>>();
+                match matching.as_slice() {
+                    [] => Ok(UniqueOccupancyKind::Vacant),
+                    [entry]
+                        if entry.current_record().is_some()
+                            && entry.key() == target.expected_entry() =>
+                    {
+                        Ok(UniqueOccupancyKind::Owned)
+                    }
+                    [entry] if entry.current_record().is_some() => {
+                        Ok(UniqueOccupancyKind::Conflict)
+                    }
+                    _ => Err(storage_error(StorageErrorKind::CorruptData)),
+                }
+            })
     }
 
     fn finish(

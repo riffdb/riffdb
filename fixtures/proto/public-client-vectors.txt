@@ -142,6 +142,7 @@ enum-value riffdb.v1.ContractCompatibilityClass 3 CONTRACT_COMPATIBILITY_CLASS_I
 enum-value riffdb.v1.DiscoveryRepresentation 0 DISCOVERY_REPRESENTATION_UNSPECIFIED
 enum-value riffdb.v1.DiscoveryRepresentation 1 DISCOVERY_REPRESENTATION_FULL
 enum-value riffdb.v1.DiscoveryRepresentation 2 DISCOVERY_REPRESENTATION_COMPACT_OBSERVATION
+enum-value riffdb.v1.ExecutionFailureCode 3 EXECUTION_FAILURE_CODE_UNIQUE_CONFLICT
 enum-value riffdb.v1.FixedToolKind 0 FIXED_TOOL_KIND_UNSPECIFIED
 enum-value riffdb.v1.FixedToolKind 1 FIXED_TOOL_KIND_VALIDATE_CONTRACT
 enum-value riffdb.v1.FixedToolKind 10 FIXED_TOOL_KIND_TRACE_PROVENANCE

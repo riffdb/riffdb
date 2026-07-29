@@ -15,7 +15,7 @@ use riffdb_types::{
 use crate::{
     AffectedIndexEpochTargets, ExecutablePlanRef, MAX_COMMAND_READ_TARGETS, MAX_READ_DEPENDENCIES,
     MAX_READ_SNAPSHOT_BYTES, MAX_SCAN_PAGE_BYTES, MAX_SCAN_PAGE_ENTRIES, StorageError,
-    StorageValueError, StoredEntityRecordV1, canonical_codec_storage_error,
+    StorageValueError, StoredEntityRecordV1, UniqueIndexTarget, canonical_codec_storage_error,
 };
 
 /// One complete canonical entity identity.
@@ -1527,7 +1527,50 @@ impl CurrentRangeObservation {
 #[derive(Clone, Eq, PartialEq)]
 pub struct AffectedEpochCurrentState {
     observations: Vec<CurrentRangeObservation>,
+    unique_occupancies: Vec<UniqueIndexOccupancy>,
     semantic_bytes: usize,
+}
+
+/// Exact transaction-current occupancy of one declared unique prefix.
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+pub enum UniqueOccupancyKind {
+    /// No entry currently occupies the prefix.
+    Vacant,
+    /// The sole entry is the same entity that this command will write.
+    Owned,
+    /// Another entity occupies the prefix.
+    Conflict,
+}
+
+/// One value-free unique occupancy observation.
+#[derive(Clone, Eq, PartialEq)]
+pub struct UniqueIndexOccupancy {
+    target: UniqueIndexTarget,
+    kind: UniqueOccupancyKind,
+}
+
+impl UniqueIndexOccupancy {
+    /// Constructs an exact occupancy observation.
+    #[must_use]
+    pub const fn new(target: UniqueIndexTarget, kind: UniqueOccupancyKind) -> Self {
+        Self { target, kind }
+    }
+    /// Checked target.
+    #[must_use]
+    pub const fn target(&self) -> &UniqueIndexTarget {
+        &self.target
+    }
+    /// Redacted occupancy class.
+    #[must_use]
+    pub const fn kind(&self) -> UniqueOccupancyKind {
+        self.kind
+    }
+    fn semantic_bytes(&self) -> Result<usize, StorageValueError> {
+        self.target
+            .semantic_bytes()?
+            .checked_add(1)
+            .ok_or(StorageValueError::SizeOverflow)
+    }
 }
 
 /// Incremental adapter-facing construction of mutation-affected epoch state.
@@ -1538,6 +1581,7 @@ pub struct AffectedEpochCurrentState {
 pub struct AffectedEpochCurrentStateBuilder<'expected> {
     expected: &'expected AffectedIndexEpochTargets,
     observations: Vec<CurrentRangeObservation>,
+    unique_occupancies: Vec<UniqueIndexOccupancy>,
     semantic_bytes: usize,
 }
 
@@ -1548,6 +1592,7 @@ impl<'expected> AffectedEpochCurrentStateBuilder<'expected> {
         Self {
             expected,
             observations: Vec::new(),
+            unique_occupancies: Vec::new(),
             semantic_bytes: affected_epoch_current_fixed_semantic_bytes(),
         }
     }
@@ -1579,10 +1624,39 @@ impl<'expected> AffectedEpochCurrentStateBuilder<'expected> {
         if self.observations.len() != self.expected.as_slice().len() {
             return Err(StorageValueError::IdentityMismatch);
         }
+        if self.unique_occupancies.len() != self.expected.unique_targets().len() {
+            return Err(StorageValueError::IdentityMismatch);
+        }
         Ok(AffectedEpochCurrentState {
             observations: self.observations,
+            unique_occupancies: self.unique_occupancies,
             semantic_bytes: self.semantic_bytes,
         })
+    }
+
+    /// Retains the next canonical unique occupancy after charging it.
+    pub fn push_unique(
+        &mut self,
+        occupancy: UniqueIndexOccupancy,
+    ) -> Result<(), StorageValueError> {
+        let expected = self
+            .expected
+            .unique_targets()
+            .get(self.unique_occupancies.len())
+            .ok_or(StorageValueError::IdentityMismatch)?;
+        if occupancy.target() != expected {
+            return Err(StorageValueError::IdentityMismatch);
+        }
+        let next = self
+            .semantic_bytes
+            .checked_add(occupancy.semantic_bytes()?)
+            .ok_or(StorageValueError::SizeOverflow)?;
+        if next > MAX_READ_SNAPSHOT_BYTES {
+            return Err(StorageValueError::LimitExceeded);
+        }
+        self.semantic_bytes = next;
+        self.unique_occupancies.push(occupancy);
+        Ok(())
     }
 }
 
@@ -1599,10 +1673,31 @@ impl AffectedEpochCurrentState {
         builder.finish()
     }
 
+    /// Validates epoch and unique occupancy coverage together.
+    pub fn with_unique(
+        expected: &AffectedIndexEpochTargets,
+        observations: Vec<CurrentRangeObservation>,
+        unique_occupancies: Vec<UniqueIndexOccupancy>,
+    ) -> Result<Self, StorageValueError> {
+        let mut builder = AffectedEpochCurrentStateBuilder::new(expected);
+        for observation in observations {
+            builder.push(observation)?;
+        }
+        for occupancy in unique_occupancies {
+            builder.push_unique(occupancy)?;
+        }
+        builder.finish()
+    }
+
     /// Borrows observations in exact affected-target order.
     #[must_use]
     pub fn observations(&self) -> &[CurrentRangeObservation] {
         &self.observations
+    }
+    /// Borrows unique occupancies in exact target order.
+    #[must_use]
+    pub fn unique_occupancies(&self) -> &[UniqueIndexOccupancy] {
+        &self.unique_occupancies
     }
 
     /// Returns the bounded transient observation charge.

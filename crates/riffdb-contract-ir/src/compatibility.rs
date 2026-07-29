@@ -689,6 +689,34 @@ fn compare_schema(
             );
         }
     }
+    let parent_unique = parent
+        .unique_keys()
+        .iter()
+        .map(|unique| ((unique.source_entity(), unique.name().to_owned()), unique))
+        .collect::<BTreeMap<_, _>>();
+    let next_unique = next
+        .unique_keys()
+        .iter()
+        .map(|unique| ((unique.source_entity(), unique.name().to_owned()), unique))
+        .collect::<BTreeMap<_, _>>();
+    for (key, unique) in &next_unique {
+        if parent_unique.get(key).is_none_or(|old| *old != *unique) {
+            add(
+                findings,
+                CompatibilityCode::InvariantChange,
+                format!("entity:{}", key.0.get()),
+            );
+        }
+    }
+    for key in parent_unique.keys() {
+        if !next_unique.contains_key(key) {
+            add(
+                findings,
+                CompatibilityCode::InvariantChange,
+                format!("entity:{}", key.0.get()),
+            );
+        }
+    }
     compatible
 }
 

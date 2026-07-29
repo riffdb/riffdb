@@ -1,7 +1,7 @@
 format=riffdb-compiler-diagnostic-fixture-v1
 
 [semantic-code-registry]
-count=27
+count=29
 code.0.id=RDB-C001
 code.0.message=contract version must be a supported nonzero integer
 code.0.help=use a base-10 application version in 1..=u64::MAX
@@ -74,15 +74,21 @@ code.22.help=none
 code.23.id=RDB-C024
 code.23.message=a relationship change lacks a dominating exact target read and missing-target outcome
 code.23.help=read the complete referenced key before the mutable binding and declare its missing-target outcome
-code.24.id=RDB-C201
-code.24.message=an identifier cannot form a valid MCP command tool-name segment
-code.24.help=start contract and command identifiers with an ASCII letter
-code.25.id=RDB-C202
-code.25.message=the complete MCP command tool name exceeds 128 bytes
-code.25.help=shorten the source contract or command identifier
-code.26.id=RDB-C203
-code.26.message=two commands normalize to the same MCP command tool name
-code.26.help=rename one command so lowercase identifiers remain distinct
+code.24.id=RDB-C025
+code.24.message=a unique key must use required fields and begin with the complete partition route
+code.24.help=declare required key-compatible fields beginning with the canonical partition prefix
+code.25.id=RDB-C026
+code.25.message=a changed unique value must be computable from validated command inputs
+code.25.help=assign every changed unique component from command inputs or input-only expressions
+code.26.id=RDB-C201
+code.26.message=an identifier cannot form a valid MCP command tool-name segment
+code.26.help=start contract and command identifiers with an ASCII letter
+code.27.id=RDB-C202
+code.27.message=the complete MCP command tool name exceeds 128 bytes
+code.27.help=shorten the source contract or command identifier
+code.28.id=RDB-C203
+code.28.message=two commands normalize to the same MCP command tool name
+code.28.help=rename one command so lowercase identifiers remain distinct
 
 [RDB-C001-invalid-contract-version]
 expected=RDB-C001
@@ -328,6 +334,26 @@ diagnostic.0.message=a relationship change lacks a dominating exact target read 
 diagnostic.0.primary=236..242
 diagnostic.0.related=619..698
 diagnostic.0.help=read the complete referenced key before the mutable binding and declare its missing-target outcome
+
+[RDB-C025-invalid-unique-key]
+expected=RDB-C025
+kind=semantic
+count=1
+diagnostic.0.code=RDB-C025
+diagnostic.0.message=a unique key must use required fields and begin with the complete partition route
+diagnostic.0.primary=176..186
+diagnostic.0.related=none
+diagnostic.0.help=declare required key-compatible fields beginning with the canonical partition prefix
+
+[RDB-C026-unique-key-not-input-computable]
+expected=RDB-C026
+kind=semantic
+count=1
+diagnostic.0.code=RDB-C026
+diagnostic.0.message=a changed unique value must be computable from validated command inputs
+diagnostic.0.primary=182..192
+diagnostic.0.related=none
+diagnostic.0.help=assign every changed unique component from command inputs or input-only expressions
 
 [RDB-C201-invalid-command-tool-name]
 expected=RDB-C201

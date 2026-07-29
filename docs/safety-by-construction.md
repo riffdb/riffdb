@@ -75,6 +75,41 @@ Only required same-partition relationships are supported. Optional,
 cross-partition, polymorphic, cascading, deferred, and inferred relationships
 are rejected rather than approximated.
 
+## Declared same-partition uniqueness
+
+Scoped uniqueness is declared on an entity and backed by an authoritative
+index:
+
+```riff
+unique user_email (organization_id, email)
+```
+
+The declaration is accepted only when every component is required and
+key-compatible and the key begins with the complete aggregate-root route.
+RiffDB does not infer uniqueness from names, application checks, a currently
+empty scan, or a globally repeated field. Global, collation-dependent,
+cross-partition, optional, and undeclared uniqueness are unsupported.
+
+For every create or mutation that can change the value, the compiler derives
+the complete resulting tuple from validated command inputs. That tuple becomes
+an additional logical conflict capability. If the result depends on an entity
+read, omitted assignment, clock, or other runtime value, compilation rejects
+the command; the application cannot substitute a check-then-write sequence.
+
+After semantic validation and while the conflict capability is still held, the
+commit transaction reads the exact complete unique prefix. Vacant or
+same-entity ownership may proceed. Ownership by another entity produces the
+durable, retry-replayable `UniqueConflict` execution result before capacity or
+commit-sequence assignment. Entity mutation, removal of an old unique entry,
+creation of the new entry, outcome, provenance, and commit record remain one
+atomic write.
+
+Startup readiness recomputes each declared unique entry from the authoritative
+entity post-image and validates both directions in one immutable recovery view.
+A missing, duplicate, stale, malformed, or orphan unique-index row is
+authoritative corruption. Recovery withholds operational ports and never
+silently repairs or chooses a winner.
+
 ## Bug classes made unavailable
 
 The stable application profile must prevent:

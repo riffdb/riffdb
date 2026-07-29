@@ -114,6 +114,7 @@ pub(crate) struct HirIndex {
     pub(crate) name: String,
     pub(crate) span: Span,
     pub(crate) fields: Vec<(FieldId, Span)>,
+    pub(crate) unique: bool,
 }
 
 #[derive(Clone, Debug)]
@@ -456,7 +457,10 @@ fn lower_entities(
                         fields.push(lowered);
                     }
                 }
-                EntityItem::Invariant(_) | EntityItem::Index(_) | EntityItem::Reference(_) => {}
+                EntityItem::Invariant(_)
+                | EntityItem::Index(_)
+                | EntityItem::Unique(_)
+                | EntityItem::Reference(_) => {}
             }
         }
         let field_scope = fields_by_name(&fields);
@@ -508,6 +512,33 @@ fn lower_entities(
                         name: index.name.value.clone(),
                         span: index.name.span,
                         fields: index_fields,
+                        unique: false,
+                    });
+                }
+                EntityItem::Unique(unique) => {
+                    let Some(index_id) = symbols
+                        .indexes
+                        .get(&(id, unique.name.value.clone()))
+                        .copied()
+                    else {
+                        continue;
+                    };
+                    let mut index_fields = Vec::new();
+                    for field in &unique.fields {
+                        match field_scope.get(&field.value) {
+                            Some((field_id, _)) => index_fields.push((*field_id, field.span)),
+                            None => diagnostics.push(CompilerDiagnostic::new(
+                                CompilerDiagnosticCode::UnknownName,
+                                field.span,
+                            )),
+                        }
+                    }
+                    indexes.push(HirIndex {
+                        id: index_id,
+                        name: unique.name.value.clone(),
+                        span: unique.name.span,
+                        fields: index_fields,
+                        unique: true,
                     });
                 }
                 EntityItem::Reference(reference) => {

@@ -25,6 +25,7 @@ use riffdb_storage_api::{
     StoredCapabilityRecordV1, StoredEntityRecordV1, StoredIndexEntryV1, StoredIndexEntryV2,
     StoredIndexEpochV1, StructuralEvidenceCursor, StructuralEvidenceEnd, StructuralEvidencePage,
     StructuralEvidenceSession, StructuralOpenOutcome, StructurallyDecodedIndexRangePrefixV1,
+    UniqueIndexTarget, UniqueOccupancyKind,
 };
 use riffdb_types::{
     ActorId, ActorKind, AdministrationSequence, AggregateTypeId, Audience, CanonicalRecord,
@@ -40,6 +41,25 @@ const CAPABILITY_KEYS: &str = r#"
 contract CapabilityKeys version 1 {
   entity TextRow { key (id: string<4>) }
   aggregate TextRows { root TextRow partition_by id conflict_key (id) }
+}
+"#;
+
+const UNIQUE_RECOVERY: &str = r#"
+contract UniqueRecovery version 1 {
+  entity Organization {
+    key (organization_id: u64)
+  }
+  entity User {
+    key (organization_id: u64, user_id: u64)
+    field email: string<64>
+    unique user_email (organization_id, email)
+  }
+  aggregate Organizations {
+    root Organization
+    child User
+    partition_by organization_id
+    conflict_key (organization_id)
+  }
 }
 "#;
 
@@ -97,7 +117,17 @@ struct FakeSession {
     pages: Vec<Option<Vec<HistoricalSemanticEvidence>>>,
     page: usize,
     bundles: Vec<HistoricalBundleEvidence>,
+    entities: Vec<StoredEntityRecordV1>,
+    unique_state: FakeUniqueState,
     fault: CursorFault,
+}
+
+#[derive(Clone, Copy)]
+enum FakeUniqueState {
+    Vacant,
+    Owned,
+    Conflict,
+    Corrupt,
 }
 
 impl StructuralEvidenceSession for FakeSession {
@@ -203,6 +233,29 @@ impl StructuralEvidenceSession for FakeSession {
             .cloned())
     }
 
+    fn read_integrity_entity(
+        &mut self,
+        target: &EntityTarget,
+    ) -> Result<Option<StoredEntityRecordV1>, StorageError> {
+        Ok(self
+            .entities
+            .iter()
+            .find(|record| record.target() == target)
+            .cloned())
+    }
+
+    fn read_integrity_unique_occupancy(
+        &mut self,
+        _target: &UniqueIndexTarget,
+    ) -> Result<UniqueOccupancyKind, StorageError> {
+        match self.unique_state {
+            FakeUniqueState::Vacant => Ok(UniqueOccupancyKind::Vacant),
+            FakeUniqueState::Owned => Ok(UniqueOccupancyKind::Owned),
+            FakeUniqueState::Conflict => Ok(UniqueOccupancyKind::Conflict),
+            FakeUniqueState::Corrupt => Err(storage_error(StorageErrorKind::CorruptData)),
+        }
+    }
+
     fn finish(
         self,
         _structural_end: Self::StructuralEnd,
@@ -245,6 +298,8 @@ fn session(
         pages: pages.into_iter().map(Some).collect(),
         page: 0,
         bundles,
+        entities: Vec::new(),
+        unique_state: FakeUniqueState::Vacant,
         fault,
     }
 }
@@ -769,6 +824,76 @@ fn unknown_or_hash_mismatched_plan_fails_without_active_substitution() {
             .expect("unknown plan")
             .kind(),
         CatalogErrorKind::UnknownExecutablePlan
+    );
+}
+
+#[test]
+fn startup_unique_reciprocity_accepts_exact_owner_and_rejects_torn_or_orphan_state() {
+    let (bundle, record, index_key, partition) = unique_recovery_fixture();
+    let stored = stored_bundle(&bundle);
+    let entity_evidence = HistoricalSemanticEvidence::PersistedKey(
+        HistoricalPersistedKeyEvidenceV1::from_entity(&record),
+    );
+    for unique_state in [
+        FakeUniqueState::Vacant,
+        FakeUniqueState::Conflict,
+        FakeUniqueState::Corrupt,
+    ] {
+        let mut invalid = session(
+            vec![
+                vec![HistoricalSemanticEvidence::Bundle(stored.clone())],
+                vec![active(&bundle)],
+                vec![HistoricalSemanticEvidence::PersistedKey(
+                    HistoricalPersistedKeyEvidenceV1::from_entity(&record),
+                )],
+            ],
+            vec![stored.clone()],
+            CursorFault::None,
+        );
+        invalid.entities.push(record.clone());
+        invalid.unique_state = unique_state;
+        assert!(
+            validate_catalog_history(&mut invalid).is_err(),
+            "torn, conflicting, or duplicate unique state must withhold readiness"
+        );
+    }
+
+    let mut exact = session(
+        vec![
+            vec![HistoricalSemanticEvidence::Bundle(stored.clone())],
+            vec![active(&bundle)],
+            vec![entity_evidence],
+            vec![migration_v2_evidence(
+                &bundle,
+                index_key.clone(),
+                partition.clone(),
+            )],
+        ],
+        vec![stored.clone()],
+        CursorFault::None,
+    );
+    exact.entities.push(record.clone());
+    exact.unique_state = FakeUniqueState::Owned;
+    assert!(matches!(
+        validate_catalog_history(&mut exact)
+            .expect("exact reciprocal unique state validates")
+            .outcome(),
+        CatalogHistoryOutcome::Ready(_)
+    ));
+
+    let mut orphan = session(
+        vec![
+            vec![HistoricalSemanticEvidence::Bundle(stored.clone())],
+            vec![active(&bundle)],
+            vec![migration_v2_evidence(&bundle, index_key, partition)],
+        ],
+        vec![stored],
+        CursorFault::None,
+    );
+    orphan.unique_state = FakeUniqueState::Owned;
+    assert!(
+        validate_catalog_history(&mut orphan).is_err(),
+        "an index row without its authoritative entity is nonreciprocal"
     );
 }
 
@@ -1400,6 +1525,76 @@ fn migration_index_key_and_partition(
     bundle: &ValidatedContractBundle,
 ) -> (riffdb_types::IndexEntryKey, PartitionKey) {
     migration_index_key_and_partition_for(bundle, 42)
+}
+
+fn unique_recovery_fixture() -> (
+    ValidatedContractBundle,
+    StoredEntityRecordV1,
+    riffdb_types::IndexEntryKey,
+    PartitionKey,
+) {
+    let bundle = ValidatedContractBundle::from_compiler_bundle(
+        compile_contract_source(UNIQUE_RECOVERY).expect("unique recovery contract"),
+    )
+    .expect("validated unique recovery contract");
+    let user = bundle
+        .bundle()
+        .schema()
+        .entities()
+        .iter()
+        .find(|entity| entity.name() == "User")
+        .expect("User entity");
+    let field = |name: &str| {
+        user.record()
+            .fields()
+            .iter()
+            .find(|field| field.name() == name)
+            .expect("User field")
+            .id()
+    };
+    let values = [
+        CanonicalValue::U64(7),
+        CanonicalValue::U64(11),
+        CanonicalValue::string("owner@example.test").expect("email"),
+    ];
+    let record = CanonicalRecord::new(vec![
+        (field("organization_id"), values[0].clone()),
+        (field("user_id"), values[1].clone()),
+        (field("email"), values[2].clone()),
+    ])
+    .expect("canonical User record");
+    let entity_key = user
+        .primary_key()
+        .encode_entity(&values[..2])
+        .expect("User key");
+    let stored = StoredEntityRecordV1::new(
+        EntityTarget::new(user.id(), entity_key.clone()).expect("User target"),
+        EntityVersion::first(),
+        bundle.contract_version(),
+        DurableKeySchemaBindingV1::new(
+            bundle.lineage().clone(),
+            bundle.contract_version(),
+            bundle.bundle_hash(),
+        ),
+        record,
+    )
+    .expect("stored User");
+    let index = user.indexes().first().expect("unique backing index");
+    let index_key = index
+        .key_schema()
+        .encode_index(&[values[0].clone(), values[2].clone()], entity_key)
+        .expect("unique index key");
+    let aggregate = bundle
+        .bundle()
+        .schema()
+        .aggregate_for_entity(user.id())
+        .expect("aggregate");
+    let partition = aggregate
+        .keys()
+        .partition_schema()
+        .encode_partition(&[values[0].clone()])
+        .expect("partition");
+    (bundle, stored, index_key, partition)
 }
 
 fn migration_index_key_and_partition_for(

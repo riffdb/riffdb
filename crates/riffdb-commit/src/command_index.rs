@@ -19,11 +19,12 @@ use riffdb_storage_api::{
     IndexEpochAdvanceV1, IndexRangePrefixBuilder, IndexRangeTarget,
     MAX_AFFECTED_INDEX_EPOCH_TARGETS, MAX_INDEX_DELTAS, MAX_READ_SNAPSHOT_BYTES,
     MAX_VALIDATION_TARGETS, StorageError, StoredIndexEntryV2, TransactionCurrentState,
-    ValidatedCommandWriteSetShapeV1, command_write_set_upper_bound_v1,
+    UniqueIndexTarget, UniqueOccupancyKind, ValidatedCommandWriteSetShapeV1,
+    command_write_set_upper_bound_v1,
 };
 use riffdb_types::{CanonicalRecord, CanonicalValue, IndexEntryKey, PartitionKey};
 
-use crate::command_attempt::PendingCommandAttempts;
+use crate::command_attempt::{PendingCommandAttempts, RolledBackCandidateDisposition};
 #[cfg(test)]
 use crate::command_validation::CheckedCandidateSeal;
 use crate::command_validation::{
@@ -115,6 +116,7 @@ where
 /// Closed result of reading exact mutation-affected epoch positions.
 pub(super) enum CheckedAffectedEpochDecision<C> {
     Ready(CheckedCommitCandidate<C>),
+    Rejected(RolledBackCandidateDisposition),
     StorageFailure(StorageError),
 }
 
@@ -133,6 +135,17 @@ where
         let CheckedAttemptAuthority(checked) = authority;
         match checked.read_affected_epoch_current() {
             CheckedAffectedEpochRead::Ready(checked) => {
+                if checked
+                    .awaiting_capacity()
+                    .affected_current()
+                    .unique_occupancies()
+                    .iter()
+                    .any(|occupancy| occupancy.kind() == UniqueOccupancyKind::Conflict)
+                {
+                    return CheckedAffectedEpochDecision::Rejected(
+                        checked.reject_unique_conflict(),
+                    );
+                }
                 CheckedAffectedEpochDecision::Ready(CheckedCommitCandidate {
                     authority: CheckedAttemptAuthority(checked),
                     entry_mutations,
@@ -230,6 +243,8 @@ where
         if retained.intent() != checked.attempt().commit_intent()
             || retained.affected_targets() != &affected_targets
             || retained.affected_current().observations().len() != affected_targets.as_slice().len()
+            || retained.affected_current().unique_occupancies().len()
+                != affected_targets.unique_targets().len()
         {
             drop(checked);
             return CheckedReserveDecision::Integrity;
@@ -507,6 +522,7 @@ struct IndexDerivationBuilder {
     entry_mutations: Vec<IndexEntryMutationV1>,
     entry_keys: BTreeSet<IndexEntryKey>,
     affected_targets: BTreeSet<IndexRangeTarget>,
+    unique_targets: BTreeSet<UniqueIndexTarget>,
     validation_positions: usize,
     affected_current_semantic_bytes: usize,
 }
@@ -523,6 +539,7 @@ impl IndexDerivationBuilder {
             entry_mutations: Vec::new(),
             entry_keys: BTreeSet::new(),
             affected_targets: BTreeSet::new(),
+            unique_targets: BTreeSet::new(),
             validation_positions,
             affected_current_semantic_bytes: AFFECTED_CURRENT_STATE_FIXED_BYTES_V1,
         })
@@ -572,6 +589,40 @@ impl IndexDerivationBuilder {
         Ok(())
     }
 
+    fn insert_unique(&mut self, target: UniqueIndexTarget) -> Result<(), CommandIndexError> {
+        if self.unique_targets.len() >= MAX_AFFECTED_INDEX_EPOCH_TARGETS
+            || self.unique_targets.contains(&target)
+        {
+            return Err(CommandIndexError::internal_defect());
+        }
+        let next_positions = self
+            .validation_positions
+            .checked_add(1)
+            .ok_or_else(CommandIndexError::internal_defect)?;
+        if next_positions > MAX_VALIDATION_TARGETS {
+            return Err(CommandIndexError::internal_defect());
+        }
+        let observation_bytes = target
+            .prefix()
+            .prefix()
+            .as_bytes()
+            .len()
+            .checked_add(target.expected_entry().as_bytes().len())
+            .and_then(|bytes| bytes.checked_add(13))
+            .ok_or_else(CommandIndexError::internal_defect)?;
+        let next_bytes = self
+            .affected_current_semantic_bytes
+            .checked_add(observation_bytes)
+            .ok_or_else(CommandIndexError::internal_defect)?;
+        if next_bytes > MAX_READ_SNAPSHOT_BYTES {
+            return Err(CommandIndexError::internal_defect());
+        }
+        self.unique_targets.insert(target);
+        self.validation_positions = next_positions;
+        self.affected_current_semantic_bytes = next_bytes;
+        Ok(())
+    }
+
     fn finish(mut self) -> Result<DerivedCommandIndexes, CommandIndexError> {
         self.entry_mutations
             .sort_unstable_by(|left, right| left.key().as_bytes().cmp(right.key().as_bytes()));
@@ -582,9 +633,11 @@ impl IndexDerivationBuilder {
         {
             return Err(CommandIndexError::internal_defect());
         }
-        let affected_targets =
-            AffectedIndexEpochTargets::new(self.affected_targets.into_iter().collect())
-                .map_err(|_| CommandIndexError::internal_defect())?;
+        let affected_targets = AffectedIndexEpochTargets::with_unique(
+            self.affected_targets.into_iter().collect(),
+            self.unique_targets.into_iter().collect(),
+        )
+        .map_err(|_| CommandIndexError::internal_defect())?;
         Ok(DerivedCommandIndexes {
             entry_mutations: self.entry_mutations,
             affected_targets,
@@ -660,6 +713,11 @@ fn derive_grammar_v1_indexes(
             }
         };
         for index in entity.indexes() {
+            let is_unique = bundle
+                .schema()
+                .unique_keys()
+                .iter()
+                .any(|unique| unique.index_id() == index.id());
             let new_values = index_values(index, mutation.post_image().fields())?;
             let new_key = index
                 .key_schema()
@@ -667,6 +725,9 @@ fn derive_grammar_v1_indexes(
                 .map_err(|_| CommandIndexError::internal_defect())?;
             match current_record {
                 None => {
+                    if is_unique {
+                        insert_unique_target(index, &new_values, new_key.clone(), &mut builder)?;
+                    }
                     builder.push_entry(IndexEntryMutationV1::Put(
                         StoredIndexEntryV2::new(
                             new_key,
@@ -687,6 +748,9 @@ fn derive_grammar_v1_indexes(
                     if old_key == new_key {
                         continue;
                     }
+                    if is_unique {
+                        insert_unique_target(index, &new_values, new_key.clone(), &mut builder)?;
+                    }
                     builder.push_entry(IndexEntryMutationV1::Delete(old_key))?;
                     builder.push_entry(IndexEntryMutationV1::Put(
                         StoredIndexEntryV2::new(
@@ -704,6 +768,30 @@ fn derive_grammar_v1_indexes(
         }
     }
     builder.finish()
+}
+
+fn insert_unique_target(
+    index: &IndexSchema,
+    values: &[CanonicalValue],
+    expected_entry: IndexEntryKey,
+    builder: &mut IndexDerivationBuilder,
+) -> Result<(), CommandIndexError> {
+    let prefix = index
+        .key_schema()
+        .encode_index_prefix(values)
+        .map_err(|_| CommandIndexError::internal_defect())?;
+    let mut storage_prefix = IndexRangePrefixBuilder::new(index.id());
+    for value in values {
+        push_storage_prefix_component(&mut storage_prefix, value)?;
+    }
+    let storage = storage_prefix.finish();
+    if storage.as_bytes() != prefix.as_bytes() {
+        return Err(CommandIndexError::internal_defect());
+    }
+    builder.insert_unique(
+        UniqueIndexTarget::new(IndexRangeTarget::new(storage), expected_entry)
+            .map_err(|_| CommandIndexError::internal_defect())?,
+    )
 }
 
 fn index_values(

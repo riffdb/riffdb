@@ -1142,6 +1142,24 @@ pub trait StructuralEvidenceSession: Sized {
         bundle_hash: ContractBundleHash,
     ) -> Result<Option<HistoricalBundleEvidence>, StorageError>;
 
+    /// Reads one exact authoritative entity inside the immutable startup view.
+    ///
+    /// Catalog validation uses this only to prove reciprocal declared unique
+    /// indexes. The read is cursor-neutral and grants no mutation authority.
+    fn read_integrity_entity(
+        &mut self,
+        target: &crate::EntityTarget,
+    ) -> Result<Option<crate::StoredEntityRecordV1>, StorageError>;
+
+    /// Reads one exact declared-unique prefix inside the immutable startup view.
+    ///
+    /// Multiple physical rows are corruption and must return an error rather
+    /// than an occupancy class.
+    fn read_integrity_unique_occupancy(
+        &mut self,
+        target: &crate::UniqueIndexTarget,
+    ) -> Result<crate::UniqueOccupancyKind, StorageError>;
+
     /// Consumes a completely scanned session into exactly one startup outcome.
     fn finish(
         self,
