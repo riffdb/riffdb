@@ -1,0 +1,63 @@
+query PostPage(
+    $site_id: Site.site_id,
+    $post_id: Post.post_id,
+    $comments_after: Cursor?,
+) {
+    one post from Post
+        where site_id == $site_id
+            && post_id == $post_id
+        else NotFound
+
+    one author from Author
+        where site_id == $site_id
+            && author_id == post.author_id
+        else IntegrityFailure
+
+    many comments from Comment
+        where site_id == $site_id
+            && post_id == post.post_id
+        order by created_at asc, comment_id asc
+        take 50 after $comments_after
+
+    many post_tags from PostTag
+        where site_id == $site_id
+            && post_id == post.post_id
+        order by tag_id asc
+        take 32
+
+    many tags from Tag
+        where site_id == $site_id
+            && tag_id in post_tags.tag_id
+        order by tag_id asc
+        take 32
+        else IntegrityFailure
+
+    return Found {
+        post: post {
+            post_id
+            slug
+            title
+            body
+            status
+            published_at
+            updated_at
+        }
+        author: author {
+            author_id
+            display_name
+        }
+        comments: comments {
+            comment_id
+            author_id
+            body
+            status
+            created_at
+        }
+        tags: tags {
+            tag_id
+            name
+        }
+    }
+
+    outcomes Found | NotFound | IntegrityFailure
+}

@@ -1,0 +1,14 @@
+[package]
+name = "agent-alpha-domains-rust"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[workspace]
+
+[dependencies]
+riffdb-client-rust = { path = "../../../../crates/riffdb-client-rust", default-features = false }
+tokio = { version = "1", default-features = false, features = ["macros", "rt-multi-thread"] }
+
+[lints.rust]
+unsafe_code = "forbid"

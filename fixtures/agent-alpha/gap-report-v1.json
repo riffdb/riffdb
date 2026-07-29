@@ -1,0 +1,65 @@
+{
+  "conclusion": "Both domains complete without a new grammar or IR construct.",
+  "diagnostics": [
+    {
+      "classification": "index",
+      "code": "RDB-QP003",
+      "remedy": "Declare an index beginning (site_id, title), or use the existing status feed.",
+      "shape": "blog-unindexed-title",
+      "source_span": {
+        "end": 136,
+        "start": 117
+      },
+      "suggested_index": "index by_query on Post (site_id, title)",
+      "summary": "no declared index proves the requested bounded order",
+      "symbol_path": [
+        "Post"
+      ]
+    },
+    {
+      "classification": "locality",
+      "code": "RDB-QP002",
+      "remedy": "Supply site_id and keep the author lookup inside that partition.",
+      "shape": "blog-cross-partition",
+      "source_span": {
+        "end": 132,
+        "start": 109
+      },
+      "suggested_index": null,
+      "summary": "query access is not routed by an exact partition parameter",
+      "symbol_path": [
+        "Author",
+        "site_id"
+      ]
+    },
+    {
+      "classification": "cardinality",
+      "code": "RDB-QP007",
+      "remedy": "Use the bounded dependent-key batch form: product_id in lines.product_id.",
+      "shape": "orders-collection-as-scalar",
+      "source_span": {
+        "end": 363,
+        "start": 353
+      },
+      "suggested_index": null,
+      "summary": "predicate consumes a binding field with incompatible cardinality",
+      "symbol_path": [
+        "lines",
+        "product_id"
+      ]
+    },
+    {
+      "classification": "bounds",
+      "code": "RDB-QS009",
+      "remedy": "Add an explicit positive take bound and optional cursor.",
+      "shape": "orders-unbounded-many",
+      "source_span": {
+        "end": 69,
+        "start": 65
+      },
+      "summary": "many binding requires an explicit take clause"
+    }
+  ],
+  "language_addition": null,
+  "schema": "riffdb-agent-domain-gap-report/v1"
+}

@@ -1,0 +1,1 @@
+{"customer_id":{"$uuid":"018f0f8b-7c6d-7e31-8a4f-2c2d37a52b31"},"idempotency_key":"orders-order-first","order_id":{"$uuid":"018f0f8b-7c6d-7e31-8a4f-2c2d37a52b33"},"store_id":{"$uuid":"018f0f8b-7c6d-7e31-8a4f-2c2d37a52b30"}}

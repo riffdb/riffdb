@@ -1,0 +1,82 @@
+{
+  "application": "agent-orders",
+  "languages": [
+    "rust",
+    "typescript"
+  ],
+  "observations": [
+    {
+      "application_rpc_count": 1,
+      "operation": "CustomerHistory",
+      "result": "typed_declared_outcome",
+      "snapshot": "single_engine_snapshot",
+      "transport_glue_lines": 0
+    },
+    {
+      "application_rpc_count": 1,
+      "operation": "InventoryDashboard",
+      "result": "typed_declared_outcome",
+      "snapshot": "single_engine_snapshot",
+      "transport_glue_lines": 0
+    },
+    {
+      "application_rpc_count": 1,
+      "operation": "OpenOrders",
+      "result": "typed_declared_outcome",
+      "snapshot": "single_engine_snapshot",
+      "transport_glue_lines": 0
+    },
+    {
+      "application_rpc_count": 1,
+      "operation": "OrderPage",
+      "result": "typed_declared_outcome",
+      "snapshot": "single_engine_snapshot",
+      "transport_glue_lines": 0
+    }
+  ],
+  "schema": "riffdb-agent-domain-observations/v1",
+  "writes": [
+    {
+      "idempotency": "required",
+      "operation": "AddOrderLine",
+      "result": "typed_declared_outcome",
+      "transport_glue_lines": 0
+    },
+    {
+      "idempotency": "required",
+      "operation": "CreateCustomer",
+      "result": "typed_declared_outcome",
+      "transport_glue_lines": 0
+    },
+    {
+      "idempotency": "required",
+      "operation": "CreateInventory",
+      "result": "typed_declared_outcome",
+      "transport_glue_lines": 0
+    },
+    {
+      "idempotency": "required",
+      "operation": "CreateOrder",
+      "result": "typed_declared_outcome",
+      "transport_glue_lines": 0
+    },
+    {
+      "idempotency": "required",
+      "operation": "CreateProduct",
+      "result": "typed_declared_outcome",
+      "transport_glue_lines": 0
+    },
+    {
+      "idempotency": "required",
+      "operation": "CreateStore",
+      "result": "typed_declared_outcome",
+      "transport_glue_lines": 0
+    },
+    {
+      "idempotency": "required",
+      "operation": "ReserveInventory",
+      "result": "typed_declared_outcome",
+      "transport_glue_lines": 0
+    }
+  ]
+}

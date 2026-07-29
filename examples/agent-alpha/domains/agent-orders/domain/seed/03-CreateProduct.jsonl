@@ -1,0 +1,1 @@
+{"idempotency_key":"orders-product-widget","name":"Safety Widget","product_id":{"$uuid":"018f0f8b-7c6d-7e31-8a4f-2c2d37a52b32"},"sku":"SAFE-001","store_id":{"$uuid":"018f0f8b-7c6d-7e31-8a4f-2c2d37a52b30"},"unit_price":{"$decimal":{"coefficient_twos_complement":"B2w=","precision":18,"scale":2}}}

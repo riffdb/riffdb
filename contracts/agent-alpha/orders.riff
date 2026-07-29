@@ -1,0 +1,206 @@
+contract AgentOrders version 1 {
+  enum OrderStatus { Open, Reserved, Fulfilled, Cancelled }
+
+  entity Store {
+    key (store_id: uuid)
+    field name: string<64>
+    field created_at: timestamp
+  }
+
+  entity Customer {
+    key (store_id: uuid, customer_id: uuid)
+    field display_name: string<96>
+    field created_at: timestamp
+    index by_store (store_id, customer_id)
+    reference store (store_id) -> Store(store_id)
+  }
+
+  entity Product {
+    key (store_id: uuid, product_id: uuid)
+    field sku: string<64>
+    field name: string<128>
+    field unit_price: decimal<18,2>
+    field active: bool
+    field created_at: timestamp
+    unique by_sku (store_id, sku)
+    reference store (store_id) -> Store(store_id)
+  }
+
+  entity Inventory {
+    key (store_id: uuid, product_id: uuid)
+    field available: i64
+    field reserved: i64
+    field updated_at: timestamp
+    invariant available_non_negative: available >= 0
+    invariant reserved_non_negative: reserved >= 0
+    index by_store (store_id, product_id)
+    reference product (store_id, product_id) -> Product(store_id, product_id)
+  }
+
+  entity PurchaseOrder {
+    key (store_id: uuid, order_id: uuid)
+    field customer_id: uuid
+    field status: OrderStatus
+    field created_at: timestamp
+    field updated_at: timestamp
+    index by_customer (store_id, customer_id, created_at, order_id)
+    index by_status (store_id, status, created_at, order_id)
+    reference customer (store_id, customer_id) -> Customer(store_id, customer_id)
+  }
+
+  entity OrderLine {
+    key (store_id: uuid, order_id: uuid, product_id: uuid)
+    field quantity: i64
+    field unit_price: decimal<18,2>
+    field created_at: timestamp
+    index by_order (store_id, order_id, product_id)
+    index by_product (store_id, product_id, order_id)
+    reference order (store_id, order_id) -> PurchaseOrder(store_id, order_id)
+    reference product (store_id, product_id) -> Product(store_id, product_id)
+  }
+
+  aggregate StoreRoot {
+    root Store
+    child Customer
+    child Product
+    child Inventory
+    child PurchaseOrder
+    child OrderLine
+    partition_by store_id
+    conflict_key (store_id)
+  }
+
+  command CreateStore {
+    input idempotency_key: string<128>
+    input store_id: uuid
+    input name: string<64>
+    idempotency_key idempotency_key
+    create Store(store_id) as store
+      else StoreExists { store_id: store_id }
+    set store.name = name
+    set store.created_at = tx.time
+    return Created { store: store }
+  }
+
+  command CreateCustomer {
+    input idempotency_key: string<128>
+    input store_id: uuid
+    input customer_id: uuid
+    input display_name: string<96>
+    idempotency_key idempotency_key
+    read Store(store_id) as store
+      else StoreMissing { store_id: store_id }
+    create Customer(store_id, customer_id) as customer
+      else CustomerExists { customer_id: customer_id }
+    set customer.display_name = display_name
+    set customer.created_at = tx.time
+    return Created { customer: customer }
+  }
+
+  command CreateProduct {
+    input idempotency_key: string<128>
+    input store_id: uuid
+    input product_id: uuid
+    input sku: string<64>
+    input name: string<128>
+    input unit_price: decimal<18,2>
+    idempotency_key idempotency_key
+    read Store(store_id) as store
+      else StoreMissing { store_id: store_id }
+    create Product(store_id, product_id) as product
+      else ProductExists { product_id: product_id }
+    set product.sku = sku
+    set product.name = name
+    set product.unit_price = unit_price
+    set product.active = true
+    set product.created_at = tx.time
+    return Created { product: product }
+  }
+
+  command CreateInventory {
+    input idempotency_key: string<128>
+    input store_id: uuid
+    input product_id: uuid
+    input available: i64
+    idempotency_key idempotency_key
+    read Product(store_id, product_id) as product
+      else ProductMissing { product_id: product_id }
+    create Inventory(store_id, product_id) as inventory
+      else InventoryExists { product_id: product_id }
+    require non_negative_stock: available >= 0
+      else InvalidStock { minimum: 0 }
+    set inventory.available = available
+    set inventory.reserved = 0
+    set inventory.updated_at = tx.time
+    return Created { inventory: inventory }
+  }
+
+  command CreateOrder {
+    input idempotency_key: string<128>
+    input store_id: uuid
+    input order_id: uuid
+    input customer_id: uuid
+    idempotency_key idempotency_key
+    read Customer(store_id, customer_id) as customer
+      else CustomerMissing { customer_id: customer_id }
+    create PurchaseOrder(store_id, order_id) as order
+      else OrderExists { order_id: order_id }
+    set order.customer_id = customer_id
+    set order.status = OrderStatus.Open
+    set order.created_at = tx.time
+    set order.updated_at = tx.time
+    return Created { order: order }
+  }
+
+  command AddOrderLine {
+    input idempotency_key: string<128>
+    input store_id: uuid
+    input order_id: uuid
+    input product_id: uuid
+    input quantity: i64
+    idempotency_key idempotency_key
+    read PurchaseOrder(store_id, order_id) as order
+      else OrderMissing { order_id: order_id }
+    read Product(store_id, product_id) as product
+      else ProductMissing { product_id: product_id }
+    create OrderLine(store_id, order_id, product_id) as line
+      else LineExists { order_id: order_id, product_id: product_id }
+    require positive_quantity: quantity > 0
+      else InvalidQuantity { minimum: 1 }
+    set line.quantity = quantity
+    set line.unit_price = product.unit_price
+    set line.created_at = tx.time
+    return Created { line: line }
+  }
+
+  command ReserveInventory {
+    input idempotency_key: string<128>
+    input store_id: uuid
+    input order_id: uuid
+    input product_id: uuid
+    input quantity: i64
+    idempotency_key idempotency_key
+    mutate PurchaseOrder(store_id, order_id) as order
+      else OrderMissing { order_id: order_id }
+    read OrderLine(store_id, order_id, product_id) as line
+      else LineMissing { order_id: order_id, product_id: product_id }
+    mutate Inventory(store_id, product_id) as inventory
+      else InventoryMissing { product_id: product_id }
+    require order_open: order.status == OrderStatus.Open
+      else OrderNotOpen { order_id: order_id }
+    require exact_quantity: line.quantity == quantity
+      else QuantityMismatch { expected: line.quantity, requested: quantity }
+    require sufficient_stock: inventory.available >= quantity
+      else InsufficientStock {
+        product_id: product_id,
+        available: inventory.available,
+        requested: quantity
+      }
+    set inventory.available = inventory.available - quantity
+    set inventory.reserved = inventory.reserved + quantity
+    set inventory.updated_at = tx.time
+    set order.status = OrderStatus.Reserved
+    set order.updated_at = tx.time
+    return Reserved { order: order, inventory: inventory }
+  }
+}

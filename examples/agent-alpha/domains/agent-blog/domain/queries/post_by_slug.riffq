@@ -1,0 +1,29 @@
+query PostBySlug(
+    $site_id: Site.site_id,
+    $slug: PostSlug.slug,
+) {
+    one route from PostSlug
+        where site_id == $site_id
+            && slug == $slug
+        else NotFound
+
+    one post from Post
+        where site_id == $site_id
+            && post_id == route.post_id
+        else IntegrityFailure
+
+    return Found {
+        post: post {
+            post_id
+            author_id
+            slug
+            title
+            body
+            status
+            published_at
+            updated_at
+        }
+    }
+
+    outcomes Found | NotFound | IntegrityFailure
+}

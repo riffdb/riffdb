@@ -1,0 +1,55 @@
+query OrderPage(
+    $store_id: Store.store_id,
+    $order_id: PurchaseOrder.order_id,
+) {
+    one purchase from PurchaseOrder
+        where store_id == $store_id
+            && order_id == $order_id
+        else NotFound
+
+    one customer from Customer
+        where store_id == $store_id
+            && customer_id == purchase.customer_id
+        else IntegrityFailure
+
+    many lines from OrderLine
+        where store_id == $store_id
+            && order_id == purchase.order_id
+        order by product_id asc
+        take 100
+
+    many products from Product
+        where store_id == $store_id
+            && product_id in lines.product_id
+        order by product_id asc
+        take 100
+        else IntegrityFailure
+
+    return Found {
+        purchase_order: purchase {
+            order_id
+            customer_id
+            status
+            created_at
+            updated_at
+        }
+        customer: customer {
+            customer_id
+            display_name
+        }
+        lines: lines {
+            product_id
+            quantity
+            unit_price
+        }
+        products: products {
+            product_id
+            sku
+            name
+            unit_price
+            active
+        }
+    }
+
+    outcomes Found | NotFound | IntegrityFailure
+}

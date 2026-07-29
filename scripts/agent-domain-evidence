@@ -1,0 +1,182 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+assert_complete=false
+case "${1:-}" in
+    "") ;;
+    --assert-complete) assert_complete=true ;;
+    *)
+        echo "usage: scripts/agent-domain-evidence [--assert-complete]" >&2
+        exit 2
+        ;;
+esac
+
+for tool in cargo cmp jq mktemp npm; do
+    command -v "$tool" >/dev/null 2>&1 || {
+        echo "required domain-evidence tool is missing: $tool" >&2
+        exit 1
+    }
+done
+
+work_root="$(mktemp -d "${TMPDIR:-/tmp}/riffdb-agent-domains.XXXXXX")"
+dev_pid=
+cleanup() {
+    if [[ -n "$dev_pid" ]] && kill -0 "$dev_pid" 2>/dev/null; then
+        kill -TERM "$dev_pid" 2>/dev/null || true
+        wait "$dev_pid" 2>/dev/null || true
+    fi
+    rm -rf "$work_root"
+}
+trap cleanup EXIT INT TERM
+
+cargo run --quiet -p riffdb-query-module --example validate_agent_domains -- \
+    --write "$work_root"
+
+artifacts=(
+    fixtures/agent-alpha/agent-blog/application-manifest.json
+    fixtures/agent-alpha/agent-blog/golden-observations.json
+    fixtures/agent-alpha/agent-blog/role.json
+    fixtures/agent-alpha/agent-orders/application-manifest.json
+    fixtures/agent-alpha/agent-orders/golden-observations.json
+    fixtures/agent-alpha/agent-orders/role.json
+    fixtures/agent-alpha/gap-report-v1.json
+)
+for artifact in "${artifacts[@]}"; do
+    cmp "$repo_root/$artifact" "$work_root/$artifact" >/dev/null || {
+        echo "generated unfamiliar-domain artifact is stale: $artifact" >&2
+        exit 1
+    }
+done
+while IFS= read -r generated; do
+    relative="${generated#"$work_root/"}"
+    cmp "$repo_root/$relative" "$generated" >/dev/null || {
+        echo "generated unfamiliar-domain application is stale: $relative" >&2
+        exit 1
+    }
+done < <(find "$work_root/examples/agent-alpha/domains" -type f | sort)
+
+for domain in agent-blog agent-orders; do
+    application="$repo_root/examples/agent-alpha/domains/$domain"
+    manifest="$application/riffdb.application.json"
+    jq -e '
+      .schema == "riffdb.application-manifest/v1"
+      and (.contract.bundle_hash | test("^[0-9a-f]{64}$"))
+      and (.query_modules | length) == 1
+      and (.roles | length) == 1
+      and (.seed_inputs | length) >= 7
+    ' "$manifest" >/dev/null
+    while IFS= read -r seed; do
+        [[ -f "$application/$seed" ]] || {
+            echo "manifest seed is missing: $seed" >&2
+            exit 1
+        }
+        jq -e '
+          type == "object"
+          and (.idempotency_key | type) == "string"
+          and (.idempotency_key | length) > 0
+        ' "$application/$seed" >/dev/null
+    done < <(jq -r '.seed_inputs[]' "$manifest")
+done
+
+cargo check --quiet \
+    --manifest-path "$repo_root/examples/agent-alpha/domains/rust/Cargo.toml" \
+    --all-targets
+
+runtime="$repo_root/clients/typescript/runtime"
+cache="${RIFFDB_NPM_CACHE:-/home/user/tmp/npm-cache}"
+if [[ ! -x "$runtime/node_modules/.bin/tsc" ]]; then
+    npm --cache "$cache" --prefix "$runtime" ci --ignore-scripts
+fi
+"$runtime/node_modules/.bin/tsc" \
+    -p "$repo_root/examples/agent-alpha/domains/tsconfig.json"
+"$runtime/node_modules/.bin/tsc" \
+    -p "$repo_root/examples/agent-alpha/domains/tsconfig.json" \
+    --noEmit false \
+    --outDir "$work_root/typescript"
+
+cargo build --quiet -p riffdb-cli --bin riffdb
+riffdb="$repo_root/target/debug/riffdb"
+
+run_live_domain() {
+    local domain="$1"
+    local binary="$2"
+    local application="$repo_root/examples/agent-alpha/domains/$domain"
+    local fifo="$work_root/$domain.fifo"
+    local stderr="$work_root/$domain.stderr"
+    local ready endpoint credential role
+    mkfifo "$fifo"
+    exec {ready_fd}<>"$fifo"
+    (
+        cd "$application"
+        "$riffdb" dev --seed
+    ) >"$fifo" 2>"$stderr" &
+    dev_pid=$!
+    ready=
+    while IFS= read -r -t 90 line <&"$ready_fd"; do
+        case "$line" in
+            riffdb-dev-ready-v1$'\t'*) ready="$line"; break ;;
+        esac
+    done
+    exec {ready_fd}>&-
+    [[ -n "$ready" ]] || {
+        cat "$stderr" >&2
+        echo "$domain development application did not become ready" >&2
+        exit 1
+    }
+    IFS=$'\t' read -r _ endpoint credential role <<<"$ready"
+    [[ -f "$credential" && -n "$role" ]] || {
+        echo "$domain returned an invalid application profile" >&2
+        exit 1
+    }
+    cargo run --quiet \
+        --manifest-path "$repo_root/examples/agent-alpha/domains/rust/Cargo.toml" \
+        --bin "$binary" \
+        -- "$endpoint" "$credential" \
+        >"$work_root/$domain-rust.out"
+    node --no-warnings "$repo_root/examples/agent-alpha/domains/live.js" \
+        "$domain" "$endpoint" "$credential" "$riffdb" "$work_root/typescript" \
+        >"$work_root/$domain-typescript.out"
+    [[ -s "$work_root/$domain-rust.out" && -s "$work_root/$domain-typescript.out" ]] || {
+        echo "$domain generated client returned no typed page result" >&2
+        exit 1
+    }
+    kill -TERM "$dev_pid"
+    wait "$dev_pid" 2>/dev/null || true
+    dev_pid=
+}
+
+run_live_domain agent-blog blog
+run_live_domain agent-orders orders
+
+if "$assert_complete"; then
+    jq -e '
+      .schema == "riffdb-agent-domain-gap-report/v1"
+      and .language_addition == null
+      and (.diagnostics | map(.classification) | sort)
+          == ["bounds", "cardinality", "index", "locality"]
+      and all(.diagnostics[];
+          (.code | test("^RDB-Q[SP][0-9]{3}$"))
+          and (.source_span.start | type) == "number"
+          and (.source_span.end | type) == "number"
+          and .source_span.end > .source_span.start
+          and (.remedy | length) > 0)
+    ' "$repo_root/fixtures/agent-alpha/gap-report-v1.json" >/dev/null
+    for domain in agent-blog agent-orders; do
+        jq -e '
+          .schema == "riffdb-agent-domain-observations/v1"
+          and .languages == ["rust", "typescript"]
+          and (.observations | length) == 4
+          and all(.observations[];
+              .application_rpc_count == 1
+              and .transport_glue_lines == 0
+              and .snapshot == "single_engine_snapshot")
+          and (.writes | length) >= 7
+          and all(.writes[];
+              .idempotency == "required"
+              and .transport_glue_lines == 0)
+        ' "$repo_root/fixtures/agent-alpha/$domain/golden-observations.json" >/dev/null
+    done
+fi
+
+echo "Agent unfamiliar-domain evidence passed"

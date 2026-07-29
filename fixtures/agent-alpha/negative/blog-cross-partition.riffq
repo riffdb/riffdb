@@ -1,0 +1,17 @@
+query CrossPartitionAuthor(
+    $author_id: Author.author_id,
+) {
+    many authors from Author
+        where author_id == $author_id
+        order by author_id asc
+        take 10
+
+    return Found {
+        authors: authors {
+            author_id
+            display_name
+        }
+    }
+
+    outcomes Found
+}

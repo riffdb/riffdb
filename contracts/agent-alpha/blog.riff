@@ -1,0 +1,204 @@
+contract AgentBlog version 1 {
+  enum PostStatus { Draft, Published, Archived }
+  enum CommentStatus { Pending, Approved, Rejected }
+
+  entity Site {
+    key (site_id: uuid)
+    field name: string<64>
+    field created_at: timestamp
+  }
+
+  entity Author {
+    key (site_id: uuid, author_id: uuid)
+    field display_name: string<64>
+    field created_at: timestamp
+    index by_site (site_id, author_id)
+    reference site (site_id) -> Site(site_id)
+  }
+
+  entity Post {
+    key (site_id: uuid, post_id: uuid)
+    field author_id: uuid
+    field slug: string<96>
+    field title: string<160>
+    field body: string<4096>
+    field status: PostStatus
+    field published_at: timestamp
+    field updated_at: timestamp
+    index by_status (site_id, status, published_at, post_id)
+    reference site (site_id) -> Site(site_id)
+    reference author (site_id, author_id) -> Author(site_id, author_id)
+  }
+
+  entity PostSlug {
+    key (site_id: uuid, slug: string<96>)
+    field post_id: uuid
+    reference site (site_id) -> Site(site_id)
+    reference post (site_id, post_id) -> Post(site_id, post_id)
+  }
+
+  entity Comment {
+    key (site_id: uuid, comment_id: uuid)
+    field post_id: uuid
+    field author_id: uuid
+    field body: string<1024>
+    field status: CommentStatus
+    field created_at: timestamp
+    index by_post (site_id, post_id, created_at, comment_id)
+    index by_moderation (site_id, status, created_at, comment_id)
+    reference post (site_id, post_id) -> Post(site_id, post_id)
+    reference author (site_id, author_id) -> Author(site_id, author_id)
+  }
+
+  entity Tag {
+    key (site_id: uuid, tag_id: uuid)
+    field name: string<48>
+    field created_at: timestamp
+    unique by_name (site_id, name)
+    reference site (site_id) -> Site(site_id)
+  }
+
+  entity PostTag {
+    key (site_id: uuid, post_id: uuid, tag_id: uuid)
+    field created_at: timestamp
+    index by_post (site_id, post_id, tag_id)
+    index by_tag (site_id, tag_id, post_id)
+    reference post (site_id, post_id) -> Post(site_id, post_id)
+    reference tag (site_id, tag_id) -> Tag(site_id, tag_id)
+  }
+
+  aggregate SiteRoot {
+    root Site
+    child Author
+    child Post
+    child PostSlug
+    child Comment
+    child Tag
+    child PostTag
+    partition_by site_id
+    conflict_key (site_id)
+  }
+
+  command CreateSite {
+    input idempotency_key: string<128>
+    input site_id: uuid
+    input name: string<64>
+    idempotency_key idempotency_key
+    create Site(site_id) as site
+      else SiteExists { site_id: site_id }
+    set site.name = name
+    set site.created_at = tx.time
+    return Created { site: site }
+  }
+
+  command CreateAuthor {
+    input idempotency_key: string<128>
+    input site_id: uuid
+    input author_id: uuid
+    input display_name: string<64>
+    idempotency_key idempotency_key
+    read Site(site_id) as site
+      else SiteMissing { site_id: site_id }
+    create Author(site_id, author_id) as author
+      else AuthorExists { author_id: author_id }
+    set author.display_name = display_name
+    set author.created_at = tx.time
+    return Created { author: author }
+  }
+
+  command CreatePost {
+    input idempotency_key: string<128>
+    input site_id: uuid
+    input post_id: uuid
+    input author_id: uuid
+    input slug: string<96>
+    input title: string<160>
+    input body: string<4096>
+    input status: PostStatus
+    idempotency_key idempotency_key
+    read Site(site_id) as site
+      else SiteMissing { site_id: site_id }
+    read Author(site_id, author_id) as author
+      else AuthorMissing { author_id: author_id }
+    create Post(site_id, post_id) as post
+      else PostExists { post_id: post_id }
+    set post.author_id = author_id
+    set post.slug = slug
+    set post.title = title
+    set post.body = body
+    set post.status = status
+    set post.published_at = tx.time
+    set post.updated_at = tx.time
+    return Created { post: post }
+  }
+
+  command CreatePostRoute {
+    input idempotency_key: string<128>
+    input site_id: uuid
+    input post_id: uuid
+    input slug: string<96>
+    idempotency_key idempotency_key
+    read Site(site_id) as site
+      else SiteMissing { site_id: site_id }
+    read Post(site_id, post_id) as post
+      else PostMissing { post_id: post_id }
+    create PostSlug(site_id, slug) as route
+      else SlugExists { slug: slug }
+    set route.post_id = post_id
+    return Created { route: route }
+  }
+
+  command CreateComment {
+    input idempotency_key: string<128>
+    input site_id: uuid
+    input comment_id: uuid
+    input post_id: uuid
+    input author_id: uuid
+    input body: string<1024>
+    input status: CommentStatus
+    idempotency_key idempotency_key
+    read Post(site_id, post_id) as post
+      else PostMissing { post_id: post_id }
+    read Author(site_id, author_id) as author
+      else AuthorMissing { author_id: author_id }
+    create Comment(site_id, comment_id) as comment
+      else CommentExists { comment_id: comment_id }
+    set comment.post_id = post_id
+    set comment.author_id = author_id
+    set comment.body = body
+    set comment.status = status
+    set comment.created_at = tx.time
+    return Created { comment: comment }
+  }
+
+  command CreateTag {
+    input idempotency_key: string<128>
+    input site_id: uuid
+    input tag_id: uuid
+    input name: string<48>
+    idempotency_key idempotency_key
+    read Site(site_id) as site
+      else SiteMissing { site_id: site_id }
+    create Tag(site_id, tag_id) as tag
+      else TagExists { tag_id: tag_id }
+    set tag.name = name
+    set tag.created_at = tx.time
+    return Created { tag: tag }
+  }
+
+  command AttachTag {
+    input idempotency_key: string<128>
+    input site_id: uuid
+    input post_id: uuid
+    input tag_id: uuid
+    idempotency_key idempotency_key
+    read Post(site_id, post_id) as post
+      else PostMissing { post_id: post_id }
+    read Tag(site_id, tag_id) as tag
+      else TagMissing { tag_id: tag_id }
+    create PostTag(site_id, post_id, tag_id) as link
+      else TagAlreadyAttached { post_id: post_id, tag_id: tag_id }
+    set link.created_at = tx.time
+    return Created { link: link }
+  }
+}

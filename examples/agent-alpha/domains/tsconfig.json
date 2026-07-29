@@ -1,0 +1,22 @@
+{
+  "compilerOptions": {
+    "exactOptionalPropertyTypes": true,
+    "module": "NodeNext",
+    "moduleResolution": "NodeNext",
+    "noImplicitOverride": true,
+    "noUncheckedIndexedAccess": true,
+    "noEmit": true,
+    "paths": {
+      "@riffdb/application": [
+        "../../../clients/typescript/runtime/dist/index.d.ts"
+      ]
+    },
+    "strict": true,
+    "target": "ES2022"
+  },
+  "include": [
+    "agent-blog/generated/typescript/client.ts",
+    "agent-orders/generated/typescript/client.ts",
+    "typecheck.ts"
+  ]
+}

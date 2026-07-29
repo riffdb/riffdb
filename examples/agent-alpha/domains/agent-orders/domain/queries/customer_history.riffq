@@ -1,0 +1,32 @@
+query CustomerHistory(
+    $store_id: Store.store_id,
+    $customer_id: Customer.customer_id,
+    $after: Cursor?,
+    $limit: Limit = 25,
+) {
+    one customer from Customer
+        where store_id == $store_id
+            && customer_id == $customer_id
+        else NotFound
+
+    many orders from PurchaseOrder
+        where store_id == $store_id
+            && customer_id == customer.customer_id
+        order by created_at desc, order_id desc
+        take $limit after $after
+
+    return Found {
+        customer: customer {
+            customer_id
+            display_name
+        }
+        orders: orders {
+            order_id
+            status
+            created_at
+            updated_at
+        }
+    }
+
+    outcomes Found | NotFound
+}

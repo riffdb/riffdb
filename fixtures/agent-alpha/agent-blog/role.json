@@ -1,0 +1,62 @@
+{
+  "application": "agent-blog",
+  "application_manifest_hash": "6bc257937a0bb51c09c5147d6ff22b1c36852dd0edc2f690a788a7e44de85e97",
+  "contract": {
+    "bundle_hash": "93f0dd8c7cd8423db28dca15ac8c6eb57e5a0447268586a7bb17cbbb5aa8029a",
+    "lineage": "AgentBlog",
+    "version": 1
+  },
+  "environment": "development",
+  "operations": [
+    {
+      "kind": "query",
+      "name": "ModerationQueue"
+    },
+    {
+      "kind": "query",
+      "name": "PostBySlug"
+    },
+    {
+      "kind": "query",
+      "name": "PostPage"
+    },
+    {
+      "kind": "query",
+      "name": "PublicFeed"
+    },
+    {
+      "kind": "command",
+      "name": "AttachTag"
+    },
+    {
+      "kind": "command",
+      "name": "CreateAuthor"
+    },
+    {
+      "kind": "command",
+      "name": "CreateComment"
+    },
+    {
+      "kind": "command",
+      "name": "CreatePost"
+    },
+    {
+      "kind": "command",
+      "name": "CreatePostRoute"
+    },
+    {
+      "kind": "command",
+      "name": "CreateSite"
+    },
+    {
+      "kind": "command",
+      "name": "CreateTag"
+    }
+  ],
+  "query_module_hashes": [
+    "37c745a028f59389b6d7e440ccec47932792509c5840c25410f7ed72daa1c7ec"
+  ],
+  "role": "BlogApplication",
+  "role_hash": "4d859c20d25ec04c02e8cd6359e9fb46f1814dbad344fe1a3fb5af72673656de",
+  "tenant_scope": "global"
+}

@@ -1,0 +1,16 @@
+query UnboundedInventory(
+    $store_id: Store.store_id,
+) {
+    many inventory from Inventory
+        where store_id == $store_id
+        order by product_id asc
+
+    return Found {
+        inventory: inventory {
+            product_id
+            available
+        }
+    }
+
+    outcomes Found
+}

@@ -1,0 +1,1 @@
+{"customer_id":{"$uuid":"018f0f8b-7c6d-7e31-8a4f-2c2d37a52b31"},"display_name":"River Chen","idempotency_key":"orders-customer-river","store_id":{"$uuid":"018f0f8b-7c6d-7e31-8a4f-2c2d37a52b30"}}
