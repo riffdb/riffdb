@@ -1,0 +1,100 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+runtime="$repo_root/clients/typescript/runtime"
+application="$repo_root/examples/agent-alpha"
+web="$application/web"
+cache="${RIFFDB_NPM_CACHE:-/home/kevin/tmp/npm-cache}"
+
+for tool in cargo jq mkfifo mktemp node npm; do
+    command -v "$tool" >/dev/null 2>&1 || {
+        echo "required TypeScript acceptance tool is missing: $tool" >&2
+        exit 1
+    }
+done
+
+npm --cache "$cache" --prefix "$runtime" ci --ignore-scripts
+npm --prefix "$runtime" run build
+npm --prefix "$runtime" test
+npm --cache "$cache" --prefix "$web" ci --ignore-scripts
+npm --prefix "$web" run build
+
+cargo build --quiet -p riffdb-cli --bin riffdb
+riffdb="$repo_root/target/debug/riffdb"
+work_root="$(mktemp -d "${TMPDIR:-/tmp}/riffdb-typescript-acceptance.XXXXXX")"
+dev_pid=
+web_pid=
+cleanup() {
+    if [[ -n "$web_pid" ]] && kill -0 "$web_pid" 2>/dev/null; then
+        kill -TERM "$web_pid" 2>/dev/null || true
+        wait "$web_pid" 2>/dev/null || true
+    fi
+    if [[ -n "$dev_pid" ]] && kill -0 "$dev_pid" 2>/dev/null; then
+        kill -TERM "$dev_pid" 2>/dev/null || true
+        wait "$dev_pid" 2>/dev/null || true
+    fi
+    rm -rf "$work_root"
+}
+trap cleanup EXIT INT TERM
+
+mkfifo "$work_root/dev.fifo"
+exec {dev_fd}<>"$work_root/dev.fifo"
+(
+    cd "$application"
+    "$riffdb" dev --seed
+) >"$work_root/dev.fifo" 2>"$work_root/dev.stderr" &
+dev_pid=$!
+
+ready=
+while IFS= read -r -t 60 line <&"$dev_fd"; do
+    case "$line" in
+        riffdb-dev-ready-v1$'\t'*) ready="$line"; break ;;
+    esac
+done
+[[ -n "$ready" ]] || {
+    cat "$work_root/dev.stderr" >&2
+    echo "TypeScript acceptance development server did not become ready" >&2
+    exit 1
+}
+IFS=$'\t' read -r _ endpoint credential role <<<"$ready"
+[[ "$role" == "AgentAlphaApplication" && -f "$credential" ]] || {
+    echo "TypeScript acceptance received an invalid application profile" >&2
+    exit 1
+}
+
+mkfifo "$work_root/web.fifo"
+exec {web_fd}<>"$work_root/web.fifo"
+node "$web/dist/server.js" "$endpoint" "$credential" "$riffdb" \
+    >"$work_root/web.fifo" 2>"$work_root/web.stderr" &
+web_pid=$!
+IFS= read -r -t 30 web_ready <&"$web_fd" || {
+    cat "$work_root/web.stderr" >&2
+    echo "TypeScript web application did not become ready" >&2
+    exit 1
+}
+case "$web_ready" in
+    agent-alpha-web-ready-v1$'\t'*) web_port="${web_ready#*$'\t'}" ;;
+    *)
+        echo "TypeScript web application returned invalid readiness" >&2
+        exit 1
+        ;;
+esac
+
+node -e '
+const port = process.argv[1];
+const response = await fetch(`http://127.0.0.1:${port}/item`);
+if (!response.ok) process.exit(1);
+process.stdout.write(`${await response.text()}\n`);
+' "$web_port" >"$work_root/observation.json"
+
+jq -e --slurpfile expected \
+    "$repo_root/fixtures/application-parity/agent-alpha-observation-v1.json" '
+  .outcome == $expected[0].outcome
+  and .title == $expected[0].title
+  and (.readAfterCommit | type) == "string"
+  and (.applicationHead | type) == "string"
+  and ((.applicationHead | tonumber) >= (.readAfterCommit | tonumber))
+' "$work_root/observation.json" >/dev/null
+
+echo "TypeScript generated web application acceptance passed"

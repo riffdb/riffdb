@@ -452,6 +452,7 @@ async fn query_command(
             source,
             parameters,
             cursor,
+            read_after_commit,
             contract,
         } => {
             let source = match read_text(&source, stdin) {
@@ -475,6 +476,7 @@ async fn query_command(
                 source,
                 parameters,
                 cursor,
+                read_after_commit,
             )
             .await
         }
@@ -483,6 +485,7 @@ async fn query_command(
             module_hash,
             parameters,
             cursor,
+            read_after_commit,
             contract,
         } => {
             let parameters = match query_parameters(parameters.as_ref(), stdin) {
@@ -502,6 +505,7 @@ async fn query_command(
                 module_hash,
                 parameters,
                 cursor,
+                read_after_commit,
             )
             .await
         }
@@ -655,6 +659,7 @@ async fn query_command(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn execute_query_cli(
     identity: CommandIdentity,
     client: &mut RiffDbClient,
@@ -663,6 +668,7 @@ async fn execute_query_cli(
     source: String,
     parameters: serde_json::Map<String, serde_json::Value>,
     cursor: Option<String>,
+    read_after_commit: Option<String>,
 ) -> Terminal {
     let contract = match symbolic_contract_selection(contract) {
         Ok(contract) => contract,
@@ -686,6 +692,14 @@ async fn execute_query_cli(
         Ok(request_id) => request_id,
         Err(error) => return client_error(identity, &error),
     };
+    let minimum_application_head = match read_after_commit
+        .as_deref()
+        .map(parse_nonzero_u64)
+        .transpose()
+    {
+        Ok(value) => value,
+        Err(()) => return invalid_input(identity),
+    };
     match client
         .execute_query(
             app_v1::ExecuteQueryRequest {
@@ -694,7 +708,7 @@ async fn execute_query_cli(
                 module_hash: None,
                 parameters,
                 cursor,
-                minimum_application_head: None,
+                minimum_application_head,
                 request_id,
             },
             metadata,
@@ -719,6 +733,7 @@ async fn execute_named_query_cli(
     module_hash: Option<Vec<u8>>,
     parameters: Vec<app_v1::Parameter>,
     cursor: Option<String>,
+    read_after_commit: Option<String>,
 ) -> Terminal {
     let contract = match symbolic_contract_selection(contract) {
         Ok(contract) => contract,
@@ -728,6 +743,14 @@ async fn execute_named_query_cli(
         Ok(request_id) => request_id,
         Err(error) => return client_error(identity, &error),
     };
+    let minimum_application_head = match read_after_commit
+        .as_deref()
+        .map(parse_nonzero_u64)
+        .transpose()
+    {
+        Ok(value) => value,
+        Err(()) => return invalid_input(identity),
+    };
     match client
         .execute_query(
             app_v1::ExecuteQueryRequest {
@@ -736,7 +759,7 @@ async fn execute_named_query_cli(
                 module_hash,
                 parameters,
                 cursor,
-                minimum_application_head: None,
+                minimum_application_head,
                 request_id,
             },
             metadata,

@@ -1098,26 +1098,31 @@ pub fn generate_typescript_client(module: &QueryModule, contract: &ContractBundl
     emit_typescript_application_errors(&mut output);
     writeln!(
         output,
-        "export interface NamedQueryRequest<P> {{ readonly contractLineage: typeof CONTRACT_LINEAGE; \
+        "export type ApplicationValueSchema =\n  | {{ readonly kind: \"bool\" | \"i64\" | \"u64\" | \"string\" | \"uuid\" | \"enum\" | \"bytes\" | \"date\" | \"timestamp\" | \"decimal\" | \"money\" | \"cursor\" | \"limit\" }}\n  | {{ readonly kind: \"optional\"; readonly value: ApplicationValueSchema }}\n  | {{ readonly kind: \"list\"; readonly value: ApplicationValueSchema; readonly maximum?: number }}\n  | {{ readonly kind: \"record\"; readonly fields: ReadonlyArray<{{ readonly name: string; readonly schema: ApplicationValueSchema; readonly wireId?: number }}> }};\n\
+         export interface NamedQueryRequest<P, R> {{ readonly contractLineage: typeof CONTRACT_LINEAGE; \
          readonly contractVersion: typeof CONTRACT_VERSION; readonly contractBundleHash: typeof CONTRACT_BUNDLE_HASH; \
-         readonly moduleHash: typeof QUERY_MODULE_HASH; readonly queryName: string; readonly parameters: P; }}\n\
+         readonly moduleHash: typeof QUERY_MODULE_HASH; readonly queryName: string; readonly parameters: P; \
+         readonly parameterSchema: ApplicationValueSchema; readonly resultSchemas: Readonly<Record<string, ApplicationValueSchema>>; \
+         readonly decodeError: typeof decodeApplicationError; readonly resultType?: R; }}\n\
          export interface QueryResponseIdentity {{ readonly contractLineage: string; readonly contractVersion: number; \
          readonly contractBundleHash: string; readonly moduleHash: string; readonly queryName: string; }}\n\
-         export function acceptsIdentity<P>(request: NamedQueryRequest<P>, identity: QueryResponseIdentity): boolean {{\n\
+         export function acceptsIdentity<P, R>(request: NamedQueryRequest<P, R>, identity: QueryResponseIdentity): boolean {{\n\
          \x20 return identity.contractLineage === request.contractLineage\n    \
          && identity.contractVersion === request.contractVersion\n    \
          && identity.contractBundleHash === request.contractBundleHash\n    \
          && identity.moduleHash === request.moduleHash\n    \
          && identity.queryName === request.queryName;\n}}\n\
-         export interface CommandRequest<I> {{ readonly contractLineage: typeof CONTRACT_LINEAGE; \
+         export interface CommandRequest<I, R> {{ readonly contractLineage: typeof CONTRACT_LINEAGE; \
          readonly contractVersion: typeof CONTRACT_VERSION; readonly commandName: string; readonly planHash: string; \
-         readonly input: I; readonly idempotencyKey: string; }}\n\
+         readonly input: I; readonly idempotencyKey: string; readonly inputSchema: ApplicationValueSchema; \
+         readonly outcomeSchemas: Readonly<Record<string, ApplicationValueSchema>>; \
+         readonly decodeError: typeof decodeApplicationError; readonly outcomeType?: R; }}\n\
          export interface TypedQueryResult<T> {{ readonly identity: QueryResponseIdentity; readonly value: T; readonly applicationHead: bigint; readonly nextCursor?: string; }}\n\
          export interface TypedCommandResult<T> {{ readonly outcome: T; readonly commitSequence?: bigint; \
          readonly contractVersion: number; readonly planHash: string; readonly replayed: boolean; readonly outcomeUri?: string; }}\n\
          export interface QueryOptions {{ readonly cursor?: string; readonly readAfterCommit?: bigint; }}\n\
-         export interface ApplicationTransport {{\n  executeNamedQuery<P, R>(request: NamedQueryRequest<P>, options?: QueryOptions): Promise<TypedQueryResult<R>>;\n  \
-         executeCommand<I, R>(request: CommandRequest<I>, attemptBudget: number): Promise<TypedCommandResult<R>>;\n}}\n"
+         export interface ApplicationTransport {{\n  executeNamedQuery<P, R>(request: NamedQueryRequest<P, R>, options?: QueryOptions): Promise<TypedQueryResult<R>>;\n  \
+         executeCommand<I, R>(request: CommandRequest<I, R>, attemptBudget: number): Promise<TypedCommandResult<R>>;\n}}\n"
     )
     .expect("string");
 
@@ -1164,11 +1169,37 @@ pub fn generate_typescript_client(module: &QueryModule, contract: &ContractBundl
             write!(output, "{name}{}", pascal(branch.name())).expect("string");
         }
         writeln!(output, ";\n").expect("string");
+        let parameter_schema = ts_named_record_schema(
+            schemas
+                .parameters()
+                .iter()
+                .map(|parameter| (parameter.name(), parameter.value_type())),
+            contract,
+        );
+        let result_schemas = Value::Object(
+            schemas
+                .results()
+                .iter()
+                .map(|branch| {
+                    (
+                        branch.name().to_owned(),
+                        ts_named_record_schema(
+                            branch
+                                .fields()
+                                .iter()
+                                .map(|field| (field.name(), field.value_type())),
+                            contract,
+                        ),
+                    )
+                })
+                .collect(),
+        );
         writeln!(
             output,
-            "export function {function}(parameters: {name}Params): NamedQueryRequest<{name}Params> {{\n\
+            "export function {function}(parameters: {name}Params): NamedQueryRequest<{name}Params, {name}Result> {{\n\
              \x20 return {{ contractLineage: CONTRACT_LINEAGE, contractVersion: CONTRACT_VERSION, \
-             contractBundleHash: CONTRACT_BUNDLE_HASH, moduleHash: QUERY_MODULE_HASH, queryName: \"{name}\", parameters }};\n\
+             contractBundleHash: CONTRACT_BUNDLE_HASH, moduleHash: QUERY_MODULE_HASH, queryName: \"{name}\", parameters, \
+             parameterSchema: {parameter_schema}, resultSchemas: {result_schemas}, decodeError: decodeApplicationError }};\n\
              }}\n",
             function = camel(name),
         )
@@ -1212,12 +1243,42 @@ pub fn generate_typescript_client(module: &QueryModule, contract: &ContractBundl
             .idempotency_input()
             .and_then(|id| command.input().record().field(id))
             .map_or("idempotency_key", |field| field.name());
+        let input_schema = ts_contract_record_schema(
+            command
+                .input()
+                .record()
+                .fields()
+                .iter()
+                .map(|field| (field.name(), field.id().get(), field.value_type())),
+            contract,
+            false,
+        );
+        let outcome_schemas =
+            Value::Object(
+                command
+                    .outcomes()
+                    .iter()
+                    .map(|outcome| {
+                        (
+                            outcome.name().to_owned(),
+                            ts_contract_record_schema(
+                                outcome.payload().fields().iter().map(|field| {
+                                    (field.name(), field.id().get(), field.value_type())
+                                }),
+                                contract,
+                                true,
+                            ),
+                        )
+                    })
+                    .collect(),
+            );
         writeln!(
             output,
             "export const {constant}_PLAN_HASH = \"{plan_hash}\" as const;\n\
-             export function {function}(input: {name}Input): CommandRequest<{name}Input> {{\n\
+             export function {function}(input: {name}Input): CommandRequest<{name}Input, {name}Outcome> {{\n\
              \x20 return {{ contractLineage: CONTRACT_LINEAGE, contractVersion: CONTRACT_VERSION, \
-             commandName: \"{name}\", planHash: {constant}_PLAN_HASH, input, idempotencyKey: input.{idempotency} }};\n\
+             commandName: \"{name}\", planHash: {constant}_PLAN_HASH, input, idempotencyKey: input.{idempotency}, \
+             inputSchema: {input_schema}, outcomeSchemas: {outcome_schemas}, decodeError: decodeApplicationError }};\n\
              }}\n",
             function = camel(name),
             constant = screaming_snake(name),
@@ -1276,7 +1337,7 @@ export interface ApplicationErrorDetails {
 }
 
 export class RiffDbApplicationError extends Error {
-  public readonly name = "RiffDbApplicationError";
+  public override readonly name = "RiffDbApplicationError";
   public constructor(public readonly details: ApplicationErrorDetails) {
     super(`${details.code}: ${details.message} [${details.operation}]`);
   }
@@ -1320,13 +1381,14 @@ export function decodeApplicationError(value: unknown): RiffDbApplicationError {
   return new RiffDbApplicationError({
     type: "application", code: code as ApplicationErrorCode, message: rule[0],
     category: rule[1], recoveryAction: rule[2], operation: input.operation as ApplicationOperation,
-    contractLineage: input.contractLineage as string | undefined,
-    contractVersion: input.contractVersion as number | undefined,
-    operationSymbol: input.operationSymbol as string | undefined,
     symbolPath: symbolPath as ReadonlyArray<string>,
-    sourceSpan: input.sourceSpan as { readonly start: number; readonly end: number } | undefined,
-    fixes: rule[3], traceId: input.traceId as string | undefined,
-    incidentId: input.incidentId as string | undefined,
+    fixes: rule[3],
+    ...(input.contractLineage === undefined ? {} : { contractLineage: input.contractLineage as string }),
+    ...(input.contractVersion === undefined ? {} : { contractVersion: input.contractVersion as number }),
+    ...(input.operationSymbol === undefined ? {} : { operationSymbol: input.operationSymbol as string }),
+    ...(input.sourceSpan === undefined ? {} : { sourceSpan: input.sourceSpan as { readonly start: number; readonly end: number } }),
+    ...(input.traceId === undefined ? {} : { traceId: input.traceId as string }),
+    ...(input.incidentId === undefined ? {} : { incidentId: input.incidentId as string }),
   });
 }
 
@@ -1556,6 +1618,135 @@ fn ts_query_type(value_type: &NamedTypeSchema) -> String {
         NamedTypeSchema::Cursor => "string".to_owned(),
         NamedTypeSchema::Limit => "number".to_owned(),
     }
+}
+
+fn ts_named_record_schema<'a>(
+    fields: impl Iterator<Item = (&'a str, &'a NamedTypeSchema)>,
+    contract: &ContractBundle,
+) -> Value {
+    json!({
+        "kind": "record",
+        "fields": fields.map(|(name, schema)| json!({
+            "name": name,
+            "schema": ts_named_value_schema(schema, contract),
+        })).collect::<Vec<_>>(),
+    })
+}
+
+fn ts_named_value_schema(value_type: &NamedTypeSchema, contract: &ContractBundle) -> Value {
+    match value_type {
+        NamedTypeSchema::Scalar(name) => {
+            let kind = match name.as_str() {
+                "bool" => "bool",
+                "i64" => "i64",
+                "u64" => "u64",
+                "uuid" => "uuid",
+                "timestamp" => "timestamp",
+                "date" => "date",
+                value if value.starts_with("bytes<") => "bytes",
+                value if value.starts_with("decimal<") => "decimal",
+                value
+                    if contract
+                        .schema()
+                        .enums()
+                        .iter()
+                        .any(|enumeration| enumeration.name() == value) =>
+                {
+                    "enum"
+                }
+                _ => "string",
+            };
+            json!({"kind": kind})
+        }
+        NamedTypeSchema::Optional(inner) => {
+            json!({"kind": "optional", "value": ts_named_value_schema(inner, contract)})
+        }
+        NamedTypeSchema::Set(inner) => {
+            json!({"kind": "list", "value": ts_named_value_schema(inner, contract)})
+        }
+        NamedTypeSchema::Record(fields) => ts_named_record_schema(
+            fields
+                .iter()
+                .map(|field| (field.name(), field.value_type())),
+            contract,
+        ),
+        NamedTypeSchema::List { element, maximum } => {
+            let mut schema = Map::new();
+            schema.insert("kind".to_owned(), Value::String("list".to_owned()));
+            schema.insert("value".to_owned(), ts_named_value_schema(element, contract));
+            if let PageBound::Literal(value) = maximum {
+                schema.insert("maximum".to_owned(), Value::from(*value));
+            }
+            Value::Object(schema)
+        }
+        NamedTypeSchema::Cursor => json!({"kind": "cursor"}),
+        NamedTypeSchema::Limit => json!({"kind": "limit"}),
+    }
+}
+
+fn ts_contract_record_schema<'a>(
+    fields: impl Iterator<Item = (&'a str, u32, &'a ValueType)>,
+    contract: &ContractBundle,
+    wire_ids: bool,
+) -> Value {
+    json!({
+        "kind": "record",
+        "fields": fields.map(|(name, wire_id, schema)| {
+            let mut field = Map::new();
+            field.insert("name".to_owned(), Value::String(name.to_owned()));
+            field.insert("schema".to_owned(), ts_contract_value_schema(schema, contract));
+            if wire_ids {
+                field.insert("wireId".to_owned(), Value::from(wire_id));
+            }
+            Value::Object(field)
+        }).collect::<Vec<_>>(),
+    })
+}
+
+fn ts_contract_value_schema(value_type: &ValueType, contract: &ContractBundle) -> Value {
+    if let Some(inner) = value_type.optional_inner() {
+        return json!({"kind": "optional", "value": ts_contract_value_schema(inner, contract)});
+    }
+    if let Some((inner, maximum)) = value_type.list_parts() {
+        return json!({
+            "kind": "list",
+            "value": ts_contract_value_schema(inner, contract),
+            "maximum": maximum,
+        });
+    }
+    let kind = match value_type.tag() {
+        ValueTypeTag::Bool => "bool",
+        ValueTypeTag::I64 => "i64",
+        ValueTypeTag::U64 => "u64",
+        ValueTypeTag::Decimal => "decimal",
+        ValueTypeTag::Money => "money",
+        ValueTypeTag::String => "string",
+        ValueTypeTag::Bytes => "bytes",
+        ValueTypeTag::Timestamp => "timestamp",
+        ValueTypeTag::Date => "date",
+        ValueTypeTag::Uuid => "uuid",
+        ValueTypeTag::Enum => "enum",
+        ValueTypeTag::Record => {
+            if let Some(RecordTypeRef::Entity(entity_id)) = value_type.record_ref() {
+                let entity = contract
+                    .schema()
+                    .entity(*entity_id)
+                    .expect("validated record entity");
+                return ts_contract_record_schema(
+                    entity
+                        .record()
+                        .fields()
+                        .iter()
+                        .map(|field| (field.name(), field.id().get(), field.value_type())),
+                    contract,
+                    true,
+                );
+            }
+            "string"
+        }
+        ValueTypeTag::Optional | ValueTypeTag::List => unreachable!("handled above"),
+    };
+    json!({"kind": kind})
 }
 
 fn ts_contract_type(value_type: &ValueType, contract: &ContractBundle) -> String {
