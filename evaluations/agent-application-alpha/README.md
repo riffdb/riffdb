@@ -29,6 +29,13 @@ JSONL transcript under `runs/<run-id>/events.jsonl`, and writes a report
 conforming to `report-schema.json`. Credentials and application values must
 never enter either artifact.
 
+The report schema accepts both successes and failures. It records booleans,
+counts, nullable first-success timings, and bounded unsupported-shape
+diagnostics without embedding the release thresholds. The gate checker—not
+the evidence schema—decides whether a valid report passes. This distinction
+ensures a failed run remains publishable evidence instead of becoming an
+unrepresentable result.
+
 The gate is intentionally fail-closed:
 
 ```bash

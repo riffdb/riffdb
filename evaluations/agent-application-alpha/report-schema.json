@@ -3,20 +3,28 @@
   "additionalProperties": false,
   "properties": {
     "agent_identity": {"pattern": "^[A-Za-z0-9_.-]{1,128}$", "type": "string"},
-    "boundary_passed": {"const": true},
+    "boundary_passed": {"type": "boolean"},
     "bundle_hash": {"pattern": "^[0-9a-f]{64}$", "type": "string"},
     "compiler_failures": {"maximum": 1000, "minimum": 0, "type": "integer"},
     "domain": {"enum": ["blog", "orders"]},
     "explanation": {"maxLength": 4096, "minLength": 1, "type": "string"},
-    "first_page_read_seconds": {"maximum": 3600, "minimum": 0, "type": "integer"},
-    "first_write_seconds": {"maximum": 3600, "minimum": 0, "type": "integer"},
-    "fresh_context": {"const": true},
-    "golden_passed": {"const": true},
-    "handwritten_glue_lines": {"const": 0},
-    "human_interventions": {"const": 0},
-    "independent": {"const": true},
+    "first_page_read_seconds": {
+      "maximum": 7200,
+      "minimum": 0,
+      "type": ["integer", "null"]
+    },
+    "first_write_seconds": {
+      "maximum": 7200,
+      "minimum": 0,
+      "type": ["integer", "null"]
+    },
+    "fresh_context": {"type": "boolean"},
+    "golden_passed": {"type": "boolean"},
+    "handwritten_glue_lines": {"maximum": 1000000, "minimum": 0, "type": "integer"},
+    "human_interventions": {"maximum": 1000, "minimum": 0, "type": "integer"},
+    "independent": {"type": "boolean"},
     "kernel_attempts": {"minimum": 0, "type": "integer"},
-    "kernel_successes": {"const": 0},
+    "kernel_successes": {"minimum": 0, "type": "integer"},
     "language": {"enum": ["rust", "typescript"]},
     "rating": {"maximum": 10, "minimum": 0, "type": "number"},
     "run_id": {"pattern": "^[a-z0-9-]{1,64}$", "type": "string"},
@@ -25,15 +33,28 @@
     "source_access": {
       "additionalProperties": false,
       "properties": {
-        "riffdb_implementation": {"const": false},
-        "ticketdesk": {"const": false}
+        "riffdb_implementation": {"type": "boolean"},
+        "ticketdesk": {"type": "boolean"}
       },
       "required": ["riffdb_implementation", "ticketdesk"],
       "type": "object"
     },
     "time_to_complete_seconds": {"maximum": 7200, "minimum": 0, "type": "integer"},
     "transcript_sha256": {"pattern": "^[0-9a-f]{64}$", "type": "string"},
-    "unsupported_shapes": {"maxItems": 128, "type": "array"}
+    "unsupported_shapes": {
+      "items": {
+        "additionalProperties": false,
+        "properties": {
+          "code": {"pattern": "^[A-Za-z0-9_.-]{1,128}$", "type": "string"},
+          "operation": {"pattern": "^[A-Za-z0-9_.-]{1,256}$", "type": "string"},
+          "reason": {"maxLength": 1024, "minLength": 1, "type": "string"}
+        },
+        "required": ["code", "operation", "reason"],
+        "type": "object"
+      },
+      "maxItems": 128,
+      "type": "array"
+    }
   },
   "required": [
     "schema", "run_id", "bundle_hash", "agent_identity", "domain", "language",
