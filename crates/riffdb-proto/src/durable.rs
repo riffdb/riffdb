@@ -11,7 +11,7 @@ use crate::envelope::{PayloadValidationError, RecordRegistry, RecordSchema};
 use crate::storage::v1;
 
 /// Number of durable semantic payload tuples accepted while opening or migrating storage.
-pub const READABLE_RECORD_SCHEMA_COUNT: usize = 30;
+pub const READABLE_RECORD_SCHEMA_COUNT: usize = 31;
 /// Number of durable semantic roles accepted for current writes.
 pub const WRITABLE_RECORD_SCHEMA_COUNT: usize = 29;
 /// Number of durable semantic roles accepted for current writes.
@@ -33,6 +33,10 @@ const INDEX_V2_RECORD_BOUND_BYTES: &[u8; 8] = include_bytes!(concat!(
     env!("CARGO_MANIFEST_DIR"),
     "/../../fixtures/proto/durable-index-v2-record-bound.bin"
 ));
+const PRE_WP280_CAPABILITY_SCHEMA_HASH: SchemaHash = SchemaHash::from_bytes([
+    0xcb, 0x42, 0xc4, 0xeb, 0xbc, 0xe8, 0x28, 0x01, 0x23, 0xf8, 0xb3, 0x4d, 0x4d, 0xcd, 0xe7, 0x4c,
+    0xa9, 0x48, 0x34, 0x06, 0x84, 0x75, 0x31, 0xf3, 0x4d, 0x5f, 0xb3, 0xf1, 0x8d, 0x40, 0xb3, 0x42,
+]);
 
 const fn legacy_schema_hash(index: usize) -> SchemaHash {
     let mut bytes = [0_u8; 32];
@@ -89,6 +93,29 @@ fn preflight_payload<const RECORD_INDEX: usize>(
         DurablePreflightError::NonCanonical => PayloadValidationError::NonCanonical,
         DurablePreflightError::LimitExceeded => PayloadValidationError::LimitExceeded,
     })
+}
+
+fn validate_pre_wp280_capability_payload(payload: &[u8]) -> Result<(), PayloadValidationError> {
+    preflight_payload::<17>(payload)?;
+    let message =
+        v1::CapabilityRecordV1::decode(payload).map_err(|_| PayloadValidationError::Malformed)?;
+    let permissions = message
+        .grant
+        .as_ref()
+        .and_then(|grant| grant.permissions.as_ref())
+        .map(|permissions| permissions.values.as_slice())
+        .unwrap_or_default();
+    if permissions.iter().any(|permission| {
+        permission.kind > 19
+            || permission.query_module_hash.is_some()
+            || permission.query_name.is_some()
+    }) {
+        return Err(PayloadValidationError::Malformed);
+    }
+    if message.encode_to_vec() != payload {
+        return Err(PayloadValidationError::NonCanonical);
+    }
+    Ok(())
 }
 
 macro_rules! current_schema {
@@ -181,6 +208,15 @@ const INDEX_V2_RECORD_SCHEMA: RecordSchema<'static> = RecordSchema::new_current(
     validate_payload::<29, v1::StoredIndexEntryV2>,
 );
 
+const PRE_WP280_CAPABILITY_RECORD_SCHEMA: RecordSchema<'static> = RecordSchema::new_current(
+    "riffdb.storage.v1.CapabilityRecordV1",
+    PRE_WP280_CAPABILITY_SCHEMA_HASH,
+    legacy_record_bound(17, 0),
+    legacy_record_bound(17, 4),
+    validate_pre_wp280_capability_payload,
+    validate_pre_wp280_capability_payload,
+);
+
 /// Readable durable schemas in immutable compatibility order.
 pub static READABLE_RECORD_SCHEMAS: [RecordSchema<'static>; READABLE_RECORD_SCHEMA_COUNT] = [
     CURRENT_V1_RECORD_SCHEMAS[0],
@@ -213,6 +249,7 @@ pub static READABLE_RECORD_SCHEMAS: [RecordSchema<'static>; READABLE_RECORD_SCHE
     CURRENT_V1_RECORD_SCHEMAS[27],
     CURRENT_V1_RECORD_SCHEMAS[28],
     INDEX_V2_RECORD_SCHEMA,
+    PRE_WP280_CAPABILITY_RECORD_SCHEMA,
 ];
 
 /// Writable durable schemas in immutable role order.

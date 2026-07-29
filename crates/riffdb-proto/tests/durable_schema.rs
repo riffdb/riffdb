@@ -231,7 +231,7 @@ fn storage_source_import_and_type_inventory_is_exact() {
 #[test]
 fn closed_registry_order_and_schema_hashes_are_exactly_derived() {
     assert_eq!(CURRENT_RECORD_SCHEMA_COUNT, 29);
-    assert_eq!(READABLE_RECORD_SCHEMA_COUNT, 30);
+    assert_eq!(READABLE_RECORD_SCHEMA_COUNT, 31);
     assert_eq!(WRITABLE_RECORD_SCHEMA_COUNT, 29);
     assert_eq!(
         CURRENT_RECORD_SCHEMAS
@@ -255,6 +255,7 @@ fn closed_registry_order_and_schema_hashes_are_exactly_derived() {
             .map(|(name, _)| format!("riffdb.storage.v1.{name}")),
     );
     readable_names.push(format!("riffdb.storage.v1.{}", INDEX_V2_RECORD.0));
+    readable_names.push("riffdb.storage.v1.CapabilityRecordV1".to_owned());
     let mut writable_names = legacy_names.clone();
     writable_names[8] = format!("riffdb.storage.v1.{}", INDEX_V2_RECORD.0);
     writable_names.extend(
@@ -319,6 +320,17 @@ fn closed_registry_order_and_schema_hashes_are_exactly_derived() {
         assert!(schema.max_envelope_bytes() > schema.max_payload_bytes());
         assert!(readable_record_schema(&record_type).is_some());
     }
+    let legacy_capability = READABLE_RECORD_SCHEMAS
+        .last()
+        .expect("pre-WP280 capability reader");
+    assert_eq!(
+        legacy_capability.record_type(),
+        "riffdb.storage.v1.CapabilityRecordV1"
+    );
+    assert_eq!(
+        schema_hash_hex(legacy_capability),
+        "cb42c4ebbce8280123f8b34d4dcde74ca9483406847531f34d5fb3f18d40b342"
+    );
     assert_eq!(
         READABLE_RECORD_SCHEMAS
             .iter()
@@ -358,7 +370,7 @@ fn closed_registry_order_and_schema_hashes_are_exactly_derived() {
 #[test]
 fn generated_registry_fixtures_freeze_exact_membership_and_hashes() {
     let legacy = registry_fixture_entries(LEGACY_REGISTRY_FIXTURE, 26);
-    let readable = registry_fixture_entries(READABLE_REGISTRY_FIXTURE, 30);
+    let readable = registry_fixture_entries(READABLE_REGISTRY_FIXTURE, 31);
     let writable = registry_fixture_entries(WRITABLE_REGISTRY_FIXTURE, 29);
 
     assert_eq!(legacy, readable[..legacy.len()]);
@@ -450,6 +462,25 @@ fn every_semantic_golden_payload_and_envelope_is_canonical() {
 }
 
 #[test]
+fn pre_wp280_capability_payload_remains_readable_under_its_original_hash() {
+    let line = DURABLE_WIRE_VECTORS
+        .lines()
+        .find(|line| line.starts_with("riffdb.storage.v1.CapabilityRecordV1\t"))
+        .expect("capability golden");
+    let payload = decode_lower_hex(line.split('\t').nth(1).expect("capability payload column"));
+    let legacy = READABLE_RECORD_SCHEMAS
+        .last()
+        .expect("pre-WP280 capability reader");
+    let envelope = encode(legacy, &payload).expect("old payload is canonical under old hash");
+    let decoded = readable_record_registry()
+        .decode(&envelope)
+        .expect("old capability envelope remains readable");
+    assert_eq!(decoded.record_type(), legacy.record_type());
+    assert_eq!(decoded.schema_hash(), legacy.schema_hash());
+    assert_eq!(decoded.payload(), payload);
+}
+
+#[test]
 fn semantic_optional_wire_presence_is_exact() {
     let descriptors = descriptors();
     let messages = message_map(&descriptors);
@@ -468,6 +499,8 @@ fn semantic_optional_wire_presence_is_exact() {
         "CapabilityAdministrationAuditV1.approval_id",
         "CapabilityAdministrationAuditV1.revocation_reason",
         "CapabilityPermissionV1.contract_lineage",
+        "CapabilityPermissionV1.query_module_hash",
+        "CapabilityPermissionV1.query_name",
         "CapabilityPermissionV1.stable_id",
         "OutboxDeadLetterV1.last_safe_error",
         "OutboxRetryMetadataV1.last_safe_error",
@@ -617,7 +650,7 @@ fn closed_oneof_and_enum_registries_are_exact() {
         [
             ("ActorKindV1", "ACTOR_KIND_UNSPECIFIED=0,ACTOR_KIND_HUMAN=1,ACTOR_KIND_AGENT=2,ACTOR_KIND_SERVICE=3"),
             ("CapabilityAdministrationOperationV1", "CAPABILITY_ADMINISTRATION_OPERATION_UNSPECIFIED=0,CAPABILITY_ADMINISTRATION_OPERATION_BOOTSTRAP=1,CAPABILITY_ADMINISTRATION_OPERATION_CREATE=2,CAPABILITY_ADMINISTRATION_OPERATION_REVOKE=3"),
-            ("CapabilityPermissionKindV1", "CAPABILITY_PERMISSION_KIND_UNSPECIFIED=0,CAPABILITY_PERMISSION_KIND_VALIDATE_CONTRACT=1,CAPABILITY_PERMISSION_KIND_READ_CONTRACT=2,CAPABILITY_PERMISSION_KIND_EXPLAIN_COMMAND=3,CAPABILITY_PERMISSION_KIND_DEPLOY_CONTRACT=4,CAPABILITY_PERMISSION_KIND_INVOKE_COMMAND=5,CAPABILITY_PERMISSION_KIND_READ_ENTITY=6,CAPABILITY_PERMISSION_KIND_SCAN_INDEX=7,CAPABILITY_PERMISSION_KIND_QUERY_PROJECTION=8,CAPABILITY_PERMISSION_KIND_READ_PROJECTION_STATUS=9,CAPABILITY_PERMISSION_KIND_READ_COMMIT=10,CAPABILITY_PERMISSION_KIND_SCAN_COMMITS=11,CAPABILITY_PERMISSION_KIND_SUBSCRIBE_COMMITS=12,CAPABILITY_PERMISSION_KIND_READ_PROVENANCE=13,CAPABILITY_PERMISSION_KIND_INSPECT_OUTBOX=14,CAPABILITY_PERMISSION_KIND_READ_HEALTH=15,CAPABILITY_PERMISSION_KIND_READ_STATISTICS=16,CAPABILITY_PERMISSION_KIND_CREATE_CAPABILITY=17,CAPABILITY_PERMISSION_KIND_REVOKE_CAPABILITY=18,CAPABILITY_PERMISSION_KIND_ADMINISTER_CAPABILITIES=19"),
+            ("CapabilityPermissionKindV1", "CAPABILITY_PERMISSION_KIND_UNSPECIFIED=0,CAPABILITY_PERMISSION_KIND_VALIDATE_CONTRACT=1,CAPABILITY_PERMISSION_KIND_READ_CONTRACT=2,CAPABILITY_PERMISSION_KIND_EXPLAIN_COMMAND=3,CAPABILITY_PERMISSION_KIND_DEPLOY_CONTRACT=4,CAPABILITY_PERMISSION_KIND_INVOKE_COMMAND=5,CAPABILITY_PERMISSION_KIND_READ_ENTITY=6,CAPABILITY_PERMISSION_KIND_SCAN_INDEX=7,CAPABILITY_PERMISSION_KIND_QUERY_PROJECTION=8,CAPABILITY_PERMISSION_KIND_READ_PROJECTION_STATUS=9,CAPABILITY_PERMISSION_KIND_READ_COMMIT=10,CAPABILITY_PERMISSION_KIND_SCAN_COMMITS=11,CAPABILITY_PERMISSION_KIND_SUBSCRIBE_COMMITS=12,CAPABILITY_PERMISSION_KIND_READ_PROVENANCE=13,CAPABILITY_PERMISSION_KIND_INSPECT_OUTBOX=14,CAPABILITY_PERMISSION_KIND_READ_HEALTH=15,CAPABILITY_PERMISSION_KIND_READ_STATISTICS=16,CAPABILITY_PERMISSION_KIND_CREATE_CAPABILITY=17,CAPABILITY_PERMISSION_KIND_REVOKE_CAPABILITY=18,CAPABILITY_PERMISSION_KIND_ADMINISTER_CAPABILITIES=19,CAPABILITY_PERMISSION_KIND_CHECK_AD_HOC_QUERY=20,CAPABILITY_PERMISSION_KIND_EXPLAIN_AD_HOC_QUERY=21,CAPABILITY_PERMISSION_KIND_EXECUTE_AD_HOC_QUERY=22,CAPABILITY_PERMISSION_KIND_EXPLAIN_NAMED_QUERY=23,CAPABILITY_PERMISSION_KIND_EXECUTE_NAMED_QUERY=24"),
             ("DurabilityModeV1", "DURABILITY_MODE_UNSPECIFIED=0,DURABILITY_MODE_SYNC=1,DURABILITY_MODE_GROUP=2,DURABILITY_MODE_MEMORY=3"),
             ("ExecutionFailureCodeV1", "EXECUTION_FAILURE_CODE_UNSPECIFIED=0,EXECUTION_FAILURE_CODE_ARITHMETIC_FAULT=1,EXECUTION_FAILURE_CODE_RESOURCE_LIMIT=2"),
             ("ProjectionFailureCodeV1", "PROJECTION_FAILURE_CODE_UNSPECIFIED=0,PROJECTION_FAILURE_CODE_ARITHMETIC_OVERFLOW=1,PROJECTION_FAILURE_CODE_MALFORMED_DURABLE_EVENT=2,PROJECTION_FAILURE_CODE_MISSING_COMMIT=3,PROJECTION_FAILURE_CODE_PLAN_OR_SCHEMA_UNAVAILABLE=4,PROJECTION_FAILURE_CODE_PROJECTION_STATE_INTEGRITY=5,PROJECTION_FAILURE_CODE_HARD_LIMIT_EXCEEDED=6"),

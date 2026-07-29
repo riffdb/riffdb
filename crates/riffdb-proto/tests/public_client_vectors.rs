@@ -286,6 +286,31 @@ fn descriptor_delta() -> (BTreeSet<String>, BTreeSet<String>) {
 fn expected_enum_values() -> BTreeSet<String> {
     let mut values = [
         (
+            "riffdb.v1.CapabilityPermissionKind",
+            20,
+            "CAPABILITY_PERMISSION_KIND_CHECK_AD_HOC_QUERY",
+        ),
+        (
+            "riffdb.v1.CapabilityPermissionKind",
+            21,
+            "CAPABILITY_PERMISSION_KIND_EXPLAIN_AD_HOC_QUERY",
+        ),
+        (
+            "riffdb.v1.CapabilityPermissionKind",
+            22,
+            "CAPABILITY_PERMISSION_KIND_EXECUTE_AD_HOC_QUERY",
+        ),
+        (
+            "riffdb.v1.CapabilityPermissionKind",
+            23,
+            "CAPABILITY_PERMISSION_KIND_EXPLAIN_NAMED_QUERY",
+        ),
+        (
+            "riffdb.v1.CapabilityPermissionKind",
+            24,
+            "CAPABILITY_PERMISSION_KIND_EXECUTE_NAMED_QUERY",
+        ),
+        (
             "riffdb.v1.ContractCompatibilityClass",
             0,
             "CONTRACT_COMPATIBILITY_CLASS_UNSPECIFIED",

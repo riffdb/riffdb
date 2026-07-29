@@ -1063,6 +1063,35 @@ fn capability_grant_order_uses_the_authoritative_length_framed_keys() {
 }
 
 #[test]
+fn named_query_permissions_require_exact_bounded_module_and_symbol_identity() {
+    let mut request = create_request(v1::CapabilityCreateMode::Normal);
+    request.grant.as_mut().expect("grant").permissions = vec![v1::CapabilityPermission {
+        permission: Some(v1::capability_permission::Permission::ExecuteNamedQuery(
+            v1::NamedQueryPermission {
+                contract_lineage: "ticketdesk".to_owned(),
+                query_module_hash: vec![0x5a; 32],
+                query_name: "TicketPage".to_owned(),
+            },
+        )),
+    }];
+    validate_public_message(&request).expect("exact named query permission");
+
+    let v1::capability_permission::Permission::ExecuteNamedQuery(permission) =
+        request.grant.as_mut().expect("grant").permissions[0]
+            .permission
+            .as_mut()
+            .expect("permission")
+    else {
+        panic!("named permission");
+    };
+    permission.query_module_hash.pop();
+    assert_eq!(
+        validate_public_message(&request),
+        Err(PublicWireError::InvalidIdentity)
+    );
+}
+
+#[test]
 fn health_and_subscription_closed_bounds_are_checked() {
     let pre_bootstrap = v1::HealthResponse {
         result: Some(v1::health_response::Result::PreBootstrap(

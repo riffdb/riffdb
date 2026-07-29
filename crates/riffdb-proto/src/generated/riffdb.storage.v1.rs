@@ -771,6 +771,10 @@ pub struct CapabilityPermissionV1 {
     pub contract_lineage: ::core::option::Option<::prost::alloc::string::String>,
     #[prost(uint32, optional, tag = "3")]
     pub stable_id: ::core::option::Option<u32>,
+    #[prost(bytes = "vec", optional, tag = "4")]
+    pub query_module_hash: ::core::option::Option<::prost::alloc::vec::Vec<u8>>,
+    #[prost(string, optional, tag = "5")]
+    pub query_name: ::core::option::Option<::prost::alloc::string::String>,
 }
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct CapabilityPermissionsV1 {
@@ -941,6 +945,11 @@ pub enum CapabilityPermissionKindV1 {
     CapabilityPermissionKindCreateCapability = 17,
     CapabilityPermissionKindRevokeCapability = 18,
     CapabilityPermissionKindAdministerCapabilities = 19,
+    CapabilityPermissionKindCheckAdHocQuery = 20,
+    CapabilityPermissionKindExplainAdHocQuery = 21,
+    CapabilityPermissionKindExecuteAdHocQuery = 22,
+    CapabilityPermissionKindExplainNamedQuery = 23,
+    CapabilityPermissionKindExecuteNamedQuery = 24,
 }
 impl CapabilityPermissionKindV1 {
     /// String value of the enum field names used in the ProtoBuf definition.
@@ -1009,6 +1018,21 @@ impl CapabilityPermissionKindV1 {
             Self::CapabilityPermissionKindAdministerCapabilities => {
                 "CAPABILITY_PERMISSION_KIND_ADMINISTER_CAPABILITIES"
             }
+            Self::CapabilityPermissionKindCheckAdHocQuery => {
+                "CAPABILITY_PERMISSION_KIND_CHECK_AD_HOC_QUERY"
+            }
+            Self::CapabilityPermissionKindExplainAdHocQuery => {
+                "CAPABILITY_PERMISSION_KIND_EXPLAIN_AD_HOC_QUERY"
+            }
+            Self::CapabilityPermissionKindExecuteAdHocQuery => {
+                "CAPABILITY_PERMISSION_KIND_EXECUTE_AD_HOC_QUERY"
+            }
+            Self::CapabilityPermissionKindExplainNamedQuery => {
+                "CAPABILITY_PERMISSION_KIND_EXPLAIN_NAMED_QUERY"
+            }
+            Self::CapabilityPermissionKindExecuteNamedQuery => {
+                "CAPABILITY_PERMISSION_KIND_EXECUTE_NAMED_QUERY"
+            }
         }
     }
     /// Creates an enum from field names used in the ProtoBuf definition.
@@ -1073,6 +1097,21 @@ impl CapabilityPermissionKindV1 {
             }
             "CAPABILITY_PERMISSION_KIND_ADMINISTER_CAPABILITIES" => {
                 Some(Self::CapabilityPermissionKindAdministerCapabilities)
+            }
+            "CAPABILITY_PERMISSION_KIND_CHECK_AD_HOC_QUERY" => {
+                Some(Self::CapabilityPermissionKindCheckAdHocQuery)
+            }
+            "CAPABILITY_PERMISSION_KIND_EXPLAIN_AD_HOC_QUERY" => {
+                Some(Self::CapabilityPermissionKindExplainAdHocQuery)
+            }
+            "CAPABILITY_PERMISSION_KIND_EXECUTE_AD_HOC_QUERY" => {
+                Some(Self::CapabilityPermissionKindExecuteAdHocQuery)
+            }
+            "CAPABILITY_PERMISSION_KIND_EXPLAIN_NAMED_QUERY" => {
+                Some(Self::CapabilityPermissionKindExplainNamedQuery)
+            }
+            "CAPABILITY_PERMISSION_KIND_EXECUTE_NAMED_QUERY" => {
+                Some(Self::CapabilityPermissionKindExecuteNamedQuery)
             }
             _ => None,
         }

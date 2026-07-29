@@ -17,7 +17,8 @@ use riffdb_errors::{
     PublicError, ValidationCode, ValidationIssue, ValidationIssues, ValidationPath,
 };
 use riffdb_policy::{
-    Decision, OperationRequest, OperationTenantScope, OutputClassification, PartitionConstraint,
+    ApplicationQueryAccessRequirement, ApplicationQueryTarget, AuthorizedApplicationQuery,
+    OperationRequest, OperationTenantScope, OutputClassification, PartitionConstraint,
 };
 use riffdb_query_compiler::{PlannerDiagnostic, compile_query};
 use riffdb_query_executor::{
@@ -34,9 +35,8 @@ use riffdb_riffql_syntax::{
 };
 use riffdb_types::{
     CanonicalValue, ContractBundleHash, ContractLineage, ContractVersion, QueryModuleHash,
-    QueryModuleName, QueryModuleVersion, QueryPlanHash, ScopedPartitionV1, ServiceAuditLinkV1,
-    ServiceAuditPhaseV1, ServiceOperationV1, TenantScope, encode_canonical_value,
-    hash_query_parameters,
+    QueryModuleName, QueryModuleVersion, QueryOperationName, QueryPlanHash, ServiceAuditLinkV1,
+    ServiceAuditPhaseV1, ServiceOperationV1, encode_canonical_value, hash_query_parameters,
 };
 
 use crate::command_operations::{SubmittedValueMaterializationError, materialize_submitted_value};
@@ -1180,7 +1180,7 @@ async fn check_query(
         &service,
         &context,
         &bundle,
-        OperationRequest::check_query(),
+        OperationRequest::check_ad_hoc_query(),
         OPERATION,
     )
     .await?;
@@ -1213,7 +1213,7 @@ async fn explain_query(
         &service,
         &context,
         &bundle,
-        OperationRequest::explain_query(),
+        OperationRequest::explain_ad_hoc_query(),
         OPERATION,
     )
     .await?;
@@ -1385,7 +1385,7 @@ async fn inspect_module(
         &service,
         &context,
         &bundle,
-        OperationRequest::explain_query(),
+        OperationRequest::describe_contract(),
         OPERATION,
     )
     .await?;
@@ -1414,16 +1414,21 @@ async fn explain_named_query(
         prepare_selected_contract(&service, &context, request.contract.selection(), OPERATION)
             .await?;
     ensure_selected_hash(&request.contract, &bundle)?;
+    let module_hash = request
+        .module_hash
+        .ok_or_else(|| validation_failure(ValidationCode::InvalidValue))?;
+    let query_name = QueryOperationName::new(request.query_name.clone())
+        .map_err(|_| validation_failure(ValidationCode::InvalidValue))?;
     let begun = begin_symbolic(
         &service,
         &context,
         &bundle,
-        OperationRequest::explain_query(),
+        OperationRequest::explain_named_query(bundle.lineage().clone(), module_hash, query_name),
         OPERATION,
     )
     .await?;
     let module =
-        match load_query_module(&service, &context, bundle, request.module_hash, OPERATION).await {
+        match load_query_module(&service, &context, bundle, Some(module_hash), OPERATION).await {
             Ok(Some(module)) => module,
             Ok(None) => {
                 let failure = validation_failure(ValidationCode::InvalidValue);
@@ -1457,11 +1462,16 @@ async fn execute_named_query(
         prepare_selected_contract(&service, &context, request.contract.selection(), OPERATION)
             .await?;
     ensure_selected_hash(&request.contract, &bundle)?;
+    let module_hash = request
+        .module_hash
+        .ok_or_else(|| validation_failure(ValidationCode::InvalidValue))?;
+    let query_name = QueryOperationName::new(request.query_name.clone())
+        .map_err(|_| validation_failure(ValidationCode::InvalidValue))?;
     let module = load_query_module(
         &service,
         &context,
         bundle.clone(),
-        request.module_hash,
+        Some(module_hash),
         OPERATION,
     )
     .await?
@@ -1479,6 +1489,10 @@ async fn execute_named_query(
         query.program().clone(),
         document,
         Some(module.identity()),
+        QueryAuthority::Named {
+            module_hash,
+            query_name,
+        },
         request.parameters,
         request.cursor,
     )
@@ -1547,10 +1561,19 @@ async fn execute_query(
         compiled.program,
         compiled.document,
         None,
+        QueryAuthority::AdHoc,
         request.parameters,
         request.cursor,
     )
     .await
+}
+
+enum QueryAuthority {
+    AdHoc,
+    Named {
+        module_hash: QueryModuleHash,
+        query_name: QueryOperationName,
+    },
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -1561,6 +1584,7 @@ async fn execute_compiled_query(
     program: QueryAccessProgramV1,
     document: Document,
     module_hash: Option<QueryModuleHash>,
+    authority: QueryAuthority,
     submitted: SymbolicQueryParameters,
     cursor: Option<CursorToken>,
 ) -> ServiceResult<ExecuteSymbolicQueryResult> {
@@ -1572,6 +1596,22 @@ async fn execute_compiled_query(
         materialize_query_parameters(&service, OPERATION, bundle.bundle(), &document, &submitted)?;
     let parameter_hash = query_parameter_hash(&parameters)
         .ok_or_else(|| validation_failure(ValidationCode::InvalidValue))?;
+    let target =
+        application_query_target(bundle.bundle(), &program, &parameters, context.ingress())
+            .ok_or_else(|| validation_failure(ValidationCode::InvalidValue))?;
+    let operation_request = match authority {
+        QueryAuthority::AdHoc => OperationRequest::execute_ad_hoc_query(target),
+        QueryAuthority::Named {
+            module_hash,
+            query_name,
+        } => OperationRequest::execute_named_query(
+            bundle.lineage().clone(),
+            module_hash,
+            query_name,
+            target,
+        )
+        .map_err(|_| service.internal_failure(OPERATION, InternalDefect::ProofMismatch))?,
+    };
     let cursor_lookup = QueryCursorLookup::new(
         CursorContractIdentity::new(
             program.contract().lineage().clone(),
@@ -1584,17 +1624,7 @@ async fn execute_compiled_query(
         context.principal().capability_id(),
         context.principal().capability_revision(),
     );
-    let begun = begin_symbolic(
-        &service,
-        &context,
-        &bundle,
-        OperationRequest::execute_query(),
-        OPERATION,
-    )
-    .await?;
-    if !authorize_program(&service, &context, bundle.bundle(), &program, &parameters) {
-        return Err(begun.finish_authorization_denial(&service, &context).await);
-    }
+    let begun = begin_symbolic(&service, &context, &bundle, operation_request, OPERATION).await?;
     let prior = match cursor {
         Some(token) => match service.cursors.resolve_query(
             token,
@@ -1617,7 +1647,14 @@ async fn execute_compiled_query(
         let failure = PublicError::storage_unavailable().into();
         return Err(finish_failure(&service, &context, &begun, failure).await);
     };
-    let snapshot = match executor.execute_query_page(
+    let execution_authorization = begun
+        .reauthorize(&service, &context)
+        .await?
+        .into_application_query()
+        .ok_or_else(|| service.internal_failure(OPERATION, InternalDefect::ProofMismatch))?;
+    let snapshot = match execute_authorized_query_page(
+        execution_authorization,
+        executor.as_ref(),
         &program,
         &parameters,
         prior.as_deref().map(QueryCursorState::continuation),
@@ -1629,9 +1666,6 @@ async fn execute_compiled_query(
         }
     };
     begun.reauthorize(&service, &context).await?;
-    if !authorize_program(&service, &context, bundle.bundle(), &program, &parameters) {
-        return Err(begun.finish_authorization_denial(&service, &context).await);
-    }
     let continuation = match (snapshot.continuation_binding(), snapshot.continuation()) {
         (Some(binding), Some(lower)) => QueryContinuation::checked(
             binding.to_owned(),
@@ -1967,28 +2001,21 @@ fn query_parameter_hash(parameters: &QueryParameters) -> Option<riffdb_types::Qu
     Some(hash_query_parameters(&bytes))
 }
 
-fn authorize_program(
-    service: &RiffDbServiceInner,
-    context: &RequestContext,
+fn application_query_target(
     bundle: &riffdb_contract_ir::ContractBundle,
     program: &QueryAccessProgramV1,
     parameters: &QueryParameters,
-) -> bool {
-    let Some(partition_value) = parameters.get(program.partition_parameter()) else {
-        return false;
-    };
-    let lineage = program.contract().lineage();
+    ingress: riffdb_types::ServiceIngressKindV1,
+) -> Option<ApplicationQueryTarget> {
+    let partition_value = parameters.get(program.partition_parameter())?;
+    let mut routed_partition = None;
+    let mut accesses = Vec::with_capacity(program.steps().len());
     for step in program.steps() {
-        let Some(entity) = program
+        let entity = program
             .authorization()
             .iter()
-            .find(|access| access.entity() == step.entity())
-        else {
-            return false;
-        };
-        let Some(contract_entity) = bundle.schema().entity(step.internal_entity_id()) else {
-            return false;
-        };
+            .find(|access| access.entity() == step.entity())?;
+        let contract_entity = bundle.schema().entity(step.internal_entity_id())?;
         let mut non_key_fields = entity
             .internal_fields()
             .filter_map(|(_, field)| {
@@ -1998,117 +2025,76 @@ fn authorize_program(
         non_key_fields.sort_unstable();
         non_key_fields.dedup();
         let partition = {
-            let Some(aggregate) = bundle
+            let aggregate = bundle
                 .schema()
-                .aggregate_for_entity(step.internal_entity_id())
-            else {
-                return false;
-            };
+                .aggregate_for_entity(step.internal_entity_id())?;
             let Ok(partition) = aggregate
                 .keys()
                 .partition_schema()
                 .encode_partition(std::slice::from_ref(partition_value))
             else {
-                return false;
+                return None;
             };
             partition
         };
-        let request = match step.access() {
-            QueryAccessKind::Point { .. } | QueryAccessKind::DependentPointBatch { .. } => {
-                OperationRequest::get_entity(
-                    lineage.clone(),
-                    program.contract().version(),
-                    step.internal_entity_id(),
-                    OperationTenantScope::global_only(),
-                    partition.clone(),
-                    non_key_fields.clone(),
-                )
-            }
-            QueryAccessKind::Index { .. } => {
-                let Some(index_id) = step.internal_index_id() else {
-                    return false;
-                };
-                let Ok(rows) = u16::try_from(step.maximum_rows()) else {
-                    return false;
-                };
-                let Some(rows) = NonZeroU16::new(rows) else {
-                    return false;
-                };
-                OperationRequest::scan_index(
-                    lineage.clone(),
-                    program.contract().version(),
-                    index_id,
-                    step.internal_entity_id(),
-                    OperationTenantScope::global_only(),
-                    non_key_fields.clone(),
-                    rows,
-                )
-            }
+        match &routed_partition {
+            Some(expected) if expected != &partition => return None,
+            Some(_) => {}
+            None => routed_partition = Some(partition),
         };
-        let Ok(request) = request else {
-            return false;
+        let Ok(rows) = u16::try_from(step.maximum_rows()) else {
+            return None;
         };
-        let Ok(Decision::Allow(authorization)) = service
-            .providers
-            .policy
-            .authorize(context.principal(), request)
-        else {
-            return false;
+        let rows = NonZeroU16::new(rows)?;
+        let index_id = match step.access() {
+            QueryAccessKind::Index { .. } => Some(step.internal_index_id()?),
+            QueryAccessKind::Point { .. } | QueryAccessKind::DependentPointBatch { .. } => None,
         };
-        let obligations = authorization.obligations();
-        let mask_matches = obligations.field_mask().is_some_and(|mask| {
-            mask.lineage() == lineage
-                && mask.entity_type_id() == step.internal_entity_id()
-                && mask.fields() == non_key_fields
-        });
-        let common = authorization.database_id() == service.identity.database_id()
-            && authorization.environment() == service.identity.environment()
-            && obligations.effective_tenant_scope() == &TenantScope::Global
-            && obligations.output_classification()
-                == OutputClassification::PolicyFilteredApplicationData
-            && mask_matches;
-        let access_matches = match step.access() {
-            QueryAccessKind::Point { .. } | QueryAccessKind::DependentPointBatch { .. } => {
-                authorization.operation() == ServiceOperationV1::GetEntity
-                    && obligations.row_limit().is_none()
-                    && obligations.partition_constraint()
-                        == Some(&PartitionConstraint::Exact(ScopedPartitionV1::new(
-                            lineage.clone(),
-                            partition,
-                        )))
-            }
-            QueryAccessKind::Index { .. } => {
-                authorization.operation() == ServiceOperationV1::ScanIndex
-                    && obligations
-                        .row_limit()
-                        .is_some_and(|limit| u64::from(limit.get()) >= step.maximum_rows())
-                    && obligations
-                        .partition_constraint()
-                        .is_some_and(|constraint| {
-                            partition_allowed(constraint, lineage, &partition)
-                        })
-            }
-        };
-        if !common || !access_matches {
-            return false;
-        }
+        accesses.push(
+            ApplicationQueryAccessRequirement::new(
+                step.internal_entity_id(),
+                index_id,
+                non_key_fields,
+                rows,
+            )
+            .ok()?,
+        );
     }
-    true
+    ApplicationQueryTarget::new(
+        program.contract().lineage().clone(),
+        program.contract().version(),
+        program.contract().bundle_hash(),
+        program.identity().hash(),
+        ingress,
+        OperationTenantScope::global_only(),
+        routed_partition?,
+        accesses,
+    )
+    .ok()
 }
 
-fn partition_allowed(
-    constraint: &PartitionConstraint,
-    lineage: &ContractLineage,
-    partition: &riffdb_types::PartitionKey,
-) -> bool {
-    let scoped = ScopedPartitionV1::new(lineage.clone(), partition.clone());
-    match constraint {
-        PartitionConstraint::Exact(expected) => expected == &scoped,
-        PartitionConstraint::Filter(riffdb_types::PartitionScopeV1::All) => true,
-        PartitionConstraint::Filter(riffdb_types::PartitionScopeV1::Explicit(entries)) => {
-            entries.iter().any(|candidate| candidate == &scoped)
-        }
+fn execute_authorized_query_page(
+    authorization: AuthorizedApplicationQuery,
+    executor: &dyn riffdb_query_executor::QueryExecutionPort,
+    program: &QueryAccessProgramV1,
+    parameters: &QueryParameters,
+    prior: Option<&QueryContinuation>,
+) -> Result<QueryOwnedSnapshot, QueryExecutionError> {
+    let target = authorization.target();
+    let obligations = authorization.obligations();
+    let exact_target = target.lineage() == program.contract().lineage()
+        && target.version() == program.contract().version()
+        && target.bundle_hash() == program.contract().bundle_hash()
+        && target.plan_hash() == program.identity().hash()
+        && target.accesses().len() == program.steps().len()
+        && obligations.output_classification()
+            == OutputClassification::PolicyFilteredApplicationData
+        && obligations.partition_constraint()
+            == Some(&PartitionConstraint::Exact(target.partition().clone()));
+    if !exact_target {
+        return Err(QueryExecutionError::InvalidProgram);
     }
+    executor.execute_query_page(program, parameters, prior)
 }
 
 fn execution_failure(

@@ -10,10 +10,12 @@ activation through the control-plane coordinator. The module bytes and active
 pointer are committed atomically. Startup replays and validates the durable
 module history before readiness.
 
-Named execution selects either the active module for an exact contract or an
-exact module hash. Cached plans are bounded and keyed by immutable identity.
-The server still authorizes the complete compiled access program for every
-request; a module or generated client conveys no authority.
+Named execution always submits the exact module hash emitted by the generated
+binding or manifest. Selecting the ambient active module is an inspection and
+development action, not an execution identity: omitting the hash fails closed.
+Cached plans are bounded and keyed by immutable identity. The server authorizes
+the complete compiler-derived application-query request for every invocation;
+a module or generated client conveys no authority.
 
 ## Generated artifacts
 

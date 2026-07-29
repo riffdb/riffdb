@@ -4,7 +4,7 @@ use std::{error::Error, fmt, num::NonZeroU16};
 
 use crate::{
     CommandId, ContractLineage, EntityTypeId, FieldId, IndexId, PartitionKey, ProjectionId,
-    TenantScope,
+    QueryModuleHash, QueryOperationName, TenantScope,
 };
 
 /// Maximum explicit partition entries retained by one grant.
@@ -86,6 +86,16 @@ pub enum CapabilityPermissionKindV1 {
     RevokeCapability,
     /// Administer capabilities in this database and environment.
     AdministerCapabilities,
+    /// Check ad-hoc RiffQL source.
+    CheckAdHocQuery,
+    /// Explain ad-hoc RiffQL source.
+    ExplainAdHocQuery,
+    /// Execute ad-hoc RiffQL source.
+    ExecuteAdHocQuery,
+    /// Explain one exact named deployed query.
+    ExplainNamedQuery,
+    /// Execute one exact named deployed query.
+    ExecuteNamedQuery,
 }
 
 impl CapabilityPermissionKindV1 {
@@ -112,6 +122,11 @@ impl CapabilityPermissionKindV1 {
             Self::CreateCapability => 0x11,
             Self::RevokeCapability => 0x12,
             Self::AdministerCapabilities => 0x13,
+            Self::CheckAdHocQuery => 0x14,
+            Self::ExplainAdHocQuery => 0x15,
+            Self::ExecuteAdHocQuery => 0x16,
+            Self::ExplainNamedQuery => 0x17,
+            Self::ExecuteNamedQuery => 0x18,
         }
     }
 
@@ -138,6 +153,11 @@ impl CapabilityPermissionKindV1 {
             0x11 => Some(Self::CreateCapability),
             0x12 => Some(Self::RevokeCapability),
             0x13 => Some(Self::AdministerCapabilities),
+            0x14 => Some(Self::CheckAdHocQuery),
+            0x15 => Some(Self::ExplainAdHocQuery),
+            0x16 => Some(Self::ExecuteAdHocQuery),
+            0x17 => Some(Self::ExplainNamedQuery),
+            0x18 => Some(Self::ExecuteNamedQuery),
             _ => None,
         }
     }
@@ -151,6 +171,8 @@ impl CapabilityPermissionKindV1 {
                 | Self::ScanIndex
                 | Self::QueryProjection
                 | Self::ReadProjectionStatus
+                | Self::ExplainNamedQuery
+                | Self::ExecuteNamedQuery
         )
     }
 }
@@ -172,6 +194,10 @@ pub enum CapabilityPermissionV1 {
     QueryProjection(ContractLineage, ProjectionId),
     /// Read status for a lineage-scoped projection.
     ReadProjectionStatus(ContractLineage, ProjectionId),
+    /// Explain one exact named query in one immutable module.
+    ExplainNamedQuery(ContractLineage, QueryModuleHash, QueryOperationName),
+    /// Execute one exact named query in one immutable module.
+    ExecuteNamedQuery(ContractLineage, QueryModuleHash, QueryOperationName),
 }
 
 impl CapabilityPermissionV1 {
@@ -194,6 +220,8 @@ impl CapabilityPermissionV1 {
             Self::ScanIndex(..) => CapabilityPermissionKindV1::ScanIndex,
             Self::QueryProjection(..) => CapabilityPermissionKindV1::QueryProjection,
             Self::ReadProjectionStatus(..) => CapabilityPermissionKindV1::ReadProjectionStatus,
+            Self::ExplainNamedQuery(..) => CapabilityPermissionKindV1::ExplainNamedQuery,
+            Self::ExecuteNamedQuery(..) => CapabilityPermissionKindV1::ExecuteNamedQuery,
         }
     }
 
@@ -218,6 +246,12 @@ impl CapabilityPermissionV1 {
             Self::QueryProjection(lineage, id) | Self::ReadProjectionStatus(lineage, id) => {
                 append_lineage(&mut bytes, lineage);
                 bytes.extend_from_slice(&id.to_be_bytes());
+            }
+            Self::ExplainNamedQuery(lineage, module_hash, query_name)
+            | Self::ExecuteNamedQuery(lineage, module_hash, query_name) => {
+                append_lineage(&mut bytes, lineage);
+                bytes.extend_from_slice(module_hash.as_bytes());
+                append_bytes(&mut bytes, query_name.as_str().as_bytes());
             }
         }
         bytes
@@ -429,7 +463,7 @@ impl CapabilityGrantV1 {
     ) -> Result<Self, CapabilityGrantError> {
         if usize::from(max_scan_rows.get()) > 500
             || field_visibility.len() > MAX_CAPABILITY_FIELD_VISIBILITY
-            || approval_required.len() > 19
+            || approval_required.len() > 24
         {
             return Err(CapabilityGrantError::LimitExceeded);
         }
@@ -543,6 +577,10 @@ fn capability_permission_semantic_bytes(permission: &CapabilityPermissionV1) -> 
         | CapabilityPermissionV1::ReadProjectionStatus(lineage, _) => {
             1 + 4 + lineage.as_bytes().len() + 4
         }
+        CapabilityPermissionV1::ExplainNamedQuery(lineage, _, name)
+        | CapabilityPermissionV1::ExecuteNamedQuery(lineage, _, name) => {
+            1 + 4 + lineage.as_bytes().len() + 32 + 4 + name.as_str().len()
+        }
     }
 }
 
@@ -645,12 +683,12 @@ mod tests {
 
     #[test]
     fn permission_tags_are_closed_and_stable() {
-        for tag in 1..=19 {
+        for tag in 1..=24 {
             let kind = CapabilityPermissionKindV1::from_tag(tag).expect("known tag");
             assert_eq!(kind.tag(), tag);
         }
         assert_eq!(CapabilityPermissionKindV1::from_tag(0), None);
-        assert_eq!(CapabilityPermissionKindV1::from_tag(20), None);
+        assert_eq!(CapabilityPermissionKindV1::from_tag(25), None);
     }
 
     #[test]
@@ -661,6 +699,14 @@ mod tests {
         );
         assert!(
             CapabilityPermissionV1::unparameterized(CapabilityPermissionKindV1::ReadHealth).is_ok()
+        );
+        assert_eq!(
+            CapabilityPermissionV1::unparameterized(CapabilityPermissionKindV1::ExecuteNamedQuery),
+            Err(CapabilityGrantError::InvalidShape)
+        );
+        assert!(
+            CapabilityPermissionV1::unparameterized(CapabilityPermissionKindV1::ExecuteAdHocQuery)
+                .is_ok()
         );
     }
 

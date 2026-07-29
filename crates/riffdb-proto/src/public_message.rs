@@ -2238,47 +2238,71 @@ fn validate_stats_response(message: &v1::StatsResponse) -> Result<(), PublicWire
 
 fn permission_key(
     permission: &v1::CapabilityPermission,
-) -> Result<(u8, &str, u32), PublicWireError> {
+) -> Result<(u8, &str, u32, &[u8], &str), PublicWireError> {
     let permission = permission
         .permission
         .as_ref()
         .ok_or(PublicWireError::MissingRequiredField)?;
-    let key = match permission {
-        v1::capability_permission::Permission::ValidateContract(_) => (1, "", 0),
-        v1::capability_permission::Permission::ReadContract(_) => (2, "", 0),
+    let key: (u8, &str, u32, &[u8], &str) = match permission {
+        v1::capability_permission::Permission::ValidateContract(_) => (1, "", 0, &[], ""),
+        v1::capability_permission::Permission::ReadContract(_) => (2, "", 0, &[], ""),
         v1::capability_permission::Permission::ExplainCommand(value) => {
-            (3, value.contract_lineage.as_str(), value.stable_id)
+            (3, value.contract_lineage.as_str(), value.stable_id, &[], "")
         }
-        v1::capability_permission::Permission::DeployContract(_) => (4, "", 0),
+        v1::capability_permission::Permission::DeployContract(_) => (4, "", 0, &[], ""),
         v1::capability_permission::Permission::InvokeCommand(value) => {
-            (5, value.contract_lineage.as_str(), value.stable_id)
+            (5, value.contract_lineage.as_str(), value.stable_id, &[], "")
         }
         v1::capability_permission::Permission::ReadEntity(value) => {
-            (6, value.contract_lineage.as_str(), value.stable_id)
+            (6, value.contract_lineage.as_str(), value.stable_id, &[], "")
         }
         v1::capability_permission::Permission::ScanIndex(value) => {
-            (7, value.contract_lineage.as_str(), value.stable_id)
+            (7, value.contract_lineage.as_str(), value.stable_id, &[], "")
         }
         v1::capability_permission::Permission::QueryProjection(value) => {
-            (8, value.contract_lineage.as_str(), value.stable_id)
+            (8, value.contract_lineage.as_str(), value.stable_id, &[], "")
         }
         v1::capability_permission::Permission::ReadProjectionStatus(value) => {
-            (9, value.contract_lineage.as_str(), value.stable_id)
+            (9, value.contract_lineage.as_str(), value.stable_id, &[], "")
         }
-        v1::capability_permission::Permission::ReadCommit(_) => (10, "", 0),
-        v1::capability_permission::Permission::ScanCommits(_) => (11, "", 0),
-        v1::capability_permission::Permission::SubscribeCommits(_) => (12, "", 0),
-        v1::capability_permission::Permission::ReadProvenance(_) => (13, "", 0),
-        v1::capability_permission::Permission::InspectOutbox(_) => (14, "", 0),
-        v1::capability_permission::Permission::ReadHealth(_) => (15, "", 0),
-        v1::capability_permission::Permission::ReadStatistics(_) => (16, "", 0),
-        v1::capability_permission::Permission::CreateCapability(_) => (17, "", 0),
-        v1::capability_permission::Permission::RevokeCapability(_) => (18, "", 0),
-        v1::capability_permission::Permission::AdministerCapabilities(_) => (19, "", 0),
+        v1::capability_permission::Permission::ReadCommit(_) => (10, "", 0, &[], ""),
+        v1::capability_permission::Permission::ScanCommits(_) => (11, "", 0, &[], ""),
+        v1::capability_permission::Permission::SubscribeCommits(_) => (12, "", 0, &[], ""),
+        v1::capability_permission::Permission::ReadProvenance(_) => (13, "", 0, &[], ""),
+        v1::capability_permission::Permission::InspectOutbox(_) => (14, "", 0, &[], ""),
+        v1::capability_permission::Permission::ReadHealth(_) => (15, "", 0, &[], ""),
+        v1::capability_permission::Permission::ReadStatistics(_) => (16, "", 0, &[], ""),
+        v1::capability_permission::Permission::CreateCapability(_) => (17, "", 0, &[], ""),
+        v1::capability_permission::Permission::RevokeCapability(_) => (18, "", 0, &[], ""),
+        v1::capability_permission::Permission::AdministerCapabilities(_) => (19, "", 0, &[], ""),
+        v1::capability_permission::Permission::CheckAdHocQuery(_) => (20, "", 0, &[], ""),
+        v1::capability_permission::Permission::ExplainAdHocQuery(_) => (21, "", 0, &[], ""),
+        v1::capability_permission::Permission::ExecuteAdHocQuery(_) => (22, "", 0, &[], ""),
+        v1::capability_permission::Permission::ExplainNamedQuery(value) => (
+            23,
+            value.contract_lineage.as_str(),
+            0,
+            value.query_module_hash.as_slice(),
+            value.query_name.as_str(),
+        ),
+        v1::capability_permission::Permission::ExecuteNamedQuery(value) => (
+            24,
+            value.contract_lineage.as_str(),
+            0,
+            value.query_module_hash.as_slice(),
+            value.query_name.as_str(),
+        ),
     };
     if key.0 >= 3
         && matches!(key.0, 3 | 5 | 6 | 7 | 8 | 9)
         && (!valid_bounded_text(key.1, MAX_CONTRACT_LINEAGE_BYTES) || key.2 == 0)
+    {
+        return Err(PublicWireError::InvalidIdentity);
+    }
+    if matches!(key.0, 23 | 24)
+        && (!valid_bounded_text(key.1, MAX_CONTRACT_LINEAGE_BYTES)
+            || key.3.len() != 32
+            || !valid_bounded_text(key.4, 256))
     {
         return Err(PublicWireError::InvalidIdentity);
     }
@@ -2289,11 +2313,16 @@ fn compare_framed_bytes(left: &[u8], right: &[u8]) -> Ordering {
     left.len().cmp(&right.len()).then_with(|| left.cmp(right))
 }
 
-fn compare_permission_keys(left: (u8, &str, u32), right: (u8, &str, u32)) -> Ordering {
+fn compare_permission_keys(
+    left: (u8, &str, u32, &[u8], &str),
+    right: (u8, &str, u32, &[u8], &str),
+) -> Ordering {
     left.0
         .cmp(&right.0)
         .then_with(|| compare_framed_bytes(left.1.as_bytes(), right.1.as_bytes()))
         .then_with(|| left.2.cmp(&right.2))
+        .then_with(|| left.3.cmp(right.3))
+        .then_with(|| compare_framed_bytes(left.4.as_bytes(), right.4.as_bytes()))
 }
 
 fn compare_scoped_partitions(left: (&str, &[u8]), right: (&str, &[u8])) -> Ordering {
@@ -2357,9 +2386,16 @@ fn capability_grant_semantic_bytes(grant: &v1::CapabilityGrant) -> Result<usize,
         .permissions
         .iter()
         .try_fold(4usize, |total, permission| {
-            let (tag, lineage, _) = permission_key(permission)?;
+            let (tag, lineage, _, module_hash, query_name) = permission_key(permission)?;
             let content = if matches!(tag, 3 | 5 | 6 | 7 | 8 | 9) {
                 checked_capability_sum([1, framed_capability_bytes(lineage.len())?, 4])?
+            } else if matches!(tag, 23 | 24) {
+                checked_capability_sum([
+                    1,
+                    framed_capability_bytes(lineage.len())?,
+                    framed_capability_bytes(module_hash.len())?,
+                    framed_capability_bytes(query_name.len())?,
+                ])?
             } else {
                 1
             };
@@ -2432,7 +2468,7 @@ fn validate_capability_grant(grant: Option<&v1::CapabilityGrant>) -> Result<(), 
     }
     if grant.permissions.len() > MAX_CAPABILITY_PERMISSIONS
         || grant.field_visibility.len() > MAX_CAPABILITY_FIELD_VISIBILITY
-        || grant.approval_required.len() > 19
+        || grant.approval_required.len() > 24
         || !(1..=500).contains(&grant.max_scan_rows)
     {
         return Err(PublicWireError::TooManyItems);
@@ -2476,7 +2512,7 @@ fn validate_capability_grant(grant: Option<&v1::CapabilityGrant>) -> Result<(), 
     }
     let mut previous_approval = 0;
     for approval in &grant.approval_required {
-        if !(1..=19).contains(approval) || *approval <= previous_approval {
+        if !(1..=24).contains(approval) || *approval <= previous_approval {
             return Err(PublicWireError::NonCanonical);
         }
         previous_approval = *approval;

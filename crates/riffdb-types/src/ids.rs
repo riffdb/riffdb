@@ -679,6 +679,57 @@ impl fmt::Display for QueryModuleName {
     }
 }
 
+/// Checked exact name of one deployed application query.
+#[derive(Clone, Eq, Hash, Ord, PartialEq, PartialOrd)]
+pub struct QueryOperationName(String);
+
+impl QueryOperationName {
+    /// Maximum encoded bytes in one query operation name.
+    pub const MAX_BYTES: usize = 256;
+
+    /// Checks one nonempty source identifier without normalization.
+    pub fn new(value: impl Into<String>) -> Result<Self, TextIdError> {
+        let value = value.into();
+        if value.is_empty() {
+            return Err(TextIdError::Empty);
+        }
+        if value.len() > Self::MAX_BYTES {
+            return Err(TextIdError::TooLong {
+                maximum: Self::MAX_BYTES,
+                actual: value.len(),
+            });
+        }
+        if let Some(index) = value.bytes().enumerate().find_map(|(index, byte)| {
+            (!(byte == b'_' || byte.is_ascii_alphabetic() || index > 0 && byte.is_ascii_digit()))
+                .then_some(index)
+        }) {
+            return Err(TextIdError::InvalidCharacter { index });
+        }
+        Ok(Self(value))
+    }
+
+    /// Borrows the exact query name.
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl fmt::Debug for QueryOperationName {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_tuple("QueryOperationName")
+            .field(&self.0)
+            .finish()
+    }
+}
+
+impl fmt::Display for QueryOperationName {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        self.0.fmt(formatter)
+    }
+}
+
 impl fmt::Display for ContractLineage {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         self.0.fmt(formatter)

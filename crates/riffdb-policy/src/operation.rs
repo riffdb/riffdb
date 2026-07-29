@@ -7,7 +7,8 @@ use riffdb_types::{
     CommitSequence, ContractBundleHash, ContractLineage, ContractVersion, EntityTypeId, FieldId,
     IndexId, MAX_CAPABILITY_FIELD_VISIBILITY, MAX_PROJECTION_GROUP_COMPONENTS, PartitionKey,
     ProjectionGeneration, ProjectionGroupPrefixBuilder, ProjectionId, ProjectionIdentity,
-    ProvenanceId, ScopedPartitionV1, ServiceOperationV1, TenantScope,
+    ProvenanceId, QueryModuleHash, QueryOperationName, QueryPlanHash, ScopedPartitionV1,
+    ServiceIngressKindV1, ServiceOperationV1, TenantScope,
 };
 
 use crate::{
@@ -302,6 +303,10 @@ pub enum OperationRequestError {
     TooManyProjectionComponents,
     /// A projection selector is not a bounded canonical scalar prefix.
     InvalidProjectionSelector,
+    /// An application query contains too many independently authorized accesses.
+    TooManyQueryAccesses,
+    /// The named permission and compiler-derived target name different contracts.
+    ApplicationQueryContractMismatch,
 }
 
 impl fmt::Display for OperationRequestError {
@@ -314,6 +319,10 @@ impl fmt::Display for OperationRequestError {
             }
             Self::InvalidProjectionSelector => {
                 "projection selector is not a bounded canonical prefix"
+            }
+            Self::TooManyQueryAccesses => "application query access set exceeds the hard limit",
+            Self::ApplicationQueryContractMismatch => {
+                "application query permission and target contracts do not match"
             }
         })
     }
@@ -353,6 +362,158 @@ impl FieldRequest {
 struct ExactDataScope {
     tenant_scope: OperationTenantScope,
     partition: ScopedPartitionV1,
+}
+
+/// One compiler-derived storage requirement retained inside an application-query proof.
+#[derive(Clone, Eq, PartialEq)]
+pub struct ApplicationQueryAccessRequirement {
+    entity_type_id: EntityTypeId,
+    index_id: Option<IndexId>,
+    non_key_fields: Vec<FieldId>,
+    maximum_rows: NonZeroU16,
+}
+
+impl ApplicationQueryAccessRequirement {
+    /// Constructs one canonical bounded access requirement.
+    pub fn new(
+        entity_type_id: EntityTypeId,
+        index_id: Option<IndexId>,
+        mut non_key_fields: Vec<FieldId>,
+        maximum_rows: NonZeroU16,
+    ) -> Result<Self, OperationRequestError> {
+        if non_key_fields.len() > MAX_CAPABILITY_FIELD_VISIBILITY {
+            return Err(OperationRequestError::TooManyFields);
+        }
+        non_key_fields.sort_unstable();
+        if non_key_fields.windows(2).any(|pair| pair[0] == pair[1]) {
+            return Err(OperationRequestError::DuplicateField);
+        }
+        Ok(Self {
+            entity_type_id,
+            index_id,
+            non_key_fields,
+            maximum_rows,
+        })
+    }
+
+    /// Returns the compiler-resolved entity identity.
+    #[must_use]
+    pub const fn entity_type_id(&self) -> EntityTypeId {
+        self.entity_type_id
+    }
+
+    /// Returns the compiler-selected index, when this is an index access.
+    #[must_use]
+    pub const fn index_id(&self) -> Option<IndexId> {
+        self.index_id
+    }
+
+    /// Returns every non-key field the plan may observe or return.
+    #[must_use]
+    pub fn non_key_fields(&self) -> &[FieldId] {
+        &self.non_key_fields
+    }
+
+    /// Returns the plan's hard maximum row count for this access.
+    #[must_use]
+    pub const fn maximum_rows(&self) -> NonZeroU16 {
+        self.maximum_rows
+    }
+}
+
+impl fmt::Debug for ApplicationQueryAccessRequirement {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("ApplicationQueryAccessRequirement([REDACTED])")
+    }
+}
+
+/// Complete compiler-derived target for one authorized application-query execution.
+#[derive(Clone, Eq, PartialEq)]
+pub struct ApplicationQueryTarget {
+    lineage: ContractLineage,
+    version: ContractVersion,
+    bundle_hash: ContractBundleHash,
+    plan_hash: QueryPlanHash,
+    ingress: ServiceIngressKindV1,
+    scope: ExactDataScope,
+    accesses: Vec<ApplicationQueryAccessRequirement>,
+}
+
+impl ApplicationQueryTarget {
+    /// Constructs a complete bounded target. Empty query plans are rejected.
+    #[allow(clippy::too_many_arguments)]
+    pub fn new(
+        lineage: ContractLineage,
+        version: ContractVersion,
+        bundle_hash: ContractBundleHash,
+        plan_hash: QueryPlanHash,
+        ingress: ServiceIngressKindV1,
+        tenant_scope: OperationTenantScope,
+        partition: PartitionKey,
+        accesses: Vec<ApplicationQueryAccessRequirement>,
+    ) -> Result<Self, OperationRequestError> {
+        if accesses.is_empty() || accesses.len() > 64 {
+            return Err(OperationRequestError::TooManyQueryAccesses);
+        }
+        let scope = ExactDataScope::new(tenant_scope, lineage.clone(), partition);
+        Ok(Self {
+            lineage,
+            version,
+            bundle_hash,
+            plan_hash,
+            ingress,
+            scope,
+            accesses,
+        })
+    }
+
+    /// Exact contract lineage.
+    #[must_use]
+    pub const fn lineage(&self) -> &ContractLineage {
+        &self.lineage
+    }
+
+    /// Exact contract version.
+    #[must_use]
+    pub const fn version(&self) -> ContractVersion {
+        self.version
+    }
+
+    /// Exact contract bundle identity.
+    #[must_use]
+    pub const fn bundle_hash(&self) -> ContractBundleHash {
+        self.bundle_hash
+    }
+
+    /// Exact compiler plan identity.
+    #[must_use]
+    pub const fn plan_hash(&self) -> QueryPlanHash {
+        self.plan_hash
+    }
+
+    /// Exact API-neutral ingress classification.
+    #[must_use]
+    pub const fn ingress(&self) -> ServiceIngressKindV1 {
+        self.ingress
+    }
+
+    /// Exact routed partition.
+    #[must_use]
+    pub const fn partition(&self) -> &ScopedPartitionV1 {
+        &self.scope.partition
+    }
+
+    /// Complete ordered compiler access requirements.
+    #[must_use]
+    pub fn accesses(&self) -> &[ApplicationQueryAccessRequirement] {
+        &self.accesses
+    }
+}
+
+impl fmt::Debug for ApplicationQueryTarget {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("ApplicationQueryTarget([REDACTED])")
+    }
 }
 
 impl ExactDataScope {
@@ -463,9 +624,22 @@ enum OperationKind {
     DiscoverCommandTools,
     DiscoverResources,
     DescribeContract,
-    CheckQuery,
-    ExplainQuery,
-    ExecuteQuery,
+    CheckAdHocQuery,
+    ExplainAdHocQuery,
+    ExecuteAdHocQuery {
+        target: ApplicationQueryTarget,
+    },
+    ExplainNamedQuery {
+        lineage: ContractLineage,
+        module_hash: QueryModuleHash,
+        query_name: QueryOperationName,
+    },
+    ExecuteNamedQuery {
+        lineage: ContractLineage,
+        module_hash: QueryModuleHash,
+        query_name: QueryOperationName,
+        target: ApplicationQueryTarget,
+    },
     DeployQueryModule {
         lineage: ContractLineage,
         version: ContractVersion,
@@ -765,14 +939,14 @@ impl OperationRequest {
 
     /// Constructs one symbolic query-check request.
     #[must_use]
-    pub const fn check_query() -> Self {
-        Self(OperationKind::CheckQuery)
+    pub const fn check_ad_hoc_query() -> Self {
+        Self(OperationKind::CheckAdHocQuery)
     }
 
     /// Constructs one symbolic query-explanation request.
     #[must_use]
-    pub const fn explain_query() -> Self {
-        Self(OperationKind::ExplainQuery)
+    pub const fn explain_ad_hoc_query() -> Self {
+        Self(OperationKind::ExplainAdHocQuery)
     }
 
     /// Constructs one symbolic query-execution lifecycle request.
@@ -781,8 +955,40 @@ impl OperationRequest {
     /// entity, field, index, partition, and row requirement before execution
     /// and again before release.
     #[must_use]
-    pub const fn execute_query() -> Self {
-        Self(OperationKind::ExecuteQuery)
+    pub const fn execute_ad_hoc_query(target: ApplicationQueryTarget) -> Self {
+        Self(OperationKind::ExecuteAdHocQuery { target })
+    }
+
+    /// Constructs one exact named-query explanation request.
+    #[must_use]
+    pub const fn explain_named_query(
+        lineage: ContractLineage,
+        module_hash: QueryModuleHash,
+        query_name: QueryOperationName,
+    ) -> Self {
+        Self(OperationKind::ExplainNamedQuery {
+            lineage,
+            module_hash,
+            query_name,
+        })
+    }
+
+    /// Constructs one exact named-query execution request.
+    pub fn execute_named_query(
+        lineage: ContractLineage,
+        module_hash: QueryModuleHash,
+        query_name: QueryOperationName,
+        target: ApplicationQueryTarget,
+    ) -> Result<Self, OperationRequestError> {
+        if target.lineage != lineage {
+            return Err(OperationRequestError::ApplicationQueryContractMismatch);
+        }
+        Ok(Self(OperationKind::ExecuteNamedQuery {
+            lineage,
+            module_hash,
+            query_name,
+            target,
+        }))
     }
 
     /// Constructs one exact-contract immutable query-module deployment request.
@@ -832,9 +1038,13 @@ impl OperationRequest {
             OperationKind::DiscoverCommandTools => ServiceOperationV1::DiscoverCommandTools,
             OperationKind::DiscoverResources => ServiceOperationV1::DiscoverResources,
             OperationKind::DescribeContract => ServiceOperationV1::DescribeContract,
-            OperationKind::CheckQuery => ServiceOperationV1::CheckQuery,
-            OperationKind::ExplainQuery => ServiceOperationV1::ExplainQuery,
-            OperationKind::ExecuteQuery => ServiceOperationV1::ExecuteQuery,
+            OperationKind::CheckAdHocQuery => ServiceOperationV1::CheckQuery,
+            OperationKind::ExplainAdHocQuery | OperationKind::ExplainNamedQuery { .. } => {
+                ServiceOperationV1::ExplainQuery
+            }
+            OperationKind::ExecuteAdHocQuery { .. } | OperationKind::ExecuteNamedQuery { .. } => {
+                ServiceOperationV1::ExecuteQuery
+            }
             OperationKind::DeployQueryModule { .. } => ServiceOperationV1::DeployQueryModule,
         }
     }
@@ -880,10 +1090,34 @@ impl OperationRequest {
             }
             OperationKind::GetActiveContract
             | OperationKind::GetContractVersion { .. }
-            | OperationKind::DescribeContract
-            | OperationKind::CheckQuery
-            | OperationKind::ExplainQuery
-            | OperationKind::ExecuteQuery => PermissionRequirement::Kind(Kind::ReadContract),
+            | OperationKind::DescribeContract => PermissionRequirement::Kind(Kind::ReadContract),
+            OperationKind::CheckAdHocQuery => PermissionRequirement::Kind(Kind::CheckAdHocQuery),
+            OperationKind::ExplainAdHocQuery => {
+                PermissionRequirement::Kind(Kind::ExplainAdHocQuery)
+            }
+            OperationKind::ExecuteAdHocQuery { .. } => {
+                PermissionRequirement::Kind(Kind::ExecuteAdHocQuery)
+            }
+            OperationKind::ExplainNamedQuery {
+                lineage,
+                module_hash,
+                query_name,
+                ..
+            } => PermissionRequirement::Exact(CapabilityPermissionV1::ExplainNamedQuery(
+                lineage.clone(),
+                *module_hash,
+                query_name.clone(),
+            )),
+            OperationKind::ExecuteNamedQuery {
+                lineage,
+                module_hash,
+                query_name,
+                ..
+            } => PermissionRequirement::Exact(CapabilityPermissionV1::ExecuteNamedQuery(
+                lineage.clone(),
+                *module_hash,
+                query_name.clone(),
+            )),
             OperationKind::ExecuteCommand {
                 lineage,
                 command_id,
@@ -973,7 +1207,8 @@ impl OperationRequest {
             | OperationKind::ListPendingOutboxDeliveries { .. } => {
                 Some(&GLOBAL_ONLY_OPERATION_SCOPE)
             }
-            OperationKind::ExecuteQuery => Some(&GLOBAL_ONLY_OPERATION_SCOPE),
+            OperationKind::ExecuteAdHocQuery { target }
+            | OperationKind::ExecuteNamedQuery { target, .. } => Some(&target.scope.tenant_scope),
             _ => None,
         }
     }
@@ -998,6 +1233,10 @@ impl OperationRequest {
             | OperationKind::ResolveCommandOutcome { scope, .. }
             | OperationKind::GetEntity { scope, .. } => {
                 PartitionRequirement::Exact(&scope.partition)
+            }
+            OperationKind::ExecuteAdHocQuery { target }
+            | OperationKind::ExecuteNamedQuery { target, .. } => {
+                PartitionRequirement::Exact(&target.scope.partition)
             }
             OperationKind::ScanIndex { .. } | OperationKind::QueryProjection { .. } => {
                 if matches!(&self.0, OperationKind::QueryProjection { .. }) {
@@ -1073,7 +1312,10 @@ impl OperationRequest {
             | OperationKind::GetEntity { .. }
             | OperationKind::ScanIndex { .. }
             | OperationKind::QueryProjection { .. }
-            | OperationKind::ExecuteQuery => OutputClassification::PolicyFilteredApplicationData,
+            | OperationKind::ExecuteAdHocQuery { .. }
+            | OperationKind::ExecuteNamedQuery { .. } => {
+                OutputClassification::PolicyFilteredApplicationData
+            }
             OperationKind::DeployContract { .. }
             | OperationKind::DeployQueryModule { .. }
             | OperationKind::GetCommit { .. }
@@ -1121,6 +1363,14 @@ impl OperationRequest {
                 class,
                 partition: scope.partition,
             }),
+            _ => None,
+        }
+    }
+
+    pub(crate) const fn application_query_target(&self) -> Option<&ApplicationQueryTarget> {
+        match &self.0 {
+            OperationKind::ExecuteAdHocQuery { target }
+            | OperationKind::ExecuteNamedQuery { target, .. } => Some(target),
             _ => None,
         }
     }
@@ -1237,10 +1487,10 @@ pub(crate) const fn fixed_tool_permission_kind(
         FixedToolCandidate::GetProjectionStatus => Kind::ReadProjectionStatus,
         FixedToolCandidate::ListPendingOutboxDeliveries => Kind::InspectOutbox,
         FixedToolCandidate::GetHealth => Kind::ReadHealth,
-        FixedToolCandidate::DescribeContract
-        | FixedToolCandidate::CheckQuery
-        | FixedToolCandidate::ExplainQuery
-        | FixedToolCandidate::ExecuteQuery => Kind::ReadContract,
+        FixedToolCandidate::DescribeContract => Kind::ReadContract,
+        FixedToolCandidate::CheckQuery => Kind::CheckAdHocQuery,
+        FixedToolCandidate::ExplainQuery => Kind::ExplainAdHocQuery,
+        FixedToolCandidate::ExecuteQuery => Kind::ExecuteAdHocQuery,
         FixedToolCandidate::RunCommand => Kind::InvokeCommand,
     }
 }
@@ -1364,6 +1614,36 @@ mod tests {
         ContractBundleHash::from_bytes([byte; 32])
     }
 
+    fn query_module_hash() -> QueryModuleHash {
+        QueryModuleHash::from_bytes([7; 32])
+    }
+
+    fn query_name() -> QueryOperationName {
+        QueryOperationName::new("TicketPage").expect("valid query operation name")
+    }
+
+    fn application_query_target() -> ApplicationQueryTarget {
+        ApplicationQueryTarget::new(
+            lineage(),
+            version(),
+            bundle_hash(3),
+            QueryPlanHash::from_bytes([8; 32]),
+            ServiceIngressKindV1::InProcessTestComparison,
+            OperationTenantScope::global_only(),
+            partition(),
+            vec![
+                ApplicationQueryAccessRequirement::new(
+                    EntityTypeId::first(),
+                    None,
+                    vec![FieldId::first()],
+                    NonZeroU16::new(1).expect("nonzero"),
+                )
+                .expect("valid access"),
+            ],
+        )
+        .expect("valid target")
+    }
+
     fn projection_identity() -> ProjectionIdentity {
         ProjectionIdentity::new(
             lineage(),
@@ -1438,23 +1718,35 @@ mod tests {
             OperationRequest::discover_command_tools(),
             OperationRequest::discover_resources(),
             OperationRequest::describe_contract(),
-            OperationRequest::check_query(),
-            OperationRequest::explain_query(),
-            OperationRequest::execute_query(),
+            OperationRequest::check_ad_hoc_query(),
+            OperationRequest::explain_ad_hoc_query(),
+            OperationRequest::execute_ad_hoc_query(application_query_target()),
+            OperationRequest::explain_named_query(
+                lineage.clone(),
+                query_module_hash(),
+                query_name(),
+            ),
+            OperationRequest::execute_named_query(
+                lineage.clone(),
+                query_module_hash(),
+                query_name(),
+                application_query_target(),
+            )
+            .expect("matching query target"),
             OperationRequest::deploy_query_module(lineage, version(), bundle_hash(2)),
         ]
     }
 
     #[test]
-    fn request_inventory_is_exactly_the_shared_27_operations() {
+    fn request_inventory_covers_every_shared_operation() {
         let requests = requests();
-        assert_eq!(requests.len(), 27);
+        assert_eq!(requests.len(), 29);
         assert_eq!(
             requests
                 .iter()
                 .map(OperationRequest::operation)
-                .collect::<Vec<_>>(),
-            ServiceOperationV1::ALL
+                .collect::<BTreeSet<_>>(),
+            ServiceOperationV1::ALL.into_iter().collect::<BTreeSet<_>>()
         );
     }
 
@@ -1478,13 +1770,27 @@ mod tests {
                 }
             }
         }
-        assert_eq!(kinds.len(), 19);
+        assert_eq!(kinds.len(), 24);
         assert_eq!(
             kinds
                 .into_iter()
                 .map(CapabilityPermissionKindV1::tag)
                 .collect::<Vec<_>>(),
-            (1..=19).collect::<Vec<_>>()
+            (1..=24).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn named_query_permission_cannot_be_bound_to_another_contract_target() {
+        let other = ContractLineage::new("other.contract").expect("lineage");
+        assert_eq!(
+            OperationRequest::execute_named_query(
+                other,
+                query_module_hash(),
+                query_name(),
+                application_query_target(),
+            ),
+            Err(OperationRequestError::ApplicationQueryContractMismatch)
         );
     }
 
