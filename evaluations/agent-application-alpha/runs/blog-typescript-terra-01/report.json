@@ -1,0 +1,35 @@
+{
+  "schema": "riffdb-agent-application-alpha-run/v1",
+  "run_id": "blog-typescript-terra-01",
+  "bundle_hash": "1afb8faf08f43dd5f38a4b2c90a1bfad450eb1ce21663457ebbe4a1c9865827a",
+  "agent_identity": "terra-blog-typescript-01",
+  "domain": "blog",
+  "language": "typescript",
+  "independent": true,
+  "fresh_context": true,
+  "human_interventions": 0,
+  "kernel_attempts": 0,
+  "kernel_successes": 0,
+  "handwritten_glue_lines": 0,
+  "compiler_failures": 0,
+  "runtime_failures": 5,
+  "unsupported_shapes": [
+    {
+      "code": "RDB-EVAL-SCAFFOLD-WRITE",
+      "operation": "generated_blog_application",
+      "reason": "The public TypeScript scaffold failed before it wrote an application repository, so generated Blog commands and named RiffQL operations could not be created."
+    }
+  ],
+  "first_write_seconds": null,
+  "first_page_read_seconds": 146,
+  "time_to_complete_seconds": 200,
+  "source_access": {
+    "riffdb_implementation": false,
+    "ticketdesk": false
+  },
+  "boundary_passed": true,
+  "golden_passed": false,
+  "rating": 2.0,
+  "explanation": "The public documentation clearly describes the intended symbolic TypeScript path, and the supplied boundary checker accepted the final artifact. However, `riffdb new` repeatedly failed before writing a fresh repository, and `riffdb dev --seed` consequently could not run. Without a generated client, manifest, compiled commands, or named RiffQL operations, no RiffDB write could be attempted. A real local HTTP post-detail page was compiled and read successfully, but it is explicitly an unbacked failure artifact rather than a successful Blog/CMS workload. The essential empty-repository product path is therefore blocked.",
+  "transcript_sha256": "536afe1c62a326ce025a125649e6169411f9b0d633b102a3121194433d3c061d"
+}

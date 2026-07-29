@@ -1,0 +1,35 @@
+{
+  "schema": "riffdb-agent-application-alpha-run/v1",
+  "run_id": "orders-rust-terra-01",
+  "bundle_hash": "1afb8faf08f43dd5f38a4b2c90a1bfad450eb1ce21663457ebbe4a1c9865827a",
+  "agent_identity": "terra-orders-rust-01",
+  "domain": "orders",
+  "language": "rust",
+  "independent": true,
+  "fresh_context": true,
+  "human_interventions": 0,
+  "kernel_attempts": 0,
+  "kernel_successes": 0,
+  "handwritten_glue_lines": 0,
+  "compiler_failures": 3,
+  "runtime_failures": 2,
+  "unsupported_shapes": [
+    {
+      "code": "manifest_identity_refresh",
+      "operation": "orders_inventory_contract",
+      "reason": "The public manifest requires new content hashes after changing the scaffold, but the exposed application CLI provides no author-facing hash refresh path; generation fails closed."
+    }
+  ],
+  "first_write_seconds": 172,
+  "first_page_read_seconds": 172,
+  "time_to_complete_seconds": 321,
+  "source_access": {
+    "riffdb_implementation": false,
+    "ticketdesk": false
+  },
+  "boundary_passed": true,
+  "golden_passed": false,
+  "rating": 3.0,
+  "explanation": "The public Rust scaffold, generated client, seed write, page read, and final application-boundary check succeeded without kernel use or handwritten RiffDB glue. The complete Orders/Inventory workload could not be created: changing the scaffolded contract produced either a generic compile failure or a pinned-manifest identity mismatch, while the documented public application surface exposes no mechanism to calculate and update the required identities. Therefore customers, products, exact prices, inventory reservation/retry proof, order lines, fulfillment state, and the four required named reads remain unimplemented.",
+  "transcript_sha256": "aa29ce7819b84cb80e3c1452ae141e285e543397b65af1d752352c91a3a479d9"
+}

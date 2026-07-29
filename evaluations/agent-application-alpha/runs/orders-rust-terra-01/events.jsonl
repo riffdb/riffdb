@@ -1,0 +1,13 @@
+{"schema":"riffdb-agent-application-alpha-event/v1","elapsed_ms":0,"kind":"start","operation":"orders-rust"}
+{"schema":"riffdb-agent-application-alpha-event/v1","elapsed_ms":1000,"kind":"source_access","code":"bundle_public_only","operation":"public_bundle"}
+{"schema":"riffdb-agent-application-alpha-event/v1","elapsed_ms":54000,"kind":"runtime_failure","code":"scaffold_relative_destination","operation":"riffdb_new"}
+{"schema":"riffdb-agent-application-alpha-event/v1","elapsed_ms":69000,"kind":"runtime_failure","code":"scaffold_default_destination","operation":"riffdb_new"}
+{"schema":"riffdb-agent-application-alpha-event/v1","elapsed_ms":172000,"kind":"first_write","code":"seed_command_succeeded","operation":"CreateItem"}
+{"schema":"riffdb-agent-application-alpha-event/v1","elapsed_ms":172000,"kind":"first_page_read","code":"generated_page_succeeded","operation":"ItemPage"}
+{"schema":"riffdb-agent-application-alpha-event/v1","elapsed_ms":238000,"kind":"compiler_failure","code":"application_contract_compile_failed","operation":"riffdb_application_generate"}
+{"schema":"riffdb-agent-application-alpha-event/v1","elapsed_ms":251000,"kind":"compiler_failure","code":"application_contract_compile_failed","operation":"riffdb_dev"}
+{"schema":"riffdb-agent-application-alpha-event/v1","elapsed_ms":276000,"kind":"compiler_failure","code":"pinned_manifest_identity_mismatch","operation":"riffdb_application_generate"}
+{"schema":"riffdb-agent-application-alpha-event/v1","elapsed_ms":291000,"kind":"unsupported_shape","code":"manifest_identity_refresh","operation":"orders_inventory_contract"}
+{"schema":"riffdb-agent-application-alpha-event/v1","elapsed_ms":316000,"kind":"tool","code":"boundary_check_passed","operation":"check_application_boundary"}
+{"schema":"riffdb-agent-application-alpha-event/v1","elapsed_ms":321000,"kind":"complete","code":"golden_incomplete","operation":"orders_rust_evaluation"}
+{"schema":"riffdb-agent-application-alpha-event/v1","elapsed_ms":321000,"kind":"rating","code":"rating_3_0","operation":"orders_rust_evaluation"}

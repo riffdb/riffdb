@@ -1,0 +1,13 @@
+{"schema":"riffdb-agent-application-alpha-event/v1","elapsed_ms":0,"kind":"start","operation":"orders.typescript"}
+{"schema":"riffdb-agent-application-alpha-event/v1","elapsed_ms":1000,"kind":"tool","code":"bundle.docs.read","operation":"public.docs"}
+{"schema":"riffdb-agent-application-alpha-event/v1","elapsed_ms":42000,"kind":"source_access","code":"source_access.none","operation":"sealed.bundle"}
+{"schema":"riffdb-agent-application-alpha-event/v1","elapsed_ms":79000,"kind":"compiler_failure","code":"riffdb.application.generate_failed","operation":"orders.contract"}
+{"schema":"riffdb-agent-application-alpha-event/v1","elapsed_ms":116000,"kind":"unsupported_shape","code":"orders.reservation.contract","operation":"ReserveOrder"}
+{"schema":"riffdb-agent-application-alpha-event/v1","elapsed_ms":169000,"kind":"tool","code":"riffdb.dev.acceptance","operation":"application.scaffold"}
+{"schema":"riffdb-agent-application-alpha-event/v1","elapsed_ms":258000,"kind":"compiler_failure","code":"typescript.node_types_missing","operation":"orders.web.compile"}
+{"schema":"riffdb-agent-application-alpha-event/v1","elapsed_ms":278000,"kind":"tool","code":"typescript.compile_passed","operation":"orders.web.compile"}
+{"schema":"riffdb-agent-application-alpha-event/v1","elapsed_ms":315000,"kind":"first_write","code":"generated.command.success","operation":"CreateItem"}
+{"schema":"riffdb-agent-application-alpha-event/v1","elapsed_ms":316000,"kind":"first_page_read","code":"generated.named_query.success","operation":"ItemPage"}
+{"schema":"riffdb-agent-application-alpha-event/v1","elapsed_ms":335000,"kind":"tool","code":"application.boundary.passed","operation":"application.boundary"}
+{"schema":"riffdb-agent-application-alpha-event/v1","elapsed_ms":336000,"kind":"rating","code":"rating.2","operation":"orders.typescript"}
+{"schema":"riffdb-agent-application-alpha-event/v1","elapsed_ms":336000,"kind":"complete","code":"run.complete","operation":"orders.typescript"}

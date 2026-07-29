@@ -1,0 +1,13 @@
+{"schema":"riffdb-agent-application-alpha-event/v1","elapsed_ms":0,"kind":"start","operation":"blog_rust"}
+{"schema":"riffdb-agent-application-alpha-event/v1","elapsed_ms":1000,"kind":"runtime_failure","code":"CLI_DESTINATION_EXISTS","operation":"riffdb_new"}
+{"schema":"riffdb-agent-application-alpha-event/v1","elapsed_ms":1000,"kind":"intervention","code":"CLI_CHILD_DIRECTORY","operation":"riffdb_new"}
+{"schema":"riffdb-agent-application-alpha-event/v1","elapsed_ms":2000,"kind":"runtime_failure","code":"CLI_REPOSITORY_WRITE_FAILED","operation":"riffdb_new"}
+{"schema":"riffdb-agent-application-alpha-event/v1","elapsed_ms":2000,"kind":"intervention","code":"RECREATE_EMPTY_DESTINATION","operation":"riffdb_new"}
+{"schema":"riffdb-agent-application-alpha-event/v1","elapsed_ms":3000,"kind":"runtime_failure","code":"CLI_REPOSITORY_WRITE_FAILED","operation":"riffdb_new"}
+{"schema":"riffdb-agent-application-alpha-event/v1","elapsed_ms":4000,"kind":"runtime_failure","code":"MANIFEST_INVALID","operation":"application_generate"}
+{"schema":"riffdb-agent-application-alpha-event/v1","elapsed_ms":5000,"kind":"runtime_failure","code":"MANIFEST_INVALID","operation":"riffdb_dev_acceptance"}
+{"schema":"riffdb-agent-application-alpha-event/v1","elapsed_ms":100432,"kind":"unsupported_shape","code":"MANIFEST_SCHEMA_UNAVAILABLE","operation":"blog_cms"}
+{"schema":"riffdb-agent-application-alpha-event/v1","elapsed_ms":162541,"kind":"runtime_failure","code":"MANIFEST_INVALID","operation":"application_boundary_checker"}
+{"schema":"riffdb-agent-application-alpha-event/v1","elapsed_ms":162541,"kind":"source_access","code":"NO_PRIVATE_SOURCE","operation":"source_access"}
+{"schema":"riffdb-agent-application-alpha-event/v1","elapsed_ms":162541,"kind":"complete","operation":"blog_rust"}
+{"schema":"riffdb-agent-application-alpha-event/v1","elapsed_ms":162541,"kind":"rating","code":"RATING_1","operation":"blog_rust"}
