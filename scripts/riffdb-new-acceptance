@@ -1,0 +1,53 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+cd "$repo_root"
+
+for tool in cargo diff mktemp; do
+    command -v "$tool" >/dev/null 2>&1 || {
+        echo "required scaffold acceptance tool is missing: $tool" >&2
+        exit 1
+    }
+done
+
+cargo build --quiet -p riffdb-cli --bin riffdb
+riffdb="$repo_root/target/debug/riffdb"
+work_root="$(mktemp -d "${TMPDIR:-/tmp}/riffdb-new-acceptance.XXXXXX")"
+cleanup() {
+    rm -rf "$work_root"
+}
+trap cleanup EXIT INT TERM
+
+"$riffdb" new order-desk --directory "$work_root/rust-one"
+"$riffdb" new order-desk --directory "$work_root/rust-two"
+"$riffdb" new order-desk --language typescript --directory "$work_root/typescript"
+
+diff -ru "$work_root/rust-one" "$work_root/rust-two"
+"$riffdb" application generate "$work_root/rust-one/riffdb.application.json"
+"$repo_root/scripts/check-application-boundary" \
+    "$work_root/rust-one" \
+    "$work_root/typescript" \
+    "$repo_root/examples/agent-alpha"
+
+if "$riffdb" new order-desk --directory "$work_root/rust-one"; then
+    echo "riffdb new unexpectedly overwrote an existing application" >&2
+    exit 1
+fi
+for unsafe_fixture in \
+    negative-kernel-dependency \
+    negative-handwritten-transport \
+    negative-fake-generated; do
+    if "$repo_root/scripts/check-application-boundary" \
+        "$repo_root/fixtures/application-boundaries/$unsafe_fixture"; then
+        echo "boundary linter accepted unsafe fixture: $unsafe_fixture" >&2
+        exit 1
+    fi
+done
+
+(
+    cd "$work_root/rust-one"
+    "$riffdb" dev --seed --acceptance
+)
+
+echo "riffdb new acceptance passed"

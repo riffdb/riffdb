@@ -1,0 +1,175 @@
+{
+  "application_manifest_hash": "8ca0da7b600c68f1f31724303db27d81dc599d1bd83469ac372033ca1f4fc913",
+  "commands": [
+    {
+      "annotations": {
+        "destructiveHint": true,
+        "idempotentHint": true,
+        "openWorldHint": false,
+        "readOnlyHint": false
+      },
+      "contract_bundle_hash": "26ad9a9d1b67644ca151981d54a4bd3091a25a6c641f484457a9a40c8d57f1b4",
+      "description": "Execute the exact CreateItem compiled command from contract AgentAlpha.",
+      "input_schema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "properties": {
+          "idempotency_key": {
+            "type": "string"
+          },
+          "item_id": {
+            "type": "string"
+          },
+          "title": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "title",
+          "item_id",
+          "idempotency_key"
+        ],
+        "type": "object"
+      },
+      "name": "agent_alpha.create_item",
+      "plan_hash": "1c556595b9c28cdd10c24500e2b5c448ab4aa80a1b5f8c6afc64c5570d65c8ba",
+      "result_schema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "oneOf": [
+          {
+            "additionalProperties": false,
+            "properties": {
+              "item": {
+                "additionalProperties": false,
+                "properties": {
+                  "created_at": {
+                    "type": "string"
+                  },
+                  "item_id": {
+                    "type": "string"
+                  },
+                  "title": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "title",
+                  "item_id",
+                  "created_at"
+                ],
+                "type": "object"
+              },
+              "outcome": {
+                "const": "Created",
+                "type": "string"
+              }
+            },
+            "required": [
+              "item",
+              "outcome"
+            ],
+            "type": "object"
+          },
+          {
+            "additionalProperties": false,
+            "properties": {
+              "item_id": {
+                "type": "string"
+              },
+              "outcome": {
+                "const": "ItemExists",
+                "type": "string"
+              }
+            },
+            "required": [
+              "item_id",
+              "outcome"
+            ],
+            "type": "object"
+          }
+        ]
+      },
+      "title": "Run CreateItem"
+    }
+  ],
+  "schema": "riffdb-generated-mcp-tools-v1",
+  "tools": [
+    {
+      "annotations": {
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false,
+        "readOnlyHint": true
+      },
+      "description": "Execute the exact ItemPage named query from immutable module agent_alpha.",
+      "input_schema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "properties": {
+          "item_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "item_id"
+        ],
+        "type": "object"
+      },
+      "module_hash": "30408cd94c7b82ab8dcf38557af7dc7ab0db223f6350abf7b81b52d6238be16d",
+      "name": "agent_alpha.item_page",
+      "result_schema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "oneOf": [
+          {
+            "additionalProperties": false,
+            "properties": {
+              "item": {
+                "additionalProperties": false,
+                "properties": {
+                  "created_at": {
+                    "type": "string"
+                  },
+                  "item_id": {
+                    "type": "string"
+                  },
+                  "title": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "item_id",
+                  "title",
+                  "created_at"
+                ],
+                "type": "object"
+              },
+              "outcome": {
+                "const": "Found",
+                "type": "string"
+              }
+            },
+            "required": [
+              "outcome",
+              "item"
+            ],
+            "type": "object"
+          },
+          {
+            "additionalProperties": false,
+            "properties": {
+              "outcome": {
+                "const": "NotFound",
+                "type": "string"
+              }
+            },
+            "required": [
+              "outcome"
+            ],
+            "type": "object"
+          }
+        ]
+      },
+      "title": "Run ItemPage"
+    }
+  ]
+}

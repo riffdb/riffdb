@@ -1,5 +1,20 @@
 # RiffDB
 
+## Build an application
+
+The application-first path starts from symbolic contract and RiffQL sources:
+
+```bash
+riffdb new order-desk
+cd order-desk
+riffdb dev --seed
+```
+
+This produces and verifies typed Rust, TypeScript, and MCP operations without
+exposing numeric schema IDs, field masks, encoded keys, protobuf records, or
+kernel RPCs to handwritten application code. See the
+[agent application quickstart](docs/getting-started/AGENT-APPLICATION-QUICKSTART.md).
+
 RiffDB is a standalone database written in Rust for contract-first operational
 state. Applications mutate state through compiled, typed commands. The database
 owns invariant evaluation, conflict domains, retry identity, durable outcomes,

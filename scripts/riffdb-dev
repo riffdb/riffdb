@@ -1,10 +1,13 @@
 #!/usr/bin/env bash
 set -euo pipefail
+umask 077
 
-repo_root="$(git rev-parse --show-toplevel)"
+script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+repo_root="$(cd "$script_dir/.." && pwd)"
+application_root=
 cd "$repo_root"
 
-role=ticketdesk-application
+role=application
 watch=0
 acceptance=0
 seed_dir=
@@ -14,6 +17,10 @@ while (($#)); do
     case "$1" in
         --role)
             role="${2:-}"
+            shift 2
+            ;;
+        --application-root)
+            application_root="${2:-}"
             shift 2
             ;;
         --watch) watch=1; shift ;;
@@ -28,19 +35,30 @@ while (($#)); do
             shift 2
             ;;
         *)
-            echo "usage: riffdb-dev [--role ticketdesk-application|ticketdesk-agent|ticketdesk-kernel] [--watch] [--seed] [--seed-dir DIR] [--seed-concurrency 1..8] [--acceptance]" >&2
+            echo "usage: riffdb-dev [--application-root DIR] [--role application|ROLE] [--watch] [--seed] [--seed-dir DIR] [--seed-concurrency 1..8] [--acceptance]" >&2
             exit 2
             ;;
     esac
 done
 
-case "$role" in
-    ticketdesk-application|ticketdesk-agent|ticketdesk-kernel) ;;
-    *)
-        echo "unknown development role preset: $role" >&2
+generic_application=0
+if [[ -n "$application_root" ]]; then
+    application_root="$(cd "$application_root" && pwd)"
+    [[ -f "$application_root/riffdb.application.json" ]] || {
+        echo "application root has no riffdb.application.json" >&2
         exit 2
-        ;;
-esac
+    }
+    generic_application=1
+else
+    case "$role" in
+        application) role=ticketdesk-application ;;
+        ticketdesk-application|ticketdesk-agent|ticketdesk-kernel) ;;
+        *)
+            echo "unknown development role preset: $role" >&2
+            exit 2
+            ;;
+    esac
+fi
 [[ "$seed_concurrency" =~ ^[1-8]$ ]] || {
     echo "seed concurrency must be in 1..8" >&2
     exit 2
@@ -63,16 +81,45 @@ if ((acceptance)); then
     profile=release
     profile_args+=(--release)
 fi
-cargo build --quiet "${profile_args[@]}" \
-    -p riffdb-server --bin riffdbd -p riffdb-cli --bin riffdb \
-    -p riffdb-ticketdesk --bin benchmark
+build_packages=(-p riffdb-server --bin riffdbd -p riffdb-cli --bin riffdb)
+if ((generic_application == 0)); then
+    build_packages+=(-p riffdb-ticketdesk --bin benchmark)
+fi
+cargo build --quiet "${profile_args[@]}" "${build_packages[@]}"
 riffdbd="$repo_root/target/$profile/riffdbd"
 riffdb="$repo_root/target/$profile/riffdb"
-benchmark="$repo_root/target/$profile/benchmark"
-contract="$repo_root/examples/app-baseline/contracts/ticketdesk.riff"
-queries="$repo_root/queries/ticketdesk"
 bootstrap_request="$repo_root/release/config/bootstrap-ticketdesk-dev.json"
-application_manifest="$repo_root/fixtures/application-manifests/ticketdesk-v1.json"
+if ((generic_application)); then
+    application_manifest="$application_root/riffdb.application.json"
+    "$riffdb" application generate "$application_manifest"
+    "$repo_root/scripts/check-application-boundary" "$application_root"
+    contract="$application_root/$(jq -er '.contract.source' "$application_manifest")"
+    query_source="$application_root/$(jq -er '.query_modules[0].queries[0].source' "$application_manifest")"
+    queries="$(dirname "$query_source")"
+    module_name="$(jq -er '.query_modules[0].name' "$application_manifest")"
+    module_version="$(jq -er '.query_modules[0].version' "$application_manifest")"
+    contract_lineage="$(jq -er '.contract.lineage' "$application_manifest")"
+    contract_version="$(jq -er '.contract.version' "$application_manifest")"
+    if [[ "$role" == "application" ]]; then
+        role_symbol="$(jq -er '.roles[0].name' "$application_manifest")"
+    else
+        role_symbol="$role"
+        jq -e --arg role "$role_symbol" '.roles | any(.name == $role)' \
+            "$application_manifest" >/dev/null || {
+            echo "application manifest does not declare role: $role_symbol" >&2
+            exit 2
+        }
+    fi
+else
+    benchmark="$repo_root/target/$profile/benchmark"
+    contract="$repo_root/examples/app-baseline/contracts/ticketdesk.riff"
+    queries="$repo_root/queries/ticketdesk"
+    application_manifest="$repo_root/fixtures/application-manifests/ticketdesk-v1.json"
+    module_name=ticketdesk
+    module_version=1
+    contract_lineage=TicketDesk
+    contract_version=1
+fi
 
 work_root="$(mktemp -d "${TMPDIR:-/tmp}/riffdb-dev.XXXXXX")"
 server_pid=
@@ -143,18 +190,27 @@ operator=("$riffdb" --endpoint "$endpoint" --output json --credential-file "$wor
 "${operator[@]}" contract deploy "$contract" >"$work_root/contract.json"
 jq -e '.ok == true and .command == "contract.deploy"' "$work_root/contract.json" >/dev/null
 if ! "${operator[@]}" query deploy "$queries" \
-    --module-name ticketdesk \
-    --module-version 1 \
+    --module-name "$module_name" \
+    --module-version "$module_version" \
     --expected-active any \
-    --contract-lineage TicketDesk \
-    --contract-version 1 >"$work_root/module.json"; then
+    --contract-lineage "$contract_lineage" \
+    --contract-version "$contract_version" >"$work_root/module.json"; then
     cat "$work_root/module.json" >&2
     cat "$work_root/riffdbd.stderr" >&2
     exit 1
 fi
 jq -e '.ok == true and .command == "query.deploy"' "$work_root/module.json" >/dev/null
 
-case "$role" in
+if ((generic_application)); then
+    "${operator[@]}" role bind "$application_manifest" \
+        --role "$role_symbol" \
+        --principal "app:$(jq -er '.application' "$application_manifest")" \
+        --actor-kind service \
+        --lifetime-seconds 86400 \
+        --audience riffdb-grpc-loopback \
+        --credential-output "$work_root/profile.credential" >"$work_root/role.json"
+    jq -e '.ok == true and .command == "role.bind"' "$work_root/role.json" >/dev/null
+else case "$role" in
     ticketdesk-application)
         "${operator[@]}" role bind "$application_manifest" \
             --role TicketDeskApplication \
@@ -182,16 +238,17 @@ case "$role" in
         jq -e '.ok == true and .command == "capability.create"' "$work_root/role.json" >/dev/null
         ;;
 esac
+fi
 
 profile_client=("$riffdb" --endpoint "$endpoint" --output json --credential-file "$work_root/profile.credential")
 "${operator[@]}" query module \
-    --contract-lineage TicketDesk \
-    --contract-version 1 >"$work_root/inspect.json"
-jq -e '
+    --contract-lineage "$contract_lineage" \
+    --contract-version "$contract_version" >"$work_root/inspect.json"
+jq -e --arg module "$module_name" '
   .ok == true
   and .command == "query.module"
-  and .result.module.module_name == "ticketdesk"
-  and (.result.queries | length) == 8
+  and .result.module.module_name == $module
+  and (.result.queries | length) > 0
 ' "$work_root/inspect.json" >/dev/null
 
 run_seed() {
@@ -225,6 +282,38 @@ run_seed() {
         echo "seed directory contains no JSONL command batches" >&2
         return 1
     fi
+}
+
+run_seed_file() {
+    local seed_file="$1"
+    local namespace="$2"
+    local command_name seed_result
+    [[ -f "$seed_file" ]] || {
+        echo "seed input is unavailable: $seed_file" >&2
+        return 1
+    }
+    command_name="$(basename "$seed_file" .jsonl)"
+    command_name="${command_name#*-}"
+    [[ -n "$command_name" ]] || {
+        echo "seed input must be named NN-CommandName.jsonl" >&2
+        return 1
+    }
+    seed_result="$work_root/seed-$namespace-$(basename "$seed_file").result"
+    if ! "${profile_client[@]}" command batch "$command_name" "$seed_file" \
+        --concurrency "$seed_concurrency" \
+        --checkpoint "$work_root/seed-$namespace-$(basename "$seed_file").checkpoint.json" \
+        >"$seed_result"; then
+        cat "$seed_result" >&2
+        cat "$work_root/riffdbd.stderr" >&2
+        return 1
+    fi
+    jq -e '
+      .ok == true
+      and .command == "command.batch"
+      and .result.pending == 0
+      and .result.rejected == 0
+      and .result.total == .result.succeeded
+    ' "$seed_result" >/dev/null
 }
 
 seed_uuid() {
@@ -316,32 +405,45 @@ if [[ -n "$seed_dir" ]]; then
     run_seed "$seed_dir" external
 fi
 if ((acceptance || seed_builtin)); then
-    builtin_seed_dir="$work_root/builtin-seed"
-    generate_builtin_seed "$builtin_seed_dir"
-    seed_started_ns="$(date +%s%N)"
-    run_seed "$builtin_seed_dir" builtin
-    seed_ns=$(( $(date +%s%N) - seed_started_ns ))
-    seed_rows=276
-    if ((seed_ns > 3000000000)); then
-        echo "built-in TicketDesk seed missed the 3 second gate: ${seed_ns}ns" >&2
-        exit 1
+    if ((generic_application)); then
+        seed_index=0
+        while IFS= read -r seed_relative; do
+            ((seed_index += 1))
+            run_seed_file "$application_root/$seed_relative" "manifest-$seed_index"
+        done < <(jq -er '.seed_inputs[]' "$application_manifest")
+        ((seed_index > 0)) || {
+            echo "application manifest contains no seed inputs" >&2
+            exit 1
+        }
+        printf 'riffdb-dev-seed-v1\t%s\tapplication-manifest\n' "$seed_index" >&2
+    else
+        builtin_seed_dir="$work_root/builtin-seed"
+        generate_builtin_seed "$builtin_seed_dir"
+        seed_started_ns="$(date +%s%N)"
+        run_seed "$builtin_seed_dir" builtin
+        seed_ns=$(( $(date +%s%N) - seed_started_ns ))
+        seed_rows=276
+        if ((seed_ns > 3000000000)); then
+            echo "built-in TicketDesk seed missed the 3 second gate: ${seed_ns}ns" >&2
+            exit 1
+        fi
+        printf 'riffdb-dev-seed-v1\t%s\t%sns\n' "$seed_rows" "$seed_ns" >&2
+        benchmark_result="$("$benchmark" "$endpoint" "$work_root/profile.credential")"
+        IFS=$'\t' read -r benchmark_schema list_ns members_ns summary_ns detail_ns <<<"$benchmark_result"
+        [[ "$benchmark_schema" == "riffdb-ticketdesk-query-benchmark-v1" ]] || {
+            echo "TicketDesk named-query benchmark returned an invalid result" >&2
+            exit 1
+        }
+        if ((list_ns > 15000000 || members_ns > 15000000 || summary_ns > 15000000 || detail_ns > 15000000)); then
+            echo "TicketDesk named-query benchmark missed the 15ms gate" >&2
+            exit 1
+        fi
+        printf 'riffdb-dev-query-p50-v1\tlist=%sns\tmembers=%sns\tsummary=%sns\tdetail=%sns\n' \
+            "$list_ns" "$members_ns" "$summary_ns" "$detail_ns" >&2
     fi
-    printf 'riffdb-dev-seed-v1\t%s\t%sns\n' "$seed_rows" "$seed_ns" >&2
-    benchmark_result="$("$benchmark" "$endpoint" "$work_root/profile.credential")"
-    IFS=$'\t' read -r benchmark_schema list_ns members_ns summary_ns detail_ns <<<"$benchmark_result"
-    [[ "$benchmark_schema" == "riffdb-ticketdesk-query-benchmark-v1" ]] || {
-        echo "TicketDesk named-query benchmark returned an invalid result" >&2
-        exit 1
-    }
-    if ((list_ns > 15000000 || members_ns > 15000000 || summary_ns > 15000000 || detail_ns > 15000000)); then
-        echo "TicketDesk named-query benchmark missed the 15ms gate" >&2
-        exit 1
-    fi
-    printf 'riffdb-dev-query-p50-v1\tlist=%sns\tmembers=%sns\tsummary=%sns\tdetail=%sns\n' \
-        "$list_ns" "$members_ns" "$summary_ns" "$detail_ns" >&2
 fi
 
-if ((acceptance)) && [[ "$role" == "ticketdesk-application" ]]; then
+if ((acceptance)) && ((generic_application == 0)) && [[ "$role" == "ticketdesk-application" ]]; then
     if "${profile_client[@]}" query run "$repo_root/queries/ticketdesk/get_ticket.riffq" \
         --contract-lineage TicketDesk \
         --contract-version 1 \
@@ -358,8 +460,42 @@ if ((acceptance)) && [[ "$role" == "ticketdesk-application" ]]; then
     ' "$work_root/ad-hoc-denied.json" >/dev/null
 fi
 
+if ((acceptance)) && ((generic_application)); then
+    if [[ -f "$application_root/Cargo.toml" ]]; then
+        app_patch="patch.crates-io.riffdb-client-rust.path=\"$repo_root/crates/riffdb-client-rust\""
+        CARGO_TARGET_DIR="$repo_root/target/application-alpha" \
+            cargo run --quiet --offline \
+            --manifest-path "$application_root/Cargo.toml" \
+            --config "$app_patch" \
+            -- "$endpoint" "$work_root/profile.credential" \
+            >"$work_root/generated-application-client.stdout"
+        [[ -s "$work_root/generated-application-client.stdout" ]] || {
+            echo "generated Rust application client returned no typed page result" >&2
+            exit 1
+        }
+    fi
+    printf '{"item_id":{"$uuid":"018f0f8b-7c6d-7e31-8a4f-2c2d37a52b10"}}\n' \
+        >"$work_root/item-page.parameters.json"
+    module_hash="$(jq -er '.query_modules[0].module_hash' "$application_manifest")"
+    "${profile_client[@]}" query run-named ItemPage \
+        --module-hash "$module_hash" \
+        --contract-lineage "$contract_lineage" \
+        --contract-version "$contract_version" \
+        --parameters "$work_root/item-page.parameters.json" \
+        >"$work_root/item-page.json"
+    jq -e '
+      .ok == true
+      and .command == "query.run_named"
+      and .result.outcome == "Found"
+    ' "$work_root/item-page.json" >/dev/null
+fi
+
+reported_role="$role"
+if ((generic_application)); then
+    reported_role="$role_symbol"
+fi
 printf 'riffdb-dev-ready-v1\t%s\t%s\t%s\n' \
-    "$endpoint" "$work_root/profile.credential" "$role"
+    "$endpoint" "$work_root/profile.credential" "$reported_role"
 
 if ((acceptance)); then
     exit 0
@@ -373,23 +509,30 @@ fi
 
 contract_stamp="$(stat -c '%Y:%s' "$contract")"
 query_stamp="$(find "$queries" -maxdepth 1 -type f -name '*.riffq' -printf '%f:%T@:%s\n' | sort)"
-module_version=1
 while kill -0 "$server_pid" 2>/dev/null; do
     sleep 0.25
     next_contract_stamp="$(stat -c '%Y:%s' "$contract")"
     next_query_stamp="$(find "$queries" -maxdepth 1 -type f -name '*.riffq' -printf '%f:%T@:%s\n' | sort)"
     if [[ "$next_contract_stamp" != "$contract_stamp" ]]; then
+        if ((generic_application)); then
+            "$riffdb" application generate "$application_manifest"
+            "$repo_root/scripts/check-application-boundary" "$application_root"
+        fi
         "${operator[@]}" contract deploy "$contract" >/dev/null
         contract_stamp="$next_contract_stamp"
     fi
     if [[ "$next_query_stamp" != "$query_stamp" ]]; then
         ((module_version += 1))
+        if ((generic_application)); then
+            "$riffdb" application generate "$application_manifest"
+            "$repo_root/scripts/check-application-boundary" "$application_root"
+        fi
         "${operator[@]}" query deploy "$queries" \
-            --module-name ticketdesk \
+            --module-name "$module_name" \
             --module-version "$module_version" \
             --expected-active any \
-            --contract-lineage TicketDesk \
-            --contract-version 1 >/dev/null
+            --contract-lineage "$contract_lineage" \
+            --contract-version "$contract_version" >/dev/null
         query_stamp="$next_query_stamp"
     fi
 done

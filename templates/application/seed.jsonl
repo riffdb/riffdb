@@ -1,0 +1,1 @@
+{"idempotency_key":"dev-item-welcome","item_id":{"$uuid":"018f0f8b-7c6d-7e31-8a4f-2c2d37a52b10"},"title":"Welcome to {{APPLICATION_NAME}}"}

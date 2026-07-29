@@ -1,0 +1,12 @@
+{
+  "compilerOptions": {
+    "exactOptionalPropertyTypes": true,
+    "module": "NodeNext",
+    "moduleResolution": "NodeNext",
+    "noImplicitOverride": true,
+    "noUncheckedIndexedAccess": true,
+    "strict": true,
+    "target": "ES2022"
+  },
+  "include": ["src/**/*.ts", "generated/**/*.ts"]
+}
