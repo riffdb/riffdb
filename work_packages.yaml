@@ -3106,6 +3106,7 @@ work_packages:
   - crates/riffdb-query-compiler/**
   - crates/riffdb-query-module/**
   - crates/riffdb-catalog/**
+  - crates/riffdb-commit/**
   - crates/riffdb-storage-api/**
   - crates/riffdb-storage-memory/**
   - crates/riffdb-storage-redb/**

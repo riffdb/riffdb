@@ -327,6 +327,14 @@ hash_id!(
     QueryPlanHash
 );
 hash_id!(
+    /// The identity of one canonical immutable query module.
+    QueryModuleHash
+);
+hash_id!(
+    /// The hash of one exact RiffQL source document.
+    QuerySourceHash
+);
+hash_id!(
     /// The hash of one canonical name-addressed RiffQL parameter set.
     QueryParameterHash
 );

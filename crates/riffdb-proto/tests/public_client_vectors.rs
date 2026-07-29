@@ -387,11 +387,7 @@ fn expected_enum_values() -> BTreeSet<String> {
             18,
             "FIXED_TOOL_KIND_EXECUTE_QUERY",
         ),
-        (
-            "riffdb.v1.FixedToolKind",
-            19,
-            "FIXED_TOOL_KIND_RUN_COMMAND",
-        ),
+        ("riffdb.v1.FixedToolKind", 19, "FIXED_TOOL_KIND_RUN_COMMAND"),
         (
             "riffdb.v1.OutboxDeliveryState",
             0,
