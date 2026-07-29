@@ -6,7 +6,7 @@
 **Tagline:** *Vibe fast. Commit safely.*  
 **Category:** Contract-first operational database for agent-built applications  
 
-**Version:** 0.37
+**Version:** 0.38
 **Status:** Application-platform implementation handoff
 **Date:** 29 July 2026
 **Audience:** Coding agents, database engineers, compiler engineers, security reviewers, and technical product leads  
@@ -73,6 +73,7 @@
 | 0.35 | 2026-07-24 | Applied accepted ADR-0049 and ADR-0050: completed bounded derived-worker recovery observations, catalog-owned event materialization and projection expression ownership, closed owner telemetry and hosted-MCP server composition; activated WP-155 with three public offline maintenance operations, a checksummed external receipt ledger, staged-backup authorization, and the explicit restore-rewind limitation. |
 | 0.36 | 2026-07-28 | Applied accepted ADR-0051 through ADR-0053: established bounded symbolic RiffQL, exact-contract immutable query modules, an additive application API above the compatible kernel gRPC surface, one-snapshot composite query execution, rebuildable current catalog/capability views, and measured unary-gRPC-first application performance gates through WP-270. |
 | 0.37 | 2026-07-29 | Applied accepted ADR-0054 and WP-275: added bounded collection-to-complete-key dependencies with explicit missing-target outcomes, closed dependent point batching inside one snapshot, and full one-request TicketDesk detail-page parity without general SQL joins. |
+| 0.38 | 2026-07-29 | Applied accepted ADR-0055 and planned WP-280 through WP-300: separated stable named-application, scoped ad-hoc-agent, and kernel authority; required private derived query proofs, whole-request execution fuel, declared relationship and uniqueness integrity, safe generated defaults, and negative application canaries. |
 
 ### Normative language
 
@@ -195,6 +196,7 @@ These decisions are binding for the POC unless changed through an ADR reviewed b
 | Redb baseline | `STO-001` The first storage implementation MUST use `redb` behind a narrow semantic storage trait. | Provides pure-Rust ACID storage with simple single-writer commit behavior. |
 | Versioned Protobuf records | `STO-002` Durable records and public gRPC messages MUST use explicit versioned Protobuf schemas. | Supports compatibility, generated types, and future replicated-log entries. |
 | Shared service core | `API-001` gRPC, CLI, Rust SDK, and MCP MUST invoke the same application service and authorization layer. | Avoids semantic drift and privileged side paths. |
+| Closed application authority | `SAFE-001` through `SAFE-003` separate exact named stable-application operations, explicitly granted ad-hoc agent queries, and raw kernel administration. | Makes reviewed application behavior enforceable instead of relying on SDK convention or table-shaped permissions. |
 | Native MCP | `MCP-001` MCP MUST be an in-repository first-class interface, not a separate integration maintained against internal APIs. | The product is designed for autonomous agents and should expose its semantics directly. |
 | No replication in POC | `REP-001` The POC MUST preserve replicated-state-machine-shaped boundaries but MUST NOT implement Raft. | Prevents consensus engineering from obscuring the semantic proof. |
 
@@ -5273,6 +5275,7 @@ earlier deadline governs unless a reviewed reconciliation changes both sources.
 | `ADR-0052` | Accepted | Immutable exact-contract query modules, additive application gRPC, symbolic MCP/CLI operations, and optional generated clients | WP-250 and WP-260 |
 | `ADR-0053` | Accepted | One-snapshot composite execution, epoch-bound cursors, rebuildable current catalog/capability views, and measured unary-gRPC-first optimization | WP-205, WP-240, and WP-270 |
 | `ADR-0054` | Accepted | Bounded collection-to-complete-key dependencies, explicit missing-target outcomes, and one-snapshot dependent point batches | WP-275 |
+| `ADR-0055` | Accepted | Disjoint stable-application, ad-hoc-agent, and kernel authority; private exact-plan proofs; whole-query fuel; declared relationship/uniqueness integrity; and negative safety canaries | WP-280 through WP-300 |
 
 ## 22.2 Decisions to resolve before implementation reaches the named gate
 
@@ -5576,6 +5579,14 @@ RiffQL is read-only. Compiled contract commands remain the only application
 mutation mechanism. Natural language may be translated to RiffQL by an agent,
 but the database accepts only deterministic formal source and typed values.
 
+The primary experience is also an authority boundary. Stable applications may
+invoke only exact named compiled commands and exact named deployed queries.
+Scoped agents may additionally receive explicit ad-hoc RiffQL authority. Raw
+entity/index operations remain compatible kernel/administrative operations and
+are never implied by either application profile. The normative product rule and
+claim boundary are documented in `docs/safety-by-construction.md` and accepted
+ADR-0055.
+
 - `RQL-001`: The implementation MUST provide one versioned formal RiffQL
   grammar, formatter, canonical AST, and parser for both ad-hoc and named
   read-only queries. It MUST NOT admit mutation, SQL escape, natural-language
@@ -5661,6 +5672,54 @@ but the database accepts only deterministic formal source and typed values.
   result types, demo verification, and benchmark MUST exercise that complete
   shape without a second label query or denormalized label names.
 
+- `SAFE-001`: A stable application capability MUST authorize only exact named
+  compiled commands and exact named deployed queries. Named query authority
+  MUST bind contract lineage, query-module hash, and query name. It MUST NOT
+  authorize ad-hoc query source or a substituted module, query, plan, contract,
+  partition, principal, or capability revision.
+- `SAFE-002`: Application-query authorization and kernel `ReadEntity`/
+  `ScanIndex` authorization MUST use disjoint permission types. Policy MUST
+  produce a private exact-plan query proof that cannot be reused, serialized,
+  retained in a cursor, or converted into a public kernel request. Existing
+  kernel permissions MUST NOT authorize RiffQL, and application permissions
+  MUST NOT authorize kernel RPCs.
+- `SAFE-003`: Ad-hoc RiffQL check, explain, and execute MUST be separate
+  explicit agent/development permissions. `ReadContract`, named-query
+  authority, generated-client availability, or tool discovery MUST NOT imply
+  ad-hoc execution authority.
+- `SAFE-004`: Contracts MUST support declared required same-partition
+  relationships whose source components map to one complete target primary
+  key. A command that establishes or changes such a relationship MUST fail
+  compilation unless a dominating exact target read with a declared missing-
+  target outcome is visible in the command plan and revalidated at commit.
+  Cross-partition, hidden, partial-key, or implicit-name relationships MUST be
+  rejected.
+- `SAFE-005`: Contracts MUST support declared same-partition unique keys.
+  Every command that can establish or change a declared unique value MUST
+  acquire the compiler-derived input-computable unique conflict capability,
+  validate the exact unique key, and update the authoritative unique index
+  atomically with the entity. Global, unbounded, collation-dependent, or
+  undeclared uniqueness MUST NOT be inferred.
+- `SAFE-006`: Every compiled query MUST contain one canonical whole-request
+  cost vector covered by its plan hash. Policy MUST authorize the complete
+  vector once, and execution MUST consume matching fuel for steps, scans,
+  point reads, dependent keys, intermediates, projected values, and encoded
+  output. Repeating individually bounded steps MUST NOT amplify the admitted
+  budget, and exhaustion MUST release no partial result or cursor.
+- `SAFE-007`: Stable generated SDKs, ordinary application capability presets,
+  and normal application MCP catalogs MUST expose only named operations.
+  Kernel operations and ad-hoc source construction MUST require visibly
+  separate profiles and credentials; there MUST NOT be a default preset that
+  silently combines stable application, agent, and kernel authority.
+- `SAFE-008`: The application milestone MUST include negative programs proving
+  rejection of generic writes, raw kernel reads under application authority,
+  ad-hoc source under named-only authority, module/query/plan substitution,
+  dangling declared relationships, concurrent declared-unique collisions,
+  cumulative query-cost amplification, public N+1/multi-snapshot page
+  composition, and dependent-batch field/partition/cursor/revocation escape.
+  Safety claims MUST remain scoped to declared RiffDB semantics and MUST NOT
+  imply control over undeclared business rules or external application effects.
+
 - `PERF-001`: The application path MUST publish bounded redaction-safe latency
   decomposition for transport, authentication, current-view lookup,
   authorization, catalog/query compilation or cache lookup, authoritative
@@ -5674,9 +5733,10 @@ but the database accepts only deterministic formal source and typed values.
   authorization, durability, snapshot, command, audit, or compatibility
   semantics.
 
-The milestone is complete only when WP-205 through WP-275 pass their package
+The milestone is complete only when WP-205 through WP-300 pass their package
 acceptance commands and an independent fresh-agent TicketDesk run satisfies
-`DX-005`, `DX-006`, and the published performance gates.
+`DX-005`, `DX-006`, every `SAFE-*` requirement, and the published performance
+gates.
 
 ---
 
@@ -5845,6 +5905,7 @@ The implementation MUST prefer primary project documentation and pin reviewed ve
 | `RQL-*` | RiffQL syntax, semantics, planning, and diagnostics |
 | `QRY-*` | Composite query execution and immutable query modules |
 | `DX-*` | Symbolic application surfaces, generation, and local workflow |
+| `SAFE-*` | Safety-by-construction application authority, declared integrity, budgets, and negative acceptance |
 | `PERF-*` | Application-path measurement and performance gates |
 
 Every normative requirement MUST be traceable to at least one automated test, review checklist item, or explicitly justified manual verification artifact before its stage can pass.

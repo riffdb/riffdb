@@ -1,4 +1,4 @@
-spec_version: '0.37'
+spec_version: '0.38'
 product: RiffDB
 repository: riffdb
 status: application-platform-implementation
@@ -67,6 +67,11 @@ gates:
   - WP-260
   - WP-270
   - WP-275
+  - WP-280
+  - WP-285
+  - WP-290
+  - WP-295
+  - WP-300
 work_packages:
 - id: WP-000
   name: Repository foundation
@@ -3282,4 +3287,351 @@ work_packages:
   exit_gate: TicketDesk returns its complete detail shape through one named symbolic request and one authoritative
     snapshot; invalid collection fan-out fails closed; generated artifacts are reproducible; and PERF-002 remains
     satisfied without SQL, a second label query, or a public N+1 path.
+  human_review_triggers: *id001
+- id: WP-280
+  name: Closed application-query authority and private execution proofs
+  depends_on:
+  - WP-275
+  objective: Separate exact named-application, explicitly ad-hoc-agent, and raw kernel read authority, then authorize
+    one complete query plan through a private non-reusable proof without changing compatible kernel RPC bytes.
+  requirements:
+  - SAFE-001
+  - SAFE-002
+  - SAFE-003
+  required_adrs:
+  - ADR-0007
+  - ADR-0009
+  - ADR-0013
+  - ADR-0021
+  - ADR-0022
+  - ADR-0026
+  - ADR-0027
+  - ADR-0052
+  - ADR-0055
+  allowed_paths:
+  - Cargo.toml
+  - Cargo.lock
+  - proto/riffdb/app/v1/**
+  - proto/riffdb/storage/v1/**
+  - crates/riffdb-types/**
+  - crates/riffdb-errors/**
+  - crates/riffdb-proto/**
+  - crates/riffdb-auth/**
+  - crates/riffdb-policy/**
+  - crates/riffdb-query-ir/**
+  - crates/riffdb-query-module/**
+  - crates/riffdb-catalog/**
+  - crates/riffdb-storage-api/**
+  - crates/riffdb-storage-memory/**
+  - crates/riffdb-storage-redb/**
+  - crates/riffdb-service/**
+  - crates/riffdb-commit/**
+  - crates/riffdb-api-grpc/**
+  - crates/riffdb-api-mcp/**
+  - crates/riffdb-client-rust/**
+  - crates/riffdb-server/**
+  - crates/riffdb-testkit/**
+  - tests/authorization/**
+  - tests/service/**
+  - tests/grpc/**
+  - tests/mcp/**
+  - fixtures/proto/**
+  - fixtures/query-modules/**
+  - fixtures/mcp/**
+  - docs/riffql/**
+  - docs/safety-by-construction.md
+  deliverables:
+  - Additive exact named-query and explicit ad-hoc check/explain/execute capability permissions with old/current
+    durable and public compatibility fixtures
+  - One policy-owned application-query authorization request containing exact contract/module/query/plan, partition,
+    field/index, principal/revision, and output requirements
+  - Private non-Clone, non-Serialize exact-plan authorization proof consumed once by the query executor
+  - Disjoint raw ReadEntity/ScanIndex kernel authorization that cannot satisfy application-query policy
+  - Revocation, substitution, cursor, field, partition, approval, audit, and transport-parity adversarial tests
+  acceptance_commands:
+  - cargo test -p riffdb-types --all-features
+  - cargo test -p riffdb-proto --all-features
+  - cargo test -p riffdb-policy --all-features
+  - cargo test -p riffdb-service --all-features
+  - cargo test -p riffdb-storage-memory --all-features
+  - cargo test -p riffdb-storage-redb --all-features
+  - cargo test -p riffdb-api-grpc --all-features
+  - cargo test -p riffdb-api-mcp --all-features
+  - cargo test -p riffdb-client-rust --all-features
+  - ./scripts/check-generated
+  - cargo fmt --all -- --check
+  - cargo clippy --workspace --all-targets --all-features -- -D warnings
+  exit_gate: A named application capability executes only its exact module/query and cannot execute ad-hoc RiffQL or
+    a raw kernel read; an ad-hoc agent capability cannot execute kernel reads; exact-plan proof substitution,
+    retention, serialization, or cross-principal reuse is structurally impossible.
+  human_review_triggers: *id001
+- id: WP-285
+  name: Whole-query cost authorization and execution fuel
+  depends_on:
+  - WP-280
+  objective: Replace per-step-only query budgeting with one canonical compiler-derived cost vector authorized once
+    and enforced as decrementing execution fuel across every access and result-shaping path.
+  requirements:
+  - SAFE-006
+  required_adrs:
+  - ADR-0013
+  - ADR-0027
+  - ADR-0035
+  - ADR-0038
+  - ADR-0051
+  - ADR-0053
+  - ADR-0054
+  - ADR-0055
+  allowed_paths:
+  - Cargo.toml
+  - Cargo.lock
+  - crates/riffdb-query-ir/**
+  - crates/riffdb-query-compiler/**
+  - crates/riffdb-query-executor/**
+  - crates/riffdb-policy/**
+  - crates/riffdb-service/**
+  - crates/riffdb-storage-api/**
+  - crates/riffdb-storage-memory/**
+  - crates/riffdb-storage-redb/**
+  - crates/riffdb-errors/**
+  - crates/riffdb-types/**
+  - crates/riffdb-testkit/**
+  - fixtures/riffql/**
+  - benchmarks/application-path/**
+  - docs/riffql/**
+  - docs/safety-by-construction.md
+  deliverables:
+  - Canonical plan-hashed cost vector for steps, scans, points, dependent keys, intermediates, projected values, and
+    encoded response bytes
+  - Capability budget comparison over the complete vector rather than independent step reuse
+  - Consuming execution-fuel type with backend work accounting and no partial result/cursor on exhaustion
+  - Boundary fixtures for exact budget, one-over, repeated scans, chained batches, empty work, and backend
+    over-report/under-report defects
+  - Updated explain output and application-path cost/latency evidence
+  acceptance_commands:
+  - cargo test -p riffdb-query-ir --all-features
+  - cargo test -p riffdb-query-compiler --all-features
+  - cargo test -p riffdb-query-executor --all-features
+  - cargo test -p riffdb-policy --all-features
+  - cargo test -p riffdb-service --all-features
+  - cargo test -p riffdb-storage-memory --all-features
+  - cargo test -p riffdb-storage-redb --all-features
+  - ./scripts/check-generated
+  - ./scripts/benchmark-application-path --assert-wp275
+  - cargo fmt --all -- --check
+  - cargo clippy --workspace --all-targets --all-features -- -D warnings
+  exit_gate: Repeating individually valid steps cannot exceed the admitted whole-query cost, backend work cannot
+    exceed fuel, exhausted work releases no fields or cursor, and existing TicketDesk performance gates remain green.
+  human_review_triggers: *id001
+- id: WP-290
+  name: Declared same-partition relationships
+  depends_on:
+  - WP-275
+  objective: Make required entity relationships explicit in contracts and reject every command that can establish a
+    dangling reference without a visible exact target read, declared missing outcome, dependency, and commit recheck.
+  requirements:
+  - SAFE-004
+  required_adrs:
+  - ADR-0002
+  - ADR-0003
+  - ADR-0013
+  - ADR-0016
+  - ADR-0051
+  - ADR-0055
+  allowed_paths:
+  - Cargo.toml
+  - Cargo.lock
+  - crates/riffdb-contract-syntax/**
+  - crates/riffdb-contract-ir/**
+  - crates/riffdb-contract-compiler/**
+  - crates/riffdb-invariant/**
+  - crates/riffdb-runtime/**
+  - crates/riffdb-catalog/**
+  - crates/riffdb-query-ir/**
+  - crates/riffdb-query-compiler/**
+  - crates/riffdb-diagnostics/**
+  - crates/riffdb-errors/**
+  - crates/riffdb-types/**
+  - contracts/parser-fixtures/**
+  - contracts/examples/**
+  - examples/app-baseline/contracts/**
+  - queries/ticketdesk/**
+  - fixtures/compiler/**
+  - fixtures/riffql/**
+  - docs/riffql/**
+  - docs/safety-by-construction.md
+  deliverables:
+  - Exact reviewed reference grammar and additive canonical IR/source-map/compatibility fixtures
+  - Same-partition complete-target-key and exact-type validation with required relationships only
+  - Compiler dataflow proof that every create/change is dominated by a visible exact target read and declared
+    missing-target outcome
+  - Ordinary dependency and commit-revalidation lowering with no hidden read or new runtime authority
+  - TicketDesk project, reporter, assignee, member, comment, and label relationships plus dangling-reference negative
+    corpus
+  acceptance_commands:
+  - cargo test -p riffdb-contract-syntax --all-features
+  - cargo test -p riffdb-contract-ir --all-features
+  - cargo test -p riffdb-contract-compiler --all-features
+  - cargo test -p riffdb-invariant --all-features
+  - cargo test -p riffdb-runtime --all-features
+  - cargo test -p riffdb-query-compiler --all-features
+  - ./scripts/check-generated
+  - cargo fmt --all -- --check
+  - cargo clippy --workspace --all-targets --all-features -- -D warnings
+  exit_gate: TicketDesk cannot compile a command that creates a dangling declared relationship; every accepted
+    relationship check is visible in source/explain and revalidated at commit; no cross-partition or implicit
+    relationship is accepted.
+  human_review_triggers: *id001
+- id: WP-295
+  name: Declared same-partition uniqueness
+  depends_on:
+  - WP-290
+  objective: Make bounded same-partition uniqueness a contract property enforced under concurrency by compiler-
+    derived conflict capabilities, exact unique-key validation, and atomic authoritative index maintenance.
+  requirements:
+  - SAFE-005
+  required_adrs:
+  - ADR-0002
+  - ADR-0003
+  - ADR-0004
+  - ADR-0013
+  - ADR-0016
+  - ADR-0035
+  - ADR-0055
+  allowed_paths:
+  - Cargo.toml
+  - Cargo.lock
+  - proto/riffdb/storage/v1/**
+  - crates/riffdb-contract-syntax/**
+  - crates/riffdb-contract-ir/**
+  - crates/riffdb-contract-compiler/**
+  - crates/riffdb-invariant/**
+  - crates/riffdb-runtime/**
+  - crates/riffdb-conflict/**
+  - crates/riffdb-commit/**
+  - crates/riffdb-storage-api/**
+  - crates/riffdb-storage-memory/**
+  - crates/riffdb-storage-redb/**
+  - crates/riffdb-catalog/**
+  - crates/riffdb-types/**
+  - crates/riffdb-proto/**
+  - crates/riffdb-diagnostics/**
+  - crates/riffdb-errors/**
+  - crates/riffdb-testkit/**
+  - tests/command_semantics/**
+  - tests/recovery/**
+  - contracts/parser-fixtures/**
+  - examples/app-baseline/contracts/**
+  - fixtures/compiler/**
+  - fixtures/proto/**
+  - docs/riffql/**
+  - docs/safety-by-construction.md
+  deliverables:
+  - Exact reviewed unique-key grammar, canonical IR, conflict derivation, and compatibility fixtures
+  - Input-computable same-partition unique conflict capability and exact transaction-current occupancy validation
+  - Atomic entity/unique-index create and change semantics with no sequence allocation on collision
+  - Concurrent equal-value, changed-value, replay, crash, recovery, corruption, and one-byte-boundary tests
+  - TicketDesk scoped uniqueness declarations selected by the contract review, with no inferred global uniqueness
+  acceptance_commands:
+  - cargo test -p riffdb-contract-syntax --all-features
+  - cargo test -p riffdb-contract-ir --all-features
+  - cargo test -p riffdb-contract-compiler --all-features
+  - cargo test -p riffdb-conflict --all-features
+  - cargo test -p riffdb-commit --all-features
+  - cargo test -p riffdb-storage-memory --all-features
+  - cargo test -p riffdb-storage-redb --all-features
+  - cargo test -p riffdb-commit --test command_concurrency
+  - cargo test -p riffdb-testkit --all-features
+  - ./scripts/check-generated
+  - cargo fmt --all -- --check
+  - cargo clippy --workspace --all-targets --all-features -- -D warnings
+  exit_gate: Two concurrent commands cannot commit the same declared same-partition unique value, retries preserve the
+    original result, crash recovery detects every torn or nonreciprocal unique index, and undeclared/global uniqueness
+    is never claimed.
+  human_review_triggers: *id001
+- id: WP-300
+  name: Safe application surface cutover and negative acceptance
+  depends_on:
+  - WP-280
+  - WP-285
+  - WP-290
+  - WP-295
+  objective: Make named-only application authority the default across SDK, CLI presets, MCP, and TicketDesk, hide
+    kernel/ad-hoc escape hatches behind separate credentials, and prove the product rule with intentionally bad apps.
+  requirements:
+  - SAFE-007
+  - SAFE-008
+  required_adrs:
+  - ADR-0007
+  - ADR-0008
+  - ADR-0009
+  - ADR-0020
+  - ADR-0027
+  - ADR-0040
+  - ADR-0041
+  - ADR-0046
+  - ADR-0052
+  - ADR-0055
+  allowed_paths:
+  - Cargo.toml
+  - Cargo.lock
+  - crates/riffdb-auth/**
+  - crates/riffdb-policy/**
+  - crates/riffdb-service/**
+  - crates/riffdb-api-grpc/**
+  - crates/riffdb-api-mcp/**
+  - crates/riffdb-mcp-stdio/**
+  - crates/riffdb-client-rust/**
+  - crates/riffdb-cli/**
+  - crates/riffdb-server/**
+  - crates/riffdb-query-module/**
+  - crates/riffdb-testkit/**
+  - clients/typescript/**
+  - examples/ticketdesk/**
+  - examples/app-baseline/**
+  - queries/ticketdesk/**
+  - tests/authorization/**
+  - tests/service/**
+  - tests/grpc/**
+  - tests/mcp/**
+  - fixtures/query-modules/**
+  - fixtures/mcp/**
+  - scripts/check-generated
+  - scripts/check-ticketdesk-symbolic-boundary
+  - scripts/riffdb-dev*
+  - scripts/safety-by-construction*
+  - benchmarks/application-path/**
+  - docs/getting-started/**
+  - docs/riffql/**
+  - docs/safety-by-construction.md
+  - README.md
+  deliverables:
+  - Separate stable-application, scoped-agent, and kernel/admin dev presets with no combined default
+  - Named-only generated Rust/TypeScript clients and generated MCP application tools
+  - Normal MCP/application catalogs without raw entity/index tools or ad-hoc source construction
+  - Machine-checked bad-application corpus covering every SAFE-008 rejection and positive transport parity
+  - Updated TicketDesk acceptance using declared relationships/uniqueness, exact named authority, and whole-query fuel
+  - Published safety claim, limitations, migration instructions, and independent fresh-agent review
+  acceptance_commands:
+  - cargo test -p riffdb-auth --all-features
+  - cargo test -p riffdb-policy --all-features
+  - cargo test -p riffdb-service --all-features
+  - cargo test -p riffdb-api-grpc --all-features
+  - cargo test -p riffdb-api-mcp --all-features
+  - cargo test -p riffdb-client-rust --all-features
+  - cargo test -p riffdb-cli --all-features
+  - cargo test --manifest-path examples/ticketdesk/Cargo.toml
+  - ./scripts/safety-by-construction-acceptance
+  - ./scripts/check-ticketdesk-symbolic-boundary
+  - ./scripts/riffdb-dev-acceptance
+  - ./scripts/check-generated
+  - ./scripts/check-requirement-coverage
+  - cargo fmt --all -- --check
+  - cargo clippy --workspace --all-targets --all-features -- -D warnings
+  - cargo test --workspace --all-features
+  - cargo doc --workspace --no-deps
+  - cargo deny check
+  exit_gate: Stable application credentials can invoke only their exact generated named operations; every bad-
+    application canary fails before output/mutation; agent and kernel credentials remain explicitly separate; and the
+    documented safety claim exactly matches tested supported behavior.
   human_review_triggers: *id001
