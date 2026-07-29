@@ -519,6 +519,7 @@ fn service_link_is_valid(state: &MemoryState, record: &StoredServiceAuditRecordV
                         ServiceOperationV1::ExecuteCommand
                             | ServiceOperationV1::ResolveCommandOutcome
                             | ServiceOperationV1::DeployContract
+                            | ServiceOperationV1::DeployQueryModule
                             | ServiceOperationV1::CreateCapability
                             | ServiceOperationV1::RevokeCapability
                     ))
@@ -553,6 +554,9 @@ fn service_link_is_valid(state: &MemoryState, record: &StoredServiceAuditRecordV
                 (
                     ServiceOperationV1::DeployContract,
                     StoredAdministrationAuditRecordV1::Catalog(_)
+                ) | (
+                    ServiceOperationV1::DeployQueryModule,
+                    StoredAdministrationAuditRecordV1::QueryModule(_)
                 ) | (
                     ServiceOperationV1::CreateCapability,
                     StoredAdministrationAuditRecordV1::Capability(_)

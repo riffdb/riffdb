@@ -3173,6 +3173,7 @@ fn service_link_is_valid(
                     riffdb_types::ServiceOperationV1::ExecuteCommand
                         | riffdb_types::ServiceOperationV1::ResolveCommandOutcome
                         | riffdb_types::ServiceOperationV1::DeployContract
+                        | riffdb_types::ServiceOperationV1::DeployQueryModule
                         | riffdb_types::ServiceOperationV1::CreateCapability
                         | riffdb_types::ServiceOperationV1::RevokeCapability
                 ))),
@@ -3202,6 +3203,10 @@ fn service_link_is_valid(
                 (
                     riffdb_storage_api::StoredAdministrationAuditRecordV1::Catalog(_),
                     riffdb_types::ServiceOperationV1::DeployContract,
+                ) => true,
+                (
+                    riffdb_storage_api::StoredAdministrationAuditRecordV1::QueryModule(_),
+                    riffdb_types::ServiceOperationV1::DeployQueryModule,
                 ) => true,
                 (
                     riffdb_storage_api::StoredAdministrationAuditRecordV1::Capability(target),

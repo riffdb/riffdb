@@ -12,6 +12,7 @@ default = []
 [dependencies]
 riffdb-contract-ir = { version = "0.1.0", path = "../riffdb-contract-ir" }
 riffdb-invariant = { version = "0.1.0", path = "../riffdb-invariant" }
+riffdb-query-module = { version = "0.1.0", path = "../riffdb-query-module" }
 riffdb-storage-api = { version = "0.1.0", path = "../riffdb-storage-api" }
 riffdb-types = { version = "0.1.0", path = "../riffdb-types" }
 

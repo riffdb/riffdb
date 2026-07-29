@@ -683,6 +683,7 @@ fn validate_service_audit_phase_link(
                 ServiceOperationV1::ExecuteCommand
                     | ServiceOperationV1::ResolveCommandOutcome
                     | ServiceOperationV1::DeployContract
+                    | ServiceOperationV1::DeployQueryModule
                     | ServiceOperationV1::CreateCapability
                     | ServiceOperationV1::RevokeCapability
             ),
@@ -693,6 +694,7 @@ fn validate_service_audit_phase_link(
             ServiceAuditLinkV1::ControlPlane { .. } => matches!(
                 operation,
                 ServiceOperationV1::DeployContract
+                    | ServiceOperationV1::DeployQueryModule
                     | ServiceOperationV1::CreateCapability
                     | ServiceOperationV1::RevokeCapability
             ),
@@ -1252,6 +1254,7 @@ mod tests {
                                 ServiceOperationV1::ExecuteCommand
                                     | ServiceOperationV1::ResolveCommandOutcome
                                     | ServiceOperationV1::DeployContract
+                                    | ServiceOperationV1::DeployQueryModule
                                     | ServiceOperationV1::CreateCapability
                                     | ServiceOperationV1::RevokeCapability
                             ),
@@ -1263,6 +1266,7 @@ mod tests {
                             ServiceAuditLinkV1::ControlPlane { .. } => matches!(
                                 operation,
                                 ServiceOperationV1::DeployContract
+                                    | ServiceOperationV1::DeployQueryModule
                                     | ServiceOperationV1::CreateCapability
                                     | ServiceOperationV1::RevokeCapability
                             ),

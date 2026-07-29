@@ -27,7 +27,7 @@ use crate::{
     CursorMonotonicClock, CursorTokenGenerator, HealthRequest, HealthResult,
     OfflineMaintenanceCoordinatorPort, OperationalStatusPort, OutboxStatusPort, PortDriverStopped,
     PortReceipt, PreBootstrapHealthContext, PreBootstrapHealthContextIssuer,
-    PreBootstrapHealthReport, ProjectionQueryPort, RequestDeadlineScheduler,
+    PreBootstrapHealthReport, ProjectionQueryPort, QueryModuleReadPort, RequestDeadlineScheduler,
     ServiceCursorRegistries, ServiceDiagnostics, ServiceFailure, ServiceFuture, ServiceHealthHooks,
     ServiceJob, ServiceJobSpawner, ServiceResponseCharge, ServiceResult, ServiceTelemetry,
     ServiceTelemetryEvent, ensure_response_budget, port_completion_channel,
@@ -155,6 +155,7 @@ pub struct ServiceProviders {
     pub(crate) cursor_tokens: Arc<dyn CursorTokenGenerator>,
     pub(crate) cursor_clock: Arc<dyn CursorMonotonicClock>,
     pub(crate) query_executor: Option<Arc<dyn QueryExecutionPort>>,
+    pub(crate) query_modules: Option<Arc<dyn QueryModuleReadPort>>,
 }
 
 impl ServiceProviders {
@@ -196,6 +197,7 @@ impl ServiceProviders {
             cursor_tokens,
             cursor_clock,
             query_executor: None,
+            query_modules: None,
         }
     }
 
@@ -203,6 +205,13 @@ impl ServiceProviders {
     #[must_use]
     pub fn with_query_executor(mut self, query_executor: Arc<dyn QueryExecutionPort>) -> Self {
         self.query_executor = Some(query_executor);
+        self
+    }
+
+    /// Installs immutable query-module reads for named execution.
+    #[must_use]
+    pub fn with_query_modules(mut self, query_modules: Arc<dyn QueryModuleReadPort>) -> Self {
+        self.query_modules = Some(query_modules);
         self
     }
 

@@ -32,16 +32,18 @@ use riffdb_storage_api::{
     ProjectionQueryReader, ProjectionQueryRequest, ProjectionQueryResult,
     ProjectionRecoveryPageLimit, ProjectionRecoveryRepository,
     ProjectionRecoveryValidationRequestV1, ProjectionRecoveryValidationResultV1, ProjectionStatus,
-    ReadSnapshot, ServiceAuditAppendIntentV1, ServiceAuditAppendRepository,
-    ServiceAuditAppendResult, SnapshotReader, SnapshotRequest, StorageError, StorageErrorKind,
-    StorageScanLimit, StoredCapabilityRecordV1, StoredCommitRecordV1, StoredContractBundleV1,
-    StoredDurableEventV1, StoredEntityRecordV1, StoredOutcomeV1, StoredProvenanceRecordV1,
+    QueryModuleActivationIntentV1, QueryModuleActivationResult,
+    QueryModuleAdministrationRepository, QueryModuleRepository, ReadSnapshot,
+    ServiceAuditAppendIntentV1, ServiceAuditAppendRepository, ServiceAuditAppendResult,
+    SnapshotReader, SnapshotRequest, StorageError, StorageErrorKind, StorageScanLimit,
+    StoredCapabilityRecordV1, StoredCommitRecordV1, StoredContractBundleV1, StoredDurableEventV1,
+    StoredEntityRecordV1, StoredOutcomeV1, StoredProvenanceRecordV1, StoredQueryModuleV1,
     UndeliveredOutboxStatusScanRequestV1, UndeliveredOutboxStatusScanV1,
 };
 use riffdb_storage_redb::RedbOperationalPorts;
 use riffdb_types::{
-    CapabilityId, CapabilityTokenDigest, CommitSequence, ContractLineage, ContractVersion, EventId,
-    ProvenanceId,
+    CapabilityId, CapabilityTokenDigest, CommitSequence, ContractBundleHash, ContractLineage,
+    ContractVersion, EventId, ProvenanceId, QueryModuleHash,
 };
 
 /// A cloneable handle to the sole activated redb semantic-port bundle.
@@ -510,6 +512,43 @@ impl CatalogAdministrationRepository for SharedRedbOperationalPorts {
             return Err(self.current_view_failure(error));
         }
         Ok(result)
+    }
+}
+
+impl QueryModuleAdministrationRepository for SharedRedbOperationalPorts {
+    fn activate_query_module(
+        &mut self,
+        intent: &QueryModuleActivationIntentV1,
+    ) -> Result<QueryModuleActivationResult, StorageError> {
+        self.cell.with_mut(|ports| {
+            QueryModuleAdministrationRepository::activate_query_module(ports, intent)
+        })
+    }
+}
+
+impl QueryModuleRepository for SharedRedbOperationalPorts {
+    fn read_query_module(
+        &self,
+        module_hash: QueryModuleHash,
+    ) -> Result<Option<StoredQueryModuleV1>, StorageError> {
+        self.cell
+            .with_ref(|ports| QueryModuleRepository::read_query_module(ports, module_hash))
+    }
+
+    fn read_active_query_module(
+        &self,
+        lineage: &ContractLineage,
+        contract_version: ContractVersion,
+        contract_bundle_hash: ContractBundleHash,
+    ) -> Result<Option<riffdb_storage_api::ActiveQueryModulePointerV1>, StorageError> {
+        self.cell.with_ref(|ports| {
+            QueryModuleRepository::read_active_query_module(
+                ports,
+                lineage,
+                contract_version,
+                contract_bundle_hash,
+            )
+        })
     }
 }
 
@@ -1231,9 +1270,11 @@ mod tests {
                 + ExecutionFailureTransitionPort
                 + ServiceAuditAppendRepository
                 + CatalogAdministrationRepository
+                + QueryModuleAdministrationRepository
                 + CapabilityAdministrationTransactionPort
                 + CapabilityBootstrapAdministrationRepository
                 + CatalogRepository
+                + QueryModuleRepository
                 + CapabilityReader
                 + CapabilityInventoryReader
                 + AuthoritativePointReader

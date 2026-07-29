@@ -261,9 +261,11 @@ const PROBE_PAYLOAD: &[u8] = &[0x08, 0x2a];
 const CRC_32C: Crc<u32> = Crc::<u32>::new(&CRC_32_ISCSI);
 const EXPECTED_METHODS: &[(&str, &str, bool)] = &[
     ("ApplicationQueryService", "CheckQuery", false),
+    ("ApplicationQueryService", "DeployQueryModule", false),
     ("ApplicationQueryService", "DescribeContract", false),
     ("ApplicationQueryService", "ExecuteQuery", false),
     ("ApplicationQueryService", "ExplainQuery", false),
+    ("ApplicationQueryService", "GetQueryModule", false),
     ("AdminService", "CreateCapability", false),
     ("AdminService", "CreateOfflineBackup", false),
     ("AdminService", "GetOfflineMaintenanceOperation", false),

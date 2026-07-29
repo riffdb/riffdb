@@ -529,6 +529,11 @@ pub enum ServiceOperationV1 {
     ServiceOperationListPendingOutboxDeliveries = 20,
     ServiceOperationDiscoverCommandTools = 21,
     ServiceOperationDiscoverResources = 22,
+    ServiceOperationDescribeContract = 23,
+    ServiceOperationCheckQuery = 24,
+    ServiceOperationExplainQuery = 25,
+    ServiceOperationExecuteQuery = 26,
+    ServiceOperationDeployQueryModule = 27,
 }
 impl ServiceOperationV1 {
     /// String value of the enum field names used in the ProtoBuf definition.
@@ -581,6 +586,15 @@ impl ServiceOperationV1 {
             }
             Self::ServiceOperationDiscoverResources => {
                 "SERVICE_OPERATION_DISCOVER_RESOURCES"
+            }
+            Self::ServiceOperationDescribeContract => {
+                "SERVICE_OPERATION_DESCRIBE_CONTRACT"
+            }
+            Self::ServiceOperationCheckQuery => "SERVICE_OPERATION_CHECK_QUERY",
+            Self::ServiceOperationExplainQuery => "SERVICE_OPERATION_EXPLAIN_QUERY",
+            Self::ServiceOperationExecuteQuery => "SERVICE_OPERATION_EXECUTE_QUERY",
+            Self::ServiceOperationDeployQueryModule => {
+                "SERVICE_OPERATION_DEPLOY_QUERY_MODULE"
             }
         }
     }
@@ -643,6 +657,15 @@ impl ServiceOperationV1 {
             }
             "SERVICE_OPERATION_DISCOVER_RESOURCES" => {
                 Some(Self::ServiceOperationDiscoverResources)
+            }
+            "SERVICE_OPERATION_DESCRIBE_CONTRACT" => {
+                Some(Self::ServiceOperationDescribeContract)
+            }
+            "SERVICE_OPERATION_CHECK_QUERY" => Some(Self::ServiceOperationCheckQuery),
+            "SERVICE_OPERATION_EXPLAIN_QUERY" => Some(Self::ServiceOperationExplainQuery),
+            "SERVICE_OPERATION_EXECUTE_QUERY" => Some(Self::ServiceOperationExecuteQuery),
+            "SERVICE_OPERATION_DEPLOY_QUERY_MODULE" => {
+                Some(Self::ServiceOperationDeployQueryModule)
             }
             _ => None,
         }

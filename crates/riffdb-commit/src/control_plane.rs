@@ -2,7 +2,7 @@
 
 use std::{error::Error, fmt, num::NonZeroU32, num::NonZeroU64};
 
-use riffdb_catalog::PreparedCatalogActivation;
+use riffdb_catalog::{PreparedCatalogActivation, PreparedQueryModuleActivation};
 use riffdb_policy::{
     AbsentCapabilityRevokePreparationChange, AuthorizationClock, AuthorizationClockError,
     AuthorizedCapabilityMutationPreparation, AuthorizedCatalogDeployment, CapabilityActivity,
@@ -23,13 +23,15 @@ use riffdb_storage_api::{
     CapabilityRequestedRecordV1, CapabilityRevokeAwaitingDecision,
     CapabilityRevokeCandidateTransaction, CapabilityRevokeCandidateV1, CapabilityRevokeIntentV1,
     CapabilityRevokeResult, CatalogActivationResult, CatalogAdministrationRepository,
-    ServiceAuditAppendIntentV1, ServiceAuditAppendRepository, ServiceAuditAppendResult,
-    StorageError, StorageErrorKind, StorageValueError, TransactionCurrentCapabilityObservationV1,
+    QueryModuleActivationResult, QueryModuleAdministrationRepository, ServiceAuditAppendIntentV1,
+    ServiceAuditAppendRepository, ServiceAuditAppendResult, StorageError, StorageErrorKind,
+    StorageValueError, TransactionCurrentCapabilityObservationV1,
 };
 use riffdb_types::{
     AdministrationSequence, CapabilityId, CapabilityPermissionKindV1, CapabilityTokenDigest,
-    ContractBundleHash, ContractLineage, ContractVersion, RequestId, ServiceAuditLinkV1,
-    ServiceAuditTargetV1, ServiceAuditTargetsV1, ServiceIngressKindV1, Timestamp,
+    ContractBundleHash, ContractLineage, ContractVersion, QueryModuleHash, QueryModuleName,
+    QueryModuleVersion, RequestId, ServiceAuditLinkV1, ServiceAuditTargetV1, ServiceAuditTargetsV1,
+    ServiceIngressKindV1, Timestamp,
 };
 
 use crate::{
@@ -96,6 +98,42 @@ impl CatalogDeploymentPreparation {
 impl fmt::Debug for CatalogDeploymentPreparation {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter.write_str("CatalogDeploymentPreparation([REDACTED])")
+    }
+}
+
+/// Move-only query-module activation bound to an exact deployment authorization.
+#[must_use = "a query-module deployment preparation must be submitted or explicitly discarded"]
+pub struct QueryModuleDeploymentPreparation {
+    request_id: RequestId,
+    module: PreparedQueryModuleActivation,
+    authorization: AuthorizedCatalogDeployment,
+}
+
+impl QueryModuleDeploymentPreparation {
+    /// Binds a checked module to authorization for its exact contract identity.
+    pub fn new(
+        request_id: RequestId,
+        module: PreparedQueryModuleActivation,
+        authorization: AuthorizedCatalogDeployment,
+    ) -> Result<Self, ControlPlanePreparationError> {
+        let checked = module.module().module();
+        if checked.contract_lineage() != authorization.lineage()
+            || checked.contract_version() != authorization.version()
+            || checked.contract_hash() != authorization.bundle_hash()
+        {
+            return Err(ControlPlanePreparationError::AuthorizationMismatch);
+        }
+        Ok(Self {
+            request_id,
+            module,
+            authorization,
+        })
+    }
+}
+
+impl fmt::Debug for QueryModuleDeploymentPreparation {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("QueryModuleDeploymentPreparation([REDACTED])")
     }
 }
 
@@ -308,6 +346,84 @@ impl CatalogDeploymentResult {
 impl fmt::Debug for CatalogDeploymentResult {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter.write_str("CatalogDeploymentResult([REDACTED])")
+    }
+}
+
+/// Symbolic identity returned by one query-module activation.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ActivatedQueryModule {
+    name: QueryModuleName,
+    version: QueryModuleVersion,
+    hash: QueryModuleHash,
+}
+
+impl ActivatedQueryModule {
+    /// Module name.
+    #[must_use]
+    pub const fn name(&self) -> &QueryModuleName {
+        &self.name
+    }
+
+    /// Module version.
+    #[must_use]
+    pub const fn version(&self) -> QueryModuleVersion {
+        self.version
+    }
+
+    /// Immutable content hash.
+    #[must_use]
+    pub const fn hash(&self) -> QueryModuleHash {
+        self.hash
+    }
+}
+
+/// Closed semantic query-module deployment outcome.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum QueryModuleDeploymentOutcome {
+    /// A new exact active pointer committed.
+    Activated(ActivatedQueryModule),
+    /// The exact module was already active.
+    AlreadyActive(ActivatedQueryModule),
+    /// The transaction-current pointer differed from the submitted CAS.
+    ExpectedActiveMismatch {
+        /// Actual module hash, or absence.
+        actual: Option<QueryModuleHash>,
+    },
+    /// Same module name/version is retained with different bytes.
+    ModuleVersionConflict,
+    /// The exact contract is no longer retained.
+    ContractUnavailable,
+}
+
+/// Deployment result plus the authoritative transition link.
+pub struct QueryModuleDeploymentResult {
+    outcome: QueryModuleDeploymentOutcome,
+    transition_sequence: Option<AdministrationSequence>,
+}
+
+impl QueryModuleDeploymentResult {
+    /// Safe semantic outcome.
+    #[must_use]
+    pub const fn outcome(&self) -> &QueryModuleDeploymentOutcome {
+        &self.outcome
+    }
+
+    /// Consumes the result after terminal service audit handling.
+    #[must_use]
+    pub fn into_outcome(self) -> QueryModuleDeploymentOutcome {
+        self.outcome
+    }
+
+    /// Required terminal service-audit link.
+    #[must_use]
+    pub fn terminal_audit(&self) -> ControlPlaneTerminalAudit {
+        terminal_audit(self.transition_sequence)
+    }
+}
+
+impl fmt::Debug for QueryModuleDeploymentResult {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("QueryModuleDeploymentResult([REDACTED])")
     }
 }
 
@@ -680,6 +796,88 @@ where
             transition_sequence: None,
         },
     })
+}
+
+pub(crate) fn drive_query_module_deployment<R>(
+    repository: &mut R,
+    clock: &dyn AdministrationClock,
+    lifecycle: &dyn CommandExecutionLifecycle,
+    preparation: QueryModuleDeploymentPreparation,
+) -> Result<QueryModuleDeploymentResult, ControlPlaneExecutionError>
+where
+    R: QueryModuleAdministrationRepository + ?Sized,
+{
+    let QueryModuleDeploymentPreparation {
+        request_id,
+        module,
+        authorization,
+    } = preparation;
+    let timestamp = clock.now().map_err(|error| {
+        lifecycle.stop();
+        ControlPlaneExecutionError {
+            kind: ControlPlaneExecutionErrorKind::StorageUnavailable,
+            detail: ControlPlaneExecutionErrorDetail::AdministrationClock(error),
+        }
+    })?;
+    let principal = AuditPrincipalV1::new(
+        authorization.principal_id().clone(),
+        authorization.actor_kind(),
+        authorization.authorizing_capability_id(),
+        authorization.authorizing_revision(),
+    );
+    let approval = authorization.obligations().validated_approval().cloned();
+    let intent = module
+        .into_storage_intent(request_id, principal, timestamp, approval)
+        .map_err(|_| {
+            lifecycle.stop();
+            ControlPlaneExecutionError {
+                kind: ControlPlaneExecutionErrorKind::InternalDefect,
+                detail: ControlPlaneExecutionErrorDetail::Catalog,
+            }
+        })?;
+    let result = repository
+        .activate_query_module(&intent)
+        .map_err(|error| classify_write_error(error, lifecycle))?;
+    Ok(match result {
+        QueryModuleActivationResult::Activated {
+            active,
+            administration_sequence,
+        } => QueryModuleDeploymentResult {
+            outcome: QueryModuleDeploymentOutcome::Activated(lower_active_module(&active)),
+            transition_sequence: Some(administration_sequence),
+        },
+        QueryModuleActivationResult::AlreadyActive {
+            active,
+            administration_sequence,
+        } => QueryModuleDeploymentResult {
+            outcome: QueryModuleDeploymentOutcome::AlreadyActive(lower_active_module(&active)),
+            transition_sequence: Some(administration_sequence),
+        },
+        QueryModuleActivationResult::ExpectedActiveMismatch { actual } => {
+            QueryModuleDeploymentResult {
+                outcome: QueryModuleDeploymentOutcome::ExpectedActiveMismatch { actual },
+                transition_sequence: None,
+            }
+        }
+        QueryModuleActivationResult::ModuleVersionConflict => QueryModuleDeploymentResult {
+            outcome: QueryModuleDeploymentOutcome::ModuleVersionConflict,
+            transition_sequence: None,
+        },
+        QueryModuleActivationResult::ContractUnavailable => QueryModuleDeploymentResult {
+            outcome: QueryModuleDeploymentOutcome::ContractUnavailable,
+            transition_sequence: None,
+        },
+    })
+}
+
+fn lower_active_module(
+    active: &riffdb_storage_api::ActiveQueryModulePointerV1,
+) -> ActivatedQueryModule {
+    ActivatedQueryModule {
+        name: active.module_name().clone(),
+        version: active.module_version(),
+        hash: active.module_hash(),
+    }
 }
 
 pub(crate) fn drive_capability_create<R>(

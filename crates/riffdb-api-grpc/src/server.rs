@@ -900,7 +900,14 @@ impl ApplicationQueryService for GrpcApplication {
         let (request_id, request) = explain_symbolic_query_request_from_proto(message)?;
         let (service, context, _cancellation) =
             self.normal_invocation(ServiceOperationV1::ExplainQuery, &metadata, request_id)?;
-        let result = map_service(service.explain_symbolic_query(context, request).await)?;
+        let result = match request {
+            ExplainSymbolicQueryInvocation::AdHoc(request) => {
+                map_service(service.explain_symbolic_query(context, request).await)?
+            }
+            ExplainSymbolicQueryInvocation::Named(request) => {
+                map_service(service.explain_named_symbolic_query(context, request).await)?
+            }
+        };
         Ok(Response::new(explain_symbolic_query_result_to_proto(
             &result,
         )?))
@@ -914,10 +921,43 @@ impl ApplicationQueryService for GrpcApplication {
         let (request_id, request) = execute_symbolic_query_request_from_proto(message)?;
         let (service, context, _cancellation) =
             self.normal_invocation(ServiceOperationV1::ExecuteQuery, &metadata, request_id)?;
-        let result = map_service(service.execute_symbolic_query(context, request).await)?;
+        let result = match request {
+            ExecuteSymbolicQueryInvocation::AdHoc(request) => {
+                map_service(service.execute_symbolic_query(context, request).await)?
+            }
+            ExecuteSymbolicQueryInvocation::Named(request) => {
+                map_service(service.execute_named_symbolic_query(context, request).await)?
+            }
+        };
         Ok(Response::new(execute_symbolic_query_result_to_proto(
             &result,
         )?))
+    }
+
+    async fn deploy_query_module(
+        &self,
+        request: Request<app_v1::DeployQueryModuleRequest>,
+    ) -> Result<Response<app_v1::DeployQueryModuleResponse>, Status> {
+        let (metadata, _peer, message) = split_request(request);
+        let (request_id, request) = deploy_query_module_request_from_proto(message)?;
+        let (service, context, _cancellation) =
+            self.normal_invocation(ServiceOperationV1::DeployQueryModule, &metadata, request_id)?;
+        let result = map_service(service.deploy_query_module(context, request).await)?;
+        Ok(Response::new(deploy_query_module_result_to_proto(&result)))
+    }
+
+    async fn get_query_module(
+        &self,
+        request: Request<app_v1::GetQueryModuleRequest>,
+    ) -> Result<Response<app_v1::GetQueryModuleResponse>, Status> {
+        let (metadata, _peer, message) = split_request(request);
+        let (request_id, request) = get_query_module_request_from_proto(message)?;
+        let (service, context, _cancellation) =
+            self.normal_invocation(ServiceOperationV1::ExplainQuery, &metadata, request_id)?;
+        let result = map_service(service.get_query_module(context, request).await)?;
+        Ok(Response::new(get_query_module_result_to_proto(
+            result.as_ref(),
+        )))
     }
 }
 

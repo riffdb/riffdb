@@ -19,5 +19,9 @@ riffdb-types = { path = "../riffdb-types" }
 [dev-dependencies]
 riffdb-contract-compiler = { path = "../riffdb-contract-compiler" }
 
+[[example]]
+name = "generate_clients"
+required-features = []
+
 [lints]
 workspace = true

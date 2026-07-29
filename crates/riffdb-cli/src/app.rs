@@ -1,5 +1,7 @@
 use std::ffi::OsString;
+use std::fs;
 use std::io::{self, Read};
+use std::path::Path;
 use std::process::ExitCode;
 
 use base64::Engine as _;
@@ -23,7 +25,9 @@ use crate::config::{EffectiveConfig, Environment, ProcessEnvironment, resolve};
 use crate::credential::{
     CredentialError, bootstrap_material, normal_credential, retain_normal_token,
 };
-use crate::input::{InputError, MAX_INPUT_BYTES, read_path_or_stdin, utf8, validate_path};
+use crate::input::{
+    InputError, MAX_INPUT_BYTES, read_file, read_path_or_stdin, utf8, validate_path,
+};
 use crate::output::{
     CommandIdentity, NormalCreateDisposition, Terminal, client_error, local_error,
     local_error_with, maintenance_uncertain, render_bootstrap, render_commit,
@@ -186,6 +190,9 @@ async fn query_command(
         QueryCommand::Check { .. } => CommandIdentity::QueryCheck,
         QueryCommand::Explain { .. } => CommandIdentity::QueryExplain,
         QueryCommand::Run { .. } => CommandIdentity::QueryRun,
+        QueryCommand::RunNamed { .. } => CommandIdentity::QueryRunNamed,
+        QueryCommand::Deploy { .. } => CommandIdentity::QueryDeploy,
+        QueryCommand::Module { .. } => CommandIdentity::QueryModule,
         QueryCommand::Repl { .. } => CommandIdentity::QueryRepl,
     };
     let metadata = match required_metadata(identity, config, environment) {
@@ -316,6 +323,127 @@ async fn query_command(
             )
             .await
         }
+        QueryCommand::RunNamed {
+            query_name,
+            module_hash,
+            parameters,
+            cursor,
+            contract,
+        } => {
+            let parameters = match query_parameters(parameters.as_ref(), stdin) {
+                Ok(parameters) => parameters,
+                Err(error) => return input_terminal(identity, error),
+            };
+            let module_hash = match module_hash.as_deref().map(parse_hash).transpose() {
+                Ok(module_hash) => module_hash,
+                Err(()) => return invalid_input(identity),
+            };
+            execute_named_query_cli(
+                identity,
+                &mut client,
+                &metadata,
+                contract,
+                query_name,
+                module_hash,
+                parameters,
+                cursor,
+            )
+            .await
+        }
+        QueryCommand::Deploy {
+            directory,
+            module_name,
+            module_version,
+            expected_active,
+            contract,
+        } => {
+            let contract = match symbolic_contract_selection(contract) {
+                Ok(contract) => contract,
+                Err(()) => return invalid_input(identity),
+            };
+            let module_version = match module_version.parse::<u64>() {
+                Ok(version) if version != 0 => version,
+                _ => return invalid_input(identity),
+            };
+            let queries = match read_query_directory(Path::new(&directory)) {
+                Ok(queries) => queries,
+                Err(error) => return input_terminal(identity, error),
+            };
+            let expected_active = match parse_module_expectation(&expected_active) {
+                Ok(expectation) => Some(expectation),
+                Err(()) => return invalid_input(identity),
+            };
+            let request_id = match request_id() {
+                Ok(request_id) => request_id,
+                Err(error) => return client_error(identity, &error),
+            };
+            match client
+                .deploy_query_module(
+                    app_v1::DeployQueryModuleRequest {
+                        contract,
+                        module_name,
+                        module_version,
+                        queries,
+                        expected_active,
+                        request_id,
+                    },
+                    &metadata,
+                )
+                .await
+            {
+                Ok(response) => success(
+                    identity,
+                    "deployed",
+                    &serde_json::json!({
+                        "outcome": response.outcome,
+                        "module": response.module.map(module_descriptor_json),
+                        "actual_active_module_hash": response.actual_active_module_hash.map(|hash| hex(&hash)),
+                    }),
+                ),
+                Err(error) => client_error(identity, &error),
+            }
+        }
+        QueryCommand::Module {
+            module_hash,
+            contract,
+        } => {
+            let contract = match symbolic_contract_selection(contract) {
+                Ok(contract) => contract,
+                Err(()) => return invalid_input(identity),
+            };
+            let module_hash = match module_hash.as_deref().map(parse_hash).transpose() {
+                Ok(module_hash) => module_hash,
+                Err(()) => return invalid_input(identity),
+            };
+            let request_id = match request_id() {
+                Ok(request_id) => request_id,
+                Err(error) => return client_error(identity, &error),
+            };
+            match client
+                .get_query_module(
+                    app_v1::GetQueryModuleRequest {
+                        contract,
+                        module_hash,
+                        request_id,
+                    },
+                    &metadata,
+                )
+                .await
+            {
+                Ok(response) => success(
+                    identity,
+                    "inspected",
+                    &serde_json::json!({
+                        "module": response.module.map(module_descriptor_json),
+                        "queries": response.queries.into_iter().map(|query| serde_json::json!({
+                            "name": query.name,
+                            "source": query.source,
+                        })).collect::<Vec<_>>(),
+                    }),
+                ),
+                Err(error) => client_error(identity, &error),
+            }
+        }
         QueryCommand::Repl { contract } => {
             let mut source = String::new();
             if stdin.read_to_string(&mut source).is_err() || source.len() > MAX_INPUT_BYTES {
@@ -422,6 +550,159 @@ async fn execute_query_cli(
         ),
         Err(error) => client_error(identity, &error),
     }
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn execute_named_query_cli(
+    identity: CommandIdentity,
+    client: &mut RiffDbClient,
+    metadata: &CallMetadata,
+    contract: ContractSelectionArgs,
+    query_name: String,
+    module_hash: Option<Vec<u8>>,
+    parameters: Vec<app_v1::Parameter>,
+    cursor: Option<String>,
+) -> Terminal {
+    let contract = match symbolic_contract_selection(contract) {
+        Ok(contract) => contract,
+        Err(()) => return invalid_input(identity),
+    };
+    let request_id = match request_id() {
+        Ok(request_id) => request_id,
+        Err(error) => return client_error(identity, &error),
+    };
+    match client
+        .execute_query(
+            app_v1::ExecuteQueryRequest {
+                contract,
+                query: Some(app_v1::execute_query_request::Query::QueryName(query_name)),
+                module_hash,
+                parameters,
+                cursor,
+                request_id,
+            },
+            metadata,
+        )
+        .await
+    {
+        Ok(response) => query_execution_json(&response).map_or_else(
+            || invalid_input(identity),
+            |result| success(identity, "completed", &result),
+        ),
+        Err(error) => client_error(identity, &error),
+    }
+}
+
+fn query_parameters(
+    path: Option<&OsString>,
+    stdin: &mut dyn Read,
+) -> Result<Vec<app_v1::Parameter>, InputError> {
+    let parameters = match path {
+        Some(path) => read_json::<serde_json::Map<String, serde_json::Value>>(path, stdin)?,
+        None => serde_json::Map::new(),
+    };
+    let mut parameters = parameters
+        .into_iter()
+        .map(|(name, value)| {
+            Ok(app_v1::Parameter {
+                name,
+                value: Some(natural_query_value(value).map_err(|_| InputError::Invalid)?),
+            })
+        })
+        .collect::<Result<Vec<_>, InputError>>()?;
+    parameters.sort_by(|left, right| left.name.cmp(&right.name));
+    Ok(parameters)
+}
+
+fn read_query_directory(directory: &Path) -> Result<Vec<app_v1::NamedQuerySource>, InputError> {
+    validate_path(directory.as_os_str())?;
+    let entries = fs::read_dir(directory).map_err(|_| InputError::ReadFailed)?;
+    let mut paths = Vec::new();
+    for entry in entries {
+        let entry = entry.map_err(|_| InputError::ReadFailed)?;
+        let path = entry.path();
+        if path.extension().and_then(|extension| extension.to_str()) == Some("riffq") {
+            paths.push(path);
+        }
+        if paths.len() > 4_096 {
+            return Err(InputError::TooLarge);
+        }
+    }
+    paths.sort();
+    if paths.is_empty() {
+        return Err(InputError::Invalid);
+    }
+    let mut total = 0_usize;
+    let mut queries = Vec::with_capacity(paths.len());
+    for path in paths {
+        let name = path
+            .file_stem()
+            .and_then(|name| name.to_str())
+            .filter(|name| !name.is_empty())
+            .ok_or(InputError::Invalid)?
+            .to_owned();
+        let source = utf8(read_file(&path, MAX_INPUT_BYTES)?)?;
+        total = total
+            .checked_add(source.len())
+            .ok_or(InputError::TooLarge)?;
+        if total > 16 * MAX_INPUT_BYTES {
+            return Err(InputError::TooLarge);
+        }
+        queries.push(app_v1::NamedQuerySource { name, source });
+    }
+    queries.sort_by(|left, right| left.name.cmp(&right.name));
+    if queries.windows(2).any(|pair| pair[0].name == pair[1].name) {
+        return Err(InputError::Invalid);
+    }
+    Ok(queries)
+}
+
+fn parse_module_expectation(
+    value: &str,
+) -> Result<app_v1::deploy_query_module_request::ExpectedActive, ()> {
+    match value {
+        "any" => Ok(app_v1::deploy_query_module_request::ExpectedActive::AnyActive(true)),
+        "absent" => Ok(app_v1::deploy_query_module_request::ExpectedActive::AbsentActive(true)),
+        hash => {
+            parse_hash(hash).map(app_v1::deploy_query_module_request::ExpectedActive::ModuleHash)
+        }
+    }
+}
+
+fn parse_hash(value: &str) -> Result<Vec<u8>, ()> {
+    if value.len() != 64 {
+        return Err(());
+    }
+    value
+        .as_bytes()
+        .chunks_exact(2)
+        .map(|pair| {
+            let high = hex_nibble(pair[0]).ok_or(())?;
+            let low = hex_nibble(pair[1]).ok_or(())?;
+            Ok((high << 4) | low)
+        })
+        .collect()
+}
+
+const fn hex_nibble(byte: u8) -> Option<u8> {
+    match byte {
+        b'0'..=b'9' => Some(byte - b'0'),
+        b'a'..=b'f' => Some(byte - b'a' + 10),
+        b'A'..=b'F' => Some(byte - b'A' + 10),
+        _ => None,
+    }
+}
+
+fn module_descriptor_json(descriptor: app_v1::QueryModuleDescriptor) -> serde_json::Value {
+    serde_json::json!({
+        "module_name": descriptor.module_name,
+        "module_version": descriptor.module_version.to_string(),
+        "module_hash": hex(&descriptor.module_hash),
+        "contract_lineage": descriptor.contract_lineage,
+        "contract_version": descriptor.contract_version.to_string(),
+        "contract_bundle_hash": hex(&descriptor.contract_bundle_hash),
+        "query_names": descriptor.query_names,
+    })
 }
 
 async fn backup_command(
@@ -2099,6 +2380,15 @@ const fn command_identity(command: &TopLevel) -> CommandIdentity {
         TopLevel::Query {
             command: QueryCommand::Run { .. },
         } => CommandIdentity::QueryRun,
+        TopLevel::Query {
+            command: QueryCommand::RunNamed { .. },
+        } => CommandIdentity::QueryRunNamed,
+        TopLevel::Query {
+            command: QueryCommand::Deploy { .. },
+        } => CommandIdentity::QueryDeploy,
+        TopLevel::Query {
+            command: QueryCommand::Module { .. },
+        } => CommandIdentity::QueryModule,
         TopLevel::Query {
             command: QueryCommand::Repl { .. },
         } => CommandIdentity::QueryRepl,

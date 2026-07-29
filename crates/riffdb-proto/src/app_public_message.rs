@@ -389,3 +389,146 @@ app_message!(
         Ok(())
     }
 );
+
+fn validate_named_sources(values: &[app_v1::NamedQuerySource]) -> Result<(), PublicWireError> {
+    if values.is_empty() || values.len() > MAX_QUERY_ITEMS {
+        return Err(PublicWireError::TooManyItems);
+    }
+    for value in values {
+        if !valid_name(&value.name)
+            || value.source.is_empty()
+            || value.source.len() > MAX_QUERY_SOURCE_BYTES
+        {
+            return Err(PublicWireError::InvalidBytes);
+        }
+    }
+    if values.windows(2).any(|pair| pair[0].name >= pair[1].name) {
+        return Err(PublicWireError::NonCanonical);
+    }
+    Ok(())
+}
+
+fn validate_module_descriptor(
+    value: &app_v1::QueryModuleDescriptor,
+) -> Result<(), PublicWireError> {
+    if !valid_name(&value.module_name)
+        || value.module_version == 0
+        || !valid_hash(&value.module_hash)
+        || value.contract_lineage.is_empty()
+        || value.contract_lineage.len() > MAX_CONTRACT_LINEAGE_BYTES
+        || value.contract_version == 0
+        || !valid_hash(&value.contract_bundle_hash)
+        || value.query_names.is_empty()
+        || value.query_names.len() > MAX_QUERY_ITEMS
+        || value.query_names.iter().any(|name| !valid_name(name))
+        || value.query_names.windows(2).any(|pair| pair[0] >= pair[1])
+    {
+        return Err(PublicWireError::InvalidIdentity);
+    }
+    Ok(())
+}
+
+app_message!(
+    app_v1::DeployQueryModuleRequest,
+    MAX_PUBLIC_REQUEST_BYTES,
+    100,
+    &[4],
+    &[5, 6, 7],
+    |value: &app_v1::DeployQueryModuleRequest| {
+        validate_request_id(&value.request_id)?;
+        validate_selector(
+            value
+                .contract
+                .as_ref()
+                .ok_or(PublicWireError::MissingRequiredField)?,
+        )?;
+        if !valid_name(&value.module_name) || value.module_version == 0 {
+            return Err(PublicWireError::InvalidIdentity);
+        }
+        validate_named_sources(&value.queries)?;
+        match value.expected_active.as_ref() {
+            Some(app_v1::deploy_query_module_request::ExpectedActive::AnyActive(true))
+            | Some(app_v1::deploy_query_module_request::ExpectedActive::AbsentActive(true)) => {
+                Ok(())
+            }
+            Some(app_v1::deploy_query_module_request::ExpectedActive::ModuleHash(hash))
+                if valid_hash(hash) =>
+            {
+                Ok(())
+            }
+            _ => Err(PublicWireError::InvalidValue),
+        }
+    }
+);
+app_message!(
+    app_v1::DeployQueryModuleResponse,
+    MAX_PUBLIC_RESPONSE_BYTES,
+    3,
+    &[],
+    &[],
+    |value: &app_v1::DeployQueryModuleResponse| {
+        let outcome = app_v1::QueryModuleDeploymentOutcome::try_from(value.outcome)
+            .map_err(|_| PublicWireError::InvalidEnum)?;
+        if outcome == app_v1::QueryModuleDeploymentOutcome::Unspecified {
+            return Err(PublicWireError::InvalidEnum);
+        }
+        validate_module_descriptor(
+            value
+                .module
+                .as_ref()
+                .ok_or(PublicWireError::MissingRequiredField)?,
+        )?;
+        let mismatch = outcome == app_v1::QueryModuleDeploymentOutcome::ExpectedActiveMismatch;
+        if mismatch
+            != value
+                .actual_active_module_hash
+                .as_deref()
+                .is_some_and(valid_hash)
+            && value.actual_active_module_hash.is_some()
+        {
+            return Err(PublicWireError::InconsistentFields);
+        }
+        Ok(())
+    }
+);
+app_message!(
+    app_v1::GetQueryModuleRequest,
+    MAX_PUBLIC_REQUEST_BYTES,
+    100,
+    &[],
+    &[],
+    |value: &app_v1::GetQueryModuleRequest| {
+        validate_request_id(&value.request_id)?;
+        validate_selector(
+            value
+                .contract
+                .as_ref()
+                .ok_or(PublicWireError::MissingRequiredField)?,
+        )?;
+        if value
+            .module_hash
+            .as_deref()
+            .is_some_and(|hash| !valid_hash(hash))
+        {
+            return Err(PublicWireError::InvalidIdentity);
+        }
+        Ok(())
+    }
+);
+app_message!(
+    app_v1::GetQueryModuleResponse,
+    MAX_PUBLIC_RESPONSE_BYTES,
+    2,
+    &[2],
+    &[],
+    |value: &app_v1::GetQueryModuleResponse| {
+        match value.module.as_ref() {
+            Some(module) => {
+                validate_module_descriptor(module)?;
+                validate_named_sources(&value.queries)
+            }
+            None if value.queries.is_empty() => Ok(()),
+            None => Err(PublicWireError::InconsistentFields),
+        }
+    }
+);

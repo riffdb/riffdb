@@ -15,36 +15,37 @@ use riffdb_service::{
     CompactResourceDescriptorRef, CompileSymbolicQueryRequest, ContractCompatibilityClass,
     ContractDescriptor, ContractSelection, ContractSource, ContractValidationResult,
     CreateCapabilityResult, CreateOfflineBackupRequest, CursorToken, DeclaredOutcomeView,
-    DeployContractRequest, DeployContractResult, DescribeSymbolicContractResult,
-    DiscoverCommandToolsRequest, DiscoverCommandToolsResult, DiscoverCommandToolsResultRef,
-    DiscoverResourcesRequest, DiscoverResourcesResult, DiscoverResourcesResultRef,
-    DiscoveryCatalogFence, DiscoveryCatalogStateRef, DiscoveryRepresentation,
-    ExecuteCommandRequest, ExecuteCommandResult, ExecuteSymbolicQueryRequest,
-    ExecuteSymbolicQueryResult, ExplainCommandRequest, ExplainCommandResult,
-    ExplainSymbolicQueryResult, FieldSelection, FixedToolKind, GeneratedSchemaIdentity,
-    GetActiveContractRequest, GetActiveContractResult, GetCommitRequest, GetCommitResult,
-    GetContractVersionRequest, GetContractVersionResult, GetEntityRequest, GetEntityResult,
-    GetOfflineMaintenanceOperationRequest, GetOfflineMaintenanceOperationResult,
-    GetProjectionStatusRequest, GetProjectionStatusResult, HealthComponentKind,
-    HealthComponentStatus, HealthRequest, HealthResult, HealthStatus, JournaledCommandResult,
-    JournaledCompletion, ListPendingOutboxDeliveriesRequest, ListPendingOutboxDeliveriesResult,
-    NormalCreateCapabilityRequest, NormalCreateCapabilityResult,
-    OfflineMaintenanceObservationFailure, OfflineMaintenanceObservationPhase,
-    OfflineMaintenanceOperationObservation, OfflineMaintenanceStartDisposition,
-    OfflineMaintenanceStartResult, OperationSchemaArtifact, OperationSchemaCatalog,
-    OperationSchemaCatalogIdentity, OperationSchemaIdentity, OutboxDeliveryState,
-    OutcomeResourceLocator, PageLimit, PageRequest, PreBootstrapLifecycle, ProjectionFailureCode,
-    ProjectionLifecycle, ProjectionUnavailableReason, ProvenanceSelection, PublishedApplyMode,
-    QueryProjectionRequest, QueryProjectionResult, ResolveCommandOutcomeRequest,
-    ResolveCommandOutcomeResult, ResourceDescriptor, ResourceDescriptorRef, ResourceDiscoveryKind,
-    RestoreOfflineBackupRequest, RevokeCapabilityRequest, RevokeCapabilityResult,
-    ScanCommitsRequest, ScanCommitsResult, ScanIndexRequest, ScanIndexResult,
-    SchemaBoundOutcomeRecord, SchemaBoundOutcomeValue, SourceName, StatisticsRequest,
-    StatisticsResult, SubmittedDecimal, SubmittedEnum, SubmittedField, SubmittedFieldIdentity,
-    SubmittedMoney, SubmittedRecord, SubmittedValue, SubscribeToCommitsRequest,
-    SymbolicContractSelector, SymbolicDiagnostic, SymbolicQueryIdentity, SymbolicQueryParameters,
-    SymbolicQuerySchema, SymbolicQuerySource, SymbolicResultField, SymbolicResultRecord,
-    TraceProvenanceRequest, TraceProvenanceResult, ValidateContractRequest,
+    DeployContractRequest, DeployContractResult, DeployQueryModuleRequest, DeployQueryModuleResult,
+    DescribeSymbolicContractResult, DiscoverCommandToolsRequest, DiscoverCommandToolsResult,
+    DiscoverCommandToolsResultRef, DiscoverResourcesRequest, DiscoverResourcesResult,
+    DiscoverResourcesResultRef, DiscoveryCatalogFence, DiscoveryCatalogStateRef,
+    DiscoveryRepresentation, ExecuteCommandRequest, ExecuteCommandResult,
+    ExecuteSymbolicQueryRequest, ExecuteSymbolicQueryResult, ExplainCommandRequest,
+    ExplainCommandResult, ExplainSymbolicQueryResult, FieldSelection, FixedToolKind,
+    GeneratedSchemaIdentity, GetActiveContractRequest, GetActiveContractResult, GetCommitRequest,
+    GetCommitResult, GetContractVersionRequest, GetContractVersionResult, GetEntityRequest,
+    GetEntityResult, GetOfflineMaintenanceOperationRequest, GetOfflineMaintenanceOperationResult,
+    GetProjectionStatusRequest, GetProjectionStatusResult, GetQueryModuleRequest,
+    HealthComponentKind, HealthComponentStatus, HealthRequest, HealthResult, HealthStatus,
+    JournaledCommandResult, JournaledCompletion, ListPendingOutboxDeliveriesRequest,
+    ListPendingOutboxDeliveriesResult, NamedSymbolicQueryRequest, NormalCreateCapabilityRequest,
+    NormalCreateCapabilityResult, OfflineMaintenanceObservationFailure,
+    OfflineMaintenanceObservationPhase, OfflineMaintenanceOperationObservation,
+    OfflineMaintenanceStartDisposition, OfflineMaintenanceStartResult, OperationSchemaArtifact,
+    OperationSchemaCatalog, OperationSchemaCatalogIdentity, OperationSchemaIdentity,
+    OutboxDeliveryState, OutcomeResourceLocator, PageLimit, PageRequest, PreBootstrapLifecycle,
+    ProjectionFailureCode, ProjectionLifecycle, ProjectionUnavailableReason, ProvenanceSelection,
+    PublishedApplyMode, QueryModuleActiveExpectation, QueryModuleDeploymentDisposition,
+    QueryModuleInspection, QueryProjectionRequest, QueryProjectionResult,
+    ResolveCommandOutcomeRequest, ResolveCommandOutcomeResult, ResourceDescriptor,
+    ResourceDescriptorRef, ResourceDiscoveryKind, RestoreOfflineBackupRequest,
+    RevokeCapabilityRequest, RevokeCapabilityResult, ScanCommitsRequest, ScanCommitsResult,
+    ScanIndexRequest, ScanIndexResult, SchemaBoundOutcomeRecord, SchemaBoundOutcomeValue,
+    SourceName, StatisticsRequest, StatisticsResult, SubmittedDecimal, SubmittedEnum,
+    SubmittedField, SubmittedFieldIdentity, SubmittedMoney, SubmittedRecord, SubmittedValue,
+    SubscribeToCommitsRequest, SymbolicContractSelector, SymbolicDiagnostic, SymbolicQueryIdentity,
+    SymbolicQueryParameters, SymbolicQuerySchema, SymbolicQuerySource, SymbolicResultField,
+    SymbolicResultRecord, TraceProvenanceRequest, TraceProvenanceResult, ValidateContractRequest,
 };
 use riffdb_types::{
     ActorId, ActorKind, AdmittedActorContext, Audience, BackupNameV1, CapabilityGrantV1,
@@ -53,8 +54,8 @@ use riffdb_types::{
     Date, EntityFieldVisibilityV1, EntityKey, EntityTypeId, EnumTypeId, EnumVariantId, FieldId,
     FrontierPosition, IdempotencyKey, IndexEpochPosition, IndexId, OfflineMaintenanceOperationId,
     OfflineMaintenanceOperationKind, OfflineMaintenanceReplacementConfirmation, PartitionKey,
-    PartitionScopeV1, ProjectionId, ProvenanceId, RequestId, RevocationReasonCodeV1, SchemaHash,
-    ScopedPartitionV1, TenantId, TenantScope, Timestamp,
+    PartitionScopeV1, ProjectionId, ProvenanceId, QueryModuleHash, RequestId,
+    RevocationReasonCodeV1, SchemaHash, ScopedPartitionV1, TenantId, TenantScope, Timestamp,
 };
 use tonic::Status;
 
@@ -128,49 +129,97 @@ pub fn check_symbolic_query_request_from_proto(
     ))
 }
 
-/// Converts an ad-hoc explain request; named modules are owned by WP-260.
-pub fn explain_symbolic_query_request_from_proto(
-    request: app_v1::ExplainQueryRequest,
-) -> Result<(RequestId, CompileSymbolicQueryRequest), Status> {
-    let request_id = request_id_from_bytes(&request.request_id)?;
-    if request.module_hash.is_some() {
-        return Err(invalid_request());
-    }
-    let source = match request.query {
-        Some(app_v1::explain_query_request::Query::Source(source)) => source,
-        Some(app_v1::explain_query_request::Query::QueryName(_)) | None => {
-            return Err(Status::unimplemented(
-                "named query modules are not deployed by this server",
-            ));
-        }
-    };
-    let contract = symbolic_contract_selector_from_proto(request.contract)?;
-    let source = SymbolicQuerySource::new(source).map_err(|_| invalid_request())?;
-    Ok((
-        request_id,
-        CompileSymbolicQueryRequest::new(contract, source),
-    ))
+/// Exact explain operation selected by the public oneof.
+pub enum ExplainSymbolicQueryInvocation {
+    /// Ad-hoc source.
+    AdHoc(CompileSymbolicQueryRequest),
+    /// Named immutable operation.
+    Named(NamedSymbolicQueryRequest),
 }
 
-/// Converts an ad-hoc execute request into canonical name-addressed parameters.
+/// Converts an ad-hoc or named explain request.
+pub fn explain_symbolic_query_request_from_proto(
+    request: app_v1::ExplainQueryRequest,
+) -> Result<(RequestId, ExplainSymbolicQueryInvocation), Status> {
+    let request_id = request_id_from_bytes(&request.request_id)?;
+    let contract = symbolic_contract_selector_from_proto(request.contract)?;
+    let module_hash = optional_query_module_hash(request.module_hash)?;
+    let invocation = match request.query {
+        Some(app_v1::explain_query_request::Query::Source(source)) if module_hash.is_none() => {
+            ExplainSymbolicQueryInvocation::AdHoc(CompileSymbolicQueryRequest::new(
+                contract,
+                SymbolicQuerySource::new(source).map_err(|_| invalid_request())?,
+            ))
+        }
+        Some(app_v1::explain_query_request::Query::QueryName(name)) => {
+            ExplainSymbolicQueryInvocation::Named(
+                NamedSymbolicQueryRequest::new(
+                    contract,
+                    name,
+                    module_hash,
+                    SymbolicQueryParameters::new(std::collections::BTreeMap::new())
+                        .map_err(|_| invalid_request())?,
+                )
+                .map_err(|_| invalid_request())?,
+            )
+        }
+        _ => return Err(invalid_request()),
+    };
+    Ok((request_id, invocation))
+}
+
+/// Exact execute operation selected by the public oneof.
+pub enum ExecuteSymbolicQueryInvocation {
+    /// Ad-hoc source.
+    AdHoc(ExecuteSymbolicQueryRequest),
+    /// Named immutable operation.
+    Named(NamedSymbolicQueryRequest),
+}
+
+/// Converts an ad-hoc or named execute request into canonical parameters.
 pub fn execute_symbolic_query_request_from_proto(
     request: app_v1::ExecuteQueryRequest,
-) -> Result<(RequestId, ExecuteSymbolicQueryRequest), Status> {
+) -> Result<(RequestId, ExecuteSymbolicQueryInvocation), Status> {
     let request_id = request_id_from_bytes(&request.request_id)?;
-    if request.module_hash.is_some() {
-        return Err(invalid_request());
-    }
-    let source = match request.query {
-        Some(app_v1::execute_query_request::Query::Source(source)) => source,
-        Some(app_v1::execute_query_request::Query::QueryName(_)) | None => {
-            return Err(Status::unimplemented(
-                "named query modules are not deployed by this server",
-            ));
+    let contract = symbolic_contract_selector_from_proto(request.contract)?;
+    let module_hash = optional_query_module_hash(request.module_hash)?;
+    let parameters = symbolic_parameters_from_proto(&request.parameters)?;
+    let cursor = request
+        .cursor
+        .map(|cursor| cursor_token_from_text(&cursor))
+        .transpose()?;
+    let invocation = match request.query {
+        Some(app_v1::execute_query_request::Query::Source(source)) if module_hash.is_none() => {
+            let mut request = ExecuteSymbolicQueryRequest::new(
+                contract,
+                SymbolicQuerySource::new(source).map_err(|_| invalid_request())?,
+                parameters,
+            );
+            if let Some(cursor) = cursor {
+                request = request.with_cursor(cursor);
+            }
+            ExecuteSymbolicQueryInvocation::AdHoc(request)
         }
+        Some(app_v1::execute_query_request::Query::QueryName(name)) => {
+            let mut request =
+                NamedSymbolicQueryRequest::new(contract, name, module_hash, parameters)
+                    .map_err(|_| invalid_request())?;
+            if let Some(cursor) = cursor {
+                request = request.with_cursor(cursor);
+            }
+            ExecuteSymbolicQueryInvocation::Named(request)
+        }
+        _ => return Err(invalid_request()),
     };
+    Ok((request_id, invocation))
+}
+
+fn symbolic_parameters_from_proto(
+    values: &[app_v1::Parameter],
+) -> Result<SymbolicQueryParameters, Status> {
     let mut prior: Option<&str> = None;
     let mut parameters = std::collections::BTreeMap::new();
-    for parameter in &request.parameters {
+    for parameter in values {
         if parameter.name.is_empty() || prior.is_some_and(|name| name >= parameter.name.as_str()) {
             return Err(invalid_request());
         }
@@ -179,20 +228,72 @@ pub fn execute_symbolic_query_request_from_proto(
         parameters.insert(parameter.name.clone(), submitted);
         prior = Some(&parameter.name);
     }
-    let parameters = SymbolicQueryParameters::new(parameters).map_err(|_| invalid_request())?;
-    let mut service_request = ExecuteSymbolicQueryRequest::new(
+    SymbolicQueryParameters::new(parameters).map_err(|_| invalid_request())
+}
+
+fn cursor_token_from_text(cursor: &str) -> Result<CursorToken, Status> {
+    let bytes = URL_SAFE_NO_PAD
+        .decode(cursor.as_bytes())
+        .map_err(|_| invalid_request())?;
+    let bytes: [u8; 16] = bytes.try_into().map_err(|_| invalid_request())?;
+    Ok(CursorToken::from_bytes(bytes))
+}
+
+fn optional_query_module_hash(value: Option<Vec<u8>>) -> Result<Option<QueryModuleHash>, Status> {
+    value
+        .map(|bytes| {
+            let bytes: [u8; 32] = bytes.try_into().map_err(|_| invalid_request())?;
+            Ok(QueryModuleHash::from_bytes(bytes))
+        })
+        .transpose()
+}
+
+/// Converts one immutable query-module deployment.
+pub fn deploy_query_module_request_from_proto(
+    request: app_v1::DeployQueryModuleRequest,
+) -> Result<(RequestId, DeployQueryModuleRequest), Status> {
+    let request_id = request_id_from_bytes(&request.request_id)?;
+    let expectation = match request.expected_active.ok_or_else(invalid_request)? {
+        app_v1::deploy_query_module_request::ExpectedActive::AnyActive(true) => {
+            QueryModuleActiveExpectation::Any
+        }
+        app_v1::deploy_query_module_request::ExpectedActive::AbsentActive(true) => {
+            QueryModuleActiveExpectation::Absent
+        }
+        app_v1::deploy_query_module_request::ExpectedActive::ModuleHash(hash) => {
+            QueryModuleActiveExpectation::Exact(
+                optional_query_module_hash(Some(hash))?.ok_or_else(invalid_request)?,
+            )
+        }
+        _ => return Err(invalid_request()),
+    };
+    let queries = request
+        .queries
+        .into_iter()
+        .map(|query| (query.name, query.source))
+        .collect();
+    let service_request = DeployQueryModuleRequest::from_sources(
         symbolic_contract_selector_from_proto(request.contract)?,
-        SymbolicQuerySource::new(source).map_err(|_| invalid_request())?,
-        parameters,
-    );
-    if let Some(cursor) = request.cursor {
-        let bytes = URL_SAFE_NO_PAD
-            .decode(cursor.as_bytes())
-            .map_err(|_| invalid_request())?;
-        let bytes: [u8; 16] = bytes.try_into().map_err(|_| invalid_request())?;
-        service_request = service_request.with_cursor(CursorToken::from_bytes(bytes));
-    }
+        request.module_name,
+        request.module_version,
+        queries,
+        expectation,
+    )
+    .map_err(|_| invalid_request())?;
     Ok((request_id, service_request))
+}
+
+/// Converts active or exact module inspection.
+pub fn get_query_module_request_from_proto(
+    request: app_v1::GetQueryModuleRequest,
+) -> Result<(RequestId, GetQueryModuleRequest), Status> {
+    Ok((
+        request_id_from_bytes(&request.request_id)?,
+        GetQueryModuleRequest::new(
+            symbolic_contract_selector_from_proto(request.contract)?,
+            optional_query_module_hash(request.module_hash)?,
+        ),
+    ))
 }
 
 fn symbolic_identity_to_proto(identity: &SymbolicQueryIdentity) -> app_v1::QueryIdentity {
@@ -202,7 +303,7 @@ fn symbolic_identity_to_proto(identity: &SymbolicQueryIdentity) -> app_v1::Query
         contract_bundle_hash: identity.bundle_hash().as_bytes().to_vec(),
         query_name: identity.name().map(str::to_owned),
         plan_hash: identity.plan_hash().as_bytes().to_vec(),
-        module_hash: None,
+        module_hash: identity.module_hash().map(|hash| hash.as_bytes().to_vec()),
     }
 }
 
@@ -352,6 +453,73 @@ pub fn execute_symbolic_query_result_to_proto(
             .next_cursor()
             .map(|cursor| URL_SAFE_NO_PAD.encode(cursor.as_bytes())),
     })
+}
+
+fn query_module_descriptor_to_proto(
+    module: &riffdb_service::QueryModuleDescriptor,
+) -> app_v1::QueryModuleDescriptor {
+    app_v1::QueryModuleDescriptor {
+        module_name: module.name().as_str().to_owned(),
+        module_version: module.version().get(),
+        module_hash: module.hash().as_bytes().to_vec(),
+        contract_lineage: module.contract_lineage().as_str().to_owned(),
+        contract_version: module.contract_version().get(),
+        contract_bundle_hash: module.contract_hash().as_bytes().to_vec(),
+        query_names: module.query_names().to_vec(),
+    }
+}
+
+/// Converts one closed query-module deployment result.
+pub fn deploy_query_module_result_to_proto(
+    result: &DeployQueryModuleResult,
+) -> app_v1::DeployQueryModuleResponse {
+    let (outcome, actual) = match result.outcome() {
+        QueryModuleDeploymentDisposition::Activated => {
+            (app_v1::QueryModuleDeploymentOutcome::Activated, None)
+        }
+        QueryModuleDeploymentDisposition::AlreadyActive => {
+            (app_v1::QueryModuleDeploymentOutcome::AlreadyActive, None)
+        }
+        QueryModuleDeploymentDisposition::ExpectedActiveMismatch { actual } => (
+            app_v1::QueryModuleDeploymentOutcome::ExpectedActiveMismatch,
+            actual.map(|hash| hash.as_bytes().to_vec()),
+        ),
+        QueryModuleDeploymentDisposition::ModuleVersionConflict => {
+            (app_v1::QueryModuleDeploymentOutcome::VersionConflict, None)
+        }
+        QueryModuleDeploymentDisposition::ContractUnavailable => (
+            app_v1::QueryModuleDeploymentOutcome::ContractUnavailable,
+            None,
+        ),
+    };
+    app_v1::DeployQueryModuleResponse {
+        outcome: outcome as i32,
+        module: Some(query_module_descriptor_to_proto(result.module())),
+        actual_active_module_hash: actual,
+    }
+}
+
+/// Converts active/exact module inspection.
+pub fn get_query_module_result_to_proto(
+    result: Option<&QueryModuleInspection>,
+) -> app_v1::GetQueryModuleResponse {
+    match result {
+        Some(result) => app_v1::GetQueryModuleResponse {
+            module: Some(query_module_descriptor_to_proto(result.descriptor())),
+            queries: result
+                .queries()
+                .iter()
+                .map(|query| app_v1::NamedQuerySource {
+                    name: query.name().to_owned(),
+                    source: query.source().to_owned(),
+                })
+                .collect(),
+        },
+        None => app_v1::GetQueryModuleResponse {
+            module: None,
+            queries: Vec::new(),
+        },
+    }
 }
 
 /// Converts checked pagination syntax into the opaque service cursor boundary.
