@@ -456,6 +456,114 @@ fn closed_errors_do_not_debug_business_values() {
     let _execute = execute_in_snapshot::<FakeView>;
 }
 
+struct ReportedWorkView {
+    row: QueryRow,
+    scanned_rows: u64,
+    point_reads: u64,
+    continuation: bool,
+}
+
+impl QueryReadView for ReportedWorkView {
+    type Error = ();
+
+    fn application_head(&self) -> u64 {
+        1
+    }
+
+    fn point(
+        &mut self,
+        _step: &QueryAccessStep,
+        _predicates: &[BoundPredicate],
+    ) -> Result<Option<QueryRow>, Self::Error> {
+        Err(())
+    }
+
+    fn dependent_point_batch(
+        &mut self,
+        _step: &QueryAccessStep,
+        _predicates: &[Vec<BoundPredicate>],
+    ) -> Result<Vec<Option<QueryRow>>, Self::Error> {
+        Err(())
+    }
+
+    fn scan(
+        &mut self,
+        _step: &QueryAccessStep,
+        _predicates: &[BoundPredicate],
+        _limit: u64,
+        _after: Option<&[u8]>,
+    ) -> Result<QueryScanPage, Self::Error> {
+        QueryScanPage::reported(
+            vec![self.row.clone()],
+            1,
+            self.scanned_rows,
+            self.point_reads,
+            self.continuation.then(|| vec![0x55]),
+        )
+        .ok_or(())
+    }
+}
+
+#[test]
+fn backend_work_is_reconciled_with_whole_query_fuel_before_release() {
+    let bundle = compile_contract_source(CONTRACT).expect("contract");
+    let catalog = SymbolicCatalog::from_bundle(&bundle).expect("catalog");
+    let program =
+        compile_query(&parse_query(OPEN_TICKETS).expect("query"), &catalog).expect("program");
+    assert_eq!(program.cost().scanned_index_rows(), 5);
+    let status = catalog.enumeration("TicketStatus").expect("status enum");
+    let parameters = QueryParameters::checked(BTreeMap::from([
+        ("organization_id".to_owned(), CanonicalValue::Uuid([1; 16])),
+        ("project_id".to_owned(), CanonicalValue::Uuid([2; 16])),
+    ]))
+    .expect("parameters");
+    let ticket = row(
+        "Ticket",
+        [
+            ("organization_id", CanonicalValue::Uuid([1; 16])),
+            ("project_id", CanonicalValue::Uuid([2; 16])),
+            ("ticket_id", CanonicalValue::Uuid([3; 16])),
+            (
+                "status",
+                CanonicalValue::Enum {
+                    type_id: status.internal_id(),
+                    variant_id: status.variant("Open").expect("Open"),
+                },
+            ),
+        ],
+    );
+
+    let mut exact = ReportedWorkView {
+        row: ticket.clone(),
+        scanned_rows: 5,
+        point_reads: 1,
+        continuation: false,
+    };
+    assert!(execute_in_snapshot(&program, &parameters, &mut exact).is_ok());
+
+    let mut one_over = ReportedWorkView {
+        row: ticket.clone(),
+        scanned_rows: 6,
+        point_reads: 1,
+        continuation: true,
+    };
+    assert_eq!(
+        execute_in_snapshot(&program, &parameters, &mut one_over),
+        Err(QueryExecutionError::FuelExhausted)
+    );
+
+    let mut under_report = ReportedWorkView {
+        row: ticket,
+        scanned_rows: 0,
+        point_reads: 0,
+        continuation: false,
+    };
+    assert_eq!(
+        execute_in_snapshot(&program, &parameters, &mut under_report),
+        Err(QueryExecutionError::BoundExceeded)
+    );
+}
+
 fn row<const N: usize>(entity: &str, fields: [(&str, CanonicalValue); N]) -> QueryRow {
     QueryRow::checked(
         entity.to_owned(),

@@ -49,6 +49,7 @@ query Bad($organization_id: Organization.organization_id, $title: Ticket.title) 
     return Found { tickets: tickets { ticket_id } }
     outcomes Found
 }
+
 "#;
     let diagnostics =
         compile_query(&parse_query(unindexed).expect("parse"), &catalog).expect_err("reject");
@@ -86,5 +87,50 @@ query Bad($organization_id: Organization.organization_id, $project_id: Project.p
     assert_eq!(
         diagnostics.as_slice()[0].code(),
         PlannerDiagnosticCode::NonLocal
+    );
+}
+
+#[test]
+fn encoded_result_cost_overflow_is_source_spanned_and_releases_no_plan() {
+    let bundle = compile_contract_source(CONTRACT).expect("contract");
+    let catalog = SymbolicCatalog::from_bundle(&bundle).expect("catalog");
+    let copies = (0..40)
+        .map(|index| format!("copy_{index}: tickets {{ title }}"))
+        .collect::<Vec<_>>()
+        .join("\n        ");
+    let source = format!(
+        "query Huge(
+    $organization_id: Organization.organization_id,
+    $project_id: Project.project_id,
+    $status: TicketStatus
+) {{
+    many tickets from Ticket
+        where organization_id == $organization_id
+          && project_id == $project_id
+          && status == $status
+        order by ticket_id asc
+        take 500
+    return Found {{
+        {copies}
+    }}
+    outcomes Found
+}}"
+    );
+    let diagnostics =
+        compile_query(&parse_query(&source).expect("parse"), &catalog).expect_err("reject");
+    let diagnostic = &diagnostics.as_slice()[0];
+    assert_eq!(diagnostic.code(), PlannerDiagnosticCode::Unbounded);
+    assert!(diagnostic.primary().end > diagnostic.primary().start);
+    assert_eq!(
+        format!(
+            "{}|{}..{}|{}|{}|{}\n",
+            diagnostic.code().as_str(),
+            diagnostic.primary().start,
+            diagnostic.primary().end,
+            diagnostic.symbol_path().join("."),
+            diagnostic.summary(),
+            diagnostic.suggested_index().unwrap_or("")
+        ),
+        include_str!("../../../fixtures/riffql/whole_cost.snapshot")
     );
 }

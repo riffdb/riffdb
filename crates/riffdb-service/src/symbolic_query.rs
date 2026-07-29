@@ -2069,6 +2069,7 @@ fn application_query_target(
         OperationTenantScope::global_only(),
         routed_partition?,
         accesses,
+        program.cost(),
     )
     .ok()
 }
@@ -2086,6 +2087,7 @@ fn execute_authorized_query_page(
         && target.version() == program.contract().version()
         && target.bundle_hash() == program.contract().bundle_hash()
         && target.plan_hash() == program.identity().hash()
+        && target.cost() == program.cost()
         && target.accesses().len() == program.steps().len()
         && obligations.output_classification()
             == OutputClassification::PolicyFilteredApplicationData
@@ -2110,7 +2112,9 @@ fn execution_failure(
             validation_failure(ValidationCode::InvalidValue)
         }
         QueryExecutionError::BackendUnavailable => PublicError::storage_unavailable().into(),
-        QueryExecutionError::BoundExceeded => ServiceFailure::ResponseTooLarge,
+        QueryExecutionError::BoundExceeded | QueryExecutionError::FuelExhausted => {
+            ServiceFailure::ResponseTooLarge
+        }
         QueryExecutionError::MissingField { .. }
         | QueryExecutionError::InvalidDependentKey { .. }
         | QueryExecutionError::InvalidProgram
