@@ -61,3 +61,24 @@ The parser accepts at most 1 MiB of UTF-8 source, 131,072 tokens/AST nodes,
 32 nesting levels, 4,096 bindings, and 1,024 items in any local collection.
 Diagnostics are value-free and use stable `RDB-QS001` through `RDB-QS009`
 codes.
+
+## Accepted application-profile target
+
+The following boundary is accepted by ADR-0055 and assigned to WP-280 through
+WP-300; it is not a claim about the pre-WP-300 surface.
+
+- Stable applications execute exact named deployed queries with typed
+  parameters. They do not submit source text.
+- Scoped agents may check, explain, or execute ad-hoc RiffQL only through
+  separately granted permissions.
+- Raw `GetEntity` and `ScanIndex` remain kernel/administrative operations. Their
+  permissions do not authorize RiffQL, and RiffQL permissions do not authorize
+  them.
+- Generated stable-application clients expose neither raw field/index IDs nor
+  constructors for source text, field masks, encoded keys, or kernel requests.
+
+Required same-partition relationships and same-partition unique keys are
+contract declarations rather than RiffQL predicates. RiffQL may navigate a
+declared relationship only when it still lowers to the bounded complete-key
+accesses described above. A query never creates a missing integrity guarantee
+by convention or inference.

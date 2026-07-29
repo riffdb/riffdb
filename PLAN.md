@@ -70,7 +70,7 @@ frozen before semantic implementation began.
 
 ## 2. Consistency Findings
 
-The reconciled manifest has 28 unique work-package IDs and an acyclic dependency
+The reconciled manifest has 45 unique work-package IDs and an acyclic dependency
 graph. Gate membership, SPEC package table, YAML dependencies, and the work-package
 DAG agree. All referenced normative requirement IDs exist or are explicitly
 classified by the manifest's coverage policy. The 29 crate names and three POC
@@ -78,7 +78,10 @@ binaries (`riffdbd`, `riffdb`, and `riffdb-mcp`) agree across the specification
 and package scopes. Allowed paths now cover each declared deliverable and
 acceptance script. Public/durable ownership and MCP/gRPC/CLI/SDK layering agree
 with the shared-service and coordinator boundaries.
-The manifest identifies SPEC version 0.12 and assigns the accepted pre-sequence
+The manifest identifies SPEC version 0.38. Its P3 application-platform sequence
+extends the completed kernel proof with symbolic RiffQL, composite one-snapshot
+reads, immutable query modules, and the ADR-0055 safe-application boundary. The
+earlier packages assign the accepted pre-sequence
 reservation, envelope-bound, event-hash, single-terminal-outcome-row, and POC
 state-machine-deferral evidence to the existing
 WP-060/WP-065/WP-070/WP-100/WP-190/WP-200 owners without changing their IDs,
@@ -830,7 +833,88 @@ extension, and it must not use an in-process storage or service bypass.
 
 P2 proves that both MCP transports expose the same policy-filtered service, a stale or unauthorized tool cannot bypass policy, an uncertain outcome resolves without a second identity/effect, outbox recovery loses no intent, and a projection query after the winning commit cannot return a prefix missing that commit. Derived degradation must not rewrite or falsely fail authoritative state. POC exit additionally needs every POC criterion, recovery boundary, reproducible generator, dependency/security report, and the resolved storage comparison.
 
-### 6.5 Roadmap Toward MVP
+### 6.5 P3 — Safe Symbolic Application Platform
+
+WP-205 through WP-275 establish the application-path performance baseline,
+formal RiffQL syntax, symbolic resolution, deterministic planning, one-snapshot
+composite execution, textual CLI/MCP surfaces, immutable named query modules,
+local development workflow, and the bounded dependent-key batch needed for the
+complete TicketDesk page. Those packages remove numeric IDs, encoded key
+parsing, public N+1 execution, and most hand-built authorization material from
+normal application code.
+
+ADR-0055 adds the remaining product boundary: ordinary application credentials
+must be unable to fall back to storage-shaped reads, unreviewed ad-hoc queries,
+undeclared referential conventions, racy application-level uniqueness checks, or
+per-step budget amplification.
+
+#### WP-280 — Closed application-query authority and private proofs
+
+- **Purpose:** Split stable named-query, scoped ad-hoc-query, and raw-kernel
+  permissions and authorize one complete resolved query rather than reusable
+  storage operations.
+- **Hard dependency:** WP-275.
+- **Key evidence:** Exact module-hash/query-name authorization, wrong-plan and
+  wrong-partition denial, non-cloneable process-local proof consumption,
+  revocation races, and architecture checks preventing proof serialization or
+  conversion into `GetEntity`/`ScanIndex`.
+- **Compatibility:** Keep existing kernel RPC bytes and semantics; issue new
+  application/agent capabilities rather than widening old permissions.
+
+#### WP-285 — Whole-query cost authorization and execution fuel
+
+- **Purpose:** Bind one canonical cost vector into the plan hash, compare the
+  complete vector once in policy, and consume matching fuel during execution.
+- **Hard dependency:** WP-280.
+- **Key evidence:** Exact-budget and one-over boundaries, repeated-step
+  amplification rejection, backend accounting faults, and no partial
+  result/cursor after fuel exhaustion.
+
+#### WP-290 — Declared same-partition relationships
+
+- **Purpose:** Make required relationships contract symbols and reject commands
+  that can establish or change one without a visible dominating exact target
+  read, declared missing-target outcome, ordinary dependency, and commit
+  revalidation.
+- **Hard dependency:** WP-275. It may proceed in parallel with WP-280.
+- **Key evidence:** Exact grammar/IR fixtures, same-partition complete-key type
+  checks, compiler dataflow tests, explain visibility, and TicketDesk
+  dangling-reference negative cases.
+- **Scope boundary:** No hidden reads, optional/cascading/polymorphic
+  relationships, or cross-partition references.
+
+#### WP-295 — Declared same-partition uniqueness
+
+- **Purpose:** Compile declared unique keys into exact conflict ownership and
+  atomically maintain authoritative unique indexes with entity mutations.
+- **Hard dependency:** WP-290.
+- **Key evidence:** Equal-value races, value changes, replay, crash/recovery,
+  corruption detection, and no sequence allocation or partial state on
+  collision.
+- **Scope boundary:** No inferred/global, deferrable, nullable multi-row, or
+  collation-dependent uniqueness.
+
+#### WP-300 — Safe application cutover and negative acceptance
+
+- **Purpose:** Make named-only operations the stable SDK/MCP/dev default, keep
+  agent and kernel authority on separate credentials, migrate TicketDesk, and
+  machine-check the safety claim.
+- **Hard dependencies:** WP-280, WP-285, WP-290, and WP-295.
+- **Key evidence:** A bad-application corpus for raw kernel reads, ad-hoc
+  substitution, plan/module/partition substitution, dangling references,
+  uniqueness races, cumulative cost amplification, dependent-batch escape, and
+  N+1/multi-snapshot page construction. Positive tests run the exact generated
+  named operations through gRPC, CLI wrappers, and generated MCP tools.
+
+P3 closes only when the stable application profile exposes named compiled
+commands and exact named deployed queries, while scoped agents and kernel
+operators must deliberately select separate authority. The supported safety
+claim is limited to declared RiffDB semantics; undeclared business invariants,
+external side effects, and multi-command workflow intent remain application
+design responsibilities. `docs/safety-by-construction.md` is the concise
+normative product rule and acceptance boundary.
+
+### 6.6 Roadmap Toward MVP
 
 - **Stage A, single-node alpha:** Add a real migration framework, stable format policy, online consistent backup/verified restore, bundle signing, bounded indexed reads, approved repair operations, remote TLS/OAuth MCP, TypeScript/Python clients, quotas, projection/backfill controls, and upgrade/downgrade compatibility. Gate on a trusted design-partner workload with documented recovery and incident procedures.
 - **Stage B, replicated beta:** Put deterministic normalized commit application behind a replication facade, add snapshots/membership/catch-up/leader routing, and prove idempotency/outcomes unchanged through leader loss and network partitions. Do not add Raft to the POC path.
@@ -1059,6 +1143,9 @@ Fuzz, Loom, Shuttle, and full crash jobs run in dedicated profiles. Process corr
 
 | Risk | Trigger / early warning | Affected WPs | Consequence | Mitigation and required decision/experiment | Threat |
 |---|---|---|---|---|---|
+| Application authority collapses into kernel permissions | A stable application capability can call `GetEntity`/`ScanIndex`, submit ad-hoc source, or substitute a different named module/query/plan | WP-250/260/280/300 | Application code can recreate N+1, multi-snapshot, overbroad-read, and unreviewed-query bugs despite RiffQL | ADR-0055; disjoint exact permissions; one whole-query policy request; private plan-bound proof; named-only generated clients; negative capability/substitution tests | Core safe-application product claim |
+| Query budgets amplify across individually valid steps | Policy compares each scan/batch with the same ceiling or the backend performs work not charged to the admitted plan | WP-230/240/280/285/300 | A bounded-looking query exceeds capability resource limits or returns partial data after exhaustion | Canonical plan-hashed cost vector; one aggregate policy comparison; decrementing execution fuel; exact/one-over and adversarial accounting tests | Availability and tenant-isolation boundary |
+| Declared integrity can be omitted or races under concurrency | Relationships remain scalar conventions, uniqueness is checked by a prior query, or enforcement injects hidden reads outside the plan | WP-290/295/300 | Dangling references, duplicate business keys, invisible dependencies, or write skew reappear in normal application code | Explicit same-partition reference/unique declarations; compiler-visible exact dependencies/conflict keys; commit revalidation and atomic unique-index maintenance; concurrent/crash negative tests | Core safe-by-construction claim for declared semantics |
 | Contract language scope growth | Requests for loops, callbacks, arbitrary scans/I/O, both conflicting syntaxes, or runtime AST access | WP-030/040/080 | Static read/effect/conflict visibility and termination no longer hold | Select one grammar; reject unsupported constructs; require semantic corpus/model evidence and human review for every construct | Core concept if static visibility is lost |
 | Hidden nondeterminism | Runtime imports clocks/random/env/filesystem, unordered map serialization, variable bundle metadata, or schedule-dependent output | WP-010/040/080/100 | Replay/model/replication-shaped semantics diverge | ADR-0011/0012; pure value context; canonical collections; determinism fixtures and differential histories | Core concept |
 | UUID source ownership or replay drifts | A fourth direct entropy owner appears, types/runtime/storage access ambient sources, a retry regenerates durable identity, UUID order substitutes for sequence order, or provenance collision occurs after allocation | WP-010/060/070/100/110/130/150/185/190 | Nondeterminism, duplicate/ambiguous durable records, unsafe uncertainty recovery, or dependency sprawl | ADR-0018; pure assembler; auth/client/server-only dependency check; injected ports; exact call-count/collision/replay/crash tests; sequences remain sole order | Core uncertainty proof if identity duplicates; otherwise implementation/security |
@@ -1144,6 +1231,16 @@ earlier bounded `many` field consumed by `in` as one component of a later
 closed bounds, and an explicit missing-target outcome. General SQL, arbitrary
 joins, non-key fan-out, collection-as-scalar behavior, and implicit follow-up
 queries remain outside the critical path.
+
+The maintainer accepted the safe-application product rule on 2026-07-29 through
+ADR-0055. Stable application authority is exact to named compiled commands and
+named deployed queries; ad-hoc RiffQL and raw kernel operations require
+separate credentials. WP-280 through WP-300 own the exact capability tags,
+private proof type, cost-vector/fuel encoding, relationship and unique grammar/
+IR, compatibility fixtures, migration, and negative application corpus. Those
+concrete interface artifacts still receive the human reviews required by their
+own `human_review_triggers`; the accepted rule does not pre-approve arbitrary
+wire tags, durable keys, or incompatible encodings.
 
 The former SPEC Section 22.2 defaults and the accepted 2026-07-14 clarifications are
 now resolved architecture decisions:

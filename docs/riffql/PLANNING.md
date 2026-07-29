@@ -34,3 +34,28 @@ Dependent batches execute as ordered point reads inside the same engine-owned
 snapshot as the source scan. They do not become public N+1 requests. Null,
 duplicate, noncanonical, over-bound, or missing dependent keys fail closed
 before a partial result can be released.
+
+## Accepted authorization and fuel target
+
+ADR-0055 and WP-280 through WP-300 strengthen this planner boundary. The text
+below is the accepted target, not a claim that a pre-WP-300 service already
+enforces it.
+
+The service resolves the entire query before data access and presents policy
+with one application-query request. For a named query this includes the exact
+contract lineage, immutable module hash, query name, plan hash, partition route,
+complete entity/field/index/output requirements, principal and capability
+revision, and one whole-request cost vector. Ad-hoc execution uses a distinct
+permission and classification.
+
+An allow decision produces a process-local, non-cloneable and nonserializable
+proof bound to that exact request. The executor consumes the proof with the
+matching plan and parameters. It cannot be converted into, or reused to
+authorize, public `GetEntity`/`ScanIndex` requests.
+
+The plan-hashed cost vector includes at least step count, scanned rows, point
+reads, dependent keys, intermediate rows, projected values, and encoded result
+bytes. Policy compares the complete vector once. Execution consumes matching
+fuel and checks backend-reported work; exhaustion returns no partial result or
+cursor. Per-step bounds remain defense in depth, not the aggregate authority
+model.
