@@ -622,6 +622,44 @@ async fn command_command(
     stdin: &mut dyn Read,
 ) -> Terminal {
     match command {
+        CommandCommand::Run {
+            command_name,
+            input,
+            expected_version,
+        } => {
+            let input = match read_json::<serde_json::Map<String, serde_json::Value>>(&input, stdin)
+                .and_then(|input| natural_command_record(input).map_err(|()| InputError::Invalid))
+            {
+                Ok(input) => input,
+                Err(error) => return input_terminal(CommandIdentity::CommandRun, error),
+            };
+            let expected_version = match expected_version
+                .as_deref()
+                .map(parse_nonzero_u64)
+                .transpose()
+            {
+                Ok(value) => value,
+                Err(()) => return invalid_input(CommandIdentity::CommandRun),
+            };
+            let command = match IdempotentCommand::new(command_name, expected_version, input) {
+                Ok(command) => command,
+                Err(_) => return invalid_input(CommandIdentity::CommandRun),
+            };
+            let metadata = match required_metadata(CommandIdentity::CommandRun, config, environment)
+            {
+                Ok(metadata) => metadata,
+                Err(terminal) => return terminal,
+            };
+            let mut client = match connect(config).await {
+                Ok(client) => client,
+                Err(error) => return client_error(CommandIdentity::CommandRun, &error),
+            };
+            let attempts = AttemptBudget::new(config.max_attempts).expect("configuration bound");
+            match submit_execute_retry(&mut client, &command, attempts, &metadata).await {
+                Ok(response) => render_execution(CommandIdentity::CommandRun, &response),
+                Err(error) => client_error(CommandIdentity::CommandRun, &error),
+            }
+        }
         CommandCommand::Execute {
             command_name,
             input,
@@ -1836,6 +1874,28 @@ fn natural_query_value(value: serde_json::Value) -> Result<v1::Value, ()> {
     Ok(v1::Value { kind: Some(kind) })
 }
 
+fn natural_command_record(
+    input: serde_json::Map<String, serde_json::Value>,
+) -> Result<v1::Value, ()> {
+    let mut fields = input
+        .into_iter()
+        .map(|(name, value)| {
+            if name.is_empty() {
+                return Err(());
+            }
+            Ok(v1::ValueField {
+                field_id: None,
+                name,
+                value: Some(natural_query_value(value)?),
+            })
+        })
+        .collect::<Result<Vec<_>, ()>>()?;
+    fields.sort_by(|left, right| left.name.cmp(&right.name));
+    Ok(v1::Value {
+        kind: Some(v1::value::Kind::RecordValue(v1::ValueRecord { fields })),
+    })
+}
+
 fn render_query_check(identity: CommandIdentity, response: app_v1::CheckQueryResponse) -> Terminal {
     if response.diagnostics.is_empty() {
         match response
@@ -2015,6 +2075,9 @@ const fn command_identity(command: &TopLevel) -> CommandIdentity {
         TopLevel::Contract {
             command: ContractCommand::Deploy { .. },
         } => CommandIdentity::ContractDeploy,
+        TopLevel::Command {
+            command: CommandCommand::Run { .. },
+        } => CommandIdentity::CommandRun,
         TopLevel::Command {
             command: CommandCommand::Execute { .. },
         } => CommandIdentity::CommandExecute,

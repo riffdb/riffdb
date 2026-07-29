@@ -7009,6 +7009,8 @@ pub enum FixedToolKind {
     ExplainQuery,
     /// One-snapshot RiffQL execution.
     ExecuteQuery,
+    /// Name-addressed command invocation.
+    RunCommand,
 }
 
 impl FixedToolKind {
@@ -7032,6 +7034,7 @@ impl FixedToolKind {
             FixedToolCandidate::CheckQuery => Self::CheckQuery,
             FixedToolCandidate::ExplainQuery => Self::ExplainQuery,
             FixedToolCandidate::ExecuteQuery => Self::ExecuteQuery,
+            FixedToolCandidate::RunCommand => Self::RunCommand,
         }
     }
 
@@ -7057,6 +7060,7 @@ impl FixedToolKind {
             Self::CheckQuery => 16,
             Self::ExplainQuery => 17,
             Self::ExecuteQuery => 18,
+            Self::RunCommand => 19,
         }
     }
 }

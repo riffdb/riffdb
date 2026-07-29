@@ -505,6 +505,15 @@ pub enum McpFixedToolRequest {
         /// Optional opaque application-query cursor.
         cursor: Option<String>,
     },
+    /// `riffdb.command.run`.
+    RunCommand {
+        /// Exact compiled command source name.
+        command_name: String,
+        /// Natural name-addressed input record.
+        input: Map<String, Value>,
+        /// Optional active contract version precondition.
+        expected_contract_version: Option<u64>,
+    },
 }
 
 /// Decodes one already-schema-validated fixed-tool input.
@@ -660,6 +669,14 @@ pub fn decode_fixed_tool_request(
                 source: request.source,
                 parameters: request.parameters,
                 cursor: request.cursor,
+            })
+        }
+        19 => {
+            let request: RawSymbolicCommand = arguments.deserialize().map_err(conversion)?;
+            Ok(McpFixedToolRequest::RunCommand {
+                command_name: request.command_name,
+                input: request.input,
+                expected_contract_version: parse_optional_u64(request.expected_contract_version)?,
             })
         }
         _ => Err(McpConversionError),
@@ -918,6 +935,8 @@ pub enum McpFixedResultBranch {
     QueryExplainInvalid,
     /// Symbolic query completed.
     QueryCompleted,
+    /// Symbolic command completed.
+    CommandCompleted,
 }
 
 impl McpFixedResultBranch {
@@ -947,6 +966,7 @@ impl McpFixedResultBranch {
             Self::QueryCheckValid | Self::QueryCheckInvalid => 16,
             Self::QueryExplainValid | Self::QueryExplainInvalid => 17,
             Self::QueryCompleted => 18,
+            Self::CommandCompleted => 19,
         }
     }
 
@@ -985,6 +1005,7 @@ impl McpFixedResultBranch {
             Self::QueryExplainValid => "valid",
             Self::QueryExplainInvalid => "invalid",
             Self::QueryCompleted => "completed",
+            Self::CommandCompleted => "completed",
         }
     }
 
@@ -1135,6 +1156,14 @@ struct RawSymbolicExecute {
     source: String,
     parameters: Map<String, Value>,
     cursor: Option<String>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RawSymbolicCommand {
+    command_name: String,
+    input: Map<String, Value>,
+    expected_contract_version: Option<String>,
 }
 
 #[derive(Deserialize)]

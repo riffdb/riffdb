@@ -1565,6 +1565,7 @@ const fn fixed_tool_to_proto(kind: FixedToolKind) -> v1::FixedToolKind {
         FixedToolKind::CheckQuery => v1::FixedToolKind::CheckQuery,
         FixedToolKind::ExplainQuery => v1::FixedToolKind::ExplainQuery,
         FixedToolKind::ExecuteQuery => v1::FixedToolKind::ExecuteQuery,
+        FixedToolKind::RunCommand => v1::FixedToolKind::RunCommand,
     }
 }
 

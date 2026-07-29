@@ -890,6 +890,12 @@ impl PublicGrpcMcpBackend {
                     .await
                     .authenticated_client_result(&self.client_activity)?,
             ),
+            FixedGrpcRequest::RunCommand(request) => response::run_command(
+                client
+                    .execute(request, &self.metadata)
+                    .await
+                    .authenticated_client_result(&self.client_activity)?,
+            ),
         }
         .map_err(|_| McpBackendError::InvalidResponse)
     }

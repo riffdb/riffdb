@@ -226,11 +226,13 @@ pub enum FixedToolCandidate {
     ExplainQuery,
     /// `riffdb.query`.
     ExecuteQuery,
+    /// `riffdb.command.run`.
+    RunCommand,
 }
 
 impl FixedToolCandidate {
     /// The exact SPEC POC fixed-tool inventory in stable presentation order.
-    pub const ALL: [Self; 18] = [
+    pub const ALL: [Self; 19] = [
         Self::ValidateContract,
         Self::GetActiveContract,
         Self::ExplainCommand,
@@ -249,6 +251,7 @@ impl FixedToolCandidate {
         Self::CheckQuery,
         Self::ExplainQuery,
         Self::ExecuteQuery,
+        Self::RunCommand,
     ];
 }
 
@@ -1211,6 +1214,7 @@ pub(crate) const fn fixed_tool_permission_kind(
         | FixedToolCandidate::CheckQuery
         | FixedToolCandidate::ExplainQuery
         | FixedToolCandidate::ExecuteQuery => Kind::ReadContract,
+        FixedToolCandidate::RunCommand => Kind::InvokeCommand,
     }
 }
 
@@ -1406,13 +1410,17 @@ mod tests {
             OperationRequest::list_pending_outbox_deliveries(NonZeroU16::new(10).expect("nonzero")),
             OperationRequest::discover_command_tools(),
             OperationRequest::discover_resources(),
+            OperationRequest::describe_contract(),
+            OperationRequest::check_query(),
+            OperationRequest::explain_query(),
+            OperationRequest::execute_query(),
         ]
     }
 
     #[test]
-    fn request_inventory_is_exactly_the_shared_22_operations() {
+    fn request_inventory_is_exactly_the_shared_26_operations() {
         let requests = requests();
-        assert_eq!(requests.len(), 22);
+        assert_eq!(requests.len(), 26);
         assert_eq!(
             requests
                 .iter()
