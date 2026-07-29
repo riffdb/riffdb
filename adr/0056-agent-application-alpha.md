@@ -1,12 +1,16 @@
 # ADR-0056: Agent Application Alpha Before Operational and Distributed Alpha
 
-- **Status:** Proposed
+- **Status:** Accepted
 - **Proposed:** 2026-07-29
+- **Direction approved:** 2026-07-29
+- **Exact text accepted:** 2026-07-29
+- **Acceptance reference:** Maintainer direction in the current Codex session
+  to build the complete planned Agent Application Alpha phase
 - **Requires:** ADR-0005, ADR-0006, ADR-0007, ADR-0008, ADR-0009,
   ADR-0013, ADR-0018, ADR-0027, ADR-0040, ADR-0041, ADR-0051,
   ADR-0052, ADR-0053, and ADR-0055
 - **Amends if accepted:** SPEC Sections 20 and 24
-- **Decision gate:** Must be accepted before WP-305 starts
+- **Decision gate:** Satisfied by the acceptance reference above
 
 ## Context
 

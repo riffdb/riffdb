@@ -6,7 +6,7 @@
 **Tagline:** *Vibe fast. Commit safely.*  
 **Category:** Contract-first operational database for agent-built applications  
 
-**Version:** 0.39
+**Version:** 0.40
 **Status:** Application-platform implementation handoff
 **Date:** 29 July 2026
 **Audience:** Coding agents, database engineers, compiler engineers, security reviewers, and technical product leads  
@@ -75,6 +75,7 @@
 | 0.37 | 2026-07-29 | Applied accepted ADR-0054 and WP-275: added bounded collection-to-complete-key dependencies with explicit missing-target outcomes, closed dependent point batching inside one snapshot, and full one-request TicketDesk detail-page parity without general SQL joins. |
 | 0.38 | 2026-07-29 | Applied accepted ADR-0055 and planned WP-280 through WP-300: separated stable named-application, scoped ad-hoc-agent, and kernel authority; required private derived query proofs, whole-request execution fuel, declared relationship and uniqueness integrity, safe generated defaults, and negative application canaries. |
 | 0.39 | 2026-07-29 | Planned the proposed post-WP-300 Agent Application Alpha gate and WP-305 through WP-340: complete generated bindings, symbolic roles, structured public application errors, resumable command batches, canonical scaffolding and package boundaries, TypeScript runtime parity, evidence-driven RiffQL growth, and four sealed unfamiliar-domain agent evaluations before operational alpha or replication. ADR-0056 remains Proposed pending exact human acceptance. |
+| 0.40 | 2026-07-29 | Applied accepted ADR-0056 after the maintainer directed implementation of the complete Agent Application Alpha phase. WP-305 through WP-340 may begin in dependency order; their exact public/durable/grammar fixtures retain the human review checkpoints named by the accepted record. |
 
 ### Normative language
 
@@ -5321,7 +5322,7 @@ earlier deadline governs unless a reviewed reconciliation changes both sources.
 | `ADR-0053` | Accepted | One-snapshot composite execution, epoch-bound cursors, rebuildable current catalog/capability views, and measured unary-gRPC-first optimization | WP-205, WP-240, and WP-270 |
 | `ADR-0054` | Accepted | Bounded collection-to-complete-key dependencies, explicit missing-target outcomes, and one-snapshot dependent point batches | WP-275 |
 | `ADR-0055` | Accepted | Disjoint stable-application, ad-hoc-agent, and kernel authority; private exact-plan proofs; whole-query fuel; declared relationship/uniqueness integrity; and negative safety canaries | WP-280 through WP-300 |
-| `ADR-0056` | Proposed | Agent Application Alpha before operational/distributed alpha; complete generated bindings, symbolic roles, structured application errors, command batches, canonical scaffolding, TypeScript parity, evidence-driven RiffQL growth, and sealed independent evaluation | WP-305 through WP-340 after acceptance |
+| `ADR-0056` | Accepted | Agent Application Alpha before operational/distributed alpha; complete generated bindings, symbolic roles, structured application errors, command batches, canonical scaffolding, TypeScript parity, evidence-driven RiffQL growth, and sealed independent evaluation | WP-305 through WP-340 |
 
 ## 22.2 Decisions to resolve before implementation reaches the named gate
 
@@ -5786,10 +5787,10 @@ gates.
 
 ## 24.4 Agent Application Alpha milestone
 
-This proposed milestone begins only after the safe symbolic application
-platform is complete. It is governed by ADR-0056 after that ADR receives exact
-human acceptance. `docs/agent-application-alpha.md` defines the concise gate and
-measurement contract.
+This milestone begins only after the safe symbolic application platform is
+complete. It is governed by accepted ADR-0056.
+`docs/agent-application-alpha.md` defines the concise gate and measurement
+contract.
 
 - `AAA-001`: Generated Rust and TypeScript stable-application clients MUST own
   typed parameter serialization, exact named invocation, typed result and
