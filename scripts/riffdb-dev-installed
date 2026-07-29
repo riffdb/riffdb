@@ -1,0 +1,312 @@
+#!/usr/bin/env bash
+set -euo pipefail
+umask 077
+
+script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+installation_root="$(cd "$script_dir/.." && pwd)"
+application_root=
+role=application
+watch=0
+acceptance=0
+seed_dir=
+seed_builtin=0
+seed_concurrency=8
+while (($#)); do
+    case "$1" in
+        --role) role="${2:-}"; shift 2 ;;
+        --application-root) application_root="${2:-}"; shift 2 ;;
+        --watch) watch=1; shift ;;
+        --acceptance) acceptance=1; shift ;;
+        --seed-dir) seed_dir="${2:-}"; shift 2 ;;
+        --seed) seed_builtin=1; shift ;;
+        --seed-concurrency) seed_concurrency="${2:-}"; shift 2 ;;
+        *)
+            echo "usage: riffdb-dev [--application-root DIR] [--role application|ROLE] [--watch] [--seed] [--seed-dir DIR] [--seed-concurrency 1..8] [--acceptance]" >&2
+            exit 2
+            ;;
+    esac
+done
+
+[[ -n "$application_root" ]] || {
+    echo "installed riffdb dev requires an application root" >&2
+    exit 2
+}
+application_root="$(cd "$application_root" && pwd)"
+application_manifest="$application_root/riffdb.application.json"
+[[ -f "$application_manifest" ]] || {
+    echo "application root has no riffdb.application.json" >&2
+    exit 2
+}
+[[ "$seed_concurrency" =~ ^[1-8]$ ]] || {
+    echo "seed concurrency must be in 1..8" >&2
+    exit 2
+}
+if [[ -n "$seed_dir" ]]; then
+    [[ -d "$seed_dir" ]] || {
+        echo "seed directory is unavailable" >&2
+        exit 2
+    }
+    seed_dir="$(cd "$seed_dir" && pwd)"
+fi
+
+riffdb="$script_dir/riffdb"
+riffdbd="$script_dir/riffdbd"
+boundary_check="$installation_root/libexec/check-application-boundary"
+bootstrap_request="$installation_root/share/riffdb/bootstrap-dev.json"
+rust_sdk="${RIFFDB_RUST_SDK:-$installation_root/public/rust-sdk/crates/riffdb-client-rust}"
+for executable in "$riffdb" "$riffdbd" "$boundary_check"; do
+    [[ -x "$executable" ]] || {
+        echo "installed development component is unavailable" >&2
+        exit 1
+    }
+done
+[[ -f "$bootstrap_request" && -f "$rust_sdk/Cargo.toml" ]] || {
+    echo "installed development data is unavailable" >&2
+    exit 1
+}
+for tool in cargo date find jq mkfifo mktemp od rg sort stat timeout tr; do
+    command -v "$tool" >/dev/null 2>&1 || {
+        echo "required development tool is missing: $tool" >&2
+        exit 1
+    }
+done
+
+"$riffdb" application generate "$application_manifest"
+"$boundary_check" "$application_root"
+contract="$application_root/$(jq -er '.contract.source' "$application_manifest")"
+query_source="$application_root/$(jq -er '.query_modules[0].queries[0].source' "$application_manifest")"
+queries="$(dirname "$query_source")"
+module_name="$(jq -er '.query_modules[0].name' "$application_manifest")"
+module_version="$(jq -er '.query_modules[0].version' "$application_manifest")"
+contract_lineage="$(jq -er '.contract.lineage' "$application_manifest")"
+contract_version="$(jq -er '.contract.version' "$application_manifest")"
+if [[ "$role" == application ]]; then
+    role_symbol="$(jq -er '.roles[0].name' "$application_manifest")"
+else
+    role_symbol="$role"
+    jq -e --arg role "$role_symbol" '.roles | any(.name == $role)' \
+        "$application_manifest" >/dev/null || {
+        echo "application manifest does not declare role: $role_symbol" >&2
+        exit 2
+    }
+fi
+
+work_root="$(mktemp -d "${TMPDIR:-/tmp}/riffdb-dev.XXXXXX")"
+server_pid=
+cleanup() {
+    if [[ -n "$server_pid" ]] && kill -0 "$server_pid" 2>/dev/null; then
+        kill -TERM "$server_pid" 2>/dev/null || true
+        timeout 15s tail --pid="$server_pid" -f /dev/null 2>/dev/null || {
+            kill -KILL "$server_pid" 2>/dev/null || true
+        }
+        wait "$server_pid" 2>/dev/null || true
+    fi
+    rm -rf "$work_root"
+}
+trap cleanup EXIT INT TERM
+
+random_hex_32() {
+    od -An -tx1 -N32 /dev/urandom | tr -d ' \n'
+}
+
+mkdir -p "$work_root/backups"
+mkfifo "$work_root/ready.fifo"
+(
+    capability_key="$(random_hex_32)"
+    idempotency_key="$(random_hex_32)"
+    while [[ "$idempotency_key" == "$capability_key" ]]; do
+        idempotency_key="$(random_hex_32)"
+    done
+    printf 'riffdb-capability-digest-keys-v1\n1:%s\n' "$capability_key" \
+        >"$work_root/capability.keys"
+    printf 'riffdb-idempotency-digest-keys-v1\n1:%s\n' "$idempotency_key" \
+        >"$work_root/idempotency.keys"
+)
+
+"$riffdbd" \
+    --database "$work_root/riffdb.redb" \
+    --listen 127.0.0.1:0 \
+    --environment local-dev \
+    --audience riffdb-grpc-loopback \
+    --backup-root "$work_root/backups" \
+    --capability-keys "$work_root/capability.keys" \
+    --idempotency-keys "$work_root/idempotency.keys" \
+    </dev/null >"$work_root/ready.fifo" 2>"$work_root/riffdbd.stderr" &
+server_pid=$!
+
+exec {ready_fd}<"$work_root/ready.fifo"
+IFS= read -r -t 30 ready_line <&"$ready_fd" || {
+    echo "development server did not become ready" >&2
+    exit 1
+}
+exec {ready_fd}<&-
+case "$ready_line" in
+    riffdbd-ready-v1$'\t'*) address="${ready_line#*$'\t'}" ;;
+    *)
+        echo "development server returned invalid readiness" >&2
+        exit 1
+        ;;
+esac
+endpoint="http://$address"
+
+"$riffdb" --endpoint "$endpoint" --output json \
+    capability bootstrap \
+    --request "$bootstrap_request" \
+    --generate "$work_root/bootstrap.credential" \
+    --bearer-output "$work_root/operator.credential" \
+    >"$work_root/bootstrap.json"
+jq -e '.ok == true and .command == "capability.bootstrap"' \
+    "$work_root/bootstrap.json" >/dev/null
+
+operator=("$riffdb" --endpoint "$endpoint" --output json --credential-file "$work_root/operator.credential")
+"${operator[@]}" contract deploy "$contract" >"$work_root/contract.json"
+jq -e '.ok == true and .command == "contract.deploy"' \
+    "$work_root/contract.json" >/dev/null
+if ! "${operator[@]}" query deploy "$queries" \
+    --module-name "$module_name" \
+    --module-version "$module_version" \
+    --expected-active any \
+    --contract-lineage "$contract_lineage" \
+    --contract-version "$contract_version" >"$work_root/module.json"; then
+    cat "$work_root/module.json" >&2
+    cat "$work_root/riffdbd.stderr" >&2
+    exit 1
+fi
+jq -e '.ok == true and .command == "query.deploy"' \
+    "$work_root/module.json" >/dev/null
+
+"${operator[@]}" role bind "$application_manifest" \
+    --role "$role_symbol" \
+    --principal "app:$(jq -er '.application' "$application_manifest")" \
+    --actor-kind service \
+    --lifetime-seconds 86400 \
+    --audience riffdb-grpc-loopback \
+    --credential-output "$work_root/profile.credential" >"$work_root/role.json"
+jq -e '.ok == true and .command == "role.bind"' "$work_root/role.json" >/dev/null
+
+profile_client=("$riffdb" --endpoint "$endpoint" --output json --credential-file "$work_root/profile.credential")
+"${operator[@]}" query module \
+    --contract-lineage "$contract_lineage" \
+    --contract-version "$contract_version" >"$work_root/inspect.json"
+jq -e --arg module "$module_name" '
+  .ok == true
+  and .command == "query.module"
+  and .result.module.module_name == $module
+  and (.result.queries | length) > 0
+' "$work_root/inspect.json" >/dev/null
+
+run_seed_file() {
+    local seed_file="$1"
+    local namespace="$2"
+    local command_name seed_result
+    [[ -f "$seed_file" ]] || {
+        echo "seed input is unavailable" >&2
+        return 1
+    }
+    command_name="$(basename "$seed_file" .jsonl)"
+    command_name="${command_name#*-}"
+    [[ -n "$command_name" ]] || {
+        echo "seed input must be named NN-CommandName.jsonl" >&2
+        return 1
+    }
+    seed_result="$work_root/seed-$namespace-$(basename "$seed_file").result"
+    if ! "${profile_client[@]}" command batch "$command_name" "$seed_file" \
+        --concurrency "$seed_concurrency" \
+        --checkpoint "$work_root/seed-$namespace-$(basename "$seed_file").checkpoint.json" \
+        >"$seed_result"; then
+        cat "$seed_result" >&2
+        cat "$work_root/riffdbd.stderr" >&2
+        return 1
+    fi
+    jq -e '
+      .ok == true
+      and .command == "command.batch"
+      and .result.pending == 0
+      and .result.rejected == 0
+      and .result.total == .result.succeeded
+    ' "$seed_result" >/dev/null
+}
+
+run_seed_directory() {
+    local source_dir="$1"
+    local namespace="$2"
+    local seed_file files=0
+    while IFS= read -r -d '' seed_file; do
+        ((files += 1))
+        run_seed_file "$seed_file" "$namespace-$files"
+    done < <(find "$source_dir" -maxdepth 1 -type f -name '*.jsonl' -print0 | sort -z)
+    ((files > 0)) || {
+        echo "seed directory contains no JSONL command batches" >&2
+        return 1
+    }
+}
+
+seed_count=0
+if [[ -n "$seed_dir" ]]; then
+    run_seed_directory "$seed_dir" external
+fi
+if ((seed_builtin || acceptance)); then
+    while IFS= read -r seed_relative; do
+        ((seed_count += 1))
+        run_seed_file "$application_root/$seed_relative" "manifest-$seed_count"
+    done < <(jq -er '.seed_inputs[]' "$application_manifest")
+    ((seed_count > 0)) || {
+        echo "application manifest contains no seed inputs" >&2
+        exit 1
+    }
+    printf 'riffdb-dev-seed-v1\t%s\tapplication-manifest\n' "$seed_count" >&2
+fi
+
+printf 'riffdb-dev-ready-v1\t%s\t%s\t%s\n' \
+    "$endpoint" "$work_root/profile.credential" "$role_symbol"
+
+if ((acceptance)); then
+    if [[ -f "$application_root/Cargo.toml" ]]; then
+        app_patch="patch.crates-io.riffdb-client-rust.path=\"$rust_sdk\""
+        CARGO_TARGET_DIR="$work_root/application-target" \
+            cargo run --quiet --offline \
+            --manifest-path "$application_root/Cargo.toml" \
+            --config "$app_patch" \
+            -- "$endpoint" "$work_root/profile.credential" \
+            >"$work_root/generated-application-client.stdout"
+        [[ -s "$work_root/generated-application-client.stdout" ]] || {
+            echo "generated Rust application client returned no typed page result" >&2
+            exit 1
+        }
+    fi
+    exit 0
+fi
+
+if ((watch == 0)); then
+    wait "$server_pid"
+    server_pid=
+    exit 0
+fi
+
+contract_stamp="$(stat -c '%Y:%s' "$contract")"
+query_stamp="$(find "$queries" -maxdepth 1 -type f -name '*.riffq' -printf '%f:%T@:%s\n' | sort)"
+while kill -0 "$server_pid" 2>/dev/null; do
+    sleep 0.25
+    next_contract_stamp="$(stat -c '%Y:%s' "$contract")"
+    next_query_stamp="$(find "$queries" -maxdepth 1 -type f -name '*.riffq' -printf '%f:%T@:%s\n' | sort)"
+    if [[ "$next_contract_stamp" != "$contract_stamp" ]]; then
+        "$riffdb" application generate "$application_manifest"
+        "$boundary_check" "$application_root"
+        "${operator[@]}" contract deploy "$contract" >/dev/null
+        contract_stamp="$next_contract_stamp"
+    fi
+    if [[ "$next_query_stamp" != "$query_stamp" ]]; then
+        ((module_version += 1))
+        "$riffdb" application generate "$application_manifest"
+        "$boundary_check" "$application_root"
+        "${operator[@]}" query deploy "$queries" \
+            --module-name "$module_name" \
+            --module-version "$module_version" \
+            --expected-active any \
+            --contract-lineage "$contract_lineage" \
+            --contract-version "$contract_version" >/dev/null
+        query_stamp="$next_query_stamp"
+    fi
+done
+wait "$server_pid"
+server_pid=
