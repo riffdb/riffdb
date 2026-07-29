@@ -9,6 +9,7 @@ mod gate;
 mod integrity_administration;
 mod integrity_command;
 mod integrity_projection;
+mod query;
 mod startup;
 mod state;
 mod store;

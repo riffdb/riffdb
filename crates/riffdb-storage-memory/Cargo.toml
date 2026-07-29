@@ -11,6 +11,8 @@ default = []
 
 [dependencies]
 riffdb-catalog = { version = "0.1.0", path = "../riffdb-catalog", default-features = false }
+riffdb-query-executor = { path = "../riffdb-query-executor" }
+riffdb-query-ir = { path = "../riffdb-query-ir" }
 riffdb-storage-api = { version = "0.1.0", path = "../riffdb-storage-api", default-features = false }
 riffdb-types = { version = "0.1.0", path = "../riffdb-types", default-features = false }
 

@@ -241,9 +241,20 @@ impl<'a> Planner<'a> {
                 predicate_fields.clone(),
                 selected_fields.clone(),
                 binding_results,
+                binding
+                    .absence_outcome
+                    .as_ref()
+                    .map(|outcome| outcome.value.as_str().to_owned()),
                 dependencies,
                 entity.internal_id(),
                 index_id,
+                entity.internal_primary_key_schema().clone(),
+                match &access {
+                    QueryAccessKind::Point { .. } => None,
+                    QueryAccessKind::Index { index, .. } => entity
+                        .index(index)
+                        .map(|symbol| symbol.internal_key_schema().clone()),
+                },
             )
             .ok_or_else(internal)?;
 
