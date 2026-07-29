@@ -4,7 +4,8 @@ use riffdb_proto::storage::v1 as wire;
 use riffdb_types::{
     ActorId, AdministrationSequence, ApprovalId, Audience, CapabilityGrantError, CapabilityId,
     CapabilityTokenDigest, CommandId, ContractLineage, DatabaseId, DigestKeyId, EntityTypeId,
-    Environment, FieldId, IndexId, PartitionKey, ProjectionId, RequestId,
+    Environment, FieldId, IndexId, PartitionKey, ProjectionId, QueryModuleHash, QueryOperationName,
+    RequestId,
 };
 
 use crate::{
@@ -37,21 +38,46 @@ fn permission_to_proto(value: &CapabilityPermissionV1) -> wire::CapabilityPermis
         ScanIndex, Unparameterized,
     };
 
-    let (contract_lineage, stable_id) = match value {
-        Unparameterized(_) => (None, None),
-        ExplainCommand(lineage, id) | InvokeCommand(lineage, id) => {
-            (Some(lineage.as_str().to_owned()), Some(id.get()))
-        }
-        ReadEntity(lineage, id) => (Some(lineage.as_str().to_owned()), Some(id.get())),
-        ScanIndex(lineage, id) => (Some(lineage.as_str().to_owned()), Some(id.get())),
-        QueryProjection(lineage, id) | ReadProjectionStatus(lineage, id) => {
-            (Some(lineage.as_str().to_owned()), Some(id.get()))
-        }
+    let (contract_lineage, stable_id, query_module_hash, query_name) = match value {
+        Unparameterized(_) => (None, None, None, None),
+        ExplainCommand(lineage, id) | InvokeCommand(lineage, id) => (
+            Some(lineage.as_str().to_owned()),
+            Some(id.get()),
+            None,
+            None,
+        ),
+        ReadEntity(lineage, id) => (
+            Some(lineage.as_str().to_owned()),
+            Some(id.get()),
+            None,
+            None,
+        ),
+        ScanIndex(lineage, id) => (
+            Some(lineage.as_str().to_owned()),
+            Some(id.get()),
+            None,
+            None,
+        ),
+        QueryProjection(lineage, id) | ReadProjectionStatus(lineage, id) => (
+            Some(lineage.as_str().to_owned()),
+            Some(id.get()),
+            None,
+            None,
+        ),
+        CapabilityPermissionV1::ExplainNamedQuery(lineage, hash, name)
+        | CapabilityPermissionV1::ExecuteNamedQuery(lineage, hash, name) => (
+            Some(lineage.as_str().to_owned()),
+            None,
+            Some(hash.as_bytes().to_vec()),
+            Some(name.as_str().to_owned()),
+        ),
     };
     wire::CapabilityPermissionV1 {
         kind: i32::from(value.kind().tag()),
         contract_lineage,
         stable_id,
+        query_module_hash,
+        query_name,
     }
 }
 
@@ -62,54 +88,92 @@ fn permission_from_proto(
         .ok()
         .and_then(CapabilityPermissionKindV1::from_tag)
         .ok_or_else(DurableCodecError::corrupt)?;
-    let parameter = match (value.contract_lineage, value.stable_id) {
-        (None, None) => None,
-        (Some(lineage), Some(id)) => Some((
+    let parameter = match (
+        value.contract_lineage,
+        value.stable_id,
+        value.query_module_hash,
+        value.query_name,
+    ) {
+        (None, None, None, None) => PermissionParameter::None,
+        (Some(lineage), Some(id), None, None) => PermissionParameter::StableId(
             ContractLineage::new(lineage).map_err(|_| DurableCodecError::corrupt())?,
             id,
-        )),
+        ),
+        (Some(lineage), None, Some(hash), Some(name)) => {
+            let hash: [u8; 32] = hash.try_into().map_err(|_| DurableCodecError::corrupt())?;
+            PermissionParameter::NamedQuery(
+                ContractLineage::new(lineage).map_err(|_| DurableCodecError::corrupt())?,
+                QueryModuleHash::from_bytes(hash),
+                QueryOperationName::new(name).map_err(|_| DurableCodecError::corrupt())?,
+            )
+        }
         _ => return Err(DurableCodecError::corrupt()),
     };
     match (kind, parameter) {
-        (CapabilityPermissionKindV1::ExplainCommand, Some((lineage, id))) => {
-            Ok(CapabilityPermissionV1::ExplainCommand(
-                lineage,
-                CommandId::new(id).ok_or_else(DurableCodecError::corrupt)?,
-            ))
-        }
-        (CapabilityPermissionKindV1::InvokeCommand, Some((lineage, id))) => {
+        (
+            CapabilityPermissionKindV1::ExplainCommand,
+            PermissionParameter::StableId(lineage, id),
+        ) => Ok(CapabilityPermissionV1::ExplainCommand(
+            lineage,
+            CommandId::new(id).ok_or_else(DurableCodecError::corrupt)?,
+        )),
+        (CapabilityPermissionKindV1::InvokeCommand, PermissionParameter::StableId(lineage, id)) => {
             Ok(CapabilityPermissionV1::InvokeCommand(
                 lineage,
                 CommandId::new(id).ok_or_else(DurableCodecError::corrupt)?,
             ))
         }
-        (CapabilityPermissionKindV1::ReadEntity, Some((lineage, id))) => {
+        (CapabilityPermissionKindV1::ReadEntity, PermissionParameter::StableId(lineage, id)) => {
             Ok(CapabilityPermissionV1::ReadEntity(
                 lineage,
                 EntityTypeId::new(id).ok_or_else(DurableCodecError::corrupt)?,
             ))
         }
-        (CapabilityPermissionKindV1::ScanIndex, Some((lineage, id))) => {
+        (CapabilityPermissionKindV1::ScanIndex, PermissionParameter::StableId(lineage, id)) => {
             Ok(CapabilityPermissionV1::ScanIndex(
                 lineage,
                 IndexId::new(id).ok_or_else(DurableCodecError::corrupt)?,
             ))
         }
-        (CapabilityPermissionKindV1::QueryProjection, Some((lineage, id))) => {
-            Ok(CapabilityPermissionV1::QueryProjection(
-                lineage,
-                ProjectionId::new(id).ok_or_else(DurableCodecError::corrupt)?,
-            ))
+        (
+            CapabilityPermissionKindV1::QueryProjection,
+            PermissionParameter::StableId(lineage, id),
+        ) => Ok(CapabilityPermissionV1::QueryProjection(
+            lineage,
+            ProjectionId::new(id).ok_or_else(DurableCodecError::corrupt)?,
+        )),
+        (
+            CapabilityPermissionKindV1::ReadProjectionStatus,
+            PermissionParameter::StableId(lineage, id),
+        ) => Ok(CapabilityPermissionV1::ReadProjectionStatus(
+            lineage,
+            ProjectionId::new(id).ok_or_else(DurableCodecError::corrupt)?,
+        )),
+        (
+            CapabilityPermissionKindV1::ExplainNamedQuery,
+            PermissionParameter::NamedQuery(lineage, hash, name),
+        ) => Ok(CapabilityPermissionV1::ExplainNamedQuery(
+            lineage, hash, name,
+        )),
+        (
+            CapabilityPermissionKindV1::ExecuteNamedQuery,
+            PermissionParameter::NamedQuery(lineage, hash, name),
+        ) => Ok(CapabilityPermissionV1::ExecuteNamedQuery(
+            lineage, hash, name,
+        )),
+        (kind, PermissionParameter::None) => {
+            grant_result(CapabilityPermissionV1::unparameterized(kind))
         }
-        (CapabilityPermissionKindV1::ReadProjectionStatus, Some((lineage, id))) => {
-            Ok(CapabilityPermissionV1::ReadProjectionStatus(
-                lineage,
-                ProjectionId::new(id).ok_or_else(DurableCodecError::corrupt)?,
-            ))
+        (_, PermissionParameter::StableId(..) | PermissionParameter::NamedQuery(..)) => {
+            Err(DurableCodecError::corrupt())
         }
-        (kind, None) => grant_result(CapabilityPermissionV1::unparameterized(kind)),
-        (_, Some(_)) => Err(DurableCodecError::corrupt()),
     }
+}
+
+enum PermissionParameter {
+    None,
+    StableId(ContractLineage, u32),
+    NamedQuery(ContractLineage, QueryModuleHash, QueryOperationName),
 }
 
 fn permissions_to_proto(value: &CapabilityPermissionsV1) -> wire::CapabilityPermissionsV1 {
@@ -497,4 +561,31 @@ pub fn decode_capability_administration_v1(
             ))
         },
     )
+}
+
+#[cfg(test)]
+mod permission_tests {
+    use super::*;
+
+    #[test]
+    fn exact_named_and_ad_hoc_query_permissions_round_trip_durably() {
+        let lineage = ContractLineage::new("ticketdesk").expect("lineage");
+        let module = QueryModuleHash::from_bytes([0x41; 32]);
+        let name = QueryOperationName::new("TicketPage").expect("query name");
+        for permission in [
+            CapabilityPermissionV1::unparameterized(CapabilityPermissionKindV1::CheckAdHocQuery)
+                .expect("ad-hoc permission"),
+            CapabilityPermissionV1::unparameterized(CapabilityPermissionKindV1::ExplainAdHocQuery)
+                .expect("ad-hoc permission"),
+            CapabilityPermissionV1::unparameterized(CapabilityPermissionKindV1::ExecuteAdHocQuery)
+                .expect("ad-hoc permission"),
+            CapabilityPermissionV1::ExplainNamedQuery(lineage.clone(), module, name.clone()),
+            CapabilityPermissionV1::ExecuteNamedQuery(lineage.clone(), module, name.clone()),
+        ] {
+            assert_eq!(
+                permission_from_proto(permission_to_proto(&permission)).expect("round trip"),
+                permission
+            );
+        }
+    }
 }

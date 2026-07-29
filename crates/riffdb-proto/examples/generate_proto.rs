@@ -76,6 +76,10 @@ const PRODUCTION_SOURCES: &[&str] = &[
 const TINY_PAYLOAD_BOUND: usize = 8 * 1024;
 const ADMISSION_PAYLOAD_BOUND: usize = 128 * 1024;
 const DOCUMENT_PAYLOAD_BOUND: usize = 2 * 1024 * 1024;
+const PRE_WP280_CAPABILITY_SCHEMA_HASH: [u8; 32] = [
+    0xcb, 0x42, 0xc4, 0xeb, 0xbc, 0xe8, 0x28, 0x01, 0x23, 0xf8, 0xb3, 0x4d, 0x4d, 0xcd, 0xe7, 0x4c,
+    0xa9, 0x48, 0x34, 0x06, 0x84, 0x75, 0x31, 0xf3, 0x4d, 0x5f, 0xb3, 0xf1, 0x8d, 0x40, 0xb3, 0x42,
+];
 
 #[derive(Clone, Copy)]
 enum PayloadBound {
@@ -520,7 +524,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     write_artifact(
         &output_root,
         "fixtures/proto/durable-readable-registry.txt",
-        durable_registry_fixture(&durable_registry).as_bytes(),
+        durable_readable_registry_fixture(&durable_registry)?.as_bytes(),
     )?;
     write_artifact(
         &output_root,
@@ -973,6 +977,36 @@ fn durable_registry_fixture(records: &[BuiltDurableRecord]) -> String {
         output.push('\n');
     }
     output
+}
+
+fn durable_readable_registry_fixture(
+    records: &[BuiltDurableRecord],
+) -> Result<String, Box<dyn Error>> {
+    let capability = records
+        .iter()
+        .find(|record| record.name == "CapabilityRecordV1")
+        .ok_or_else(|| io::Error::other("durable registry is missing CapabilityRecordV1"))?;
+    let mut output = durable_registry_fixture(records);
+    output = output.replacen(
+        &format!("records {}", records.len()),
+        &format!("records {}", records.len() + 1),
+        1,
+    );
+    let _ = write!(
+        output,
+        "{} source={} message={} descriptor-bytes={} max-payload-bytes={} max-envelope-bytes={} schema-hash=",
+        capability.record_type,
+        capability.source,
+        capability.name,
+        capability.descriptor_bytes,
+        capability.max_payload_bytes,
+        capability.max_envelope_bytes,
+    );
+    for byte in PRE_WP280_CAPABILITY_SCHEMA_HASH {
+        let _ = write!(output, "{byte:02x}");
+    }
+    output.push('\n');
+    Ok(output)
 }
 
 fn durable_writable_registry_fixture(

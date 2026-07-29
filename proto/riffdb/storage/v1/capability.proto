@@ -25,6 +25,11 @@ enum CapabilityPermissionKindV1 {
   CAPABILITY_PERMISSION_KIND_CREATE_CAPABILITY = 17;
   CAPABILITY_PERMISSION_KIND_REVOKE_CAPABILITY = 18;
   CAPABILITY_PERMISSION_KIND_ADMINISTER_CAPABILITIES = 19;
+  CAPABILITY_PERMISSION_KIND_CHECK_AD_HOC_QUERY = 20;
+  CAPABILITY_PERMISSION_KIND_EXPLAIN_AD_HOC_QUERY = 21;
+  CAPABILITY_PERMISSION_KIND_EXECUTE_AD_HOC_QUERY = 22;
+  CAPABILITY_PERMISSION_KIND_EXPLAIN_NAMED_QUERY = 23;
+  CAPABILITY_PERMISSION_KIND_EXECUTE_NAMED_QUERY = 24;
 }
 
 enum RevocationReasonCodeV1 {
@@ -52,6 +57,8 @@ message CapabilityPermissionV1 {
   CapabilityPermissionKindV1 kind = 1;
   optional string contract_lineage = 2;
   optional uint32 stable_id = 3;
+  optional bytes query_module_hash = 4;
+  optional string query_name = 5;
 }
 
 message CapabilityPermissionsV1 {

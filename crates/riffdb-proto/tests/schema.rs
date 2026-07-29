@@ -611,7 +611,7 @@ fn service_inventory_and_completed_phase_zero_messages_are_exact() {
             .keys()
             .filter(|name| name.starts_with("riffdb.v1."))
             .count(),
-        158
+        159
     );
     assert_eq!(
         messages

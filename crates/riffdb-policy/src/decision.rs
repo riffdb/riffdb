@@ -11,8 +11,8 @@ use riffdb_types::{
 };
 
 use crate::operation::{
-    FieldRequirement, PermissionRequirement, command_tool_permission, fixed_tool_permission_kind,
-    resource_field_requirement, resource_permission,
+    ApplicationQueryTarget, FieldRequirement, PermissionRequirement, command_tool_permission,
+    fixed_tool_permission_kind, resource_field_requirement, resource_permission,
 };
 use crate::{
     AgentSessionAdmissionPolicy, AuthorizedCapabilityMutationPreparation,
@@ -423,6 +423,65 @@ pub struct AuthorizedOperation {
     discovery_authority: Option<CapabilityGrantV1>,
 }
 
+/// Move-only proof that current policy allowed one exact compiler-derived application plan.
+///
+/// This type deliberately implements neither `Clone` nor serialization. The
+/// application service consumes it at the execution boundary, so raw kernel
+/// read permissions cannot be substituted for application-query authority.
+///
+/// ```compile_fail
+/// # use riffdb_policy::AuthorizedApplicationQuery;
+/// fn duplicate(proof: &AuthorizedApplicationQuery) {
+///     let _second = proof.clone();
+/// }
+/// ```
+#[derive(Eq, PartialEq)]
+pub struct AuthorizedApplicationQuery {
+    database_id: DatabaseId,
+    environment: Environment,
+    target: ApplicationQueryTarget,
+    identity: CurrentAuthorizationIdentity,
+    obligations: Obligations,
+}
+
+impl AuthorizedApplicationQuery {
+    /// Returns the exact database boundary checked by policy.
+    #[must_use]
+    pub const fn database_id(&self) -> DatabaseId {
+        self.database_id
+    }
+
+    /// Returns the exact environment checked by policy.
+    #[must_use]
+    pub const fn environment(&self) -> &Environment {
+        &self.environment
+    }
+
+    /// Returns the exact compiler-derived target bound into this proof.
+    #[must_use]
+    pub const fn target(&self) -> &ApplicationQueryTarget {
+        &self.target
+    }
+
+    /// Returns the capability identity revision checked at the safe point.
+    #[must_use]
+    pub const fn capability_revision(&self) -> NonZeroU64 {
+        self.identity.capability_revision
+    }
+
+    /// Returns the exact policy obligations attached to execution and output.
+    #[must_use]
+    pub const fn obligations(&self) -> &Obligations {
+        &self.obligations
+    }
+}
+
+impl fmt::Debug for AuthorizedApplicationQuery {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("AuthorizedApplicationQuery([REDACTED])")
+    }
+}
+
 #[derive(Eq, PartialEq)]
 pub(crate) struct CurrentAuthorizationIdentity {
     capability_id: CapabilityId,
@@ -511,6 +570,29 @@ impl AuthorizedOperation {
     #[must_use]
     pub const fn operation(&self) -> ServiceOperationV1 {
         self.request.operation()
+    }
+
+    /// Consumes this fresh allow proof into one exact application-query proof.
+    pub fn into_application_query(self) -> Option<AuthorizedApplicationQuery> {
+        let Self {
+            database_id,
+            environment,
+            request,
+            obligations,
+            identity,
+            discovery_authority,
+        } = self;
+        if discovery_authority.is_some() {
+            return None;
+        }
+        let target = request.application_query_target()?.clone();
+        Some(AuthorizedApplicationQuery {
+            database_id,
+            environment,
+            target,
+            identity,
+            obligations,
+        })
     }
 
     /// Consumes this fresh allow proof into an exact command-execution binding.

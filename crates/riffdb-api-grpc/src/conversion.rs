@@ -54,7 +54,7 @@ use riffdb_types::{
     Date, EntityFieldVisibilityV1, EntityKey, EntityTypeId, EnumTypeId, EnumVariantId, FieldId,
     FrontierPosition, IdempotencyKey, IndexEpochPosition, IndexId, OfflineMaintenanceOperationId,
     OfflineMaintenanceOperationKind, OfflineMaintenanceReplacementConfirmation, PartitionKey,
-    PartitionScopeV1, ProjectionId, ProvenanceId, QueryModuleHash, RequestId,
+    PartitionScopeV1, ProjectionId, ProvenanceId, QueryModuleHash, QueryOperationName, RequestId,
     RevocationReasonCodeV1, SchemaHash, ScopedPartitionV1, TenantId, TenantScope, Timestamp,
 };
 use tonic::Status;
@@ -3117,7 +3117,42 @@ fn capability_permission_from_proto(
         Permission::AdministerCapabilities(_) => {
             unparameterized(CapabilityPermissionKindV1::AdministerCapabilities)
         }
+        Permission::CheckAdHocQuery(_) => {
+            unparameterized(CapabilityPermissionKindV1::CheckAdHocQuery)
+        }
+        Permission::ExplainAdHocQuery(_) => {
+            unparameterized(CapabilityPermissionKindV1::ExplainAdHocQuery)
+        }
+        Permission::ExecuteAdHocQuery(_) => {
+            unparameterized(CapabilityPermissionKindV1::ExecuteAdHocQuery)
+        }
+        Permission::ExplainNamedQuery(value) => {
+            let (lineage, hash, name) = named_query_permission(value)?;
+            Ok(CapabilityPermissionV1::ExplainNamedQuery(
+                lineage, hash, name,
+            ))
+        }
+        Permission::ExecuteNamedQuery(value) => {
+            let (lineage, hash, name) = named_query_permission(value)?;
+            Ok(CapabilityPermissionV1::ExecuteNamedQuery(
+                lineage, hash, name,
+            ))
+        }
     }
+}
+
+fn named_query_permission(
+    value: v1::NamedQueryPermission,
+) -> Result<(ContractLineage, QueryModuleHash, QueryOperationName), Status> {
+    let hash: [u8; 32] = value
+        .query_module_hash
+        .try_into()
+        .map_err(|_| invalid_request())?;
+    Ok((
+        ContractLineage::new(value.contract_lineage).map_err(|_| invalid_request())?,
+        QueryModuleHash::from_bytes(hash),
+        QueryOperationName::new(value.query_name).map_err(|_| invalid_request())?,
+    ))
 }
 
 fn lineage_scoped_id(value: v1::LineageScopedStableId) -> Result<(ContractLineage, u32), Status> {
@@ -3173,6 +3208,21 @@ fn capability_permission_kind_from_proto(value: i32) -> Result<CapabilityPermiss
         }
         v1::CapabilityPermissionKind::AdministerCapabilities => {
             Ok(CapabilityPermissionKindV1::AdministerCapabilities)
+        }
+        v1::CapabilityPermissionKind::CheckAdHocQuery => {
+            Ok(CapabilityPermissionKindV1::CheckAdHocQuery)
+        }
+        v1::CapabilityPermissionKind::ExplainAdHocQuery => {
+            Ok(CapabilityPermissionKindV1::ExplainAdHocQuery)
+        }
+        v1::CapabilityPermissionKind::ExecuteAdHocQuery => {
+            Ok(CapabilityPermissionKindV1::ExecuteAdHocQuery)
+        }
+        v1::CapabilityPermissionKind::ExplainNamedQuery => {
+            Ok(CapabilityPermissionKindV1::ExplainNamedQuery)
+        }
+        v1::CapabilityPermissionKind::ExecuteNamedQuery => {
+            Ok(CapabilityPermissionKindV1::ExecuteNamedQuery)
         }
         v1::CapabilityPermissionKind::Unspecified => Err(invalid_request()),
     }

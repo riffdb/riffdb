@@ -211,10 +211,12 @@ messages
   riffdb.storage.v1.CapabilityLifecycleV1 fields=2
     1 active optional .riffdb.storage.v1.UnitV1 oneof=state
     2 revoked optional .riffdb.storage.v1.RevokedCapabilityV1 oneof=state
-  riffdb.storage.v1.CapabilityPermissionV1 fields=3
+  riffdb.storage.v1.CapabilityPermissionV1 fields=5
     1 kind optional .riffdb.storage.v1.CapabilityPermissionKindV1
     2 contract_lineage optional string proto3-optional oneof=_contract_lineage
     3 stable_id optional uint32 proto3-optional oneof=_stable_id
+    4 query_module_hash optional bytes proto3-optional oneof=_query_module_hash
+    5 query_name optional string proto3-optional oneof=_query_name
   riffdb.storage.v1.CapabilityPermissionsV1 fields=1
     1 values repeated .riffdb.storage.v1.CapabilityPermissionV1
   riffdb.storage.v1.CapabilityRecordV1 fields=14
@@ -594,7 +596,7 @@ messages
   riffdb.v1.CapabilityIdentity fields=2
     1 capability_id optional bytes
     2 revision optional uint64
-  riffdb.v1.CapabilityPermission fields=19
+  riffdb.v1.CapabilityPermission fields=24
     1 validate_contract optional .riffdb.v1.Unit oneof=permission
     2 read_contract optional .riffdb.v1.Unit oneof=permission
     3 explain_command optional .riffdb.v1.LineageScopedStableId oneof=permission
@@ -614,6 +616,11 @@ messages
     17 create_capability optional .riffdb.v1.Unit oneof=permission
     18 revoke_capability optional .riffdb.v1.Unit oneof=permission
     19 administer_capabilities optional .riffdb.v1.Unit oneof=permission
+    20 check_ad_hoc_query optional .riffdb.v1.Unit oneof=permission
+    21 explain_ad_hoc_query optional .riffdb.v1.Unit oneof=permission
+    22 execute_ad_hoc_query optional .riffdb.v1.Unit oneof=permission
+    23 explain_named_query optional .riffdb.v1.NamedQueryPermission oneof=permission
+    24 execute_named_query optional .riffdb.v1.NamedQueryPermission oneof=permission
   riffdb.v1.CapabilityTransition fields=2
     1 identity optional .riffdb.v1.CapabilityIdentity
     2 administration_sequence optional uint64
@@ -959,6 +966,10 @@ messages
   riffdb.v1.Money fields=2
     1 currency optional string
     2 amount optional .riffdb.v1.Decimal
+  riffdb.v1.NamedQueryPermission fields=3
+    1 contract_lineage optional string
+    2 query_module_hash optional bytes
+    3 query_name optional string
   riffdb.v1.NormalCapabilityCreated fields=2
     1 transition optional .riffdb.v1.CapabilityTransition
     2 token optional string
@@ -1259,7 +1270,7 @@ enums
     1 CAPABILITY_ADMINISTRATION_OPERATION_BOOTSTRAP
     2 CAPABILITY_ADMINISTRATION_OPERATION_CREATE
     3 CAPABILITY_ADMINISTRATION_OPERATION_REVOKE
-  riffdb.storage.v1.CapabilityPermissionKindV1 values=20
+  riffdb.storage.v1.CapabilityPermissionKindV1 values=25
     0 CAPABILITY_PERMISSION_KIND_UNSPECIFIED
     1 CAPABILITY_PERMISSION_KIND_VALIDATE_CONTRACT
     2 CAPABILITY_PERMISSION_KIND_READ_CONTRACT
@@ -1280,6 +1291,11 @@ enums
     17 CAPABILITY_PERMISSION_KIND_CREATE_CAPABILITY
     18 CAPABILITY_PERMISSION_KIND_REVOKE_CAPABILITY
     19 CAPABILITY_PERMISSION_KIND_ADMINISTER_CAPABILITIES
+    20 CAPABILITY_PERMISSION_KIND_CHECK_AD_HOC_QUERY
+    21 CAPABILITY_PERMISSION_KIND_EXPLAIN_AD_HOC_QUERY
+    22 CAPABILITY_PERMISSION_KIND_EXECUTE_AD_HOC_QUERY
+    23 CAPABILITY_PERMISSION_KIND_EXPLAIN_NAMED_QUERY
+    24 CAPABILITY_PERMISSION_KIND_EXECUTE_NAMED_QUERY
   riffdb.storage.v1.DurabilityModeV1 values=4
     0 DURABILITY_MODE_UNSPECIFIED
     1 DURABILITY_MODE_SYNC
@@ -1366,7 +1382,7 @@ enums
     0 CAPABILITY_CREATE_MODE_UNSPECIFIED
     1 CAPABILITY_CREATE_MODE_NORMAL
     2 CAPABILITY_CREATE_MODE_BOOTSTRAP
-  riffdb.v1.CapabilityPermissionKind values=20
+  riffdb.v1.CapabilityPermissionKind values=25
     0 CAPABILITY_PERMISSION_KIND_UNSPECIFIED
     1 CAPABILITY_PERMISSION_KIND_VALIDATE_CONTRACT
     2 CAPABILITY_PERMISSION_KIND_READ_CONTRACT
@@ -1387,6 +1403,11 @@ enums
     17 CAPABILITY_PERMISSION_KIND_CREATE_CAPABILITY
     18 CAPABILITY_PERMISSION_KIND_REVOKE_CAPABILITY
     19 CAPABILITY_PERMISSION_KIND_ADMINISTER_CAPABILITIES
+    20 CAPABILITY_PERMISSION_KIND_CHECK_AD_HOC_QUERY
+    21 CAPABILITY_PERMISSION_KIND_EXPLAIN_AD_HOC_QUERY
+    22 CAPABILITY_PERMISSION_KIND_EXECUTE_AD_HOC_QUERY
+    23 CAPABILITY_PERMISSION_KIND_EXPLAIN_NAMED_QUERY
+    24 CAPABILITY_PERMISSION_KIND_EXECUTE_NAMED_QUERY
   riffdb.v1.CommandDurability values=3
     0 COMMAND_DURABILITY_UNSPECIFIED
     1 COMMAND_DURABILITY_SYNCHRONOUS

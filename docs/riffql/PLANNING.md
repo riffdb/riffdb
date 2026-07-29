@@ -37,9 +37,9 @@ before a partial result can be released.
 
 ## Accepted authorization and fuel target
 
-ADR-0055 and WP-280 through WP-300 strengthen this planner boundary. The text
-below is the accepted target, not a claim that a pre-WP-300 service already
-enforces it.
+ADR-0055 and WP-280 establish the exact application-query authorization
+boundary below. Whole-query cost and execution fuel remain the WP-285 portion
+of the accepted target until that work package is complete.
 
 The service resolves the entire query before data access and presents policy
 with one application-query request. For a named query this includes the exact
@@ -49,9 +49,10 @@ revision, and one whole-request cost vector. Ad-hoc execution uses a distinct
 permission and classification.
 
 An allow decision produces a process-local, non-cloneable and nonserializable
-proof bound to that exact request. The executor consumes the proof with the
-matching plan and parameters. It cannot be converted into, or reused to
-authorize, public `GetEntity`/`ScanIndex` requests.
+proof bound to that exact request and current capability revision. The service
+consumes the proof at the executor boundary with the matching plan and
+parameters, then reauthorizes before releasing output. It cannot be converted
+into, or reused to authorize, public `GetEntity`/`ScanIndex` requests.
 
 The plan-hashed cost vector includes at least step count, scanned rows, point
 reads, dependent keys, intermediate rows, projected values, and encoded result

@@ -115,11 +115,22 @@ enum CapabilityPermissionKind {
   CAPABILITY_PERMISSION_KIND_CREATE_CAPABILITY = 17;
   CAPABILITY_PERMISSION_KIND_REVOKE_CAPABILITY = 18;
   CAPABILITY_PERMISSION_KIND_ADMINISTER_CAPABILITIES = 19;
+  CAPABILITY_PERMISSION_KIND_CHECK_AD_HOC_QUERY = 20;
+  CAPABILITY_PERMISSION_KIND_EXPLAIN_AD_HOC_QUERY = 21;
+  CAPABILITY_PERMISSION_KIND_EXECUTE_AD_HOC_QUERY = 22;
+  CAPABILITY_PERMISSION_KIND_EXPLAIN_NAMED_QUERY = 23;
+  CAPABILITY_PERMISSION_KIND_EXECUTE_NAMED_QUERY = 24;
 }
 
 message LineageScopedStableId {
   string contract_lineage = 1;
   uint32 stable_id = 2;
+}
+
+message NamedQueryPermission {
+  string contract_lineage = 1;
+  bytes query_module_hash = 2;
+  string query_name = 3;
 }
 
 message CapabilityPermission {
@@ -143,6 +154,11 @@ message CapabilityPermission {
     Unit create_capability = 17;
     Unit revoke_capability = 18;
     Unit administer_capabilities = 19;
+    Unit check_ad_hoc_query = 20;
+    Unit explain_ad_hoc_query = 21;
+    Unit execute_ad_hoc_query = 22;
+    NamedQueryPermission explain_named_query = 23;
+    NamedQueryPermission execute_named_query = 24;
   }
 }
 

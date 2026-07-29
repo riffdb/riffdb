@@ -527,13 +527,18 @@ mod tests {
     };
     use riffdb_types::{
         AggregateTypeId, CapabilityPermissionKindV1, CapabilityPermissionV1,
-        CapabilityPermissionsV1, CommandId, CommitSequence, ContractLineage,
-        EntityFieldVisibilityV1, EntityTypeId, FieldId, IndexId, PartitionKeyBuilder, ProjectionId,
-        ProjectionIdentity, ProjectionPlanHash, RequestId, ScopedPartitionV1, TenantId,
+        CapabilityPermissionsV1, CommandId, CommitSequence, ContractBundleHash, ContractLineage,
+        ContractVersion, EntityFieldVisibilityV1, EntityTypeId, FieldId, IndexId,
+        PartitionKeyBuilder, ProjectionId, ProjectionIdentity, ProjectionPlanHash, QueryModuleHash,
+        QueryOperationName, QueryPlanHash, RequestId, ScopedPartitionV1, ServiceIngressKindV1,
+        TenantId,
     };
 
     use super::*;
-    use crate::{CommandExecutionClass, OperationTenantScope, PartitionConstraint};
+    use crate::{
+        ApplicationQueryAccessRequirement, ApplicationQueryTarget, CommandExecutionClass,
+        OperationTenantScope, PartitionConstraint,
+    };
 
     struct FixedAuthorizationClock(Timestamp);
 
@@ -577,6 +582,28 @@ mod tests {
     fn explicit_partition() -> PartitionScopeV1 {
         PartitionScopeV1::explicit(vec![ScopedPartitionV1::new(lineage(), partition())])
             .expect("explicit scope")
+    }
+
+    fn application_query_target() -> ApplicationQueryTarget {
+        ApplicationQueryTarget::new(
+            lineage(),
+            ContractVersion::new(1).expect("nonzero version"),
+            ContractBundleHash::from_bytes([6; 32]),
+            QueryPlanHash::from_bytes([7; 32]),
+            ServiceIngressKindV1::InProcessTestComparison,
+            OperationTenantScope::global_only(),
+            partition(),
+            vec![
+                ApplicationQueryAccessRequirement::new(
+                    EntityTypeId::first(),
+                    Some(IndexId::first()),
+                    vec![FieldId::first()],
+                    NonZeroU16::new(10).expect("nonzero"),
+                )
+                .expect("valid access"),
+            ],
+        )
+        .expect("valid target")
     }
 
     fn grant(
@@ -625,6 +652,127 @@ mod tests {
             grant,
         };
         (principal, current, environment)
+    }
+
+    #[test]
+    fn exact_named_query_authority_is_not_kernel_or_ad_hoc_authority() {
+        let module_hash = QueryModuleHash::from_bytes([8; 32]);
+        let query_name = QueryOperationName::new("TicketPage").expect("valid name");
+        let permission =
+            CapabilityPermissionV1::ExecuteNamedQuery(lineage(), module_hash, query_name.clone());
+        let (principal, current, environment) = facts(grant(
+            TenantScope::Global,
+            PartitionScopeV1::All,
+            vec![permission],
+            Vec::new(),
+            100,
+            Vec::new(),
+        ));
+        let named = |module_hash, query_name| {
+            OperationRequest::execute_named_query(
+                lineage(),
+                module_hash,
+                query_name,
+                application_query_target(),
+            )
+            .expect("matching query target")
+        };
+        assert!(
+            evaluate(
+                &principal,
+                &current,
+                current.database_id,
+                &environment,
+                timestamp(15),
+                &named(module_hash, query_name.clone()),
+            )
+            .is_ok()
+        );
+        assert_eq!(
+            evaluate(
+                &principal,
+                &current,
+                current.database_id,
+                &environment,
+                timestamp(15),
+                &named(QueryModuleHash::from_bytes([9; 32]), query_name.clone()),
+            ),
+            Err(PolicyCode::MissingPermission)
+        );
+        assert_eq!(
+            evaluate(
+                &principal,
+                &current,
+                current.database_id,
+                &environment,
+                timestamp(15),
+                &named(
+                    module_hash,
+                    QueryOperationName::new("OtherPage").expect("valid name"),
+                ),
+            ),
+            Err(PolicyCode::MissingPermission)
+        );
+        assert_eq!(
+            evaluate(
+                &principal,
+                &current,
+                current.database_id,
+                &environment,
+                timestamp(15),
+                &OperationRequest::execute_ad_hoc_query(application_query_target()),
+            ),
+            Err(PolicyCode::MissingPermission)
+        );
+        assert_eq!(
+            evaluate(
+                &principal,
+                &current,
+                current.database_id,
+                &environment,
+                timestamp(15),
+                &OperationRequest::get_entity(
+                    lineage(),
+                    ContractVersion::new(1).expect("nonzero"),
+                    EntityTypeId::first(),
+                    OperationTenantScope::global_only(),
+                    partition(),
+                    vec![FieldId::first()],
+                )
+                .expect("valid read"),
+            ),
+            Err(PolicyCode::MissingPermission)
+        );
+
+        let (kernel_principal, kernel_current, kernel_environment) = facts(grant(
+            TenantScope::Global,
+            PartitionScopeV1::All,
+            vec![
+                CapabilityPermissionV1::ReadEntity(lineage(), EntityTypeId::first()),
+                CapabilityPermissionV1::ScanIndex(lineage(), IndexId::first()),
+            ],
+            vec![
+                EntityFieldVisibilityV1::new(
+                    lineage(),
+                    EntityTypeId::first(),
+                    vec![FieldId::first()],
+                )
+                .expect("field visibility"),
+            ],
+            100,
+            Vec::new(),
+        ));
+        assert_eq!(
+            evaluate(
+                &kernel_principal,
+                &kernel_current,
+                kernel_current.database_id,
+                &kernel_environment,
+                timestamp(15),
+                &named(module_hash, query_name),
+            ),
+            Err(PolicyCode::MissingPermission)
+        );
     }
 
     #[test]
