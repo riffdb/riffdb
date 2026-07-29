@@ -166,10 +166,11 @@ fn unit_variants_are_encoded_as_present_oneofs() {
 }
 
 #[test]
-fn both_execution_failure_codes_round_trip() {
+fn every_execution_failure_code_round_trips() {
     for code in [
         ExecutionFailureCode::ArithmeticFault,
         ExecutionFailureCode::ResourceLimit,
+        ExecutionFailureCode::UniqueConflict,
     ] {
         assert_round_trip(
             crate::StoredExecutionFailedV1::new(sample::pending(), code),

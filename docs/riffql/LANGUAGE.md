@@ -88,3 +88,8 @@ fields, target entity, and complete ordered target key. That metadata grants no
 new join operator. Current RiffQL must still spell an accepted point read or
 bounded dependent batch; future navigation syntax must compile to those same
 plans.
+
+Declared uniqueness is not implemented as a RiffQL `exists` or `count`
+preflight. Commands that establish or change a unique tuple carry
+compiler-derived conflict and transaction-current occupancy plans; a read
+query cannot acquire write authority or make a later write safe.

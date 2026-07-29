@@ -737,6 +737,67 @@ impl RelationshipSchema {
     }
 }
 
+/// One required same-partition unique key backed by an authoritative index.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct UniqueKeySchema {
+    name: String,
+    source_entity: EntityTypeId,
+    index_id: IndexId,
+    fields: Vec<FieldId>,
+}
+
+impl UniqueKeySchema {
+    /// Creates a bounded unique-key declaration. `SchemaIr` validates the
+    /// backing index, field types, ownership, and complete partition prefix.
+    pub fn new(
+        name: impl Into<String>,
+        source_entity: EntityTypeId,
+        index_id: IndexId,
+        fields: Vec<FieldId>,
+    ) -> Result<Self, IrValidationError> {
+        let name = name.into();
+        validate_source_name(&name, "unique key")?;
+        if fields.is_empty() || fields.len() > 1_024 {
+            return Err(IrValidationError::InvalidKey {
+                reason: "unique key component arity",
+            });
+        }
+        let mut seen = BTreeSet::new();
+        if fields.iter().any(|field| !seen.insert(*field)) {
+            return Err(IrValidationError::InvalidKey {
+                reason: "duplicate unique key component",
+            });
+        }
+        Ok(Self {
+            name,
+            source_entity,
+            index_id,
+            fields,
+        })
+    }
+
+    /// Exact source name.
+    #[must_use]
+    pub fn name(&self) -> &str {
+        &self.name
+    }
+    /// Owning entity.
+    #[must_use]
+    pub const fn source_entity(&self) -> EntityTypeId {
+        self.source_entity
+    }
+    /// Authoritative backing index identity.
+    #[must_use]
+    pub const fn index_id(&self) -> IndexId {
+        self.index_id
+    }
+    /// Complete unique components, beginning with the partition route.
+    #[must_use]
+    pub fn fields(&self) -> &[FieldId] {
+        &self.fields
+    }
+}
+
 /// Complete structural schema for one contract version.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct SchemaIr {
@@ -745,6 +806,7 @@ pub struct SchemaIr {
     enums: Vec<EnumSchema>,
     aggregates: Vec<AggregateSchema>,
     relationships: Vec<RelationshipSchema>,
+    unique_keys: Vec<UniqueKeySchema>,
 }
 
 impl SchemaIr {
@@ -755,16 +817,28 @@ impl SchemaIr {
         enums: Vec<EnumSchema>,
         aggregates: Vec<AggregateSchema>,
     ) -> Result<Self, IrValidationError> {
-        Self::with_relationships(entities, events, enums, aggregates, vec![])
+        Self::with_integrity(entities, events, enums, aggregates, vec![], vec![])
     }
 
     /// Creates a checked canonical schema including required relationships.
     pub fn with_relationships(
+        entities: Vec<EntitySchema>,
+        events: Vec<EventSchema>,
+        enums: Vec<EnumSchema>,
+        aggregates: Vec<AggregateSchema>,
+        relationships: Vec<RelationshipSchema>,
+    ) -> Result<Self, IrValidationError> {
+        Self::with_integrity(entities, events, enums, aggregates, relationships, vec![])
+    }
+
+    /// Creates a checked canonical schema including every declared integrity key.
+    pub fn with_integrity(
         mut entities: Vec<EntitySchema>,
         mut events: Vec<EventSchema>,
         mut enums: Vec<EnumSchema>,
         mut aggregates: Vec<AggregateSchema>,
         mut relationships: Vec<RelationshipSchema>,
+        mut unique_keys: Vec<UniqueKeySchema>,
     ) -> Result<Self, IrValidationError> {
         for (kind, count) in [
             ("entities", entities.len()),
@@ -772,6 +846,7 @@ impl SchemaIr {
             ("enums", enums.len()),
             ("aggregates", aggregates.len()),
             ("relationships", relationships.len()),
+            ("unique keys", unique_keys.len()),
         ] {
             checked_len(kind, count, MAX_DECLARATIONS_PER_KIND)?;
         }
@@ -780,6 +855,11 @@ impl SchemaIr {
         enums.sort_unstable_by_key(EnumSchema::id);
         aggregates.sort_unstable_by_key(AggregateSchema::id);
         relationships.sort_unstable_by(|left, right| {
+            left.source_entity
+                .cmp(&right.source_entity)
+                .then_with(|| left.name.cmp(&right.name))
+        });
+        unique_keys.sort_unstable_by(|left, right| {
             left.source_entity
                 .cmp(&right.source_entity)
                 .then_with(|| left.name.cmp(&right.name))
@@ -797,6 +877,13 @@ impl SchemaIr {
         }) {
             return Err(IrValidationError::InvalidName {
                 kind: "duplicate relationship",
+            });
+        }
+        if unique_keys.windows(2).any(|pair| {
+            pair[0].source_entity == pair[1].source_entity && pair[0].name == pair[1].name
+        }) {
+            return Err(IrValidationError::InvalidName {
+                kind: "duplicate unique key",
             });
         }
 
@@ -875,12 +962,16 @@ impl SchemaIr {
         for relationship in &relationships {
             validate_relationship(relationship, &entity_map, &aggregates, &ownership)?;
         }
+        for unique in &unique_keys {
+            validate_unique_key(unique, &entity_map, &aggregates, &ownership)?;
+        }
         let result = Self {
             entities,
             events,
             enums,
             aggregates,
             relationships,
+            unique_keys,
         };
         result.validate_enum_references()?;
         result.validate_schema_enum_registries_and_constants()?;
@@ -911,6 +1002,11 @@ impl SchemaIr {
     #[must_use]
     pub fn relationships(&self) -> &[RelationshipSchema] {
         &self.relationships
+    }
+    /// Same-partition unique keys in canonical source-entity/name order.
+    #[must_use]
+    pub fn unique_keys(&self) -> &[UniqueKeySchema] {
+        &self.unique_keys
     }
     /// Resolves an entity.
     #[must_use]
@@ -1275,6 +1371,70 @@ fn validate_relationship(
     if relationship.source_fields.get(..route_len) != source.primary_key_fields().get(..route_len) {
         return Err(IrValidationError::InvalidReference {
             kind: "relationship partition route",
+        });
+    }
+    Ok(())
+}
+
+fn validate_unique_key(
+    unique: &UniqueKeySchema,
+    entities: &BTreeMap<EntityTypeId, &EntitySchema>,
+    aggregates: &[AggregateSchema],
+    ownership: &BTreeMap<EntityTypeId, AggregateTypeId>,
+) -> Result<(), IrValidationError> {
+    let source =
+        entities
+            .get(&unique.source_entity)
+            .ok_or(IrValidationError::InvalidReference {
+                kind: "unique key source entity",
+            })?;
+    let index = source
+        .indexes()
+        .iter()
+        .find(|index| index.id() == unique.index_id)
+        .ok_or(IrValidationError::InvalidReference {
+            kind: "unique key backing index",
+        })?;
+    if index.name() != unique.name || index.fields() != unique.fields {
+        return Err(IrValidationError::InvalidReference {
+            kind: "unique key backing index mismatch",
+        });
+    }
+    for field in &unique.fields {
+        let field = source
+            .record()
+            .field(*field)
+            .ok_or(IrValidationError::InvalidReference {
+                kind: "unique key field",
+            })?;
+        if field.value_type().is_optional() {
+            return Err(IrValidationError::TypeMismatch {
+                context: "required unique key component",
+            });
+        }
+    }
+    let owner_id =
+        ownership
+            .get(&source.id())
+            .copied()
+            .ok_or(IrValidationError::InvalidReference {
+                kind: "unique key aggregate owner",
+            })?;
+    let owner = aggregates
+        .iter()
+        .find(|aggregate| aggregate.id() == owner_id)
+        .ok_or(IrValidationError::InvalidReference {
+            kind: "unique key aggregate",
+        })?;
+    let root = entities
+        .get(&owner.root())
+        .ok_or(IrValidationError::InvalidReference {
+            kind: "unique key aggregate root",
+        })?;
+    let route_len = root.primary_key_fields().len();
+    if unique.fields.get(..route_len) != source.primary_key_fields().get(..route_len) {
+        return Err(IrValidationError::InvalidKey {
+            reason: "unique key lacks complete canonical partition prefix",
         });
     }
     Ok(())

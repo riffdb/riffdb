@@ -722,6 +722,20 @@ mod tests {
             Err(StorageError::new(StorageErrorKind::Unavailable, None))
         }
 
+        fn read_integrity_entity(
+            &mut self,
+            _target: &riffdb_storage_api::EntityTarget,
+        ) -> Result<Option<riffdb_storage_api::StoredEntityRecordV1>, StorageError> {
+            Err(StorageError::new(StorageErrorKind::Unavailable, None))
+        }
+
+        fn read_integrity_unique_occupancy(
+            &mut self,
+            _target: &riffdb_storage_api::UniqueIndexTarget,
+        ) -> Result<riffdb_storage_api::UniqueOccupancyKind, StorageError> {
+            Err(StorageError::new(StorageErrorKind::Unavailable, None))
+        }
+
         fn finish(
             self,
             _structural_end: Self::StructuralEnd,

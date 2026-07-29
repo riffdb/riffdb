@@ -2,7 +2,7 @@
 
 use std::collections::BTreeSet;
 use std::fmt;
-use std::ops::Bound::{Excluded, Unbounded};
+use std::ops::Bound::{Excluded, Included, Unbounded};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -26,6 +26,7 @@ use riffdb_storage_api::{
     StorageErrorKind, StorageValueError, StructuralEvidenceCursor, StructuralEvidenceEnd,
     StructuralEvidenceOpen, StructuralEvidencePage, StructuralEvidenceSession, StructuralFinding,
     StructuralFindingCode, StructuralFindingScope, StructuralOpenOutcome, StructurallyOpened,
+    UniqueIndexTarget, UniqueOccupancyKind,
 };
 use riffdb_types::{
     CommitSequence, ContractBundleHash, ContractLineage, ContractVersion, DatabaseId,
@@ -49,6 +50,14 @@ use crate::store::{RedbDormantPorts, RedbStore, SharedRedb};
 
 static NEXT_OPEN_SESSION: AtomicU64 = AtomicU64::new(1);
 const STRUCTURAL_TABLE_COUNT: usize = 21;
+
+fn exclusive_prefix_end(prefix: &[u8]) -> Option<Vec<u8>> {
+    let mut end = prefix.to_vec();
+    let position = end.iter().rposition(|byte| *byte != u8::MAX)?;
+    end[position] = end[position].checked_add(1)?;
+    end.truncate(position + 1);
+    Some(end)
+}
 
 /// Redb authority whose constructor is private to a completed startup session.
 pub struct RedbCompletionAuthority {
@@ -572,6 +581,44 @@ impl StructuralEvidenceSession for RedbStructuralEvidenceSession {
     ) -> Result<Option<HistoricalBundleEvidence>, StorageError> {
         let transaction = self.open_snapshot_read()?;
         read_historical_bundle(&transaction, lineage, version, hash)
+    }
+
+    fn read_integrity_entity(
+        &mut self,
+        target: &riffdb_storage_api::EntityTarget,
+    ) -> Result<Option<riffdb_storage_api::StoredEntityRecordV1>, StorageError> {
+        let transaction = self.open_snapshot_read()?;
+        let table = transaction.open_table(ENTITIES).map_err(table_error)?;
+        crate::reads::read_entity_record(&table, target)
+    }
+
+    fn read_integrity_unique_occupancy(
+        &mut self,
+        target: &UniqueIndexTarget,
+    ) -> Result<UniqueOccupancyKind, StorageError> {
+        let transaction = self.open_snapshot_read()?;
+        let table = transaction
+            .open_table(SECONDARY_INDEXES)
+            .map_err(table_error)?;
+        let prefix = target.prefix().prefix().as_bytes();
+        let upper = exclusive_prefix_end(prefix).ok_or_else(corrupt)?;
+        let mut range = table
+            .range::<&[u8]>((Included(prefix), Excluded(upper.as_slice())))
+            .map_err(precommit_storage_error)?;
+        let first = range
+            .next()
+            .transpose()
+            .map_err(precommit_storage_error)?
+            .map(|(key, _)| key.value().to_vec());
+        let second = range.next().transpose().map_err(precommit_storage_error)?;
+        match (first, second) {
+            (None, None) => Ok(UniqueOccupancyKind::Vacant),
+            (Some(key), None) if key.as_slice() == target.expected_entry().as_bytes() => {
+                Ok(UniqueOccupancyKind::Owned)
+            }
+            (Some(_), None) => Ok(UniqueOccupancyKind::Conflict),
+            _ => Err(corrupt()),
+        }
     }
 
     fn finish(

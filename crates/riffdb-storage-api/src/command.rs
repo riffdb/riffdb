@@ -4,7 +4,7 @@ use std::fmt;
 
 use riffdb_types::{
     AdmittedActorContext, ApprovalId, CanonicalInputHash, CanonicalRecord, ConflictKeyHash,
-    ContractVersion, EntityVersion, EventTypeId, ExecutionFailureCode, LogicalTime,
+    ContractVersion, EntityVersion, EventTypeId, ExecutionFailureCode, IndexEntryKey, LogicalTime,
     MAX_CANONICAL_DOCUMENT_BYTES, MAX_COMMIT_INTENT_SEMANTIC_BYTES,
     MAX_EVALUATED_COMMAND_SEMANTIC_BYTES, OutcomeId, PartitionKey, PartitionKeyHash, ProvenanceId,
     ProvenanceReason, RequestId, SourceCommit, SourceRepository, encode_canonical_record,
@@ -14,8 +14,9 @@ use riffdb_types::{
 use crate::{
     EntityTarget, ExecutablePlanRef, IdempotencyIdentity, IndexRangeTarget,
     MAX_AFFECTED_INDEX_EPOCH_TARGETS, MAX_COMMAND_READ_TARGETS, MAX_ENTITY_MUTATIONS,
-    MAX_EVENT_INTENTS, MAX_READ_DEPENDENCIES, MAX_READ_SNAPSHOT_BYTES, ReadDependencies,
-    ReadSnapshot, StorageValueError, ValidationReadRequest, canonical_codec_storage_error,
+    MAX_EVENT_INTENTS, MAX_READ_DEPENDENCIES, MAX_READ_SNAPSHOT_BYTES, MAX_VALIDATION_TARGETS,
+    ReadDependencies, ReadSnapshot, StorageValueError, ValidationReadRequest,
+    canonical_codec_storage_error,
 };
 
 /// Fixed provenance ID, partition hash, conflict-count framing, and empty conflict set.
@@ -477,7 +478,7 @@ impl EntityMutation {
         }
     }
 
-    fn semantic_bytes(&self) -> Result<usize, StorageValueError> {
+    pub(crate) fn semantic_bytes(&self) -> Result<usize, StorageValueError> {
         let variant_bytes = match self {
             Self::Create(_) => 1,
             Self::Replace { .. } => 1 + 8,
@@ -859,29 +860,100 @@ impl CommitIntent {
 #[derive(Clone, Eq, PartialEq)]
 pub struct AffectedIndexEpochTargets {
     targets: Vec<IndexRangeTarget>,
+    unique_targets: Vec<UniqueIndexTarget>,
     semantic_bytes: usize,
+}
+
+/// One exact unique-prefix occupancy check and its permitted owner entry.
+#[derive(Clone, Eq, Ord, PartialEq, PartialOrd)]
+pub struct UniqueIndexTarget {
+    prefix: IndexRangeTarget,
+    expected_entry: IndexEntryKey,
+}
+
+impl UniqueIndexTarget {
+    /// Constructs a checked target whose expected entry lies under the exact prefix.
+    pub fn new(
+        prefix: IndexRangeTarget,
+        expected_entry: IndexEntryKey,
+    ) -> Result<Self, StorageValueError> {
+        if prefix.prefix().index_id() != expected_entry.index_id()
+            || !expected_entry
+                .as_bytes()
+                .starts_with(prefix.prefix().as_bytes())
+        {
+            return Err(StorageValueError::IdentityMismatch);
+        }
+        Ok(Self {
+            prefix,
+            expected_entry,
+        })
+    }
+    /// Exact complete-component unique prefix.
+    #[must_use]
+    pub const fn prefix(&self) -> &IndexRangeTarget {
+        &self.prefix
+    }
+    /// Sole entry allowed to occupy this prefix.
+    #[must_use]
+    pub const fn expected_entry(&self) -> &IndexEntryKey {
+        &self.expected_entry
+    }
+    pub(crate) fn semantic_bytes(&self) -> Result<usize, StorageValueError> {
+        self.prefix
+            .semantic_bytes()?
+            .checked_add(self.expected_entry.as_bytes().len())
+            .and_then(|bytes| bytes.checked_add(4))
+            .ok_or(StorageValueError::SizeOverflow)
+    }
 }
 
 impl AffectedIndexEpochTargets {
     /// Canonicalizes and bounds the complete affected bucket set.
-    pub fn new(mut targets: Vec<IndexRangeTarget>) -> Result<Self, StorageValueError> {
-        if targets.len() > MAX_AFFECTED_INDEX_EPOCH_TARGETS {
+    pub fn new(targets: Vec<IndexRangeTarget>) -> Result<Self, StorageValueError> {
+        Self::with_unique(targets, Vec::new())
+    }
+
+    /// Canonicalizes affected epoch buckets and exact unique occupancy targets.
+    pub fn with_unique(
+        mut targets: Vec<IndexRangeTarget>,
+        mut unique_targets: Vec<UniqueIndexTarget>,
+    ) -> Result<Self, StorageValueError> {
+        if targets.len() > MAX_AFFECTED_INDEX_EPOCH_TARGETS
+            || unique_targets.len() > MAX_AFFECTED_INDEX_EPOCH_TARGETS
+            || targets
+                .len()
+                .checked_add(unique_targets.len())
+                .is_none_or(|count| count > MAX_VALIDATION_TARGETS)
+        {
             return Err(StorageValueError::LimitExceeded);
         }
         targets.sort_unstable();
         if targets.windows(2).any(|pair| pair[0] == pair[1]) {
             return Err(StorageValueError::Duplicate);
         }
-        let semantic_bytes = targets.iter().try_fold(4usize, |total, target| {
+        unique_targets.sort_unstable();
+        if unique_targets.windows(2).any(|pair| pair[0] == pair[1]) {
+            return Err(StorageValueError::Duplicate);
+        }
+        let semantic_bytes = targets.iter().try_fold(8usize, |total, target| {
             total
                 .checked_add(target.semantic_bytes()?)
                 .ok_or(StorageValueError::SizeOverflow)
         })?;
+        let semantic_bytes = unique_targets
+            .iter()
+            .try_fold(semantic_bytes, |total, target| {
+                total
+                    .checked_add(target.semantic_bytes()?)
+                    .ok_or(StorageValueError::SizeOverflow)
+            })?;
         if semantic_bytes > MAX_READ_SNAPSHOT_BYTES {
             return Err(StorageValueError::LimitExceeded);
         }
         Ok(Self {
             targets,
+            unique_targets,
             semantic_bytes,
         })
     }
@@ -890,6 +962,11 @@ impl AffectedIndexEpochTargets {
     #[must_use]
     pub fn as_slice(&self) -> &[IndexRangeTarget] {
         &self.targets
+    }
+    /// Borrows exact unique targets in canonical prefix/owner order.
+    #[must_use]
+    pub fn unique_targets(&self) -> &[UniqueIndexTarget] {
+        &self.unique_targets
     }
 
     /// Returns the bounded aggregate transient target charge.
@@ -1049,7 +1126,7 @@ mod tests {
     use crate::{EntityObservation, IndexRangePrefixBuilder, SnapshotRequest};
     use riffdb_types::{
         CanonicalValue, CommandId, ContractBundleHash, ContractLineage, EntityKeyBuilder,
-        EntityTypeId, FieldId, IndexId, PlanHash,
+        EntityTypeId, FieldId, IndexEntryKeyBuilder, IndexId, PlanHash,
     };
 
     fn plan() -> ExecutablePlanRef {
@@ -1126,6 +1203,56 @@ mod tests {
         );
         assert_eq!(
             AffectedIndexEpochTargets::new(targets(MAX_AFFECTED_INDEX_EPOCH_TARGETS + 1)),
+            Err(StorageValueError::LimitExceeded)
+        );
+    }
+
+    #[test]
+    fn unique_targets_accept_the_exact_shared_limit_and_reject_the_next_position() {
+        let unique_targets = |count: usize| {
+            (1..=count)
+                .map(|value| {
+                    let index = IndexId::new(u32::try_from(value).expect("test index fits u32"))
+                        .expect("nonzero index");
+                    let mut prefix = IndexRangePrefixBuilder::new(index);
+                    prefix.push_u64(7).expect("unique component");
+                    let mut entry = IndexEntryKeyBuilder::new(index);
+                    entry.push_u64(7).expect("unique component");
+                    UniqueIndexTarget::new(
+                        IndexRangeTarget::new(prefix.finish()),
+                        entry
+                            .finish(
+                                target(u64::try_from(value).expect("test entity"))
+                                    .key()
+                                    .clone(),
+                            )
+                            .expect("unique entry"),
+                    )
+                    .expect("unique target")
+                })
+                .collect::<Vec<_>>()
+        };
+
+        let exact = AffectedIndexEpochTargets::with_unique(
+            Vec::new(),
+            unique_targets(MAX_VALIDATION_TARGETS),
+        )
+        .expect("exact unique validation-position limit");
+        assert_eq!(exact.unique_targets().len(), MAX_VALIDATION_TARGETS);
+        assert_eq!(
+            AffectedIndexEpochTargets::with_unique(
+                Vec::new(),
+                unique_targets(MAX_VALIDATION_TARGETS + 1)
+            ),
+            Err(StorageValueError::LimitExceeded)
+        );
+        assert_eq!(
+            AffectedIndexEpochTargets::with_unique(
+                vec![IndexRangeTarget::new(
+                    IndexRangePrefixBuilder::new(IndexId::first()).finish()
+                )],
+                unique_targets(MAX_VALIDATION_TARGETS)
+            ),
             Err(StorageValueError::LimitExceeded)
         );
     }

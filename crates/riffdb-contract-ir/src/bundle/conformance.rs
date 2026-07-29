@@ -240,7 +240,14 @@ fn ordered_layout_registry_has_one_closed_witness_slot_per_layout() {
         ),
         (
             "StructuralSchema",
-            vec!["entities", "events", "enums", "aggregates", "relationships"],
+            vec![
+                "entities",
+                "events",
+                "enums",
+                "aggregates",
+                "relationships",
+                "unique_keys",
+            ],
         ),
         (
             "RelationshipSchema",
@@ -251,6 +258,10 @@ fn ordered_layout_registry_has_one_closed_witness_slot_per_layout() {
                 "target_entity",
                 "target_fields",
             ],
+        ),
+        (
+            "UniqueKeySchema",
+            vec!["name", "source_entity", "index_id", "fields"],
         ),
         (
             "EntitySchema",
@@ -482,6 +493,7 @@ fn ordered_layout_registry_has_one_closed_witness_slot_per_layout() {
         ("LineageEntry", "lineage ledger fixture"),
         ("StructuralSchema", "structural schema fixture"),
         ("RelationshipSchema", "relationship compiler fixture"),
+        ("UniqueKeySchema", "uniqueness compiler fixture"),
         ("EntitySchema", "command schema closure fixture"),
         ("EventSchema", "projection source fixture"),
         ("EnumSchema", "enum closure fixture"),

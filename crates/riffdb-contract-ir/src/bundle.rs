@@ -46,6 +46,7 @@ pub const GRAMMAR_VERSION_V1: u32 = 1;
 pub const EXECUTABLE_IR_VERSION_V1: u32 = 1;
 
 const RELATIONSHIP_SCHEMA_EXTENSION: u32 = 0xffff_fffe;
+const UNIQUE_KEY_SCHEMA_EXTENSION: u32 = 0xffff_fffd;
 /// Immutable stable-ID lineage-ledger format version.
 pub const LINEAGE_LEDGER_VERSION_V1: u32 = 1;
 /// Maximum canonical bundle bytes below the durable envelope limit.
@@ -1877,6 +1878,19 @@ fn encode_schema(writer: &mut Writer, schema: &SchemaIr) -> Result<(), IrValidat
             }
         }
     }
+    if !schema.unique_keys().is_empty() {
+        writer.u32(UNIQUE_KEY_SCHEMA_EXTENSION)?;
+        writer.u32(schema.unique_keys().len() as u32)?;
+        for unique in schema.unique_keys() {
+            writer.string(unique.name())?;
+            writer.u32(unique.source_entity().get())?;
+            writer.u32(unique.index_id().get())?;
+            writer.u32(unique.fields().len() as u32)?;
+            for field in unique.fields() {
+                writer.u32(field.get())?;
+            }
+        }
+    }
     Ok(())
 }
 
@@ -2835,7 +2849,36 @@ fn decode_schema(reader: &mut Reader<'_>) -> Result<SchemaIr, IrValidationError>
             )?);
         }
     }
-    SchemaIr::with_relationships(entities, events, enums, aggregates, relationships)
+    let mut unique_keys = Vec::new();
+    if reader.remaining() >= 4 && reader.peek_u32()? == UNIQUE_KEY_SCHEMA_EXTENSION {
+        let _marker = reader.u32()?;
+        let unique_count = decode_len(reader, "unique keys", crate::MAX_DECLARATIONS_PER_KIND)?;
+        unique_keys.reserve(unique_count);
+        for _ in 0..unique_count {
+            let name = reader.string(256)?;
+            let source_entity = decode_entity_id(reader)?;
+            let index_id = decode_index_id(reader)?;
+            let field_count = decode_len(reader, "unique key fields", 1_024)?;
+            let mut fields = Vec::with_capacity(field_count);
+            for _ in 0..field_count {
+                fields.push(decode_field_id(reader)?);
+            }
+            unique_keys.push(crate::UniqueKeySchema::new(
+                name,
+                source_entity,
+                index_id,
+                fields,
+            )?);
+        }
+    }
+    SchemaIr::with_integrity(
+        entities,
+        events,
+        enums,
+        aggregates,
+        relationships,
+        unique_keys,
+    )
 }
 
 fn decode_entity_schema(reader: &mut Reader<'_>) -> Result<EntitySchema, IrValidationError> {

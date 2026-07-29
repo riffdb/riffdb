@@ -6,15 +6,18 @@ use std::fmt;
 use std::marker::PhantomData;
 use std::sync::Arc;
 
-use riffdb_contract_ir::{CompatibilityClass, EntitySchema, IndexSchema, KeyPurpose, SchemaIr};
+use riffdb_contract_ir::{
+    CompatibilityClass, EntitySchema, IndexSchema, KeyPurpose, SchemaIr, UniqueKeySchema,
+};
 use riffdb_invariant::{EvaluationError, ExpressionValueSource, evaluate_expression};
 use riffdb_storage_api::{
     EvidencePageLimit, HistoricalBundleEvidence, HistoricalEvidenceCursor, HistoricalEvidenceEnd,
     HistoricalEvidencePage, HistoricalPersistedKeyEvidenceV1, HistoricalSemanticEvidence,
     IndexMigrationCursor, IndexMigrationRowEvidence, IndexMigrationSemanticRow,
-    IrOpaquePersistedKeyV1, MAX_INDEX_MIGRATION_PAGE_BYTES, MAX_INDEX_MIGRATION_PAGE_ENTRIES,
-    OpenSessionId, StartupIndexMigrationPort, StorageError, StorageValueError, StoredIndexEntryV2,
-    StructuralEvidenceSession,
+    IndexRangePrefixBuilder, IrOpaquePersistedKeyV1, MAX_INDEX_MIGRATION_PAGE_BYTES,
+    MAX_INDEX_MIGRATION_PAGE_ENTRIES, OpenSessionId, StartupIndexMigrationPort, StorageError,
+    StorageValueError, StoredEntityRecordV1, StoredIndexEntryV2, StructuralEvidenceSession,
+    UniqueIndexTarget, UniqueOccupancyKind,
 };
 use riffdb_types::{
     CanonicalValue, ContractBundleHash, ContractLineage, ContractVersion, DatabaseId, FieldId,
@@ -1109,6 +1112,28 @@ fn validate_index_migration_row<S: StructuralEvidenceSession>(
             CatalogErrorKind::InvalidHistoricalEvidence,
         ));
     }
+    if let Some(unique) = bundle
+        .bundle()
+        .schema()
+        .unique_keys()
+        .iter()
+        .find(|unique| unique.index_id() == index.id())
+    {
+        let target =
+            riffdb_storage_api::EntityTarget::new(entity.id(), decoded.entity_key().clone())
+                .map_err(|_| CatalogError::new(CatalogErrorKind::InvalidHistoricalKey))?;
+        let record = session
+            .read_integrity_entity(&target)?
+            .ok_or_else(|| CatalogError::new(CatalogErrorKind::InvalidHistoricalEvidence))?;
+        let expected = derive_unique_target(entity, index, unique, &record)?;
+        if expected.expected_entry() != evidence.physical_key()
+            || session.read_integrity_unique_occupancy(&expected)? != UniqueOccupancyKind::Owned
+        {
+            return Err(CatalogError::new(
+                CatalogErrorKind::InvalidHistoricalEvidence,
+            ));
+        }
+    }
     Ok(evidence.row().is_v1())
 }
 
@@ -1245,11 +1270,50 @@ fn validate_persisted_key<S: StructuralEvidenceSession>(
         IrOpaquePersistedKeyV1::Entity {
             entity_type_id,
             key,
-        } => bundle
-            .bundle()
-            .schema()
-            .entity(*entity_type_id)
-            .is_some_and(|entity| entity.primary_key().decode_entity(key).is_ok()),
+        } => {
+            let Some(entity) = bundle.bundle().schema().entity(*entity_type_id) else {
+                return Err(CatalogError::new(CatalogErrorKind::InvalidHistoricalKey));
+            };
+            if entity.primary_key().decode_entity(key).is_err() {
+                return Err(CatalogError::new(CatalogErrorKind::InvalidHistoricalKey));
+            }
+            let unique_keys = bundle
+                .bundle()
+                .schema()
+                .unique_keys()
+                .iter()
+                .filter(|unique| unique.source_entity() == entity.id())
+                .collect::<Vec<_>>();
+            if unique_keys.is_empty() {
+                return Ok(());
+            }
+            let target = riffdb_storage_api::EntityTarget::new(*entity_type_id, key.clone())
+                .map_err(|_| CatalogError::new(CatalogErrorKind::InvalidHistoricalKey))?;
+            let record = session
+                .read_integrity_entity(&target)?
+                .ok_or_else(|| CatalogError::new(CatalogErrorKind::InvalidHistoricalEvidence))?;
+            if record.schema_binding() != binding {
+                return Err(CatalogError::new(
+                    CatalogErrorKind::InvalidHistoricalEvidence,
+                ));
+            }
+            for unique in unique_keys {
+                let index = entity
+                    .indexes()
+                    .iter()
+                    .find(|index| index.id() == unique.index_id())
+                    .ok_or_else(|| {
+                        CatalogError::new(CatalogErrorKind::InvalidHistoricalEvidence)
+                    })?;
+                let target = derive_unique_target(entity, index, unique, &record)?;
+                if session.read_integrity_unique_occupancy(&target)? != UniqueOccupancyKind::Owned {
+                    return Err(CatalogError::new(
+                        CatalogErrorKind::InvalidHistoricalEvidence,
+                    ));
+                }
+            }
+            true
+        }
         IrOpaquePersistedKeyV1::IndexRangePrefix(prefix) => {
             find_index(bundle.bundle().schema().entities(), prefix.index_id()).is_some_and(
                 |index| {
@@ -1265,6 +1329,85 @@ fn validate_persisted_key<S: StructuralEvidenceSession>(
         return Err(CatalogError::new(CatalogErrorKind::InvalidHistoricalKey));
     }
     Ok(())
+}
+
+fn derive_unique_target(
+    entity: &EntitySchema,
+    index: &IndexSchema,
+    unique: &UniqueKeySchema,
+    record: &StoredEntityRecordV1,
+) -> Result<UniqueIndexTarget, CatalogError> {
+    if unique.source_entity() != entity.id()
+        || unique.index_id() != index.id()
+        || unique.fields() != index.fields()
+        || record.target().entity_type_id() != entity.id()
+    {
+        return Err(CatalogError::new(
+            CatalogErrorKind::InvalidHistoricalEvidence,
+        ));
+    }
+    let values = unique
+        .fields()
+        .iter()
+        .map(|field| {
+            record
+                .fields()
+                .fields()
+                .binary_search_by_key(field, |(candidate, _)| *candidate)
+                .ok()
+                .map(|position| record.fields().fields()[position].1.clone())
+                .ok_or_else(|| CatalogError::new(CatalogErrorKind::InvalidHistoricalEvidence))
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    let ir_prefix = index
+        .key_schema()
+        .encode_index_prefix(&values)
+        .map_err(|_| CatalogError::new(CatalogErrorKind::InvalidHistoricalKey))?;
+    let mut prefix = IndexRangePrefixBuilder::new(index.id());
+    for value in &values {
+        push_unique_prefix_component(&mut prefix, value)?;
+    }
+    let prefix = prefix.finish();
+    if prefix.as_bytes() != ir_prefix.as_bytes() {
+        return Err(CatalogError::new(
+            CatalogErrorKind::InvalidHistoricalEvidence,
+        ));
+    }
+    let expected = index
+        .key_schema()
+        .encode_index(&values, record.target().key().clone())
+        .map_err(|_| CatalogError::new(CatalogErrorKind::InvalidHistoricalKey))?;
+    UniqueIndexTarget::new(riffdb_storage_api::IndexRangeTarget::new(prefix), expected)
+        .map_err(|_| CatalogError::new(CatalogErrorKind::InvalidHistoricalEvidence))
+}
+
+fn push_unique_prefix_component(
+    builder: &mut IndexRangePrefixBuilder,
+    value: &CanonicalValue,
+) -> Result<(), CatalogError> {
+    let result = match value {
+        CanonicalValue::Bool(value) => builder.push_bool(*value),
+        CanonicalValue::I64(value) => builder.push_i64(*value),
+        CanonicalValue::U64(value) => builder.push_u64(*value),
+        CanonicalValue::String(value) => builder.push_str(value.as_str()),
+        CanonicalValue::Bytes(value) => builder.push_bytes(value.as_bytes()),
+        CanonicalValue::Timestamp(value) => builder.push_timestamp(*value),
+        CanonicalValue::Date(value) => builder.push_date(*value),
+        CanonicalValue::Uuid(value) => builder.push_uuid(value),
+        CanonicalValue::Enum { variant_id, .. } => builder.push_enum_variant(*variant_id),
+        CanonicalValue::Null
+        | CanonicalValue::Decimal(_)
+        | CanonicalValue::Money(_)
+        | CanonicalValue::List(_)
+        | CanonicalValue::Record(_) => {
+            return Err(CatalogError::new(
+                CatalogErrorKind::InvalidHistoricalEvidence,
+            ));
+        }
+    };
+    result
+        .map(|_| ())
+        .map_err(|_| CatalogError::new(CatalogErrorKind::InvalidHistoricalEvidence))
 }
 
 fn ensure_lineage_proof<'a>(

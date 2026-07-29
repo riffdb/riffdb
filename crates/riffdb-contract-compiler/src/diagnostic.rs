@@ -59,6 +59,10 @@ pub enum CompilerDiagnosticCode {
     InvalidIr,
     /// `RDB-C024`: a relationship-changing command lacks a dominating exact target read.
     MissingRelationshipRead,
+    /// `RDB-C025`: a unique key is optional, mistyped, or lacks its partition prefix.
+    InvalidUniqueKey,
+    /// `RDB-C026`: a unique-key change cannot be derived entirely from command inputs.
+    UniqueKeyNotInputComputable,
     /// `RDB-C201`: an identifier cannot form an ADR-0020 command tool-name segment.
     InvalidCommandToolName,
     /// `RDB-C202`: a complete ADR-0020 command tool name exceeds 128 bytes.
@@ -69,7 +73,7 @@ pub enum CompilerDiagnosticCode {
 
 impl CompilerDiagnosticCode {
     /// Complete pre-freeze public semantic diagnostic registry in code order.
-    pub const ALL: [Self; 27] = [
+    pub const ALL: [Self; 29] = [
         Self::InvalidContractVersion,
         Self::DuplicateName,
         Self::MissingDeclaration,
@@ -94,6 +98,8 @@ impl CompilerDiagnosticCode {
         Self::InvalidParent,
         Self::InvalidIr,
         Self::MissingRelationshipRead,
+        Self::InvalidUniqueKey,
+        Self::UniqueKeyNotInputComputable,
         Self::InvalidCommandToolName,
         Self::CommandToolNameTooLong,
         Self::CommandToolNameCollision,
@@ -127,6 +133,8 @@ impl CompilerDiagnosticCode {
             Self::InvalidParent => "RDB-C022",
             Self::InvalidIr => "RDB-C023",
             Self::MissingRelationshipRead => "RDB-C024",
+            Self::InvalidUniqueKey => "RDB-C025",
+            Self::UniqueKeyNotInputComputable => "RDB-C026",
             Self::InvalidCommandToolName => "RDB-C201",
             Self::CommandToolNameTooLong => "RDB-C202",
             Self::CommandToolNameCollision => "RDB-C203",
@@ -172,6 +180,12 @@ impl CompilerDiagnosticCode {
             Self::InvalidIr => "checked executable IR construction rejected the compiled plan",
             Self::MissingRelationshipRead => {
                 "a relationship change lacks a dominating exact target read and missing-target outcome"
+            }
+            Self::InvalidUniqueKey => {
+                "a unique key must use required fields and begin with the complete partition route"
+            }
+            Self::UniqueKeyNotInputComputable => {
+                "a changed unique value must be computable from validated command inputs"
             }
             Self::InvalidCommandToolName => {
                 "an identifier cannot form a valid MCP command tool-name segment"
@@ -240,6 +254,12 @@ impl CompilerDiagnosticCode {
             Self::InvalidIr => None,
             Self::MissingRelationshipRead => Some(
                 "read the complete referenced key before the mutable binding and declare its missing-target outcome",
+            ),
+            Self::InvalidUniqueKey => Some(
+                "declare required key-compatible fields beginning with the canonical partition prefix",
+            ),
+            Self::UniqueKeyNotInputComputable => Some(
+                "assign every changed unique component from command inputs or input-only expressions",
             ),
             Self::InvalidCommandToolName => {
                 Some("start contract and command identifiers with an ASCII letter")
@@ -415,7 +435,7 @@ mod tests {
 
     #[test]
     fn public_diagnostic_registry_is_complete_unique_and_code_ordered() {
-        assert_eq!(CompilerDiagnosticCode::ALL.len(), 27);
+        assert_eq!(CompilerDiagnosticCode::ALL.len(), 29);
         let codes = CompilerDiagnosticCode::ALL.map(CompilerDiagnosticCode::as_str);
         assert!(codes.windows(2).all(|pair| pair[0] < pair[1]));
         assert!(CompilerDiagnosticCode::ALL.iter().all(|code| {

@@ -821,6 +821,7 @@ layout!(SCHEMA_LAYOUT, "StructuralSchema", {
     "enums" => "u32 count + EnumSchema[]",
     "aggregates" => "u32 count + AggregateSchema[]",
     "relationships" => "optional u32 marker 0xfffffffe + u32 count + RelationshipSchema[]; omitted when empty",
+    "unique_keys" => "optional u32 marker 0xfffffffd + u32 count + UniqueKeySchema[]; omitted when empty",
 });
 layout!(RELATIONSHIP_LAYOUT, "RelationshipSchema", {
     "name" => "string",
@@ -828,6 +829,12 @@ layout!(RELATIONSHIP_LAYOUT, "RelationshipSchema", {
     "source_fields" => "u32 count + FieldId[]",
     "target_entity" => "EntityTypeId",
     "target_fields" => "u32 count + FieldId[]",
+});
+layout!(UNIQUE_KEY_LAYOUT, "UniqueKeySchema", {
+    "name" => "string",
+    "source_entity" => "EntityTypeId",
+    "index_id" => "IndexId",
+    "fields" => "u32 count + FieldId[]",
 });
 layout!(ENTITY_LAYOUT, "EntitySchema", {
     "id" => "u32",
@@ -1062,6 +1069,7 @@ pub(crate) const FORMAT_LAYOUTS: &[FormatLayout] = &[
     LEDGER_ENTRY_LAYOUT,
     SCHEMA_LAYOUT,
     RELATIONSHIP_LAYOUT,
+    UNIQUE_KEY_LAYOUT,
     ENTITY_LAYOUT,
     EVENT_LAYOUT,
     ENUM_LAYOUT,
@@ -1919,7 +1927,7 @@ mod tests {
     #[test]
     fn ordered_layout_registry_is_complete_and_canonical() {
         assert_eq!(FORMAT_LAYOUTS.first(), Some(&BUNDLE_LAYOUT));
-        assert_eq!(FORMAT_LAYOUTS.len(), 42);
+        assert_eq!(FORMAT_LAYOUTS.len(), 43);
         for layout in FORMAT_LAYOUTS {
             assert!(!layout.fields.is_empty(), "{}", layout.name);
             assert!(

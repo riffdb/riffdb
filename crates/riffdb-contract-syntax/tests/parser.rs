@@ -50,6 +50,31 @@ fn parses_required_same_partition_reference_with_exact_spans() {
 }
 
 #[test]
+fn parses_declared_same_partition_unique_key_with_exact_spans() {
+    let source = include_str!("../../../contracts/parser-fixtures/valid/uniqueness.riff");
+    let document = parse_contract(source).expect("unique fixture parses");
+    let Declaration::Entity(user) = &document.contract.value.declarations[1].value else {
+        panic!("second declaration must be User");
+    };
+    let EntityItem::Unique(unique) = &user.items[2].value else {
+        panic!("third User item must be unique");
+    };
+    assert_eq!(unique.name.value, "user_email");
+    assert_eq!(
+        unique
+            .fields
+            .iter()
+            .map(|field| field.value.as_str())
+            .collect::<Vec<_>>(),
+        ["organization_id", "email"]
+    );
+    assert_eq!(
+        &source[unique.name.span.start() as usize..unique.name.span.end() as usize],
+        "user_email"
+    );
+}
+
+#[test]
 fn invalid_corpus_matches_golden_diagnostics() {
     for (source, golden) in [
         (

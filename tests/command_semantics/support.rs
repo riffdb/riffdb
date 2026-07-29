@@ -51,6 +51,56 @@ use riffdb_types::{
 };
 
 const BUDGET_SOURCE: &str = include_str!("../../contracts/examples/budget.riff");
+const UNIQUE_SOURCE: &str = r#"
+contract UniqueUsers version 1 {
+  entity Organization {
+    key (organization_id: uuid)
+  }
+  entity User {
+    key (organization_id: uuid, user_id: uuid)
+    field email: string<128>
+    unique user_email (organization_id, email)
+  }
+  aggregate Users {
+    root Organization
+    child User
+    partition_by organization_id
+    conflict_key (organization_id)
+  }
+  command CreateOrganization {
+    input idempotency_key: string<128>
+    input organization_id: uuid
+    idempotency_key idempotency_key
+    create Organization(organization_id) as organization
+      else OrganizationExists { organization_id: organization_id }
+    return Created { organization: organization }
+  }
+  command CreateUser {
+    input idempotency_key: string<128>
+    input organization_id: uuid
+    input user_id: uuid
+    input email: string<128>
+    idempotency_key idempotency_key
+    read Organization(organization_id) as organization
+      else OrganizationMissing { organization_id: organization_id }
+    create User(organization_id, user_id) as user
+      else UserExists { user_id: user_id }
+    set user.email = email
+    return Created { user: user }
+  }
+  command ChangeEmail {
+    input idempotency_key: string<128>
+    input organization_id: uuid
+    input user_id: uuid
+    input email: string<128>
+    idempotency_key idempotency_key
+    mutate User(organization_id, user_id) as user
+      else UserMissing { user_id: user_id }
+    set user.email = email
+    return Changed { user: user }
+  }
+}
+"#;
 const PRINCIPAL: &str = "command-semantics-agent";
 const CALLER_KEY: &str = "command-semantics-idempotency-key";
 const ORGANIZATION_ID: [u8; 16] = [0x31; 16];
@@ -63,6 +113,350 @@ pub(crate) struct BudgetDatabase {
     checked_bundle: ValidatedContractBundle,
     target_entity_type: EntityTypeId,
     approved_amount_field: FieldId,
+}
+
+pub(crate) struct UniqueUserDatabase {
+    path: PathBuf,
+    checked_bundle: ValidatedContractBundle,
+    user_entity_type: EntityTypeId,
+    email_field: FieldId,
+}
+
+impl UniqueUserDatabase {
+    pub(crate) fn create(label: &str) -> Self {
+        let ordinal = NEXT_PATH.fetch_add(1, Ordering::Relaxed);
+        let path = std::env::temp_dir().join(format!(
+            "riffdb-command-unique-{label}-{}-{ordinal}.redb",
+            std::process::id()
+        ));
+        let compiled = compile_contract_source(UNIQUE_SOURCE).expect("unique contract compiles");
+        let checked_bundle = ValidatedContractBundle::from_compiler_bundle(compiled)
+            .expect("unique bundle passes catalog validation");
+        let user = checked_bundle
+            .bundle()
+            .schema()
+            .entities()
+            .iter()
+            .find(|entity| entity.name() == "User")
+            .expect("User entity schema");
+        let user_entity_type = user.id();
+        let email_field = user
+            .record()
+            .fields()
+            .iter()
+            .find(|field| field.name() == "email")
+            .expect("email field")
+            .id();
+
+        let mut store = RedbStore::open(&path).expect("create redb unique database");
+        store
+            .initialize_database(database_id())
+            .expect("initialize unique database");
+        let mut ports = open_operational(store);
+        let stored_bundle = checked_bundle.to_stored().expect("stored unique bundle");
+        let activation = ports
+            .activate_catalog(&CatalogActivationIntentV1::new(
+                None,
+                stored_bundle.clone(),
+                request_id(0x71),
+                catalog_principal(),
+                timestamp(1_700_000_000),
+                None,
+            ))
+            .expect("activate unique bundle");
+        assert!(matches!(
+            activation,
+            CatalogActivationResult::Activated { active, .. }
+                if active == ActiveCatalogPointerV1::from_bundle(&stored_bundle)
+        ));
+        drop(ports);
+
+        Self {
+            path,
+            checked_bundle,
+            user_entity_type,
+            email_field,
+        }
+    }
+
+    pub(crate) fn open(&self) -> RedbOperationalPorts {
+        open_operational(RedbStore::open(&self.path).expect("reopen unique database"))
+    }
+
+    pub(crate) fn open_with_controller(
+        &self,
+        controller: RedbTestController,
+    ) -> RedbOperationalPorts {
+        open_operational(
+            RedbStore::open_with_test_controller(&self.path, controller)
+                .expect("reopen unique database with test controller"),
+        )
+    }
+
+    pub(crate) fn prepare(
+        &self,
+        ports: &RedbOperationalPorts,
+        user_id: [u8; 16],
+        email: &str,
+        caller_key: &str,
+        digest_seed: u8,
+        request_seed: u8,
+    ) -> CommandExecutionPreparation {
+        self.prepare_user_command(
+            ports,
+            "CreateUser",
+            user_id,
+            email,
+            caller_key,
+            digest_seed,
+            request_seed,
+        )
+    }
+
+    pub(crate) fn prepare_email_change(
+        &self,
+        ports: &RedbOperationalPorts,
+        user_id: [u8; 16],
+        email: &str,
+        caller_key: &str,
+        digest_seed: u8,
+        request_seed: u8,
+    ) -> CommandExecutionPreparation {
+        self.prepare_user_command(
+            ports,
+            "ChangeEmail",
+            user_id,
+            email,
+            caller_key,
+            digest_seed,
+            request_seed,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn prepare_user_command(
+        &self,
+        ports: &RedbOperationalPorts,
+        command_name: &str,
+        user_id: [u8; 16],
+        email: &str,
+        caller_key: &str,
+        digest_seed: u8,
+        request_seed: u8,
+    ) -> CommandExecutionPreparation {
+        let plan = self.command_plan(command_name);
+        let reference = ExecutablePlanRef::new(
+            self.checked_bundle.lineage().clone(),
+            self.checked_bundle.contract_version(),
+            self.checked_bundle.bundle_hash(),
+            plan.command_id(),
+            plan.plan_hash(),
+        );
+        let resolved =
+            resolve_executable_plan(ports, &reference).expect("deployed user command resolves");
+        let input = input_record(
+            plan.input().record(),
+            [
+                (
+                    "idempotency_key",
+                    CanonicalValue::string(caller_key).expect("bounded caller key"),
+                ),
+                ("organization_id", CanonicalValue::Uuid(ORGANIZATION_ID)),
+                ("user_id", CanonicalValue::Uuid(user_id)),
+                (
+                    "email",
+                    CanonicalValue::string(email).expect("bounded email"),
+                ),
+            ],
+        );
+        let facts = derive_input_command_facts(plan, input.clone())
+            .expect("checked user command input facts");
+        let caller_key = IdempotencyKey::new(caller_key).expect("bounded caller key");
+        let scope = CommandIdempotencyScopeV1::new(
+            database_id(),
+            environment(),
+            TenantScope::Global,
+            ActorId::new(PRINCIPAL).expect("bounded principal"),
+            reference.contract_lineage().clone(),
+            reference.command_id(),
+        );
+        let lookup =
+            prepare_idempotency_lookup(&scope, &caller_key, &FixedDigestProvider(digest_seed))
+                .expect("prepare unique caller-key lookup");
+        let idempotency = IdempotencyInspectionExecutor::new(ports)
+            .inspect(lookup)
+            .expect("inspect unique idempotency state")
+            .confirm_input(
+                &input,
+                plan.idempotency_input()
+                    .expect("user command idempotency input"),
+                &caller_key,
+            )
+            .expect("confirm unique command input")
+            .bind_selected_plan(reference)
+            .expect("bind unique command plan");
+        let authorization = authorize_command(
+            plan,
+            self.checked_bundle.lineage().clone(),
+            facts.partition_key().clone(),
+        );
+        let (control, _cancellation) = CommandRequestControl::new(
+            Instant::now()
+                .checked_add(Duration::from_secs(30))
+                .expect("representable unique command deadline"),
+        );
+
+        CommandExecutionPreparation::new(
+            database_id(),
+            &environment(),
+            resolved,
+            input,
+            idempotency,
+            facts,
+            authorization,
+            request_id(request_seed),
+            riffdb_types::ServiceIngressKindV1::Grpc,
+            control,
+        )
+        .expect("join exact unique command preparation proofs")
+    }
+
+    pub(crate) fn prepare_organization(
+        &self,
+        ports: &RedbOperationalPorts,
+    ) -> CommandExecutionPreparation {
+        let plan = self.command_plan("CreateOrganization");
+        let reference = ExecutablePlanRef::new(
+            self.checked_bundle.lineage().clone(),
+            self.checked_bundle.contract_version(),
+            self.checked_bundle.bundle_hash(),
+            plan.command_id(),
+            plan.plan_hash(),
+        );
+        let resolved = resolve_executable_plan(ports, &reference)
+            .expect("deployed CreateOrganization plan resolves");
+        let caller_key_text = "create-organization";
+        let input = input_record(
+            plan.input().record(),
+            [
+                (
+                    "idempotency_key",
+                    CanonicalValue::string(caller_key_text).expect("bounded caller key"),
+                ),
+                ("organization_id", CanonicalValue::Uuid(ORGANIZATION_ID)),
+            ],
+        );
+        let facts = derive_input_command_facts(plan, input.clone())
+            .expect("checked CreateOrganization input facts");
+        let caller_key = IdempotencyKey::new(caller_key_text).expect("bounded caller key");
+        let scope = CommandIdempotencyScopeV1::new(
+            database_id(),
+            environment(),
+            TenantScope::Global,
+            ActorId::new(PRINCIPAL).expect("bounded principal"),
+            reference.contract_lineage().clone(),
+            reference.command_id(),
+        );
+        let lookup = prepare_idempotency_lookup(&scope, &caller_key, &FixedDigestProvider(0x60))
+            .expect("prepare organization caller-key lookup");
+        let idempotency = IdempotencyInspectionExecutor::new(ports)
+            .inspect(lookup)
+            .expect("inspect organization idempotency state")
+            .confirm_input(
+                &input,
+                plan.idempotency_input()
+                    .expect("CreateOrganization idempotency input"),
+                &caller_key,
+            )
+            .expect("confirm organization command input")
+            .bind_selected_plan(reference)
+            .expect("bind organization command plan");
+        let authorization = authorize_command(
+            plan,
+            self.checked_bundle.lineage().clone(),
+            facts.partition_key().clone(),
+        );
+        let (control, _cancellation) = CommandRequestControl::new(
+            Instant::now()
+                .checked_add(Duration::from_secs(30))
+                .expect("representable organization command deadline"),
+        );
+        CommandExecutionPreparation::new(
+            database_id(),
+            &environment(),
+            resolved,
+            input,
+            idempotency,
+            facts,
+            authorization,
+            request_id(0x50),
+            riffdb_types::ServiceIngressKindV1::Grpc,
+            control,
+        )
+        .expect("join exact organization preparation proofs")
+    }
+
+    pub(crate) fn assert_user_exists(
+        &self,
+        ports: &RedbOperationalPorts,
+        user_id: [u8; 16],
+        expected: bool,
+    ) {
+        assert_eq!(
+            ports
+                .read_entity(&self.user_target(user_id))
+                .expect("read unique user")
+                .is_some(),
+            expected
+        );
+    }
+
+    pub(crate) fn assert_user_email(
+        &self,
+        ports: &RedbOperationalPorts,
+        user_id: [u8; 16],
+        expected: &str,
+    ) {
+        let user = ports
+            .read_entity(&self.user_target(user_id))
+            .expect("read unique user")
+            .expect("unique user exists");
+        assert_eq!(
+            user.fields()
+                .fields()
+                .iter()
+                .find(|(field, _)| *field == self.email_field)
+                .map(|(_, value)| value),
+            Some(&CanonicalValue::string(expected).expect("bounded expected email"))
+        );
+    }
+
+    fn command_plan(&self, name: &str) -> &CommandPlan {
+        self.checked_bundle
+            .bundle()
+            .commands()
+            .iter()
+            .find(|plan| plan.name() == name)
+            .unwrap_or_else(|| panic!("{name} command plan"))
+    }
+
+    fn user_target(&self, user_id: [u8; 16]) -> riffdb_storage_api::EntityTarget {
+        let mut key = EntityKeyBuilder::new(self.user_entity_type);
+        key.push_uuid(&ORGANIZATION_ID)
+            .expect("organization key component");
+        key.push_uuid(&user_id).expect("user key component");
+        riffdb_storage_api::EntityTarget::new(
+            self.user_entity_type,
+            key.finish().expect("user entity key"),
+        )
+        .expect("User entity target")
+    }
+}
+
+impl Drop for UniqueUserDatabase {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_file(&self.path);
+    }
 }
 
 impl BudgetDatabase {
@@ -164,7 +558,7 @@ impl BudgetDatabase {
             reference.contract_lineage().clone(),
             reference.command_id(),
         );
-        let lookup = prepare_idempotency_lookup(&scope, &caller_key, &FixedDigestProvider)
+        let lookup = prepare_idempotency_lookup(&scope, &caller_key, &FixedDigestProvider(0x51))
             .expect("prepare caller-key lookup");
         let idempotency = IdempotencyInspectionExecutor::new(ports)
             .inspect(lookup)
@@ -341,6 +735,29 @@ impl ProvenanceIdSource for CountingProvenanceSource {
     }
 }
 
+pub(crate) struct IncrementingProvenanceSource {
+    seed: u8,
+    calls: AtomicUsize,
+}
+
+impl IncrementingProvenanceSource {
+    pub(crate) fn new(seed: u8) -> Self {
+        Self {
+            seed,
+            calls: AtomicUsize::new(0),
+        }
+    }
+}
+
+impl ProvenanceIdSource for IncrementingProvenanceSource {
+    fn next_provenance_id(&self) -> Result<ProvenanceId, ProvenanceIdSourceError> {
+        let offset = self.calls.fetch_add(1, Ordering::Relaxed);
+        let offset = u8::try_from(offset).unwrap_or(u8::MAX);
+        ProvenanceId::from_bytes(uuid_bytes(self.seed.wrapping_add(offset)))
+            .map_err(|_| ProvenanceIdSourceError)
+    }
+}
+
 pub(crate) fn start_coordinator(
     ports: RedbOperationalPorts,
     admission_clock: Arc<FixedAdmissionClock>,
@@ -354,12 +771,15 @@ pub(crate) fn start_coordinator(
     )
 }
 
-pub(crate) fn start_coordinator_with_notifications(
+pub(crate) fn start_coordinator_with_notifications<P>(
     ports: RedbOperationalPorts,
     admission_clock: Arc<FixedAdmissionClock>,
-    provenance_source: Arc<CountingProvenanceSource>,
+    provenance_source: Arc<P>,
     notifications: Arc<dyn ApplicationCommitNotificationSink>,
-) -> RunningCommandCoordinator {
+) -> RunningCommandCoordinator
+where
+    P: ProvenanceIdSource + 'static,
+{
     let conflicts: Arc<dyn ConflictManager> = Arc::new(
         ShardedConflictManager::new(ConflictManagerConfig::default())
             .expect("start conflict manager"),
@@ -620,7 +1040,7 @@ impl AuthorizationClock for FixedAuthorizationClock {
     }
 }
 
-struct FixedDigestProvider;
+struct FixedDigestProvider(u8);
 
 impl IdempotencyDigestProvider for FixedDigestProvider {
     fn digest_candidates(
@@ -629,7 +1049,7 @@ impl IdempotencyDigestProvider for FixedDigestProvider {
     ) -> Result<IdempotencyDigestCandidatesV1, IdempotencyDigestError> {
         IdempotencyDigestCandidatesV1::new(vec![IdempotencyKeyDigest::from_hmac_bytes(
             DigestKeyId::new(1).expect("digest key ID"),
-            [0x51; 32],
+            [self.0; 32],
         )])
     }
 }

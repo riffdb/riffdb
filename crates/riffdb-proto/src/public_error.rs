@@ -279,6 +279,7 @@ const fn proto_execution_failure_code(
     match code {
         DomainExecutionFailureCode::ArithmeticFault => v1::ExecutionFailureCode::ArithmeticFault,
         DomainExecutionFailureCode::ResourceLimit => v1::ExecutionFailureCode::ResourceLimit,
+        DomainExecutionFailureCode::UniqueConflict => v1::ExecutionFailureCode::UniqueConflict,
     }
 }
 
@@ -291,6 +292,9 @@ fn domain_execution_failure_code(
         }
         Ok(v1::ExecutionFailureCode::ResourceLimit) => {
             Ok(DomainExecutionFailureCode::ResourceLimit)
+        }
+        Ok(v1::ExecutionFailureCode::UniqueConflict) => {
+            Ok(DomainExecutionFailureCode::UniqueConflict)
         }
         Ok(v1::ExecutionFailureCode::Unspecified) | Err(_) => {
             Err(PublicErrorWireError::InvalidExecutionFailureDetails)

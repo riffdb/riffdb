@@ -60,6 +60,9 @@ fn execution_code_to_proto(value: riffdb_types::ExecutionFailureCode) -> i32 {
         riffdb_types::ExecutionFailureCode::ResourceLimit => {
             wire::ExecutionFailureCodeV1::ExecutionFailureCodeResourceLimit as i32
         }
+        riffdb_types::ExecutionFailureCode::UniqueConflict => {
+            wire::ExecutionFailureCodeV1::ExecutionFailureCodeUniqueConflict as i32
+        }
     }
 }
 
@@ -72,6 +75,9 @@ fn execution_code_from_proto(
         }
         wire::ExecutionFailureCodeV1::ExecutionFailureCodeResourceLimit => {
             Ok(riffdb_types::ExecutionFailureCode::ResourceLimit)
+        }
+        wire::ExecutionFailureCodeV1::ExecutionFailureCodeUniqueConflict => {
+            Ok(riffdb_types::ExecutionFailureCode::UniqueConflict)
         }
         wire::ExecutionFailureCodeV1::ExecutionFailureCodeUnspecified => {
             Err(DurableCodecError::corrupt())

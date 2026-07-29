@@ -7,7 +7,7 @@ use riffdb_types::{CommandId, EventTypeId, FieldId, InvariantId, OutcomeId};
 use crate::{
     BindingId, BindingPlan, CommandPlan, CommitCheckPlan, ConflictDerivationPlan,
     EventConstruction, ExecutionClass, ExprId, ExpressionArena, ExpressionKind, KeySchema,
-    OutcomeSchema, RelationshipCheckPlan, RootValidationReadPlan,
+    OutcomeSchema, RelationshipCheckPlan, RootValidationReadPlan, UniqueConflictPlan,
 };
 
 /// A bounded stable-ID-only command explanation.
@@ -28,6 +28,7 @@ pub struct CommandExplain {
     conflict_derivations: Vec<ConflictDerivationPlan>,
     binding_plans: Vec<BindingPlan>,
     relationship_checks: Vec<RelationshipCheckPlan>,
+    unique_conflicts: Vec<UniqueConflictPlan>,
     root_validation_reads: Vec<RootValidationReadPlan>,
     commit_checks: Vec<CommitCheckPlan>,
     event_constructions: Vec<EventConstruction>,
@@ -86,7 +87,8 @@ impl CommandExplain {
             command_id: plan.command_id(),
             execution_class: plan.execution_class(),
             partition_component_count: plan.locality().partition_schema().components().len(),
-            conflict_key_count: plan.locality().conflict_keys().len(),
+            conflict_key_count: plan.locality().conflict_keys().len()
+                + plan.unique_conflicts().len(),
             bindings,
             read_fields,
             write_fields,
@@ -98,6 +100,7 @@ impl CommandExplain {
             conflict_derivations: plan.locality().conflict_keys().to_vec(),
             binding_plans: plan.bindings().to_vec(),
             relationship_checks: plan.relationship_checks().to_vec(),
+            unique_conflicts: plan.unique_conflicts().to_vec(),
             root_validation_reads: plan.root_validation_reads().to_vec(),
             commit_checks: plan.commit_checks().to_vec(),
             event_constructions,
@@ -185,6 +188,12 @@ impl CommandExplain {
     #[must_use]
     pub fn relationship_checks(&self) -> &[RelationshipCheckPlan] {
         &self.relationship_checks
+    }
+
+    /// Input-computable conflict keys for changed declared unique values.
+    #[must_use]
+    pub fn unique_conflicts(&self) -> &[UniqueConflictPlan] {
+        &self.unique_conflicts
     }
 
     /// Internal aggregate-root read templates in dense ID order.
@@ -303,6 +312,22 @@ impl CommandExplain {
                 check.relationship_name(),
                 check.source_binding().get(),
                 check.target_binding().get()
+            );
+        }
+        for unique in &self.unique_conflicts {
+            let expressions = unique
+                .expressions()
+                .iter()
+                .map(|expression| expression.get().to_string())
+                .collect::<Vec<_>>()
+                .join(",");
+            let _ = writeln!(
+                output,
+                "unique:{} index={} source-binding={} conflict=[{}] transaction-current:true atomic-index:true",
+                unique.unique_name(),
+                unique.index_id().get(),
+                unique.source_binding().get(),
+                expressions
             );
         }
         for read in &self.root_validation_reads {

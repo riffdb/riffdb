@@ -119,6 +119,7 @@ fn candidate_validation_rejections_are_distinct_non_durable_controls() {
             CandidateValidationRejection::CommitCheckRejected => 2,
             CandidateValidationRejection::CommitCheckArithmeticFault => 3,
             CandidateValidationRejection::MutationPreconditionChanged => 4,
+            CandidateValidationRejection::UniqueConflict => 5,
         }
     }
 
@@ -128,8 +129,9 @@ fn candidate_validation_rejections_are_distinct_non_durable_controls() {
             CandidateValidationRejection::CommitCheckRejected,
             CandidateValidationRejection::CommitCheckArithmeticFault,
             CandidateValidationRejection::MutationPreconditionChanged,
+            CandidateValidationRejection::UniqueConflict,
         ]
         .map(fixture_tag),
-        [1, 2, 3, 4]
+        [1, 2, 3, 4, 5]
     );
 }

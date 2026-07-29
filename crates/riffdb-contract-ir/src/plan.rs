@@ -311,6 +311,44 @@ pub struct RelationshipCheckPlan {
     target_binding: BindingId,
 }
 
+/// One compiler-derived input-computable unique conflict capability.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct UniqueConflictPlan {
+    unique_name: String,
+    index_id: IndexId,
+    source_binding: BindingId,
+    schema: KeySchema,
+    expressions: Vec<ExprId>,
+}
+
+impl UniqueConflictPlan {
+    /// Declared unique-key symbol.
+    #[must_use]
+    pub fn unique_name(&self) -> &str {
+        &self.unique_name
+    }
+    /// Authoritative unique index.
+    #[must_use]
+    pub const fn index_id(&self) -> IndexId {
+        self.index_id
+    }
+    /// Mutable binding establishing or changing the unique value.
+    #[must_use]
+    pub const fn source_binding(&self) -> BindingId {
+        self.source_binding
+    }
+    /// Aggregate-scoped canonical conflict schema.
+    #[must_use]
+    pub const fn schema(&self) -> &KeySchema {
+        &self.schema
+    }
+    /// Input-computable resulting unique components.
+    #[must_use]
+    pub fn expressions(&self) -> &[ExprId] {
+        &self.expressions
+    }
+}
+
 impl RelationshipCheckPlan {
     /// Exact relationship symbol.
     #[must_use]
@@ -699,6 +737,7 @@ pub struct CommandPlan {
     expressions: ExpressionArena,
     bindings: Vec<BindingPlan>,
     relationship_checks: Vec<RelationshipCheckPlan>,
+    unique_conflicts: Vec<UniqueConflictPlan>,
     root_validation_reads: Vec<RootValidationReadPlan>,
     locality: LocalityPlan,
     commit_checks: Vec<CommitCheckPlan>,
@@ -924,6 +963,19 @@ impl CommandPlan {
         )?;
         let relationship_checks =
             derive_relationship_checks(&expressions, &bindings, &instructions, contract_schema)?;
+        let unique_conflicts =
+            derive_unique_conflicts(&expressions, &bindings, &instructions, contract_schema)?;
+        checked_len(
+            "all command conflict derivations",
+            locality
+                .conflict_keys()
+                .len()
+                .checked_add(unique_conflicts.len())
+                .ok_or(IrValidationError::SizeOverflow {
+                    kind: "all command conflict derivations",
+                })?,
+            MAX_COMMAND_CONFLICT_KEYS_V1,
+        )?;
 
         let mut plan = Self {
             command_id,
@@ -936,6 +988,7 @@ impl CommandPlan {
             expressions,
             bindings,
             relationship_checks,
+            unique_conflicts,
             root_validation_reads,
             locality,
             commit_checks,
@@ -1001,6 +1054,11 @@ impl CommandPlan {
     #[must_use]
     pub fn relationship_checks(&self) -> &[RelationshipCheckPlan] {
         &self.relationship_checks
+    }
+    /// Declared unique values and their exact input-derived conflict capabilities.
+    #[must_use]
+    pub fn unique_conflicts(&self) -> &[UniqueConflictPlan] {
+        &self.unique_conflicts
     }
     /// Internal aggregate-root validation reads in dense ID order.
     #[must_use]
@@ -1160,6 +1218,114 @@ fn derive_relationship_checks(
     Ok(checks)
 }
 
+fn derive_unique_conflicts(
+    expressions: &ExpressionArena,
+    bindings: &[BindingPlan],
+    instructions: &[Instruction],
+    schema: &SchemaIr,
+) -> Result<Vec<UniqueConflictPlan>, IrValidationError> {
+    let writes = instructions
+        .iter()
+        .filter_map(|instruction| match instruction {
+            Instruction::SetField {
+                binding,
+                field,
+                value,
+            } => Some(((*binding, *field), *value)),
+            Instruction::Require { .. } | Instruction::EmitEvent(_) | Instruction::Return(_) => {
+                None
+            }
+        })
+        .collect::<BTreeMap<_, _>>();
+    let mut conflicts = Vec::new();
+    for binding in bindings
+        .iter()
+        .filter(|binding| matches!(binding.mode(), BindingMode::Create | BindingMode::Mutate))
+    {
+        let entity =
+            schema
+                .entity(binding.entity_type())
+                .ok_or(IrValidationError::InvalidReference {
+                    kind: "unique conflict source entity",
+                })?;
+        let aggregate = schema.aggregate_for_entity(entity.id()).ok_or(
+            IrValidationError::InvalidReference {
+                kind: "unique conflict aggregate",
+            },
+        )?;
+        for unique in schema
+            .unique_keys()
+            .iter()
+            .filter(|unique| unique.source_entity() == entity.id())
+        {
+            let changes = binding.mode() == BindingMode::Create
+                || unique
+                    .fields()
+                    .iter()
+                    .any(|field| writes.contains_key(&(binding.id(), *field)));
+            if !changes {
+                continue;
+            }
+            let resulting = unique
+                .fields()
+                .iter()
+                .map(|field| {
+                    writes.get(&(binding.id(), *field)).copied().or_else(|| {
+                        entity
+                            .primary_key_fields()
+                            .iter()
+                            .position(|key| key == field)
+                            .and_then(|position| binding.key_expressions().get(position).copied())
+                    })
+                })
+                .collect::<Option<Vec<_>>>()
+                .ok_or(IrValidationError::InvalidDependency {
+                    reason: "unique conflict value is not statically visible",
+                })?;
+            let index = entity
+                .indexes()
+                .iter()
+                .find(|index| index.id() == unique.index_id())
+                .ok_or(IrValidationError::InvalidReference {
+                    kind: "unique conflict backing index",
+                })?;
+            let conflict_schema = KeySchema::new(
+                KeyPurpose::Conflict(aggregate.id()),
+                index.key_schema().components().to_vec(),
+            )?;
+            for (expression, component) in resulting.iter().zip(conflict_schema.components()) {
+                if expressions
+                    .get(*expression)
+                    .is_none_or(|node| node.result_type() != component.value_type())
+                    || !expressions.dependencies(*expression)?.is_input_computable()
+                {
+                    return Err(IrValidationError::InvalidDependency {
+                        reason: "unique conflict value is not input-computable",
+                    });
+                }
+            }
+            conflicts.push(UniqueConflictPlan {
+                unique_name: unique.name().to_owned(),
+                index_id: unique.index_id(),
+                source_binding: binding.id(),
+                schema: conflict_schema,
+                expressions: resulting,
+            });
+        }
+    }
+    conflicts.sort_unstable_by(|left, right| {
+        left.source_binding
+            .cmp(&right.source_binding)
+            .then_with(|| left.index_id.cmp(&right.index_id))
+    });
+    checked_len(
+        "command unique conflict derivations",
+        conflicts.len(),
+        MAX_COMMAND_CONFLICT_KEYS_V1,
+    )?;
+    Ok(conflicts)
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 struct WorstCaseIndexDerivation {
     index_entry_deltas: usize,
@@ -1167,6 +1333,8 @@ struct WorstCaseIndexDerivation {
     index_entry_v2_partition_semantic_bytes: usize,
     affected_prefixes: usize,
     affected_target_bytes: usize,
+    unique_occupancies: usize,
+    unique_occupancy_bytes: usize,
 }
 
 fn validate_worst_case_index_derivation(
@@ -1204,6 +1372,13 @@ fn worst_case_index_derivation(
     let mut non_whole_prefixes = 0usize;
     let mut non_whole_prefix_bytes = 0usize;
     let mut affected_indexes = BTreeSet::<IndexId>::new();
+    let unique_indexes = schema
+        .unique_keys()
+        .iter()
+        .map(|unique| unique.index_id())
+        .collect::<BTreeSet<_>>();
+    let mut unique_occupancies = 0usize;
+    let mut unique_occupancy_bytes = 0usize;
 
     for (binding, assigned) in bindings.iter().zip(&assigned_fields) {
         if binding.mode == BindingMode::Read {
@@ -1262,6 +1437,19 @@ fn worst_case_index_derivation(
                     checked_index_derivation_mul(prefix_bytes, copies)?,
                 )?;
             }
+            if unique_indexes.contains(&index.id()) {
+                unique_occupancies = checked_index_derivation_add(unique_occupancies, 1)?;
+                unique_occupancy_bytes = checked_index_derivation_add(
+                    unique_occupancy_bytes,
+                    checked_index_derivation_add(
+                        checked_index_derivation_add(
+                            INDEX_PREFIX_TARGET_FIXED_SEMANTIC_BYTES_V1,
+                            cumulative_component_bytes,
+                        )?,
+                        checked_index_derivation_add(MAX_KEY_BYTES, 5)?,
+                    )?,
+                )?;
+            }
         }
     }
 
@@ -1286,6 +1474,8 @@ fn worst_case_index_derivation(
         index_entry_v2_partition_semantic_bytes,
         affected_prefixes,
         affected_target_bytes,
+        unique_occupancies,
+        unique_occupancy_bytes,
     })
 }
 
@@ -1321,8 +1511,11 @@ fn validate_worst_case_index_limits(
     )?;
 
     let validation_targets = checked_index_derivation_add(
-        checked_index_derivation_add(binding_count, root_validation_read_count)?,
-        derivation.affected_prefixes,
+        checked_index_derivation_add(
+            checked_index_derivation_add(binding_count, root_validation_read_count)?,
+            derivation.affected_prefixes,
+        )?,
+        derivation.unique_occupancies,
     )?;
     checked_len(
         "command worst-case validation targets",
@@ -1339,6 +1532,10 @@ fn validate_worst_case_index_limits(
             derivation.affected_prefixes,
             MAX_INDEX_EPOCH_POSITION_SEMANTIC_BYTES_V1,
         )?,
+    )?;
+    let affected_epoch_state_bytes = checked_index_derivation_add(
+        affected_epoch_state_bytes,
+        derivation.unique_occupancy_bytes,
     )?;
     checked_len(
         "command worst-case affected epoch state bytes",
@@ -3076,6 +3273,8 @@ pub(crate) mod tests {
             index_entry_v2_partition_semantic_bytes: 0,
             affected_prefixes: 0,
             affected_target_bytes: 0,
+            unique_occupancies: 0,
+            unique_occupancy_bytes: 0,
         };
         assert!(
             validate_worst_case_index_limits(
@@ -3099,6 +3298,8 @@ pub(crate) mod tests {
                     index_entry_v2_partition_semantic_bytes: 0,
                     affected_prefixes: MAX_COMMAND_AFFECTED_INDEX_PREFIXES_V1 + 1,
                     affected_target_bytes: 0,
+                    unique_occupancies: 0,
+                    unique_occupancy_bytes: 0,
                 },
                 0,
                 0,
@@ -3215,6 +3416,8 @@ pub(crate) mod tests {
             index_entry_v2_partition_semantic_bytes: 0,
             affected_prefixes: 0,
             affected_target_bytes: 0,
+            unique_occupancies: 0,
+            unique_occupancy_bytes: 0,
         };
         assert_eq!(
             validate_worst_case_index_limits(
@@ -3271,6 +3474,8 @@ pub(crate) mod tests {
                 index_entry_v2_partition_semantic_bytes: 18,
                 affected_prefixes: 4,
                 affected_target_bytes: 104,
+                unique_occupancies: 0,
+                unique_occupancy_bytes: 0,
             }
         );
         assert_eq!(
@@ -3281,6 +3486,8 @@ pub(crate) mod tests {
                 index_entry_v2_partition_semantic_bytes: 18,
                 affected_prefixes: 7,
                 affected_target_bytes: 194,
+                unique_occupancies: 0,
+                unique_occupancy_bytes: 0,
             }
         );
         assert_eq!(
@@ -3291,6 +3498,8 @@ pub(crate) mod tests {
                 index_entry_v2_partition_semantic_bytes: 18,
                 affected_prefixes: 6,
                 affected_target_bytes: 172,
+                unique_occupancies: 0,
+                unique_occupancy_bytes: 0,
             }
         );
         assert_eq!(
@@ -3301,6 +3510,8 @@ pub(crate) mod tests {
                 index_entry_v2_partition_semantic_bytes: 18,
                 affected_prefixes: 5,
                 affected_target_bytes: 142,
+                unique_occupancies: 0,
+                unique_occupancy_bytes: 0,
             }
         );
         assert_eq!(
@@ -3311,6 +3522,8 @@ pub(crate) mod tests {
                 index_entry_v2_partition_semantic_bytes: 0,
                 affected_prefixes: 0,
                 affected_target_bytes: 0,
+                unique_occupancies: 0,
+                unique_occupancy_bytes: 0,
             }
         );
         assert_eq!(
@@ -3321,6 +3534,8 @@ pub(crate) mod tests {
                 index_entry_v2_partition_semantic_bytes: 36,
                 affected_prefixes: 13,
                 affected_target_bytes: 374,
+                unique_occupancies: 0,
+                unique_occupancy_bytes: 0,
             }
         );
     }

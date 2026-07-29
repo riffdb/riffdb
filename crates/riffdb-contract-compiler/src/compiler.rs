@@ -17,7 +17,9 @@ use crate::hir::lower_contract_hir;
 use crate::locality::analyze_locality;
 use crate::mcp_name::build_command_tool_registry;
 use crate::projection_lowering::lower_projections;
-use crate::schema_lowering::{lower_schema, validate_relationship_declarations};
+use crate::schema_lowering::{
+    lower_schema, validate_relationship_declarations, validate_unique_declarations,
+};
 use crate::symbols::{allocate_genesis_symbols, allocate_successor_symbols};
 use crate::typecheck::resolve_declared_types;
 
@@ -73,6 +75,7 @@ pub fn validate_contract_source(source: &str) -> Result<(), CompilationError> {
     let hir =
         lower_contract_hir(&document, &symbols, &types).map_err(CompilationError::Semantic)?;
     validate_relationship_declarations(&hir).map_err(CompilationError::Semantic)?;
+    validate_unique_declarations(&hir).map_err(CompilationError::Semantic)?;
     validate_commands(&hir).map_err(CompilationError::Semantic)?;
     let locality = analyze_locality(&hir).map_err(CompilationError::Semantic)?;
     let _owned_entity_count = locality.entity_owner.len();
@@ -129,6 +132,7 @@ fn compile(
     let hir =
         lower_contract_hir(&document, &symbols, &types).map_err(CompilationError::Semantic)?;
     validate_relationship_declarations(&hir).map_err(CompilationError::Semantic)?;
+    validate_unique_declarations(&hir).map_err(CompilationError::Semantic)?;
     validate_commands(&hir).map_err(CompilationError::Semantic)?;
     analyze_locality(&hir).map_err(CompilationError::Semantic)?;
     let schema = lower_schema(&hir).map_err(CompilationError::Semantic)?;
@@ -1538,6 +1542,90 @@ contract RelationshipMutation version 1 {{
       else ChildMissing {{ child_id: child_id }}
     set row.parent_id = parent_id
     return Changed {{ record: row }}
+  }}
+}}
+"#
+        )
+    }
+
+    #[test]
+    fn declared_unique_key_adds_input_computable_conflict_to_create_and_change() {
+        let source = unique_source("set user.email = email");
+        let bundle = compile_contract_source(&source).expect("unique commands compile");
+        assert_eq!(bundle.schema().unique_keys().len(), 1);
+        let create = bundle
+            .commands()
+            .iter()
+            .find(|command| command.name() == "CreateUser")
+            .expect("create");
+        let change = bundle
+            .commands()
+            .iter()
+            .find(|command| command.name() == "ChangeEmail")
+            .expect("change");
+        for command in [create, change] {
+            assert_eq!(command.unique_conflicts().len(), 1);
+            assert_eq!(command.unique_conflicts()[0].unique_name(), "user_email");
+            assert_eq!(command.unique_conflicts()[0].expressions().len(), 2);
+            assert!(
+                CommandExplain::from_plan(command)
+                    .render_text()
+                    .contains("unique:user_email")
+            );
+        }
+        assert_eq!(create.locality().conflict_keys().len(), 1);
+        assert_eq!(change.locality().conflict_keys().len(), 1);
+        assert_eq!(
+            ContractBundle::decode(bundle.canonical_bytes()).expect("round trip"),
+            bundle
+        );
+    }
+
+    #[test]
+    fn changed_unique_value_must_be_input_computable() {
+        let source = unique_source("set user.email = user.email");
+        assert_semantic_diagnostic_at(
+            &source,
+            CompilerDiagnosticCode::UniqueKeyNotInputComputable,
+            "user_email",
+        );
+    }
+
+    fn unique_source(change_effect: &str) -> String {
+        format!(
+            r#"
+contract UniqueUsers version 1 {{
+  entity Organization {{ key (organization_id: uuid) }}
+  entity User {{
+    key (organization_id: uuid, user_id: uuid)
+    field email: string<128>
+    unique user_email (organization_id, email)
+  }}
+  aggregate OrganizationRoot {{
+    root Organization
+    child User
+    partition_by organization_id
+    conflict_key (organization_id)
+  }}
+  command CreateUser {{
+    input request: string<128>
+    input organization_id: uuid
+    input user_id: uuid
+    input email: string<128>
+    idempotency_key request
+    create User(organization_id, user_id) as user else UserExists {{}}
+    set user.email = email
+    return Created {{ user: user }}
+  }}
+  command ChangeEmail {{
+    input request: string<128>
+    input organization_id: uuid
+    input user_id: uuid
+    input email: string<128>
+    idempotency_key request
+    mutate User(organization_id, user_id) as user else UserMissing {{}}
+    {change_effect}
+    return Changed {{ user: user }}
   }}
 }}
 "#

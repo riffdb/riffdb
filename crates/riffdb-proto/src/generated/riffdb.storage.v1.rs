@@ -319,6 +319,7 @@ pub enum ExecutionFailureCodeV1 {
     ExecutionFailureCodeUnspecified = 0,
     ExecutionFailureCodeArithmeticFault = 1,
     ExecutionFailureCodeResourceLimit = 2,
+    ExecutionFailureCodeUniqueConflict = 3,
 }
 impl ExecutionFailureCodeV1 {
     /// String value of the enum field names used in the ProtoBuf definition.
@@ -334,6 +335,9 @@ impl ExecutionFailureCodeV1 {
             Self::ExecutionFailureCodeResourceLimit => {
                 "EXECUTION_FAILURE_CODE_RESOURCE_LIMIT"
             }
+            Self::ExecutionFailureCodeUniqueConflict => {
+                "EXECUTION_FAILURE_CODE_UNIQUE_CONFLICT"
+            }
         }
     }
     /// Creates an enum from field names used in the ProtoBuf definition.
@@ -347,6 +351,9 @@ impl ExecutionFailureCodeV1 {
             }
             "EXECUTION_FAILURE_CODE_RESOURCE_LIMIT" => {
                 Some(Self::ExecutionFailureCodeResourceLimit)
+            }
+            "EXECUTION_FAILURE_CODE_UNIQUE_CONFLICT" => {
+                Some(Self::ExecutionFailureCodeUniqueConflict)
             }
             _ => None,
         }

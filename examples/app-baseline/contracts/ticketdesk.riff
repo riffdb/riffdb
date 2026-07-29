@@ -13,6 +13,7 @@ contract TicketDesk version 1 {
     field display_name: string<64>
     field created_at: timestamp
     index by_organization (organization_id, user_id)
+    unique user_email (organization_id, email)
     reference organization (organization_id) -> Organization(organization_id)
   }
 
@@ -21,6 +22,7 @@ contract TicketDesk version 1 {
     field name: string<64>
     field created_at: timestamp
     index by_organization (organization_id, project_id)
+    unique project_name (organization_id, name)
     reference organization (organization_id) -> Organization(organization_id)
   }
 
@@ -65,6 +67,7 @@ contract TicketDesk version 1 {
     key (organization_id: uuid, label_id: uuid)
     field name: string<32>
     field created_at: timestamp
+    unique label_name (organization_id, name)
     reference organization (organization_id) -> Organization(organization_id)
   }
 

@@ -1834,6 +1834,10 @@ fn wire_vectors() -> Result<String, Box<dyn Error>> {
             "error.execution-resource-limit",
             PublicError::command_execution_failed(ExecutionFailureCode::ResourceLimit),
         ),
+        (
+            "error.execution-unique-conflict",
+            PublicError::command_execution_failed(ExecutionFailureCode::UniqueConflict),
+        ),
         ("error.storage", PublicError::storage_unavailable()),
         ("error.outcome-unknown", PublicError::outcome_unknown()),
         ("error.internal", PublicError::internal_defect(incident_id)),
