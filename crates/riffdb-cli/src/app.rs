@@ -30,9 +30,10 @@ use crate::batch::{
     execute as execute_batch, parse_source as parse_batch_source,
 };
 use crate::cli::{
-    BackupCommand, CapabilityCommand, Cli, CommandCommand, CommitCommand, ContractCommand,
-    ContractSelectionArgs, DemoCommand, EntityCommand, ProjectionCommand, QueryCommand,
-    RevocationReason, RoleActorKind, RoleCommand, ServerCommand, TopLevel,
+    ApplicationCommand, ApplicationLanguage, BackupCommand, CapabilityCommand, Cli, CommandCommand,
+    CommitCommand, ContractCommand, ContractSelectionArgs, DemoCommand, EntityCommand,
+    ProjectionCommand, QueryCommand, RevocationReason, RoleActorKind, RoleCommand, ServerCommand,
+    TopLevel,
 };
 use crate::config::{EffectiveConfig, Environment, ProcessEnvironment, resolve};
 use crate::credential::{
@@ -50,6 +51,7 @@ use crate::output::{
     render_revoke, success, take_normal_create_disposition, uncertain,
 };
 use crate::runner::{RunnerError, RunnerStream, run_budget};
+use crate::scaffold::{ScaffoldLanguage, create_application, generate_application};
 use crate::value::{InputValue, RecordInput, ValueError, parse_uuid};
 
 const DEFAULT_PAGE_LIMIT: u32 = 50;
@@ -140,6 +142,49 @@ async fn submit_normal_create_retry(
 /// Parses one process invocation and runs exactly one public CLI operation.
 pub async fn run() -> ExitCode {
     let cli = Cli::parse();
+    if let TopLevel::New {
+        application,
+        language,
+        directory,
+    } = &cli.command
+    {
+        let destination = directory.as_deref().map_or_else(
+            || std::path::PathBuf::from(application),
+            std::path::PathBuf::from,
+        );
+        let language = match language {
+            ApplicationLanguage::Rust => ScaffoldLanguage::Rust,
+            ApplicationLanguage::Typescript => ScaffoldLanguage::Typescript,
+        };
+        return match create_application(application, language, &destination) {
+            Ok(()) => {
+                println!(
+                    "created application `{application}` at {}",
+                    destination.display()
+                );
+                ExitCode::SUCCESS
+            }
+            Err(error) => {
+                eprintln!("riffdb new failed: {error}");
+                ExitCode::FAILURE
+            }
+        };
+    }
+    if let TopLevel::Application {
+        command: ApplicationCommand::Generate { manifest },
+    } = &cli.command
+    {
+        return match generate_application(Path::new(manifest)) {
+            Ok(()) => {
+                println!("generated exact application bindings");
+                ExitCode::SUCCESS
+            }
+            Err(error) => {
+                eprintln!("riffdb application generate failed: {error}");
+                ExitCode::FAILURE
+            }
+        };
+    }
     if let TopLevel::Dev {
         role,
         watch,
@@ -192,19 +237,29 @@ fn run_dev(
     seed_concurrency: &str,
     acceptance: bool,
 ) -> ExitCode {
-    let script = match std::env::current_dir() {
-        Ok(directory) => directory.join("scripts/riffdb-dev"),
+    let application_root = match std::env::current_dir() {
+        Ok(directory) => directory,
         Err(_) => {
-            eprintln!("riffdb dev requires an accessible workspace");
+            eprintln!("riffdb dev requires an accessible application directory");
             return ExitCode::FAILURE;
         }
     };
+    let workspace_script = application_root.join("scripts/riffdb-dev");
+    let source_script = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../scripts/riffdb-dev");
+    let script = if workspace_script.is_file() {
+        workspace_script
+    } else {
+        source_script
+    };
     if !script.is_file() {
-        eprintln!("riffdb dev must be run from a RiffDB source workspace");
+        eprintln!("riffdb dev workflow is unavailable in this installation");
         return ExitCode::FAILURE;
     }
     let mut command = ProcessCommand::new(script);
     command.args(["--role", role, "--seed-concurrency", seed_concurrency]);
+    if application_root.join("riffdb.application.json").is_file() {
+        command.arg("--application-root").arg(&application_root);
+    }
     if watch {
         command.arg("--watch");
     }
@@ -212,7 +267,12 @@ fn run_dev(
         command.arg("--seed");
     }
     if let Some(seed_dir) = seed_dir {
-        command.arg("--seed-dir").arg(seed_dir);
+        let seed_dir = Path::new(seed_dir);
+        command.arg("--seed-dir").arg(if seed_dir.is_absolute() {
+            seed_dir.to_path_buf()
+        } else {
+            application_root.join(seed_dir)
+        });
     }
     if acceptance {
         command.arg("--acceptance");
@@ -239,6 +299,16 @@ async fn dispatch(
     stdin: &mut dyn Read,
 ) -> Terminal {
     match command {
+        TopLevel::Application { .. } => local_error(
+            CommandIdentity::ServerHealth,
+            "application_dispatch_invalid",
+            "application package dispatch is invalid",
+        ),
+        TopLevel::New { .. } => local_error(
+            CommandIdentity::ServerHealth,
+            "new_dispatch_invalid",
+            "application scaffold dispatch is invalid",
+        ),
         TopLevel::Dev { .. } => local_error(
             CommandIdentity::ServerHealth,
             "dev_dispatch_invalid",
@@ -3004,6 +3074,8 @@ const fn restore_confirmation(confirmed: bool) -> OfflineMaintenanceReplacementC
 
 const fn command_identity(command: &TopLevel) -> CommandIdentity {
     match command {
+        TopLevel::Application { .. } => CommandIdentity::ServerHealth,
+        TopLevel::New { .. } => CommandIdentity::ServerHealth,
         TopLevel::Dev { .. } => CommandIdentity::ServerHealth,
         TopLevel::Contract {
             command: ContractCommand::Validate { .. },

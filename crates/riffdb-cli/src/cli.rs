@@ -21,13 +21,28 @@ pub(crate) struct Cli {
 
 #[derive(Debug, Subcommand)]
 pub(crate) enum TopLevel {
-    /// Starts the bounded local symbolic development workflow.
-    Dev {
+    /// Creates a deterministic application-first RiffDB repository.
+    New {
+        #[arg(value_name = "APPLICATION")]
+        application: String,
         #[arg(
             long,
-            default_value = "ticketdesk-application",
-            value_name = "ROLE_PRESET"
+            value_enum,
+            default_value = "rust",
+            value_name = "rust|typescript"
         )]
+        language: ApplicationLanguage,
+        #[arg(long, value_name = "DIRECTORY")]
+        directory: Option<OsString>,
+    },
+    /// Validates and regenerates an exact application package.
+    Application {
+        #[command(subcommand)]
+        command: ApplicationCommand,
+    },
+    /// Starts the bounded local symbolic development workflow.
+    Dev {
+        #[arg(long, default_value = "application", value_name = "ROLE_PRESET")]
         role: String,
         #[arg(long)]
         watch: bool,
@@ -85,6 +100,25 @@ pub(crate) enum TopLevel {
         #[command(subcommand)]
         command: DemoCommand,
     },
+}
+
+#[derive(Debug, Subcommand)]
+pub(crate) enum ApplicationCommand {
+    /// Recompiles pinned sources and regenerates all compiler-owned bindings.
+    Generate {
+        #[arg(
+            default_value = "riffdb.application.json",
+            value_name = "APPLICATION_MANIFEST"
+        )]
+        manifest: OsString,
+    },
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, ValueEnum)]
+#[value(rename_all = "lower")]
+pub(crate) enum ApplicationLanguage {
+    Rust,
+    Typescript,
 }
 
 #[derive(Debug, Subcommand)]
@@ -466,6 +500,21 @@ mod tests {
                 ..
             } if role == "ticketdesk-application" && seed_concurrency == "4"
         ));
+    }
+
+    #[test]
+    fn new_is_application_first_and_has_no_kernel_mode() {
+        let cli = Cli::try_parse_from(["riffdb", "new", "inventory", "--language", "typescript"])
+            .expect("accepted scaffold command");
+        assert!(matches!(
+            cli.command,
+            TopLevel::New {
+                application,
+                language: ApplicationLanguage::Typescript,
+                ..
+            } if application == "inventory"
+        ));
+        assert!(Cli::try_parse_from(["riffdb", "new", "inventory", "--kernel"]).is_err());
     }
 
     #[test]

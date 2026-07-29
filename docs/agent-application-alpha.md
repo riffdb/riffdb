@@ -59,6 +59,49 @@ WP-320's batch rule is documented in
 scheduler for separately authorized exact commands; it never grants collection
 atomicity or a generic mutation path.
 
+## WP-325 handoff
+
+Work package: WP-325
+
+Requirement IDs: AAA-008, AAA-009
+
+ADRs consulted: ADR-0007, ADR-0008, ADR-0040, ADR-0041, ADR-0052,
+ADR-0055, ADR-0056
+
+Upstream revision: `f079800`
+
+Allowed paths used: CLI and Rust application facade crates, application
+templates and fixtures, `examples/agent-alpha`, development and boundary
+scripts, getting-started and alpha documentation, root Cargo metadata, and
+README.
+
+Behavior added or changed: deterministic compiled `riffdb new`; exact offline
+application regeneration; generic manifest-driven `riffdb dev`; protected role
+binding and resumable seed; compiler-owned Rust, TypeScript, and MCP outputs;
+mandatory application-boundary linting; generated Rust write and page-read
+acceptance.
+
+Compatibility classification: additive application surface. The kernel
+protocol is unchanged. `riffdb dev` retains the TicketDesk presets and maps its
+new `application` default to `ticketdesk-application` in the source workspace.
+
+Security implications: scaffolding fails before writing on compiler failure and
+never overwrites a destination. Regeneration checks exact pinned identities.
+The boundary linter rejects kernel/transport packages and handwritten protocol
+adaptation. Generic development grants only the manifest-declared symbolic
+role; kernel access remains an explicit separate TicketDesk source-workspace
+preset and credential.
+
+Generated artifacts checked: `examples/agent-alpha` Rust, TypeScript, MCP, and
+manifest artifacts are emitted from one compiled contract and query module.
+The acceptance script proves byte-for-byte deterministic scaffolding.
+
+Known limitations: the v1 manifest has one generated output target, so the
+offline generator accepts exactly one query module. Watch mode accepts edits
+only when the updated manifest pins the new identities; it does not silently
+rewrite immutable identities. WP-330 owns TypeScript runtime parity and WP-335
+owns unfamiliar-domain evidence.
+
 ## Measurements
 
 Every evaluation run records:

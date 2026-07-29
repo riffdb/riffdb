@@ -10,6 +10,7 @@ mod credential;
 mod input;
 mod output;
 mod runner;
+mod scaffold;
 mod value;
 
 pub use app::run;

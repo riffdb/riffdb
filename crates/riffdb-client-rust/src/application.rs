@@ -2,6 +2,7 @@
 
 use std::collections::BTreeMap;
 use std::fmt;
+use std::time::Duration;
 
 use riffdb_errors::{ApplicationError, ApplicationErrorContext, ApplicationOperation};
 use riffdb_proto::{app::v1 as app_v1, v1};
@@ -25,6 +26,19 @@ pub struct StableApplicationClient {
 }
 
 impl StableApplicationClient {
+    /// Connects the application facade from one bounded URI without exposing
+    /// the transport package to application code.
+    pub async fn connect_uri(endpoint: String) -> Result<Self, ClientError> {
+        if endpoint.is_empty() || endpoint.len() > 2_048 {
+            return Err(ClientError::ConnectionFailure);
+        }
+        let endpoint = Endpoint::from_shared(endpoint)
+            .map_err(|_| ClientError::ConnectionFailure)?
+            .connect_timeout(Duration::from_secs(10))
+            .timeout(Duration::from_secs(30));
+        Self::connect(endpoint).await
+    }
+
     /// Connects the application facade over one reusable HTTP/2 channel.
     pub async fn connect(endpoint: Endpoint) -> Result<Self, ClientError> {
         Ok(Self {

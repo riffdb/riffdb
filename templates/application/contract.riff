@@ -1,0 +1,25 @@
+contract {{CONTRACT_NAME}} version 1 {
+  entity Item {
+    key (item_id: uuid)
+    field title: string<128>
+    field created_at: timestamp
+  }
+
+  aggregate ItemRoot {
+    root Item
+    partition_by item_id
+    conflict_key (item_id)
+  }
+
+  command CreateItem {
+    input idempotency_key: string<128>
+    input item_id: uuid
+    input title: string<128>
+    idempotency_key idempotency_key
+    create Item(item_id) as item
+      else ItemExists { item_id: item_id }
+    set item.title = title
+    set item.created_at = tx.time
+    return Created { item: item }
+  }
+}
