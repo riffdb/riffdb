@@ -101,9 +101,11 @@ fn reviewed_dependency_owners_and_lock_entries_are_frozen() {
             "base64",
             "base64 = { version = \"=0.22.1\", default-features = false, features = [\"alloc\"] }",
             [
+                "riffdb-api-grpc",
                 "riffdb-api-mcp",
                 "riffdb-auth",
                 "riffdb-cli",
+                "riffdb-mcp-stdio",
                 "riffdb-proto",
                 "riffdb-service",
             ]

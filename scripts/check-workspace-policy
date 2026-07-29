@@ -29,6 +29,11 @@ EXPECTED_PACKAGES = %w[
   riffdb-policy
   riffdb-projection
   riffdb-proto
+  riffdb-query-compiler
+  riffdb-query-executor
+  riffdb-query-ir
+  riffdb-query-module
+  riffdb-riffql-syntax
   riffdb-runtime
   riffdb-server
   riffdb-service
@@ -36,12 +41,18 @@ EXPECTED_PACKAGES = %w[
   riffdb-storage-memory
   riffdb-storage-redb
   riffdb-testkit
+  riffdb-ticketdesk
   riffdb-types
 ].freeze
 EXPECTED_BINS = {
+  "benchmark" => "riffdb-ticketdesk",
   "riffdb" => "riffdb-cli",
   "riffdb-mcp" => "riffdb-mcp-stdio",
-  "riffdbd" => "riffdb-server"
+  "riffdbd" => "riffdb-server",
+  "seed" => "riffdb-ticketdesk"
+}.freeze
+EXPECTED_MANIFESTS = {
+  "riffdb-ticketdesk" => ROOT.join("examples", "ticketdesk", "Cargo.toml")
 }.freeze
 EXPECTED_FIXTURE_BINS = {
   "riffdb-mcp-conformance-stdio" => {
@@ -75,7 +86,7 @@ actual_fixture_bins = {}
 packages.each do |package|
   name = package.fetch("name")
   manifest_path = Pathname.new(package.fetch("manifest_path")).realpath
-  expected_manifest = ROOT.join("crates", name, "Cargo.toml")
+  expected_manifest = EXPECTED_MANIFESTS.fetch(name, ROOT.join("crates", name, "Cargo.toml"))
   errors << "#{name} manifest is outside its owned crate directory" unless manifest_path == expected_manifest
   errors << "#{name} is not private" unless package.fetch("publish") == []
   errors << "#{name} has an external source" unless package["source"].nil?

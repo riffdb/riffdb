@@ -66,7 +66,7 @@ pub struct ListTicketsFound {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum ListTicketsResult {
-    Found(ListTicketsFound),
+    Found(Box<ListTicketsFound>),
 }
 
 pub fn list_tickets(parameters: ListTicketsParams) -> NamedQueryRequest<ListTicketsParams> {
@@ -93,7 +93,7 @@ pub struct ProjectMembersFound {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum ProjectMembersResult {
-    Found(ProjectMembersFound),
+    Found(Box<ProjectMembersFound>),
 }
 
 pub fn project_members(parameters: ProjectMembersParams) -> NamedQueryRequest<ProjectMembersParams> {
@@ -133,8 +133,8 @@ pub struct ProjectSummaryNotFound {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum ProjectSummaryResult {
-    Found(ProjectSummaryFound),
-    NotFound(ProjectSummaryNotFound),
+    Found(Box<ProjectSummaryFound>),
+    NotFound(Box<ProjectSummaryNotFound>),
 }
 
 pub fn project_summary(parameters: ProjectSummaryParams) -> NamedQueryRequest<ProjectSummaryParams> {
@@ -195,9 +195,9 @@ pub struct TicketPageIntegrityFailure {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum TicketPageResult {
-    Found(TicketPageFound),
-    NotFound(TicketPageNotFound),
-    IntegrityFailure(TicketPageIntegrityFailure),
+    Found(Box<TicketPageFound>),
+    NotFound(Box<TicketPageNotFound>),
+    IntegrityFailure(Box<TicketPageIntegrityFailure>),
 }
 
 pub fn ticket_page(parameters: TicketPageParams) -> NamedQueryRequest<TicketPageParams> {

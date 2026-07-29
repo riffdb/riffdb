@@ -230,7 +230,7 @@ pub fn generate_rust_client(module: &QueryModule, contract: &ContractBundle) -> 
         .expect("string");
         for branch in schemas.results() {
             let variant = pascal(branch.name());
-            writeln!(output, "    {variant}({name}{variant}),").expect("string");
+            writeln!(output, "    {variant}(Box<{name}{variant}>),").expect("string");
         }
         writeln!(output, "}}\n").expect("string");
         writeln!(
@@ -622,9 +622,10 @@ fn separated(name: &str, separator: char, upper_words: bool) -> String {
             word_start = true;
             continue;
         }
-        if character.is_ascii_uppercase() && !word_start && separator != '\0' {
-            output.push(separator);
-        } else if word_start && !output.is_empty() && separator != '\0' {
+        if separator != '\0'
+            && ((character.is_ascii_uppercase() && !word_start)
+                || (word_start && !output.is_empty()))
+        {
             output.push(separator);
         }
         if upper_words && word_start {

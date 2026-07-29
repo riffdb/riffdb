@@ -676,6 +676,30 @@ impl SymbolicQueryApplication for ProjectionService {
         riffdb_service::ExecuteSymbolicQueryRequest,
         riffdb_service::ExecuteSymbolicQueryResult
     );
+    denied_operation!(
+        deploy_query_module,
+        RequestContext,
+        riffdb_service::DeployQueryModuleRequest,
+        riffdb_service::DeployQueryModuleResult
+    );
+    denied_operation!(
+        get_query_module,
+        RequestContext,
+        riffdb_service::GetQueryModuleRequest,
+        Option<riffdb_service::QueryModuleInspection>
+    );
+    denied_operation!(
+        explain_named_symbolic_query,
+        RequestContext,
+        riffdb_service::NamedSymbolicQueryRequest,
+        riffdb_service::ExplainSymbolicQueryResult
+    );
+    denied_operation!(
+        execute_named_symbolic_query,
+        RequestContext,
+        riffdb_service::NamedSymbolicQueryRequest,
+        riffdb_service::ExecuteSymbolicQueryResult
+    );
 }
 
 #[derive(Clone)]

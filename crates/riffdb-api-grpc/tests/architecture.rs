@@ -87,13 +87,13 @@ fn generated_servers_are_wrapped_with_exact_public_message_limits() {
         source
             .matches(".max_decoding_message_size(MAX_PUBLIC_REQUEST_BYTES)")
             .count(),
-        5
+        6
     );
     assert_eq!(
         source
             .matches(".max_encoding_message_size(MAX_PUBLIC_RESPONSE_BYTES)")
             .count(),
-        5
+        6
     );
     assert!(!source.contains("accept_compressed"));
     assert!(!source.contains("send_compressed"));
