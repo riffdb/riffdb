@@ -3180,6 +3180,7 @@ work_packages:
   - scripts/riffdb-dev*
   - scripts/benchmark-application-path
   - benchmarks/application-path/**
+  - scripts/check-workspace-policy
   - docs/getting-started/**
   - docs/riffql/**
   - README.md

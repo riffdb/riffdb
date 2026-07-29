@@ -131,11 +131,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     rows += 1;
                 }
 
-                for label in 0..2 {
+                for (label, label_id) in labels.iter().enumerate().take(2) {
                     let attachment_number = ticket_number * 10 + label;
                     ticketdesk
                         .attach_label(AttachLabelInput {
-                            label_id: labels[label].clone(),
+                            label_id: label_id.clone(),
                             ticket_id: ticket_id.clone(),
                             idempotency_key: key("attachment", attachment_number),
                             organization_id: organization_id.clone(),

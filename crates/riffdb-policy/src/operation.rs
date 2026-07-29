@@ -1441,13 +1441,14 @@ mod tests {
             OperationRequest::check_query(),
             OperationRequest::explain_query(),
             OperationRequest::execute_query(),
+            OperationRequest::deploy_query_module(lineage, version(), bundle_hash(2)),
         ]
     }
 
     #[test]
-    fn request_inventory_is_exactly_the_shared_26_operations() {
+    fn request_inventory_is_exactly_the_shared_27_operations() {
         let requests = requests();
-        assert_eq!(requests.len(), 26);
+        assert_eq!(requests.len(), 27);
         assert_eq!(
             requests
                 .iter()

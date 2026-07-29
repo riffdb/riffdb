@@ -415,7 +415,7 @@ impl CheckedSymbolicQuery {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum CheckSymbolicQueryResult {
     /// Fully resolved, typed, local, authorized-access-derived bounded plan.
-    Valid(CheckedSymbolicQuery),
+    Valid(Box<CheckedSymbolicQuery>),
     /// Bounded compiler diagnostics; no partial program escaped.
     Invalid(Vec<SymbolicDiagnostic>),
 }
@@ -426,7 +426,7 @@ pub enum ExplainSymbolicQueryResult {
     /// Fully checked identity, schema, and name-only plan.
     Valid {
         /// Query descriptor.
-        query: CheckedSymbolicQuery,
+        query: Box<CheckedSymbolicQuery>,
         /// Stable bounded explain lines.
         lines: Vec<String>,
     },
@@ -1186,7 +1186,7 @@ async fn check_query(
     .await?;
     let result = match compile(request.source().as_str(), bundle.bundle()) {
         Ok(program) => {
-            CheckSymbolicQueryResult::Valid(CheckedSymbolicQuery::from_program(&program))
+            CheckSymbolicQueryResult::Valid(Box::new(CheckedSymbolicQuery::from_program(&program)))
         }
         Err(diagnostics) => CheckSymbolicQueryResult::Invalid(diagnostics),
     };
@@ -1219,7 +1219,7 @@ async fn explain_query(
     .await?;
     let result = match compile(request.source().as_str(), bundle.bundle()) {
         Ok(program) => ExplainSymbolicQueryResult::Valid {
-            query: CheckedSymbolicQuery::from_program(&program),
+            query: Box::new(CheckedSymbolicQuery::from_program(&program)),
             lines: program.explain().lines().to_vec(),
         },
         Err(diagnostics) => ExplainSymbolicQueryResult::Invalid(diagnostics),
@@ -1436,7 +1436,10 @@ async fn explain_named_query(
         return Err(finish_failure(&service, &context, &begun, failure).await);
     };
     let result = ExplainSymbolicQueryResult::Valid {
-        query: CheckedSymbolicQuery::from_named(query.program(), module.identity()),
+        query: Box::new(CheckedSymbolicQuery::from_named(
+            query.program(),
+            module.identity(),
+        )),
         lines: query.program().explain().lines().to_vec(),
     };
     begun.reauthorize(&service, &context).await?;
@@ -1837,8 +1840,7 @@ fn materialize_natural_query_value(
     service: &RiffDbServiceInner,
     operation: ServiceOperationV1,
 ) -> ServiceResult<CanonicalValue> {
-    let coerced = coerce_natural_query_value(value_type, submitted)
-        .map_err(|code| validation_failure(code))?;
+    let coerced = coerce_natural_query_value(value_type, submitted).map_err(validation_failure)?;
     materialize_submitted_value(bundle.schema(), value_type, &coerced, Vec::new())
         .map_err(|error| materialization_failure(service, operation, error))
 }

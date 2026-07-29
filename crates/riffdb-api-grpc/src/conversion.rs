@@ -322,8 +322,8 @@ fn symbolic_diagnostic_to_proto(
         code: diagnostic.code().to_owned(),
         summary: diagnostic.summary().to_owned(),
         span: Some(app_v1::SourceSpan {
-            start: u64::try_from(diagnostic.span().start).map_err(|_| invalid_request())?,
-            end: u64::try_from(diagnostic.span().end).map_err(|_| invalid_request())?,
+            start: u64::from(diagnostic.span().start),
+            end: u64::from(diagnostic.span().end),
         }),
         symbols: diagnostic.symbols().to_vec(),
         suggestion: diagnostic.suggestion().map(str::to_owned),

@@ -10,15 +10,15 @@ publish.workspace = true
 default = []
 
 [dependencies]
-riffdb-contract-ir = { path = "../riffdb-contract-ir" }
-riffdb-query-compiler = { path = "../riffdb-query-compiler" }
-riffdb-query-ir = { path = "../riffdb-query-ir" }
-riffdb-riffql-syntax = { path = "../riffdb-riffql-syntax" }
-riffdb-types = { path = "../riffdb-types" }
+riffdb-contract-ir = { version = "0.1.0", path = "../riffdb-contract-ir", default-features = false }
+riffdb-query-compiler = { version = "0.1.0", path = "../riffdb-query-compiler", default-features = false }
+riffdb-query-ir = { version = "0.1.0", path = "../riffdb-query-ir", default-features = false }
+riffdb-riffql-syntax = { version = "0.1.0", path = "../riffdb-riffql-syntax", default-features = false }
+riffdb-types = { version = "0.1.0", path = "../riffdb-types", default-features = false }
 serde_json = { version = "=1.0.150", default-features = false, features = ["std"] }
 
 [dev-dependencies]
-riffdb-contract-compiler = { path = "../riffdb-contract-compiler" }
+riffdb-contract-compiler = { version = "0.1.0", path = "../riffdb-contract-compiler", default-features = false }
 
 [[example]]
 name = "generate_clients"

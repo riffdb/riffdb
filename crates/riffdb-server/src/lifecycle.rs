@@ -591,6 +591,7 @@ mod tests {
         CreateCapabilityInvocation, CreateCapabilityResult, DiscoveryApplication,
         OfflineMaintenanceApplication, QueryApplication, RecoveryOfflineMaintenanceApplication,
         RequestContext, RestoreRetryOfflineMaintenanceApplication, ServiceFailure,
+        SymbolicQueryApplication,
     };
     use riffdb_types::{Audience, DatabaseId, Environment};
 
@@ -694,6 +695,57 @@ mod tests {
             RequestContext,
             riffdb_service::GetProjectionStatusRequest,
             riffdb_service::GetProjectionStatusResult
+        );
+    }
+
+    impl SymbolicQueryApplication for ClosedApplicationService {
+        denied_operation!(
+            describe_symbolic_contract,
+            RequestContext,
+            riffdb_service::SymbolicContractSelector,
+            riffdb_service::DescribeSymbolicContractResult
+        );
+        denied_operation!(
+            check_symbolic_query,
+            RequestContext,
+            riffdb_service::CompileSymbolicQueryRequest,
+            riffdb_service::CheckSymbolicQueryResult
+        );
+        denied_operation!(
+            explain_symbolic_query,
+            RequestContext,
+            riffdb_service::CompileSymbolicQueryRequest,
+            riffdb_service::ExplainSymbolicQueryResult
+        );
+        denied_operation!(
+            execute_symbolic_query,
+            RequestContext,
+            riffdb_service::ExecuteSymbolicQueryRequest,
+            riffdb_service::ExecuteSymbolicQueryResult
+        );
+        denied_operation!(
+            deploy_query_module,
+            RequestContext,
+            riffdb_service::DeployQueryModuleRequest,
+            riffdb_service::DeployQueryModuleResult
+        );
+        denied_operation!(
+            get_query_module,
+            RequestContext,
+            riffdb_service::GetQueryModuleRequest,
+            Option<riffdb_service::QueryModuleInspection>
+        );
+        denied_operation!(
+            explain_named_symbolic_query,
+            RequestContext,
+            riffdb_service::NamedSymbolicQueryRequest,
+            riffdb_service::ExplainSymbolicQueryResult
+        );
+        denied_operation!(
+            execute_named_symbolic_query,
+            RequestContext,
+            riffdb_service::NamedSymbolicQueryRequest,
+            riffdb_service::ExecuteSymbolicQueryResult
         );
     }
 
