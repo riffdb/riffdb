@@ -96,13 +96,14 @@ messages
     3 span optional .riffdb.app.v1.SourceSpan
     4 symbols repeated string
     5 suggestion optional string proto3-optional oneof=_suggestion
-  riffdb.app.v1.ExecuteQueryRequest fields=7
+  riffdb.app.v1.ExecuteQueryRequest fields=8
     1 contract optional .riffdb.app.v1.ContractSelector proto3-optional oneof=_contract
     2 source optional string oneof=query
     3 query_name optional string oneof=query
     4 module_hash optional bytes proto3-optional oneof=_module_hash
     5 parameters repeated .riffdb.app.v1.Parameter
     6 cursor optional string proto3-optional oneof=_cursor
+    7 minimum_application_head optional uint64 proto3-optional oneof=_minimum_application_head
     100 request_id optional bytes
   riffdb.app.v1.ExecuteQueryResponse fields=5
     1 identity optional .riffdb.app.v1.QueryIdentity

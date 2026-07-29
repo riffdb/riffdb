@@ -84,6 +84,7 @@ message ExecuteQueryRequest {
   optional bytes module_hash = 4;
   repeated Parameter parameters = 5;
   optional string cursor = 6;
+  optional uint64 minimum_application_head = 7;
   bytes request_id = 100;
 }
 

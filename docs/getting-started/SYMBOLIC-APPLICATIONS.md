@@ -115,7 +115,7 @@ The input object uses contract field names. Idempotency, declared outcomes,
 provenance, events, and the commit record retain their existing atomic
 semantics.
 
-## Optional generated clients
+## Generated application clients
 
 Stable named operations can generate Rust, TypeScript, and MCP artifacts:
 
@@ -125,9 +125,49 @@ Stable named operations can generate Rust, TypeScript, and MCP artifacts:
 ```
 
 Generated query requests pin the exact contract lineage, contract version,
-contract bundle hash, query-module hash, and query name. They include a
-response-identity verifier. Code generation is optional; ad-hoc RiffQL and
-named CLI/MCP execution remain first-class.
+contract bundle hash, query-module hash, and query name. The facade owns
+parameter encoding, result decoding, typed outcomes, cursors, read fences,
+public errors, and command uncertainty recovery. A command retry retains its
+original idempotency identity and uses outcome resolution when the commit
+result is uncertain.
+
+Rust application code calls only generated names and types:
+
+```rust,no_run
+use riffdb_client_rust::{AttemptBudget, CallMetadata, QueryOptions};
+use riffdb_ticketdesk::{TicketDeskClient, TicketPageParams};
+
+# async fn example(
+#     application: riffdb_client_rust::StableApplicationClient,
+#     metadata: CallMetadata,
+# ) -> Result<(), riffdb_client_rust::ApplicationClientError> {
+let mut db = TicketDeskClient::new(
+    application,
+    metadata,
+    AttemptBudget::new(3).expect("positive configured attempt budget"),
+);
+let page = db
+    .ticket_page_with_options(
+        TicketPageParams {
+            organization_id: "c93bf186-4901-4cb6-8af2-fec65eb928e6".to_owned(),
+            ticket_id: "535bbe7a-3f53-4792-97bb-5d9a692be0ef".to_owned(),
+            comments_after: None,
+        },
+        QueryOptions::new().read_after_commit(1843),
+    )
+    .await?;
+# let _ = page;
+# Ok(())
+# }
+```
+
+TypeScript exposes the same named operations and observations, including
+`bigint` application heads and commit sequences. MCP query and command schemas
+are generated from the same registry and carry the same exact identities.
+
+Code generation is optional for exploration: ad-hoc RiffQL and named CLI/MCP
+execution remain first-class. It is the normal boundary for stable application
+code. See [Application manifest](APPLICATION-MANIFEST.md).
 
 See [RiffQL language](../riffql/LANGUAGE.md),
 [planning](../riffql/PLANNING.md), and [query modules](../riffql/MODULES.md).

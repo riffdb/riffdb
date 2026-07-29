@@ -8,11 +8,14 @@ use std::path::PathBuf;
 
 use riffdb_contract_compiler::compile_contract_source;
 use riffdb_query_module::{
-    NamedQuerySource, QueryModule, QueryModuleCandidate, QueryModuleName, QueryModuleVersion,
-    generate_mcp_tools, generate_rust_client, generate_typescript_client,
+    ApplicationManifest, NamedQuerySource, QueryModule, QueryModuleCandidate, QueryModuleName,
+    QueryModuleVersion, generate_mcp_commands, generate_mcp_tools, generate_rust_client,
+    generate_typescript_client,
 };
 
 const CONTRACT: &str = include_str!("../../../examples/app-baseline/contracts/ticketdesk.riff");
+const APPLICATION_MANIFEST: &str =
+    include_str!("../../../fixtures/application-manifests/ticketdesk-v1.json");
 const QUERIES: [(&str, &str); 8] = [
     (
         "GetTicket",
@@ -53,6 +56,8 @@ fn main() {
         .nth(1)
         .map_or_else(|| PathBuf::from("."), PathBuf::from);
     let contract = compile_contract_source(CONTRACT).expect("compile TicketDesk contract");
+    let application = ApplicationManifest::decode_canonical(APPLICATION_MANIFEST.as_bytes())
+        .expect("canonical TicketDesk application manifest");
     let candidate = QueryModuleCandidate::new(
         QueryModuleName::new("ticketdesk").expect("module name"),
         QueryModuleVersion::new(1).expect("module version"),
@@ -63,7 +68,22 @@ fn main() {
     )
     .expect("module candidate");
     let module = QueryModule::compile(candidate, &contract).expect("compile query module");
+    assert_eq!(
+        application.contract().lineage(),
+        contract.lineage().as_str()
+    );
+    assert_eq!(
+        application.contract().version(),
+        contract.contract_version().get()
+    );
+    assert_eq!(application.contract().bundle_hash(), contract.bundle_hash());
+    assert_eq!(
+        application.query_modules()[0].module_hash(),
+        module.identity()
+    );
     fs::create_dir_all(output.join("fixtures/query-modules")).expect("fixture directory");
+    fs::create_dir_all(output.join("fixtures/application-manifests"))
+        .expect("manifest fixture directory");
     fs::create_dir_all(output.join("clients/typescript/ticketdesk")).expect("client directory");
     fs::write(
         output.join("fixtures/query-modules/ticketdesk.rs"),
@@ -76,8 +96,10 @@ fn main() {
     )
     .expect("TypeScript fixture");
     let tools = generate_mcp_tools(&module).expect("generate MCP tools");
+    let commands = generate_mcp_commands(&module, &contract).expect("generate MCP commands");
     let manifest = serde_json::json!({
         "schema": "riffdb-generated-mcp-tools-v1",
+        "application_manifest_hash": hex(application.identity().as_bytes()),
         "tools": tools
             .iter()
             .map(|tool| serde_json::json!({
@@ -97,6 +119,26 @@ fn main() {
                 },
             }))
             .collect::<Vec<_>>(),
+        "commands": commands
+            .iter()
+            .map(|command| serde_json::json!({
+                "name": command.name,
+                "title": command.title,
+                "description": command.description,
+                "contract_bundle_hash": hex(&command.contract_bundle_hash),
+                "plan_hash": hex(&command.plan_hash),
+                "input_schema": serde_json::from_str::<serde_json::Value>(&command.input_schema)
+                    .expect("input schema"),
+                "result_schema": serde_json::from_str::<serde_json::Value>(&command.result_schema)
+                    .expect("result schema"),
+                "annotations": {
+                    "readOnlyHint": false,
+                    "destructiveHint": true,
+                    "idempotentHint": true,
+                    "openWorldHint": false,
+                },
+            }))
+            .collect::<Vec<_>>(),
     });
     fs::write(
         output.join("fixtures/query-modules/ticketdesk.mcp.json"),
@@ -106,6 +148,11 @@ fn main() {
         ),
     )
     .expect("MCP fixture");
+    fs::write(
+        output.join("fixtures/application-manifests/ticketdesk-v1.identity"),
+        format!("{}\n", hex(application.identity().as_bytes())),
+    )
+    .expect("manifest identity fixture");
 }
 
 fn hex(bytes: &[u8]) -> String {

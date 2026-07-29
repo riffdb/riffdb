@@ -5,35 +5,33 @@ repo_root="$(git rev-parse --show-toplevel)"
 cd "$repo_root"
 
 source_root="examples/ticketdesk/src"
+generated="fixtures/query-modules/ticketdesk.rs"
 forbidden='entity_type_id|field_id|index_id|command_input_id|capability_mask|FieldSelection|GetEntity|ScanIndex|RiffDbClient|riffdb_proto|app_v1|v1::|encoded_key|decode_key|key_bytes'
 
-if rg -n "$forbidden" "$source_root"; then
+if rg -n "$forbidden" "$source_root/lib.rs"; then
     echo "TicketDesk contains forbidden kernel-shaped application code" >&2
     exit 1
 fi
 
-for query in GetTicket GetUser ListComments ListTickets ListTicketsByAssignee ProjectMembers ProjectSummary TicketPage; do
-    count="$(rg -c "\"$query\"" "$source_root/lib.rs" || true)"
-    if [[ "$count" != "1" ]]; then
-        echo "named query $query must have exactly one application call site" >&2
-        exit 1
-    fi
-done
-
-for command in CreateOrganization CreateUser CreateProject AddProjectMember CreateTicket CreateComment CreateLabel AttachLabel; do
-    count="$(rg -c "\"$command\"" "$source_root/lib.rs" || true)"
-    if [[ "$count" != "1" ]]; then
-        echo "symbolic command $command must have exactly one application call site" >&2
-        exit 1
-    fi
-done
-
-query_dispatches="$(rg -c '\.execute_named_query' "$source_root/lib.rs")"
-command_dispatches="$(rg -c '\.execute_command' "$source_root/lib.rs")"
-if [[ "$query_dispatches" != "1" || "$command_dispatches" != "1" ]]; then
-    echo "TicketDesk must have one shared symbolic query and command dispatch boundary" >&2
+if ! rg -q 'include!\("../../../fixtures/query-modules/ticketdesk.rs"\)' \
+    "$source_root/generated.rs"; then
+    echo "TicketDesk must consume the reviewed generated application facade" >&2
     exit 1
 fi
+
+if rg -n 'BTreeMap|execute_named_query|execute_command|NamedQueryResult|ApplicationValue' \
+    "$source_root/lib.rs"; then
+    echo "TicketDesk contains handwritten application transport or codec glue" >&2
+    exit 1
+fi
+
+for query in get_ticket get_user list_comments list_tickets list_tickets_by_assignee project_members project_summary ticket_page; do
+    rg -q "pub async fn $query" "$generated"
+done
+
+for command in AddProjectMember AttachLabel CreateComment CreateLabel CreateOrganization CreateProject CreateTicket CreateUser; do
+    rg -q "impl GeneratedCommand for ${command}Input" "$generated"
+done
 
 cargo check --quiet -p riffdb-ticketdesk
 echo "TicketDesk symbolic boundary is clean."

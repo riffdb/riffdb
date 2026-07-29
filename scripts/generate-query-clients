@@ -10,9 +10,10 @@ if [[ "${1:-}" == "--check" ]]; then
     cargo run --quiet -p riffdb-query-module --example generate_clients -- "$generated"
     diff -u fixtures/query-modules/ticketdesk.rs "$generated/fixtures/query-modules/ticketdesk.rs"
     diff -u fixtures/query-modules/ticketdesk.mcp.json "$generated/fixtures/query-modules/ticketdesk.mcp.json"
+    diff -u fixtures/application-manifests/ticketdesk-v1.identity \
+        "$generated/fixtures/application-manifests/ticketdesk-v1.identity"
     diff -u clients/typescript/ticketdesk/client.ts "$generated/clients/typescript/ticketdesk/client.ts"
-    rustc -F unsafe-code --crate-type lib --edition 2024 "$generated/fixtures/query-modules/ticketdesk.rs" \
-        --out-dir "$generated"
+    cargo check --quiet -p riffdb-ticketdesk --all-targets
     if command -v tsc >/dev/null 2>&1; then
         tsc --noEmit --strict --target ES2022 \
             "$generated/clients/typescript/ticketdesk/client.ts"

@@ -1,0 +1,56 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+repo_root="$(git rev-parse --show-toplevel)"
+cd "$repo_root"
+
+manifest="fixtures/application-manifests/ticketdesk-v1.json"
+identity="$(<fixtures/application-manifests/ticketdesk-v1.identity)"
+module_hash="$(jq -er '.query_modules[0].module_hash' "$manifest")"
+bundle_hash="$(jq -er '.contract.bundle_hash' "$manifest")"
+
+jq -e '
+  .schema == "riffdb.application-manifest/v1"
+  and (.query_modules | length) == 1
+  and (.roles | length) == 2
+  and (.query_modules[0].queries | length) == 8
+  and all(.roles[]; (.queries | length) == 8 and (.commands | length) == 8)
+  and (.generation.rust | endswith(".rs"))
+  and (.generation.typescript | endswith(".ts"))
+  and (.generation.mcp | endswith(".json"))
+' "$manifest" >/dev/null
+
+./scripts/generate-query-clients --check
+
+rg -q "pub struct TicketDeskClient" fixtures/query-modules/ticketdesk.rs
+rg -q "impl GeneratedQuery for TicketPageQuery" fixtures/query-modules/ticketdesk.rs
+rg -q "execute_generated_with_recovery" crates/riffdb-client-rust/src/client.rs
+rg -q "export class TicketDeskClient" clients/typescript/ticketdesk/client.ts
+rg -q "RiffDB application identity mismatch" clients/typescript/ticketdesk/client.ts
+
+jq -e \
+  --arg identity "$identity" \
+  --arg module_hash "$module_hash" \
+  --arg bundle_hash "$bundle_hash" '
+    .application_manifest_hash == $identity
+    and (.tools | length) == 8
+    and (.commands | length) == 8
+    and all(.tools[]; .module_hash == $module_hash)
+    and all(.commands[]; .contract_bundle_hash == $bundle_hash)
+    and all(.commands[]; .annotations.idempotentHint == true)
+    and all(.commands[]; .input_schema.properties.idempotency_key.type == "string")
+  ' fixtures/query-modules/ticketdesk.mcp.json >/dev/null
+
+if rg -n \
+  'BTreeMap|NamedQueryResult|ApplicationValue|RiffDbClient|riffdb_proto|execute_named_query|execute_query\(|get_entity|scan_index|field_id|entity_type_id|index_id|tonic::' \
+  examples/ticketdesk/src/lib.rs; then
+  echo "TicketDesk stable application source contains handwritten RiffDB glue" >&2
+  exit 1
+fi
+
+node --experimental-strip-types --check clients/typescript/ticketdesk/client.ts
+cargo test --quiet -p riffdb-query-module --all-features
+cargo test --quiet -p riffdb-client-rust --all-features
+cargo test --quiet -p riffdb-ticketdesk
+
+echo "Application bindings are canonical, identity-pinned, typed, and glue-free."

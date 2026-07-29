@@ -14,7 +14,9 @@ use riffdb_app_baseline_core::{
     AppBackend, CommentRow, CommentSeed, LabelRow, OrganizationRow, ProjectMemberRow, ProjectRow,
     SeedDataset, TicketDetailPage, TicketRow, TicketStatus, UserRow, UuidBytes, format_uuid,
 };
-use riffdb_client_rust::{BearerCredential, CallMetadata, StableApplicationClient};
+use riffdb_client_rust::{
+    AttemptBudget, BearerCredential, CallMetadata, StableApplicationClient,
+};
 use riffdb_ticketdesk::{
     AddProjectMemberInput, AttachLabelInput, CreateCommentInput, CreateLabelInput,
     CreateOrganizationInput, CreateProjectInput, CreateTicketInput, CreateUserInput, GetTicketParams,
@@ -45,7 +47,11 @@ impl RiffDbPublicBackend {
             BearerCredential::new(bearer_token).map_err(|_| RiffDbError::Connection)?,
         );
         Ok(Self {
-            client: TicketDeskClient::new(client, metadata),
+            client: TicketDeskClient::new(
+                client,
+                metadata,
+                AttemptBudget::new(3).expect("positive command attempt budget"),
+            ),
         })
     }
 }

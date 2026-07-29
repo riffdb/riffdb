@@ -1,7 +1,8 @@
 # Agent Application Alpha
 
-Status: accepted post-WP-300 milestone under ADR-0056. It describes the target
-gate, not behavior that may be claimed before WP-340 passes.
+Status: accepted post-WP-300 milestone under ADR-0056. WP-305 provides the
+canonical manifest and complete generated TicketDesk bindings. The document
+still describes a target gate that may not be claimed before WP-340 passes.
 
 ## Gate
 

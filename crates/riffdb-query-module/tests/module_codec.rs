@@ -2,8 +2,9 @@
 
 use riffdb_contract_compiler::compile_contract_source;
 use riffdb_query_module::{
-    NamedQuerySource, QueryModule, QueryModuleCandidate, QueryModuleErrorKind, QueryModuleName,
-    QueryModuleVersion, generate_mcp_tools, generate_rust_client, generate_typescript_client,
+    ApplicationManifest, ManifestErrorKind, NamedQuerySource, QueryModule, QueryModuleCandidate,
+    QueryModuleErrorKind, QueryModuleName, QueryModuleVersion, generate_mcp_commands,
+    generate_mcp_tools, generate_rust_client, generate_typescript_client,
 };
 
 const CONTRACT: &str = include_str!("../../../examples/app-baseline/contracts/ticketdesk.riff");
@@ -62,6 +63,17 @@ fn generated_mcp_tools_are_module_pinned_name_addressed_and_domain_shaped() {
     );
     assert!(!tools[0].input_schema.contains("field_id"));
     assert!(!tools[0].result_schema.contains("entity_type_id"));
+
+    let commands = generate_mcp_commands(&module, &bundle).expect("commands");
+    assert_eq!(commands.len(), 8);
+    assert_eq!(commands[0].name, "ticketdesk.add_project_member");
+    assert!(commands[0].input_schema.contains("idempotency_key"));
+    assert!(commands[0].result_schema.contains("\"outcome\""));
+    assert!(
+        commands
+            .iter()
+            .all(|command| command.contract_bundle_hash == *bundle.bundle_hash().as_bytes())
+    );
 }
 
 #[test]
@@ -129,15 +141,61 @@ fn generated_clients_are_reproducible_name_addressed_and_identity_pinned() {
     assert_eq!(rust, generate_rust_client(&module, &bundle));
     assert_eq!(typescript, generate_typescript_client(&module, &bundle));
     assert!(rust.contains("pub struct ListTicketsParams"));
-    assert!(rust.contains("query_name: \"TicketPage\""));
+    assert!(rust.contains("\"TicketPage\",\n            Some(QUERY_MODULE_HASH)"));
     assert!(rust.contains("pub struct CreateTicketInput"));
     assert!(rust.contains("pub const CONTRACT_BUNDLE_HASH"));
-    assert!(rust.contains("pub fn accepts_identity"));
+    assert!(rust.contains("impl GeneratedQuery for TicketPageQuery"));
+    assert!(rust.contains("pub struct TicketDeskClient"));
+    assert!(rust.contains("execute_generated_command"));
+    assert!(rust.contains("fn decode_outcome"));
+    assert!(rust.contains("with_options(options)"));
     assert!(typescript.contains("export interface TicketPageParams"));
     assert!(typescript.contains("queryName: \"ListTickets\""));
     assert!(typescript.contains("export interface CreateTicketInput"));
     assert!(typescript.contains("export const CONTRACT_BUNDLE_HASH"));
     assert!(typescript.contains("export function acceptsIdentity"));
-    assert!(!rust.contains("field_id"));
+    assert!(typescript.contains("export class TicketDeskClient"));
+    assert!(typescript.contains("executeNamedQuery"));
+    assert!(typescript.contains("executeCommand"));
+    assert!(typescript.contains("RiffDB application identity mismatch"));
+    assert!(!rust.contains("pub field_id"));
     assert!(!typescript.contains("entity_type_id"));
+}
+
+#[test]
+fn application_manifest_is_canonical_bounded_and_identity_bearing() {
+    let source = include_str!("../../../fixtures/application-manifests/ticketdesk-v1.json");
+    let manifest = ApplicationManifest::parse(source).expect("manifest");
+
+    assert_eq!(manifest.application_name(), "ticketdesk");
+    assert_eq!(manifest.contract().lineage(), "TicketDesk");
+    assert_eq!(manifest.query_modules().len(), 1);
+    assert_eq!(manifest.roles().len(), 2);
+    assert_eq!(
+        ApplicationManifest::decode_canonical(manifest.canonical_bytes())
+            .expect("canonical round trip")
+            .identity(),
+        manifest.identity()
+    );
+    assert!(
+        manifest
+            .source_map()
+            .span("contract.source")
+            .is_some_and(|span| span.start() < span.end())
+    );
+
+    let noncanonical = format!("\n{source}");
+    let error = ApplicationManifest::decode_canonical(noncanonical.as_bytes())
+        .expect_err("strict decoder rejects noncanonical source");
+    assert_eq!(error.kind(), ManifestErrorKind::NonCanonical);
+}
+
+#[test]
+fn unsupported_application_manifest_fixture_fails_closed() {
+    let source = include_str!("../../../fixtures/application-manifests/pre-v1-unsupported.json");
+    let error = ApplicationManifest::parse(source).expect_err("v0 must remain unsupported");
+    assert!(matches!(
+        error.kind(),
+        ManifestErrorKind::InvalidShape | ManifestErrorKind::UnsupportedVersion
+    ));
 }

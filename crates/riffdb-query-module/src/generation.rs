@@ -3,8 +3,8 @@
 use std::collections::BTreeSet;
 use std::fmt::Write as _;
 
-use riffdb_contract_ir::{ContractBundle, ValueType, ValueTypeTag};
-use riffdb_query_ir::{NamedTypeSchema, PageBound};
+use riffdb_contract_ir::{CommandPlan, ContractBundle, RecordTypeRef, ValueType, ValueTypeTag};
+use riffdb_query_ir::{NamedQuerySchemas, NamedTypeSchema, PageBound};
 use serde_json::{Map, Value, json};
 
 use crate::QueryModule;
@@ -26,6 +26,25 @@ pub struct GeneratedMcpTool {
     pub result_schema: String,
     /// Exact immutable module identity.
     pub module_hash: [u8; 32],
+}
+
+/// One compiler-owned generated MCP command operation.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct GeneratedMcpCommand {
+    /// Stable module-qualified tool name.
+    pub name: String,
+    /// Human-facing title.
+    pub title: String,
+    /// Bounded safe description.
+    pub description: String,
+    /// Canonical input JSON Schema.
+    pub input_schema: String,
+    /// Canonical declared-outcome JSON Schema.
+    pub result_schema: String,
+    /// Exact contract bundle identity.
+    pub contract_bundle_hash: [u8; 32],
+    /// Exact command plan identity.
+    pub plan_hash: [u8; 32],
 }
 
 /// Closed generated-tool failure.
@@ -113,6 +132,152 @@ pub fn generate_mcp_tools(
         .collect()
 }
 
+/// Generates deterministic mutating MCP operation artifacts for every command.
+pub fn generate_mcp_commands(
+    module: &QueryModule,
+    contract: &ContractBundle,
+) -> Result<Vec<GeneratedMcpCommand>, McpToolGenerationError> {
+    let mut commands = contract.commands().iter().collect::<Vec<_>>();
+    commands.sort_by(|left, right| left.name().cmp(right.name()));
+    commands
+        .into_iter()
+        .map(|command| {
+            let input_properties = command
+                .input()
+                .record()
+                .fields()
+                .iter()
+                .map(|field| {
+                    (
+                        field.name().to_owned(),
+                        mcp_contract_type_schema(field.value_type(), contract),
+                    )
+                })
+                .collect::<Map<_, _>>();
+            let input_required = command
+                .input()
+                .record()
+                .fields()
+                .iter()
+                .map(|field| Value::String(field.name().to_owned()))
+                .collect::<Vec<_>>();
+            let outcomes = command
+                .outcomes()
+                .iter()
+                .map(|outcome| {
+                    let mut properties = outcome
+                        .payload()
+                        .fields()
+                        .iter()
+                        .map(|field| {
+                            (
+                                field.name().to_owned(),
+                                mcp_contract_type_schema(field.value_type(), contract),
+                            )
+                        })
+                        .collect::<Map<_, _>>();
+                    properties.insert(
+                        "outcome".to_owned(),
+                        json!({"const": outcome.name(), "type": "string"}),
+                    );
+                    let mut required = outcome
+                        .payload()
+                        .fields()
+                        .iter()
+                        .map(|field| Value::String(field.name().to_owned()))
+                        .collect::<Vec<_>>();
+                    required.push(Value::String("outcome".to_owned()));
+                    json!({
+                        "additionalProperties": false,
+                        "properties": properties,
+                        "required": required,
+                        "type": "object",
+                    })
+                })
+                .collect::<Vec<_>>();
+            Ok(GeneratedMcpCommand {
+                name: format!(
+                    "{}.{}",
+                    snake(module.name().as_str()),
+                    snake(command.name())
+                ),
+                title: format!("Run {}", command.name()),
+                description: format!(
+                    "Execute the exact {} compiled command from contract {}.",
+                    command.name(),
+                    contract.lineage().as_str()
+                ),
+                input_schema: serde_json::to_string(&json!({
+                    "$schema": MCP_SCHEMA_DIALECT,
+                    "additionalProperties": false,
+                    "properties": input_properties,
+                    "required": input_required,
+                    "type": "object",
+                }))
+                .map_err(|_| McpToolGenerationError::InvalidSchema)?,
+                result_schema: serde_json::to_string(&json!({
+                    "$schema": MCP_SCHEMA_DIALECT,
+                    "oneOf": outcomes,
+                }))
+                .map_err(|_| McpToolGenerationError::InvalidSchema)?,
+                contract_bundle_hash: *contract.bundle_hash().as_bytes(),
+                plan_hash: *command.plan_hash().as_bytes(),
+            })
+        })
+        .collect()
+}
+
+fn mcp_contract_type_schema(value_type: &ValueType, contract: &ContractBundle) -> Value {
+    if let Some(inner) = value_type.optional_inner() {
+        return json!({"anyOf": [mcp_contract_type_schema(inner, contract), {"type": "null"}]});
+    }
+    if let Some((inner, maximum)) = value_type.list_parts() {
+        return json!({
+            "items": mcp_contract_type_schema(inner, contract),
+            "maxItems": maximum,
+            "type": "array",
+        });
+    }
+    match value_type.tag() {
+        ValueTypeTag::Bool => json!({"type": "boolean"}),
+        ValueTypeTag::I64 | ValueTypeTag::U64 => json!({"type": "integer"}),
+        ValueTypeTag::Bytes => json!({"contentEncoding": "base64", "type": "string"}),
+        ValueTypeTag::Record => match value_type.record_ref() {
+            Some(RecordTypeRef::Entity(entity_id)) => {
+                let entity = contract
+                    .schema()
+                    .entity(*entity_id)
+                    .expect("validated record entity");
+                let properties = entity
+                    .record()
+                    .fields()
+                    .iter()
+                    .map(|field| {
+                        (
+                            field.name().to_owned(),
+                            mcp_contract_type_schema(field.value_type(), contract),
+                        )
+                    })
+                    .collect::<Map<_, _>>();
+                let required = entity
+                    .record()
+                    .fields()
+                    .iter()
+                    .map(|field| Value::String(field.name().to_owned()))
+                    .collect::<Vec<_>>();
+                json!({
+                    "additionalProperties": false,
+                    "properties": properties,
+                    "required": required,
+                    "type": "object",
+                })
+            }
+            _ => json!({"type": "object"}),
+        },
+        _ => json!({"type": "string"}),
+    }
+}
+
 fn mcp_type_schema(value_type: &NamedTypeSchema) -> Value {
     match value_type {
         NamedTypeSchema::Scalar(name) => match name.as_str() {
@@ -170,35 +335,17 @@ pub fn generate_rust_client(module: &QueryModule, contract: &ContractBundle) -> 
     let mut output = String::new();
     writeln!(
         output,
-        "// @generated by riffdb-query-module; do not edit.\n"
+        "// @generated by riffdb-query-module; do not edit.\n\
+         use std::collections::BTreeMap;\n\
+         use riffdb_client_rust::generated::{{GeneratedCommand, GeneratedCommandError, GeneratedQuery}};\n\
+         use riffdb_client_rust::{{ApplicationCardinality, ApplicationClientError, ApplicationContract, \
+         ApplicationRecord, ApplicationValue, AttemptBudget, CallMetadata, IdempotentCommand, NamedQuery, \
+         NamedQueryResult, QueryOptions, StableApplicationClient, TypedCommandResult, TypedQueryResult, v1}};\n\
+         use riffdb_client_rust::v1::value::Kind as WireKind;\n"
     )
     .expect("string");
     emit_rust_identity(&mut output, module);
-    writeln!(
-        output,
-        "#[derive(Clone, Debug, Eq, PartialEq)]\n\
-         pub struct NamedQueryRequest<P> {{\n    pub contract_lineage: &'static str,\n    \
-         pub contract_version: u64,\n    pub contract_bundle_hash: [u8; 32],\n    \
-         pub module_hash: [u8; 32],\n    pub query_name: &'static str,\n    pub parameters: P,\n}}\n\
-         #[derive(Clone, Debug, Eq, PartialEq)]\n\
-         pub struct QueryResponseIdentity<'a> {{\n    pub contract_lineage: &'a str,\n    \
-         pub contract_version: u64,\n    pub contract_bundle_hash: [u8; 32],\n    \
-         pub module_hash: [u8; 32],\n    pub query_name: &'a str,\n}}\n\
-         impl<P> NamedQueryRequest<P> {{\n    pub fn accepts_identity(&self, identity: &QueryResponseIdentity<'_>) -> bool {{\n        \
-         identity.contract_lineage == self.contract_lineage\n            \
-         && identity.contract_version == self.contract_version\n            \
-         && identity.contract_bundle_hash == self.contract_bundle_hash\n            \
-         && identity.module_hash == self.module_hash\n            \
-         && identity.query_name == self.query_name\n    }}\n}}\n"
-    )
-    .expect("string");
-    writeln!(
-        output,
-        "#[derive(Clone, Debug, Eq, PartialEq)]\n\
-         pub struct CommandRequest<I> {{\n    pub command_name: &'static str,\n    \
-         pub input: I,\n    pub idempotency_key: String,\n}}\n"
-    )
-    .expect("string");
+    emit_rust_common_value_types(&mut output);
 
     for query in module.queries() {
         let name = query.name();
@@ -233,20 +380,13 @@ pub fn generate_rust_client(module: &QueryModule, contract: &ContractBundle) -> 
             writeln!(output, "    {variant}(Box<{name}{variant}>),").expect("string");
         }
         writeln!(output, "}}\n").expect("string");
-        writeln!(
-            output,
-            "pub fn {function}(parameters: {params_name}) -> NamedQueryRequest<{params_name}> {{\n\
-             \x20   NamedQueryRequest {{ contract_lineage: CONTRACT_LINEAGE, contract_version: CONTRACT_VERSION, \
-             contract_bundle_hash: CONTRACT_BUNDLE_HASH, module_hash: QUERY_MODULE_HASH, query_name: \"{name}\", parameters }}\n\
-             }}\n",
-            function = snake(name),
-        )
-        .expect("string");
+        emit_rust_generated_query_impl(&mut output, name, schemas);
     }
 
     let mut commands = contract.commands().iter().collect::<Vec<_>>();
     commands.sort_by(|left, right| left.name().cmp(right.name()));
-    for command in commands {
+    emit_rust_entity_types(&mut output, contract);
+    for command in &commands {
         let name = command.name();
         let input_name = format!("{name}Input");
         writeln!(
@@ -259,21 +399,677 @@ pub fn generate_rust_client(module: &QueryModule, contract: &ContractBundle) -> 
                 output,
                 "    pub {}: {},",
                 rust_identifier(field.name()),
-                rust_contract_type(field.value_type())
+                rust_contract_type(field.value_type(), contract)
+            )
+            .expect("string");
+        }
+        writeln!(output, "}}\n").expect("string");
+        emit_rust_command_outcome(&mut output, command, contract);
+        emit_rust_generated_command_impl(&mut output, command, contract);
+    }
+    emit_rust_client_facade(&mut output, module, &commands);
+    emit_rust_runtime_helpers(&mut output);
+    output
+}
+
+fn emit_rust_common_value_types(output: &mut String) {
+    writeln!(
+        output,
+        "#[derive(Clone, Debug, Eq, PartialEq)]\n\
+         pub struct DecimalValue {{\n    pub coefficient_twos_complement: Vec<u8>,\n    pub scale: u32,\n    pub precision: Option<u32>,\n}}\n\
+         #[derive(Clone, Debug, Eq, PartialEq)]\n\
+         pub struct MoneyValue {{\n    pub currency: String,\n    pub amount: DecimalValue,\n}}\n\
+         #[derive(Clone, Copy, Debug, Eq, PartialEq)]\n\
+         pub struct TimestampValue {{\n    pub seconds: i64,\n    pub nanos: u32,\n}}\n"
+    )
+    .expect("string");
+}
+
+fn emit_rust_generated_query_impl(output: &mut String, name: &str, schemas: &NamedQuerySchemas) {
+    let params_name = format!("{name}Params");
+    let query_type = format!("{name}Query");
+    writeln!(
+        output,
+        "#[derive(Clone, Debug, Eq, PartialEq)]\n\
+         pub struct {query_type}(pub {params_name});\n\
+         impl GeneratedQuery for {query_type} {{\n    type Output = {name}Result;\n\
+         \n    fn named_query(self, options: QueryOptions) -> Result<NamedQuery, ApplicationClientError> {{\n\
+         \x20       let mut parameters = BTreeMap::new();"
+    )
+    .expect("string");
+    for parameter in schemas.parameters() {
+        let expression = rust_encode_application_expr(
+            parameter.value_type(),
+            &format!("self.0.{}", rust_identifier(parameter.name())),
+        );
+        writeln!(
+            output,
+            "        parameters.insert(\"{}\".to_owned(), {expression});",
+            parameter.name()
+        )
+        .expect("string");
+    }
+    writeln!(
+        output,
+        "        NamedQuery::new(\n            ApplicationContract::Exact {{\n                \
+         lineage: CONTRACT_LINEAGE.to_owned(),\n                version: CONTRACT_VERSION,\n                \
+         bundle_hash: Some(CONTRACT_BUNDLE_HASH),\n            }},\n            \"{name}\",\n            \
+         Some(QUERY_MODULE_HASH),\n            parameters,\n            None,\n        )?.with_options(options)\n    }}\n\
+         \n    fn decode_result(mut response: NamedQueryResult) -> Result<Self::Output, ApplicationClientError> {{\n\
+         \x20       let outcome = response.outcome.clone();\n        match outcome.as_str() {{"
+    )
+    .expect("string");
+    for branch in schemas.results() {
+        let variant = pascal(branch.name());
+        writeln!(
+            output,
+            "            \"{}\" => {{\n                let decoded = {name}{variant} {{",
+            branch.name()
+        )
+        .expect("string");
+        for field in branch.fields() {
+            let nested_name = format!("{name}{variant}{}", pascal(field.name()));
+            let expression = rust_decode_top_expression(
+                field.value_type(),
+                &nested_name,
+                field.name(),
+                "response.fields",
+            );
+            writeln!(
+                output,
+                "                    {}: {expression},",
+                rust_identifier(field.name())
+            )
+            .expect("string");
+        }
+        writeln!(
+            output,
+            "                }};\n                if !response.fields.is_empty() {{ return Err(ApplicationClientError::InvalidResponse); }}\n\
+             \x20               Ok({name}Result::{variant}(Box::new(decoded)))\n            }},"
+        )
+        .expect("string");
+    }
+    writeln!(
+        output,
+        "            _ => Err(ApplicationClientError::InvalidResponse),\n        }}\n    }}\n}}\n"
+    )
+    .expect("string");
+    for branch in schemas.results() {
+        let variant = pascal(branch.name());
+        for field in branch.fields() {
+            emit_rust_query_decoder(
+                output,
+                &format!("{name}{variant}{}", pascal(field.name())),
+                field.value_type(),
+            );
+        }
+    }
+}
+
+fn emit_rust_query_decoder(output: &mut String, name: &str, value_type: &NamedTypeSchema) {
+    match value_type {
+        NamedTypeSchema::Optional(inner)
+        | NamedTypeSchema::Set(inner)
+        | NamedTypeSchema::List { element: inner, .. } => {
+            emit_rust_query_decoder(output, name, inner);
+        }
+        NamedTypeSchema::Record(fields) => {
+            for field in fields {
+                emit_rust_query_decoder(
+                    output,
+                    &format!("{name}{}", pascal(field.name())),
+                    field.value_type(),
+                );
+            }
+            writeln!(
+                output,
+                "fn decode_{function}_record(mut record: ApplicationRecord) -> Result<{name}, ApplicationClientError> {{\n\
+                 \x20   let value = {name} {{",
+                function = snake(name),
+            )
+            .expect("string");
+            for field in fields {
+                let expression = rust_decode_application_expr(
+                    field.value_type(),
+                    &format!(
+                        "take_application_value(&mut record.fields, \"{}\")?",
+                        field.name()
+                    ),
+                    &format!("{name}{}", pascal(field.name())),
+                );
+                writeln!(
+                    output,
+                    "        {}: {expression},",
+                    rust_identifier(field.name())
+                )
+                .expect("string");
+            }
+            writeln!(
+                output,
+                "    }};\n    if !record.fields.is_empty() {{ return Err(ApplicationClientError::InvalidResponse); }}\n\
+                 \x20   Ok(value)\n}}\n"
+            )
+            .expect("string");
+        }
+        NamedTypeSchema::Scalar(_) | NamedTypeSchema::Cursor | NamedTypeSchema::Limit => {}
+    }
+}
+
+fn rust_encode_application_expr(value_type: &NamedTypeSchema, access: &str) -> String {
+    match value_type {
+        NamedTypeSchema::Scalar(name) => match name.as_str() {
+            "bool" => format!("ApplicationValue::Bool({access})"),
+            "i64" => format!("ApplicationValue::I64({access})"),
+            "u64" => format!("ApplicationValue::U64({access})"),
+            "uuid" => format!("ApplicationValue::Uuid({access})"),
+            "timestamp" => format!(
+                "ApplicationValue::Timestamp {{ seconds: {access}.seconds, nanos: {access}.nanos }}"
+            ),
+            "date" => format!("ApplicationValue::Date({access})"),
+            value if value.starts_with("bytes<") => format!("ApplicationValue::Bytes({access})"),
+            value if value.starts_with("decimal<") => format!(
+                "ApplicationValue::Decimal {{ coefficient_twos_complement: {access}.coefficient_twos_complement, \
+                 scale: {access}.scale, precision: {access}.precision }}"
+            ),
+            value if value.starts_with("string<") => format!("ApplicationValue::String({access})"),
+            _ => format!("ApplicationValue::Enum({access})"),
+        },
+        NamedTypeSchema::Optional(inner) => format!(
+            "match {access} {{ Some(value) => {}, None => ApplicationValue::Null }}",
+            rust_encode_application_expr(inner, "value")
+        ),
+        NamedTypeSchema::Set(inner) | NamedTypeSchema::List { element: inner, .. } => {
+            let element = rust_encode_application_expr(inner, "value");
+            if element == "ApplicationValue::Enum(value)" {
+                format!(
+                    "ApplicationValue::List({access}.into_iter().map(ApplicationValue::Enum).collect())"
+                )
+            } else {
+                format!(
+                    "ApplicationValue::List({access}.into_iter().map(|value| {element}).collect())"
+                )
+            }
+        }
+        NamedTypeSchema::Cursor => format!("ApplicationValue::String({access})"),
+        NamedTypeSchema::Limit => format!("ApplicationValue::U64({access})"),
+        NamedTypeSchema::Record(_) => "ApplicationValue::Null".to_owned(),
+    }
+}
+
+fn rust_decode_top_expression(
+    value_type: &NamedTypeSchema,
+    nested_name: &str,
+    field_name: &str,
+    fields: &str,
+) -> String {
+    let take = format!("take_result_field(&mut {fields}, \"{field_name}\")?");
+    match value_type {
+        NamedTypeSchema::Record(_) => format!(
+            "decode_{}_record(one_result_record({take})?)?",
+            snake(nested_name)
+        ),
+        NamedTypeSchema::Optional(inner)
+            if matches!(inner.as_ref(), NamedTypeSchema::Record(_)) =>
+        {
+            format!(
+                "optional_result_record({take})?.map(decode_{}_record).transpose()?",
+                snake(nested_name)
+            )
+        }
+        NamedTypeSchema::List { element, .. }
+            if matches!(element.as_ref(), NamedTypeSchema::Record(_)) =>
+        {
+            format!(
+                "many_result_records({take})?.into_iter().map(decode_{}_record).collect::<Result<Vec<_>, _>>()?",
+                snake(nested_name)
+            )
+        }
+        _ => "return Err(ApplicationClientError::InvalidResponse)".to_owned(),
+    }
+}
+
+fn rust_decode_application_expr(
+    value_type: &NamedTypeSchema,
+    access: &str,
+    nested_name: &str,
+) -> String {
+    match value_type {
+        NamedTypeSchema::Scalar(name) => match name.as_str() {
+            "bool" => format!("application_bool({access})?"),
+            "i64" => format!("application_i64({access})?"),
+            "u64" => format!("application_u64({access})?"),
+            "uuid" => format!("application_uuid({access})?"),
+            "timestamp" => format!("application_timestamp({access})?"),
+            "date" => format!("application_date({access})?"),
+            value if value.starts_with("bytes<") => format!("application_bytes({access})?"),
+            value if value.starts_with("decimal<") => format!("application_decimal({access})?"),
+            value if value.starts_with("string<") => format!("application_string({access})?"),
+            _ => format!("application_enum({access})?"),
+        },
+        NamedTypeSchema::Optional(inner) => format!(
+            "match {access} {{ ApplicationValue::Null => None, value => Some({}) }}",
+            rust_decode_application_expr(inner, "value", nested_name)
+        ),
+        NamedTypeSchema::Set(inner) | NamedTypeSchema::List { element: inner, .. } => format!(
+            "application_list({access})?.into_iter().map(|value| Ok({})).collect::<Result<Vec<_>, ApplicationClientError>>()?",
+            rust_decode_application_expr(inner, "value", nested_name)
+        ),
+        NamedTypeSchema::Record(_) => format!(
+            "decode_{}_record(application_record({access})?)?",
+            snake(nested_name)
+        ),
+        NamedTypeSchema::Cursor => format!("application_string({access})?"),
+        NamedTypeSchema::Limit => format!("application_u64({access})?"),
+    }
+}
+
+fn emit_rust_entity_types(output: &mut String, contract: &ContractBundle) {
+    for entity in contract.schema().entities() {
+        writeln!(
+            output,
+            "#[derive(Clone, Debug, Eq, PartialEq)]\npub struct {} {{",
+            entity.name()
+        )
+        .expect("string");
+        for field in entity.record().fields() {
+            writeln!(
+                output,
+                "    pub {}: {},",
+                rust_identifier(field.name()),
+                rust_contract_type(field.value_type(), contract)
             )
             .expect("string");
         }
         writeln!(output, "}}\n").expect("string");
         writeln!(
             output,
-            "pub fn {function}(input: {input_name}, idempotency_key: String) -> CommandRequest<{input_name}> {{\n\
-             \x20   CommandRequest {{ command_name: \"{name}\", input, idempotency_key }}\n\
-             }}\n",
-            function = snake(name),
+            "fn decode_{}_entity(value: v1::Value) -> Result<{}, GeneratedCommandError> {{\n\
+             \x20   let mut fields = wire_record_fields(value)?;\n    let entity = {} {{",
+            snake(entity.name()),
+            entity.name(),
+            entity.name(),
+        )
+        .expect("string");
+        for field in entity.record().fields() {
+            let expression = rust_decode_wire_expr(
+                field.value_type(),
+                &format!("take_wire_field(&mut fields, {})?", field.id().get()),
+                contract,
+            );
+            writeln!(
+                output,
+                "        {}: {expression},",
+                rust_identifier(field.name())
+            )
+            .expect("string");
+        }
+        writeln!(
+            output,
+            "    }};\n    if !fields.is_empty() {{ return Err(GeneratedCommandError::InvalidOutcomeShape); }}\n\
+             \x20   Ok(entity)\n}}\n"
         )
         .expect("string");
     }
-    output
+}
+
+fn emit_rust_command_outcome(
+    output: &mut String,
+    command: &CommandPlan,
+    contract: &ContractBundle,
+) {
+    let name = command.name();
+    write!(
+        output,
+        "#[derive(Clone, Debug, Eq, PartialEq)]\npub enum {name}Outcome {{"
+    )
+    .expect("string");
+    for outcome in command.outcomes() {
+        let variant = pascal(outcome.name());
+        if outcome.payload().fields().is_empty() {
+            writeln!(output, "\n    {variant},").expect("string");
+        } else {
+            writeln!(output, "\n    {variant} {{").expect("string");
+            for field in outcome.payload().fields() {
+                writeln!(
+                    output,
+                    "        {}: {},",
+                    rust_identifier(field.name()),
+                    rust_contract_type(field.value_type(), contract)
+                )
+                .expect("string");
+            }
+            writeln!(output, "    }},").expect("string");
+        }
+    }
+    writeln!(output, "}}\n").expect("string");
+}
+
+fn emit_rust_generated_command_impl(
+    output: &mut String,
+    command: &CommandPlan,
+    contract: &ContractBundle,
+) {
+    let name = command.name();
+    let input_name = format!("{name}Input");
+    let idempotency_field = command
+        .idempotency_input()
+        .and_then(|id| command.input().record().field(id))
+        .map(|field| rust_identifier(field.name()));
+    write!(
+        output,
+        "const {}_PLAN_HASH: [u8; 32] = [",
+        screaming_snake(name)
+    )
+    .expect("string");
+    for (index, byte) in command.plan_hash().as_bytes().iter().enumerate() {
+        if index != 0 {
+            write!(output, ", ").expect("string");
+        }
+        write!(output, "0x{byte:02x}").expect("string");
+    }
+    writeln!(output, "];").expect("string");
+    writeln!(
+        output,
+        "impl GeneratedCommand for {input_name} {{\n    type Outcome = {name}Outcome;\n\
+         \n    fn idempotent_command(&self) -> Result<IdempotentCommand, GeneratedCommandError> {{\n\
+         \x20       let fields = vec!["
+    )
+    .expect("string");
+    for field in command.input().record().fields() {
+        let expression = rust_encode_wire_expr(
+            field.value_type(),
+            &format!("&self.{}", rust_identifier(field.name())),
+            contract,
+        );
+        writeln!(
+            output,
+            "            wire_named_field(\"{}\", {expression}),",
+            field.name()
+        )
+        .expect("string");
+    }
+    writeln!(
+        output,
+        "        ];\n        IdempotentCommand::new(\"{name}\", Some(CONTRACT_VERSION), wire_record(fields)).map_err(Into::into)\n    }}"
+    )
+    .expect("string");
+    if let Some(idempotency_field) = idempotency_field {
+        writeln!(
+            output,
+            "\n    fn outcome_request(&self, request_id: riffdb_client_rust::RequestId) -> Result<v1::GetOutcomeRequest, GeneratedCommandError> {{\n\
+             \x20       Ok(v1::GetOutcomeRequest {{\n            request_id: request_id.into_bytes().to_vec(),\n            \
+             contract_lineage: CONTRACT_LINEAGE.to_owned(),\n            command_name: \"{name}\".to_owned(),\n            \
+             idempotency_key: self.{idempotency_field}.clone(),\n            outcome_uri: None,\n        }})\n    }}"
+        )
+        .expect("string");
+    } else {
+        writeln!(
+            output,
+            "\n    fn outcome_request(&self, _request_id: riffdb_client_rust::RequestId) -> Result<v1::GetOutcomeRequest, GeneratedCommandError> {{\n\
+             \x20       Err(GeneratedCommandError::InvalidInputShape)\n    }}"
+        )
+        .expect("string");
+    }
+    writeln!(
+        output,
+        "\n    fn decode_outcome(&self, response: &v1::ExecuteCommandResponse) -> Result<Self::Outcome, GeneratedCommandError> {{\n\
+         \x20       let mut fields = wire_outcome_fields(response, &{}_PLAN_HASH)?;\n        match response.outcome_type.as_str() {{",
+        screaming_snake(name)
+    )
+    .expect("string");
+    for outcome in command.outcomes() {
+        let variant = pascal(outcome.name());
+        if outcome.payload().fields().is_empty() {
+            writeln!(
+                output,
+                "            \"{}\" => Ok(Self::Outcome::{variant}),",
+                outcome.name()
+            )
+            .expect("string");
+        } else {
+            writeln!(
+                output,
+                "            \"{}\" => {{\n                let outcome = Self::Outcome::{variant} {{",
+                outcome.name()
+            )
+            .expect("string");
+            for field in outcome.payload().fields() {
+                let expression = rust_decode_wire_expr(
+                    field.value_type(),
+                    &format!("take_wire_field(&mut fields, {})?", field.id().get()),
+                    contract,
+                );
+                writeln!(
+                    output,
+                    "                    {}: {expression},",
+                    rust_identifier(field.name())
+                )
+                .expect("string");
+            }
+            writeln!(
+                output,
+                "                }};\n                if !fields.is_empty() {{ return Err(GeneratedCommandError::InvalidOutcomeShape); }}\n\
+                 \x20               Ok(outcome)\n            }},"
+            )
+            .expect("string");
+        }
+    }
+    writeln!(
+        output,
+        "            _ => Err(GeneratedCommandError::InvalidOutcomeShape),\n        }}\n    }}\n}}\n"
+    )
+    .expect("string");
+}
+
+fn emit_rust_client_facade(output: &mut String, module: &QueryModule, commands: &[&CommandPlan]) {
+    let client_name = format!("{}Client", pascal(module.contract_lineage().as_str()));
+    writeln!(
+        output,
+        "pub struct {client_name} {{\n    client: StableApplicationClient,\n    metadata: CallMetadata,\n    \
+         command_attempts: AttemptBudget,\n}}\n\
+         impl {client_name} {{\n    pub const fn new(client: StableApplicationClient, metadata: CallMetadata, \
+         command_attempts: AttemptBudget) -> Self {{\n        Self {{ client, metadata, command_attempts }}\n    }}\n"
+    )
+    .expect("string");
+    for query in module.queries() {
+        let name = query.name();
+        writeln!(
+            output,
+            "    pub async fn {function}(&mut self, parameters: {name}Params) \
+             -> Result<{name}Result, ApplicationClientError> {{\n\
+             \x20       Ok(self.{function}_with_options(parameters, QueryOptions::new()).await?.value)\n    }}\n\
+             \x20   pub async fn {function}_with_options(&mut self, parameters: {name}Params, options: QueryOptions) \
+             -> Result<TypedQueryResult<{name}Result>, ApplicationClientError> {{\n\
+             \x20       self.client.execute_generated_query({name}Query(parameters), options, &self.metadata).await\n    }}\n",
+            function = snake(name)
+        )
+        .expect("string");
+    }
+    for command in commands {
+        let name = command.name();
+        writeln!(
+            output,
+            "    pub async fn {function}(&mut self, input: {name}Input) \
+             -> Result<TypedCommandResult<{name}Outcome>, ApplicationClientError> {{\n\
+             \x20       self.client.execute_generated_command(&input, self.command_attempts, &self.metadata).await.map_err(Into::into)\n    }}\n",
+            function = snake(name)
+        )
+        .expect("string");
+    }
+    writeln!(output, "}}\n").expect("string");
+}
+
+fn emit_rust_runtime_helpers(output: &mut String) {
+    output.push_str(
+        r#"fn take_result_field(fields: &mut BTreeMap<String, riffdb_client_rust::ApplicationResultField>, name: &str) -> Result<riffdb_client_rust::ApplicationResultField, ApplicationClientError> {
+    fields.remove(name).ok_or(ApplicationClientError::InvalidResponse)
+}
+fn one_result_record(field: riffdb_client_rust::ApplicationResultField) -> Result<ApplicationRecord, ApplicationClientError> {
+    if field.cardinality != ApplicationCardinality::One || field.records.len() != 1 { return Err(ApplicationClientError::InvalidResponse); }
+    field.records.into_iter().next().ok_or(ApplicationClientError::InvalidResponse)
+}
+fn optional_result_record(field: riffdb_client_rust::ApplicationResultField) -> Result<Option<ApplicationRecord>, ApplicationClientError> {
+    if field.cardinality != ApplicationCardinality::Maybe || field.records.len() > 1 { return Err(ApplicationClientError::InvalidResponse); }
+    Ok(field.records.into_iter().next())
+}
+fn many_result_records(field: riffdb_client_rust::ApplicationResultField) -> Result<Vec<ApplicationRecord>, ApplicationClientError> {
+    if field.cardinality != ApplicationCardinality::Many { return Err(ApplicationClientError::InvalidResponse); }
+    Ok(field.records)
+}
+fn take_application_value(fields: &mut BTreeMap<String, ApplicationValue>, name: &str) -> Result<ApplicationValue, ApplicationClientError> {
+    fields.remove(name).ok_or(ApplicationClientError::InvalidResponse)
+}
+fn application_bool(value: ApplicationValue) -> Result<bool, ApplicationClientError> { if let ApplicationValue::Bool(value) = value { Ok(value) } else { Err(ApplicationClientError::InvalidResponse) } }
+fn application_i64(value: ApplicationValue) -> Result<i64, ApplicationClientError> { if let ApplicationValue::I64(value) = value { Ok(value) } else { Err(ApplicationClientError::InvalidResponse) } }
+fn application_u64(value: ApplicationValue) -> Result<u64, ApplicationClientError> { if let ApplicationValue::U64(value) = value { Ok(value) } else { Err(ApplicationClientError::InvalidResponse) } }
+fn application_string(value: ApplicationValue) -> Result<String, ApplicationClientError> { if let ApplicationValue::String(value) = value { Ok(value) } else { Err(ApplicationClientError::InvalidResponse) } }
+fn application_uuid(value: ApplicationValue) -> Result<String, ApplicationClientError> { if let ApplicationValue::Uuid(value) = value { Ok(value) } else { Err(ApplicationClientError::InvalidResponse) } }
+fn application_enum(value: ApplicationValue) -> Result<String, ApplicationClientError> { if let ApplicationValue::Enum(value) = value { Ok(value) } else { Err(ApplicationClientError::InvalidResponse) } }
+fn application_bytes(value: ApplicationValue) -> Result<Vec<u8>, ApplicationClientError> { if let ApplicationValue::Bytes(value) = value { Ok(value) } else { Err(ApplicationClientError::InvalidResponse) } }
+fn application_date(value: ApplicationValue) -> Result<i32, ApplicationClientError> { if let ApplicationValue::Date(value) = value { Ok(value) } else { Err(ApplicationClientError::InvalidResponse) } }
+fn application_timestamp(value: ApplicationValue) -> Result<TimestampValue, ApplicationClientError> { if let ApplicationValue::Timestamp { seconds, nanos } = value { Ok(TimestampValue { seconds, nanos }) } else { Err(ApplicationClientError::InvalidResponse) } }
+fn application_decimal(value: ApplicationValue) -> Result<DecimalValue, ApplicationClientError> { if let ApplicationValue::Decimal { coefficient_twos_complement, scale, precision } = value { Ok(DecimalValue { coefficient_twos_complement, scale, precision }) } else { Err(ApplicationClientError::InvalidResponse) } }
+fn application_list(value: ApplicationValue) -> Result<Vec<ApplicationValue>, ApplicationClientError> { if let ApplicationValue::List(value) = value { Ok(value) } else { Err(ApplicationClientError::InvalidResponse) } }
+fn application_record(value: ApplicationValue) -> Result<ApplicationRecord, ApplicationClientError> { if let ApplicationValue::Record(fields) = value { Ok(ApplicationRecord { entity: String::new(), fields }) } else { Err(ApplicationClientError::InvalidResponse) } }
+fn wire_named_field(name: &str, value: v1::Value) -> v1::ValueField { v1::ValueField { field_id: None, name: name.to_owned(), value: Some(value) } }
+fn wire_record(fields: Vec<v1::ValueField>) -> v1::Value { v1::Value { kind: Some(WireKind::RecordValue(v1::ValueRecord { fields })) } }
+fn wire_null() -> v1::Value { v1::Value { kind: Some(WireKind::NullValue(v1::NullValue::NullValue as i32)) } }
+fn wire_string(value: String) -> v1::Value { v1::Value { kind: Some(WireKind::StringValue(value)) } }
+fn wire_bool(value: bool) -> v1::Value { v1::Value { kind: Some(WireKind::BoolValue(value)) } }
+fn wire_i64(value: i64) -> v1::Value { v1::Value { kind: Some(WireKind::I64Value(value)) } }
+fn wire_u64(value: u64) -> v1::Value { v1::Value { kind: Some(WireKind::U64Value(value)) } }
+fn wire_bytes(value: Vec<u8>) -> v1::Value { v1::Value { kind: Some(WireKind::BytesValue(value)) } }
+fn wire_date(value: i32) -> v1::Value { v1::Value { kind: Some(WireKind::DateValue(v1::Date { days_since_unix_epoch: value })) } }
+fn wire_timestamp(value: &TimestampValue) -> Result<v1::Value, GeneratedCommandError> { if value.nanos >= 1_000_000_000 { return Err(GeneratedCommandError::InvalidInputShape); } Ok(v1::Value { kind: Some(WireKind::TimestampValue(v1::Timestamp { seconds: value.seconds, nanos: value.nanos })) }) }
+fn wire_decimal(value: &DecimalValue) -> v1::Value { v1::Value { kind: Some(WireKind::DecimalValue(v1::Decimal { coefficient_twos_complement: value.coefficient_twos_complement.clone(), scale: value.scale, precision: value.precision })) } }
+fn wire_enum(value: String) -> v1::Value { v1::Value { kind: Some(WireKind::EnumValue(v1::EnumValue { type_id: 0, variant_id: 0, name: value })) } }
+fn wire_uuid(value: &str) -> Result<v1::Value, GeneratedCommandError> {
+    if value.len() != 36 { return Err(GeneratedCommandError::InvalidInputShape); }
+    let compact = value.bytes().filter(|byte| *byte != b'-').collect::<Vec<_>>();
+    if compact.len() != 32 { return Err(GeneratedCommandError::InvalidInputShape); }
+    let mut bytes = Vec::with_capacity(16);
+    for pair in compact.chunks_exact(2) {
+        let text = std::str::from_utf8(pair).map_err(|_| GeneratedCommandError::InvalidInputShape)?;
+        bytes.push(u8::from_str_radix(text, 16).map_err(|_| GeneratedCommandError::InvalidInputShape)?);
+    }
+    Ok(v1::Value { kind: Some(WireKind::UuidValue(bytes)) })
+}
+fn wire_outcome_fields(response: &v1::ExecuteCommandResponse, plan_hash: &[u8; 32]) -> Result<BTreeMap<u32, v1::Value>, GeneratedCommandError> {
+    if response.contract_version != CONTRACT_VERSION || response.plan_hash.as_slice() != plan_hash { return Err(GeneratedCommandError::InvalidOutcomeShape); }
+    wire_record_fields(response.outcome.clone().ok_or(GeneratedCommandError::InvalidOutcomeShape)?)
+}
+fn wire_record_fields(value: v1::Value) -> Result<BTreeMap<u32, v1::Value>, GeneratedCommandError> {
+    let Some(WireKind::RecordValue(record)) = value.kind else { return Err(GeneratedCommandError::InvalidOutcomeShape); };
+    let mut fields = BTreeMap::new();
+    for field in record.fields {
+        let id = field.field_id.ok_or(GeneratedCommandError::InvalidOutcomeShape)?;
+        if id == 0 || fields.insert(id, field.value.ok_or(GeneratedCommandError::InvalidOutcomeShape)?).is_some() { return Err(GeneratedCommandError::InvalidOutcomeShape); }
+    }
+    Ok(fields)
+}
+fn take_wire_field(fields: &mut BTreeMap<u32, v1::Value>, id: u32) -> Result<v1::Value, GeneratedCommandError> { fields.remove(&id).ok_or(GeneratedCommandError::InvalidOutcomeShape) }
+fn decode_wire_bool(value: v1::Value) -> Result<bool, GeneratedCommandError> { if let Some(WireKind::BoolValue(value)) = value.kind { Ok(value) } else { Err(GeneratedCommandError::InvalidOutcomeShape) } }
+fn decode_wire_i64(value: v1::Value) -> Result<i64, GeneratedCommandError> { if let Some(WireKind::I64Value(value)) = value.kind { Ok(value) } else { Err(GeneratedCommandError::InvalidOutcomeShape) } }
+fn decode_wire_u64(value: v1::Value) -> Result<u64, GeneratedCommandError> { if let Some(WireKind::U64Value(value)) = value.kind { Ok(value) } else { Err(GeneratedCommandError::InvalidOutcomeShape) } }
+fn decode_wire_string(value: v1::Value) -> Result<String, GeneratedCommandError> { if let Some(WireKind::StringValue(value)) = value.kind { Ok(value) } else { Err(GeneratedCommandError::InvalidOutcomeShape) } }
+fn decode_wire_uuid(value: v1::Value) -> Result<String, GeneratedCommandError> {
+    let Some(WireKind::UuidValue(bytes)) = value.kind else { return Err(GeneratedCommandError::InvalidOutcomeShape); };
+    if bytes.len() != 16 { return Err(GeneratedCommandError::InvalidOutcomeShape); }
+    Ok(format!("{:02x}{:02x}{:02x}{:02x}-{:02x}{:02x}-{:02x}{:02x}-{:02x}{:02x}-{:02x}{:02x}{:02x}{:02x}{:02x}{:02x}", bytes[0],bytes[1],bytes[2],bytes[3],bytes[4],bytes[5],bytes[6],bytes[7],bytes[8],bytes[9],bytes[10],bytes[11],bytes[12],bytes[13],bytes[14],bytes[15]))
+}
+fn decode_wire_enum(value: v1::Value) -> Result<String, GeneratedCommandError> { if let Some(WireKind::EnumValue(value)) = value.kind { if value.name.is_empty() { Err(GeneratedCommandError::InvalidOutcomeShape) } else { Ok(value.name) } } else { Err(GeneratedCommandError::InvalidOutcomeShape) } }
+fn decode_wire_bytes(value: v1::Value) -> Result<Vec<u8>, GeneratedCommandError> { if let Some(WireKind::BytesValue(value)) = value.kind { Ok(value) } else { Err(GeneratedCommandError::InvalidOutcomeShape) } }
+fn decode_wire_date(value: v1::Value) -> Result<i32, GeneratedCommandError> { if let Some(WireKind::DateValue(value)) = value.kind { Ok(value.days_since_unix_epoch) } else { Err(GeneratedCommandError::InvalidOutcomeShape) } }
+fn decode_wire_timestamp(value: v1::Value) -> Result<TimestampValue, GeneratedCommandError> { if let Some(WireKind::TimestampValue(value)) = value.kind { if value.nanos < 1_000_000_000 { Ok(TimestampValue { seconds: value.seconds, nanos: value.nanos }) } else { Err(GeneratedCommandError::InvalidOutcomeShape) } } else { Err(GeneratedCommandError::InvalidOutcomeShape) } }
+fn decode_wire_decimal(value: v1::Value) -> Result<DecimalValue, GeneratedCommandError> { if let Some(WireKind::DecimalValue(value)) = value.kind { Ok(DecimalValue { coefficient_twos_complement: value.coefficient_twos_complement, scale: value.scale, precision: value.precision }) } else { Err(GeneratedCommandError::InvalidOutcomeShape) } }
+"#,
+    );
+}
+
+fn rust_encode_wire_expr(
+    value_type: &ValueType,
+    access: &str,
+    contract: &ContractBundle,
+) -> String {
+    if let Some(inner) = value_type.optional_inner() {
+        return format!(
+            "match {access}.as_ref() {{ Some(value) => {}, None => wire_null() }}",
+            rust_encode_wire_expr(inner, "value", contract)
+        );
+    }
+    if let Some((inner, _)) = value_type.list_parts() {
+        return format!(
+            "v1::Value {{ kind: Some(WireKind::ListValue(v1::ValueList {{ values: {access}.iter().map(|value| Ok({})).collect::<Result<Vec<_>, GeneratedCommandError>>()? }})) }}",
+            rust_encode_wire_expr(inner, "value", contract)
+        );
+    }
+    match value_type.tag() {
+        ValueTypeTag::Bool => format!("wire_bool(*({access}))"),
+        ValueTypeTag::I64 => format!("wire_i64(*({access}))"),
+        ValueTypeTag::U64 => format!("wire_u64(*({access}))"),
+        ValueTypeTag::Decimal => format!("wire_decimal({access})"),
+        ValueTypeTag::Money => "return Err(GeneratedCommandError::InvalidInputShape)".to_owned(),
+        ValueTypeTag::String => format!("wire_string(Clone::clone({access}))"),
+        ValueTypeTag::Bytes => format!("wire_bytes(Clone::clone({access}))"),
+        ValueTypeTag::Timestamp => format!("wire_timestamp({access})?"),
+        ValueTypeTag::Date => format!("wire_date(*({access}))"),
+        ValueTypeTag::Uuid => format!("wire_uuid({access})?"),
+        ValueTypeTag::Enum => format!("wire_enum(Clone::clone({access}))"),
+        ValueTypeTag::Record => match value_type.record_ref() {
+            Some(RecordTypeRef::Entity(entity_id)) => {
+                let entity = contract
+                    .schema()
+                    .entity(*entity_id)
+                    .expect("validated record entity");
+                format!("encode_{}_entity({access})?", snake(entity.name()))
+            }
+            _ => "return Err(GeneratedCommandError::InvalidInputShape)".to_owned(),
+        },
+        ValueTypeTag::Optional | ValueTypeTag::List => unreachable!("handled above"),
+    }
+}
+
+fn rust_decode_wire_expr(
+    value_type: &ValueType,
+    access: &str,
+    contract: &ContractBundle,
+) -> String {
+    if let Some(inner) = value_type.optional_inner() {
+        return format!(
+            "if matches!({access}.kind, Some(WireKind::NullValue(_))) {{ None }} else {{ Some({}) }}",
+            rust_decode_wire_expr(inner, access, contract)
+        );
+    }
+    if let Some((inner, _)) = value_type.list_parts() {
+        return format!(
+            "if let Some(WireKind::ListValue(list)) = {access}.kind {{ list.values.into_iter().map(|value| Ok({})).collect::<Result<Vec<_>, GeneratedCommandError>>()? }} else {{ return Err(GeneratedCommandError::InvalidOutcomeShape); }}",
+            rust_decode_wire_expr(inner, "value", contract)
+        );
+    }
+    match value_type.tag() {
+        ValueTypeTag::Bool => format!("decode_wire_bool({access})?"),
+        ValueTypeTag::I64 => format!("decode_wire_i64({access})?"),
+        ValueTypeTag::U64 => format!("decode_wire_u64({access})?"),
+        ValueTypeTag::Decimal => format!("decode_wire_decimal({access})?"),
+        ValueTypeTag::Money => "return Err(GeneratedCommandError::InvalidOutcomeShape)".to_owned(),
+        ValueTypeTag::String => format!("decode_wire_string({access})?"),
+        ValueTypeTag::Bytes => format!("decode_wire_bytes({access})?"),
+        ValueTypeTag::Timestamp => format!("decode_wire_timestamp({access})?"),
+        ValueTypeTag::Date => format!("decode_wire_date({access})?"),
+        ValueTypeTag::Uuid => format!("decode_wire_uuid({access})?"),
+        ValueTypeTag::Enum => format!("decode_wire_enum({access})?"),
+        ValueTypeTag::Record => match value_type.record_ref() {
+            Some(RecordTypeRef::Entity(entity_id)) => {
+                let entity = contract
+                    .schema()
+                    .entity(*entity_id)
+                    .expect("validated record entity");
+                format!("decode_{}_entity({access})?", snake(entity.name()))
+            }
+            _ => "return Err(GeneratedCommandError::InvalidOutcomeShape)".to_owned(),
+        },
+        ValueTypeTag::Optional | ValueTypeTag::List => unreachable!("handled above"),
+    }
 }
 
 /// Generates a dependency-free TypeScript request model for every named query and command.
@@ -309,8 +1105,15 @@ pub fn generate_typescript_client(module: &QueryModule, contract: &ContractBundl
          && identity.contractBundleHash === request.contractBundleHash\n    \
          && identity.moduleHash === request.moduleHash\n    \
          && identity.queryName === request.queryName;\n}}\n\
-         export interface CommandRequest<I> {{ readonly commandName: string; readonly input: I; \
-         readonly idempotencyKey: string; }}\n"
+         export interface CommandRequest<I> {{ readonly contractLineage: typeof CONTRACT_LINEAGE; \
+         readonly contractVersion: typeof CONTRACT_VERSION; readonly commandName: string; readonly planHash: string; \
+         readonly input: I; readonly idempotencyKey: string; }}\n\
+         export interface TypedQueryResult<T> {{ readonly identity: QueryResponseIdentity; readonly value: T; readonly applicationHead: bigint; readonly nextCursor?: string; }}\n\
+         export interface TypedCommandResult<T> {{ readonly outcome: T; readonly commitSequence?: bigint; \
+         readonly contractVersion: number; readonly planHash: string; readonly replayed: boolean; readonly outcomeUri?: string; }}\n\
+         export interface QueryOptions {{ readonly cursor?: string; readonly readAfterCommit?: bigint; }}\n\
+         export interface ApplicationTransport {{\n  executeNamedQuery<P, R>(request: NamedQueryRequest<P>, options?: QueryOptions): Promise<TypedQueryResult<R>>;\n  \
+         executeCommand<I, R>(request: CommandRequest<I>, attemptBudget: number): Promise<TypedCommandResult<R>>;\n}}\n"
     )
     .expect("string");
 
@@ -370,7 +1173,7 @@ pub fn generate_typescript_client(module: &QueryModule, contract: &ContractBundl
 
     let mut commands = contract.commands().iter().collect::<Vec<_>>();
     commands.sort_by(|left, right| left.name().cmp(right.name()));
-    for command in commands {
+    for command in &commands {
         let name = command.name();
         writeln!(output, "export interface {name}Input {{").expect("string");
         for field in command.input().record().fields() {
@@ -378,21 +1181,89 @@ pub fn generate_typescript_client(module: &QueryModule, contract: &ContractBundl
                 output,
                 "  readonly {}: {};",
                 ts_identifier(field.name()),
-                ts_contract_type(field.value_type())
+                ts_contract_type(field.value_type(), contract)
             )
             .expect("string");
         }
         writeln!(output, "}}\n").expect("string");
+        write!(output, "export type {name}Outcome = ").expect("string");
+        for (index, outcome) in command.outcomes().iter().enumerate() {
+            if index != 0 {
+                write!(output, " | ").expect("string");
+            }
+            write!(output, "{{ readonly outcome: \"{}\"", outcome.name()).expect("string");
+            for field in outcome.payload().fields() {
+                write!(
+                    output,
+                    "; readonly {}: {}",
+                    ts_identifier(field.name()),
+                    ts_contract_type(field.value_type(), contract)
+                )
+                .expect("string");
+            }
+            write!(output, " }}").expect("string");
+        }
+        writeln!(output, ";\n").expect("string");
+        let idempotency = command
+            .idempotency_input()
+            .and_then(|id| command.input().record().field(id))
+            .map_or("idempotency_key", |field| field.name());
         writeln!(
             output,
-            "export function {function}(input: {name}Input, idempotencyKey: string): CommandRequest<{name}Input> {{\n\
-             \x20 return {{ commandName: \"{name}\", input, idempotencyKey }};\n\
+            "export const {constant}_PLAN_HASH = \"{plan_hash}\" as const;\n\
+             export function {function}(input: {name}Input): CommandRequest<{name}Input> {{\n\
+             \x20 return {{ contractLineage: CONTRACT_LINEAGE, contractVersion: CONTRACT_VERSION, \
+             commandName: \"{name}\", planHash: {constant}_PLAN_HASH, input, idempotencyKey: input.{idempotency} }};\n\
              }}\n",
             function = camel(name),
+            constant = screaming_snake(name),
+            plan_hash = hex(command.plan_hash().as_bytes()),
         )
         .expect("string");
     }
+    emit_typescript_client_facade(&mut output, module, &commands);
     output
+}
+
+fn emit_typescript_client_facade(
+    output: &mut String,
+    module: &QueryModule,
+    commands: &[&CommandPlan],
+) {
+    let client_name = format!("{}Client", pascal(module.contract_lineage().as_str()));
+    writeln!(
+        output,
+        "export class {client_name} {{\n  public constructor(\n    private readonly transport: ApplicationTransport,\n    \
+         private readonly commandAttemptBudget: number,\n  ) {{\n    if (!Number.isInteger(commandAttemptBudget) || commandAttemptBudget < 1) \
+         throw new Error(\"invalid command attempt budget\");\n  }}\n"
+    )
+    .expect("string");
+    for query in module.queries() {
+        let name = query.name();
+        writeln!(
+            output,
+            "  public async {function}(parameters: {name}Params, options: QueryOptions = {{}}): \
+             Promise<TypedQueryResult<{name}Result>> {{\n    const request = {function}(parameters);\n    \
+             const result = await this.transport.executeNamedQuery<{name}Params, {name}Result>(request, options);\n    \
+             if (!acceptsIdentity(request, result.identity)) throw new Error(\"RiffDB application identity mismatch\");\n    return result;\n  }}\n",
+            function = camel(name)
+        )
+        .expect("string");
+    }
+    for command in commands {
+        let name = command.name();
+        writeln!(
+            output,
+            "  public async {function}(input: {name}Input): Promise<TypedCommandResult<{name}Outcome>> {{\n    \
+             const result = await this.transport.executeCommand<{name}Input, {name}Outcome>({function}(input), this.commandAttemptBudget);\n    \
+             if (result.contractVersion !== CONTRACT_VERSION || result.planHash !== {constant}_PLAN_HASH) \
+             throw new Error(\"RiffDB application identity mismatch\");\n    return result;\n  }}\n",
+            function = camel(name),
+            constant = screaming_snake(name),
+        )
+        .expect("string");
+    }
+    writeln!(output, "}}\n").expect("string");
 }
 
 fn emit_rust_identity(output: &mut String, module: &QueryModule) {
@@ -488,10 +1359,14 @@ fn emit_rust_nested_type(output: &mut String, name: &str, value_type: &NamedType
 fn rust_query_type(value_type: &NamedTypeSchema, nested_name: &str) -> String {
     match value_type {
         NamedTypeSchema::Scalar(name) => match name.as_str() {
-            "Bool" => "bool".to_owned(),
-            "I64" => "i64".to_owned(),
-            "U64" | "Limit" => "u64".to_owned(),
-            "Bytes" => "Vec<u8>".to_owned(),
+            "bool" => "bool".to_owned(),
+            "i64" => "i64".to_owned(),
+            "u64" => "u64".to_owned(),
+            "uuid" => "String".to_owned(),
+            "timestamp" => "TimestampValue".to_owned(),
+            "date" => "i32".to_owned(),
+            value if value.starts_with("bytes<") => "Vec<u8>".to_owned(),
+            value if value.starts_with("decimal<") => "DecimalValue".to_owned(),
             _ => "String".to_owned(),
         },
         NamedTypeSchema::Optional(inner) => {
@@ -506,18 +1381,33 @@ fn rust_query_type(value_type: &NamedTypeSchema, nested_name: &str) -> String {
     }
 }
 
-fn rust_contract_type(value_type: &ValueType) -> String {
+fn rust_contract_type(value_type: &ValueType, contract: &ContractBundle) -> String {
     if let Some(inner) = value_type.optional_inner() {
-        return format!("Option<{}>", rust_contract_type(inner));
+        return format!("Option<{}>", rust_contract_type(inner, contract));
     }
     if let Some((inner, _)) = value_type.list_parts() {
-        return format!("Vec<{}>", rust_contract_type(inner));
+        return format!("Vec<{}>", rust_contract_type(inner, contract));
     }
     match value_type.tag() {
         ValueTypeTag::Bool => "bool",
         ValueTypeTag::I64 => "i64",
         ValueTypeTag::U64 => "u64",
         ValueTypeTag::Bytes => "Vec<u8>",
+        ValueTypeTag::Decimal => "DecimalValue",
+        ValueTypeTag::Money => "MoneyValue",
+        ValueTypeTag::Timestamp => "TimestampValue",
+        ValueTypeTag::Date => "i32",
+        ValueTypeTag::Record => match value_type.record_ref() {
+            Some(RecordTypeRef::Entity(entity_id)) => {
+                return contract
+                    .schema()
+                    .entity(*entity_id)
+                    .expect("validated record entity")
+                    .name()
+                    .to_owned();
+            }
+            _ => "String",
+        },
         _ => "String",
     }
     .to_owned()
@@ -526,9 +1416,14 @@ fn rust_contract_type(value_type: &ValueType) -> String {
 fn ts_query_type(value_type: &NamedTypeSchema) -> String {
     match value_type {
         NamedTypeSchema::Scalar(name) => match name.as_str() {
-            "Bool" => "boolean".to_owned(),
-            "I64" | "U64" => "bigint".to_owned(),
-            "Bytes" => "Uint8Array".to_owned(),
+            "bool" => "boolean".to_owned(),
+            "i64" | "u64" => "bigint".to_owned(),
+            "timestamp" => "{ readonly seconds: bigint; readonly nanos: number }".to_owned(),
+            "date" => "number".to_owned(),
+            value if value.starts_with("bytes<") => "Uint8Array".to_owned(),
+            value if value.starts_with("decimal<") => {
+                "{ readonly coefficientTwosComplement: Uint8Array; readonly scale: number; readonly precision?: number }".to_owned()
+            }
             _ => "string".to_owned(),
         },
         NamedTypeSchema::Optional(inner) => format!("{} | null", ts_query_type(inner)),
@@ -554,17 +1449,47 @@ fn ts_query_type(value_type: &NamedTypeSchema) -> String {
     }
 }
 
-fn ts_contract_type(value_type: &ValueType) -> String {
+fn ts_contract_type(value_type: &ValueType, contract: &ContractBundle) -> String {
     if let Some(inner) = value_type.optional_inner() {
-        return format!("{} | null", ts_contract_type(inner));
+        return format!("{} | null", ts_contract_type(inner, contract));
     }
     if let Some((inner, _)) = value_type.list_parts() {
-        return format!("ReadonlyArray<{}>", ts_contract_type(inner));
+        return format!("ReadonlyArray<{}>", ts_contract_type(inner, contract));
     }
     match value_type.tag() {
         ValueTypeTag::Bool => "boolean",
         ValueTypeTag::I64 | ValueTypeTag::U64 => "bigint",
         ValueTypeTag::Bytes => "Uint8Array",
+        ValueTypeTag::Timestamp => "{ readonly seconds: bigint; readonly nanos: number }",
+        ValueTypeTag::Date => "number",
+        ValueTypeTag::Decimal => {
+            "{ readonly coefficientTwosComplement: Uint8Array; readonly scale: number; readonly precision?: number }"
+        }
+        ValueTypeTag::Money => {
+            "{ readonly currency: string; readonly amount: { readonly coefficientTwosComplement: Uint8Array; readonly scale: number; readonly precision?: number } }"
+        }
+        ValueTypeTag::Record => match value_type.record_ref() {
+            Some(RecordTypeRef::Entity(entity_id)) => {
+                return format!(
+                    "{{ {} }}",
+                    contract
+                        .schema()
+                        .entity(*entity_id)
+                        .expect("validated record entity")
+                        .record()
+                        .fields()
+                        .iter()
+                        .map(|field| format!(
+                            "readonly {}: {}",
+                            ts_identifier(field.name()),
+                            ts_contract_type(field.value_type(), contract)
+                        ))
+                        .collect::<Vec<_>>()
+                        .join("; ")
+                );
+            }
+            _ => "string",
+        },
         _ => "string",
     }
     .to_owned()
@@ -593,6 +1518,10 @@ fn ts_identifier(name: &str) -> String {
 
 fn snake(name: &str) -> String {
     separated(name, '_', false)
+}
+
+fn screaming_snake(name: &str) -> String {
+    snake(name).to_ascii_uppercase()
 }
 
 fn camel(name: &str) -> String {

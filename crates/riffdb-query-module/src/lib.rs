@@ -2,11 +2,18 @@
 
 //! Immutable, exact-contract query modules with a strict canonical codec.
 
+mod application_manifest;
 mod generation;
 
+pub use application_manifest::{
+    APPLICATION_MANIFEST_SCHEMA_V1, ApplicationManifest, ApplicationManifestSourceMap,
+    MAX_APPLICATION_MANIFEST_BYTES, ManifestContract, ManifestError, ManifestErrorKind,
+    ManifestGenerationTargets, ManifestQueryModule, ManifestQuerySource, ManifestRole,
+    ManifestSpan,
+};
 pub use generation::{
-    GeneratedMcpTool, McpToolGenerationError, generate_mcp_tools, generate_rust_client,
-    generate_typescript_client,
+    GeneratedMcpCommand, GeneratedMcpTool, McpToolGenerationError, generate_mcp_commands,
+    generate_mcp_tools, generate_rust_client, generate_typescript_client,
 };
 
 use riffdb_contract_ir::ContractBundle;

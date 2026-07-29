@@ -6,7 +6,9 @@ use std::env;
 use std::path::Path;
 use std::time::Instant;
 
-use riffdb_client_rust::{CallMetadata, StableApplicationClient, load_protected_bearer_credential};
+use riffdb_client_rust::{
+    AttemptBudget, CallMetadata, StableApplicationClient, load_protected_bearer_credential,
+};
 use riffdb_ticketdesk::{
     ListTicketsParams, ListTicketsResult, ProjectMembersParams, ProjectMembersResult,
     ProjectSummaryParams, ProjectSummaryResult, TicketDeskClient, TicketPageParams,
@@ -28,7 +30,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             .timeout(std::time::Duration::from_secs(30)),
     )
     .await?;
-    let mut ticketdesk = TicketDeskClient::new(client, CallMetadata::authenticated(credential));
+    let mut ticketdesk = TicketDeskClient::new(
+        client,
+        CallMetadata::authenticated(credential),
+        AttemptBudget::new(3).expect("positive command attempt budget"),
+    );
 
     let mut list = Vec::with_capacity(SAMPLES);
     let mut members = Vec::with_capacity(SAMPLES);
