@@ -386,14 +386,19 @@ pub fn explain_symbolic_query_result_to_proto(
     }
 }
 
-fn symbolic_record_to_proto(record: &SymbolicResultRecord) -> Result<app_v1::ResultRecord, Status> {
+fn symbolic_record_to_proto(
+    result: &ExecuteSymbolicQueryResult,
+    record: &SymbolicResultRecord,
+) -> Result<app_v1::ResultRecord, Status> {
     let fields = record
         .fields()
         .iter()
         .map(|(name, value)| {
+            let mut value = canonical_value_to_public(value)?;
+            name_symbolic_enum_values(result, &mut value)?;
             Ok(app_v1::Parameter {
                 name: name.clone(),
-                value: Some(canonical_value_to_public(value)?),
+                value: Some(value),
             })
         })
         .collect::<Result<Vec<_>, Status>>()?;
@@ -404,19 +409,20 @@ fn symbolic_record_to_proto(record: &SymbolicResultRecord) -> Result<app_v1::Res
 }
 
 fn symbolic_field_to_proto(
+    result: &ExecuteSymbolicQueryResult,
     name: &str,
     field: &SymbolicResultField,
 ) -> Result<app_v1::ResultField, Status> {
     let (cardinality, records) = match field {
         SymbolicResultField::One(record) => (
             app_v1::ResultCardinality::One,
-            vec![symbolic_record_to_proto(record)?],
+            vec![symbolic_record_to_proto(result, record)?],
         ),
         SymbolicResultField::Maybe(record) => (
             app_v1::ResultCardinality::Maybe,
             record
                 .as_ref()
-                .map(symbolic_record_to_proto)
+                .map(|record| symbolic_record_to_proto(result, record))
                 .transpose()?
                 .into_iter()
                 .collect(),
@@ -425,7 +431,7 @@ fn symbolic_field_to_proto(
             app_v1::ResultCardinality::Many,
             records
                 .iter()
-                .map(symbolic_record_to_proto)
+                .map(|record| symbolic_record_to_proto(result, record))
                 .collect::<Result<Vec<_>, _>>()?,
         ),
     };
@@ -434,6 +440,37 @@ fn symbolic_field_to_proto(
         cardinality: cardinality as i32,
         records,
     })
+}
+
+fn name_symbolic_enum_values(
+    result: &ExecuteSymbolicQueryResult,
+    value: &mut v1::Value,
+) -> Result<(), Status> {
+    use v1::value::Kind;
+
+    match value.kind.as_mut().ok_or_else(invalid_service_response)? {
+        Kind::EnumValue(enumeration) => {
+            enumeration.name = result
+                .enum_variant_name(enumeration.type_id, enumeration.variant_id)
+                .ok_or_else(invalid_service_response)?
+                .to_owned();
+        }
+        Kind::ListValue(values) => {
+            for value in &mut values.values {
+                name_symbolic_enum_values(result, value)?;
+            }
+        }
+        Kind::RecordValue(record) => {
+            for field in &mut record.fields {
+                name_symbolic_enum_values(
+                    result,
+                    field.value.as_mut().ok_or_else(invalid_service_response)?,
+                )?;
+            }
+        }
+        _ => {}
+    }
+    Ok(())
 }
 
 /// Converts one symbolic snapshot result.
@@ -447,7 +484,7 @@ pub fn execute_symbolic_query_result_to_proto(
         fields: result
             .fields()
             .iter()
-            .map(|(name, field)| symbolic_field_to_proto(name, field))
+            .map(|(name, field)| symbolic_field_to_proto(result, name, field))
             .collect::<Result<Vec<_>, _>>()?,
         next_cursor: result
             .next_cursor()

@@ -147,6 +147,7 @@ impl<'a> Planner<'a> {
     ) -> Result<QueryAccessProgramV1, PlannerDiagnostics> {
         let mut partition_parameter: Option<String> = None;
         let selections = selected_fields(self.document);
+        let dependency_fields = dependency_fields(self.document);
         let result_names = result_names(self.document);
         let mut steps = Vec::with_capacity(self.document.body.bindings.len());
         let mut auth = BTreeMap::<String, AuthAccumulator>::new();
@@ -197,6 +198,9 @@ impl<'a> Planner<'a> {
                 .iter()
                 .map(|comparison| comparison.field.to_owned())
                 .collect::<BTreeSet<_>>();
+            if let Some(fields) = dependency_fields.get(binding.name.value.as_str()) {
+                predicate_fields.extend(fields.iter().cloned());
+            }
             let mut dependencies = BTreeSet::new();
             collect_expression_dependencies(
                 &binding.predicate.value,
@@ -790,6 +794,33 @@ fn selected_fields(document: &Document) -> BTreeMap<String, BTreeSet<String>> {
         collect_selected(selection, &mut output);
     }
     output
+}
+
+fn dependency_fields(document: &Document) -> BTreeMap<String, BTreeSet<String>> {
+    let mut output = BTreeMap::new();
+    for binding in &document.body.bindings {
+        collect_dependency_fields(&binding.predicate.value, &mut output);
+    }
+    output
+}
+
+fn collect_dependency_fields(
+    expression: &Expression,
+    output: &mut BTreeMap<String, BTreeSet<String>>,
+) {
+    match expression {
+        Expression::Path(path) if path.0.len() == 2 => {
+            output
+                .entry(path.0[0].value.as_str().to_owned())
+                .or_default()
+                .insert(path.0[1].value.as_str().to_owned());
+        }
+        Expression::Binary { left, right, .. } => {
+            collect_dependency_fields(&left.value, output);
+            collect_dependency_fields(&right.value, output);
+        }
+        Expression::Path(_) | Expression::Parameter(_) | Expression::Literal(_) => {}
+    }
 }
 
 fn result_names(document: &Document) -> BTreeMap<String, BTreeSet<String>> {

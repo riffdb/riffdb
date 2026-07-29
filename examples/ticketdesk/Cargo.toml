@@ -1,0 +1,15 @@
+[package]
+name = "riffdb-ticketdesk"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+riffdb-client-rust = { path = "../../crates/riffdb-client-rust" }
+tokio = { version = "=1.52.0", default-features = false, features = ["macros", "rt-multi-thread"] }
+tonic = { version = "=0.14.6", default-features = false, features = ["channel"] }
+
+[lints]
+workspace = true

@@ -1065,6 +1065,10 @@ fn service_link_is_valid(
                     StoredAdministrationAuditRecordV1::Catalog(_),
                 ) => true,
                 (
+                    ServiceOperationV1::DeployQueryModule,
+                    StoredAdministrationAuditRecordV1::QueryModule(_),
+                ) => true,
+                (
                     ServiceOperationV1::CreateCapability,
                     StoredAdministrationAuditRecordV1::Capability(record),
                 ) => {

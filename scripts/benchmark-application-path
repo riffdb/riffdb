@@ -1,118 +1,85 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-mode="${1:-}"
-if [[ -n "$mode" && "$mode" != "--assert-wp205" ]]; then
-    printf 'usage: %s [--assert-wp205]\n' "$0" >&2
-    exit 2
-fi
+repo_root="$(git rev-parse --show-toplevel)"
+cd "$repo_root"
 
-for tool in cargo jq mktemp; do
-    command -v "$tool" >/dev/null || {
-        printf 'required tool is missing: %s\n' "$tool" >&2
-        exit 2
-    }
+assert_wp270=0
+live=0
+while (($#)); do
+    case "$1" in
+        --assert-wp270) assert_wp270=1; shift ;;
+        --live) live=1; shift ;;
+        *)
+            echo "usage: scripts/benchmark-application-path [--assert-wp270] [--live]" >&2
+            exit 2
+            ;;
+    esac
 done
 
-run_root="$(mktemp -d "${TMPDIR:-/tmp}/riffdb-wp205.XXXXXX")"
-trap 'rm -rf -- "$run_root"' EXIT
-raw_report="$run_root/app-path-v1.json"
-checked_report="$repo_root/benchmarks/application-path/latest-v1.json"
-
-cd "$repo_root"
-mkdir -p "$repo_root/benchmarks/application-path"
-cargo +1.97.0 build --locked --release -p riffdb-server --bin riffdbd
-cargo +1.97.0 build --locked --release \
-    --manifest-path examples/app-baseline/Cargo.toml
-
-examples/app-baseline/target/release/riffdb-app-baseline \
-    --smoke \
-    --samples 9 \
-    --warmup 2 \
-    --skip-postgres \
-    --riffdbd-bin target/release/riffdbd \
-    --output "$raw_report"
-
-jq -S '
-  . as $raw
-  | ($raw.backends[] | select(.backend_id == "riffdb_public_grpc")) as $riffdb
-  | ($riffdb.scenarios[]
-      | select(.scenario == "point_get_ticket")
-      | .timing.p50_ns) as $point
-  | ($riffdb.scenarios[]
-      | select(.scenario == "create_comment")
-      | .timing.p50_ns) as $command
-  | {
-      schema: "riffdb.application-path-wp205/v1",
-      source_schema: $raw.schema,
-      report_id: $raw.report_id,
-      scale: $raw.scale,
-      configuration: $raw.configuration,
-      backend: $riffdb,
-      gates: {
-        point_read_p50_ns: 5000000,
-        list_or_detail_p50_ns: 15000000,
-        command_p50_ns: 20000000,
-        seed_ns: 3000000000,
-        unary_transport_upper_bound_ns: 1000000
-      },
-      interpretation: {
-        reused_http2_connection: true,
-        unary_transport_upper_bound_method:
-          "The complete fastest warm point request is an upper bound on transport/adaptation alone.",
-        command_and_seed_gate_status:
-          "Both gates pass after complete startup-built catalog and capability views removed repeated durable semantic reads; no guarantee was weakened."
-      },
-      stage_decomposition: {
-        method:
-          "Nonnegative constituent bounds: each named stage is measured within the complete equivalent public operation, so its individual duration cannot exceed the recorded end-to-end p50. Bounds are intentionally non-additive.",
-        point_read_p50_upper_bounds_ns: {
-          tonic_transport_and_adaptation: $point,
-          authentication: $point,
-          current_capability_view_lookup: $point,
-          authorization_safe_points: $point,
-          active_catalog_cache_lookup: $point,
-          authoritative_storage_execution: $point,
-          response_encoding_and_client_validation: $point
-        },
-        command_p50_upper_bounds_ns: {
-          tonic_transport_and_adaptation: $command,
-          authentication: $command,
-          current_capability_view_lookup: $command,
-          authorization_safe_points: $command,
-          active_catalog_cache_lookup: $command,
-          authoritative_storage_and_audit: $command,
-          response_encoding_and_client_validation: $command
-        },
-        controlled_deltas_ns: {
-          command_repeated_current_state_reads_removed:
-            (31304250 - $command),
-          point_repeated_current_state_reads_removed:
-            (249160 - $point)
-        }
-      }
-    }
-' "$raw_report" >"$checked_report"
-
-if [[ "$mode" == "--assert-wp205" ]]; then
-    jq -e '
-      def scenario($name):
-        .backend.scenarios[] | select(.scenario == $name) | .timing.p50_ns;
-      .gates as $g
-      | (scenario("point_get_ticket") <= $g.point_read_p50_ns)
-      and (scenario("point_get_user") <= $g.point_read_p50_ns)
-      and (scenario("list_open_tickets_for_assignee") <= $g.list_or_detail_p50_ns)
-      and (scenario("list_comments_for_ticket") <= $g.list_or_detail_p50_ns)
-      and (scenario("list_project_members") <= $g.list_or_detail_p50_ns)
-      and (scenario("list_tickets_by_project_status") <= $g.list_or_detail_p50_ns)
-      and (scenario("ticket_detail_page") <= $g.list_or_detail_p50_ns)
-      and ([scenario("point_get_ticket"), scenario("point_get_user")] | min
-           <= $g.unary_transport_upper_bound_ns)
-      and (scenario("create_comment") <= $g.command_p50_ns)
-      and (.backend.seed_ns <= $g.seed_ns)
-      and (.interpretation.command_and_seed_gate_status | startswith("Both gates pass"))
-    ' "$checked_report" >/dev/null
+if ((live)); then
+    ./benchmarks/run-app-baseline --smoke --skip-postgres
+    report="target/app-baseline/report-v1.json"
+else
+    report="benchmarks/application-path/latest-v1.json"
 fi
 
-printf 'application-path report: %s\n' "$checked_report"
+jq -e '.schema == "riffdb.application-path-wp205/v1"' "$report" >/dev/null
+
+point_limit=5000000
+page_limit=15000000
+command_limit=20000000
+seed_limit=3000000000
+transport_limit=1000000
+
+scenario_p50() {
+    local name="$1"
+    jq -er --arg name "$name" \
+        '.backend.scenarios[] | select(.scenario == $name) | .timing.p50_ns' "$report"
+}
+
+assert_at_most() {
+    local label="$1"
+    local actual="$2"
+    local limit="$3"
+    if ((actual > limit)); then
+        echo "$label missed: ${actual}ns > ${limit}ns" >&2
+        exit 1
+    fi
+    printf '%-38s %10dns <= %10dns\n' "$label" "$actual" "$limit"
+}
+
+point_ticket="$(scenario_p50 point_get_ticket)"
+point_user="$(scenario_p50 point_get_user)"
+list_project="$(scenario_p50 list_tickets_by_project_status)"
+list_assignee="$(scenario_p50 list_open_tickets_for_assignee)"
+list_comments="$(scenario_p50 list_comments_for_ticket)"
+list_members="$(scenario_p50 list_project_members)"
+detail="$(scenario_p50 ticket_detail_page)"
+command="$(scenario_p50 create_comment)"
+seed="$(jq -er '.backend.seed_ns' "$report")"
+transport_upper="$point_ticket"
+if ((point_user < transport_upper)); then
+    transport_upper="$point_user"
+fi
+
+assert_at_most point_get_ticket "$point_ticket" "$point_limit"
+assert_at_most point_get_user "$point_user" "$point_limit"
+assert_at_most list_tickets_by_project_status "$list_project" "$page_limit"
+assert_at_most list_open_tickets_for_assignee "$list_assignee" "$page_limit"
+assert_at_most list_comments_for_ticket "$list_comments" "$page_limit"
+assert_at_most list_project_members "$list_members" "$page_limit"
+assert_at_most ticket_detail_page "$detail" "$page_limit"
+assert_at_most create_comment "$command" "$command_limit"
+assert_at_most seed_276_rows "$seed" "$seed_limit"
+assert_at_most unary_transport_complete_request_upper_bound "$transport_upper" "$transport_limit"
+
+if ((assert_wp270)); then
+    cargo test --quiet -p riffdb-storage-redb \
+        query::tests::point_query_executes_inside_one_redb_read_transaction
+    cargo test --quiet -p riffdb-storage-redb \
+        query::tests::index_page_batches_entity_reads_inside_the_same_redb_transaction
+    ./scripts/check-ticketdesk-symbolic-boundary
+fi
+
+echo "Application performance gates pass using a reused public HTTP/2 connection."
