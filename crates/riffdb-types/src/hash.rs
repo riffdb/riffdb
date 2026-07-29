@@ -9,7 +9,7 @@ use crate::{
     CanonicalInputHash, CanonicalValueHash, CapabilityTokenDigest, ConflictKeyHash,
     ContractBundleHash, ContractPlanRootHash, DigestKey, DigestKeyId, EntityKeyHash, EventHash,
     OfflineMaintenanceInputHash, PartitionKeyHash, PlanHash, ProjectionApplyHash,
-    ProjectionPlanHash, SchemaHash, SourceHash,
+    ProjectionPlanHash, QueryPlanHash, SchemaHash, SourceHash,
 };
 
 /// Hash framing and algorithm scheme defined by ADR-0011.
@@ -31,6 +31,8 @@ pub enum HashDomain {
     Plan,
     /// Validated projection plan.
     ProjectionPlan,
+    /// Closed RiffQL query access program.
+    QueryPlan,
     /// Ordered semantic plan set for one contract bundle.
     ContractPlanRoot,
     /// Canonical command input.
@@ -53,12 +55,13 @@ pub enum HashDomain {
 
 impl HashDomain {
     /// Every registered unkeyed domain, for compatibility and collision checks.
-    pub const ALL: [Self; 14] = [
+    pub const ALL: [Self; 15] = [
         Self::CanonicalValue,
         Self::Source,
         Self::ContractBundle,
         Self::Plan,
         Self::ProjectionPlan,
+        Self::QueryPlan,
         Self::ContractPlanRoot,
         Self::CommandInput,
         Self::Event,
@@ -78,6 +81,7 @@ impl HashDomain {
             Self::ContractBundle => "riffdb.contract-bundle/v1",
             Self::Plan => "riffdb.plan/v1",
             Self::ProjectionPlan => "riffdb.projection-plan/v1",
+            Self::QueryPlan => "riffdb.query-plan/v1",
             Self::ContractPlanRoot => "riffdb.contract-plan-root/v1",
             Self::CommandInput => "riffdb.command-input/v1",
             Self::Event => "riffdb.event/v1",
@@ -249,6 +253,12 @@ typed_hash_function!(
     hash_projection_plan,
     ProjectionPlan,
     ProjectionPlanHash
+);
+typed_hash_function!(
+    /// Hashes a closed RiffQL query access program in its immutable v1 domain.
+    hash_query_plan,
+    QueryPlan,
+    QueryPlanHash
 );
 typed_hash_function!(
     /// Hashes an ordered contract semantic-plan set in its immutable v1 domain.

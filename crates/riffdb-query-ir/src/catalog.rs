@@ -80,6 +80,7 @@ pub struct EntitySymbol {
     name: String,
     fields: BTreeMap<String, FieldSymbol>,
     indexes: BTreeMap<String, IndexSymbol>,
+    primary_key: Vec<String>,
 }
 
 impl EntitySymbol {
@@ -111,6 +112,12 @@ impl EntitySymbol {
     #[must_use]
     pub fn indexes(&self) -> impl ExactSizeIterator<Item = &IndexSymbol> {
         self.indexes.values()
+    }
+
+    /// Primary-key component names in declared key order.
+    #[must_use]
+    pub fn primary_key(&self) -> &[String] {
+        &self.primary_key
     }
 
     /// Compiler-internal stable identity.
@@ -209,6 +216,16 @@ impl SymbolicCatalog {
                 name: entity.name().to_owned(),
                 fields,
                 indexes,
+                primary_key: key_ids
+                    .iter()
+                    .map(|id| {
+                        entity
+                            .record()
+                            .field(*id)
+                            .map(|field| field.name().to_owned())
+                            .ok_or_else(|| invariant("primary key references an absent field"))
+                    })
+                    .collect::<Result<Vec<_>, _>>()?,
             };
             if entities.insert(symbol.name.clone(), symbol).is_some() {
                 return Err(invariant("duplicate exact-contract entity"));

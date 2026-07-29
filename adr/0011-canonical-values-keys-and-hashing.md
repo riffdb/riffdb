@@ -7,7 +7,8 @@
   partition/index keys and partition hashing, ADR-0009 for capability-token
   keyed hashing, ADR-0005 for the versioned idempotency key, ADR-0017 for
   projection keys and apply hashing, and ADR-0018 for UUIDv7 assembly and
-  production-source ownership
+  production-source ownership; ADR-0051 adds the typed
+  `riffdb.query-plan/v1` unkeyed domain
 - **Decision deadline:** Before WP-010 semantic types or fixtures merge
 
 The human maintainer accepted this exact text, including the foundational

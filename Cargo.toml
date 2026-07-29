@@ -23,6 +23,7 @@ members = [
     "crates/riffdb-projection",
     "crates/riffdb-proto",
     "crates/riffdb-query-ir",
+    "crates/riffdb-query-compiler",
     "crates/riffdb-runtime",
     "crates/riffdb-riffql-syntax",
     "crates/riffdb-server",
