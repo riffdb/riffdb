@@ -1,0 +1,11 @@
+[net]
+offline = true
+
+[source.crates-io]
+replace-with = "vendored-sources"
+
+[source.vendored-sources]
+directory = "public/rust-sdk/vendor"
+
+[patch.crates-io]
+riffdb-client-rust = { path = "public/rust-sdk/crates/riffdb-client-rust" }

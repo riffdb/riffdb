@@ -1,0 +1,215 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+expected_runs=
+sealed=false
+assert_gate=false
+while (($#)); do
+    case "$1" in
+        --runs) expected_runs="${2:-}"; shift 2 ;;
+        --sealed) sealed=true; shift ;;
+        --assert-gate) assert_gate=true; shift ;;
+        *)
+            echo "usage: scripts/agent-application-alpha-acceptance --runs 4 --sealed --assert-gate" >&2
+            exit 2
+            ;;
+    esac
+done
+[[ "$expected_runs" == "4" && "$sealed" == true && "$assert_gate" == true ]] || {
+    echo "the alpha gate requires exactly four sealed asserted runs" >&2
+    exit 2
+}
+
+for tool in jq sha256sum mktemp; do
+    command -v "$tool" >/dev/null 2>&1 || {
+        echo "required alpha-gate tool is missing: $tool" >&2
+        exit 1
+    }
+done
+
+work_root="$(mktemp -d "${TMPDIR:-/tmp}/riffdb-agent-alpha-gate.XXXXXX")"
+cleanup() {
+    rm -rf "$work_root"
+}
+trap cleanup EXIT INT TERM
+bundle="$work_root/bundle"
+bundle_hash="$("$repo_root/scripts/agent-application-alpha-package" "$bundle")"
+[[ "$(jq -er '.bundle_hash' "$bundle/bundle.json")" == "$bundle_hash" ]] || {
+    echo "sealed bundle identity mismatch" >&2
+    exit 1
+}
+
+runs_root="$repo_root/evaluations/agent-application-alpha/runs"
+gate_evidence="$repo_root/release/evidence/agent-application-alpha-gate-v1.json"
+mapfile -t reports < <(find "$runs_root" -mindepth 2 -maxdepth 2 -type f -name report.json | sort)
+[[ "${#reports[@]}" == 4 ]] || {
+    if [[ "${#reports[@]}" == 0 ]]; then
+        jq -e --arg bundle "$bundle_hash" '
+          .schema == "riffdb-agent-application-alpha-gate/v1"
+          and .bundle_hash == $bundle
+          and .decision == "not_eligible"
+          and .sealed_bundle_self_test == "passed"
+          and .independent_runs_completed == 0
+          and .independent_runs_required == 4
+          and .runs == []
+        ' "$gate_evidence" >/dev/null || {
+            echo "published ineligible gate evidence is stale or malformed" >&2
+            exit 1
+        }
+    fi
+    echo "Agent Application Alpha is not yet eligible: expected 4 independent reports, found ${#reports[@]}" >&2
+    exit 1
+}
+
+combinations="$work_root/combinations"
+agents="$work_root/agents"
+: >"$combinations"
+: >"$agents"
+for report in "${reports[@]}"; do
+    run_dir="$(dirname "$report")"
+    run_id="$(basename "$run_dir")"
+    transcript="$run_dir/events.jsonl"
+    [[ -s "$transcript" ]] || {
+        echo "missing raw event transcript for $report" >&2
+        exit 1
+    }
+    transcript_hash="$(sha256sum "$transcript" | cut -d' ' -f1)"
+    jq -e \
+        --arg bundle "$bundle_hash" \
+        --arg run_id "$run_id" \
+        --arg transcript "$transcript_hash" '
+      (keys | sort) == ([
+        "agent_identity", "boundary_passed", "bundle_hash",
+        "compiler_failures", "domain", "explanation",
+        "first_page_read_seconds", "first_write_seconds", "fresh_context",
+        "golden_passed", "handwritten_glue_lines", "human_interventions",
+        "independent", "kernel_attempts", "kernel_successes", "language",
+        "rating", "run_id", "runtime_failures", "schema", "source_access",
+        "time_to_complete_seconds", "transcript_sha256", "unsupported_shapes"
+      ] | sort)
+      and .schema == "riffdb-agent-application-alpha-run/v1"
+      and .run_id == $run_id
+      and .bundle_hash == $bundle
+      and .transcript_sha256 == $transcript
+      and .independent == true
+      and .fresh_context == true
+      and (.human_interventions | type) == "number"
+      and (.human_interventions | floor) == .human_interventions
+      and .human_interventions == 0
+      and (.kernel_attempts | type) == "number"
+      and (.kernel_attempts | floor) == .kernel_attempts
+      and .kernel_attempts >= 0
+      and (.kernel_successes | type) == "number"
+      and (.kernel_successes | floor) == .kernel_successes
+      and .kernel_successes == 0
+      and (.handwritten_glue_lines | type) == "number"
+      and (.handwritten_glue_lines | floor) == .handwritten_glue_lines
+      and .handwritten_glue_lines == 0
+      and (.compiler_failures | type) == "number"
+      and (.compiler_failures | floor) == .compiler_failures
+      and .compiler_failures >= 0
+      and (.runtime_failures | type) == "number"
+      and (.runtime_failures | floor) == .runtime_failures
+      and .runtime_failures >= 0
+      and (.unsupported_shapes | type) == "array"
+      and (.unsupported_shapes | length) == 0
+      and (.first_write_seconds | type) == "number"
+      and (.first_write_seconds | floor) == .first_write_seconds
+      and .first_write_seconds >= 0
+      and .first_write_seconds <= 1800
+      and (.first_page_read_seconds | type) == "number"
+      and (.first_page_read_seconds | floor) == .first_page_read_seconds
+      and .first_page_read_seconds >= 0
+      and .first_page_read_seconds <= 3600
+      and (.time_to_complete_seconds | type) == "number"
+      and (.time_to_complete_seconds | floor) == .time_to_complete_seconds
+      and .time_to_complete_seconds >= 0
+      and .time_to_complete_seconds <= 7200
+      and (.source_access | keys | sort) == [
+        "riffdb_implementation", "ticketdesk"
+      ]
+      and .source_access.riffdb_implementation == false
+      and .source_access.ticketdesk == false
+      and .boundary_passed == true
+      and .golden_passed == true
+      and (.rating | type) == "number"
+      and .rating >= 8.5
+      and .rating <= 10
+      and (.explanation | type) == "string"
+      and (.explanation | length) > 0
+      and (.explanation | length) <= 4096
+      and (.agent_identity | test("^[A-Za-z0-9_.-]{1,128}$"))
+      and (.domain == "blog" or .domain == "orders")
+      and (.language == "rust" or .language == "typescript")
+    ' "$report" >/dev/null || {
+        echo "sealed run missed an Agent Application Alpha threshold: $report" >&2
+        exit 1
+    }
+    jq -r '[.domain, .language] | join(\"-\")' "$report" >>"$combinations"
+    jq -r '.agent_identity' "$report" >>"$agents"
+    while IFS= read -r event; do
+        jq -e '
+          (keys - ["schema", "elapsed_ms", "kind", "code", "operation"]
+            | length) == 0
+          and .schema == "riffdb-agent-application-alpha-event/v1"
+          and (.elapsed_ms | type) == "number"
+          and (.elapsed_ms | floor) == .elapsed_ms
+          and .elapsed_ms >= 0
+          and (
+            .kind as $kind
+            | ([
+              "start", "tool", "compiler_failure", "runtime_failure",
+              "unsupported_shape", "intervention", "kernel_attempt",
+              "source_access", "first_write", "first_page_read", "complete",
+              "rating"
+            ] | index($kind)) != null
+          )
+          and (
+            (.code == null)
+            or (
+              (.code | type) == "string"
+              and (.code | test("^[A-Za-z0-9_.-]{1,128}$"))
+            )
+          )
+          and (
+            (.operation == null)
+            or (
+              (.operation | type) == "string"
+              and (.operation | test("^[A-Za-z0-9_.-]{1,256}$"))
+            )
+          )
+        ' <<<"$event" >/dev/null || {
+            echo "invalid redaction-safe event in $transcript" >&2
+            exit 1
+        }
+    done <"$transcript"
+done
+
+[[ "$(sort -u "$agents" | wc -l)" == "4" ]] || {
+    echo "sealed runs do not have four independent agent identities" >&2
+    exit 1
+}
+diff -u <(printf '%s\n' blog-rust blog-typescript orders-rust orders-typescript) \
+    <(sort -u "$combinations") >/dev/null || {
+    echo "sealed runs do not cover both domains in both languages" >&2
+    exit 1
+}
+
+jq -s 'sort_by(.domain, .language)' "${reports[@]}" >"$work_root/published-runs.json"
+jq -e \
+    --arg bundle "$bundle_hash" \
+    --slurpfile runs "$work_root/published-runs.json" '
+  .schema == "riffdb-agent-application-alpha-gate/v1"
+  and .bundle_hash == $bundle
+  and .decision == "eligible"
+  and .sealed_bundle_self_test == "passed"
+  and .independent_runs_completed == 4
+  and .independent_runs_required == 4
+  and .runs == $runs[0]
+' "$gate_evidence" >/dev/null || {
+    echo "published eligible gate evidence is missing or does not match raw reports" >&2
+    exit 1
+}
+
+echo "Agent Application Alpha gate passed"
