@@ -62,10 +62,11 @@ if ((acceptance)); then
 fi
 cargo build --quiet "${profile_args[@]}" \
     -p riffdb-server --bin riffdbd -p riffdb-cli --bin riffdb \
-    -p riffdb-ticketdesk --bin seed
+    -p riffdb-ticketdesk --bin seed --bin benchmark
 riffdbd="$repo_root/target/$profile/riffdbd"
 riffdb="$repo_root/target/$profile/riffdb"
 seed="$repo_root/target/$profile/seed"
+benchmark="$repo_root/target/$profile/benchmark"
 contract="$repo_root/examples/app-baseline/contracts/ticketdesk.riff"
 queries="$repo_root/queries/ticketdesk"
 bootstrap_request="$repo_root/release/config/bootstrap-ticketdesk-dev.json"
@@ -202,6 +203,17 @@ if ((acceptance || seed_builtin)); then
         exit 1
     fi
     printf 'riffdb-dev-seed-v1\t%s\t%sns\n' "$seed_rows" "$seed_ns" >&2
+    benchmark_result="$("$benchmark" "$endpoint" "$work_root/agent.credential")"
+    IFS=$'\t' read -r benchmark_schema list_ns detail_ns <<<"$benchmark_result"
+    [[ "$benchmark_schema" == "riffdb-ticketdesk-query-benchmark-v1" ]] || {
+        echo "TicketDesk named-query benchmark returned an invalid result" >&2
+        exit 1
+    }
+    if ((list_ns > 15000000 || detail_ns > 15000000)); then
+        echo "TicketDesk named-query benchmark missed the 15ms gate" >&2
+        exit 1
+    fi
+    printf 'riffdb-dev-query-p50-v1\t%sns\t%sns\n' "$list_ns" "$detail_ns" >&2
 fi
 
 printf 'riffdb-dev-ready-v1\t%s\t%s\t%s\n' \

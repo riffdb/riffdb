@@ -21,6 +21,22 @@ The checked-in evidence manifest is a candidate map, not a signed result.
 `scripts/demo --assert` writes the revision-specific result to
 `target/wp200/demo-report.json` only after every selected assertion succeeds.
 
+## Symbolic application quick start
+
+Application and agent development is RiffQL-first. Start a disposable,
+authorized TicketDesk environment with its contract, named query module,
+development role, and 276-row command seed:
+
+```bash
+cargo run -p riffdb-cli -- dev --seed
+```
+
+Every list or detail page is one symbolic query request; mutations remain one
+compiled command invocation. The kernel gRPC API remains supported, but normal
+application code does not construct IDs, masks, keys, or protobuf field maps.
+See [Symbolic applications](docs/getting-started/SYMBOLIC-APPLICATIONS.md) and
+the [TicketDesk acceptance report](docs/getting-started/TICKETDESK-ACCEPTANCE.md).
+
 ## Why RiffDB
 
 RiffDB narrows the application mutation surface. First-party gRPC, MCP, CLI,

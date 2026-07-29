@@ -2,7 +2,7 @@ use std::ffi::OsString;
 use std::fs;
 use std::io::{self, Read};
 use std::path::Path;
-use std::process::ExitCode;
+use std::process::{Command as ProcessCommand, ExitCode};
 
 use base64::Engine as _;
 use base64::engine::general_purpose::STANDARD;
@@ -127,6 +127,24 @@ async fn submit_normal_create_retry(
 /// Parses one process invocation and runs exactly one public CLI operation.
 pub async fn run() -> ExitCode {
     let cli = Cli::parse();
+    if let TopLevel::Dev {
+        role,
+        watch,
+        seed,
+        seed_dir,
+        seed_concurrency,
+        acceptance,
+    } = &cli.command
+    {
+        return run_dev(
+            role,
+            *watch,
+            *seed,
+            seed_dir.as_deref(),
+            seed_concurrency,
+            *acceptance,
+        );
+    }
     let identity = command_identity(&cli.command);
     let environment = ProcessEnvironment;
     let config = match resolve(&cli, &environment) {
@@ -153,6 +171,54 @@ pub async fn run() -> ExitCode {
     )
 }
 
+fn run_dev(
+    role: &str,
+    watch: bool,
+    seed: bool,
+    seed_dir: Option<&std::ffi::OsStr>,
+    seed_concurrency: &str,
+    acceptance: bool,
+) -> ExitCode {
+    let script = match std::env::current_dir() {
+        Ok(directory) => directory.join("scripts/riffdb-dev"),
+        Err(_) => {
+            eprintln!("riffdb dev requires an accessible workspace");
+            return ExitCode::FAILURE;
+        }
+    };
+    if !script.is_file() {
+        eprintln!("riffdb dev must be run from a RiffDB source workspace");
+        return ExitCode::FAILURE;
+    }
+    let mut command = ProcessCommand::new(script);
+    command.args(["--role", role, "--seed-concurrency", seed_concurrency]);
+    if watch {
+        command.arg("--watch");
+    }
+    if seed {
+        command.arg("--seed");
+    }
+    if let Some(seed_dir) = seed_dir {
+        command.arg("--seed-dir").arg(seed_dir);
+    }
+    if acceptance {
+        command.arg("--acceptance");
+    }
+    match command.status() {
+        Ok(status) if status.success() => ExitCode::SUCCESS,
+        Ok(status) => ExitCode::from(
+            status
+                .code()
+                .and_then(|code| u8::try_from(code).ok())
+                .unwrap_or(1),
+        ),
+        Err(_) => {
+            eprintln!("riffdb dev workflow could not be started");
+            ExitCode::FAILURE
+        }
+    }
+}
+
 async fn dispatch(
     command: TopLevel,
     config: &EffectiveConfig,
@@ -160,6 +226,11 @@ async fn dispatch(
     stdin: &mut dyn Read,
 ) -> Terminal {
     match command {
+        TopLevel::Dev { .. } => local_error(
+            CommandIdentity::ServerHealth,
+            "dev_dispatch_invalid",
+            "development workflow dispatch is invalid",
+        ),
         TopLevel::Contract { command } => {
             contract_command(command, config, environment, stdin).await
         }
@@ -2356,6 +2427,7 @@ const fn restore_confirmation(confirmed: bool) -> OfflineMaintenanceReplacementC
 
 const fn command_identity(command: &TopLevel) -> CommandIdentity {
     match command {
+        TopLevel::Dev { .. } => CommandIdentity::ServerHealth,
         TopLevel::Contract {
             command: ContractCommand::Validate { .. },
         } => CommandIdentity::ContractValidate,

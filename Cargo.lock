@@ -1869,6 +1869,7 @@ dependencies = [
  "riffdb-query-ir",
  "riffdb-riffql-syntax",
  "riffdb-types",
+ "serde_json",
 ]
 
 [[package]]

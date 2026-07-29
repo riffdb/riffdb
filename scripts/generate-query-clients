@@ -9,9 +9,17 @@ if [[ "${1:-}" == "--check" ]]; then
     trap 'rm -rf "$generated"' EXIT
     cargo run --quiet -p riffdb-query-module --example generate_clients -- "$generated"
     diff -u fixtures/query-modules/ticketdesk.rs "$generated/fixtures/query-modules/ticketdesk.rs"
+    diff -u fixtures/query-modules/ticketdesk.mcp.json "$generated/fixtures/query-modules/ticketdesk.mcp.json"
     diff -u clients/typescript/ticketdesk/client.ts "$generated/clients/typescript/ticketdesk/client.ts"
     rustc -F unsafe-code --crate-type lib --edition 2024 "$generated/fixtures/query-modules/ticketdesk.rs" \
         --out-dir "$generated"
+    if command -v tsc >/dev/null 2>&1; then
+        tsc --noEmit --strict --target ES2022 \
+            "$generated/clients/typescript/ticketdesk/client.ts"
+    else
+        node --experimental-strip-types --check \
+            "$generated/clients/typescript/ticketdesk/client.ts"
+    fi
     exit 0
 fi
 

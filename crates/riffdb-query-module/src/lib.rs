@@ -4,7 +4,10 @@
 
 mod generation;
 
-pub use generation::{generate_rust_client, generate_typescript_client};
+pub use generation::{
+    GeneratedMcpTool, McpToolGenerationError, generate_mcp_tools, generate_rust_client,
+    generate_typescript_client,
+};
 
 use riffdb_contract_ir::ContractBundle;
 use riffdb_query_compiler::compile_query;

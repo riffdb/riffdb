@@ -9,7 +9,7 @@ use std::path::PathBuf;
 use riffdb_contract_compiler::compile_contract_source;
 use riffdb_query_module::{
     NamedQuerySource, QueryModule, QueryModuleCandidate, QueryModuleName, QueryModuleVersion,
-    generate_rust_client, generate_typescript_client,
+    generate_mcp_tools, generate_rust_client, generate_typescript_client,
 };
 
 const CONTRACT: &str = include_str!("../../../examples/app-baseline/contracts/ticketdesk.riff");
@@ -59,4 +59,45 @@ fn main() {
         generate_typescript_client(&module, &contract),
     )
     .expect("TypeScript fixture");
+    let tools = generate_mcp_tools(&module).expect("generate MCP tools");
+    let manifest = serde_json::json!({
+        "schema": "riffdb-generated-mcp-tools-v1",
+        "tools": tools
+            .iter()
+            .map(|tool| serde_json::json!({
+                "name": tool.name,
+                "title": tool.title,
+                "description": tool.description,
+                "module_hash": hex(&tool.module_hash),
+                "input_schema": serde_json::from_str::<serde_json::Value>(&tool.input_schema)
+                    .expect("input schema"),
+                "result_schema": serde_json::from_str::<serde_json::Value>(&tool.result_schema)
+                    .expect("result schema"),
+                "annotations": {
+                    "readOnlyHint": true,
+                    "destructiveHint": false,
+                    "idempotentHint": true,
+                    "openWorldHint": false,
+                },
+            }))
+            .collect::<Vec<_>>(),
+    });
+    fs::write(
+        output.join("fixtures/query-modules/ticketdesk.mcp.json"),
+        format!(
+            "{}\n",
+            serde_json::to_string_pretty(&manifest).expect("MCP manifest")
+        ),
+    )
+    .expect("MCP fixture");
+}
+
+fn hex(bytes: &[u8]) -> String {
+    use std::fmt::Write as _;
+
+    let mut output = String::with_capacity(bytes.len() * 2);
+    for byte in bytes {
+        write!(output, "{byte:02x}").expect("string");
+    }
+    output
 }
