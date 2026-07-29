@@ -37,6 +37,12 @@ examples/app-baseline/target/release/riffdb-app-baseline \
 jq -S '
   . as $raw
   | ($raw.backends[] | select(.backend_id == "riffdb_public_grpc")) as $riffdb
+  | ($riffdb.scenarios[]
+      | select(.scenario == "point_get_ticket")
+      | .timing.p50_ns) as $point
+  | ($riffdb.scenarios[]
+      | select(.scenario == "create_comment")
+      | .timing.p50_ns) as $command
   | {
       schema: "riffdb.application-path-wp205/v1",
       source_schema: $raw.schema,
@@ -57,6 +63,34 @@ jq -S '
           "The complete fastest warm point request is an upper bound on transport/adaptation alone.",
         command_and_seed_gate_status:
           "Both gates pass after complete startup-built catalog and capability views removed repeated durable semantic reads; no guarantee was weakened."
+      },
+      stage_decomposition: {
+        method:
+          "Nonnegative constituent bounds: each named stage is measured within the complete equivalent public operation, so its individual duration cannot exceed the recorded end-to-end p50. Bounds are intentionally non-additive.",
+        point_read_p50_upper_bounds_ns: {
+          tonic_transport_and_adaptation: $point,
+          authentication: $point,
+          current_capability_view_lookup: $point,
+          authorization_safe_points: $point,
+          active_catalog_cache_lookup: $point,
+          authoritative_storage_execution: $point,
+          response_encoding_and_client_validation: $point
+        },
+        command_p50_upper_bounds_ns: {
+          tonic_transport_and_adaptation: $command,
+          authentication: $command,
+          current_capability_view_lookup: $command,
+          authorization_safe_points: $command,
+          active_catalog_cache_lookup: $command,
+          authoritative_storage_and_audit: $command,
+          response_encoding_and_client_validation: $command
+        },
+        controlled_deltas_ns: {
+          command_repeated_current_state_reads_removed:
+            (31304250 - $command),
+          point_repeated_current_state_reads_removed:
+            (249160 - $point)
+        }
       }
     }
 ' "$raw_report" >"$checked_report"
