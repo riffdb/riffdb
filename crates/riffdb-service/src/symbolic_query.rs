@@ -2014,14 +2014,16 @@ fn authorize_program(
             partition
         };
         let request = match step.access() {
-            QueryAccessKind::Point { .. } => OperationRequest::get_entity(
-                lineage.clone(),
-                program.contract().version(),
-                step.internal_entity_id(),
-                OperationTenantScope::global_only(),
-                partition.clone(),
-                non_key_fields.clone(),
-            ),
+            QueryAccessKind::Point { .. } | QueryAccessKind::DependentPointBatch { .. } => {
+                OperationRequest::get_entity(
+                    lineage.clone(),
+                    program.contract().version(),
+                    step.internal_entity_id(),
+                    OperationTenantScope::global_only(),
+                    partition.clone(),
+                    non_key_fields.clone(),
+                )
+            }
             QueryAccessKind::Index { .. } => {
                 let Some(index_id) = step.internal_index_id() else {
                     return false;
@@ -2066,7 +2068,7 @@ fn authorize_program(
                 == OutputClassification::PolicyFilteredApplicationData
             && mask_matches;
         let access_matches = match step.access() {
-            QueryAccessKind::Point { .. } => {
+            QueryAccessKind::Point { .. } | QueryAccessKind::DependentPointBatch { .. } => {
                 authorization.operation() == ServiceOperationV1::GetEntity
                     && obligations.row_limit().is_none()
                     && obligations.partition_constraint()
@@ -2124,6 +2126,7 @@ fn execution_failure(
         QueryExecutionError::BackendUnavailable => PublicError::storage_unavailable().into(),
         QueryExecutionError::BoundExceeded => ServiceFailure::ResponseTooLarge,
         QueryExecutionError::MissingField { .. }
+        | QueryExecutionError::InvalidDependentKey { .. }
         | QueryExecutionError::InvalidProgram
         | QueryExecutionError::UnexpectedCardinality { .. }
         | QueryExecutionError::UnsupportedPredicate => {

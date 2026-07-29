@@ -32,6 +32,8 @@ pub enum PlannerDiagnosticCode {
     Unbounded,
     /// Resolved input could not form a closed internal program.
     InternalInvariant,
+    /// Scalar and bounded-collection cardinality are used incompatibly.
+    Cardinality,
 }
 
 impl PlannerDiagnosticCode {
@@ -45,6 +47,7 @@ impl PlannerDiagnosticCode {
             Self::Unordered => "RDB-QP004",
             Self::Unbounded => "RDB-QP005",
             Self::InternalInvariant => "RDB-QP006",
+            Self::Cardinality => "RDB-QP007",
         }
     }
 }
@@ -125,6 +128,8 @@ struct Planner<'a> {
     catalog: &'a SymbolicCatalog,
     parameters: BTreeMap<&'a str, &'a TypeReference>,
     binding_entities: BTreeMap<&'a str, &'a EntitySymbol>,
+    binding_cardinalities: BTreeMap<&'a str, Cardinality>,
+    binding_maximum_rows: BTreeMap<&'a str, u64>,
 }
 
 impl<'a> Planner<'a> {
@@ -138,6 +143,8 @@ impl<'a> Planner<'a> {
                 .map(|parameter| (parameter.name.value.as_str(), &parameter.ty.value))
                 .collect(),
             binding_entities: BTreeMap::new(),
+            binding_cardinalities: BTreeMap::new(),
+            binding_maximum_rows: BTreeMap::new(),
         }
     }
 
@@ -158,7 +165,8 @@ impl<'a> Planner<'a> {
                 .entity(binding.entity.value.as_str())
                 .ok_or_else(internal)?;
             let comparisons = comparisons(&binding.predicate.value);
-            self.type_check(entity, &comparisons)?;
+            let maximum_rows = maximum_rows(binding)?;
+            self.type_check(entity, binding, &comparisons)?;
 
             let partition_field = entity.partition_field();
             let route = comparisons.iter().find_map(|comparison| {
@@ -190,9 +198,16 @@ impl<'a> Planner<'a> {
                 }
             }
 
-            let maximum_rows = maximum_rows(binding)?;
             let row_limit = row_limit(binding, self.document)?;
-            let (access, index_id) = choose_access(entity, binding, &comparisons)?;
+            let (access, index_id) = choose_access(
+                entity,
+                binding,
+                &comparisons,
+                &self.binding_cardinalities,
+                &self.binding_maximum_rows,
+                self.document,
+                maximum_rows,
+            )?;
             let predicates = self.normalize_predicates(&comparisons)?;
             let mut predicate_fields = comparisons
                 .iter()
@@ -218,6 +233,9 @@ impl<'a> Planner<'a> {
             }
             match &access {
                 QueryAccessKind::Point { key_fields } => {
+                    predicate_fields.extend(key_fields.iter().cloned());
+                }
+                QueryAccessKind::DependentPointBatch { key_fields, .. } => {
                     predicate_fields.extend(key_fields.iter().cloned());
                 }
                 QueryAccessKind::Index { fields, .. } => {
@@ -261,7 +279,9 @@ impl<'a> Planner<'a> {
                 index_id,
                 entity.internal_primary_key_schema().clone(),
                 match &access {
-                    QueryAccessKind::Point { .. } => None,
+                    QueryAccessKind::Point { .. } | QueryAccessKind::DependentPointBatch { .. } => {
+                        None
+                    }
                     QueryAccessKind::Index { index, .. } => entity
                         .index(index)
                         .map(|symbol| symbol.internal_key_schema().clone()),
@@ -292,6 +312,10 @@ impl<'a> Planner<'a> {
             steps.push(step);
             self.binding_entities
                 .insert(binding.name.value.as_str(), entity);
+            self.binding_cardinalities
+                .insert(binding.name.value.as_str(), binding.cardinality.value);
+            self.binding_maximum_rows
+                .insert(binding.name.value.as_str(), maximum_rows);
         }
 
         let authorization = auth
@@ -315,6 +339,7 @@ impl<'a> Planner<'a> {
     fn type_check(
         &self,
         entity: &EntitySymbol,
+        binding: &riffdb_riffql_syntax::Binding,
         comparisons: &[Comparison<'_>],
     ) -> Result<(), PlannerDiagnostics> {
         for comparison in comparisons {
@@ -351,6 +376,31 @@ impl<'a> Planner<'a> {
                 && path.0.len() == 2
                 && let Some(source_entity) = self.binding_entities.get(path.0[0].value.as_str())
             {
+                let source_binding = path.0[0].value.as_str();
+                let source_cardinality = self
+                    .binding_cardinalities
+                    .get(source_binding)
+                    .copied()
+                    .ok_or_else(internal)?;
+                let cardinality_is_valid = match comparison.operator {
+                    BinaryOperator::In => {
+                        source_cardinality == Cardinality::Many
+                            && binding.cardinality.value == Cardinality::Many
+                    }
+                    _ => source_cardinality != Cardinality::Many,
+                };
+                if !cardinality_is_valid {
+                    return Err(one(
+                        PlannerDiagnosticCode::Cardinality,
+                        path.0[1].span,
+                        vec![
+                            source_binding.to_owned(),
+                            path.0[1].value.as_str().to_owned(),
+                        ],
+                        "predicate consumes a binding field with incompatible cardinality",
+                        None,
+                    ));
+                }
                 let source = source_entity
                     .field(path.0[1].value.as_str())
                     .ok_or_else(internal)?
@@ -398,9 +448,16 @@ impl<'a> Planner<'a> {
                         let first = path.0[0].value.as_str();
                         let second = path.0[1].value.as_str();
                         if self.binding_entities.contains_key(first) {
-                            QueryPredicateValue::BindingField {
-                                binding: first.to_owned(),
-                                field: second.to_owned(),
+                            if self.binding_cardinalities.get(first) == Some(&Cardinality::Many) {
+                                QueryPredicateValue::BindingFieldSet {
+                                    binding: first.to_owned(),
+                                    field: second.to_owned(),
+                                }
+                            } else {
+                                QueryPredicateValue::BindingField {
+                                    binding: first.to_owned(),
+                                    field: second.to_owned(),
+                                }
                             }
                         } else if let Some((type_id, variant_id)) =
                             self.catalog.enumeration(first).and_then(|enumeration| {
@@ -579,7 +636,114 @@ fn choose_access(
     entity: &EntitySymbol,
     binding: &riffdb_riffql_syntax::Binding,
     comparisons: &[Comparison<'_>],
+    binding_cardinalities: &BTreeMap<&str, Cardinality>,
+    binding_maximum_rows: &BTreeMap<&str, u64>,
+    document: &Document,
+    maximum_rows: u64,
 ) -> Result<(QueryAccessKind, Option<riffdb_types::IndexId>), PlannerDiagnostics> {
+    let collection_dependencies = comparisons
+        .iter()
+        .filter_map(|comparison| {
+            if comparison.operator != BinaryOperator::In {
+                return None;
+            }
+            let Expression::Path(path) = comparison.value else {
+                return None;
+            };
+            let [source_binding, source_field] = path.0.as_slice() else {
+                return None;
+            };
+            (binding_cardinalities.get(source_binding.value.as_str()) == Some(&Cardinality::Many))
+                .then_some((comparison, source_binding, source_field))
+        })
+        .collect::<Vec<_>>();
+    if !collection_dependencies.is_empty() {
+        if collection_dependencies.len() != 1 {
+            return Err(one(
+                PlannerDiagnosticCode::Cardinality,
+                binding.predicate.span,
+                vec![binding.name.value.as_str().to_owned()],
+                "dependent key batch requires exactly one bounded collection field",
+                None,
+            ));
+        }
+        let (collection, source_binding, source_field) = collection_dependencies[0];
+        let key_fields = entity.primary_key();
+        let complete_key = key_fields.iter().all(|field| {
+            comparisons.iter().any(|comparison| {
+                comparison.field == field
+                    && (comparison.operator == BinaryOperator::Equal
+                        || std::ptr::eq(comparison, collection))
+            })
+        });
+        let key_only = comparisons
+            .iter()
+            .all(|comparison| key_fields.iter().any(|field| field == comparison.field));
+        let source_maximum = binding_maximum_rows
+            .get(source_binding.value.as_str())
+            .copied()
+            .ok_or_else(internal)?;
+        let source = document
+            .body
+            .bindings
+            .iter()
+            .find(|candidate| candidate.name.value == source_binding.value)
+            .ok_or_else(internal)?;
+        let source_order = source
+            .order
+            .iter()
+            .filter_map(|term| path_field(&term.path.value))
+            .collect::<Vec<_>>();
+        let source_order_is_forward = source
+            .order
+            .iter()
+            .all(|term| term.direction.value == Direction::Ascending);
+        let target_order = binding
+            .order
+            .iter()
+            .filter_map(|term| path_field(&term.path.value))
+            .collect::<Vec<_>>();
+        let forward_order = binding
+            .order
+            .iter()
+            .all(|term| term.direction.value == Direction::Ascending);
+        let valid = binding.cardinality.value == Cardinality::Many
+            && binding.absence_outcome.is_some()
+            && binding
+                .take
+                .as_ref()
+                .is_some_and(|take| take.after.is_none())
+            && complete_key
+            && key_only
+            && maximum_rows <= source_maximum
+            && source_order == [source_field.value.as_str()]
+            && source_order_is_forward
+            && target_order == [collection.field]
+            && forward_order
+            && collection.field == source_field.value.as_str();
+        if !valid {
+            return Err(one(
+                PlannerDiagnosticCode::Cardinality,
+                binding.predicate.span,
+                vec![
+                    binding.name.value.as_str().to_owned(),
+                    source_binding.value.as_str().to_owned(),
+                    source_field.value.as_str().to_owned(),
+                ],
+                "dependent key batch is not a complete ordered bounded primary-key traversal",
+                None,
+            ));
+        }
+        return Ok((
+            QueryAccessKind::DependentPointBatch {
+                key_fields: key_fields.to_vec(),
+                source_binding: source_binding.value.as_str().to_owned(),
+                source_field: source_field.value.as_str().to_owned(),
+            },
+            None,
+        ));
+    }
+
     if entity.primary_key().iter().all(|field| {
         comparisons.iter().any(|comparison| {
             comparison.field == field && comparison.operator == BinaryOperator::Equal

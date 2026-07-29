@@ -1137,6 +1137,14 @@ pre-approved without seeing their exact output:
    generate` subcommand and whether privileged replay/repair warrants a separate
    binary. WP-000 and the POC do not create `riffdb-codegen` or `riffdb-replay`.
 
+The maintainer resolved the TicketDesk junction-read question on 2026-07-29 by
+accepting ADR-0054 and directing WP-275. The approved extension is limited to an
+earlier bounded `many` field consumed by `in` as one component of a later
+`many` binding's complete same-partition primary key, with canonical order,
+closed bounds, and an explicit missing-target outcome. General SQL, arbitrary
+joins, non-key fan-out, collection-as-scalar behavior, and implicit follow-up
+queries remain outside the critical path.
+
 The former SPEC Section 22.2 defaults and the accepted 2026-07-14 clarifications are
 now resolved architecture decisions:
 

@@ -1,0 +1,54 @@
+{
+  "schema": "riffdb.application-path-wp275-riffql/v1",
+  "report_id": "ticketdesk-complete-symbolic-public-grpc",
+  "transport": {
+    "protocol": "riffdb.app.v1 over unary gRPC",
+    "connection": "one reused HTTP/2 channel",
+    "server": "live riffdbd",
+    "authorization": "ordinary ticketdesk-agent capability"
+  },
+  "configuration": {
+    "warmup_iterations": 2,
+    "measured_samples": 9,
+    "distribution_method": "nearest-rank p50",
+    "seed_rows": 276
+  },
+  "scenarios": [
+    {
+      "scenario": "named_list_tickets",
+      "public_rpc_count": 1,
+      "authoritative_snapshot_count": 1,
+      "p50_ns": 358441
+    },
+    {
+      "scenario": "named_project_members",
+      "public_rpc_count": 1,
+      "authoritative_snapshot_count": 1,
+      "p50_ns": 306441
+    },
+    {
+      "scenario": "named_project_summary",
+      "public_rpc_count": 1,
+      "authoritative_snapshot_count": 1,
+      "p50_ns": 376431
+    },
+    {
+      "scenario": "named_ticket_page_with_labels",
+      "public_rpc_count": 1,
+      "authoritative_snapshot_count": 1,
+      "dependent_point_batch_count": 1,
+      "p50_ns": 582462
+    }
+  ],
+  "seed_ns": 2044426344,
+  "gates": {
+    "list_or_detail_p50_ns": 15000000,
+    "seed_ns": 3000000000
+  },
+  "interpretation": [
+    "The complete TicketPage returns ticket, project, organization, reporter, optional assignee, comments, and junction-reached labels.",
+    "Every measured page uses one public unary gRPC request and one authoritative redb snapshot.",
+    "The label traversal is one compiler-produced bounded dependent point batch inside that snapshot, not public N+1 composition.",
+    "All measured named operations and the 276-row command seed remain below PERF-002."
+  ]
+}

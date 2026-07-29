@@ -190,6 +190,17 @@ pub trait QueryReadView {
         predicates: &[BoundPredicate],
     ) -> Result<Option<QueryRow>, Self::Error>;
 
+    /// Executes one ordered bounded set of complete primary-key steps.
+    ///
+    /// The output preserves input position and represents each missing target
+    /// explicitly. Concrete adapters keep the whole batch inside this view's
+    /// one authoritative snapshot.
+    fn dependent_point_batch(
+        &mut self,
+        step: &QueryAccessStep,
+        predicates: &[Vec<BoundPredicate>],
+    ) -> Result<Vec<Option<QueryRow>>, Self::Error>;
+
     /// Executes one bounded declared-index step.
     fn scan(
         &mut self,
@@ -344,6 +355,13 @@ pub enum QueryExecutionError {
     },
     /// A predicate uses a value/operator unavailable in v1.
     UnsupportedPredicate,
+    /// A dependent collection key is null, duplicate, out of order, or malformed.
+    InvalidDependentKey {
+        /// Safe source binding name.
+        binding: String,
+        /// Safe source field name.
+        field: String,
+    },
     /// Cursor binding or an observed index epoch is stale.
     StaleCursor,
     /// Cursor structure does not match this query.
@@ -383,18 +401,72 @@ pub fn execute_page_in_snapshot<V: QueryReadView>(
         .unwrap_or_else(|| "Result".to_owned());
 
     for step in program.steps() {
-        let predicates = bind_predicates(step, parameters, &bindings)?;
         let limit = resolve_row_limit(step, parameters)?;
         let after = prior
             .filter(|cursor| cursor.binding == step.binding())
             .map(|cursor| cursor.lower.as_slice());
-        let mut rows = match step.access() {
-            riffdb_query_ir::QueryAccessKind::Point { .. } => view
-                .point(step, &predicates)
-                .map_err(|_| QueryExecutionError::BackendUnavailable)?
-                .into_iter()
-                .collect::<Vec<_>>(),
+        let (mut rows, scalar_predicates) = match step.access() {
+            riffdb_query_ir::QueryAccessKind::Point { .. } => {
+                let predicates = bind_predicates(step, parameters, &bindings)?;
+                (
+                    view.point(step, &predicates)
+                        .map_err(|_| QueryExecutionError::BackendUnavailable)?
+                        .into_iter()
+                        .collect::<Vec<_>>(),
+                    Some(predicates),
+                )
+            }
+            riffdb_query_ir::QueryAccessKind::DependentPointBatch {
+                source_binding,
+                source_field,
+                ..
+            } => {
+                if after.is_some() {
+                    return Err(QueryExecutionError::InvalidProgram);
+                }
+                let predicates = bind_dependent_point_batch(
+                    step,
+                    parameters,
+                    &bindings,
+                    source_binding,
+                    source_field,
+                    limit,
+                )?;
+                let observations = view
+                    .dependent_point_batch(step, &predicates)
+                    .map_err(|_| QueryExecutionError::BackendUnavailable)?;
+                if observations.len() != predicates.len() {
+                    return Err(QueryExecutionError::InvalidProgram);
+                }
+                if observations.iter().any(Option::is_none) {
+                    let outcome = step
+                        .absence_outcome()
+                        .ok_or(QueryExecutionError::InvalidProgram)?
+                        .to_owned();
+                    return Ok(QueryOwnedSnapshot {
+                        application_head: view.application_head(),
+                        index_epochs,
+                        outcome,
+                        fields: BTreeMap::new(),
+                        continuation_binding: None,
+                        continuation: None,
+                    });
+                }
+                let rows = observations
+                    .into_iter()
+                    .zip(&predicates)
+                    .map(|(row, predicates)| {
+                        let row = row.ok_or(QueryExecutionError::InvalidProgram)?;
+                        if row.entity() != step.entity() || !predicates_match(&row, predicates)? {
+                            return Err(QueryExecutionError::InvalidProgram);
+                        }
+                        Ok(row)
+                    })
+                    .collect::<Result<Vec<_>, _>>()?;
+                (rows, None)
+            }
             riffdb_query_ir::QueryAccessKind::Index { index, .. } => {
+                let predicates = bind_predicates(step, parameters, &bindings)?;
                 let page = view
                     .scan(step, &predicates, limit, after)
                     .map_err(|_| QueryExecutionError::BackendUnavailable)?;
@@ -415,13 +487,15 @@ pub fn execute_page_in_snapshot<V: QueryReadView>(
                     continuation_binding = Some(step.binding().to_owned());
                     continuation = page.continuation;
                 }
-                page.rows
+                (page.rows, Some(predicates))
             }
         };
         if rows.iter().any(|row| row.entity() != step.entity()) {
             return Err(QueryExecutionError::InvalidProgram);
         }
-        rows.retain(|row| predicates_match(row, &predicates).unwrap_or(false));
+        if let Some(predicates) = &scalar_predicates {
+            rows.retain(|row| predicates_match(row, predicates).unwrap_or(false));
+        }
         if rows.len() as u64 > step.maximum_rows() {
             return Err(QueryExecutionError::BoundExceeded);
         }
@@ -531,6 +605,9 @@ fn bind_predicates(
                     .and_then(|row| row.field(field))
                     .cloned()
                     .unwrap_or(CanonicalValue::Null),
+                QueryPredicateValue::BindingFieldSet { .. } => {
+                    return Err(QueryExecutionError::InvalidProgram);
+                }
                 QueryPredicateValue::Literal(literal) => literal_value(literal)?,
                 QueryPredicateValue::EnumVariant {
                     type_id,
@@ -557,6 +634,113 @@ fn bind_predicates(
                 operator: predicate.operator(),
                 value,
             })
+        })
+        .collect()
+}
+
+fn bind_dependent_point_batch(
+    step: &QueryAccessStep,
+    parameters: &QueryParameters,
+    bindings: &BTreeMap<String, Vec<QueryRow>>,
+    source_binding: &str,
+    source_field: &str,
+    limit: u64,
+) -> Result<Vec<Vec<BoundPredicate>>, QueryExecutionError> {
+    let source_rows = bindings
+        .get(source_binding)
+        .ok_or(QueryExecutionError::InvalidProgram)?;
+    if source_rows.len() as u64 > limit || source_rows.len() as u64 > step.maximum_rows() {
+        return Err(QueryExecutionError::BoundExceeded);
+    }
+    let values = source_rows
+        .iter()
+        .map(|row| {
+            row.field(source_field)
+                .cloned()
+                .ok_or_else(|| QueryExecutionError::MissingField {
+                    entity: row.entity().to_owned(),
+                    field: source_field.to_owned(),
+                })
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    if values
+        .iter()
+        .any(|value| matches!(value, CanonicalValue::Null))
+    {
+        return Err(QueryExecutionError::InvalidDependentKey {
+            binding: source_binding.to_owned(),
+            field: source_field.to_owned(),
+        });
+    }
+    let encoded = values
+        .iter()
+        .map(encode_canonical_value)
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|_| QueryExecutionError::InvalidDependentKey {
+            binding: source_binding.to_owned(),
+            field: source_field.to_owned(),
+        })?;
+    if encoded.windows(2).any(|pair| pair[0] >= pair[1]) {
+        return Err(QueryExecutionError::InvalidDependentKey {
+            binding: source_binding.to_owned(),
+            field: source_field.to_owned(),
+        });
+    }
+
+    values
+        .into_iter()
+        .map(|dependent_value| {
+            step.predicates()
+                .iter()
+                .map(|predicate| {
+                    let (operator, value) = match predicate.value() {
+                        QueryPredicateValue::Parameter(name) => (
+                            predicate.operator(),
+                            parameters.get(name).cloned().ok_or_else(|| {
+                                QueryExecutionError::MissingParameter {
+                                    parameter: name.clone(),
+                                }
+                            })?,
+                        ),
+                        QueryPredicateValue::BindingField { binding, field } => (
+                            predicate.operator(),
+                            bindings
+                                .get(binding)
+                                .and_then(|rows| rows.first())
+                                .and_then(|row| row.field(field))
+                                .cloned()
+                                .unwrap_or(CanonicalValue::Null),
+                        ),
+                        QueryPredicateValue::BindingFieldSet { binding, field }
+                            if binding == source_binding && field == source_field =>
+                        {
+                            (QueryPredicateOperator::Equal, dependent_value.clone())
+                        }
+                        QueryPredicateValue::BindingFieldSet { .. } => {
+                            return Err(QueryExecutionError::InvalidProgram);
+                        }
+                        QueryPredicateValue::Literal(literal) => {
+                            (predicate.operator(), literal_value(literal)?)
+                        }
+                        QueryPredicateValue::EnumVariant {
+                            type_id,
+                            variant_id,
+                            ..
+                        } => (
+                            predicate.operator(),
+                            CanonicalValue::Enum {
+                                type_id: *type_id,
+                                variant_id: *variant_id,
+                            },
+                        ),
+                    };
+                    Ok(BoundPredicate {
+                        field: predicate.field().to_owned(),
+                        operator,
+                        value,
+                    })
+                })
+                .collect()
         })
         .collect()
 }

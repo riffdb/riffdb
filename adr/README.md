@@ -75,6 +75,7 @@ direction, merged draft, or implementation choice.
 | [0051](0051-riffql-bounded-symbolic-query-language.md) | RiffQL Bounded Symbolic Query Language | Accepted |
 | [0052](0052-versioned-query-modules-and-application-surfaces.md) | Versioned Query Modules and Application Surfaces | Accepted |
 | [0053](0053-composite-query-snapshots-and-current-view-publication.md) | Composite Query Snapshots and Current-View Publication | Accepted |
+| [0054](0054-bounded-dependent-key-batches.md) | Bounded Dependent Key Batches | Accepted |
 
 The human architecture review on 2026-07-12 approved the direction represented
 by ADR-0001 through ADR-0012. The human maintainer accepted ADR-0001 through
@@ -212,6 +213,11 @@ they establish bounded symbolic RiffQL, immutable exact-contract query modules,
 the additive application API hierarchy, one-snapshot composite execution,
 rebuildable current catalog/capability views, and a unary-gRPC-first performance
 strategy.
+ADR-0054 has a separate acceptance reference: the human maintainer's explicit
+2026-07-29 direction in the current Codex session to implement WP-275 and close
+the TicketDesk POC gap. It adds only bounded collection-to-complete-key
+dependencies and one-snapshot dependent point batches; it does not admit
+general SQL or arbitrary joins.
 
 ## Workflow
 

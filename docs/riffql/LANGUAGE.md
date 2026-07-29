@@ -8,6 +8,31 @@ A named query declares typed `$parameters`, then ordered `one`, `maybe`, or
 absence outcome; every `many` has an explicit positive `take` bound. Ordering
 is explicit and cursors are optional typed parameters.
 
+One deliberately narrow collection dependency is available for operational
+junction reads. An earlier bounded `many` field may be consumed by `in` only to
+supply one component of a later `many` binding's complete primary key:
+
+```riffql
+many ticket_labels from TicketLabel
+    where organization_id == $organization_id
+      && ticket_id == ticket.ticket_id
+    order by label_id asc
+    take 50
+
+many labels from Label
+    where organization_id == $organization_id
+      && label_id in ticket_labels.label_id
+    order by label_id asc
+    take 50
+    else IntegrityFailure
+```
+
+The target bound cannot exceed the source bound. Both accesses must remain in
+one partition, source and target keys must be in canonical ascending order, and
+every target must exist. An empty source produces an empty list; a missing
+target selects the declared `else` outcome. Collection-as-scalar use, non-key
+fan-out, nested per-row collections, and Cartesian products are rejected.
+
 ```riffql
 query OpenTickets($tenant: TenantId, $limit: Limit = 25) {
     many tickets from Ticket
