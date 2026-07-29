@@ -9,7 +9,7 @@ query ListTickets(
         where organization_id == $organization_id
             && project_id == $project_id
             && status in $statuses
-        order by updated_at desc, ticket_id desc
+        order by status desc, ticket_id desc
         take $limit after $after
 
     return Found {

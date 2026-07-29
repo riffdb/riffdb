@@ -1,6 +1,7 @@
 query ProjectSummary(
     $organization_id: Organization.organization_id,
     $project_id: Project.project_id,
+    $status: TicketStatus,
 ) {
     one project from Project
         where organization_id == $organization_id
@@ -10,7 +11,8 @@ query ProjectSummary(
     many recent_tickets from Ticket
         where organization_id == $organization_id
             && project_id == project.project_id
-        order by updated_at desc, ticket_id desc
+            && status == $status
+        order by ticket_id desc
         take 10
 
     return Found {
