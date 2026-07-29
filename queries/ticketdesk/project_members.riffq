@@ -1,0 +1,20 @@
+query ProjectMembers(
+    $tenant_id: TenantId,
+    $project_id: ProjectId,
+    $after: Cursor?,
+) {
+    many memberships from ProjectMember
+        where tenant_id == $tenant_id
+            && project_id == $project_id
+        order by user_id asc
+        take 100 after $after
+
+    return Found {
+        members: memberships {
+            user_id
+            role
+        }
+    }
+
+    outcomes Found
+}

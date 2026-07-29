@@ -1824,6 +1824,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "riffdb-riffql-syntax"
+version = "0.1.0"
+
+[[package]]
 name = "riffdb-runtime"
 version = "0.1.0"
 dependencies = [

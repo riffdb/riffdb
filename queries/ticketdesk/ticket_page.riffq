@@ -1,0 +1,53 @@
+query TicketPage(
+    $tenant_id: TenantId,
+    $ticket_id: TicketId,
+    $comments_after: Cursor?,
+) {
+    one ticket from Ticket
+        where tenant_id == $tenant_id
+            && ticket_id == $ticket_id
+        else NotFound
+
+    one requester from User
+        where tenant_id == $tenant_id
+            && user_id == ticket.requester_id
+        else IntegrityFailure
+
+    maybe assignee from User
+        where tenant_id == $tenant_id
+            && user_id == ticket.assignee_id
+
+    many comments from Comment
+        where tenant_id == $tenant_id
+            && ticket_id == ticket.ticket_id
+        order by created_at asc, comment_id asc
+        take 50 after $comments_after
+
+    return Found {
+        ticket: ticket {
+            ticket_id
+            title
+            description
+            status
+            priority
+            created_at
+            updated_at
+        }
+        requester: requester {
+            user_id
+            display_name
+        }
+        assignee: assignee {
+            user_id
+            display_name
+        }
+        comments: comments {
+            comment_id
+            body
+            author_id
+            created_at
+        }
+    }
+
+    outcomes Found | NotFound | IntegrityFailure
+}
