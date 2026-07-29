@@ -1187,6 +1187,55 @@ pub struct StoredCatalogAdministrationV1 {
     #[prost(string, optional, tag = "7")]
     pub approval_id: ::core::option::Option<::prost::alloc::string::String>,
 }
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct StoredQueryModuleV1 {
+    #[prost(string, tag = "1")]
+    pub module_name: ::prost::alloc::string::String,
+    #[prost(uint64, tag = "2")]
+    pub module_version: u64,
+    #[prost(bytes = "vec", tag = "3")]
+    pub module_hash: ::prost::alloc::vec::Vec<u8>,
+    #[prost(string, tag = "4")]
+    pub contract_lineage: ::prost::alloc::string::String,
+    #[prost(uint64, tag = "5")]
+    pub contract_version: u64,
+    #[prost(bytes = "vec", tag = "6")]
+    pub contract_bundle_hash: ::prost::alloc::vec::Vec<u8>,
+    #[prost(bytes = "vec", tag = "7")]
+    pub canonical_module: ::prost::alloc::vec::Vec<u8>,
+}
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct ActiveQueryModulePointerV1 {
+    #[prost(string, tag = "1")]
+    pub module_name: ::prost::alloc::string::String,
+    #[prost(uint64, tag = "2")]
+    pub module_version: u64,
+    #[prost(bytes = "vec", tag = "3")]
+    pub module_hash: ::prost::alloc::vec::Vec<u8>,
+    #[prost(string, tag = "4")]
+    pub contract_lineage: ::prost::alloc::string::String,
+    #[prost(uint64, tag = "5")]
+    pub contract_version: u64,
+    #[prost(bytes = "vec", tag = "6")]
+    pub contract_bundle_hash: ::prost::alloc::vec::Vec<u8>,
+}
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct StoredQueryModuleAdministrationV1 {
+    #[prost(uint64, tag = "1")]
+    pub administration_sequence: u64,
+    #[prost(bytes = "vec", tag = "2")]
+    pub request_id: ::prost::alloc::vec::Vec<u8>,
+    #[prost(message, optional, tag = "3")]
+    pub timestamp: ::core::option::Option<TimestampV1>,
+    #[prost(message, optional, tag = "4")]
+    pub principal: ::core::option::Option<AuditPrincipalV1>,
+    #[prost(message, optional, tag = "5")]
+    pub previous_active: ::core::option::Option<ActiveQueryModulePointerV1>,
+    #[prost(message, optional, tag = "6")]
+    pub activated: ::core::option::Option<ActiveQueryModulePointerV1>,
+    #[prost(string, optional, tag = "7")]
+    pub approval_id: ::core::option::Option<::prost::alloc::string::String>,
+}
 #[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct UnitV1 {}
 #[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]

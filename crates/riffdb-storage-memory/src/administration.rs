@@ -3,27 +3,31 @@
 use std::num::NonZeroU64;
 
 use riffdb_storage_api::{
-    ActiveCatalogPointerV1, AdministrationAuditReader, AdministrationAuditScan,
-    AdministrationAuditScanRequest, AuditPrincipalV1, CapabilityAdministrationOperationV1,
-    CapabilityAdministrationTransactionPort, CapabilityBootstrapAdministrationRepository,
-    CapabilityBootstrapIntentV1, CapabilityBootstrapMarkerV1, CapabilityBootstrapResult,
-    CapabilityCreateAwaitingDecision, CapabilityCreateCandidateTransaction,
-    CapabilityCreateCandidateV1, CapabilityCreateIntentV1, CapabilityCreateResult,
-    CapabilityInventoryPageV1, CapabilityInventoryReader, CapabilityLifecycleV1,
-    CapabilityLookupResult, CapabilityMutationCurrentStateV1, CapabilityReader,
-    CapabilityRevokeAwaitingDecision, CapabilityRevokeCandidateTransaction,
+    ActiveCatalogPointerV1, ActiveQueryModulePointerV1, AdministrationAuditReader,
+    AdministrationAuditScan, AdministrationAuditScanRequest, AuditPrincipalV1,
+    CapabilityAdministrationOperationV1, CapabilityAdministrationTransactionPort,
+    CapabilityBootstrapAdministrationRepository, CapabilityBootstrapIntentV1,
+    CapabilityBootstrapMarkerV1, CapabilityBootstrapResult, CapabilityCreateAwaitingDecision,
+    CapabilityCreateCandidateTransaction, CapabilityCreateCandidateV1, CapabilityCreateIntentV1,
+    CapabilityCreateResult, CapabilityInventoryPageV1, CapabilityInventoryReader,
+    CapabilityLifecycleV1, CapabilityLookupResult, CapabilityMutationCurrentStateV1,
+    CapabilityReader, CapabilityRevokeAwaitingDecision, CapabilityRevokeCandidateTransaction,
     CapabilityRevokeCandidateV1, CapabilityRevokeIntentV1, CapabilityRevokeResult,
     CapabilityTokenLookupV1, CatalogActivationIntentV1, CatalogActivationResult,
     CatalogAdministrationRepository, CatalogRepository, EncodedPageItem, MAX_READABLE_DIGEST_KEYS,
-    MAX_SCAN_PAGE_BYTES, RetainedMetadataV1, ServiceAuditAppendIntentV1,
-    ServiceAuditAppendRepository, ServiceAuditAppendResult, StorageError, StorageErrorKind,
-    StorageScanLimit, StoredAdministrationAuditRecordV1, StoredCapabilityAdministrationV1,
-    StoredCapabilityRecordV1, StoredCatalogAdministrationV1, StoredContractBundleV1,
+    MAX_RETAINED_QUERY_MODULES, MAX_SCAN_PAGE_BYTES, QueryModuleActivationIntentV1,
+    QueryModuleActivationResult, QueryModuleActiveExpectationV1,
+    QueryModuleAdministrationRepository, QueryModuleRepository, RetainedMetadataV1,
+    ServiceAuditAppendIntentV1, ServiceAuditAppendRepository, ServiceAuditAppendResult,
+    StorageError, StorageErrorKind, StorageScanLimit, StoredAdministrationAuditRecordV1,
+    StoredCapabilityAdministrationV1, StoredCapabilityRecordV1, StoredCatalogAdministrationV1,
+    StoredContractBundleV1, StoredQueryModuleAdministrationV1, StoredQueryModuleV1,
     StoredServiceAuditRecordV1, TransactionCurrentCapabilityObservationV1,
 };
 use riffdb_types::{
-    AdministrationSequence, CapabilityId, CapabilityTokenDigest, ContractLineage, ContractVersion,
-    RequestId, ServiceAuditLinkV1, ServiceAuditPhaseV1, ServiceAuditTargetV1, ServiceOperationV1,
+    AdministrationSequence, CapabilityId, CapabilityTokenDigest, ContractBundleHash,
+    ContractLineage, ContractVersion, QueryModuleHash, RequestId, ServiceAuditLinkV1,
+    ServiceAuditPhaseV1, ServiceAuditTargetV1, ServiceOperationV1,
 };
 
 use crate::state::{
@@ -44,6 +48,8 @@ struct AdministrationMutation<O> {
     catalog_bundles: Vec<CatalogBundleRow>,
     catalog_activations: Vec<CatalogActivationIndexRow>,
     catalog_bundle_activations: Vec<CatalogBundleActivationIndexRow>,
+    query_modules: Vec<StoredQueryModuleV1>,
+    active_query_modules: Vec<StoredQueryModuleAdministrationV1>,
     administration_audit: Vec<StoredAdministrationAuditRecordV1>,
     service_audit_invocations: Vec<ServiceAuditInvocationIndexRow>,
     capabilities: Vec<StoredCapabilityRecordV1>,
@@ -75,6 +81,8 @@ impl<O> AdministrationMutation<O> {
             catalog_bundles: state.catalog_bundles.clone(),
             catalog_activations: state.catalog_activations.clone(),
             catalog_bundle_activations: state.catalog_bundle_activations.clone(),
+            query_modules: state.query_modules.clone(),
+            active_query_modules: state.active_query_modules.clone(),
             administration_audit: state.administration_audit.clone(),
             service_audit_invocations: state.service_audit_invocations.clone(),
             capabilities: state.capabilities.clone(),
@@ -89,6 +97,8 @@ impl<O> AdministrationMutation<O> {
         state.catalog_bundles = self.catalog_bundles;
         state.catalog_activations = self.catalog_activations;
         state.catalog_bundle_activations = self.catalog_bundle_activations;
+        state.query_modules = self.query_modules;
+        state.active_query_modules = self.active_query_modules;
         state.administration_audit = self.administration_audit;
         state.service_audit_invocations = self.service_audit_invocations;
         state.capabilities = self.capabilities;
@@ -513,6 +523,207 @@ fn prepare_catalog_activation(
     mutation.append_audit(StoredAdministrationAuditRecordV1::Catalog(record));
     mutation.metadata =
         metadata_with_links(allocated, Some(requested), metadata.capability_bootstrap())?;
+    Ok(AdministrationPreparation::Apply(Box::new(mutation)))
+}
+
+fn query_module_position(
+    state: &MemoryState,
+    module_hash: QueryModuleHash,
+) -> Result<Result<usize, usize>, StorageError> {
+    unique_binary_search_by(&state.query_modules, |module| {
+        module.module_hash().cmp(&module_hash)
+    })
+}
+
+fn active_query_module_order(
+    record: &StoredQueryModuleAdministrationV1,
+    lineage: &ContractLineage,
+    version: ContractVersion,
+    bundle_hash: ContractBundleHash,
+) -> std::cmp::Ordering {
+    record
+        .activated()
+        .contract_lineage()
+        .cmp(lineage)
+        .then_with(|| record.activated().contract_version().cmp(&version))
+        .then_with(|| record.activated().contract_bundle_hash().cmp(&bundle_hash))
+}
+
+fn active_query_module_position(
+    state: &MemoryState,
+    lineage: &ContractLineage,
+    version: ContractVersion,
+    bundle_hash: ContractBundleHash,
+) -> Result<Result<usize, usize>, StorageError> {
+    unique_binary_search_by(&state.active_query_modules, |record| {
+        active_query_module_order(record, lineage, version, bundle_hash)
+    })
+}
+
+impl QueryModuleRepository for MemoryOperationalPorts {
+    fn read_query_module(
+        &self,
+        module_hash: QueryModuleHash,
+    ) -> Result<Option<StoredQueryModuleV1>, StorageError> {
+        self.read(|state| {
+            retained_metadata(state)?;
+            Ok(query_module_position(state, module_hash)?
+                .ok()
+                .map(|index| state.query_modules[index].clone()))
+        })
+    }
+
+    fn read_active_query_module(
+        &self,
+        lineage: &ContractLineage,
+        contract_version: ContractVersion,
+        contract_bundle_hash: ContractBundleHash,
+    ) -> Result<Option<ActiveQueryModulePointerV1>, StorageError> {
+        self.read(|state| {
+            retained_metadata(state)?;
+            let Ok(index) = active_query_module_position(
+                state,
+                lineage,
+                contract_version,
+                contract_bundle_hash,
+            )?
+            else {
+                return Ok(None);
+            };
+            let record = &state.active_query_modules[index];
+            let StoredAdministrationAuditRecordV1::QueryModule(audit) =
+                administration_record(state, record.administration_sequence())?
+            else {
+                return Err(storage_error(StorageErrorKind::CorruptData));
+            };
+            if audit != record {
+                return Err(storage_error(StorageErrorKind::CorruptData));
+            }
+            let Ok(module_index) = query_module_position(state, record.activated().module_hash())?
+            else {
+                return Err(storage_error(StorageErrorKind::CorruptData));
+            };
+            if !record
+                .activated()
+                .matches_module(&state.query_modules[module_index])
+            {
+                return Err(storage_error(StorageErrorKind::CorruptData));
+            }
+            Ok(Some(record.activated().clone()))
+        })
+    }
+}
+
+impl QueryModuleAdministrationRepository for MemoryOperationalPorts {
+    fn activate_query_module(
+        &mut self,
+        intent: &QueryModuleActivationIntentV1,
+    ) -> Result<QueryModuleActivationResult, StorageError> {
+        self.apply_prepared(|state| prepare_query_module_activation(state, intent))
+    }
+}
+
+fn prepare_query_module_activation(
+    state: &MemoryState,
+    intent: &QueryModuleActivationIntentV1,
+) -> Result<AdministrationPreparation<QueryModuleActivationResult>, StorageError> {
+    validate_administration_stream(state)?;
+    let contract = catalog_bundle_position(
+        state,
+        intent.module().contract_lineage(),
+        intent.module().contract_version(),
+    )?
+    .and_then(|index| state.catalog_bundles.get(index));
+    if !contract
+        .is_some_and(|row| row.bundle.bundle_hash() == intent.module().contract_bundle_hash())
+    {
+        return Ok(AdministrationPreparation::NoChange(
+            QueryModuleActivationResult::ContractUnavailable,
+        ));
+    }
+    if state.query_modules.len() > MAX_RETAINED_QUERY_MODULES {
+        return Err(storage_error(StorageErrorKind::CorruptData));
+    }
+    let module_position = query_module_position(state, intent.module().module_hash())?;
+    if module_position
+        .ok()
+        .is_some_and(|index| state.query_modules[index] != *intent.module())
+    {
+        return Err(storage_error(StorageErrorKind::CorruptData));
+    }
+    if state.query_modules.iter().any(|module| {
+        module.contract_lineage() == intent.module().contract_lineage()
+            && module.contract_version() == intent.module().contract_version()
+            && module.contract_bundle_hash() == intent.module().contract_bundle_hash()
+            && module.module_name() == intent.module().module_name()
+            && module.module_version() == intent.module().module_version()
+            && module.module_hash() != intent.module().module_hash()
+    }) {
+        return Ok(AdministrationPreparation::NoChange(
+            QueryModuleActivationResult::ModuleVersionConflict,
+        ));
+    }
+    if module_position.is_err() && state.query_modules.len() == MAX_RETAINED_QUERY_MODULES {
+        return Err(storage_error(StorageErrorKind::LimitExceeded));
+    }
+
+    let active_position = active_query_module_position(
+        state,
+        intent.module().contract_lineage(),
+        intent.module().contract_version(),
+        intent.module().contract_bundle_hash(),
+    )?;
+    let active_record = active_position
+        .ok()
+        .map(|index| &state.active_query_modules[index]);
+    let active = active_record.map(|record| record.activated().clone());
+    let requested = intent.requested_active();
+    if active.as_ref() == Some(&requested) {
+        return Ok(AdministrationPreparation::NoChange(
+            QueryModuleActivationResult::AlreadyActive {
+                active: requested,
+                administration_sequence: active_record
+                    .map(StoredQueryModuleAdministrationV1::administration_sequence)
+                    .ok_or_else(|| storage_error(StorageErrorKind::CorruptData))?,
+            },
+        ));
+    }
+    let expectation_matches = match intent.expectation() {
+        QueryModuleActiveExpectationV1::Any => true,
+        QueryModuleActiveExpectationV1::Absent => active.is_none(),
+        QueryModuleActiveExpectationV1::Exact(expected) => {
+            active.as_ref().map(ActiveQueryModulePointerV1::module_hash) == Some(expected)
+        }
+    };
+    if !expectation_matches {
+        return Ok(AdministrationPreparation::NoChange(
+            QueryModuleActivationResult::ExpectedActiveMismatch {
+                actual: active.as_ref().map(ActiveQueryModulePointerV1::module_hash),
+            },
+        ));
+    }
+
+    let (sequence, allocated) = append_sequence(state)?;
+    let record = StoredQueryModuleAdministrationV1::from_committed_intent(sequence, intent, active);
+    let mut mutation = AdministrationMutation::from_state(
+        state,
+        QueryModuleActivationResult::Activated {
+            active: requested,
+            administration_sequence: sequence,
+        },
+    )?;
+    match module_position {
+        Ok(_) => {}
+        Err(index) => mutation
+            .query_modules
+            .insert(index, intent.module().clone()),
+    }
+    match active_position {
+        Ok(index) => mutation.active_query_modules[index] = record.clone(),
+        Err(index) => mutation.active_query_modules.insert(index, record.clone()),
+    }
+    mutation.append_audit(StoredAdministrationAuditRecordV1::QueryModule(record));
+    mutation.metadata = allocated;
     Ok(AdministrationPreparation::Apply(Box::new(mutation)))
 }
 

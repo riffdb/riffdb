@@ -26,3 +26,32 @@ message StoredCatalogAdministrationV1 {
   ActiveCatalogPointerV1 activated = 6;
   optional string approval_id = 7;
 }
+
+message StoredQueryModuleV1 {
+  string module_name = 1;
+  uint64 module_version = 2;
+  bytes module_hash = 3;
+  string contract_lineage = 4;
+  uint64 contract_version = 5;
+  bytes contract_bundle_hash = 6;
+  bytes canonical_module = 7;
+}
+
+message ActiveQueryModulePointerV1 {
+  string module_name = 1;
+  uint64 module_version = 2;
+  bytes module_hash = 3;
+  string contract_lineage = 4;
+  uint64 contract_version = 5;
+  bytes contract_bundle_hash = 6;
+}
+
+message StoredQueryModuleAdministrationV1 {
+  uint64 administration_sequence = 1;
+  bytes request_id = 2;
+  TimestampV1 timestamp = 3;
+  AuditPrincipalV1 principal = 4;
+  ActiveQueryModulePointerV1 previous_active = 5;
+  ActiveQueryModulePointerV1 activated = 6;
+  optional string approval_id = 7;
+}

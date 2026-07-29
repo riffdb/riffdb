@@ -21,15 +21,15 @@ use riffdb_storage_api::{
     HistoricalActiveCatalogEvidence, HistoricalBundleBytes, HistoricalBundleEvidence,
     HistoricalCapabilityPartitionEvidenceV1, HistoricalEvidenceCursor, HistoricalEvidenceEnd,
     HistoricalEvidencePage, HistoricalPersistedKeyEvidenceV1, HistoricalSemanticEvidence,
-    IndexMigrationCursor, OpenSessionId, ReadableDigestKey, RetainedMetadataV1,
-    StartupIndexMigrationPort, StartupValidationInputs, StorageError, StorageErrorKind,
-    StorageValueError, StructuralEvidenceCursor, StructuralEvidenceEnd, StructuralEvidenceOpen,
-    StructuralEvidencePage, StructuralEvidenceSession, StructuralFinding, StructuralFindingCode,
-    StructuralFindingScope, StructuralOpenOutcome, StructurallyOpened,
+    IndexMigrationCursor, MAX_RETAINED_QUERY_MODULES, OpenSessionId, ReadableDigestKey,
+    RetainedMetadataV1, StartupIndexMigrationPort, StartupValidationInputs, StorageError,
+    StorageErrorKind, StorageValueError, StructuralEvidenceCursor, StructuralEvidenceEnd,
+    StructuralEvidenceOpen, StructuralEvidencePage, StructuralEvidenceSession, StructuralFinding,
+    StructuralFindingCode, StructuralFindingScope, StructuralOpenOutcome, StructurallyOpened,
 };
 use riffdb_types::{
     CommitSequence, ContractBundleHash, ContractLineage, ContractVersion, DatabaseId,
-    FrontierPosition, hash_contract_bundle,
+    FrontierPosition, hash_contract_bundle, hash_query_module,
 };
 
 use crate::codec::{self, IdempotencyRecordV1};
@@ -42,12 +42,13 @@ use crate::layout::{
     CONTRACT_BUNDLES, ENTITIES, EVENTS, IDEMPOTENCY, IDEMPOTENCY_PENDING, INDEX_EPOCHS, META,
     META_ADMINISTRATION_SEQUENCE, META_APPLICATION_SEQUENCE, META_CAPABILITY_BOOTSTRAP,
     META_DATABASE_ID, META_FORMAT_VERSION, META_KEYS, OUTBOX, OUTBOX_STATUS, PROJECTION_APPLIED,
-    PROJECTION_FRONTIER, PROJECTION_STATE, PROVENANCE, SECONDARY_INDEXES, TABLE_NAMES,
+    PROJECTION_FRONTIER, PROJECTION_STATE, PROVENANCE, QUERY_MODULE_ACTIVE, QUERY_MODULES,
+    SECONDARY_INDEXES, TABLE_NAMES,
 };
 use crate::store::{RedbDormantPorts, RedbStore, SharedRedb};
 
 static NEXT_OPEN_SESSION: AtomicU64 = AtomicU64::new(1);
-const STRUCTURAL_TABLE_COUNT: usize = 19;
+const STRUCTURAL_TABLE_COUNT: usize = 21;
 
 /// Redb authority whose constructor is private to a completed startup session.
 pub struct RedbCompletionAuthority {
@@ -668,6 +669,8 @@ fn collect_startup_snapshot(
         meta.len().map_err(precommit_storage_error)?,
         table_len(transaction, CONTRACT_BUNDLES)?,
         table_len(transaction, CATALOG_ACTIVE)?,
+        table_len(transaction, QUERY_MODULES)?,
+        table_len(transaction, QUERY_MODULE_ACTIVE)?,
         table_len(transaction, ENTITIES)?,
         table_len(transaction, SECONDARY_INDEXES)?,
         table_len(transaction, INDEX_EPOCHS)?,
@@ -886,44 +889,48 @@ fn inspect_table_row(
     let definition = match phase {
         1 => CONTRACT_BUNDLES,
         2 => CATALOG_ACTIVE,
-        3 => ENTITIES,
-        4 => SECONDARY_INDEXES,
-        5 => INDEX_EPOCHS,
-        6 => IDEMPOTENCY,
-        7 => IDEMPOTENCY_PENDING,
-        8 => COMMITS,
-        9 => PROVENANCE,
-        10 => EVENTS,
-        11 => OUTBOX,
-        12 => OUTBOX_STATUS,
-        13 => PROJECTION_STATE,
-        14 => PROJECTION_FRONTIER,
-        15 => PROJECTION_APPLIED,
-        16 => CAPABILITIES,
-        17 => CAPABILITY_TOKENS,
-        18 => AUDIT,
+        3 => QUERY_MODULES,
+        4 => QUERY_MODULE_ACTIVE,
+        5 => ENTITIES,
+        6 => SECONDARY_INDEXES,
+        7 => INDEX_EPOCHS,
+        8 => IDEMPOTENCY,
+        9 => IDEMPOTENCY_PENDING,
+        10 => COMMITS,
+        11 => PROVENANCE,
+        12 => EVENTS,
+        13 => OUTBOX,
+        14 => OUTBOX_STATUS,
+        15 => PROJECTION_STATE,
+        16 => PROJECTION_FRONTIER,
+        17 => PROJECTION_APPLIED,
+        18 => CAPABILITIES,
+        19 => CAPABILITY_TOKENS,
+        20 => AUDIT,
         _ => return Err(invariant()),
     };
     let (key, value) = nth_bytes_entry(transaction, definition, index)?;
     match phase {
         1 => inspect_bundle_row(transaction, &key, &value),
         2 => inspect_active_row(transaction, &key, &value),
-        3 => inspect_entity_row(transaction, &key, &value),
-        4 => inspect_index_row(transaction, &key, &value),
-        5 => inspect_epoch_row(transaction, &key, &value),
-        6 => inspect_terminal_row(transaction, inputs, database_id, &key, &value),
-        7 => inspect_pending_row(transaction, inputs, database_id, &key, &value),
-        8 => inspect_commit_row(transaction, index, &key, &value),
-        9 => inspect_provenance_row(transaction, &key, &value),
-        10 => inspect_event_row(transaction, &key, &value),
-        11 => inspect_outbox_row(transaction, &key, &value),
-        12 => inspect_outbox_status_row(transaction, &key, &value),
-        13 => inspect_projection_state_row(transaction, &key, &value),
-        14 => inspect_projection_control_row(transaction, &key, &value),
-        15 => inspect_projection_apply_row(transaction, &key, &value),
-        16 => inspect_capability_row(transaction, inputs, database_id, &key, &value),
-        17 => inspect_capability_lookup_row(transaction, &key, &value),
-        18 => inspect_audit_row(transaction, index, &key, &value),
+        3 => inspect_query_module_row(transaction, &key, &value),
+        4 => inspect_active_query_module_row(transaction, &key, &value),
+        5 => inspect_entity_row(transaction, &key, &value),
+        6 => inspect_index_row(transaction, &key, &value),
+        7 => inspect_epoch_row(transaction, &key, &value),
+        8 => inspect_terminal_row(transaction, inputs, database_id, &key, &value),
+        9 => inspect_pending_row(transaction, inputs, database_id, &key, &value),
+        10 => inspect_commit_row(transaction, index, &key, &value),
+        11 => inspect_provenance_row(transaction, &key, &value),
+        12 => inspect_event_row(transaction, &key, &value),
+        13 => inspect_outbox_row(transaction, &key, &value),
+        14 => inspect_outbox_status_row(transaction, &key, &value),
+        15 => inspect_projection_state_row(transaction, &key, &value),
+        16 => inspect_projection_control_row(transaction, &key, &value),
+        17 => inspect_projection_apply_row(transaction, &key, &value),
+        18 => inspect_capability_row(transaction, inputs, database_id, &key, &value),
+        19 => inspect_capability_lookup_row(transaction, &key, &value),
+        20 => inspect_audit_row(transaction, index, &key, &value),
         _ => Err(invariant()),
     }
 }
@@ -993,6 +1000,11 @@ fn inspect_header(
             || has_application_authoritative_state(transaction)?)
     {
         return Ok(Some(authoritative(StructuralFindingCode::MissingCrossLink)));
+    }
+    if table_len(transaction, QUERY_MODULES)?
+        > u64::try_from(MAX_RETAINED_QUERY_MODULES).map_err(|_| limit_exceeded())?
+    {
+        return Ok(Some(authoritative(StructuralFindingCode::LimitExceeded)));
     }
     if let Some(value) = meta
         .get(META_CAPABILITY_BOOTSTRAP)
@@ -1076,6 +1088,60 @@ fn inspect_active_row(
         (!active_catalog_matches_last_activation(transaction, Some(&active))?)
             .then(|| authoritative(StructuralFindingCode::CrossLinkMismatch)),
     )
+}
+
+fn inspect_query_module_row(
+    transaction: &ReadTransaction,
+    key: &[u8],
+    value: &[u8],
+) -> Result<Option<StructuralFinding>, StorageError> {
+    let Ok(module_hash) = keys::decode_query_module_key(key) else {
+        return Ok(Some(authoritative(StructuralFindingCode::MalformedRecord)));
+    };
+    let module = match decoded(codec::decode_query_module_v1(value)) {
+        Ok(value) => value,
+        Err(code) => return Ok(Some(authoritative(code))),
+    };
+    if module.module_hash() != module_hash
+        || hash_query_module(module.canonical_bytes()) != module_hash
+    {
+        return Ok(Some(authoritative(
+            StructuralFindingCode::CrossLinkMismatch,
+        )));
+    }
+    if !query_module_contract_exists(transaction, &module)? {
+        return Ok(Some(authoritative(StructuralFindingCode::MissingCrossLink)));
+    }
+    Ok((!query_module_has_activation(transaction, &module)?)
+        .then(|| authoritative(StructuralFindingCode::MissingCrossLink)))
+}
+
+fn inspect_active_query_module_row(
+    transaction: &ReadTransaction,
+    key: &[u8],
+    value: &[u8],
+) -> Result<Option<StructuralFinding>, StorageError> {
+    let Ok((lineage, version, bundle_hash)) = keys::decode_active_query_module_key(key) else {
+        return Ok(Some(authoritative(StructuralFindingCode::MalformedRecord)));
+    };
+    let record = match decoded(codec::decode_query_module_administration_v1(value)) {
+        Ok(value) => value,
+        Err(code) => return Ok(Some(authoritative(code))),
+    };
+    let activated = record.activated();
+    if activated.contract_lineage() != &lineage
+        || activated.contract_version() != version
+        || activated.contract_bundle_hash() != bundle_hash
+    {
+        return Ok(Some(authoritative(
+            StructuralFindingCode::CrossLinkMismatch,
+        )));
+    }
+    if !query_module_pointer_exists(transaction, activated)? {
+        return Ok(Some(authoritative(StructuralFindingCode::MissingCrossLink)));
+    }
+    Ok((!query_module_record_is_reciprocal(transaction, &record)?)
+        .then(|| authoritative(StructuralFindingCode::CrossLinkMismatch)))
 }
 
 fn inspect_entity_row(
@@ -1627,6 +1693,15 @@ fn inspect_audit_row(
                 None
             }
         }
+        riffdb_storage_api::StoredAdministrationAuditRecordV1::QueryModule(record) => {
+            if !query_module_pointer_exists(transaction, record.activated())? {
+                Some(authoritative(StructuralFindingCode::MissingCrossLink))
+            } else if !query_module_record_is_reciprocal(transaction, record)? {
+                Some(authoritative(StructuralFindingCode::CrossLinkMismatch))
+            } else {
+                None
+            }
+        }
         riffdb_storage_api::StoredAdministrationAuditRecordV1::Capability(record) => {
             match capability_administration_status(transaction, record)? {
                 CrossLinkStatus::Exact => None,
@@ -2146,6 +2221,130 @@ fn bundle_has_activation(
         }
     }
     Ok(false)
+}
+
+fn query_module_contract_exists(
+    transaction: &ReadTransaction,
+    module: &riffdb_storage_api::StoredQueryModuleV1,
+) -> Result<bool, StorageError> {
+    bundle_exists(
+        transaction,
+        module.contract_lineage(),
+        module.contract_version(),
+        module.contract_bundle_hash(),
+    )
+}
+
+fn query_module_pointer_exists(
+    transaction: &ReadTransaction,
+    pointer: &riffdb_storage_api::ActiveQueryModulePointerV1,
+) -> Result<bool, StorageError> {
+    if !bundle_exists(
+        transaction,
+        pointer.contract_lineage(),
+        pointer.contract_version(),
+        pointer.contract_bundle_hash(),
+    )? {
+        return Ok(false);
+    }
+    let key = keys::encode_query_module_key(pointer.module_hash());
+    let module = get_decoded(
+        transaction,
+        QUERY_MODULES,
+        &key,
+        codec::decode_query_module_v1,
+    )?;
+    Ok(matches!(module, Ok(Some(module)) if pointer.matches_module(&module)))
+}
+
+fn query_module_has_activation(
+    transaction: &ReadTransaction,
+    module: &riffdb_storage_api::StoredQueryModuleV1,
+) -> Result<bool, StorageError> {
+    let table = transaction.open_table(AUDIT).map_err(table_error)?;
+    for entry in table.iter().map_err(precommit_storage_error)? {
+        let (physical_key, value) = entry.map_err(precommit_storage_error)?;
+        let Ok(sequence) = keys::decode_audit_key(physical_key.value()) else {
+            return Ok(false);
+        };
+        let Ok(record) = decoded(codec::decode_administration_audit_record_v1(value.value()))
+        else {
+            return Ok(false);
+        };
+        if record.administration_sequence() != sequence {
+            return Ok(false);
+        }
+        if matches!(
+            record,
+            riffdb_storage_api::StoredAdministrationAuditRecordV1::QueryModule(ref activation)
+                if activation.activated().matches_module(module)
+        ) {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
+fn same_query_module_contract(
+    left: &riffdb_storage_api::ActiveQueryModulePointerV1,
+    right: &riffdb_storage_api::ActiveQueryModulePointerV1,
+) -> bool {
+    left.contract_lineage() == right.contract_lineage()
+        && left.contract_version() == right.contract_version()
+        && left.contract_bundle_hash() == right.contract_bundle_hash()
+}
+
+fn query_module_record_is_reciprocal(
+    transaction: &ReadTransaction,
+    record: &riffdb_storage_api::StoredQueryModuleAdministrationV1,
+) -> Result<bool, StorageError> {
+    if !query_module_pointer_exists(transaction, record.activated())? {
+        return Ok(false);
+    }
+    let table = transaction.open_table(AUDIT).map_err(table_error)?;
+    let mut previous = None;
+    let mut last = None;
+    let mut found = false;
+    for entry in table.iter().map_err(precommit_storage_error)? {
+        let (physical_key, value) = entry.map_err(precommit_storage_error)?;
+        let Ok(sequence) = keys::decode_audit_key(physical_key.value()) else {
+            return Ok(false);
+        };
+        let Ok(candidate) = decoded(codec::decode_administration_audit_record_v1(value.value()))
+        else {
+            return Ok(false);
+        };
+        if candidate.administration_sequence() != sequence {
+            return Ok(false);
+        }
+        if let riffdb_storage_api::StoredAdministrationAuditRecordV1::QueryModule(candidate) =
+            candidate
+            && same_query_module_contract(candidate.activated(), record.activated())
+        {
+            if sequence < record.administration_sequence() {
+                previous = Some(candidate.activated().clone());
+            }
+            if sequence == record.administration_sequence() {
+                found = candidate == *record;
+            }
+            last = Some(candidate);
+        }
+    }
+    let active_key = keys::encode_active_query_module_key(
+        record.activated().contract_lineage(),
+        record.activated().contract_version(),
+        record.activated().contract_bundle_hash(),
+    )
+    .map_err(|_| invariant())?;
+    let active = get_decoded(
+        transaction,
+        QUERY_MODULE_ACTIVE,
+        &active_key,
+        codec::decode_query_module_administration_v1,
+    )?;
+    Ok(found
+        && record.previous_active() == previous.as_ref()
+        && matches!(&active, Ok(Some(active)) if Some(active) == last.as_ref()))
 }
 
 fn catalog_record_is_reciprocal(

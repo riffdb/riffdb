@@ -13,11 +13,12 @@ use riffdb_storage_api::{
     HistoricalBundleBytes, HistoricalBundleEvidence, HistoricalCapabilityPartitionEvidenceV1,
     HistoricalEvidenceCursor, HistoricalEvidenceEnd, HistoricalEvidencePage,
     HistoricalPersistedKeyEvidenceV1, HistoricalSemanticEvidence, IndexMigrationCursor,
-    IndexMigrationRowEvidence, OpenSessionId, ReadableDigestKey, RetainedMetadataV1,
-    StartupIndexMigrationPort, StartupValidationInputs, StorageError, StorageErrorKind,
-    StorageValueError, StoredAdmissionStateV1, StructuralEvidenceCursor, StructuralEvidenceEnd,
-    StructuralEvidenceOpen, StructuralEvidencePage, StructuralEvidenceSession, StructuralFinding,
-    StructuralFindingCode, StructuralFindingScope, StructuralOpenOutcome, StructurallyOpened,
+    IndexMigrationRowEvidence, MAX_RETAINED_QUERY_MODULES, OpenSessionId, ReadableDigestKey,
+    RetainedMetadataV1, StartupIndexMigrationPort, StartupValidationInputs, StorageError,
+    StorageErrorKind, StorageValueError, StoredAdmissionStateV1, StructuralEvidenceCursor,
+    StructuralEvidenceEnd, StructuralEvidenceOpen, StructuralEvidencePage,
+    StructuralEvidenceSession, StructuralFinding, StructuralFindingCode, StructuralFindingScope,
+    StructuralOpenOutcome, StructurallyOpened,
 };
 use riffdb_types::{ContractBundleHash, ContractLineage, ContractVersion, DatabaseId};
 
@@ -442,6 +443,8 @@ fn structural_item_count(state: &MemoryState) -> Result<u64, StorageError> {
         state.catalog_bundles.len(),
         state.catalog_activations.len(),
         state.catalog_bundle_activations.len(),
+        state.query_modules.len(),
+        state.active_query_modules.len(),
         state.administration_audit.len(),
         state.service_audit_invocations.len(),
         state.admissions.len(),
@@ -528,6 +531,14 @@ fn inspect_structural_item(
     locate!(
         catalog_bundle_activations,
         crate::integrity_administration::inspect_catalog_bundle_activation_index(state, position)
+    );
+    locate!(
+        query_modules,
+        crate::integrity_administration::inspect_query_module(state, position)
+    );
+    locate!(
+        active_query_modules,
+        crate::integrity_administration::inspect_active_query_module(state, position)
     );
     locate!(
         administration_audit,
@@ -633,6 +644,9 @@ fn inspect_metadata(state: &MemoryState) -> Option<StructuralFinding> {
         return Some(authoritative_finding(
             StructuralFindingCode::SequenceDiscontinuity,
         ));
+    }
+    if state.query_modules.len() > MAX_RETAINED_QUERY_MODULES {
+        return Some(authoritative_finding(StructuralFindingCode::LimitExceeded));
     }
     if !crate::integrity_administration::bootstrap_is_consistent(state, metadata)
         || !crate::integrity_administration::active_catalog_matches_last_activation(state, metadata)

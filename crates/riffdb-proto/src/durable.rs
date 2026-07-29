@@ -11,9 +11,9 @@ use crate::envelope::{PayloadValidationError, RecordRegistry, RecordSchema};
 use crate::storage::v1;
 
 /// Number of durable semantic payload tuples accepted while opening or migrating storage.
-pub const READABLE_RECORD_SCHEMA_COUNT: usize = 27;
+pub const READABLE_RECORD_SCHEMA_COUNT: usize = 30;
 /// Number of durable semantic roles accepted for current writes.
-pub const WRITABLE_RECORD_SCHEMA_COUNT: usize = 26;
+pub const WRITABLE_RECORD_SCHEMA_COUNT: usize = 29;
 /// Number of durable semantic roles accepted for current writes.
 pub const CURRENT_RECORD_SCHEMA_COUNT: usize = WRITABLE_RECORD_SCHEMA_COUNT;
 
@@ -104,7 +104,7 @@ macro_rules! current_schema {
     };
 }
 
-const LEGACY_RECORD_SCHEMAS: [RecordSchema<'static>; WRITABLE_RECORD_SCHEMA_COUNT] = [
+const CURRENT_V1_RECORD_SCHEMAS: [RecordSchema<'static>; WRITABLE_RECORD_SCHEMA_COUNT] = [
     current_schema!(
         0,
         "StoredStorageFormatVersionV1",
@@ -159,6 +159,17 @@ const LEGACY_RECORD_SCHEMAS: [RecordSchema<'static>; WRITABLE_RECORD_SCHEMA_COUN
         "StoredProjectionControlV1",
         v1::StoredProjectionControlV1
     ),
+    current_schema!(26, "StoredQueryModuleV1", v1::StoredQueryModuleV1),
+    current_schema!(
+        27,
+        "ActiveQueryModulePointerV1",
+        v1::ActiveQueryModulePointerV1
+    ),
+    current_schema!(
+        28,
+        "StoredQueryModuleAdministrationV1",
+        v1::StoredQueryModuleAdministrationV1
+    ),
 ];
 
 const INDEX_V2_RECORD_SCHEMA: RecordSchema<'static> = RecordSchema::new_current(
@@ -166,69 +177,75 @@ const INDEX_V2_RECORD_SCHEMA: RecordSchema<'static> = RecordSchema::new_current(
     index_v2_schema_hash(),
     index_v2_record_bound(0),
     index_v2_record_bound(4),
-    preflight_payload::<26>,
-    validate_payload::<26, v1::StoredIndexEntryV2>,
+    preflight_payload::<29>,
+    validate_payload::<29, v1::StoredIndexEntryV2>,
 );
 
 /// Readable durable schemas in immutable compatibility order.
 pub static READABLE_RECORD_SCHEMAS: [RecordSchema<'static>; READABLE_RECORD_SCHEMA_COUNT] = [
-    LEGACY_RECORD_SCHEMAS[0],
-    LEGACY_RECORD_SCHEMAS[1],
-    LEGACY_RECORD_SCHEMAS[2],
-    LEGACY_RECORD_SCHEMAS[3],
-    LEGACY_RECORD_SCHEMAS[4],
-    LEGACY_RECORD_SCHEMAS[5],
-    LEGACY_RECORD_SCHEMAS[6],
-    LEGACY_RECORD_SCHEMAS[7],
-    LEGACY_RECORD_SCHEMAS[8],
-    LEGACY_RECORD_SCHEMAS[9],
-    LEGACY_RECORD_SCHEMAS[10],
-    LEGACY_RECORD_SCHEMAS[11],
-    LEGACY_RECORD_SCHEMAS[12],
-    LEGACY_RECORD_SCHEMAS[13],
-    LEGACY_RECORD_SCHEMAS[14],
-    LEGACY_RECORD_SCHEMAS[15],
-    LEGACY_RECORD_SCHEMAS[16],
-    LEGACY_RECORD_SCHEMAS[17],
-    LEGACY_RECORD_SCHEMAS[18],
-    LEGACY_RECORD_SCHEMAS[19],
-    LEGACY_RECORD_SCHEMAS[20],
-    LEGACY_RECORD_SCHEMAS[21],
-    LEGACY_RECORD_SCHEMAS[22],
-    LEGACY_RECORD_SCHEMAS[23],
-    LEGACY_RECORD_SCHEMAS[24],
-    LEGACY_RECORD_SCHEMAS[25],
+    CURRENT_V1_RECORD_SCHEMAS[0],
+    CURRENT_V1_RECORD_SCHEMAS[1],
+    CURRENT_V1_RECORD_SCHEMAS[2],
+    CURRENT_V1_RECORD_SCHEMAS[3],
+    CURRENT_V1_RECORD_SCHEMAS[4],
+    CURRENT_V1_RECORD_SCHEMAS[5],
+    CURRENT_V1_RECORD_SCHEMAS[6],
+    CURRENT_V1_RECORD_SCHEMAS[7],
+    CURRENT_V1_RECORD_SCHEMAS[8],
+    CURRENT_V1_RECORD_SCHEMAS[9],
+    CURRENT_V1_RECORD_SCHEMAS[10],
+    CURRENT_V1_RECORD_SCHEMAS[11],
+    CURRENT_V1_RECORD_SCHEMAS[12],
+    CURRENT_V1_RECORD_SCHEMAS[13],
+    CURRENT_V1_RECORD_SCHEMAS[14],
+    CURRENT_V1_RECORD_SCHEMAS[15],
+    CURRENT_V1_RECORD_SCHEMAS[16],
+    CURRENT_V1_RECORD_SCHEMAS[17],
+    CURRENT_V1_RECORD_SCHEMAS[18],
+    CURRENT_V1_RECORD_SCHEMAS[19],
+    CURRENT_V1_RECORD_SCHEMAS[20],
+    CURRENT_V1_RECORD_SCHEMAS[21],
+    CURRENT_V1_RECORD_SCHEMAS[22],
+    CURRENT_V1_RECORD_SCHEMAS[23],
+    CURRENT_V1_RECORD_SCHEMAS[24],
+    CURRENT_V1_RECORD_SCHEMAS[25],
+    CURRENT_V1_RECORD_SCHEMAS[26],
+    CURRENT_V1_RECORD_SCHEMAS[27],
+    CURRENT_V1_RECORD_SCHEMAS[28],
     INDEX_V2_RECORD_SCHEMA,
 ];
 
 /// Writable durable schemas in immutable role order.
 pub static WRITABLE_RECORD_SCHEMAS: [RecordSchema<'static>; WRITABLE_RECORD_SCHEMA_COUNT] = [
-    LEGACY_RECORD_SCHEMAS[0],
-    LEGACY_RECORD_SCHEMAS[1],
-    LEGACY_RECORD_SCHEMAS[2],
-    LEGACY_RECORD_SCHEMAS[3],
-    LEGACY_RECORD_SCHEMAS[4],
-    LEGACY_RECORD_SCHEMAS[5],
-    LEGACY_RECORD_SCHEMAS[6],
-    LEGACY_RECORD_SCHEMAS[7],
+    CURRENT_V1_RECORD_SCHEMAS[0],
+    CURRENT_V1_RECORD_SCHEMAS[1],
+    CURRENT_V1_RECORD_SCHEMAS[2],
+    CURRENT_V1_RECORD_SCHEMAS[3],
+    CURRENT_V1_RECORD_SCHEMAS[4],
+    CURRENT_V1_RECORD_SCHEMAS[5],
+    CURRENT_V1_RECORD_SCHEMAS[6],
+    CURRENT_V1_RECORD_SCHEMAS[7],
     INDEX_V2_RECORD_SCHEMA,
-    LEGACY_RECORD_SCHEMAS[9],
-    LEGACY_RECORD_SCHEMAS[10],
-    LEGACY_RECORD_SCHEMAS[11],
-    LEGACY_RECORD_SCHEMAS[12],
-    LEGACY_RECORD_SCHEMAS[13],
-    LEGACY_RECORD_SCHEMAS[14],
-    LEGACY_RECORD_SCHEMAS[15],
-    LEGACY_RECORD_SCHEMAS[16],
-    LEGACY_RECORD_SCHEMAS[17],
-    LEGACY_RECORD_SCHEMAS[18],
-    LEGACY_RECORD_SCHEMAS[19],
-    LEGACY_RECORD_SCHEMAS[20],
-    LEGACY_RECORD_SCHEMAS[21],
-    LEGACY_RECORD_SCHEMAS[22],
-    LEGACY_RECORD_SCHEMAS[23],
-    LEGACY_RECORD_SCHEMAS[24],
-    LEGACY_RECORD_SCHEMAS[25],
+    CURRENT_V1_RECORD_SCHEMAS[9],
+    CURRENT_V1_RECORD_SCHEMAS[10],
+    CURRENT_V1_RECORD_SCHEMAS[11],
+    CURRENT_V1_RECORD_SCHEMAS[12],
+    CURRENT_V1_RECORD_SCHEMAS[13],
+    CURRENT_V1_RECORD_SCHEMAS[14],
+    CURRENT_V1_RECORD_SCHEMAS[15],
+    CURRENT_V1_RECORD_SCHEMAS[16],
+    CURRENT_V1_RECORD_SCHEMAS[17],
+    CURRENT_V1_RECORD_SCHEMAS[18],
+    CURRENT_V1_RECORD_SCHEMAS[19],
+    CURRENT_V1_RECORD_SCHEMAS[20],
+    CURRENT_V1_RECORD_SCHEMAS[21],
+    CURRENT_V1_RECORD_SCHEMAS[22],
+    CURRENT_V1_RECORD_SCHEMAS[23],
+    CURRENT_V1_RECORD_SCHEMAS[24],
+    CURRENT_V1_RECORD_SCHEMAS[25],
+    CURRENT_V1_RECORD_SCHEMAS[26],
+    CURRENT_V1_RECORD_SCHEMAS[27],
+    CURRENT_V1_RECORD_SCHEMAS[28],
 ];
 
 /// Current durable schemas. `current` is exactly synonymous with writable roles.
