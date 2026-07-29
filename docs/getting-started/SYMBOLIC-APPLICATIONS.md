@@ -16,9 +16,10 @@ cargo run -p riffdb-cli -- dev --seed
 1. starts `riffdbd` on a random loopback port;
 2. bootstraps an operator through the production capability path;
 3. deploys the TicketDesk contract and immutable query module;
-4. creates an ordinary capability from the `ticketdesk-agent` role preset;
+4. creates a named-only capability from the default
+   `ticketdesk-application` role preset;
 5. creates 276 rows through compiled commands; and
-6. prints the endpoint and protected agent credential path.
+6. prints the endpoint and protected application credential path.
 
 Nothing in this path bypasses authorization, command semantics, audit, the
 commit coordinator, or durable redb storage. The disposable directory and
@@ -31,6 +32,12 @@ regeneration:
 ```bash
 cargo run -p riffdb-cli -- dev --watch
 ```
+
+Use `--role ticketdesk-agent` only when the process needs explicit ad-hoc
+RiffQL check/explain/execute authority. Use `--role ticketdesk-kernel` only for
+low-level diagnosis; it receives no application command or RiffQL authority and
+cannot seed. There is no combined preset. See
+[Safe application profiles](SAFE-APPLICATION-PROFILES.md).
 
 Use a directory of JSON command inputs with bounded concurrency:
 

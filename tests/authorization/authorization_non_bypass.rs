@@ -5,20 +5,22 @@
 use std::num::NonZeroU16;
 
 use riffdb_policy::{
-    AgentSessionAdmissionPolicy, AuthorizationClock, AuthorizationClockError, AuthorizationError,
-    CommandExecutionClass, CommandToolCandidate, CurrentAuthorizer, Decision, DiscoveryVisibility,
-    FixedToolCandidate, NoopAuthorizationTelemetry, OperationRequest, OperationTenantScope,
-    PolicyCode, admit_invocation_claims,
+    AgentSessionAdmissionPolicy, ApplicationQueryAccessRequirement, ApplicationQueryTarget,
+    AuthorizationClock, AuthorizationClockError, AuthorizationError, CommandExecutionClass,
+    CommandToolCandidate, CurrentAuthorizer, Decision, DiscoveryVisibility, FixedToolCandidate,
+    NoopAuthorizationTelemetry, OperationRequest, OperationTenantScope, PolicyCode,
+    admit_invocation_claims,
 };
 use riffdb_testkit::authorization::{
     AuthorizationFixture, AuthorizationFixtureConfig, AuthorizationFixtureTimes,
 };
 use riffdb_types::{
     ActorId, ActorKind, AgentSessionId, AggregateTypeId, Audience, CapabilityGrantV1,
-    CapabilityPermissionV1, CapabilityPermissionsV1, CommandId, ContractLineage, ContractVersion,
-    DatabaseId, EntityFieldVisibilityV1, EntityTypeId, Environment, FieldId, PartitionKey,
-    PartitionKeyBuilder, PartitionScopeV1, ProvenanceReason, SourceCommit, SourceRepository,
-    TenantScope, Timestamp,
+    CapabilityPermissionV1, CapabilityPermissionsV1, CommandId, ContractBundleHash,
+    ContractLineage, ContractVersion, DatabaseId, EntityFieldVisibilityV1, EntityTypeId,
+    Environment, FieldId, PartitionKey, PartitionKeyBuilder, PartitionScopeV1, ProvenanceReason,
+    QueryCostVectorV1, QueryModuleHash, QueryOperationName, QueryPlanHash, ServiceIngressKindV1,
+    SourceCommit, SourceRepository, TenantScope, Timestamp,
 };
 
 const POLICY_MANIFEST: &str = include_str!("../../crates/riffdb-policy/Cargo.toml");
@@ -84,6 +86,10 @@ fn grant() -> CapabilityGrantV1 {
 }
 
 fn fixture(actor_kind: ActorKind) -> AuthorizationFixture {
+    fixture_with_grant(actor_kind, grant())
+}
+
+fn fixture_with_grant(actor_kind: ActorKind, grant: CapabilityGrantV1) -> AuthorizationFixture {
     AuthorizationFixture::new(AuthorizationFixtureConfig::new(
         database_id(),
         environment(),
@@ -91,9 +97,56 @@ fn fixture(actor_kind: ActorKind) -> AuthorizationFixture {
         actor_kind,
         audience(),
         AuthorizationFixtureTimes::new(timestamp(100), timestamp(200), timestamp(150)),
-        grant(),
+        grant,
     ))
     .expect("authorization fixture")
+}
+
+fn stable_application_grant() -> CapabilityGrantV1 {
+    let lineage = lineage();
+    CapabilityGrantV1::new(
+        TenantScope::Global,
+        PartitionScopeV1::All,
+        CapabilityPermissionsV1::new(vec![
+            CapabilityPermissionV1::InvokeCommand(lineage.clone(), CommandId::first()),
+            CapabilityPermissionV1::ExecuteNamedQuery(
+                lineage.clone(),
+                QueryModuleHash::from_bytes([0x31; 32]),
+                QueryOperationName::new("TicketPage").expect("query name"),
+            ),
+        ])
+        .expect("canonical permissions"),
+        vec![
+            EntityFieldVisibilityV1::new(lineage, EntityTypeId::first(), vec![FieldId::first()])
+                .expect("field visibility"),
+        ],
+        NonZeroU16::new(37).expect("nonzero row bound"),
+        Vec::new(),
+    )
+    .expect("stable application grant")
+}
+
+fn application_query_target() -> ApplicationQueryTarget {
+    ApplicationQueryTarget::new(
+        lineage(),
+        ContractVersion::new(1).expect("nonzero version"),
+        ContractBundleHash::from_bytes([0x21; 32]),
+        QueryPlanHash::from_bytes([0x41; 32]),
+        ServiceIngressKindV1::InProcessTestComparison,
+        OperationTenantScope::global_only(),
+        partition(),
+        vec![
+            ApplicationQueryAccessRequirement::new(
+                EntityTypeId::first(),
+                None,
+                vec![FieldId::first()],
+                NonZeroU16::new(1).expect("nonzero bound"),
+            )
+            .expect("query access"),
+        ],
+        QueryCostVectorV1::new(1, 0, 1, 0, 1, 1, 128).expect("query cost"),
+    )
+    .expect("application query target")
 }
 
 fn authorize(
@@ -241,6 +294,85 @@ fn discovery_is_visibility_only_and_each_invocation_reauthorizes() {
         authorize(&fixture, environment(), timestamp(171), execute).unwrap(),
         Decision::Deny(PolicyCode::InactiveOrStaleCapability)
     );
+}
+
+#[test]
+fn stable_application_authority_and_catalog_are_named_only() {
+    let fixture = fixture_with_grant(ActorKind::Service, stable_application_grant());
+    let module_hash = QueryModuleHash::from_bytes([0x31; 32]);
+    let query_name = QueryOperationName::new("TicketPage").expect("query name");
+    let exact = OperationRequest::execute_named_query(
+        lineage(),
+        module_hash,
+        query_name.clone(),
+        application_query_target(),
+    )
+    .expect("exact named request");
+    allowed(authorize(&fixture, environment(), timestamp(160), exact).expect("authorization"));
+
+    for rejected in [
+        OperationRequest::execute_ad_hoc_query(application_query_target()),
+        OperationRequest::execute_named_query(
+            lineage(),
+            QueryModuleHash::from_bytes([0x32; 32]),
+            query_name.clone(),
+            application_query_target(),
+        )
+        .expect("wrong module request"),
+        OperationRequest::execute_named_query(
+            lineage(),
+            module_hash,
+            QueryOperationName::new("OtherPage").expect("query name"),
+            application_query_target(),
+        )
+        .expect("wrong query request"),
+        OperationRequest::get_entity(
+            lineage(),
+            ContractVersion::new(1).expect("nonzero version"),
+            EntityTypeId::first(),
+            OperationTenantScope::global_only(),
+            partition(),
+            vec![FieldId::first()],
+        )
+        .expect("kernel request"),
+    ] {
+        assert_eq!(
+            authorize(&fixture, environment(), timestamp(160), rejected)
+                .expect("closed authorization"),
+            Decision::Deny(PolicyCode::MissingPermission)
+        );
+    }
+
+    let discovery = allowed(
+        authorize(
+            &fixture,
+            environment(),
+            timestamp(160),
+            OperationRequest::discover_command_tools(),
+        )
+        .expect("discovery authorization"),
+    )
+    .into_discovery()
+    .expect("discovery proof")
+    .tool_catalog(
+        FixedToolCandidate::ALL.as_slice(),
+        &[CommandToolCandidate::new(lineage(), CommandId::first())],
+    )
+    .expect("catalog");
+    for hidden in [
+        FixedToolCandidate::GetEntity,
+        FixedToolCandidate::ScanIndex,
+        FixedToolCandidate::CheckQuery,
+        FixedToolCandidate::ExplainQuery,
+        FixedToolCandidate::ExecuteQuery,
+    ] {
+        let index = FixedToolCandidate::ALL
+            .iter()
+            .position(|candidate| *candidate == hidden)
+            .expect("candidate");
+        assert_eq!(discovery.fixed_tools()[index], DiscoveryVisibility::Hidden);
+    }
+    assert_eq!(discovery.command_tools(), &[DiscoveryVisibility::Visible]);
 }
 
 #[test]

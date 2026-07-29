@@ -9,7 +9,7 @@ use std::collections::BTreeMap;
 
 use riffdb_client_rust::{
     ApplicationClientError, ApplicationCommand, ApplicationCommandResult, ApplicationContract,
-    ApplicationValue, AttemptBudget, CallMetadata, NamedQuery, RiffDbClient,
+    ApplicationValue, AttemptBudget, CallMetadata, NamedQuery, StableApplicationClient,
 };
 
 pub use generated::{
@@ -23,14 +23,14 @@ pub use generated::{
 
 /// One application client pinned to the checked TicketDesk query module.
 pub struct TicketDeskClient {
-    client: RiffDbClient,
+    client: StableApplicationClient,
     metadata: CallMetadata,
 }
 
 impl TicketDeskClient {
     /// Wraps a connected public client and authenticated metadata.
     #[must_use]
-    pub const fn new(client: RiffDbClient, metadata: CallMetadata) -> Self {
+    pub const fn new(client: StableApplicationClient, metadata: CallMetadata) -> Self {
         Self { client, metadata }
     }
 
@@ -350,9 +350,7 @@ impl TicketDeskClient {
             parameters,
             None,
         )?;
-        self.client
-            .execute_named_application_query(query, &self.metadata)
-            .await
+        self.client.execute_named_query(query, &self.metadata).await
     }
 
     async fn command(
@@ -362,7 +360,7 @@ impl TicketDeskClient {
     ) -> Result<ApplicationCommandResult, ApplicationClientError> {
         let command = ApplicationCommand::new(name, Some(generated::CONTRACT_VERSION), input)?;
         self.client
-            .execute_application_command(
+            .execute_command(
                 command,
                 AttemptBudget::new(3).expect("nonzero constant"),
                 &self.metadata,

@@ -9,6 +9,11 @@ exact query-module hash. Application source contains no numeric schema IDs,
 protobuf construction, encoded-key parsing, field masks, `GetEntity`,
 `ScanIndex`, or public N+1 loops.
 
+`TicketDeskClient` accepts `StableApplicationClient`, whose public surface has
+no kernel entity/index or administrative operations. The live acceptance uses
+the default `ticketdesk-application` credential containing only the eight exact
+commands and eight exact immutable named queries.
+
 Run the machine boundary:
 
 ```bash
@@ -18,4 +23,3 @@ Run the machine boundary:
 The underlying transport remains public gRPC over a reused HTTP/2 connection.
 RiffQL removes the structural RPC multiplication: the server plans batch reads
 and joins and executes the complete page against one snapshot.
-

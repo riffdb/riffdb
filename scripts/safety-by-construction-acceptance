@@ -1,0 +1,98 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+repo_root="$(git rev-parse --show-toplevel)"
+cd "$repo_root"
+
+for tool in cargo jq rg; do
+    command -v "$tool" >/dev/null 2>&1 || {
+        echo "required safety acceptance tool is missing: $tool" >&2
+        exit 1
+    }
+done
+
+corpus="tests/authorization/fixtures/bad-application-corpus.json"
+jq -e '
+  .schema == "riffdb-safe-application-negative-corpus-v1"
+  and ([.cases[].id] == [
+    "generic-write",
+    "raw-kernel-read",
+    "ad-hoc-source",
+    "module-query-plan-substitution",
+    "dangling-relationship",
+    "concurrent-unique-collision",
+    "cumulative-query-cost",
+    "public-n-plus-one-page",
+    "dependent-batch-scope-escape"
+  ])
+  and ([.cases[].id] | length == (unique | length))
+  and all(.cases[]; (.evidence | length) > 0)
+' "$corpus" >/dev/null
+
+application_role="release/config/dev-role-ticketdesk-application.json"
+agent_role="release/config/dev-role-ticketdesk-agent.json"
+kernel_role="release/config/dev-role-ticketdesk-kernel.json"
+
+jq -e '
+  [.grant.permissions[].type] as $types
+  | ($types | length) == 16
+  and all($types[]; . == "invoke_command" or . == "execute_named_query")
+  and ([$types[] | select(. == "execute_named_query")] | length) == 8
+  and ([.grant.permissions[] | select(.type == "execute_named_query") | .query_module_hash] | unique | length) == 1
+' "$application_role" >/dev/null
+
+jq -e '
+  [.grant.permissions[].type] as $types
+  | all($types[];
+      . == "read_contract"
+      or . == "invoke_command"
+      or . == "check_ad_hoc_query"
+      or . == "explain_ad_hoc_query"
+      or . == "execute_ad_hoc_query"
+      or . == "explain_named_query"
+      or . == "execute_named_query")
+  and ([$types[] | select(. == "read_entity" or . == "scan_index")] | length) == 0
+' "$agent_role" >/dev/null
+
+jq -e '
+  [.grant.permissions[].type] as $types
+  | all($types[]; . == "read_contract" or . == "read_entity" or . == "scan_index")
+  and ([$types[] | select(
+      . == "invoke_command"
+      or . == "check_ad_hoc_query"
+      or . == "explain_ad_hoc_query"
+      or . == "execute_ad_hoc_query"
+      or . == "explain_named_query"
+      or . == "execute_named_query")] | length) == 0
+' "$kernel_role" >/dev/null
+
+module_hash="$(sed -n '2s/^export const QUERY_MODULE_HASH = "\([^"]*\)" as const;$/\1/p' clients/typescript/ticketdesk/client.ts)"
+[[ ${#module_hash} -eq 64 ]]
+jq -e --arg module_hash "$module_hash" '
+  all(.grant.permissions[] | select(.type == "execute_named_query"); .query_module_hash == $module_hash)
+' "$application_role" "$agent_role" >/dev/null
+
+jq -e '
+  .schema == "riffdb-generated-mcp-tools-v1"
+  and (.tools | length) == 8
+  and all(.tools[];
+      (.name | startswith("ticketdesk."))
+      and (.module_hash | length) == 64
+      and ((.input_schema | tostring) | test("entity_type_id|field_id|index_id|encoded_key") | not))
+' fixtures/query-modules/ticketdesk.mcp.json >/dev/null
+
+./scripts/check-ticketdesk-symbolic-boundary
+
+cargo test --quiet -p riffdb-policy --test authorization_non_bypass \
+  stable_application_authority_and_catalog_are_named_only
+cargo test --quiet -p riffdb-policy whole_query_budget_is_compared_once_across_repeated_steps
+cargo test --quiet -p riffdb-service --test architecture \
+  dependent_query_batches_cannot_escape_identity_scope_or_final_reauthorization
+cargo test --quiet -p riffdb-query-executor --test composite_snapshot \
+  backend_work_is_reconciled_with_whole_query_fuel_before_release
+cargo test --quiet -p riffdb-contract-compiler \
+  relationship_negative_corpus_has_stable_source_spanned_diagnostics
+cargo test --quiet -p riffdb-commit --test command_concurrency \
+  equal_scoped_unique_values_commit_once_and_loser_replays_without_sequence
+
+echo "Safe application profiles and every SAFE-008 negative canary passed."

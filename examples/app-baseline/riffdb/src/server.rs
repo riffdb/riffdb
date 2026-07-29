@@ -219,15 +219,18 @@ async fn bootstrap_deploy_and_issue(
     )
     .await
     .map_err(|error| RiffDbError::Rpc(format!("deploy_query_module: {error}")))?;
-    if module.module.is_none() {
+    let Some(module) = module.module else {
         return Err(RiffDbError::Rpc(format!(
             "deploy_query_module did not activate: {module:?}"
         )));
-    }
+    };
 
     let response = bounded_rpc(
         "create_runner_capability",
-        client.create_capability(normal_capability_request()?, &authenticated),
+        client.create_capability(
+            normal_capability_request(&module.module_hash)?,
+            &authenticated,
+        ),
     )
     .await?;
     let Some(v1::create_capability_response::Result::Normal(result)) = response.result else {
@@ -280,31 +283,42 @@ fn bootstrap_request(
     })
 }
 
-fn normal_capability_request() -> Result<v1::CreateCapabilityRequest, RiffDbError> {
+fn normal_capability_request(module_hash: &[u8]) -> Result<v1::CreateCapabilityRequest, RiffDbError> {
     use v1::capability_permission::Permission;
     let scoped = |stable_id| v1::LineageScopedStableId {
         contract_lineage: CONTRACT_LINEAGE.to_owned(),
         stable_id,
     };
-    // Named RiffQL execute requires ReadContract; entity/index grants authorize
-    // the compiled access plan. Canonical permission order:
-    // ReadContract(3), InvokeCommand(5), ReadEntity(6), ScanIndex(7).
-    let mut permissions = vec![v1::CapabilityPermission {
-        permission: Some(Permission::ReadContract(v1::Unit {})),
-    }];
+    if module_hash.len() != 32 {
+        return Err(RiffDbError::Rpc(
+            "deployed query module returned an invalid identity".into(),
+        ));
+    }
+    // The stable application profile contains only exact command and immutable
+    // named-query permissions. Compiler-derived entity/index access never
+    // becomes reusable kernel authority.
+    let mut permissions = Vec::new();
     for stable_id in 1_u32..=8 {
         permissions.push(v1::CapabilityPermission {
             permission: Some(Permission::InvokeCommand(scoped(stable_id))),
         });
     }
-    for entity_id in 1_u32..=8 {
+    for query_name in [
+        "GetUser",
+        "GetTicket",
+        "TicketPage",
+        "ListTickets",
+        "ListComments",
+        "ProjectMembers",
+        "ProjectSummary",
+        "ListTicketsByAssignee",
+    ] {
         permissions.push(v1::CapabilityPermission {
-            permission: Some(Permission::ReadEntity(scoped(entity_id))),
-        });
-    }
-    for index_id in 1_u32..=9 {
-        permissions.push(v1::CapabilityPermission {
-            permission: Some(Permission::ScanIndex(scoped(index_id))),
+            permission: Some(Permission::ExecuteNamedQuery(v1::NamedQueryPermission {
+                contract_lineage: CONTRACT_LINEAGE.to_owned(),
+                query_module_hash: module_hash.to_vec(),
+                query_name: query_name.to_owned(),
+            })),
         });
     }
 

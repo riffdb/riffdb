@@ -1377,6 +1377,19 @@ enum CapabilityPermissionInput {
     CreateCapability {},
     RevokeCapability {},
     AdministerCapabilities {},
+    CheckAdHocQuery {},
+    ExplainAdHocQuery {},
+    ExecuteAdHocQuery {},
+    ExplainNamedQuery {
+        contract_lineage: String,
+        query_module_hash: String,
+        query_name: String,
+    },
+    ExecuteNamedQuery {
+        contract_lineage: String,
+        query_module_hash: String,
+        query_name: String,
+    },
 }
 
 #[derive(Clone, Copy, Deserialize)]
@@ -1401,6 +1414,11 @@ enum CapabilityPermissionKindInput {
     CreateCapability,
     RevokeCapability,
     AdministerCapabilities,
+    CheckAdHocQuery,
+    ExplainAdHocQuery,
+    ExecuteAdHocQuery,
+    ExplainNamedQuery,
+    ExecuteNamedQuery,
 }
 
 #[derive(Deserialize)]
@@ -1745,6 +1763,31 @@ fn capability_permission(input: CapabilityPermissionInput) -> Result<v1::Capabil
         CapabilityPermissionInput::AdministerCapabilities {} => {
             Permission::AdministerCapabilities(v1::Unit {})
         }
+        CapabilityPermissionInput::CheckAdHocQuery {} => Permission::CheckAdHocQuery(v1::Unit {}),
+        CapabilityPermissionInput::ExplainAdHocQuery {} => {
+            Permission::ExplainAdHocQuery(v1::Unit {})
+        }
+        CapabilityPermissionInput::ExecuteAdHocQuery {} => {
+            Permission::ExecuteAdHocQuery(v1::Unit {})
+        }
+        CapabilityPermissionInput::ExplainNamedQuery {
+            contract_lineage,
+            query_module_hash,
+            query_name,
+        } => Permission::ExplainNamedQuery(named_query_permission(
+            contract_lineage,
+            query_module_hash,
+            query_name,
+        )?),
+        CapabilityPermissionInput::ExecuteNamedQuery {
+            contract_lineage,
+            query_module_hash,
+            query_name,
+        } => Permission::ExecuteNamedQuery(named_query_permission(
+            contract_lineage,
+            query_module_hash,
+            query_name,
+        )?),
     };
     Ok(v1::CapabilityPermission {
         permission: Some(permission),
@@ -1808,7 +1851,41 @@ const fn permission_kind(input: CapabilityPermissionKindInput) -> i32 {
         CapabilityPermissionKindInput::AdministerCapabilities => {
             v1::CapabilityPermissionKind::AdministerCapabilities as i32
         }
+        CapabilityPermissionKindInput::CheckAdHocQuery => {
+            v1::CapabilityPermissionKind::CheckAdHocQuery as i32
+        }
+        CapabilityPermissionKindInput::ExplainAdHocQuery => {
+            v1::CapabilityPermissionKind::ExplainAdHocQuery as i32
+        }
+        CapabilityPermissionKindInput::ExecuteAdHocQuery => {
+            v1::CapabilityPermissionKind::ExecuteAdHocQuery as i32
+        }
+        CapabilityPermissionKindInput::ExplainNamedQuery => {
+            v1::CapabilityPermissionKind::ExplainNamedQuery as i32
+        }
+        CapabilityPermissionKindInput::ExecuteNamedQuery => {
+            v1::CapabilityPermissionKind::ExecuteNamedQuery as i32
+        }
     }
+}
+
+fn named_query_permission(
+    contract_lineage: String,
+    query_module_hash: String,
+    query_name: String,
+) -> Result<v1::NamedQueryPermission, ()> {
+    if contract_lineage.is_empty()
+        || contract_lineage.len() > 256
+        || query_name.is_empty()
+        || query_name.len() > 256
+    {
+        return Err(());
+    }
+    Ok(v1::NamedQueryPermission {
+        contract_lineage,
+        query_module_hash: parse_hash(&query_module_hash)?,
+        query_name,
+    })
 }
 
 async fn server_command(
@@ -2924,5 +3001,66 @@ mod tests {
             increasing_nonzero_u32(&["1".to_owned(), "1".to_owned()]),
             Err(())
         );
+    }
+
+    #[test]
+    fn application_query_permissions_are_explicit_and_hash_checked() {
+        use v1::capability_permission::Permission;
+
+        let named: CapabilityPermissionInput = serde_json::from_str(
+            r#"{
+                "type":"execute_named_query",
+                "contract_lineage":"TicketDesk",
+                "query_module_hash":"3131313131313131313131313131313131313131313131313131313131313131",
+                "query_name":"TicketPage"
+            }"#,
+        )
+        .expect("named permission JSON");
+        let lowered = capability_permission(named).expect("named permission");
+        assert!(matches!(
+            lowered.permission,
+            Some(Permission::ExecuteNamedQuery(v1::NamedQueryPermission {
+                contract_lineage,
+                query_module_hash,
+                query_name,
+            })) if contract_lineage == "TicketDesk"
+                && query_module_hash == vec![0x31; 32]
+                && query_name == "TicketPage"
+        ));
+
+        for invalid in [
+            "",
+            "31",
+            "gggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggg",
+        ] {
+            assert!(
+                named_query_permission(
+                    "TicketDesk".to_owned(),
+                    invalid.to_owned(),
+                    "TicketPage".to_owned(),
+                )
+                .is_err()
+            );
+        }
+    }
+
+    #[test]
+    fn development_profile_documents_are_canonical_and_disjoint() {
+        for source in [
+            include_str!("../../../release/config/dev-role-ticketdesk-application.json"),
+            include_str!("../../../release/config/dev-role-ticketdesk-agent.json"),
+            include_str!("../../../release/config/dev-role-ticketdesk-kernel.json"),
+        ] {
+            let input: CapabilityCreateInput = serde_json::from_str(source).expect("profile JSON");
+            let request = capability_request(
+                input,
+                parse_uuid_v7("01900000-0000-7000-8000-000000000041")
+                    .expect("capability ID")
+                    .to_vec(),
+                v1::CapabilityCreateMode::Normal,
+            )
+            .expect("profile request");
+            NormalCapabilityCreateTemplate::new(request).expect("canonical profile");
+        }
     }
 }

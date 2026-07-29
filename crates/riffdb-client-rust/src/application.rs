@@ -4,10 +4,62 @@ use std::collections::BTreeMap;
 use std::fmt;
 
 use riffdb_proto::{app::v1 as app_v1, v1};
+use tonic::transport::{Channel, Endpoint};
 
 use crate::{
     AttemptBudget, CallMetadata, ClientError, IdempotentCommand, RiffDbClient, generate_request_id,
 };
+
+/// Application-only client facade.
+///
+/// This type deliberately has no accessor for its kernel client. Stable
+/// application code can execute name-addressed commands and exact named
+/// queries, but cannot construct raw entity/index requests through this
+/// surface.
+#[derive(Clone)]
+pub struct StableApplicationClient {
+    inner: RiffDbClient,
+}
+
+impl StableApplicationClient {
+    /// Connects the application facade over one reusable HTTP/2 channel.
+    pub async fn connect(endpoint: Endpoint) -> Result<Self, ClientError> {
+        Ok(Self {
+            inner: RiffDbClient::connect(endpoint).await?,
+        })
+    }
+
+    /// Constructs the application facade over an existing channel.
+    #[must_use]
+    pub fn from_channel(channel: Channel) -> Self {
+        Self {
+            inner: RiffDbClient::from_channel(channel),
+        }
+    }
+
+    /// Executes one exact named module query.
+    pub async fn execute_named_query(
+        &mut self,
+        query: NamedQuery,
+        metadata: &CallMetadata,
+    ) -> Result<NamedQueryResult, ApplicationClientError> {
+        self.inner
+            .execute_named_application_query(query, metadata)
+            .await
+    }
+
+    /// Executes one exact symbolic command with bounded uncertainty recovery.
+    pub async fn execute_command(
+        &mut self,
+        command: ApplicationCommand,
+        attempts: AttemptBudget,
+        metadata: &CallMetadata,
+    ) -> Result<ApplicationCommandResult, ApplicationClientError> {
+        self.inner
+            .execute_application_command(command, attempts, metadata)
+            .await
+    }
+}
 
 /// A bounded application value addressed only by contract names.
 #[derive(Clone, Debug, Eq, PartialEq)]
