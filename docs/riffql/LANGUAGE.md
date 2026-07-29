@@ -93,3 +93,41 @@ Declared uniqueness is not implemented as a RiffQL `exists` or `count`
 preflight. Commands that establish or change a unique tuple carry
 compiler-derived conflict and transaction-current occupancy plans; a read
 query cannot acquire write authority or make a later write safe.
+
+## Application-safety product rule
+
+An application operation is accepted only when RiffDB can prove its complete
+typed access program before any data access. The proof must identify the exact
+contract and operation, authorize every returned field and access path, route
+every access to one partition, select declared indexes or complete keys, bound
+all work and output, establish cardinality, and execute the read against one
+engine-owned snapshot. If any proof is missing, the operation is rejected with
+a source-spanned symbolic diagnostic.
+
+There is no application fallback to an unrestricted scan, client-side join or
+sort, partial field redaction, N+1 public requests, cross-partition access,
+string-built predicate, or optimizer-dependent plan. This is the key
+difference from treating RiffQL as a smaller SQL dialect: the rejected forms
+are product safety properties, not optimizer preferences.
+
+WP-335 exercised this rule against independent Blog/CMS and Orders/Inventory
+corpora. Both completed without a new grammar, IR node, hash input, access
+operator, cursor, or result semantic. The positive corpus proves:
+
+- primary-key page and slug-route reads;
+- declared-index feeds, moderation queues, histories, and dashboards;
+- singular foreign-key reads from prior singular bindings;
+- bounded junction-to-entity and line-to-product batches;
+- numeric inventory invariants and command-only reservation transitions; and
+- identical generated Rust, TypeScript, and MCP operation schemas.
+
+The retained negative corpus rejects an unindexed title ordering
+(`RDB-QP003`), a cross-partition author scan (`RDB-QP002`), collection-as-scalar
+fan-out (`RDB-QP007`), and a collection without `take` (`RDB-QS009`). Exact
+spans, classifications, and smallest remedies are generated in
+`fixtures/agent-alpha/gap-report-v1.json`.
+
+Application evidence did not justify `exists`, aggregate, computed-field,
+fragment, search, projection-source, or general-join syntax. Such a construct
+still requires repeated domain evidence and a separate accepted ADR before any
+grammar or IR change.

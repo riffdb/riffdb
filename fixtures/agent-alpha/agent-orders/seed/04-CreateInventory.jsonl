@@ -1,0 +1,1 @@
+{"available":{"$i64":"10"},"idempotency_key":"orders-inventory-widget","product_id":{"$uuid":"018f0f8b-7c6d-7e31-8a4f-2c2d37a52b32"},"store_id":{"$uuid":"018f0f8b-7c6d-7e31-8a4f-2c2d37a52b30"}}

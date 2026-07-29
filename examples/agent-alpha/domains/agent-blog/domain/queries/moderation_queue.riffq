@@ -1,0 +1,25 @@
+query ModerationQueue(
+    $site_id: Site.site_id,
+    $status: CommentStatus,
+    $after: Cursor?,
+    $limit: Limit = 25,
+) {
+    many comments from Comment
+        where site_id == $site_id
+            && status == $status
+        order by created_at asc, comment_id asc
+        take $limit after $after
+
+    return Found {
+        comments: comments {
+            comment_id
+            post_id
+            author_id
+            body
+            status
+            created_at
+        }
+    }
+
+    outcomes Found
+}

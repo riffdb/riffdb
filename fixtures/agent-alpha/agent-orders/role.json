@@ -1,0 +1,62 @@
+{
+  "application": "agent-orders",
+  "application_manifest_hash": "34b40387b18a3451524d0d846ff94743cdda04842fcd57495f7df1b09f46793e",
+  "contract": {
+    "bundle_hash": "ab6aa84f62b2bc61b20caec2b2f0849100762000ebc88d578be675cc041b274a",
+    "lineage": "AgentOrders",
+    "version": 1
+  },
+  "environment": "development",
+  "operations": [
+    {
+      "kind": "query",
+      "name": "CustomerHistory"
+    },
+    {
+      "kind": "query",
+      "name": "InventoryDashboard"
+    },
+    {
+      "kind": "query",
+      "name": "OpenOrders"
+    },
+    {
+      "kind": "query",
+      "name": "OrderPage"
+    },
+    {
+      "kind": "command",
+      "name": "AddOrderLine"
+    },
+    {
+      "kind": "command",
+      "name": "CreateCustomer"
+    },
+    {
+      "kind": "command",
+      "name": "CreateInventory"
+    },
+    {
+      "kind": "command",
+      "name": "CreateOrder"
+    },
+    {
+      "kind": "command",
+      "name": "CreateProduct"
+    },
+    {
+      "kind": "command",
+      "name": "CreateStore"
+    },
+    {
+      "kind": "command",
+      "name": "ReserveInventory"
+    }
+  ],
+  "query_module_hashes": [
+    "32d3a3ed584903a2f30ef742b22b116242fa6d4a36f01e4540c0da4ad4cc083a"
+  ],
+  "role": "OrdersApplication",
+  "role_hash": "3a537ee09efebf146053b7ef7d3a968a78cd22b92857474dcab9acd27a0b27f3",
+  "tenant_scope": "global"
+}

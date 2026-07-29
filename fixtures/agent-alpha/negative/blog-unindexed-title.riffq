@@ -1,0 +1,18 @@
+query UnindexedTitle(
+    $site_id: Site.site_id,
+    $limit: Limit = 20,
+) {
+    many posts from Post
+        where site_id == $site_id
+        order by title asc
+        take $limit
+
+    return Found {
+        posts: posts {
+            post_id
+            title
+        }
+    }
+
+    outcomes Found
+}

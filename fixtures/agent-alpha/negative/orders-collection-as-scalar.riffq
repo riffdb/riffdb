@@ -1,0 +1,24 @@
+query CollectionAsScalar(
+    $store_id: Store.store_id,
+    $order_id: PurchaseOrder.order_id,
+) {
+    many lines from OrderLine
+        where store_id == $store_id
+            && order_id == $order_id
+        order by product_id asc
+        take 100
+
+    one product from Product
+        where store_id == $store_id
+            && product_id == lines.product_id
+        else IntegrityFailure
+
+    return Found {
+        products: product {
+            product_id
+            name
+        }
+    }
+
+    outcomes Found | IntegrityFailure
+}

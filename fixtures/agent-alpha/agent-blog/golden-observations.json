@@ -1,0 +1,82 @@
+{
+  "application": "agent-blog",
+  "languages": [
+    "rust",
+    "typescript"
+  ],
+  "observations": [
+    {
+      "application_rpc_count": 1,
+      "operation": "ModerationQueue",
+      "result": "typed_declared_outcome",
+      "snapshot": "single_engine_snapshot",
+      "transport_glue_lines": 0
+    },
+    {
+      "application_rpc_count": 1,
+      "operation": "PostBySlug",
+      "result": "typed_declared_outcome",
+      "snapshot": "single_engine_snapshot",
+      "transport_glue_lines": 0
+    },
+    {
+      "application_rpc_count": 1,
+      "operation": "PostPage",
+      "result": "typed_declared_outcome",
+      "snapshot": "single_engine_snapshot",
+      "transport_glue_lines": 0
+    },
+    {
+      "application_rpc_count": 1,
+      "operation": "PublicFeed",
+      "result": "typed_declared_outcome",
+      "snapshot": "single_engine_snapshot",
+      "transport_glue_lines": 0
+    }
+  ],
+  "schema": "riffdb-agent-domain-observations/v1",
+  "writes": [
+    {
+      "idempotency": "required",
+      "operation": "AttachTag",
+      "result": "typed_declared_outcome",
+      "transport_glue_lines": 0
+    },
+    {
+      "idempotency": "required",
+      "operation": "CreateAuthor",
+      "result": "typed_declared_outcome",
+      "transport_glue_lines": 0
+    },
+    {
+      "idempotency": "required",
+      "operation": "CreateComment",
+      "result": "typed_declared_outcome",
+      "transport_glue_lines": 0
+    },
+    {
+      "idempotency": "required",
+      "operation": "CreatePost",
+      "result": "typed_declared_outcome",
+      "transport_glue_lines": 0
+    },
+    {
+      "idempotency": "required",
+      "operation": "CreatePostRoute",
+      "result": "typed_declared_outcome",
+      "transport_glue_lines": 0
+    },
+    {
+      "idempotency": "required",
+      "operation": "CreateSite",
+      "result": "typed_declared_outcome",
+      "transport_glue_lines": 0
+    },
+    {
+      "idempotency": "required",
+      "operation": "CreateTag",
+      "result": "typed_declared_outcome",
+      "transport_glue_lines": 0
+    }
+  ]
+}

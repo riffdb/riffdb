@@ -1,0 +1,1419 @@
+{
+  "application_manifest_hash": "6bc257937a0bb51c09c5147d6ff22b1c36852dd0edc2f690a788a7e44de85e97",
+  "commands": [
+    {
+      "annotations": {
+        "destructiveHint": true,
+        "idempotentHint": true,
+        "openWorldHint": false,
+        "readOnlyHint": false
+      },
+      "contract_bundle_hash": "93f0dd8c7cd8423db28dca15ac8c6eb57e5a0447268586a7bb17cbbb5aa8029a",
+      "description": "Execute the exact AttachTag compiled command from contract AgentBlog.",
+      "input_schema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "properties": {
+          "idempotency_key": {
+            "type": "string"
+          },
+          "post_id": {
+            "type": "string"
+          },
+          "site_id": {
+            "type": "string"
+          },
+          "tag_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "tag_id",
+          "post_id",
+          "site_id",
+          "idempotency_key"
+        ],
+        "type": "object"
+      },
+      "name": "agent_blog.attach_tag",
+      "plan_hash": "12a3ef50422a3f31316f9744d6e8326b5770d89d3edb0dfdaf5f51fb0f57945e",
+      "result_schema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "oneOf": [
+          {
+            "additionalProperties": false,
+            "properties": {
+              "link": {
+                "additionalProperties": false,
+                "properties": {
+                  "created_at": {
+                    "type": "string"
+                  },
+                  "post_id": {
+                    "type": "string"
+                  },
+                  "site_id": {
+                    "type": "string"
+                  },
+                  "tag_id": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "tag_id",
+                  "post_id",
+                  "site_id",
+                  "created_at"
+                ],
+                "type": "object"
+              },
+              "outcome": {
+                "const": "Created",
+                "type": "string"
+              }
+            },
+            "required": [
+              "link",
+              "outcome"
+            ],
+            "type": "object"
+          },
+          {
+            "additionalProperties": false,
+            "properties": {
+              "outcome": {
+                "const": "TagMissing",
+                "type": "string"
+              },
+              "tag_id": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "tag_id",
+              "outcome"
+            ],
+            "type": "object"
+          },
+          {
+            "additionalProperties": false,
+            "properties": {
+              "outcome": {
+                "const": "PostMissing",
+                "type": "string"
+              },
+              "post_id": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "post_id",
+              "outcome"
+            ],
+            "type": "object"
+          },
+          {
+            "additionalProperties": false,
+            "properties": {
+              "outcome": {
+                "const": "TagAlreadyAttached",
+                "type": "string"
+              },
+              "post_id": {
+                "type": "string"
+              },
+              "tag_id": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "tag_id",
+              "post_id",
+              "outcome"
+            ],
+            "type": "object"
+          }
+        ]
+      },
+      "title": "Run AttachTag"
+    },
+    {
+      "annotations": {
+        "destructiveHint": true,
+        "idempotentHint": true,
+        "openWorldHint": false,
+        "readOnlyHint": false
+      },
+      "contract_bundle_hash": "93f0dd8c7cd8423db28dca15ac8c6eb57e5a0447268586a7bb17cbbb5aa8029a",
+      "description": "Execute the exact CreateAuthor compiled command from contract AgentBlog.",
+      "input_schema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "properties": {
+          "author_id": {
+            "type": "string"
+          },
+          "display_name": {
+            "type": "string"
+          },
+          "idempotency_key": {
+            "type": "string"
+          },
+          "site_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "site_id",
+          "author_id",
+          "display_name",
+          "idempotency_key"
+        ],
+        "type": "object"
+      },
+      "name": "agent_blog.create_author",
+      "plan_hash": "3ed778239f61da944b1ec65c4a76e2dde1b01b031df0fbc5f8765780fa91f149",
+      "result_schema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "oneOf": [
+          {
+            "additionalProperties": false,
+            "properties": {
+              "author": {
+                "additionalProperties": false,
+                "properties": {
+                  "author_id": {
+                    "type": "string"
+                  },
+                  "created_at": {
+                    "type": "string"
+                  },
+                  "display_name": {
+                    "type": "string"
+                  },
+                  "site_id": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "site_id",
+                  "author_id",
+                  "created_at",
+                  "display_name"
+                ],
+                "type": "object"
+              },
+              "outcome": {
+                "const": "Created",
+                "type": "string"
+              }
+            },
+            "required": [
+              "author",
+              "outcome"
+            ],
+            "type": "object"
+          },
+          {
+            "additionalProperties": false,
+            "properties": {
+              "outcome": {
+                "const": "SiteMissing",
+                "type": "string"
+              },
+              "site_id": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "site_id",
+              "outcome"
+            ],
+            "type": "object"
+          },
+          {
+            "additionalProperties": false,
+            "properties": {
+              "author_id": {
+                "type": "string"
+              },
+              "outcome": {
+                "const": "AuthorExists",
+                "type": "string"
+              }
+            },
+            "required": [
+              "author_id",
+              "outcome"
+            ],
+            "type": "object"
+          }
+        ]
+      },
+      "title": "Run CreateAuthor"
+    },
+    {
+      "annotations": {
+        "destructiveHint": true,
+        "idempotentHint": true,
+        "openWorldHint": false,
+        "readOnlyHint": false
+      },
+      "contract_bundle_hash": "93f0dd8c7cd8423db28dca15ac8c6eb57e5a0447268586a7bb17cbbb5aa8029a",
+      "description": "Execute the exact CreateComment compiled command from contract AgentBlog.",
+      "input_schema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "properties": {
+          "author_id": {
+            "type": "string"
+          },
+          "body": {
+            "type": "string"
+          },
+          "comment_id": {
+            "type": "string"
+          },
+          "idempotency_key": {
+            "type": "string"
+          },
+          "post_id": {
+            "type": "string"
+          },
+          "site_id": {
+            "type": "string"
+          },
+          "status": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "body",
+          "status",
+          "post_id",
+          "site_id",
+          "author_id",
+          "comment_id",
+          "idempotency_key"
+        ],
+        "type": "object"
+      },
+      "name": "agent_blog.create_comment",
+      "plan_hash": "57f578b60ad438c0b55a8a051fab130fc5913daab0e86a37d17b132f892361da",
+      "result_schema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "oneOf": [
+          {
+            "additionalProperties": false,
+            "properties": {
+              "comment": {
+                "additionalProperties": false,
+                "properties": {
+                  "author_id": {
+                    "type": "string"
+                  },
+                  "body": {
+                    "type": "string"
+                  },
+                  "comment_id": {
+                    "type": "string"
+                  },
+                  "created_at": {
+                    "type": "string"
+                  },
+                  "post_id": {
+                    "type": "string"
+                  },
+                  "site_id": {
+                    "type": "string"
+                  },
+                  "status": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "body",
+                  "status",
+                  "post_id",
+                  "site_id",
+                  "author_id",
+                  "comment_id",
+                  "created_at"
+                ],
+                "type": "object"
+              },
+              "outcome": {
+                "const": "Created",
+                "type": "string"
+              }
+            },
+            "required": [
+              "comment",
+              "outcome"
+            ],
+            "type": "object"
+          },
+          {
+            "additionalProperties": false,
+            "properties": {
+              "outcome": {
+                "const": "PostMissing",
+                "type": "string"
+              },
+              "post_id": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "post_id",
+              "outcome"
+            ],
+            "type": "object"
+          },
+          {
+            "additionalProperties": false,
+            "properties": {
+              "author_id": {
+                "type": "string"
+              },
+              "outcome": {
+                "const": "AuthorMissing",
+                "type": "string"
+              }
+            },
+            "required": [
+              "author_id",
+              "outcome"
+            ],
+            "type": "object"
+          },
+          {
+            "additionalProperties": false,
+            "properties": {
+              "comment_id": {
+                "type": "string"
+              },
+              "outcome": {
+                "const": "CommentExists",
+                "type": "string"
+              }
+            },
+            "required": [
+              "comment_id",
+              "outcome"
+            ],
+            "type": "object"
+          }
+        ]
+      },
+      "title": "Run CreateComment"
+    },
+    {
+      "annotations": {
+        "destructiveHint": true,
+        "idempotentHint": true,
+        "openWorldHint": false,
+        "readOnlyHint": false
+      },
+      "contract_bundle_hash": "93f0dd8c7cd8423db28dca15ac8c6eb57e5a0447268586a7bb17cbbb5aa8029a",
+      "description": "Execute the exact CreatePost compiled command from contract AgentBlog.",
+      "input_schema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "properties": {
+          "author_id": {
+            "type": "string"
+          },
+          "body": {
+            "type": "string"
+          },
+          "idempotency_key": {
+            "type": "string"
+          },
+          "post_id": {
+            "type": "string"
+          },
+          "site_id": {
+            "type": "string"
+          },
+          "slug": {
+            "type": "string"
+          },
+          "status": {
+            "type": "string"
+          },
+          "title": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "body",
+          "slug",
+          "title",
+          "status",
+          "post_id",
+          "site_id",
+          "author_id",
+          "idempotency_key"
+        ],
+        "type": "object"
+      },
+      "name": "agent_blog.create_post",
+      "plan_hash": "9ba5013db3f2de16bb978fe61279de69e259d0b65bd983a673df85898ecb388c",
+      "result_schema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "oneOf": [
+          {
+            "additionalProperties": false,
+            "properties": {
+              "outcome": {
+                "const": "Created",
+                "type": "string"
+              },
+              "post": {
+                "additionalProperties": false,
+                "properties": {
+                  "author_id": {
+                    "type": "string"
+                  },
+                  "body": {
+                    "type": "string"
+                  },
+                  "post_id": {
+                    "type": "string"
+                  },
+                  "published_at": {
+                    "type": "string"
+                  },
+                  "site_id": {
+                    "type": "string"
+                  },
+                  "slug": {
+                    "type": "string"
+                  },
+                  "status": {
+                    "type": "string"
+                  },
+                  "title": {
+                    "type": "string"
+                  },
+                  "updated_at": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "body",
+                  "slug",
+                  "title",
+                  "status",
+                  "post_id",
+                  "site_id",
+                  "author_id",
+                  "updated_at",
+                  "published_at"
+                ],
+                "type": "object"
+              }
+            },
+            "required": [
+              "post",
+              "outcome"
+            ],
+            "type": "object"
+          },
+          {
+            "additionalProperties": false,
+            "properties": {
+              "outcome": {
+                "const": "PostExists",
+                "type": "string"
+              },
+              "post_id": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "post_id",
+              "outcome"
+            ],
+            "type": "object"
+          },
+          {
+            "additionalProperties": false,
+            "properties": {
+              "outcome": {
+                "const": "SiteMissing",
+                "type": "string"
+              },
+              "site_id": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "site_id",
+              "outcome"
+            ],
+            "type": "object"
+          },
+          {
+            "additionalProperties": false,
+            "properties": {
+              "author_id": {
+                "type": "string"
+              },
+              "outcome": {
+                "const": "AuthorMissing",
+                "type": "string"
+              }
+            },
+            "required": [
+              "author_id",
+              "outcome"
+            ],
+            "type": "object"
+          }
+        ]
+      },
+      "title": "Run CreatePost"
+    },
+    {
+      "annotations": {
+        "destructiveHint": true,
+        "idempotentHint": true,
+        "openWorldHint": false,
+        "readOnlyHint": false
+      },
+      "contract_bundle_hash": "93f0dd8c7cd8423db28dca15ac8c6eb57e5a0447268586a7bb17cbbb5aa8029a",
+      "description": "Execute the exact CreatePostRoute compiled command from contract AgentBlog.",
+      "input_schema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "properties": {
+          "idempotency_key": {
+            "type": "string"
+          },
+          "post_id": {
+            "type": "string"
+          },
+          "site_id": {
+            "type": "string"
+          },
+          "slug": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "slug",
+          "post_id",
+          "site_id",
+          "idempotency_key"
+        ],
+        "type": "object"
+      },
+      "name": "agent_blog.create_post_route",
+      "plan_hash": "ac96d745aa24bd4396ac3531b72fd0e84b76e0e44d0428299769231dbfcb4550",
+      "result_schema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "oneOf": [
+          {
+            "additionalProperties": false,
+            "properties": {
+              "outcome": {
+                "const": "Created",
+                "type": "string"
+              },
+              "route": {
+                "additionalProperties": false,
+                "properties": {
+                  "post_id": {
+                    "type": "string"
+                  },
+                  "site_id": {
+                    "type": "string"
+                  },
+                  "slug": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "slug",
+                  "post_id",
+                  "site_id"
+                ],
+                "type": "object"
+              }
+            },
+            "required": [
+              "route",
+              "outcome"
+            ],
+            "type": "object"
+          },
+          {
+            "additionalProperties": false,
+            "properties": {
+              "outcome": {
+                "const": "SlugExists",
+                "type": "string"
+              },
+              "slug": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "slug",
+              "outcome"
+            ],
+            "type": "object"
+          },
+          {
+            "additionalProperties": false,
+            "properties": {
+              "outcome": {
+                "const": "PostMissing",
+                "type": "string"
+              },
+              "post_id": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "post_id",
+              "outcome"
+            ],
+            "type": "object"
+          },
+          {
+            "additionalProperties": false,
+            "properties": {
+              "outcome": {
+                "const": "SiteMissing",
+                "type": "string"
+              },
+              "site_id": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "site_id",
+              "outcome"
+            ],
+            "type": "object"
+          }
+        ]
+      },
+      "title": "Run CreatePostRoute"
+    },
+    {
+      "annotations": {
+        "destructiveHint": true,
+        "idempotentHint": true,
+        "openWorldHint": false,
+        "readOnlyHint": false
+      },
+      "contract_bundle_hash": "93f0dd8c7cd8423db28dca15ac8c6eb57e5a0447268586a7bb17cbbb5aa8029a",
+      "description": "Execute the exact CreateSite compiled command from contract AgentBlog.",
+      "input_schema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "properties": {
+          "idempotency_key": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "site_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "name",
+          "site_id",
+          "idempotency_key"
+        ],
+        "type": "object"
+      },
+      "name": "agent_blog.create_site",
+      "plan_hash": "e3fc9b2292fc7e918151fc2f0d36d64eb10e6de7b6e9e8114f62905391a56685",
+      "result_schema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "oneOf": [
+          {
+            "additionalProperties": false,
+            "properties": {
+              "outcome": {
+                "const": "Created",
+                "type": "string"
+              },
+              "site": {
+                "additionalProperties": false,
+                "properties": {
+                  "created_at": {
+                    "type": "string"
+                  },
+                  "name": {
+                    "type": "string"
+                  },
+                  "site_id": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "name",
+                  "site_id",
+                  "created_at"
+                ],
+                "type": "object"
+              }
+            },
+            "required": [
+              "site",
+              "outcome"
+            ],
+            "type": "object"
+          },
+          {
+            "additionalProperties": false,
+            "properties": {
+              "outcome": {
+                "const": "SiteExists",
+                "type": "string"
+              },
+              "site_id": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "site_id",
+              "outcome"
+            ],
+            "type": "object"
+          }
+        ]
+      },
+      "title": "Run CreateSite"
+    },
+    {
+      "annotations": {
+        "destructiveHint": true,
+        "idempotentHint": true,
+        "openWorldHint": false,
+        "readOnlyHint": false
+      },
+      "contract_bundle_hash": "93f0dd8c7cd8423db28dca15ac8c6eb57e5a0447268586a7bb17cbbb5aa8029a",
+      "description": "Execute the exact CreateTag compiled command from contract AgentBlog.",
+      "input_schema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "properties": {
+          "idempotency_key": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "site_id": {
+            "type": "string"
+          },
+          "tag_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "name",
+          "tag_id",
+          "site_id",
+          "idempotency_key"
+        ],
+        "type": "object"
+      },
+      "name": "agent_blog.create_tag",
+      "plan_hash": "ca55ecb95abe64fb2a5e24aa02b7d2c959d9af75bda034af1a3cafbc364c10a8",
+      "result_schema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "oneOf": [
+          {
+            "additionalProperties": false,
+            "properties": {
+              "outcome": {
+                "const": "Created",
+                "type": "string"
+              },
+              "tag": {
+                "additionalProperties": false,
+                "properties": {
+                  "created_at": {
+                    "type": "string"
+                  },
+                  "name": {
+                    "type": "string"
+                  },
+                  "site_id": {
+                    "type": "string"
+                  },
+                  "tag_id": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "name",
+                  "tag_id",
+                  "site_id",
+                  "created_at"
+                ],
+                "type": "object"
+              }
+            },
+            "required": [
+              "tag",
+              "outcome"
+            ],
+            "type": "object"
+          },
+          {
+            "additionalProperties": false,
+            "properties": {
+              "outcome": {
+                "const": "TagExists",
+                "type": "string"
+              },
+              "tag_id": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "tag_id",
+              "outcome"
+            ],
+            "type": "object"
+          },
+          {
+            "additionalProperties": false,
+            "properties": {
+              "outcome": {
+                "const": "SiteMissing",
+                "type": "string"
+              },
+              "site_id": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "site_id",
+              "outcome"
+            ],
+            "type": "object"
+          }
+        ]
+      },
+      "title": "Run CreateTag"
+    }
+  ],
+  "schema": "riffdb-generated-mcp-tools-v1",
+  "tools": [
+    {
+      "annotations": {
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false,
+        "readOnlyHint": true
+      },
+      "description": "Execute the exact ModerationQueue named query from immutable module agent_blog.",
+      "input_schema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "properties": {
+          "after": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "limit": {
+            "maximum": 500,
+            "minimum": 1,
+            "type": "integer"
+          },
+          "site_id": {
+            "type": "string"
+          },
+          "status": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "site_id",
+          "status"
+        ],
+        "type": "object"
+      },
+      "module_hash": "37c745a028f59389b6d7e440ccec47932792509c5840c25410f7ed72daa1c7ec",
+      "name": "agent_blog.moderation_queue",
+      "result_schema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "oneOf": [
+          {
+            "additionalProperties": false,
+            "properties": {
+              "comments": {
+                "items": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "author_id": {
+                      "type": "string"
+                    },
+                    "body": {
+                      "type": "string"
+                    },
+                    "comment_id": {
+                      "type": "string"
+                    },
+                    "created_at": {
+                      "type": "string"
+                    },
+                    "post_id": {
+                      "type": "string"
+                    },
+                    "status": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "comment_id",
+                    "post_id",
+                    "author_id",
+                    "body",
+                    "status",
+                    "created_at"
+                  ],
+                  "type": "object"
+                },
+                "maxItems": 500,
+                "type": "array"
+              },
+              "outcome": {
+                "const": "Found",
+                "type": "string"
+              }
+            },
+            "required": [
+              "outcome",
+              "comments"
+            ],
+            "type": "object"
+          }
+        ]
+      },
+      "title": "Run ModerationQueue"
+    },
+    {
+      "annotations": {
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false,
+        "readOnlyHint": true
+      },
+      "description": "Execute the exact PostBySlug named query from immutable module agent_blog.",
+      "input_schema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "properties": {
+          "site_id": {
+            "type": "string"
+          },
+          "slug": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "site_id",
+          "slug"
+        ],
+        "type": "object"
+      },
+      "module_hash": "37c745a028f59389b6d7e440ccec47932792509c5840c25410f7ed72daa1c7ec",
+      "name": "agent_blog.post_by_slug",
+      "result_schema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "oneOf": [
+          {
+            "additionalProperties": false,
+            "properties": {
+              "outcome": {
+                "const": "Found",
+                "type": "string"
+              },
+              "post": {
+                "additionalProperties": false,
+                "properties": {
+                  "author_id": {
+                    "type": "string"
+                  },
+                  "body": {
+                    "type": "string"
+                  },
+                  "post_id": {
+                    "type": "string"
+                  },
+                  "published_at": {
+                    "type": "string"
+                  },
+                  "slug": {
+                    "type": "string"
+                  },
+                  "status": {
+                    "type": "string"
+                  },
+                  "title": {
+                    "type": "string"
+                  },
+                  "updated_at": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "post_id",
+                  "author_id",
+                  "slug",
+                  "title",
+                  "body",
+                  "status",
+                  "published_at",
+                  "updated_at"
+                ],
+                "type": "object"
+              }
+            },
+            "required": [
+              "outcome",
+              "post"
+            ],
+            "type": "object"
+          },
+          {
+            "additionalProperties": false,
+            "properties": {
+              "outcome": {
+                "const": "NotFound",
+                "type": "string"
+              }
+            },
+            "required": [
+              "outcome"
+            ],
+            "type": "object"
+          },
+          {
+            "additionalProperties": false,
+            "properties": {
+              "outcome": {
+                "const": "IntegrityFailure",
+                "type": "string"
+              }
+            },
+            "required": [
+              "outcome"
+            ],
+            "type": "object"
+          }
+        ]
+      },
+      "title": "Run PostBySlug"
+    },
+    {
+      "annotations": {
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false,
+        "readOnlyHint": true
+      },
+      "description": "Execute the exact PostPage named query from immutable module agent_blog.",
+      "input_schema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "properties": {
+          "comments_after": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "post_id": {
+            "type": "string"
+          },
+          "site_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "site_id",
+          "post_id"
+        ],
+        "type": "object"
+      },
+      "module_hash": "37c745a028f59389b6d7e440ccec47932792509c5840c25410f7ed72daa1c7ec",
+      "name": "agent_blog.post_page",
+      "result_schema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "oneOf": [
+          {
+            "additionalProperties": false,
+            "properties": {
+              "author": {
+                "additionalProperties": false,
+                "properties": {
+                  "author_id": {
+                    "type": "string"
+                  },
+                  "display_name": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "author_id",
+                  "display_name"
+                ],
+                "type": "object"
+              },
+              "comments": {
+                "items": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "author_id": {
+                      "type": "string"
+                    },
+                    "body": {
+                      "type": "string"
+                    },
+                    "comment_id": {
+                      "type": "string"
+                    },
+                    "created_at": {
+                      "type": "string"
+                    },
+                    "status": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "comment_id",
+                    "author_id",
+                    "body",
+                    "status",
+                    "created_at"
+                  ],
+                  "type": "object"
+                },
+                "maxItems": 50,
+                "type": "array"
+              },
+              "outcome": {
+                "const": "Found",
+                "type": "string"
+              },
+              "post": {
+                "additionalProperties": false,
+                "properties": {
+                  "body": {
+                    "type": "string"
+                  },
+                  "post_id": {
+                    "type": "string"
+                  },
+                  "published_at": {
+                    "type": "string"
+                  },
+                  "slug": {
+                    "type": "string"
+                  },
+                  "status": {
+                    "type": "string"
+                  },
+                  "title": {
+                    "type": "string"
+                  },
+                  "updated_at": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "post_id",
+                  "slug",
+                  "title",
+                  "body",
+                  "status",
+                  "published_at",
+                  "updated_at"
+                ],
+                "type": "object"
+              },
+              "tags": {
+                "items": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "name": {
+                      "type": "string"
+                    },
+                    "tag_id": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "tag_id",
+                    "name"
+                  ],
+                  "type": "object"
+                },
+                "maxItems": 32,
+                "type": "array"
+              }
+            },
+            "required": [
+              "outcome",
+              "post",
+              "author",
+              "comments",
+              "tags"
+            ],
+            "type": "object"
+          },
+          {
+            "additionalProperties": false,
+            "properties": {
+              "outcome": {
+                "const": "NotFound",
+                "type": "string"
+              }
+            },
+            "required": [
+              "outcome"
+            ],
+            "type": "object"
+          },
+          {
+            "additionalProperties": false,
+            "properties": {
+              "outcome": {
+                "const": "IntegrityFailure",
+                "type": "string"
+              }
+            },
+            "required": [
+              "outcome"
+            ],
+            "type": "object"
+          }
+        ]
+      },
+      "title": "Run PostPage"
+    },
+    {
+      "annotations": {
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false,
+        "readOnlyHint": true
+      },
+      "description": "Execute the exact PublicFeed named query from immutable module agent_blog.",
+      "input_schema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "properties": {
+          "after": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "limit": {
+            "maximum": 500,
+            "minimum": 1,
+            "type": "integer"
+          },
+          "site_id": {
+            "type": "string"
+          },
+          "status": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "site_id",
+          "status"
+        ],
+        "type": "object"
+      },
+      "module_hash": "37c745a028f59389b6d7e440ccec47932792509c5840c25410f7ed72daa1c7ec",
+      "name": "agent_blog.public_feed",
+      "result_schema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "oneOf": [
+          {
+            "additionalProperties": false,
+            "properties": {
+              "outcome": {
+                "const": "Found",
+                "type": "string"
+              },
+              "posts": {
+                "items": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "author_id": {
+                      "type": "string"
+                    },
+                    "post_id": {
+                      "type": "string"
+                    },
+                    "published_at": {
+                      "type": "string"
+                    },
+                    "slug": {
+                      "type": "string"
+                    },
+                    "title": {
+                      "type": "string"
+                    },
+                    "updated_at": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "post_id",
+                    "author_id",
+                    "slug",
+                    "title",
+                    "published_at",
+                    "updated_at"
+                  ],
+                  "type": "object"
+                },
+                "maxItems": 500,
+                "type": "array"
+              }
+            },
+            "required": [
+              "outcome",
+              "posts"
+            ],
+            "type": "object"
+          }
+        ]
+      },
+      "title": "Run PublicFeed"
+    }
+  ]
+}

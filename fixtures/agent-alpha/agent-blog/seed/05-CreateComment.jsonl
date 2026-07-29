@@ -1,0 +1,1 @@
+{"author_id":{"$uuid":"018f0f8b-7c6d-7e31-8a4f-2c2d37a52b21"},"body":"Bounded page reads make the execution plan reviewable.","comment_id":{"$uuid":"018f0f8b-7c6d-7e31-8a4f-2c2d37a52b23"},"idempotency_key":"blog-comment-first","post_id":{"$uuid":"018f0f8b-7c6d-7e31-8a4f-2c2d37a52b22"},"site_id":{"$uuid":"018f0f8b-7c6d-7e31-8a4f-2c2d37a52b20"},"status":{"$enum":"Approved"}}

@@ -134,6 +134,100 @@ returned commit sequence, and checks the language-neutral observation fixture.
 `scripts/check-application-bindings` proves generated identities and rejects a
 handwritten transport or kernel dependency.
 
+WP-335 exposed and corrected one WP-330 parity defect before unfamiliar-domain
+evidence was accepted: the TypeScript CLI transport originally generated types
+for every scalar but could not encode integer, decimal, money, bytes, date, or
+timestamp inputs. The transport and public CLI now use closed symbolic tags
+with range and shape checks, including decimal coefficients as bounded base64
+and integers as decimal strings. No JSON-number precision loss or numeric
+contract field ID is involved. This allowed the Orders corpus to retain real
+`i64` quantities, exact decimal prices, nonnegative inventory invariants, and
+atomic reservation arithmetic instead of weakening the model to strings.
+
+## WP-335 unfamiliar-domain evidence
+
+The Blog/CMS and Orders/Inventory applications compile and generate without a
+RiffQL language change.
+
+The Blog application includes symbolic commands for sites, authors, posts,
+slug routes, comments, tags, and attachments. Its named reads cover a public
+feed, slug lookup, moderation queue, and one-snapshot post page with author,
+comments, and tags. Slug lookup uses an explicit `PostSlug` primary-key entity;
+it does not use a read-before-write uniqueness check. Creating the post and
+creating its route are separate idempotent commands because a declared
+relationship must observe an existing target rather than infer integrity from
+command ordering.
+
+The Orders application includes customers, products, exact prices, inventory,
+orders, lines, and a reservation command. The reservation command checks order
+state, line quantity, and available inventory in one compiled command, then
+atomically changes the order and inventory. Its named reads cover customer
+history, open orders, an inventory dashboard, and one-snapshot order detail
+with a bounded line-to-product batch.
+
+Rust and TypeScript generated clients compile from the same exact manifests.
+The generated MCP catalogs, roles, manifests, and language-neutral workload
+observations are byte-reproducible. The application boundary linter remains
+green with zero handwritten transport glue and no kernel dependency.
+The domain gate also starts a fresh server for each application, deploys its
+exact contract and query module, binds only its generated symbolic role, seeds
+all seven commands through resumable batches, and executes the page workload
+through both generated Rust and TypeScript clients.
+
+Four deliberately unsafe shapes are retained as executable diagnostic
+fixtures:
+
+| Shape | Classification | Diagnostic | Safe remedy |
+|---|---|---|---|
+| Blog title ordering without a matching index | index | `RDB-QP003` | Declare the suggested index or use the status feed |
+| Author lookup without `site_id` | locality | `RDB-QP002` | Supply the partition key |
+| Treating a line collection as one scalar product key | cardinality | `RDB-QP007` | Use the bounded dependent-key batch |
+| Inventory collection without `take` | bounds | `RDB-QS009` | Add a positive bound and optional cursor |
+
+The canonical report is `fixtures/agent-alpha/gap-report-v1.json`; the gate is
+`scripts/agent-domain-evidence --assert-complete`. No repeated missing bounded
+construct was found, so WP-335 adds no grammar, IR, plan-hash, authorization,
+storage, cursor, or result semantic.
+
+### WP-335 handoff
+
+Work package: WP-335
+
+Requirement IDs: AAA-011
+
+ADRs consulted: ADR-0002, ADR-0013, ADR-0051, ADR-0054, ADR-0055, ADR-0056
+
+Upstream revisions: `046709a`, plus the focused WP-330 correction `6c80d60`
+
+Allowed paths used: contract and query corpora, query-module evidence generator,
+Rust/TypeScript/MCP generated domain clients, agent-alpha fixtures and examples,
+domain evidence and boundary scripts, and RiffQL/alpha documentation.
+
+Behavior added or changed: two unfamiliar symbolic application corpora,
+deterministic manifests and roles, resumable command seed inputs, typed
+cross-language clients, language-neutral observations, and source-spanned
+negative diagnostic evidence.
+
+Compatibility classification: additive application evidence only. RiffQL v1,
+query IR v1, plan hashes, storage, service authorization, cursor encoding, and
+result semantics are unchanged.
+
+Security implications: every positive query remains same-partition, indexed,
+bounded, whole-query authorized, and one-snapshot. Every write remains a
+compiled idempotent command with declared outcomes. The negative fixtures prove
+there is no fallback for four common unsafe access patterns.
+
+Generated artifacts checked: manifests, roles, Rust, TypeScript, MCP catalogs,
+golden observations, and the gap report regenerate byte-for-byte.
+
+Known limitations: RiffQL still has no unbounded aggregates, general joins,
+computed expressions, fragments, or search escape hatch. The two applications
+did not produce repeated evidence sufficient to add any of them.
+
+Follow-up issues: WP-340 must run four genuinely independent sealed evaluations;
+these corpus checks are product evidence, not a substitute for independent
+agent ratings.
+
 ## Measurements
 
 Every evaluation run records:

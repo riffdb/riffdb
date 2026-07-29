@@ -1,0 +1,35 @@
+query InventoryDashboard(
+    $store_id: Store.store_id,
+    $after: Cursor?,
+    $limit: Limit = 50,
+) {
+    many inventory from Inventory
+        where store_id == $store_id
+        order by product_id asc
+        take $limit after $after
+
+    many products from Product
+        where store_id == $store_id
+            && product_id in inventory.product_id
+        order by product_id asc
+        take $limit
+        else IntegrityFailure
+
+    return Found {
+        inventory: inventory {
+            product_id
+            available
+            reserved
+            updated_at
+        }
+        products: products {
+            product_id
+            sku
+            name
+            unit_price
+            active
+        }
+    }
+
+    outcomes Found | IntegrityFailure
+}

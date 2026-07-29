@@ -1,0 +1,24 @@
+query OpenOrders(
+    $store_id: Store.store_id,
+    $status: OrderStatus,
+    $after: Cursor?,
+    $limit: Limit = 25,
+) {
+    many orders from PurchaseOrder
+        where store_id == $store_id
+            && status == $status
+        order by created_at asc, order_id asc
+        take $limit after $after
+
+    return Found {
+        orders: orders {
+            order_id
+            customer_id
+            status
+            created_at
+            updated_at
+        }
+    }
+
+    outcomes Found
+}

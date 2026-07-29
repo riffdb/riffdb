@@ -1,0 +1,25 @@
+query PublicFeed(
+    $site_id: Site.site_id,
+    $status: PostStatus,
+    $after: Cursor?,
+    $limit: Limit = 20,
+) {
+    many posts from Post
+        where site_id == $site_id
+            && status == $status
+        order by published_at desc, post_id desc
+        take $limit after $after
+
+    return Found {
+        posts: posts {
+            post_id
+            author_id
+            slug
+            title
+            published_at
+            updated_at
+        }
+    }
+
+    outcomes Found
+}
