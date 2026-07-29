@@ -84,6 +84,10 @@ fn hash_v1_domain_vectors_are_stable() {
             HashDomain::ProjectionApply,
             "406205600e6ec6208bd990827d9348fb37302d9d1ccd55a2846e8bc8ea6937c2",
         ),
+        (
+            HashDomain::CommandBatch,
+            "fb5295452b8b2a703ce46f092939b2d25fd2b57399dc3ef46353d660a9d34bfb",
+        ),
     ];
 
     for (domain, expected) in vectors {

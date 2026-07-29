@@ -221,6 +221,25 @@ pub(crate) enum ContractCommand {
 
 #[derive(Debug, Subcommand)]
 pub(crate) enum CommandCommand {
+    /// Runs or resumes bounded ordinary symbolic commands from JSONL.
+    Batch {
+        #[arg(value_name = "COMMAND_NAME")]
+        command_name: String,
+        #[arg(value_name = "JSONL_INPUT")]
+        input: OsString,
+        #[arg(long, value_name = "VERSION")]
+        expected_version: Option<String>,
+        #[arg(long, default_value = "8", value_name = "1..32")]
+        concurrency: String,
+        #[arg(long, default_value = "idempotency_key", value_name = "FIELD")]
+        idempotency_field: String,
+        #[arg(long, value_name = "PATH")]
+        checkpoint: Option<OsString>,
+        #[arg(long = "error-outcome", value_name = "OUTCOME")]
+        error_outcomes: Vec<String>,
+        #[arg(long)]
+        progress: bool,
+    },
     Run {
         #[arg(value_name = "COMMAND_NAME")]
         command_name: String,
@@ -447,6 +466,48 @@ mod tests {
                 ..
             } if role == "ticketdesk-application" && seed_concurrency == "4"
         ));
+    }
+
+    #[test]
+    fn command_batch_is_symbolic_and_has_no_bulk_write_escape_hatch() {
+        let cli = Cli::try_parse_from([
+            "riffdb",
+            "command",
+            "batch",
+            "CreateTicket",
+            "tickets.jsonl",
+            "--concurrency",
+            "16",
+            "--checkpoint",
+            "tickets.checkpoint.json",
+            "--error-outcome",
+            "InvalidInput",
+            "--progress",
+        ])
+        .expect("symbolic batch");
+        assert!(matches!(
+            cli.command,
+            TopLevel::Command {
+                command: CommandCommand::Batch {
+                    command_name,
+                    concurrency,
+                    progress: true,
+                    ..
+                }
+            } if command_name == "CreateTicket" && concurrency == "16"
+        ));
+        assert!(
+            Cli::try_parse_from([
+                "riffdb",
+                "command",
+                "batch",
+                "CreateTicket",
+                "tickets.jsonl",
+                "--entity-type-id",
+                "2",
+            ])
+            .is_err()
+        );
     }
 
     #[test]

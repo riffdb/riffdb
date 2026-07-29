@@ -1,3 +1,4 @@
+use std::collections::BTreeSet;
 use std::ffi::OsString;
 use std::fs;
 use std::io::{self, Read};
@@ -24,6 +25,10 @@ use riffdb_types::{
 };
 use serde::{Deserialize, Serialize};
 
+use crate::batch::{
+    BatchError, BatchOptions, BatchReport, MAX_BATCH_CONCURRENCY, MAX_BATCH_SOURCE_BYTES,
+    execute as execute_batch, parse_source as parse_batch_source,
+};
 use crate::cli::{
     BackupCommand, CapabilityCommand, Cli, CommandCommand, CommitCommand, ContractCommand,
     ContractSelectionArgs, DemoCommand, EntityCommand, ProjectionCommand, QueryCommand,
@@ -992,6 +997,74 @@ async fn command_command(
     stdin: &mut dyn Read,
 ) -> Terminal {
     match command {
+        CommandCommand::Batch {
+            command_name,
+            input,
+            expected_version,
+            concurrency,
+            idempotency_field,
+            checkpoint,
+            error_outcomes,
+            progress,
+        } => {
+            let expected_version = match expected_version
+                .as_deref()
+                .map(parse_nonzero_u64)
+                .transpose()
+            {
+                Ok(value) => value,
+                Err(()) => return invalid_input(CommandIdentity::CommandBatch),
+            };
+            let concurrency = match concurrency.parse::<usize>() {
+                Ok(value) if (1..=MAX_BATCH_CONCURRENCY).contains(&value) => value,
+                _ => return invalid_input(CommandIdentity::CommandBatch),
+            };
+            let source = match read_path_or_stdin(&input, stdin, MAX_BATCH_SOURCE_BYTES) {
+                Ok(source) => source,
+                Err(error) => return input_terminal(CommandIdentity::CommandBatch, error),
+            };
+            let source = match parse_batch_source(
+                &source,
+                &command_name,
+                expected_version,
+                &idempotency_field,
+            ) {
+                Ok(source) => source,
+                Err(error) => return batch_error_terminal(error),
+            };
+            let error_outcomes = error_outcomes.into_iter().collect::<BTreeSet<_>>();
+            let metadata =
+                match required_metadata(CommandIdentity::CommandBatch, config, environment) {
+                    Ok(metadata) => metadata,
+                    Err(terminal) => return terminal,
+                };
+            let client = match connect(config).await {
+                Ok(client) => client,
+                Err(error) => return client_error(CommandIdentity::CommandBatch, &error),
+            };
+            let attempts = AttemptBudget::new(config.max_attempts).expect("configuration bound");
+            let report = match execute_batch(
+                source,
+                BatchOptions {
+                    command_name,
+                    expected_contract_version: expected_version,
+                    concurrency,
+                    idempotency_field,
+                    error_outcomes,
+                    checkpoint_path: checkpoint.map(std::path::PathBuf::from),
+                    progress,
+                },
+                client,
+                attempts,
+                metadata,
+            )
+            .await
+            {
+                Ok(report) => report,
+                Err(error) => return batch_error_terminal(error),
+            };
+            render_batch_report(report)
+        }
         CommandCommand::Run {
             command_name,
             input,
@@ -2518,6 +2591,49 @@ fn input_terminal(command: CommandIdentity, error: InputError) -> Terminal {
     }
 }
 
+fn batch_error_terminal(error: BatchError) -> Terminal {
+    match error {
+        BatchError::Input(error) => input_terminal(CommandIdentity::CommandBatch, error),
+        BatchError::CheckpointInvalid => local_error(
+            CommandIdentity::CommandBatch,
+            "batch_checkpoint_invalid",
+            "the batch checkpoint does not match its checksum, command, or source",
+        ),
+        BatchError::CheckpointWriteFailed => local_error(
+            CommandIdentity::CommandBatch,
+            "batch_checkpoint_write_failed",
+            "the batch checkpoint could not be durably replaced",
+        ),
+        BatchError::IdentifierUnavailable => local_error(
+            CommandIdentity::CommandBatch,
+            "batch_session_unavailable",
+            "a batch session identifier could not be generated",
+        ),
+    }
+}
+
+fn render_batch_report(report: BatchReport) -> Terminal {
+    if !report.is_complete() {
+        return local_error_with(
+            CommandIdentity::CommandBatch,
+            &report,
+            "batch_incomplete",
+            "one or more command outcomes remain pending; resume with the same source and checkpoint",
+            3,
+        );
+    }
+    if report.has_rejections() {
+        return local_error_with(
+            CommandIdentity::CommandBatch,
+            &report,
+            "batch_items_rejected",
+            "one or more commands reached a terminal rejected result",
+            2,
+        );
+    }
+    success(CommandIdentity::CommandBatch, "completed", &report)
+}
+
 fn invalid_input(command: CommandIdentity) -> Terminal {
     local_error(command, "input_invalid", "input is invalid")
 }
@@ -2672,12 +2788,28 @@ fn natural_query_value(value: serde_json::Value) -> Result<v1::Value, ()> {
                 .map(natural_query_value)
                 .collect::<Result<Vec<_>, _>>()?,
         }),
+        serde_json::Value::Object(mut tagged) if tagged.len() == 1 => {
+            if let Some(serde_json::Value::String(value)) = tagged.remove("$uuid") {
+                Kind::UuidValue(parse_uuid(&value).ok_or(())?.to_vec())
+            } else if let Some(serde_json::Value::String(value)) = tagged.remove("$enum") {
+                if value.is_empty() || value.len() > 256 {
+                    return Err(());
+                }
+                Kind::EnumValue(v1::EnumValue {
+                    type_id: 0,
+                    variant_id: 0,
+                    name: value,
+                })
+            } else {
+                return Err(());
+            }
+        }
         serde_json::Value::Object(_) => return Err(()),
     };
     Ok(v1::Value { kind: Some(kind) })
 }
 
-fn natural_command_record(
+pub(crate) fn natural_command_record(
     input: serde_json::Map<String, serde_json::Value>,
 ) -> Result<v1::Value, ()> {
     let mut fields = input
@@ -2879,6 +3011,9 @@ const fn command_identity(command: &TopLevel) -> CommandIdentity {
         TopLevel::Contract {
             command: ContractCommand::Deploy { .. },
         } => CommandIdentity::ContractDeploy,
+        TopLevel::Command {
+            command: CommandCommand::Batch { .. },
+        } => CommandIdentity::CommandBatch,
         TopLevel::Command {
             command: CommandCommand::Run { .. },
         } => CommandIdentity::CommandRun,

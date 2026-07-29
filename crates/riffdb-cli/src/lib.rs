@@ -3,6 +3,7 @@
 //! Public-only command-line workflows for a standalone RiffDB server.
 
 mod app;
+mod batch;
 mod cli;
 mod config;
 mod credential;

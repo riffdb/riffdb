@@ -54,6 +54,11 @@ WP-315's public contract and disclosure rules are documented in
 clients must use that semantic error object; exposing the compatible kernel
 error or reconstructing context from numeric IDs is a boundary failure.
 
+WP-320's batch rule is documented in
+`docs/getting-started/COMMAND-BATCHES.md`. A batch is only a bounded client
+scheduler for separately authorized exact commands; it never grants collection
+atomicity or a generic mutation path.
+
 ## Measurements
 
 Every evaluation run records:
