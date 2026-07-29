@@ -1,0 +1,28 @@
+query ListTickets(
+    $tenant_id: TenantId,
+    $project_id: ProjectId,
+    $statuses: Set<TicketStatus>,
+    $after: Cursor?,
+    $limit: Limit = 25,
+) {
+    many tickets from Ticket
+        where tenant_id == $tenant_id
+            && project_id == $project_id
+            && status in $statuses
+        order by updated_at desc, ticket_id desc
+        take $limit after $after
+
+    return Found {
+        tickets: tickets {
+            ticket_id
+            title
+            status
+            priority
+            updated_at
+            requester_id
+            assignee_id
+        }
+    }
+
+    outcomes Found
+}
