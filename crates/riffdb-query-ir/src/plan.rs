@@ -4,7 +4,9 @@ use riffdb_types::{
     QueryPlanHash, hash_query_plan,
 };
 
-use crate::{ExactContractIdentity, MAX_QUERY_ARTIFACT_BYTES, QUERY_IR_VERSION_V1};
+use crate::{
+    ExactContractIdentity, MAX_QUERY_ARTIFACT_BYTES, QUERY_IR_VERSION_V1, ResolvedQueryV1,
+};
 
 const PROGRAM_MAGIC: &[u8] = b"RIFFDB-QUERY-ACCESS-PROGRAM\0";
 
@@ -15,6 +17,130 @@ pub enum AccessDirection {
     Forward,
     /// Complete reverse of declared index order.
     Reverse,
+}
+
+/// Closed normalized predicate operator.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum QueryPredicateOperator {
+    /// Equality.
+    Equal,
+    /// Inequality.
+    NotEqual,
+    /// Less than.
+    Less,
+    /// Less than or equal.
+    LessEqual,
+    /// Greater than.
+    Greater,
+    /// Greater than or equal.
+    GreaterEqual,
+    /// Membership in one canonical submitted set.
+    In,
+}
+
+/// Literal retained in a compiled predicate.
+#[derive(Clone, Eq, PartialEq)]
+pub enum QueryLiteral {
+    /// Unsigned integer source spelling.
+    Unsigned(String),
+    /// UTF-8 string.
+    String(String),
+    /// Boolean.
+    Boolean(bool),
+    /// Null.
+    Null,
+}
+
+impl std::fmt::Debug for QueryLiteral {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("[REDACTED LITERAL]")
+    }
+}
+
+/// Closed right-hand input for one normalized predicate.
+#[derive(Clone, Eq, PartialEq)]
+pub enum QueryPredicateValue {
+    /// Typed submitted parameter.
+    Parameter(String),
+    /// Field from one earlier binding.
+    BindingField {
+        /// Query-local binding.
+        binding: String,
+        /// Contract field.
+        field: String,
+    },
+    /// Exact contract enum variant.
+    EnumVariant {
+        /// Enum declaration name.
+        enumeration: String,
+        /// Variant name.
+        variant: String,
+    },
+    /// Plan literal; debug and explain representations redact its value.
+    Literal(QueryLiteral),
+}
+
+impl std::fmt::Debug for QueryPredicateValue {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Parameter(name) => formatter.debug_tuple("Parameter").field(name).finish(),
+            Self::BindingField { binding, field } => formatter
+                .debug_struct("BindingField")
+                .field("binding", binding)
+                .field("field", field)
+                .finish(),
+            Self::EnumVariant {
+                enumeration,
+                variant,
+            } => formatter
+                .debug_struct("EnumVariant")
+                .field("enumeration", enumeration)
+                .field("variant", variant)
+                .finish(),
+            Self::Literal(_) => formatter.write_str("Literal([REDACTED])"),
+        }
+    }
+}
+
+/// One normalized conjunctive predicate term.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct QueryPredicate {
+    field: String,
+    operator: QueryPredicateOperator,
+    value: QueryPredicateValue,
+}
+
+impl QueryPredicate {
+    /// Target field on the accessed entity.
+    #[must_use]
+    pub fn field(&self) -> &str {
+        &self.field
+    }
+
+    /// Typed comparison operator.
+    #[must_use]
+    pub const fn operator(&self) -> QueryPredicateOperator {
+        self.operator
+    }
+
+    /// Typed parameter, dependency, enum, or literal input.
+    #[must_use]
+    pub const fn value(&self) -> &QueryPredicateValue {
+        &self.value
+    }
+
+    #[doc(hidden)]
+    pub fn checked(
+        field: String,
+        operator: QueryPredicateOperator,
+        value: QueryPredicateValue,
+    ) -> Option<Self> {
+        (!field.is_empty()).then_some(Self {
+            field,
+            operator,
+            value,
+        })
+    }
 }
 
 /// Closed physical access selected for one binding.
@@ -44,8 +170,10 @@ pub struct QueryAccessStep {
     cardinality: Cardinality,
     maximum_rows: u64,
     access: QueryAccessKind,
+    predicates: Vec<QueryPredicate>,
     predicate_fields: Vec<String>,
     selected_fields: Vec<String>,
+    result_names: Vec<String>,
     dependencies: Vec<String>,
     entity_id: EntityTypeId,
     index_id: Option<IndexId>,
@@ -82,6 +210,12 @@ impl QueryAccessStep {
         &self.access
     }
 
+    /// Normalized conjunctive predicates in source evaluation order.
+    #[must_use]
+    pub fn predicates(&self) -> &[QueryPredicate] {
+        &self.predicates
+    }
+
     /// Fields read while evaluating predicates.
     #[must_use]
     pub fn predicate_fields(&self) -> &[String] {
@@ -92,6 +226,12 @@ impl QueryAccessStep {
     #[must_use]
     pub fn selected_fields(&self) -> &[String] {
         &self.selected_fields
+    }
+
+    /// Top-level result field names populated from this binding.
+    #[must_use]
+    pub fn result_names(&self) -> &[String] {
+        &self.result_names
     }
 
     /// Earlier bindings supplying key values.
@@ -108,8 +248,10 @@ impl QueryAccessStep {
         cardinality: Cardinality,
         maximum_rows: u64,
         access: QueryAccessKind,
+        predicates: Vec<QueryPredicate>,
         predicate_fields: Vec<String>,
         selected_fields: Vec<String>,
+        result_names: Vec<String>,
         dependencies: Vec<String>,
         entity_id: EntityTypeId,
         index_id: Option<IndexId>,
@@ -119,6 +261,8 @@ impl QueryAccessStep {
             || maximum_rows == 0
             || predicate_fields.windows(2).any(|pair| pair[0] >= pair[1])
             || selected_fields.windows(2).any(|pair| pair[0] >= pair[1])
+            || result_names.is_empty()
+            || result_names.windows(2).any(|pair| pair[0] >= pair[1])
             || dependencies.windows(2).any(|pair| pair[0] >= pair[1])
         {
             return None;
@@ -129,8 +273,10 @@ impl QueryAccessStep {
             cardinality,
             maximum_rows,
             access,
+            predicates,
             predicate_fields,
             selected_fields,
+            result_names,
             dependencies,
             entity_id,
             index_id,
@@ -236,6 +382,7 @@ impl QueryPlanExplain {
 #[derive(Clone, Eq, PartialEq)]
 pub struct QueryAccessProgramV1 {
     contract: ExactContractIdentity,
+    surface: ResolvedQueryV1,
     name: Option<String>,
     partition_parameter: String,
     steps: Vec<QueryAccessStep>,
@@ -264,12 +411,14 @@ impl QueryAccessProgramV1 {
     #[doc(hidden)]
     pub fn checked(
         contract: ExactContractIdentity,
+        surface: ResolvedQueryV1,
         name: Option<String>,
         partition_parameter: String,
         steps: Vec<QueryAccessStep>,
         authorization: Vec<AuthorizationEntityAccess>,
     ) -> Option<Self> {
-        if partition_parameter.is_empty()
+        if surface.contract() != &contract
+            || partition_parameter.is_empty()
             || steps.is_empty()
             || authorization.is_empty()
             || authorization
@@ -280,6 +429,7 @@ impl QueryAccessProgramV1 {
         }
         let canonical_bytes = encode_program(
             &contract,
+            surface.canonical_bytes(),
             name.as_deref(),
             &partition_parameter,
             &steps,
@@ -289,6 +439,7 @@ impl QueryAccessProgramV1 {
         let explain = build_explain(&partition_parameter, &steps, &authorization);
         Some(Self {
             contract,
+            surface,
             name,
             partition_parameter,
             steps,
@@ -303,6 +454,12 @@ impl QueryAccessProgramV1 {
     #[must_use]
     pub const fn contract(&self) -> &ExactContractIdentity {
         &self.contract
+    }
+
+    /// Complete resolved parameter/result schema and canonical symbolic surface.
+    #[must_use]
+    pub const fn surface(&self) -> &ResolvedQueryV1 {
+        &self.surface
     }
 
     /// Optional declared query name.
@@ -350,6 +507,7 @@ impl QueryAccessProgramV1 {
 
 fn encode_program(
     contract: &ExactContractIdentity,
+    surface_bytes: &[u8],
     name: Option<&str>,
     partition_parameter: &str,
     steps: &[QueryAccessStep],
@@ -361,6 +519,8 @@ fn encode_program(
     write_text(&mut out, contract.lineage().as_str())?;
     out.extend_from_slice(&contract.version().get().to_be_bytes());
     out.extend_from_slice(contract.bundle_hash().as_bytes());
+    write_count(&mut out, surface_bytes.len())?;
+    out.extend_from_slice(surface_bytes);
     write_text(&mut out, name.unwrap_or(""))?;
     write_text(&mut out, partition_parameter)?;
     write_count(&mut out, steps.len())?;
@@ -392,8 +552,15 @@ fn encode_program(
                 });
             }
         }
+        write_count(&mut out, step.predicates.len())?;
+        for predicate in &step.predicates {
+            write_text(&mut out, &predicate.field)?;
+            out.push(predicate_operator_tag(predicate.operator));
+            encode_predicate_value(&mut out, &predicate.value)?;
+        }
         write_strings(&mut out, &step.predicate_fields)?;
         write_strings(&mut out, &step.selected_fields)?;
+        write_strings(&mut out, &step.result_names)?;
         write_strings(&mut out, &step.dependencies)?;
     }
     write_count(&mut out, authorization.len())?;
@@ -404,6 +571,62 @@ fn encode_program(
         out.extend_from_slice(&access.maximum_rows.to_be_bytes());
     }
     (out.len() <= MAX_QUERY_ARTIFACT_BYTES).then_some(out)
+}
+
+fn predicate_operator_tag(operator: QueryPredicateOperator) -> u8 {
+    match operator {
+        QueryPredicateOperator::Equal => 1,
+        QueryPredicateOperator::NotEqual => 2,
+        QueryPredicateOperator::Less => 3,
+        QueryPredicateOperator::LessEqual => 4,
+        QueryPredicateOperator::Greater => 5,
+        QueryPredicateOperator::GreaterEqual => 6,
+        QueryPredicateOperator::In => 7,
+    }
+}
+
+fn encode_predicate_value(out: &mut Vec<u8>, value: &QueryPredicateValue) -> Option<()> {
+    match value {
+        QueryPredicateValue::Parameter(name) => {
+            out.push(1);
+            write_text(out, name)
+        }
+        QueryPredicateValue::BindingField { binding, field } => {
+            out.push(2);
+            write_text(out, binding)?;
+            write_text(out, field)
+        }
+        QueryPredicateValue::EnumVariant {
+            enumeration,
+            variant,
+        } => {
+            out.push(3);
+            write_text(out, enumeration)?;
+            write_text(out, variant)
+        }
+        QueryPredicateValue::Literal(literal) => {
+            out.push(4);
+            match literal {
+                QueryLiteral::Unsigned(value) => {
+                    out.push(1);
+                    write_text(out, value)
+                }
+                QueryLiteral::String(value) => {
+                    out.push(2);
+                    write_text(out, value)
+                }
+                QueryLiteral::Boolean(value) => {
+                    out.push(3);
+                    out.push(u8::from(*value));
+                    Some(())
+                }
+                QueryLiteral::Null => {
+                    out.push(4);
+                    Some(())
+                }
+            }
+        }
+    }
 }
 
 fn write_count(out: &mut Vec<u8>, value: usize) -> Option<()> {

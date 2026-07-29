@@ -2,7 +2,7 @@
 
 use riffdb_contract_compiler::compile_contract_source;
 use riffdb_query_compiler::compile_query;
-use riffdb_query_ir::{QueryAccessKind, SymbolicCatalog};
+use riffdb_query_ir::{QueryAccessKind, QueryPredicateValue, SymbolicCatalog};
 use riffdb_riffql_syntax::parse_query;
 
 const CONTRACT: &str = include_str!("../../../examples/app-baseline/contracts/ticketdesk.riff");
@@ -71,5 +71,25 @@ fn list_and_detail_choose_expected_physical_accesses() {
     assert!(matches!(
         detail.steps()[3].access(),
         QueryAccessKind::Index { index, .. } if index == "by_ticket"
+    ));
+}
+
+#[test]
+fn predicate_inputs_are_closed_and_participate_in_plan_identity() {
+    let bundle = compile_contract_source(CONTRACT).expect("contract");
+    let catalog = SymbolicCatalog::from_bundle(&bundle).expect("catalog");
+    let open = QUERIES[3].1;
+    let closed = open.replace("status == $status", "status == TicketStatus.Closed");
+    let open = compile_query(&parse_query(open).expect("parse"), &catalog).expect("plan");
+    let closed = compile_query(&parse_query(&closed).expect("parse"), &catalog).expect("plan");
+    assert_ne!(open.identity(), closed.identity());
+    assert!(matches!(
+        open.steps()[1].predicates()[2].value(),
+        QueryPredicateValue::Parameter(name) if name == "status"
+    ));
+    assert!(matches!(
+        closed.steps()[1].predicates()[2].value(),
+        QueryPredicateValue::EnumVariant { enumeration, variant }
+            if enumeration == "TicketStatus" && variant == "Closed"
     ));
 }
