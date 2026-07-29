@@ -439,7 +439,7 @@ fn read_entity_observation(
     ))
 }
 
-fn read_entity_record(
+pub(crate) fn read_entity_record(
     table: &BytesTable,
     target: &EntityTarget,
 ) -> Result<Option<StoredEntityRecordV1>, StorageError> {
@@ -476,7 +476,7 @@ fn read_epoch_position(
     Ok(IndexEpochPosition::Value(epoch.epoch()))
 }
 
-fn read_commit_head(table: &BytesTable) -> Result<Option<CommitSequence>, StorageError> {
+pub(crate) fn read_commit_head(table: &BytesTable) -> Result<Option<CommitSequence>, StorageError> {
     let Some((physical_key, encoded)) = table.last().map_err(precommit_storage_error)? else {
         return Ok(None);
     };

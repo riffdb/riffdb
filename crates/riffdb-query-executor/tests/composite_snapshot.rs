@@ -60,16 +60,10 @@ impl QueryReadView for FakeView {
 fn all_accesses_use_one_owned_snapshot_and_respect_cardinality() {
     let bundle = compile_contract_source(CONTRACT).expect("contract");
     let catalog = SymbolicCatalog::from_bundle(&bundle).expect("catalog");
-    let program = compile_query(
-        &parse_query(TICKET_PAGE).expect("query"),
-        &catalog,
-    )
-    .expect("program");
+    let program =
+        compile_query(&parse_query(TICKET_PAGE).expect("query"), &catalog).expect("program");
     let parameters = QueryParameters::checked(BTreeMap::from([
-        (
-            "organization_id".to_owned(),
-            CanonicalValue::Uuid([1; 16]),
-        ),
+        ("organization_id".to_owned(), CanonicalValue::Uuid([1; 16])),
         ("ticket_id".to_owned(), CanonicalValue::Uuid([2; 16])),
     ]))
     .expect("parameters");

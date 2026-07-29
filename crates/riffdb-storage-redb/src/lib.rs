@@ -15,6 +15,7 @@ mod hooks;
 mod keys;
 mod layout;
 mod maintenance;
+mod query;
 mod reads;
 mod startup;
 mod store;
