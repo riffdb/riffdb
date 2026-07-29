@@ -6,9 +6,9 @@ use hmac::{Hmac, KeyInit, Mac};
 use sha2::{Digest, Sha256};
 
 use crate::{
-    ApplicationManifestHash, CanonicalInputHash, CanonicalValueHash, CapabilityTokenDigest,
-    ConflictKeyHash, ContractBundleHash, ContractPlanRootHash, DigestKey, DigestKeyId,
-    EntityKeyHash, EventHash, OfflineMaintenanceInputHash, PartitionKeyHash, PlanHash,
+    ApplicationManifestHash, ApplicationRoleHash, CanonicalInputHash, CanonicalValueHash,
+    CapabilityTokenDigest, ConflictKeyHash, ContractBundleHash, ContractPlanRootHash, DigestKey,
+    DigestKeyId, EntityKeyHash, EventHash, OfflineMaintenanceInputHash, PartitionKeyHash, PlanHash,
     ProjectionApplyHash, ProjectionPlanHash, QueryModuleHash, QueryParameterHash, QueryPlanHash,
     QuerySourceHash, SchemaHash, SourceHash,
 };
@@ -38,6 +38,8 @@ pub enum HashDomain {
     QueryModule,
     /// Canonical application manifest.
     ApplicationManifest,
+    /// Canonical compiled application role.
+    ApplicationRole,
     /// Exact RiffQL source document.
     QuerySource,
     /// Canonical name-addressed RiffQL parameter set.
@@ -64,7 +66,7 @@ pub enum HashDomain {
 
 impl HashDomain {
     /// Every registered unkeyed domain, for compatibility and collision checks.
-    pub const ALL: [Self; 19] = [
+    pub const ALL: [Self; 20] = [
         Self::CanonicalValue,
         Self::Source,
         Self::ContractBundle,
@@ -73,6 +75,7 @@ impl HashDomain {
         Self::QueryPlan,
         Self::QueryModule,
         Self::ApplicationManifest,
+        Self::ApplicationRole,
         Self::QuerySource,
         Self::QueryParameters,
         Self::ContractPlanRoot,
@@ -97,6 +100,7 @@ impl HashDomain {
             Self::QueryPlan => "riffdb.query-plan/v1",
             Self::QueryModule => "riffdb.query-module/v1",
             Self::ApplicationManifest => "riffdb.application-manifest/v1",
+            Self::ApplicationRole => "riffdb.application-role/v1",
             Self::QuerySource => "riffdb.query-source/v1",
             Self::QueryParameters => "riffdb.query-parameters/v1",
             Self::ContractPlanRoot => "riffdb.contract-plan-root/v1",
@@ -288,6 +292,12 @@ typed_hash_function!(
     hash_application_manifest,
     ApplicationManifest,
     ApplicationManifestHash
+);
+typed_hash_function!(
+    /// Hashes one canonical compiled application role in its immutable v1 domain.
+    hash_application_role,
+    ApplicationRole,
+    ApplicationRoleHash
 );
 typed_hash_function!(
     /// Hashes one exact RiffQL source document in its immutable v1 domain.

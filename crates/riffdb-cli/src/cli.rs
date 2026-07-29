@@ -64,6 +64,11 @@ pub(crate) enum TopLevel {
         #[command(subcommand)]
         command: QueryCommand,
     },
+    /// Checks, describes, binds, or revokes an exact symbolic application role.
+    Role {
+        #[command(subcommand)]
+        command: RoleCommand,
+    },
     Capability {
         #[command(subcommand)]
         command: CapabilityCommand,
@@ -80,6 +85,60 @@ pub(crate) enum TopLevel {
         #[command(subcommand)]
         command: DemoCommand,
     },
+}
+
+#[derive(Debug, Subcommand)]
+pub(crate) enum RoleCommand {
+    Check {
+        #[arg(value_name = "APPLICATION_MANIFEST")]
+        manifest: OsString,
+        #[arg(long, value_name = "ROLE")]
+        role: String,
+        #[arg(long, value_name = "TENANT")]
+        tenant: Option<String>,
+    },
+    Describe {
+        #[arg(value_name = "APPLICATION_MANIFEST")]
+        manifest: OsString,
+        #[arg(long, value_name = "ROLE")]
+        role: String,
+        #[arg(long, value_name = "TENANT")]
+        tenant: Option<String>,
+    },
+    Bind {
+        #[arg(value_name = "APPLICATION_MANIFEST")]
+        manifest: OsString,
+        #[arg(long, value_name = "ROLE")]
+        role: String,
+        #[arg(long, value_name = "TENANT")]
+        tenant: Option<String>,
+        #[arg(long, value_name = "PRINCIPAL")]
+        principal: String,
+        #[arg(long, value_enum, value_name = "human|agent|service")]
+        actor_kind: RoleActorKind,
+        #[arg(long, default_value = "3600", value_name = "SECONDS")]
+        lifetime_seconds: String,
+        #[arg(long = "audience", required = true, value_name = "AUDIENCE")]
+        audiences: Vec<String>,
+        #[arg(long, value_name = "CAPABILITY_UUIDV7")]
+        capability_id: Option<String>,
+        #[arg(long, value_name = "PATH")]
+        credential_output: OsString,
+    },
+    Revoke {
+        #[arg(value_name = "CAPABILITY_UUIDV7")]
+        capability_id: String,
+        #[arg(long, value_enum, value_name = "REASON")]
+        reason: RevocationReason,
+    },
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, ValueEnum)]
+#[value(rename_all = "lower")]
+pub(crate) enum RoleActorKind {
+    Human,
+    Agent,
+    Service,
 }
 
 #[derive(Debug, Subcommand)]
@@ -388,6 +447,46 @@ mod tests {
                 ..
             } if role == "ticketdesk-application" && seed_concurrency == "4"
         ));
+    }
+
+    #[test]
+    fn symbolic_role_commands_never_accept_masks_or_stable_ids() {
+        let cli = Cli::try_parse_from([
+            "riffdb",
+            "role",
+            "describe",
+            "riffdb.application.json",
+            "--role",
+            "HelpdeskAgent",
+        ])
+        .expect("symbolic role command");
+        assert!(matches!(
+            cli.command,
+            TopLevel::Role {
+                command: RoleCommand::Describe { role, .. }
+            } if role == "HelpdeskAgent"
+        ));
+        assert!(
+            Cli::try_parse_from([
+                "riffdb",
+                "role",
+                "bind",
+                "riffdb.application.json",
+                "--role",
+                "HelpdeskAgent",
+                "--principal",
+                "app:helpdesk",
+                "--actor-kind",
+                "service",
+                "--audience",
+                "helpdesk",
+                "--credential-output",
+                "helpdesk.credential",
+                "--field-id",
+                "7",
+            ])
+            .is_err()
+        );
     }
 
     #[test]

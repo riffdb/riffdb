@@ -2292,6 +2292,9 @@ fn permission_key(
             value.query_module_hash.as_slice(),
             value.query_name.as_str(),
         ),
+        v1::capability_permission::Permission::ApplicationRoleIdentity(value) => {
+            (25, "", 0, value.as_slice(), "")
+        }
     };
     if key.0 >= 3
         && matches!(key.0, 3 | 5 | 6 | 7 | 8 | 9)
@@ -2304,6 +2307,9 @@ fn permission_key(
             || key.3.len() != 32
             || !valid_bounded_text(key.4, 256))
     {
+        return Err(PublicWireError::InvalidIdentity);
+    }
+    if key.0 == 25 && key.3.len() != 32 {
         return Err(PublicWireError::InvalidIdentity);
     }
     Ok(key)

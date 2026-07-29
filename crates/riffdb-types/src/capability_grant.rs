@@ -3,8 +3,8 @@
 use std::{error::Error, fmt, num::NonZeroU16};
 
 use crate::{
-    CommandId, ContractLineage, EntityTypeId, FieldId, IndexId, PartitionKey, ProjectionId,
-    QueryModuleHash, QueryOperationName, TenantScope,
+    ApplicationRoleHash, CommandId, ContractLineage, EntityTypeId, FieldId, IndexId, PartitionKey,
+    ProjectionId, QueryModuleHash, QueryOperationName, TenantScope,
 };
 
 /// Maximum explicit partition entries retained by one grant.
@@ -96,6 +96,8 @@ pub enum CapabilityPermissionKindV1 {
     ExplainNamedQuery,
     /// Execute one exact named deployed query.
     ExecuteNamedQuery,
+    /// Non-authorizing identity of the compiled application role that produced the grant.
+    ApplicationRoleIdentity,
 }
 
 impl CapabilityPermissionKindV1 {
@@ -127,6 +129,7 @@ impl CapabilityPermissionKindV1 {
             Self::ExecuteAdHocQuery => 0x16,
             Self::ExplainNamedQuery => 0x17,
             Self::ExecuteNamedQuery => 0x18,
+            Self::ApplicationRoleIdentity => 0x19,
         }
     }
 
@@ -158,6 +161,7 @@ impl CapabilityPermissionKindV1 {
             0x16 => Some(Self::ExecuteAdHocQuery),
             0x17 => Some(Self::ExplainNamedQuery),
             0x18 => Some(Self::ExecuteNamedQuery),
+            0x19 => Some(Self::ApplicationRoleIdentity),
             _ => None,
         }
     }
@@ -173,6 +177,7 @@ impl CapabilityPermissionKindV1 {
                 | Self::ReadProjectionStatus
                 | Self::ExplainNamedQuery
                 | Self::ExecuteNamedQuery
+                | Self::ApplicationRoleIdentity
         )
     }
 }
@@ -198,6 +203,8 @@ pub enum CapabilityPermissionV1 {
     ExplainNamedQuery(ContractLineage, QueryModuleHash, QueryOperationName),
     /// Execute one exact named query in one immutable module.
     ExecuteNamedQuery(ContractLineage, QueryModuleHash, QueryOperationName),
+    /// Audit-only identity of the exact compiled application role.
+    ApplicationRoleIdentity(ApplicationRoleHash),
 }
 
 impl CapabilityPermissionV1 {
@@ -222,6 +229,9 @@ impl CapabilityPermissionV1 {
             Self::ReadProjectionStatus(..) => CapabilityPermissionKindV1::ReadProjectionStatus,
             Self::ExplainNamedQuery(..) => CapabilityPermissionKindV1::ExplainNamedQuery,
             Self::ExecuteNamedQuery(..) => CapabilityPermissionKindV1::ExecuteNamedQuery,
+            Self::ApplicationRoleIdentity(..) => {
+                CapabilityPermissionKindV1::ApplicationRoleIdentity
+            }
         }
     }
 
@@ -252,6 +262,9 @@ impl CapabilityPermissionV1 {
                 append_lineage(&mut bytes, lineage);
                 bytes.extend_from_slice(module_hash.as_bytes());
                 append_bytes(&mut bytes, query_name.as_str().as_bytes());
+            }
+            Self::ApplicationRoleIdentity(role_hash) => {
+                bytes.extend_from_slice(role_hash.as_bytes());
             }
         }
         bytes
@@ -581,6 +594,7 @@ fn capability_permission_semantic_bytes(permission: &CapabilityPermissionV1) -> 
         | CapabilityPermissionV1::ExecuteNamedQuery(lineage, _, name) => {
             1 + 4 + lineage.as_bytes().len() + 32 + 4 + name.as_str().len()
         }
+        CapabilityPermissionV1::ApplicationRoleIdentity(_) => 1 + 32,
     }
 }
 
@@ -683,12 +697,12 @@ mod tests {
 
     #[test]
     fn permission_tags_are_closed_and_stable() {
-        for tag in 1..=24 {
+        for tag in 1..=25 {
             let kind = CapabilityPermissionKindV1::from_tag(tag).expect("known tag");
             assert_eq!(kind.tag(), tag);
         }
         assert_eq!(CapabilityPermissionKindV1::from_tag(0), None);
-        assert_eq!(CapabilityPermissionKindV1::from_tag(25), None);
+        assert_eq!(CapabilityPermissionKindV1::from_tag(26), None);
     }
 
     #[test]

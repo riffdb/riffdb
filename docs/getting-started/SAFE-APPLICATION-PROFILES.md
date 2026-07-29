@@ -7,7 +7,7 @@ everything. Choose the smallest interaction profile:
 # Default: exact generated commands and named queries only
 cargo run -p riffdb-cli -- dev --role ticketdesk-application --seed
 
-# Agent exploration: named operations plus explicit ad-hoc RiffQL
+# Agent runtime: a separate exact named-operation role
 cargo run -p riffdb-cli -- dev --role ticketdesk-agent --seed
 
 # Low-level diagnosis: raw entity/index access, no application execution
@@ -17,8 +17,9 @@ cargo run -p riffdb-cli -- dev --role ticketdesk-kernel
 Each invocation issues one protected credential for only the selected profile.
 The kernel profile cannot seed or run the application acceptance workload. The
 stable profile cannot check, explain, or execute ad-hoc source and cannot call
-raw entity/index operations. The agent profile gains ad-hoc RiffQL explicitly
-but still has no raw storage-shaped read authority.
+raw entity/index operations. The agent profile is also compiled from its
+symbolic manifest allowlist; it does not gain ad-hoc RiffQL merely because its
+principal is an agent.
 
 ## Why the split exists
 
@@ -31,10 +32,9 @@ A kernel permission is the opposite: it authorizes one compatible low-level
 operation but does not authorize RiffQL. This preserves the kernel protocol for
 conformance and diagnosis without making it the application programming model.
 
-MCP discovery is filtered from the same current capability. Application
-catalogs omit raw entity/index and ad-hoc-source tools. Agent catalogs add only
-the separately granted RiffQL tools. Kernel catalogs do not silently acquire
-named commands or queries.
+MCP discovery is filtered from the same current capability. Application and
+agent catalogs omit raw entity/index and ad-hoc-source tools. Kernel catalogs
+do not silently acquire named commands or queries.
 
 ## Moving an existing development deployment
 

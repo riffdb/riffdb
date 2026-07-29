@@ -15,6 +15,9 @@ base64 = { version = "=0.22.1", default-features = false, features = ["alloc"] }
 clap = { version = "=4.6.3", default-features = false, features = ["derive", "std", "help", "usage", "error-context"] }
 riffdb-auth = { version = "0.1.0", path = "../riffdb-auth", default-features = false }
 riffdb-client-rust = { version = "0.1.0", path = "../riffdb-client-rust", default-features = false }
+riffdb-contract-compiler = { version = "0.1.0", path = "../riffdb-contract-compiler", default-features = false }
+riffdb-query-module = { version = "0.1.0", path = "../riffdb-query-module", default-features = false }
+riffdb-types = { version = "0.1.0", path = "../riffdb-types", default-features = false }
 serde = { version = "=1.0.229", default-features = false, features = ["derive", "std"] }
 serde_json = { version = "=1.0.150", default-features = false, features = ["std"] }
 tokio = { version = "=1.52.0", default-features = false, features = ["macros", "rt-multi-thread"] }

@@ -33,10 +33,11 @@ regeneration:
 cargo run -p riffdb-cli -- dev --watch
 ```
 
-Use `--role ticketdesk-agent` only when the process needs explicit ad-hoc
-RiffQL check/explain/execute authority. Use `--role ticketdesk-kernel` only for
-low-level diagnosis; it receives no application command or RiffQL authority and
-cannot seed. There is no combined preset. See
+Use `--role ticketdesk-agent` for the separately named agent allowlist. It
+still receives no ad-hoc query or kernel authority. Use
+`--role ticketdesk-kernel` only for low-level diagnosis; it receives no
+application command or RiffQL authority and cannot seed. There is no combined
+preset. See
 [Safe application profiles](SAFE-APPLICATION-PROFILES.md).
 
 Use a directory of JSON command inputs with bounded concurrency:

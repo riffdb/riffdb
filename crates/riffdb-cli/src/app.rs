@@ -14,12 +14,20 @@ use riffdb_client_rust::{
     RiffDbClient, app_v1, generate_capability_id, generate_offline_maintenance_operation_id,
     generate_request_id, v1,
 };
+use riffdb_contract_compiler::compile_contract_source;
+use riffdb_query_module::{
+    ApplicationManifest, CompiledApplicationRole, NamedQuerySource, QueryModule,
+    QueryModuleCandidate, QueryModuleName, QueryModuleVersion, compile_application_role,
+};
+use riffdb_types::{
+    CapabilityGrantV1, CapabilityPermissionV1, PartitionScopeV1, TenantId, TenantScope,
+};
 use serde::{Deserialize, Serialize};
 
 use crate::cli::{
     BackupCommand, CapabilityCommand, Cli, CommandCommand, CommitCommand, ContractCommand,
     ContractSelectionArgs, DemoCommand, EntityCommand, ProjectionCommand, QueryCommand,
-    RevocationReason, ServerCommand, TopLevel,
+    RevocationReason, RoleActorKind, RoleCommand, ServerCommand, TopLevel,
 };
 use crate::config::{EffectiveConfig, Environment, ProcessEnvironment, resolve};
 use crate::credential::{
@@ -241,6 +249,7 @@ async fn dispatch(
             projection_command(command, config, environment, stdin).await
         }
         TopLevel::Query { command } => query_command(command, config, environment, stdin).await,
+        TopLevel::Role { command } => role_command(command, config, environment).await,
         TopLevel::Capability { command } => {
             capability_command(command, config, environment, stdin).await
         }
@@ -1196,6 +1205,369 @@ async fn commit_command(
     }
 }
 
+async fn role_command(
+    command: RoleCommand,
+    config: &EffectiveConfig,
+    environment: &dyn Environment,
+) -> Terminal {
+    match command {
+        RoleCommand::Check {
+            manifest,
+            role,
+            tenant,
+        } => {
+            let role = match compile_role_from_workspace(&manifest, &role, tenant.as_deref()) {
+                Ok(role) => role,
+                Err(()) => return role_invalid(CommandIdentity::RoleCheck),
+            };
+            success(
+                CommandIdentity::RoleCheck,
+                "checked",
+                &role_description(&role),
+            )
+        }
+        RoleCommand::Describe {
+            manifest,
+            role,
+            tenant,
+        } => {
+            let role = match compile_role_from_workspace(&manifest, &role, tenant.as_deref()) {
+                Ok(role) => role,
+                Err(()) => return role_invalid(CommandIdentity::RoleDescribe),
+            };
+            success(
+                CommandIdentity::RoleDescribe,
+                "described",
+                &role_description(&role),
+            )
+        }
+        RoleCommand::Bind {
+            manifest,
+            role,
+            tenant,
+            principal,
+            actor_kind,
+            lifetime_seconds,
+            audiences,
+            capability_id,
+            credential_output,
+        } => {
+            let role = match compile_role_from_workspace(&manifest, &role, tenant.as_deref()) {
+                Ok(role) => role,
+                Err(()) => return role_invalid(CommandIdentity::RoleBind),
+            };
+            let lifetime_seconds = match parse_nonzero_u32(&lifetime_seconds) {
+                Ok(value) => value,
+                Err(()) => return invalid_input(CommandIdentity::RoleBind),
+            };
+            let capability_id = match capability_id {
+                Some(value) => match parse_uuid_v7(&value) {
+                    Some(value) => value,
+                    None => return invalid_input(CommandIdentity::RoleBind),
+                },
+                None => match generate_capability_id() {
+                    Ok(value) => value.into_bytes(),
+                    Err(error) => {
+                        return client_error(
+                            CommandIdentity::RoleBind,
+                            &ClientError::IdentifierGeneration(error),
+                        );
+                    }
+                },
+            };
+            if validate_path(&credential_output).is_err()
+                || credential_output.as_encoded_bytes() == b"-"
+                || principal.is_empty()
+                || audiences.is_empty()
+            {
+                return invalid_input(CommandIdentity::RoleBind);
+            }
+            let request = v1::CreateCapabilityRequest {
+                request_id: Vec::new(),
+                mode: v1::CapabilityCreateMode::Normal as i32,
+                capability_id: capability_id.to_vec(),
+                principal_id: principal,
+                actor_kind: match actor_kind {
+                    RoleActorKind::Human => v1::ActorKind::Human as i32,
+                    RoleActorKind::Agent => v1::ActorKind::Agent as i32,
+                    RoleActorKind::Service => v1::ActorKind::Service as i32,
+                },
+                requested_lifetime_seconds: lifetime_seconds,
+                audiences,
+                grant: Some(application_role_grant_to_proto(role.internal_grant())),
+            };
+            let template = match NormalCapabilityCreateTemplate::new(request) {
+                Ok(template) => template,
+                Err(_) => return role_invalid(CommandIdentity::RoleBind),
+            };
+            let metadata = match required_metadata(CommandIdentity::RoleBind, config, environment) {
+                Ok(metadata) => metadata,
+                Err(terminal) => return terminal,
+            };
+            let mut client = match connect(config).await {
+                Ok(client) => client,
+                Err(error) => return client_error(CommandIdentity::RoleBind, &error),
+            };
+            let attempts = AttemptBudget::new(config.max_attempts).expect("configuration bound");
+            let mut response =
+                match submit_normal_create_retry(&mut client, &template, attempts, &metadata).await
+                {
+                    Ok(response) => response,
+                    Err(ClientError::OutcomeUnknown(_)) => {
+                        return uncertain(
+                            CommandIdentity::RoleBind,
+                            "role_bind_outcome_unknown",
+                            "the role-binding outcome remains unknown",
+                            "retry_with_same_capability_id",
+                            Some(&capability_id),
+                        );
+                    }
+                    Err(error) => return client_error(CommandIdentity::RoleBind, &error),
+                };
+            let Some((disposition, token)) = take_normal_create_disposition(&mut response) else {
+                return local_error(
+                    CommandIdentity::RoleBind,
+                    "output_render_failed",
+                    "output rendering failed",
+                );
+            };
+            match (&disposition, token) {
+                (NormalCreateDisposition::Created(_), Some(token)) => {
+                    if retain_normal_token(&credential_output, token).is_err() {
+                        return local_error(
+                            CommandIdentity::RoleBind,
+                            "credential_retention_failed",
+                            "credential retention failed",
+                        );
+                    }
+                }
+                (NormalCreateDisposition::Created(_), None) | (_, Some(_)) => {
+                    return local_error(
+                        CommandIdentity::RoleBind,
+                        "output_render_failed",
+                        "output rendering failed",
+                    );
+                }
+                _ => {}
+            }
+            render_normal_create(CommandIdentity::RoleBind, &disposition)
+        }
+        RoleCommand::Revoke {
+            capability_id,
+            reason,
+        } => {
+            let capability_id = match parse_uuid_v7(&capability_id) {
+                Some(value) => value,
+                None => return invalid_input(CommandIdentity::RoleRevoke),
+            };
+            let metadata = match required_metadata(CommandIdentity::RoleRevoke, config, environment)
+            {
+                Ok(metadata) => metadata,
+                Err(terminal) => return terminal,
+            };
+            let mut client = match connect(config).await {
+                Ok(client) => client,
+                Err(error) => return client_error(CommandIdentity::RoleRevoke, &error),
+            };
+            let request_id = match request_id() {
+                Ok(request_id) => request_id,
+                Err(error) => return client_error(CommandIdentity::RoleRevoke, &error),
+            };
+            let request = v1::RevokeCapabilityRequest {
+                request_id,
+                capability_id: capability_id.to_vec(),
+                reason: revocation_reason_to_proto(reason),
+            };
+            match client.revoke_capability(request, &metadata).await {
+                Ok(response) => render_revoke(CommandIdentity::RoleRevoke, &response),
+                Err(error) => client_error(CommandIdentity::RoleRevoke, &error),
+            }
+        }
+    }
+}
+
+fn compile_role_from_workspace(
+    manifest_path: &OsString,
+    role_name: &str,
+    tenant: Option<&str>,
+) -> Result<CompiledApplicationRole, ()> {
+    let manifest_bytes = read_file(Path::new(manifest_path), MAX_INPUT_BYTES).map_err(|_| ())?;
+    let manifest_source = std::str::from_utf8(&manifest_bytes).map_err(|_| ())?;
+    let manifest = ApplicationManifest::parse(manifest_source).map_err(|_| ())?;
+    let workspace = find_application_workspace(manifest_path, manifest.contract().source())?;
+    let contract_source = read_workspace_text(&workspace, manifest.contract().source())?;
+    let contract = compile_contract_source(&contract_source).map_err(|_| ())?;
+    let mut modules = Vec::with_capacity(manifest.query_modules().len());
+    for module in manifest.query_modules() {
+        let queries = module
+            .queries()
+            .iter()
+            .map(|query| {
+                let source = read_workspace_text(&workspace, query.source())?;
+                NamedQuerySource::new(query.name(), source).map_err(|_| ())
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        let candidate = QueryModuleCandidate::new(
+            QueryModuleName::new(module.name()).map_err(|_| ())?,
+            QueryModuleVersion::new(module.version()).ok_or(())?,
+            queries,
+        )
+        .map_err(|_| ())?;
+        modules.push(QueryModule::compile(candidate, &contract).map_err(|_| ())?);
+    }
+    let tenant = tenant
+        .map(|tenant| TenantId::new(tenant.to_owned()).map_err(|_| ()))
+        .transpose()?;
+    compile_application_role(&manifest, role_name, tenant, &contract, &modules).map_err(|_| ())
+}
+
+fn find_application_workspace(
+    manifest_path: &OsString,
+    contract_path: &str,
+) -> Result<std::path::PathBuf, ()> {
+    let manifest_path = Path::new(manifest_path);
+    let absolute = if manifest_path.is_absolute() {
+        manifest_path.to_path_buf()
+    } else {
+        std::env::current_dir().map_err(|_| ())?.join(manifest_path)
+    };
+    let mut matches = absolute
+        .parent()
+        .into_iter()
+        .flat_map(Path::ancestors)
+        .filter(|ancestor| ancestor.join(contract_path).is_file());
+    let workspace = matches.next().ok_or(())?.to_path_buf();
+    if matches.next().is_some() {
+        return Err(());
+    }
+    Ok(workspace)
+}
+
+fn read_workspace_text(workspace: &Path, path: &str) -> Result<String, ()> {
+    let relative = OsString::from(path);
+    validate_path(&relative).map_err(|_| ())?;
+    let bytes = read_file(&workspace.join(path), MAX_INPUT_BYTES).map_err(|_| ())?;
+    String::from_utf8(bytes).map_err(|_| ())
+}
+
+fn role_description(role: &CompiledApplicationRole) -> serde_json::Value {
+    serde_json::json!({
+        "application": role.application_name(),
+        "application_manifest_hash": hex(role.manifest_hash().as_bytes()),
+        "role": role.role_name(),
+        "role_hash": hex(role.identity().as_bytes()),
+        "environment": role.environment().as_str(),
+        "tenant_scope": match role.tenant_scope() {
+            TenantScope::Global => "global",
+            TenantScope::Tenant(_) => "tenant",
+        },
+        "contract": {
+            "lineage": role.contract_lineage().as_str(),
+            "version": role.contract_version().get().to_string(),
+            "bundle_hash": hex(role.contract_hash().as_bytes()),
+        },
+        "query_module_hashes": role.module_hashes().iter()
+            .map(|hash| hex(hash.as_bytes()))
+            .collect::<Vec<_>>(),
+        "operations": role.operations().iter().map(|operation| serde_json::json!({
+            "kind": match operation.kind() {
+                riffdb_query_module::ApplicationRoleOperationKind::Query => "query",
+                riffdb_query_module::ApplicationRoleOperationKind::Command => "command",
+            },
+            "name": operation.name(),
+        })).collect::<Vec<_>>(),
+    })
+}
+
+fn application_role_grant_to_proto(grant: &CapabilityGrantV1) -> v1::CapabilityGrant {
+    let tenant_scope = match grant.tenant_scope() {
+        TenantScope::Global => v1::TenantScope {
+            scope: Some(v1::tenant_scope::Scope::Global(v1::Unit {})),
+        },
+        TenantScope::Tenant(tenant) => v1::TenantScope {
+            scope: Some(v1::tenant_scope::Scope::TenantId(
+                tenant.as_str().to_owned(),
+            )),
+        },
+    };
+    let partition_scope = match grant.partition_scope() {
+        PartitionScopeV1::All => v1::PartitionScope {
+            scope: Some(v1::partition_scope::Scope::All(v1::Unit {})),
+        },
+        PartitionScopeV1::Explicit(_) => unreachable!("application roles never expose partitions"),
+    };
+    v1::CapabilityGrant {
+        tenant_scope: Some(tenant_scope),
+        partition_scope: Some(partition_scope),
+        permissions: grant
+            .permissions()
+            .as_slice()
+            .iter()
+            .map(application_role_permission_to_proto)
+            .collect(),
+        field_visibility: grant
+            .field_visibility()
+            .iter()
+            .map(|visibility| v1::EntityFieldVisibility {
+                contract_lineage: visibility.lineage().as_str().to_owned(),
+                entity_type_id: visibility.entity_type().get(),
+                field_ids: visibility
+                    .fields()
+                    .iter()
+                    .map(|field| field.get())
+                    .collect(),
+            })
+            .collect(),
+        max_scan_rows: u32::from(grant.max_scan_rows().get()),
+        approval_required: Vec::new(),
+    }
+}
+
+fn application_role_permission_to_proto(
+    permission: &CapabilityPermissionV1,
+) -> v1::CapabilityPermission {
+    use v1::capability_permission::Permission;
+    let permission = match permission {
+        CapabilityPermissionV1::InvokeCommand(lineage, command) => {
+            Permission::InvokeCommand(v1::LineageScopedStableId {
+                contract_lineage: lineage.as_str().to_owned(),
+                stable_id: command.get(),
+            })
+        }
+        CapabilityPermissionV1::ExecuteNamedQuery(lineage, module_hash, query_name) => {
+            Permission::ExecuteNamedQuery(v1::NamedQueryPermission {
+                contract_lineage: lineage.as_str().to_owned(),
+                query_module_hash: module_hash.as_bytes().to_vec(),
+                query_name: query_name.as_str().to_owned(),
+            })
+        }
+        CapabilityPermissionV1::ApplicationRoleIdentity(role_hash) => {
+            Permission::ApplicationRoleIdentity(role_hash.as_bytes().to_vec())
+        }
+        _ => unreachable!("application role compiler emitted kernel authority"),
+    };
+    v1::CapabilityPermission {
+        permission: Some(permission),
+    }
+}
+
+fn role_invalid(command: CommandIdentity) -> Terminal {
+    local_error(
+        command,
+        "role_invalid",
+        "symbolic application role compilation failed",
+    )
+}
+
+const fn revocation_reason_to_proto(reason: RevocationReason) -> i32 {
+    match reason {
+        RevocationReason::Requested => v1::RevocationReason::Requested as i32,
+        RevocationReason::Replaced => v1::RevocationReason::Replaced as i32,
+        RevocationReason::SuspectedCompromise => v1::RevocationReason::SuspectedCompromise as i32,
+        RevocationReason::PolicyChange => v1::RevocationReason::PolicyChange as i32,
+    }
+}
+
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct ProjectionInput {
@@ -1590,7 +1962,7 @@ async fn capability_command(
                 }
                 _ => {}
             }
-            render_normal_create(&disposition)
+            render_normal_create(CommandIdentity::CapabilityCreate, &disposition)
         }
         CapabilityCommand::Revoke {
             capability_id,
@@ -1616,17 +1988,10 @@ async fn capability_command(
             let request = v1::RevokeCapabilityRequest {
                 request_id,
                 capability_id: capability_id.to_vec(),
-                reason: match reason {
-                    RevocationReason::Requested => v1::RevocationReason::Requested as i32,
-                    RevocationReason::Replaced => v1::RevocationReason::Replaced as i32,
-                    RevocationReason::SuspectedCompromise => {
-                        v1::RevocationReason::SuspectedCompromise as i32
-                    }
-                    RevocationReason::PolicyChange => v1::RevocationReason::PolicyChange as i32,
-                },
+                reason: revocation_reason_to_proto(reason),
             };
             match client.revoke_capability(request, &metadata).await {
-                Ok(response) => render_revoke(&response),
+                Ok(response) => render_revoke(CommandIdentity::CapabilityRevoke, &response),
                 Err(error) => client_error(CommandIdentity::CapabilityRevoke, &error),
             }
         }
@@ -2550,6 +2915,18 @@ const fn command_identity(command: &TopLevel) -> CommandIdentity {
         TopLevel::Query {
             command: QueryCommand::Repl { .. },
         } => CommandIdentity::QueryRepl,
+        TopLevel::Role {
+            command: RoleCommand::Check { .. },
+        } => CommandIdentity::RoleCheck,
+        TopLevel::Role {
+            command: RoleCommand::Describe { .. },
+        } => CommandIdentity::RoleDescribe,
+        TopLevel::Role {
+            command: RoleCommand::Bind { .. },
+        } => CommandIdentity::RoleBind,
+        TopLevel::Role {
+            command: RoleCommand::Revoke { .. },
+        } => CommandIdentity::RoleRevoke,
         TopLevel::Capability {
             command: CapabilityCommand::Bootstrap { .. },
         } => CommandIdentity::CapabilityBootstrap,
@@ -3045,6 +3422,39 @@ mod tests {
                 .is_err()
             );
         }
+    }
+
+    #[test]
+    fn workspace_role_compilation_hides_all_kernel_requirements() {
+        use v1::capability_permission::Permission;
+
+        let mut workspace = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+        assert!(workspace.pop());
+        assert!(workspace.pop());
+        let role = compile_role_from_workspace(
+            &workspace
+                .join("fixtures/application-manifests/ticketdesk-v1.json")
+                .into_os_string(),
+            "TicketDeskAgent",
+            None,
+        )
+        .expect("role");
+        let grant = application_role_grant_to_proto(role.internal_grant());
+        assert!(grant.permissions.iter().all(|permission| {
+            matches!(
+                permission.permission,
+                Some(Permission::InvokeCommand(_))
+                    | Some(Permission::ExecuteNamedQuery(_))
+                    | Some(Permission::ApplicationRoleIdentity(_))
+            )
+        }));
+        assert!(grant.permissions.iter().any(|permission| {
+            matches!(
+                permission.permission.as_ref(),
+                Some(Permission::ApplicationRoleIdentity(hash))
+                    if hash.as_slice() == role.identity().as_bytes()
+            )
+        }));
     }
 
     #[test]

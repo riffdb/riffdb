@@ -782,6 +782,8 @@ pub struct CapabilityPermissionV1 {
     pub query_module_hash: ::core::option::Option<::prost::alloc::vec::Vec<u8>>,
     #[prost(string, optional, tag = "5")]
     pub query_name: ::core::option::Option<::prost::alloc::string::String>,
+    #[prost(bytes = "vec", optional, tag = "6")]
+    pub application_role_hash: ::core::option::Option<::prost::alloc::vec::Vec<u8>>,
 }
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct CapabilityPermissionsV1 {
@@ -957,6 +959,7 @@ pub enum CapabilityPermissionKindV1 {
     CapabilityPermissionKindExecuteAdHocQuery = 22,
     CapabilityPermissionKindExplainNamedQuery = 23,
     CapabilityPermissionKindExecuteNamedQuery = 24,
+    CapabilityPermissionKindApplicationRoleIdentity = 25,
 }
 impl CapabilityPermissionKindV1 {
     /// String value of the enum field names used in the ProtoBuf definition.
@@ -1040,6 +1043,9 @@ impl CapabilityPermissionKindV1 {
             Self::CapabilityPermissionKindExecuteNamedQuery => {
                 "CAPABILITY_PERMISSION_KIND_EXECUTE_NAMED_QUERY"
             }
+            Self::CapabilityPermissionKindApplicationRoleIdentity => {
+                "CAPABILITY_PERMISSION_KIND_APPLICATION_ROLE_IDENTITY"
+            }
         }
     }
     /// Creates an enum from field names used in the ProtoBuf definition.
@@ -1119,6 +1125,9 @@ impl CapabilityPermissionKindV1 {
             }
             "CAPABILITY_PERMISSION_KIND_EXECUTE_NAMED_QUERY" => {
                 Some(Self::CapabilityPermissionKindExecuteNamedQuery)
+            }
+            "CAPABILITY_PERMISSION_KIND_APPLICATION_ROLE_IDENTITY" => {
+                Some(Self::CapabilityPermissionKindApplicationRoleIdentity)
             }
             _ => None,
         }

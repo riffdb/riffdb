@@ -39,6 +39,10 @@ pub(crate) enum CommandIdentity {
     QueryDeploy,
     QueryModule,
     QueryRepl,
+    RoleCheck,
+    RoleDescribe,
+    RoleBind,
+    RoleRevoke,
     CapabilityBootstrap,
     CapabilityCreate,
     CapabilityRevoke,
@@ -68,6 +72,10 @@ impl CommandIdentity {
             Self::QueryDeploy => "query.deploy",
             Self::QueryModule => "query.module",
             Self::QueryRepl => "query.repl",
+            Self::RoleCheck => "role.check",
+            Self::RoleDescribe => "role.describe",
+            Self::RoleBind => "role.bind",
+            Self::RoleRevoke => "role.revoke",
             Self::CapabilityBootstrap => "capability.bootstrap",
             Self::CapabilityCreate => "capability.create",
             Self::CapabilityRevoke => "capability.revoke",
@@ -544,10 +552,13 @@ pub(crate) fn take_normal_create_disposition(
     }
 }
 
-pub(crate) fn render_normal_create(disposition: &NormalCreateDisposition) -> Terminal {
+pub(crate) fn render_normal_create(
+    command: CommandIdentity,
+    disposition: &NormalCreateDisposition,
+) -> Terminal {
     match disposition {
         NormalCreateDisposition::Created(transition) => success(
-            CommandIdentity::CapabilityCreate,
+            command,
             "created",
             &NormalCreated {
                 status: "created",
@@ -556,7 +567,7 @@ pub(crate) fn render_normal_create(disposition: &NormalCreateDisposition) -> Ter
             },
         ),
         NormalCreateDisposition::AlreadyCreated(identity) => success(
-            CommandIdentity::CapabilityCreate,
+            command,
             "already_created_token_unavailable",
             &AlreadyCreated {
                 status: "already_created_token_unavailable",
@@ -564,7 +575,7 @@ pub(crate) fn render_normal_create(disposition: &NormalCreateDisposition) -> Ter
             },
         ),
         NormalCreateDisposition::Conflict => success(
-            CommandIdentity::CapabilityCreate,
+            command,
             "capability_id_conflict",
             &StatusResult {
                 status: "capability_id_conflict",
@@ -573,11 +584,14 @@ pub(crate) fn render_normal_create(disposition: &NormalCreateDisposition) -> Ter
     }
 }
 
-pub(crate) fn render_revoke(response: &v1::RevokeCapabilityResponse) -> Terminal {
+pub(crate) fn render_revoke(
+    command: CommandIdentity,
+    response: &v1::RevokeCapabilityResponse,
+) -> Terminal {
     use v1::revoke_capability_response::Result;
     match response.result.as_ref() {
         Some(Result::Revoked(transition)) => success(
-            CommandIdentity::CapabilityRevoke,
+            command,
             "revoked",
             &RevokeResult {
                 status: "revoked",
@@ -585,7 +599,7 @@ pub(crate) fn render_revoke(response: &v1::RevokeCapabilityResponse) -> Terminal
             },
         ),
         Some(Result::AlreadyRevoked(transition)) => success(
-            CommandIdentity::CapabilityRevoke,
+            command,
             "already_revoked",
             &RevokeResult {
                 status: "already_revoked",
@@ -593,13 +607,13 @@ pub(crate) fn render_revoke(response: &v1::RevokeCapabilityResponse) -> Terminal
             },
         ),
         Some(Result::CapabilityNotFound(_)) => success(
-            CommandIdentity::CapabilityRevoke,
+            command,
             "capability_not_found",
             &StatusResult {
                 status: "capability_not_found",
             },
         ),
-        None => rendering_failure(CommandIdentity::CapabilityRevoke),
+        None => rendering_failure(command),
     }
 }
 
@@ -2438,7 +2452,7 @@ mod tests {
                 "capability_id_conflict" => NormalCreateDisposition::Conflict,
                 _ => panic!("unexpected capability-create status {status}"),
             };
-            return render_normal_create(&disposition);
+            return render_normal_create(CommandIdentity::CapabilityCreate, &disposition);
         }
         if name.starts_with("capability.revoke.") {
             use v1::revoke_capability_response::Result;
@@ -2448,9 +2462,12 @@ mod tests {
                 "capability_not_found" => Result::CapabilityNotFound(v1::Unit {}),
                 _ => panic!("unexpected revoke status {status}"),
             };
-            return render_revoke(&v1::RevokeCapabilityResponse {
-                result: Some(result),
-            });
+            return render_revoke(
+                CommandIdentity::CapabilityRevoke,
+                &v1::RevokeCapabilityResponse {
+                    result: Some(result),
+                },
+            );
         }
         if name.starts_with("server.health.") {
             return render_health(&health_response(result));
@@ -3193,7 +3210,10 @@ mod tests {
         );
 
         assert_fixture(
-            &render_normal_create(&NormalCreateDisposition::Conflict),
+            &render_normal_create(
+                CommandIdentity::CapabilityCreate,
+                &NormalCreateDisposition::Conflict,
+            ),
             include_bytes!("../fixtures/output-v1/capability.create.capability_id_conflict.jsonl"),
         );
 
@@ -3203,7 +3223,7 @@ mod tests {
             )),
         };
         assert_fixture(
-            &render_revoke(&revoke),
+            &render_revoke(CommandIdentity::CapabilityRevoke, &revoke),
             include_bytes!("../fixtures/output-v1/capability.revoke.capability_not_found.jsonl"),
         );
 

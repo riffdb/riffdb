@@ -73,7 +73,7 @@ benchmark="$repo_root/target/$profile/benchmark"
 contract="$repo_root/examples/app-baseline/contracts/ticketdesk.riff"
 queries="$repo_root/queries/ticketdesk"
 bootstrap_request="$repo_root/release/config/bootstrap-ticketdesk-dev.json"
-role_request="$repo_root/release/config/dev-role-${role}.json"
+application_manifest="$repo_root/fixtures/application-manifests/ticketdesk-v1.json"
 
 work_root="$(mktemp -d "${TMPDIR:-/tmp}/riffdb-dev.XXXXXX")"
 server_pid=
@@ -155,10 +155,34 @@ if ! "${operator[@]}" query deploy "$queries" \
 fi
 jq -e '.ok == true and .command == "query.deploy"' "$work_root/module.json" >/dev/null
 
-"${operator[@]}" capability create \
-    --request "$role_request" \
-    --credential-output "$work_root/profile.credential" >"$work_root/role.json"
-jq -e '.ok == true and .command == "capability.create"' "$work_root/role.json" >/dev/null
+case "$role" in
+    ticketdesk-application)
+        "${operator[@]}" role bind "$application_manifest" \
+            --role TicketDeskApplication \
+            --principal ticketdesk-dev-application \
+            --actor-kind service \
+            --lifetime-seconds 86400 \
+            --audience riffdb-grpc-loopback \
+            --credential-output "$work_root/profile.credential" >"$work_root/role.json"
+        jq -e '.ok == true and .command == "role.bind"' "$work_root/role.json" >/dev/null
+        ;;
+    ticketdesk-agent)
+        "${operator[@]}" role bind "$application_manifest" \
+            --role TicketDeskAgent \
+            --principal ticketdesk-dev-agent \
+            --actor-kind agent \
+            --lifetime-seconds 86400 \
+            --audience riffdb-grpc-loopback \
+            --credential-output "$work_root/profile.credential" >"$work_root/role.json"
+        jq -e '.ok == true and .command == "role.bind"' "$work_root/role.json" >/dev/null
+        ;;
+    ticketdesk-kernel)
+        "${operator[@]}" capability create \
+            --request "$repo_root/release/config/dev-role-ticketdesk-kernel.json" \
+            --credential-output "$work_root/profile.credential" >"$work_root/role.json"
+        jq -e '.ok == true and .command == "capability.create"' "$work_root/role.json" >/dev/null
+        ;;
+esac
 
 profile_client=("$riffdb" --endpoint "$endpoint" --output json --credential-file "$work_root/profile.credential")
 "${operator[@]}" query module \
