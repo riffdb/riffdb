@@ -1,0 +1,3 @@
+partition $organization_id
+tickets: Ticket via index by_project_status reverse max 500
+authorize Ticket fields [assignee_id,organization_id,project_id,reporter_id,status,ticket_id,title,updated_at] indexes [by_project_status] max 500

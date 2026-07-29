@@ -4,12 +4,17 @@
 
 mod catalog;
 mod diagnostic;
+mod plan;
 mod resolver;
 mod schema;
 
 pub use catalog::{EntitySymbol, EnumSymbol, FieldSymbol, IndexSymbol, SymbolicCatalog};
 pub use diagnostic::{
     QueryDiagnostic, QueryDiagnosticCode, QueryDiagnosticStage, QueryDiagnostics,
+};
+pub use plan::{
+    AccessDirection, AuthorizationEntityAccess, QueryAccessKind, QueryAccessProgramV1,
+    QueryAccessStep, QueryPlanExplain, QueryPlanIdentity,
 };
 pub use resolver::{
     BindingSymbol, ExactContractIdentity, QuerySourceMap, ResolvedQueryV1, SourceMapEntry,

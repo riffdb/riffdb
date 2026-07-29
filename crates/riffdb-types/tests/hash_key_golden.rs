@@ -10,7 +10,7 @@ use riffdb_types::{
     IndexId, KeyedHashDomain, MAX_KEY_BYTES, PARTITION_KEY_V1_PREFIX, PartitionKeyBuilder,
     ProjectionApplyHash, Timestamp, hash, hash_capability_token, hash_capability_token_secret,
     hash_contract_plan_root, hash_partition_key, hash_plan, hash_projection_apply,
-    hash_projection_plan, keyed_hash, keyed_hash_secret,
+    hash_projection_plan, hash_query_plan, keyed_hash, keyed_hash_secret,
 };
 
 fn hex(input: &str) -> Vec<u8> {
@@ -47,6 +47,10 @@ fn hash_v1_domain_vectors_are_stable() {
         (
             HashDomain::ProjectionPlan,
             "44887bd72c1e081a9c3499ad47f35a2c090e5176552c2a7ad3324902db3705f0",
+        ),
+        (
+            HashDomain::QueryPlan,
+            "ba0ae83a32a99e420360c48e4b4867a71a7c29b7018eebfd333239ee83285fd8",
         ),
         (
             HashDomain::ContractPlanRoot,
@@ -98,6 +102,7 @@ fn typed_hash_helpers_preserve_semantic_output_types() {
     assert_eq!(generic.domain(), HashDomain::Plan);
 
     let _: riffdb_types::ProjectionPlanHash = hash_projection_plan(b"abc");
+    let _: riffdb_types::QueryPlanHash = hash_query_plan(b"abc");
     let _: riffdb_types::ContractPlanRootHash = hash_contract_plan_root(b"abc");
     let _: riffdb_types::PartitionKeyHash = hash_partition_key(b"abc");
     let _: ProjectionApplyHash = hash_projection_apply(b"abc");

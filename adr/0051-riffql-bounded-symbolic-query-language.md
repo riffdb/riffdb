@@ -2,7 +2,7 @@
 
 - **Status:** Accepted
 - **Direction approved:** 2026-07-28
-- **Exact text accepted:** 2026-07-28
+- **Exact text accepted:** 2026-07-28; plan-identity amendment 2026-07-28
 - **Acceptance reference:** Maintainer authorization in the current Codex
   session to make the implementation decisions required through WP-270
 - **Requires:** ADR-0002, ADR-0007, ADR-0011, ADR-0013, ADR-0016,
@@ -188,3 +188,19 @@ operation and cannot submit a caller-authored access mask or executable plan.
 
 Exact acceptance is required before RiffQL parser, public query IR, planner,
 authorization conjunction, or executable query behavior is implemented.
+
+## 2026-07-28 query-plan identity amendment
+
+The accepted plan hash is the typed `QueryPlanHash` computed with ADR-0011's
+unchanged SHA-256 frame under the immutable unkeyed domain
+`riffdb.query-plan/v1`. Its payload is the complete canonical
+`QueryAccessProgramV1` bytes, including query IR version, exact contract
+lineage/version/bundle hash, declared query name when present, partition
+parameter, ordered access steps and bounds, and the canonical authorization
+conjunction. Source spans, diagnostics, explain text, numeric display
+formatting, and submitted parameter values are absent.
+
+Adding this previously unassigned domain is additive. It does not reuse or
+change command `PlanHash`, projection `ProjectionPlanHash`, schema hashes, or
+any durable/public v1 field. The central domain uniqueness and golden-vector
+tests cover the new label before WP-230 publishes query-plan IR.

@@ -323,6 +323,10 @@ hash_id!(
     ProjectionPlanHash
 );
 hash_id!(
+    /// The hash of one closed RiffQL query access program.
+    QueryPlanHash
+);
+hash_id!(
     /// The hash of a contract bundle's ordered semantic plan set.
     ContractPlanRootHash
 );
