@@ -1,14 +1,14 @@
 query ProjectSummary(
-    $tenant_id: TenantId,
-    $project_id: ProjectId,
+    $organization_id: Organization.organization_id,
+    $project_id: Project.project_id,
 ) {
     one project from Project
-        where tenant_id == $tenant_id
+        where organization_id == $organization_id
             && project_id == $project_id
         else NotFound
 
     many recent_tickets from Ticket
-        where tenant_id == $tenant_id
+        where organization_id == $organization_id
             && project_id == project.project_id
         order by updated_at desc, ticket_id desc
         take 10

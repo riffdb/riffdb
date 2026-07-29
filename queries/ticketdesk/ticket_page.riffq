@@ -1,24 +1,24 @@
 query TicketPage(
-    $tenant_id: TenantId,
-    $ticket_id: TicketId,
+    $organization_id: Organization.organization_id,
+    $ticket_id: Ticket.ticket_id,
     $comments_after: Cursor?,
 ) {
     one ticket from Ticket
-        where tenant_id == $tenant_id
+        where organization_id == $organization_id
             && ticket_id == $ticket_id
         else NotFound
 
-    one requester from User
-        where tenant_id == $tenant_id
-            && user_id == ticket.requester_id
+    one reporter from AppUser
+        where organization_id == $organization_id
+            && user_id == ticket.reporter_id
         else IntegrityFailure
 
-    maybe assignee from User
-        where tenant_id == $tenant_id
+    maybe assignee from AppUser
+        where organization_id == $organization_id
             && user_id == ticket.assignee_id
 
     many comments from Comment
-        where tenant_id == $tenant_id
+        where organization_id == $organization_id
             && ticket_id == ticket.ticket_id
         order by created_at asc, comment_id asc
         take 50 after $comments_after
@@ -27,13 +27,11 @@ query TicketPage(
         ticket: ticket {
             ticket_id
             title
-            description
             status
-            priority
             created_at
             updated_at
         }
-        requester: requester {
+        reporter: reporter {
             user_id
             display_name
         }
