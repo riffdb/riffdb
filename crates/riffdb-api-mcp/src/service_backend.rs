@@ -2876,7 +2876,7 @@ fn render_symbolic_execution(
                 "cardinality": cardinality,
                 "records": records
                     .into_iter()
-                    .map(symbolic_record_payload)
+                    .map(|record| symbolic_record_payload(result, record))
                     .collect::<Result<Vec<_>, McpBackendError>>()?,
             }))
         })
@@ -3063,6 +3063,7 @@ fn diagnostic_payloads(diagnostics: &[SymbolicDiagnostic]) -> Vec<serde_json::Va
 }
 
 fn symbolic_record_payload(
+    result: &ExecuteSymbolicQueryResult,
     record: &SymbolicResultRecord,
 ) -> Result<serde_json::Value, McpBackendError> {
     let fields = record
@@ -3071,7 +3072,7 @@ fn symbolic_record_payload(
         .map(|(name, value)| {
             Ok(serde_json::json!({
                 "name": name,
-                "value": presented_value(value)?,
+                "value": symbolic_presented_value(result, value)?,
             }))
         })
         .collect::<Result<Vec<_>, McpBackendError>>()?;
@@ -3079,6 +3080,35 @@ fn symbolic_record_payload(
         "entity": record.entity(),
         "fields": fields,
     }))
+}
+
+fn symbolic_presented_value(
+    result: &ExecuteSymbolicQueryResult,
+    value: &CanonicalValue,
+) -> Result<serde_json::Value, McpBackendError> {
+    if let CanonicalValue::Enum {
+        type_id,
+        variant_id,
+    } = value
+    {
+        return Ok(serde_json::json!({
+            "kind": "enum",
+            "name": result
+                .enum_variant_name(type_id.get(), variant_id.get())
+                .ok_or(McpBackendError::InvalidResponse)?,
+        }));
+    }
+    if let CanonicalValue::List(values) = value {
+        return Ok(serde_json::json!({
+            "kind": "list",
+            "values": values
+                .values()
+                .iter()
+                .map(|value| symbolic_presented_value(result, value))
+                .collect::<Result<Vec<_>, _>>()?,
+        }));
+    }
+    serde_json::to_value(presented_value(value)?).map_err(|_| McpBackendError::InvalidResponse)
 }
 
 fn lower_hex(bytes: &[u8]) -> String {

@@ -20,6 +20,22 @@ pub enum ApplicationValue {
     I64(i64),
     /// Unsigned integer.
     U64(u64),
+    /// Exact fixed-scale decimal.
+    Decimal {
+        /// Minimal big-endian two's-complement coefficient.
+        coefficient_twos_complement: Vec<u8>,
+        /// Fractional scale.
+        scale: u32,
+        /// Optional declared precision assertion.
+        precision: Option<u32>,
+    },
+    /// Currency-qualified exact decimal.
+    Money {
+        /// Three-letter currency code.
+        currency: String,
+        /// Exact amount.
+        amount: Box<Self>,
+    },
     /// Exact text.
     String(String),
     /// Canonical UUID text lowered to the typed public value.
@@ -28,6 +44,15 @@ pub enum ApplicationValue {
     Enum(String),
     /// Opaque bytes.
     Bytes(Vec<u8>),
+    /// Days since the Unix epoch.
+    Date(i32),
+    /// UTC timestamp.
+    Timestamp {
+        /// Whole seconds since the Unix epoch.
+        seconds: i64,
+        /// Nanosecond fraction.
+        nanos: u32,
+    },
     /// Ordered bounded values.
     List(Vec<Self>),
     /// Name-addressed record.
@@ -217,6 +242,9 @@ impl RiffDbClient {
         query: NamedQuery,
         metadata: &CallMetadata,
     ) -> Result<NamedQueryResult, ApplicationClientError> {
+        let expected_contract = query.contract.clone();
+        let expected_name = query.name.clone();
+        let expected_module_hash = query.module_hash;
         let request_id = generate_request_id()
             .map_err(|_| ApplicationClientError::IdentifierUnavailable)?
             .into_bytes()
@@ -244,6 +272,12 @@ impl RiffDbClient {
                 metadata,
             )
             .await?;
+        validate_query_response_identity(
+            &response,
+            &expected_contract,
+            &expected_name,
+            expected_module_hash,
+        )?;
         raise_query_result(response)
     }
 
@@ -266,6 +300,38 @@ impl RiffDbClient {
             outcome_uri: response.outcome_uri,
         })
     }
+}
+
+fn validate_query_response_identity(
+    response: &app_v1::ExecuteQueryResponse,
+    contract: &ApplicationContract,
+    query_name: &str,
+    module_hash: Option<[u8; 32]>,
+) -> Result<(), ApplicationClientError> {
+    let identity = response
+        .identity
+        .as_ref()
+        .ok_or(ApplicationClientError::InvalidResponse)?;
+    if identity.query_name.as_deref() != Some(query_name)
+        || module_hash
+            .is_some_and(|expected| identity.module_hash.as_deref() != Some(expected.as_slice()))
+    {
+        return Err(ApplicationClientError::InvalidResponse);
+    }
+    if let ApplicationContract::Exact {
+        lineage,
+        version,
+        bundle_hash,
+    } = contract
+        && (identity.contract_lineage != *lineage
+            || identity.contract_version != *version
+            || bundle_hash.is_some_and(|expected| {
+                identity.contract_bundle_hash.as_slice() != expected.as_slice()
+            }))
+    {
+        return Err(ApplicationClientError::InvalidResponse);
+    }
+    Ok(())
 }
 
 fn validate_contract(contract: &ApplicationContract) -> Result<(), ApplicationClientError> {
@@ -301,6 +367,27 @@ fn lower_value(value: ApplicationValue) -> Result<v1::Value, ApplicationClientEr
         ApplicationValue::Bool(value) => Kind::BoolValue(value),
         ApplicationValue::I64(value) => Kind::I64Value(value),
         ApplicationValue::U64(value) => Kind::U64Value(value),
+        ApplicationValue::Decimal {
+            coefficient_twos_complement,
+            scale,
+            precision,
+        } => Kind::DecimalValue(v1::Decimal {
+            coefficient_twos_complement,
+            scale,
+            precision,
+        }),
+        ApplicationValue::Money { currency, amount } => {
+            let Kind::DecimalValue(amount) = lower_value(*amount)?
+                .kind
+                .ok_or(ApplicationClientError::InvalidInput)?
+            else {
+                return Err(ApplicationClientError::InvalidInput);
+            };
+            Kind::MoneyValue(v1::Money {
+                currency,
+                amount: Some(amount),
+            })
+        }
         ApplicationValue::String(value) => Kind::StringValue(value),
         ApplicationValue::Uuid(value) => Kind::UuidValue(parse_uuid(&value)?.to_vec()),
         ApplicationValue::Enum(name) if !name.is_empty() && name.len() <= 256 => {
@@ -312,6 +399,15 @@ fn lower_value(value: ApplicationValue) -> Result<v1::Value, ApplicationClientEr
         }
         ApplicationValue::Enum(_) => return Err(ApplicationClientError::InvalidInput),
         ApplicationValue::Bytes(value) => Kind::BytesValue(value),
+        ApplicationValue::Date(days_since_unix_epoch) => Kind::DateValue(v1::Date {
+            days_since_unix_epoch,
+        }),
+        ApplicationValue::Timestamp { seconds, nanos } if nanos < 1_000_000_000 => {
+            Kind::TimestampValue(v1::Timestamp { seconds, nanos })
+        }
+        ApplicationValue::Timestamp { .. } => {
+            return Err(ApplicationClientError::InvalidInput);
+        }
         ApplicationValue::List(values) => Kind::ListValue(v1::ValueList {
             values: values
                 .into_iter()
@@ -408,6 +504,24 @@ fn raise_value(value: v1::Value) -> Result<ApplicationValue, ApplicationClientEr
         Kind::BoolValue(value) => Ok(ApplicationValue::Bool(value)),
         Kind::I64Value(value) => Ok(ApplicationValue::I64(value)),
         Kind::U64Value(value) => Ok(ApplicationValue::U64(value)),
+        Kind::DecimalValue(value) => Ok(ApplicationValue::Decimal {
+            coefficient_twos_complement: value.coefficient_twos_complement,
+            scale: value.scale,
+            precision: value.precision,
+        }),
+        Kind::MoneyValue(value) => {
+            let amount = value
+                .amount
+                .ok_or(ApplicationClientError::InvalidResponse)?;
+            Ok(ApplicationValue::Money {
+                currency: value.currency,
+                amount: Box::new(ApplicationValue::Decimal {
+                    coefficient_twos_complement: amount.coefficient_twos_complement,
+                    scale: amount.scale,
+                    precision: amount.precision,
+                }),
+            })
+        }
         Kind::StringValue(value) => Ok(ApplicationValue::String(value)),
         Kind::BytesValue(value) => Ok(ApplicationValue::Bytes(value)),
         Kind::UuidValue(value) => Ok(ApplicationValue::Uuid(uuid_text(&value)?)),
@@ -437,14 +551,14 @@ fn raise_value(value: v1::Value) -> Result<ApplicationValue, ApplicationClientEr
             }
             Ok(ApplicationValue::Record(fields))
         }
-        Kind::DateValue(value) => Ok(ApplicationValue::I64(i64::from(
-            value.days_since_unix_epoch,
-        ))),
-        Kind::TimestampValue(value) => Ok(ApplicationValue::String(format!(
-            "{}.{:09}Z",
-            value.seconds, value.nanos
-        ))),
-        Kind::DecimalValue(_) | Kind::MoneyValue(_) | Kind::EnumValue(_) => {
+        Kind::DateValue(value) => Ok(ApplicationValue::Date(value.days_since_unix_epoch)),
+        Kind::TimestampValue(value) if value.nanos < 1_000_000_000 => {
+            Ok(ApplicationValue::Timestamp {
+                seconds: value.seconds,
+                nanos: value.nanos,
+            })
+        }
+        Kind::TimestampValue(_) | Kind::EnumValue(_) => {
             Err(ApplicationClientError::InvalidResponse)
         }
     }
@@ -576,5 +690,49 @@ mod tests {
             result.fields["ticket"].records[0].fields["title"],
             ApplicationValue::String("Hello".to_owned())
         );
+    }
+
+    #[test]
+    fn generated_identity_expectations_reject_contract_module_and_name_drift() {
+        let response = app_v1::ExecuteQueryResponse {
+            identity: Some(app_v1::QueryIdentity {
+                contract_lineage: "TicketDesk".to_owned(),
+                contract_version: 1,
+                contract_bundle_hash: vec![1; 32],
+                query_name: Some("TicketPage".to_owned()),
+                plan_hash: vec![2; 32],
+                module_hash: Some(vec![3; 32]),
+            }),
+            ..Default::default()
+        };
+        let contract = ApplicationContract::Exact {
+            lineage: "TicketDesk".to_owned(),
+            version: 1,
+            bundle_hash: Some([1; 32]),
+        };
+        validate_query_response_identity(&response, &contract, "TicketPage", Some([3; 32]))
+            .expect("exact identity");
+        assert!(matches!(
+            validate_query_response_identity(&response, &contract, "Other", Some([3; 32])),
+            Err(ApplicationClientError::InvalidResponse)
+        ));
+        assert!(matches!(
+            validate_query_response_identity(&response, &contract, "TicketPage", Some([4; 32])),
+            Err(ApplicationClientError::InvalidResponse)
+        ));
+        let changed_contract = ApplicationContract::Exact {
+            lineage: "TicketDesk".to_owned(),
+            version: 1,
+            bundle_hash: Some([9; 32]),
+        };
+        assert!(matches!(
+            validate_query_response_identity(
+                &response,
+                &changed_contract,
+                "TicketPage",
+                Some([3; 32])
+            ),
+            Err(ApplicationClientError::InvalidResponse)
+        ));
     }
 }

@@ -1,11 +1,168 @@
 //! Reproducible, name-addressed client source generation.
 
+use std::collections::BTreeSet;
 use std::fmt::Write as _;
 
 use riffdb_contract_ir::{ContractBundle, ValueType, ValueTypeTag};
-use riffdb_query_ir::NamedTypeSchema;
+use riffdb_query_ir::{NamedTypeSchema, PageBound};
+use serde_json::{Map, Value, json};
 
 use crate::QueryModule;
+
+const MCP_SCHEMA_DIALECT: &str = "https://json-schema.org/draft/2020-12/schema";
+
+/// One compiler-owned generated MCP tool for a visible named query.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct GeneratedMcpTool {
+    /// Stable module-qualified tool name.
+    pub name: String,
+    /// Human-facing title.
+    pub title: String,
+    /// Bounded safe description.
+    pub description: String,
+    /// Canonical input JSON Schema.
+    pub input_schema: String,
+    /// Canonical result JSON Schema.
+    pub result_schema: String,
+    /// Exact immutable module identity.
+    pub module_hash: [u8; 32],
+}
+
+/// Closed generated-tool failure.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum McpToolGenerationError {
+    /// Two source names normalize to the same tool name.
+    NameCollision,
+    /// A generated schema could not be serialized.
+    InvalidSchema,
+}
+
+/// Generates deterministic read-only MCP tool artifacts for every named query.
+pub fn generate_mcp_tools(
+    module: &QueryModule,
+) -> Result<Vec<GeneratedMcpTool>, McpToolGenerationError> {
+    let mut names = BTreeSet::new();
+    module
+        .queries()
+        .iter()
+        .map(|query| {
+            let name = format!("{}.{}", snake(module.name().as_str()), snake(query.name()));
+            if !names.insert(name.clone()) {
+                return Err(McpToolGenerationError::NameCollision);
+            }
+            let schemas = query.program().surface().schemas();
+            let mut properties = Map::new();
+            let mut required = Vec::new();
+            for parameter in schemas.parameters() {
+                properties.insert(
+                    parameter.name().to_owned(),
+                    mcp_type_schema(parameter.value_type()),
+                );
+                if !parameter.has_default() && !is_cursor_type(parameter.value_type()) {
+                    required.push(Value::String(parameter.name().to_owned()));
+                }
+            }
+            let input = json!({
+                "$schema": MCP_SCHEMA_DIALECT,
+                "type": "object",
+                "additionalProperties": false,
+                "properties": properties,
+                "required": required,
+            });
+            let branches = schemas
+                .results()
+                .iter()
+                .map(|branch| {
+                    let mut fields = Map::new();
+                    fields.insert(
+                        "outcome".to_owned(),
+                        json!({"const": branch.name(), "type": "string"}),
+                    );
+                    let mut required = vec![Value::String("outcome".to_owned())];
+                    for field in branch.fields() {
+                        fields.insert(field.name().to_owned(), mcp_type_schema(field.value_type()));
+                        required.push(Value::String(field.name().to_owned()));
+                    }
+                    json!({
+                        "type": "object",
+                        "additionalProperties": false,
+                        "properties": fields,
+                        "required": required,
+                    })
+                })
+                .collect::<Vec<_>>();
+            let result = json!({
+                "$schema": MCP_SCHEMA_DIALECT,
+                "oneOf": branches,
+            });
+            Ok(GeneratedMcpTool {
+                title: format!("Run {}", query.name()),
+                description: format!(
+                    "Execute the exact {} named query from immutable module {}.",
+                    query.name(),
+                    module.name().as_str()
+                ),
+                name,
+                input_schema: serde_json::to_string(&input)
+                    .map_err(|_| McpToolGenerationError::InvalidSchema)?,
+                result_schema: serde_json::to_string(&result)
+                    .map_err(|_| McpToolGenerationError::InvalidSchema)?,
+                module_hash: *module.identity().as_bytes(),
+            })
+        })
+        .collect()
+}
+
+fn mcp_type_schema(value_type: &NamedTypeSchema) -> Value {
+    match value_type {
+        NamedTypeSchema::Scalar(name) => match name.as_str() {
+            "Bool" => json!({"type": "boolean"}),
+            "I64" | "U64" => json!({"type": "integer"}),
+            "Bytes" => json!({"contentEncoding": "base64", "type": "string"}),
+            _ => json!({"type": "string"}),
+        },
+        NamedTypeSchema::Optional(inner) => {
+            json!({"anyOf": [mcp_type_schema(inner), {"type": "null"}]})
+        }
+        NamedTypeSchema::Set(inner) => {
+            json!({"type": "array", "items": mcp_type_schema(inner), "uniqueItems": true})
+        }
+        NamedTypeSchema::List { element, maximum } => {
+            let maximum = match maximum {
+                PageBound::Literal(maximum) => *maximum,
+                PageBound::Parameter(_) => 500,
+            };
+            json!({"type": "array", "items": mcp_type_schema(element), "maxItems": maximum})
+        }
+        NamedTypeSchema::Record(fields) => {
+            let properties = fields
+                .iter()
+                .map(|field| (field.name().to_owned(), mcp_type_schema(field.value_type())))
+                .collect::<Map<_, _>>();
+            let required = fields
+                .iter()
+                .map(|field| Value::String(field.name().to_owned()))
+                .collect::<Vec<_>>();
+            json!({
+                "type": "object",
+                "additionalProperties": false,
+                "properties": properties,
+                "required": required,
+            })
+        }
+        NamedTypeSchema::Cursor => json!({"type": "string"}),
+        NamedTypeSchema::Limit => json!({"maximum": 500, "minimum": 1, "type": "integer"}),
+    }
+}
+
+fn is_cursor_type(value_type: &NamedTypeSchema) -> bool {
+    matches!(value_type, NamedTypeSchema::Cursor)
+        || matches!(
+            value_type,
+            NamedTypeSchema::Optional(inner)
+                if matches!(inner.as_ref(), NamedTypeSchema::Cursor)
+        )
+}
 
 /// Generates a dependency-free Rust request model for every named query and command.
 #[must_use]
@@ -20,8 +177,19 @@ pub fn generate_rust_client(module: &QueryModule, contract: &ContractBundle) -> 
     writeln!(
         output,
         "#[derive(Clone, Debug, Eq, PartialEq)]\n\
-         pub struct NamedQueryRequest<P> {{\n    pub module_hash: [u8; 32],\n    \
-         pub query_name: &'static str,\n    pub parameters: P,\n}}\n"
+         pub struct NamedQueryRequest<P> {{\n    pub contract_lineage: &'static str,\n    \
+         pub contract_version: u64,\n    pub contract_bundle_hash: [u8; 32],\n    \
+         pub module_hash: [u8; 32],\n    pub query_name: &'static str,\n    pub parameters: P,\n}}\n\
+         #[derive(Clone, Debug, Eq, PartialEq)]\n\
+         pub struct QueryResponseIdentity<'a> {{\n    pub contract_lineage: &'a str,\n    \
+         pub contract_version: u64,\n    pub contract_bundle_hash: [u8; 32],\n    \
+         pub module_hash: [u8; 32],\n    pub query_name: &'a str,\n}}\n\
+         impl<P> NamedQueryRequest<P> {{\n    pub fn accepts_identity(&self, identity: &QueryResponseIdentity<'_>) -> bool {{\n        \
+         identity.contract_lineage == self.contract_lineage\n            \
+         && identity.contract_version == self.contract_version\n            \
+         && identity.contract_bundle_hash == self.contract_bundle_hash\n            \
+         && identity.module_hash == self.module_hash\n            \
+         && identity.query_name == self.query_name\n    }}\n}}\n"
     )
     .expect("string");
     writeln!(
@@ -68,7 +236,8 @@ pub fn generate_rust_client(module: &QueryModule, contract: &ContractBundle) -> 
         writeln!(
             output,
             "pub fn {function}(parameters: {params_name}) -> NamedQueryRequest<{params_name}> {{\n\
-             \x20   NamedQueryRequest {{ module_hash: QUERY_MODULE_HASH, query_name: \"{name}\", parameters }}\n\
+             \x20   NamedQueryRequest {{ contract_lineage: CONTRACT_LINEAGE, contract_version: CONTRACT_VERSION, \
+             contract_bundle_hash: CONTRACT_BUNDLE_HASH, module_hash: QUERY_MODULE_HASH, query_name: \"{name}\", parameters }}\n\
              }}\n",
             function = snake(name),
         )
@@ -120,15 +289,26 @@ pub fn generate_typescript_client(module: &QueryModule, contract: &ContractBundl
     .expect("string");
     writeln!(
         output,
-        "export const CONTRACT_LINEAGE = \"{}\" as const;\nexport const CONTRACT_VERSION = {} as const;\n",
+        "export const CONTRACT_LINEAGE = \"{}\" as const;\nexport const CONTRACT_VERSION = {} as const;\n\
+         export const CONTRACT_BUNDLE_HASH = \"{}\" as const;\n",
         module.contract_lineage().as_str(),
-        module.contract_version().get()
+        module.contract_version().get(),
+        hex(module.contract_hash().as_bytes())
     )
     .expect("string");
     writeln!(
         output,
-        "export interface NamedQueryRequest<P> {{ readonly moduleHash: typeof QUERY_MODULE_HASH; \
-         readonly queryName: string; readonly parameters: P; }}\n\
+        "export interface NamedQueryRequest<P> {{ readonly contractLineage: typeof CONTRACT_LINEAGE; \
+         readonly contractVersion: typeof CONTRACT_VERSION; readonly contractBundleHash: typeof CONTRACT_BUNDLE_HASH; \
+         readonly moduleHash: typeof QUERY_MODULE_HASH; readonly queryName: string; readonly parameters: P; }}\n\
+         export interface QueryResponseIdentity {{ readonly contractLineage: string; readonly contractVersion: number; \
+         readonly contractBundleHash: string; readonly moduleHash: string; readonly queryName: string; }}\n\
+         export function acceptsIdentity<P>(request: NamedQueryRequest<P>, identity: QueryResponseIdentity): boolean {{\n\
+         \x20 return identity.contractLineage === request.contractLineage\n    \
+         && identity.contractVersion === request.contractVersion\n    \
+         && identity.contractBundleHash === request.contractBundleHash\n    \
+         && identity.moduleHash === request.moduleHash\n    \
+         && identity.queryName === request.queryName;\n}}\n\
          export interface CommandRequest<I> {{ readonly commandName: string; readonly input: I; \
          readonly idempotencyKey: string; }}\n"
     )
@@ -139,7 +319,11 @@ pub fn generate_typescript_client(module: &QueryModule, contract: &ContractBundl
         let schemas = query.program().surface().schemas();
         writeln!(output, "export interface {name}Params {{").expect("string");
         for parameter in schemas.parameters() {
-            let optional = if parameter.has_default() { "?" } else { "" };
+            let optional = if parameter.has_default() || is_cursor_type(parameter.value_type()) {
+                "?"
+            } else {
+                ""
+            };
             writeln!(
                 output,
                 "  readonly {}{}: {};",
@@ -176,7 +360,8 @@ pub fn generate_typescript_client(module: &QueryModule, contract: &ContractBundl
         writeln!(
             output,
             "export function {function}(parameters: {name}Params): NamedQueryRequest<{name}Params> {{\n\
-             \x20 return {{ moduleHash: QUERY_MODULE_HASH, queryName: \"{name}\", parameters }};\n\
+             \x20 return {{ contractLineage: CONTRACT_LINEAGE, contractVersion: CONTRACT_VERSION, \
+             contractBundleHash: CONTRACT_BUNDLE_HASH, moduleHash: QUERY_MODULE_HASH, queryName: \"{name}\", parameters }};\n\
              }}\n",
             function = camel(name),
         )
@@ -226,6 +411,14 @@ fn emit_rust_identity(output: &mut String, module: &QueryModule) {
         module.contract_version().get()
     )
     .expect("string");
+    write!(output, "pub const CONTRACT_BUNDLE_HASH: [u8; 32] = [").expect("string");
+    for (index, byte) in module.contract_hash().as_bytes().iter().enumerate() {
+        if index != 0 {
+            write!(output, ", ").expect("string");
+        }
+        write!(output, "0x{byte:02x}").expect("string");
+    }
+    writeln!(output, "];\n").expect("string");
 }
 
 fn emit_rust_fields_struct<'a>(

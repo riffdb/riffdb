@@ -2,15 +2,24 @@
 export const QUERY_MODULE_HASH = "f883bead2d14e4c7f738ed9af381018dcc66c76b6ef35b8265db7b26327cba92" as const;
 export const CONTRACT_LINEAGE = "TicketDesk" as const;
 export const CONTRACT_VERSION = 1 as const;
+export const CONTRACT_BUNDLE_HASH = "5d5b7b965a1f250cfaf4658b02a7f77cb1f42609a17e273f9e35e337694d968e" as const;
 
-export interface NamedQueryRequest<P> { readonly moduleHash: typeof QUERY_MODULE_HASH; readonly queryName: string; readonly parameters: P; }
+export interface NamedQueryRequest<P> { readonly contractLineage: typeof CONTRACT_LINEAGE; readonly contractVersion: typeof CONTRACT_VERSION; readonly contractBundleHash: typeof CONTRACT_BUNDLE_HASH; readonly moduleHash: typeof QUERY_MODULE_HASH; readonly queryName: string; readonly parameters: P; }
+export interface QueryResponseIdentity { readonly contractLineage: string; readonly contractVersion: number; readonly contractBundleHash: string; readonly moduleHash: string; readonly queryName: string; }
+export function acceptsIdentity<P>(request: NamedQueryRequest<P>, identity: QueryResponseIdentity): boolean {
+  return identity.contractLineage === request.contractLineage
+    && identity.contractVersion === request.contractVersion
+    && identity.contractBundleHash === request.contractBundleHash
+    && identity.moduleHash === request.moduleHash
+    && identity.queryName === request.queryName;
+}
 export interface CommandRequest<I> { readonly commandName: string; readonly input: I; readonly idempotencyKey: string; }
 
 export interface ListTicketsParams {
   readonly organization_id: string;
   readonly project_id: string;
   readonly statuses: ReadonlyArray<string>;
-  readonly after: string | null;
+  readonly after?: string | null;
   readonly limit?: number;
 }
 
@@ -22,13 +31,13 @@ export interface ListTicketsFound {
 export type ListTicketsResult = ListTicketsFound;
 
 export function listTickets(parameters: ListTicketsParams): NamedQueryRequest<ListTicketsParams> {
-  return { moduleHash: QUERY_MODULE_HASH, queryName: "ListTickets", parameters };
+  return { contractLineage: CONTRACT_LINEAGE, contractVersion: CONTRACT_VERSION, contractBundleHash: CONTRACT_BUNDLE_HASH, moduleHash: QUERY_MODULE_HASH, queryName: "ListTickets", parameters };
 }
 
 export interface ProjectMembersParams {
   readonly organization_id: string;
   readonly project_id: string;
-  readonly after: string | null;
+  readonly after?: string | null;
 }
 
 export interface ProjectMembersFound {
@@ -39,7 +48,7 @@ export interface ProjectMembersFound {
 export type ProjectMembersResult = ProjectMembersFound;
 
 export function projectMembers(parameters: ProjectMembersParams): NamedQueryRequest<ProjectMembersParams> {
-  return { moduleHash: QUERY_MODULE_HASH, queryName: "ProjectMembers", parameters };
+  return { contractLineage: CONTRACT_LINEAGE, contractVersion: CONTRACT_VERSION, contractBundleHash: CONTRACT_BUNDLE_HASH, moduleHash: QUERY_MODULE_HASH, queryName: "ProjectMembers", parameters };
 }
 
 export interface ProjectSummaryParams {
@@ -61,13 +70,13 @@ export interface ProjectSummaryNotFound {
 export type ProjectSummaryResult = ProjectSummaryFound | ProjectSummaryNotFound;
 
 export function projectSummary(parameters: ProjectSummaryParams): NamedQueryRequest<ProjectSummaryParams> {
-  return { moduleHash: QUERY_MODULE_HASH, queryName: "ProjectSummary", parameters };
+  return { contractLineage: CONTRACT_LINEAGE, contractVersion: CONTRACT_VERSION, contractBundleHash: CONTRACT_BUNDLE_HASH, moduleHash: QUERY_MODULE_HASH, queryName: "ProjectSummary", parameters };
 }
 
 export interface TicketPageParams {
   readonly organization_id: string;
   readonly ticket_id: string;
-  readonly comments_after: string | null;
+  readonly comments_after?: string | null;
 }
 
 export interface TicketPageFound {
@@ -89,7 +98,7 @@ export interface TicketPageIntegrityFailure {
 export type TicketPageResult = TicketPageFound | TicketPageNotFound | TicketPageIntegrityFailure;
 
 export function ticketPage(parameters: TicketPageParams): NamedQueryRequest<TicketPageParams> {
-  return { moduleHash: QUERY_MODULE_HASH, queryName: "TicketPage", parameters };
+  return { contractLineage: CONTRACT_LINEAGE, contractVersion: CONTRACT_VERSION, contractBundleHash: CONTRACT_BUNDLE_HASH, moduleHash: QUERY_MODULE_HASH, queryName: "TicketPage", parameters };
 }
 
 export interface AddProjectMemberInput {

@@ -251,7 +251,7 @@ impl TicketDeskClient {
             ApplicationContract::Exact {
                 lineage: generated::CONTRACT_LINEAGE.to_owned(),
                 version: generated::CONTRACT_VERSION,
-                bundle_hash: None,
+                bundle_hash: Some(generated::CONTRACT_BUNDLE_HASH),
             },
             name,
             Some(generated::QUERY_MODULE_HASH),

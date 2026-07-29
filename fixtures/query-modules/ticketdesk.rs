@@ -4,11 +4,33 @@ pub const QUERY_MODULE_HASH: [u8; 32] = [0xf8, 0x83, 0xbe, 0xad, 0x2d, 0x14, 0xe
 pub const CONTRACT_LINEAGE: &str = "TicketDesk";
 pub const CONTRACT_VERSION: u64 = 1;
 
+pub const CONTRACT_BUNDLE_HASH: [u8; 32] = [0x5d, 0x5b, 0x7b, 0x96, 0x5a, 0x1f, 0x25, 0x0c, 0xfa, 0xf4, 0x65, 0x8b, 0x02, 0xa7, 0xf7, 0x7c, 0xb1, 0xf4, 0x26, 0x09, 0xa1, 0x7e, 0x27, 0x3f, 0x9e, 0x35, 0xe3, 0x37, 0x69, 0x4d, 0x96, 0x8e];
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct NamedQueryRequest<P> {
+    pub contract_lineage: &'static str,
+    pub contract_version: u64,
+    pub contract_bundle_hash: [u8; 32],
     pub module_hash: [u8; 32],
     pub query_name: &'static str,
     pub parameters: P,
+}
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct QueryResponseIdentity<'a> {
+    pub contract_lineage: &'a str,
+    pub contract_version: u64,
+    pub contract_bundle_hash: [u8; 32],
+    pub module_hash: [u8; 32],
+    pub query_name: &'a str,
+}
+impl<P> NamedQueryRequest<P> {
+    pub fn accepts_identity(&self, identity: &QueryResponseIdentity<'_>) -> bool {
+        identity.contract_lineage == self.contract_lineage
+            && identity.contract_version == self.contract_version
+            && identity.contract_bundle_hash == self.contract_bundle_hash
+            && identity.module_hash == self.module_hash
+            && identity.query_name == self.query_name
+    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -48,7 +70,7 @@ pub enum ListTicketsResult {
 }
 
 pub fn list_tickets(parameters: ListTicketsParams) -> NamedQueryRequest<ListTicketsParams> {
-    NamedQueryRequest { module_hash: QUERY_MODULE_HASH, query_name: "ListTickets", parameters }
+    NamedQueryRequest { contract_lineage: CONTRACT_LINEAGE, contract_version: CONTRACT_VERSION, contract_bundle_hash: CONTRACT_BUNDLE_HASH, module_hash: QUERY_MODULE_HASH, query_name: "ListTickets", parameters }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -75,7 +97,7 @@ pub enum ProjectMembersResult {
 }
 
 pub fn project_members(parameters: ProjectMembersParams) -> NamedQueryRequest<ProjectMembersParams> {
-    NamedQueryRequest { module_hash: QUERY_MODULE_HASH, query_name: "ProjectMembers", parameters }
+    NamedQueryRequest { contract_lineage: CONTRACT_LINEAGE, contract_version: CONTRACT_VERSION, contract_bundle_hash: CONTRACT_BUNDLE_HASH, module_hash: QUERY_MODULE_HASH, query_name: "ProjectMembers", parameters }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -116,7 +138,7 @@ pub enum ProjectSummaryResult {
 }
 
 pub fn project_summary(parameters: ProjectSummaryParams) -> NamedQueryRequest<ProjectSummaryParams> {
-    NamedQueryRequest { module_hash: QUERY_MODULE_HASH, query_name: "ProjectSummary", parameters }
+    NamedQueryRequest { contract_lineage: CONTRACT_LINEAGE, contract_version: CONTRACT_VERSION, contract_bundle_hash: CONTRACT_BUNDLE_HASH, module_hash: QUERY_MODULE_HASH, query_name: "ProjectSummary", parameters }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -179,7 +201,7 @@ pub enum TicketPageResult {
 }
 
 pub fn ticket_page(parameters: TicketPageParams) -> NamedQueryRequest<TicketPageParams> {
-    NamedQueryRequest { module_hash: QUERY_MODULE_HASH, query_name: "TicketPage", parameters }
+    NamedQueryRequest { contract_lineage: CONTRACT_LINEAGE, contract_version: CONTRACT_VERSION, contract_bundle_hash: CONTRACT_BUNDLE_HASH, module_hash: QUERY_MODULE_HASH, query_name: "TicketPage", parameters }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]

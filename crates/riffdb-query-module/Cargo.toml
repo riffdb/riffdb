@@ -15,6 +15,7 @@ riffdb-query-compiler = { path = "../riffdb-query-compiler" }
 riffdb-query-ir = { path = "../riffdb-query-ir" }
 riffdb-riffql-syntax = { path = "../riffdb-riffql-syntax" }
 riffdb-types = { path = "../riffdb-types" }
+serde_json = { version = "=1.0.150", default-features = false, features = ["std"] }
 
 [dev-dependencies]
 riffdb-contract-compiler = { path = "../riffdb-contract-compiler" }

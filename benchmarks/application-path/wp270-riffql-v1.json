@@ -1,0 +1,41 @@
+{
+  "schema": "riffdb.application-path-wp270-riffql/v1",
+  "report_id": "ticketdesk-symbolic-public-grpc",
+  "transport": {
+    "protocol": "riffdb.app.v1 over unary gRPC",
+    "connection": "one reused HTTP/2 channel",
+    "server": "live riffdbd",
+    "authorization": "ordinary ticketdesk-agent capability"
+  },
+  "configuration": {
+    "warmup_iterations": 2,
+    "measured_samples": 9,
+    "distribution_method": "nearest-rank p50",
+    "seed_rows": 276
+  },
+  "scenarios": [
+    {
+      "scenario": "named_list_tickets",
+      "public_rpc_count": 1,
+      "authoritative_snapshot_count": 1,
+      "p50_ns": 400901
+    },
+    {
+      "scenario": "named_ticket_page",
+      "public_rpc_count": 1,
+      "authoritative_snapshot_count": 1,
+      "p50_ns": 414151
+    }
+  ],
+  "seed_ns": 1944435382,
+  "gates": {
+    "list_or_detail_p50_ns": 15000000,
+    "seed_ns": 3000000000
+  },
+  "interpretation": [
+    "RiffQL keeps unary gRPC and removes client-side RPC multiplication.",
+    "Each page is compiled, authorized, and executed inside one authoritative redb read transaction.",
+    "The measured named list and detail paths are well below the 15 ms PERF-002 gate.",
+    "The gRPC method was retained because the earlier overhead was structural N+1 composition, not unary framing."
+  ]
+}

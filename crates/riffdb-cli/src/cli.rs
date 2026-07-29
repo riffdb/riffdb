@@ -21,6 +21,21 @@ pub(crate) struct Cli {
 
 #[derive(Debug, Subcommand)]
 pub(crate) enum TopLevel {
+    /// Starts the bounded local symbolic development workflow.
+    Dev {
+        #[arg(long, default_value = "ticketdesk-agent", value_name = "ROLE_PRESET")]
+        role: String,
+        #[arg(long)]
+        watch: bool,
+        #[arg(long)]
+        seed: bool,
+        #[arg(long, value_name = "DIRECTORY")]
+        seed_dir: Option<OsString>,
+        #[arg(long, default_value = "8", value_name = "1..8")]
+        seed_concurrency: String,
+        #[arg(long, hide = true)]
+        acceptance: bool,
+    },
     Contract {
         #[command(subcommand)]
         command: ContractCommand,
@@ -345,6 +360,29 @@ mod tests {
                     ..
                 }
             }
+        ));
+    }
+
+    #[test]
+    fn dev_is_a_first_class_bounded_top_level_command() {
+        let cli = Cli::try_parse_from([
+            "riffdb",
+            "dev",
+            "--role",
+            "ticketdesk-agent",
+            "--seed",
+            "--seed-concurrency",
+            "4",
+        ])
+        .expect("accepted dev command");
+        assert!(matches!(
+            cli.command,
+            TopLevel::Dev {
+                role,
+                seed: true,
+                seed_concurrency,
+                ..
+            } if role == "ticketdesk-agent" && seed_concurrency == "4"
         ));
     }
 

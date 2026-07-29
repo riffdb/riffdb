@@ -4,7 +4,10 @@ set -euo pipefail
 repo_root="$(git rev-parse --show-toplevel)"
 cd "$repo_root"
 
-output="$(./scripts/riffdb-dev --role ticketdesk-agent --seed-concurrency 8 --acceptance)"
+output="$(cargo run --quiet -p riffdb-cli -- dev \
+    --role ticketdesk-agent \
+    --seed-concurrency 8 \
+    --acceptance)"
 case "$output" in
     riffdb-dev-ready-v1$'\t'*) ;;
     *)
@@ -15,4 +18,3 @@ esac
 
 ./scripts/check-ticketdesk-symbolic-boundary
 echo "riffdb dev bootstrap, role preset, contract, and query module acceptance passed."
-
