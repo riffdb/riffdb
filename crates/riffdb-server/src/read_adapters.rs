@@ -1,7 +1,8 @@
 //! Production catalog and authoritative-read adapters for the API-neutral service.
 
+use std::collections::BTreeMap;
 use std::fmt;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use riffdb_catalog::{
     ActiveCatalogSnapshot, CatalogError, CatalogErrorKind, CatalogPreparationResult,
@@ -51,6 +52,37 @@ use crate::storage::SharedRedbOperationalPorts;
 
 type ContractVersionRequest = (ContractLineage, ContractVersion);
 type DeploymentRequest = (ContractBundle, Option<ContractVersion>);
+const MAX_HOT_HISTORICAL_CONTRACTS: usize = 4_096;
+
+#[derive(Default)]
+struct HistoricalContractView {
+    bundles: BTreeMap<ContractVersionRequest, ValidatedContractBundle>,
+}
+
+impl HistoricalContractView {
+    fn get(
+        &self,
+        lineage: &ContractLineage,
+        version: ContractVersion,
+    ) -> Option<ValidatedContractBundle> {
+        self.bundles.get(&(lineage.clone(), version)).cloned()
+    }
+
+    fn insert(&mut self, bundle: ValidatedContractBundle) -> Result<(), CatalogError> {
+        let key = (bundle.lineage().clone(), bundle.contract_version());
+        if let Some(existing) = self.bundles.get(&key) {
+            if existing.bundle_hash() != bundle.bundle_hash() {
+                return Err(CatalogError::new(CatalogErrorKind::BundleIdentityConflict));
+            }
+            return Ok(());
+        }
+        if self.bundles.len() == MAX_HOT_HISTORICAL_CONTRACTS {
+            return Err(CatalogError::new(CatalogErrorKind::LineageBundleCountLimit));
+        }
+        self.bundles.insert(key, bundle);
+        Ok(())
+    }
+}
 
 /// Catalog-owned semantic reads driven on the retained blocking worker set.
 pub(crate) struct ServerCatalogReadPort {
@@ -72,9 +104,25 @@ impl ServerCatalogReadPort {
         let active_storage = storage.clone();
         let active = driver.executor(move |()| ActiveCatalogSnapshot::read(&active_storage));
 
+        let historical = Arc::new(Mutex::new(HistoricalContractView::default()));
         let version_storage = storage.clone();
+        let version_historical = Arc::clone(&historical);
         let contract_version = driver.executor(move |(lineage, version)| {
-            read_contract_version(&version_storage, lineage, version)
+            if let Some(bundle) = version_historical
+                .lock()
+                .map_err(|_| CatalogError::new(CatalogErrorKind::InvalidHistoricalEvidence))?
+                .get(&lineage, version)
+            {
+                return Ok(Some(bundle));
+            }
+            let bundle = read_contract_version(&version_storage, lineage, version)?;
+            if let Some(bundle) = bundle.as_ref() {
+                version_historical
+                    .lock()
+                    .map_err(|_| CatalogError::new(CatalogErrorKind::InvalidHistoricalEvidence))?
+                    .insert(bundle.clone())?;
+            }
+            Ok(bundle)
         });
 
         let plan_storage = storage.clone();

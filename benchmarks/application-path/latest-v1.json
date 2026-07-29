@@ -1,0 +1,242 @@
+{
+  "backend": {
+    "backend_id": "riffdb_public_grpc",
+    "description": "Live riffdbd over public gRPC (commands + GetEntity + ScanIndex)",
+    "guarantee_notes": [
+      "Compiled TicketDesk contract commands for seed/writes",
+      "Reads via public GetEntity and ScanIndex RPCs",
+      "ticket_detail_page is multi-RPC application composition, not SQL join",
+      "Synchronous durable command commits"
+    ],
+    "scenarios": [
+      {
+        "last_row_count": 1,
+        "scenario": "point_get_ticket",
+        "timing": {
+          "max_ns": 280191,
+          "mean_ns": 232715,
+          "min_ns": 120940,
+          "p50_ns": 249160,
+          "p95_ns": 280191,
+          "p99_ns": 280191,
+          "sample_count": 9,
+          "samples_ns": [
+            120940,
+            200411,
+            219881,
+            229210,
+            249160,
+            254801,
+            267371,
+            272470,
+            280191
+          ]
+        }
+      },
+      {
+        "last_row_count": 1,
+        "scenario": "point_get_user",
+        "timing": {
+          "max_ns": 228690,
+          "mean_ns": 173767,
+          "min_ns": 124071,
+          "p50_ns": 171650,
+          "p95_ns": 228690,
+          "p99_ns": 228690,
+          "sample_count": 9,
+          "samples_ns": [
+            124071,
+            128550,
+            160731,
+            170430,
+            171650,
+            172310,
+            201530,
+            205941,
+            228690
+          ]
+        }
+      },
+      {
+        "last_row_count": 4,
+        "scenario": "list_tickets_by_project_status",
+        "timing": {
+          "max_ns": 831051,
+          "mean_ns": 729188,
+          "min_ns": 578761,
+          "p50_ns": 706441,
+          "p95_ns": 831051,
+          "p99_ns": 831051,
+          "sample_count": 9,
+          "samples_ns": [
+            578761,
+            688541,
+            692532,
+            700892,
+            706441,
+            750852,
+            805872,
+            807752,
+            831051
+          ]
+        }
+      },
+      {
+        "last_row_count": 2,
+        "scenario": "list_open_tickets_for_assignee",
+        "timing": {
+          "max_ns": 478691,
+          "mean_ns": 395866,
+          "min_ns": 360231,
+          "p50_ns": 397700,
+          "p95_ns": 478691,
+          "p99_ns": 478691,
+          "sample_count": 9,
+          "samples_ns": [
+            360231,
+            361070,
+            369871,
+            369951,
+            397700,
+            403261,
+            409331,
+            412690,
+            478691
+          ]
+        }
+      },
+      {
+        "last_row_count": 4,
+        "scenario": "list_comments_for_ticket",
+        "timing": {
+          "max_ns": 675472,
+          "mean_ns": 614395,
+          "min_ns": 472291,
+          "p50_ns": 627452,
+          "p95_ns": 675472,
+          "p99_ns": 675472,
+          "sample_count": 9,
+          "samples_ns": [
+            472291,
+            587741,
+            607712,
+            612072,
+            627452,
+            629111,
+            654811,
+            662901,
+            675472
+          ]
+        }
+      },
+      {
+        "last_row_count": 3,
+        "scenario": "list_project_members",
+        "timing": {
+          "max_ns": 520021,
+          "mean_ns": 482614,
+          "min_ns": 440671,
+          "p50_ns": 477301,
+          "p95_ns": 520021,
+          "p99_ns": 520021,
+          "sample_count": 9,
+          "samples_ns": [
+            440671,
+            457461,
+            466140,
+            469191,
+            477301,
+            490521,
+            504160,
+            518061,
+            520021
+          ]
+        }
+      },
+      {
+        "last_row_count": 8,
+        "scenario": "ticket_detail_page",
+        "timing": {
+          "max_ns": 1529843,
+          "mean_ns": 1396445,
+          "min_ns": 1264452,
+          "p50_ns": 1380382,
+          "p95_ns": 1529843,
+          "p99_ns": 1529843,
+          "sample_count": 9,
+          "samples_ns": [
+            1264452,
+            1343022,
+            1359393,
+            1378302,
+            1380382,
+            1408913,
+            1433133,
+            1470572,
+            1529843
+          ]
+        }
+      },
+      {
+        "last_row_count": 1,
+        "scenario": "create_comment",
+        "timing": {
+          "max_ns": 32357533,
+          "mean_ns": 31412764,
+          "min_ns": 30581578,
+          "p50_ns": 31304250,
+          "p95_ns": 32357533,
+          "p99_ns": 32357533,
+          "sample_count": 9,
+          "samples_ns": [
+            30581578,
+            30679109,
+            31122679,
+            31256580,
+            31304250,
+            31519681,
+            31815831,
+            32077642,
+            32357533
+          ]
+        }
+      }
+    ],
+    "seed_ns": 4771794291,
+    "seed_rows": 276
+  },
+  "configuration": {
+    "distribution_method": "nearest-rank p50/p95/p99",
+    "list_limit": 50,
+    "measured_samples": 9,
+    "timing_source": "std::time::Instant",
+    "warmup_iterations": 2
+  },
+  "gates": {
+    "command_p50_ns": 20000000,
+    "list_or_detail_p50_ns": 15000000,
+    "point_read_p50_ns": 5000000,
+    "seed_ns": 3000000000,
+    "unary_transport_upper_bound_ns": 1000000
+  },
+  "interpretation": {
+    "command_and_seed_gate_status": "WP-205 measured blocker retained for command-path and WP-270 seed work; no guarantee was weakened.",
+    "reused_http2_connection": true,
+    "unary_transport_upper_bound_method": "The complete fastest warm point request is an upper bound on transport/adaptation alone."
+  },
+  "report_id": "ticketdesk-app-baseline",
+  "scale": {
+    "approximate_row_count": 276,
+    "comments_per_ticket": 3,
+    "labels_per_org": 4,
+    "labels_per_ticket": 2,
+    "members_per_project": 3,
+    "organizations": 2,
+    "profile": "smoke",
+    "projects_per_org": 2,
+    "tickets_per_project": 10,
+    "users_per_org": 5
+  },
+  "schema": "riffdb.application-path-wp205/v1",
+  "source_schema": "riffdb.app-baseline/v1"
+}
