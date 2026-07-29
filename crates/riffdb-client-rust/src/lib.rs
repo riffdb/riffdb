@@ -6,6 +6,7 @@
 //! authorization, idempotency, command execution, and durable recovery remain
 //! server-owned semantics.
 
+mod application;
 mod capability;
 mod client;
 mod command;
@@ -26,6 +27,11 @@ pub use riffdb_proto::app::v1 as app_v1;
 /// requests without taking a second direct dependency on the Proto owner.
 pub use riffdb_proto::v1;
 
+pub use application::{
+    ApplicationCardinality, ApplicationClientError, ApplicationCommand, ApplicationCommandResult,
+    ApplicationContract, ApplicationRecord, ApplicationResultField, ApplicationValue, NamedQuery,
+    NamedQueryResult,
+};
 pub use capability::{
     BootstrapCapabilityCreateTemplate, CapabilityCreateTemplateError,
     NormalCapabilityCreateTemplate,

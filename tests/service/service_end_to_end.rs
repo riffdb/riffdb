@@ -635,7 +635,7 @@ fn large_discovery_catalogs_batch_authorization_and_page_before_the_mcp_limit() 
     run_async(async move {
         const ADDITIONAL_COMMANDS: usize = 499;
         const COMMAND_CANDIDATES: usize = 501;
-        const COMMAND_ITEMS: usize = 14 + COMMAND_CANDIDATES;
+        const COMMAND_ITEMS: usize = 19 + COMMAND_CANDIDATES;
         const RESOURCE_ITEMS: usize = 4 + 1 + 1 + (3 * COMMAND_CANDIDATES) + 1;
         let limit = PageLimit::new(500).expect("maximum discovery page limit");
         let mut harness = ServiceHarness::discovery_inventory(ADDITIONAL_COMMANDS);
@@ -661,7 +661,7 @@ fn large_discovery_catalogs_batch_authorization_and_page_before_the_mcp_limit() 
         assert_eq!(first_tools.items().len(), 500);
         let command_cursor = first_tools
             .next_cursor()
-            .expect("the first 500 of 515 visible tools require continuation");
+            .expect("the first 500 visible tools require continuation");
         assert_eq!(
             harness.policy.calls() - policy_calls,
             3,

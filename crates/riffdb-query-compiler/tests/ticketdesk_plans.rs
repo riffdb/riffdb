@@ -72,6 +72,20 @@ fn list_and_detail_choose_expected_physical_accesses() {
         detail.steps()[3].access(),
         QueryAccessKind::Index { index, .. } if index == "by_ticket"
     ));
+    let ticket = &detail.steps()[0];
+    assert!(
+        ["reporter_id", "assignee_id"]
+            .iter()
+            .all(|field| ticket.predicate_fields().iter().any(|read| read == field)),
+        "downstream join fields must be fetched from the source binding"
+    );
+    assert!(
+        ["reporter_id", "assignee_id"].iter().all(|field| !ticket
+            .selected_fields()
+            .iter()
+            .any(|selected| selected == field)),
+        "dependency-only fields must not leak into the public result"
+    );
 }
 
 #[test]

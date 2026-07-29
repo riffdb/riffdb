@@ -635,13 +635,8 @@ fn read_query_directory(directory: &Path) -> Result<Vec<app_v1::NamedQuerySource
     let mut total = 0_usize;
     let mut queries = Vec::with_capacity(paths.len());
     for path in paths {
-        let name = path
-            .file_stem()
-            .and_then(|name| name.to_str())
-            .filter(|name| !name.is_empty())
-            .ok_or(InputError::Invalid)?
-            .to_owned();
         let source = utf8(read_file(&path, MAX_INPUT_BYTES)?)?;
+        let name = declared_query_name(&source).ok_or(InputError::Invalid)?;
         total = total
             .checked_add(source.len())
             .ok_or(InputError::TooLarge)?;
@@ -655,6 +650,17 @@ fn read_query_directory(directory: &Path) -> Result<Vec<app_v1::NamedQuerySource
         return Err(InputError::Invalid);
     }
     Ok(queries)
+}
+
+fn declared_query_name(source: &str) -> Option<String> {
+    let source = source.trim_start();
+    let remainder = source.strip_prefix("query ")?;
+    let length = remainder
+        .bytes()
+        .take_while(|byte| byte.is_ascii_alphanumeric() || *byte == b'_')
+        .count();
+    let name = remainder.get(..length)?;
+    (!name.is_empty() && name.len() <= 256).then(|| name.to_owned())
 }
 
 fn parse_module_expectation(

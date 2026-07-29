@@ -4,7 +4,9 @@ use std::collections::BTreeMap;
 use std::num::NonZeroU16;
 use std::sync::Arc;
 
-use riffdb_catalog::{PreparedQueryModuleActivation, ValidatedQueryModule};
+use riffdb_catalog::{
+    ActiveQueryModuleExpectation, PreparedQueryModuleActivation, ValidatedQueryModule,
+};
 use riffdb_commit::{
     ControlPlaneExecutionErrorKind, ControlPlaneTerminalAudit,
     QueryModuleDeploymentOutcome as CoordinatorQueryModuleDeploymentOutcome,
@@ -30,7 +32,6 @@ use riffdb_query_module::{NamedQuerySource, QueryModuleCandidate};
 use riffdb_riffql_syntax::{
     Document, MAX_IDENTIFIER_BYTES, ParseDiagnostic, Span, TypeReference, parse_query,
 };
-use riffdb_storage_api::QueryModuleActiveExpectationV1;
 use riffdb_types::{
     CanonicalValue, ContractBundleHash, ContractLineage, ContractVersion, QueryModuleHash,
     QueryModuleName, QueryModuleVersion, QueryPlanHash, ScopedPartitionV1, ServiceAuditLinkV1,
@@ -507,11 +508,11 @@ pub enum QueryModuleActiveExpectation {
 }
 
 impl QueryModuleActiveExpectation {
-    const fn lower(self) -> QueryModuleActiveExpectationV1 {
+    const fn lower(self) -> ActiveQueryModuleExpectation {
         match self {
-            Self::Any => QueryModuleActiveExpectationV1::Any,
-            Self::Absent => QueryModuleActiveExpectationV1::Absent,
-            Self::Exact(hash) => QueryModuleActiveExpectationV1::Exact(hash),
+            Self::Any => ActiveQueryModuleExpectation::Any,
+            Self::Absent => ActiveQueryModuleExpectation::Absent,
+            Self::Exact(hash) => ActiveQueryModuleExpectation::Exact(hash),
         }
     }
 }
@@ -877,11 +878,16 @@ pub struct ExecuteSymbolicQueryResult {
     outcome: String,
     application_head: u64,
     fields: BTreeMap<String, SymbolicResultField>,
+    enum_variant_names: BTreeMap<(u32, u32), String>,
     next_cursor: Option<CursorToken>,
 }
 
 impl ExecuteSymbolicQueryResult {
-    fn from_snapshot(program: &QueryAccessProgramV1, snapshot: &QueryOwnedSnapshot) -> Self {
+    fn from_snapshot(
+        program: &QueryAccessProgramV1,
+        snapshot: &QueryOwnedSnapshot,
+        bundle: &riffdb_contract_ir::ContractBundle,
+    ) -> Self {
         let fields = snapshot
             .fields()
             .iter()
@@ -905,6 +911,19 @@ impl ExecuteSymbolicQueryResult {
             outcome: snapshot.outcome().to_owned(),
             application_head: snapshot.application_head(),
             fields,
+            enum_variant_names: bundle
+                .schema()
+                .enums()
+                .iter()
+                .flat_map(|enumeration| {
+                    enumeration.variants().iter().map(move |variant| {
+                        (
+                            (enumeration.id().get(), variant.id().get()),
+                            variant.name().to_owned(),
+                        )
+                    })
+                })
+                .collect(),
             next_cursor: None,
         }
     }
@@ -931,6 +950,14 @@ impl ExecuteSymbolicQueryResult {
     #[must_use]
     pub const fn fields(&self) -> &BTreeMap<String, SymbolicResultField> {
         &self.fields
+    }
+
+    /// Resolves a canonical enum identity to its contract source name.
+    #[must_use]
+    pub fn enum_variant_name(&self, type_id: u32, variant_id: u32) -> Option<&str> {
+        self.enum_variant_names
+            .get(&(type_id, variant_id))
+            .map(String::as_str)
     }
 
     /// Opaque continuation token, when this page is not final.
@@ -1628,7 +1655,8 @@ async fn execute_compiled_query(
         },
         None => None,
     };
-    let mut result = ExecuteSymbolicQueryResult::from_snapshot(&program, &snapshot);
+    let mut result =
+        ExecuteSymbolicQueryResult::from_snapshot(&program, &snapshot, bundle.bundle());
     if let Some(module_hash) = module_hash {
         result.identity = SymbolicQueryIdentity::from_named(&program, module_hash);
     }
@@ -1732,6 +1760,21 @@ fn materialize_query_parameters(
         match (&parameter.ty.value, value) {
             (TypeReference::Cursor, None) => continue,
             (TypeReference::Cursor, Some(_)) => {
+                return Err(validation_failure(ValidationCode::InvalidValue));
+            }
+            (TypeReference::Optional(inner), None)
+                if matches!(inner.value, TypeReference::Cursor) =>
+            {
+                continue;
+            }
+            (TypeReference::Optional(inner), Some(SubmittedValue::Null))
+                if matches!(inner.value, TypeReference::Cursor) =>
+            {
+                continue;
+            }
+            (TypeReference::Optional(inner), Some(_))
+                if matches!(inner.value, TypeReference::Cursor) =>
+            {
                 return Err(validation_failure(ValidationCode::InvalidValue));
             }
             (TypeReference::Limit, None) if parameter.default.is_some() => continue,

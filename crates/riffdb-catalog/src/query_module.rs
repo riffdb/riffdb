@@ -113,11 +113,32 @@ impl fmt::Debug for ValidatedQueryModule {
     }
 }
 
+/// API-neutral transaction-current active-module expectation.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ActiveQueryModuleExpectation {
+    /// Replace any transaction-current pointer.
+    Any,
+    /// Require no active module for the exact contract.
+    Absent,
+    /// Require one exact active module identity.
+    Exact(QueryModuleHash),
+}
+
+impl ActiveQueryModuleExpectation {
+    const fn into_storage(self) -> QueryModuleActiveExpectationV1 {
+        match self {
+            Self::Any => QueryModuleActiveExpectationV1::Any,
+            Self::Absent => QueryModuleActiveExpectationV1::Absent,
+            Self::Exact(hash) => QueryModuleActiveExpectationV1::Exact(hash),
+        }
+    }
+}
+
 /// Move-ready catalog preparation for one atomic module activation.
 #[derive(Clone, Debug)]
 pub struct PreparedQueryModuleActivation {
     module: ValidatedQueryModule,
-    expectation: QueryModuleActiveExpectationV1,
+    expectation: ActiveQueryModuleExpectation,
 }
 
 impl PreparedQueryModuleActivation {
@@ -125,7 +146,7 @@ impl PreparedQueryModuleActivation {
     #[must_use]
     pub const fn new(
         module: ValidatedQueryModule,
-        expectation: QueryModuleActiveExpectationV1,
+        expectation: ActiveQueryModuleExpectation,
     ) -> Self {
         Self {
             module,
@@ -141,7 +162,7 @@ impl PreparedQueryModuleActivation {
 
     /// Transaction-current storage expectation.
     #[must_use]
-    pub const fn expectation(&self) -> QueryModuleActiveExpectationV1 {
+    pub const fn expectation(&self) -> ActiveQueryModuleExpectation {
         self.expectation
     }
 
@@ -168,7 +189,7 @@ impl PreparedQueryModuleActivation {
         approval_id: Option<ApprovalId>,
     ) -> Result<QueryModuleActivationIntentV1, QueryModuleCatalogError> {
         Ok(QueryModuleActivationIntentV1::new(
-            self.expectation,
+            self.expectation.into_storage(),
             self.module.to_stored()?,
             request_id,
             principal,

@@ -299,7 +299,8 @@ fn scan_service_records(ports: &RedbOperationalPorts) -> Vec<StoredServiceAuditR
         .map(|item| match item.into_parts().0 {
             StoredAdministrationAuditRecordV1::Service(record) => record,
             StoredAdministrationAuditRecordV1::Catalog(_)
-            | StoredAdministrationAuditRecordV1::Capability(_) => {
+            | StoredAdministrationAuditRecordV1::Capability(_)
+            | StoredAdministrationAuditRecordV1::QueryModule(_) => {
                 panic!("service-only fixture contains a control-plane record")
             }
         })

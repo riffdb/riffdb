@@ -1,0 +1,18 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+repo_root="$(git rev-parse --show-toplevel)"
+cd "$repo_root"
+
+output="$(./scripts/riffdb-dev --role ticketdesk-agent --seed-concurrency 8 --acceptance)"
+case "$output" in
+    riffdb-dev-ready-v1$'\t'*) ;;
+    *)
+        echo "riffdb dev acceptance returned an invalid readiness line" >&2
+        exit 1
+        ;;
+esac
+
+./scripts/check-ticketdesk-symbolic-boundary
+echo "riffdb dev bootstrap, role preset, contract, and query module acceptance passed."
+

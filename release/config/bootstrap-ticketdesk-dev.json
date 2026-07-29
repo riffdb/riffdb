@@ -1,0 +1,20 @@
+{
+  "principal_id": "riffdb-dev-operator",
+  "actor_kind": "human",
+  "requested_lifetime_seconds": 86400,
+  "audiences": ["riffdb-grpc-loopback"],
+  "grant": {
+    "tenant_scope": {"type": "global"},
+    "partition_scope": {"type": "all"},
+    "permissions": [
+      {"type": "read_contract"},
+      {"type": "deploy_contract"},
+      {"type": "read_health"},
+      {"type": "administer_capabilities"}
+    ],
+    "field_visibility": [],
+    "max_scan_rows": 1,
+    "approval_required": []
+  }
+}
+

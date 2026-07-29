@@ -1,0 +1,40 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+repo_root="$(git rev-parse --show-toplevel)"
+cd "$repo_root"
+
+source_root="examples/ticketdesk/src"
+forbidden='entity_type_id|field_id|index_id|command_input_id|capability_mask|FieldSelection|GetEntity|ScanIndex|riffdb_proto|app_v1|v1::|encoded_key|decode_key|key_bytes'
+
+if rg -n "$forbidden" "$source_root"; then
+    echo "TicketDesk contains forbidden kernel-shaped application code" >&2
+    exit 1
+fi
+
+for query in ListTickets ProjectMembers ProjectSummary TicketPage; do
+    count="$(rg -c "\"$query\"" "$source_root/lib.rs" || true)"
+    if [[ "$count" != "1" ]]; then
+        echo "named query $query must have exactly one application call site" >&2
+        exit 1
+    fi
+done
+
+for command in CreateOrganization CreateUser CreateProject AddProjectMember CreateTicket CreateComment CreateLabel AttachLabel; do
+    count="$(rg -c "\"$command\"" "$source_root/lib.rs" || true)"
+    if [[ "$count" != "1" ]]; then
+        echo "symbolic command $command must have exactly one application call site" >&2
+        exit 1
+    fi
+done
+
+query_dispatches="$(rg -c 'execute_named_application_query' "$source_root/lib.rs")"
+command_dispatches="$(rg -c 'execute_application_command' "$source_root/lib.rs")"
+if [[ "$query_dispatches" != "1" || "$command_dispatches" != "1" ]]; then
+    echo "TicketDesk must have one shared symbolic query and command dispatch boundary" >&2
+    exit 1
+fi
+
+cargo check --quiet -p riffdb-ticketdesk
+echo "TicketDesk symbolic boundary is clean."
+

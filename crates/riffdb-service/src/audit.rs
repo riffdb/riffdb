@@ -77,6 +77,7 @@ fn validate_phase_link(
         ServiceAuditLinkV1::ControlPlane { .. } => matches!(
             operation,
             ServiceOperationV1::DeployContract
+                | ServiceOperationV1::DeployQueryModule
                 | ServiceOperationV1::CreateCapability
                 | ServiceOperationV1::RevokeCapability
         ),
@@ -586,6 +587,11 @@ mod tests {
                 ServiceAuditTargetMap::symbolic_query(lineage.clone(), version)
                     .expect("canonical targets"),
             ),
+            (
+                ServiceOperationV1::DeployQueryModule,
+                ServiceAuditTargetMap::symbolic_query(lineage.clone(), version)
+                    .expect("canonical targets"),
+            ),
         ];
 
         assert_eq!(mapped.len(), ServiceOperationV1::ALL.len());
@@ -595,7 +601,7 @@ mod tests {
         );
 
         let expected_nonempty_lengths = [
-            0, 2, 1, 0, 1, 2, 1, 2, 2, 2, 2, 1, 0, 0, 1, 0, 0, 1, 1, 0, 0, 0, 1, 1, 1, 1,
+            0, 2, 1, 0, 1, 2, 1, 2, 2, 2, 2, 1, 0, 0, 1, 0, 0, 1, 1, 0, 0, 0, 1, 1, 1, 1, 1,
         ];
         assert_eq!(
             mapped.each_ref().map(|(_, targets)| targets.len()),

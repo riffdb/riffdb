@@ -35,6 +35,7 @@ members = [
     "crates/riffdb-storage-redb",
     "crates/riffdb-testkit",
     "crates/riffdb-types",
+    "examples/ticketdesk",
 ]
 
 [workspace.package]
