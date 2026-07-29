@@ -102,6 +102,38 @@ only when the updated manifest pins the new identities; it does not silently
 rewrite immutable identities. WP-330 owns TypeScript runtime parity and WP-335
 owns unfamiliar-domain evidence.
 
+## WP-330 TypeScript application boundary
+
+The generated TypeScript client now embeds compiler-owned input and result
+schemas for every query and command. The first-party `@riffdb/application`
+runtime uses those schemas to:
+
+- encode UUIDs and enums without guessing from field names;
+- reject extra, missing, malformed, oversized, or wrong-cardinality values;
+- decode command outcome records through compiler-emitted field identities;
+- decode page-shaped query records through symbolic result names;
+- preserve exact contract, module, query, and plan identities;
+- preserve a caller-provided idempotency key across the Rust CLI's bounded
+  uncertainty recovery;
+- carry cursor and read-after-commit options; and
+- normalize the CLI application-error envelope before the generated closed
+  error decoder accepts it.
+
+The application imports only `@riffdb/application` and its generated client.
+It does not import gRPC, protobuf, kernel requests, field masks, value codecs,
+or a handwritten adapter. The runtime's CLI transport is a POC application
+transport over the same public application service; it is intentionally named
+`CliApplicationTransport` and makes no direct-channel latency claim. A
+long-lived native TypeScript channel can replace that transport without
+changing generated application operations or their safety schemas.
+
+`scripts/agent-application-typescript-acceptance` starts the real local server,
+binds only `AgentAlphaApplication`, seeds through command batches, starts an
+HTTP web application, executes `CreateItem`, fences `ItemPage` after the
+returned commit sequence, and checks the language-neutral observation fixture.
+`scripts/check-application-bindings` proves generated identities and rejects a
+handwritten transport or kernel dependency.
+
 ## Measurements
 
 Every evaluation run records:

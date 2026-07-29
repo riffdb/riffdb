@@ -1,0 +1,8 @@
+{
+  "schema": "riffdb.application-parity/v1",
+  "operation": "CreateItem+ItemPage",
+  "outcome": "Created",
+  "title": "TypeScript generated web application",
+  "read_after_commit": true,
+  "application_head_at_least_read_after_commit": true
+}

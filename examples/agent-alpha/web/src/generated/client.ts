@@ -49,7 +49,7 @@ export interface ApplicationErrorDetails {
 }
 
 export class RiffDbApplicationError extends Error {
-  public readonly name = "RiffDbApplicationError";
+  public override readonly name = "RiffDbApplicationError";
   public constructor(public readonly details: ApplicationErrorDetails) {
     super(`${details.code}: ${details.message} [${details.operation}]`);
   }
@@ -93,32 +93,38 @@ export function decodeApplicationError(value: unknown): RiffDbApplicationError {
   return new RiffDbApplicationError({
     type: "application", code: code as ApplicationErrorCode, message: rule[0],
     category: rule[1], recoveryAction: rule[2], operation: input.operation as ApplicationOperation,
-    contractLineage: input.contractLineage as string | undefined,
-    contractVersion: input.contractVersion as number | undefined,
-    operationSymbol: input.operationSymbol as string | undefined,
     symbolPath: symbolPath as ReadonlyArray<string>,
-    sourceSpan: input.sourceSpan as { readonly start: number; readonly end: number } | undefined,
-    fixes: rule[3], traceId: input.traceId as string | undefined,
-    incidentId: input.incidentId as string | undefined,
+    fixes: rule[3],
+    ...(input.contractLineage === undefined ? {} : { contractLineage: input.contractLineage as string }),
+    ...(input.contractVersion === undefined ? {} : { contractVersion: input.contractVersion as number }),
+    ...(input.operationSymbol === undefined ? {} : { operationSymbol: input.operationSymbol as string }),
+    ...(input.sourceSpan === undefined ? {} : { sourceSpan: input.sourceSpan as { readonly start: number; readonly end: number } }),
+    ...(input.traceId === undefined ? {} : { traceId: input.traceId as string }),
+    ...(input.incidentId === undefined ? {} : { incidentId: input.incidentId as string }),
   });
 }
 
-export interface NamedQueryRequest<P> { readonly contractLineage: typeof CONTRACT_LINEAGE; readonly contractVersion: typeof CONTRACT_VERSION; readonly contractBundleHash: typeof CONTRACT_BUNDLE_HASH; readonly moduleHash: typeof QUERY_MODULE_HASH; readonly queryName: string; readonly parameters: P; }
+export type ApplicationValueSchema =
+  | { readonly kind: "bool" | "i64" | "u64" | "string" | "uuid" | "enum" | "bytes" | "date" | "timestamp" | "decimal" | "money" | "cursor" | "limit" }
+  | { readonly kind: "optional"; readonly value: ApplicationValueSchema }
+  | { readonly kind: "list"; readonly value: ApplicationValueSchema; readonly maximum?: number }
+  | { readonly kind: "record"; readonly fields: ReadonlyArray<{ readonly name: string; readonly schema: ApplicationValueSchema; readonly wireId?: number }> };
+export interface NamedQueryRequest<P, R> { readonly contractLineage: typeof CONTRACT_LINEAGE; readonly contractVersion: typeof CONTRACT_VERSION; readonly contractBundleHash: typeof CONTRACT_BUNDLE_HASH; readonly moduleHash: typeof QUERY_MODULE_HASH; readonly queryName: string; readonly parameters: P; readonly parameterSchema: ApplicationValueSchema; readonly resultSchemas: Readonly<Record<string, ApplicationValueSchema>>; readonly decodeError: typeof decodeApplicationError; readonly resultType?: R; }
 export interface QueryResponseIdentity { readonly contractLineage: string; readonly contractVersion: number; readonly contractBundleHash: string; readonly moduleHash: string; readonly queryName: string; }
-export function acceptsIdentity<P>(request: NamedQueryRequest<P>, identity: QueryResponseIdentity): boolean {
+export function acceptsIdentity<P, R>(request: NamedQueryRequest<P, R>, identity: QueryResponseIdentity): boolean {
   return identity.contractLineage === request.contractLineage
     && identity.contractVersion === request.contractVersion
     && identity.contractBundleHash === request.contractBundleHash
     && identity.moduleHash === request.moduleHash
     && identity.queryName === request.queryName;
 }
-export interface CommandRequest<I> { readonly contractLineage: typeof CONTRACT_LINEAGE; readonly contractVersion: typeof CONTRACT_VERSION; readonly commandName: string; readonly planHash: string; readonly input: I; readonly idempotencyKey: string; }
+export interface CommandRequest<I, R> { readonly contractLineage: typeof CONTRACT_LINEAGE; readonly contractVersion: typeof CONTRACT_VERSION; readonly commandName: string; readonly planHash: string; readonly input: I; readonly idempotencyKey: string; readonly inputSchema: ApplicationValueSchema; readonly outcomeSchemas: Readonly<Record<string, ApplicationValueSchema>>; readonly decodeError: typeof decodeApplicationError; readonly outcomeType?: R; }
 export interface TypedQueryResult<T> { readonly identity: QueryResponseIdentity; readonly value: T; readonly applicationHead: bigint; readonly nextCursor?: string; }
 export interface TypedCommandResult<T> { readonly outcome: T; readonly commitSequence?: bigint; readonly contractVersion: number; readonly planHash: string; readonly replayed: boolean; readonly outcomeUri?: string; }
 export interface QueryOptions { readonly cursor?: string; readonly readAfterCommit?: bigint; }
 export interface ApplicationTransport {
-  executeNamedQuery<P, R>(request: NamedQueryRequest<P>, options?: QueryOptions): Promise<TypedQueryResult<R>>;
-  executeCommand<I, R>(request: CommandRequest<I>, attemptBudget: number): Promise<TypedCommandResult<R>>;
+  executeNamedQuery<P, R>(request: NamedQueryRequest<P, R>, options?: QueryOptions): Promise<TypedQueryResult<R>>;
+  executeCommand<I, R>(request: CommandRequest<I, R>, attemptBudget: number): Promise<TypedCommandResult<R>>;
 }
 
 export interface ItemPageParams {
@@ -136,8 +142,8 @@ export interface ItemPageNotFound {
 
 export type ItemPageResult = ItemPageFound | ItemPageNotFound;
 
-export function itemPage(parameters: ItemPageParams): NamedQueryRequest<ItemPageParams> {
-  return { contractLineage: CONTRACT_LINEAGE, contractVersion: CONTRACT_VERSION, contractBundleHash: CONTRACT_BUNDLE_HASH, moduleHash: QUERY_MODULE_HASH, queryName: "ItemPage", parameters };
+export function itemPage(parameters: ItemPageParams): NamedQueryRequest<ItemPageParams, ItemPageResult> {
+  return { contractLineage: CONTRACT_LINEAGE, contractVersion: CONTRACT_VERSION, contractBundleHash: CONTRACT_BUNDLE_HASH, moduleHash: QUERY_MODULE_HASH, queryName: "ItemPage", parameters, parameterSchema: {"fields":[{"name":"item_id","schema":{"kind":"uuid"}}],"kind":"record"}, resultSchemas: {"Found":{"fields":[{"name":"item","schema":{"fields":[{"name":"item_id","schema":{"kind":"uuid"}},{"name":"title","schema":{"kind":"string"}},{"name":"created_at","schema":{"kind":"timestamp"}}],"kind":"record"}}],"kind":"record"},"NotFound":{"fields":[],"kind":"record"}}, decodeError: decodeApplicationError };
 }
 
 export interface CreateItemInput {
@@ -149,8 +155,8 @@ export interface CreateItemInput {
 export type CreateItemOutcome = { readonly outcome: "Created"; readonly item: { readonly title: string; readonly item_id: string; readonly created_at: { readonly seconds: bigint; readonly nanos: number } } } | { readonly outcome: "ItemExists"; readonly item_id: string };
 
 export const CREATE_ITEM_PLAN_HASH = "1c556595b9c28cdd10c24500e2b5c448ab4aa80a1b5f8c6afc64c5570d65c8ba" as const;
-export function createItem(input: CreateItemInput): CommandRequest<CreateItemInput> {
-  return { contractLineage: CONTRACT_LINEAGE, contractVersion: CONTRACT_VERSION, commandName: "CreateItem", planHash: CREATE_ITEM_PLAN_HASH, input, idempotencyKey: input.idempotency_key };
+export function createItem(input: CreateItemInput): CommandRequest<CreateItemInput, CreateItemOutcome> {
+  return { contractLineage: CONTRACT_LINEAGE, contractVersion: CONTRACT_VERSION, commandName: "CreateItem", planHash: CREATE_ITEM_PLAN_HASH, input, idempotencyKey: input.idempotency_key, inputSchema: {"fields":[{"name":"title","schema":{"kind":"string"}},{"name":"item_id","schema":{"kind":"uuid"}},{"name":"idempotency_key","schema":{"kind":"string"}}],"kind":"record"}, outcomeSchemas: {"Created":{"fields":[{"name":"item","schema":{"fields":[{"name":"title","schema":{"kind":"string"},"wireId":1},{"name":"item_id","schema":{"kind":"uuid"},"wireId":2},{"name":"created_at","schema":{"kind":"timestamp"},"wireId":3}],"kind":"record"},"wireId":1}],"kind":"record"},"ItemExists":{"fields":[{"name":"item_id","schema":{"kind":"uuid"},"wireId":1}],"kind":"record"}}, decodeError: decodeApplicationError };
 }
 
 export class AgentAlphaClient {

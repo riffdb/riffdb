@@ -49,7 +49,7 @@ export interface ApplicationErrorDetails {
 }
 
 export class RiffDbApplicationError extends Error {
-  public readonly name = "RiffDbApplicationError";
+  public override readonly name = "RiffDbApplicationError";
   public constructor(public readonly details: ApplicationErrorDetails) {
     super(`${details.code}: ${details.message} [${details.operation}]`);
   }
@@ -93,32 +93,38 @@ export function decodeApplicationError(value: unknown): RiffDbApplicationError {
   return new RiffDbApplicationError({
     type: "application", code: code as ApplicationErrorCode, message: rule[0],
     category: rule[1], recoveryAction: rule[2], operation: input.operation as ApplicationOperation,
-    contractLineage: input.contractLineage as string | undefined,
-    contractVersion: input.contractVersion as number | undefined,
-    operationSymbol: input.operationSymbol as string | undefined,
     symbolPath: symbolPath as ReadonlyArray<string>,
-    sourceSpan: input.sourceSpan as { readonly start: number; readonly end: number } | undefined,
-    fixes: rule[3], traceId: input.traceId as string | undefined,
-    incidentId: input.incidentId as string | undefined,
+    fixes: rule[3],
+    ...(input.contractLineage === undefined ? {} : { contractLineage: input.contractLineage as string }),
+    ...(input.contractVersion === undefined ? {} : { contractVersion: input.contractVersion as number }),
+    ...(input.operationSymbol === undefined ? {} : { operationSymbol: input.operationSymbol as string }),
+    ...(input.sourceSpan === undefined ? {} : { sourceSpan: input.sourceSpan as { readonly start: number; readonly end: number } }),
+    ...(input.traceId === undefined ? {} : { traceId: input.traceId as string }),
+    ...(input.incidentId === undefined ? {} : { incidentId: input.incidentId as string }),
   });
 }
 
-export interface NamedQueryRequest<P> { readonly contractLineage: typeof CONTRACT_LINEAGE; readonly contractVersion: typeof CONTRACT_VERSION; readonly contractBundleHash: typeof CONTRACT_BUNDLE_HASH; readonly moduleHash: typeof QUERY_MODULE_HASH; readonly queryName: string; readonly parameters: P; }
+export type ApplicationValueSchema =
+  | { readonly kind: "bool" | "i64" | "u64" | "string" | "uuid" | "enum" | "bytes" | "date" | "timestamp" | "decimal" | "money" | "cursor" | "limit" }
+  | { readonly kind: "optional"; readonly value: ApplicationValueSchema }
+  | { readonly kind: "list"; readonly value: ApplicationValueSchema; readonly maximum?: number }
+  | { readonly kind: "record"; readonly fields: ReadonlyArray<{ readonly name: string; readonly schema: ApplicationValueSchema; readonly wireId?: number }> };
+export interface NamedQueryRequest<P, R> { readonly contractLineage: typeof CONTRACT_LINEAGE; readonly contractVersion: typeof CONTRACT_VERSION; readonly contractBundleHash: typeof CONTRACT_BUNDLE_HASH; readonly moduleHash: typeof QUERY_MODULE_HASH; readonly queryName: string; readonly parameters: P; readonly parameterSchema: ApplicationValueSchema; readonly resultSchemas: Readonly<Record<string, ApplicationValueSchema>>; readonly decodeError: typeof decodeApplicationError; readonly resultType?: R; }
 export interface QueryResponseIdentity { readonly contractLineage: string; readonly contractVersion: number; readonly contractBundleHash: string; readonly moduleHash: string; readonly queryName: string; }
-export function acceptsIdentity<P>(request: NamedQueryRequest<P>, identity: QueryResponseIdentity): boolean {
+export function acceptsIdentity<P, R>(request: NamedQueryRequest<P, R>, identity: QueryResponseIdentity): boolean {
   return identity.contractLineage === request.contractLineage
     && identity.contractVersion === request.contractVersion
     && identity.contractBundleHash === request.contractBundleHash
     && identity.moduleHash === request.moduleHash
     && identity.queryName === request.queryName;
 }
-export interface CommandRequest<I> { readonly contractLineage: typeof CONTRACT_LINEAGE; readonly contractVersion: typeof CONTRACT_VERSION; readonly commandName: string; readonly planHash: string; readonly input: I; readonly idempotencyKey: string; }
+export interface CommandRequest<I, R> { readonly contractLineage: typeof CONTRACT_LINEAGE; readonly contractVersion: typeof CONTRACT_VERSION; readonly commandName: string; readonly planHash: string; readonly input: I; readonly idempotencyKey: string; readonly inputSchema: ApplicationValueSchema; readonly outcomeSchemas: Readonly<Record<string, ApplicationValueSchema>>; readonly decodeError: typeof decodeApplicationError; readonly outcomeType?: R; }
 export interface TypedQueryResult<T> { readonly identity: QueryResponseIdentity; readonly value: T; readonly applicationHead: bigint; readonly nextCursor?: string; }
 export interface TypedCommandResult<T> { readonly outcome: T; readonly commitSequence?: bigint; readonly contractVersion: number; readonly planHash: string; readonly replayed: boolean; readonly outcomeUri?: string; }
 export interface QueryOptions { readonly cursor?: string; readonly readAfterCommit?: bigint; }
 export interface ApplicationTransport {
-  executeNamedQuery<P, R>(request: NamedQueryRequest<P>, options?: QueryOptions): Promise<TypedQueryResult<R>>;
-  executeCommand<I, R>(request: CommandRequest<I>, attemptBudget: number): Promise<TypedCommandResult<R>>;
+  executeNamedQuery<P, R>(request: NamedQueryRequest<P, R>, options?: QueryOptions): Promise<TypedQueryResult<R>>;
+  executeCommand<I, R>(request: CommandRequest<I, R>, attemptBudget: number): Promise<TypedCommandResult<R>>;
 }
 
 export interface GetTicketParams {
@@ -137,8 +143,8 @@ export interface GetTicketNotFound {
 
 export type GetTicketResult = GetTicketFound | GetTicketNotFound;
 
-export function getTicket(parameters: GetTicketParams): NamedQueryRequest<GetTicketParams> {
-  return { contractLineage: CONTRACT_LINEAGE, contractVersion: CONTRACT_VERSION, contractBundleHash: CONTRACT_BUNDLE_HASH, moduleHash: QUERY_MODULE_HASH, queryName: "GetTicket", parameters };
+export function getTicket(parameters: GetTicketParams): NamedQueryRequest<GetTicketParams, GetTicketResult> {
+  return { contractLineage: CONTRACT_LINEAGE, contractVersion: CONTRACT_VERSION, contractBundleHash: CONTRACT_BUNDLE_HASH, moduleHash: QUERY_MODULE_HASH, queryName: "GetTicket", parameters, parameterSchema: {"fields":[{"name":"organization_id","schema":{"kind":"uuid"}},{"name":"ticket_id","schema":{"kind":"uuid"}}],"kind":"record"}, resultSchemas: {"Found":{"fields":[{"name":"ticket","schema":{"fields":[{"name":"ticket_id","schema":{"kind":"uuid"}},{"name":"project_id","schema":{"kind":"uuid"}},{"name":"title","schema":{"kind":"string"}},{"name":"status","schema":{"kind":"enum"}},{"name":"reporter_id","schema":{"kind":"uuid"}},{"name":"assignee_id","schema":{"kind":"uuid"}}],"kind":"record"}}],"kind":"record"},"NotFound":{"fields":[],"kind":"record"}}, decodeError: decodeApplicationError };
 }
 
 export interface GetUserParams {
@@ -157,8 +163,8 @@ export interface GetUserNotFound {
 
 export type GetUserResult = GetUserFound | GetUserNotFound;
 
-export function getUser(parameters: GetUserParams): NamedQueryRequest<GetUserParams> {
-  return { contractLineage: CONTRACT_LINEAGE, contractVersion: CONTRACT_VERSION, contractBundleHash: CONTRACT_BUNDLE_HASH, moduleHash: QUERY_MODULE_HASH, queryName: "GetUser", parameters };
+export function getUser(parameters: GetUserParams): NamedQueryRequest<GetUserParams, GetUserResult> {
+  return { contractLineage: CONTRACT_LINEAGE, contractVersion: CONTRACT_VERSION, contractBundleHash: CONTRACT_BUNDLE_HASH, moduleHash: QUERY_MODULE_HASH, queryName: "GetUser", parameters, parameterSchema: {"fields":[{"name":"organization_id","schema":{"kind":"uuid"}},{"name":"user_id","schema":{"kind":"uuid"}}],"kind":"record"}, resultSchemas: {"Found":{"fields":[{"name":"user","schema":{"fields":[{"name":"user_id","schema":{"kind":"uuid"}},{"name":"email","schema":{"kind":"string"}},{"name":"display_name","schema":{"kind":"string"}}],"kind":"record"}}],"kind":"record"},"NotFound":{"fields":[],"kind":"record"}}, decodeError: decodeApplicationError };
 }
 
 export interface ListCommentsParams {
@@ -175,8 +181,8 @@ export interface ListCommentsFound {
 
 export type ListCommentsResult = ListCommentsFound;
 
-export function listComments(parameters: ListCommentsParams): NamedQueryRequest<ListCommentsParams> {
-  return { contractLineage: CONTRACT_LINEAGE, contractVersion: CONTRACT_VERSION, contractBundleHash: CONTRACT_BUNDLE_HASH, moduleHash: QUERY_MODULE_HASH, queryName: "ListComments", parameters };
+export function listComments(parameters: ListCommentsParams): NamedQueryRequest<ListCommentsParams, ListCommentsResult> {
+  return { contractLineage: CONTRACT_LINEAGE, contractVersion: CONTRACT_VERSION, contractBundleHash: CONTRACT_BUNDLE_HASH, moduleHash: QUERY_MODULE_HASH, queryName: "ListComments", parameters, parameterSchema: {"fields":[{"name":"organization_id","schema":{"kind":"uuid"}},{"name":"ticket_id","schema":{"kind":"uuid"}},{"name":"after","schema":{"kind":"optional","value":{"kind":"cursor"}}},{"name":"limit","schema":{"kind":"limit"}}],"kind":"record"}, resultSchemas: {"Found":{"fields":[{"name":"comments","schema":{"kind":"list","value":{"fields":[{"name":"comment_id","schema":{"kind":"uuid"}},{"name":"body","schema":{"kind":"string"}},{"name":"author_id","schema":{"kind":"uuid"}},{"name":"created_at","schema":{"kind":"timestamp"}}],"kind":"record"}}}],"kind":"record"}}, decodeError: decodeApplicationError };
 }
 
 export interface ListTicketsParams {
@@ -194,8 +200,8 @@ export interface ListTicketsFound {
 
 export type ListTicketsResult = ListTicketsFound;
 
-export function listTickets(parameters: ListTicketsParams): NamedQueryRequest<ListTicketsParams> {
-  return { contractLineage: CONTRACT_LINEAGE, contractVersion: CONTRACT_VERSION, contractBundleHash: CONTRACT_BUNDLE_HASH, moduleHash: QUERY_MODULE_HASH, queryName: "ListTickets", parameters };
+export function listTickets(parameters: ListTicketsParams): NamedQueryRequest<ListTicketsParams, ListTicketsResult> {
+  return { contractLineage: CONTRACT_LINEAGE, contractVersion: CONTRACT_VERSION, contractBundleHash: CONTRACT_BUNDLE_HASH, moduleHash: QUERY_MODULE_HASH, queryName: "ListTickets", parameters, parameterSchema: {"fields":[{"name":"organization_id","schema":{"kind":"uuid"}},{"name":"project_id","schema":{"kind":"uuid"}},{"name":"statuses","schema":{"kind":"list","value":{"kind":"enum"}}},{"name":"after","schema":{"kind":"optional","value":{"kind":"cursor"}}},{"name":"limit","schema":{"kind":"limit"}}],"kind":"record"}, resultSchemas: {"Found":{"fields":[{"name":"tickets","schema":{"kind":"list","value":{"fields":[{"name":"ticket_id","schema":{"kind":"uuid"}},{"name":"project_id","schema":{"kind":"uuid"}},{"name":"title","schema":{"kind":"string"}},{"name":"status","schema":{"kind":"enum"}},{"name":"updated_at","schema":{"kind":"timestamp"}},{"name":"reporter_id","schema":{"kind":"uuid"}},{"name":"assignee_id","schema":{"kind":"uuid"}}],"kind":"record"}}}],"kind":"record"}}, decodeError: decodeApplicationError };
 }
 
 export interface ListTicketsByAssigneeParams {
@@ -213,8 +219,8 @@ export interface ListTicketsByAssigneeFound {
 
 export type ListTicketsByAssigneeResult = ListTicketsByAssigneeFound;
 
-export function listTicketsByAssignee(parameters: ListTicketsByAssigneeParams): NamedQueryRequest<ListTicketsByAssigneeParams> {
-  return { contractLineage: CONTRACT_LINEAGE, contractVersion: CONTRACT_VERSION, contractBundleHash: CONTRACT_BUNDLE_HASH, moduleHash: QUERY_MODULE_HASH, queryName: "ListTicketsByAssignee", parameters };
+export function listTicketsByAssignee(parameters: ListTicketsByAssigneeParams): NamedQueryRequest<ListTicketsByAssigneeParams, ListTicketsByAssigneeResult> {
+  return { contractLineage: CONTRACT_LINEAGE, contractVersion: CONTRACT_VERSION, contractBundleHash: CONTRACT_BUNDLE_HASH, moduleHash: QUERY_MODULE_HASH, queryName: "ListTicketsByAssignee", parameters, parameterSchema: {"fields":[{"name":"organization_id","schema":{"kind":"uuid"}},{"name":"assignee_id","schema":{"kind":"uuid"}},{"name":"statuses","schema":{"kind":"list","value":{"kind":"enum"}}},{"name":"after","schema":{"kind":"optional","value":{"kind":"cursor"}}},{"name":"limit","schema":{"kind":"limit"}}],"kind":"record"}, resultSchemas: {"Found":{"fields":[{"name":"tickets","schema":{"kind":"list","value":{"fields":[{"name":"ticket_id","schema":{"kind":"uuid"}},{"name":"project_id","schema":{"kind":"uuid"}},{"name":"title","schema":{"kind":"string"}},{"name":"status","schema":{"kind":"enum"}},{"name":"updated_at","schema":{"kind":"timestamp"}},{"name":"reporter_id","schema":{"kind":"uuid"}},{"name":"assignee_id","schema":{"kind":"uuid"}}],"kind":"record"}}}],"kind":"record"}}, decodeError: decodeApplicationError };
 }
 
 export interface ProjectMembersParams {
@@ -230,8 +236,8 @@ export interface ProjectMembersFound {
 
 export type ProjectMembersResult = ProjectMembersFound;
 
-export function projectMembers(parameters: ProjectMembersParams): NamedQueryRequest<ProjectMembersParams> {
-  return { contractLineage: CONTRACT_LINEAGE, contractVersion: CONTRACT_VERSION, contractBundleHash: CONTRACT_BUNDLE_HASH, moduleHash: QUERY_MODULE_HASH, queryName: "ProjectMembers", parameters };
+export function projectMembers(parameters: ProjectMembersParams): NamedQueryRequest<ProjectMembersParams, ProjectMembersResult> {
+  return { contractLineage: CONTRACT_LINEAGE, contractVersion: CONTRACT_VERSION, contractBundleHash: CONTRACT_BUNDLE_HASH, moduleHash: QUERY_MODULE_HASH, queryName: "ProjectMembers", parameters, parameterSchema: {"fields":[{"name":"organization_id","schema":{"kind":"uuid"}},{"name":"project_id","schema":{"kind":"uuid"}},{"name":"after","schema":{"kind":"optional","value":{"kind":"cursor"}}}],"kind":"record"}, resultSchemas: {"Found":{"fields":[{"name":"members","schema":{"kind":"list","maximum":100,"value":{"fields":[{"name":"user_id","schema":{"kind":"uuid"}},{"name":"role","schema":{"kind":"string"}}],"kind":"record"}}}],"kind":"record"}}, decodeError: decodeApplicationError };
 }
 
 export interface ProjectSummaryParams {
@@ -252,8 +258,8 @@ export interface ProjectSummaryNotFound {
 
 export type ProjectSummaryResult = ProjectSummaryFound | ProjectSummaryNotFound;
 
-export function projectSummary(parameters: ProjectSummaryParams): NamedQueryRequest<ProjectSummaryParams> {
-  return { contractLineage: CONTRACT_LINEAGE, contractVersion: CONTRACT_VERSION, contractBundleHash: CONTRACT_BUNDLE_HASH, moduleHash: QUERY_MODULE_HASH, queryName: "ProjectSummary", parameters };
+export function projectSummary(parameters: ProjectSummaryParams): NamedQueryRequest<ProjectSummaryParams, ProjectSummaryResult> {
+  return { contractLineage: CONTRACT_LINEAGE, contractVersion: CONTRACT_VERSION, contractBundleHash: CONTRACT_BUNDLE_HASH, moduleHash: QUERY_MODULE_HASH, queryName: "ProjectSummary", parameters, parameterSchema: {"fields":[{"name":"organization_id","schema":{"kind":"uuid"}},{"name":"project_id","schema":{"kind":"uuid"}},{"name":"status","schema":{"kind":"enum"}}],"kind":"record"}, resultSchemas: {"Found":{"fields":[{"name":"project","schema":{"fields":[{"name":"project_id","schema":{"kind":"uuid"}},{"name":"name","schema":{"kind":"string"}}],"kind":"record"}},{"name":"recent_tickets","schema":{"kind":"list","maximum":10,"value":{"fields":[{"name":"ticket_id","schema":{"kind":"uuid"}},{"name":"title","schema":{"kind":"string"}},{"name":"status","schema":{"kind":"enum"}},{"name":"updated_at","schema":{"kind":"timestamp"}}],"kind":"record"}}}],"kind":"record"},"NotFound":{"fields":[],"kind":"record"}}, decodeError: decodeApplicationError };
 }
 
 export interface TicketPageParams {
@@ -283,8 +289,8 @@ export interface TicketPageIntegrityFailure {
 
 export type TicketPageResult = TicketPageFound | TicketPageNotFound | TicketPageIntegrityFailure;
 
-export function ticketPage(parameters: TicketPageParams): NamedQueryRequest<TicketPageParams> {
-  return { contractLineage: CONTRACT_LINEAGE, contractVersion: CONTRACT_VERSION, contractBundleHash: CONTRACT_BUNDLE_HASH, moduleHash: QUERY_MODULE_HASH, queryName: "TicketPage", parameters };
+export function ticketPage(parameters: TicketPageParams): NamedQueryRequest<TicketPageParams, TicketPageResult> {
+  return { contractLineage: CONTRACT_LINEAGE, contractVersion: CONTRACT_VERSION, contractBundleHash: CONTRACT_BUNDLE_HASH, moduleHash: QUERY_MODULE_HASH, queryName: "TicketPage", parameters, parameterSchema: {"fields":[{"name":"organization_id","schema":{"kind":"uuid"}},{"name":"ticket_id","schema":{"kind":"uuid"}},{"name":"comments_after","schema":{"kind":"optional","value":{"kind":"cursor"}}}],"kind":"record"}, resultSchemas: {"Found":{"fields":[{"name":"ticket","schema":{"fields":[{"name":"ticket_id","schema":{"kind":"uuid"}},{"name":"project_id","schema":{"kind":"uuid"}},{"name":"title","schema":{"kind":"string"}},{"name":"status","schema":{"kind":"enum"}},{"name":"created_at","schema":{"kind":"timestamp"}},{"name":"updated_at","schema":{"kind":"timestamp"}}],"kind":"record"}},{"name":"project","schema":{"fields":[{"name":"project_id","schema":{"kind":"uuid"}},{"name":"name","schema":{"kind":"string"}}],"kind":"record"}},{"name":"organization","schema":{"fields":[{"name":"organization_id","schema":{"kind":"uuid"}},{"name":"name","schema":{"kind":"string"}}],"kind":"record"}},{"name":"reporter","schema":{"fields":[{"name":"user_id","schema":{"kind":"uuid"}},{"name":"display_name","schema":{"kind":"string"}}],"kind":"record"}},{"name":"assignee","schema":{"kind":"optional","value":{"fields":[{"name":"user_id","schema":{"kind":"uuid"}},{"name":"display_name","schema":{"kind":"string"}}],"kind":"record"}}},{"name":"comments","schema":{"kind":"list","maximum":50,"value":{"fields":[{"name":"comment_id","schema":{"kind":"uuid"}},{"name":"body","schema":{"kind":"string"}},{"name":"author_id","schema":{"kind":"uuid"}},{"name":"created_at","schema":{"kind":"timestamp"}}],"kind":"record"}}},{"name":"labels","schema":{"kind":"list","maximum":50,"value":{"fields":[{"name":"label_id","schema":{"kind":"uuid"}},{"name":"name","schema":{"kind":"string"}}],"kind":"record"}}}],"kind":"record"},"IntegrityFailure":{"fields":[],"kind":"record"},"NotFound":{"fields":[],"kind":"record"}}, decodeError: decodeApplicationError };
 }
 
 export interface AddProjectMemberInput {
@@ -298,8 +304,8 @@ export interface AddProjectMemberInput {
 export type AddProjectMemberOutcome = { readonly outcome: "Created"; readonly member: { readonly role: string; readonly user_id: string; readonly created_at: { readonly seconds: bigint; readonly nanos: number }; readonly project_id: string; readonly organization_id: string } } | { readonly outcome: "UserMissing"; readonly user_id: string } | { readonly outcome: "MemberExists"; readonly user_id: string; readonly project_id: string } | { readonly outcome: "ProjectMissing"; readonly project_id: string };
 
 export const ADD_PROJECT_MEMBER_PLAN_HASH = "c8e03938e4e8412c217e850b33bce01407ee90ba535e43dee785281388bc7a58" as const;
-export function addProjectMember(input: AddProjectMemberInput): CommandRequest<AddProjectMemberInput> {
-  return { contractLineage: CONTRACT_LINEAGE, contractVersion: CONTRACT_VERSION, commandName: "AddProjectMember", planHash: ADD_PROJECT_MEMBER_PLAN_HASH, input, idempotencyKey: input.idempotency_key };
+export function addProjectMember(input: AddProjectMemberInput): CommandRequest<AddProjectMemberInput, AddProjectMemberOutcome> {
+  return { contractLineage: CONTRACT_LINEAGE, contractVersion: CONTRACT_VERSION, commandName: "AddProjectMember", planHash: ADD_PROJECT_MEMBER_PLAN_HASH, input, idempotencyKey: input.idempotency_key, inputSchema: {"fields":[{"name":"role","schema":{"kind":"string"}},{"name":"user_id","schema":{"kind":"uuid"}},{"name":"project_id","schema":{"kind":"uuid"}},{"name":"idempotency_key","schema":{"kind":"string"}},{"name":"organization_id","schema":{"kind":"uuid"}}],"kind":"record"}, outcomeSchemas: {"Created":{"fields":[{"name":"member","schema":{"fields":[{"name":"role","schema":{"kind":"string"},"wireId":1},{"name":"user_id","schema":{"kind":"uuid"},"wireId":2},{"name":"created_at","schema":{"kind":"timestamp"},"wireId":3},{"name":"project_id","schema":{"kind":"uuid"},"wireId":4},{"name":"organization_id","schema":{"kind":"uuid"},"wireId":5}],"kind":"record"},"wireId":1}],"kind":"record"},"MemberExists":{"fields":[{"name":"user_id","schema":{"kind":"uuid"},"wireId":1},{"name":"project_id","schema":{"kind":"uuid"},"wireId":2}],"kind":"record"},"ProjectMissing":{"fields":[{"name":"project_id","schema":{"kind":"uuid"},"wireId":1}],"kind":"record"},"UserMissing":{"fields":[{"name":"user_id","schema":{"kind":"uuid"},"wireId":1}],"kind":"record"}}, decodeError: decodeApplicationError };
 }
 
 export interface AttachLabelInput {
@@ -312,8 +318,8 @@ export interface AttachLabelInput {
 export type AttachLabelOutcome = { readonly outcome: "Created"; readonly link: { readonly label_id: string; readonly ticket_id: string; readonly created_at: { readonly seconds: bigint; readonly nanos: number }; readonly organization_id: string } } | { readonly outcome: "LinkExists"; readonly label_id: string; readonly ticket_id: string } | { readonly outcome: "LabelMissing"; readonly label_id: string } | { readonly outcome: "TicketMissing"; readonly ticket_id: string };
 
 export const ATTACH_LABEL_PLAN_HASH = "aaaeab0f219d8f84e637e45a0fbe52bd3befab6576e1f3c69febfcd0019d3aff" as const;
-export function attachLabel(input: AttachLabelInput): CommandRequest<AttachLabelInput> {
-  return { contractLineage: CONTRACT_LINEAGE, contractVersion: CONTRACT_VERSION, commandName: "AttachLabel", planHash: ATTACH_LABEL_PLAN_HASH, input, idempotencyKey: input.idempotency_key };
+export function attachLabel(input: AttachLabelInput): CommandRequest<AttachLabelInput, AttachLabelOutcome> {
+  return { contractLineage: CONTRACT_LINEAGE, contractVersion: CONTRACT_VERSION, commandName: "AttachLabel", planHash: ATTACH_LABEL_PLAN_HASH, input, idempotencyKey: input.idempotency_key, inputSchema: {"fields":[{"name":"label_id","schema":{"kind":"uuid"}},{"name":"ticket_id","schema":{"kind":"uuid"}},{"name":"idempotency_key","schema":{"kind":"string"}},{"name":"organization_id","schema":{"kind":"uuid"}}],"kind":"record"}, outcomeSchemas: {"Created":{"fields":[{"name":"link","schema":{"fields":[{"name":"label_id","schema":{"kind":"uuid"},"wireId":1},{"name":"ticket_id","schema":{"kind":"uuid"},"wireId":2},{"name":"created_at","schema":{"kind":"timestamp"},"wireId":3},{"name":"organization_id","schema":{"kind":"uuid"},"wireId":4}],"kind":"record"},"wireId":1}],"kind":"record"},"LabelMissing":{"fields":[{"name":"label_id","schema":{"kind":"uuid"},"wireId":1}],"kind":"record"},"LinkExists":{"fields":[{"name":"label_id","schema":{"kind":"uuid"},"wireId":1},{"name":"ticket_id","schema":{"kind":"uuid"},"wireId":2}],"kind":"record"},"TicketMissing":{"fields":[{"name":"ticket_id","schema":{"kind":"uuid"},"wireId":1}],"kind":"record"}}, decodeError: decodeApplicationError };
 }
 
 export interface CreateCommentInput {
@@ -328,8 +334,8 @@ export interface CreateCommentInput {
 export type CreateCommentOutcome = { readonly outcome: "Created"; readonly comment: { readonly body: string; readonly author_id: string; readonly ticket_id: string; readonly comment_id: string; readonly created_at: { readonly seconds: bigint; readonly nanos: number }; readonly organization_id: string } } | { readonly outcome: "AuthorMissing"; readonly user_id: string } | { readonly outcome: "CommentExists"; readonly comment_id: string } | { readonly outcome: "TicketMissing"; readonly ticket_id: string };
 
 export const CREATE_COMMENT_PLAN_HASH = "b02d6787a576a02b4b9d7cead1a14fc41e0c2cc1bbd18402476e2ef83e1f767d" as const;
-export function createComment(input: CreateCommentInput): CommandRequest<CreateCommentInput> {
-  return { contractLineage: CONTRACT_LINEAGE, contractVersion: CONTRACT_VERSION, commandName: "CreateComment", planHash: CREATE_COMMENT_PLAN_HASH, input, idempotencyKey: input.idempotency_key };
+export function createComment(input: CreateCommentInput): CommandRequest<CreateCommentInput, CreateCommentOutcome> {
+  return { contractLineage: CONTRACT_LINEAGE, contractVersion: CONTRACT_VERSION, commandName: "CreateComment", planHash: CREATE_COMMENT_PLAN_HASH, input, idempotencyKey: input.idempotency_key, inputSchema: {"fields":[{"name":"body","schema":{"kind":"string"}},{"name":"author_id","schema":{"kind":"uuid"}},{"name":"ticket_id","schema":{"kind":"uuid"}},{"name":"comment_id","schema":{"kind":"uuid"}},{"name":"idempotency_key","schema":{"kind":"string"}},{"name":"organization_id","schema":{"kind":"uuid"}}],"kind":"record"}, outcomeSchemas: {"AuthorMissing":{"fields":[{"name":"user_id","schema":{"kind":"uuid"},"wireId":1}],"kind":"record"},"CommentExists":{"fields":[{"name":"comment_id","schema":{"kind":"uuid"},"wireId":1}],"kind":"record"},"Created":{"fields":[{"name":"comment","schema":{"fields":[{"name":"body","schema":{"kind":"string"},"wireId":1},{"name":"author_id","schema":{"kind":"uuid"},"wireId":2},{"name":"ticket_id","schema":{"kind":"uuid"},"wireId":3},{"name":"comment_id","schema":{"kind":"uuid"},"wireId":4},{"name":"created_at","schema":{"kind":"timestamp"},"wireId":5},{"name":"organization_id","schema":{"kind":"uuid"},"wireId":6}],"kind":"record"},"wireId":1}],"kind":"record"},"TicketMissing":{"fields":[{"name":"ticket_id","schema":{"kind":"uuid"},"wireId":1}],"kind":"record"}}, decodeError: decodeApplicationError };
 }
 
 export interface CreateLabelInput {
@@ -342,8 +348,8 @@ export interface CreateLabelInput {
 export type CreateLabelOutcome = { readonly outcome: "Created"; readonly label: { readonly name: string; readonly label_id: string; readonly created_at: { readonly seconds: bigint; readonly nanos: number }; readonly organization_id: string } } | { readonly outcome: "LabelExists"; readonly label_id: string } | { readonly outcome: "OrganizationMissing"; readonly organization_id: string };
 
 export const CREATE_LABEL_PLAN_HASH = "ed33d0fbb9b0951fcf4ed70900f129180e0bb7164122dad74325d08d816d53f2" as const;
-export function createLabel(input: CreateLabelInput): CommandRequest<CreateLabelInput> {
-  return { contractLineage: CONTRACT_LINEAGE, contractVersion: CONTRACT_VERSION, commandName: "CreateLabel", planHash: CREATE_LABEL_PLAN_HASH, input, idempotencyKey: input.idempotency_key };
+export function createLabel(input: CreateLabelInput): CommandRequest<CreateLabelInput, CreateLabelOutcome> {
+  return { contractLineage: CONTRACT_LINEAGE, contractVersion: CONTRACT_VERSION, commandName: "CreateLabel", planHash: CREATE_LABEL_PLAN_HASH, input, idempotencyKey: input.idempotency_key, inputSchema: {"fields":[{"name":"name","schema":{"kind":"string"}},{"name":"label_id","schema":{"kind":"uuid"}},{"name":"idempotency_key","schema":{"kind":"string"}},{"name":"organization_id","schema":{"kind":"uuid"}}],"kind":"record"}, outcomeSchemas: {"Created":{"fields":[{"name":"label","schema":{"fields":[{"name":"name","schema":{"kind":"string"},"wireId":1},{"name":"label_id","schema":{"kind":"uuid"},"wireId":2},{"name":"created_at","schema":{"kind":"timestamp"},"wireId":3},{"name":"organization_id","schema":{"kind":"uuid"},"wireId":4}],"kind":"record"},"wireId":1}],"kind":"record"},"LabelExists":{"fields":[{"name":"label_id","schema":{"kind":"uuid"},"wireId":1}],"kind":"record"},"OrganizationMissing":{"fields":[{"name":"organization_id","schema":{"kind":"uuid"},"wireId":1}],"kind":"record"}}, decodeError: decodeApplicationError };
 }
 
 export interface CreateOrganizationInput {
@@ -355,8 +361,8 @@ export interface CreateOrganizationInput {
 export type CreateOrganizationOutcome = { readonly outcome: "Created"; readonly organization: { readonly name: string; readonly created_at: { readonly seconds: bigint; readonly nanos: number }; readonly organization_id: string } } | { readonly outcome: "OrganizationExists"; readonly organization_id: string };
 
 export const CREATE_ORGANIZATION_PLAN_HASH = "15bb4a409548f7fa60f84c6194b58010beb40b6c8105f09209965cf4e7503811" as const;
-export function createOrganization(input: CreateOrganizationInput): CommandRequest<CreateOrganizationInput> {
-  return { contractLineage: CONTRACT_LINEAGE, contractVersion: CONTRACT_VERSION, commandName: "CreateOrganization", planHash: CREATE_ORGANIZATION_PLAN_HASH, input, idempotencyKey: input.idempotency_key };
+export function createOrganization(input: CreateOrganizationInput): CommandRequest<CreateOrganizationInput, CreateOrganizationOutcome> {
+  return { contractLineage: CONTRACT_LINEAGE, contractVersion: CONTRACT_VERSION, commandName: "CreateOrganization", planHash: CREATE_ORGANIZATION_PLAN_HASH, input, idempotencyKey: input.idempotency_key, inputSchema: {"fields":[{"name":"name","schema":{"kind":"string"}},{"name":"idempotency_key","schema":{"kind":"string"}},{"name":"organization_id","schema":{"kind":"uuid"}}],"kind":"record"}, outcomeSchemas: {"Created":{"fields":[{"name":"organization","schema":{"fields":[{"name":"name","schema":{"kind":"string"},"wireId":1},{"name":"created_at","schema":{"kind":"timestamp"},"wireId":2},{"name":"organization_id","schema":{"kind":"uuid"},"wireId":3}],"kind":"record"},"wireId":1}],"kind":"record"},"OrganizationExists":{"fields":[{"name":"organization_id","schema":{"kind":"uuid"},"wireId":1}],"kind":"record"}}, decodeError: decodeApplicationError };
 }
 
 export interface CreateProjectInput {
@@ -369,8 +375,8 @@ export interface CreateProjectInput {
 export type CreateProjectOutcome = { readonly outcome: "Created"; readonly project: { readonly name: string; readonly created_at: { readonly seconds: bigint; readonly nanos: number }; readonly project_id: string; readonly organization_id: string } } | { readonly outcome: "ProjectExists"; readonly project_id: string } | { readonly outcome: "OrganizationMissing"; readonly organization_id: string };
 
 export const CREATE_PROJECT_PLAN_HASH = "cb8e36ae61946cee88344bc208ad9fcd7507efff5bbd29dfee3eaf2e6e4a8392" as const;
-export function createProject(input: CreateProjectInput): CommandRequest<CreateProjectInput> {
-  return { contractLineage: CONTRACT_LINEAGE, contractVersion: CONTRACT_VERSION, commandName: "CreateProject", planHash: CREATE_PROJECT_PLAN_HASH, input, idempotencyKey: input.idempotency_key };
+export function createProject(input: CreateProjectInput): CommandRequest<CreateProjectInput, CreateProjectOutcome> {
+  return { contractLineage: CONTRACT_LINEAGE, contractVersion: CONTRACT_VERSION, commandName: "CreateProject", planHash: CREATE_PROJECT_PLAN_HASH, input, idempotencyKey: input.idempotency_key, inputSchema: {"fields":[{"name":"name","schema":{"kind":"string"}},{"name":"project_id","schema":{"kind":"uuid"}},{"name":"idempotency_key","schema":{"kind":"string"}},{"name":"organization_id","schema":{"kind":"uuid"}}],"kind":"record"}, outcomeSchemas: {"Created":{"fields":[{"name":"project","schema":{"fields":[{"name":"name","schema":{"kind":"string"},"wireId":1},{"name":"created_at","schema":{"kind":"timestamp"},"wireId":2},{"name":"project_id","schema":{"kind":"uuid"},"wireId":3},{"name":"organization_id","schema":{"kind":"uuid"},"wireId":4}],"kind":"record"},"wireId":1}],"kind":"record"},"OrganizationMissing":{"fields":[{"name":"organization_id","schema":{"kind":"uuid"},"wireId":1}],"kind":"record"},"ProjectExists":{"fields":[{"name":"project_id","schema":{"kind":"uuid"},"wireId":1}],"kind":"record"}}, decodeError: decodeApplicationError };
 }
 
 export interface CreateTicketInput {
@@ -387,8 +393,8 @@ export interface CreateTicketInput {
 export type CreateTicketOutcome = { readonly outcome: "Created"; readonly ticket: { readonly title: string; readonly status: string; readonly ticket_id: string; readonly created_at: { readonly seconds: bigint; readonly nanos: number }; readonly project_id: string; readonly updated_at: { readonly seconds: bigint; readonly nanos: number }; readonly assignee_id: string; readonly reporter_id: string; readonly organization_id: string } } | { readonly outcome: "TicketExists"; readonly ticket_id: string } | { readonly outcome: "ProjectMissing"; readonly project_id: string } | { readonly outcome: "AssigneeMissing"; readonly user_id: string } | { readonly outcome: "ReporterMissing"; readonly user_id: string };
 
 export const CREATE_TICKET_PLAN_HASH = "89e0877c9feb60cef4d6e4ee1393d3cfc05751324d71d29ca33218e90ccb64aa" as const;
-export function createTicket(input: CreateTicketInput): CommandRequest<CreateTicketInput> {
-  return { contractLineage: CONTRACT_LINEAGE, contractVersion: CONTRACT_VERSION, commandName: "CreateTicket", planHash: CREATE_TICKET_PLAN_HASH, input, idempotencyKey: input.idempotency_key };
+export function createTicket(input: CreateTicketInput): CommandRequest<CreateTicketInput, CreateTicketOutcome> {
+  return { contractLineage: CONTRACT_LINEAGE, contractVersion: CONTRACT_VERSION, commandName: "CreateTicket", planHash: CREATE_TICKET_PLAN_HASH, input, idempotencyKey: input.idempotency_key, inputSchema: {"fields":[{"name":"title","schema":{"kind":"string"}},{"name":"status","schema":{"kind":"enum"}},{"name":"ticket_id","schema":{"kind":"uuid"}},{"name":"project_id","schema":{"kind":"uuid"}},{"name":"assignee_id","schema":{"kind":"uuid"}},{"name":"reporter_id","schema":{"kind":"uuid"}},{"name":"idempotency_key","schema":{"kind":"string"}},{"name":"organization_id","schema":{"kind":"uuid"}}],"kind":"record"}, outcomeSchemas: {"AssigneeMissing":{"fields":[{"name":"user_id","schema":{"kind":"uuid"},"wireId":1}],"kind":"record"},"Created":{"fields":[{"name":"ticket","schema":{"fields":[{"name":"title","schema":{"kind":"string"},"wireId":1},{"name":"status","schema":{"kind":"enum"},"wireId":2},{"name":"ticket_id","schema":{"kind":"uuid"},"wireId":3},{"name":"created_at","schema":{"kind":"timestamp"},"wireId":4},{"name":"project_id","schema":{"kind":"uuid"},"wireId":5},{"name":"updated_at","schema":{"kind":"timestamp"},"wireId":6},{"name":"assignee_id","schema":{"kind":"uuid"},"wireId":7},{"name":"reporter_id","schema":{"kind":"uuid"},"wireId":8},{"name":"organization_id","schema":{"kind":"uuid"},"wireId":9}],"kind":"record"},"wireId":1}],"kind":"record"},"ProjectMissing":{"fields":[{"name":"project_id","schema":{"kind":"uuid"},"wireId":1}],"kind":"record"},"ReporterMissing":{"fields":[{"name":"user_id","schema":{"kind":"uuid"},"wireId":1}],"kind":"record"},"TicketExists":{"fields":[{"name":"ticket_id","schema":{"kind":"uuid"},"wireId":1}],"kind":"record"}}, decodeError: decodeApplicationError };
 }
 
 export interface CreateUserInput {
@@ -402,8 +408,8 @@ export interface CreateUserInput {
 export type CreateUserOutcome = { readonly outcome: "Created"; readonly user: { readonly email: string; readonly user_id: string; readonly created_at: { readonly seconds: bigint; readonly nanos: number }; readonly display_name: string; readonly organization_id: string } } | { readonly outcome: "UserExists"; readonly user_id: string } | { readonly outcome: "OrganizationMissing"; readonly organization_id: string };
 
 export const CREATE_USER_PLAN_HASH = "d6e386ce4608cbb4b91ac99755742cec0f3fd30e3a6f52280e862be2bfca0298" as const;
-export function createUser(input: CreateUserInput): CommandRequest<CreateUserInput> {
-  return { contractLineage: CONTRACT_LINEAGE, contractVersion: CONTRACT_VERSION, commandName: "CreateUser", planHash: CREATE_USER_PLAN_HASH, input, idempotencyKey: input.idempotency_key };
+export function createUser(input: CreateUserInput): CommandRequest<CreateUserInput, CreateUserOutcome> {
+  return { contractLineage: CONTRACT_LINEAGE, contractVersion: CONTRACT_VERSION, commandName: "CreateUser", planHash: CREATE_USER_PLAN_HASH, input, idempotencyKey: input.idempotency_key, inputSchema: {"fields":[{"name":"email","schema":{"kind":"string"}},{"name":"user_id","schema":{"kind":"uuid"}},{"name":"display_name","schema":{"kind":"string"}},{"name":"idempotency_key","schema":{"kind":"string"}},{"name":"organization_id","schema":{"kind":"uuid"}}],"kind":"record"}, outcomeSchemas: {"Created":{"fields":[{"name":"user","schema":{"fields":[{"name":"email","schema":{"kind":"string"},"wireId":1},{"name":"user_id","schema":{"kind":"uuid"},"wireId":2},{"name":"created_at","schema":{"kind":"timestamp"},"wireId":3},{"name":"display_name","schema":{"kind":"string"},"wireId":4},{"name":"organization_id","schema":{"kind":"uuid"},"wireId":5}],"kind":"record"},"wireId":1}],"kind":"record"},"OrganizationMissing":{"fields":[{"name":"organization_id","schema":{"kind":"uuid"},"wireId":1}],"kind":"record"},"UserExists":{"fields":[{"name":"user_id","schema":{"kind":"uuid"},"wireId":1}],"kind":"record"}}, decodeError: decodeApplicationError };
 }
 
 export class TicketDeskClient {

@@ -200,6 +200,8 @@ pub(crate) enum QueryCommand {
         parameters: Option<OsString>,
         #[arg(long, value_name = "CURSOR")]
         cursor: Option<String>,
+        #[arg(long, value_name = "COMMIT_SEQUENCE")]
+        read_after_commit: Option<String>,
         #[command(flatten)]
         contract: ContractSelectionArgs,
     },
@@ -212,6 +214,8 @@ pub(crate) enum QueryCommand {
         parameters: Option<OsString>,
         #[arg(long, value_name = "CURSOR")]
         cursor: Option<String>,
+        #[arg(long, value_name = "COMMIT_SEQUENCE")]
+        read_after_commit: Option<String>,
         #[command(flatten)]
         contract: ContractSelectionArgs,
     },
