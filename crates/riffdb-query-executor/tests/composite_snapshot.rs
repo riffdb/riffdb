@@ -36,6 +36,8 @@ struct FakeView {
     head: u64,
     rows: BTreeMap<String, Vec<QueryRow>>,
     point_calls: usize,
+    batch_calls: usize,
+    missing_batch_target: bool,
     scan_calls: usize,
     last_limit: Option<u64>,
     last_after: Option<Vec<u8>>,
@@ -61,6 +63,25 @@ impl QueryReadView for FakeView {
             .get(step.binding())
             .and_then(|rows| rows.first())
             .cloned())
+    }
+
+    fn dependent_point_batch(
+        &mut self,
+        step: &QueryAccessStep,
+        predicates: &[Vec<BoundPredicate>],
+    ) -> Result<Vec<Option<QueryRow>>, Self::Error> {
+        self.batch_calls += 1;
+        if self.missing_batch_target {
+            return Ok((0..predicates.len()).map(|_| None).collect());
+        }
+        Ok(self
+            .rows
+            .get(step.binding())
+            .into_iter()
+            .flatten()
+            .cloned()
+            .map(Some)
+            .collect())
     }
 
     fn scan(
@@ -104,6 +125,7 @@ fn all_accesses_use_one_owned_snapshot_and_respect_cardinality() {
                     [
                         ("organization_id", CanonicalValue::Uuid([1; 16])),
                         ("ticket_id", CanonicalValue::Uuid([2; 16])),
+                        ("project_id", CanonicalValue::Uuid([6; 16])),
                         ("reporter_id", CanonicalValue::Uuid([3; 16])),
                         ("assignee_id", CanonicalValue::Uuid([4; 16])),
                         (
@@ -116,6 +138,30 @@ fn all_accesses_use_one_owned_snapshot_and_respect_cardinality() {
                         ("title", CanonicalValue::string("ticket").expect("text")),
                         ("created_at", timestamp.clone()),
                         ("updated_at", timestamp.clone()),
+                    ],
+                )],
+            ),
+            (
+                "project".to_owned(),
+                vec![row(
+                    "Project",
+                    [
+                        ("organization_id", CanonicalValue::Uuid([1; 16])),
+                        ("project_id", CanonicalValue::Uuid([6; 16])),
+                        ("name", CanonicalValue::string("project").expect("text")),
+                    ],
+                )],
+            ),
+            (
+                "organization".to_owned(),
+                vec![row(
+                    "Organization",
+                    [
+                        ("organization_id", CanonicalValue::Uuid([1; 16])),
+                        (
+                            "name",
+                            CanonicalValue::string("organization").expect("text"),
+                        ),
                     ],
                 )],
             ),
@@ -161,8 +207,32 @@ fn all_accesses_use_one_owned_snapshot_and_respect_cardinality() {
                     ],
                 )],
             ),
+            (
+                "ticket_labels".to_owned(),
+                vec![row(
+                    "TicketLabel",
+                    [
+                        ("organization_id", CanonicalValue::Uuid([1; 16])),
+                        ("ticket_id", CanonicalValue::Uuid([2; 16])),
+                        ("label_id", CanonicalValue::Uuid([7; 16])),
+                    ],
+                )],
+            ),
+            (
+                "labels".to_owned(),
+                vec![row(
+                    "Label",
+                    [
+                        ("organization_id", CanonicalValue::Uuid([1; 16])),
+                        ("label_id", CanonicalValue::Uuid([7; 16])),
+                        ("name", CanonicalValue::string("urgent").expect("text")),
+                    ],
+                )],
+            ),
         ]),
         point_calls: 0,
+        batch_calls: 0,
+        missing_batch_target: false,
         scan_calls: 0,
         last_limit: None,
         last_after: None,
@@ -172,14 +242,84 @@ fn all_accesses_use_one_owned_snapshot_and_respect_cardinality() {
     let snapshot = execute_in_snapshot(&program, &parameters, &mut view).expect("snapshot");
     assert_eq!(snapshot.application_head(), 9);
     assert_eq!(snapshot.outcome(), "Found");
-    assert_eq!(view.point_calls, 3);
-    assert_eq!(view.scan_calls, 1);
+    assert_eq!(view.point_calls, 5);
+    assert_eq!(view.batch_calls, 1);
+    assert_eq!(view.scan_calls, 2);
     assert_eq!(view.last_limit, Some(50));
     assert_eq!(snapshot.index_epochs().get("Comment.by_ticket"), Some(&7));
     assert!(matches!(
         snapshot.fields().get("comments"),
         Some(QueryResultValue::Many(rows)) if rows.len() == 1
     ));
+    assert!(matches!(
+        snapshot.fields().get("labels"),
+        Some(QueryResultValue::Many(rows)) if rows.len() == 1
+    ));
+
+    view.missing_batch_target = true;
+    let missing = execute_in_snapshot(&program, &parameters, &mut view).expect("declared outcome");
+    assert_eq!(missing.outcome(), "IntegrityFailure");
+    assert!(missing.fields().is_empty());
+
+    view.missing_batch_target = false;
+    view.rows.insert("ticket_labels".to_owned(), Vec::new());
+    view.rows.insert("labels".to_owned(), Vec::new());
+    let empty = execute_in_snapshot(&program, &parameters, &mut view).expect("empty collection");
+    assert!(matches!(
+        empty.fields().get("labels"),
+        Some(QueryResultValue::Many(rows)) if rows.is_empty()
+    ));
+
+    let ticket_label = |label_id| {
+        row(
+            "TicketLabel",
+            [
+                ("organization_id", CanonicalValue::Uuid([1; 16])),
+                ("ticket_id", CanonicalValue::Uuid([2; 16])),
+                ("label_id", label_id),
+            ],
+        )
+    };
+    view.rows.insert(
+        "ticket_labels".to_owned(),
+        vec![
+            ticket_label(CanonicalValue::Uuid([7; 16])),
+            ticket_label(CanonicalValue::Uuid([7; 16])),
+        ],
+    );
+    assert!(matches!(
+        execute_in_snapshot(&program, &parameters, &mut view),
+        Err(QueryExecutionError::InvalidDependentKey { .. })
+    ));
+    view.rows.insert(
+        "ticket_labels".to_owned(),
+        vec![ticket_label(CanonicalValue::Null)],
+    );
+    assert!(matches!(
+        execute_in_snapshot(&program, &parameters, &mut view),
+        Err(QueryExecutionError::InvalidDependentKey { .. })
+    ));
+    view.rows.insert(
+        "ticket_labels".to_owned(),
+        vec![
+            ticket_label(CanonicalValue::Uuid([8; 16])),
+            ticket_label(CanonicalValue::Uuid([7; 16])),
+        ],
+    );
+    assert!(matches!(
+        execute_in_snapshot(&program, &parameters, &mut view),
+        Err(QueryExecutionError::InvalidDependentKey { .. })
+    ));
+    view.rows.insert(
+        "ticket_labels".to_owned(),
+        (0_u8..51)
+            .map(|value| ticket_label(CanonicalValue::Uuid([value; 16])))
+            .collect(),
+    );
+    assert_eq!(
+        execute_in_snapshot(&program, &parameters, &mut view),
+        Err(QueryExecutionError::BoundExceeded)
+    );
 }
 
 #[test]
@@ -206,6 +346,8 @@ fn continuation_resumes_the_named_binding_and_rejects_a_stale_epoch() {
         head: 11,
         rows: BTreeMap::from([("memberships".to_owned(), vec![membership.clone()])]),
         point_calls: 0,
+        batch_calls: 0,
+        missing_batch_target: false,
         scan_calls: 0,
         last_limit: None,
         last_after: None,
@@ -228,6 +370,8 @@ fn continuation_resumes_the_named_binding_and_rejects_a_stale_epoch() {
         head: 12,
         rows: BTreeMap::from([("memberships".to_owned(), vec![membership.clone()])]),
         point_calls: 0,
+        batch_calls: 0,
+        missing_batch_target: false,
         scan_calls: 0,
         last_limit: None,
         last_after: None,
@@ -243,6 +387,8 @@ fn continuation_resumes_the_named_binding_and_rejects_a_stale_epoch() {
         head: 13,
         rows: BTreeMap::from([("memberships".to_owned(), vec![membership])]),
         point_calls: 0,
+        batch_calls: 0,
+        missing_batch_target: false,
         scan_calls: 0,
         last_limit: None,
         last_after: None,
@@ -286,6 +432,8 @@ fn exact_enum_symbols_execute_as_internal_canonical_values() {
             )],
         )]),
         point_calls: 0,
+        batch_calls: 0,
+        missing_batch_target: false,
         scan_calls: 0,
         last_limit: None,
         last_after: None,

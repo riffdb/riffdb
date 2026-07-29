@@ -5,13 +5,15 @@ repo_root="$(git rev-parse --show-toplevel)"
 cd "$repo_root"
 
 assert_wp270=0
+assert_wp275=0
 live=0
 while (($#)); do
     case "$1" in
         --assert-wp270) assert_wp270=1; shift ;;
+        --assert-wp275) assert_wp275=1; shift ;;
         --live) live=1; shift ;;
         *)
-            echo "usage: scripts/benchmark-application-path [--assert-wp270] [--live]" >&2
+            echo "usage: scripts/benchmark-application-path [--assert-wp270] [--assert-wp275] [--live]" >&2
             exit 2
             ;;
     esac
@@ -88,6 +90,28 @@ if ((assert_wp270)); then
     ' "$riffql_report" >/dev/null
     cargo test --quiet -p riffdb-storage-redb \
         query::tests::point_query_executes_inside_one_redb_read_transaction
+    cargo test --quiet -p riffdb-storage-redb \
+        query::tests::index_page_batches_entity_reads_inside_the_same_redb_transaction
+    ./scripts/check-ticketdesk-symbolic-boundary
+fi
+
+if ((assert_wp275)); then
+    riffql_report="benchmarks/application-path/wp275-riffql-v1.json"
+    jq -e '
+      .schema == "riffdb.application-path-wp275-riffql/v1"
+      and .transport.connection == "one reused HTTP/2 channel"
+      and (.scenarios | length) == 4
+      and all(.scenarios[];
+        .public_rpc_count == 1
+        and .authoritative_snapshot_count == 1
+        and .p50_ns <= 15000000)
+      and (.scenarios[]
+        | select(.scenario == "named_ticket_page_with_labels")
+        | .dependent_point_batch_count == 1)
+      and .seed_ns <= 3000000000
+    ' "$riffql_report" >/dev/null
+    cargo test --quiet -p riffdb-query-executor \
+        all_accesses_use_one_owned_snapshot_and_respect_cardinality
     cargo test --quiet -p riffdb-storage-redb \
         query::tests::index_page_batches_entity_reads_inside_the_same_redb_transaction
     ./scripts/check-ticketdesk-symbolic-boundary

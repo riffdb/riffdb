@@ -49,7 +49,7 @@
         ],
         "type": "object"
       },
-      "module_hash": "f883bead2d14e4c7f738ed9af381018dcc66c76b6ef35b8265db7b26327cba92",
+      "module_hash": "ad6d671919db32abf1be9eed25759adafb4c44bc246b7b61ff818e6423d958d9",
       "name": "ticketdesk.list_tickets",
       "result_schema": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
@@ -143,7 +143,7 @@
         ],
         "type": "object"
       },
-      "module_hash": "f883bead2d14e4c7f738ed9af381018dcc66c76b6ef35b8265db7b26327cba92",
+      "module_hash": "ad6d671919db32abf1be9eed25759adafb4c44bc246b7b61ff818e6423d958d9",
       "name": "ticketdesk.project_members",
       "result_schema": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
@@ -215,7 +215,7 @@
         ],
         "type": "object"
       },
-      "module_hash": "f883bead2d14e4c7f738ed9af381018dcc66c76b6ef35b8265db7b26327cba92",
+      "module_hash": "ad6d671919db32abf1be9eed25759adafb4c44bc246b7b61ff818e6423d958d9",
       "name": "ticketdesk.project_summary",
       "result_schema": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
@@ -331,7 +331,7 @@
         ],
         "type": "object"
       },
-      "module_hash": "f883bead2d14e4c7f738ed9af381018dcc66c76b6ef35b8265db7b26327cba92",
+      "module_hash": "ad6d671919db32abf1be9eed25759adafb4c44bc246b7b61ff818e6423d958d9",
       "name": "ticketdesk.ticket_page",
       "result_schema": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
@@ -390,9 +390,61 @@
                 "maxItems": 50,
                 "type": "array"
               },
+              "labels": {
+                "items": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "label_id": {
+                      "type": "string"
+                    },
+                    "name": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "label_id",
+                    "name"
+                  ],
+                  "type": "object"
+                },
+                "maxItems": 50,
+                "type": "array"
+              },
+              "organization": {
+                "additionalProperties": false,
+                "properties": {
+                  "name": {
+                    "type": "string"
+                  },
+                  "organization_id": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "organization_id",
+                  "name"
+                ],
+                "type": "object"
+              },
               "outcome": {
                 "const": "Found",
                 "type": "string"
+              },
+              "project": {
+                "additionalProperties": false,
+                "properties": {
+                  "name": {
+                    "type": "string"
+                  },
+                  "project_id": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "project_id",
+                  "name"
+                ],
+                "type": "object"
               },
               "reporter": {
                 "additionalProperties": false,
@@ -416,6 +468,9 @@
                   "created_at": {
                     "type": "string"
                   },
+                  "project_id": {
+                    "type": "string"
+                  },
                   "status": {
                     "type": "string"
                   },
@@ -431,6 +486,7 @@
                 },
                 "required": [
                   "ticket_id",
+                  "project_id",
                   "title",
                   "status",
                   "created_at",
@@ -442,9 +498,12 @@
             "required": [
               "outcome",
               "ticket",
+              "project",
+              "organization",
               "reporter",
               "assignee",
-              "comments"
+              "comments",
+              "labels"
             ],
             "type": "object"
           },

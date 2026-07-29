@@ -6,9 +6,9 @@
 **Tagline:** *Vibe fast. Commit safely.*  
 **Category:** Contract-first operational database for agent-built applications  
 
-**Version:** 0.36
+**Version:** 0.37
 **Status:** Application-platform implementation handoff
-**Date:** 28 July 2026
+**Date:** 29 July 2026
 **Audience:** Coding agents, database engineers, compiler engineers, security reviewers, and technical product leads  
 **Working binaries:** `riffdbd`, `riffdb`, `riffdb-mcp`  
 **Working URI scheme:** `riffdb://`  
@@ -72,6 +72,7 @@
 | 0.34 | 2026-07-23 | Applied accepted ADR-0047 and ADR-0048: corrected thirteen pre-release MCP schemas to advertise their required object root without changing accepted instance shapes, and separated the existing 14-per-tick logical observer-operation bound from an enforced 46-per-tick/8,280-per-session physical service-call bound while removing the redundant stdio parity probe. No durable, IR, compiler, contract, public Protobuf, URI, or storage boundary changed. |
 | 0.35 | 2026-07-24 | Applied accepted ADR-0049 and ADR-0050: completed bounded derived-worker recovery observations, catalog-owned event materialization and projection expression ownership, closed owner telemetry and hosted-MCP server composition; activated WP-155 with three public offline maintenance operations, a checksummed external receipt ledger, staged-backup authorization, and the explicit restore-rewind limitation. |
 | 0.36 | 2026-07-28 | Applied accepted ADR-0051 through ADR-0053: established bounded symbolic RiffQL, exact-contract immutable query modules, an additive application API above the compatible kernel gRPC surface, one-snapshot composite query execution, rebuildable current catalog/capability views, and measured unary-gRPC-first application performance gates through WP-270. |
+| 0.37 | 2026-07-29 | Applied accepted ADR-0054 and WP-275: added bounded collection-to-complete-key dependencies with explicit missing-target outcomes, closed dependent point batching inside one snapshot, and full one-request TicketDesk detail-page parity without general SQL joins. |
 
 ### Normative language
 
@@ -5271,6 +5272,7 @@ earlier deadline governs unless a reviewed reconciliation changes both sources.
 | `ADR-0051` | Accepted | Formal bounded symbolic RiffQL with typed cardinality, deterministic indexed planning, same-partition locality, and compiler-derived authorization | WP-210 through WP-240 |
 | `ADR-0052` | Accepted | Immutable exact-contract query modules, additive application gRPC, symbolic MCP/CLI operations, and optional generated clients | WP-250 and WP-260 |
 | `ADR-0053` | Accepted | One-snapshot composite execution, epoch-bound cursors, rebuildable current catalog/capability views, and measured unary-gRPC-first optimization | WP-205, WP-240, and WP-270 |
+| `ADR-0054` | Accepted | Bounded collection-to-complete-key dependencies, explicit missing-target outcomes, and one-snapshot dependent point batches | WP-275 |
 
 ## 22.2 Decisions to resolve before implementation reaches the named gate
 
@@ -5599,6 +5601,14 @@ but the database accepts only deterministic formal source and typed values.
   stable codes, contract/query symbols, source spans, and safe remediation.
   A missing usable index SHOULD identify the smallest compatible contract-index
   change without revealing inaccessible schema.
+- `RQL-006`: A field from an earlier explicitly bounded `many` binding MAY be
+  consumed only as a bounded collection by `in` to supply one component of a
+  later `many` binding's complete primary key. The remaining key components,
+  same-partition route, compatible source/target types, canonical order,
+  target bound no greater than the source bound, and a declared missing-target
+  outcome MUST be statically proven. Collection-as-scalar use, singular-as-set
+  use, non-key fan-out, Cartesian products, and unbounded nested access MUST be
+  rejected with source-spanned diagnostics.
 
 - `QRY-001`: One query request MUST execute its complete closed access program
   against one authoritative storage snapshot and return only owned bounded
@@ -5617,6 +5627,12 @@ but the database accepts only deterministic formal source and typed values.
   public application surface MUST NOT require numeric entity, field, index, or
   command-input IDs, encoded keys, protobuf field maps, field masks, or access
   plans from its caller.
+- `QRY-005`: A compiled dependent key batch MUST execute every ordered bounded
+  target point read inside the query's one authoritative snapshot, preserve
+  source order, and validate exact target completeness before release. Empty
+  input MUST return an empty collection; null, duplicate, noncanonical,
+  over-bound, or malformed keys MUST fail closed; and a missing target MUST
+  select the query's declared outcome without partial results.
 
 - `DX-001`: The implementation MUST add an additive versioned application gRPC
   API over the same API-neutral service, authorization, compiler, query
@@ -5639,6 +5655,11 @@ but the database accepts only deterministic formal source and typed values.
   symbolic command invocation, with no caller-visible stable numeric IDs,
   hand-authored protobuf records, key decoding, manual field masks, or public
   N+1 entity requests.
+- `DX-006`: TicketDesk's named detail query MUST return the ticket, project,
+  organization, optional assignee, bounded comments, and bounded labels reached
+  through `TicketLabel` in one symbolic request and one snapshot. Its generated
+  result types, demo verification, and benchmark MUST exercise that complete
+  shape without a second label query or denormalized label names.
 
 - `PERF-001`: The application path MUST publish bounded redaction-safe latency
   decomposition for transport, authentication, current-view lookup,
@@ -5653,9 +5674,9 @@ but the database accepts only deterministic formal source and typed values.
   authorization, durability, snapshot, command, audit, or compatibility
   semantics.
 
-The milestone is complete only when WP-205 through WP-270 pass their package
+The milestone is complete only when WP-205 through WP-275 pass their package
 acceptance commands and an independent fresh-agent TicketDesk run satisfies
-`DX-005` and the published performance gates.
+`DX-005`, `DX-006`, and the published performance gates.
 
 ---
 

@@ -79,8 +79,10 @@ impl QueryReadView for RedbQueryView<'_> {
         step: &QueryAccessStep,
         predicates: &[BoundPredicate],
     ) -> Result<Option<QueryRow>, Self::Error> {
-        let QueryAccessKind::Point { key_fields } = step.access() else {
-            return Err(invariant());
+        let key_fields = match step.access() {
+            QueryAccessKind::Point { key_fields }
+            | QueryAccessKind::DependentPointBatch { key_fields, .. } => key_fields,
+            QueryAccessKind::Index { .. } => return Err(invariant()),
         };
         let values = key_fields
             .iter()
@@ -100,6 +102,20 @@ impl QueryReadView for RedbQueryView<'_> {
         read_entity_record(&self.entities, &target)?
             .map(|record| row_from_record(self.program, step, &record))
             .transpose()
+    }
+
+    fn dependent_point_batch(
+        &mut self,
+        step: &QueryAccessStep,
+        predicates: &[Vec<BoundPredicate>],
+    ) -> Result<Vec<Option<QueryRow>>, Self::Error> {
+        if !matches!(step.access(), QueryAccessKind::DependentPointBatch { .. }) {
+            return Err(invariant());
+        }
+        predicates
+            .iter()
+            .map(|predicates| self.point(step, predicates))
+            .collect()
     }
 
     fn scan(

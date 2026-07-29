@@ -142,7 +142,10 @@ pub struct Binding {
     pub order: Vec<OrderTerm>,
     /// Explicit bound for `many`, optional cursor for all cardinalities.
     pub take: Option<Take>,
-    /// Declared absence outcome required by `one`.
+    /// Declared absence or missing-target outcome.
+    ///
+    /// This is required by `one`; the planner also requires it for a bounded
+    /// dependent point batch sourced from an earlier `many`.
     pub absence_outcome: Option<Spanned<Identifier>>,
 }
 

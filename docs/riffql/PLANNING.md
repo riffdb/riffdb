@@ -10,6 +10,9 @@ The v1 planner accepts only:
 - complete primary-key point reads for `one` and `maybe`;
 - bounded `many` reads whose equality/membership prefix and complete ordering
   match one declared index;
+- a bounded dependent primary-key batch where one earlier `many` field supplies
+  exactly one complete-key component through `in`, the target bound does not
+  exceed the source bound, and a missing-target outcome is declared;
 - one wholly forward or wholly reverse traversal direction;
 - explicit row bounds no greater than the 500-row service ceiling.
 
@@ -26,3 +29,8 @@ name-only view of the same program. An absent compatible index produces
 
 RiffQL v1 does not perform an unbounded fallback scan, client-side sort,
 cross-partition join, or optimizer-dependent plan choice.
+
+Dependent batches execute as ordered point reads inside the same engine-owned
+snapshot as the source scan. They do not become public N+1 requests. Null,
+duplicate, noncanonical, over-bound, or missing dependent keys fail closed
+before a partial result can be released.

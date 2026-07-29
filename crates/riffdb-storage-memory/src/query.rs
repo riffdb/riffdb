@@ -51,8 +51,12 @@ impl QueryReadView for MemoryQueryView<'_> {
         step: &QueryAccessStep,
         predicates: &[BoundPredicate],
     ) -> Result<Option<QueryRow>, Self::Error> {
-        let QueryAccessKind::Point { key_fields } = step.access() else {
-            return Err(storage_error(StorageErrorKind::InvariantViolation));
+        let key_fields = match step.access() {
+            QueryAccessKind::Point { key_fields }
+            | QueryAccessKind::DependentPointBatch { key_fields, .. } => key_fields,
+            QueryAccessKind::Index { .. } => {
+                return Err(storage_error(StorageErrorKind::InvariantViolation));
+            }
         };
         let values = key_fields
             .iter()
@@ -75,6 +79,20 @@ impl QueryReadView for MemoryQueryView<'_> {
             Ok(index) => row_from_record(self.program, step, &self.state.entities[index]).map(Some),
             Err(_) => Ok(None),
         }
+    }
+
+    fn dependent_point_batch(
+        &mut self,
+        step: &QueryAccessStep,
+        predicates: &[Vec<BoundPredicate>],
+    ) -> Result<Vec<Option<QueryRow>>, Self::Error> {
+        if !matches!(step.access(), QueryAccessKind::DependentPointBatch { .. }) {
+            return Err(storage_error(StorageErrorKind::InvariantViolation));
+        }
+        predicates
+            .iter()
+            .map(|predicates| self.point(step, predicates))
+            .collect()
     }
 
     fn scan(

@@ -204,16 +204,17 @@ if ((acceptance || seed_builtin)); then
     fi
     printf 'riffdb-dev-seed-v1\t%s\t%sns\n' "$seed_rows" "$seed_ns" >&2
     benchmark_result="$("$benchmark" "$endpoint" "$work_root/agent.credential")"
-    IFS=$'\t' read -r benchmark_schema list_ns detail_ns <<<"$benchmark_result"
+    IFS=$'\t' read -r benchmark_schema list_ns members_ns summary_ns detail_ns <<<"$benchmark_result"
     [[ "$benchmark_schema" == "riffdb-ticketdesk-query-benchmark-v1" ]] || {
         echo "TicketDesk named-query benchmark returned an invalid result" >&2
         exit 1
     }
-    if ((list_ns > 15000000 || detail_ns > 15000000)); then
+    if ((list_ns > 15000000 || members_ns > 15000000 || summary_ns > 15000000 || detail_ns > 15000000)); then
         echo "TicketDesk named-query benchmark missed the 15ms gate" >&2
         exit 1
     fi
-    printf 'riffdb-dev-query-p50-v1\t%sns\t%sns\n' "$list_ns" "$detail_ns" >&2
+    printf 'riffdb-dev-query-p50-v1\tlist=%sns\tmembers=%sns\tsummary=%sns\tdetail=%sns\n' \
+        "$list_ns" "$members_ns" "$summary_ns" "$detail_ns" >&2
 fi
 
 printf 'riffdb-dev-ready-v1\t%s\t%s\t%s\n' \

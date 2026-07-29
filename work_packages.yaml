@@ -1,4 +1,4 @@
-spec_version: '0.36'
+spec_version: '0.37'
 product: RiffDB
 repository: riffdb
 status: application-platform-implementation
@@ -66,6 +66,7 @@ gates:
   - WP-250
   - WP-260
   - WP-270
+  - WP-275
 work_packages:
 - id: WP-000
   name: Repository foundation
@@ -3201,4 +3202,84 @@ work_packages:
   - cargo deny check
   exit_gate: A fresh coding agent builds and exercises TicketDesk with one symbolic request per page or mutation, no
     forbidden low-level glue, a documented rating of at least 8/10, and all PERF-002 gates passing.
+  human_review_triggers: *id001
+- id: WP-275
+  name: Bounded dependent key batches and complete TicketDesk detail parity
+  depends_on:
+  - WP-270
+  objective: Close the TicketDesk junction-read gap with one bounded same-partition collection-to-complete-key
+    operator, execute it inside the existing one-snapshot boundary, and verify the complete detail result through
+    generated symbolic application APIs.
+  requirements:
+  - RQL-006
+  - QRY-005
+  - DX-006
+  - PERF-002
+  required_adrs:
+  - ADR-0013
+  - ADR-0016
+  - ADR-0027
+  - ADR-0035
+  - ADR-0038
+  - ADR-0051
+  - ADR-0052
+  - ADR-0053
+  - ADR-0054
+  allowed_paths:
+  - Cargo.toml
+  - Cargo.lock
+  - SPEC.md
+  - work_packages.yaml
+  - PLAN.md
+  - adr/**
+  - crates/riffdb-riffql-syntax/**
+  - crates/riffdb-query-ir/**
+  - crates/riffdb-query-compiler/**
+  - crates/riffdb-query-executor/**
+  - crates/riffdb-query-module/**
+  - crates/riffdb-storage-memory/**
+  - crates/riffdb-storage-redb/**
+  - crates/riffdb-service/**
+  - crates/riffdb-client-rust/**
+  - clients/typescript/**
+  - examples/ticketdesk/**
+  - examples/app-baseline/**
+  - queries/ticketdesk/**
+  - fixtures/riffql/**
+  - fixtures/query-modules/**
+  - scripts/check-generated
+  - scripts/check-ticketdesk-symbolic-boundary
+  - scripts/riffdb-dev*
+  - scripts/benchmark-application-path
+  - benchmarks/application-path/**
+  - docs/riffql/**
+  - docs/getting-started/**
+  - README.md
+  deliverables:
+  - Source-spanned scalar/collection cardinality diagnostics and canonical dependent-batch query IR
+  - Deterministic bounded dependent point execution with explicit missing-target outcomes
+  - Memory/redb one-snapshot parity for empty, ordered, missing, duplicate, null, and over-bound batches
+  - One TicketPage query/result containing project, organization, comments, assignee, and junction-reached labels
+  - Generated Rust/TypeScript/MCP fixtures plus demo and benchmark verification of the complete page
+  acceptance_commands:
+  - cargo test -p riffdb-riffql-syntax --all-features
+  - cargo test -p riffdb-query-ir --all-features
+  - cargo test -p riffdb-query-compiler --all-features
+  - cargo test -p riffdb-query-executor --all-features
+  - cargo test -p riffdb-storage-memory --all-features
+  - cargo test -p riffdb-storage-redb --all-features
+  - cargo test -p riffdb-service --all-features
+  - cargo test -p riffdb-query-module --all-features
+  - cargo test --manifest-path examples/ticketdesk/Cargo.toml
+  - ./scripts/check-generated
+  - ./scripts/check-ticketdesk-symbolic-boundary
+  - ./scripts/benchmark-application-path --assert-wp275
+  - cargo fmt --all -- --check
+  - cargo clippy --workspace --all-targets --all-features -- -D warnings
+  - cargo test --workspace --all-features
+  - cargo doc --workspace --no-deps
+  - cargo deny check
+  exit_gate: TicketDesk returns its complete detail shape through one named symbolic request and one authoritative
+    snapshot; invalid collection fan-out fails closed; generated artifacts are reproducible; and PERF-002 remains
+    satisfied without SQL, a second label query, or a public N+1 path.
   human_review_triggers: *id001

@@ -64,17 +64,36 @@ fn list_and_detail_choose_expected_physical_accesses() {
     ));
 
     let detail = compile_query(&parse_query(QUERIES[1].1).expect("parse"), &catalog).expect("plan");
+    let step = |binding: &str| {
+        detail
+            .steps()
+            .iter()
+            .find(|step| step.binding() == binding)
+            .unwrap_or_else(|| panic!("missing {binding}"))
+    };
     assert!(matches!(
-        detail.steps()[0].access(),
+        step("ticket").access(),
         QueryAccessKind::Point { .. }
     ));
     assert!(matches!(
-        detail.steps()[3].access(),
+        step("comments").access(),
         QueryAccessKind::Index { index, .. } if index == "by_ticket"
+    ));
+    assert!(matches!(
+        step("ticket_labels").access(),
+        QueryAccessKind::Index { index, .. } if index == "by_ticket"
+    ));
+    assert!(matches!(
+        step("labels").access(),
+        QueryAccessKind::DependentPointBatch {
+            source_binding,
+            source_field,
+            ..
+        } if source_binding == "ticket_labels" && source_field == "label_id"
     ));
     let ticket = &detail.steps()[0];
     assert!(
-        ["reporter_id", "assignee_id"]
+        ["project_id", "reporter_id", "assignee_id"]
             .iter()
             .all(|field| ticket.predicate_fields().iter().any(|read| read == field)),
         "downstream join fields must be fetched from the source binding"
@@ -85,6 +104,87 @@ fn list_and_detail_choose_expected_physical_accesses() {
             .iter()
             .any(|selected| selected == field)),
         "dependency-only fields must not leak into the public result"
+    );
+}
+
+#[test]
+fn collection_dependencies_are_not_implicitly_scalar_or_unbounded() {
+    let bundle = compile_contract_source(CONTRACT).expect("contract");
+    let catalog = SymbolicCatalog::from_bundle(&bundle).expect("catalog");
+    let scalar = QUERIES[1].1.replace(
+        "label_id in ticket_labels.label_id",
+        "label_id == ticket_labels.label_id",
+    );
+    let diagnostics =
+        compile_query(&parse_query(&scalar).expect("parse"), &catalog).expect_err("reject scalar");
+    assert_eq!(
+        diagnostics.as_slice()[0].code(),
+        riffdb_query_compiler::PlannerDiagnosticCode::Cardinality
+    );
+    assert_eq!(
+        diagnostics.as_slice()[0].symbol_path(),
+        &["ticket_labels", "label_id"]
+    );
+    let diagnostic = &diagnostics.as_slice()[0];
+    assert_eq!(
+        format!(
+            "{}|{}..{}|{}|{}|{}\n",
+            diagnostic.code().as_str(),
+            diagnostic.primary().start,
+            diagnostic.primary().end,
+            diagnostic.symbol_path().join("."),
+            diagnostic.summary(),
+            diagnostic.suggested_index().unwrap_or("")
+        ),
+        include_str!("../../../fixtures/riffql/cardinality.snapshot")
+    );
+
+    let singular_set = QUERIES[1].1.replace(
+        "label_id in ticket_labels.label_id",
+        "label_id in ticket.ticket_id",
+    );
+    let diagnostics = compile_query(&parse_query(&singular_set).expect("parse"), &catalog)
+        .expect_err("reject singular set");
+    assert_eq!(
+        diagnostics.as_slice()[0].code(),
+        riffdb_query_compiler::PlannerDiagnosticCode::Cardinality
+    );
+
+    let no_outcome = QUERIES[1].1.replace(
+        "        take 50\n        else IntegrityFailure\n\n    return Found",
+        "        take 50\n\n    return Found",
+    );
+    let diagnostics = compile_query(&parse_query(&no_outcome).expect("parse"), &catalog)
+        .expect_err("reject implicit missing targets");
+    assert_eq!(
+        diagnostics.as_slice()[0].code(),
+        riffdb_query_compiler::PlannerDiagnosticCode::Cardinality
+    );
+
+    let target_exceeds_source = QUERIES[1].1.replacen(
+        "        take 50\n\n    many labels",
+        "        take 25\n\n    many labels",
+        1,
+    );
+    let diagnostics = compile_query(
+        &parse_query(&target_exceeds_source).expect("parse"),
+        &catalog,
+    )
+    .expect_err("reject target bound above source");
+    assert_eq!(
+        diagnostics.as_slice()[0].code(),
+        riffdb_query_compiler::PlannerDiagnosticCode::Cardinality
+    );
+
+    let noncanonical_source = QUERIES[1].1.replace(
+        "order by label_id asc\n        take 50\n\n    many labels",
+        "order by label_id desc\n        take 50\n\n    many labels",
+    );
+    let diagnostics = compile_query(&parse_query(&noncanonical_source).expect("parse"), &catalog)
+        .expect_err("reject reverse collection source");
+    assert_eq!(
+        diagnostics.as_slice()[0].code(),
+        riffdb_query_compiler::PlannerDiagnosticCode::Cardinality
     );
 }
 

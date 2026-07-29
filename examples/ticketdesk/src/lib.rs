@@ -2,19 +2,21 @@
 
 //! TicketDesk acceptance client using only symbolic application operations.
 
+mod decode;
 mod generated;
 
 use std::collections::BTreeMap;
 
 use riffdb_client_rust::{
     ApplicationClientError, ApplicationCommand, ApplicationCommandResult, ApplicationContract,
-    ApplicationValue, AttemptBudget, CallMetadata, NamedQuery, NamedQueryResult, RiffDbClient,
+    ApplicationValue, AttemptBudget, CallMetadata, NamedQuery, RiffDbClient,
 };
 
 pub use generated::{
     AddProjectMemberInput, AttachLabelInput, CreateCommentInput, CreateLabelInput,
     CreateOrganizationInput, CreateProjectInput, CreateTicketInput, CreateUserInput,
-    ListTicketsParams, ProjectMembersParams, ProjectSummaryParams, TicketPageParams,
+    ListTicketsParams, ListTicketsResult, ProjectMembersParams, ProjectMembersResult,
+    ProjectSummaryParams, ProjectSummaryResult, TicketPageParams, TicketPageResult,
 };
 
 /// One application client pinned to the checked TicketDesk query module.
@@ -34,69 +36,79 @@ impl TicketDeskClient {
     pub async fn list_tickets(
         &mut self,
         input: ListTicketsParams,
-    ) -> Result<NamedQueryResult, ApplicationClientError> {
-        self.query(
-            "ListTickets",
-            parameters([
-                ("organization_id", uuid(input.organization_id)),
-                ("project_id", uuid(input.project_id)),
-                (
-                    "statuses",
-                    ApplicationValue::List(input.statuses.into_iter().map(enum_variant).collect()),
-                ),
-                ("after", optional_text(input.after)),
-                ("limit", ApplicationValue::U64(input.limit)),
-            ]),
-        )
-        .await
+    ) -> Result<ListTicketsResult, ApplicationClientError> {
+        let result = self
+            .query(
+                "ListTickets",
+                parameters([
+                    ("organization_id", uuid(input.organization_id)),
+                    ("project_id", uuid(input.project_id)),
+                    (
+                        "statuses",
+                        ApplicationValue::List(
+                            input.statuses.into_iter().map(enum_variant).collect(),
+                        ),
+                    ),
+                    ("after", optional_text(input.after)),
+                    ("limit", ApplicationValue::U64(input.limit)),
+                ]),
+            )
+            .await?;
+        decode::list_tickets_result(result)
     }
 
     /// Returns a project-members page with one symbolic request.
     pub async fn project_members(
         &mut self,
         input: ProjectMembersParams,
-    ) -> Result<NamedQueryResult, ApplicationClientError> {
-        self.query(
-            "ProjectMembers",
-            parameters([
-                ("organization_id", uuid(input.organization_id)),
-                ("project_id", uuid(input.project_id)),
-                ("after", optional_text(input.after)),
-            ]),
-        )
-        .await
+    ) -> Result<ProjectMembersResult, ApplicationClientError> {
+        let result = self
+            .query(
+                "ProjectMembers",
+                parameters([
+                    ("organization_id", uuid(input.organization_id)),
+                    ("project_id", uuid(input.project_id)),
+                    ("after", optional_text(input.after)),
+                ]),
+            )
+            .await?;
+        decode::project_members_result(result)
     }
 
     /// Returns the project summary with one symbolic request.
     pub async fn project_summary(
         &mut self,
         input: ProjectSummaryParams,
-    ) -> Result<NamedQueryResult, ApplicationClientError> {
-        self.query(
-            "ProjectSummary",
-            parameters([
-                ("organization_id", uuid(input.organization_id)),
-                ("project_id", uuid(input.project_id)),
-                ("status", enum_variant(input.status)),
-            ]),
-        )
-        .await
+    ) -> Result<ProjectSummaryResult, ApplicationClientError> {
+        let result = self
+            .query(
+                "ProjectSummary",
+                parameters([
+                    ("organization_id", uuid(input.organization_id)),
+                    ("project_id", uuid(input.project_id)),
+                    ("status", enum_variant(input.status)),
+                ]),
+            )
+            .await?;
+        decode::project_summary_result(result)
     }
 
     /// Returns the complete detail page with one symbolic request.
     pub async fn ticket_page(
         &mut self,
         input: TicketPageParams,
-    ) -> Result<NamedQueryResult, ApplicationClientError> {
-        self.query(
-            "TicketPage",
-            parameters([
-                ("organization_id", uuid(input.organization_id)),
-                ("ticket_id", uuid(input.ticket_id)),
-                ("comments_after", optional_text(input.comments_after)),
-            ]),
-        )
-        .await
+    ) -> Result<TicketPageResult, ApplicationClientError> {
+        let result = self
+            .query(
+                "TicketPage",
+                parameters([
+                    ("organization_id", uuid(input.organization_id)),
+                    ("ticket_id", uuid(input.ticket_id)),
+                    ("comments_after", optional_text(input.comments_after)),
+                ]),
+            )
+            .await?;
+        decode::ticket_page_result(result)
     }
 
     /// Creates an organization with one symbolic command invocation.
@@ -246,7 +258,7 @@ impl TicketDeskClient {
         &mut self,
         name: &str,
         parameters: BTreeMap<String, ApplicationValue>,
-    ) -> Result<NamedQueryResult, ApplicationClientError> {
+    ) -> Result<riffdb_client_rust::NamedQueryResult, ApplicationClientError> {
         let query = NamedQuery::new(
             ApplicationContract::Exact {
                 lineage: generated::CONTRACT_LINEAGE.to_owned(),

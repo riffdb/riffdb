@@ -84,6 +84,13 @@ pub enum QueryPredicateValue {
         /// Contract field.
         field: String,
     },
+    /// Ordered field collection from one earlier bounded `many` binding.
+    BindingFieldSet {
+        /// Query-local bounded source binding.
+        binding: String,
+        /// Contract field supplying one target-key component.
+        field: String,
+    },
     /// Exact contract enum variant.
     EnumVariant {
         /// Enum declaration name.
@@ -107,6 +114,11 @@ impl std::fmt::Debug for QueryPredicateValue {
             Self::Parameter(name) => formatter.debug_tuple("Parameter").field(name).finish(),
             Self::BindingField { binding, field } => formatter
                 .debug_struct("BindingField")
+                .field("binding", binding)
+                .field("field", field)
+                .finish(),
+            Self::BindingFieldSet { binding, field } => formatter
+                .debug_struct("BindingFieldSet")
                 .field("binding", binding)
                 .field("field", field)
                 .finish(),
@@ -172,6 +184,15 @@ pub enum QueryAccessKind {
     Point {
         /// Primary-key fields in contract order.
         key_fields: Vec<String>,
+    },
+    /// Ordered bounded primary-key lookups derived from one earlier `many`.
+    DependentPointBatch {
+        /// Complete primary-key fields in contract order.
+        key_fields: Vec<String>,
+        /// Earlier bounded collection binding.
+        source_binding: String,
+        /// Source field supplying the collection key component.
+        source_field: String,
     },
     /// Bounded secondary-index range.
     Index {
@@ -355,12 +376,58 @@ impl QueryAccessStep {
         entity_key_schema: KeySchema,
         index_key_schema: Option<KeySchema>,
     ) -> Option<Self> {
+        let access_is_valid = match &access {
+            QueryAccessKind::Point { key_fields } => {
+                !key_fields.is_empty()
+                    && !predicates.iter().any(|predicate| {
+                        matches!(predicate.value, QueryPredicateValue::BindingFieldSet { .. })
+                    })
+            }
+            QueryAccessKind::Index { fields, .. } => {
+                !fields.is_empty()
+                    && !predicates.iter().any(|predicate| {
+                        matches!(predicate.value, QueryPredicateValue::BindingFieldSet { .. })
+                    })
+            }
+            QueryAccessKind::DependentPointBatch {
+                key_fields,
+                source_binding,
+                source_field,
+            } => {
+                let matching_sets = predicates
+                    .iter()
+                    .filter(|predicate| {
+                        predicate.operator == QueryPredicateOperator::In
+                            && matches!(
+                                &predicate.value,
+                                QueryPredicateValue::BindingFieldSet { binding, field }
+                                    if binding == source_binding && field == source_field
+                            )
+                    })
+                    .count();
+                !key_fields.is_empty()
+                    && !source_binding.is_empty()
+                    && !source_field.is_empty()
+                    && cardinality == Cardinality::Many
+                    && absence_outcome.is_some()
+                    && cursor_parameter.is_none()
+                    && dependencies.binary_search(source_binding).is_ok()
+                    && matching_sets == 1
+                    && predicates
+                        .iter()
+                        .filter(|predicate| {
+                            matches!(predicate.value, QueryPredicateValue::BindingFieldSet { .. })
+                        })
+                        .count()
+                        == 1
+            }
+        };
         if binding.is_empty()
             || entity.is_empty()
             || maximum_rows == 0
+            || !access_is_valid
             || predicate_fields.windows(2).any(|pair| pair[0] >= pair[1])
             || selected_fields.windows(2).any(|pair| pair[0] >= pair[1])
-            || result_names.is_empty()
             || result_names.windows(2).any(|pair| pair[0] >= pair[1])
             || dependencies.windows(2).any(|pair| pair[0] >= pair[1])
         {
@@ -695,6 +762,16 @@ fn encode_program(
                     AccessDirection::Reverse => 2,
                 });
             }
+            QueryAccessKind::DependentPointBatch {
+                key_fields,
+                source_binding,
+                source_field,
+            } => {
+                out.push(3);
+                write_strings(&mut out, key_fields)?;
+                write_text(&mut out, source_binding)?;
+                write_text(&mut out, source_field)?;
+            }
         }
         write_count(&mut out, step.predicates.len())?;
         for predicate in &step.predicates {
@@ -777,6 +854,11 @@ fn encode_predicate_value(out: &mut Vec<u8>, value: &QueryPredicateValue) -> Opt
                 }
             }
         }
+        QueryPredicateValue::BindingFieldSet { binding, field } => {
+            out.push(5);
+            write_text(out, binding)?;
+            write_text(out, field)
+        }
     }
 }
 
@@ -808,6 +890,11 @@ fn build_explain(
     for step in steps {
         let access = match &step.access {
             QueryAccessKind::Point { .. } => "primary-key".to_owned(),
+            QueryAccessKind::DependentPointBatch {
+                source_binding,
+                source_field,
+                ..
+            } => format!("dependent primary-key batch from {source_binding}.{source_field}"),
             QueryAccessKind::Index {
                 index, direction, ..
             } => format!(
