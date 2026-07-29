@@ -89,7 +89,11 @@ fn predicate_inputs_are_closed_and_participate_in_plan_identity() {
     ));
     assert!(matches!(
         closed.steps()[1].predicates()[2].value(),
-        QueryPredicateValue::EnumVariant { enumeration, variant }
+        QueryPredicateValue::EnumVariant {
+            enumeration,
+            variant,
+            ..
+        }
             if enumeration == "TicketStatus" && variant == "Closed"
     ));
 }

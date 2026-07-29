@@ -7,10 +7,10 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use riffdb_query_ir::{
     QueryAccessProgramV1, QueryAccessStep, QueryLiteral, QueryPredicateOperator,
-    QueryPredicateValue,
+    QueryPredicateValue, QueryRowLimit,
 };
 use riffdb_riffql_syntax::Cardinality;
-use riffdb_types::CanonicalValue;
+use riffdb_types::{CanonicalValue, encode_canonical_value};
 
 /// Maximum checked submitted parameters.
 pub const MAX_QUERY_PARAMETERS: usize = 1_024;
@@ -183,7 +183,36 @@ pub trait QueryReadView {
         &mut self,
         step: &QueryAccessStep,
         predicates: &[BoundPredicate],
+        limit: u64,
+        after: Option<&[u8]>,
     ) -> Result<QueryScanPage, Self::Error>;
+}
+
+/// Checked lower continuation and epoch fence resolved from one opaque cursor.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct QueryContinuation {
+    binding: String,
+    lower: Vec<u8>,
+    index_epochs: BTreeMap<String, u64>,
+}
+
+impl QueryContinuation {
+    /// Constructs one bounded continuation.
+    pub fn checked(
+        binding: String,
+        lower: Vec<u8>,
+        index_epochs: BTreeMap<String, u64>,
+    ) -> Option<Self> {
+        (!binding.is_empty()
+            && !lower.is_empty()
+            && lower.len() <= MAX_QUERY_CONTINUATION_BYTES
+            && !index_epochs.is_empty())
+        .then_some(Self {
+            binding,
+            lower,
+            index_epochs,
+        })
+    }
 }
 
 /// Engine-owned one-snapshot execution boundary.
@@ -191,12 +220,23 @@ pub trait QueryReadView {
 /// Implementations open one read transaction, invoke the closed executor, copy
 /// the owned result, and close the transaction before returning.
 pub trait QueryExecutionPort {
+    /// Executes one compiler-produced program page against one checked
+    /// parameter set and optional validated continuation.
+    fn execute_query_page(
+        &self,
+        program: &QueryAccessProgramV1,
+        parameters: &QueryParameters,
+        prior: Option<&QueryContinuation>,
+    ) -> Result<QueryOwnedSnapshot, QueryExecutionError>;
+
     /// Executes one compiler-produced program against one checked parameter set.
     fn execute_query(
         &self,
         program: &QueryAccessProgramV1,
         parameters: &QueryParameters,
-    ) -> Result<QueryOwnedSnapshot, QueryExecutionError>;
+    ) -> Result<QueryOwnedSnapshot, QueryExecutionError> {
+        self.execute_query_page(program, parameters, None)
+    }
 }
 
 /// One returned root field.
@@ -217,6 +257,7 @@ pub struct QueryOwnedSnapshot {
     index_epochs: BTreeMap<String, u64>,
     outcome: String,
     fields: BTreeMap<String, QueryResultValue>,
+    continuation_binding: Option<String>,
     continuation: Option<Vec<u8>>,
 }
 
@@ -250,6 +291,12 @@ impl QueryOwnedSnapshot {
     pub fn continuation(&self) -> Option<&[u8]> {
         self.continuation.as_deref()
     }
+
+    /// Binding whose ordered access produced the continuation.
+    #[must_use]
+    pub fn continuation_binding(&self) -> Option<&str> {
+        self.continuation_binding.as_deref()
+    }
 }
 
 /// Closed, safe executor failure classification.
@@ -257,6 +304,11 @@ impl QueryOwnedSnapshot {
 pub enum QueryExecutionError {
     /// Required submitted parameter is absent.
     MissingParameter {
+        /// Safe parameter name.
+        parameter: String,
+    },
+    /// A submitted parameter is not in its required canonical representation.
+    InvalidParameter {
         /// Safe parameter name.
         parameter: String,
     },
@@ -280,6 +332,10 @@ pub enum QueryExecutionError {
     },
     /// A predicate uses a value/operator unavailable in v1.
     UnsupportedPredicate,
+    /// Cursor binding or an observed index epoch is stale.
+    StaleCursor,
+    /// Cursor structure does not match this query.
+    InvalidContinuation,
 }
 
 /// Executes the complete program through one already-open engine view.
@@ -291,9 +347,20 @@ pub fn execute_in_snapshot<V: QueryReadView>(
     parameters: &QueryParameters,
     view: &mut V,
 ) -> Result<QueryOwnedSnapshot, QueryExecutionError> {
+    execute_page_in_snapshot(program, parameters, None, view)
+}
+
+/// Executes one page with an optional previously validated lower continuation.
+pub fn execute_page_in_snapshot<V: QueryReadView>(
+    program: &QueryAccessProgramV1,
+    parameters: &QueryParameters,
+    prior: Option<&QueryContinuation>,
+    view: &mut V,
+) -> Result<QueryOwnedSnapshot, QueryExecutionError> {
     let mut bindings = BTreeMap::<String, Vec<QueryRow>>::new();
     let mut result_fields = BTreeMap::new();
     let mut index_epochs = BTreeMap::new();
+    let mut continuation_binding = None;
     let mut continuation = None;
     let default_outcome = program
         .surface()
@@ -305,6 +372,10 @@ pub fn execute_in_snapshot<V: QueryReadView>(
 
     for step in program.steps() {
         let predicates = bind_predicates(step, parameters, &bindings)?;
+        let limit = resolve_row_limit(step, parameters)?;
+        let after = prior
+            .filter(|cursor| cursor.binding == step.binding())
+            .map(|cursor| cursor.lower.as_slice());
         let mut rows = match step.access() {
             riffdb_query_ir::QueryAccessKind::Point { .. } => view
                 .point(step, &predicates)
@@ -313,10 +384,10 @@ pub fn execute_in_snapshot<V: QueryReadView>(
                 .collect::<Vec<_>>(),
             riffdb_query_ir::QueryAccessKind::Index { index, .. } => {
                 let page = view
-                    .scan(step, &predicates)
+                    .scan(step, &predicates, limit, after)
                     .map_err(|_| QueryExecutionError::BackendUnavailable)?;
                 if page.scanned_rows > MAX_QUERY_SCANNED_ROWS
-                    || page.rows.len() as u64 > step.maximum_rows()
+                    || page.rows.len() as u64 > limit
                     || page
                         .continuation
                         .as_ref()
@@ -329,6 +400,7 @@ pub fn execute_in_snapshot<V: QueryReadView>(
                     if continuation.is_some() {
                         return Err(QueryExecutionError::InvalidProgram);
                     }
+                    continuation_binding = Some(step.binding().to_owned());
                     continuation = page.continuation;
                 }
                 page.rows
@@ -356,6 +428,7 @@ pub fn execute_in_snapshot<V: QueryReadView>(
                 index_epochs,
                 outcome,
                 fields: BTreeMap::new(),
+                continuation_binding: None,
                 continuation: None,
             });
         }
@@ -381,13 +454,47 @@ pub fn execute_in_snapshot<V: QueryReadView>(
         bindings.insert(step.binding().to_owned(), rows);
     }
 
+    if let Some(prior) = prior {
+        if !program
+            .steps()
+            .iter()
+            .any(|step| step.binding() == prior.binding && step.cursor_parameter().is_some())
+        {
+            return Err(QueryExecutionError::InvalidContinuation);
+        }
+        if prior.index_epochs != index_epochs {
+            return Err(QueryExecutionError::StaleCursor);
+        }
+    }
+
     Ok(QueryOwnedSnapshot {
         application_head: view.application_head(),
         index_epochs,
         outcome: default_outcome,
         fields: result_fields,
+        continuation_binding,
         continuation,
     })
+}
+
+fn resolve_row_limit(
+    step: &QueryAccessStep,
+    parameters: &QueryParameters,
+) -> Result<u64, QueryExecutionError> {
+    let limit = match step.row_limit() {
+        QueryRowLimit::Literal(value) => *value,
+        QueryRowLimit::Parameter { name, default } => match parameters.get(name) {
+            Some(CanonicalValue::U64(value)) => *value,
+            Some(_) => return Err(QueryExecutionError::InvalidProgram),
+            None => default.ok_or_else(|| QueryExecutionError::MissingParameter {
+                parameter: name.clone(),
+            })?,
+        },
+    };
+    if limit == 0 || limit > step.maximum_rows() {
+        return Err(QueryExecutionError::BoundExceeded);
+    }
+    Ok(limit)
 }
 
 fn bind_predicates(
@@ -413,10 +520,26 @@ fn bind_predicates(
                     .cloned()
                     .unwrap_or(CanonicalValue::Null),
                 QueryPredicateValue::Literal(literal) => literal_value(literal)?,
-                QueryPredicateValue::EnumVariant { .. } => {
-                    return Err(QueryExecutionError::UnsupportedPredicate);
-                }
+                QueryPredicateValue::EnumVariant {
+                    type_id,
+                    variant_id,
+                    ..
+                } => CanonicalValue::Enum {
+                    type_id: *type_id,
+                    variant_id: *variant_id,
+                },
             };
+            if predicate.operator() == QueryPredicateOperator::In {
+                let parameter = match predicate.value() {
+                    QueryPredicateValue::Parameter(name) => name,
+                    _ => return Err(QueryExecutionError::InvalidProgram),
+                };
+                validate_canonical_set(&value).map_err(|()| {
+                    QueryExecutionError::InvalidParameter {
+                        parameter: parameter.clone(),
+                    }
+                })?;
+            }
             Ok(BoundPredicate {
                 field: predicate.field().to_owned(),
                 operator: predicate.operator(),
@@ -424,6 +547,25 @@ fn bind_predicates(
             })
         })
         .collect()
+}
+
+fn validate_canonical_set(value: &CanonicalValue) -> Result<(), ()> {
+    let CanonicalValue::List(values) = value else {
+        return Err(());
+    };
+    if values.values().is_empty() || values.values().len() > MAX_QUERY_PARAMETERS {
+        return Err(());
+    }
+    let encoded = values
+        .values()
+        .iter()
+        .map(encode_canonical_value)
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|_| ())?;
+    if encoded.windows(2).any(|pair| pair[0] >= pair[1]) {
+        return Err(());
+    }
+    Ok(())
 }
 
 fn literal_value(literal: &QueryLiteral) -> Result<CanonicalValue, QueryExecutionError> {

@@ -1,8 +1,8 @@
 use riffdb_contract_ir::KeySchema;
 use riffdb_riffql_syntax::Cardinality;
 use riffdb_types::{
-    ContractBundleHash, ContractLineage, ContractVersion, EntityTypeId, FieldId, IndexId,
-    QueryPlanHash, hash_query_plan,
+    ContractBundleHash, ContractLineage, ContractVersion, EntityTypeId, EnumTypeId, EnumVariantId,
+    FieldId, IndexId, QueryPlanHash, hash_query_plan,
 };
 
 use crate::{
@@ -18,6 +18,20 @@ pub enum AccessDirection {
     Forward,
     /// Complete reverse of declared index order.
     Reverse,
+}
+
+/// Runtime row-limit source for one access step.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum QueryRowLimit {
+    /// Fixed positive source literal.
+    Literal(u64),
+    /// Typed `Limit` parameter with an optional source default.
+    Parameter {
+        /// Parameter name without `$`.
+        name: String,
+        /// Positive default, when declared.
+        default: Option<u64>,
+    },
 }
 
 /// Closed normalized predicate operator.
@@ -76,6 +90,12 @@ pub enum QueryPredicateValue {
         enumeration: String,
         /// Variant name.
         variant: String,
+        /// Compiler-internal enum identity.
+        #[doc(hidden)]
+        type_id: EnumTypeId,
+        /// Compiler-internal variant identity.
+        #[doc(hidden)]
+        variant_id: EnumVariantId,
     },
     /// Plan literal; debug and explain representations redact its value.
     Literal(QueryLiteral),
@@ -93,6 +113,7 @@ impl std::fmt::Debug for QueryPredicateValue {
             Self::EnumVariant {
                 enumeration,
                 variant,
+                ..
             } => formatter
                 .debug_struct("EnumVariant")
                 .field("enumeration", enumeration)
@@ -170,12 +191,14 @@ pub struct QueryAccessStep {
     entity: String,
     cardinality: Cardinality,
     maximum_rows: u64,
+    row_limit: QueryRowLimit,
     access: QueryAccessKind,
     predicates: Vec<QueryPredicate>,
     predicate_fields: Vec<String>,
     selected_fields: Vec<String>,
     result_names: Vec<String>,
     absence_outcome: Option<String>,
+    cursor_parameter: Option<String>,
     dependencies: Vec<String>,
     entity_id: EntityTypeId,
     index_id: Option<IndexId>,
@@ -191,6 +214,7 @@ impl std::fmt::Debug for QueryAccessStep {
             .field("entity", &self.entity)
             .field("cardinality", &self.cardinality)
             .field("maximum_rows", &self.maximum_rows)
+            .field("row_limit", &self.row_limit)
             .field("access", &self.access)
             .field("predicates", &self.predicates)
             .field("predicate_fields", &self.predicate_fields)
@@ -198,6 +222,7 @@ impl std::fmt::Debug for QueryAccessStep {
             .field("result_names", &self.result_names)
             .field("dependencies", &self.dependencies)
             .field("absence_outcome", &self.absence_outcome)
+            .field("cursor_parameter", &self.cursor_parameter)
             .finish()
     }
 }
@@ -225,6 +250,12 @@ impl QueryAccessStep {
     #[must_use]
     pub const fn maximum_rows(&self) -> u64 {
         self.maximum_rows
+    }
+
+    /// Source of the request-specific row limit.
+    #[must_use]
+    pub const fn row_limit(&self) -> &QueryRowLimit {
+        &self.row_limit
     }
 
     /// Selected physical access.
@@ -261,6 +292,12 @@ impl QueryAccessStep {
     #[must_use]
     pub fn absence_outcome(&self) -> Option<&str> {
         self.absence_outcome.as_deref()
+    }
+
+    /// Optional cursor parameter associated with this access.
+    #[must_use]
+    pub fn cursor_parameter(&self) -> Option<&str> {
+        self.cursor_parameter.as_deref()
     }
 
     /// Compiler-internal stable entity identity.
@@ -304,12 +341,14 @@ impl QueryAccessStep {
         entity: String,
         cardinality: Cardinality,
         maximum_rows: u64,
+        row_limit: QueryRowLimit,
         access: QueryAccessKind,
         predicates: Vec<QueryPredicate>,
         predicate_fields: Vec<String>,
         selected_fields: Vec<String>,
         result_names: Vec<String>,
         absence_outcome: Option<String>,
+        cursor_parameter: Option<String>,
         dependencies: Vec<String>,
         entity_id: EntityTypeId,
         index_id: Option<IndexId>,
@@ -332,12 +371,14 @@ impl QueryAccessStep {
             entity,
             cardinality,
             maximum_rows,
+            row_limit,
             access,
             predicates,
             predicate_fields,
             selected_fields,
             result_names,
             absence_outcome,
+            cursor_parameter,
             dependencies,
             entity_id,
             index_id,
@@ -625,6 +666,17 @@ fn encode_program(
             Cardinality::Many => 3,
         });
         out.extend_from_slice(&step.maximum_rows.to_be_bytes());
+        match &step.row_limit {
+            QueryRowLimit::Literal(value) => {
+                out.push(1);
+                out.extend_from_slice(&value.to_be_bytes());
+            }
+            QueryRowLimit::Parameter { name, default } => {
+                out.push(2);
+                write_text(&mut out, name)?;
+                out.extend_from_slice(&default.unwrap_or(0).to_be_bytes());
+            }
+        }
         match &step.access {
             QueryAccessKind::Point { key_fields } => {
                 out.push(1);
@@ -654,6 +706,7 @@ fn encode_program(
         write_strings(&mut out, &step.selected_fields)?;
         write_strings(&mut out, &step.result_names)?;
         write_text(&mut out, step.absence_outcome.as_deref().unwrap_or(""))?;
+        write_text(&mut out, step.cursor_parameter.as_deref().unwrap_or(""))?;
         write_strings(&mut out, &step.dependencies)?;
     }
     write_count(&mut out, authorization.len())?;
@@ -692,10 +745,15 @@ fn encode_predicate_value(out: &mut Vec<u8>, value: &QueryPredicateValue) -> Opt
         QueryPredicateValue::EnumVariant {
             enumeration,
             variant,
+            type_id,
+            variant_id,
         } => {
             out.push(3);
             write_text(out, enumeration)?;
-            write_text(out, variant)
+            write_text(out, variant)?;
+            out.extend_from_slice(&type_id.get().to_be_bytes());
+            out.extend_from_slice(&variant_id.get().to_be_bytes());
+            Some(())
         }
         QueryPredicateValue::Literal(literal) => {
             out.push(4);

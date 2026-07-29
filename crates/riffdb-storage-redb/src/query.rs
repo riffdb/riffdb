@@ -1,11 +1,12 @@
 //! One-transaction owned composite-query snapshots for redb.
 
 use std::collections::BTreeMap;
+use std::ops::Bound::{Excluded, Included};
 
 use redb::ReadOnlyTable;
 use riffdb_query_executor::{
-    BoundPredicate, QueryExecutionError, QueryExecutionPort, QueryOwnedSnapshot, QueryParameters,
-    QueryReadView, QueryRow, QueryScanPage, execute_in_snapshot,
+    BoundPredicate, QueryContinuation, QueryExecutionError, QueryExecutionPort, QueryOwnedSnapshot,
+    QueryParameters, QueryReadView, QueryRow, QueryScanPage, execute_page_in_snapshot,
 };
 use riffdb_query_ir::{
     AccessDirection, QueryAccessKind, QueryAccessProgramV1, QueryAccessStep, QueryPredicateOperator,
@@ -23,10 +24,11 @@ use crate::store::RedbOperationalPorts;
 type BytesTable = ReadOnlyTable<&'static [u8], &'static [u8]>;
 
 impl QueryExecutionPort for RedbOperationalPorts {
-    fn execute_query(
+    fn execute_query_page(
         &self,
         program: &QueryAccessProgramV1,
         parameters: &QueryParameters,
+        prior: Option<&QueryContinuation>,
     ) -> Result<QueryOwnedSnapshot, QueryExecutionError> {
         let transaction = self
             .begin_read()
@@ -53,7 +55,7 @@ impl QueryExecutionPort for RedbOperationalPorts {
             head,
             program,
         };
-        execute_in_snapshot(program, parameters, &mut view)
+        execute_page_in_snapshot(program, parameters, prior, &mut view)
     }
 }
 
@@ -104,6 +106,8 @@ impl QueryReadView for RedbQueryView<'_> {
         &mut self,
         step: &QueryAccessStep,
         predicates: &[BoundPredicate],
+        limit: u64,
+        after: Option<&[u8]>,
     ) -> Result<QueryScanPage, Self::Error> {
         let QueryAccessKind::Index {
             fields, direction, ..
@@ -118,40 +122,70 @@ impl QueryReadView for RedbQueryView<'_> {
             .map_err(|_| invariant())?;
         let epoch = read_epoch(&self.epochs, epoch_prefix.as_bytes())?;
         let mut entries = Vec::<(IndexEntryKey, riffdb_storage_api::StoredIndexEntryV2)>::new();
-        for values in index_prefixes(fields, predicates)? {
-            let prefix = schema
-                .encode_index_prefix(&values)
-                .map_err(|_| invariant())?;
+        let mut prefixes = index_prefixes(fields, predicates)?
+            .into_iter()
+            .map(|values| schema.encode_index_prefix(&values).map_err(|_| invariant()))
+            .collect::<Result<Vec<_>, _>>()?;
+        prefixes.sort_unstable_by(|left, right| left.as_bytes().cmp(right.as_bytes()));
+        let unique_len = prefixes.len();
+        prefixes.dedup_by(|left, right| left.as_bytes() == right.as_bytes());
+        if prefixes.len() != unique_len {
+            return Err(invariant());
+        }
+        if *direction == AccessDirection::Reverse {
+            prefixes.reverse();
+        }
+
+        'prefixes: for prefix in prefixes {
+            let upper = exclusive_prefix_end(prefix.as_bytes()).ok_or_else(invariant)?;
+            if after.is_some_and(|after| match direction {
+                AccessDirection::Forward => upper.as_slice() <= after,
+                AccessDirection::Reverse => prefix.as_bytes() > after,
+            }) {
+                continue;
+            }
+            let lower_bound = match (direction, after) {
+                (AccessDirection::Forward, Some(after)) if after.starts_with(prefix.as_bytes()) => {
+                    Excluded(after)
+                }
+                _ => Included(prefix.as_bytes()),
+            };
+            let upper_bound = match (direction, after) {
+                (AccessDirection::Reverse, Some(after)) if after.starts_with(prefix.as_bytes()) => {
+                    Excluded(after)
+                }
+                _ => Excluded(upper.as_slice()),
+            };
             let mut range = self
                 .indexes
-                .range(prefix.as_bytes()..)
+                .range::<&[u8]>((lower_bound, upper_bound))
                 .map_err(precommit_storage_error)?;
-            for entry in &mut range {
-                let (physical_key, encoded) = entry.map_err(precommit_storage_error)?;
-                if !physical_key.value().starts_with(prefix.as_bytes()) {
-                    break;
+            match direction {
+                AccessDirection::Forward => {
+                    for entry in &mut range {
+                        entries.push(decode_current_index_entry(
+                            entry.map_err(precommit_storage_error)?,
+                        )?);
+                        if entries.len() == limit as usize {
+                            break 'prefixes;
+                        }
+                    }
                 }
-                let key = decode_index_entry_key(physical_key.value()).map_err(|_| corrupt())?;
-                let decoded = decode_index_entry_v2(encoded.value())?.into_parts().0;
-                if decoded.key() != &key {
-                    return Err(corrupt());
-                }
-                entries.push((key, decoded));
-                if entries.len() > 501 {
-                    return Err(storage_error(StorageErrorKind::LimitExceeded));
+                AccessDirection::Reverse => {
+                    while let Some(entry) = range.next_back() {
+                        entries.push(decode_current_index_entry(
+                            entry.map_err(precommit_storage_error)?,
+                        )?);
+                        if entries.len() == limit as usize {
+                            break 'prefixes;
+                        }
+                    }
                 }
             }
         }
-        entries.sort_unstable_by(|left, right| left.0.cmp(&right.0));
-        entries.dedup_by(|left, right| left.0 == right.0);
-        if *direction == AccessDirection::Reverse {
-            entries.reverse();
-        }
-        let scanned_rows = u64::try_from(entries.len().min(500))
+        let scanned_rows = u64::try_from(entries.len())
             .map_err(|_| storage_error(StorageErrorKind::LimitExceeded))?;
-        let has_more = entries.len() > step.maximum_rows() as usize;
-        entries.truncate(step.maximum_rows() as usize);
-        let continuation = has_more
+        let continuation = (entries.len() == limit as usize)
             .then(|| entries.last().map(|entry| entry.0.as_bytes().to_vec()))
             .flatten();
         let rows = entries
@@ -173,6 +207,29 @@ impl QueryReadView for RedbQueryView<'_> {
             None => Ok(QueryScanPage::exact_end(rows, epoch)),
         }
     }
+}
+
+fn decode_current_index_entry(
+    entry: (
+        redb::AccessGuard<'_, &'static [u8]>,
+        redb::AccessGuard<'_, &'static [u8]>,
+    ),
+) -> Result<(IndexEntryKey, riffdb_storage_api::StoredIndexEntryV2), StorageError> {
+    let (physical_key, encoded) = entry;
+    let key = decode_index_entry_key(physical_key.value()).map_err(|_| corrupt())?;
+    let decoded = decode_index_entry_v2(encoded.value())?.into_parts().0;
+    if decoded.key() != &key {
+        return Err(corrupt());
+    }
+    Ok((key, decoded))
+}
+
+fn exclusive_prefix_end(prefix: &[u8]) -> Option<Vec<u8>> {
+    let mut upper = prefix.to_vec();
+    let position = upper.iter().rposition(|byte| *byte != u8::MAX)?;
+    upper[position] = upper[position].saturating_add(1);
+    upper.truncate(position + 1);
+    Some(upper)
 }
 
 fn read_epoch(table: &BytesTable, prefix: &[u8]) -> Result<u64, StorageError> {
@@ -293,7 +350,9 @@ mod tests {
 
     use riffdb_contract_compiler::compile_contract_source;
     use riffdb_query_compiler::compile_query;
-    use riffdb_query_executor::{QueryExecutionPort, QueryParameters, QueryResultValue};
+    use riffdb_query_executor::{
+        QueryContinuation, QueryExecutionPort, QueryParameters, QueryResultValue,
+    };
     use riffdb_query_ir::SymbolicCatalog;
     use riffdb_riffql_syntax::parse_query;
     use riffdb_storage_api::{
@@ -323,7 +382,20 @@ query PointTicket(
     outcomes Found | NotFound
 }
 "#;
-    const MEMBERS_QUERY: &str = include_str!("../../../queries/ticketdesk/project_members.riffq");
+    const MEMBERS_QUERY: &str = r#"
+query ProjectMembers(
+    $organization_id: Organization.organization_id,
+    $project_id: Project.project_id,
+    $after: Cursor?,
+) {
+    many memberships from ProjectMember
+        where organization_id == $organization_id && project_id == $project_id
+        order by user_id asc
+        take 1 after $after
+    return Found { members: memberships { user_id role } }
+    outcomes Found
+}
+"#;
     static NEXT_PATH: AtomicU64 = AtomicU64::new(1);
 
     struct TestPath(PathBuf);
@@ -549,7 +621,28 @@ query PointTicket(
         let snapshot = ports.execute_query(&program, &parameters).expect("query");
         assert!(matches!(
             snapshot.fields().get("members"),
-            Some(QueryResultValue::Many(rows)) if rows.len() == 2
+            Some(QueryResultValue::Many(rows)) if rows.len() == 1
+        ));
+        let first_user = match snapshot.fields().get("members") {
+            Some(QueryResultValue::Many(rows)) => rows[0].field("user_id").cloned(),
+            _ => None,
+        };
+        let cursor = QueryContinuation::checked(
+            snapshot
+                .continuation_binding()
+                .expect("continuation binding")
+                .to_owned(),
+            snapshot.continuation().expect("continuation").to_vec(),
+            snapshot.index_epochs().clone(),
+        )
+        .expect("cursor");
+        let second = ports
+            .execute_query_page(&program, &parameters, Some(&cursor))
+            .expect("second page");
+        assert!(matches!(
+            second.fields().get("members"),
+            Some(QueryResultValue::Many(rows))
+                if rows.len() == 1 && rows[0].field("user_id").cloned() != first_user
         ));
     }
 }
