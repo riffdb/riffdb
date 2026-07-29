@@ -351,6 +351,7 @@ failure outside the explicitly local development workflow.
 | Contract, query, manifest, and role failures lose their source spans and actionable causes at the CLI | Blog/Rust and both Orders runs | WP-350 authoring diagnostics |
 | The sealed public bundle has a RiffQL reference but no complete contract-language reference or machine-readable manifest schema | Blog/Rust | WP-355 public authoring kit |
 | The TypeScript scaffold does not start as a complete offline web application without dependency and script repair | Orders/TypeScript | WP-360 TypeScript and builder-MCP parity |
+| Synchronous sole-writer redb command throughput degrades sharply as retained state grows | Post-campaign application comparison | WP-362 durability-preserving performance investigation |
 | An unbacked HTTP page could be recorded as a first page read even though the golden result remained false | Blog/TypeScript | WP-365 evaluation-harness correction |
 
 The existing Blog/CMS and Orders/Inventory corpora already compile and run
@@ -505,6 +506,31 @@ WP-360 exits when both generated repositories build offline and serve the same
 golden observation, and CLI/MCP differential tests prove identical diagnostic,
 lock, operation, and authority semantics.
 
+### WP-362 — growing-database command throughput
+
+The post-campaign comparison found a separate storage-side defect: synchronous
+sole-writer commands with redb immediate durability and multi-table record
+graphs degrade sharply as retained state grows. This is not a deadlock and is
+not explained by gRPC framing.
+
+WP-362 first adds a reproducible retained-size sweep that separates queue wait,
+evaluation, transaction-current reads, table/page work, commit call, durable
+flush, file growth, and recovery. Every result runs the semantic and
+crash/reopen preflight and names the exact configured durability.
+
+The likely safe optimization is bounded multi-command staging so several
+independently admitted, validated, idempotent commands share one durable flush.
+The existing semantic storage boundary anticipates such staging, but production
+group scheduling is not currently enabled. Before implementation, an exact
+durability/performance ADR must freeze the batch window, fairness, cancellation,
+failure, acknowledgement, and crash semantics.
+
+Disabling redb two-phase commit, changing acknowledgement durability, changing
+the atomic record graph, or enabling group scheduling without that decision is
+not an acceptable benchmark fix. The final checked profile must retain at least
+half of initial steady-state throughput as data grows and remain above 50
+committed commands per second.
+
 ### WP-365 — public-only rehearsal and canary gate
 
 Another four-run campaign is too expensive to use as the first regression
@@ -515,8 +541,10 @@ test. WP-365 adds a prerequisite public-only rehearsal:
    Orders corpora in both Rust and TypeScript using only that bundle.
 3. Inject stale-lock, invalid-contract, missing-index, unsafe-role, and
    interrupted-generation failures and assert actionable recovery.
-4. Run two fresh canary agents: Blog/Rust and Orders/TypeScript.
-5. Proceed to an official campaign only if both canaries complete their golden
+4. Pass the growing-database command-throughput gate under the exact reviewed
+   durability mode.
+5. Run two fresh canary agents: Blog/Rust and Orders/TypeScript.
+6. Proceed to an official campaign only if both canaries complete their golden
    workloads with zero intervention, zero glue/kernel/source access, and
    ratings of at least 8.5.
 

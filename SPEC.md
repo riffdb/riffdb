@@ -6,7 +6,7 @@
 **Tagline:** *Vibe fast. Commit safely.*  
 **Category:** Contract-first operational database for agent-built applications  
 
-**Version:** 0.40
+**Version:** 0.41
 **Status:** Application-platform implementation handoff
 **Date:** 29 July 2026
 **Audience:** Coding agents, database engineers, compiler engineers, security reviewers, and technical product leads  
@@ -76,6 +76,7 @@
 | 0.38 | 2026-07-29 | Applied accepted ADR-0055 and planned WP-280 through WP-300: separated stable named-application, scoped ad-hoc-agent, and kernel authority; required private derived query proofs, whole-request execution fuel, declared relationship and uniqueness integrity, safe generated defaults, and negative application canaries. |
 | 0.39 | 2026-07-29 | Planned the proposed post-WP-300 Agent Application Alpha gate and WP-305 through WP-340: complete generated bindings, symbolic roles, structured public application errors, resumable command batches, canonical scaffolding and package boundaries, TypeScript runtime parity, evidence-driven RiffQL growth, and four sealed unfamiliar-domain agent evaluations before operational alpha or replication. ADR-0056 remains Proposed pending exact human acceptance. |
 | 0.40 | 2026-07-29 | Applied accepted ADR-0056 after the maintainer directed implementation of the complete Agent Application Alpha phase. WP-305 through WP-340 may begin in dependency order; their exact public/durable/grammar fixtures retain the human review checkpoints named by the accepted record. |
+| 0.41 | 2026-07-29 | Applied accepted ADR-0057 after four sealed Terra evaluations failed the application-authoring gate: authors own symbolic intent, the compiler owns an exact lock and every derived identity, diagnostics remain source-spanned and bounded, scaffolding supports an existing empty repository, TypeScript and builder MCP become complete public paths, public-only rehearsals and canaries precede campaign 02, and growing-database command degradation receives an independent durability-preserving gate. |
 
 ### Normative language
 
@@ -5144,7 +5145,8 @@ reaches its first write within 30 minutes and first page-shaped read within
 60 minutes; and rates the experience at least 8.5/10.
 
 **P4 work-package members:** WP-305, WP-310, WP-315, WP-320, WP-325,
-WP-330, WP-335, and WP-340.
+WP-330, WP-335, WP-340, WP-345, WP-350, WP-355, WP-360, WP-362,
+WP-365, and WP-370.
 
 ## 20.5 Stage A — single-node alpha hardening
 
@@ -5323,6 +5325,7 @@ earlier deadline governs unless a reviewed reconciliation changes both sources.
 | `ADR-0054` | Accepted | Bounded collection-to-complete-key dependencies, explicit missing-target outcomes, and one-snapshot dependent point batches | WP-275 |
 | `ADR-0055` | Accepted | Disjoint stable-application, ad-hoc-agent, and kernel authority; private exact-plan proofs; whole-query fuel; declared relationship/uniqueness integrity; and negative safety canaries | WP-280 through WP-300 |
 | `ADR-0056` | Accepted | Agent Application Alpha before operational/distributed alpha; complete generated bindings, symbolic roles, structured application errors, command batches, canonical scaffolding, TypeScript parity, evidence-driven RiffQL growth, and sealed independent evaluation | WP-305 through WP-340 |
+| `ADR-0057` | Accepted | Compiler-owned exact application lock, bounded authoring diagnostics, empty-directory scaffold, complete public authoring kit, TypeScript/builder-MCP parity, durability-preserving performance investigation, rehearsals, canaries, and campaign 02 | WP-345 through WP-370 |
 
 ## 22.2 Decisions to resolve before implementation reaches the named gate
 
@@ -5779,6 +5782,15 @@ ADR-0055.
   cost MUST be at most 1 ms. A missed gate blocks WP-270 rather than weakening
   authorization, durability, snapshot, command, audit, or compatibility
   semantics.
+- `PERF-003`: The release-derived application benchmark MUST publish command
+  throughput and commit-duration samples across increasing retained database
+  sizes under the exact configured acknowledgement durability. The final
+  measured window MUST retain at least 50 percent of the first steady-state
+  window's throughput and MUST NOT fall below 50 committed commands per second
+  on the checked reference-machine profile. A miss blocks Agent Application
+  Alpha. It MUST NOT be repaired by silently reducing durability, disabling a
+  reviewed crash defense, weakening atomic records, or acknowledging before
+  the configured durable boundary.
 
 The milestone is complete only when WP-205 through WP-300 pass their package
 acceptance commands and an independent fresh-agent TicketDesk run satisfies
@@ -5862,10 +5874,47 @@ contract.
   completion, source access, and rating. Every run MUST meet the thresholds in
   SPEC Section 20.4.2; failures MUST reopen the owning package rather than be
   patched in the evaluator.
+- `AAA-013`: Application authors MUST declare only symbolic source, role,
+  generation-target, and seed intent. The compiler MUST produce one
+  deterministic exact lock covering source, contract, module, query, plan,
+  schema, role-authority, compiler-format, and generated-artifact identities.
+  Generation, role binding, and non-development deployment MUST reject missing,
+  stale, partial, or mismatched locks. No lock-writing operation may deploy,
+  grant, bind, invoke, or silently widen authority.
+- `AAA-014`: Contract, query, planner, manifest, role, lock, generation, and
+  scaffold failures MUST retain one bounded machine-readable authoring
+  diagnostic with stable stage/code, source span when available, symbolic
+  path, closed cause/fix codes, file-change disposition, and retry
+  classification. Diagnostics MUST NOT contain credentials, runtime values,
+  hidden schema, arbitrary engine prose, or internal sources.
+- `AAA-015`: `riffdb new` MUST support a new child or an existing empty regular
+  writable directory without overwriting or following a destination symlink.
+  The public bundle MUST contain the complete versioned contract-language
+  reference, command/invariant cookbook, machine-readable application schema,
+  inspection workflow, domain-neutral examples, and negative diagnostic
+  examples needed to replace the scaffold through public inputs alone.
+- `AAA-016`: The generated TypeScript repository MUST be a complete
+  offline-buildable server-side web application with exact product runtime and
+  toolchain inputs. Builder MCP MUST expose the same bounded local describe,
+  check, diagnostic, lock-preview, explicit lock-write, and generation
+  semantics as CLI while possessing no storage, deployment, role-binding,
+  execution, or credential authority.
+- `AAA-017`: Before an official rerun, one sealed public-only rehearsal MUST
+  complete Blog and Orders in Rust and TypeScript and exercise invalid source,
+  stale lock, missing index, unsafe role, interrupted generation, and the
+  growing-database performance gate. Two fresh canary agents MUST then
+  complete Blog/Rust and Orders/TypeScript with every AAA-012 threshold,
+  including ratings of at least 8.5.
+- `AAA-018`: Evaluation evidence MUST retain failed campaigns immutably and
+  select one exact bundle/campaign. First-write and first-page metrics count
+  only generated RiffDB operations whose returned contract, module, query,
+  plan, and commit identities match the golden workload. An unbacked
+  application response or harness self-test MUST NOT satisfy an agent metric.
 
-The milestone is complete only when WP-305 through WP-340 pass, ADR-0056 and
-every language or public/durable interface decision required by those packages
-is accepted, and the raw sealed evaluation reports are published.
+The milestone is complete only when WP-305 through WP-370 pass, ADR-0056,
+ADR-0057, and every language or public/durable interface decision required by
+those packages is accepted, and the raw sealed evaluation reports are
+published.
 
 ---
 
