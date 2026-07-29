@@ -43,6 +43,14 @@ regenerates all bindings, checks the application boundary, executes seed JSONL
 through ordinary idempotent commands, and shuts down its child on failure or
 interrupt. Credentials live only in a mode-protected temporary directory.
 
+A release installation places the reviewed `riffdb-dev` workflow beside the
+`riffdb` and `riffdbd` binaries. That installed workflow takes precedence over
+an application-local script, so opening an unfamiliar repository cannot
+replace the development control plane. Source checkouts retain the
+application-local fallback for first-party development. The release workflow
+uses only installed binaries and public packages; it never rebuilds or reads
+RiffDB implementation source.
+
 ## The application boundary
 
 Handwritten application code may use the stable application facade and

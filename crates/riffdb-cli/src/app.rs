@@ -2,7 +2,7 @@ use std::collections::BTreeSet;
 use std::ffi::OsString;
 use std::fs;
 use std::io::{self, Read};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::{Command as ProcessCommand, ExitCode};
 
 use base64::Engine as _;
@@ -244,17 +244,15 @@ fn run_dev(
             return ExitCode::FAILURE;
         }
     };
-    let workspace_script = application_root.join("scripts/riffdb-dev");
-    let source_script = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../scripts/riffdb-dev");
-    let script = if workspace_script.is_file() {
-        workspace_script
-    } else {
-        source_script
-    };
-    if !script.is_file() {
+    let current_executable = std::env::current_exe().ok();
+    let Some(script) = resolve_dev_script(
+        &application_root,
+        current_executable.as_deref(),
+        Path::new(env!("CARGO_MANIFEST_DIR")),
+    ) else {
         eprintln!("riffdb dev workflow is unavailable in this installation");
         return ExitCode::FAILURE;
-    }
+    };
     let mut command = ProcessCommand::new(script);
     command.args(["--role", role, "--seed-concurrency", seed_concurrency]);
     if application_root.join("riffdb.application.json").is_file() {
@@ -290,6 +288,26 @@ fn run_dev(
             ExitCode::FAILURE
         }
     }
+}
+
+fn resolve_dev_script(
+    application_root: &Path,
+    current_executable: Option<&Path>,
+    manifest_directory: &Path,
+) -> Option<PathBuf> {
+    if let Some(installed_script) = current_executable
+        .and_then(Path::parent)
+        .map(|directory| directory.join("riffdb-dev"))
+        .filter(|candidate| candidate.is_file())
+    {
+        return Some(installed_script);
+    }
+    let workspace_script = application_root.join("scripts/riffdb-dev");
+    if workspace_script.is_file() {
+        return Some(workspace_script);
+    }
+    let source_script = manifest_directory.join("../../scripts/riffdb-dev");
+    source_script.is_file().then_some(source_script)
 }
 
 async fn dispatch(
@@ -3304,6 +3322,47 @@ mod tests {
             restore_confirmation(true),
             OfflineMaintenanceReplacementConfirmation::AllowReplaceNonemptyTarget
         );
+    }
+
+    #[test]
+    fn dev_script_resolution_prefers_installation_then_workspace_then_source() {
+        let directory =
+            std::env::temp_dir().join(format!("riffdb-cli-dev-resolution-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&directory);
+        let application = directory.join("application");
+        let executable = directory.join("installation/bin/riffdb");
+        let installed = directory.join("installation/bin/riffdb-dev");
+        let manifest = directory.join("source/crates/riffdb-cli");
+        let source = directory.join("source/scripts/riffdb-dev");
+        fs::create_dir_all(application.join("scripts")).expect("application scripts");
+        fs::create_dir_all(executable.parent().expect("executable parent"))
+            .expect("installation bin");
+        fs::create_dir_all(&manifest).expect("source manifest");
+        fs::create_dir_all(source.parent().expect("source parent")).expect("source scripts");
+        fs::write(&source, b"source").expect("source workflow");
+
+        assert_eq!(
+            resolve_dev_script(&application, Some(&executable), &manifest),
+            Some(manifest.join("../../scripts/riffdb-dev"))
+        );
+        fs::write(&installed, b"installed").expect("installed workflow");
+        assert_eq!(
+            resolve_dev_script(&application, Some(&executable), &manifest),
+            Some(installed.clone())
+        );
+        let workspace = application.join("scripts/riffdb-dev");
+        fs::write(&workspace, b"workspace").expect("workspace workflow");
+        assert_eq!(
+            resolve_dev_script(&application, Some(&executable), &manifest),
+            Some(installed)
+        );
+        fs::remove_file(directory.join("installation/bin/riffdb-dev"))
+            .expect("remove installed workflow");
+        assert_eq!(
+            resolve_dev_script(&application, Some(&executable), &manifest),
+            Some(workspace)
+        );
+        fs::remove_dir_all(directory).expect("cleanup");
     }
 
     fn assert_terminal_omits(terminal: Terminal, needle: &[u8], mode: crate::cli::OutputMode) {
