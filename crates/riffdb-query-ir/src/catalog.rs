@@ -1,6 +1,6 @@
 use std::collections::BTreeMap;
 
-use riffdb_contract_ir::{ContractBundle, ExpressionKind, ValueType};
+use riffdb_contract_ir::{ContractBundle, ExpressionKind, KeySchema, ValueType};
 use riffdb_types::{EntityTypeId, EnumTypeId, EnumVariantId, FieldId, IndexId};
 
 use crate::{
@@ -50,6 +50,7 @@ pub struct IndexSymbol {
     id: IndexId,
     name: String,
     fields: Vec<String>,
+    key_schema: KeySchema,
 }
 
 impl IndexSymbol {
@@ -71,6 +72,13 @@ impl IndexSymbol {
     pub const fn internal_id(&self) -> IndexId {
         self.id
     }
+
+    /// Compiler-internal complete index key schema.
+    #[doc(hidden)]
+    #[must_use]
+    pub const fn internal_key_schema(&self) -> &KeySchema {
+        &self.key_schema
+    }
 }
 
 /// One exact entity symbol with deterministic name lookup.
@@ -82,6 +90,7 @@ pub struct EntitySymbol {
     indexes: BTreeMap<String, IndexSymbol>,
     primary_key: Vec<String>,
     partition_field: String,
+    primary_key_schema: KeySchema,
 }
 
 impl EntitySymbol {
@@ -125,6 +134,13 @@ impl EntitySymbol {
     #[must_use]
     pub fn partition_field(&self) -> &str {
         &self.partition_field
+    }
+
+    /// Compiler-internal complete entity key schema.
+    #[doc(hidden)]
+    #[must_use]
+    pub const fn internal_primary_key_schema(&self) -> &KeySchema {
+        &self.primary_key_schema
     }
 
     /// Compiler-internal stable identity.
@@ -251,6 +267,7 @@ impl SymbolicCatalog {
                     id: index.id(),
                     name: index.name().to_owned(),
                     fields: component_names,
+                    key_schema: index.key_schema().clone(),
                 };
                 if indexes.insert(symbol.name.clone(), symbol).is_some() {
                     return Err(invariant("duplicate exact-contract index"));
@@ -272,6 +289,7 @@ impl SymbolicCatalog {
                     })
                     .collect::<Result<Vec<_>, _>>()?,
                 partition_field: partition_name,
+                primary_key_schema: entity.primary_key().clone(),
             };
             if entities.insert(symbol.name.clone(), symbol).is_some() {
                 return Err(invariant("duplicate exact-contract entity"));

@@ -1,3 +1,4 @@
+use riffdb_contract_ir::KeySchema;
 use riffdb_riffql_syntax::Cardinality;
 use riffdb_types::{
     ContractBundleHash, ContractLineage, ContractVersion, EntityTypeId, FieldId, IndexId,
@@ -163,7 +164,7 @@ pub enum QueryAccessKind {
 }
 
 /// One ordered, bounded access in a closed program.
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Eq, PartialEq)]
 pub struct QueryAccessStep {
     binding: String,
     entity: String,
@@ -174,9 +175,31 @@ pub struct QueryAccessStep {
     predicate_fields: Vec<String>,
     selected_fields: Vec<String>,
     result_names: Vec<String>,
+    absence_outcome: Option<String>,
     dependencies: Vec<String>,
     entity_id: EntityTypeId,
     index_id: Option<IndexId>,
+    entity_key_schema: KeySchema,
+    index_key_schema: Option<KeySchema>,
+}
+
+impl std::fmt::Debug for QueryAccessStep {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("QueryAccessStep")
+            .field("binding", &self.binding)
+            .field("entity", &self.entity)
+            .field("cardinality", &self.cardinality)
+            .field("maximum_rows", &self.maximum_rows)
+            .field("access", &self.access)
+            .field("predicates", &self.predicates)
+            .field("predicate_fields", &self.predicate_fields)
+            .field("selected_fields", &self.selected_fields)
+            .field("result_names", &self.result_names)
+            .field("dependencies", &self.dependencies)
+            .field("absence_outcome", &self.absence_outcome)
+            .finish()
+    }
 }
 
 impl QueryAccessStep {
@@ -234,6 +257,40 @@ impl QueryAccessStep {
         &self.result_names
     }
 
+    /// Declared result selected when an exact-one binding is absent.
+    #[must_use]
+    pub fn absence_outcome(&self) -> Option<&str> {
+        self.absence_outcome.as_deref()
+    }
+
+    /// Compiler-internal stable entity identity.
+    #[doc(hidden)]
+    #[must_use]
+    pub const fn internal_entity_id(&self) -> EntityTypeId {
+        self.entity_id
+    }
+
+    /// Compiler-internal selected index identity.
+    #[doc(hidden)]
+    #[must_use]
+    pub const fn internal_index_id(&self) -> Option<IndexId> {
+        self.index_id
+    }
+
+    /// Compiler-internal complete entity-key schema.
+    #[doc(hidden)]
+    #[must_use]
+    pub const fn internal_entity_key_schema(&self) -> &KeySchema {
+        &self.entity_key_schema
+    }
+
+    /// Compiler-internal complete selected-index key schema.
+    #[doc(hidden)]
+    #[must_use]
+    pub const fn internal_index_key_schema(&self) -> Option<&KeySchema> {
+        self.index_key_schema.as_ref()
+    }
+
     /// Earlier bindings supplying key values.
     #[must_use]
     pub fn dependencies(&self) -> &[String] {
@@ -252,9 +309,12 @@ impl QueryAccessStep {
         predicate_fields: Vec<String>,
         selected_fields: Vec<String>,
         result_names: Vec<String>,
+        absence_outcome: Option<String>,
         dependencies: Vec<String>,
         entity_id: EntityTypeId,
         index_id: Option<IndexId>,
+        entity_key_schema: KeySchema,
+        index_key_schema: Option<KeySchema>,
     ) -> Option<Self> {
         if binding.is_empty()
             || entity.is_empty()
@@ -277,9 +337,12 @@ impl QueryAccessStep {
             predicate_fields,
             selected_fields,
             result_names,
+            absence_outcome,
             dependencies,
             entity_id,
             index_id,
+            entity_key_schema,
+            index_key_schema,
         })
     }
 }
@@ -319,6 +382,25 @@ impl AuthorizationEntityAccess {
     #[must_use]
     pub const fn maximum_rows(&self) -> u64 {
         self.maximum_rows
+    }
+
+    /// Resolves one compiler-internal field identity by its exact public name.
+    #[doc(hidden)]
+    #[must_use]
+    pub fn internal_field_id(&self, name: &str) -> Option<FieldId> {
+        self.fields
+            .binary_search_by(|candidate| candidate.as_str().cmp(name))
+            .ok()
+            .map(|index| self.field_ids[index])
+    }
+
+    /// Compiler-internal name/field-ID pairs in canonical name order.
+    #[doc(hidden)]
+    pub fn internal_fields(&self) -> impl ExactSizeIterator<Item = (&str, FieldId)> {
+        self.fields
+            .iter()
+            .map(String::as_str)
+            .zip(self.field_ids.iter().copied())
     }
 
     #[doc(hidden)]
@@ -486,6 +568,16 @@ impl QueryAccessProgramV1 {
         &self.authorization
     }
 
+    /// Resolves the compiler-derived access record for one exact entity name.
+    #[doc(hidden)]
+    #[must_use]
+    pub fn internal_entity_access(&self, name: &str) -> Option<&AuthorizationEntityAccess> {
+        self.authorization
+            .binary_search_by(|candidate| candidate.entity.as_str().cmp(name))
+            .ok()
+            .map(|index| &self.authorization[index])
+    }
+
     /// Canonical bytes covered by the plan identity.
     #[must_use]
     pub fn canonical_bytes(&self) -> &[u8] {
@@ -561,6 +653,7 @@ fn encode_program(
         write_strings(&mut out, &step.predicate_fields)?;
         write_strings(&mut out, &step.selected_fields)?;
         write_strings(&mut out, &step.result_names)?;
+        write_text(&mut out, step.absence_outcome.as_deref().unwrap_or(""))?;
         write_strings(&mut out, &step.dependencies)?;
     }
     write_count(&mut out, authorization.len())?;
