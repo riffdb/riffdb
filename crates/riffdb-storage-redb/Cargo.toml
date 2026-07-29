@@ -14,12 +14,16 @@ test-fixtures = ["riffdb-storage-api/test-fixtures"]
 cap-std = { version = "=4.0.2", default-features = false }
 redb = { version = "=4.1.0", default-features = false }
 riffdb-catalog = { version = "0.1.0", path = "../riffdb-catalog", default-features = false }
+riffdb-query-executor = { path = "../riffdb-query-executor" }
+riffdb-query-ir = { path = "../riffdb-query-ir" }
 riffdb-storage-api = { version = "0.1.0", path = "../riffdb-storage-api" }
 riffdb-types = { version = "0.1.0", path = "../riffdb-types" }
 sha2 = { version = "=0.11.0", default-features = false }
 
 [dev-dependencies]
 riffdb-contract-compiler = { version = "0.1.0", path = "../riffdb-contract-compiler", default-features = false }
+riffdb-query-compiler = { path = "../riffdb-query-compiler" }
+riffdb-riffql-syntax = { path = "../riffdb-riffql-syntax" }
 riffdb-storage-api = { version = "0.1.0", path = "../riffdb-storage-api", features = ["test-fixtures"] }
 
 [[test]]

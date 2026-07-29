@@ -400,12 +400,11 @@ fn bind_predicates(
         .map(|predicate| {
             let value = match predicate.value() {
                 QueryPredicateValue::Parameter(name) => {
-                    parameters
-                        .get(name)
-                        .cloned()
-                        .ok_or_else(|| QueryExecutionError::MissingParameter {
+                    parameters.get(name).cloned().ok_or_else(|| {
+                        QueryExecutionError::MissingParameter {
                             parameter: name.clone(),
-                        })?
+                        }
+                    })?
                 }
                 QueryPredicateValue::BindingField { binding, field } => bindings
                     .get(binding)
@@ -460,8 +459,8 @@ fn predicates_match(
                 _ => return Err(QueryExecutionError::InvalidProgram),
             },
             operator => {
-                let ordering =
-                    scalar_order(actual, &predicate.value).ok_or(QueryExecutionError::UnsupportedPredicate)?;
+                let ordering = scalar_order(actual, &predicate.value)
+                    .ok_or(QueryExecutionError::UnsupportedPredicate)?;
                 match operator {
                     QueryPredicateOperator::Less => ordering == Ordering::Less,
                     QueryPredicateOperator::LessEqual => ordering != Ordering::Greater,

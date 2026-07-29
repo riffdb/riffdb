@@ -18,6 +18,8 @@ riffdb-types = { version = "0.1.0", path = "../riffdb-types", default-features =
 
 [dev-dependencies]
 riffdb-contract-compiler = { version = "0.1.0", path = "../riffdb-contract-compiler", default-features = false }
+riffdb-query-compiler = { path = "../riffdb-query-compiler" }
+riffdb-riffql-syntax = { path = "../riffdb-riffql-syntax" }
 riffdb-storage-api = { version = "0.1.0", path = "../riffdb-storage-api", default-features = false, features = ["test-fixtures"] }
 riffdb-testkit = { path = "../riffdb-testkit", version = "0.1.0" }
 
