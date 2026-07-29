@@ -30,7 +30,7 @@ pub use riffdb_proto::v1;
 pub use application::{
     ApplicationCardinality, ApplicationClientError, ApplicationCommand, ApplicationCommandResult,
     ApplicationContract, ApplicationRecord, ApplicationResultField, ApplicationValue, NamedQuery,
-    NamedQueryResult, StableApplicationClient,
+    NamedQueryResult, QueryOptions, StableApplicationClient, TypedCommandResult, TypedQueryResult,
 };
 pub use capability::{
     BootstrapCapabilityCreateTemplate, CapabilityCreateTemplateError,
@@ -60,5 +60,5 @@ pub use riffdb_errors::{
 };
 pub use riffdb_types::{
     BackupNameV1, BackupNameV1Error, OfflineMaintenanceOperationId,
-    OfflineMaintenanceReplacementConfirmation,
+    OfflineMaintenanceReplacementConfirmation, RequestId,
 };

@@ -742,6 +742,7 @@ pub struct NamedSymbolicQueryRequest {
     module_hash: Option<QueryModuleHash>,
     parameters: SymbolicQueryParameters,
     cursor: Option<CursorToken>,
+    minimum_application_head: Option<u64>,
 }
 
 impl NamedSymbolicQueryRequest {
@@ -761,6 +762,7 @@ impl NamedSymbolicQueryRequest {
             module_hash,
             parameters,
             cursor: None,
+            minimum_application_head: None,
         })
     }
 
@@ -769,6 +771,19 @@ impl NamedSymbolicQueryRequest {
     pub const fn with_cursor(mut self, cursor: CursorToken) -> Self {
         self.cursor = Some(cursor);
         self
+    }
+
+    /// Requires a snapshot at or after one positive application sequence.
+    #[must_use]
+    pub const fn with_minimum_application_head(mut self, minimum: u64) -> Self {
+        self.minimum_application_head = Some(minimum);
+        self
+    }
+
+    /// Minimum authoritative application head required by this read.
+    #[must_use]
+    pub const fn minimum_application_head(&self) -> Option<u64> {
+        self.minimum_application_head
     }
 }
 
@@ -779,6 +794,7 @@ pub struct ExecuteSymbolicQueryRequest {
     source: SymbolicQuerySource,
     parameters: SymbolicQueryParameters,
     cursor: Option<CursorToken>,
+    minimum_application_head: Option<u64>,
 }
 
 impl ExecuteSymbolicQueryRequest {
@@ -794,6 +810,7 @@ impl ExecuteSymbolicQueryRequest {
             source,
             parameters,
             cursor: None,
+            minimum_application_head: None,
         }
     }
 
@@ -802,6 +819,19 @@ impl ExecuteSymbolicQueryRequest {
     pub const fn with_cursor(mut self, cursor: CursorToken) -> Self {
         self.cursor = Some(cursor);
         self
+    }
+
+    /// Requires a snapshot at or after one positive application sequence.
+    #[must_use]
+    pub const fn with_minimum_application_head(mut self, minimum: u64) -> Self {
+        self.minimum_application_head = Some(minimum);
+        self
+    }
+
+    /// Minimum authoritative application head required by this read.
+    #[must_use]
+    pub const fn minimum_application_head(&self) -> Option<u64> {
+        self.minimum_application_head
     }
 
     /// Contract selector.
@@ -1495,6 +1525,7 @@ async fn execute_named_query(
         },
         request.parameters,
         request.cursor,
+        request.minimum_application_head,
     )
     .await
 }
@@ -1564,6 +1595,7 @@ async fn execute_query(
         QueryAuthority::AdHoc,
         request.parameters,
         request.cursor,
+        request.minimum_application_head,
     )
     .await
 }
@@ -1587,6 +1619,7 @@ async fn execute_compiled_query(
     authority: QueryAuthority,
     submitted: SymbolicQueryParameters,
     cursor: Option<CursorToken>,
+    minimum_application_head: Option<u64>,
 ) -> ServiceResult<ExecuteSymbolicQueryResult> {
     const OPERATION: ServiceOperationV1 = ServiceOperationV1::ExecuteQuery;
     if program.steps().len() > MAX_SYMBOLIC_QUERY_STEPS {
@@ -1665,6 +1698,10 @@ async fn execute_compiled_query(
             return Err(finish_failure(&service, &context, &begun, failure).await);
         }
     };
+    if minimum_application_head.is_some_and(|minimum| snapshot.application_head() < minimum) {
+        let failure = PublicError::concurrency_deadline_exceeded().into();
+        return Err(finish_failure(&service, &context, &begun, failure).await);
+    }
     begun.reauthorize(&service, &context).await?;
     let continuation = match (snapshot.continuation_binding(), snapshot.continuation()) {
         (Some(binding), Some(lower)) => QueryContinuation::checked(

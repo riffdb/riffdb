@@ -119,6 +119,8 @@ pub struct ExecuteQueryRequest {
     pub parameters: ::prost::alloc::vec::Vec<Parameter>,
     #[prost(string, optional, tag = "6")]
     pub cursor: ::core::option::Option<::prost::alloc::string::String>,
+    #[prost(uint64, optional, tag = "7")]
+    pub minimum_application_head: ::core::option::Option<u64>,
     #[prost(bytes = "vec", tag = "100")]
     pub request_id: ::prost::alloc::vec::Vec<u8>,
     #[prost(oneof = "execute_query_request::Query", tags = "2, 3")]

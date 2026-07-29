@@ -13,7 +13,14 @@ export function acceptsIdentity<P>(request: NamedQueryRequest<P>, identity: Quer
     && identity.moduleHash === request.moduleHash
     && identity.queryName === request.queryName;
 }
-export interface CommandRequest<I> { readonly commandName: string; readonly input: I; readonly idempotencyKey: string; }
+export interface CommandRequest<I> { readonly contractLineage: typeof CONTRACT_LINEAGE; readonly contractVersion: typeof CONTRACT_VERSION; readonly commandName: string; readonly planHash: string; readonly input: I; readonly idempotencyKey: string; }
+export interface TypedQueryResult<T> { readonly identity: QueryResponseIdentity; readonly value: T; readonly applicationHead: bigint; readonly nextCursor?: string; }
+export interface TypedCommandResult<T> { readonly outcome: T; readonly commitSequence?: bigint; readonly contractVersion: number; readonly planHash: string; readonly replayed: boolean; readonly outcomeUri?: string; }
+export interface QueryOptions { readonly cursor?: string; readonly readAfterCommit?: bigint; }
+export interface ApplicationTransport {
+  executeNamedQuery<P, R>(request: NamedQueryRequest<P>, options?: QueryOptions): Promise<TypedQueryResult<R>>;
+  executeCommand<I, R>(request: CommandRequest<I>, attemptBudget: number): Promise<TypedCommandResult<R>>;
+}
 
 export interface GetTicketParams {
   readonly organization_id: string;
@@ -64,7 +71,7 @@ export interface ListCommentsParams {
 
 export interface ListCommentsFound {
   readonly outcome: "Found";
-  readonly comments: ReadonlyArray<{ readonly comment_id: string; readonly body: string; readonly author_id: string; readonly created_at: string }>;
+  readonly comments: ReadonlyArray<{ readonly comment_id: string; readonly body: string; readonly author_id: string; readonly created_at: { readonly seconds: bigint; readonly nanos: number } }>;
 }
 
 export type ListCommentsResult = ListCommentsFound;
@@ -83,7 +90,7 @@ export interface ListTicketsParams {
 
 export interface ListTicketsFound {
   readonly outcome: "Found";
-  readonly tickets: ReadonlyArray<{ readonly ticket_id: string; readonly project_id: string; readonly title: string; readonly status: string; readonly updated_at: string; readonly reporter_id: string; readonly assignee_id: string }>;
+  readonly tickets: ReadonlyArray<{ readonly ticket_id: string; readonly project_id: string; readonly title: string; readonly status: string; readonly updated_at: { readonly seconds: bigint; readonly nanos: number }; readonly reporter_id: string; readonly assignee_id: string }>;
 }
 
 export type ListTicketsResult = ListTicketsFound;
@@ -102,7 +109,7 @@ export interface ListTicketsByAssigneeParams {
 
 export interface ListTicketsByAssigneeFound {
   readonly outcome: "Found";
-  readonly tickets: ReadonlyArray<{ readonly ticket_id: string; readonly project_id: string; readonly title: string; readonly status: string; readonly updated_at: string; readonly reporter_id: string; readonly assignee_id: string }>;
+  readonly tickets: ReadonlyArray<{ readonly ticket_id: string; readonly project_id: string; readonly title: string; readonly status: string; readonly updated_at: { readonly seconds: bigint; readonly nanos: number }; readonly reporter_id: string; readonly assignee_id: string }>;
 }
 
 export type ListTicketsByAssigneeResult = ListTicketsByAssigneeFound;
@@ -137,7 +144,7 @@ export interface ProjectSummaryParams {
 export interface ProjectSummaryFound {
   readonly outcome: "Found";
   readonly project: { readonly project_id: string; readonly name: string };
-  readonly recent_tickets: ReadonlyArray<{ readonly ticket_id: string; readonly title: string; readonly status: string; readonly updated_at: string }>;
+  readonly recent_tickets: ReadonlyArray<{ readonly ticket_id: string; readonly title: string; readonly status: string; readonly updated_at: { readonly seconds: bigint; readonly nanos: number } }>;
 }
 
 export interface ProjectSummaryNotFound {
@@ -158,12 +165,12 @@ export interface TicketPageParams {
 
 export interface TicketPageFound {
   readonly outcome: "Found";
-  readonly ticket: { readonly ticket_id: string; readonly project_id: string; readonly title: string; readonly status: string; readonly created_at: string; readonly updated_at: string };
+  readonly ticket: { readonly ticket_id: string; readonly project_id: string; readonly title: string; readonly status: string; readonly created_at: { readonly seconds: bigint; readonly nanos: number }; readonly updated_at: { readonly seconds: bigint; readonly nanos: number } };
   readonly project: { readonly project_id: string; readonly name: string };
   readonly organization: { readonly organization_id: string; readonly name: string };
   readonly reporter: { readonly user_id: string; readonly display_name: string };
   readonly assignee: { readonly user_id: string; readonly display_name: string } | null;
-  readonly comments: ReadonlyArray<{ readonly comment_id: string; readonly body: string; readonly author_id: string; readonly created_at: string }>;
+  readonly comments: ReadonlyArray<{ readonly comment_id: string; readonly body: string; readonly author_id: string; readonly created_at: { readonly seconds: bigint; readonly nanos: number } }>;
   readonly labels: ReadonlyArray<{ readonly label_id: string; readonly name: string }>;
 }
 
@@ -189,8 +196,11 @@ export interface AddProjectMemberInput {
   readonly organization_id: string;
 }
 
-export function addProjectMember(input: AddProjectMemberInput, idempotencyKey: string): CommandRequest<AddProjectMemberInput> {
-  return { commandName: "AddProjectMember", input, idempotencyKey };
+export type AddProjectMemberOutcome = { readonly outcome: "Created"; readonly member: { readonly role: string; readonly user_id: string; readonly created_at: { readonly seconds: bigint; readonly nanos: number }; readonly project_id: string; readonly organization_id: string } } | { readonly outcome: "UserMissing"; readonly user_id: string } | { readonly outcome: "MemberExists"; readonly user_id: string; readonly project_id: string } | { readonly outcome: "ProjectMissing"; readonly project_id: string };
+
+export const ADD_PROJECT_MEMBER_PLAN_HASH = "c8e03938e4e8412c217e850b33bce01407ee90ba535e43dee785281388bc7a58" as const;
+export function addProjectMember(input: AddProjectMemberInput): CommandRequest<AddProjectMemberInput> {
+  return { contractLineage: CONTRACT_LINEAGE, contractVersion: CONTRACT_VERSION, commandName: "AddProjectMember", planHash: ADD_PROJECT_MEMBER_PLAN_HASH, input, idempotencyKey: input.idempotency_key };
 }
 
 export interface AttachLabelInput {
@@ -200,8 +210,11 @@ export interface AttachLabelInput {
   readonly organization_id: string;
 }
 
-export function attachLabel(input: AttachLabelInput, idempotencyKey: string): CommandRequest<AttachLabelInput> {
-  return { commandName: "AttachLabel", input, idempotencyKey };
+export type AttachLabelOutcome = { readonly outcome: "Created"; readonly link: { readonly label_id: string; readonly ticket_id: string; readonly created_at: { readonly seconds: bigint; readonly nanos: number }; readonly organization_id: string } } | { readonly outcome: "LinkExists"; readonly label_id: string; readonly ticket_id: string } | { readonly outcome: "LabelMissing"; readonly label_id: string } | { readonly outcome: "TicketMissing"; readonly ticket_id: string };
+
+export const ATTACH_LABEL_PLAN_HASH = "aaaeab0f219d8f84e637e45a0fbe52bd3befab6576e1f3c69febfcd0019d3aff" as const;
+export function attachLabel(input: AttachLabelInput): CommandRequest<AttachLabelInput> {
+  return { contractLineage: CONTRACT_LINEAGE, contractVersion: CONTRACT_VERSION, commandName: "AttachLabel", planHash: ATTACH_LABEL_PLAN_HASH, input, idempotencyKey: input.idempotency_key };
 }
 
 export interface CreateCommentInput {
@@ -213,8 +226,11 @@ export interface CreateCommentInput {
   readonly organization_id: string;
 }
 
-export function createComment(input: CreateCommentInput, idempotencyKey: string): CommandRequest<CreateCommentInput> {
-  return { commandName: "CreateComment", input, idempotencyKey };
+export type CreateCommentOutcome = { readonly outcome: "Created"; readonly comment: { readonly body: string; readonly author_id: string; readonly ticket_id: string; readonly comment_id: string; readonly created_at: { readonly seconds: bigint; readonly nanos: number }; readonly organization_id: string } } | { readonly outcome: "AuthorMissing"; readonly user_id: string } | { readonly outcome: "CommentExists"; readonly comment_id: string } | { readonly outcome: "TicketMissing"; readonly ticket_id: string };
+
+export const CREATE_COMMENT_PLAN_HASH = "b02d6787a576a02b4b9d7cead1a14fc41e0c2cc1bbd18402476e2ef83e1f767d" as const;
+export function createComment(input: CreateCommentInput): CommandRequest<CreateCommentInput> {
+  return { contractLineage: CONTRACT_LINEAGE, contractVersion: CONTRACT_VERSION, commandName: "CreateComment", planHash: CREATE_COMMENT_PLAN_HASH, input, idempotencyKey: input.idempotency_key };
 }
 
 export interface CreateLabelInput {
@@ -224,8 +240,11 @@ export interface CreateLabelInput {
   readonly organization_id: string;
 }
 
-export function createLabel(input: CreateLabelInput, idempotencyKey: string): CommandRequest<CreateLabelInput> {
-  return { commandName: "CreateLabel", input, idempotencyKey };
+export type CreateLabelOutcome = { readonly outcome: "Created"; readonly label: { readonly name: string; readonly label_id: string; readonly created_at: { readonly seconds: bigint; readonly nanos: number }; readonly organization_id: string } } | { readonly outcome: "LabelExists"; readonly label_id: string } | { readonly outcome: "OrganizationMissing"; readonly organization_id: string };
+
+export const CREATE_LABEL_PLAN_HASH = "ed33d0fbb9b0951fcf4ed70900f129180e0bb7164122dad74325d08d816d53f2" as const;
+export function createLabel(input: CreateLabelInput): CommandRequest<CreateLabelInput> {
+  return { contractLineage: CONTRACT_LINEAGE, contractVersion: CONTRACT_VERSION, commandName: "CreateLabel", planHash: CREATE_LABEL_PLAN_HASH, input, idempotencyKey: input.idempotency_key };
 }
 
 export interface CreateOrganizationInput {
@@ -234,8 +253,11 @@ export interface CreateOrganizationInput {
   readonly organization_id: string;
 }
 
-export function createOrganization(input: CreateOrganizationInput, idempotencyKey: string): CommandRequest<CreateOrganizationInput> {
-  return { commandName: "CreateOrganization", input, idempotencyKey };
+export type CreateOrganizationOutcome = { readonly outcome: "Created"; readonly organization: { readonly name: string; readonly created_at: { readonly seconds: bigint; readonly nanos: number }; readonly organization_id: string } } | { readonly outcome: "OrganizationExists"; readonly organization_id: string };
+
+export const CREATE_ORGANIZATION_PLAN_HASH = "15bb4a409548f7fa60f84c6194b58010beb40b6c8105f09209965cf4e7503811" as const;
+export function createOrganization(input: CreateOrganizationInput): CommandRequest<CreateOrganizationInput> {
+  return { contractLineage: CONTRACT_LINEAGE, contractVersion: CONTRACT_VERSION, commandName: "CreateOrganization", planHash: CREATE_ORGANIZATION_PLAN_HASH, input, idempotencyKey: input.idempotency_key };
 }
 
 export interface CreateProjectInput {
@@ -245,8 +267,11 @@ export interface CreateProjectInput {
   readonly organization_id: string;
 }
 
-export function createProject(input: CreateProjectInput, idempotencyKey: string): CommandRequest<CreateProjectInput> {
-  return { commandName: "CreateProject", input, idempotencyKey };
+export type CreateProjectOutcome = { readonly outcome: "Created"; readonly project: { readonly name: string; readonly created_at: { readonly seconds: bigint; readonly nanos: number }; readonly project_id: string; readonly organization_id: string } } | { readonly outcome: "ProjectExists"; readonly project_id: string } | { readonly outcome: "OrganizationMissing"; readonly organization_id: string };
+
+export const CREATE_PROJECT_PLAN_HASH = "cb8e36ae61946cee88344bc208ad9fcd7507efff5bbd29dfee3eaf2e6e4a8392" as const;
+export function createProject(input: CreateProjectInput): CommandRequest<CreateProjectInput> {
+  return { contractLineage: CONTRACT_LINEAGE, contractVersion: CONTRACT_VERSION, commandName: "CreateProject", planHash: CREATE_PROJECT_PLAN_HASH, input, idempotencyKey: input.idempotency_key };
 }
 
 export interface CreateTicketInput {
@@ -260,8 +285,11 @@ export interface CreateTicketInput {
   readonly organization_id: string;
 }
 
-export function createTicket(input: CreateTicketInput, idempotencyKey: string): CommandRequest<CreateTicketInput> {
-  return { commandName: "CreateTicket", input, idempotencyKey };
+export type CreateTicketOutcome = { readonly outcome: "Created"; readonly ticket: { readonly title: string; readonly status: string; readonly ticket_id: string; readonly created_at: { readonly seconds: bigint; readonly nanos: number }; readonly project_id: string; readonly updated_at: { readonly seconds: bigint; readonly nanos: number }; readonly assignee_id: string; readonly reporter_id: string; readonly organization_id: string } } | { readonly outcome: "TicketExists"; readonly ticket_id: string } | { readonly outcome: "ProjectMissing"; readonly project_id: string } | { readonly outcome: "AssigneeMissing"; readonly user_id: string } | { readonly outcome: "ReporterMissing"; readonly user_id: string };
+
+export const CREATE_TICKET_PLAN_HASH = "89e0877c9feb60cef4d6e4ee1393d3cfc05751324d71d29ca33218e90ccb64aa" as const;
+export function createTicket(input: CreateTicketInput): CommandRequest<CreateTicketInput> {
+  return { contractLineage: CONTRACT_LINEAGE, contractVersion: CONTRACT_VERSION, commandName: "CreateTicket", planHash: CREATE_TICKET_PLAN_HASH, input, idempotencyKey: input.idempotency_key };
 }
 
 export interface CreateUserInput {
@@ -272,7 +300,124 @@ export interface CreateUserInput {
   readonly organization_id: string;
 }
 
-export function createUser(input: CreateUserInput, idempotencyKey: string): CommandRequest<CreateUserInput> {
-  return { commandName: "CreateUser", input, idempotencyKey };
+export type CreateUserOutcome = { readonly outcome: "Created"; readonly user: { readonly email: string; readonly user_id: string; readonly created_at: { readonly seconds: bigint; readonly nanos: number }; readonly display_name: string; readonly organization_id: string } } | { readonly outcome: "UserExists"; readonly user_id: string } | { readonly outcome: "OrganizationMissing"; readonly organization_id: string };
+
+export const CREATE_USER_PLAN_HASH = "d6e386ce4608cbb4b91ac99755742cec0f3fd30e3a6f52280e862be2bfca0298" as const;
+export function createUser(input: CreateUserInput): CommandRequest<CreateUserInput> {
+  return { contractLineage: CONTRACT_LINEAGE, contractVersion: CONTRACT_VERSION, commandName: "CreateUser", planHash: CREATE_USER_PLAN_HASH, input, idempotencyKey: input.idempotency_key };
+}
+
+export class TicketDeskClient {
+  public constructor(
+    private readonly transport: ApplicationTransport,
+    private readonly commandAttemptBudget: number,
+  ) {
+    if (!Number.isInteger(commandAttemptBudget) || commandAttemptBudget < 1) throw new Error("invalid command attempt budget");
+  }
+
+  public async getTicket(parameters: GetTicketParams, options: QueryOptions = {}): Promise<TypedQueryResult<GetTicketResult>> {
+    const request = getTicket(parameters);
+    const result = await this.transport.executeNamedQuery<GetTicketParams, GetTicketResult>(request, options);
+    if (!acceptsIdentity(request, result.identity)) throw new Error("RiffDB application identity mismatch");
+    return result;
+  }
+
+  public async getUser(parameters: GetUserParams, options: QueryOptions = {}): Promise<TypedQueryResult<GetUserResult>> {
+    const request = getUser(parameters);
+    const result = await this.transport.executeNamedQuery<GetUserParams, GetUserResult>(request, options);
+    if (!acceptsIdentity(request, result.identity)) throw new Error("RiffDB application identity mismatch");
+    return result;
+  }
+
+  public async listComments(parameters: ListCommentsParams, options: QueryOptions = {}): Promise<TypedQueryResult<ListCommentsResult>> {
+    const request = listComments(parameters);
+    const result = await this.transport.executeNamedQuery<ListCommentsParams, ListCommentsResult>(request, options);
+    if (!acceptsIdentity(request, result.identity)) throw new Error("RiffDB application identity mismatch");
+    return result;
+  }
+
+  public async listTickets(parameters: ListTicketsParams, options: QueryOptions = {}): Promise<TypedQueryResult<ListTicketsResult>> {
+    const request = listTickets(parameters);
+    const result = await this.transport.executeNamedQuery<ListTicketsParams, ListTicketsResult>(request, options);
+    if (!acceptsIdentity(request, result.identity)) throw new Error("RiffDB application identity mismatch");
+    return result;
+  }
+
+  public async listTicketsByAssignee(parameters: ListTicketsByAssigneeParams, options: QueryOptions = {}): Promise<TypedQueryResult<ListTicketsByAssigneeResult>> {
+    const request = listTicketsByAssignee(parameters);
+    const result = await this.transport.executeNamedQuery<ListTicketsByAssigneeParams, ListTicketsByAssigneeResult>(request, options);
+    if (!acceptsIdentity(request, result.identity)) throw new Error("RiffDB application identity mismatch");
+    return result;
+  }
+
+  public async projectMembers(parameters: ProjectMembersParams, options: QueryOptions = {}): Promise<TypedQueryResult<ProjectMembersResult>> {
+    const request = projectMembers(parameters);
+    const result = await this.transport.executeNamedQuery<ProjectMembersParams, ProjectMembersResult>(request, options);
+    if (!acceptsIdentity(request, result.identity)) throw new Error("RiffDB application identity mismatch");
+    return result;
+  }
+
+  public async projectSummary(parameters: ProjectSummaryParams, options: QueryOptions = {}): Promise<TypedQueryResult<ProjectSummaryResult>> {
+    const request = projectSummary(parameters);
+    const result = await this.transport.executeNamedQuery<ProjectSummaryParams, ProjectSummaryResult>(request, options);
+    if (!acceptsIdentity(request, result.identity)) throw new Error("RiffDB application identity mismatch");
+    return result;
+  }
+
+  public async ticketPage(parameters: TicketPageParams, options: QueryOptions = {}): Promise<TypedQueryResult<TicketPageResult>> {
+    const request = ticketPage(parameters);
+    const result = await this.transport.executeNamedQuery<TicketPageParams, TicketPageResult>(request, options);
+    if (!acceptsIdentity(request, result.identity)) throw new Error("RiffDB application identity mismatch");
+    return result;
+  }
+
+  public async addProjectMember(input: AddProjectMemberInput): Promise<TypedCommandResult<AddProjectMemberOutcome>> {
+    const result = await this.transport.executeCommand<AddProjectMemberInput, AddProjectMemberOutcome>(addProjectMember(input), this.commandAttemptBudget);
+    if (result.contractVersion !== CONTRACT_VERSION || result.planHash !== ADD_PROJECT_MEMBER_PLAN_HASH) throw new Error("RiffDB application identity mismatch");
+    return result;
+  }
+
+  public async attachLabel(input: AttachLabelInput): Promise<TypedCommandResult<AttachLabelOutcome>> {
+    const result = await this.transport.executeCommand<AttachLabelInput, AttachLabelOutcome>(attachLabel(input), this.commandAttemptBudget);
+    if (result.contractVersion !== CONTRACT_VERSION || result.planHash !== ATTACH_LABEL_PLAN_HASH) throw new Error("RiffDB application identity mismatch");
+    return result;
+  }
+
+  public async createComment(input: CreateCommentInput): Promise<TypedCommandResult<CreateCommentOutcome>> {
+    const result = await this.transport.executeCommand<CreateCommentInput, CreateCommentOutcome>(createComment(input), this.commandAttemptBudget);
+    if (result.contractVersion !== CONTRACT_VERSION || result.planHash !== CREATE_COMMENT_PLAN_HASH) throw new Error("RiffDB application identity mismatch");
+    return result;
+  }
+
+  public async createLabel(input: CreateLabelInput): Promise<TypedCommandResult<CreateLabelOutcome>> {
+    const result = await this.transport.executeCommand<CreateLabelInput, CreateLabelOutcome>(createLabel(input), this.commandAttemptBudget);
+    if (result.contractVersion !== CONTRACT_VERSION || result.planHash !== CREATE_LABEL_PLAN_HASH) throw new Error("RiffDB application identity mismatch");
+    return result;
+  }
+
+  public async createOrganization(input: CreateOrganizationInput): Promise<TypedCommandResult<CreateOrganizationOutcome>> {
+    const result = await this.transport.executeCommand<CreateOrganizationInput, CreateOrganizationOutcome>(createOrganization(input), this.commandAttemptBudget);
+    if (result.contractVersion !== CONTRACT_VERSION || result.planHash !== CREATE_ORGANIZATION_PLAN_HASH) throw new Error("RiffDB application identity mismatch");
+    return result;
+  }
+
+  public async createProject(input: CreateProjectInput): Promise<TypedCommandResult<CreateProjectOutcome>> {
+    const result = await this.transport.executeCommand<CreateProjectInput, CreateProjectOutcome>(createProject(input), this.commandAttemptBudget);
+    if (result.contractVersion !== CONTRACT_VERSION || result.planHash !== CREATE_PROJECT_PLAN_HASH) throw new Error("RiffDB application identity mismatch");
+    return result;
+  }
+
+  public async createTicket(input: CreateTicketInput): Promise<TypedCommandResult<CreateTicketOutcome>> {
+    const result = await this.transport.executeCommand<CreateTicketInput, CreateTicketOutcome>(createTicket(input), this.commandAttemptBudget);
+    if (result.contractVersion !== CONTRACT_VERSION || result.planHash !== CREATE_TICKET_PLAN_HASH) throw new Error("RiffDB application identity mismatch");
+    return result;
+  }
+
+  public async createUser(input: CreateUserInput): Promise<TypedCommandResult<CreateUserOutcome>> {
+    const result = await this.transport.executeCommand<CreateUserInput, CreateUserOutcome>(createUser(input), this.commandAttemptBudget);
+    if (result.contractVersion !== CONTRACT_VERSION || result.planHash !== CREATE_USER_PLAN_HASH) throw new Error("RiffDB application identity mismatch");
+    return result;
+  }
+
 }
 

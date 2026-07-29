@@ -568,6 +568,52 @@ impl RiffDbClient {
             .map_err(GeneratedExecutionError::CommandShape)?;
         Ok(GeneratedExecution { response, outcome })
     }
+
+    /// Executes a generated command and performs one exact same-key outcome
+    /// lookup when the bounded submission loop ends in uncertainty.
+    pub async fn execute_generated_with_recovery<C: GeneratedCommand>(
+        &mut self,
+        command: &C,
+        attempt_budget: AttemptBudget,
+        metadata: &CallMetadata,
+    ) -> Result<GeneratedExecution<C::Outcome>, GeneratedExecutionError> {
+        let generic = command
+            .idempotent_command()
+            .map_err(GeneratedExecutionError::CommandShape)?;
+        let response = match self
+            .execute_with_retry(&generic, attempt_budget, metadata)
+            .await
+        {
+            Ok(response) => response,
+            Err(ClientError::OutcomeUnknown(_)) => {
+                let request_id = crate::generate_request_id().map_err(|_| {
+                    GeneratedExecutionError::Client(ClientError::OutcomeUnknown(
+                        crate::OutcomeUnknown,
+                    ))
+                })?;
+                let request = command
+                    .outcome_request(request_id)
+                    .map_err(GeneratedExecutionError::CommandShape)?;
+                let resolved = self
+                    .get_outcome(request, metadata)
+                    .await
+                    .map_err(GeneratedExecutionError::Client)?;
+                match resolved.result {
+                    Some(v1::get_outcome_response::Result::Found(response)) => response,
+                    Some(v1::get_outcome_response::Result::NotFound(_)) | None => {
+                        return Err(GeneratedExecutionError::Client(
+                            ClientError::OutcomeUnknown(crate::OutcomeUnknown),
+                        ));
+                    }
+                }
+            }
+            Err(error) => return Err(GeneratedExecutionError::Client(error)),
+        };
+        let outcome = command
+            .decode_outcome(&response)
+            .map_err(GeneratedExecutionError::CommandShape)?;
+        Ok(GeneratedExecution { response, outcome })
+    }
 }
 
 impl ExecuteRetryAttempt for RiffDbClient {

@@ -337,6 +337,10 @@ hash_id!(
     QueryModuleHash
 );
 hash_id!(
+    /// The identity of one canonical application manifest.
+    ApplicationManifestHash
+);
+hash_id!(
     /// The hash of one exact RiffQL source document.
     QuerySourceHash
 );

@@ -223,6 +223,7 @@ pub(crate) fn fixed_request_to_proto(
                             .map_err(|_| WireConversionError)
                     })
                     .transpose()?,
+                minimum_application_head: None,
                 request_id,
             })
         }

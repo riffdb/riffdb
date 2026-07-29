@@ -7,7 +7,9 @@ use riffdb_proto::{app::v1 as app_v1, v1};
 use tonic::transport::{Channel, Endpoint};
 
 use crate::{
-    AttemptBudget, CallMetadata, ClientError, IdempotentCommand, RiffDbClient, generate_request_id,
+    AttemptBudget, CallMetadata, ClientError, GeneratedExecutionError, IdempotentCommand,
+    RiffDbClient, generate_request_id,
+    generated::{GeneratedCommand, GeneratedQuery},
 };
 
 /// Application-only client facade.
@@ -48,6 +50,25 @@ impl StableApplicationClient {
             .await
     }
 
+    /// Executes and decodes one generated exact named-query shape.
+    pub async fn execute_generated_query<Q: GeneratedQuery>(
+        &mut self,
+        query: Q,
+        options: QueryOptions,
+        metadata: &CallMetadata,
+    ) -> Result<TypedQueryResult<Q::Output>, ApplicationClientError> {
+        let query = query.named_query(options)?;
+        let result = self.execute_named_query(query, metadata).await?;
+        let application_head = result.application_head;
+        let next_cursor = result.next_cursor.clone();
+        let value = Q::decode_result(result)?;
+        Ok(TypedQueryResult {
+            value,
+            application_head,
+            next_cursor,
+        })
+    }
+
     /// Executes one exact symbolic command with bounded uncertainty recovery.
     pub async fn execute_command(
         &mut self,
@@ -58,6 +79,29 @@ impl StableApplicationClient {
         self.inner
             .execute_application_command(command, attempts, metadata)
             .await
+    }
+
+    /// Executes and decodes one generated command, then performs one exact
+    /// same-key outcome lookup if transport uncertainty remains.
+    pub async fn execute_generated_command<C: GeneratedCommand>(
+        &mut self,
+        command: &C,
+        attempts: AttemptBudget,
+        metadata: &CallMetadata,
+    ) -> Result<TypedCommandResult<C::Outcome>, GeneratedExecutionError> {
+        let execution = self
+            .inner
+            .execute_generated_with_recovery(command, attempts, metadata)
+            .await?;
+        let (outcome, response) = execution.into_parts();
+        Ok(TypedCommandResult {
+            outcome,
+            commit_sequence: (response.commit_sequence != 0).then_some(response.commit_sequence),
+            contract_version: response.contract_version,
+            replayed: response.status
+                == v1::execute_command_response::CompletionStatus::Replayed as i32,
+            outcome_uri: response.outcome_uri,
+        })
     }
 }
 
@@ -135,6 +179,7 @@ pub struct NamedQuery {
     module_hash: Option<[u8; 32]>,
     parameters: BTreeMap<String, ApplicationValue>,
     cursor: Option<String>,
+    minimum_application_head: Option<u64>,
 }
 
 impl NamedQuery {
@@ -163,8 +208,77 @@ impl NamedQuery {
             module_hash,
             parameters,
             cursor,
+            minimum_application_head: None,
         })
     }
+
+    /// Applies generated pagination and read-after-commit options.
+    pub fn with_options(mut self, options: QueryOptions) -> Result<Self, ApplicationClientError> {
+        if options.read_after_commit == Some(0) {
+            return Err(ApplicationClientError::InvalidInput);
+        }
+        self.cursor = options.cursor;
+        self.minimum_application_head = options.read_after_commit;
+        Ok(self)
+    }
+}
+
+/// Typed execution options shared by every generated named query.
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct QueryOptions {
+    cursor: Option<String>,
+    read_after_commit: Option<u64>,
+}
+
+impl QueryOptions {
+    /// Creates default query options.
+    #[must_use]
+    pub const fn new() -> Self {
+        Self {
+            cursor: None,
+            read_after_commit: None,
+        }
+    }
+
+    /// Continues from one opaque application cursor.
+    #[must_use]
+    pub fn after(mut self, cursor: impl Into<String>) -> Self {
+        self.cursor = Some(cursor.into());
+        self
+    }
+
+    /// Requires a snapshot at or after one observed application commit.
+    #[must_use]
+    pub const fn read_after_commit(mut self, commit_sequence: u64) -> Self {
+        self.read_after_commit = Some(commit_sequence);
+        self
+    }
+}
+
+/// Typed generated result with its snapshot and pagination metadata.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct TypedQueryResult<T> {
+    /// Generated declared-result value.
+    pub value: T,
+    /// Authoritative application head observed by the one-snapshot read.
+    pub application_head: u64,
+    /// Opaque continuation cursor, when another bounded page exists.
+    pub next_cursor: Option<String>,
+}
+
+/// Typed generated command result without kernel protocol exposure.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct TypedCommandResult<T> {
+    /// Generated declared business outcome.
+    pub outcome: T,
+    /// Durable application commit sequence.
+    pub commit_sequence: Option<u64>,
+    /// Exact contract version used by execution.
+    pub contract_version: u64,
+    /// Whether the invocation replayed an already durable result.
+    pub replayed: bool,
+    /// Durable opaque outcome locator, when available.
+    pub outcome_uri: Option<String>,
 }
 
 /// One symbolic command invocation with only name-addressed input.
@@ -251,6 +365,16 @@ pub struct NamedQueryResult {
 pub struct ApplicationCommandResult {
     /// Declared business outcome name when present.
     pub outcome: Option<String>,
+    /// Complete name-addressed declared outcome payload.
+    pub outcome_value: Option<ApplicationValue>,
+    /// Application commit sequence; absent for unjournaled read-only commands.
+    pub commit_sequence: Option<u64>,
+    /// Exact contract version used by the command.
+    pub contract_version: u64,
+    /// Exact command plan hash used by the command.
+    pub plan_hash: [u8; 32],
+    /// Whether this invocation replayed an already durable result.
+    pub replayed: bool,
     /// Durable outcome locator when present.
     pub outcome_uri: Option<String>,
 }
@@ -287,6 +411,15 @@ impl From<ClientError> for ApplicationClientError {
     }
 }
 
+impl From<GeneratedExecutionError> for ApplicationClientError {
+    fn from(error: GeneratedExecutionError) -> Self {
+        match error {
+            GeneratedExecutionError::Client(error) => Self::Client(error),
+            GeneratedExecutionError::CommandShape(_) => Self::InvalidResponse,
+        }
+    }
+}
+
 impl RiffDbClient {
     /// Executes one named module query through one public application RPC.
     pub async fn execute_named_application_query(
@@ -319,6 +452,7 @@ impl RiffDbClient {
                     module_hash: query.module_hash.map(|hash| hash.to_vec()),
                     parameters,
                     cursor: query.cursor,
+                    minimum_application_head: query.minimum_application_head,
                     request_id,
                 },
                 metadata,
@@ -349,6 +483,15 @@ impl RiffDbClient {
             .await?;
         Ok(ApplicationCommandResult {
             outcome: (!response.outcome_type.is_empty()).then_some(response.outcome_type),
+            outcome_value: response.outcome.map(raise_value).transpose()?,
+            commit_sequence: (response.commit_sequence != 0).then_some(response.commit_sequence),
+            contract_version: response.contract_version,
+            plan_hash: response
+                .plan_hash
+                .try_into()
+                .map_err(|_| ApplicationClientError::InvalidResponse)?,
+            replayed: response.status
+                == v1::execute_command_response::CompletionStatus::Replayed as i32,
             outcome_uri: response.outcome_uri,
         })
     }
@@ -705,6 +848,42 @@ mod tests {
         .expect("query");
         assert_eq!(query.name, "TicketPage");
         assert_eq!(query.module_hash, Some([7; 32]));
+    }
+
+    #[test]
+    fn generated_query_options_preserve_cursor_and_read_fence() {
+        let query = NamedQuery::new(
+            ApplicationContract::Exact {
+                lineage: "TicketDesk".to_owned(),
+                version: 1,
+                bundle_hash: Some([9; 32]),
+            },
+            "TicketPage",
+            Some([7; 32]),
+            BTreeMap::new(),
+            None,
+        )
+        .expect("query")
+        .with_options(
+            QueryOptions::new()
+                .after("opaque-cursor")
+                .read_after_commit(41),
+        )
+        .expect("options");
+        assert_eq!(query.cursor.as_deref(), Some("opaque-cursor"));
+        assert_eq!(query.minimum_application_head, Some(41));
+        assert!(
+            NamedQuery::new(
+                ApplicationContract::Active,
+                "TicketPage",
+                Some([7; 32]),
+                BTreeMap::new(),
+                None,
+            )
+            .expect("query")
+            .with_options(QueryOptions::new().read_after_commit(0))
+            .is_err()
+        );
     }
 
     #[test]

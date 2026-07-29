@@ -6,7 +6,22 @@ use std::fmt;
 use riffdb_proto::v1;
 use riffdb_types::RequestId;
 
-use crate::{CommandShapeError, IdempotentCommand};
+use crate::{
+    ApplicationClientError, CommandShapeError, IdempotentCommand, NamedQuery, NamedQueryResult,
+    QueryOptions,
+};
+
+/// One exact named query shape emitted from an immutable query module.
+pub trait GeneratedQuery {
+    /// The generated declared-result union.
+    type Output;
+
+    /// Constructs the exact module-pinned symbolic request.
+    fn named_query(self, options: QueryOptions) -> Result<NamedQuery, ApplicationClientError>;
+
+    /// Decodes one identity-checked name-addressed response.
+    fn decode_result(response: NamedQueryResult) -> Result<Self::Output, ApplicationClientError>;
+}
 
 /// One command shape emitted from a checked contract bundle.
 ///

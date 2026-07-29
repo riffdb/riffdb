@@ -188,6 +188,10 @@ pub fn execute_symbolic_query_request_from_proto(
         .cursor
         .map(|cursor| cursor_token_from_text(&cursor))
         .transpose()?;
+    let minimum_application_head = request.minimum_application_head;
+    if minimum_application_head == Some(0) {
+        return Err(invalid_request());
+    }
     let invocation = match request.query {
         Some(app_v1::execute_query_request::Query::Source(source)) if module_hash.is_none() => {
             let mut request = ExecuteSymbolicQueryRequest::new(
@@ -198,6 +202,9 @@ pub fn execute_symbolic_query_request_from_proto(
             if let Some(cursor) = cursor {
                 request = request.with_cursor(cursor);
             }
+            if let Some(minimum) = minimum_application_head {
+                request = request.with_minimum_application_head(minimum);
+            }
             ExecuteSymbolicQueryInvocation::AdHoc(request)
         }
         Some(app_v1::execute_query_request::Query::QueryName(name)) => {
@@ -206,6 +213,9 @@ pub fn execute_symbolic_query_request_from_proto(
                     .map_err(|_| invalid_request())?;
             if let Some(cursor) = cursor {
                 request = request.with_cursor(cursor);
+            }
+            if let Some(minimum) = minimum_application_head {
+                request = request.with_minimum_application_head(minimum);
             }
             ExecuteSymbolicQueryInvocation::Named(request)
         }
@@ -3355,6 +3365,46 @@ mod tests {
         assert_eq!(decimal.coefficient(), 123);
         assert_eq!(decimal.scale(), 2);
         assert_eq!(decimal.precision(), Some(8));
+    }
+
+    #[test]
+    fn named_query_preserves_positive_read_after_commit_fence() {
+        let (_, invocation) =
+            execute_symbolic_query_request_from_proto(app_v1::ExecuteQueryRequest {
+                request_id: request_id().as_bytes().to_vec(),
+                contract: None,
+                query: Some(app_v1::execute_query_request::Query::QueryName(
+                    "TicketPage".to_owned(),
+                )),
+                module_hash: None,
+                parameters: Vec::new(),
+                cursor: None,
+                minimum_application_head: Some(42),
+            })
+            .expect("positive fence");
+        let ExecuteSymbolicQueryInvocation::Named(request) = invocation else {
+            panic!("expected named query")
+        };
+        assert_eq!(request.minimum_application_head(), Some(42));
+    }
+
+    #[test]
+    fn query_rejects_zero_read_after_commit_fence() {
+        let result = execute_symbolic_query_request_from_proto(app_v1::ExecuteQueryRequest {
+            request_id: request_id().as_bytes().to_vec(),
+            contract: None,
+            query: Some(app_v1::execute_query_request::Query::QueryName(
+                "TicketPage".to_owned(),
+            )),
+            module_hash: None,
+            parameters: Vec::new(),
+            cursor: None,
+            minimum_application_head: Some(0),
+        });
+        let Err(status) = result else {
+            panic!("zero fence must fail closed")
+        };
+        assert_eq!(status.code(), tonic::Code::InvalidArgument);
     }
 
     #[test]

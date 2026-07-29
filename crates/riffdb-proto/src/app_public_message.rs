@@ -332,6 +332,7 @@ app_message!(
                 .cursor
                 .as_deref()
                 .is_some_and(|cursor| cursor.is_empty() || cursor.len() > MAX_CURSOR_BYTES)
+            || value.minimum_application_head == Some(0)
         {
             return Err(PublicWireError::InvalidBytes);
         }

@@ -1,4 +1,1063 @@
 {
+  "application_manifest_hash": "93fca10f108421b14f3cc00f4adca942d949af44fe83dd38ace4f70cf7f892bc",
+  "commands": [
+    {
+      "annotations": {
+        "destructiveHint": true,
+        "idempotentHint": true,
+        "openWorldHint": false,
+        "readOnlyHint": false
+      },
+      "contract_bundle_hash": "23e9b5b207414e2753e4d914b1b94ecd786181be08028ace9d4f3cc0b6f4944c",
+      "description": "Execute the exact AddProjectMember compiled command from contract TicketDesk.",
+      "input_schema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "properties": {
+          "idempotency_key": {
+            "type": "string"
+          },
+          "organization_id": {
+            "type": "string"
+          },
+          "project_id": {
+            "type": "string"
+          },
+          "role": {
+            "type": "string"
+          },
+          "user_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "role",
+          "user_id",
+          "project_id",
+          "idempotency_key",
+          "organization_id"
+        ],
+        "type": "object"
+      },
+      "name": "ticketdesk.add_project_member",
+      "plan_hash": "c8e03938e4e8412c217e850b33bce01407ee90ba535e43dee785281388bc7a58",
+      "result_schema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "oneOf": [
+          {
+            "additionalProperties": false,
+            "properties": {
+              "member": {
+                "additionalProperties": false,
+                "properties": {
+                  "created_at": {
+                    "type": "string"
+                  },
+                  "organization_id": {
+                    "type": "string"
+                  },
+                  "project_id": {
+                    "type": "string"
+                  },
+                  "role": {
+                    "type": "string"
+                  },
+                  "user_id": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "role",
+                  "user_id",
+                  "created_at",
+                  "project_id",
+                  "organization_id"
+                ],
+                "type": "object"
+              },
+              "outcome": {
+                "const": "Created",
+                "type": "string"
+              }
+            },
+            "required": [
+              "member",
+              "outcome"
+            ],
+            "type": "object"
+          },
+          {
+            "additionalProperties": false,
+            "properties": {
+              "outcome": {
+                "const": "UserMissing",
+                "type": "string"
+              },
+              "user_id": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "user_id",
+              "outcome"
+            ],
+            "type": "object"
+          },
+          {
+            "additionalProperties": false,
+            "properties": {
+              "outcome": {
+                "const": "MemberExists",
+                "type": "string"
+              },
+              "project_id": {
+                "type": "string"
+              },
+              "user_id": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "user_id",
+              "project_id",
+              "outcome"
+            ],
+            "type": "object"
+          },
+          {
+            "additionalProperties": false,
+            "properties": {
+              "outcome": {
+                "const": "ProjectMissing",
+                "type": "string"
+              },
+              "project_id": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "project_id",
+              "outcome"
+            ],
+            "type": "object"
+          }
+        ]
+      },
+      "title": "Run AddProjectMember"
+    },
+    {
+      "annotations": {
+        "destructiveHint": true,
+        "idempotentHint": true,
+        "openWorldHint": false,
+        "readOnlyHint": false
+      },
+      "contract_bundle_hash": "23e9b5b207414e2753e4d914b1b94ecd786181be08028ace9d4f3cc0b6f4944c",
+      "description": "Execute the exact AttachLabel compiled command from contract TicketDesk.",
+      "input_schema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "properties": {
+          "idempotency_key": {
+            "type": "string"
+          },
+          "label_id": {
+            "type": "string"
+          },
+          "organization_id": {
+            "type": "string"
+          },
+          "ticket_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "label_id",
+          "ticket_id",
+          "idempotency_key",
+          "organization_id"
+        ],
+        "type": "object"
+      },
+      "name": "ticketdesk.attach_label",
+      "plan_hash": "aaaeab0f219d8f84e637e45a0fbe52bd3befab6576e1f3c69febfcd0019d3aff",
+      "result_schema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "oneOf": [
+          {
+            "additionalProperties": false,
+            "properties": {
+              "link": {
+                "additionalProperties": false,
+                "properties": {
+                  "created_at": {
+                    "type": "string"
+                  },
+                  "label_id": {
+                    "type": "string"
+                  },
+                  "organization_id": {
+                    "type": "string"
+                  },
+                  "ticket_id": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "label_id",
+                  "ticket_id",
+                  "created_at",
+                  "organization_id"
+                ],
+                "type": "object"
+              },
+              "outcome": {
+                "const": "Created",
+                "type": "string"
+              }
+            },
+            "required": [
+              "link",
+              "outcome"
+            ],
+            "type": "object"
+          },
+          {
+            "additionalProperties": false,
+            "properties": {
+              "label_id": {
+                "type": "string"
+              },
+              "outcome": {
+                "const": "LinkExists",
+                "type": "string"
+              },
+              "ticket_id": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "label_id",
+              "ticket_id",
+              "outcome"
+            ],
+            "type": "object"
+          },
+          {
+            "additionalProperties": false,
+            "properties": {
+              "label_id": {
+                "type": "string"
+              },
+              "outcome": {
+                "const": "LabelMissing",
+                "type": "string"
+              }
+            },
+            "required": [
+              "label_id",
+              "outcome"
+            ],
+            "type": "object"
+          },
+          {
+            "additionalProperties": false,
+            "properties": {
+              "outcome": {
+                "const": "TicketMissing",
+                "type": "string"
+              },
+              "ticket_id": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "ticket_id",
+              "outcome"
+            ],
+            "type": "object"
+          }
+        ]
+      },
+      "title": "Run AttachLabel"
+    },
+    {
+      "annotations": {
+        "destructiveHint": true,
+        "idempotentHint": true,
+        "openWorldHint": false,
+        "readOnlyHint": false
+      },
+      "contract_bundle_hash": "23e9b5b207414e2753e4d914b1b94ecd786181be08028ace9d4f3cc0b6f4944c",
+      "description": "Execute the exact CreateComment compiled command from contract TicketDesk.",
+      "input_schema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "properties": {
+          "author_id": {
+            "type": "string"
+          },
+          "body": {
+            "type": "string"
+          },
+          "comment_id": {
+            "type": "string"
+          },
+          "idempotency_key": {
+            "type": "string"
+          },
+          "organization_id": {
+            "type": "string"
+          },
+          "ticket_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "body",
+          "author_id",
+          "ticket_id",
+          "comment_id",
+          "idempotency_key",
+          "organization_id"
+        ],
+        "type": "object"
+      },
+      "name": "ticketdesk.create_comment",
+      "plan_hash": "b02d6787a576a02b4b9d7cead1a14fc41e0c2cc1bbd18402476e2ef83e1f767d",
+      "result_schema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "oneOf": [
+          {
+            "additionalProperties": false,
+            "properties": {
+              "comment": {
+                "additionalProperties": false,
+                "properties": {
+                  "author_id": {
+                    "type": "string"
+                  },
+                  "body": {
+                    "type": "string"
+                  },
+                  "comment_id": {
+                    "type": "string"
+                  },
+                  "created_at": {
+                    "type": "string"
+                  },
+                  "organization_id": {
+                    "type": "string"
+                  },
+                  "ticket_id": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "body",
+                  "author_id",
+                  "ticket_id",
+                  "comment_id",
+                  "created_at",
+                  "organization_id"
+                ],
+                "type": "object"
+              },
+              "outcome": {
+                "const": "Created",
+                "type": "string"
+              }
+            },
+            "required": [
+              "comment",
+              "outcome"
+            ],
+            "type": "object"
+          },
+          {
+            "additionalProperties": false,
+            "properties": {
+              "outcome": {
+                "const": "AuthorMissing",
+                "type": "string"
+              },
+              "user_id": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "user_id",
+              "outcome"
+            ],
+            "type": "object"
+          },
+          {
+            "additionalProperties": false,
+            "properties": {
+              "comment_id": {
+                "type": "string"
+              },
+              "outcome": {
+                "const": "CommentExists",
+                "type": "string"
+              }
+            },
+            "required": [
+              "comment_id",
+              "outcome"
+            ],
+            "type": "object"
+          },
+          {
+            "additionalProperties": false,
+            "properties": {
+              "outcome": {
+                "const": "TicketMissing",
+                "type": "string"
+              },
+              "ticket_id": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "ticket_id",
+              "outcome"
+            ],
+            "type": "object"
+          }
+        ]
+      },
+      "title": "Run CreateComment"
+    },
+    {
+      "annotations": {
+        "destructiveHint": true,
+        "idempotentHint": true,
+        "openWorldHint": false,
+        "readOnlyHint": false
+      },
+      "contract_bundle_hash": "23e9b5b207414e2753e4d914b1b94ecd786181be08028ace9d4f3cc0b6f4944c",
+      "description": "Execute the exact CreateLabel compiled command from contract TicketDesk.",
+      "input_schema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "properties": {
+          "idempotency_key": {
+            "type": "string"
+          },
+          "label_id": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "organization_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "name",
+          "label_id",
+          "idempotency_key",
+          "organization_id"
+        ],
+        "type": "object"
+      },
+      "name": "ticketdesk.create_label",
+      "plan_hash": "ed33d0fbb9b0951fcf4ed70900f129180e0bb7164122dad74325d08d816d53f2",
+      "result_schema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "oneOf": [
+          {
+            "additionalProperties": false,
+            "properties": {
+              "label": {
+                "additionalProperties": false,
+                "properties": {
+                  "created_at": {
+                    "type": "string"
+                  },
+                  "label_id": {
+                    "type": "string"
+                  },
+                  "name": {
+                    "type": "string"
+                  },
+                  "organization_id": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "name",
+                  "label_id",
+                  "created_at",
+                  "organization_id"
+                ],
+                "type": "object"
+              },
+              "outcome": {
+                "const": "Created",
+                "type": "string"
+              }
+            },
+            "required": [
+              "label",
+              "outcome"
+            ],
+            "type": "object"
+          },
+          {
+            "additionalProperties": false,
+            "properties": {
+              "label_id": {
+                "type": "string"
+              },
+              "outcome": {
+                "const": "LabelExists",
+                "type": "string"
+              }
+            },
+            "required": [
+              "label_id",
+              "outcome"
+            ],
+            "type": "object"
+          },
+          {
+            "additionalProperties": false,
+            "properties": {
+              "organization_id": {
+                "type": "string"
+              },
+              "outcome": {
+                "const": "OrganizationMissing",
+                "type": "string"
+              }
+            },
+            "required": [
+              "organization_id",
+              "outcome"
+            ],
+            "type": "object"
+          }
+        ]
+      },
+      "title": "Run CreateLabel"
+    },
+    {
+      "annotations": {
+        "destructiveHint": true,
+        "idempotentHint": true,
+        "openWorldHint": false,
+        "readOnlyHint": false
+      },
+      "contract_bundle_hash": "23e9b5b207414e2753e4d914b1b94ecd786181be08028ace9d4f3cc0b6f4944c",
+      "description": "Execute the exact CreateOrganization compiled command from contract TicketDesk.",
+      "input_schema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "properties": {
+          "idempotency_key": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "organization_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "name",
+          "idempotency_key",
+          "organization_id"
+        ],
+        "type": "object"
+      },
+      "name": "ticketdesk.create_organization",
+      "plan_hash": "15bb4a409548f7fa60f84c6194b58010beb40b6c8105f09209965cf4e7503811",
+      "result_schema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "oneOf": [
+          {
+            "additionalProperties": false,
+            "properties": {
+              "organization": {
+                "additionalProperties": false,
+                "properties": {
+                  "created_at": {
+                    "type": "string"
+                  },
+                  "name": {
+                    "type": "string"
+                  },
+                  "organization_id": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "name",
+                  "created_at",
+                  "organization_id"
+                ],
+                "type": "object"
+              },
+              "outcome": {
+                "const": "Created",
+                "type": "string"
+              }
+            },
+            "required": [
+              "organization",
+              "outcome"
+            ],
+            "type": "object"
+          },
+          {
+            "additionalProperties": false,
+            "properties": {
+              "organization_id": {
+                "type": "string"
+              },
+              "outcome": {
+                "const": "OrganizationExists",
+                "type": "string"
+              }
+            },
+            "required": [
+              "organization_id",
+              "outcome"
+            ],
+            "type": "object"
+          }
+        ]
+      },
+      "title": "Run CreateOrganization"
+    },
+    {
+      "annotations": {
+        "destructiveHint": true,
+        "idempotentHint": true,
+        "openWorldHint": false,
+        "readOnlyHint": false
+      },
+      "contract_bundle_hash": "23e9b5b207414e2753e4d914b1b94ecd786181be08028ace9d4f3cc0b6f4944c",
+      "description": "Execute the exact CreateProject compiled command from contract TicketDesk.",
+      "input_schema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "properties": {
+          "idempotency_key": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "organization_id": {
+            "type": "string"
+          },
+          "project_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "name",
+          "project_id",
+          "idempotency_key",
+          "organization_id"
+        ],
+        "type": "object"
+      },
+      "name": "ticketdesk.create_project",
+      "plan_hash": "cb8e36ae61946cee88344bc208ad9fcd7507efff5bbd29dfee3eaf2e6e4a8392",
+      "result_schema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "oneOf": [
+          {
+            "additionalProperties": false,
+            "properties": {
+              "outcome": {
+                "const": "Created",
+                "type": "string"
+              },
+              "project": {
+                "additionalProperties": false,
+                "properties": {
+                  "created_at": {
+                    "type": "string"
+                  },
+                  "name": {
+                    "type": "string"
+                  },
+                  "organization_id": {
+                    "type": "string"
+                  },
+                  "project_id": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "name",
+                  "created_at",
+                  "project_id",
+                  "organization_id"
+                ],
+                "type": "object"
+              }
+            },
+            "required": [
+              "project",
+              "outcome"
+            ],
+            "type": "object"
+          },
+          {
+            "additionalProperties": false,
+            "properties": {
+              "outcome": {
+                "const": "ProjectExists",
+                "type": "string"
+              },
+              "project_id": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "project_id",
+              "outcome"
+            ],
+            "type": "object"
+          },
+          {
+            "additionalProperties": false,
+            "properties": {
+              "organization_id": {
+                "type": "string"
+              },
+              "outcome": {
+                "const": "OrganizationMissing",
+                "type": "string"
+              }
+            },
+            "required": [
+              "organization_id",
+              "outcome"
+            ],
+            "type": "object"
+          }
+        ]
+      },
+      "title": "Run CreateProject"
+    },
+    {
+      "annotations": {
+        "destructiveHint": true,
+        "idempotentHint": true,
+        "openWorldHint": false,
+        "readOnlyHint": false
+      },
+      "contract_bundle_hash": "23e9b5b207414e2753e4d914b1b94ecd786181be08028ace9d4f3cc0b6f4944c",
+      "description": "Execute the exact CreateTicket compiled command from contract TicketDesk.",
+      "input_schema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "properties": {
+          "assignee_id": {
+            "type": "string"
+          },
+          "idempotency_key": {
+            "type": "string"
+          },
+          "organization_id": {
+            "type": "string"
+          },
+          "project_id": {
+            "type": "string"
+          },
+          "reporter_id": {
+            "type": "string"
+          },
+          "status": {
+            "type": "string"
+          },
+          "ticket_id": {
+            "type": "string"
+          },
+          "title": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "title",
+          "status",
+          "ticket_id",
+          "project_id",
+          "assignee_id",
+          "reporter_id",
+          "idempotency_key",
+          "organization_id"
+        ],
+        "type": "object"
+      },
+      "name": "ticketdesk.create_ticket",
+      "plan_hash": "89e0877c9feb60cef4d6e4ee1393d3cfc05751324d71d29ca33218e90ccb64aa",
+      "result_schema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "oneOf": [
+          {
+            "additionalProperties": false,
+            "properties": {
+              "outcome": {
+                "const": "Created",
+                "type": "string"
+              },
+              "ticket": {
+                "additionalProperties": false,
+                "properties": {
+                  "assignee_id": {
+                    "type": "string"
+                  },
+                  "created_at": {
+                    "type": "string"
+                  },
+                  "organization_id": {
+                    "type": "string"
+                  },
+                  "project_id": {
+                    "type": "string"
+                  },
+                  "reporter_id": {
+                    "type": "string"
+                  },
+                  "status": {
+                    "type": "string"
+                  },
+                  "ticket_id": {
+                    "type": "string"
+                  },
+                  "title": {
+                    "type": "string"
+                  },
+                  "updated_at": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "title",
+                  "status",
+                  "ticket_id",
+                  "created_at",
+                  "project_id",
+                  "updated_at",
+                  "assignee_id",
+                  "reporter_id",
+                  "organization_id"
+                ],
+                "type": "object"
+              }
+            },
+            "required": [
+              "ticket",
+              "outcome"
+            ],
+            "type": "object"
+          },
+          {
+            "additionalProperties": false,
+            "properties": {
+              "outcome": {
+                "const": "TicketExists",
+                "type": "string"
+              },
+              "ticket_id": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "ticket_id",
+              "outcome"
+            ],
+            "type": "object"
+          },
+          {
+            "additionalProperties": false,
+            "properties": {
+              "outcome": {
+                "const": "ProjectMissing",
+                "type": "string"
+              },
+              "project_id": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "project_id",
+              "outcome"
+            ],
+            "type": "object"
+          },
+          {
+            "additionalProperties": false,
+            "properties": {
+              "outcome": {
+                "const": "AssigneeMissing",
+                "type": "string"
+              },
+              "user_id": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "user_id",
+              "outcome"
+            ],
+            "type": "object"
+          },
+          {
+            "additionalProperties": false,
+            "properties": {
+              "outcome": {
+                "const": "ReporterMissing",
+                "type": "string"
+              },
+              "user_id": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "user_id",
+              "outcome"
+            ],
+            "type": "object"
+          }
+        ]
+      },
+      "title": "Run CreateTicket"
+    },
+    {
+      "annotations": {
+        "destructiveHint": true,
+        "idempotentHint": true,
+        "openWorldHint": false,
+        "readOnlyHint": false
+      },
+      "contract_bundle_hash": "23e9b5b207414e2753e4d914b1b94ecd786181be08028ace9d4f3cc0b6f4944c",
+      "description": "Execute the exact CreateUser compiled command from contract TicketDesk.",
+      "input_schema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "properties": {
+          "display_name": {
+            "type": "string"
+          },
+          "email": {
+            "type": "string"
+          },
+          "idempotency_key": {
+            "type": "string"
+          },
+          "organization_id": {
+            "type": "string"
+          },
+          "user_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "email",
+          "user_id",
+          "display_name",
+          "idempotency_key",
+          "organization_id"
+        ],
+        "type": "object"
+      },
+      "name": "ticketdesk.create_user",
+      "plan_hash": "d6e386ce4608cbb4b91ac99755742cec0f3fd30e3a6f52280e862be2bfca0298",
+      "result_schema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "oneOf": [
+          {
+            "additionalProperties": false,
+            "properties": {
+              "outcome": {
+                "const": "Created",
+                "type": "string"
+              },
+              "user": {
+                "additionalProperties": false,
+                "properties": {
+                  "created_at": {
+                    "type": "string"
+                  },
+                  "display_name": {
+                    "type": "string"
+                  },
+                  "email": {
+                    "type": "string"
+                  },
+                  "organization_id": {
+                    "type": "string"
+                  },
+                  "user_id": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "email",
+                  "user_id",
+                  "created_at",
+                  "display_name",
+                  "organization_id"
+                ],
+                "type": "object"
+              }
+            },
+            "required": [
+              "user",
+              "outcome"
+            ],
+            "type": "object"
+          },
+          {
+            "additionalProperties": false,
+            "properties": {
+              "outcome": {
+                "const": "UserExists",
+                "type": "string"
+              },
+              "user_id": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "user_id",
+              "outcome"
+            ],
+            "type": "object"
+          },
+          {
+            "additionalProperties": false,
+            "properties": {
+              "organization_id": {
+                "type": "string"
+              },
+              "outcome": {
+                "const": "OrganizationMissing",
+                "type": "string"
+              }
+            },
+            "required": [
+              "organization_id",
+              "outcome"
+            ],
+            "type": "object"
+          }
+        ]
+      },
+      "title": "Run CreateUser"
+    }
+  ],
   "schema": "riffdb-generated-mcp-tools-v1",
   "tools": [
     {
