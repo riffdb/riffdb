@@ -6,7 +6,7 @@
 **Tagline:** *Vibe fast. Commit safely.*  
 **Category:** Contract-first operational database for agent-built applications  
 
-**Version:** 0.38
+**Version:** 0.39
 **Status:** Application-platform implementation handoff
 **Date:** 29 July 2026
 **Audience:** Coding agents, database engineers, compiler engineers, security reviewers, and technical product leads  
@@ -74,6 +74,7 @@
 | 0.36 | 2026-07-28 | Applied accepted ADR-0051 through ADR-0053: established bounded symbolic RiffQL, exact-contract immutable query modules, an additive application API above the compatible kernel gRPC surface, one-snapshot composite query execution, rebuildable current catalog/capability views, and measured unary-gRPC-first application performance gates through WP-270. |
 | 0.37 | 2026-07-29 | Applied accepted ADR-0054 and WP-275: added bounded collection-to-complete-key dependencies with explicit missing-target outcomes, closed dependent point batching inside one snapshot, and full one-request TicketDesk detail-page parity without general SQL joins. |
 | 0.38 | 2026-07-29 | Applied accepted ADR-0055 and planned WP-280 through WP-300: separated stable named-application, scoped ad-hoc-agent, and kernel authority; required private derived query proofs, whole-request execution fuel, declared relationship and uniqueness integrity, safe generated defaults, and negative application canaries. |
+| 0.39 | 2026-07-29 | Planned the proposed post-WP-300 Agent Application Alpha gate and WP-305 through WP-340: complete generated bindings, symbolic roles, structured public application errors, resumable command batches, canonical scaffolding and package boundaries, TypeScript runtime parity, evidence-driven RiffQL growth, and four sealed unfamiliar-domain agent evaluations before operational alpha or replication. ADR-0056 remains Proposed pending exact human acceptance. |
 
 ### Normative language
 
@@ -82,6 +83,8 @@ The terms **MUST**, **MUST NOT**, **SHOULD**, **SHOULD NOT**, and **MAY** are no
 ### Scope labels
 
 - **POC**: Required to demonstrate the core contract-first thesis on a durable single node.
+- **AGENT-ALPHA**: Required to prove unfamiliar application authorship through
+  public symbolic surfaces before operational or distributed alpha work.
 - **MVP**: Required for an externally usable early product with replication, production authorization, operational tooling, and a stable compatibility story.
 - **POST-MVP**: Deliberately deferred research or scale work.
 
@@ -5100,6 +5103,48 @@ operational pause does not add a semantic dependency to WP-140 or WP-150.
 **P2 work-package members:** WP-140, WP-160, WP-170, WP-180, WP-185,
 WP-155, WP-190, and WP-200.
 
+## 20.4.1 Stage P3 — safe symbolic application platform
+
+**Objective:** Replace storage-shaped application plumbing with bounded
+symbolic reads, generated named operations, one-snapshot page execution, and
+closed safe application authority.
+
+**Gate P3:** WP-205 through WP-300 pass. TicketDesk uses exact named queries and
+compiled commands without caller-visible numeric IDs, encoded keys, field
+masks, public N+1 reads, raw kernel authority, undeclared supported integrity,
+or per-step budget amplification.
+
+## 20.4.2 Stage P4 — Agent Application Alpha
+
+**Objective:** Prove that a fresh coding agent can build an unfamiliar
+application from an empty repository using only public textual, generated, CLI,
+and MCP surfaces.
+
+**Deliverables:**
+
+- Complete generated Rust and TypeScript operation clients with no handwritten
+  transport/encoding/decoding glue.
+- One symbolic application manifest and symbolic roles compiled into exact
+  named-operation authority.
+- Bounded structured application errors preserved across gRPC, Rust,
+  TypeScript, CLI, and MCP.
+- Resumable concurrent command batches for ordinary seed/import workflows.
+- `riffdb new`, one canonical `riffdb dev`, an application-only default facade,
+  and mandatory kernel-boundary linting.
+- A real TypeScript web application with the same semantic fixtures as Rust.
+- Blog/CMS and orders/inventory evidence before any additional RiffQL
+  construct is accepted.
+- Four sealed fresh-agent evaluations covering both domains in both languages.
+
+**Gate P4 / Agent Application Alpha:** Every `AAA-*` requirement passes. Each
+sealed run completes without human product workaround, kernel use, handwritten
+RiffDB glue, implementation-source access, or unresolved required query shape;
+reaches its first write within 30 minutes and first page-shaped read within
+60 minutes; and rates the experience at least 8.5/10.
+
+**P4 work-package members:** WP-305, WP-310, WP-315, WP-320, WP-325,
+WP-330, WP-335, and WP-340.
+
 ## 20.5 Stage A — single-node alpha hardening
 
 **Objective:** Turn the prototype into a stable, supportable single-node alpha for trusted design partners.
@@ -5112,7 +5157,7 @@ WP-155, WP-190, and WP-200.
 - More entity indexes and bounded indexed reads.
 - Operational repair commands with two-person or approval policy and complete audit.
 - Remote MCP over TLS with standards-based authorization.
-- Generated TypeScript and Python clients.
+- Production-hardened TypeScript compatibility plus generated Python clients.
 - Outbox connector framework with destination-specific idempotency configuration.
 - Projection backfill, rebuild, and operator controls.
 - Resource quotas and workload admission.
@@ -5276,6 +5321,7 @@ earlier deadline governs unless a reviewed reconciliation changes both sources.
 | `ADR-0053` | Accepted | One-snapshot composite execution, epoch-bound cursors, rebuildable current catalog/capability views, and measured unary-gRPC-first optimization | WP-205, WP-240, and WP-270 |
 | `ADR-0054` | Accepted | Bounded collection-to-complete-key dependencies, explicit missing-target outcomes, and one-snapshot dependent point batches | WP-275 |
 | `ADR-0055` | Accepted | Disjoint stable-application, ad-hoc-agent, and kernel authority; private exact-plan proofs; whole-query fuel; declared relationship/uniqueness integrity; and negative safety canaries | WP-280 through WP-300 |
+| `ADR-0056` | Proposed | Agent Application Alpha before operational/distributed alpha; complete generated bindings, symbolic roles, structured application errors, command batches, canonical scaffolding, TypeScript parity, evidence-driven RiffQL growth, and sealed independent evaluation | WP-305 through WP-340 after acceptance |
 
 ## 22.2 Decisions to resolve before implementation reaches the named gate
 
@@ -5738,6 +5784,88 @@ acceptance commands and an independent fresh-agent TicketDesk run satisfies
 `DX-005`, `DX-006`, every `SAFE-*` requirement, and the published performance
 gates.
 
+## 24.4 Agent Application Alpha milestone
+
+This proposed milestone begins only after the safe symbolic application
+platform is complete. It is governed by ADR-0056 after that ADR receives exact
+human acceptance. `docs/agent-application-alpha.md` defines the concise gate and
+measurement contract.
+
+- `AAA-001`: Generated Rust and TypeScript stable-application clients MUST own
+  typed parameter serialization, exact named invocation, typed result and
+  declared-outcome decoding, cursor handling, public-error decoding, and
+  read-after-commit options. A first-party acceptance application MUST contain
+  no handwritten RiffDB parameter map, encoder, decoder, transport-status
+  parser, or RPC wrapper.
+- `AAA-002`: Generated command methods MUST preserve one caller-supplied or
+  configured durable idempotency identity across retry and uncertain-outcome
+  recovery. Generated clients MUST pin and verify exact contract and query-
+  module identities and MUST fail closed rather than silently negotiate a
+  different operation shape.
+- `AAA-003`: One versioned symbolic application manifest MUST bind contract
+  source, named query modules, roles, generation targets, and seed inputs.
+  Symbolic roles MUST name only application operations and tenant/environment
+  scope; the compiler MUST derive contract-description, command, private query,
+  field/index/partition/cost, result-visibility, lineage, and MCP visibility
+  requirements without exposing numeric IDs, masks, raw capability bits, or
+  reusable kernel permissions.
+- `AAA-004`: Every public application failure MUST use one bounded versioned
+  semantic error envelope with stable code/category/recovery action, attempted
+  operation, authorized contract/module context, authorized symbolic path and
+  caller-source span when applicable, a static safe message, closed suggested-
+  fix codes, and a trace identifier when available. A failure with no valid
+  symbol path MUST NOT fabricate one.
+- `AAA-005`: Application errors MUST be authorization-filtered and redacted
+  before serialization and MUST contain no submitted free-form values,
+  credentials, hidden schema, arbitrary server prose, or internal source.
+  gRPC, Rust, TypeScript, CLI, and MCP MUST preserve the same machine-readable
+  semantics and retry/recovery classification.
+- `AAA-006`: Bulk seed/import MUST execute every item as an ordinary exact
+  named compiled command with its own canonical input, idempotency identity,
+  authorization, typed outcome or structured error, provenance, and commit.
+  A batch MUST NOT expose generic writes or claim collection-wide atomicity.
+- `AAA-007`: Command batches MUST enforce bounded concurrency, streaming
+  backpressure, input/output limits, cancellation, progress, and resumable
+  same-key checkpoints. Every item MUST correlate with one bounded import/seed
+  session, and retry MUST NOT duplicate a committed command.
+- `AAA-008`: `riffdb new <application>` MUST create the canonical application
+  manifest, contract/query/role/seed layout and generated-output roots.
+  `riffdb dev` MUST start local RiffDB, compile/deploy, bind the selected role,
+  generate Rust/TypeScript/MCP artifacts, run the command-batch seed, and watch
+  accepted inputs without weakening production service or authorization
+  semantics.
+- `AAA-009`: Normal Rust/TypeScript application facades, templates,
+  quickstarts, generated clients, and MCP catalogs MUST exclude kernel
+  requests by default. Kernel/admin use MUST require an explicit package or
+  unstable/administrative feature plus separate credential. A mandatory
+  boundary linter MUST reject kernel imports and handwritten transport glue in
+  first-party acceptance applications.
+- `AAA-010`: Rust and TypeScript MUST consume the same application manifest,
+  operation schemas, compatibility fixtures, and golden observations and MUST
+  provide equivalent named queries, commands, outcomes, optional/nested
+  results, pagination, read-after-commit, error recovery, development
+  credentials, hot reload, and boundary checks. TypeScript acceptance MUST run
+  a real web application, not only type-check generated source.
+- `AAA-011`: Blog/CMS and orders/inventory application corpora MUST be attempted
+  before another RiffQL construct is accepted. Every unsupported shape MUST
+  retain a source-spanned diagnostic fixture classifying the locality, bound,
+  index, authorization, cardinality, or language cause and suggesting an
+  index, relationship, projection, or decomposition when sufficient. Any new
+  grammar/IR construct MUST stop for a separate accepted ADR and MUST be the
+  smallest bounded construct supported by repeated application evidence.
+- `AAA-012`: The Agent Application Alpha gate MUST run at least four fresh
+  independent sealed evaluations covering both domains in both Rust and
+  TypeScript without RiffDB implementation or TicketDesk source. Every run
+  MUST publish interventions, kernel attempts, handwritten glue lines,
+  compiler/runtime failures, unsupported shapes, time to first write/read and
+  completion, source access, and rating. Every run MUST meet the thresholds in
+  SPEC Section 20.4.2; failures MUST reopen the owning package rather than be
+  patched in the evaluator.
+
+The milestone is complete only when WP-305 through WP-340 pass, ADR-0056 and
+every language or public/durable interface decision required by those packages
+is accepted, and the raw sealed evaluation reports are published.
+
 ---
 
 # Appendix A. Core state and storage key examples
@@ -5907,5 +6035,6 @@ The implementation MUST prefer primary project documentation and pin reviewed ve
 | `DX-*` | Symbolic application surfaces, generation, and local workflow |
 | `SAFE-*` | Safety-by-construction application authority, declared integrity, budgets, and negative acceptance |
 | `PERF-*` | Application-path measurement and performance gates |
+| `AAA-*` | Agent Application Alpha bindings, roles, diagnostics, batches, scaffolding, language parity, and evaluation |
 
 Every normative requirement MUST be traceable to at least one automated test, review checklist item, or explicitly justified manual verification artifact before its stage can pass.

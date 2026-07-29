@@ -1,4 +1,4 @@
-spec_version: '0.38'
+spec_version: '0.39'
 product: RiffDB
 repository: riffdb
 status: application-platform-implementation
@@ -72,6 +72,17 @@ gates:
   - WP-290
   - WP-295
   - WP-300
+- id: P4
+  name: Agent Application Alpha
+  requires:
+  - WP-305
+  - WP-310
+  - WP-315
+  - WP-320
+  - WP-325
+  - WP-330
+  - WP-335
+  - WP-340
 work_packages:
 - id: WP-000
   name: Repository foundation
@@ -3634,4 +3645,564 @@ work_packages:
   exit_gate: Stable application credentials can invoke only their exact generated named operations; every bad-
     application canary fails before output/mutation; agent and kernel credentials remain explicitly separate; and the
     documented safety claim exactly matches tested supported behavior.
+  human_review_triggers: *id001
+- id: WP-305
+  name: Complete generated application bindings and manifest
+  depends_on:
+  - WP-300
+  objective: Replace generated type/metadata fragments and handwritten application glue with one versioned application
+    manifest and complete Rust/TypeScript named-operation clients that own transport, encoding, decoding, identity
+    negotiation, cursors, read fences, errors, and retry-safe command recovery.
+  requirements:
+  - AAA-001
+  - AAA-002
+  required_adrs:
+  - ADR-0005
+  - ADR-0006
+  - ADR-0018
+  - ADR-0027
+  - ADR-0040
+  - ADR-0052
+  - ADR-0055
+  - ADR-0056
+  allowed_paths:
+  - Cargo.toml
+  - Cargo.lock
+  - proto/riffdb/app/v1/**
+  - crates/riffdb-types/**
+  - crates/riffdb-errors/**
+  - crates/riffdb-proto/**
+  - crates/riffdb-query-module/**
+  - crates/riffdb-service/**
+  - crates/riffdb-api-grpc/**
+  - crates/riffdb-api-mcp/**
+  - crates/riffdb-client-rust/**
+  - crates/riffdb-cli/**
+  - clients/typescript/**
+  - fixtures/application-manifests/**
+  - fixtures/query-modules/**
+  - fixtures/proto/**
+  - fixtures/mcp/**
+  - scripts/generate-query-clients
+  - scripts/check-application-bindings
+  - docs/getting-started/**
+  - docs/riffql/**
+  - docs/agent-application-alpha.md
+  deliverables:
+  - Exact reviewed canonical application-manifest grammar, source maps, canonical bytes/hash, schemas, and
+    old/current fixtures binding contract, query modules, generation targets, roles, and seed inputs
+  - Generated Rust and TypeScript facades with typed named-query invocation, parameters, results, outcomes, optional
+    fields, nested rows, cursors, and read-after-commit options
+  - Exact contract/module negotiation and fail-closed mismatch behavior with no silent downgrade or rediscovery from
+    ambient active state
+  - Retry-safe generated command methods that preserve the caller/configured idempotency identity, resolve uncertainty,
+    and expose every typed declared outcome
+  - Generated MCP operation schemas from the same operation registry and zero-glue application boundary scanner
+  acceptance_commands:
+  - cargo test -p riffdb-query-module --all-features
+  - cargo test -p riffdb-client-rust --all-features
+  - cargo test -p riffdb-api-grpc --all-features
+  - cargo test -p riffdb-api-mcp --all-features
+  - ./scripts/check-application-bindings
+  - ./scripts/check-generated
+  - cargo fmt --all -- --check
+  - cargo clippy --workspace --all-targets --all-features -- -D warnings
+  exit_gate: The same exact named operation is callable through generated Rust, TypeScript, and MCP bindings with
+    identical typed observations; incompatible identities and uncertain responses fail safely; and the acceptance
+    sources contain no handwritten map, codec, transport-status parser, RPC wrapper, or replacement retry identity.
+  human_review_triggers: *id001
+- id: WP-310
+  name: Symbolic application roles and exact capability binding
+  depends_on:
+  - WP-305
+  objective: Compile manifest roles that name only commands and named queries into exact safe-application authority,
+    then bind those roles to principals and tenant scope without exposing field masks, raw permission bits, kernel
+    grants, or a manual ReadContract ritual.
+  requirements:
+  - AAA-003
+  required_adrs:
+  - ADR-0007
+  - ADR-0008
+  - ADR-0009
+  - ADR-0020
+  - ADR-0021
+  - ADR-0026
+  - ADR-0052
+  - ADR-0055
+  - ADR-0056
+  allowed_paths:
+  - Cargo.toml
+  - Cargo.lock
+  - proto/riffdb/app/v1/**
+  - proto/riffdb/storage/v1/**
+  - crates/riffdb-types/**
+  - crates/riffdb-errors/**
+  - crates/riffdb-proto/**
+  - crates/riffdb-query-module/**
+  - crates/riffdb-catalog/**
+  - crates/riffdb-auth/**
+  - crates/riffdb-policy/**
+  - crates/riffdb-service/**
+  - crates/riffdb-commit/**
+  - crates/riffdb-storage-api/**
+  - crates/riffdb-storage-memory/**
+  - crates/riffdb-storage-redb/**
+  - crates/riffdb-api-grpc/**
+  - crates/riffdb-api-mcp/**
+  - crates/riffdb-client-rust/**
+  - crates/riffdb-cli/**
+  - crates/riffdb-server/**
+  - crates/riffdb-testkit/**
+  - clients/typescript/**
+  - tests/authorization/**
+  - tests/service/**
+  - tests/grpc/**
+  - tests/mcp/**
+  - fixtures/application-manifests/**
+  - fixtures/proto/**
+  - fixtures/mcp/**
+  - docs/getting-started/**
+  - docs/agent-application-alpha.md
+  deliverables:
+  - Exact role grammar and canonical role identity bound to one immutable application/contract/query-module identity
+  - Compiler-derived contract description, named command/query, private field/index/partition/cost/result, lineage, and
+    MCP visibility requirements with no reusable raw kernel grants
+  - Audited exact role binding and revocation for principal, environment, tenant scope, and application identity
+  - CLI and MCP role describe/check/bind surfaces using symbols only, including bounded missing-requirement diagnostics
+  - Adversarial role substitution, stale module, hidden tool, field, tenant, revocation, mask/ID injection, and
+    application-to-kernel escalation tests
+  acceptance_commands:
+  - cargo test -p riffdb-query-module --all-features
+  - cargo test -p riffdb-auth --all-features
+  - cargo test -p riffdb-policy --all-features
+  - cargo test -p riffdb-service --all-features
+  - cargo test -p riffdb-api-grpc --all-features
+  - cargo test -p riffdb-api-mcp --all-features
+  - cargo test -p riffdb-cli --all-features
+  - ./scripts/check-generated
+  - cargo fmt --all -- --check
+  - cargo clippy --workspace --all-targets --all-features -- -D warnings
+  exit_gate: An application author can describe, bind, revoke, and diagnose a symbolic role without field/index IDs,
+    masks, capability bits, or explicit ReadContract grants; the role authorizes only exact named operations and cannot
+    be converted into ad-hoc or kernel authority.
+  human_review_triggers: *id001
+- id: WP-315
+  name: Structured semantic application errors across public surfaces
+  depends_on:
+  - WP-310
+  objective: Preserve bounded redaction-safe operation, contract, symbol, requirement, remediation, retry, and trace
+    context from compiler/service failures through gRPC, Rust, TypeScript, CLI, and MCP without changing compatible
+    kernel error bytes or exposing hidden schema and submitted values.
+  requirements:
+  - AAA-004
+  - AAA-005
+  required_adrs:
+  - ADR-0006
+  - ADR-0007
+  - ADR-0008
+  - ADR-0026
+  - ADR-0027
+  - ADR-0037
+  - ADR-0040
+  - ADR-0046
+  - ADR-0055
+  - ADR-0056
+  allowed_paths:
+  - Cargo.toml
+  - Cargo.lock
+  - proto/riffdb/app/v1/**
+  - crates/riffdb-types/**
+  - crates/riffdb-errors/**
+  - crates/riffdb-proto/**
+  - crates/riffdb-diagnostics/**
+  - crates/riffdb-query-compiler/**
+  - crates/riffdb-query-module/**
+  - crates/riffdb-catalog/**
+  - crates/riffdb-auth/**
+  - crates/riffdb-policy/**
+  - crates/riffdb-service/**
+  - crates/riffdb-api-grpc/**
+  - crates/riffdb-api-mcp/**
+  - crates/riffdb-mcp-stdio/**
+  - crates/riffdb-client-rust/**
+  - crates/riffdb-cli/**
+  - crates/riffdb-server/**
+  - crates/riffdb-testkit/**
+  - clients/typescript/**
+  - tests/authorization/**
+  - tests/service/**
+  - tests/grpc/**
+  - tests/mcp/**
+  - fixtures/application-errors/**
+  - fixtures/proto/**
+  - fixtures/mcp/**
+  - docs/getting-started/**
+  - docs/agent-application-alpha.md
+  deliverables:
+  - Additive versioned application-error envelope with exact tags, bounds, closed codes/categories/recovery actions,
+    symbolic context, source spans, fix codes, and trace/incident identity fixtures
+  - One service-owned error-context builder that applies authorization visibility and redaction before construction
+  - Total semantic conversion and equivalent machine-readable decoding/rendering for gRPC, Rust, TypeScript, CLI, MCP,
+    logs, and traces
+  - Contextual authorization, contract/module/input/decode/resource/cursor/revocation/storage/uncertainty/internal error
+    matrix with no fabricated symbol for context-free failures
+  - Secret, hidden-schema, arbitrary-prose, oversize, unknown-tag, malformed, downgrade, and cross-principal canaries
+  acceptance_commands:
+  - cargo test -p riffdb-errors --all-features
+  - cargo test -p riffdb-proto --all-features
+  - cargo test -p riffdb-diagnostics --all-features
+  - cargo test -p riffdb-policy --all-features
+  - cargo test -p riffdb-service --all-features
+  - cargo test -p riffdb-api-grpc --all-features
+  - cargo test -p riffdb-api-mcp --all-features
+  - cargo test -p riffdb-client-rust --all-features
+  - cargo test -p riffdb-cli --all-features
+  - ./scripts/check-generated
+  - cargo fmt --all -- --check
+  - cargo clippy --workspace --all-targets --all-features -- -D warnings
+  exit_gate: Every application-semantic failure carries the same bounded actionable machine context through every
+    public surface, infrastructure failures carry honest operation/recovery/trace context, and no value, credential,
+    hidden symbol, internal source, or unbounded prose crosses the public boundary.
+  human_review_triggers: *id001
+- id: WP-320
+  name: Resumable bounded command batches and development seed
+  depends_on:
+  - WP-310
+  - WP-315
+  objective: Productize seed/import as bounded concurrent orchestration of ordinary exact named commands with per-item
+    idempotency, typed outcomes, progress, cancellation, backpressure, provenance correlation, and crash-safe resume,
+    without adding generic bulk writes or collection-wide transaction semantics.
+  requirements:
+  - AAA-006
+  - AAA-007
+  required_adrs:
+  - ADR-0004
+  - ADR-0005
+  - ADR-0006
+  - ADR-0007
+  - ADR-0018
+  - ADR-0027
+  - ADR-0040
+  - ADR-0041
+  - ADR-0055
+  - ADR-0056
+  allowed_paths:
+  - Cargo.toml
+  - Cargo.lock
+  - proto/riffdb/app/v1/**
+  - proto/riffdb/storage/v1/**
+  - crates/riffdb-types/**
+  - crates/riffdb-errors/**
+  - crates/riffdb-proto/**
+  - crates/riffdb-auth/**
+  - crates/riffdb-policy/**
+  - crates/riffdb-runtime/**
+  - crates/riffdb-commit/**
+  - crates/riffdb-service/**
+  - crates/riffdb-storage-api/**
+  - crates/riffdb-storage-memory/**
+  - crates/riffdb-storage-redb/**
+  - crates/riffdb-api-grpc/**
+  - crates/riffdb-api-mcp/**
+  - crates/riffdb-client-rust/**
+  - crates/riffdb-cli/**
+  - crates/riffdb-server/**
+  - crates/riffdb-testkit/**
+  - clients/typescript/**
+  - tests/command_semantics/**
+  - tests/service/**
+  - tests/grpc/**
+  - tests/mcp/**
+  - tests/recovery/**
+  - fixtures/batches/**
+  - fixtures/proto/**
+  - fixtures/mcp/**
+  - scripts/riffdb-dev*
+  - docs/getting-started/**
+  - docs/agent-application-alpha.md
+  deliverables:
+  - Exact reviewed bounded batch request/progress/item-result/resume model and compatibility fixtures before choosing
+    client-streamed orchestration, an additive RPC, or durable correlation fields
+  - JSONL/stream batch runner with explicit command, concurrency, idempotency extraction, outcome policy, limits,
+    backpressure, cancellation, stable progress, and redaction-safe reporting
+  - Per-item ordinary service/authorization/runtime/coordinator execution and one bounded seed/import session
+    provenance correlation with no shared application transaction
+  - Checksummed resumable checkpoint/receipt that safely replays the same per-item keys after client/server crash
+  - riffdb dev seed migration plus duplicate, partial, reorder, malformed, cancellation, retry, crash, revocation,
+    deadline, and bounded-memory tests
+  acceptance_commands:
+  - cargo test -p riffdb-service --all-features
+  - cargo test -p riffdb-commit --all-features
+  - cargo test -p riffdb-api-grpc --all-features
+  - cargo test -p riffdb-client-rust --all-features
+  - cargo test -p riffdb-cli --all-features
+  - cargo test -p riffdb-testkit --all-features
+  - ./scripts/riffdb-dev-acceptance
+  - ./scripts/check-generated
+  - cargo fmt --all -- --check
+  - cargo clippy --workspace --all-targets --all-features -- -D warnings
+  exit_gate: A killed and resumed import returns one final typed result per input and no duplicate committed effect,
+    bounds memory/concurrency/output, uses only ordinary commands, and makes no generic-write or batch-atomicity claim.
+  human_review_triggers: *id001
+- id: WP-325
+  name: Canonical application scaffold, dev orchestration, and package boundary
+  depends_on:
+  - WP-305
+  - WP-310
+  - WP-315
+  - WP-320
+  objective: Make the correct product surface the generated default through riffdb new, one canonical riffdb dev
+    orchestrator, application-only Rust/TypeScript facades, templates and documentation, and mandatory boundary linting
+    that rejects kernel dependencies and handwritten transport glue.
+  requirements:
+  - AAA-008
+  - AAA-009
+  required_adrs:
+  - ADR-0007
+  - ADR-0008
+  - ADR-0040
+  - ADR-0041
+  - ADR-0052
+  - ADR-0055
+  - ADR-0056
+  allowed_paths:
+  - Cargo.toml
+  - Cargo.lock
+  - crates/riffdb-client-rust/**
+  - crates/riffdb-query-module/**
+  - crates/riffdb-auth/**
+  - crates/riffdb-service/**
+  - crates/riffdb-api-grpc/**
+  - crates/riffdb-api-mcp/**
+  - crates/riffdb-mcp-stdio/**
+  - crates/riffdb-cli/**
+  - crates/riffdb-server/**
+  - crates/riffdb-testkit/**
+  - clients/typescript/**
+  - templates/application/**
+  - fixtures/application-manifests/**
+  - fixtures/application-boundaries/**
+  - examples/agent-alpha/**
+  - scripts/check-application-boundary
+  - scripts/riffdb-new*
+  - scripts/riffdb-dev*
+  - docs/getting-started/**
+  - docs/riffql/**
+  - docs/agent-application-alpha.md
+  - README.md
+  deliverables:
+  - Deterministic riffdb new Rust/TypeScript scaffold containing manifest, contract, queries, roles, seed, generated
+    output roots, protected credential configuration, MCP setup, and one tested page/command
+  - One riffdb dev state machine for process start, readiness, compile/deploy, role bind, generation, resumable seed,
+    watch/reload, shutdown, and actionable recovery
+  - Application facade/package defaults that exclude kernel operations, with explicit reviewed unstable/admin opt-in
+    and separate credential for low-level use
+  - Mandatory manifest/dependency/source boundary lint rejecting kernel crates/packages, requests, masks, encoded keys,
+    protobuf/transport construction, and handwritten RiffDB adapters
+  - Application-first quickstart/search/navigation and reproducible ten-minute empty-repository transcript
+  acceptance_commands:
+  - cargo test -p riffdb-cli --all-features
+  - cargo test -p riffdb-client-rust --all-features
+  - cargo test -p riffdb-server --all-features
+  - ./scripts/riffdb-new-acceptance
+  - ./scripts/riffdb-dev-acceptance
+  - ./scripts/check-application-boundary
+  - ./scripts/check-generated
+  - cargo fmt --all -- --check
+  - cargo clippy --workspace --all-targets --all-features -- -D warnings
+  exit_gate: From an empty directory, riffdb new followed by riffdb dev reaches one typed write and page-shaped read
+    through generated application-only APIs, while dependency/source checks make accidental kernel use and handwritten
+    transport glue unavailable in the generated project.
+  human_review_triggers: *id001
+- id: WP-330
+  name: First-class TypeScript web-application parity
+  depends_on:
+  - WP-325
+  objective: Prove the TypeScript application path as a real generated-client web application with the same manifest,
+    operation schemas, observations, errors, credentials, reload behavior, and safety boundary as the Rust path.
+  requirements:
+  - AAA-010
+  required_adrs:
+  - ADR-0027
+  - ADR-0040
+  - ADR-0052
+  - ADR-0055
+  - ADR-0056
+  allowed_paths:
+  - Cargo.toml
+  - Cargo.lock
+  - crates/riffdb-query-module/**
+  - crates/riffdb-api-grpc/**
+  - crates/riffdb-api-mcp/**
+  - crates/riffdb-client-rust/**
+  - crates/riffdb-cli/**
+  - crates/riffdb-testkit/**
+  - clients/typescript/**
+  - examples/agent-alpha/**
+  - fixtures/application-manifests/**
+  - fixtures/application-errors/**
+  - fixtures/application-parity/**
+  - fixtures/query-modules/**
+  - fixtures/mcp/**
+  - scripts/agent-application-typescript-acceptance
+  - scripts/check-application-bindings
+  - scripts/check-application-boundary
+  - docs/getting-started/**
+  - docs/agent-application-alpha.md
+  deliverables:
+  - Pinned reviewed TypeScript runtime/build/test dependency graph and reproducible generated package
+  - Working web application exercising generated queries, commands, typed outcomes, optional/nested fields, cursors,
+    read-after-commit, structured errors, development credentials, hot reload, and MCP-assisted discovery
+  - Language-neutral operation/observation/error fixtures consumed unchanged by Rust and TypeScript
+  - Cross-language canonical input, result, outcome, cursor, identity mismatch, retry, and error differential tests
+  - TypeScript dependency/source boundary proof with zero handwritten RiffDB transport or codec
+  acceptance_commands:
+  - cargo test -p riffdb-query-module --all-features
+  - cargo test -p riffdb-client-rust --all-features
+  - ./scripts/agent-application-typescript-acceptance
+  - ./scripts/check-application-bindings
+  - ./scripts/check-application-boundary
+  - ./scripts/check-generated
+  - cargo fmt --all -- --check
+  - cargo clippy --workspace --all-targets --all-features -- -D warnings
+  exit_gate: The real TypeScript web application and Rust reference produce the same golden observations and recovery
+    classifications using only generated application bindings, and neither language contains a handwritten adapter or
+    kernel dependency.
+  human_review_triggers: *id001
+- id: WP-335
+  name: Unfamiliar-domain evidence and bounded RiffQL closure
+  depends_on:
+  - WP-330
+  objective: Build blog/CMS and orders/inventory corpora through the complete Rust and TypeScript application paths,
+    preserve every unsupported shape as diagnostic evidence, and close only repeated bounded RiffQL gaps after a
+    separate accepted language/IR decision.
+  requirements:
+  - AAA-011
+  required_adrs:
+  - ADR-0002
+  - ADR-0013
+  - ADR-0051
+  - ADR-0054
+  - ADR-0055
+  - ADR-0056
+  allowed_paths:
+  - Cargo.toml
+  - Cargo.lock
+  - crates/riffdb-contract-syntax/**
+  - crates/riffdb-contract-ir/**
+  - crates/riffdb-contract-compiler/**
+  - crates/riffdb-riffql-syntax/**
+  - crates/riffdb-query-ir/**
+  - crates/riffdb-query-compiler/**
+  - crates/riffdb-query-executor/**
+  - crates/riffdb-query-module/**
+  - crates/riffdb-storage-memory/**
+  - crates/riffdb-storage-redb/**
+  - crates/riffdb-service/**
+  - crates/riffdb-diagnostics/**
+  - crates/riffdb-client-rust/**
+  - clients/typescript/**
+  - contracts/agent-alpha/**
+  - queries/agent-alpha/**
+  - examples/agent-alpha/**
+  - fixtures/agent-alpha/**
+  - fixtures/compiler/**
+  - fixtures/riffql/**
+  - fixtures/query-modules/**
+  - scripts/agent-domain-evidence
+  - scripts/check-application-boundary
+  - docs/riffql/**
+  - docs/agent-application-alpha.md
+  deliverables:
+  - Blog/CMS and orders/inventory application manifests, contracts, roles, seeds, named queries, generated clients, and
+    language-neutral golden workload observations
+  - Versioned gap report classifying every failed shape by bounds, locality, index, authorization, cardinality,
+    projection suitability, or missing bounded expressiveness
+  - Source-spanned negative diagnostics explaining why a shape is rejected and the smallest existing
+    index/relation/projection/decomposition remedy when available
+  - Mandatory stop and separate accepted ADR for any new grammar/IR node, plan-hash domain input, access operator,
+    authorization requirement, storage path, cursor state, or result semantic
+  - If repeated evidence requires a language addition, after that review only the smallest accepted construct plus
+    rejection fixtures for broader exists/aggregate/computed/fragment/relation/search/projection/general-join variants;
+    otherwise fixtures proving the existing language completes both domains unchanged
+  acceptance_commands:
+  - cargo test -p riffdb-contract-syntax --all-features
+  - cargo test -p riffdb-contract-compiler --all-features
+  - cargo test -p riffdb-riffql-syntax --all-features
+  - cargo test -p riffdb-query-ir --all-features
+  - cargo test -p riffdb-query-compiler --all-features
+  - cargo test -p riffdb-query-executor --all-features
+  - cargo test -p riffdb-service --all-features
+  - ./scripts/agent-domain-evidence --assert-complete
+  - ./scripts/check-application-boundary
+  - ./scripts/check-generated
+  - cargo fmt --all -- --check
+  - cargo clippy --workspace --all-targets --all-features -- -D warnings
+  exit_gate: Both unfamiliar domains complete their bounded application workloads in Rust and TypeScript; every
+    rejected shape is actionable; every added construct has repeated evidence and a separately accepted exact ADR; and
+    no general SQL, arbitrary join, unbounded aggregate, or client-side semantic fallback enters the application path.
+  human_review_triggers: *id001
+- id: WP-340
+  name: Agent Application Alpha sealed evaluation and release gate
+  depends_on:
+  - WP-305
+  - WP-310
+  - WP-315
+  - WP-320
+  - WP-325
+  - WP-330
+  - WP-335
+  objective: Evaluate the complete public application-authoring product in four sealed fresh-agent runs covering
+    blog/CMS and orders/inventory in Rust and TypeScript, publish raw measurements and ratings, and block operational
+    alpha or replication until every Agent Application Alpha threshold passes.
+  requirements:
+  - AAA-012
+  required_adrs:
+  - ADR-0007
+  - ADR-0008
+  - ADR-0041
+  - ADR-0051
+  - ADR-0052
+  - ADR-0055
+  - ADR-0056
+  allowed_paths:
+  - Cargo.toml
+  - Cargo.lock
+  - evaluations/agent-application-alpha/**
+  - examples/agent-alpha/**
+  - fixtures/agent-alpha/**
+  - scripts/agent-application-alpha*
+  - scripts/check-application-bindings
+  - scripts/check-application-boundary
+  - release/**
+  - docs/getting-started/**
+  - docs/riffql/**
+  - docs/agent-application-alpha.md
+  - docs/safety-by-construction.md
+  - README.md
+  deliverables:
+  - Sealed release-derived evaluation bundle containing public binaries, docs, builder MCP, generated packages, and no
+    RiffDB implementation or TicketDesk source
+  - Four isolated empty-repository briefs/runs covering both domains in both languages with no shared agent context
+  - Versioned redaction-safe event transcript and JSON report for interventions, kernel attempts/successes, handwritten
+    glue, failures per feature, unsupported shapes, first-write/read/completion time, source access, and rating
+  - Machine checks for generated hashes, zero kernel imports/success, zero handwritten RiffDB glue, no prohibited
+    source access, complete golden observations, and all time/rating thresholds
+  - Published gate decision, raw measurements, independent explanations, limitations, and owner-routed failures with
+    no evaluator-side product workaround
+  acceptance_commands:
+  - ./scripts/agent-application-alpha-acceptance --runs 4 --sealed --assert-gate
+  - ./scripts/check-application-bindings
+  - ./scripts/check-application-boundary
+  - ./scripts/agent-domain-evidence --assert-complete
+  - ./scripts/check-generated
+  - ./scripts/check-requirement-coverage
+  - cargo fmt --all -- --check
+  - cargo clippy --workspace --all-targets --all-features -- -D warnings
+  - cargo test --workspace --all-features
+  - cargo doc --workspace --no-deps
+  - cargo deny check
+  exit_gate: All four sealed independent runs meet every AAA-012 threshold, each rates the experience at least 8.5/10,
+    raw evidence is published, and no unresolved product workaround, kernel escape, glue, source access, query gap, or
+    cross-language semantic difference remains before single-node operational alpha.
   human_review_triggers: *id001
