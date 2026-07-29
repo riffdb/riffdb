@@ -6,8 +6,8 @@ use std::sync::{Arc, Mutex};
 
 use riffdb_catalog::{
     ActiveCatalogSnapshot, CatalogError, CatalogErrorKind, CatalogPreparationResult,
-    ResolvedExecutablePlan, ValidatedContractBundle, prepare_catalog_activation,
-    resolve_executable_plan,
+    QueryModuleCatalogError, ResolvedExecutablePlan, ValidatedContractBundle, ValidatedQueryModule,
+    prepare_catalog_activation, resolve_executable_plan,
 };
 use riffdb_contract_ir::ContractBundle;
 use riffdb_idempotency::{
@@ -27,7 +27,7 @@ use riffdb_service::{
     CatalogExecutablePlanRequest, CatalogReadPort, CommandDurability, CommitNotificationSource,
     ContractVersionReadPermit, DeclaredOutcomeView, DurableEventView, OutcomeLocatorDigestEvidence,
     PortAdmissionError, PortDriverStopped, PortFuture, PresentCapabilityRevokeTargetSnapshot,
-    ProvenanceClaimsView, RequestControl,
+    ProvenanceClaimsView, QueryModuleReadError, QueryModuleReadPort, RequestControl,
 };
 use riffdb_storage_api::{
     AdmissionLookupResultV1, AdmissionRepository, AuthoritativePointReader,
@@ -36,14 +36,14 @@ use riffdb_storage_api::{
     FilteredAuthoritativeIndexScanPage, FilteredAuthoritativeIndexScanRequest,
     FilteredAuthoritativeScanReader, IdempotencyIdentity, IdempotencyKeyDigest,
     IdempotencyLookupCandidatesV1, IndexPartitionFilter, IndexPartitionFilterScope,
-    IndexRangePrefixBuilder, IndexRangeTarget, ReadableDigestKey,
+    IndexRangePrefixBuilder, IndexRangeTarget, QueryModuleRepository, ReadableDigestKey,
     ReadableIdempotencyDigestInventory, StorageError, StorageErrorKind, StorageScanLimit,
     StoredAdmissionStateV1, StoredCommitRecordV1, StoredPendingAdmissionV1,
     StoredProvenanceRecordV1,
 };
 use riffdb_types::{
     CanonicalValue, CapabilityId, CommitSequence, ContractLineage, ContractVersion, DatabaseId,
-    Environment,
+    Environment, QueryModuleHash,
 };
 
 use crate::notifications::FirstCommitNotificationHub;
@@ -52,7 +52,9 @@ use crate::storage::SharedRedbOperationalPorts;
 
 type ContractVersionRequest = (ContractLineage, ContractVersion);
 type DeploymentRequest = (ContractBundle, Option<ContractVersion>);
+type QueryModuleReadRequest = (ValidatedContractBundle, Option<QueryModuleHash>);
 const MAX_HOT_HISTORICAL_CONTRACTS: usize = 4_096;
+const MAX_HOT_QUERY_MODULES: usize = 4_096;
 
 #[derive(Default)]
 struct HistoricalContractView {
@@ -84,6 +86,37 @@ impl HistoricalContractView {
     }
 }
 
+#[derive(Default)]
+struct QueryModulePlanCache {
+    modules: BTreeMap<QueryModuleHash, ValidatedQueryModule>,
+}
+
+impl QueryModulePlanCache {
+    fn get(
+        &self,
+        module_hash: QueryModuleHash,
+        contract: &ValidatedContractBundle,
+    ) -> Option<ValidatedQueryModule> {
+        self.modules.get(&module_hash).and_then(|module| {
+            let compiled = module.module();
+            (compiled.contract_lineage() == contract.lineage()
+                && compiled.contract_version() == contract.contract_version()
+                && compiled.contract_hash() == contract.bundle_hash())
+            .then(|| module.clone())
+        })
+    }
+
+    fn insert(&mut self, module: ValidatedQueryModule) {
+        if self.modules.len() == MAX_HOT_QUERY_MODULES
+            && !self.modules.contains_key(&module.identity())
+            && let Some(oldest_identity) = self.modules.keys().next().copied()
+        {
+            self.modules.remove(&oldest_identity);
+        }
+        self.modules.insert(module.identity(), module);
+    }
+}
+
 /// Catalog-owned semantic reads driven on the retained blocking worker set.
 pub(crate) struct ServerCatalogReadPort {
     active: BlockingPortExecutor<(), Option<ActiveCatalogSnapshot>, CatalogError>,
@@ -92,6 +125,11 @@ pub(crate) struct ServerCatalogReadPort {
     executable_plan:
         BlockingPortExecutor<CatalogExecutablePlanRequest, ResolvedExecutablePlan, CatalogError>,
     deployment: BlockingPortExecutor<DeploymentRequest, CatalogPreparationResult, CatalogError>,
+    query_module: BlockingPortExecutor<
+        QueryModuleReadRequest,
+        Option<ValidatedQueryModule>,
+        QueryModuleReadError,
+    >,
 }
 
 impl ServerCatalogReadPort {
@@ -137,6 +175,46 @@ impl ServerCatalogReadPort {
             resolve_executable_plan(&plan_storage, &reference)
         });
 
+        let module_storage = storage.clone();
+        let module_cache = Arc::new(Mutex::new(QueryModulePlanCache::default()));
+        let query_module = driver.executor(move |(contract, selected): QueryModuleReadRequest| {
+            let selected = match selected {
+                Some(module_hash) => Some(module_hash),
+                None => QueryModuleRepository::read_active_query_module(
+                    &module_storage,
+                    contract.lineage(),
+                    contract.contract_version(),
+                    contract.bundle_hash(),
+                )
+                .map_err(map_query_module_storage)?
+                .map(|pointer| pointer.module_hash()),
+            };
+            let Some(module_hash) = selected else {
+                return Ok(None);
+            };
+            if let Some(module) = module_cache
+                .lock()
+                .map_err(|_| QueryModuleReadError::Integrity)?
+                .get(module_hash, &contract)
+            {
+                return Ok(Some(module));
+            }
+            let module = QueryModuleRepository::read_query_module(&module_storage, module_hash)
+                .map_err(map_query_module_storage)?
+                .map(|stored| {
+                    ValidatedQueryModule::from_stored(&stored, &contract)
+                        .map_err(map_query_module_catalog)
+                })
+                .transpose()?;
+            if let Some(module) = module.as_ref() {
+                module_cache
+                    .lock()
+                    .map_err(|_| QueryModuleReadError::Integrity)?
+                    .insert(module.clone());
+            }
+            Ok(module)
+        });
+
         let deployment = driver.executor(
             move |(candidate, expected_active_version): DeploymentRequest| {
                 let active = ActiveCatalogSnapshot::read(&storage)?;
@@ -149,6 +227,7 @@ impl ServerCatalogReadPort {
             contract_version,
             executable_plan,
             deployment,
+            query_module,
         }
     }
 }
@@ -205,6 +284,28 @@ impl CatalogReadPort for ServerCatalogReadPort {
         submit_catalog(
             self.deployment.reserve(control),
             (candidate, expected_active_version),
+        )
+    }
+}
+
+impl QueryModuleReadPort for ServerCatalogReadPort {
+    fn prepare_active_query_module(
+        &self,
+        control: &RequestControl,
+        contract: ValidatedContractBundle,
+    ) -> PortFuture<'_, Option<ValidatedQueryModule>, QueryModuleReadError> {
+        submit_query_module(self.query_module.reserve(control), (contract, None))
+    }
+
+    fn prepare_query_module(
+        &self,
+        control: &RequestControl,
+        contract: ValidatedContractBundle,
+        module_hash: QueryModuleHash,
+    ) -> PortFuture<'_, Option<ValidatedQueryModule>, QueryModuleReadError> {
+        submit_query_module(
+            self.query_module.reserve(control),
+            (contract, Some(module_hash)),
         )
     }
 }
@@ -473,6 +574,37 @@ where
             Err(PortDriverStopped) => Err(catalog_driver_unavailable()),
         }
     })
+}
+
+fn submit_query_module<'a, Request, Response>(
+    reservation: Result<
+        BoxPortCapacityPermit<Request, Response, QueryModuleReadError>,
+        PortAdmissionError,
+    >,
+    request: Request,
+) -> PortFuture<'a, Response, QueryModuleReadError>
+where
+    Request: Send + 'a,
+    Response: Send + 'a,
+{
+    Box::pin(async move {
+        let permit = reservation.map_err(|_| QueryModuleReadError::Unavailable)?;
+        let receipt = permit
+            .submit(request)
+            .map_err(|_| QueryModuleReadError::Unavailable)?;
+        match receipt.completion().await {
+            Ok(result) => result,
+            Err(PortDriverStopped) => Err(QueryModuleReadError::Unavailable),
+        }
+    })
+}
+
+fn map_query_module_storage(_: StorageError) -> QueryModuleReadError {
+    QueryModuleReadError::Unavailable
+}
+
+fn map_query_module_catalog(_: QueryModuleCatalogError) -> QueryModuleReadError {
+    QueryModuleReadError::Integrity
 }
 
 fn submit_authoritative<'a, Request, Response>(

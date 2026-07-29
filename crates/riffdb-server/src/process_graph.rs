@@ -36,8 +36,8 @@ use riffdb_projection::{ProjectionNotifier, ProjectionSchemaRegistry};
 use riffdb_service::{
     ApplicationService, AuthoritativeReadPort, BuildInfo, CapabilityTokenIssuer, CatalogReadPort,
     CurrentPolicyPort, CursorMonotonicClock, CursorTokenGenerator, OperationalStatusPort,
-    ProjectionQueryPort, RequestDeadlineScheduler, RiffDbServiceActivator, ServiceDiagnostics,
-    ServiceExecutors, ServiceHealthHooks, ServiceIdentity, ServiceJobSpawner,
+    ProjectionQueryPort, QueryModuleReadPort, RequestDeadlineScheduler, RiffDbServiceActivator,
+    ServiceDiagnostics, ServiceExecutors, ServiceHealthHooks, ServiceIdentity, ServiceJobSpawner,
     ServiceProcessMetadata, ServiceProviders, ServiceTelemetry,
 };
 use riffdb_storage_api::{
@@ -300,8 +300,9 @@ impl ProductionGraphBuilder {
         let token_issuer: Arc<dyn CapabilityTokenIssuer> = Arc::new(
             ServerCapabilityTokenIssuer::new(Arc::clone(&capability_keys)),
         );
-        let catalog: Arc<dyn CatalogReadPort> =
-            Arc::new(ServerCatalogReadPort::new(storage.clone(), &blocking));
+        let catalog_adapter = Arc::new(ServerCatalogReadPort::new(storage.clone(), &blocking));
+        let catalog: Arc<dyn CatalogReadPort> = catalog_adapter.clone();
+        let query_modules: Arc<dyn QueryModuleReadPort> = catalog_adapter;
         let authoritative: Arc<dyn AuthoritativeReadPort> =
             Arc::new(ServerAuthoritativeReadPort::new(
                 storage.clone(),
@@ -420,6 +421,7 @@ impl ProductionGraphBuilder {
             cursor_clock,
         )
         .with_query_executor(Arc::new(storage))
+        .with_query_modules(query_modules)
         .with_offline_maintenance(maintenance);
         let identity = ServiceIdentity::new(
             database_id,

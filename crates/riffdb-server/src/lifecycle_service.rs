@@ -12,18 +12,19 @@ use riffdb_service::{
     AdministrationApplication, CheckSymbolicQueryResult, CommandApplication, CommitApplication,
     CompileSymbolicQueryRequest, ContractApplication, ContractValidationResult,
     CreateCapabilityInvocation, CreateCapabilityResult, CreateOfflineBackupRequest,
-    DeployContractRequest, DeployContractResult, DescribeSymbolicContractResult,
-    DiscoverCommandToolsRequest, DiscoverCommandToolsResult, DiscoverResourcesRequest,
-    DiscoverResourcesResult, DiscoveryApplication, ExecuteCommandRequest, ExecuteCommandResult,
-    ExecuteSymbolicQueryRequest, ExecuteSymbolicQueryResult, ExplainCommandRequest,
-    ExplainCommandResult, ExplainSymbolicQueryResult, GetActiveContractRequest,
-    GetActiveContractResult, GetCommitRequest, GetCommitResult, GetContractVersionRequest,
-    GetContractVersionResult, GetEntityRequest, GetEntityResult,
+    DeployContractRequest, DeployContractResult, DeployQueryModuleRequest, DeployQueryModuleResult,
+    DescribeSymbolicContractResult, DiscoverCommandToolsRequest, DiscoverCommandToolsResult,
+    DiscoverResourcesRequest, DiscoverResourcesResult, DiscoveryApplication, ExecuteCommandRequest,
+    ExecuteCommandResult, ExecuteSymbolicQueryRequest, ExecuteSymbolicQueryResult,
+    ExplainCommandRequest, ExplainCommandResult, ExplainSymbolicQueryResult,
+    GetActiveContractRequest, GetActiveContractResult, GetCommitRequest, GetCommitResult,
+    GetContractVersionRequest, GetContractVersionResult, GetEntityRequest, GetEntityResult,
     GetOfflineMaintenanceOperationRequest, GetOfflineMaintenanceOperationResult,
-    GetProjectionStatusRequest, GetProjectionStatusResult, HealthContext, HealthRequest,
-    HealthResult, ListPendingOutboxDeliveriesRequest, ListPendingOutboxDeliveriesResult,
-    OfflineMaintenanceApplication, OfflineMaintenanceStartResult, QueryApplication,
-    QueryProjectionRequest, QueryProjectionResult, RequestContext, ResolveCommandOutcomeRequest,
+    GetProjectionStatusRequest, GetProjectionStatusResult, GetQueryModuleRequest, HealthContext,
+    HealthRequest, HealthResult, ListPendingOutboxDeliveriesRequest,
+    ListPendingOutboxDeliveriesResult, NamedSymbolicQueryRequest, OfflineMaintenanceApplication,
+    OfflineMaintenanceStartResult, QueryApplication, QueryModuleInspection, QueryProjectionRequest,
+    QueryProjectionResult, RequestContext, ResolveCommandOutcomeRequest,
     ResolveCommandOutcomeResult, RestoreOfflineBackupInvocation, RevokeCapabilityRequest,
     RevokeCapabilityResult, ScanCommitsRequest, ScanCommitsResult, ScanIndexRequest,
     ScanIndexResult, ServiceFuture, StatisticsRequest, StatisticsResult, SubscribeToCommitsRequest,
@@ -351,6 +352,22 @@ delegate_operation! {
         execute_symbolic_query(
             context: RequestContext,
             request: ExecuteSymbolicQueryRequest
+        ) -> ExecuteSymbolicQueryResult => ExecuteQuery;
+        deploy_query_module(
+            context: RequestContext,
+            request: DeployQueryModuleRequest
+        ) -> DeployQueryModuleResult => DeployQueryModule;
+        get_query_module(
+            context: RequestContext,
+            request: GetQueryModuleRequest
+        ) -> Option<QueryModuleInspection> => ExplainQuery;
+        explain_named_symbolic_query(
+            context: RequestContext,
+            request: NamedSymbolicQueryRequest
+        ) -> ExplainSymbolicQueryResult => ExplainQuery;
+        execute_named_symbolic_query(
+            context: RequestContext,
+            request: NamedSymbolicQueryRequest
         ) -> ExecuteSymbolicQueryResult => ExecuteQuery;
     }
 }

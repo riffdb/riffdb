@@ -1124,6 +1124,7 @@ pub(crate) struct CursorBindingError;
 #[derive(Clone, Eq, PartialEq)]
 pub(crate) struct QueryCursorLookup {
     contract: CursorContractIdentity,
+    module_hash: Option<riffdb_types::QueryModuleHash>,
     plan_hash: QueryPlanHash,
     parameter_hash: QueryParameterHash,
     capability_id: CapabilityId,
@@ -1134,6 +1135,7 @@ impl QueryCursorLookup {
     #[must_use]
     pub(crate) const fn new(
         contract: CursorContractIdentity,
+        module_hash: Option<riffdb_types::QueryModuleHash>,
         plan_hash: QueryPlanHash,
         parameter_hash: QueryParameterHash,
         capability_id: CapabilityId,
@@ -1141,6 +1143,7 @@ impl QueryCursorLookup {
     ) -> Self {
         Self {
             contract,
+            module_hash,
             plan_hash,
             parameter_hash,
             capability_id,

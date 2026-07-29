@@ -182,6 +182,20 @@ impl RiffDbClient {
         app_v1::ExecuteQueryRequest,
         app_v1::ExecuteQueryResponse
     );
+    unary!(
+        deploy_query_module,
+        application_query,
+        deploy_query_module,
+        app_v1::DeployQueryModuleRequest,
+        app_v1::DeployQueryModuleResponse
+    );
+    unary!(
+        get_query_module,
+        application_query,
+        get_query_module,
+        app_v1::GetQueryModuleRequest,
+        app_v1::GetQueryModuleResponse
+    );
 
     unary_exchange!(
         validate_contract,

@@ -181,6 +181,84 @@ pub struct DescribeContractResponse {
     #[prost(string, tag = "4")]
     pub symbolic_catalog: ::prost::alloc::string::String,
 }
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct NamedQuerySource {
+    #[prost(string, tag = "1")]
+    pub name: ::prost::alloc::string::String,
+    #[prost(string, tag = "2")]
+    pub source: ::prost::alloc::string::String,
+}
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct DeployQueryModuleRequest {
+    #[prost(message, optional, tag = "1")]
+    pub contract: ::core::option::Option<ContractSelector>,
+    #[prost(string, tag = "2")]
+    pub module_name: ::prost::alloc::string::String,
+    #[prost(uint64, tag = "3")]
+    pub module_version: u64,
+    #[prost(message, repeated, tag = "4")]
+    pub queries: ::prost::alloc::vec::Vec<NamedQuerySource>,
+    #[prost(bytes = "vec", tag = "100")]
+    pub request_id: ::prost::alloc::vec::Vec<u8>,
+    #[prost(oneof = "deploy_query_module_request::ExpectedActive", tags = "5, 6, 7")]
+    pub expected_active: ::core::option::Option<
+        deploy_query_module_request::ExpectedActive,
+    >,
+}
+/// Nested message and enum types in `DeployQueryModuleRequest`.
+pub mod deploy_query_module_request {
+    #[derive(Clone, PartialEq, Eq, Hash, ::prost::Oneof)]
+    pub enum ExpectedActive {
+        #[prost(bool, tag = "5")]
+        AnyActive(bool),
+        #[prost(bool, tag = "6")]
+        AbsentActive(bool),
+        #[prost(bytes, tag = "7")]
+        ModuleHash(::prost::alloc::vec::Vec<u8>),
+    }
+}
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct QueryModuleDescriptor {
+    #[prost(string, tag = "1")]
+    pub module_name: ::prost::alloc::string::String,
+    #[prost(uint64, tag = "2")]
+    pub module_version: u64,
+    #[prost(bytes = "vec", tag = "3")]
+    pub module_hash: ::prost::alloc::vec::Vec<u8>,
+    #[prost(string, tag = "4")]
+    pub contract_lineage: ::prost::alloc::string::String,
+    #[prost(uint64, tag = "5")]
+    pub contract_version: u64,
+    #[prost(bytes = "vec", tag = "6")]
+    pub contract_bundle_hash: ::prost::alloc::vec::Vec<u8>,
+    #[prost(string, repeated, tag = "7")]
+    pub query_names: ::prost::alloc::vec::Vec<::prost::alloc::string::String>,
+}
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct DeployQueryModuleResponse {
+    #[prost(enumeration = "QueryModuleDeploymentOutcome", tag = "1")]
+    pub outcome: i32,
+    #[prost(message, optional, tag = "2")]
+    pub module: ::core::option::Option<QueryModuleDescriptor>,
+    #[prost(bytes = "vec", optional, tag = "3")]
+    pub actual_active_module_hash: ::core::option::Option<::prost::alloc::vec::Vec<u8>>,
+}
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct GetQueryModuleRequest {
+    #[prost(message, optional, tag = "1")]
+    pub contract: ::core::option::Option<ContractSelector>,
+    #[prost(bytes = "vec", optional, tag = "2")]
+    pub module_hash: ::core::option::Option<::prost::alloc::vec::Vec<u8>>,
+    #[prost(bytes = "vec", tag = "100")]
+    pub request_id: ::prost::alloc::vec::Vec<u8>,
+}
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct GetQueryModuleResponse {
+    #[prost(message, optional, tag = "1")]
+    pub module: ::core::option::Option<QueryModuleDescriptor>,
+    #[prost(message, repeated, tag = "2")]
+    pub queries: ::prost::alloc::vec::Vec<NamedQuerySource>,
+}
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, ::prost::Enumeration)]
 #[repr(i32)]
 pub enum ResultCardinality {
@@ -209,6 +287,54 @@ impl ResultCardinality {
             "RESULT_CARDINALITY_ONE" => Some(Self::One),
             "RESULT_CARDINALITY_MAYBE" => Some(Self::Maybe),
             "RESULT_CARDINALITY_MANY" => Some(Self::Many),
+            _ => None,
+        }
+    }
+}
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, ::prost::Enumeration)]
+#[repr(i32)]
+pub enum QueryModuleDeploymentOutcome {
+    Unspecified = 0,
+    Activated = 1,
+    AlreadyActive = 2,
+    ExpectedActiveMismatch = 3,
+    VersionConflict = 4,
+    ContractUnavailable = 5,
+}
+impl QueryModuleDeploymentOutcome {
+    /// String value of the enum field names used in the ProtoBuf definition.
+    ///
+    /// The values are not transformed in any way and thus are considered stable
+    /// (if the ProtoBuf definition does not change) and safe for programmatic use.
+    pub fn as_str_name(&self) -> &'static str {
+        match self {
+            Self::Unspecified => "QUERY_MODULE_DEPLOYMENT_OUTCOME_UNSPECIFIED",
+            Self::Activated => "QUERY_MODULE_DEPLOYMENT_OUTCOME_ACTIVATED",
+            Self::AlreadyActive => "QUERY_MODULE_DEPLOYMENT_OUTCOME_ALREADY_ACTIVE",
+            Self::ExpectedActiveMismatch => {
+                "QUERY_MODULE_DEPLOYMENT_OUTCOME_EXPECTED_ACTIVE_MISMATCH"
+            }
+            Self::VersionConflict => "QUERY_MODULE_DEPLOYMENT_OUTCOME_VERSION_CONFLICT",
+            Self::ContractUnavailable => {
+                "QUERY_MODULE_DEPLOYMENT_OUTCOME_CONTRACT_UNAVAILABLE"
+            }
+        }
+    }
+    /// Creates an enum from field names used in the ProtoBuf definition.
+    pub fn from_str_name(value: &str) -> ::core::option::Option<Self> {
+        match value {
+            "QUERY_MODULE_DEPLOYMENT_OUTCOME_UNSPECIFIED" => Some(Self::Unspecified),
+            "QUERY_MODULE_DEPLOYMENT_OUTCOME_ACTIVATED" => Some(Self::Activated),
+            "QUERY_MODULE_DEPLOYMENT_OUTCOME_ALREADY_ACTIVE" => Some(Self::AlreadyActive),
+            "QUERY_MODULE_DEPLOYMENT_OUTCOME_EXPECTED_ACTIVE_MISMATCH" => {
+                Some(Self::ExpectedActiveMismatch)
+            }
+            "QUERY_MODULE_DEPLOYMENT_OUTCOME_VERSION_CONFLICT" => {
+                Some(Self::VersionConflict)
+            }
+            "QUERY_MODULE_DEPLOYMENT_OUTCOME_CONTRACT_UNAVAILABLE" => {
+                Some(Self::ContractUnavailable)
+            }
             _ => None,
         }
     }

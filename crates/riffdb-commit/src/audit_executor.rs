@@ -11,9 +11,9 @@ use std::{error::Error, fmt, panic, thread};
 use riffdb_storage_api::{
     AdmissionRepository, ApplicationCommandTransactionPort, AuditPrincipalV1,
     CapabilityAdministrationTransactionPort, CapabilityBootstrapAdministrationRepository,
-    CatalogAdministrationRepository, ExecutionFailureTransitionPort, ServiceAuditAppendIntentV1,
-    ServiceAuditAppendRepository, ServiceAuditAppendResult, SnapshotReader, StorageError,
-    StorageValueError,
+    CatalogAdministrationRepository, ExecutionFailureTransitionPort,
+    QueryModuleAdministrationRepository, ServiceAuditAppendIntentV1, ServiceAuditAppendRepository,
+    ServiceAuditAppendResult, SnapshotReader, StorageError, StorageValueError,
 };
 use tokio::runtime;
 use tokio::sync::{mpsc, oneshot};
@@ -36,8 +36,9 @@ use crate::{
         CapabilityBootstrapTerminalPreparation, CapabilityCreateExecutionResult,
         CapabilityCreatePreparation, CapabilityRevokeExecutionResult, CapabilityRevokePreparation,
         CatalogDeploymentPreparation, CatalogDeploymentResult, ControlPlaneExecutionError,
-        drive_capability_bootstrap, drive_capability_bootstrap_terminal, drive_capability_create,
-        drive_capability_revoke, drive_catalog_deployment,
+        QueryModuleDeploymentPreparation, QueryModuleDeploymentResult, drive_capability_bootstrap,
+        drive_capability_bootstrap_terminal, drive_capability_create, drive_capability_revoke,
+        drive_catalog_deployment, drive_query_module_deployment,
     },
     idempotency_inspection::{
         CommandIdempotencyInspectionError, CommandIdempotencyInspectionRequest,
@@ -480,6 +481,21 @@ impl ControlPlaneExecutionCapacityPermit {
         Ok(CatalogDeploymentReceipt { receiver })
     }
 
+    /// Submits one exact-contract query-module activation.
+    pub fn submit_query_module_deployment(
+        self,
+        preparation: QueryModuleDeploymentPreparation,
+    ) -> Result<QueryModuleDeploymentReceipt, ControlPlaneExecutionAdmissionError> {
+        let (permit, submission) = self.into_submission()?;
+        let (completion, receiver) = oneshot::channel();
+        let _sender = permit.send(CoordinatorMessage::QueryModuleDeployment {
+            preparation: Box::new(preparation),
+            completion,
+        });
+        drop(submission);
+        Ok(QueryModuleDeploymentReceipt { receiver })
+    }
+
     /// Submits one freshly authorized normal capability creation.
     pub fn submit_capability_create(
         self,
@@ -591,6 +607,7 @@ macro_rules! control_plane_receipt {
 }
 
 control_plane_receipt!(CatalogDeploymentReceipt, CatalogDeploymentResult);
+control_plane_receipt!(QueryModuleDeploymentReceipt, QueryModuleDeploymentResult);
 control_plane_receipt!(CapabilityCreateReceipt, CapabilityCreateExecutionResult);
 control_plane_receipt!(CapabilityRevokeReceipt, CapabilityRevokeExecutionResult);
 control_plane_receipt!(
@@ -906,6 +923,7 @@ impl RunningCommandCoordinator {
             + ExecutionFailureTransitionPort
             + ServiceAuditAppendRepository
             + CatalogAdministrationRepository
+            + QueryModuleAdministrationRepository
             + CapabilityAdministrationTransactionPort
             + CapabilityBootstrapAdministrationRepository
             + Send
@@ -946,6 +964,7 @@ impl RunningCommandCoordinator {
             + ExecutionFailureTransitionPort
             + ServiceAuditAppendRepository
             + CatalogAdministrationRepository
+            + QueryModuleAdministrationRepository
             + CapabilityAdministrationTransactionPort
             + CapabilityBootstrapAdministrationRepository
             + Send
@@ -1164,6 +1183,11 @@ enum CoordinatorMessage {
         preparation: Box<CatalogDeploymentPreparation>,
         completion: oneshot::Sender<Result<CatalogDeploymentResult, ControlPlaneExecutionError>>,
     },
+    QueryModuleDeployment {
+        preparation: Box<QueryModuleDeploymentPreparation>,
+        completion:
+            oneshot::Sender<Result<QueryModuleDeploymentResult, ControlPlaneExecutionError>>,
+    },
     CapabilityCreate {
         preparation: Box<CapabilityCreatePreparation>,
         completion:
@@ -1213,6 +1237,11 @@ trait CoordinatorActorOperations: Send {
         preparation: CatalogDeploymentPreparation,
     ) -> Result<CatalogDeploymentResult, ControlPlaneExecutionError>;
 
+    fn deploy_query_module(
+        &mut self,
+        preparation: QueryModuleDeploymentPreparation,
+    ) -> Result<QueryModuleDeploymentResult, ControlPlaneExecutionError>;
+
     fn create_capability(
         &mut self,
         preparation: CapabilityCreatePreparation,
@@ -1254,6 +1283,7 @@ where
         + ExecutionFailureTransitionPort
         + ServiceAuditAppendRepository
         + CatalogAdministrationRepository
+        + QueryModuleAdministrationRepository
         + CapabilityAdministrationTransactionPort
         + CapabilityBootstrapAdministrationRepository
         + Send,
@@ -1266,6 +1296,18 @@ where
             &mut self.repository,
             self.administration_clock.as_ref(),
             input,
+        )
+    }
+
+    fn deploy_query_module(
+        &mut self,
+        preparation: QueryModuleDeploymentPreparation,
+    ) -> Result<QueryModuleDeploymentResult, ControlPlaneExecutionError> {
+        drive_query_module_deployment(
+            &mut self.repository,
+            self.administration_clock.as_ref(),
+            &self.lifecycle,
+            preparation,
         )
     }
 
@@ -1417,6 +1459,13 @@ where
         Err(ControlPlaneExecutionError::coordinator_stopped())
     }
 
+    fn deploy_query_module(
+        &mut self,
+        _: QueryModuleDeploymentPreparation,
+    ) -> Result<QueryModuleDeploymentResult, ControlPlaneExecutionError> {
+        Err(ControlPlaneExecutionError::coordinator_stopped())
+    }
+
     fn create_capability(
         &mut self,
         _: CapabilityCreatePreparation,
@@ -1564,6 +1613,15 @@ impl CommandCoordinatorActor {
                         break;
                     }
                 }
+                CoordinatorMessage::QueryModuleDeployment {
+                    preparation,
+                    completion,
+                } => {
+                    self.execute_query_module_deployment(*preparation, completion);
+                    if self.reject_after_published_terminal_state().await {
+                        break;
+                    }
+                }
                 CoordinatorMessage::CapabilityCreate {
                     preparation,
                     completion,
@@ -1663,6 +1721,15 @@ impl CommandCoordinatorActor {
                                 completion,
                             } => {
                                 self.execute_catalog_deployment(*preparation, completion);
+                                if self.reject_after_published_terminal_state().await {
+                                    return;
+                                }
+                            }
+                            CoordinatorMessage::QueryModuleDeployment {
+                                preparation,
+                                completion,
+                            } => {
+                                self.execute_query_module_deployment(*preparation, completion);
                                 if self.reject_after_published_terminal_state().await {
                                     return;
                                 }
@@ -1817,6 +1884,17 @@ impl CommandCoordinatorActor {
         let _receiver_may_be_dropped = completion.send(result);
     }
 
+    fn execute_query_module_deployment(
+        &mut self,
+        preparation: QueryModuleDeploymentPreparation,
+        completion: oneshot::Sender<
+            Result<QueryModuleDeploymentResult, ControlPlaneExecutionError>,
+        >,
+    ) {
+        let result = self.operations.deploy_query_module(preparation);
+        let _receiver_may_be_dropped = completion.send(result);
+    }
+
     fn execute_capability_create(
         &mut self,
         preparation: CapabilityCreatePreparation,
@@ -1898,6 +1976,10 @@ impl CommandCoordinatorActor {
                     let _receiver_may_be_dropped =
                         completion.send(Err(ControlPlaneExecutionError::coordinator_fenced()));
                 }
+                CoordinatorMessage::QueryModuleDeployment { completion, .. } => {
+                    let _receiver_may_be_dropped =
+                        completion.send(Err(ControlPlaneExecutionError::coordinator_fenced()));
+                }
                 CoordinatorMessage::CapabilityCreate { completion, .. } => {
                     let _receiver_may_be_dropped =
                         completion.send(Err(ControlPlaneExecutionError::coordinator_fenced()));
@@ -1939,6 +2021,10 @@ impl CommandCoordinatorActor {
                         .send(Err(CommandIdempotencyInspectionError::coordinator_stopped()));
                 }
                 CoordinatorMessage::CatalogDeployment { completion, .. } => {
+                    let _receiver_may_be_dropped =
+                        completion.send(Err(ControlPlaneExecutionError::coordinator_stopped()));
+                }
+                CoordinatorMessage::QueryModuleDeployment { completion, .. } => {
                     let _receiver_may_be_dropped =
                         completion.send(Err(ControlPlaneExecutionError::coordinator_stopped()));
                 }

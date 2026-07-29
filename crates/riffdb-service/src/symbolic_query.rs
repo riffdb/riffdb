@@ -4,6 +4,12 @@ use std::collections::BTreeMap;
 use std::num::NonZeroU16;
 use std::sync::Arc;
 
+use riffdb_catalog::{PreparedQueryModuleActivation, ValidatedQueryModule};
+use riffdb_commit::{
+    ControlPlaneExecutionErrorKind, ControlPlaneTerminalAudit,
+    QueryModuleDeploymentOutcome as CoordinatorQueryModuleDeploymentOutcome,
+    QueryModuleDeploymentPreparation,
+};
 use riffdb_contract_ir::{ValueType, ValueTypeTag};
 use riffdb_errors::{
     PublicError, ValidationCode, ValidationIssue, ValidationIssues, ValidationPath,
@@ -20,10 +26,15 @@ use riffdb_query_ir::{
     NamedTypeSchema, QueryAccessKind, QueryAccessProgramV1, QueryDiagnostic, SymbolicCatalog,
     resolve_query_surface,
 };
-use riffdb_riffql_syntax::{Document, ParseDiagnostic, Span, TypeReference, parse_query};
+use riffdb_query_module::{NamedQuerySource, QueryModuleCandidate};
+use riffdb_riffql_syntax::{
+    Document, MAX_IDENTIFIER_BYTES, ParseDiagnostic, Span, TypeReference, parse_query,
+};
+use riffdb_storage_api::QueryModuleActiveExpectationV1;
 use riffdb_types::{
-    CanonicalValue, ContractBundleHash, ContractLineage, ContractVersion, QueryPlanHash,
-    ScopedPartitionV1, ServiceOperationV1, TenantScope, encode_canonical_value,
+    CanonicalValue, ContractBundleHash, ContractLineage, ContractVersion, QueryModuleHash,
+    QueryModuleName, QueryModuleVersion, QueryPlanHash, ScopedPartitionV1, ServiceAuditLinkV1,
+    ServiceAuditPhaseV1, ServiceOperationV1, TenantScope, encode_canonical_value,
     hash_query_parameters,
 };
 
@@ -32,6 +43,7 @@ use crate::orchestration::AuditScope;
 use crate::query_discovery_operations::{
     finish_failure, finish_success, prepare_selected_contract,
 };
+use crate::wait::{ControlledWaitError, wait_with_control};
 use crate::{
     ContractSelection, CursorAccessError, CursorContractIdentity, CursorToken, InternalDefect,
     QueryCursorLookup, QueryCursorState, RequestContext, RiffDbService, RiffDbServiceInner,
@@ -232,6 +244,7 @@ pub struct SymbolicQueryIdentity {
     bundle_hash: ContractBundleHash,
     name: Option<String>,
     plan_hash: QueryPlanHash,
+    module_hash: Option<QueryModuleHash>,
 }
 
 impl SymbolicQueryIdentity {
@@ -242,7 +255,14 @@ impl SymbolicQueryIdentity {
             bundle_hash: program.contract().bundle_hash(),
             name: program.name().map(str::to_owned),
             plan_hash: program.identity().hash(),
+            module_hash: None,
         }
+    }
+
+    fn from_named(program: &QueryAccessProgramV1, module_hash: QueryModuleHash) -> Self {
+        let mut identity = Self::from_program(program);
+        identity.module_hash = Some(module_hash);
+        identity
     }
 
     /// Exact contract lineage.
@@ -273,6 +293,12 @@ impl SymbolicQueryIdentity {
     #[must_use]
     pub const fn plan_hash(&self) -> QueryPlanHash {
         self.plan_hash
+    }
+
+    /// Exact immutable module identity for named execution.
+    #[must_use]
+    pub const fn module_hash(&self) -> Option<QueryModuleHash> {
+        self.module_hash
     }
 }
 
@@ -360,6 +386,13 @@ impl CheckedSymbolicQuery {
     fn from_program(program: &QueryAccessProgramV1) -> Self {
         Self {
             identity: SymbolicQueryIdentity::from_program(program),
+            schema: SymbolicQuerySchema::from_program(program),
+        }
+    }
+
+    fn from_named(program: &QueryAccessProgramV1, module_hash: QueryModuleHash) -> Self {
+        Self {
+            identity: SymbolicQueryIdentity::from_named(program, module_hash),
             schema: SymbolicQuerySchema::from_program(program),
         }
     }
@@ -459,6 +492,282 @@ impl CompileSymbolicQueryRequest {
     #[must_use]
     pub const fn source(&self) -> &SymbolicQuerySource {
         &self.source
+    }
+}
+
+/// Caller-supplied transaction-current module-pointer expectation.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum QueryModuleActiveExpectation {
+    /// Replace any transaction-current pointer.
+    Any,
+    /// Require no active module for the exact contract.
+    Absent,
+    /// Require one exact active module identity.
+    Exact(QueryModuleHash),
+}
+
+impl QueryModuleActiveExpectation {
+    const fn lower(self) -> QueryModuleActiveExpectationV1 {
+        match self {
+            Self::Any => QueryModuleActiveExpectationV1::Any,
+            Self::Absent => QueryModuleActiveExpectationV1::Absent,
+            Self::Exact(hash) => QueryModuleActiveExpectationV1::Exact(hash),
+        }
+    }
+}
+
+/// Checked immutable query-module deployment request.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct DeployQueryModuleRequest {
+    contract: SymbolicContractSelector,
+    candidate: QueryModuleCandidate,
+    expectation: QueryModuleActiveExpectation,
+}
+
+impl DeployQueryModuleRequest {
+    /// Groups exact contract selection, bounded module source, and CAS expectation.
+    #[must_use]
+    pub const fn new(
+        contract: SymbolicContractSelector,
+        candidate: QueryModuleCandidate,
+        expectation: QueryModuleActiveExpectation,
+    ) -> Self {
+        Self {
+            contract,
+            candidate,
+            expectation,
+        }
+    }
+
+    /// Checks raw symbolic names, positive version, and named source bounds.
+    pub fn from_sources(
+        contract: SymbolicContractSelector,
+        module_name: String,
+        module_version: u64,
+        queries: Vec<(String, String)>,
+        expectation: QueryModuleActiveExpectation,
+    ) -> Result<Self, SymbolicQueryInputError> {
+        let name =
+            QueryModuleName::new(module_name).map_err(|_| SymbolicQueryInputError::TooLong)?;
+        let version =
+            QueryModuleVersion::new(module_version).ok_or(SymbolicQueryInputError::Empty)?;
+        let queries = queries
+            .into_iter()
+            .map(|(name, source)| {
+                NamedQuerySource::new(name, source).map_err(|_| SymbolicQueryInputError::TooLong)
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        let candidate = QueryModuleCandidate::new(name, version, queries)
+            .map_err(|_| SymbolicQueryInputError::TooLong)?;
+        Ok(Self::new(contract, candidate, expectation))
+    }
+}
+
+/// Name-only immutable module descriptor.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct QueryModuleDescriptor {
+    name: QueryModuleName,
+    version: QueryModuleVersion,
+    hash: QueryModuleHash,
+    contract_lineage: ContractLineage,
+    contract_version: ContractVersion,
+    contract_hash: ContractBundleHash,
+    query_names: Vec<String>,
+}
+
+impl QueryModuleDescriptor {
+    fn from_module(module: &ValidatedQueryModule) -> Self {
+        let module = module.module();
+        Self {
+            name: module.name().clone(),
+            version: module.version(),
+            hash: module.identity(),
+            contract_lineage: module.contract_lineage().clone(),
+            contract_version: module.contract_version(),
+            contract_hash: module.contract_hash(),
+            query_names: module
+                .queries()
+                .iter()
+                .map(|query| query.name().to_owned())
+                .collect(),
+        }
+    }
+
+    /// Module name.
+    #[must_use]
+    pub const fn name(&self) -> &QueryModuleName {
+        &self.name
+    }
+
+    /// Module version.
+    #[must_use]
+    pub const fn version(&self) -> QueryModuleVersion {
+        self.version
+    }
+
+    /// Immutable content hash.
+    #[must_use]
+    pub const fn hash(&self) -> QueryModuleHash {
+        self.hash
+    }
+
+    /// Exact contract lineage.
+    #[must_use]
+    pub const fn contract_lineage(&self) -> &ContractLineage {
+        &self.contract_lineage
+    }
+
+    /// Exact contract version.
+    #[must_use]
+    pub const fn contract_version(&self) -> ContractVersion {
+        self.contract_version
+    }
+
+    /// Exact contract bundle hash.
+    #[must_use]
+    pub const fn contract_hash(&self) -> ContractBundleHash {
+        self.contract_hash
+    }
+
+    /// Named operations in canonical order.
+    #[must_use]
+    pub fn query_names(&self) -> &[String] {
+        &self.query_names
+    }
+}
+
+/// Safe module-deployment response.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum QueryModuleDeploymentDisposition {
+    /// A new active module committed.
+    Activated,
+    /// The exact module was already active.
+    AlreadyActive,
+    /// The active pointer differed from the submitted CAS.
+    ExpectedActiveMismatch {
+        /// Actual module identity, or absence.
+        actual: Option<QueryModuleHash>,
+    },
+    /// Same module name/version is retained with different content.
+    ModuleVersionConflict,
+    /// The exact contract ceased to be retained before commit.
+    ContractUnavailable,
+}
+
+/// Safe module-deployment response.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct DeployQueryModuleResult {
+    outcome: QueryModuleDeploymentDisposition,
+    module: QueryModuleDescriptor,
+}
+
+impl DeployQueryModuleResult {
+    /// Closed deployment outcome.
+    #[must_use]
+    pub const fn outcome(&self) -> &QueryModuleDeploymentDisposition {
+        &self.outcome
+    }
+
+    /// Submitted immutable module identity.
+    #[must_use]
+    pub const fn module(&self) -> &QueryModuleDescriptor {
+        &self.module
+    }
+}
+
+/// Active or content-addressed module inspection request.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct GetQueryModuleRequest {
+    contract: SymbolicContractSelector,
+    module_hash: Option<QueryModuleHash>,
+}
+
+impl GetQueryModuleRequest {
+    /// Selects the active module when `module_hash` is absent.
+    #[must_use]
+    pub const fn new(
+        contract: SymbolicContractSelector,
+        module_hash: Option<QueryModuleHash>,
+    ) -> Self {
+        Self {
+            contract,
+            module_hash,
+        }
+    }
+}
+
+/// Inspected module and its canonical sources.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct QueryModuleInspection {
+    descriptor: QueryModuleDescriptor,
+    queries: Vec<NamedQuerySource>,
+}
+
+impl QueryModuleInspection {
+    fn from_module(module: &ValidatedQueryModule) -> Result<Self, SymbolicQueryInputError> {
+        let queries = module
+            .module()
+            .queries()
+            .iter()
+            .map(|query| {
+                NamedQuerySource::new(query.name(), query.canonical_source())
+                    .map_err(|_| SymbolicQueryInputError::TooLong)
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(Self {
+            descriptor: QueryModuleDescriptor::from_module(module),
+            queries,
+        })
+    }
+
+    /// Immutable module descriptor.
+    #[must_use]
+    pub const fn descriptor(&self) -> &QueryModuleDescriptor {
+        &self.descriptor
+    }
+
+    /// Canonical named RiffQL sources.
+    #[must_use]
+    pub fn queries(&self) -> &[NamedQuerySource] {
+        &self.queries
+    }
+}
+
+/// Named query selection and values.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct NamedSymbolicQueryRequest {
+    contract: SymbolicContractSelector,
+    query_name: String,
+    module_hash: Option<QueryModuleHash>,
+    parameters: SymbolicQueryParameters,
+    cursor: Option<CursorToken>,
+}
+
+impl NamedSymbolicQueryRequest {
+    /// Constructs active-module or exact-module named execution.
+    pub fn new(
+        contract: SymbolicContractSelector,
+        query_name: String,
+        module_hash: Option<QueryModuleHash>,
+        parameters: SymbolicQueryParameters,
+    ) -> Result<Self, SymbolicQueryInputError> {
+        if query_name.is_empty() || query_name.len() > MAX_IDENTIFIER_BYTES {
+            return Err(SymbolicQueryInputError::TooLong);
+        }
+        Ok(Self {
+            contract,
+            query_name,
+            module_hash,
+            parameters,
+            cursor: None,
+        })
+    }
+
+    /// Attaches a server-owned cursor.
+    #[must_use]
+    pub const fn with_cursor(mut self, cursor: CursorToken) -> Self {
+        self.cursor = Some(cursor);
+        self
     }
 }
 
@@ -660,6 +969,34 @@ pub trait SymbolicQueryApplication: Send + Sync {
         context: RequestContext,
         request: ExecuteSymbolicQueryRequest,
     ) -> ServiceFuture<'_, ExecuteSymbolicQueryResult>;
+
+    /// Compiles and atomically activates one immutable exact-contract module.
+    fn deploy_query_module(
+        &self,
+        context: RequestContext,
+        request: DeployQueryModuleRequest,
+    ) -> ServiceFuture<'_, DeployQueryModuleResult>;
+
+    /// Inspects an active or content-addressed module.
+    fn get_query_module(
+        &self,
+        context: RequestContext,
+        request: GetQueryModuleRequest,
+    ) -> ServiceFuture<'_, Option<QueryModuleInspection>>;
+
+    /// Explains one operation from an active or content-addressed module.
+    fn explain_named_symbolic_query(
+        &self,
+        context: RequestContext,
+        request: NamedSymbolicQueryRequest,
+    ) -> ServiceFuture<'_, ExplainSymbolicQueryResult>;
+
+    /// Executes one operation from an active or content-addressed module.
+    fn execute_named_symbolic_query(
+        &self,
+        context: RequestContext,
+        request: NamedSymbolicQueryRequest,
+    ) -> ServiceFuture<'_, ExecuteSymbolicQueryResult>;
 }
 
 impl SymbolicQueryApplication for RiffDbService {
@@ -708,6 +1045,54 @@ impl SymbolicQueryApplication for RiffDbService {
         let ingress = context.ingress();
         self.spawn_operation(ServiceOperationV1::ExecuteQuery, ingress, async move {
             execute_query(service, context, request).await
+        })
+    }
+
+    fn deploy_query_module(
+        &self,
+        context: RequestContext,
+        request: DeployQueryModuleRequest,
+    ) -> ServiceFuture<'_, DeployQueryModuleResult> {
+        let service = Arc::clone(&self.inner);
+        let ingress = context.ingress();
+        self.spawn_operation(ServiceOperationV1::DeployQueryModule, ingress, async move {
+            deploy_module(service, context, request).await
+        })
+    }
+
+    fn get_query_module(
+        &self,
+        context: RequestContext,
+        request: GetQueryModuleRequest,
+    ) -> ServiceFuture<'_, Option<QueryModuleInspection>> {
+        let service = Arc::clone(&self.inner);
+        let ingress = context.ingress();
+        self.spawn_operation(ServiceOperationV1::ExplainQuery, ingress, async move {
+            inspect_module(service, context, request).await
+        })
+    }
+
+    fn explain_named_symbolic_query(
+        &self,
+        context: RequestContext,
+        request: NamedSymbolicQueryRequest,
+    ) -> ServiceFuture<'_, ExplainSymbolicQueryResult> {
+        let service = Arc::clone(&self.inner);
+        let ingress = context.ingress();
+        self.spawn_operation(ServiceOperationV1::ExplainQuery, ingress, async move {
+            explain_named_query(service, context, request).await
+        })
+    }
+
+    fn execute_named_symbolic_query(
+        &self,
+        context: RequestContext,
+        request: NamedSymbolicQueryRequest,
+    ) -> ServiceFuture<'_, ExecuteSymbolicQueryResult> {
+        let service = Arc::clone(&self.inner);
+        let ingress = context.ingress();
+        self.spawn_operation(ServiceOperationV1::ExecuteQuery, ingress, async move {
+            execute_named_query(service, context, request).await
         })
     }
 }
@@ -817,6 +1202,298 @@ async fn explain_query(
     Ok(result)
 }
 
+async fn deploy_module(
+    service: Arc<RiffDbServiceInner>,
+    context: RequestContext,
+    request: DeployQueryModuleRequest,
+) -> ServiceResult<DeployQueryModuleResult> {
+    const OPERATION: ServiceOperationV1 = ServiceOperationV1::DeployQueryModule;
+    let bundle =
+        prepare_selected_contract(&service, &context, request.contract.selection(), OPERATION)
+            .await?;
+    ensure_selected_hash(&request.contract, &bundle)?;
+    let module = ValidatedQueryModule::compile(request.candidate, &bundle)
+        .map_err(|_| validation_failure(ValidationCode::InvalidValue))?;
+    let descriptor = QueryModuleDescriptor::from_module(&module);
+    let operation = OperationRequest::deploy_query_module(
+        bundle.lineage().clone(),
+        bundle.contract_version(),
+        bundle.bundle_hash(),
+    );
+    let targets =
+        ServiceAuditTargetMap::symbolic_query(bundle.lineage().clone(), bundle.contract_version())
+            .map_err(|_| service.internal_failure(OPERATION, InternalDefect::ProofMismatch))?;
+    let begun = service
+        .begin_invocation(&context, operation, targets, AuditScope::Intrinsic)
+        .await?;
+    let permit = match wait_with_control(
+        context.control(),
+        service.providers.deadline_scheduler.as_ref(),
+        service.executors.control_plane.reserve_capacity(),
+    )
+    .await
+    {
+        Ok(Ok(permit)) => permit,
+        Ok(Err(_)) => {
+            let failure = PublicError::storage_unavailable().into();
+            return Err(finish_failure(&service, &context, &begun, failure).await);
+        }
+        Err(error) => {
+            let failure = controlled_failure(error);
+            return Err(finish_failure(&service, &context, &begun, failure).await);
+        }
+    };
+    let authorization = begun.reauthorize(&service, &context).await?;
+    let authorization = match (*authorization).into_catalog_deployment(
+        bundle.lineage(),
+        bundle.contract_version(),
+        bundle.bundle_hash(),
+        Some(bundle.contract_version()),
+    ) {
+        Ok(authorization) => authorization,
+        Err(_) => {
+            let failure = service.internal_failure(OPERATION, InternalDefect::ProofMismatch);
+            return Err(finish_failure(&service, &context, &begun, failure).await);
+        }
+    };
+    let prepared = PreparedQueryModuleActivation::new(module, request.expectation.lower());
+    let preparation = match QueryModuleDeploymentPreparation::new(
+        context.request_id(),
+        prepared,
+        authorization,
+    ) {
+        Ok(preparation) => preparation,
+        Err(_) => {
+            let failure = service.internal_failure(OPERATION, InternalDefect::ProofMismatch);
+            return Err(finish_failure(&service, &context, &begun, failure).await);
+        }
+    };
+    let receipt = match permit.submit_query_module_deployment(preparation) {
+        Ok(receipt) => receipt,
+        Err(_) => {
+            let failure = PublicError::storage_unavailable().into();
+            return Err(finish_failure(&service, &context, &begun, failure).await);
+        }
+    };
+    let result = match receipt.completion().await {
+        Ok(result) => result,
+        Err(error) => {
+            let phase = if error.kind() == ControlPlaneExecutionErrorKind::OutcomeUnknown {
+                ServiceAuditPhaseV1::OutcomeUncertain
+            } else {
+                ServiceAuditPhaseV1::Failed
+            };
+            let _ = begun
+                .finish(&service, &context, phase, ServiceAuditLinkV1::None)
+                .await;
+            return Err(match error.kind() {
+                ControlPlaneExecutionErrorKind::OutcomeUnknown => {
+                    PublicError::outcome_unknown().into()
+                }
+                ControlPlaneExecutionErrorKind::AuthorizationDenied => {
+                    PublicError::authorization_denied().into()
+                }
+                ControlPlaneExecutionErrorKind::StorageUnavailable
+                | ControlPlaneExecutionErrorKind::CoordinatorStopped
+                | ControlPlaneExecutionErrorKind::CoordinatorFenced => {
+                    PublicError::storage_unavailable().into()
+                }
+                ControlPlaneExecutionErrorKind::InternalDefect => {
+                    service.internal_failure(OPERATION, InternalDefect::ProofMismatch)
+                }
+            });
+        }
+    };
+    let terminal = result.terminal_audit();
+    let outcome = match result.into_outcome() {
+        CoordinatorQueryModuleDeploymentOutcome::Activated(_) => {
+            QueryModuleDeploymentDisposition::Activated
+        }
+        CoordinatorQueryModuleDeploymentOutcome::AlreadyActive(_) => {
+            QueryModuleDeploymentDisposition::AlreadyActive
+        }
+        CoordinatorQueryModuleDeploymentOutcome::ExpectedActiveMismatch { actual } => {
+            QueryModuleDeploymentDisposition::ExpectedActiveMismatch { actual }
+        }
+        CoordinatorQueryModuleDeploymentOutcome::ModuleVersionConflict => {
+            QueryModuleDeploymentDisposition::ModuleVersionConflict
+        }
+        CoordinatorQueryModuleDeploymentOutcome::ContractUnavailable => {
+            QueryModuleDeploymentDisposition::ContractUnavailable
+        }
+    };
+    let (phase, link) = match terminal {
+        ControlPlaneTerminalAudit::Succeeded(link) => (ServiceAuditPhaseV1::Succeeded, link),
+        ControlPlaneTerminalAudit::Failed => {
+            (ServiceAuditPhaseV1::Failed, ServiceAuditLinkV1::None)
+        }
+    };
+    begun
+        .finish(&service, &context, phase, link)
+        .await
+        .map_err(|_| -> ServiceFailure {
+            if phase == ServiceAuditPhaseV1::Succeeded {
+                PublicError::outcome_unknown().into()
+            } else {
+                PublicError::storage_unavailable().into()
+            }
+        })?;
+    Ok(DeployQueryModuleResult {
+        outcome,
+        module: descriptor,
+    })
+}
+
+async fn inspect_module(
+    service: Arc<RiffDbServiceInner>,
+    context: RequestContext,
+    request: GetQueryModuleRequest,
+) -> ServiceResult<Option<QueryModuleInspection>> {
+    const OPERATION: ServiceOperationV1 = ServiceOperationV1::ExplainQuery;
+    let bundle =
+        prepare_selected_contract(&service, &context, request.contract.selection(), OPERATION)
+            .await?;
+    ensure_selected_hash(&request.contract, &bundle)?;
+    let begun = begin_symbolic(
+        &service,
+        &context,
+        &bundle,
+        OperationRequest::explain_query(),
+        OPERATION,
+    )
+    .await?;
+    let module =
+        match load_query_module(&service, &context, bundle, request.module_hash, OPERATION).await {
+            Ok(module) => module,
+            Err(failure) => return Err(finish_failure(&service, &context, &begun, failure).await),
+        };
+    let result = module
+        .as_ref()
+        .map(QueryModuleInspection::from_module)
+        .transpose()
+        .map_err(|_| service.internal_failure(OPERATION, InternalDefect::ProofMismatch))?;
+    begun.reauthorize(&service, &context).await?;
+    finish_success(&service, &context, &begun).await?;
+    Ok(result)
+}
+
+async fn explain_named_query(
+    service: Arc<RiffDbServiceInner>,
+    context: RequestContext,
+    request: NamedSymbolicQueryRequest,
+) -> ServiceResult<ExplainSymbolicQueryResult> {
+    const OPERATION: ServiceOperationV1 = ServiceOperationV1::ExplainQuery;
+    let bundle =
+        prepare_selected_contract(&service, &context, request.contract.selection(), OPERATION)
+            .await?;
+    ensure_selected_hash(&request.contract, &bundle)?;
+    let begun = begin_symbolic(
+        &service,
+        &context,
+        &bundle,
+        OperationRequest::explain_query(),
+        OPERATION,
+    )
+    .await?;
+    let module =
+        match load_query_module(&service, &context, bundle, request.module_hash, OPERATION).await {
+            Ok(Some(module)) => module,
+            Ok(None) => {
+                let failure = validation_failure(ValidationCode::InvalidValue);
+                return Err(finish_failure(&service, &context, &begun, failure).await);
+            }
+            Err(failure) => return Err(finish_failure(&service, &context, &begun, failure).await),
+        };
+    let Some(query) = module.module().query(&request.query_name) else {
+        let failure = validation_failure(ValidationCode::InvalidValue);
+        return Err(finish_failure(&service, &context, &begun, failure).await);
+    };
+    let result = ExplainSymbolicQueryResult::Valid {
+        query: CheckedSymbolicQuery::from_named(query.program(), module.identity()),
+        lines: query.program().explain().lines().to_vec(),
+    };
+    begun.reauthorize(&service, &context).await?;
+    finish_success(&service, &context, &begun).await?;
+    Ok(result)
+}
+
+async fn execute_named_query(
+    service: Arc<RiffDbServiceInner>,
+    context: RequestContext,
+    request: NamedSymbolicQueryRequest,
+) -> ServiceResult<ExecuteSymbolicQueryResult> {
+    const OPERATION: ServiceOperationV1 = ServiceOperationV1::ExecuteQuery;
+    let bundle =
+        prepare_selected_contract(&service, &context, request.contract.selection(), OPERATION)
+            .await?;
+    ensure_selected_hash(&request.contract, &bundle)?;
+    let module = load_query_module(
+        &service,
+        &context,
+        bundle.clone(),
+        request.module_hash,
+        OPERATION,
+    )
+    .await?
+    .ok_or_else(|| validation_failure(ValidationCode::InvalidValue))?;
+    let query = module
+        .module()
+        .query(&request.query_name)
+        .ok_or_else(|| validation_failure(ValidationCode::InvalidValue))?;
+    let document = parse_query(query.canonical_source())
+        .map_err(|_| service.internal_failure(OPERATION, InternalDefect::ProofMismatch))?;
+    execute_compiled_query(
+        service,
+        context,
+        bundle,
+        query.program().clone(),
+        document,
+        Some(module.identity()),
+        request.parameters,
+        request.cursor,
+    )
+    .await
+}
+
+async fn load_query_module(
+    service: &RiffDbServiceInner,
+    context: &RequestContext,
+    contract: riffdb_catalog::ValidatedContractBundle,
+    module_hash: Option<QueryModuleHash>,
+    operation: ServiceOperationV1,
+) -> ServiceResult<Option<ValidatedQueryModule>> {
+    let Some(modules) = service.providers.query_modules.as_ref() else {
+        return Err(PublicError::storage_unavailable().into());
+    };
+    let future = match module_hash {
+        Some(module_hash) => modules.prepare_query_module(context.control(), contract, module_hash),
+        None => modules.prepare_active_query_module(context.control(), contract),
+    };
+    match wait_with_control(
+        context.control(),
+        service.providers.deadline_scheduler.as_ref(),
+        future,
+    )
+    .await
+    {
+        Ok(Ok(module)) => Ok(module),
+        Ok(Err(crate::QueryModuleReadError::Unavailable)) => {
+            Err(PublicError::storage_unavailable().into())
+        }
+        Ok(Err(crate::QueryModuleReadError::Integrity)) => {
+            Err(service.internal_failure(operation, InternalDefect::ProofMismatch))
+        }
+        Err(error) => Err(controlled_failure(error)),
+    }
+}
+
+fn controlled_failure(error: ControlledWaitError) -> ServiceFailure {
+    match error {
+        ControlledWaitError::Cancelled => ServiceFailure::Cancelled,
+        ControlledWaitError::DeadlineExceeded => ServiceFailure::DeadlineExceeded,
+    }
+}
+
 async fn execute_query(
     service: Arc<RiffDbServiceInner>,
     context: RequestContext,
@@ -833,17 +1510,36 @@ async fn execute_query(
     ensure_selected_hash(request.contract(), &bundle)?;
     let compiled = compile_parts(request.source().as_str(), bundle.bundle())
         .map_err(|_| validation_failure(ValidationCode::InvalidValue))?;
-    let program = compiled.program;
+    execute_compiled_query(
+        service,
+        context,
+        bundle,
+        compiled.program,
+        compiled.document,
+        None,
+        request.parameters,
+        request.cursor,
+    )
+    .await
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn execute_compiled_query(
+    service: Arc<RiffDbServiceInner>,
+    context: RequestContext,
+    bundle: riffdb_catalog::ValidatedContractBundle,
+    program: QueryAccessProgramV1,
+    document: Document,
+    module_hash: Option<QueryModuleHash>,
+    submitted: SymbolicQueryParameters,
+    cursor: Option<CursorToken>,
+) -> ServiceResult<ExecuteSymbolicQueryResult> {
+    const OPERATION: ServiceOperationV1 = ServiceOperationV1::ExecuteQuery;
     if program.steps().len() > MAX_SYMBOLIC_QUERY_STEPS {
         return Err(validation_failure(ValidationCode::InvalidValue));
     }
-    let parameters = materialize_query_parameters(
-        &service,
-        OPERATION,
-        bundle.bundle(),
-        &compiled.document,
-        request.parameters(),
-    )?;
+    let parameters =
+        materialize_query_parameters(&service, OPERATION, bundle.bundle(), &document, &submitted)?;
     let parameter_hash = query_parameter_hash(&parameters)
         .ok_or_else(|| validation_failure(ValidationCode::InvalidValue))?;
     let cursor_lookup = QueryCursorLookup::new(
@@ -852,6 +1548,7 @@ async fn execute_query(
             program.contract().version(),
             program.contract().bundle_hash(),
         ),
+        module_hash,
         program.identity().hash(),
         parameter_hash,
         context.principal().capability_id(),
@@ -868,7 +1565,7 @@ async fn execute_query(
     if !authorize_program(&service, &context, bundle.bundle(), &program, &parameters) {
         return Err(begun.finish_authorization_denial(&service, &context).await);
     }
-    let prior = match request.cursor() {
+    let prior = match cursor {
         Some(token) => match service.cursors.resolve_query(
             token,
             context.principal().principal_id(),
@@ -932,6 +1629,9 @@ async fn execute_query(
         None => None,
     };
     let mut result = ExecuteSymbolicQueryResult::from_snapshot(&program, &snapshot);
+    if let Some(module_hash) = module_hash {
+        result.identity = SymbolicQueryIdentity::from_named(&program, module_hash);
+    }
     finish_success(&service, &context, &begun).await?;
     result.next_cursor = cursor_guard.map(crate::CursorPublicationGuard::publish);
     Ok(result)

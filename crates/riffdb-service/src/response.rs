@@ -15,23 +15,23 @@ use crate::{
     CompactCommandToolDescriptor, CompactCommandToolDiscoveryItem, CompactResourceDescriptor,
     CompactResourceDescriptorRef, ContractDescriptor, ContractValidationResult,
     CreateCapabilityResult, CursorToken, DeclaredOutcomeView, DeployContractResult,
-    DescribeSymbolicContractResult, DiscoverCommandToolsResult, DiscoverCommandToolsResultRef,
-    DiscoverResourcesResult, DiscoverResourcesResultRef, DiscoveryCatalogFence,
-    DiscoveryCatalogStateRef, DurableEventView, EntityView, ExecuteCommandResult,
-    ExecuteSymbolicQueryResult, ExplainCommandResult, ExplainSymbolicQueryResult,
-    GeneratedSchemaIdentity, GetActiveContractResult, GetCommitResult, GetContractVersionResult,
-    GetEntityResult, GetOfflineMaintenanceOperationResult, GetProjectionStatusResult, HealthReport,
-    HealthResult, IndexRowView, IndexScanFence, JournaledCommandResult,
-    ListPendingOutboxDeliveriesResult, NormalCreateCapabilityResult,
+    DeployQueryModuleResult, DescribeSymbolicContractResult, DiscoverCommandToolsResult,
+    DiscoverCommandToolsResultRef, DiscoverResourcesResult, DiscoverResourcesResultRef,
+    DiscoveryCatalogFence, DiscoveryCatalogStateRef, DurableEventView, EntityView,
+    ExecuteCommandResult, ExecuteSymbolicQueryResult, ExplainCommandResult,
+    ExplainSymbolicQueryResult, GeneratedSchemaIdentity, GetActiveContractResult, GetCommitResult,
+    GetContractVersionResult, GetEntityResult, GetOfflineMaintenanceOperationResult,
+    GetProjectionStatusResult, HealthReport, HealthResult, IndexRowView, IndexScanFence,
+    JournaledCommandResult, ListPendingOutboxDeliveriesResult, NormalCreateCapabilityResult,
     OfflineMaintenanceOperationObservation, OfflineMaintenanceStartResult, OperationSchemaArtifact,
     OperationSchemaCatalog, OperationSchemaCatalogIdentity, OperationSchemaIdentity,
     OutboxDeliverySummary, Page, ProjectionPageFence, ProjectionRow, ProjectionStatusSnapshot,
-    ProvenanceClaimsView, ProvenanceView, QueryProjectionResult, ReadOnlyCommandResult,
-    ResolveCommandOutcomeResult, ResourceDescriptor, ResourceDescriptorRef, RevokeCapabilityResult,
-    ScanCommitsResult, ScanIndexResult, SchemaBoundOutcomeRecord, SchemaBoundOutcomeValue,
-    ServiceFailure, StatisticsResult, SubscribeToCommitsResult, SymbolicDiagnostic,
-    SymbolicQueryIdentity, SymbolicQuerySchema, SymbolicResultField, SymbolicResultRecord,
-    TraceProvenanceResult,
+    ProvenanceClaimsView, ProvenanceView, QueryModuleInspection, QueryProjectionResult,
+    ReadOnlyCommandResult, ResolveCommandOutcomeResult, ResourceDescriptor, ResourceDescriptorRef,
+    RevokeCapabilityResult, ScanCommitsResult, ScanIndexResult, SchemaBoundOutcomeRecord,
+    SchemaBoundOutcomeValue, ServiceFailure, StatisticsResult, SubscribeToCommitsResult,
+    SymbolicDiagnostic, SymbolicQueryIdentity, SymbolicQuerySchema, SymbolicResultField,
+    SymbolicResultRecord, TraceProvenanceResult,
 };
 
 /// Exact POC ceiling for one API-neutral unary result or visible stream item.
@@ -343,6 +343,50 @@ impl ServiceResponseCharge for ExecuteSymbolicQueryResult {
         }
         if self.next_cursor().is_some() {
             charge.bytes(crate::CURSOR_TOKEN_BYTES)?;
+        }
+        Ok(charge.finish())
+    }
+}
+
+impl sealed::Sealed for DeployQueryModuleResult {}
+
+impl ServiceResponseCharge for DeployQueryModuleResult {
+    fn service_response_charge_v1(
+        &self,
+    ) -> Result<ServiceResponseChargeV1, ServiceResponseChargeOverflow> {
+        let mut charge = ChargeAccumulator::message();
+        let module = self.module();
+        charge.bytes(module.name().as_str().len())?;
+        charge.fields(3)?;
+        charge.bytes(module.hash().as_bytes().len())?;
+        charge_lineage(&mut charge, module.contract_lineage())?;
+        charge.fields(1)?;
+        charge.bytes(module.contract_hash().as_bytes().len())?;
+        for query in module.query_names() {
+            charge.bytes(query.len())?;
+        }
+        Ok(charge.finish())
+    }
+}
+
+impl sealed::Sealed for Option<QueryModuleInspection> {}
+
+impl ServiceResponseCharge for Option<QueryModuleInspection> {
+    fn service_response_charge_v1(
+        &self,
+    ) -> Result<ServiceResponseChargeV1, ServiceResponseChargeOverflow> {
+        let mut charge = ChargeAccumulator::message();
+        if let Some(inspection) = self {
+            let module = inspection.descriptor();
+            charge.bytes(module.name().as_str().len())?;
+            charge.bytes(module.hash().as_bytes().len())?;
+            charge_lineage(&mut charge, module.contract_lineage())?;
+            charge.bytes(module.contract_hash().as_bytes().len())?;
+            charge.fields(4)?;
+            for query in inspection.queries() {
+                charge.bytes(query.name().len())?;
+                charge.bytes(query.source().len())?;
+            }
         }
         Ok(charge.finish())
     }

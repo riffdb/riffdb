@@ -69,6 +69,19 @@ messages
     1 lineage optional string
     2 version optional uint64
     3 bundle_hash optional bytes
+  riffdb.app.v1.DeployQueryModuleRequest fields=8
+    1 contract optional .riffdb.app.v1.ContractSelector
+    2 module_name optional string
+    3 module_version optional uint64
+    4 queries repeated .riffdb.app.v1.NamedQuerySource
+    5 any_active optional bool oneof=expected_active
+    6 absent_active optional bool oneof=expected_active
+    7 module_hash optional bytes oneof=expected_active
+    100 request_id optional bytes
+  riffdb.app.v1.DeployQueryModuleResponse fields=3
+    1 outcome optional .riffdb.app.v1.QueryModuleDeploymentOutcome
+    2 module optional .riffdb.app.v1.QueryModuleDescriptor
+    3 actual_active_module_hash optional bytes proto3-optional oneof=_actual_active_module_hash
   riffdb.app.v1.DescribeContractRequest fields=2
     1 contract optional .riffdb.app.v1.ContractSelector proto3-optional oneof=_contract
     100 request_id optional bytes
@@ -108,6 +121,16 @@ messages
     2 schema optional .riffdb.app.v1.QuerySchema proto3-optional oneof=_schema
     3 plan_lines repeated string
     4 diagnostics repeated .riffdb.app.v1.Diagnostic
+  riffdb.app.v1.GetQueryModuleRequest fields=3
+    1 contract optional .riffdb.app.v1.ContractSelector
+    2 module_hash optional bytes proto3-optional oneof=_module_hash
+    100 request_id optional bytes
+  riffdb.app.v1.GetQueryModuleResponse fields=2
+    1 module optional .riffdb.app.v1.QueryModuleDescriptor proto3-optional oneof=_module
+    2 queries repeated .riffdb.app.v1.NamedQuerySource
+  riffdb.app.v1.NamedQuerySource fields=2
+    1 name optional string
+    2 source optional string
   riffdb.app.v1.Parameter fields=2
     1 name optional string
     2 value optional .riffdb.v1.Value
@@ -118,6 +141,14 @@ messages
     4 query_name optional string proto3-optional oneof=_query_name
     5 plan_hash optional bytes
     6 module_hash optional bytes proto3-optional oneof=_module_hash
+  riffdb.app.v1.QueryModuleDescriptor fields=7
+    1 module_name optional string
+    2 module_version optional uint64
+    3 module_hash optional bytes
+    4 contract_lineage optional string
+    5 contract_version optional uint64
+    6 contract_bundle_hash optional bytes
+    7 query_names repeated string
   riffdb.app.v1.QuerySchema fields=3
     1 parameters repeated string
     2 outcomes repeated string
@@ -1206,6 +1237,13 @@ messages
     1 fields repeated .riffdb.v1.ValueField
 
 enums
+  riffdb.app.v1.QueryModuleDeploymentOutcome values=6
+    0 QUERY_MODULE_DEPLOYMENT_OUTCOME_UNSPECIFIED
+    1 QUERY_MODULE_DEPLOYMENT_OUTCOME_ACTIVATED
+    2 QUERY_MODULE_DEPLOYMENT_OUTCOME_ALREADY_ACTIVE
+    3 QUERY_MODULE_DEPLOYMENT_OUTCOME_EXPECTED_ACTIVE_MISMATCH
+    4 QUERY_MODULE_DEPLOYMENT_OUTCOME_VERSION_CONFLICT
+    5 QUERY_MODULE_DEPLOYMENT_OUTCOME_CONTRACT_UNAVAILABLE
   riffdb.app.v1.ResultCardinality values=4
     0 RESULT_CARDINALITY_UNSPECIFIED
     1 RESULT_CARDINALITY_ONE
@@ -1290,7 +1328,7 @@ enums
     1 SERVICE_INGRESS_KIND_GRPC
     2 SERVICE_INGRESS_KIND_MCP_HTTP
     3 SERVICE_INGRESS_KIND_IN_PROCESS_TEST_COMPARISON
-  riffdb.storage.v1.ServiceOperationV1 values=23
+  riffdb.storage.v1.ServiceOperationV1 values=28
     0 SERVICE_OPERATION_UNSPECIFIED
     1 SERVICE_OPERATION_VALIDATE_CONTRACT
     2 SERVICE_OPERATION_EXPLAIN_COMMAND
@@ -1314,6 +1352,11 @@ enums
     20 SERVICE_OPERATION_LIST_PENDING_OUTBOX_DELIVERIES
     21 SERVICE_OPERATION_DISCOVER_COMMAND_TOOLS
     22 SERVICE_OPERATION_DISCOVER_RESOURCES
+    23 SERVICE_OPERATION_DESCRIBE_CONTRACT
+    24 SERVICE_OPERATION_CHECK_QUERY
+    25 SERVICE_OPERATION_EXPLAIN_QUERY
+    26 SERVICE_OPERATION_EXECUTE_QUERY
+    27 SERVICE_OPERATION_DEPLOY_QUERY_MODULE
   riffdb.v1.ActorKind values=4
     0 ACTOR_KIND_UNSPECIFIED
     1 ACTOR_KIND_HUMAN
@@ -1528,6 +1571,8 @@ services
     CheckQuery .riffdb.app.v1.CheckQueryRequest -> .riffdb.app.v1.CheckQueryResponse (unary)
     ExplainQuery .riffdb.app.v1.ExplainQueryRequest -> .riffdb.app.v1.ExplainQueryResponse (unary)
     ExecuteQuery .riffdb.app.v1.ExecuteQueryRequest -> .riffdb.app.v1.ExecuteQueryResponse (unary)
+    DeployQueryModule .riffdb.app.v1.DeployQueryModuleRequest -> .riffdb.app.v1.DeployQueryModuleResponse (unary)
+    GetQueryModule .riffdb.app.v1.GetQueryModuleRequest -> .riffdb.app.v1.GetQueryModuleResponse (unary)
   riffdb.v1.AdminService
     Health .riffdb.v1.HealthRequest -> .riffdb.v1.HealthResponse (unary)
     Stats .riffdb.v1.StatsRequest -> .riffdb.v1.StatsResponse (unary)

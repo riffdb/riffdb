@@ -466,6 +466,11 @@ enum OperationKind {
     CheckQuery,
     ExplainQuery,
     ExecuteQuery,
+    DeployQueryModule {
+        lineage: ContractLineage,
+        version: ContractVersion,
+        bundle_hash: ContractBundleHash,
+    },
 }
 
 /// Checked policy facts for exactly one closed application-service operation.
@@ -780,6 +785,20 @@ impl OperationRequest {
         Self(OperationKind::ExecuteQuery)
     }
 
+    /// Constructs one exact-contract immutable query-module deployment request.
+    #[must_use]
+    pub const fn deploy_query_module(
+        lineage: ContractLineage,
+        version: ContractVersion,
+        bundle_hash: ContractBundleHash,
+    ) -> Self {
+        Self(OperationKind::DeployQueryModule {
+            lineage,
+            version,
+            bundle_hash,
+        })
+    }
+
     /// Returns the exact closed service operation.
     #[must_use]
     pub const fn operation(&self) -> ServiceOperationV1 {
@@ -816,6 +835,7 @@ impl OperationRequest {
             OperationKind::CheckQuery => ServiceOperationV1::CheckQuery,
             OperationKind::ExplainQuery => ServiceOperationV1::ExplainQuery,
             OperationKind::ExecuteQuery => ServiceOperationV1::ExecuteQuery,
+            OperationKind::DeployQueryModule { .. } => ServiceOperationV1::DeployQueryModule,
         }
     }
 
@@ -834,6 +854,11 @@ impl OperationRequest {
                 bundle_hash,
                 expected_active_version,
             } => Some((lineage, version, bundle_hash, expected_active_version)),
+            OperationKind::DeployQueryModule {
+                lineage,
+                version,
+                bundle_hash,
+            } => Some((lineage, version, bundle_hash, Some(version))),
             _ => None,
         }
     }
@@ -850,7 +875,7 @@ impl OperationRequest {
                 lineage.clone(),
                 *command_id,
             )),
-            OperationKind::DeployContract { .. } => {
+            OperationKind::DeployContract { .. } | OperationKind::DeployQueryModule { .. } => {
                 PermissionRequirement::Kind(Kind::DeployContract)
             }
             OperationKind::GetActiveContract
@@ -1022,6 +1047,7 @@ impl OperationRequest {
                 ..
             } => Some(AuditClass::CommandMutation),
             OperationKind::DeployContract { .. }
+            | OperationKind::DeployQueryModule { .. }
             | OperationKind::CreateCapability { .. }
             | OperationKind::RevokeCapability { .. }
             | OperationKind::RevokeAbsentCapability { .. } => {
@@ -1049,6 +1075,7 @@ impl OperationRequest {
             | OperationKind::QueryProjection { .. }
             | OperationKind::ExecuteQuery => OutputClassification::PolicyFilteredApplicationData,
             OperationKind::DeployContract { .. }
+            | OperationKind::DeployQueryModule { .. }
             | OperationKind::GetCommit { .. }
             | OperationKind::ScanCommits { .. }
             | OperationKind::SubscribeToCommits

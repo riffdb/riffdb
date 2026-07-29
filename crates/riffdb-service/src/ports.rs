@@ -12,7 +12,7 @@ use riffdb_auth::{
 };
 use riffdb_catalog::{
     ActiveCatalogSnapshot, CatalogError, CatalogPreparationResult, ResolvedExecutablePlan,
-    ValidatedContractBundle,
+    ValidatedContractBundle, ValidatedQueryModule,
 };
 use riffdb_contract_ir::ContractBundle;
 use riffdb_errors::InternalError;
@@ -23,7 +23,7 @@ use riffdb_policy::{
 };
 use riffdb_types::{
     CapabilityId, CommandId, ContractBundleHash, ContractLineage, ContractVersion,
-    FrontierPosition, PlanHash, RequestId,
+    FrontierPosition, PlanHash, QueryModuleHash, RequestId,
 };
 
 use crate::{
@@ -403,6 +403,33 @@ pub trait CatalogReadPort: Send + Sync {
         candidate: ContractBundle,
         expected_active_version: Option<ContractVersion>,
     ) -> PortFuture<'_, CatalogPreparationResult, CatalogError>;
+}
+
+/// Closed failure while reading and recompiling an immutable query module.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum QueryModuleReadError {
+    /// Storage or bounded execution capacity was unavailable.
+    Unavailable,
+    /// Durable module bytes, identity, or exact-contract binding failed validation.
+    Integrity,
+}
+
+/// Exact query-module observations needed by named execution and inspection.
+pub trait QueryModuleReadPort: Send + Sync {
+    /// Reads and recompiles the active module for one exact retained contract.
+    fn prepare_active_query_module(
+        &self,
+        control: &RequestControl,
+        contract: ValidatedContractBundle,
+    ) -> PortFuture<'_, Option<ValidatedQueryModule>, QueryModuleReadError>;
+
+    /// Reads and recompiles one content-addressed module for an exact contract.
+    fn prepare_query_module(
+        &self,
+        control: &RequestControl,
+        contract: ValidatedContractBundle,
+        module_hash: QueryModuleHash,
+    ) -> PortFuture<'_, Option<ValidatedQueryModule>, QueryModuleReadError>;
 }
 
 /// Closed authoritative-read failure with no storage diagnostic or handle.

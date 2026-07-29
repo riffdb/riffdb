@@ -125,9 +125,65 @@ message DescribeContractResponse {
   string symbolic_catalog = 4;
 }
 
+message NamedQuerySource {
+  string name = 1;
+  string source = 2;
+}
+
+message DeployQueryModuleRequest {
+  ContractSelector contract = 1;
+  string module_name = 2;
+  uint64 module_version = 3;
+  repeated NamedQuerySource queries = 4;
+  oneof expected_active {
+    bool any_active = 5;
+    bool absent_active = 6;
+    bytes module_hash = 7;
+  }
+  bytes request_id = 100;
+}
+
+enum QueryModuleDeploymentOutcome {
+  QUERY_MODULE_DEPLOYMENT_OUTCOME_UNSPECIFIED = 0;
+  QUERY_MODULE_DEPLOYMENT_OUTCOME_ACTIVATED = 1;
+  QUERY_MODULE_DEPLOYMENT_OUTCOME_ALREADY_ACTIVE = 2;
+  QUERY_MODULE_DEPLOYMENT_OUTCOME_EXPECTED_ACTIVE_MISMATCH = 3;
+  QUERY_MODULE_DEPLOYMENT_OUTCOME_VERSION_CONFLICT = 4;
+  QUERY_MODULE_DEPLOYMENT_OUTCOME_CONTRACT_UNAVAILABLE = 5;
+}
+
+message QueryModuleDescriptor {
+  string module_name = 1;
+  uint64 module_version = 2;
+  bytes module_hash = 3;
+  string contract_lineage = 4;
+  uint64 contract_version = 5;
+  bytes contract_bundle_hash = 6;
+  repeated string query_names = 7;
+}
+
+message DeployQueryModuleResponse {
+  QueryModuleDeploymentOutcome outcome = 1;
+  QueryModuleDescriptor module = 2;
+  optional bytes actual_active_module_hash = 3;
+}
+
+message GetQueryModuleRequest {
+  ContractSelector contract = 1;
+  optional bytes module_hash = 2;
+  bytes request_id = 100;
+}
+
+message GetQueryModuleResponse {
+  optional QueryModuleDescriptor module = 1;
+  repeated NamedQuerySource queries = 2;
+}
+
 service ApplicationQueryService {
   rpc DescribeContract(DescribeContractRequest) returns (DescribeContractResponse);
   rpc CheckQuery(CheckQueryRequest) returns (CheckQueryResponse);
   rpc ExplainQuery(ExplainQueryRequest) returns (ExplainQueryResponse);
   rpc ExecuteQuery(ExecuteQueryRequest) returns (ExecuteQueryResponse);
+  rpc DeployQueryModule(DeployQueryModuleRequest) returns (DeployQueryModuleResponse);
+  rpc GetQueryModule(GetQueryModuleRequest) returns (GetQueryModuleResponse);
 }

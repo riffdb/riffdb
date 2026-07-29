@@ -2,6 +2,10 @@
 
 //! Immutable, exact-contract query modules with a strict canonical codec.
 
+mod generation;
+
+pub use generation::{generate_rust_client, generate_typescript_client};
+
 use riffdb_contract_ir::ContractBundle;
 use riffdb_query_compiler::compile_query;
 use riffdb_query_ir::{

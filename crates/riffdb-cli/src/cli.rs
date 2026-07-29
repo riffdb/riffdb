@@ -91,6 +91,36 @@ pub(crate) enum QueryCommand {
         #[command(flatten)]
         contract: ContractSelectionArgs,
     },
+    RunNamed {
+        #[arg(value_name = "QUERY_NAME")]
+        query_name: String,
+        #[arg(long, value_name = "MODULE_HASH_HEX")]
+        module_hash: Option<String>,
+        #[arg(long, value_name = "JSON_PARAMETERS")]
+        parameters: Option<OsString>,
+        #[arg(long, value_name = "CURSOR")]
+        cursor: Option<String>,
+        #[command(flatten)]
+        contract: ContractSelectionArgs,
+    },
+    Deploy {
+        #[arg(value_name = "QUERY_DIRECTORY")]
+        directory: OsString,
+        #[arg(long, value_name = "MODULE_NAME")]
+        module_name: String,
+        #[arg(long, value_name = "POSITIVE_VERSION")]
+        module_version: String,
+        #[arg(long, value_name = "any|absent|MODULE_HASH_HEX", default_value = "any")]
+        expected_active: String,
+        #[command(flatten)]
+        contract: ContractSelectionArgs,
+    },
+    Module {
+        #[arg(long, value_name = "MODULE_HASH_HEX")]
+        module_hash: Option<String>,
+        #[command(flatten)]
+        contract: ContractSelectionArgs,
+    },
     Repl {
         #[command(flatten)]
         contract: ContractSelectionArgs,

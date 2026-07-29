@@ -3,7 +3,7 @@
 use riffdb_contract_compiler::compile_contract_source;
 use riffdb_query_module::{
     NamedQuerySource, QueryModule, QueryModuleCandidate, QueryModuleErrorKind, QueryModuleName,
-    QueryModuleVersion,
+    QueryModuleVersion, generate_rust_client, generate_typescript_client,
 };
 
 const CONTRACT: &str = include_str!("../../../examples/app-baseline/contracts/ticketdesk.riff");
@@ -85,4 +85,23 @@ fn same_version_with_changed_source_has_a_distinct_identity() {
     .expect("changed candidate");
     let changed = QueryModule::compile(changed, &bundle).expect("changed module");
     assert_ne!(changed.identity(), original.identity());
+}
+
+#[test]
+fn generated_clients_are_reproducible_name_addressed_and_identity_pinned() {
+    let bundle = compile_contract_source(CONTRACT).expect("contract");
+    let module = QueryModule::compile(candidate(false), &bundle).expect("module");
+    let rust = generate_rust_client(&module, &bundle);
+    let typescript = generate_typescript_client(&module, &bundle);
+
+    assert_eq!(rust, generate_rust_client(&module, &bundle));
+    assert_eq!(typescript, generate_typescript_client(&module, &bundle));
+    assert!(rust.contains("pub struct ListTicketsParams"));
+    assert!(rust.contains("query_name: \"TicketPage\""));
+    assert!(rust.contains("pub struct CreateTicketInput"));
+    assert!(typescript.contains("export interface TicketPageParams"));
+    assert!(typescript.contains("queryName: \"ListTickets\""));
+    assert!(typescript.contains("export interface CreateTicketInput"));
+    assert!(!rust.contains("field_id"));
+    assert!(!typescript.contains("entity_type_id"));
 }
