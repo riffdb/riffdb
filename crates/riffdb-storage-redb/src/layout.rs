@@ -7,6 +7,10 @@ pub(crate) const CONTRACT_BUNDLES: TableDefinition<&[u8], &[u8]> =
     TableDefinition::new("contract_bundles");
 pub(crate) const CATALOG_ACTIVE: TableDefinition<&[u8], &[u8]> =
     TableDefinition::new("catalog_active");
+pub(crate) const QUERY_MODULES: TableDefinition<&[u8], &[u8]> =
+    TableDefinition::new("query_modules");
+pub(crate) const QUERY_MODULE_ACTIVE: TableDefinition<&[u8], &[u8]> =
+    TableDefinition::new("query_module_active");
 pub(crate) const ENTITIES: TableDefinition<&[u8], &[u8]> = TableDefinition::new("entities");
 pub(crate) const SECONDARY_INDEXES: TableDefinition<&[u8], &[u8]> =
     TableDefinition::new("secondary_indexes");
@@ -31,10 +35,12 @@ pub(crate) const CAPABILITY_TOKENS: TableDefinition<&[u8], &[u8]> =
     TableDefinition::new("capability_tokens");
 pub(crate) const AUDIT: TableDefinition<&[u8], &[u8]> = TableDefinition::new("audit");
 
-pub(crate) const TABLE_NAMES: [&str; 19] = [
+pub(crate) const TABLE_NAMES: [&str; 21] = [
     "meta",
     "contract_bundles",
     "catalog_active",
+    "query_modules",
+    "query_module_active",
     "entities",
     "secondary_indexes",
     "index_epochs",
@@ -74,6 +80,8 @@ pub(crate) fn create_all_tables(tx: &WriteTransaction) -> Result<(), TableError>
     drop(tx.open_table(META)?);
     drop(tx.open_table(CONTRACT_BUNDLES)?);
     drop(tx.open_table(CATALOG_ACTIVE)?);
+    drop(tx.open_table(QUERY_MODULES)?);
+    drop(tx.open_table(QUERY_MODULE_ACTIVE)?);
     drop(tx.open_table(ENTITIES)?);
     drop(tx.open_table(SECONDARY_INDEXES)?);
     drop(tx.open_table(INDEX_EPOCHS)?);
@@ -107,6 +115,8 @@ mod tests {
             META.name(),
             CONTRACT_BUNDLES.name(),
             CATALOG_ACTIVE.name(),
+            QUERY_MODULES.name(),
+            QUERY_MODULE_ACTIVE.name(),
             ENTITIES.name(),
             SECONDARY_INDEXES.name(),
             INDEX_EPOCHS.name(),
@@ -126,7 +136,7 @@ mod tests {
         ];
 
         assert_eq!(definition_names, TABLE_NAMES);
-        assert_eq!(TABLE_NAMES.len(), 19);
+        assert_eq!(TABLE_NAMES.len(), 21);
         assert_eq!(
             TABLE_NAMES.into_iter().collect::<BTreeSet<_>>().len(),
             TABLE_NAMES.len()

@@ -136,6 +136,13 @@ messages
     1 contract_lineage optional string
     2 contract_version optional uint64
     3 contract_bundle_hash optional bytes
+  riffdb.storage.v1.ActiveQueryModulePointerV1 fields=6
+    1 module_name optional string
+    2 module_version optional uint64
+    3 module_hash optional bytes
+    4 contract_lineage optional string
+    5 contract_version optional uint64
+    6 contract_bundle_hash optional bytes
   riffdb.storage.v1.AdmittedActorContextV1 fields=4
     1 principal_id optional string
     2 actor_kind optional .riffdb.storage.v1.ActorKindV1
@@ -482,6 +489,22 @@ messages
     12 affected_entities repeated .riffdb.storage.v1.AffectedEntityV1
     13 event_ids repeated .riffdb.storage.v1.EventIdV1
     14 admitted_claims optional .riffdb.storage.v1.StoredAdmittedProvenanceClaimsV1
+  riffdb.storage.v1.StoredQueryModuleAdministrationV1 fields=7
+    1 administration_sequence optional uint64
+    2 request_id optional bytes
+    3 timestamp optional .riffdb.storage.v1.TimestampV1
+    4 principal optional .riffdb.storage.v1.AuditPrincipalV1
+    5 previous_active optional .riffdb.storage.v1.ActiveQueryModulePointerV1
+    6 activated optional .riffdb.storage.v1.ActiveQueryModulePointerV1
+    7 approval_id optional string proto3-optional oneof=_approval_id
+  riffdb.storage.v1.StoredQueryModuleV1 fields=7
+    1 module_name optional string
+    2 module_version optional uint64
+    3 module_hash optional bytes
+    4 contract_lineage optional string
+    5 contract_version optional uint64
+    6 contract_bundle_hash optional bytes
+    7 canonical_module optional bytes
   riffdb.storage.v1.StoredReadDependenciesV1 fields=1
     1 dependencies repeated .riffdb.storage.v1.StoredReadDependencyV1
   riffdb.storage.v1.StoredReadDependencyV1 fields=2

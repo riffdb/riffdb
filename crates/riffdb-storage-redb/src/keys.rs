@@ -7,10 +7,10 @@
 
 use riffdb_storage_api::{IdempotencyIdentityKey, StructurallyDecodedIndexRangePrefixV1};
 use riffdb_types::{
-    AdministrationSequence, CapabilityId, CapabilityTokenDigest, CommitSequence, ContractLineage,
-    ContractVersion, DIGEST_SCHEME_V1, DigestKeyId, EntityKey, EventId, IndexEntryKey, IndexId,
-    MAX_CONTRACT_LINEAGE_BYTES, ProjectionApplyKey, ProjectionFrontierKey, ProjectionGroupKey,
-    ProvenanceId,
+    AdministrationSequence, CapabilityId, CapabilityTokenDigest, CommitSequence,
+    ContractBundleHash, ContractLineage, ContractVersion, DIGEST_SCHEME_V1, DigestKeyId, EntityKey,
+    EventId, IndexEntryKey, IndexId, MAX_CONTRACT_LINEAGE_BYTES, ProjectionApplyKey,
+    ProjectionFrontierKey, ProjectionGroupKey, ProvenanceId, QueryModuleHash,
 };
 
 pub(crate) const SINGLETON_KEY: [u8; 1] = [0x01];
@@ -150,6 +150,38 @@ pub(crate) fn decode_contract_bundle_key(
     let canonical = encode_contract_bundle_key(&lineage, version)?;
     require_canonical(bytes, &canonical)?;
     Ok((lineage, version))
+}
+
+pub(crate) const fn encode_query_module_key(module_hash: QueryModuleHash) -> [u8; 32] {
+    module_hash.into_bytes()
+}
+
+pub(crate) fn decode_query_module_key(bytes: &[u8]) -> Result<QueryModuleHash, PhysicalKeyError> {
+    Ok(QueryModuleHash::from_bytes(exact_array::<32>(bytes)?))
+}
+
+pub(crate) fn encode_active_query_module_key(
+    lineage: &ContractLineage,
+    version: ContractVersion,
+    bundle_hash: ContractBundleHash,
+) -> Result<Vec<u8>, PhysicalKeyError> {
+    let mut encoded = encode_contract_bundle_key(lineage, version)?;
+    encoded.extend_from_slice(bundle_hash.as_bytes());
+    Ok(encoded)
+}
+
+pub(crate) fn decode_active_query_module_key(
+    bytes: &[u8],
+) -> Result<(ContractLineage, ContractVersion, ContractBundleHash), PhysicalKeyError> {
+    let contract_end = bytes
+        .len()
+        .checked_sub(32)
+        .ok_or(PhysicalKeyError::InvalidLength)?;
+    let (lineage, version) = decode_contract_bundle_key(&bytes[..contract_end])?;
+    let bundle_hash = ContractBundleHash::from_bytes(exact_array::<32>(&bytes[contract_end..])?);
+    let canonical = encode_active_query_module_key(&lineage, version, bundle_hash)?;
+    require_canonical(bytes, &canonical)?;
+    Ok((lineage, version, bundle_hash))
 }
 
 pub(crate) fn encode_capability_key(capability_id: CapabilityId) -> [u8; 17] {

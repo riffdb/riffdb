@@ -15,6 +15,8 @@ pub enum RedbTestOperation {
     CommandBatch,
     IndexMigrationBatch,
     CatalogAdministration,
+    /// Immutable query-module activation.
+    QueryModuleAdministration,
     CapabilityAdministration,
     CapabilityBootstrap,
     ServiceAudit,

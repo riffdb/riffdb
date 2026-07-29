@@ -104,6 +104,27 @@ borrowed_codec!(
     encode_catalog_administration_v1,
     decode_catalog_administration_v1
 );
+borrowed_codec!(
+    encode_query_module_v1,
+    decode_query_module_v1,
+    storage::StoredQueryModuleV1,
+    encode_query_module_v1,
+    decode_query_module_v1
+);
+borrowed_codec!(
+    encode_active_query_module_pointer_v1,
+    decode_active_query_module_pointer_v1,
+    storage::ActiveQueryModulePointerV1,
+    encode_active_query_module_pointer_v1,
+    decode_active_query_module_pointer_v1
+);
+borrowed_codec!(
+    encode_query_module_administration_v1,
+    decode_query_module_administration_v1,
+    storage::StoredQueryModuleAdministrationV1,
+    encode_query_module_administration_v1,
+    decode_query_module_administration_v1
+);
 
 borrowed_codec!(
     encode_entity_record_v1,
@@ -328,6 +349,9 @@ pub(crate) fn encode_administration_audit_record_v1(
         storage::StoredAdministrationAuditRecordV1::Catalog(value) => {
             encode_catalog_administration_v1(value)
         }
+        storage::StoredAdministrationAuditRecordV1::QueryModule(value) => {
+            encode_query_module_administration_v1(value)
+        }
         storage::StoredAdministrationAuditRecordV1::Capability(value) => {
             encode_capability_administration_v1(value)
         }
@@ -356,9 +380,20 @@ pub(crate) fn decode_administration_audit_record_v1(
     }
 
     match storage::decode_capability_administration_v1(encoded) {
+        Ok(item) => {
+            return Ok(map_item(
+                item,
+                storage::StoredAdministrationAuditRecordV1::Capability,
+            ));
+        }
+        Err(error) if error.kind() == storage::DurableCodecErrorKind::UnexpectedRecordType => {}
+        Err(error) => return Err(codec_error(error)),
+    }
+
+    match storage::decode_query_module_administration_v1(encoded) {
         Ok(item) => Ok(map_item(
             item,
-            storage::StoredAdministrationAuditRecordV1::Capability,
+            storage::StoredAdministrationAuditRecordV1::QueryModule,
         )),
         Err(error) if error.kind() == storage::DurableCodecErrorKind::UnexpectedRecordType => {
             storage::decode_service_audit_record_v1(encoded)

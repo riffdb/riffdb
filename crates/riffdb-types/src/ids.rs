@@ -101,6 +101,12 @@ nonzero_id!(
     u64,
     NonZeroU64
 );
+nonzero_id!(
+    /// An application-owned immutable query-module version.
+    QueryModuleVersion,
+    u64,
+    NonZeroU64
+);
 allocatable_nonzero_id!(
     /// A single-node application commit sequence.
     CommitSequence,
@@ -619,6 +625,57 @@ impl ContractLineage {
     #[must_use]
     pub fn as_bytes(&self) -> &[u8] {
         self.0.as_bytes()
+    }
+}
+
+/// Checked ASCII query-module name.
+#[derive(Clone, Eq, Hash, Ord, PartialEq, PartialOrd)]
+pub struct QueryModuleName(String);
+
+impl QueryModuleName {
+    /// Maximum encoded bytes in one query-module name.
+    pub const MAX_BYTES: usize = 256;
+
+    /// Checks one nonempty source-like module name.
+    pub fn new(value: impl Into<String>) -> Result<Self, TextIdError> {
+        let value = value.into();
+        if value.is_empty() {
+            return Err(TextIdError::Empty);
+        }
+        if value.len() > Self::MAX_BYTES {
+            return Err(TextIdError::TooLong {
+                maximum: Self::MAX_BYTES,
+                actual: value.len(),
+            });
+        }
+        if let Some(index) = value.bytes().enumerate().find_map(|(index, byte)| {
+            (!(byte == b'_' || byte.is_ascii_alphabetic() || index > 0 && byte.is_ascii_digit()))
+                .then_some(index)
+        }) {
+            return Err(TextIdError::InvalidCharacter { index });
+        }
+        Ok(Self(value))
+    }
+
+    /// Borrows the exact module name.
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl fmt::Debug for QueryModuleName {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_tuple("QueryModuleName")
+            .field(&self.0)
+            .finish()
+    }
+}
+
+impl fmt::Display for QueryModuleName {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        self.0.fmt(formatter)
     }
 }
 

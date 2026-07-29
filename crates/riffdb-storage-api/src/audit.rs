@@ -497,6 +497,8 @@ pub enum ServiceAuditAppendResult {
 pub enum StoredAdministrationAuditRecordV1 {
     /// Contract catalog activation.
     Catalog(crate::StoredCatalogAdministrationV1),
+    /// Immutable query-module activation.
+    QueryModule(crate::StoredQueryModuleAdministrationV1),
     /// Capability bootstrap, creation, or revocation.
     Capability(crate::StoredCapabilityAdministrationV1),
     /// Application-service invocation phase.
@@ -509,6 +511,7 @@ impl StoredAdministrationAuditRecordV1 {
     pub const fn administration_sequence(&self) -> AdministrationSequence {
         match self {
             Self::Catalog(record) => record.administration_sequence(),
+            Self::QueryModule(record) => record.administration_sequence(),
             Self::Capability(record) => record.administration_sequence(),
             Self::Service(record) => record.administration_sequence(),
         }

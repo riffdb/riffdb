@@ -45,6 +45,10 @@ pub const MAX_STAGED_WRITE_BYTES: usize = 16 * 1024 * 1024;
 pub const MAX_INTEGRITY_FINDINGS: usize = 256;
 /// Maximum bytes in one immutable contract bundle.
 pub const MAX_CATALOG_BUNDLE_BYTES: usize = 15 * 1024 * 1024;
+/// Maximum bytes in one immutable query module.
+pub const MAX_QUERY_MODULE_BYTES: usize = 16 * 1024 * 1024;
+/// Maximum immutable query modules retained by the POC database.
+pub const MAX_RETAINED_QUERY_MODULES: usize = 4_096;
 /// Maximum semantic bytes in one service-audit record.
 pub const MAX_SERVICE_AUDIT_BYTES: usize = 64 * 1024;
 /// Maximum readable digest keys in either operational key inventory.

@@ -2,9 +2,6 @@
 
 //! Immutable, exact-contract query modules with a strict canonical codec.
 
-use std::fmt;
-use std::num::NonZeroU64;
-
 use riffdb_contract_ir::ContractBundle;
 use riffdb_query_compiler::compile_query;
 use riffdb_query_ir::{
@@ -17,6 +14,9 @@ use riffdb_types::{
     ContractBundleHash, ContractLineage, ContractVersion, QueryModuleHash, QuerySourceHash,
     hash_query_module, hash_query_source,
 };
+use std::fmt;
+
+pub use riffdb_types::{QueryModuleName, QueryModuleVersion};
 
 const MODULE_MAGIC: &[u8] = b"RIFFDB-QUERY-MODULE\0";
 /// Canonical query-module codec version.
@@ -26,47 +26,6 @@ pub const MAX_MODULE_QUERIES: usize = 4_096;
 /// Maximum canonical bytes for one immutable module.
 pub const MAX_QUERY_MODULE_BYTES: usize = 16 * 1_024 * 1_024;
 const MAX_COMPILER_ID_BYTES: usize = 64;
-
-/// Checked ASCII query-module name.
-#[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
-pub struct QueryModuleName(String);
-
-impl QueryModuleName {
-    /// Checks one nonempty source-like module name.
-    pub fn new(value: impl Into<String>) -> Result<Self, QueryModuleError> {
-        let value = value.into();
-        if !valid_name(&value) {
-            return Err(QueryModuleError::new(QueryModuleErrorKind::InvalidName));
-        }
-        Ok(Self(value))
-    }
-
-    /// Borrows the exact module name.
-    #[must_use]
-    pub fn as_str(&self) -> &str {
-        &self.0
-    }
-}
-
-/// Positive application-owned query-module version.
-#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
-pub struct QueryModuleVersion(NonZeroU64);
-
-impl QueryModuleVersion {
-    /// Checks a positive module version.
-    pub const fn new(value: u64) -> Option<Self> {
-        match NonZeroU64::new(value) {
-            Some(value) => Some(Self(value)),
-            None => None,
-        }
-    }
-
-    /// Returns the positive numeric version.
-    #[must_use]
-    pub const fn get(self) -> u64 {
-        self.0.get()
-    }
-}
 
 /// One bounded named RiffQL document awaiting exact-contract compilation.
 #[derive(Clone, Eq, PartialEq)]
@@ -495,7 +454,8 @@ fn decode_candidate(bytes: &[u8]) -> Result<DecodedCandidate, QueryModuleError> 
             QueryModuleErrorKind::UnsupportedVersion,
         ));
     }
-    let name = QueryModuleName::new(input.text(MAX_IDENTIFIER_BYTES)?)?;
+    let name = QueryModuleName::new(input.text(MAX_IDENTIFIER_BYTES)?)
+        .map_err(|_| QueryModuleError::new(QueryModuleErrorKind::InvalidEncoding))?;
     let version = QueryModuleVersion::new(input.u64()?)
         .ok_or_else(|| QueryModuleError::new(QueryModuleErrorKind::InvalidEncoding))?;
     let contract_lineage = ContractLineage::new(input.text(MAX_IDENTIFIER_BYTES)?)

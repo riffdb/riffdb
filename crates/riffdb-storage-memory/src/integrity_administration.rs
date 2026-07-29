@@ -1,14 +1,15 @@
 //! Bounded reciprocal validation for catalog, capability, and service audit state.
 
 use riffdb_storage_api::{
-    ActiveCatalogPointerV1, CapabilityAdministrationOperationV1, CapabilityLifecycleV1,
-    RetainedMetadataV1, StoredAdministrationAuditRecordV1, StoredCapabilityAdministrationV1,
-    StoredCapabilityRecordV1, StoredCatalogAdministrationV1, StoredServiceAuditRecordV1,
-    StructuralFinding, StructuralFindingCode, StructuralFindingScope,
+    ActiveCatalogPointerV1, ActiveQueryModulePointerV1, CapabilityAdministrationOperationV1,
+    CapabilityLifecycleV1, RetainedMetadataV1, StoredAdministrationAuditRecordV1,
+    StoredCapabilityAdministrationV1, StoredCapabilityRecordV1, StoredCatalogAdministrationV1,
+    StoredQueryModuleAdministrationV1, StoredServiceAuditRecordV1, StructuralFinding,
+    StructuralFindingCode, StructuralFindingScope,
 };
 use riffdb_types::{
     AdministrationSequence, CapabilityId, RequestId, ServiceAuditLinkV1, ServiceAuditPhaseV1,
-    ServiceAuditTargetV1, ServiceOperationV1,
+    ServiceAuditTargetV1, ServiceOperationV1, hash_query_module,
 };
 
 use crate::state::{
@@ -108,11 +109,131 @@ pub(crate) fn inspect_administration_graph(
 ) -> Option<StructuralFinding> {
     match &state.administration_audit[index] {
         StoredAdministrationAuditRecordV1::Catalog(record) => inspect_catalog_record(state, record),
+        StoredAdministrationAuditRecordV1::QueryModule(record) => {
+            inspect_query_module_record(state, record)
+        }
         StoredAdministrationAuditRecordV1::Capability(record) => {
             inspect_capability_administration(state, record)
         }
         StoredAdministrationAuditRecordV1::Service(record) => inspect_service_record(state, record),
     }
+}
+
+pub(crate) fn inspect_query_module(state: &MemoryState, index: usize) -> Option<StructuralFinding> {
+    let module = &state.query_modules[index];
+    if hash_query_module(module.canonical_bytes()) != module.module_hash()
+        || (index > 0 && state.query_modules[index - 1].module_hash() >= module.module_hash())
+    {
+        return mismatch();
+    }
+    let contract = ActiveCatalogPointerV1::new(
+        module.contract_lineage().clone(),
+        module.contract_version(),
+        module.contract_bundle_hash(),
+    );
+    if catalog_bundle(state, &contract).is_none()
+        || !state.administration_audit.iter().any(|record| {
+            matches!(
+                record,
+                StoredAdministrationAuditRecordV1::QueryModule(activation)
+                    if activation.activated().matches_module(module)
+            )
+        })
+    {
+        return missing();
+    }
+    None
+}
+
+pub(crate) fn inspect_active_query_module(
+    state: &MemoryState,
+    index: usize,
+) -> Option<StructuralFinding> {
+    let record = &state.active_query_modules[index];
+    if index > 0
+        && compare_query_module_contract(
+            state.active_query_modules[index - 1].activated(),
+            record.activated(),
+        ) != std::cmp::Ordering::Less
+    {
+        return mismatch();
+    }
+    let Some(StoredAdministrationAuditRecordV1::QueryModule(audit)) =
+        administration(state, record.administration_sequence())
+    else {
+        return missing();
+    };
+    if audit != record || inspect_query_module_record(state, record).is_some() {
+        return mismatch();
+    }
+    None
+}
+
+fn compare_query_module_contract(
+    left: &ActiveQueryModulePointerV1,
+    right: &ActiveQueryModulePointerV1,
+) -> std::cmp::Ordering {
+    left.contract_lineage()
+        .cmp(right.contract_lineage())
+        .then_with(|| left.contract_version().cmp(&right.contract_version()))
+        .then_with(|| {
+            left.contract_bundle_hash()
+                .cmp(&right.contract_bundle_hash())
+        })
+}
+
+fn same_query_module_contract(
+    left: &ActiveQueryModulePointerV1,
+    right: &ActiveQueryModulePointerV1,
+) -> bool {
+    compare_query_module_contract(left, right).is_eq()
+}
+
+fn inspect_query_module_record(
+    state: &MemoryState,
+    record: &StoredQueryModuleAdministrationV1,
+) -> Option<StructuralFinding> {
+    let Ok(module_index) = state
+        .query_modules
+        .binary_search_by_key(&record.activated().module_hash(), |module| {
+            module.module_hash()
+        })
+    else {
+        return missing();
+    };
+    if !record
+        .activated()
+        .matches_module(&state.query_modules[module_index])
+    {
+        return mismatch();
+    }
+
+    let mut previous = None;
+    let mut last = None;
+    let mut found = false;
+    for candidate in &state.administration_audit {
+        let StoredAdministrationAuditRecordV1::QueryModule(candidate) = candidate else {
+            continue;
+        };
+        if !same_query_module_contract(candidate.activated(), record.activated()) {
+            continue;
+        }
+        if candidate.administration_sequence() < record.administration_sequence() {
+            previous = Some(candidate.activated());
+        }
+        if candidate.administration_sequence() == record.administration_sequence() {
+            found = candidate == record;
+        }
+        last = Some(candidate);
+    }
+    let active = state
+        .active_query_modules
+        .iter()
+        .find(|candidate| same_query_module_contract(candidate.activated(), record.activated()));
+    if !found || record.previous_active() != previous || last != active {
+        return mismatch();
+    }
+    None
 }
 
 pub(crate) fn inspect_service_invocation_index(
@@ -464,6 +585,7 @@ fn service_link_is_valid(state: &MemoryState, record: &StoredServiceAuditRecordV
                     has_capability_target(record, capability.target_capability_id())
                 }
                 StoredAdministrationAuditRecordV1::Catalog(_)
+                | StoredAdministrationAuditRecordV1::QueryModule(_)
                 | StoredAdministrationAuditRecordV1::Service(_) => true,
             };
             operation_kind_matches

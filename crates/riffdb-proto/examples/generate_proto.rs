@@ -220,6 +220,21 @@ const DURABLE_RECORDS: &[DurableRecord] = &[
         PayloadBound::Tiny,
     ),
     durable(
+        "catalog.proto",
+        "StoredQueryModuleV1",
+        PayloadBound::EnvelopeMaximum,
+    ),
+    durable(
+        "catalog.proto",
+        "ActiveQueryModulePointerV1",
+        PayloadBound::Tiny,
+    ),
+    durable(
+        "catalog.proto",
+        "StoredQueryModuleAdministrationV1",
+        PayloadBound::Tiny,
+    ),
+    durable(
         "index_v2.proto",
         "StoredIndexEntryV2",
         PayloadBound::Document,
@@ -227,6 +242,7 @@ const DURABLE_RECORDS: &[DurableRecord] = &[
 ];
 
 const LEGACY_DURABLE_RECORD_COUNT: usize = 26;
+const QUERY_MODULE_DURABLE_RECORD_COUNT: usize = 3;
 
 const fn durable(
     source: &'static str,
@@ -487,8 +503,12 @@ fn main() -> Result<(), Box<dyn Error>> {
     let legacy_registry = durable_registry
         .get(..LEGACY_DURABLE_RECORD_COUNT)
         .ok_or_else(|| io::Error::other("durable registry lost its legacy prefix"))?;
+    let current_v1_record_count = LEGACY_DURABLE_RECORD_COUNT + QUERY_MODULE_DURABLE_RECORD_COUNT;
+    let current_v1_registry = durable_registry
+        .get(..current_v1_record_count)
+        .ok_or_else(|| io::Error::other("durable registry lost current v1 records"))?;
     let v2_record = durable_registry
-        .get(LEGACY_DURABLE_RECORD_COUNT)
+        .get(current_v1_record_count)
         .ok_or_else(|| io::Error::other("durable registry is missing StoredIndexEntryV2"))?;
     write_artifact(
         &output_root,
@@ -508,7 +528,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     write_artifact(
         &output_root,
         "fixtures/proto/durable-schema-hashes.bin",
-        &durable_schema_hashes(legacy_registry),
+        &durable_schema_hashes(current_v1_registry),
     )?;
     write_artifact(
         &output_root,
@@ -518,7 +538,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     write_artifact(
         &output_root,
         "fixtures/proto/durable-record-bounds.bin",
-        &durable_record_bounds(legacy_registry),
+        &durable_record_bounds(current_v1_registry),
     )?;
     write_artifact(
         &output_root,
@@ -792,9 +812,9 @@ struct BuiltDurableRecord {
 fn build_durable_registry(
     storage: &FileDescriptorSet,
 ) -> Result<Vec<BuiltDurableRecord>, Box<dyn Error>> {
-    if DURABLE_RECORDS.len() != 27 {
+    if DURABLE_RECORDS.len() != 30 {
         return Err(
-            io::Error::other("readable durable registry must contain exactly 27 records").into(),
+            io::Error::other("readable durable registry must contain exactly 30 records").into(),
         );
     }
     if storage.file.len() != STORAGE_SOURCES.len()
@@ -818,9 +838,9 @@ fn build_durable_registry(
         .iter()
         .map(|file| file.enum_type.len())
         .sum::<usize>();
-    if message_count != 76 || enum_count != 12 {
+    if message_count != 79 || enum_count != 12 {
         return Err(io::Error::other(format!(
-            "storage schema must contain 75 semantic messages plus StoredEnvelope and 12 enums; found {message_count} messages and {enum_count} enums"
+            "storage schema must contain 78 semantic messages plus StoredEnvelope and 12 enums; found {message_count} messages and {enum_count} enums"
         ))
         .into());
     }
@@ -959,16 +979,21 @@ fn durable_writable_registry_fixture(
     let legacy = records
         .get(..LEGACY_DURABLE_RECORD_COUNT)
         .ok_or_else(|| io::Error::other("durable registry lost its legacy prefix"))?;
+    let current_v1_record_count = LEGACY_DURABLE_RECORD_COUNT + QUERY_MODULE_DURABLE_RECORD_COUNT;
+    let query_modules = records
+        .get(LEGACY_DURABLE_RECORD_COUNT..current_v1_record_count)
+        .ok_or_else(|| io::Error::other("durable registry lost query-module records"))?;
     let v2 = records
-        .get(LEGACY_DURABLE_RECORD_COUNT)
+        .get(current_v1_record_count)
         .ok_or_else(|| io::Error::other("durable registry is missing StoredIndexEntryV2"))?;
     let writable = legacy[..8]
         .iter()
         .chain(std::iter::once(v2))
-        .chain(legacy[9..].iter());
+        .chain(legacy[9..].iter())
+        .chain(query_modules.iter());
 
     let mut output = String::from("riffdb-durable-writable-registry-v1\n");
-    let _ = writeln!(output, "records {LEGACY_DURABLE_RECORD_COUNT}");
+    let _ = writeln!(output, "records {current_v1_record_count}");
     for record in writable {
         let _ = write!(output, "{} schema-hash=", record.record_type);
         for byte in record.schema_hash {

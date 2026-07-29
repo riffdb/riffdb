@@ -25,6 +25,7 @@ const MAX_ENVIRONMENT_BYTES: usize = 64;
 const MAX_KEY_BYTES: usize = 4_096;
 const MAX_DOCUMENT_BYTES: usize = 1024 * 1024;
 const MAX_BUNDLE_BYTES: usize = 15 * 1024 * 1024;
+const MAX_QUERY_MODULE_BYTES: usize = 16 * 1024 * 1024;
 const MAX_COMMAND_ITEMS: usize = 4_096;
 const MAX_CONFLICT_HASHES: usize = 2_046;
 const MAX_PACKED_ITEMS: usize = 65_535 + 19;
@@ -283,6 +284,27 @@ shape!(CATALOG_ADMINISTRATION [
     message(6, &ACTIVE_CATALOG),
     string(7, MAX_TEXT_ID_BYTES),
 ]);
+shape!(QUERY_MODULE [
+    string(1, MAX_TEXT_ID_BYTES),
+    fixed_bytes(3, 32),
+    string(4, MAX_TEXT_ID_BYTES),
+    fixed_bytes(6, 32),
+    nonempty_bytes(7, MAX_QUERY_MODULE_BYTES),
+]);
+shape!(ACTIVE_QUERY_MODULE [
+    string(1, MAX_TEXT_ID_BYTES),
+    fixed_bytes(3, 32),
+    string(4, MAX_TEXT_ID_BYTES),
+    fixed_bytes(6, 32),
+]);
+shape!(QUERY_MODULE_ADMINISTRATION [
+    fixed_bytes(2, 16),
+    message(3, &TIMESTAMP),
+    message(4, &AUDIT_PRINCIPAL),
+    message(5, &ACTIVE_QUERY_MODULE),
+    message(6, &ACTIVE_QUERY_MODULE),
+    string(7, MAX_TEXT_ID_BYTES),
+]);
 
 shape!(CAPABILITY_TOKEN_DIGEST[fixed_bytes(3, 32)]);
 shape!(CAPABILITY_PERMISSION[string(2, MAX_TEXT_ID_BYTES)]);
@@ -418,7 +440,7 @@ shape!(PROJECTION_CONTROL [
     message(7, &PROJECTION_FAILURE),
 ]);
 
-const ROOTS: [&Shape; 27] = [
+const ROOTS: [&Shape; 30] = [
     &Shape { rules: &[] },
     &Shape {
         rules: &[fixed_bytes(1, 16)],
@@ -451,6 +473,9 @@ const ROOTS: [&Shape; 27] = [
     &PROJECTION_STATE,
     &PROJECTION_APPLY,
     &PROJECTION_CONTROL,
+    &QUERY_MODULE,
+    &ACTIVE_QUERY_MODULE,
+    &QUERY_MODULE_ADMINISTRATION,
     &INDEX_ENTRY_V2,
 ];
 

@@ -4,9 +4,9 @@ use std::num::NonZeroU64;
 
 use redb::ReadableTable;
 use riffdb_storage_api::{
-    ActiveCatalogPointerV1, AdministrationAuditReader, AdministrationAuditScan,
-    AdministrationAuditScanRequest, AdministrationSequenceAllocator, AuditPrincipalV1,
-    CapabilityAdministrationOperationV1, CapabilityAdministrationTransactionPort,
+    ActiveCatalogPointerV1, ActiveQueryModulePointerV1, AdministrationAuditReader,
+    AdministrationAuditScan, AdministrationAuditScanRequest, AdministrationSequenceAllocator,
+    AuditPrincipalV1, CapabilityAdministrationOperationV1, CapabilityAdministrationTransactionPort,
     CapabilityBootstrapAdministrationRepository, CapabilityBootstrapIntentV1,
     CapabilityBootstrapMarkerV1, CapabilityBootstrapResult, CapabilityCreateAwaitingDecision,
     CapabilityCreateCandidateTransaction, CapabilityCreateCandidateV1, CapabilityCreateIntentV1,
@@ -16,15 +16,19 @@ use riffdb_storage_api::{
     CapabilityRevokeCandidateV1, CapabilityRevokeIntentV1, CapabilityRevokeResult,
     CapabilityTokenLookupV1, CatalogActivationIntentV1, CatalogActivationResult,
     CatalogAdministrationRepository, CatalogRepository, EncodedPageItem, MAX_READABLE_DIGEST_KEYS,
-    MAX_SCAN_PAGE_BYTES, SequenceAllocationError, ServiceAuditAppendIntentV1,
-    ServiceAuditAppendRepository, ServiceAuditAppendResult, StorageError, StorageErrorKind,
-    StorageScanLimit, StoredAdministrationAuditRecordV1, StoredCapabilityAdministrationV1,
-    StoredCapabilityRecordV1, StoredCatalogAdministrationV1, StoredContractBundleV1,
+    MAX_RETAINED_QUERY_MODULES, MAX_SCAN_PAGE_BYTES, QueryModuleActivationIntentV1,
+    QueryModuleActivationResult, QueryModuleActiveExpectationV1,
+    QueryModuleAdministrationRepository, QueryModuleRepository, SequenceAllocationError,
+    ServiceAuditAppendIntentV1, ServiceAuditAppendRepository, ServiceAuditAppendResult,
+    StorageError, StorageErrorKind, StorageScanLimit, StoredAdministrationAuditRecordV1,
+    StoredCapabilityAdministrationV1, StoredCapabilityRecordV1, StoredCatalogAdministrationV1,
+    StoredContractBundleV1, StoredQueryModuleAdministrationV1, StoredQueryModuleV1,
     StoredServiceAuditRecordV1, TransactionCurrentCapabilityObservationV1,
 };
 use riffdb_types::{
-    AdministrationSequence, CapabilityId, CapabilityTokenDigest, ContractLineage, ContractVersion,
-    RequestId, ServiceAuditLinkV1, ServiceAuditPhaseV1, ServiceAuditTargetV1, ServiceOperationV1,
+    AdministrationSequence, CapabilityId, CapabilityTokenDigest, ContractBundleHash,
+    ContractLineage, ContractVersion, QueryModuleHash, RequestId, ServiceAuditLinkV1,
+    ServiceAuditPhaseV1, ServiceAuditTargetV1, ServiceOperationV1,
 };
 
 use crate::codec::{
@@ -32,21 +36,24 @@ use crate::codec::{
     decode_administration_sequence_allocator_v1, decode_capability_bootstrap_marker_v1,
     decode_capability_record_v1, decode_capability_token_lookup_v1, decode_commit_record_v1,
     decode_contract_bundle_v1, decode_database_identity_v1, decode_provenance_record_v1,
+    decode_query_module_administration_v1, decode_query_module_v1,
     encode_active_catalog_pointer_v1, encode_administration_audit_record_v1,
     encode_administration_sequence_allocator_v1, encode_capability_bootstrap_marker_v1,
     encode_capability_record_v1, encode_capability_token_lookup_v1, encode_contract_bundle_v1,
+    encode_query_module_administration_v1, encode_query_module_v1,
 };
 use crate::error::{precommit_storage_error, storage_error, table_error};
 use crate::hooks::RedbTestOperation;
 use crate::keys::{
-    decode_audit_key, decode_capability_key, encode_application_sequence_key, encode_audit_key,
-    encode_capability_key, encode_capability_token_key, encode_contract_bundle_key,
-    encode_provenance_key,
+    decode_audit_key, decode_capability_key, encode_active_query_module_key,
+    encode_application_sequence_key, encode_audit_key, encode_capability_key,
+    encode_capability_token_key, encode_contract_bundle_key, encode_provenance_key,
+    encode_query_module_key,
 };
 use crate::layout::{
     AUDIT, CAPABILITIES, CAPABILITY_TOKENS, CATALOG_ACTIVE, CATALOG_ACTIVE_KEY, COMMITS,
     CONTRACT_BUNDLES, META, META_ADMINISTRATION_SEQUENCE, META_CAPABILITY_BOOTSTRAP,
-    META_DATABASE_ID, PROVENANCE,
+    META_DATABASE_ID, PROVENANCE, QUERY_MODULE_ACTIVE, QUERY_MODULES,
 };
 use crate::store::{RedbOperationalPorts, RedbWriteAccess};
 use crate::transient::TransientIndexDelta;
@@ -495,6 +502,259 @@ impl CatalogAdministrationRepository for RedbOperationalPorts {
         write_administration_allocator(transaction, allocator, next)?;
         access.commit_for(RedbTestOperation::CatalogAdministration)?;
         Ok(CatalogActivationResult::Activated {
+            active: requested,
+            administration_sequence: sequence,
+        })
+    }
+}
+
+fn query_module_from_table<T>(
+    table: &T,
+    module_hash: QueryModuleHash,
+) -> Result<Option<StoredQueryModuleV1>, StorageError>
+where
+    T: ReadableTable<&'static [u8], &'static [u8]>,
+{
+    let key = encode_query_module_key(module_hash);
+    let Some(value) = table.get(key.as_slice()).map_err(precommit_storage_error)? else {
+        return Ok(None);
+    };
+    let module = decoded_value(decode_query_module_v1(value.value())?);
+    if module.module_hash() != module_hash {
+        return Err(corrupt());
+    }
+    Ok(Some(module))
+}
+
+fn active_query_module_from_table<T>(
+    table: &T,
+    lineage: &ContractLineage,
+    version: ContractVersion,
+    bundle_hash: ContractBundleHash,
+) -> Result<Option<StoredQueryModuleAdministrationV1>, StorageError>
+where
+    T: ReadableTable<&'static [u8], &'static [u8]>,
+{
+    let key =
+        encode_active_query_module_key(lineage, version, bundle_hash).map_err(|_| invariant())?;
+    let Some(value) = table.get(key.as_slice()).map_err(precommit_storage_error)? else {
+        return Ok(None);
+    };
+    let record = decoded_value(decode_query_module_administration_v1(value.value())?);
+    let active = record.activated();
+    if active.contract_lineage() != lineage
+        || active.contract_version() != version
+        || active.contract_bundle_hash() != bundle_hash
+    {
+        return Err(corrupt());
+    }
+    Ok(Some(record))
+}
+
+fn module_version_conflicts<T>(
+    table: &T,
+    candidate: &StoredQueryModuleV1,
+) -> Result<bool, StorageError>
+where
+    T: ReadableTable<&'static [u8], &'static [u8]>,
+{
+    let mut count = 0usize;
+    for entry in table.iter().map_err(precommit_storage_error)? {
+        let (key, value) = entry.map_err(precommit_storage_error)?;
+        count = count.checked_add(1).ok_or_else(corrupt)?;
+        if count > MAX_RETAINED_QUERY_MODULES {
+            return Err(corrupt());
+        }
+        let module = decoded_value(decode_query_module_v1(value.value())?);
+        if key.value() != encode_query_module_key(module.module_hash()) {
+            return Err(corrupt());
+        }
+        if module.contract_lineage() == candidate.contract_lineage()
+            && module.contract_version() == candidate.contract_version()
+            && module.contract_bundle_hash() == candidate.contract_bundle_hash()
+            && module.module_name() == candidate.module_name()
+            && module.module_version() == candidate.module_version()
+            && module.module_hash() != candidate.module_hash()
+        {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
+impl QueryModuleRepository for RedbOperationalPorts {
+    fn read_query_module(
+        &self,
+        module_hash: QueryModuleHash,
+    ) -> Result<Option<StoredQueryModuleV1>, StorageError> {
+        let transaction = self.begin_read()?;
+        read_database_id_readonly(&transaction)?;
+        let modules = transaction.open_table(QUERY_MODULES).map_err(table_error)?;
+        query_module_from_table(&modules, module_hash)
+    }
+
+    fn read_active_query_module(
+        &self,
+        lineage: &ContractLineage,
+        contract_version: ContractVersion,
+        contract_bundle_hash: ContractBundleHash,
+    ) -> Result<Option<ActiveQueryModulePointerV1>, StorageError> {
+        let transaction = self.begin_read()?;
+        validate_administration_stream_readonly(&transaction)?;
+        let active_table = transaction
+            .open_table(QUERY_MODULE_ACTIVE)
+            .map_err(table_error)?;
+        let active = active_query_module_from_table(
+            &active_table,
+            lineage,
+            contract_version,
+            contract_bundle_hash,
+        )?;
+        let Some(record) = active else {
+            return Ok(None);
+        };
+        let audit = transaction.open_table(AUDIT).map_err(table_error)?;
+        let key = encode_audit_key(record.administration_sequence());
+        let durable = audit
+            .get(key.as_slice())
+            .map_err(precommit_storage_error)?
+            .ok_or_else(corrupt)?;
+        let durable = decoded_value(decode_administration_audit_record_v1(durable.value())?);
+        if durable != StoredAdministrationAuditRecordV1::QueryModule(record.clone()) {
+            return Err(corrupt());
+        }
+        let modules = transaction.open_table(QUERY_MODULES).map_err(table_error)?;
+        let module = query_module_from_table(&modules, record.activated().module_hash())?
+            .ok_or_else(corrupt)?;
+        if !record.activated().matches_module(&module) {
+            return Err(corrupt());
+        }
+        Ok(Some(record.activated().clone()))
+    }
+}
+
+impl QueryModuleAdministrationRepository for RedbOperationalPorts {
+    fn activate_query_module(
+        &mut self,
+        intent: &QueryModuleActivationIntentV1,
+    ) -> Result<QueryModuleActivationResult, StorageError> {
+        let access = self.begin_write()?;
+        let transaction = access.transaction()?;
+        let allocator = validate_administration_stream(transaction)?;
+
+        let bundles = transaction
+            .open_table(CONTRACT_BUNDLES)
+            .map_err(table_error)?;
+        let contract = read_contract_bundle_from_table(
+            &bundles,
+            intent.module().contract_lineage(),
+            intent.module().contract_version(),
+        )?;
+        drop(bundles);
+        if !contract
+            .is_some_and(|bundle| bundle.bundle_hash() == intent.module().contract_bundle_hash())
+        {
+            access.abort()?;
+            return Ok(QueryModuleActivationResult::ContractUnavailable);
+        }
+
+        let modules = transaction.open_table(QUERY_MODULES).map_err(table_error)?;
+        let existing = query_module_from_table(&modules, intent.module().module_hash())?;
+        if existing
+            .as_ref()
+            .is_some_and(|module| module != intent.module())
+        {
+            return Err(corrupt());
+        }
+        if module_version_conflicts(&modules, intent.module())? {
+            drop(modules);
+            access.abort()?;
+            return Ok(QueryModuleActivationResult::ModuleVersionConflict);
+        }
+        drop(modules);
+
+        let active_table = transaction
+            .open_table(QUERY_MODULE_ACTIVE)
+            .map_err(table_error)?;
+        let active_record = active_query_module_from_table(
+            &active_table,
+            intent.module().contract_lineage(),
+            intent.module().contract_version(),
+            intent.module().contract_bundle_hash(),
+        )?;
+        drop(active_table);
+        let active = active_record
+            .as_ref()
+            .map(|record| record.activated().clone());
+        let requested = intent.requested_active();
+        if active.as_ref() == Some(&requested) {
+            let sequence = active_record
+                .as_ref()
+                .map(StoredQueryModuleAdministrationV1::administration_sequence)
+                .ok_or_else(corrupt)?;
+            access.abort()?;
+            return Ok(QueryModuleActivationResult::AlreadyActive {
+                active: requested,
+                administration_sequence: sequence,
+            });
+        }
+
+        let expectation_matches = match intent.expectation() {
+            QueryModuleActiveExpectationV1::Any => true,
+            QueryModuleActiveExpectationV1::Absent => active.is_none(),
+            QueryModuleActiveExpectationV1::Exact(expected) => {
+                active.as_ref().map(ActiveQueryModulePointerV1::module_hash) == Some(expected)
+            }
+        };
+        if !expectation_matches {
+            let actual = active.as_ref().map(ActiveQueryModulePointerV1::module_hash);
+            access.abort()?;
+            return Ok(QueryModuleActivationResult::ExpectedActiveMismatch { actual });
+        }
+
+        let (assigned, next) = allocate_sequences(allocator, 1)?;
+        let sequence = assigned[0];
+        let record =
+            StoredQueryModuleAdministrationV1::from_committed_intent(sequence, intent, active);
+        let encoded_module = encode_query_module_v1(intent.module())?;
+        let encoded_active = encode_query_module_administration_v1(&record)?;
+        let audit_record = StoredAdministrationAuditRecordV1::QueryModule(record.clone());
+        if existing.is_none() {
+            let key = encode_query_module_key(intent.module().module_hash());
+            let mut table = transaction.open_table(QUERY_MODULES).map_err(table_error)?;
+            if table
+                .insert(key.as_slice(), encoded_module.as_bytes())
+                .map_err(precommit_storage_error)?
+                .is_some()
+            {
+                return Err(invariant());
+            }
+        }
+        {
+            let key = encode_active_query_module_key(
+                intent.module().contract_lineage(),
+                intent.module().contract_version(),
+                intent.module().contract_bundle_hash(),
+            )
+            .map_err(|_| invariant())?;
+            let mut table = transaction
+                .open_table(QUERY_MODULE_ACTIVE)
+                .map_err(table_error)?;
+            let prior = table
+                .insert(key.as_slice(), encoded_active.as_bytes())
+                .map_err(precommit_storage_error)?
+                .map(|value| {
+                    decode_query_module_administration_v1(value.value()).map(decoded_value)
+                })
+                .transpose()?;
+            if prior != active_record {
+                return Err(invariant());
+            }
+        }
+        append_audit_record(transaction, &audit_record)?;
+        write_administration_allocator(transaction, allocator, next)?;
+        access.commit_for(RedbTestOperation::QueryModuleAdministration)?;
+        Ok(QueryModuleActivationResult::Activated {
             active: requested,
             administration_sequence: sequence,
         })
@@ -1554,7 +1814,8 @@ mod tests {
     };
     use riffdb_types::{
         ActorId, ActorKind, Audience, ContractBundleHash, DatabaseId, DigestKeyId, Environment,
-        ServiceAuditTargetsV1, ServiceIngressKindV1, TenantScope, Timestamp,
+        QueryModuleHash, QueryModuleName, QueryModuleVersion, ServiceAuditTargetsV1,
+        ServiceIngressKindV1, TenantScope, Timestamp,
     };
 
     use super::*;
@@ -1687,6 +1948,38 @@ mod tests {
         )
     }
 
+    fn query_module(
+        contract: &StoredContractBundleV1,
+        version: u64,
+        hash: u8,
+    ) -> StoredQueryModuleV1 {
+        StoredQueryModuleV1::new(
+            QueryModuleName::new("ticketdesk").expect("module name"),
+            QueryModuleVersion::new(version).expect("module version"),
+            QueryModuleHash::from_bytes([hash; 32]),
+            contract.lineage().clone(),
+            contract.contract_version(),
+            contract.bundle_hash(),
+            vec![hash, 1, 2, 3],
+        )
+        .expect("stored module")
+    }
+
+    fn query_module_intent(
+        expectation: QueryModuleActiveExpectationV1,
+        module: StoredQueryModuleV1,
+        request: u8,
+    ) -> QueryModuleActivationIntentV1 {
+        QueryModuleActivationIntentV1::new(
+            expectation,
+            module,
+            request_id(request),
+            principal(capability_id(2)),
+            Timestamp::new(i64::from(request), 0).expect("timestamp"),
+            None,
+        )
+    }
+
     fn bootstrap_intent(
         request: u8,
         capability_id: CapabilityId,
@@ -1794,6 +2087,79 @@ mod tests {
             .expect("detect bundle conflict");
         assert_eq!(conflict, CatalogActivationResult::BundleConflict);
         assert_eq!(audit_count(&ports), 2);
+    }
+
+    #[test]
+    fn query_module_activation_is_atomic_cas_audited_and_restart_safe() {
+        let (path, mut ports) = initialized_ports("query-module");
+        let contract = bundle("ticketdesk", 1, 7);
+        ports
+            .activate_catalog(&catalog_intent(None, contract.clone(), 30))
+            .expect("activate exact contract");
+        let module = query_module(&contract, 1, 8);
+        let activated = ports
+            .activate_query_module(&query_module_intent(
+                QueryModuleActiveExpectationV1::Absent,
+                module.clone(),
+                31,
+            ))
+            .expect("activate query module");
+        assert!(matches!(
+            activated,
+            QueryModuleActivationResult::Activated {
+                administration_sequence,
+                ..
+            } if administration_sequence == AdministrationSequence::new(2).expect("sequence two")
+        ));
+        assert_eq!(
+            ports
+                .read_query_module(module.module_hash())
+                .expect("read module"),
+            Some(module.clone())
+        );
+        assert_eq!(
+            ports
+                .read_active_query_module(
+                    contract.lineage(),
+                    contract.contract_version(),
+                    contract.bundle_hash(),
+                )
+                .expect("read active module"),
+            Some(ActiveQueryModulePointerV1::from_module(&module))
+        );
+        assert!(matches!(
+            ports
+                .activate_query_module(&query_module_intent(
+                    QueryModuleActiveExpectationV1::Exact(QueryModuleHash::from_bytes([1; 32])),
+                    module.clone(),
+                    32,
+                ))
+                .expect("idempotent exact replay"),
+            QueryModuleActivationResult::AlreadyActive {
+                administration_sequence,
+                ..
+            } if administration_sequence == AdministrationSequence::new(2).expect("sequence two")
+        ));
+        assert_eq!(audit_count(&ports), 2);
+
+        drop(ports);
+        let store = RedbStore::open(&path.0).expect("reopen database");
+        let dormant = crate::store::RedbDormantPorts {
+            shared: store.shared,
+        };
+        let reopened = dormant
+            .into_operational_after_catalog_validation()
+            .expect("reactivate ports");
+        assert_eq!(
+            reopened
+                .read_active_query_module(
+                    contract.lineage(),
+                    contract.contract_version(),
+                    contract.bundle_hash(),
+                )
+                .expect("read active after restart"),
+            Some(ActiveQueryModulePointerV1::from_module(&module))
+        );
     }
 
     #[test]

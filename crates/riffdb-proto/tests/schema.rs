@@ -97,7 +97,7 @@ fn descriptors_are_normalized_and_use_only_accepted_packages() {
             .iter()
             .map(FileDescriptorProto::package)
             .collect::<BTreeSet<_>>(),
-        BTreeSet::from(["riffdb.storage.v1", "riffdb.v1"])
+        BTreeSet::from(["riffdb.app.v1", "riffdb.storage.v1", "riffdb.v1"])
     );
 }
 
@@ -420,6 +420,7 @@ fn service_inventory_and_completed_phase_zero_messages_are_exact() {
         services,
         BTreeSet::from([
             "AdminService",
+            "ApplicationQueryService",
             "CommandService",
             "CommitService",
             "ContractService",
@@ -432,7 +433,7 @@ fn service_inventory_and_completed_phase_zero_messages_are_exact() {
             .iter()
             .map(|file| file.service.len())
             .sum::<usize>(),
-        5
+        6
     );
     let mut methods = Vec::new();
     for file in &descriptors.file {
@@ -450,7 +451,7 @@ fn service_inventory_and_completed_phase_zero_messages_are_exact() {
         }
     }
     methods.sort();
-    assert_eq!(methods.len(), 25);
+    assert_eq!(methods.len(), 29);
     let descriptor_order = descriptors
         .file
         .iter()
@@ -466,6 +467,15 @@ fn service_inventory_and_completed_phase_zero_messages_are_exact() {
             )
         })
         .collect::<BTreeMap<_, _>>();
+    assert_eq!(
+        descriptor_order["ApplicationQueryService"],
+        vec![
+            "DescribeContract",
+            "CheckQuery",
+            "ExplainQuery",
+            "ExecuteQuery",
+        ]
+    );
     assert_eq!(
         descriptor_order["ContractService"],
         vec![
@@ -520,6 +530,7 @@ fn service_inventory_and_completed_phase_zero_messages_are_exact() {
             .collect::<BTreeSet<_>>(),
         BTreeSet::from([
             "AdminService",
+            "ApplicationQueryService",
             "CommandService",
             "CommitService",
             "ContractService",

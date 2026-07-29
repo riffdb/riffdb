@@ -49,6 +49,11 @@ const LEGACY_RECORDS: &[(&str, &str)] = &[
 ];
 
 const INDEX_V2_RECORD: (&str, &str) = ("StoredIndexEntryV2", "index_v2.proto");
+const QUERY_MODULE_RECORDS: &[(&str, &str)] = &[
+    ("StoredQueryModuleV1", "catalog.proto"),
+    ("ActiveQueryModulePointerV1", "catalog.proto"),
+    ("StoredQueryModuleAdministrationV1", "catalog.proto"),
+];
 
 const DURABLE_WIRE_VECTORS: &str = include_str!(concat!(
     env!("CARGO_MANIFEST_DIR"),
@@ -195,8 +200,8 @@ fn storage_source_import_and_type_inventory_is_exact() {
             .iter()
             .map(|file| file.message_type.len())
             .sum::<usize>(),
-        76,
-        "75 semantic messages plus the unchanged StoredEnvelope"
+        79,
+        "78 semantic messages plus the unchanged StoredEnvelope"
     );
     assert_eq!(
         descriptors
@@ -225,9 +230,9 @@ fn storage_source_import_and_type_inventory_is_exact() {
 
 #[test]
 fn closed_registry_order_and_schema_hashes_are_exactly_derived() {
-    assert_eq!(CURRENT_RECORD_SCHEMA_COUNT, 26);
-    assert_eq!(READABLE_RECORD_SCHEMA_COUNT, 27);
-    assert_eq!(WRITABLE_RECORD_SCHEMA_COUNT, 26);
+    assert_eq!(CURRENT_RECORD_SCHEMA_COUNT, 29);
+    assert_eq!(READABLE_RECORD_SCHEMA_COUNT, 30);
+    assert_eq!(WRITABLE_RECORD_SCHEMA_COUNT, 29);
     assert_eq!(
         CURRENT_RECORD_SCHEMAS
             .iter()
@@ -244,9 +249,19 @@ fn closed_registry_order_and_schema_hashes_are_exactly_derived() {
         .map(|(name, _)| format!("riffdb.storage.v1.{name}"))
         .collect::<Vec<_>>();
     let mut readable_names = legacy_names.clone();
+    readable_names.extend(
+        QUERY_MODULE_RECORDS
+            .iter()
+            .map(|(name, _)| format!("riffdb.storage.v1.{name}")),
+    );
     readable_names.push(format!("riffdb.storage.v1.{}", INDEX_V2_RECORD.0));
     let mut writable_names = legacy_names.clone();
     writable_names[8] = format!("riffdb.storage.v1.{}", INDEX_V2_RECORD.0);
+    writable_names.extend(
+        QUERY_MODULE_RECORDS
+            .iter()
+            .map(|(name, _)| format!("riffdb.storage.v1.{name}")),
+    );
     assert_eq!(
         READABLE_RECORD_SCHEMAS
             .iter()
@@ -279,6 +294,7 @@ fn closed_registry_order_and_schema_hashes_are_exactly_derived() {
     let readable_records = LEGACY_RECORDS
         .iter()
         .copied()
+        .chain(QUERY_MODULE_RECORDS.iter().copied())
         .chain(std::iter::once(INDEX_V2_RECORD));
     for ((record_name, source), schema) in readable_records.zip(&READABLE_RECORD_SCHEMAS) {
         let root = format!("riffdb/storage/v1/{source}");
@@ -309,7 +325,7 @@ fn closed_registry_order_and_schema_hashes_are_exactly_derived() {
             .map(|schema| schema.max_payload_bytes())
             .collect::<BTreeSet<_>>()
             .len(),
-        6,
+        7,
         "four semantic classes plus three FQN-specific absolute maxima"
     );
 
@@ -342,8 +358,8 @@ fn closed_registry_order_and_schema_hashes_are_exactly_derived() {
 #[test]
 fn generated_registry_fixtures_freeze_exact_membership_and_hashes() {
     let legacy = registry_fixture_entries(LEGACY_REGISTRY_FIXTURE, 26);
-    let readable = registry_fixture_entries(READABLE_REGISTRY_FIXTURE, 27);
-    let writable = registry_fixture_entries(WRITABLE_REGISTRY_FIXTURE, 26);
+    let readable = registry_fixture_entries(READABLE_REGISTRY_FIXTURE, 30);
+    let writable = registry_fixture_entries(WRITABLE_REGISTRY_FIXTURE, 29);
 
     assert_eq!(legacy, readable[..legacy.len()]);
     assert_eq!(
@@ -463,6 +479,7 @@ fn semantic_optional_wire_presence_is_exact() {
         "StoredAdmittedProvenanceClaimsV1.source_repository",
         "StoredCatalogAdministrationV1.approval_id",
         "StoredProjectionControlV1.published_apply_mode",
+        "StoredQueryModuleAdministrationV1.approval_id",
     ]
     .into_iter()
     .map(|suffix| format!("riffdb.storage.v1.{suffix}"))
