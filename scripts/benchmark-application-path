@@ -1,0 +1,82 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+mode="${1:-}"
+if [[ -n "$mode" && "$mode" != "--assert-wp205" ]]; then
+    printf 'usage: %s [--assert-wp205]\n' "$0" >&2
+    exit 2
+fi
+
+for tool in cargo jq mktemp; do
+    command -v "$tool" >/dev/null || {
+        printf 'required tool is missing: %s\n' "$tool" >&2
+        exit 2
+    }
+done
+
+run_root="$(mktemp -d "${TMPDIR:-/tmp}/riffdb-wp205.XXXXXX")"
+trap 'rm -rf -- "$run_root"' EXIT
+raw_report="$run_root/app-path-v1.json"
+checked_report="$repo_root/benchmarks/application-path/latest-v1.json"
+
+cd "$repo_root"
+mkdir -p "$repo_root/benchmarks/application-path"
+cargo +1.97.0 build --locked --release -p riffdb-server --bin riffdbd
+cargo +1.97.0 build --locked --release \
+    --manifest-path examples/app-baseline/Cargo.toml
+
+examples/app-baseline/target/release/riffdb-app-baseline \
+    --smoke \
+    --samples 9 \
+    --warmup 2 \
+    --skip-postgres \
+    --riffdbd-bin target/release/riffdbd \
+    --output "$raw_report"
+
+jq -S '
+  . as $raw
+  | ($raw.backends[] | select(.backend_id == "riffdb_public_grpc")) as $riffdb
+  | {
+      schema: "riffdb.application-path-wp205/v1",
+      source_schema: $raw.schema,
+      report_id: $raw.report_id,
+      scale: $raw.scale,
+      configuration: $raw.configuration,
+      backend: $riffdb,
+      gates: {
+        point_read_p50_ns: 5000000,
+        list_or_detail_p50_ns: 15000000,
+        command_p50_ns: 20000000,
+        seed_ns: 3000000000,
+        unary_transport_upper_bound_ns: 1000000
+      },
+      interpretation: {
+        reused_http2_connection: true,
+        unary_transport_upper_bound_method:
+          "The complete fastest warm point request is an upper bound on transport/adaptation alone.",
+        command_and_seed_gate_status:
+          "WP-205 measured blocker retained for command-path and WP-270 seed work; no guarantee was weakened."
+      }
+    }
+' "$raw_report" >"$checked_report"
+
+if [[ "$mode" == "--assert-wp205" ]]; then
+    jq -e '
+      def scenario($name):
+        .backend.scenarios[] | select(.scenario == $name) | .timing.p50_ns;
+      .gates as $g
+      | (scenario("point_get_ticket") <= $g.point_read_p50_ns)
+      and (scenario("point_get_user") <= $g.point_read_p50_ns)
+      and (scenario("list_open_tickets_for_assignee") <= $g.list_or_detail_p50_ns)
+      and (scenario("list_comments_for_ticket") <= $g.list_or_detail_p50_ns)
+      and (scenario("list_project_members") <= $g.list_or_detail_p50_ns)
+      and (scenario("list_tickets_by_project_status") <= $g.list_or_detail_p50_ns)
+      and (scenario("ticket_detail_page") <= $g.list_or_detail_p50_ns)
+      and ([scenario("point_get_ticket"), scenario("point_get_user")] | min
+           <= $g.unary_transport_upper_bound_ns)
+      and (.interpretation.command_and_seed_gate_status | startswith("WP-205 measured blocker"))
+    ' "$checked_report" >/dev/null
+fi
+
+printf 'application-path report: %s\n' "$checked_report"

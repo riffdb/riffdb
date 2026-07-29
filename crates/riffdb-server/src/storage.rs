@@ -1,15 +1,19 @@
 //! Private sharing bridge for the one activated production redb port bundle.
 
+use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, MutexGuard};
 
 use riffdb_storage_api::{
     ActiveCatalogPointerV1, AdmissionLookupResultV1, AdmissionRepository, AdmissionRequestV1,
     AdmissionResultV1, ApplicationCommandTransactionPort, AuthoritativeIndexScanPage,
     AuthoritativeIndexScanRequest, AuthoritativePointReader, AuthoritativeScanReader,
     CapabilityAdministrationTransactionPort, CapabilityBootstrapAdministrationRepository,
-    CapabilityBootstrapIntentV1, CapabilityBootstrapResult, CapabilityCreateCandidateV1,
-    CapabilityLookupResult, CapabilityReader, CapabilityRevokeCandidateV1,
+    CapabilityBootstrapIntentV1, CapabilityBootstrapResult, CapabilityCreateAwaitingDecision,
+    CapabilityCreateCandidateTransaction, CapabilityCreateCandidateV1, CapabilityCreateIntentV1,
+    CapabilityCreateResult, CapabilityLookupResult, CapabilityReader,
+    CapabilityRevokeAwaitingDecision, CapabilityRevokeCandidateTransaction,
+    CapabilityRevokeCandidateV1, CapabilityRevokeIntentV1, CapabilityRevokeResult,
     CatalogActivationIntentV1, CatalogActivationResult, CatalogAdministrationRepository,
     CatalogRepository, CommitScanPageV1, CommitScanRequest, ExecutionFailureAdmissionResult,
     ExecutionFailureTransitionPort, ExecutionFailureTransitionRequestV1,
@@ -25,9 +29,9 @@ use riffdb_storage_api::{
     ProjectionRecoveryValidationRequestV1, ProjectionRecoveryValidationResultV1, ProjectionStatus,
     ReadSnapshot, ServiceAuditAppendIntentV1, ServiceAuditAppendRepository,
     ServiceAuditAppendResult, SnapshotReader, SnapshotRequest, StorageError, StorageErrorKind,
-    StoredCommitRecordV1, StoredContractBundleV1, StoredDurableEventV1, StoredEntityRecordV1,
-    StoredOutcomeV1, StoredProvenanceRecordV1, UndeliveredOutboxStatusScanRequestV1,
-    UndeliveredOutboxStatusScanV1,
+    StoredCapabilityRecordV1, StoredCommitRecordV1, StoredContractBundleV1, StoredDurableEventV1,
+    StoredEntityRecordV1, StoredOutcomeV1, StoredProvenanceRecordV1,
+    UndeliveredOutboxStatusScanRequestV1, UndeliveredOutboxStatusScanV1,
 };
 use riffdb_storage_redb::RedbOperationalPorts;
 use riffdb_types::{
@@ -48,6 +52,7 @@ use riffdb_types::{
 )]
 pub(crate) struct SharedRedbOperationalPorts {
     cell: SharedStorageCell<RedbOperationalPorts>,
+    capabilities: Arc<CurrentCapabilityView>,
 }
 
 impl SharedRedbOperationalPorts {
@@ -59,6 +64,7 @@ impl SharedRedbOperationalPorts {
     pub(crate) fn new(ports: RedbOperationalPorts) -> Self {
         Self {
             cell: SharedStorageCell::new(ports),
+            capabilities: Arc::new(CurrentCapabilityView::new()),
         }
     }
 }
@@ -67,6 +73,7 @@ impl Clone for SharedRedbOperationalPorts {
     fn clone(&self) -> Self {
         Self {
             cell: self.cell.clone(),
+            capabilities: Arc::clone(&self.capabilities),
         }
     }
 }
@@ -128,6 +135,129 @@ impl<T> Clone for SharedStorageCell<T> {
 )]
 fn poisoned_storage_bridge() -> StorageError {
     StorageError::new(StorageErrorKind::InvariantViolation, None)
+}
+
+const MAX_CURRENT_CAPABILITY_VIEW_RECORDS: usize = 4_096;
+type RedbCapabilityCreateCandidate =
+    <RedbOperationalPorts as CapabilityAdministrationTransactionPort>::CreateCandidate;
+type RedbCapabilityCreateAwaiting =
+    <RedbCapabilityCreateCandidate as CapabilityCreateCandidateTransaction>::AwaitingDecision;
+type RedbCapabilityRevokeCandidate =
+    <RedbOperationalPorts as CapabilityAdministrationTransactionPort>::RevokeCandidate;
+type RedbCapabilityRevokeAwaiting =
+    <RedbCapabilityRevokeCandidate as CapabilityRevokeCandidateTransaction>::AwaitingDecision;
+
+#[derive(Default)]
+struct CurrentCapabilityViewState {
+    records: BTreeMap<CapabilityId, StoredCapabilityRecordV1>,
+    digests: BTreeMap<CapabilityTokenDigest, CapabilityId>,
+    known_absent_digests: BTreeSet<CapabilityTokenDigest>,
+}
+
+impl CurrentCapabilityViewState {
+    fn insert(&mut self, record: StoredCapabilityRecordV1) -> Result<(), StorageError> {
+        let capability_id = record.capability_id();
+        let digest = record.token_digest();
+        if let Some(existing) = self.records.get(&capability_id) {
+            if existing.revision() > record.revision() {
+                return Err(poisoned_storage_bridge());
+            }
+            if existing.token_digest() != digest {
+                return Err(poisoned_storage_bridge());
+            }
+        } else if self.records.len() == MAX_CURRENT_CAPABILITY_VIEW_RECORDS {
+            return Err(StorageError::new(StorageErrorKind::LimitExceeded, None));
+        }
+        if self
+            .digests
+            .get(&digest)
+            .is_some_and(|existing| *existing != capability_id)
+        {
+            return Err(poisoned_storage_bridge());
+        }
+        self.known_absent_digests.remove(&digest);
+        self.digests.insert(digest, capability_id);
+        self.records.insert(capability_id, record);
+        Ok(())
+    }
+
+    fn resolve(&self, candidates: &[CapabilityTokenDigest]) -> Option<CapabilityLookupResult> {
+        let mut matched = None;
+        for candidate in candidates {
+            let Some(capability_id) = self.digests.get(candidate) else {
+                if self.known_absent_digests.contains(candidate) {
+                    continue;
+                }
+                return None;
+            };
+            let Some(record) = self.records.get(capability_id) else {
+                return Some(CapabilityLookupResult::MultipleMatches);
+            };
+            if matched.is_some() {
+                return Some(CapabilityLookupResult::MultipleMatches);
+            }
+            matched = Some(record.clone());
+        }
+        Some(matched.map_or(CapabilityLookupResult::NotFound, |record| {
+            CapabilityLookupResult::Found(Box::new(record))
+        }))
+    }
+
+    fn note_lookup(
+        &mut self,
+        candidates: &[CapabilityTokenDigest],
+        result: &CapabilityLookupResult,
+    ) -> Result<(), StorageError> {
+        if let CapabilityLookupResult::Found(record) = result {
+            self.insert((**record).clone())?;
+        }
+        for candidate in candidates {
+            if !self.digests.contains_key(candidate) {
+                self.known_absent_digests.insert(*candidate);
+            }
+        }
+        Ok(())
+    }
+}
+
+struct CurrentCapabilityView {
+    state: Mutex<CurrentCapabilityViewState>,
+}
+
+impl CurrentCapabilityView {
+    const fn new() -> Self {
+        Self {
+            state: Mutex::new(CurrentCapabilityViewState {
+                records: BTreeMap::new(),
+                digests: BTreeMap::new(),
+                known_absent_digests: BTreeSet::new(),
+            }),
+        }
+    }
+
+    fn lock(&self) -> Result<MutexGuard<'_, CurrentCapabilityViewState>, StorageError> {
+        self.state.lock().map_err(|_| poisoned_storage_bridge())
+    }
+}
+
+pub(crate) struct SharedCapabilityCreateCandidate {
+    inner: RedbCapabilityCreateCandidate,
+    storage: SharedRedbOperationalPorts,
+}
+
+pub(crate) struct SharedCapabilityCreateAwaiting {
+    inner: RedbCapabilityCreateAwaiting,
+    storage: SharedRedbOperationalPorts,
+}
+
+pub(crate) struct SharedCapabilityRevokeCandidate {
+    inner: RedbCapabilityRevokeCandidate,
+    storage: SharedRedbOperationalPorts,
+}
+
+pub(crate) struct SharedCapabilityRevokeAwaiting {
+    inner: RedbCapabilityRevokeAwaiting,
+    storage: SharedRedbOperationalPorts,
 }
 
 impl AdmissionRepository for SharedRedbOperationalPorts {
@@ -198,17 +328,19 @@ impl CatalogAdministrationRepository for SharedRedbOperationalPorts {
 }
 
 impl CapabilityAdministrationTransactionPort for SharedRedbOperationalPorts {
-    type CreateCandidate =
-        <RedbOperationalPorts as CapabilityAdministrationTransactionPort>::CreateCandidate;
-    type RevokeCandidate =
-        <RedbOperationalPorts as CapabilityAdministrationTransactionPort>::RevokeCandidate;
+    type CreateCandidate = SharedCapabilityCreateCandidate;
+    type RevokeCandidate = SharedCapabilityRevokeCandidate;
 
     fn begin_capability_create(
         &self,
         candidate: CapabilityCreateCandidateV1,
     ) -> Result<Self::CreateCandidate, StorageError> {
-        self.cell.with_ref(|ports| {
+        let inner = self.cell.with_ref(|ports| {
             CapabilityAdministrationTransactionPort::begin_capability_create(ports, candidate)
+        })?;
+        Ok(SharedCapabilityCreateCandidate {
+            inner,
+            storage: self.clone(),
         })
     }
 
@@ -216,9 +348,120 @@ impl CapabilityAdministrationTransactionPort for SharedRedbOperationalPorts {
         &self,
         candidate: CapabilityRevokeCandidateV1,
     ) -> Result<Self::RevokeCandidate, StorageError> {
-        self.cell.with_ref(|ports| {
+        let inner = self.cell.with_ref(|ports| {
             CapabilityAdministrationTransactionPort::begin_capability_revoke(ports, candidate)
+        })?;
+        Ok(SharedCapabilityRevokeCandidate {
+            inner,
+            storage: self.clone(),
         })
+    }
+}
+
+impl CapabilityCreateCandidateTransaction for SharedCapabilityCreateCandidate {
+    type AwaitingDecision = SharedCapabilityCreateAwaiting;
+
+    fn read_transaction_current(
+        self,
+    ) -> Result<
+        (
+            Self::AwaitingDecision,
+            riffdb_storage_api::CapabilityMutationCurrentStateV1,
+        ),
+        StorageError,
+    > {
+        let Self { inner, storage } = self;
+        let (inner, current) = inner.read_transaction_current()?;
+        Ok((SharedCapabilityCreateAwaiting { inner, storage }, current))
+    }
+
+    fn abandon(self) -> CapabilityCreateCandidateV1 {
+        self.inner.abandon()
+    }
+}
+
+impl CapabilityCreateAwaitingDecision for SharedCapabilityCreateAwaiting {
+    fn commit_create(
+        self,
+        intent: CapabilityCreateIntentV1,
+    ) -> Result<CapabilityCreateResult, StorageError> {
+        let Self { inner, storage } = self;
+        let mut view = storage.capabilities.lock()?;
+        if !view.records.contains_key(&intent.capability_id())
+            && view.records.len() == MAX_CURRENT_CAPABILITY_VIEW_RECORDS
+        {
+            let _ = inner.abandon();
+            return Err(StorageError::new(StorageErrorKind::LimitExceeded, None));
+        }
+        let result = inner.commit_create(intent)?;
+        let capability_id = match result {
+            CapabilityCreateResult::Created { capability_id, .. }
+            | CapabilityCreateResult::AlreadyCreated { capability_id, .. } => Some(capability_id),
+            CapabilityCreateResult::CapabilityIdConflict
+            | CapabilityCreateResult::TokenDigestCollision => None,
+        };
+        if let Some(capability_id) = capability_id {
+            let record = storage
+                .cell
+                .with_ref(|ports| CapabilityReader::read_capability(ports, capability_id))?
+                .ok_or_else(poisoned_storage_bridge)?;
+            view.insert(record)?;
+        }
+        Ok(result)
+    }
+
+    fn abandon(self) -> CapabilityCreateCandidateV1 {
+        self.inner.abandon()
+    }
+}
+
+impl CapabilityRevokeCandidateTransaction for SharedCapabilityRevokeCandidate {
+    type AwaitingDecision = SharedCapabilityRevokeAwaiting;
+
+    fn read_transaction_current(
+        self,
+    ) -> Result<
+        (
+            Self::AwaitingDecision,
+            riffdb_storage_api::CapabilityMutationCurrentStateV1,
+        ),
+        StorageError,
+    > {
+        let Self { inner, storage } = self;
+        let (inner, current) = inner.read_transaction_current()?;
+        Ok((SharedCapabilityRevokeAwaiting { inner, storage }, current))
+    }
+
+    fn abandon(self) -> CapabilityRevokeCandidateV1 {
+        self.inner.abandon()
+    }
+}
+
+impl CapabilityRevokeAwaitingDecision for SharedCapabilityRevokeAwaiting {
+    fn commit_revoke(
+        self,
+        intent: CapabilityRevokeIntentV1,
+    ) -> Result<CapabilityRevokeResult, StorageError> {
+        let Self { inner, storage } = self;
+        let mut view = storage.capabilities.lock()?;
+        let result = inner.commit_revoke(intent)?;
+        let capability_id = match result {
+            CapabilityRevokeResult::Revoked { capability_id, .. }
+            | CapabilityRevokeResult::AlreadyRevoked { capability_id, .. } => Some(capability_id),
+            CapabilityRevokeResult::CapabilityNotFound => None,
+        };
+        if let Some(capability_id) = capability_id {
+            let record = storage
+                .cell
+                .with_ref(|ports| CapabilityReader::read_capability(ports, capability_id))?
+                .ok_or_else(poisoned_storage_bridge)?;
+            view.insert(record)?;
+        }
+        Ok(result)
+    }
+
+    fn abandon(self) -> CapabilityRevokeCandidateV1 {
+        self.inner.abandon()
     }
 }
 
@@ -227,9 +470,30 @@ impl CapabilityBootstrapAdministrationRepository for SharedRedbOperationalPorts 
         &mut self,
         intent: &CapabilityBootstrapIntentV1,
     ) -> Result<CapabilityBootstrapResult, StorageError> {
-        self.cell.with_mut(|ports| {
+        let mut view = self.capabilities.lock()?;
+        if !view.records.contains_key(&intent.capability_id())
+            && view.records.len() == MAX_CURRENT_CAPABILITY_VIEW_RECORDS
+        {
+            return Err(StorageError::new(StorageErrorKind::LimitExceeded, None));
+        }
+        let result = self.cell.with_mut(|ports| {
             CapabilityBootstrapAdministrationRepository::bootstrap_capability(ports, intent)
-        })
+        })?;
+        let capability_id = match result {
+            CapabilityBootstrapResult::BootstrapCreated { capability_id, .. }
+            | CapabilityBootstrapResult::BootstrapReplayed { capability_id, .. } => {
+                Some(capability_id)
+            }
+            CapabilityBootstrapResult::BootstrapConflict => None,
+        };
+        if let Some(capability_id) = capability_id {
+            let record = self
+                .cell
+                .with_ref(|ports| CapabilityReader::read_capability(ports, capability_id))?
+                .ok_or_else(poisoned_storage_bridge)?;
+            view.insert(record)?;
+        }
+        Ok(result)
     }
 }
 
@@ -253,17 +517,33 @@ impl CapabilityReader for SharedRedbOperationalPorts {
     fn read_capability(
         &self,
         capability_id: CapabilityId,
-    ) -> Result<Option<riffdb_storage_api::StoredCapabilityRecordV1>, StorageError> {
-        self.cell
-            .with_ref(|ports| CapabilityReader::read_capability(ports, capability_id))
+    ) -> Result<Option<StoredCapabilityRecordV1>, StorageError> {
+        let mut view = self.capabilities.lock()?;
+        if let Some(record) = view.records.get(&capability_id) {
+            return Ok(Some(record.clone()));
+        }
+        let record = self
+            .cell
+            .with_ref(|ports| CapabilityReader::read_capability(ports, capability_id))?;
+        if let Some(record) = record.as_ref() {
+            view.insert(record.clone())?;
+        }
+        Ok(record)
     }
 
     fn resolve_capability_digests(
         &self,
         candidates: &[CapabilityTokenDigest],
     ) -> Result<CapabilityLookupResult, StorageError> {
-        self.cell
-            .with_ref(|ports| CapabilityReader::resolve_capability_digests(ports, candidates))
+        let mut view = self.capabilities.lock()?;
+        if let Some(cached) = view.resolve(candidates) {
+            return Ok(cached);
+        }
+        let result = self
+            .cell
+            .with_ref(|ports| CapabilityReader::resolve_capability_digests(ports, candidates))?;
+        view.note_lookup(candidates, &result)?;
+        Ok(result)
     }
 }
 
@@ -471,11 +751,105 @@ impl ProjectionRecoveryRepository for SharedRedbOperationalPorts {
 
 #[cfg(test)]
 mod tests {
+    use std::num::{NonZeroU16, NonZeroU32, NonZeroU64};
     use std::sync::Barrier;
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::thread;
 
+    use riffdb_storage_api::{
+        CapabilityPermissionV1, CapabilityPermissionsV1, CapabilityRequestedRecordV1,
+        PartitionScopeV1,
+    };
+    use riffdb_types::{
+        ActorId, ActorKind, AdministrationSequence, Audience, CapabilityGrantV1, DatabaseId,
+        DigestKeyId, Environment, RequestId, RevocationReasonCodeV1, TenantScope, Timestamp,
+    };
+
     use super::*;
+
+    fn uuid_bytes(fill: u8) -> [u8; 16] {
+        let mut bytes = [fill; 16];
+        bytes[6] = 0x70 | (fill & 0x0f);
+        bytes[8] = 0x80 | (fill & 0x3f);
+        bytes
+    }
+
+    fn capability_record() -> StoredCapabilityRecordV1 {
+        let grant = CapabilityGrantV1::new(
+            TenantScope::Global,
+            PartitionScopeV1::All,
+            CapabilityPermissionsV1::new(Vec::<CapabilityPermissionV1>::new())
+                .expect("empty permission set"),
+            Vec::new(),
+            NonZeroU16::MIN,
+            Vec::new(),
+        )
+        .expect("grant");
+        let requested = CapabilityRequestedRecordV1::new(
+            DatabaseId::from_bytes(uuid_bytes(0x22)).expect("database ID"),
+            Environment::new("test").expect("environment"),
+            ActorId::new("view-principal").expect("principal"),
+            ActorKind::Service,
+            NonZeroU32::new(100).expect("duration"),
+            vec![Audience::new("riffdb-test").expect("audience")],
+            grant,
+        )
+        .expect("requested capability");
+        StoredCapabilityRecordV1::active(
+            CapabilityId::from_bytes(uuid_bytes(0x11)).expect("capability ID"),
+            CapabilityTokenDigest::from_hmac_bytes(
+                DigestKeyId::new(7).expect("digest key"),
+                [0x44; 32],
+            ),
+            requested,
+            Timestamp::new(100, 0).expect("issued at"),
+            Timestamp::new(200, 0).expect("expires at"),
+            AdministrationSequence::first(),
+            RequestId::from_bytes(uuid_bytes(0x33)).expect("request ID"),
+        )
+        .expect("active capability")
+    }
+
+    #[test]
+    fn current_capability_view_publishes_revisions_and_complete_digest_lookup_facts() {
+        let active = capability_record();
+        let digest = active.token_digest();
+        let absent =
+            CapabilityTokenDigest::from_hmac_bytes(DigestKeyId::new(8).expect("key"), [0x55; 32]);
+        let mut view = CurrentCapabilityViewState::default();
+        let initial = CapabilityLookupResult::Found(Box::new(active.clone()));
+
+        assert!(view.resolve(&[digest, absent]).is_none());
+        view.note_lookup(&[digest, absent], &initial)
+            .expect("publish lookup result");
+        let CapabilityLookupResult::Found(found) =
+            view.resolve(&[digest, absent]).expect("lookup is complete")
+        else {
+            panic!("expected one cached match");
+        };
+        assert_eq!(found.revision(), NonZeroU64::MIN);
+
+        let revoked = active
+            .revoked(
+                NonZeroU64::MIN,
+                Timestamp::new(150, 0).expect("revoked at"),
+                AdministrationSequence::new(2).expect("sequence"),
+                RevocationReasonCodeV1::Requested,
+            )
+            .expect("revoked record");
+        view.insert(revoked).expect("publish revoke");
+        let CapabilityLookupResult::Found(found) = view
+            .resolve(&[digest, absent])
+            .expect("lookup remains complete")
+        else {
+            panic!("expected one cached match");
+        };
+        assert_eq!(found.revision(), NonZeroU64::new(2).expect("revision"));
+        assert!(matches!(
+            found.lifecycle(),
+            riffdb_storage_api::CapabilityLifecycleV1::Revoked { .. }
+        ));
+    }
 
     #[test]
     fn cloned_cells_share_one_value() {

@@ -1807,7 +1807,13 @@ struct HostedGrpc {
 
 impl HostedGrpc {
     fn bind(address: SocketAddr, application: &GrpcApplication) -> Result<Self, DaemonError> {
-        let incoming = TcpIncoming::bind(address).map_err(DaemonError::Listener)?;
+        // HTTP/2 emits small control and data frames independently. Leaving
+        // Nagle enabled on the accepted side couples those frames to the peer's
+        // delayed-ACK timer and adds a repeatable ~40 ms to otherwise local
+        // unary calls. The public client already enables TCP_NODELAY.
+        let incoming = TcpIncoming::bind(address)
+            .map_err(DaemonError::Listener)?
+            .with_nodelay(Some(true));
         let local_address = incoming.local_addr().map_err(DaemonError::Listener)?;
         let (shutdown, stopped) = oneshot::channel();
         let router = Server::builder()
@@ -2176,6 +2182,22 @@ mod tests {
         let readiness = production.find("publish_readiness(").expect("readiness");
         assert!(listener < startup);
         assert!(startup < readiness);
+    }
+
+    #[test]
+    fn production_grpc_accepts_connections_with_nagle_disabled() {
+        let source = include_str!("daemon.rs");
+        let production = source
+            .split_once("#[cfg(test)]")
+            .expect("daemon architecture boundary")
+            .0;
+        let hosted = production
+            .split_once("impl HostedGrpc {")
+            .and_then(|(_, tail)| tail.split_once("const fn local_address"))
+            .map(|(body, _)| body)
+            .expect("hosted gRPC construction");
+
+        assert!(hosted.contains(".with_nodelay(Some(true))"));
     }
 
     #[test]
