@@ -1,4 +1,4 @@
-spec_version: '0.39'
+spec_version: '0.40'
 product: RiffDB
 repository: riffdb
 status: application-platform-implementation

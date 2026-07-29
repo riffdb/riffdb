@@ -924,9 +924,9 @@ or distributed-systems gate:
 > repository using only RiffDB's public textual, generated, CLI, and MCP
 > surfaces.
 
-ADR-0056 is Proposed. No P4 implementation begins until its exact application
-manifest, client, role, error, batch, packaging, evaluation, and compatibility
-boundaries are accepted.
+ADR-0056 is Accepted. P4 implementation proceeds in dependency order while its
+exact manifest, public/durable, generated-signature, dependency, and evaluation
+fixtures retain their named review checkpoints.
 
 #### WP-305 — Complete generated bindings and manifest
 
@@ -1342,15 +1342,14 @@ concrete interface artifacts still receive the human reviews required by their
 own `human_review_triggers`; the accepted rule does not pre-approve arbitrary
 wire tags, durable keys, or incompatible encodings.
 
-ADR-0056 is Proposed from the 2026-07-29 Agent Application Alpha feedback. The
-planning request authorizes this roadmap draft but does not satisfy the ADR
-workflow's exact-text acceptance rule. Before WP-305 starts, human review must
-accept or amend the application-manifest identity, complete-client signatures,
-symbolic role derivation, structured-error disclosure boundary, batch
-transport/resume/provenance model, package opt-in, TypeScript dependency graph,
-sealed evaluation rules, and compatibility classification. WP-335 additionally
-stops for a separate accepted ADR before any evidence-derived RiffQL grammar,
-IR, plan, authorization, cursor, storage, or result semantic is implemented.
+The maintainer accepted ADR-0056 on 2026-07-29 by directing implementation of
+the complete planned Agent Application Alpha phase. WP-305 still reviews exact
+application-manifest and generated-signature fixtures; WP-315 reviews public
+error tags; WP-320 reviews batch transport/resume/provenance encodings; WP-325
+reviews any package/crate change; and WP-330 reviews the TypeScript dependency
+graph. WP-335 additionally stops for a separate accepted ADR before any
+evidence-derived RiffQL grammar, IR, plan, authorization, cursor, storage, or
+result semantic is implemented.
 
 The former SPEC Section 22.2 defaults and the accepted 2026-07-14 clarifications are
 now resolved architecture decisions:

@@ -1,7 +1,7 @@
 # Agent Application Alpha
 
-Status: proposed post-WP-300 milestone under ADR-0056. It does not describe the
-current product surface and cannot start until ADR-0056 is accepted.
+Status: accepted post-WP-300 milestone under ADR-0056. It describes the target
+gate, not behavior that may be claimed before WP-340 passes.
 
 ## Gate
 

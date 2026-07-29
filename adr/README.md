@@ -77,7 +77,7 @@ direction, merged draft, or implementation choice.
 | [0053](0053-composite-query-snapshots-and-current-view-publication.md) | Composite Query Snapshots and Current-View Publication | Accepted |
 | [0054](0054-bounded-dependent-key-batches.md) | Bounded Dependent Key Batches | Accepted |
 | [0055](0055-safe-application-surface-and-declared-integrity.md) | Safe Application Surface and Declared Integrity | Accepted |
-| [0056](0056-agent-application-alpha.md) | Agent Application Alpha Before Operational and Distributed Alpha | Proposed |
+| [0056](0056-agent-application-alpha.md) | Agent Application Alpha Before Operational and Distributed Alpha | Accepted |
 
 The human architecture review on 2026-07-12 approved the direction represented
 by ADR-0001 through ADR-0012. The human maintainer accepted ADR-0001 through
@@ -226,10 +226,11 @@ product rule. It separates named application, ad-hoc agent, and kernel
 authority; requires whole-query fuel plus declared relationship and uniqueness
 integrity; and adds a negative-canary gate without removing the compatible
 kernel protocol.
-ADR-0056 is a proposed next-phase decision derived from the 2026-07-29
-application-authoring feedback. It is not accepted by the request to plan the
-phase; WP-305 and later implementation must wait for explicit review of its
-exact text.
+ADR-0056 has a separate acceptance reference: the maintainer's explicit
+2026-07-29 direction in the current Codex session to build the complete planned
+Agent Application Alpha phase. It places application-authoring alpha before
+operational/distributed alpha and freezes the boundary described by the exact
+record text while retaining separate interface-fixture reviews.
 
 ## Workflow
 
