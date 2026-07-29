@@ -35,11 +35,10 @@ snapshot as the source scan. They do not become public N+1 requests. Null,
 duplicate, noncanonical, over-bound, or missing dependent keys fail closed
 before a partial result can be released.
 
-## Accepted authorization and fuel target
+## Whole-query authorization and execution fuel
 
-ADR-0055 and WP-280 establish the exact application-query authorization
-boundary below. Whole-query cost and execution fuel remain the WP-285 portion
-of the accepted target until that work package is complete.
+ADR-0055, WP-280, and WP-285 establish the exact application-query
+authorization and work boundary below.
 
 The service resolves the entire query before data access and presents policy
 with one application-query request. For a named query this includes the exact
@@ -60,3 +59,33 @@ bytes. Policy compares the complete vector once. Execution consumes matching
 fuel and checks backend-reported work; exhaustion returns no partial result or
 cursor. Per-step bounds remain defense in depth, not the aggregate authority
 model.
+
+The compiler derives each component conservatively:
+
+- index scans charge their complete declared `take` maximum;
+- point reads include direct reads, every dependent key, and index-result
+  hydration;
+- dependent batches charge their complete source-key maximum;
+- intermediate rows are summed across all bindings rather than reset per
+  entity or step;
+- projected values include every declared result copy; and
+- result bytes use contract field byte bounds plus deterministic envelope
+  reserves.
+
+The complete vector is appended to the canonical access-program bytes before
+the `riffdb.query-plan/v1` hash is computed. Changing any component therefore
+changes plan identity and invalidates substitution.
+
+The current compatible capability record has one `max_scan_rows` field. WP-285
+interprets it as the whole-query allowance for each row/work dimension instead
+of allowing every step to reuse it. The projected-value allowance is that row
+budget multiplied by the existing maximum visible-field count, and encoded
+bytes retain the fixed 4 MiB service ceiling. This closes cumulative work
+amplification without changing durable capability or public gRPC bytes.
+
+At runtime the executor creates a move-only fuel value from the exact program
+cost. It decrements fuel for every access step, backend-reported scanned row,
+point read, dependent key, retained intermediate row, projected value, and
+encoded result byte. Backend scan reports are reconciled with returned rows.
+An impossible, under-reported, over-reported, or exhausted execution returns a
+closed failure before a result or cursor is constructed.

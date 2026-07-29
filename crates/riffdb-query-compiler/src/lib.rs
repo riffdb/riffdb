@@ -14,6 +14,7 @@ use riffdb_riffql_syntax::{
     BinaryOperator, Cardinality, Direction, Document, Expression, FieldSelection, Literal, Path,
     Span, TypeReference,
 };
+use riffdb_types::QueryCostVectorV1;
 
 const MAX_QUERY_ROWS: u64 = 500;
 
@@ -158,6 +159,7 @@ impl<'a> Planner<'a> {
         let result_names = result_names(self.document);
         let mut steps = Vec::with_capacity(self.document.body.bindings.len());
         let mut auth = BTreeMap::<String, AuthAccumulator>::new();
+        let mut cost = QueryCostAccumulator::new(self.document);
 
         for binding in &self.document.body.bindings {
             let entity = self
@@ -288,6 +290,7 @@ impl<'a> Planner<'a> {
                 },
             )
             .ok_or_else(internal)?;
+            cost.add_step(entity, &step)?;
 
             let accumulator = auth
                 .entry(entity.name().to_owned())
@@ -322,6 +325,7 @@ impl<'a> Planner<'a> {
             .into_values()
             .map(AuthAccumulator::finish)
             .collect::<Result<Vec<_>, _>>()?;
+        let cost = cost.finish(steps.len())?;
         QueryAccessProgramV1::checked(
             self.catalog.identity().clone(),
             surface,
@@ -332,6 +336,7 @@ impl<'a> Planner<'a> {
             partition_parameter.ok_or_else(internal)?,
             steps,
             authorization,
+            cost,
         )
         .ok_or_else(internal)
     }
@@ -521,6 +526,179 @@ impl<'a> Planner<'a> {
             TypeReference::Set(_) | TypeReference::Cursor | TypeReference::Limit => None,
         }
     }
+}
+
+struct QueryCostAccumulator {
+    primary_span: Span,
+    scanned_index_rows: u64,
+    point_reads: u64,
+    dependent_keys: u64,
+    intermediate_rows: u64,
+    projected_values: u64,
+    encoded_result_bytes: u64,
+}
+
+impl QueryCostAccumulator {
+    fn new(document: &Document) -> Self {
+        let primary_span = document
+            .name
+            .as_ref()
+            .map(|name| name.span)
+            .or_else(|| {
+                document
+                    .body
+                    .bindings
+                    .first()
+                    .map(|binding| binding.cardinality.span)
+            })
+            .unwrap_or(Span { start: 0, end: 0 });
+        let identity_and_envelope = document
+            .name
+            .as_ref()
+            .map_or(0, |name| name.value.as_str().len() as u64)
+            .saturating_add(
+                document
+                    .body
+                    .outcomes
+                    .iter()
+                    .map(|outcome| outcome.value.as_str().len() as u64)
+                    .max()
+                    .unwrap_or(0),
+            )
+            .saturating_add(1_024);
+        Self {
+            primary_span,
+            scanned_index_rows: 0,
+            point_reads: 0,
+            dependent_keys: 0,
+            intermediate_rows: 0,
+            projected_values: 0,
+            encoded_result_bytes: identity_and_envelope,
+        }
+    }
+
+    fn add_step(
+        &mut self,
+        entity: &EntitySymbol,
+        step: &QueryAccessStep,
+    ) -> Result<(), PlannerDiagnostics> {
+        let rows = step.maximum_rows();
+        match step.access() {
+            QueryAccessKind::Point { .. } => {
+                self.point_reads = checked_cost_add(self.point_reads, 1, self.primary_span)?;
+            }
+            QueryAccessKind::DependentPointBatch { .. } => {
+                self.point_reads = checked_cost_add(self.point_reads, rows, self.primary_span)?;
+                self.dependent_keys =
+                    checked_cost_add(self.dependent_keys, rows, self.primary_span)?;
+            }
+            QueryAccessKind::Index { .. } => {
+                self.scanned_index_rows =
+                    checked_cost_add(self.scanned_index_rows, rows, self.primary_span)?;
+                self.point_reads = checked_cost_add(self.point_reads, rows, self.primary_span)?;
+            }
+        }
+        self.intermediate_rows = checked_cost_add(self.intermediate_rows, rows, self.primary_span)?;
+
+        let result_copies = u64::try_from(step.result_names().len()).map_err(|_| internal())?;
+        if result_copies == 0 {
+            return Ok(());
+        }
+        let selected = u64::try_from(step.selected_fields().len()).map_err(|_| internal())?;
+        let values = checked_cost_product(
+            checked_cost_product(rows, selected, self.primary_span)?,
+            result_copies,
+            self.primary_span,
+        )?;
+        self.projected_values = checked_cost_add(self.projected_values, values, self.primary_span)?;
+
+        let mut row_bytes = u64::try_from(entity.name().len())
+            .map_err(|_| internal())?
+            .checked_add(64)
+            .ok_or_else(internal)?;
+        for field_name in step.selected_fields() {
+            let field = entity.field(field_name).ok_or_else(internal)?;
+            let maximum = field
+                .value_type()
+                .maximum_canonical_bytes()
+                .map_err(|_| internal())?
+                .ok_or_else(internal)?;
+            let field_bytes = u64::try_from(field_name.len())
+                .ok()
+                .and_then(|name| name.checked_add(maximum as u64))
+                .and_then(|value| value.checked_add(160))
+                .ok_or_else(internal)?;
+            row_bytes = checked_cost_add(row_bytes, field_bytes, self.primary_span)?;
+        }
+        let record_bytes = checked_cost_product(
+            checked_cost_product(rows, result_copies, self.primary_span)?,
+            row_bytes,
+            self.primary_span,
+        )?;
+        let result_name_bytes = step.result_names().iter().try_fold(0_u64, |total, name| {
+            total
+                .checked_add(name.len() as u64)
+                .and_then(|value| value.checked_add(64))
+                .ok_or_else(internal)
+        })?;
+        self.encoded_result_bytes =
+            checked_cost_add(self.encoded_result_bytes, record_bytes, self.primary_span)?;
+        self.encoded_result_bytes = checked_cost_add(
+            self.encoded_result_bytes,
+            result_name_bytes,
+            self.primary_span,
+        )?;
+        if step.cursor_parameter().is_some() {
+            self.encoded_result_bytes =
+                checked_cost_add(self.encoded_result_bytes, 128, self.primary_span)?;
+        }
+        Ok(())
+    }
+
+    fn finish(self, steps: usize) -> Result<QueryCostVectorV1, PlannerDiagnostics> {
+        QueryCostVectorV1::new(
+            u64::try_from(steps).map_err(|_| internal())?,
+            self.scanned_index_rows,
+            self.point_reads,
+            self.dependent_keys,
+            self.intermediate_rows,
+            self.projected_values,
+            self.encoded_result_bytes,
+        )
+        .ok_or_else(|| {
+            one(
+                PlannerDiagnosticCode::Unbounded,
+                self.primary_span,
+                Vec::new(),
+                "query whole-request cost exceeds a closed planner ceiling",
+                None,
+            )
+        })
+    }
+}
+
+fn checked_cost_add(left: u64, right: u64, span: Span) -> Result<u64, PlannerDiagnostics> {
+    left.checked_add(right).ok_or_else(|| {
+        one(
+            PlannerDiagnosticCode::Unbounded,
+            span,
+            Vec::new(),
+            "query whole-request cost arithmetic overflowed",
+            None,
+        )
+    })
+}
+
+fn checked_cost_product(left: u64, right: u64, span: Span) -> Result<u64, PlannerDiagnostics> {
+    left.checked_mul(right).ok_or_else(|| {
+        one(
+            PlannerDiagnosticCode::Unbounded,
+            span,
+            Vec::new(),
+            "query whole-request cost arithmetic overflowed",
+            None,
+        )
+    })
 }
 
 fn predicate_operator(

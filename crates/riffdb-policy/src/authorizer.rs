@@ -431,6 +431,22 @@ fn evaluate(
             PermissionCheck::Allowed => {}
         }
     }
+    if let Some(target) = request.application_query_target() {
+        let rows = u64::from(current.grant.max_scan_rows().get());
+        let budget = riffdb_types::QueryCostVectorV1::new(
+            riffdb_types::MAX_APPLICATION_QUERY_STEPS,
+            rows,
+            rows,
+            rows,
+            rows,
+            rows.saturating_mul(riffdb_types::MAX_CAPABILITY_FIELD_VISIBILITY as u64),
+            riffdb_types::MAX_APPLICATION_QUERY_RESULT_BYTES,
+        )
+        .expect("application-query budget constants are valid");
+        if !budget.covers(target.cost()) {
+            return Err(PolicyCode::MissingPermission);
+        }
+    }
 
     let effective_tenant_scope =
         authorize_tenant(current.grant.tenant_scope(), request.tenant_requirement())?;
@@ -585,6 +601,14 @@ mod tests {
     }
 
     fn application_query_target() -> ApplicationQueryTarget {
+        application_query_target_with_cost(
+            riffdb_types::QueryCostVectorV1::new(1, 10, 10, 0, 10, 10, 1_024).expect("valid cost"),
+        )
+    }
+
+    fn application_query_target_with_cost(
+        cost: riffdb_types::QueryCostVectorV1,
+    ) -> ApplicationQueryTarget {
         ApplicationQueryTarget::new(
             lineage(),
             ContractVersion::new(1).expect("nonzero version"),
@@ -602,6 +626,7 @@ mod tests {
                 )
                 .expect("valid access"),
             ],
+            cost,
         )
         .expect("valid target")
     }
@@ -770,6 +795,85 @@ mod tests {
                 &kernel_environment,
                 timestamp(15),
                 &named(module_hash, query_name),
+            ),
+            Err(PolicyCode::MissingPermission)
+        );
+    }
+
+    #[test]
+    fn whole_query_budget_is_compared_once_across_repeated_steps() {
+        let module_hash = QueryModuleHash::from_bytes([8; 32]);
+        let query_name = QueryOperationName::new("TicketPage").expect("valid name");
+        let (principal, current, environment) = facts(grant(
+            TenantScope::Global,
+            PartitionScopeV1::All,
+            vec![CapabilityPermissionV1::ExecuteNamedQuery(
+                lineage(),
+                module_hash,
+                query_name.clone(),
+            )],
+            Vec::new(),
+            10,
+            Vec::new(),
+        ));
+        let repeated_target = |rows_per_step: u16, total: u64| {
+            let access = || {
+                ApplicationQueryAccessRequirement::new(
+                    EntityTypeId::first(),
+                    Some(IndexId::first()),
+                    vec![FieldId::first()],
+                    NonZeroU16::new(rows_per_step).expect("nonzero"),
+                )
+                .expect("valid access")
+            };
+            ApplicationQueryTarget::new(
+                lineage(),
+                ContractVersion::new(1).expect("nonzero version"),
+                ContractBundleHash::from_bytes([6; 32]),
+                QueryPlanHash::from_bytes([7; 32]),
+                ServiceIngressKindV1::InProcessTestComparison,
+                OperationTenantScope::global_only(),
+                partition(),
+                vec![access(), access()],
+                riffdb_types::QueryCostVectorV1::new(2, total, total, 0, total, total, 1_024)
+                    .expect("valid cost"),
+            )
+            .expect("valid repeated target")
+        };
+        let exact = OperationRequest::execute_named_query(
+            lineage(),
+            module_hash,
+            query_name.clone(),
+            repeated_target(5, 10),
+        )
+        .expect("matching exact target");
+        assert!(
+            evaluate(
+                &principal,
+                &current,
+                current.database_id,
+                &environment,
+                timestamp(15),
+                &exact,
+            )
+            .is_ok()
+        );
+
+        let amplified = OperationRequest::execute_named_query(
+            lineage(),
+            module_hash,
+            query_name,
+            repeated_target(6, 12),
+        )
+        .expect("matching amplified target");
+        assert_eq!(
+            evaluate(
+                &principal,
+                &current,
+                current.database_id,
+                &environment,
+                timestamp(15),
+                &amplified,
             ),
             Err(PolicyCode::MissingPermission)
         );

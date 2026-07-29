@@ -2,7 +2,7 @@ use riffdb_contract_ir::KeySchema;
 use riffdb_riffql_syntax::Cardinality;
 use riffdb_types::{
     ContractBundleHash, ContractLineage, ContractVersion, EntityTypeId, EnumTypeId, EnumVariantId,
-    FieldId, IndexId, QueryPlanHash, hash_query_plan,
+    FieldId, IndexId, QueryCostVectorV1, QueryPlanHash, hash_query_plan,
 };
 
 use crate::{
@@ -577,6 +577,7 @@ pub struct QueryAccessProgramV1 {
     partition_parameter: String,
     steps: Vec<QueryAccessStep>,
     authorization: Vec<AuthorizationEntityAccess>,
+    cost: QueryCostVectorV1,
     canonical_bytes: Vec<u8>,
     identity: QueryPlanIdentity,
     explain: QueryPlanExplain,
@@ -592,6 +593,7 @@ impl std::fmt::Debug for QueryAccessProgramV1 {
             .field("partition_parameter", &self.partition_parameter)
             .field("steps", &self.steps)
             .field("authorization", &self.authorization)
+            .field("cost", &self.cost)
             .field("identity", &self.identity)
             .finish()
     }
@@ -606,6 +608,7 @@ impl QueryAccessProgramV1 {
         partition_parameter: String,
         steps: Vec<QueryAccessStep>,
         authorization: Vec<AuthorizationEntityAccess>,
+        cost: QueryCostVectorV1,
     ) -> Option<Self> {
         if surface.contract() != &contract
             || partition_parameter.is_empty()
@@ -614,6 +617,7 @@ impl QueryAccessProgramV1 {
             || authorization
                 .windows(2)
                 .any(|pair| pair[0].entity >= pair[1].entity)
+            || cost.access_steps() != steps.len() as u64
         {
             return None;
         }
@@ -624,9 +628,10 @@ impl QueryAccessProgramV1 {
             &partition_parameter,
             &steps,
             &authorization,
+            cost,
         )?;
         let identity = QueryPlanIdentity(hash_query_plan(&canonical_bytes));
-        let explain = build_explain(&partition_parameter, &steps, &authorization);
+        let explain = build_explain(&partition_parameter, &steps, &authorization, cost);
         Some(Self {
             contract,
             surface,
@@ -634,6 +639,7 @@ impl QueryAccessProgramV1 {
             partition_parameter,
             steps,
             authorization,
+            cost,
             canonical_bytes,
             identity,
             explain,
@@ -676,6 +682,12 @@ impl QueryAccessProgramV1 {
         &self.authorization
     }
 
+    /// Canonical whole-request maximum work covered by the plan identity.
+    #[must_use]
+    pub const fn cost(&self) -> QueryCostVectorV1 {
+        self.cost
+    }
+
     /// Resolves the compiler-derived access record for one exact entity name.
     #[doc(hidden)]
     #[must_use]
@@ -712,6 +724,7 @@ fn encode_program(
     partition_parameter: &str,
     steps: &[QueryAccessStep],
     authorization: &[AuthorizationEntityAccess],
+    cost: QueryCostVectorV1,
 ) -> Option<Vec<u8>> {
     let mut out = Vec::new();
     out.extend_from_slice(PROGRAM_MAGIC);
@@ -793,6 +806,13 @@ fn encode_program(
         write_strings(&mut out, &access.indexes)?;
         out.extend_from_slice(&access.maximum_rows.to_be_bytes());
     }
+    out.extend_from_slice(&cost.access_steps().to_be_bytes());
+    out.extend_from_slice(&cost.scanned_index_rows().to_be_bytes());
+    out.extend_from_slice(&cost.point_reads().to_be_bytes());
+    out.extend_from_slice(&cost.dependent_keys().to_be_bytes());
+    out.extend_from_slice(&cost.intermediate_rows().to_be_bytes());
+    out.extend_from_slice(&cost.projected_values().to_be_bytes());
+    out.extend_from_slice(&cost.encoded_result_bytes().to_be_bytes());
     (out.len() <= MAX_QUERY_ARTIFACT_BYTES).then_some(out)
 }
 
@@ -885,6 +905,7 @@ fn build_explain(
     partition_parameter: &str,
     steps: &[QueryAccessStep],
     authorization: &[AuthorizationEntityAccess],
+    cost: QueryCostVectorV1,
 ) -> QueryPlanExplain {
     let mut lines = vec![format!("partition ${partition_parameter}")];
     for step in steps {
@@ -919,6 +940,16 @@ fn build_explain(
             access.maximum_rows
         ));
     }
+    lines.push(format!(
+        "cost steps={} scans={} points={} dependent_keys={} intermediates={} projected_values={} result_bytes={}",
+        cost.access_steps(),
+        cost.scanned_index_rows(),
+        cost.point_reads(),
+        cost.dependent_keys(),
+        cost.intermediate_rows(),
+        cost.projected_values(),
+        cost.encoded_result_bytes()
+    ));
     QueryPlanExplain { lines }
 }
 

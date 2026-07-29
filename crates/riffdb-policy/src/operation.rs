@@ -7,8 +7,8 @@ use riffdb_types::{
     CommitSequence, ContractBundleHash, ContractLineage, ContractVersion, EntityTypeId, FieldId,
     IndexId, MAX_CAPABILITY_FIELD_VISIBILITY, MAX_PROJECTION_GROUP_COMPONENTS, PartitionKey,
     ProjectionGeneration, ProjectionGroupPrefixBuilder, ProjectionId, ProjectionIdentity,
-    ProvenanceId, QueryModuleHash, QueryOperationName, QueryPlanHash, ScopedPartitionV1,
-    ServiceIngressKindV1, ServiceOperationV1, TenantScope,
+    ProvenanceId, QueryCostVectorV1, QueryModuleHash, QueryOperationName, QueryPlanHash,
+    ScopedPartitionV1, ServiceIngressKindV1, ServiceOperationV1, TenantScope,
 };
 
 use crate::{
@@ -437,6 +437,7 @@ pub struct ApplicationQueryTarget {
     ingress: ServiceIngressKindV1,
     scope: ExactDataScope,
     accesses: Vec<ApplicationQueryAccessRequirement>,
+    cost: QueryCostVectorV1,
 }
 
 impl ApplicationQueryTarget {
@@ -451,8 +452,12 @@ impl ApplicationQueryTarget {
         tenant_scope: OperationTenantScope,
         partition: PartitionKey,
         accesses: Vec<ApplicationQueryAccessRequirement>,
+        cost: QueryCostVectorV1,
     ) -> Result<Self, OperationRequestError> {
-        if accesses.is_empty() || accesses.len() > 64 {
+        if accesses.is_empty()
+            || accesses.len() > 64
+            || cost.access_steps() != accesses.len() as u64
+        {
             return Err(OperationRequestError::TooManyQueryAccesses);
         }
         let scope = ExactDataScope::new(tenant_scope, lineage.clone(), partition);
@@ -464,6 +469,7 @@ impl ApplicationQueryTarget {
             ingress,
             scope,
             accesses,
+            cost,
         })
     }
 
@@ -507,6 +513,12 @@ impl ApplicationQueryTarget {
     #[must_use]
     pub fn accesses(&self) -> &[ApplicationQueryAccessRequirement] {
         &self.accesses
+    }
+
+    /// Complete compiler-derived whole-request cost.
+    #[must_use]
+    pub const fn cost(&self) -> QueryCostVectorV1 {
+        self.cost
     }
 }
 
@@ -1640,6 +1652,7 @@ mod tests {
                 )
                 .expect("valid access"),
             ],
+            QueryCostVectorV1::new(1, 0, 1, 0, 1, 1, 256).expect("valid cost"),
         )
         .expect("valid target")
     }

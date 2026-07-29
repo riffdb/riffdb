@@ -432,7 +432,7 @@ pub struct AuthorizedOperation {
 /// ```compile_fail
 /// # use riffdb_policy::AuthorizedApplicationQuery;
 /// fn duplicate(proof: &AuthorizedApplicationQuery) {
-///     let _second = proof.clone();
+///     let _second: AuthorizedApplicationQuery = proof.clone();
 /// }
 /// ```
 #[derive(Eq, PartialEq)]

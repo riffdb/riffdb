@@ -11,7 +11,8 @@
     "warmup_iterations": 2,
     "measured_samples": 9,
     "distribution_method": "nearest-rank p50",
-    "seed_rows": 276
+    "seed_rows": 276,
+    "query_cost_model": "plan-hashed whole-request vector with consuming execution fuel"
   },
   "scenarios": [
     {
@@ -49,6 +50,7 @@
     "The complete TicketPage returns ticket, project, organization, reporter, optional assignee, comments, and junction-reached labels.",
     "Every measured page uses one public unary gRPC request and one authoritative redb snapshot.",
     "The label traversal is one compiler-produced bounded dependent point batch inside that snapshot, not public N+1 composition.",
+    "WP-285 retains these latency gates while authorizing aggregate steps, scans, points, dependent keys, intermediates, projected values, and encoded bytes once per request.",
     "All measured named operations and the 276-row command seed remain below PERF-002."
   ]
 }

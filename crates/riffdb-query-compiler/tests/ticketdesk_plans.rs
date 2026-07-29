@@ -2,8 +2,11 @@
 
 use riffdb_contract_compiler::compile_contract_source;
 use riffdb_query_compiler::compile_query;
-use riffdb_query_ir::{QueryAccessKind, QueryPredicateValue, SymbolicCatalog};
+use riffdb_query_ir::{
+    QueryAccessKind, QueryAccessProgramV1, QueryAccessStep, QueryPredicateValue, SymbolicCatalog,
+};
 use riffdb_riffql_syntax::parse_query;
+use riffdb_types::QueryCostVectorV1;
 
 const CONTRACT: &str = include_str!("../../../examples/app-baseline/contracts/ticketdesk.riff");
 
@@ -120,6 +123,40 @@ fn list_and_detail_choose_expected_physical_accesses() {
             ..
         } if source_binding == "ticket_labels" && source_field == "label_id"
     ));
+    let expected_scans = detail
+        .steps()
+        .iter()
+        .filter(|step| matches!(step.access(), QueryAccessKind::Index { .. }))
+        .map(QueryAccessStep::maximum_rows)
+        .sum::<u64>();
+    let expected_points = detail
+        .steps()
+        .iter()
+        .map(|step| match step.access() {
+            QueryAccessKind::Point { .. } => 1,
+            QueryAccessKind::Index { .. } | QueryAccessKind::DependentPointBatch { .. } => {
+                step.maximum_rows()
+            }
+        })
+        .sum::<u64>();
+    let expected_dependent_keys = detail
+        .steps()
+        .iter()
+        .filter(|step| matches!(step.access(), QueryAccessKind::DependentPointBatch { .. }))
+        .map(QueryAccessStep::maximum_rows)
+        .sum::<u64>();
+    assert_eq!(detail.cost().access_steps(), detail.steps().len() as u64);
+    assert_eq!(detail.cost().scanned_index_rows(), expected_scans);
+    assert_eq!(detail.cost().point_reads(), expected_points);
+    assert_eq!(detail.cost().dependent_keys(), expected_dependent_keys);
+    assert_eq!(
+        detail.cost().intermediate_rows(),
+        detail
+            .steps()
+            .iter()
+            .map(QueryAccessStep::maximum_rows)
+            .sum::<u64>()
+    );
     let ticket = &detail.steps()[0];
     assert!(
         ["project_id", "reporter_id", "assignee_id"]
@@ -240,4 +277,35 @@ fn predicate_inputs_are_closed_and_participate_in_plan_identity() {
         }
             if enumeration == "TicketStatus" && variant == "Closed"
     ));
+}
+
+#[test]
+fn complete_cost_vector_participates_in_plan_identity() {
+    let bundle = compile_contract_source(CONTRACT).expect("contract");
+    let catalog = SymbolicCatalog::from_bundle(&bundle).expect("catalog");
+    let original =
+        compile_query(&parse_query(query("get_ticket")).expect("parse"), &catalog).expect("plan");
+    let cost = original.cost();
+    let changed_cost = QueryCostVectorV1::new(
+        cost.access_steps(),
+        cost.scanned_index_rows(),
+        cost.point_reads(),
+        cost.dependent_keys(),
+        cost.intermediate_rows(),
+        cost.projected_values(),
+        cost.encoded_result_bytes() + 1,
+    )
+    .expect("one-byte-larger bounded cost");
+    let changed = QueryAccessProgramV1::checked(
+        original.contract().clone(),
+        original.surface().clone(),
+        original.name().map(str::to_owned),
+        original.partition_parameter().to_owned(),
+        original.steps().to_vec(),
+        original.authorization().to_vec(),
+        changed_cost,
+    )
+    .expect("checked program");
+    assert_ne!(original.identity(), changed.identity());
+    assert_ne!(original.canonical_bytes(), changed.canonical_bytes());
 }

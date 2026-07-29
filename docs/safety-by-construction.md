@@ -32,6 +32,13 @@ permissions do not authorize the corresponding kernel RPCs.
 7. Missing fields, rows, relationships, indexes, authority, or budget reject
    the operation; they do not silently weaken the requested semantics.
 
+For compatibility, the current capability's `max_scan_rows` is applied once to
+the complete query's scanned-row, point-read, dependent-key, and intermediate-
+row totals. It is not reset for each binding. The compiler also hashes bounded
+step, projected-value, and encoded-result-byte maxima into the plan. The
+executor decrements matching fuel and treats inconsistent backend work reports
+as a closed failure. Fuel exhaustion cannot publish a partial result or cursor.
+
 ## Bug classes made unavailable
 
 The stable application profile must prevent:

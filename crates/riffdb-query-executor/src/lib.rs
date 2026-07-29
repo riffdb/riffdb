@@ -10,7 +10,7 @@ use riffdb_query_ir::{
     QueryPredicateValue, QueryRowLimit,
 };
 use riffdb_riffql_syntax::Cardinality;
-use riffdb_types::{CanonicalValue, encode_canonical_value};
+use riffdb_types::{CanonicalValue, QueryCostVectorV1, encode_canonical_value};
 
 /// Maximum checked submitted parameters.
 pub const MAX_QUERY_PARAMETERS: usize = 1_024;
@@ -140,6 +140,7 @@ pub struct QueryScanPage {
     rows: Vec<QueryRow>,
     epoch: u64,
     scanned_rows: u64,
+    point_reads: u64,
     continuation: Option<Vec<u8>>,
 }
 
@@ -147,8 +148,10 @@ impl QueryScanPage {
     /// Constructs an exact-end page.
     #[must_use]
     pub fn exact_end(rows: Vec<QueryRow>, epoch: u64) -> Self {
+        let work = rows.len() as u64;
         Self {
-            scanned_rows: rows.len() as u64,
+            scanned_rows: work,
+            point_reads: work,
             rows,
             epoch,
             continuation: None,
@@ -162,6 +165,7 @@ impl QueryScanPage {
         scanned_rows: u64,
         continuation: Vec<u8>,
     ) -> Option<Self> {
+        let point_reads = rows.len() as u64;
         (!continuation.is_empty()
             && continuation.len() <= MAX_QUERY_CONTINUATION_BYTES
             && scanned_rows > 0
@@ -170,9 +174,106 @@ impl QueryScanPage {
                 rows,
                 epoch,
                 scanned_rows,
+                point_reads,
                 continuation: Some(continuation),
             })
     }
+
+    /// Constructs one backend-reported page for conformance and fault tests.
+    ///
+    /// The executor independently reconciles these counts with the returned
+    /// rows and the plan fuel; this constructor intentionally performs only
+    /// structural bounds checks.
+    #[doc(hidden)]
+    pub fn reported(
+        rows: Vec<QueryRow>,
+        epoch: u64,
+        scanned_rows: u64,
+        point_reads: u64,
+        continuation: Option<Vec<u8>>,
+    ) -> Option<Self> {
+        (scanned_rows <= MAX_QUERY_SCANNED_ROWS
+            && continuation.as_ref().is_none_or(|value| {
+                !value.is_empty() && value.len() <= MAX_QUERY_CONTINUATION_BYTES
+            })
+            && (continuation.is_none() || scanned_rows > 0))
+            .then_some(Self {
+                rows,
+                epoch,
+                scanned_rows,
+                point_reads,
+                continuation,
+            })
+    }
+}
+
+/// Move-only decrementing work allowance for one exact compiled query.
+///
+/// Fuel is created from the plan-hashed cost vector inside the closed executor
+/// and is never serialized into a cursor or returned with a result.
+pub struct QueryExecutionFuel {
+    access_steps: u64,
+    scanned_index_rows: u64,
+    point_reads: u64,
+    dependent_keys: u64,
+    intermediate_rows: u64,
+    projected_values: u64,
+    encoded_result_bytes: u64,
+}
+
+impl std::fmt::Debug for QueryExecutionFuel {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("QueryExecutionFuel([REDACTED])")
+    }
+}
+
+impl QueryExecutionFuel {
+    fn from_cost(cost: QueryCostVectorV1) -> Self {
+        Self {
+            access_steps: cost.access_steps(),
+            scanned_index_rows: cost.scanned_index_rows(),
+            point_reads: cost.point_reads(),
+            dependent_keys: cost.dependent_keys(),
+            intermediate_rows: cost.intermediate_rows(),
+            projected_values: cost.projected_values(),
+            encoded_result_bytes: cost.encoded_result_bytes(),
+        }
+    }
+
+    fn step(&mut self) -> Result<(), QueryExecutionError> {
+        burn(&mut self.access_steps, 1)
+    }
+
+    fn scans(&mut self, amount: u64) -> Result<(), QueryExecutionError> {
+        burn(&mut self.scanned_index_rows, amount)
+    }
+
+    fn points(&mut self, amount: u64) -> Result<(), QueryExecutionError> {
+        burn(&mut self.point_reads, amount)
+    }
+
+    fn dependent_keys(&mut self, amount: u64) -> Result<(), QueryExecutionError> {
+        burn(&mut self.dependent_keys, amount)
+    }
+
+    fn intermediates(&mut self, amount: u64) -> Result<(), QueryExecutionError> {
+        burn(&mut self.intermediate_rows, amount)
+    }
+
+    fn projected_values(&mut self, amount: u64) -> Result<(), QueryExecutionError> {
+        burn(&mut self.projected_values, amount)
+    }
+
+    fn encoded_result(&mut self, amount: u64) -> Result<(), QueryExecutionError> {
+        burn(&mut self.encoded_result_bytes, amount)
+    }
+}
+
+fn burn(remaining: &mut u64, amount: u64) -> Result<(), QueryExecutionError> {
+    *remaining = remaining
+        .checked_sub(amount)
+        .ok_or(QueryExecutionError::FuelExhausted)?;
+    Ok(())
 }
 
 /// The only operations available while a concrete adapter owns one read transaction.
@@ -348,6 +449,8 @@ pub enum QueryExecutionError {
     BackendUnavailable,
     /// A row, byte, scan, or result ceiling was exceeded.
     BoundExceeded,
+    /// Backend work or result shaping exhausted the admitted whole-query fuel.
+    FuelExhausted,
     /// A `one` or `maybe` binding returned too many rows.
     UnexpectedCardinality {
         /// Safe binding name.
@@ -387,6 +490,7 @@ pub fn execute_page_in_snapshot<V: QueryReadView>(
     prior: Option<&QueryContinuation>,
     view: &mut V,
 ) -> Result<QueryOwnedSnapshot, QueryExecutionError> {
+    let mut fuel = QueryExecutionFuel::from_cost(program.cost());
     let mut bindings = BTreeMap::<String, Vec<QueryRow>>::new();
     let mut result_fields = BTreeMap::new();
     let mut index_epochs = BTreeMap::new();
@@ -401,6 +505,7 @@ pub fn execute_page_in_snapshot<V: QueryReadView>(
         .unwrap_or_else(|| "Result".to_owned());
 
     for step in program.steps() {
+        fuel.step()?;
         let limit = resolve_row_limit(step, parameters)?;
         let after = prior
             .filter(|cursor| cursor.binding == step.binding())
@@ -408,6 +513,7 @@ pub fn execute_page_in_snapshot<V: QueryReadView>(
         let (mut rows, scalar_predicates) = match step.access() {
             riffdb_query_ir::QueryAccessKind::Point { .. } => {
                 let predicates = bind_predicates(step, parameters, &bindings)?;
+                fuel.points(1)?;
                 (
                     view.point(step, &predicates)
                         .map_err(|_| QueryExecutionError::BackendUnavailable)?
@@ -432,25 +538,35 @@ pub fn execute_page_in_snapshot<V: QueryReadView>(
                     source_field,
                     limit,
                 )?;
+                let key_count = u64::try_from(predicates.len())
+                    .map_err(|_| QueryExecutionError::BoundExceeded)?;
+                fuel.dependent_keys(key_count)?;
                 let observations = view
                     .dependent_point_batch(step, &predicates)
                     .map_err(|_| QueryExecutionError::BackendUnavailable)?;
                 if observations.len() != predicates.len() {
                     return Err(QueryExecutionError::InvalidProgram);
                 }
+                fuel.points(
+                    u64::try_from(observations.len())
+                        .map_err(|_| QueryExecutionError::BoundExceeded)?,
+                )?;
                 if observations.iter().any(Option::is_none) {
                     let outcome = step
                         .absence_outcome()
                         .ok_or(QueryExecutionError::InvalidProgram)?
                         .to_owned();
-                    return Ok(QueryOwnedSnapshot {
-                        application_head: view.application_head(),
-                        index_epochs,
-                        outcome,
-                        fields: BTreeMap::new(),
-                        continuation_binding: None,
-                        continuation: None,
-                    });
+                    return finish_snapshot(
+                        &mut fuel,
+                        QueryOwnedSnapshot {
+                            application_head: view.application_head(),
+                            index_epochs,
+                            outcome,
+                            fields: BTreeMap::new(),
+                            continuation_binding: None,
+                            continuation: None,
+                        },
+                    );
                 }
                 let rows = observations
                     .into_iter()
@@ -472,6 +588,8 @@ pub fn execute_page_in_snapshot<V: QueryReadView>(
                     .map_err(|_| QueryExecutionError::BackendUnavailable)?;
                 if page.scanned_rows > MAX_QUERY_SCANNED_ROWS
                     || page.rows.len() as u64 > limit
+                    || page.point_reads != page.rows.len() as u64
+                    || page.rows.len() as u64 > page.scanned_rows
                     || page
                         .continuation
                         .as_ref()
@@ -479,6 +597,8 @@ pub fn execute_page_in_snapshot<V: QueryReadView>(
                 {
                     return Err(QueryExecutionError::BoundExceeded);
                 }
+                fuel.scans(page.scanned_rows)?;
+                fuel.points(page.point_reads)?;
                 index_epochs.insert(format!("{}.{}", step.entity(), index), page.epoch);
                 if page.continuation.is_some() {
                     if continuation.is_some() {
@@ -490,6 +610,9 @@ pub fn execute_page_in_snapshot<V: QueryReadView>(
                 (page.rows, Some(predicates))
             }
         };
+        fuel.intermediates(
+            u64::try_from(rows.len()).map_err(|_| QueryExecutionError::BoundExceeded)?,
+        )?;
         if rows.iter().any(|row| row.entity() != step.entity()) {
             return Err(QueryExecutionError::InvalidProgram);
         }
@@ -509,19 +632,28 @@ pub fn execute_page_in_snapshot<V: QueryReadView>(
                 .absence_outcome()
                 .ok_or(QueryExecutionError::InvalidProgram)?
                 .to_owned();
-            return Ok(QueryOwnedSnapshot {
-                application_head: view.application_head(),
-                index_epochs,
-                outcome,
-                fields: BTreeMap::new(),
-                continuation_binding: None,
-                continuation: None,
-            });
+            return finish_snapshot(
+                &mut fuel,
+                QueryOwnedSnapshot {
+                    application_head: view.application_head(),
+                    index_epochs,
+                    outcome,
+                    fields: BTreeMap::new(),
+                    continuation_binding: None,
+                    continuation: None,
+                },
+            );
         }
         let projected = rows
             .iter()
             .map(|row| row.project(step.selected_fields()))
             .collect::<Result<Vec<_>, _>>()?;
+        let projected_count = u64::try_from(projected.len())
+            .ok()
+            .and_then(|rows| rows.checked_mul(step.selected_fields().len() as u64))
+            .and_then(|values| values.checked_mul(step.result_names().len() as u64))
+            .ok_or(QueryExecutionError::BoundExceeded)?;
+        fuel.projected_values(projected_count)?;
         let value = match step.cardinality() {
             Cardinality::One => QueryResultValue::One(
                 projected
@@ -553,14 +685,64 @@ pub fn execute_page_in_snapshot<V: QueryReadView>(
         }
     }
 
-    Ok(QueryOwnedSnapshot {
-        application_head: view.application_head(),
-        index_epochs,
-        outcome: default_outcome,
-        fields: result_fields,
-        continuation_binding,
-        continuation,
-    })
+    finish_snapshot(
+        &mut fuel,
+        QueryOwnedSnapshot {
+            application_head: view.application_head(),
+            index_epochs,
+            outcome: default_outcome,
+            fields: result_fields,
+            continuation_binding,
+            continuation,
+        },
+    )
+}
+
+fn finish_snapshot(
+    fuel: &mut QueryExecutionFuel,
+    snapshot: QueryOwnedSnapshot,
+) -> Result<QueryOwnedSnapshot, QueryExecutionError> {
+    fuel.encoded_result(encoded_snapshot_bytes(&snapshot)?)?;
+    Ok(snapshot)
+}
+
+fn encoded_snapshot_bytes(snapshot: &QueryOwnedSnapshot) -> Result<u64, QueryExecutionError> {
+    let mut bytes = 512_u64
+        .checked_add(snapshot.outcome.len() as u64)
+        .ok_or(QueryExecutionError::BoundExceeded)?;
+    for (name, value) in &snapshot.fields {
+        bytes = bytes
+            .checked_add(name.len() as u64)
+            .and_then(|value| value.checked_add(64))
+            .ok_or(QueryExecutionError::BoundExceeded)?;
+        let rows: &[QueryRow] = match value {
+            QueryResultValue::One(row) => std::slice::from_ref(row),
+            QueryResultValue::Maybe(Some(row)) => std::slice::from_ref(row),
+            QueryResultValue::Maybe(None) => &[],
+            QueryResultValue::Many(rows) => rows,
+        };
+        for row in rows {
+            bytes = bytes
+                .checked_add(row.entity.len() as u64)
+                .and_then(|value| value.checked_add(64))
+                .ok_or(QueryExecutionError::BoundExceeded)?;
+            for (field, value) in &row.fields {
+                let encoded = encode_canonical_value(value)
+                    .map_err(|_| QueryExecutionError::InvalidProgram)?;
+                bytes = bytes
+                    .checked_add(field.len() as u64)
+                    .and_then(|value| value.checked_add(encoded.len() as u64))
+                    .and_then(|value| value.checked_add(160))
+                    .ok_or(QueryExecutionError::BoundExceeded)?;
+            }
+        }
+    }
+    if snapshot.continuation.is_some() {
+        bytes = bytes
+            .checked_add(48)
+            .ok_or(QueryExecutionError::BoundExceeded)?;
+    }
+    Ok(bytes)
 }
 
 fn resolve_row_limit(
