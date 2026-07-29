@@ -901,7 +901,8 @@ fn validate_and_authorize_stage(
         _allocator_capacity,
         operational_ports,
     ) = staged_startup.into_parts();
-    let storage = SharedRedbOperationalPorts::new(operational_ports);
+    let storage = SharedRedbOperationalPorts::new(operational_ports, None)
+        .map_err(|_| DriverFault::Validation)?;
     let authenticator = ServerCredentialAuthenticator::new(
         storage.clone(),
         Arc::clone(&dependencies.capability_keys),

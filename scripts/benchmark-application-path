@@ -56,7 +56,7 @@ jq -S '
         unary_transport_upper_bound_method:
           "The complete fastest warm point request is an upper bound on transport/adaptation alone.",
         command_and_seed_gate_status:
-          "WP-205 measured blocker retained for command-path and WP-270 seed work; no guarantee was weakened."
+          "Both gates pass after complete startup-built catalog and capability views removed repeated durable semantic reads; no guarantee was weakened."
       }
     }
 ' "$raw_report" >"$checked_report"
@@ -75,7 +75,9 @@ if [[ "$mode" == "--assert-wp205" ]]; then
       and (scenario("ticket_detail_page") <= $g.list_or_detail_p50_ns)
       and ([scenario("point_get_ticket"), scenario("point_get_user")] | min
            <= $g.unary_transport_upper_bound_ns)
-      and (.interpretation.command_and_seed_gate_status | startswith("WP-205 measured blocker"))
+      and (scenario("create_comment") <= $g.command_p50_ns)
+      and (.backend.seed_ns <= $g.seed_ns)
+      and (.interpretation.command_and_seed_gate_status | startswith("Both gates pass"))
     ' "$checked_report" >/dev/null
 fi
 
