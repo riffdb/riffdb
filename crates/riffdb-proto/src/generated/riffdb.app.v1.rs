@@ -23,6 +23,35 @@ pub struct SourceSpan {
     pub end: u64,
 }
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct ApplicationError {
+    #[prost(uint32, tag = "1")]
+    pub envelope_version: u32,
+    #[prost(enumeration = "ApplicationErrorCode", tag = "2")]
+    pub code: i32,
+    #[prost(enumeration = "ApplicationErrorCategory", tag = "3")]
+    pub category: i32,
+    #[prost(enumeration = "ApplicationRecoveryAction", tag = "4")]
+    pub recovery_action: i32,
+    #[prost(enumeration = "ApplicationOperation", tag = "5")]
+    pub operation: i32,
+    #[prost(string, optional, tag = "6")]
+    pub contract_lineage: ::core::option::Option<::prost::alloc::string::String>,
+    #[prost(uint64, optional, tag = "7")]
+    pub contract_version: ::core::option::Option<u64>,
+    #[prost(string, optional, tag = "8")]
+    pub operation_symbol: ::core::option::Option<::prost::alloc::string::String>,
+    #[prost(string, repeated, tag = "9")]
+    pub symbol_path: ::prost::alloc::vec::Vec<::prost::alloc::string::String>,
+    #[prost(message, optional, tag = "10")]
+    pub source_span: ::core::option::Option<SourceSpan>,
+    #[prost(enumeration = "ApplicationFixCode", repeated, tag = "11")]
+    pub fixes: ::prost::alloc::vec::Vec<i32>,
+    #[prost(bytes = "vec", optional, tag = "12")]
+    pub trace_id: ::core::option::Option<::prost::alloc::vec::Vec<u8>>,
+    #[prost(bytes = "vec", optional, tag = "13")]
+    pub incident_id: ::core::option::Option<::prost::alloc::vec::Vec<u8>>,
+}
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct Diagnostic {
     #[prost(string, tag = "1")]
     pub code: ::prost::alloc::string::String,
@@ -260,6 +289,321 @@ pub struct GetQueryModuleResponse {
     pub module: ::core::option::Option<QueryModuleDescriptor>,
     #[prost(message, repeated, tag = "2")]
     pub queries: ::prost::alloc::vec::Vec<NamedQuerySource>,
+}
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, ::prost::Enumeration)]
+#[repr(i32)]
+pub enum ApplicationOperation {
+    Unspecified = 0,
+    DescribeContract = 1,
+    CheckQuery = 2,
+    ExplainQuery = 3,
+    ExecuteQuery = 4,
+    DeployQueryModule = 5,
+    GetQueryModule = 6,
+    ExecuteCommand = 7,
+    BatchCommand = 8,
+}
+impl ApplicationOperation {
+    /// String value of the enum field names used in the ProtoBuf definition.
+    ///
+    /// The values are not transformed in any way and thus are considered stable
+    /// (if the ProtoBuf definition does not change) and safe for programmatic use.
+    pub fn as_str_name(&self) -> &'static str {
+        match self {
+            Self::Unspecified => "APPLICATION_OPERATION_UNSPECIFIED",
+            Self::DescribeContract => "APPLICATION_OPERATION_DESCRIBE_CONTRACT",
+            Self::CheckQuery => "APPLICATION_OPERATION_CHECK_QUERY",
+            Self::ExplainQuery => "APPLICATION_OPERATION_EXPLAIN_QUERY",
+            Self::ExecuteQuery => "APPLICATION_OPERATION_EXECUTE_QUERY",
+            Self::DeployQueryModule => "APPLICATION_OPERATION_DEPLOY_QUERY_MODULE",
+            Self::GetQueryModule => "APPLICATION_OPERATION_GET_QUERY_MODULE",
+            Self::ExecuteCommand => "APPLICATION_OPERATION_EXECUTE_COMMAND",
+            Self::BatchCommand => "APPLICATION_OPERATION_BATCH_COMMAND",
+        }
+    }
+    /// Creates an enum from field names used in the ProtoBuf definition.
+    pub fn from_str_name(value: &str) -> ::core::option::Option<Self> {
+        match value {
+            "APPLICATION_OPERATION_UNSPECIFIED" => Some(Self::Unspecified),
+            "APPLICATION_OPERATION_DESCRIBE_CONTRACT" => Some(Self::DescribeContract),
+            "APPLICATION_OPERATION_CHECK_QUERY" => Some(Self::CheckQuery),
+            "APPLICATION_OPERATION_EXPLAIN_QUERY" => Some(Self::ExplainQuery),
+            "APPLICATION_OPERATION_EXECUTE_QUERY" => Some(Self::ExecuteQuery),
+            "APPLICATION_OPERATION_DEPLOY_QUERY_MODULE" => Some(Self::DeployQueryModule),
+            "APPLICATION_OPERATION_GET_QUERY_MODULE" => Some(Self::GetQueryModule),
+            "APPLICATION_OPERATION_EXECUTE_COMMAND" => Some(Self::ExecuteCommand),
+            "APPLICATION_OPERATION_BATCH_COMMAND" => Some(Self::BatchCommand),
+            _ => None,
+        }
+    }
+}
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, ::prost::Enumeration)]
+#[repr(i32)]
+pub enum ApplicationErrorCode {
+    Unspecified = 0,
+    InvalidRequest = 1,
+    InputInvalid = 2,
+    AuthorizationDenied = 3,
+    ContractMismatch = 4,
+    QueryInvalid = 5,
+    QueryUnavailable = 6,
+    ModuleUnavailable = 7,
+    CursorInvalid = 8,
+    ResponseTooLarge = 9,
+    StorageUnavailable = 10,
+    OutcomeUnknown = 11,
+    OperationCancelled = 12,
+    DeadlineExceeded = 13,
+    InternalDefect = 14,
+    IdempotencyKeyReuse = 15,
+    CommandExecutionFailed = 16,
+    CapabilityRevoked = 17,
+    ProtocolInvalid = 18,
+}
+impl ApplicationErrorCode {
+    /// String value of the enum field names used in the ProtoBuf definition.
+    ///
+    /// The values are not transformed in any way and thus are considered stable
+    /// (if the ProtoBuf definition does not change) and safe for programmatic use.
+    pub fn as_str_name(&self) -> &'static str {
+        match self {
+            Self::Unspecified => "APPLICATION_ERROR_CODE_UNSPECIFIED",
+            Self::InvalidRequest => "APPLICATION_ERROR_CODE_INVALID_REQUEST",
+            Self::InputInvalid => "APPLICATION_ERROR_CODE_INPUT_INVALID",
+            Self::AuthorizationDenied => "APPLICATION_ERROR_CODE_AUTHORIZATION_DENIED",
+            Self::ContractMismatch => "APPLICATION_ERROR_CODE_CONTRACT_MISMATCH",
+            Self::QueryInvalid => "APPLICATION_ERROR_CODE_QUERY_INVALID",
+            Self::QueryUnavailable => "APPLICATION_ERROR_CODE_QUERY_UNAVAILABLE",
+            Self::ModuleUnavailable => "APPLICATION_ERROR_CODE_MODULE_UNAVAILABLE",
+            Self::CursorInvalid => "APPLICATION_ERROR_CODE_CURSOR_INVALID",
+            Self::ResponseTooLarge => "APPLICATION_ERROR_CODE_RESPONSE_TOO_LARGE",
+            Self::StorageUnavailable => "APPLICATION_ERROR_CODE_STORAGE_UNAVAILABLE",
+            Self::OutcomeUnknown => "APPLICATION_ERROR_CODE_OUTCOME_UNKNOWN",
+            Self::OperationCancelled => "APPLICATION_ERROR_CODE_OPERATION_CANCELLED",
+            Self::DeadlineExceeded => "APPLICATION_ERROR_CODE_DEADLINE_EXCEEDED",
+            Self::InternalDefect => "APPLICATION_ERROR_CODE_INTERNAL_DEFECT",
+            Self::IdempotencyKeyReuse => "APPLICATION_ERROR_CODE_IDEMPOTENCY_KEY_REUSE",
+            Self::CommandExecutionFailed => {
+                "APPLICATION_ERROR_CODE_COMMAND_EXECUTION_FAILED"
+            }
+            Self::CapabilityRevoked => "APPLICATION_ERROR_CODE_CAPABILITY_REVOKED",
+            Self::ProtocolInvalid => "APPLICATION_ERROR_CODE_PROTOCOL_INVALID",
+        }
+    }
+    /// Creates an enum from field names used in the ProtoBuf definition.
+    pub fn from_str_name(value: &str) -> ::core::option::Option<Self> {
+        match value {
+            "APPLICATION_ERROR_CODE_UNSPECIFIED" => Some(Self::Unspecified),
+            "APPLICATION_ERROR_CODE_INVALID_REQUEST" => Some(Self::InvalidRequest),
+            "APPLICATION_ERROR_CODE_INPUT_INVALID" => Some(Self::InputInvalid),
+            "APPLICATION_ERROR_CODE_AUTHORIZATION_DENIED" => {
+                Some(Self::AuthorizationDenied)
+            }
+            "APPLICATION_ERROR_CODE_CONTRACT_MISMATCH" => Some(Self::ContractMismatch),
+            "APPLICATION_ERROR_CODE_QUERY_INVALID" => Some(Self::QueryInvalid),
+            "APPLICATION_ERROR_CODE_QUERY_UNAVAILABLE" => Some(Self::QueryUnavailable),
+            "APPLICATION_ERROR_CODE_MODULE_UNAVAILABLE" => Some(Self::ModuleUnavailable),
+            "APPLICATION_ERROR_CODE_CURSOR_INVALID" => Some(Self::CursorInvalid),
+            "APPLICATION_ERROR_CODE_RESPONSE_TOO_LARGE" => Some(Self::ResponseTooLarge),
+            "APPLICATION_ERROR_CODE_STORAGE_UNAVAILABLE" => {
+                Some(Self::StorageUnavailable)
+            }
+            "APPLICATION_ERROR_CODE_OUTCOME_UNKNOWN" => Some(Self::OutcomeUnknown),
+            "APPLICATION_ERROR_CODE_OPERATION_CANCELLED" => {
+                Some(Self::OperationCancelled)
+            }
+            "APPLICATION_ERROR_CODE_DEADLINE_EXCEEDED" => Some(Self::DeadlineExceeded),
+            "APPLICATION_ERROR_CODE_INTERNAL_DEFECT" => Some(Self::InternalDefect),
+            "APPLICATION_ERROR_CODE_IDEMPOTENCY_KEY_REUSE" => {
+                Some(Self::IdempotencyKeyReuse)
+            }
+            "APPLICATION_ERROR_CODE_COMMAND_EXECUTION_FAILED" => {
+                Some(Self::CommandExecutionFailed)
+            }
+            "APPLICATION_ERROR_CODE_CAPABILITY_REVOKED" => Some(Self::CapabilityRevoked),
+            "APPLICATION_ERROR_CODE_PROTOCOL_INVALID" => Some(Self::ProtocolInvalid),
+            _ => None,
+        }
+    }
+}
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, ::prost::Enumeration)]
+#[repr(i32)]
+pub enum ApplicationErrorCategory {
+    Unspecified = 0,
+    Input = 1,
+    Authorization = 2,
+    Contract = 3,
+    Query = 4,
+    Module = 5,
+    Cursor = 6,
+    Resource = 7,
+    Storage = 8,
+    Uncertainty = 9,
+    Internal = 10,
+    Protocol = 11,
+    Command = 12,
+    Control = 13,
+}
+impl ApplicationErrorCategory {
+    /// String value of the enum field names used in the ProtoBuf definition.
+    ///
+    /// The values are not transformed in any way and thus are considered stable
+    /// (if the ProtoBuf definition does not change) and safe for programmatic use.
+    pub fn as_str_name(&self) -> &'static str {
+        match self {
+            Self::Unspecified => "APPLICATION_ERROR_CATEGORY_UNSPECIFIED",
+            Self::Input => "APPLICATION_ERROR_CATEGORY_INPUT",
+            Self::Authorization => "APPLICATION_ERROR_CATEGORY_AUTHORIZATION",
+            Self::Contract => "APPLICATION_ERROR_CATEGORY_CONTRACT",
+            Self::Query => "APPLICATION_ERROR_CATEGORY_QUERY",
+            Self::Module => "APPLICATION_ERROR_CATEGORY_MODULE",
+            Self::Cursor => "APPLICATION_ERROR_CATEGORY_CURSOR",
+            Self::Resource => "APPLICATION_ERROR_CATEGORY_RESOURCE",
+            Self::Storage => "APPLICATION_ERROR_CATEGORY_STORAGE",
+            Self::Uncertainty => "APPLICATION_ERROR_CATEGORY_UNCERTAINTY",
+            Self::Internal => "APPLICATION_ERROR_CATEGORY_INTERNAL",
+            Self::Protocol => "APPLICATION_ERROR_CATEGORY_PROTOCOL",
+            Self::Command => "APPLICATION_ERROR_CATEGORY_COMMAND",
+            Self::Control => "APPLICATION_ERROR_CATEGORY_CONTROL",
+        }
+    }
+    /// Creates an enum from field names used in the ProtoBuf definition.
+    pub fn from_str_name(value: &str) -> ::core::option::Option<Self> {
+        match value {
+            "APPLICATION_ERROR_CATEGORY_UNSPECIFIED" => Some(Self::Unspecified),
+            "APPLICATION_ERROR_CATEGORY_INPUT" => Some(Self::Input),
+            "APPLICATION_ERROR_CATEGORY_AUTHORIZATION" => Some(Self::Authorization),
+            "APPLICATION_ERROR_CATEGORY_CONTRACT" => Some(Self::Contract),
+            "APPLICATION_ERROR_CATEGORY_QUERY" => Some(Self::Query),
+            "APPLICATION_ERROR_CATEGORY_MODULE" => Some(Self::Module),
+            "APPLICATION_ERROR_CATEGORY_CURSOR" => Some(Self::Cursor),
+            "APPLICATION_ERROR_CATEGORY_RESOURCE" => Some(Self::Resource),
+            "APPLICATION_ERROR_CATEGORY_STORAGE" => Some(Self::Storage),
+            "APPLICATION_ERROR_CATEGORY_UNCERTAINTY" => Some(Self::Uncertainty),
+            "APPLICATION_ERROR_CATEGORY_INTERNAL" => Some(Self::Internal),
+            "APPLICATION_ERROR_CATEGORY_PROTOCOL" => Some(Self::Protocol),
+            "APPLICATION_ERROR_CATEGORY_COMMAND" => Some(Self::Command),
+            "APPLICATION_ERROR_CATEGORY_CONTROL" => Some(Self::Control),
+            _ => None,
+        }
+    }
+}
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, ::prost::Enumeration)]
+#[repr(i32)]
+pub enum ApplicationRecoveryAction {
+    Unspecified = 0,
+    CorrectRequest = 1,
+    Retry = 2,
+    ResolveWithSameIdempotencyKey = 3,
+    ObtainPermission = 4,
+    RefreshContract = 5,
+    ContactOperator = 6,
+    None = 7,
+}
+impl ApplicationRecoveryAction {
+    /// String value of the enum field names used in the ProtoBuf definition.
+    ///
+    /// The values are not transformed in any way and thus are considered stable
+    /// (if the ProtoBuf definition does not change) and safe for programmatic use.
+    pub fn as_str_name(&self) -> &'static str {
+        match self {
+            Self::Unspecified => "APPLICATION_RECOVERY_ACTION_UNSPECIFIED",
+            Self::CorrectRequest => "APPLICATION_RECOVERY_ACTION_CORRECT_REQUEST",
+            Self::Retry => "APPLICATION_RECOVERY_ACTION_RETRY",
+            Self::ResolveWithSameIdempotencyKey => {
+                "APPLICATION_RECOVERY_ACTION_RESOLVE_WITH_SAME_IDEMPOTENCY_KEY"
+            }
+            Self::ObtainPermission => "APPLICATION_RECOVERY_ACTION_OBTAIN_PERMISSION",
+            Self::RefreshContract => "APPLICATION_RECOVERY_ACTION_REFRESH_CONTRACT",
+            Self::ContactOperator => "APPLICATION_RECOVERY_ACTION_CONTACT_OPERATOR",
+            Self::None => "APPLICATION_RECOVERY_ACTION_NONE",
+        }
+    }
+    /// Creates an enum from field names used in the ProtoBuf definition.
+    pub fn from_str_name(value: &str) -> ::core::option::Option<Self> {
+        match value {
+            "APPLICATION_RECOVERY_ACTION_UNSPECIFIED" => Some(Self::Unspecified),
+            "APPLICATION_RECOVERY_ACTION_CORRECT_REQUEST" => Some(Self::CorrectRequest),
+            "APPLICATION_RECOVERY_ACTION_RETRY" => Some(Self::Retry),
+            "APPLICATION_RECOVERY_ACTION_RESOLVE_WITH_SAME_IDEMPOTENCY_KEY" => {
+                Some(Self::ResolveWithSameIdempotencyKey)
+            }
+            "APPLICATION_RECOVERY_ACTION_OBTAIN_PERMISSION" => {
+                Some(Self::ObtainPermission)
+            }
+            "APPLICATION_RECOVERY_ACTION_REFRESH_CONTRACT" => Some(Self::RefreshContract),
+            "APPLICATION_RECOVERY_ACTION_CONTACT_OPERATOR" => Some(Self::ContactOperator),
+            "APPLICATION_RECOVERY_ACTION_NONE" => Some(Self::None),
+            _ => None,
+        }
+    }
+}
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, ::prost::Enumeration)]
+#[repr(i32)]
+pub enum ApplicationFixCode {
+    Unspecified = 0,
+    CorrectInput = 1,
+    RemoveForbiddenOutput = 2,
+    BindApplicationRole = 3,
+    RefreshContract = 4,
+    PinActiveModule = 5,
+    AddBoundedIndex = 6,
+    RestartFromFirstPage = 7,
+    RetryLater = 8,
+    ResolveWithSameIdempotencyKey = 9,
+    ContactOperatorWithIncident = 10,
+}
+impl ApplicationFixCode {
+    /// String value of the enum field names used in the ProtoBuf definition.
+    ///
+    /// The values are not transformed in any way and thus are considered stable
+    /// (if the ProtoBuf definition does not change) and safe for programmatic use.
+    pub fn as_str_name(&self) -> &'static str {
+        match self {
+            Self::Unspecified => "APPLICATION_FIX_CODE_UNSPECIFIED",
+            Self::CorrectInput => "APPLICATION_FIX_CODE_CORRECT_INPUT",
+            Self::RemoveForbiddenOutput => "APPLICATION_FIX_CODE_REMOVE_FORBIDDEN_OUTPUT",
+            Self::BindApplicationRole => "APPLICATION_FIX_CODE_BIND_APPLICATION_ROLE",
+            Self::RefreshContract => "APPLICATION_FIX_CODE_REFRESH_CONTRACT",
+            Self::PinActiveModule => "APPLICATION_FIX_CODE_PIN_ACTIVE_MODULE",
+            Self::AddBoundedIndex => "APPLICATION_FIX_CODE_ADD_BOUNDED_INDEX",
+            Self::RestartFromFirstPage => "APPLICATION_FIX_CODE_RESTART_FROM_FIRST_PAGE",
+            Self::RetryLater => "APPLICATION_FIX_CODE_RETRY_LATER",
+            Self::ResolveWithSameIdempotencyKey => {
+                "APPLICATION_FIX_CODE_RESOLVE_WITH_SAME_IDEMPOTENCY_KEY"
+            }
+            Self::ContactOperatorWithIncident => {
+                "APPLICATION_FIX_CODE_CONTACT_OPERATOR_WITH_INCIDENT"
+            }
+        }
+    }
+    /// Creates an enum from field names used in the ProtoBuf definition.
+    pub fn from_str_name(value: &str) -> ::core::option::Option<Self> {
+        match value {
+            "APPLICATION_FIX_CODE_UNSPECIFIED" => Some(Self::Unspecified),
+            "APPLICATION_FIX_CODE_CORRECT_INPUT" => Some(Self::CorrectInput),
+            "APPLICATION_FIX_CODE_REMOVE_FORBIDDEN_OUTPUT" => {
+                Some(Self::RemoveForbiddenOutput)
+            }
+            "APPLICATION_FIX_CODE_BIND_APPLICATION_ROLE" => {
+                Some(Self::BindApplicationRole)
+            }
+            "APPLICATION_FIX_CODE_REFRESH_CONTRACT" => Some(Self::RefreshContract),
+            "APPLICATION_FIX_CODE_PIN_ACTIVE_MODULE" => Some(Self::PinActiveModule),
+            "APPLICATION_FIX_CODE_ADD_BOUNDED_INDEX" => Some(Self::AddBoundedIndex),
+            "APPLICATION_FIX_CODE_RESTART_FROM_FIRST_PAGE" => {
+                Some(Self::RestartFromFirstPage)
+            }
+            "APPLICATION_FIX_CODE_RETRY_LATER" => Some(Self::RetryLater),
+            "APPLICATION_FIX_CODE_RESOLVE_WITH_SAME_IDEMPOTENCY_KEY" => {
+                Some(Self::ResolveWithSameIdempotencyKey)
+            }
+            "APPLICATION_FIX_CODE_CONTACT_OPERATOR_WITH_INCIDENT" => {
+                Some(Self::ContactOperatorWithIncident)
+            }
+            _ => None,
+        }
+    }
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, ::prost::Enumeration)]
 #[repr(i32)]

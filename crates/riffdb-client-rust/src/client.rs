@@ -26,9 +26,12 @@ use riffdb_types::{CommitSequence, RequestId};
 use tonic::transport::{Channel, Endpoint};
 use tonic::{Request, Streaming};
 
+use crate::application::contextualize_command_client_error;
 use crate::command::{RetryDecision, RetryState};
 use crate::generated::{GeneratedCommand, GeneratedCommandError};
-use crate::status::{ClientError, ProtocolFailure, ProtocolFailureKind, checked_status};
+use crate::status::{
+    ClientError, ProtocolFailure, ProtocolFailureKind, checked_application_status, checked_status,
+};
 use crate::{
     AttemptBudget, BootstrapCallMetadata, BootstrapCapabilityCreateTemplate, CallMetadata,
     CreateOfflineBackup, IdempotentCommand, NormalCapabilityCreateTemplate, RestoreOfflineBackup,
@@ -117,6 +120,33 @@ macro_rules! unary_exchange {
     };
 }
 
+macro_rules! unary_application {
+    ($name:ident, $rpc:ident, $request:ty, $response:ty) => {
+        #[doc = concat!(
+                                                            "Performs the checked application `",
+                                                            stringify!($rpc),
+                                                            "` unary RPC."
+                                                        )]
+        pub async fn $name(
+            &mut self,
+            message: $request,
+            metadata: &CallMetadata,
+        ) -> Result<$response, ClientError> {
+            validate_outbound(&message)?;
+            let mut request = Request::new(message);
+            metadata.apply(&mut request);
+            let response = self
+                .application_query
+                .$rpc(request)
+                .await
+                .map_err(checked_application_status)?
+                .into_inner();
+            validate_inbound(&response)?;
+            Ok(response)
+        }
+    };
+}
+
 /// Typed clients for every service in the public `riffdb.v1` API.
 ///
 /// Clones share one Tonic channel while retaining independent generated client
@@ -154,44 +184,38 @@ impl RiffDbClient {
         }
     }
 
-    unary!(
+    unary_application!(
         describe_contract,
-        application_query,
         describe_contract,
         app_v1::DescribeContractRequest,
         app_v1::DescribeContractResponse
     );
-    unary!(
+    unary_application!(
         check_query,
-        application_query,
         check_query,
         app_v1::CheckQueryRequest,
         app_v1::CheckQueryResponse
     );
-    unary!(
+    unary_application!(
         explain_query,
-        application_query,
         explain_query,
         app_v1::ExplainQueryRequest,
         app_v1::ExplainQueryResponse
     );
-    unary!(
+    unary_application!(
         execute_query,
-        application_query,
         execute_query,
         app_v1::ExecuteQueryRequest,
         app_v1::ExecuteQueryResponse
     );
-    unary!(
+    unary_application!(
         deploy_query_module,
-        application_query,
         deploy_query_module,
         app_v1::DeployQueryModuleRequest,
         app_v1::DeployQueryModuleResponse
     );
-    unary!(
+    unary_application!(
         get_query_module,
-        application_query,
         get_query_module,
         app_v1::GetQueryModuleRequest,
         app_v1::GetQueryModuleResponse
@@ -559,9 +583,11 @@ impl RiffDbClient {
         let generic = command
             .idempotent_command()
             .map_err(GeneratedExecutionError::CommandShape)?;
+        let command_name = generic.command_name().to_owned();
         let response = self
             .execute_with_retry(&generic, attempt_budget, metadata)
             .await
+            .map_err(|error| contextualize_command_client_error(error, &command_name))
             .map_err(GeneratedExecutionError::Client)?;
         let outcome = command
             .decode_outcome(&response)
@@ -580,6 +606,7 @@ impl RiffDbClient {
         let generic = command
             .idempotent_command()
             .map_err(GeneratedExecutionError::CommandShape)?;
+        let command_name = generic.command_name().to_owned();
         let response = match self
             .execute_with_retry(&generic, attempt_budget, metadata)
             .await
@@ -607,7 +634,11 @@ impl RiffDbClient {
                     }
                 }
             }
-            Err(error) => return Err(GeneratedExecutionError::Client(error)),
+            Err(error) => {
+                return Err(GeneratedExecutionError::Client(
+                    contextualize_command_client_error(error, &command_name),
+                ));
+            }
         };
         let outcome = command
             .decode_outcome(&response)

@@ -3,6 +3,7 @@
 use std::collections::BTreeMap;
 use std::fmt;
 
+use riffdb_errors::{ApplicationError, ApplicationErrorContext, ApplicationOperation};
 use riffdb_proto::{app::v1 as app_v1, v1};
 use tonic::transport::{Channel, Endpoint};
 
@@ -394,16 +395,34 @@ pub enum ApplicationClientError {
 
 impl fmt::Display for ApplicationClientError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter.write_str(match self {
-            Self::InvalidInput => "application input is invalid",
-            Self::InvalidResponse => "application response is invalid",
-            Self::IdentifierUnavailable => "request identity is unavailable",
-            Self::Client(_) => "application request failed",
-        })
+        match self {
+            Self::InvalidInput => formatter.write_str("application input is invalid"),
+            Self::InvalidResponse => formatter.write_str("application response is invalid"),
+            Self::IdentifierUnavailable => formatter.write_str("request identity is unavailable"),
+            Self::Client(error) => error.fmt(formatter),
+        }
     }
 }
 
-impl std::error::Error for ApplicationClientError {}
+impl std::error::Error for ApplicationClientError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::Client(error) => Some(error),
+            Self::InvalidInput | Self::InvalidResponse | Self::IdentifierUnavailable => None,
+        }
+    }
+}
+
+impl ApplicationClientError {
+    /// Returns the checked semantic application failure, when supplied by RiffDB.
+    #[must_use]
+    pub const fn semantic_error(&self) -> Option<&riffdb_errors::ApplicationError> {
+        match self {
+            Self::Client(error) => error.application_error(),
+            Self::InvalidInput | Self::InvalidResponse | Self::IdentifierUnavailable => None,
+        }
+    }
+}
 
 impl From<ClientError> for ApplicationClientError {
     fn from(error: ClientError) -> Self {
@@ -474,13 +493,15 @@ impl RiffDbClient {
         attempts: AttemptBudget,
         metadata: &CallMetadata,
     ) -> Result<ApplicationCommandResult, ApplicationClientError> {
+        let command_name = command.name.clone();
         let input = lower_value(ApplicationValue::Record(command.input))?;
         let command =
             IdempotentCommand::new(command.name, command.expected_contract_version, input)
                 .map_err(|_| ApplicationClientError::InvalidInput)?;
         let response = self
             .execute_with_retry(&command, attempts, metadata)
-            .await?;
+            .await
+            .map_err(|error| contextualize_command_client_error(error, &command_name))?;
         Ok(ApplicationCommandResult {
             outcome: (!response.outcome_type.is_empty()).then_some(response.outcome_type),
             outcome_value: response.outcome.map(raise_value).transpose()?,
@@ -495,6 +516,23 @@ impl RiffDbClient {
             outcome_uri: response.outcome_uri,
         })
     }
+}
+
+pub(crate) fn contextualize_command_client_error(
+    error: ClientError,
+    command_name: &str,
+) -> ClientError {
+    let ClientError::Public(public) = error else {
+        return error;
+    };
+    let context = ApplicationErrorContext::empty()
+        .with_operation_symbol(command_name.to_owned())
+        .unwrap_or_else(|_| ApplicationErrorContext::empty());
+    ClientError::Application(Box::new(ApplicationError::from_public_error(
+        &public,
+        ApplicationOperation::ExecuteCommand,
+        context,
+    )))
 }
 
 fn validate_query_response_identity(

@@ -130,7 +130,10 @@ impl McpObserverBackend for PublicGrpcMcpObserverBackend {
             };
             match observation {
                 Ok(fingerprint) => Ok(McpSubscribedResourceObservation::Visible(fingerprint)),
-                Err(riffdb_api_mcp::McpBackendError::Public(_))
+                Err(
+                    riffdb_api_mcp::McpBackendError::Public(_)
+                    | riffdb_api_mcp::McpBackendError::Application(_),
+                )
                 | Err(riffdb_api_mcp::McpBackendError::TargetUnavailable) => {
                     Ok(McpSubscribedResourceObservation::Hidden)
                 }

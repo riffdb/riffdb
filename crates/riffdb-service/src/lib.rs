@@ -4,6 +4,7 @@
 
 mod administration_operations;
 mod application;
+mod application_error;
 mod audit;
 mod command_operations;
 mod commit_operations;
@@ -23,6 +24,7 @@ mod symbolic_query;
 mod wait;
 
 pub use application::*;
+pub use application_error::*;
 pub use audit::*;
 pub use context::*;
 pub use cursor::*;

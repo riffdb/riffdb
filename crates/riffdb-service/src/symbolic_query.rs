@@ -14,7 +14,8 @@ use riffdb_commit::{
 };
 use riffdb_contract_ir::{ValueType, ValueTypeTag};
 use riffdb_errors::{
-    PublicError, ValidationCode, ValidationIssue, ValidationIssues, ValidationPath,
+    ApplicationErrorCode, PublicError, ValidationCode, ValidationIssue, ValidationIssues,
+    ValidationPath,
 };
 use riffdb_policy::{
     ApplicationQueryAccessRequirement, ApplicationQueryTarget, AuthorizedApplicationQuery,
@@ -1269,8 +1270,12 @@ async fn deploy_module(
         prepare_selected_contract(&service, &context, request.contract.selection(), OPERATION)
             .await?;
     ensure_selected_hash(&request.contract, &bundle)?;
-    let module = ValidatedQueryModule::compile(request.candidate, &bundle)
-        .map_err(|_| validation_failure(ValidationCode::InvalidValue))?;
+    let module = ValidatedQueryModule::compile(request.candidate, &bundle).map_err(|_| {
+        application_validation_failure(
+            ValidationCode::InvalidValue,
+            ApplicationErrorCode::QueryInvalid,
+        )
+    })?;
     let descriptor = QueryModuleDescriptor::from_module(&module);
     let operation = OperationRequest::deploy_query_module(
         bundle.lineage().clone(),
@@ -1461,13 +1466,19 @@ async fn explain_named_query(
         match load_query_module(&service, &context, bundle, Some(module_hash), OPERATION).await {
             Ok(Some(module)) => module,
             Ok(None) => {
-                let failure = validation_failure(ValidationCode::InvalidValue);
+                let failure = application_validation_failure(
+                    ValidationCode::InvalidValue,
+                    ApplicationErrorCode::ModuleUnavailable,
+                );
                 return Err(finish_failure(&service, &context, &begun, failure).await);
             }
             Err(failure) => return Err(finish_failure(&service, &context, &begun, failure).await),
         };
     let Some(query) = module.module().query(&request.query_name) else {
-        let failure = validation_failure(ValidationCode::InvalidValue);
+        let failure = application_validation_failure(
+            ValidationCode::InvalidValue,
+            ApplicationErrorCode::QueryUnavailable,
+        );
         return Err(finish_failure(&service, &context, &begun, failure).await);
     };
     let result = ExplainSymbolicQueryResult::Valid {
@@ -1505,11 +1516,18 @@ async fn execute_named_query(
         OPERATION,
     )
     .await?
-    .ok_or_else(|| validation_failure(ValidationCode::InvalidValue))?;
-    let query = module
-        .module()
-        .query(&request.query_name)
-        .ok_or_else(|| validation_failure(ValidationCode::InvalidValue))?;
+    .ok_or_else(|| {
+        application_validation_failure(
+            ValidationCode::InvalidValue,
+            ApplicationErrorCode::ModuleUnavailable,
+        )
+    })?;
+    let query = module.module().query(&request.query_name).ok_or_else(|| {
+        application_validation_failure(
+            ValidationCode::InvalidValue,
+            ApplicationErrorCode::QueryUnavailable,
+        )
+    })?;
     let document = parse_query(query.canonical_source())
         .map_err(|_| service.internal_failure(OPERATION, InternalDefect::ProofMismatch))?;
     execute_compiled_query(
@@ -1583,8 +1601,12 @@ async fn execute_query(
     )
     .await?;
     ensure_selected_hash(request.contract(), &bundle)?;
-    let compiled = compile_parts(request.source().as_str(), bundle.bundle())
-        .map_err(|_| validation_failure(ValidationCode::InvalidValue))?;
+    let compiled = compile_parts(request.source().as_str(), bundle.bundle()).map_err(|_| {
+        application_validation_failure(
+            ValidationCode::InvalidValue,
+            ApplicationErrorCode::QueryInvalid,
+        )
+    })?;
     execute_compiled_query(
         service,
         context,
@@ -1666,7 +1688,10 @@ async fn execute_compiled_query(
         ) {
             Ok(state) => Some(state),
             Err(CursorAccessError::InvalidCursor) => {
-                let failure = validation_failure(ValidationCode::InvalidValue);
+                let failure = application_validation_failure(
+                    ValidationCode::InvalidValue,
+                    ApplicationErrorCode::CursorInvalid,
+                );
                 return Err(finish_failure(&service, &context, &begun, failure).await);
             }
             Err(CursorAccessError::Unavailable) => {
@@ -2143,10 +2168,14 @@ fn execution_failure(
 ) -> ServiceFailure {
     match error {
         QueryExecutionError::MissingParameter { .. }
-        | QueryExecutionError::InvalidParameter { .. }
-        | QueryExecutionError::StaleCursor
-        | QueryExecutionError::InvalidContinuation => {
+        | QueryExecutionError::InvalidParameter { .. } => {
             validation_failure(ValidationCode::InvalidValue)
+        }
+        QueryExecutionError::StaleCursor | QueryExecutionError::InvalidContinuation => {
+            application_validation_failure(
+                ValidationCode::InvalidValue,
+                ApplicationErrorCode::CursorInvalid,
+            )
         }
         QueryExecutionError::BackendUnavailable => PublicError::storage_unavailable().into(),
         QueryExecutionError::BoundExceeded | QueryExecutionError::FuelExhausted => {
@@ -2168,6 +2197,22 @@ fn validation_failure(code: ValidationCode) -> ServiceFailure {
         ValidationPath::root(),
     )))
     .into()
+}
+
+fn application_validation_failure(
+    code: ValidationCode,
+    application_code: ApplicationErrorCode,
+) -> ServiceFailure {
+    let error = PublicError::validation(ValidationIssues::one(ValidationIssue::new(
+        code,
+        ValidationPath::root(),
+    )));
+    match error.with_application_code_hint(application_code) {
+        Ok(error) => error.into(),
+        Err(_) => ServiceFailure::from(PublicError::validation(ValidationIssues::one(
+            ValidationIssue::new(ValidationCode::InvalidValue, ValidationPath::root()),
+        ))),
+    }
 }
 
 fn parse_diagnostic(diagnostic: &ParseDiagnostic) -> SymbolicDiagnostic {

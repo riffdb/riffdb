@@ -3,8 +3,14 @@
 use std::error::Error;
 use std::fmt;
 
-use riffdb_errors::{ErrorClass, PublicError, PublicErrorKind};
-use riffdb_proto::{MAX_PUBLIC_ERROR_BYTES, PublicErrorWireError, decode_public_error};
+use riffdb_errors::{
+    ApplicationError, ApplicationErrorCode, ErrorClass, MAX_APPLICATION_ERROR_BYTES, PublicError,
+    PublicErrorKind,
+};
+use riffdb_proto::{
+    ApplicationErrorWireError, MAX_PUBLIC_ERROR_BYTES, PublicErrorWireError,
+    decode_application_error, decode_public_error,
+};
 use tonic::{Code, Status};
 
 use crate::ids::IdentifierGenerationError;
@@ -55,6 +61,16 @@ pub enum ProtocolFailureKind {
     InvalidOutboundMessage,
     /// A successful response or stream item failed public structural validation.
     InvalidInboundMessage,
+    /// An application RPC carried no application error details.
+    MissingApplicationErrorDetails,
+    /// Application error details exceeded their exact ceiling.
+    OversizedApplicationErrorDetails,
+    /// Application error details were malformed or noncanonical.
+    InvalidApplicationErrorDetails,
+    /// The application status code disagreed with its checked semantic code.
+    ApplicationStatusCodeMismatch,
+    /// The application status message disagreed with its registry-owned message.
+    ApplicationStatusMessageMismatch,
 }
 
 /// A bounded protocol failure containing no peer-provided text or bytes.
@@ -100,6 +116,8 @@ impl Error for OutcomeUnknown {}
 pub enum ClientError {
     /// A fully checked public-safe RiffDB failure.
     Public(PublicError),
+    /// A fully checked symbolic application failure.
+    Application(Box<ApplicationError>),
     /// A valid status from a closed details-free boundary.
     DetailsFree(DetailsFreeStatus),
     /// The peer violated the public gRPC contract.
@@ -124,7 +142,22 @@ impl ClientError {
     pub const fn public_error(&self) -> Option<&PublicError> {
         match self {
             Self::Public(error) => Some(error),
-            Self::DetailsFree(_)
+            Self::Application(_)
+            | Self::DetailsFree(_)
+            | Self::Protocol(_)
+            | Self::IdentifierGeneration(_)
+            | Self::ConnectionFailure
+            | Self::OutcomeUnknown(_) => None,
+        }
+    }
+
+    /// Returns a checked symbolic application failure, when this is one.
+    #[must_use]
+    pub const fn application_error(&self) -> Option<&ApplicationError> {
+        match self {
+            Self::Application(error) => Some(error),
+            Self::Public(_)
+            | Self::DetailsFree(_)
             | Self::Protocol(_)
             | Self::IdentifierGeneration(_)
             | Self::ConnectionFailure
@@ -137,6 +170,7 @@ impl fmt::Display for ClientError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Public(error) => error.fmt(formatter),
+            Self::Application(error) => error.fmt(formatter),
             Self::DetailsFree(status) => formatter.write_str(match status {
                 DetailsFreeStatus::Unauthenticated => AUTHENTICATION_FAILED,
                 DetailsFreeStatus::Cancelled => REQUEST_CANCELLED,
@@ -181,6 +215,36 @@ pub(crate) fn checked_status(status: Status) -> ClientError {
     ClientError::Public(error)
 }
 
+pub(crate) fn checked_application_status(status: Status) -> ClientError {
+    let details = status.details();
+    if details.is_empty() {
+        let checked = checked_details_free_status(
+            status.code(),
+            status.message(),
+            Error::source(&status).is_some(),
+        );
+        return match checked {
+            ClientError::DetailsFree(DetailsFreeStatus::EmergencyInternal)
+            | ClientError::DetailsFree(DetailsFreeStatus::TransportUnavailable) => checked,
+            _ => protocol(ProtocolFailureKind::MissingApplicationErrorDetails),
+        };
+    }
+    if details.len() > MAX_APPLICATION_ERROR_BYTES {
+        return protocol(ProtocolFailureKind::OversizedApplicationErrorDetails);
+    }
+    let error = match decode_application_error(details) {
+        Ok(error) => error,
+        Err(error) => return protocol(map_application_wire_error(error)),
+    };
+    if status.code() != code_for_application(error.code()) {
+        return protocol(ProtocolFailureKind::ApplicationStatusCodeMismatch);
+    }
+    if status.message() != error.safe_message() {
+        return protocol(ProtocolFailureKind::ApplicationStatusMessageMismatch);
+    }
+    ClientError::Application(Box::new(error))
+}
+
 fn checked_details_free_status(code: Code, message: &str, has_local_source: bool) -> ClientError {
     let status = match (code, message) {
         (Code::Unauthenticated, AUTHENTICATION_FAILED) => DetailsFreeStatus::Unauthenticated,
@@ -221,6 +285,31 @@ const fn code_for_class(class: ErrorClass) -> Code {
     }
 }
 
+const fn code_for_application(code: ApplicationErrorCode) -> Code {
+    match code {
+        ApplicationErrorCode::InvalidRequest
+        | ApplicationErrorCode::InputInvalid
+        | ApplicationErrorCode::QueryInvalid
+        | ApplicationErrorCode::CursorInvalid => Code::InvalidArgument,
+        ApplicationErrorCode::AuthorizationDenied | ApplicationErrorCode::CapabilityRevoked => {
+            Code::PermissionDenied
+        }
+        ApplicationErrorCode::ContractMismatch
+        | ApplicationErrorCode::QueryUnavailable
+        | ApplicationErrorCode::ModuleUnavailable
+        | ApplicationErrorCode::CommandExecutionFailed => Code::FailedPrecondition,
+        ApplicationErrorCode::ResponseTooLarge => Code::ResourceExhausted,
+        ApplicationErrorCode::StorageUnavailable => Code::Unavailable,
+        ApplicationErrorCode::OutcomeUnknown => Code::Unknown,
+        ApplicationErrorCode::OperationCancelled => Code::Cancelled,
+        ApplicationErrorCode::DeadlineExceeded => Code::DeadlineExceeded,
+        ApplicationErrorCode::InternalDefect | ApplicationErrorCode::ProtocolInvalid => {
+            Code::Internal
+        }
+        ApplicationErrorCode::IdempotencyKeyReuse => Code::AlreadyExists,
+    }
+}
+
 const fn map_wire_error(error: PublicErrorWireError) -> ProtocolFailureKind {
     match error {
         PublicErrorWireError::MessageTooLarge => ProtocolFailureKind::OversizedPublicErrorDetails,
@@ -239,6 +328,26 @@ const fn map_wire_error(error: PublicErrorWireError) -> ProtocolFailureKind {
     }
 }
 
+const fn map_application_wire_error(error: ApplicationErrorWireError) -> ProtocolFailureKind {
+    match error {
+        ApplicationErrorWireError::MessageTooLarge => {
+            ProtocolFailureKind::OversizedApplicationErrorDetails
+        }
+        ApplicationErrorWireError::MalformedEncoding
+        | ApplicationErrorWireError::PreflightLimitExceeded
+        | ApplicationErrorWireError::UnknownField
+        | ApplicationErrorWireError::DuplicateField
+        | ApplicationErrorWireError::UnknownCode
+        | ApplicationErrorWireError::UnknownOperation
+        | ApplicationErrorWireError::UnknownFix
+        | ApplicationErrorWireError::InconsistentRegistry
+        | ApplicationErrorWireError::InvalidContext
+        | ApplicationErrorWireError::MissingInternalIncident => {
+            ProtocolFailureKind::InvalidApplicationErrorDetails
+        }
+    }
+}
+
 const fn protocol(kind: ProtocolFailureKind) -> ClientError {
     ClientError::Protocol(ProtocolFailure::new(kind))
 }
@@ -249,6 +358,11 @@ pub(crate) const fn is_retryable(error: &ClientError) -> bool {
             error.recovery_action(),
             riffdb_errors::RecoveryAction::Retry
                 | riffdb_errors::RecoveryAction::ResolveWithSameIdempotencyKey
+        ),
+        ClientError::Application(error) => matches!(
+            error.recovery_action(),
+            riffdb_errors::ApplicationRecoveryAction::Retry
+                | riffdb_errors::ApplicationRecoveryAction::ResolveWithSameIdempotencyKey
         ),
         ClientError::DetailsFree(DetailsFreeStatus::TransportUnavailable) => true,
         ClientError::DetailsFree(_)
@@ -263,6 +377,10 @@ pub(crate) const fn carries_uncertainty(error: &ClientError) -> bool {
     matches!(
         error,
         ClientError::Public(error) if matches!(error.kind(), PublicErrorKind::OutcomeUnknown)
+    ) || matches!(
+        error,
+        ClientError::Application(error)
+            if matches!(error.code(), ApplicationErrorCode::OutcomeUnknown)
     ) || matches!(
         error,
         ClientError::DetailsFree(DetailsFreeStatus::TransportUnavailable)
@@ -401,6 +519,52 @@ mod tests {
                 details.into(),
             )),
             ProtocolFailureKind::StatusMessageMismatch,
+        );
+    }
+
+    #[test]
+    fn checked_application_error_rejects_downgrade_status_and_message_drift() {
+        let application = ApplicationError::new(
+            ApplicationErrorCode::AuthorizationDenied,
+            riffdb_errors::ApplicationOperation::ExecuteQuery,
+            riffdb_errors::ApplicationErrorContext::empty(),
+            None,
+        );
+        let details = riffdb_proto::encode_application_error(&application);
+        let checked = checked_application_status(Status::with_details(
+            Code::PermissionDenied,
+            application.safe_message(),
+            details.clone().into(),
+        ));
+        assert!(matches!(
+            checked,
+            ClientError::Application(ref error) if error.as_ref() == &application
+        ));
+        assert_protocol_kind(
+            checked_application_status(Status::with_details(
+                Code::InvalidArgument,
+                application.safe_message(),
+                details.clone().into(),
+            )),
+            ProtocolFailureKind::ApplicationStatusCodeMismatch,
+        );
+        assert_protocol_kind(
+            checked_application_status(Status::with_details(
+                Code::PermissionDenied,
+                "peer supplied authorization detail",
+                details.into(),
+            )),
+            ProtocolFailureKind::ApplicationStatusMessageMismatch,
+        );
+
+        let legacy_kernel_details = authorization_denied_bytes();
+        assert_protocol_kind(
+            checked_application_status(Status::with_details(
+                Code::PermissionDenied,
+                "operation is not authorized",
+                legacy_kernel_details.into(),
+            )),
+            ProtocolFailureKind::InvalidApplicationErrorDetails,
         );
     }
 

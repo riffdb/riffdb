@@ -1,0 +1,1 @@
+application_error version=1 code=RDB-AUTH-0214 category=authorization recovery_action=obtain_permission operation=ExecuteQuery contract_lineage=ticketdesk contract_version=18 operation_symbol=TicketPage symbol_path=Ticket.requester.User.email source_span=20:44 fixes=bind_application_role trace_id=019bf6aa-a640-7de6-89c9-8a7f70bbbd23

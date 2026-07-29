@@ -1728,6 +1728,7 @@ version = "0.1.0"
 dependencies = [
  "riffdb-contract-compiler",
  "riffdb-contract-ir",
+ "riffdb-errors",
  "riffdb-types",
 ]
 

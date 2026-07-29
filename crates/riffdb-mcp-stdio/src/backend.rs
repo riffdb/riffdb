@@ -1091,6 +1091,7 @@ fn fresh_public_request_id() -> Result<[u8; 16], RequestIdSourceError> {
 pub(crate) fn map_client_error(error: ClientError) -> McpBackendError {
     match error {
         ClientError::Public(error) => McpBackendError::Public(error),
+        ClientError::Application(error) => McpBackendError::Application(error),
         ClientError::DetailsFree(DetailsFreeStatus::Unauthenticated) => {
             McpBackendError::AuthenticationLost
         }
@@ -1124,13 +1125,17 @@ impl<T> AuthenticatedClientResult<T> for Result<T, ClientError> {
 }
 
 fn client_result_proves_authentication<T>(result: &Result<T, ClientError>) -> bool {
-    matches!(result, Ok(_) | Err(ClientError::Public(_)))
+    matches!(
+        result,
+        Ok(_) | Err(ClientError::Public(_) | ClientError::Application(_))
+    )
 }
 
 fn hide_dynamic_resolution_error(error: McpBackendError) -> McpBackendError {
     match error {
         McpBackendError::AuthenticationLost | McpBackendError::Cancelled => error,
         McpBackendError::Public(_)
+        | McpBackendError::Application(_)
         | McpBackendError::InvalidResponse
         | McpBackendError::RateLimited
         | McpBackendError::TargetUnavailable => McpBackendError::TargetUnavailable,
