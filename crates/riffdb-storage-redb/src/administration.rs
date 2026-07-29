@@ -10,16 +10,17 @@ use riffdb_storage_api::{
     CapabilityBootstrapAdministrationRepository, CapabilityBootstrapIntentV1,
     CapabilityBootstrapMarkerV1, CapabilityBootstrapResult, CapabilityCreateAwaitingDecision,
     CapabilityCreateCandidateTransaction, CapabilityCreateCandidateV1, CapabilityCreateIntentV1,
-    CapabilityCreateResult, CapabilityLifecycleV1, CapabilityLookupResult,
-    CapabilityMutationCurrentStateV1, CapabilityReader, CapabilityRevokeAwaitingDecision,
-    CapabilityRevokeCandidateTransaction, CapabilityRevokeCandidateV1, CapabilityRevokeIntentV1,
-    CapabilityRevokeResult, CapabilityTokenLookupV1, CatalogActivationIntentV1,
-    CatalogActivationResult, CatalogAdministrationRepository, CatalogRepository, EncodedPageItem,
-    MAX_READABLE_DIGEST_KEYS, MAX_SCAN_PAGE_BYTES, SequenceAllocationError,
-    ServiceAuditAppendIntentV1, ServiceAuditAppendRepository, ServiceAuditAppendResult,
-    StorageError, StorageErrorKind, StoredAdministrationAuditRecordV1,
-    StoredCapabilityAdministrationV1, StoredCapabilityRecordV1, StoredCatalogAdministrationV1,
-    StoredContractBundleV1, StoredServiceAuditRecordV1, TransactionCurrentCapabilityObservationV1,
+    CapabilityCreateResult, CapabilityInventoryPageV1, CapabilityInventoryReader,
+    CapabilityLifecycleV1, CapabilityLookupResult, CapabilityMutationCurrentStateV1,
+    CapabilityReader, CapabilityRevokeAwaitingDecision, CapabilityRevokeCandidateTransaction,
+    CapabilityRevokeCandidateV1, CapabilityRevokeIntentV1, CapabilityRevokeResult,
+    CapabilityTokenLookupV1, CatalogActivationIntentV1, CatalogActivationResult,
+    CatalogAdministrationRepository, CatalogRepository, EncodedPageItem, MAX_READABLE_DIGEST_KEYS,
+    MAX_SCAN_PAGE_BYTES, SequenceAllocationError, ServiceAuditAppendIntentV1,
+    ServiceAuditAppendRepository, ServiceAuditAppendResult, StorageError, StorageErrorKind,
+    StorageScanLimit, StoredAdministrationAuditRecordV1, StoredCapabilityAdministrationV1,
+    StoredCapabilityRecordV1, StoredCatalogAdministrationV1, StoredContractBundleV1,
+    StoredServiceAuditRecordV1, TransactionCurrentCapabilityObservationV1,
 };
 use riffdb_types::{
     AdministrationSequence, CapabilityId, CapabilityTokenDigest, ContractLineage, ContractVersion,
@@ -38,8 +39,9 @@ use crate::codec::{
 use crate::error::{precommit_storage_error, storage_error, table_error};
 use crate::hooks::RedbTestOperation;
 use crate::keys::{
-    decode_audit_key, encode_application_sequence_key, encode_audit_key, encode_capability_key,
-    encode_capability_token_key, encode_contract_bundle_key, encode_provenance_key,
+    decode_audit_key, decode_capability_key, encode_application_sequence_key, encode_audit_key,
+    encode_capability_key, encode_capability_token_key, encode_contract_bundle_key,
+    encode_provenance_key,
 };
 use crate::layout::{
     AUDIT, CAPABILITIES, CAPABILITY_TOKENS, CATALOG_ACTIVE, CATALOG_ACTIVE_KEY, COMMITS,
@@ -638,6 +640,42 @@ impl CapabilityReader for RedbOperationalPorts {
             .open_table(CAPABILITY_TOKENS)
             .map_err(table_error)?;
         resolve_capability_digests_from_tables(&capabilities, &lookups, database_id, candidates)
+    }
+}
+
+impl CapabilityInventoryReader for RedbOperationalPorts {
+    fn scan_capabilities(
+        &self,
+        after: Option<CapabilityId>,
+        limit: StorageScanLimit,
+    ) -> Result<CapabilityInventoryPageV1, StorageError> {
+        let transaction = self.begin_read()?;
+        read_database_id_readonly(&transaction)?;
+        let table = transaction.open_table(CAPABILITIES).map_err(table_error)?;
+        let mut records = Vec::new();
+        let mut bytes = 0usize;
+        let mut has_more = false;
+        for entry in table.iter().map_err(precommit_storage_error)? {
+            let (key, value) = entry.map_err(precommit_storage_error)?;
+            let capability_id = decode_capability_key(key.value()).map_err(|_| corrupt())?;
+            if after.is_some_and(|after| capability_id <= after) {
+                continue;
+            }
+            let record = decoded_value(decode_capability_record_v1(value.value())?);
+            if record.capability_id() != capability_id {
+                return Err(corrupt());
+            }
+            let next_bytes = bytes
+                .checked_add(record.semantic_bytes().map_err(|_| corrupt())?)
+                .ok_or_else(corrupt)?;
+            if records.len() == usize::from(limit.get()) || next_bytes > MAX_SCAN_PAGE_BYTES {
+                has_more = true;
+                break;
+            }
+            bytes = next_bytes;
+            records.push(record);
+        }
+        CapabilityInventoryPageV1::new(after, limit, records, has_more).map_err(|_| corrupt())
     }
 }
 
@@ -1788,6 +1826,15 @@ mod tests {
                 .expect("resolve bootstrap digest"),
             CapabilityLookupResult::Found(record) if record.capability_id() == root
         ));
+        let inventory = CapabilityInventoryReader::scan_capabilities(
+            &ports,
+            None,
+            StorageScanLimit::new(1).expect("inventory limit"),
+        )
+        .expect("scan capability inventory");
+        assert_eq!(inventory.records().len(), 1);
+        assert_eq!(inventory.records()[0].capability_id(), root);
+        assert!(!inventory.has_more());
 
         let replay = bootstrap_intent(21, root, root_digest, 20);
         assert_eq!(

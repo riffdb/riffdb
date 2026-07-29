@@ -225,7 +225,9 @@ impl ProductionGraphBuilder {
         let spawner = SupervisedServiceJobSpawner::from_current_runtime(runtime.clone())
             .map_err(ProductionGraphBuildError::Runtime)?;
 
-        let storage = SharedRedbOperationalPorts::new(operational_ports);
+        let health: Arc<dyn ServiceHealthHooks> = Arc::new(runtime.clone());
+        let storage = SharedRedbOperationalPorts::new(operational_ports, Some(health))
+            .map_err(|_| ProductionGraphBuildError::CurrentView)?;
         let outbox_recovery = recover_outbox(storage.clone(), clocks.outbox());
         let outbox_health = NoDestinationOutboxHealth::new(outbox_recovery);
         outbox_health.refresh(&storage);
@@ -703,6 +705,7 @@ fn shutdown_result(
 /// Closed construction failure with cleanup evidence for any started owner.
 pub(crate) enum ProductionGraphBuildError {
     ServerGeneration(ServerGenerationSourceError),
+    CurrentView,
     ReadableIdempotencyDigests(StorageValueError),
     TrustedAudience(CapabilityMutationFactsError),
     Runtime(RuntimeSupportError),
@@ -740,6 +743,7 @@ impl fmt::Display for ProductionGraphBuildError {
             | Self::ProjectionWorker { cleanup, .. }
             | Self::Activation { cleanup, .. } => cleanup.is_some(),
             Self::ServerGeneration(_)
+            | Self::CurrentView
             | Self::ReadableIdempotencyDigests(_)
             | Self::TrustedAudience(_)
             | Self::Runtime(_)
@@ -759,6 +763,7 @@ impl Error for ProductionGraphBuildError {
     fn source(&self) -> Option<&(dyn Error + 'static)> {
         match self {
             Self::ServerGeneration(source) => Some(source),
+            Self::CurrentView => None,
             Self::ReadableIdempotencyDigests(source) => Some(source),
             Self::TrustedAudience(source) => Some(source),
             Self::Runtime(source) => Some(source),

@@ -103,7 +103,8 @@ impl RunningRestoreRetryHost {
             _allocator_capacity,
             operational_ports,
         ) = startup.into_parts();
-        let storage = SharedRedbOperationalPorts::new(operational_ports);
+        let storage = SharedRedbOperationalPorts::new(operational_ports, None)
+            .map_err(|_| RestoreRetryHostStartError::InvalidStartup)?;
         let authentication_telemetry: Arc<dyn AuthenticationTelemetry> = observability.clone();
         let authorization_telemetry: Arc<dyn AuthorizationTelemetry> = observability;
         let capability_keys = digest_keys.shared_capability();

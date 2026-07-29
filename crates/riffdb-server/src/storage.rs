@@ -4,6 +4,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 use std::sync::{Arc, Mutex, MutexGuard};
 
+use riffdb_service::{AuthoritativeReadinessFailure, ServiceHealthHooks};
 use riffdb_storage_api::{
     ActiveCatalogPointerV1, AdmissionLookupResultV1, AdmissionRepository, AdmissionRequestV1,
     AdmissionResultV1, ApplicationCommandTransactionPort, AuthoritativeIndexScanPage,
@@ -11,7 +12,7 @@ use riffdb_storage_api::{
     CapabilityAdministrationTransactionPort, CapabilityBootstrapAdministrationRepository,
     CapabilityBootstrapIntentV1, CapabilityBootstrapResult, CapabilityCreateAwaitingDecision,
     CapabilityCreateCandidateTransaction, CapabilityCreateCandidateV1, CapabilityCreateIntentV1,
-    CapabilityCreateResult, CapabilityLookupResult, CapabilityReader,
+    CapabilityCreateResult, CapabilityInventoryReader, CapabilityLookupResult, CapabilityReader,
     CapabilityRevokeAwaitingDecision, CapabilityRevokeCandidateTransaction,
     CapabilityRevokeCandidateV1, CapabilityRevokeIntentV1, CapabilityRevokeResult,
     CatalogActivationIntentV1, CatalogActivationResult, CatalogAdministrationRepository,
@@ -29,8 +30,8 @@ use riffdb_storage_api::{
     ProjectionRecoveryValidationRequestV1, ProjectionRecoveryValidationResultV1, ProjectionStatus,
     ReadSnapshot, ServiceAuditAppendIntentV1, ServiceAuditAppendRepository,
     ServiceAuditAppendResult, SnapshotReader, SnapshotRequest, StorageError, StorageErrorKind,
-    StoredCapabilityRecordV1, StoredCommitRecordV1, StoredContractBundleV1, StoredDurableEventV1,
-    StoredEntityRecordV1, StoredOutcomeV1, StoredProvenanceRecordV1,
+    StorageScanLimit, StoredCapabilityRecordV1, StoredCommitRecordV1, StoredContractBundleV1,
+    StoredDurableEventV1, StoredEntityRecordV1, StoredOutcomeV1, StoredProvenanceRecordV1,
     UndeliveredOutboxStatusScanRequestV1, UndeliveredOutboxStatusScanV1,
 };
 use riffdb_storage_redb::RedbOperationalPorts;
@@ -52,7 +53,9 @@ use riffdb_types::{
 )]
 pub(crate) struct SharedRedbOperationalPorts {
     cell: SharedStorageCell<RedbOperationalPorts>,
+    catalog: Arc<CurrentCatalogView>,
     capabilities: Arc<CurrentCapabilityView>,
+    health: Option<Arc<dyn ServiceHealthHooks>>,
 }
 
 impl SharedRedbOperationalPorts {
@@ -61,11 +64,25 @@ impl SharedRedbOperationalPorts {
         dead_code,
         reason = "WP-130 process composition constructs this private bridge after staged startup"
     )]
-    pub(crate) fn new(ports: RedbOperationalPorts) -> Self {
-        Self {
+    pub(crate) fn new(
+        ports: RedbOperationalPorts,
+        health: Option<Arc<dyn ServiceHealthHooks>>,
+    ) -> Result<Self, StorageError> {
+        let catalog = CurrentCatalogView::rebuild(&ports)?;
+        let capabilities = CurrentCapabilityView::rebuild(&ports)?;
+        Ok(Self {
             cell: SharedStorageCell::new(ports),
-            capabilities: Arc::new(CurrentCapabilityView::new()),
+            catalog: Arc::new(catalog),
+            capabilities: Arc::new(capabilities),
+            health,
+        })
+    }
+
+    fn current_view_failure(&self, error: StorageError) -> StorageError {
+        if let Some(health) = &self.health {
+            health.fail_authoritative_readiness(AuthoritativeReadinessFailure::Integrity);
         }
+        error
     }
 }
 
@@ -73,7 +90,9 @@ impl Clone for SharedRedbOperationalPorts {
     fn clone(&self) -> Self {
         Self {
             cell: self.cell.clone(),
+            catalog: Arc::clone(&self.catalog),
             capabilities: Arc::clone(&self.capabilities),
+            health: self.health.clone(),
         }
     }
 }
@@ -137,6 +156,93 @@ fn poisoned_storage_bridge() -> StorageError {
     StorageError::new(StorageErrorKind::InvariantViolation, None)
 }
 
+#[derive(Default)]
+struct CurrentCatalogViewState {
+    active: Option<ActiveCatalogPointerV1>,
+    active_bundle: Option<StoredContractBundleV1>,
+}
+
+impl CurrentCatalogViewState {
+    fn install_rebuilt(
+        &mut self,
+        active: ActiveCatalogPointerV1,
+        bundle: StoredContractBundleV1,
+    ) -> Result<(), StorageError> {
+        if !active.matches_bundle(&bundle) {
+            return Err(poisoned_storage_bridge());
+        }
+        self.active = Some(active);
+        self.active_bundle = Some(bundle);
+        Ok(())
+    }
+
+    fn publish_activation(
+        &mut self,
+        expected_active_version: Option<ContractVersion>,
+        active: ActiveCatalogPointerV1,
+        bundle: StoredContractBundleV1,
+        changed: bool,
+    ) -> Result<(), StorageError> {
+        if !active.matches_bundle(&bundle) {
+            return Err(poisoned_storage_bridge());
+        }
+        if changed {
+            let current_version = self
+                .active
+                .as_ref()
+                .map(ActiveCatalogPointerV1::contract_version);
+            if current_version != expected_active_version {
+                return Err(poisoned_storage_bridge());
+            }
+        } else if self.active.as_ref() != Some(&active) {
+            return Err(poisoned_storage_bridge());
+        }
+        self.active = Some(active);
+        self.active_bundle = Some(bundle);
+        Ok(())
+    }
+
+    fn active_bundle(
+        &self,
+        lineage: &ContractLineage,
+        contract_version: ContractVersion,
+    ) -> Option<StoredContractBundleV1> {
+        self.active_bundle
+            .as_ref()
+            .filter(|bundle| {
+                bundle.lineage() == lineage && bundle.contract_version() == contract_version
+            })
+            .cloned()
+    }
+}
+
+struct CurrentCatalogView {
+    state: Mutex<CurrentCatalogViewState>,
+}
+
+impl CurrentCatalogView {
+    fn rebuild(ports: &RedbOperationalPorts) -> Result<Self, StorageError> {
+        let active = CatalogRepository::read_active_catalog(ports)?;
+        let mut state = CurrentCatalogViewState::default();
+        if let Some(active) = active {
+            let bundle = CatalogRepository::read_contract_bundle(
+                ports,
+                active.lineage(),
+                active.contract_version(),
+            )?
+            .ok_or_else(poisoned_storage_bridge)?;
+            state.install_rebuilt(active, bundle)?;
+        }
+        Ok(Self {
+            state: Mutex::new(state),
+        })
+    }
+
+    fn lock(&self) -> Result<MutexGuard<'_, CurrentCatalogViewState>, StorageError> {
+        self.state.lock().map_err(|_| poisoned_storage_bridge())
+    }
+}
+
 const MAX_CURRENT_CAPABILITY_VIEW_RECORDS: usize = 4_096;
 type RedbCapabilityCreateCandidate =
     <RedbOperationalPorts as CapabilityAdministrationTransactionPort>::CreateCandidate;
@@ -155,16 +261,44 @@ struct CurrentCapabilityViewState {
 }
 
 impl CurrentCapabilityViewState {
-    fn insert(&mut self, record: StoredCapabilityRecordV1) -> Result<(), StorageError> {
+    fn insert_rebuilt(&mut self, record: StoredCapabilityRecordV1) -> Result<(), StorageError> {
+        let capability_id = record.capability_id();
+        let digest = record.token_digest();
+        if self.records.contains_key(&capability_id)
+            || self
+                .digests
+                .get(&digest)
+                .is_some_and(|existing| *existing != capability_id)
+        {
+            return Err(poisoned_storage_bridge());
+        }
+        if self.records.len() == MAX_CURRENT_CAPABILITY_VIEW_RECORDS {
+            return Err(StorageError::new(StorageErrorKind::LimitExceeded, None));
+        }
+        self.known_absent_digests.remove(&digest);
+        self.digests.insert(digest, capability_id);
+        self.records.insert(capability_id, record);
+        Ok(())
+    }
+
+    fn publish(&mut self, record: StoredCapabilityRecordV1) -> Result<(), StorageError> {
         let capability_id = record.capability_id();
         let digest = record.token_digest();
         if let Some(existing) = self.records.get(&capability_id) {
-            if existing.revision() > record.revision() {
+            if existing == &record {
+                return Ok(());
+            }
+            let expected_revision = existing
+                .revision()
+                .get()
+                .checked_add(1)
+                .and_then(std::num::NonZeroU64::new)
+                .ok_or_else(poisoned_storage_bridge)?;
+            if record.revision() != expected_revision || existing.token_digest() != digest {
                 return Err(poisoned_storage_bridge());
             }
-            if existing.token_digest() != digest {
-                return Err(poisoned_storage_bridge());
-            }
+        } else if record.revision() != std::num::NonZeroU64::MIN {
+            return Err(poisoned_storage_bridge());
         } else if self.records.len() == MAX_CURRENT_CAPABILITY_VIEW_RECORDS {
             return Err(StorageError::new(StorageErrorKind::LimitExceeded, None));
         }
@@ -209,7 +343,7 @@ impl CurrentCapabilityViewState {
         result: &CapabilityLookupResult,
     ) -> Result<(), StorageError> {
         if let CapabilityLookupResult::Found(record) = result {
-            self.insert((**record).clone())?;
+            self.publish((**record).clone())?;
         }
         for candidate in candidates {
             if !self.digests.contains_key(candidate) {
@@ -225,14 +359,24 @@ struct CurrentCapabilityView {
 }
 
 impl CurrentCapabilityView {
-    const fn new() -> Self {
-        Self {
-            state: Mutex::new(CurrentCapabilityViewState {
-                records: BTreeMap::new(),
-                digests: BTreeMap::new(),
-                known_absent_digests: BTreeSet::new(),
-            }),
+    fn rebuild(ports: &RedbOperationalPorts) -> Result<Self, StorageError> {
+        let mut state = CurrentCapabilityViewState::default();
+        let limit = StorageScanLimit::new(500).expect("fixed inventory page limit is valid");
+        let mut after = None;
+        loop {
+            let page = ports.scan_capabilities(after, limit)?;
+            let has_more = page.has_more();
+            for record in page.into_records() {
+                after = Some(record.capability_id());
+                state.insert_rebuilt(record)?;
+            }
+            if !has_more {
+                break;
+            }
         }
+        Ok(Self {
+            state: Mutex::new(state),
+        })
     }
 
     fn lock(&self) -> Result<MutexGuard<'_, CurrentCapabilityViewState>, StorageError> {
@@ -322,8 +466,30 @@ impl CatalogAdministrationRepository for SharedRedbOperationalPorts {
         &mut self,
         intent: &CatalogActivationIntentV1,
     ) -> Result<CatalogActivationResult, StorageError> {
-        self.cell
-            .with_mut(|ports| CatalogAdministrationRepository::activate_catalog(ports, intent))
+        let mut view = self.catalog.lock()?;
+        let result = self
+            .cell
+            .with_mut(|ports| CatalogAdministrationRepository::activate_catalog(ports, intent))?;
+        let publication = match &result {
+            CatalogActivationResult::Activated { active, .. } => view.publish_activation(
+                intent.expected_active_version(),
+                active.clone(),
+                intent.bundle().clone(),
+                true,
+            ),
+            CatalogActivationResult::AlreadyActive { active, .. } => view.publish_activation(
+                intent.expected_active_version(),
+                active.clone(),
+                intent.bundle().clone(),
+                false,
+            ),
+            CatalogActivationResult::ExpectedActiveVersionMismatch { .. }
+            | CatalogActivationResult::BundleConflict => Ok(()),
+        };
+        if let Err(error) = publication {
+            return Err(self.current_view_failure(error));
+        }
+        Ok(result)
     }
 }
 
@@ -403,9 +569,13 @@ impl CapabilityCreateAwaitingDecision for SharedCapabilityCreateAwaiting {
         if let Some(capability_id) = capability_id {
             let record = storage
                 .cell
-                .with_ref(|ports| CapabilityReader::read_capability(ports, capability_id))?
-                .ok_or_else(poisoned_storage_bridge)?;
-            view.insert(record)?;
+                .with_ref(|ports| CapabilityReader::read_capability(ports, capability_id))
+                .map_err(|error| storage.current_view_failure(error))?
+                .ok_or_else(poisoned_storage_bridge)
+                .map_err(|error| storage.current_view_failure(error))?;
+            if let Err(error) = view.publish(record) {
+                return Err(storage.current_view_failure(error));
+            }
         }
         Ok(result)
     }
@@ -453,9 +623,13 @@ impl CapabilityRevokeAwaitingDecision for SharedCapabilityRevokeAwaiting {
         if let Some(capability_id) = capability_id {
             let record = storage
                 .cell
-                .with_ref(|ports| CapabilityReader::read_capability(ports, capability_id))?
-                .ok_or_else(poisoned_storage_bridge)?;
-            view.insert(record)?;
+                .with_ref(|ports| CapabilityReader::read_capability(ports, capability_id))
+                .map_err(|error| storage.current_view_failure(error))?
+                .ok_or_else(poisoned_storage_bridge)
+                .map_err(|error| storage.current_view_failure(error))?;
+            if let Err(error) = view.publish(record) {
+                return Err(storage.current_view_failure(error));
+            }
         }
         Ok(result)
     }
@@ -489,9 +663,13 @@ impl CapabilityBootstrapAdministrationRepository for SharedRedbOperationalPorts 
         if let Some(capability_id) = capability_id {
             let record = self
                 .cell
-                .with_ref(|ports| CapabilityReader::read_capability(ports, capability_id))?
-                .ok_or_else(poisoned_storage_bridge)?;
-            view.insert(record)?;
+                .with_ref(|ports| CapabilityReader::read_capability(ports, capability_id))
+                .map_err(|error| self.current_view_failure(error))?
+                .ok_or_else(poisoned_storage_bridge)
+                .map_err(|error| self.current_view_failure(error))?;
+            if let Err(error) = view.publish(record) {
+                return Err(self.current_view_failure(error));
+            }
         }
         Ok(result)
     }
@@ -499,7 +677,7 @@ impl CapabilityBootstrapAdministrationRepository for SharedRedbOperationalPorts 
 
 impl CatalogRepository for SharedRedbOperationalPorts {
     fn read_active_catalog(&self) -> Result<Option<ActiveCatalogPointerV1>, StorageError> {
-        self.cell.with_ref(CatalogRepository::read_active_catalog)
+        Ok(self.catalog.lock()?.active.clone())
     }
 
     fn read_contract_bundle(
@@ -507,6 +685,13 @@ impl CatalogRepository for SharedRedbOperationalPorts {
         lineage: &ContractLineage,
         contract_version: ContractVersion,
     ) -> Result<Option<StoredContractBundleV1>, StorageError> {
+        if let Some(bundle) = self
+            .catalog
+            .lock()?
+            .active_bundle(lineage, contract_version)
+        {
+            return Ok(Some(bundle));
+        }
         self.cell.with_ref(|ports| {
             CatalogRepository::read_contract_bundle(ports, lineage, contract_version)
         })
@@ -525,8 +710,10 @@ impl CapabilityReader for SharedRedbOperationalPorts {
         let record = self
             .cell
             .with_ref(|ports| CapabilityReader::read_capability(ports, capability_id))?;
-        if let Some(record) = record.as_ref() {
-            view.insert(record.clone())?;
+        if let Some(record) = record.as_ref()
+            && let Err(error) = view.publish(record.clone())
+        {
+            return Err(self.current_view_failure(error));
         }
         Ok(record)
     }
@@ -542,8 +729,21 @@ impl CapabilityReader for SharedRedbOperationalPorts {
         let result = self
             .cell
             .with_ref(|ports| CapabilityReader::resolve_capability_digests(ports, candidates))?;
-        view.note_lookup(candidates, &result)?;
+        if let Err(error) = view.note_lookup(candidates, &result) {
+            return Err(self.current_view_failure(error));
+        }
         Ok(result)
+    }
+}
+
+impl CapabilityInventoryReader for SharedRedbOperationalPorts {
+    fn scan_capabilities(
+        &self,
+        after: Option<CapabilityId>,
+        limit: StorageScanLimit,
+    ) -> Result<riffdb_storage_api::CapabilityInventoryPageV1, StorageError> {
+        self.cell
+            .with_ref(|ports| CapabilityInventoryReader::scan_capabilities(ports, after, limit))
     }
 }
 
@@ -761,8 +961,9 @@ mod tests {
         PartitionScopeV1,
     };
     use riffdb_types::{
-        ActorId, ActorKind, AdministrationSequence, Audience, CapabilityGrantV1, DatabaseId,
-        DigestKeyId, Environment, RequestId, RevocationReasonCodeV1, TenantScope, Timestamp,
+        ActorId, ActorKind, AdministrationSequence, Audience, CapabilityGrantV1,
+        ContractBundleHash, DatabaseId, DigestKeyId, Environment, RequestId,
+        RevocationReasonCodeV1, TenantScope, Timestamp,
     };
 
     use super::*;
@@ -810,6 +1011,46 @@ mod tests {
         .expect("active capability")
     }
 
+    fn catalog_bundle(version: u64, fill: u8) -> StoredContractBundleV1 {
+        StoredContractBundleV1::new(
+            ContractLineage::new("view-test").expect("lineage"),
+            ContractVersion::new(version).expect("version"),
+            ContractBundleHash::from_bytes([fill; 32]),
+            vec![fill],
+        )
+        .expect("bundle")
+    }
+
+    #[test]
+    fn current_catalog_view_accepts_only_the_expected_activation_successor() {
+        let first = catalog_bundle(1, 0x11);
+        let second = catalog_bundle(2, 0x22);
+        let mut view = CurrentCatalogViewState::default();
+        view.install_rebuilt(ActiveCatalogPointerV1::from_bundle(&first), first.clone())
+            .expect("install startup view");
+
+        assert!(
+            view.publish_activation(
+                Some(ContractVersion::new(2).expect("wrong expected version")),
+                ActiveCatalogPointerV1::from_bundle(&second),
+                second.clone(),
+                true,
+            )
+            .is_err()
+        );
+        view.publish_activation(
+            Some(first.contract_version()),
+            ActiveCatalogPointerV1::from_bundle(&second),
+            second.clone(),
+            true,
+        )
+        .expect("publish exact successor");
+        assert_eq!(
+            view.active_bundle(second.lineage(), second.contract_version()),
+            Some(second)
+        );
+    }
+
     #[test]
     fn current_capability_view_publishes_revisions_and_complete_digest_lookup_facts() {
         let active = capability_record();
@@ -837,7 +1078,7 @@ mod tests {
                 RevocationReasonCodeV1::Requested,
             )
             .expect("revoked record");
-        view.insert(revoked).expect("publish revoke");
+        view.publish(revoked).expect("publish revoke");
         let CapabilityLookupResult::Found(found) = view
             .resolve(&[digest, absent])
             .expect("lookup remains complete")
@@ -974,6 +1215,7 @@ mod tests {
                 + CapabilityBootstrapAdministrationRepository
                 + CatalogRepository
                 + CapabilityReader
+                + CapabilityInventoryReader
                 + AuthoritativePointReader
                 + AuthoritativeScanReader
                 + OutboxRepository

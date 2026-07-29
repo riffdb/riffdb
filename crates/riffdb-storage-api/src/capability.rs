@@ -14,7 +14,10 @@ pub use riffdb_types::{
     RevocationReasonCodeV1, ScopedPartitionV1,
 };
 
-use crate::{AuditPrincipalV1, BootstrapServiceAuditStartV1, StorageError, StorageValueError};
+use crate::{
+    AuditPrincipalV1, BootstrapServiceAuditStartV1, MAX_SCAN_PAGE_BYTES, StorageError,
+    StorageScanLimit, StorageValueError,
+};
 
 /// Canonical request-owned record used to detect create/bootstrap replay.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -1246,6 +1249,60 @@ pub enum CapabilityLookupResult {
     MultipleMatches,
 }
 
+/// One bounded ordered page used only to rebuild the process-local current view.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct CapabilityInventoryPageV1 {
+    records: Vec<StoredCapabilityRecordV1>,
+    has_more: bool,
+}
+
+impl CapabilityInventoryPageV1 {
+    /// Checks ordering, continuation, row count, and the shared scan-byte bound.
+    pub fn new(
+        after: Option<CapabilityId>,
+        limit: StorageScanLimit,
+        records: Vec<StoredCapabilityRecordV1>,
+        has_more: bool,
+    ) -> Result<Self, StorageValueError> {
+        if records.len() > usize::from(limit.get()) || (records.is_empty() && has_more) {
+            return Err(StorageValueError::LimitExceeded);
+        }
+        let mut previous = after;
+        let mut bytes = 0usize;
+        for record in &records {
+            if previous.is_some_and(|value| record.capability_id() <= value) {
+                return Err(StorageValueError::InvalidShape);
+            }
+            previous = Some(record.capability_id());
+            bytes = bytes
+                .checked_add(record.semantic_bytes()?)
+                .ok_or(StorageValueError::SizeOverflow)?;
+            if bytes > MAX_SCAN_PAGE_BYTES {
+                return Err(StorageValueError::LimitExceeded);
+            }
+        }
+        Ok(Self { records, has_more })
+    }
+
+    /// Returns the canonical capability-ID ordered records.
+    #[must_use]
+    pub fn records(&self) -> &[StoredCapabilityRecordV1] {
+        &self.records
+    }
+
+    /// Returns whether another page must follow.
+    #[must_use]
+    pub const fn has_more(&self) -> bool {
+        self.has_more
+    }
+
+    /// Consumes the checked page.
+    #[must_use]
+    pub fn into_records(self) -> Vec<StoredCapabilityRecordV1> {
+        self.records
+    }
+}
+
 /// Closed normal create transition result.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum CapabilityCreateResult {
@@ -1340,6 +1397,16 @@ pub trait CapabilityReader {
         &self,
         candidates: &[CapabilityTokenDigest],
     ) -> Result<CapabilityLookupResult, StorageError>;
+}
+
+/// Complete ordered capability inventory used to rebuild a non-authoritative view.
+pub trait CapabilityInventoryReader {
+    /// Reads one bounded page strictly after the supplied stable ID.
+    fn scan_capabilities(
+        &self,
+        after: Option<CapabilityId>,
+        limit: StorageScanLimit,
+    ) -> Result<CapabilityInventoryPageV1, StorageError>;
 }
 
 /// Opens short consuming normal capability-administration transactions.

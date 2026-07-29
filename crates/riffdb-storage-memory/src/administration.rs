@@ -9,16 +9,17 @@ use riffdb_storage_api::{
     CapabilityBootstrapIntentV1, CapabilityBootstrapMarkerV1, CapabilityBootstrapResult,
     CapabilityCreateAwaitingDecision, CapabilityCreateCandidateTransaction,
     CapabilityCreateCandidateV1, CapabilityCreateIntentV1, CapabilityCreateResult,
-    CapabilityLifecycleV1, CapabilityLookupResult, CapabilityMutationCurrentStateV1,
-    CapabilityReader, CapabilityRevokeAwaitingDecision, CapabilityRevokeCandidateTransaction,
+    CapabilityInventoryPageV1, CapabilityInventoryReader, CapabilityLifecycleV1,
+    CapabilityLookupResult, CapabilityMutationCurrentStateV1, CapabilityReader,
+    CapabilityRevokeAwaitingDecision, CapabilityRevokeCandidateTransaction,
     CapabilityRevokeCandidateV1, CapabilityRevokeIntentV1, CapabilityRevokeResult,
     CapabilityTokenLookupV1, CatalogActivationIntentV1, CatalogActivationResult,
     CatalogAdministrationRepository, CatalogRepository, EncodedPageItem, MAX_READABLE_DIGEST_KEYS,
     MAX_SCAN_PAGE_BYTES, RetainedMetadataV1, ServiceAuditAppendIntentV1,
     ServiceAuditAppendRepository, ServiceAuditAppendResult, StorageError, StorageErrorKind,
-    StoredAdministrationAuditRecordV1, StoredCapabilityAdministrationV1, StoredCapabilityRecordV1,
-    StoredCatalogAdministrationV1, StoredContractBundleV1, StoredServiceAuditRecordV1,
-    TransactionCurrentCapabilityObservationV1,
+    StorageScanLimit, StoredAdministrationAuditRecordV1, StoredCapabilityAdministrationV1,
+    StoredCapabilityRecordV1, StoredCatalogAdministrationV1, StoredContractBundleV1,
+    StoredServiceAuditRecordV1, TransactionCurrentCapabilityObservationV1,
 };
 use riffdb_types::{
     AdministrationSequence, CapabilityId, CapabilityTokenDigest, ContractLineage, ContractVersion,
@@ -745,6 +746,40 @@ impl CapabilityReader for MemoryOperationalPorts {
         candidates: &[CapabilityTokenDigest],
     ) -> Result<CapabilityLookupResult, StorageError> {
         self.read(|state| resolve_capability_digests_in_state(state, candidates))
+    }
+}
+
+impl CapabilityInventoryReader for MemoryOperationalPorts {
+    fn scan_capabilities(
+        &self,
+        after: Option<CapabilityId>,
+        limit: StorageScanLimit,
+    ) -> Result<CapabilityInventoryPageV1, StorageError> {
+        self.read(|state| {
+            let mut records = Vec::new();
+            let mut bytes = 0usize;
+            let mut has_more = false;
+            for record in &state.capabilities {
+                if after.is_some_and(|after| record.capability_id() <= after) {
+                    continue;
+                }
+                let next_bytes = bytes
+                    .checked_add(
+                        record
+                            .semantic_bytes()
+                            .map_err(|_| storage_error(StorageErrorKind::InvariantViolation))?,
+                    )
+                    .ok_or_else(|| storage_error(StorageErrorKind::InvariantViolation))?;
+                if records.len() == usize::from(limit.get()) || next_bytes > MAX_SCAN_PAGE_BYTES {
+                    has_more = true;
+                    break;
+                }
+                bytes = next_bytes;
+                records.push(record.clone());
+            }
+            CapabilityInventoryPageV1::new(after, limit, records, has_more)
+                .map_err(|_| storage_error(StorageErrorKind::InvariantViolation))
+        })
     }
 }
 
@@ -1903,6 +1938,14 @@ mod tests {
                 .expect("resolve missing digest through trait"),
             CapabilityLookupResult::NotFound
         );
+        let inventory = CapabilityInventoryReader::scan_capabilities(
+            &ports,
+            None,
+            StorageScanLimit::new(1).expect("inventory limit"),
+        )
+        .expect("scan empty capability inventory");
+        assert!(inventory.records().is_empty());
+        assert!(!inventory.has_more());
     }
 
     #[test]
