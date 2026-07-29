@@ -1,0 +1,160 @@
+#!/usr/bin/env bash
+set -euo pipefail
+umask 077
+
+repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+destination="${1:-}"
+[[ -n "$destination" && "$destination" == /* ]] || {
+    echo "usage: scripts/agent-application-alpha-package /absolute/new-directory" >&2
+    exit 2
+}
+[[ ! -e "$destination" ]] || {
+    echo "sealed bundle destination already exists" >&2
+    exit 2
+}
+parent="$(dirname "$destination")"
+[[ -d "$parent" ]] || {
+    echo "sealed bundle parent is unavailable" >&2
+    exit 2
+}
+temporary="$(mktemp -d "$parent/.riffdb-agent-alpha.XXXXXX")"
+cleanup() {
+    if [[ -d "$temporary" ]]; then
+        rm -rf "$temporary"
+    fi
+}
+trap cleanup EXIT INT TERM
+
+for tool in cargo find jq rg sha256sum sort; do
+    command -v "$tool" >/dev/null 2>&1 || {
+        echo "required sealed-bundle tool is missing: $tool" >&2
+        exit 1
+    }
+done
+
+cargo build --quiet --release \
+    -p riffdb-cli --bin riffdb \
+    -p riffdb-server --bin riffdbd \
+    -p riffdb-mcp-stdio --bin riffdb-mcp
+
+mkdir -p "$temporary/bin" "$temporary/.cargo" "$temporary/docs" \
+    "$temporary/evaluation" "$temporary/libexec" "$temporary/public/typescript" \
+    "$temporary/public/rust-sdk/crates" "$temporary/share/riffdb"
+cp "$repo_root/target/release/riffdb" "$temporary/bin/"
+cp "$repo_root/target/release/riffdbd" "$temporary/bin/"
+cp "$repo_root/target/release/riffdb-mcp" "$temporary/bin/"
+cp "$repo_root/scripts/riffdb-dev-installed" "$temporary/bin/riffdb-dev"
+cp "$repo_root/scripts/check-application-boundary" \
+    "$temporary/libexec/check-application-boundary"
+cp "$repo_root/release/config/bootstrap-ticketdesk-dev.json" \
+    "$temporary/share/riffdb/bootstrap-dev.json"
+cp "$repo_root/README.md" "$temporary/docs/README.md"
+cp "$repo_root/docs/safety-by-construction.md" "$temporary/docs/"
+cp "$repo_root/docs/agent-application-alpha.md" "$temporary/docs/"
+mkdir -p "$temporary/docs/getting-started"
+for document in \
+    AGENT-APPLICATION-QUICKSTART.md APPLICATION-ERRORS.md APPLICATION-MANIFEST.md \
+    COMMAND-BATCHES.md SAFE-APPLICATION-PROFILES.md SYMBOLIC-APPLICATIONS.md \
+    TYPESCRIPT-APPLICATIONS.md; do
+    cp "$repo_root/docs/getting-started/$document" "$temporary/docs/getting-started/"
+done
+cp -R "$repo_root/docs/riffql" "$temporary/docs/"
+cp "$repo_root/clients/typescript/runtime/package.json" "$temporary/public/typescript/"
+cp "$repo_root/clients/typescript/runtime/package-lock.json" "$temporary/public/typescript/"
+cp -R "$repo_root/clients/typescript/runtime/dist" "$temporary/public/typescript/"
+cp -R "$repo_root/clients/typescript/runtime/node_modules" "$temporary/public/typescript/"
+for crate in riffdb-client-rust riffdb-api-grpc riffdb-errors riffdb-proto riffdb-types; do
+    cp -R "$repo_root/crates/$crate" "$temporary/public/rust-sdk/crates/"
+done
+cp -R "$repo_root/proto" "$temporary/public/rust-sdk/"
+mkdir -p "$temporary/public/rust-sdk/fixtures"
+cp -R "$repo_root/fixtures/proto" "$temporary/public/rust-sdk/fixtures/"
+cp "$repo_root/release/agent-application-alpha/sdk-Cargo.toml" \
+    "$temporary/public/rust-sdk/Cargo.toml"
+cp "$repo_root/release/agent-application-alpha/riffdb-api-grpc-client.Cargo.toml" \
+    "$temporary/public/rust-sdk/crates/riffdb-api-grpc/Cargo.toml"
+cp "$repo_root/release/agent-application-alpha/BUNDLE.md" "$temporary/README.md"
+cp "$repo_root/release/agent-application-alpha/cargo-config.toml" \
+    "$temporary/.cargo/config.toml"
+cp -R "$repo_root/evaluations/agent-application-alpha/briefs" "$temporary/evaluation/"
+cp "$repo_root/evaluations/agent-application-alpha/event-schema.json" "$temporary/evaluation/"
+cp "$repo_root/evaluations/agent-application-alpha/report-schema.json" "$temporary/evaluation/"
+
+"$temporary/bin/riffdb" --help >/dev/null
+"$temporary/bin/riffdb" new agent-alpha-smoke \
+    --directory "$temporary/.application-smoke" >/dev/null
+CARGO_TARGET_DIR="$temporary/.sdk-check-target" cargo check --quiet \
+    --manifest-path "$temporary/public/rust-sdk/Cargo.toml" \
+    -p riffdb-client-rust
+app_patch="patch.crates-io.riffdb-client-rust.path=\"$temporary/public/rust-sdk/crates/riffdb-client-rust\""
+cargo generate-lockfile --quiet \
+    --manifest-path "$temporary/.application-smoke/Cargo.toml" \
+    --config "$app_patch"
+cargo vendor --quiet --locked --versioned-dirs \
+    --manifest-path "$temporary/public/rust-sdk/Cargo.toml" \
+    --sync "$temporary/.application-smoke/Cargo.toml" \
+    --config "$app_patch" \
+    "$temporary/public/rust-sdk/vendor" >/dev/null
+CARGO_HOME="$temporary/.cargo" CARGO_NET_OFFLINE=true \
+    CARGO_TARGET_DIR="$temporary/.sdk-check-target" \
+    cargo check --quiet --locked \
+    --manifest-path "$temporary/public/rust-sdk/Cargo.toml" \
+    -p riffdb-client-rust
+"$temporary/public/typescript/node_modules/.bin/tsc" --version >/dev/null
+rm -rf "$temporary/.sdk-check-target"
+
+(
+    cd "$temporary/.application-smoke"
+    CARGO_HOME="$temporary/.cargo" \
+        RIFFDB_RUST_SDK="$temporary/public/rust-sdk/crates/riffdb-client-rust" \
+        "$temporary/bin/riffdb" dev --seed --acceptance >/dev/null
+)
+rm -rf "$temporary/.application-smoke"
+rm -f \
+    "$temporary/.cargo/.global-cache" \
+    "$temporary/.cargo/.package-cache" \
+    "$temporary/.cargo/.package-cache-mutate" \
+    "$temporary/.cargo/registry/CACHEDIR.TAG"
+rmdir "$temporary/.cargo/registry" 2>/dev/null || {
+    echo "sealed Cargo home retained unexpected mutable state" >&2
+    exit 1
+}
+
+if find "$temporary" -type f \
+    \( -iname '*ticketdesk*' -o -name SPEC.md -o -name work_packages.yaml \) \
+    | grep -q .; then
+    echo "sealed bundle contains prohibited product source" >&2
+    exit 1
+fi
+if find "$temporary" -type f -name '*.rs' \
+    ! -path "$temporary/public/rust-sdk/*" | grep -q .; then
+    echo "sealed bundle contains non-SDK Rust implementation source" >&2
+    exit 1
+fi
+
+(
+    cd "$temporary"
+    find . \( -type f -o -type l \) \
+        ! -name bundle.json \
+        ! -name checksums.sha256 \
+        -print0 \
+        | sort -z \
+        | xargs -0 sha256sum >checksums.sha256
+)
+bundle_hash="$(sha256sum "$temporary/checksums.sha256" | cut -d' ' -f1)"
+jq -n \
+    --arg hash "$bundle_hash" \
+    --arg revision "$(git -C "$repo_root" rev-parse HEAD)" \
+    '{
+      schema: "riffdb-agent-application-alpha-bundle/v1",
+      bundle_hash: $hash,
+      revision: $revision,
+      sealed: true,
+      contains_ticketdesk: false,
+      contains_riffdb_implementation: false,
+      public_rust_sdk_source: true
+    }' >"$temporary/bundle.json"
+
+mv "$temporary" "$destination"
+trap - EXIT INT TERM
+echo "$bundle_hash"

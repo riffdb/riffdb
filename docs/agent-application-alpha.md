@@ -265,6 +265,33 @@ The gate report must publish raw measurements and explanations, not only the
 aggregate score. A failed run reopens its owning product package and cannot be
 waived by modifying the evaluation application.
 
+## WP-340 sealed evaluator status
+
+The release-derived evaluator harness is implemented, but the gate is not yet
+eligible. `scripts/agent-application-alpha-package` creates a new
+content-hashed bundle containing release binaries, public docs, builder MCP,
+the public Rust SDK, the TypeScript runtime/toolchain, four briefs, and
+redaction-safe schemas. It rejects TicketDesk artifacts and any non-SDK Rust
+source. Its self-test creates a new application, starts the installed
+development workflow, grants its symbolic role, seeds through commands, and
+executes its generated Rust client with network disabled. Both Rust and
+TypeScript toolchains are included and checked before publication.
+
+`scripts/agent-application-alpha-acceptance --runs 4 --sealed --assert-gate`
+rebuilds the exact bundle and then requires four raw report/transcript pairs.
+It checks unique agent identities, exact domain/language coverage, bundle and
+transcript hashes, zero successful kernel use, zero handwritten glue, no
+prohibited source access, no unresolved shape, both time thresholds, golden
+and boundary gates, and a rating of at least 8.5.
+
+No report is generated from WP-335 or from the harness itself. Those are
+product and harness tests, not independent-agent evidence. The current
+machine-readable decision is
+`release/evidence/agent-application-alpha-gate-v1.json`: zero of four required
+independent runs are present, so operational alpha and replication remain
+blocked. Passing WP-340 requires external fresh-agent executions with isolated
+context; filling reports with inferred or self-authored scores is prohibited.
+
 ## Scope boundary
 
 This milestone does not add replication, partitioning, general SQL, generic

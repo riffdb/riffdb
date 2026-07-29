@@ -1,0 +1,22 @@
+{
+  "bundle_hash": "28c64fa0f03d7d8a2b685bc6eb2804078b65585e6a64c0acfcd6a14e6fb99153",
+  "decision": "not_eligible",
+  "independent_runs_completed": 0,
+  "independent_runs_required": 4,
+  "reason": "No sealed fresh-agent reports have been submitted. Harness self-tests and WP-335 corpus runs are not independent evaluations.",
+  "requirement": "AAA-012",
+  "runs": [],
+  "schema": "riffdb-agent-application-alpha-gate/v1",
+  "sealed_bundle_self_test": "passed",
+  "thresholds": {
+    "handwritten_glue_lines": 0,
+    "human_interventions": 0,
+    "kernel_successes": 0,
+    "maximum_first_page_read_seconds": 3600,
+    "maximum_first_write_seconds": 1800,
+    "minimum_rating": 8.5,
+    "prohibited_source_access": true,
+    "unresolved_required_shapes": 0
+  },
+  "work_package": "WP-340"
+}
