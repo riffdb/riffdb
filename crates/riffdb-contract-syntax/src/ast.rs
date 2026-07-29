@@ -57,6 +57,8 @@ pub enum EntityItem {
     Invariant(InvariantDeclaration),
     /// An exact-prefix index declaration.
     Index(IndexDeclaration),
+    /// A required same-partition relationship.
+    Reference(ReferenceDeclaration),
 }
 
 /// The typed fields forming an entity key.
@@ -91,6 +93,19 @@ pub struct IndexDeclaration {
     pub name: Spanned<String>,
     /// Indexed field names in declared order.
     pub fields: Vec<Spanned<String>>,
+}
+
+/// A required relationship from stored source fields to one complete target key.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ReferenceDeclaration {
+    /// Relationship name scoped to the source entity.
+    pub name: Spanned<String>,
+    /// Stored source fields in target-key component order.
+    pub source_fields: Vec<Spanned<String>>,
+    /// Target entity name.
+    pub target_entity: Spanned<String>,
+    /// Complete target primary-key fields in canonical order.
+    pub target_fields: Vec<Spanned<String>>,
 }
 
 /// A durable event declaration.

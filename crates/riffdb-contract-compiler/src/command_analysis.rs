@@ -9,6 +9,7 @@ use crate::diagnostic::{CompilerDiagnostic, CompilerDiagnosticCode, CompilerDiag
 use crate::hir::{
     HirCommand, HirEffect, HirExpressionRoot, HirObjectField, HirOutcome, TypedContractHir,
 };
+use crate::locality::command_expression_fingerprint;
 
 #[derive(Clone, Debug)]
 struct BindingState {
@@ -37,6 +38,7 @@ fn validate_command(
     diagnostics: &mut Vec<CompilerDiagnostic>,
 ) {
     validate_binding_ownership(command, diagnostics);
+    validate_relationship_reads(hir, command, diagnostics);
     let secret_input = validate_idempotency(command, diagnostics);
     let mut states = command
         .bindings
@@ -163,6 +165,92 @@ fn validate_command(
     }
     validate_outcome_shapes(&outcomes, diagnostics);
     validate_secret_taint(secret_input, command, &influential_roots, diagnostics);
+}
+
+fn validate_relationship_reads(
+    hir: &TypedContractHir,
+    command: &HirCommand,
+    diagnostics: &mut Vec<CompilerDiagnostic>,
+) {
+    let assignments = command
+        .effects
+        .iter()
+        .filter_map(|effect| match effect {
+            HirEffect::Set {
+                binding,
+                field,
+                value,
+                ..
+            } => Some(((*binding, *field), value)),
+            HirEffect::Emit { .. } => None,
+        })
+        .collect::<BTreeMap<_, _>>();
+
+    for source_binding in &command.bindings {
+        if !matches!(
+            source_binding.mode,
+            BindingMode::Create | BindingMode::Mutate
+        ) {
+            continue;
+        }
+        let Some(source_entity) = hir.entity(source_binding.entity_id) else {
+            continue;
+        };
+        for relationship in &source_entity.relationships {
+            let changes_relationship = source_binding.mode == BindingMode::Create
+                || relationship
+                    .source_fields
+                    .iter()
+                    .any(|field| assignments.contains_key(&(source_binding.id, field.0)));
+            if !changes_relationship {
+                continue;
+            }
+            let resulting_values = relationship
+                .source_fields
+                .iter()
+                .map(|field| {
+                    assignments
+                        .get(&(source_binding.id, field.0))
+                        .copied()
+                        .or_else(|| {
+                            source_entity
+                                .key_fields
+                                .iter()
+                                .position(|key| *key == field.0)
+                                .and_then(|position| source_binding.arguments.get(position))
+                        })
+                })
+                .collect::<Option<Vec<_>>>();
+            let qualifying_read = resulting_values.as_ref().is_some_and(|values| {
+                command.bindings.iter().any(|target| {
+                    target.id < source_binding.id
+                        && target.mode == BindingMode::Read
+                        && target.entity_id == relationship.target_entity
+                        && target.arguments.len() == values.len()
+                        && target
+                            .arguments
+                            .iter()
+                            .zip(values)
+                            .all(|(actual, expected)| {
+                                command_expression_fingerprint(&command.expressions, actual.id)
+                                    == command_expression_fingerprint(
+                                        &command.expressions,
+                                        expected.id,
+                                    )
+                            })
+                })
+            });
+            if !qualifying_read {
+                diagnostics.push(
+                    CompilerDiagnostic::new(
+                        CompilerDiagnosticCode::MissingRelationshipRead,
+                        relationship.name_span,
+                    )
+                    .with_related_span(source_binding.span),
+                );
+            }
+        }
+    }
 }
 
 fn validate_binding_ownership(command: &HirCommand, diagnostics: &mut Vec<CompilerDiagnostic>) {

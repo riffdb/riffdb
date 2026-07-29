@@ -1,7 +1,7 @@
 format=riffdb-compiler-diagnostic-fixture-v1
 
 [semantic-code-registry]
-count=25
+count=27
 code.0.id=RDB-C001
 code.0.message=contract version must be a supported nonzero integer
 code.0.help=use a base-10 application version in 1..=u64::MAX
@@ -53,30 +53,36 @@ code.15.help=derive aggregate keys only from root-key inputs and constants
 code.16.id=RDB-C017
 code.16.message=all command bindings must be statically colocated in one partition
 code.16.help=make all bindings use the same structural partition derivation
-code.17.id=RDB-C019
-code.17.message=the projection uses an unsupported or invalid operation
-code.17.help=use equality/conjunction filters and bounded count or sum aggregation
-code.18.id=RDB-C020
-code.18.message=a compiled artifact exceeds a fixed semantic bound
-code.18.help=reduce declared bounds or the number of schema components
-code.19.id=RDB-C021
-code.19.message=stable semantic identifiers cannot be allocated compatibly
-code.19.help=preserve lineage identities and do not reuse removed identifiers
-code.20.id=RDB-C022
-code.20.message=the parent bundle is not a valid predecessor
-code.20.help=compile against the exact validated predecessor bundle
-code.21.id=RDB-C023
-code.21.message=checked executable IR construction rejected the compiled plan
-code.21.help=none
-code.22.id=RDB-C201
-code.22.message=an identifier cannot form a valid MCP command tool-name segment
-code.22.help=start contract and command identifiers with an ASCII letter
-code.23.id=RDB-C202
-code.23.message=the complete MCP command tool name exceeds 128 bytes
-code.23.help=shorten the source contract or command identifier
-code.24.id=RDB-C203
-code.24.message=two commands normalize to the same MCP command tool name
-code.24.help=rename one command so lowercase identifiers remain distinct
+code.17.id=RDB-C018
+code.17.message=a required relationship must map stored fields to one complete same-partition target key
+code.17.help=map required non-optional fields to the complete target key in canonical order
+code.18.id=RDB-C019
+code.18.message=the projection uses an unsupported or invalid operation
+code.18.help=use equality/conjunction filters and bounded count or sum aggregation
+code.19.id=RDB-C020
+code.19.message=a compiled artifact exceeds a fixed semantic bound
+code.19.help=reduce declared bounds or the number of schema components
+code.20.id=RDB-C021
+code.20.message=stable semantic identifiers cannot be allocated compatibly
+code.20.help=preserve lineage identities and do not reuse removed identifiers
+code.21.id=RDB-C022
+code.21.message=the parent bundle is not a valid predecessor
+code.21.help=compile against the exact validated predecessor bundle
+code.22.id=RDB-C023
+code.22.message=checked executable IR construction rejected the compiled plan
+code.22.help=none
+code.23.id=RDB-C024
+code.23.message=a relationship change lacks a dominating exact target read and missing-target outcome
+code.23.help=read the complete referenced key before the mutable binding and declare its missing-target outcome
+code.24.id=RDB-C201
+code.24.message=an identifier cannot form a valid MCP command tool-name segment
+code.24.help=start contract and command identifiers with an ASCII letter
+code.25.id=RDB-C202
+code.25.message=the complete MCP command tool name exceeds 128 bytes
+code.25.help=shorten the source contract or command identifier
+code.26.id=RDB-C203
+code.26.message=two commands normalize to the same MCP command tool name
+code.26.help=rename one command so lowercase identifiers remain distinct
 
 [RDB-C001-invalid-contract-version]
 expected=RDB-C001
@@ -253,6 +259,16 @@ diagnostic.0.primary=425..428
 diagnostic.0.related=none
 diagnostic.0.help=make all bindings use the same structural partition derivation
 
+[RDB-C018-invalid-relationship]
+expected=RDB-C018
+kind=semantic
+count=1
+diagnostic.0.code=RDB-C018
+diagnostic.0.message=a required relationship must map stored fields to one complete same-partition target key
+diagnostic.0.primary=235..241
+diagnostic.0.related=none
+diagnostic.0.help=map required non-optional fields to the complete target key in canonical order
+
 [RDB-C019-invalid-projection]
 expected=RDB-C019
 kind=semantic
@@ -302,6 +318,16 @@ diagnostic.0.message=checked executable IR construction rejected the compiled pl
 diagnostic.0.primary=23..37
 diagnostic.0.related=none
 diagnostic.0.help=none
+
+[RDB-C024-missing-relationship-read]
+expected=RDB-C024
+kind=semantic
+count=1
+diagnostic.0.code=RDB-C024
+diagnostic.0.message=a relationship change lacks a dominating exact target read and missing-target outcome
+diagnostic.0.primary=236..242
+diagnostic.0.related=619..698
+diagnostic.0.help=read the complete referenced key before the mutable binding and declare its missing-target outcome
 
 [RDB-C201-invalid-command-tool-name]
 expected=RDB-C201

@@ -47,6 +47,13 @@ const QUERIES: &[(&str, &str)] = &[
 fn ticketdesk_queries_resolve_to_exact_name_addressed_schemas_and_source_maps() {
     let bundle = compile_contract_source(CONTRACT).expect("compile TicketDesk contract");
     let catalog = SymbolicCatalog::from_bundle(&bundle).expect("symbolic catalog");
+    let ticket = catalog.entity("Ticket").expect("Ticket symbol");
+    let project = ticket
+        .relationship("project")
+        .expect("project relationship");
+    assert_eq!(project.source_fields(), ["organization_id", "project_id"]);
+    assert_eq!(project.target_entity(), "Project");
+    assert_eq!(project.target_fields(), ["organization_id", "project_id"]);
 
     for (name, source) in QUERIES {
         let document = parse_query(source).expect("parse TicketDesk query");

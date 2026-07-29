@@ -53,6 +53,38 @@ pub struct IndexSymbol {
     key_schema: KeySchema,
 }
 
+/// One exact required relationship symbol.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct RelationshipSymbol {
+    name: String,
+    source_fields: Vec<String>,
+    target_entity: String,
+    target_fields: Vec<String>,
+}
+
+impl RelationshipSymbol {
+    /// Exact relationship source name.
+    #[must_use]
+    pub fn name(&self) -> &str {
+        &self.name
+    }
+    /// Stored source fields in target-key order.
+    #[must_use]
+    pub fn source_fields(&self) -> &[String] {
+        &self.source_fields
+    }
+    /// Exact target entity source name.
+    #[must_use]
+    pub fn target_entity(&self) -> &str {
+        &self.target_entity
+    }
+    /// Complete target primary-key field names.
+    #[must_use]
+    pub fn target_fields(&self) -> &[String] {
+        &self.target_fields
+    }
+}
+
 impl IndexSymbol {
     /// Exact source name.
     #[must_use]
@@ -88,6 +120,7 @@ pub struct EntitySymbol {
     name: String,
     fields: BTreeMap<String, FieldSymbol>,
     indexes: BTreeMap<String, IndexSymbol>,
+    relationships: BTreeMap<String, RelationshipSymbol>,
     primary_key: Vec<String>,
     partition_field: String,
     primary_key_schema: KeySchema,
@@ -122,6 +155,18 @@ impl EntitySymbol {
     #[must_use]
     pub fn indexes(&self) -> impl ExactSizeIterator<Item = &IndexSymbol> {
         self.indexes.values()
+    }
+
+    /// Resolves an exact required relationship name.
+    #[must_use]
+    pub fn relationship(&self, name: &str) -> Option<&RelationshipSymbol> {
+        self.relationships.get(name)
+    }
+
+    /// Required relationships in exact name order.
+    #[must_use]
+    pub fn relationships(&self) -> impl ExactSizeIterator<Item = &RelationshipSymbol> {
+        self.relationships.values()
     }
 
     /// Primary-key component names in declared key order.
@@ -273,11 +318,53 @@ impl SymbolicCatalog {
                     return Err(invariant("duplicate exact-contract index"));
                 }
             }
+            let mut relationships = BTreeMap::new();
+            for relationship in bundle
+                .schema()
+                .relationships()
+                .iter()
+                .filter(|relationship| relationship.source_entity() == entity.id())
+            {
+                let target = bundle
+                    .schema()
+                    .entity(relationship.target_entity())
+                    .ok_or_else(|| invariant("relationship target entity is absent"))?;
+                let symbol = RelationshipSymbol {
+                    name: relationship.name().to_owned(),
+                    source_fields: relationship
+                        .source_fields()
+                        .iter()
+                        .map(|id| {
+                            entity
+                                .record()
+                                .field(*id)
+                                .map(|field| field.name().to_owned())
+                                .ok_or_else(|| invariant("relationship source field is absent"))
+                        })
+                        .collect::<Result<Vec<_>, _>>()?,
+                    target_entity: target.name().to_owned(),
+                    target_fields: relationship
+                        .target_fields()
+                        .iter()
+                        .map(|id| {
+                            target
+                                .record()
+                                .field(*id)
+                                .map(|field| field.name().to_owned())
+                                .ok_or_else(|| invariant("relationship target field is absent"))
+                        })
+                        .collect::<Result<Vec<_>, _>>()?,
+                };
+                if relationships.insert(symbol.name.clone(), symbol).is_some() {
+                    return Err(invariant("duplicate exact-contract relationship"));
+                }
+            }
             let symbol = EntitySymbol {
                 id: entity.id(),
                 name: entity.name().to_owned(),
                 fields,
                 indexes,
+                relationships,
                 primary_key: key_ids
                     .iter()
                     .map(|id| {

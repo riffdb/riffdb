@@ -3,7 +3,7 @@
 use riffdb_contract_ir::{
     AggregateKeyPlan, AggregateSchema, EntitySchema, EnumSchema, EnumVariantSchema, EventSchema,
     FieldSchema, IndexSchema, InvariantPlan, KeyComponentSchema, KeyPurpose, KeySchema,
-    RecordSchema, RecordTypeRef, SchemaIr, ValueType,
+    RecordSchema, RecordTypeRef, RelationshipSchema, SchemaIr, ValueType,
 };
 use riffdb_contract_syntax::Span;
 use riffdb_types::{EnumTypeId, EnumVariantId};
@@ -14,15 +14,120 @@ use crate::hir::{HirInvariant, TypedContractHir};
 /// Lowers the complete typed HIR schema into checked executable IR.
 pub(crate) fn lower_schema(hir: &TypedContractHir) -> Result<SchemaIr, CompilerDiagnostics> {
     let mut diagnostics = Vec::new();
+    validate_relationship_declarations(hir)?;
     let enums = lower_enums(hir, &mut diagnostics);
     let entities = lower_entities(hir, &mut diagnostics);
     let events = lower_events(hir, &mut diagnostics);
     let aggregates = lower_aggregates(hir, &mut diagnostics);
+    let relationships = lower_relationships(hir, &mut diagnostics);
     if !diagnostics.is_empty() {
         return Err(CompilerDiagnostics::new(diagnostics).expect("nonempty diagnostics"));
     }
-    SchemaIr::new(entities, events, enums, aggregates)
+    SchemaIr::with_relationships(entities, events, enums, aggregates, relationships)
         .map_err(|_| CompilerDiagnostics::single(ir_diagnostic(hir.span)))
+}
+
+pub(crate) fn validate_relationship_declarations(
+    hir: &TypedContractHir,
+) -> Result<(), CompilerDiagnostics> {
+    let mut diagnostics = Vec::new();
+    for source in &hir.entities {
+        let mut names = std::collections::BTreeSet::new();
+        for relationship in &source.relationships {
+            let Some(target) = hir.entity(relationship.target_entity) else {
+                diagnostics.push(CompilerDiagnostic::new(
+                    CompilerDiagnosticCode::InvalidRelationship,
+                    relationship.target_entity_span,
+                ));
+                continue;
+            };
+            let valid_name = names.insert(relationship.name.as_str());
+            let complete_target = relationship
+                .target_fields
+                .iter()
+                .map(|field| field.0)
+                .eq(target.key_fields.iter().copied());
+            let matching_arity =
+                relationship.source_fields.len() == relationship.target_fields.len();
+            let exact_types = matching_arity
+                && relationship
+                    .source_fields
+                    .iter()
+                    .zip(&relationship.target_fields)
+                    .all(|(source_field, target_field)| {
+                        source
+                            .fields
+                            .iter()
+                            .find(|field| field.id == source_field.0)
+                            .zip(
+                                target
+                                    .fields
+                                    .iter()
+                                    .find(|field| field.id == target_field.0),
+                            )
+                            .is_some_and(|(source, target)| {
+                                !source.value_type.is_optional()
+                                    && source.value_type == target.value_type
+                            })
+                    });
+            let source_owner = hir.aggregate_for_entity(source.id);
+            let target_owner = hir.aggregate_for_entity(target.id);
+            let same_owner = source_owner.zip(target_owner).is_some_and(|(left, right)| {
+                left.id == right.id
+                    && hir.entity(left.root).is_some_and(|root| {
+                        let route_len = root.key_fields.len();
+                        relationship
+                            .source_fields
+                            .get(..route_len)
+                            .map(|fields| fields.iter().map(|field| field.0))
+                            .is_some_and(|fields| {
+                                fields.eq(source.key_fields.iter().take(route_len).copied())
+                            })
+                    })
+            });
+            if !(valid_name && complete_target && matching_arity && exact_types && same_owner) {
+                diagnostics.push(CompilerDiagnostic::new(
+                    CompilerDiagnosticCode::InvalidRelationship,
+                    relationship.name_span,
+                ));
+            }
+        }
+    }
+    if diagnostics.is_empty() {
+        Ok(())
+    } else {
+        Err(CompilerDiagnostics::new(diagnostics).expect("nonempty diagnostics"))
+    }
+}
+
+fn lower_relationships(
+    hir: &TypedContractHir,
+    diagnostics: &mut Vec<CompilerDiagnostic>,
+) -> Vec<RelationshipSchema> {
+    let mut lowered = Vec::new();
+    for entity in &hir.entities {
+        for relationship in &entity.relationships {
+            match RelationshipSchema::new(
+                relationship.name.clone(),
+                entity.id,
+                relationship
+                    .source_fields
+                    .iter()
+                    .map(|field| field.0)
+                    .collect(),
+                relationship.target_entity,
+                relationship
+                    .target_fields
+                    .iter()
+                    .map(|field| field.0)
+                    .collect(),
+            ) {
+                Ok(relationship) => lowered.push(relationship),
+                Err(_) => diagnostics.push(ir_diagnostic(relationship.name_span)),
+            }
+        }
+    }
+    lowered
 }
 
 fn lower_enums(

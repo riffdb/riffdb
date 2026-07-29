@@ -117,6 +117,16 @@ pub(crate) struct HirIndex {
 }
 
 #[derive(Clone, Debug)]
+pub(crate) struct HirRelationship {
+    pub(crate) name: String,
+    pub(crate) name_span: Span,
+    pub(crate) source_fields: Vec<(FieldId, Span)>,
+    pub(crate) target_entity: EntityTypeId,
+    pub(crate) target_entity_span: Span,
+    pub(crate) target_fields: Vec<(FieldId, Span)>,
+}
+
+#[derive(Clone, Debug)]
 pub(crate) struct HirEntity {
     pub(crate) id: EntityTypeId,
     pub(crate) name: String,
@@ -125,6 +135,7 @@ pub(crate) struct HirEntity {
     pub(crate) key_fields: Vec<FieldId>,
     pub(crate) invariants: Vec<HirInvariant>,
     pub(crate) indexes: Vec<HirIndex>,
+    pub(crate) relationships: Vec<HirRelationship>,
 }
 
 impl HirEntity {
@@ -445,12 +456,13 @@ fn lower_entities(
                         fields.push(lowered);
                     }
                 }
-                EntityItem::Invariant(_) | EntityItem::Index(_) => {}
+                EntityItem::Invariant(_) | EntityItem::Index(_) | EntityItem::Reference(_) => {}
             }
         }
         let field_scope = fields_by_name(&fields);
         let mut invariants = Vec::new();
         let mut indexes = Vec::new();
+        let mut relationships = Vec::new();
         for item in &source.items {
             match &item.value {
                 EntityItem::Invariant(invariant) => {
@@ -498,6 +510,51 @@ fn lower_entities(
                         fields: index_fields,
                     });
                 }
+                EntityItem::Reference(reference) => {
+                    let mut source_fields = Vec::new();
+                    for field in &reference.source_fields {
+                        match field_scope.get(&field.value) {
+                            Some((field_id, _)) => source_fields.push((*field_id, field.span)),
+                            None => diagnostics.push(CompilerDiagnostic::new(
+                                CompilerDiagnosticCode::UnknownName,
+                                field.span,
+                            )),
+                        }
+                    }
+                    let Some(target_entity) = symbols
+                        .entities
+                        .get(&reference.target_entity.value)
+                        .copied()
+                    else {
+                        diagnostics.push(CompilerDiagnostic::new(
+                            CompilerDiagnosticCode::UnknownName,
+                            reference.target_entity.span,
+                        ));
+                        continue;
+                    };
+                    let mut target_fields = Vec::new();
+                    for field in &reference.target_fields {
+                        match symbols
+                            .entity_fields
+                            .get(&(target_entity, field.value.clone()))
+                            .copied()
+                        {
+                            Some(field_id) => target_fields.push((field_id, field.span)),
+                            None => diagnostics.push(CompilerDiagnostic::new(
+                                CompilerDiagnosticCode::UnknownName,
+                                field.span,
+                            )),
+                        }
+                    }
+                    relationships.push(HirRelationship {
+                        name: reference.name.value.clone(),
+                        name_span: reference.name.span,
+                        source_fields,
+                        target_entity,
+                        target_entity_span: reference.target_entity.span,
+                        target_fields,
+                    });
+                }
                 EntityItem::Key(_) | EntityItem::Field(_) => {}
             }
         }
@@ -509,6 +566,7 @@ fn lower_entities(
             key_fields,
             invariants,
             indexes,
+            relationships,
         });
     }
     result

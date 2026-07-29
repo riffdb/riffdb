@@ -2,7 +2,7 @@
 
 use proptest::prelude::*;
 use riffdb_contract_syntax::ast::{
-    BinaryOperator, Binding, Declaration, Effect, Expression, Literal,
+    BinaryOperator, Binding, Declaration, Effect, EntityItem, Expression, Literal,
 };
 use riffdb_contract_syntax::diagnostic::SyntaxDiagnosticCode;
 use riffdb_contract_syntax::limits::{MAX_EXPECTED_TOKENS, MAX_SYNTAX_DIAGNOSTICS};
@@ -12,7 +12,42 @@ use std::fmt::Write as _;
 const LEGAL_SPEND: &str = include_str!("../../../contracts/parser-fixtures/valid/legal_spend.riff");
 const FULL_SURFACE: &str =
     include_str!("../../../contracts/parser-fixtures/valid/full_surface.riff");
+const RELATIONSHIPS: &str =
+    include_str!("../../../contracts/parser-fixtures/valid/relationships.riff");
 const SPEC: &str = include_str!("../../../SPEC.md");
+
+#[test]
+fn parses_required_same_partition_reference_with_exact_spans() {
+    let source = concat!(
+        "contract C version 1 { ",
+        "entity Ticket { key (tenant_id: uuid, ticket_id: uuid) ",
+        "field project_id: uuid ",
+        "reference project (tenant_id, project_id) -> Project(tenant_id, project_id) } ",
+        "entity Project { key (tenant_id: uuid, project_id: uuid) } }"
+    );
+    let document = parse_contract(source).expect("required reference parses");
+    let Declaration::Entity(ticket) = &document.contract.value.declarations[0].value else {
+        panic!("ticket entity");
+    };
+    let EntityItem::Reference(reference) = &ticket.items[2].value else {
+        panic!("reference item");
+    };
+    assert_eq!(reference.name.value, "project");
+    assert_eq!(
+        reference
+            .source_fields
+            .iter()
+            .map(|field| field.value.as_str())
+            .collect::<Vec<_>>(),
+        ["tenant_id", "project_id"]
+    );
+    assert_eq!(reference.target_entity.value, "Project");
+    assert_eq!(
+        &source[reference.target_entity.span.start() as usize
+            ..reference.target_entity.span.end() as usize],
+        "Project"
+    );
+}
 
 #[test]
 fn invalid_corpus_matches_golden_diagnostics() {
@@ -75,6 +110,8 @@ fn parses_the_checked_valid_corpus() {
         full_surface.contract.value.declarations[0].value,
         Declaration::Enum(_)
     ));
+    let relationships = parse_contract(RELATIONSHIPS).expect("relationship grammar must parse");
+    assert_eq!(relationships.contract.value.name.value, "Relationships");
 }
 
 #[test]

@@ -265,7 +265,7 @@ impl DeclarationKind {
         match self {
             Self::Entity => matches!(
                 token,
-                Token::Key | Token::Field | Token::Invariant | Token::Index
+                Token::Key | Token::Field | Token::Invariant | Token::Index | Token::Reference
             ),
             Self::Event => matches!(token, Token::Colon),
             Self::Enum => matches!(token, Token::Identifier(_) | Token::IdempotencyKey),
@@ -487,6 +487,7 @@ const EXPECTED_TOKEN_NAMES: &[&str] = &[
     "field",
     "invariant",
     "index",
+    "reference",
     "event",
     "enum",
     "aggregate",
@@ -617,6 +618,13 @@ impl NodeCounter {
                             self.add(1, item.span)?;
                             self.name(&index.name)?;
                             self.names(&index.fields, item.span)?;
+                        }
+                        EntityItem::Reference(reference) => {
+                            self.add(1, item.span)?;
+                            self.name(&reference.name)?;
+                            self.names(&reference.source_fields, item.span)?;
+                            self.name(&reference.target_entity)?;
+                            self.names(&reference.target_fields, item.span)?;
                         }
                     }
                 }

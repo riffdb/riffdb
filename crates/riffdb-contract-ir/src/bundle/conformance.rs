@@ -240,7 +240,17 @@ fn ordered_layout_registry_has_one_closed_witness_slot_per_layout() {
         ),
         (
             "StructuralSchema",
-            vec!["entities", "events", "enums", "aggregates"],
+            vec!["entities", "events", "enums", "aggregates", "relationships"],
+        ),
+        (
+            "RelationshipSchema",
+            vec![
+                "name",
+                "source_entity",
+                "source_fields",
+                "target_entity",
+                "target_fields",
+            ],
         ),
         (
             "EntitySchema",
@@ -315,6 +325,7 @@ fn ordered_layout_registry_has_one_closed_witness_slot_per_layout() {
                 "expressions",
                 "bindings",
                 "root_validation_reads",
+                "relationship_checks",
                 "locality",
                 "commit_checks",
                 "instructions",
@@ -351,6 +362,10 @@ fn ordered_layout_registry_has_one_closed_witness_slot_per_layout() {
                 "key_expressions",
                 "accessed_fields",
             ],
+        ),
+        (
+            "RelationshipCheckPlan",
+            vec!["relationship_name", "source_binding", "target_binding"],
         ),
         (
             "LocalityPlan",
@@ -466,6 +481,7 @@ fn ordered_layout_registry_has_one_closed_witness_slot_per_layout() {
         ("LineageAllocation", "lineage ledger fixture"),
         ("LineageEntry", "lineage ledger fixture"),
         ("StructuralSchema", "structural schema fixture"),
+        ("RelationshipSchema", "relationship compiler fixture"),
         ("EntitySchema", "command schema closure fixture"),
         ("EventSchema", "projection source fixture"),
         ("EnumSchema", "enum closure fixture"),
@@ -484,6 +500,7 @@ fn ordered_layout_registry_has_one_closed_witness_slot_per_layout() {
         ("OutcomeSchema", "root-validation command fixture"),
         ("BindingPlan", "root-validation command fixture"),
         ("RootValidationReadPlan", "root-validation command fixture"),
+        ("RelationshipCheckPlan", "relationship compiler fixture"),
         ("LocalityPlan", "root-validation command fixture"),
         ("ConflictDerivationPlan", "root-validation command fixture"),
         ("CommitCheckPlan", "root-validation command fixture"),

@@ -17,7 +17,7 @@ use crate::hir::lower_contract_hir;
 use crate::locality::analyze_locality;
 use crate::mcp_name::build_command_tool_registry;
 use crate::projection_lowering::lower_projections;
-use crate::schema_lowering::lower_schema;
+use crate::schema_lowering::{lower_schema, validate_relationship_declarations};
 use crate::symbols::{allocate_genesis_symbols, allocate_successor_symbols};
 use crate::typecheck::resolve_declared_types;
 
@@ -72,6 +72,7 @@ pub fn validate_contract_source(source: &str) -> Result<(), CompilationError> {
     let types = resolve_declared_types(&document, &symbols).map_err(CompilationError::Semantic)?;
     let hir =
         lower_contract_hir(&document, &symbols, &types).map_err(CompilationError::Semantic)?;
+    validate_relationship_declarations(&hir).map_err(CompilationError::Semantic)?;
     validate_commands(&hir).map_err(CompilationError::Semantic)?;
     let locality = analyze_locality(&hir).map_err(CompilationError::Semantic)?;
     let _owned_entity_count = locality.entity_owner.len();
@@ -127,6 +128,7 @@ fn compile(
     let types = resolve_declared_types(&document, &symbols).map_err(CompilationError::Semantic)?;
     let hir =
         lower_contract_hir(&document, &symbols, &types).map_err(CompilationError::Semantic)?;
+    validate_relationship_declarations(&hir).map_err(CompilationError::Semantic)?;
     validate_commands(&hir).map_err(CompilationError::Semantic)?;
     analyze_locality(&hir).map_err(CompilationError::Semantic)?;
     let schema = lower_schema(&hir).map_err(CompilationError::Semantic)?;
@@ -193,8 +195,8 @@ mod tests {
     use super::*;
     use crate::diagnostic::CompilerDiagnosticCode;
     use riffdb_contract_ir::{
-        CompatibilityClass, CompatibilityCode, ContractBundle, ExpressionKind, LineageEntryState,
-        UnaryOperator, ValueType, ValueTypeTag,
+        CommandExplain, CompatibilityClass, CompatibilityCode, ContractBundle, ExpressionKind,
+        LineageEntryState, UnaryOperator, ValueType, ValueTypeTag,
     };
     use riffdb_types::CanonicalValue;
 
@@ -210,7 +212,18 @@ mod tests {
             .as_slice()
             .iter()
             .find(|diagnostic| diagnostic.code() == code)
-            .expect("expected diagnostic code");
+            .unwrap_or_else(|| {
+                panic!(
+                    "expected diagnostic code {code:?}, got {:?}",
+                    error
+                        .semantic()
+                        .expect("semantic diagnostics")
+                        .as_slice()
+                        .iter()
+                        .map(|diagnostic| diagnostic.code())
+                        .collect::<Vec<_>>()
+                )
+            });
         let start = source.find(exact_source).expect("source span");
         assert_eq!(diagnostic.primary_span().start() as usize, start);
         assert_eq!(
@@ -1248,6 +1261,287 @@ contract Example version 1 {
                 .code(),
             CompilerDiagnosticCode::CommandToolNameCollision
         );
+    }
+
+    #[test]
+    fn required_relationship_is_canonical_and_exact_read_is_preserved() {
+        let source = relationship_source(
+            "reference parent_ref (tenant_id, parent_id) -> Parent(tenant_id, parent_id)",
+            concat!(
+                "read Parent(tenant_id, parent_id) as parent ",
+                "else ParentMissing { parent_id: parent_id }\n    ",
+                "create Child(tenant_id, child_id) as row ",
+                "else ChildExists { child_id: child_id }"
+            ),
+        );
+        let bundle = compile_contract_source(&source).expect("safe relationship compiles");
+        let relationship = &bundle.schema().relationships()[0];
+        assert_eq!(relationship.name(), "parent_ref");
+        assert_eq!(relationship.source_fields().len(), 2);
+        assert_eq!(relationship.target_fields().len(), 2);
+        let command = &bundle.commands()[0];
+        assert_eq!(command.bindings().len(), 2);
+        assert_eq!(
+            command.bindings()[0].mode(),
+            riffdb_contract_ir::BindingMode::Read
+        );
+        assert_eq!(command.relationship_checks().len(), 1);
+        let explanation = CommandExplain::from_plan(command).render_text();
+        assert!(explanation.contains(
+            "relationship:parent_ref source-binding:1 exact-target-read:0 commit-revalidated:true"
+        ));
+        let decoded = ContractBundle::decode(bundle.canonical_bytes()).expect("round trip");
+        assert_eq!(decoded, bundle);
+    }
+
+    #[test]
+    fn relationship_change_on_mutation_requires_and_preserves_exact_read() {
+        let safe = relationship_mutation_source(concat!(
+            "read Parent(tenant_id, parent_id) as parent ",
+            "else ParentMissing { parent_id: parent_id }\n    "
+        ));
+        let bundle = compile_contract_source(&safe).expect("safe mutation compiles");
+        let command = &bundle.commands()[0];
+        assert_eq!(command.relationship_checks().len(), 1);
+        assert_eq!(command.relationship_checks()[0].target_binding().get(), 0);
+        assert_eq!(command.relationship_checks()[0].source_binding().get(), 1);
+
+        let dangling = relationship_mutation_source("");
+        assert_semantic_diagnostic_at(
+            &dangling,
+            CompilerDiagnosticCode::MissingRelationshipRead,
+            "parent_ref",
+        );
+    }
+
+    #[test]
+    fn adding_relationship_is_an_explicit_incompatible_invariant_change() {
+        let genesis_source = relationship_source(
+            "",
+            concat!(
+                "read Parent(tenant_id, parent_id) as parent ",
+                "else ParentMissing { parent_id: parent_id }\n    ",
+                "create Child(tenant_id, child_id) as row ",
+                "else ChildExists { child_id: child_id }"
+            ),
+        );
+        let genesis = compile_contract_source(&genesis_source).expect("genesis");
+        let successor_source = relationship_source(
+            "reference parent_ref (tenant_id, parent_id) -> Parent(tenant_id, parent_id)",
+            concat!(
+                "read Parent(tenant_id, parent_id) as parent ",
+                "else ParentMissing { parent_id: parent_id }\n    ",
+                "create Child(tenant_id, child_id) as row ",
+                "else ChildExists { child_id: child_id }"
+            ),
+        )
+        .replace("version 1", "version 2");
+        let successor =
+            compile_contract_successor(&successor_source, &genesis).expect("successor compiles");
+        assert_eq!(
+            successor.compatibility().overall(),
+            CompatibilityClass::Incompatible
+        );
+        assert!(
+            successor
+                .compatibility()
+                .entries()
+                .iter()
+                .any(|entry| entry.code() == CompatibilityCode::InvariantChange)
+        );
+    }
+
+    #[test]
+    fn relationship_change_without_dominating_exact_read_fails_at_declaration() {
+        for bindings in [
+            concat!(
+                "create Child(tenant_id, child_id) as row ",
+                "else ChildExists { child_id: child_id }"
+            ),
+            concat!(
+                "create Child(tenant_id, child_id) as row ",
+                "else ChildExists { child_id: child_id }\n    ",
+                "read Parent(tenant_id, parent_id) as parent ",
+                "else ParentMissing { parent_id: parent_id }"
+            ),
+            concat!(
+                "read Parent(tenant_id, wrong_parent_id) as parent ",
+                "else ParentMissing { parent_id: wrong_parent_id }\n    ",
+                "create Child(tenant_id, child_id) as row ",
+                "else ChildExists { child_id: child_id }"
+            ),
+        ] {
+            let source = relationship_source(
+                "reference parent_ref (tenant_id, parent_id) -> Parent(tenant_id, parent_id)",
+                bindings,
+            );
+            assert_semantic_diagnostic_at(
+                &source,
+                CompilerDiagnosticCode::MissingRelationshipRead,
+                "parent_ref",
+            );
+        }
+    }
+
+    #[test]
+    fn partial_and_cross_partition_relationships_fail_closed() {
+        let partial = relationship_source(
+            "reference parent_ref (parent_id) -> Parent(parent_id)",
+            concat!(
+                "read Parent(tenant_id, parent_id) as parent ",
+                "else ParentMissing { parent_id: parent_id }\n    ",
+                "create Child(tenant_id, child_id) as row ",
+                "else ChildExists { child_id: child_id }"
+            ),
+        );
+        assert_semantic_diagnostic_at(
+            &partial,
+            CompilerDiagnosticCode::InvalidRelationship,
+            "parent_ref",
+        );
+
+        let cross = relationship_source(
+            "reference parent_ref (tenant_id, parent_id) -> External(tenant_id, parent_id)",
+            concat!(
+                "read External(tenant_id, parent_id) as parent ",
+                "else ParentMissing { parent_id: parent_id }\n    ",
+                "create Child(tenant_id, child_id) as row ",
+                "else ChildExists { child_id: child_id }"
+            ),
+        )
+        .replace(
+            "aggregate Family {",
+            concat!(
+                "aggregate ExternalFamily { root External partition_by tenant_id ",
+                "conflict_key (tenant_id, parent_id) }\n  aggregate Family {"
+            ),
+        )
+        .replace("    child External\n", "");
+        assert_semantic_diagnostic_at(
+            &cross,
+            CompilerDiagnosticCode::InvalidRelationship,
+            "parent_ref",
+        );
+    }
+
+    #[test]
+    fn relationship_negative_corpus_has_stable_source_spanned_diagnostics() {
+        for (source, code) in [
+            (
+                include_str!("../../../fixtures/compiler/relationships/dangling-create.riff"),
+                CompilerDiagnosticCode::MissingRelationshipRead,
+            ),
+            (
+                include_str!("../../../fixtures/compiler/relationships/late-read.riff"),
+                CompilerDiagnosticCode::MissingRelationshipRead,
+            ),
+            (
+                include_str!("../../../fixtures/compiler/relationships/partial-target.riff"),
+                CompilerDiagnosticCode::InvalidRelationship,
+            ),
+            (
+                include_str!("../../../fixtures/compiler/relationships/cross-partition.riff"),
+                CompilerDiagnosticCode::InvalidRelationship,
+            ),
+            (
+                include_str!("../../../fixtures/compiler/relationships/optional-source.riff"),
+                CompilerDiagnosticCode::InvalidRelationship,
+            ),
+            (
+                include_str!("../../../fixtures/compiler/relationships/type-mismatch.riff"),
+                CompilerDiagnosticCode::InvalidRelationship,
+            ),
+        ] {
+            let error = validate_contract_source(source).expect_err("negative fixture rejects");
+            let diagnostic = error
+                .semantic()
+                .expect("semantic diagnostic")
+                .as_slice()
+                .iter()
+                .find(|diagnostic| diagnostic.code() == code)
+                .expect("expected relationship diagnostic");
+            assert_eq!(
+                &source[diagnostic.primary_span().start() as usize
+                    ..diagnostic.primary_span().end() as usize],
+                "parent"
+            );
+        }
+    }
+
+    fn relationship_source(reference: &str, bindings: &str) -> String {
+        format!(
+            r#"
+contract Relationships version 1 {{
+  entity Tenant {{
+    key (tenant_id: uuid)
+  }}
+  entity Parent {{
+    key (tenant_id: uuid, parent_id: uuid)
+  }}
+  entity External {{
+    key (tenant_id: uuid, parent_id: uuid)
+  }}
+  entity Child {{
+    key (tenant_id: uuid, child_id: uuid)
+    field parent_id: uuid
+    {reference}
+  }}
+  aggregate Family {{
+    root Tenant
+    child Parent
+    child External
+    child Child
+    partition_by tenant_id
+    conflict_key (tenant_id)
+  }}
+  command CreateChild {{
+    input idempotency_key: string<128>
+    input tenant_id: uuid
+    input parent_id: uuid
+    input wrong_parent_id: uuid
+    input child_id: uuid
+    idempotency_key idempotency_key
+    {bindings}
+    set row.parent_id = parent_id
+    return Created {{ record: row }}
+  }}
+}}
+"#
+        )
+    }
+
+    fn relationship_mutation_source(parent_read: &str) -> String {
+        format!(
+            r#"
+contract RelationshipMutation version 1 {{
+  entity Tenant {{ key (tenant_id: uuid) }}
+  entity Parent {{ key (tenant_id: uuid, parent_id: uuid) }}
+  entity Child {{
+    key (tenant_id: uuid, child_id: uuid)
+    field parent_id: uuid
+    reference parent_ref (tenant_id, parent_id) -> Parent(tenant_id, parent_id)
+  }}
+  aggregate Family {{
+    root Tenant
+    child Parent
+    child Child
+    partition_by tenant_id
+    conflict_key (tenant_id)
+  }}
+  command ChangeChildParent {{
+    input idempotency_key: string<128>
+    input tenant_id: uuid
+    input parent_id: uuid
+    input child_id: uuid
+    idempotency_key idempotency_key
+    {parent_read}mutate Child(tenant_id, child_id) as row
+      else ChildMissing {{ child_id: child_id }}
+    set row.parent_id = parent_id
+    return Changed {{ record: row }}
+  }}
+}}
+"#
+        )
     }
 
     fn evolution_source(version: u64, add_command: bool) -> String {

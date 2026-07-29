@@ -648,6 +648,47 @@ fn compare_schema(
         }
         compare_invariants(old.invariants(), aggregate.invariants(), &path, findings);
     }
+    let parent_relationships = parent
+        .relationships()
+        .iter()
+        .map(|relationship| {
+            (
+                (relationship.source_entity(), relationship.name().to_owned()),
+                relationship,
+            )
+        })
+        .collect::<BTreeMap<_, _>>();
+    let next_relationships = next
+        .relationships()
+        .iter()
+        .map(|relationship| {
+            (
+                (relationship.source_entity(), relationship.name().to_owned()),
+                relationship,
+            )
+        })
+        .collect::<BTreeMap<_, _>>();
+    for (key, relationship) in &next_relationships {
+        if parent_relationships
+            .get(key)
+            .is_none_or(|old| *old != *relationship)
+        {
+            add(
+                findings,
+                CompatibilityCode::InvariantChange,
+                format!("entity:{}", key.0.get()),
+            );
+        }
+    }
+    for key in parent_relationships.keys() {
+        if !next_relationships.contains_key(key) {
+            add(
+                findings,
+                CompatibilityCode::InvariantChange,
+                format!("entity:{}", key.0.get()),
+            );
+        }
+    }
     compatible
 }
 
