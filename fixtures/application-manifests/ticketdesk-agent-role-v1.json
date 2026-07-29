@@ -1,0 +1,82 @@
+{
+  "application": "ticketdesk",
+  "application_manifest_hash": "c18f88f1190e87008a7575d72517f92895f61c789046c91985eecc79b0570bea",
+  "contract": {
+    "bundle_hash": "23e9b5b207414e2753e4d914b1b94ecd786181be08028ace9d4f3cc0b6f4944c",
+    "lineage": "TicketDesk",
+    "version": 1
+  },
+  "environment": "development",
+  "operations": [
+    {
+      "kind": "query",
+      "name": "GetTicket"
+    },
+    {
+      "kind": "query",
+      "name": "GetUser"
+    },
+    {
+      "kind": "query",
+      "name": "ListComments"
+    },
+    {
+      "kind": "query",
+      "name": "ListTickets"
+    },
+    {
+      "kind": "query",
+      "name": "ListTicketsByAssignee"
+    },
+    {
+      "kind": "query",
+      "name": "ProjectMembers"
+    },
+    {
+      "kind": "query",
+      "name": "ProjectSummary"
+    },
+    {
+      "kind": "query",
+      "name": "TicketPage"
+    },
+    {
+      "kind": "command",
+      "name": "AddProjectMember"
+    },
+    {
+      "kind": "command",
+      "name": "AttachLabel"
+    },
+    {
+      "kind": "command",
+      "name": "CreateComment"
+    },
+    {
+      "kind": "command",
+      "name": "CreateLabel"
+    },
+    {
+      "kind": "command",
+      "name": "CreateOrganization"
+    },
+    {
+      "kind": "command",
+      "name": "CreateProject"
+    },
+    {
+      "kind": "command",
+      "name": "CreateTicket"
+    },
+    {
+      "kind": "command",
+      "name": "CreateUser"
+    }
+  ],
+  "query_module_hashes": [
+    "459c4d8733fdf33426905f6fb1eda5100683902f979b363ed3017479937f6f37"
+  ],
+  "role": "TicketDeskAgent",
+  "role_hash": "a32cd7864d9b17772b961567a8873f1067ec248db6338a4bbdbc2d5eabcc6f16",
+  "tenant_scope": "global"
+}

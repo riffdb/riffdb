@@ -3,13 +3,18 @@
 //! Immutable, exact-contract query modules with a strict canonical codec.
 
 mod application_manifest;
+mod application_role;
 mod generation;
 
 pub use application_manifest::{
     APPLICATION_MANIFEST_SCHEMA_V1, ApplicationManifest, ApplicationManifestSourceMap,
     MAX_APPLICATION_MANIFEST_BYTES, ManifestContract, ManifestError, ManifestErrorKind,
     ManifestGenerationTargets, ManifestQueryModule, ManifestQuerySource, ManifestRole,
-    ManifestSpan,
+    ManifestSpan, ManifestTenantScope,
+};
+pub use application_role::{
+    ApplicationRoleError, ApplicationRoleErrorKind, ApplicationRoleOperation,
+    ApplicationRoleOperationKind, CompiledApplicationRole, compile_application_role,
 };
 pub use generation::{
     GeneratedMcpCommand, GeneratedMcpTool, McpToolGenerationError, generate_mcp_commands,

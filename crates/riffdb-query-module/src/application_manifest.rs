@@ -150,8 +150,28 @@ impl ManifestQueryModule {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ManifestRole {
     name: String,
+    environment: String,
+    tenant_scope: ManifestTenantScope,
     queries: Vec<String>,
     commands: Vec<String>,
+}
+
+/// Symbolic tenant binding required by an application role.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ManifestTenantScope {
+    /// The role is bound only for global application operations.
+    Global,
+    /// A concrete tenant must be supplied when the role is bound.
+    Tenant,
+}
+
+impl ManifestTenantScope {
+    const fn as_str(self) -> &'static str {
+        match self {
+            Self::Global => "global",
+            Self::Tenant => "tenant",
+        }
+    }
 }
 
 impl ManifestRole {
@@ -159,6 +179,18 @@ impl ManifestRole {
     #[must_use]
     pub fn name(&self) -> &str {
         &self.name
+    }
+
+    /// Exact deployment environment selected by this role.
+    #[must_use]
+    pub fn environment(&self) -> &str {
+        &self.environment
+    }
+
+    /// Whether binding is global or requires one exact tenant.
+    #[must_use]
+    pub const fn tenant_scope(&self) -> ManifestTenantScope {
+        self.tenant_scope
     }
 
     /// Exact named-query allowlist.
@@ -270,8 +302,10 @@ impl ApplicationManifest {
             })).collect::<Vec<_>>(),
             "roles": roles.iter().map(|role| json!({
                 "commands": role.commands,
+                "environment": role.environment,
                 "name": role.name,
                 "queries": role.queries,
+                "tenant_scope": role.tenant_scope.as_str(),
             })).collect::<Vec<_>>(),
             "schema": APPLICATION_MANIFEST_SCHEMA_V1,
             "seed_inputs": seed_inputs,
@@ -485,7 +519,10 @@ fn parse_roles(
         .collect::<BTreeSet<_>>();
     let mut roles = Vec::with_capacity(values.len());
     for value in values {
-        let object = object(value, &["commands", "name", "queries"])?;
+        let object = object(
+            value,
+            &["commands", "environment", "name", "queries", "tenant_scope"],
+        )?;
         let mut queries = parse_names(required(object, "queries")?, MAX_ROLE_OPERATIONS)?;
         let mut commands = parse_names(required(object, "commands")?, MAX_ROLE_OPERATIONS)?;
         queries.sort();
@@ -500,6 +537,12 @@ fn parse_roles(
         }
         roles.push(ManifestRole {
             name: checked_name(string(object, "name")?)?,
+            environment: checked_name(string(object, "environment")?)?,
+            tenant_scope: match string(object, "tenant_scope")? {
+                "global" => ManifestTenantScope::Global,
+                "tenant" => ManifestTenantScope::Tenant,
+                _ => return Err(ManifestError::new(ManifestErrorKind::InvalidShape)),
+            },
             queries,
             commands,
         });
@@ -707,6 +750,24 @@ fn build_source_map(
             ManifestSpan {
                 start,
                 end: start + encoded.len(),
+            },
+        );
+    }
+    for role in roles {
+        let encoded_environment = serde_json::to_string(&role.environment)
+            .map_err(|_| ManifestError::new(ManifestErrorKind::InvalidJson))?;
+        let encoded_name = serde_json::to_string(&role.name)
+            .map_err(|_| ManifestError::new(ManifestErrorKind::InvalidJson))?;
+        let prefix = format!(",\"environment\":{encoded_environment},\"name\":{encoded_name},");
+        let object_start = source
+            .find(&prefix)
+            .ok_or_else(|| ManifestError::new(ManifestErrorKind::InvalidShape))?;
+        let start = object_start + ",\"environment\":".len();
+        spans.insert(
+            format!("roles.{}.environment", role.name),
+            ManifestSpan {
+                start,
+                end: start + encoded_environment.len(),
             },
         );
     }

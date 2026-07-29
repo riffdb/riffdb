@@ -120,6 +120,7 @@ enum CapabilityPermissionKind {
   CAPABILITY_PERMISSION_KIND_EXECUTE_AD_HOC_QUERY = 22;
   CAPABILITY_PERMISSION_KIND_EXPLAIN_NAMED_QUERY = 23;
   CAPABILITY_PERMISSION_KIND_EXECUTE_NAMED_QUERY = 24;
+  CAPABILITY_PERMISSION_KIND_APPLICATION_ROLE_IDENTITY = 25;
 }
 
 message LineageScopedStableId {
@@ -159,6 +160,7 @@ message CapabilityPermission {
     Unit execute_ad_hoc_query = 22;
     NamedQueryPermission explain_named_query = 23;
     NamedQueryPermission execute_named_query = 24;
+    bytes application_role_identity = 25;
   }
 }
 

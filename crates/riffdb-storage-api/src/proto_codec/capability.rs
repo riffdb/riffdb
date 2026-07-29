@@ -2,10 +2,10 @@ use std::num::{NonZeroU16, NonZeroU64};
 
 use riffdb_proto::storage::v1 as wire;
 use riffdb_types::{
-    ActorId, AdministrationSequence, ApprovalId, Audience, CapabilityGrantError, CapabilityId,
-    CapabilityTokenDigest, CommandId, ContractLineage, DatabaseId, DigestKeyId, EntityTypeId,
-    Environment, FieldId, IndexId, PartitionKey, ProjectionId, QueryModuleHash, QueryOperationName,
-    RequestId,
+    ActorId, AdministrationSequence, ApplicationRoleHash, ApprovalId, Audience,
+    CapabilityGrantError, CapabilityId, CapabilityTokenDigest, CommandId, ContractLineage,
+    DatabaseId, DigestKeyId, EntityTypeId, Environment, FieldId, IndexId, PartitionKey,
+    ProjectionId, QueryModuleHash, QueryOperationName, RequestId,
 };
 
 use crate::{
@@ -38,46 +38,56 @@ fn permission_to_proto(value: &CapabilityPermissionV1) -> wire::CapabilityPermis
         ScanIndex, Unparameterized,
     };
 
-    let (contract_lineage, stable_id, query_module_hash, query_name) = match value {
-        Unparameterized(_) => (None, None, None, None),
-        ExplainCommand(lineage, id) | InvokeCommand(lineage, id) => (
-            Some(lineage.as_str().to_owned()),
-            Some(id.get()),
-            None,
-            None,
-        ),
-        ReadEntity(lineage, id) => (
-            Some(lineage.as_str().to_owned()),
-            Some(id.get()),
-            None,
-            None,
-        ),
-        ScanIndex(lineage, id) => (
-            Some(lineage.as_str().to_owned()),
-            Some(id.get()),
-            None,
-            None,
-        ),
-        QueryProjection(lineage, id) | ReadProjectionStatus(lineage, id) => (
-            Some(lineage.as_str().to_owned()),
-            Some(id.get()),
-            None,
-            None,
-        ),
-        CapabilityPermissionV1::ExplainNamedQuery(lineage, hash, name)
-        | CapabilityPermissionV1::ExecuteNamedQuery(lineage, hash, name) => (
-            Some(lineage.as_str().to_owned()),
-            None,
-            Some(hash.as_bytes().to_vec()),
-            Some(name.as_str().to_owned()),
-        ),
-    };
+    let (contract_lineage, stable_id, query_module_hash, query_name, application_role_hash) =
+        match value {
+            Unparameterized(_) => (None, None, None, None, None),
+            ExplainCommand(lineage, id) | InvokeCommand(lineage, id) => (
+                Some(lineage.as_str().to_owned()),
+                Some(id.get()),
+                None,
+                None,
+                None,
+            ),
+            ReadEntity(lineage, id) => (
+                Some(lineage.as_str().to_owned()),
+                Some(id.get()),
+                None,
+                None,
+                None,
+            ),
+            ScanIndex(lineage, id) => (
+                Some(lineage.as_str().to_owned()),
+                Some(id.get()),
+                None,
+                None,
+                None,
+            ),
+            QueryProjection(lineage, id) | ReadProjectionStatus(lineage, id) => (
+                Some(lineage.as_str().to_owned()),
+                Some(id.get()),
+                None,
+                None,
+                None,
+            ),
+            CapabilityPermissionV1::ExplainNamedQuery(lineage, hash, name)
+            | CapabilityPermissionV1::ExecuteNamedQuery(lineage, hash, name) => (
+                Some(lineage.as_str().to_owned()),
+                None,
+                Some(hash.as_bytes().to_vec()),
+                Some(name.as_str().to_owned()),
+                None,
+            ),
+            CapabilityPermissionV1::ApplicationRoleIdentity(hash) => {
+                (None, None, None, None, Some(hash.as_bytes().to_vec()))
+            }
+        };
     wire::CapabilityPermissionV1 {
         kind: i32::from(value.kind().tag()),
         contract_lineage,
         stable_id,
         query_module_hash,
         query_name,
+        application_role_hash,
     }
 }
 
@@ -93,19 +103,24 @@ fn permission_from_proto(
         value.stable_id,
         value.query_module_hash,
         value.query_name,
+        value.application_role_hash,
     ) {
-        (None, None, None, None) => PermissionParameter::None,
-        (Some(lineage), Some(id), None, None) => PermissionParameter::StableId(
+        (None, None, None, None, None) => PermissionParameter::None,
+        (Some(lineage), Some(id), None, None, None) => PermissionParameter::StableId(
             ContractLineage::new(lineage).map_err(|_| DurableCodecError::corrupt())?,
             id,
         ),
-        (Some(lineage), None, Some(hash), Some(name)) => {
+        (Some(lineage), None, Some(hash), Some(name), None) => {
             let hash: [u8; 32] = hash.try_into().map_err(|_| DurableCodecError::corrupt())?;
             PermissionParameter::NamedQuery(
                 ContractLineage::new(lineage).map_err(|_| DurableCodecError::corrupt())?,
                 QueryModuleHash::from_bytes(hash),
                 QueryOperationName::new(name).map_err(|_| DurableCodecError::corrupt())?,
             )
+        }
+        (None, None, None, None, Some(hash)) => {
+            let hash: [u8; 32] = hash.try_into().map_err(|_| DurableCodecError::corrupt())?;
+            PermissionParameter::ApplicationRole(ApplicationRoleHash::from_bytes(hash))
         }
         _ => return Err(DurableCodecError::corrupt()),
     };
@@ -161,12 +176,19 @@ fn permission_from_proto(
         ) => Ok(CapabilityPermissionV1::ExecuteNamedQuery(
             lineage, hash, name,
         )),
+        (
+            CapabilityPermissionKindV1::ApplicationRoleIdentity,
+            PermissionParameter::ApplicationRole(hash),
+        ) => Ok(CapabilityPermissionV1::ApplicationRoleIdentity(hash)),
         (kind, PermissionParameter::None) => {
             grant_result(CapabilityPermissionV1::unparameterized(kind))
         }
-        (_, PermissionParameter::StableId(..) | PermissionParameter::NamedQuery(..)) => {
-            Err(DurableCodecError::corrupt())
-        }
+        (
+            _,
+            PermissionParameter::StableId(..)
+            | PermissionParameter::NamedQuery(..)
+            | PermissionParameter::ApplicationRole(..),
+        ) => Err(DurableCodecError::corrupt()),
     }
 }
 
@@ -174,6 +196,7 @@ enum PermissionParameter {
     None,
     StableId(ContractLineage, u32),
     NamedQuery(ContractLineage, QueryModuleHash, QueryOperationName),
+    ApplicationRole(ApplicationRoleHash),
 }
 
 fn permissions_to_proto(value: &CapabilityPermissionsV1) -> wire::CapabilityPermissionsV1 {
@@ -581,6 +604,9 @@ mod permission_tests {
                 .expect("ad-hoc permission"),
             CapabilityPermissionV1::ExplainNamedQuery(lineage.clone(), module, name.clone()),
             CapabilityPermissionV1::ExecuteNamedQuery(lineage.clone(), module, name.clone()),
+            CapabilityPermissionV1::ApplicationRoleIdentity(ApplicationRoleHash::from_bytes(
+                [0x42; 32],
+            )),
         ] {
             assert_eq!(
                 permission_from_proto(permission_to_proto(&permission)).expect("round trip"),

@@ -105,7 +105,7 @@ pub struct NamedQueryPermission {
 pub struct CapabilityPermission {
     #[prost(
         oneof = "capability_permission::Permission",
-        tags = "1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24"
+        tags = "1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25"
     )]
     pub permission: ::core::option::Option<capability_permission::Permission>,
 }
@@ -161,6 +161,8 @@ pub mod capability_permission {
         ExplainNamedQuery(super::NamedQueryPermission),
         #[prost(message, tag = "24")]
         ExecuteNamedQuery(super::NamedQueryPermission),
+        #[prost(bytes, tag = "25")]
+        ApplicationRoleIdentity(::prost::alloc::vec::Vec<u8>),
     }
 }
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
@@ -630,6 +632,7 @@ pub enum CapabilityPermissionKind {
     ExecuteAdHocQuery = 22,
     ExplainNamedQuery = 23,
     ExecuteNamedQuery = 24,
+    ApplicationRoleIdentity = 25,
 }
 impl CapabilityPermissionKind {
     /// String value of the enum field names used in the ProtoBuf definition.
@@ -667,6 +670,9 @@ impl CapabilityPermissionKind {
             Self::ExecuteAdHocQuery => "CAPABILITY_PERMISSION_KIND_EXECUTE_AD_HOC_QUERY",
             Self::ExplainNamedQuery => "CAPABILITY_PERMISSION_KIND_EXPLAIN_NAMED_QUERY",
             Self::ExecuteNamedQuery => "CAPABILITY_PERMISSION_KIND_EXECUTE_NAMED_QUERY",
+            Self::ApplicationRoleIdentity => {
+                "CAPABILITY_PERMISSION_KIND_APPLICATION_ROLE_IDENTITY"
+            }
         }
     }
     /// Creates an enum from field names used in the ProtoBuf definition.
@@ -718,6 +724,9 @@ impl CapabilityPermissionKind {
             }
             "CAPABILITY_PERMISSION_KIND_EXECUTE_NAMED_QUERY" => {
                 Some(Self::ExecuteNamedQuery)
+            }
+            "CAPABILITY_PERMISSION_KIND_APPLICATION_ROLE_IDENTITY" => {
+                Some(Self::ApplicationRoleIdentity)
             }
             _ => None,
         }

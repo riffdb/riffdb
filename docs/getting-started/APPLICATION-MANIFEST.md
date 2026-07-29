@@ -43,8 +43,10 @@ The v1 document is closed JSON with exactly these top-level members:
   "roles": [
     {
       "commands": ["CreateTicket"],
+      "environment": "development",
       "name": "TicketDeskAgent",
-      "queries": ["TicketPage"]
+      "queries": ["TicketPage"],
+      "tenant_scope": "tenant"
     }
   ],
   "schema": "riffdb.application-manifest/v1",
@@ -57,6 +59,12 @@ components, empty components, duplicate paths, duplicate names, undeclared
 query references, and unknown members are rejected. Versions are positive.
 Names and collections are bounded; the source document may not exceed one MiB.
 Hash text is exact lowercase hexadecimal.
+
+Each role declares an exact environment and either `global` scope or `tenant`
+scope. A tenant-scoped role must receive one concrete tenant at binding time;
+a global role rejects a tenant argument. The role author names only commands
+and named queries. Field visibility, stable IDs, indexes, partitions, result
+shape, and scan ceilings are compiler-private consequences of those names.
 
 RiffDB sorts every set-like collection, serializes the validated value as
 compact canonical JSON with a final line feed, and hashes those bytes under the
@@ -85,3 +93,24 @@ typed command outcomes, and retry-safe uncertainty recovery. Generated MCP
 schemas come from the same operation registry. Application code uses these
 facades or RiffQL text; numeric IDs, field masks, protobuf records, and raw RPC
 wrappers remain generated or internal implementation details.
+
+Check, inspect, bind, and revoke roles symbolically:
+
+```bash
+riffdb role check riffdb.application.json --role TicketDeskAgent --tenant acme
+riffdb role describe riffdb.application.json --role TicketDeskAgent --tenant acme
+riffdb role bind riffdb.application.json \
+  --role TicketDeskAgent \
+  --tenant acme \
+  --principal app:ticketdesk \
+  --actor-kind service \
+  --audience ticketdesk \
+  --credential-output .riffdb/ticketdesk.credential
+riffdb role revoke <capability-uuidv7> --reason replaced
+```
+
+The compiled role has a domain-separated identity covering the manifest,
+contract, immutable query modules, environment, tenant binding, named
+operations, compiler-derived visibility, and resource ceiling. That identity
+is retained as a non-authorizing capability marker for audit and substitution
+detection. The marker cannot execute any operation.

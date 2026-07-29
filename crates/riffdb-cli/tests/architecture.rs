@@ -7,11 +7,14 @@ use std::fs;
 use std::path::PathBuf;
 use std::process::Command;
 
-const DIRECT_DEPENDENCIES: [&str; 9] = [
+const DIRECT_DEPENDENCIES: [&str; 12] = [
     "base64",
     "clap",
     "riffdb-auth",
     "riffdb-client-rust",
+    "riffdb-contract-compiler",
+    "riffdb-query-module",
+    "riffdb-types",
     "serde",
     "serde_json",
     "tokio",
@@ -23,6 +26,9 @@ const EXACT_DEPENDENCY_ROWS: &str = concat!(
     "clap = { version = \"=4.6.3\", default-features = false, features = [\"derive\", \"std\", \"help\", \"usage\", \"error-context\"] }\n",
     "riffdb-auth = { version = \"0.1.0\", path = \"../riffdb-auth\", default-features = false }\n",
     "riffdb-client-rust = { version = \"0.1.0\", path = \"../riffdb-client-rust\", default-features = false }\n",
+    "riffdb-contract-compiler = { version = \"0.1.0\", path = \"../riffdb-contract-compiler\", default-features = false }\n",
+    "riffdb-query-module = { version = \"0.1.0\", path = \"../riffdb-query-module\", default-features = false }\n",
+    "riffdb-types = { version = \"0.1.0\", path = \"../riffdb-types\", default-features = false }\n",
     "serde = { version = \"=1.0.229\", default-features = false, features = [\"derive\", \"std\"] }\n",
     "serde_json = { version = \"=1.0.150\", default-features = false, features = [\"std\"] }\n",
     "tokio = { version = \"=1.52.0\", default-features = false, features = [\"macros\", \"rt-multi-thread\"] }\n",
@@ -69,7 +75,6 @@ fn source_has_no_internal_database_or_unchecked_transport_path() {
         "riffdb_catalog",
         "riffdb_commit",
         "riffdb_conflict",
-        "riffdb_contract",
         "riffdb_errors",
         "riffdb_idempotency",
         "riffdb_policy",
@@ -78,7 +83,6 @@ fn source_has_no_internal_database_or_unchecked_transport_path() {
         "riffdb_server",
         "riffdb_service",
         "riffdb_storage",
-        "riffdb_types",
         "tonic::",
         "redb",
         "load_capability_token_file",

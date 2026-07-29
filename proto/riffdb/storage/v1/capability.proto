@@ -30,6 +30,7 @@ enum CapabilityPermissionKindV1 {
   CAPABILITY_PERMISSION_KIND_EXECUTE_AD_HOC_QUERY = 22;
   CAPABILITY_PERMISSION_KIND_EXPLAIN_NAMED_QUERY = 23;
   CAPABILITY_PERMISSION_KIND_EXECUTE_NAMED_QUERY = 24;
+  CAPABILITY_PERMISSION_KIND_APPLICATION_ROLE_IDENTITY = 25;
 }
 
 enum RevocationReasonCodeV1 {
@@ -59,6 +60,7 @@ message CapabilityPermissionV1 {
   optional uint32 stable_id = 3;
   optional bytes query_module_hash = 4;
   optional string query_name = 5;
+  optional bytes application_role_hash = 6;
 }
 
 message CapabilityPermissionsV1 {

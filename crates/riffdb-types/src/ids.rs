@@ -341,6 +341,10 @@ hash_id!(
     ApplicationManifestHash
 );
 hash_id!(
+    /// The identity of one canonical compiled application role.
+    ApplicationRoleHash
+);
+hash_id!(
     /// The hash of one exact RiffQL source document.
     QuerySourceHash
 );

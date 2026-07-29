@@ -183,6 +183,14 @@ fn application_manifest_is_canonical_bounded_and_identity_bearing() {
             .span("contract.source")
             .is_some_and(|span| span.start() < span.end())
     );
+    assert_ne!(
+        manifest
+            .source_map()
+            .span("roles.TicketDeskAgent.environment"),
+        manifest
+            .source_map()
+            .span("roles.TicketDeskApplication.environment")
+    );
 
     let noncanonical = format!("\n{source}");
     let error = ApplicationManifest::decode_canonical(noncanonical.as_bytes())

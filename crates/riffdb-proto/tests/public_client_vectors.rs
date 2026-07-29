@@ -311,6 +311,11 @@ fn expected_enum_values() -> BTreeSet<String> {
             "CAPABILITY_PERMISSION_KIND_EXECUTE_NAMED_QUERY",
         ),
         (
+            "riffdb.v1.CapabilityPermissionKind",
+            25,
+            "CAPABILITY_PERMISSION_KIND_APPLICATION_ROLE_IDENTITY",
+        ),
+        (
             "riffdb.v1.ContractCompatibilityClass",
             0,
             "CONTRACT_COMPATIBILITY_CLASS_UNSPECIFIED",

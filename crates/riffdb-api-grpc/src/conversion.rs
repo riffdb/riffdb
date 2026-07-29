@@ -48,14 +48,15 @@ use riffdb_service::{
     SymbolicResultRecord, TraceProvenanceRequest, TraceProvenanceResult, ValidateContractRequest,
 };
 use riffdb_types::{
-    ActorId, ActorKind, AdmittedActorContext, Audience, BackupNameV1, CapabilityGrantV1,
-    CapabilityId, CapabilityPermissionKindV1, CapabilityPermissionV1, CapabilityPermissionsV1,
-    CommandId, CommitSequence, ContractBundleHash, ContractLineage, ContractVersion, CurrencyCode,
-    Date, EntityFieldVisibilityV1, EntityKey, EntityTypeId, EnumTypeId, EnumVariantId, FieldId,
-    FrontierPosition, IdempotencyKey, IndexEpochPosition, IndexId, OfflineMaintenanceOperationId,
-    OfflineMaintenanceOperationKind, OfflineMaintenanceReplacementConfirmation, PartitionKey,
-    PartitionScopeV1, ProjectionId, ProvenanceId, QueryModuleHash, QueryOperationName, RequestId,
-    RevocationReasonCodeV1, SchemaHash, ScopedPartitionV1, TenantId, TenantScope, Timestamp,
+    ActorId, ActorKind, AdmittedActorContext, ApplicationRoleHash, Audience, BackupNameV1,
+    CapabilityGrantV1, CapabilityId, CapabilityPermissionKindV1, CapabilityPermissionV1,
+    CapabilityPermissionsV1, CommandId, CommitSequence, ContractBundleHash, ContractLineage,
+    ContractVersion, CurrencyCode, Date, EntityFieldVisibilityV1, EntityKey, EntityTypeId,
+    EnumTypeId, EnumVariantId, FieldId, FrontierPosition, IdempotencyKey, IndexEpochPosition,
+    IndexId, OfflineMaintenanceOperationId, OfflineMaintenanceOperationKind,
+    OfflineMaintenanceReplacementConfirmation, PartitionKey, PartitionScopeV1, ProjectionId,
+    ProvenanceId, QueryModuleHash, QueryOperationName, RequestId, RevocationReasonCodeV1,
+    SchemaHash, ScopedPartitionV1, TenantId, TenantScope, Timestamp,
 };
 use tonic::Status;
 
@@ -3148,6 +3149,12 @@ fn capability_permission_from_proto(
                 lineage, hash, name,
             ))
         }
+        Permission::ApplicationRoleIdentity(value) => {
+            let hash: [u8; 32] = value.try_into().map_err(|_| invalid_request())?;
+            Ok(CapabilityPermissionV1::ApplicationRoleIdentity(
+                ApplicationRoleHash::from_bytes(hash),
+            ))
+        }
     }
 }
 
@@ -3233,6 +3240,9 @@ fn capability_permission_kind_from_proto(value: i32) -> Result<CapabilityPermiss
         }
         v1::CapabilityPermissionKind::ExecuteNamedQuery => {
             Ok(CapabilityPermissionKindV1::ExecuteNamedQuery)
+        }
+        v1::CapabilityPermissionKind::ApplicationRoleIdentity => {
+            Ok(CapabilityPermissionKindV1::ApplicationRoleIdentity)
         }
         v1::CapabilityPermissionKind::Unspecified => Err(invalid_request()),
     }

@@ -9,8 +9,8 @@ use std::path::PathBuf;
 use riffdb_contract_compiler::compile_contract_source;
 use riffdb_query_module::{
     ApplicationManifest, NamedQuerySource, QueryModule, QueryModuleCandidate, QueryModuleName,
-    QueryModuleVersion, generate_mcp_commands, generate_mcp_tools, generate_rust_client,
-    generate_typescript_client,
+    QueryModuleVersion, compile_application_role, generate_mcp_commands, generate_mcp_tools,
+    generate_rust_client, generate_typescript_client,
 };
 
 const CONTRACT: &str = include_str!("../../../examples/app-baseline/contracts/ticketdesk.riff");
@@ -81,6 +81,14 @@ fn main() {
         application.query_modules()[0].module_hash(),
         module.identity()
     );
+    let role = compile_application_role(
+        &application,
+        "TicketDeskAgent",
+        None,
+        &contract,
+        std::slice::from_ref(&module),
+    )
+    .expect("compile TicketDesk role");
     fs::create_dir_all(output.join("fixtures/query-modules")).expect("fixture directory");
     fs::create_dir_all(output.join("fixtures/application-manifests"))
         .expect("manifest fixture directory");
@@ -153,6 +161,42 @@ fn main() {
         format!("{}\n", hex(application.identity().as_bytes())),
     )
     .expect("manifest identity fixture");
+    fs::write(
+        output.join("fixtures/application-manifests/ticketdesk-agent-role-v1.identity"),
+        format!("{}\n", hex(role.identity().as_bytes())),
+    )
+    .expect("role identity fixture");
+    let role_description = serde_json::json!({
+        "application": role.application_name(),
+        "application_manifest_hash": hex(role.manifest_hash().as_bytes()),
+        "contract": {
+            "bundle_hash": hex(role.contract_hash().as_bytes()),
+            "lineage": role.contract_lineage().as_str(),
+            "version": role.contract_version().get(),
+        },
+        "environment": role.environment().as_str(),
+        "query_module_hashes": role.module_hashes().iter()
+            .map(|hash| hex(hash.as_bytes()))
+            .collect::<Vec<_>>(),
+        "role": role.role_name(),
+        "role_hash": hex(role.identity().as_bytes()),
+        "tenant_scope": "global",
+        "operations": role.operations().iter().map(|operation| serde_json::json!({
+            "kind": match operation.kind() {
+                riffdb_query_module::ApplicationRoleOperationKind::Query => "query",
+                riffdb_query_module::ApplicationRoleOperationKind::Command => "command",
+            },
+            "name": operation.name(),
+        })).collect::<Vec<_>>(),
+    });
+    fs::write(
+        output.join("fixtures/application-manifests/ticketdesk-agent-role-v1.json"),
+        format!(
+            "{}\n",
+            serde_json::to_string_pretty(&role_description).expect("role description")
+        ),
+    )
+    .expect("role description fixture");
 }
 
 fn hex(bytes: &[u8]) -> String {

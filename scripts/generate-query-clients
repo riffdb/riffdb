@@ -12,6 +12,10 @@ if [[ "${1:-}" == "--check" ]]; then
     diff -u fixtures/query-modules/ticketdesk.mcp.json "$generated/fixtures/query-modules/ticketdesk.mcp.json"
     diff -u fixtures/application-manifests/ticketdesk-v1.identity \
         "$generated/fixtures/application-manifests/ticketdesk-v1.identity"
+    diff -u fixtures/application-manifests/ticketdesk-agent-role-v1.identity \
+        "$generated/fixtures/application-manifests/ticketdesk-agent-role-v1.identity"
+    diff -u fixtures/application-manifests/ticketdesk-agent-role-v1.json \
+        "$generated/fixtures/application-manifests/ticketdesk-agent-role-v1.json"
     diff -u clients/typescript/ticketdesk/client.ts "$generated/clients/typescript/ticketdesk/client.ts"
     cargo check --quiet -p riffdb-ticketdesk --all-targets
     if command -v tsc >/dev/null 2>&1; then
