@@ -8,7 +8,7 @@ use riffdb_contract_ir::{ValueType, ValueTypeTag};
 use riffdb_query_ir::{
     AccessDirection, AuthorizationEntityAccess, EntitySymbol, QueryAccessKind,
     QueryAccessProgramV1, QueryAccessStep, QueryLiteral, QueryPredicate, QueryPredicateOperator,
-    QueryPredicateValue, SymbolicCatalog, resolve_query_surface,
+    QueryPredicateValue, QueryRowLimit, SymbolicCatalog, resolve_query_surface,
 };
 use riffdb_riffql_syntax::{
     BinaryOperator, Cardinality, Direction, Document, Expression, FieldSelection, Literal, Path,
@@ -190,6 +190,7 @@ impl<'a> Planner<'a> {
             }
 
             let maximum_rows = maximum_rows(binding)?;
+            let row_limit = row_limit(binding, self.document)?;
             let (access, index_id) = choose_access(entity, binding, &comparisons)?;
             let predicates = self.normalize_predicates(&comparisons)?;
             let mut predicate_fields = comparisons
@@ -236,6 +237,7 @@ impl<'a> Planner<'a> {
                 entity.name().to_owned(),
                 binding.cardinality.value,
                 maximum_rows,
+                row_limit,
                 access.clone(),
                 predicates,
                 predicate_fields.clone(),
@@ -245,6 +247,11 @@ impl<'a> Planner<'a> {
                     .absence_outcome
                     .as_ref()
                     .map(|outcome| outcome.value.as_str().to_owned()),
+                binding
+                    .take
+                    .as_ref()
+                    .and_then(|take| take.after.as_ref())
+                    .map(|cursor| cursor.value.as_str().to_owned()),
                 dependencies,
                 entity.internal_id(),
                 index_id,
@@ -391,15 +398,18 @@ impl<'a> Planner<'a> {
                                 binding: first.to_owned(),
                                 field: second.to_owned(),
                             }
-                        } else if self
-                            .catalog
-                            .enumeration(first)
-                            .and_then(|enumeration| enumeration.variant(second))
-                            .is_some()
+                        } else if let Some((type_id, variant_id)) =
+                            self.catalog.enumeration(first).and_then(|enumeration| {
+                                enumeration
+                                    .variant(second)
+                                    .map(|variant| (enumeration.internal_id(), variant))
+                            })
                         {
                             QueryPredicateValue::EnumVariant {
                                 enumeration: first.to_owned(),
                                 variant: second.to_owned(),
+                                type_id,
+                                variant_id,
                             }
                         } else {
                             return Err(internal());
@@ -736,6 +746,42 @@ fn maximum_rows(binding: &riffdb_riffql_syntax::Binding) -> Result<u64, PlannerD
             None,
         )
     })
+}
+
+fn row_limit(
+    binding: &riffdb_riffql_syntax::Binding,
+    document: &Document,
+) -> Result<QueryRowLimit, PlannerDiagnostics> {
+    if binding.cardinality.value != Cardinality::Many {
+        return Ok(QueryRowLimit::Literal(1));
+    }
+    let take = binding.take.as_ref().ok_or_else(internal)?;
+    match &take.limit.value {
+        Expression::Literal(Literal::Unsigned(value)) => value
+            .parse::<u64>()
+            .ok()
+            .map(QueryRowLimit::Literal)
+            .ok_or_else(internal),
+        Expression::Parameter(parameter) => {
+            let declared = document
+                .parameters
+                .iter()
+                .find(|candidate| candidate.name.value == parameter.value)
+                .ok_or_else(internal)?;
+            let default = match declared.default.as_ref().map(|value| &value.value) {
+                Some(Literal::Unsigned(value)) => {
+                    Some(value.parse::<u64>().map_err(|_| internal())?)
+                }
+                None => None,
+                Some(_) => return Err(internal()),
+            };
+            Ok(QueryRowLimit::Parameter {
+                name: parameter.value.as_str().to_owned(),
+                default,
+            })
+        }
+        _ => Err(internal()),
+    }
 }
 
 fn selected_fields(document: &Document) -> BTreeMap<String, BTreeSet<String>> {

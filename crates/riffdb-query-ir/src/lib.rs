@@ -15,7 +15,7 @@ pub use diagnostic::{
 pub use plan::{
     AccessDirection, AuthorizationEntityAccess, QueryAccessKind, QueryAccessProgramV1,
     QueryAccessStep, QueryLiteral, QueryPlanExplain, QueryPlanIdentity, QueryPredicate,
-    QueryPredicateOperator, QueryPredicateValue,
+    QueryPredicateOperator, QueryPredicateValue, QueryRowLimit,
 };
 pub use resolver::{
     BindingSymbol, ExactContractIdentity, QuerySourceMap, ResolvedQueryV1, SourceMapEntry,
