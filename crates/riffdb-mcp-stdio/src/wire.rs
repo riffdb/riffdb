@@ -30,6 +30,7 @@ pub(crate) enum FixedGrpcRequest {
     CheckQuery(app_v1::CheckQueryRequest),
     ExplainQuery(app_v1::ExplainQueryRequest),
     ExecuteQuery(app_v1::ExecuteQueryRequest),
+    RunCommand(v1::ExecuteCommandRequest),
 }
 
 pub(crate) fn fixed_request_to_proto(
@@ -223,6 +224,31 @@ pub(crate) fn fixed_request_to_proto(
                     })
                     .transpose()?,
                 request_id,
+            })
+        }
+        McpFixedToolRequest::RunCommand {
+            command_name,
+            input,
+            expected_contract_version,
+        } => {
+            let mut fields = input
+                .into_iter()
+                .map(|(name, value)| {
+                    Ok(v1::ValueField {
+                        field_id: None,
+                        name,
+                        value: Some(natural_value_to_proto(value)?),
+                    })
+                })
+                .collect::<Result<Vec<_>, WireConversionError>>()?;
+            fields.sort_by(|left, right| left.name.cmp(&right.name));
+            FixedGrpcRequest::RunCommand(v1::ExecuteCommandRequest {
+                request_id,
+                command_name,
+                expected_contract_version,
+                input: Some(v1::Value {
+                    kind: Some(v1::value::Kind::RecordValue(v1::ValueRecord { fields })),
+                }),
             })
         }
     })

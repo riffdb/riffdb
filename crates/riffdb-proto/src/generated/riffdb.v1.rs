@@ -2246,6 +2246,7 @@ pub enum FixedToolKind {
     CheckQuery = 16,
     ExplainQuery = 17,
     ExecuteQuery = 18,
+    RunCommand = 19,
 }
 impl FixedToolKind {
     /// String value of the enum field names used in the ProtoBuf definition.
@@ -2275,6 +2276,7 @@ impl FixedToolKind {
             Self::CheckQuery => "FIXED_TOOL_KIND_CHECK_QUERY",
             Self::ExplainQuery => "FIXED_TOOL_KIND_EXPLAIN_QUERY",
             Self::ExecuteQuery => "FIXED_TOOL_KIND_EXECUTE_QUERY",
+            Self::RunCommand => "FIXED_TOOL_KIND_RUN_COMMAND",
         }
     }
     /// Creates an enum from field names used in the ProtoBuf definition.
@@ -2303,6 +2305,7 @@ impl FixedToolKind {
             "FIXED_TOOL_KIND_CHECK_QUERY" => Some(Self::CheckQuery),
             "FIXED_TOOL_KIND_EXPLAIN_QUERY" => Some(Self::ExplainQuery),
             "FIXED_TOOL_KIND_EXECUTE_QUERY" => Some(Self::ExecuteQuery),
+            "FIXED_TOOL_KIND_RUN_COMMAND" => Some(Self::RunCommand),
             _ => None,
         }
     }

@@ -733,6 +733,47 @@ fn append_symbolic_tools(
             result_schema,
         });
     }
+    let input_id = "riffdb.fixed-tool/riffdb.command.run/input/v1".to_owned();
+    let result_id = "riffdb.fixed-tool/riffdb.command.run/result/v1".to_owned();
+    let input_schema = generated_schema(
+        input_id.clone(),
+        serde_json::json!({
+            "$schema": SCHEMA_DIALECT,
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+                "command_name": {"type": "string", "minLength": 1, "maxLength": 128},
+                "input": {"type": "object"},
+                "expected_contract_version": {"type": "string", "minLength": 1, "maxLength": 20}
+            },
+            "required": ["command_name", "input"]
+        }),
+    )?;
+    let result_schema = generated_schema(result_id.clone(), wrapped_result_schema("completed"))?;
+    manifest.extend([input_id, result_id]);
+    tools.push(FixedToolDefinition {
+        kind: 19,
+        name: "riffdb.command.run".to_owned(),
+        title: "Run symbolic command".to_owned(),
+        description:
+            "Invoke one compiled command with name-addressed natural JSON and declared outcomes."
+                .to_owned(),
+        risk_class: "application_mutation".to_owned(),
+        grpc_service: "CommandService".to_owned(),
+        grpc_method: "Execute".to_owned(),
+        service_operation: "ExecuteCommand".to_owned(),
+        request_converter_id: "riffdb.mcp.symbolic.command.request/v1".to_owned(),
+        result_converter_id: "riffdb.mcp.symbolic.command.result/v1".to_owned(),
+        result_branches: vec!["completed".to_owned()],
+        annotations: FixedToolAnnotations {
+            read_only_hint: false,
+            destructive_hint: true,
+            idempotent_hint: true,
+            open_world_hint: false,
+        },
+        input_schema,
+        result_schema,
+    });
     Ok(())
 }
 
@@ -1256,8 +1297,8 @@ mod tests {
     #[test]
     fn fixed_registry_reproduces_every_accepted_schema_identity() {
         let registry = fixed_tool_registry().expect("accepted fixed registry loads");
-        assert_eq!(registry.tools().len(), 18);
-        assert_eq!(registry.artifact_manifest().len(), 37);
+        assert_eq!(registry.tools().len(), 19);
+        assert_eq!(registry.artifact_manifest().len(), 39);
         assert_eq!(registry.operation_schemas().len(), 2);
         assert!(registry.fixed_schema_bytes() > EXPECTED_FIXED_SCHEMA_BYTES);
         assert!(registry.fixed_schema_bytes() <= MAX_FIXED_SCHEMA_BYTES);

@@ -506,6 +506,115 @@ pub(crate) fn execute_query(
     )
 }
 
+pub(crate) fn run_command(
+    response: v1::ExecuteCommandResponse,
+) -> Result<McpToolResult, ResponseConversionError> {
+    let status =
+        match v1::execute_command_response::CompletionStatus::try_from(response.status).ok() {
+            Some(v1::execute_command_response::CompletionStatus::Committed) => "committed",
+            Some(v1::execute_command_response::CompletionStatus::Replayed) => "replayed",
+            Some(v1::execute_command_response::CompletionStatus::ExecutedReadOnly) => {
+                "executed_read_only"
+            }
+            Some(v1::execute_command_response::CompletionStatus::Unspecified) | None => {
+                return Err(ResponseConversionError);
+            }
+        };
+    let payload = serde_json::json!({
+        "status": status,
+        "commit_sequence": (status != "executed_read_only")
+            .then(|| response.commit_sequence.to_string()),
+        "contract_version": response.contract_version.to_string(),
+        "plan_hash": lower_hex(&response.plan_hash),
+        "outcome": {
+            "type": response.outcome_type,
+            "value": public_natural_value(response.outcome.ok_or(ResponseConversionError)?)?,
+        },
+        "provenance_uri": (!response.provenance_uri.is_empty())
+            .then_some(response.provenance_uri),
+        "durability": (!response.durability_mode.is_empty())
+            .then_some(response.durability_mode),
+        "outcome_uri": response.outcome_uri,
+    });
+    compose(
+        19,
+        McpFixedResultBranch::CommandCompleted,
+        Some(payload_from(&payload)?),
+    )
+}
+
+fn public_natural_value(value: v1::Value) -> Result<serde_json::Value, ResponseConversionError> {
+    use v1::value::Kind;
+    match value.kind.ok_or(ResponseConversionError)? {
+        Kind::NullValue(value) if value == v1::NullValue::NullValue as i32 => {
+            Ok(serde_json::Value::Null)
+        }
+        Kind::NullValue(_) => Err(ResponseConversionError),
+        Kind::BoolValue(value) => Ok(serde_json::Value::Bool(value)),
+        Kind::I64Value(value) => Ok(serde_json::Value::String(value.to_string())),
+        Kind::U64Value(value) => Ok(serde_json::Value::String(value.to_string())),
+        Kind::DecimalValue(value) => {
+            let (precision, scale, coefficient) = presented_decimal(value)?;
+            Ok(serde_json::json!({
+                "coefficient": coefficient,
+                "precision": precision,
+                "scale": scale,
+            }))
+        }
+        Kind::MoneyValue(value) => {
+            let currency = value.currency;
+            let (precision, scale, coefficient) =
+                presented_decimal(value.amount.ok_or(ResponseConversionError)?)?;
+            Ok(serde_json::json!({
+                "currency": currency,
+                "coefficient": coefficient,
+                "precision": precision,
+                "scale": scale,
+            }))
+        }
+        Kind::StringValue(value) => Ok(serde_json::Value::String(value)),
+        Kind::BytesValue(value) => {
+            serde_json::to_value(McpPresentedBytes::new(value)).map_err(|_| ResponseConversionError)
+        }
+        Kind::TimestampValue(value) => Ok(serde_json::json!({
+            "seconds": value.seconds.to_string(),
+            "nanos": value.nanos,
+        })),
+        Kind::DateValue(value) => Ok(serde_json::json!({
+            "days_since_unix_epoch": value.days_since_unix_epoch,
+        })),
+        Kind::UuidValue(value) => {
+            serde_json::to_value(uuid(&value)?).map_err(|_| ResponseConversionError)
+        }
+        Kind::EnumValue(value) if !value.name.is_empty() => {
+            Ok(serde_json::Value::String(value.name))
+        }
+        Kind::EnumValue(_) => Err(ResponseConversionError),
+        Kind::ListValue(values) => values
+            .values
+            .into_iter()
+            .map(public_natural_value)
+            .collect::<Result<Vec<_>, _>>()
+            .map(serde_json::Value::Array),
+        Kind::RecordValue(record) => {
+            let mut fields = serde_json::Map::new();
+            for field in record.fields {
+                if field.name.is_empty()
+                    || fields
+                        .insert(
+                            field.name,
+                            public_natural_value(field.value.ok_or(ResponseConversionError)?)?,
+                        )
+                        .is_some()
+                {
+                    return Err(ResponseConversionError);
+                }
+            }
+            Ok(serde_json::Value::Object(fields))
+        }
+    }
+}
+
 fn checked_query_payload(
     identity: app_v1::QueryIdentity,
     schema: app_v1::QuerySchema,

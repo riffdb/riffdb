@@ -7,6 +7,7 @@ use std::{
     time::{Duration, Instant},
 };
 
+use base64::Engine as _;
 use riffdb_service::{
     ApplicationService, CheckSymbolicQueryResult, CommandToolDescriptor, CommandToolDiscoveryItem,
     CompactCommandToolDiscoveryItem, CompactResourceDescriptor, CompactResourceDescriptorRef,
@@ -1142,6 +1143,42 @@ impl HostedServiceMcpBackend {
                     .map_err(map_service_failure)?;
                 call.complete();
                 render_symbolic_execution(&result)
+            }
+            McpFixedToolRequest::RunCommand {
+                command_name,
+                input,
+                expected_contract_version,
+            } => {
+                let fields = input
+                    .into_iter()
+                    .map(|(name, value)| {
+                        Ok(SubmittedField::new(
+                            SubmittedFieldIdentity::Name(
+                                SourceName::new(name).map_err(invalid_response)?,
+                            ),
+                            natural_parameter(value)?,
+                        ))
+                    })
+                    .collect::<Result<Vec<_>, McpBackendError>>()?;
+                let request = ExecuteCommandRequest::new(
+                    SourceName::new(command_name).map_err(invalid_response)?,
+                    expected_contract_version
+                        .map(contract_version_from_u64)
+                        .transpose()?,
+                    SubmittedRecord::new(fields).map_err(invalid_response)?,
+                )
+                .map_err(invalid_response)?;
+                let mut call = self.prepare_call(
+                    invocation,
+                    McpRateTarget::Service(ServiceOperationV1::ExecuteCommand),
+                )?;
+                let result = self
+                    .service
+                    .execute_command(call.take_context()?, request)
+                    .await
+                    .map_err(map_service_failure)?;
+                call.complete();
+                render_symbolic_command(result)
             }
         }
     }
@@ -2860,6 +2897,129 @@ fn render_symbolic_execution(
     )
 }
 
+fn render_symbolic_command(
+    result: riffdb_service::ExecuteCommandResult,
+) -> Result<McpToolResult, McpBackendError> {
+    let payload = match result {
+        riffdb_service::ExecuteCommandResult::Journaled(result) => {
+            let status = match result.completion() {
+                riffdb_service::JournaledCompletion::Committed => "committed",
+                riffdb_service::JournaledCompletion::Replayed => "replayed",
+            };
+            let durability = match result.durability() {
+                riffdb_service::CommandDurability::Synchronous => "synchronous",
+                riffdb_service::CommandDurability::Group => "group",
+            };
+            serde_json::json!({
+                "status": status,
+                "commit_sequence": result.commit_sequence().get().to_string(),
+                "contract_version": result.contract_version().get().to_string(),
+                "plan_hash": lower_hex(result.plan_hash().as_bytes()),
+                "outcome": {
+                    "type": result.outcome().outcome_name().as_str(),
+                    "value": untyped_natural_record(result.outcome().schema_bound_value())?,
+                },
+                "provenance_uri": format_provenance_locator(result.provenance_id()),
+                "durability": durability,
+                "outcome_uri": result.outcome_locator().canonical_uri(),
+            })
+        }
+        riffdb_service::ExecuteCommandResult::ReadOnlyExecuted(result) => serde_json::json!({
+            "status": "executed_read_only",
+            "contract_version": result.contract_version().get().to_string(),
+            "plan_hash": lower_hex(result.plan_hash().as_bytes()),
+            "outcome": {
+                "type": result.outcome().outcome_name().as_str(),
+                "value": untyped_natural_record(result.outcome().schema_bound_value())?,
+            }
+        }),
+    };
+    compose(
+        19,
+        McpFixedResultBranch::CommandCompleted,
+        Some(payload_from(&payload)?),
+    )
+}
+
+fn untyped_natural_record(
+    record: riffdb_service::SchemaBoundOutcomeRecord<'_>,
+) -> Result<serde_json::Value, McpBackendError> {
+    let mut fields = serde_json::Map::new();
+    for index in 0..record.len() {
+        let field = record
+            .field(index)
+            .ok_or(McpBackendError::InvalidResponse)?;
+        let value = field.value().ok_or(McpBackendError::InvalidResponse)?;
+        if fields
+            .insert(
+                field.field_name().as_str().to_owned(),
+                untyped_natural_value(value)?,
+            )
+            .is_some()
+        {
+            return Err(McpBackendError::InvalidResponse);
+        }
+    }
+    Ok(serde_json::Value::Object(fields))
+}
+
+fn untyped_natural_value(
+    value: riffdb_service::SchemaBoundOutcomeValue<'_>,
+) -> Result<serde_json::Value, McpBackendError> {
+    match value {
+        riffdb_service::SchemaBoundOutcomeValue::Null => Ok(serde_json::Value::Null),
+        riffdb_service::SchemaBoundOutcomeValue::Scalar(value) => canonical_natural_value(value),
+        riffdb_service::SchemaBoundOutcomeValue::Enum { variant_name, .. } => {
+            Ok(serde_json::Value::String(variant_name.as_str().to_owned()))
+        }
+        riffdb_service::SchemaBoundOutcomeValue::List(values) => (0..values.len())
+            .map(|index| {
+                values
+                    .value(index)
+                    .ok_or(McpBackendError::InvalidResponse)
+                    .and_then(untyped_natural_value)
+            })
+            .collect::<Result<Vec<_>, _>>()
+            .map(serde_json::Value::Array),
+        riffdb_service::SchemaBoundOutcomeValue::Record(record) => untyped_natural_record(record),
+    }
+}
+
+fn canonical_natural_value(value: &CanonicalValue) -> Result<serde_json::Value, McpBackendError> {
+    match value {
+        CanonicalValue::Null => Ok(serde_json::Value::Null),
+        CanonicalValue::Bool(value) => Ok(serde_json::Value::Bool(*value)),
+        CanonicalValue::I64(value) => Ok(serde_json::Value::String(value.to_string())),
+        CanonicalValue::U64(value) => Ok(serde_json::Value::String(value.to_string())),
+        CanonicalValue::Decimal(value) => Ok(serde_json::json!({
+            "coefficient": value.coefficient().to_string(),
+            "precision": value.spec().precision(),
+            "scale": value.spec().scale(),
+        })),
+        CanonicalValue::Money(value) => Ok(serde_json::json!({
+            "currency": value.currency().to_string(),
+            "coefficient": value.amount().coefficient().to_string(),
+            "precision": value.amount().spec().precision(),
+            "scale": value.amount().spec().scale(),
+        })),
+        CanonicalValue::String(value) => Ok(serde_json::Value::String(value.as_str().to_owned())),
+        CanonicalValue::Bytes(value) => Ok(serde_json::Value::String(
+            base64::engine::general_purpose::STANDARD.encode(value.as_bytes()),
+        )),
+        CanonicalValue::Timestamp(value) => Ok(serde_json::json!({
+            "seconds": value.seconds().to_string(),
+            "nanos": value.nanos(),
+        })),
+        CanonicalValue::Date(value) => Ok(serde_json::json!({
+            "days_since_unix_epoch": value.days_since_unix_epoch(),
+        })),
+        CanonicalValue::Uuid(value) => Ok(serde_json::Value::String(format_uuid(*value))),
+        CanonicalValue::Enum { .. } | CanonicalValue::List(_) | CanonicalValue::Record(_) => {
+            Err(McpBackendError::InvalidResponse)
+        }
+    }
+}
+
 fn checked_query_payload(
     identity: &SymbolicQueryIdentity,
     schema: &SymbolicQuerySchema,
@@ -2929,6 +3089,18 @@ fn lower_hex(bytes: &[u8]) -> String {
         output.push(char::from(HEX[usize::from(byte & 0x0f)]));
     }
     output
+}
+
+fn format_uuid(bytes: [u8; 16]) -> String {
+    let hex = lower_hex(&bytes);
+    format!(
+        "{}-{}-{}-{}-{}",
+        &hex[0..8],
+        &hex[8..12],
+        &hex[12..16],
+        &hex[16..20],
+        &hex[20..32]
+    )
 }
 
 fn render_execute_result(

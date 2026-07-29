@@ -113,6 +113,14 @@ pub(crate) enum ContractCommand {
 
 #[derive(Debug, Subcommand)]
 pub(crate) enum CommandCommand {
+    Run {
+        #[arg(value_name = "COMMAND_NAME")]
+        command_name: String,
+        #[arg(long, value_name = "JSON_INPUT")]
+        input: OsString,
+        #[arg(long, value_name = "VERSION")]
+        expected_version: Option<String>,
+    },
     Execute {
         #[arg(value_name = "COMMAND_NAME")]
         command_name: String,
