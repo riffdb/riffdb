@@ -321,6 +321,234 @@ Operational alpha and replication remain blocked. A failed report cannot be
 reclassified or edited into a pass; a future evaluation must use a newly
 sealed bundle and fresh agent identities.
 
+## Recovery plan after Terra campaign 01
+
+The failed campaign identified an application-authoring defect rather than a
+kernel, RiffQL execution, or safety-boundary defect. The existing product asks
+an application author to update compiler-derived contract and query-module
+hashes, rejects stale hashes, and exposes no public operation that computes and
+records their replacements. At the same time, the CLI collapses useful
+compiler diagnostics into generic scaffold errors.
+
+The recovery phase adopts this product rule:
+
+> Application authors own symbolic intent. The compiler alone owns numeric,
+> hash, plan, schema, and derived-authority identities. Exact compiler-owned
+> identities remain mandatory for generation, authorization, deployment, and
+> execution.
+
+This rule removes an impossible manual step without weakening fail-closed
+pinning. Source changes do not deploy themselves, production never selects an
+ambient identity, and a stale or missing compiler-owned lock remains a hard
+failure outside the explicitly local development workflow.
+
+### Evidence-to-owner map
+
+| Observed failure | Evidence | Owning recovery |
+|---|---|---|
+| `riffdb new` rejects the already-created empty evaluation repository or hides the reason a destination cannot be written | Both Blog runs and the Orders/Rust retries | WP-355 scaffold and local-loop repair |
+| Editing the sample contract makes exact manifest hashes stale, but no public command can refresh them | Both Orders runs | WP-345 compiler-owned application lock |
+| Contract, query, manifest, and role failures lose their source spans and actionable causes at the CLI | Blog/Rust and both Orders runs | WP-350 authoring diagnostics |
+| The sealed public bundle has a RiffQL reference but no complete contract-language reference or machine-readable manifest schema | Blog/Rust | WP-355 public authoring kit |
+| The TypeScript scaffold does not start as a complete offline web application without dependency and script repair | Orders/TypeScript | WP-360 TypeScript and builder-MCP parity |
+| An unbacked HTTP page could be recorded as a first page read even though the golden result remained false | Blog/TypeScript | WP-365 evaluation-harness correction |
+
+The existing Blog/CMS and Orders/Inventory corpora already compile and run
+through first-party fixtures. No RiffQL grammar change is justified by this
+campaign. The recovery packages must not add SQL, arbitrary joins, unbounded
+reads, client-side semantic composition, generic writes, or a kernel escape.
+
+### WP-345 — compiler-owned application lock
+
+WP-345 reopens the application-manifest portion of WP-305 and the generation
+portion of WP-325. It requires a separately accepted compatibility decision
+before freezing a new manifest or lock schema.
+
+The target source-control model is:
+
+```text
+riffdb.application.json       # author-owned symbolic sources, roles, outputs
+riffdb.application.lock.json  # compiler-owned exact identities and digests
+```
+
+The author-owned document contains no contract bundle hash, query-module hash,
+query ID, plan hash, field ID, capability mask, or derived visibility set. The
+lock contains the exact compiled contract, module, query, plan, generated
+schema, role-authority, compiler-format, and source identities required by the
+existing runtime guarantees.
+
+The public authoring operations are:
+
+```text
+riffdb application check
+riffdb application lock --write
+riffdb application lock --check
+riffdb application generate --locked
+```
+
+`check` is read-only. `lock --write` compiles every contract, query, and role
+before atomically replacing any compiler-owned artifact; it prints a bounded
+symbolic authority and operation-shape diff and performs no server operation.
+`generate --locked`, role binding, and non-development deployment reject
+source drift, lock drift, compiler-format mismatch, and partial output.
+
+`riffdb dev` may compile, refresh the development lock, regenerate, deploy, and
+rebind only against its product-owned local ephemeral database and declared
+development role. A failed watch iteration leaves the last accepted
+generation running and does not partially deploy or broaden authority. There
+is no corresponding production auto-refresh.
+
+V1 manifests remain readable for exact generation. Migration to the
+author-owned source plus compiler-owned lock is explicit and deterministic;
+existing pinned input is never silently reinterpreted.
+
+WP-345 exits only when tests prove:
+
+- deterministic lock bytes and generated outputs across repeated runs;
+- atomic no-change-on-failure behavior for invalid contract, query, role, and
+  output paths;
+- source, lock, module, plan, and role-authority drift all fail closed;
+- authority additions and removals appear symbolically before a lock write;
+- interrupted writes cannot leave a valid-looking mixed generation;
+- V1 compatibility and explicit migration fixtures remain exact; and
+- no lock/update operation deploys, grants, binds, or invokes an application.
+
+### WP-350 — complete authoring diagnostics
+
+WP-350 reopens the diagnostic boundary of WP-315 for local application
+authorship. It preserves existing parser, compiler, planner, manifest, and role
+diagnostics instead of mapping them to `CompileContract`, `CompileQuery`, or
+`Manifest`.
+
+Every CLI and builder-MCP authoring failure uses one bounded structured
+diagnostic with:
+
+- stable stage and diagnostic code;
+- source path and byte/line span when one exists;
+- authorized symbolic contract, query, role, or manifest path;
+- closed cause and suggested-fix codes;
+- whether any files changed;
+- whether retry without a source change is useful; and
+- no credentials, submitted runtime values, hidden schema, or arbitrary
+  internal error text.
+
+Human rendering may point to the caller's local source, but persisted reports,
+JSON, MCP results, logs, and traces remain value-free and bounded. Filesystem
+failures distinguish destination-exists, parent-missing, permission,
+non-regular/symlink, and interrupted-staging cases without exposing unrelated
+host paths.
+
+WP-350 exits only when every diagnostic has a source-span snapshot and semantic
+assertion, and the following mistakes self-correct from the public message:
+unknown contract symbol, invalid command invariant, missing partition route,
+unindexed RiffQL ordering, stale lock, undeclared role operation, invalid
+manifest member, and unsafe output path.
+
+### WP-355 — scaffold and public authoring kit
+
+WP-355 reopens AAA-008 and AAA-009.
+
+`riffdb new` must work in both normal forms:
+
+```text
+riffdb new my-app
+riffdb new my-app --directory .
+```
+
+The second form accepts only an existing empty, regular, writable directory.
+It never overwrites a file, follows a destination symlink, or accepts a
+non-empty directory. Staging is bounded and recoverable; a failure reports the
+exact safe remediation. Nested destinations either create parents under an
+explicit option or reject them with an actionable parent-missing diagnostic.
+
+The generated README teaches the actual edit loop:
+
+```text
+edit symbolic contract, queries, roles, and seed
+riffdb application check
+riffdb application lock --write
+riffdb dev --seed
+```
+
+The public bundle adds:
+
+- a complete versioned contract-language reference;
+- a command and invariant cookbook;
+- the application-manifest JSON Schema;
+- contract, query, role, and generated-client inspection commands;
+- small domain-neutral examples that are not Blog, Orders, or TicketDesk;
+- negative examples with the exact expected diagnostic and safe correction;
+  and
+- the same resources through builder MCP.
+
+WP-355's acceptance starts in an already-created empty directory, changes the
+sample into a new multi-entity domain using only bundled public material, and
+reaches a typed command plus page-shaped read without reading RiffDB source or
+manually editing a compiler identity.
+
+### WP-360 — TypeScript and builder-MCP parity
+
+The TypeScript scaffold must be a complete offline server-side web
+application, not a type-only fragment. `riffdb new --language typescript`
+materializes or resolves the exact first-party runtime, TypeScript compiler,
+Node types, lockfile, check/build/start scripts, and a real HTTP page without
+network access or manual `package.json` repair. Rust and TypeScript consume the
+same lock and generated operation schemas.
+
+Builder MCP exposes the same bounded local authoring operations and resources
+as the CLI: describe grammar/schema, check, explain diagnostics, preview the
+lock/authority diff, write the lock only through an explicit mutating tool,
+and generate exact bindings. It does not deploy, bind a role, access storage,
+or gain a credential by being a builder tool.
+
+WP-360 exits when both generated repositories build offline and serve the same
+golden observation, and CLI/MCP differential tests prove identical diagnostic,
+lock, operation, and authority semantics.
+
+### WP-365 — public-only rehearsal and canary gate
+
+Another four-run campaign is too expensive to use as the first regression
+test. WP-365 adds a prerequisite public-only rehearsal:
+
+1. Package a release-derived sealed bundle.
+2. From existing empty directories, author and run the internal Blog and
+   Orders corpora in both Rust and TypeScript using only that bundle.
+3. Inject stale-lock, invalid-contract, missing-index, unsafe-role, and
+   interrupted-generation failures and assert actionable recovery.
+4. Run two fresh canary agents: Blog/Rust and Orders/TypeScript.
+5. Proceed to an official campaign only if both canaries complete their golden
+   workloads with zero intervention, zero glue/kernel/source access, and
+   ratings of at least 8.5.
+
+The harness counts `first_write` and `first_page_read` only after a generated
+RiffDB operation succeeds and the observation is tied to the expected contract,
+module, query, plan, and commit identities. An unbacked HTTP response cannot
+satisfy either metric.
+
+Failed and superseded campaigns remain immutable under separate campaign
+directories. The gate selects one exact sealed bundle and exactly four fresh
+reports; it never deletes or rewrites Terra campaign 01.
+
+### WP-370 — Agent Application Alpha campaign 02
+
+WP-370 repeats the four official domain/language evaluations only after
+WP-345 through WP-365 pass. It uses a new bundle hash and four new agent
+identities. The AAA-012 thresholds remain unchanged.
+
+Campaign 02 is eligible only when all four runs:
+
+- complete the assigned unfamiliar-domain golden workload;
+- use generated symbolic application operations exclusively;
+- perform no handwritten identity, transport, codec, authorization, or
+  client-side join work;
+- perform no kernel operation or prohibited source access;
+- meet first-write and first-page timing thresholds; and
+- independently rate the experience at least 8.5.
+
+Any failure reopens the owning recovery package. Replication and operational
+alpha remain blocked until campaign 02 passes; reducing the workload or rating
+threshold is not a remedy.
+
 ## Scope boundary
 
 This milestone does not add replication, partitioning, general SQL, generic
