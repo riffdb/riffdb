@@ -1,10 +1,12 @@
 //! Checked lowering from common MCP request DTOs to the public Protobuf surface.
 
+use base64::Engine as _;
+use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use riffdb_api_mcp::{
     McpContractSelection, McpFixedToolRequest, McpPageRequest, McpSubmittedField,
     McpSubmittedFieldIdentity, McpSubmittedValue,
 };
-use riffdb_client_rust::v1;
+use riffdb_client_rust::{app_v1, v1};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct WireConversionError;
@@ -24,6 +26,10 @@ pub(crate) enum FixedGrpcRequest {
     GetProjectionStatus(v1::GetProjectionStatusRequest),
     ListPendingOutboxDeliveries(v1::ListPendingOutboxDeliveriesRequest),
     Health(v1::HealthRequest),
+    DescribeContract(app_v1::DescribeContractRequest),
+    CheckQuery(app_v1::CheckQueryRequest),
+    ExplainQuery(app_v1::ExplainQueryRequest),
+    ExecuteQuery(app_v1::ExecuteQueryRequest),
 }
 
 pub(crate) fn fixed_request_to_proto(
@@ -167,7 +173,99 @@ pub(crate) fn fixed_request_to_proto(
         McpFixedToolRequest::Health => FixedGrpcRequest::Health(v1::HealthRequest {
             request_id: Some(request_id),
         }),
+        McpFixedToolRequest::DescribeContract { contract } => {
+            FixedGrpcRequest::DescribeContract(app_v1::DescribeContractRequest {
+                contract: contract.and_then(symbolic_contract_selection_to_proto),
+                request_id,
+            })
+        }
+        McpFixedToolRequest::CheckQuery { contract, source } => {
+            FixedGrpcRequest::CheckQuery(app_v1::CheckQueryRequest {
+                contract: contract.and_then(symbolic_contract_selection_to_proto),
+                source,
+                request_id,
+            })
+        }
+        McpFixedToolRequest::ExplainQuery { contract, source } => {
+            FixedGrpcRequest::ExplainQuery(app_v1::ExplainQueryRequest {
+                contract: contract.and_then(symbolic_contract_selection_to_proto),
+                query: Some(app_v1::explain_query_request::Query::Source(source)),
+                module_hash: None,
+                request_id,
+            })
+        }
+        McpFixedToolRequest::ExecuteQuery {
+            contract,
+            source,
+            parameters,
+            cursor,
+        } => {
+            let mut parameters = parameters
+                .into_iter()
+                .map(|(name, value)| {
+                    Ok(app_v1::Parameter {
+                        name,
+                        value: Some(natural_value_to_proto(value)?),
+                    })
+                })
+                .collect::<Result<Vec<_>, WireConversionError>>()?;
+            parameters.sort_by(|left, right| left.name.cmp(&right.name));
+            FixedGrpcRequest::ExecuteQuery(app_v1::ExecuteQueryRequest {
+                contract: contract.and_then(symbolic_contract_selection_to_proto),
+                query: Some(app_v1::execute_query_request::Query::Source(source)),
+                module_hash: None,
+                parameters,
+                cursor: cursor
+                    .map(|cursor| {
+                        riffdb_api_mcp::decode_mcp_cursor(&cursor)
+                            .map(|bytes| URL_SAFE_NO_PAD.encode(bytes))
+                            .map_err(|_| WireConversionError)
+                    })
+                    .transpose()?,
+                request_id,
+            })
+        }
     })
+}
+
+fn symbolic_contract_selection_to_proto(
+    selection: McpContractSelection,
+) -> Option<app_v1::ContractSelector> {
+    match selection {
+        McpContractSelection::Active => None,
+        McpContractSelection::Exact {
+            contract_lineage,
+            contract_version,
+        } => Some(app_v1::ContractSelector {
+            lineage: contract_lineage,
+            version: contract_version,
+            bundle_hash: Vec::new(),
+        }),
+    }
+}
+
+fn natural_value_to_proto(value: serde_json::Value) -> Result<v1::Value, WireConversionError> {
+    use v1::value::Kind;
+    let kind = match value {
+        serde_json::Value::Null => Kind::NullValue(v1::NullValue::NullValue as i32),
+        serde_json::Value::Bool(value) => Kind::BoolValue(value),
+        serde_json::Value::Number(value) => {
+            if let Some(value) = value.as_u64() {
+                Kind::U64Value(value)
+            } else {
+                Kind::I64Value(value.as_i64().ok_or(WireConversionError)?)
+            }
+        }
+        serde_json::Value::String(value) => Kind::StringValue(value),
+        serde_json::Value::Array(values) => Kind::ListValue(v1::ValueList {
+            values: values
+                .into_iter()
+                .map(natural_value_to_proto)
+                .collect::<Result<Vec<_>, _>>()?,
+        }),
+        serde_json::Value::Object(_) => return Err(WireConversionError),
+    };
+    Ok(v1::Value { kind: Some(kind) })
 }
 
 pub(crate) fn submitted_record_to_proto(

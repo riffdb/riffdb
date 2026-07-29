@@ -3,16 +3,18 @@
 use std::collections::BTreeMap;
 use std::error::Error;
 use std::fmt;
-use std::num::NonZeroU16;
+use std::num::{NonZeroU16, NonZeroU64};
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::Duration;
 
 use riffdb_contract_ir::{IndexScanPrefix, MAX_DECLARATIONS_PER_KIND};
 use riffdb_policy::{FixedToolCandidate, PartitionConstraint};
+use riffdb_query_executor::QueryContinuation;
 use riffdb_types::{
-    ActorId, CanonicalValue, CommitSequence, ContractBundleHash, ContractLineage, ContractVersion,
-    EntityTypeId, EventId, FieldId, IndexEntryKey, IndexEpochPosition, IndexId,
-    MAX_CAPABILITY_FIELD_VISIBILITY, ProjectionIdentity, TenantScope,
+    ActorId, CanonicalValue, CapabilityId, CommitSequence, ContractBundleHash, ContractLineage,
+    ContractVersion, EntityTypeId, EventId, FieldId, IndexEntryKey, IndexEpochPosition, IndexId,
+    MAX_CAPABILITY_FIELD_VISIBILITY, ProjectionIdentity, QueryParameterHash, QueryPlanHash,
+    TenantScope,
 };
 
 use crate::dto::{
@@ -1118,6 +1120,53 @@ impl ResourceDiscoveryCursorState {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct CursorBindingError;
 
+/// Complete caller-reconstructible binding for one RiffQL continuation.
+#[derive(Clone, Eq, PartialEq)]
+pub(crate) struct QueryCursorLookup {
+    contract: CursorContractIdentity,
+    plan_hash: QueryPlanHash,
+    parameter_hash: QueryParameterHash,
+    capability_id: CapabilityId,
+    capability_revision: NonZeroU64,
+}
+
+impl QueryCursorLookup {
+    #[must_use]
+    pub(crate) const fn new(
+        contract: CursorContractIdentity,
+        plan_hash: QueryPlanHash,
+        parameter_hash: QueryParameterHash,
+        capability_id: CapabilityId,
+        capability_revision: NonZeroU64,
+    ) -> Self {
+        Self {
+            contract,
+            plan_hash,
+            parameter_hash,
+            capability_id,
+            capability_revision,
+        }
+    }
+}
+
+/// Registry-only engine continuation; never serialized into the public token.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct QueryCursorState {
+    continuation: QueryContinuation,
+}
+
+impl QueryCursorState {
+    #[must_use]
+    pub(crate) const fn new(continuation: QueryContinuation) -> Self {
+        Self { continuation }
+    }
+
+    #[must_use]
+    pub(crate) const fn continuation(&self) -> &QueryContinuation {
+        &self.continuation
+    }
+}
+
 #[derive(Eq, PartialEq)]
 enum ServiceCursorLookup {
     CommitScan(CommitScanCursorLookup),
@@ -1126,6 +1175,7 @@ enum ServiceCursorLookup {
     Outbox(OutboxCursorLookup),
     CommandDiscovery(CommandDiscoveryCursorLookup),
     ResourceDiscovery(ResourceDiscoveryCursorLookup),
+    Query(QueryCursorLookup),
 }
 
 enum ServiceCursorState {
@@ -1135,6 +1185,7 @@ enum ServiceCursorState {
     Outbox(Arc<OutboxCursorState>),
     CommandDiscovery(Arc<CommandDiscoveryCursorState>),
     ResourceDiscovery(Arc<ResourceDiscoveryCursorState>),
+    Query(Arc<QueryCursorState>),
 }
 
 type SharedServiceCursorRegistry = CursorRegistry<
@@ -1469,6 +1520,42 @@ impl ServiceCursorRegistries {
         )?;
         match state.as_ref() {
             ServiceCursorState::ResourceDiscovery(state) => Ok(Arc::clone(state)),
+            _ => Err(CursorAccessError::Unavailable),
+        }
+    }
+
+    pub(crate) fn register_query_unpublished(
+        &self,
+        principal: &ActorId,
+        lookup: QueryCursorLookup,
+        state: QueryCursorState,
+    ) -> Result<CursorPublicationGuard<'_>, CursorUnavailable> {
+        let token = self.registry.register(
+            CursorBinding::new(principal.clone(), ServiceCursorLookup::Query(lookup)),
+            ServiceCursorState::Query(Arc::new(state)),
+        )?;
+        Ok(CursorPublicationGuard {
+            registries: self,
+            token,
+            published: false,
+        })
+    }
+
+    pub(crate) fn resolve_query(
+        &self,
+        token: CursorToken,
+        principal: &ActorId,
+        lookup: &QueryCursorLookup,
+    ) -> Result<Arc<QueryCursorState>, CursorAccessError> {
+        let state = self.registry.resolve(
+            token,
+            &CursorBinding::new(
+                principal.clone(),
+                ServiceCursorLookup::Query(lookup.clone()),
+            ),
+        )?;
+        match state.as_ref() {
+            ServiceCursorState::Query(state) => Ok(Arc::clone(state)),
             _ => Err(CursorAccessError::Unavailable),
         }
     }

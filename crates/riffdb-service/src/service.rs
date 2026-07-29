@@ -15,6 +15,7 @@ use riffdb_commit::{
 };
 use riffdb_errors::{IncidentIdSource, InternalError, PublicError, PublicErrorKind};
 use riffdb_policy::AgentSessionAdmissionPolicy;
+use riffdb_query_executor::QueryExecutionPort;
 use riffdb_types::{DatabaseId, Environment, ServiceOperationV1, Timestamp};
 
 use crate::context::PreBootstrapHealthAdmission;
@@ -153,6 +154,7 @@ pub struct ServiceProviders {
     pub(crate) deadline_scheduler: Arc<dyn RequestDeadlineScheduler>,
     pub(crate) cursor_tokens: Arc<dyn CursorTokenGenerator>,
     pub(crate) cursor_clock: Arc<dyn CursorMonotonicClock>,
+    pub(crate) query_executor: Option<Arc<dyn QueryExecutionPort>>,
 }
 
 impl ServiceProviders {
@@ -193,7 +195,15 @@ impl ServiceProviders {
             deadline_scheduler,
             cursor_tokens,
             cursor_clock,
+            query_executor: None,
         }
+    }
+
+    /// Installs the closed one-snapshot symbolic query executor.
+    #[must_use]
+    pub fn with_query_executor(mut self, query_executor: Arc<dyn QueryExecutionPort>) -> Self {
+        self.query_executor = Some(query_executor);
+        self
     }
 
     /// Installs the server-private offline-maintenance lifecycle controller.

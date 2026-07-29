@@ -327,6 +327,10 @@ hash_id!(
     QueryPlanHash
 );
 hash_id!(
+    /// The hash of one canonical name-addressed RiffQL parameter set.
+    QueryParameterHash
+);
+hash_id!(
     /// The hash of a contract bundle's ordered semantic plan set.
     ContractPlanRootHash
 );

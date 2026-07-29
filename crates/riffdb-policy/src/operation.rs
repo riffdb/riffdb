@@ -218,11 +218,19 @@ pub enum FixedToolCandidate {
     ListPendingOutboxDeliveries,
     /// `riffdb.server.health`.
     GetHealth,
+    /// `riffdb.contract.describe`.
+    DescribeContract,
+    /// `riffdb.query.check`.
+    CheckQuery,
+    /// `riffdb.query.explain`.
+    ExplainQuery,
+    /// `riffdb.query`.
+    ExecuteQuery,
 }
 
 impl FixedToolCandidate {
     /// The exact SPEC POC fixed-tool inventory in stable presentation order.
-    pub const ALL: [Self; 14] = [
+    pub const ALL: [Self; 18] = [
         Self::ValidateContract,
         Self::GetActiveContract,
         Self::ExplainCommand,
@@ -237,6 +245,10 @@ impl FixedToolCandidate {
         Self::GetProjectionStatus,
         Self::ListPendingOutboxDeliveries,
         Self::GetHealth,
+        Self::DescribeContract,
+        Self::CheckQuery,
+        Self::ExplainQuery,
+        Self::ExecuteQuery,
     ];
 }
 
@@ -447,6 +459,10 @@ enum OperationKind {
     },
     DiscoverCommandTools,
     DiscoverResources,
+    DescribeContract,
+    CheckQuery,
+    ExplainQuery,
+    ExecuteQuery,
 }
 
 /// Checked policy facts for exactly one closed application-service operation.
@@ -733,6 +749,34 @@ impl OperationRequest {
         Self(OperationKind::DiscoverResources)
     }
 
+    /// Constructs one symbolic contract-description request.
+    #[must_use]
+    pub const fn describe_contract() -> Self {
+        Self(OperationKind::DescribeContract)
+    }
+
+    /// Constructs one symbolic query-check request.
+    #[must_use]
+    pub const fn check_query() -> Self {
+        Self(OperationKind::CheckQuery)
+    }
+
+    /// Constructs one symbolic query-explanation request.
+    #[must_use]
+    pub const fn explain_query() -> Self {
+        Self(OperationKind::ExplainQuery)
+    }
+
+    /// Constructs one symbolic query-execution lifecycle request.
+    ///
+    /// The shared service additionally authorizes every compiler-derived
+    /// entity, field, index, partition, and row requirement before execution
+    /// and again before release.
+    #[must_use]
+    pub const fn execute_query() -> Self {
+        Self(OperationKind::ExecuteQuery)
+    }
+
     /// Returns the exact closed service operation.
     #[must_use]
     pub const fn operation(&self) -> ServiceOperationV1 {
@@ -765,6 +809,10 @@ impl OperationRequest {
             }
             OperationKind::DiscoverCommandTools => ServiceOperationV1::DiscoverCommandTools,
             OperationKind::DiscoverResources => ServiceOperationV1::DiscoverResources,
+            OperationKind::DescribeContract => ServiceOperationV1::DescribeContract,
+            OperationKind::CheckQuery => ServiceOperationV1::CheckQuery,
+            OperationKind::ExplainQuery => ServiceOperationV1::ExplainQuery,
+            OperationKind::ExecuteQuery => ServiceOperationV1::ExecuteQuery,
         }
     }
 
@@ -802,9 +850,12 @@ impl OperationRequest {
             OperationKind::DeployContract { .. } => {
                 PermissionRequirement::Kind(Kind::DeployContract)
             }
-            OperationKind::GetActiveContract | OperationKind::GetContractVersion { .. } => {
-                PermissionRequirement::Kind(Kind::ReadContract)
-            }
+            OperationKind::GetActiveContract
+            | OperationKind::GetContractVersion { .. }
+            | OperationKind::DescribeContract
+            | OperationKind::CheckQuery
+            | OperationKind::ExplainQuery
+            | OperationKind::ExecuteQuery => PermissionRequirement::Kind(Kind::ReadContract),
             OperationKind::ExecuteCommand {
                 lineage,
                 command_id,
@@ -894,6 +945,7 @@ impl OperationRequest {
             | OperationKind::ListPendingOutboxDeliveries { .. } => {
                 Some(&GLOBAL_ONLY_OPERATION_SCOPE)
             }
+            OperationKind::ExecuteQuery => Some(&GLOBAL_ONLY_OPERATION_SCOPE),
             _ => None,
         }
     }
@@ -991,9 +1043,8 @@ impl OperationRequest {
             | OperationKind::ResolveCommandOutcome { .. }
             | OperationKind::GetEntity { .. }
             | OperationKind::ScanIndex { .. }
-            | OperationKind::QueryProjection { .. } => {
-                OutputClassification::PolicyFilteredApplicationData
-            }
+            | OperationKind::QueryProjection { .. }
+            | OperationKind::ExecuteQuery => OutputClassification::PolicyFilteredApplicationData,
             OperationKind::DeployContract { .. }
             | OperationKind::GetCommit { .. }
             | OperationKind::ScanCommits { .. }
@@ -1156,6 +1207,10 @@ pub(crate) const fn fixed_tool_permission_kind(
         FixedToolCandidate::GetProjectionStatus => Kind::ReadProjectionStatus,
         FixedToolCandidate::ListPendingOutboxDeliveries => Kind::InspectOutbox,
         FixedToolCandidate::GetHealth => Kind::ReadHealth,
+        FixedToolCandidate::DescribeContract
+        | FixedToolCandidate::CheckQuery
+        | FixedToolCandidate::ExplainQuery
+        | FixedToolCandidate::ExecuteQuery => Kind::ReadContract,
     }
 }
 

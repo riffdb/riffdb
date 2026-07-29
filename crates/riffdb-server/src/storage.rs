@@ -4,6 +4,10 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 use std::sync::{Arc, Mutex, MutexGuard};
 
+use riffdb_query_executor::{
+    QueryContinuation, QueryExecutionError, QueryExecutionPort, QueryOwnedSnapshot, QueryParameters,
+};
+use riffdb_query_ir::QueryAccessProgramV1;
 use riffdb_service::{AuthoritativeReadinessFailure, ServiceHealthHooks};
 use riffdb_storage_api::{
     ActiveCatalogPointerV1, AdmissionLookupResultV1, AdmissionRepository, AdmissionRequestV1,
@@ -94,6 +98,22 @@ impl Clone for SharedRedbOperationalPorts {
             capabilities: Arc::clone(&self.capabilities),
             health: self.health.clone(),
         }
+    }
+}
+
+impl QueryExecutionPort for SharedRedbOperationalPorts {
+    fn execute_query_page(
+        &self,
+        program: &QueryAccessProgramV1,
+        parameters: &QueryParameters,
+        prior: Option<&QueryContinuation>,
+    ) -> Result<QueryOwnedSnapshot, QueryExecutionError> {
+        let guard = self
+            .cell
+            .inner
+            .lock()
+            .map_err(|_| QueryExecutionError::BackendUnavailable)?;
+        QueryExecutionPort::execute_query_page(&*guard, program, parameters, prior)
     }
 }
 

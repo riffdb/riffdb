@@ -2241,7 +2241,7 @@ fn filtered_entity_schema_artifact(
     GeneratedSchemaArtifact::entity(entity.id(), &record, schema).map_err(|_| ())
 }
 
-async fn prepare_selected_contract(
+pub(crate) async fn prepare_selected_contract(
     service: &RiffDbServiceInner,
     context: &RequestContext,
     selection: &ContractSelection,
@@ -3040,7 +3040,7 @@ async fn finish_discovery_result<T>(
     result
 }
 
-async fn finish_success(
+pub(crate) async fn finish_success(
     service: &RiffDbServiceInner,
     context: &RequestContext,
     begun: &BegunInvocation,
@@ -3061,7 +3061,7 @@ async fn finish_success(
     Ok(())
 }
 
-async fn finish_failure(
+pub(crate) async fn finish_failure(
     service: &RiffDbServiceInner,
     context: &RequestContext,
     begun: &BegunInvocation,

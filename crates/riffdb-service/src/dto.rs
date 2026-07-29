@@ -7001,6 +7001,14 @@ pub enum FixedToolKind {
     ListPendingOutboxDeliveries,
     /// Server health read.
     GetHealth,
+    /// Name-addressed contract catalog.
+    DescribeContract,
+    /// RiffQL compiler check.
+    CheckQuery,
+    /// RiffQL explain.
+    ExplainQuery,
+    /// One-snapshot RiffQL execution.
+    ExecuteQuery,
 }
 
 impl FixedToolKind {
@@ -7020,6 +7028,10 @@ impl FixedToolKind {
             FixedToolCandidate::GetProjectionStatus => Self::GetProjectionStatus,
             FixedToolCandidate::ListPendingOutboxDeliveries => Self::ListPendingOutboxDeliveries,
             FixedToolCandidate::GetHealth => Self::GetHealth,
+            FixedToolCandidate::DescribeContract => Self::DescribeContract,
+            FixedToolCandidate::CheckQuery => Self::CheckQuery,
+            FixedToolCandidate::ExplainQuery => Self::ExplainQuery,
+            FixedToolCandidate::ExecuteQuery => Self::ExecuteQuery,
         }
     }
 
@@ -7041,6 +7053,10 @@ impl FixedToolKind {
             Self::GetProjectionStatus => 12,
             Self::ListPendingOutboxDeliveries => 13,
             Self::GetHealth => 14,
+            Self::DescribeContract => 15,
+            Self::CheckQuery => 16,
+            Self::ExplainQuery => 17,
+            Self::ExecuteQuery => 18,
         }
     }
 }

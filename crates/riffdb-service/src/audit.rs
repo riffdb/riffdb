@@ -206,6 +206,14 @@ impl ServiceAuditTargetMap {
         one(ServiceAuditTargetV1::ContractVersion { lineage, version })
     }
 
+    /// Targets for one symbolic operation pinned to an exact contract.
+    pub(crate) fn symbolic_query(
+        lineage: ContractLineage,
+        version: ContractVersion,
+    ) -> Result<ServiceAuditTargetsV1, ServiceAuditTargetsError> {
+        one(ServiceAuditTargetV1::ContractVersion { lineage, version })
+    }
+
     /// Targets for one exact classified command execution.
     pub(crate) fn execute_command(
         lineage: ContractLineage,
@@ -558,6 +566,26 @@ mod tests {
                 ServiceOperationV1::DiscoverResources,
                 ServiceAuditTargetMap::discover_resources(),
             ),
+            (
+                ServiceOperationV1::DescribeContract,
+                ServiceAuditTargetMap::symbolic_query(lineage.clone(), version)
+                    .expect("canonical targets"),
+            ),
+            (
+                ServiceOperationV1::CheckQuery,
+                ServiceAuditTargetMap::symbolic_query(lineage.clone(), version)
+                    .expect("canonical targets"),
+            ),
+            (
+                ServiceOperationV1::ExplainQuery,
+                ServiceAuditTargetMap::symbolic_query(lineage.clone(), version)
+                    .expect("canonical targets"),
+            ),
+            (
+                ServiceOperationV1::ExecuteQuery,
+                ServiceAuditTargetMap::symbolic_query(lineage.clone(), version)
+                    .expect("canonical targets"),
+            ),
         ];
 
         assert_eq!(mapped.len(), ServiceOperationV1::ALL.len());
@@ -567,7 +595,7 @@ mod tests {
         );
 
         let expected_nonempty_lengths = [
-            0, 2, 1, 0, 1, 2, 1, 2, 2, 2, 2, 1, 0, 0, 1, 0, 0, 1, 1, 0, 0, 0,
+            0, 2, 1, 0, 1, 2, 1, 2, 2, 2, 2, 1, 0, 0, 1, 0, 0, 1, 1, 0, 0, 0, 1, 1, 1, 1,
         ];
         assert_eq!(
             mapped.each_ref().map(|(_, targets)| targets.len()),

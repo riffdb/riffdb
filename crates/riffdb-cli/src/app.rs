@@ -9,15 +9,15 @@ use riffdb_client_rust::{
     AttemptBudget, BackupNameV1, BootstrapCapabilityCreateTemplate, CallMetadata, ClientError,
     CreateOfflineBackup, IdempotentCommand, NormalCapabilityCreateTemplate,
     OfflineMaintenanceOperationId, OfflineMaintenanceReplacementConfirmation, RestoreOfflineBackup,
-    RiffDbClient, generate_capability_id, generate_offline_maintenance_operation_id,
+    RiffDbClient, app_v1, generate_capability_id, generate_offline_maintenance_operation_id,
     generate_request_id, v1,
 };
 use serde::{Deserialize, Serialize};
 
 use crate::cli::{
     BackupCommand, CapabilityCommand, Cli, CommandCommand, CommitCommand, ContractCommand,
-    ContractSelectionArgs, DemoCommand, EntityCommand, ProjectionCommand, RevocationReason,
-    ServerCommand, TopLevel,
+    ContractSelectionArgs, DemoCommand, EntityCommand, ProjectionCommand, QueryCommand,
+    RevocationReason, ServerCommand, TopLevel,
 };
 use crate::config::{EffectiveConfig, Environment, ProcessEnvironment, resolve};
 use crate::credential::{
@@ -165,12 +165,262 @@ async fn dispatch(
         TopLevel::Projection { command } => {
             projection_command(command, config, environment, stdin).await
         }
+        TopLevel::Query { command } => query_command(command, config, environment, stdin).await,
         TopLevel::Capability { command } => {
             capability_command(command, config, environment, stdin).await
         }
         TopLevel::Server { command } => server_command(command, config, environment).await,
         TopLevel::Backup { command } => backup_command(command, config, environment).await,
         TopLevel::Demo { command } => demo_command(command, config, environment),
+    }
+}
+
+async fn query_command(
+    command: QueryCommand,
+    config: &EffectiveConfig,
+    environment: &dyn Environment,
+    stdin: &mut dyn Read,
+) -> Terminal {
+    let identity = match command {
+        QueryCommand::Describe { .. } => CommandIdentity::QueryDescribe,
+        QueryCommand::Check { .. } => CommandIdentity::QueryCheck,
+        QueryCommand::Explain { .. } => CommandIdentity::QueryExplain,
+        QueryCommand::Run { .. } => CommandIdentity::QueryRun,
+        QueryCommand::Repl { .. } => CommandIdentity::QueryRepl,
+    };
+    let metadata = match required_metadata(identity, config, environment) {
+        Ok(metadata) => metadata,
+        Err(terminal) => return terminal,
+    };
+    let mut client = match connect(config).await {
+        Ok(client) => client,
+        Err(error) => return client_error(identity, &error),
+    };
+    match command {
+        QueryCommand::Describe { contract } => {
+            let contract = match symbolic_contract_selection(contract) {
+                Ok(contract) => contract,
+                Err(()) => return invalid_input(identity),
+            };
+            let request_id = match request_id() {
+                Ok(request_id) => request_id,
+                Err(error) => return client_error(identity, &error),
+            };
+            match client
+                .describe_contract(
+                    app_v1::DescribeContractRequest {
+                        contract,
+                        request_id,
+                    },
+                    &metadata,
+                )
+                .await
+            {
+                Ok(response) => success(
+                    identity,
+                    "described",
+                    &serde_json::json!({
+                        "contract_lineage": response.contract_lineage,
+                        "contract_version": response.contract_version.to_string(),
+                        "contract_bundle_hash": hex(&response.contract_bundle_hash),
+                        "catalog": response.symbolic_catalog,
+                    }),
+                ),
+                Err(error) => client_error(identity, &error),
+            }
+        }
+        QueryCommand::Check { source, contract } => {
+            let source = match read_text(&source, stdin) {
+                Ok(source) => source,
+                Err(error) => return input_terminal(identity, error),
+            };
+            let contract = match symbolic_contract_selection(contract) {
+                Ok(contract) => contract,
+                Err(()) => return invalid_input(identity),
+            };
+            let request_id = match request_id() {
+                Ok(request_id) => request_id,
+                Err(error) => return client_error(identity, &error),
+            };
+            match client
+                .check_query(
+                    app_v1::CheckQueryRequest {
+                        contract,
+                        source,
+                        request_id,
+                    },
+                    &metadata,
+                )
+                .await
+            {
+                Ok(response) => render_query_check(identity, response),
+                Err(error) => client_error(identity, &error),
+            }
+        }
+        QueryCommand::Explain { source, contract } => {
+            let source = match read_text(&source, stdin) {
+                Ok(source) => source,
+                Err(error) => return input_terminal(identity, error),
+            };
+            let contract = match symbolic_contract_selection(contract) {
+                Ok(contract) => contract,
+                Err(()) => return invalid_input(identity),
+            };
+            let request_id = match request_id() {
+                Ok(request_id) => request_id,
+                Err(error) => return client_error(identity, &error),
+            };
+            match client
+                .explain_query(
+                    app_v1::ExplainQueryRequest {
+                        contract,
+                        query: Some(app_v1::explain_query_request::Query::Source(source)),
+                        module_hash: None,
+                        request_id,
+                    },
+                    &metadata,
+                )
+                .await
+            {
+                Ok(response) => render_query_explain(identity, response),
+                Err(error) => client_error(identity, &error),
+            }
+        }
+        QueryCommand::Run {
+            source,
+            parameters,
+            cursor,
+            contract,
+        } => {
+            let source = match read_text(&source, stdin) {
+                Ok(source) => source,
+                Err(error) => return input_terminal(identity, error),
+            };
+            let parameters = match parameters {
+                Some(path) => {
+                    match read_json::<serde_json::Map<String, serde_json::Value>>(&path, stdin) {
+                        Ok(parameters) => parameters,
+                        Err(error) => return input_terminal(identity, error),
+                    }
+                }
+                None => serde_json::Map::new(),
+            };
+            execute_query_cli(
+                identity,
+                &mut client,
+                &metadata,
+                contract,
+                source,
+                parameters,
+                cursor,
+            )
+            .await
+        }
+        QueryCommand::Repl { contract } => {
+            let mut source = String::new();
+            if stdin.read_to_string(&mut source).is_err() || source.len() > MAX_INPUT_BYTES {
+                return invalid_input(identity);
+            }
+            let documents = source
+                .split("\n---\n")
+                .filter(|document| !document.trim().is_empty())
+                .collect::<Vec<_>>();
+            if documents.is_empty() || documents.len() > 64 {
+                return invalid_input(identity);
+            }
+            let mut results = Vec::with_capacity(documents.len());
+            for document in documents {
+                let request_id = match request_id() {
+                    Ok(request_id) => request_id,
+                    Err(error) => return client_error(identity, &error),
+                };
+                let contract = match symbolic_contract_selection_ref(&contract) {
+                    Ok(contract) => contract,
+                    Err(()) => return invalid_input(identity),
+                };
+                let response = match client
+                    .execute_query(
+                        app_v1::ExecuteQueryRequest {
+                            contract,
+                            query: Some(app_v1::execute_query_request::Query::Source(
+                                document.to_owned(),
+                            )),
+                            module_hash: None,
+                            parameters: Vec::new(),
+                            cursor: None,
+                            request_id,
+                        },
+                        &metadata,
+                    )
+                    .await
+                {
+                    Ok(response) => response,
+                    Err(error) => return client_error(identity, &error),
+                };
+                match query_execution_json(&response) {
+                    Some(result) => results.push(result),
+                    None => return invalid_input(identity),
+                }
+            }
+            success(
+                identity,
+                "completed",
+                &serde_json::json!({"results": results}),
+            )
+        }
+    }
+}
+
+async fn execute_query_cli(
+    identity: CommandIdentity,
+    client: &mut RiffDbClient,
+    metadata: &CallMetadata,
+    contract: ContractSelectionArgs,
+    source: String,
+    parameters: serde_json::Map<String, serde_json::Value>,
+    cursor: Option<String>,
+) -> Terminal {
+    let contract = match symbolic_contract_selection(contract) {
+        Ok(contract) => contract,
+        Err(()) => return invalid_input(identity),
+    };
+    let mut parameters = match parameters
+        .into_iter()
+        .map(|(name, value)| {
+            Ok(app_v1::Parameter {
+                name,
+                value: Some(natural_query_value(value)?),
+            })
+        })
+        .collect::<Result<Vec<_>, ()>>()
+    {
+        Ok(parameters) => parameters,
+        Err(()) => return invalid_input(identity),
+    };
+    parameters.sort_by(|left, right| left.name.cmp(&right.name));
+    let request_id = match request_id() {
+        Ok(request_id) => request_id,
+        Err(error) => return client_error(identity, &error),
+    };
+    match client
+        .execute_query(
+            app_v1::ExecuteQueryRequest {
+                contract,
+                query: Some(app_v1::execute_query_request::Query::Source(source)),
+                module_hash: None,
+                parameters,
+                cursor,
+                request_id,
+            },
+            metadata,
+        )
+        .await
+    {
+        Ok(response) => query_execution_json(&response).map_or_else(
+            || invalid_input(identity),
+            |result| success(identity, "completed", &result),
+        ),
+        Err(error) => client_error(identity, &error),
     }
 }
 
@@ -1533,6 +1783,217 @@ fn contract_selection(args: ContractSelectionArgs) -> Result<v1::ContractSelecti
     })
 }
 
+fn symbolic_contract_selection(
+    args: ContractSelectionArgs,
+) -> Result<Option<app_v1::ContractSelector>, ()> {
+    symbolic_contract_selection_parts(args.contract_lineage, args.contract_version)
+}
+
+fn symbolic_contract_selection_ref(
+    args: &ContractSelectionArgs,
+) -> Result<Option<app_v1::ContractSelector>, ()> {
+    symbolic_contract_selection_parts(args.contract_lineage.clone(), args.contract_version.clone())
+}
+
+fn symbolic_contract_selection_parts(
+    lineage: Option<String>,
+    version: Option<String>,
+) -> Result<Option<app_v1::ContractSelector>, ()> {
+    match (lineage, version) {
+        (None, None) => Ok(None),
+        (Some(lineage), Some(version)) if !lineage.is_empty() => {
+            Ok(Some(app_v1::ContractSelector {
+                lineage,
+                version: parse_nonzero_u64(&version)?,
+                bundle_hash: Vec::new(),
+            }))
+        }
+        _ => Err(()),
+    }
+}
+
+fn natural_query_value(value: serde_json::Value) -> Result<v1::Value, ()> {
+    use v1::value::Kind;
+    let kind = match value {
+        serde_json::Value::Null => Kind::NullValue(v1::NullValue::NullValue as i32),
+        serde_json::Value::Bool(value) => Kind::BoolValue(value),
+        serde_json::Value::Number(value) => {
+            if let Some(value) = value.as_u64() {
+                Kind::U64Value(value)
+            } else {
+                Kind::I64Value(value.as_i64().ok_or(())?)
+            }
+        }
+        serde_json::Value::String(value) => Kind::StringValue(value),
+        serde_json::Value::Array(values) => Kind::ListValue(v1::ValueList {
+            values: values
+                .into_iter()
+                .map(natural_query_value)
+                .collect::<Result<Vec<_>, _>>()?,
+        }),
+        serde_json::Value::Object(_) => return Err(()),
+    };
+    Ok(v1::Value { kind: Some(kind) })
+}
+
+fn render_query_check(identity: CommandIdentity, response: app_v1::CheckQueryResponse) -> Terminal {
+    if response.diagnostics.is_empty() {
+        match response
+            .identity
+            .as_ref()
+            .zip(response.schema.as_ref())
+            .map(|(query, schema)| checked_query_json(query, schema))
+        {
+            Some(result) => success(identity, "valid", &result),
+            None => invalid_input(identity),
+        }
+    } else {
+        success(
+            identity,
+            "invalid",
+            &serde_json::json!({
+                "status": "invalid",
+                "diagnostics": diagnostics_json(&response.diagnostics),
+            }),
+        )
+    }
+}
+
+fn render_query_explain(
+    identity: CommandIdentity,
+    response: app_v1::ExplainQueryResponse,
+) -> Terminal {
+    if response.diagnostics.is_empty() {
+        match response
+            .identity
+            .as_ref()
+            .zip(response.schema.as_ref())
+            .map(|(query, schema)| {
+                let mut result = checked_query_json(query, schema);
+                if let Some(object) = result.as_object_mut() {
+                    object.insert("plan".to_owned(), serde_json::json!(response.plan_lines));
+                }
+                result
+            }) {
+            Some(result) => success(identity, "valid", &result),
+            None => invalid_input(identity),
+        }
+    } else {
+        success(
+            identity,
+            "invalid",
+            &serde_json::json!({
+                "status": "invalid",
+                "diagnostics": diagnostics_json(&response.diagnostics),
+            }),
+        )
+    }
+}
+
+fn checked_query_json(
+    identity: &app_v1::QueryIdentity,
+    schema: &app_v1::QuerySchema,
+) -> serde_json::Value {
+    serde_json::json!({
+        "status": "valid",
+        "identity": {
+            "contract_lineage": identity.contract_lineage,
+            "contract_version": identity.contract_version.to_string(),
+            "contract_bundle_hash": hex(&identity.contract_bundle_hash),
+            "query_name": identity.query_name,
+            "plan_hash": hex(&identity.plan_hash),
+        },
+        "schema": {
+            "parameters": schema.parameters,
+            "outcomes": schema.outcomes,
+            "result_fields": schema.result_fields,
+        }
+    })
+}
+
+fn diagnostics_json(diagnostics: &[app_v1::Diagnostic]) -> Vec<serde_json::Value> {
+    diagnostics
+        .iter()
+        .map(|diagnostic| {
+            serde_json::json!({
+                "code": diagnostic.code,
+                "summary": diagnostic.summary,
+                "span": diagnostic.span.as_ref().map(|span| {
+                    serde_json::json!({"start": span.start, "end": span.end})
+                }),
+                "symbols": diagnostic.symbols,
+                "suggestion": diagnostic.suggestion,
+            })
+        })
+        .collect()
+}
+
+fn query_execution_json(response: &app_v1::ExecuteQueryResponse) -> Option<serde_json::Value> {
+    let identity = response.identity.as_ref()?;
+    let fields = response
+        .fields
+        .iter()
+        .map(|field| {
+            let cardinality = match app_v1::ResultCardinality::try_from(field.cardinality).ok()? {
+                app_v1::ResultCardinality::One => "one",
+                app_v1::ResultCardinality::Maybe => "maybe",
+                app_v1::ResultCardinality::Many => "many",
+                app_v1::ResultCardinality::Unspecified => return None,
+            };
+            let records = field
+                .records
+                .iter()
+                .map(|record| {
+                    let fields = record
+                        .fields
+                        .iter()
+                        .map(|field| {
+                            Some(serde_json::json!({
+                                "name": field.name,
+                                "value": serde_json::to_value(crate::value::OutputValue(
+                                    field.value.as_ref()?
+                                )).ok()?,
+                            }))
+                        })
+                        .collect::<Option<Vec<_>>>()?;
+                    Some(serde_json::json!({
+                        "entity": record.entity,
+                        "fields": fields,
+                    }))
+                })
+                .collect::<Option<Vec<_>>>()?;
+            Some(serde_json::json!({
+                "name": field.name,
+                "cardinality": cardinality,
+                "records": records,
+            }))
+        })
+        .collect::<Option<Vec<_>>>()?;
+    Some(serde_json::json!({
+        "identity": {
+            "contract_lineage": identity.contract_lineage,
+            "contract_version": identity.contract_version.to_string(),
+            "contract_bundle_hash": hex(&identity.contract_bundle_hash),
+            "query_name": identity.query_name,
+            "plan_hash": hex(&identity.plan_hash),
+        },
+        "outcome": response.outcome,
+        "application_head": response.application_head.to_string(),
+        "fields": fields,
+        "next_cursor": response.next_cursor,
+    }))
+}
+
+fn hex(bytes: &[u8]) -> String {
+    const HEX: &[u8; 16] = b"0123456789abcdef";
+    let mut output = String::with_capacity(bytes.len() * 2);
+    for byte in bytes {
+        output.push(char::from(HEX[usize::from(byte >> 4)]));
+        output.push(char::from(HEX[usize::from(byte & 0x0f)]));
+    }
+    output
+}
+
 fn parse_uuid_v7(value: &str) -> Option<[u8; 16]> {
     let bytes = parse_uuid(value)?;
     ((bytes[6] >> 4 == 7) && (bytes[8] & 0xc0 == 0x80)).then_some(bytes)
@@ -1563,6 +2024,21 @@ const fn command_identity(command: &TopLevel) -> CommandIdentity {
         TopLevel::Entity { .. } => CommandIdentity::EntityGet,
         TopLevel::Commit { .. } => CommandIdentity::CommitShow,
         TopLevel::Projection { .. } => CommandIdentity::ProjectionQuery,
+        TopLevel::Query {
+            command: QueryCommand::Describe { .. },
+        } => CommandIdentity::QueryDescribe,
+        TopLevel::Query {
+            command: QueryCommand::Check { .. },
+        } => CommandIdentity::QueryCheck,
+        TopLevel::Query {
+            command: QueryCommand::Explain { .. },
+        } => CommandIdentity::QueryExplain,
+        TopLevel::Query {
+            command: QueryCommand::Run { .. },
+        } => CommandIdentity::QueryRun,
+        TopLevel::Query {
+            command: QueryCommand::Repl { .. },
+        } => CommandIdentity::QueryRepl,
         TopLevel::Capability {
             command: CapabilityCommand::Bootstrap { .. },
         } => CommandIdentity::CapabilityBootstrap,

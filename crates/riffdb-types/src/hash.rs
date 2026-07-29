@@ -9,7 +9,7 @@ use crate::{
     CanonicalInputHash, CanonicalValueHash, CapabilityTokenDigest, ConflictKeyHash,
     ContractBundleHash, ContractPlanRootHash, DigestKey, DigestKeyId, EntityKeyHash, EventHash,
     OfflineMaintenanceInputHash, PartitionKeyHash, PlanHash, ProjectionApplyHash,
-    ProjectionPlanHash, QueryPlanHash, SchemaHash, SourceHash,
+    ProjectionPlanHash, QueryParameterHash, QueryPlanHash, SchemaHash, SourceHash,
 };
 
 /// Hash framing and algorithm scheme defined by ADR-0011.
@@ -33,6 +33,8 @@ pub enum HashDomain {
     ProjectionPlan,
     /// Closed RiffQL query access program.
     QueryPlan,
+    /// Canonical name-addressed RiffQL parameter set.
+    QueryParameters,
     /// Ordered semantic plan set for one contract bundle.
     ContractPlanRoot,
     /// Canonical command input.
@@ -55,13 +57,14 @@ pub enum HashDomain {
 
 impl HashDomain {
     /// Every registered unkeyed domain, for compatibility and collision checks.
-    pub const ALL: [Self; 15] = [
+    pub const ALL: [Self; 16] = [
         Self::CanonicalValue,
         Self::Source,
         Self::ContractBundle,
         Self::Plan,
         Self::ProjectionPlan,
         Self::QueryPlan,
+        Self::QueryParameters,
         Self::ContractPlanRoot,
         Self::CommandInput,
         Self::Event,
@@ -82,6 +85,7 @@ impl HashDomain {
             Self::Plan => "riffdb.plan/v1",
             Self::ProjectionPlan => "riffdb.projection-plan/v1",
             Self::QueryPlan => "riffdb.query-plan/v1",
+            Self::QueryParameters => "riffdb.query-parameters/v1",
             Self::ContractPlanRoot => "riffdb.contract-plan-root/v1",
             Self::CommandInput => "riffdb.command-input/v1",
             Self::Event => "riffdb.event/v1",
@@ -259,6 +263,12 @@ typed_hash_function!(
     hash_query_plan,
     QueryPlan,
     QueryPlanHash
+);
+typed_hash_function!(
+    /// Hashes one canonical name-addressed RiffQL parameter set.
+    hash_query_parameters,
+    QueryParameters,
+    QueryParameterHash
 );
 typed_hash_function!(
     /// Hashes an ordered contract semantic-plan set in its immutable v1 domain.

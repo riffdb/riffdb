@@ -1,6 +1,8 @@
 riffdb-proto-schema-inventory-v1
 
 files
+  riffdb/app/v1/application.proto
+    import riffdb/v1/value.proto
   riffdb/storage/v1/application.proto
     import riffdb/storage/v1/common.proto
   riffdb/storage/v1/audit.proto
@@ -55,6 +57,81 @@ files
   riffdb/v1/value.proto
 
 messages
+  riffdb.app.v1.CheckQueryRequest fields=3
+    1 contract optional .riffdb.app.v1.ContractSelector proto3-optional oneof=_contract
+    2 source optional string
+    100 request_id optional bytes
+  riffdb.app.v1.CheckQueryResponse fields=3
+    1 identity optional .riffdb.app.v1.QueryIdentity proto3-optional oneof=_identity
+    2 schema optional .riffdb.app.v1.QuerySchema proto3-optional oneof=_schema
+    3 diagnostics repeated .riffdb.app.v1.Diagnostic
+  riffdb.app.v1.ContractSelector fields=3
+    1 lineage optional string
+    2 version optional uint64
+    3 bundle_hash optional bytes
+  riffdb.app.v1.DescribeContractRequest fields=2
+    1 contract optional .riffdb.app.v1.ContractSelector proto3-optional oneof=_contract
+    100 request_id optional bytes
+  riffdb.app.v1.DescribeContractResponse fields=4
+    1 contract_lineage optional string
+    2 contract_version optional uint64
+    3 contract_bundle_hash optional bytes
+    4 symbolic_catalog optional string
+  riffdb.app.v1.Diagnostic fields=5
+    1 code optional string
+    2 summary optional string
+    3 span optional .riffdb.app.v1.SourceSpan
+    4 symbols repeated string
+    5 suggestion optional string proto3-optional oneof=_suggestion
+  riffdb.app.v1.ExecuteQueryRequest fields=7
+    1 contract optional .riffdb.app.v1.ContractSelector proto3-optional oneof=_contract
+    2 source optional string oneof=query
+    3 query_name optional string oneof=query
+    4 module_hash optional bytes proto3-optional oneof=_module_hash
+    5 parameters repeated .riffdb.app.v1.Parameter
+    6 cursor optional string proto3-optional oneof=_cursor
+    100 request_id optional bytes
+  riffdb.app.v1.ExecuteQueryResponse fields=5
+    1 identity optional .riffdb.app.v1.QueryIdentity
+    2 outcome optional string
+    3 application_head optional uint64
+    4 fields repeated .riffdb.app.v1.ResultField
+    5 next_cursor optional string proto3-optional oneof=_next_cursor
+  riffdb.app.v1.ExplainQueryRequest fields=5
+    1 contract optional .riffdb.app.v1.ContractSelector proto3-optional oneof=_contract
+    2 source optional string oneof=query
+    3 query_name optional string oneof=query
+    4 module_hash optional bytes proto3-optional oneof=_module_hash
+    100 request_id optional bytes
+  riffdb.app.v1.ExplainQueryResponse fields=4
+    1 identity optional .riffdb.app.v1.QueryIdentity proto3-optional oneof=_identity
+    2 schema optional .riffdb.app.v1.QuerySchema proto3-optional oneof=_schema
+    3 plan_lines repeated string
+    4 diagnostics repeated .riffdb.app.v1.Diagnostic
+  riffdb.app.v1.Parameter fields=2
+    1 name optional string
+    2 value optional .riffdb.v1.Value
+  riffdb.app.v1.QueryIdentity fields=6
+    1 contract_lineage optional string
+    2 contract_version optional uint64
+    3 contract_bundle_hash optional bytes
+    4 query_name optional string proto3-optional oneof=_query_name
+    5 plan_hash optional bytes
+    6 module_hash optional bytes proto3-optional oneof=_module_hash
+  riffdb.app.v1.QuerySchema fields=3
+    1 parameters repeated string
+    2 outcomes repeated string
+    3 result_fields repeated string
+  riffdb.app.v1.ResultField fields=3
+    1 name optional string
+    2 cardinality optional .riffdb.app.v1.ResultCardinality
+    3 records repeated .riffdb.app.v1.ResultRecord
+  riffdb.app.v1.ResultRecord fields=2
+    1 fields repeated .riffdb.app.v1.Parameter
+    2 entity optional string
+  riffdb.app.v1.SourceSpan fields=2
+    1 start optional uint64
+    2 end optional uint64
   riffdb.storage.v1.ActiveCatalogPointerV1 fields=3
     1 contract_lineage optional string
     2 contract_version optional uint64
@@ -1106,6 +1183,11 @@ messages
     1 fields repeated .riffdb.v1.ValueField
 
 enums
+  riffdb.app.v1.ResultCardinality values=4
+    0 RESULT_CARDINALITY_UNSPECIFIED
+    1 RESULT_CARDINALITY_ONE
+    2 RESULT_CARDINALITY_MAYBE
+    3 RESULT_CARDINALITY_MANY
   riffdb.storage.v1.ActorKindV1 values=4
     0 ACTOR_KIND_UNSPECIFIED
     1 ACTOR_KIND_HUMAN
@@ -1275,7 +1357,7 @@ enums
     0 EXECUTION_FAILURE_CODE_UNSPECIFIED
     1 EXECUTION_FAILURE_CODE_ARITHMETIC_FAULT
     2 EXECUTION_FAILURE_CODE_RESOURCE_LIMIT
-  riffdb.v1.FixedToolKind values=15
+  riffdb.v1.FixedToolKind values=19
     0 FIXED_TOOL_KIND_UNSPECIFIED
     1 FIXED_TOOL_KIND_VALIDATE_CONTRACT
     2 FIXED_TOOL_KIND_GET_ACTIVE_CONTRACT
@@ -1291,6 +1373,10 @@ enums
     12 FIXED_TOOL_KIND_GET_PROJECTION_STATUS
     13 FIXED_TOOL_KIND_LIST_PENDING_OUTBOX_DELIVERIES
     14 FIXED_TOOL_KIND_GET_HEALTH
+    15 FIXED_TOOL_KIND_DESCRIBE_CONTRACT
+    16 FIXED_TOOL_KIND_CHECK_QUERY
+    17 FIXED_TOOL_KIND_EXPLAIN_QUERY
+    18 FIXED_TOOL_KIND_EXECUTE_QUERY
   riffdb.v1.HealthComponentKind values=6
     0 HEALTH_COMPONENT_KIND_UNSPECIFIED
     1 HEALTH_COMPONENT_KIND_AUTHORITATIVE_STORAGE
@@ -1413,6 +1499,11 @@ enums
     8 VALIDATION_CODE_DUPLICATE_FIELD
 
 services
+  riffdb.app.v1.ApplicationQueryService
+    DescribeContract .riffdb.app.v1.DescribeContractRequest -> .riffdb.app.v1.DescribeContractResponse (unary)
+    CheckQuery .riffdb.app.v1.CheckQueryRequest -> .riffdb.app.v1.CheckQueryResponse (unary)
+    ExplainQuery .riffdb.app.v1.ExplainQueryRequest -> .riffdb.app.v1.ExplainQueryResponse (unary)
+    ExecuteQuery .riffdb.app.v1.ExecuteQueryRequest -> .riffdb.app.v1.ExecuteQueryResponse (unary)
   riffdb.v1.AdminService
     Health .riffdb.v1.HealthRequest -> .riffdb.v1.HealthResponse (unary)
     Stats .riffdb.v1.StatsRequest -> .riffdb.v1.StatsResponse (unary)

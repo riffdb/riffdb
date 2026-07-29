@@ -475,6 +475,36 @@ pub enum McpFixedToolRequest {
     },
     /// `riffdb.server.health`.
     Health,
+    /// `riffdb.contract.describe`.
+    DescribeContract {
+        /// Active by default or an exact contract selection.
+        contract: Option<McpContractSelection>,
+    },
+    /// `riffdb.query.check`.
+    CheckQuery {
+        /// Active by default or an exact contract selection.
+        contract: Option<McpContractSelection>,
+        /// Exact bounded RiffQL source.
+        source: String,
+    },
+    /// `riffdb.query.explain`.
+    ExplainQuery {
+        /// Active by default or an exact contract selection.
+        contract: Option<McpContractSelection>,
+        /// Exact bounded RiffQL source.
+        source: String,
+    },
+    /// `riffdb.query`.
+    ExecuteQuery {
+        /// Active by default or an exact contract selection.
+        contract: Option<McpContractSelection>,
+        /// Exact bounded RiffQL source.
+        source: String,
+        /// Natural name-addressed parameter values.
+        parameters: Map<String, Value>,
+        /// Optional opaque application-query cursor.
+        cursor: Option<String>,
+    },
 }
 
 /// Decodes one already-schema-validated fixed-tool input.
@@ -602,6 +632,35 @@ pub fn decode_fixed_tool_request(
         14 => {
             let _: RawEmpty = arguments.deserialize().map_err(conversion)?;
             Ok(McpFixedToolRequest::Health)
+        }
+        15 => {
+            let request: RawSymbolicDescribe = arguments.deserialize().map_err(conversion)?;
+            Ok(McpFixedToolRequest::DescribeContract {
+                contract: request.contract.map(TryInto::try_into).transpose()?,
+            })
+        }
+        16 => {
+            let request: RawSymbolicSource = arguments.deserialize().map_err(conversion)?;
+            Ok(McpFixedToolRequest::CheckQuery {
+                contract: request.contract.map(TryInto::try_into).transpose()?,
+                source: request.source,
+            })
+        }
+        17 => {
+            let request: RawSymbolicSource = arguments.deserialize().map_err(conversion)?;
+            Ok(McpFixedToolRequest::ExplainQuery {
+                contract: request.contract.map(TryInto::try_into).transpose()?,
+                source: request.source,
+            })
+        }
+        18 => {
+            let request: RawSymbolicExecute = arguments.deserialize().map_err(conversion)?;
+            Ok(McpFixedToolRequest::ExecuteQuery {
+                contract: request.contract.map(TryInto::try_into).transpose()?,
+                source: request.source,
+                parameters: request.parameters,
+                cursor: request.cursor,
+            })
         }
         _ => Err(McpConversionError),
     }
@@ -847,6 +906,18 @@ pub enum McpFixedResultBranch {
     HealthPreBootstrap,
     /// Authenticated health.
     HealthAuthenticated,
+    /// Symbolic contract description.
+    ContractDescribed,
+    /// Symbolic query passed compilation.
+    QueryCheckValid,
+    /// Symbolic query failed compilation.
+    QueryCheckInvalid,
+    /// Symbolic query explain passed compilation.
+    QueryExplainValid,
+    /// Symbolic query explain failed compilation.
+    QueryExplainInvalid,
+    /// Symbolic query completed.
+    QueryCompleted,
 }
 
 impl McpFixedResultBranch {
@@ -872,6 +943,10 @@ impl McpFixedResultBranch {
             Self::ProjectionStatusNotFound | Self::ProjectionStatusFound => 12,
             Self::OutboxPage => 13,
             Self::HealthPreBootstrap | Self::HealthAuthenticated => 14,
+            Self::ContractDescribed => 15,
+            Self::QueryCheckValid | Self::QueryCheckInvalid => 16,
+            Self::QueryExplainValid | Self::QueryExplainInvalid => 17,
+            Self::QueryCompleted => 18,
         }
     }
 
@@ -904,6 +979,12 @@ impl McpFixedResultBranch {
             Self::ProjectionInvalid => "invalid",
             Self::HealthPreBootstrap => "pre_bootstrap",
             Self::HealthAuthenticated => "authenticated",
+            Self::ContractDescribed => "described",
+            Self::QueryCheckValid => "valid",
+            Self::QueryCheckInvalid => "invalid",
+            Self::QueryExplainValid => "valid",
+            Self::QueryExplainInvalid => "invalid",
+            Self::QueryCompleted => "completed",
         }
     }
 
@@ -1032,6 +1113,28 @@ struct RawEmpty {}
 #[serde(deny_unknown_fields)]
 struct RawSource {
     source: String,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RawSymbolicDescribe {
+    contract: Option<RawContractSelection>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RawSymbolicSource {
+    contract: Option<RawContractSelection>,
+    source: String,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RawSymbolicExecute {
+    contract: Option<RawContractSelection>,
+    source: String,
+    parameters: Map<String, Value>,
+    cursor: Option<String>,
 }
 
 #[derive(Deserialize)]

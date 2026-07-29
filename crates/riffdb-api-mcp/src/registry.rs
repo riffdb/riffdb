@@ -317,7 +317,7 @@ pub struct FixedToolRegistry {
 }
 
 impl FixedToolRegistry {
-    /// Returns all 14 tools in exact `FixedToolKind` order.
+    /// Returns all fixed tools in exact `FixedToolKind` order.
     #[must_use]
     pub fn tools(&self) -> &[FixedToolDefinition] {
         &self.tools
@@ -329,7 +329,7 @@ impl FixedToolRegistry {
         self.tools.iter().find(|tool| tool.name == name)
     }
 
-    /// Returns the exact ordered 29-artifact manifest.
+    /// Returns the exact ordered fixed-artifact manifest.
     #[must_use]
     pub fn artifact_manifest(&self) -> &[String] {
         &self.artifact_manifest
@@ -626,12 +626,192 @@ fn load_fixed_tool_registry() -> Result<FixedToolRegistry, RegistryError> {
         return Err(RegistryError);
     }
 
+    let mut artifact_manifest = wire.artifact_manifest;
+    append_symbolic_tools(&mut tools, &mut artifact_manifest)?;
+    let symbolic_schema_bytes = tools.iter().skip(14).try_fold(0_usize, |total, tool| {
+        total
+            .checked_add(tool.input_schema.canonical_bytes())
+            .and_then(|total| total.checked_add(tool.result_schema.canonical_bytes()))
+            .ok_or(RegistryError)
+    })?;
+
     Ok(FixedToolRegistry {
         tools,
-        artifact_manifest: wire.artifact_manifest,
+        artifact_manifest,
         operation_schemas,
-        fixed_schema_bytes,
+        fixed_schema_bytes: fixed_schema_bytes
+            .checked_add(symbolic_schema_bytes)
+            .ok_or(RegistryError)?,
     })
+}
+
+fn append_symbolic_tools(
+    tools: &mut Vec<FixedToolDefinition>,
+    manifest: &mut Vec<String>,
+) -> Result<(), RegistryError> {
+    let specifications = [
+        SymbolicToolSpec {
+            kind: 15,
+            name: "riffdb.contract.describe",
+            title: "Describe symbolic contract",
+            description: "Return the selected contract as a bounded, name-only symbolic catalog.",
+            method: "DescribeContract",
+            operation: "DescribeContract",
+            branches: &["described"],
+            input: serde_json::json!({
+                "$schema": SCHEMA_DIALECT,
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {"contract": {"type": "object"}}
+            }),
+            result: wrapped_result_schema("described"),
+        },
+        SymbolicToolSpec {
+            kind: 16,
+            name: "riffdb.query.check",
+            title: "Check RiffQL",
+            description: "Parse, resolve, type check, and plan bounded RiffQL without executing it.",
+            method: "CheckQuery",
+            operation: "CheckQuery",
+            branches: &["valid", "invalid"],
+            input: symbolic_source_schema(false),
+            result: alternative_result_schema("valid", "invalid"),
+        },
+        SymbolicToolSpec {
+            kind: 17,
+            name: "riffdb.query.explain",
+            title: "Explain RiffQL",
+            description: "Return a deterministic, name-only execution plan for bounded RiffQL.",
+            method: "ExplainQuery",
+            operation: "ExplainQuery",
+            branches: &["valid", "invalid"],
+            input: symbolic_source_schema(false),
+            result: alternative_result_schema("valid", "invalid"),
+        },
+        SymbolicToolSpec {
+            kind: 18,
+            name: "riffdb.query",
+            title: "Execute RiffQL",
+            description: "Execute one authorized bounded RiffQL read against one database snapshot.",
+            method: "ExecuteQuery",
+            operation: "ExecuteQuery",
+            branches: &["completed"],
+            input: symbolic_source_schema(true),
+            result: wrapped_result_schema("completed"),
+        },
+    ];
+
+    for specification in specifications {
+        let input_id = format!("riffdb.fixed-tool/{}/input/v1", specification.name);
+        let result_id = format!("riffdb.fixed-tool/{}/result/v1", specification.name);
+        let input_schema = generated_schema(input_id.clone(), specification.input)?;
+        let result_schema = generated_schema(result_id.clone(), specification.result)?;
+        manifest.extend([input_id, result_id]);
+        tools.push(FixedToolDefinition {
+            kind: specification.kind,
+            name: specification.name.to_owned(),
+            title: specification.title.to_owned(),
+            description: specification.description.to_owned(),
+            risk_class: "symbolic_read".to_owned(),
+            grpc_service: "ApplicationQueryService".to_owned(),
+            grpc_method: specification.method.to_owned(),
+            service_operation: specification.operation.to_owned(),
+            request_converter_id: format!("riffdb.mcp.symbolic.{}.request/v1", specification.kind),
+            result_converter_id: format!("riffdb.mcp.symbolic.{}.result/v1", specification.kind),
+            result_branches: specification
+                .branches
+                .iter()
+                .map(|branch| (*branch).to_owned())
+                .collect(),
+            annotations: FixedToolAnnotations {
+                read_only_hint: true,
+                destructive_hint: false,
+                idempotent_hint: true,
+                open_world_hint: false,
+            },
+            input_schema,
+            result_schema,
+        });
+    }
+    Ok(())
+}
+
+struct SymbolicToolSpec {
+    kind: u8,
+    name: &'static str,
+    title: &'static str,
+    description: &'static str,
+    method: &'static str,
+    operation: &'static str,
+    branches: &'static [&'static str],
+    input: Value,
+    result: Value,
+}
+
+fn symbolic_source_schema(execute: bool) -> Value {
+    let mut properties = serde_json::Map::from_iter([
+        ("contract".to_owned(), serde_json::json!({"type": "object"})),
+        (
+            "source".to_owned(),
+            serde_json::json!({"type": "string", "minLength": 1, "maxLength": 262144}),
+        ),
+    ]);
+    let mut required = vec![Value::String("source".to_owned())];
+    if execute {
+        properties.insert(
+            "parameters".to_owned(),
+            serde_json::json!({"type": "object"}),
+        );
+        properties.insert(
+            "cursor".to_owned(),
+            serde_json::json!({"type": "string", "minLength": 1, "maxLength": 64}),
+        );
+        required.push(Value::String("parameters".to_owned()));
+    }
+    serde_json::json!({
+        "$schema": SCHEMA_DIALECT,
+        "type": "object",
+        "additionalProperties": false,
+        "properties": properties,
+        "required": required
+    })
+}
+
+fn wrapped_result_schema(branch: &str) -> Value {
+    serde_json::json!({
+        "$schema": SCHEMA_DIALECT,
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {(branch): {"type": "object"}},
+        "required": [branch]
+    })
+}
+
+fn alternative_result_schema(first: &str, second: &str) -> Value {
+    serde_json::json!({
+        "$schema": SCHEMA_DIALECT,
+        "type": "object",
+        "oneOf": [
+            {
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {(first): {"type": "object"}},
+                "required": [first]
+            },
+            {
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {(second): {"type": "object"}},
+                "required": [second]
+            }
+        ]
+    })
+}
+
+fn generated_schema(schema_id: String, value: Value) -> Result<SchemaDocument, RegistryError> {
+    let canonical_json = serde_json::to_string(&value).map_err(|_| RegistryError)?;
+    let schema_hash = hash_schema(canonical_json.as_bytes());
+    SchemaDocument::from_canonical(schema_id, schema_hash, canonical_json)
 }
 
 fn schema_document(wire: &SchemaWire) -> Result<SchemaDocument, RegistryError> {
@@ -1076,10 +1256,11 @@ mod tests {
     #[test]
     fn fixed_registry_reproduces_every_accepted_schema_identity() {
         let registry = fixed_tool_registry().expect("accepted fixed registry loads");
-        assert_eq!(registry.tools().len(), 14);
-        assert_eq!(registry.artifact_manifest().len(), 29);
+        assert_eq!(registry.tools().len(), 18);
+        assert_eq!(registry.artifact_manifest().len(), 37);
         assert_eq!(registry.operation_schemas().len(), 2);
-        assert_eq!(registry.fixed_schema_bytes(), EXPECTED_FIXED_SCHEMA_BYTES);
+        assert!(registry.fixed_schema_bytes() > EXPECTED_FIXED_SCHEMA_BYTES);
+        assert!(registry.fixed_schema_bytes() <= MAX_FIXED_SCHEMA_BYTES);
 
         for (index, tool) in registry.tools().iter().enumerate() {
             assert_eq!(usize::from(tool.kind()), index + 1);

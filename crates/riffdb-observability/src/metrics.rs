@@ -1224,6 +1224,10 @@ const fn operation_name(operation: ServiceOperationV1) -> &'static str {
         ServiceOperationV1::ListPendingOutboxDeliveries => "list_pending_outbox_deliveries",
         ServiceOperationV1::DiscoverCommandTools => "discover_command_tools",
         ServiceOperationV1::DiscoverResources => "discover_resources",
+        ServiceOperationV1::DescribeContract => "describe_contract",
+        ServiceOperationV1::CheckQuery => "check_query",
+        ServiceOperationV1::ExplainQuery => "explain_query",
+        ServiceOperationV1::ExecuteQuery => "execute_query",
     }
 }
 

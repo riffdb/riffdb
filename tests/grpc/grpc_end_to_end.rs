@@ -45,7 +45,7 @@ use riffdb_service::{
     RecoveryRestoreOfflineBackupInvocation, RequestContext, ResolveCommandOutcomeResult,
     ResolveCommandOutcomeSelectorRef, ResourceDescriptor, RestoreOfflineBackupInvocation,
     RestoreRetryOfflineMaintenanceApplication, ServiceFailure, ServiceFuture,
-    TraceProvenanceResult,
+    SymbolicQueryApplication, TraceProvenanceResult,
 };
 use riffdb_testkit::authorization::{
     AuthorizationFixture, AuthorizationFixtureConfig, AuthorizationFixtureTimes,
@@ -649,6 +649,33 @@ impl DiscoveryApplication for ProjectionService {
         };
         Box::pin(async move { Ok(result) })
     }
+}
+
+impl SymbolicQueryApplication for ProjectionService {
+    denied_operation!(
+        describe_symbolic_contract,
+        RequestContext,
+        riffdb_service::SymbolicContractSelector,
+        riffdb_service::DescribeSymbolicContractResult
+    );
+    denied_operation!(
+        check_symbolic_query,
+        RequestContext,
+        riffdb_service::CompileSymbolicQueryRequest,
+        riffdb_service::CheckSymbolicQueryResult
+    );
+    denied_operation!(
+        explain_symbolic_query,
+        RequestContext,
+        riffdb_service::CompileSymbolicQueryRequest,
+        riffdb_service::ExplainSymbolicQueryResult
+    );
+    denied_operation!(
+        execute_symbolic_query,
+        RequestContext,
+        riffdb_service::ExecuteSymbolicQueryRequest,
+        riffdb_service::ExecuteSymbolicQueryResult
+    );
 }
 
 #[derive(Clone)]

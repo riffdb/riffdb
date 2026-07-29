@@ -10,9 +10,11 @@ publish.workspace = true
 default = []
 
 [dependencies]
+base64 = { version = "=0.22.1", default-features = false, features = ["alloc"] }
 riffdb-api-mcp = { version = "0.1.0", path = "../riffdb-api-mcp", default-features = false, features = ["stdio"] }
 riffdb-client-rust = { version = "0.1.0", path = "../riffdb-client-rust", default-features = false }
 serde = { version = "=1.0.229", default-features = false, features = ["derive", "std"] }
+serde_json = { version = "=1.0.150", default-features = false, features = ["std"] }
 tokio = { version = "=1.52.0", default-features = false, features = ["macros", "rt"] }
 toml = { version = "=1.1.3", default-features = false, features = ["parse", "serde", "std"] }
 tracing-subscriber = { version = "=0.3.23", default-features = false, features = ["fmt"] }

@@ -382,7 +382,7 @@ impl ProductionGraphBuilder {
             projection_notifier,
             &blocking,
         ));
-        let outbox = Arc::new(ServerOutboxStatusPort::new(storage, &blocking));
+        let outbox = Arc::new(ServerOutboxStatusPort::new(storage.clone(), &blocking));
         let operational: Arc<dyn OperationalStatusPort> =
             Arc::new(ProductionOperationalStatusPort::new(
                 allocator_capacity,
@@ -419,6 +419,7 @@ impl ProductionGraphBuilder {
             cursor_tokens,
             cursor_clock,
         )
+        .with_query_executor(Arc::new(storage))
         .with_offline_maintenance(maintenance);
         let identity = ServiceIdentity::new(
             database_id,

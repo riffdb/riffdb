@@ -2242,6 +2242,10 @@ pub enum FixedToolKind {
     GetProjectionStatus = 12,
     ListPendingOutboxDeliveries = 13,
     GetHealth = 14,
+    DescribeContract = 15,
+    CheckQuery = 16,
+    ExplainQuery = 17,
+    ExecuteQuery = 18,
 }
 impl FixedToolKind {
     /// String value of the enum field names used in the ProtoBuf definition.
@@ -2267,6 +2271,10 @@ impl FixedToolKind {
                 "FIXED_TOOL_KIND_LIST_PENDING_OUTBOX_DELIVERIES"
             }
             Self::GetHealth => "FIXED_TOOL_KIND_GET_HEALTH",
+            Self::DescribeContract => "FIXED_TOOL_KIND_DESCRIBE_CONTRACT",
+            Self::CheckQuery => "FIXED_TOOL_KIND_CHECK_QUERY",
+            Self::ExplainQuery => "FIXED_TOOL_KIND_EXPLAIN_QUERY",
+            Self::ExecuteQuery => "FIXED_TOOL_KIND_EXECUTE_QUERY",
         }
     }
     /// Creates an enum from field names used in the ProtoBuf definition.
@@ -2291,6 +2299,10 @@ impl FixedToolKind {
                 Some(Self::ListPendingOutboxDeliveries)
             }
             "FIXED_TOOL_KIND_GET_HEALTH" => Some(Self::GetHealth),
+            "FIXED_TOOL_KIND_DESCRIBE_CONTRACT" => Some(Self::DescribeContract),
+            "FIXED_TOOL_KIND_CHECK_QUERY" => Some(Self::CheckQuery),
+            "FIXED_TOOL_KIND_EXPLAIN_QUERY" => Some(Self::ExplainQuery),
+            "FIXED_TOOL_KIND_EXECUTE_QUERY" => Some(Self::ExecuteQuery),
             _ => None,
         }
     }
