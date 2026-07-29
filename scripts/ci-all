@@ -22,8 +22,14 @@ require_tool_version cargo-audit "$RIFFDB_CARGO_AUDIT_VERSION" cargo audit
 require_tool_version cargo-machete "$RIFFDB_CARGO_MACHETE_VERSION" cargo machete
 
 cargo fmt --all -- --check
+cargo fmt --manifest-path xtask/Cargo.toml -- --check
 cargo clippy --workspace --all-targets --all-features -- -D warnings
+cargo clippy --locked --manifest-path xtask/Cargo.toml --all-targets -- -D warnings
 cargo test --workspace --all-features
+cargo test --locked --manifest-path xtask/Cargo.toml
+cargo riffdb --help >/dev/null 2>&1
+cargo riffdb install --help >/dev/null 2>&1
+cargo riffdb bootstrap --help >/dev/null 2>&1
 RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps
 cargo deny check
 cargo audit
@@ -31,3 +37,4 @@ cargo machete
 ./scripts/check-workspace-policy
 ./scripts/check-requirement-coverage
 ./scripts/check-generated
+./scripts/release-source-install-smoke

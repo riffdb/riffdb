@@ -1,0 +1,72 @@
+{
+  "principal_id": "riffdb-local-mcp",
+  "actor_kind": "agent",
+  "requested_lifetime_seconds": 2505600,
+  "audiences": [
+    "riffdb-grpc-loopback"
+  ],
+  "grant": {
+    "tenant_scope": {
+      "type": "global"
+    },
+    "partition_scope": {
+      "type": "all"
+    },
+    "permissions": [
+      {
+        "type": "read_contract"
+      },
+      {
+        "type": "explain_command",
+        "contract_lineage": "LegalSpend",
+        "stable_id": 1
+      },
+      {
+        "type": "explain_command",
+        "contract_lineage": "LegalSpend",
+        "stable_id": 2
+      },
+      {
+        "type": "invoke_command",
+        "contract_lineage": "LegalSpend",
+        "stable_id": 1
+      },
+      {
+        "type": "invoke_command",
+        "contract_lineage": "LegalSpend",
+        "stable_id": 2
+      },
+      {
+        "type": "read_entity",
+        "contract_lineage": "LegalSpend",
+        "stable_id": 1
+      },
+      {
+        "type": "query_projection",
+        "contract_lineage": "LegalSpend",
+        "stable_id": 1
+      },
+      {
+        "type": "read_projection_status",
+        "contract_lineage": "LegalSpend",
+        "stable_id": 1
+      },
+      {
+        "type": "read_health"
+      }
+    ],
+    "field_visibility": [
+      {
+        "contract_lineage": "LegalSpend",
+        "entity_type_id": 1,
+        "field_ids": [
+          1,
+          3,
+          5
+        ]
+      }
+    ],
+    "max_scan_rows": 50,
+    "approval_required": []
+  }
+}

@@ -1,0 +1,681 @@
+#!/usr/bin/env bash
+set -euo pipefail
+export LC_ALL=C
+umask 077
+
+usage() {
+    printf '%s\n' \
+        'usage: scripts/release-source-bootstrap-smoke [--binary-dir DIR]' >&2
+}
+
+fail() {
+    printf 'release source bootstrap smoke failed: %s\n' "$1" >&2
+    exit 1
+}
+
+require_tool() {
+    command -v "$1" >/dev/null 2>&1 \
+        || fail "required tool is missing: $1"
+}
+
+require_regular_mode() {
+    local path="$1"
+    local expected_mode="$2"
+    if [[ ! -f "$path" || -L "$path" ]]; then
+        fail "expected a regular non-link file: $path"
+    fi
+    if [[ "$(stat -c '%a' "$path")" != "${expected_mode#0}" ]]; then
+        fail "unexpected mode for $path"
+    fi
+    if [[ "$(stat -c '%u' "$path")" != "$(id -u)" ]]; then
+        fail "unexpected owner for $path"
+    fi
+}
+
+binary_dir=target/debug
+while (($#)); do
+    case "$1" in
+        --binary-dir)
+            if [[ $# -lt 2 || -z "$2" ]]; then
+                usage
+                exit 2
+            fi
+            binary_dir="$2"
+            shift 2
+            ;;
+        -h|--help)
+            usage
+            exit 0
+            ;;
+        *)
+            usage
+            exit 2
+            ;;
+    esac
+done
+
+for tool in \
+    cargo chmod cmp cp git grep id jq mkfifo mkdir mktemp mv rm sed \
+    sha256sum stat tail timeout
+do
+    require_tool "$tool"
+done
+
+repo_root="$(git rev-parse --show-toplevel)"
+cd "$repo_root"
+if [[ "$binary_dir" != /* ]]; then
+    binary_dir="$repo_root/$binary_dir"
+fi
+if [[ ! -d "$binary_dir" || -L "$binary_dir" ]]; then
+    fail "binary directory is missing, not a directory, or linked: $binary_dir"
+fi
+binary_dir="$(cd -- "$binary_dir" && pwd -P)"
+for binary in riffdbd riffdb riffdb-mcp; do
+    if [[ ! -f "$binary_dir/$binary" \
+       || -L "$binary_dir/$binary" \
+       || ! -x "$binary_dir/$binary" ]]; then
+        fail "build the real $binary binary before running this smoke"
+    fi
+done
+
+source_home="${HOME:?HOME must be set}"
+source_cargo_home="${CARGO_HOME:-$source_home/.cargo}"
+source_rustup_home="${RUSTUP_HOME:-$source_home/.rustup}"
+work_root="$(mktemp -d "${TMPDIR:-/tmp}/riffdb-source-bootstrap-smoke.XXXXXX")"
+server_pid=
+cleanup() {
+    if [[ -n "$server_pid" ]] && kill -0 "$server_pid" 2>/dev/null; then
+        kill -KILL "$server_pid" 2>/dev/null || true
+        wait "$server_pid" 2>/dev/null || true
+    fi
+    rm -rf "$work_root"
+}
+trap cleanup EXIT INT TERM
+
+export HOME="$work_root/home with spaces"
+export XDG_CONFIG_HOME="$work_root/config with spaces"
+export XDG_DATA_HOME="$work_root/data with spaces"
+export XDG_STATE_HOME="$work_root/state with spaces"
+export XDG_RUNTIME_DIR="$work_root/runtime with spaces"
+export TMPDIR="$work_root/tmp with spaces"
+export CARGO_HOME="$source_cargo_home"
+export RUSTUP_HOME="$source_rustup_home"
+mkdir -p \
+    "$HOME" \
+    "$XDG_CONFIG_HOME" \
+    "$XDG_DATA_HOME" \
+    "$XDG_STATE_HOME" \
+    "$XDG_RUNTIME_DIR" \
+    "$TMPDIR"
+chmod 0700 \
+    "$HOME" \
+    "$XDG_CONFIG_HOME" \
+    "$XDG_DATA_HOME" \
+    "$XDG_STATE_HOME" \
+    "$XDG_RUNTIME_DIR" \
+    "$TMPDIR"
+
+unset \
+    RIFFDB_AUDIENCE \
+    RIFFDB_BACKUP_ROOT \
+    RIFFDB_CAPABILITY_DIGEST_KEYS \
+    RIFFDB_CAPABILITY_KEYS \
+    RIFFDB_CAPABILITY_TOKEN \
+    RIFFDB_CODEX \
+    RIFFDB_CONFIG \
+    RIFFDB_CREDENTIAL_FILE \
+    RIFFDB_DATABASE \
+    RIFFDB_ENDPOINT \
+    RIFFDB_ENVIRONMENT \
+    RIFFDB_IDEMPOTENCY_DIGEST_KEYS \
+    RIFFDB_IDEMPOTENCY_KEYS \
+    RIFFDB_LISTEN \
+    RIFFDB_MAX_ATTEMPTS \
+    RIFFDB_MCP_CAPABILITY_TOKEN \
+    RIFFDB_MCP_CONFIG \
+    RIFFDB_MCP_CREDENTIAL_FILE \
+    RIFFDB_MCP_ENDPOINT \
+    RIFFDB_MCP_LISTEN \
+    RIFFDB_MCP_ORIGINS \
+    RIFFDB_OUTPUT \
+    RIFFDB_SYSTEM_PREFIX \
+    RIFFDB_USER_PREFIX
+
+shim_dir="$work_root/command shims"
+forbidden_log="$work_root/forbidden-command-calls.log"
+verify_log="$work_root/systemd-analyze-calls.log"
+mkdir -p "$shim_dir"
+: >"$forbidden_log"
+: >"$verify_log"
+for command_name in codex loginctl sudo systemctl; do
+    printf '%s\n' \
+        '#!/usr/bin/env bash' \
+        'printf "%s" "${0##*/}" >>"${RIFFDB_TEST_FORBIDDEN_LOG:?}"' \
+        'printf " %q" "$@" >>"${RIFFDB_TEST_FORBIDDEN_LOG:?}"' \
+        'printf "\n" >>"${RIFFDB_TEST_FORBIDDEN_LOG:?}"' \
+        'exit 97' \
+        >"$shim_dir/$command_name"
+    chmod 0755 "$shim_dir/$command_name"
+done
+printf '%s\n' \
+    '#!/usr/bin/env bash' \
+    'set -euo pipefail' \
+    'if [[ $# -ne 3 || "$1" != "--user" || "$2" != "verify" ]]' \
+    'then' \
+    '    exit 98' \
+    'fi' \
+    'if [[ ! -f "$3" || -L "$3" ]]' \
+    'then' \
+    '    exit 99' \
+    'fi' \
+    'printf "%s\t%s\t%s\n" "$1" "$2" "$3" >>"${RIFFDB_TEST_VERIFY_LOG:?}"' \
+    >"$shim_dir/systemd-analyze"
+chmod 0755 "$shim_dir/systemd-analyze"
+export RIFFDB_TEST_FORBIDDEN_LOG="$forbidden_log"
+export RIFFDB_TEST_VERIFY_LOG="$verify_log"
+export PATH="$shim_dir:$PATH"
+
+install_output="$work_root/install.log"
+scripts/release-source-install install --user \
+    --from-binaries "$binary_dir" \
+    --no-start \
+    >"$install_output" 2>&1
+if [[ -s "$forbidden_log" ]]; then
+    fail "isolated installation crossed a forbidden boundary: $(<"$forbidden_log")"
+fi
+
+bin_root="$HOME/.local/bin"
+config_root="$XDG_CONFIG_HOME/riffdb"
+data_root="$XDG_DATA_HOME/riffdb"
+state_root="$XDG_STATE_HOME/riffdb"
+server_config="$config_root/riffdbd.toml"
+operator_credential="$config_root/operator.credential"
+client_config="$config_root/client.toml"
+mcp_credential="$config_root/mcp.credential"
+mcp_config="$config_root/mcp.toml"
+operator_capability_id="$state_root/operator-capability.id"
+mcp_capability_id="$state_root/mcp-capability.id"
+bootstrap_request="$state_root/bootstrap-local-owner.json"
+mcp_request="$state_root/mcp-budget-agent.json"
+bootstrap_credential="$state_root/bootstrap.credential"
+operator_candidate="$config_root/.operator.credential.new"
+
+require_regular_mode "$server_config" 0600
+if [[ "$(grep -Fxc 'grpc_listen = "127.0.0.1:7443"' "$server_config")" -ne 1 ]]; then
+    fail "generated disposable server configuration has an unexpected listen setting"
+fi
+original_server_config="$work_root/original-riffdbd.toml"
+candidate_server_config="$work_root/riffdbd.toml.candidate"
+cp "$server_config" "$original_server_config"
+sed \
+    's/^grpc_listen = "127\.0\.0\.1:7443"$/grpc_listen = "127.0.0.1:0"/' \
+    "$original_server_config" >"$candidate_server_config"
+chmod 0600 "$candidate_server_config"
+mv "$candidate_server_config" "$server_config"
+require_regular_mode "$server_config" 0600
+if [[ "$(grep -Fxc 'grpc_listen = "127.0.0.1:0"' "$server_config")" -ne 1 ]]; then
+    fail "disposable server configuration was not rewritten to an ephemeral port"
+fi
+
+# The CLI retains both recovery material and its bearer before attempting the
+# connection. A refused connection must not let the helper promote that
+# unproven candidate until a later replay reaches a terminal result.
+preconnect_output="$work_root/preconnect-bootstrap.stdout"
+preconnect_stderr="$work_root/preconnect-bootstrap.stderr"
+if RIFFDB_ENDPOINT=http://127.0.0.1:1 cargo riffdb bootstrap --user \
+    >"$preconnect_output" 2>"$preconnect_stderr"
+then
+    fail "bootstrap unexpectedly reached a server on the closed test endpoint"
+fi
+require_regular_mode "$bootstrap_credential" 0600
+require_regular_mode "$operator_candidate" 0600
+operator_candidate_token="$(<"$operator_candidate")"
+bootstrap_operator_capability="$(
+    sed -n 's/^capability-id://p' "$bootstrap_credential"
+)"
+if [[ "$operator_candidate_token" != \
+        "$(sed -n 's/^token://p' "$bootstrap_credential")" ]]; then
+    fail "pre-connect operator candidate differs from retained bootstrap material"
+fi
+if [[ ! "$bootstrap_operator_capability" =~ ^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$ ]]; then
+    fail "pre-connect bootstrap material has a noncanonical capability ID"
+fi
+bootstrap_recovery_copy="$work_root/bootstrap.credential.recovery"
+cp "$bootstrap_credential" "$bootstrap_recovery_copy"
+chmod 0600 "$bootstrap_recovery_copy"
+if grep -F -- "$operator_candidate_token" \
+        "$preconnect_output" "$preconnect_stderr" >/dev/null; then
+    fail "failed pre-connect bootstrap exposed its bearer credential"
+fi
+
+ready_fifo="$work_root/riffdbd-ready.fifo"
+server_stderr="$work_root/riffdbd.stderr"
+mkfifo "$ready_fifo"
+(
+    cd "$state_root"
+    exec "$bin_root/riffdbd" --config "$server_config"
+) </dev/null >"$ready_fifo" 2>"$server_stderr" &
+server_pid=$!
+
+exec {ready_fd}<"$ready_fifo"
+if ! IFS= read -r -t 30 ready_line <&"$ready_fd"; then
+    fail "installed riffdbd did not publish readiness"
+fi
+exec {ready_fd}<&-
+case "$ready_line" in
+    riffdbd-ready-v1$'\t'*) address="${ready_line#*$'\t'}" ;;
+    *) fail "installed riffdbd published an invalid readiness line" ;;
+esac
+if [[ ! "$address" =~ ^127\.0\.0\.1:([1-9][0-9]{0,4})$ \
+   || "${BASH_REMATCH[1]}" -gt 65535 ]]; then
+    fail "installed riffdbd published a non-loopback or invalid address"
+fi
+if ! kill -0 "$server_pid" 2>/dev/null; then
+    fail "installed riffdbd exited after closed stdin"
+fi
+endpoint="http://$address"
+
+first_bootstrap_output="$work_root/first-bootstrap.stdout"
+first_bootstrap_stderr="$work_root/first-bootstrap.stderr"
+if ! RIFFDB_ENDPOINT="$endpoint" cargo riffdb bootstrap --user \
+    >"$first_bootstrap_output" 2>"$first_bootstrap_stderr"
+then
+    sed 's/^/bootstrap: /' "$first_bootstrap_stderr" >&2
+    fail "first cargo riffdb bootstrap invocation failed"
+fi
+
+for private_file in \
+    "$operator_credential" \
+    "$client_config" \
+    "$mcp_credential" \
+    "$mcp_config" \
+    "$operator_capability_id" \
+    "$mcp_capability_id" \
+    "$bootstrap_request" \
+    "$mcp_request"
+do
+    require_regular_mode "$private_file" 0600
+done
+cmp release/config/bootstrap-local-owner.json.example "$bootstrap_request" \
+    || fail "bootstrap owner request differs from the checked fixture"
+cmp release/config/mcp-budget-agent.json.example "$mcp_request" \
+    || fail "MCP capability request differs from the checked fixture"
+
+if [[ "$(stat -c '%s' "$operator_credential")" -ne 43 \
+   || "$(stat -c '%s' "$mcp_credential")" -ne 43 ]]; then
+    fail "generated bearer credential has a noncanonical length"
+fi
+operator_token="$(<"$operator_credential")"
+mcp_token="$(<"$mcp_credential")"
+if [[ ! "$operator_token" =~ ^[A-Za-z0-9_-]{43}$ \
+   || ! "$mcp_token" =~ ^[A-Za-z0-9_-]{43}$ \
+   || "$operator_token" == "$mcp_token" ]]; then
+    fail "generated bearer credentials are malformed or reused"
+fi
+if [[ "$operator_token" != "$operator_candidate_token" ]]; then
+    fail "terminal operator credential changed the pre-connect identity"
+fi
+capability_id="$(<"$mcp_capability_id")"
+operator_capability="$(<"$operator_capability_id")"
+if [[ "$(stat -c '%s' "$mcp_capability_id")" -ne 37 \
+   || ! "$capability_id" =~ ^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$ ]]; then
+    fail "persisted MCP capability ID is not a canonical UUIDv7"
+fi
+if [[ "$(stat -c '%s' "$operator_capability_id")" -ne 37 \
+   || ! "$operator_capability" =~ ^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$ \
+   || "$operator_capability" != "$bootstrap_operator_capability" \
+   || "$operator_capability" == "$capability_id" ]]; then
+    fail "persisted operator capability ID is not a distinct canonical UUIDv7"
+fi
+
+for expected in \
+    "$endpoint" \
+    "$operator_credential"
+do
+    grep -F "$expected" "$client_config" >/dev/null \
+        || fail "client configuration omitted expected value: $expected"
+done
+for expected in \
+    "$endpoint" \
+    "$mcp_credential"
+do
+    grep -F "$expected" "$mcp_config" >/dev/null \
+        || fail "MCP configuration omitted expected value: $expected"
+done
+for transient in \
+    "$state_root/bootstrap.credential" \
+    "$state_root/mcp-capability.pending-id" \
+    "$config_root/.operator.credential.new" \
+    "$config_root/.mcp.credential.new"
+do
+    if [[ -e "$transient" || -L "$transient" ]]; then
+        fail "terminal bootstrap retained transient state: $transient"
+    fi
+done
+if grep -F -- "$operator_token" \
+        "$first_bootstrap_output" "$first_bootstrap_stderr" >/dev/null \
+   || grep -F -- "$mcp_token" \
+        "$first_bootstrap_output" "$first_bootstrap_stderr" >/dev/null; then
+    fail "bootstrap output exposed a bearer credential"
+fi
+
+stable_files=(
+    "$operator_credential"
+    "$client_config"
+    "$mcp_credential"
+    "$mcp_config"
+    "$operator_capability_id"
+    "$mcp_capability_id"
+    "$bootstrap_request"
+    "$mcp_request"
+)
+stable_hashes=()
+for stable_file in "${stable_files[@]}"; do
+    stable_hashes+=("$(sha256sum "$stable_file" | sed 's/ .*//')")
+done
+
+cp "$bootstrap_recovery_copy" "$bootstrap_credential"
+chmod 0600 "$bootstrap_credential"
+rm -f "$operator_capability_id"
+owner_recovery_output="$work_root/owner-id-recovery.stdout"
+owner_recovery_stderr="$work_root/owner-id-recovery.stderr"
+if ! RIFFDB_ENDPOINT="$endpoint" cargo riffdb bootstrap --user \
+    >"$owner_recovery_output" 2>"$owner_recovery_stderr"
+then
+    sed 's/^/owner ID recovery: /' "$owner_recovery_stderr" >&2
+    fail "operator capability ID recovery failed"
+fi
+for index in "${!stable_files[@]}"; do
+    current_hash="$(sha256sum "${stable_files[$index]}" | sed 's/ .*//')"
+    if [[ "$current_hash" != "${stable_hashes[$index]}" ]]; then
+        fail "operator ID recovery changed durable state: ${stable_files[$index]}"
+    fi
+done
+if [[ -e "$bootstrap_credential" || -L "$bootstrap_credential" ]]; then
+    fail "operator ID recovery retained terminal bootstrap material"
+fi
+if grep -F -- "$operator_token" \
+        "$owner_recovery_output" "$owner_recovery_stderr" >/dev/null \
+   || grep -F -- "$mcp_token" \
+        "$owner_recovery_output" "$owner_recovery_stderr" >/dev/null; then
+    fail "operator ID recovery output exposed a bearer credential"
+fi
+
+# Recreate the only two-file state possible if the helper stops after the
+# create-only token is durable but before its pending identity is promoted.
+mv "$mcp_credential" "$config_root/.mcp.credential.new"
+mv "$mcp_capability_id" "$state_root/mcp-capability.pending-id"
+
+second_bootstrap_output="$work_root/second-bootstrap.stdout"
+second_bootstrap_stderr="$work_root/second-bootstrap.stderr"
+if ! RIFFDB_ENDPOINT="$endpoint" cargo riffdb bootstrap --user \
+    >"$second_bootstrap_output" 2>"$second_bootstrap_stderr"
+then
+    sed 's/^/repeat bootstrap: /' "$second_bootstrap_stderr" >&2
+    fail "repeat cargo riffdb bootstrap invocation failed"
+fi
+for index in "${!stable_files[@]}"; do
+    current_hash="$(sha256sum "${stable_files[$index]}" | sed 's/ .*//')"
+    if [[ "$current_hash" != "${stable_hashes[$index]}" ]]; then
+        fail "repeat bootstrap changed durable local state: ${stable_files[$index]}"
+    fi
+done
+if [[ "$(<"$operator_credential")" != "$operator_token" \
+   || "$(<"$mcp_credential")" != "$mcp_token" \
+   || "$(<"$operator_capability_id")" != "$operator_capability" \
+   || "$(<"$mcp_capability_id")" != "$capability_id" ]]; then
+    fail "repeat bootstrap replaced a credential or capability identity"
+fi
+if grep -F -- "$operator_token" \
+        "$second_bootstrap_output" "$second_bootstrap_stderr" >/dev/null \
+   || grep -F -- "$mcp_token" \
+        "$second_bootstrap_output" "$second_bootstrap_stderr" >/dev/null; then
+    fail "repeat bootstrap output exposed a bearer credential"
+fi
+if [[ -s "$forbidden_log" ]]; then
+    fail "bootstrap crossed a forbidden system boundary: $(<"$forbidden_log")"
+fi
+
+# Recreate the crash window after the credential was promoted but before its
+# pending capability ID was moved to the final path.
+mv "$mcp_capability_id" "$state_root/mcp-capability.pending-id"
+third_bootstrap_output="$work_root/third-bootstrap.stdout"
+third_bootstrap_stderr="$work_root/third-bootstrap.stderr"
+if ! RIFFDB_ENDPOINT="$endpoint" cargo riffdb bootstrap --user \
+    >"$third_bootstrap_output" 2>"$third_bootstrap_stderr"
+then
+    sed 's/^/half-promotion recovery: /' "$third_bootstrap_stderr" >&2
+    fail "MCP half-promotion recovery failed"
+fi
+for index in "${!stable_files[@]}"; do
+    current_hash="$(sha256sum "${stable_files[$index]}" | sed 's/ .*//')"
+    if [[ "$current_hash" != "${stable_hashes[$index]}" ]]; then
+        fail "half-promotion recovery changed durable state: ${stable_files[$index]}"
+    fi
+done
+if grep -F -- "$operator_token" \
+        "$third_bootstrap_output" "$third_bootstrap_stderr" >/dev/null \
+   || grep -F -- "$mcp_token" \
+        "$third_bootstrap_output" "$third_bootstrap_stderr" >/dev/null; then
+    fail "half-promotion recovery output exposed a bearer credential"
+fi
+
+codex_call_counts="$work_root/codex-call-counts.log"
+codex_arguments="$work_root/codex-arguments.bin"
+: >"$codex_call_counts"
+: >"$codex_arguments"
+printf '%s\n' \
+    '#!/usr/bin/env bash' \
+    'set -euo pipefail' \
+    'printf "%s\n" "$#" >>"${RIFFDB_TEST_CODEX_CALL_COUNTS:?}"' \
+    'printf "%s\0" "$@" >>"${RIFFDB_TEST_CODEX_ARGUMENTS:?}"' \
+    'if [[ $# -eq 3 && "$1" == mcp && "$2" == list && "$3" == --json ]]' \
+    'then' \
+    '    printf "[]\n"' \
+    '    exit 0' \
+    'fi' \
+    '[[ $# -eq 7 && "$1" == mcp && "$2" == add && "$3" == riffdb ]]' \
+    >"$shim_dir/codex"
+chmod 0755 "$shim_dir/codex"
+export RIFFDB_TEST_CODEX_CALL_COUNTS="$codex_call_counts"
+export RIFFDB_TEST_CODEX_ARGUMENTS="$codex_arguments"
+register_output="$work_root/register-bootstrap.stdout"
+register_stderr="$work_root/register-bootstrap.stderr"
+if ! RIFFDB_ENDPOINT="$endpoint" RIFFDB_CODEX="$shim_dir/codex" \
+    cargo riffdb bootstrap --user --register-codex \
+    >"$register_output" 2>"$register_stderr"
+then
+    sed 's/^/registration: /' "$register_stderr" >&2
+    fail "bootstrap with isolated Codex registration failed"
+fi
+if [[ "$(<"$codex_call_counts")" != $'3\n7' ]]; then
+    fail "Codex registration did not perform one checked list and add"
+fi
+mapfile -d '' -t codex_args <"$codex_arguments"
+expected_codex_args=(
+    mcp list --json
+    mcp add riffdb --
+    "$bin_root/riffdb-mcp" --config "$mcp_config"
+)
+if [[ "${#codex_args[@]}" -ne "${#expected_codex_args[@]}" ]]; then
+    fail "Codex registration emitted an unexpected argument count"
+fi
+for index in "${!expected_codex_args[@]}"; do
+    if [[ "${codex_args[$index]}" != "${expected_codex_args[$index]}" ]]; then
+        fail "Codex registration argument $index was not exact"
+    fi
+done
+for index in "${!stable_files[@]}"; do
+    current_hash="$(sha256sum "${stable_files[$index]}" | sed 's/ .*//')"
+    if [[ "$current_hash" != "${stable_hashes[$index]}" ]]; then
+        fail "Codex registration changed durable local state: ${stable_files[$index]}"
+    fi
+done
+if grep -F -- "$operator_token" "$register_output" "$register_stderr" >/dev/null \
+   || grep -F -- "$mcp_token" "$register_output" "$register_stderr" >/dev/null; then
+    fail "Codex registration output exposed a bearer credential"
+fi
+
+mcp_input="$work_root/mcp-input.jsonl"
+mcp_output="$work_root/mcp-output.jsonl"
+mcp_stderr="$work_root/mcp.stderr"
+jq -cn '{
+  jsonrpc: "2.0",
+  id: 1,
+  method: "initialize",
+  params: {
+    protocolVersion: "2025-11-25",
+    capabilities: {},
+    clientInfo: {name: "riffdb-source-bootstrap-smoke", version: "1"}
+  }
+}' >"$mcp_input"
+jq -cn '{
+  jsonrpc: "2.0",
+  method: "notifications/initialized"
+}' >>"$mcp_input"
+jq -cn '{
+  jsonrpc: "2.0",
+  id: 2,
+  method: "tools/list"
+}' >>"$mcp_input"
+jq -cn '{
+  jsonrpc: "2.0",
+  id: 3,
+  method: "tools/call",
+  params: {
+    name: "riffdb.server.health",
+    arguments: {}
+  }
+}' >>"$mcp_input"
+jq -cn '{
+  jsonrpc: "2.0",
+  id: 4,
+  method: "resources/list"
+}' >>"$mcp_input"
+jq -cn '{
+  jsonrpc: "2.0",
+  id: 5,
+  method: "resources/templates/list"
+}' >>"$mcp_input"
+timeout 45s "$bin_root/riffdb-mcp" --config "$mcp_config" \
+    <"$mcp_input" >"$mcp_output" 2>"$mcp_stderr"
+if ! jq -s -e '
+  def response($id): first(.[] | select(.id == $id));
+  response(1).result.protocolVersion == "2025-11-25"
+  and (response(2).result.tools | type == "array" and length > 0)
+  and any(response(2).result.tools[];
+          .name == "riffdb.server.health")
+  and any(response(2).result.tools[];
+          .name == "riffdb.cmd.legalspend.createbudget")
+  and any(response(2).result.tools[];
+          .name == "riffdb.cmd.legalspend.allocatebudget")
+  and all(response(2).result.tools[];
+          .name != "riffdb.contract.deploy")
+  and all(response(2).result.tools[];
+          .name != "riffdb.commit.get"
+          and .name != "riffdb.commit.scan"
+          and .name != "riffdb.provenance.trace"
+          and .name != "riffdb.outbox.list_pending")
+  and (response(4).result.resources | type == "array")
+  and all(response(4).result.resources[];
+          (.uri | type) == "string"
+          and (.uri | startswith("riffdb://commit/") | not)
+          and (.uri | startswith("riffdb://provenance/") | not)
+          and (.uri | startswith("riffdb://outbox/") | not))
+  and (response(5).result.resourceTemplates | type == "array")
+  and all(response(5).result.resourceTemplates[];
+          (.uriTemplate | type) == "string"
+          and (.uriTemplate | startswith("riffdb://commit/") | not)
+          and (.uriTemplate | startswith("riffdb://provenance/") | not)
+          and (.uriTemplate | startswith("riffdb://outbox/") | not))
+  and (response(3).result.structuredContent.authenticated as $health
+       | $health.status == "ready"
+       and $health.active_contract_version == "1"
+       and ([$health.components[]
+             | select(.component == "authoritative_storage"
+                      or .component == "catalog"
+                      or .component == "commit_coordinator")]
+            == [
+              {component: "authoritative_storage", status: "healthy"},
+              {component: "catalog", status: "healthy"},
+              {component: "commit_coordinator", status: "healthy"}
+            ]))
+' "$mcp_output" >/dev/null; then
+    fail "installed MCP bridge did not expose the restricted live catalog"
+fi
+if grep -F -- "$operator_token" "$mcp_output" "$mcp_stderr" >/dev/null \
+   || grep -F -- "$mcp_token" "$mcp_output" "$mcp_stderr" >/dev/null; then
+    fail "MCP process output exposed a bearer credential"
+fi
+
+symlink_test_credential="$work_root/symlink-test-mcp.credential"
+symlink_test_id="$work_root/symlink-test-mcp-capability.id"
+symlink_target="$work_root/must-not-create-pending-id"
+mv "$mcp_credential" "$symlink_test_credential"
+mv "$mcp_capability_id" "$symlink_test_id"
+ln -s "$symlink_target" "$state_root/mcp-capability.pending-id"
+symlink_output="$work_root/pending-symlink-bootstrap.stdout"
+symlink_stderr="$work_root/pending-symlink-bootstrap.stderr"
+if RIFFDB_ENDPOINT="$endpoint" cargo riffdb bootstrap --user \
+    >"$symlink_output" 2>"$symlink_stderr"
+then
+    fail "bootstrap accepted a dangling pending capability-ID symlink"
+fi
+if [[ -e "$symlink_target" || ! -L "$state_root/mcp-capability.pending-id" ]]; then
+    fail "pending capability-ID symlink rejection changed its target or link"
+fi
+rm "$state_root/mcp-capability.pending-id"
+mv "$symlink_test_credential" "$mcp_credential"
+mv "$symlink_test_id" "$mcp_capability_id"
+if grep -F -- "$operator_token" "$symlink_output" "$symlink_stderr" >/dev/null \
+   || grep -F -- "$mcp_token" "$symlink_output" "$symlink_stderr" >/dev/null; then
+    fail "pending capability-ID symlink rejection exposed a bearer credential"
+fi
+
+# Simulate a terminal create whose token presentation was lost. Reusing the
+# retained capability ID must revoke that unusable identity and create one
+# fresh ID/token pair without exposing either token.
+lost_mcp_credential="$work_root/lost-mcp.credential"
+mv "$mcp_credential" "$lost_mcp_credential"
+mv "$mcp_capability_id" "$state_root/mcp-capability.pending-id"
+replacement_output="$work_root/replacement-bootstrap.stdout"
+replacement_stderr="$work_root/replacement-bootstrap.stderr"
+if ! RIFFDB_ENDPOINT="$endpoint" cargo riffdb bootstrap --user \
+    >"$replacement_output" 2>"$replacement_stderr"
+then
+    sed 's/^/token-unavailable recovery: /' "$replacement_stderr" >&2
+    fail "token-unavailable MCP recovery failed"
+fi
+require_regular_mode "$mcp_credential" 0600
+require_regular_mode "$mcp_capability_id" 0600
+replacement_mcp_token="$(<"$mcp_credential")"
+replacement_capability_id="$(<"$mcp_capability_id")"
+if [[ ! "$replacement_mcp_token" =~ ^[A-Za-z0-9_-]{43}$ \
+   || "$replacement_mcp_token" == "$mcp_token" \
+   || ! "$replacement_capability_id" =~ ^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$ \
+   || "$replacement_capability_id" == "$capability_id" ]]; then
+    fail "token-unavailable recovery did not publish a fresh canonical identity"
+fi
+if grep -F -- "$operator_token" "$replacement_output" "$replacement_stderr" >/dev/null \
+   || grep -F -- "$mcp_token" "$replacement_output" "$replacement_stderr" >/dev/null \
+   || grep -F -- "$replacement_mcp_token" \
+        "$replacement_output" "$replacement_stderr" >/dev/null; then
+    fail "token-unavailable recovery output exposed a bearer credential"
+fi
+revoked_health="$work_root/revoked-mcp-health.json"
+if "$bin_root/riffdb" --endpoint "$endpoint" --output json \
+    --credential-file "$lost_mcp_credential" server health \
+    >"$revoked_health" 2>/dev/null; then
+    fail "token-unavailable recovery left the lost MCP capability authorized"
+fi
+
+kill -TERM "$server_pid"
+if ! timeout 80s tail --pid="$server_pid" -f /dev/null; then
+    fail "installed riffdbd did not finish its bounded SIGTERM drain"
+fi
+if ! wait "$server_pid"; then
+    fail "installed riffdbd returned failure after SIGTERM"
+fi
+server_pid=
+
+printf '%s\n' 'riffdb-release-source-bootstrap-smoke-v1: verified'

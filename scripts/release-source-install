@@ -1,0 +1,1040 @@
+#!/usr/bin/env bash
+set -euo pipefail
+export LC_ALL=C
+umask 077
+
+usage() {
+    printf '%s\n' \
+        'usage: cargo riffdb install (--user|--system) [--from-binaries DIR] [--no-start]' >&2
+}
+
+fail() {
+    printf 'riffdb source install: %s\n' "$1" >&2
+    exit 1
+}
+
+if [[ $# -lt 2 || "$1" != "install" ]]; then
+    usage
+    exit 2
+fi
+shift
+
+scope=
+binary_source=
+no_start=0
+while (($#)); do
+    case "$1" in
+        --user|--system)
+            [[ -z "$scope" ]] || {
+                usage
+                exit 2
+            }
+            scope="${1#--}"
+            shift
+            ;;
+        --from-binaries)
+            [[ -z "$binary_source" && $# -ge 2 && -n "$2" ]] || {
+                usage
+                exit 2
+            }
+            binary_source="$2"
+            shift 2
+            ;;
+        --no-start)
+            [[ "$no_start" -eq 0 ]] || {
+                usage
+                exit 2
+            }
+            no_start=1
+            shift
+            ;;
+        -h|--help)
+            usage
+            exit 0
+            ;;
+        *)
+            usage
+            exit 2
+            ;;
+    esac
+done
+[[ -n "$scope" ]] || {
+    usage
+    exit 2
+}
+if ((EUID == 0)); then
+    fail 'run this command as the target unprivileged user, without sudo'
+fi
+[[ "$(uname -s)" == Linux ]] || fail 'the POC installer supports Linux only'
+
+script_root="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
+repo_root="$(cd -- "$script_root/.." && pwd -P)"
+
+for tool in cat chmod find id install ln mktemp mv od rm stat tail tr uname; do
+    command -v "$tool" >/dev/null 2>&1 \
+        || fail "required tool is missing: $tool"
+done
+
+temporary_roots=()
+cleanup() {
+    local path
+    for path in "${temporary_roots[@]}"; do
+        rm -rf -- "$path"
+    done
+}
+trap cleanup EXIT INT TERM
+
+new_temporary_root() {
+    local label="$1"
+    local output_name="$2"
+    local root
+    root="$(mktemp -d "${TMPDIR:-/tmp}/riffdb-${label}.XXXXXX")"
+    temporary_roots+=("$root")
+    printf -v "$output_name" '%s' "$root"
+}
+
+require_absolute_path() {
+    local label="$1"
+    local path="$2"
+    [[ "$path" == /* && "$path" != *$'\n'* && "$path" != *$'\r'* ]] \
+        || fail "$label must be an absolute path without line breaks"
+}
+
+canonical_directory() {
+    local label="$1"
+    local path="$2"
+    require_absolute_path "$label" "$path"
+    [[ -d "$path" && ! -L "$path" ]] \
+        || fail "$label is missing, not a directory, or a symbolic link"
+    (cd -- "$path" && pwd -P)
+}
+
+validate_binary_source() {
+    local root="$1"
+    local binary
+    for binary in riffdbd riffdb riffdb-mcp; do
+        [[ -f "$root/$binary" && ! -L "$root/$binary" && -x "$root/$binary" ]] \
+            || fail "binary source must contain a regular executable $binary"
+    done
+}
+
+if [[ -n "$binary_source" ]]; then
+    if [[ "$binary_source" != /* ]]; then
+        binary_source="$PWD/$binary_source"
+    fi
+    binary_source="$(canonical_directory 'binary source' "$binary_source")"
+    validate_binary_source "$binary_source"
+else
+    for tool in cargo git; do
+        command -v "$tool" >/dev/null 2>&1 \
+            || fail "required source-build tool is missing: $tool"
+    done
+    new_temporary_root source-build build_root
+    revision=development-unversioned
+    if [[ -z "$(git -C "$repo_root" status \
+        --porcelain=v1 --untracked-files=normal --ignore-submodules)" ]]; then
+        revision="$(git -C "$repo_root" rev-parse HEAD)"
+    fi
+    cargo_target="$repo_root/target/source-install"
+    install_one_crate() {
+        local package_path="$1"
+        local binary="$2"
+        printf 'Building %s from locked source...\n' "$binary" >&2
+        CARGO_INCREMENTAL=0 \
+        RIFFDB_GIT_REVISION="$revision" \
+            cargo install \
+                --quiet \
+                --locked \
+                --no-track \
+                --path "$repo_root/$package_path" \
+                --bin "$binary" \
+                --root "$build_root" \
+                --target-dir "$cargo_target"
+    }
+    install_one_crate crates/riffdb-server riffdbd
+    install_one_crate crates/riffdb-cli riffdb
+    install_one_crate crates/riffdb-mcp-stdio riffdb-mcp
+    binary_source="$build_root/bin"
+    validate_binary_source "$binary_source"
+fi
+
+current_uid="$(id -u)"
+current_gid="$(id -g)"
+key_install_marker_text=riffdb-digest-key-install-v1
+
+path_type() {
+    local path="$1"
+    if [[ -L "$path" ]]; then
+        printf '%s\n' link
+    elif [[ -e "$path" ]]; then
+        if [[ -d "$path" ]]; then
+            printf '%s\n' directory
+        elif [[ -f "$path" ]]; then
+            printf '%s\n' file
+        else
+            printf '%s\n' other
+        fi
+    else
+        printf '%s\n' absent
+    fi
+}
+
+validate_owned_directory() {
+    local path="$1"
+    local mode="$2"
+    local uid="$3"
+    local gid="$4"
+    local actual_type actual_mode actual_uid actual_gid
+    actual_type="$(path_type "$path")"
+    if [[ "$actual_type" == absent ]]; then
+        install -d -m "$mode" "$path"
+        return
+    fi
+    [[ "$actual_type" == directory ]] \
+        || fail "managed directory is not a real directory: $path"
+    actual_mode="$(stat -c '%a' "$path")"
+    actual_uid="$(stat -c '%u' "$path")"
+    actual_gid="$(stat -c '%g' "$path")"
+    [[ "$actual_mode" == "${mode#0}" \
+       && "$actual_uid" == "$uid" \
+       && "$actual_gid" == "$gid" ]] \
+        || fail "managed directory has unexpected ownership or mode: $path"
+}
+
+validate_owned_file() {
+    local path="$1"
+    local mode="$2"
+    local uid="$3"
+    local gid="$4"
+    [[ "$(path_type "$path")" == file ]] \
+        || fail "managed file is not a regular non-symlink file: $path"
+    [[ "$(stat -c '%a' "$path")" == "${mode#0}" \
+       && "$(stat -c '%u' "$path")" == "$uid" \
+       && "$(stat -c '%g' "$path")" == "$gid" ]] \
+        || fail "managed file has unexpected ownership or mode: $path"
+}
+
+validate_user_runtime_directory() {
+    local path="$1"
+    [[ -n "$path" ]] || fail 'XDG_RUNTIME_DIR must be set for user-unit verification'
+    require_absolute_path XDG_RUNTIME_DIR "$path"
+    [[ "$(path_type "$path")" == directory ]] \
+        || fail 'XDG_RUNTIME_DIR must be a real existing directory'
+    [[ "$(stat -c '%a' "$path")" == 700 \
+       && "$(stat -c '%u' "$path")" == "$current_uid" ]] \
+        || fail 'XDG_RUNTIME_DIR must be mode 0700 and owned by the current user'
+}
+
+publish_user_file() {
+    local source="$1"
+    local destination="$2"
+    local mode="$3"
+    local temporary="${destination}.new.$$"
+    [[ "$(path_type "$destination")" == absent ]] \
+        || fail "refusing to replace managed file: $destination"
+    [[ "$(path_type "$temporary")" == absent ]] \
+        || fail "temporary publication path already exists: $temporary"
+    install -m "$mode" "$source" "$temporary"
+    if ! ln "$temporary" "$destination"; then
+        rm -f -- "$temporary"
+        fail "create-only publication failed: $destination"
+    fi
+    rm -f -- "$temporary"
+}
+
+random_hex_32() {
+    od -An -tx1 -N32 /dev/urandom | tr -d ' \n'
+}
+
+write_key_source() {
+    local path="$1"
+    local header="$2"
+    local material="$3"
+    printf '%s\n1:%s\n' "$header" "$material" >"$path"
+    chmod 0600 "$path"
+}
+
+read_managed_file() {
+    local path="$1"
+    if [[ "$scope" == user ]]; then
+        command cat -- "$path"
+    else
+        sudo cat -- "$path"
+    fi
+}
+
+validate_key_install_marker() {
+    local path="$1"
+    local size final_byte value
+    if [[ "$scope" == user ]]; then
+        size="$(stat -c '%s' "$path")"
+        final_byte="$(tail -c 1 -- "$path" | od -An -tu1 | tr -d ' ')"
+    else
+        size="$(sudo stat -c '%s' "$path")"
+        final_byte="$(sudo tail -c 1 -- "$path" | od -An -tu1 | tr -d ' ')"
+    fi
+    value="$(read_managed_file "$path")"
+    [[ "$size" == "$((${#key_install_marker_text} + 1))" \
+       && "$final_byte" == 10 \
+       && "$value" == "$key_install_marker_text" ]] \
+        || fail "digest-key installation marker is invalid: $path"
+}
+
+validate_key_document() {
+    local path="$1"
+    local expected_header="$2"
+    local -n output_materials="$3"
+    local size final_byte line id material
+    local -a lines=()
+    local -A seen_ids=()
+    local -A seen_materials=()
+
+    if [[ "$scope" == user ]]; then
+        size="$(stat -c '%s' "$path")"
+        final_byte="$(tail -c 1 -- "$path" | od -An -tu1 | tr -d ' ')"
+    else
+        size="$(sudo stat -c '%s' "$path")"
+        final_byte="$(sudo tail -c 1 -- "$path" | od -An -tu1 | tr -d ' ')"
+    fi
+    ((size > 0 && size <= 1024)) \
+        || fail "digest-key document has an invalid size: $path"
+    [[ "$final_byte" == 10 ]] \
+        || fail "digest-key document must end in LF: $path"
+    readarray -t lines < <(read_managed_file "$path")
+    [[ "${#lines[@]}" -ge 2 && "${#lines[@]}" -le 9 ]] \
+        || fail "digest-key document must contain one through eight entries: $path"
+    [[ "${lines[0]}" == "$expected_header" ]] \
+        || fail "digest-key document has the wrong header: $path"
+    for line in "${lines[@]:1}"; do
+        [[ "$line" =~ ^([1-9][0-9]*):([0-9a-f]{64})$ ]] \
+            || fail "digest-key document contains a malformed entry: $path"
+        id="${BASH_REMATCH[1]}"
+        material="${BASH_REMATCH[2]}"
+        [[ -z "${seen_ids[$id]-}" && -z "${seen_materials[$material]-}" ]] \
+            || fail "digest-key document contains a duplicate ID or key: $path"
+        seen_ids["$id"]=1
+        seen_materials["$material"]=1
+        output_materials+=("$material")
+    done
+}
+
+validate_disjoint_key_material() {
+    local capability_path="$1"
+    local idempotency_path="$2"
+    local material other
+    local -a capability_materials=()
+    local -a idempotency_materials=()
+    validate_key_document \
+        "$capability_path" \
+        riffdb-capability-digest-keys-v1 \
+        capability_materials
+    validate_key_document \
+        "$idempotency_path" \
+        riffdb-idempotency-digest-keys-v1 \
+        idempotency_materials
+    for material in "${capability_materials[@]}"; do
+        for other in "${idempotency_materials[@]}"; do
+            [[ "$material" != "$other" ]] \
+                || fail 'digest-key material is reused across typed namespaces'
+        done
+    done
+}
+
+generate_material_disjoint_from_document() {
+    local existing_path="$1"
+    local existing_header="$2"
+    local output_name="$3"
+    local candidate existing collision
+    local -a existing_materials=()
+
+    validate_key_document "$existing_path" "$existing_header" existing_materials
+    while :; do
+        candidate="$(random_hex_32)"
+        collision=0
+        for existing in "${existing_materials[@]}"; do
+            if [[ "$candidate" == "$existing" ]]; then
+                collision=1
+                break
+            fi
+        done
+        if ((collision == 0)); then
+            printf -v "$output_name" '%s' "$candidate"
+            return
+        fi
+    done
+}
+
+toml_quote() {
+    local value="$1"
+    value="${value//\\/\\\\}"
+    value="${value//\"/\\\"}"
+    value="${value//$'\t'/\\t}"
+    printf '"%s"' "$value"
+}
+
+render_user_config() {
+    local destination="$1"
+    local config_root="$2"
+    local data_root="$3"
+    local database="$data_root/data/riffdb.redb"
+    local backups="$data_root/backups"
+    local capability_keys="$config_root/capability.keys"
+    local idempotency_keys="$config_root/idempotency.keys"
+    {
+        printf '%s\n' '[server]'
+        printf 'database = %s\n' "$(toml_quote "$database")"
+        printf '%s\n' 'grpc_listen = "127.0.0.1:7443"'
+        printf '%s\n' 'environment = "local"'
+        printf '%s\n' 'audience = "riffdb-grpc-loopback"'
+        printf 'capability_keys = %s\n' "$(toml_quote "$capability_keys")"
+        printf 'idempotency_keys = %s\n' "$(toml_quote "$idempotency_keys")"
+        printf '\n%s\n' '[maintenance]'
+        printf 'backup_root = %s\n' "$(toml_quote "$backups")"
+    } >"$destination"
+    chmod 0600 "$destination"
+}
+
+render_user_unit() {
+    local destination="$1"
+    {
+        printf '%s\n' \
+            '[Unit]' \
+            'Description=RiffDB standalone database (user)' \
+            'After=default.target' \
+            'StartLimitIntervalSec=30s' \
+            'StartLimitBurst=3' \
+            '' \
+            '[Service]' \
+            'Type=exec' \
+            'ExecStart=%h/.local/bin/riffdbd --config %E/riffdb/riffdbd.toml' \
+            'WorkingDirectory=%S/riffdb' \
+            'StateDirectory=riffdb' \
+            'StateDirectoryMode=0700' \
+            'UMask=0077' \
+            '' \
+            'StandardInput=null' \
+            'StandardOutput=journal' \
+            'StandardError=journal' \
+            'KillSignal=SIGTERM' \
+            'KillMode=mixed' \
+            'TimeoutStopSec=80s' \
+            'SendSIGKILL=yes' \
+            'Restart=on-failure' \
+            'RestartSec=2s' \
+            'OOMPolicy=stop' \
+            'LimitNOFILE=65536' \
+            '' \
+            'NoNewPrivileges=yes' \
+            'PrivateDevices=yes' \
+            'PrivateTmp=yes' \
+            'ProtectClock=yes' \
+            'ProtectControlGroups=yes' \
+            'ProtectHome=read-only' \
+            'ProtectHostname=yes' \
+            'ProtectKernelLogs=yes' \
+            'ProtectKernelModules=yes' \
+            'ProtectKernelTunables=yes' \
+            'ProtectSystem=strict' \
+            'ReadOnlyPaths=%E/riffdb' \
+            'ReadWritePaths=%D/riffdb %S/riffdb' \
+            'LockPersonality=yes' \
+            'MemoryDenyWriteExecute=yes' \
+            'RemoveIPC=yes' \
+            'RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6' \
+            'RestrictNamespaces=yes' \
+            'RestrictRealtime=yes' \
+            'SystemCallArchitectures=native' \
+            'SystemCallFilter=@system-service' \
+            'SystemCallErrorNumber=EPERM' \
+            '' \
+            '[Install]' \
+            'WantedBy=default.target'
+    } >"$destination"
+    chmod 0644 "$destination"
+}
+
+preflight_binary_destinations() {
+    local destination_root="$1"
+    local expected_uid="$2"
+    local expected_gid="$3"
+    local binary type
+    for binary in riffdbd riffdb riffdb-mcp; do
+        type="$(path_type "$destination_root/$binary")"
+        case "$type" in
+            absent) ;;
+            file)
+                validate_owned_file \
+                    "$destination_root/$binary" 0755 "$expected_uid" "$expected_gid"
+                ;;
+            *)
+                fail "installed binary path is unsafe: $destination_root/$binary"
+                ;;
+        esac
+    done
+}
+
+publish_user_binaries() {
+    local destination_root="$1"
+    local staging
+    local binary
+    validate_binary_source "$binary_source"
+    staging="$(mktemp -d "$destination_root/.riffdb-install.XXXXXX")"
+    temporary_roots+=("$staging")
+    for binary in riffdbd riffdb riffdb-mcp; do
+        install -m 0755 "$binary_source/$binary" "$staging/$binary"
+    done
+    for binary in riffdbd riffdb riffdb-mcp; do
+        mv -f -- "$staging/$binary" "$destination_root/$binary"
+    done
+}
+
+install_user() {
+    local home config_home data_home state_home runtime_dir
+    local config_root data_root state_root unit_root unit_path bin_root
+    local capability_path idempotency_path key_marker_path database_path config_path
+    local config_type capability_type idempotency_type marker_type database_type unit_type
+    local durable_inventory
+    local material_root capability_source idempotency_source marker_source
+    local config_source unit_source
+    local capability_material idempotency_material
+
+    home="${HOME:?HOME must be set}"
+    require_absolute_path HOME "$home"
+    config_home="${XDG_CONFIG_HOME:-$home/.config}"
+    data_home="${XDG_DATA_HOME:-$home/.local/share}"
+    state_home="${XDG_STATE_HOME:-$home/.local/state}"
+    require_absolute_path XDG_CONFIG_HOME "$config_home"
+    require_absolute_path XDG_DATA_HOME "$data_home"
+    require_absolute_path XDG_STATE_HOME "$state_home"
+    runtime_dir="${XDG_RUNTIME_DIR:-}"
+    validate_user_runtime_directory "$runtime_dir"
+
+    bin_root="$home/.local/bin"
+    config_root="$config_home/riffdb"
+    data_root="$data_home/riffdb"
+    state_root="$state_home/riffdb"
+    unit_root="$config_home/systemd/user"
+    unit_path="$unit_root/riffdbd.service"
+    capability_path="$config_root/capability.keys"
+    idempotency_path="$config_root/idempotency.keys"
+    key_marker_path="$config_root/.digest-key-install-v1"
+    database_path="$data_root/data/riffdb.redb"
+    config_path="$config_root/riffdbd.toml"
+
+    validate_owned_directory "$bin_root" 0755 "$current_uid" "$current_gid"
+    validate_owned_directory "$config_root" 0700 "$current_uid" "$current_gid"
+    validate_owned_directory "$data_root" 0700 "$current_uid" "$current_gid"
+    validate_owned_directory "$data_root/data" 0700 "$current_uid" "$current_gid"
+    validate_owned_directory "$data_root/backups" 0700 "$current_uid" "$current_gid"
+    validate_owned_directory "$state_root" 0700 "$current_uid" "$current_gid"
+    validate_owned_directory "$config_home/systemd" 0755 "$current_uid" "$current_gid"
+    validate_owned_directory "$unit_root" 0755 "$current_uid" "$current_gid"
+
+    preflight_binary_destinations "$bin_root" "$current_uid" "$current_gid"
+
+    capability_type="$(path_type "$capability_path")"
+    idempotency_type="$(path_type "$idempotency_path")"
+    marker_type="$(path_type "$key_marker_path")"
+    database_type="$(path_type "$database_path")"
+    config_type="$(path_type "$config_path")"
+    unit_type="$(path_type "$unit_path")"
+    if [[ "$marker_type" == file ]]; then
+        validate_owned_file \
+            "$key_marker_path" 0600 "$current_uid" "$current_gid"
+        validate_key_install_marker "$key_marker_path"
+    elif [[ "$marker_type" != absent ]]; then
+        fail "digest-key installation marker is unsafe: $key_marker_path"
+    fi
+    if [[ "$capability_type" != file || "$idempotency_type" != file ]]; then
+        [[ "$config_type" == absent ]] \
+            || fail 'refusing to recover digest-key material after server configuration publication'
+        [[ "$unit_type" == absent ]] \
+            || fail 'refusing to recover digest-key material after service-unit publication'
+        [[ "$database_type" == absent ]] \
+            || fail 'refusing to generate digest-key material for an existing database'
+        durable_inventory="$(
+            find "$data_root/data" "$data_root/backups" \
+                -mindepth 1 -printf x -quit
+        )"
+        [[ -z "$durable_inventory" ]] \
+            || fail 'refusing to generate digest-key material beside existing data or backups'
+        durable_inventory="$(
+            find "$state_root" -mindepth 1 -printf x -quit
+        )"
+        [[ -z "$durable_inventory" ]] \
+            || fail 'refusing to generate digest-key material beside existing service or operator state'
+        if [[ "$marker_type" == absent ]]; then
+            if [[ "$capability_type" != absent || "$idempotency_type" != absent ]]; then
+                fail 'partial digest-key state has no active installation marker'
+            fi
+            new_temporary_root user-material material_root
+            marker_source="$material_root/digest-key-install-v1"
+            printf '%s\n' "$key_install_marker_text" >"$marker_source"
+            chmod 0600 "$marker_source"
+            publish_user_file "$marker_source" "$key_marker_path" 0600
+            marker_type=file
+        fi
+    fi
+    if [[ "$capability_type" == file && "$idempotency_type" == file ]]; then
+        validate_owned_file "$capability_path" 0600 "$current_uid" "$current_gid"
+        validate_owned_file "$idempotency_path" 0600 "$current_uid" "$current_gid"
+        validate_disjoint_key_material "$capability_path" "$idempotency_path"
+    elif [[ "$capability_type" == file && "$idempotency_type" == absent ]]; then
+        validate_owned_file "$capability_path" 0600 "$current_uid" "$current_gid"
+        generate_material_disjoint_from_document \
+            "$capability_path" \
+            riffdb-capability-digest-keys-v1 \
+            idempotency_material
+        new_temporary_root user-material material_root
+        idempotency_source="$material_root/idempotency.keys"
+        write_key_source \
+            "$idempotency_source" \
+            riffdb-idempotency-digest-keys-v1 \
+            "$idempotency_material"
+        publish_user_file "$idempotency_source" "$idempotency_path" 0600
+        validate_disjoint_key_material "$capability_path" "$idempotency_path"
+    elif [[ "$capability_type" == absent && "$idempotency_type" == file ]]; then
+        validate_owned_file "$idempotency_path" 0600 "$current_uid" "$current_gid"
+        generate_material_disjoint_from_document \
+            "$idempotency_path" \
+            riffdb-idempotency-digest-keys-v1 \
+            capability_material
+        new_temporary_root user-material material_root
+        capability_source="$material_root/capability.keys"
+        write_key_source \
+            "$capability_source" \
+            riffdb-capability-digest-keys-v1 \
+            "$capability_material"
+        publish_user_file "$capability_source" "$capability_path" 0600
+        validate_disjoint_key_material "$capability_path" "$idempotency_path"
+    elif [[ "$capability_type" != absent || "$idempotency_type" != absent ]]; then
+        fail 'digest-key state is partial or unsafe; refusing to generate replacements'
+    else
+        new_temporary_root user-material material_root
+        capability_source="$material_root/capability.keys"
+        idempotency_source="$material_root/idempotency.keys"
+        capability_material="$(random_hex_32)"
+        idempotency_material="$(random_hex_32)"
+        while [[ "$idempotency_material" == "$capability_material" ]]; do
+            idempotency_material="$(random_hex_32)"
+        done
+        write_key_source \
+            "$capability_source" \
+            riffdb-capability-digest-keys-v1 \
+            "$capability_material"
+        write_key_source \
+            "$idempotency_source" \
+            riffdb-idempotency-digest-keys-v1 \
+            "$idempotency_material"
+        publish_user_file "$capability_source" "$capability_path" 0600
+        publish_user_file "$idempotency_source" "$idempotency_path" 0600
+        validate_disjoint_key_material "$capability_path" "$idempotency_path"
+    fi
+    if [[ "$marker_type" == file ]]; then
+        rm -f -- "$key_marker_path"
+    fi
+
+    if [[ "$config_type" == file ]]; then
+        validate_owned_file "$config_path" 0600 "$current_uid" "$current_gid"
+    elif [[ "$config_type" == absent ]]; then
+        new_temporary_root user-config material_root
+        config_source="$material_root/riffdbd.toml"
+        render_user_config "$config_source" "$config_root" "$data_root"
+        publish_user_file "$config_source" "$config_path" 0600
+    else
+        fail "server configuration path is unsafe: $config_path"
+    fi
+
+    if [[ "$unit_type" == file ]]; then
+        validate_owned_file "$unit_path" 0644 "$current_uid" "$current_gid"
+    elif [[ "$unit_type" == absent ]]; then
+        new_temporary_root user-unit material_root
+        unit_source="$material_root/riffdbd.service"
+        render_user_unit "$unit_source"
+        publish_user_file "$unit_source" "$unit_path" 0644
+    else
+        fail "systemd user unit path is unsafe: $unit_path"
+    fi
+
+    publish_user_binaries "$bin_root"
+
+    command -v systemd-analyze >/dev/null 2>&1 \
+        || fail 'required tool is missing: systemd-analyze'
+    systemd-analyze --user verify "$unit_path"
+    if ((no_start)); then
+        printf '%s\n' \
+            'RiffDB user files installed; service reload/start was skipped.'
+    else
+        command -v systemctl >/dev/null 2>&1 \
+            || fail 'required tool is missing: systemctl'
+        systemctl --user daemon-reload
+        systemctl --user enable riffdbd.service
+        if systemctl --user --quiet is-active riffdbd.service; then
+            systemctl --user restart riffdbd.service
+        else
+            systemctl --user start riffdbd.service
+        fi
+        printf '%s\n' \
+            'RiffDB user service installed and started.' \
+            'Inspect it with: systemctl --user status riffdbd.service'
+    fi
+}
+
+system_path_type() {
+    local path="$1"
+    if sudo test -L "$path"; then
+        printf '%s\n' link
+    elif sudo test -e "$path"; then
+        if sudo test -d "$path"; then
+            printf '%s\n' directory
+        elif sudo test -f "$path"; then
+            printf '%s\n' file
+        else
+            printf '%s\n' other
+        fi
+    else
+        printf '%s\n' absent
+    fi
+}
+
+validate_system_directory() {
+    local path="$1"
+    local mode="$2"
+    local uid="$3"
+    local gid="$4"
+    [[ "$(system_path_type "$path")" == directory ]] \
+        || fail "managed system directory is not a real directory: $path"
+    [[ "$(sudo stat -c '%a' "$path")" == "${mode#0}" \
+       && "$(sudo stat -c '%u' "$path")" == "$uid" \
+       && "$(sudo stat -c '%g' "$path")" == "$gid" ]] \
+        || fail "managed system directory has unexpected ownership or mode: $path"
+}
+
+validate_system_file() {
+    local path="$1"
+    local mode="$2"
+    local uid="$3"
+    local gid="$4"
+    [[ "$(system_path_type "$path")" == file ]] \
+        || fail "managed system file is not a regular non-symlink file: $path"
+    [[ "$(sudo stat -c '%a' "$path")" == "${mode#0}" \
+       && "$(sudo stat -c '%u' "$path")" == "$uid" \
+       && "$(sudo stat -c '%g' "$path")" == "$gid" ]] \
+        || fail "managed system file has unexpected ownership or mode: $path"
+}
+
+ensure_system_parent_directory() {
+    local path="$1"
+    local type
+    type="$(system_path_type "$path")"
+    if [[ "$type" == absent ]]; then
+        sudo install -d -o root -g root -m 0755 "$path"
+        return
+    fi
+    [[ "$type" == directory ]] \
+        || fail "system installation parent is not a real directory: $path"
+    [[ "$(sudo stat -c '%a' "$path")" == 755 \
+       && "$(sudo stat -c '%u' "$path")" == 0 \
+       && "$(sudo stat -c '%g' "$path")" == 0 ]] \
+        || fail "system installation parent has unexpected ownership or mode: $path"
+}
+
+publish_system_file() {
+    local source="$1"
+    local destination="$2"
+    local mode="$3"
+    local owner="$4"
+    local group="$5"
+    local temporary="${destination}.new.$$"
+    [[ -f "$source" && ! -L "$source" && -r "$source" ]] \
+        || fail "system publication source is not a readable regular file: $source"
+    [[ "$(system_path_type "$destination")" == absent ]] \
+        || fail "refusing to replace managed system file: $destination"
+    [[ "$(system_path_type "$temporary")" == absent ]] \
+        || fail "temporary system publication path already exists: $temporary"
+    sudo install -o "$owner" -g "$group" -m "$mode" /dev/null "$temporary"
+    if ! command cat -- "$source" | sudo tee -- "$temporary" >/dev/null; then
+        sudo rm -f -- "$temporary"
+        fail "unable to stream system publication source: $source"
+    fi
+    if ! sudo ln "$temporary" "$destination"; then
+        sudo rm -f -- "$temporary"
+        fail "create-only system publication failed: $destination"
+    fi
+    sudo rm -f -- "$temporary"
+}
+
+render_system_unit() {
+    local destination="$1"
+    sed \
+        -e '\|^Documentation=file:/usr/share/doc/riffdb/docs/installation.md$|d' \
+        -e 's|ExecStart=/usr/bin/riffdbd |ExecStart=/usr/local/bin/riffdbd |' \
+        "$repo_root/release/systemd/riffdbd.service" \
+        >"$destination"
+    chmod 0644 "$destination"
+}
+
+install_system_support_file() {
+    local source="$1"
+    local destination="$2"
+    local type
+    type="$(system_path_type "$destination")"
+    if [[ "$type" == file ]]; then
+        validate_system_file "$destination" 0644 0 0
+    elif [[ "$type" == absent ]]; then
+        publish_system_file "$source" "$destination" 0644 root root
+    else
+        fail "system support-file path is unsafe: $destination"
+    fi
+}
+
+preflight_system_binary_destinations() {
+    local binary type
+    for binary in riffdbd riffdb riffdb-mcp; do
+        type="$(system_path_type "/usr/local/bin/$binary")"
+        case "$type" in
+            absent) ;;
+            file)
+                validate_system_file "/usr/local/bin/$binary" 0755 0 0
+                ;;
+            *)
+                fail "installed system binary path is unsafe: /usr/local/bin/$binary"
+                ;;
+        esac
+    done
+}
+
+publish_system_binaries() {
+    local staging binary failed_binary
+    staging="/usr/local/bin/.riffdb-install.$$"
+    validate_binary_source "$binary_source"
+    [[ "$(system_path_type "$staging")" == absent ]] \
+        || fail "system binary staging path already exists: $staging"
+    sudo install -d -o root -g root -m 0700 "$staging"
+    for binary in riffdbd riffdb riffdb-mcp; do
+        sudo install -o root -g root -m 0755 /dev/null "$staging/$binary"
+        if ! command cat -- "$binary_source/$binary" \
+            | sudo tee -- "$staging/$binary" >/dev/null
+        then
+            failed_binary="$binary"
+            for binary in riffdbd riffdb riffdb-mcp; do
+                sudo rm -f -- "$staging/$binary"
+            done
+            sudo rmdir "$staging"
+            fail "unable to stream system binary: $failed_binary"
+        fi
+    done
+    for binary in riffdbd riffdb riffdb-mcp; do
+        sudo mv -f -- "$staging/$binary" "/usr/local/bin/$binary"
+    done
+    sudo rmdir "$staging"
+}
+
+install_system() {
+    local sysusers_path tmpfiles_path unit_path
+    local capability_path idempotency_path key_marker_path database_path config_path
+    local riffdb_uid riffdb_gid
+    local capability_type idempotency_type marker_type database_type config_type unit_type
+    local durable_inventory
+    local material_root capability_source idempotency_source marker_source unit_source
+    local capability_material idempotency_material
+
+    for tool in sed sudo systemd-analyze systemd-sysusers systemd-tmpfiles tee; do
+        command -v "$tool" >/dev/null 2>&1 \
+            || fail "required system-install tool is missing: $tool"
+    done
+    if ((!no_start)); then
+        command -v systemctl >/dev/null 2>&1 \
+            || fail 'required system-install tool is missing: systemctl'
+    fi
+    sudo -v
+
+    ensure_system_parent_directory /usr/local/bin
+    ensure_system_parent_directory /usr/local/lib/sysusers.d
+    ensure_system_parent_directory /usr/local/lib/tmpfiles.d
+    ensure_system_parent_directory /etc/systemd/system
+
+    sysusers_path=/usr/local/lib/sysusers.d/riffdb.conf
+    tmpfiles_path=/usr/local/lib/tmpfiles.d/riffdb.conf
+    unit_path=/etc/systemd/system/riffdbd.service
+    capability_path=/etc/riffdb/capability.keys
+    idempotency_path=/etc/riffdb/idempotency.keys
+    key_marker_path=/etc/riffdb/.digest-key-install-v1
+    database_path=/var/lib/riffdb/data/riffdb.redb
+    config_path=/etc/riffdb/riffdbd.toml
+
+    install_system_support_file \
+        "$repo_root/release/sysusers.d/riffdb.conf" \
+        "$sysusers_path"
+    install_system_support_file \
+        "$repo_root/release/tmpfiles.d/riffdb.conf" \
+        "$tmpfiles_path"
+    sudo systemd-sysusers "$sysusers_path"
+    sudo systemd-tmpfiles --create "$tmpfiles_path"
+
+    riffdb_uid="$(id -u riffdb)"
+    riffdb_gid="$(id -g riffdb)"
+    validate_system_directory /var/lib/riffdb 0700 "$riffdb_uid" "$riffdb_gid"
+    validate_system_directory /var/lib/riffdb/data 0700 "$riffdb_uid" "$riffdb_gid"
+    validate_system_directory /var/lib/riffdb/backups 0700 "$riffdb_uid" "$riffdb_gid"
+    validate_system_directory /etc/riffdb 0750 0 "$riffdb_gid"
+    preflight_system_binary_destinations
+
+    capability_type="$(system_path_type "$capability_path")"
+    idempotency_type="$(system_path_type "$idempotency_path")"
+    marker_type="$(system_path_type "$key_marker_path")"
+    database_type="$(system_path_type "$database_path")"
+    config_type="$(system_path_type "$config_path")"
+    unit_type="$(system_path_type "$unit_path")"
+    if [[ "$marker_type" == file ]]; then
+        validate_system_file "$key_marker_path" 0600 0 "$riffdb_gid"
+        validate_key_install_marker "$key_marker_path"
+    elif [[ "$marker_type" != absent ]]; then
+        fail "system digest-key installation marker is unsafe: $key_marker_path"
+    fi
+    if [[ "$capability_type" != file || "$idempotency_type" != file ]]; then
+        [[ "$config_type" == absent ]] \
+            || fail 'refusing to recover system digest-key material after server configuration publication'
+        [[ "$unit_type" == absent ]] \
+            || fail 'refusing to recover system digest-key material after service-unit publication'
+        [[ "$database_type" == absent ]] \
+            || fail 'refusing to generate system digest-key material for an existing database'
+        durable_inventory="$(
+            sudo find /var/lib/riffdb/data /var/lib/riffdb/backups \
+                -mindepth 1 -printf x -quit
+        )"
+        [[ -z "$durable_inventory" ]] \
+            || fail 'refusing to generate system digest-key material beside existing data or backups'
+        durable_inventory="$(
+            sudo find /var/lib/riffdb \
+                -mindepth 1 -maxdepth 1 \
+                ! -name data ! -name backups \
+                -printf x -quit
+        )"
+        [[ -z "$durable_inventory" ]] \
+            || fail 'refusing to generate system digest-key material beside existing service state'
+        if [[ "$marker_type" == absent ]]; then
+            if [[ "$capability_type" != absent || "$idempotency_type" != absent ]]; then
+                fail 'partial system digest-key state has no active installation marker'
+            fi
+            new_temporary_root system-material material_root
+            marker_source="$material_root/digest-key-install-v1"
+            printf '%s\n' "$key_install_marker_text" >"$marker_source"
+            chmod 0600 "$marker_source"
+            publish_system_file \
+                "$marker_source" "$key_marker_path" 0600 root riffdb
+            marker_type=file
+        fi
+    fi
+    if [[ "$capability_type" == file && "$idempotency_type" == file ]]; then
+        validate_system_file \
+            "$capability_path" 0600 "$riffdb_uid" "$riffdb_gid"
+        validate_system_file \
+            "$idempotency_path" 0600 "$riffdb_uid" "$riffdb_gid"
+        validate_disjoint_key_material "$capability_path" "$idempotency_path"
+    elif [[ "$capability_type" == file && "$idempotency_type" == absent ]]; then
+        validate_system_file \
+            "$capability_path" 0600 "$riffdb_uid" "$riffdb_gid"
+        generate_material_disjoint_from_document \
+            "$capability_path" \
+            riffdb-capability-digest-keys-v1 \
+            idempotency_material
+        new_temporary_root system-material material_root
+        idempotency_source="$material_root/idempotency.keys"
+        write_key_source \
+            "$idempotency_source" \
+            riffdb-idempotency-digest-keys-v1 \
+            "$idempotency_material"
+        publish_system_file \
+            "$idempotency_source" "$idempotency_path" 0600 riffdb riffdb
+        validate_disjoint_key_material "$capability_path" "$idempotency_path"
+    elif [[ "$capability_type" == absent && "$idempotency_type" == file ]]; then
+        validate_system_file \
+            "$idempotency_path" 0600 "$riffdb_uid" "$riffdb_gid"
+        generate_material_disjoint_from_document \
+            "$idempotency_path" \
+            riffdb-idempotency-digest-keys-v1 \
+            capability_material
+        new_temporary_root system-material material_root
+        capability_source="$material_root/capability.keys"
+        write_key_source \
+            "$capability_source" \
+            riffdb-capability-digest-keys-v1 \
+            "$capability_material"
+        publish_system_file \
+            "$capability_source" "$capability_path" 0600 riffdb riffdb
+        validate_disjoint_key_material "$capability_path" "$idempotency_path"
+    elif [[ "$capability_type" != absent || "$idempotency_type" != absent ]]; then
+        fail 'system digest-key state is partial or unsafe; refusing to generate replacements'
+    else
+        new_temporary_root system-material material_root
+        capability_source="$material_root/capability.keys"
+        idempotency_source="$material_root/idempotency.keys"
+        capability_material="$(random_hex_32)"
+        idempotency_material="$(random_hex_32)"
+        while [[ "$idempotency_material" == "$capability_material" ]]; do
+            idempotency_material="$(random_hex_32)"
+        done
+        write_key_source \
+            "$capability_source" \
+            riffdb-capability-digest-keys-v1 \
+            "$capability_material"
+        write_key_source \
+            "$idempotency_source" \
+            riffdb-idempotency-digest-keys-v1 \
+            "$idempotency_material"
+        publish_system_file \
+            "$capability_source" "$capability_path" 0600 riffdb riffdb
+        publish_system_file \
+            "$idempotency_source" "$idempotency_path" 0600 riffdb riffdb
+        validate_disjoint_key_material "$capability_path" "$idempotency_path"
+    fi
+    if [[ "$marker_type" == file ]]; then
+        sudo rm -f -- "$key_marker_path"
+    fi
+
+    if [[ "$config_type" == file ]]; then
+        validate_system_file "$config_path" 0640 0 "$riffdb_gid"
+    elif [[ "$config_type" == absent ]]; then
+        publish_system_file \
+            "$repo_root/release/config/riffdbd.toml.example" \
+            "$config_path" 0640 root riffdb
+    else
+        fail "system server configuration path is unsafe: $config_path"
+    fi
+
+    if [[ "$unit_type" == file ]]; then
+        validate_system_file "$unit_path" 0644 0 0
+    elif [[ "$unit_type" == absent ]]; then
+        new_temporary_root system-unit material_root
+        unit_source="$material_root/riffdbd.service"
+        render_system_unit "$unit_source"
+        publish_system_file "$unit_source" "$unit_path" 0644 root root
+    else
+        fail "systemd system unit path is unsafe: $unit_path"
+    fi
+
+    publish_system_binaries
+    sudo systemd-analyze verify "$unit_path"
+    if ((no_start)); then
+        printf '%s\n' \
+            'RiffDB system files installed; service reload/start was skipped.'
+    else
+        sudo systemctl daemon-reload
+        sudo systemctl enable riffdbd.service
+        if sudo systemctl --quiet is-active riffdbd.service; then
+            sudo systemctl restart riffdbd.service
+        else
+            sudo systemctl start riffdbd.service
+        fi
+        printf '%s\n' \
+            'RiffDB system service installed and started.' \
+            'Inspect it with: sudo systemctl status riffdbd.service'
+    fi
+}
+
+case "$scope" in
+    user) install_user ;;
+    system) install_system ;;
+    *) fail 'internal scope error' ;;
+esac

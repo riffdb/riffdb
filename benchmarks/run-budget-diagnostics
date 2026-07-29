@@ -1,0 +1,238 @@
+#!/usr/bin/env bash
+# Layered RiffDB-vs-PostgreSQL diagnostics for optimization triage.
+# Not the frozen WP-200 publication suite (use benchmarks/run-budget-comparison).
+set -euo pipefail
+export LC_ALL=C
+export TZ=UTC
+
+usage() {
+    printf '%s\n' \
+        'usage: benchmarks/run-budget-diagnostics [--smoke|--full] [--samples N] [--warmup N] [--commands N] [--skip-public] [--skip-postgres]' >&2
+    exit 2
+}
+
+repo_root="$(git rev-parse --show-toplevel)"
+cd "$repo_root"
+
+mode=smoke
+samples=
+warmup=
+commands=
+skip_public=0
+skip_postgres=0
+while (($#)); do
+    case "$1" in
+        --smoke)
+            mode=smoke
+            shift
+            ;;
+        --full)
+            mode=full
+            shift
+            ;;
+        --samples)
+            (($# >= 2)) || usage
+            samples="$2"
+            shift 2
+            ;;
+        --warmup)
+            (($# >= 2)) || usage
+            warmup="$2"
+            shift 2
+            ;;
+        --commands)
+            (($# >= 2)) || usage
+            commands="$2"
+            shift 2
+            ;;
+        --skip-public)
+            skip_public=1
+            shift
+            ;;
+        --skip-postgres)
+            skip_postgres=1
+            shift
+            ;;
+        *)
+            usage
+            ;;
+    esac
+done
+
+canonical_count() {
+    [[ "$1" =~ ^(0|[1-9][0-9]*)$ ]]
+}
+
+if [[ "$mode" == full ]]; then
+    samples="${samples:-12}"
+    warmup="${warmup:-2}"
+    commands="${commands:-64}"
+else
+    samples="${samples:-1}"
+    warmup="${warmup:-0}"
+    commands="${commands:-8}"
+fi
+canonical_count "$samples" || usage
+canonical_count "$warmup" || usage
+canonical_count "$commands" || usage
+
+for tool in cargo docker jq rustc; do
+    command -v "$tool" >/dev/null 2>&1 || {
+        printf 'required tool is missing: %s\n' "$tool" >&2
+        exit 1
+    }
+done
+
+target_root=target/budget-diagnostics
+mkdir -p "$target_root"
+layered_report="$repo_root/$target_root/layered-report-v1.json"
+public_report="$repo_root/$target_root/public-path-report-v1.json"
+summary_report="$repo_root/$target_root/summary-v1.txt"
+postgres_container="riffdb-budget-diagnostics-$$"
+postgres_started=0
+cleanup() {
+    if ((postgres_started)); then
+        docker rm -f "$postgres_container" >/dev/null 2>&1 || true
+    fi
+}
+trap cleanup EXIT
+
+if ((skip_postgres == 0)); then
+    if [[ -z "${RIFFDB_BUDGET_POSTGRES_URL:-}" ]]; then
+        postgres_image='postgres:18.4-bookworm@sha256:d9c83446333daec3f0588cc709adb80c26090b7f9f0f7ec8d43c243385d79818'
+        docker pull "$postgres_image" >/dev/null
+        docker run -d --rm --name "$postgres_container" \
+            -e POSTGRES_USER=riffdb \
+            -e POSTGRES_PASSWORD=riffdb \
+            -e POSTGRES_DB=riffdb_budget \
+            -p 127.0.0.1::5432 \
+            "$postgres_image" >/dev/null
+        postgres_started=1
+        # Map the ephemeral host port.
+        for _ in $(seq 1 60); do
+            host_port="$(docker port "$postgres_container" 5432/tcp 2>/dev/null | head -n1 | awk -F: '{print $NF}')"
+            if [[ -n "$host_port" ]] && docker exec "$postgres_container" pg_isready -U riffdb -d riffdb_budget >/dev/null 2>&1; then
+                export RIFFDB_BUDGET_POSTGRES_URL="postgres://riffdb:riffdb@127.0.0.1:${host_port}/riffdb_budget"
+                break
+            fi
+            sleep 0.25
+        done
+        [[ -n "${RIFFDB_BUDGET_POSTGRES_URL:-}" ]] || {
+            printf 'failed to start digest-pinned PostgreSQL for diagnostics\n' >&2
+            exit 1
+        }
+    fi
+    export RIFFDB_BUDGET_DIAGNOSTICS_POSTGRES_REQUIRED=true
+else
+    export RIFFDB_BUDGET_DIAGNOSTICS_POSTGRES_REQUIRED=false
+    unset RIFFDB_BUDGET_POSTGRES_URL || true
+fi
+
+printf 'building layered diagnostics (mode=%s samples=%s warmup=%s commands=%s)\n' \
+    "$mode" "$samples" "$warmup" "$commands"
+
+cargo +1.97.0 test \
+    --manifest-path examples/budget-comparison/Cargo.toml \
+    -p riffdb-budget-comparison \
+    --test service_comparison \
+    --release \
+    --no-run
+
+export RIFFDB_BUDGET_DIAGNOSTICS_MODE="$mode"
+export RIFFDB_BUDGET_DIAGNOSTICS_OUTPUT="$layered_report"
+export RIFFDB_BUDGET_DIAGNOSTICS_SAMPLES="$samples"
+export RIFFDB_BUDGET_DIAGNOSTICS_WARMUPS="$warmup"
+export RIFFDB_BUDGET_DIAGNOSTICS_COMMANDS="$commands"
+# Keep live Postgres optional only when explicitly skipped.
+if ((skip_postgres == 0)); then
+    export RIFFDB_BUDGET_POSTGRES_REQUIRED=1
+fi
+
+cargo +1.97.0 test \
+    --manifest-path examples/budget-comparison/Cargo.toml \
+    -p riffdb-budget-comparison \
+    --test service_comparison \
+    --release \
+    budget_diagnostics::budget_layered_diagnostics_report \
+    -- --ignored --exact --nocapture
+
+if ((skip_public == 0)); then
+    printf 'building public-path phase diagnostics\n'
+    cargo +1.97.0 build --locked --release \
+        -p riffdb-server --bin riffdbd
+    cargo +1.97.0 build --release \
+        --manifest-path examples/budget-comparison/Cargo.toml \
+        -p riffdb-budget-comparison-riffdb-grpc \
+        --bin riffdb-budget-public
+
+    export RIFFDB_BUDGET_RIFFDBD_BIN="$repo_root/target/release/riffdbd"
+    export RIFFDB_BUDGET_RUNNER_BIN="$repo_root/examples/budget-comparison/target/release/riffdb-budget-public"
+    # cargo build --manifest-path may place binaries under examples/budget-comparison/target
+    if [[ ! -x "$RIFFDB_BUDGET_RUNNER_BIN" ]]; then
+        # Fallback: search common cargo target layouts.
+        candidate="$(find examples/budget-comparison/target target -type f -name riffdb-budget-public 2>/dev/null | head -n1 || true)"
+        [[ -n "$candidate" && -x "$candidate" ]] || {
+            printf 'riffdb-budget-public binary not found\n' >&2
+            exit 1
+        }
+        export RIFFDB_BUDGET_RUNNER_BIN="$repo_root/$candidate"
+    fi
+    export RIFFDB_BUDGET_PUBLIC_PATH_DIAGNOSTICS_OUTPUT="$public_report"
+
+    cargo +1.97.0 test \
+        --manifest-path examples/budget-comparison/Cargo.toml \
+        -p riffdb-budget-comparison \
+        --test public_comparison \
+        --release \
+        public_path_phase_diagnostics_report \
+        -- --ignored --exact --nocapture
+fi
+
+{
+    printf 'RiffDB budget diagnostics summary\n'
+    printf 'mode=%s samples=%s warmup=%s amortized_commands=%s\n\n' \
+        "$mode" "$samples" "$warmup" "$commands"
+
+    if [[ -f "$layered_report" ]]; then
+        printf '== Layered kernel comparison (service vs PostgreSQL) ==\n'
+        jq -r '
+          def ms: (. / 1000000 | tostring);
+          "layers:",
+          (.layers[] | "  \(.layer_id): create_ops/s=\(.rates.amortized_create_ops_per_second) allocate_ops/s=\(.rates.amortized_allocate_ops_per_second)"),
+          "",
+          (if .comparisons.available then
+            "phase p50 ratios (service/postgres):",
+            (.comparisons.phases[] | "  \(.phase): service=\(.riffdb_service_p50_ns/1000000)ms postgres=\(.postgres_p50_ns/1000000)ms ratio=\(.ratio_service_over_postgres)"),
+            "",
+            "slowest sequential ops by ratio:",
+            (.comparisons.sequential_operations[:5][] | "  \(.operation_id): service=\(.riffdb_service_p50_ns/1000000)ms postgres=\(.postgres_p50_ns/1000000)ms ratio=\(.ratio_service_over_postgres)")
+          else
+            "comparisons unavailable: \(.comparisons.reason // "postgres layer missing")"
+          end),
+          "",
+          "bottleneck hints:",
+          (.bottleneck_hints[] | "  [\(.severity)] \(.detail)")
+        ' "$layered_report"
+        printf '\nlayered report: %s\n' "$layered_report"
+    fi
+
+    if [[ -f "$public_report" ]]; then
+        printf '\n== Public gRPC process path phases ==\n'
+        jq -r '
+          (.phases[] | "  \(.phase): p50=\(.p50_ns/1000000)ms mean=\(.mean_ns/1000000)ms share=\(.share_basis_points/100)%"),
+          "",
+          "hint: \(.bottleneck_hint)"
+        ' "$public_report"
+        printf '\npublic-path report: %s\n' "$public_report"
+    fi
+
+    if [[ -f "$layered_report" && -f "$public_report" ]]; then
+        printf '\n== Cross-layer reading guide ==\n'
+        printf '1. If public bootstrap/server_start dominates, optimize process lifecycle last; warm-path work is elsewhere.\n'
+        printf '2. If service/postgres amortized ratios are large, optimize the semantic kernel (auth, runtime, commit, redb).\n'
+        printf '3. If public runner_* >> service sequential_wall, optimize gRPC framing, client, or public admission.\n'
+        printf '4. Use sequential_time_share and per-op ratios to pick the first command class to profile.\n'
+    fi
+} | tee "$summary_report"
+
+printf '\ndiagnostics complete: %s\n' "$summary_report"

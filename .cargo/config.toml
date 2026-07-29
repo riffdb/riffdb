@@ -1,0 +1,2 @@
+[alias]
+riffdb = "run --quiet --locked --manifest-path xtask/Cargo.toml --"

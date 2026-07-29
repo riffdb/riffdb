@@ -7,7 +7,206 @@ interfaces are loopback-only and do not include TLS.
 RiffDB is available under either the MIT License or the Apache License, Version
 2.0, at your option. A verified release bundle includes both license texts.
 
-## Install a Verified Release Bundle
+## Source Checkout Convenience Install
+
+Run the convenience commands from the repository root so Cargo reads
+`.cargo/config.toml` and its `riffdb` alias. Rust 1.97.0, Linux, systemd, Git,
+`jq`, a util-linux `uuidgen` with UUIDv7 support, and the ordinary utilities
+checked by the installer are required.
+
+Use a clean, reviewed checkout for an attributable installation. When the
+checkout is clean, the installer embeds its exact Git revision. A dirty
+checkout is allowed for development, but its binaries are labeled
+`development-unversioned` and are not release evidence or attributable to a
+specific revision.
+
+For a service owned by the current user:
+
+```bash
+cargo riffdb install --user
+cargo riffdb bootstrap --user
+```
+
+To register the restricted MCP capability with Codex during bootstrap:
+
+```bash
+cargo riffdb bootstrap --user --register-codex
+```
+
+For a machine-wide service, select the same scope in both phases:
+
+```bash
+cargo riffdb install --system
+cargo riffdb bootstrap --system
+```
+
+System scope is an administrator-facing POC path. Repository automation
+validates the shared release service assets but does not execute this source
+installer's privileged account, `/etc`, or `/usr/local` flow. Perform the first
+privileged installation and service-start acceptance on the intended
+disposable or staging host, review every `sudo` prompt, and require
+authenticated RiffDB Health before admitting use.
+
+Always invoke these as the intended unprivileged operator. Never use
+`sudo cargo riffdb ...`; the installer rejects a root caller. The system
+installer builds all three binaries as the operator and invokes `sudo`
+internally to inspect protected destination state, publish root-owned files,
+create the two service accounts and their directories, verify the unit, and
+control the system service.
+System bootstrap still runs as the operator and uses the public loopback API.
+The helper is mutable source-checkout code and is not suitable for a narrow
+`sudoers` allowlist. System installation assumes the operator already has
+ordinary administrative authorization for the displayed `sudo` operations.
+Privileged publication opens only root-owned destination paths; the
+unprivileged process opens and streams each checkout or build source.
+
+### Installed Paths
+
+| Asset | `--user` | `--system` |
+|---|---|---|
+| Product binaries | `$HOME/.local/bin/{riffdbd,riffdb,riffdb-mcp}` | `/usr/local/bin/{riffdbd,riffdb,riffdb-mcp}` |
+| Server configuration and digest keys | `${XDG_CONFIG_HOME:-$HOME/.config}/riffdb/` | `/etc/riffdb/` |
+| Database and backups | `${XDG_DATA_HOME:-$HOME/.local/share}/riffdb/data/riffdb.redb` and `.../backups/` | `/var/lib/riffdb/data/riffdb.redb` and `/var/lib/riffdb/backups/` |
+| Service unit | `${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user/riffdbd.service` | `/etc/systemd/system/riffdbd.service` |
+| Service state/working directory | `${XDG_STATE_HOME:-$HOME/.local/state}/riffdb/` | `/var/lib/riffdb/` |
+| Service accounts | Current user | `riffdb` and `riffdb-mcp` |
+| MCP service roots | Operator XDG files described below | `/etc/riffdb-mcp/` and `/var/lib/riffdb-mcp/` |
+| Account/directory definitions | Not applicable | `/usr/local/lib/sysusers.d/riffdb.conf` and `/usr/local/lib/tmpfiles.d/riffdb.conf` |
+
+Bootstrap always writes the current operator's private client files beneath
+`${XDG_CONFIG_HOME:-$HOME/.config}/riffdb/` and recovery state beneath
+`${XDG_STATE_HOME:-$HOME/.local/state}/riffdb/`, including for a `--system`
+database. In particular, `client.toml`, `operator.credential`, `mcp.toml`, and
+`mcp.credential` are user-owned mode-`0600` files. The same private state root
+retains `operator-capability.id` and `mcp-capability.id` for deliberate
+server-side revocation. System scope does not turn an operator credential into
+a root-owned secret.
+
+User binaries follow the XDG-recommended `~/.local/bin` convention. Add that
+directory to `PATH` for direct `riffdb` and `riffdb-mcp` invocations when the
+login environment does not already include it. The `cargo riffdb bootstrap`
+command uses the installed absolute paths and does not depend on that `PATH`
+entry.
+
+### Start Control and User Managers
+
+Installation normally verifies, enables, and starts the selected service. To
+publish and verify files without reloading, enabling, starting, or restarting
+the service:
+
+```bash
+cargo riffdb install --user --no-start
+cargo riffdb install --system --no-start
+```
+
+Bootstrap requires the selected service to be running and reachable. After a
+user `--no-start` installation, start it deliberately with:
+
+```bash
+systemctl --user daemon-reload
+systemctl --user enable --now riffdbd.service
+```
+
+Every user-scope installation requires a valid existing `XDG_RUNTIME_DIR`
+owned by the current user with mode `0700`; `systemd-analyze --user verify`
+uses it even with `--no-start`. Automatic user-service start or restart also
+requires a functioning per-user systemd manager, normally supplied by a PAM
+login session. `install --user --no-start` verifies the unit without contacting
+the live user bus. The installer does not call `loginctl`, enable lingering,
+or fabricate a runtime directory or user bus. On a headless or restricted SSH
+host, arrange the runtime directory, user manager, and linger policy
+explicitly, retain `--no-start` until the manager exists, or use the system
+scope. For system `--no-start`, an administrator later runs:
+
+```bash
+sudo systemctl daemon-reload
+sudo systemctl enable --now riffdbd.service
+```
+
+### Explicit Bootstrap Semantics
+
+Install creates filesystem state and, unless `--no-start` is selected, starts
+an unbootstrapped server. It does not silently create database authority. The
+separate bootstrap command:
+
+1. submits the one-time first-human bootstrap through loopback gRPC;
+2. durably retains uncertainty-recovery material before submission;
+3. writes private operator CLI configuration and credential files;
+4. validates and deploys `contracts/examples/budget.riff`;
+5. creates a separate capability and config for `riffdb-mcp`, limited to
+   catalog/health reads and checked LegalSpend command, entity, and projection
+   access, with no global commit or provenance reads; and
+6. with `--register-codex`, runs `codex mcp add riffdb -- ...` only after the
+   database and MCP credential are ready.
+
+These are authoritative database operations, not local file setup. A failure
+after bootstrap may leave the database successfully bootstrapped even when a
+later deployment, MCP capability, or Codex-registration step failed. Rerun the
+same bootstrap command: it preserves retained bootstrap material and pending
+capability identity so uncertainty is resolved rather than assigned a new
+identity. It refuses to replace changed credential/config files or an existing
+Codex MCP entry named `riffdb`. Codex currently exposes replacement-capable
+`mcp add`, not an atomic create-if-absent operation, so use
+`--register-codex` only while no other process is changing that user's Codex
+MCP configuration.
+
+Bootstrap defaults to `http://127.0.0.1:7443`. To select a deliberately
+reconfigured loopback listener, set an exact endpoint for that invocation:
+
+```bash
+RIFFDB_ENDPOINT=http://127.0.0.1:7553 \
+  cargo riffdb bootstrap --user
+```
+
+Treat that value as an authority selection: verify it identifies the intended
+unbootstrapped database, and do not leave a stale override in the environment.
+User and system installs both default to port `7443`, so choose one default
+scope. Running both on one host requires distinct server listen ports and
+separate operator XDG config/state roots; otherwise their service listeners and
+private client filenames collide.
+
+The generated owner capability requests 30 days and the restricted MCP
+capability requests less than 30 days. The POC does not renew either
+automatically. Create replacement capabilities through the authenticated
+public service before the current administrative capability expires.
+
+### Rerun and Update Limits
+
+Re-running install validates ownership, modes, non-symlink paths, and existing
+key documents, then republishes the three binaries. It preserves existing
+digest keys, server configuration, service-unit files, and system
+sysusers/tmpfiles definitions byte-for-byte rather than treating them as
+upgrade templates. During first-time key creation it publishes a private,
+create-only marker before either key. A rerun creates a missing typed
+counterpart only when that exact marker is still present, server configuration
+and the service unit have not been published, and the data, backup, and state
+directories remain empty. Partial key state without the marker, or any missing
+key beside later-phase configuration, unit, data, backup, or state evidence,
+fails closed as possible key loss. It refuses linked or malformed key state,
+unsafe file types, unexpected ownership, or modes.
+
+Each binary replacement is atomic on its destination filesystem, but the
+three-binary update is not one transaction. If installation is interrupted
+during publication, rerun the same install command before starting or
+restarting the service.
+
+Consequently, the convenience command is not a general configuration
+migration, key-rotation, uninstall, or compatibility-aware upgrade tool.
+Review [Upgrade and Removal](upgrade-removal.md) and compatibility policy
+before changing revisions. Use `--no-start` when replacing binaries should not
+immediately restart the existing service.
+
+`--from-binaries DIR` is an advanced staging/test input. `DIR` must contain
+exactly named executable regular files `riffdbd`, `riffdb`, and `riffdb-mcp`.
+This mode skips the locked Cargo build and performs no revision, checksum,
+signature, or provenance verification; use only a directory whose complete
+contents were independently verified. Normal source installs should omit it.
+
+After bootstrap succeeds, the convenience flow is complete. The procedures
+below are advanced alternatives; do not manually reprovision keys or overwrite
+configuration created by the convenience installer.
+
+## Advanced: Install a Verified Release Bundle
 
 Use this procedure for an extracted archive produced by
 `scripts/release-poc --verify`. Keep the archive, its adjacent checksum, and the
@@ -65,7 +264,7 @@ The release verifier installs the staged bundle into a private root, compares
 every required asset and mode, checks the extracted layout, and runs the demo
 from the private installed layout before creating the archive.
 
-## Build and Install From Source
+## Advanced: Manual Build and Install From Source
 
 Install rustup, let `rust-toolchain.toml` select Rust 1.97.0, and build the
 three product binaries:
@@ -229,7 +428,26 @@ riffdb --endpoint http://127.0.0.1:7443 --output json \
 
 Bearer output paths are create-only. Choose a new absent output path for an
 uncertain retry. After a terminal bootstrap result and successful authenticated
-health call, securely retire the bootstrap document. Retain the normal
+health call, retain the exact owner capability ID before securely retiring the
+bootstrap document:
+
+```bash
+mapfile -t bootstrap_lines \
+  < "$HOME/.local/state/riffdb/bootstrap.credential"
+[[ "${#bootstrap_lines[@]}" -eq 3 \
+   && "${bootstrap_lines[0]}" == "riffdb-bootstrap-credential-v1" \
+   && "${bootstrap_lines[1]}" =~ ^capability-id:([0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12})$ ]] \
+  || exit 1
+operator_capability_id="${BASH_REMATCH[1]}"
+operator_id_file="$HOME/.local/state/riffdb/operator-capability.id"
+[[ ! -e "$operator_id_file" && ! -L "$operator_id_file" ]] || exit 1
+(set -o noclobber; printf '%s\n' "$operator_capability_id" > "$operator_id_file") \
+  || exit 1
+chmod 0600 "$operator_id_file"
+```
+
+Retain every later capability ID through the same private operational
+inventory; the POC has no operator-facing capability list. Retain the normal
 operator credential at mode `0600`.
 
 Install client configuration:

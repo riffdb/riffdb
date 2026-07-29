@@ -1,0 +1,706 @@
+#!/usr/bin/env bash
+set -euo pipefail
+export LC_ALL=C
+umask 077
+
+fail() {
+    printf 'release source install smoke failed: %s\n' "$1" >&2
+    exit 1
+}
+
+require_tool() {
+    if ! command -v "$1" >/dev/null 2>&1; then
+        fail "required tool is missing: $1"
+    fi
+}
+
+require_regular_mode() {
+    local path="$1"
+    local expected_mode="$2"
+    local actual_mode
+
+    if [[ ! -f "$path" || -L "$path" ]]; then
+        fail "expected a regular non-link file: $path"
+    fi
+    actual_mode="$(stat -c '%a' "$path")"
+    if [[ "$actual_mode" != "${expected_mode#0}" ]]; then
+        fail "unexpected mode for $path: expected ${expected_mode#0}, found $actual_mode"
+    fi
+}
+
+require_owned_by_current_user() {
+    local path="$1"
+    local expected_uid
+    local actual_uid
+
+    expected_uid="$(id -u)"
+    actual_uid="$(stat -c '%u' "$path")"
+    if [[ "$actual_uid" != "$expected_uid" ]]; then
+        fail "unexpected owner for $path: expected $expected_uid, found $actual_uid"
+    fi
+}
+
+set_isolated_user_roots() {
+    local root="$1"
+
+    export HOME="$root/home with spaces"
+    export XDG_CONFIG_HOME="$root/config with spaces"
+    export XDG_DATA_HOME="$root/data with spaces"
+    export XDG_STATE_HOME="$root/state with spaces"
+    export XDG_RUNTIME_DIR="$root/runtime with spaces"
+    export TMPDIR="$root/tmp with spaces"
+
+    mkdir -p \
+        "$HOME" \
+        "$XDG_CONFIG_HOME" \
+        "$XDG_DATA_HOME" \
+        "$XDG_STATE_HOME" \
+        "$XDG_RUNTIME_DIR" \
+        "$TMPDIR"
+    chmod 0700 \
+        "$HOME" \
+        "$XDG_CONFIG_HOME" \
+        "$XDG_DATA_HOME" \
+        "$XDG_STATE_HOME" \
+        "$XDG_RUNTIME_DIR" \
+        "$TMPDIR"
+}
+
+if [[ $# -ne 0 ]]; then
+    printf '%s\n' 'usage: scripts/release-source-install-smoke' >&2
+    exit 2
+fi
+
+for tool in cargo chmod cmp cp find git grep id ln mkdir mktemp rm sed sha256sum sort stat wc; do
+    require_tool "$tool"
+done
+
+repo_root="$(git rev-parse --show-toplevel)"
+cd "$repo_root"
+installer="$repo_root/scripts/release-source-install"
+if [[ ! -x "$installer" ]]; then
+    fail "installer is missing or not executable: $installer"
+fi
+source_home="${HOME:?HOME must be set}"
+export CARGO_HOME="${CARGO_HOME:-$source_home/.cargo}"
+export RUSTUP_HOME="${RUSTUP_HOME:-$source_home/.rustup}"
+
+work_root="$(mktemp -d "${TMPDIR:-/tmp}/riffdb-source-install-smoke.XXXXXX")"
+cleanup() {
+    rm -rf "$work_root"
+}
+trap cleanup EXIT INT TERM
+
+fixture_bin="$work_root/prebuilt binaries"
+shim_bin="$work_root/system command shims"
+forbidden_call_log="$work_root/forbidden-command-calls.log"
+verify_call_log="$work_root/systemd-analyze-calls.log"
+mkdir -p "$fixture_bin" "$shim_bin"
+: >"$forbidden_call_log"
+: >"$verify_call_log"
+
+for binary in riffdb riffdb-mcp riffdbd; do
+    printf '%s\n' \
+        '#!/usr/bin/env bash' \
+        "printf '%s\\n' 'riffdb-source-install-fixture-v1 $binary'" \
+        >"$fixture_bin/$binary"
+    chmod 0755 "$fixture_bin/$binary"
+done
+
+for command_name in codex loginctl sudo systemctl; do
+    printf '%s\n' \
+        '#!/usr/bin/env bash' \
+        'printf "%s" "${0##*/}" >>"${RIFFDB_TEST_FORBIDDEN_CALL_LOG:?}"' \
+        'printf " %q" "$@" >>"${RIFFDB_TEST_FORBIDDEN_CALL_LOG:?}"' \
+        'printf "\n" >>"${RIFFDB_TEST_FORBIDDEN_CALL_LOG:?}"' \
+        'exit 97' \
+        >"$shim_bin/$command_name"
+    chmod 0755 "$shim_bin/$command_name"
+done
+printf '%s\n' \
+    '#!/usr/bin/env bash' \
+    'set -euo pipefail' \
+    'if [[ $# -ne 3 || "$1" != "--user" || "$2" != "verify" ]]' \
+    'then' \
+    '    exit 98' \
+    'fi' \
+    'if [[ ! -f "$3" || -L "$3" ]]' \
+    'then' \
+    '    exit 99' \
+    'fi' \
+    'printf "%s\t%s\t%s\n" "$1" "$2" "$3" >>"${RIFFDB_TEST_VERIFY_CALL_LOG:?}"' \
+    >"$shim_bin/systemd-analyze"
+chmod 0755 "$shim_bin/systemd-analyze"
+
+export RIFFDB_TEST_FORBIDDEN_CALL_LOG="$forbidden_call_log"
+export RIFFDB_TEST_VERIFY_CALL_LOG="$verify_call_log"
+export PATH="$shim_bin:$PATH"
+
+install_root="$work_root/isolated install"
+set_isolated_user_roots "$install_root"
+first_output="$work_root/first-install.log"
+cargo riffdb install --user \
+    --from-binaries "$fixture_bin" \
+    --no-start \
+    >"$first_output" 2>&1
+
+bin_root="$HOME/.local/bin"
+config_root="$XDG_CONFIG_HOME/riffdb"
+data_root="$XDG_DATA_HOME/riffdb"
+state_root="$XDG_STATE_HOME/riffdb"
+unit_path="$XDG_CONFIG_HOME/systemd/user/riffdbd.service"
+server_config="$config_root/riffdbd.toml"
+capability_keys="$config_root/capability.keys"
+idempotency_keys="$config_root/idempotency.keys"
+
+if [[ ! -d "$bin_root" || -L "$bin_root" \
+   || "$(stat -c '%a' "$bin_root")" != 755 ]]; then
+    fail "user binary directory is not a mode-755 non-link directory: $bin_root"
+fi
+expected_binaries=$'riffdb\nriffdb-mcp\nriffdbd'
+actual_binaries="$(
+    find "$bin_root" -mindepth 1 -maxdepth 1 -printf '%f\n' | sort
+)"
+if [[ "$actual_binaries" != "$expected_binaries" ]]; then
+    fail "user binary directory contains an unexpected file set"
+fi
+for binary in riffdb riffdb-mcp riffdbd; do
+    installed="$bin_root/$binary"
+    require_regular_mode "$installed" 0755
+    require_owned_by_current_user "$installed"
+    cmp "$fixture_bin/$binary" "$installed" \
+        || fail "installed binary differs from its selected source: $binary"
+done
+
+require_regular_mode "$server_config" 0600
+require_regular_mode "$capability_keys" 0600
+require_regular_mode "$idempotency_keys" 0600
+require_regular_mode "$unit_path" 0644
+require_owned_by_current_user "$server_config"
+require_owned_by_current_user "$capability_keys"
+require_owned_by_current_user "$idempotency_keys"
+require_owned_by_current_user "$unit_path"
+
+for private_root in "$config_root" "$data_root" "$state_root"; do
+    if [[ ! -d "$private_root" || -L "$private_root" ]]; then
+        fail "expected a private non-link directory: $private_root"
+    fi
+    if [[ "$(stat -c '%a' "$private_root")" != 700 ]]; then
+        fail "private directory is not mode 700: $private_root"
+    fi
+    require_owned_by_current_user "$private_root"
+done
+for private_root in "$data_root/data" "$data_root/backups"; do
+    if [[ ! -d "$private_root" || -L "$private_root" ]]; then
+        fail "expected a private non-link directory: $private_root"
+    fi
+    if [[ "$(stat -c '%a' "$private_root")" != 700 ]]; then
+        fail "private directory is not mode 700: $private_root"
+    fi
+    require_owned_by_current_user "$private_root"
+done
+if [[ -e "$config_root/.digest-key-install-v1" \
+   || -L "$config_root/.digest-key-install-v1" ]]; then
+    fail "terminal install retained its digest-key installation marker"
+fi
+mapfile -t capability_lines <"$capability_keys"
+mapfile -t idempotency_lines <"$idempotency_keys"
+if [[ ${#capability_lines[@]} -ne 2 \
+   || "$(wc -l <"$capability_keys")" -ne 2 \
+   || "${capability_lines[0]}" != "riffdb-capability-digest-keys-v1" \
+   || ! "${capability_lines[1]}" =~ ^1:[0-9a-f]{64}$ ]]; then
+    fail "capability digest-key document is not canonical"
+fi
+if [[ ${#idempotency_lines[@]} -ne 2 \
+   || "$(wc -l <"$idempotency_keys")" -ne 2 \
+   || "${idempotency_lines[0]}" != "riffdb-idempotency-digest-keys-v1" \
+   || ! "${idempotency_lines[1]}" =~ ^1:[0-9a-f]{64}$ ]]; then
+    fail "idempotency digest-key document is not canonical"
+fi
+capability_material="${capability_lines[1]#1:}"
+idempotency_material="${idempotency_lines[1]#1:}"
+if [[ "$capability_material" == "$idempotency_material" ]]; then
+    fail "capability and idempotency digest keys reused material"
+fi
+if grep -F "$capability_material" "$first_output" >/dev/null \
+   || grep -F "$idempotency_material" "$first_output" >/dev/null; then
+    fail "installer output exposed digest-key material"
+fi
+
+for expected_path in \
+    "$data_root/data/riffdb.redb" \
+    "$data_root/backups" \
+    "$capability_keys" \
+    "$idempotency_keys"
+do
+    grep -F "$expected_path" "$server_config" >/dev/null \
+        || fail "server configuration omitted user-local path: $expected_path"
+done
+grep -F '%h/.local/bin/riffdbd' "$unit_path" >/dev/null \
+    || fail "user unit omitted the installed riffdbd path"
+grep -F '%E/riffdb/riffdbd.toml' "$unit_path" >/dev/null \
+    || fail "user unit omitted the generated server configuration path"
+grep -F '%D/riffdb' "$unit_path" >/dev/null \
+    || fail "user unit omitted the user data root"
+grep -F '%S/riffdb' "$unit_path" >/dev/null \
+    || fail "user unit omitted the user state root"
+for required_directive in \
+    'Type=exec' \
+    'StandardInput=null' \
+    'KillSignal=SIGTERM' \
+    'TimeoutStopSec=80s' \
+    'ProtectHome=read-only'
+do
+    grep -Fx "$required_directive" "$unit_path" >/dev/null \
+        || fail "user unit omitted required directive: $required_directive"
+done
+
+if grep -E \
+    '(/etc/riffdb|/var/lib/riffdb|/usr/bin/riffdb(d|-mcp)?|^(User|Group)=riffdb)' \
+    "$server_config" "$unit_path" >/dev/null; then
+    fail "user installation retained a system-wide path or service account"
+fi
+if [[ -s "$forbidden_call_log" ]]; then
+    fail "no-start invoked a forbidden system boundary: $(<"$forbidden_call_log")"
+fi
+expected_verify_call=$'--user\tverify\t'"$unit_path"
+if [[ "$(<"$verify_call_log")" != "$expected_verify_call" ]]; then
+    fail "installer did not perform the isolated user-unit verification"
+fi
+
+capability_hash_before="$(sha256sum "$capability_keys" | sed 's/ .*//')"
+idempotency_hash_before="$(sha256sum "$idempotency_keys" | sed 's/ .*//')"
+config_hash_before="$(sha256sum "$server_config" | sed 's/ .*//')"
+unit_hash_before="$(sha256sum "$unit_path" | sed 's/ .*//')"
+second_output="$work_root/second-install.log"
+"$installer" install --user \
+    --from-binaries "$fixture_bin" \
+    --no-start \
+    >"$second_output" 2>&1
+capability_hash_after="$(sha256sum "$capability_keys" | sed 's/ .*//')"
+idempotency_hash_after="$(sha256sum "$idempotency_keys" | sed 's/ .*//')"
+config_hash_after="$(sha256sum "$server_config" | sed 's/ .*//')"
+unit_hash_after="$(sha256sum "$unit_path" | sed 's/ .*//')"
+if [[ "$capability_hash_before" != "$capability_hash_after" \
+   || "$idempotency_hash_before" != "$idempotency_hash_after" \
+   || "$config_hash_before" != "$config_hash_after" \
+   || "$unit_hash_before" != "$unit_hash_after" ]]; then
+    fail "repeat installation replaced persistent user configuration"
+fi
+if grep -F "$capability_material" "$second_output" >/dev/null \
+   || grep -F "$idempotency_material" "$second_output" >/dev/null; then
+    fail "repeat installer output exposed digest-key material"
+fi
+if [[ -s "$forbidden_call_log" ]]; then
+    fail "repeat no-start invoked a forbidden system boundary: $(<"$forbidden_call_log")"
+fi
+if [[ "$(grep -Fxc -- "$expected_verify_call" "$verify_call_log")" -ne 2 ]]; then
+    fail "repeat installation did not verify the preserved user unit"
+fi
+
+attack_root="$work_root/symlink attack"
+set_isolated_user_roots "$attack_root"
+attack_config="$XDG_CONFIG_HOME/riffdb"
+mkdir -p "$attack_config"
+chmod 0700 "$attack_config"
+sentinel="$work_root/symlink-target-sentinel"
+sentinel_expected="$work_root/symlink-target-expected"
+printf '%s\n' 'must-not-be-overwritten' >"$sentinel"
+cp "$sentinel" "$sentinel_expected"
+ln -s "$sentinel" "$attack_config/capability.keys"
+
+attack_output="$work_root/symlink-install.log"
+if "$installer" install --user \
+    --from-binaries "$fixture_bin" \
+    --no-start \
+    >"$attack_output" 2>&1
+then
+    fail "installer accepted a digest-key destination symlink"
+fi
+cmp "$sentinel_expected" "$sentinel" \
+    || fail "digest-key destination symlink target was modified"
+if [[ ! -L "$attack_config/capability.keys" ]]; then
+    fail "installer replaced a rejected digest-key destination symlink"
+fi
+if [[ -s "$forbidden_call_log" ]]; then
+    fail "symlink rejection invoked a forbidden system boundary: $(<"$forbidden_call_log")"
+fi
+
+marker_only_root="$work_root/marker only recovery"
+set_isolated_user_roots "$marker_only_root"
+marker_only_config="$XDG_CONFIG_HOME/riffdb"
+mkdir -p "$marker_only_config"
+chmod 0700 "$marker_only_config"
+printf '%s\n' riffdb-digest-key-install-v1 \
+    >"$marker_only_config/.digest-key-install-v1"
+chmod 0600 "$marker_only_config/.digest-key-install-v1"
+"$installer" install --user \
+    --from-binaries "$fixture_bin" \
+    --no-start \
+    >/dev/null
+require_regular_mode "$marker_only_config/capability.keys" 0600
+require_regular_mode "$marker_only_config/idempotency.keys" 0600
+marker_only_capability="$(
+    sed -n '2s/^1://p' "$marker_only_config/capability.keys"
+)"
+marker_only_idempotency="$(
+    sed -n '2s/^1://p' "$marker_only_config/idempotency.keys"
+)"
+if [[ -e "$marker_only_config/.digest-key-install-v1" \
+   || -L "$marker_only_config/.digest-key-install-v1" \
+   || ! "$marker_only_capability" =~ ^[0-9a-f]{64}$ \
+   || ! "$marker_only_idempotency" =~ ^[0-9a-f]{64}$ \
+   || "$marker_only_capability" == "$marker_only_idempotency" ]]; then
+    fail "marker-only recovery did not publish two disjoint canonical keys"
+fi
+
+complete_marker_root="$work_root/complete marker recovery"
+set_isolated_user_roots "$complete_marker_root"
+complete_marker_config="$XDG_CONFIG_HOME/riffdb"
+mkdir -p "$complete_marker_config"
+chmod 0700 "$complete_marker_config"
+printf '%s\n' riffdb-digest-key-install-v1 \
+    >"$complete_marker_config/.digest-key-install-v1"
+printf '%s\n' \
+    riffdb-capability-digest-keys-v1 \
+    '1:000000000000000000000000000000000000000000000000000000000000000d' \
+    >"$complete_marker_config/capability.keys"
+printf '%s\n' \
+    riffdb-idempotency-digest-keys-v1 \
+    '1:0000000000000000000000000000000000000000000000000000000000000013' \
+    >"$complete_marker_config/idempotency.keys"
+chmod 0600 \
+    "$complete_marker_config/.digest-key-install-v1" \
+    "$complete_marker_config/capability.keys" \
+    "$complete_marker_config/idempotency.keys"
+complete_capability_hash="$(
+    sha256sum "$complete_marker_config/capability.keys" | sed 's/ .*//'
+)"
+complete_idempotency_hash="$(
+    sha256sum "$complete_marker_config/idempotency.keys" | sed 's/ .*//'
+)"
+"$installer" install --user \
+    --from-binaries "$fixture_bin" \
+    --no-start \
+    >/dev/null
+if [[ -e "$complete_marker_config/.digest-key-install-v1" \
+   || -L "$complete_marker_config/.digest-key-install-v1" \
+   || "$(sha256sum "$complete_marker_config/capability.keys" | sed 's/ .*//')" \
+        != "$complete_capability_hash" \
+   || "$(sha256sum "$complete_marker_config/idempotency.keys" | sed 's/ .*//')" \
+        != "$complete_idempotency_hash" ]]; then
+    fail "complete key recovery did not preserve keys and clear its marker"
+fi
+
+unmarked_partial_root="$work_root/unmarked partial key"
+set_isolated_user_roots "$unmarked_partial_root"
+unmarked_partial_config="$XDG_CONFIG_HOME/riffdb"
+mkdir -p "$unmarked_partial_config"
+chmod 0700 "$unmarked_partial_config"
+printf '%s\n' \
+    riffdb-capability-digest-keys-v1 \
+    '1:000000000000000000000000000000000000000000000000000000000000000b' \
+    >"$unmarked_partial_config/capability.keys"
+chmod 0600 "$unmarked_partial_config/capability.keys"
+unmarked_partial_hash="$(
+    sha256sum "$unmarked_partial_config/capability.keys" | sed 's/ .*//'
+)"
+if "$installer" install --user \
+    --from-binaries "$fixture_bin" \
+    --no-start \
+    >/dev/null 2>&1
+then
+    fail "installer accepted partial digest-key state without its marker"
+fi
+if [[ -e "$unmarked_partial_config/idempotency.keys" \
+   || -e "$unmarked_partial_config/.digest-key-install-v1" \
+   || "$(sha256sum "$unmarked_partial_config/capability.keys" | sed 's/ .*//')" \
+        != "$unmarked_partial_hash" ]]; then
+    fail "unmarked partial-key rejection changed key state"
+fi
+
+configured_root="$work_root/configured key loss"
+set_isolated_user_roots "$configured_root"
+configured_config="$XDG_CONFIG_HOME/riffdb"
+mkdir -p "$configured_config"
+chmod 0700 "$configured_config"
+printf '%s\n' riffdb-digest-key-install-v1 \
+    >"$configured_config/.digest-key-install-v1"
+printf '%s\n' \
+    riffdb-capability-digest-keys-v1 \
+    '1:0000000000000000000000000000000000000000000000000000000000000017' \
+    >"$configured_config/capability.keys"
+printf '%s\n' '[server]' \
+    'database = "/deliberately/nondefault/riffdb.redb"' \
+    >"$configured_config/riffdbd.toml"
+chmod 0600 \
+    "$configured_config/.digest-key-install-v1" \
+    "$configured_config/capability.keys" \
+    "$configured_config/riffdbd.toml"
+configured_key_hash="$(
+    sha256sum "$configured_config/capability.keys" | sed 's/ .*//'
+)"
+configured_file_hash="$(
+    sha256sum "$configured_config/riffdbd.toml" | sed 's/ .*//'
+)"
+if "$installer" install --user \
+    --from-binaries "$fixture_bin" \
+    --no-start \
+    >/dev/null 2>&1
+then
+    fail "installer regenerated a key after server configuration publication"
+fi
+if [[ -e "$configured_config/idempotency.keys" \
+   || "$(sha256sum "$configured_config/capability.keys" | sed 's/ .*//')" \
+        != "$configured_key_hash" \
+   || "$(sha256sum "$configured_config/riffdbd.toml" | sed 's/ .*//')" \
+        != "$configured_file_hash" ]]; then
+    fail "configured key-loss rejection changed persistent state"
+fi
+
+unit_root="$work_root/unit key loss"
+set_isolated_user_roots "$unit_root"
+unit_config="$XDG_CONFIG_HOME/riffdb"
+unit_directory="$XDG_CONFIG_HOME/systemd/user"
+unit_path="$unit_directory/riffdbd.service"
+mkdir -p "$unit_config" "$unit_directory"
+chmod 0700 "$unit_config"
+chmod 0755 "$XDG_CONFIG_HOME/systemd" "$unit_directory"
+printf '%s\n' riffdb-digest-key-install-v1 \
+    >"$unit_config/.digest-key-install-v1"
+printf '%s\n' \
+    riffdb-capability-digest-keys-v1 \
+    '1:0000000000000000000000000000000000000000000000000000000000000025' \
+    >"$unit_config/capability.keys"
+printf '%s\n' '[Unit]' 'Description=retained-user-unit' >"$unit_path"
+chmod 0600 \
+    "$unit_config/.digest-key-install-v1" \
+    "$unit_config/capability.keys"
+chmod 0644 "$unit_path"
+unit_key_hash="$(
+    sha256sum "$unit_config/capability.keys" | sed 's/ .*//'
+)"
+unit_marker_hash="$(
+    sha256sum "$unit_config/.digest-key-install-v1" | sed 's/ .*//'
+)"
+unit_file_hash="$(sha256sum "$unit_path" | sed 's/ .*//')"
+if "$installer" install --user \
+    --from-binaries "$fixture_bin" \
+    --no-start \
+    >/dev/null 2>&1
+then
+    fail "installer regenerated a key after user-unit publication"
+fi
+if [[ -e "$unit_config/idempotency.keys" \
+   || -L "$unit_config/idempotency.keys" \
+   || ! -f "$unit_config/.digest-key-install-v1" \
+   || -L "$unit_config/.digest-key-install-v1" \
+   || "$(sha256sum "$unit_config/.digest-key-install-v1" | sed 's/ .*//')" \
+        != "$unit_marker_hash" \
+   || "$(sha256sum "$unit_config/capability.keys" | sed 's/ .*//')" \
+        != "$unit_key_hash" \
+   || "$(sha256sum "$unit_path" | sed 's/ .*//')" != "$unit_file_hash" ]]; then
+    fail "user-unit key-loss rejection changed retained state"
+fi
+
+operator_state_root="$work_root/operator state key loss"
+set_isolated_user_roots "$operator_state_root"
+operator_state_config="$XDG_CONFIG_HOME/riffdb"
+operator_state_directory="$XDG_STATE_HOME/riffdb"
+operator_state_id="$operator_state_directory/operator-capability.id"
+mkdir -p "$operator_state_config" "$operator_state_directory"
+chmod 0700 "$operator_state_config" "$operator_state_directory"
+printf '%s\n' riffdb-digest-key-install-v1 \
+    >"$operator_state_config/.digest-key-install-v1"
+printf '%s\n' \
+    riffdb-capability-digest-keys-v1 \
+    '1:0000000000000000000000000000000000000000000000000000000000000029' \
+    >"$operator_state_config/capability.keys"
+printf '%s\n' '01234567-89ab-7def-8123-456789abcdef' >"$operator_state_id"
+chmod 0600 \
+    "$operator_state_config/.digest-key-install-v1" \
+    "$operator_state_config/capability.keys" \
+    "$operator_state_id"
+operator_state_key_hash="$(
+    sha256sum "$operator_state_config/capability.keys" | sed 's/ .*//'
+)"
+operator_state_marker_hash="$(
+    sha256sum "$operator_state_config/.digest-key-install-v1" | sed 's/ .*//'
+)"
+operator_state_id_hash="$(sha256sum "$operator_state_id" | sed 's/ .*//')"
+if "$installer" install --user \
+    --from-binaries "$fixture_bin" \
+    --no-start \
+    >/dev/null 2>&1
+then
+    fail "installer regenerated a key beside retained operator state"
+fi
+if [[ -e "$operator_state_config/idempotency.keys" \
+   || -L "$operator_state_config/idempotency.keys" \
+   || ! -f "$operator_state_config/.digest-key-install-v1" \
+   || -L "$operator_state_config/.digest-key-install-v1" \
+   || "$(sha256sum "$operator_state_config/.digest-key-install-v1" | sed 's/ .*//')" \
+        != "$operator_state_marker_hash" \
+   || "$(sha256sum "$operator_state_config/capability.keys" | sed 's/ .*//')" \
+        != "$operator_state_key_hash" \
+   || "$(sha256sum "$operator_state_id" | sed 's/ .*//')" \
+        != "$operator_state_id_hash" ]]; then
+    fail "operator-state key-loss rejection changed retained state"
+fi
+
+backup_root="$work_root/backup key loss"
+set_isolated_user_roots "$backup_root"
+backup_config="$XDG_CONFIG_HOME/riffdb"
+backup_data="$XDG_DATA_HOME/riffdb"
+mkdir -p "$backup_config" "$backup_data/data" "$backup_data/backups"
+chmod 0700 \
+    "$backup_config" "$backup_data" "$backup_data/data" "$backup_data/backups"
+printf '%s\n' riffdb-digest-key-install-v1 \
+    >"$backup_config/.digest-key-install-v1"
+printf '%s\n' \
+    riffdb-capability-digest-keys-v1 \
+    '1:000000000000000000000000000000000000000000000000000000000000001d' \
+    >"$backup_config/capability.keys"
+chmod 0600 \
+    "$backup_config/.digest-key-install-v1" \
+    "$backup_config/capability.keys"
+printf '%s\n' 'retained-backup-sentinel' \
+    >"$backup_data/backups/retained-backup"
+backup_key_hash="$(
+    sha256sum "$backup_config/capability.keys" | sed 's/ .*//'
+)"
+backup_sentinel_hash="$(
+    sha256sum "$backup_data/backups/retained-backup" | sed 's/ .*//'
+)"
+if "$installer" install --user \
+    --from-binaries "$fixture_bin" \
+    --no-start \
+    >/dev/null 2>&1
+then
+    fail "installer regenerated a key beside a retained backup"
+fi
+if [[ -e "$backup_config/idempotency.keys" \
+   || "$(sha256sum "$backup_config/capability.keys" | sed 's/ .*//')" \
+        != "$backup_key_hash" \
+   || "$(sha256sum "$backup_data/backups/retained-backup" | sed 's/ .*//')" \
+        != "$backup_sentinel_hash" ]]; then
+    fail "backup key-loss rejection changed retained state"
+fi
+
+for retained_kind in capability idempotency; do
+    recovery_root="$work_root/$retained_kind key recovery"
+    set_isolated_user_roots "$recovery_root"
+    recovery_config="$XDG_CONFIG_HOME/riffdb"
+    mkdir -p "$recovery_config"
+    chmod 0700 "$recovery_config"
+    if [[ "$retained_kind" == capability ]]; then
+        printf -v retained_material '%064x' 17
+    else
+        printf -v retained_material '%064x' 23
+    fi
+    retained_path="$recovery_config/$retained_kind.keys"
+    printf 'riffdb-%s-digest-keys-v1\n1:%s\n' \
+        "$retained_kind" "$retained_material" >"$retained_path"
+    chmod 0600 "$retained_path"
+    printf '%s\n' riffdb-digest-key-install-v1 \
+        >"$recovery_config/.digest-key-install-v1"
+    chmod 0600 "$recovery_config/.digest-key-install-v1"
+    retained_hash="$(sha256sum "$retained_path" | sed 's/ .*//')"
+
+    recovery_output="$work_root/$retained_kind-key-recovery.log"
+    "$installer" install --user \
+        --from-binaries "$fixture_bin" \
+        --no-start \
+        >"$recovery_output" 2>&1
+
+    if [[ "$(sha256sum "$retained_path" | sed 's/ .*//')" != "$retained_hash" ]]; then
+        fail "partial-key recovery replaced retained $retained_kind material"
+    fi
+    require_regular_mode "$recovery_config/capability.keys" 0600
+    require_regular_mode "$recovery_config/idempotency.keys" 0600
+    recovered_capability="$(sed -n '2s/^1://p' "$recovery_config/capability.keys")"
+    recovered_idempotency="$(sed -n '2s/^1://p' "$recovery_config/idempotency.keys")"
+    if [[ "$recovered_capability" == "$recovered_idempotency" ]]; then
+        fail "partial-key recovery reused material across typed namespaces"
+    fi
+    if grep -F "$retained_material" "$recovery_output" >/dev/null; then
+        fail "partial-key recovery exposed retained digest-key material"
+    fi
+    if [[ -e "$recovery_config/.digest-key-install-v1" \
+       || -L "$recovery_config/.digest-key-install-v1" ]]; then
+        fail "partial-key recovery retained its installation marker"
+    fi
+done
+if [[ -s "$forbidden_call_log" ]]; then
+    fail "partial-key recovery invoked a forbidden system boundary: $(<"$forbidden_call_log")"
+fi
+
+existing_root="$work_root/existing database key loss"
+set_isolated_user_roots "$existing_root"
+existing_config="$XDG_CONFIG_HOME/riffdb"
+existing_data="$XDG_DATA_HOME/riffdb/data"
+mkdir -p "$existing_config" "$existing_data"
+chmod 0700 "$existing_config" "$XDG_DATA_HOME/riffdb" "$existing_data"
+printf '%s\n' riffdb-digest-key-install-v1 \
+    >"$existing_config/.digest-key-install-v1"
+printf '%s\n' \
+    riffdb-capability-digest-keys-v1 \
+    '1:000000000000000000000000000000000000000000000000000000000000001d' \
+    >"$existing_config/capability.keys"
+chmod 0600 \
+    "$existing_config/.digest-key-install-v1" \
+    "$existing_config/capability.keys"
+printf '%s\n' 'existing-database-sentinel' >"$existing_data/riffdb.redb"
+existing_database_hash="$(sha256sum "$existing_data/riffdb.redb" | sed 's/ .*//')"
+existing_key_hash="$(sha256sum "$existing_config/capability.keys" | sed 's/ .*//')"
+existing_output="$work_root/existing-database-key-loss.log"
+if "$installer" install --user \
+    --from-binaries "$fixture_bin" \
+    --no-start \
+    >"$existing_output" 2>&1
+then
+    fail "installer regenerated a missing key for an existing database"
+fi
+if [[ -e "$existing_config/idempotency.keys" \
+   || "$(sha256sum "$existing_data/riffdb.redb" | sed 's/ .*//')" \
+        != "$existing_database_hash" \
+   || "$(sha256sum "$existing_config/capability.keys" | sed 's/ .*//')" \
+        != "$existing_key_hash" ]]; then
+    fail "existing-database key-loss rejection changed durable state"
+fi
+
+systemctl_log="$work_root/systemctl-user-calls.log"
+systemctl_state="$work_root/systemctl-user-active"
+: >"$systemctl_log"
+printf '%s\n' \
+    '#!/usr/bin/env bash' \
+    'set -euo pipefail' \
+    'printf "%s\n" "$*" >>"${RIFFDB_TEST_SYSTEMCTL_LOG:?}"' \
+    'case "$*" in' \
+    '    "--user daemon-reload"|"--user enable riffdbd.service") exit 0 ;;' \
+    '    "--user --quiet is-active riffdbd.service")' \
+    '        [[ -e "${RIFFDB_TEST_SYSTEMCTL_STATE:?}" ]]' \
+    '        ;;' \
+    '    "--user start riffdbd.service")' \
+    '        : >"${RIFFDB_TEST_SYSTEMCTL_STATE:?}"' \
+    '        ;;' \
+    '    "--user restart riffdbd.service")' \
+    '        [[ -e "${RIFFDB_TEST_SYSTEMCTL_STATE:?}" ]]' \
+    '        ;;' \
+    '    *) exit 98 ;;' \
+    'esac' \
+    >"$shim_bin/systemctl"
+chmod 0755 "$shim_bin/systemctl"
+export RIFFDB_TEST_SYSTEMCTL_LOG="$systemctl_log"
+export RIFFDB_TEST_SYSTEMCTL_STATE="$systemctl_state"
+
+service_root="$work_root/user service control"
+set_isolated_user_roots "$service_root"
+"$installer" install --user --from-binaries "$fixture_bin" >/dev/null
+"$installer" install --user --from-binaries "$fixture_bin" >/dev/null
+expected_systemctl_calls=$'--user daemon-reload\n--user enable riffdbd.service\n--user --quiet is-active riffdbd.service\n--user start riffdbd.service\n--user daemon-reload\n--user enable riffdbd.service\n--user --quiet is-active riffdbd.service\n--user restart riffdbd.service'
+if [[ "$(<"$systemctl_log")" != "$expected_systemctl_calls" ]]; then
+    fail "user service control did not follow inactive-start then active-restart"
+fi
+
+printf '%s\n' 'riffdb-release-source-install-smoke-v1: verified'

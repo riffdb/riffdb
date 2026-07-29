@@ -1,0 +1,125 @@
+#!/usr/bin/env bash
+# Application-shaped baseline: live PostgreSQL vs live riffdbd (public gRPC).
+set -euo pipefail
+export LC_ALL=C
+export TZ=UTC
+
+usage() {
+    printf '%s\n' \
+        'usage: benchmarks/run-app-baseline [--smoke|--full] [--samples N] [--warmup N] [--skip-postgres] [--skip-riffdb]' >&2
+    exit 2
+}
+
+repo_root="$(git rev-parse --show-toplevel)"
+cd "$repo_root"
+
+mode=smoke
+samples=
+warmup=
+skip_postgres=0
+skip_riffdb=0
+while (($#)); do
+    case "$1" in
+        --smoke) mode=smoke; shift ;;
+        --full) mode=full; shift ;;
+        --samples)
+            (($# >= 2)) || usage
+            samples="$2"
+            shift 2
+            ;;
+        --warmup)
+            (($# >= 2)) || usage
+            warmup="$2"
+            shift 2
+            ;;
+        --skip-postgres) skip_postgres=1; shift ;;
+        --skip-riffdb) skip_riffdb=1; shift ;;
+        *) usage ;;
+    esac
+done
+
+out_dir=target/app-baseline
+mkdir -p "$out_dir"
+report="$repo_root/$out_dir/report-v1.json"
+
+postgres_container="riffdb-app-baseline-$$"
+postgres_started=0
+cleanup() {
+    if ((postgres_started)); then
+        docker rm -f "$postgres_container" >/dev/null 2>&1 || true
+    fi
+}
+trap cleanup EXIT
+
+extra_args=()
+if [[ "$mode" == full ]]; then
+    extra_args+=(--full)
+else
+    extra_args+=(--smoke)
+fi
+[[ -n "$samples" ]] && extra_args+=(--samples "$samples")
+[[ -n "$warmup" ]] && extra_args+=(--warmup "$warmup")
+((skip_postgres)) && extra_args+=(--skip-postgres)
+((skip_riffdb)) && extra_args+=(--skip-riffdb)
+
+if ((skip_postgres == 0)); then
+    if [[ -z "${RIFFDB_APP_BASELINE_POSTGRES_URL:-}" ]]; then
+        command -v docker >/dev/null 2>&1 || {
+            printf 'docker required when RIFFDB_APP_BASELINE_POSTGRES_URL is unset\n' >&2
+            exit 1
+        }
+        image='postgres:18.4-bookworm@sha256:d9c83446333daec3f0588cc709adb80c26090b7f9f0f7ec8d43c243385d79818'
+        docker pull "$image" >/dev/null
+        docker run -d --rm --name "$postgres_container" \
+            -e POSTGRES_USER=riffdb \
+            -e POSTGRES_PASSWORD=riffdb \
+            -e POSTGRES_DB=riffdb_app_baseline \
+            -p 127.0.0.1::5432 \
+            "$image" >/dev/null
+        postgres_started=1
+        for _ in $(seq 1 90); do
+            host_port="$(docker port "$postgres_container" 5432/tcp 2>/dev/null | head -n1 | awk -F: '{print $NF}')"
+            if [[ -n "$host_port" ]] && docker exec "$postgres_container" pg_isready -U riffdb -d riffdb_app_baseline >/dev/null 2>&1; then
+                # pg_isready can race the postmaster still accepting first clients.
+                sleep 1
+                export RIFFDB_APP_BASELINE_POSTGRES_URL="postgres://riffdb:riffdb@127.0.0.1:${host_port}/riffdb_app_baseline"
+                break
+            fi
+            sleep 0.25
+        done
+        [[ -n "${RIFFDB_APP_BASELINE_POSTGRES_URL:-}" ]] || {
+            printf 'failed to start PostgreSQL for app baseline\n' >&2
+            exit 1
+        }
+    fi
+fi
+
+if ((skip_riffdb == 0)); then
+    printf 'building riffdbd (release)\n'
+    cargo +1.97.0 build --locked --release -p riffdb-server --bin riffdbd
+    export RIFFDB_APP_BASELINE_RIFFDBD_BIN="$repo_root/target/release/riffdbd"
+fi
+
+printf 'building app-baseline runner\n'
+cargo +1.97.0 build --release --manifest-path examples/app-baseline/Cargo.toml -p riffdb-app-baseline
+
+runner=examples/app-baseline/target/release/riffdb-app-baseline
+if [[ ! -x "$runner" ]]; then
+    runner="$(find examples/app-baseline/target target -type f -name riffdb-app-baseline 2>/dev/null | head -n1 || true)"
+    [[ -n "$runner" && -x "$runner" ]] || {
+        printf 'riffdb-app-baseline binary not found\n' >&2
+        exit 1
+    }
+fi
+
+printf 'running app baseline (%s)\n' "$mode"
+cmd=("$runner" "${extra_args[@]}" --output "$report")
+if ((skip_postgres == 0)); then
+    cmd+=(--postgres-url "$RIFFDB_APP_BASELINE_POSTGRES_URL")
+fi
+if ((skip_riffdb == 0)); then
+    cmd+=(--riffdbd-bin "$RIFFDB_APP_BASELINE_RIFFDBD_BIN")
+fi
+"${cmd[@]}"
+
+printf 'report: %s\n' "$report"

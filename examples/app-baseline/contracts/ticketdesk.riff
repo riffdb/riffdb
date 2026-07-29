@@ -1,0 +1,233 @@
+contract TicketDesk version 1 {
+  enum TicketStatus { Open, InProgress, Closed }
+
+  entity Organization {
+    key (organization_id: uuid)
+    field name: string<64>
+    field created_at: timestamp
+  }
+
+  entity AppUser {
+    key (organization_id: uuid, user_id: uuid)
+    field email: string<128>
+    field display_name: string<64>
+    field created_at: timestamp
+    index by_organization (organization_id, user_id)
+  }
+
+  entity Project {
+    key (organization_id: uuid, project_id: uuid)
+    field name: string<64>
+    field created_at: timestamp
+    index by_organization (organization_id, project_id)
+  }
+
+  entity ProjectMember {
+    key (organization_id: uuid, project_id: uuid, user_id: uuid)
+    field role: string<32>
+    field created_at: timestamp
+    index by_user (organization_id, user_id, project_id)
+    index by_project (organization_id, project_id, user_id)
+  }
+
+  entity Ticket {
+    key (organization_id: uuid, ticket_id: uuid)
+    field project_id: uuid
+    field reporter_id: uuid
+    field assignee_id: uuid
+    field status: TicketStatus
+    field title: string<128>
+    field created_at: timestamp
+    field updated_at: timestamp
+    index by_project_status (organization_id, project_id, status, ticket_id)
+    index by_assignee_status (organization_id, assignee_id, status, ticket_id)
+  }
+
+  entity Comment {
+    key (organization_id: uuid, comment_id: uuid)
+    field ticket_id: uuid
+    field author_id: uuid
+    field body: string<256>
+    field created_at: timestamp
+    index by_ticket (organization_id, ticket_id, created_at, comment_id)
+  }
+
+  entity Label {
+    key (organization_id: uuid, label_id: uuid)
+    field name: string<32>
+    field created_at: timestamp
+  }
+
+  entity TicketLabel {
+    key (organization_id: uuid, ticket_id: uuid, label_id: uuid)
+    field created_at: timestamp
+    index by_label (organization_id, label_id, ticket_id)
+    index by_ticket (organization_id, ticket_id, label_id)
+  }
+
+  aggregate OrganizationRoot {
+    root Organization
+    partition_by organization_id
+    conflict_key (organization_id)
+  }
+
+  aggregate AppUserRoot {
+    root AppUser
+    partition_by organization_id
+    conflict_key (organization_id, user_id)
+  }
+
+  aggregate ProjectRoot {
+    root Project
+    partition_by organization_id
+    conflict_key (organization_id, project_id)
+  }
+
+  aggregate ProjectMemberRoot {
+    root ProjectMember
+    partition_by organization_id
+    conflict_key (organization_id, project_id, user_id)
+  }
+
+  aggregate TicketRoot {
+    root Ticket
+    partition_by organization_id
+    conflict_key (organization_id, ticket_id)
+  }
+
+  aggregate CommentRoot {
+    root Comment
+    partition_by organization_id
+    conflict_key (organization_id, comment_id)
+  }
+
+  aggregate LabelRoot {
+    root Label
+    partition_by organization_id
+    conflict_key (organization_id, label_id)
+  }
+
+  aggregate TicketLabelRoot {
+    root TicketLabel
+    partition_by organization_id
+    conflict_key (organization_id, ticket_id, label_id)
+  }
+
+  command CreateOrganization {
+    input idempotency_key: string<128>
+    input organization_id: uuid
+    input name: string<64>
+    idempotency_key idempotency_key
+    create Organization(organization_id) as organization
+      else OrganizationExists { organization_id: organization_id }
+    set organization.name = name
+    set organization.created_at = tx.time
+    return Created { organization: organization }
+  }
+
+  command CreateUser {
+    input idempotency_key: string<128>
+    input organization_id: uuid
+    input user_id: uuid
+    input email: string<128>
+    input display_name: string<64>
+    idempotency_key idempotency_key
+    create AppUser(organization_id, user_id) as user
+      else UserExists { user_id: user_id }
+    set user.email = email
+    set user.display_name = display_name
+    set user.created_at = tx.time
+    return Created { user: user }
+  }
+
+  command CreateProject {
+    input idempotency_key: string<128>
+    input organization_id: uuid
+    input project_id: uuid
+    input name: string<64>
+    idempotency_key idempotency_key
+    create Project(organization_id, project_id) as project
+      else ProjectExists { project_id: project_id }
+    set project.name = name
+    set project.created_at = tx.time
+    return Created { project: project }
+  }
+
+  command AddProjectMember {
+    input idempotency_key: string<128>
+    input organization_id: uuid
+    input project_id: uuid
+    input user_id: uuid
+    input role: string<32>
+    idempotency_key idempotency_key
+    create ProjectMember(organization_id, project_id, user_id) as member
+      else MemberExists { project_id: project_id, user_id: user_id }
+    set member.role = role
+    set member.created_at = tx.time
+    return Created { member: member }
+  }
+
+  command CreateTicket {
+    input idempotency_key: string<128>
+    input organization_id: uuid
+    input ticket_id: uuid
+    input project_id: uuid
+    input reporter_id: uuid
+    input assignee_id: uuid
+    input title: string<128>
+    input status: TicketStatus
+    idempotency_key idempotency_key
+    create Ticket(organization_id, ticket_id) as ticket
+      else TicketExists { ticket_id: ticket_id }
+    set ticket.project_id = project_id
+    set ticket.reporter_id = reporter_id
+    set ticket.assignee_id = assignee_id
+    set ticket.status = status
+    set ticket.title = title
+    set ticket.created_at = tx.time
+    set ticket.updated_at = tx.time
+    return Created { ticket: ticket }
+  }
+
+  command CreateComment {
+    input idempotency_key: string<128>
+    input organization_id: uuid
+    input comment_id: uuid
+    input ticket_id: uuid
+    input author_id: uuid
+    input body: string<256>
+    idempotency_key idempotency_key
+    create Comment(organization_id, comment_id) as comment
+      else CommentExists { comment_id: comment_id }
+    set comment.ticket_id = ticket_id
+    set comment.author_id = author_id
+    set comment.body = body
+    set comment.created_at = tx.time
+    return Created { comment: comment }
+  }
+
+  command CreateLabel {
+    input idempotency_key: string<128>
+    input organization_id: uuid
+    input label_id: uuid
+    input name: string<32>
+    idempotency_key idempotency_key
+    create Label(organization_id, label_id) as label
+      else LabelExists { label_id: label_id }
+    set label.name = name
+    set label.created_at = tx.time
+    return Created { label: label }
+  }
+
+  command AttachLabel {
+    input idempotency_key: string<128>
+    input organization_id: uuid
+    input ticket_id: uuid
+    input label_id: uuid
+    idempotency_key idempotency_key
+    create TicketLabel(organization_id, ticket_id, label_id) as link
+      else LinkExists { ticket_id: ticket_id, label_id: label_id }
+    set link.created_at = tx.time
+    return Created { link: link }
+  }
+}

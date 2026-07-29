@@ -16,7 +16,7 @@ use std::str;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, SyncSender};
 use std::thread::{self, JoinHandle};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use riffdb_auth::bootstrap_secret::{
     BootstrapCredential as RetainedBootstrapCredential, SystemEntropy,
@@ -153,6 +153,339 @@ fn public_comparison_process_runner_matches_the_shared_oracle() -> TestResult<()
         }
         assert_invalid_invocation(&binaries.runner)?;
         Ok(())
+    })
+}
+
+/// Public gRPC process-path phase timings for optimization triage.
+///
+/// Each sample starts a fresh `riffdbd`, so process lifecycle costs are explicit
+/// and comparable to the frozen suite wall-clock. Run via
+/// `benchmarks/run-budget-diagnostics`.
+#[test]
+#[ignore = "run through benchmarks/run-budget-diagnostics"]
+fn public_path_phase_diagnostics_report() -> TestResult<()> {
+    let Some(binaries) = ProcessBinaries::from_environment()? else {
+        return Err(test_failure(
+            "public path diagnostics require RIFFDB_BUDGET_RIFFDBD_BIN and RIFFDB_BUDGET_RUNNER_BIN",
+        ));
+    };
+    let output = required_diagnostics_output_path()?;
+    let samples = diagnostics_sample_count();
+    let warmups = diagnostics_warmup_count();
+    let runtime = tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(2)
+        .enable_all()
+        .build()?;
+    let report = runtime.block_on(async {
+        for _ in 0..warmups {
+            let _ = measure_public_path_phases(&binaries).await?;
+        }
+        let mut phases: std::collections::BTreeMap<&'static str, Vec<u64>> =
+            std::collections::BTreeMap::new();
+        for _ in 0..samples {
+            let sample = measure_public_path_phases(&binaries).await?;
+            for (name, elapsed_ns) in sample {
+                phases.entry(name).or_default().push(elapsed_ns);
+            }
+        }
+        Ok::<_, Box<dyn Error + Send + Sync>>(phases)
+    })?;
+
+    let mut phase_rows = Vec::new();
+    let mut total_mean = 0_u128;
+    for (name, samples_ns) in &report {
+        let summary = summarize_samples(samples_ns);
+        // Exclude aggregate rows from the share denominator.
+        if *name != "full_case_cycle_mean" {
+            total_mean = total_mean.saturating_add(u128::from(summary.mean_ns));
+        }
+        phase_rows.push((name, summary));
+    }
+    let mut phases_json = Vec::new();
+    let mut shares = Vec::new();
+    for (name, summary) in &phase_rows {
+        let share_bps = if total_mean == 0 || *name == "full_case_cycle_mean" {
+            0
+        } else {
+            (u128::from(summary.mean_ns) * 10_000) / total_mean
+        };
+        if *name != "full_case_cycle_mean" {
+            shares.push(((*name).to_owned(), share_bps, summary.mean_ns));
+        }
+        phases_json.push(format!(
+            concat!(
+                "{{\"phase\":\"{}\",\"sample_count\":{},\"min_ns\":{},\"p50_ns\":{},",
+                "\"p95_ns\":{},\"p99_ns\":{},\"max_ns\":{},\"mean_ns\":{},",
+                "\"share_basis_points\":{}}}"
+            ),
+            name,
+            summary.sample_count,
+            summary.min_ns,
+            summary.p50_ns,
+            summary.p95_ns,
+            summary.p99_ns,
+            summary.max_ns,
+            summary.mean_ns,
+            share_bps
+        ));
+    }
+    shares.sort_by(|left, right| right.1.cmp(&left.1));
+    let mut hint = String::from(
+        "Inspect the largest share_basis_points phase first; if server_start_ready or bootstrap_deploy_credentials dominate, whole-suite process timings are lifecycle-dominated.",
+    );
+    if let Some((name, share_bps, _)) = shares.first() {
+        if *share_bps >= 2_500 {
+            hint = format!(
+                "Phase `{name}` is {:.1}% of mean sample time; prioritize that surface before command-kernel tuning.",
+                *share_bps as f64 / 100.0
+            );
+        }
+    }
+
+    let body = format!(
+        concat!(
+            "{{\n",
+            "  \"schema\": \"riffdb.budget.public-path-diagnostics/v1\",\n",
+            "  \"report_id\": \"budget-public-path-diagnostics\",\n",
+            "  \"sample_count\": {},\n",
+            "  \"warmup_count\": {},\n",
+            "  \"timing_source\": \"std::time::Instant\",\n",
+            "  \"phases\": [\n    {}\n  ],\n",
+            "  \"bottleneck_hint\": {},\n",
+            "  \"limitations\": [\n",
+            "    \"Each sample starts a fresh riffdbd and temporary database.\",\n",
+            "    \"Case timings include runner child-process overhead for sequential, contention, and same_key_replay.\",\n",
+            "    \"Diagnostic only; does not replace the frozen budget-comparison publication report.\"\n",
+            "  ]\n",
+            "}}\n"
+        ),
+        samples,
+        warmups,
+        phases_json.join(",\n    "),
+        json_string(&hint)
+    );
+    fs::write(&output, body)?;
+    println!("RIFFDB_BUDGET_PUBLIC_PATH_DIAGNOSTICS_REPORT={}", output.display());
+    Ok(())
+}
+
+struct PhaseSummary {
+    sample_count: usize,
+    min_ns: u64,
+    p50_ns: u64,
+    p95_ns: u64,
+    p99_ns: u64,
+    max_ns: u64,
+    mean_ns: u64,
+}
+
+fn summarize_samples(samples_ns: &[u64]) -> PhaseSummary {
+    let mut sorted = samples_ns.to_vec();
+    sorted.sort_unstable();
+    let sample_count = sorted.len();
+    assert!(sample_count > 0);
+    let sum: u128 = sorted.iter().map(|sample| u128::from(*sample)).sum();
+    PhaseSummary {
+        sample_count,
+        min_ns: sorted[0],
+        p50_ns: nearest_rank(&sorted, 50),
+        p95_ns: nearest_rank(&sorted, 95),
+        p99_ns: nearest_rank(&sorted, 99),
+        max_ns: *sorted.last().expect("nonempty"),
+        mean_ns: u64::try_from(sum / sample_count as u128).expect("mean fits u64"),
+    }
+}
+
+fn nearest_rank(sorted: &[u64], percentile: usize) -> u64 {
+    let numerator = sorted.len().saturating_mul(percentile);
+    let rank = numerator.div_ceil(100).max(1);
+    sorted[rank - 1]
+}
+
+fn duration_ns(duration: Duration) -> u64 {
+    u64::try_from(duration.as_nanos()).expect("phase sample fits u64")
+}
+
+fn json_string(value: &str) -> String {
+    let mut encoded = String::from("\"");
+    for ch in value.chars() {
+        match ch {
+            '"' => encoded.push_str("\\\""),
+            '\\' => encoded.push_str("\\\\"),
+            '\n' => encoded.push_str("\\n"),
+            c if c.is_control() => encoded.push_str(&format!("\\u{:04x}", c as u32)),
+            c => encoded.push(c),
+        }
+    }
+    encoded.push('"');
+    encoded
+}
+
+fn required_diagnostics_output_path() -> TestResult<PathBuf> {
+    let raw = std::env::var("RIFFDB_BUDGET_PUBLIC_PATH_DIAGNOSTICS_OUTPUT")
+        .map_err(|_| test_failure("RIFFDB_BUDGET_PUBLIC_PATH_DIAGNOSTICS_OUTPUT is required"))?;
+    if raw.is_empty() || raw.len() > 4_096 {
+        return Err(test_failure(
+            "RIFFDB_BUDGET_PUBLIC_PATH_DIAGNOSTICS_OUTPUT is empty or too long",
+        ));
+    }
+    let path = PathBuf::from(raw);
+    if !path.is_absolute() {
+        return Err(test_failure(
+            "RIFFDB_BUDGET_PUBLIC_PATH_DIAGNOSTICS_OUTPUT must be absolute",
+        ));
+    }
+    Ok(path)
+}
+
+fn diagnostics_sample_count() -> usize {
+    parse_bounded_usize_env("RIFFDB_BUDGET_DIAGNOSTICS_SAMPLES", 3, 1, 100)
+}
+
+fn diagnostics_warmup_count() -> usize {
+    parse_bounded_usize_env("RIFFDB_BUDGET_DIAGNOSTICS_WARMUPS", 0, 0, 20)
+}
+
+fn parse_bounded_usize_env(name: &str, default: usize, minimum: usize, maximum: usize) -> usize {
+    let value = std::env::var(name).ok().map_or(default, |raw| {
+        raw.parse()
+            .unwrap_or_else(|_| panic!("{name} must be a usize"))
+    });
+    assert!(
+        (minimum..=maximum).contains(&value),
+        "{name} must be in {minimum}..={maximum}"
+    );
+    value
+}
+
+async fn measure_public_path_phases(
+    binaries: &ProcessBinaries,
+) -> TestResult<Vec<(&'static str, u64)>> {
+    // Canonical cases share budget keys, so each case needs a fresh database.
+    let sequential = measure_public_case_cycle(binaries, "sequential").await?;
+    let contention = measure_public_case_cycle(binaries, "contention").await?;
+    let replay = measure_public_case_cycle(binaries, "same_key_replay").await?;
+
+    let mean3 = |a: u64, b: u64, c: u64| a.saturating_add(b).saturating_add(c) / 3;
+    Ok(vec![
+        (
+            "server_start_ready",
+            mean3(
+                sequential.server_start_ready_ns,
+                contention.server_start_ready_ns,
+                replay.server_start_ready_ns,
+            ),
+        ),
+        (
+            "grpc_connect",
+            mean3(
+                sequential.grpc_connect_ns,
+                contention.grpc_connect_ns,
+                replay.grpc_connect_ns,
+            ),
+        ),
+        (
+            "bootstrap_deploy_credentials",
+            mean3(
+                sequential.bootstrap_deploy_credentials_ns,
+                contention.bootstrap_deploy_credentials_ns,
+                replay.bootstrap_deploy_credentials_ns,
+            ),
+        ),
+        ("runner_sequential", sequential.runner_case_ns),
+        ("runner_contention", contention.runner_case_ns),
+        ("runner_same_key_replay", replay.runner_case_ns),
+        (
+            "server_shutdown",
+            mean3(
+                sequential.server_shutdown_ns,
+                contention.server_shutdown_ns,
+                replay.server_shutdown_ns,
+            ),
+        ),
+        (
+            "full_case_cycle_mean",
+            mean3(
+                sequential.full_cycle_ns,
+                contention.full_cycle_ns,
+                replay.full_cycle_ns,
+            ),
+        ),
+    ])
+}
+
+struct PublicCaseCycle {
+    server_start_ready_ns: u64,
+    grpc_connect_ns: u64,
+    bootstrap_deploy_credentials_ns: u64,
+    runner_case_ns: u64,
+    server_shutdown_ns: u64,
+    full_cycle_ns: u64,
+}
+
+async fn measure_public_case_cycle(
+    binaries: &ProcessBinaries,
+    case: &'static str,
+) -> TestResult<PublicCaseCycle> {
+    let full_started = Instant::now();
+    let temporary = TemporaryDirectory::new()?;
+    let database_path = temporary.path().join("riffdb.redb");
+    let backup_root = temporary.path().join("backups");
+    let capability_keys_path = temporary.path().join("capability.keys");
+    let idempotency_keys_path = temporary.path().join("idempotency.keys");
+    let bootstrap_path = temporary.path().join("bootstrap.credential");
+    let bearer_path = temporary.path().join("runner.credential");
+
+    write_protected_file(&capability_keys_path, CAPABILITY_KEY_DOCUMENT)?;
+    write_protected_file(&idempotency_keys_path, IDEMPOTENCY_KEY_DOCUMENT)?;
+    let generated = generate_bootstrap_credential(BOOTSTRAP_UNIX_MILLISECONDS, &SystemEntropy)?;
+    write_protected_file(&bootstrap_path, generated.render_document().expose_secret())?;
+    drop(generated);
+    let retained = load_bootstrap_credential_file(&bootstrap_path)?;
+
+    let start_ready = Instant::now();
+    let mut process = ServerProcess::spawn(
+        &binaries.riffdbd,
+        &database_path,
+        &backup_root,
+        &capability_keys_path,
+        &idempotency_keys_path,
+    )?;
+    let address = process.wait_for_ready_address()?;
+    let server_start_ready_ns = duration_ns(start_ready.elapsed());
+    let endpoint = format!("http://{address}");
+
+    let connect_started = Instant::now();
+    let mut client = connect(&endpoint).await?;
+    let grpc_connect_ns = duration_ns(connect_started.elapsed());
+
+    let bootstrap_started = Instant::now();
+    let credentials = bootstrap_deploy_and_issue(&mut client, &retained).await?;
+    let bootstrap_deploy_credentials_ns = duration_ns(bootstrap_started.elapsed());
+    write_protected_file(&bearer_path, credentials.runner.as_bytes())?;
+
+    let case_started = Instant::now();
+    let output = invoke_runner(&binaries.runner, case, &endpoint, &bearer_path)?;
+    assert_runner_output(
+        &output,
+        0,
+        &expected_success(case),
+        b"",
+        &format!("diagnostics {case}"),
+    )?;
+    let runner_case_ns = duration_ns(case_started.elapsed());
+
+    let shutdown_started = Instant::now();
+    process.shutdown_cleanly()?;
+    let server_shutdown_ns = duration_ns(shutdown_started.elapsed());
+
+    Ok(PublicCaseCycle {
+        server_start_ready_ns,
+        grpc_connect_ns,
+        bootstrap_deploy_credentials_ns,
+        runner_case_ns,
+        server_shutdown_ns,
+        full_cycle_ns: duration_ns(full_started.elapsed()),
     })
 }
 
