@@ -1,7 +1,7 @@
-spec_version: '0.35'
+spec_version: '0.36'
 product: RiffDB
 repository: riffdb
-status: implementation-handoff
+status: application-platform-implementation
 source_spec: SPEC.md
 normative_terms:
 - MUST
@@ -55,6 +55,17 @@ gates:
   - WP-155
   - WP-190
   - WP-200
+- id: P3
+  name: Symbolic application platform
+  requires:
+  - WP-205
+  - WP-210
+  - WP-220
+  - WP-230
+  - WP-240
+  - WP-250
+  - WP-260
+  - WP-270
 work_packages:
 - id: WP-000
   name: Repository foundation
@@ -2781,4 +2792,411 @@ work_packages:
   - ./scripts/demo --assert
   - ./scripts/release-poc --verify
   exit_gate: POC-001 through POC-010 are signed off and architecture review records the next-stage decision.
+  human_review_triggers: *id001
+- id: WP-205
+  name: Application-path latency decomposition and optimization baseline
+  depends_on:
+  - WP-200
+  objective: Reproduce TicketDesk's public-path latency, measure every semantic stage over a reused connection, and
+    remove repeated catalog/capability work without weakening current-policy or authoritative-read guarantees.
+  requirements:
+  - PERF-001
+  - PERF-002
+  required_adrs:
+  - ADR-0007
+  - ADR-0009
+  - ADR-0025
+  - ADR-0026
+  - ADR-0027
+  - ADR-0053
+  allowed_paths:
+  - Cargo.toml
+  - Cargo.lock
+  - crates/riffdb-auth/**
+  - crates/riffdb-catalog/**
+  - crates/riffdb-observability/**
+  - crates/riffdb-service/**
+  - crates/riffdb-server/**
+  - crates/riffdb-api-grpc/**
+  - crates/riffdb-storage-api/**
+  - crates/riffdb-storage-memory/**
+  - crates/riffdb-storage-redb/**
+  - crates/riffdb-testkit/**
+  - examples/app-baseline/**
+  - benchmarks/application-path/**
+  - scripts/benchmark-application-path
+  - docs/performance/**
+  deliverables:
+  - Reproducible warm/cold reference profile with a reused HTTP/2 connection
+  - Bounded redaction-safe per-stage latency and operation-count telemetry
+  - Immutable rebuildable current catalog and capability views with startup/readiness and publication tests
+  - Before/after TicketDesk report proving whether unary transport remains within its accepted budget
+  acceptance_commands:
+  - cargo test -p riffdb-service --all-features
+  - cargo test -p riffdb-server --all-features
+  - cargo test -p riffdb-api-grpc --all-features
+  - ./scripts/benchmark-application-path --assert-wp205
+  - cargo fmt --all -- --check
+  - cargo clippy --workspace --all-targets --all-features -- -D warnings
+  exit_gate: Every semantic stage is measured; point and command paths meet PERF-002 or have an evidence-backed
+    blocking diagnosis; current-view gaps stop readiness; no authorization, audit, durability, or compatibility
+    guarantee is weakened.
+  human_review_triggers: *id001
+- id: WP-210
+  name: RiffQL syntax, formatter, and TicketDesk corpus
+  depends_on:
+  - WP-205
+  objective: Freeze the versioned formal read-only RiffQL source language and prove it can express every bounded
+    TicketDesk page without admitting SQL, mutation, natural-language execution, or unbounded computation.
+  requirements:
+  - RQL-001
+  - RQL-002
+  required_adrs:
+  - ADR-0002
+  - ADR-0011
+  - ADR-0013
+  - ADR-0016
+  - ADR-0051
+  allowed_paths:
+  - Cargo.toml
+  - Cargo.lock
+  - crates/riffdb-riffql-syntax/**
+  - crates/riffdb-types/**
+  - crates/riffdb-diagnostics/**
+  - queries/ticketdesk/**
+  - docs/riffql/**
+  deliverables:
+  - Versioned lexer, parser, source AST, formatter, and bounded parser diagnostics
+  - Canonical formatting and parse/format/parse stability fixtures
+  - TicketDesk list, detail, and summary query corpus
+  - Negative corpus for mutation, recursion, unbounded many, and unsupported access forms
+  acceptance_commands:
+  - cargo test -p riffdb-riffql-syntax --all-features
+  - cargo test -p riffdb-riffql-syntax --test ticketdesk_corpus
+  - cargo fmt --all -- --check
+  - cargo clippy -p riffdb-riffql-syntax --all-targets --all-features -- -D warnings
+  exit_gate: The grammar and formatter are deterministic, every accepted many binding has explicit bounds, and the
+    complete TicketDesk corpus parses without storage IDs or encoded keys.
+  human_review_triggers: *id001
+- id: WP-220
+  name: Symbolic catalog, source maps, schemas, and diagnostics
+  depends_on:
+  - WP-210
+  objective: Resolve RiffQL entirely through exact contract symbols and publish bounded name-addressed parameter and
+    result schemas plus source-spanned diagnostics.
+  requirements:
+  - RQL-005
+  - QRY-004
+  required_adrs:
+  - ADR-0013
+  - ADR-0020
+  - ADR-0027
+  - ADR-0046
+  - ADR-0051
+  - ADR-0052
+  allowed_paths:
+  - Cargo.toml
+  - Cargo.lock
+  - crates/riffdb-riffql-syntax/**
+  - crates/riffdb-query-ir/**
+  - crates/riffdb-contract-ir/**
+  - crates/riffdb-catalog/**
+  - crates/riffdb-diagnostics/**
+  - crates/riffdb-errors/**
+  - crates/riffdb-types/**
+  - fixtures/riffql/**
+  - docs/riffql/**
+  deliverables:
+  - Exact-contract symbolic catalog with deterministic name lookup and ambiguity rejection
+  - Versioned canonical typed query IR and source maps
+  - Name-addressed parameter and result schemas
+  - Stable bounded diagnostics and source-span snapshots for every semantic failure class
+  acceptance_commands:
+  - cargo test -p riffdb-query-ir --all-features
+  - cargo test -p riffdb-catalog --all-features
+  - cargo test -p riffdb-diagnostics --all-features
+  - ./scripts/check-generated
+  - cargo fmt --all -- --check
+  - cargo clippy --workspace --all-targets --all-features -- -D warnings
+  exit_gate: TicketDesk queries resolve from names to exact types with reproducible schemas/source maps, and no
+    application-facing artifact requires a numeric semantic ID.
+  human_review_triggers: *id001
+- id: WP-230
+  name: RiffQL type checker, authorization analysis, and deterministic planner
+  depends_on:
+  - WP-210
+  - WP-220
+  objective: Compile symbolic queries into a closed, bounded, same-partition access program with complete
+    compiler-derived authorization requirements and stable explain plans.
+  requirements:
+  - RQL-003
+  - RQL-004
+  required_adrs:
+  - ADR-0007
+  - ADR-0013
+  - ADR-0016
+  - ADR-0026
+  - ADR-0027
+  - ADR-0038
+  - ADR-0051
+  - ADR-0053
+  allowed_paths:
+  - Cargo.toml
+  - Cargo.lock
+  - crates/riffdb-query-ir/**
+  - crates/riffdb-query-compiler/**
+  - crates/riffdb-riffql-syntax/**
+  - crates/riffdb-contract-ir/**
+  - crates/riffdb-catalog/**
+  - crates/riffdb-policy/**
+  - crates/riffdb-diagnostics/**
+  - crates/riffdb-errors/**
+  - crates/riffdb-types/**
+  - fixtures/riffql/**
+  - docs/riffql/**
+  deliverables:
+  - Resolver and type checker for the accepted RiffQL subset
+  - Deterministic rule planner with partition, cardinality, fan-out, order, and index proofs
+  - Canonical closed QueryAccessProgram, plan identity, and bounded explain form
+  - Complete pre-execution field/row-scope authorization analysis with no silent omission
+  - Suggested compatible index diagnostics and deterministic plan fixtures
+  acceptance_commands:
+  - cargo test -p riffdb-query-compiler --all-features
+  - cargo test -p riffdb-query-compiler --test ticketdesk_plans
+  - cargo test -p riffdb-query-compiler --test authorization
+  - ./scripts/check-generated
+  - cargo fmt --all -- --check
+  - cargo clippy -p riffdb-query-compiler --all-targets --all-features -- -D warnings
+  exit_gate: Every TicketDesk query has one stable bounded same-partition plan and access set; unbounded, nonlocal,
+    unordered, inaccessible, or unindexed variants fail with named source-spanned diagnostics.
+  human_review_triggers: *id001
+- id: WP-240
+  name: One-snapshot composite query execution
+  depends_on:
+  - WP-205
+  - WP-230
+  objective: Execute a closed query access program inside one authoritative read snapshot, batch dependent reads,
+    enforce cardinality and bounds, and return one typed page with epoch-safe pagination.
+  requirements:
+  - QRY-001
+  - QRY-002
+  required_adrs:
+  - ADR-0004
+  - ADR-0007
+  - ADR-0011
+  - ADR-0016
+  - ADR-0027
+  - ADR-0035
+  - ADR-0038
+  - ADR-0051
+  - ADR-0053
+  allowed_paths:
+  - Cargo.toml
+  - Cargo.lock
+  - crates/riffdb-query-ir/**
+  - crates/riffdb-query-executor/**
+  - crates/riffdb-storage-api/**
+  - crates/riffdb-storage-memory/**
+  - crates/riffdb-storage-redb/**
+  - crates/riffdb-service/**
+  - crates/riffdb-policy/**
+  - crates/riffdb-errors/**
+  - crates/riffdb-types/**
+  - crates/riffdb-testkit/**
+  - fixtures/riffql/**
+  - benchmarks/application-path/**
+  deliverables:
+  - Storage-neutral query execution port and closed owned QuerySnapshot result
+  - Memory and redb adapters using one read transaction per query request
+  - Deterministic dependent point-read batching, cardinality checks, and whole-query budgets
+  - Canonical cursor binding and stale-epoch rejection
+  - Cross-backend semantic, snapshot, pagination, and performance tests
+  acceptance_commands:
+  - cargo test -p riffdb-query-executor --all-features
+  - cargo test -p riffdb-storage-memory --all-features
+  - cargo test -p riffdb-storage-redb --all-features
+  - cargo test -p riffdb-service --all-features
+  - cargo fmt --all -- --check
+  - cargo clippy --workspace --all-targets --all-features -- -D warnings
+  exit_gate: Each TicketDesk page executes in one service request and one authoritative snapshot, cross-backend
+    outputs agree, stale cursors fail closed, and list/detail latency meets PERF-002 without covering-format changes.
+  human_review_triggers: *id001
+- id: WP-250
+  name: RiffQL application gRPC, CLI, REPL, and MCP surfaces
+  depends_on:
+  - WP-220
+  - WP-230
+  - WP-240
+  objective: Publish the symbolic application interface through additive unary gRPC, CLI, and MCP adapters while
+    preserving the existing kernel protocol and the single shared-service authorization path.
+  requirements:
+  - DX-001
+  - DX-002
+  required_adrs:
+  - ADR-0007
+  - ADR-0008
+  - ADR-0025
+  - ADR-0026
+  - ADR-0027
+  - ADR-0028
+  - ADR-0040
+  - ADR-0046
+  - ADR-0052
+  - ADR-0053
+  allowed_paths:
+  - Cargo.toml
+  - Cargo.lock
+  - proto/riffdb/app/v1/**
+  - crates/riffdb-proto/**
+  - crates/riffdb-service/**
+  - crates/riffdb-api-grpc/**
+  - crates/riffdb-client-rust/**
+  - crates/riffdb-api-mcp/**
+  - crates/riffdb-mcp-stdio/**
+  - crates/riffdb-cli/**
+  - crates/riffdb-server/**
+  - crates/riffdb-errors/**
+  - crates/riffdb-types/**
+  - fixtures/proto/**
+  - fixtures/mcp/**
+  - docs/riffql/**
+  deliverables:
+  - Additive versioned application Protobuf and generated compatibility fixtures
+  - Shared-service check, explain, ad-hoc execute, named execute, and symbolic command operations
+  - CLI query/check/explain/REPL and symbolic command invocation
+  - Small MCP symbolic tool/resource surface with separate read and mutation risk
+  - Kernel/application compatibility, authorization, schema, redaction, and transport-parity tests
+  acceptance_commands:
+  - cargo test -p riffdb-proto --all-features
+  - cargo test -p riffdb-api-grpc --all-features
+  - cargo test -p riffdb-api-mcp --all-features
+  - cargo test -p riffdb-cli --all-features
+  - ./scripts/check-generated
+  - cargo fmt --all -- --check
+  - cargo clippy --workspace --all-targets --all-features -- -D warnings
+  exit_gate: The same RiffQL and command text works through CLI and MCP over the shared application service, old
+    kernel fixtures remain compatible, and no transport derives policy or touches storage.
+  human_review_triggers: *id001
+- id: WP-260
+  name: Immutable named query modules and optional client generation
+  depends_on:
+  - WP-220
+  - WP-230
+  - WP-240
+  - WP-250
+  objective: Compile, deploy, activate, execute, inspect, and generate clients from immutable query modules pinned to
+    exact contract identities.
+  requirements:
+  - QRY-003
+  - DX-003
+  required_adrs:
+  - ADR-0006
+  - ADR-0013
+  - ADR-0020
+  - ADR-0021
+  - ADR-0022
+  - ADR-0027
+  - ADR-0052
+  allowed_paths:
+  - Cargo.toml
+  - Cargo.lock
+  - proto/riffdb/app/v1/**
+  - proto/riffdb/storage/v1/**
+  - crates/riffdb-query-ir/**
+  - crates/riffdb-query-compiler/**
+  - crates/riffdb-query-module/**
+  - crates/riffdb-catalog/**
+  - crates/riffdb-storage-api/**
+  - crates/riffdb-storage-memory/**
+  - crates/riffdb-storage-redb/**
+  - crates/riffdb-service/**
+  - crates/riffdb-proto/**
+  - crates/riffdb-api-grpc/**
+  - crates/riffdb-api-mcp/**
+  - crates/riffdb-client-rust/**
+  - crates/riffdb-cli/**
+  - crates/riffdb-server/**
+  - crates/riffdb-types/**
+  - crates/riffdb-errors/**
+  - crates/riffdb-testkit/**
+  - clients/typescript/**
+  - fixtures/query-modules/**
+  - fixtures/proto/**
+  - fixtures/mcp/**
+  - scripts/check-generated
+  - docs/riffql/**
+  deliverables:
+  - Canonical query-module codec, identity, compatibility fixtures, and startup validation
+  - Audited compare-and-swap deployment and active-pointer lifecycle
+  - Exact active/module-selector execution and plan cache
+  - Reproducible Rust and TypeScript generation from named queries and commands
+  - Generated MCP tools for named operations without removing the general symbolic surface
+  acceptance_commands:
+  - cargo test -p riffdb-query-module --all-features
+  - cargo test -p riffdb-catalog --all-features
+  - cargo test -p riffdb-storage-redb --all-features
+  - cargo test -p riffdb-client-rust --all-features
+  - ./scripts/check-generated
+  - cargo fmt --all -- --check
+  - cargo clippy --workspace --all-targets --all-features -- -D warnings
+  exit_gate: Query modules survive restart with exact identity, activation is audited and CAS-safe, named execution
+    is equivalent to ad-hoc execution, and both generated clients compile against checked fixtures.
+  human_review_triggers: *id001
+- id: WP-270
+  name: Local development workflow and independent-agent TicketDesk gate
+  depends_on:
+  - WP-250
+  - WP-260
+  objective: Deliver the ten-minute symbolic local workflow, then independently rebuild TicketDesk without
+    storage-shaped application plumbing and enforce the application performance gates.
+  requirements:
+  - DX-004
+  - DX-005
+  - PERF-002
+  required_adrs:
+  - ADR-0007
+  - ADR-0009
+  - ADR-0026
+  - ADR-0041
+  - ADR-0051
+  - ADR-0052
+  - ADR-0053
+  allowed_paths:
+  - Cargo.toml
+  - Cargo.lock
+  - crates/riffdb-cli/**
+  - crates/riffdb-client-rust/**
+  - crates/riffdb-server/**
+  - crates/riffdb-service/**
+  - crates/riffdb-auth/**
+  - crates/riffdb-catalog/**
+  - crates/riffdb-query-module/**
+  - crates/riffdb-api-grpc/**
+  - crates/riffdb-api-mcp/**
+  - examples/ticketdesk/**
+  - examples/app-baseline/**
+  - queries/ticketdesk/**
+  - scripts/riffdb-dev*
+  - scripts/benchmark-application-path
+  - benchmarks/application-path/**
+  - docs/getting-started/**
+  - docs/riffql/**
+  - README.md
+  - release/**
+  deliverables:
+  - One-command bounded local bootstrap with named dev-role presets
+  - Contract/query watch mode and bounded concurrent seed commands
+  - Fresh-agent TicketDesk implementation using only symbolic application surfaces
+  - Machine-checked source scan rejecting IDs, protobuf construction, encoded-key parsing, masks, and public N+1 reads
+  - Reproducible application-DX transcript, independent rating, and PERF-002 report
+  acceptance_commands:
+  - cargo test -p riffdb-cli --all-features
+  - ./scripts/riffdb-dev-acceptance
+  - ./scripts/benchmark-application-path --assert-wp270
+  - ./scripts/check-ticketdesk-symbolic-boundary
+  - ./scripts/ci-all
+  - cargo doc --workspace --no-deps
+  - cargo deny check
+  exit_gate: A fresh coding agent builds and exercises TicketDesk with one symbolic request per page or mutation, no
+    forbidden low-level glue, a documented rating of at least 8/10, and all PERF-002 gates passing.
   human_review_triggers: *id001

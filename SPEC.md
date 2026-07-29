@@ -6,9 +6,9 @@
 **Tagline:** *Vibe fast. Commit safely.*  
 **Category:** Contract-first operational database for agent-built applications  
 
-**Version:** 0.35
-**Status:** Architecture-approved implementation handoff
-**Date:** 24 July 2026
+**Version:** 0.36
+**Status:** Application-platform implementation handoff
+**Date:** 28 July 2026
 **Audience:** Coding agents, database engineers, compiler engineers, security reviewers, and technical product leads  
 **Working binaries:** `riffdbd`, `riffdb`, `riffdb-mcp`  
 **Working URI scheme:** `riffdb://`  
@@ -25,7 +25,7 @@
 | Repository | `riffdb` |
 | Primary language | Rust |
 | POC deployment | Standalone, single-node server |
-| Primary application API | gRPC over HTTP/2 |
+| Primary application API | RiffQL and generated named operations over gRPC |
 | Native agent API | Model Context Protocol (MCP) |
 | Storage baseline | `redb`, behind a narrow internal storage interface |
 | Rust baseline | Rust 1.97.0 |
@@ -71,6 +71,7 @@
 | 0.33 | 2026-07-23 | Applied accepted ADR-0046: corrected the WP-137/WP-140 public presentation boundary with additive decimal precision and bounded contract-compatibility metadata, exact name-only enum submission, service-owned schema-bound outcome names, complete resource content and factual generated examples, plus hosted-only post-authentication MCP limiting. No durable, IR, bundle, plan-hash, URI, RPC, storage, or dependency boundary changed. |
 | 0.34 | 2026-07-23 | Applied accepted ADR-0047 and ADR-0048: corrected thirteen pre-release MCP schemas to advertise their required object root without changing accepted instance shapes, and separated the existing 14-per-tick logical observer-operation bound from an enforced 46-per-tick/8,280-per-session physical service-call bound while removing the redundant stdio parity probe. No durable, IR, compiler, contract, public Protobuf, URI, or storage boundary changed. |
 | 0.35 | 2026-07-24 | Applied accepted ADR-0049 and ADR-0050: completed bounded derived-worker recovery observations, catalog-owned event materialization and projection expression ownership, closed owner telemetry and hosted-MCP server composition; activated WP-155 with three public offline maintenance operations, a checksummed external receipt ledger, staged-backup authorization, and the explicit restore-rewind limitation. |
+| 0.36 | 2026-07-28 | Applied accepted ADR-0051 through ADR-0053: established bounded symbolic RiffQL, exact-contract immutable query modules, an additive application API above the compatible kernel gRPC surface, one-snapshot composite query execution, rebuildable current catalog/capability views, and measured unary-gRPC-first application performance gates through WP-270. |
 
 ### Normative language
 
@@ -5210,7 +5211,7 @@ Risk owners are assigned in the project tracker. A risk may be closed only with 
 
 ## 22.1 Required ADRs
 
-Specification v0.35 records each ADR's current status. An Accepted record is
+Specification v0.36 records each ADR's current status. An Accepted record is
 authoritative; a Proposed record remains planning input until its exact text
 receives human review. Where this table and a work-package deadline differ, the
 earlier deadline governs unless a reviewed reconciliation changes both sources.
@@ -5267,6 +5268,9 @@ earlier deadline governs unless a reviewed reconciliation changes both sources.
 | `ADR-0048` | Accepted | Separate logical observer operations from metered physical service calls and remove the stdio parity probe | WP-140 observer bounds and conformance |
 | `ADR-0049` | Accepted | Bounded derived recovery scans/fences, catalog-owned event materialization, narrow projection evaluator ownership, closed owner telemetry, and hosted-MCP process composition | WP-160/WP-170/WP-180 correction and WP-185 composition |
 | `ADR-0050` | Accepted | Three public offline maintenance operations, current/staged authorization, external checksummed receipts, exclusive restore lifecycle, and explicit history-rewind semantics | WP-155 and WP-190/WP-200 evidence |
+| `ADR-0051` | Accepted | Formal bounded symbolic RiffQL with typed cardinality, deterministic indexed planning, same-partition locality, and compiler-derived authorization | WP-210 through WP-240 |
+| `ADR-0052` | Accepted | Immutable exact-contract query modules, additive application gRPC, symbolic MCP/CLI operations, and optional generated clients | WP-250 and WP-260 |
+| `ADR-0053` | Accepted | One-snapshot composite execution, epoch-bound cursors, rebuildable current catalog/capability views, and measured unary-gRPC-first optimization | WP-205, WP-240, and WP-270 |
 
 ## 22.2 Decisions to resolve before implementation reaches the named gate
 
@@ -5558,6 +5562,101 @@ MVP is done only when:
 - Agent branches and semantic change review cannot mutate production without policy and approval.
 - Support boundaries and post-MVP exclusions remain explicit.
 
+## 24.3 Application-platform milestone
+
+The post-POC application milestone keeps the existing `riffdb.v1` surface as a
+compatible, supported kernel protocol. Normal application and agent development
+uses formal RiffQL, named operations, or clients generated from named
+operations. Raw stable IDs, field masks, encoded index keys, and caller-built
+access plans are not part of that primary experience.
+
+RiffQL is read-only. Compiled contract commands remain the only application
+mutation mechanism. Natural language may be translated to RiffQL by an agent,
+but the database accepts only deterministic formal source and typed values.
+
+- `RQL-001`: The implementation MUST provide one versioned formal RiffQL
+  grammar, formatter, canonical AST, and parser for both ad-hoc and named
+  read-only queries. It MUST NOT admit mutation, SQL escape, natural-language
+  interpretation, host callbacks, network/filesystem/clock/randomness access,
+  unbounded loops, or recursion.
+- `RQL-002`: RiffQL MUST express typed parameters and explicit `one`, `maybe`,
+  and bounded `many` cardinality. The accepted access subset is limited to
+  primary-key lookups, declared-index prefix/range scans, bounded ordered
+  unions, and bounded same-partition equijoins through a complete key or
+  declared index. Every per-parent and whole-query row/fan-out bound MUST be
+  statically proven.
+- `RQL-003`: Resolution and planning MUST use contract symbols while emitting a
+  closed canonical internal access program. Planning MUST be deterministic,
+  MUST prove one partition route and index-compatible ordering, and MUST expose
+  stable plan identity and a bounded explain representation.
+- `RQL-004`: Required entity, field, index, and row-scope access MUST be derived
+  from the complete query before execution and authorized through the shared
+  service. Unauthorized requested data MUST reject the query rather than be
+  silently omitted unless the declared result schema explicitly models
+  redaction.
+- `RQL-005`: Parser, resolver, type, locality, bound, index, cardinality, and
+  authorization failures MUST produce bounded redaction-safe diagnostics with
+  stable codes, contract/query symbols, source spans, and safe remediation.
+  A missing usable index SHOULD identify the smallest compatible contract-index
+  change without revealing inaccessible schema.
+
+- `QRY-001`: One query request MUST execute its complete closed access program
+  against one authoritative storage snapshot and return only owned bounded
+  observations after the storage transaction closes. No engine iterator,
+  callback, or transaction handle may cross the query-execution port.
+- `QRY-002`: Pagination MUST be snapshot-per-request. A cursor MUST bind the
+  principal, exact contract/module/plan identities, canonical parameter hash,
+  ordering and continuation state, authorization constraint, and observed
+  index epochs; any incompatible or stale cursor MUST fail closed.
+- `QRY-003`: A deployed query module MUST be immutable, content-addressed,
+  versioned, and pinned to an exact retained contract lineage, version, and
+  bundle hash. Activation MUST be audited and compare-and-swap safe, and
+  generated clients MUST pin exact contract and module identities.
+- `QRY-004`: Ad-hoc and named query requests and responses MUST use
+  name-addressed typed values and generated parameter/result schemas. The
+  public application surface MUST NOT require numeric entity, field, index, or
+  command-input IDs, encoded keys, protobuf field maps, field masks, or access
+  plans from its caller.
+
+- `DX-001`: The implementation MUST add an additive versioned application gRPC
+  API over the same API-neutral service, authorization, compiler, query
+  executor, command runtime, and commit coordinator. Existing `riffdb.v1`
+  requests and compatibility fixtures MUST remain supported as the kernel
+  protocol.
+- `DX-002`: CLI and MCP MUST expose contract description, query check/explain/
+  execute, named-query execution, and symbolic command execution through that
+  shared service. Read and mutation operations MUST remain distinct in schemas,
+  authorization, audit, and MCP risk presentation.
+- `DX-003`: Exact named query modules and compiled commands MUST optionally
+  generate reproducible Rust and TypeScript parameter/result/operation clients.
+  Code generation is a convenience and MUST NOT be required for ad-hoc RiffQL.
+- `DX-004`: `riffdb dev` MUST provide bounded local bootstrap, ordinary
+  capability grants from named development-role presets, contract/query watch
+  mode, and bounded concurrent seed-command execution without bypassing
+  production authorization or command semantics.
+- `DX-005`: The TicketDesk acceptance application MUST implement every list or
+  detail page with one symbolic query request and every mutation with one
+  symbolic command invocation, with no caller-visible stable numeric IDs,
+  hand-authored protobuf records, key decoding, manual field masks, or public
+  N+1 entity requests.
+
+- `PERF-001`: The application path MUST publish bounded redaction-safe latency
+  decomposition for transport, authentication, current-view lookup,
+  authorization, catalog/query compilation or cache lookup, authoritative
+  storage execution, and response encoding. Optimization evidence MUST compare
+  equivalent semantics over a reused HTTP/2 connection.
+- `PERF-002`: On the checked reference-machine profile, warm p50 latency MUST
+  be at most 5 ms for point reads, 15 ms for representative list/detail
+  queries, and 20 ms for one command; TicketDesk's 276-row seed MUST complete
+  within 3 seconds. The measured incremental unary gRPC transport/adaptation
+  cost MUST be at most 1 ms. A missed gate blocks WP-270 rather than weakening
+  authorization, durability, snapshot, command, audit, or compatibility
+  semantics.
+
+The milestone is complete only when WP-205 through WP-270 pass their package
+acceptance commands and an independent fresh-agent TicketDesk run satisfies
+`DX-005` and the published performance gates.
+
 ---
 
 # Appendix A. Core state and storage key examples
@@ -5641,9 +5740,10 @@ service AdminService {
 }
 ```
 
-This appendix intentionally repeats the five canonical services and exact 25-RPC
-inventory from Section 11.2. A sixth service or abbreviated RPC alias is not
-part of v0.35. Public messages MUST use stable field numbers, reserve removed
+This appendix intentionally repeats the five canonical kernel services and exact
+25-RPC `riffdb.v1` inventory from Section 11.2. That inventory remains
+compatible in v0.36; ADR-0052's additive `riffdb.app.v1` application service is
+versioned and tested separately. Public messages MUST use stable field numbers, reserve removed
 fields, bound nested sizes, use the exact `Value` family in Section 11.3, and
 distinguish absent values from defaults when semantics require it.
 
@@ -5721,5 +5821,9 @@ The implementation MUST prefer primary project documentation and pin reviewed ve
 | `PRJ-*` | Projection semantics |
 | `TEST-*` | Verification and failpoint requirements |
 | `REP-*` | Replication and distribution boundary |
+| `RQL-*` | RiffQL syntax, semantics, planning, and diagnostics |
+| `QRY-*` | Composite query execution and immutable query modules |
+| `DX-*` | Symbolic application surfaces, generation, and local workflow |
+| `PERF-*` | Application-path measurement and performance gates |
 
 Every normative requirement MUST be traceable to at least one automated test, review checklist item, or explicitly justified manual verification artifact before its stage can pass.

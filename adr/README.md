@@ -72,6 +72,9 @@ direction, merged draft, or implementation choice.
 | [0048](0048-mcp-observer-physical-call-accounting.md) | MCP Observer Physical-Call Accounting | Accepted |
 | [0049](0049-p2-derived-recovery-telemetry-and-hosted-composition.md) | P2 Derived Recovery, Telemetry, and Hosted Composition | Accepted |
 | [0050](0050-public-offline-backup-and-restore-maintenance.md) | Public Offline Backup and Restore Maintenance | Accepted |
+| [0051](0051-riffql-bounded-symbolic-query-language.md) | RiffQL Bounded Symbolic Query Language | Accepted |
+| [0052](0052-versioned-query-modules-and-application-surfaces.md) | Versioned Query Modules and Application Surfaces | Accepted |
+| [0053](0053-composite-query-snapshots-and-current-view-publication.md) | Composite Query Snapshots and Current-View Publication | Accepted |
 
 The human architecture review on 2026-07-12 approved the direction represented
 by ADR-0001 through ADR-0012. The human maintainer accepted ADR-0001 through
@@ -202,6 +205,13 @@ ADR-0049 likewise has a separate acceptance reference: the human maintainer's
 explicit confirmation in the current Codex session on 2026-07-24.
 ADR-0050 likewise has a separate acceptance reference: the human maintainer's
 explicit confirmation in the current Codex session on 2026-07-24.
+ADR-0051 through ADR-0053 likewise have a separate acceptance reference: the
+human maintainer's explicit 2026-07-28 authorization in the current Codex
+session to make the implementation decisions required through WP-270. Together
+they establish bounded symbolic RiffQL, immutable exact-contract query modules,
+the additive application API hierarchy, one-snapshot composite execution,
+rebuildable current catalog/capability views, and a unary-gRPC-first performance
+strategy.
 
 ## Workflow
 
