@@ -10,8 +10,24 @@ const CONTRACT: &str = include_str!("../../../examples/app-baseline/contracts/ti
 
 const QUERIES: &[(&str, &str)] = &[
     (
+        "get_ticket",
+        include_str!("../../../queries/ticketdesk/get_ticket.riffq"),
+    ),
+    (
+        "get_user",
+        include_str!("../../../queries/ticketdesk/get_user.riffq"),
+    ),
+    (
+        "list_comments",
+        include_str!("../../../queries/ticketdesk/list_comments.riffq"),
+    ),
+    (
         "list_tickets",
         include_str!("../../../queries/ticketdesk/list_tickets.riffq"),
+    ),
+    (
+        "list_tickets_by_assignee",
+        include_str!("../../../queries/ticketdesk/list_tickets_by_assignee.riffq"),
     ),
     (
         "ticket_page",
@@ -58,7 +74,11 @@ fn ticketdesk_queries_resolve_to_exact_name_addressed_schemas_and_source_maps() 
 fn list_query_schema_uses_contract_names_and_declared_page_bound() {
     let bundle = compile_contract_source(CONTRACT).expect("compile TicketDesk contract");
     let catalog = SymbolicCatalog::from_bundle(&bundle).expect("symbolic catalog");
-    let document = parse_query(QUERIES[0].1).expect("parse list query");
+    let list_query = QUERIES
+        .iter()
+        .find_map(|(name, source)| (*name == "list_tickets").then_some(*source))
+        .expect("ListTickets query is present");
+    let document = parse_query(list_query).expect("parse list query");
     let resolved = resolve_query_surface(&document, &catalog).expect("resolve list query");
 
     assert_eq!(

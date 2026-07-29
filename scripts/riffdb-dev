@@ -165,7 +165,7 @@ jq -e '
   .ok == true
   and .command == "query.module"
   and .result.module.module_name == "ticketdesk"
-  and (.result.queries | length) == 4
+  and (.result.queries | length) == 8
 ' "$work_root/inspect.json" >/dev/null
 
 run_seed() {

@@ -1,39 +1,34 @@
-//! Public gRPC TicketDesk adapter against a live `riffdbd`.
+//! Public symbolic TicketDesk adapter against a live `riffdbd`.
+//!
+//! All application reads use named RiffQL queries. All mutations use symbolic
+//! command invocation. There is no GetEntity/ScanIndex/field-id path here.
 
 #![forbid(unsafe_code)]
 
-mod schema;
 mod server;
-mod values;
 
 use std::error::Error;
 use std::fmt;
 
 use riffdb_app_baseline_core::{
     AppBackend, CommentRow, CommentSeed, LabelRow, OrganizationRow, ProjectMemberRow, ProjectRow,
-    SeedDataset, TicketDetailPage, TicketRow, TicketStatus, UserRow, UuidBytes,
+    SeedDataset, TicketDetailPage, TicketRow, TicketStatus, UserRow, UuidBytes, format_uuid,
 };
-use riffdb_client_rust::{
-    AttemptBudget, BearerCredential, CallMetadata, IdempotentCommand, RiffDbClient,
-    generate_request_id, v1,
+use riffdb_client_rust::{BearerCredential, CallMetadata, RiffDbClient};
+use riffdb_ticketdesk::{
+    AddProjectMemberInput, AttachLabelInput, CreateCommentInput, CreateLabelInput,
+    CreateOrganizationInput, CreateProjectInput, CreateTicketInput, CreateUserInput, GetTicketParams,
+    GetTicketResult, GetUserParams, GetUserResult, ListCommentsParams, ListCommentsResult,
+    ListTicketsByAssigneeParams, ListTicketsByAssigneeResult, ListTicketsParams, ListTicketsResult,
+    ProjectMembersParams, ProjectMembersResult, TicketDeskClient, TicketPageParams, TicketPageResult,
 };
 use tonic::transport::Endpoint;
 
-use schema::{
-    CONTRACT_LINEAGE, CONTRACT_VERSION, comment_field, entity, index, label_field, member_field,
-    org_field, project_field, ticket_field, ticket_label_field, user_field,
-};
-use values::{
-    entity_key, enum_value, field, field_map, record, require_string, require_uuid, string_value,
-    uuid_value,
-};
-
 pub use server::RiffDbServerSession;
 
-/// Public-gRPC application backend.
+/// Public symbolic application backend.
 pub struct RiffDbPublicBackend {
-    client: RiffDbClient,
-    metadata: CallMetadata,
+    client: TicketDeskClient,
 }
 
 impl RiffDbPublicBackend {
@@ -49,312 +44,11 @@ impl RiffDbPublicBackend {
         let metadata = CallMetadata::authenticated(
             BearerCredential::new(bearer_token).map_err(|_| RiffDbError::Connection)?,
         );
-        Ok(Self { client, metadata })
-    }
-
-
-
-    async fn execute_command(
-        &mut self,
-        command_name: &str,
-        input: v1::Value,
-    ) -> Result<(), RiffDbError> {
-        let command = IdempotentCommand::new(command_name, Some(CONTRACT_VERSION), input)
-            .map_err(|error| RiffDbError::Rpc(format!("bad command shape {command_name}: {error:?}")))?;
-        let budget = AttemptBudget::new(1).ok_or(RiffDbError::InvalidSchema)?;
-        let response = self
-            .client
-            .execute_with_retry(&command, budget, &self.metadata)
-            .await
-            .map_err(|e| {
-                RiffDbError::Rpc(format!(
-                    "EXECUTE_CMD {command_name} FAILED ({e:?}): {e}"
-                ))
-            })?;
-        // Accept committed/replayed; existence outcomes still complete as committed declared outcomes.
-        let status = v1::execute_command_response::CompletionStatus::try_from(response.status)
-            .map_err(|e| RiffDbError::Rpc(e.to_string()))?;
-        match status {
-            v1::execute_command_response::CompletionStatus::Committed
-            | v1::execute_command_response::CompletionStatus::Replayed => Ok(()),
-            other => Err(RiffDbError::Rpc(format!("unexpected status {other:?}"))),
-        }
-    }
-
-    async fn get_entity_record(
-        &mut self,
-        entity_type_id: u32,
-        key_components: &[[u8; 16]],
-        field_ids: &[u32],
-    ) -> Result<Option<v1::ValueRecord>, RiffDbError> {
-        let entity_key = entity_key(entity_type_id, key_components)?;
-        let response = self
-            .client
-            .get_entity(
-                v1::GetEntityRequest {
-                    request_id: request_id_bytes()?,
-                    contract: Some(exact_contract()),
-                    entity_type_id,
-                    entity_key: entity_key.clone(),
-                    fields: Some(v1::FieldSelection {
-                        field_ids: field_ids.to_vec(),
-                    }),
-                },
-                &self.metadata,
-            )
-            .await
-            .map_err(|e| {
-                RiffDbError::Rpc(format!(
-                    "GetEntity type={entity_type_id} key_len={} fields={field_ids:?}: {e}",
-                    entity_key.len()
-                ))
-            })?;
-        match response.result {
-            Some(v1::get_entity_response::Result::NotFound(_)) => Ok(None),
-            Some(v1::get_entity_response::Result::Found(entity)) => {
-                let fields = entity.fields.ok_or_else(|| {
-                    RiffDbError::Rpc("GetEntity Found without fields message".into())
-                })?;
-                if fields.fields.is_empty() {
-                    return Err(RiffDbError::Rpc(format!(
-                        "GETENTITY_EMPTY_FIELDS_V2 type={entity_type_id} version={} contract={} requested={field_ids:?} key_prefix={:02x?}",
-                        entity.entity_version,
-                        entity.written_by_contract_version,
-                        &entity_key[..entity_key.len().min(8)]
-                    )));
-                }
-                Ok(Some(fields))
-            }
-            None => Err(RiffDbError::Decode),
-        }
-    }
-
-
-    async fn fetch_tickets_from_index(
-        &mut self,
-        index_id: u32,
-        leading: Vec<v1::Value>,
-        organization_id: UuidBytes,
-        limit: u32,
-    ) -> Result<Vec<TicketRow>, RiffDbError> {
-        // v1 indexes have empty covering values; request any granted non-key field
-        // so ScanIndex is authorized, then resolve rows via GetEntity.
-        let rows = self
-            .scan_index_keys(index_id, leading, &[ticket_field::TITLE], limit)
-            .await?;
-        let mut out = Vec::with_capacity(rows.len());
-        for index_key in rows {
-            let ticket_id = last_uuid_component(&index_key)?;
-            let record = self
-                .get_entity_record(
-                    entity::TICKET,
-                    &[organization_id, ticket_id],
-                    TICKET_NON_KEY_FIELDS,
-                )
-                .await?
-                .ok_or_else(|| {
-                    RiffDbError::Rpc(format!(
-                        "index pointed at missing ticket {:02x?}",
-                        &ticket_id[..4]
-                    ))
-                })?;
-            out.push(decode_ticket(&record, organization_id, ticket_id)?);
-        }
-        Ok(out)
-    }
-
-    async fn fetch_comments_from_index(
-        &mut self,
-        organization_id: UuidBytes,
-        ticket_id: UuidBytes,
-        limit: u32,
-    ) -> Result<Vec<CommentRow>, RiffDbError> {
-        let rows = self
-            .scan_index_keys(
-                index::COMMENT_BY_TICKET,
-                vec![uuid_value(organization_id), uuid_value(ticket_id)],
-                &[comment_field::BODY],
-                limit,
-            )
-            .await?;
-        let mut out = Vec::with_capacity(rows.len());
-        for index_key in rows {
-            let comment_id = last_uuid_component(&index_key)?;
-            let record = self
-                .get_entity_record(
-                    entity::COMMENT,
-                    &[organization_id, comment_id],
-                    COMMENT_NON_KEY_FIELDS,
-                )
-                .await?
-                .ok_or_else(|| {
-                    RiffDbError::Rpc(format!(
-                        "index pointed at missing comment {:02x?}",
-                        &comment_id[..4]
-                    ))
-                })?;
-            out.push(decode_comment(
-                &record,
-                organization_id,
-                comment_id,
-                ticket_id,
-            )?);
-        }
-        Ok(out)
-    }
-
-    async fn fetch_members_from_index(
-        &mut self,
-        organization_id: UuidBytes,
-        project_id: UuidBytes,
-        limit: u32,
-    ) -> Result<Vec<ProjectMemberRow>, RiffDbError> {
-        let rows = self
-            .scan_index_keys(
-                index::PROJECT_MEMBER_BY_PROJECT,
-                vec![uuid_value(organization_id), uuid_value(project_id)],
-                &[member_field::ROLE],
-                limit,
-            )
-            .await?;
-        let mut out = Vec::with_capacity(rows.len());
-        for index_key in rows {
-            // ProjectMember PK is (organization_id, project_id, user_id); entity key is 54 bytes.
-            let user_id = last_uuid_component(&index_key)?;
-            let record = self
-                .get_entity_record(
-                    entity::PROJECT_MEMBER,
-                    &[organization_id, project_id, user_id],
-                    MEMBER_NON_KEY_FIELDS,
-                )
-                .await?
-                .ok_or_else(|| {
-                    RiffDbError::Rpc(format!(
-                        "index pointed at missing member {:02x?}",
-                        &user_id[..4]
-                    ))
-                })?;
-            out.push(decode_member(
-                &record,
-                organization_id,
-                project_id,
-                user_id,
-            )?);
-        }
-        Ok(out)
-    }
-
-    async fn fetch_labels_for_ticket(
-        &mut self,
-        organization_id: UuidBytes,
-        ticket_id: UuidBytes,
-        limit: u32,
-    ) -> Result<Vec<LabelRow>, RiffDbError> {
-        let rows = self
-            .scan_index_keys(
-                index::TICKET_LABEL_BY_TICKET,
-                vec![uuid_value(organization_id), uuid_value(ticket_id)],
-                // TicketLabel only has created_at as a non-key field.
-                &[ticket_label_field::CREATED_AT],
-                limit,
-            )
-            .await?;
-        let mut labels = Vec::with_capacity(rows.len());
-        for index_key in rows {
-            // TicketLabel PK is (organization_id, ticket_id, label_id).
-            let label_id = last_uuid_component(&index_key)?;
-            if let Some(label_record) = self
-                .get_entity_record(
-                    entity::LABEL,
-                    &[organization_id, label_id],
-                    LABEL_NON_KEY_FIELDS,
-                )
-                .await?
-            {
-                labels.push(decode_label(&label_record, organization_id, label_id)?);
-            }
-        }
-        Ok(labels)
-    }
-
-    /// Scans an index and returns raw index-entry keys only.
-    ///
-    /// v1 index covering values are empty; callers must GetEntity for payload fields.
-    async fn scan_index_keys(
-        &mut self,
-        index_id: u32,
-        leading: Vec<v1::Value>,
-        field_ids: &[u32],
-        limit: u32,
-    ) -> Result<Vec<Vec<u8>>, RiffDbError> {
-        let leading_len = leading.len();
-        let response = self
-            .client
-            .scan_index(
-                v1::ScanIndexRequest {
-                    request_id: request_id_bytes()?,
-                    contract: Some(exact_contract()),
-                    index_id,
-                    leading_components: leading,
-                    fields: Some(v1::FieldSelection {
-                        field_ids: field_ids.to_vec(),
-                    }),
-                    page: Some(v1::PageRequest {
-                        limit: Some(limit),
-                        cursor: None,
-                    }),
-                },
-                &self.metadata,
-            )
-            .await
-            .map_err(|e| {
-                RiffDbError::Rpc(format!(
-                    "ScanIndex id={index_id} leading={leading_len} limit={limit}: {e}"
-                ))
-            })?;
-        let page = response.page.ok_or_else(|| {
-            RiffDbError::Rpc(format!("ScanIndex id={index_id}: missing page"))
-        })?;
-        Ok(page
-            .items
-            .into_iter()
-            .map(|item| item.index_entry_key)
-            .collect())
+        Ok(Self {
+            client: TicketDeskClient::new(client, metadata),
+        })
     }
 }
-
-/// Ticket non-key field ids (must match capability field_visibility).
-const TICKET_NON_KEY_FIELDS: &[u32] = &[1, 2, 4, 5, 6, 7, 8];
-/// Comment non-key field ids.
-const COMMENT_NON_KEY_FIELDS: &[u32] = &[1, 2, 3, 5];
-/// ProjectMember non-key field ids (user_id is part of the primary key).
-const MEMBER_NON_KEY_FIELDS: &[u32] = &[1, 3];
-/// Label non-key field ids.
-const LABEL_NON_KEY_FIELDS: &[u32] = &[1, 3];
-/// AppUser non-key field ids.
-const USER_NON_KEY_FIELDS: &[u32] = &[1, 3, 4];
-/// Project non-key field ids.
-const PROJECT_NON_KEY_FIELDS: &[u32] = &[1, 2];
-/// Organization non-key field ids.
-const ORG_NON_KEY_FIELDS: &[u32] = &[1, 2];
-
-/// Last UUID component of the length-delimited entity key suffix on an index entry.
-///
-/// Index entry keys end with `u32_be_len || entity_key_bytes`. Entity keys end with
-/// their final primary-key UUID (16 bytes), which is enough for ticket_id, comment_id,
-/// user_id, and label_id in this contract.
-fn last_uuid_component(index_entry_key: &[u8]) -> Result<UuidBytes, RiffDbError> {
-    if index_entry_key.len() < 16 {
-        return Err(RiffDbError::Rpc(format!(
-            "index entry too short for uuid suffix: {}",
-            index_entry_key.len()
-        )));
-    }
-    let mut id = [0_u8; 16];
-    id.copy_from_slice(&index_entry_key[index_entry_key.len() - 16..]);
-    Ok(id)
-}
-
 
 fn block_on_runtime<T>(
     future: impl std::future::Future<Output = Result<T, RiffDbError>>,
@@ -375,139 +69,125 @@ impl AppBackend for RiffDbPublicBackend {
     type Error = RiffDbError;
 
     fn reset(&mut self) -> Result<(), Self::Error> {
-        // Fresh riffdbd process per session; nothing to drop.
         Ok(())
     }
 
     fn seed(&mut self, dataset: &SeedDataset) -> Result<(), Self::Error> {
         block_on_runtime(async {
             for org in &dataset.organizations {
-                self.execute_command(
-                    "CreateOrganization",
-                    record(vec![
-                        field(1, string_value(&org.name)),
-                        field(2, string_value(format!("seed-org-{}", hex::encode_short(org.organization_id)))),
-                        field(3, uuid_value(org.organization_id)),
-                    ]),
-                )
-                .await?;
+                self.client
+                    .create_organization(CreateOrganizationInput {
+                        name: org.name.clone(),
+                        organization_id: uuid_text(org.organization_id),
+                        idempotency_key: format!(
+                            "seed-org-{}",
+                            encode_short(org.organization_id)
+                        ),
+                    })
+                    .await
+                    .map_err(map_app)?;
             }
             for user in &dataset.users {
-                self.execute_command(
-                    "CreateUser",
-                    record(vec![
-                        field(1, string_value(&user.email)),
-                        field(2, uuid_value(user.user_id)),
-                        field(3, string_value(&user.display_name)),
-                        field(4, string_value(format!("seed-user-{}", hex::encode_short(user.user_id)))),
-                        field(5, uuid_value(user.organization_id)),
-                    ]),
-                )
-                .await?;
+                self.client
+                    .create_user(CreateUserInput {
+                        email: user.email.clone(),
+                        display_name: user.display_name.clone(),
+                        user_id: uuid_text(user.user_id),
+                        idempotency_key: format!("seed-user-{}", encode_short(user.user_id)),
+                        organization_id: uuid_text(user.organization_id),
+                    })
+                    .await
+                    .map_err(map_app)?;
             }
             for project in &dataset.projects {
-                self.execute_command(
-                    "CreateProject",
-                    record(vec![
-                        field(1, string_value(&project.name)),
-                        field(2, uuid_value(project.project_id)),
-                        field(3, string_value(format!("seed-project-{}", hex::encode_short(project.project_id)))),
-                        field(4, uuid_value(project.organization_id)),
-                    ]),
-                )
-                .await?;
+                self.client
+                    .create_project(CreateProjectInput {
+                        name: project.name.clone(),
+                        project_id: uuid_text(project.project_id),
+                        idempotency_key: format!(
+                            "seed-project-{}",
+                            encode_short(project.project_id)
+                        ),
+                        organization_id: uuid_text(project.organization_id),
+                    })
+                    .await
+                    .map_err(map_app)?;
             }
             for member in &dataset.members {
-                self.execute_command(
-                    "AddProjectMember",
-                    record(vec![
-                        field(1, string_value(&member.role)),
-                        field(2, uuid_value(member.user_id)),
-                        field(3, uuid_value(member.project_id)),
-                        field(
-                            4,
-                            string_value(format!(
-                                "seed-member-{}-{}",
-                                hex::encode_short(member.project_id),
-                                hex::encode_short(member.user_id)
-                            )),
+                self.client
+                    .add_project_member(AddProjectMemberInput {
+                        role: member.role.clone(),
+                        user_id: uuid_text(member.user_id),
+                        project_id: uuid_text(member.project_id),
+                        idempotency_key: format!(
+                            "seed-member-{}-{}",
+                            encode_short(member.project_id),
+                            encode_short(member.user_id)
                         ),
-                        field(5, uuid_value(member.organization_id)),
-                    ]),
-                )
-                .await?;
+                        organization_id: uuid_text(member.organization_id),
+                    })
+                    .await
+                    .map_err(map_app)?;
             }
             for label in &dataset.labels {
-                self.execute_command(
-                    "CreateLabel",
-                    record(vec![
-                        field(1, string_value(&label.name)),
-                        field(2, uuid_value(label.label_id)),
-                        field(3, string_value(format!("seed-label-{}", hex::encode_short(label.label_id)))),
-                        field(4, uuid_value(label.organization_id)),
-                    ]),
-                )
-                .await?;
+                self.client
+                    .create_label(CreateLabelInput {
+                        name: label.name.clone(),
+                        label_id: uuid_text(label.label_id),
+                        idempotency_key: format!("seed-label-{}", encode_short(label.label_id)),
+                        organization_id: uuid_text(label.organization_id),
+                    })
+                    .await
+                    .map_err(map_app)?;
             }
             for ticket in &dataset.tickets {
-                self.execute_command(
-                    "CreateTicket",
-                    record(vec![
-                        field(1, string_value(&ticket.title)),
-                        field(
-                            2,
-                            enum_value(
-                                1,
-                                ticket.status.riffdb_variant_id(),
-                                match ticket.status {
-                                    TicketStatus::Open => "Open",
-                                    TicketStatus::Closed => "Closed",
-                                    TicketStatus::InProgress => "InProgress",
-                                },
-                            ),
+                self.client
+                    .create_ticket(CreateTicketInput {
+                        title: ticket.title.clone(),
+                        status: status_name(ticket.status).to_owned(),
+                        ticket_id: uuid_text(ticket.ticket_id),
+                        project_id: uuid_text(ticket.project_id),
+                        assignee_id: uuid_text(ticket.assignee_id),
+                        reporter_id: uuid_text(ticket.reporter_id),
+                        idempotency_key: format!(
+                            "seed-ticket-{}",
+                            encode_short(ticket.ticket_id)
                         ),
-                        field(3, uuid_value(ticket.ticket_id)),
-                        field(4, uuid_value(ticket.project_id)),
-                        field(5, uuid_value(ticket.assignee_id)),
-                        field(6, uuid_value(ticket.reporter_id)),
-                        field(7, string_value(format!("seed-ticket-{}", hex::encode_short(ticket.ticket_id)))),
-                        field(8, uuid_value(ticket.organization_id)),
-                    ]),
-                )
-                .await?;
+                        organization_id: uuid_text(ticket.organization_id),
+                    })
+                    .await
+                    .map_err(map_app)?;
             }
             for comment in &dataset.comments {
-                self.execute_command(
-                    "CreateComment",
-                    record(vec![
-                        field(1, string_value(&comment.body)),
-                        field(2, uuid_value(comment.author_id)),
-                        field(3, uuid_value(comment.ticket_id)),
-                        field(4, uuid_value(comment.comment_id)),
-                        field(5, string_value(format!("seed-comment-{}", hex::encode_short(comment.comment_id)))),
-                        field(6, uuid_value(comment.organization_id)),
-                    ]),
-                )
-                .await?;
+                self.client
+                    .create_comment(CreateCommentInput {
+                        body: comment.body.clone(),
+                        author_id: uuid_text(comment.author_id),
+                        ticket_id: uuid_text(comment.ticket_id),
+                        comment_id: uuid_text(comment.comment_id),
+                        idempotency_key: format!(
+                            "seed-comment-{}",
+                            encode_short(comment.comment_id)
+                        ),
+                        organization_id: uuid_text(comment.organization_id),
+                    })
+                    .await
+                    .map_err(map_app)?;
             }
             for link in &dataset.ticket_labels {
-                self.execute_command(
-                    "AttachLabel",
-                    record(vec![
-                        field(1, uuid_value(link.label_id)),
-                        field(2, uuid_value(link.ticket_id)),
-                        field(
-                            3,
-                            string_value(format!(
-                                "seed-link-{}-{}",
-                                hex::encode_short(link.ticket_id),
-                                hex::encode_short(link.label_id)
-                            )),
+                self.client
+                    .attach_label(AttachLabelInput {
+                        label_id: uuid_text(link.label_id),
+                        ticket_id: uuid_text(link.ticket_id),
+                        idempotency_key: format!(
+                            "seed-link-{}-{}",
+                            encode_short(link.ticket_id),
+                            encode_short(link.label_id)
                         ),
-                        field(4, uuid_value(link.organization_id)),
-                    ]),
-                )
-                .await?;
+                        organization_id: uuid_text(link.organization_id),
+                    })
+                    .await
+                    .map_err(map_app)?;
             }
             Ok(())
         })
@@ -519,16 +199,26 @@ impl AppBackend for RiffDbPublicBackend {
         ticket_id: UuidBytes,
     ) -> Result<Option<TicketRow>, Self::Error> {
         block_on_runtime(async {
-            let record = self
-                .get_entity_record(
-                    entity::TICKET,
-                    &[organization_id, ticket_id],
-                    TICKET_NON_KEY_FIELDS,
-                )
-                .await?;
-            record
-                .map(|record| decode_ticket(&record, organization_id, ticket_id))
-                .transpose()
+            match self
+                .client
+                .get_ticket(GetTicketParams {
+                    organization_id: uuid_text(organization_id),
+                    ticket_id: uuid_text(ticket_id),
+                })
+                .await
+                .map_err(map_app)?
+            {
+                GetTicketResult::Found(found) => Ok(Some(TicketRow {
+                    organization_id,
+                    ticket_id: parse_uuid(&found.ticket.ticket_id)?,
+                    project_id: parse_uuid(&found.ticket.project_id)?,
+                    reporter_id: parse_uuid(&found.ticket.reporter_id)?,
+                    assignee_id: parse_uuid(&found.ticket.assignee_id)?,
+                    status: parse_status(&found.ticket.status)?,
+                    title: found.ticket.title,
+                })),
+                GetTicketResult::NotFound(_) => Ok(None),
+            }
         })
     }
 
@@ -538,16 +228,23 @@ impl AppBackend for RiffDbPublicBackend {
         user_id: UuidBytes,
     ) -> Result<Option<UserRow>, Self::Error> {
         block_on_runtime(async {
-            let record = self
-                .get_entity_record(
-                    entity::APP_USER,
-                    &[organization_id, user_id],
-                    USER_NON_KEY_FIELDS,
-                )
-                .await?;
-            record
-                .map(|record| decode_user(&record, organization_id, user_id))
-                .transpose()
+            match self
+                .client
+                .get_user(GetUserParams {
+                    organization_id: uuid_text(organization_id),
+                    user_id: uuid_text(user_id),
+                })
+                .await
+                .map_err(map_app)?
+            {
+                GetUserResult::Found(found) => Ok(Some(UserRow {
+                    organization_id,
+                    user_id: parse_uuid(&found.user.user_id)?,
+                    email: found.user.email,
+                    display_name: found.user.display_name,
+                })),
+                GetUserResult::NotFound(_) => Ok(None),
+            }
         })
     }
 
@@ -559,25 +256,32 @@ impl AppBackend for RiffDbPublicBackend {
         limit: u32,
     ) -> Result<Vec<TicketRow>, Self::Error> {
         block_on_runtime(async {
-            self.fetch_tickets_from_index(
-                index::TICKET_BY_PROJECT_STATUS,
-                vec![
-                    uuid_value(organization_id),
-                    uuid_value(project_id),
-                    enum_value(
-                        1,
-                        status.riffdb_variant_id(),
-                        match status {
-                            TicketStatus::Open => "Open",
-                            TicketStatus::Closed => "Closed",
-                            TicketStatus::InProgress => "InProgress",
-                        },
-                    ),
-                ],
-                organization_id,
-                limit,
-            )
-            .await
+            let ListTicketsResult::Found(found) = self
+                .client
+                .list_tickets(ListTicketsParams {
+                    organization_id: uuid_text(organization_id),
+                    project_id: uuid_text(project_id),
+                    statuses: vec![status_name(status).to_owned()],
+                    after: None,
+                    limit: u64::from(limit),
+                })
+                .await
+                .map_err(map_app)?;
+            found
+                .tickets
+                .into_iter()
+                .map(|ticket| {
+                    Ok(TicketRow {
+                        organization_id,
+                        ticket_id: parse_uuid(&ticket.ticket_id)?,
+                        project_id: parse_uuid(&ticket.project_id)?,
+                        reporter_id: parse_uuid(&ticket.reporter_id)?,
+                        assignee_id: parse_uuid(&ticket.assignee_id)?,
+                        status: parse_status(&ticket.status)?,
+                        title: ticket.title,
+                    })
+                })
+                .collect()
         })
     }
 
@@ -588,17 +292,32 @@ impl AppBackend for RiffDbPublicBackend {
         limit: u32,
     ) -> Result<Vec<TicketRow>, Self::Error> {
         block_on_runtime(async {
-            self.fetch_tickets_from_index(
-                index::TICKET_BY_ASSIGNEE_STATUS,
-                vec![
-                    uuid_value(organization_id),
-                    uuid_value(assignee_id),
-                    enum_value(1, TicketStatus::Open.riffdb_variant_id(), "Open"),
-                ],
-                organization_id,
-                limit,
-            )
-            .await
+            let ListTicketsByAssigneeResult::Found(found) = self
+                .client
+                .list_tickets_by_assignee(ListTicketsByAssigneeParams {
+                    organization_id: uuid_text(organization_id),
+                    assignee_id: uuid_text(assignee_id),
+                    statuses: vec![status_name(TicketStatus::Open).to_owned()],
+                    after: None,
+                    limit: u64::from(limit),
+                })
+                .await
+                .map_err(map_app)?;
+            found
+                .tickets
+                .into_iter()
+                .map(|ticket| {
+                    Ok(TicketRow {
+                        organization_id,
+                        ticket_id: parse_uuid(&ticket.ticket_id)?,
+                        project_id: parse_uuid(&ticket.project_id)?,
+                        reporter_id: parse_uuid(&ticket.reporter_id)?,
+                        assignee_id: parse_uuid(&ticket.assignee_id)?,
+                        status: parse_status(&ticket.status)?,
+                        title: ticket.title,
+                    })
+                })
+                .collect()
         })
     }
 
@@ -609,8 +328,29 @@ impl AppBackend for RiffDbPublicBackend {
         limit: u32,
     ) -> Result<Vec<CommentRow>, Self::Error> {
         block_on_runtime(async {
-            self.fetch_comments_from_index(organization_id, ticket_id, limit)
+            let ListCommentsResult::Found(found) = self
+                .client
+                .list_comments(ListCommentsParams {
+                    organization_id: uuid_text(organization_id),
+                    ticket_id: uuid_text(ticket_id),
+                    after: None,
+                    limit: u64::from(limit),
+                })
                 .await
+                .map_err(map_app)?;
+            found
+                .comments
+                .into_iter()
+                .map(|comment| {
+                    Ok(CommentRow {
+                        organization_id,
+                        comment_id: parse_uuid(&comment.comment_id)?,
+                        ticket_id,
+                        author_id: parse_uuid(&comment.author_id)?,
+                        body: comment.body,
+                    })
+                })
+                .collect()
         })
     }
 
@@ -621,8 +361,28 @@ impl AppBackend for RiffDbPublicBackend {
         limit: u32,
     ) -> Result<Vec<ProjectMemberRow>, Self::Error> {
         block_on_runtime(async {
-            self.fetch_members_from_index(organization_id, project_id, limit)
+            let ProjectMembersResult::Found(found) = self
+                .client
+                .project_members(ProjectMembersParams {
+                    organization_id: uuid_text(organization_id),
+                    project_id: uuid_text(project_id),
+                    after: None,
+                })
                 .await
+                .map_err(map_app)?;
+            found
+                .members
+                .into_iter()
+                .take(limit as usize)
+                .map(|member| {
+                    Ok(ProjectMemberRow {
+                        organization_id,
+                        project_id,
+                        user_id: parse_uuid(&member.user_id)?,
+                        role: member.role,
+                    })
+                })
+                .collect()
         })
     }
 
@@ -633,295 +393,155 @@ impl AppBackend for RiffDbPublicBackend {
         comment_limit: u32,
     ) -> Result<Option<TicketDetailPage>, Self::Error> {
         block_on_runtime(async {
-            let Some(ticket_record) = self
-                .get_entity_record(
-                    entity::TICKET,
-                    &[organization_id, ticket_id],
-                    TICKET_NON_KEY_FIELDS,
-                )
-                .await?
-            else {
-                return Ok(None);
-            };
-            let ticket = decode_ticket(&ticket_record, organization_id, ticket_id)?;
-            let project_record = self
-                .get_entity_record(
-                    entity::PROJECT,
-                    &[organization_id, ticket.project_id],
-                    PROJECT_NON_KEY_FIELDS,
-                )
-                .await?
-                .ok_or_else(|| {
-                    RiffDbError::Rpc(format!(
-                        "ticket detail missing project {:02x?}",
-                        &ticket.project_id[..4]
-                    ))
-                })?;
-            let project = decode_project(&project_record, organization_id, ticket.project_id)?;
-            let org_record = self
-                .get_entity_record(
-                    entity::ORGANIZATION,
-                    &[organization_id],
-                    ORG_NON_KEY_FIELDS,
-                )
-                .await?
-                .ok_or_else(|| RiffDbError::Rpc("ticket detail missing organization".into()))?;
-            let organization = decode_organization(&org_record, organization_id)?;
-            let assignee = self
-                .get_entity_record(
-                    entity::APP_USER,
-                    &[organization_id, ticket.assignee_id],
-                    USER_NON_KEY_FIELDS,
-                )
-                .await?
-                .map(|record| decode_user(&record, organization_id, ticket.assignee_id))
-                .transpose()?;
-            let comments = self
-                .fetch_comments_from_index(organization_id, ticket_id, comment_limit)
-                .await?;
-            let labels = self
-                .fetch_labels_for_ticket(organization_id, ticket_id, 50)
-                .await?;
-
-            Ok(Some(TicketDetailPage {
-                ticket,
-                project,
-                organization,
-                assignee,
-                comments,
-                labels,
-            }))
+            match self
+                .client
+                .ticket_page(TicketPageParams {
+                    organization_id: uuid_text(organization_id),
+                    ticket_id: uuid_text(ticket_id),
+                    comments_after: None,
+                })
+                .await
+                .map_err(map_app)?
+            {
+                TicketPageResult::NotFound(_) => Ok(None),
+                TicketPageResult::IntegrityFailure(_) => {
+                    Err(RiffDbError::Rpc("TicketPage integrity failure".into()))
+                }
+                TicketPageResult::Found(page) => {
+                    let project_id = parse_uuid(&page.project.project_id)?;
+                    let assignee_id = page
+                        .assignee
+                        .as_ref()
+                        .map(|assignee| parse_uuid(&assignee.user_id))
+                        .transpose()?
+                        .unwrap_or([0; 16]);
+                    let assignee = page
+                        .assignee
+                        .map(|assignee| {
+                            Ok(UserRow {
+                                organization_id,
+                                user_id: parse_uuid(&assignee.user_id)?,
+                                email: String::new(),
+                                display_name: assignee.display_name,
+                            })
+                        })
+                        .transpose()?;
+                    let comments = page
+                        .comments
+                        .into_iter()
+                        .take(comment_limit as usize)
+                        .map(|comment| {
+                            Ok(CommentRow {
+                                organization_id,
+                                comment_id: parse_uuid(&comment.comment_id)?,
+                                ticket_id,
+                                author_id: parse_uuid(&comment.author_id)?,
+                                body: comment.body,
+                            })
+                        })
+                        .collect::<Result<Vec<_>, RiffDbError>>()?;
+                    let labels = page
+                        .labels
+                        .into_iter()
+                        .map(|label| {
+                            Ok(LabelRow {
+                                organization_id,
+                                label_id: parse_uuid(&label.label_id)?,
+                                name: label.name,
+                            })
+                        })
+                        .collect::<Result<Vec<_>, RiffDbError>>()?;
+                    Ok(Some(TicketDetailPage {
+                        ticket: TicketRow {
+                            organization_id,
+                            ticket_id: parse_uuid(&page.ticket.ticket_id)?,
+                            project_id,
+                            reporter_id: parse_uuid(&page.reporter.user_id)?,
+                            assignee_id,
+                            status: parse_status(&page.ticket.status)?,
+                            title: page.ticket.title,
+                        },
+                        project: ProjectRow {
+                            organization_id,
+                            project_id,
+                            name: page.project.name,
+                        },
+                        organization: OrganizationRow {
+                            organization_id: parse_uuid(&page.organization.organization_id)?,
+                            name: page.organization.name,
+                        },
+                        assignee,
+                        comments,
+                        labels,
+                    }))
+                }
+            }
         })
     }
 
     fn create_comment(&mut self, comment: &CommentSeed) -> Result<(), Self::Error> {
         block_on_runtime(async {
-            self.execute_command(
-                "CreateComment",
-                record(vec![
-                    field(1, string_value(&comment.row.body)),
-                    field(2, uuid_value(comment.row.author_id)),
-                    field(3, uuid_value(comment.row.ticket_id)),
-                    field(4, uuid_value(comment.row.comment_id)),
-                    field(5, string_value(&comment.idempotency_key)),
-                    field(6, uuid_value(comment.row.organization_id)),
-                ]),
-            )
-            .await
+            self.client
+                .create_comment(CreateCommentInput {
+                    body: comment.row.body.clone(),
+                    author_id: uuid_text(comment.row.author_id),
+                    ticket_id: uuid_text(comment.row.ticket_id),
+                    comment_id: uuid_text(comment.row.comment_id),
+                    idempotency_key: comment.idempotency_key.clone(),
+                    organization_id: uuid_text(comment.row.organization_id),
+                })
+                .await
+                .map_err(map_app)?;
+            Ok(())
         })
     }
 }
 
-// Avoid hex dependency: short stable key fragment for idempotency labels.
-mod hex {
-    pub(crate) fn encode_short(bytes: [u8; 16]) -> String {
-        format!(
-            "{:02x}{:02x}{:02x}{:02x}",
-            bytes[12], bytes[13], bytes[14], bytes[15]
-        )
+fn uuid_text(bytes: UuidBytes) -> String {
+    format_uuid(bytes)
+}
+
+fn parse_uuid(text: &str) -> Result<UuidBytes, RiffDbError> {
+    if text.len() != 36 {
+        return Err(RiffDbError::Decode);
     }
-}
-
-fn exact_contract() -> v1::ContractSelection {
-    v1::ContractSelection {
-        selection: Some(v1::contract_selection::Selection::Exact(
-            v1::ExactContractSelection {
-                contract_lineage: CONTRACT_LINEAGE.to_owned(),
-                contract_version: CONTRACT_VERSION,
-            },
-        )),
-    }
-}
-
-fn request_id_bytes() -> Result<Vec<u8>, RiffDbError> {
-    Ok(generate_request_id()
-        .map_err(|e| RiffDbError::Rpc(e.to_string()))?
-        .into_bytes()
-        .to_vec())
-}
-
-fn decode_ticket(
-    record: &v1::ValueRecord,
-    organization_id: UuidBytes,
-    ticket_id: UuidBytes,
-) -> Result<TicketRow, RiffDbError> {
-    let fields = field_map(record).map_err(|_| RiffDbError::Rpc("ticket field_map".into()))?;
-    let status_value = fields.get(&ticket_field::STATUS).ok_or_else(|| {
-        let names: Vec<_> = record
-            .fields
-            .iter()
-            .map(|field| {
-                format!(
-                    "id={:?},name={},has_value={}",
-                    field.field_id,
-                    field.name,
-                    field.value.is_some()
-                )
-            })
-            .collect();
-        RiffDbError::Rpc(format!("TICKET_DECODE_MISSING_STATUS_V2; fields={names:?}"))
-    })?;
-    let status = match status_value.kind.as_ref() {
-        Some(v1::value::Kind::EnumValue(value)) => match value.variant_id {
-            1 => TicketStatus::Open,
-            2 => TicketStatus::Closed,
-            3 => TicketStatus::InProgress,
-            other => {
-                return Err(RiffDbError::Rpc(format!(
-                    "ticket status variant {other} name={}",
-                    value.name
-                )));
-            }
-        },
-        Some(v1::value::Kind::StringValue(name)) => match name.as_str() {
-            "Open" => TicketStatus::Open,
-            "Closed" => TicketStatus::Closed,
-            "InProgress" => TicketStatus::InProgress,
-            other => return Err(RiffDbError::Rpc(format!("ticket status string {other}"))),
-        },
-        other => {
-            return Err(RiffDbError::Rpc(format!("ticket status kind {other:?}")));
-        }
+    let mut out = [0_u8; 16];
+    let hex = |i: usize| {
+        u8::from_str_radix(&text[i..i + 2], 16).map_err(|_| RiffDbError::Decode)
     };
-    Ok(TicketRow {
-        organization_id,
-        ticket_id,
-        project_id: require_uuid(
-            fields
-                .get(&ticket_field::PROJECT_ID)
-                .ok_or_else(|| RiffDbError::Rpc("ticket missing project_id".into()))?,
-        )?,
-        reporter_id: require_uuid(
-            fields
-                .get(&ticket_field::REPORTER_ID)
-                .ok_or_else(|| RiffDbError::Rpc("ticket missing reporter_id".into()))?,
-        )?,
-        assignee_id: require_uuid(
-            fields
-                .get(&ticket_field::ASSIGNEE_ID)
-                .ok_or_else(|| RiffDbError::Rpc("ticket missing assignee_id".into()))?,
-        )?,
-        status,
-        title: require_string(
-            fields
-                .get(&ticket_field::TITLE)
-                .ok_or_else(|| RiffDbError::Rpc("ticket missing title".into()))?,
-        )?,
-    })
+    let positions = [0, 2, 4, 6, 9, 11, 14, 16, 19, 21, 24, 26, 28, 30, 32, 34];
+    for (index, start) in positions.into_iter().enumerate() {
+        out[index] = hex(start)?;
+    }
+    Ok(out)
 }
 
-fn decode_user(
-    record: &v1::ValueRecord,
-    organization_id: UuidBytes,
-    user_id: UuidBytes,
-) -> Result<UserRow, RiffDbError> {
-    let fields = field_map(record).map_err(|_| RiffDbError::Rpc("user field_map".into()))?;
-    Ok(UserRow {
-        organization_id,
-        user_id,
-        email: require_string(
-            fields
-                .get(&user_field::EMAIL)
-                .ok_or_else(|| RiffDbError::Rpc("user missing email".into()))?,
-        )?,
-        display_name: require_string(
-            fields
-                .get(&user_field::DISPLAY_NAME)
-                .ok_or_else(|| RiffDbError::Rpc("user missing display_name".into()))?,
-        )?,
-    })
+fn status_name(status: TicketStatus) -> &'static str {
+    match status {
+        TicketStatus::Open => "Open",
+        TicketStatus::Closed => "Closed",
+        TicketStatus::InProgress => "InProgress",
+    }
 }
 
-fn decode_project(
-    record: &v1::ValueRecord,
-    organization_id: UuidBytes,
-    project_id: UuidBytes,
-) -> Result<ProjectRow, RiffDbError> {
-    let fields = field_map(record).map_err(|_| RiffDbError::Rpc("project field_map".into()))?;
-    Ok(ProjectRow {
-        organization_id,
-        project_id,
-        name: require_string(
-            fields
-                .get(&project_field::NAME)
-                .ok_or_else(|| RiffDbError::Rpc("project missing name".into()))?,
-        )?,
-    })
+fn parse_status(name: &str) -> Result<TicketStatus, RiffDbError> {
+    match name {
+        "Open" => Ok(TicketStatus::Open),
+        "Closed" => Ok(TicketStatus::Closed),
+        "InProgress" => Ok(TicketStatus::InProgress),
+        _ => Err(RiffDbError::Decode),
+    }
 }
 
-fn decode_organization(
-    record: &v1::ValueRecord,
-    organization_id: UuidBytes,
-) -> Result<OrganizationRow, RiffDbError> {
-    let fields = field_map(record).map_err(|_| RiffDbError::Rpc("org field_map".into()))?;
-    Ok(OrganizationRow {
-        organization_id,
-        name: require_string(
-            fields
-                .get(&org_field::NAME)
-                .ok_or_else(|| RiffDbError::Rpc("org missing name".into()))?,
-        )?,
-    })
+fn encode_short(bytes: UuidBytes) -> String {
+    format!(
+        "{:02x}{:02x}{:02x}{:02x}",
+        bytes[12], bytes[13], bytes[14], bytes[15]
+    )
 }
 
-fn decode_comment(
-    record: &v1::ValueRecord,
-    organization_id: UuidBytes,
-    comment_id: UuidBytes,
-    ticket_id: UuidBytes,
-) -> Result<CommentRow, RiffDbError> {
-    let fields = field_map(record).map_err(|_| RiffDbError::Rpc("comment field_map".into()))?;
-    Ok(CommentRow {
-        organization_id,
-        comment_id,
-        ticket_id,
-        author_id: require_uuid(
-            fields
-                .get(&comment_field::AUTHOR_ID)
-                .ok_or_else(|| RiffDbError::Rpc("comment missing author_id".into()))?,
-        )?,
-        body: require_string(
-            fields
-                .get(&comment_field::BODY)
-                .ok_or_else(|| RiffDbError::Rpc("comment missing body".into()))?,
-        )?,
-    })
-}
-
-fn decode_member(
-    record: &v1::ValueRecord,
-    organization_id: UuidBytes,
-    project_id: UuidBytes,
-    user_id: UuidBytes,
-) -> Result<ProjectMemberRow, RiffDbError> {
-    let fields = field_map(record).map_err(|_| RiffDbError::Rpc("member field_map".into()))?;
-    Ok(ProjectMemberRow {
-        organization_id,
-        project_id,
-        user_id,
-        role: require_string(
-            fields
-                .get(&member_field::ROLE)
-                .ok_or_else(|| RiffDbError::Rpc("member missing role".into()))?,
-        )?,
-    })
-}
-
-fn decode_label(
-    record: &v1::ValueRecord,
-    organization_id: UuidBytes,
-    label_id: UuidBytes,
-) -> Result<LabelRow, RiffDbError> {
-    let fields = field_map(record).map_err(|_| RiffDbError::Rpc("label field_map".into()))?;
-    Ok(LabelRow {
-        organization_id,
-        label_id,
-        name: require_string(
-            fields
-                .get(&label_field::NAME)
-                .ok_or_else(|| RiffDbError::Rpc("label missing name".into()))?,
-        )?,
-    })
+fn map_app(error: riffdb_client_rust::ApplicationClientError) -> RiffDbError {
+    RiffDbError::Rpc(format!("{error:?}"))
 }
 
 /// Public RiffDB adapter errors.
@@ -931,7 +551,7 @@ pub enum RiffDbError {
     Connection,
     /// Bootstrap failed.
     Bootstrap,
-    /// Contract deploy failed.
+    /// Contract or query-module deploy failed.
     Deploy,
     /// Server process failed.
     Server,
@@ -939,16 +559,10 @@ pub enum RiffDbError {
     Io,
     /// RPC failed.
     Rpc(String),
-    /// Timeout.
-    Timeout,
     /// Runtime missing.
     Runtime,
-    /// Schema/constant mismatch.
-    InvalidSchema,
     /// Decode failure.
     Decode,
-    /// Scenario not supported by current contract surface.
-    Unsupported(&'static str),
 }
 
 impl fmt::Display for RiffDbError {
@@ -956,15 +570,12 @@ impl fmt::Display for RiffDbError {
         match self {
             Self::Connection => formatter.write_str("riffdb connection failed"),
             Self::Bootstrap => formatter.write_str("riffdb bootstrap failed"),
-            Self::Deploy => formatter.write_str("riffdb contract deploy failed"),
+            Self::Deploy => formatter.write_str("riffdb contract/query module deploy failed"),
             Self::Server => formatter.write_str("riffdbd process failed"),
             Self::Io => formatter.write_str("riffdb harness io failed"),
             Self::Rpc(detail) => write!(formatter, "riffdb rpc failed: {detail}"),
-            Self::Timeout => formatter.write_str("riffdb rpc timeout"),
             Self::Runtime => formatter.write_str("riffdb async runtime unavailable"),
-            Self::InvalidSchema => formatter.write_str("riffdb schema/constants invalid"),
             Self::Decode => formatter.write_str("riffdb response decode failed"),
-            Self::Unsupported(reason) => write!(formatter, "unsupported scenario: {reason}"),
         }
     }
 }

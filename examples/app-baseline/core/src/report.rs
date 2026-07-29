@@ -68,7 +68,7 @@ pub fn build_report(
         "comparisons": comparisons,
         "limitations": [
             "Application-equivalent baseline, not SQL plan equivalence.",
-            "PostgreSQL uses SQL joins/filters; RiffDB uses public gRPC GetEntity/ScanIndex multi-RPC application patterns.",
+            "PostgreSQL uses SQL joins/filters; RiffDB uses symbolic commands and named RiffQL queries over public gRPC.",
             "Not the frozen WP-200 budget-comparison publication suite.",
             "Results are architectural feedback for optimization prioritization, not marketing claims.",
         ],

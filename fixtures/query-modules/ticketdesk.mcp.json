@@ -8,6 +8,271 @@
         "openWorldHint": false,
         "readOnlyHint": true
       },
+      "description": "Execute the exact GetTicket named query from immutable module ticketdesk.",
+      "input_schema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "properties": {
+          "organization_id": {
+            "type": "string"
+          },
+          "ticket_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "organization_id",
+          "ticket_id"
+        ],
+        "type": "object"
+      },
+      "module_hash": "71d6bf01c58f12f63c7423fe3af349ebd91dca5ecbb373e3993cc733f8e28745",
+      "name": "ticketdesk.get_ticket",
+      "result_schema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "oneOf": [
+          {
+            "additionalProperties": false,
+            "properties": {
+              "outcome": {
+                "const": "Found",
+                "type": "string"
+              },
+              "ticket": {
+                "additionalProperties": false,
+                "properties": {
+                  "assignee_id": {
+                    "type": "string"
+                  },
+                  "project_id": {
+                    "type": "string"
+                  },
+                  "reporter_id": {
+                    "type": "string"
+                  },
+                  "status": {
+                    "type": "string"
+                  },
+                  "ticket_id": {
+                    "type": "string"
+                  },
+                  "title": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "ticket_id",
+                  "project_id",
+                  "title",
+                  "status",
+                  "reporter_id",
+                  "assignee_id"
+                ],
+                "type": "object"
+              }
+            },
+            "required": [
+              "outcome",
+              "ticket"
+            ],
+            "type": "object"
+          },
+          {
+            "additionalProperties": false,
+            "properties": {
+              "outcome": {
+                "const": "NotFound",
+                "type": "string"
+              }
+            },
+            "required": [
+              "outcome"
+            ],
+            "type": "object"
+          }
+        ]
+      },
+      "title": "Run GetTicket"
+    },
+    {
+      "annotations": {
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false,
+        "readOnlyHint": true
+      },
+      "description": "Execute the exact GetUser named query from immutable module ticketdesk.",
+      "input_schema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "properties": {
+          "organization_id": {
+            "type": "string"
+          },
+          "user_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "organization_id",
+          "user_id"
+        ],
+        "type": "object"
+      },
+      "module_hash": "71d6bf01c58f12f63c7423fe3af349ebd91dca5ecbb373e3993cc733f8e28745",
+      "name": "ticketdesk.get_user",
+      "result_schema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "oneOf": [
+          {
+            "additionalProperties": false,
+            "properties": {
+              "outcome": {
+                "const": "Found",
+                "type": "string"
+              },
+              "user": {
+                "additionalProperties": false,
+                "properties": {
+                  "display_name": {
+                    "type": "string"
+                  },
+                  "email": {
+                    "type": "string"
+                  },
+                  "user_id": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "user_id",
+                  "email",
+                  "display_name"
+                ],
+                "type": "object"
+              }
+            },
+            "required": [
+              "outcome",
+              "user"
+            ],
+            "type": "object"
+          },
+          {
+            "additionalProperties": false,
+            "properties": {
+              "outcome": {
+                "const": "NotFound",
+                "type": "string"
+              }
+            },
+            "required": [
+              "outcome"
+            ],
+            "type": "object"
+          }
+        ]
+      },
+      "title": "Run GetUser"
+    },
+    {
+      "annotations": {
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false,
+        "readOnlyHint": true
+      },
+      "description": "Execute the exact ListComments named query from immutable module ticketdesk.",
+      "input_schema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "properties": {
+          "after": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "limit": {
+            "maximum": 500,
+            "minimum": 1,
+            "type": "integer"
+          },
+          "organization_id": {
+            "type": "string"
+          },
+          "ticket_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "organization_id",
+          "ticket_id"
+        ],
+        "type": "object"
+      },
+      "module_hash": "71d6bf01c58f12f63c7423fe3af349ebd91dca5ecbb373e3993cc733f8e28745",
+      "name": "ticketdesk.list_comments",
+      "result_schema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "oneOf": [
+          {
+            "additionalProperties": false,
+            "properties": {
+              "comments": {
+                "items": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "author_id": {
+                      "type": "string"
+                    },
+                    "body": {
+                      "type": "string"
+                    },
+                    "comment_id": {
+                      "type": "string"
+                    },
+                    "created_at": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "comment_id",
+                    "body",
+                    "author_id",
+                    "created_at"
+                  ],
+                  "type": "object"
+                },
+                "maxItems": 500,
+                "type": "array"
+              },
+              "outcome": {
+                "const": "Found",
+                "type": "string"
+              }
+            },
+            "required": [
+              "outcome",
+              "comments"
+            ],
+            "type": "object"
+          }
+        ]
+      },
+      "title": "Run ListComments"
+    },
+    {
+      "annotations": {
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false,
+        "readOnlyHint": true
+      },
       "description": "Execute the exact ListTickets named query from immutable module ticketdesk.",
       "input_schema": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
@@ -49,7 +314,7 @@
         ],
         "type": "object"
       },
-      "module_hash": "ad6d671919db32abf1be9eed25759adafb4c44bc246b7b61ff818e6423d958d9",
+      "module_hash": "71d6bf01c58f12f63c7423fe3af349ebd91dca5ecbb373e3993cc733f8e28745",
       "name": "ticketdesk.list_tickets",
       "result_schema": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
@@ -66,6 +331,9 @@
                   "additionalProperties": false,
                   "properties": {
                     "assignee_id": {
+                      "type": "string"
+                    },
+                    "project_id": {
                       "type": "string"
                     },
                     "reporter_id": {
@@ -86,6 +354,7 @@
                   },
                   "required": [
                     "ticket_id",
+                    "project_id",
                     "title",
                     "status",
                     "updated_at",
@@ -107,6 +376,117 @@
         ]
       },
       "title": "Run ListTickets"
+    },
+    {
+      "annotations": {
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false,
+        "readOnlyHint": true
+      },
+      "description": "Execute the exact ListTicketsByAssignee named query from immutable module ticketdesk.",
+      "input_schema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "properties": {
+          "after": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "assignee_id": {
+            "type": "string"
+          },
+          "limit": {
+            "maximum": 500,
+            "minimum": 1,
+            "type": "integer"
+          },
+          "organization_id": {
+            "type": "string"
+          },
+          "statuses": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "uniqueItems": true
+          }
+        },
+        "required": [
+          "organization_id",
+          "assignee_id",
+          "statuses"
+        ],
+        "type": "object"
+      },
+      "module_hash": "71d6bf01c58f12f63c7423fe3af349ebd91dca5ecbb373e3993cc733f8e28745",
+      "name": "ticketdesk.list_tickets_by_assignee",
+      "result_schema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "oneOf": [
+          {
+            "additionalProperties": false,
+            "properties": {
+              "outcome": {
+                "const": "Found",
+                "type": "string"
+              },
+              "tickets": {
+                "items": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "assignee_id": {
+                      "type": "string"
+                    },
+                    "project_id": {
+                      "type": "string"
+                    },
+                    "reporter_id": {
+                      "type": "string"
+                    },
+                    "status": {
+                      "type": "string"
+                    },
+                    "ticket_id": {
+                      "type": "string"
+                    },
+                    "title": {
+                      "type": "string"
+                    },
+                    "updated_at": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "ticket_id",
+                    "project_id",
+                    "title",
+                    "status",
+                    "updated_at",
+                    "reporter_id",
+                    "assignee_id"
+                  ],
+                  "type": "object"
+                },
+                "maxItems": 500,
+                "type": "array"
+              }
+            },
+            "required": [
+              "outcome",
+              "tickets"
+            ],
+            "type": "object"
+          }
+        ]
+      },
+      "title": "Run ListTicketsByAssignee"
     },
     {
       "annotations": {
@@ -143,7 +523,7 @@
         ],
         "type": "object"
       },
-      "module_hash": "ad6d671919db32abf1be9eed25759adafb4c44bc246b7b61ff818e6423d958d9",
+      "module_hash": "71d6bf01c58f12f63c7423fe3af349ebd91dca5ecbb373e3993cc733f8e28745",
       "name": "ticketdesk.project_members",
       "result_schema": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
@@ -215,7 +595,7 @@
         ],
         "type": "object"
       },
-      "module_hash": "ad6d671919db32abf1be9eed25759adafb4c44bc246b7b61ff818e6423d958d9",
+      "module_hash": "71d6bf01c58f12f63c7423fe3af349ebd91dca5ecbb373e3993cc733f8e28745",
       "name": "ticketdesk.project_summary",
       "result_schema": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
@@ -331,7 +711,7 @@
         ],
         "type": "object"
       },
-      "module_hash": "ad6d671919db32abf1be9eed25759adafb4c44bc246b7b61ff818e6423d958d9",
+      "module_hash": "71d6bf01c58f12f63c7423fe3af349ebd91dca5ecbb373e3993cc733f8e28745",
       "name": "ticketdesk.ticket_page",
       "result_schema": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",

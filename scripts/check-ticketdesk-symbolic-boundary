@@ -12,7 +12,7 @@ if rg -n "$forbidden" "$source_root"; then
     exit 1
 fi
 
-for query in ListTickets ProjectMembers ProjectSummary TicketPage; do
+for query in GetTicket GetUser ListComments ListTickets ListTicketsByAssignee ProjectMembers ProjectSummary TicketPage; do
     count="$(rg -c "\"$query\"" "$source_root/lib.rs" || true)"
     if [[ "$count" != "1" ]]; then
         echo "named query $query must have exactly one application call site" >&2

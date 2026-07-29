@@ -31,14 +31,14 @@ Contract source: `contracts/ticketdesk.riff` (deployed to `riffdbd` at runtime).
 
 | Scenario | Postgres | RiffDB (application-equivalent) |
 |----------|----------|----------------------------------|
-| `point_get_ticket` | `SELECT` by PK | `GetEntity` |
-| `point_get_user` | `SELECT` by PK | `GetEntity` |
-| `list_tickets_by_project_status` | filtered `SELECT` | `ScanIndex` |
-| `list_open_tickets_for_assignee` | filtered `SELECT` | `ScanIndex` |
-| `list_comments_for_ticket` | filtered `SELECT` | `ScanIndex` |
-| `list_project_members` | filtered `SELECT` | `ScanIndex` |
-| `ticket_detail_page` | multi-table `JOIN` | multi-RPC compose |
-| `create_comment` | idempotent `INSERT` | `CreateComment` command |
+| `point_get_ticket` | `SELECT` by PK | named `GetTicket` |
+| `point_get_user` | `SELECT` by PK | named `GetUser` |
+| `list_tickets_by_project_status` | filtered `SELECT` | named `ListTickets` |
+| `list_open_tickets_for_assignee` | filtered `SELECT` | named `ListTicketsByAssignee` |
+| `list_comments_for_ticket` | filtered `SELECT` | named `ListComments` |
+| `list_project_members` | filtered `SELECT` | named `ProjectMembers` |
+| `ticket_detail_page` | multi-table `JOIN` | named `TicketPage` (dependent key batches) |
+| `create_comment` | idempotent `INSERT` | symbolic `CreateComment` |
 
 ## Run
 
@@ -74,8 +74,8 @@ human summary with p50 latencies and RiffDB/Postgres ratios.
 ## Architecture rules
 
 - No raw `redb` / storage primitives on the RiffDB client path.
-- RiffDB seed and mutations go through **compiled commands** on `riffdbd`.
-- RiffDB reads use **public** `GetEntity` / `ScanIndex`.
+- RiffDB seed and mutations use **symbolic application commands** (no field IDs).
+- RiffDB reads use **named RiffQL queries** (no `GetEntity` / `ScanIndex` in app code).
 - PostgreSQL stays in the nested comparison workspace only.
 
 ## Scale
