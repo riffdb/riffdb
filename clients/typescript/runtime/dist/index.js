@@ -198,13 +198,54 @@ function encodeValue(value, schema) {
             if (typeof value !== "boolean")
                 throw new Error("invalid boolean input");
             return value;
+        case "i64":
+            if (typeof value !== "bigint" || value < -(1n << 63n) || value > (1n << 63n) - 1n) {
+                throw new Error("invalid i64 input");
+            }
+            return { $i64: value.toString() };
+        case "u64":
+            if (typeof value !== "bigint" || value < 0n || value > (1n << 64n) - 1n) {
+                throw new Error("invalid u64 input");
+            }
+            return { $u64: value.toString() };
+        case "decimal":
+            return { $decimal: encodeDecimal(value) };
+        case "money": {
+            const input = exactObject(value);
+            return {
+                $money: {
+                    currency: expectCurrency(input.currency),
+                    amount: encodeDecimal(input.amount),
+                },
+            };
+        }
+        case "bytes":
+            if (!(value instanceof Uint8Array) || value.byteLength > 1_048_576) {
+                throw new Error("invalid bytes input");
+            }
+            return { $bytes: Buffer.from(value).toString("base64") };
+        case "date":
+            if (!Number.isInteger(value) || value < -2_147_483_648 || value > 2_147_483_647) {
+                throw new Error("invalid date input");
+            }
+            return { $date: value };
+        case "timestamp": {
+            const input = exactObject(value);
+            const seconds = input.seconds;
+            const nanos = input.nanos;
+            if (typeof seconds !== "bigint" || seconds < -(1n << 63n) || seconds > (1n << 63n) - 1n
+                || !Number.isInteger(nanos) || nanos < 0 || nanos > 999_999_999) {
+                throw new Error("invalid timestamp input");
+            }
+            return { $timestamp: { seconds: seconds.toString(), nanos } };
+        }
         case "limit":
             if (!Number.isInteger(value) || value < 1 || value > 500) {
                 throw new Error("invalid limit input");
             }
             return value;
         default:
-            throw new Error(`generated application scalar is not supported by the CLI transport: ${schema.kind}`);
+            throw new Error("generated application scalar is not supported by the CLI transport");
     }
 }
 function normalizeQueryFields(value) {
@@ -263,12 +304,48 @@ function decodeTagged(value) {
         case "date": return Number(expectDecimal(input.days_since_unix_epoch));
         case "timestamp": return { seconds: BigInt(expectDecimal(input.seconds)), nanos: nonnegativeNumber(input.nanos) };
         case "bytes": return Uint8Array.from(Buffer.from(expectBoundedString(input.value, MAX_OUTPUT_BYTES), "base64"));
+        case "decimal": return decodeDecimal(input);
+        case "money": return {
+            currency: expectCurrency(input.currency),
+            amount: decodeDecimal(exactObject(input.amount)),
+        };
         case "list":
             if (!Array.isArray(input.values))
                 return fail();
             return input.values.map(decodeTagged);
         default: return fail();
     }
+}
+function encodeDecimal(value) {
+    const input = exactObject(value);
+    const coefficient = input.coefficientTwosComplement;
+    if (!(coefficient instanceof Uint8Array) || coefficient.byteLength < 1 || coefficient.byteLength > 16
+        || !Number.isInteger(input.scale) || input.scale < 0
+        || input.scale > 4_294_967_295) {
+        throw new Error("invalid decimal input");
+    }
+    const output = {
+        coefficient_twos_complement: Buffer.from(coefficient).toString("base64"),
+        scale: input.scale,
+    };
+    if (input.precision !== undefined) {
+        if (!Number.isInteger(input.precision) || input.precision < 1
+            || input.precision > 4_294_967_295) {
+            throw new Error("invalid decimal precision");
+        }
+        output.precision = input.precision;
+    }
+    return output;
+}
+function decodeDecimal(input) {
+    const coefficient = Uint8Array.from(Buffer.from(expectBoundedString(input.coefficient_twos_complement, 24), "base64"));
+    const scale = nonnegativeNumber(input.scale);
+    if (coefficient.byteLength < 1 || coefficient.byteLength > 16)
+        return fail();
+    if (input.precision === undefined)
+        return { coefficientTwosComplement: coefficient, scale };
+    const precision = positiveNumber(input.precision);
+    return { coefficientTwosComplement: coefficient, scale, precision };
 }
 function decodePlain(value, schema) {
     if (schema.kind === "optional")
@@ -322,6 +399,15 @@ function decodePlain(value, schema) {
             if (value instanceof Uint8Array)
                 return value;
             break;
+        case "decimal":
+            encodeDecimal(value);
+            return value;
+        case "money": {
+            const input = exactObject(value);
+            expectCurrency(input.currency);
+            encodeDecimal(input.amount);
+            return value;
+        }
         default: break;
     }
     return fail();
@@ -408,6 +494,11 @@ function expectDecimal(value) {
 }
 function expectBoundedString(value, maximum) {
     if (typeof value !== "string" || value.length > maximum)
+        return fail();
+    return value;
+}
+function expectCurrency(value) {
+    if (typeof value !== "string" || !/^[A-Z]{3}$/.test(value))
         return fail();
     return value;
 }

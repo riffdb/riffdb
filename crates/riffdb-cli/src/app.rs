@@ -2893,6 +2893,55 @@ fn natural_query_value(value: serde_json::Value) -> Result<v1::Value, ()> {
                     variant_id: 0,
                     name: value,
                 })
+            } else if let Some(serde_json::Value::String(value)) = tagged.remove("$i64") {
+                Kind::I64Value(value.parse().map_err(|_| ())?)
+            } else if let Some(serde_json::Value::String(value)) = tagged.remove("$u64") {
+                Kind::U64Value(value.parse().map_err(|_| ())?)
+            } else if let Some(value) = tagged.remove("$decimal") {
+                Kind::DecimalValue(natural_decimal(value)?)
+            } else if let Some(value) = tagged.remove("$money") {
+                let mut value = value.as_object().cloned().ok_or(())?;
+                if value.len() != 2 {
+                    return Err(());
+                }
+                let currency = value
+                    .remove("currency")
+                    .and_then(|value| value.as_str().map(str::to_owned))
+                    .filter(|value| value.len() == 3 && value.bytes().all(|byte| byte.is_ascii()))
+                    .ok_or(())?;
+                let amount = natural_decimal(value.remove("amount").ok_or(())?)?;
+                Kind::MoneyValue(v1::Money {
+                    currency,
+                    amount: Some(amount),
+                })
+            } else if let Some(serde_json::Value::String(value)) = tagged.remove("$bytes") {
+                let value = STANDARD.decode(value).map_err(|_| ())?;
+                if value.len() > MAX_INPUT_BYTES {
+                    return Err(());
+                }
+                Kind::BytesValue(value)
+            } else if let Some(value) = tagged.remove("$date") {
+                let days_since_unix_epoch =
+                    i32::try_from(value.as_i64().ok_or(())?).map_err(|_| ())?;
+                Kind::DateValue(v1::Date {
+                    days_since_unix_epoch,
+                })
+            } else if let Some(value) = tagged.remove("$timestamp") {
+                let mut value = value.as_object().cloned().ok_or(())?;
+                if value.len() != 2 {
+                    return Err(());
+                }
+                let seconds = value
+                    .remove("seconds")
+                    .and_then(|value| value.as_str().and_then(|value| value.parse().ok()))
+                    .ok_or(())?;
+                let nanos = value
+                    .remove("nanos")
+                    .and_then(|value| value.as_u64())
+                    .and_then(|value| u32::try_from(value).ok())
+                    .filter(|value| *value <= 999_999_999)
+                    .ok_or(())?;
+                Kind::TimestampValue(v1::Timestamp { seconds, nanos })
             } else {
                 return Err(());
             }
@@ -2900,6 +2949,42 @@ fn natural_query_value(value: serde_json::Value) -> Result<v1::Value, ()> {
         serde_json::Value::Object(_) => return Err(()),
     };
     Ok(v1::Value { kind: Some(kind) })
+}
+
+fn natural_decimal(value: serde_json::Value) -> Result<v1::Decimal, ()> {
+    let mut value = value.as_object().cloned().ok_or(())?;
+    if !(value.len() == 2 || value.len() == 3) {
+        return Err(());
+    }
+    let coefficient_twos_complement = value
+        .remove("coefficient_twos_complement")
+        .and_then(|value| value.as_str().map(str::to_owned))
+        .and_then(|value| STANDARD.decode(value).ok())
+        .filter(|value| !value.is_empty() && value.len() <= 16)
+        .ok_or(())?;
+    let scale = value
+        .remove("scale")
+        .and_then(|value| value.as_u64())
+        .and_then(|value| u32::try_from(value).ok())
+        .ok_or(())?;
+    let precision = value
+        .remove("precision")
+        .map(|value| {
+            value
+                .as_u64()
+                .and_then(|value| u32::try_from(value).ok())
+                .filter(|value| *value > 0)
+                .ok_or(())
+        })
+        .transpose()?;
+    if !value.is_empty() {
+        return Err(());
+    }
+    Ok(v1::Decimal {
+        coefficient_twos_complement,
+        scale,
+        precision,
+    })
 }
 
 pub(crate) fn natural_command_record(
@@ -3256,6 +3341,83 @@ mod tests {
             Err(error) if error.kind() == io::ErrorKind::WouldBlock => {}
             Ok(_) => panic!("local rejection opened a transport connection"),
             Err(error) => panic!("listener observation failed: {error}"),
+        }
+    }
+
+    #[test]
+    fn symbolic_application_values_cover_every_generated_scalar_without_numeric_ids() {
+        let input = serde_json::json!({
+            "signed": {"$i64": "-9223372036854775808"},
+            "unsigned": {"$u64": "18446744073709551615"},
+            "decimal": {"$decimal": {
+                "coefficient_twos_complement": "ew==",
+                "scale": 2,
+                "precision": 3
+            }},
+            "money": {"$money": {
+                "currency": "USD",
+                "amount": {
+                    "coefficient_twos_complement": "ew==",
+                    "scale": 2,
+                    "precision": 3
+                }
+            }},
+            "bytes": {"$bytes": "c2FmZQ=="},
+            "date": {"$date": 1},
+            "timestamp": {"$timestamp": {"seconds": "-1", "nanos": 999999999}}
+        });
+        let record = natural_command_record(input.as_object().expect("record").clone())
+            .expect("all generated scalar tags");
+        let Some(v1::value::Kind::RecordValue(record)) = record.kind else {
+            panic!("record value");
+        };
+        let fields = record
+            .fields
+            .into_iter()
+            .map(|field| {
+                (
+                    field.name,
+                    field
+                        .value
+                        .and_then(|value| value.kind)
+                        .expect("value kind"),
+                )
+            })
+            .collect::<BTreeMap<_, _>>();
+        assert!(matches!(
+            fields["signed"],
+            v1::value::Kind::I64Value(i64::MIN)
+        ));
+        assert!(matches!(
+            fields["unsigned"],
+            v1::value::Kind::U64Value(u64::MAX)
+        ));
+        assert!(matches!(
+            fields["decimal"],
+            v1::value::Kind::DecimalValue(_)
+        ));
+        assert!(matches!(fields["money"], v1::value::Kind::MoneyValue(_)));
+        assert!(matches!(fields["bytes"], v1::value::Kind::BytesValue(_)));
+        assert!(matches!(fields["date"], v1::value::Kind::DateValue(_)));
+        assert!(matches!(
+            fields["timestamp"],
+            v1::value::Kind::TimestampValue(_)
+        ));
+
+        for invalid in [
+            serde_json::json!({"$i64": "9223372036854775808"}),
+            serde_json::json!({"$u64": "-1"}),
+            serde_json::json!({"$decimal": {
+                "coefficient_twos_complement": "",
+                "scale": 2
+            }}),
+            serde_json::json!({"$money": {
+                "currency": "US",
+                "amount": {"coefficient_twos_complement": "AQ==", "scale": 0}
+            }}),
+            serde_json::json!({"$timestamp": {"seconds": "0", "nanos": 1000000000}}),
+        ] {
+            assert!(natural_query_value(invalid).is_err());
         }
     }
 
