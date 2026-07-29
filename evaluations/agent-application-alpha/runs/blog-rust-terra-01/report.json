@@ -1,0 +1,35 @@
+{
+  "schema": "riffdb-agent-application-alpha-run/v1",
+  "run_id": "blog-rust-terra-01",
+  "bundle_hash": "1afb8faf08f43dd5f38a4b2c90a1bfad450eb1ce21663457ebbe4a1c9865827a",
+  "agent_identity": "terra-blog-rust-01",
+  "domain": "blog",
+  "language": "rust",
+  "independent": true,
+  "fresh_context": true,
+  "human_interventions": 2,
+  "kernel_attempts": 0,
+  "kernel_successes": 0,
+  "handwritten_glue_lines": 0,
+  "compiler_failures": 0,
+  "runtime_failures": 6,
+  "unsupported_shapes": [
+    {
+      "code": "MANIFEST_SCHEMA_UNAVAILABLE",
+      "operation": "blog_cms",
+      "reason": "The public generator could not create an application repository and rejected the minimal manifest without actionable schema diagnostics, so no Blog/CMS contract or generated typed command/query shapes could be authored."
+    }
+  ],
+  "first_write_seconds": null,
+  "first_page_read_seconds": null,
+  "time_to_complete_seconds": 163,
+  "source_access": {
+    "riffdb_implementation": false,
+    "ticketdesk": false
+  },
+  "boundary_passed": false,
+  "golden_passed": false,
+  "rating": 1.0,
+  "explanation": "This sealed, fresh Rust evaluation could not construct a RiffDB application from the public interfaces. riffdb new rejected an existing empty destination, then twice reported that a requested new repository could not be written. riffdb application generate and riffdb-dev --acceptance rejected the minimal manifest with only a generic invalid-manifest failure. No public manifest schema or template was available in the bundle. I did not invent a contract, generated bindings, credentials, transport, codecs, kernel calls, or client-side joins. Consequently no typed Blog/CMS write, named feed/moderation/slug/detail operation, detail-page read, seed data, boundary pass, or golden workload could be demonstrated. The one-point rating reflects that the public Rust SDK exposes an application-first facade, but the supplied public authoring path was insufficient to bootstrap the required application.",
+  "transcript_sha256": "27363d29f97313c51462308e96d69b96b752a91859284a1d23e5d563e9da1e7d"
+}

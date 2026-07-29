@@ -267,8 +267,8 @@ waived by modifying the evaluation application.
 
 ## WP-340 sealed evaluator status
 
-The release-derived evaluator harness is implemented, but the gate is not yet
-eligible. `scripts/agent-application-alpha-package` creates a new
+The release-derived evaluator harness is implemented.
+`scripts/agent-application-alpha-package` creates a new
 content-hashed bundle containing release binaries, public docs, builder MCP,
 the public Rust SDK, the TypeScript runtime/toolchain, four briefs, and
 redaction-safe schemas. It rejects TicketDesk artifacts and any non-SDK Rust
@@ -285,12 +285,41 @@ prohibited source access, no unresolved shape, both time thresholds, golden
 and boundary gates, and a rating of at least 8.5.
 
 No report is generated from WP-335 or from the harness itself. Those are
-product and harness tests, not independent-agent evidence. The current
-machine-readable decision is
-`release/evidence/agent-application-alpha-gate-v1.json`: zero of four required
-independent runs are present, so operational alpha and replication remain
-blocked. Passing WP-340 requires external fresh-agent executions with isolated
-context; filling reports with inferred or self-authored scores is prohibited.
+product and harness tests, not independent-agent evidence.
+
+Four independent Terra evaluations ran against sealed bundle
+`1afb8faf08f43dd5f38a4b2c90a1bfad450eb1ce21663457ebbe4a1c9865827a`
+without RiffDB implementation or TicketDesk source access:
+
+| Domain | Language | Rating | Golden | Principal result |
+|---|---|---:|---|---|
+| Blog | Rust | 1.0 | failed | Scaffolding and the minimal manifest failed without enough public schema diagnostics to author the application |
+| Blog | TypeScript | 2.0 | failed | Scaffolding failed before a generated RiffDB application could be written |
+| Orders | Rust | 3.0 | failed | The sample write/read worked, but an edited contract could not refresh its pinned identities |
+| Orders | TypeScript | 2.0 | failed | The sample write/read worked, but the richer Orders contract and operations could not be generated |
+
+All raw reports and redaction-safe event transcripts are published unchanged
+under `evaluations/agent-application-alpha/runs`. Three final applications
+passed the boundary checker, and no run used a kernel API, handwritten RiffDB
+transport glue, implementation source, or TicketDesk source. These controls
+worked as intended. The product gate nevertheless failed because no evaluator
+completed its assigned unfamiliar-domain workload or reached the 8.5 rating
+threshold.
+
+The repeated product defect is in the authoring loop, not RiffQL execution:
+after editing a scaffolded contract or query module, a public application
+author has no discoverable command that compiles the source, reports
+source-spanned diagnostics, and safely refreshes the manifest's pinned
+contract, module, query, and plan identities. The Blog runs additionally
+exposed confusing `riffdb new` destination behavior. The next product package
+must close those defects before the same evaluation is repeated.
+
+The current machine-readable decision is
+`release/evidence/agent-application-alpha-gate-v1.json`: all four required
+independent runs are present and the decision remains `not_eligible`.
+Operational alpha and replication remain blocked. A failed report cannot be
+reclassified or edited into a pass; a future evaluation must use a newly
+sealed bundle and fresh agent identities.
 
 ## Scope boundary
 

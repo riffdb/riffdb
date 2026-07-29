@@ -1,0 +1,45 @@
+{
+  "schema": "riffdb-agent-application-alpha-run/v1",
+  "run_id": "orders-typescript-terra-01",
+  "bundle_hash": "1afb8faf08f43dd5f38a4b2c90a1bfad450eb1ce21663457ebbe4a1c9865827a",
+  "agent_identity": "terra-orders-typescript-01",
+  "domain": "orders",
+  "language": "typescript",
+  "independent": true,
+  "fresh_context": true,
+  "human_interventions": 0,
+  "kernel_attempts": 0,
+  "kernel_successes": 0,
+  "handwritten_glue_lines": 0,
+  "compiler_failures": 2,
+  "runtime_failures": 0,
+  "unsupported_shapes": [
+    {
+      "code": "orders.contract.generation",
+      "operation": "application.generate",
+      "reason": "A richer Orders contract could not be regenerated: the public generator reported only that its built-in contract did not compile, without a usable public diagnostic or regenerated identities."
+    },
+    {
+      "code": "orders.inventory.invariant",
+      "operation": "ReserveOrder",
+      "reason": "The generated scaffold exposes only CreateItem and ItemPage, so an atomic reservation command and nonnegative-inventory retry workload could not be built or verified."
+    },
+    {
+      "code": "orders.named_pages",
+      "operation": "OrdersApplication",
+      "reason": "Customer history, open orders, inventory dashboard, and full order-detail operations could not be generated from the available scaffold."
+    }
+  ],
+  "first_write_seconds": 315,
+  "first_page_read_seconds": 316,
+  "time_to_complete_seconds": 336,
+  "source_access": {
+    "riffdb_implementation": false,
+    "ticketdesk": false
+  },
+  "boundary_passed": true,
+  "golden_passed": false,
+  "rating": 2,
+  "explanation": "The sealed public CLI scaffolded a TypeScript application, regenerated its compiler-owned bindings, and passed the application-boundary checker. A real HTTP page at /orders/sample successfully used the packaged CliApplicationTransport plus generated CreateItem and ItemPage calls, including a read-after-commit fence. No handwritten transport, codec, auth, kernel, numeric-ID, mask, encoded-key, scan, or client-side join code was written. However, this is not the requested Orders/Inventory application: the available generated scaffold was item-only, the richer contract regeneration did not yield public diagnostics or new identities, and reservation/nonnegative-inventory-under-retry plus the four required named order reads were not achieved. Therefore the complete golden workload is false and the rating is deliberately low.",
+  "transcript_sha256": "58fc5b13815c7e16e4c7c0cafee719bc7dcdd8dfa17d13722e01cb070040fc51"
+}

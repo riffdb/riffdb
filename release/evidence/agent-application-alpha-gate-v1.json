@@ -1,11 +1,162 @@
 {
   "bundle_hash": "1afb8faf08f43dd5f38a4b2c90a1bfad450eb1ce21663457ebbe4a1c9865827a",
   "decision": "not_eligible",
-  "independent_runs_completed": 0,
+  "independent_runs_completed": 4,
   "independent_runs_required": 4,
-  "reason": "No sealed fresh-agent reports have been submitted. Harness self-tests and WP-335 corpus runs are not independent evaluations.",
+  "reason": "All four sealed fresh-agent evaluations completed, but none passed the golden workload or the 8.5 rating threshold. The public authoring workflow cannot yet regenerate a changed application contract and refresh its pinned contract/query identities with actionable diagnostics.",
   "requirement": "AAA-012",
-  "runs": [],
+  "runs": [
+    {
+      "schema": "riffdb-agent-application-alpha-run/v1",
+      "run_id": "blog-rust-terra-01",
+      "bundle_hash": "1afb8faf08f43dd5f38a4b2c90a1bfad450eb1ce21663457ebbe4a1c9865827a",
+      "agent_identity": "terra-blog-rust-01",
+      "domain": "blog",
+      "language": "rust",
+      "independent": true,
+      "fresh_context": true,
+      "human_interventions": 2,
+      "kernel_attempts": 0,
+      "kernel_successes": 0,
+      "handwritten_glue_lines": 0,
+      "compiler_failures": 0,
+      "runtime_failures": 6,
+      "unsupported_shapes": [
+        {
+          "code": "MANIFEST_SCHEMA_UNAVAILABLE",
+          "operation": "blog_cms",
+          "reason": "The public generator could not create an application repository and rejected the minimal manifest without actionable schema diagnostics, so no Blog/CMS contract or generated typed command/query shapes could be authored."
+        }
+      ],
+      "first_write_seconds": null,
+      "first_page_read_seconds": null,
+      "time_to_complete_seconds": 163,
+      "source_access": {
+        "riffdb_implementation": false,
+        "ticketdesk": false
+      },
+      "boundary_passed": false,
+      "golden_passed": false,
+      "rating": 1,
+      "explanation": "This sealed, fresh Rust evaluation could not construct a RiffDB application from the public interfaces. riffdb new rejected an existing empty destination, then twice reported that a requested new repository could not be written. riffdb application generate and riffdb-dev --acceptance rejected the minimal manifest with only a generic invalid-manifest failure. No public manifest schema or template was available in the bundle. I did not invent a contract, generated bindings, credentials, transport, codecs, kernel calls, or client-side joins. Consequently no typed Blog/CMS write, named feed/moderation/slug/detail operation, detail-page read, seed data, boundary pass, or golden workload could be demonstrated. The one-point rating reflects that the public Rust SDK exposes an application-first facade, but the supplied public authoring path was insufficient to bootstrap the required application.",
+      "transcript_sha256": "27363d29f97313c51462308e96d69b96b752a91859284a1d23e5d563e9da1e7d"
+    },
+    {
+      "schema": "riffdb-agent-application-alpha-run/v1",
+      "run_id": "blog-typescript-terra-01",
+      "bundle_hash": "1afb8faf08f43dd5f38a4b2c90a1bfad450eb1ce21663457ebbe4a1c9865827a",
+      "agent_identity": "terra-blog-typescript-01",
+      "domain": "blog",
+      "language": "typescript",
+      "independent": true,
+      "fresh_context": true,
+      "human_interventions": 0,
+      "kernel_attempts": 0,
+      "kernel_successes": 0,
+      "handwritten_glue_lines": 0,
+      "compiler_failures": 0,
+      "runtime_failures": 5,
+      "unsupported_shapes": [
+        {
+          "code": "RDB-EVAL-SCAFFOLD-WRITE",
+          "operation": "generated_blog_application",
+          "reason": "The public TypeScript scaffold failed before it wrote an application repository, so generated Blog commands and named RiffQL operations could not be created."
+        }
+      ],
+      "first_write_seconds": null,
+      "first_page_read_seconds": 146,
+      "time_to_complete_seconds": 200,
+      "source_access": {
+        "riffdb_implementation": false,
+        "ticketdesk": false
+      },
+      "boundary_passed": true,
+      "golden_passed": false,
+      "rating": 2,
+      "explanation": "The public documentation clearly describes the intended symbolic TypeScript path, and the supplied boundary checker accepted the final artifact. However, `riffdb new` repeatedly failed before writing a fresh repository, and `riffdb dev --seed` consequently could not run. Without a generated client, manifest, compiled commands, or named RiffQL operations, no RiffDB write could be attempted. A real local HTTP post-detail page was compiled and read successfully, but it is explicitly an unbacked failure artifact rather than a successful Blog/CMS workload. The essential empty-repository product path is therefore blocked.",
+      "transcript_sha256": "536afe1c62a326ce025a125649e6169411f9b0d633b102a3121194433d3c061d"
+    },
+    {
+      "schema": "riffdb-agent-application-alpha-run/v1",
+      "run_id": "orders-rust-terra-01",
+      "bundle_hash": "1afb8faf08f43dd5f38a4b2c90a1bfad450eb1ce21663457ebbe4a1c9865827a",
+      "agent_identity": "terra-orders-rust-01",
+      "domain": "orders",
+      "language": "rust",
+      "independent": true,
+      "fresh_context": true,
+      "human_interventions": 0,
+      "kernel_attempts": 0,
+      "kernel_successes": 0,
+      "handwritten_glue_lines": 0,
+      "compiler_failures": 3,
+      "runtime_failures": 2,
+      "unsupported_shapes": [
+        {
+          "code": "manifest_identity_refresh",
+          "operation": "orders_inventory_contract",
+          "reason": "The public manifest requires new content hashes after changing the scaffold, but the exposed application CLI provides no author-facing hash refresh path; generation fails closed."
+        }
+      ],
+      "first_write_seconds": 172,
+      "first_page_read_seconds": 172,
+      "time_to_complete_seconds": 321,
+      "source_access": {
+        "riffdb_implementation": false,
+        "ticketdesk": false
+      },
+      "boundary_passed": true,
+      "golden_passed": false,
+      "rating": 3,
+      "explanation": "The public Rust scaffold, generated client, seed write, page read, and final application-boundary check succeeded without kernel use or handwritten RiffDB glue. The complete Orders/Inventory workload could not be created: changing the scaffolded contract produced either a generic compile failure or a pinned-manifest identity mismatch, while the documented public application surface exposes no mechanism to calculate and update the required identities. Therefore customers, products, exact prices, inventory reservation/retry proof, order lines, fulfillment state, and the four required named reads remain unimplemented.",
+      "transcript_sha256": "aa29ce7819b84cb80e3c1452ae141e285e543397b65af1d752352c91a3a479d9"
+    },
+    {
+      "schema": "riffdb-agent-application-alpha-run/v1",
+      "run_id": "orders-typescript-terra-01",
+      "bundle_hash": "1afb8faf08f43dd5f38a4b2c90a1bfad450eb1ce21663457ebbe4a1c9865827a",
+      "agent_identity": "terra-orders-typescript-01",
+      "domain": "orders",
+      "language": "typescript",
+      "independent": true,
+      "fresh_context": true,
+      "human_interventions": 0,
+      "kernel_attempts": 0,
+      "kernel_successes": 0,
+      "handwritten_glue_lines": 0,
+      "compiler_failures": 2,
+      "runtime_failures": 0,
+      "unsupported_shapes": [
+        {
+          "code": "orders.contract.generation",
+          "operation": "application.generate",
+          "reason": "A richer Orders contract could not be regenerated: the public generator reported only that its built-in contract did not compile, without a usable public diagnostic or regenerated identities."
+        },
+        {
+          "code": "orders.inventory.invariant",
+          "operation": "ReserveOrder",
+          "reason": "The generated scaffold exposes only CreateItem and ItemPage, so an atomic reservation command and nonnegative-inventory retry workload could not be built or verified."
+        },
+        {
+          "code": "orders.named_pages",
+          "operation": "OrdersApplication",
+          "reason": "Customer history, open orders, inventory dashboard, and full order-detail operations could not be generated from the available scaffold."
+        }
+      ],
+      "first_write_seconds": 315,
+      "first_page_read_seconds": 316,
+      "time_to_complete_seconds": 336,
+      "source_access": {
+        "riffdb_implementation": false,
+        "ticketdesk": false
+      },
+      "boundary_passed": true,
+      "golden_passed": false,
+      "rating": 2,
+      "explanation": "The sealed public CLI scaffolded a TypeScript application, regenerated its compiler-owned bindings, and passed the application-boundary checker. A real HTTP page at /orders/sample successfully used the packaged CliApplicationTransport plus generated CreateItem and ItemPage calls, including a read-after-commit fence. No handwritten transport, codec, auth, kernel, numeric-ID, mask, encoded-key, scan, or client-side join code was written. However, this is not the requested Orders/Inventory application: the available generated scaffold was item-only, the richer contract regeneration did not yield public diagnostics or new identities, and reservation/nonnegative-inventory-under-retry plus the four required named order reads were not achieved. Therefore the complete golden workload is false and the rating is deliberately low.",
+      "transcript_sha256": "58fc5b13815c7e16e4c7c0cafee719bc7dcdd8dfa17d13722e01cb070040fc51"
+    }
+  ],
   "schema": "riffdb-agent-application-alpha-gate/v1",
   "sealed_bundle_self_test": "passed",
   "thresholds": {
