@@ -345,6 +345,11 @@ fn expected_enum_values() -> BTreeSet<String> {
             2,
             "DISCOVERY_REPRESENTATION_COMPACT_OBSERVATION",
         ),
+        (
+            "riffdb.v1.ExecutionFailureCode",
+            3,
+            "EXECUTION_FAILURE_CODE_UNIQUE_CONFLICT",
+        ),
         ("riffdb.v1.FixedToolKind", 0, "FIXED_TOOL_KIND_UNSPECIFIED"),
         (
             "riffdb.v1.FixedToolKind",

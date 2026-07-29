@@ -274,6 +274,7 @@ fn exact_closed_enum_registries_are_frozen() {
             ("EXECUTION_FAILURE_CODE_UNSPECIFIED", 0),
             ("EXECUTION_FAILURE_CODE_ARITHMETIC_FAULT", 1),
             ("EXECUTION_FAILURE_CODE_RESOURCE_LIMIT", 2),
+            ("EXECUTION_FAILURE_CODE_UNIQUE_CONFLICT", 3),
         ]
     );
 

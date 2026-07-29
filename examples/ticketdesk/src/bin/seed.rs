@@ -6,7 +6,7 @@ use std::env;
 use std::path::Path;
 use std::time::Instant;
 
-use riffdb_client_rust::{CallMetadata, RiffDbClient, load_protected_bearer_credential};
+use riffdb_client_rust::{CallMetadata, StableApplicationClient, load_protected_bearer_credential};
 use riffdb_ticketdesk::{
     AddProjectMemberInput, AttachLabelInput, CreateCommentInput, CreateLabelInput,
     CreateOrganizationInput, CreateProjectInput, CreateTicketInput, CreateUserInput,
@@ -27,7 +27,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let endpoint = env::args().nth(1).ok_or("missing endpoint")?;
     let credential_path = env::args_os().nth(2).ok_or("missing credential")?;
     let credential = load_protected_bearer_credential(Path::new(&credential_path))?;
-    let client = RiffDbClient::connect(
+    let client = StableApplicationClient::connect(
         Endpoint::from_shared(endpoint)?
             .connect_timeout(std::time::Duration::from_secs(10))
             .timeout(std::time::Duration::from_secs(30)),

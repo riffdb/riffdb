@@ -410,6 +410,12 @@ mod tests {
             DomainPublicError::command_execution_failed(DomainExecutionFailureCode::ResourceLimit);
         let wire = public_error_to_proto(&error);
         assert_eq!(public_error_from_proto(&wire), Ok(error));
+        let unique =
+            DomainPublicError::command_execution_failed(DomainExecutionFailureCode::UniqueConflict);
+        assert_eq!(
+            public_error_from_proto(&public_error_to_proto(&unique)),
+            Ok(unique)
+        );
 
         let mut missing = wire.clone();
         missing.details = None;
@@ -437,7 +443,7 @@ mod tests {
 
         let mut unknown = wire.clone();
         unknown.details = Some(v1::public_error::Details::ExecutionFailure(
-            v1::CommandExecutionFailureDetails { code: 3 },
+            v1::CommandExecutionFailureDetails { code: 4 },
         ));
         assert_eq!(
             public_error_from_proto(&unknown),

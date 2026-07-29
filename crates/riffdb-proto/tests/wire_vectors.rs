@@ -40,6 +40,7 @@ fn every_checked_in_wire_vector_decodes_through_its_strict_boundary() {
         "error.contract",
         "error.execution-arithmetic",
         "error.execution-resource-limit",
+        "error.execution-unique-conflict",
         "error.idempotency",
         "error.internal",
         "error.outcome-unknown",

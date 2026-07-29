@@ -18,6 +18,7 @@ const MAINTENANCE_SOURCE: &str = include_str!("../src/maintenance_operations.rs"
 const PORTS_SOURCE: &str = include_str!("../src/ports.rs");
 const QUERY_SOURCE: &str = include_str!("../src/query_discovery_operations.rs");
 const SERVICE_SOURCE: &str = include_str!("../src/service.rs");
+const SYMBOLIC_QUERY_SOURCE: &str = include_str!("../src/symbolic_query.rs");
 const TRAITS_SOURCE: &str = include_str!("../src/application.rs");
 
 fn assert_object_safe(
@@ -443,4 +444,74 @@ fn current_restore_retry_is_exact_and_has_no_broader_maintenance_surface() {
     assert!(service.contains("OfflineMaintenanceInputHash"));
     assert!(!service.contains("RiffDbServiceInner"));
     assert!(!service.contains("ServiceExecutors"));
+}
+
+#[test]
+fn dependent_query_batches_cannot_escape_identity_scope_or_final_reauthorization() {
+    let execution = SYMBOLIC_QUERY_SOURCE
+        .split_once("async fn execute_compiled_query(")
+        .expect("compiled query execution")
+        .1
+        .split_once("async fn begin_symbolic(")
+        .expect("compiled query execution has a closed boundary")
+        .0;
+
+    for cursor_identity in [
+        "program.contract().lineage().clone()",
+        "program.contract().version()",
+        "program.contract().bundle_hash()",
+        "module_hash",
+        "program.identity().hash()",
+        "parameter_hash",
+        "context.principal().capability_id()",
+        "context.principal().capability_revision()",
+    ] {
+        assert!(
+            execution.contains(cursor_identity),
+            "query cursor omitted {cursor_identity}"
+        );
+    }
+    assert!(execution.contains("execute_authorized_query_page("));
+    assert!(execution.contains(".into_application_query()"));
+    assert!(
+        execution
+            .matches(".reauthorize(&service, &context)")
+            .count()
+            >= 2,
+        "execution must reauthorize before the dependent batch and before release"
+    );
+    let final_authorization = execution
+        .rfind("begun.reauthorize(&service, &context)")
+        .expect("final authorization");
+    let result_construction = execution
+        .find("ExecuteSymbolicQueryResult::from_snapshot")
+        .expect("result construction");
+    let cursor_publication = execution
+        .find("CursorPublicationGuard::publish")
+        .expect("cursor publication");
+    assert!(final_authorization < result_construction);
+    assert!(result_construction < cursor_publication);
+
+    let proof_consumer = SYMBOLIC_QUERY_SOURCE
+        .split_once("fn execute_authorized_query_page(")
+        .expect("authorized query proof consumer")
+        .1
+        .split_once("fn execution_failure(")
+        .expect("proof consumer has a closed boundary")
+        .0;
+    for exact_requirement in [
+        "target.lineage() == program.contract().lineage()",
+        "target.version() == program.contract().version()",
+        "target.bundle_hash() == program.contract().bundle_hash()",
+        "target.plan_hash() == program.identity().hash()",
+        "target.cost() == program.cost()",
+        "target.accesses().len() == program.steps().len()",
+        "OutputClassification::PolicyFilteredApplicationData",
+        "PartitionConstraint::Exact(target.partition().clone())",
+    ] {
+        assert!(
+            proof_consumer.contains(exact_requirement),
+            "query proof consumer omitted {exact_requirement}"
+        );
+    }
 }

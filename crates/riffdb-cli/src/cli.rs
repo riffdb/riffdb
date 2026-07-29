@@ -23,7 +23,11 @@ pub(crate) struct Cli {
 pub(crate) enum TopLevel {
     /// Starts the bounded local symbolic development workflow.
     Dev {
-        #[arg(long, default_value = "ticketdesk-agent", value_name = "ROLE_PRESET")]
+        #[arg(
+            long,
+            default_value = "ticketdesk-application",
+            value_name = "ROLE_PRESET"
+        )]
         role: String,
         #[arg(long)]
         watch: bool,
@@ -369,7 +373,7 @@ mod tests {
             "riffdb",
             "dev",
             "--role",
-            "ticketdesk-agent",
+            "ticketdesk-application",
             "--seed",
             "--seed-concurrency",
             "4",
@@ -382,7 +386,7 @@ mod tests {
                 seed: true,
                 seed_concurrency,
                 ..
-            } if role == "ticketdesk-agent" && seed_concurrency == "4"
+            } if role == "ticketdesk-application" && seed_concurrency == "4"
         ));
     }
 

@@ -35,7 +35,8 @@ Every list or detail page is one symbolic query request; mutations remain one
 compiled command invocation. The kernel gRPC API remains supported, but normal
 application code does not construct IDs, masks, keys, or protobuf field maps.
 See [Symbolic applications](docs/getting-started/SYMBOLIC-APPLICATIONS.md) and
-the [TicketDesk acceptance report](docs/getting-started/TICKETDESK-ACCEPTANCE.md).
+the [safe application profiles](docs/getting-started/SAFE-APPLICATION-PROFILES.md),
+and the [TicketDesk acceptance report](docs/getting-started/TICKETDESK-ACCEPTANCE.md).
 
 ## Why RiffDB
 

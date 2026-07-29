@@ -5,7 +5,7 @@ repo_root="$(git rev-parse --show-toplevel)"
 cd "$repo_root"
 
 output="$(cargo run --quiet -p riffdb-cli -- dev \
-    --role ticketdesk-agent \
+    --role ticketdesk-application \
     --seed-concurrency 8 \
     --acceptance)"
 case "$output" in

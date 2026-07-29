@@ -1,6 +1,7 @@
 # Safety by construction
 
-Status: normative target for WP-280 through WP-300 under accepted ADR-0055.
+Status: implemented application-surface rule for WP-280 through WP-300 under
+accepted ADR-0055.
 
 RiffDB's application product is not a safer collection of table operations. It
 is a closed set of compiled domain operations whose unsafe alternatives are not
@@ -17,6 +18,17 @@ available to ordinary application credentials.
 Permissions do not flow upward between these profiles. In particular,
 `ReadEntity` and `ScanIndex` do not authorize RiffQL, and application-query
 permissions do not authorize the corresponding kernel RPCs.
+
+The checked development presets are:
+
+| Preset | Credential contents |
+|---|---|
+| `ticketdesk-application` (default) | Exact TicketDesk commands and exact query-module-hash/query-name pairs |
+| `ticketdesk-agent` | Named operations plus explicit ad-hoc check, explain, and execute; no kernel reads |
+| `ticketdesk-kernel` | Raw contract/entity/index diagnosis only; no application commands or RiffQL |
+
+`riffdb dev` issues one selected credential. It has no `full`, `all`, or
+combined preset.
 
 ## Product rules
 
@@ -158,3 +170,37 @@ passes only when each program fails before protected output or mutation:
 Positive acceptance must also prove that the same stable application capability
 can execute its exact generated commands and named queries through gRPC, CLI
 wrappers, and generated MCP tools without gaining any rejected authority.
+
+Run the complete checked negative corpus with:
+
+```bash
+./scripts/safety-by-construction-acceptance
+```
+
+The corpus registry is
+`tests/authorization/fixtures/bad-application-corpus.json`. It maps every
+`SAFE-008` case to executable compiler, policy, service, transaction, fuel, or
+application-boundary evidence. `riffdb-dev-acceptance` additionally proves
+against live `riffdbd` that the default credential can execute the exact
+TicketDesk workload but cannot submit ad-hoc RiffQL.
+
+## Migration from pre-cutover development credentials
+
+Capabilities issued before the named-authority cutover are not upgraded or
+narrowed in place. Create one replacement credential for the intended profile,
+move the caller to it, verify its exact named operations, and revoke the old
+credential. Do not reuse an old capability containing `ReadEntity` or
+`ScanIndex` as an application credential.
+
+Stable Rust application code should accept `StableApplicationClient`, which
+has no entity/index or administrative methods. Kernel tooling deliberately uses
+`RiffDbClient` and a separate kernel/admin credential. Generated TypeScript and
+MCP artifacts contain exact named operations and immutable module hashes; raw
+fixed MCP tools are hidden by current-policy discovery for application and
+agent credentials.
+
+The current lower-level JSON capability documents still encode
+compiler-derived field visibility and command IDs. They are implementation
+fixtures, not the application authoring format. Symbolic role compilation
+replaces those documents in WP-310 without changing the authority separation
+established here.

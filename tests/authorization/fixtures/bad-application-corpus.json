@@ -1,0 +1,50 @@
+{
+  "schema": "riffdb-safe-application-negative-corpus-v1",
+  "cases": [
+    {
+      "id": "generic-write",
+      "rejection": "stable-client-surface",
+      "evidence": "scripts/check-ticketdesk-symbolic-boundary"
+    },
+    {
+      "id": "raw-kernel-read",
+      "rejection": "service-authorization",
+      "evidence": "stable_application_authority_and_catalog_are_named_only"
+    },
+    {
+      "id": "ad-hoc-source",
+      "rejection": "service-authorization",
+      "evidence": "riffdb-dev-acceptance"
+    },
+    {
+      "id": "module-query-plan-substitution",
+      "rejection": "policy-and-proof-consumption",
+      "evidence": "stable_application_authority_and_catalog_are_named_only"
+    },
+    {
+      "id": "dangling-relationship",
+      "rejection": "contract-compilation",
+      "evidence": "relationship_negative_corpus_has_stable_source_spanned_diagnostics"
+    },
+    {
+      "id": "concurrent-unique-collision",
+      "rejection": "transaction-current-command-validation",
+      "evidence": "equal_scoped_unique_values_commit_once_and_loser_replays_without_sequence"
+    },
+    {
+      "id": "cumulative-query-cost",
+      "rejection": "policy-and-execution-fuel",
+      "evidence": "whole_query_budget_is_compared_once_across_repeated_steps"
+    },
+    {
+      "id": "public-n-plus-one-page",
+      "rejection": "application-boundary",
+      "evidence": "scripts/check-ticketdesk-symbolic-boundary"
+    },
+    {
+      "id": "dependent-batch-scope-escape",
+      "rejection": "query-proof-cursor-and-safe-points",
+      "evidence": "dependent_query_batches_cannot_escape_identity_scope_or_final_reauthorization"
+    }
+  ]
+}

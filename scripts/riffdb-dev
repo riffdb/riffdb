@@ -4,7 +4,7 @@ set -euo pipefail
 repo_root="$(git rev-parse --show-toplevel)"
 cd "$repo_root"
 
-role=ticketdesk-agent
+role=ticketdesk-application
 watch=0
 acceptance=0
 seed_dir=
@@ -28,16 +28,19 @@ while (($#)); do
             shift 2
             ;;
         *)
-            echo "usage: riffdb-dev [--role ticketdesk-agent] [--watch] [--seed] [--seed-dir DIR] [--seed-concurrency 1..8] [--acceptance]" >&2
+            echo "usage: riffdb-dev [--role ticketdesk-application|ticketdesk-agent|ticketdesk-kernel] [--watch] [--seed] [--seed-dir DIR] [--seed-concurrency 1..8] [--acceptance]" >&2
             exit 2
             ;;
     esac
 done
 
-[[ "$role" == "ticketdesk-agent" ]] || {
-    echo "unknown development role preset: $role" >&2
-    exit 2
-}
+case "$role" in
+    ticketdesk-application|ticketdesk-agent|ticketdesk-kernel) ;;
+    *)
+        echo "unknown development role preset: $role" >&2
+        exit 2
+        ;;
+esac
 [[ "$seed_concurrency" =~ ^[1-8]$ ]] || {
     echo "seed concurrency must be in 1..8" >&2
     exit 2
@@ -70,7 +73,7 @@ benchmark="$repo_root/target/$profile/benchmark"
 contract="$repo_root/examples/app-baseline/contracts/ticketdesk.riff"
 queries="$repo_root/queries/ticketdesk"
 bootstrap_request="$repo_root/release/config/bootstrap-ticketdesk-dev.json"
-role_request="$repo_root/release/config/dev-role-ticketdesk-agent.json"
+role_request="$repo_root/release/config/dev-role-${role}.json"
 
 work_root="$(mktemp -d "${TMPDIR:-/tmp}/riffdb-dev.XXXXXX")"
 server_pid=
@@ -154,11 +157,11 @@ jq -e '.ok == true and .command == "query.deploy"' "$work_root/module.json" >/de
 
 "${operator[@]}" capability create \
     --request "$role_request" \
-    --credential-output "$work_root/agent.credential" >"$work_root/role.json"
+    --credential-output "$work_root/profile.credential" >"$work_root/role.json"
 jq -e '.ok == true and .command == "capability.create"' "$work_root/role.json" >/dev/null
 
-agent=("$riffdb" --endpoint "$endpoint" --output json --credential-file "$work_root/agent.credential")
-"${agent[@]}" query module \
+profile_client=("$riffdb" --endpoint "$endpoint" --output json --credential-file "$work_root/profile.credential")
+"${operator[@]}" query module \
     --contract-lineage TicketDesk \
     --contract-version 1 >"$work_root/inspect.json"
 jq -e '
@@ -174,7 +177,7 @@ run_seed() {
     while IFS= read -r -d '' seed_file; do
         command_name="$(basename "$seed_file" .json)"
         command_name="${command_name#*-}"
-        "${agent[@]}" command run "$command_name" --input "$seed_file" \
+        "${profile_client[@]}" command run "$command_name" --input "$seed_file" \
             >"$work_root/seed-$(basename "$seed_file").result" &
         ((running += 1))
         if ((running == seed_concurrency)); then
@@ -185,11 +188,15 @@ run_seed() {
     wait
 }
 
+if [[ "$role" == "ticketdesk-kernel" && ( -n "$seed_dir" || "$seed_builtin" == 1 || "$acceptance" == 1 ) ]]; then
+    echo "the kernel profile cannot seed or run application acceptance; select ticketdesk-application or ticketdesk-agent" >&2
+    exit 2
+fi
 if [[ -n "$seed_dir" ]]; then
     run_seed
 fi
 if ((acceptance || seed_builtin)); then
-    if ! seed_result="$("$seed" "$endpoint" "$work_root/agent.credential")"; then
+    if ! seed_result="$("$seed" "$endpoint" "$work_root/profile.credential")"; then
         cat "$work_root/riffdbd.stderr" >&2
         exit 1
     fi
@@ -203,7 +210,7 @@ if ((acceptance || seed_builtin)); then
         exit 1
     fi
     printf 'riffdb-dev-seed-v1\t%s\t%sns\n' "$seed_rows" "$seed_ns" >&2
-    benchmark_result="$("$benchmark" "$endpoint" "$work_root/agent.credential")"
+    benchmark_result="$("$benchmark" "$endpoint" "$work_root/profile.credential")"
     IFS=$'\t' read -r benchmark_schema list_ns members_ns summary_ns detail_ns <<<"$benchmark_result"
     [[ "$benchmark_schema" == "riffdb-ticketdesk-query-benchmark-v1" ]] || {
         echo "TicketDesk named-query benchmark returned an invalid result" >&2
@@ -217,8 +224,20 @@ if ((acceptance || seed_builtin)); then
         "$list_ns" "$members_ns" "$summary_ns" "$detail_ns" >&2
 fi
 
+if ((acceptance)) && [[ "$role" == "ticketdesk-application" ]]; then
+    if "${profile_client[@]}" query run "$repo_root/queries/ticketdesk/get_ticket.riffq" \
+        --contract-lineage TicketDesk \
+        --contract-version 1 \
+        --parameters "$repo_root/tests/authorization/fixtures/application-ad-hoc-parameters.json" \
+        >"$work_root/ad-hoc-denied.json" 2>"$work_root/ad-hoc-denied.stderr"; then
+        echo "stable application credential unexpectedly executed ad-hoc RiffQL" >&2
+        exit 1
+    fi
+    jq -e '.ok == false and .error.type == "public"' "$work_root/ad-hoc-denied.json" >/dev/null
+fi
+
 printf 'riffdb-dev-ready-v1\t%s\t%s\t%s\n' \
-    "$endpoint" "$work_root/agent.credential" "$role"
+    "$endpoint" "$work_root/profile.credential" "$role"
 
 if ((acceptance)); then
     exit 0

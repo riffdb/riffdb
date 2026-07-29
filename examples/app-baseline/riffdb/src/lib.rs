@@ -14,7 +14,7 @@ use riffdb_app_baseline_core::{
     AppBackend, CommentRow, CommentSeed, LabelRow, OrganizationRow, ProjectMemberRow, ProjectRow,
     SeedDataset, TicketDetailPage, TicketRow, TicketStatus, UserRow, UuidBytes, format_uuid,
 };
-use riffdb_client_rust::{BearerCredential, CallMetadata, RiffDbClient};
+use riffdb_client_rust::{BearerCredential, CallMetadata, StableApplicationClient};
 use riffdb_ticketdesk::{
     AddProjectMemberInput, AttachLabelInput, CreateCommentInput, CreateLabelInput,
     CreateOrganizationInput, CreateProjectInput, CreateTicketInput, CreateUserInput, GetTicketParams,
@@ -38,7 +38,7 @@ impl RiffDbPublicBackend {
             .map_err(|_| RiffDbError::Connection)?
             .connect_timeout(std::time::Duration::from_secs(10))
             .timeout(std::time::Duration::from_secs(60));
-        let client = RiffDbClient::connect(endpoint)
+        let client = StableApplicationClient::connect(endpoint)
             .await
             .map_err(|_| RiffDbError::Connection)?;
         let metadata = CallMetadata::authenticated(
