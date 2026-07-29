@@ -10,6 +10,7 @@ use std::sync::atomic::{AtomicI64, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
+mod budget_diagnostics;
 mod performance_support;
 
 use riffdb_auth::{AuthenticatedPrincipal, NewlyIssuedCapabilityToken};

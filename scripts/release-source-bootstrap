@@ -1,0 +1,635 @@
+#!/usr/bin/env bash
+set -euo pipefail
+export LC_ALL=C
+umask 077
+
+usage() {
+    printf '%s\n' \
+        'usage: cargo riffdb bootstrap (--user | --system) [--register-codex]' \
+        '' \
+        'Bootstraps one new local POC database, deploys the checked budget' \
+        'contract, creates a restricted MCP capability, and writes user-owned' \
+        'client configuration. This is an explicit authoritative operation.' >&2
+}
+
+scope=
+register_codex=false
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --user|--system)
+            if [[ -n "$scope" ]]; then
+                usage
+                exit 2
+            fi
+            scope="${1#--}"
+            ;;
+        --register-codex)
+            register_codex=true
+            ;;
+        -h|--help)
+            usage
+            exit 0
+            ;;
+        *)
+            usage
+            exit 2
+            ;;
+    esac
+    shift
+done
+if [[ -z "$scope" ]]; then
+    usage
+    exit 2
+fi
+if [[ "$(uname -s)" != "Linux" ]]; then
+    printf '%s\n' 'RiffDB source bootstrap supports Linux only' >&2
+    exit 1
+fi
+if [[ "$EUID" -eq 0 ]]; then
+    printf '%s\n' 'run RiffDB bootstrap as the operator user, not root' >&2
+    exit 1
+fi
+
+script_root="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
+repo_root="$(cd -- "$script_root/.." && pwd -P)"
+cd "$repo_root"
+
+for tool in chmod cmp id install jq ln mktemp mv rm stat sync tr uname uuidgen; do
+    if ! command -v "$tool" >/dev/null 2>&1; then
+        printf 'required RiffDB bootstrap tool is missing: %s\n' "$tool" >&2
+        exit 1
+    fi
+done
+
+home="${HOME:?HOME must be set}"
+config_home="${XDG_CONFIG_HOME:-$home/.config}"
+state_home="${XDG_STATE_HOME:-$home/.local/state}"
+case "$config_home:$state_home" in
+    /*:/*) ;;
+    *)
+        printf '%s\n' 'HOME and XDG bootstrap paths must resolve absolutely' >&2
+        exit 1
+        ;;
+esac
+case "$config_home$state_home" in
+    *$'\n'*|*$'\r'*)
+        printf '%s\n' 'bootstrap paths must not contain line breaks' >&2
+        exit 1
+        ;;
+esac
+
+case "$scope" in
+    user) bin_dir="$home/.local/bin" ;;
+    system) bin_dir=/usr/local/bin ;;
+esac
+riffdb="$bin_dir/riffdb"
+riffdb_mcp="$bin_dir/riffdb-mcp"
+if [[ ! -x "$riffdb" || -L "$riffdb" || ! -x "$riffdb_mcp" || -L "$riffdb_mcp" ]]; then
+    printf 'RiffDB %s binaries are not installed; run cargo riffdb install --%s\n' \
+        "$scope" "$scope" >&2
+    exit 1
+fi
+
+endpoint="${RIFFDB_ENDPOINT:-http://127.0.0.1:7443}"
+if [[ ! "$endpoint" =~ ^http://127\.0\.0\.1:[1-9][0-9]{0,4}$ ]]; then
+    printf '%s\n' 'RIFFDB_ENDPOINT must be a literal IPv4 loopback HTTP endpoint' >&2
+    exit 1
+fi
+port="${endpoint##*:}"
+if (( port > 65535 )); then
+    printf '%s\n' 'RIFFDB_ENDPOINT port is out of range' >&2
+    exit 1
+fi
+
+config_dir="$config_home/riffdb"
+state_dir="$state_home/riffdb"
+
+ensure_private_directory() {
+    local path="$1"
+    if [[ -L "$path" || ( -e "$path" && ! -d "$path" ) ]]; then
+        printf 'RiffDB bootstrap directory is linked or not a directory: %s\n' \
+            "$path" >&2
+        exit 1
+    fi
+    if [[ ! -e "$path" ]]; then
+        install -d -m 0700 "$path"
+    fi
+    if [[ "$(stat -c '%u' "$path")" != "$(id -u)" \
+       || "$(stat -c '%a' "$path")" != "700" ]]; then
+        printf 'RiffDB bootstrap directory is not private and user-owned: %s\n' \
+            "$path" >&2
+        exit 1
+    fi
+}
+
+ensure_private_directory "$config_dir"
+ensure_private_directory "$state_dir"
+
+owner_credential="$config_dir/operator.credential"
+client_config="$config_dir/client.toml"
+mcp_credential="$config_dir/mcp.credential"
+mcp_config="$config_dir/mcp.toml"
+bootstrap_credential="$state_dir/bootstrap.credential"
+bootstrap_request="$state_dir/bootstrap-local-owner.json"
+mcp_request="$state_dir/mcp-budget-agent.json"
+owner_capability_id="$state_dir/operator-capability.id"
+mcp_pending_id="$state_dir/mcp-capability.pending-id"
+mcp_capability_id="$state_dir/mcp-capability.id"
+owner_candidate="$config_dir/.operator.credential.new"
+mcp_candidate="$config_dir/.mcp.credential.new"
+
+require_safe_destination() {
+    local path="$1"
+    if [[ -L "$path" || ( -e "$path" && ! -f "$path" ) ]]; then
+        printf 'RiffDB bootstrap path is linked or not regular: %s\n' "$path" >&2
+        exit 1
+    fi
+}
+
+require_private_file() {
+    local path="$1"
+    require_safe_destination "$path"
+    if [[ ! -f "$path" \
+       || "$(stat -c '%u' "$path")" != "$(id -u)" \
+       || "$(stat -c '%a' "$path")" != "600" ]]; then
+        printf 'RiffDB credential is not a private current-user file: %s\n' \
+            "$path" >&2
+        exit 1
+    fi
+}
+
+require_bearer_file() {
+    local path="$1"
+    local value
+    require_private_file "$path"
+    value="$(<"$path")"
+    if [[ "$(stat -c '%s' "$path")" != "43" \
+       || ! "$value" =~ ^[A-Za-z0-9_-]{43}$ ]]; then
+        printf 'RiffDB bearer credential is not canonical: %s\n' "$path" >&2
+        exit 1
+    fi
+}
+
+require_matching_bootstrap_candidate() {
+    local candidate="$1"
+    local document="$2"
+    local candidate_value
+    local -a document_lines=()
+
+    require_bearer_file "$candidate"
+    require_private_file "$document"
+    mapfile -t document_lines <"$document"
+    candidate_value="$(<"$candidate")"
+    if [[ "${#document_lines[@]}" -ne 3 \
+       || "${document_lines[0]}" != "riffdb-bootstrap-credential-v1" \
+       || ! "${document_lines[1]}" =~ ^capability-id:[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$ \
+       || ! "$candidate_value" =~ ^[A-Za-z0-9_-]{43}$ \
+       || "${document_lines[2]}" != "token:$candidate_value" ]]; then
+        printf '%s\n' \
+            'operator credential candidate does not match retained bootstrap material' >&2
+        exit 1
+    fi
+}
+
+read_capability_id_file() {
+    local path="$1"
+    local value
+    require_private_file "$path"
+    if [[ "$(stat -c '%s' "$path")" != "37" ]]; then
+        printf 'capability ID file has an invalid size: %s\n' "$path" >&2
+        exit 1
+    fi
+    value="$(<"$path")"
+    if [[ ! "$value" =~ ^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$ ]]; then
+        printf 'capability ID is not canonical UUIDv7: %s\n' "$path" >&2
+        exit 1
+    fi
+    printf '%s\n' "$value"
+}
+
+read_bootstrap_capability_id() {
+    local document="$1"
+    local -a document_lines=()
+
+    require_private_file "$document"
+    mapfile -t document_lines <"$document"
+    if [[ "${#document_lines[@]}" -ne 3 \
+       || "${document_lines[0]}" != "riffdb-bootstrap-credential-v1" \
+       || ! "${document_lines[1]}" =~ ^capability-id:([0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12})$ \
+       || ! "${document_lines[2]}" =~ ^token:[A-Za-z0-9_-]{43}$ ]]; then
+        printf 'retained bootstrap credential is not canonical: %s\n' \
+            "$document" >&2
+        exit 1
+    fi
+    printf '%s\n' "${document_lines[1]#capability-id:}"
+}
+
+toml_quote() {
+    local value="$1"
+    value="${value//\\/\\\\}"
+    value="${value//\"/\\\"}"
+    value="${value//$'\t'/\\t}"
+    printf '"%s"' "$value"
+}
+
+install_exact_private() {
+    local source="$1"
+    local destination="$2"
+    require_safe_destination "$destination"
+    if [[ -e "$destination" ]]; then
+        if ! cmp -s "$source" "$destination"; then
+            printf 'RiffDB bootstrap refuses to replace changed file: %s\n' \
+                "$destination" >&2
+            exit 1
+        fi
+        require_private_file "$destination"
+        return
+    fi
+    install -m 0600 "$source" "$destination"
+}
+
+publish_durable_private_state_file() {
+    local source="$1"
+    local destination="$2"
+
+    require_private_file "$source"
+    require_safe_destination "$destination"
+    sync -f "$source"
+    if [[ -e "$destination" ]]; then
+        require_private_file "$destination"
+        if ! cmp -s "$source" "$destination"; then
+            printf 'RiffDB bootstrap refuses a changed state identity: %s\n' \
+                "$destination" >&2
+            exit 1
+        fi
+    elif ! ln -- "$source" "$destination"; then
+        printf 'RiffDB bootstrap create-only state publication failed: %s\n' \
+            "$destination" >&2
+        exit 1
+    fi
+    sync -f "$destination"
+    sync -f "$state_dir"
+    rm -f "$source"
+    sync -f "$state_dir"
+}
+
+sync_private_file_and_directory() {
+    local path="$1"
+    local directory="$2"
+    require_private_file "$path"
+    sync -f "$path"
+    sync -f "$directory"
+}
+
+install_exact_private \
+    release/config/bootstrap-local-owner.json.example \
+    "$bootstrap_request"
+install_exact_private \
+    release/config/mcp-budget-agent.json.example \
+    "$mcp_request"
+
+bootstrap_result="$(mktemp "$state_dir/.bootstrap-result.XXXXXX")"
+create_result="$(mktemp "$state_dir/.create-result.XXXXXX")"
+validate_result="$(mktemp "$state_dir/.validate-result.XXXXXX")"
+deploy_result="$(mktemp "$state_dir/.deploy-result.XXXXXX")"
+health_result="$(mktemp "$state_dir/.health-result.XXXXXX")"
+owner_id_candidate=
+mcp_id_candidate=
+cleanup() {
+    rm -f "$bootstrap_result" "$create_result" "$validate_result" \
+        "$deploy_result" "$health_result" "${codex_list:-}" \
+        "$owner_id_candidate" "$mcp_id_candidate"
+}
+trap cleanup EXIT INT TERM
+
+if [[ ! -e "$owner_credential" ]]; then
+    require_safe_destination "$owner_credential"
+    require_safe_destination "$owner_candidate"
+    if [[ -f "$bootstrap_credential" ]]; then
+        require_private_file "$bootstrap_credential"
+        bootstrap_args=(
+            --bootstrap-file "$bootstrap_credential"
+        )
+    elif [[ -e "$bootstrap_credential" || -L "$bootstrap_credential" ]]; then
+        printf 'retained bootstrap credential is invalid: %s\n' \
+            "$bootstrap_credential" >&2
+        exit 1
+    elif [[ -e "$owner_candidate" ]]; then
+        printf '%s\n' \
+            'operator credential candidate has no retained bootstrap material' >&2
+        exit 1
+    else
+        bootstrap_args=(
+            --generate "$bootstrap_credential"
+        )
+    fi
+
+    bearer_args=()
+    if [[ -e "$owner_candidate" ]]; then
+        require_matching_bootstrap_candidate \
+            "$owner_candidate" "$bootstrap_credential"
+    else
+        bearer_args=(
+            --bearer-output "$owner_candidate"
+        )
+    fi
+
+    if ! "$riffdb" --endpoint "$endpoint" --output json \
+        capability bootstrap \
+        --request "$bootstrap_request" \
+        "${bootstrap_args[@]}" \
+        "${bearer_args[@]}" >"$bootstrap_result"; then
+        printf '%s\n' \
+            'RiffDB bootstrap did not reach a terminal result.' \
+            "Retained recovery material remains at $bootstrap_credential." \
+            'Run the same cargo riffdb bootstrap command again.' >&2
+        exit 1
+    fi
+    if ! jq -e '
+        .schema == "riffdb.cli.output/v1"
+        and .command == "capability.bootstrap"
+        and .ok == true
+        and (
+            .result.status == "created"
+            or .result.status == "replayed"
+        )
+    ' "$bootstrap_result" >/dev/null; then
+        printf '%s\n' 'RiffDB rejected or conflicted with local bootstrap' >&2
+        exit 1
+    fi
+    require_matching_bootstrap_candidate \
+        "$owner_candidate" "$bootstrap_credential"
+    mv "$owner_candidate" "$owner_credential"
+    sync_private_file_and_directory "$owner_credential" "$config_dir"
+fi
+require_bearer_file "$owner_credential"
+if [[ -e "$owner_candidate" ]]; then
+    printf '%s\n' 'operator credential state is ambiguous after recovery' >&2
+    exit 1
+fi
+sync_private_file_and_directory "$owner_credential" "$config_dir"
+if [[ -f "$bootstrap_credential" ]]; then
+    require_matching_bootstrap_candidate \
+        "$owner_credential" "$bootstrap_credential"
+    bootstrap_capability_id="$(read_bootstrap_capability_id "$bootstrap_credential")"
+    owner_id_candidate="$(
+        mktemp "$state_dir/.operator-capability.id.XXXXXX"
+    )"
+    printf '%s\n' "$bootstrap_capability_id" >"$owner_id_candidate"
+    chmod 0600 "$owner_id_candidate"
+    read_capability_id_file "$owner_id_candidate" >/dev/null
+    publish_durable_private_state_file \
+        "$owner_id_candidate" "$owner_capability_id"
+    owner_id_candidate=
+elif [[ -e "$bootstrap_credential" || -L "$bootstrap_credential" ]]; then
+    printf 'retained bootstrap credential is invalid: %s\n' \
+        "$bootstrap_credential" >&2
+    exit 1
+elif [[ ! -e "$owner_capability_id" ]]; then
+    printf '%s\n' \
+        'operator capability ID is absent and no retained bootstrap material can recover it' >&2
+    exit 1
+fi
+read_capability_id_file "$owner_capability_id" >/dev/null
+sync_private_file_and_directory "$owner_capability_id" "$state_dir"
+
+client_candidate="$(mktemp "$config_dir/.client.toml.XXXXXX")"
+{
+    printf '%s\n' '[client]'
+    printf 'endpoint = %s\n' "$(toml_quote "$endpoint")"
+    printf '%s\n' 'output = "human"' 'max_attempts = 3'
+    printf 'credential_file = %s\n' "$(toml_quote "$owner_credential")"
+} >"$client_candidate"
+chmod 0600 "$client_candidate"
+install_exact_private "$client_candidate" "$client_config"
+rm -f "$client_candidate"
+
+contract="$repo_root/contracts/examples/budget.riff"
+"$riffdb" --config "$client_config" --output json \
+    contract validate "$contract" >"$validate_result"
+if ! jq -e '
+    .schema == "riffdb.cli.output/v1"
+    and .command == "contract.validate"
+    and .ok == true
+    and .result.status == "valid"
+' "$validate_result" >/dev/null; then
+    printf '%s\n' 'checked budget contract did not validate' >&2
+    exit 1
+fi
+"$riffdb" --config "$client_config" --output json \
+    contract deploy "$contract" >"$deploy_result"
+if ! jq -e '
+    .schema == "riffdb.cli.output/v1"
+    and .command == "contract.deploy"
+    and .ok == true
+    and (
+        .result.status == "activated"
+        or .result.status == "already_active"
+    )
+' "$deploy_result" >/dev/null; then
+    printf '%s\n' 'checked budget contract did not activate exactly' >&2
+    exit 1
+fi
+
+if ! "$riffdb" --config "$client_config" --output json \
+    server health >"$health_result"; then
+    printf '%s\n' 'authenticated RiffDB health failed after deployment' >&2
+    exit 1
+fi
+if ! jq -e '
+    .schema == "riffdb.cli.output/v1"
+    and .command == "server.health"
+    and .ok == true
+    and .result.status == "ready"
+' "$health_result" >/dev/null; then
+    printf '%s\n' 'RiffDB did not report ready health after deployment' >&2
+    exit 1
+fi
+rm -f "$bootstrap_credential"
+sync -f "$state_dir"
+
+if [[ ! -e "$mcp_credential" && -e "$mcp_candidate" ]]; then
+    require_bearer_file "$mcp_candidate"
+    if [[ -e "$mcp_pending_id" && ! -e "$mcp_capability_id" ]]; then
+        read_capability_id_file "$mcp_pending_id" >/dev/null
+        mv "$mcp_candidate" "$mcp_credential"
+        sync_private_file_and_directory "$mcp_credential" "$config_dir"
+        mv "$mcp_pending_id" "$mcp_capability_id"
+        sync -f "$state_dir"
+    else
+        printf '%s\n' 'MCP credential candidate state is ambiguous' >&2
+        exit 1
+    fi
+fi
+if [[ -e "$mcp_credential" ]]; then
+    require_bearer_file "$mcp_credential"
+    if [[ -e "$mcp_candidate" ]]; then
+        printf '%s\n' 'MCP credential state is ambiguous after recovery' >&2
+        exit 1
+    fi
+    if [[ -e "$mcp_capability_id" && ! -e "$mcp_pending_id" ]]; then
+        read_capability_id_file "$mcp_capability_id" >/dev/null
+    elif [[ ! -e "$mcp_capability_id" && -e "$mcp_pending_id" ]]; then
+        read_capability_id_file "$mcp_pending_id" >/dev/null
+        mv "$mcp_pending_id" "$mcp_capability_id"
+        sync -f "$state_dir"
+    else
+        printf '%s\n' 'MCP credential and capability ID state is ambiguous' >&2
+        exit 1
+    fi
+else
+    require_safe_destination "$mcp_capability_id"
+    if [[ -e "$mcp_capability_id" ]]; then
+        printf '%s\n' 'MCP capability ID exists without its credential' >&2
+        exit 1
+    fi
+    require_safe_destination "$mcp_credential"
+    create_attempt=0
+    while [[ "$create_attempt" -lt 2 ]]; do
+        create_attempt=$((create_attempt + 1))
+        require_safe_destination "$mcp_pending_id"
+        if [[ ! -e "$mcp_pending_id" ]]; then
+            mcp_id_candidate="$(
+                mktemp "$state_dir/.mcp-capability.pending-id.XXXXXX"
+            )"
+            uuidgen --time-v7 >"$mcp_id_candidate"
+            chmod 0600 "$mcp_id_candidate"
+            read_capability_id_file "$mcp_id_candidate" >/dev/null
+            publish_durable_private_state_file \
+                "$mcp_id_candidate" "$mcp_pending_id"
+            mcp_id_candidate=
+        fi
+        require_private_file "$mcp_pending_id"
+        capability_id="$(read_capability_id_file "$mcp_pending_id")"
+        sync_private_file_and_directory "$mcp_pending_id" "$state_dir"
+
+        require_safe_destination "$mcp_candidate"
+        if [[ -e "$mcp_candidate" ]]; then
+            printf 'an unresolved MCP credential candidate exists: %s\n' \
+                "$mcp_candidate" >&2
+            exit 1
+        fi
+        : >"$create_result"
+        if ! "$riffdb" --config "$client_config" --output json \
+            capability create \
+            --request "$mcp_request" \
+            --capability-id "$capability_id" \
+            --credential-output "$mcp_candidate" >"$create_result"; then
+            printf '%s\n' \
+                'MCP capability creation did not reach a terminal result.' \
+                "The exact pending capability ID remains in $mcp_pending_id." \
+                'Run the same cargo riffdb bootstrap command again.' >&2
+            exit 1
+        fi
+
+        create_status="$(jq -er '
+            select(
+                .schema == "riffdb.cli.output/v1"
+                and .command == "capability.create"
+                and .ok == true
+            )
+            | .result.status
+        ' "$create_result")" || {
+            printf '%s\n' 'MCP capability creation returned an invalid result' >&2
+            exit 1
+        }
+        case "$create_status" in
+            created)
+                require_bearer_file "$mcp_candidate"
+                mv "$mcp_candidate" "$mcp_credential"
+                sync_private_file_and_directory "$mcp_credential" "$config_dir"
+                mv "$mcp_pending_id" "$mcp_capability_id"
+                sync -f "$state_dir"
+                break
+                ;;
+            already_created_token_unavailable)
+                "$riffdb" --config "$client_config" --output json \
+                    capability revoke "$capability_id" --reason replaced \
+                    >"$create_result"
+                if ! jq -e '
+                    .schema == "riffdb.cli.output/v1"
+                    and .command == "capability.revoke"
+                    and .ok == true
+                ' "$create_result" >/dev/null; then
+                    printf '%s\n' \
+                        'unable to revoke token-unavailable MCP capability' >&2
+                    exit 1
+                fi
+                rm -f "$mcp_pending_id"
+                sync -f "$state_dir"
+                ;;
+            *)
+                printf 'MCP capability creation stopped with status: %s\n' \
+                    "$create_status" >&2
+                exit 1
+                ;;
+        esac
+    done
+fi
+require_bearer_file "$mcp_credential"
+read_capability_id_file "$mcp_capability_id" >/dev/null
+sync_private_file_and_directory "$mcp_credential" "$config_dir"
+sync_private_file_and_directory "$mcp_capability_id" "$state_dir"
+
+mcp_candidate_config="$(mktemp "$config_dir/.mcp.toml.XXXXXX")"
+{
+    printf '%s\n' '[mcp]'
+    printf 'endpoint = %s\n' "$(toml_quote "$endpoint")"
+    printf 'credential_file = %s\n' "$(toml_quote "$mcp_credential")"
+} >"$mcp_candidate_config"
+chmod 0600 "$mcp_candidate_config"
+install_exact_private "$mcp_candidate_config" "$mcp_config"
+rm -f "$mcp_candidate_config"
+
+"$riffdb" --endpoint "$endpoint" --output json \
+    --credential-file "$mcp_credential" server health >"$health_result"
+if ! jq -e '
+    .schema == "riffdb.cli.output/v1"
+    and .command == "server.health"
+    and .ok == true
+    and .result.status == "ready"
+' "$health_result" >/dev/null; then
+    printf '%s\n' 'restricted MCP credential failed authenticated health' >&2
+    exit 1
+fi
+
+if "$register_codex"; then
+    codex_command="${RIFFDB_CODEX:-codex}"
+    if ! command -v "$codex_command" >/dev/null 2>&1; then
+        printf '%s\n' 'Codex is unavailable; MCP registration was not changed' >&2
+        exit 1
+    fi
+    codex_list="$(mktemp "$state_dir/.codex-mcp-list.XXXXXX")"
+    if ! "$codex_command" mcp list --json >"$codex_list"; then
+        rm -f "$codex_list"
+        printf '%s\n' \
+            'Codex MCP configuration could not be inspected; registration was not changed' >&2
+        exit 1
+    fi
+    if ! jq -e '
+        type == "array"
+        and all(.[]; (.name | type) == "string")
+    ' "$codex_list" >/dev/null; then
+        rm -f "$codex_list"
+        printf '%s\n' \
+            'Codex returned an invalid MCP inventory; registration was not changed' >&2
+        exit 1
+    fi
+    if jq -e 'any(.[]; .name == "riffdb")' "$codex_list" >/dev/null; then
+        rm -f "$codex_list"
+        printf '%s\n' \
+            'Codex already has an MCP server named riffdb; registration was not changed' >&2
+        exit 1
+    fi
+    rm -f "$codex_list"
+    "$codex_command" mcp add riffdb -- \
+        "$riffdb_mcp" --config "$mcp_config"
+fi
+
+printf '%s\n' \
+    "RiffDB local POC bootstrap is ready at $endpoint." \
+    "CLI config: $client_config" \
+    "MCP config: $mcp_config" \
+    'The MCP capability grants catalog/health reads and checked LegalSpend access.' \
+    'POC capabilities expire after at most 30 days; this is not production-ready.' \
+    "Register later with: codex mcp add riffdb -- $riffdb_mcp --config $mcp_config"

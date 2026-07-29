@@ -1,0 +1,16 @@
+[package]
+name = "riffdb-xtask"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.97.0"
+license = "MIT OR Apache-2.0"
+publish = false
+
+[workspace]
+
+[lints.rust]
+unsafe_code = "forbid"
+unused_must_use = "deny"
+
+[lints.clippy]
+correctness = { level = "warn", priority = -1 }

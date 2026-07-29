@@ -6,6 +6,15 @@ These limits are part of the POC release posture, not hidden roadmap promises.
   security, compatibility, or support limits.
 - Linux is the POC deployment gate. Protected credential and key-file loading
   is unavailable on other platforms.
+- The source convenience installer targets Linux systemd. Every user-scope
+  install requires a valid private `XDG_RUNTIME_DIR` for unit verification.
+  Starting or restarting additionally requires an available per-user manager;
+  `--no-start` avoids that live-manager requirement. The installer does not
+  configure login sessions or lingering.
+- Automated source-install acceptance exercises user scope; separate release
+  checks validate the shared systemd assets. Automation does not execute the
+  source installer's real account, `/etc`, or `/usr/local` flow. System scope
+  requires first-install acceptance on its disposable or staging host.
 - gRPC and hosted MCP are loopback-only, cleartext, and have no TLS, proxy,
   OAuth, or remote-bind support.
 - `riffdbd` exposes only the documented POC configuration fields. There is no
@@ -29,12 +38,30 @@ These limits are part of the POC release posture, not hidden roadmap promises.
   join engine, distributed transaction, replication, failover, or consensus.
 - The POC authorization model uses opaque local capability tokens, not a
   production identity provider or OAuth authorization server.
+- Capability administration has create and revoke operations but no
+  operator-facing inventory command. Retain each issued capability ID in a
+  private operational inventory; deleting a bearer file is not revocation.
+- Convenience bootstrap capabilities expire after at most 30 days. There is
+  no automatic renewal; a replacement must be created through the public
+  service while an administrative capability remains valid.
+- Re-running the source installer updates the three binaries but deliberately
+  preserves existing keys, server configuration, unit files, and system
+  sysusers/tmpfiles definitions. It is not a general configuration migration,
+  key-rotation, uninstall, or compatibility-aware upgrade mechanism.
+- Individual binary replacement is atomic, but replacement of all three
+  binaries is not transactional. Rerun an interrupted install before starting
+  or restarting the service.
+- Optional Codex MCP registration checks for an existing `riffdb` entry before
+  calling the replacement-capable Codex command, but Codex provides no atomic
+  create-if-absent operation. Do not run it concurrently with another writer
+  to the same user's Codex MCP configuration.
 - Metrics are in-process; there is no network metrics exporter.
 - Outbox delivery has only the explicitly configured POC connector behavior.
 - Projection state is rebuildable and can be degraded while authoritative
   commits remain available.
-- Restore publication assumes the database directory is private to the
-  `riffdb` service user. An uncooperative process with equal write authority can
+- Restore publication assumes the database directory is private to the sole
+  configured service identity: the current operator for user scope or `riffdb`
+  for system scope. An uncooperative process with equal write authority can
   invalidate filesystem assumptions, so shared write access and concurrent
   servers are unsupported.
 - Backup and restore are offline. There is no online, incremental, encrypted,

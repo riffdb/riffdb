@@ -1,0 +1,13 @@
+[package]
+name = "riffdb-app-baseline-core"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+license.workspace = true
+
+[dependencies]
+serde_json = { version = "=1.0.150", default-features = false, features = ["std"] }
+
+[lints]
+workspace = true

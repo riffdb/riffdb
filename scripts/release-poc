@@ -239,6 +239,7 @@ rm -rf "$repro_target"
     --mcp-binary target/release/riffdb-mcp \
     --cli-binary target/release/riffdb \
     --expected-revision "$revision"
+./scripts/release-source-bootstrap-smoke --binary-dir target/release
 
 publish_root="$repo_root/target/wp200/release"
 release_root="$repo_root/target/wp200/.release-poc-staging"

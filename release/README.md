@@ -21,6 +21,17 @@ SBOM; Fjall is not linked into any product binary.
 Checked-in files under this directory are inputs and candidate evidence. They
 are not a binary release and do not attest that POC exit passed.
 
+The matching full source checkout also provides
+`cargo riffdb install --user|--system` and the separate authoritative
+`cargo riffdb bootstrap --user|--system [--register-codex]` convenience flow.
+Those Cargo commands are source-checkout tooling and are not embedded in the
+binary archive. Archive users follow `docs/installation.md`'s verified-bundle
+procedure. The source installer must run as an unprivileged operator, never
+under `sudo`; system scope performs protected destination inspection,
+publication, account setup, and service management through `sudo` internally.
+Because that helper is mutable checkout code, do not grant it a narrow
+command-specific `sudoers` exception.
+
 RiffDB is offered under either the MIT License or the Apache License, Version
 2.0, at your option. The release verifier requires matching workspace metadata
 and both root license texts before it can publish a bundle.

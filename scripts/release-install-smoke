@@ -52,7 +52,7 @@ if [[ "$actual_docs" != "$expected_docs" ]]; then
     printf '%s\n' 'release bundle contains an unexpected documentation set' >&2
     exit 1
 fi
-expected_configs=$'bootstrap-budget-demo.json\nbootstrap-operator.json.example\nbudget-allocate-v1.json\nbudget-create-v1.json\nclient.toml.example\nmcp.toml.example\nriffdbd.toml.example'
+expected_configs=$'bootstrap-budget-demo.json\nbootstrap-local-owner.json.example\nbootstrap-operator.json.example\nbudget-allocate-v1.json\nbudget-create-v1.json\nclient.toml.example\nmcp-budget-agent.json.example\nmcp.toml.example\nriffdbd.toml.example'
 actual_configs="$(
     find "$bundle_root/release/config" \
         -mindepth 1 -maxdepth 1 -printf '%f\n' | sort

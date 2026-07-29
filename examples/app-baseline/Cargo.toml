@@ -1,0 +1,43 @@
+[package]
+name = "riffdb-app-baseline"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+license.workspace = true
+autotests = false
+
+[workspace]
+resolver = "3"
+members = ["core", "postgres", "riffdb"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.97.0"
+publish = false
+license = "MIT OR Apache-2.0"
+
+[workspace.lints.rust]
+unsafe_code = "forbid"
+unused_must_use = "deny"
+missing_docs = "warn"
+unreachable_pub = "warn"
+
+[workspace.lints.clippy]
+correctness = { level = "warn", priority = -1 }
+await_holding_lock = "deny"
+
+[dependencies]
+riffdb-app-baseline-core = { path = "core", version = "0.1.0" }
+riffdb-app-baseline-postgres = { path = "postgres", version = "0.1.0" }
+riffdb-app-baseline-riffdb = { path = "riffdb", version = "0.1.0" }
+serde_json = { version = "=1.0.150", default-features = false, features = ["std"] }
+tokio = { version = "=1.52.0", default-features = false, features = ["macros", "rt-multi-thread", "time"] }
+
+[[bin]]
+name = "riffdb-app-baseline"
+path = "src/main.rs"
+
+[lints]
+workspace = true

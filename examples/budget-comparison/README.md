@@ -151,3 +151,28 @@ RiffDB product binary.
 Correctness preflight is mandatory before later benchmark work. WP-125 adds the
 in-process RiffDB service adapter and WP-135 adds the canonical public gRPC/SDK
 adapter; both must reuse this core workload and oracle instead of redefining it.
+
+## Optimization diagnostics
+
+The frozen publication suite (`benchmarks/run-budget-comparison`) reports only
+suite-level process wall-clock. For triage of *where* time goes, use:
+
+```bash
+./benchmarks/run-budget-diagnostics --smoke
+# or, for a longer sample set:
+./benchmarks/run-budget-diagnostics --full --samples 12 --warmup 2 --commands 64
+```
+
+This writes layered JSON under `target/budget-diagnostics/`:
+
+- `layered-report-v1.json` — in-process RiffDB service vs canonical PostgreSQL
+  with per-operation sequential timings, contention wall, and amortized
+  create/allocate throughput on unique keys.
+- `public-path-report-v1.json` — public gRPC process phases
+  (`server_start_ready`, `bootstrap_deploy_credentials`, `runner_sequential`,
+  `runner_contention`, `runner_same_key_replay`, `server_shutdown`).
+- `summary-v1.txt` — human-readable ratios and bottleneck hints.
+
+Diagnostic reports are not WP-200 publication evidence and do not replace
+`benchmarks/run-budget-comparison`. Use them to decide whether to profile the
+semantic kernel, public transport, or process lifecycle first.

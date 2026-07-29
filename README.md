@@ -68,7 +68,32 @@ derived and rebuildable; entity state and the commit log are authoritative.
 The deterministic runtime has no filesystem, network, operating-system clock,
 process-global mutation, or untracked randomness.
 
-## Build
+## Quick Source Install
+
+From the repository root on a Linux systemd host, install a private user
+service and then explicitly bootstrap its database:
+
+```bash
+cargo riffdb install --user
+cargo riffdb bootstrap --user --register-codex
+```
+
+Omit `--register-codex` when Codex MCP registration is not wanted. A
+machine-wide service uses `--system` for both commands. Run both commands as
+the intended operator user: never run Cargo with `sudo`. The system installer
+builds as that user and invokes `sudo` itself for privileged destination
+inspection, publication, account setup, and systemd operations. Treat the
+mutable checkout helper as an interactive administrator tool, not as a command
+to allowlist in `sudoers`.
+
+Install and bootstrap are intentionally separate. Bootstrap creates the first
+durable human capability, deploys the checked budget contract, creates a
+restricted MCP capability, and writes private client configuration. POC
+capabilities expire after at most 30 days and are not automatically renewed.
+See [Installation](docs/installation.md) for paths, `--no-start`, systemd user
+manager requirements, rerun limits, and advanced bundle/manual procedures.
+
+## Manual Build
 
 The workspace pins Rust 1.97.0. On Linux with rustup:
 
