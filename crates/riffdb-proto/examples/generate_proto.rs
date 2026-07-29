@@ -49,6 +49,7 @@ const STORAGE_SOURCES: &[&str] = &[
     "riffdb/storage/v1/projection.proto",
 ];
 const PRODUCTION_SOURCES: &[&str] = &[
+    "riffdb/app/v1/application.proto",
     "riffdb/storage/v1/application.proto",
     "riffdb/storage/v1/audit.proto",
     "riffdb/storage/v1/capability.proto",
@@ -243,6 +244,10 @@ const PROBE_RECORD_TYPE: &str = "riffdb.testing.v1.CompatibilityProbe";
 const PROBE_PAYLOAD: &[u8] = &[0x08, 0x2a];
 const CRC_32C: Crc<u32> = Crc::<u32>::new(&CRC_32_ISCSI);
 const EXPECTED_METHODS: &[(&str, &str, bool)] = &[
+    ("ApplicationQueryService", "CheckQuery", false),
+    ("ApplicationQueryService", "DescribeContract", false),
+    ("ApplicationQueryService", "ExecuteQuery", false),
+    ("ApplicationQueryService", "ExplainQuery", false),
     ("AdminService", "CreateCapability", false),
     ("AdminService", "CreateOfflineBackup", false),
     ("AdminService", "GetOfflineMaintenanceOperation", false),
@@ -1188,12 +1193,12 @@ fn collect_proto_sources(
 }
 
 fn validate_service_inventory(descriptor_set: &FileDescriptorSet) -> Result<(), Box<dyn Error>> {
-    if descriptor_set
-        .file
-        .iter()
-        .any(|file| !file.service.is_empty() && file.package() != "riffdb.v1")
-    {
-        return Err(io::Error::other("public services must remain in riffdb.v1").into());
+    if descriptor_set.file.iter().any(|file| {
+        !file.service.is_empty() && !matches!(file.package(), "riffdb.v1" | "riffdb.app.v1")
+    }) {
+        return Err(
+            io::Error::other("public services must remain in riffdb.v1 or riffdb.app.v1").into(),
+        );
     }
 
     let actual_services = descriptor_set
@@ -1237,18 +1242,23 @@ fn validate_service_inventory(descriptor_set: &FileDescriptorSet) -> Result<(), 
         .collect::<Vec<_>>();
     actual.sort();
 
-    let expected = EXPECTED_METHODS
+    let mut expected = EXPECTED_METHODS
         .iter()
         .map(|(service, method, server_streaming)| {
+            let package = if *service == "ApplicationQueryService" {
+                "riffdb.app.v1"
+            } else {
+                "riffdb.v1"
+            };
             let input_type = if *method == "Execute" {
                 ".riffdb.v1.ExecuteCommandRequest".to_owned()
             } else {
-                format!(".riffdb.v1.{method}Request")
+                format!(".{package}.{method}Request")
             };
             let output_type = match *method {
                 "Execute" => ".riffdb.v1.ExecuteCommandResponse".to_owned(),
                 "SubscribeCommits" => ".riffdb.v1.CommitNotification".to_owned(),
-                _ => format!(".riffdb.v1.{method}Response"),
+                _ => format!(".{package}.{method}Response"),
             };
             (
                 (*service).to_owned(),
@@ -1260,6 +1270,7 @@ fn validate_service_inventory(descriptor_set: &FileDescriptorSet) -> Result<(), 
             )
         })
         .collect::<Vec<_>>();
+    expected.sort();
 
     if actual != expected {
         return Err(io::Error::other(format!(

@@ -866,6 +866,30 @@ impl PublicGrpcMcpBackend {
                     .await
                     .authenticated_client_result(&self.client_activity)?,
             ),
+            FixedGrpcRequest::DescribeContract(request) => response::describe_contract(
+                client
+                    .describe_contract(request, &self.metadata)
+                    .await
+                    .authenticated_client_result(&self.client_activity)?,
+            ),
+            FixedGrpcRequest::CheckQuery(request) => response::check_query(
+                client
+                    .check_query(request, &self.metadata)
+                    .await
+                    .authenticated_client_result(&self.client_activity)?,
+            ),
+            FixedGrpcRequest::ExplainQuery(request) => response::explain_query(
+                client
+                    .explain_query(request, &self.metadata)
+                    .await
+                    .authenticated_client_result(&self.client_activity)?,
+            ),
+            FixedGrpcRequest::ExecuteQuery(request) => response::execute_query(
+                client
+                    .execute_query(request, &self.metadata)
+                    .await
+                    .authenticated_client_result(&self.client_activity)?,
+            ),
         }
         .map_err(|_| McpBackendError::InvalidResponse)
     }

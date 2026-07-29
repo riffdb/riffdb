@@ -29,6 +29,12 @@ pub mod generated {
     include!(concat!(env!("OUT_DIR"), "/riffdb.v1.rs"));
 }
 
+/// Generated Tonic bindings for the symbolic `riffdb.app.v1` service.
+#[allow(missing_docs, clippy::large_enum_variant)]
+pub mod generated_app {
+    include!(concat!(env!("OUT_DIR"), "/riffdb.app.v1.rs"));
+}
+
 #[cfg(feature = "server")]
 pub use authentication::*;
 #[cfg(feature = "server")]

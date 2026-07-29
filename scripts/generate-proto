@@ -49,6 +49,7 @@ generate_durable_vectors
 generate_durable_relationship_vectors
 
 artifacts=(
+    crates/riffdb-proto/src/generated/riffdb.app.v1.rs
     crates/riffdb-proto/src/generated/riffdb.storage.v1.rs
     crates/riffdb-proto/src/generated/riffdb.v1.rs
     fixtures/proto/compatibility-probe-envelope.bin
@@ -78,7 +79,7 @@ artifacts=(
     fixtures/proto/wire-vectors.txt
 )
 
-expected_generated=$'crates/riffdb-proto/src/generated/riffdb.storage.v1.rs\ncrates/riffdb-proto/src/generated/riffdb.v1.rs'
+expected_generated=$'crates/riffdb-proto/src/generated/riffdb.app.v1.rs\ncrates/riffdb-proto/src/generated/riffdb.storage.v1.rs\ncrates/riffdb-proto/src/generated/riffdb.v1.rs'
 
 check_generated_inventory() {
     local root="$1"

@@ -1,5 +1,7 @@
 //! Checked public-Protobuf to common MCP presentation conversion.
 
+use base64::Engine as _;
+use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use riffdb_api_mcp::{
     McpBindingFieldReferencePresentation, McpCommandDurability, McpCommandExecutionClass,
     McpCommandExplanationFields, McpCommandExplanationPresentation, McpCompatibilityCodeCount,
@@ -18,7 +20,7 @@ use riffdb_api_mcp::{
     render_active_contract_resource, render_command_documentation, render_command_plan_resource,
     render_contract_version_resource, render_projection_status_resource,
 };
-use riffdb_client_rust::v1;
+use riffdb_client_rust::{app_v1, v1};
 use serde::Serialize;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -400,6 +402,207 @@ pub(crate) fn health(
             Some(payload_from(&AuthenticatedHealth::try_from(health)?)?),
         ),
     }
+}
+
+pub(crate) fn describe_contract(
+    response: app_v1::DescribeContractResponse,
+) -> Result<McpToolResult, ResponseConversionError> {
+    let payload = serde_json::json!({
+        "contract": {
+            "lineage": response.contract_lineage,
+            "version": response.contract_version.to_string(),
+            "bundle_hash": lower_hex(&response.contract_bundle_hash),
+        },
+        "catalog": response.symbolic_catalog,
+    });
+    compose(
+        15,
+        McpFixedResultBranch::ContractDescribed,
+        Some(payload_from(&payload)?),
+    )
+}
+
+pub(crate) fn check_query(
+    response: app_v1::CheckQueryResponse,
+) -> Result<McpToolResult, ResponseConversionError> {
+    if response.diagnostics.is_empty() {
+        let payload = checked_query_payload(
+            response.identity.ok_or(ResponseConversionError)?,
+            response.schema.ok_or(ResponseConversionError)?,
+        );
+        compose(
+            16,
+            McpFixedResultBranch::QueryCheckValid,
+            Some(payload_from(&payload)?),
+        )
+    } else {
+        compose(
+            16,
+            McpFixedResultBranch::QueryCheckInvalid,
+            Some(payload_from(&serde_json::json!({
+                "diagnostics": diagnostic_payloads(response.diagnostics)?
+            }))?),
+        )
+    }
+}
+
+pub(crate) fn explain_query(
+    response: app_v1::ExplainQueryResponse,
+) -> Result<McpToolResult, ResponseConversionError> {
+    if response.diagnostics.is_empty() {
+        let mut payload = checked_query_payload(
+            response.identity.ok_or(ResponseConversionError)?,
+            response.schema.ok_or(ResponseConversionError)?,
+        );
+        payload
+            .as_object_mut()
+            .ok_or(ResponseConversionError)?
+            .insert("plan".to_owned(), serde_json::json!(response.plan_lines));
+        compose(
+            17,
+            McpFixedResultBranch::QueryExplainValid,
+            Some(payload_from(&payload)?),
+        )
+    } else {
+        compose(
+            17,
+            McpFixedResultBranch::QueryExplainInvalid,
+            Some(payload_from(&serde_json::json!({
+                "diagnostics": diagnostic_payloads(response.diagnostics)?
+            }))?),
+        )
+    }
+}
+
+pub(crate) fn execute_query(
+    response: app_v1::ExecuteQueryResponse,
+) -> Result<McpToolResult, ResponseConversionError> {
+    let fields = response
+        .fields
+        .into_iter()
+        .map(symbolic_result_field)
+        .collect::<Result<Vec<_>, _>>()?;
+    let next_cursor = response
+        .next_cursor
+        .map(|cursor| {
+            let bytes = URL_SAFE_NO_PAD
+                .decode(cursor.as_bytes())
+                .map_err(|_| ResponseConversionError)?;
+            let bytes: [u8; 16] = bytes.try_into().map_err(|_| ResponseConversionError)?;
+            Ok(riffdb_api_mcp::encode_mcp_cursor(bytes))
+        })
+        .transpose()?;
+    let payload = serde_json::json!({
+        "identity": symbolic_identity_payload(response.identity.ok_or(ResponseConversionError)?),
+        "outcome": response.outcome,
+        "application_head": response.application_head.to_string(),
+        "fields": fields,
+        "next_cursor": next_cursor,
+    });
+    compose(
+        18,
+        McpFixedResultBranch::QueryCompleted,
+        Some(payload_from(&payload)?),
+    )
+}
+
+fn checked_query_payload(
+    identity: app_v1::QueryIdentity,
+    schema: app_v1::QuerySchema,
+) -> serde_json::Value {
+    serde_json::json!({
+        "identity": symbolic_identity_payload(identity),
+        "schema": {
+            "parameters": schema.parameters,
+            "outcomes": schema.outcomes,
+            "result_fields": schema.result_fields,
+        }
+    })
+}
+
+fn symbolic_identity_payload(identity: app_v1::QueryIdentity) -> serde_json::Value {
+    serde_json::json!({
+        "contract_lineage": identity.contract_lineage,
+        "contract_version": identity.contract_version.to_string(),
+        "contract_bundle_hash": lower_hex(&identity.contract_bundle_hash),
+        "query_name": identity.query_name,
+        "plan_hash": lower_hex(&identity.plan_hash),
+    })
+}
+
+fn diagnostic_payloads(
+    diagnostics: Vec<app_v1::Diagnostic>,
+) -> Result<Vec<serde_json::Value>, ResponseConversionError> {
+    diagnostics
+        .into_iter()
+        .map(|diagnostic| {
+            let span = diagnostic.span.ok_or(ResponseConversionError)?;
+            Ok(serde_json::json!({
+                "code": diagnostic.code,
+                "summary": diagnostic.summary,
+                "span": {"start": span.start, "end": span.end},
+                "symbols": diagnostic.symbols,
+                "suggestion": diagnostic.suggestion,
+            }))
+        })
+        .collect()
+}
+
+fn symbolic_result_field(
+    field: app_v1::ResultField,
+) -> Result<serde_json::Value, ResponseConversionError> {
+    let cardinality = match app_v1::ResultCardinality::try_from(field.cardinality).ok() {
+        Some(app_v1::ResultCardinality::One) => "one",
+        Some(app_v1::ResultCardinality::Maybe) => "maybe",
+        Some(app_v1::ResultCardinality::Many) => "many",
+        Some(app_v1::ResultCardinality::Unspecified) | None => {
+            return Err(ResponseConversionError);
+        }
+    };
+    let records = field
+        .records
+        .into_iter()
+        .map(|record| {
+            let mut prior = None;
+            let fields = record
+                .fields
+                .into_iter()
+                .map(|field| {
+                    if field.name.is_empty()
+                        || prior
+                            .as_deref()
+                            .is_some_and(|name| name >= field.name.as_str())
+                    {
+                        return Err(ResponseConversionError);
+                    }
+                    prior = Some(field.name.clone());
+                    Ok(serde_json::json!({
+                        "name": field.name,
+                        "value": presented_value(field.value.ok_or(ResponseConversionError)?)?,
+                    }))
+                })
+                .collect::<Result<Vec<_>, ResponseConversionError>>()?;
+            if record.entity.is_empty() {
+                return Err(ResponseConversionError);
+            }
+            Ok(serde_json::json!({"entity": record.entity, "fields": fields}))
+        })
+        .collect::<Result<Vec<_>, ResponseConversionError>>()?;
+    Ok(serde_json::json!({
+        "name": field.name,
+        "cardinality": cardinality,
+        "records": records,
+    }))
+}
+
+fn lower_hex(bytes: &[u8]) -> String {
+    const HEX: &[u8; 16] = b"0123456789abcdef";
+    let mut output = String::with_capacity(bytes.len() * 2);
+    for byte in bytes {
+        output.push(char::from(HEX[usize::from(byte >> 4)]));
+        output.push(char::from(HEX[usize::from(byte & 0x0f)]));
+    }
+    output
 }
 
 pub(crate) fn active_contract_resource(

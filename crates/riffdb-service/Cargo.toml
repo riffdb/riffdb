@@ -19,6 +19,10 @@ riffdb-contract-ir = { version = "0.1.0", path = "../riffdb-contract-ir", defaul
 riffdb-errors = { version = "0.1.0", path = "../riffdb-errors", default-features = false }
 riffdb-invariant = { version = "0.1.0", path = "../riffdb-invariant", default-features = false }
 riffdb-policy = { version = "0.1.0", path = "../riffdb-policy", default-features = false }
+riffdb-query-compiler = { version = "0.1.0", path = "../riffdb-query-compiler", default-features = false }
+riffdb-query-executor = { version = "0.1.0", path = "../riffdb-query-executor", default-features = false }
+riffdb-query-ir = { version = "0.1.0", path = "../riffdb-query-ir", default-features = false }
+riffdb-riffql-syntax = { version = "0.1.0", path = "../riffdb-riffql-syntax", default-features = false }
 riffdb-types = { version = "0.1.0", path = "../riffdb-types", default-features = false }
 
 [dev-dependencies]

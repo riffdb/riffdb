@@ -11,7 +11,7 @@ use std::time::{Duration, Instant};
 
 use riffdb_auth::{AuthenticationContext, CapabilityDigestKeyProvider, CredentialAuthenticator};
 use riffdb_errors::PublicErrorKind;
-use riffdb_proto::{MAX_PUBLIC_REQUEST_BYTES, MAX_PUBLIC_RESPONSE_BYTES, v1};
+use riffdb_proto::{MAX_PUBLIC_REQUEST_BYTES, MAX_PUBLIC_RESPONSE_BYTES, app::v1 as app_v1, v1};
 use riffdb_service::{
     ApplicationService, BootstrapCapabilityResult, BootstrapRequestContext, CommitSubscription,
     CommitSubscriptionEvent, CreateCapabilityInvocation, CreateCapabilityResult,
@@ -40,6 +40,9 @@ use crate::generated::command_service_server::{CommandService, CommandServiceSer
 use crate::generated::commit_service_server::{CommitService, CommitServiceServer};
 use crate::generated::contract_service_server::{ContractService, ContractServiceServer};
 use crate::generated::query_service_server::{QueryService, QueryServiceServer};
+use crate::generated_app::application_query_service_server::{
+    ApplicationQueryService, ApplicationQueryServiceServer,
+};
 
 const GRPC_TIMEOUT_METADATA_KEY: &str = "grpc-timeout";
 
@@ -323,6 +326,14 @@ impl GrpcApplication {
     #[must_use]
     pub fn admin_server(&self) -> AdminServiceServer<Self> {
         AdminServiceServer::new(self.clone())
+            .max_decoding_message_size(MAX_PUBLIC_REQUEST_BYTES)
+            .max_encoding_message_size(MAX_PUBLIC_RESPONSE_BYTES)
+    }
+
+    /// Builds the bounded symbolic application query service.
+    #[must_use]
+    pub fn application_query_server(&self) -> ApplicationQueryServiceServer<Self> {
+        ApplicationQueryServiceServer::new(self.clone())
             .max_decoding_message_size(MAX_PUBLIC_REQUEST_BYTES)
             .max_encoding_message_size(MAX_PUBLIC_RESPONSE_BYTES)
     }
@@ -848,6 +859,65 @@ impl QueryService for GrpcApplication {
         Ok(Response::new(get_projection_status_result_to_proto(
             &result,
         )))
+    }
+}
+
+#[tonic::async_trait]
+impl ApplicationQueryService for GrpcApplication {
+    async fn describe_contract(
+        &self,
+        request: Request<app_v1::DescribeContractRequest>,
+    ) -> Result<Response<app_v1::DescribeContractResponse>, Status> {
+        let (metadata, _peer, message) = split_request(request);
+        let (request_id, selector) = describe_symbolic_contract_request_from_proto(message)?;
+        let (service, context, _cancellation) =
+            self.normal_invocation(ServiceOperationV1::DescribeContract, &metadata, request_id)?;
+        let result = map_service(service.describe_symbolic_contract(context, selector).await)?;
+        Ok(Response::new(describe_symbolic_contract_result_to_proto(
+            &result,
+        )))
+    }
+
+    async fn check_query(
+        &self,
+        request: Request<app_v1::CheckQueryRequest>,
+    ) -> Result<Response<app_v1::CheckQueryResponse>, Status> {
+        let (metadata, _peer, message) = split_request(request);
+        let (request_id, request) = check_symbolic_query_request_from_proto(message)?;
+        let (service, context, _cancellation) =
+            self.normal_invocation(ServiceOperationV1::CheckQuery, &metadata, request_id)?;
+        let result = map_service(service.check_symbolic_query(context, request).await)?;
+        Ok(Response::new(check_symbolic_query_result_to_proto(
+            &result,
+        )?))
+    }
+
+    async fn explain_query(
+        &self,
+        request: Request<app_v1::ExplainQueryRequest>,
+    ) -> Result<Response<app_v1::ExplainQueryResponse>, Status> {
+        let (metadata, _peer, message) = split_request(request);
+        let (request_id, request) = explain_symbolic_query_request_from_proto(message)?;
+        let (service, context, _cancellation) =
+            self.normal_invocation(ServiceOperationV1::ExplainQuery, &metadata, request_id)?;
+        let result = map_service(service.explain_symbolic_query(context, request).await)?;
+        Ok(Response::new(explain_symbolic_query_result_to_proto(
+            &result,
+        )?))
+    }
+
+    async fn execute_query(
+        &self,
+        request: Request<app_v1::ExecuteQueryRequest>,
+    ) -> Result<Response<app_v1::ExecuteQueryResponse>, Status> {
+        let (metadata, _peer, message) = split_request(request);
+        let (request_id, request) = execute_symbolic_query_request_from_proto(message)?;
+        let (service, context, _cancellation) =
+            self.normal_invocation(ServiceOperationV1::ExecuteQuery, &metadata, request_id)?;
+        let result = map_service(service.execute_symbolic_query(context, request).await)?;
+        Ok(Response::new(execute_symbolic_query_result_to_proto(
+            &result,
+        )?))
     }
 }
 

@@ -37,6 +37,11 @@ impl QueryParameters {
     pub fn get(&self, name: &str) -> Option<&CanonicalValue> {
         self.0.get(name)
     }
+
+    /// Iterates parameters in canonical name order.
+    pub fn iter(&self) -> impl ExactSizeIterator<Item = (&str, &CanonicalValue)> {
+        self.0.iter().map(|(name, value)| (name.as_str(), value))
+    }
 }
 
 /// One owned, name-addressed authoritative entity row.
@@ -75,6 +80,13 @@ impl QueryRow {
     #[must_use]
     pub fn field(&self, name: &str) -> Option<&CanonicalValue> {
         self.fields.get(name)
+    }
+
+    /// Iterates returned fields in canonical name order.
+    pub fn fields(&self) -> impl ExactSizeIterator<Item = (&str, &CanonicalValue)> {
+        self.fields
+            .iter()
+            .map(|(name, value)| (name.as_str(), value))
     }
 
     fn project(&self, selected: &[String]) -> Result<Self, QueryExecutionError> {
@@ -219,7 +231,7 @@ impl QueryContinuation {
 ///
 /// Implementations open one read transaction, invoke the closed executor, copy
 /// the owned result, and close the transaction before returning.
-pub trait QueryExecutionPort {
+pub trait QueryExecutionPort: Send + Sync {
     /// Executes one compiler-produced program page against one checked
     /// parameter set and optional validated continuation.
     fn execute_query_page(

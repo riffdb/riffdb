@@ -9,7 +9,7 @@ use riffdb_api_grpc::generated::{
     commit_service_client::CommitServiceClient, contract_service_client::ContractServiceClient,
     query_service_client::QueryServiceClient,
 };
-use riffdb_proto::v1;
+use riffdb_api_grpc::generated_app::application_query_service_client::ApplicationQueryServiceClient;
 use riffdb_proto::{
     PublicMessage, validate_contract_validation_exchange, validate_create_capability_exchange,
     validate_create_offline_backup_exchange, validate_discover_command_tools_exchange,
@@ -21,6 +21,7 @@ use riffdb_proto::{
     validate_scan_commits_exchange, validate_scan_index_exchange,
     validate_trace_provenance_exchange,
 };
+use riffdb_proto::{app::v1 as app_v1, v1};
 use riffdb_types::{CommitSequence, RequestId};
 use tonic::transport::{Channel, Endpoint};
 use tonic::{Request, Streaming};
@@ -127,6 +128,7 @@ pub struct RiffDbClient {
     query: QueryServiceClient<Channel>,
     commit: CommitServiceClient<Channel>,
     admin: AdminServiceClient<Channel>,
+    application_query: ApplicationQueryServiceClient<Channel>,
 }
 
 impl RiffDbClient {
@@ -147,9 +149,39 @@ impl RiffDbClient {
             command: CommandServiceClient::new(channel.clone()),
             query: QueryServiceClient::new(channel.clone()),
             commit: CommitServiceClient::new(channel.clone()),
-            admin: AdminServiceClient::new(channel),
+            admin: AdminServiceClient::new(channel.clone()),
+            application_query: ApplicationQueryServiceClient::new(channel),
         }
     }
+
+    unary!(
+        describe_contract,
+        application_query,
+        describe_contract,
+        app_v1::DescribeContractRequest,
+        app_v1::DescribeContractResponse
+    );
+    unary!(
+        check_query,
+        application_query,
+        check_query,
+        app_v1::CheckQueryRequest,
+        app_v1::CheckQueryResponse
+    );
+    unary!(
+        explain_query,
+        application_query,
+        explain_query,
+        app_v1::ExplainQueryRequest,
+        app_v1::ExplainQueryResponse
+    );
+    unary!(
+        execute_query,
+        application_query,
+        execute_query,
+        app_v1::ExecuteQueryRequest,
+        app_v1::ExecuteQueryResponse
+    );
 
     unary_exchange!(
         validate_contract,

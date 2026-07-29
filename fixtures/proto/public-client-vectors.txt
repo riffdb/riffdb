@@ -144,6 +144,10 @@ enum-value riffdb.v1.FixedToolKind 11 FIXED_TOOL_KIND_QUERY_PROJECTION
 enum-value riffdb.v1.FixedToolKind 12 FIXED_TOOL_KIND_GET_PROJECTION_STATUS
 enum-value riffdb.v1.FixedToolKind 13 FIXED_TOOL_KIND_LIST_PENDING_OUTBOX_DELIVERIES
 enum-value riffdb.v1.FixedToolKind 14 FIXED_TOOL_KIND_GET_HEALTH
+enum-value riffdb.v1.FixedToolKind 15 FIXED_TOOL_KIND_DESCRIBE_CONTRACT
+enum-value riffdb.v1.FixedToolKind 16 FIXED_TOOL_KIND_CHECK_QUERY
+enum-value riffdb.v1.FixedToolKind 17 FIXED_TOOL_KIND_EXPLAIN_QUERY
+enum-value riffdb.v1.FixedToolKind 18 FIXED_TOOL_KIND_EXECUTE_QUERY
 enum-value riffdb.v1.FixedToolKind 2 FIXED_TOOL_KIND_GET_ACTIVE_CONTRACT
 enum-value riffdb.v1.FixedToolKind 3 FIXED_TOOL_KIND_EXPLAIN_COMMAND
 enum-value riffdb.v1.FixedToolKind 4 FIXED_TOOL_KIND_DEPLOY_CONTRACT

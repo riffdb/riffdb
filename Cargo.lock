@@ -1569,6 +1569,7 @@ checksum = "d6f6ff9a378485b298a5286656da665ba74413d36db0979633275d2e708145d4"
 name = "riffdb-api-grpc"
 version = "0.1.0"
 dependencies = [
+ "base64",
  "prost",
  "prost-types",
  "riffdb-auth",
@@ -1753,9 +1754,11 @@ dependencies = [
 name = "riffdb-mcp-stdio"
 version = "0.1.0"
 dependencies = [
+ "base64",
  "riffdb-api-mcp",
  "riffdb-client-rust",
  "serde",
+ "serde_json",
  "tokio",
  "toml",
  "tracing-subscriber",
@@ -1891,6 +1894,8 @@ dependencies = [
  "riffdb-policy",
  "riffdb-projection",
  "riffdb-proto",
+ "riffdb-query-executor",
+ "riffdb-query-ir",
  "riffdb-service",
  "riffdb-storage-api",
  "riffdb-storage-redb",
@@ -1917,6 +1922,10 @@ dependencies = [
  "riffdb-idempotency",
  "riffdb-invariant",
  "riffdb-policy",
+ "riffdb-query-compiler",
+ "riffdb-query-executor",
+ "riffdb-query-ir",
+ "riffdb-riffql-syntax",
  "riffdb-storage-api",
  "riffdb-storage-redb",
  "riffdb-testkit",

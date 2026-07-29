@@ -19,6 +19,7 @@ mod query_discovery_operations;
 mod response;
 mod service;
 mod submitted;
+mod symbolic_query;
 mod wait;
 
 pub use application::*;
@@ -32,5 +33,7 @@ pub use maintenance_operations::{
 };
 pub use ports::*;
 pub use response::*;
+pub use riffdb_query_executor::QueryParameters;
 pub use service::*;
 pub use submitted::*;
+pub use symbolic_query::*;

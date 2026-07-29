@@ -18,6 +18,8 @@ mod status;
 /// Boundaries implemented by contract-generated ergonomic modules.
 pub mod generated;
 
+/// Exact symbolic application wire types used by the typed transport client.
+pub use riffdb_proto::app::v1 as app_v1;
 /// Exact public wire types used by the typed transport client.
 ///
 /// Re-exporting the generated package lets public-API consumers construct

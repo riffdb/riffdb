@@ -41,6 +41,10 @@ pub(crate) enum TopLevel {
         #[command(subcommand)]
         command: ProjectionCommand,
     },
+    Query {
+        #[command(subcommand)]
+        command: QueryCommand,
+    },
     Capability {
         #[command(subcommand)]
         command: CapabilityCommand,
@@ -56,6 +60,40 @@ pub(crate) enum TopLevel {
     Demo {
         #[command(subcommand)]
         command: DemoCommand,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+pub(crate) enum QueryCommand {
+    Describe {
+        #[command(flatten)]
+        contract: ContractSelectionArgs,
+    },
+    Check {
+        #[arg(value_name = "RIFFQL_SOURCE")]
+        source: OsString,
+        #[command(flatten)]
+        contract: ContractSelectionArgs,
+    },
+    Explain {
+        #[arg(value_name = "RIFFQL_SOURCE")]
+        source: OsString,
+        #[command(flatten)]
+        contract: ContractSelectionArgs,
+    },
+    Run {
+        #[arg(value_name = "RIFFQL_SOURCE")]
+        source: OsString,
+        #[arg(long, value_name = "JSON_PARAMETERS")]
+        parameters: Option<OsString>,
+        #[arg(long, value_name = "CURSOR")]
+        cursor: Option<String>,
+        #[command(flatten)]
+        contract: ContractSelectionArgs,
+    },
+    Repl {
+        #[command(flatten)]
+        contract: ContractSelectionArgs,
     },
 }
 

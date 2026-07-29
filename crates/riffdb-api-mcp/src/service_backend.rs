@@ -1,28 +1,33 @@
 //! Hosted Streamable-HTTP backend over the API-neutral application service.
 
 use std::{
-    collections::BTreeSet,
+    collections::{BTreeMap, BTreeSet},
     fmt,
     sync::{Arc, Mutex},
     time::{Duration, Instant},
 };
 
 use riffdb_service::{
-    ApplicationService, CommandToolDescriptor, CommandToolDiscoveryItem,
+    ApplicationService, CheckSymbolicQueryResult, CommandToolDescriptor, CommandToolDiscoveryItem,
     CompactCommandToolDiscoveryItem, CompactResourceDescriptor, CompactResourceDescriptorRef,
-    ContractSelection, ContractSource, CursorToken, DeployContractRequest, DeployContractResult,
+    CompileSymbolicQueryRequest, ContractSelection, ContractSource, CursorToken,
+    DeployContractRequest, DeployContractResult, DescribeSymbolicContractResult,
     DiscoverCommandToolsRequest, DiscoverCommandToolsResult, DiscoverCommandToolsResultRef,
     DiscoverResourcesRequest, DiscoverResourcesResult, DiscoverResourcesResultRef,
-    DiscoveryCatalogFence, DiscoveryRepresentation, ExecuteCommandRequest, ExplainCommandRequest,
-    ExplainCommandResult, ExplainedCommand, FieldSelection, GetActiveContractRequest,
-    GetActiveContractResult, GetCommitRequest, GetContractVersionRequest, GetContractVersionResult,
-    GetEntityRequest, GetProjectionStatusRequest, GetProjectionStatusResult, HealthContext,
-    HealthRequest, HealthResult, ListPendingOutboxDeliveriesRequest, OperationSchemaCatalog,
-    PageLimit, PageRequest, ProvenanceSelection, QueryProjectionRequest, RequestCancellationHandle,
-    RequestContext, RequestControl, ResolveCommandOutcomeRequest, ResourceDescriptorRef,
-    ResourceDiscoveryKind, ScanCommitsRequest, ScanIndexRequest, ServiceFailure, SourceName,
-    SubmittedDecimal, SubmittedField, SubmittedFieldIdentity, SubmittedList, SubmittedMoney,
-    SubmittedRecord, SubmittedValue, TraceProvenanceRequest, ValidateContractRequest,
+    DiscoveryCatalogFence, DiscoveryRepresentation, ExecuteCommandRequest,
+    ExecuteSymbolicQueryRequest, ExecuteSymbolicQueryResult, ExplainCommandRequest,
+    ExplainCommandResult, ExplainSymbolicQueryResult, ExplainedCommand, FieldSelection,
+    GetActiveContractRequest, GetActiveContractResult, GetCommitRequest, GetContractVersionRequest,
+    GetContractVersionResult, GetEntityRequest, GetProjectionStatusRequest,
+    GetProjectionStatusResult, HealthContext, HealthRequest, HealthResult,
+    ListPendingOutboxDeliveriesRequest, OperationSchemaCatalog, PageLimit, PageRequest,
+    ProvenanceSelection, QueryProjectionRequest, RequestCancellationHandle, RequestContext,
+    RequestControl, ResolveCommandOutcomeRequest, ResourceDescriptorRef, ResourceDiscoveryKind,
+    ScanCommitsRequest, ScanIndexRequest, ServiceFailure, SourceName, SubmittedDecimal,
+    SubmittedField, SubmittedFieldIdentity, SubmittedList, SubmittedMoney, SubmittedRecord,
+    SubmittedValue, SymbolicContractSelector, SymbolicDiagnostic, SymbolicQueryIdentity,
+    SymbolicQueryParameters, SymbolicQuerySchema, SymbolicQuerySource, SymbolicResultField,
+    SymbolicResultRecord, TraceProvenanceRequest, ValidateContractRequest,
 };
 use riffdb_types::{
     CanonicalRecord, CanonicalValue, CommandId, CommitSequence, ContractLineage, ContractVersion,
@@ -57,11 +62,12 @@ use crate::{
     McpToolInvocation, McpToolPage, McpToolResult, McpTransportKind, McpVisibleFingerprint,
     RequestIdSource, RequestIdSourceError, SchemaDocument, compose_dynamic_command_result,
     compose_fixed_tool_result, decode_dynamic_command_input, decode_fixed_tool_request,
-    fixed_tool_registry, format_active_contract_locator, format_command_documentation_locator,
-    format_command_plan_locator, format_commit_locator, format_commit_template_locator,
-    format_contract_version_locator, format_entity_schema_locator, format_outcome_locator,
-    format_outcome_template_locator_from_public, format_projection_status_locator,
-    format_provenance_locator, format_provenance_template_locator, format_server_health_locator,
+    decode_mcp_cursor, encode_mcp_cursor, fixed_tool_registry, format_active_contract_locator,
+    format_command_documentation_locator, format_command_plan_locator, format_commit_locator,
+    format_commit_template_locator, format_contract_version_locator, format_entity_schema_locator,
+    format_outcome_locator, format_outcome_template_locator_from_public,
+    format_projection_status_locator, format_provenance_locator,
+    format_provenance_template_locator, format_server_health_locator,
 };
 
 const HOSTED_SERVICE_CALL_TIMEOUT: Duration = Duration::from_secs(30);
@@ -1057,6 +1063,86 @@ impl HostedServiceMcpBackend {
                 call.complete();
                 render_outbox_result(result)
             }
+            McpFixedToolRequest::DescribeContract { contract } => {
+                let selector = symbolic_contract_selector(contract)?;
+                let mut call = self.prepare_call(
+                    invocation,
+                    McpRateTarget::Service(ServiceOperationV1::DescribeContract),
+                )?;
+                let result = self
+                    .service
+                    .describe_symbolic_contract(call.take_context()?, selector)
+                    .await
+                    .map_err(map_service_failure)?;
+                call.complete();
+                render_symbolic_contract(result)
+            }
+            McpFixedToolRequest::CheckQuery { contract, source } => {
+                let request = CompileSymbolicQueryRequest::new(
+                    symbolic_contract_selector(contract)?,
+                    SymbolicQuerySource::new(source).map_err(invalid_response)?,
+                );
+                let mut call = self.prepare_call(
+                    invocation,
+                    McpRateTarget::Service(ServiceOperationV1::CheckQuery),
+                )?;
+                let result = self
+                    .service
+                    .check_symbolic_query(call.take_context()?, request)
+                    .await
+                    .map_err(map_service_failure)?;
+                call.complete();
+                render_symbolic_check(result)
+            }
+            McpFixedToolRequest::ExplainQuery { contract, source } => {
+                let request = CompileSymbolicQueryRequest::new(
+                    symbolic_contract_selector(contract)?,
+                    SymbolicQuerySource::new(source).map_err(invalid_response)?,
+                );
+                let mut call = self.prepare_call(
+                    invocation,
+                    McpRateTarget::Service(ServiceOperationV1::ExplainQuery),
+                )?;
+                let result = self
+                    .service
+                    .explain_symbolic_query(call.take_context()?, request)
+                    .await
+                    .map_err(map_service_failure)?;
+                call.complete();
+                render_symbolic_explain(result)
+            }
+            McpFixedToolRequest::ExecuteQuery {
+                contract,
+                source,
+                parameters,
+                cursor,
+            } => {
+                let parameters = parameters
+                    .into_iter()
+                    .map(|(name, value)| Ok((name, natural_parameter(value)?)))
+                    .collect::<Result<BTreeMap<_, _>, McpBackendError>>()?;
+                let mut request = ExecuteSymbolicQueryRequest::new(
+                    symbolic_contract_selector(contract)?,
+                    SymbolicQuerySource::new(source).map_err(invalid_response)?,
+                    SymbolicQueryParameters::new(parameters).map_err(invalid_response)?,
+                );
+                if let Some(cursor) = cursor {
+                    request = request.with_cursor(CursorToken::from_bytes(
+                        decode_mcp_cursor(&cursor).map_err(invalid_response)?,
+                    ));
+                }
+                let mut call = self.prepare_call(
+                    invocation,
+                    McpRateTarget::Service(ServiceOperationV1::ExecuteQuery),
+                )?;
+                let result = self
+                    .service
+                    .execute_symbolic_query(call.take_context()?, request)
+                    .await
+                    .map_err(map_service_failure)?;
+                call.complete();
+                render_symbolic_execution(&result)
+            }
         }
     }
 
@@ -2035,6 +2121,43 @@ fn service_contract_selection(
     }
 }
 
+fn symbolic_contract_selector(
+    selection: Option<McpContractSelection>,
+) -> Result<SymbolicContractSelector, McpBackendError> {
+    selection.map_or_else(
+        || Ok(SymbolicContractSelector::active()),
+        |selection| {
+            service_contract_selection(selection).map(SymbolicContractSelector::from_selection)
+        },
+    )
+}
+
+fn natural_parameter(value: serde_json::Value) -> Result<SubmittedValue, McpBackendError> {
+    match value {
+        serde_json::Value::Null => Ok(SubmittedValue::Null),
+        serde_json::Value::Bool(value) => Ok(SubmittedValue::Bool(value)),
+        serde_json::Value::Number(value) => {
+            if let Some(value) = value.as_u64() {
+                Ok(SubmittedValue::U64(value))
+            } else {
+                value
+                    .as_i64()
+                    .map(SubmittedValue::I64)
+                    .ok_or(McpBackendError::InvalidResponse)
+            }
+        }
+        serde_json::Value::String(value) => SubmittedValue::string(value).map_err(invalid_response),
+        serde_json::Value::Array(values) => SubmittedValue::list(
+            values
+                .into_iter()
+                .map(natural_parameter)
+                .collect::<Result<Vec<_>, _>>()?,
+        )
+        .map_err(invalid_response),
+        serde_json::Value::Object(_) => Err(McpBackendError::InvalidResponse),
+    }
+}
+
 fn contract_version_from_u64(value: u64) -> Result<ContractVersion, McpBackendError> {
     ContractVersion::new(value).ok_or(McpBackendError::InvalidResponse)
 }
@@ -2631,6 +2754,181 @@ fn render_outbox_result(
         McpFixedResultBranch::OutboxPage,
         Some(payload_from(&payload)?),
     )
+}
+
+fn render_symbolic_contract(
+    result: DescribeSymbolicContractResult,
+) -> Result<McpToolResult, McpBackendError> {
+    let payload = serde_json::json!({
+        "contract": {
+            "lineage": result.lineage().as_str(),
+            "version": result.version().get().to_string(),
+            "bundle_hash": lower_hex(result.bundle_hash().as_bytes()),
+        },
+        "catalog": result.catalog(),
+    });
+    compose(
+        15,
+        McpFixedResultBranch::ContractDescribed,
+        Some(payload_from(&payload)?),
+    )
+}
+
+fn render_symbolic_check(
+    result: CheckSymbolicQueryResult,
+) -> Result<McpToolResult, McpBackendError> {
+    match result {
+        CheckSymbolicQueryResult::Valid(query) => {
+            let payload = checked_query_payload(query.identity(), query.schema());
+            compose(
+                16,
+                McpFixedResultBranch::QueryCheckValid,
+                Some(payload_from(&payload)?),
+            )
+        }
+        CheckSymbolicQueryResult::Invalid(diagnostics) => compose(
+            16,
+            McpFixedResultBranch::QueryCheckInvalid,
+            Some(payload_from(&serde_json::json!({
+                "diagnostics": diagnostic_payloads(&diagnostics)
+            }))?),
+        ),
+    }
+}
+
+fn render_symbolic_explain(
+    result: ExplainSymbolicQueryResult,
+) -> Result<McpToolResult, McpBackendError> {
+    match result {
+        ExplainSymbolicQueryResult::Valid { query, lines } => {
+            let mut payload = checked_query_payload(query.identity(), query.schema());
+            payload
+                .as_object_mut()
+                .ok_or(McpBackendError::InvalidResponse)?
+                .insert("plan".to_owned(), serde_json::json!(lines));
+            compose(
+                17,
+                McpFixedResultBranch::QueryExplainValid,
+                Some(payload_from(&payload)?),
+            )
+        }
+        ExplainSymbolicQueryResult::Invalid(diagnostics) => compose(
+            17,
+            McpFixedResultBranch::QueryExplainInvalid,
+            Some(payload_from(&serde_json::json!({
+                "diagnostics": diagnostic_payloads(&diagnostics)
+            }))?),
+        ),
+    }
+}
+
+fn render_symbolic_execution(
+    result: &ExecuteSymbolicQueryResult,
+) -> Result<McpToolResult, McpBackendError> {
+    let fields = result
+        .fields()
+        .iter()
+        .map(|(name, field)| {
+            let (cardinality, records): (&str, Vec<&SymbolicResultRecord>) = match field {
+                SymbolicResultField::One(record) => ("one", vec![record]),
+                SymbolicResultField::Maybe(record) => ("maybe", record.iter().collect::<Vec<_>>()),
+                SymbolicResultField::Many(records) => ("many", records.iter().collect()),
+            };
+            Ok(serde_json::json!({
+                "name": name,
+                "cardinality": cardinality,
+                "records": records
+                    .into_iter()
+                    .map(symbolic_record_payload)
+                    .collect::<Result<Vec<_>, McpBackendError>>()?,
+            }))
+        })
+        .collect::<Result<Vec<_>, McpBackendError>>()?;
+    let payload = serde_json::json!({
+        "identity": symbolic_identity_payload(result.identity()),
+        "outcome": result.outcome(),
+        "application_head": result.application_head().to_string(),
+        "fields": fields,
+        "next_cursor": result
+            .next_cursor()
+            .map(|cursor| encode_mcp_cursor(*cursor.as_bytes())),
+    });
+    compose(
+        18,
+        McpFixedResultBranch::QueryCompleted,
+        Some(payload_from(&payload)?),
+    )
+}
+
+fn checked_query_payload(
+    identity: &SymbolicQueryIdentity,
+    schema: &SymbolicQuerySchema,
+) -> serde_json::Value {
+    serde_json::json!({
+        "identity": symbolic_identity_payload(identity),
+        "schema": {
+            "parameters": schema.parameters(),
+            "outcomes": schema.outcomes(),
+            "result_fields": schema.result_fields(),
+        }
+    })
+}
+
+fn symbolic_identity_payload(identity: &SymbolicQueryIdentity) -> serde_json::Value {
+    serde_json::json!({
+        "contract_lineage": identity.lineage().as_str(),
+        "contract_version": identity.version().get().to_string(),
+        "contract_bundle_hash": lower_hex(identity.bundle_hash().as_bytes()),
+        "query_name": identity.name(),
+        "plan_hash": lower_hex(identity.plan_hash().as_bytes()),
+    })
+}
+
+fn diagnostic_payloads(diagnostics: &[SymbolicDiagnostic]) -> Vec<serde_json::Value> {
+    diagnostics
+        .iter()
+        .map(|diagnostic| {
+            serde_json::json!({
+                "code": diagnostic.code(),
+                "summary": diagnostic.summary(),
+                "span": {
+                    "start": diagnostic.span().start,
+                    "end": diagnostic.span().end,
+                },
+                "symbols": diagnostic.symbols(),
+                "suggestion": diagnostic.suggestion(),
+            })
+        })
+        .collect()
+}
+
+fn symbolic_record_payload(
+    record: &SymbolicResultRecord,
+) -> Result<serde_json::Value, McpBackendError> {
+    let fields = record
+        .fields()
+        .iter()
+        .map(|(name, value)| {
+            Ok(serde_json::json!({
+                "name": name,
+                "value": presented_value(value)?,
+            }))
+        })
+        .collect::<Result<Vec<_>, McpBackendError>>()?;
+    Ok(serde_json::json!({
+        "entity": record.entity(),
+        "fields": fields,
+    }))
+}
+
+fn lower_hex(bytes: &[u8]) -> String {
+    const HEX: &[u8; 16] = b"0123456789abcdef";
+    let mut output = String::with_capacity(bytes.len() * 2);
+    for byte in bytes {
+        output.push(char::from(HEX[usize::from(byte >> 4)]));
+        output.push(char::from(HEX[usize::from(byte & 0x0f)]));
+    }
+    output
 }
 
 fn render_execute_result(

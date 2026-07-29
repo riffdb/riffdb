@@ -10,25 +10,28 @@ use riffdb_types::{
 };
 
 use crate::{
-    BuildInfo, CommandToolDescriptor, CommandToolDiscoveryItem, CommitScanFence,
-    CommitSubscriptionEvent, CommitView, CompactCommandToolDescriptor,
-    CompactCommandToolDiscoveryItem, CompactResourceDescriptor, CompactResourceDescriptorRef,
-    ContractDescriptor, ContractValidationResult, CreateCapabilityResult, CursorToken,
-    DeclaredOutcomeView, DeployContractResult, DiscoverCommandToolsResult,
-    DiscoverCommandToolsResultRef, DiscoverResourcesResult, DiscoverResourcesResultRef,
-    DiscoveryCatalogFence, DiscoveryCatalogStateRef, DurableEventView, EntityView,
-    ExecuteCommandResult, ExplainCommandResult, GeneratedSchemaIdentity, GetActiveContractResult,
-    GetCommitResult, GetContractVersionResult, GetEntityResult,
-    GetOfflineMaintenanceOperationResult, GetProjectionStatusResult, HealthReport, HealthResult,
-    IndexRowView, IndexScanFence, JournaledCommandResult, ListPendingOutboxDeliveriesResult,
-    NormalCreateCapabilityResult, OfflineMaintenanceOperationObservation,
-    OfflineMaintenanceStartResult, OperationSchemaArtifact, OperationSchemaCatalog,
-    OperationSchemaCatalogIdentity, OperationSchemaIdentity, OutboxDeliverySummary, Page,
-    ProjectionPageFence, ProjectionRow, ProjectionStatusSnapshot, ProvenanceClaimsView,
-    ProvenanceView, QueryProjectionResult, ReadOnlyCommandResult, ResolveCommandOutcomeResult,
-    ResourceDescriptor, ResourceDescriptorRef, RevokeCapabilityResult, ScanCommitsResult,
-    ScanIndexResult, SchemaBoundOutcomeRecord, SchemaBoundOutcomeValue, ServiceFailure,
-    StatisticsResult, SubscribeToCommitsResult, TraceProvenanceResult,
+    BuildInfo, CheckSymbolicQueryResult, CheckedSymbolicQuery, CommandToolDescriptor,
+    CommandToolDiscoveryItem, CommitScanFence, CommitSubscriptionEvent, CommitView,
+    CompactCommandToolDescriptor, CompactCommandToolDiscoveryItem, CompactResourceDescriptor,
+    CompactResourceDescriptorRef, ContractDescriptor, ContractValidationResult,
+    CreateCapabilityResult, CursorToken, DeclaredOutcomeView, DeployContractResult,
+    DescribeSymbolicContractResult, DiscoverCommandToolsResult, DiscoverCommandToolsResultRef,
+    DiscoverResourcesResult, DiscoverResourcesResultRef, DiscoveryCatalogFence,
+    DiscoveryCatalogStateRef, DurableEventView, EntityView, ExecuteCommandResult,
+    ExecuteSymbolicQueryResult, ExplainCommandResult, ExplainSymbolicQueryResult,
+    GeneratedSchemaIdentity, GetActiveContractResult, GetCommitResult, GetContractVersionResult,
+    GetEntityResult, GetOfflineMaintenanceOperationResult, GetProjectionStatusResult, HealthReport,
+    HealthResult, IndexRowView, IndexScanFence, JournaledCommandResult,
+    ListPendingOutboxDeliveriesResult, NormalCreateCapabilityResult,
+    OfflineMaintenanceOperationObservation, OfflineMaintenanceStartResult, OperationSchemaArtifact,
+    OperationSchemaCatalog, OperationSchemaCatalogIdentity, OperationSchemaIdentity,
+    OutboxDeliverySummary, Page, ProjectionPageFence, ProjectionRow, ProjectionStatusSnapshot,
+    ProvenanceClaimsView, ProvenanceView, QueryProjectionResult, ReadOnlyCommandResult,
+    ResolveCommandOutcomeResult, ResourceDescriptor, ResourceDescriptorRef, RevokeCapabilityResult,
+    ScanCommitsResult, ScanIndexResult, SchemaBoundOutcomeRecord, SchemaBoundOutcomeValue,
+    ServiceFailure, StatisticsResult, SubscribeToCommitsResult, SymbolicDiagnostic,
+    SymbolicQueryIdentity, SymbolicQuerySchema, SymbolicResultField, SymbolicResultRecord,
+    TraceProvenanceResult,
 };
 
 /// Exact POC ceiling for one API-neutral unary result or visible stream item.
@@ -177,6 +180,171 @@ impl ServiceResponseCharge for () {
         &self,
     ) -> Result<ServiceResponseChargeV1, ServiceResponseChargeOverflow> {
         Ok(ChargeAccumulator::message().finish())
+    }
+}
+
+fn charge_symbolic_identity(
+    charge: &mut ChargeAccumulator,
+    identity: &SymbolicQueryIdentity,
+) -> Result<(), ServiceResponseChargeOverflow> {
+    charge_lineage(charge, identity.lineage())?;
+    charge.fields(1)?;
+    charge.bytes(identity.bundle_hash().as_bytes().len())?;
+    if let Some(name) = identity.name() {
+        charge.bytes(name.len())?;
+    }
+    charge.bytes(identity.plan_hash().as_bytes().len())
+}
+
+fn charge_symbolic_schema(
+    charge: &mut ChargeAccumulator,
+    schema: &SymbolicQuerySchema,
+) -> Result<(), ServiceResponseChargeOverflow> {
+    for value in schema
+        .parameters()
+        .iter()
+        .chain(schema.outcomes())
+        .chain(schema.result_fields())
+    {
+        charge.bytes(value.len())?;
+    }
+    Ok(())
+}
+
+fn charge_checked_symbolic_query(
+    charge: &mut ChargeAccumulator,
+    query: &CheckedSymbolicQuery,
+) -> Result<(), ServiceResponseChargeOverflow> {
+    charge_symbolic_identity(charge, query.identity())?;
+    charge_symbolic_schema(charge, query.schema())
+}
+
+fn charge_symbolic_diagnostic(
+    charge: &mut ChargeAccumulator,
+    diagnostic: &SymbolicDiagnostic,
+) -> Result<(), ServiceResponseChargeOverflow> {
+    charge.bytes(diagnostic.code().len())?;
+    charge.bytes(diagnostic.summary().len())?;
+    charge.fields(2)?;
+    for symbol in diagnostic.symbols() {
+        charge.bytes(symbol.len())?;
+    }
+    if let Some(suggestion) = diagnostic.suggestion() {
+        charge.bytes(suggestion.len())?;
+    }
+    Ok(())
+}
+
+impl sealed::Sealed for DescribeSymbolicContractResult {}
+
+impl ServiceResponseCharge for DescribeSymbolicContractResult {
+    fn service_response_charge_v1(
+        &self,
+    ) -> Result<ServiceResponseChargeV1, ServiceResponseChargeOverflow> {
+        let mut charge = ChargeAccumulator::message();
+        charge_lineage(&mut charge, self.lineage())?;
+        charge.fields(1)?;
+        charge.bytes(self.bundle_hash().as_bytes().len())?;
+        charge.bytes(self.catalog().len())?;
+        Ok(charge.finish())
+    }
+}
+
+impl sealed::Sealed for CheckSymbolicQueryResult {}
+
+impl ServiceResponseCharge for CheckSymbolicQueryResult {
+    fn service_response_charge_v1(
+        &self,
+    ) -> Result<ServiceResponseChargeV1, ServiceResponseChargeOverflow> {
+        let mut charge = ChargeAccumulator::message();
+        match self {
+            Self::Valid(query) => charge_checked_symbolic_query(&mut charge, query)?,
+            Self::Invalid(diagnostics) => {
+                for diagnostic in diagnostics {
+                    charge_symbolic_diagnostic(&mut charge, diagnostic)?;
+                }
+            }
+        }
+        Ok(charge.finish())
+    }
+}
+
+impl sealed::Sealed for ExplainSymbolicQueryResult {}
+
+impl ServiceResponseCharge for ExplainSymbolicQueryResult {
+    fn service_response_charge_v1(
+        &self,
+    ) -> Result<ServiceResponseChargeV1, ServiceResponseChargeOverflow> {
+        let mut charge = ChargeAccumulator::message();
+        match self {
+            Self::Valid { query, lines } => {
+                charge_checked_symbolic_query(&mut charge, query)?;
+                for line in lines {
+                    charge.bytes(line.len())?;
+                }
+            }
+            Self::Invalid(diagnostics) => {
+                for diagnostic in diagnostics {
+                    charge_symbolic_diagnostic(&mut charge, diagnostic)?;
+                }
+            }
+        }
+        Ok(charge.finish())
+    }
+}
+
+fn charge_symbolic_record(
+    charge: &mut ChargeAccumulator,
+    record: &SymbolicResultRecord,
+) -> Result<(), ServiceResponseChargeOverflow> {
+    charge.bytes(record.entity().len())?;
+    for (name, value) in record.fields() {
+        charge.bytes(name.len())?;
+        charge.nested(value)?;
+    }
+    Ok(())
+}
+
+fn charge_symbolic_field(
+    charge: &mut ChargeAccumulator,
+    field: &SymbolicResultField,
+) -> Result<(), ServiceResponseChargeOverflow> {
+    match field {
+        SymbolicResultField::One(record) => charge_symbolic_record(charge, record),
+        SymbolicResultField::Maybe(record) => {
+            charge.fields(1)?;
+            if let Some(record) = record {
+                charge_symbolic_record(charge, record)?;
+            }
+            Ok(())
+        }
+        SymbolicResultField::Many(records) => {
+            for record in records {
+                charge_symbolic_record(charge, record)?;
+            }
+            Ok(())
+        }
+    }
+}
+
+impl sealed::Sealed for ExecuteSymbolicQueryResult {}
+
+impl ServiceResponseCharge for ExecuteSymbolicQueryResult {
+    fn service_response_charge_v1(
+        &self,
+    ) -> Result<ServiceResponseChargeV1, ServiceResponseChargeOverflow> {
+        let mut charge = ChargeAccumulator::message();
+        charge_symbolic_identity(&mut charge, self.identity())?;
+        charge.bytes(self.outcome().len())?;
+        charge.fields(1)?;
+        for (name, field) in self.fields() {
+            charge.bytes(name.len())?;
+            charge_symbolic_field(&mut charge, field)?;
+        }
+        if self.next_cursor().is_some() {
+            charge.bytes(crate::CURSOR_TOKEN_BYTES)?;
+        }
+        Ok(charge.finish())
     }
 }
 

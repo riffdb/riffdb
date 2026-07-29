@@ -1,0 +1,133 @@
+syntax = "proto3";
+
+package riffdb.app.v1;
+
+import "riffdb/v1/value.proto";
+
+// Exact contract selection. An absent selector requests the active contract.
+message ContractSelector {
+  string lineage = 1;
+  uint64 version = 2;
+  bytes bundle_hash = 3;
+}
+
+// One name-addressed typed parameter.
+message Parameter {
+  string name = 1;
+  riffdb.v1.Value value = 2;
+}
+
+message SourceSpan {
+  uint64 start = 1;
+  uint64 end = 2;
+}
+
+// Bounded, redaction-safe symbolic compiler diagnostic.
+message Diagnostic {
+  string code = 1;
+  string summary = 2;
+  SourceSpan span = 3;
+  repeated string symbols = 4;
+  optional string suggestion = 5;
+}
+
+message QueryIdentity {
+  string contract_lineage = 1;
+  uint64 contract_version = 2;
+  bytes contract_bundle_hash = 3;
+  optional string query_name = 4;
+  bytes plan_hash = 5;
+  optional bytes module_hash = 6;
+}
+
+message QuerySchema {
+  repeated string parameters = 1;
+  repeated string outcomes = 2;
+  repeated string result_fields = 3;
+}
+
+message CheckQueryRequest {
+  optional ContractSelector contract = 1;
+  string source = 2;
+  bytes request_id = 100;
+}
+
+message CheckQueryResponse {
+  optional QueryIdentity identity = 1;
+  optional QuerySchema schema = 2;
+  repeated Diagnostic diagnostics = 3;
+}
+
+message ExplainQueryRequest {
+  optional ContractSelector contract = 1;
+  oneof query {
+    string source = 2;
+    string query_name = 3;
+  }
+  optional bytes module_hash = 4;
+  bytes request_id = 100;
+}
+
+message ExplainQueryResponse {
+  optional QueryIdentity identity = 1;
+  optional QuerySchema schema = 2;
+  repeated string plan_lines = 3;
+  repeated Diagnostic diagnostics = 4;
+}
+
+message ExecuteQueryRequest {
+  optional ContractSelector contract = 1;
+  oneof query {
+    string source = 2;
+    string query_name = 3;
+  }
+  optional bytes module_hash = 4;
+  repeated Parameter parameters = 5;
+  optional string cursor = 6;
+  bytes request_id = 100;
+}
+
+message ResultRecord {
+  repeated Parameter fields = 1;
+  string entity = 2;
+}
+
+enum ResultCardinality {
+  RESULT_CARDINALITY_UNSPECIFIED = 0;
+  RESULT_CARDINALITY_ONE = 1;
+  RESULT_CARDINALITY_MAYBE = 2;
+  RESULT_CARDINALITY_MANY = 3;
+}
+
+message ResultField {
+  string name = 1;
+  ResultCardinality cardinality = 2;
+  repeated ResultRecord records = 3;
+}
+
+message ExecuteQueryResponse {
+  QueryIdentity identity = 1;
+  string outcome = 2;
+  uint64 application_head = 3;
+  repeated ResultField fields = 4;
+  optional string next_cursor = 5;
+}
+
+message DescribeContractRequest {
+  optional ContractSelector contract = 1;
+  bytes request_id = 100;
+}
+
+message DescribeContractResponse {
+  string contract_lineage = 1;
+  uint64 contract_version = 2;
+  bytes contract_bundle_hash = 3;
+  string symbolic_catalog = 4;
+}
+
+service ApplicationQueryService {
+  rpc DescribeContract(DescribeContractRequest) returns (DescribeContractResponse);
+  rpc CheckQuery(CheckQueryRequest) returns (CheckQueryResponse);
+  rpc ExplainQuery(ExplainQueryRequest) returns (ExplainQueryResponse);
+  rpc ExecuteQuery(ExecuteQueryRequest) returns (ExecuteQueryResponse);
+}

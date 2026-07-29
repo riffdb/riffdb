@@ -56,11 +56,19 @@ pub enum ServiceOperationV1 {
     DiscoverCommandTools,
     /// Discover policy-visible resources.
     DiscoverResources,
+    /// Describe one exact symbolic contract catalog.
+    DescribeContract,
+    /// Parse, resolve, type-check, and plan one symbolic query.
+    CheckQuery,
+    /// Return one bounded symbolic query plan explanation.
+    ExplainQuery,
+    /// Execute one closed symbolic query.
+    ExecuteQuery,
 }
 
 impl ServiceOperationV1 {
     /// Every accepted v1 service operation, in tag order.
-    pub const ALL: [Self; 22] = [
+    pub const ALL: [Self; 26] = [
         Self::ValidateContract,
         Self::ExplainCommand,
         Self::DeployContract,
@@ -83,6 +91,10 @@ impl ServiceOperationV1 {
         Self::ListPendingOutboxDeliveries,
         Self::DiscoverCommandTools,
         Self::DiscoverResources,
+        Self::DescribeContract,
+        Self::CheckQuery,
+        Self::ExplainQuery,
+        Self::ExecuteQuery,
     ];
 
     /// Returns the stable v1 semantic tag.
@@ -111,6 +123,10 @@ impl ServiceOperationV1 {
             Self::ListPendingOutboxDeliveries => 0x14,
             Self::DiscoverCommandTools => 0x15,
             Self::DiscoverResources => 0x16,
+            Self::DescribeContract => 0x17,
+            Self::CheckQuery => 0x18,
+            Self::ExplainQuery => 0x19,
+            Self::ExecuteQuery => 0x1a,
         }
     }
 
@@ -140,6 +156,10 @@ impl ServiceOperationV1 {
             0x14 => Some(Self::ListPendingOutboxDeliveries),
             0x15 => Some(Self::DiscoverCommandTools),
             0x16 => Some(Self::DiscoverResources),
+            0x17 => Some(Self::DescribeContract),
+            0x18 => Some(Self::CheckQuery),
+            0x19 => Some(Self::ExplainQuery),
+            0x1a => Some(Self::ExecuteQuery),
             _ => None,
         }
     }
@@ -548,7 +568,7 @@ mod tests {
 
     #[test]
     fn service_operation_registry_is_exact_and_closed() {
-        let expected: Vec<u8> = (0x01..=0x16).collect();
+        let expected: Vec<u8> = (0x01..=0x1a).collect();
         assert_eq!(
             ServiceOperationV1::ALL
                 .into_iter()
@@ -563,7 +583,7 @@ mod tests {
             );
         }
         assert_eq!(ServiceOperationV1::from_tag(0), None);
-        assert_eq!(ServiceOperationV1::from_tag(0x17), None);
+        assert_eq!(ServiceOperationV1::from_tag(0x1b), None);
         assert_eq!(ServiceOperationV1::from_tag(u8::MAX), None);
     }
 

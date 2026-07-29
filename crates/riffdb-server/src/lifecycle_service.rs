@@ -9,22 +9,25 @@ use riffdb_api_grpc::{
 };
 use riffdb_errors::PublicError;
 use riffdb_service::{
-    AdministrationApplication, CommandApplication, CommitApplication, ContractApplication,
-    ContractValidationResult, CreateCapabilityInvocation, CreateCapabilityResult,
-    CreateOfflineBackupRequest, DeployContractRequest, DeployContractResult,
+    AdministrationApplication, CheckSymbolicQueryResult, CommandApplication, CommitApplication,
+    CompileSymbolicQueryRequest, ContractApplication, ContractValidationResult,
+    CreateCapabilityInvocation, CreateCapabilityResult, CreateOfflineBackupRequest,
+    DeployContractRequest, DeployContractResult, DescribeSymbolicContractResult,
     DiscoverCommandToolsRequest, DiscoverCommandToolsResult, DiscoverResourcesRequest,
     DiscoverResourcesResult, DiscoveryApplication, ExecuteCommandRequest, ExecuteCommandResult,
-    ExplainCommandRequest, ExplainCommandResult, GetActiveContractRequest, GetActiveContractResult,
-    GetCommitRequest, GetCommitResult, GetContractVersionRequest, GetContractVersionResult,
-    GetEntityRequest, GetEntityResult, GetOfflineMaintenanceOperationRequest,
-    GetOfflineMaintenanceOperationResult, GetProjectionStatusRequest, GetProjectionStatusResult,
-    HealthContext, HealthRequest, HealthResult, ListPendingOutboxDeliveriesRequest,
-    ListPendingOutboxDeliveriesResult, OfflineMaintenanceApplication,
-    OfflineMaintenanceStartResult, QueryApplication, QueryProjectionRequest, QueryProjectionResult,
-    RequestContext, ResolveCommandOutcomeRequest, ResolveCommandOutcomeResult,
-    RestoreOfflineBackupInvocation, RevokeCapabilityRequest, RevokeCapabilityResult,
-    ScanCommitsRequest, ScanCommitsResult, ScanIndexRequest, ScanIndexResult, ServiceFuture,
-    StatisticsRequest, StatisticsResult, SubscribeToCommitsRequest, SubscribeToCommitsResult,
+    ExecuteSymbolicQueryRequest, ExecuteSymbolicQueryResult, ExplainCommandRequest,
+    ExplainCommandResult, ExplainSymbolicQueryResult, GetActiveContractRequest,
+    GetActiveContractResult, GetCommitRequest, GetCommitResult, GetContractVersionRequest,
+    GetContractVersionResult, GetEntityRequest, GetEntityResult,
+    GetOfflineMaintenanceOperationRequest, GetOfflineMaintenanceOperationResult,
+    GetProjectionStatusRequest, GetProjectionStatusResult, HealthContext, HealthRequest,
+    HealthResult, ListPendingOutboxDeliveriesRequest, ListPendingOutboxDeliveriesResult,
+    OfflineMaintenanceApplication, OfflineMaintenanceStartResult, QueryApplication,
+    QueryProjectionRequest, QueryProjectionResult, RequestContext, ResolveCommandOutcomeRequest,
+    ResolveCommandOutcomeResult, RestoreOfflineBackupInvocation, RevokeCapabilityRequest,
+    RevokeCapabilityResult, ScanCommitsRequest, ScanCommitsResult, ScanIndexRequest,
+    ScanIndexResult, ServiceFuture, StatisticsRequest, StatisticsResult, SubscribeToCommitsRequest,
+    SubscribeToCommitsResult, SymbolicContractSelector, SymbolicQueryApplication,
     TraceProvenanceRequest, TraceProvenanceResult, ValidateContractRequest,
 };
 use riffdb_types::ServiceOperationV1;
@@ -328,6 +331,27 @@ delegate_operation! {
             context: RequestContext,
             request: DiscoverResourcesRequest
         ) -> DiscoverResourcesResult => DiscoverResources;
+    }
+}
+
+delegate_operation! {
+    SymbolicQueryApplication {
+        describe_symbolic_contract(
+            context: RequestContext,
+            request: SymbolicContractSelector
+        ) -> DescribeSymbolicContractResult => DescribeContract;
+        check_symbolic_query(
+            context: RequestContext,
+            request: CompileSymbolicQueryRequest
+        ) -> CheckSymbolicQueryResult => CheckQuery;
+        explain_symbolic_query(
+            context: RequestContext,
+            request: CompileSymbolicQueryRequest
+        ) -> ExplainSymbolicQueryResult => ExplainQuery;
+        execute_symbolic_query(
+            context: RequestContext,
+            request: ExecuteSymbolicQueryRequest
+        ) -> ExecuteSymbolicQueryResult => ExecuteQuery;
     }
 }
 

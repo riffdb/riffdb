@@ -2,6 +2,7 @@
 
 //! Versioned public and durable Protobuf boundaries for RiffDB.
 
+mod app_public_message;
 mod command;
 pub mod durable;
 mod durable_wire;
@@ -15,6 +16,15 @@ mod wire;
 #[allow(missing_docs, clippy::large_enum_variant)]
 pub mod v1 {
     include!("generated/riffdb.v1.rs");
+}
+
+/// Checked-in Prost messages for the `riffdb.app.v1` application package.
+pub mod app {
+    /// Symbolic application API v1.
+    #[allow(missing_docs, clippy::large_enum_variant)]
+    pub mod v1 {
+        include!("generated/riffdb.app.v1.rs");
+    }
 }
 
 /// Checked-in Prost messages for RiffDB durable packages.

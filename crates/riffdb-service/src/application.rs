@@ -251,7 +251,7 @@ pub trait DiscoveryApplication: Send + Sync {
     ) -> ServiceFuture<'_, DiscoverResourcesResult>;
 }
 
-/// Marker trait grouping the seven coherent object-safe surfaces.
+/// Marker trait grouping the coherent object-safe application surfaces.
 pub trait ApplicationService:
     ContractApplication
     + CommandApplication
@@ -260,6 +260,7 @@ pub trait ApplicationService:
     + AdministrationApplication
     + OfflineMaintenanceApplication
     + DiscoveryApplication
+    + crate::SymbolicQueryApplication
 {
 }
 
@@ -271,5 +272,6 @@ impl<T> ApplicationService for T where
         + AdministrationApplication
         + OfflineMaintenanceApplication
         + DiscoveryApplication
+        + crate::SymbolicQueryApplication
 {
 }
