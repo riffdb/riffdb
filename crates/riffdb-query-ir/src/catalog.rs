@@ -1,6 +1,6 @@
 use std::collections::BTreeMap;
 
-use riffdb_contract_ir::{ContractBundle, ValueType};
+use riffdb_contract_ir::{ContractBundle, ExpressionKind, ValueType};
 use riffdb_types::{EntityTypeId, EnumTypeId, EnumVariantId, FieldId, IndexId};
 
 use crate::{
@@ -81,6 +81,7 @@ pub struct EntitySymbol {
     fields: BTreeMap<String, FieldSymbol>,
     indexes: BTreeMap<String, IndexSymbol>,
     primary_key: Vec<String>,
+    partition_field: String,
 }
 
 impl EntitySymbol {
@@ -118,6 +119,12 @@ impl EntitySymbol {
     #[must_use]
     pub fn primary_key(&self) -> &[String] {
         &self.primary_key
+    }
+
+    /// Field whose exact value derives this entity's aggregate partition.
+    #[must_use]
+    pub fn partition_field(&self) -> &str {
+        &self.partition_field
     }
 
     /// Compiler-internal stable identity.
@@ -176,6 +183,44 @@ impl SymbolicCatalog {
     pub fn from_bundle(bundle: &ContractBundle) -> Result<Self, QueryDiagnostics> {
         let mut entities = BTreeMap::new();
         for entity in bundle.schema().entities() {
+            let aggregate = bundle
+                .schema()
+                .aggregates()
+                .iter()
+                .find(|aggregate| aggregate.owns(entity.id()))
+                .ok_or_else(|| invariant("entity has no aggregate owner"))?;
+            let partition_node = aggregate
+                .keys()
+                .expressions()
+                .get(aggregate.keys().partition_expression())
+                .ok_or_else(|| invariant("aggregate partition expression is absent"))?;
+            let (partition_entity_id, partition_field_id) = match partition_node.kind() {
+                ExpressionKind::SchemaField { entity_type, field } => (*entity_type, *field),
+                _ => {
+                    return Err(invariant(
+                        "RiffQL v1 requires a direct aggregate partition field",
+                    ));
+                }
+            };
+            let partition_entity = bundle
+                .schema()
+                .entity(partition_entity_id)
+                .ok_or_else(|| invariant("partition expression entity is absent"))?;
+            let partition_name = partition_entity
+                .record()
+                .field(partition_field_id)
+                .map(|field| field.name().to_owned())
+                .ok_or_else(|| invariant("partition expression field is absent"))?;
+            if !entity
+                .record()
+                .fields()
+                .iter()
+                .any(|field| field.name() == partition_name)
+            {
+                return Err(invariant(
+                    "owned entity lacks the aggregate partition field",
+                ));
+            }
             let key_ids = entity.primary_key_fields();
             let mut fields = BTreeMap::new();
             for field in entity.record().fields() {
@@ -226,6 +271,7 @@ impl SymbolicCatalog {
                             .ok_or_else(|| invariant("primary key references an absent field"))
                     })
                     .collect::<Result<Vec<_>, _>>()?,
+                partition_field: partition_name,
             };
             if entities.insert(symbol.name.clone(), symbol).is_some() {
                 return Err(invariant("duplicate exact-contract entity"));

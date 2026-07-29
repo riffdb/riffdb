@@ -4,10 +4,11 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use riffdb_contract_ir::ValueType;
+use riffdb_contract_ir::{ValueType, ValueTypeTag};
 use riffdb_query_ir::{
     AccessDirection, AuthorizationEntityAccess, EntitySymbol, QueryAccessKind,
-    QueryAccessProgramV1, QueryAccessStep, SymbolicCatalog, resolve_query_surface,
+    QueryAccessProgramV1, QueryAccessStep, QueryLiteral, QueryPredicate, QueryPredicateOperator,
+    QueryPredicateValue, SymbolicCatalog, resolve_query_surface,
 };
 use riffdb_riffql_syntax::{
     BinaryOperator, Cardinality, Direction, Document, Expression, FieldSelection, Literal, Path,
@@ -107,7 +108,7 @@ pub fn compile_query(
     document: &Document,
     catalog: &SymbolicCatalog,
 ) -> Result<QueryAccessProgramV1, PlannerDiagnostics> {
-    resolve_query_surface(document, catalog).map_err(|_| {
+    let surface = resolve_query_surface(document, catalog).map_err(|_| {
         one(
             PlannerDiagnosticCode::InternalInvariant,
             Span { start: 0, end: 0 },
@@ -116,7 +117,7 @@ pub fn compile_query(
             None,
         )
     })?;
-    Planner::new(document, catalog).compile()
+    Planner::new(document, catalog).compile(surface)
 }
 
 struct Planner<'a> {
@@ -140,9 +141,13 @@ impl<'a> Planner<'a> {
         }
     }
 
-    fn compile(mut self) -> Result<QueryAccessProgramV1, PlannerDiagnostics> {
+    fn compile(
+        mut self,
+        surface: riffdb_query_ir::ResolvedQueryV1,
+    ) -> Result<QueryAccessProgramV1, PlannerDiagnostics> {
         let mut partition_parameter: Option<String> = None;
         let selections = selected_fields(self.document);
+        let result_names = result_names(self.document);
         let mut steps = Vec::with_capacity(self.document.body.bindings.len());
         let mut auth = BTreeMap::<String, AuthAccumulator>::new();
 
@@ -154,9 +159,9 @@ impl<'a> Planner<'a> {
             let comparisons = comparisons(&binding.predicate.value);
             self.type_check(entity, &comparisons)?;
 
-            let partition_field = entity.primary_key().first().ok_or_else(internal)?;
+            let partition_field = entity.partition_field();
             let route = comparisons.iter().find_map(|comparison| {
-                (comparison.field == partition_field.as_str()
+                (comparison.field == partition_field
                     && comparison.operator == BinaryOperator::Equal)
                     .then(|| parameter_name(comparison.value))
                     .flatten()
@@ -165,7 +170,7 @@ impl<'a> Planner<'a> {
                 return Err(one(
                     PlannerDiagnosticCode::NonLocal,
                     binding.predicate.span,
-                    vec![entity.name().to_owned(), partition_field.clone()],
+                    vec![entity.name().to_owned(), partition_field.to_owned()],
                     "query access is not routed by an exact partition parameter",
                     None,
                 ));
@@ -186,6 +191,7 @@ impl<'a> Planner<'a> {
 
             let maximum_rows = maximum_rows(binding)?;
             let (access, index_id) = choose_access(entity, binding, &comparisons)?;
+            let predicates = self.normalize_predicates(&comparisons)?;
             let mut predicate_fields = comparisons
                 .iter()
                 .map(|comparison| comparison.field.to_owned())
@@ -215,6 +221,12 @@ impl<'a> Planner<'a> {
             }
             let predicate_fields = predicate_fields.into_iter().collect::<Vec<_>>();
             let selected_fields = selected.into_iter().collect::<Vec<_>>();
+            let binding_results = result_names
+                .get(binding.name.value.as_str())
+                .cloned()
+                .unwrap_or_default()
+                .into_iter()
+                .collect::<Vec<_>>();
             let dependencies = dependencies
                 .into_iter()
                 .map(str::to_owned)
@@ -225,8 +237,10 @@ impl<'a> Planner<'a> {
                 binding.cardinality.value,
                 maximum_rows,
                 access.clone(),
+                predicates,
                 predicate_fields.clone(),
                 selected_fields.clone(),
+                binding_results,
                 dependencies,
                 entity.internal_id(),
                 index_id,
@@ -264,6 +278,7 @@ impl<'a> Planner<'a> {
             .collect::<Result<Vec<_>, _>>()?;
         QueryAccessProgramV1::checked(
             self.catalog.identity().clone(),
+            surface,
             self.document
                 .name
                 .as_ref()
@@ -310,9 +325,93 @@ impl<'a> Planner<'a> {
                         None,
                     ));
                 }
+            } else if let Expression::Path(path) = comparison.value
+                && path.0.len() == 2
+                && let Some(source_entity) = self.binding_entities.get(path.0[0].value.as_str())
+            {
+                let source = source_entity
+                    .field(path.0[1].value.as_str())
+                    .ok_or_else(internal)?
+                    .value_type();
+                let compatible = field.value_type() == source
+                    || source
+                        .optional_inner()
+                        .is_some_and(|inner| inner == field.value_type());
+                if !compatible {
+                    return Err(one(
+                        PlannerDiagnosticCode::TypeMismatch,
+                        path.0[1].span,
+                        vec![entity.name().to_owned(), comparison.field.to_owned()],
+                        "dependent field type does not match the contract field",
+                        None,
+                    ));
+                }
+            } else if let Expression::Literal(literal) = comparison.value
+                && !literal_compatible(field.value_type(), literal)
+            {
+                return Err(one(
+                    PlannerDiagnosticCode::TypeMismatch,
+                    Span { start: 0, end: 0 },
+                    vec![entity.name().to_owned(), comparison.field.to_owned()],
+                    "literal type does not match the contract field",
+                    None,
+                ));
             }
         }
         Ok(())
+    }
+
+    fn normalize_predicates(
+        &self,
+        comparisons: &[Comparison<'_>],
+    ) -> Result<Vec<QueryPredicate>, PlannerDiagnostics> {
+        comparisons
+            .iter()
+            .map(|comparison| {
+                let value = match comparison.value {
+                    Expression::Parameter(parameter) => {
+                        QueryPredicateValue::Parameter(parameter.value.as_str().to_owned())
+                    }
+                    Expression::Path(path) if path.0.len() == 2 => {
+                        let first = path.0[0].value.as_str();
+                        let second = path.0[1].value.as_str();
+                        if self.binding_entities.contains_key(first) {
+                            QueryPredicateValue::BindingField {
+                                binding: first.to_owned(),
+                                field: second.to_owned(),
+                            }
+                        } else if self
+                            .catalog
+                            .enumeration(first)
+                            .and_then(|enumeration| enumeration.variant(second))
+                            .is_some()
+                        {
+                            QueryPredicateValue::EnumVariant {
+                                enumeration: first.to_owned(),
+                                variant: second.to_owned(),
+                            }
+                        } else {
+                            return Err(internal());
+                        }
+                    }
+                    Expression::Literal(literal) => QueryPredicateValue::Literal(match literal {
+                        Literal::Unsigned(value) => QueryLiteral::Unsigned(value.clone()),
+                        Literal::String(value) => QueryLiteral::String(value.clone()),
+                        Literal::Boolean(value) => QueryLiteral::Boolean(*value),
+                        Literal::Null => QueryLiteral::Null,
+                    }),
+                    Expression::Path(_) | Expression::Binary { .. } => {
+                        return Err(internal());
+                    }
+                };
+                QueryPredicate::checked(
+                    comparison.field.to_owned(),
+                    predicate_operator(comparison.operator)?,
+                    value,
+                )
+                .ok_or_else(internal)
+            })
+            .collect()
     }
 
     fn resolve_parameter_type(&self, reference: &TypeReference) -> Option<ValueType> {
@@ -339,6 +438,30 @@ impl<'a> Planner<'a> {
             },
             TypeReference::Set(_) | TypeReference::Cursor | TypeReference::Limit => None,
         }
+    }
+}
+
+fn predicate_operator(
+    operator: BinaryOperator,
+) -> Result<QueryPredicateOperator, PlannerDiagnostics> {
+    Ok(match operator {
+        BinaryOperator::Equal => QueryPredicateOperator::Equal,
+        BinaryOperator::NotEqual => QueryPredicateOperator::NotEqual,
+        BinaryOperator::Less => QueryPredicateOperator::Less,
+        BinaryOperator::LessEqual => QueryPredicateOperator::LessEqual,
+        BinaryOperator::Greater => QueryPredicateOperator::Greater,
+        BinaryOperator::GreaterEqual => QueryPredicateOperator::GreaterEqual,
+        BinaryOperator::In => QueryPredicateOperator::In,
+        BinaryOperator::And | BinaryOperator::Or => return Err(internal()),
+    })
+}
+
+fn literal_compatible(value_type: &ValueType, literal: &Literal) -> bool {
+    match literal {
+        Literal::Unsigned(_) => matches!(value_type.tag(), ValueTypeTag::U64 | ValueTypeTag::I64),
+        Literal::String(_) => value_type.tag() == ValueTypeTag::String,
+        Literal::Boolean(_) => value_type.tag() == ValueTypeTag::Bool,
+        Literal::Null => value_type.is_optional(),
     }
 }
 
@@ -608,6 +731,27 @@ fn selected_fields(document: &Document) -> BTreeMap<String, BTreeSet<String>> {
     let mut output = BTreeMap::new();
     for selection in &document.body.selection.fields {
         collect_selected(selection, &mut output);
+    }
+    output
+}
+
+fn result_names(document: &Document) -> BTreeMap<String, BTreeSet<String>> {
+    let mut output = BTreeMap::<String, BTreeSet<String>>::new();
+    for selection in &document.body.selection.fields {
+        if selection.nested.is_none() {
+            continue;
+        }
+        let Some(binding) = selection.source.value.0.first() else {
+            continue;
+        };
+        let output_name = selection
+            .alias
+            .as_ref()
+            .map_or(binding.value.as_str(), |alias| alias.value.as_str());
+        output
+            .entry(binding.value.as_str().to_owned())
+            .or_default()
+            .insert(output_name.to_owned());
     }
     output
 }
