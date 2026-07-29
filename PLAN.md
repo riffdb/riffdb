@@ -70,7 +70,7 @@ frozen before semantic implementation began.
 
 ## 2. Consistency Findings
 
-The reconciled manifest has 45 unique work-package IDs and an acyclic dependency
+The reconciled manifest has 53 unique work-package IDs and an acyclic dependency
 graph. Gate membership, SPEC package table, YAML dependencies, and the work-package
 DAG agree. All referenced normative requirement IDs exist or are explicitly
 classified by the manifest's coverage policy. The 29 crate names and three POC
@@ -78,10 +78,11 @@ binaries (`riffdbd`, `riffdb`, and `riffdb-mcp`) agree across the specification
 and package scopes. Allowed paths now cover each declared deliverable and
 acceptance script. Public/durable ownership and MCP/gRPC/CLI/SDK layering agree
 with the shared-service and coordinator boundaries.
-The manifest identifies SPEC version 0.38. Its P3 application-platform sequence
+The manifest identifies SPEC version 0.39. Its P3 application-platform sequence
 extends the completed kernel proof with symbolic RiffQL, composite one-snapshot
 reads, immutable query modules, and the ADR-0055 safe-application boundary. The
-earlier packages assign the accepted pre-sequence
+proposed P4 sequence adds the Agent Application Alpha gate before operational
+or distributed alpha work. The earlier packages assign the accepted pre-sequence
 reservation, envelope-bound, event-hash, single-terminal-outcome-row, and POC
 state-machine-deferral evidence to the existing
 WP-060/WP-065/WP-070/WP-100/WP-190/WP-200 owners without changing their IDs,
@@ -914,9 +915,103 @@ external side effects, and multi-command workflow intent remain application
 design responsibilities. `docs/safety-by-construction.md` is the concise
 normative product rule and acceptance boundary.
 
-### 6.6 Roadmap Toward MVP
+### 6.6 P4 — Agent Application Alpha
 
-- **Stage A, single-node alpha:** Add a real migration framework, stable format policy, online consistent backup/verified restore, bundle signing, bounded indexed reads, approved repair operations, remote TLS/OAuth MCP, TypeScript/Python clients, quotas, projection/backfill controls, and upgrade/downgrade compatibility. Gate on a trusted design-partner workload with documented recovery and incident procedures.
+P4 begins after WP-300. It is an application-authoring gate, not an operational
+or distributed-systems gate:
+
+> A fresh coding agent can build an unfamiliar application from an empty
+> repository using only RiffDB's public textual, generated, CLI, and MCP
+> surfaces.
+
+ADR-0056 is Proposed. No P4 implementation begins until its exact application
+manifest, client, role, error, batch, packaging, evaluation, and compatibility
+boundaries are accepted.
+
+#### WP-305 — Complete generated bindings and manifest
+
+- Generate complete Rust and TypeScript named-operation clients, not only
+  parameter/result types.
+- Own serialization, invocation, decoding, outcomes, cursors,
+  read-after-commit, errors, exact module negotiation, and safe same-key retry.
+- Establish one canonical application manifest consumed by generation, roles,
+  seed, scaffolding, and both languages.
+- Gate on zero handwritten RiffDB transport/encoding glue.
+
+#### WP-310 — Symbolic roles
+
+- Compile role operation names into exact application authority and private
+  query requirements.
+- Derive contract description, result visibility, bounds, lineage, and MCP
+  visibility without exposing field masks or kernel permissions.
+- Bind by role, principal, environment, and tenant scope; make missing
+  requirements actionable by symbol.
+
+#### WP-315 — Structured application errors
+
+- Add one bounded versioned application-error envelope while retaining
+  compatible kernel error bytes.
+- Preserve authorized operation, contract/module, symbol/span, required
+  permission/resource, closed remediation, retry/recovery, and trace context.
+- Prove semantic parity and redaction across gRPC, Rust, TypeScript, CLI, MCP,
+  logs, and traces.
+
+#### WP-320 — Command batches and seed/import
+
+- Run bounded concurrent streams of ordinary exact named commands.
+- Keep per-item idempotency, authorization, typed outcomes, provenance, and
+  commits; never claim one batch transaction.
+- Add backpressure, progress, cancellation, checksummed resume, crash replay,
+  and `riffdb dev --seed` integration.
+
+#### WP-325 — Scaffold and unavoidable application boundary
+
+- Make `riffdb new <application>` followed by `riffdb dev` the canonical path.
+- Generate the manifest, contract, queries, roles, seed, protected credential
+  configuration, MCP setup, and Rust/TypeScript output roots.
+- Default application facades exclude kernel APIs; explicit admin/unstable
+  packages or features and separate credentials retain low-level access.
+- Make dependency/source boundary linting mandatory.
+
+#### WP-330 — TypeScript runtime parity
+
+- Ship a real TypeScript web application, not only compiling generated source.
+- Consume the same manifest, operation schemas, error fixtures, and golden
+  observations as Rust.
+- Exercise queries, commands, outcomes, pagination, nested/optional results,
+  read-after-commit, errors, credentials, reload, and MCP-assisted discovery.
+
+#### WP-335 — Two-domain evidence and bounded RiffQL closure
+
+- Build blog/CMS and orders/inventory corpora through both language paths.
+- Preserve every unsupported shape and its actionable diagnostic.
+- Classify whether an index, declared relation, projection, or decomposition
+  already solves the need.
+- Stop for a separate exact accepted ADR before adding any grammar, IR, plan,
+  authorization, cursor, storage, or result semantic; implement only the
+  smallest repeated-use bounded construct after that review.
+
+#### WP-340 — Sealed independent evaluation
+
+- Run four isolated fresh-agent builds: both domains in both Rust and
+  TypeScript.
+- Provide public binaries, docs, builder MCP, and generated packages, but no
+  RiffDB implementation or TicketDesk source.
+- Publish raw measurements for interventions, kernel attempts, handwritten
+  glue, failures per feature, query gaps, first-write/read/completion time,
+  source access, and rating.
+- Require zero workaround intervention, successful kernel use, kernel imports,
+  handwritten glue, prohibited source access, or unresolved required query
+  shape; first write within 30 minutes, first page within 60 minutes, and every
+  rating at least 8.5/10.
+
+The detailed gate is in `docs/agent-application-alpha.md`. Failures return to
+the owning package; evaluation applications cannot patch around product gaps.
+
+### 6.7 Roadmap Toward MVP
+
+- **Agent Application Alpha:** Complete WP-305 through WP-340 and the sealed four-run gate before operational hardening or replication.
+- **Stage A, single-node alpha:** Add a real migration framework, stable format policy, online consistent backup/verified restore, bundle signing, bounded indexed reads, approved repair operations, remote TLS/OAuth MCP, production-hardened TypeScript compatibility plus generated Python, quotas, projection/backfill controls, and upgrade/downgrade compatibility. Gate on a trusted design-partner workload with documented recovery and incident procedures.
 - **Stage B, replicated beta:** Put deterministic normalized commit application behind a replication facade, add snapshots/membership/catch-up/leader routing, and prove idempotency/outcomes unchanged through leader loss and network partitions. Do not add Raft to the POC path.
 - **Stage C, partitioned MVP:** Add tenant-local leaders, placement epochs, fenced movement, production authorization/audit/rate limits, stable clients, operational projections, agent branches/replay, CDC/export, and full operational support. Continue rejecting undeclared cross-partition mutations.
 - **Post-MVP research:** Distributed transaction/saga semantics, escrow/commutative types, global uniqueness/indexes, multi-region placement, richer incremental analytics, and verified migrations remain explicit research tracks. They must not leak into POC abstractions beyond preserving deterministic, replication-shaped records.
@@ -1143,6 +1238,11 @@ Fuzz, Loom, Shuttle, and full crash jobs run in dedicated profiles. Process corr
 
 | Risk | Trigger / early warning | Affected WPs | Consequence | Mitigation and required decision/experiment | Threat |
 |---|---|---|---|---|---|
+| Generated bindings remain metadata rather than a complete client | Acceptance apps contain parameter maps, result-tag switches, RPC wrappers, cursor/status parsers, or retry identity construction | WP-260/305/325/330/340 | Every application recreates transport glue and can diverge from module, error, and retry semantics | One manifest/operation registry; complete generated invocation/codec/recovery methods; zero-glue source scanner; Rust/TypeScript differential goldens | Agent Application Alpha viability |
+| Symbolic roles leak reusable kernel authority | Role compilation emits `ReadEntity`/`ScanIndex`, masks, or broad ReadContract grants instead of private exact-query requirements | WP-280/300/310/340 | Application code regains N+1, multi-snapshot, field overreach, or hidden storage-shaped access | ADR-0055 proof boundary; role names operations only; sealed compiler-derived requirements; escalation and substitution tests | Core safe-application security claim |
+| Rich application errors leak schema, values, or arbitrary model-facing prose | Error context is attached before authorization/redaction, includes submitted values/internal sources, or differs by transport | WP-315/330/340 | Security disclosure, prompt injection, inconsistent recovery, or operator-hostile fallback | Closed bounded fields/fix codes; service-owned redacted builder; secret/hidden-schema canaries; cross-transport semantic fixtures | Security and agent self-correction |
+| Batch import becomes an alternate mutation protocol | Batch owns a transaction, bypasses commands, changes idempotency/outcomes, or retries with new keys | WP-320/325/340 | Invariants, provenance, uncertainty recovery, or authorization can be bypassed for seed/import | Per-item ordinary command path; explicit non-atomic semantics; checksummed same-key resume; crash/revocation/backpressure tests | Core command-only mutation claim |
+| Agent evaluation overfits examples or hides intervention | Agents see TicketDesk/internal source, evaluators patch product gaps, only aggregate ratings are published, or one language/domain is omitted | WP-335/340 | A high score provides no evidence of general application authorship | Sealed release bundle; four isolated domain/language runs; raw event/metric reports; zero-workaround rule; owner-routed failures | Product evidence integrity |
 | Application authority collapses into kernel permissions | A stable application capability can call `GetEntity`/`ScanIndex`, submit ad-hoc source, or substitute a different named module/query/plan | WP-250/260/280/300 | Application code can recreate N+1, multi-snapshot, overbroad-read, and unreviewed-query bugs despite RiffQL | ADR-0055; disjoint exact permissions; one whole-query policy request; private plan-bound proof; named-only generated clients; negative capability/substitution tests | Core safe-application product claim |
 | Query budgets amplify across individually valid steps | Policy compares each scan/batch with the same ceiling or the backend performs work not charged to the admitted plan | WP-230/240/280/285/300 | A bounded-looking query exceeds capability resource limits or returns partial data after exhaustion | Canonical plan-hashed cost vector; one aggregate policy comparison; decrementing execution fuel; exact/one-over and adversarial accounting tests | Availability and tenant-isolation boundary |
 | Declared integrity can be omitted or races under concurrency | Relationships remain scalar conventions, uniqueness is checked by a prior query, or enforcement injects hidden reads outside the plan | WP-290/295/300 | Dangling references, duplicate business keys, invisible dependencies, or write skew reappear in normal application code | Explicit same-partition reference/unique declarations; compiler-visible exact dependencies/conflict keys; commit revalidation and atomic unique-index maintenance; concurrent/crash negative tests | Core safe-by-construction claim for declared semantics |
@@ -1241,6 +1341,16 @@ IR, compatibility fixtures, migration, and negative application corpus. Those
 concrete interface artifacts still receive the human reviews required by their
 own `human_review_triggers`; the accepted rule does not pre-approve arbitrary
 wire tags, durable keys, or incompatible encodings.
+
+ADR-0056 is Proposed from the 2026-07-29 Agent Application Alpha feedback. The
+planning request authorizes this roadmap draft but does not satisfy the ADR
+workflow's exact-text acceptance rule. Before WP-305 starts, human review must
+accept or amend the application-manifest identity, complete-client signatures,
+symbolic role derivation, structured-error disclosure boundary, batch
+transport/resume/provenance model, package opt-in, TypeScript dependency graph,
+sealed evaluation rules, and compatibility classification. WP-335 additionally
+stops for a separate accepted ADR before any evidence-derived RiffQL grammar,
+IR, plan, authorization, cursor, storage, or result semantic is implemented.
 
 The former SPEC Section 22.2 defaults and the accepted 2026-07-14 clarifications are
 now resolved architecture decisions:
