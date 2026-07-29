@@ -504,4 +504,23 @@ mod tests {
             Err(PublicErrorWireError::InvalidValidationDetails)
         );
     }
+
+    #[test]
+    fn application_hint_does_not_change_compatible_kernel_bytes() {
+        let base =
+            DomainPublicError::validation(DomainValidationIssues::one(DomainValidationIssue::new(
+                DomainValidationCode::InvalidValue,
+                DomainValidationPath::root(),
+            )));
+        let hinted = base
+            .clone()
+            .with_application_code_hint(riffdb_errors::ApplicationErrorCode::CursorInvalid)
+            .expect("compatible hint");
+        let base_bytes = public_error_to_proto(&base).encode_to_vec();
+        let hinted_bytes = public_error_to_proto(&hinted).encode_to_vec();
+        assert_eq!(hinted_bytes, base_bytes);
+        let decoded = decode_public_error(&hinted_bytes).expect("kernel decode");
+        assert_eq!(decoded, base);
+        assert_eq!(decoded.application_code_hint(), None);
+    }
 }

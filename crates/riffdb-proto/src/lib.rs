@@ -3,6 +3,7 @@
 //! Versioned public and durable Protobuf boundaries for RiffDB.
 
 mod app_public_message;
+mod application_error;
 mod command;
 pub mod durable;
 mod durable_wire;
@@ -36,6 +37,7 @@ pub mod storage {
     }
 }
 
+pub use application_error::*;
 pub use command::*;
 pub use public_error::*;
 pub use public_message::*;

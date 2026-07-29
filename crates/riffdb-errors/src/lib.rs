@@ -10,7 +10,669 @@
 use std::error::Error;
 use std::fmt;
 
-use riffdb_types::{ContractVersion, ExecutionFailureCode, FieldId, IncidentId};
+use riffdb_types::{
+    ContractLineage, ContractVersion, ExecutionFailureCode, FieldId, IncidentId, RequestId,
+};
+
+/// Version of the bounded application-semantic error envelope.
+pub const APPLICATION_ERROR_ENVELOPE_VERSION: u32 = 1;
+/// Maximum encoded application-error details accepted at a public boundary.
+pub const MAX_APPLICATION_ERROR_BYTES: usize = 16 * 1024;
+/// Maximum number of symbolic path segments in an application error.
+pub const MAX_APPLICATION_SYMBOL_PATH_SEGMENTS: usize = 16;
+/// Maximum bytes in one application operation or path symbol.
+pub const MAX_APPLICATION_SYMBOL_BYTES: usize = 256;
+/// Maximum number of closed remediation codes in one application error.
+pub const MAX_APPLICATION_FIXES: usize = 8;
+/// Maximum RiffQL source offset retained in a public error.
+pub const MAX_APPLICATION_SOURCE_OFFSET: u64 = 262_144;
+
+/// Closed application operation inventory used only for public-safe context.
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+pub enum ApplicationOperation {
+    /// Describe a symbolic contract catalog.
+    DescribeContract,
+    /// Check RiffQL source.
+    CheckQuery,
+    /// Explain ad-hoc or named RiffQL.
+    ExplainQuery,
+    /// Execute ad-hoc or named RiffQL.
+    ExecuteQuery,
+    /// Compile and deploy a named-query module.
+    DeployQueryModule,
+    /// Inspect a named-query module.
+    GetQueryModule,
+    /// Execute a symbolic command.
+    ExecuteCommand,
+    /// Execute a bounded command batch.
+    BatchCommand,
+}
+
+impl ApplicationOperation {
+    /// Returns the stable application-facing operation name.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::DescribeContract => "DescribeContract",
+            Self::CheckQuery => "CheckQuery",
+            Self::ExplainQuery => "ExplainQuery",
+            Self::ExecuteQuery => "ExecuteQuery",
+            Self::DeployQueryModule => "DeployQueryModule",
+            Self::GetQueryModule => "GetQueryModule",
+            Self::ExecuteCommand => "ExecuteCommand",
+            Self::BatchCommand => "BatchCommand",
+        }
+    }
+}
+
+/// Closed stable code registry for application-semantic failures.
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+pub enum ApplicationErrorCode {
+    /// Public message bytes failed structural validation.
+    InvalidRequest,
+    /// A typed application input failed validation.
+    InputInvalid,
+    /// Current policy denied the operation.
+    AuthorizationDenied,
+    /// Contract identity is absent, stale, or does not match.
+    ContractMismatch,
+    /// RiffQL could not be parsed, resolved, typed, or planned.
+    QueryInvalid,
+    /// A checked query cannot currently be loaded or executed.
+    QueryUnavailable,
+    /// The requested named-query module is absent or stale.
+    ModuleUnavailable,
+    /// A continuation cursor is invalid or stale.
+    CursorInvalid,
+    /// One complete authorized result exceeds a public bound.
+    ResponseTooLarge,
+    /// Authoritative storage is temporarily unavailable.
+    StorageUnavailable,
+    /// A durable mutation may have completed.
+    OutcomeUnknown,
+    /// The request was cancelled at a safe point.
+    OperationCancelled,
+    /// The request deadline elapsed.
+    DeadlineExceeded,
+    /// A redacted internal defect occurred.
+    InternalDefect,
+    /// An idempotency identity was reused with different input.
+    IdempotencyKeyReuse,
+    /// Deterministic command execution failed.
+    CommandExecutionFailed,
+    /// A formerly valid capability is revoked.
+    CapabilityRevoked,
+    /// A public peer violated the application protocol.
+    ProtocolInvalid,
+}
+
+/// Complete v1 application error code registry in stable wire order.
+pub const APPLICATION_ERROR_CODES: [ApplicationErrorCode; 18] = [
+    ApplicationErrorCode::InvalidRequest,
+    ApplicationErrorCode::InputInvalid,
+    ApplicationErrorCode::AuthorizationDenied,
+    ApplicationErrorCode::ContractMismatch,
+    ApplicationErrorCode::QueryInvalid,
+    ApplicationErrorCode::QueryUnavailable,
+    ApplicationErrorCode::ModuleUnavailable,
+    ApplicationErrorCode::CursorInvalid,
+    ApplicationErrorCode::ResponseTooLarge,
+    ApplicationErrorCode::StorageUnavailable,
+    ApplicationErrorCode::OutcomeUnknown,
+    ApplicationErrorCode::OperationCancelled,
+    ApplicationErrorCode::DeadlineExceeded,
+    ApplicationErrorCode::InternalDefect,
+    ApplicationErrorCode::IdempotencyKeyReuse,
+    ApplicationErrorCode::CommandExecutionFailed,
+    ApplicationErrorCode::CapabilityRevoked,
+    ApplicationErrorCode::ProtocolInvalid,
+];
+
+impl ApplicationErrorCode {
+    /// Maps the compatible kernel classification into the application registry.
+    #[must_use]
+    pub const fn from_public_kind(kind: PublicErrorKind) -> Self {
+        match kind {
+            PublicErrorKind::Validation => Self::InputInvalid,
+            PublicErrorKind::IdempotencyKeyReuse => Self::IdempotencyKeyReuse,
+            PublicErrorKind::AuthorizationDenied => Self::AuthorizationDenied,
+            PublicErrorKind::ConcurrencyDeadlineExceeded => Self::DeadlineExceeded,
+            PublicErrorKind::ContractMismatch => Self::ContractMismatch,
+            PublicErrorKind::StorageUnavailable => Self::StorageUnavailable,
+            PublicErrorKind::OutcomeUnknown => Self::OutcomeUnknown,
+            PublicErrorKind::InternalDefect => Self::InternalDefect,
+            PublicErrorKind::CommandExecutionFailed => Self::CommandExecutionFailed,
+        }
+    }
+
+    /// Returns the stable externally documented code.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::InvalidRequest => "RDB-APP-0001",
+            Self::InputInvalid => "RDB-INPUT-0101",
+            Self::AuthorizationDenied => "RDB-AUTH-0214",
+            Self::ContractMismatch => "RDB-CONTRACT-0101",
+            Self::QueryInvalid => "RDB-QUERY-0101",
+            Self::QueryUnavailable => "RDB-QUERY-0102",
+            Self::ModuleUnavailable => "RDB-MODULE-0101",
+            Self::CursorInvalid => "RDB-CURSOR-0101",
+            Self::ResponseTooLarge => "RDB-RESOURCE-0101",
+            Self::StorageUnavailable => "RDB-STORAGE-0101",
+            Self::OutcomeUnknown => "RDB-UNCERTAIN-0101",
+            Self::OperationCancelled => "RDB-APP-0002",
+            Self::DeadlineExceeded => "RDB-APP-0003",
+            Self::InternalDefect => "RDB-INTERNAL-0001",
+            Self::IdempotencyKeyReuse => "RDB-COMMAND-0101",
+            Self::CommandExecutionFailed => "RDB-COMMAND-0102",
+            Self::CapabilityRevoked => "RDB-AUTH-0215",
+            Self::ProtocolInvalid => "RDB-PROTOCOL-0101",
+        }
+    }
+
+    /// Returns the one registry-owned public message for this code.
+    #[must_use]
+    pub const fn safe_message(self) -> &'static str {
+        match self {
+            Self::InvalidRequest => "application request is structurally invalid",
+            Self::InputInvalid => "application input is invalid",
+            Self::AuthorizationDenied => "application operation is not authorized",
+            Self::ContractMismatch => "application contract does not match",
+            Self::QueryInvalid => "RiffQL query is invalid",
+            Self::QueryUnavailable => "RiffQL query is unavailable",
+            Self::ModuleUnavailable => "query module is unavailable",
+            Self::CursorInvalid => "query cursor is invalid or stale",
+            Self::ResponseTooLarge => "application result exceeds the service limit",
+            Self::StorageUnavailable => "storage is temporarily unavailable",
+            Self::OutcomeUnknown => "command outcome is not yet known",
+            Self::OperationCancelled => "application request was cancelled",
+            Self::DeadlineExceeded => "application request deadline elapsed",
+            Self::InternalDefect => "an internal error occurred",
+            Self::IdempotencyKeyReuse => {
+                "idempotency key was reused with different application input"
+            }
+            Self::CommandExecutionFailed => "command execution failed",
+            Self::CapabilityRevoked => "application capability is revoked",
+            Self::ProtocolInvalid => "the RiffDB peer returned an invalid application response",
+        }
+    }
+
+    /// Returns the closed category.
+    #[must_use]
+    pub const fn category(self) -> ApplicationErrorCategory {
+        match self {
+            Self::InvalidRequest | Self::InputInvalid => ApplicationErrorCategory::Input,
+            Self::AuthorizationDenied | Self::CapabilityRevoked => {
+                ApplicationErrorCategory::Authorization
+            }
+            Self::ContractMismatch => ApplicationErrorCategory::Contract,
+            Self::QueryInvalid | Self::QueryUnavailable => ApplicationErrorCategory::Query,
+            Self::ModuleUnavailable => ApplicationErrorCategory::Module,
+            Self::CursorInvalid => ApplicationErrorCategory::Cursor,
+            Self::ResponseTooLarge => ApplicationErrorCategory::Resource,
+            Self::StorageUnavailable => ApplicationErrorCategory::Storage,
+            Self::OutcomeUnknown => ApplicationErrorCategory::Uncertainty,
+            Self::OperationCancelled | Self::DeadlineExceeded => ApplicationErrorCategory::Control,
+            Self::InternalDefect => ApplicationErrorCategory::Internal,
+            Self::IdempotencyKeyReuse | Self::CommandExecutionFailed => {
+                ApplicationErrorCategory::Command
+            }
+            Self::ProtocolInvalid => ApplicationErrorCategory::Protocol,
+        }
+    }
+
+    /// Returns deterministic recovery guidance.
+    #[must_use]
+    pub const fn recovery_action(self) -> ApplicationRecoveryAction {
+        match self {
+            Self::InvalidRequest
+            | Self::InputInvalid
+            | Self::QueryInvalid
+            | Self::CursorInvalid
+            | Self::ResponseTooLarge
+            | Self::IdempotencyKeyReuse => ApplicationRecoveryAction::CorrectRequest,
+            Self::AuthorizationDenied | Self::CapabilityRevoked => {
+                ApplicationRecoveryAction::ObtainPermission
+            }
+            Self::ContractMismatch | Self::QueryUnavailable | Self::ModuleUnavailable => {
+                ApplicationRecoveryAction::RefreshContract
+            }
+            Self::StorageUnavailable | Self::DeadlineExceeded => ApplicationRecoveryAction::Retry,
+            Self::OutcomeUnknown => ApplicationRecoveryAction::ResolveWithSameIdempotencyKey,
+            Self::OperationCancelled => ApplicationRecoveryAction::None,
+            Self::InternalDefect | Self::CommandExecutionFailed | Self::ProtocolInvalid => {
+                ApplicationRecoveryAction::ContactOperator
+            }
+        }
+    }
+
+    /// Returns the exact deterministic remediation set.
+    #[must_use]
+    pub const fn fixes(self) -> &'static [ApplicationFixCode] {
+        match self {
+            Self::InvalidRequest | Self::InputInvalid | Self::QueryInvalid => {
+                &[ApplicationFixCode::CorrectInput]
+            }
+            Self::AuthorizationDenied | Self::CapabilityRevoked => {
+                &[ApplicationFixCode::BindApplicationRole]
+            }
+            Self::ContractMismatch => &[ApplicationFixCode::RefreshContract],
+            Self::QueryUnavailable | Self::ModuleUnavailable => {
+                &[ApplicationFixCode::PinActiveModule]
+            }
+            Self::CursorInvalid => &[ApplicationFixCode::RestartFromFirstPage],
+            Self::ResponseTooLarge | Self::IdempotencyKeyReuse => {
+                &[ApplicationFixCode::CorrectInput]
+            }
+            Self::StorageUnavailable | Self::DeadlineExceeded => &[ApplicationFixCode::RetryLater],
+            Self::OutcomeUnknown => &[ApplicationFixCode::ResolveWithSameIdempotencyKey],
+            Self::InternalDefect => &[ApplicationFixCode::ContactOperatorWithIncident],
+            Self::OperationCancelled | Self::CommandExecutionFailed | Self::ProtocolInvalid => &[],
+        }
+    }
+}
+
+/// Coarse application failure category.
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+pub enum ApplicationErrorCategory {
+    /// Caller-controlled application input.
+    Input,
+    /// Authentication, role, or authorization policy.
+    Authorization,
+    /// Contract selection and compatibility.
+    Contract,
+    /// RiffQL compilation or execution.
+    Query,
+    /// Named-query module selection.
+    Module,
+    /// Cursor validation.
+    Cursor,
+    /// Public resource bounds.
+    Resource,
+    /// Authoritative storage availability.
+    Storage,
+    /// Mutation uncertainty.
+    Uncertainty,
+    /// Cancellation, deadline, or redacted defects.
+    Internal,
+    /// Peer protocol conformance.
+    Protocol,
+    /// Symbolic command admission or execution.
+    Command,
+    /// Cancellation and deadline control.
+    Control,
+}
+
+impl ApplicationErrorCategory {
+    /// Returns the stable machine name.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Input => "input",
+            Self::Authorization => "authorization",
+            Self::Contract => "contract",
+            Self::Query => "query",
+            Self::Module => "module",
+            Self::Cursor => "cursor",
+            Self::Resource => "resource",
+            Self::Storage => "storage",
+            Self::Uncertainty => "uncertainty",
+            Self::Internal => "internal",
+            Self::Protocol => "protocol",
+            Self::Command => "command",
+            Self::Control => "control",
+        }
+    }
+}
+
+/// Closed application recovery action.
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+pub enum ApplicationRecoveryAction {
+    /// Correct the input before retrying.
+    CorrectRequest,
+    /// Retry according to caller policy.
+    Retry,
+    /// Resolve using the same idempotency identity.
+    ResolveWithSameIdempotencyKey,
+    /// Bind or obtain an application role.
+    ObtainPermission,
+    /// Refresh contract and module metadata.
+    RefreshContract,
+    /// Escalate with the incident identifier when present.
+    ContactOperator,
+    /// No recovery is prescribed.
+    None,
+}
+
+impl ApplicationRecoveryAction {
+    /// Returns the stable machine name.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::CorrectRequest => "correct_request",
+            Self::Retry => "retry",
+            Self::ResolveWithSameIdempotencyKey => "resolve_with_same_idempotency_key",
+            Self::ObtainPermission => "obtain_permission",
+            Self::RefreshContract => "refresh_contract",
+            Self::ContactOperator => "contact_operator",
+            Self::None => "none",
+        }
+    }
+}
+
+/// Closed machine-actionable remediation.
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+pub enum ApplicationFixCode {
+    /// Correct the typed input or query source.
+    CorrectInput,
+    /// Remove a result field not visible to the application role.
+    RemoveForbiddenOutput,
+    /// Bind the symbolic application role.
+    BindApplicationRole,
+    /// Refresh exact contract metadata.
+    RefreshContract,
+    /// Pin or redeploy the active named-query module.
+    PinActiveModule,
+    /// Declare a bounded index that satisfies the diagnostic.
+    AddBoundedIndex,
+    /// Discard a stale cursor and restart.
+    RestartFromFirstPage,
+    /// Retry later using bounded caller policy.
+    RetryLater,
+    /// Resolve or retry with the exact same idempotency identity.
+    ResolveWithSameIdempotencyKey,
+    /// Contact an operator and include only the opaque incident ID.
+    ContactOperatorWithIncident,
+}
+
+impl ApplicationFixCode {
+    /// Returns the stable machine name.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::CorrectInput => "correct_input",
+            Self::RemoveForbiddenOutput => "remove_forbidden_output",
+            Self::BindApplicationRole => "bind_application_role",
+            Self::RefreshContract => "refresh_contract",
+            Self::PinActiveModule => "pin_active_module",
+            Self::AddBoundedIndex => "add_bounded_index",
+            Self::RestartFromFirstPage => "restart_from_first_page",
+            Self::RetryLater => "retry_later",
+            Self::ResolveWithSameIdempotencyKey => "resolve_with_same_idempotency_key",
+            Self::ContactOperatorWithIncident => "contact_operator_with_incident",
+        }
+    }
+}
+
+/// Checked half-open source span in submitted RiffQL.
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+pub struct ApplicationSourceSpan {
+    start: u64,
+    end: u64,
+}
+
+impl ApplicationSourceSpan {
+    /// Constructs a bounded ordered source span.
+    pub const fn new(start: u64, end: u64) -> Option<Self> {
+        if start <= end && end <= MAX_APPLICATION_SOURCE_OFFSET {
+            Some(Self { start, end })
+        } else {
+            None
+        }
+    }
+
+    /// Inclusive start byte offset.
+    #[must_use]
+    pub const fn start(self) -> u64 {
+        self.start
+    }
+
+    /// Exclusive end byte offset.
+    #[must_use]
+    pub const fn end(self) -> u64 {
+        self.end
+    }
+}
+
+/// Bounded symbolic context for one application failure.
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct ApplicationErrorContext {
+    contract: Option<(ContractLineage, ContractVersion)>,
+    operation_symbol: Option<String>,
+    symbol_path: Vec<String>,
+    source_span: Option<ApplicationSourceSpan>,
+    trace_id: Option<RequestId>,
+}
+
+impl ApplicationErrorContext {
+    /// Constructs empty context for a failure that has no honest symbol.
+    #[must_use]
+    pub const fn empty() -> Self {
+        Self {
+            contract: None,
+            operation_symbol: None,
+            symbol_path: Vec::new(),
+            source_span: None,
+            trace_id: None,
+        }
+    }
+
+    /// Adds exact contract identity already visible to the caller.
+    #[must_use]
+    pub fn with_contract(mut self, lineage: ContractLineage, version: ContractVersion) -> Self {
+        self.contract = Some((lineage, version));
+        self
+    }
+
+    /// Adds one checked caller-visible query, module, command, or role symbol.
+    pub fn with_operation_symbol(
+        mut self,
+        symbol: String,
+    ) -> Result<Self, ApplicationErrorContextError> {
+        validate_application_symbol(&symbol)?;
+        self.operation_symbol = Some(symbol);
+        Ok(self)
+    }
+
+    /// Adds a bounded checked caller-visible symbol path.
+    pub fn with_symbol_path(
+        mut self,
+        symbols: Vec<String>,
+    ) -> Result<Self, ApplicationErrorContextError> {
+        if symbols.len() > MAX_APPLICATION_SYMBOL_PATH_SEGMENTS {
+            return Err(ApplicationErrorContextError);
+        }
+        for symbol in &symbols {
+            validate_application_symbol(symbol)?;
+        }
+        self.symbol_path = symbols;
+        Ok(self)
+    }
+
+    /// Adds a checked source span.
+    #[must_use]
+    pub const fn with_source_span(mut self, source_span: ApplicationSourceSpan) -> Self {
+        self.source_span = Some(source_span);
+        self
+    }
+
+    /// Adds the request identity as the safe end-to-end trace identity.
+    #[must_use]
+    pub const fn with_trace_id(mut self, trace_id: RequestId) -> Self {
+        self.trace_id = Some(trace_id);
+        self
+    }
+
+    /// Exact selected contract, when safely known.
+    #[must_use]
+    pub const fn contract(&self) -> Option<&(ContractLineage, ContractVersion)> {
+        self.contract.as_ref()
+    }
+
+    /// Caller-visible operation symbol, when safely known.
+    #[must_use]
+    pub fn operation_symbol(&self) -> Option<&str> {
+        self.operation_symbol.as_deref()
+    }
+
+    /// Caller-visible symbolic path.
+    #[must_use]
+    pub fn symbol_path(&self) -> &[String] {
+        &self.symbol_path
+    }
+
+    /// Source span, when safely known.
+    #[must_use]
+    pub const fn source_span(&self) -> Option<ApplicationSourceSpan> {
+        self.source_span
+    }
+
+    /// Opaque request/trace identity.
+    #[must_use]
+    pub const fn trace_id(&self) -> Option<RequestId> {
+        self.trace_id
+    }
+}
+
+fn validate_application_symbol(symbol: &str) -> Result<(), ApplicationErrorContextError> {
+    if symbol.is_empty()
+        || symbol.len() > MAX_APPLICATION_SYMBOL_BYTES
+        || !symbol
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-' | b'.'))
+    {
+        return Err(ApplicationErrorContextError);
+    }
+    Ok(())
+}
+
+/// A symbolic context rejected before it could reach a public error.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct ApplicationErrorContextError;
+
+impl fmt::Display for ApplicationErrorContextError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("application error context is invalid")
+    }
+}
+
+impl Error for ApplicationErrorContextError {}
+
+/// One fully checked bounded application-semantic failure.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ApplicationError {
+    code: ApplicationErrorCode,
+    operation: ApplicationOperation,
+    context: ApplicationErrorContext,
+    incident_id: Option<IncidentId>,
+}
+
+impl ApplicationError {
+    /// Constructs one registry-owned error with already checked context.
+    #[must_use]
+    pub const fn new(
+        code: ApplicationErrorCode,
+        operation: ApplicationOperation,
+        context: ApplicationErrorContext,
+        incident_id: Option<IncidentId>,
+    ) -> Self {
+        Self {
+            code,
+            operation,
+            context,
+            incident_id,
+        }
+    }
+
+    /// Lifts one compatible kernel failure into symbolic application context.
+    ///
+    /// Kernel validation paths are intentionally not copied because they carry
+    /// compiler IDs rather than application symbols.
+    #[must_use]
+    pub fn from_public_error(
+        error: &PublicError,
+        operation: ApplicationOperation,
+        context: ApplicationErrorContext,
+    ) -> Self {
+        Self::new(
+            error
+                .application_code_hint()
+                .unwrap_or_else(|| ApplicationErrorCode::from_public_kind(error.kind())),
+            operation,
+            context,
+            error.incident_id().copied(),
+        )
+    }
+
+    /// Stable code.
+    #[must_use]
+    pub const fn code(&self) -> ApplicationErrorCode {
+        self.code
+    }
+
+    /// Application operation.
+    #[must_use]
+    pub const fn operation(&self) -> ApplicationOperation {
+        self.operation
+    }
+
+    /// Checked safe context.
+    #[must_use]
+    pub const fn context(&self) -> &ApplicationErrorContext {
+        &self.context
+    }
+
+    /// Opaque incident identity.
+    #[must_use]
+    pub const fn incident_id(&self) -> Option<&IncidentId> {
+        self.incident_id.as_ref()
+    }
+
+    /// Closed category.
+    #[must_use]
+    pub const fn category(&self) -> ApplicationErrorCategory {
+        self.code.category()
+    }
+
+    /// Stable public message.
+    #[must_use]
+    pub const fn safe_message(&self) -> &'static str {
+        self.code.safe_message()
+    }
+
+    /// Recovery action.
+    #[must_use]
+    pub const fn recovery_action(&self) -> ApplicationRecoveryAction {
+        self.code.recovery_action()
+    }
+
+    /// Deterministic remediation codes.
+    #[must_use]
+    pub const fn fixes(&self) -> &'static [ApplicationFixCode] {
+        self.code.fixes()
+    }
+}
+
+impl fmt::Display for ApplicationError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            formatter,
+            "{}: {} [{}]",
+            self.code.as_str(),
+            self.safe_message(),
+            self.operation.as_str()
+        )?;
+        if let Some(symbol) = self.context.operation_symbol() {
+            write!(formatter, " {symbol}")?;
+        }
+        if let Some(incident_id) = &self.incident_id {
+            write!(formatter, " (incident {incident_id})")?;
+        }
+        Ok(())
+    }
+}
+
+impl Error for ApplicationError {}
 
 /// Consumer-owned source for fresh opaque incident identifiers.
 ///
@@ -439,6 +1101,7 @@ pub struct PublicError {
     kind: PublicErrorKind,
     details: PublicErrorDetails,
     incident_id: Option<IncidentId>,
+    application_code_hint: Option<ApplicationErrorCode>,
 }
 
 impl PublicError {
@@ -447,6 +1110,7 @@ impl PublicError {
             kind,
             details: PublicErrorDetails::None,
             incident_id: None,
+            application_code_hint: None,
         }
     }
 
@@ -457,6 +1121,7 @@ impl PublicError {
             kind: PublicErrorKind::Validation,
             details: PublicErrorDetails::Validation(issues),
             incident_id: None,
+            application_code_hint: None,
         }
     }
 
@@ -488,6 +1153,7 @@ impl PublicError {
                 active_contract_version,
             },
             incident_id: None,
+            application_code_hint: None,
         }
     }
 
@@ -510,6 +1176,7 @@ impl PublicError {
             kind: PublicErrorKind::CommandExecutionFailed,
             details: PublicErrorDetails::CommandExecutionFailed { code },
             incident_id: None,
+            application_code_hint: None,
         }
     }
 
@@ -520,6 +1187,7 @@ impl PublicError {
             kind: PublicErrorKind::InternalDefect,
             details: PublicErrorDetails::None,
             incident_id: Some(incident_id),
+            application_code_hint: None,
         }
     }
 
@@ -528,6 +1196,54 @@ impl PublicError {
     pub const fn with_incident_id(mut self, incident_id: IncidentId) -> Self {
         self.incident_id = Some(incident_id);
         self
+    }
+
+    /// Attaches a stricter symbolic classification for the application surface.
+    ///
+    /// The compatible kernel serializer deliberately ignores this hint.
+    pub fn with_application_code_hint(
+        mut self,
+        code: ApplicationErrorCode,
+    ) -> Result<Self, ApplicationErrorHintError> {
+        let compatible = match self.kind {
+            PublicErrorKind::Validation => matches!(
+                code,
+                ApplicationErrorCode::InvalidRequest
+                    | ApplicationErrorCode::InputInvalid
+                    | ApplicationErrorCode::QueryInvalid
+                    | ApplicationErrorCode::QueryUnavailable
+                    | ApplicationErrorCode::ModuleUnavailable
+                    | ApplicationErrorCode::CursorInvalid
+            ),
+            PublicErrorKind::AuthorizationDenied => matches!(
+                code,
+                ApplicationErrorCode::AuthorizationDenied | ApplicationErrorCode::CapabilityRevoked
+            ),
+            PublicErrorKind::ContractMismatch => code == ApplicationErrorCode::ContractMismatch,
+            PublicErrorKind::StorageUnavailable => code == ApplicationErrorCode::StorageUnavailable,
+            PublicErrorKind::OutcomeUnknown => code == ApplicationErrorCode::OutcomeUnknown,
+            PublicErrorKind::InternalDefect => code == ApplicationErrorCode::InternalDefect,
+            PublicErrorKind::IdempotencyKeyReuse => {
+                code == ApplicationErrorCode::IdempotencyKeyReuse
+            }
+            PublicErrorKind::ConcurrencyDeadlineExceeded => {
+                code == ApplicationErrorCode::DeadlineExceeded
+            }
+            PublicErrorKind::CommandExecutionFailed => {
+                code == ApplicationErrorCode::CommandExecutionFailed
+            }
+        };
+        if !compatible {
+            return Err(ApplicationErrorHintError);
+        }
+        self.application_code_hint = Some(code);
+        Ok(self)
+    }
+
+    /// Returns the stricter application-only classification, when present.
+    #[must_use]
+    pub const fn application_code_hint(&self) -> Option<ApplicationErrorCode> {
+        self.application_code_hint
     }
 
     /// Returns the closed failure kind.
@@ -572,6 +1288,18 @@ impl PublicError {
         self.incident_id.as_ref()
     }
 }
+
+/// An application hint did not refine the compatible kernel classification.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct ApplicationErrorHintError;
+
+impl fmt::Display for ApplicationErrorHintError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("application error hint is incompatible")
+    }
+}
+
+impl Error for ApplicationErrorHintError {}
 
 impl fmt::Display for PublicError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -647,6 +1375,8 @@ impl From<InternalError> for PublicError {
 
 #[cfg(test)]
 mod tests {
+    use std::fmt::Write as _;
+
     use super::*;
 
     const KINDS: [PublicErrorKind; 9] = [
@@ -682,6 +1412,58 @@ mod tests {
     }
 
     impl Error for SecretSource {}
+
+    #[test]
+    fn application_error_registry_matches_the_checked_fixture() {
+        let mut rendered = "code\tcategory\trecovery_action\tfixes\tmessage\n".to_owned();
+        for code in APPLICATION_ERROR_CODES {
+            let fixes = code
+                .fixes()
+                .iter()
+                .map(|fix| fix.as_str())
+                .collect::<Vec<_>>()
+                .join(",");
+            writeln!(
+                rendered,
+                "{}\t{}\t{}\t{}\t{}",
+                code.as_str(),
+                code.category().as_str(),
+                code.recovery_action().as_str(),
+                fixes,
+                code.safe_message()
+            )
+            .expect("string");
+        }
+        assert_eq!(
+            rendered,
+            include_str!("../../../fixtures/application-errors/registry-v1.tsv")
+        );
+    }
+
+    #[test]
+    fn application_hints_only_refine_compatible_kernel_failures() {
+        let validation = PublicError::validation(ValidationIssues::one(ValidationIssue::new(
+            ValidationCode::InvalidValue,
+            ValidationPath::root(),
+        )));
+        let cursor = validation
+            .clone()
+            .with_application_code_hint(ApplicationErrorCode::CursorInvalid)
+            .expect("compatible cursor refinement");
+        assert_eq!(
+            cursor.application_code_hint(),
+            Some(ApplicationErrorCode::CursorInvalid)
+        );
+        assert_eq!(
+            validation.with_application_code_hint(ApplicationErrorCode::StorageUnavailable),
+            Err(ApplicationErrorHintError)
+        );
+        assert_eq!(
+            PublicError::authorization_denied()
+                .with_application_code_hint(ApplicationErrorCode::QueryInvalid),
+            Err(ApplicationErrorHintError)
+        );
+    }
 
     fn incident_id() -> IncidentId {
         let mut bytes = [0x42; 16];

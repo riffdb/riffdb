@@ -167,9 +167,10 @@ fn validate_diagnostics(values: &[app_v1::Diagnostic]) -> Result<(), PublicWireE
 }
 
 macro_rules! app_message {
-    ($type:ty, $maximum:expr, $last:expr, $repeated:expr, $oneof:expr, $validate:expr) => {
+    ($type:ty, $operation:expr, $maximum:expr, $last:expr, $repeated:expr, $oneof:expr, $validate:expr) => {
         impl PublicMessage for $type {
             const MAX_ENCODED_BYTES: usize = $maximum;
+            const APPLICATION_OPERATION: Option<riffdb_errors::ApplicationOperation> = $operation;
 
             fn preflight(input: &[u8]) -> Result<(), PublicWireError> {
                 preflight(input, Self::MAX_ENCODED_BYTES, $last, $repeated, $oneof)
@@ -184,6 +185,7 @@ macro_rules! app_message {
 
 app_message!(
     app_v1::DescribeContractRequest,
+    Some(riffdb_errors::ApplicationOperation::DescribeContract),
     MAX_PUBLIC_REQUEST_BYTES,
     100,
     &[],
@@ -195,6 +197,7 @@ app_message!(
 );
 app_message!(
     app_v1::DescribeContractResponse,
+    None,
     MAX_PUBLIC_RESPONSE_BYTES,
     4,
     &[],
@@ -215,6 +218,7 @@ app_message!(
 );
 app_message!(
     app_v1::CheckQueryRequest,
+    Some(riffdb_errors::ApplicationOperation::CheckQuery),
     MAX_PUBLIC_REQUEST_BYTES,
     100,
     &[],
@@ -231,6 +235,7 @@ app_message!(
 );
 app_message!(
     app_v1::CheckQueryResponse,
+    None,
     MAX_PUBLIC_RESPONSE_BYTES,
     3,
     &[3],
@@ -249,6 +254,7 @@ app_message!(
 );
 app_message!(
     app_v1::ExplainQueryRequest,
+    Some(riffdb_errors::ApplicationOperation::ExplainQuery),
     MAX_PUBLIC_REQUEST_BYTES,
     100,
     &[],
@@ -274,6 +280,7 @@ app_message!(
 );
 app_message!(
     app_v1::ExplainQueryResponse,
+    None,
     MAX_PUBLIC_RESPONSE_BYTES,
     4,
     &[3, 4],
@@ -311,6 +318,7 @@ app_message!(
 );
 app_message!(
     app_v1::ExecuteQueryRequest,
+    Some(riffdb_errors::ApplicationOperation::ExecuteQuery),
     MAX_PUBLIC_REQUEST_BYTES,
     100,
     &[5],
@@ -341,6 +349,7 @@ app_message!(
 );
 app_message!(
     app_v1::ExecuteQueryResponse,
+    None,
     MAX_PUBLIC_RESPONSE_BYTES,
     5,
     &[4],
@@ -431,6 +440,7 @@ fn validate_module_descriptor(
 
 app_message!(
     app_v1::DeployQueryModuleRequest,
+    Some(riffdb_errors::ApplicationOperation::DeployQueryModule),
     MAX_PUBLIC_REQUEST_BYTES,
     100,
     &[4],
@@ -463,6 +473,7 @@ app_message!(
 );
 app_message!(
     app_v1::DeployQueryModuleResponse,
+    None,
     MAX_PUBLIC_RESPONSE_BYTES,
     3,
     &[],
@@ -494,6 +505,7 @@ app_message!(
 );
 app_message!(
     app_v1::GetQueryModuleRequest,
+    Some(riffdb_errors::ApplicationOperation::GetQueryModule),
     MAX_PUBLIC_REQUEST_BYTES,
     100,
     &[],
@@ -518,6 +530,7 @@ app_message!(
 );
 app_message!(
     app_v1::GetQueryModuleResponse,
+    None,
     MAX_PUBLIC_RESPONSE_BYTES,
     2,
     &[2],

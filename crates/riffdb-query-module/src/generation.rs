@@ -1092,6 +1092,7 @@ pub fn generate_typescript_client(module: &QueryModule, contract: &ContractBundl
         hex(module.contract_hash().as_bytes())
     )
     .expect("string");
+    emit_typescript_application_errors(&mut output);
     writeln!(
         output,
         "export interface NamedQueryRequest<P> {{ readonly contractLineage: typeof CONTRACT_LINEAGE; \
@@ -1223,6 +1224,111 @@ pub fn generate_typescript_client(module: &QueryModule, contract: &ContractBundl
     }
     emit_typescript_client_facade(&mut output, module, &commands);
     output
+}
+
+fn emit_typescript_application_errors(output: &mut String) {
+    output.push_str(
+        r#"export const APPLICATION_ERROR_REGISTRY = {
+  "RDB-APP-0001": ["application request is structurally invalid", "input", "correct_request", ["correct_input"]],
+  "RDB-INPUT-0101": ["application input is invalid", "input", "correct_request", ["correct_input"]],
+  "RDB-AUTH-0214": ["application operation is not authorized", "authorization", "obtain_permission", ["bind_application_role"]],
+  "RDB-CONTRACT-0101": ["application contract does not match", "contract", "refresh_contract", ["refresh_contract"]],
+  "RDB-QUERY-0101": ["RiffQL query is invalid", "query", "correct_request", ["correct_input"]],
+  "RDB-QUERY-0102": ["RiffQL query is unavailable", "query", "refresh_contract", ["pin_active_module"]],
+  "RDB-MODULE-0101": ["query module is unavailable", "module", "refresh_contract", ["pin_active_module"]],
+  "RDB-CURSOR-0101": ["query cursor is invalid or stale", "cursor", "correct_request", ["restart_from_first_page"]],
+  "RDB-RESOURCE-0101": ["application result exceeds the service limit", "resource", "correct_request", ["correct_input"]],
+  "RDB-STORAGE-0101": ["storage is temporarily unavailable", "storage", "retry", ["retry_later"]],
+  "RDB-UNCERTAIN-0101": ["command outcome is not yet known", "uncertainty", "resolve_with_same_idempotency_key", ["resolve_with_same_idempotency_key"]],
+  "RDB-APP-0002": ["application request was cancelled", "control", "none", []],
+  "RDB-APP-0003": ["application request deadline elapsed", "control", "retry", ["retry_later"]],
+  "RDB-INTERNAL-0001": ["an internal error occurred", "internal", "contact_operator", ["contact_operator_with_incident"]],
+  "RDB-COMMAND-0101": ["idempotency key was reused with different application input", "command", "correct_request", ["correct_input"]],
+  "RDB-COMMAND-0102": ["command execution failed", "command", "contact_operator", []],
+  "RDB-AUTH-0215": ["application capability is revoked", "authorization", "obtain_permission", ["bind_application_role"]],
+  "RDB-PROTOCOL-0101": ["the RiffDB peer returned an invalid application response", "protocol", "contact_operator", []],
+} as const;
+
+export type ApplicationErrorCode = keyof typeof APPLICATION_ERROR_REGISTRY;
+export type ApplicationOperation = "DescribeContract" | "CheckQuery" | "ExplainQuery" | "ExecuteQuery" | "DeployQueryModule" | "GetQueryModule" | "ExecuteCommand" | "BatchCommand";
+export type ApplicationErrorCategory = typeof APPLICATION_ERROR_REGISTRY[ApplicationErrorCode][1];
+export type ApplicationRecoveryAction = typeof APPLICATION_ERROR_REGISTRY[ApplicationErrorCode][2];
+export type ApplicationFixCode = typeof APPLICATION_ERROR_REGISTRY[ApplicationErrorCode][3][number];
+
+export interface ApplicationErrorDetails {
+  readonly type: "application";
+  readonly code: ApplicationErrorCode;
+  readonly message: string;
+  readonly category: ApplicationErrorCategory;
+  readonly recoveryAction: ApplicationRecoveryAction;
+  readonly operation: ApplicationOperation;
+  readonly contractLineage?: string;
+  readonly contractVersion?: number;
+  readonly operationSymbol?: string;
+  readonly symbolPath: ReadonlyArray<string>;
+  readonly sourceSpan?: { readonly start: number; readonly end: number };
+  readonly fixes: ReadonlyArray<ApplicationFixCode>;
+  readonly traceId?: string;
+  readonly incidentId?: string;
+}
+
+export class RiffDbApplicationError extends Error {
+  public readonly name = "RiffDbApplicationError";
+  public constructor(public readonly details: ApplicationErrorDetails) {
+    super(`${details.code}: ${details.message} [${details.operation}]`);
+  }
+}
+
+const APPLICATION_OPERATIONS: ReadonlySet<string> = new Set([
+  "DescribeContract", "CheckQuery", "ExplainQuery", "ExecuteQuery",
+  "DeployQueryModule", "GetQueryModule", "ExecuteCommand", "BatchCommand",
+]);
+const SAFE_SYMBOL = /^[A-Za-z0-9_.-]{1,256}$/;
+const UUID_V7 = /^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
+
+export function decodeApplicationError(value: unknown): RiffDbApplicationError {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) throw new Error("invalid RiffDB application error");
+  const input = value as Record<string, unknown>;
+  const code = input.code;
+  if (typeof code !== "string" || !(code in APPLICATION_ERROR_REGISTRY)) throw new Error("invalid RiffDB application error");
+  const rule = APPLICATION_ERROR_REGISTRY[code as ApplicationErrorCode];
+  if (input.type !== "application" || input.message !== rule[0] || input.category !== rule[1]
+      || input.recoveryAction !== rule[2] || typeof input.operation !== "string"
+      || !APPLICATION_OPERATIONS.has(input.operation)) throw new Error("invalid RiffDB application error");
+  if (!Array.isArray(input.fixes) || input.fixes.length !== rule[3].length
+      || input.fixes.some((fix, index) => fix !== rule[3][index])) throw new Error("invalid RiffDB application error");
+  const symbolPath = input.symbolPath;
+  if (!Array.isArray(symbolPath) || symbolPath.length > 16
+      || symbolPath.some((symbol) => typeof symbol !== "string" || !SAFE_SYMBOL.test(symbol))) throw new Error("invalid RiffDB application error");
+  for (const key of ["contractLineage", "operationSymbol"] as const) {
+    if (input[key] !== undefined && (typeof input[key] !== "string" || !SAFE_SYMBOL.test(input[key]))) throw new Error("invalid RiffDB application error");
+  }
+  if ((input.contractLineage === undefined) !== (input.contractVersion === undefined)
+      || (input.contractVersion !== undefined && (!Number.isSafeInteger(input.contractVersion) || (input.contractVersion as number) < 1))) throw new Error("invalid RiffDB application error");
+  if (input.sourceSpan !== undefined) {
+    const span = input.sourceSpan as Record<string, unknown>;
+    if (typeof span !== "object" || span === null || !Number.isSafeInteger(span.start)
+        || !Number.isSafeInteger(span.end) || (span.start as number) < 0
+        || (span.start as number) > (span.end as number) || (span.end as number) > 262144) throw new Error("invalid RiffDB application error");
+  }
+  for (const key of ["traceId", "incidentId"] as const) {
+    if (input[key] !== undefined && (typeof input[key] !== "string" || !UUID_V7.test(input[key]))) throw new Error("invalid RiffDB application error");
+  }
+  return new RiffDbApplicationError({
+    type: "application", code: code as ApplicationErrorCode, message: rule[0],
+    category: rule[1], recoveryAction: rule[2], operation: input.operation as ApplicationOperation,
+    contractLineage: input.contractLineage as string | undefined,
+    contractVersion: input.contractVersion as number | undefined,
+    operationSymbol: input.operationSymbol as string | undefined,
+    symbolPath: symbolPath as ReadonlyArray<string>,
+    sourceSpan: input.sourceSpan as { readonly start: number; readonly end: number } | undefined,
+    fixes: rule[3], traceId: input.traceId as string | undefined,
+    incidentId: input.incidentId as string | undefined,
+  });
+}
+
+"#,
+    );
 }
 
 fn emit_typescript_client_facade(

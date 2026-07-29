@@ -1,8 +1,10 @@
 //! Exact gRPC carriage for API-neutral service failures.
 
-use riffdb_errors::{ErrorClass, PublicError};
-use riffdb_proto::{MAX_PUBLIC_ERROR_BYTES, public_error_to_proto};
-use riffdb_service::ServiceFailure;
+use riffdb_errors::{
+    ApplicationError, ApplicationErrorCode, ErrorClass, MAX_APPLICATION_ERROR_BYTES, PublicError,
+};
+use riffdb_proto::{MAX_PUBLIC_ERROR_BYTES, application_error_to_proto, public_error_to_proto};
+use riffdb_service::{ApplicationErrorContextBuilder, ServiceFailure};
 use tonic::codegen::Bytes;
 use tonic::{Code, Status};
 use tonic_prost::prost::Message;
@@ -43,6 +45,76 @@ pub fn status_from_public_error(error: &PublicError) -> Status {
     )
 }
 
+/// Encodes one checked application error as the complete app-v1 details payload.
+#[must_use]
+pub fn status_from_application_error(error: &ApplicationError) -> Status {
+    let details = application_error_to_proto(error).encode_to_vec();
+    if details.len() > MAX_APPLICATION_ERROR_BYTES {
+        return Status::internal(crate::EMERGENCY_INTERNAL_MESSAGE);
+    }
+    Status::with_details(
+        application_grpc_code(error.code()),
+        error.safe_message(),
+        Bytes::from(details),
+    )
+}
+
+/// Maps a shared service failure through the service-owned application context.
+#[must_use]
+pub fn status_from_application_failure(
+    failure: &ServiceFailure,
+    context: &ApplicationErrorContextBuilder,
+) -> Status {
+    context.build(failure).map_or_else(
+        || status_from_service_failure(failure),
+        |error| status_from_application_error(&error),
+    )
+}
+
+/// Reclassifies an exact pre-service boundary failure for an application RPC.
+#[must_use]
+pub fn status_from_application_boundary(
+    status: Status,
+    context: &ApplicationErrorContextBuilder,
+) -> Status {
+    let error = match status.code() {
+        Code::InvalidArgument => context.invalid_request(),
+        Code::Unauthenticated | Code::PermissionDenied => context.authorization_denied(),
+        Code::Unavailable => context.unavailable(),
+        // Emergency containment has no real incident identity and remains
+        // details-free instead of fabricating application context.
+        _ => return status,
+    };
+    status_from_application_error(&error)
+}
+
+/// Returns the exact gRPC code for an application-semantic error.
+#[must_use]
+pub const fn application_grpc_code(code: ApplicationErrorCode) -> Code {
+    match code {
+        ApplicationErrorCode::InvalidRequest
+        | ApplicationErrorCode::InputInvalid
+        | ApplicationErrorCode::QueryInvalid
+        | ApplicationErrorCode::CursorInvalid => Code::InvalidArgument,
+        ApplicationErrorCode::AuthorizationDenied | ApplicationErrorCode::CapabilityRevoked => {
+            Code::PermissionDenied
+        }
+        ApplicationErrorCode::ContractMismatch
+        | ApplicationErrorCode::QueryUnavailable
+        | ApplicationErrorCode::ModuleUnavailable
+        | ApplicationErrorCode::CommandExecutionFailed => Code::FailedPrecondition,
+        ApplicationErrorCode::ResponseTooLarge => Code::ResourceExhausted,
+        ApplicationErrorCode::StorageUnavailable => Code::Unavailable,
+        ApplicationErrorCode::OutcomeUnknown => Code::Unknown,
+        ApplicationErrorCode::OperationCancelled => Code::Cancelled,
+        ApplicationErrorCode::DeadlineExceeded => Code::DeadlineExceeded,
+        ApplicationErrorCode::InternalDefect | ApplicationErrorCode::ProtocolInvalid => {
+            Code::Internal
+        }
+        ApplicationErrorCode::IdempotencyKeyReuse => Code::AlreadyExists,
+    }
+}
+
 /// Returns the canonical gRPC status code for one protocol-neutral error class.
 #[must_use]
 pub const fn grpc_code(class: ErrorClass) -> Code {
@@ -60,8 +132,11 @@ pub const fn grpc_code(class: ErrorClass) -> Code {
 
 #[cfg(test)]
 mod tests {
-    use riffdb_errors::PublicError;
-    use riffdb_proto::decode_public_error;
+    use riffdb_errors::{
+        ApplicationError, ApplicationErrorCode, ApplicationErrorContext, ApplicationOperation,
+        PublicError,
+    };
+    use riffdb_proto::{decode_application_error, decode_public_error};
 
     use super::*;
 
@@ -89,6 +164,20 @@ mod tests {
         for (class, expected) in cases {
             assert_eq!(grpc_code(class), expected);
         }
+    }
+
+    #[test]
+    fn application_error_is_one_direct_checked_details_payload() {
+        let error = ApplicationError::new(
+            ApplicationErrorCode::AuthorizationDenied,
+            ApplicationOperation::ExecuteQuery,
+            ApplicationErrorContext::empty(),
+            None,
+        );
+        let status = status_from_application_error(&error);
+        assert_eq!(status.code(), Code::PermissionDenied);
+        assert_eq!(status.message(), error.safe_message());
+        assert_eq!(decode_application_error(status.details()), Ok(error));
     }
 
     #[test]

@@ -157,6 +157,9 @@ fn generated_clients_are_reproducible_name_addressed_and_identity_pinned() {
     assert!(typescript.contains("export class TicketDeskClient"));
     assert!(typescript.contains("executeNamedQuery"));
     assert!(typescript.contains("executeCommand"));
+    assert!(typescript.contains("export class RiffDbApplicationError"));
+    assert!(typescript.contains("export function decodeApplicationError"));
+    assert!(typescript.contains("\"RDB-AUTH-0214\""));
     assert!(typescript.contains("RiffDB application identity mismatch"));
     assert!(!rust.contains("pub field_id"));
     assert!(!typescript.contains("entity_type_id"));

@@ -7,7 +7,7 @@ use std::pin::Pin;
 use std::sync::Arc;
 
 use futures::future::{Either, select};
-use riffdb_errors::{PublicError, PublicErrorKind};
+use riffdb_errors::{ApplicationError, ApplicationErrorCode, PublicError, PublicErrorKind};
 use rmcp::ErrorData as McpError;
 use rmcp::handler::server::ServerHandler;
 use rmcp::model::{
@@ -28,8 +28,8 @@ use serde_json::Value;
 
 use crate::bounded_json;
 use crate::presentation::{
-    BoundedStructuredContent, escape_markdown_block_text, render_business_result,
-    render_public_error,
+    BoundedStructuredContent, escape_markdown_block_text, render_application_error,
+    render_business_result, render_public_error,
 };
 use crate::schema::{RiffDbSchemaValidator, compose_command_result_schema};
 use crate::{
@@ -1133,6 +1133,8 @@ pub trait McpBackend: Send + Sync + 'static {
 pub enum McpBackendError {
     /// A public-safe application failure after a known operation was selected.
     Public(PublicError),
+    /// A bounded symbolic application failure.
+    Application(Box<ApplicationError>),
     /// Fresh transport authentication no longer proves the current session.
     AuthenticationLost,
     /// Unknown, stale, hidden, unauthorized, or otherwise unavailable target.
@@ -1150,6 +1152,10 @@ impl fmt::Debug for McpBackendError {
         match self {
             Self::Public(error) => formatter
                 .debug_tuple("Public")
+                .field(&error.code())
+                .finish(),
+            Self::Application(error) => formatter
+                .debug_tuple("Application")
                 .field(&error.code())
                 .finish(),
             Self::AuthenticationLost => formatter.write_str("AuthenticationLost"),
@@ -1418,6 +1424,7 @@ where
                         self.record_authorization_denial(&error);
                         return Err(unavailable_tool());
                     }
+                    Err(McpBackendError::Application(_)) => return Err(unavailable_tool()),
                     Err(
                         McpBackendError::AuthenticationLost
                         | McpBackendError::TargetUnavailable
@@ -1468,6 +1475,10 @@ where
             Err(McpBackendError::Public(error)) => {
                 self.record_authorization_denial(&error);
                 return render_public_error(&error).map_err(|_| internal_error());
+            }
+            Err(McpBackendError::Application(error)) => {
+                self.record_application_authorization_denial(&error);
+                return render_application_error(&error).map_err(|_| internal_error());
             }
             Err(McpBackendError::AuthenticationLost) => return Err(unavailable_tool()),
             Err(McpBackendError::Cancelled) => return Err(cancelled_request()),
@@ -1741,6 +1752,16 @@ where
 
     fn record_authorization_denial(&self, error: &PublicError) {
         if error.kind() == PublicErrorKind::AuthorizationDenied {
+            self.telemetry
+                .record(McpTelemetryEvent::AuthorizationDenied);
+        }
+    }
+
+    fn record_application_authorization_denial(&self, error: &ApplicationError) {
+        if matches!(
+            error.code(),
+            ApplicationErrorCode::AuthorizationDenied | ApplicationErrorCode::CapabilityRevoked
+        ) {
             self.telemetry
                 .record(McpTelemetryEvent::AuthorizationDenied);
         }
@@ -2165,6 +2186,7 @@ fn discovery_error(error: McpBackendError) -> McpError {
         McpBackendError::Cancelled => cancelled_request(),
         McpBackendError::RateLimited => rate_limited_request(),
         McpBackendError::Public(_)
+        | McpBackendError::Application(_)
         | McpBackendError::AuthenticationLost
         | McpBackendError::TargetUnavailable
         | McpBackendError::InvalidResponse => {
@@ -2186,6 +2208,7 @@ fn resource_error(error: McpBackendError) -> McpError {
         McpBackendError::Cancelled => cancelled_request(),
         McpBackendError::RateLimited => rate_limited_request(),
         McpBackendError::Public(_)
+        | McpBackendError::Application(_)
         | McpBackendError::AuthenticationLost
         | McpBackendError::TargetUnavailable
         | McpBackendError::InvalidResponse => unavailable_resource(),

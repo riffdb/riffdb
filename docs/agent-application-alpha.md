@@ -49,6 +49,11 @@ than grow temporary alternatives. RiffQL expansion occurs after both language
 paths are usable so application evidence is about the query language rather
 than missing client plumbing.
 
+WP-315's public contract and disclosure rules are documented in
+`docs/getting-started/APPLICATION-ERRORS.md`. Application examples and generated
+clients must use that semantic error object; exposing the compatible kernel
+error or reconstructing context from numeric IDs is a boundary failure.
+
 ## Measurements
 
 Every evaluation run records:

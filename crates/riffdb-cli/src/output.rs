@@ -2,8 +2,8 @@ use std::io::{self, Write};
 use std::process::ExitCode;
 
 use riffdb_client_rust::{
-    ClientError, DetailsFreeStatus, OfflineMaintenanceOperationId, PublicError, PublicErrorDetails,
-    RecoveryAction, ValidationPathSegment, v1,
+    ApplicationError, ClientError, DetailsFreeStatus, OfflineMaintenanceOperationId, PublicError,
+    PublicErrorDetails, RecoveryAction, ValidationPathSegment, v1,
 };
 use serde::de::{MapAccess, SeqAccess, Visitor};
 use serde::ser::{Error as _, SerializeMap, SerializeSeq};
@@ -173,6 +173,7 @@ pub(crate) fn maintenance_uncertain(
 pub(crate) fn client_error(command: CommandIdentity, error: &ClientError) -> Terminal {
     match error {
         ClientError::Public(error) => public_error(command, error),
+        ClientError::Application(error) => application_error(command, error),
         ClientError::OutcomeUnknown(_) => uncertain(
             command,
             "outcome_unknown",
@@ -757,6 +758,24 @@ fn public_error(command: CommandIdentity, error: &PublicError) -> Terminal {
     )
 }
 
+fn application_error(command: CommandIdentity, error: &ApplicationError) -> Terminal {
+    let exit = if matches!(
+        error.code(),
+        riffdb_client_rust::ApplicationErrorCode::OutcomeUnknown
+    ) {
+        3
+    } else {
+        1
+    };
+    error_with_exit(
+        command,
+        &ApplicationErrorDto(error),
+        error.code().as_str(),
+        error.safe_message(),
+        exit,
+    )
+}
+
 fn error_with_exit<T: Serialize>(
     command: CommandIdentity,
     error: &T,
@@ -1297,6 +1316,59 @@ impl Serialize for PublicErrorDto<'_> {
         }
         map.end()
     }
+}
+
+struct ApplicationErrorDto<'a>(&'a ApplicationError);
+
+impl Serialize for ApplicationErrorDto<'_> {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        let error = self.0;
+        let mut map = serializer.serialize_map(None)?;
+        map.serialize_entry("type", "application")?;
+        map.serialize_entry("code", error.code().as_str())?;
+        map.serialize_entry("message", error.safe_message())?;
+        map.serialize_entry("category", error.category().as_str())?;
+        map.serialize_entry("recovery_action", error.recovery_action().as_str())?;
+        map.serialize_entry("operation", error.operation().as_str())?;
+        if let Some((lineage, version)) = error.context().contract() {
+            map.serialize_entry("contract_lineage", lineage.as_str())?;
+            map.serialize_entry("contract_version", &version.to_string())?;
+        }
+        if let Some(symbol) = error.context().operation_symbol() {
+            map.serialize_entry("operation_symbol", symbol)?;
+        }
+        if !error.context().symbol_path().is_empty() {
+            map.serialize_entry("symbol_path", error.context().symbol_path())?;
+        }
+        if let Some(span) = error.context().source_span() {
+            map.serialize_entry(
+                "source_span",
+                &ApplicationSourceSpanDto {
+                    start: span.start().to_string(),
+                    end: span.end().to_string(),
+                },
+            )?;
+        }
+        let fixes = error
+            .fixes()
+            .iter()
+            .map(|fix| fix.as_str())
+            .collect::<Vec<_>>();
+        map.serialize_entry("fixes", &fixes)?;
+        if let Some(trace_id) = error.context().trace_id() {
+            map.serialize_entry("trace_id", &trace_id.to_string())?;
+        }
+        if let Some(incident_id) = error.incident_id() {
+            map.serialize_entry("incident_id", &incident_id.to_string())?;
+        }
+        map.end()
+    }
+}
+
+#[derive(Serialize)]
+struct ApplicationSourceSpanDto {
+    start: String,
+    end: String,
 }
 
 fn recovery_action(action: RecoveryAction) -> &'static str {
@@ -2150,7 +2222,11 @@ mod tests {
 
     use base64::Engine as _;
     use base64::engine::general_purpose::STANDARD;
-    use riffdb_client_rust::PublicError;
+    use riffdb_client_rust::{
+        ApplicationError, ApplicationErrorCode, ApplicationErrorContext, ApplicationOperation,
+        ApplicationSourceSpan, PublicError, RequestId,
+    };
+    use riffdb_types::{ContractLineage, ContractVersion};
     use serde::Serialize;
     use serde_json::Value as JsonValue;
 
@@ -2160,6 +2236,42 @@ mod tests {
     #[derive(Serialize)]
     struct Status<'a> {
         status: &'a str,
+    }
+
+    #[test]
+    fn application_error_json_matches_the_cross_surface_fixture() {
+        let trace_id = RequestId::from_bytes([
+            0x01, 0x9b, 0xf6, 0xaa, 0xa6, 0x40, 0x7d, 0xe6, 0x89, 0xc9, 0x8a, 0x7f, 0x70, 0xbb,
+            0xbd, 0x23,
+        ])
+        .expect("trace ID");
+        let context = ApplicationErrorContext::empty()
+            .with_contract(
+                ContractLineage::new("ticketdesk").expect("lineage"),
+                ContractVersion::new(18).expect("version"),
+            )
+            .with_operation_symbol("TicketPage".to_owned())
+            .expect("symbol")
+            .with_symbol_path(vec![
+                "Ticket".to_owned(),
+                "requester".to_owned(),
+                "User.email".to_owned(),
+            ])
+            .expect("path")
+            .with_source_span(ApplicationSourceSpan::new(20, 44).expect("span"))
+            .with_trace_id(trace_id);
+        let error = ApplicationError::new(
+            ApplicationErrorCode::AuthorizationDenied,
+            ApplicationOperation::ExecuteQuery,
+            context,
+            None,
+        );
+        let actual = serde_json::to_value(ApplicationErrorDto(&error)).expect("serialize");
+        let expected: JsonValue = serde_json::from_slice(include_bytes!(
+            "../../../fixtures/application-errors/authorization-ticket-page-v1.json"
+        ))
+        .expect("fixture");
+        assert_eq!(actual, expected);
     }
 
     const RESULT_FIXTURES: &[&str] = &[

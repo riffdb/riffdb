@@ -5,6 +5,7 @@ use std::error::Error;
 use std::fmt;
 
 use prost::Message;
+use riffdb_errors::ApplicationOperation;
 use riffdb_types::{
     AgentSessionId, Audience, BackupNameV1, CapabilityId, EntityKey, IndexEntryKey,
     MAX_ACTOR_ID_BYTES, MAX_CAPABILITY_AUDIENCES, MAX_CAPABILITY_FIELD_VISIBILITY,
@@ -139,6 +140,9 @@ const EXPECTED_TOKEN_NAMES: &[&str] = &[
 pub trait PublicMessage: Message + Default + Sized {
     /// Maximum accepted encoded length for this message family.
     const MAX_ENCODED_BYTES: usize;
+
+    /// Application operation for the symbolic error boundary, when applicable.
+    const APPLICATION_OPERATION: Option<ApplicationOperation> = None;
 
     #[doc(hidden)]
     fn preflight(input: &[u8]) -> Result<(), PublicWireError>;

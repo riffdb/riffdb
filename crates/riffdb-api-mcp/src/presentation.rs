@@ -2,7 +2,8 @@ use std::error::Error;
 use std::fmt;
 
 use riffdb_errors::{
-    ErrorClass, PublicError, PublicErrorDetails, RecoveryAction, ValidationPathSegment,
+    ApplicationError, ErrorClass, PublicError, PublicErrorDetails, RecoveryAction,
+    ValidationPathSegment,
 };
 use rmcp::model::{CallToolResult, ContentBlock};
 use serde_json::{Map, Value, json};
@@ -170,6 +171,99 @@ pub(crate) fn render_public_error(
     )]))
 }
 
+/// Renders the shared symbolic application error as bounded machine JSON.
+pub(crate) fn render_application_error(
+    error: &ApplicationError,
+) -> Result<CallToolResult, McpPresentationError> {
+    let value = application_error_value(error);
+    let compact_json = bounded_json::to_string(&value, MCP_OUTBOUND_MESSAGE_MAX_BYTES)
+        .map_err(|_| McpPresentationError)?;
+    Ok(CallToolResult::error(vec![ContentBlock::text(
+        compact_json,
+    )]))
+}
+
+fn application_error_value(error: &ApplicationError) -> Value {
+    let mut object = Map::new();
+    object.insert("type".to_owned(), Value::String("application".to_owned()));
+    object.insert(
+        "code".to_owned(),
+        Value::String(error.code().as_str().to_owned()),
+    );
+    object.insert(
+        "message".to_owned(),
+        Value::String(error.safe_message().to_owned()),
+    );
+    object.insert(
+        "category".to_owned(),
+        Value::String(error.category().as_str().to_owned()),
+    );
+    object.insert(
+        "recovery_action".to_owned(),
+        Value::String(error.recovery_action().as_str().to_owned()),
+    );
+    object.insert(
+        "operation".to_owned(),
+        Value::String(error.operation().as_str().to_owned()),
+    );
+    if let Some((lineage, version)) = error.context().contract() {
+        object.insert(
+            "contract_lineage".to_owned(),
+            Value::String(lineage.as_str().to_owned()),
+        );
+        object.insert(
+            "contract_version".to_owned(),
+            Value::String(version.to_string()),
+        );
+    }
+    if let Some(symbol) = error.context().operation_symbol() {
+        object.insert(
+            "operation_symbol".to_owned(),
+            Value::String(symbol.to_owned()),
+        );
+    }
+    if !error.context().symbol_path().is_empty() {
+        object.insert(
+            "symbol_path".to_owned(),
+            Value::Array(
+                error
+                    .context()
+                    .symbol_path()
+                    .iter()
+                    .cloned()
+                    .map(Value::String)
+                    .collect(),
+            ),
+        );
+    }
+    if let Some(span) = error.context().source_span() {
+        object.insert(
+            "source_span".to_owned(),
+            json!({"start": span.start().to_string(), "end": span.end().to_string()}),
+        );
+    }
+    object.insert(
+        "fixes".to_owned(),
+        Value::Array(
+            error
+                .fixes()
+                .iter()
+                .map(|fix| Value::String(fix.as_str().to_owned()))
+                .collect(),
+        ),
+    );
+    if let Some(trace_id) = error.context().trace_id() {
+        object.insert("trace_id".to_owned(), Value::String(trace_id.to_string()));
+    }
+    if let Some(incident_id) = error.incident_id() {
+        object.insert(
+            "incident_id".to_owned(),
+            Value::String(incident_id.to_string()),
+        );
+    }
+    Value::Object(object)
+}
+
 fn public_error_value(error: &PublicError) -> Value {
     let mut object = Map::new();
     object.insert("code".to_owned(), Value::String(error.code().to_owned()));
@@ -276,15 +370,19 @@ mod tests {
     use std::fmt;
 
     use riffdb_errors::{
-        InternalError, PublicError, PublicErrorKind, ValidationCode, ValidationIssue,
-        ValidationIssues, ValidationPath, ValidationPathSegment,
+        ApplicationError, ApplicationErrorCode, ApplicationErrorContext, ApplicationOperation,
+        ApplicationSourceSpan, InternalError, PublicError, PublicErrorKind, ValidationCode,
+        ValidationIssue, ValidationIssues, ValidationPath, ValidationPathSegment,
     };
-    use riffdb_types::{ContractVersion, ExecutionFailureCode, FieldId, IncidentId};
+    use riffdb_types::{
+        ContractLineage, ContractVersion, ExecutionFailureCode, FieldId, IncidentId, RequestId,
+    };
     use serde_json::{Value, json};
 
     use super::{
         BoundedStructuredContent, McpPresentationError, StructuredContentValidator,
-        escape_markdown_block_text, render_business_result, render_public_error,
+        escape_markdown_block_text, render_application_error, render_business_result,
+        render_public_error,
     };
     use crate::{
         MCP_OUTBOUND_MESSAGE_MAX_BYTES, SchemaDocument, bounded_json, fixed_tool_registry,
@@ -301,6 +399,45 @@ mod tests {
         PublicErrorKind::InternalDefect,
         PublicErrorKind::CommandExecutionFailed,
     ];
+
+    #[test]
+    fn application_error_matches_the_cross_surface_fixture() {
+        let trace_id = RequestId::from_bytes([
+            0x01, 0x9b, 0xf6, 0xaa, 0xa6, 0x40, 0x7d, 0xe6, 0x89, 0xc9, 0x8a, 0x7f, 0x70, 0xbb,
+            0xbd, 0x23,
+        ])
+        .expect("trace ID");
+        let context = ApplicationErrorContext::empty()
+            .with_contract(
+                ContractLineage::new("ticketdesk").expect("lineage"),
+                ContractVersion::new(18).expect("version"),
+            )
+            .with_operation_symbol("TicketPage".to_owned())
+            .expect("symbol")
+            .with_symbol_path(vec![
+                "Ticket".to_owned(),
+                "requester".to_owned(),
+                "User.email".to_owned(),
+            ])
+            .expect("path")
+            .with_source_span(ApplicationSourceSpan::new(20, 44).expect("span"))
+            .with_trace_id(trace_id);
+        let error = ApplicationError::new(
+            ApplicationErrorCode::AuthorizationDenied,
+            ApplicationOperation::ExecuteQuery,
+            context,
+            None,
+        );
+        let result = render_application_error(&error).expect("render");
+        let value = serde_json::to_value(result).expect("SDK result");
+        let text = value["content"][0]["text"].as_str().expect("text");
+        let actual: Value = serde_json::from_str(text).expect("JSON");
+        let expected: Value = serde_json::from_slice(include_bytes!(
+            "../../../fixtures/application-errors/authorization-ticket-page-v1.json"
+        ))
+        .expect("fixture");
+        assert_eq!(actual, expected);
+    }
 
     const PUBLIC_ERROR_TEXT_GOLDENS: [&str; 9] = [
         "{\"class\":\"invalid_argument\",\"code\":\"validation_failed\",\"message\":\"request validation failed\",\"recovery_action\":\"correct_request\",\"validation_issues\":[{\"code\":\"type_mismatch\",\"path\":[{\"field_id\":7},{\"list_index\":3}]}]}",

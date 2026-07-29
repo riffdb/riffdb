@@ -8,27 +8,28 @@ use std::{
 };
 
 use base64::Engine as _;
+use riffdb_errors::ApplicationOperation;
 use riffdb_service::{
-    ApplicationService, CheckSymbolicQueryResult, CommandToolDescriptor, CommandToolDiscoveryItem,
-    CompactCommandToolDiscoveryItem, CompactResourceDescriptor, CompactResourceDescriptorRef,
-    CompileSymbolicQueryRequest, ContractSelection, ContractSource, CursorToken,
-    DeployContractRequest, DeployContractResult, DescribeSymbolicContractResult,
-    DiscoverCommandToolsRequest, DiscoverCommandToolsResult, DiscoverCommandToolsResultRef,
-    DiscoverResourcesRequest, DiscoverResourcesResult, DiscoverResourcesResultRef,
-    DiscoveryCatalogFence, DiscoveryRepresentation, ExecuteCommandRequest,
-    ExecuteSymbolicQueryRequest, ExecuteSymbolicQueryResult, ExplainCommandRequest,
-    ExplainCommandResult, ExplainSymbolicQueryResult, ExplainedCommand, FieldSelection,
-    GetActiveContractRequest, GetActiveContractResult, GetCommitRequest, GetContractVersionRequest,
-    GetContractVersionResult, GetEntityRequest, GetProjectionStatusRequest,
-    GetProjectionStatusResult, HealthContext, HealthRequest, HealthResult,
-    ListPendingOutboxDeliveriesRequest, OperationSchemaCatalog, PageLimit, PageRequest,
-    ProvenanceSelection, QueryProjectionRequest, RequestCancellationHandle, RequestContext,
-    RequestControl, ResolveCommandOutcomeRequest, ResourceDescriptorRef, ResourceDiscoveryKind,
-    ScanCommitsRequest, ScanIndexRequest, ServiceFailure, SourceName, SubmittedDecimal,
-    SubmittedField, SubmittedFieldIdentity, SubmittedList, SubmittedMoney, SubmittedRecord,
-    SubmittedValue, SymbolicContractSelector, SymbolicDiagnostic, SymbolicQueryIdentity,
-    SymbolicQueryParameters, SymbolicQuerySchema, SymbolicQuerySource, SymbolicResultField,
-    SymbolicResultRecord, TraceProvenanceRequest, ValidateContractRequest,
+    ApplicationErrorContextBuilder, ApplicationService, CheckSymbolicQueryResult,
+    CommandToolDescriptor, CommandToolDiscoveryItem, CompactCommandToolDiscoveryItem,
+    CompactResourceDescriptor, CompactResourceDescriptorRef, CompileSymbolicQueryRequest,
+    ContractSelection, ContractSource, CursorToken, DeployContractRequest, DeployContractResult,
+    DescribeSymbolicContractResult, DiscoverCommandToolsRequest, DiscoverCommandToolsResult,
+    DiscoverCommandToolsResultRef, DiscoverResourcesRequest, DiscoverResourcesResult,
+    DiscoverResourcesResultRef, DiscoveryCatalogFence, DiscoveryRepresentation,
+    ExecuteCommandRequest, ExecuteSymbolicQueryRequest, ExecuteSymbolicQueryResult,
+    ExplainCommandRequest, ExplainCommandResult, ExplainSymbolicQueryResult, ExplainedCommand,
+    FieldSelection, GetActiveContractRequest, GetActiveContractResult, GetCommitRequest,
+    GetContractVersionRequest, GetContractVersionResult, GetEntityRequest,
+    GetProjectionStatusRequest, GetProjectionStatusResult, HealthContext, HealthRequest,
+    HealthResult, ListPendingOutboxDeliveriesRequest, OperationSchemaCatalog, PageLimit,
+    PageRequest, ProvenanceSelection, QueryProjectionRequest, RequestCancellationHandle,
+    RequestContext, RequestControl, ResolveCommandOutcomeRequest, ResourceDescriptorRef,
+    ResourceDiscoveryKind, ScanCommitsRequest, ScanIndexRequest, ServiceFailure, SourceName,
+    SubmittedDecimal, SubmittedField, SubmittedFieldIdentity, SubmittedList, SubmittedMoney,
+    SubmittedRecord, SubmittedValue, SymbolicContractSelector, SymbolicDiagnostic,
+    SymbolicQueryIdentity, SymbolicQueryParameters, SymbolicQuerySchema, SymbolicQuerySource,
+    SymbolicResultField, SymbolicResultRecord, TraceProvenanceRequest, ValidateContractRequest,
 };
 use riffdb_types::{
     CanonicalRecord, CanonicalValue, CommandId, CommitSequence, ContractLineage, ContractVersion,
@@ -1070,11 +1071,13 @@ impl HostedServiceMcpBackend {
                     invocation,
                     McpRateTarget::Service(ServiceOperationV1::DescribeContract),
                 )?;
+                let error_context =
+                    call.application_context(ApplicationOperation::DescribeContract)?;
                 let result = self
                     .service
                     .describe_symbolic_contract(call.take_context()?, selector)
                     .await
-                    .map_err(map_service_failure)?;
+                    .map_err(|failure| map_application_service_failure(failure, &error_context))?;
                 call.complete();
                 render_symbolic_contract(result)
             }
@@ -1087,11 +1090,12 @@ impl HostedServiceMcpBackend {
                     invocation,
                     McpRateTarget::Service(ServiceOperationV1::CheckQuery),
                 )?;
+                let error_context = call.application_context(ApplicationOperation::CheckQuery)?;
                 let result = self
                     .service
                     .check_symbolic_query(call.take_context()?, request)
                     .await
-                    .map_err(map_service_failure)?;
+                    .map_err(|failure| map_application_service_failure(failure, &error_context))?;
                 call.complete();
                 render_symbolic_check(result)
             }
@@ -1104,11 +1108,12 @@ impl HostedServiceMcpBackend {
                     invocation,
                     McpRateTarget::Service(ServiceOperationV1::ExplainQuery),
                 )?;
+                let error_context = call.application_context(ApplicationOperation::ExplainQuery)?;
                 let result = self
                     .service
                     .explain_symbolic_query(call.take_context()?, request)
                     .await
-                    .map_err(map_service_failure)?;
+                    .map_err(|failure| map_application_service_failure(failure, &error_context))?;
                 call.complete();
                 render_symbolic_explain(result)
             }
@@ -1136,11 +1141,12 @@ impl HostedServiceMcpBackend {
                     invocation,
                     McpRateTarget::Service(ServiceOperationV1::ExecuteQuery),
                 )?;
+                let error_context = call.application_context(ApplicationOperation::ExecuteQuery)?;
                 let result = self
                     .service
                     .execute_symbolic_query(call.take_context()?, request)
                     .await
-                    .map_err(map_service_failure)?;
+                    .map_err(|failure| map_application_service_failure(failure, &error_context))?;
                 call.complete();
                 render_symbolic_execution(&result)
             }
@@ -1149,6 +1155,7 @@ impl HostedServiceMcpBackend {
                 input,
                 expected_contract_version,
             } => {
+                let application_command_name = command_name.clone();
                 let fields = input
                     .into_iter()
                     .map(|(name, value)| {
@@ -1172,11 +1179,14 @@ impl HostedServiceMcpBackend {
                     invocation,
                     McpRateTarget::Service(ServiceOperationV1::ExecuteCommand),
                 )?;
+                let error_context = call
+                    .application_context(ApplicationOperation::ExecuteCommand)?
+                    .with_operation_symbol(application_command_name);
                 let result = self
                     .service
                     .execute_command(call.take_context()?, request)
                     .await
-                    .map_err(map_service_failure)?;
+                    .map_err(|failure| map_application_service_failure(failure, &error_context))?;
                 call.complete();
                 render_symbolic_command(result)
             }
@@ -1411,7 +1421,11 @@ impl HostedServiceMcpBackend {
                     .await
                 {
                     Ok(authorized) => authorized,
-                    Err(McpBackendError::Public(_) | McpBackendError::TargetUnavailable) => {
+                    Err(
+                        McpBackendError::Public(_)
+                        | McpBackendError::Application(_)
+                        | McpBackendError::TargetUnavailable,
+                    ) => {
                         return Ok(McpSubscribedResourceObservation::Hidden);
                     }
                     Err(error) => return Err(observer_backend_error(error)),
@@ -1467,9 +1481,11 @@ impl HostedServiceMcpBackend {
                 .visible_fingerprint()
                 .map(McpSubscribedResourceObservation::Visible)
                 .map_err(|_| McpObserverBackendError::RetryNextTick),
-            Err(McpBackendError::Public(_) | McpBackendError::TargetUnavailable) => {
-                Ok(McpSubscribedResourceObservation::Hidden)
-            }
+            Err(
+                McpBackendError::Public(_)
+                | McpBackendError::Application(_)
+                | McpBackendError::TargetUnavailable,
+            ) => Ok(McpSubscribedResourceObservation::Hidden),
             Err(McpBackendError::AuthenticationLost) => {
                 Err(McpObserverBackendError::AuthenticationLost)
             }
@@ -1669,6 +1685,20 @@ struct AuthorizedCommandResource {
 }
 
 impl PreparedServiceCall {
+    fn application_context(
+        &self,
+        operation: ApplicationOperation,
+    ) -> Result<ApplicationErrorContextBuilder, McpBackendError> {
+        let context = self
+            .context
+            .as_ref()
+            .ok_or(McpBackendError::InvalidResponse)?;
+        Ok(ApplicationErrorContextBuilder::new(
+            operation,
+            context.request_id(),
+        ))
+    }
+
     fn take_context(&mut self) -> Result<RequestContext, McpBackendError> {
         self.context.take().ok_or(McpBackendError::InvalidResponse)
     }
@@ -3910,6 +3940,7 @@ fn observer_backend_error(error: McpBackendError) -> McpObserverBackendError {
         McpBackendError::AuthenticationLost => McpObserverBackendError::AuthenticationLost,
         McpBackendError::Cancelled => McpObserverBackendError::Cancelled,
         McpBackendError::Public(_)
+        | McpBackendError::Application(_)
         | McpBackendError::TargetUnavailable
         | McpBackendError::InvalidResponse
         | McpBackendError::RateLimited => McpObserverBackendError::RetryNextTick,
@@ -4429,12 +4460,23 @@ fn map_service_failure(error: ServiceFailure) -> McpBackendError {
     }
 }
 
+fn map_application_service_failure(
+    error: ServiceFailure,
+    context: &ApplicationErrorContextBuilder,
+) -> McpBackendError {
+    context.build(&error).map_or_else(
+        || map_service_failure(error),
+        |error| McpBackendError::Application(Box::new(error)),
+    )
+}
+
 fn collapse_dynamic_resolution_error(error: McpBackendError) -> McpBackendError {
     match error {
         McpBackendError::Cancelled => McpBackendError::Cancelled,
         McpBackendError::RateLimited => McpBackendError::RateLimited,
         McpBackendError::AuthenticationLost => McpBackendError::AuthenticationLost,
         McpBackendError::Public(_)
+        | McpBackendError::Application(_)
         | McpBackendError::TargetUnavailable
         | McpBackendError::InvalidResponse => McpBackendError::TargetUnavailable,
     }

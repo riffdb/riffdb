@@ -55,6 +55,8 @@ pub use status::{
 };
 
 pub use riffdb_errors::{
+    ApplicationError, ApplicationErrorCategory, ApplicationErrorCode, ApplicationErrorContext,
+    ApplicationFixCode, ApplicationOperation, ApplicationRecoveryAction, ApplicationSourceSpan,
     ErrorClass, PublicError, PublicErrorDetails, PublicErrorKind, RecoveryAction, ValidationCode,
     ValidationIssue, ValidationIssues, ValidationPath, ValidationPathSegment,
 };

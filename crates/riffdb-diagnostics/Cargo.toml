@@ -12,6 +12,7 @@ default = []
 [dependencies]
 riffdb-contract-compiler = { version = "0.1.0", path = "../riffdb-contract-compiler", default-features = false }
 riffdb-contract-ir = { version = "0.1.0", path = "../riffdb-contract-ir", default-features = false }
+riffdb-errors = { version = "0.1.0", path = "../riffdb-errors", default-features = false }
 
 [dev-dependencies]
 riffdb-types = { version = "0.1.0", path = "../riffdb-types", default-features = false }

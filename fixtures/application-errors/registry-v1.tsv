@@ -1,0 +1,19 @@
+code	category	recovery_action	fixes	message
+RDB-APP-0001	input	correct_request	correct_input	application request is structurally invalid
+RDB-INPUT-0101	input	correct_request	correct_input	application input is invalid
+RDB-AUTH-0214	authorization	obtain_permission	bind_application_role	application operation is not authorized
+RDB-CONTRACT-0101	contract	refresh_contract	refresh_contract	application contract does not match
+RDB-QUERY-0101	query	correct_request	correct_input	RiffQL query is invalid
+RDB-QUERY-0102	query	refresh_contract	pin_active_module	RiffQL query is unavailable
+RDB-MODULE-0101	module	refresh_contract	pin_active_module	query module is unavailable
+RDB-CURSOR-0101	cursor	correct_request	restart_from_first_page	query cursor is invalid or stale
+RDB-RESOURCE-0101	resource	correct_request	correct_input	application result exceeds the service limit
+RDB-STORAGE-0101	storage	retry	retry_later	storage is temporarily unavailable
+RDB-UNCERTAIN-0101	uncertainty	resolve_with_same_idempotency_key	resolve_with_same_idempotency_key	command outcome is not yet known
+RDB-APP-0002	control	none		application request was cancelled
+RDB-APP-0003	control	retry	retry_later	application request deadline elapsed
+RDB-INTERNAL-0001	internal	contact_operator	contact_operator_with_incident	an internal error occurred
+RDB-COMMAND-0101	command	correct_request	correct_input	idempotency key was reused with different application input
+RDB-COMMAND-0102	command	contact_operator		command execution failed
+RDB-AUTH-0215	authorization	obtain_permission	bind_application_role	application capability is revoked
+RDB-PROTOCOL-0101	protocol	contact_operator		the RiffDB peer returned an invalid application response

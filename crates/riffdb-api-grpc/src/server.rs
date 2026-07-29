@@ -10,19 +10,20 @@ use std::task::{Context, Poll};
 use std::time::{Duration, Instant};
 
 use riffdb_auth::{AuthenticationContext, CapabilityDigestKeyProvider, CredentialAuthenticator};
-use riffdb_errors::PublicErrorKind;
+use riffdb_errors::{ApplicationOperation, PublicErrorKind};
 use riffdb_proto::{MAX_PUBLIC_REQUEST_BYTES, MAX_PUBLIC_RESPONSE_BYTES, app::v1 as app_v1, v1};
 use riffdb_service::{
-    ApplicationService, BootstrapCapabilityResult, BootstrapRequestContext, CommitSubscription,
-    CommitSubscriptionEvent, CreateCapabilityInvocation, CreateCapabilityResult,
-    DeployContractResult, HealthContext, HealthRequest, HealthResult,
-    MAX_COMMIT_SUBSCRIPTION_LIFETIME, RecoveryOfflineMaintenanceApplication,
-    RecoveryRestoreOfflineBackupInvocation, RequestCancellationHandle, RequestContext,
-    RequestControl, RestoreOfflineBackupInvocation, RestoreRetryOfflineMaintenanceApplication,
-    ServiceFuture, ServiceResult,
+    ApplicationErrorContextBuilder, ApplicationService, BootstrapCapabilityResult,
+    BootstrapRequestContext, CommitSubscription, CommitSubscriptionEvent,
+    CreateCapabilityInvocation, CreateCapabilityResult, DeployContractResult, HealthContext,
+    HealthRequest, HealthResult, MAX_COMMIT_SUBSCRIPTION_LIFETIME,
+    RecoveryOfflineMaintenanceApplication, RecoveryRestoreOfflineBackupInvocation,
+    RequestCancellationHandle, RequestContext, RequestControl, RestoreOfflineBackupInvocation,
+    RestoreRetryOfflineMaintenanceApplication, ServiceFuture, ServiceResult,
 };
 use riffdb_types::{
-    OfflineMaintenanceInputHash, OfflineMaintenanceOperationId, RequestId, ServiceOperationV1,
+    ContractLineage, ContractVersion, OfflineMaintenanceInputHash, OfflineMaintenanceOperationId,
+    RequestId, ServiceOperationV1,
 };
 use tonic::codegen::tokio_stream::Stream;
 use tonic::metadata::MetadataMap;
@@ -34,7 +35,9 @@ use crate::authentication::{
     prepare_loopback_bootstrap_token, retain_normal_request_credential,
 };
 use crate::conversion::*;
-use crate::error::status_from_service_failure;
+use crate::error::{
+    status_from_application_boundary, status_from_application_failure, status_from_service_failure,
+};
 use crate::generated::admin_service_server::{AdminService, AdminServiceServer};
 use crate::generated::command_service_server::{CommandService, CommandServiceServer};
 use crate::generated::commit_service_server::{CommitService, CommitServiceServer};
@@ -638,6 +641,34 @@ fn map_service<T>(result: ServiceResult<T>) -> Result<T, Status> {
     result.map_err(|failure| status_from_service_failure(&failure))
 }
 
+fn map_application_service<T>(
+    result: ServiceResult<T>,
+    context: &ApplicationErrorContextBuilder,
+) -> Result<T, Status> {
+    result.map_err(|failure| status_from_application_failure(&failure, context))
+}
+
+fn application_context(
+    operation: ApplicationOperation,
+    request_id: RequestId,
+    contract: Option<&app_v1::ContractSelector>,
+    operation_symbol: Option<&str>,
+) -> ApplicationErrorContextBuilder {
+    let mut context = ApplicationErrorContextBuilder::new(operation, request_id);
+    if let Some(contract) = contract
+        && let (Ok(lineage), Some(version)) = (
+            ContractLineage::new(contract.lineage.clone()),
+            ContractVersion::new(contract.version),
+        )
+    {
+        context = context.with_contract(lineage, version);
+    }
+    if let Some(symbol) = operation_symbol {
+        context = context.with_operation_symbol(symbol.to_owned());
+    }
+    context
+}
+
 fn grpc_timeout(metadata: &MetadataMap) -> Result<Option<Duration>, Status> {
     let mut values = metadata.get_all(GRPC_TIMEOUT_METADATA_KEY).iter();
     let Some(value) = values.next() else {
@@ -869,10 +900,24 @@ impl ApplicationQueryService for GrpcApplication {
         request: Request<app_v1::DescribeContractRequest>,
     ) -> Result<Response<app_v1::DescribeContractResponse>, Status> {
         let (metadata, _peer, message) = split_request(request);
-        let (request_id, selector) = describe_symbolic_contract_request_from_proto(message)?;
-        let (service, context, _cancellation) =
-            self.normal_invocation(ServiceOperationV1::DescribeContract, &metadata, request_id)?;
-        let result = map_service(service.describe_symbolic_contract(context, selector).await)?;
+        let boundary =
+            ApplicationErrorContextBuilder::without_trace(ApplicationOperation::DescribeContract);
+        let original = message.clone();
+        let (request_id, selector) = describe_symbolic_contract_request_from_proto(message)
+            .map_err(|status| status_from_application_boundary(status, &boundary))?;
+        let application = application_context(
+            ApplicationOperation::DescribeContract,
+            request_id,
+            original.contract.as_ref(),
+            None,
+        );
+        let (service, context, _cancellation) = self
+            .normal_invocation(ServiceOperationV1::DescribeContract, &metadata, request_id)
+            .map_err(|status| status_from_application_boundary(status, &application))?;
+        let result = map_application_service(
+            service.describe_symbolic_contract(context, selector).await,
+            &application,
+        )?;
         Ok(Response::new(describe_symbolic_contract_result_to_proto(
             &result,
         )))
@@ -883,10 +928,24 @@ impl ApplicationQueryService for GrpcApplication {
         request: Request<app_v1::CheckQueryRequest>,
     ) -> Result<Response<app_v1::CheckQueryResponse>, Status> {
         let (metadata, _peer, message) = split_request(request);
-        let (request_id, request) = check_symbolic_query_request_from_proto(message)?;
-        let (service, context, _cancellation) =
-            self.normal_invocation(ServiceOperationV1::CheckQuery, &metadata, request_id)?;
-        let result = map_service(service.check_symbolic_query(context, request).await)?;
+        let boundary =
+            ApplicationErrorContextBuilder::without_trace(ApplicationOperation::CheckQuery);
+        let original = message.clone();
+        let (request_id, request) = check_symbolic_query_request_from_proto(message)
+            .map_err(|status| status_from_application_boundary(status, &boundary))?;
+        let application = application_context(
+            ApplicationOperation::CheckQuery,
+            request_id,
+            original.contract.as_ref(),
+            None,
+        );
+        let (service, context, _cancellation) = self
+            .normal_invocation(ServiceOperationV1::CheckQuery, &metadata, request_id)
+            .map_err(|status| status_from_application_boundary(status, &application))?;
+        let result = map_application_service(
+            service.check_symbolic_query(context, request).await,
+            &application,
+        )?;
         Ok(Response::new(check_symbolic_query_result_to_proto(
             &result,
         )?))
@@ -897,16 +956,33 @@ impl ApplicationQueryService for GrpcApplication {
         request: Request<app_v1::ExplainQueryRequest>,
     ) -> Result<Response<app_v1::ExplainQueryResponse>, Status> {
         let (metadata, _peer, message) = split_request(request);
-        let (request_id, request) = explain_symbolic_query_request_from_proto(message)?;
-        let (service, context, _cancellation) =
-            self.normal_invocation(ServiceOperationV1::ExplainQuery, &metadata, request_id)?;
+        let boundary =
+            ApplicationErrorContextBuilder::without_trace(ApplicationOperation::ExplainQuery);
+        let original = message.clone();
+        let operation_symbol = match original.query.as_ref() {
+            Some(app_v1::explain_query_request::Query::QueryName(name)) => Some(name.as_str()),
+            Some(app_v1::explain_query_request::Query::Source(_)) | None => None,
+        };
+        let (request_id, request) = explain_symbolic_query_request_from_proto(message)
+            .map_err(|status| status_from_application_boundary(status, &boundary))?;
+        let application = application_context(
+            ApplicationOperation::ExplainQuery,
+            request_id,
+            original.contract.as_ref(),
+            operation_symbol,
+        );
+        let (service, context, _cancellation) = self
+            .normal_invocation(ServiceOperationV1::ExplainQuery, &metadata, request_id)
+            .map_err(|status| status_from_application_boundary(status, &application))?;
         let result = match request {
-            ExplainSymbolicQueryInvocation::AdHoc(request) => {
-                map_service(service.explain_symbolic_query(context, request).await)?
-            }
-            ExplainSymbolicQueryInvocation::Named(request) => {
-                map_service(service.explain_named_symbolic_query(context, request).await)?
-            }
+            ExplainSymbolicQueryInvocation::AdHoc(request) => map_application_service(
+                service.explain_symbolic_query(context, request).await,
+                &application,
+            )?,
+            ExplainSymbolicQueryInvocation::Named(request) => map_application_service(
+                service.explain_named_symbolic_query(context, request).await,
+                &application,
+            )?,
         };
         Ok(Response::new(explain_symbolic_query_result_to_proto(
             &result,
@@ -918,16 +994,33 @@ impl ApplicationQueryService for GrpcApplication {
         request: Request<app_v1::ExecuteQueryRequest>,
     ) -> Result<Response<app_v1::ExecuteQueryResponse>, Status> {
         let (metadata, _peer, message) = split_request(request);
-        let (request_id, request) = execute_symbolic_query_request_from_proto(message)?;
-        let (service, context, _cancellation) =
-            self.normal_invocation(ServiceOperationV1::ExecuteQuery, &metadata, request_id)?;
+        let boundary =
+            ApplicationErrorContextBuilder::without_trace(ApplicationOperation::ExecuteQuery);
+        let original = message.clone();
+        let operation_symbol = match original.query.as_ref() {
+            Some(app_v1::execute_query_request::Query::QueryName(name)) => Some(name.as_str()),
+            Some(app_v1::execute_query_request::Query::Source(_)) | None => None,
+        };
+        let (request_id, request) = execute_symbolic_query_request_from_proto(message)
+            .map_err(|status| status_from_application_boundary(status, &boundary))?;
+        let application = application_context(
+            ApplicationOperation::ExecuteQuery,
+            request_id,
+            original.contract.as_ref(),
+            operation_symbol,
+        );
+        let (service, context, _cancellation) = self
+            .normal_invocation(ServiceOperationV1::ExecuteQuery, &metadata, request_id)
+            .map_err(|status| status_from_application_boundary(status, &application))?;
         let result = match request {
-            ExecuteSymbolicQueryInvocation::AdHoc(request) => {
-                map_service(service.execute_symbolic_query(context, request).await)?
-            }
-            ExecuteSymbolicQueryInvocation::Named(request) => {
-                map_service(service.execute_named_symbolic_query(context, request).await)?
-            }
+            ExecuteSymbolicQueryInvocation::AdHoc(request) => map_application_service(
+                service.execute_symbolic_query(context, request).await,
+                &application,
+            )?,
+            ExecuteSymbolicQueryInvocation::Named(request) => map_application_service(
+                service.execute_named_symbolic_query(context, request).await,
+                &application,
+            )?,
         };
         Ok(Response::new(execute_symbolic_query_result_to_proto(
             &result,
@@ -939,10 +1032,24 @@ impl ApplicationQueryService for GrpcApplication {
         request: Request<app_v1::DeployQueryModuleRequest>,
     ) -> Result<Response<app_v1::DeployQueryModuleResponse>, Status> {
         let (metadata, _peer, message) = split_request(request);
-        let (request_id, request) = deploy_query_module_request_from_proto(message)?;
-        let (service, context, _cancellation) =
-            self.normal_invocation(ServiceOperationV1::DeployQueryModule, &metadata, request_id)?;
-        let result = map_service(service.deploy_query_module(context, request).await)?;
+        let boundary =
+            ApplicationErrorContextBuilder::without_trace(ApplicationOperation::DeployQueryModule);
+        let original = message.clone();
+        let (request_id, request) = deploy_query_module_request_from_proto(message)
+            .map_err(|status| status_from_application_boundary(status, &boundary))?;
+        let application = application_context(
+            ApplicationOperation::DeployQueryModule,
+            request_id,
+            original.contract.as_ref(),
+            Some(original.module_name.as_str()),
+        );
+        let (service, context, _cancellation) = self
+            .normal_invocation(ServiceOperationV1::DeployQueryModule, &metadata, request_id)
+            .map_err(|status| status_from_application_boundary(status, &application))?;
+        let result = map_application_service(
+            service.deploy_query_module(context, request).await,
+            &application,
+        )?;
         Ok(Response::new(deploy_query_module_result_to_proto(&result)))
     }
 
@@ -951,10 +1058,24 @@ impl ApplicationQueryService for GrpcApplication {
         request: Request<app_v1::GetQueryModuleRequest>,
     ) -> Result<Response<app_v1::GetQueryModuleResponse>, Status> {
         let (metadata, _peer, message) = split_request(request);
-        let (request_id, request) = get_query_module_request_from_proto(message)?;
-        let (service, context, _cancellation) =
-            self.normal_invocation(ServiceOperationV1::ExplainQuery, &metadata, request_id)?;
-        let result = map_service(service.get_query_module(context, request).await)?;
+        let boundary =
+            ApplicationErrorContextBuilder::without_trace(ApplicationOperation::GetQueryModule);
+        let original = message.clone();
+        let (request_id, request) = get_query_module_request_from_proto(message)
+            .map_err(|status| status_from_application_boundary(status, &boundary))?;
+        let application = application_context(
+            ApplicationOperation::GetQueryModule,
+            request_id,
+            original.contract.as_ref(),
+            None,
+        );
+        let (service, context, _cancellation) = self
+            .normal_invocation(ServiceOperationV1::ExplainQuery, &metadata, request_id)
+            .map_err(|status| status_from_application_boundary(status, &application))?;
+        let result = map_application_service(
+            service.get_query_module(context, request).await,
+            &application,
+        )?;
         Ok(Response::new(get_query_module_result_to_proto(
             result.as_ref(),
         )))
