@@ -1,4 +1,4 @@
-spec_version: '0.40'
+spec_version: '0.41'
 product: RiffDB
 repository: riffdb
 status: application-platform-implementation
@@ -83,6 +83,13 @@ gates:
   - WP-330
   - WP-335
   - WP-340
+  - WP-345
+  - WP-350
+  - WP-355
+  - WP-360
+  - WP-362
+  - WP-365
+  - WP-370
 work_packages:
 - id: WP-000
   name: Repository foundation
@@ -4205,4 +4212,401 @@ work_packages:
   exit_gate: All four sealed independent runs meet every AAA-012 threshold, each rates the experience at least 8.5/10,
     raw evidence is published, and no unresolved product workaround, kernel escape, glue, source access, query gap, or
     cross-language semantic difference remains before single-node operational alpha.
+  human_review_triggers: *id001
+- id: WP-345
+  name: Compiler-owned application source and exact lock
+  depends_on:
+  - WP-340
+  objective: Remove compiler-derived identities from author-owned application input while preserving exact fail-closed
+    generation, authorization, and deployment through one deterministic compiler-owned lock and explicit local
+    authoring operations.
+  requirements:
+  - AAA-013
+  required_adrs:
+  - ADR-0005
+  - ADR-0006
+  - ADR-0007
+  - ADR-0013
+  - ADR-0040
+  - ADR-0052
+  - ADR-0055
+  - ADR-0056
+  - ADR-0057
+  allowed_paths:
+  - Cargo.toml
+  - Cargo.lock
+  - crates/riffdb-query-module/**
+  - crates/riffdb-cli/**
+  - crates/riffdb-auth/**
+  - crates/riffdb-policy/**
+  - crates/riffdb-service/**
+  - clients/typescript/**
+  - templates/application/**
+  - fixtures/application-manifests/**
+  - fixtures/application-locks/**
+  - scripts/check-application-bindings
+  - scripts/check-generated
+  - scripts/riffdb-dev*
+  - docs/getting-started/**
+  - docs/agent-application-alpha.md
+  deliverables:
+  - Additive author-owned symbolic application-source schema and compiler-owned exact lock schema with canonical
+    bytes, source maps, domain-separated identities, old/current fixtures, and explicit V1 migration
+  - Read-only application check, atomic lock write/check, exact locked generation, and bounded symbolic operation and
+    role-authority diff
+  - Lock coverage for normalized sources, contract/module/query/plan/schema/role identities, compiler formats, and
+    generated artifacts without clocks, machine paths, credentials, active pointers, or runtime values
+  - Development-only local lock refresh that leaves the last accepted generation active on failure and no production
+    auto-refresh or ambient identity selection
+  - Interrupted-write, partial-generation, stale source/lock, role widening, path, symlink, determinism, and V1
+    compatibility tests
+  acceptance_commands:
+  - cargo test -p riffdb-query-module --all-features
+  - cargo test -p riffdb-cli --all-features
+  - ./scripts/check-application-bindings
+  - ./scripts/riffdb-dev-acceptance
+  - ./scripts/check-generated
+  - cargo fmt --all -- --check
+  - cargo clippy --workspace --all-targets --all-features -- -D warnings
+  exit_gate: An author edits only symbolic source and one explicit compiler operation deterministically produces an
+    exact reviewed lock and bindings; all drift fails before authorization or deployment; no lock operation performs a
+    server-side or authority-bearing action.
+  human_review_triggers: *id001
+- id: WP-350
+  name: Source-spanned authoring diagnostics
+  depends_on:
+  - WP-345
+  objective: Preserve bounded actionable compiler, planner, manifest, role, lock, scaffold, and generation diagnostics
+    through CLI and builder MCP without leaking values, hidden schema, internal sources, or arbitrary engine prose.
+  requirements:
+  - AAA-014
+  required_adrs:
+  - ADR-0002
+  - ADR-0006
+  - ADR-0007
+  - ADR-0008
+  - ADR-0037
+  - ADR-0040
+  - ADR-0051
+  - ADR-0055
+  - ADR-0057
+  allowed_paths:
+  - Cargo.toml
+  - Cargo.lock
+  - crates/riffdb-contract-syntax/**
+  - crates/riffdb-contract-compiler/**
+  - crates/riffdb-riffql-syntax/**
+  - crates/riffdb-query-compiler/**
+  - crates/riffdb-query-module/**
+  - crates/riffdb-diagnostics/**
+  - crates/riffdb-api-mcp/**
+  - crates/riffdb-mcp-stdio/**
+  - crates/riffdb-cli/**
+  - clients/typescript/**
+  - fixtures/application-diagnostics/**
+  - fixtures/compiler/**
+  - fixtures/riffql/**
+  - fixtures/mcp/**
+  - docs/getting-started/**
+  - docs/agent-application-alpha.md
+  deliverables:
+  - One closed versioned authoring-diagnostic value with bounded stage/code, path/span, symbol path, cause/fix codes,
+    file-change disposition, and retry classification
+  - Total conversions retaining existing parser/compiler/planner diagnostics instead of generic CompileContract,
+    CompileQuery, Manifest, or role errors
+  - Equivalent human and JSON CLI plus builder-MCP rendering with local source pointers but no persisted source values
+  - Closed filesystem diagnostic classes for destination, parent, permission, regular-file/symlink, and interrupted
+    staging failures
+  - Source-span snapshots and semantic assertions for every changed diagnostic plus secret, hidden-schema, arbitrary-
+    prose, oversize, malformed, and unknown-tag canaries
+  acceptance_commands:
+  - cargo test -p riffdb-contract-compiler --all-features
+  - cargo test -p riffdb-query-compiler --all-features
+  - cargo test -p riffdb-query-module --all-features
+  - cargo test -p riffdb-diagnostics --all-features
+  - cargo test -p riffdb-api-mcp --all-features
+  - cargo test -p riffdb-cli --all-features
+  - ./scripts/check-generated
+  - cargo fmt --all -- --check
+  - cargo clippy --workspace --all-targets --all-features -- -D warnings
+  exit_gate: Each representative source, plan, role, lock, manifest, scaffold, and output error names its actionable
+    symbolic cause and exact local span when available across CLI and MCP, while every redaction and bound canary
+    passes.
+  human_review_triggers: *id001
+- id: WP-355
+  name: Empty-repository scaffold and complete public authoring kit
+  depends_on:
+  - WP-350
+  objective: Make a fresh application replaceable through bundled public material alone by supporting existing empty
+    destinations and shipping the complete contract, manifest, command, query, role, inspection, and correction
+    reference.
+  requirements:
+  - AAA-015
+  required_adrs:
+  - ADR-0002
+  - ADR-0007
+  - ADR-0008
+  - ADR-0041
+  - ADR-0051
+  - ADR-0055
+  - ADR-0057
+  allowed_paths:
+  - Cargo.toml
+  - Cargo.lock
+  - crates/riffdb-contract-syntax/**
+  - crates/riffdb-contract-compiler/**
+  - crates/riffdb-query-module/**
+  - crates/riffdb-cli/**
+  - clients/typescript/**
+  - templates/application/**
+  - fixtures/application-manifests/**
+  - fixtures/application-locks/**
+  - fixtures/application-diagnostics/**
+  - examples/agent-alpha/**
+  - release/agent-application-alpha/**
+  - evaluations/agent-application-alpha/**
+  - scripts/riffdb-new*
+  - scripts/riffdb-dev*
+  - scripts/agent-application-alpha-package
+  - scripts/check-application-boundary
+  - docs/contracts/**
+  - docs/getting-started/**
+  - docs/riffql/**
+  - docs/agent-application-alpha.md
+  - README.md
+  deliverables:
+  - Safe new-child and existing-empty-directory scaffold flows with bounded recoverable staging and no overwrite or
+    destination-symlink traversal
+  - Generated edit/check/lock/dev instructions that contain no manual hash, numeric ID, mask, encoded key, grant, or
+    transport step
+  - Complete versioned contract-language reference, command/invariant cookbook, application JSON Schema, inspection
+    reference, domain-neutral examples, and negative examples with expected diagnostics and remedies
+  - Release bundle and builder resources containing the same authoring kit without RiffDB implementation, TicketDesk,
+    Blog, or Orders source
+  - Public-only multi-entity replacement acceptance from an already-created empty repository
+  acceptance_commands:
+  - cargo test -p riffdb-cli --all-features
+  - ./scripts/riffdb-new-acceptance
+  - ./scripts/riffdb-dev-acceptance
+  - ./scripts/agent-application-alpha-package-acceptance
+  - ./scripts/check-application-boundary
+  - ./scripts/check-generated
+  - cargo fmt --all -- --check
+  - cargo clippy --workspace --all-targets --all-features -- -D warnings
+  exit_gate: A public-only user starts in an existing empty directory, replaces the sample with a new multi-entity
+    application, receives actionable diagnostics for mistakes, and completes a generated typed write/page read without
+    private source or manual compiler identity.
+  human_review_triggers: *id001
+- id: WP-360
+  name: Offline TypeScript and builder-MCP authoring parity
+  depends_on:
+  - WP-355
+  objective: Make the generated TypeScript repository and builder MCP complete first-class consumers of the exact
+    application source, lock, diagnostics, and generation model without granting builder tools runtime authority.
+  requirements:
+  - AAA-016
+  required_adrs:
+  - ADR-0007
+  - ADR-0008
+  - ADR-0027
+  - ADR-0040
+  - ADR-0052
+  - ADR-0055
+  - ADR-0057
+  allowed_paths:
+  - Cargo.toml
+  - Cargo.lock
+  - crates/riffdb-query-module/**
+  - crates/riffdb-diagnostics/**
+  - crates/riffdb-api-mcp/**
+  - crates/riffdb-mcp-stdio/**
+  - crates/riffdb-cli/**
+  - clients/typescript/**
+  - templates/application/**
+  - fixtures/application-locks/**
+  - fixtures/application-diagnostics/**
+  - fixtures/application-parity/**
+  - fixtures/mcp/**
+  - examples/agent-alpha/**
+  - release/agent-application-alpha/**
+  - scripts/agent-application-typescript-acceptance
+  - scripts/check-application-bindings
+  - scripts/check-application-boundary
+  - scripts/agent-application-alpha-package*
+  - docs/getting-started/**
+  - docs/agent-application-alpha.md
+  deliverables:
+  - Complete offline TypeScript runtime/compiler/Node-type/lockfile/check/build/start setup and real server-side HTTP
+    starter generated without network or manual package edits
+  - Same exact application lock, operation schemas, diagnostics, read fences, typed outcomes, cursors, and errors as
+    Rust
+  - Builder-MCP resources for grammar/schema/examples and tools for describe, check, diagnostic explanation,
+    lock/authority preview, explicit lock write, and exact generation
+  - Static and runtime proof that builder MCP has no credential, storage, deployment, role-binding, command execution,
+    query execution, or kernel dependency
+  - CLI/MCP and Rust/TypeScript differential fixtures for locks, diagnostics, operation schemas, and golden observations
+  acceptance_commands:
+  - cargo test -p riffdb-query-module --all-features
+  - cargo test -p riffdb-api-mcp --all-features
+  - cargo test -p riffdb-mcp-stdio --all-features
+  - cargo test -p riffdb-cli --all-features
+  - ./scripts/agent-application-typescript-acceptance
+  - ./scripts/check-application-bindings
+  - ./scripts/check-application-boundary
+  - ./scripts/agent-application-alpha-package-acceptance
+  - ./scripts/check-generated
+  - cargo fmt --all -- --check
+  - cargo clippy --workspace --all-targets --all-features -- -D warnings
+  exit_gate: A generated TypeScript web application builds and serves offline, while CLI and credential-less builder
+    MCP produce identical checked lock/diagnostic/generation semantics and no builder operation can reach runtime or
+    authority.
+  human_review_triggers: *id001
+- id: WP-362
+  name: Growing-database command throughput and durability investigation
+  depends_on:
+  - WP-340
+  objective: Reproduce, decompose, and safely correct the observed synchronous redb command degradation as retained
+    state grows without weakening acknowledgement durability, atomic command records, crash recovery, or sole
+    coordinator ownership.
+  requirements:
+  - PERF-003
+  required_adrs:
+  - ADR-0004
+  - ADR-0005
+  - ADR-0006
+  - ADR-0012
+  - ADR-0057
+  allowed_paths:
+  - Cargo.toml
+  - Cargo.lock
+  - crates/riffdb-storage-api/**
+  - crates/riffdb-storage-memory/**
+  - crates/riffdb-storage-redb/**
+  - crates/riffdb-commit/**
+  - crates/riffdb-observability/**
+  - crates/riffdb-server/**
+  - crates/riffdb-testkit/**
+  - benchmarks/command-growth/**
+  - fixtures/performance/**
+  - scripts/benchmark-command-growth
+  - docs/performance/**
+  - docs/agent-application-alpha.md
+  deliverables:
+  - Reproducible size-sweep benchmark separating evaluation, transaction-current reads, table/page work, commit call,
+    durable flush, queue wait, file growth, and recovery cost under the exact configured durability
+  - Equivalent memory/redb semantic preflight and crash/reopen/idempotency/provenance/outcome/commit reciprocity checks
+    before every reported performance result
+  - Evidence comparing one-phase/two-phase engine mechanics and bounded multi-command group scheduling without changing
+    production behavior before a separate accepted durability/performance ADR
+  - Smallest accepted optimization plus deterministic scheduling, cancellation, fairness, crash, uncertainty, replay,
+    sequence, and atomicity tests
+  - Checked reference-machine report satisfying PERF-003 without weaker durability or acknowledgement semantics
+  acceptance_commands:
+  - cargo test -p riffdb-storage-redb --all-features
+  - cargo test -p riffdb-commit --all-features
+  - cargo test -p riffdb-server --all-features
+  - cargo test --manifest-path benchmarks/command-growth/Cargo.toml --workspace
+  - ./scripts/benchmark-command-growth --assert-perf-003
+  - cargo fmt --all -- --check
+  - cargo clippy --workspace --all-targets --all-features -- -D warnings
+  exit_gate: Growing retained state preserves at least half of initial steady-state command throughput and at least 50
+    committed commands per second on the checked profile, with unchanged configured durability, complete crash/replay
+    evidence, and an accepted ADR for any scheduling, engine-durability, or atomic-layout change.
+  human_review_triggers: *id001
+- id: WP-365
+  name: Public-only rehearsal, qualified evidence, and canary gate
+  depends_on:
+  - WP-360
+  - WP-362
+  objective: Prove the repaired application-authoring product through sealed public-only four-way rehearsals and two
+    fresh canary agents before spending another official four-agent campaign.
+  requirements:
+  - AAA-017
+  - AAA-018
+  required_adrs:
+  - ADR-0007
+  - ADR-0008
+  - ADR-0041
+  - ADR-0051
+  - ADR-0052
+  - ADR-0055
+  - ADR-0056
+  - ADR-0057
+  allowed_paths:
+  - Cargo.toml
+  - Cargo.lock
+  - evaluations/agent-application-alpha/**
+  - examples/agent-alpha/**
+  - contracts/agent-alpha/**
+  - queries/agent-alpha/**
+  - fixtures/agent-alpha/**
+  - fixtures/performance/**
+  - release/agent-application-alpha/**
+  - release/evidence/**
+  - scripts/agent-application-alpha*
+  - scripts/agent-domain-evidence
+  - scripts/benchmark-command-growth
+  - scripts/check-application-bindings
+  - scripts/check-application-boundary
+  - docs/getting-started/**
+  - docs/riffql/**
+  - docs/agent-application-alpha.md
+  deliverables:
+  - One release-derived bundle that completes Blog and Orders in Rust and TypeScript from existing empty directories
+    using only public inputs
+  - Public-only injected invalid-source, stale-lock, missing-index, unsafe-role, interrupted-generation, and
+    growing-database performance recovery evidence
+  - Qualified event semantics requiring exact generated RiffDB identity evidence for first write/page read
+  - Immutable campaign directories and exact campaign/bundle selection without deleting or rewriting prior failures
+  - Two fresh isolated canary runs covering Blog/Rust and Orders/TypeScript at every AAA-012 threshold
+  acceptance_commands:
+  - ./scripts/agent-application-alpha-package-acceptance
+  - ./scripts/agent-application-alpha-rehearsal --assert-complete
+  - ./scripts/agent-application-alpha-canary-acceptance --runs 2 --sealed --assert-gate
+  - ./scripts/benchmark-command-growth --assert-perf-003
+  - ./scripts/check-application-bindings
+  - ./scripts/check-application-boundary
+  - ./scripts/check-generated
+  - cargo fmt --all -- --check
+  - cargo clippy --workspace --all-targets --all-features -- -D warnings
+  exit_gate: All public-only rehearsals and failure recoveries pass, both fresh canaries meet every official threshold,
+    every first-success metric carries exact RiffDB identity evidence, and campaign 01 remains byte-identical.
+  human_review_triggers: *id001
+- id: WP-370
+  name: Agent Application Alpha sealed evaluation campaign 02
+  depends_on:
+  - WP-365
+  objective: Repeat the official Blog and Orders Rust/TypeScript evaluation against one new sealed bundle and publish
+    an eligible gate only when all unchanged Agent Application Alpha thresholds pass.
+  requirements:
+  - AAA-012
+  - AAA-018
+  required_adrs:
+  - ADR-0007
+  - ADR-0008
+  - ADR-0041
+  - ADR-0051
+  - ADR-0052
+  - ADR-0055
+  - ADR-0056
+  - ADR-0057
+  allowed_paths:
+  - evaluations/agent-application-alpha/**
+  - release/evidence/**
+  - scripts/agent-application-alpha*
+  - docs/agent-application-alpha.md
+  deliverables:
+  - New campaign ID, bundle hash, four fresh isolated agent identities, and exact domain/language coverage
+  - Four immutable qualified reports/transcripts with exact generated-operation identity evidence and raw explanations
+  - Machine-checked unchanged time, golden, boundary, source, glue, kernel, shape, performance, and rating thresholds
+  - Published eligible or not-eligible decision retaining every prior campaign without waiver or evaluator workaround
+  acceptance_commands:
+  - ./scripts/agent-application-alpha-acceptance --campaign campaign-02 --runs 4 --sealed --assert-gate
+  - ./scripts/agent-application-alpha-rehearsal --assert-complete
+  - ./scripts/benchmark-command-growth --assert-perf-003
+  - ./scripts/check-generated
+  - ./scripts/check-requirement-coverage
+  exit_gate: All four fresh campaign-02 runs complete the unfamiliar-domain workloads, satisfy every unchanged AAA-012
+    and PERF-003 threshold, rate the product at least 8.5, and publish immutable raw evidence before operational alpha
+    or replication.
   human_review_triggers: *id001

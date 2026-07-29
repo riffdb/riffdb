@@ -1010,7 +1010,10 @@ the owning package; evaluation applications cannot patch around product gaps.
 
 ### 6.7 Roadmap Toward MVP
 
-- **Agent Application Alpha:** Complete WP-305 through WP-340 and the sealed four-run gate before operational hardening or replication.
+- **Agent Application Alpha:** Complete WP-305 through WP-370, including the
+  compiler-owned application lock, authoring recovery, growing-database
+  performance gate, sealed rehearsals, canaries, and campaign 02 before
+  operational hardening or replication.
 - **Stage A, single-node alpha:** Add a real migration framework, stable format policy, online consistent backup/verified restore, bundle signing, bounded indexed reads, approved repair operations, remote TLS/OAuth MCP, production-hardened TypeScript compatibility plus generated Python, quotas, projection/backfill controls, and upgrade/downgrade compatibility. Gate on a trusted design-partner workload with documented recovery and incident procedures.
 - **Stage B, replicated beta:** Put deterministic normalized commit application behind a replication facade, add snapshots/membership/catch-up/leader routing, and prove idempotency/outcomes unchanged through leader loss and network partitions. Do not add Raft to the POC path.
 - **Stage C, partitioned MVP:** Add tenant-local leaders, placement epochs, fenced movement, production authorization/audit/rate limits, stable clients, operational projections, agent branches/replay, CDC/export, and full operational support. Continue rejecting undeclared cross-partition mutations.
