@@ -50,7 +50,7 @@ if [[ -n "$seed_dir" && ! -d "$seed_dir" ]]; then
     exit 2
 fi
 
-for tool in cargo jq mkfifo mktemp od timeout tr; do
+for tool in cargo date jq mkfifo mktemp od timeout tr; do
     command -v "$tool" >/dev/null 2>&1 || {
         echo "required development tool is missing: $tool" >&2
         exit 1
@@ -65,10 +65,9 @@ if ((acceptance)); then
 fi
 cargo build --quiet "${profile_args[@]}" \
     -p riffdb-server --bin riffdbd -p riffdb-cli --bin riffdb \
-    -p riffdb-ticketdesk --bin seed --bin benchmark
+    -p riffdb-ticketdesk --bin benchmark
 riffdbd="$repo_root/target/$profile/riffdbd"
 riffdb="$repo_root/target/$profile/riffdb"
-seed="$repo_root/target/$profile/seed"
 benchmark="$repo_root/target/$profile/benchmark"
 contract="$repo_root/examples/app-baseline/contracts/ticketdesk.riff"
 queries="$repo_root/queries/ticketdesk"
@@ -196,20 +195,117 @@ jq -e '
 ' "$work_root/inspect.json" >/dev/null
 
 run_seed() {
-    local running=0
-    local seed_file command_name
+    local source_dir="$1"
+    local namespace="$2"
+    local seed_file command_name seed_result
+    local files=0
     while IFS= read -r -d '' seed_file; do
-        command_name="$(basename "$seed_file" .json)"
+        ((files += 1))
+        command_name="$(basename "$seed_file" .jsonl)"
         command_name="${command_name#*-}"
-        "${profile_client[@]}" command run "$command_name" --input "$seed_file" \
-            >"$work_root/seed-$(basename "$seed_file").result" &
-        ((running += 1))
-        if ((running == seed_concurrency)); then
-            wait -n
-            ((running -= 1))
+        seed_result="$work_root/seed-$namespace-$(basename "$seed_file").result"
+        if ! "${profile_client[@]}" command batch "$command_name" "$seed_file" \
+            --concurrency "$seed_concurrency" \
+            --checkpoint "$work_root/seed-$namespace-$(basename "$seed_file").checkpoint.json" \
+            >"$seed_result"; then
+            cat "$seed_result" >&2
+            cat "$work_root/seed-$namespace-$(basename "$seed_file").checkpoint.json" >&2
+            cat "$work_root/riffdbd.stderr" >&2
+            return 1
         fi
-    done < <(find "$seed_dir" -maxdepth 1 -type f -name '*.json' -print0 | sort -z)
-    wait
+        jq -e '
+          .ok == true
+          and .command == "command.batch"
+          and .result.pending == 0
+          and .result.rejected == 0
+          and .result.total == .result.succeeded
+        ' "$seed_result" >/dev/null
+    done < <(find "$source_dir" -maxdepth 1 -type f -name '*.jsonl' -print0 | sort -z)
+    if ((files == 0)); then
+        echo "seed directory contains no JSONL command batches" >&2
+        return 1
+    fi
+}
+
+seed_uuid() {
+    printf '01900000-0000-7000-8000-%012x' "$1"
+}
+
+generate_builtin_seed() {
+    local output_dir="$1"
+    local organization project user label ticket comment member command_name
+    local organization_id project_id user_id label_id ticket_id
+    local assignee_id reporter_id comment_id author_id member_role
+    local project_number ticket_number comment_number attachment_number status
+    mkdir -p "$output_dir"
+    for command_name in \
+        01-CreateOrganization 02-CreateUser 03-CreateLabel 04-CreateProject \
+        05-AddProjectMember 06-CreateTicket 07-CreateComment 08-AttachLabel; do
+        : >"$output_dir/$command_name.jsonl"
+    done
+    for organization in 0 1; do
+        organization_id="$(seed_uuid $((1000 + organization)))"
+        printf '{"idempotency_key":"ticketdesk-seed-organization-%s","organization_id":{"$uuid":"%s"},"name":"Organization %s"}\n' \
+            "$organization" "$organization_id" "$organization" \
+            >>"$output_dir/01-CreateOrganization.jsonl"
+        for user in 0 1 2 3 4; do
+            user_id="$(seed_uuid $((10000 + organization * 100 + user)))"
+            printf '{"display_name":"User %s-%s","email":"user-%s-%s@example.test","idempotency_key":"ticketdesk-seed-user-%s","organization_id":{"$uuid":"%s"},"user_id":{"$uuid":"%s"}}\n' \
+                "$organization" "$user" "$organization" "$user" \
+                "$((organization * 100 + user))" "$organization_id" "$user_id" \
+                >>"$output_dir/02-CreateUser.jsonl"
+        done
+        for label in 0 1 2 3; do
+            label_id="$(seed_uuid $((20000 + organization * 100 + label)))"
+            printf '{"idempotency_key":"ticketdesk-seed-label-%s","label_id":{"$uuid":"%s"},"name":"Label %s","organization_id":{"$uuid":"%s"}}\n' \
+                "$((organization * 100 + label))" "$label_id" "$label" "$organization_id" \
+                >>"$output_dir/03-CreateLabel.jsonl"
+        done
+        for project in 0 1; do
+            project_number=$((organization * 10 + project))
+            project_id="$(seed_uuid $((30000 + project_number)))"
+            printf '{"idempotency_key":"ticketdesk-seed-project-%s","name":"Project %s-%s","organization_id":{"$uuid":"%s"},"project_id":{"$uuid":"%s"}}\n' \
+                "$project_number" "$organization" "$project" "$organization_id" "$project_id" \
+                >>"$output_dir/04-CreateProject.jsonl"
+            for member in 0 1 2; do
+                user_id="$(seed_uuid $((10000 + organization * 100 + member)))"
+                if ((member == 0)); then member_role=lead; else member_role=member; fi
+                printf '{"idempotency_key":"ticketdesk-seed-member-%s","organization_id":{"$uuid":"%s"},"project_id":{"$uuid":"%s"},"role":"%s","user_id":{"$uuid":"%s"}}\n' \
+                    "$((project_number * 10 + member))" "$organization_id" "$project_id" \
+                    "$member_role" "$user_id" >>"$output_dir/05-AddProjectMember.jsonl"
+            done
+            for ticket in 0 1 2 3 4 5 6 7 8 9; do
+                ticket_number=$((project_number * 100 + ticket))
+                ticket_id="$(seed_uuid $((40000 + ticket_number)))"
+                case $((ticket % 3)) in
+                    0) status=Closed ;;
+                    1) status=InProgress ;;
+                    2) status=Open ;;
+                esac
+                assignee_id="$(seed_uuid $((10000 + organization * 100 + ticket % 5)))"
+                reporter_id="$(seed_uuid $((10000 + organization * 100 + (ticket + 1) % 5)))"
+                printf '{"assignee_id":{"$uuid":"%s"},"idempotency_key":"ticketdesk-seed-ticket-%s","organization_id":{"$uuid":"%s"},"project_id":{"$uuid":"%s"},"reporter_id":{"$uuid":"%s"},"status":{"$enum":"%s"},"ticket_id":{"$uuid":"%s"},"title":"Ticket %s-%s-%s"}\n' \
+                    "$assignee_id" "$ticket_number" "$organization_id" "$project_id" \
+                    "$reporter_id" "$status" "$ticket_id" "$organization" "$project" "$ticket" \
+                    >>"$output_dir/06-CreateTicket.jsonl"
+                for comment in 0 1 2; do
+                    comment_number=$((ticket_number * 10 + comment))
+                    comment_id="$(seed_uuid $((50000 + comment_number)))"
+                    author_id="$(seed_uuid $((10000 + organization * 100 + comment % 5)))"
+                    printf '{"author_id":{"$uuid":"%s"},"body":"Comment %s","comment_id":{"$uuid":"%s"},"idempotency_key":"ticketdesk-seed-comment-%s","organization_id":{"$uuid":"%s"},"ticket_id":{"$uuid":"%s"}}\n' \
+                        "$author_id" "$comment" "$comment_id" "$comment_number" \
+                        "$organization_id" "$ticket_id" >>"$output_dir/07-CreateComment.jsonl"
+                done
+                for label in 0 1; do
+                    attachment_number=$((ticket_number * 10 + label))
+                    label_id="$(seed_uuid $((20000 + organization * 100 + label)))"
+                    printf '{"idempotency_key":"ticketdesk-seed-attachment-%s","label_id":{"$uuid":"%s"},"organization_id":{"$uuid":"%s"},"ticket_id":{"$uuid":"%s"}}\n' \
+                        "$attachment_number" "$label_id" "$organization_id" "$ticket_id" \
+                        >>"$output_dir/08-AttachLabel.jsonl"
+                done
+            done
+        done
+    done
 }
 
 if [[ "$role" == "ticketdesk-kernel" && ( -n "$seed_dir" || "$seed_builtin" == 1 || "$acceptance" == 1 ) ]]; then
@@ -217,18 +313,15 @@ if [[ "$role" == "ticketdesk-kernel" && ( -n "$seed_dir" || "$seed_builtin" == 1
     exit 2
 fi
 if [[ -n "$seed_dir" ]]; then
-    run_seed
+    run_seed "$seed_dir" external
 fi
 if ((acceptance || seed_builtin)); then
-    if ! seed_result="$("$seed" "$endpoint" "$work_root/profile.credential")"; then
-        cat "$work_root/riffdbd.stderr" >&2
-        exit 1
-    fi
-    IFS=$'\t' read -r seed_schema seed_rows seed_ns <<<"$seed_result"
-    [[ "$seed_schema" == "riffdb-ticketdesk-seed-v1" && "$seed_rows" == "276" ]] || {
-        echo "built-in TicketDesk seed returned an invalid result" >&2
-        exit 1
-    }
+    builtin_seed_dir="$work_root/builtin-seed"
+    generate_builtin_seed "$builtin_seed_dir"
+    seed_started_ns="$(date +%s%N)"
+    run_seed "$builtin_seed_dir" builtin
+    seed_ns=$(( $(date +%s%N) - seed_started_ns ))
+    seed_rows=276
     if ((seed_ns > 3000000000)); then
         echo "built-in TicketDesk seed missed the 3 second gate: ${seed_ns}ns" >&2
         exit 1
@@ -257,7 +350,12 @@ if ((acceptance)) && [[ "$role" == "ticketdesk-application" ]]; then
         echo "stable application credential unexpectedly executed ad-hoc RiffQL" >&2
         exit 1
     fi
-    jq -e '.ok == false and .error.type == "public"' "$work_root/ad-hoc-denied.json" >/dev/null
+    jq -e '
+      .ok == false
+      and .error.type == "application"
+      and .error.code == "RDB-AUTH-0214"
+      and .error.operation == "ExecuteQuery"
+    ' "$work_root/ad-hoc-denied.json" >/dev/null
 fi
 
 printf 'riffdb-dev-ready-v1\t%s\t%s\t%s\n' \

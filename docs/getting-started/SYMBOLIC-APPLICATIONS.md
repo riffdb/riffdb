@@ -40,7 +40,9 @@ application command or RiffQL authority and cannot seed. There is no combined
 preset. See
 [Safe application profiles](SAFE-APPLICATION-PROFILES.md).
 
-Use a directory of JSON command inputs with bounded concurrency:
+Use a directory of JSONL command batches with bounded concurrency. Each file
+contains complete inputs for one exact command and is named
+`NN-CommandName.jsonl` so dependency stages sort explicitly:
 
 ```bash
 cargo run -p riffdb-cli -- dev \
@@ -48,8 +50,10 @@ cargo run -p riffdb-cli -- dev \
   --seed-concurrency 4
 ```
 
-The concurrency bound is `1..8`. Every file is submitted through `riffdb
-command run`; seed files are not storage imports.
+The development concurrency bound is `1..8`. Every line is submitted through
+the resumable `riffdb command batch` scheduler as an ordinary symbolic command;
+seed files are not storage imports or collection transactions. See
+[Resumable command batches](COMMAND-BATCHES.md).
 
 ## Write a read
 

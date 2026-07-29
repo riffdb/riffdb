@@ -6,6 +6,7 @@ cd "$repo_root"
 
 output="$(cargo run --quiet -p riffdb-cli -- dev \
     --role ticketdesk-application \
+    --seed-dir fixtures/batches \
     --seed-concurrency 8 \
     --acceptance)"
 case "$output" in

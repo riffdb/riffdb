@@ -932,7 +932,10 @@ fn application_decimal(value: ApplicationValue) -> Result<DecimalValue, Applicat
 fn application_list(value: ApplicationValue) -> Result<Vec<ApplicationValue>, ApplicationClientError> { if let ApplicationValue::List(value) = value { Ok(value) } else { Err(ApplicationClientError::InvalidResponse) } }
 fn application_record(value: ApplicationValue) -> Result<ApplicationRecord, ApplicationClientError> { if let ApplicationValue::Record(fields) = value { Ok(ApplicationRecord { entity: String::new(), fields }) } else { Err(ApplicationClientError::InvalidResponse) } }
 fn wire_named_field(name: &str, value: v1::Value) -> v1::ValueField { v1::ValueField { field_id: None, name: name.to_owned(), value: Some(value) } }
-fn wire_record(fields: Vec<v1::ValueField>) -> v1::Value { v1::Value { kind: Some(WireKind::RecordValue(v1::ValueRecord { fields })) } }
+fn wire_record(mut fields: Vec<v1::ValueField>) -> v1::Value {
+    fields.sort_by(|left, right| left.name.cmp(&right.name));
+    v1::Value { kind: Some(WireKind::RecordValue(v1::ValueRecord { fields })) }
+}
 fn wire_null() -> v1::Value { v1::Value { kind: Some(WireKind::NullValue(v1::NullValue::NullValue as i32)) } }
 fn wire_string(value: String) -> v1::Value { v1::Value { kind: Some(WireKind::StringValue(value)) } }
 fn wire_bool(value: bool) -> v1::Value { v1::Value { kind: Some(WireKind::BoolValue(value)) } }

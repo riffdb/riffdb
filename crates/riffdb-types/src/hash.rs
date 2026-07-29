@@ -62,11 +62,13 @@ pub enum HashDomain {
     ProjectionApply,
     /// One checked offline-maintenance semantic input.
     OfflineMaintenanceInput,
+    /// One bounded command-batch source, item, or checkpoint document.
+    CommandBatch,
 }
 
 impl HashDomain {
     /// Every registered unkeyed domain, for compatibility and collision checks.
-    pub const ALL: [Self; 20] = [
+    pub const ALL: [Self; 21] = [
         Self::CanonicalValue,
         Self::Source,
         Self::ContractBundle,
@@ -87,6 +89,7 @@ impl HashDomain {
         Self::Schema,
         Self::ProjectionApply,
         Self::OfflineMaintenanceInput,
+        Self::CommandBatch,
     ];
 
     /// Returns the immutable ASCII v1 domain label.
@@ -112,6 +115,7 @@ impl HashDomain {
             Self::Schema => "riffdb.schema/v1",
             Self::ProjectionApply => "riffdb.projection-apply/v1",
             Self::OfflineMaintenanceInput => "riffdb.offline-maintenance-input/v1",
+            Self::CommandBatch => "riffdb.command-batch/v1",
         }
     }
 }
@@ -233,6 +237,12 @@ pub fn hash(domain: HashDomain, payload: &[u8]) -> ContentDigest {
     let mut hasher = Sha256::new();
     write_frame(&mut hasher, HASH_PREFIX, domain.label(), payload);
     ContentDigest::new(domain, hasher.finalize().into())
+}
+
+/// Hashes one bounded command-batch source, item, or checkpoint document.
+#[must_use]
+pub fn hash_command_batch_document(payload: &[u8]) -> ContentDigest {
+    hash(HashDomain::CommandBatch, payload)
 }
 
 macro_rules! typed_hash_function {
