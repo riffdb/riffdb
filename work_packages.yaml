@@ -93,6 +93,11 @@ gates:
   - WP-367
   - WP-368
   - WP-369
+  - WP-371
+  - WP-372
+  - WP-373
+  - WP-374
+  - WP-375
   - WP-370
 work_packages:
 - id: WP-000
@@ -4996,6 +5001,7 @@ work_packages:
   - WP-367
   - WP-368
   - WP-369
+  - WP-375
   objective: Repeat the official Blog and Orders Rust/TypeScript evaluation against one new sealed bundle and publish
     an eligible gate only when all unchanged Agent Application Alpha thresholds pass.
   requirements:
@@ -5029,4 +5035,298 @@ work_packages:
   exit_gate: All four fresh campaign-02 runs complete the unfamiliar-domain workloads, satisfy every unchanged AAA-012
     and PERF-003 threshold, rate the product at least 8.5, and publish immutable raw evidence before operational alpha
     or replication.
+  human_review_triggers: *id001
+- id: WP-371
+  name: Semantic durability profiles and standard one-phase commits
+  depends_on:
+  - WP-369
+  objective: Separate the application acknowledgement guarantee from the redb mechanism and make Immediate one-phase
+    checksum commits the standard hot application profile while retaining a hardened two-phase oracle.
+  requirements:
+  - PERF-009
+  required_adrs:
+  - ADR-0004
+  - ADR-0023
+  - ADR-0058
+  - ADR-0060
+  - ADR-0061
+  allowed_paths:
+  - Cargo.toml
+  - Cargo.lock
+  - SPEC.md
+  - work_packages.yaml
+  - adr/**
+  - crates/riffdb-storage-api/**
+  - crates/riffdb-storage-memory/**
+  - crates/riffdb-storage-redb/**
+  - crates/riffdb-commit/**
+  - crates/riffdb-server/**
+  - crates/riffdb-observability/**
+  - crates/riffdb-testkit/**
+  - tests/command_semantics/**
+  - tests/recovery/**
+  - tests/grpc/**
+  - benchmarks/command-growth/**
+  - benchmarks/run-app-baseline
+  - scripts/benchmark-command-growth
+  - docs/performance/**
+  deliverables:
+  - Closed standard-one-phase and hardened-two-phase engine profiles with identical application semantics
+  - Standard application writes using Immediate one-phase commits while initialization, migration, and the oracle may
+    remain hardened
+  - Explicit non-Byzantine host/storage threat statement and no public command-controlled durability downgrade
+  - Process crash, reopen, unknown-status, complete-or-absent, and same-key recovery evidence for both profiles
+  - Same-run application and engine A/B report without assuming a fixed improvement
+  acceptance_commands:
+  - cargo test -p riffdb-storage-redb --all-features
+  - cargo test -p riffdb-commit --all-features
+  - cargo test -p riffdb-server --all-features
+  - ./scripts/benchmark-command-growth --assert-perf-009
+  - ./benchmarks/run-app-baseline --full
+  - cargo fmt --all -- --check
+  - cargo clippy --workspace --all-targets --all-features -- -D warnings
+  exit_gate: The standard profile acknowledges only complete one-phase Immediate commits, the hardened oracle retains
+    two-phase behavior, both pass the same crash/idempotency graph, and the measured report names the actual gain.
+  human_review_triggers: *id001
+- id: WP-372
+  name: Atomic terminal admission for synchronous commands
+  depends_on:
+  - WP-371
+  objective: Remove durable Pending churn from new synchronous commands by moving only bounded side-effect-free
+    preparation before one freshly authorized vacant-to-terminal authoritative transaction.
+  requirements:
+  - PERF-010
+  required_adrs:
+  - ADR-0003
+  - ADR-0005
+  - ADR-0007
+  - ADR-0012
+  - ADR-0023
+  - ADR-0058
+  - ADR-0061
+  allowed_paths:
+  - Cargo.toml
+  - Cargo.lock
+  - SPEC.md
+  - work_packages.yaml
+  - adr/**
+  - crates/riffdb-auth/**
+  - crates/riffdb-policy/**
+  - crates/riffdb-catalog/**
+  - crates/riffdb-runtime/**
+  - crates/riffdb-conflict/**
+  - crates/riffdb-idempotency/**
+  - crates/riffdb-storage-api/**
+  - crates/riffdb-storage-memory/**
+  - crates/riffdb-storage-redb/**
+  - crates/riffdb-commit/**
+  - crates/riffdb-service/**
+  - crates/riffdb-server/**
+  - crates/riffdb-observability/**
+  - crates/riffdb-testkit/**
+  - tests/command_semantics/**
+  - tests/service/**
+  - tests/service_audit/**
+  - tests/service_audit_recovery/**
+  - tests/grpc/**
+  - examples/app-baseline/**
+  - benchmarks/run-app-baseline
+  - docs/performance/**
+  deliverables:
+  - Move-only terminal-admission preparation joining initial authorization, fixed invocation time, conflict lease,
+    evaluated command, fresh post-evaluation authorization, and complete release proof
+  - One transaction from vacant identity to Started plus complete terminal command graph plus linked terminal audit
+  - Direct dependency-validated vacant-to-ExecutionFailed transition
+  - Exact concurrent equal, different-input, replay, deployment, cancellation, revocation, retry, and unknown-status
+    semantics with one terminal winner and no leaked preparation
+  - Historical Pending resume compatibility and startup fixtures retained
+  - Process failpoints proving pre-terminal absence or complete terminal recovery with no partial audit or graph
+  acceptance_commands:
+  - cargo test -p riffdb-idempotency --all-features
+  - cargo test -p riffdb-storage-api --all-features
+  - cargo test -p riffdb-storage-memory --all-features
+  - cargo test -p riffdb-storage-redb --all-features
+  - cargo test -p riffdb-commit --all-features
+  - cargo test -p riffdb-service --all-features
+  - cargo test -p riffdb-server --all-features
+  - ./benchmarks/run-app-baseline --full
+  - ./scripts/check-generated
+  - cargo fmt --all -- --check
+  - cargo clippy --workspace --all-targets --all-features -- -D warnings
+  exit_gate: New synchronous commands create no Pending row, expose no speculative result or effect, freshly authorize
+    before one complete terminal transaction, and retain exact replay, crash, audit, provenance, and uncertainty safety.
+  human_review_triggers: *id001
+- id: WP-373
+  name: Compact durable storage format V2 and migration
+  depends_on:
+  - WP-372
+  objective: Replace repeated full StoredEnvelope framing with a compact checked V2 record header and migrate V1
+    databases through one bounded restartable fail-closed format transition.
+  requirements:
+  - PERF-011
+  required_adrs:
+  - ADR-0004
+  - ADR-0006
+  - ADR-0022
+  - ADR-0039
+  - ADR-0061
+  allowed_paths:
+  - Cargo.toml
+  - Cargo.lock
+  - SPEC.md
+  - work_packages.yaml
+  - adr/**
+  - proto/riffdb/storage/**
+  - crates/riffdb-proto/**
+  - crates/riffdb-storage-api/**
+  - crates/riffdb-storage-memory/**
+  - crates/riffdb-storage-redb/**
+  - crates/riffdb-catalog/**
+  - crates/riffdb-server/**
+  - crates/riffdb-testkit/**
+  - fixtures/proto/**
+  - fixtures/storage/**
+  - tests/recovery/**
+  - tests/grpc/**
+  - scripts/generate-proto
+  - scripts/check-generated
+  - docs/performance/**
+  deliverables:
+  - Compact V2 header with format marker/version, closed record tag, nonzero schema revision, and payload CRC32C
+  - One durable database registry digest binding all tag/revision pairs to canonical descriptor hashes
+  - Canonical V2 encoder/decoder with strict re-encode, key/value, bound, registry, checksum, and unknown-state rejection
+  - Bounded resumable V1-to-V2 migration with crash checkpoints, mixed-revision startup state, and final verification
+  - Immutable V1 fixtures plus new V2 golden vectors and measured bytes by record class
+  acceptance_commands:
+  - cargo test -p riffdb-proto --all-features
+  - cargo test -p riffdb-storage-api --all-features
+  - cargo test -p riffdb-storage-redb --all-features
+  - cargo test -p riffdb-catalog --all-features
+  - cargo test -p riffdb-server --all-features
+  - ./scripts/generate-proto --check
+  - ./scripts/check-generated
+  - cargo fmt --all -- --check
+  - cargo clippy --workspace --all-targets --all-features -- -D warnings
+  exit_gate: Every new durable row uses compact V2 framing, V1 migrates restartably without mixed unproved activation,
+    and every corruption, substitution, unknown revision, and crash state fails closed.
+  human_review_triggers: *id001
+- id: WP-374
+  name: Single authoritative event payload and reciprocal references
+  depends_on:
+  - WP-373
+  objective: Store each complete durable event exactly once and replace commit/outbox payload copies with atomic exact
+    ID-and-hash references while preserving dispatch, projection, recovery, and provenance guarantees.
+  requirements:
+  - PERF-011
+  required_adrs:
+  - ADR-0004
+  - ADR-0010
+  - ADR-0017
+  - ADR-0022
+  - ADR-0049
+  - ADR-0061
+  allowed_paths:
+  - Cargo.toml
+  - Cargo.lock
+  - SPEC.md
+  - work_packages.yaml
+  - adr/**
+  - proto/riffdb/storage/**
+  - crates/riffdb-proto/**
+  - crates/riffdb-storage-api/**
+  - crates/riffdb-storage-memory/**
+  - crates/riffdb-storage-redb/**
+  - crates/riffdb-commit/**
+  - crates/riffdb-catalog/**
+  - crates/riffdb-outbox/**
+  - crates/riffdb-projection/**
+  - crates/riffdb-server/**
+  - crates/riffdb-testkit/**
+  - fixtures/proto/**
+  - fixtures/storage/**
+  - tests/command_semantics/**
+  - tests/recovery/**
+  - scripts/generate-proto
+  - scripts/check-generated
+  - docs/performance/**
+  deliverables:
+  - Versioned EventReference carrying exact EventId and EventHash
+  - Commit and outbox records containing references rather than complete event payloads
+  - Atomic event/reference staging and exact startup three-way reciprocity
+  - Dispatcher and projection materialization loading one authoritative event with hash verification
+  - Compatibility migration and byte-amplification evidence
+  acceptance_commands:
+  - cargo test -p riffdb-storage-api --all-features
+  - cargo test -p riffdb-storage-memory --all-features
+  - cargo test -p riffdb-storage-redb --all-features
+  - cargo test -p riffdb-commit --all-features
+  - cargo test -p riffdb-outbox --all-features
+  - cargo test -p riffdb-projection --all-features
+  - cargo test -p riffdb-server --all-features
+  - ./scripts/generate-proto --check
+  - ./scripts/check-generated
+  - cargo fmt --all -- --check
+  - cargo clippy --workspace --all-targets --all-features -- -D warnings
+  exit_gate: Event payload bytes have one authoritative owner, every reference is atomic and reciprocal, and dispatch,
+    projection, crash recovery, and corruption detection retain exact behavior.
+  human_review_triggers: *id001
+- id: WP-375
+  name: Conservative partition-index generations and renewed parity gate
+  depends_on:
+  - WP-374
+  objective: Replace prefix epoch write amplification with one conservative generation per affected partition/index
+    pair, then rerun the complete semantic and PostgreSQL parity campaign before agent alpha.
+  requirements:
+  - PERF-012
+  - PERF-008
+  required_adrs:
+  - ADR-0003
+  - ADR-0004
+  - ADR-0038
+  - ADR-0055
+  - ADR-0059
+  - ADR-0061
+  allowed_paths:
+  - Cargo.toml
+  - Cargo.lock
+  - SPEC.md
+  - work_packages.yaml
+  - adr/**
+  - crates/riffdb-types/**
+  - crates/riffdb-contract-ir/**
+  - crates/riffdb-contract-compiler/**
+  - crates/riffdb-query-ir/**
+  - crates/riffdb-query-compiler/**
+  - crates/riffdb-query-executor/**
+  - crates/riffdb-storage-api/**
+  - crates/riffdb-storage-memory/**
+  - crates/riffdb-storage-redb/**
+  - crates/riffdb-commit/**
+  - crates/riffdb-service/**
+  - crates/riffdb-server/**
+  - crates/riffdb-testkit/**
+  - tests/command_semantics/**
+  - tests/grpc/**
+  - examples/app-baseline/**
+  - benchmarks/**
+  - scripts/benchmark-command-growth
+  - scripts/benchmark-concurrent-application
+  - docs/performance/**
+  deliverables:
+  - Canonical partition/index generation identity and exactly one advance per affected pair per command
+  - Range dependencies and cursors bound to conservative generations with no stale acceptance
+  - Compiler rejection and source-spanned diagnostics for an unprovable write-influencing range
+  - Migration from prefix epoch rows and removal of prefix write fan-out
+  - Full crash, safety, seed, unary, 1/8/32/64-client, and same-run PostgreSQL evidence
+  acceptance_commands:
+  - cargo test --workspace --all-features
+  - ./scripts/benchmark-command-growth --assert-perf-012
+  - ./scripts/benchmark-concurrent-application --assert-perf-008
+  - ./benchmarks/run-app-baseline --full --assert-all-parity
+  - ./scripts/check-generated
+  - ./scripts/check-requirement-coverage
+  - cargo fmt --all -- --check
+  - cargo clippy --workspace --all-targets --all-features -- -D warnings
+  exit_gate: Every range remains conservatively safe with at most one generation write per affected partition/index,
+    all crash and corruption evidence passes, and the complete application parity gate determines WP-370 eligibility.
   human_review_triggers: *id001

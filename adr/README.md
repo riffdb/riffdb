@@ -252,6 +252,12 @@ ADR-0060 has a separate acceptance reference: the maintainer's explicit
 activated storage-lane, immutable-artifact, parallel-preparation, and
 concurrent application-parity plan while retaining one ordered authoritative
 writer and every fail-closed command guarantee.
+ADR-0061 has a separate acceptance reference: the maintainer's explicit
+2026-07-30 approval of the pre-alpha semantic durability contract, standard
+one-phase and hardened two-phase redb profiles, atomic terminal admission,
+compact storage format V2, single authoritative event payload, conservative
+partition/index generations, and the prohibition on visible non-durable
+chaining.
 
 ## Workflow
 
