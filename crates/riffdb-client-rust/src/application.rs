@@ -79,9 +79,11 @@ impl StableApplicationClient {
         let result = self.execute_named_query(query, metadata).await?;
         let application_head = result.application_head;
         let next_cursor = result.next_cursor.clone();
+        let identity = result.identity.clone();
         let value = Q::decode_result(result)?;
         Ok(TypedQueryResult {
             value,
+            identity,
             application_head,
             next_cursor,
         })
@@ -116,6 +118,11 @@ impl StableApplicationClient {
             outcome,
             commit_sequence: (response.commit_sequence != 0).then_some(response.commit_sequence),
             contract_version: response.contract_version,
+            plan_hash: response.plan_hash.try_into().map_err(|_| {
+                GeneratedExecutionError::CommandShape(
+                    crate::generated::GeneratedCommandError::InvalidOutcomeShape,
+                )
+            })?,
             replayed: response.status
                 == v1::execute_command_response::CompletionStatus::Replayed as i32,
             outcome_uri: response.outcome_uri,
@@ -284,7 +291,7 @@ impl StableApplicationClient {
                     .map_err(GeneratedExecutionError::CommandShape);
                 (
                     index,
-                    outcome.map(|outcome| typed_command_result(outcome, response)),
+                    outcome.and_then(|outcome| typed_command_result(outcome, response)),
                 )
             },
         ));
@@ -301,15 +308,21 @@ fn generated_transport_batch_policy(item_concurrency: usize) -> (usize, usize) {
 fn typed_command_result<T>(
     outcome: T,
     response: v1::ExecuteCommandResponse,
-) -> TypedCommandResult<T> {
-    TypedCommandResult {
+) -> Result<TypedCommandResult<T>, GeneratedExecutionError> {
+    let plan_hash = response.plan_hash.try_into().map_err(|_| {
+        GeneratedExecutionError::CommandShape(
+            crate::generated::GeneratedCommandError::InvalidOutcomeShape,
+        )
+    })?;
+    Ok(TypedCommandResult {
         outcome,
         commit_sequence: (response.commit_sequence != 0).then_some(response.commit_sequence),
         contract_version: response.contract_version,
+        plan_hash,
         replayed: response.status
             == v1::execute_command_response::CompletionStatus::Replayed as i32,
         outcome_uri: response.outcome_uri,
-    }
+    })
 }
 
 /// Bounds for generated command batches.
@@ -466,6 +479,7 @@ pub struct NamedQuery {
     contract: ApplicationContract,
     name: String,
     module_hash: Option<[u8; 32]>,
+    expected_plan_hash: Option<[u8; 32]>,
     parameters: BTreeMap<String, ApplicationValue>,
     cursor: Option<String>,
     minimum_application_head: Option<u64>,
@@ -495,10 +509,18 @@ impl NamedQuery {
             contract,
             name,
             module_hash,
+            expected_plan_hash: None,
             parameters,
             cursor,
             minimum_application_head: None,
         })
+    }
+
+    /// Requires the server to return this exact compiler-owned query plan.
+    #[must_use]
+    pub const fn expect_plan_hash(mut self, plan_hash: [u8; 32]) -> Self {
+        self.expected_plan_hash = Some(plan_hash);
+        self
     }
 
     /// Applies generated pagination and read-after-commit options.
@@ -549,6 +571,8 @@ impl QueryOptions {
 pub struct TypedQueryResult<T> {
     /// Generated declared-result value.
     pub value: T,
+    /// Exact returned identity, verified against the generated request.
+    pub identity: QueryResponseIdentity,
     /// Authoritative application head observed by the one-snapshot read.
     pub application_head: u64,
     /// Opaque continuation cursor, when another bounded page exists.
@@ -564,6 +588,8 @@ pub struct TypedCommandResult<T> {
     pub commit_sequence: Option<u64>,
     /// Exact contract version used by execution.
     pub contract_version: u64,
+    /// Exact compiler-owned command plan used by execution.
+    pub plan_hash: [u8; 32],
     /// Whether the invocation replayed an already durable result.
     pub replayed: bool,
     /// Durable opaque outcome locator, when available.
@@ -645,8 +671,25 @@ pub struct NamedQueryResult {
     pub fields: BTreeMap<String, ApplicationResultField>,
     /// Opaque continuation cursor.
     pub next_cursor: Option<String>,
-    /// Exact module identity used by named execution.
+    /// Exact symbolic identity used by named execution.
+    pub identity: QueryResponseIdentity,
+}
+
+/// Exact server-returned identity for one named query execution.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct QueryResponseIdentity {
+    /// Exact contract lineage.
+    pub contract_lineage: String,
+    /// Exact contract version.
+    pub contract_version: u64,
+    /// Exact contract bundle hash.
+    pub contract_bundle_hash: [u8; 32],
+    /// Exact deployed query module hash.
     pub module_hash: [u8; 32],
+    /// Exact query operation name.
+    pub query_name: String,
+    /// Exact compiler-owned query plan hash.
+    pub plan_hash: [u8; 32],
 }
 
 /// Successful command completion without kernel protocol details.
@@ -737,6 +780,7 @@ impl RiffDbClient {
         let expected_contract = query.contract.clone();
         let expected_name = query.name.clone();
         let expected_module_hash = query.module_hash;
+        let expected_plan_hash = query.expected_plan_hash;
         let request_id = generate_request_id()
             .map_err(|_| ApplicationClientError::IdentifierUnavailable)?
             .into_bytes()
@@ -770,6 +814,7 @@ impl RiffDbClient {
             &expected_contract,
             &expected_name,
             expected_module_hash,
+            expected_plan_hash,
         )?;
         raise_query_result(response)
     }
@@ -828,6 +873,7 @@ fn validate_query_response_identity(
     contract: &ApplicationContract,
     query_name: &str,
     module_hash: Option<[u8; 32]>,
+    plan_hash: Option<[u8; 32]>,
 ) -> Result<(), ApplicationClientError> {
     let identity = response
         .identity
@@ -836,6 +882,7 @@ fn validate_query_response_identity(
     if identity.query_name.as_deref() != Some(query_name)
         || module_hash
             .is_some_and(|expected| identity.module_hash.as_deref() != Some(expected.as_slice()))
+        || plan_hash.is_some_and(|expected| identity.plan_hash.as_slice() != expected.as_slice())
     {
         return Err(ApplicationClientError::InvalidResponse);
     }
@@ -962,6 +1009,17 @@ fn raise_query_result(
         .ok_or(ApplicationClientError::InvalidResponse)?
         .try_into()
         .map_err(|_| ApplicationClientError::InvalidResponse)?;
+    let contract_bundle_hash = identity
+        .contract_bundle_hash
+        .try_into()
+        .map_err(|_| ApplicationClientError::InvalidResponse)?;
+    let plan_hash = identity
+        .plan_hash
+        .try_into()
+        .map_err(|_| ApplicationClientError::InvalidResponse)?;
+    let query_name = identity
+        .query_name
+        .ok_or(ApplicationClientError::InvalidResponse)?;
     let mut fields = BTreeMap::new();
     for field in response.fields {
         let cardinality = match app_v1::ResultCardinality::try_from(field.cardinality) {
@@ -1014,7 +1072,14 @@ fn raise_query_result(
         application_head: response.application_head,
         fields,
         next_cursor: response.next_cursor,
-        module_hash,
+        identity: QueryResponseIdentity {
+            contract_lineage: identity.contract_lineage,
+            contract_version: identity.contract_version,
+            contract_bundle_hash,
+            module_hash,
+            query_name,
+            plan_hash,
+        },
     })
 }
 
@@ -1242,7 +1307,12 @@ mod tests {
         };
         let result = raise_query_result(response).expect("result");
         assert_eq!(result.outcome, "Found");
-        assert_eq!(result.module_hash, [3; 32]);
+        assert_eq!(result.identity.contract_lineage, "TicketDesk");
+        assert_eq!(result.identity.contract_version, 1);
+        assert_eq!(result.identity.contract_bundle_hash, [1; 32]);
+        assert_eq!(result.identity.module_hash, [3; 32]);
+        assert_eq!(result.identity.query_name, "TicketPage");
+        assert_eq!(result.identity.plan_hash, [2; 32]);
         assert_eq!(
             result.fields["ticket"].records[0].fields["title"],
             ApplicationValue::String("Hello".to_owned())
@@ -1267,14 +1337,42 @@ mod tests {
             version: 1,
             bundle_hash: Some([1; 32]),
         };
-        validate_query_response_identity(&response, &contract, "TicketPage", Some([3; 32]))
-            .expect("exact identity");
+        validate_query_response_identity(
+            &response,
+            &contract,
+            "TicketPage",
+            Some([3; 32]),
+            Some([2; 32]),
+        )
+        .expect("exact identity");
         assert!(matches!(
-            validate_query_response_identity(&response, &contract, "Other", Some([3; 32])),
+            validate_query_response_identity(
+                &response,
+                &contract,
+                "Other",
+                Some([3; 32]),
+                Some([2; 32])
+            ),
             Err(ApplicationClientError::InvalidResponse)
         ));
         assert!(matches!(
-            validate_query_response_identity(&response, &contract, "TicketPage", Some([4; 32])),
+            validate_query_response_identity(
+                &response,
+                &contract,
+                "TicketPage",
+                Some([4; 32]),
+                Some([2; 32])
+            ),
+            Err(ApplicationClientError::InvalidResponse)
+        ));
+        assert!(matches!(
+            validate_query_response_identity(
+                &response,
+                &contract,
+                "TicketPage",
+                Some([3; 32]),
+                Some([4; 32])
+            ),
             Err(ApplicationClientError::InvalidResponse)
         ));
         let changed_contract = ApplicationContract::Exact {
@@ -1287,7 +1385,8 @@ mod tests {
                 &response,
                 &changed_contract,
                 "TicketPage",
-                Some([3; 32])
+                Some([3; 32]),
+                Some([2; 32])
             ),
             Err(ApplicationClientError::InvalidResponse)
         ));

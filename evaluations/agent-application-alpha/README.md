@@ -1,10 +1,11 @@
 # Agent Application Alpha sealed evaluation
 
-This directory defines the WP-340 evaluation protocol. The `runs` directory
-contains four completed Terra evaluations from one sealed bundle. They are raw
-failed-run evidence, not synthetic scores and not a passing gate. A gate report
-is valid only when four fresh agents independently produce the required raw
-reports and transcripts from the same sealed bundle.
+This directory defines the sealed evaluation protocol. The `runs` directory
+contains the original four Terra evaluations from one sealed bundle. They are
+raw failed-run evidence, not synthetic scores and not a passing gate.
+`campaigns/campaign-01.json` is the immutable, hash-qualified selection of
+those files; later campaigns must never discover evidence by scanning a shared
+directory or replace a prior selection.
 
 Prepare a release-derived bundle:
 
@@ -26,9 +27,12 @@ sealed `.cargo` directory. Agents may use only bundled public docs, CLI, MCP, an
 generated application packages.
 
 Each runner records value-free events using `event-schema.json`, writes its raw
-JSONL transcript under `runs/<run-id>/events.jsonl`, and writes a report
-conforming to `report-schema.json`. Credentials and application values must
-never enter either artifact.
+JSONL transcript, and writes a report conforming to `report-schema.json`.
+First-write and first-page-read timings count only when a separate
+`qualified-events.jsonl` record conforms to `qualified-event-schema.json` and
+matches the compiler-owned application lock: contract, module, query, plan,
+commit sequence, application head, and read-after-commit fence are all exact.
+Credentials and application values must never enter any evidence artifact.
 
 The report schema accepts both successes and failures. It records booleans,
 counts, nullable first-success timings, and bounded unsupported-shape
@@ -47,6 +51,20 @@ Missing runs, duplicate agent identities, source access, a kernel escape,
 handwritten glue, an unresolved query shape, a missed time threshold, or a
 rating below 8.5 fails the gate. A maintainer cannot replace an independent run
 with a harness self-test.
+
+WP-365 adds a public-only four-way rehearsal and a two-run canary:
+
+```bash
+./scripts/agent-application-alpha-rehearsal --assert-complete
+./scripts/agent-application-alpha-canary-acceptance \
+  --runs 2 --sealed --assert-gate
+```
+
+The canary campaign is selected by
+`campaigns/wp365-canary-01.json`. It must contain exactly Blog/Rust and
+Orders/TypeScript from distinct fresh agents, and it pins the report,
+transcript, qualified events, and compiler lock by SHA-256. The checker also
+revalidates every hash in campaign 01 before considering the canary.
 
 The current four reports intentionally fail this command. They remain
 publishable because the report schema records observed outcomes while the gate

@@ -25,6 +25,7 @@ interface NamedQueryRequest<P, R> {
     readonly contractBundleHash: string;
     readonly moduleHash: string;
     readonly queryName: string;
+    readonly planHash: string;
     readonly parameters: P;
     readonly parameterSchema: ApplicationValueSchema;
     readonly resultSchemas: Readonly<Record<string, ApplicationValueSchema>>;
@@ -49,6 +50,7 @@ export interface QueryResponseIdentity {
     readonly contractBundleHash: string;
     readonly moduleHash: string;
     readonly queryName: string;
+    readonly planHash: string;
 }
 export interface TypedQueryResult<T> {
     readonly identity: QueryResponseIdentity;

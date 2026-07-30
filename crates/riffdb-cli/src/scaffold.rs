@@ -58,7 +58,6 @@ pub(crate) enum ScaffoldError {
     ApplicationSource,
     ApplicationLock,
     LockRequired,
-    LockMismatch,
     IdentityMismatch,
     SourceLimit,
     GenerateMcp,
@@ -81,9 +80,6 @@ impl fmt::Display for ScaffoldError {
             Self::ApplicationLock => "the compiler-owned application lock is invalid",
             Self::LockRequired => {
                 "symbolic application generation requires --locked and an exact lock"
-            }
-            Self::LockMismatch => {
-                "application source, lock, or generated artifacts are stale or substituted"
             }
             Self::IdentityMismatch => {
                 "application source no longer matches its pinned manifest identity"
@@ -235,12 +231,18 @@ pub(crate) fn check_application_lock(
     let decoded = ApplicationLock::decode_canonical(&existing)
         .map_err(|error| lock_diagnostic(&lock_path, error.kind()))?;
     if decoded.canonical_bytes() != compiled.lock.canonical_bytes() {
-        return Err(ScaffoldError::LockMismatch);
+        return Err(lock_diagnostic(
+            &lock_path,
+            riffdb_query_module::ApplicationLockErrorKind::IdentityMismatch,
+        ));
     }
     for (path, expected) in &compiled.outputs {
         let actual = read_workspace_file(root, path, 16 * 1_024 * 1_024)?;
         if &actual != expected {
-            return Err(ScaffoldError::LockMismatch);
+            return Err(lock_diagnostic(
+                &lock_path,
+                riffdb_query_module::ApplicationLockErrorKind::IdentityMismatch,
+            ));
         }
     }
     Ok(())
@@ -254,7 +256,10 @@ fn generate_application_locked(source_path: &Path, lock_path: &Path) -> Result<(
     let decoded = ApplicationLock::decode_canonical(&existing)
         .map_err(|error| lock_diagnostic(&lock_path, error.kind()))?;
     if decoded.canonical_bytes() != compiled.lock.canonical_bytes() {
-        return Err(ScaffoldError::LockMismatch);
+        return Err(lock_diagnostic(
+            &lock_path,
+            riffdb_query_module::ApplicationLockErrorKind::IdentityMismatch,
+        ));
     }
     for (path, bytes) in &compiled.outputs {
         atomic_write_workspace(root, path, bytes)?;
@@ -1448,7 +1453,6 @@ mod tests {
             generate_application(&first.join("riffdb.application.json"), true, None),
             Err(ScaffoldError::CompileQuery
                 | ScaffoldError::IdentityMismatch
-                | ScaffoldError::LockMismatch
                 | ScaffoldError::Authoring(_))
         ));
         assert!(create_application("order-desk", ScaffoldLanguage::Rust, &first).is_err());
@@ -1572,10 +1576,15 @@ mod tests {
         write_application_lock(&source, None).expect("write lock");
         assert_eq!(preview, fs::read(&lock).expect("written lock"));
         fs::write(&generated, b"substituted\n").expect("substitute output");
-        assert!(matches!(
-            check_application_lock(&source, None),
-            Err(ScaffoldError::LockMismatch)
-        ));
+        let error = check_application_lock(&source, None).expect_err("artifact drift rejected");
+        let diagnostics = error
+            .diagnostics()
+            .expect("artifact drift has a structured public diagnostic");
+        let [diagnostic] = diagnostics.as_slice() else {
+            panic!("artifact drift returns exactly one diagnostic");
+        };
+        assert_eq!(diagnostic.code().as_str(), "RDB-AL008");
+        assert_eq!(diagnostic.path().as_str(), DEFAULT_LOCK_PATH);
         fs::remove_dir_all(base).expect("cleanup");
     }
 

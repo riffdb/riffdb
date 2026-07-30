@@ -1,5 +1,5 @@
 {
-  "application_manifest_hash": "6bc257937a0bb51c09c5147d6ff22b1c36852dd0edc2f690a788a7e44de85e97",
+  "application_manifest_hash": "e81bd4f6302040fb3d916f62430a616598e97fa9f19e3f9780023bf5eba4b964",
   "commands": [
     {
       "annotations": {
@@ -8,7 +8,7 @@
         "openWorldHint": false,
         "readOnlyHint": false
       },
-      "contract_bundle_hash": "93f0dd8c7cd8423db28dca15ac8c6eb57e5a0447268586a7bb17cbbb5aa8029a",
+      "contract_bundle_hash": "d7e7a05088cad945357e38f37af00d7a92d4d0d7cd54e9ac8615d44d965801c2",
       "description": "Execute the exact AttachTag compiled command from contract AgentBlog.",
       "input_schema": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
@@ -36,7 +36,7 @@
         "type": "object"
       },
       "name": "agent_blog.attach_tag",
-      "plan_hash": "12a3ef50422a3f31316f9744d6e8326b5770d89d3edb0dfdaf5f51fb0f57945e",
+      "plan_hash": "bdb549221c1f718892bb896fca5efd032e1158d0db1c514a1e7b8189960a5413",
       "result_schema": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "oneOf": [
@@ -144,7 +144,7 @@
         "openWorldHint": false,
         "readOnlyHint": false
       },
-      "contract_bundle_hash": "93f0dd8c7cd8423db28dca15ac8c6eb57e5a0447268586a7bb17cbbb5aa8029a",
+      "contract_bundle_hash": "d7e7a05088cad945357e38f37af00d7a92d4d0d7cd54e9ac8615d44d965801c2",
       "description": "Execute the exact CreateAuthor compiled command from contract AgentBlog.",
       "input_schema": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
@@ -172,7 +172,7 @@
         "type": "object"
       },
       "name": "agent_blog.create_author",
-      "plan_hash": "3ed778239f61da944b1ec65c4a76e2dde1b01b031df0fbc5f8765780fa91f149",
+      "plan_hash": "3deefb9cb4c3ac6a469a36f6e880fc6adf422d26ed6eb5543c9e5b5916f6fc3f",
       "result_schema": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "oneOf": [
@@ -259,7 +259,7 @@
         "openWorldHint": false,
         "readOnlyHint": false
       },
-      "contract_bundle_hash": "93f0dd8c7cd8423db28dca15ac8c6eb57e5a0447268586a7bb17cbbb5aa8029a",
+      "contract_bundle_hash": "d7e7a05088cad945357e38f37af00d7a92d4d0d7cd54e9ac8615d44d965801c2",
       "description": "Execute the exact CreateComment compiled command from contract AgentBlog.",
       "input_schema": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
@@ -299,7 +299,7 @@
         "type": "object"
       },
       "name": "agent_blog.create_comment",
-      "plan_hash": "57f578b60ad438c0b55a8a051fab130fc5913daab0e86a37d17b132f892361da",
+      "plan_hash": "9db6e0e3dfe2b8460ad17e0446e483b4df99b1cb2bf2d47bc744fc8a2834a20c",
       "result_schema": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "oneOf": [
@@ -415,7 +415,7 @@
         "openWorldHint": false,
         "readOnlyHint": false
       },
-      "contract_bundle_hash": "93f0dd8c7cd8423db28dca15ac8c6eb57e5a0447268586a7bb17cbbb5aa8029a",
+      "contract_bundle_hash": "d7e7a05088cad945357e38f37af00d7a92d4d0d7cd54e9ac8615d44d965801c2",
       "description": "Execute the exact CreatePost compiled command from contract AgentBlog.",
       "input_schema": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
@@ -459,7 +459,7 @@
         "type": "object"
       },
       "name": "agent_blog.create_post",
-      "plan_hash": "9ba5013db3f2de16bb978fe61279de69e259d0b65bd983a673df85898ecb388c",
+      "plan_hash": "a753353766799c7f36fa6acef34d41b6b40a65197e49beb14baf33963765c493",
       "result_schema": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "oneOf": [
@@ -583,7 +583,7 @@
         "openWorldHint": false,
         "readOnlyHint": false
       },
-      "contract_bundle_hash": "93f0dd8c7cd8423db28dca15ac8c6eb57e5a0447268586a7bb17cbbb5aa8029a",
+      "contract_bundle_hash": "d7e7a05088cad945357e38f37af00d7a92d4d0d7cd54e9ac8615d44d965801c2",
       "description": "Execute the exact CreatePostRoute compiled command from contract AgentBlog.",
       "input_schema": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
@@ -611,7 +611,7 @@
         "type": "object"
       },
       "name": "agent_blog.create_post_route",
-      "plan_hash": "ac96d745aa24bd4396ac3531b72fd0e84b76e0e44d0428299769231dbfcb4550",
+      "plan_hash": "d3c5172275458d0e95455656f95848e7e0e321b96f0407b750c24a0d2fd3364b",
       "result_schema": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "oneOf": [
@@ -711,7 +711,7 @@
         "openWorldHint": false,
         "readOnlyHint": false
       },
-      "contract_bundle_hash": "93f0dd8c7cd8423db28dca15ac8c6eb57e5a0447268586a7bb17cbbb5aa8029a",
+      "contract_bundle_hash": "d7e7a05088cad945357e38f37af00d7a92d4d0d7cd54e9ac8615d44d965801c2",
       "description": "Execute the exact CreateSite compiled command from contract AgentBlog.",
       "input_schema": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
@@ -801,7 +801,7 @@
         "openWorldHint": false,
         "readOnlyHint": false
       },
-      "contract_bundle_hash": "93f0dd8c7cd8423db28dca15ac8c6eb57e5a0447268586a7bb17cbbb5aa8029a",
+      "contract_bundle_hash": "d7e7a05088cad945357e38f37af00d7a92d4d0d7cd54e9ac8615d44d965801c2",
       "description": "Execute the exact CreateTag compiled command from contract AgentBlog.",
       "input_schema": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
@@ -829,7 +829,7 @@
         "type": "object"
       },
       "name": "agent_blog.create_tag",
-      "plan_hash": "ca55ecb95abe64fb2a5e24aa02b7d2c959d9af75bda034af1a3cafbc364c10a8",
+      "plan_hash": "c8d195da1a0ebf7ecde1e491de737ab5816ccc6c7bd468d78212ec9d18d5717a",
       "result_schema": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "oneOf": [
@@ -952,7 +952,7 @@
         ],
         "type": "object"
       },
-      "module_hash": "37c745a028f59389b6d7e440ccec47932792509c5840c25410f7ed72daa1c7ec",
+      "module_hash": "633ec7748d84bce389480ae5e1b2437880d36d4e00a3bbf24de250472570f019",
       "name": "agent_blog.moderation_queue",
       "result_schema": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
@@ -1036,7 +1036,7 @@
         ],
         "type": "object"
       },
-      "module_hash": "37c745a028f59389b6d7e440ccec47932792509c5840c25410f7ed72daa1c7ec",
+      "module_hash": "633ec7748d84bce389480ae5e1b2437880d36d4e00a3bbf24de250472570f019",
       "name": "agent_blog.post_by_slug",
       "result_schema": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
@@ -1160,7 +1160,7 @@
         ],
         "type": "object"
       },
-      "module_hash": "37c745a028f59389b6d7e440ccec47932792509c5840c25410f7ed72daa1c7ec",
+      "module_hash": "633ec7748d84bce389480ae5e1b2437880d36d4e00a3bbf24de250472570f019",
       "name": "agent_blog.post_page",
       "result_schema": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
@@ -1356,7 +1356,7 @@
         ],
         "type": "object"
       },
-      "module_hash": "37c745a028f59389b6d7e440ccec47932792509c5840c25410f7ed72daa1c7ec",
+      "module_hash": "633ec7748d84bce389480ae5e1b2437880d36d4e00a3bbf24de250472570f019",
       "name": "agent_blog.public_feed",
       "result_schema": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",

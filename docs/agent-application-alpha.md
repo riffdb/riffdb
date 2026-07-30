@@ -248,6 +248,14 @@ diagnostic/error codes, generated-file hashes, boundary-lint output, and final
 acceptance observations. It must not retain credentials or application values
 that are outside the checked fixture set.
 
+AAA-018 tightens first-success accounting: a chronological `first_write` or
+`first_page_read` event is qualified only by a separate value-free record whose
+returned contract, module, query, plan, commit, application-head, and
+read-after-commit identities match the compiler-owned application lock. An
+unbacked success claim counts as no success. Campaign manifests select exact
+reports, transcripts, qualified events, and locks by hash; acceptance never
+flat-scans a mutable directory to choose favorable runs.
+
 ## Alpha thresholds
 
 Each of four runs—both domains in both Rust and TypeScript—must have:

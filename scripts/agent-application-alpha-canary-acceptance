@@ -1,0 +1,283 @@
+#!/usr/bin/env bash
+set -euo pipefail
+umask 077
+
+repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+expected_runs=
+sealed=false
+assert_gate=false
+campaign=wp365-canary-01
+while (($#)); do
+    case "$1" in
+        --runs) expected_runs="${2:-}"; shift 2 ;;
+        --sealed) sealed=true; shift ;;
+        --assert-gate) assert_gate=true; shift ;;
+        --campaign) campaign="${2:-}"; shift 2 ;;
+        *)
+            echo "usage: scripts/agent-application-alpha-canary-acceptance --runs 2 --sealed --assert-gate [--campaign ID]" >&2
+            exit 2
+            ;;
+    esac
+done
+[[ "$expected_runs" == 2 && "$sealed" == true && "$assert_gate" == true ]] || {
+    echo "the WP-365 canary gate requires exactly two sealed asserted runs" >&2
+    exit 2
+}
+[[ "$campaign" =~ ^[a-z0-9-]{1,64}$ ]] || {
+    echo "canary campaign identifier is invalid" >&2
+    exit 2
+}
+for tool in jq mktemp sha256sum sort; do
+    command -v "$tool" >/dev/null 2>&1 || {
+        echo "required canary-gate tool is missing: $tool" >&2
+        exit 1
+    }
+done
+
+work_root="$(mktemp -d "${TMPDIR:-/tmp}/riffdb-agent-alpha-canary.XXXXXX")"
+cleanup() {
+    rm -rf "$work_root"
+}
+trap cleanup EXIT INT TERM
+
+validate_hash() {
+    local path="$1"
+    local expected="$2"
+    [[ "$path" != /* && "$path" != *".."* && -f "$repo_root/$path" ]] || {
+        echo "campaign evidence path is unsafe or missing: $path" >&2
+        exit 1
+    }
+    local actual
+    actual="$(sha256sum "$repo_root/$path" | cut -d' ' -f1)"
+    [[ "$actual" == "$expected" ]] || {
+        echo "immutable campaign evidence hash mismatch: $path" >&2
+        exit 1
+    }
+}
+
+campaign_one="$repo_root/evaluations/agent-application-alpha/campaigns/campaign-01.json"
+jq -e '
+  (keys | sort) == ([
+    "bundle_hash", "campaign_id", "immutable", "runs", "schema", "status"
+  ] | sort)
+  and .schema == "riffdb-agent-application-alpha-campaign/v1"
+  and .campaign_id == "campaign-01"
+  and .immutable == true
+  and .status == "failed"
+  and (.runs | length) == 4
+' "$campaign_one" >/dev/null
+while IFS=$'\t' read -r report report_hash events events_hash; do
+    validate_hash "$report" "$report_hash"
+    validate_hash "$events" "$events_hash"
+done < <(jq -r '.runs[] | [
+  .report.path, .report.sha256, .events.path, .events.sha256
+] | @tsv' "$campaign_one")
+
+manifest="$repo_root/evaluations/agent-application-alpha/campaigns/$campaign.json"
+[[ -f "$manifest" ]] || {
+    echo "sealed canary campaign has not been published: $campaign" >&2
+    exit 1
+}
+jq -e --arg campaign "$campaign" '
+  (keys | sort) == ([
+    "bundle_hash", "campaign_id", "immutable", "runs", "schema", "status"
+  ] | sort)
+  and .schema == "riffdb-agent-application-alpha-campaign/v1"
+  and .campaign_id == $campaign
+  and .immutable == true
+  and .status == "passed"
+  and (.bundle_hash | test("^[0-9a-f]{64}$"))
+  and (.runs | length) == 2
+  and ([.runs[] | [.domain, .language] | join("-")] | sort)
+      == ["blog-rust", "orders-typescript"]
+  and ([.runs[].run_id] | unique | length) == 2
+  and ([.runs[].agent_identity] | unique | length) == 2
+  and all(.runs[];
+      (keys | sort) == ([
+        "agent_identity", "application_lock", "domain", "events", "language",
+        "qualified_events", "report", "run_id"
+      ] | sort)
+      and all(.report, .events, .qualified_events, .application_lock;
+          (keys | sort) == ["path", "sha256"]
+          and (.path | type) == "string"
+          and (.sha256 | test("^[0-9a-f]{64}$"))))
+' "$manifest" >/dev/null || {
+    echo "canary campaign manifest is malformed or does not select the required runs" >&2
+    exit 1
+}
+
+bundle="$work_root/bundle"
+bundle_hash="$("$repo_root/scripts/agent-application-alpha-package" "$bundle")"
+[[ "$bundle_hash" == "$(jq -er '.bundle_hash' "$manifest")" ]] || {
+    echo "canary campaign was not produced from the current sealed bundle" >&2
+    exit 1
+}
+
+while IFS= read -r run; do
+    run_id="$(jq -er '.run_id' <<<"$run")"
+    domain="$(jq -er '.domain' <<<"$run")"
+    language="$(jq -er '.language' <<<"$run")"
+    agent="$(jq -er '.agent_identity' <<<"$run")"
+    report_path="$(jq -er '.report.path' <<<"$run")"
+    report_hash="$(jq -er '.report.sha256' <<<"$run")"
+    events_path="$(jq -er '.events.path' <<<"$run")"
+    events_hash="$(jq -er '.events.sha256' <<<"$run")"
+    qualified_path="$(jq -er '.qualified_events.path' <<<"$run")"
+    qualified_hash="$(jq -er '.qualified_events.sha256' <<<"$run")"
+    lock_path="$(jq -er '.application_lock.path' <<<"$run")"
+    lock_hash="$(jq -er '.application_lock.sha256' <<<"$run")"
+    for evidence in \
+        "$report_path:$report_hash" \
+        "$events_path:$events_hash" \
+        "$qualified_path:$qualified_hash" \
+        "$lock_path:$lock_hash"; do
+        validate_hash "${evidence%%:*}" "${evidence#*:}"
+    done
+
+    report="$repo_root/$report_path"
+    events="$repo_root/$events_path"
+    qualified="$repo_root/$qualified_path"
+    lock="$repo_root/$lock_path"
+    transcript_hash="$(sha256sum "$events" | cut -d' ' -f1)"
+    jq -e \
+        --arg run_id "$run_id" \
+        --arg agent "$agent" \
+        --arg domain "$domain" \
+        --arg language "$language" \
+        --arg bundle "$bundle_hash" \
+        --arg transcript "$transcript_hash" '
+      (keys | sort) == ([
+        "agent_identity", "boundary_passed", "bundle_hash",
+        "compiler_failures", "domain", "explanation",
+        "first_page_read_seconds", "first_write_seconds", "fresh_context",
+        "golden_passed", "handwritten_glue_lines", "human_interventions",
+        "independent", "kernel_attempts", "kernel_successes", "language",
+        "rating", "run_id", "runtime_failures", "schema", "source_access",
+        "time_to_complete_seconds", "transcript_sha256", "unsupported_shapes"
+      ] | sort)
+      and .schema == "riffdb-agent-application-alpha-run/v1"
+      and .run_id == $run_id
+      and .agent_identity == $agent
+      and .domain == $domain
+      and .language == $language
+      and .bundle_hash == $bundle
+      and .transcript_sha256 == $transcript
+      and .independent == true
+      and .fresh_context == true
+      and .human_interventions == 0
+      and .kernel_attempts == 0
+      and .kernel_successes == 0
+      and .handwritten_glue_lines == 0
+      and (.compiler_failures | type) == "number"
+      and (.compiler_failures | floor) == .compiler_failures
+      and .compiler_failures >= 0
+      and (.runtime_failures | type) == "number"
+      and (.runtime_failures | floor) == .runtime_failures
+      and .runtime_failures >= 0
+      and (.unsupported_shapes | length) == 0
+      and (.first_write_seconds | type) == "number"
+      and (.first_write_seconds | floor) == .first_write_seconds
+      and .first_write_seconds >= 0
+      and .first_write_seconds <= 1800
+      and (.first_page_read_seconds | type) == "number"
+      and (.first_page_read_seconds | floor) == .first_page_read_seconds
+      and .first_page_read_seconds >= 0
+      and .first_page_read_seconds <= 3600
+      and (.time_to_complete_seconds | type) == "number"
+      and (.time_to_complete_seconds | floor) == .time_to_complete_seconds
+      and .time_to_complete_seconds >= 0
+      and .time_to_complete_seconds <= 7200
+      and (.source_access | keys | sort) == [
+        "riffdb_implementation", "ticketdesk"
+      ]
+      and .source_access.riffdb_implementation == false
+      and .source_access.ticketdesk == false
+      and .boundary_passed == true
+      and .golden_passed == true
+      and .rating >= 8.5
+      and .rating <= 10
+      and (.explanation | type) == "string"
+      and (.explanation | length) >= 1
+    ' "$report" >/dev/null || {
+        echo "canary run missed an Agent Application Alpha threshold: $run_id" >&2
+        exit 1
+    }
+
+    jq -s '.' "$qualified" >"$work_root/$run_id.qualified.json"
+    jq -e --slurpfile lock "$lock" --slurpfile report "$report" '
+      length == 2
+      and ([.[].kind] | sort) == ["first_page_read", "first_write"]
+      and all(.[];
+          .schema == "riffdb-agent-application-alpha-qualified-event/v1"
+          and (.elapsed_ms | type) == "number"
+          and .elapsed_ms >= 0
+          and .contract_lineage == $lock[0].contract.lineage
+          and .contract_version == $lock[0].contract.version
+          and .contract_bundle_hash == $lock[0].contract.bundle_hash)
+      and (
+        (map(select(.kind == "first_write"))[0]) as $write
+        | (map(select(.kind == "first_page_read"))[0]) as $page
+        | ($write | keys | sort) == ([
+            "commit_sequence", "contract_bundle_hash", "contract_lineage",
+            "contract_version", "elapsed_ms", "kind", "operation", "plan_hash",
+            "replayed", "schema"
+          ] | sort)
+        and ($page | keys | sort) == ([
+            "application_head", "contract_bundle_hash", "contract_lineage",
+            "contract_version", "elapsed_ms", "kind", "module_hash",
+            "operation", "plan_hash", "query_name", "read_after_commit", "schema"
+          ] | sort)
+        and any($lock[0].roles[].definition.commands[];
+            .name == $write.operation and .plan_hash == $write.plan_hash)
+        and any($lock[0].modules[];
+            .module_hash == $page.module_hash
+            and any(.queries[];
+                .name == $page.query_name
+                and .plan_hash == $page.plan_hash))
+        and ($write.commit_sequence | test("^[1-9][0-9]{0,19}$"))
+        and $write.replayed == false
+        and ($page.application_head | test("^[1-9][0-9]{0,19}$"))
+        and $page.operation == $page.query_name
+        and $page.read_after_commit == $write.commit_sequence
+        and (($page.application_head | tonumber) >= ($write.commit_sequence | tonumber))
+        and $report[0].first_write_seconds == (($write.elapsed_ms / 1000) | floor)
+        and $report[0].first_page_read_seconds == (($page.elapsed_ms / 1000) | floor)
+      )
+    ' "$work_root/$run_id.qualified.json" >/dev/null || {
+        echo "canary first-success evidence is not backed by exact compiler/runtime identity: $run_id" >&2
+        exit 1
+    }
+
+    jq -e -s '
+      length >= 4
+      and (map(select(.kind == "start")) | length) == 1
+      and (map(select(.kind == "first_write")) | length) == 1
+      and (map(select(.kind == "first_page_read")) | length) == 1
+      and (map(select(.kind == "complete")) | length) == 1
+      and all(.[];
+          (keys - ["schema", "elapsed_ms", "kind", "code", "operation"]
+            | length) == 0
+          and .schema == "riffdb-agent-application-alpha-event/v1"
+          and (.elapsed_ms | type) == "number"
+          and .elapsed_ms >= 0
+          and (
+            .kind as $kind
+            | ([
+              "start", "tool", "compiler_failure", "runtime_failure",
+              "unsupported_shape", "intervention", "kernel_attempt",
+              "source_access", "first_write", "first_page_read", "complete",
+              "rating"
+            ] | index($kind)) != null)
+          and (.code == null
+            or ((.code | type) == "string"
+              and (.code | test("^[A-Za-z0-9_.-]{1,128}$"))))
+          and (.operation == null
+            or ((.operation | type) == "string"
+              and (.operation | test("^[A-Za-z0-9_.-]{1,256}$")))))
+    ' "$events" >/dev/null || {
+        echo "canary event transcript is incomplete or malformed: $run_id" >&2
+        exit 1
+    }
+done < <(jq -c '.runs[]' "$manifest")
+
+echo "Agent Application Alpha sealed canary gate passed"

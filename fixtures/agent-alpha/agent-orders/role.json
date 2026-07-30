@@ -1,8 +1,8 @@
 {
   "application": "agent-orders",
-  "application_manifest_hash": "34b40387b18a3451524d0d846ff94743cdda04842fcd57495f7df1b09f46793e",
+  "application_manifest_hash": "1995dc9d40a168563ea655fd8b15549b76d4167e25706d190998a7d1a3d9b9d5",
   "contract": {
-    "bundle_hash": "ab6aa84f62b2bc61b20caec2b2f0849100762000ebc88d578be675cc041b274a",
+    "bundle_hash": "10e146d528c9fe4aa56328f14697b4190200d92af594c044f892f5a2cb97108d",
     "lineage": "AgentOrders",
     "version": 1
   },
@@ -54,9 +54,9 @@
     }
   ],
   "query_module_hashes": [
-    "32d3a3ed584903a2f30ef742b22b116242fa6d4a36f01e4540c0da4ad4cc083a"
+    "4efa919991df225b1235aeb95ed76b98b3eab6002b04d7afdb4c6894d13addea"
   ],
   "role": "OrdersApplication",
-  "role_hash": "3a537ee09efebf146053b7ef7d3a968a78cd22b92857474dcab9acd27a0b27f3",
+  "role_hash": "c9ae6fa72b26d007ae38a745faef5191d6a735856cde9cbba8a968b01524a9a0",
   "tenant_scope": "global"
 }

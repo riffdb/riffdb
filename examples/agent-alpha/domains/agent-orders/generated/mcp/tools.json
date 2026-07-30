@@ -1,5 +1,5 @@
 {
-  "application_manifest_hash": "34b40387b18a3451524d0d846ff94743cdda04842fcd57495f7df1b09f46793e",
+  "application_manifest_hash": "1995dc9d40a168563ea655fd8b15549b76d4167e25706d190998a7d1a3d9b9d5",
   "commands": [
     {
       "annotations": {
@@ -8,7 +8,7 @@
         "openWorldHint": false,
         "readOnlyHint": false
       },
-      "contract_bundle_hash": "ab6aa84f62b2bc61b20caec2b2f0849100762000ebc88d578be675cc041b274a",
+      "contract_bundle_hash": "10e146d528c9fe4aa56328f14697b4190200d92af594c044f892f5a2cb97108d",
       "description": "Execute the exact AddOrderLine compiled command from contract AgentOrders.",
       "input_schema": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
@@ -40,7 +40,7 @@
         "type": "object"
       },
       "name": "agent_orders.add_order_line",
-      "plan_hash": "57e6d760fdefb575cc8f2c27d589fd66c13fb8303661f0ed44c68c1fd6354bde",
+      "plan_hash": "0bf35b27f4dcc9602a01b5c941ec7069c65a5e7da747dec19139a582db3c2d06",
       "result_schema": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "oneOf": [
@@ -173,7 +173,7 @@
         "openWorldHint": false,
         "readOnlyHint": false
       },
-      "contract_bundle_hash": "ab6aa84f62b2bc61b20caec2b2f0849100762000ebc88d578be675cc041b274a",
+      "contract_bundle_hash": "10e146d528c9fe4aa56328f14697b4190200d92af594c044f892f5a2cb97108d",
       "description": "Execute the exact CreateCustomer compiled command from contract AgentOrders.",
       "input_schema": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
@@ -201,7 +201,7 @@
         "type": "object"
       },
       "name": "agent_orders.create_customer",
-      "plan_hash": "9bffc97cd548ef9ca7c3c3ce382fee8ca2ae5d894b30d1ebd63b863f5e17c6a9",
+      "plan_hash": "e9cc4a35c3a5ae6971299f9d7a2a2aef35c38cb00849d0ad1ce5b28fc9d248e0",
       "result_schema": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "oneOf": [
@@ -288,7 +288,7 @@
         "openWorldHint": false,
         "readOnlyHint": false
       },
-      "contract_bundle_hash": "ab6aa84f62b2bc61b20caec2b2f0849100762000ebc88d578be675cc041b274a",
+      "contract_bundle_hash": "10e146d528c9fe4aa56328f14697b4190200d92af594c044f892f5a2cb97108d",
       "description": "Execute the exact CreateInventory compiled command from contract AgentOrders.",
       "input_schema": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
@@ -316,7 +316,7 @@
         "type": "object"
       },
       "name": "agent_orders.create_inventory",
-      "plan_hash": "64e3b4c863a199b0b538f6fc89fd2f8eee1c4bcd11fb288107a1bec7d2d2a62d",
+      "plan_hash": "ab3a75ba47435612b4594d6af49620726c7417239c49ba275a3c9ff13f41208a",
       "result_schema": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "oneOf": [
@@ -424,7 +424,7 @@
         "openWorldHint": false,
         "readOnlyHint": false
       },
-      "contract_bundle_hash": "ab6aa84f62b2bc61b20caec2b2f0849100762000ebc88d578be675cc041b274a",
+      "contract_bundle_hash": "10e146d528c9fe4aa56328f14697b4190200d92af594c044f892f5a2cb97108d",
       "description": "Execute the exact CreateOrder compiled command from contract AgentOrders.",
       "input_schema": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
@@ -452,7 +452,7 @@
         "type": "object"
       },
       "name": "agent_orders.create_order",
-      "plan_hash": "ba83fd09effde6fdce38d4b4f35183fb609a59ff412ef6cedbc12d22324202ad",
+      "plan_hash": "fe654c9054282d5eef50fdcb117648b7f652414c3d38da57aacfa24bdd061971",
       "result_schema": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "oneOf": [
@@ -547,7 +547,7 @@
         "openWorldHint": false,
         "readOnlyHint": false
       },
-      "contract_bundle_hash": "ab6aa84f62b2bc61b20caec2b2f0849100762000ebc88d578be675cc041b274a",
+      "contract_bundle_hash": "10e146d528c9fe4aa56328f14697b4190200d92af594c044f892f5a2cb97108d",
       "description": "Execute the exact CreateProduct compiled command from contract AgentOrders.",
       "input_schema": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
@@ -583,7 +583,7 @@
         "type": "object"
       },
       "name": "agent_orders.create_product",
-      "plan_hash": "70a981b7c031ae938ad9ed1e62d974ec43ce6990201c39483f41a8cb415f4f83",
+      "plan_hash": "c52d7f6ac66f5bcc3085d414668c2c3d50844178c975d365cc86f8cd740418f5",
       "result_schema": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "oneOf": [
@@ -682,7 +682,7 @@
         "openWorldHint": false,
         "readOnlyHint": false
       },
-      "contract_bundle_hash": "ab6aa84f62b2bc61b20caec2b2f0849100762000ebc88d578be675cc041b274a",
+      "contract_bundle_hash": "10e146d528c9fe4aa56328f14697b4190200d92af594c044f892f5a2cb97108d",
       "description": "Execute the exact CreateStore compiled command from contract AgentOrders.",
       "input_schema": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
@@ -772,7 +772,7 @@
         "openWorldHint": false,
         "readOnlyHint": false
       },
-      "contract_bundle_hash": "ab6aa84f62b2bc61b20caec2b2f0849100762000ebc88d578be675cc041b274a",
+      "contract_bundle_hash": "10e146d528c9fe4aa56328f14697b4190200d92af594c044f892f5a2cb97108d",
       "description": "Execute the exact ReserveInventory compiled command from contract AgentOrders.",
       "input_schema": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
@@ -1048,7 +1048,7 @@
         ],
         "type": "object"
       },
-      "module_hash": "32d3a3ed584903a2f30ef742b22b116242fa6d4a36f01e4540c0da4ad4cc083a",
+      "module_hash": "4efa919991df225b1235aeb95ed76b98b3eab6002b04d7afdb4c6894d13addea",
       "name": "agent_orders.customer_history",
       "result_schema": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
@@ -1165,7 +1165,7 @@
         ],
         "type": "object"
       },
-      "module_hash": "32d3a3ed584903a2f30ef742b22b116242fa6d4a36f01e4540c0da4ad4cc083a",
+      "module_hash": "4efa919991df225b1235aeb95ed76b98b3eab6002b04d7afdb4c6894d13addea",
       "name": "agent_orders.inventory_dashboard",
       "result_schema": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
@@ -1302,7 +1302,7 @@
         ],
         "type": "object"
       },
-      "module_hash": "32d3a3ed584903a2f30ef742b22b116242fa6d4a36f01e4540c0da4ad4cc083a",
+      "module_hash": "4efa919991df225b1235aeb95ed76b98b3eab6002b04d7afdb4c6894d13addea",
       "name": "agent_orders.open_orders",
       "result_schema": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
@@ -1382,7 +1382,7 @@
         ],
         "type": "object"
       },
-      "module_hash": "32d3a3ed584903a2f30ef742b22b116242fa6d4a36f01e4540c0da4ad4cc083a",
+      "module_hash": "4efa919991df225b1235aeb95ed76b98b3eab6002b04d7afdb4c6894d13addea",
       "name": "agent_orders.order_page",
       "result_schema": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",

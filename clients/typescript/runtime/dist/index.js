@@ -49,12 +49,21 @@ export class CliApplicationTransport {
                 contractLineage: expectSymbol(rawIdentity.contract_lineage),
                 contractVersion: positiveNumber(rawIdentity.contract_version),
                 contractBundleHash: expectHash(rawIdentity.contract_bundle_hash),
-                moduleHash: request.moduleHash,
+                moduleHash: expectHash(rawIdentity.module_hash),
                 queryName: expectSymbol(rawIdentity.query_name),
+                planHash: expectHash(rawIdentity.plan_hash),
             },
             value,
             applicationHead: positiveBigInt(result.application_head),
         };
+        if (typed.identity.contractLineage !== request.contractLineage
+            || typed.identity.contractVersion !== request.contractVersion
+            || typed.identity.contractBundleHash !== request.contractBundleHash
+            || typed.identity.moduleHash !== request.moduleHash
+            || typed.identity.queryName !== request.queryName
+            || typed.identity.planHash !== request.planHash) {
+            throw new Error("RiffDB application identity mismatch");
+        }
         if (result.next_cursor !== null && result.next_cursor !== undefined) {
             return { ...typed, nextCursor: expectBoundedString(result.next_cursor, 4096) };
         }

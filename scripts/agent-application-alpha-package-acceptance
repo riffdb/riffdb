@@ -33,6 +33,8 @@ for required in \
     docs/getting-started/application-source-v1.schema.json \
     docs/getting-started/AUTHORING-DIAGNOSTICS.md \
     docs/getting-started/INSPECTION.md \
+    evaluation/CANARY-PROTOCOL.md \
+    evaluation/qualified-event-schema.json \
     docs/riffql/LANGUAGE.md; do
     [[ -s "$bundle/$required" ]] || {
         echo "sealed bundle is missing authoring resource: $required" >&2

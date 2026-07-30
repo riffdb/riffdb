@@ -1,0 +1,49 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "oneOf": [
+    {
+      "additionalProperties": false,
+      "properties": {
+        "commit_sequence": {"pattern": "^[1-9][0-9]{0,19}$", "type": "string"},
+        "contract_bundle_hash": {"pattern": "^[0-9a-f]{64}$", "type": "string"},
+        "contract_lineage": {"pattern": "^[A-Za-z][A-Za-z0-9_]{0,127}$", "type": "string"},
+        "contract_version": {"minimum": 1, "type": "integer"},
+        "elapsed_ms": {"minimum": 0, "type": "integer"},
+        "kind": {"const": "first_write"},
+        "operation": {"pattern": "^[A-Za-z][A-Za-z0-9_]{0,255}$", "type": "string"},
+        "plan_hash": {"pattern": "^[0-9a-f]{64}$", "type": "string"},
+        "replayed": {"type": "boolean"},
+        "schema": {"const": "riffdb-agent-application-alpha-qualified-event/v1"}
+      },
+      "required": [
+        "schema", "elapsed_ms", "kind", "operation", "contract_lineage",
+        "contract_version", "contract_bundle_hash", "plan_hash",
+        "commit_sequence", "replayed"
+      ],
+      "type": "object"
+    },
+    {
+      "additionalProperties": false,
+      "properties": {
+        "application_head": {"pattern": "^[1-9][0-9]{0,19}$", "type": "string"},
+        "contract_bundle_hash": {"pattern": "^[0-9a-f]{64}$", "type": "string"},
+        "contract_lineage": {"pattern": "^[A-Za-z][A-Za-z0-9_]{0,127}$", "type": "string"},
+        "contract_version": {"minimum": 1, "type": "integer"},
+        "elapsed_ms": {"minimum": 0, "type": "integer"},
+        "kind": {"const": "first_page_read"},
+        "module_hash": {"pattern": "^[0-9a-f]{64}$", "type": "string"},
+        "operation": {"pattern": "^[A-Za-z][A-Za-z0-9_]{0,255}$", "type": "string"},
+        "plan_hash": {"pattern": "^[0-9a-f]{64}$", "type": "string"},
+        "query_name": {"pattern": "^[A-Za-z][A-Za-z0-9_]{0,255}$", "type": "string"},
+        "read_after_commit": {"pattern": "^[1-9][0-9]{0,19}$", "type": "string"},
+        "schema": {"const": "riffdb-agent-application-alpha-qualified-event/v1"}
+      },
+      "required": [
+        "schema", "elapsed_ms", "kind", "operation", "contract_lineage",
+        "contract_version", "contract_bundle_hash", "module_hash", "query_name",
+        "plan_hash", "application_head", "read_after_commit"
+      ],
+      "type": "object"
+    }
+  ]
+}

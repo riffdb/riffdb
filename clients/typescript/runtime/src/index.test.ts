@@ -107,3 +107,53 @@ process.stdout.write(JSON.stringify({
     await rm(directory, { recursive: true, force: true });
   }
 });
+
+test("named queries reject a returned plan outside the generated exact identity", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "riffdb-typescript-query-identity-"));
+  const executable = join(directory, "riffdb-fake.cjs");
+  await writeFile(executable, `#!/usr/bin/env node
+process.stdout.write(JSON.stringify({
+  schema: "riffdb.cli.output/v1",
+  ok: true,
+  result: {
+    identity: {
+      contract_lineage: "SafeApplication",
+      contract_version: "1",
+      contract_bundle_hash: "${"b".repeat(64)}",
+      module_hash: "${"c".repeat(64)}",
+      query_name: "ItemPage",
+      plan_hash: "${"e".repeat(64)}",
+    },
+    outcome: "Found",
+    application_head: "1",
+    fields: [],
+    next_cursor: null,
+  },
+}) + "\\n");
+`);
+  await chmod(executable, 0o700);
+  try {
+    const transport = new CliApplicationTransport({
+      riffdbPath: executable,
+      endpoint: "http://127.0.0.1:7443",
+      credentialFile: join(directory, "credential"),
+    });
+    await assert.rejects(
+      transport.executeNamedQuery({
+        contractLineage: "SafeApplication",
+        contractVersion: 1,
+        contractBundleHash: "b".repeat(64),
+        moduleHash: "c".repeat(64),
+        queryName: "ItemPage",
+        planHash: "d".repeat(64),
+        parameters: {},
+        parameterSchema: { kind: "record", fields: [] },
+        resultSchemas: { Found: { kind: "record", fields: [] } },
+        decodeError: () => new Error("unexpected application error"),
+      }),
+      /RiffDB application identity mismatch/,
+    );
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});

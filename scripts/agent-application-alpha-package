@@ -83,7 +83,11 @@ cp "$repo_root/release/agent-application-alpha/BUNDLE.md" "$temporary/README.md"
 cp "$repo_root/release/agent-application-alpha/cargo-config.toml" \
     "$temporary/.cargo/config.toml"
 cp -R "$repo_root/evaluations/agent-application-alpha/briefs" "$temporary/evaluation/"
+cp "$repo_root/evaluations/agent-application-alpha/CANARY-PROTOCOL.md" \
+    "$temporary/evaluation/"
 cp "$repo_root/evaluations/agent-application-alpha/event-schema.json" "$temporary/evaluation/"
+cp "$repo_root/evaluations/agent-application-alpha/qualified-event-schema.json" \
+    "$temporary/evaluation/"
 cp "$repo_root/evaluations/agent-application-alpha/report-schema.json" "$temporary/evaluation/"
 
 "$temporary/bin/riffdb" --help >/dev/null

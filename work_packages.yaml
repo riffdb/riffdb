@@ -4234,8 +4234,15 @@ work_packages:
   - ADR-0056
   - ADR-0057
   allowed_paths:
+  - work_packages.yaml
   - Cargo.toml
   - Cargo.lock
+  - crates/riffdb-policy/**
+  - crates/riffdb-cli/**
+  - crates/riffdb-diagnostics/**
+  - crates/riffdb-client-rust/**
+  - crates/riffdb-query-module/**
+  - clients/typescript/**
   - crates/riffdb-types/**
   - crates/riffdb-query-module/**
   - crates/riffdb-cli/**
@@ -4630,6 +4637,7 @@ work_packages:
   - contracts/agent-alpha/**
   - queries/agent-alpha/**
   - fixtures/agent-alpha/**
+  - fixtures/query-modules/**
   - fixtures/performance/**
   - release/agent-application-alpha/**
   - release/evidence/**
@@ -4638,6 +4646,7 @@ work_packages:
   - scripts/benchmark-command-growth
   - scripts/check-application-bindings
   - scripts/check-application-boundary
+  - scripts/generate-query-clients
   - docs/getting-started/**
   - docs/riffql/**
   - docs/agent-application-alpha.md

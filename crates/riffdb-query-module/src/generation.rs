@@ -381,7 +381,12 @@ pub fn generate_rust_client(module: &QueryModule, contract: &ContractBundle) -> 
             writeln!(output, "    {variant}(Box<{name}{variant}>),").expect("string");
         }
         writeln!(output, "}}\n").expect("string");
-        emit_rust_generated_query_impl(&mut output, name, schemas);
+        emit_rust_generated_query_impl(
+            &mut output,
+            name,
+            schemas,
+            query.program().identity().hash().as_bytes(),
+        );
     }
 
     let mut commands = contract.commands().iter().collect::<Vec<_>>();
@@ -426,9 +431,23 @@ fn emit_rust_common_value_types(output: &mut String) {
     .expect("string");
 }
 
-fn emit_rust_generated_query_impl(output: &mut String, name: &str, schemas: &NamedQuerySchemas) {
+fn emit_rust_generated_query_impl(
+    output: &mut String,
+    name: &str,
+    schemas: &NamedQuerySchemas,
+    plan_hash: &[u8; 32],
+) {
     let params_name = format!("{name}Params");
     let query_type = format!("{name}Query");
+    let plan_hash_constant = format!("{}_QUERY_PLAN_HASH", screaming_snake(name));
+    write!(output, "pub const {plan_hash_constant}: [u8; 32] = [").expect("string");
+    for (index, byte) in plan_hash.iter().enumerate() {
+        if index != 0 {
+            write!(output, ", ").expect("string");
+        }
+        write!(output, "0x{byte:02x}").expect("string");
+    }
+    writeln!(output, "];").expect("string");
     writeln!(
         output,
         "#[derive(Clone, Debug, Eq, PartialEq)]\n\
@@ -455,7 +474,7 @@ fn emit_rust_generated_query_impl(output: &mut String, name: &str, schemas: &Nam
         "        NamedQuery::new(\n            ApplicationContract::Exact {{\n                \
          lineage: CONTRACT_LINEAGE.to_owned(),\n                version: CONTRACT_VERSION,\n                \
          bundle_hash: Some(CONTRACT_BUNDLE_HASH),\n            }},\n            \"{name}\",\n            \
-         Some(QUERY_MODULE_HASH),\n            parameters,\n            None,\n        )?.with_options(options)\n    }}\n\
+         Some(QUERY_MODULE_HASH),\n            parameters,\n            None,\n        )?.expect_plan_hash({plan_hash_constant}).with_options(options)\n    }}\n\
          \n    fn decode_result(mut response: NamedQueryResult) -> Result<Self::Output, ApplicationClientError> {{\n\
          \x20       let outcome = response.outcome.clone();\n        match outcome.as_str() {{"
     )
@@ -1120,17 +1139,18 @@ pub fn generate_typescript_client(module: &QueryModule, contract: &ContractBundl
         "export type ApplicationValueSchema =\n  | {{ readonly kind: \"bool\" | \"i64\" | \"u64\" | \"string\" | \"uuid\" | \"enum\" | \"bytes\" | \"date\" | \"timestamp\" | \"decimal\" | \"money\" | \"cursor\" | \"limit\" }}\n  | {{ readonly kind: \"optional\"; readonly value: ApplicationValueSchema }}\n  | {{ readonly kind: \"list\"; readonly value: ApplicationValueSchema; readonly maximum?: number }}\n  | {{ readonly kind: \"record\"; readonly fields: ReadonlyArray<{{ readonly name: string; readonly schema: ApplicationValueSchema; readonly wireId?: number }}> }};\n\
          export interface NamedQueryRequest<P, R> {{ readonly contractLineage: typeof CONTRACT_LINEAGE; \
          readonly contractVersion: typeof CONTRACT_VERSION; readonly contractBundleHash: typeof CONTRACT_BUNDLE_HASH; \
-         readonly moduleHash: typeof QUERY_MODULE_HASH; readonly queryName: string; readonly parameters: P; \
+         readonly moduleHash: typeof QUERY_MODULE_HASH; readonly queryName: string; readonly planHash: string; readonly parameters: P; \
          readonly parameterSchema: ApplicationValueSchema; readonly resultSchemas: Readonly<Record<string, ApplicationValueSchema>>; \
          readonly decodeError: typeof decodeApplicationError; readonly resultType?: R; }}\n\
          export interface QueryResponseIdentity {{ readonly contractLineage: string; readonly contractVersion: number; \
-         readonly contractBundleHash: string; readonly moduleHash: string; readonly queryName: string; }}\n\
+         readonly contractBundleHash: string; readonly moduleHash: string; readonly queryName: string; readonly planHash: string; }}\n\
          export function acceptsIdentity<P, R>(request: NamedQueryRequest<P, R>, identity: QueryResponseIdentity): boolean {{\n\
          \x20 return identity.contractLineage === request.contractLineage\n    \
          && identity.contractVersion === request.contractVersion\n    \
          && identity.contractBundleHash === request.contractBundleHash\n    \
          && identity.moduleHash === request.moduleHash\n    \
-         && identity.queryName === request.queryName;\n}}\n\
+         && identity.queryName === request.queryName\n    \
+         && identity.planHash === request.planHash;\n}}\n\
          export interface CommandRequest<I, R> {{ readonly contractLineage: typeof CONTRACT_LINEAGE; \
          readonly contractVersion: typeof CONTRACT_VERSION; readonly commandName: string; readonly planHash: string; \
          readonly input: I; readonly idempotencyKey: string; readonly inputSchema: ApplicationValueSchema; \
@@ -1152,6 +1172,13 @@ pub fn generate_typescript_client(module: &QueryModule, contract: &ContractBundl
     for query in module.queries() {
         let name = query.name();
         let schemas = query.program().surface().schemas();
+        let plan_hash = hex(query.program().identity().hash().as_bytes());
+        let constant = format!("{}_QUERY_PLAN_HASH", screaming_snake(name));
+        writeln!(
+            output,
+            "export const {constant} = \"{plan_hash}\" as const;"
+        )
+        .expect("string");
         writeln!(output, "export interface {name}Params {{").expect("string");
         for parameter in schemas.parameters() {
             let optional = if parameter.has_default() || is_cursor_type(parameter.value_type()) {
@@ -1221,7 +1248,7 @@ pub fn generate_typescript_client(module: &QueryModule, contract: &ContractBundl
             output,
             "export function {function}(parameters: {name}Params): NamedQueryRequest<{name}Params, {name}Result> {{\n\
              \x20 return {{ contractLineage: CONTRACT_LINEAGE, contractVersion: CONTRACT_VERSION, \
-             contractBundleHash: CONTRACT_BUNDLE_HASH, moduleHash: QUERY_MODULE_HASH, queryName: \"{name}\", parameters, \
+             contractBundleHash: CONTRACT_BUNDLE_HASH, moduleHash: QUERY_MODULE_HASH, queryName: \"{name}\", planHash: {constant}, parameters, \
              parameterSchema: {parameter_schema}, resultSchemas: {result_schemas}, decodeError: decodeApplicationError }};\n\
              }}\n",
             function = camel(name),
