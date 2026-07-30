@@ -51,7 +51,10 @@ use crate::output::{
     render_revoke, success, take_normal_create_disposition, uncertain,
 };
 use crate::runner::{RunnerError, RunnerStream, run_budget};
-use crate::scaffold::{ScaffoldLanguage, create_application, generate_application};
+use crate::scaffold::{
+    ScaffoldLanguage, check_application, check_application_lock, create_application,
+    generate_application, write_application_lock,
+};
 use crate::value::{InputValue, RecordInput, ValueError, parse_uuid};
 
 const DEFAULT_PAGE_LIMIT: u32 = 50;
@@ -170,17 +173,35 @@ pub async fn run() -> ExitCode {
             }
         };
     }
-    if let TopLevel::Application {
-        command: ApplicationCommand::Generate { manifest },
-    } = &cli.command
-    {
-        return match generate_application(Path::new(manifest)) {
+    if let TopLevel::Application { command } = &cli.command {
+        let result = match command {
+            ApplicationCommand::Check { source } => check_application(Path::new(source)),
+            ApplicationCommand::Lock {
+                source,
+                write,
+                check,
+                lock,
+            } => {
+                debug_assert_ne!(write, check);
+                if *write {
+                    write_application_lock(Path::new(source), Some(Path::new(lock)))
+                } else {
+                    check_application_lock(Path::new(source), Some(Path::new(lock)))
+                }
+            }
+            ApplicationCommand::Generate {
+                manifest,
+                locked,
+                lock,
+            } => generate_application(Path::new(manifest), *locked, Some(Path::new(lock))),
+        };
+        return match result {
             Ok(()) => {
-                println!("generated exact application bindings");
+                println!("application sources, lock, and generated bindings are exact");
                 ExitCode::SUCCESS
             }
             Err(error) => {
-                eprintln!("riffdb application generate failed: {error}");
+                eprintln!("riffdb application failed: {error}");
                 ExitCode::FAILURE
             }
         };
@@ -1575,7 +1596,26 @@ fn compile_role_from_workspace(
     role_name: &str,
     tenant: Option<&str>,
 ) -> Result<CompiledApplicationRole, ()> {
-    let manifest_bytes = read_file(Path::new(manifest_path), MAX_INPUT_BYTES).map_err(|_| ())?;
+    let requested_path = Path::new(manifest_path);
+    let requested_bytes = read_file(requested_path, MAX_INPUT_BYTES).map_err(|_| ())?;
+    let requested_value: serde_json::Value =
+        serde_json::from_slice(&requested_bytes).map_err(|_| ())?;
+    let exact_path;
+    let manifest_path = if requested_value
+        .get("schema")
+        .and_then(serde_json::Value::as_str)
+        == Some("riffdb.application-source/v1")
+    {
+        check_application_lock(requested_path, None).map_err(|_| ())?;
+        exact_path = requested_path
+            .parent()
+            .unwrap_or_else(|| Path::new("."))
+            .join("generated/riffdb.application.exact.json");
+        exact_path.as_path()
+    } else {
+        requested_path
+    };
+    let manifest_bytes = read_file(manifest_path, MAX_INPUT_BYTES).map_err(|_| ())?;
     let manifest_source = std::str::from_utf8(&manifest_bytes).map_err(|_| ())?;
     let manifest = ApplicationManifest::parse(manifest_source).map_err(|_| ())?;
     let workspace = find_application_workspace(manifest_path, manifest.contract().source())?;
@@ -1606,10 +1646,9 @@ fn compile_role_from_workspace(
 }
 
 fn find_application_workspace(
-    manifest_path: &OsString,
+    manifest_path: &Path,
     contract_path: &str,
 ) -> Result<std::path::PathBuf, ()> {
-    let manifest_path = Path::new(manifest_path);
     let absolute = if manifest_path.is_absolute() {
         manifest_path.to_path_buf()
     } else {

@@ -341,8 +341,24 @@ hash_id!(
     ApplicationManifestHash
 );
 hash_id!(
+    /// The identity of one author-owned symbolic application source manifest.
+    ApplicationSourceHash
+);
+hash_id!(
+    /// The identity of one compiler-owned exact application lock.
+    ApplicationLockHash
+);
+hash_id!(
+    /// The content hash of one compiler-generated application artifact.
+    GeneratedArtifactHash
+);
+hash_id!(
     /// The identity of one canonical compiled application role.
     ApplicationRoleHash
+);
+hash_id!(
+    /// The identity of one exact, tenant-unbound application role definition.
+    ApplicationRoleDefinitionHash
 );
 hash_id!(
     /// The hash of one exact RiffQL source document.

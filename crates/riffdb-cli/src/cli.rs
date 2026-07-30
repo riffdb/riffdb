@@ -104,13 +104,47 @@ pub(crate) enum TopLevel {
 
 #[derive(Debug, Subcommand)]
 pub(crate) enum ApplicationCommand {
-    /// Recompiles pinned sources and regenerates all compiler-owned bindings.
+    /// Read-only symbolic compilation and safety analysis.
+    Check {
+        #[arg(
+            default_value = "riffdb.application.json",
+            value_name = "APPLICATION_SOURCE"
+        )]
+        source: OsString,
+    },
+    /// Writes or verifies the compiler-owned exact lock and generated artifacts.
+    Lock {
+        #[arg(
+            default_value = "riffdb.application.json",
+            value_name = "APPLICATION_SOURCE"
+        )]
+        source: OsString,
+        #[arg(long, conflicts_with = "check", required_unless_present = "check")]
+        write: bool,
+        #[arg(long, conflicts_with = "write", required_unless_present = "write")]
+        check: bool,
+        #[arg(
+            long,
+            default_value = "riffdb.application.lock.json",
+            value_name = "APPLICATION_LOCK"
+        )]
+        lock: OsString,
+    },
+    /// Regenerates V1 manifests or exact locked symbolic application bindings.
     Generate {
         #[arg(
             default_value = "riffdb.application.json",
-            value_name = "APPLICATION_MANIFEST"
+            value_name = "APPLICATION_SOURCE_OR_V1_MANIFEST"
         )]
         manifest: OsString,
+        #[arg(long)]
+        locked: bool,
+        #[arg(
+            long,
+            default_value = "riffdb.application.lock.json",
+            value_name = "APPLICATION_LOCK"
+        )]
+        lock: OsString,
     },
 }
 
@@ -519,6 +553,42 @@ mod tests {
             } if application == "inventory"
         ));
         assert!(Cli::try_parse_from(["riffdb", "new", "inventory", "--kernel"]).is_err());
+    }
+
+    #[test]
+    fn application_source_and_lock_operations_are_explicit_and_closed() {
+        assert!(matches!(
+            Cli::try_parse_from(["riffdb", "application", "check"])
+                .expect("check")
+                .command,
+            TopLevel::Application {
+                command: ApplicationCommand::Check { .. }
+            }
+        ));
+        assert!(matches!(
+            Cli::try_parse_from(["riffdb", "application", "lock", "--write"])
+                .expect("write")
+                .command,
+            TopLevel::Application {
+                command: ApplicationCommand::Lock {
+                    write: true,
+                    check: false,
+                    ..
+                }
+            }
+        ));
+        assert!(Cli::try_parse_from(["riffdb", "application", "lock"]).is_err());
+        assert!(
+            Cli::try_parse_from(["riffdb", "application", "lock", "--write", "--check"]).is_err()
+        );
+        assert!(matches!(
+            Cli::try_parse_from(["riffdb", "application", "generate", "--locked"])
+                .expect("locked generation")
+                .command,
+            TopLevel::Application {
+                command: ApplicationCommand::Generate { locked: true, .. }
+            }
+        ));
     }
 
     #[test]

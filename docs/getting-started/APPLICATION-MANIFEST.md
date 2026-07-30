@@ -1,23 +1,29 @@
-# Application manifest
+# Symbolic application source and exact lock
 
-An application manifest is the canonical, reviewed input to RiffDB application
-generation. It binds source paths to exact compiled identities, names the
-operations available to each symbolic role, and declares all generated and
-seed artifacts. It is not a discovery hint: a mismatch fails closed.
+The normal author-owned input is `riffdb.application.json` using
+`riffdb.application-source/v1`. It names source paths, operations, roles, and
+output paths. It never asks an author or agent to discover, copy, or maintain a
+compiler-derived identity.
 
-The current schema identifier is:
+The compiler writes `riffdb.application.lock.json` using
+`riffdb.application-lock/v1`. That exact lock covers the normalized symbolic
+source; contract source, bundle, plan-root, lineage, version, and compiler
+formats; query module, source, and plan identities; tenant-unbound role
+definitions and their exact operation authority; and every generated artifact
+hash. It contains no clock, host path, credential, active pointer, tenant
+value, or runtime-selected identity.
 
 ```text
-riffdb.application-manifest/v1
+author source: riffdb.application-source/v1
+compiler lock: riffdb.application-lock/v1
 ```
 
-The v1 document is closed JSON with exactly these top-level members:
+The source document is closed JSON with exactly these top-level members:
 
 ```json
 {
   "application": "ticketdesk",
   "contract": {
-    "bundle_hash": "<64 lowercase hexadecimal characters>",
     "lineage": "TicketDesk",
     "source": "riffdb/contract.riff",
     "version": 1
@@ -29,7 +35,6 @@ The v1 document is closed JSON with exactly these top-level members:
   },
   "query_modules": [
     {
-      "module_hash": "<64 lowercase hexadecimal characters>",
       "name": "ticketdesk",
       "queries": [
         {
@@ -49,7 +54,7 @@ The v1 document is closed JSON with exactly these top-level members:
       "tenant_scope": "tenant"
     }
   ],
-  "schema": "riffdb.application-manifest/v1",
+  "schema": "riffdb.application-source/v1",
   "seed_inputs": ["riffdb/seed/dev.jsonl"]
 }
 ```
@@ -58,7 +63,7 @@ All paths are normalized, workspace-relative paths. Absolute paths, parent
 components, empty components, duplicate paths, duplicate names, undeclared
 query references, and unknown members are rejected. Versions are positive.
 Names and collections are bounded; the source document may not exceed one MiB.
-Hash text is exact lowercase hexadecimal.
+No hash field is valid in author source.
 
 Each role declares an exact environment and either `global` scope or `tenant`
 scope. A tenant-scoped role must receive one concrete tenant at binding time;
@@ -66,24 +71,33 @@ a global role rejects a tenant argument. The role author names only commands
 and named queries. Field visibility, stable IDs, indexes, partitions, result
 shape, and scan ceilings are compiler-private consequences of those names.
 
-RiffDB sorts every set-like collection, serializes the validated value as
+RiffDB sorts every set-like collection, serializes the validated source as
 compact canonical JSON with a final line feed, and hashes those bytes under the
-`riffdb.application-manifest/v1` domain. The compiler exposes byte spans for
-manifest-defined symbols and paths so diagnostics can point to the reviewed
+`riffdb.application-source/v1` domain. The compiler exposes byte spans for
+source-defined symbols and paths so diagnostics can point to the reviewed
 input. Reformatting or reordering set-like members does not change identity;
 changing a semantic value does.
 
-Generation checks the manifest's contract lineage, version, bundle hash, query
-module name, version, and module hash against the compiled inputs. It never
-silently selects an ambient active version or regenerates against a different
-identity. The checked-in TicketDesk example is
+Lock compilation resolves all symbolic names against exact compiled inputs and
+privately derives role authority. Locked generation byte-compares the
+recompiled lock before writing. It never silently selects an ambient active
+version, trusts an author-provided hash, widens a role, or regenerates against
+a different identity.
+
+The older `riffdb.application-manifest/v1` exact document remains a supported
+compatibility artifact for deployments and stable V1 tooling. It includes
+bundle and module hashes, but is now emitted under
+`generated/riffdb.application.exact.json`; application authors do not edit it.
+The checked-in TicketDesk compatibility fixture is
 [`fixtures/application-manifests/ticketdesk-v1.json`](../../fixtures/application-manifests/ticketdesk-v1.json).
 
-Run generation and drift checks with:
+Run source, lock, generation, and drift checks with:
 
 ```bash
-./scripts/generate-query-clients
-./scripts/generate-query-clients --check
+riffdb application check
+riffdb application lock --write
+riffdb application lock --check
+riffdb application generate --locked
 ./scripts/check-application-bindings
 ```
 

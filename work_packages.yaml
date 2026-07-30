@@ -4235,6 +4235,7 @@ work_packages:
   allowed_paths:
   - Cargo.toml
   - Cargo.lock
+  - crates/riffdb-types/**
   - crates/riffdb-query-module/**
   - crates/riffdb-cli/**
   - crates/riffdb-auth/**

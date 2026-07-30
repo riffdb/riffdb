@@ -6,11 +6,12 @@ use hmac::{Hmac, KeyInit, Mac};
 use sha2::{Digest, Sha256};
 
 use crate::{
-    ApplicationManifestHash, ApplicationRoleHash, CanonicalInputHash, CanonicalValueHash,
+    ApplicationLockHash, ApplicationManifestHash, ApplicationRoleDefinitionHash,
+    ApplicationRoleHash, ApplicationSourceHash, CanonicalInputHash, CanonicalValueHash,
     CapabilityTokenDigest, ConflictKeyHash, ContractBundleHash, ContractPlanRootHash, DigestKey,
-    DigestKeyId, EntityKeyHash, EventHash, OfflineMaintenanceInputHash, PartitionKeyHash, PlanHash,
-    ProjectionApplyHash, ProjectionPlanHash, QueryModuleHash, QueryParameterHash, QueryPlanHash,
-    QuerySourceHash, SchemaHash, SourceHash,
+    DigestKeyId, EntityKeyHash, EventHash, GeneratedArtifactHash, OfflineMaintenanceInputHash,
+    PartitionKeyHash, PlanHash, ProjectionApplyHash, ProjectionPlanHash, QueryModuleHash,
+    QueryParameterHash, QueryPlanHash, QuerySourceHash, SchemaHash, SourceHash,
 };
 
 /// Hash framing and algorithm scheme defined by ADR-0011.
@@ -38,6 +39,14 @@ pub enum HashDomain {
     QueryModule,
     /// Canonical application manifest.
     ApplicationManifest,
+    /// Author-owned symbolic application source manifest.
+    ApplicationSource,
+    /// Compiler-owned exact application lock.
+    ApplicationLock,
+    /// Compiler-generated application artifact.
+    GeneratedArtifact,
+    /// Exact tenant-unbound application role definition.
+    ApplicationRoleDefinition,
     /// Canonical compiled application role.
     ApplicationRole,
     /// Exact RiffQL source document.
@@ -68,7 +77,7 @@ pub enum HashDomain {
 
 impl HashDomain {
     /// Every registered unkeyed domain, for compatibility and collision checks.
-    pub const ALL: [Self; 21] = [
+    pub const ALL: [Self; 25] = [
         Self::CanonicalValue,
         Self::Source,
         Self::ContractBundle,
@@ -77,6 +86,10 @@ impl HashDomain {
         Self::QueryPlan,
         Self::QueryModule,
         Self::ApplicationManifest,
+        Self::ApplicationSource,
+        Self::ApplicationLock,
+        Self::GeneratedArtifact,
+        Self::ApplicationRoleDefinition,
         Self::ApplicationRole,
         Self::QuerySource,
         Self::QueryParameters,
@@ -103,6 +116,10 @@ impl HashDomain {
             Self::QueryPlan => "riffdb.query-plan/v1",
             Self::QueryModule => "riffdb.query-module/v1",
             Self::ApplicationManifest => "riffdb.application-manifest/v1",
+            Self::ApplicationSource => "riffdb.application-source/v1",
+            Self::ApplicationLock => "riffdb.application-lock/v1",
+            Self::GeneratedArtifact => "riffdb.generated-artifact/v1",
+            Self::ApplicationRoleDefinition => "riffdb.application-role-definition/v1",
             Self::ApplicationRole => "riffdb.application-role/v1",
             Self::QuerySource => "riffdb.query-source/v1",
             Self::QueryParameters => "riffdb.query-parameters/v1",
@@ -302,6 +319,30 @@ typed_hash_function!(
     hash_application_manifest,
     ApplicationManifest,
     ApplicationManifestHash
+);
+typed_hash_function!(
+    /// Hashes one canonical symbolic application source manifest.
+    hash_application_source,
+    ApplicationSource,
+    ApplicationSourceHash
+);
+typed_hash_function!(
+    /// Hashes one canonical compiler-owned application lock.
+    hash_application_lock,
+    ApplicationLock,
+    ApplicationLockHash
+);
+typed_hash_function!(
+    /// Hashes one compiler-generated application artifact.
+    hash_generated_artifact,
+    GeneratedArtifact,
+    GeneratedArtifactHash
+);
+typed_hash_function!(
+    /// Hashes one exact tenant-unbound application role definition.
+    hash_application_role_definition,
+    ApplicationRoleDefinition,
+    ApplicationRoleDefinitionHash
 );
 typed_hash_function!(
     /// Hashes one canonical compiled application role in its immutable v1 domain.

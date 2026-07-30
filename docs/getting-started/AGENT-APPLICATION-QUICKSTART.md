@@ -21,25 +21,47 @@ path. It creates:
 
 ```text
 riffdb.application.json
+riffdb.application.lock.json
 riffdb/
   contract.riff
   queries/item_page.riffq
   seed/01-CreateItem.jsonl
 generated/
+  riffdb.application.exact.json
   rust/client.rs
   typescript/client.ts
   mcp/tools.json
 src/
 ```
 
-The manifest pins the exact contract bundle and query-module identities. A
-source change cannot silently retain stale bindings: `riffdb application
-generate` fails closed until the manifest describes the newly compiled
-identities.
+`riffdb.application.json` is author-owned symbolic source. It contains names
+and paths, never compiler hashes, numeric IDs, masks, plans, or encoded keys.
+`riffdb.application.lock.json` is compiler-owned and pins the exact contract,
+query plans, role authority definitions, compiler formats, and generated
+artifact hashes. The compatible V1 exact manifest under `generated/` is also
+compiler-owned.
+
+The explicit authoring operations are:
+
+```text
+riffdb application check
+riffdb application lock --write
+riffdb application lock --check
+riffdb application generate --locked
+```
+
+`check` performs no writes. `lock --write` is the only operation that accepts
+new derived identities. It stages generated files and publishes the lock last.
+`lock --check` verifies source, lock, and every generated artifact.
+`generate --locked` reproduces bindings only when the current symbolic sources
+compile to the exact reviewed lock. A stale, substituted, interrupted, or
+partially generated application therefore fails before role binding,
+authorization, deployment, or application execution.
 
 `riffdb dev` starts one local server, waits for explicit readiness, deploys the
 exact contract and module, compiles and binds the symbolic application role,
-regenerates all bindings, checks the application boundary, executes seed JSONL
+refreshes the lock only for its product-owned ephemeral database, regenerates
+all bindings, checks the application boundary, executes seed JSONL
 through ordinary idempotent commands, and shuts down its child on failure or
 interrupt. Credentials live only in a mode-protected temporary directory.
 
@@ -79,3 +101,17 @@ application role. The normal scaffold has no kernel dependency, feature, role,
 credential, MCP tool, or documentation path. Kernel access is an explicit
 source-repository operational workflow and must not reuse an application
 credential.
+
+## Product safety rule
+
+Application authors express only symbolic intent. The compiler owns every
+derived identity, access plan, schema, capability requirement, visibility set,
+cost bound, cursor codec, and transport adaptation.
+
+If an application can hand-author or override one of those derived values, the
+surface is a kernel or administrative API, not an application API. Normal
+templates, generated clients, CLI commands, MCP tools, and documentation must
+not expose it. RiffDB rejects the whole operation on identity, authorization,
+cardinality, boundedness, locality, or generated-artifact drift; it does not
+silently omit fields, choose an ambient version, accept a broader role, or
+continue with partially updated output.
