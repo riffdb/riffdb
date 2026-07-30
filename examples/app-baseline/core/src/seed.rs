@@ -250,15 +250,27 @@ impl SeedDataset {
         let project_id = ticket.project_id;
         let organization_id = ticket.organization_id;
         let assignee_id = ticket.assignee_id;
-        // Prefer a second open ticket for close-with-comment so read probes stay open.
+        // The close-with-comment target must be invisible to every read probe:
+        // a different open ticket (so the read ticket stays open and its comment
+        // list stays fixed), in a different project (so
+        // `list_tickets_by_project_status` keeps its row count), and with a
+        // different assignee (so `list_open_tickets_for_assignee` keeps its row
+        // count when the ticket is closed). Weaker fallbacks keep `probes()`
+        // working at scales that cannot satisfy the full predicate.
+        let other_open_ticket = |row: &&TicketRow| {
+            row.organization_id == organization_id
+                && row.ticket_id != ticket.ticket_id
+                && row.status == TicketStatus::Open
+        };
         let close_ticket = self
             .tickets
             .iter()
             .find(|row| {
-                row.organization_id == organization_id
-                    && row.ticket_id != ticket.ticket_id
-                    && row.status == TicketStatus::Open
+                other_open_ticket(row)
+                    && row.project_id != project_id
+                    && row.assignee_id != assignee_id
             })
+            .or_else(|| self.tickets.iter().find(other_open_ticket))
             .cloned()
             .unwrap_or_else(|| ticket.clone());
         let project_members = self
@@ -451,6 +463,17 @@ mod tests {
             assert_ne!(probes.write_project_id, probes.project_id);
             assert_ne!(probes.write_assignee_id, probes.assignee_id);
             assert_ne!(probes.write_label_a, probes.write_label_b);
+
+            // Closing the write ticket must not change any read scenario's row
+            // count, so it lives outside the read-probe project and belongs to
+            // a different assignee.
+            let write_ticket = dataset
+                .tickets
+                .iter()
+                .find(|ticket| ticket.ticket_id == probes.write_ticket_id)
+                .expect("write ticket exists in the dataset");
+            assert_ne!(write_ticket.project_id, probes.project_id);
+            assert_ne!(write_ticket.assignee_id, probes.assignee_id);
         }
     }
 
