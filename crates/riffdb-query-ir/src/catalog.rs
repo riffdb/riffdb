@@ -123,6 +123,7 @@ pub struct EntitySymbol {
     relationships: BTreeMap<String, RelationshipSymbol>,
     primary_key: Vec<String>,
     partition_field: String,
+    partition_key_schema: KeySchema,
     primary_key_schema: KeySchema,
 }
 
@@ -179,6 +180,13 @@ impl EntitySymbol {
     #[must_use]
     pub fn partition_field(&self) -> &str {
         &self.partition_field
+    }
+
+    /// Compiler-internal aggregate partition-key schema.
+    #[doc(hidden)]
+    #[must_use]
+    pub const fn internal_partition_key_schema(&self) -> &KeySchema {
+        &self.partition_key_schema
     }
 
     /// Compiler-internal complete entity key schema.
@@ -376,6 +384,7 @@ impl SymbolicCatalog {
                     })
                     .collect::<Result<Vec<_>, _>>()?,
                 partition_field: partition_name,
+                partition_key_schema: aggregate.keys().partition_schema().clone(),
                 primary_key_schema: entity.primary_key().clone(),
             };
             if entities.insert(symbol.name.clone(), symbol).is_some() {

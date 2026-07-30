@@ -156,6 +156,15 @@ impl FilteredAuthoritativeIndexScanRequest {
         limit: StorageScanLimit,
     ) -> Result<Self, StorageValueError> {
         validate_index_scan_continuation(&target, after.as_ref())?;
+        match partition_filter.scope() {
+            IndexPartitionFilterScope::Explicit(keys)
+                if keys.as_slice() == [target.generation_target().partition_key().clone()] => {}
+            IndexPartitionFilterScope::All
+            | IndexPartitionFilterScope::None
+            | IndexPartitionFilterScope::Explicit(_) => {
+                return Err(StorageValueError::InvalidShape);
+            }
+        }
         Ok(Self {
             target,
             partition_filter,
@@ -808,7 +817,7 @@ mod tests {
     fn range() -> IndexRangeTarget {
         let mut builder = IndexRangePrefixBuilder::new(IndexId::new(1).expect("index"));
         builder.push_u64(7).expect("prefix component");
-        IndexRangeTarget::new(builder.finish())
+        IndexRangeTarget::new(partition(7), builder.finish())
     }
 
     fn index_key(value: u64) -> IndexEntryKey {
@@ -903,8 +912,11 @@ mod tests {
 
     #[test]
     fn sparse_page_requires_strict_physical_progress() {
-        let filter = IndexPartitionFilter::new(lineage("orders"), IndexPartitionFilterScope::All)
-            .expect("filter");
+        let filter = IndexPartitionFilter::new(
+            lineage("orders"),
+            IndexPartitionFilterScope::Explicit(vec![partition(7)]),
+        )
+        .expect("filter");
         let request = FilteredAuthoritativeIndexScanRequest::new(
             range(),
             filter.clone(),
@@ -943,8 +955,11 @@ mod tests {
 
     #[test]
     fn filtered_page_rejects_wrong_lineage_and_enforces_returned_byte_boundary() {
-        let filter = IndexPartitionFilter::new(lineage("orders"), IndexPartitionFilterScope::All)
-            .expect("filter");
+        let filter = IndexPartitionFilter::new(
+            lineage("orders"),
+            IndexPartitionFilterScope::Explicit(vec![partition(7)]),
+        )
+        .expect("filter");
         let request = FilteredAuthoritativeIndexScanRequest::new(
             range(),
             filter,
@@ -953,7 +968,7 @@ mod tests {
         )
         .expect("request");
         let foreign = EncodedPageItem::new(
-            row(1, "foreign", partition(1)),
+            row(1, "foreign", partition(7)),
             EncodedContentCharge::new(1).expect("charge"),
         );
         assert_eq!(
@@ -966,7 +981,7 @@ mod tests {
         );
 
         let exact = EncodedPageItem::new(
-            row(1, "orders", partition(1)),
+            row(1, "orders", partition(7)),
             EncodedContentCharge::new(MAX_SCAN_PAGE_BYTES).expect("charge"),
         );
         assert!(
@@ -979,7 +994,7 @@ mod tests {
         );
 
         let oversized = EncodedPageItem::new(
-            row(1, "orders", partition(1)),
+            row(1, "orders", partition(7)),
             EncodedContentCharge::new(MAX_SCAN_PAGE_BYTES + 1).expect("charge"),
         );
         assert_eq!(

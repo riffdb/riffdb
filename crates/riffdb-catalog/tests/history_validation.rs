@@ -20,12 +20,13 @@ use riffdb_storage_api::{
     EvidencePageLimit, HistoricalActiveCatalogEvidence, HistoricalBundleBytes,
     HistoricalBundleEvidence, HistoricalCapabilityPartitionEvidenceV1, HistoricalEvidenceCursor,
     HistoricalEvidenceEnd, HistoricalEvidencePage, HistoricalPersistedKeyEvidenceV1,
-    HistoricalSemanticEvidence, IndexMigrationCursor, IndexMigrationRowEvidence, OpenSessionId,
-    PartitionScopeV1, StartupIndexMigrationPort, StorageError, StorageErrorKind, StorageValueError,
-    StoredCapabilityRecordV1, StoredEntityRecordV1, StoredIndexEntryV1, StoredIndexEntryV2,
-    StoredIndexEpochV1, StructuralEvidenceCursor, StructuralEvidenceEnd, StructuralEvidencePage,
-    StructuralEvidenceSession, StructuralOpenOutcome, StructurallyDecodedIndexRangePrefixV1,
-    UniqueIndexTarget, UniqueOccupancyKind,
+    HistoricalSemanticEvidence, IndexMigrationCursor, IndexMigrationRowEvidence,
+    LegacyStoredIndexEpochV1, OpenSessionId, PartitionScopeV1, StartupIndexMigrationPort,
+    StorageError, StorageErrorKind, StorageValueError, StoredCapabilityRecordV1,
+    StoredEntityRecordV1, StoredIndexEntryV1, StoredIndexEntryV2, StructuralEvidenceCursor,
+    StructuralEvidenceEnd, StructuralEvidencePage, StructuralEvidenceSession,
+    StructuralOpenOutcome, StructurallyDecodedIndexRangePrefixV1, UniqueIndexTarget,
+    UniqueOccupancyKind,
 };
 use riffdb_types::{
     ActorId, ActorKind, AdministrationSequence, AggregateTypeId, Audience, CanonicalRecord,
@@ -1704,7 +1705,7 @@ fn index_prefix_evidence(
     let index = bundle.bundle().schema().entities()[0].indexes()[0].id();
     let prefix = StructurallyDecodedIndexRangePrefixV1::new(index, bytes)
         .expect("structural prefix envelope");
-    let record = StoredIndexEpochV1::new(
+    let record = LegacyStoredIndexEpochV1::new(
         prefix,
         DurableKeySchemaBindingV1::new(
             bundle.lineage().clone(),
@@ -1713,7 +1714,7 @@ fn index_prefix_evidence(
         ),
         IndexEpoch::first(),
     );
-    HistoricalPersistedKeyEvidenceV1::from_index_epoch(&record)
+    HistoricalPersistedKeyEvidenceV1::from_legacy_index_epoch(&record)
 }
 
 fn version(source: &str, number: u64) -> String {

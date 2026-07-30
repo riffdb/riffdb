@@ -2,16 +2,17 @@ use prost::Message;
 use riffdb_proto::storage::v1 as wire;
 use riffdb_types::{
     CanonicalInputHash, CommitSequence, ConflictKeyHash, ContractVersion, EntityVersion, EventHash,
-    EventTypeId, IndexEntryKey, IndexEpoch, MAX_KEY_BYTES, OutcomeId, PartitionKey,
+    EventTypeId, IndexEntryKey, IndexEpoch, IndexId, MAX_KEY_BYTES, OutcomeId, PartitionKey,
     PartitionKeyHash, ProvenanceId, RequestId, encode_canonical_record,
 };
 
 use crate::{
     AffectedEntityV1, CommittedEntityMutationV1, DurabilityMode, EncodedPageItem, EventReferenceV2,
-    IndexMigrationRowEvidence, IndexMigrationSemanticRow, StoredCommitRecordV1,
-    StoredDurableEventV1, StoredEntityRecordV1, StoredExecutionFailedV1, StoredIndexEntryV1,
-    StoredIndexEntryV2, StoredIndexEpochV1, StoredOutcomeV1, StoredPendingAdmissionV1,
-    StoredProvenanceRecordV1, StoredReadDependenciesV1, StoredReadDependencyV1,
+    IndexMigrationRowEvidence, IndexMigrationSemanticRow, LegacyStoredIndexEpochV1,
+    PartitionIndexTarget, StoredCommitRecordV1, StoredDurableEventV1, StoredEntityRecordV1,
+    StoredExecutionFailedV1, StoredIndexEntryV1, StoredIndexEntryV2, StoredIndexEpochV1,
+    StoredOutcomeV1, StoredPendingAdmissionV1, StoredProvenanceRecordV1, StoredReadDependenciesV1,
+    StoredReadDependencyV1,
 };
 
 use super::{
@@ -27,7 +28,8 @@ use super::{
 pub(super) const ENTITY: &str = "riffdb.storage.v1.StoredEntityRecordV1";
 pub(super) const INDEX_ENTRY: &str = "riffdb.storage.v1.StoredIndexEntryV2";
 const LEGACY_INDEX_ENTRY: &str = "riffdb.storage.v1.StoredIndexEntryV1";
-pub(super) const INDEX_EPOCH: &str = "riffdb.storage.v1.StoredIndexEpochV1";
+pub(super) const INDEX_EPOCH: &str = "riffdb.storage.v1.StoredIndexGenerationV2";
+const LEGACY_INDEX_EPOCH: &str = "riffdb.storage.v1.StoredIndexEpochV1";
 const PENDING: &str = "riffdb.storage.v1.StoredPendingAdmissionV1";
 const EXECUTION_FAILED: &str = "riffdb.storage.v1.StoredExecutionFailedV1";
 pub(super) const OUTCOME: &str = "riffdb.storage.v1.StoredOutcomeV1";
@@ -158,7 +160,31 @@ fn index_entry_from_proto(
     ))
 }
 
-pub(super) fn index_epoch_to_proto(value: &StoredIndexEpochV1) -> wire::StoredIndexEpochV1 {
+pub(super) fn index_epoch_to_proto(value: &StoredIndexEpochV1) -> wire::StoredIndexGenerationV2 {
+    wire::StoredIndexGenerationV2 {
+        partition_key: value.target().partition_key().as_bytes().to_vec(),
+        index_id: value.target().index_id().get(),
+        schema_binding: Some(binding_to_proto(value.schema_binding())),
+        generation: value.epoch().get(),
+    }
+}
+
+fn index_epoch_from_proto(
+    value: wire::StoredIndexGenerationV2,
+) -> Result<StoredIndexEpochV1, DurableCodecError> {
+    Ok(StoredIndexEpochV1::new(
+        PartitionIndexTarget::new(
+            PartitionKey::from_bytes(value.partition_key)
+                .map_err(|_| DurableCodecError::corrupt())?,
+            IndexId::new(value.index_id).ok_or_else(DurableCodecError::corrupt)?,
+        ),
+        binding_from_proto(require(value.schema_binding)?)?,
+        IndexEpoch::new(value.generation).ok_or_else(DurableCodecError::corrupt)?,
+    ))
+}
+
+#[cfg(any(test, feature = "test-fixtures"))]
+fn legacy_index_epoch_to_proto(value: &LegacyStoredIndexEpochV1) -> wire::StoredIndexEpochV1 {
     wire::StoredIndexEpochV1 {
         canonical_index_range_prefix: value.target().as_bytes().to_vec(),
         schema_binding: Some(binding_to_proto(value.schema_binding())),
@@ -166,10 +192,10 @@ pub(super) fn index_epoch_to_proto(value: &StoredIndexEpochV1) -> wire::StoredIn
     }
 }
 
-fn index_epoch_from_proto(
+fn legacy_index_epoch_from_proto(
     value: wire::StoredIndexEpochV1,
-) -> Result<StoredIndexEpochV1, DurableCodecError> {
-    Ok(StoredIndexEpochV1::new(
+) -> Result<LegacyStoredIndexEpochV1, DurableCodecError> {
+    Ok(LegacyStoredIndexEpochV1::new(
         structural_prefix_from_bytes(value.canonical_index_range_prefix)?,
         binding_from_proto(require(value.schema_binding)?)?,
         IndexEpoch::new(value.epoch).ok_or_else(DurableCodecError::corrupt)?,
@@ -434,7 +460,37 @@ pub fn encode_index_epoch_v1(
 pub fn decode_index_epoch_v1(
     encoded: &[u8],
 ) -> Result<EncodedPageItem<StoredIndexEpochV1>, DurableCodecError> {
-    decode_message::<wire::StoredIndexEpochV1, _, _>(INDEX_EPOCH, encoded, index_epoch_from_proto)
+    decode_message::<wire::StoredIndexGenerationV2, _, _>(
+        INDEX_EPOCH,
+        encoded,
+        index_epoch_from_proto,
+    )
+}
+
+/// Decodes one historical prefix epoch for the bounded generation migration.
+pub fn decode_legacy_index_epoch_v1(
+    encoded: &[u8],
+) -> Result<EncodedPageItem<LegacyStoredIndexEpochV1>, DurableCodecError> {
+    decode_message::<wire::StoredIndexEpochV1, _, _>(
+        LEGACY_INDEX_EPOCH,
+        encoded,
+        legacy_index_epoch_from_proto,
+    )
+}
+
+#[cfg(any(test, feature = "test-fixtures"))]
+/// Encodes one historical prefix epoch for migration and compatibility fixtures.
+pub fn encode_legacy_index_epoch_v1_fixture(
+    value: &LegacyStoredIndexEpochV1,
+) -> Result<CanonicalStoredEnvelopeV1, DurableCodecError> {
+    let message = legacy_index_epoch_to_proto(value);
+    let schema = riffdb_proto::durable::readable_record_schema(LEGACY_INDEX_EPOCH)
+        .ok_or_else(DurableCodecError::invariant)?;
+    let bytes = riffdb_proto::envelope::encode(schema, &message.encode_to_vec())
+        .map_err(DurableCodecError::from_encode_envelope)?;
+    let charge =
+        crate::EncodedContentCharge::new(bytes.len()).ok_or_else(DurableCodecError::invariant)?;
+    Ok(CanonicalStoredEnvelopeV1 { bytes, charge })
 }
 
 /// Encodes one pending command admission.

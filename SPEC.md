@@ -6037,7 +6037,7 @@ contract_bundles/<u32-be-lineage-length>/<lineage-utf8>/<u64-be-version>
 catalog_active/0x01
 entities/<exact-canonical-entity-key>
 secondary_indexes/<exact-canonical-index-entry-key>
-index_epochs/<exact-canonical-index-range-prefix>
+index_generations/<u32-be-partition-key-length>/<canonical-partition-key>/<u32-be-index-id>
 idempotency/<database-id>/<environment>/<tenant-scope>/<principal-id>/<contract-lineage>/<command-id>/<key-digest>  # one full StoredOutcomeV1 or StoredExecutionFailedV1 envelope
 idempotency_pending/<canonical-idempotency-identity>  # deleted atomically at terminalization; no tombstone
 commits/<u64-be-sequence>

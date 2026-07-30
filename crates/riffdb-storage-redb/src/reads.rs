@@ -8,10 +8,10 @@ use riffdb_storage_api::{
     AuthoritativeScanReader, CommitScanPageV1, CommitScanRequest, EncodedPageItem,
     EntityObservation, EntityTarget, FilteredAuthoritativeIndexScanPage,
     FilteredAuthoritativeIndexScanRequest, FilteredAuthoritativeScanReader, IdempotencyIdentity,
-    IndexEpochPosition, IndexRangeEntry, IndexRangeTarget, MAX_COMMIT_SCAN_PAGE_BYTES,
+    IndexEpochPosition, IndexPartitionFilterScope, IndexRangeEntry, MAX_COMMIT_SCAN_PAGE_BYTES,
     MAX_INDEX_SCAN_INSPECTED_BYTES, MAX_INDEX_SCAN_INSPECTED_ENTRIES, MAX_SCAN_PAGE_BYTES,
-    ReadSnapshot, ReadSnapshotBuilder, SnapshotReader, SnapshotRequest, StorageError,
-    StorageErrorKind, StorageValueError, StoredCommitRecordV1, StoredDurableEventV1,
+    PartitionIndexTarget, ReadSnapshot, ReadSnapshotBuilder, SnapshotReader, SnapshotRequest,
+    StorageError, StorageErrorKind, StorageValueError, StoredCommitRecordV1, StoredDurableEventV1,
     StoredEntityRecordV1, StoredOutcomeV1, StoredProvenanceRecordV1,
 };
 use riffdb_types::{CommitSequence, EventId, FrontierPosition, ProvenanceId};
@@ -24,7 +24,8 @@ use crate::codec::{
 use crate::error::{precommit_storage_error, storage_error, table_error};
 use crate::keys::{
     decode_application_sequence_key, decode_index_entry_key, encode_application_sequence_key,
-    encode_entity_key, encode_event_key, encode_idempotency_key, encode_provenance_key,
+    encode_entity_key, encode_event_key, encode_idempotency_key, encode_partition_index_key,
+    encode_provenance_key,
 };
 use crate::layout::{
     COMMITS, ENTITIES, EVENTS, IDEMPOTENCY, INDEX_EPOCHS, PROVENANCE, SECONDARY_INDEXES,
@@ -58,7 +59,7 @@ impl SnapshotReader for RedbOperationalPorts {
                 .map_err(materialization_value)?;
         }
         for target in request.range_targets() {
-            let epoch = read_epoch_position(&index_epochs, target)?;
+            let epoch = read_epoch_position(&index_epochs, target.generation_target())?;
             let mut range = snapshot
                 .begin_range(target.clone(), epoch)
                 .map_err(materialization_value)?;
@@ -76,6 +77,9 @@ impl SnapshotReader for RedbOperationalPorts {
                 if decoded.value().key() != &key {
                     return Err(corrupt());
                 }
+                if decoded.value().partition_key() != target.generation_target().partition_key() {
+                    continue;
+                }
                 let row = IndexRangeEntry::new(
                     key.index_id(),
                     key,
@@ -86,7 +90,6 @@ impl SnapshotReader for RedbOperationalPorts {
             }
             range.finish().map_err(materialization_value)?;
         }
-
         snapshot.finish().map_err(materialization_value)
     }
 }
@@ -213,7 +216,7 @@ impl AuthoritativeScanReader for RedbOperationalPorts {
             .open_table(SECONDARY_INDEXES)
             .map_err(table_error)?;
         let index_epochs = transaction.open_table(INDEX_EPOCHS).map_err(table_error)?;
-        let epoch = read_epoch_position(&index_epochs, request.target())?;
+        let epoch = read_epoch_position(&index_epochs, request.target().generation_target())?;
         let prefix = request.target().prefix().as_bytes();
         let mut scan = match request.after() {
             Some(after) => table
@@ -232,13 +235,18 @@ impl AuthoritativeScanReader for RedbOperationalPorts {
                 break;
             }
             let key = decode_index_entry_key(physical_key.value()).map_err(|_| corrupt())?;
-            if entries.len() == wanted {
-                has_more = true;
-                break;
-            }
             let decoded = decode_index_entry_v2(encoded.value())?;
             if decoded.value().key() != &key {
                 return Err(corrupt());
+            }
+            if decoded.value().partition_key()
+                != request.target().generation_target().partition_key()
+            {
+                continue;
+            }
+            if entries.len() == wanted {
+                has_more = true;
+                break;
             }
             let (stored, charge) = decoded.into_parts();
             let next_bytes = encoded_bytes
@@ -356,11 +364,26 @@ impl FilteredAuthoritativeScanReader for RedbOperationalPorts {
             .open_table(SECONDARY_INDEXES)
             .map_err(table_error)?;
         let index_epochs = transaction.open_table(INDEX_EPOCHS).map_err(table_error)?;
-        let epoch = read_epoch_position(&index_epochs, request.target())?;
         if request.partition_filter().is_none() {
-            return FilteredAuthoritativeIndexScanPage::exact_end(&request, epoch, Vec::new())
-                .map_err(corrupt_value);
+            return FilteredAuthoritativeIndexScanPage::exact_end(
+                &request,
+                IndexEpochPosition::BeforeFirst,
+                Vec::new(),
+            )
+            .map_err(corrupt_value);
         }
+        let partition = match request.partition_filter().scope() {
+            IndexPartitionFilterScope::Explicit(keys) if keys.len() == 1 => &keys[0],
+            IndexPartitionFilterScope::All
+            | IndexPartitionFilterScope::None
+            | IndexPartitionFilterScope::Explicit(_) => {
+                return Err(storage_error(StorageErrorKind::InvariantViolation));
+            }
+        };
+        let epoch = read_epoch_position(
+            &index_epochs,
+            &PartitionIndexTarget::new(partition.clone(), request.target().prefix().index_id()),
+        )?;
 
         let prefix = request.target().prefix().as_bytes();
         let mut scan = match request.after() {
@@ -469,19 +492,14 @@ pub(crate) fn read_entity_record(
 
 fn read_epoch_position(
     table: &BytesTable,
-    target: &IndexRangeTarget,
+    target: &PartitionIndexTarget,
 ) -> Result<IndexEpochPosition, StorageError> {
-    let prefix = target.prefix();
-    let Some(encoded) = table
-        .get(prefix.as_bytes())
-        .map_err(precommit_storage_error)?
-    else {
+    let key = encode_partition_index_key(target);
+    let Some(encoded) = table.get(key.as_slice()).map_err(precommit_storage_error)? else {
         return Ok(IndexEpochPosition::BeforeFirst);
     };
     let epoch = decode_index_epoch_v1(encoded.value())?.into_parts().0;
-    if epoch.target().index_id() != prefix.index_id()
-        || epoch.target().as_bytes() != prefix.as_bytes()
-    {
+    if epoch.target() != target {
         return Err(corrupt());
     }
     Ok(IndexEpochPosition::Value(epoch.epoch()))
@@ -532,9 +550,9 @@ mod tests {
     use riffdb_storage_api::{
         AuthoritativeIndexScanPage, DatabaseInitializationPort, DeclaredOutcome, DurabilityMode,
         DurableKeySchemaBindingV1, ExecutablePlanRef, IdempotencyIdentity, IdempotencyKeyDigest,
-        IndexPartitionFilter, IndexPartitionFilterScope, IndexRangePrefixBuilder, ReadDependencies,
-        StorageScanLimit, StoredCommitRecordV1, StoredIndexEntryV2, StoredIndexEpochV1,
-        StoredReadDependenciesV1, StructurallyDecodedIndexRangePrefixV1,
+        IndexPartitionFilter, IndexPartitionFilterScope, IndexRangePrefixBuilder, IndexRangeTarget,
+        PartitionIndexTarget, ReadDependencies, StorageScanLimit, StoredCommitRecordV1,
+        StoredIndexEntryV2, StoredIndexEpochV1, StoredReadDependenciesV1,
     };
     use riffdb_types::{
         ActorId, ActorKind, AdmittedActorContext, AggregateTypeId, CanonicalInputHash,
@@ -642,9 +660,13 @@ mod tests {
     }
 
     fn filtered_range() -> IndexRangeTarget {
+        filtered_range_for(1)
+    }
+
+    fn filtered_range_for(partition: u64) -> IndexRangeTarget {
         let mut prefix = IndexRangePrefixBuilder::new(IndexId::new(7).expect("index"));
         prefix.push_u64(19).expect("prefix component");
-        IndexRangeTarget::new(prefix.finish())
+        IndexRangeTarget::new(filtered_partition(partition), prefix.finish())
     }
 
     fn filtered_index_key(value: u64) -> riffdb_types::IndexEntryKey {
@@ -674,17 +696,17 @@ mod tests {
     }
 
     fn filtered_request(
-        scope: IndexPartitionFilterScope,
+        partition: u64,
         after: Option<riffdb_types::IndexEntryKey>,
         limit: u16,
     ) -> FilteredAuthoritativeIndexScanRequest {
         let filter = IndexPartitionFilter::new(
             ContractLineage::new("application-test").expect("lineage"),
-            scope,
+            IndexPartitionFilterScope::Explicit(vec![filtered_partition(partition)]),
         )
         .expect("filter");
         FilteredAuthoritativeIndexScanRequest::new(
-            filtered_range(),
+            filtered_range_for(partition),
             filter,
             after,
             StorageScanLimit::new(limit).expect("limit"),
@@ -694,12 +716,12 @@ mod tests {
 
     fn seed_filtered_rows(ports: &RedbOperationalPorts, rows: Vec<StoredIndexEntryV2>) {
         let target = filtered_range();
-        let stored_epoch = StoredIndexEpochV1::new(
-            StructurallyDecodedIndexRangePrefixV1::from_live(target.prefix()),
-            filtered_binding("application-test"),
-            IndexEpoch::first(),
-        );
-        let encoded_epoch = encode_index_epoch_v1(&stored_epoch).expect("encode index epoch");
+        let generations = rows
+            .iter()
+            .map(|row| {
+                PartitionIndexTarget::new(row.partition_key().clone(), target.prefix().index_id())
+            })
+            .collect::<std::collections::BTreeSet<_>>();
         let access = ports.begin_write().expect("begin filtered seed");
         {
             let mut table = access
@@ -723,12 +745,22 @@ mod tests {
                 .expect("seed transaction")
                 .open_table(INDEX_EPOCHS)
                 .expect("epoch table");
-            assert!(
-                table
-                    .insert(target.prefix().as_bytes(), encoded_epoch.as_bytes())
-                    .expect("insert index epoch")
-                    .is_none()
-            );
+            for generation in generations {
+                let stored_epoch = StoredIndexEpochV1::new(
+                    generation.clone(),
+                    filtered_binding("application-test"),
+                    IndexEpoch::first(),
+                );
+                let encoded_epoch =
+                    encode_index_epoch_v1(&stored_epoch).expect("encode index epoch");
+                let key = encode_partition_index_key(&generation);
+                assert!(
+                    table
+                        .insert(key.as_slice(), encoded_epoch.as_bytes())
+                        .expect("insert index generation")
+                        .is_none()
+                );
+            }
         }
         access.commit().expect("commit filtered seed");
     }
@@ -898,22 +930,24 @@ mod tests {
         let key = index_key
             .finish(entity_target(1).key().clone())
             .expect("index key");
-        let target = IndexRangeTarget::new(IndexRangePrefixBuilder::new(index_id).finish());
         let mut partition = PartitionKeyBuilder::new(AggregateTypeId::first());
         partition.push_u64(1).expect("partition component");
+        let partition = partition.finish().expect("partition key");
+        let target = IndexRangeTarget::new(
+            partition.clone(),
+            IndexRangePrefixBuilder::new(index_id).finish(),
+        );
         let stored = StoredIndexEntryV2::new(
             key.clone(),
             binding(),
             CanonicalRecord::new(Vec::new()).expect("covered values"),
-            partition.finish().expect("partition key"),
+            partition.clone(),
         )
         .expect("stored index entry");
         let encoded = encode_index_entry_v2(&stored).expect("encode index entry");
-        let stored_epoch = StoredIndexEpochV1::new(
-            StructurallyDecodedIndexRangePrefixV1::from_live(target.prefix()),
-            binding(),
-            IndexEpoch::first(),
-        );
+        let generation = PartitionIndexTarget::new(partition.clone(), index_id);
+        let stored_epoch =
+            StoredIndexEpochV1::new(generation.clone(), binding(), IndexEpoch::first());
         let encoded_epoch = encode_index_epoch_v1(&stored_epoch).expect("encode index epoch");
         let access = ports.begin_write().expect("begin write");
         {
@@ -933,7 +967,10 @@ mod tests {
                 .open_table(INDEX_EPOCHS)
                 .expect("epoch table");
             table
-                .insert(target.prefix().as_bytes(), encoded_epoch.as_bytes())
+                .insert(
+                    encode_partition_index_key(&generation).as_slice(),
+                    encoded_epoch.as_bytes(),
+                )
                 .expect("insert index epoch");
         }
         access.commit().expect("commit index row");
@@ -971,7 +1008,7 @@ mod tests {
     }
 
     #[test]
-    fn filtered_scan_enforces_all_explicit_none_and_lineage() {
+    fn filtered_scan_requires_one_exact_partition_and_enforces_lineage() {
         let (_path, ports) = operational("filtered-partitions");
         seed_filtered_rows(
             &ports,
@@ -982,24 +1019,8 @@ mod tests {
             ],
         );
 
-        let all = ports
-            .scan_index_filtered(filtered_request(IndexPartitionFilterScope::All, None, 500))
-            .expect("all scan");
-        assert_eq!(all.epoch(), IndexEpochPosition::Value(IndexEpoch::first()));
-        assert!(matches!(
-            all,
-            FilteredAuthoritativeIndexScanPage::ExactEnd { ref entries, .. }
-                if entries.len() == 2
-                    && entries[0].value().key() == &filtered_index_key(1)
-                    && entries[1].value().key() == &filtered_index_key(3)
-        ));
-
         let explicit = ports
-            .scan_index_filtered(filtered_request(
-                IndexPartitionFilterScope::Explicit(vec![filtered_partition(3)]),
-                None,
-                500,
-            ))
+            .scan_index_filtered(filtered_request(3, None, 500))
             .expect("explicit scan");
         assert!(matches!(
             explicit,
@@ -1007,14 +1028,26 @@ mod tests {
                 if entries.len() == 1 && entries[0].value().key() == &filtered_index_key(3)
         ));
 
-        let none = ports
-            .scan_index_filtered(filtered_request(IndexPartitionFilterScope::None, None, 500))
-            .expect("none scan");
-        assert!(matches!(
-            none,
-            FilteredAuthoritativeIndexScanPage::ExactEnd { ref entries, .. }
-                if entries.is_empty()
-        ));
+        for scope in [
+            IndexPartitionFilterScope::All,
+            IndexPartitionFilterScope::None,
+            IndexPartitionFilterScope::Explicit(vec![filtered_partition(1), filtered_partition(3)]),
+        ] {
+            let filter = IndexPartitionFilter::new(
+                ContractLineage::new("application-test").expect("lineage"),
+                scope,
+            )
+            .expect("structural filter");
+            assert!(matches!(
+                FilteredAuthoritativeIndexScanRequest::new(
+                    filtered_range(),
+                    filter,
+                    None,
+                    StorageScanLimit::new(500).expect("limit"),
+                ),
+                Err(StorageValueError::InvalidShape)
+            ));
+        }
     }
 
     #[test]
@@ -1023,12 +1056,12 @@ mod tests {
         seed_filtered_rows(
             &ports,
             (1_u64..=501)
-                .map(|value| filtered_row(value, value, "foreign"))
+                .map(|value| filtered_row(value, 1, "foreign"))
                 .collect(),
         );
 
         let first = ports
-            .scan_index_filtered(filtered_request(IndexPartitionFilterScope::All, None, 500))
+            .scan_index_filtered(filtered_request(1, None, 500))
             .expect("first sparse page");
         let FilteredAuthoritativeIndexScanPage::Page {
             entries,
@@ -1043,11 +1076,7 @@ mod tests {
         assert_eq!(epoch, IndexEpochPosition::Value(IndexEpoch::first()));
 
         let final_page = ports
-            .scan_index_filtered(filtered_request(
-                IndexPartitionFilterScope::All,
-                Some(scanned_through),
-                500,
-            ))
+            .scan_index_filtered(filtered_request(1, Some(scanned_through), 500))
             .expect("final sparse page");
         assert!(matches!(
             final_page,
@@ -1064,13 +1093,13 @@ mod tests {
             &ports,
             vec![
                 filtered_row(1, 1, "application-test"),
-                filtered_row(2, 2, "application-test"),
-                filtered_row(3, 3, "application-test"),
+                filtered_row(2, 1, "application-test"),
+                filtered_row(3, 1, "application-test"),
             ],
         );
 
         let first = ports
-            .scan_index_filtered(filtered_request(IndexPartitionFilterScope::All, None, 2))
+            .scan_index_filtered(filtered_request(1, None, 2))
             .expect("bounded first page");
         let FilteredAuthoritativeIndexScanPage::Page {
             entries,
@@ -1086,11 +1115,7 @@ mod tests {
         assert_eq!(scanned_through, filtered_index_key(2));
 
         let final_page = ports
-            .scan_index_filtered(filtered_request(
-                IndexPartitionFilterScope::All,
-                Some(scanned_through),
-                2,
-            ))
+            .scan_index_filtered(filtered_request(1, Some(scanned_through), 2))
             .expect("bounded final page");
         assert!(matches!(
             final_page,

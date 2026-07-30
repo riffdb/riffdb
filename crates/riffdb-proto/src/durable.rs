@@ -11,7 +11,7 @@ use crate::envelope::{PayloadValidationError, RecordRegistry, RecordSchema};
 use crate::storage::v1;
 
 /// Number of durable semantic payload tuples accepted while opening or migrating storage.
-pub const READABLE_RECORD_SCHEMA_COUNT: usize = 34;
+pub const READABLE_RECORD_SCHEMA_COUNT: usize = 35;
 /// Number of durable semantic roles accepted for current writes.
 pub const WRITABLE_RECORD_SCHEMA_COUNT: usize = 30;
 /// Number of durable semantic roles accepted for current writes.
@@ -49,6 +49,14 @@ const EVENT_REFERENCE_V2_SCHEMA_HASH_BYTES: &[u8; 64] = include_bytes!(concat!(
 const EVENT_REFERENCE_V2_RECORD_BOUND_BYTES: &[u8; 16] = include_bytes!(concat!(
     env!("CARGO_MANIFEST_DIR"),
     "/../../fixtures/proto/durable-event-reference-v2-record-bounds.bin"
+));
+const INDEX_GENERATION_V2_SCHEMA_HASH_BYTES: &[u8; 32] = include_bytes!(concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/../../fixtures/proto/durable-index-generation-v2-schema-hash.bin"
+));
+const INDEX_GENERATION_V2_RECORD_BOUND_BYTES: &[u8; 8] = include_bytes!(concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/../../fixtures/proto/durable-index-generation-v2-record-bound.bin"
 ));
 const PRE_WP280_CAPABILITY_SCHEMA_HASH: SchemaHash = SchemaHash::from_bytes([
     0xcb, 0x42, 0xc4, 0xeb, 0xbc, 0xe8, 0x28, 0x01, 0x23, 0xf8, 0xb3, 0x4d, 0x4d, 0xcd, 0xe7, 0x4c,
@@ -118,6 +126,19 @@ const fn event_reference_v2_record_bound(index: usize, offset: usize) -> usize {
         EVENT_REFERENCE_V2_RECORD_BOUND_BYTES[start + 1],
         EVENT_REFERENCE_V2_RECORD_BOUND_BYTES[start + 2],
         EVENT_REFERENCE_V2_RECORD_BOUND_BYTES[start + 3],
+    ]) as usize
+}
+
+const fn index_generation_v2_schema_hash() -> SchemaHash {
+    SchemaHash::from_bytes(*INDEX_GENERATION_V2_SCHEMA_HASH_BYTES)
+}
+
+const fn index_generation_v2_record_bound(offset: usize) -> usize {
+    u32::from_be_bytes([
+        INDEX_GENERATION_V2_RECORD_BOUND_BYTES[offset],
+        INDEX_GENERATION_V2_RECORD_BOUND_BYTES[offset + 1],
+        INDEX_GENERATION_V2_RECORD_BOUND_BYTES[offset + 2],
+        INDEX_GENERATION_V2_RECORD_BOUND_BYTES[offset + 3],
     ]) as usize
 }
 
@@ -290,6 +311,16 @@ const OUTBOX_INTENT_V2_RECORD_SCHEMA: RecordSchema<'static> = RecordSchema::new_
 )
 .with_compact_identity(15, 2);
 
+const INDEX_GENERATION_V2_RECORD_SCHEMA: RecordSchema<'static> = RecordSchema::new_current(
+    "riffdb.storage.v1.StoredIndexGenerationV2",
+    index_generation_v2_schema_hash(),
+    index_generation_v2_record_bound(0),
+    index_generation_v2_record_bound(4),
+    preflight_payload::<33>,
+    validate_payload::<33, v1::StoredIndexGenerationV2>,
+)
+.with_compact_identity(10, 2);
+
 mod sealed {
     pub trait WritableRecordMessage {}
 }
@@ -323,7 +354,6 @@ writable_message!(4, v1::StoredContractBundleV1);
 writable_message!(5, v1::ActiveCatalogPointerV1);
 writable_message!(6, v1::StoredCatalogAdministrationV1);
 writable_message!(7, v1::StoredEntityRecordV1);
-writable_message!(9, v1::StoredIndexEpochV1);
 writable_message!(10, v1::StoredPendingAdmissionV1);
 writable_message!(11, v1::StoredExecutionFailedV1);
 writable_message!(12, v1::StoredOutcomeV1);
@@ -371,6 +401,14 @@ impl sealed::WritableRecordMessage for v1::StoredOutboxIntentV2 {}
 impl WritableRecordMessage for v1::StoredOutboxIntentV2 {
     fn record_schema() -> &'static RecordSchema<'static> {
         &OUTBOX_INTENT_V2_RECORD_SCHEMA
+    }
+}
+
+impl sealed::WritableRecordMessage for v1::StoredIndexGenerationV2 {}
+
+impl WritableRecordMessage for v1::StoredIndexGenerationV2 {
+    fn record_schema() -> &'static RecordSchema<'static> {
+        &INDEX_GENERATION_V2_RECORD_SCHEMA
     }
 }
 
@@ -426,6 +464,7 @@ pub static READABLE_RECORD_SCHEMAS: [RecordSchema<'static>; READABLE_RECORD_SCHE
     REGISTRY_V2_RECORD_SCHEMA,
     COMMIT_V2_RECORD_SCHEMA,
     OUTBOX_INTENT_V2_RECORD_SCHEMA,
+    INDEX_GENERATION_V2_RECORD_SCHEMA,
     PRE_WP280_CAPABILITY_RECORD_SCHEMA,
 ];
 
@@ -440,7 +479,7 @@ pub static WRITABLE_RECORD_SCHEMAS: [RecordSchema<'static>; WRITABLE_RECORD_SCHE
     CURRENT_V1_RECORD_SCHEMAS[6],
     CURRENT_V1_RECORD_SCHEMAS[7],
     INDEX_V2_RECORD_SCHEMA,
-    CURRENT_V1_RECORD_SCHEMAS[9],
+    INDEX_GENERATION_V2_RECORD_SCHEMA,
     CURRENT_V1_RECORD_SCHEMAS[10],
     CURRENT_V1_RECORD_SCHEMAS[11],
     CURRENT_V1_RECORD_SCHEMAS[12],

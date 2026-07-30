@@ -18,9 +18,9 @@ use riffdb_storage_api::{
     IdempotencyLookupCandidatesV1, IndexEntryMutationV1, IndexEpochAdvanceError,
     IndexEpochAdvanceV1, IndexRangePrefixBuilder, IndexRangeTarget,
     MAX_AFFECTED_INDEX_EPOCH_TARGETS, MAX_INDEX_DELTAS, MAX_READ_SNAPSHOT_BYTES,
-    MAX_VALIDATION_TARGETS, StorageError, StoredIndexEntryV2, TransactionCurrentState,
-    UniqueIndexTarget, UniqueOccupancyKind, ValidatedCommandWriteSetShapeV1,
-    command_write_set_upper_bound_v1,
+    MAX_VALIDATION_TARGETS, PartitionIndexTarget, StorageError, StoredIndexEntryV2,
+    TransactionCurrentState, UniqueIndexTarget, UniqueOccupancyKind,
+    ValidatedCommandWriteSetShapeV1, command_write_set_upper_bound_v1,
 };
 use riffdb_types::{CanonicalRecord, CanonicalValue, IndexEntryKey, PartitionKey};
 
@@ -539,7 +539,7 @@ where
 struct IndexDerivationBuilder {
     entry_mutations: Vec<IndexEntryMutationV1>,
     entry_keys: BTreeSet<IndexEntryKey>,
-    affected_targets: BTreeSet<IndexRangeTarget>,
+    affected_targets: BTreeSet<PartitionIndexTarget>,
     unique_targets: BTreeSet<UniqueIndexTarget>,
     validation_positions: usize,
     affected_current_semantic_bytes: usize,
@@ -573,7 +573,7 @@ impl IndexDerivationBuilder {
         Ok(())
     }
 
-    fn insert_target(&mut self, target: IndexRangeTarget) -> Result<(), CommandIndexError> {
+    fn insert_target(&mut self, target: PartitionIndexTarget) -> Result<(), CommandIndexError> {
         if self.affected_targets.contains(&target) {
             return Ok(());
         }
@@ -588,7 +588,7 @@ impl IndexDerivationBuilder {
             return Err(CommandIndexError::internal_defect());
         }
         let observation_bytes = target
-            .prefix()
+            .partition_key()
             .as_bytes()
             .len()
             .checked_add(INDEX_RANGE_TARGET_FIXED_BYTES_V1)
@@ -744,7 +744,13 @@ fn derive_grammar_v1_indexes(
             match current_record {
                 None => {
                     if is_unique {
-                        insert_unique_target(index, &new_values, new_key.clone(), &mut builder)?;
+                        insert_unique_target(
+                            index,
+                            &new_values,
+                            command_partition,
+                            new_key.clone(),
+                            &mut builder,
+                        )?;
                     }
                     builder.push_entry(IndexEntryMutationV1::Put(
                         StoredIndexEntryV2::new(
@@ -755,7 +761,7 @@ fn derive_grammar_v1_indexes(
                         )
                         .map_err(|_| CommandIndexError::internal_defect())?,
                     ))?;
-                    insert_prefixes(index, &new_values, &mut builder)?;
+                    insert_generation(index, &new_values, command_partition, &mut builder)?;
                 }
                 Some(record) => {
                     let old_values = index_values(index, record)?;
@@ -767,7 +773,13 @@ fn derive_grammar_v1_indexes(
                         continue;
                     }
                     if is_unique {
-                        insert_unique_target(index, &new_values, new_key.clone(), &mut builder)?;
+                        insert_unique_target(
+                            index,
+                            &new_values,
+                            command_partition,
+                            new_key.clone(),
+                            &mut builder,
+                        )?;
                     }
                     builder.push_entry(IndexEntryMutationV1::Delete(old_key))?;
                     builder.push_entry(IndexEntryMutationV1::Put(
@@ -779,8 +791,8 @@ fn derive_grammar_v1_indexes(
                         )
                         .map_err(|_| CommandIndexError::internal_defect())?,
                     ))?;
-                    insert_prefixes(index, &old_values, &mut builder)?;
-                    insert_prefixes(index, &new_values, &mut builder)?;
+                    insert_generation(index, &old_values, command_partition, &mut builder)?;
+                    insert_generation(index, &new_values, command_partition, &mut builder)?;
                 }
             }
         }
@@ -791,6 +803,7 @@ fn derive_grammar_v1_indexes(
 fn insert_unique_target(
     index: &IndexSchema,
     values: &[CanonicalValue],
+    command_partition: &PartitionKey,
     expected_entry: IndexEntryKey,
     builder: &mut IndexDerivationBuilder,
 ) -> Result<(), CommandIndexError> {
@@ -807,8 +820,11 @@ fn insert_unique_target(
         return Err(CommandIndexError::internal_defect());
     }
     builder.insert_unique(
-        UniqueIndexTarget::new(IndexRangeTarget::new(storage), expected_entry)
-            .map_err(|_| CommandIndexError::internal_defect())?,
+        UniqueIndexTarget::new(
+            IndexRangeTarget::new(command_partition.clone(), storage),
+            expected_entry,
+        )
+        .map_err(|_| CommandIndexError::internal_defect())?,
     )
 }
 
@@ -830,34 +846,28 @@ fn index_values(
         .collect()
 }
 
-fn insert_prefixes(
+fn insert_generation(
     index: &IndexSchema,
     values: &[CanonicalValue],
+    partition: &PartitionKey,
     builder: &mut IndexDerivationBuilder,
 ) -> Result<(), CommandIndexError> {
     if values.len() != index.fields().len() {
         return Err(CommandIndexError::internal_defect());
     }
     let mut storage_prefix = IndexRangePrefixBuilder::new(index.id());
-    for component_count in 0..=values.len() {
-        if let Some(value) = component_count
-            .checked_sub(1)
-            .and_then(|position| values.get(position))
-        {
-            push_storage_prefix_component(&mut storage_prefix, value)?;
-        }
-        let ir_prefix = index
-            .key_schema()
-            .encode_index_prefix(&values[..component_count])
-            .map_err(|_| CommandIndexError::internal_defect())?;
-        let storage = storage_prefix.clone().finish();
-        if storage.index_id() != ir_prefix.index_id() || storage.as_bytes() != ir_prefix.as_bytes()
-        {
-            return Err(CommandIndexError::internal_defect());
-        }
-        builder.insert_target(IndexRangeTarget::new(storage))?;
+    for value in values {
+        push_storage_prefix_component(&mut storage_prefix, value)?;
     }
-    Ok(())
+    let ir_prefix = index
+        .key_schema()
+        .encode_index_prefix(values)
+        .map_err(|_| CommandIndexError::internal_defect())?;
+    let storage = storage_prefix.finish();
+    if storage.index_id() != ir_prefix.index_id() || storage.as_bytes() != ir_prefix.as_bytes() {
+        return Err(CommandIndexError::internal_defect());
+    }
+    builder.insert_target(PartitionIndexTarget::new(partition.clone(), index.id()))
 }
 
 fn push_storage_prefix_component(
@@ -901,10 +911,10 @@ mod tests {
         StoredAdmittedProvenanceClaimsV1, StoredEntityRecordV1, StoredPendingAdmissionV1,
     };
     use riffdb_types::{
-        ActorId, ActorKind, AdmittedActorContext, CanonicalInputHash, CanonicalValue, DatabaseId,
-        Date, DigestKeyId, EntityVersion, Environment, FieldId, IndexEntryKeyBuilder, IndexId,
-        LogicalTime, MAX_CANONICAL_DOCUMENT_BYTES, ProvenanceId, RequestId, TenantScope, Timestamp,
-        hash_partition_key,
+        ActorId, ActorKind, AdmittedActorContext, AggregateTypeId, CanonicalInputHash,
+        CanonicalValue, DatabaseId, Date, DigestKeyId, EntityVersion, Environment, FieldId,
+        IndexEntryKeyBuilder, IndexId, LogicalTime, MAX_CANONICAL_DOCUMENT_BYTES,
+        PartitionKeyBuilder, ProvenanceId, RequestId, TenantScope, Timestamp, hash_partition_key,
     };
 
     use super::*;
@@ -1197,32 +1207,16 @@ contract ScalarPrefixes version 1 {
             .expect("named index")
     }
 
-    fn expected_prefix_bytes(
-        indexes: &[(&IndexSchema, Vec<Vec<CanonicalValue>>)],
-    ) -> BTreeSet<Vec<u8>> {
-        indexes
-            .iter()
-            .flat_map(|(index, value_sets)| {
-                value_sets.iter().flat_map(|values| {
-                    (0..=values.len()).map(|count| {
-                        index
-                            .key_schema()
-                            .encode_index_prefix(&values[..count])
-                            .expect("expected prefix")
-                            .as_bytes()
-                            .to_vec()
-                    })
-                })
-            })
-            .collect()
+    fn expected_generation_ids(indexes: &[&IndexSchema]) -> BTreeSet<IndexId> {
+        indexes.iter().map(|index| index.id()).collect()
     }
 
-    fn actual_prefix_bytes(derived: &DerivedCommandIndexes) -> BTreeSet<Vec<u8>> {
+    fn actual_generation_ids(derived: &DerivedCommandIndexes) -> BTreeSet<IndexId> {
         derived
             .affected_targets
             .as_slice()
             .iter()
-            .map(|target| target.prefix().as_bytes().to_vec())
+            .map(PartitionIndexTarget::index_id)
             .collect()
     }
 
@@ -1467,16 +1461,17 @@ contract ScalarPrefixes version 1 {
             ])
         );
         assert_eq!(
-            actual_prefix_bytes(&derived),
-            expected_prefix_bytes(&[
-                (
-                    tenant,
-                    vec![vec![CanonicalValue::Uuid([0x21; 16]), string("new")]],
-                ),
-                (score, vec![vec![CanonicalValue::I64(10)]]),
-            ])
+            actual_generation_ids(&derived),
+            expected_generation_ids(&[tenant, score])
         );
-        assert_eq!(derived.affected_targets.as_slice().len(), 5);
+        assert_eq!(derived.affected_targets.as_slice().len(), 2);
+        assert!(
+            derived
+                .affected_targets
+                .as_slice()
+                .iter()
+                .all(|target| target.partition_key() == &fixture.partition)
+        );
     }
 
     #[test]
@@ -1592,22 +1587,10 @@ contract ScalarPrefixes version 1 {
             ])
         );
         assert_eq!(
-            actual_prefix_bytes(&derived),
-            expected_prefix_bytes(&[
-                (
-                    tenant,
-                    vec![
-                        vec![CanonicalValue::Uuid([0x21; 16]), string("old")],
-                        vec![CanonicalValue::Uuid([0x21; 16]), string("new")],
-                    ],
-                ),
-                (
-                    score,
-                    vec![vec![CanonicalValue::I64(10)], vec![CanonicalValue::I64(20)]],
-                ),
-            ])
+            actual_generation_ids(&derived),
+            expected_generation_ids(&[tenant, score])
         );
-        assert_eq!(derived.affected_targets.as_slice().len(), 7);
+        assert_eq!(derived.affected_targets.as_slice().len(), 2);
     }
 
     #[test]
@@ -1633,18 +1616,24 @@ contract ScalarPrefixes version 1 {
             string("exact"),
         ];
         let mut builder = IndexDerivationBuilder::new(0, 0).expect("builder");
-        insert_prefixes(index, &values, &mut builder).expect("cross-checked prefixes");
-        let derived = builder.finish().expect("derived prefixes");
-        assert_eq!(derived.affected_targets.as_slice().len(), values.len() + 1);
+        let partition = PartitionKeyBuilder::new(AggregateTypeId::first())
+            .finish()
+            .expect("partition key");
+        insert_generation(index, &values, &partition, &mut builder)
+            .expect("cross-checked generation");
+        let derived = builder.finish().expect("derived generation");
+        assert_eq!(derived.affected_targets.as_slice().len(), 1);
         assert_eq!(
-            actual_prefix_bytes(&derived),
-            expected_prefix_bytes(&[(index, vec![values])])
+            actual_generation_ids(&derived),
+            BTreeSet::from([index.id()])
         );
     }
 
     #[test]
     fn incremental_guards_reject_duplicate_deltas_and_each_exact_plus_one_bound() {
         let fixture = fixture("CreateRow", "bounds-1", ([0x21; 16], "new", 10), None);
+        let generation_target =
+            |index_id: IndexId| PartitionIndexTarget::new(fixture.partition.clone(), index_id);
         let derived = derive_grammar_v1_indexes(
             &fixture.resolved,
             &fixture.evaluated,
@@ -1682,18 +1671,14 @@ contract ScalarPrefixes version 1 {
         let mut position_limit =
             IndexDerivationBuilder::new(MAX_VALIDATION_TARGETS, 0).expect("exact positions");
         assert_eq!(
-            position_limit.insert_target(IndexRangeTarget::new(
-                IndexRangePrefixBuilder::new(IndexId::first()).finish()
-            )),
+            position_limit.insert_target(generation_target(IndexId::first())),
             Err(CommandIndexError::internal_defect())
         );
 
         let mut target_limit = IndexDerivationBuilder::new(0, 0).expect("builder");
         for raw in 1..=u32::try_from(MAX_AFFECTED_INDEX_EPOCH_TARGETS).expect("u32 bound") {
             target_limit
-                .insert_target(IndexRangeTarget::new(
-                    IndexRangePrefixBuilder::new(IndexId::new(raw).expect("index ID")).finish(),
-                ))
+                .insert_target(generation_target(IndexId::new(raw).expect("index ID")))
                 .expect("exact affected-target bound");
         }
         assert_eq!(
@@ -1701,21 +1686,17 @@ contract ScalarPrefixes version 1 {
             MAX_AFFECTED_INDEX_EPOCH_TARGETS
         );
         assert_eq!(
-            target_limit.insert_target(IndexRangeTarget::new(
-                IndexRangePrefixBuilder::new(
-                    IndexId::new(
-                        u32::try_from(MAX_AFFECTED_INDEX_EPOCH_TARGETS + 1).expect("u32 bound")
-                    )
-                    .expect("index ID")
+            target_limit.insert_target(generation_target(
+                IndexId::new(
+                    u32::try_from(MAX_AFFECTED_INDEX_EPOCH_TARGETS + 1).expect("u32 bound"),
                 )
-                .finish()
+                .expect("index ID"),
             )),
             Err(CommandIndexError::internal_defect())
         );
 
-        let exact_byte_target =
-            IndexRangeTarget::new(IndexRangePrefixBuilder::new(IndexId::first()).finish());
-        let observation_bytes = exact_byte_target.prefix().as_bytes().len()
+        let exact_byte_target = generation_target(IndexId::first());
+        let observation_bytes = exact_byte_target.partition_key().as_bytes().len()
             + INDEX_RANGE_TARGET_FIXED_BYTES_V1
             + MAX_INDEX_EPOCH_POSITION_BYTES_V1;
         let mut byte_limit = IndexDerivationBuilder::new(0, 0).expect("builder");
@@ -1728,9 +1709,7 @@ contract ScalarPrefixes version 1 {
             MAX_READ_SNAPSHOT_BYTES
         );
         assert_eq!(
-            byte_limit.insert_target(IndexRangeTarget::new(
-                IndexRangePrefixBuilder::new(IndexId::new(2).expect("index ID")).finish()
-            )),
+            byte_limit.insert_target(generation_target(IndexId::new(2).expect("index ID"))),
             Err(CommandIndexError::internal_defect())
         );
     }

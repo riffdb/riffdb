@@ -874,7 +874,15 @@ fn scan_index_filtered(
     {
         return Err(AuthoritativeReadError::Integrity);
     }
-    let target = IndexRangeTarget::new(prefix);
+    let partition = match partition_filter.scope() {
+        IndexPartitionFilterScope::Explicit(keys) if keys.len() == 1 => keys[0].clone(),
+        IndexPartitionFilterScope::All
+        | IndexPartitionFilterScope::None
+        | IndexPartitionFilterScope::Explicit(_) => {
+            return Err(AuthoritativeReadError::Integrity);
+        }
+    };
+    let target = IndexRangeTarget::new(partition, prefix);
     let limit = StorageScanLimit::new(request.limit().get().get())
         .ok_or(AuthoritativeReadError::Integrity)?;
     let lower_request = FilteredAuthoritativeIndexScanRequest::new(
@@ -1861,9 +1869,15 @@ mod tests {
     fn sparse_filtered_progress_maps_to_an_empty_service_page() {
         let scanned_through = adapter_index_key(41);
         let storage = FixedFilteredReader::new(Vec::new(), Some(scanned_through.clone()));
+        let partition = adapter_partition(7);
+        let scope = PartitionScopeV1::explicit(vec![ScopedPartitionV1::new(
+            adapter_lineage(),
+            partition.clone(),
+        )])
+        .expect("one exact partition");
 
-        let page = scan_index(&storage, adapter_index_request(PartitionScopeV1::All, None))
-            .expect("sparse adapter scan");
+        let page =
+            scan_index(&storage, adapter_index_request(scope, None)).expect("sparse adapter scan");
 
         assert!(page.rows().is_empty());
         assert_eq!(page.scanned_through(), Some(&scanned_through));
@@ -1879,7 +1893,7 @@ mod tests {
                     && request.limit().get() == 10
                     && matches!(
                         request.partition_filter().scope(),
-                        IndexPartitionFilterScope::All
+                        IndexPartitionFilterScope::Explicit(keys) if keys == &[partition]
                     )
         ));
     }

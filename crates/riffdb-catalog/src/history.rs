@@ -1125,7 +1125,8 @@ fn validate_index_migration_row<S: StructuralEvidenceSession>(
         let record = session
             .read_integrity_entity(&target)?
             .ok_or_else(|| CatalogError::new(CatalogErrorKind::InvalidHistoricalEvidence))?;
-        let expected = derive_unique_target(entity, index, unique, &record)?;
+        let expected =
+            derive_unique_target(bundle.bundle().schema(), entity, index, unique, &record)?;
         if expected.expected_entry() != evidence.physical_key()
             || session.read_integrity_unique_occupancy(&expected)? != UniqueOccupancyKind::Owned
         {
@@ -1305,7 +1306,8 @@ fn validate_persisted_key<S: StructuralEvidenceSession>(
                     .ok_or_else(|| {
                         CatalogError::new(CatalogErrorKind::InvalidHistoricalEvidence)
                     })?;
-                let target = derive_unique_target(entity, index, unique, &record)?;
+                let target =
+                    derive_unique_target(bundle.bundle().schema(), entity, index, unique, &record)?;
                 if session.read_integrity_unique_occupancy(&target)? != UniqueOccupancyKind::Owned {
                     return Err(CatalogError::new(
                         CatalogErrorKind::InvalidHistoricalEvidence,
@@ -1324,6 +1326,17 @@ fn validate_persisted_key<S: StructuralEvidenceSession>(
                 },
             )
         }
+        IrOpaquePersistedKeyV1::PartitionIndex(target) => {
+            find_index_owner(bundle.bundle().schema(), target.index_id())
+                .and_then(|(entity, _)| bundle.bundle().schema().aggregate_for_entity(entity.id()))
+                .is_some_and(|aggregate| {
+                    aggregate
+                        .keys()
+                        .partition_schema()
+                        .decode_partition(target.partition_key())
+                        .is_ok()
+                })
+        }
     };
     if !valid {
         return Err(CatalogError::new(CatalogErrorKind::InvalidHistoricalKey));
@@ -1332,6 +1345,7 @@ fn validate_persisted_key<S: StructuralEvidenceSession>(
 }
 
 fn derive_unique_target(
+    schema: &SchemaIr,
     entity: &EntitySchema,
     index: &IndexSchema,
     unique: &UniqueKeySchema,
@@ -1377,8 +1391,12 @@ fn derive_unique_target(
         .key_schema()
         .encode_index(&values, record.target().key().clone())
         .map_err(|_| CatalogError::new(CatalogErrorKind::InvalidHistoricalKey))?;
-    UniqueIndexTarget::new(riffdb_storage_api::IndexRangeTarget::new(prefix), expected)
-        .map_err(|_| CatalogError::new(CatalogErrorKind::InvalidHistoricalEvidence))
+    let partition = derive_historical_partition(schema, entity, record.target().key())?;
+    UniqueIndexTarget::new(
+        riffdb_storage_api::IndexRangeTarget::new(partition, prefix),
+        expected,
+    )
+    .map_err(|_| CatalogError::new(CatalogErrorKind::InvalidHistoricalEvidence))
 }
 
 fn push_unique_prefix_component(
@@ -1517,8 +1535,13 @@ fn historical_order_key(item: &HistoricalSemanticEvidence) -> Vec<u8> {
                     key,
                 } => (0x01, entity_type_id.to_be_bytes(), key.as_bytes()),
                 IrOpaquePersistedKeyV1::IndexRangePrefix(prefix) => {
-                    (0x03, prefix.index_id().to_be_bytes(), prefix.as_bytes())
+                    (0x02, prefix.index_id().to_be_bytes(), prefix.as_bytes())
                 }
+                IrOpaquePersistedKeyV1::PartitionIndex(target) => (
+                    0x03,
+                    target.index_id().to_be_bytes(),
+                    target.partition_key().as_bytes(),
+                ),
             };
             key.push(tag);
             key.extend_from_slice(&owner);

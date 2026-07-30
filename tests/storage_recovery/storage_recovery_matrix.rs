@@ -25,15 +25,15 @@ use riffdb_storage_api::{
     CommandCandidateAffectedEpochRead, CommandCandidateAwaitingCapacity,
     CommandCandidateAwaitingValidation, CommandCandidateCapacityReserved,
     CommandCandidateSequenceAssigned, CommandCandidateStateRead, CommandWriteSetPlanV1,
-    CurrentRangeObservation, DatabaseIdentityProbe, DatabaseIdentityProbePort,
+    CurrentIndexGenerationObservation, DatabaseIdentityProbe, DatabaseIdentityProbePort,
     DatabaseInitializationPort, DeclaredOutcome, DurabilityMode, DurableKeySchemaBindingV1,
     EmptyCommandBatch, EncodedWriteSetUpperBoundResultV1, EntityMutation, EntityObservation,
     EntityPostImage, EntityTarget, EvaluationBudget, EventIntent, EvidencePageLimit,
     ExecutablePlanRef, ExpectedEntityState, IdempotencyIdentity, IdempotencyKeyDigest,
     IdempotencyLookupCandidatesV1, IndexEntryMutationV1, IndexEpochAdvanceV1, IndexEpochPosition,
-    IndexRangeObservation, IndexRangeTarget, MAX_INDEX_MIGRATION_PAGE_BYTES,
-    MAX_INDEX_MIGRATION_PAGE_ENTRIES, NonEmptyCommandBatch, OpenSessionId, OutboxPageLimit,
-    OutboxRepository, OutboxStatusObservationV1, OutboxStatusReadResultV1, PendingOutboxScanV1,
+    IndexRangeTarget, MAX_INDEX_MIGRATION_PAGE_BYTES, MAX_INDEX_MIGRATION_PAGE_ENTRIES,
+    NonEmptyCommandBatch, OpenSessionId, OutboxPageLimit, OutboxRepository,
+    OutboxStatusObservationV1, OutboxStatusReadResultV1, PartitionIndexTarget, PendingOutboxScanV1,
     PreEvaluationCommitContext, ReadSnapshot, ReadableCapabilityDigestInventory, ReadableDigestKey,
     ReadableIdempotencyDigestInventory, ServiceAuditAppendIntentV1, SnapshotReader,
     SnapshotRequest, StartupValidationInputs, StorageScanLimit, StoredAdministrationAuditRecordV1,
@@ -292,7 +292,9 @@ fn target_and_index() -> (EntityTarget, IndexEntryKey, IndexRangeTarget) {
     let index_key = index_key.finish(entity_key).expect("index entry key");
     let mut prefix = riffdb_storage_api::IndexRangePrefixBuilder::new(index_id);
     prefix.push_u64(10).expect("range component");
-    let range = IndexRangeTarget::new(prefix.finish());
+    let mut partition = PartitionKeyBuilder::new(AggregateTypeId::new(1).expect("aggregate"));
+    partition.push_u64(7).expect("partition component");
+    let range = IndexRangeTarget::new(partition.finish().expect("partition key"), prefix.finish());
     (target, index_key, range)
 }
 
@@ -336,22 +338,15 @@ fn command_fixture() -> CommandFixture {
     )
     .expect("pending admission");
 
-    let snapshot_request = SnapshotRequest::new(
-        plan.clone(),
-        vec![target.clone()],
-        Vec::new(),
-        vec![range.clone()],
-    )
-    .expect("snapshot request");
+    let snapshot_request =
+        SnapshotRequest::new(plan.clone(), vec![target.clone()], Vec::new(), Vec::new())
+            .expect("snapshot request");
     let snapshot = ReadSnapshot::new(
         &snapshot_request,
         None,
         vec![EntityObservation::Absent(target.clone())],
         Vec::new(),
-        vec![
-            IndexRangeObservation::new(range.clone(), IndexEpochPosition::BeforeFirst, Vec::new())
-                .expect("range observation"),
-        ],
+        Vec::new(),
     )
     .expect("read snapshot");
     let post_image = EntityPostImage::new(target.clone(), plan.contract_version(), record(1))
@@ -402,18 +397,19 @@ fn command_fixture() -> CommandFixture {
     )
     .expect("stored index entry");
     let index_mutation = IndexEntryMutationV1::Put(index_record);
+    let generation = PartitionIndexTarget::new(partition.clone(), index_key.index_id());
     let affected_targets =
-        AffectedIndexEpochTargets::new(vec![range.clone()]).expect("affected targets");
+        AffectedIndexEpochTargets::new(vec![generation.clone()]).expect("affected targets");
     let affected_current = AffectedEpochCurrentState::new(
         &affected_targets,
-        vec![CurrentRangeObservation::new(
-            range.clone(),
+        vec![CurrentIndexGenerationObservation::new(
+            generation.clone(),
             IndexEpochPosition::BeforeFirst,
         )],
     )
     .expect("affected current state");
     let epoch_advance = IndexEpochAdvanceV1::new(
-        range.clone(),
+        generation,
         DurableKeySchemaBindingV1::from_plan(&plan),
         IndexEpochPosition::BeforeFirst,
     )

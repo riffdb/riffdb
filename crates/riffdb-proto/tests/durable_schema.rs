@@ -174,6 +174,10 @@ fn storage_source_import_and_type_inventory_is_exact() {
                 ],
             ),
             (
+                "riffdb/storage/v1/index_generation_v2.proto".to_owned(),
+                vec!["riffdb/storage/v1/application.proto"],
+            ),
+            (
                 "riffdb/storage/v1/index_v2.proto".to_owned(),
                 vec!["riffdb/storage/v1/application.proto"],
             ),
@@ -208,8 +212,8 @@ fn storage_source_import_and_type_inventory_is_exact() {
             .iter()
             .map(|file| file.message_type.len())
             .sum::<usize>(),
-        83,
-        "82 semantic messages plus the unchanged StoredEnvelope"
+        84,
+        "83 semantic messages plus the unchanged StoredEnvelope"
     );
     assert_eq!(
         descriptors
@@ -239,7 +243,7 @@ fn storage_source_import_and_type_inventory_is_exact() {
 #[test]
 fn closed_registry_order_and_schema_hashes_are_exactly_derived() {
     assert_eq!(CURRENT_RECORD_SCHEMA_COUNT, 30);
-    assert_eq!(READABLE_RECORD_SCHEMA_COUNT, 34);
+    assert_eq!(READABLE_RECORD_SCHEMA_COUNT, 35);
     assert_eq!(WRITABLE_RECORD_SCHEMA_COUNT, 30);
     assert_eq!(
         CURRENT_RECORD_SCHEMAS
@@ -266,9 +270,11 @@ fn closed_registry_order_and_schema_hashes_are_exactly_derived() {
     readable_names.push("riffdb.storage.v1.StoredRecordRegistryV2".to_owned());
     readable_names.push("riffdb.storage.v1.StoredCommitRecordV2".to_owned());
     readable_names.push("riffdb.storage.v1.StoredOutboxIntentV2".to_owned());
+    readable_names.push("riffdb.storage.v1.StoredIndexGenerationV2".to_owned());
     readable_names.push("riffdb.storage.v1.CapabilityRecordV1".to_owned());
     let mut writable_names = legacy_names.clone();
     writable_names[8] = format!("riffdb.storage.v1.{}", INDEX_V2_RECORD.0);
+    writable_names[9] = "riffdb.storage.v1.StoredIndexGenerationV2".to_owned();
     writable_names[14] = "riffdb.storage.v1.StoredOutboxIntentV2".to_owned();
     writable_names[16] = "riffdb.storage.v1.StoredCommitRecordV2".to_owned();
     writable_names.extend(
@@ -384,7 +390,7 @@ fn closed_registry_order_and_schema_hashes_are_exactly_derived() {
 #[test]
 fn generated_registry_fixtures_freeze_exact_membership_and_hashes() {
     let legacy = registry_fixture_entries(LEGACY_REGISTRY_FIXTURE, 26);
-    let readable = registry_fixture_entries(READABLE_REGISTRY_FIXTURE, 34);
+    let readable = registry_fixture_entries(READABLE_REGISTRY_FIXTURE, 35);
     let writable = registry_fixture_entries(WRITABLE_REGISTRY_FIXTURE, 30);
 
     assert_eq!(legacy, readable[..legacy.len()]);

@@ -233,6 +233,12 @@ borrowed_codec!(
     encode_index_epoch_v1,
     decode_index_epoch_v1
 );
+
+pub(crate) fn decode_legacy_index_epoch_v1(
+    encoded: &[u8],
+) -> Result<storage::EncodedPageItem<storage::LegacyStoredIndexEpochV1>, storage::StorageError> {
+    storage::decode_legacy_index_epoch_v1(encoded).map_err(codec_error)
+}
 borrowed_codec!(
     encode_pending_admission_v1,
     decode_pending_admission_v1,

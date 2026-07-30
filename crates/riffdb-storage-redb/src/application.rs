@@ -14,17 +14,17 @@ use riffdb_storage_api::{
     CommandCandidateAdmission, CommandCandidateAffectedEpochRead, CommandCandidateAwaitingCapacity,
     CommandCandidateAwaitingValidation, CommandCandidateCapacityReserved,
     CommandCandidateSequenceAssigned, CommandCandidateStateRead, CommandWriteSetPlanV1,
-    CommitIntent, CommittedBatchV1, CurrentRangeObservation, DurabilityMode, EmptyCommandBatch,
-    EntityObservation, EntityTarget, ExecutionFailureAdmissionRechecked,
-    ExecutionFailureAdmissionResult, ExecutionFailureAwaitingDecision,
-    ExecutionFailureTransitionPort, ExecutionFailureTransitionRequestV1, ExpectedEntityState,
-    IdempotencyIdentity, IdempotencyIdentityKey, IdempotencyLookupCandidatesV1,
-    IndexEntryMutationV1, IndexEpochPosition, IndexRangeTarget, NonEmptyCommandBatch,
-    ProvenanceIdCollision, ReadDependencies, ReadDependency, StagedBatchMetrics, StorageError,
-    StorageErrorKind, StorageValueError, StoredAdmissionStateV1, StoredExecutionFailedV1,
-    StoredPendingAdmissionV1, TransactionCurrentState, TransactionCurrentStateBuilder,
-    UniqueIndexOccupancy, UniqueOccupancyKind, ValidationReadRequest,
-    encode_atomic_command_record_set_v1,
+    CommitIntent, CommittedBatchV1, CurrentIndexGenerationObservation, CurrentRangeObservation,
+    DurabilityMode, EmptyCommandBatch, EntityObservation, EntityTarget,
+    ExecutionFailureAdmissionRechecked, ExecutionFailureAdmissionResult,
+    ExecutionFailureAwaitingDecision, ExecutionFailureTransitionPort,
+    ExecutionFailureTransitionRequestV1, ExpectedEntityState, IdempotencyIdentity,
+    IdempotencyIdentityKey, IdempotencyLookupCandidatesV1, IndexEntryMutationV1,
+    IndexEpochPosition, NonEmptyCommandBatch, PartitionIndexTarget, ProvenanceIdCollision,
+    ReadDependencies, ReadDependency, StagedBatchMetrics, StorageError, StorageErrorKind,
+    StorageValueError, StoredAdmissionStateV1, StoredExecutionFailedV1, StoredPendingAdmissionV1,
+    TransactionCurrentState, TransactionCurrentStateBuilder, UniqueIndexOccupancy,
+    UniqueOccupancyKind, ValidationReadRequest, encode_atomic_command_record_set_v1,
 };
 use riffdb_types::ProvenanceId;
 
@@ -38,8 +38,8 @@ use crate::error::{codec_error, precommit_storage_error, table_error};
 use crate::hooks::RedbTestOperation;
 use crate::keys::{
     encode_application_sequence_key, encode_contract_bundle_key, encode_entity_key,
-    encode_event_key, encode_idempotency_key, encode_index_entry_key,
-    encode_index_range_prefix_key, encode_provenance_key,
+    encode_event_key, encode_idempotency_key, encode_index_entry_key, encode_partition_index_key,
+    encode_provenance_key,
 };
 use crate::layout::{
     COMMITS, CONTRACT_BUNDLES, ENTITIES, EVENTS, IDEMPOTENCY, IDEMPOTENCY_PENDING, INDEX_EPOCHS,
@@ -1038,8 +1038,8 @@ fn apply_index_epochs(
 ) -> Result<(), StorageError> {
     let mut table = transaction.open_table(INDEX_EPOCHS).map_err(table_error)?;
     for (advance, bytes) in records.index_epochs().iter().zip(encoded.index_epochs()) {
-        let key = encode_index_range_prefix_key(advance.post_image().target());
-        let current = table.get(key).map_err(precommit_storage_error)?;
+        let key = encode_partition_index_key(advance.post_image().target());
+        let current = table.get(key.as_slice()).map_err(precommit_storage_error)?;
         let observation = current
             .as_ref()
             .map(|value| decode_index_epoch_v1(value.value()).map(decoded_value))
@@ -1054,7 +1054,7 @@ fn apply_index_epochs(
             return Err(storage_error(StorageErrorKind::InvariantViolation));
         }
         table
-            .insert(key, bytes.as_bytes())
+            .insert(key.as_slice(), bytes.as_bytes())
             .map_err(precommit_storage_error)?;
     }
     Ok(())
@@ -1234,7 +1234,7 @@ fn current_state(
         builder
             .push_range(CurrentRangeObservation::new(
                 target.clone(),
-                epoch_position(transaction, target)?,
+                epoch_position(transaction, target.generation_target())?,
             ))
             .map_err(materialization_value)?;
     }
@@ -1248,7 +1248,7 @@ fn affected_current_state(
     let mut builder = AffectedEpochCurrentStateBuilder::new(targets);
     for target in targets.as_slice() {
         builder
-            .push(CurrentRangeObservation::new(
+            .push(CurrentIndexGenerationObservation::new(
                 target.clone(),
                 epoch_position(transaction, target)?,
             ))
@@ -1313,17 +1313,15 @@ fn entity_observation(
 
 fn epoch_position(
     transaction: &redb::WriteTransaction,
-    target: &IndexRangeTarget,
+    target: &PartitionIndexTarget,
 ) -> Result<IndexEpochPosition, StorageError> {
     let table = transaction.open_table(INDEX_EPOCHS).map_err(table_error)?;
-    let Some(value) = table
-        .get(target.prefix().as_bytes())
-        .map_err(precommit_storage_error)?
-    else {
+    let key = encode_partition_index_key(target);
+    let Some(value) = table.get(key.as_slice()).map_err(precommit_storage_error)? else {
         return Ok(IndexEpochPosition::BeforeFirst);
     };
     let record = decoded_value(decode_index_epoch_v1(value.value())?);
-    if record.target().as_bytes() != target.prefix().as_bytes() {
+    if record.target() != target {
         return Err(storage_error(StorageErrorKind::CorruptData));
     }
     Ok(IndexEpochPosition::Value(record.epoch()))

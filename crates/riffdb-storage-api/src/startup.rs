@@ -11,12 +11,12 @@ use riffdb_types::{
 };
 
 use crate::{
-    DurableKeySchemaBindingV1, EncodedContentCharge, ExecutablePlanRef, MAX_CATALOG_BUNDLE_BYTES,
-    MAX_HISTORICAL_EVIDENCE_PAGE_BYTES, MAX_INDEX_MIGRATION_PAGE_BYTES,
+    DurableKeySchemaBindingV1, EncodedContentCharge, ExecutablePlanRef, LegacyStoredIndexEpochV1,
+    MAX_CATALOG_BUNDLE_BYTES, MAX_HISTORICAL_EVIDENCE_PAGE_BYTES, MAX_INDEX_MIGRATION_PAGE_BYTES,
     MAX_INDEX_MIGRATION_PAGE_ENTRIES, MAX_INTEGRITY_FINDINGS, MAX_READABLE_DIGEST_KEYS,
-    MAX_SCAN_PAGE_ENTRIES, RetainedMetadataV1, StorageError, StorageValueError,
-    StoredEntityRecordV1, StoredIndexEntryV1, StoredIndexEntryV2, StoredIndexEpochV1,
-    StructurallyDecodedIndexRangePrefixV1,
+    MAX_SCAN_PAGE_ENTRIES, PartitionIndexTarget, RetainedMetadataV1, StorageError,
+    StorageValueError, StoredEntityRecordV1, StoredIndexEntryV1, StoredIndexEntryV2,
+    StoredIndexEpochV1, StructurallyDecodedIndexRangePrefixV1,
 };
 
 /// A process-local, non-durable structural-open session identity.
@@ -497,8 +497,10 @@ pub enum IrOpaquePersistedKeyV1 {
         /// Structurally decoded opaque key bytes.
         key: EntityKey,
     },
-    /// One persisted index-epoch prefix key.
+    /// One historical prefix epoch retained only through V1 index migration.
     IndexRangePrefix(StructurallyDecodedIndexRangePrefixV1),
+    /// One persisted conservative partition/index generation key.
+    PartitionIndex(PartitionIndexTarget),
 }
 
 impl IrOpaquePersistedKeyV1 {
@@ -513,10 +515,16 @@ impl IrOpaquePersistedKeyV1 {
         })
     }
 
-    /// Wraps an envelope-checked prefix without claiming component completeness.
+    /// Wraps an envelope-checked conservative generation identity.
     #[must_use]
-    pub const fn index_range_prefix(prefix: StructurallyDecodedIndexRangePrefixV1) -> Self {
-        Self::IndexRangePrefix(prefix)
+    pub const fn partition_index(target: PartitionIndexTarget) -> Self {
+        Self::PartitionIndex(target)
+    }
+
+    /// Wraps one structurally decoded historical prefix epoch key.
+    #[must_use]
+    pub const fn index_range_prefix(target: StructurallyDecodedIndexRangePrefixV1) -> Self {
+        Self::IndexRangePrefix(target)
     }
 
     fn canonical_key(&self) -> Vec<u8> {
@@ -525,9 +533,14 @@ impl IrOpaquePersistedKeyV1 {
                 entity_type_id,
                 key,
             } => (0x01, entity_type_id.to_be_bytes(), key.as_bytes()),
-            Self::IndexRangePrefix(prefix) => {
-                (0x03, prefix.index_id().to_be_bytes(), prefix.as_bytes())
+            Self::IndexRangePrefix(target) => {
+                (0x02, target.index_id().to_be_bytes(), target.as_bytes())
             }
+            Self::PartitionIndex(target) => (
+                0x03,
+                target.index_id().to_be_bytes(),
+                target.partition_key().as_bytes(),
+            ),
         };
         let mut output = Vec::with_capacity(1 + 4 + 4 + bytes.len());
         output.push(tag);
@@ -544,7 +557,8 @@ impl IrOpaquePersistedKeyV1 {
     fn semantic_bytes(&self) -> Result<usize, StorageValueError> {
         let bytes = match self {
             Self::Entity { key, .. } => key.as_bytes(),
-            Self::IndexRangePrefix(prefix) => prefix.as_bytes(),
+            Self::IndexRangePrefix(target) => target.as_bytes(),
+            Self::PartitionIndex(target) => target.partition_key().as_bytes(),
         };
         bytes
             .len()
@@ -582,6 +596,15 @@ impl HistoricalPersistedKeyEvidenceV1 {
     /// Derives evidence only from a persisted range-epoch post-image binding.
     #[must_use]
     pub fn from_index_epoch(record: &StoredIndexEpochV1) -> Self {
+        Self {
+            schema: record.schema_binding().clone(),
+            key: IrOpaquePersistedKeyV1::PartitionIndex(record.target().clone()),
+        }
+    }
+
+    /// Derives evidence only from one decoded historical prefix epoch.
+    #[must_use]
+    pub fn from_legacy_index_epoch(record: &LegacyStoredIndexEpochV1) -> Self {
         Self {
             schema: record.schema_binding().clone(),
             key: IrOpaquePersistedKeyV1::IndexRangePrefix(record.target().clone()),

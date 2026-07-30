@@ -279,6 +279,7 @@ impl<'a> Planner<'a> {
                 dependencies,
                 entity.internal_id(),
                 index_id,
+                entity.internal_partition_key_schema().clone(),
                 entity.internal_primary_key_schema().clone(),
                 match &access {
                     QueryAccessKind::Point { .. } | QueryAccessKind::DependentPointBatch { .. } => {
@@ -1000,6 +1001,12 @@ fn choose_access(
                         BinaryOperator::Equal | BinaryOperator::In
                     )
             })
+        {
+            continue;
+        }
+        if !index.fields()[..order_start]
+            .iter()
+            .any(|field| field == entity.partition_field())
         {
             continue;
         }

@@ -1367,8 +1367,8 @@ mod tests {
         IndexRangePrefixBuilder, IndexRangeTarget, SnapshotRequest,
     };
     use riffdb_types::{
-        ActorId, ActorKind, AdmittedActorContext, ContractBundleHash, EntityVersion, IndexId,
-        RequestId, TenantScope, Timestamp,
+        ActorId, ActorKind, AdmittedActorContext, AggregateTypeId, ContractBundleHash,
+        EntityVersion, IndexId, PartitionKeyBuilder, RequestId, TenantScope, Timestamp,
     };
 
     use super::*;
@@ -1978,7 +1978,13 @@ contract ReadOnlyValidation version 1 {
             vec![EntityObservation::Absent(target.clone())],
             Vec::new(),
         );
-        let range = IndexRangeTarget::new(IndexRangePrefixBuilder::new(IndexId::first()).finish());
+        let partition = PartitionKeyBuilder::new(AggregateTypeId::first())
+            .finish()
+            .expect("partition");
+        let range = IndexRangeTarget::new(
+            partition,
+            IndexRangePrefixBuilder::new(IndexId::first()).finish(),
+        );
         let forged_request = SnapshotRequest::new(
             ordinary.prepared.resolved.reference().clone(),
             ordinary.prepared.binding_targets.clone(),

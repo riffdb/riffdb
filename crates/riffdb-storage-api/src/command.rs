@@ -15,8 +15,8 @@ use crate::{
     EntityTarget, ExecutablePlanRef, IdempotencyIdentity, IdempotencyLookupCandidatesV1,
     IndexRangeTarget, MAX_AFFECTED_INDEX_EPOCH_TARGETS, MAX_COMMAND_READ_TARGETS,
     MAX_ENTITY_MUTATIONS, MAX_EVENT_INTENTS, MAX_READ_DEPENDENCIES, MAX_READ_SNAPSHOT_BYTES,
-    MAX_VALIDATION_TARGETS, ReadDependencies, ReadSnapshot, StorageValueError,
-    ValidationReadRequest, canonical_codec_storage_error,
+    MAX_VALIDATION_TARGETS, PartitionIndexTarget, ReadDependencies, ReadSnapshot,
+    StorageValueError, ValidationReadRequest, canonical_codec_storage_error,
 };
 
 /// Fixed provenance ID, partition hash, conflict-count framing, and empty conflict set.
@@ -906,7 +906,7 @@ impl CommitIntent {
 /// once after private mutation validation.
 #[derive(Clone, Eq, PartialEq)]
 pub struct AffectedIndexEpochTargets {
-    targets: Vec<IndexRangeTarget>,
+    targets: Vec<PartitionIndexTarget>,
     unique_targets: Vec<UniqueIndexTarget>,
     semantic_bytes: usize,
 }
@@ -957,13 +957,13 @@ impl UniqueIndexTarget {
 
 impl AffectedIndexEpochTargets {
     /// Canonicalizes and bounds the complete affected bucket set.
-    pub fn new(targets: Vec<IndexRangeTarget>) -> Result<Self, StorageValueError> {
+    pub fn new(targets: Vec<PartitionIndexTarget>) -> Result<Self, StorageValueError> {
         Self::with_unique(targets, Vec::new())
     }
 
     /// Canonicalizes affected epoch buckets and exact unique occupancy targets.
     pub fn with_unique(
-        mut targets: Vec<IndexRangeTarget>,
+        mut targets: Vec<PartitionIndexTarget>,
         mut unique_targets: Vec<UniqueIndexTarget>,
     ) -> Result<Self, StorageValueError> {
         if targets.len() > MAX_AFFECTED_INDEX_EPOCH_TARGETS
@@ -1007,7 +1007,7 @@ impl AffectedIndexEpochTargets {
 
     /// Borrows targets in exact canonical prefix-byte order.
     #[must_use]
-    pub fn as_slice(&self) -> &[IndexRangeTarget] {
+    pub fn as_slice(&self) -> &[PartitionIndexTarget] {
         &self.targets
     }
     /// Borrows exact unique targets in canonical prefix/owner order.
@@ -1172,8 +1172,9 @@ mod tests {
     use super::*;
     use crate::{EntityObservation, IndexRangePrefixBuilder, SnapshotRequest};
     use riffdb_types::{
-        CanonicalValue, CommandId, ContractBundleHash, ContractLineage, EntityKeyBuilder,
-        EntityTypeId, FieldId, IndexEntryKeyBuilder, IndexId, PlanHash,
+        AggregateTypeId, CanonicalValue, CommandId, ContractBundleHash, ContractLineage,
+        EntityKeyBuilder, EntityTypeId, FieldId, IndexEntryKeyBuilder, IndexId,
+        PartitionKeyBuilder, PlanHash,
     };
 
     fn plan() -> ExecutablePlanRef {
@@ -1191,6 +1192,15 @@ mod tests {
         let mut key = EntityKeyBuilder::new(entity_type);
         key.push_u64(value).expect("key component");
         EntityTarget::new(entity_type, key.finish().expect("entity key")).expect("matching target")
+    }
+
+    fn generation_target(index: IndexId) -> PartitionIndexTarget {
+        PartitionIndexTarget::new(
+            PartitionKeyBuilder::new(AggregateTypeId::first())
+                .finish()
+                .expect("partition key"),
+            index,
+        )
     }
 
     fn absent_snapshot(plan: &ExecutablePlanRef, targets: &[EntityTarget]) -> ReadSnapshot {
@@ -1237,7 +1247,7 @@ mod tests {
                 .map(|value| {
                     let index = IndexId::new(u32::try_from(value).expect("test index fits u32"))
                         .expect("nonzero index");
-                    IndexRangeTarget::new(IndexRangePrefixBuilder::new(index).finish())
+                    generation_target(index)
                 })
                 .collect::<Vec<_>>()
         };
@@ -1266,7 +1276,10 @@ mod tests {
                     let mut entry = IndexEntryKeyBuilder::new(index);
                     entry.push_u64(7).expect("unique component");
                     UniqueIndexTarget::new(
-                        IndexRangeTarget::new(prefix.finish()),
+                        IndexRangeTarget::new(
+                            generation_target(index).partition_key().clone(),
+                            prefix.finish(),
+                        ),
                         entry
                             .finish(
                                 target(u64::try_from(value).expect("test entity"))
@@ -1295,9 +1308,7 @@ mod tests {
         );
         assert_eq!(
             AffectedIndexEpochTargets::with_unique(
-                vec![IndexRangeTarget::new(
-                    IndexRangePrefixBuilder::new(IndexId::first()).finish()
-                )],
+                vec![generation_target(IndexId::first())],
                 unique_targets(MAX_VALIDATION_TARGETS)
             ),
             Err(StorageValueError::LimitExceeded)

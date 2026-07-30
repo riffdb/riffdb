@@ -1,0 +1,13 @@
+syntax = "proto3";
+
+package riffdb.storage.v1;
+
+import "riffdb/storage/v1/application.proto";
+
+// Conservative generation for every range of one index in one partition.
+message StoredIndexGenerationV2 {
+  bytes partition_key = 1;
+  uint32 index_id = 2;
+  DurableKeySchemaBindingV1 schema_binding = 3;
+  uint64 generation = 4;
+}

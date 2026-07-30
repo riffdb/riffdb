@@ -9,7 +9,7 @@ use riffdb_types::IndexEpoch;
 use riffdb_types::{
     CanonicalRecord, CommitSequence, Date, EntityKey, EntityTypeId, EntityVersion, EnumVariantId,
     IndexEntryKey, IndexEntryKeyBuilder, IndexEpochPosition, IndexId, KeyEncodingError,
-    MAX_KEY_BYTES, Timestamp, encode_canonical_record,
+    MAX_KEY_BYTES, PartitionKey, Timestamp, encode_canonical_record,
 };
 
 use crate::{
@@ -233,39 +233,123 @@ impl fmt::Debug for IndexRangePrefix {
     }
 }
 
-/// One exact index-range dependency target.
+/// One exact index-range dependency target in one aggregate partition.
 #[derive(Clone, Eq, Hash, Ord, PartialEq, PartialOrd)]
-pub struct IndexRangeTarget(IndexRangePrefix);
+pub struct IndexRangeTarget {
+    prefix: IndexRangePrefix,
+    generation_target: PartitionIndexTarget,
+}
 
 impl IndexRangeTarget {
-    /// Wraps a structurally checked complete-component prefix.
+    /// Binds a structurally checked complete-component prefix to the exact
+    /// partition whose conservative generation protects the range.
     #[must_use]
-    pub const fn new(prefix: IndexRangePrefix) -> Self {
-        Self(prefix)
+    pub fn new(partition_key: PartitionKey, prefix: IndexRangePrefix) -> Self {
+        let generation_target = PartitionIndexTarget::new(partition_key, prefix.index_id());
+        Self {
+            prefix,
+            generation_target,
+        }
     }
 
     /// Borrows the exact prefix.
     #[must_use]
     pub const fn prefix(&self) -> &IndexRangePrefix {
-        &self.0
+        &self.prefix
+    }
+
+    /// Borrows the exact partition/index generation identity.
+    #[must_use]
+    pub const fn generation_target(&self) -> &PartitionIndexTarget {
+        &self.generation_target
     }
 
     pub(crate) fn canonical_target_key(&self) -> Vec<u8> {
-        let mut output = Vec::with_capacity(1 + 4 + 4 + self.0.bytes.len());
-        output.push(0x02);
-        output.extend_from_slice(&self.0.index_id.to_be_bytes());
-        let length = u32::try_from(self.0.bytes.len()).expect("range prefix bound fits u32");
+        let generation_key = self.generation_target.to_key_bytes();
+        let mut output =
+            Vec::with_capacity(1 + 4 + generation_key.len() + 4 + self.prefix.bytes.len());
+        output.push(0x03);
+        let generation_length =
+            u32::try_from(generation_key.len()).expect("generation target bound fits u32");
+        output.extend_from_slice(&generation_length.to_be_bytes());
+        output.extend_from_slice(&generation_key);
+        let length = u32::try_from(self.prefix.bytes.len()).expect("range prefix bound fits u32");
         output.extend_from_slice(&length.to_be_bytes());
-        output.extend_from_slice(&self.0.bytes);
+        output.extend_from_slice(&self.prefix.bytes);
         output
     }
 
     pub(crate) fn semantic_bytes(&self) -> Result<usize, StorageValueError> {
-        self.0
+        self.prefix
             .bytes
             .len()
-            .checked_add(4 + 4)
+            .checked_add(self.generation_target.semantic_bytes()?)
+            .and_then(|bytes| bytes.checked_add(4 + 4))
             .ok_or(StorageValueError::SizeOverflow)
+    }
+}
+
+/// Canonical conservative generation identity for one partition and index.
+#[derive(Clone, Eq, Hash, Ord, PartialEq, PartialOrd)]
+pub struct PartitionIndexTarget {
+    partition_key: PartitionKey,
+    index_id: IndexId,
+}
+
+impl PartitionIndexTarget {
+    /// Constructs the one generation bucket shared by every range of this
+    /// index in the exact aggregate partition.
+    #[must_use]
+    pub const fn new(partition_key: PartitionKey, index_id: IndexId) -> Self {
+        Self {
+            partition_key,
+            index_id,
+        }
+    }
+
+    /// Borrows the exact canonical partition identity.
+    #[must_use]
+    pub const fn partition_key(&self) -> &PartitionKey {
+        &self.partition_key
+    }
+
+    /// Returns the stable index identity.
+    #[must_use]
+    pub const fn index_id(&self) -> IndexId {
+        self.index_id
+    }
+
+    /// Returns the durable length-framed partition/index key.
+    #[must_use]
+    pub fn to_key_bytes(&self) -> Vec<u8> {
+        let partition = self.partition_key.as_bytes();
+        let mut bytes = Vec::with_capacity(4 + partition.len() + 4);
+        bytes.extend_from_slice(
+            &u32::try_from(partition.len())
+                .expect("partition-key bound fits u32")
+                .to_be_bytes(),
+        );
+        bytes.extend_from_slice(partition);
+        bytes.extend_from_slice(&self.index_id.to_be_bytes());
+        bytes
+    }
+
+    pub(crate) fn semantic_bytes(&self) -> Result<usize, StorageValueError> {
+        self.partition_key
+            .as_bytes()
+            .len()
+            .checked_add(8)
+            .ok_or(StorageValueError::SizeOverflow)
+    }
+}
+
+impl fmt::Debug for PartitionIndexTarget {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("PartitionIndexTarget")
+            .field("partition_key", &"[REDACTED]")
+            .field("index_id", &self.index_id)
+            .finish()
     }
 }
 
@@ -1523,10 +1607,48 @@ impl CurrentRangeObservation {
     }
 }
 
+/// One current conservative partition/index generation read in the writer.
+#[derive(Clone, Eq, PartialEq)]
+pub struct CurrentIndexGenerationObservation {
+    target: PartitionIndexTarget,
+    epoch: IndexEpochPosition,
+}
+
+impl CurrentIndexGenerationObservation {
+    /// Constructs an exact current generation observation.
+    #[must_use]
+    pub const fn new(target: PartitionIndexTarget, epoch: IndexEpochPosition) -> Self {
+        Self { target, epoch }
+    }
+
+    /// Borrows the exact partition/index target.
+    #[must_use]
+    pub const fn target(&self) -> &PartitionIndexTarget {
+        &self.target
+    }
+
+    /// Returns the current generation position.
+    #[must_use]
+    pub const fn epoch(&self) -> IndexEpochPosition {
+        self.epoch
+    }
+
+    fn semantic_bytes(&self) -> Result<usize, StorageValueError> {
+        let epoch_bytes = match self.epoch {
+            IndexEpochPosition::BeforeFirst => 1,
+            IndexEpochPosition::Value(_) => 1 + 8,
+        };
+        self.target
+            .semantic_bytes()?
+            .checked_add(epoch_bytes)
+            .ok_or(StorageValueError::SizeOverflow)
+    }
+}
+
 /// Exact current positions for mutation-derived epoch buckets read after validation.
 #[derive(Clone, Eq, PartialEq)]
 pub struct AffectedEpochCurrentState {
-    observations: Vec<CurrentRangeObservation>,
+    observations: Vec<CurrentIndexGenerationObservation>,
     unique_occupancies: Vec<UniqueIndexOccupancy>,
     semantic_bytes: usize,
 }
@@ -1580,7 +1702,7 @@ impl UniqueIndexOccupancy {
 /// aggregate snapshot byte bound.
 pub struct AffectedEpochCurrentStateBuilder<'expected> {
     expected: &'expected AffectedIndexEpochTargets,
-    observations: Vec<CurrentRangeObservation>,
+    observations: Vec<CurrentIndexGenerationObservation>,
     unique_occupancies: Vec<UniqueIndexOccupancy>,
     semantic_bytes: usize,
 }
@@ -1598,7 +1720,10 @@ impl<'expected> AffectedEpochCurrentStateBuilder<'expected> {
     }
 
     /// Retains the next canonical epoch observation after charging it.
-    pub fn push(&mut self, observation: CurrentRangeObservation) -> Result<(), StorageValueError> {
+    pub fn push(
+        &mut self,
+        observation: CurrentIndexGenerationObservation,
+    ) -> Result<(), StorageValueError> {
         let expected = self
             .expected
             .as_slice()
@@ -1664,7 +1789,7 @@ impl AffectedEpochCurrentState {
     /// Validates one-to-one canonical coverage of the retained affected target set.
     pub fn new(
         expected: &AffectedIndexEpochTargets,
-        observations: Vec<CurrentRangeObservation>,
+        observations: Vec<CurrentIndexGenerationObservation>,
     ) -> Result<Self, StorageValueError> {
         let mut builder = AffectedEpochCurrentStateBuilder::new(expected);
         for observation in observations {
@@ -1676,7 +1801,7 @@ impl AffectedEpochCurrentState {
     /// Validates epoch and unique occupancy coverage together.
     pub fn with_unique(
         expected: &AffectedIndexEpochTargets,
-        observations: Vec<CurrentRangeObservation>,
+        observations: Vec<CurrentIndexGenerationObservation>,
         unique_occupancies: Vec<UniqueIndexOccupancy>,
     ) -> Result<Self, StorageValueError> {
         let mut builder = AffectedEpochCurrentStateBuilder::new(expected);
@@ -1691,7 +1816,7 @@ impl AffectedEpochCurrentState {
 
     /// Borrows observations in exact affected-target order.
     #[must_use]
-    pub fn observations(&self) -> &[CurrentRangeObservation] {
+    pub fn observations(&self) -> &[CurrentIndexGenerationObservation] {
         &self.observations
     }
     /// Borrows unique occupancies in exact target order.
@@ -2067,9 +2192,9 @@ redacted_debug!(
 #[cfg(test)]
 mod builder_tests {
     use riffdb_types::{
-        CanonicalRecord, CanonicalValue, CommandId, ContractBundleHash, ContractLineage,
-        ContractVersion, EntityKeyBuilder, EntityTypeId, EntityVersion, FieldId,
-        IndexEntryKeyBuilder, IndexId, PlanHash,
+        AggregateTypeId, CanonicalRecord, CanonicalValue, CommandId, ContractBundleHash,
+        ContractLineage, ContractVersion, EntityKeyBuilder, EntityTypeId, EntityVersion, FieldId,
+        IndexEntryKeyBuilder, IndexId, PartitionKeyBuilder, PlanHash,
     };
 
     use super::*;
@@ -2137,7 +2262,19 @@ mod builder_tests {
     }
 
     fn range_target(index: IndexId) -> IndexRangeTarget {
-        IndexRangeTarget::new(IndexRangePrefixBuilder::new(index).finish())
+        IndexRangeTarget::new(
+            generation_target(index).partition_key().clone(),
+            IndexRangePrefixBuilder::new(index).finish(),
+        )
+    }
+
+    fn generation_target(index: IndexId) -> PartitionIndexTarget {
+        PartitionIndexTarget::new(
+            PartitionKeyBuilder::new(AggregateTypeId::first())
+                .finish()
+                .expect("partition key"),
+            index,
+        )
     }
 
     fn affected_targets_for_state_bytes(total: usize) -> AffectedIndexEpochTargets {
@@ -2154,16 +2291,19 @@ mod builder_tests {
 
             let index = IndexId::new(u32::try_from(ordinal).expect("bounded index ordinal"))
                 .expect("nonzero index ID");
-            let mut prefix = IndexRangePrefixBuilder::new(index);
+            let mut partition = PartitionKeyBuilder::new(AggregateTypeId::first());
             if prefix_bytes > 6 {
                 let payload_bytes = prefix_bytes
                     .checked_sub(10)
                     .expect("partial reduction leaves one complete byte component");
-                prefix
+                partition
                     .push_bytes(&vec![0xa5; payload_bytes])
-                    .expect("bounded prefix payload");
+                    .expect("bounded partition payload");
             }
-            targets.push(IndexRangeTarget::new(prefix.finish()));
+            targets.push(PartitionIndexTarget::new(
+                partition.finish().expect("partition key"),
+                index,
+            ));
         }
         assert_eq!(reduction, 0);
         AffectedIndexEpochTargets::new(targets).expect("bounded affected target set")
@@ -2172,14 +2312,14 @@ mod builder_tests {
     #[test]
     fn affected_epoch_semantic_framing_matches_the_checked_plan_estimator() {
         let index = IndexId::first();
-        let whole = range_target(index);
+        let whole = generation_target(index);
         assert_eq!(whole.semantic_bytes(), Ok(14));
 
         let expected =
             AffectedIndexEpochTargets::new(vec![whole.clone()]).expect("one whole-index target");
         let current = AffectedEpochCurrentState::new(
             &expected,
-            vec![CurrentRangeObservation::new(
+            vec![CurrentIndexGenerationObservation::new(
                 whole,
                 IndexEpochPosition::Value(IndexEpoch::first()),
             )],
@@ -2192,8 +2332,12 @@ mod builder_tests {
             .push_u64(u64::MAX)
             .expect("fixed-width component");
         assert_eq!(
-            IndexRangeTarget::new(component_prefix.finish()).semantic_bytes(),
-            Ok(14 + 8)
+            IndexRangeTarget::new(
+                generation_target(index).partition_key().clone(),
+                component_prefix.finish(),
+            )
+            .semantic_bytes(),
+            Ok(14 + 8 + 14)
         );
     }
 
@@ -2731,7 +2875,7 @@ mod builder_tests {
         let mut builder = AffectedEpochCurrentStateBuilder::new(&expected);
         for target in expected.as_slice() {
             builder
-                .push(CurrentRangeObservation::new(
+                .push(CurrentIndexGenerationObservation::new(
                     target.clone(),
                     IndexEpochPosition::BeforeFirst,
                 ))
@@ -2754,7 +2898,7 @@ mod builder_tests {
         let (last, prefix) = expected.as_slice().split_last().expect("nonempty targets");
         for target in prefix {
             builder
-                .push(CurrentRangeObservation::new(
+                .push(CurrentIndexGenerationObservation::new(
                     target.clone(),
                     IndexEpochPosition::BeforeFirst,
                 ))
@@ -2762,7 +2906,7 @@ mod builder_tests {
         }
         let retained = builder.observations.len();
         assert_eq!(
-            builder.push(CurrentRangeObservation::new(
+            builder.push(CurrentIndexGenerationObservation::new(
                 last.clone(),
                 IndexEpochPosition::BeforeFirst,
             )),
@@ -2773,7 +2917,7 @@ mod builder_tests {
 
     #[test]
     fn affected_epoch_builder_rejects_incomplete_state() {
-        let expected = AffectedIndexEpochTargets::new(vec![range_target(IndexId::first())])
+        let expected = AffectedIndexEpochTargets::new(vec![generation_target(IndexId::first())])
             .expect("affected targets");
         assert_eq!(
             AffectedEpochCurrentStateBuilder::new(&expected).finish(),
