@@ -6,7 +6,7 @@
 **Tagline:** *Vibe fast. Commit safely.*  
 **Category:** Contract-first operational database for agent-built applications  
 
-**Version:** 0.41
+**Version:** 0.42
 **Status:** Application-platform implementation handoff
 **Date:** 29 July 2026
 **Audience:** Coding agents, database engineers, compiler engineers, security reviewers, and technical product leads  
@@ -77,6 +77,7 @@
 | 0.39 | 2026-07-29 | Planned the proposed post-WP-300 Agent Application Alpha gate and WP-305 through WP-340: complete generated bindings, symbolic roles, structured public application errors, resumable command batches, canonical scaffolding and package boundaries, TypeScript runtime parity, evidence-driven RiffQL growth, and four sealed unfamiliar-domain agent evaluations before operational alpha or replication. ADR-0056 remains Proposed pending exact human acceptance. |
 | 0.40 | 2026-07-29 | Applied accepted ADR-0056 after the maintainer directed implementation of the complete Agent Application Alpha phase. WP-305 through WP-340 may begin in dependency order; their exact public/durable/grammar fixtures retain the human review checkpoints named by the accepted record. |
 | 0.41 | 2026-07-29 | Applied accepted ADR-0057 after four sealed Terra evaluations failed the application-authoring gate: authors own symbolic intent, the compiler owns an exact lock and every derived identity, diagnostics remain source-spanned and bounded, scaffolding supports an existing empty repository, TypeScript and builder MCP become complete public paths, public-only rehearsals and canaries precede campaign 02, and growing-database command degradation receives an independent durability-preserving gate. |
+| 0.42 | 2026-07-29 | Applied accepted ADR-0058 and planned WP-364: redb retains `Immediate` two-phase durability behind one typed FIFO writer scheduler; production uses bounded group durability; command `Started` plus `Pending` admission and successful command graph plus terminal audit become two atomic transitions; every grouped command retains independent identity, outcome, provenance, audit, acknowledgement, and uncertainty recovery. |
 
 ### Normative language
 
@@ -5326,6 +5327,7 @@ earlier deadline governs unless a reviewed reconciliation changes both sources.
 | `ADR-0055` | Accepted | Disjoint stable-application, ad-hoc-agent, and kernel authority; private exact-plan proofs; whole-query fuel; declared relationship/uniqueness integrity; and negative safety canaries | WP-280 through WP-300 |
 | `ADR-0056` | Accepted | Agent Application Alpha before operational/distributed alpha; complete generated bindings, symbolic roles, structured application errors, command batches, canonical scaffolding, TypeScript parity, evidence-driven RiffQL growth, and sealed independent evaluation | WP-305 through WP-340 |
 | `ADR-0057` | Accepted | Compiler-owned exact application lock, bounded authoring diagnostics, empty-directory scaffold, complete public authoring kit, TypeScript/builder-MCP parity, durability-preserving performance investigation, rehearsals, canaries, and campaign 02 | WP-345 through WP-370 |
+| `ADR-0058` | Accepted | Bounded typed FIFO writer scheduling, production group durability over redb `Immediate`, two-transition audited commands, complete-outcome release proof, and independent grouped uncertainty | WP-364 |
 
 ## 22.2 Decisions to resolve before implementation reaches the named gate
 
@@ -5791,6 +5793,19 @@ ADR-0055.
   Alpha. It MUST NOT be repaired by silently reducing durability, disabling a
   reviewed crash defense, weakening atomic records, or acknowledging before
   the configured durable boundary.
+- `PERF-004`: Production online writes MUST pass through one typed FIFO
+  scheduler using redb `Immediate` durability. It MAY group at most 16
+  compatible transitions for at most 200 microseconds and MUST retain the
+  existing 64-command and 16 MiB transaction ceilings. A newly executed,
+  successfully returned application command MUST require no more than two
+  durable transitions: atomic `Started` plus `Pending`, then atomic command
+  graph plus terminal `Succeeded` audit. Every item MUST retain independent
+  identity, sequence, outcome, provenance, audit, acknowledgement, and
+  uncertainty recovery. On the checked profile, a saturated grouped workload
+  MUST deliver at least twice the synchronous durability oracle's throughput
+  without a p99 scheduler wait above 2 ms or starvation. A miss blocks Agent
+  Application Alpha and MUST NOT be repaired by weaker durability, audit,
+  authorization, atomicity, or response-release semantics.
 
 The milestone is complete only when WP-205 through WP-300 pass their package
 acceptance commands and an independent fresh-agent TicketDesk run satisfies
@@ -5912,7 +5927,7 @@ contract.
   application response or harness self-test MUST NOT satisfy an agent metric.
 
 The milestone is complete only when WP-305 through WP-370 pass, ADR-0056,
-ADR-0057, and every language or public/durable interface decision required by
+ADR-0057, ADR-0058, and every language or public/durable interface decision required by
 those packages is accepted, and the raw sealed evaluation reports are
 published.
 

@@ -78,6 +78,8 @@ direction, merged draft, or implementation choice.
 | [0054](0054-bounded-dependent-key-batches.md) | Bounded Dependent Key Batches | Accepted |
 | [0055](0055-safe-application-surface-and-declared-integrity.md) | Safe Application Surface and Declared Integrity | Accepted |
 | [0056](0056-agent-application-alpha.md) | Agent Application Alpha Before Operational and Distributed Alpha | Accepted |
+| [0057](0057-compiler-owned-application-lock-and-alpha-recovery.md) | Compiler-Owned Application Lock and Agent-Alpha Recovery | Accepted |
+| [0058](0058-bounded-group-durability-and-audited-command-transitions.md) | Bounded Group Durability and Audited Command Transitions | Accepted |
 
 The human architecture review on 2026-07-12 approved the direction represented
 by ADR-0001 through ADR-0012. The human maintainer accepted ADR-0001 through
@@ -231,6 +233,13 @@ ADR-0056 has a separate acceptance reference: the maintainer's explicit
 Agent Application Alpha phase. It places application-authoring alpha before
 operational/distributed alpha and freezes the boundary described by the exact
 record text while retaining separate interface-fixture reviews.
+ADR-0057 has a separate acceptance reference: the maintainer's explicit
+2026-07-29 approval of the exact compiler-owned lock and failed-campaign
+remediation record.
+ADR-0058 has a separate acceptance reference: the maintainer's explicit
+2026-07-29 acceptance of the exact bounded group-durability, two-transition
+audited command lifecycle, independent uncertainty, and redb `Immediate`
+durability amendment.
 
 ## Workflow
 
