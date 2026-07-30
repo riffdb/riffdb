@@ -38,7 +38,7 @@ Contract source: `contracts/ticketdesk.riff` (deployed to `riffdbd` at runtime).
 | `list_comments_for_ticket` | filtered `SELECT` | named `ListComments` |
 | `list_project_members` | filtered `SELECT` | named `ProjectMembers` |
 | `ticket_detail_page` | multi-table `JOIN` | named `TicketPage` (dependent key batches) |
-| `create_comment` | idempotent `INSERT` | symbolic `CreateComment` |
+| `create_comment` | plain `INSERT` of a distinct new row per sample | symbolic `CreateComment` |
 | `close_ticket_with_comment` | SQL txn: validate + `UPDATE` ticket + `INSERT` comment | one symbolic `CloseTicketWithComment` (mutate + create) |
 | `swap_member_roles` | SQL txn: two `UPDATE` memberships | one symbolic `SwapMemberRoles` (two mutates) |
 | `open_ticket_with_labels` | SQL txn: ticket + two label links | one symbolic `OpenTicketWithLabels` (three creates) |
@@ -117,9 +117,14 @@ WP-366 then removed fixed command-path amplification:
 4. CRC-32C uses the existing safe 16-lane implementation; and
 5. generated batches use the 16-item public transport with per-item recovery.
 
-The current full same-run evidence is recorded in
+The full same-run evidence is recorded in
 `docs/performance/wp-366-write-parity.md`. The seed is flat at roughly 3,900
 ordinary commands/second rather than collapsing with retained history. All
 interactive read and write p50s beat PostgreSQL in that run. The remaining
 seed gap compares independently durable command lifecycles with PostgreSQL's
 single 15,160-insert seed transaction and remains an explicit open gate.
+
+Those figures predate the 2026-07-30 harness correction (per-sample distinct
+write identities on both backends, plus a warm PostgreSQL connection and
+prepared statements), so the interactive read/write numbers in that note must
+be regenerated before being cited.

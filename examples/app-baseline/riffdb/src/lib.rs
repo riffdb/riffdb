@@ -61,11 +61,14 @@ impl RiffDbPublicBackend {
         let metadata = CallMetadata::authenticated(
             BearerCredential::new(bearer_token).map_err(|_| RiffDbError::Connection)?,
         );
+        // The harness always connects from inside its persistent runtime; a
+        // missing runtime is a recoverable configuration error, not a panic.
+        let runtime = tokio::runtime::Handle::try_current().map_err(|_| RiffDbError::Runtime)?;
         Ok(Self {
             transport,
             metadata,
             command_attempts: AttemptBudget::new(3).expect("positive command attempt budget"),
-            runtime: tokio::runtime::Handle::current(),
+            runtime,
         })
     }
 

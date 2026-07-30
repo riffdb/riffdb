@@ -10,7 +10,7 @@
 
 ## Global Constraints
 
-- All commands run from the repo worktree root; build/test the example with `cargo +1.97.0 <cmd> --manifest-path examples/app-baseline/Cargo.toml`.
+- All commands run from the repo worktree root; build/test the example with `cargo +1.97.0 <cmd> --manifest-path examples/app-baseline/Cargo.toml`. `test` and `clippy` additionally need `--workspace`, because that manifest is both a package and the workspace root — without it cargo only runs the root package's targets and skips the `core`, `postgres`, and `riffdb` members entirely.
 - Workspace lints: `unsafe_code = forbid`, `missing_docs = warn`, clippy `-D warnings` in CI. Every new public item needs a doc comment.
 - Do NOT change the `AppBackend` trait method signatures (`create_comment(&mut self, &CommentSeed)`, `close_ticket_with_comment(&mut self, &CloseTicketWithCommentSeed)`, `swap_member_roles(&mut self, &SwapMemberRolesSeed)`, `open_ticket_with_labels(&mut self, &OpenTicketWithLabelsSeed)`), the seed dataset content, the seed phases, or the report JSON schema keys (adding one string to the existing `limitations` array is allowed).
 - Do NOT touch anything outside `examples/app-baseline/` and `docs/`.
@@ -154,9 +154,11 @@ Methods that call `client.transaction()` need `let client = self.client()?;` fol
 Run:
 ```bash
 cargo +1.97.0 build --manifest-path examples/app-baseline/Cargo.toml
-cargo +1.97.0 clippy --manifest-path examples/app-baseline/Cargo.toml --all-targets -- -D warnings
-cargo +1.97.0 test --manifest-path examples/app-baseline/Cargo.toml
+cargo +1.97.0 clippy --workspace --all-targets --manifest-path examples/app-baseline/Cargo.toml -- -D warnings
+cargo +1.97.0 test --workspace --manifest-path examples/app-baseline/Cargo.toml
 ```
+`--workspace` is required: `examples/app-baseline/Cargo.toml` is both a package and the workspace root, so without it cargo runs only the root package's targets and silently skips the `core`, `postgres`, and `riffdb` member tests.
+
 Expected: all pass (the workspace has unit tests in `src/main.rs` for the parity gate; they are unaffected).
 
 - [ ] **Step 5: Commit**
@@ -264,7 +266,7 @@ mod tests {
 
 - [ ] **Step 2: Run tests to verify they fail**
 
-Run: `cargo +1.97.0 test --manifest-path examples/app-baseline/Cargo.toml -p riffdb-app-baseline-core`
+Run: `cargo +1.97.0 test --workspace --manifest-path examples/app-baseline/Cargo.toml`
 Expected: FAIL to compile — `write_ticket_id`, `write_project_id`, etc. do not exist yet.
 
 - [ ] **Step 3: Restructure `ScenarioProbes`**
@@ -485,10 +487,12 @@ In `examples/app-baseline/core/src/report.rs`, append two strings to the `limita
 
 Run:
 ```bash
-cargo +1.97.0 test --manifest-path examples/app-baseline/Cargo.toml
-cargo +1.97.0 clippy --manifest-path examples/app-baseline/Cargo.toml --all-targets -- -D warnings
+cargo +1.97.0 test --workspace --manifest-path examples/app-baseline/Cargo.toml
+cargo +1.97.0 clippy --workspace --all-targets --manifest-path examples/app-baseline/Cargo.toml -- -D warnings
 cargo +1.97.0 build --release --manifest-path examples/app-baseline/Cargo.toml
 ```
+`--workspace` is required here too; without it the new `core` tests never run.
+
 Expected: all pass, both new tests green.
 
 - [ ] **Step 9: Commit**

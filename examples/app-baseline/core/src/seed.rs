@@ -77,7 +77,7 @@ pub struct OpenTicketWithLabelsSeed {
     pub label_a: [u8; 16],
     /// Second existing label.
     pub label_b: [u8; 16],
-    /// Stable idempotency key for the complete operation.
+    /// Per-sample idempotency key (each measured sample is a new durable write).
     pub idempotency_key: String,
 }
 
@@ -463,6 +463,9 @@ mod tests {
             assert_ne!(probes.write_project_id, probes.project_id);
             assert_ne!(probes.write_assignee_id, probes.assignee_id);
             assert_ne!(probes.write_label_a, probes.write_label_b);
+            // SwapMemberRoles must mutate two distinct memberships in one
+            // command; the `probes()` fallback would otherwise alias them.
+            assert_ne!(probes.swap_user_a, probes.swap_user_b);
 
             // Closing the write ticket must not change any read scenario's row
             // count, so it lives outside the read-probe project and belongs to
