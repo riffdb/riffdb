@@ -29,7 +29,7 @@ use crate::{
     ProvenanceIdSource,
     command_execution::{
         CommandExecutionError, CommandExecutionLifecycle, CommandExecutionResult,
-        CoordinatorDurability, drive_command_execution,
+        CoordinatorDurability, drive_command_execution, drive_command_execution_group,
     },
     control_plane::{
         CapabilityBootstrapExecutionResult, CapabilityBootstrapPreparation,
@@ -1292,9 +1292,18 @@ enum CoordinatorMessage {
 
 type LocalCommandFuture<'a> =
     Pin<Box<dyn Future<Output = Result<CommandExecutionResult, CommandExecutionError>> + 'a>>;
+type LocalCommandGroupFuture<'a> =
+    Pin<Box<dyn Future<Output = Vec<Result<CommandExecutionResult, CommandExecutionError>>> + 'a>>;
 type AuditGroupItem = (
     Box<dyn AdministrationAuditInputView>,
     oneshot::Sender<Result<(), AdministrationAuditExecutionError>>,
+);
+type CommandGroupItem = (
+    CommandExecutionPreparation,
+    riffdb_types::CommandId,
+    riffdb_types::ServiceIngressKindV1,
+    Instant,
+    oneshot::Sender<Result<CommandExecutionResult, CommandExecutionError>>,
 );
 
 trait CoordinatorActorOperations: Send {
@@ -1315,6 +1324,19 @@ trait CoordinatorActorOperations: Send {
 
     fn drive_command(&mut self, preparation: CommandExecutionPreparation)
     -> LocalCommandFuture<'_>;
+
+    fn drive_command_group(
+        &mut self,
+        preparations: Vec<CommandExecutionPreparation>,
+    ) -> LocalCommandGroupFuture<'_> {
+        Box::pin(async move {
+            let mut results = Vec::with_capacity(preparations.len());
+            for preparation in preparations {
+                results.push(self.drive_command(preparation).await);
+            }
+            results
+        })
+    }
 
     fn inspect_idempotency(
         &mut self,
@@ -1429,6 +1451,22 @@ where
             &self.lifecycle,
             self.telemetry.as_ref(),
             preparation,
+        ))
+    }
+
+    fn drive_command_group(
+        &mut self,
+        preparations: Vec<CommandExecutionPreparation>,
+    ) -> LocalCommandGroupFuture<'_> {
+        Box::pin(drive_command_execution_group(
+            &self.repository,
+            self.conflicts.as_ref(),
+            self.admission_clock.as_ref(),
+            self.provenance_source.as_ref(),
+            self.durability,
+            &self.lifecycle,
+            self.telemetry.as_ref(),
+            preparations,
         ))
     }
 
@@ -1670,6 +1708,16 @@ impl CommandCoordinatorActor {
                     while group.len() < riffdb_storage_api::MAX_GROUPED_WRITE_TRANSITIONS {
                         match self.receiver.try_recv() {
                             Ok(CoordinatorMessage::AdministrationAudit { input, completion }) => {
+                                if group
+                                    .iter()
+                                    .any(|(grouped, _)| grouped.request_id() == input.request_id())
+                                {
+                                    deferred = Some(CoordinatorMessage::AdministrationAudit {
+                                        input,
+                                        completion,
+                                    });
+                                    break;
+                                }
                                 group.push((input, completion));
                             }
                             Ok(message) => {
@@ -1691,14 +1739,31 @@ impl CommandCoordinatorActor {
                     enqueued_at,
                     completion,
                 } => {
-                    self.execute_command(
-                        *preparation,
-                        command_id,
-                        ingress,
-                        enqueued_at,
-                        completion,
-                    )
-                    .await;
+                    let mut group =
+                        vec![(*preparation, command_id, ingress, enqueued_at, completion)];
+                    while group.len() < riffdb_storage_api::MAX_GROUPED_WRITE_TRANSITIONS {
+                        match self.receiver.try_recv() {
+                            Ok(CoordinatorMessage::Command {
+                                preparation,
+                                command_id,
+                                ingress,
+                                enqueued_at,
+                                completion,
+                            }) => group.push((
+                                *preparation,
+                                command_id,
+                                ingress,
+                                enqueued_at,
+                                completion,
+                            )),
+                            Ok(message) => {
+                                deferred = Some(message);
+                                break;
+                            }
+                            Err(_) => break,
+                        }
+                    }
+                    self.execute_command_group(group).await;
                     if self.reject_after_published_terminal_state().await {
                         break;
                     }
@@ -1986,6 +2051,57 @@ impl CommandCoordinatorActor {
                 elapsed: enqueued_at.elapsed(),
             });
         let _receiver_may_be_dropped = completion.send(result);
+    }
+
+    async fn execute_command_group(&mut self, group: Vec<CommandGroupItem>) {
+        for (_, command_id, ingress, enqueued_at, _) in &group {
+            self.telemetry
+                .record(CommitTelemetryEvent::StorageQueueCompleted {
+                    command_id: *command_id,
+                    ingress: *ingress,
+                    elapsed: enqueued_at.elapsed(),
+                });
+        }
+        let (preparations, metadata): (Vec<_>, Vec<_>) = group
+            .into_iter()
+            .map(
+                |(preparation, command_id, ingress, enqueued_at, completion)| {
+                    (preparation, (command_id, ingress, enqueued_at, completion))
+                },
+            )
+            .unzip();
+        let results = self.operations.drive_command_group(preparations).await;
+        if results.len() != metadata.len() {
+            self.lifecycle.stop();
+            for (_, _, _, completion) in metadata {
+                let _receiver_may_be_dropped =
+                    completion.send(Err(CommandExecutionError::coordinator_stopped()));
+            }
+            return;
+        }
+        for ((command_id, ingress, enqueued_at, completion), result) in
+            metadata.into_iter().zip(results)
+        {
+            if let Ok(CommandExecutionResult::Committed(outcome)) = &result
+                && outcome.disposition() == CommittedOutcomeDisposition::FirstCommit
+            {
+                let sequence = outcome.stored_outcome().commit_sequence();
+                let publication = panic::catch_unwind(panic::AssertUnwindSafe(|| {
+                    self.notifications.publish_first_commit(sequence)
+                }));
+                if !matches!(publication, Ok(Ok(()))) {
+                    self.lifecycle.stop();
+                }
+            }
+            self.telemetry
+                .record(CommitTelemetryEvent::CommandTerminal {
+                    command_id,
+                    ingress,
+                    terminal: commit_command_terminal(&result),
+                    elapsed: enqueued_at.elapsed(),
+                });
+            let _receiver_may_be_dropped = completion.send(result);
+        }
     }
 
     fn execute_read_only(

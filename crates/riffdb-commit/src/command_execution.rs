@@ -336,7 +336,6 @@ where
 
 /// Owns a bounded FIFO group through one shared physical admission transition.
 #[allow(clippy::too_many_arguments)]
-#[allow(dead_code, reason = "WP-364 interface-first grouped actor integration")]
 pub(super) async fn drive_command_execution_group<P>(
     port: &P,
     conflicts: &dyn ConflictManager,
