@@ -332,7 +332,7 @@ impl ProductionGraphBuilder {
                 .expect("the fixed P1 coordinator workload capacity is nonzero");
         let coordinator = match RunningCommandCoordinator::start_with_telemetry(
             coordinator_capacity,
-            CoordinatorDurability::Sync,
+            CoordinatorDurability::Group,
             storage.clone(),
             conflicts,
             Arc::new(admission_clock),
@@ -813,10 +813,10 @@ mod tests {
     }
 
     #[test]
-    fn production_coordinator_selects_only_sync_explicitly() {
+    fn production_coordinator_selects_only_group_explicitly() {
         let source = production_source();
-        assert!(source.contains("CoordinatorDurability::Sync"));
-        assert!(!source.contains("CoordinatorDurability::Group"));
+        assert!(source.contains("CoordinatorDurability::Group"));
+        assert!(!source.contains("CoordinatorDurability::Sync"));
         assert!(!source.contains("DurabilityMode::Memory"));
     }
 

@@ -787,8 +787,10 @@ fn command_admission_is_private_move_only_and_orders_external_calls_exactly() {
         "lower_provenance_claims(&parts.authorization)",
         "StoredPendingAdmissionV1::new(",
         "AdmissionRequestV1::new(lookup_candidates, &context)",
-        ".admit_or_resolve(request)",
-        "Ok(AdmissionResultV1::Created(created)) if created == pending",
+        ".admit_or_resolve(prepared.request.clone())",
+        ".admit_or_resolve_group(requests)",
+        "AdmissionResultV1::Resumed(existing)",
+        ".rebind_durable_pending(existing)",
         "raw.sort_unstable()",
         "raw.dedup()",
         "raw.is_empty() || raw.len() > MAX_COMMAND_CONFLICT_KEYS_V1",
@@ -808,6 +810,12 @@ fn command_admission_is_private_move_only_and_orders_external_calls_exactly() {
     assert!(!LIB_SOURCE.contains("pub use command_admission"));
     assert_eq!(production_source.matches(".recheck(").count(), 1);
     assert_eq!(production_source.matches(".admit_or_resolve(").count(), 1);
+    assert_eq!(
+        production_source
+            .matches(".admit_or_resolve_group(")
+            .count(),
+        1
+    );
 
     let candidate_body = production_source
         .split_once("pub(crate) struct CommandExecutionCandidate {")
@@ -845,25 +853,26 @@ fn command_admission_is_private_move_only_and_orders_external_calls_exactly() {
     }
 
     let vacant_body = production_source
-        .split_once("fn admit_vacant(")
-        .and_then(|(_, remainder)| remainder.split_once("\nfn resume_pending("))
+        .split_once("fn prepare_vacant(")
+        .and_then(|(_, remainder)| remainder.split_once("\nfn complete_vacant_admission("))
         .map(|(body, _)| body)
         .expect("bounded vacant-admission implementation");
     let lowering = vacant_body
         .find("lower_preparation(parts, normalized_input, conflict_hasher)")
         .expect("pure lowering");
     let clock = vacant_body.find("clock.now()").expect("one clock sample");
-    let mutation = vacant_body
-        .find(".admit_or_resolve(request)")
-        .expect("one admission mutation");
+    let request = vacant_body
+        .find("AdmissionRequestV1::new")
+        .expect("one prepared admission request");
     assert!(
         lowering < clock,
         "pure lowering must finish before clock sampling"
     );
     assert!(
-        clock < mutation,
-        "clock sampling must precede admission mutation"
+        clock < request,
+        "clock sampling must precede admission request construction"
     );
+    assert!(production_source.contains("repository.admit_or_resolve_group(requests)"));
 }
 
 #[test]

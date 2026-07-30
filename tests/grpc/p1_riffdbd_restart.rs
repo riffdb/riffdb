@@ -170,7 +170,7 @@ async fn real_riffdbd_restart_preserves_budget_and_bootstrap_replay() -> TestRes
         v1::execute_command_response::CompletionStatus::Committed as i32
     );
     assert_eq!(created.response().commit_sequence, 1);
-    assert_eq!(created.response().durability_mode, "sync");
+    assert_eq!(created.response().durability_mode, "group");
     let CreateBudgetOutcome::BudgetCreated { budget } = created.outcome() else {
         return Err(test_failure("CreateBudget did not return BudgetCreated"));
     };
@@ -198,7 +198,7 @@ async fn real_riffdbd_restart_preserves_budget_and_bootstrap_replay() -> TestRes
         v1::execute_command_response::CompletionStatus::Committed as i32
     );
     assert_eq!(allocated.response().commit_sequence, 2);
-    assert_eq!(allocated.response().durability_mode, "sync");
+    assert_eq!(allocated.response().durability_mode, "group");
     assert_schema_bound_allocated_outcome(allocated.response())?;
     let AllocateBudgetOutcome::Allocated { budget, remaining } = allocated.outcome() else {
         return Err(test_failure("AllocateBudget did not return Allocated"));
@@ -397,7 +397,7 @@ async fn real_riffdbd_migrates_v1_index_before_public_readiness() -> TestResult<
     );
     assert_eq!(created.commit_sequence, 1);
     assert_eq!(created.contract_version, CONTRACT_VERSION);
-    assert_eq!(created.durability_mode, "sync");
+    assert_eq!(created.durability_mode, "group");
 
     let restricted_token = normal_capability_token(
         bounded_rpc(

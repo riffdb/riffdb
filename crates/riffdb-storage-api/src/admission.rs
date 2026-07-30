@@ -139,6 +139,27 @@ pub trait AdmissionRepository {
         request: AdmissionRequestV1,
     ) -> Result<AdmissionResultV1, StorageError>;
 
+    /// Resolves a bounded FIFO group in one physical durable transition.
+    ///
+    /// Each result is independent and retains input order. Production
+    /// repositories override this atomically; the default is a small
+    /// conformance adapter for test repositories.
+    fn admit_or_resolve_group(
+        &self,
+        requests: Vec<AdmissionRequestV1>,
+    ) -> Result<Vec<AdmissionResultV1>, StorageError> {
+        if requests.is_empty() || requests.len() > crate::MAX_GROUPED_WRITE_TRANSITIONS {
+            return Err(StorageError::new(
+                crate::StorageErrorKind::LimitExceeded,
+                None,
+            ));
+        }
+        requests
+            .into_iter()
+            .map(|request| self.admit_or_resolve(request))
+            .collect()
+    }
+
     /// Performs a bounded read without creating or changing admission state.
     fn lookup_admission(
         &self,

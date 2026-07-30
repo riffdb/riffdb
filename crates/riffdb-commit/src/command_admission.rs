@@ -267,6 +267,29 @@ impl CommandExecutionCandidate {
         IdempotencyLookupCandidatesV1::new(vec![self.commit_context.pending().identity().clone()])
             .map_err(|_| CommandAdmissionError::Integrity)
     }
+
+    fn rebind_durable_pending(
+        mut self: Box<Self>,
+        pending: StoredPendingAdmissionV1,
+    ) -> Result<Box<Self>, CommandAdmissionError> {
+        let proposed = self.commit_context.pending();
+        if pending.identity() != proposed.identity()
+            || pending.canonical_input_hash() != proposed.canonical_input_hash()
+            || pending.plan() != proposed.plan()
+            || pending.actor() != proposed.actor()
+            || pending.partition_key() != proposed.partition_key()
+            || pending.provenance_claims() != proposed.provenance_claims()
+        {
+            return Err(CommandAdmissionError::Integrity);
+        }
+        self.commit_context = PreEvaluationCommitContext::new(
+            pending,
+            self.commit_context.partition_hash(),
+            self.commit_context.conflict_hashes().to_vec(),
+        )
+        .map_err(|_| CommandAdmissionError::Integrity)?;
+        Ok(self)
+    }
 }
 
 impl fmt::Debug for CommandExecutionCandidate {
@@ -306,6 +329,73 @@ pub(crate) fn reduce_command_admission(
     preparation: CommandExecutionPreparation,
 ) -> Result<CommandAdmissionResult, CommandAdmissionError> {
     reduce_command_admission_with_hash(repository, clock, preparation, &hash_conflict_key)
+}
+
+/// Reduces a bounded FIFO group and shares only the physical Pending transition.
+///
+/// Every returned item retains its original identity and independent result.
+#[allow(dead_code, reason = "WP-364 interface-first grouped actor integration")]
+pub(crate) fn reduce_command_admission_group(
+    repository: &dyn AdmissionRepository,
+    clock: &dyn AdmissionClock,
+    preparations: Vec<CommandExecutionPreparation>,
+) -> Vec<Result<CommandAdmissionResult, CommandAdmissionError>> {
+    if preparations.is_empty()
+        || preparations.len() > riffdb_storage_api::MAX_GROUPED_WRITE_TRANSITIONS
+    {
+        return preparations
+            .into_iter()
+            .map(|_| {
+                Err(CommandAdmissionError::AdmissionWrite(StorageError::new(
+                    StorageErrorKind::LimitExceeded,
+                    None,
+                )))
+            })
+            .collect();
+    }
+    let count = preparations.len();
+    let mut outputs = (0..count).map(|_| None).collect::<Vec<_>>();
+    let mut vacant = Vec::new();
+    for (index, preparation) in preparations.into_iter().enumerate() {
+        match prepare_command_admission_with_hash(
+            preparation,
+            repository,
+            clock,
+            &hash_conflict_key,
+        ) {
+            Ok(PreparedCommandAdmission::Complete(result)) => outputs[index] = Some(Ok(*result)),
+            Ok(PreparedCommandAdmission::Vacant(prepared)) => vacant.push((index, prepared)),
+            Err(error) => outputs[index] = Some(Err(error)),
+        }
+    }
+    if !vacant.is_empty() {
+        let requests = vacant
+            .iter()
+            .map(|(_, prepared)| prepared.request.clone())
+            .collect();
+        match repository.admit_or_resolve_group(requests) {
+            Ok(results) if results.len() == vacant.len() => {
+                for ((index, prepared), result) in vacant.into_iter().zip(results) {
+                    outputs[index] = Some(complete_vacant_admission(*prepared, result, true));
+                }
+            }
+            Ok(_) => {
+                for (index, _) in vacant {
+                    outputs[index] = Some(Err(CommandAdmissionError::Integrity));
+                }
+            }
+            Err(error) => {
+                for (index, prepared) in vacant {
+                    outputs[index] =
+                        Some(Err(vacant_admission_write_error(*prepared, error.clone())));
+                }
+            }
+        }
+    }
+    outputs
+        .into_iter()
+        .map(|output| output.unwrap_or(Err(CommandAdmissionError::Integrity)))
+        .collect()
 }
 
 /// Resolves an uncertain pending-admission write using only its original identity evidence.
@@ -368,6 +458,36 @@ fn reduce_command_admission_with_hash(
     preparation: CommandExecutionPreparation,
     conflict_hasher: &dyn Fn(&[u8]) -> ConflictKeyHash,
 ) -> Result<CommandAdmissionResult, CommandAdmissionError> {
+    match prepare_command_admission_with_hash(preparation, repository, clock, conflict_hasher)? {
+        PreparedCommandAdmission::Complete(result) => Ok(*result),
+        PreparedCommandAdmission::Vacant(prepared) => {
+            let result = repository.admit_or_resolve(prepared.request.clone());
+            match result {
+                Ok(result) => complete_vacant_admission(*prepared, result, false),
+                Err(error) => Err(vacant_admission_write_error(*prepared, error)),
+            }
+        }
+    }
+}
+
+enum PreparedCommandAdmission {
+    Complete(Box<CommandAdmissionResult>),
+    Vacant(Box<PreparedVacantAdmission>),
+}
+
+struct PreparedVacantAdmission {
+    request: AdmissionRequestV1,
+    recovery_candidates: IdempotencyLookupCandidatesV1,
+    pending: StoredPendingAdmissionV1,
+    execution_candidate: Box<CommandExecutionCandidate>,
+}
+
+fn prepare_command_admission_with_hash(
+    preparation: CommandExecutionPreparation,
+    repository: &dyn AdmissionRepository,
+    clock: &dyn AdmissionClock,
+    conflict_hasher: &dyn Fn(&[u8]) -> ConflictKeyHash,
+) -> Result<PreparedCommandAdmission, CommandAdmissionError> {
     let crate::command_preparation::CommandExecutionPreparationParts {
         resolved_plan,
         normalized_input,
@@ -393,37 +513,46 @@ fn reduce_command_admission_with_hash(
 
     match rechecked {
         IdempotencyRecheckResultV1::Vacant(vacant) => {
-            admit_vacant(repository, clock, parts, vacant, conflict_hasher)
+            prepare_vacant(clock, parts, vacant, conflict_hasher)
+                .map(Box::new)
+                .map(PreparedCommandAdmission::Vacant)
         }
         IdempotencyRecheckResultV1::Pending(pending) => {
             resume_pending(parts, pending, conflict_hasher)
+                .map(Box::new)
+                .map(PreparedCommandAdmission::Complete)
         }
         IdempotencyRecheckResultV1::Outcome(outcome) => {
             if outcome.partition_key() != parts.input_facts.partition_key() {
                 return Err(CommandAdmissionError::Integrity);
             }
-            Ok(CommandAdmissionResult::Outcome(outcome))
+            Ok(PreparedCommandAdmission::Complete(Box::new(
+                CommandAdmissionResult::Outcome(outcome),
+            )))
         }
         IdempotencyRecheckResultV1::ExecutionFailed(failure) => {
             if failure.pending().partition_key() != parts.input_facts.partition_key() {
                 return Err(CommandAdmissionError::Integrity);
             }
-            Ok(CommandAdmissionResult::ExecutionFailed(failure))
+            Ok(PreparedCommandAdmission::Complete(Box::new(
+                CommandAdmissionResult::ExecutionFailed(failure),
+            )))
         }
-        IdempotencyRecheckResultV1::PreparationChanged => {
-            Ok(CommandAdmissionResult::PreparationChanged)
-        }
-        IdempotencyRecheckResultV1::InputMismatch => Ok(CommandAdmissionResult::InputMismatch),
+        IdempotencyRecheckResultV1::PreparationChanged => Ok(PreparedCommandAdmission::Complete(
+            Box::new(CommandAdmissionResult::PreparationChanged),
+        )),
+        IdempotencyRecheckResultV1::InputMismatch => Ok(PreparedCommandAdmission::Complete(
+            Box::new(CommandAdmissionResult::InputMismatch),
+        )),
     }
 }
 
-fn admit_vacant(
-    repository: &dyn AdmissionRepository,
+fn prepare_vacant(
     clock: &dyn AdmissionClock,
     parts: AdmissionPreparationParts,
     vacant: VacantIdempotencyAdmissionV1,
     conflict_hasher: &dyn Fn(&[u8]) -> ConflictKeyHash,
-) -> Result<CommandAdmissionResult, CommandAdmissionError> {
+) -> Result<PreparedVacantAdmission, CommandAdmissionError> {
     let (selected_plan, normalized_input, prepared_idempotency) = vacant.into_parts();
     if &selected_plan != parts.resolved_plan.reference()
         || normalized_input != parts.normalized_input
@@ -461,31 +590,54 @@ fn admit_vacant(
         .map_err(|_| CommandAdmissionError::Integrity)?;
     let recovery_candidates = request.lookup_candidates().clone();
     let execution_candidate = Box::new(candidate(lowered, context));
+    Ok(PreparedVacantAdmission {
+        request,
+        recovery_candidates,
+        pending,
+        execution_candidate,
+    })
+}
 
-    match repository.admit_or_resolve(request) {
-        Ok(AdmissionResultV1::Created(created)) if created == pending => {
-            Ok(CommandAdmissionResult::Execute(execution_candidate))
-        }
-        Err(error) if error.kind() == StorageErrorKind::CommitStatusUnknown => {
-            Err(CommandAdmissionError::AdmissionStatusUnknown(Box::new(
-                UncertainCommandAdmission::new(
-                    error,
-                    recovery_candidates,
-                    pending,
-                    execution_candidate,
-                )?,
-            )))
-        }
-        Err(error) => Err(CommandAdmissionError::AdmissionWrite(error)),
-        Ok(
-            AdmissionResultV1::Created(_)
-            | AdmissionResultV1::Resumed(_)
-            | AdmissionResultV1::StoredOutcome(_)
-            | AdmissionResultV1::ExecutionFailed(_)
-            | AdmissionResultV1::InputMismatch
-            | AdmissionResultV1::MultipleMatches,
-        ) => Err(CommandAdmissionError::Integrity),
+fn complete_vacant_admission(
+    prepared: PreparedVacantAdmission,
+    result: AdmissionResultV1,
+    allow_resumed: bool,
+) -> Result<CommandAdmissionResult, CommandAdmissionError> {
+    match result {
+        AdmissionResultV1::Created(created) if created == prepared.pending => Ok(
+            CommandAdmissionResult::Execute(prepared.execution_candidate),
+        ),
+        AdmissionResultV1::Resumed(existing) if allow_resumed => prepared
+            .execution_candidate
+            .rebind_durable_pending(existing)
+            .map(CommandAdmissionResult::Execute),
+        AdmissionResultV1::Created(_)
+        | AdmissionResultV1::Resumed(_)
+        | AdmissionResultV1::StoredOutcome(_)
+        | AdmissionResultV1::ExecutionFailed(_)
+        | AdmissionResultV1::InputMismatch
+        | AdmissionResultV1::MultipleMatches => Err(CommandAdmissionError::Integrity),
     }
+}
+
+fn vacant_admission_write_error(
+    prepared: PreparedVacantAdmission,
+    error: StorageError,
+) -> CommandAdmissionError {
+    if error.kind() == StorageErrorKind::CommitStatusUnknown {
+        return UncertainCommandAdmission::new(
+            error.clone(),
+            prepared.recovery_candidates,
+            prepared.pending,
+            prepared.execution_candidate,
+        )
+        .map(Box::new)
+        .map_or_else(
+            |_| CommandAdmissionError::Integrity,
+            CommandAdmissionError::AdmissionStatusUnknown,
+        );
+    }
+    CommandAdmissionError::AdmissionWrite(error)
 }
 
 fn resume_pending(

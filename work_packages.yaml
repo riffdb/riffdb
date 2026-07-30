@@ -4553,6 +4553,11 @@ work_packages:
   - crates/riffdb-cli/**
   - crates/riffdb-observability/**
   - crates/riffdb-testkit/**
+  - tests/command_semantics/**
+  - tests/grpc/**
+  - tests/service_audit/**
+  - tests/service_audit_recovery/**
+  - tests/storage_recovery/**
   - clients/typescript/**
   - benchmarks/command-growth/**
   - fixtures/performance/**
