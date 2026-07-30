@@ -213,6 +213,7 @@ impl NonEmptyCommandBatch for RedbNonEmptyBatch {
             .collect::<Vec<_>>();
         let delta = (!pending_events.is_empty())
             .then_some(TransientIndexDelta::PendingOutboxInserted(pending_events));
+        stage_application_allocator(self.core.access.transaction()?, self.core.allocator)?;
         self.core
             .access
             .commit_for_with_delta(RedbTestOperation::CommandBatch, delta)?;
@@ -261,6 +262,7 @@ impl NonEmptyCommandBatch for RedbNonEmptyBatch {
         if !pending_events.is_empty() {
             deltas.push(TransientIndexDelta::PendingOutboxInserted(pending_events));
         }
+        stage_application_allocator(self.core.access.transaction()?, self.core.allocator)?;
         self.core.access.commit_for_with_delta(
             RedbTestOperation::CommandBatch,
             Some(TransientIndexDelta::Composite(deltas)),
@@ -829,11 +831,18 @@ fn apply_record_set(
             return Err(storage_error(StorageErrorKind::InvariantViolation));
         }
     }
-    {
-        let mut meta = transaction.open_table(META).map_err(table_error)?;
-        meta.insert(META_APPLICATION_SEQUENCE, encoded.allocator().as_bytes())
-            .map_err(precommit_storage_error)?;
-    }
+    Ok(())
+}
+
+fn stage_application_allocator(
+    transaction: &redb::WriteTransaction,
+    allocator: ApplicationSequenceAllocator,
+) -> Result<(), StorageError> {
+    let encoded = riffdb_storage_api::encode_application_sequence_allocator_v1(allocator)
+        .map_err(codec_error)?;
+    let mut meta = transaction.open_table(META).map_err(table_error)?;
+    meta.insert(META_APPLICATION_SEQUENCE, encoded.as_bytes())
+        .map_err(precommit_storage_error)?;
     Ok(())
 }
 

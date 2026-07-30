@@ -349,7 +349,22 @@ impl Error for EnvelopeError {}
 pub fn encode(schema: &RecordSchema<'_>, payload: &[u8]) -> Result<Vec<u8>, EnvelopeError> {
     maximum_encoded_envelope_bytes(schema, payload.len())?;
     (schema.validate_payload)(payload).map_err(EnvelopeError::InvalidPayload)?;
+    encode_checked_payload(schema, payload)
+}
 
+pub(crate) fn encode_preflighted(
+    schema: &RecordSchema<'_>,
+    payload: &[u8],
+) -> Result<Vec<u8>, EnvelopeError> {
+    maximum_encoded_envelope_bytes(schema, payload.len())?;
+    (schema.preflight_payload)(payload).map_err(EnvelopeError::InvalidPayload)?;
+    encode_checked_payload(schema, payload)
+}
+
+fn encode_checked_payload(
+    schema: &RecordSchema<'_>,
+    payload: &[u8],
+) -> Result<Vec<u8>, EnvelopeError> {
     let envelope = StoredEnvelope {
         storage_format_version: STORAGE_FORMAT_VERSION_V1,
         record_type: schema.record_type.to_owned(),

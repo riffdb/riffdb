@@ -1623,6 +1623,13 @@ where
         append_administration_audit(&mut self.repository, &self.clock, input)
     }
 
+    fn append_audit_group(
+        &mut self,
+        inputs: &[Box<dyn AdministrationAuditInputView>],
+    ) -> Vec<Result<(), AdministrationAuditExecutionError>> {
+        append_administration_audit_group(&mut self.repository, &self.clock, inputs)
+    }
+
     fn drive_command(&mut self, _: CommandExecutionPreparation) -> LocalCommandFuture<'_> {
         Box::pin(async { Err(CommandExecutionError::coordinator_stopped()) })
     }

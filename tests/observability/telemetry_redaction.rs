@@ -21,9 +21,10 @@ use riffdb_observability::{
     CommandWorkCountError, CommandWorkCounts, DerivedComponent, DerivedCondition, DerivedFinding,
     HISTOGRAM_UPPER_BOUNDS, HealthClassification, HealthRegistry, IncidentClass,
     IncidentReportError, MAX_COMMAND_METRIC_SERIES, MAX_DERIVED_FINDINGS_PER_COMPONENT,
-    MAX_METRIC_SERIES, MAX_TRACE_RECORDS, MetricKey, MetricSemantics, Observability,
-    PrincipalIdTelemetryHash, REQUIRED_COMMAND_SPAN_FIELDS, REQUIRED_METRIC_INVENTORY,
-    RequiredCounter, RequiredGauge, RequiredHistogram, SafeTraceLayer, TraceKind, request_span,
+    MAX_METRIC_SERIES, MAX_TRACE_RECORDS, MAX_WRITE_GROUP_SIZE, MetricKey, MetricSemantics,
+    Observability, PrincipalIdTelemetryHash, REQUIRED_COMMAND_SPAN_FIELDS,
+    REQUIRED_METRIC_INVENTORY, RequiredCounter, RequiredGauge, RequiredHistogram, SafeTraceLayer,
+    TraceKind, request_span,
 };
 use riffdb_policy::{AuthorizationTelemetry, AuthorizationTelemetryEvent, PolicyCode};
 use riffdb_service::{
@@ -600,6 +601,26 @@ fn owner_adapters_map_closed_events_to_required_metrics_and_traces() {
             .count(),
         6
     );
+}
+
+#[test]
+fn completion_group_evidence_accepts_exactly_the_internal_group_ceiling() {
+    let source = Arc::new(ScriptedIncidentIds::new([]));
+    let observability = Observability::new(source, 1).expect("bounded observability");
+
+    CommitTelemetry::record(
+        &observability,
+        CommitTelemetryEvent::CommitCallCompleted {
+            terminal: CommitCallTerminal::Committed,
+            elapsed: Duration::from_micros(1),
+            batch_size: u16::try_from(MAX_WRITE_GROUP_SIZE).expect("group ceiling fits u16"),
+            synchronous: true,
+        },
+    );
+    let groups = observability.write_completion_group_snapshot();
+    assert_eq!(groups.len(), 64);
+    assert!(groups[..63].iter().all(|count| *count == 0));
+    assert_eq!(groups[63], 1);
 }
 
 #[test]

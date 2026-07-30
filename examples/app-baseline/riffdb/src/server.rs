@@ -143,7 +143,7 @@ impl RiffDbServerSession {
     }
 
     /// Stops the server cleanly.
-    pub fn shutdown(mut self) -> Result<[u64; 16], RiffDbError> {
+    pub fn shutdown(mut self) -> Result<[u64; 64], RiffDbError> {
         self.process.shutdown_cleanly().map_err(|_| RiffDbError::Server)
     }
 }
@@ -514,7 +514,7 @@ enum ReaperCommand {
 struct ServerProcess {
     stdin: Option<std::process::ChildStdin>,
     ready: Receiver<io::Result<String>>,
-    write_groups: Receiver<io::Result<[u64; 16]>>,
+    write_groups: Receiver<io::Result<[u64; 64]>>,
     reaper_commands: SyncSender<ReaperCommand>,
     exited: Receiver<io::Result<ExitStatus>>,
     reaper: Option<JoinHandle<()>>,
@@ -594,7 +594,7 @@ impl ServerProcess {
             .map_err(|_| io::Error::other("bad ready address"))
     }
 
-    fn shutdown_cleanly(&mut self) -> io::Result<[u64; 16]> {
+    fn shutdown_cleanly(&mut self) -> io::Result<[u64; 64]> {
         if let Some(mut stdin) = self.stdin.take() {
             let _ = stdin.write_all(b"shutdown\n");
             let _ = stdin.flush();
@@ -639,7 +639,7 @@ impl Drop for ServerProcess {
 fn read_server_stdout(
     stream: impl Read,
     ready_sender: SyncSender<io::Result<String>>,
-    write_group_sender: SyncSender<io::Result<[u64; 16]>>,
+    write_group_sender: SyncSender<io::Result<[u64; 64]>>,
 ) -> usize {
     let mut reader = BufReader::new(stream);
     let mut line = String::new();
@@ -662,7 +662,7 @@ fn read_server_stdout(
     total
 }
 
-fn parse_write_groups(encoded: &str) -> io::Result<[u64; 16]> {
+fn parse_write_groups(encoded: &str) -> io::Result<[u64; 64]> {
     let values = encoded
         .split(',')
         .map(|value| {
