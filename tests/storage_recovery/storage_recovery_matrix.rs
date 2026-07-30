@@ -45,8 +45,8 @@ use riffdb_storage_api::{
     encode_index_entry_v2,
 };
 use riffdb_storage_redb::{
-    RedbDormantPorts, RedbOperationalPorts, RedbStartupIndexMigrationPort, RedbStore,
-    RedbTestController, RedbTestOperation,
+    RedbCommitProfile, RedbDormantPorts, RedbOperationalPorts, RedbStartupIndexMigrationPort,
+    RedbStore, RedbTestController, RedbTestOperation,
 };
 use riffdb_types::{
     ActorId, ActorKind, AggregateTypeId, CanonicalInputHash, CanonicalRecord, CanonicalValue,
@@ -58,6 +58,7 @@ use riffdb_types::{
 
 const CHILD_MODE: &str = "RIFFDB_STORAGE_RECOVERY_CHILD_MODE";
 const CHILD_PATH: &str = "RIFFDB_STORAGE_RECOVERY_CHILD_PATH";
+const CHILD_COMMIT_PROFILE: &str = "RIFFDB_STORAGE_RECOVERY_CHILD_COMMIT_PROFILE";
 const META: TableDefinition<&str, &[u8]> = TableDefinition::new("meta");
 const SECONDARY_INDEXES: TableDefinition<&[u8], &[u8]> = TableDefinition::new("secondary_indexes");
 static NEXT_PATH: AtomicU64 = AtomicU64::new(1);
@@ -129,12 +130,21 @@ fn uuid_bytes(fill: u8) -> [u8; 16] {
 }
 
 fn run_crashing_child(mode: &str, path: &Path) {
+    run_crashing_child_with_profile(mode, path, RedbCommitProfile::Standard);
+}
+
+fn run_crashing_child_with_profile(mode: &str, path: &Path, profile: RedbCommitProfile) {
+    let profile = match profile {
+        RedbCommitProfile::Standard => "standard",
+        RedbCommitProfile::Hardened => "hardened",
+    };
     let status = Command::new(std::env::current_exe().expect("current test executable"))
         .arg("--exact")
         .arg("process_recovery_child")
         .arg("--nocapture")
         .env(CHILD_MODE, mode)
         .env(CHILD_PATH, path)
+        .env(CHILD_COMMIT_PROFILE, profile)
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null())
@@ -962,6 +972,11 @@ fn process_recovery_child() {
         return;
     };
     let path = PathBuf::from(std::env::var_os(CHILD_PATH).expect("child database path"));
+    let profile = match std::env::var(CHILD_COMMIT_PROFILE).as_deref() {
+        Ok("standard") => RedbCommitProfile::Standard,
+        Ok("hardened") => RedbCommitProfile::Hardened,
+        _ => panic!("unknown closed child commit profile"),
+    };
     let controller = match mode.as_str() {
         "before-initialization-commit" => {
             RedbTestController::abort_before_commit(RedbTestOperation::Initialization)
@@ -983,8 +998,9 @@ fn process_recovery_child() {
         }
         _ => panic!("unknown closed child mode"),
     };
-    let store = RedbStore::open_with_test_controller(path, controller.clone())
-        .expect("open child database");
+    let store =
+        RedbStore::open_with_test_controller_and_commit_profile(path, profile, controller.clone())
+            .expect("open child database");
     match mode.as_str() {
         "before-initialization-commit" | "after-initialization-commit" => {
             let mut store = store;
@@ -1490,24 +1506,34 @@ fn crash_after_initialization_commit_preserves_the_durable_database_identity() {
 
 #[test]
 fn crash_before_command_commit_preserves_only_the_pending_admission() {
-    let path = TestDatabasePath::new("before-command");
-    prepare_command_database(&path.0);
-    run_crashing_child("before-command-batch-commit", &path.0);
+    for (label, profile) in [
+        ("standard", RedbCommitProfile::Standard),
+        ("hardened", RedbCommitProfile::Hardened),
+    ] {
+        let path = TestDatabasePath::new(&format!("before-command-{label}"));
+        prepare_command_database(&path.0);
+        run_crashing_child_with_profile("before-command-batch-commit", &path.0, profile);
 
-    let ports = open_operational(RedbStore::open(&path.0).expect("recover precommit crash"));
-    assert_precommit_command_state(&ports, &command_fixture());
+        let ports = open_operational(RedbStore::open(&path.0).expect("recover precommit crash"));
+        assert_precommit_command_state(&ports, &command_fixture());
+    }
 }
 
 #[test]
 fn crash_after_command_commit_preserves_the_complete_reciprocal_graph() {
-    let path = TestDatabasePath::new("after-command");
-    prepare_command_database(&path.0);
-    run_crashing_child("after-command-batch-commit", &path.0);
+    for (label, profile) in [
+        ("standard", RedbCommitProfile::Standard),
+        ("hardened", RedbCommitProfile::Hardened),
+    ] {
+        let path = TestDatabasePath::new(&format!("after-command-{label}"));
+        prepare_command_database(&path.0);
+        run_crashing_child_with_profile("after-command-batch-commit", &path.0, profile);
 
-    let ports = open_operational(RedbStore::open(&path.0).expect("recover postcommit crash"));
-    assert_postcommit_command_state(&ports, &command_fixture());
-    drop(ports);
+        let ports = open_operational(RedbStore::open(&path.0).expect("recover postcommit crash"));
+        assert_postcommit_command_state(&ports, &command_fixture());
+        drop(ports);
 
-    let ports = open_operational(RedbStore::open(&path.0).expect("repeat postcommit recovery"));
-    assert_postcommit_command_state(&ports, &command_fixture());
+        let ports = open_operational(RedbStore::open(&path.0).expect("repeat postcommit recovery"));
+        assert_postcommit_command_state(&ports, &command_fixture());
+    }
 }

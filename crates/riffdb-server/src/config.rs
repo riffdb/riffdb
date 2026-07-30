@@ -13,6 +13,7 @@ use std::path::{Component, Path, PathBuf};
 use riffdb_api_mcp::{
     MAX_ALLOWED_ORIGIN_AGGREGATE_BYTES, MAX_ALLOWED_ORIGINS, MAX_ORIGIN_BYTES, MCP_ROUTE,
 };
+use riffdb_storage_redb::RedbCommitProfile;
 use riffdb_types::{Audience, Environment};
 use serde::Deserialize;
 
@@ -25,6 +26,7 @@ const DEFAULT_ENVIRONMENT: &str = "local";
 const DEFAULT_AUDIENCE: &str = "riffdb-grpc-loopback";
 const DEFAULT_CAPABILITY_KEY_PATH: &str = "config/capability.keys";
 const DEFAULT_IDEMPOTENCY_KEY_PATH: &str = "config/idempotency.keys";
+const DEFAULT_REDB_COMMIT_PROFILE: &str = "standard";
 
 const CONFIG_ENVIRONMENT: &str = "RIFFDB_CONFIG";
 const DATABASE_ENVIRONMENT: &str = "RIFFDB_DATABASE";
@@ -36,6 +38,7 @@ const MCP_ORIGINS_ENVIRONMENT: &str = "RIFFDB_MCP_ORIGINS";
 const BACKUP_ROOT_ENVIRONMENT: &str = "RIFFDB_BACKUP_ROOT";
 const CAPABILITY_KEYS_ENVIRONMENT: &str = "RIFFDB_CAPABILITY_KEYS";
 const IDEMPOTENCY_KEYS_ENVIRONMENT: &str = "RIFFDB_IDEMPOTENCY_KEYS";
+const REDB_COMMIT_PROFILE_ENVIRONMENT: &str = "RIFFDB_REDB_COMMIT_PROFILE";
 
 /// Complete POC process configuration.
 ///
@@ -53,6 +56,7 @@ pub(crate) struct ServerConfig {
     backup_root: PathBuf,
     capability_key_path: PathBuf,
     idempotency_key_path: PathBuf,
+    redb_commit_profile: RedbCommitProfile,
 }
 
 impl ServerConfig {
@@ -149,6 +153,12 @@ impl ServerConfig {
             server.idempotency_keys.map(OsString::from),
             OsString::from(DEFAULT_IDEMPOTENCY_KEY_PATH),
         )?)?;
+        let redb_commit_profile = parse_redb_commit_profile(select_os(
+            arguments.redb_commit_profile.as_ref(),
+            environment.value(REDB_COMMIT_PROFILE_ENVIRONMENT),
+            server.redb_commit_profile.map(OsString::from),
+            OsString::from(DEFAULT_REDB_COMMIT_PROFILE),
+        )?)?;
 
         if mcp_listen_address.is_none() && !mcp_origins.is_empty() {
             return Err(ServerConfigError::InvalidMcpConfiguration);
@@ -172,6 +182,7 @@ impl ServerConfig {
             backup_root,
             capability_key_path,
             idempotency_key_path,
+            redb_commit_profile,
         };
         config.validate_disjoint_paths(current_directory)?;
         Ok(config)
@@ -234,6 +245,10 @@ impl ServerConfig {
     pub(crate) fn idempotency_key_path(&self) -> &Path {
         &self.idempotency_key_path
     }
+
+    pub(crate) const fn redb_commit_profile(&self) -> RedbCommitProfile {
+        self.redb_commit_profile
+    }
 }
 
 impl fmt::Debug for ServerConfig {
@@ -250,6 +265,7 @@ impl fmt::Debug for ServerConfig {
             .field("backup_root", &"[CONFIGURED]")
             .field("capability_key_path", &"[CONFIGURED]")
             .field("idempotency_key_path", &"[CONFIGURED]")
+            .field("redb_commit_profile", &self.redb_commit_profile)
             .finish()
     }
 }
@@ -266,6 +282,7 @@ struct ArgumentValues {
     backup_root: Option<OsString>,
     capability_keys: Option<OsString>,
     idempotency_keys: Option<OsString>,
+    redb_commit_profile: Option<OsString>,
 }
 
 impl ArgumentValues {
@@ -285,6 +302,7 @@ impl ArgumentValues {
                 Some("--backup-root") => set_once(&mut values.backup_root, value)?,
                 Some("--capability-keys") => set_once(&mut values.capability_keys, value)?,
                 Some("--idempotency-keys") => set_once(&mut values.idempotency_keys, value)?,
+                Some("--redb-commit-profile") => set_once(&mut values.redb_commit_profile, value)?,
                 _ => return Err(ServerConfigError::UnknownOption),
             }
         }
@@ -338,6 +356,7 @@ struct ServerDocument {
     mcp_origins: Option<Vec<String>>,
     capability_keys: Option<String>,
     idempotency_keys: Option<String>,
+    redb_commit_profile: Option<String>,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -521,6 +540,14 @@ fn parse_audience(value: OsString) -> Result<Audience, ServerConfigError> {
         .and_then(|value| Audience::new(value).map_err(|_| ServerConfigError::InvalidAudience))
 }
 
+fn parse_redb_commit_profile(value: OsString) -> Result<RedbCommitProfile, ServerConfigError> {
+    match value.to_str() {
+        Some("standard") => Ok(RedbCommitProfile::Standard),
+        Some("hardened") => Ok(RedbCommitProfile::Hardened),
+        _ => Err(ServerConfigError::InvalidRedbCommitProfile),
+    }
+}
+
 /// Closed process-configuration failures that never echo a supplied value.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum ServerConfigError {
@@ -536,6 +563,7 @@ pub(crate) enum ServerConfigError {
     InvalidEnvironment,
     InvalidAudience,
     InvalidMcpConfiguration,
+    InvalidRedbCommitProfile,
 }
 
 impl fmt::Display for ServerConfigError {
@@ -553,6 +581,7 @@ impl fmt::Display for ServerConfigError {
             Self::InvalidEnvironment => "configured environment is invalid",
             Self::InvalidAudience => "configured audience is invalid",
             Self::InvalidMcpConfiguration => "configured MCP endpoint is invalid",
+            Self::InvalidRedbCommitProfile => "configured redb commit profile is invalid",
         })
     }
 }
@@ -665,6 +694,34 @@ mod tests {
         assert_eq!(
             config.idempotency_key_path(),
             Path::new(DEFAULT_IDEMPOTENCY_KEY_PATH)
+        );
+        assert_eq!(config.redb_commit_profile(), RedbCommitProfile::Standard);
+    }
+
+    #[test]
+    fn redb_commit_profile_is_closed_and_uses_normal_precedence() {
+        let root = TestRoot::new();
+        let document = root.write(
+            br#"
+[server]
+redb_commit_profile = "hardened"
+"#,
+        );
+        let environment = TestEnvironment::default()
+            .with(CONFIG_ENVIRONMENT, document.to_str().unwrap())
+            .with(REDB_COMMIT_PROFILE_ENVIRONMENT, "standard");
+        let config = ServerConfig::resolve(
+            ["--redb-commit-profile", "hardened"].map(OsString::from),
+            &environment,
+            &root.0,
+        )
+        .expect("closed profile");
+        assert_eq!(config.redb_commit_profile(), RedbCommitProfile::Hardened);
+
+        assert_eq!(
+            ServerConfig::parse(["--redb-commit-profile", "eventual"].map(OsString::from))
+                .unwrap_err(),
+            ServerConfigError::InvalidRedbCommitProfile
         );
     }
 

@@ -45,4 +45,4 @@ pub use startup::{
     RedbCompletionAuthority, RedbHistoricalEvidenceEnd, RedbStartupIndexMigrationPort,
     RedbStructuralEvidenceEnd, RedbStructuralEvidenceSession,
 };
-pub use store::{RedbDormantPorts, RedbOperationalPorts, RedbStore};
+pub use store::{RedbCommitProfile, RedbDormantPorts, RedbOperationalPorts, RedbStore};

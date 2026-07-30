@@ -22,7 +22,8 @@ use riffdb_storage_api::{
     StructuralEvidenceSession, StructuralOpenOutcome, StructurallyOpened,
 };
 use riffdb_storage_redb::{
-    RedbDormantPorts, RedbOperationalPorts, RedbStartupIndexMigrationPort, RedbStore,
+    RedbCommitProfile, RedbDormantPorts, RedbOperationalPorts, RedbStartupIndexMigrationPort,
+    RedbStore,
 };
 use riffdb_types::{ContractBundleHash, ContractLineage, ContractVersion, DatabaseId};
 
@@ -211,7 +212,17 @@ pub(crate) fn open_redb_startup(
     inputs: StartupValidationInputs,
     database_ids: &DatabaseIdCandidateSource,
 ) -> Result<CheckedRedbStartup, RedbStartupError> {
-    let store = RedbStore::open(path)?;
+    open_redb_startup_with_commit_profile(path, inputs, database_ids, RedbCommitProfile::Standard)
+}
+
+/// Opens and validates one database under the selected application profile.
+pub(crate) fn open_redb_startup_with_commit_profile(
+    path: &Path,
+    inputs: StartupValidationInputs,
+    database_ids: &DatabaseIdCandidateSource,
+    application_commit_profile: RedbCommitProfile,
+) -> Result<CheckedRedbStartup, RedbStartupError> {
+    let store = RedbStore::open_with_commit_profile(path, application_commit_profile)?;
     complete_redb_startup(store, inputs, || database_ids.next_database_id())
 }
 

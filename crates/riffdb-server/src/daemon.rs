@@ -63,7 +63,7 @@ use crate::restore_retry_host::{
     RestoreRetryHostShutdownError, RestoreRetryHostStartError, RunningRestoreRetryHost,
 };
 use crate::runtime_support::{RuntimeRoutingState, RuntimeStopReason};
-use crate::startup::{RedbStartupError, open_redb_startup};
+use crate::startup::{RedbStartupError, open_redb_startup_with_commit_profile};
 
 /// Bounded public-service scheduler width. Blocking storage ports retain their
 /// separate eight-thread admission bound.
@@ -483,10 +483,11 @@ async fn run_server(
     // ADR-0034 requires the real listener to exist before every blocking proof.
     let mut completed_initial_operation = None;
     let startup = match initial_action {
-        InitialDatabaseAction::OpenCurrent => match open_redb_startup(
+        InitialDatabaseAction::OpenCurrent => match open_redb_startup_with_commit_profile(
             config.database_path(),
             startup_inputs.clone(),
             &database_ids,
+            config.redb_commit_profile(),
         ) {
             Ok(startup) => startup,
             Err(source)
@@ -522,10 +523,11 @@ async fn run_server(
         } => {
             let operation_id = request.operation_id();
             if validate_current_source {
-                let current = open_redb_startup(
+                let current = open_redb_startup_with_commit_profile(
                     config.database_path(),
                     startup_inputs.clone(),
                     &database_ids,
+                    config.redb_commit_profile(),
                 )
                 .map_err(DaemonError::Startup)?;
                 if receipt.source_database_id() != Some(current.database_id()) {
@@ -587,10 +589,11 @@ async fn run_server(
             success.into_parts().1
         }
         InitialDatabaseAction::AwaitRestoreCredential(receipt) => {
-            let startup = open_redb_startup(
+            let startup = open_redb_startup_with_commit_profile(
                 config.database_path(),
                 startup_inputs.clone(),
                 &database_ids,
+                config.redb_commit_profile(),
             )
             .map_err(DaemonError::Startup)?;
             if receipt.source_database_id() != Some(startup.database_id()) {
@@ -934,6 +937,7 @@ fn maintenance_driver_dependencies<'a>(
     Ok(MaintenanceDriverDependencies::new(
         startup_inputs.clone(),
         identifiers.database_ids(),
+        config.redb_commit_profile(),
         digest_keys.shared_capability(),
         config.environment().clone(),
         config.audience().clone(),
@@ -2192,7 +2196,7 @@ mod tests {
             .0;
         let listener = production.find("HostedGrpc::bind(").expect("listener bind");
         let startup = production
-            .find("open_redb_startup(")
+            .find("open_redb_startup_with_commit_profile(")
             .expect("startup proof");
         let readiness = production.find("publish_readiness(").expect("readiness");
         assert!(listener < startup);
