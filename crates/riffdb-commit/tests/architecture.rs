@@ -516,6 +516,33 @@ fn command_index_derivation_preserves_the_sealed_storage_progression_chain() {
 }
 
 #[test]
+fn production_group_collection_never_parks_on_a_submillisecond_tokio_timer() {
+    let production = production_source(AUDIT_EXECUTOR_SOURCE);
+
+    for forbidden in [
+        "COMMAND_GROUP_WINDOW",
+        "IDEMPOTENCY_INSPECTION_GROUP_WINDOW",
+        "tokio::time::timeout_at",
+        ".enable_time()",
+    ] {
+        assert!(
+            !production.contains(forbidden),
+            "production grouping retained timer-wheel mechanism {forbidden}"
+        );
+    }
+    for required in [
+        "receiver.blocking_recv()",
+        "receiver.try_recv()",
+        "CommitGroupDispatchReason::QueueDrained",
+    ] {
+        assert!(
+            production.contains(required),
+            "timer-free grouping is missing reviewed mechanism {required}"
+        );
+    }
+}
+
+#[test]
 fn durable_graph_construction_requires_checked_input_and_retains_attempt_through_commit() {
     let production = production_source(COMMAND_RECORDS_SOURCE);
     for required in [
@@ -1536,10 +1563,10 @@ fn coordinator_actor_uses_only_the_reviewed_current_thread_channel_surface() {
         "self.receiver.close()",
         ".store(LIFECYCLE_FENCED, Ordering::Release)",
         "thread::Builder::new()",
-        "use std::time::{Duration, Instant};",
+        "use std::time::Instant;",
         "Instant::now()",
-        "Duration::from_micros(200)",
-        "tokio::time::timeout_at(",
+        "CommitGroupDispatchReason::QueueDrained",
+        "receiver.blocking_recv()",
     ] {
         assert!(
             production_source.contains(required),

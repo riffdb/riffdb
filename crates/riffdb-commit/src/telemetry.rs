@@ -80,8 +80,8 @@ pub enum CommitGroupDispatchReason {
     Full,
     /// A non-deferrable message fixed the ordering boundary.
     Barrier,
-    /// The bounded oldest-item collection window elapsed.
-    WindowElapsed,
+    /// Every message immediately available after the oldest command was drained.
+    QueueDrained,
     /// Every sender was closed while the actor drained accepted work.
     ReceiverClosed,
 }

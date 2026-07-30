@@ -82,6 +82,7 @@
 | 0.44 | 2026-07-30 | Applied the maintainer-approved ADR-0059 amendment: the internal FIFO writer may form compatible physical groups up to the existing 64-command transaction ceiling while the public transport batch remains capped at 16. Exact conflict/dependency checks, independent command semantics, two durable transitions, redb `Immediate` durability, and the 16 MiB transaction ceiling remain unchanged. |
 | 0.45 | 2026-07-30 | Applied accepted ADR-0060 and planned WP-367 through WP-370: bounded oldest-item group collection, grouped historical idempotency selection, count-and-byte queue bounds, concurrent redb MVCC reads, exact transient outbox readiness, immutable cached command/query artifacts, bounded parallel deterministic preparation, and strict same-run application parity evidence while retaining one admission-ordered writer, fresh authorization, transaction-current validation, two Immediate durable transitions, and every fail-closed recovery guarantee. |
 | 0.46 | 2026-07-30 | Applied accepted ADR-0061 and planned WP-371 through WP-375: application durability is a semantic acknowledgement and visibility guarantee; normal synchronous commands may transition atomically from vacant identity to terminal graph after bounded side-effect-free preparation; the standard application profile uses redb Immediate one-phase checksum commits while a hardened two-phase oracle remains; storage format V2 compacts per-row framing and references one authoritative event payload; conservative partition/index generations replace prefix fan-out; and visible non-durable chaining remains prohibited. |
+| 0.47 | 2026-07-30 | Planned WP-376 through WP-379 after post-WP-375 evidence identified timer-wheel parks, remaining immutable-artifact clones, repeated checked decoding, quadratic group compatibility, and sequence-free sizing construction as the residual application-path costs. The packages retain every authorization safe point, canonical durable validation, transaction-current recheck, one ordered writer, and Immediate acknowledgement boundary; WP-370 now depends on the renewed PERF-008 gate. |
 
 ### Normative language
 
@@ -5151,7 +5152,8 @@ reaches its first write within 30 minutes and first page-shaped read within
 
 **P4 work-package members:** WP-305, WP-310, WP-315, WP-320, WP-325,
 WP-330, WP-335, WP-340, WP-345, WP-350, WP-355, WP-360, WP-362,
-WP-364, WP-365, WP-366, and WP-370.
+WP-364, WP-365, WP-366, WP-367 through WP-379 as required by their dependency
+graph, and WP-370 as the final sealed evaluation.
 
 ## 20.5 Stage A — single-node alpha hardening
 
@@ -6017,10 +6019,10 @@ contract.
   plan, and commit identities match the golden workload. An unbacked
   application response or harness self-test MUST NOT satisfy an agent metric.
 
-The milestone is complete only when WP-305 through WP-370 pass, ADR-0056,
-ADR-0057, ADR-0058, and every language or public/durable interface decision required by
-those packages is accepted, and the raw sealed evaluation reports are
-published.
+The milestone is complete only when WP-305 through WP-379 required by the
+dependency graph pass, ADR-0056, ADR-0057, ADR-0058, ADR-0060, ADR-0061, and
+every language or public/durable interface decision required by those packages
+is accepted, and the raw sealed evaluation reports are published.
 
 ---
 

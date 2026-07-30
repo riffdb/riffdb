@@ -5001,7 +5001,7 @@ work_packages:
   - WP-367
   - WP-368
   - WP-369
-  - WP-375
+  - WP-379
   objective: Repeat the official Blog and Orders Rust/TypeScript evaluation against one new sealed bundle and publish
     an eligible gate only when all unchanged Agent Application Alpha thresholds pass.
   requirements:
@@ -5336,4 +5336,237 @@ work_packages:
   - cargo clippy --workspace --all-targets --all-features -- -D warnings
   exit_gate: Every range remains conservatively safe with at most one generation write per affected partition/index,
     all crash and corruption evidence passes, and the complete application parity gate determines WP-370 eligibility.
+  human_review_triggers: *id001
+- id: WP-376
+  name: Timer-free self-clocking command scheduler
+  depends_on:
+  - WP-375
+  objective: Remove sub-millisecond Tokio timer-wheel parks from low-load command and historical-idempotency lanes
+    while retaining bounded drain grouping, FIFO barriers, replay selection, fairness, and every durable command
+    guarantee.
+  requirements:
+  - PERF-006
+  required_adrs:
+  - ADR-0003
+  - ADR-0005
+  - ADR-0007
+  - ADR-0023
+  - ADR-0058
+  - ADR-0060
+  - ADR-0061
+  allowed_paths:
+  - SPEC.md
+  - work_packages.yaml
+  - crates/riffdb-commit/**
+  - crates/riffdb-observability/**
+  - crates/riffdb-server/**
+  - tests/command_semantics/**
+  - tests/observability/**
+  - benchmarks/run-app-baseline
+  - benchmarks/command-growth/**
+  - scripts/benchmark-command-growth
+  - docs/performance/**
+  deliverables:
+  - Drain-only bounded historical-idempotency grouping with no independent timed wait
+  - Self-clocking writer collection that dispatches an idle singleton immediately and drains work accumulated during
+    prior commits
+  - Deterministic solo, queued, saturated, barrier, cancellation, fencing, receiver-close, and fairness schedules
+  - Redaction-safe telemetry proving no timer-wheel park and retaining exact group-size and dispatch-reason evidence
+  - Same-run unary mutation and seed evidence under the unchanged semantic acknowledgement profile
+  acceptance_commands:
+  - cargo test -p riffdb-commit --all-features
+  - cargo test -p riffdb-server --all-features
+  - cargo test -p riffdb-observability --all-features
+  - ./scripts/benchmark-command-growth --assert-perf-006
+  - ./benchmarks/run-app-baseline --full
+  - cargo fmt --all -- --check
+  - cargo clippy --workspace --all-targets --all-features -- -D warnings
+  exit_gate: A lone command and lone historical inspection perform no timed group-formation park, saturated work still
+    fills bounded compatible groups from queued arrivals, every hard barrier remains ordered, and the measured unary
+    mutation regression is removed without weaker durability or safety. Full seed parity remains WP-378/WP-379.
+  human_review_triggers: *id001
+- id: WP-377
+  name: Exact-identity read hot path
+  depends_on:
+  - WP-376
+  objective: Remove immutable query-artifact cloning, repeated capability reconstruction, and redundant durable
+    decoding from named reads while preserving every authorization safe point, canonicality check, semantic
+    reconstruction, partition proof, and snapshot guarantee.
+  requirements:
+  - PERF-007
+  - PERF-008
+  required_adrs:
+  - ADR-0004
+  - ADR-0006
+  - ADR-0007
+  - ADR-0033
+  - ADR-0053
+  - ADR-0060
+  - ADR-0061
+  allowed_paths:
+  - Cargo.toml
+  - Cargo.lock
+  - SPEC.md
+  - work_packages.yaml
+  - crates/riffdb-auth/**
+  - crates/riffdb-policy/**
+  - crates/riffdb-proto/**
+  - crates/riffdb-query-ir/**
+  - crates/riffdb-query-module/**
+  - crates/riffdb-query-executor/**
+  - crates/riffdb-storage-api/**
+  - crates/riffdb-storage-redb/**
+  - crates/riffdb-service/**
+  - crates/riffdb-server/**
+  - crates/riffdb-observability/**
+  - tests/grpc/**
+  - tests/observability/**
+  - benchmarks/application-path/**
+  - benchmarks/run-app-baseline
+  - benchmarks/run-concurrent-application
+  - scripts/benchmark-concurrent-application
+  - fixtures/proto/**
+  - fixtures/query-modules/**
+  - docs/performance/**
+  deliverables:
+  - Arc-owned parsed named-query document and access program under exact contract/module/query identities
+  - Cheap exact capability-revision revalidation at existing pre-execution and pre-release safe points
+  - One checked durable decode path reusing structural and typed evidence without reducing canonical or semantic checks
+  - Independent MVCC reader evidence and explicit storage-bridge wait telemetry
+  - Same-run point, list, detail, and 1/8/32/64-client public read evidence
+  acceptance_commands:
+  - cargo test -p riffdb-auth --all-features
+  - cargo test -p riffdb-proto --all-features
+  - cargo test -p riffdb-query-module --all-features
+  - cargo test -p riffdb-storage-redb --all-features
+  - cargo test -p riffdb-service --all-features
+  - cargo test -p riffdb-server --all-features
+  - ./scripts/benchmark-concurrent-application --assert-perf-007
+  - ./benchmarks/run-app-baseline --full
+  - ./scripts/check-generated
+  - cargo fmt --all -- --check
+  - cargo clippy --workspace --all-targets --all-features -- -D warnings
+  exit_gate: Named reads allocate no deep query artifact clone, retain all three current-policy safe points through exact
+    revision proofs, decode each durable value through one fail-closed checked reconstruction, and materially improve
+    public read latency and concurrency without changing results or compatibility bytes.
+  human_review_triggers: *id001
+- id: WP-378
+  name: Incremental command preparation and structural reservation
+  depends_on:
+  - WP-377
+  objective: Remove residual serialized command CPU through measured stage decomposition, incremental compatibility,
+    structural sequence-free sizing, move/shared ownership, and deduplicated same-transaction observations while
+    retaining transaction-current validation and one admission-ordered writer.
+  requirements:
+  - PERF-008
+  required_adrs:
+  - ADR-0002
+  - ADR-0003
+  - ADR-0004
+  - ADR-0006
+  - ADR-0007
+  - ADR-0012
+  - ADR-0022
+  - ADR-0023
+  - ADR-0059
+  - ADR-0060
+  - ADR-0061
+  allowed_paths:
+  - Cargo.toml
+  - Cargo.lock
+  - SPEC.md
+  - work_packages.yaml
+  - crates/riffdb-contract-ir/**
+  - crates/riffdb-conflict/**
+  - crates/riffdb-runtime/**
+  - crates/riffdb-invariant/**
+  - crates/riffdb-proto/**
+  - crates/riffdb-storage-api/**
+  - crates/riffdb-storage-memory/**
+  - crates/riffdb-storage-redb/**
+  - crates/riffdb-commit/**
+  - crates/riffdb-service/**
+  - crates/riffdb-server/**
+  - crates/riffdb-observability/**
+  - crates/riffdb-testkit/**
+  - tests/command_semantics/**
+  - tests/recovery/**
+  - tests/observability/**
+  - benchmarks/command-growth/**
+  - benchmarks/application-path/**
+  - benchmarks/run-app-baseline
+  - scripts/benchmark-command-growth
+  - fixtures/proto/**
+  - docs/performance/**
+  deliverables:
+  - Bounded redaction-safe prep, evaluate, validate, encode, stage, commit, and publish decomposition
+  - Incremental exact compatibility accumulator with linear group construction and unchanged FIFO partition result
+  - Non-materializing sequence-free structural reservation dominating every final compact durable encoding
+  - Move or immutable shared ownership for repeated mutation, event, plan, and schema graphs
+  - One transaction-local observation per exact identity where repeated reads add no fresher semantic evidence
+  acceptance_commands:
+  - cargo test -p riffdb-contract-ir --all-features
+  - cargo test -p riffdb-proto --all-features
+  - cargo test -p riffdb-storage-api --all-features
+  - cargo test -p riffdb-storage-memory --all-features
+  - cargo test -p riffdb-storage-redb --all-features
+  - cargo test -p riffdb-commit --all-features
+  - cargo test -p riffdb-runtime --all-features
+  - cargo test -p riffdb-service --all-features
+  - cargo test -p riffdb-server --all-features
+  - ./scripts/benchmark-command-growth --assert-perf-008
+  - ./benchmarks/run-app-baseline --full
+  - ./scripts/check-generated
+  - cargo fmt --all -- --check
+  - cargo clippy --workspace --all-targets --all-features -- -D warnings
+  exit_gate: Stage evidence shows no unexplained serialized command cost, compatible group construction is linear,
+    reservations remain conservative and fixtures byte-identical, transaction-current checks remain fresh, and the full
+    seed materially closes the remaining same-run PostgreSQL gap.
+  human_review_triggers: *id001
+- id: WP-379
+  name: Renewed public application parity and alpha eligibility
+  depends_on:
+  - WP-378
+  objective: Run the complete semantic, crash, unary, seed, and concurrent PostgreSQL comparison after the measured
+    timer, read, and command-CPU corrections and publish an eligible decision only when unchanged PERF-008 thresholds
+    pass.
+  requirements:
+  - PERF-008
+  - AAA-012
+  required_adrs:
+  - ADR-0004
+  - ADR-0007
+  - ADR-0055
+  - ADR-0058
+  - ADR-0059
+  - ADR-0060
+  - ADR-0061
+  allowed_paths:
+  - SPEC.md
+  - work_packages.yaml
+  - examples/app-baseline/**
+  - benchmarks/**
+  - fixtures/performance/**
+  - scripts/benchmark-command-growth
+  - scripts/benchmark-concurrent-application
+  - docs/performance/**
+  - release/evidence/**
+  deliverables:
+  - Complete semantic and crash preflight under the exact checked standard durability profile
+  - Same-run full TicketDesk seed and every representative unary comparison
+  - Same-run public 1/8/32/64-client read, write, and mixed comparison
+  - Immutable machine-readable eligible or not-eligible report retaining every miss without waiver
+  - Exact WP-370 bundle prerequisite when and only when every PERF-008 threshold passes
+  acceptance_commands:
+  - cargo test --workspace --all-features
+  - ./scripts/benchmark-command-growth --assert-perf-008
+  - ./scripts/benchmark-concurrent-application --assert-perf-008
+  - ./benchmarks/run-app-baseline --full --assert-all-parity
+  - ./scripts/check-generated
+  - ./scripts/check-requirement-coverage
+  - cargo fmt --all -- --check
+  - cargo clippy --workspace --all-targets --all-features -- -D warnings
+  exit_gate: The full seed and every representative unary p50 are at most 1.10 times same-run PostgreSQL; at 32
+    clients public mixed throughput is at least 0.90 times PostgreSQL and p95 is at most 1.25 times PostgreSQL; every
+    semantic and crash gate passes; only then may WP-370 start.
   human_review_triggers: *id001
