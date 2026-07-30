@@ -201,7 +201,10 @@ fn every_live_database_engine_commit_routes_through_the_epoch_boundary() {
         let path = entry.expect("source entry").path();
         if path.extension().is_none_or(|extension| extension != "rs")
             || path.file_name().is_some_and(|name| {
-                name == "store.rs" || name == "startup.rs" || name == "fixtures.rs"
+                name == "store.rs"
+                    || name == "startup.rs"
+                    || name == "fixtures.rs"
+                    || name == "benchmark_support.rs"
             })
         {
             continue;
@@ -223,4 +226,40 @@ fn every_live_database_engine_commit_routes_through_the_epoch_boundary() {
     let startup = without_whitespace(&production_source(source_dir.join("startup.rs")));
     assert!(!startup.contains("transaction.commit()"));
     assert_eq!(startup.matches("commit_durable(transaction)?").count(), 1);
+}
+
+#[test]
+fn administration_writes_preserve_a_startup_proof_without_history_rescans() {
+    let administration = without_whitespace(&production_source(
+        crate_root().join("src/administration.rs"),
+    ));
+    let tail = administration
+        .split_once("fnvalidate_administration_tail(")
+        .expect("tail validator")
+        .1
+        .split_once("fnvalidate_administration_stream_readonly(")
+        .expect("tail validator end")
+        .0;
+    assert!(tail.contains(".len()"));
+    assert!(tail.contains(".last()"));
+    assert!(!tail.contains(".iter()"));
+
+    let full_read = administration
+        .split_once("fnvalidate_administration_stream_readonly(")
+        .expect("read validator")
+        .1
+        .split_once("fnallocate_sequences(")
+        .expect("read validator end")
+        .0;
+    assert!(full_read.contains("validate_administration_table(&table,allocator)"));
+
+    let append = administration
+        .split_once("implServiceAuditAppendRepositoryforRedbOperationalPorts")
+        .expect("service audit repository")
+        .1
+        .split_once("fnprincipal_matches_observation(")
+        .expect("service audit repository end")
+        .0;
+    assert!(append.contains("validate_administration_tail(transaction)?"));
+    assert!(!append.contains("validate_administration_table"));
 }

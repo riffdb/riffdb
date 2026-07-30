@@ -1,0 +1,21 @@
+[package]
+name = "riffdb-command-growth"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.97.0"
+publish = false
+
+[workspace]
+resolver = "3"
+
+[dependencies]
+riffdb-storage-redb = { path = "../../crates/riffdb-storage-redb", features = ["benchmark-support"] }
+
+[lints.rust]
+unsafe_code = "forbid"
+unused_must_use = "deny"
+missing_docs = "warn"
+
+[lints.clippy]
+correctness = { level = "warn", priority = -1 }
+await_holding_lock = "deny"

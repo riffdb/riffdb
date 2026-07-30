@@ -2,7 +2,7 @@
 
 use std::num::NonZeroU64;
 
-use redb::ReadableTable;
+use redb::{ReadableTable, ReadableTableMetadata};
 use riffdb_storage_api::{
     ActiveCatalogPointerV1, ActiveQueryModulePointerV1, AdministrationAuditReader,
     AdministrationAuditScan, AdministrationAuditScanRequest, AdministrationSequenceAllocator,
@@ -148,13 +148,42 @@ where
     Ok(())
 }
 
-fn validate_administration_stream(
+fn validate_administration_tail(
     transaction: &redb::WriteTransaction,
 ) -> Result<AdministrationSequenceAllocator, StorageError> {
+    // Startup and every public read validate the complete contiguous stream.
+    // Once that proof holds, typed writes preserve it inductively: the only
+    // audit mutation appends exactly the allocator-owned next sequence and
+    // atomically advances the allocator. Checking count plus the exact decoded
+    // tail therefore rejects a lost, duplicated, reordered, or allocator-skewed
+    // transition without rescanning all retained history for every append.
     let allocator = read_administration_allocator(transaction)?;
     let table = transaction.open_table(AUDIT).map_err(table_error)?;
-    validate_administration_table(&table, allocator)?;
-    Ok(allocator)
+    let (expected_count, expected_last) = match allocator {
+        AdministrationSequenceAllocator::Next(next) => {
+            let count = next.get().checked_sub(1).ok_or_else(corrupt)?;
+            (count, AdministrationSequence::new(count))
+        }
+        AdministrationSequenceAllocator::Exhausted => {
+            (u64::MAX, AdministrationSequence::new(u64::MAX))
+        }
+    };
+    if table.len().map_err(precommit_storage_error)? != expected_count {
+        return Err(corrupt());
+    }
+    let last = table.last().map_err(precommit_storage_error)?;
+    match (expected_last, last) {
+        (None, None) => Ok(allocator),
+        (Some(expected), Some((key, value))) => {
+            let key = decode_audit_key(key.value()).map_err(|_| corrupt())?;
+            let record = decode_administration_audit_record_v1(value.value())?;
+            if key != expected || record.value().administration_sequence() != expected {
+                return Err(corrupt());
+            }
+            Ok(allocator)
+        }
+        _ => Err(corrupt()),
+    }
 }
 
 fn validate_administration_stream_readonly(
@@ -415,7 +444,7 @@ impl CatalogAdministrationRepository for RedbOperationalPorts {
     ) -> Result<CatalogActivationResult, StorageError> {
         let access = self.begin_write()?;
         let transaction = access.transaction()?;
-        let allocator = validate_administration_stream(transaction)?;
+        let allocator = validate_administration_tail(transaction)?;
         let bundles = transaction
             .open_table(CONTRACT_BUNDLES)
             .map_err(table_error)?;
@@ -640,7 +669,7 @@ impl QueryModuleAdministrationRepository for RedbOperationalPorts {
     ) -> Result<QueryModuleActivationResult, StorageError> {
         let access = self.begin_write()?;
         let transaction = access.transaction()?;
-        let allocator = validate_administration_stream(transaction)?;
+        let allocator = validate_administration_tail(transaction)?;
 
         let bundles = transaction
             .open_table(CONTRACT_BUNDLES)
@@ -1108,7 +1137,7 @@ impl ServiceAuditAppendRepository for RedbOperationalPorts {
     ) -> Result<ServiceAuditAppendResult, StorageError> {
         let access = self.begin_write()?;
         let transaction = access.transaction()?;
-        let allocator = validate_administration_stream(transaction)?;
+        let allocator = validate_administration_tail(transaction)?;
         let audit = transaction.open_table(AUDIT).map_err(table_error)?;
         let sequences = access.service_audit_sequences(intent.request_id())?;
         let lifecycle = service_lifecycle(&audit, intent.request_id(), &sequences)?;
@@ -1303,7 +1332,7 @@ fn commit_capability_create(
     intent: &CapabilityCreateIntentV1,
 ) -> Result<CapabilityCreateResult, StorageError> {
     let transaction = access.transaction()?;
-    let allocator = validate_administration_stream(transaction)?;
+    let allocator = validate_administration_tail(transaction)?;
     if intent.requested().database_id() != read_database_id(transaction)? {
         return Err(invariant());
     }
@@ -1447,7 +1476,7 @@ fn commit_capability_revoke(
     intent: &CapabilityRevokeIntentV1,
 ) -> Result<CapabilityRevokeResult, StorageError> {
     let transaction = access.transaction()?;
-    let allocator = validate_administration_stream(transaction)?;
+    let allocator = validate_administration_tail(transaction)?;
     let Some(record) = capability_from_write(transaction, intent.capability_id())? else {
         access.abort()?;
         return Ok(CapabilityRevokeResult::CapabilityNotFound);
@@ -1607,7 +1636,7 @@ impl CapabilityBootstrapAdministrationRepository for RedbOperationalPorts {
     ) -> Result<CapabilityBootstrapResult, StorageError> {
         let access = self.begin_write()?;
         let transaction = access.transaction()?;
-        let allocator = validate_administration_stream(transaction)?;
+        let allocator = validate_administration_tail(transaction)?;
         let database_id = read_database_id(transaction)?;
         if intent.requested().database_id() != database_id
             || !intent
@@ -1808,6 +1837,7 @@ mod tests {
     use std::path::PathBuf;
     use std::sync::atomic::{AtomicU64, Ordering};
 
+    use redb::ReadableDatabase;
     use riffdb_storage_api::{
         BootstrapDigestCandidatesV1, BootstrapServiceAuditStartV1,
         CapabilityCreateAwaitingDecision, CapabilityCreateCandidateTransaction, CapabilityGrantV1,
@@ -2028,6 +2058,103 @@ mod tests {
                 .all(|item| item.encoded_content_charge().get() > 0)
         );
         records.len()
+    }
+
+    fn denied_audit(request: u8) -> ServiceAuditAppendIntentV1 {
+        ServiceAuditAppendIntentV1::new(
+            request_id(request),
+            Timestamp::new(i64::from(request), 0).expect("timestamp"),
+            ServiceOperationV1::GetHealth,
+            ServiceAuditPhaseV1::Denied,
+            principal(capability_id(2)),
+            ServiceIngressKindV1::Grpc,
+            ServiceAuditTargetsV1::empty(),
+            None,
+            ServiceAuditLinkV1::None,
+        )
+        .expect("audit intent")
+    }
+
+    #[test]
+    fn administration_write_rejects_allocator_tail_skew_before_append() {
+        let (_path, mut ports) = initialized_ports("audit-tail-skew");
+        ports
+            .append_service_audit(&denied_audit(10))
+            .expect("append first audit");
+
+        let transaction = ports
+            .shared
+            .database
+            .begin_write()
+            .expect("begin raw corruption transaction");
+        let allocator = AdministrationSequenceAllocator::next(
+            AdministrationSequence::new(3).expect("sequence three"),
+        );
+        let encoded =
+            encode_administration_sequence_allocator_v1(allocator).expect("encode allocator");
+        transaction
+            .open_table(META)
+            .expect("open metadata")
+            .insert(META_ADMINISTRATION_SEQUENCE, encoded.as_bytes())
+            .expect("skew allocator");
+        transaction.commit().expect("commit test corruption");
+
+        let error = ports
+            .append_service_audit(&denied_audit(11))
+            .expect_err("allocator/tail skew must fail closed");
+        assert_eq!(error.kind(), StorageErrorKind::CorruptData);
+        let transaction = ports
+            .shared
+            .database
+            .begin_read()
+            .expect("begin verification read");
+        assert_eq!(
+            transaction
+                .open_table(AUDIT)
+                .expect("open audit")
+                .len()
+                .expect("audit length"),
+            1
+        );
+    }
+
+    #[test]
+    fn full_read_validation_still_rejects_corrupt_retained_history() {
+        let (_path, mut ports) = initialized_ports("audit-retained-corruption");
+        for request in 20..23 {
+            ports
+                .append_service_audit(&denied_audit(request))
+                .expect("append audit");
+        }
+
+        let transaction = ports
+            .shared
+            .database
+            .begin_write()
+            .expect("begin raw corruption transaction");
+        let mut audit = transaction.open_table(AUDIT).expect("open audit");
+        let first = audit
+            .get(encode_audit_key(AdministrationSequence::first()).as_slice())
+            .expect("read first")
+            .expect("first audit")
+            .value()
+            .to_vec();
+        audit
+            .insert(
+                encode_audit_key(AdministrationSequence::new(2).expect("sequence two")).as_slice(),
+                first.as_slice(),
+            )
+            .expect("corrupt middle record");
+        drop(audit);
+        transaction.commit().expect("commit test corruption");
+
+        let error = ports
+            .scan_administration_audit(AdministrationAuditScanRequest::new(
+                None,
+                StorageScanLimit::new(8).expect("scan limit"),
+            ))
+            .expect_err("full public read validation must reject corrupt history");
+        assert_eq!(error.kind(), StorageErrorKind::CorruptData);
     }
 
     #[test]

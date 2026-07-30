@@ -1,0 +1,27 @@
+#!/bin/sh
+set -eu
+
+repository_root=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
+cd "$repository_root"
+
+mode=--checked
+if [ "${1-}" = "--assert-perf-003" ]; then
+    mode=--assert-perf-003
+elif [ "${1-}" = "--smoke" ]; then
+    mode=--smoke
+elif [ "$#" -ne 0 ]; then
+    echo "usage: $0 [--smoke|--assert-perf-003]" >&2
+    exit 2
+fi
+
+echo "command-growth preflight: memory semantics" >&2
+cargo test -p riffdb-storage-memory --all-features >&2
+echo "command-growth preflight: redb semantics and recovery" >&2
+cargo test -p riffdb-storage-redb --all-features >&2
+echo "command-growth preflight: coordinator sequencing and replay" >&2
+cargo test -p riffdb-commit --all-features >&2
+echo "command-growth preflight: public service semantics" >&2
+cargo test -p riffdb-server --all-features >&2
+
+RIFFDB_COMMAND_GROWTH_PREFLIGHT=semantic-crash-v1 \
+    cargo run --release --manifest-path benchmarks/command-growth/Cargo.toml -- "$mode"
