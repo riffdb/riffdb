@@ -100,7 +100,10 @@ fn equal_key_commands_commit_once_and_replay_exactly() {
     );
     assert_eq!(changed, CommandExecutionResult::InputMismatch);
     assert_eq!(notifications.sequences(), vec![CommitSequence::first()]);
-    assert_eq!(admission_clock.calls(), 1);
+    // Both concurrently observed vacancies receive a proposed logical time;
+    // the grouped atomic admission retains the FIFO winner and rebinds the
+    // equal-input follower to that exact durable Pending record.
+    assert_eq!(admission_clock.calls(), 2);
     assert_eq!(provenance_source.calls(), 1);
 
     let durable = left.into_stored_outcome();

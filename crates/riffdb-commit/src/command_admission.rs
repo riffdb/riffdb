@@ -334,7 +334,6 @@ pub(crate) fn reduce_command_admission(
 /// Reduces a bounded FIFO group and shares only the physical Pending transition.
 ///
 /// Every returned item retains its original identity and independent result.
-#[allow(dead_code, reason = "WP-364 interface-first grouped actor integration")]
 pub(crate) fn reduce_command_admission_group(
     repository: &dyn AdmissionRepository,
     clock: &dyn AdmissionClock,
