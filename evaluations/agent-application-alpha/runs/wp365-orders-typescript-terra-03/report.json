@@ -1,0 +1,29 @@
+{
+  "schema": "riffdb-agent-application-alpha-run/v1",
+  "run_id": "wp365-orders-typescript-terra-03",
+  "bundle_hash": "b72679d6d7ea66dc08e59ff547a9e5af7789f7638c862619365713618437ce11",
+  "agent_identity": "terra-wp365-orders-typescript-03",
+  "domain": "orders",
+  "language": "typescript",
+  "independent": true,
+  "fresh_context": true,
+  "human_interventions": 0,
+  "kernel_attempts": 0,
+  "kernel_successes": 0,
+  "handwritten_glue_lines": 0,
+  "compiler_failures": 7,
+  "runtime_failures": 3,
+  "unsupported_shapes": [],
+  "first_write_seconds": 1026,
+  "first_page_read_seconds": 1026,
+  "time_to_complete_seconds": 1030,
+  "source_access": {
+    "riffdb_implementation": false,
+    "ticketdesk": false
+  },
+  "boundary_passed": true,
+  "golden_passed": true,
+  "rating": 8.5,
+  "explanation": "The sealed public CLI, compiler diagnostics, generated TypeScript client, and development workflow were sufficient to build and run the complete bounded Orders workload with no kernel use, handwritten RiffDB glue, or prohibited source access. The first two product seed attempts failed because the public batch summary omitted the rejected-item reason and the required decimal precision was not documented at the seed boundary; a public retry with the declared precision completed. This friction prevents a higher rating.",
+  "transcript_sha256": "8b6d7e40ca6e52faf9522a04e616be0b50063c8e9639a1b1aa8af79f639bbe4b"
+}

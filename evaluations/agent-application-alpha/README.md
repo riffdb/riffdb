@@ -79,3 +79,10 @@ bundle `0e19842b...`: the public development workflow did not keep a reachable
 generated application attached, and Blog additionally deferred a valid
 whole-query role-bound rejection until live binding. These files are not
 selected as passing evidence and must not be rewritten by a later canary.
+
+`campaigns/wp365-canary-01.json` selects the replacement fresh-agent runs from
+bundle `b72679d6...`. Blog/Rust rated 8.8 and Orders/TypeScript rated 8.5; both
+qualified a generated command and one-snapshot named page read with exact
+returned contract/module/query/plan/commit identities, passed the application
+boundary and golden workload, and used no kernel API or handwritten RiffDB
+transport glue.
