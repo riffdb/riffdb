@@ -1,0 +1,5 @@
+RDB-S004 [contract_syntax] contract source contains an unexpected token
+  --> riffdb/contract.riff:29..41
+  cause: invalid_syntax
+  fixes: use_language_reference
+  files: no_files_changed; retry: correct_source

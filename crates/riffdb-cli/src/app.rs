@@ -16,6 +16,7 @@ use riffdb_client_rust::{
     generate_request_id, v1,
 };
 use riffdb_contract_compiler::compile_contract_source;
+use riffdb_diagnostics::{AuthoringDiagnostics, AuthoringSourcePath};
 use riffdb_query_module::{
     ApplicationManifest, CompiledApplicationRole, NamedQuerySource, QueryModule,
     QueryModuleCandidate, QueryModuleName, QueryModuleVersion, compile_application_role,
@@ -31,7 +32,7 @@ use crate::batch::{
 };
 use crate::cli::{
     ApplicationCommand, ApplicationLanguage, BackupCommand, CapabilityCommand, Cli, CommandCommand,
-    CommitCommand, ContractCommand, ContractSelectionArgs, DemoCommand, EntityCommand,
+    CommitCommand, ContractCommand, ContractSelectionArgs, DemoCommand, EntityCommand, OutputMode,
     ProjectionCommand, QueryCommand, RevocationReason, RoleActorKind, RoleCommand, ServerCommand,
     TopLevel,
 };
@@ -43,7 +44,7 @@ use crate::input::{
     InputError, MAX_INPUT_BYTES, read_file, read_path_or_stdin, utf8, validate_path,
 };
 use crate::output::{
-    CommandIdentity, NormalCreateDisposition, Terminal, client_error, local_error,
+    CommandIdentity, NormalCreateDisposition, Terminal, authoring_error, client_error, local_error,
     local_error_with, maintenance_uncertain, render_bootstrap, render_commit,
     render_contract_deploy, render_contract_validation, render_create_maintenance_start,
     render_entity, render_execution, render_health, render_maintenance_operation,
@@ -168,7 +169,7 @@ pub async fn run() -> ExitCode {
                 ExitCode::SUCCESS
             }
             Err(error) => {
-                eprintln!("riffdb new failed: {error}");
+                emit_scaffold_failure("riffdb new failed", &error, cli.output);
                 ExitCode::FAILURE
             }
         };
@@ -201,7 +202,7 @@ pub async fn run() -> ExitCode {
                 ExitCode::SUCCESS
             }
             Err(error) => {
-                eprintln!("riffdb application failed: {error}");
+                emit_scaffold_failure("riffdb application failed", &error, cli.output);
                 ExitCode::FAILURE
             }
         };
@@ -248,6 +249,21 @@ pub async fn run() -> ExitCode {
         &mut io::stdout().lock(),
         &mut io::stderr().lock(),
     )
+}
+
+fn emit_scaffold_failure(
+    prefix: &str,
+    error: &crate::scaffold::ScaffoldError,
+    mode: Option<OutputMode>,
+) {
+    if mode == Some(OutputMode::Json)
+        && let Some(diagnostics) = error.diagnostics()
+        && let Ok(rendered) = diagnostics.render_json()
+    {
+        eprint!("{rendered}");
+        return;
+    }
+    eprintln!("{prefix}: {error}");
 }
 
 fn run_dev(
@@ -1423,7 +1439,7 @@ async fn role_command(
         } => {
             let role = match compile_role_from_workspace(&manifest, &role, tenant.as_deref()) {
                 Ok(role) => role,
-                Err(()) => return role_invalid(CommandIdentity::RoleCheck),
+                Err(error) => return error.terminal(CommandIdentity::RoleCheck),
             };
             success(
                 CommandIdentity::RoleCheck,
@@ -1438,7 +1454,7 @@ async fn role_command(
         } => {
             let role = match compile_role_from_workspace(&manifest, &role, tenant.as_deref()) {
                 Ok(role) => role,
-                Err(()) => return role_invalid(CommandIdentity::RoleDescribe),
+                Err(error) => return error.terminal(CommandIdentity::RoleDescribe),
             };
             success(
                 CommandIdentity::RoleDescribe,
@@ -1459,7 +1475,7 @@ async fn role_command(
         } => {
             let role = match compile_role_from_workspace(&manifest, &role, tenant.as_deref()) {
                 Ok(role) => role,
-                Err(()) => return role_invalid(CommandIdentity::RoleBind),
+                Err(error) => return error.terminal(CommandIdentity::RoleBind),
             };
             let lifetime_seconds = match parse_nonzero_u32(&lifetime_seconds) {
                 Ok(value) => value,
@@ -1591,22 +1607,43 @@ async fn role_command(
     }
 }
 
+#[derive(Debug)]
+enum RoleWorkspaceError {
+    Authoring(AuthoringDiagnostics),
+    Invalid,
+}
+
+impl RoleWorkspaceError {
+    fn terminal(self, command: CommandIdentity) -> Terminal {
+        match self {
+            Self::Authoring(diagnostics) => authoring_error(command, &diagnostics),
+            Self::Invalid => role_invalid(command),
+        }
+    }
+}
+
 fn compile_role_from_workspace(
     manifest_path: &OsString,
     role_name: &str,
     tenant: Option<&str>,
-) -> Result<CompiledApplicationRole, ()> {
+) -> Result<CompiledApplicationRole, RoleWorkspaceError> {
     let requested_path = Path::new(manifest_path);
-    let requested_bytes = read_file(requested_path, MAX_INPUT_BYTES).map_err(|_| ())?;
+    let requested_bytes =
+        read_file(requested_path, MAX_INPUT_BYTES).map_err(|_| RoleWorkspaceError::Invalid)?;
     let requested_value: serde_json::Value =
-        serde_json::from_slice(&requested_bytes).map_err(|_| ())?;
+        serde_json::from_slice(&requested_bytes).map_err(|_| RoleWorkspaceError::Invalid)?;
     let exact_path;
     let manifest_path = if requested_value
         .get("schema")
         .and_then(serde_json::Value::as_str)
         == Some("riffdb.application-source/v1")
     {
-        check_application_lock(requested_path, None).map_err(|_| ())?;
+        check_application_lock(requested_path, None).map_err(|error| {
+            error
+                .diagnostics()
+                .cloned()
+                .map_or(RoleWorkspaceError::Invalid, RoleWorkspaceError::Authoring)
+        })?;
         exact_path = requested_path
             .parent()
             .unwrap_or_else(|| Path::new("."))
@@ -1615,34 +1652,79 @@ fn compile_role_from_workspace(
     } else {
         requested_path
     };
-    let manifest_bytes = read_file(manifest_path, MAX_INPUT_BYTES).map_err(|_| ())?;
-    let manifest_source = std::str::from_utf8(&manifest_bytes).map_err(|_| ())?;
-    let manifest = ApplicationManifest::parse(manifest_source).map_err(|_| ())?;
-    let workspace = find_application_workspace(manifest_path, manifest.contract().source())?;
-    let contract_source = read_workspace_text(&workspace, manifest.contract().source())?;
-    let contract = compile_contract_source(&contract_source).map_err(|_| ())?;
+    let manifest_bytes =
+        read_file(manifest_path, MAX_INPUT_BYTES).map_err(|_| RoleWorkspaceError::Invalid)?;
+    let manifest_source =
+        std::str::from_utf8(&manifest_bytes).map_err(|_| RoleWorkspaceError::Invalid)?;
+    let manifest = ApplicationManifest::parse(manifest_source)
+        .map_err(|error| role_manifest_diagnostic(manifest_path, error.kind()))?;
+    let workspace = find_application_workspace(manifest_path, manifest.contract().source())
+        .map_err(|()| RoleWorkspaceError::Invalid)?;
+    let contract_source = read_workspace_text(&workspace, manifest.contract().source())
+        .map_err(|()| RoleWorkspaceError::Invalid)?;
+    let contract = compile_contract_source(&contract_source).map_err(|error| {
+        AuthoringSourcePath::new(manifest.contract().source())
+            .ok()
+            .and_then(|path| AuthoringDiagnostics::from_contract(path, &error).ok())
+            .map_or(RoleWorkspaceError::Invalid, RoleWorkspaceError::Authoring)
+    })?;
     let mut modules = Vec::with_capacity(manifest.query_modules().len());
     for module in manifest.query_modules() {
         let queries = module
             .queries()
             .iter()
             .map(|query| {
-                let source = read_workspace_text(&workspace, query.source())?;
-                NamedQuerySource::new(query.name(), source).map_err(|_| ())
+                let source = read_workspace_text(&workspace, query.source())
+                    .map_err(|()| RoleWorkspaceError::Invalid)?;
+                NamedQuerySource::new(query.name(), source).map_err(|_| RoleWorkspaceError::Invalid)
             })
             .collect::<Result<Vec<_>, _>>()?;
         let candidate = QueryModuleCandidate::new(
-            QueryModuleName::new(module.name()).map_err(|_| ())?,
-            QueryModuleVersion::new(module.version()).ok_or(())?,
+            QueryModuleName::new(module.name()).map_err(|_| RoleWorkspaceError::Invalid)?,
+            QueryModuleVersion::new(module.version()).ok_or(RoleWorkspaceError::Invalid)?,
             queries,
         )
-        .map_err(|_| ())?;
-        modules.push(QueryModule::compile(candidate, &contract).map_err(|_| ())?);
+        .map_err(|_| RoleWorkspaceError::Invalid)?;
+        modules.push(QueryModule::compile(candidate, &contract).map_err(|error| {
+            let query_path = error.query_name().and_then(|name| {
+                module
+                    .queries()
+                    .iter()
+                    .find(|query| query.name() == name)
+                    .map(|query| query.source())
+            });
+            query_path
+                .and_then(|path| AuthoringSourcePath::new(path).ok())
+                .and_then(|path| AuthoringDiagnostics::from_query_module(path, &error).ok())
+                .map_or(RoleWorkspaceError::Invalid, RoleWorkspaceError::Authoring)
+        })?);
     }
     let tenant = tenant
-        .map(|tenant| TenantId::new(tenant.to_owned()).map_err(|_| ()))
+        .map(|tenant| TenantId::new(tenant.to_owned()).map_err(|_| RoleWorkspaceError::Invalid))
         .transpose()?;
-    compile_application_role(&manifest, role_name, tenant, &contract, &modules).map_err(|_| ())
+    compile_application_role(&manifest, role_name, tenant, &contract, &modules).map_err(|error| {
+        AuthoringSourcePath::new(
+            requested_path
+                .file_name()
+                .and_then(|name| name.to_str())
+                .unwrap_or("riffdb.application.json"),
+        )
+        .ok()
+        .and_then(|path| AuthoringDiagnostics::from_role(path, error.kind(), Some(role_name)).ok())
+        .map_or(RoleWorkspaceError::Invalid, RoleWorkspaceError::Authoring)
+    })
+}
+
+fn role_manifest_diagnostic(
+    manifest_path: &Path,
+    kind: riffdb_query_module::ManifestErrorKind,
+) -> RoleWorkspaceError {
+    manifest_path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .and_then(|path| AuthoringSourcePath::new(path).ok())
+        .and_then(|path| AuthoringDiagnostics::from_manifest(path, kind).ok())
+        .map_or(RoleWorkspaceError::Invalid, RoleWorkspaceError::Authoring)
 }
 
 fn find_application_workspace(
@@ -3945,6 +4027,33 @@ mod tests {
                     if hash.as_slice() == role.identity().as_bytes()
             )
         }));
+    }
+
+    #[test]
+    fn workspace_role_failure_preserves_symbolic_authoring_diagnostic() {
+        let mut workspace = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+        assert!(workspace.pop());
+        assert!(workspace.pop());
+        let error = compile_role_from_workspace(
+            &workspace
+                .join("fixtures/application-manifests/ticketdesk-v1.json")
+                .into_os_string(),
+            "MissingRole",
+            None,
+        )
+        .expect_err("missing role");
+        let RoleWorkspaceError::Authoring(diagnostics) = error else {
+            panic!("structured diagnostic required");
+        };
+        let diagnostic = &diagnostics.as_slice()[0];
+        assert_eq!(diagnostic.code().as_str(), "RDB-AR001");
+        assert_eq!(diagnostic.symbol_path(), &["MissingRole"]);
+        assert!(
+            !diagnostics
+                .render_json()
+                .expect("JSON")
+                .contains("field_id")
+        );
     }
 
     #[test]

@@ -1,0 +1,1 @@
+{"diagnostics":[{"cause":"invalid_syntax","code":"RDB-S004","file_change":"no_files_changed","fixes":["use_language_reference"],"path":"riffdb/contract.riff","retry":"correct_source","span":{"end":41,"start":29},"stage":"contract_syntax","summary":"contract source contains an unexpected token","symbol_path":[]}],"version":1}

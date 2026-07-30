@@ -35,7 +35,8 @@ use riffdb_query_ir::{
     QUERY_IR_VERSION_V1, QueryAccessProgramV1, SourceSymbolKind, SymbolicCatalog,
 };
 use riffdb_riffql_syntax::{
-    MAX_IDENTIFIER_BYTES, MAX_SOURCE_BYTES, RIFFQL_LANGUAGE_VERSION, format_query, parse_query,
+    MAX_IDENTIFIER_BYTES, MAX_SOURCE_BYTES, ParseDiagnostics, RIFFQL_LANGUAGE_VERSION,
+    format_query, parse_query,
 };
 use riffdb_types::{
     ContractBundleHash, ContractLineage, ContractVersion, QueryModuleHash, QuerySourceHash,
@@ -203,8 +204,12 @@ impl QueryModule {
             .map_err(|_| QueryModuleError::new(QueryModuleErrorKind::InvalidContract))?;
         let mut queries = Vec::with_capacity(candidate.queries.len());
         for submitted in candidate.queries {
-            let document = parse_query(&submitted.source)
-                .map_err(|_| QueryModuleError::new(QueryModuleErrorKind::InvalidQuery))?;
+            let document = parse_query(&submitted.source).map_err(|diagnostics| {
+                QueryModuleError::query(
+                    submitted.name.clone(),
+                    QueryCompilationDiagnostics::Syntax(diagnostics),
+                )
+            })?;
             if document.name.as_ref().map(|name| name.value.as_str())
                 != Some(submitted.name.as_str())
             {
@@ -213,10 +218,25 @@ impl QueryModule {
                 ));
             }
             let canonical_source = format_query(&document);
-            let canonical_document = parse_query(&canonical_source)
-                .map_err(|_| QueryModuleError::new(QueryModuleErrorKind::InvalidQuery))?;
-            let program = compile_query(&canonical_document, &catalog)
-                .map_err(|_| QueryModuleError::new(QueryModuleErrorKind::InvalidQuery))?;
+            let _source_checked_program =
+                compile_query(&document, &catalog).map_err(|diagnostics| {
+                    QueryModuleError::query(
+                        submitted.name.clone(),
+                        QueryCompilationDiagnostics::Planner(diagnostics),
+                    )
+                })?;
+            let canonical_document = parse_query(&canonical_source).map_err(|diagnostics| {
+                QueryModuleError::query(
+                    submitted.name.clone(),
+                    QueryCompilationDiagnostics::Syntax(diagnostics),
+                )
+            })?;
+            let program = compile_query(&canonical_document, &catalog).map_err(|diagnostics| {
+                QueryModuleError::query(
+                    submitted.name.clone(),
+                    QueryCompilationDiagnostics::Planner(diagnostics),
+                )
+            })?;
             queries.push(CompiledNamedQuery {
                 name: submitted.name,
                 source_hash: hash_query_source(canonical_source.as_bytes()),
@@ -373,21 +393,56 @@ pub enum QueryModuleErrorKind {
     UnsupportedVersion,
 }
 
+/// Detailed value-free source diagnostics retained for an invalid named query.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum QueryCompilationDiagnostics {
+    /// RiffQL syntax diagnostics.
+    Syntax(ParseDiagnostics),
+    /// RiffQL resolution, type, locality, cardinality, or plan diagnostics.
+    Planner(riffdb_query_compiler::PlannerDiagnostics),
+}
+
 /// Redaction-safe query-module failure.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct QueryModuleError {
     kind: QueryModuleErrorKind,
+    query_name: Option<String>,
+    diagnostics: Option<QueryCompilationDiagnostics>,
 }
 
 impl QueryModuleError {
     const fn new(kind: QueryModuleErrorKind) -> Self {
-        Self { kind }
+        Self {
+            kind,
+            query_name: None,
+            diagnostics: None,
+        }
+    }
+
+    fn query(name: String, diagnostics: QueryCompilationDiagnostics) -> Self {
+        Self {
+            kind: QueryModuleErrorKind::InvalidQuery,
+            query_name: Some(name),
+            diagnostics: Some(diagnostics),
+        }
     }
 
     /// Stable failure classification.
     #[must_use]
     pub const fn kind(&self) -> QueryModuleErrorKind {
         self.kind
+    }
+
+    /// Named query whose source failed, when applicable.
+    #[must_use]
+    pub fn query_name(&self) -> Option<&str> {
+        self.query_name.as_deref()
+    }
+
+    /// Preserved value-free syntax or planner diagnostics, when applicable.
+    #[must_use]
+    pub const fn diagnostics(&self) -> Option<&QueryCompilationDiagnostics> {
+        self.diagnostics.as_ref()
     }
 }
 
