@@ -134,12 +134,10 @@ fn disjoint_commands_share_two_immediate_transitions_and_keep_independent_result
     assert_eq!(
         transitions,
         vec![
-            RedbTestOperation::Admission,
             RedbTestOperation::CommandBatch,
-            RedbTestOperation::Admission,
             RedbTestOperation::CommandBatch,
         ],
-        "one independent command plus two disjoint commands use four physical transitions"
+        "fresh commands persist only their fused terminal transitions"
     );
 }
 
@@ -337,11 +335,22 @@ fn equal_scoped_unique_values_commit_once_and_loser_replays_without_sequence() {
     });
 
     assert!(matches!(winner, CommandExecutionResult::Committed(_)));
+    let CommandExecutionResult::ExecutionFailed(loser) = loser else {
+        panic!("unique loser must be a deterministic failure");
+    };
+    let CommandExecutionResult::ExecutionFailed(replay) = replay else {
+        panic!("unique loser replay must remain a deterministic failure");
+    };
+    assert_eq!(loser.code(), ExecutionFailureCode::UniqueConflict);
     assert_eq!(
-        loser,
-        CommandExecutionResult::ExecutionFailed(ExecutionFailureCode::UniqueConflict)
+        loser.disposition(),
+        riffdb_commit::CommittedOutcomeDisposition::FirstCommit
     );
-    assert_eq!(replay, loser);
+    assert_eq!(replay.code(), loser.code());
+    assert_eq!(
+        replay.disposition(),
+        riffdb_commit::CommittedOutcomeDisposition::Replay
+    );
     assert_eq!(
         notifications.sequences(),
         vec![
@@ -445,11 +454,22 @@ fn changing_to_an_owned_unique_value_preserves_the_original_entity_and_replays()
             .expect("complete conflicting change replay");
         (failure, replayed)
     });
+    let CommandExecutionResult::ExecutionFailed(failure) = failure else {
+        panic!("conflicting change must be a deterministic failure");
+    };
+    let CommandExecutionResult::ExecutionFailed(replayed) = replayed else {
+        panic!("conflicting change replay must remain a deterministic failure");
+    };
+    assert_eq!(failure.code(), ExecutionFailureCode::UniqueConflict);
     assert_eq!(
-        failure,
-        CommandExecutionResult::ExecutionFailed(ExecutionFailureCode::UniqueConflict)
+        failure.disposition(),
+        riffdb_commit::CommittedOutcomeDisposition::FirstCommit
     );
-    assert_eq!(replayed, failure);
+    assert_eq!(replayed.code(), failure.code());
+    assert_eq!(
+        replayed.disposition(),
+        riffdb_commit::CommittedOutcomeDisposition::Replay
+    );
 
     drop(executor);
     coordinator.shutdown().expect("drain change coordinator");

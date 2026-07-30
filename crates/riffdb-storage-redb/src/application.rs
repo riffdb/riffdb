@@ -9,12 +9,13 @@ use riffdb_storage_api::{
     AdmissionResultV1, AffectedEpochCurrentState, AffectedEpochCurrentStateBuilder,
     AffectedIndexEpochTargets, ApplicationCommandTransactionPort, ApplicationSequenceAllocator,
     AssignedCommandSequence, AtomicCommandRecordSet, AuditedCommittedBatchV1,
-    CandidateAdmissionResult, CandidateCapacityResult, CandidateStartResult,
-    CandidateValidationRejection, CommandCandidateAdmission, CommandCandidateAffectedEpochRead,
-    CommandCandidateAwaitingCapacity, CommandCandidateAwaitingValidation,
-    CommandCandidateCapacityReserved, CommandCandidateSequenceAssigned, CommandCandidateStateRead,
-    CommandWriteSetPlanV1, CommitIntent, CommittedBatchV1, CurrentRangeObservation, DurabilityMode,
-    EmptyCommandBatch, EntityObservation, EntityTarget, ExecutionFailureAdmissionRechecked,
+    AuditedExecutionFailureV1, CandidateAdmissionResult, CandidateCapacityResult,
+    CandidateStartResult, CandidateValidationRejection, CommandAdmissionExpectationV1,
+    CommandCandidateAdmission, CommandCandidateAffectedEpochRead, CommandCandidateAwaitingCapacity,
+    CommandCandidateAwaitingValidation, CommandCandidateCapacityReserved,
+    CommandCandidateSequenceAssigned, CommandCandidateStateRead, CommandWriteSetPlanV1,
+    CommitIntent, CommittedBatchV1, CurrentRangeObservation, DurabilityMode, EmptyCommandBatch,
+    EntityObservation, EntityTarget, ExecutionFailureAdmissionRechecked,
     ExecutionFailureAdmissionResult, ExecutionFailureAwaitingDecision,
     ExecutionFailureTransitionPort, ExecutionFailureTransitionRequestV1, ExpectedEntityState,
     IdempotencyIdentity, IdempotencyIdentityKey, IdempotencyLookupCandidatesV1,
@@ -220,14 +221,14 @@ impl NonEmptyCommandBatch for RedbNonEmptyBatch {
         Ok(committed)
     }
 
-    fn commit_with_service_audits(
+    fn commit_with_service_audit_transitions(
         self,
         durability: DurabilityMode,
-        terminals: Vec<riffdb_storage_api::ServiceAuditAppendIntentV1>,
+        transitions: Vec<riffdb_storage_api::CommandServiceAuditTransitionV1>,
     ) -> Result<AuditedCommittedBatchV1, StorageError> {
         if durability == DurabilityMode::Memory
-            || self.core.staged.len() != terminals.len()
-            || terminals.is_empty()
+            || self.core.staged.len() != transitions.len()
+            || transitions.is_empty()
             || self
                 .core
                 .staged
@@ -243,7 +244,18 @@ impl NonEmptyCommandBatch for RedbNonEmptyBatch {
             .map(|records| records.stored_outcome().clone())
             .collect();
         let committed = CommittedBatchV1::new(outcomes, durability).map_err(invariant_value)?;
-        let terminal_records = stage_service_audit_group_in_write(&self.core.access, &terminals)?;
+        let mut terminal_positions = Vec::with_capacity(transitions.len());
+        let mut intents = Vec::with_capacity(transitions.len().saturating_mul(2));
+        for transition in transitions {
+            let rows = transition.into_intents();
+            intents.extend(rows);
+            terminal_positions.push(intents.len() - 1);
+        }
+        let records = stage_service_audit_group_in_write(&self.core.access, &intents)?;
+        let terminal_records = terminal_positions
+            .into_iter()
+            .map(|index| records[index].clone())
+            .collect::<Vec<_>>();
         let audited = AuditedCommittedBatchV1::new(committed, terminal_records.clone())
             .map_err(invariant_value)?;
         let pending_events = self
@@ -252,11 +264,11 @@ impl NonEmptyCommandBatch for RedbNonEmptyBatch {
             .iter()
             .flat_map(|records| records.events().iter().map(|event| event.event_id()))
             .collect::<Vec<_>>();
-        let mut deltas = terminal_records
+        let mut deltas = records
             .iter()
-            .map(|terminal| TransientIndexDelta::ServiceAuditAppended {
-                request_id: terminal.request_id(),
-                sequence: terminal.administration_sequence(),
+            .map(|record| TransientIndexDelta::ServiceAuditAppended {
+                request_id: record.request_id(),
+                sequence: record.administration_sequence(),
             })
             .collect::<Vec<_>>();
         if !pending_events.is_empty() {
@@ -386,8 +398,29 @@ impl ExecutionFailureTransitionPort for RedbOperationalPorts {
         request: ExecutionFailureTransitionRequestV1,
     ) -> Result<ExecutionFailureAdmissionResult<Self::Rechecked>, StorageError> {
         let access = self.begin_write()?;
-        let state = read_admission(access.transaction()?, request.expected_pending().identity())?;
+        let state = match request.admission_expectation() {
+            CommandAdmissionExpectationV1::ExistingPending => {
+                read_admission(access.transaction()?, request.expected_pending().identity())?
+            }
+            CommandAdmissionExpectationV1::Vacant(candidates) => {
+                let matches = matching_admissions(access.transaction()?, candidates)?;
+                if matches.len() > 1 {
+                    return Ok(ExecutionFailureAdmissionResult::PendingMismatch);
+                }
+                matches.into_iter().next()
+            }
+        };
         Ok(match state {
+            None if matches!(
+                request.admission_expectation(),
+                CommandAdmissionExpectationV1::Vacant(_)
+            ) =>
+            {
+                ExecutionFailureAdmissionResult::Rechecked(RedbExecutionFailureRechecked {
+                    access,
+                    request,
+                })
+            }
             None => ExecutionFailureAdmissionResult::Missing,
             Some(StoredAdmissionStateV1::Pending(value))
                 if value == *request.expected_pending() =>
@@ -433,21 +466,65 @@ impl ExecutionFailureAdmissionRechecked for RedbExecutionFailureRechecked {
 
 impl ExecutionFailureAwaitingDecision for RedbExecutionFailureAwaitingDecision {
     fn terminalize(self) -> Result<StoredExecutionFailedV1, StorageError> {
+        self.terminalize_inner(None).map(|(failure, _)| failure)
+    }
+
+    fn terminalize_with_service_audit(
+        self,
+        transition: riffdb_storage_api::CommandServiceAuditTransitionV1,
+    ) -> Result<AuditedExecutionFailureV1, StorageError> {
+        let (failure, terminal) = self.terminalize_inner(Some(transition))?;
+        AuditedExecutionFailureV1::new(
+            failure,
+            terminal.ok_or_else(|| storage_error(StorageErrorKind::InvariantViolation))?,
+        )
+        .map_err(invariant_value)
+    }
+
+    fn abandon(self) {}
+}
+
+impl RedbExecutionFailureAwaitingDecision {
+    fn terminalize_inner(
+        self,
+        audit: Option<riffdb_storage_api::CommandServiceAuditTransitionV1>,
+    ) -> Result<
+        (
+            StoredExecutionFailedV1,
+            Option<riffdb_storage_api::StoredServiceAuditRecordV1>,
+        ),
+        StorageError,
+    > {
         if dependencies_from_current(&self.current)? != *self.request.read_dependencies() {
             return Err(storage_error(StorageErrorKind::InvariantViolation));
         }
         let terminal = self.request.terminal_record();
         let transaction = self.access.transaction()?;
-        if read_admission(transaction, self.request.expected_pending().identity())?
-            != Some(StoredAdmissionStateV1::Pending(
-                self.request.expected_pending().clone(),
-            ))
-        {
+        if !plan_bundle_exists(transaction, self.request.expected_pending().plan())? {
             return Err(storage_error(StorageErrorKind::InvariantViolation));
+        }
+        match self.request.admission_expectation() {
+            CommandAdmissionExpectationV1::ExistingPending => {
+                if read_admission(transaction, self.request.expected_pending().identity())?
+                    != Some(StoredAdmissionStateV1::Pending(
+                        self.request.expected_pending().clone(),
+                    ))
+                {
+                    return Err(storage_error(StorageErrorKind::InvariantViolation));
+                }
+            }
+            CommandAdmissionExpectationV1::Vacant(candidates) => {
+                if !matching_admissions(transaction, candidates)?.is_empty() {
+                    return Err(storage_error(StorageErrorKind::InvariantViolation));
+                }
+            }
         }
         let key = identity_key(self.request.expected_pending().identity())?;
         let encoded = encode_execution_failed_v1(&terminal)?;
-        {
+        if matches!(
+            self.request.admission_expectation(),
+            CommandAdmissionExpectationV1::ExistingPending
+        ) {
             let mut pending = transaction
                 .open_table(IDEMPOTENCY_PENDING)
                 .map_err(table_error)?;
@@ -469,12 +546,17 @@ impl ExecutionFailureAwaitingDecision for RedbExecutionFailureAwaitingDecision {
                 return Err(storage_error(StorageErrorKind::InvariantViolation));
             }
         }
+        let terminal_audit = if let Some(transition) = audit {
+            let intents = transition.into_intents();
+            let records = stage_service_audit_group_in_write(&self.access, &intents)?;
+            records.last().cloned()
+        } else {
+            None
+        };
         self.access
             .commit_for(RedbTestOperation::ExecutionFailure)?;
-        Ok(terminal)
+        Ok((terminal, terminal_audit))
     }
-
-    fn abandon(self) {}
 }
 
 macro_rules! impl_candidate_chain {
@@ -486,10 +568,32 @@ macro_rules! impl_candidate_chain {
             fn recheck_admission(
                 self,
             ) -> Result<CandidateAdmissionResult<Self::Prior, Self::StateRead>, StorageError> {
-                let state = read_admission(
-                    self.prior.core.access.transaction()?,
-                    self.intent.pending().identity(),
-                )?;
+                let state = match self.intent.admission_expectation() {
+                    CommandAdmissionExpectationV1::ExistingPending => read_admission(
+                        self.prior.core.access.transaction()?,
+                        self.intent.pending().identity(),
+                    )?,
+                    CommandAdmissionExpectationV1::Vacant(candidates) => {
+                        let matches =
+                            matching_admissions(self.prior.core.access.transaction()?, candidates)?;
+                        match matches.as_slice() {
+                            [] => {
+                                return Ok(CandidateAdmissionResult::Proceed(
+                                    RedbCandidateStateRead {
+                                        prior: self.prior,
+                                        intent: self.intent,
+                                    },
+                                ));
+                            }
+                            [state] => Some(state.clone()),
+                            [_, ..] => {
+                                return Ok(CandidateAdmissionResult::PendingMismatch(
+                                    AbandonedCandidate::new(self.prior, self.intent),
+                                ));
+                            }
+                        }
+                    }
+                };
                 Ok(match state {
                     None => CandidateAdmissionResult::MissingPending(AbandonedCandidate::new(
                         self.prior,
@@ -749,12 +853,21 @@ fn apply_record_set(
     encoded: &riffdb_storage_api::EncodedAtomicCommandRecordSetV1,
 ) -> Result<(), StorageError> {
     let identity_key = identity_key(records.expected_pending().identity())?;
-    if read_admission(transaction, records.expected_pending().identity())?
-        != Some(StoredAdmissionStateV1::Pending(
-            records.expected_pending().clone(),
-        ))
-    {
-        return Err(storage_error(StorageErrorKind::InvariantViolation));
+    match records.intent().admission_expectation() {
+        CommandAdmissionExpectationV1::ExistingPending => {
+            if read_admission(transaction, records.expected_pending().identity())?
+                != Some(StoredAdmissionStateV1::Pending(
+                    records.expected_pending().clone(),
+                ))
+            {
+                return Err(storage_error(StorageErrorKind::InvariantViolation));
+            }
+        }
+        CommandAdmissionExpectationV1::Vacant(candidates) => {
+            if !matching_admissions(transaction, candidates)?.is_empty() {
+                return Err(storage_error(StorageErrorKind::InvariantViolation));
+            }
+        }
     }
 
     apply_entities(transaction, records, encoded)?;
@@ -813,7 +926,10 @@ fn apply_record_set(
             return Err(storage_error(StorageErrorKind::InvariantViolation));
         }
     }
-    {
+    if matches!(
+        records.intent().admission_expectation(),
+        CommandAdmissionExpectationV1::ExistingPending
+    ) {
         let mut pending = transaction
             .open_table(IDEMPOTENCY_PENDING)
             .map_err(table_error)?;

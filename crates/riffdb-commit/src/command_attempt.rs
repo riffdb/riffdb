@@ -24,8 +24,10 @@ use riffdb_storage_api::{
 };
 use riffdb_types::{CanonicalRecord, ConflictKey, ExecutionFailureCode, ProvenanceId, RequestId};
 
-use crate::command_admission::CommandExecutionCandidate;
-use crate::command_preparation::AuditedCommandLifecycle;
+use crate::command_admission::{CommandExecutionCandidate, CommandExecutionCandidateParts};
+use crate::command_preparation::{
+    AuditedCommandLifecycle, PostEvaluationAuthorizationError, PostEvaluationCommandAuthorizer,
+};
 
 /// Maximum snapshot-materialization attempt slots in one outer invocation.
 pub(crate) const MAX_COMMAND_EVALUATION_ATTEMPTS_V1: usize = 3;
@@ -43,6 +45,8 @@ pub(crate) struct PendingCommandAttempts {
     deadline: Instant,
     cancellation: CancellationToken,
     audited_lifecycle: Option<AuditedCommandLifecycle>,
+    terminal_admission: bool,
+    post_evaluation_authorizer: Option<Box<dyn PostEvaluationCommandAuthorizer>>,
     completed_attempts: usize,
 }
 
@@ -54,7 +58,7 @@ impl PendingCommandAttempts {
         let lookup_candidates = candidate
             .lookup_candidates_for_resolution()
             .map_err(|_| CommandAttemptError::Integrity)?;
-        let (
+        let CommandExecutionCandidateParts {
             resolved_plan,
             normalized_input,
             commit_context,
@@ -64,7 +68,13 @@ impl PendingCommandAttempts {
             deadline,
             cancellation,
             audited_lifecycle,
-        ) = (*candidate).into_acquisition_parts();
+            terminal_admission,
+            lookup_candidates: retained_lookup_candidates,
+            post_evaluation_authorizer,
+        } = (*candidate).into_acquisition_parts();
+        if lookup_candidates != retained_lookup_candidates {
+            return Err(CommandAttemptError::Integrity);
+        }
         Ok(Self {
             resolved_plan,
             normalized_input,
@@ -76,6 +86,8 @@ impl PendingCommandAttempts {
             deadline,
             cancellation,
             audited_lifecycle,
+            terminal_admission,
+            post_evaluation_authorizer,
             completed_attempts: 0,
         })
     }
@@ -147,6 +159,15 @@ pub(crate) struct EvaluatedCommandAttempt {
 }
 
 impl EvaluatedCommandAttempt {
+    /// Performs the mandatory fresh policy safe point after deterministic
+    /// evaluation and consumes the returned proof after exact semantic checks.
+    pub(super) fn authorize_after_evaluation(
+        self,
+    ) -> Result<Self, PostEvaluationAuthorizationError> {
+        authorize_state_after_evaluation(&self.state)?;
+        Ok(self)
+    }
+
     /// Releases a completed, uncommitted evaluation back to its exact pending
     /// retry state. This is used only when a compatible physical group must be
     /// abandoned before any storage commit is attempted.
@@ -217,11 +238,20 @@ impl EvaluatedCommandAttempt {
         if !self.has_exact_semantic_join() {
             return Err(CommandAttemptError::Integrity);
         }
-        let intent = CommitIntent::new(
-            self.state.commit_context.clone(),
-            self.evaluated.clone(),
-            provenance_id,
-        )
+        let intent = if self.state.terminal_admission {
+            CommitIntent::new_for_vacant_terminal_admission(
+                self.state.commit_context.clone(),
+                self.state.lookup_candidates.clone(),
+                self.evaluated.clone(),
+                provenance_id,
+            )
+        } else {
+            CommitIntent::new(
+                self.state.commit_context.clone(),
+                self.evaluated.clone(),
+                provenance_id,
+            )
+        }
         .map_err(|_| CommandAttemptError::Integrity)?;
         let bound = ProvenanceBoundCommandAttempt {
             attempt: self,
@@ -282,6 +312,14 @@ impl ProvenanceBoundCommandAttempt {
 
     pub(super) fn audited_lifecycle(&self) -> Option<&AuditedCommandLifecycle> {
         self.attempt.audited_lifecycle()
+    }
+
+    pub(super) fn matches_terminal_outcome(&self, outcome: &StoredOutcomeV1) -> bool {
+        outcome_matches_state(outcome, &self.attempt.state)
+    }
+
+    pub(super) fn matches_terminal_failure(&self, failure: &StoredExecutionFailedV1) -> bool {
+        failure_matches_state(failure, &self.attempt.state)
     }
 
     pub(super) fn has_exact_semantic_join(&self) -> bool {
@@ -477,6 +515,15 @@ pub(super) enum ExecutionFaultCurrentRecheck {
 }
 
 impl ExecutionFaultAttempt {
+    /// Performs the same mandatory fresh policy safe point as successful
+    /// evaluation before making a deterministic failure durable.
+    pub(super) fn authorize_after_evaluation(
+        self,
+    ) -> Result<Self, PostEvaluationAuthorizationError> {
+        authorize_state_after_evaluation(self.state())?;
+        Ok(self)
+    }
+
     /// Rechecks advisory request control at the final pre-transition safe point.
     pub(super) fn recheck_request_control(&self) -> Result<(), CommandAttemptError> {
         check_request_control(self.state().deadline, &self.state().cancellation)
@@ -500,11 +547,18 @@ impl ExecutionFaultAttempt {
                 (snapshot.snapshot(), ExecutionFailureCode::UniqueConflict)
             }
         };
-        ExecutionFailureTransitionRequestV1::new(
-            self.state().commit_context.pending().clone(),
-            snapshot,
-            code,
-        )
+        let state = self.state();
+        let pending = state.commit_context.pending().clone();
+        if state.terminal_admission {
+            ExecutionFailureTransitionRequestV1::new_for_vacant_terminal_admission(
+                pending,
+                state.lookup_candidates.clone(),
+                snapshot,
+                code,
+            )
+        } else {
+            ExecutionFailureTransitionRequestV1::new(pending, snapshot, code)
+        }
         .map_err(|_| ())
     }
 
@@ -516,6 +570,16 @@ impl ExecutionFaultAttempt {
     /// Borrows the exact Pending admission retained by the attempt.
     pub(super) const fn pending(&self) -> &riffdb_storage_api::StoredPendingAdmissionV1 {
         self.state().commit_context.pending()
+    }
+
+    /// Borrows the public service lifecycle retained by this attempt.
+    pub(super) fn audited_lifecycle(&self) -> Option<&AuditedCommandLifecycle> {
+        self.state().audited_lifecycle.as_ref()
+    }
+
+    /// Returns whether this failure must fuse its previously non-durable start.
+    pub(super) const fn requires_fused_start(&self) -> bool {
+        self.state().terminal_admission
     }
 
     /// Borrows the exact influential dependencies retained by the failed snapshot.
@@ -536,7 +600,12 @@ impl ExecutionFaultAttempt {
 
     /// Returns whether a concurrent command outcome belongs to this admission.
     pub(super) fn matches_outcome(&self, outcome: &StoredOutcomeV1) -> bool {
-        outcome_matches_context(outcome, &self.state().commit_context)
+        outcome_matches_state(outcome, self.state())
+    }
+
+    /// Returns whether a durable deterministic failure belongs to this attempt.
+    pub(super) fn matches_failure(&self, failure: &StoredExecutionFailedV1) -> bool {
+        failure_matches_state(failure, self.state())
     }
 
     /// Revalidates the opaque lineage evidence only after dependencies compare equal.
@@ -611,6 +680,41 @@ impl ExecutionFaultAttempt {
             | Self::UniqueConflict { state, .. } => state,
         }
     }
+}
+
+fn authorize_state_after_evaluation(
+    state: &PendingCommandAttempts,
+) -> Result<(), PostEvaluationAuthorizationError> {
+    let Some(authorizer) = state.post_evaluation_authorizer.as_ref() else {
+        // Un-audited unit fixtures and internal legacy harnesses do not
+        // represent the public application path.
+        if state.audited_lifecycle.is_none() {
+            return Ok(());
+        }
+        return Err(PostEvaluationAuthorizationError::Integrity);
+    };
+    let authorization = authorizer.authorize()?;
+    let pending = state.commit_context.pending();
+    let claims = authorization.provenance();
+    let stored_claims = riffdb_storage_api::StoredAdmittedProvenanceClaimsV1::new(
+        claims.source_repository().cloned(),
+        claims.source_commit().cloned(),
+        claims.reason().cloned(),
+        claims.approval_id().cloned(),
+    )
+    .map_err(|_| PostEvaluationAuthorizationError::Integrity)?;
+    let exact = authorization.lineage() == pending.plan().contract_lineage()
+        && authorization.version() == pending.plan().contract_version()
+        && authorization.command_id() == pending.plan().command_id()
+        && authorization.class() == riffdb_policy::CommandExecutionClass::Mutation
+        && authorization.partition().lineage() == pending.plan().contract_lineage()
+        && authorization.partition().partition_key() == pending.partition_key()
+        && authorization.actor() == pending.actor()
+        && stored_claims == *pending.provenance_claims();
+    if !exact {
+        return Err(PostEvaluationAuthorizationError::Integrity);
+    }
+    Ok(())
 }
 
 impl fmt::Debug for ExecutionFaultAttempt {
@@ -733,19 +837,20 @@ pub(crate) fn evaluate_acquired_command_attempt(
     match durable {
         AdmissionLookupResultV1::Found(found) => match *found {
             StoredAdmissionStateV1::Pending(pending)
-                if pending == *state.commit_context.pending() => {}
+                if !state.terminal_admission && pending == *state.commit_context.pending() => {}
             StoredAdmissionStateV1::StoredOutcome(outcome)
-                if outcome_matches_context(&outcome, &state.commit_context) =>
+                if outcome_matches_state(&outcome, &state) =>
             {
                 return Ok(CommandAttemptResolution::OutcomeReplay(outcome));
             }
             StoredAdmissionStateV1::ExecutionFailed(failure)
-                if failure.pending() == state.commit_context.pending() =>
+                if failure_matches_state(&failure, &state) =>
             {
                 return Ok(CommandAttemptResolution::ExecutionFailureReplay(failure));
             }
             _ => return Err(CommandAttemptError::Integrity),
         },
+        AdmissionLookupResultV1::NotFound if state.terminal_admission => {}
         AdmissionLookupResultV1::NotFound | AdmissionLookupResultV1::MultipleMatches => {
             return Err(CommandAttemptError::Integrity);
         }
@@ -897,6 +1002,39 @@ fn outcome_matches_context(
         && outcome.partition_hash() == context.partition_hash()
         && outcome.conflict_hashes() == context.conflict_hashes()
         && outcome.admitted_claims() == pending.provenance_claims()
+}
+
+fn outcome_matches_state(outcome: &StoredOutcomeV1, state: &PendingCommandAttempts) -> bool {
+    if !state.terminal_admission {
+        return outcome_matches_context(outcome, &state.commit_context);
+    }
+    let pending = state.commit_context.pending();
+    state.lookup_candidates.contains(outcome.identity())
+        && outcome.plan() == pending.plan()
+        && outcome.canonical_input_hash() == pending.canonical_input_hash()
+        && outcome.actor() == pending.actor()
+        && outcome.partition_key() == pending.partition_key()
+        && outcome.partition_hash() == state.commit_context.partition_hash()
+        && outcome.conflict_hashes() == state.commit_context.conflict_hashes()
+        && outcome.admitted_claims() == pending.provenance_claims()
+}
+
+fn failure_matches_state(
+    failure: &StoredExecutionFailedV1,
+    state: &PendingCommandAttempts,
+) -> bool {
+    if !state.terminal_admission {
+        return failure.pending() == state.commit_context.pending();
+    }
+    let pending = state.commit_context.pending();
+    state
+        .lookup_candidates
+        .contains(failure.pending().identity())
+        && failure.pending().plan() == pending.plan()
+        && failure.pending().canonical_input_hash() == pending.canonical_input_hash()
+        && failure.pending().actor() == pending.actor()
+        && failure.pending().partition_key() == pending.partition_key()
+        && failure.pending().provenance_claims() == pending.provenance_claims()
 }
 
 #[cfg(test)]
@@ -1261,6 +1399,8 @@ contract AttemptMaterialization version {version} {{
             deadline: future_deadline(),
             cancellation: CancellationToken::new(),
             audited_lifecycle: None,
+            terminal_admission: false,
+            post_evaluation_authorizer: None,
             completed_attempts: 0,
         }
     }
@@ -1387,6 +1527,8 @@ contract AttemptMaterialization version {version} {{
                 deadline: future_deadline(),
                 cancellation: CancellationToken::new(),
                 audited_lifecycle: None,
+                terminal_admission: false,
+                post_evaluation_authorizer: None,
                 completed_attempts: 0,
             },
             snapshot,

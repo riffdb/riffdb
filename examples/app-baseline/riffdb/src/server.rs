@@ -654,6 +654,7 @@ fn read_server_stdout(
         if read == 0 {
             break;
         }
+        eprint!("{line}");
         total = total.saturating_add(read);
         if let Some(encoded) = line.trim_end().strip_prefix(WRITE_GROUP_PREFIX) {
             let _ = write_group_sender.send(parse_write_groups(encoded));

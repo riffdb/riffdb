@@ -126,7 +126,10 @@ pub trait NonEmptyCommandBatch: Sized {
         durability: DurabilityMode,
         terminal: crate::ServiceAuditAppendIntentV1,
     ) -> Result<AuditedCommittedBatchV1, StorageError> {
-        self.commit_with_service_audits(durability, vec![terminal])
+        self.commit_with_service_audit_transitions(
+            durability,
+            vec![CommandServiceAuditTransitionV1::terminal_only(terminal)?],
+        )
     }
 
     /// Durably commits every command graph and its corresponding terminal
@@ -137,8 +140,22 @@ pub trait NonEmptyCommandBatch: Sized {
     /// independent application identities and acknowledgements.
     fn commit_with_service_audits(
         self,
+        durability: DurabilityMode,
+        terminals: Vec<crate::ServiceAuditAppendIntentV1>,
+    ) -> Result<AuditedCommittedBatchV1, StorageError> {
+        let transitions = terminals
+            .into_iter()
+            .map(CommandServiceAuditTransitionV1::terminal_only)
+            .collect::<Result<Vec<_>, _>>()?;
+        self.commit_with_service_audit_transitions(durability, transitions)
+    }
+
+    /// Durably commits each command graph with either its already-started
+    /// terminal row or a fused `Started` and terminal lifecycle.
+    fn commit_with_service_audit_transitions(
+        self,
         _durability: DurabilityMode,
-        _terminals: Vec<crate::ServiceAuditAppendIntentV1>,
+        _transitions: Vec<CommandServiceAuditTransitionV1>,
     ) -> Result<AuditedCommittedBatchV1, StorageError> {
         Err(StorageError::new(
             crate::StorageErrorKind::InvariantViolation,
@@ -148,6 +165,154 @@ pub trait NonEmptyCommandBatch: Sized {
 
     /// Rolls back every staged command without a commit attempt.
     fn rollback(self);
+}
+
+/// Audit rows that must accompany one command in the authoritative commit.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum CommandServiceAuditTransitionV1 {
+    /// Recovery of a legacy `Pending` command whose start is already durable.
+    TerminalOnly(crate::ServiceAuditAppendIntentV1),
+    /// A fresh synchronous command whose complete lifecycle is fused.
+    StartedAndTerminal {
+        /// The previously non-durable invocation start.
+        started: crate::ServiceAuditAppendIntentV1,
+        /// The terminal row linked to the command commit.
+        terminal: crate::ServiceAuditAppendIntentV1,
+    },
+}
+
+impl CommandServiceAuditTransitionV1 {
+    /// Validates a terminal belonging to an already durable start.
+    pub fn terminal_only(
+        terminal: crate::ServiceAuditAppendIntentV1,
+    ) -> Result<Self, StorageError> {
+        if terminal.phase() != riffdb_types::ServiceAuditPhaseV1::Succeeded
+            || !matches!(
+                terminal.link(),
+                riffdb_types::ServiceAuditLinkV1::Command { .. }
+            )
+        {
+            return Err(StorageError::new(
+                crate::StorageErrorKind::InvariantViolation,
+                None,
+            ));
+        }
+        Ok(Self::TerminalOnly(terminal))
+    }
+
+    /// Validates a complete same-invocation command audit lifecycle.
+    pub fn started_and_terminal(
+        started: crate::ServiceAuditAppendIntentV1,
+        terminal: crate::ServiceAuditAppendIntentV1,
+    ) -> Result<Self, StorageError> {
+        let same_invocation = started.request_id() == terminal.request_id()
+            && started.operation() == terminal.operation()
+            && started.principal() == terminal.principal()
+            && started.ingress() == terminal.ingress()
+            && started.targets() == terminal.targets()
+            && started.approval_id() == terminal.approval_id();
+        if !same_invocation
+            || started.phase() != riffdb_types::ServiceAuditPhaseV1::Started
+            || started.link() != riffdb_types::ServiceAuditLinkV1::None
+            || terminal.phase() != riffdb_types::ServiceAuditPhaseV1::Succeeded
+            || !matches!(
+                terminal.link(),
+                riffdb_types::ServiceAuditLinkV1::Command { .. }
+            )
+        {
+            return Err(StorageError::new(
+                crate::StorageErrorKind::InvariantViolation,
+                None,
+            ));
+        }
+        Ok(Self::StartedAndTerminal { started, terminal })
+    }
+
+    /// Validates a failed terminal belonging to an already durable start.
+    pub fn failure_terminal_only(
+        terminal: crate::ServiceAuditAppendIntentV1,
+    ) -> Result<Self, StorageError> {
+        if terminal.phase() != riffdb_types::ServiceAuditPhaseV1::Failed
+            || terminal.link() != riffdb_types::ServiceAuditLinkV1::None
+        {
+            return Err(StorageError::new(
+                crate::StorageErrorKind::InvariantViolation,
+                None,
+            ));
+        }
+        Ok(Self::TerminalOnly(terminal))
+    }
+
+    /// Validates a complete same-invocation failed command lifecycle.
+    pub fn started_and_failure(
+        started: crate::ServiceAuditAppendIntentV1,
+        terminal: crate::ServiceAuditAppendIntentV1,
+    ) -> Result<Self, StorageError> {
+        let same_invocation = started.request_id() == terminal.request_id()
+            && started.operation() == terminal.operation()
+            && started.principal() == terminal.principal()
+            && started.ingress() == terminal.ingress()
+            && started.targets() == terminal.targets()
+            && started.approval_id() == terminal.approval_id();
+        if !same_invocation
+            || started.phase() != riffdb_types::ServiceAuditPhaseV1::Started
+            || started.link() != riffdb_types::ServiceAuditLinkV1::None
+            || terminal.phase() != riffdb_types::ServiceAuditPhaseV1::Failed
+            || terminal.link() != riffdb_types::ServiceAuditLinkV1::None
+        {
+            return Err(StorageError::new(
+                crate::StorageErrorKind::InvariantViolation,
+                None,
+            ));
+        }
+        Ok(Self::StartedAndTerminal { started, terminal })
+    }
+
+    /// Returns the terminal row for link validation.
+    #[must_use]
+    pub const fn terminal(&self) -> &crate::ServiceAuditAppendIntentV1 {
+        match self {
+            Self::TerminalOnly(terminal) | Self::StartedAndTerminal { terminal, .. } => terminal,
+        }
+    }
+
+    /// Consumes the transition into append order.
+    #[must_use]
+    pub fn into_intents(self) -> Vec<crate::ServiceAuditAppendIntentV1> {
+        match self {
+            Self::TerminalOnly(terminal) => vec![terminal],
+            Self::StartedAndTerminal { started, terminal } => vec![started, terminal],
+        }
+    }
+}
+
+/// Result proving one deterministic execution failure and its audit terminal
+/// became durable in the same authoritative transaction.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct AuditedExecutionFailureV1 {
+    failure: StoredExecutionFailedV1,
+    terminal: crate::StoredServiceAuditRecordV1,
+}
+
+impl AuditedExecutionFailureV1 {
+    /// Joins an execution failure to its same-invocation failed audit row.
+    pub fn new(
+        failure: StoredExecutionFailedV1,
+        terminal: crate::StoredServiceAuditRecordV1,
+    ) -> Result<Self, StorageValueError> {
+        if terminal.phase() != riffdb_types::ServiceAuditPhaseV1::Failed
+            || terminal.link() != riffdb_types::ServiceAuditLinkV1::None
+        {
+            return Err(StorageValueError::IdentityMismatch);
+        }
+        Ok(Self { failure, terminal })
+    }
+
+    /// Consumes the compound result.
+    #[must_use]
+    pub fn into_parts(self) -> (StoredExecutionFailedV1, crate::StoredServiceAuditRecordV1) {
+        (self.failure, self.terminal)
+    }
 }
 
 /// Result proving one command batch and linked terminal audit committed

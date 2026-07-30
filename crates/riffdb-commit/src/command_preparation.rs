@@ -18,6 +18,28 @@ use crate::AdministrationAuditInputView;
 const QUEUED_PREPARATION_FIXED_BYTES: usize = 4 * 1_024;
 const QUEUED_BYTE_UNIT: usize = 1_024;
 
+/// Closed public-safe result when current policy no longer authorizes a
+/// speculatively evaluated command.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum PostEvaluationAuthorizationError {
+    /// Current policy made an explicit deny decision.
+    Denied,
+    /// Current policy state could not be loaded or evaluated.
+    Unavailable,
+    /// The returned decision could not bind to the exact command facts.
+    Integrity,
+}
+
+/// One-use current-policy safe point invoked after deterministic evaluation.
+///
+/// Implementations may read current authorization state but must not mutate
+/// application data. The returned proof is consumed and compared with the
+/// command's frozen semantic identity before the authoritative write opens.
+pub trait PostEvaluationCommandAuthorizer: Send {
+    /// Produces a fresh exact command-execution proof or fails closed.
+    fn authorize(&self) -> Result<AuthorizedCommandExecution, PostEvaluationAuthorizationError>;
+}
+
 pub(crate) fn queued_preparation_units(input: &CanonicalRecord) -> u32 {
     let retained = QUEUED_PREPARATION_FIXED_BYTES
         .saturating_add(canonical_record_retained_bytes(input))
@@ -201,6 +223,7 @@ pub struct CommandExecutionPreparation {
     ingress: ServiceIngressKindV1,
     control: CommandRequestControl,
     audited_lifecycle: Option<AuditedCommandLifecycle>,
+    post_evaluation_authorizer: Option<Box<dyn PostEvaluationCommandAuthorizer>>,
 }
 
 pub(crate) struct AuditedCommandLifecycle {
@@ -286,6 +309,7 @@ impl CommandExecutionPreparation {
             ingress,
             control,
             audited_lifecycle: None,
+            post_evaluation_authorizer: None,
         })
     }
 
@@ -316,6 +340,19 @@ impl CommandExecutionPreparation {
         Ok(self)
     }
 
+    /// Attaches the mandatory post-evaluation current-policy safe point for the
+    /// audited application mutation path.
+    pub fn with_post_evaluation_authorizer(
+        mut self,
+        authorizer: Box<dyn PostEvaluationCommandAuthorizer>,
+    ) -> Result<Self, CommandExecutionPreparationError> {
+        if self.post_evaluation_authorizer.is_some() || self.audited_lifecycle.is_none() {
+            return Err(CommandExecutionPreparationError::proof_mismatch());
+        }
+        self.post_evaluation_authorizer = Some(authorizer);
+        Ok(self)
+    }
+
     pub(crate) fn telemetry_identity(&self) -> (CommandId, ServiceIngressKindV1) {
         (self.resolved_plan.reference().command_id(), self.ingress)
     }
@@ -337,6 +374,7 @@ impl CommandExecutionPreparation {
             deadline,
             cancellation,
             audited_lifecycle: self.audited_lifecycle,
+            post_evaluation_authorizer: self.post_evaluation_authorizer,
         }
     }
 }
@@ -358,6 +396,7 @@ pub(crate) struct CommandExecutionPreparationParts {
     pub(crate) deadline: Instant,
     pub(crate) cancellation: CancellationToken,
     pub(crate) audited_lifecycle: Option<AuditedCommandLifecycle>,
+    pub(crate) post_evaluation_authorizer: Option<Box<dyn PostEvaluationCommandAuthorizer>>,
 }
 
 #[cfg(test)]

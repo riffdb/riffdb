@@ -1,6 +1,6 @@
 //! Redb catalog, audit, and capability administration ports.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::num::NonZeroU64;
 
 use redb::{ReadableTable, ReadableTableMetadata};
@@ -1322,44 +1322,71 @@ pub(crate) fn stage_service_audit_group_in_write(
     access: &crate::store::RedbWriteAccess,
     intents: &[ServiceAuditAppendIntentV1],
 ) -> Result<Vec<StoredServiceAuditRecordV1>, StorageError> {
+    let maximum_rows = riffdb_storage_api::MAX_GROUPED_WRITE_TRANSITIONS
+        .checked_mul(2)
+        .ok_or_else(|| storage_error(StorageErrorKind::LimitExceeded))?;
     if intents.is_empty()
-        || intents.len() > riffdb_storage_api::MAX_GROUPED_WRITE_TRANSITIONS
+        || intents.len() > maximum_rows
         || intents
             .iter()
             .map(ServiceAuditAppendIntentV1::request_id)
             .collect::<BTreeSet<_>>()
             .len()
-            != intents.len()
+            > riffdb_storage_api::MAX_GROUPED_WRITE_TRANSITIONS
     {
         return Err(storage_error(StorageErrorKind::LimitExceeded));
     }
     let transaction = access.transaction()?;
     let allocator = validate_administration_tail(transaction)?;
     let mut audit = transaction.open_table(AUDIT).map_err(table_error)?;
+    let mut fused_starts: BTreeMap<riffdb_types::RequestId, ServiceAuditAppendIntentV1> =
+        BTreeMap::new();
     for intent in intents {
         let sequences = access.service_audit_sequences(intent.request_id())?;
         let lifecycle = service_lifecycle(&audit, intent.request_id(), &sequences)?;
-        let allowed = match lifecycle {
-            Some(ServiceLifecycle::Started {
-                record: started,
-                terminal: false,
-            }) => {
-                intent.phase() != ServiceAuditPhaseV1::Started
-                    && started.request_id() == intent.request_id()
-                    && started.operation() == intent.operation()
-                    && started.principal() == intent.principal()
-                    && started.ingress() == intent.ingress()
-                    && started.targets() == intent.targets()
-                    && started.approval_id() == intent.approval_id()
-                    && started.principal().is_some()
-            }
-            None | Some(ServiceLifecycle::Standalone) | Some(ServiceLifecycle::Started { .. }) => {
-                false
+        let had_fused_start = fused_starts.contains_key(&intent.request_id());
+        let allowed = if let Some(started) = fused_starts.get(&intent.request_id()) {
+            intent.phase() != ServiceAuditPhaseV1::Started
+                && started.request_id() == intent.request_id()
+                && started.operation() == intent.operation()
+                && started.principal() == intent.principal()
+                && started.ingress() == intent.ingress()
+                && started.targets() == intent.targets()
+                && started.approval_id() == intent.approval_id()
+                && started.timestamp() <= intent.timestamp()
+        } else {
+            match lifecycle {
+                Some(ServiceLifecycle::Started {
+                    record: started,
+                    terminal: false,
+                }) => {
+                    intent.phase() != ServiceAuditPhaseV1::Started
+                        && started.request_id() == intent.request_id()
+                        && started.operation() == intent.operation()
+                        && started.principal() == intent.principal()
+                        && started.ingress() == intent.ingress()
+                        && started.targets() == intent.targets()
+                        && started.approval_id() == intent.approval_id()
+                        && started.principal().is_some()
+                }
+                None if intent.phase() == ServiceAuditPhaseV1::Started => {
+                    fused_starts.insert(intent.request_id(), intent.clone());
+                    true
+                }
+                None
+                | Some(ServiceLifecycle::Standalone)
+                | Some(ServiceLifecycle::Started { .. }) => false,
             }
         };
+        if had_fused_start && allowed {
+            fused_starts.remove(&intent.request_id());
+        }
         if !allowed || !service_link_is_valid(transaction, intent)? {
             return Err(storage_error(StorageErrorKind::InvariantViolation));
         }
+    }
+    if !fused_starts.is_empty() {
+        return Err(storage_error(StorageErrorKind::InvariantViolation));
     }
 
     let count =
@@ -2265,6 +2292,25 @@ mod tests {
         .expect("audit intent")
     }
 
+    fn command_audit(
+        request: u8,
+        phase: ServiceAuditPhaseV1,
+        seconds: i64,
+    ) -> ServiceAuditAppendIntentV1 {
+        ServiceAuditAppendIntentV1::new(
+            request_id(request),
+            Timestamp::new(seconds, 0).expect("timestamp"),
+            ServiceOperationV1::ExecuteCommand,
+            phase,
+            principal(capability_id(2)),
+            ServiceIngressKindV1::Grpc,
+            ServiceAuditTargetsV1::empty(),
+            None,
+            ServiceAuditLinkV1::None,
+        )
+        .expect("command audit intent")
+    }
+
     #[test]
     fn service_audit_group_assigns_fifo_sequences_in_one_transition() {
         let (_path, mut ports) = initialized_ports("audit-group");
@@ -2287,6 +2333,50 @@ mod tests {
             .collect::<Vec<_>>();
         assert_eq!(sequences, vec![1, 2, 3]);
         assert_eq!(audit_count(&ports), 3);
+    }
+
+    #[test]
+    fn fused_maximum_command_group_allocates_two_audit_rows_per_command() {
+        let (_path, ports) = initialized_ports("fused-audit-maximum");
+        let group_bound = riffdb_storage_api::MAX_GROUPED_WRITE_TRANSITIONS;
+        let mut intents = Vec::with_capacity(group_bound * 2);
+        for request in 1..=u8::try_from(group_bound).expect("group bound") {
+            intents.push(command_audit(
+                request,
+                ServiceAuditPhaseV1::Started,
+                i64::from(request) * 2,
+            ));
+            intents.push(command_audit(
+                request,
+                ServiceAuditPhaseV1::Failed,
+                i64::from(request) * 2 + 1,
+            ));
+        }
+
+        let access = ports
+            .begin_write()
+            .expect("begin fused command transaction");
+        let records =
+            stage_service_audit_group_in_write(&access, &intents).expect("stage fused audit rows");
+
+        assert_eq!(records.len(), group_bound * 2);
+        assert_eq!(
+            records
+                .first()
+                .expect("first record")
+                .administration_sequence()
+                .get(),
+            1
+        );
+        assert_eq!(
+            records
+                .last()
+                .expect("last record")
+                .administration_sequence()
+                .get(),
+            128
+        );
+        access.abort().expect("abort uncommitted test transaction");
     }
 
     #[test]

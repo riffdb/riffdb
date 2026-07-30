@@ -45,11 +45,12 @@ pub use clock::{
     AdministrationClock, AdministrationClockError, AdmissionClock, AdmissionClockError,
 };
 pub use command_execution::{
-    CommandExecutionError, CommandExecutionErrorKind, CommandExecutionResult, CoordinatorDurability,
+    CommandExecutionError, CommandExecutionErrorKind, CommandExecutionResult,
+    CoordinatorDurability, ExecutionFailedOutcome,
 };
 pub use command_preparation::{
     CommandCancellationHandle, CommandExecutionPreparation, CommandExecutionPreparationError,
-    CommandRequestControl,
+    CommandRequestControl, PostEvaluationAuthorizationError, PostEvaluationCommandAuthorizer,
 };
 pub use control_plane::{
     ActivatedCatalog, ActivatedQueryModule, CapabilityBootstrapCompletion,

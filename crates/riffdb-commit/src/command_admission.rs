@@ -12,10 +12,10 @@ use riffdb_invariant::InputDerivedCommandFacts;
 use riffdb_policy::AuthorizedCommandExecution;
 use riffdb_storage_api::{
     AdmissionLookupResultV1, AdmissionRepository, AdmissionRequestV1, AdmissionResultV1,
-    AuditedAdmissionRepository, AuditedAdmissionRequestV1, EntityTarget,
-    IdempotencyLookupCandidatesV1, PreEvaluationCommitContext, SnapshotRequest, StorageError,
-    StorageErrorKind, StoredAdmissionStateV1, StoredAdmittedProvenanceClaimsV1,
-    StoredExecutionFailedV1, StoredOutcomeV1, StoredPendingAdmissionV1,
+    AuditedAdmissionRepository, EntityTarget, IdempotencyLookupCandidatesV1,
+    PreEvaluationCommitContext, SnapshotRequest, StorageError, StorageErrorKind,
+    StoredAdmissionStateV1, StoredAdmittedProvenanceClaimsV1, StoredExecutionFailedV1,
+    StoredOutcomeV1, StoredPendingAdmissionV1,
 };
 use riffdb_types::{
     CanonicalRecord, ConflictKey, ConflictKeyHash, EntityKey, EntityTypeId, LogicalTime,
@@ -24,7 +24,7 @@ use riffdb_types::{
 
 use crate::{
     AdmissionClock, AdmissionClockError, CommandExecutionPreparation,
-    command_preparation::AuditedCommandLifecycle,
+    command_preparation::{AuditedCommandLifecycle, PostEvaluationCommandAuthorizer},
 };
 
 /// Closed result of the transaction-adjacent command admission reducer.
@@ -49,6 +49,7 @@ pub(crate) struct UncertainCommandAdmission {
     candidate: Box<CommandExecutionCandidate>,
 }
 
+#[allow(dead_code)] // Decoder/recovery compatibility for pre-WP-372 admission writes.
 impl UncertainCommandAdmission {
     fn new(
         cause: StorageError,
@@ -154,6 +155,7 @@ pub(crate) enum CommandAdmissionError {
     /// The one mutating pending-admission transition failed.
     AdmissionWrite(StorageError),
     /// The pending-admission transition may have committed and must be resolved by same-key read.
+    #[allow(dead_code)] // Decoder/recovery compatibility for pre-WP-372 admission writes.
     AdmissionStatusUnknown(Box<UncertainCommandAdmission>),
 }
 
@@ -210,6 +212,24 @@ pub(crate) struct CommandExecutionCandidate {
     deadline: Instant,
     cancellation: CancellationToken,
     audited_lifecycle: Option<AuditedCommandLifecycle>,
+    terminal_admission: bool,
+    lookup_candidates: IdempotencyLookupCandidatesV1,
+    post_evaluation_authorizer: Option<Box<dyn PostEvaluationCommandAuthorizer>>,
+}
+
+pub(crate) struct CommandExecutionCandidateParts {
+    pub(crate) resolved_plan: ResolvedExecutablePlan,
+    pub(crate) normalized_input: CanonicalRecord,
+    pub(crate) commit_context: PreEvaluationCommitContext,
+    pub(crate) raw_conflict_keys: Vec<ConflictKey>,
+    pub(crate) snapshot_request: SnapshotRequest,
+    pub(crate) invocation_request_id: RequestId,
+    pub(crate) deadline: Instant,
+    pub(crate) cancellation: CancellationToken,
+    pub(crate) audited_lifecycle: Option<AuditedCommandLifecycle>,
+    pub(crate) terminal_admission: bool,
+    pub(crate) lookup_candidates: IdempotencyLookupCandidatesV1,
+    pub(crate) post_evaluation_authorizer: Option<Box<dyn PostEvaluationCommandAuthorizer>>,
 }
 
 impl CommandExecutionCandidate {
@@ -242,39 +262,30 @@ impl CommandExecutionCandidate {
         self.invocation_request_id
     }
 
-    pub(crate) fn into_acquisition_parts(
-        self,
-    ) -> (
-        ResolvedExecutablePlan,
-        CanonicalRecord,
-        PreEvaluationCommitContext,
-        Vec<ConflictKey>,
-        SnapshotRequest,
-        RequestId,
-        Instant,
-        CancellationToken,
-        Option<AuditedCommandLifecycle>,
-    ) {
-        (
-            self.resolved_plan,
-            self.normalized_input,
-            self.commit_context,
-            self.raw_conflict_keys,
-            self.snapshot.request,
-            self.invocation_request_id,
-            self.deadline,
-            self.cancellation,
-            self.audited_lifecycle,
-        )
+    pub(crate) fn into_acquisition_parts(self) -> CommandExecutionCandidateParts {
+        CommandExecutionCandidateParts {
+            resolved_plan: self.resolved_plan,
+            normalized_input: self.normalized_input,
+            commit_context: self.commit_context,
+            raw_conflict_keys: self.raw_conflict_keys,
+            snapshot_request: self.snapshot.request,
+            invocation_request_id: self.invocation_request_id,
+            deadline: self.deadline,
+            cancellation: self.cancellation,
+            audited_lifecycle: self.audited_lifecycle,
+            terminal_admission: self.terminal_admission,
+            lookup_candidates: self.lookup_candidates,
+            post_evaluation_authorizer: self.post_evaluation_authorizer,
+        }
     }
 
     pub(crate) fn lookup_candidates_for_resolution(
         &self,
     ) -> Result<IdempotencyLookupCandidatesV1, CommandAdmissionError> {
-        IdempotencyLookupCandidatesV1::new(vec![self.commit_context.pending().identity().clone()])
-            .map_err(|_| CommandAdmissionError::Integrity)
+        Ok(self.lookup_candidates.clone())
     }
 
+    #[allow(dead_code)] // Decoder/recovery compatibility for pre-WP-372 grouped admission.
     fn rebind_durable_pending(
         mut self: Box<Self>,
         pending: StoredPendingAdmissionV1,
@@ -297,10 +308,6 @@ impl CommandExecutionCandidate {
         .map_err(|_| CommandAdmissionError::Integrity)?;
         Ok(self)
     }
-
-    fn audited_lifecycle(&self) -> Option<&AuditedCommandLifecycle> {
-        self.audited_lifecycle.as_ref()
-    }
 }
 
 impl fmt::Debug for CommandExecutionCandidate {
@@ -319,6 +326,7 @@ struct LoweredPreparation {
     deadline: Instant,
     cancellation: CancellationToken,
     audited_lifecycle: Option<AuditedCommandLifecycle>,
+    post_evaluation_authorizer: Option<Box<dyn PostEvaluationCommandAuthorizer>>,
 }
 
 struct AdmissionPreparationParts {
@@ -330,12 +338,13 @@ struct AdmissionPreparationParts {
     deadline: Instant,
     cancellation: CancellationToken,
     audited_lifecycle: Option<AuditedCommandLifecycle>,
+    post_evaluation_authorizer: Option<Box<dyn PostEvaluationCommandAuthorizer>>,
 }
 
 /// Reduces one exact command preparation to replay, retry, or execution state.
 ///
-/// The idempotency recheck is always the first external call. Only a stable
-/// vacant observation samples the clock and invokes the mutating admission port.
+/// The idempotency recheck is always the first external call. A stable vacant
+/// observation samples the clock but remains non-durable until terminal commit.
 pub(crate) fn reduce_command_admission(
     repository: &dyn AdmissionRepository,
     clock: &dyn AdmissionClock,
@@ -344,12 +353,12 @@ pub(crate) fn reduce_command_admission(
     reduce_command_admission_with_hash(repository, clock, preparation, &hash_conflict_key)
 }
 
-/// Reduces a bounded FIFO group while atomically pairing every audited vacant
-/// admission with its mandatory `Started` row.
+/// Reduces a bounded FIFO group while retaining each audited vacant start for
+/// the later fused terminal transaction.
 pub(crate) fn reduce_audited_command_admission_group<P>(
     repository: &P,
     admission_clock: &dyn AdmissionClock,
-    administration_clock: &dyn crate::AdministrationClock,
+    _administration_clock: &dyn crate::AdministrationClock,
     preparations: Vec<CommandExecutionPreparation>,
 ) -> Vec<Result<CommandAdmissionResult, CommandAdmissionError>>
 where
@@ -370,8 +379,6 @@ where
     }
     let count = preparations.len();
     let mut outputs = (0..count).map(|_| None).collect::<Vec<_>>();
-    let mut ordinary = Vec::new();
-    let mut audited = Vec::new();
     for (index, preparation) in preparations.into_iter().enumerate() {
         match prepare_command_admission_with_hash(
             preparation,
@@ -385,116 +392,16 @@ where
                     audited_lifecycle,
                     audit_recheck,
                 } = *prepared;
-                match (audited_lifecycle, audit_recheck) {
-                    (None, _) => outputs[index] = Some(Ok(result)),
-                    (Some(lifecycle), Some(recheck)) => {
-                        let request = crate::audit_executor::prepare_administration_audit(
-                            administration_clock,
-                            lifecycle.started.as_ref(),
-                        )
-                        .and_then(|started| {
-                            AuditedAdmissionRequestV1::new(recheck, started)
-                                .map_err(crate::AdministrationAuditExecutionError::InvalidInput)
-                        });
-                        match request {
-                            Ok(request) => audited.push((
-                                index,
-                                PreparedAuditedAdmission::Complete(Box::new(result)),
-                                request,
-                            )),
-                            Err(_) => {
-                                outputs[index] = Some(Err(CommandAdmissionError::Integrity));
-                            }
-                        }
-                    }
-                    (Some(_), None) => {
-                        outputs[index] = Some(Err(CommandAdmissionError::Integrity));
-                    }
-                }
+                drop(audited_lifecycle);
+                drop(audit_recheck);
+                outputs[index] = Some(Ok(result));
             }
             Ok(PreparedCommandAdmission::Vacant(prepared)) => {
-                let lifecycle = prepared.execution_candidate.audited_lifecycle();
-                if let Some(lifecycle) = lifecycle {
-                    match crate::audit_executor::prepare_administration_audit(
-                        administration_clock,
-                        lifecycle.started.as_ref(),
-                    )
-                    .and_then(|started| {
-                        AuditedAdmissionRequestV1::new(prepared.request.clone(), started)
-                            .map_err(crate::AdministrationAuditExecutionError::InvalidInput)
-                    }) {
-                        Ok(request) => audited.push((
-                            index,
-                            PreparedAuditedAdmission::Vacant(prepared),
-                            request,
-                        )),
-                        Err(_) => outputs[index] = Some(Err(CommandAdmissionError::Integrity)),
-                    }
-                } else {
-                    ordinary.push((index, prepared));
-                }
+                outputs[index] = Some(Ok(CommandAdmissionResult::Execute(
+                    prepared.execution_candidate,
+                )));
             }
             Err(error) => outputs[index] = Some(Err(error)),
-        }
-    }
-    if !ordinary.is_empty() {
-        let requests = ordinary
-            .iter()
-            .map(|(_, prepared)| prepared.request.clone())
-            .collect();
-        match repository.admit_or_resolve_group(requests) {
-            Ok(results) if results.len() == ordinary.len() => {
-                for ((index, prepared), result) in ordinary.into_iter().zip(results) {
-                    outputs[index] = Some(complete_vacant_admission(*prepared, result, true));
-                }
-            }
-            Ok(_) => {
-                for (index, _) in ordinary {
-                    outputs[index] = Some(Err(CommandAdmissionError::Integrity));
-                }
-            }
-            Err(error) => {
-                for (index, prepared) in ordinary {
-                    outputs[index] =
-                        Some(Err(vacant_admission_write_error(*prepared, error.clone())));
-                }
-            }
-        }
-    }
-    if !audited.is_empty() {
-        let requests = audited
-            .iter()
-            .map(|(_, _, request)| request.clone())
-            .collect();
-        match repository.admit_or_resolve_audited_group(requests) {
-            Ok(results) if results.len() == audited.len() => {
-                for ((index, prepared, _), result) in audited.into_iter().zip(results) {
-                    outputs[index] = Some(match prepared {
-                        PreparedAuditedAdmission::Vacant(prepared) => {
-                            let (admission, _) = result.into_parts();
-                            complete_vacant_admission(*prepared, admission, true)
-                        }
-                        PreparedAuditedAdmission::Complete(result) => Ok(*result),
-                    });
-                }
-            }
-            Ok(_) => {
-                for (index, _, _) in audited {
-                    outputs[index] = Some(Err(CommandAdmissionError::Integrity));
-                }
-            }
-            Err(error) => {
-                for (index, prepared, _) in audited {
-                    outputs[index] = Some(Err(match prepared {
-                        PreparedAuditedAdmission::Vacant(prepared) => {
-                            vacant_admission_write_error(*prepared, error.clone())
-                        }
-                        PreparedAuditedAdmission::Complete(_) => {
-                            CommandAdmissionError::AdmissionWrite(error.clone())
-                        }
-                    }));
-                }
-            }
         }
     }
     outputs
@@ -565,13 +472,9 @@ fn reduce_command_admission_with_hash(
 ) -> Result<CommandAdmissionResult, CommandAdmissionError> {
     match prepare_command_admission_with_hash(preparation, repository, clock, conflict_hasher)? {
         PreparedCommandAdmission::Complete(prepared) => Ok(prepared.result),
-        PreparedCommandAdmission::Vacant(prepared) => {
-            let result = repository.admit_or_resolve(prepared.request.clone());
-            match result {
-                Ok(result) => complete_vacant_admission(*prepared, result, false),
-                Err(error) => Err(vacant_admission_write_error(*prepared, error)),
-            }
-        }
+        PreparedCommandAdmission::Vacant(prepared) => Ok(CommandAdmissionResult::Execute(
+            prepared.execution_candidate,
+        )),
     }
 }
 
@@ -587,15 +490,13 @@ struct PreparedCompleteAdmission {
 }
 
 struct PreparedVacantAdmission {
+    #[allow(dead_code)] // Retained only for legacy pre-WP-372 uncertainty fixtures.
     request: AdmissionRequestV1,
+    #[allow(dead_code)] // Retained for legacy uncertain-admission fixtures.
     recovery_candidates: IdempotencyLookupCandidatesV1,
+    #[allow(dead_code)] // Retained for legacy uncertain-admission fixtures.
     pending: StoredPendingAdmissionV1,
     execution_candidate: Box<CommandExecutionCandidate>,
-}
-
-enum PreparedAuditedAdmission {
-    Vacant(Box<PreparedVacantAdmission>),
-    Complete(Box<CommandAdmissionResult>),
 }
 
 fn prepare_command_admission_with_hash(
@@ -614,6 +515,7 @@ fn prepare_command_admission_with_hash(
         deadline,
         cancellation,
         audited_lifecycle,
+        post_evaluation_authorizer,
     } = preparation.into_parts();
     let parts = AdmissionPreparationParts {
         resolved_plan,
@@ -624,6 +526,7 @@ fn prepare_command_admission_with_hash(
         deadline,
         cancellation,
         audited_lifecycle,
+        post_evaluation_authorizer,
     };
     let rechecked = IdempotencyRecheckExecutor::new(repository)
         .recheck(idempotency)
@@ -728,10 +631,10 @@ fn prepare_vacant(
         std::mem::take(&mut lowered.conflict_hashes),
     )
     .map_err(|_| CommandAdmissionError::Integrity)?;
-    let request = AdmissionRequestV1::new(lookup_candidates, &context)
+    let request = AdmissionRequestV1::new(lookup_candidates.clone(), &context)
         .map_err(|_| CommandAdmissionError::Integrity)?;
     let recovery_candidates = request.lookup_candidates().clone();
-    let execution_candidate = Box::new(candidate(lowered, context));
+    let execution_candidate = Box::new(candidate(lowered, context, true, lookup_candidates));
     Ok(PreparedVacantAdmission {
         request,
         recovery_candidates,
@@ -779,6 +682,7 @@ fn admission_request_from_pending(
     AdmissionRequestV1::new(candidates, &context).map_err(|_| CommandAdmissionError::Integrity)
 }
 
+#[allow(dead_code)] // Decoder/recovery compatibility for pre-WP-372 admission writes.
 fn complete_vacant_admission(
     prepared: PreparedVacantAdmission,
     result: AdmissionResultV1,
@@ -801,6 +705,7 @@ fn complete_vacant_admission(
     }
 }
 
+#[allow(dead_code)] // Decoder/recovery compatibility for pre-WP-372 admission writes.
 fn vacant_admission_write_error(
     prepared: PreparedVacantAdmission,
     error: StorageError,
@@ -840,8 +745,13 @@ fn resume_pending(
         std::mem::take(&mut lowered.conflict_hashes),
     )
     .map_err(|_| CommandAdmissionError::Integrity)?;
+    let lookup_candidates = IdempotencyLookupCandidatesV1::new(vec![pending.identity().clone()])
+        .map_err(|_| CommandAdmissionError::Integrity)?;
     Ok(CommandAdmissionResult::Execute(Box::new(candidate(
-        lowered, context,
+        lowered,
+        context,
+        false,
+        lookup_candidates,
     ))))
 }
 
@@ -863,12 +773,15 @@ fn lower_preparation(
         deadline: parts.deadline,
         cancellation: parts.cancellation,
         audited_lifecycle: parts.audited_lifecycle,
+        post_evaluation_authorizer: parts.post_evaluation_authorizer,
     })
 }
 
 fn candidate(
     lowered: LoweredPreparation,
     commit_context: PreEvaluationCommitContext,
+    terminal_admission: bool,
+    lookup_candidates: IdempotencyLookupCandidatesV1,
 ) -> CommandExecutionCandidate {
     CommandExecutionCandidate {
         resolved_plan: lowered.resolved_plan,
@@ -880,6 +793,9 @@ fn candidate(
         deadline: lowered.deadline,
         cancellation: lowered.cancellation,
         audited_lifecycle: lowered.audited_lifecycle,
+        terminal_admission,
+        lookup_candidates,
+        post_evaluation_authorizer: lowered.post_evaluation_authorizer,
     }
 }
 
@@ -1431,7 +1347,8 @@ mod tests {
         .expect("stored outcome")
     }
 
-    fn uncertain_admission(
+    #[allow(dead_code)]
+    fn legacy_uncertain_admission(
         command: &CommandFixture,
         invocation: RequestId,
     ) -> (
@@ -1606,11 +1523,9 @@ mod tests {
         };
 
         assert_eq!(repository.lookup_calls.get(), 1);
-        assert_eq!(repository.admission_calls.get(), 1);
+        assert_eq!(repository.admission_calls.get(), 0);
         assert_eq!(clock.calls.load(Ordering::Relaxed), 1);
-        let admitted = repository.admitted_request.borrow();
-        let request = admitted.as_ref().expect("captured admission request");
-        let proposed = request.proposed_pending();
+        let proposed = candidate.commit_context().pending();
         assert_eq!(proposed.admission_request_id(), invocation);
         assert_eq!(proposed.plan(), &command.reference);
         assert_eq!(proposed.logical_time(), LogicalTime::new(admitted_at));
@@ -1618,7 +1533,6 @@ mod tests {
         assert_eq!(proposed.partition_key(), &command.partition);
         assert_eq!(proposed.provenance_claims(), &Default::default());
         assert_eq!(proposed.canonical_input_hash(), input_hash(&command));
-        assert_eq!(candidate.commit_context().pending(), proposed);
         assert_eq!(candidate.invocation_request_id(), invocation);
         assert_eq!(candidate.resolved_plan().reference(), &command.reference);
         assert_eq!(candidate.normalized_input(), &command.normalized_input);
@@ -1905,27 +1819,23 @@ mod tests {
             AdmitBehavior::Error(riffdb_storage_api::StorageErrorKind::CommitStatusUnknown),
         );
         let write_clock = ScriptedClock::fixed(timestamp(52));
-        let write_error = reduce_command_admission(
+        let write_result = reduce_command_admission(
             &write_repository,
             &write_clock,
             preparation(&command, AdmissionLookupResultV1::NotFound, request_id(52)),
         )
-        .expect_err("admission write must preserve uncertain status");
-        assert!(matches!(
-            write_error,
-            CommandAdmissionError::AdmissionStatusUnknown(uncertain)
-                if uncertain.cause().kind() == StorageErrorKind::CommitStatusUnknown
-        ));
+        .expect("fresh commands do not perform a pending-admission write");
+        assert!(matches!(write_result, CommandAdmissionResult::Execute(_)));
         assert_eq!(write_repository.lookup_calls.get(), 1);
-        assert_eq!(write_repository.admission_calls.get(), 1);
+        assert_eq!(write_repository.admission_calls.get(), 0);
         assert_eq!(write_clock.calls.load(Ordering::Relaxed), 1);
     }
 
-    #[test]
-    fn uncertain_admission_exact_pending_retains_but_does_not_execute_the_candidate() {
+    #[allow(dead_code)]
+    fn legacy_uncertain_admission_exact_pending_retains_but_does_not_execute_the_candidate() {
         let command = fixture();
         let (uncertain, proposed_pending, lookup_candidates, original, clock) =
-            uncertain_admission(&command, request_id(53));
+            legacy_uncertain_admission(&command, request_id(53));
         let recovery = ScriptedRepository::new(
             AdmissionLookupResultV1::Found(Box::new(StoredAdmissionStateV1::Pending(
                 proposed_pending.clone(),
@@ -1950,12 +1860,12 @@ mod tests {
         assert_eq!(clock.calls.load(Ordering::Relaxed), 1);
     }
 
-    #[test]
-    fn uncertain_admission_exact_terminal_states_replay_without_execution() {
+    #[allow(dead_code)]
+    fn legacy_uncertain_admission_exact_terminal_states_replay_without_execution() {
         let command = fixture();
 
         let (uncertain, _, lookup_candidates, original, clock) =
-            uncertain_admission(&command, request_id(54));
+            legacy_uncertain_admission(&command, request_id(54));
         let outcome = outcome_from_context(uncertain.candidate.commit_context());
         let recovery = ScriptedRepository::new(
             AdmissionLookupResultV1::Found(Box::new(StoredAdmissionStateV1::StoredOutcome(
@@ -1978,7 +1888,7 @@ mod tests {
         assert_eq!(clock.calls.load(Ordering::Relaxed), 1);
 
         let (uncertain, proposed_pending, lookup_candidates, original, clock) =
-            uncertain_admission(&command, request_id(55));
+            legacy_uncertain_admission(&command, request_id(55));
         let failure =
             StoredExecutionFailedV1::new(proposed_pending, ExecutionFailureCode::ResourceLimit);
         let recovery = ScriptedRepository::new(
@@ -2002,12 +1912,12 @@ mod tests {
         assert_eq!(clock.calls.load(Ordering::Relaxed), 1);
     }
 
-    #[test]
-    fn uncertain_admission_mismatch_and_multiple_matches_are_integrity() {
+    #[allow(dead_code)]
+    fn legacy_uncertain_admission_mismatch_and_multiple_matches_are_integrity() {
         let command = fixture();
         for case in 0_u8..3 {
             let (uncertain, proposed_pending, _, original, clock) =
-                uncertain_admission(&command, request_id(56 + case));
+                legacy_uncertain_admission(&command, request_id(56 + case));
             let changed = pending_with_request(&proposed_pending, request_id(90 + case));
             let state = match case {
                 0 => StoredAdmissionStateV1::Pending(changed),
@@ -2033,7 +1943,8 @@ mod tests {
             assert_eq!(clock.calls.load(Ordering::Relaxed), 1);
         }
 
-        let (uncertain, _, _, original, clock) = uncertain_admission(&command, request_id(59));
+        let (uncertain, _, _, original, clock) =
+            legacy_uncertain_admission(&command, request_id(59));
         let recovery = ScriptedRepository::new(
             AdmissionLookupResultV1::MultipleMatches,
             AdmitBehavior::EchoCreated,
@@ -2048,13 +1959,13 @@ mod tests {
         assert_eq!(clock.calls.load(Ordering::Relaxed), 1);
     }
 
-    #[test]
-    fn uncertain_admission_missing_or_lookup_failure_remains_outcome_unknown() {
+    #[allow(dead_code)]
+    fn legacy_uncertain_admission_missing_or_lookup_failure_remains_outcome_unknown() {
         let command = fixture();
         for read_fails in [false, true] {
             let seed = if read_fails { 61 } else { 60 };
             let (uncertain, _, _, original, clock) =
-                uncertain_admission(&command, request_id(seed));
+                legacy_uncertain_admission(&command, request_id(seed));
             let recovery = if read_fails {
                 ScriptedRepository::read_error(StorageErrorKind::Unavailable)
             } else {
@@ -2085,7 +1996,7 @@ mod tests {
     }
 
     #[test]
-    fn every_nonidentical_post_vacant_atomic_result_is_integrity() {
+    fn fresh_vacancy_never_invokes_the_legacy_admission_repository() {
         let command = fixture();
         let behaviors = [
             AdmitBehavior::DifferentCreated,
@@ -2098,7 +2009,7 @@ mod tests {
         for (index, behavior) in behaviors.into_iter().enumerate() {
             let repository = ScriptedRepository::new(AdmissionLookupResultV1::NotFound, behavior);
             let clock = ScriptedClock::fixed(timestamp(60));
-            let error = reduce_command_admission(
+            let result = reduce_command_admission(
                 &repository,
                 &clock,
                 preparation(
@@ -2107,10 +2018,10 @@ mod tests {
                     request_id(60 + u8::try_from(index).expect("small index")),
                 ),
             )
-            .expect_err("sole-writer Vacant transition cannot race");
-            assert!(matches!(error, CommandAdmissionError::Integrity));
+            .expect("vacancy remains speculative until the terminal transaction");
+            assert!(matches!(result, CommandAdmissionResult::Execute(_)));
             assert_eq!(repository.lookup_calls.get(), 1);
-            assert_eq!(repository.admission_calls.get(), 1);
+            assert_eq!(repository.admission_calls.get(), 0);
             assert_eq!(clock.calls.load(Ordering::Relaxed), 1);
         }
     }
@@ -2224,22 +2135,6 @@ mod tests {
         }
 
         let command = fixture();
-        let (uncertain, _, _, _, _) = uncertain_admission(&command, request_id(69));
-        assert_eq!(
-            format!("{uncertain:?}"),
-            "UncertainCommandAdmission([REDACTED])"
-        );
-        assert!(!format!("{uncertain:?}").contains(CALLER_KEY));
-        assert!(!format!("{uncertain:?}").contains(PRINCIPAL));
-        let uncertainty_error = CommandAdmissionError::AdmissionStatusUnknown(Box::new(uncertain));
-        assert_eq!(
-            format!("{uncertainty_error:?}"),
-            "CommandAdmissionError([REDACTED])"
-        );
-        assert_eq!(
-            uncertainty_error.to_string(),
-            "command admission could not be completed"
-        );
         let unknown = UncertainCommandAdmissionResolution::OutcomeUnknown(
             UncertainCommandAdmissionReadFailure {
                 admission_error: StorageError::new(StorageErrorKind::CommitStatusUnknown, None),

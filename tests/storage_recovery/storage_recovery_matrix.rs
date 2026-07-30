@@ -15,31 +15,33 @@ use riffdb_catalog::{
 };
 use riffdb_contract_compiler::compile_contract_source;
 use riffdb_storage_api::{
-    AdmissionLookupResultV1, AdmissionRepository, AdmissionRequestV1, AdmissionResultV1,
-    AffectedEntityV1, AffectedEpochCurrentState, AffectedIndexEpochTargets,
-    ApplicationCommandTransactionPort, AssignedCommandSequence, AtomicCommandRecordSet,
-    AuditPrincipalV1, AuthoritativeIndexScanPage, AuthoritativeIndexScanRequest,
-    AuthoritativePointReader, AuthoritativeScanReader, CandidateAdmissionResult,
-    CandidateCapacityResult, CatalogActivationIntentV1, CatalogActivationResult,
-    CatalogAdministrationRepository, CommandCandidateAdmission, CommandCandidateAffectedEpochRead,
-    CommandCandidateAwaitingCapacity, CommandCandidateAwaitingValidation,
-    CommandCandidateCapacityReserved, CommandCandidateSequenceAssigned, CommandCandidateStateRead,
-    CommandWriteSetPlanV1, CurrentRangeObservation, DatabaseIdentityProbe,
-    DatabaseIdentityProbePort, DatabaseInitializationPort, DeclaredOutcome, DurabilityMode,
-    DurableKeySchemaBindingV1, EmptyCommandBatch, EncodedWriteSetUpperBoundResultV1,
-    EntityMutation, EntityObservation, EntityPostImage, EntityTarget, EvaluationBudget,
-    EventIntent, EvidencePageLimit, ExecutablePlanRef, ExpectedEntityState, IdempotencyIdentity,
-    IdempotencyKeyDigest, IdempotencyLookupCandidatesV1, IndexEntryMutationV1, IndexEpochAdvanceV1,
-    IndexEpochPosition, IndexRangeObservation, IndexRangeTarget, MAX_INDEX_MIGRATION_PAGE_BYTES,
+    AdministrationAuditReader, AdministrationAuditScan, AdministrationAuditScanRequest,
+    AdmissionLookupResultV1, AdmissionRepository, AffectedEntityV1, AffectedEpochCurrentState,
+    AffectedIndexEpochTargets, ApplicationCommandTransactionPort, AssignedCommandSequence,
+    AtomicCommandRecordSet, AuditPrincipalV1, AuthoritativeIndexScanPage,
+    AuthoritativeIndexScanRequest, AuthoritativePointReader, AuthoritativeScanReader,
+    CandidateAdmissionResult, CandidateCapacityResult, CatalogActivationIntentV1,
+    CatalogActivationResult, CatalogAdministrationRepository, CommandCandidateAdmission,
+    CommandCandidateAffectedEpochRead, CommandCandidateAwaitingCapacity,
+    CommandCandidateAwaitingValidation, CommandCandidateCapacityReserved,
+    CommandCandidateSequenceAssigned, CommandCandidateStateRead, CommandWriteSetPlanV1,
+    CurrentRangeObservation, DatabaseIdentityProbe, DatabaseIdentityProbePort,
+    DatabaseInitializationPort, DeclaredOutcome, DurabilityMode, DurableKeySchemaBindingV1,
+    EmptyCommandBatch, EncodedWriteSetUpperBoundResultV1, EntityMutation, EntityObservation,
+    EntityPostImage, EntityTarget, EvaluationBudget, EventIntent, EvidencePageLimit,
+    ExecutablePlanRef, ExpectedEntityState, IdempotencyIdentity, IdempotencyKeyDigest,
+    IdempotencyLookupCandidatesV1, IndexEntryMutationV1, IndexEpochAdvanceV1, IndexEpochPosition,
+    IndexRangeObservation, IndexRangeTarget, MAX_INDEX_MIGRATION_PAGE_BYTES,
     MAX_INDEX_MIGRATION_PAGE_ENTRIES, NonEmptyCommandBatch, OpenSessionId, OutboxPageLimit,
     OutboxRepository, OutboxStatusObservationV1, OutboxStatusReadResultV1, PendingOutboxScanV1,
     PreEvaluationCommitContext, ReadSnapshot, ReadableCapabilityDigestInventory, ReadableDigestKey,
-    ReadableIdempotencyDigestInventory, SnapshotReader, SnapshotRequest, StartupValidationInputs,
-    StorageScanLimit, StoredAdmittedProvenanceClaimsV1, StoredContractBundleV1,
-    StoredDurableEventV1, StoredEntityRecordV1, StoredIndexEntryV1, StoredIndexEntryV2,
-    StoredOutboxIntentV1, StoredOutcomeV1, StoredPendingAdmissionV1, StoredProvenanceRecordV1,
-    StoredReadDependenciesV1, StructuralEvidenceCursor, StructuralEvidenceOpen,
-    StructuralEvidencePage, StructuralEvidenceSession, StructuralOpenOutcome, StructurallyOpened,
+    ReadableIdempotencyDigestInventory, ServiceAuditAppendIntentV1, SnapshotReader,
+    SnapshotRequest, StartupValidationInputs, StorageScanLimit, StoredAdministrationAuditRecordV1,
+    StoredAdmittedProvenanceClaimsV1, StoredContractBundleV1, StoredDurableEventV1,
+    StoredEntityRecordV1, StoredIndexEntryV1, StoredIndexEntryV2, StoredOutboxIntentV1,
+    StoredOutcomeV1, StoredPendingAdmissionV1, StoredProvenanceRecordV1, StoredReadDependenciesV1,
+    StructuralEvidenceCursor, StructuralEvidenceOpen, StructuralEvidencePage,
+    StructuralEvidenceSession, StructuralOpenOutcome, StructurallyOpened,
     command_write_set_upper_bound_v1, decode_index_entry_v1, decode_index_entry_v2,
     decode_index_migration_row, derive_event_hash_v1, encode_index_entry_v1_fixture,
     encode_index_entry_v2,
@@ -53,7 +55,8 @@ use riffdb_types::{
     CapabilityId, CommitSequence, DatabaseId, DigestKeyId, EntityKeyBuilder, EntityTypeId,
     EntityVersion, Environment, EventId, EventTypeId, FieldId, IndexEntryKey, IndexEntryKeyBuilder,
     IndexId, LogicalTime, MAX_CANONICAL_DOCUMENT_BYTES, OutcomeId, PartitionKeyBuilder,
-    ProvenanceId, RequestId, TenantId, TenantScope, Timestamp, hash_partition_key,
+    ProvenanceId, RequestId, ServiceAuditLinkV1, ServiceAuditPhaseV1, ServiceAuditTargetsV1,
+    ServiceIngressKindV1, ServiceOperationV1, TenantId, TenantScope, Timestamp, hash_partition_key,
 };
 
 const CHILD_MODE: &str = "RIFFDB_STORAGE_RECOVERY_CHILD_MODE";
@@ -224,7 +227,6 @@ fn open_operational(store: RedbStore) -> RedbOperationalPorts {
 
 #[derive(Clone)]
 struct CommandFixture {
-    admission: AdmissionRequestV1,
     candidates: IdempotencyLookupCandidatesV1,
     pending: StoredPendingAdmissionV1,
     intent: riffdb_storage_api::CommitIntent,
@@ -371,10 +373,13 @@ fn command_fixture() -> CommandFixture {
         .expect("commit context");
     let candidates =
         IdempotencyLookupCandidatesV1::new(vec![identity.clone()]).expect("lookup candidates");
-    let admission =
-        AdmissionRequestV1::new(candidates.clone(), &context).expect("admission request");
-    let intent = riffdb_storage_api::CommitIntent::new(context, evaluated, provenance_id)
-        .expect("commit intent");
+    let intent = riffdb_storage_api::CommitIntent::new_for_vacant_terminal_admission(
+        context,
+        candidates.clone(),
+        evaluated,
+        provenance_id,
+    )
+    .expect("fused terminal commit intent");
 
     let stored_entity = StoredEntityRecordV1::new(
         target.clone(),
@@ -513,7 +518,6 @@ fn command_fixture() -> CommandFixture {
     .expect("atomic command record set");
 
     CommandFixture {
-        admission,
         candidates,
         pending,
         intent,
@@ -560,12 +564,6 @@ fn prepare_command_database(path: &Path) {
 }
 
 fn commit_command_fixture(ports: &RedbOperationalPorts, fixture: &CommandFixture) {
-    assert_eq!(
-        ports
-            .admit_or_resolve(fixture.admission.clone())
-            .expect("persist pending admission"),
-        AdmissionResultV1::Created(fixture.pending.clone())
-    );
     let candidate = ports
         .begin_empty_batch()
         .expect("begin command batch")
@@ -575,7 +573,7 @@ fn commit_command_fixture(ports: &RedbOperationalPorts, fixture: &CommandFixture
         .recheck_admission()
         .expect("recheck pending admission")
     else {
-        panic!("fresh pending admission must proceed");
+        panic!("fresh vacant terminal admission must proceed");
     };
     let (candidate, current) = candidate
         .read_transaction_current()
@@ -599,8 +597,69 @@ fn commit_command_fixture(ports: &RedbOperationalPorts, fixture: &CommandFixture
     candidate
         .stage(fixture.records.clone())
         .expect("stage complete command graph")
-        .commit(DurabilityMode::Sync)
-        .expect("commit complete command graph");
+        .commit_with_service_audit_transitions(
+            DurabilityMode::Sync,
+            vec![command_audit_transition(fixture)],
+        )
+        .expect("commit complete command graph and audit lifecycle");
+}
+
+fn command_audit_transition(
+    fixture: &CommandFixture,
+) -> riffdb_storage_api::CommandServiceAuditTransitionV1 {
+    let principal = catalog_principal();
+    let started = ServiceAuditAppendIntentV1::new(
+        fixture.pending.admission_request_id(),
+        Timestamp::new(1_700_000_002, 0).expect("started timestamp"),
+        ServiceOperationV1::ExecuteCommand,
+        ServiceAuditPhaseV1::Started,
+        principal.clone(),
+        ServiceIngressKindV1::Grpc,
+        ServiceAuditTargetsV1::empty(),
+        None,
+        ServiceAuditLinkV1::None,
+    )
+    .expect("started audit");
+    let terminal = ServiceAuditAppendIntentV1::new(
+        fixture.pending.admission_request_id(),
+        Timestamp::new(1_700_000_003, 0).expect("terminal timestamp"),
+        ServiceOperationV1::ExecuteCommand,
+        ServiceAuditPhaseV1::Succeeded,
+        principal,
+        ServiceIngressKindV1::Grpc,
+        ServiceAuditTargetsV1::empty(),
+        None,
+        ServiceAuditLinkV1::Command {
+            commit_sequence: fixture.records.commit().commit_sequence(),
+            provenance_id: fixture.records.provenance().provenance_id(),
+        },
+    )
+    .expect("terminal audit");
+    riffdb_storage_api::CommandServiceAuditTransitionV1::started_and_terminal(started, terminal)
+        .expect("fused command audit lifecycle")
+}
+
+fn command_audit_phases(ports: &RedbOperationalPorts) -> Vec<ServiceAuditPhaseV1> {
+    let scan = ports
+        .scan_administration_audit(AdministrationAuditScanRequest::new(
+            None,
+            StorageScanLimit::new(64).expect("audit scan limit"),
+        ))
+        .expect("scan audit");
+    let AdministrationAuditScan::ExactEnd { records } = scan else {
+        panic!("small recovery audit stream must reach exact end");
+    };
+    records
+        .into_iter()
+        .filter_map(|record| match record.into_parts().0 {
+            StoredAdministrationAuditRecordV1::Service(service)
+                if service.operation() == ServiceOperationV1::ExecuteCommand =>
+            {
+                Some(service.phase())
+            }
+            _ => None,
+        })
+        .collect()
 }
 
 fn committed_index_entry(fixture: &CommandFixture) -> StoredIndexEntryV2 {
@@ -755,15 +814,16 @@ fn drive_index_migration(
 }
 
 fn assert_precommit_command_state(ports: &RedbOperationalPorts, fixture: &CommandFixture) {
-    let AdmissionLookupResultV1::Found(admission) = ports
-        .lookup_admission(fixture.candidates.clone())
-        .expect("lookup precommit admission")
-    else {
-        panic!("the separately committed pending admission must survive");
-    };
     assert_eq!(
-        *admission,
-        riffdb_storage_api::StoredAdmissionStateV1::Pending(fixture.pending.clone())
+        ports
+            .lookup_admission(fixture.candidates.clone())
+            .expect("lookup precommit admission"),
+        AdmissionLookupResultV1::NotFound,
+        "a crash before the fused terminal commit must leave no admission"
+    );
+    assert!(
+        command_audit_phases(ports).is_empty(),
+        "a precommit crash must leave no partial command audit lifecycle"
     );
     assert_eq!(
         ports.read_entity(&fixture.target).expect("read entity"),
@@ -887,6 +947,11 @@ fn assert_postcommit_command_state(ports: &RedbOperationalPorts, fixture: &Comma
             .read_provenance(fixture.records.provenance().provenance_id())
             .expect("read provenance"),
         Some(fixture.records.provenance().clone())
+    );
+    assert_eq!(
+        command_audit_phases(ports),
+        [ServiceAuditPhaseV1::Started, ServiceAuditPhaseV1::Succeeded],
+        "the complete command graph and audit lifecycle must recover together"
     );
     let event = &fixture.records.events()[0];
     assert_eq!(
@@ -1505,7 +1570,7 @@ fn crash_after_initialization_commit_preserves_the_durable_database_identity() {
 }
 
 #[test]
-fn crash_before_command_commit_preserves_only_the_pending_admission() {
+fn crash_before_fused_command_commit_preserves_complete_absence() {
     for (label, profile) in [
         ("standard", RedbCommitProfile::Standard),
         ("hardened", RedbCommitProfile::Hardened),

@@ -101,10 +101,12 @@ fn run() -> Result<(), String> {
         // reset is a no-op for fresh process
         session.backend.reset().map_err(|error| error.to_string())?;
         let seed_started = Instant::now();
-        session
-            .backend
-            .seed(&dataset)
-            .map_err(|error| error.to_string())?;
+        if let Err(error) = session.backend.seed(&dataset) {
+            if let Ok(groups) = session.shutdown() {
+                eprintln!("riffdb write completion groups 1..64: {groups:?}");
+            }
+            return Err(error.to_string());
+        }
         let seed_ns = u64::try_from(seed_started.elapsed().as_nanos()).unwrap_or(u64::MAX);
         let scenarios = run_scenarios(&mut session.backend, &dataset, args.warmups, args.samples);
         let scenarios = match scenarios {

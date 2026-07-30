@@ -71,7 +71,7 @@ where
             }
         }
         ExecutionFailureAdmissionResult::ExecutionFailed(failure) => {
-            if failure == expected_failure {
+            if attempt.matches_failure(&failure) {
                 ExecutionFailureTransitionStart::ExecutionFailureReplay(failure)
             } else {
                 ExecutionFailureTransitionStart::Integrity
@@ -173,13 +173,30 @@ where
     A: ExecutionFailureAwaitingDecision,
 {
     /// Attempts the exact terminal transition while retaining the logical lease.
+    #[cfg(test)]
     pub(super) fn terminalize(self) -> ExecutionFailureTerminalizeResult {
+        self.terminalize_with_audit(None)
+    }
+
+    /// Attempts the exact terminal transition with an optional atomic service
+    /// lifecycle append.
+    pub(super) fn terminalize_with_audit(
+        self,
+        audit: Option<riffdb_storage_api::CommandServiceAuditTransitionV1>,
+    ) -> ExecutionFailureTerminalizeResult {
         let Self {
             awaiting,
             expected_failure,
             attempt,
         } = self;
-        match awaiting.terminalize() {
+        let result = match audit {
+            Some(audit) => awaiting
+                .terminalize_with_service_audit(audit)
+                .map(riffdb_storage_api::AuditedExecutionFailureV1::into_parts)
+                .map(|(failure, _)| failure),
+            None => awaiting.terminalize(),
+        };
+        match result {
             Ok(actual) if actual == expected_failure => {
                 drop(attempt);
                 ExecutionFailureTerminalizeResult::Terminalized(Box::new(actual))
@@ -273,7 +290,7 @@ pub(super) fn resolve_uncertain_execution_failure(
     match durable {
         AdmissionLookupResultV1::Found(state) => match *state {
             StoredAdmissionStateV1::ExecutionFailed(failure)
-                if failure == uncertain.expected_failure =>
+                if uncertain.attempt.matches_failure(&failure) =>
             {
                 UncertainExecutionFailureResolution::ExecutionFailureReplay(failure)
             }
@@ -294,6 +311,19 @@ pub(super) fn resolve_uncertain_execution_failure(
                 UncertainExecutionFailureResolution::Integrity
             }
         },
+        AdmissionLookupResultV1::NotFound
+            if matches!(
+                uncertain.attempt.transition_request().as_ref().map(
+                    riffdb_storage_api::ExecutionFailureTransitionRequestV1::admission_expectation
+                ),
+                Ok(riffdb_storage_api::CommandAdmissionExpectationV1::Vacant(_))
+            ) =>
+        {
+            let UncertainExecutionFailureTransition { attempt, .. } = *uncertain;
+            UncertainExecutionFailureResolution::Retry(Box::new(
+                attempt.recover_pending_after_proven_rollback(),
+            ))
+        }
         AdmissionLookupResultV1::NotFound | AdmissionLookupResultV1::MultipleMatches => {
             UncertainExecutionFailureResolution::Integrity
         }

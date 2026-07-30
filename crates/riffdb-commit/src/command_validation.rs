@@ -152,7 +152,7 @@ where
         }
         CandidateAdmissionResult::StoredOutcome { prior, outcome } => {
             drop(prior);
-            if outcome_matches_bound_attempt(&outcome, &attempt) {
+            if attempt.matches_terminal_outcome(&outcome) {
                 CommandCandidateChainStart::OutcomeReplay(outcome)
             } else {
                 CommandCandidateChainStart::Integrity
@@ -160,7 +160,7 @@ where
         }
         CandidateAdmissionResult::ExecutionFailed { prior, failure } => {
             drop(prior);
-            if failure.pending() == attempt.commit_intent().pending() {
+            if attempt.matches_terminal_failure(&failure) {
                 CommandCandidateChainStart::ExecutionFailureReplay(failure)
             } else {
                 CommandCandidateChainStart::Integrity
@@ -185,24 +185,6 @@ where
             CommandCandidateChainStart::Integrity
         }
     }
-}
-
-fn outcome_matches_bound_attempt(
-    outcome: &StoredOutcomeV1,
-    attempt: &ProvenanceBoundCommandAttempt,
-) -> bool {
-    let context = attempt.commit_context();
-    let pending = context.pending();
-    outcome.identity() == pending.identity()
-        && outcome.admission_request_id() == pending.admission_request_id()
-        && outcome.plan() == pending.plan()
-        && outcome.canonical_input_hash() == pending.canonical_input_hash()
-        && outcome.actor() == pending.actor()
-        && outcome.logical_time() == pending.logical_time()
-        && outcome.partition_key() == pending.partition_key()
-        && outcome.partition_hash() == context.partition_hash()
-        && outcome.conflict_hashes() == context.conflict_hashes()
-        && outcome.admitted_claims() == pending.provenance_claims()
 }
 
 /// Closed current-state result retaining the exact awaiting-validation state.
