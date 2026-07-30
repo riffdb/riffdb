@@ -515,6 +515,14 @@ WP-360 exits when both generated repositories build offline and serve the same
 golden observation, and CLI/MCP differential tests prove identical diagnostic,
 lock, operation, and authority semantics.
 
+Implementation evidence: the TypeScript scaffold materializes the sealed
+toolchain and product runtime, builds offline, and serves the same
+`CreateItem+ItemPage` read-after-commit golden as Rust. The separate
+`riffdb-builder-mcp` process uses the bounded common MCP stdio transport and can
+launch only fixed local `riffdb application` subcommands with a cleared
+environment. Its inventory contains no credential, deployment, role binding,
+runtime query/command, entity, storage, or kernel operation.
+
 ### WP-362 — growing-database command throughput
 
 The post-campaign comparison found a separate storage-side defect: synchronous

@@ -35,6 +35,7 @@ done
 cargo build --quiet --release \
     -p riffdb-cli --bin riffdb \
     -p riffdb-server --bin riffdbd \
+    -p riffdb-api-mcp --features stdio --bin riffdb-builder-mcp \
     -p riffdb-mcp-stdio --bin riffdb-mcp
 
 mkdir -p "$temporary/bin" "$temporary/.cargo" "$temporary/docs" \
@@ -43,6 +44,7 @@ mkdir -p "$temporary/bin" "$temporary/.cargo" "$temporary/docs" \
 cp "$repo_root/target/release/riffdb" "$temporary/bin/"
 cp "$repo_root/target/release/riffdbd" "$temporary/bin/"
 cp "$repo_root/target/release/riffdb-mcp" "$temporary/bin/"
+cp "$repo_root/target/release/riffdb-builder-mcp" "$temporary/bin/"
 cp "$repo_root/scripts/riffdb-dev-installed" "$temporary/bin/riffdb-dev"
 cp "$repo_root/scripts/check-application-boundary" \
     "$temporary/libexec/check-application-boundary"

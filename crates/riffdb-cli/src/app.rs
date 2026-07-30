@@ -54,7 +54,7 @@ use crate::output::{
 use crate::runner::{RunnerError, RunnerStream, run_budget};
 use crate::scaffold::{
     ScaffoldLanguage, check_application, check_application_lock, create_application,
-    generate_application, write_application_lock,
+    generate_application, preview_application_lock, write_application_lock,
 };
 use crate::value::{InputValue, RecordInput, ValueError, parse_uuid};
 
@@ -175,8 +175,25 @@ pub async fn run() -> ExitCode {
         };
     }
     if let TopLevel::Application { command } = &cli.command {
+        if let ApplicationCommand::Preview { source } = command {
+            return match preview_application_lock(Path::new(source)) {
+                Ok(lock) => {
+                    use std::io::Write as _;
+
+                    match io::stdout().lock().write_all(&lock) {
+                        Ok(()) => ExitCode::SUCCESS,
+                        Err(_) => ExitCode::FAILURE,
+                    }
+                }
+                Err(error) => {
+                    emit_scaffold_failure("riffdb application failed", &error, cli.output);
+                    ExitCode::FAILURE
+                }
+            };
+        }
         let result = match command {
             ApplicationCommand::Check { source } => check_application(Path::new(source)),
+            ApplicationCommand::Preview { .. } => unreachable!("preview returned above"),
             ApplicationCommand::Lock {
                 source,
                 write,

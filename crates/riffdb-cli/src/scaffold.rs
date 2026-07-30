@@ -27,10 +27,18 @@ const TYPESCRIPT_MAIN_TEMPLATE: &str =
     include_str!("../../../templates/application/typescript-main.ts");
 const CARGO_TEMPLATE: &str = include_str!("../../../templates/application/Cargo.toml");
 const PACKAGE_TEMPLATE: &str = include_str!("../../../templates/application/package.json");
+const PACKAGE_LOCK_BASE: &str =
+    include_str!("../../../clients/typescript/runtime/package-lock.json");
 const TSCONFIG_TEMPLATE: &str = include_str!("../../../templates/application/tsconfig.json");
 const GITIGNORE_TEMPLATE: &str = include_str!("../../../templates/application/gitignore");
+const TYPESCRIPT_RUNTIME_JS: &str =
+    include_str!("../../../clients/typescript/runtime/dist/index.js");
+const TYPESCRIPT_RUNTIME_TYPES: &str =
+    include_str!("../../../clients/typescript/runtime/dist/index.d.ts");
 const MAX_APPLICATION_NAME_BYTES: usize = 64;
 const MAX_SCAFFOLD_TOP_LEVEL_ENTRIES: usize = 16;
+const MAX_TYPESCRIPT_TOOLCHAIN_FILES: usize = 16_384;
+const MAX_TYPESCRIPT_TOOLCHAIN_BYTES: u64 = 128 * 1_024 * 1_024;
 const EXACT_MANIFEST_PATH: &str = "generated/riffdb.application.exact.json";
 const DEFAULT_LOCK_PATH: &str = "riffdb.application.lock.json";
 
@@ -193,6 +201,13 @@ fn source_parent(path: &Path) -> &Path {
 pub(crate) fn check_application(source_path: &Path) -> Result<(), ScaffoldError> {
     let _ = compile_symbolic_application(source_path)?;
     Ok(())
+}
+
+pub(crate) fn preview_application_lock(source_path: &Path) -> Result<Vec<u8>, ScaffoldError> {
+    Ok(compile_symbolic_application(source_path)?
+        .lock
+        .canonical_bytes()
+        .to_vec())
 }
 
 pub(crate) fn write_application_lock(
@@ -840,6 +855,11 @@ fn write_repository(
                 )
                 .as_bytes(),
             )?;
+            write_file(
+                root,
+                "package-lock.json",
+                render_package_lock(application)?.as_bytes(),
+            )?;
             write_file(root, "tsconfig.json", TSCONFIG_TEMPLATE.as_bytes())?;
             write_file(
                 root,
@@ -853,8 +873,197 @@ fn write_repository(
                 )
                 .as_bytes(),
             )?;
+            write_file(
+                root,
+                "vendor/riffdb-application/package.json",
+                br#"{
+  "name": "@riffdb/application",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./dist/index.js"
+  },
+  "types": "./dist/index.d.ts"
+}
+"#,
+            )?;
+            write_file(
+                root,
+                "vendor/riffdb-application/dist/index.js",
+                TYPESCRIPT_RUNTIME_JS.as_bytes(),
+            )?;
+            write_file(
+                root,
+                "vendor/riffdb-application/dist/index.d.ts",
+                TYPESCRIPT_RUNTIME_TYPES.as_bytes(),
+            )?;
+            write_file(
+                root,
+                "node_modules/@riffdb/application/package.json",
+                br#"{
+  "name": "@riffdb/application",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./dist/index.js"
+  },
+  "types": "./dist/index.d.ts"
+}
+"#,
+            )?;
+            write_file(
+                root,
+                "node_modules/@riffdb/application/dist/index.js",
+                TYPESCRIPT_RUNTIME_JS.as_bytes(),
+            )?;
+            write_file(
+                root,
+                "node_modules/@riffdb/application/dist/index.d.ts",
+                TYPESCRIPT_RUNTIME_TYPES.as_bytes(),
+            )?;
+            materialize_installed_typescript_toolchain(root)?;
         }
     }
+    Ok(())
+}
+
+fn render_package_lock(application: &str) -> Result<String, ScaffoldError> {
+    let mut lock: serde_json::Value =
+        serde_json::from_str(PACKAGE_LOCK_BASE).map_err(|_| ScaffoldError::ApplicationSource)?;
+    let root = lock
+        .as_object_mut()
+        .ok_or(ScaffoldError::ApplicationSource)?;
+    root.insert("name".to_owned(), json!(application));
+    let packages = root
+        .get_mut("packages")
+        .and_then(serde_json::Value::as_object_mut)
+        .ok_or(ScaffoldError::ApplicationSource)?;
+    let package = packages
+        .get_mut("")
+        .and_then(serde_json::Value::as_object_mut)
+        .ok_or(ScaffoldError::ApplicationSource)?;
+    package.insert("name".to_owned(), json!(application));
+    package.insert(
+        "dependencies".to_owned(),
+        json!({"@riffdb/application": "file:vendor/riffdb-application"}),
+    );
+    packages.insert(
+        "node_modules/@riffdb/application".to_owned(),
+        json!({
+            "resolved": "vendor/riffdb-application",
+            "link": true
+        }),
+    );
+    packages.insert(
+        "vendor/riffdb-application".to_owned(),
+        json!({
+            "name": "@riffdb/application",
+            "version": "0.1.0"
+        }),
+    );
+    let mut rendered =
+        serde_json::to_string_pretty(&lock).map_err(|_| ScaffoldError::ApplicationSource)?;
+    rendered.push('\n');
+    Ok(rendered)
+}
+
+fn materialize_installed_typescript_toolchain(root: &Path) -> Result<(), ScaffoldError> {
+    let executable = std::env::current_exe()?;
+    let Some(bundle_root) = executable.parent().and_then(Path::parent) else {
+        return Ok(());
+    };
+    let source = bundle_root.join("public/typescript/node_modules");
+    if !source.is_dir() {
+        return Ok(());
+    }
+    let mut budget = TypeScriptCopyBudget::default();
+    copy_typescript_tree(&source, &root.join("node_modules"), &source, 0, &mut budget)
+}
+
+#[derive(Default)]
+struct TypeScriptCopyBudget {
+    files: usize,
+    bytes: u64,
+}
+
+fn copy_typescript_tree(
+    source: &Path,
+    destination: &Path,
+    source_root: &Path,
+    depth: usize,
+    budget: &mut TypeScriptCopyBudget,
+) -> Result<(), ScaffoldError> {
+    if depth > 32 {
+        return Err(ScaffoldError::SourceLimit);
+    }
+    let metadata = fs::symlink_metadata(source)?;
+    if metadata.file_type().is_symlink() {
+        let target = fs::canonicalize(source)?;
+        let source_root = fs::canonicalize(source_root)?;
+        if !target.starts_with(&source_root) {
+            return Err(ScaffoldError::UnsafePath);
+        }
+        let relative_target = fs::read_link(source)?;
+        if relative_target.is_absolute()
+            || relative_target
+                .components()
+                .any(|component| matches!(component, std::path::Component::RootDir))
+        {
+            return Err(ScaffoldError::UnsafePath);
+        }
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::symlink;
+
+            if fs::symlink_metadata(destination).is_ok() {
+                return Err(ScaffoldError::UnsafePath);
+            }
+            symlink(relative_target, destination)?;
+            return Ok(());
+        }
+        #[cfg(not(unix))]
+        {
+            let _ = (relative_target, depth, budget);
+            return Err(ScaffoldError::UnsafePath);
+        }
+    }
+    if metadata.is_dir() {
+        fs::create_dir_all(destination)?;
+        let mut entries = fs::read_dir(source)?.collect::<Result<Vec<_>, _>>()?;
+        entries.sort_by_key(fs::DirEntry::file_name);
+        for entry in entries {
+            copy_typescript_tree(
+                &entry.path(),
+                &destination.join(entry.file_name()),
+                source_root,
+                depth + 1,
+                budget,
+            )?;
+        }
+        return Ok(());
+    }
+    if !metadata.is_file() {
+        return Err(ScaffoldError::UnsafePath);
+    }
+    budget.files = budget
+        .files
+        .checked_add(1)
+        .ok_or(ScaffoldError::SourceLimit)?;
+    budget.bytes = budget
+        .bytes
+        .checked_add(metadata.len())
+        .ok_or(ScaffoldError::SourceLimit)?;
+    if budget.files > MAX_TYPESCRIPT_TOOLCHAIN_FILES
+        || budget.bytes > MAX_TYPESCRIPT_TOOLCHAIN_BYTES
+    {
+        return Err(ScaffoldError::SourceLimit);
+    }
+    if fs::symlink_metadata(destination).is_ok() {
+        return Err(ScaffoldError::UnsafePath);
+    }
+    fs::copy(source, destination)?;
     Ok(())
 }
 
@@ -1356,10 +1565,12 @@ mod tests {
         fs::remove_file(&lock).expect("remove lock");
 
         check_application(&source).expect("read-only compile");
+        let preview = preview_application_lock(&source).expect("read-only lock preview");
         assert!(!generated.exists());
         assert!(!lock.exists());
 
         write_application_lock(&source, None).expect("write lock");
+        assert_eq!(preview, fs::read(&lock).expect("written lock"));
         fs::write(&generated, b"substituted\n").expect("substitute output");
         assert!(matches!(
             check_application_lock(&source, None),
