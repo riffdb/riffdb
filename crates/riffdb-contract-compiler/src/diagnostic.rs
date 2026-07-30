@@ -166,7 +166,7 @@ impl CompilerDiagnosticCode {
                 "partition and conflict keys must be computable from validated inputs"
             }
             Self::CrossPartitionMutation => {
-                "all command bindings must be statically colocated in one partition"
+                "command bindings must share one partition and writes one aggregate"
             }
             Self::InvalidRelationship => {
                 "a required relationship must map stored fields to one complete same-partition target key"
@@ -179,7 +179,7 @@ impl CompilerDiagnosticCode {
             Self::InvalidParent => "the parent bundle is not a valid predecessor",
             Self::InvalidIr => "checked executable IR construction rejected the compiled plan",
             Self::MissingRelationshipRead => {
-                "a relationship change lacks a dominating exact target read and missing-target outcome"
+                "a relationship change lacks a dominating exact target binding and missing-target outcome"
             }
             Self::InvalidUniqueKey => {
                 "a unique key must use required fields and begin with the complete partition route"
@@ -235,9 +235,9 @@ impl CompilerDiagnosticCode {
             Self::ConflictNotInputComputable => {
                 Some("derive aggregate keys only from root-key inputs and constants")
             }
-            Self::CrossPartitionMutation => {
-                Some("make all bindings use the same structural partition derivation")
-            }
+            Self::CrossPartitionMutation => Some(
+                "use one structural partition derivation and one aggregate for create/mutate bindings",
+            ),
             Self::InvalidRelationship => Some(
                 "map required non-optional fields to the complete target key in canonical order",
             ),
@@ -253,7 +253,7 @@ impl CompilerDiagnosticCode {
             Self::InvalidParent => Some("compile against the exact validated predecessor bundle"),
             Self::InvalidIr => None,
             Self::MissingRelationshipRead => Some(
-                "read the complete referenced key before the mutable binding and declare its missing-target outcome",
+                "bind the complete referenced key before the mutable binding and declare its failure outcome",
             ),
             Self::InvalidUniqueKey => Some(
                 "declare required key-compatible fields beginning with the canonical partition prefix",

@@ -1312,47 +1312,78 @@ impl AuditedAdmissionRepository for RedbOperationalPorts {
     }
 }
 
-pub(crate) fn stage_service_audit_in_write(
+/// Stages one all-or-nothing terminal-audit group in an existing authoritative
+/// command transaction.
+///
+/// The administration stream tail and allocator are validated once for the
+/// complete bounded group. Each lifecycle and authoritative result link is
+/// still checked independently before any audit row is appended.
+pub(crate) fn stage_service_audit_group_in_write(
     access: &crate::store::RedbWriteAccess,
-    intent: &ServiceAuditAppendIntentV1,
-) -> Result<StoredServiceAuditRecordV1, StorageError> {
+    intents: &[ServiceAuditAppendIntentV1],
+) -> Result<Vec<StoredServiceAuditRecordV1>, StorageError> {
+    if intents.is_empty()
+        || intents.len() > riffdb_storage_api::MAX_GROUPED_WRITE_TRANSITIONS
+        || intents
+            .iter()
+            .map(ServiceAuditAppendIntentV1::request_id)
+            .collect::<BTreeSet<_>>()
+            .len()
+            != intents.len()
+    {
+        return Err(storage_error(StorageErrorKind::LimitExceeded));
+    }
     let transaction = access.transaction()?;
     let allocator = validate_administration_tail(transaction)?;
-    let audit = transaction.open_table(AUDIT).map_err(table_error)?;
-    let sequences = access.service_audit_sequences(intent.request_id())?;
-    let lifecycle = service_lifecycle(&audit, intent.request_id(), &sequences)?;
-    drop(audit);
-    let allowed = match lifecycle {
-        Some(ServiceLifecycle::Started {
-            record: started,
-            terminal: false,
-        }) => {
-            intent.phase() != ServiceAuditPhaseV1::Started
-                && started.request_id() == intent.request_id()
-                && started.operation() == intent.operation()
-                && started.principal() == intent.principal()
-                && started.ingress() == intent.ingress()
-                && started.targets() == intent.targets()
-                && started.approval_id() == intent.approval_id()
-                && started.principal().is_some()
+    let mut audit = transaction.open_table(AUDIT).map_err(table_error)?;
+    for intent in intents {
+        let sequences = access.service_audit_sequences(intent.request_id())?;
+        let lifecycle = service_lifecycle(&audit, intent.request_id(), &sequences)?;
+        let allowed = match lifecycle {
+            Some(ServiceLifecycle::Started {
+                record: started,
+                terminal: false,
+            }) => {
+                intent.phase() != ServiceAuditPhaseV1::Started
+                    && started.request_id() == intent.request_id()
+                    && started.operation() == intent.operation()
+                    && started.principal() == intent.principal()
+                    && started.ingress() == intent.ingress()
+                    && started.targets() == intent.targets()
+                    && started.approval_id() == intent.approval_id()
+                    && started.principal().is_some()
+            }
+            None | Some(ServiceLifecycle::Standalone) | Some(ServiceLifecycle::Started { .. }) => {
+                false
+            }
+        };
+        if !allowed || !service_link_is_valid(transaction, intent)? {
+            return Err(storage_error(StorageErrorKind::InvariantViolation));
         }
-        None | Some(ServiceLifecycle::Standalone) | Some(ServiceLifecycle::Started { .. }) => false,
-    };
-    if !allowed || !service_link_is_valid(transaction, intent)? {
-        return Err(storage_error(StorageErrorKind::InvariantViolation));
     }
-    let (assigned, next) = allocate_sequences(allocator, 1)?;
-    let sequence = assigned
-        .into_iter()
-        .next()
-        .ok_or_else(|| storage_error(StorageErrorKind::InvariantViolation))?;
-    let record = StoredServiceAuditRecordV1::from_intent(sequence, intent);
-    append_audit_record(
-        transaction,
-        &StoredAdministrationAuditRecordV1::Service(record.clone()),
-    )?;
+
+    let count =
+        u8::try_from(intents.len()).map_err(|_| storage_error(StorageErrorKind::LimitExceeded))?;
+    let (assigned, next) = allocate_sequences(allocator, count)?;
+    let mut records = Vec::with_capacity(intents.len());
+    for (intent, sequence) in intents.iter().zip(assigned) {
+        let record = StoredServiceAuditRecordV1::from_intent(sequence, intent);
+        let encoded = encode_administration_audit_record_v1(
+            &StoredAdministrationAuditRecordV1::Service(record.clone()),
+        )?;
+        let key = encode_audit_key(sequence);
+        if audit
+            .insert(key.as_slice(), encoded.as_bytes())
+            .map_err(precommit_storage_error)?
+            .is_some()
+        {
+            return Err(corrupt());
+        }
+        records.push(record);
+    }
+    drop(audit);
     write_administration_allocator(transaction, allocator, next)?;
-    Ok(record)
+    Ok(records)
 }
 
 fn principal_matches_observation(

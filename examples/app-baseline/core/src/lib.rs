@@ -86,4 +86,22 @@ pub trait AppBackend {
 
     /// Append one comment (post-seed write path).
     fn create_comment(&mut self, comment: &CommentSeed) -> Result<(), Self::Error>;
+
+    /// Atomic multi-entity write: close ticket + create comment.
+    fn close_ticket_with_comment(
+        &mut self,
+        input: &CloseTicketWithCommentSeed,
+    ) -> Result<(), Self::Error>;
+
+    /// Atomic multi-entity write: swap two membership roles.
+    fn swap_member_roles(&mut self, input: &SwapMemberRolesSeed) -> Result<(), Self::Error>;
+
+    /// Multi-command workflow: create ticket + attach two labels.
+    ///
+    /// RiffDB issues three symbolic commands; Postgres commits one SQL
+    /// transaction covering the same three inserts.
+    fn open_ticket_with_labels(
+        &mut self,
+        input: &OpenTicketWithLabelsSeed,
+    ) -> Result<(), Self::Error>;
 }

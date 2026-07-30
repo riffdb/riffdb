@@ -8,7 +8,7 @@ use riffdb_storage_api::{
     AdmissionRepository, ApplicationCommandTransactionPort, AuditedAdmissionRepository,
     CommandCandidateAdmission, CommandCandidateAffectedEpochRead, CommandCandidateAwaitingCapacity,
     CommandCandidateAwaitingValidation, CommandCandidateCapacityReserved,
-    CommandCandidateSequenceAssigned, CommandCandidateStateRead, DurabilityMode,
+    CommandCandidateSequenceAssigned, CommandCandidateStateRead, DurabilityMode, EntityTarget,
     ExecutionFailureTransitionPort, NonEmptyCommandBatch, SnapshotReader, StorageError,
     StorageErrorKind,
 };
@@ -619,12 +619,54 @@ where
 
 fn compatible_command_group(pending: &[(usize, PendingCommandAttempts)]) -> bool {
     let mut keys = std::collections::BTreeSet::new();
+    let mut prior_reads = std::collections::BTreeSet::new();
+    let mut prior_writes = std::collections::BTreeSet::new();
     pending.iter().all(|(_, state)| {
-        state
+        if !state
             .raw_conflict_keys()
             .iter()
             .all(|key| keys.insert(key.clone()))
+        {
+            return false;
+        }
+
+        let mut reads = std::collections::BTreeSet::new();
+        let mut writes = std::collections::BTreeSet::new();
+        for (mode, target) in state.binding_accesses() {
+            match mode {
+                riffdb_contract_ir::BindingMode::Read => {
+                    reads.insert(target.clone());
+                }
+                riffdb_contract_ir::BindingMode::Mutate
+                | riffdb_contract_ir::BindingMode::Create => {
+                    writes.insert(target.clone());
+                }
+            }
+        }
+        reads.extend(state.root_validation_targets().iter().cloned());
+
+        // Exact validation must describe the final grouped transaction, not
+        // merely the prefix visible when this candidate was staged. Reject
+        // read/write and write/write overlap in either FIFO direction.
+        if !exact_accesses_are_compatible(&prior_reads, &prior_writes, &reads, &writes) {
+            return false;
+        }
+        prior_reads.extend(reads);
+        prior_writes.extend(writes);
+        true
     })
+}
+
+fn exact_accesses_are_compatible(
+    prior_reads: &std::collections::BTreeSet<EntityTarget>,
+    prior_writes: &std::collections::BTreeSet<EntityTarget>,
+    reads: &std::collections::BTreeSet<EntityTarget>,
+    writes: &std::collections::BTreeSet<EntityTarget>,
+) -> bool {
+    !writes
+        .iter()
+        .any(|target| prior_reads.contains(target) || prior_writes.contains(target))
+        && !reads.iter().any(|target| prior_writes.contains(target))
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -1840,6 +1882,8 @@ fn conflict_failure(
 mod tests {
     use std::sync::atomic::{AtomicUsize, Ordering};
 
+    use riffdb_types::{EntityKeyBuilder, EntityTypeId};
+
     use super::*;
 
     #[derive(Default)]
@@ -1868,6 +1912,22 @@ mod tests {
             CoordinatorDurability::Group.storage_mode(),
             DurabilityMode::Group
         );
+    }
+
+    #[test]
+    fn grouped_exact_dependencies_reject_both_read_write_orders() {
+        let entity_type = EntityTypeId::new(1).expect("entity type");
+        let mut key = EntityKeyBuilder::new(entity_type);
+        key.push_uuid(&[7; 16]).expect("bounded UUID key");
+        let target = EntityTarget::new(entity_type, key.finish().expect("entity key"))
+            .expect("entity target");
+        let none = std::collections::BTreeSet::new();
+        let one = std::collections::BTreeSet::from([target]);
+
+        assert!(!exact_accesses_are_compatible(&one, &none, &none, &one));
+        assert!(!exact_accesses_are_compatible(&none, &one, &one, &none));
+        assert!(!exact_accesses_are_compatible(&none, &one, &none, &one));
+        assert!(exact_accesses_are_compatible(&one, &none, &one, &none));
     }
 
     #[test]

@@ -21,6 +21,65 @@ pub struct CommentSeed {
     pub idempotency_key: String,
 }
 
+/// Close ticket + create closing comment in one application transaction.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct CloseTicketWithCommentSeed {
+    /// Organization partition.
+    pub organization_id: [u8; 16],
+    /// Ticket to close.
+    pub ticket_id: [u8; 16],
+    /// Comment author.
+    pub author_id: [u8; 16],
+    /// Closing-comment identity.
+    pub comment_id: [u8; 16],
+    /// Closing note body.
+    pub body: String,
+    /// Stable idempotency key (replay-safe across samples).
+    pub idempotency_key: String,
+}
+
+/// Swap two project members' roles in one application transaction.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct SwapMemberRolesSeed {
+    /// Organization partition.
+    pub organization_id: [u8; 16],
+    /// Project containing both members.
+    pub project_id: [u8; 16],
+    /// First member.
+    pub user_a: [u8; 16],
+    /// Second member.
+    pub user_b: [u8; 16],
+    /// Role written onto member A.
+    pub role_a: String,
+    /// Role written onto member B.
+    pub role_b: String,
+    /// Stable idempotency key.
+    pub idempotency_key: String,
+}
+
+/// Atomic open-ticket operation (ticket + two label links).
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct OpenTicketWithLabelsSeed {
+    /// Organization partition.
+    pub organization_id: [u8; 16],
+    /// New ticket id.
+    pub ticket_id: [u8; 16],
+    /// Project for the ticket.
+    pub project_id: [u8; 16],
+    /// Reporter.
+    pub reporter_id: [u8; 16],
+    /// Assignee.
+    pub assignee_id: [u8; 16],
+    /// Title.
+    pub title: String,
+    /// First existing label.
+    pub label_a: [u8; 16],
+    /// Second existing label.
+    pub label_b: [u8; 16],
+    /// Stable idempotency key for the complete operation.
+    pub idempotency_key: String,
+}
+
 /// Complete deterministic dataset.
 #[derive(Clone, Debug)]
 pub struct SeedDataset {
@@ -200,6 +259,44 @@ impl SeedDataset {
             },
             idempotency_key: "app-baseline-write-comment-v1".to_owned(),
         };
+        // Prefer a second open ticket for close-with-comment so read probes stay open.
+        let close_ticket = self
+            .tickets
+            .iter()
+            .find(|row| {
+                row.organization_id == organization_id
+                    && row.ticket_id != ticket.ticket_id
+                    && row.status == TicketStatus::Open
+            })
+            .cloned()
+            .unwrap_or_else(|| ticket.clone());
+        let project_members = self
+            .members
+            .iter()
+            .filter(|member| {
+                member.organization_id == organization_id && member.project_id == project_id
+            })
+            .cloned()
+            .collect::<Vec<_>>();
+        let member_a = project_members
+            .first()
+            .expect("seed has project members")
+            .clone();
+        let member_b = project_members
+            .get(1)
+            .cloned()
+            .unwrap_or_else(|| member_a.clone());
+        let labels = self
+            .labels
+            .iter()
+            .filter(|label| label.organization_id == organization_id)
+            .cloned()
+            .collect::<Vec<_>>();
+        let label_a = labels.first().expect("seed has labels").label_id;
+        let label_b = labels
+            .get(1)
+            .map(|label| label.label_id)
+            .unwrap_or(label_a);
         ScenarioProbes {
             organization_id,
             project_id,
@@ -208,6 +305,34 @@ impl SeedDataset {
             assignee_id,
             open_status: TicketStatus::Open,
             write_comment,
+            close_ticket_with_comment: CloseTicketWithCommentSeed {
+                organization_id,
+                ticket_id: close_ticket.ticket_id,
+                author_id: user.user_id,
+                comment_id: uuid_from_ordinal(0x7f, 99_000_002),
+                body: "baseline close-with-comment note".to_owned(),
+                idempotency_key: "app-baseline-close-ticket-with-comment-v1".to_owned(),
+            },
+            swap_member_roles: SwapMemberRolesSeed {
+                organization_id,
+                project_id,
+                user_a: member_a.user_id,
+                user_b: member_b.user_id,
+                role_a: "lead".to_owned(),
+                role_b: "contributor".to_owned(),
+                idempotency_key: "app-baseline-swap-member-roles-v1".to_owned(),
+            },
+            open_ticket_with_labels: OpenTicketWithLabelsSeed {
+                organization_id,
+                ticket_id: uuid_from_ordinal(0x7f, 99_000_010),
+                project_id,
+                reporter_id: user.user_id,
+                assignee_id,
+                title: "baseline multi-command open ticket".to_owned(),
+                label_a,
+                label_b,
+                idempotency_key: "app-baseline-open-ticket-with-labels-v1".to_owned(),
+            },
         }
     }
 }
@@ -229,4 +354,10 @@ pub struct ScenarioProbes {
     pub open_status: TicketStatus,
     /// Comment created by the write scenario (idempotent key fixed).
     pub write_comment: CommentSeed,
+    /// Atomic close + comment multi-entity write.
+    pub close_ticket_with_comment: CloseTicketWithCommentSeed,
+    /// Atomic dual-membership role swap.
+    pub swap_member_roles: SwapMemberRolesSeed,
+    /// Atomic open ticket + attach labels operation.
+    pub open_ticket_with_labels: OpenTicketWithLabelsSeed,
 }

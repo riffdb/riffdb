@@ -1388,7 +1388,7 @@ contract Example version 1 {
     }
 
     #[test]
-    fn partial_and_cross_partition_relationships_fail_closed() {
+    fn partial_and_different_partition_relationships_fail_closed() {
         let partial = relationship_source(
             "reference parent_ref (parent_id) -> Parent(parent_id)",
             concat!(
@@ -1416,7 +1416,7 @@ contract Example version 1 {
         .replace(
             "aggregate Family {",
             concat!(
-                "aggregate ExternalFamily { root External partition_by tenant_id ",
+                "aggregate ExternalFamily { root External partition_by parent_id ",
                 "conflict_key (tenant_id, parent_id) }\n  aggregate Family {"
             ),
         )

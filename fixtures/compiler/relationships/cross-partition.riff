@@ -8,7 +8,7 @@ contract CrossPartitionReference version 1 {
   }
   aggregate ParentFamily {
     root Parent
-    partition_by tenant_id
+    partition_by parent_id
     conflict_key (tenant_id, parent_id)
   }
   aggregate ChildFamily {

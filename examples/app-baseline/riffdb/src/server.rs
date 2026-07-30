@@ -19,6 +19,14 @@ use riffdb_client_rust::{
     BearerCredential, BootstrapCallMetadata, BootstrapCredential as TransportBootstrapCredential,
     CallMetadata, RiffDbClient, app_v1, generate_capability_id, generate_request_id, v1,
 };
+use riffdb_contract_compiler::compile_contract_source;
+use riffdb_query_module::{
+    ApplicationManifest, CompiledApplicationRole, NamedQuerySource, QueryModule,
+    QueryModuleCandidate, QueryModuleName, QueryModuleVersion, compile_application_role,
+};
+use riffdb_types::{
+    CapabilityGrantV1, CapabilityPermissionV1, PartitionScopeV1, TenantScope,
+};
 use tokio::time::timeout;
 use tonic::transport::Endpoint;
 
@@ -27,6 +35,7 @@ use crate::{RiffDbError, RiffDbPublicBackend};
 const AUDIENCE: &str = "riffdb-grpc-loopback";
 const ENVIRONMENT: &str = "app-baseline";
 const READY_PREFIX: &str = "riffdbd-ready-v1\t";
+const WRITE_GROUP_PREFIX: &str = "riffdb-write-completion-groups-v1\t";
 const PROCESS_START_TIMEOUT: Duration = Duration::from_secs(30);
 const PROCESS_STOP_TIMEOUT: Duration = Duration::from_secs(15);
 const RPC_TIMEOUT: Duration = Duration::from_secs(30);
@@ -34,7 +43,10 @@ const BOOTSTRAP_UNIX_MILLISECONDS: u64 = 1_700_000_000_000;
 const CAPABILITY_LIFETIME_SECONDS: u32 = 3_600;
 const CONTRACT_LINEAGE: &str = "TicketDesk";
 const CONTRACT_VERSION: u64 = 1;
+const APPLICATION_ROLE_NAME: &str = "TicketDeskApplication";
 const TICKETDESK_CONTRACT: &str = include_str!("../../contracts/ticketdesk.riff");
+const TICKETDESK_MANIFEST: &str =
+    include_str!("../../../../fixtures/application-manifests/ticketdesk-v1.json");
 const MODULE_NAME: &str = "ticketdesk";
 const MODULE_VERSION: u64 = 1;
 const QUERY_SOURCES: &[(&str, &str)] = &[
@@ -131,7 +143,7 @@ impl RiffDbServerSession {
     }
 
     /// Stops the server cleanly.
-    pub fn shutdown(mut self) -> Result<(), RiffDbError> {
+    pub fn shutdown(mut self) -> Result<[u64; 16], RiffDbError> {
         self.process.shutdown_cleanly().map_err(|_| RiffDbError::Server)
     }
 }
@@ -225,10 +237,25 @@ async fn bootstrap_deploy_and_issue(
         )));
     };
 
+    // Compile the exact TicketDeskApplication role from the same sources that
+    // were deployed. Field visibility, command IDs, and scan ceilings remain
+    // compiler-private consequences of named operations (WP-310).
+    let role = compile_ticketdesk_application_role()?;
+    let expected_module_hash = role
+        .module_hashes()
+        .first()
+        .map(|hash| hash.as_bytes())
+        .ok_or(RiffDbError::Deploy)?;
+    if module.module_hash.as_slice() != expected_module_hash.as_slice() {
+        return Err(RiffDbError::Rpc(
+            "deployed query-module hash does not match compiled role module identity".into(),
+        ));
+    }
+
     let response = bounded_rpc(
         "create_runner_capability",
         client.create_capability(
-            normal_capability_request(&module.module_hash)?,
+            role_capability_request(role.internal_grant())?,
             &authenticated,
         ),
     )
@@ -283,57 +310,40 @@ fn bootstrap_request(
     })
 }
 
-fn normal_capability_request(module_hash: &[u8]) -> Result<v1::CreateCapabilityRequest, RiffDbError> {
-    use v1::capability_permission::Permission;
-    let scoped = |stable_id| v1::LineageScopedStableId {
-        contract_lineage: CONTRACT_LINEAGE.to_owned(),
-        stable_id,
-    };
-    if module_hash.len() != 32 {
-        return Err(RiffDbError::Rpc(
-            "deployed query module returned an invalid identity".into(),
-        ));
-    }
-    // The stable application profile contains only exact command and immutable
-    // named-query permissions. Compiler-derived entity/index access never
-    // becomes reusable kernel authority.
-    let mut permissions = Vec::new();
-    for stable_id in 1_u32..=8 {
-        permissions.push(v1::CapabilityPermission {
-            permission: Some(Permission::InvokeCommand(scoped(stable_id))),
-        });
-    }
-    for query_name in [
-        "GetUser",
-        "GetTicket",
-        "TicketPage",
-        "ListTickets",
-        "ListComments",
-        "ProjectMembers",
-        "ProjectSummary",
-        "ListTicketsByAssignee",
-    ] {
-        permissions.push(v1::CapabilityPermission {
-            permission: Some(Permission::ExecuteNamedQuery(v1::NamedQueryPermission {
-                contract_lineage: CONTRACT_LINEAGE.to_owned(),
-                query_module_hash: module_hash.to_vec(),
-                query_name: query_name.to_owned(),
-            })),
-        });
-    }
+/// Compiles the checked-in TicketDesk application role from the same contract
+/// and query sources the harness deploys to `riffdbd`.
+fn compile_ticketdesk_application_role() -> Result<CompiledApplicationRole, RiffDbError> {
+    let manifest = ApplicationManifest::decode_canonical(TICKETDESK_MANIFEST.as_bytes())
+        .map_err(|_| RiffDbError::Deploy)?;
+    let contract =
+        compile_contract_source(TICKETDESK_CONTRACT).map_err(|_| RiffDbError::Deploy)?;
+    let queries = QUERY_SOURCES
+        .iter()
+        .map(|(name, source)| {
+            NamedQuerySource::new(*name, *source).map_err(|_| RiffDbError::Deploy)
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    let candidate = QueryModuleCandidate::new(
+        QueryModuleName::new(MODULE_NAME).map_err(|_| RiffDbError::Deploy)?,
+        QueryModuleVersion::new(MODULE_VERSION).ok_or(RiffDbError::Deploy)?,
+        queries,
+    )
+    .map_err(|_| RiffDbError::Deploy)?;
+    let module = QueryModule::compile(candidate, &contract).map_err(|_| RiffDbError::Deploy)?;
+    compile_application_role(
+        &manifest,
+        APPLICATION_ROLE_NAME,
+        None,
+        &contract,
+        &[module],
+    )
+    .map_err(|_| RiffDbError::Deploy)
+}
 
-    // Non-key field visibility required for policy-filtered application data.
-    let field_visibility = vec![
-        field_visibility(1, &[1, 3]),
-        field_visibility(2, &[1, 2, 4, 5, 6, 7, 8]),
-        field_visibility(3, &[1, 3, 4]),
-        field_visibility(4, &[1, 2, 3, 5]),
-        field_visibility(5, &[1, 2]),
-        field_visibility(6, &[3]),
-        field_visibility(7, &[1, 2]),
-        field_visibility(8, &[1, 3]),
-    ];
-
+/// Lowers a compiler-private role grant into the public create-capability request.
+fn role_capability_request(
+    grant: &CapabilityGrantV1,
+) -> Result<v1::CreateCapabilityRequest, RiffDbError> {
     Ok(v1::CreateCapabilityRequest {
         request_id: fresh_request_id_bytes()?,
         mode: v1::CapabilityCreateMode::Normal as i32,
@@ -341,31 +351,95 @@ fn normal_capability_request(module_hash: &[u8]) -> Result<v1::CreateCapabilityR
             .map_err(|_| RiffDbError::Bootstrap)?
             .into_bytes()
             .to_vec(),
-        principal_id: "app-baseline-runner".to_owned(),
-        actor_kind: v1::ActorKind::Human as i32,
+        principal_id: "ticketdesk-application".to_owned(),
+        actor_kind: v1::ActorKind::Service as i32,
         requested_lifetime_seconds: CAPABILITY_LIFETIME_SECONDS,
         audiences: vec![AUDIENCE.to_owned()],
-        grant: Some(v1::CapabilityGrant {
-            tenant_scope: Some(v1::TenantScope {
-                scope: Some(v1::tenant_scope::Scope::Global(v1::Unit {})),
-            }),
-            partition_scope: Some(v1::PartitionScope {
-                scope: Some(v1::partition_scope::Scope::All(v1::Unit {})),
-            }),
-            permissions,
-            field_visibility,
-            max_scan_rows: 500,
-            approval_required: Vec::new(),
-        }),
+        grant: Some(application_role_grant_to_proto(grant)?),
     })
 }
 
-fn field_visibility(entity_type_id: u32, field_ids: &[u32]) -> v1::EntityFieldVisibility {
-    v1::EntityFieldVisibility {
-        contract_lineage: CONTRACT_LINEAGE.to_owned(),
-        entity_type_id,
-        field_ids: field_ids.to_vec(),
-    }
+fn application_role_grant_to_proto(
+    grant: &CapabilityGrantV1,
+) -> Result<v1::CapabilityGrant, RiffDbError> {
+    let tenant_scope = match grant.tenant_scope() {
+        TenantScope::Global => v1::TenantScope {
+            scope: Some(v1::tenant_scope::Scope::Global(v1::Unit {})),
+        },
+        TenantScope::Tenant(tenant) => v1::TenantScope {
+            scope: Some(v1::tenant_scope::Scope::TenantId(
+                tenant.as_str().to_owned(),
+            )),
+        },
+    };
+    let partition_scope = match grant.partition_scope() {
+        PartitionScopeV1::All => v1::PartitionScope {
+            scope: Some(v1::partition_scope::Scope::All(v1::Unit {})),
+        },
+        PartitionScopeV1::Explicit(_) => {
+            return Err(RiffDbError::Rpc(
+                "application role lowered to explicit partition scope".into(),
+            ));
+        }
+    };
+    let permissions = grant
+        .permissions()
+        .as_slice()
+        .iter()
+        .map(application_role_permission_to_proto)
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok(v1::CapabilityGrant {
+        tenant_scope: Some(tenant_scope),
+        partition_scope: Some(partition_scope),
+        permissions,
+        field_visibility: grant
+            .field_visibility()
+            .iter()
+            .map(|visibility| v1::EntityFieldVisibility {
+                contract_lineage: visibility.lineage().as_str().to_owned(),
+                entity_type_id: visibility.entity_type().get(),
+                field_ids: visibility
+                    .fields()
+                    .iter()
+                    .map(|field| field.get())
+                    .collect(),
+            })
+            .collect(),
+        max_scan_rows: u32::from(grant.max_scan_rows().get()),
+        approval_required: Vec::new(),
+    })
+}
+
+fn application_role_permission_to_proto(
+    permission: &CapabilityPermissionV1,
+) -> Result<v1::CapabilityPermission, RiffDbError> {
+    use v1::capability_permission::Permission;
+    let permission = match permission {
+        CapabilityPermissionV1::InvokeCommand(lineage, command) => {
+            Permission::InvokeCommand(v1::LineageScopedStableId {
+                contract_lineage: lineage.as_str().to_owned(),
+                stable_id: command.get(),
+            })
+        }
+        CapabilityPermissionV1::ExecuteNamedQuery(lineage, module_hash, query_name) => {
+            Permission::ExecuteNamedQuery(v1::NamedQueryPermission {
+                contract_lineage: lineage.as_str().to_owned(),
+                query_module_hash: module_hash.as_bytes().to_vec(),
+                query_name: query_name.as_str().to_owned(),
+            })
+        }
+        CapabilityPermissionV1::ApplicationRoleIdentity(role_hash) => {
+            Permission::ApplicationRoleIdentity(role_hash.as_bytes().to_vec())
+        }
+        _ => {
+            return Err(RiffDbError::Rpc(
+                "application role compiler emitted non-application authority".into(),
+            ));
+        }
+    };
+    Ok(v1::CapabilityPermission {
+        permission: Some(permission),
+    })
 }
 
 async fn connect(endpoint: &str) -> Result<RiffDbClient, RiffDbError> {
@@ -440,6 +514,7 @@ enum ReaperCommand {
 struct ServerProcess {
     stdin: Option<std::process::ChildStdin>,
     ready: Receiver<io::Result<String>>,
+    write_groups: Receiver<io::Result<[u64; 16]>>,
     reaper_commands: SyncSender<ReaperCommand>,
     exited: Receiver<io::Result<ExitStatus>>,
     reaper: Option<JoinHandle<()>>,
@@ -480,14 +555,18 @@ impl ServerProcess {
         let stdout = child.stdout.take().ok_or_else(|| io::Error::other("stdout"))?;
         let stderr = child.stderr.take().ok_or_else(|| io::Error::other("stderr"))?;
         let (ready_sender, ready) = mpsc::sync_channel(1);
-        let stdout = thread::spawn(move || read_ready_then_drain(stdout, ready_sender));
-        let stderr = thread::spawn(move || drain_stream(stderr));
+        let (write_group_sender, write_groups) = mpsc::sync_channel(1);
+        let stdout = thread::spawn(move || {
+            read_server_stdout(stdout, ready_sender, write_group_sender)
+        });
+        let stderr = thread::spawn(move || drain_server_stderr(stderr));
         let (reaper_commands, commands) = mpsc::sync_channel(1);
         let (exit_sender, exited) = mpsc::sync_channel(1);
         let reaper = thread::spawn(move || reap_child(child, commands, exit_sender));
         Ok(Self {
             stdin: Some(stdin),
             ready,
+            write_groups,
             reaper_commands,
             exited,
             reaper: Some(reaper),
@@ -515,7 +594,7 @@ impl ServerProcess {
             .map_err(|_| io::Error::other("bad ready address"))
     }
 
-    fn shutdown_cleanly(&mut self) -> io::Result<()> {
+    fn shutdown_cleanly(&mut self) -> io::Result<[u64; 16]> {
         if let Some(mut stdin) = self.stdin.take() {
             let _ = stdin.write_all(b"shutdown\n");
             let _ = stdin.flush();
@@ -525,7 +604,9 @@ impl ServerProcess {
                 self.exit_observed = true;
                 let status = status?;
                 if status.success() {
-                    Ok(())
+                    self.write_groups
+                        .recv_timeout(PROCESS_STOP_TIMEOUT)
+                        .map_err(|_| io::Error::other("write-group report missing"))?
                 } else {
                     Err(io::Error::other(format!("exit {status}")))
                 }
@@ -555,21 +636,55 @@ impl Drop for ServerProcess {
     }
 }
 
-fn read_ready_then_drain(
+fn read_server_stdout(
     stream: impl Read,
     ready_sender: SyncSender<io::Result<String>>,
+    write_group_sender: SyncSender<io::Result<[u64; 16]>>,
 ) -> usize {
     let mut reader = BufReader::new(stream);
     let mut line = String::new();
     let ready = reader.read_line(&mut line).map(|_| line.trim_end().to_owned());
     let _ = ready_sender.send(ready);
-    drain_stream(reader)
+    let mut total = line.len();
+    loop {
+        line.clear();
+        let Ok(read) = reader.read_line(&mut line) else {
+            break;
+        };
+        if read == 0 {
+            break;
+        }
+        total = total.saturating_add(read);
+        if let Some(encoded) = line.trim_end().strip_prefix(WRITE_GROUP_PREFIX) {
+            let _ = write_group_sender.send(parse_write_groups(encoded));
+        }
+    }
+    total
 }
 
-fn drain_stream(mut stream: impl Read) -> usize {
+fn parse_write_groups(encoded: &str) -> io::Result<[u64; 16]> {
+    let values = encoded
+        .split(',')
+        .map(|value| {
+            value
+                .parse::<u64>()
+                .map_err(|_| io::Error::other("invalid write-group count"))
+        })
+        .collect::<io::Result<Vec<_>>>()?;
+    values
+        .try_into()
+        .map_err(|_| io::Error::other("invalid write-group count length"))
+}
+
+fn drain_server_stderr(stream: impl Read) -> usize {
+    let mut reader = BufReader::new(stream);
     let mut total = 0_usize;
-    let mut buffer = [0_u8; 4_096];
-    while let Ok(read) = stream.read(&mut buffer) {
+    let mut line = String::new();
+    loop {
+        line.clear();
+        let Ok(read) = reader.read_line(&mut line) else {
+            break;
+        };
         if read == 0 {
             break;
         }

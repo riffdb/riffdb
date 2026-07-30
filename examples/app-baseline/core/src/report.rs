@@ -19,6 +19,8 @@ pub struct BackendReport {
     pub seed_rows: u64,
     /// Scenario results.
     pub scenarios: Vec<ScenarioResult>,
+    /// Exact successful RiffDB completion commits by group size 1 through 16.
+    pub write_completion_groups: Option<[u64; 16]>,
 }
 
 /// Builds the top-level diagnostics report.
@@ -94,6 +96,7 @@ fn backend_json(backend: &BackendReport) -> Value {
         "guarantee_notes": backend.guarantee_notes,
         "seed_ns": backend.seed_ns,
         "seed_rows": backend.seed_rows,
+        "write_completion_groups_by_size": backend.write_completion_groups,
         "scenarios": scenarios,
     })
 }

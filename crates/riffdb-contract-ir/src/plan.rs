@@ -303,7 +303,7 @@ impl BindingPlan {
     }
 }
 
-/// One compiler-proved relationship change backed by a source-declared exact read.
+/// One compiler-proved relationship change backed by an earlier exact target binding.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct RelationshipCheckPlan {
     relationship_name: String,
@@ -360,7 +360,7 @@ impl RelationshipCheckPlan {
     pub const fn source_binding(&self) -> BindingId {
         self.source_binding
     }
-    /// Earlier source-declared exact read that supplies commit-revalidated evidence.
+    /// Earlier exact read/mutate/create binding proving the target.
     #[must_use]
     pub const fn target_binding(&self) -> BindingId {
         self.target_binding
@@ -1179,7 +1179,10 @@ fn derive_relationship_checks(
             let mut matching = None;
             for target in bindings {
                 if target.id() >= source_binding.id()
-                    || target.mode() != BindingMode::Read
+                    || !matches!(
+                        target.mode(),
+                        BindingMode::Read | BindingMode::Mutate | BindingMode::Create
+                    )
                     || target.entity_type() != relationship.target_entity()
                     || target.key_expressions().len() != resulting.len()
                 {
@@ -1201,7 +1204,7 @@ fn derive_relationship_checks(
                 }
             }
             let target_binding = matching.ok_or(IrValidationError::InvalidDependency {
-                reason: "relationship change lacks dominating exact target read",
+                reason: "relationship change lacks dominating exact target binding",
             })?;
             checks.push(RelationshipCheckPlan {
                 relationship_name: relationship.name().to_owned(),
@@ -1723,14 +1726,17 @@ fn validate_binding_plans(
                 .ok_or(IrValidationError::InvalidReference {
                     kind: "binding entity",
                 })?;
+        let owner = schema.aggregate_for_entity(binding.entity_type).ok_or(
+            IrValidationError::InvalidReference {
+                kind: "binding aggregate owner",
+            },
+        )?;
         if entity.primary_key() != &binding.key_schema
-            || schema
-                .aggregate_for_entity(binding.entity_type)
-                .map(|value| value.id())
-                != Some(locality.aggregate_id)
+            || (matches!(binding.mode, BindingMode::Mutate | BindingMode::Create)
+                && owner.id() != locality.aggregate_id)
         {
             return Err(IrValidationError::InvalidDependency {
-                reason: "binding key or aggregate owner mismatch",
+                reason: "binding key mismatch or mutable binding is outside the locality aggregate",
             });
         }
         for (expression, component) in binding
@@ -1934,16 +1940,27 @@ fn validate_locality(
             kind: "aggregate root entity",
         })?;
     for binding in bindings {
+        let binding_aggregate = schema.aggregate_for_entity(binding.entity_type).ok_or(
+            IrValidationError::InvalidReference {
+                kind: "binding aggregate owner",
+            },
+        )?;
+        let binding_root =
+            schema
+                .entity(binding_aggregate.root())
+                .ok_or(IrValidationError::InvalidReference {
+                    kind: "binding aggregate root entity",
+                })?;
         if !matches_key_template(
-            aggregate.keys().expressions(),
-            aggregate.keys().partition_expression(),
+            binding_aggregate.keys().expressions(),
+            binding_aggregate.keys().partition_expression(),
             arena,
             locality.partition_expression,
-            root,
+            binding_root,
             binding,
         )? {
             return Err(IrValidationError::InvalidDependency {
-                reason: "partition derivation is not the aggregate template instantiated from every binding root key",
+                reason: "binding aggregate partition does not equal the command partition derivation",
             });
         }
     }

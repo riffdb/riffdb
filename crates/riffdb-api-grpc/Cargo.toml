@@ -10,6 +10,7 @@ publish.workspace = true
 default = []
 client = ["tonic/channel"]
 server = [
+    "dep:futures-util",
     "dep:riffdb-auth",
     "dep:riffdb-errors",
     "dep:riffdb-service",
@@ -20,6 +21,7 @@ server = [
 
 [dependencies]
 base64 = { version = "=0.22.1", default-features = false, features = ["alloc"] }
+futures-util = { version = "=0.3.33", default-features = false, features = ["alloc"], optional = true }
 riffdb-auth = { version = "0.1.0", path = "../riffdb-auth", default-features = false, optional = true }
 riffdb-errors = { version = "0.1.0", path = "../riffdb-errors", default-features = false, optional = true }
 riffdb-proto = { version = "0.1.0", path = "../riffdb-proto", default-features = false }

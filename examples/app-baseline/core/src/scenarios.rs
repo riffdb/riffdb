@@ -21,6 +21,12 @@ pub enum ScenarioId {
     TicketDetailPage,
     /// Post-seed write: create comment.
     CreateComment,
+    /// Atomic multi-entity write: close ticket + comment.
+    CloseTicketWithComment,
+    /// Atomic multi-entity write: swap two member roles.
+    SwapMemberRoles,
+    /// Multi-command workflow: open ticket + attach two labels.
+    OpenTicketWithLabels,
 }
 
 impl ScenarioId {
@@ -36,12 +42,15 @@ impl ScenarioId {
             Self::ListProjectMembers => "list_project_members",
             Self::TicketDetailPage => "ticket_detail_page",
             Self::CreateComment => "create_comment",
+            Self::CloseTicketWithComment => "close_ticket_with_comment",
+            Self::SwapMemberRoles => "swap_member_roles",
+            Self::OpenTicketWithLabels => "open_ticket_with_labels",
         }
     }
 
     /// All scenarios in report order.
     #[must_use]
-    pub const fn all() -> [Self; 8] {
+    pub const fn all() -> [Self; 11] {
         [
             Self::PointGetTicket,
             Self::PointGetUser,
@@ -51,6 +60,9 @@ impl ScenarioId {
             Self::ListProjectMembers,
             Self::TicketDetailPage,
             Self::CreateComment,
+            Self::CloseTicketWithComment,
+            Self::SwapMemberRoles,
+            Self::OpenTicketWithLabels,
         ]
     }
 }
@@ -162,6 +174,25 @@ pub fn run_scenarios<B: AppBackend>(
                     let (value, elapsed) =
                         time_call(|| backend.create_comment(&probes.write_comment));
                     value.map(|()| (1, elapsed))
+                }
+                ScenarioId::CloseTicketWithComment => {
+                    let (value, elapsed) = time_call(|| {
+                        backend.close_ticket_with_comment(&probes.close_ticket_with_comment)
+                    });
+                    // Two entity mutations: ticket + comment.
+                    value.map(|()| (2, elapsed))
+                }
+                ScenarioId::SwapMemberRoles => {
+                    let (value, elapsed) =
+                        time_call(|| backend.swap_member_roles(&probes.swap_member_roles));
+                    value.map(|()| (2, elapsed))
+                }
+                ScenarioId::OpenTicketWithLabels => {
+                    let (value, elapsed) = time_call(|| {
+                        backend.open_ticket_with_labels(&probes.open_ticket_with_labels)
+                    });
+                    // Ticket + two label links.
+                    value.map(|()| (3, elapsed))
                 }
             };
             let (row_count, elapsed) = match outcome {

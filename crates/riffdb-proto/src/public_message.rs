@@ -34,6 +34,7 @@ const MAX_EXPECTED_TOKENS: usize = 16;
 const MAX_BUILD_FEATURES: usize = 64;
 const MAX_BUILD_STRING_BYTES: usize = 128;
 const MAX_COMMAND_EXPLAIN_ITEMS: usize = 4_096;
+const MAX_COMMAND_BATCH_ITEMS: usize = 16;
 const MAX_DISCOVERY_PAGE_BYTES: usize = 2_621_440;
 const MAX_OPERATION_SCHEMA_BYTES: usize = 65_536;
 const MAX_PROVENANCE_LINKS: usize = 4_096;
@@ -536,6 +537,19 @@ pub fn validate_get_outcome_exchange(
     } else {
         Err(PublicWireError::InconsistentFields)
     }
+}
+
+/// Validates input-order preservation for one bounded command batch.
+pub fn validate_execute_command_batch_exchange(
+    request: &v1::ExecuteCommandBatchRequest,
+    response: &v1::ExecuteCommandBatchResponse,
+) -> Result<(), PublicWireError> {
+    validate_public_message(request)?;
+    validate_public_message(response)?;
+    if request.commands.len() != response.responses.len() {
+        return Err(PublicWireError::InconsistentFields);
+    }
+    Ok(())
 }
 
 /// Validates representation, fence, and page relations for command discovery.
@@ -4390,6 +4404,42 @@ fn preflight_execute_response(input: &[u8]) -> Result<(), PublicWireError> {
     preflight_result(wire::execute_response(input))
 }
 
+fn preflight_execute_batch_request(input: &[u8]) -> Result<(), PublicWireError> {
+    preflight_nested_message(
+        input,
+        1,
+        &[1],
+        &[],
+        &[NestedRule {
+            field: 1,
+            preflight: preflight_execute_request,
+        }],
+        &[RepeatedRule {
+            field: 1,
+            maximum: MAX_COMMAND_BATCH_ITEMS,
+            wire: RepeatedWire::LengthDelimited,
+        }],
+    )
+}
+
+fn preflight_execute_batch_response(input: &[u8]) -> Result<(), PublicWireError> {
+    preflight_nested_message(
+        input,
+        1,
+        &[1],
+        &[],
+        &[NestedRule {
+            field: 1,
+            preflight: preflight_execute_response,
+        }],
+        &[RepeatedRule {
+            field: 1,
+            maximum: MAX_COMMAND_BATCH_ITEMS,
+            wire: RepeatedWire::LengthDelimited,
+        }],
+    )
+}
+
 fn preflight_get_entity_request(input: &[u8]) -> Result<(), PublicWireError> {
     preflight_nested_message(
         input,
@@ -6767,5 +6817,49 @@ impl PublicMessage for v1::ExecuteCommandResponse {
 
     fn validate_structure(&self) -> Result<(), PublicWireError> {
         crate::validate_execute_response(self).map_err(|_| PublicWireError::InconsistentFields)
+    }
+}
+
+impl PublicMessage for v1::ExecuteCommandBatchRequest {
+    const MAX_ENCODED_BYTES: usize = MAX_PUBLIC_REQUEST_BYTES;
+
+    fn preflight(input: &[u8]) -> Result<(), PublicWireError> {
+        preflight_root(input, Self::MAX_ENCODED_BYTES, 1, &[1], &[])?;
+        preflight_execute_batch_request(input)
+    }
+
+    fn validate_structure(&self) -> Result<(), PublicWireError> {
+        if self.commands.is_empty() || self.commands.len() > MAX_COMMAND_BATCH_ITEMS {
+            return Err(PublicWireError::TooManyItems);
+        }
+        let mut request_ids = std::collections::BTreeSet::new();
+        for command in &self.commands {
+            crate::validate_execute_request(command)
+                .map_err(|_| PublicWireError::InconsistentFields)?;
+            if !request_ids.insert(command.request_id.as_slice()) {
+                return Err(PublicWireError::NonCanonical);
+            }
+        }
+        Ok(())
+    }
+}
+
+impl PublicMessage for v1::ExecuteCommandBatchResponse {
+    const MAX_ENCODED_BYTES: usize = MAX_PUBLIC_RESPONSE_BYTES;
+
+    fn preflight(input: &[u8]) -> Result<(), PublicWireError> {
+        preflight_root(input, Self::MAX_ENCODED_BYTES, 1, &[1], &[])?;
+        preflight_execute_batch_response(input)
+    }
+
+    fn validate_structure(&self) -> Result<(), PublicWireError> {
+        if self.responses.is_empty() || self.responses.len() > MAX_COMMAND_BATCH_ITEMS {
+            return Err(PublicWireError::TooManyItems);
+        }
+        for response in &self.responses {
+            crate::validate_execute_response(response)
+                .map_err(|_| PublicWireError::InconsistentFields)?;
+        }
+        Ok(())
     }
 }

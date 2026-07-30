@@ -439,10 +439,15 @@ fn lower_locality(
     expressions: &mut HirExpressionArena,
     diagnostics: &mut Vec<CompilerDiagnostic>,
 ) -> (Option<LocalityPlan>, Option<riffdb_types::AggregateTypeId>) {
-    let Some(first) = command.bindings.first() else {
+    let Some(anchor) = command
+        .bindings
+        .iter()
+        .find(|binding| matches!(binding.mode, BindingMode::Mutate | BindingMode::Create))
+        .or_else(|| command.bindings.first())
+    else {
         return (None, None);
     };
-    let Some(aggregate_hir) = hir.aggregate_for_entity(first.entity_id) else {
+    let Some(aggregate_hir) = hir.aggregate_for_entity(anchor.entity_id) else {
         return (None, None);
     };
     let aggregate_id = aggregate_hir.id;
@@ -458,7 +463,7 @@ fn lower_locality(
         .key_fields
         .iter()
         .copied()
-        .zip(first.arguments.iter().map(|argument| argument.id))
+        .zip(anchor.arguments.iter().map(|argument| argument.id))
         .collect::<BTreeMap<_, _>>();
     let partition_expression = match append_schema_expression(
         &aggregate_hir.keys.expressions,
@@ -973,6 +978,44 @@ mod tests {
             .expect("create plan");
         assert_eq!(create.commit_checks().len(), 2);
         assert_eq!(create.bindings().len(), 1);
+    }
+
+    #[test]
+    fn external_reads_do_not_expand_mutation_conflict_derivation() {
+        let source = r#"
+contract Example version 1 {
+  entity Account { key (tenant: uuid, account_id: uuid) }
+  entity Entry { key (tenant: uuid, entry_id: uuid) }
+  aggregate Accounts {
+    root Account
+    partition_by tenant
+    conflict_key (tenant)
+  }
+  aggregate Entries {
+    root Entry
+    partition_by tenant
+    conflict_key (tenant, entry_id)
+  }
+  command CreateEntry {
+    input request_key: string<16>
+    input tenant: uuid
+    input account_id: uuid
+    input entry_id: uuid
+    idempotency_key request_key
+    read Account(tenant, account_id) as account else MissingAccount {}
+    create Entry(tenant, entry_id) as entry else EntryExists {}
+    return Created { entry: entry }
+  }
+}
+"#;
+        let commands = compile_commands(source);
+        let locality = commands[0].locality();
+        assert_eq!(locality.conflict_keys().len(), 1);
+        assert_eq!(
+            locality.conflict_keys()[0].schema().components().len(),
+            2,
+            "the mutation aggregate, not the first external read, owns conflicts"
+        );
     }
 
     #[test]

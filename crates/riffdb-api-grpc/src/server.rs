@@ -9,6 +9,7 @@ use std::sync::Arc;
 use std::task::{Context, Poll};
 use std::time::{Duration, Instant};
 
+use futures_util::future::join_all;
 use riffdb_auth::{AuthenticationContext, CapabilityDigestKeyProvider, CredentialAuthenticator};
 use riffdb_errors::{ApplicationOperation, PublicErrorKind};
 use riffdb_proto::{MAX_PUBLIC_REQUEST_BYTES, MAX_PUBLIC_RESPONSE_BYTES, app::v1 as app_v1, v1};
@@ -819,6 +820,35 @@ impl CommandService for GrpcApplication {
             self.normal_invocation(ServiceOperationV1::ExecuteCommand, &metadata, request_id)?;
         let result = map_service(service.execute_command(context, request).await)?;
         Ok(Response::new(execute_command_result_to_proto(&result)?))
+    }
+
+    async fn execute_batch(
+        &self,
+        request: Request<v1::ExecuteCommandBatchRequest>,
+    ) -> Result<Response<v1::ExecuteCommandBatchResponse>, Status> {
+        let (metadata, _peer, message) = split_request(request);
+        // StrictProstCodec has already validated the complete bounded batch.
+        // Prepare every transport context before any semantic work begins.
+        let mut invocations = Vec::with_capacity(message.commands.len());
+        for command in message.commands {
+            let (request_id, request) = execute_command_request_from_proto(command)?;
+            let (service, context, cancellation) =
+                self.normal_invocation(ServiceOperationV1::ExecuteCommand, &metadata, request_id)?;
+            invocations.push(async move {
+                let _cancellation = cancellation;
+                let result = map_service(service.execute_command(context, request).await)?;
+                execute_command_result_to_proto(&result)
+            });
+        }
+        // Await every independently admitted command even when a sibling
+        // fails, so the transport never cancels an already-started item merely
+        // to provide fail-fast batch behavior.
+        let results = join_all(invocations).await;
+        let mut responses = Vec::with_capacity(results.len());
+        for result in results {
+            responses.push(result?);
+        }
+        Ok(Response::new(v1::ExecuteCommandBatchResponse { responses }))
     }
 
     async fn get_outcome(

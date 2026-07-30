@@ -291,10 +291,13 @@ fn validate_relationship_reads(
                         })
                 })
                 .collect::<Option<Vec<_>>>();
-            let qualifying_read = resulting_values.as_ref().is_some_and(|values| {
+            let qualifying_target = resulting_values.as_ref().is_some_and(|values| {
                 command.bindings.iter().any(|target| {
                     target.id < source_binding.id
-                        && target.mode == BindingMode::Read
+                        && matches!(
+                            target.mode,
+                            BindingMode::Read | BindingMode::Mutate | BindingMode::Create
+                        )
                         && target.entity_id == relationship.target_entity
                         && target.arguments.len() == values.len()
                         && target
@@ -310,7 +313,7 @@ fn validate_relationship_reads(
                             })
                 })
             });
-            if !qualifying_read {
+            if !qualifying_target {
                 diagnostics.push(
                     CompilerDiagnostic::new(
                         CompilerDiagnosticCode::MissingRelationshipRead,

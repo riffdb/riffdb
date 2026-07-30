@@ -27,7 +27,7 @@ use riffdb_storage_api::{
 };
 use riffdb_types::ProvenanceId;
 
-use crate::administration::stage_service_audit_in_write;
+use crate::administration::stage_service_audit_group_in_write;
 use crate::codec::{
     IdempotencyRecordV1, decode_application_sequence_allocator_v1, decode_entity_record_v1,
     decode_idempotency_record_v1, decode_index_epoch_v1, decode_pending_admission_v1,
@@ -242,10 +242,7 @@ impl NonEmptyCommandBatch for RedbNonEmptyBatch {
             .map(|records| records.stored_outcome().clone())
             .collect();
         let committed = CommittedBatchV1::new(outcomes, durability).map_err(invariant_value)?;
-        let mut terminal_records = Vec::with_capacity(terminals.len());
-        for terminal in &terminals {
-            terminal_records.push(stage_service_audit_in_write(&self.core.access, terminal)?);
-        }
+        let terminal_records = stage_service_audit_group_in_write(&self.core.access, &terminals)?;
         let audited = AuditedCommittedBatchV1::new(committed, terminal_records.clone())
             .map_err(invariant_value)?;
         let pending_events = self

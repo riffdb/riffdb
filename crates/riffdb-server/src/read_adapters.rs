@@ -30,7 +30,7 @@ use riffdb_service::{
     ProvenanceClaimsView, QueryModuleReadError, QueryModuleReadPort, RequestControl,
 };
 use riffdb_storage_api::{
-    AdmissionLookupResultV1, AdmissionRepository, AuthoritativePointReader,
+    ActiveCatalogPointerV1, AdmissionLookupResultV1, AdmissionRepository, AuthoritativePointReader,
     AuthoritativeScanReader, CapabilityLifecycleV1, CapabilityReader, CatalogRepository,
     CommitScanPageV1, CommitScanRequest, DurabilityMode, EntityTarget, ExecutablePlanRef,
     FilteredAuthoritativeIndexScanPage, FilteredAuthoritativeIndexScanRequest,
@@ -55,6 +55,90 @@ type DeploymentRequest = (ContractBundle, Option<ContractVersion>);
 type QueryModuleReadRequest = (ValidatedContractBundle, Option<QueryModuleHash>);
 const MAX_HOT_HISTORICAL_CONTRACTS: usize = 4_096;
 const MAX_HOT_QUERY_MODULES: usize = 4_096;
+const MAX_HOT_EXECUTABLE_PLANS: usize = 4_096;
+
+#[derive(Default)]
+struct ActiveCatalogView {
+    snapshot: Option<ActiveCatalogSnapshot>,
+}
+
+impl ActiveCatalogView {
+    fn get(
+        &self,
+        pointer: Option<&ActiveCatalogPointerV1>,
+    ) -> Option<Option<ActiveCatalogSnapshot>> {
+        match (pointer, self.snapshot.as_ref()) {
+            (None, None) => Some(None),
+            (Some(pointer), Some(snapshot)) if snapshot.pointer() == pointer => {
+                Some(Some(snapshot.clone()))
+            }
+            _ => None,
+        }
+    }
+
+    fn replace(&mut self, snapshot: Option<ActiveCatalogSnapshot>) {
+        self.snapshot = snapshot;
+    }
+}
+
+fn read_active_catalog_cached<R: CatalogRepository>(
+    repository: &R,
+    cache: &Mutex<ActiveCatalogView>,
+) -> Result<Option<ActiveCatalogSnapshot>, CatalogError> {
+    let durable_pointer = repository.read_active_catalog()?;
+    if let Some(snapshot) = cache
+        .lock()
+        .map_err(|_| CatalogError::new(CatalogErrorKind::InvalidHistoricalEvidence))?
+        .get(durable_pointer.as_ref())
+    {
+        return Ok(snapshot);
+    }
+
+    // A cache miss always takes the complete catalog validation path. The
+    // snapshot read observes the active pointer again, so a concurrent
+    // activation yields either the prior or successor complete snapshot,
+    // never a pointer/bundle mixture.
+    let snapshot = ActiveCatalogSnapshot::read(repository)?;
+    cache
+        .lock()
+        .map_err(|_| CatalogError::new(CatalogErrorKind::InvalidHistoricalEvidence))?
+        .replace(snapshot.clone());
+    Ok(snapshot)
+}
+
+#[derive(Default)]
+struct ExecutablePlanView {
+    plans: BTreeMap<ExecutablePlanRef, (ActiveCatalogPointerV1, ResolvedExecutablePlan)>,
+}
+
+impl ExecutablePlanView {
+    fn get(
+        &self,
+        reference: &ExecutablePlanRef,
+        active_pointer: &ActiveCatalogPointerV1,
+    ) -> Option<ResolvedExecutablePlan> {
+        self.plans
+            .get(reference)
+            .and_then(|(validated_under, plan)| {
+                (validated_under == active_pointer).then(|| plan.clone())
+            })
+    }
+
+    fn insert(
+        &mut self,
+        reference: ExecutablePlanRef,
+        active_pointer: ActiveCatalogPointerV1,
+        plan: ResolvedExecutablePlan,
+    ) {
+        if self.plans.len() == MAX_HOT_EXECUTABLE_PLANS
+            && !self.plans.contains_key(&reference)
+            && let Some(oldest_reference) = self.plans.keys().next().cloned()
+        {
+            self.plans.remove(&oldest_reference);
+        }
+        self.plans.insert(reference, (active_pointer, plan));
+    }
+}
 
 #[derive(Default)]
 struct HistoricalContractView {
@@ -139,8 +223,11 @@ impl ServerCatalogReadPort {
         reason = "WP-130 composition constructs this adapter after staged storage activation"
     )]
     pub(crate) fn new(storage: SharedRedbOperationalPorts, driver: &BlockingPortDriver) -> Self {
+        let active_cache = Arc::new(Mutex::new(ActiveCatalogView::default()));
         let active_storage = storage.clone();
-        let active = driver.executor(move |()| ActiveCatalogSnapshot::read(&active_storage));
+        let active_view = Arc::clone(&active_cache);
+        let active =
+            driver.executor(move |()| read_active_catalog_cached(&active_storage, &active_view));
 
         let historical = Arc::new(Mutex::new(HistoricalContractView::default()));
         let version_storage = storage.clone();
@@ -164,6 +251,7 @@ impl ServerCatalogReadPort {
         });
 
         let plan_storage = storage.clone();
+        let plan_cache = Arc::new(Mutex::new(ExecutablePlanView::default()));
         let executable_plan = driver.executor(move |request: CatalogExecutablePlanRequest| {
             let reference = ExecutablePlanRef::new(
                 request.lineage().clone(),
@@ -172,7 +260,29 @@ impl ServerCatalogReadPort {
                 request.command_id(),
                 request.plan_hash(),
             );
-            resolve_executable_plan(&plan_storage, &reference)
+            let before = plan_storage
+                .read_active_catalog()?
+                .ok_or_else(|| CatalogError::new(CatalogErrorKind::UnknownExecutablePlan))?;
+            if let Some(plan) = plan_cache
+                .lock()
+                .map_err(|_| CatalogError::new(CatalogErrorKind::InvalidHistoricalEvidence))?
+                .get(&reference, &before)
+            {
+                return Ok(plan);
+            }
+
+            let plan = resolve_executable_plan(&plan_storage, &reference)?;
+            // Cache only across an unchanged exact active pointer. If deployment
+            // raced resolution, this invocation may use the coherent snapshot it
+            // observed, while the next invocation must resolve against the new
+            // active lineage proof.
+            if plan_storage.read_active_catalog()?.as_ref() == Some(&before) {
+                plan_cache
+                    .lock()
+                    .map_err(|_| CatalogError::new(CatalogErrorKind::InvalidHistoricalEvidence))?
+                    .insert(reference, before, plan.clone());
+            }
+            Ok(plan)
         });
 
         let module_storage = storage.clone();

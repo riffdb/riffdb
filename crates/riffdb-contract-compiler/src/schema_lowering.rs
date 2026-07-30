@@ -47,7 +47,9 @@ pub(crate) fn validate_unique_declarations(
         let Some(root) = hir.entity(owner.root) else {
             continue;
         };
-        let route_len = root.key_fields.len();
+        let Some(route) = aggregate_partition_route_fields(owner, root, entity) else {
+            continue;
+        };
         for unique in entity.indexes.iter().filter(|index| index.unique) {
             let fields = unique
                 .fields
@@ -55,8 +57,8 @@ pub(crate) fn validate_unique_declarations(
                 .map(|field| field.0)
                 .collect::<Vec<_>>();
             let canonical_route = fields
-                .get(..route_len)
-                .is_some_and(|prefix| prefix == &entity.key_fields[..route_len]);
+                .get(..route.len())
+                .is_some_and(|prefix| prefix == route.as_slice());
             let required_key_types = unique.fields.iter().all(|(field_id, _)| {
                 entity
                     .fields
@@ -80,6 +82,42 @@ pub(crate) fn validate_unique_declarations(
     } else {
         Err(CompilerDiagnostics::new(diagnostics).expect("nonempty diagnostics"))
     }
+}
+
+fn aggregate_partition_route_fields(
+    owner: &crate::hir::HirAggregate,
+    root: &crate::hir::HirEntity,
+    entity: &crate::hir::HirEntity,
+) -> Option<Vec<riffdb_types::FieldId>> {
+    let mut dependencies = std::collections::BTreeSet::new();
+    let mut pending = vec![owner.keys.partition.id];
+    let mut visited = std::collections::BTreeSet::new();
+    while let Some(id) = pending.pop() {
+        if !visited.insert(id) {
+            continue;
+        }
+        let node = owner.keys.expressions.node(id)?;
+        match &node.kind {
+            riffdb_contract_ir::ExpressionKind::SchemaField { entity_type, field }
+                if *entity_type == root.id =>
+            {
+                dependencies.insert(*field);
+            }
+            riffdb_contract_ir::ExpressionKind::Unary { operand, .. } => pending.push(*operand),
+            riffdb_contract_ir::ExpressionKind::Binary { left, right, .. } => {
+                pending.push(*right);
+                pending.push(*left);
+            }
+            riffdb_contract_ir::ExpressionKind::Constant(_) => {}
+            _ => return None,
+        }
+    }
+    root.key_fields
+        .iter()
+        .enumerate()
+        .filter(|(_, field)| dependencies.contains(field))
+        .map(|(position, _)| entity.key_fields.get(position).copied())
+        .collect()
 }
 
 pub(crate) fn validate_relationship_declarations(
@@ -125,22 +163,20 @@ pub(crate) fn validate_relationship_declarations(
                                     && source.value_type == target.value_type
                             })
                     });
-            let source_owner = hir.aggregate_for_entity(source.id);
-            let target_owner = hir.aggregate_for_entity(target.id);
-            let same_owner = source_owner.zip(target_owner).is_some_and(|(left, right)| {
-                left.id == right.id
-                    && hir.entity(left.root).is_some_and(|root| {
-                        let route_len = root.key_fields.len();
-                        relationship
-                            .source_fields
-                            .get(..route_len)
-                            .map(|fields| fields.iter().map(|field| field.0))
-                            .is_some_and(|fields| {
-                                fields.eq(source.key_fields.iter().take(route_len).copied())
-                            })
-                    })
-            });
-            if !(valid_name && complete_target && matching_arity && exact_types && same_owner) {
+            let same_partition = hir
+                .aggregate_for_entity(source.id)
+                .zip(hir.aggregate_for_entity(target.id))
+                .is_some_and(|(source_owner, target_owner)| {
+                    relationship_partitions_match(
+                        hir,
+                        source,
+                        target,
+                        relationship,
+                        source_owner,
+                        target_owner,
+                    )
+                });
+            if !(valid_name && complete_target && matching_arity && exact_types && same_partition) {
                 diagnostics.push(CompilerDiagnostic::new(
                     CompilerDiagnosticCode::InvalidRelationship,
                     relationship.name_span,
@@ -153,6 +189,120 @@ pub(crate) fn validate_relationship_declarations(
     } else {
         Err(CompilerDiagnostics::new(diagnostics).expect("nonempty diagnostics"))
     }
+}
+
+fn relationship_partitions_match(
+    hir: &TypedContractHir,
+    source: &crate::hir::HirEntity,
+    target: &crate::hir::HirEntity,
+    relationship: &crate::hir::HirRelationship,
+    source_owner: &crate::hir::HirAggregate,
+    target_owner: &crate::hir::HirAggregate,
+) -> bool {
+    let Some(source_root) = hir.entity(source_owner.root) else {
+        return false;
+    };
+    let Some(target_root) = hir.entity(target_owner.root) else {
+        return false;
+    };
+    let mut pending = vec![(
+        source_owner.keys.partition.id,
+        target_owner.keys.partition.id,
+    )];
+    let mut visited = std::collections::BTreeSet::new();
+    while let Some((source_id, target_id)) = pending.pop() {
+        if !visited.insert((source_id, target_id)) {
+            continue;
+        }
+        let Some(source_node) = source_owner.keys.expressions.node(source_id) else {
+            return false;
+        };
+        let Some(target_node) = target_owner.keys.expressions.node(target_id) else {
+            return false;
+        };
+        if source_node.value_type != target_node.value_type {
+            return false;
+        }
+        match (&source_node.kind, &target_node.kind) {
+            (
+                riffdb_contract_ir::ExpressionKind::Constant(left),
+                riffdb_contract_ir::ExpressionKind::Constant(right),
+            ) if left == right => {}
+            (
+                riffdb_contract_ir::ExpressionKind::SchemaField {
+                    entity_type: left_entity,
+                    field: left_field,
+                },
+                riffdb_contract_ir::ExpressionKind::SchemaField {
+                    entity_type: right_entity,
+                    field: right_field,
+                },
+            ) => {
+                if *left_entity != source_root.id || *right_entity != target_root.id {
+                    return false;
+                }
+                let Some(left_position) = source_root
+                    .key_fields
+                    .iter()
+                    .position(|candidate| candidate == left_field)
+                else {
+                    return false;
+                };
+                let Some(source_partition_field) = source.key_fields.get(left_position).copied()
+                else {
+                    return false;
+                };
+                let Some(right_position) = target_root
+                    .key_fields
+                    .iter()
+                    .position(|candidate| candidate == right_field)
+                else {
+                    return false;
+                };
+                let Some(target_partition_field) = target.key_fields.get(right_position).copied()
+                else {
+                    return false;
+                };
+                let Some(mapped_position) = relationship
+                    .target_fields
+                    .iter()
+                    .position(|(field, _)| *field == target_partition_field)
+                else {
+                    return false;
+                };
+                if relationship.source_fields[mapped_position].0 != source_partition_field {
+                    return false;
+                }
+            }
+            (
+                riffdb_contract_ir::ExpressionKind::Unary {
+                    operator: left_operator,
+                    operand: left_operand,
+                },
+                riffdb_contract_ir::ExpressionKind::Unary {
+                    operator: right_operator,
+                    operand: right_operand,
+                },
+            ) if left_operator == right_operator => pending.push((*left_operand, *right_operand)),
+            (
+                riffdb_contract_ir::ExpressionKind::Binary {
+                    operator: left_operator,
+                    left: left_left,
+                    right: left_right,
+                },
+                riffdb_contract_ir::ExpressionKind::Binary {
+                    operator: right_operator,
+                    left: right_left,
+                    right: right_right,
+                },
+            ) if left_operator == right_operator => {
+                pending.push((*left_left, *right_left));
+                pending.push((*left_right, *right_right));
+            }
+            _ => return false,
+        }
+    }
+    true
 }
 
 fn lower_relationships(

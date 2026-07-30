@@ -4,11 +4,11 @@ use riffdb_client_rust::generated::{GeneratedCommand, GeneratedCommandError, Gen
 use riffdb_client_rust::{ApplicationCardinality, ApplicationClientError, ApplicationContract, ApplicationRecord, ApplicationValue, AttemptBudget, CallMetadata, GeneratedBatchError, GeneratedBatchOptions, GeneratedBatchProgress, GeneratedBatchResult, IdempotentCommand, NamedQuery, NamedQueryResult, QueryOptions, StableApplicationClient, TypedCommandResult, TypedQueryResult, v1};
 use riffdb_client_rust::v1::value::Kind as WireKind;
 
-pub const QUERY_MODULE_HASH: [u8; 32] = [0x45, 0x9c, 0x4d, 0x87, 0x33, 0xfd, 0xf3, 0x34, 0x26, 0x90, 0x5f, 0x6f, 0xb1, 0xed, 0xa5, 0x10, 0x06, 0x83, 0x90, 0x2f, 0x97, 0x9b, 0x36, 0x3e, 0xd3, 0x01, 0x74, 0x79, 0x93, 0x7f, 0x6f, 0x37];
+pub const QUERY_MODULE_HASH: [u8; 32] = [0x14, 0x2a, 0x51, 0x9b, 0x77, 0xd6, 0xe8, 0x33, 0xd4, 0xbd, 0x86, 0xc6, 0xf3, 0x8b, 0xd6, 0x5c, 0x3e, 0xbc, 0x01, 0x4f, 0xa5, 0x60, 0x1b, 0xf6, 0x08, 0x9b, 0x51, 0xb2, 0x13, 0x37, 0x81, 0x5c];
 pub const CONTRACT_LINEAGE: &str = "TicketDesk";
 pub const CONTRACT_VERSION: u64 = 1;
 
-pub const CONTRACT_BUNDLE_HASH: [u8; 32] = [0x23, 0xe9, 0xb5, 0xb2, 0x07, 0x41, 0x4e, 0x27, 0x53, 0xe4, 0xd9, 0x14, 0xb1, 0xb9, 0x4e, 0xcd, 0x78, 0x61, 0x81, 0xbe, 0x08, 0x02, 0x8a, 0xce, 0x9d, 0x4f, 0x3c, 0xc0, 0xb6, 0xf4, 0x94, 0x4c];
+pub const CONTRACT_BUNDLE_HASH: [u8; 32] = [0x7d, 0x66, 0x59, 0xdf, 0x2f, 0xd5, 0x9e, 0x3a, 0x37, 0xdd, 0xb8, 0xcc, 0x59, 0xb3, 0x6c, 0xf7, 0xe8, 0x87, 0xf3, 0x88, 0x57, 0x6c, 0x48, 0xf4, 0x25, 0x11, 0x34, 0xf5, 0xd6, 0x58, 0x8f, 0x83];
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct DecimalValue {
@@ -1002,6 +1002,7 @@ pub struct AddProjectMemberInput {
     pub organization_id: String,
 }
 
+#[allow(clippy::large_enum_variant)]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum AddProjectMemberOutcome {
     Created {
@@ -1022,7 +1023,7 @@ pub enum AddProjectMemberOutcome {
     },
 }
 
-const ADD_PROJECT_MEMBER_PLAN_HASH: [u8; 32] = [0xc8, 0xe0, 0x39, 0x38, 0xe4, 0xe8, 0x41, 0x2c, 0x21, 0x7e, 0x85, 0x0b, 0x33, 0xbc, 0xe0, 0x14, 0x07, 0xee, 0x90, 0xba, 0x53, 0x5e, 0x43, 0xde, 0xe7, 0x85, 0x28, 0x13, 0x88, 0xbc, 0x7a, 0x58];
+const ADD_PROJECT_MEMBER_PLAN_HASH: [u8; 32] = [0x65, 0xa0, 0xa5, 0xee, 0xdb, 0xc1, 0xdd, 0x17, 0x04, 0xda, 0x23, 0xbe, 0x83, 0xc9, 0x89, 0xc5, 0x64, 0xe1, 0x06, 0xf5, 0x55, 0x51, 0x1a, 0xc9, 0xc8, 0xfd, 0x2e, 0x98, 0x62, 0x41, 0xb6, 0x44];
 impl GeneratedCommand for AddProjectMemberInput {
     type Outcome = AddProjectMemberOutcome;
 
@@ -1092,6 +1093,7 @@ pub struct AttachLabelInput {
     pub organization_id: String,
 }
 
+#[allow(clippy::large_enum_variant)]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum AttachLabelOutcome {
     Created {
@@ -1112,7 +1114,7 @@ pub enum AttachLabelOutcome {
     },
 }
 
-const ATTACH_LABEL_PLAN_HASH: [u8; 32] = [0xaa, 0xae, 0xab, 0x0f, 0x21, 0x9d, 0x8f, 0x84, 0xe6, 0x37, 0xe4, 0x5a, 0x0f, 0xbe, 0x52, 0xbd, 0x3b, 0xef, 0xab, 0x65, 0x76, 0xe1, 0xf3, 0xc6, 0x9f, 0xeb, 0xfc, 0xd0, 0x01, 0x9d, 0x3a, 0xff];
+const ATTACH_LABEL_PLAN_HASH: [u8; 32] = [0xc1, 0x76, 0x60, 0xb5, 0xbd, 0x51, 0x60, 0x39, 0x07, 0x72, 0xaa, 0xc0, 0x01, 0x92, 0x5a, 0xcc, 0x20, 0x17, 0x27, 0x3f, 0xe0, 0x3b, 0xf3, 0x97, 0x23, 0x09, 0x4f, 0xf7, 0x69, 0xb7, 0x3a, 0x43];
 impl GeneratedCommand for AttachLabelInput {
     type Outcome = AttachLabelOutcome;
 
@@ -1174,6 +1176,111 @@ impl GeneratedCommand for AttachLabelInput {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
+pub struct CloseTicketWithCommentInput {
+    pub body: String,
+    pub author_id: String,
+    pub ticket_id: String,
+    pub comment_id: String,
+    pub idempotency_key: String,
+    pub organization_id: String,
+}
+
+#[allow(clippy::large_enum_variant)]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum CloseTicketWithCommentOutcome {
+    Closed {
+        ticket: Ticket,
+        comment: Comment,
+    },
+
+    TicketGone {
+        ticket_id: String,
+    },
+
+    AuthorMissing {
+        user_id: String,
+    },
+
+    CommentExists {
+        comment_id: String,
+    },
+
+    TicketMissing {
+        ticket_id: String,
+    },
+}
+
+const CLOSE_TICKET_WITH_COMMENT_PLAN_HASH: [u8; 32] = [0xf1, 0x26, 0x14, 0x2e, 0xed, 0x87, 0xd0, 0x7f, 0x3b, 0x8d, 0xd3, 0xb8, 0x2e, 0x09, 0xee, 0x48, 0xc4, 0x30, 0xc2, 0x35, 0x83, 0xd5, 0x01, 0x96, 0xc2, 0xad, 0x17, 0xed, 0x59, 0xbf, 0x91, 0xd7];
+impl GeneratedCommand for CloseTicketWithCommentInput {
+    type Outcome = CloseTicketWithCommentOutcome;
+
+    fn idempotent_command(&self) -> Result<IdempotentCommand, GeneratedCommandError> {
+        let fields = vec![
+            wire_named_field("body", wire_string(Clone::clone(&self.body))),
+            wire_named_field("author_id", wire_uuid(&self.author_id)?),
+            wire_named_field("ticket_id", wire_uuid(&self.ticket_id)?),
+            wire_named_field("comment_id", wire_uuid(&self.comment_id)?),
+            wire_named_field("idempotency_key", wire_string(Clone::clone(&self.idempotency_key))),
+            wire_named_field("organization_id", wire_uuid(&self.organization_id)?),
+        ];
+        IdempotentCommand::new("CloseTicketWithComment", Some(CONTRACT_VERSION), wire_record(fields)).map_err(Into::into)
+    }
+
+    fn outcome_request(&self, request_id: riffdb_client_rust::RequestId) -> Result<v1::GetOutcomeRequest, GeneratedCommandError> {
+        Ok(v1::GetOutcomeRequest {
+            request_id: request_id.into_bytes().to_vec(),
+            contract_lineage: CONTRACT_LINEAGE.to_owned(),
+            command_name: "CloseTicketWithComment".to_owned(),
+            idempotency_key: self.idempotency_key.clone(),
+            outcome_uri: None,
+        })
+    }
+
+    fn decode_outcome(&self, response: &v1::ExecuteCommandResponse) -> Result<Self::Outcome, GeneratedCommandError> {
+        let mut fields = wire_outcome_fields(response, &CLOSE_TICKET_WITH_COMMENT_PLAN_HASH)?;
+        match response.outcome_type.as_str() {
+            "Closed" => {
+                let outcome = Self::Outcome::Closed {
+                    ticket: decode_ticket_entity(take_wire_field(&mut fields, 1)?)?,
+                    comment: decode_comment_entity(take_wire_field(&mut fields, 2)?)?,
+                };
+                if !fields.is_empty() { return Err(GeneratedCommandError::InvalidOutcomeShape); }
+                Ok(outcome)
+            },
+            "TicketGone" => {
+                let outcome = Self::Outcome::TicketGone {
+                    ticket_id: decode_wire_uuid(take_wire_field(&mut fields, 1)?)?,
+                };
+                if !fields.is_empty() { return Err(GeneratedCommandError::InvalidOutcomeShape); }
+                Ok(outcome)
+            },
+            "AuthorMissing" => {
+                let outcome = Self::Outcome::AuthorMissing {
+                    user_id: decode_wire_uuid(take_wire_field(&mut fields, 1)?)?,
+                };
+                if !fields.is_empty() { return Err(GeneratedCommandError::InvalidOutcomeShape); }
+                Ok(outcome)
+            },
+            "CommentExists" => {
+                let outcome = Self::Outcome::CommentExists {
+                    comment_id: decode_wire_uuid(take_wire_field(&mut fields, 1)?)?,
+                };
+                if !fields.is_empty() { return Err(GeneratedCommandError::InvalidOutcomeShape); }
+                Ok(outcome)
+            },
+            "TicketMissing" => {
+                let outcome = Self::Outcome::TicketMissing {
+                    ticket_id: decode_wire_uuid(take_wire_field(&mut fields, 1)?)?,
+                };
+                if !fields.is_empty() { return Err(GeneratedCommandError::InvalidOutcomeShape); }
+                Ok(outcome)
+            },
+            _ => Err(GeneratedCommandError::InvalidOutcomeShape),
+        }
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct CreateCommentInput {
     pub body: String,
     pub author_id: String,
@@ -1183,6 +1290,7 @@ pub struct CreateCommentInput {
     pub organization_id: String,
 }
 
+#[allow(clippy::large_enum_variant)]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum CreateCommentOutcome {
     Created {
@@ -1202,7 +1310,7 @@ pub enum CreateCommentOutcome {
     },
 }
 
-const CREATE_COMMENT_PLAN_HASH: [u8; 32] = [0xb0, 0x2d, 0x67, 0x87, 0xa5, 0x76, 0xa0, 0x2b, 0x4b, 0x9d, 0x7c, 0xea, 0xd1, 0xa1, 0x4f, 0xc4, 0x1e, 0x0c, 0x2c, 0xc1, 0xbb, 0xd1, 0x84, 0x02, 0x47, 0x6e, 0x2e, 0xf8, 0x3e, 0x1f, 0x76, 0x7d];
+const CREATE_COMMENT_PLAN_HASH: [u8; 32] = [0x54, 0x56, 0xfb, 0xeb, 0x4b, 0x17, 0x81, 0xf6, 0x70, 0x71, 0x04, 0xa3, 0x18, 0x2c, 0x80, 0x9f, 0xd3, 0xaf, 0x7a, 0x0d, 0xbd, 0xfa, 0xf5, 0xd6, 0x49, 0x8d, 0x1e, 0xee, 0x0a, 0x5a, 0x55, 0x29];
 impl GeneratedCommand for CreateCommentInput {
     type Outcome = CreateCommentOutcome;
 
@@ -1272,6 +1380,7 @@ pub struct CreateLabelInput {
     pub organization_id: String,
 }
 
+#[allow(clippy::large_enum_variant)]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum CreateLabelOutcome {
     Created {
@@ -1287,7 +1396,7 @@ pub enum CreateLabelOutcome {
     },
 }
 
-const CREATE_LABEL_PLAN_HASH: [u8; 32] = [0xed, 0x33, 0xd0, 0xfb, 0xb9, 0xb0, 0x95, 0x1f, 0xcf, 0x4e, 0xd7, 0x09, 0x00, 0xf1, 0x29, 0x18, 0x0e, 0x0b, 0xb7, 0x16, 0x41, 0x22, 0xda, 0xd7, 0x43, 0x25, 0xd0, 0x8d, 0x81, 0x6d, 0x53, 0xf2];
+const CREATE_LABEL_PLAN_HASH: [u8; 32] = [0x15, 0x5f, 0x02, 0x76, 0x7f, 0xfa, 0xf8, 0x92, 0x74, 0x56, 0x14, 0x14, 0xd9, 0x6c, 0x13, 0x32, 0xfa, 0xed, 0x06, 0x25, 0x4e, 0x27, 0xe5, 0xf7, 0x5e, 0x12, 0xee, 0x23, 0x22, 0x84, 0x9e, 0x75];
 impl GeneratedCommand for CreateLabelInput {
     type Outcome = CreateLabelOutcome;
 
@@ -1347,6 +1456,7 @@ pub struct CreateOrganizationInput {
     pub organization_id: String,
 }
 
+#[allow(clippy::large_enum_variant)]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum CreateOrganizationOutcome {
     Created {
@@ -1358,7 +1468,7 @@ pub enum CreateOrganizationOutcome {
     },
 }
 
-const CREATE_ORGANIZATION_PLAN_HASH: [u8; 32] = [0x15, 0xbb, 0x4a, 0x40, 0x95, 0x48, 0xf7, 0xfa, 0x60, 0xf8, 0x4c, 0x61, 0x94, 0xb5, 0x80, 0x10, 0xbe, 0xb4, 0x0b, 0x6c, 0x81, 0x05, 0xf0, 0x92, 0x09, 0x96, 0x5c, 0xf4, 0xe7, 0x50, 0x38, 0x11];
+const CREATE_ORGANIZATION_PLAN_HASH: [u8; 32] = [0x1d, 0xc1, 0x2f, 0x73, 0xb4, 0x7f, 0xac, 0x29, 0xc8, 0x15, 0x9c, 0x7b, 0x02, 0x17, 0x35, 0x7e, 0x12, 0x15, 0xed, 0xfc, 0x19, 0x82, 0x82, 0xbd, 0x3b, 0xc5, 0xa3, 0xf6, 0xee, 0x53, 0x12, 0x05];
 impl GeneratedCommand for CreateOrganizationInput {
     type Outcome = CreateOrganizationOutcome;
 
@@ -1411,6 +1521,7 @@ pub struct CreateProjectInput {
     pub organization_id: String,
 }
 
+#[allow(clippy::large_enum_variant)]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum CreateProjectOutcome {
     Created {
@@ -1426,7 +1537,7 @@ pub enum CreateProjectOutcome {
     },
 }
 
-const CREATE_PROJECT_PLAN_HASH: [u8; 32] = [0xcb, 0x8e, 0x36, 0xae, 0x61, 0x94, 0x6c, 0xee, 0x88, 0x34, 0x4b, 0xc2, 0x08, 0xad, 0x9f, 0xcd, 0x75, 0x07, 0xef, 0xff, 0x5b, 0xbd, 0x29, 0xdf, 0xee, 0x3e, 0xaf, 0x2e, 0x6e, 0x4a, 0x83, 0x92];
+const CREATE_PROJECT_PLAN_HASH: [u8; 32] = [0xad, 0x38, 0x2c, 0xe1, 0xfb, 0x91, 0x59, 0x85, 0xb0, 0xb0, 0x17, 0x0f, 0xad, 0xc7, 0xb2, 0xe7, 0x31, 0x3a, 0xa5, 0x44, 0x65, 0x54, 0xbe, 0x13, 0x77, 0x33, 0x94, 0xa7, 0xf2, 0x5a, 0x51, 0x24];
 impl GeneratedCommand for CreateProjectInput {
     type Outcome = CreateProjectOutcome;
 
@@ -1491,6 +1602,7 @@ pub struct CreateTicketInput {
     pub organization_id: String,
 }
 
+#[allow(clippy::large_enum_variant)]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum CreateTicketOutcome {
     Created {
@@ -1514,7 +1626,7 @@ pub enum CreateTicketOutcome {
     },
 }
 
-const CREATE_TICKET_PLAN_HASH: [u8; 32] = [0x89, 0xe0, 0x87, 0x7c, 0x9f, 0xeb, 0x60, 0xce, 0xf4, 0xd6, 0xe4, 0xee, 0x13, 0x93, 0xd3, 0xcf, 0xc0, 0x57, 0x51, 0x32, 0x4d, 0x71, 0xd2, 0x9c, 0xa3, 0x32, 0x18, 0xe9, 0x0c, 0xcb, 0x64, 0xaa];
+const CREATE_TICKET_PLAN_HASH: [u8; 32] = [0xfa, 0x9c, 0xc2, 0x4d, 0xd1, 0x58, 0x56, 0x9b, 0xc5, 0xb8, 0x3b, 0x02, 0x87, 0xbb, 0xf1, 0xdb, 0x72, 0xdc, 0x3b, 0xe8, 0xf0, 0xf0, 0xf1, 0xb6, 0x80, 0xd7, 0xb8, 0xcc, 0xb8, 0xc8, 0x86, 0xfc];
 impl GeneratedCommand for CreateTicketInput {
     type Outcome = CreateTicketOutcome;
 
@@ -1594,6 +1706,7 @@ pub struct CreateUserInput {
     pub organization_id: String,
 }
 
+#[allow(clippy::large_enum_variant)]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum CreateUserOutcome {
     Created {
@@ -1609,7 +1722,7 @@ pub enum CreateUserOutcome {
     },
 }
 
-const CREATE_USER_PLAN_HASH: [u8; 32] = [0xd6, 0xe3, 0x86, 0xce, 0x46, 0x08, 0xcb, 0xb4, 0xb9, 0x1a, 0xc9, 0x97, 0x55, 0x74, 0x2c, 0xec, 0x0f, 0x3f, 0xd3, 0x0e, 0x3a, 0x6f, 0x52, 0x28, 0x0e, 0x86, 0x2b, 0xe2, 0xbf, 0xca, 0x02, 0x98];
+const CREATE_USER_PLAN_HASH: [u8; 32] = [0xec, 0x5c, 0x88, 0xb0, 0x2c, 0xbf, 0x31, 0x70, 0x5a, 0xef, 0x2d, 0x52, 0x24, 0xc3, 0x63, 0xa8, 0x83, 0x34, 0x66, 0x23, 0x97, 0x9d, 0xd0, 0xfb, 0x4e, 0x64, 0x03, 0xec, 0x29, 0xf3, 0x51, 0xfd];
 impl GeneratedCommand for CreateUserInput {
     type Outcome = CreateUserOutcome;
 
@@ -1654,6 +1767,228 @@ impl GeneratedCommand for CreateUserInput {
             "OrganizationMissing" => {
                 let outcome = Self::Outcome::OrganizationMissing {
                     organization_id: decode_wire_uuid(take_wire_field(&mut fields, 1)?)?,
+                };
+                if !fields.is_empty() { return Err(GeneratedCommandError::InvalidOutcomeShape); }
+                Ok(outcome)
+            },
+            _ => Err(GeneratedCommandError::InvalidOutcomeShape),
+        }
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct OpenTicketWithLabelsInput {
+    pub title: String,
+    pub label_a: String,
+    pub label_b: String,
+    pub ticket_id: String,
+    pub project_id: String,
+    pub assignee_id: String,
+    pub reporter_id: String,
+    pub idempotency_key: String,
+    pub organization_id: String,
+}
+
+#[allow(clippy::large_enum_variant)]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum OpenTicketWithLabelsOutcome {
+    Created {
+        ticket: Ticket,
+        first_link: TicketLabel,
+        second_link: TicketLabel,
+    },
+
+    LinkExists {
+        label_id: String,
+        ticket_id: String,
+    },
+
+    LabelMissing {
+        label_id: String,
+    },
+
+    TicketExists {
+        ticket_id: String,
+    },
+
+    ProjectMissing {
+        project_id: String,
+    },
+
+    AssigneeMissing {
+        user_id: String,
+    },
+
+    ReporterMissing {
+        user_id: String,
+    },
+}
+
+const OPEN_TICKET_WITH_LABELS_PLAN_HASH: [u8; 32] = [0x40, 0x00, 0x51, 0x5b, 0x7b, 0x4b, 0x97, 0x5c, 0x17, 0xba, 0x6f, 0xf2, 0x3c, 0x78, 0x47, 0x88, 0x69, 0xcd, 0xd3, 0xf4, 0x0e, 0xf2, 0xaf, 0xea, 0xe8, 0x0c, 0x88, 0xae, 0xfb, 0x45, 0x2a, 0x48];
+impl GeneratedCommand for OpenTicketWithLabelsInput {
+    type Outcome = OpenTicketWithLabelsOutcome;
+
+    fn idempotent_command(&self) -> Result<IdempotentCommand, GeneratedCommandError> {
+        let fields = vec![
+            wire_named_field("title", wire_string(Clone::clone(&self.title))),
+            wire_named_field("label_a", wire_uuid(&self.label_a)?),
+            wire_named_field("label_b", wire_uuid(&self.label_b)?),
+            wire_named_field("ticket_id", wire_uuid(&self.ticket_id)?),
+            wire_named_field("project_id", wire_uuid(&self.project_id)?),
+            wire_named_field("assignee_id", wire_uuid(&self.assignee_id)?),
+            wire_named_field("reporter_id", wire_uuid(&self.reporter_id)?),
+            wire_named_field("idempotency_key", wire_string(Clone::clone(&self.idempotency_key))),
+            wire_named_field("organization_id", wire_uuid(&self.organization_id)?),
+        ];
+        IdempotentCommand::new("OpenTicketWithLabels", Some(CONTRACT_VERSION), wire_record(fields)).map_err(Into::into)
+    }
+
+    fn outcome_request(&self, request_id: riffdb_client_rust::RequestId) -> Result<v1::GetOutcomeRequest, GeneratedCommandError> {
+        Ok(v1::GetOutcomeRequest {
+            request_id: request_id.into_bytes().to_vec(),
+            contract_lineage: CONTRACT_LINEAGE.to_owned(),
+            command_name: "OpenTicketWithLabels".to_owned(),
+            idempotency_key: self.idempotency_key.clone(),
+            outcome_uri: None,
+        })
+    }
+
+    fn decode_outcome(&self, response: &v1::ExecuteCommandResponse) -> Result<Self::Outcome, GeneratedCommandError> {
+        let mut fields = wire_outcome_fields(response, &OPEN_TICKET_WITH_LABELS_PLAN_HASH)?;
+        match response.outcome_type.as_str() {
+            "Created" => {
+                let outcome = Self::Outcome::Created {
+                    ticket: decode_ticket_entity(take_wire_field(&mut fields, 1)?)?,
+                    first_link: decode_ticket_label_entity(take_wire_field(&mut fields, 2)?)?,
+                    second_link: decode_ticket_label_entity(take_wire_field(&mut fields, 3)?)?,
+                };
+                if !fields.is_empty() { return Err(GeneratedCommandError::InvalidOutcomeShape); }
+                Ok(outcome)
+            },
+            "LinkExists" => {
+                let outcome = Self::Outcome::LinkExists {
+                    label_id: decode_wire_uuid(take_wire_field(&mut fields, 1)?)?,
+                    ticket_id: decode_wire_uuid(take_wire_field(&mut fields, 2)?)?,
+                };
+                if !fields.is_empty() { return Err(GeneratedCommandError::InvalidOutcomeShape); }
+                Ok(outcome)
+            },
+            "LabelMissing" => {
+                let outcome = Self::Outcome::LabelMissing {
+                    label_id: decode_wire_uuid(take_wire_field(&mut fields, 1)?)?,
+                };
+                if !fields.is_empty() { return Err(GeneratedCommandError::InvalidOutcomeShape); }
+                Ok(outcome)
+            },
+            "TicketExists" => {
+                let outcome = Self::Outcome::TicketExists {
+                    ticket_id: decode_wire_uuid(take_wire_field(&mut fields, 1)?)?,
+                };
+                if !fields.is_empty() { return Err(GeneratedCommandError::InvalidOutcomeShape); }
+                Ok(outcome)
+            },
+            "ProjectMissing" => {
+                let outcome = Self::Outcome::ProjectMissing {
+                    project_id: decode_wire_uuid(take_wire_field(&mut fields, 1)?)?,
+                };
+                if !fields.is_empty() { return Err(GeneratedCommandError::InvalidOutcomeShape); }
+                Ok(outcome)
+            },
+            "AssigneeMissing" => {
+                let outcome = Self::Outcome::AssigneeMissing {
+                    user_id: decode_wire_uuid(take_wire_field(&mut fields, 1)?)?,
+                };
+                if !fields.is_empty() { return Err(GeneratedCommandError::InvalidOutcomeShape); }
+                Ok(outcome)
+            },
+            "ReporterMissing" => {
+                let outcome = Self::Outcome::ReporterMissing {
+                    user_id: decode_wire_uuid(take_wire_field(&mut fields, 1)?)?,
+                };
+                if !fields.is_empty() { return Err(GeneratedCommandError::InvalidOutcomeShape); }
+                Ok(outcome)
+            },
+            _ => Err(GeneratedCommandError::InvalidOutcomeShape),
+        }
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct SwapMemberRolesInput {
+    pub role_a: String,
+    pub role_b: String,
+    pub user_a: String,
+    pub user_b: String,
+    pub project_id: String,
+    pub idempotency_key: String,
+    pub organization_id: String,
+}
+
+#[allow(clippy::large_enum_variant)]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum SwapMemberRolesOutcome {
+    Swapped {
+        member_a: ProjectMember,
+        member_b: ProjectMember,
+    },
+
+    MemberAMissing {
+        user_id: String,
+    },
+
+    MemberBMissing {
+        user_id: String,
+    },
+}
+
+const SWAP_MEMBER_ROLES_PLAN_HASH: [u8; 32] = [0x0b, 0x4e, 0x79, 0x9a, 0x31, 0x0a, 0xec, 0xa5, 0xc4, 0xc6, 0x2a, 0x7e, 0xaa, 0x58, 0x4d, 0x6b, 0x45, 0xd1, 0x50, 0x13, 0xeb, 0x4c, 0xba, 0xa9, 0x26, 0x54, 0x60, 0x04, 0x5b, 0x2a, 0x91, 0x26];
+impl GeneratedCommand for SwapMemberRolesInput {
+    type Outcome = SwapMemberRolesOutcome;
+
+    fn idempotent_command(&self) -> Result<IdempotentCommand, GeneratedCommandError> {
+        let fields = vec![
+            wire_named_field("role_a", wire_string(Clone::clone(&self.role_a))),
+            wire_named_field("role_b", wire_string(Clone::clone(&self.role_b))),
+            wire_named_field("user_a", wire_uuid(&self.user_a)?),
+            wire_named_field("user_b", wire_uuid(&self.user_b)?),
+            wire_named_field("project_id", wire_uuid(&self.project_id)?),
+            wire_named_field("idempotency_key", wire_string(Clone::clone(&self.idempotency_key))),
+            wire_named_field("organization_id", wire_uuid(&self.organization_id)?),
+        ];
+        IdempotentCommand::new("SwapMemberRoles", Some(CONTRACT_VERSION), wire_record(fields)).map_err(Into::into)
+    }
+
+    fn outcome_request(&self, request_id: riffdb_client_rust::RequestId) -> Result<v1::GetOutcomeRequest, GeneratedCommandError> {
+        Ok(v1::GetOutcomeRequest {
+            request_id: request_id.into_bytes().to_vec(),
+            contract_lineage: CONTRACT_LINEAGE.to_owned(),
+            command_name: "SwapMemberRoles".to_owned(),
+            idempotency_key: self.idempotency_key.clone(),
+            outcome_uri: None,
+        })
+    }
+
+    fn decode_outcome(&self, response: &v1::ExecuteCommandResponse) -> Result<Self::Outcome, GeneratedCommandError> {
+        let mut fields = wire_outcome_fields(response, &SWAP_MEMBER_ROLES_PLAN_HASH)?;
+        match response.outcome_type.as_str() {
+            "Swapped" => {
+                let outcome = Self::Outcome::Swapped {
+                    member_a: decode_project_member_entity(take_wire_field(&mut fields, 1)?)?,
+                    member_b: decode_project_member_entity(take_wire_field(&mut fields, 2)?)?,
+                };
+                if !fields.is_empty() { return Err(GeneratedCommandError::InvalidOutcomeShape); }
+                Ok(outcome)
+            },
+            "MemberAMissing" => {
+                let outcome = Self::Outcome::MemberAMissing {
+                    user_id: decode_wire_uuid(take_wire_field(&mut fields, 1)?)?,
+                };
+                if !fields.is_empty() { return Err(GeneratedCommandError::InvalidOutcomeShape); }
+                Ok(outcome)
+            },
+            "MemberBMissing" => {
+                let outcome = Self::Outcome::MemberBMissing {
+                    user_id: decode_wire_uuid(take_wire_field(&mut fields, 1)?)?,
                 };
                 if !fields.is_empty() { return Err(GeneratedCommandError::InvalidOutcomeShape); }
                 Ok(outcome)
@@ -1759,6 +2094,21 @@ impl TicketDeskClient {
         self.client.execute_generated_command_batch_with_progress(inputs, options, self.command_attempts, &self.metadata, progress).await
     }
 
+    pub async fn close_ticket_with_comment(&mut self, input: CloseTicketWithCommentInput) -> Result<TypedCommandResult<CloseTicketWithCommentOutcome>, ApplicationClientError> {
+        self.client.execute_generated_command(&input, self.command_attempts, &self.metadata).await.map_err(Into::into)
+    }
+
+    pub async fn close_ticket_with_comment_batch(&self, inputs: Vec<CloseTicketWithCommentInput>, options: GeneratedBatchOptions) -> Result<GeneratedBatchResult<CloseTicketWithCommentOutcome>, GeneratedBatchError> {
+        self.client.execute_generated_command_batch(inputs, options, self.command_attempts, &self.metadata).await
+    }
+
+    pub async fn close_ticket_with_comment_batch_with_progress<F>(&self, inputs: Vec<CloseTicketWithCommentInput>, options: GeneratedBatchOptions, progress: F) -> Result<GeneratedBatchResult<CloseTicketWithCommentOutcome>, GeneratedBatchError>
+    where
+        F: FnMut(GeneratedBatchProgress),
+    {
+        self.client.execute_generated_command_batch_with_progress(inputs, options, self.command_attempts, &self.metadata, progress).await
+    }
+
     pub async fn create_comment(&mut self, input: CreateCommentInput) -> Result<TypedCommandResult<CreateCommentOutcome>, ApplicationClientError> {
         self.client.execute_generated_command(&input, self.command_attempts, &self.metadata).await.map_err(Into::into)
     }
@@ -1843,6 +2193,36 @@ impl TicketDeskClient {
     }
 
     pub async fn create_user_batch_with_progress<F>(&self, inputs: Vec<CreateUserInput>, options: GeneratedBatchOptions, progress: F) -> Result<GeneratedBatchResult<CreateUserOutcome>, GeneratedBatchError>
+    where
+        F: FnMut(GeneratedBatchProgress),
+    {
+        self.client.execute_generated_command_batch_with_progress(inputs, options, self.command_attempts, &self.metadata, progress).await
+    }
+
+    pub async fn open_ticket_with_labels(&mut self, input: OpenTicketWithLabelsInput) -> Result<TypedCommandResult<OpenTicketWithLabelsOutcome>, ApplicationClientError> {
+        self.client.execute_generated_command(&input, self.command_attempts, &self.metadata).await.map_err(Into::into)
+    }
+
+    pub async fn open_ticket_with_labels_batch(&self, inputs: Vec<OpenTicketWithLabelsInput>, options: GeneratedBatchOptions) -> Result<GeneratedBatchResult<OpenTicketWithLabelsOutcome>, GeneratedBatchError> {
+        self.client.execute_generated_command_batch(inputs, options, self.command_attempts, &self.metadata).await
+    }
+
+    pub async fn open_ticket_with_labels_batch_with_progress<F>(&self, inputs: Vec<OpenTicketWithLabelsInput>, options: GeneratedBatchOptions, progress: F) -> Result<GeneratedBatchResult<OpenTicketWithLabelsOutcome>, GeneratedBatchError>
+    where
+        F: FnMut(GeneratedBatchProgress),
+    {
+        self.client.execute_generated_command_batch_with_progress(inputs, options, self.command_attempts, &self.metadata, progress).await
+    }
+
+    pub async fn swap_member_roles(&mut self, input: SwapMemberRolesInput) -> Result<TypedCommandResult<SwapMemberRolesOutcome>, ApplicationClientError> {
+        self.client.execute_generated_command(&input, self.command_attempts, &self.metadata).await.map_err(Into::into)
+    }
+
+    pub async fn swap_member_roles_batch(&self, inputs: Vec<SwapMemberRolesInput>, options: GeneratedBatchOptions) -> Result<GeneratedBatchResult<SwapMemberRolesOutcome>, GeneratedBatchError> {
+        self.client.execute_generated_command_batch(inputs, options, self.command_attempts, &self.metadata).await
+    }
+
+    pub async fn swap_member_roles_batch_with_progress<F>(&self, inputs: Vec<SwapMemberRolesInput>, options: GeneratedBatchOptions, progress: F) -> Result<GeneratedBatchResult<SwapMemberRolesOutcome>, GeneratedBatchError>
     where
         F: FnMut(GeneratedBatchProgress),
     {

@@ -2,6 +2,7 @@
 
 use std::collections::{BTreeSet, VecDeque};
 use std::fmt;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::Duration;
 
@@ -33,6 +34,8 @@ use crate::{
 pub const MAX_RETAINED_INCIDENTS: usize = 256;
 /// Maximum distinct queued conflict-key hashes retained for hot-key cardinality.
 pub const MAX_HOT_CONFLICT_KEYS: usize = 1_024;
+/// Closed production completion-group sizes.
+pub const MAX_WRITE_GROUP_SIZE: usize = 16;
 
 /// Closed internal incident classifications.
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
@@ -120,6 +123,7 @@ pub struct Observability {
     incident_ids: Arc<dyn IncidentIdSource>,
     incidents: Mutex<IncidentState>,
     hot_conflict_keys: Mutex<BTreeSet<ConflictKeyHash>>,
+    write_completion_groups: [AtomicU64; MAX_WRITE_GROUP_SIZE],
     metrics: MetricRegistry,
     traces: TraceCollector,
     health: HealthRegistry,
@@ -139,6 +143,7 @@ impl Observability {
                 records: VecDeque::with_capacity(MAX_RETAINED_INCIDENTS),
             }),
             hot_conflict_keys: Mutex::new(BTreeSet::new()),
+            write_completion_groups: std::array::from_fn(|_| AtomicU64::new(0)),
             metrics: MetricRegistry::new(),
             traces,
             health: HealthRegistry::new(),
@@ -155,6 +160,12 @@ impl Observability {
     #[must_use]
     pub const fn health(&self) -> &HealthRegistry {
         &self.health
+    }
+
+    /// Returns exact successful completion-commit counts for sizes 1 through 16.
+    #[must_use]
+    pub fn write_completion_group_snapshot(&self) -> [u64; MAX_WRITE_GROUP_SIZE] {
+        std::array::from_fn(|index| self.write_completion_groups[index].load(Ordering::Relaxed))
     }
 
     /// Returns a cloneable bounded trace collector.
@@ -436,6 +447,14 @@ impl CommitTelemetry for Observability {
                     u64::from(batch_size),
                 );
                 if terminal == riffdb_commit::CommitCallTerminal::Committed {
+                    if let Some(counter) = usize::from(batch_size)
+                        .checked_sub(1)
+                        .and_then(|index| self.write_completion_groups.get(index))
+                    {
+                        saturating_increment(counter);
+                    } else {
+                        self.metrics.increment(MetricKey::TelemetryDropped);
+                    }
                     self.metrics
                         .increment_required_counter(RequiredCounter::Commits);
                 }
@@ -453,6 +472,12 @@ impl CommitTelemetry for Observability {
         }
         self.record_trace(TraceRecord::commit(event));
     }
+}
+
+fn saturating_increment(counter: &AtomicU64) {
+    let _ = counter.fetch_update(Ordering::Relaxed, Ordering::Relaxed, |value| {
+        Some(value.saturating_add(1))
+    });
 }
 
 impl McpTelemetry for Observability {

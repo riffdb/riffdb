@@ -79,10 +79,19 @@ fn symbolic_role_lowers_only_to_exact_application_operations() {
     assert_eq!(role.role_name(), "TicketDeskAgent");
     assert_eq!(role.environment().as_str(), "development");
     assert_eq!(role.tenant_scope(), &TenantScope::Global);
-    assert_eq!(role.operations().len(), 16);
+    assert_eq!(role.operations().len(), 19);
     assert!(role.operations().iter().any(|operation| {
         operation.kind() == ApplicationRoleOperationKind::Query && operation.name() == "TicketPage"
     }));
+    for command in [
+        "CloseTicketWithComment",
+        "OpenTicketWithLabels",
+        "SwapMemberRoles",
+    ] {
+        assert!(role.operations().iter().any(|operation| {
+            operation.kind() == ApplicationRoleOperationKind::Command && operation.name() == command
+        }));
+    }
 
     let grant = role.internal_grant();
     assert!(matches!(grant.partition_scope(), PartitionScopeV1::All));

@@ -10,7 +10,10 @@ license.workspace = true
 riffdb-app-baseline-core = { path = "../core", version = "0.1.0" }
 riffdb-auth = { path = "../../../crates/riffdb-auth", version = "0.1.0", default-features = false }
 riffdb-client-rust = { path = "../../../crates/riffdb-client-rust", version = "0.1.0", default-features = false }
+riffdb-contract-compiler = { path = "../../../crates/riffdb-contract-compiler", version = "0.1.0", default-features = false }
+riffdb-query-module = { path = "../../../crates/riffdb-query-module", version = "0.1.0", default-features = false }
 riffdb-ticketdesk = { path = "../../ticketdesk", version = "0.1.0", default-features = false }
+riffdb-types = { path = "../../../crates/riffdb-types", version = "0.1.0", default-features = false }
 tokio = { version = "=1.52.0", default-features = false, features = ["macros", "rt-multi-thread", "time"] }
 tonic = { version = "=0.14.6", default-features = false, features = ["channel", "codegen"] }
 

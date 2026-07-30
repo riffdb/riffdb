@@ -1570,6 +1570,7 @@ name = "riffdb-api-grpc"
 version = "0.1.0"
 dependencies = [
  "base64",
+ "futures-util",
  "prost",
  "prost-types",
  "riffdb-auth",
