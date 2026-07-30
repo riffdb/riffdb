@@ -4718,7 +4718,7 @@ work_packages:
     multi-aggregate create/mutate bindings, anchor locality on the mutation aggregate, and derive conflicts only from it
   - TicketDesk aggregate model whose ticket/comment/label-link and project/member atomic operations retain one aggregate
     while independent application records acquire fine-grained conflict keys
-  - Fixed-cardinality server evidence for effective completion-group sizes 1 through 16 with no sensitive or
+  - Fixed-cardinality server evidence for effective completion-group sizes 1 through 64 with no sensitive or
     high-cardinality labels
   - Bounded public command-batch transport whose items retain independent authorization, idempotency, outcomes,
     provenance, audit lifecycle, uncertainty recovery, and non-atomic semantics

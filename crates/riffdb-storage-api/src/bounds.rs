@@ -40,7 +40,7 @@ pub const MAX_SCAN_PAGE_ENTRIES: usize = 500;
 /// Maximum commands staged in one authoritative transaction.
 pub const MAX_STAGED_COMMANDS: usize = 64;
 /// Maximum independently acknowledged transitions selected for one production group.
-pub const MAX_GROUPED_WRITE_TRANSITIONS: usize = 16;
+pub const MAX_GROUPED_WRITE_TRANSITIONS: usize = MAX_STAGED_COMMANDS;
 /// Maximum time the production writer may wait to form a compatible group.
 pub const MAX_GROUP_WAIT_MICROSECONDS: u64 = 200;
 /// Maximum bytes staged in one authoritative transaction.
@@ -179,6 +179,13 @@ mod tests {
             MAX_READ_SNAPSHOT_BYTES,
             riffdb_types::MAX_COMMAND_READ_STATE_SEMANTIC_BYTES_V1
         );
+    }
+
+    #[test]
+    fn physical_write_group_uses_the_existing_authoritative_command_ceiling() {
+        assert_eq!(MAX_GROUPED_WRITE_TRANSITIONS, 64);
+        assert_eq!(MAX_GROUPED_WRITE_TRANSITIONS, MAX_STAGED_COMMANDS);
+        assert_eq!(MAX_STAGED_WRITE_BYTES, 16 * 1024 * 1024);
     }
 
     #[test]

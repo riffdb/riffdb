@@ -96,7 +96,7 @@ fn run() -> Result<(), String> {
             Ok(scenarios) => scenarios,
             Err(error) => {
                 if let Ok(groups) = session.shutdown() {
-                    eprintln!("riffdb write completion groups 1..16: {groups:?}");
+                    eprintln!("riffdb write completion groups 1..64: {groups:?}");
                 }
                 return Err(error.to_string());
             }
@@ -115,7 +115,7 @@ fn run() -> Result<(), String> {
             seed_ns,
             seed_rows: args.scale.approximate_row_count(),
             scenarios,
-            write_completion_groups: Some(write_completion_groups),
+            write_completion_groups: Some(write_completion_groups.to_vec()),
         });
     }
 

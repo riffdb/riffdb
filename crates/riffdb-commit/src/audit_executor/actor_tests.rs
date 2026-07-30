@@ -158,6 +158,54 @@ struct BlockingPanicRepository {
     release: Option<std_mpsc::Receiver<()>>,
 }
 
+struct BoundaryGroupRepository {
+    next_sequence: u64,
+    entered: std_mpsc::SyncSender<()>,
+    release_first: Option<std_mpsc::Receiver<()>>,
+    group_sizes: Arc<Mutex<Vec<usize>>>,
+}
+
+impl BoundaryGroupRepository {
+    fn append(
+        &mut self,
+        intent: &ServiceAuditAppendIntentV1,
+    ) -> Result<ServiceAuditAppendResult, StorageError> {
+        let sequence =
+            AdministrationSequence::try_from(self.next_sequence).expect("test sequence is nonzero");
+        self.next_sequence = self
+            .next_sequence
+            .checked_add(1)
+            .expect("bounded test sequence");
+        Ok(ServiceAuditAppendResult::Appended(
+            StoredServiceAuditRecordV1::from_intent(sequence, intent),
+        ))
+    }
+}
+
+impl ServiceAuditAppendRepository for BoundaryGroupRepository {
+    fn append_service_audit(
+        &mut self,
+        intent: &ServiceAuditAppendIntentV1,
+    ) -> Result<ServiceAuditAppendResult, StorageError> {
+        if let Some(release) = self.release_first.take() {
+            self.entered.send(()).expect("report first append entry");
+            release.recv().expect("release first append");
+        }
+        self.append(intent)
+    }
+
+    fn append_service_audit_group(
+        &mut self,
+        intents: &[ServiceAuditAppendIntentV1],
+    ) -> Result<Vec<ServiceAuditAppendResult>, StorageError> {
+        self.group_sizes
+            .lock()
+            .expect("group-size probe")
+            .push(intents.len());
+        intents.iter().map(|intent| self.append(intent)).collect()
+    }
+}
+
 impl ServiceAuditAppendRepository for BlockingPanicRepository {
     fn append_service_audit(
         &mut self,
@@ -435,6 +483,54 @@ fn shutdown_drains_a_full_workload_queue_without_sleeping() {
     assert_eq!(block_on(second.completion()), Ok(()));
     assert_eq!(block_on(third.completion()), Ok(()));
     assert_eq!(probe.calls.load(Ordering::Relaxed), 3);
+}
+
+#[test]
+fn actor_drains_the_exact_64_item_internal_group_boundary_without_waiting() {
+    let (entered_sender, entered_receiver) = std_mpsc::sync_channel(0);
+    let (release_sender, release_receiver) = std_mpsc::sync_channel(0);
+    let group_sizes = Arc::new(Mutex::new(Vec::new()));
+    let repository = BoundaryGroupRepository {
+        next_sequence: 1,
+        entered: entered_sender,
+        release_first: Some(release_receiver),
+        group_sizes: Arc::clone(&group_sizes),
+    };
+    let running = RunningCommandCoordinator::start_audit_only(
+        capacity(64),
+        repository,
+        TestClock::fixed(fixed_timestamp()),
+    )
+    .expect("start coordinator");
+    let executor = running.administration_audit_executor();
+
+    let first = block_on(executor.reserve_capacity())
+        .expect("first slot")
+        .submit(input(0x10))
+        .expect("first accepted append");
+    entered_receiver.recv().expect("actor entered first append");
+
+    let queued = (0_u8..64)
+        .map(|index| {
+            block_on(executor.reserve_capacity())
+                .expect("queued slot")
+                .submit(input(index.wrapping_add(0x20)))
+                .expect("queued accepted append")
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(executor.sender.capacity(), 0);
+
+    release_sender.send(()).expect("release first append");
+    assert_eq!(block_on(first.completion()), Ok(()));
+    for receipt in queued {
+        assert_eq!(block_on(receipt.completion()), Ok(()));
+    }
+    running.shutdown().expect("clean shutdown");
+
+    assert_eq!(
+        group_sizes.lock().expect("group-size probe").as_slice(),
+        [64]
+    );
 }
 
 #[test]

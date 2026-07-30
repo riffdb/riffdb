@@ -19,8 +19,8 @@ pub struct BackendReport {
     pub seed_rows: u64,
     /// Scenario results.
     pub scenarios: Vec<ScenarioResult>,
-    /// Exact successful RiffDB completion commits by group size 1 through 16.
-    pub write_completion_groups: Option<[u64; 16]>,
+    /// Exact successful RiffDB completion commits by group size 1 through 64.
+    pub write_completion_groups: Option<Vec<u64>>,
 }
 
 /// Builds the top-level diagnostics report.

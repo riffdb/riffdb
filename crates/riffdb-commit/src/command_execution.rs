@@ -490,36 +490,38 @@ where
         }
     }
 
-    if pending.len() > 1 && compatible_command_group(&pending) {
-        let grouped = drive_compatible_pending_group(
-            port,
-            conflicts,
-            administration_clock,
-            provenance,
-            durability,
-            lifecycle,
-            telemetry,
-            pending,
-        )
-        .await;
-        for (index, result) in grouped {
-            results[index] = Some(result);
-        }
-    } else {
-        for (index, state) in pending {
-            results[index] = Some(
-                drive_pending_command_attempts(
-                    port,
-                    conflicts,
-                    provenance,
-                    Some(administration_clock),
-                    durability,
-                    lifecycle,
-                    telemetry,
-                    state,
-                )
-                .await,
-            );
+    for group in partition_fifo_by_compatibility(pending, compatible_command_group) {
+        if group.len() > 1 {
+            let grouped = drive_compatible_pending_group(
+                port,
+                conflicts,
+                administration_clock,
+                provenance,
+                durability,
+                lifecycle,
+                telemetry,
+                group,
+            )
+            .await;
+            for (index, result) in grouped {
+                results[index] = Some(result);
+            }
+        } else {
+            for (index, state) in group {
+                results[index] = Some(
+                    drive_pending_command_attempts(
+                        port,
+                        conflicts,
+                        provenance,
+                        Some(administration_clock),
+                        durability,
+                        lifecycle,
+                        telemetry,
+                        state,
+                    )
+                    .await,
+                );
+            }
         }
     }
     results
@@ -615,6 +617,31 @@ where
     };
     PendingCommandAttempts::from_admission(candidate)
         .map_err(|error| Err(command_attempt_failure(error, lifecycle)))
+}
+
+fn partition_fifo_by_compatibility<T>(
+    items: Vec<T>,
+    compatible: impl Fn(&[T]) -> bool,
+) -> Vec<Vec<T>> {
+    let mut groups = Vec::new();
+    let mut current = Vec::new();
+    for item in items {
+        current.push(item);
+        if compatible(&current) {
+            continue;
+        }
+        let Some(conflicting) = current.pop() else {
+            continue;
+        };
+        if !current.is_empty() {
+            groups.push(current);
+        }
+        current = vec![conflicting];
+    }
+    if !current.is_empty() {
+        groups.push(current);
+    }
+    groups
 }
 
 fn compatible_command_group(pending: &[(usize, PendingCommandAttempts)]) -> bool {
@@ -1928,6 +1955,29 @@ mod tests {
         assert!(!exact_accesses_are_compatible(&none, &one, &one, &none));
         assert!(!exact_accesses_are_compatible(&none, &one, &none, &one));
         assert!(exact_accesses_are_compatible(&one, &none, &one, &none));
+    }
+
+    #[test]
+    fn fifo_partition_keeps_maximal_compatible_prefixes_without_reordering() {
+        let groups = partition_fifo_by_compatibility(vec![1, 2, 1, 3, 4, 3, 5], |group| {
+            group
+                .iter()
+                .copied()
+                .collect::<std::collections::BTreeSet<_>>()
+                .len()
+                == group.len()
+        });
+        assert_eq!(groups, vec![vec![1, 2], vec![1, 3, 4], vec![3, 5]]);
+
+        let singletons = partition_fifo_by_compatibility(vec![1, 1, 1], |group| {
+            group
+                .iter()
+                .copied()
+                .collect::<std::collections::BTreeSet<_>>()
+                .len()
+                == group.len()
+        });
+        assert_eq!(singletons, vec![vec![1], vec![1], vec![1]]);
     }
 
     #[test]

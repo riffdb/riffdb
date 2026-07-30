@@ -35,7 +35,7 @@ pub const MAX_RETAINED_INCIDENTS: usize = 256;
 /// Maximum distinct queued conflict-key hashes retained for hot-key cardinality.
 pub const MAX_HOT_CONFLICT_KEYS: usize = 1_024;
 /// Closed production completion-group sizes.
-pub const MAX_WRITE_GROUP_SIZE: usize = 16;
+pub const MAX_WRITE_GROUP_SIZE: usize = 64;
 
 /// Closed internal incident classifications.
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
@@ -162,7 +162,7 @@ impl Observability {
         &self.health
     }
 
-    /// Returns exact successful completion-commit counts for sizes 1 through 16.
+    /// Returns exact successful completion-commit counts for sizes 1 through 64.
     #[must_use]
     pub fn write_completion_group_snapshot(&self) -> [u64; MAX_WRITE_GROUP_SIZE] {
         std::array::from_fn(|index| self.write_completion_groups[index].load(Ordering::Relaxed))

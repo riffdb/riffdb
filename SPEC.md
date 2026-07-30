@@ -6,9 +6,9 @@
 **Tagline:** *Vibe fast. Commit safely.*  
 **Category:** Contract-first operational database for agent-built applications  
 
-**Version:** 0.43
+**Version:** 0.44
 **Status:** Application-platform implementation handoff
-**Date:** 29 July 2026
+**Date:** 30 July 2026
 **Audience:** Coding agents, database engineers, compiler engineers, security reviewers, and technical product leads  
 **Working binaries:** `riffdbd`, `riffdb`, `riffdb-mcp`  
 **Working URI scheme:** `riffdb://`  
@@ -79,6 +79,7 @@
 | 0.41 | 2026-07-29 | Applied accepted ADR-0057 after four sealed Terra evaluations failed the application-authoring gate: authors own symbolic intent, the compiler owns an exact lock and every derived identity, diagnostics remain source-spanned and bounded, scaffolding supports an existing empty repository, TypeScript and builder MCP become complete public paths, public-only rehearsals and canaries precede campaign 02, and growing-database command degradation receives an independent durability-preserving gate. |
 | 0.42 | 2026-07-29 | Applied accepted ADR-0058 and planned WP-364: redb retains `Immediate` two-phase durability behind one typed FIFO writer scheduler; production uses bounded group durability; command `Started` plus `Pending` admission and successful command graph plus terminal audit become two atomic transitions; every grouped command retains independent identity, outcome, provenance, audit, acknowledgement, and uncertainty recovery. |
 | 0.43 | 2026-07-29 | Applied accepted ADR-0059 and planned WP-366: commands may carry compiler-proven same-partition observations across aggregates while every create/mutate binding remains in exactly one mutation aggregate; conflict keys derive only from that aggregate; external reads remain exact transaction-current dependencies; and the public TicketDesk seed plus unary mutation must demonstrate same-run PostgreSQL write parity within 2x. |
+| 0.44 | 2026-07-30 | Applied the maintainer-approved ADR-0059 amendment: the internal FIFO writer may form compatible physical groups up to the existing 64-command transaction ceiling while the public transport batch remains capped at 16. Exact conflict/dependency checks, independent command semantics, two durable transitions, redb `Immediate` durability, and the 16 MiB transaction ceiling remain unchanged. |
 
 ### Normative language
 
@@ -5796,9 +5797,10 @@ ADR-0055.
   reviewed crash defense, weakening atomic records, or acknowledging before
   the configured durable boundary.
 - `PERF-004`: Production online writes MUST pass through one typed FIFO
-  scheduler using redb `Immediate` durability. It MAY group at most 16
+  scheduler using redb `Immediate` durability. It MAY group at most 64
   compatible transitions for at most 200 microseconds and MUST retain the
-  existing 64-command and 16 MiB transaction ceilings. A newly executed,
+  existing 64-command and 16 MiB transaction ceilings. The public command
+  transport batch MUST remain capped at 16 ordinary commands. A newly executed,
   successfully returned application command MUST require no more than two
   durable transitions: atomic `Started` plus `Pending`, then atomic command
   graph plus terminal `Succeeded` audit. Every item MUST retain independent

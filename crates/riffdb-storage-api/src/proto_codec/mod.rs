@@ -14,10 +14,7 @@ mod projection;
 use std::fmt;
 
 use prost::Message;
-use riffdb_proto::{
-    durable::{current_record_schema, readable_record_registry},
-    envelope,
-};
+use riffdb_proto::durable::{current_record_schema, readable_record_registry};
 
 use crate::{EncodedContentCharge, EncodedPageItem};
 
@@ -70,12 +67,15 @@ impl fmt::Debug for CanonicalStoredEnvelopeV1 {
     }
 }
 
-pub(super) fn encode_message<M: Message>(
+pub(super) fn encode_message<M: Message + riffdb_proto::durable::WritableRecordMessage>(
     record_type: &'static str,
     message: &M,
 ) -> Result<CanonicalStoredEnvelopeV1, DurableCodecError> {
     let schema = current_record_schema(record_type).ok_or_else(DurableCodecError::invariant)?;
-    let bytes = envelope::encode(schema, &message.encode_to_vec())
+    if M::record_schema().record_type() != schema.record_type() {
+        return Err(DurableCodecError::invariant());
+    }
+    let bytes = riffdb_proto::durable::encode_current_message(message)
         .map_err(DurableCodecError::from_encode_envelope)?;
     let charge = EncodedContentCharge::new(bytes.len()).ok_or_else(DurableCodecError::invariant)?;
     Ok(CanonicalStoredEnvelopeV1 { bytes, charge })

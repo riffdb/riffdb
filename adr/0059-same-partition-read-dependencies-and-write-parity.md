@@ -1,7 +1,7 @@
 # ADR-0059: Same-Partition Read Dependencies and Application Write Parity
 
 - **Status:** Accepted
-- **Date:** 2026-07-29
+- **Date:** 2026-07-30
 - **Decision owners:** RiffDB maintainers
 - **Related requirements:** `PERF-004`, `PERF-005`, `TXN-001`, `TXN-004`,
   `TXN-005`
@@ -95,7 +95,7 @@ allowing independent tickets, projects, users, and labels to group safely.
 
 Server evidence MUST distinguish requested public batch concurrency from the
 effective durable completion-group distribution. At minimum it records the
-number of physical completion commits by logical group size from 1 through 16,
+number of physical completion commits by logical group size from 1 through 64,
 without identifiers, values, credentials, or other high-cardinality labels.
 
 On the checked reference-machine profile, the full TicketDesk seed MUST:
@@ -136,6 +136,17 @@ policy authorization remains mandatory for every contained command. The
 batch surface MUST NOT accept field IDs, write sets, transaction callbacks, or
 storage records.
 
+The internal FIFO writer MAY coalesce compatible commands from multiple public
+transport exchanges into one physical admission or completion group of at most
+64 commands, matching the pre-existing authoritative transaction command
+ceiling. This changes neither public batching nor application semantics. Every
+item retains FIFO admission, independent authorization, identity, outcome,
+provenance, audit, acknowledgement, and uncertainty recovery. Commands in one
+physical group MUST still pass exact bidirectional read/write and write/write
+compatibility checks, MUST NOT observe one another, and MUST fit the unchanged
+16 MiB authoritative transaction ceiling. A group that cannot meet every
+bound or compatibility rule MUST NOT be committed as that group.
+
 ## Consequences
 
 - Compiler-proven external reads no longer force unrelated entities into one
@@ -173,3 +184,9 @@ gate in the current Codex session on 2026-07-29: same-partition external reads,
 one compiler-proven mutation aggregate, mutation-only conflict keys, exact
 transaction-current read revalidation, no cross-partition reads, and no
 multi-aggregate writes.
+
+On 2026-07-30 the maintainer explicitly approved the narrow internal grouping
+amendment from 16 to 64 commands. The public transport batch remains 16; the
+two-transition protocol, redb `Immediate` durability, exact compatibility
+checks, independent command semantics, and the 16 MiB ceiling remain
+normative.

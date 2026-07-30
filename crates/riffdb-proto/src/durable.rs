@@ -208,6 +208,75 @@ const INDEX_V2_RECORD_SCHEMA: RecordSchema<'static> = RecordSchema::new_current(
     validate_payload::<29, v1::StoredIndexEntryV2>,
 );
 
+mod sealed {
+    pub trait WritableRecordMessage {}
+}
+
+/// A generated Protobuf message bound to exactly one current writable durable schema.
+///
+/// This trait is sealed so only this crate can assert that a Prost-produced
+/// payload is canonical for the selected record type.
+pub trait WritableRecordMessage: Message + sealed::WritableRecordMessage {
+    /// Returns the exact current writable schema for this generated message.
+    fn record_schema() -> &'static RecordSchema<'static>;
+}
+
+macro_rules! writable_message {
+    ($index:literal, $message:ty) => {
+        impl sealed::WritableRecordMessage for $message {}
+
+        impl WritableRecordMessage for $message {
+            fn record_schema() -> &'static RecordSchema<'static> {
+                &CURRENT_V1_RECORD_SCHEMAS[$index]
+            }
+        }
+    };
+}
+
+writable_message!(0, v1::StoredStorageFormatVersionV1);
+writable_message!(1, v1::StoredDatabaseIdentityV1);
+writable_message!(2, v1::StoredApplicationSequenceAllocatorV1);
+writable_message!(3, v1::StoredAdministrationSequenceAllocatorV1);
+writable_message!(4, v1::StoredContractBundleV1);
+writable_message!(5, v1::ActiveCatalogPointerV1);
+writable_message!(6, v1::StoredCatalogAdministrationV1);
+writable_message!(7, v1::StoredEntityRecordV1);
+writable_message!(9, v1::StoredIndexEpochV1);
+writable_message!(10, v1::StoredPendingAdmissionV1);
+writable_message!(11, v1::StoredExecutionFailedV1);
+writable_message!(12, v1::StoredOutcomeV1);
+writable_message!(13, v1::StoredDurableEventV1);
+writable_message!(14, v1::StoredOutboxIntentV1);
+writable_message!(15, v1::StoredProvenanceRecordV1);
+writable_message!(16, v1::StoredCommitRecordV1);
+writable_message!(17, v1::CapabilityRecordV1);
+writable_message!(18, v1::CapabilityTokenLookupV1);
+writable_message!(19, v1::CapabilityBootstrapMarkerV1);
+writable_message!(20, v1::CapabilityAdministrationAuditV1);
+writable_message!(21, v1::ServiceAuditRecordV1);
+writable_message!(22, v1::StoredOutboxStatusV1);
+writable_message!(23, v1::StoredProjectionStateV1);
+writable_message!(24, v1::StoredProjectionApplyV1);
+writable_message!(25, v1::StoredProjectionControlV1);
+writable_message!(26, v1::StoredQueryModuleV1);
+writable_message!(27, v1::ActiveQueryModulePointerV1);
+writable_message!(28, v1::StoredQueryModuleAdministrationV1);
+
+impl sealed::WritableRecordMessage for v1::StoredIndexEntryV2 {}
+
+impl WritableRecordMessage for v1::StoredIndexEntryV2 {
+    fn record_schema() -> &'static RecordSchema<'static> {
+        &INDEX_V2_RECORD_SCHEMA
+    }
+}
+
+/// Encodes one sealed generated message after the same allocation-free shape preflight.
+pub fn encode_current_message<M: WritableRecordMessage>(
+    message: &M,
+) -> Result<Vec<u8>, crate::envelope::EnvelopeError> {
+    crate::envelope::encode_preflighted(M::record_schema(), &message.encode_to_vec())
+}
+
 const PRE_WP280_CAPABILITY_RECORD_SCHEMA: RecordSchema<'static> = RecordSchema::new_current(
     "riffdb.storage.v1.CapabilityRecordV1",
     PRE_WP280_CAPABILITY_SCHEMA_HASH,
