@@ -11,6 +11,7 @@ const NS_PROJECT: u8 = 0x12;
 const NS_TICKET: u8 = 0x13;
 const NS_COMMENT: u8 = 0x14;
 const NS_LABEL: u8 = 0x15;
+const NS_WRITE_PROBE: u8 = 0x7f;
 
 /// One comment used for seed and post-seed write scenarios.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -34,7 +35,7 @@ pub struct CloseTicketWithCommentSeed {
     pub comment_id: [u8; 16],
     /// Closing note body.
     pub body: String,
-    /// Stable idempotency key (replay-safe across samples).
+    /// Per-sample idempotency key (each measured sample is a new durable write).
     pub idempotency_key: String,
 }
 
@@ -53,7 +54,7 @@ pub struct SwapMemberRolesSeed {
     pub role_a: String,
     /// Role written onto member B.
     pub role_b: String,
-    /// Stable idempotency key.
+    /// Per-sample idempotency key (each measured sample is a new durable write).
     pub idempotency_key: String,
 }
 
@@ -249,16 +250,6 @@ impl SeedDataset {
         let project_id = ticket.project_id;
         let organization_id = ticket.organization_id;
         let assignee_id = ticket.assignee_id;
-        let write_comment = CommentSeed {
-            row: CommentRow {
-                organization_id,
-                comment_id: uuid_from_ordinal(0x7f, 99_000_001),
-                ticket_id: ticket.ticket_id,
-                author_id: user.user_id,
-                body: "baseline write-path comment".to_owned(),
-            },
-            idempotency_key: "app-baseline-write-comment-v1".to_owned(),
-        };
         // Prefer a second open ticket for close-with-comment so read probes stay open.
         let close_ticket = self
             .tickets
@@ -297,6 +288,22 @@ impl SeedDataset {
             .get(1)
             .map(|label| label.label_id)
             .unwrap_or(label_a);
+        let write_project_id = self
+            .projects
+            .iter()
+            .find(|project| {
+                project.organization_id == organization_id && project.project_id != project_id
+            })
+            .map(|project| project.project_id)
+            .unwrap_or(project_id);
+        let write_assignee_id = self
+            .users
+            .iter()
+            .find(|candidate| {
+                candidate.organization_id == organization_id && candidate.user_id != assignee_id
+            })
+            .map(|candidate| candidate.user_id)
+            .unwrap_or(assignee_id);
         ScenarioProbes {
             organization_id,
             project_id,
@@ -304,60 +311,190 @@ impl SeedDataset {
             user_id: user.user_id,
             assignee_id,
             open_status: TicketStatus::Open,
-            write_comment,
-            close_ticket_with_comment: CloseTicketWithCommentSeed {
-                organization_id,
-                ticket_id: close_ticket.ticket_id,
-                author_id: user.user_id,
-                comment_id: uuid_from_ordinal(0x7f, 99_000_002),
-                body: "baseline close-with-comment note".to_owned(),
-                idempotency_key: "app-baseline-close-ticket-with-comment-v1".to_owned(),
-            },
-            swap_member_roles: SwapMemberRolesSeed {
-                organization_id,
-                project_id,
-                user_a: member_a.user_id,
-                user_b: member_b.user_id,
-                role_a: "lead".to_owned(),
-                role_b: "contributor".to_owned(),
-                idempotency_key: "app-baseline-swap-member-roles-v1".to_owned(),
-            },
-            open_ticket_with_labels: OpenTicketWithLabelsSeed {
-                organization_id,
-                ticket_id: uuid_from_ordinal(0x7f, 99_000_010),
-                project_id,
-                reporter_id: user.user_id,
-                assignee_id,
-                title: "baseline multi-command open ticket".to_owned(),
-                label_a,
-                label_b,
-                idempotency_key: "app-baseline-open-ticket-with-labels-v1".to_owned(),
-            },
+            write_ticket_id: close_ticket.ticket_id,
+            write_author_id: user.user_id,
+            write_project_id,
+            write_assignee_id,
+            swap_user_a: member_a.user_id,
+            swap_user_b: member_b.user_id,
+            write_label_a: label_a,
+            write_label_b: label_b,
         }
     }
 }
 
 /// Fixed keys exercised by timed scenarios.
+///
+/// Read probes (`ticket_id`, `project_id`, `assignee_id`, ...) are never
+/// mutated by write scenarios, so every measured sample of a read scenario
+/// sees identical data. Write scenarios derive a distinct idempotency key
+/// and distinct created-entity IDs per sample so both backends execute one
+/// genuinely new durable write per sample (no idempotent replays and no
+/// conflict-suppressed inserts).
 #[derive(Clone, Debug)]
 pub struct ScenarioProbes {
     /// Organization under test.
     pub organization_id: [u8; 16],
-    /// Project under test.
+    /// Project under test (read probes only).
     pub project_id: [u8; 16],
-    /// Ticket under test.
+    /// Ticket under test (read probes only).
     pub ticket_id: [u8; 16],
     /// User under test.
     pub user_id: [u8; 16],
-    /// Assignee under test.
+    /// Assignee under test (read probes only).
     pub assignee_id: [u8; 16],
     /// Open status constant.
     pub open_status: TicketStatus,
-    /// Comment created by the write scenario (idempotent key fixed).
-    pub write_comment: CommentSeed,
-    /// Atomic close + comment multi-entity write.
-    pub close_ticket_with_comment: CloseTicketWithCommentSeed,
-    /// Atomic dual-membership role swap.
-    pub swap_member_roles: SwapMemberRolesSeed,
-    /// Atomic open ticket + attach labels operation.
-    pub open_ticket_with_labels: OpenTicketWithLabelsSeed,
+    /// Ticket receiving write-scenario comments and closes.
+    pub write_ticket_id: [u8; 16],
+    /// Author of write-scenario comments.
+    pub write_author_id: [u8; 16],
+    /// Project receiving write-scenario opened tickets.
+    pub write_project_id: [u8; 16],
+    /// Assignee of write-scenario opened tickets.
+    pub write_assignee_id: [u8; 16],
+    /// First member of the role-swap pair.
+    pub swap_user_a: [u8; 16],
+    /// Second member of the role-swap pair.
+    pub swap_user_b: [u8; 16],
+    /// First label attached by the open-ticket scenario.
+    pub write_label_a: [u8; 16],
+    /// Second label attached by the open-ticket scenario.
+    pub write_label_b: [u8; 16],
+}
+
+impl ScenarioProbes {
+    /// Distinct comment insert for measured sample `sample`.
+    #[must_use]
+    pub fn write_comment(&self, sample: usize) -> CommentSeed {
+        CommentSeed {
+            row: CommentRow {
+                organization_id: self.organization_id,
+                comment_id: uuid_from_ordinal(NS_WRITE_PROBE, 99_100_000 + sample as u64),
+                ticket_id: self.write_ticket_id,
+                author_id: self.write_author_id,
+                body: format!("baseline write-path comment {sample}"),
+            },
+            idempotency_key: format!("app-baseline-write-comment-v2-{sample}"),
+        }
+    }
+
+    /// Distinct close-with-comment write for measured sample `sample`.
+    ///
+    /// `CloseTicketWithComment` has no open-status requirement, so re-closing
+    /// the same write ticket stays a real two-entity mutation on every
+    /// sample; only the created comment identity must be fresh.
+    #[must_use]
+    pub fn close_ticket_with_comment(&self, sample: usize) -> CloseTicketWithCommentSeed {
+        CloseTicketWithCommentSeed {
+            organization_id: self.organization_id,
+            ticket_id: self.write_ticket_id,
+            author_id: self.write_author_id,
+            comment_id: uuid_from_ordinal(NS_WRITE_PROBE, 99_200_000 + sample as u64),
+            body: format!("baseline close-with-comment note {sample}"),
+            idempotency_key: format!("app-baseline-close-ticket-with-comment-v2-{sample}"),
+        }
+    }
+
+    /// Distinct role swap for measured sample `sample`.
+    ///
+    /// Alternating direction by parity makes every sample a genuine value
+    /// change on the same two membership rows.
+    #[must_use]
+    pub fn swap_member_roles(&self, sample: usize) -> SwapMemberRolesSeed {
+        let (role_a, role_b) = if sample.is_multiple_of(2) {
+            ("lead", "contributor")
+        } else {
+            ("contributor", "lead")
+        };
+        SwapMemberRolesSeed {
+            organization_id: self.organization_id,
+            project_id: self.project_id,
+            user_a: self.swap_user_a,
+            user_b: self.swap_user_b,
+            role_a: role_a.to_owned(),
+            role_b: role_b.to_owned(),
+            idempotency_key: format!("app-baseline-swap-member-roles-v2-{sample}"),
+        }
+    }
+
+    /// Distinct open-ticket-with-labels write for measured sample `sample`.
+    #[must_use]
+    pub fn open_ticket_with_labels(&self, sample: usize) -> OpenTicketWithLabelsSeed {
+        OpenTicketWithLabelsSeed {
+            organization_id: self.organization_id,
+            ticket_id: uuid_from_ordinal(NS_WRITE_PROBE, 99_300_000 + sample as u64),
+            project_id: self.write_project_id,
+            reporter_id: self.write_author_id,
+            assignee_id: self.write_assignee_id,
+            title: format!("baseline multi-command open ticket {sample}"),
+            label_a: self.write_label_a,
+            label_b: self.write_label_b,
+            idempotency_key: format!("app-baseline-open-ticket-with-labels-v2-{sample}"),
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::collections::BTreeSet;
+
+    use super::SeedDataset;
+    use crate::Scale;
+
+    #[test]
+    fn write_probes_are_disjoint_from_read_probes() {
+        for scale in [Scale::smoke(), Scale::full()] {
+            let dataset = SeedDataset::generate(scale);
+            let probes = dataset.probes();
+            assert_ne!(probes.write_ticket_id, probes.ticket_id);
+            assert_ne!(probes.write_project_id, probes.project_id);
+            assert_ne!(probes.write_assignee_id, probes.assignee_id);
+            assert_ne!(probes.write_label_a, probes.write_label_b);
+        }
+    }
+
+    #[test]
+    fn write_probes_are_unique_per_sample_and_deterministic() {
+        let dataset = SeedDataset::generate(Scale::smoke());
+        let probes = dataset.probes();
+        let mut keys = BTreeSet::new();
+        let mut created_ids = BTreeSet::new();
+        for sample in 0..100 {
+            let comment = probes.write_comment(sample);
+            let close = probes.close_ticket_with_comment(sample);
+            let swap = probes.swap_member_roles(sample);
+            let open = probes.open_ticket_with_labels(sample);
+
+            assert!(keys.insert(comment.idempotency_key.clone()));
+            assert!(keys.insert(close.idempotency_key.clone()));
+            assert!(keys.insert(swap.idempotency_key.clone()));
+            assert!(keys.insert(open.idempotency_key.clone()));
+            assert!(comment.idempotency_key.len() < 128);
+            assert!(close.idempotency_key.len() < 128);
+            assert!(swap.idempotency_key.len() < 128);
+            assert!(open.idempotency_key.len() < 128);
+
+            assert!(created_ids.insert(comment.row.comment_id));
+            assert!(created_ids.insert(close.comment_id));
+            assert!(created_ids.insert(open.ticket_id));
+
+            assert_eq!(comment.row.ticket_id, probes.write_ticket_id);
+            assert_eq!(close.ticket_id, probes.write_ticket_id);
+            assert_eq!(open.project_id, probes.write_project_id);
+            assert_eq!(open.assignee_id, probes.write_assignee_id);
+            assert_eq!(swap.project_id, probes.project_id);
+
+            assert_eq!(comment, probes.write_comment(sample));
+            assert_eq!(close, probes.close_ticket_with_comment(sample));
+            assert_eq!(swap, probes.swap_member_roles(sample));
+            assert_eq!(open, probes.open_ticket_with_labels(sample));
+        }
+        // Adjacent samples swap in opposite directions (a real value change
+        // per sample on the same two membership rows).
+        let even = probes.swap_member_roles(0);
+        let odd = probes.swap_member_roles(1);
+        assert_eq!(even.role_a, odd.role_b);
+        assert_eq!(even.role_b, odd.role_a);
+    }
 }

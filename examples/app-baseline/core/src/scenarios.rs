@@ -99,7 +99,7 @@ pub fn run_scenarios<B: AppBackend>(
         })
         .collect::<Vec<_>>();
 
-    for _ in 0..samples {
+    for sample in 0..samples {
         for result in &mut results {
             let scenario_name = result.scenario.as_str();
             let outcome = match result.scenario {
@@ -170,27 +170,29 @@ pub fn run_scenarios<B: AppBackend>(
                     })
                 }
                 ScenarioId::CreateComment => {
-                    // Idempotent create: first sample inserts, later samples replay.
-                    let (value, elapsed) =
-                        time_call(|| backend.create_comment(&probes.write_comment));
+                    // Each sample inserts a distinct comment (new idempotency
+                    // key + comment id) so RiffDB never takes the replay path
+                    // and PostgreSQL never no-ops on conflict.
+                    let input = probes.write_comment(sample);
+                    let (value, elapsed) = time_call(|| backend.create_comment(&input));
                     value.map(|()| (1, elapsed))
                 }
                 ScenarioId::CloseTicketWithComment => {
-                    let (value, elapsed) = time_call(|| {
-                        backend.close_ticket_with_comment(&probes.close_ticket_with_comment)
-                    });
+                    let input = probes.close_ticket_with_comment(sample);
+                    let (value, elapsed) =
+                        time_call(|| backend.close_ticket_with_comment(&input));
                     // Two entity mutations: ticket + comment.
                     value.map(|()| (2, elapsed))
                 }
                 ScenarioId::SwapMemberRoles => {
-                    let (value, elapsed) =
-                        time_call(|| backend.swap_member_roles(&probes.swap_member_roles));
+                    let input = probes.swap_member_roles(sample);
+                    let (value, elapsed) = time_call(|| backend.swap_member_roles(&input));
                     value.map(|()| (2, elapsed))
                 }
                 ScenarioId::OpenTicketWithLabels => {
-                    let (value, elapsed) = time_call(|| {
-                        backend.open_ticket_with_labels(&probes.open_ticket_with_labels)
-                    });
+                    let input = probes.open_ticket_with_labels(sample);
+                    let (value, elapsed) =
+                        time_call(|| backend.open_ticket_with_labels(&input));
                     // Ticket + two label links.
                     value.map(|()| (3, elapsed))
                 }

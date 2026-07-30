@@ -515,12 +515,11 @@ impl AppBackend for PostgresAppBackend {
 
     fn create_comment(&mut self, comment: &CommentSeed) -> Result<(), Self::Error> {
         let client = self.client()?;
-        // Idempotent insert for repeated samples of the write scenario.
+        // Each sample inserts a distinct comment; a conflict is a harness bug.
         client
             .execute(
                 "INSERT INTO comment(organization_id, comment_id, ticket_id, author_id, body)
-                 VALUES ($1::text::uuid, $2::text::uuid, $3::text::uuid, $4::text::uuid, $5)
-                 ON CONFLICT (organization_id, comment_id) DO NOTHING",
+                 VALUES ($1::text::uuid, $2::text::uuid, $3::text::uuid, $4::text::uuid, $5)",
                 &[
                     &format_uuid(comment.row.organization_id),
                     &format_uuid(comment.row.comment_id),
@@ -579,8 +578,7 @@ impl AppBackend for PostgresAppBackend {
         .map_err(db_err)?;
         tx.execute(
             "INSERT INTO comment(organization_id, comment_id, ticket_id, author_id, body)
-             VALUES ($1::text::uuid, $2::text::uuid, $3::text::uuid, $4::text::uuid, $5)
-             ON CONFLICT (organization_id, comment_id) DO NOTHING",
+             VALUES ($1::text::uuid, $2::text::uuid, $3::text::uuid, $4::text::uuid, $5)",
             &[
                 &format_uuid(input.organization_id),
                 &format_uuid(input.comment_id),
@@ -644,8 +642,7 @@ impl AppBackend for PostgresAppBackend {
              ) VALUES (
                  $1::text::uuid, $2::text::uuid, $3::text::uuid, $4::text::uuid, $5::text::uuid,
                  'open', $6
-             )
-             ON CONFLICT (organization_id, ticket_id) DO NOTHING",
+             )",
             &[
                 &format_uuid(input.organization_id),
                 &format_uuid(input.ticket_id),
@@ -658,8 +655,7 @@ impl AppBackend for PostgresAppBackend {
         .map_err(db_err)?;
         tx.execute(
             "INSERT INTO ticket_label(organization_id, ticket_id, label_id)
-             VALUES ($1::text::uuid, $2::text::uuid, $3::text::uuid)
-             ON CONFLICT (organization_id, ticket_id, label_id) DO NOTHING",
+             VALUES ($1::text::uuid, $2::text::uuid, $3::text::uuid)",
             &[
                 &format_uuid(input.organization_id),
                 &format_uuid(input.ticket_id),
@@ -669,8 +665,7 @@ impl AppBackend for PostgresAppBackend {
         .map_err(db_err)?;
         tx.execute(
             "INSERT INTO ticket_label(organization_id, ticket_id, label_id)
-             VALUES ($1::text::uuid, $2::text::uuid, $3::text::uuid)
-             ON CONFLICT (organization_id, ticket_id, label_id) DO NOTHING",
+             VALUES ($1::text::uuid, $2::text::uuid, $3::text::uuid)",
             &[
                 &format_uuid(input.organization_id),
                 &format_uuid(input.ticket_id),
