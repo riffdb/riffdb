@@ -2,9 +2,11 @@
 
 use std::fmt;
 
+use redb::ReadableTable;
 use riffdb_storage_api as storage;
 
-use crate::error::codec_error;
+use crate::error::{codec_error, precommit_storage_error, storage_error};
+use crate::keys::encode_event_key;
 
 macro_rules! copied_codec {
     ($encode:ident, $decode:ident, $value:ty, $wire_encode:ident, $wire_decode:ident) => {
@@ -97,6 +99,43 @@ borrowed_codec!(
     encode_contract_bundle_v1,
     decode_contract_bundle_v1
 );
+
+pub(crate) fn decode_commit_event_references(
+    encoded: &[u8],
+) -> Result<storage::EncodedPageItem<Vec<storage::EventReferenceV2>>, storage::StorageError> {
+    storage::decode_commit_event_references(encoded).map_err(codec_error)
+}
+
+pub(crate) fn decode_commit_record_with_events(
+    encoded: &[u8],
+    events: Vec<storage::StoredDurableEventV1>,
+) -> Result<storage::EncodedPageItem<storage::StoredCommitRecordV1>, storage::StorageError> {
+    storage::decode_commit_record_with_events(encoded, events).map_err(codec_error)
+}
+
+pub(crate) fn decode_commit_with_event_table<T>(
+    encoded: &[u8],
+    events: &T,
+) -> Result<storage::EncodedPageItem<storage::StoredCommitRecordV1>, storage::StorageError>
+where
+    T: ReadableTable<&'static [u8], &'static [u8]>,
+{
+    let references = decode_commit_event_references(encoded)?.into_parts().0;
+    let mut loaded = Vec::with_capacity(references.len());
+    for reference in references {
+        let key = encode_event_key(reference.event_id());
+        let row = events
+            .get(key.as_slice())
+            .map_err(precommit_storage_error)?
+            .ok_or_else(|| storage_error(storage::StorageErrorKind::CorruptData))?;
+        let event = decode_durable_event_v1(row.value())?.into_parts().0;
+        if !reference.matches(&event) {
+            return Err(storage_error(storage::StorageErrorKind::CorruptData));
+        }
+        loaded.push(event);
+    }
+    decode_commit_record_with_events(encoded, loaded)
+}
 borrowed_codec!(
     encode_active_catalog_pointer_v1,
     decode_active_catalog_pointer_v1,
@@ -104,6 +143,39 @@ borrowed_codec!(
     encode_active_catalog_pointer_v1,
     decode_active_catalog_pointer_v1
 );
+
+pub(crate) fn decode_outbox_event_reference(
+    encoded: &[u8],
+) -> Result<storage::EncodedPageItem<storage::EventReferenceV2>, storage::StorageError> {
+    storage::decode_outbox_event_reference(encoded).map_err(codec_error)
+}
+
+pub(crate) fn decode_outbox_intent_with_event(
+    encoded: &[u8],
+    event: storage::StoredDurableEventV1,
+) -> Result<storage::EncodedPageItem<storage::StoredOutboxIntentV1>, storage::StorageError> {
+    storage::decode_outbox_intent_with_event(encoded, event).map_err(codec_error)
+}
+
+pub(crate) fn decode_outbox_with_event_table<T>(
+    encoded: &[u8],
+    events: &T,
+) -> Result<storage::EncodedPageItem<storage::StoredOutboxIntentV1>, storage::StorageError>
+where
+    T: ReadableTable<&'static [u8], &'static [u8]>,
+{
+    let reference = decode_outbox_event_reference(encoded)?.into_parts().0;
+    let key = encode_event_key(reference.event_id());
+    let row = events
+        .get(key.as_slice())
+        .map_err(precommit_storage_error)?
+        .ok_or_else(|| storage_error(storage::StorageErrorKind::CorruptData))?;
+    let event = decode_durable_event_v1(row.value())?.into_parts().0;
+    if !reference.matches(&event) {
+        return Err(storage_error(storage::StorageErrorKind::CorruptData));
+    }
+    decode_outbox_intent_with_event(encoded, event)
+}
 borrowed_codec!(
     encode_catalog_administration_v1,
     decode_catalog_administration_v1,

@@ -151,7 +151,7 @@ fn semantic_wire_vectors() -> Vec<(&'static str, CanonicalStoredEnvelopeV1)> {
         "riffdb.storage.v1.StoredOutboxIntentV1",
         assert_round_trip(
             atomic.outbox_intents()[0].clone(),
-            encode_outbox_intent_v1,
+            encode_outbox_intent_legacy_v1,
             decode_outbox_intent_v1,
         ),
     ));
@@ -167,7 +167,7 @@ fn semantic_wire_vectors() -> Vec<(&'static str, CanonicalStoredEnvelopeV1)> {
         "riffdb.storage.v1.StoredCommitRecordV1",
         assert_round_trip(
             atomic.commit().clone(),
-            encode_commit_record_v1,
+            encode_commit_record_legacy_v1,
             decode_commit_record_v1,
         ),
     ));
@@ -261,6 +261,16 @@ fn every_registered_semantic_record_round_trips_in_registry_order() {
 
     let (current, _) = sample::index_records();
     assert_round_trip(current, encode_index_entry_v2, decode_index_entry_v2);
+
+    let atomic = sample::atomic_record_set();
+    assert_round_trip(
+        atomic.outbox_intents()[0].clone(),
+        encode_outbox_intent_v1,
+        |bytes| decode_outbox_intent_v2(bytes, atomic.events()[0].clone()),
+    );
+    assert_round_trip(atomic.commit().clone(), encode_commit_record_v1, |bytes| {
+        decode_commit_record_v2(bytes, atomic.events().to_vec())
+    });
 }
 
 #[test]
@@ -289,6 +299,14 @@ fn emit_semantic_wire_vectors_for_fixture_regeneration() {
         }
         std::fs::write(path, index_v2_wire_fixture()).expect("write V2 semantic wire fixture");
     }
+    if let Some(path) = std::env::var_os("RIFFDB_EVENT_REFERENCE_V2_VECTOR_OUTPUT") {
+        let path = std::path::PathBuf::from(path);
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent).expect("create event-reference vector parent");
+        }
+        std::fs::write(path, event_reference_v2_wire_fixture())
+            .expect("write event-reference V2 wire fixture");
+    }
 }
 
 #[test]
@@ -304,6 +322,10 @@ fn checked_in_semantic_wire_vectors_are_current() {
     assert_eq!(
         index_v2_wire_fixture(),
         include_str!("../../../../../fixtures/proto/durable-index-v2-wire-vector.txt")
+    );
+    assert_eq!(
+        event_reference_v2_wire_fixture(),
+        include_str!("../../../../../fixtures/proto/durable-event-reference-v2-wire-vectors.txt")
     );
 }
 
@@ -330,7 +352,9 @@ fn semantic_wire_fixture(format: DurableVectorFormat) -> String {
                 riffdb_proto::envelope::encode_v1(schema, decoded.payload())
                     .expect("legacy fixture payload remains encodable")
             }
-            DurableVectorFormat::CompactV2 => envelope.as_bytes().to_vec(),
+            DurableVectorFormat::CompactV2 => transcode_durable_record_to_v2(envelope.as_bytes())
+                .expect("legacy semantic vector transcodes to compact V2")
+                .into_bytes(),
         };
         let line = format!("{name}\t{}\t{}\n", hex(decoded.payload()), hex(&encoded));
         fixture.push_str(&line);
@@ -354,6 +378,36 @@ fn index_v2_wire_fixture() -> String {
         hex(decoded.payload()),
         hex(&legacy)
     )
+}
+
+fn event_reference_v2_wire_fixture() -> String {
+    let atomic = sample::atomic_record_set();
+    let vectors = [
+        (
+            "riffdb.storage.v1.StoredCommitRecordV2",
+            encode_commit_record_v1(atomic.commit()).expect("current commit encodes"),
+        ),
+        (
+            "riffdb.storage.v1.StoredOutboxIntentV2",
+            encode_outbox_intent_v1(&atomic.outbox_intents()[0])
+                .expect("current outbox intent encodes"),
+        ),
+    ];
+    let registry = riffdb_proto::durable::readable_record_registry();
+    let mut fixture =
+        String::from("riffdb-durable-event-reference-v2-wire-vectors-v1\nrecords\t2\n");
+    for (record_type, envelope) in vectors {
+        let decoded = registry
+            .decode(envelope.as_bytes())
+            .expect("event-reference envelope decodes");
+        assert_eq!(decoded.record_type(), record_type);
+        fixture.push_str(&format!(
+            "{record_type}\t{}\t{}\n",
+            hex(decoded.payload()),
+            hex(envelope.as_bytes())
+        ));
+    }
+    fixture
 }
 
 fn hex(bytes: &[u8]) -> String {

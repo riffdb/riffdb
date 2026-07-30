@@ -268,7 +268,7 @@ pub(super) fn relationship_wire_fixture() -> String {
             expectation,
             "commit",
             COMMIT,
-            encode_commit_record_v1(&graph.commit).expect("commit encodes"),
+            encode_commit_record_legacy_v1(&graph.commit).expect("legacy commit encodes"),
         );
         append_relationship_record(
             &mut fixture,
@@ -725,7 +725,7 @@ fn assert_codec_round_trip(graph: &RelationshipGraph) {
     );
     let commit = encode_commit_record_v1(&graph.commit).expect("commit encodes");
     assert_eq!(
-        decode_commit_record_v1(commit.as_bytes())
+        decode_commit_record_v2(commit.as_bytes(), graph.commit.events().to_vec())
             .expect("commit individually decodes")
             .value(),
         &graph.commit
@@ -786,17 +786,18 @@ fn event_relationship_parts() -> EventRelationshipParts {
         .payload()
         .to_vec();
 
-    let commit_envelope = encode_commit_record_v1(records.commit()).expect("commit encodes");
-    let commit_payload = riffdb_proto::durable::current_record_registry()
+    let commit_envelope =
+        encode_commit_record_legacy_v1(records.commit()).expect("legacy commit encodes");
+    let commit_payload = riffdb_proto::durable::readable_record_registry()
         .decode(commit_envelope.as_bytes())
         .expect("commit envelope");
     let commit = wire::StoredCommitRecordV1::decode(commit_payload.payload())
         .expect("commit payload decodes");
     let nested_commit = commit.events[0].encode_to_vec();
 
-    let outbox_envelope =
-        encode_outbox_intent_v1(&records.outbox_intents()[0]).expect("outbox intent encodes");
-    let outbox_payload = riffdb_proto::durable::current_record_registry()
+    let outbox_envelope = encode_outbox_intent_legacy_v1(&records.outbox_intents()[0])
+        .expect("legacy outbox intent encodes");
+    let outbox_payload = riffdb_proto::durable::readable_record_registry()
         .decode(outbox_envelope.as_bytes())
         .expect("outbox envelope");
     let outbox = wire::StoredOutboxIntentV1::decode(outbox_payload.payload())

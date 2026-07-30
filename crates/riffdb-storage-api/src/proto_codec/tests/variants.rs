@@ -78,7 +78,7 @@ fn unit_variants_are_encoded_as_present_oneofs() {
 
     let records = sample::atomic_record_set();
     let commit = encode_commit_record_v1(records.commit()).expect("commit encodes");
-    let commit: wire::StoredCommitRecordV1 = payload(&commit);
+    let commit: wire::StoredCommitRecordV2 = payload(&commit);
     assert!(matches!(
         commit.mutations[0]
             .expected
@@ -225,9 +225,12 @@ fn every_durability_mode_survives_outcome_and_commit_round_trips() {
                 .durability_mode(),
             mode
         );
-        let commit = assert_round_trip(commit, encode_commit_record_v1, decode_commit_record_v1);
+        let expected_events = commit.events().to_vec();
+        let commit = assert_round_trip(commit, encode_commit_record_v1, |bytes| {
+            decode_commit_record_v2(bytes, expected_events.clone())
+        });
         assert_eq!(
-            decode_commit_record_v1(commit.as_bytes())
+            decode_commit_record_v2(commit.as_bytes(), expected_events)
                 .expect("commit")
                 .value()
                 .durability_mode(),

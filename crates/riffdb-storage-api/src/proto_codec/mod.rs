@@ -106,6 +106,19 @@ pub(super) fn encode_message<M: Message + riffdb_proto::durable::WritableRecordM
     Ok(CanonicalStoredEnvelopeV1 { bytes, charge })
 }
 
+#[cfg(test)]
+pub(super) fn encode_legacy_message<M: Message>(
+    record_type: &'static str,
+    message: &M,
+) -> Result<CanonicalStoredEnvelopeV1, DurableCodecError> {
+    let schema = riffdb_proto::durable::readable_record_schema(record_type)
+        .ok_or_else(DurableCodecError::invariant)?;
+    let bytes = riffdb_proto::envelope::encode_v1(schema, &message.encode_to_vec())
+        .map_err(DurableCodecError::from_encode_envelope)?;
+    let charge = EncodedContentCharge::new(bytes.len()).ok_or_else(DurableCodecError::invariant)?;
+    Ok(CanonicalStoredEnvelopeV1 { bytes, charge })
+}
+
 pub(super) fn decode_message<M, T, F>(
     record_type: &'static str,
     encoded: &[u8],

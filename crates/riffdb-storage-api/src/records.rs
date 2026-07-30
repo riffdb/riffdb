@@ -601,6 +601,48 @@ pub struct StoredDurableEventV1 {
     event_hash: EventHash,
 }
 
+/// Exact payload-free link to one authoritative durable event row.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct EventReferenceV2 {
+    event_id: EventId,
+    event_hash: EventHash,
+}
+
+impl EventReferenceV2 {
+    /// Constructs the exact event identity and integrity link.
+    #[must_use]
+    pub const fn new(event_id: EventId, event_hash: EventHash) -> Self {
+        Self {
+            event_id,
+            event_hash,
+        }
+    }
+
+    /// Derives a reference from its authoritative event.
+    #[must_use]
+    pub const fn from_event(event: &StoredDurableEventV1) -> Self {
+        Self::new(event.event_id(), event.event_hash())
+    }
+
+    /// Returns the referenced event identity.
+    #[must_use]
+    pub const fn event_id(self) -> EventId {
+        self.event_id
+    }
+
+    /// Returns the exact authoritative event hash.
+    #[must_use]
+    pub const fn event_hash(self) -> EventHash {
+        self.event_hash
+    }
+
+    /// Proves an authoritative event is the exact referenced value.
+    #[must_use]
+    pub fn matches(self, event: &StoredDurableEventV1) -> bool {
+        self.event_id == event.event_id() && self.event_hash == event.event_hash()
+    }
+}
+
 impl StoredDurableEventV1 {
     /// Constructs a bounded durable event from coordinator-checked values.
     pub fn new(
@@ -717,6 +759,12 @@ impl StoredOutboxIntentV1 {
     #[must_use]
     pub const fn event_hash(&self) -> EventHash {
         self.event.event_hash()
+    }
+
+    /// Returns the payload-free durable reference written by current storage.
+    #[must_use]
+    pub const fn event_reference(&self) -> EventReferenceV2 {
+        EventReferenceV2::from_event(&self.event)
     }
 
     fn semantic_bytes(&self) -> Result<usize, StorageValueError> {
@@ -1084,6 +1132,15 @@ impl StoredCommitRecordV1 {
         self.events
             .iter()
             .map(StoredDurableEventV1::event_id)
+            .collect()
+    }
+
+    /// Returns payload-free durable references in ordinal order.
+    #[must_use]
+    pub fn event_references(&self) -> Vec<EventReferenceV2> {
+        self.events
+            .iter()
+            .map(EventReferenceV2::from_event)
             .collect()
     }
 
@@ -2963,7 +3020,7 @@ mod tests {
     }
 
     #[test]
-    fn duplicated_entity_and_event_payloads_are_counted_per_persisted_copy() {
+    fn staged_semantic_graph_counts_each_bounded_materialized_copy() {
         let baseline = atomic_record_set(10, &[10]).expect("baseline");
         let larger_entity = atomic_record_set(11, &[10]).expect("larger entity");
         let larger_event = atomic_record_set(10, &[11]).expect("larger event");

@@ -11,7 +11,7 @@ use crate::envelope::{PayloadValidationError, RecordRegistry, RecordSchema};
 use crate::storage::v1;
 
 /// Number of durable semantic payload tuples accepted while opening or migrating storage.
-pub const READABLE_RECORD_SCHEMA_COUNT: usize = 32;
+pub const READABLE_RECORD_SCHEMA_COUNT: usize = 34;
 /// Number of durable semantic roles accepted for current writes.
 pub const WRITABLE_RECORD_SCHEMA_COUNT: usize = 30;
 /// Number of durable semantic roles accepted for current writes.
@@ -41,6 +41,14 @@ const REGISTRY_V2_SCHEMA_HASH_BYTES: &[u8; 32] = include_bytes!(concat!(
 const REGISTRY_V2_RECORD_BOUND_BYTES: &[u8; 8] = include_bytes!(concat!(
     env!("CARGO_MANIFEST_DIR"),
     "/../../fixtures/proto/durable-registry-v2-record-bound.bin"
+));
+const EVENT_REFERENCE_V2_SCHEMA_HASH_BYTES: &[u8; 64] = include_bytes!(concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/../../fixtures/proto/durable-event-reference-v2-schema-hashes.bin"
+));
+const EVENT_REFERENCE_V2_RECORD_BOUND_BYTES: &[u8; 16] = include_bytes!(concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/../../fixtures/proto/durable-event-reference-v2-record-bounds.bin"
 ));
 const PRE_WP280_CAPABILITY_SCHEMA_HASH: SchemaHash = SchemaHash::from_bytes([
     0xcb, 0x42, 0xc4, 0xeb, 0xbc, 0xe8, 0x28, 0x01, 0x23, 0xf8, 0xb3, 0x4d, 0x4d, 0xcd, 0xe7, 0x4c,
@@ -90,6 +98,26 @@ const fn registry_v2_record_bound(offset: usize) -> usize {
         REGISTRY_V2_RECORD_BOUND_BYTES[offset + 1],
         REGISTRY_V2_RECORD_BOUND_BYTES[offset + 2],
         REGISTRY_V2_RECORD_BOUND_BYTES[offset + 3],
+    ]) as usize
+}
+
+const fn event_reference_v2_schema_hash(index: usize) -> SchemaHash {
+    let mut bytes = [0_u8; 32];
+    let mut offset = 0;
+    while offset < bytes.len() {
+        bytes[offset] = EVENT_REFERENCE_V2_SCHEMA_HASH_BYTES[index * 32 + offset];
+        offset += 1;
+    }
+    SchemaHash::from_bytes(bytes)
+}
+
+const fn event_reference_v2_record_bound(index: usize, offset: usize) -> usize {
+    let start = index * 8 + offset;
+    u32::from_be_bytes([
+        EVENT_REFERENCE_V2_RECORD_BOUND_BYTES[start],
+        EVENT_REFERENCE_V2_RECORD_BOUND_BYTES[start + 1],
+        EVENT_REFERENCE_V2_RECORD_BOUND_BYTES[start + 2],
+        EVENT_REFERENCE_V2_RECORD_BOUND_BYTES[start + 3],
     ]) as usize
 }
 
@@ -242,6 +270,26 @@ const REGISTRY_V2_RECORD_SCHEMA: RecordSchema<'static> = RecordSchema::new_curre
 )
 .with_compact_identity(30, 1);
 
+const COMMIT_V2_RECORD_SCHEMA: RecordSchema<'static> = RecordSchema::new_current(
+    "riffdb.storage.v1.StoredCommitRecordV2",
+    event_reference_v2_schema_hash(0),
+    event_reference_v2_record_bound(0, 0),
+    event_reference_v2_record_bound(0, 4),
+    preflight_payload::<31>,
+    validate_payload::<31, v1::StoredCommitRecordV2>,
+)
+.with_compact_identity(17, 2);
+
+const OUTBOX_INTENT_V2_RECORD_SCHEMA: RecordSchema<'static> = RecordSchema::new_current(
+    "riffdb.storage.v1.StoredOutboxIntentV2",
+    event_reference_v2_schema_hash(1),
+    event_reference_v2_record_bound(1, 0),
+    event_reference_v2_record_bound(1, 4),
+    preflight_payload::<32>,
+    validate_payload::<32, v1::StoredOutboxIntentV2>,
+)
+.with_compact_identity(15, 2);
+
 mod sealed {
     pub trait WritableRecordMessage {}
 }
@@ -280,9 +328,7 @@ writable_message!(10, v1::StoredPendingAdmissionV1);
 writable_message!(11, v1::StoredExecutionFailedV1);
 writable_message!(12, v1::StoredOutcomeV1);
 writable_message!(13, v1::StoredDurableEventV1);
-writable_message!(14, v1::StoredOutboxIntentV1);
 writable_message!(15, v1::StoredProvenanceRecordV1);
-writable_message!(16, v1::StoredCommitRecordV1);
 writable_message!(17, v1::CapabilityRecordV1);
 writable_message!(18, v1::CapabilityTokenLookupV1);
 writable_message!(19, v1::CapabilityBootstrapMarkerV1);
@@ -309,6 +355,22 @@ impl sealed::WritableRecordMessage for v1::StoredRecordRegistryV2 {}
 impl WritableRecordMessage for v1::StoredRecordRegistryV2 {
     fn record_schema() -> &'static RecordSchema<'static> {
         &REGISTRY_V2_RECORD_SCHEMA
+    }
+}
+
+impl sealed::WritableRecordMessage for v1::StoredCommitRecordV2 {}
+
+impl WritableRecordMessage for v1::StoredCommitRecordV2 {
+    fn record_schema() -> &'static RecordSchema<'static> {
+        &COMMIT_V2_RECORD_SCHEMA
+    }
+}
+
+impl sealed::WritableRecordMessage for v1::StoredOutboxIntentV2 {}
+
+impl WritableRecordMessage for v1::StoredOutboxIntentV2 {
+    fn record_schema() -> &'static RecordSchema<'static> {
+        &OUTBOX_INTENT_V2_RECORD_SCHEMA
     }
 }
 
@@ -362,6 +424,8 @@ pub static READABLE_RECORD_SCHEMAS: [RecordSchema<'static>; READABLE_RECORD_SCHE
     CURRENT_V1_RECORD_SCHEMAS[28],
     INDEX_V2_RECORD_SCHEMA,
     REGISTRY_V2_RECORD_SCHEMA,
+    COMMIT_V2_RECORD_SCHEMA,
+    OUTBOX_INTENT_V2_RECORD_SCHEMA,
     PRE_WP280_CAPABILITY_RECORD_SCHEMA,
 ];
 
@@ -381,9 +445,9 @@ pub static WRITABLE_RECORD_SCHEMAS: [RecordSchema<'static>; WRITABLE_RECORD_SCHE
     CURRENT_V1_RECORD_SCHEMAS[11],
     CURRENT_V1_RECORD_SCHEMAS[12],
     CURRENT_V1_RECORD_SCHEMAS[13],
-    CURRENT_V1_RECORD_SCHEMAS[14],
+    OUTBOX_INTENT_V2_RECORD_SCHEMA,
     CURRENT_V1_RECORD_SCHEMAS[15],
-    CURRENT_V1_RECORD_SCHEMAS[16],
+    COMMIT_V2_RECORD_SCHEMA,
     CURRENT_V1_RECORD_SCHEMAS[17],
     CURRENT_V1_RECORD_SCHEMAS[18],
     CURRENT_V1_RECORD_SCHEMAS[19],

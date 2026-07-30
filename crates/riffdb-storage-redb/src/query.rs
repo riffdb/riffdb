@@ -45,7 +45,7 @@ impl QueryExecutionPort for RedbOperationalPorts {
         let commits = transaction
             .open_table(COMMITS)
             .map_err(|_| QueryExecutionError::BackendUnavailable)?;
-        let head = read_commit_head(&commits)
+        let head = read_commit_head(&transaction, &commits)
             .map_err(|_| QueryExecutionError::BackendUnavailable)?
             .map_or(0, riffdb_types::CommitSequence::get);
         let mut view = RedbQueryView {

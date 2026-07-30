@@ -7,7 +7,7 @@ use riffdb_types::{
 };
 
 use crate::{
-    AffectedEntityV1, CommittedEntityMutationV1, DurabilityMode, EncodedPageItem,
+    AffectedEntityV1, CommittedEntityMutationV1, DurabilityMode, EncodedPageItem, EventReferenceV2,
     IndexMigrationRowEvidence, IndexMigrationSemanticRow, StoredCommitRecordV1,
     StoredDurableEventV1, StoredEntityRecordV1, StoredExecutionFailedV1, StoredIndexEntryV1,
     StoredIndexEntryV2, StoredIndexEpochV1, StoredOutcomeV1, StoredPendingAdmissionV1,
@@ -33,7 +33,8 @@ const EXECUTION_FAILED: &str = "riffdb.storage.v1.StoredExecutionFailedV1";
 pub(super) const OUTCOME: &str = "riffdb.storage.v1.StoredOutcomeV1";
 pub(super) const EVENT: &str = "riffdb.storage.v1.StoredDurableEventV1";
 pub(super) const PROVENANCE: &str = "riffdb.storage.v1.StoredProvenanceRecordV1";
-pub(super) const COMMIT: &str = "riffdb.storage.v1.StoredCommitRecordV1";
+pub(super) const COMMIT: &str = "riffdb.storage.v1.StoredCommitRecordV2";
+const LEGACY_COMMIT: &str = "riffdb.storage.v1.StoredCommitRecordV1";
 
 pub(super) fn durability_to_proto(value: DurabilityMode) -> i32 {
     match value {
@@ -41,6 +42,22 @@ pub(super) fn durability_to_proto(value: DurabilityMode) -> i32 {
         DurabilityMode::Group => wire::DurabilityModeV1::DurabilityModeGroup as i32,
         DurabilityMode::Memory => wire::DurabilityModeV1::DurabilityModeMemory as i32,
     }
+}
+
+pub(super) fn event_reference_to_proto(value: EventReferenceV2) -> wire::EventReferenceV2 {
+    wire::EventReferenceV2 {
+        event_id: Some(event_id_to_proto(value.event_id())),
+        event_hash: value.event_hash().as_bytes().to_vec(),
+    }
+}
+
+pub(super) fn event_reference_from_proto(
+    value: wire::EventReferenceV2,
+) -> Result<EventReferenceV2, DurableCodecError> {
+    Ok(EventReferenceV2::new(
+        event_id_from_proto(require(value.event_id)?)?,
+        EventHash::from_bytes(fixed(value.event_hash)?),
+    ))
 }
 
 fn durability_from_proto(value: i32) -> Result<DurabilityMode, DurableCodecError> {
@@ -610,6 +627,48 @@ pub fn encode_commit_record_v1(
 ) -> Result<CanonicalStoredEnvelopeV1, DurableCodecError> {
     encode_message(
         COMMIT,
+        &wire::StoredCommitRecordV2 {
+            commit_sequence: value.commit_sequence().get(),
+            admission_request_id: value.admission_request_id().as_bytes().to_vec(),
+            plan: Some(plan_to_proto(value.plan())),
+            canonical_input_hash: value.canonical_input_hash().as_bytes().to_vec(),
+            actor: Some(actor_to_proto(value.actor())),
+            logical_time: Some(timestamp_to_proto(value.logical_time().timestamp())),
+            partition_hash: value.partition_hash().as_bytes().to_vec(),
+            conflict_hashes: hashes_to_proto(value.conflict_hashes()),
+            read_dependencies: Some(dependencies_to_proto(value.read_dependencies())),
+            mutations: value
+                .mutations()
+                .iter()
+                .map(|value| wire::CommittedEntityMutationV1 {
+                    expected: Some(expected_to_proto(value.expected())),
+                    post_image: Some(entity_to_proto(value.post_image())),
+                })
+                .collect(),
+            event_references: value
+                .event_references()
+                .into_iter()
+                .map(event_reference_to_proto)
+                .collect(),
+            declared_outcome: Some(declared_outcome_to_proto(value.declared_outcome())),
+            provenance_id: value.provenance_id().as_bytes().to_vec(),
+            outbox_event_ids: value
+                .outbox_event_ids()
+                .iter()
+                .copied()
+                .map(event_id_to_proto)
+                .collect(),
+            durability_mode: durability_to_proto(value.durability_mode()),
+        },
+    )
+}
+
+#[cfg(test)]
+pub(super) fn encode_commit_record_legacy_v1(
+    value: &StoredCommitRecordV1,
+) -> Result<CanonicalStoredEnvelopeV1, DurableCodecError> {
+    super::encode_legacy_message(
+        LEGACY_COMMIT,
         &wire::StoredCommitRecordV1 {
             commit_sequence: value.commit_sequence().get(),
             admission_request_id: value.admission_request_id().as_bytes().to_vec(),
@@ -646,7 +705,7 @@ pub fn encode_commit_record_v1(
 pub fn decode_commit_record_v1(
     encoded: &[u8],
 ) -> Result<EncodedPageItem<StoredCommitRecordV1>, DurableCodecError> {
-    decode_message::<wire::StoredCommitRecordV1, _, _>(COMMIT, encoded, |value| {
+    decode_message::<wire::StoredCommitRecordV1, _, _>(LEGACY_COMMIT, encoded, |value| {
         let mutations = value
             .mutations
             .into_iter()
@@ -687,4 +746,102 @@ pub fn decode_commit_record_v1(
             durability_from_proto(value.durability_mode)?,
         ))
     })
+}
+
+/// Decodes a current payload-free commit reference record using event rows
+/// loaded from the same authoritative snapshot.
+pub fn decode_commit_record_v2(
+    encoded: &[u8],
+    events: Vec<StoredDurableEventV1>,
+) -> Result<EncodedPageItem<StoredCommitRecordV1>, DurableCodecError> {
+    decode_message::<wire::StoredCommitRecordV2, _, _>(COMMIT, encoded, |value| {
+        let mutations = value
+            .mutations
+            .into_iter()
+            .map(|value| {
+                storage_result(CommittedEntityMutationV1::new(
+                    expected_from_proto(require(value.expected)?)?,
+                    entity_from_proto(require(value.post_image)?)?,
+                ))
+            })
+            .collect::<Result<Vec<_>, DurableCodecError>>()?;
+        let references = value
+            .event_references
+            .into_iter()
+            .map(event_reference_from_proto)
+            .collect::<Result<Vec<_>, _>>()?;
+        if references.len() != events.len()
+            || references
+                .iter()
+                .zip(&events)
+                .any(|(reference, event)| !reference.matches(event))
+        {
+            return Err(DurableCodecError::corrupt());
+        }
+        let outbox_event_ids = value
+            .outbox_event_ids
+            .into_iter()
+            .map(event_id_from_proto)
+            .collect::<Result<Vec<_>, _>>()?;
+        storage_result(StoredCommitRecordV1::new(
+            CommitSequence::new(value.commit_sequence).ok_or_else(DurableCodecError::corrupt)?,
+            RequestId::from_bytes(fixed(value.admission_request_id)?)
+                .map_err(|_| DurableCodecError::corrupt())?,
+            plan_from_proto(require(value.plan)?)?,
+            CanonicalInputHash::from_bytes(fixed(value.canonical_input_hash)?),
+            actor_from_proto(require(value.actor)?)?,
+            logical_time_from_proto(require(value.logical_time)?)?,
+            PartitionKeyHash::from_bytes(fixed(value.partition_hash)?),
+            hashes_from_proto(value.conflict_hashes)?,
+            dependencies_from_proto(require(value.read_dependencies)?)?,
+            mutations,
+            events,
+            declared_outcome_from_proto(require(value.declared_outcome)?)?,
+            ProvenanceId::from_bytes(fixed(value.provenance_id)?)
+                .map_err(|_| DurableCodecError::corrupt())?,
+            outbox_event_ids,
+            durability_from_proto(value.durability_mode)?,
+        ))
+    })
+}
+
+/// Decodes either historical embedded-event commits or current references,
+/// proving the supplied authoritative event rows in both cases.
+pub fn decode_commit_record_with_events(
+    encoded: &[u8],
+    events: Vec<StoredDurableEventV1>,
+) -> Result<EncodedPageItem<StoredCommitRecordV1>, DurableCodecError> {
+    match decode_commit_record_v2(encoded, events.clone()) {
+        Ok(value) => Ok(value),
+        Err(error) if error.kind() == super::DurableCodecErrorKind::UnexpectedRecordType => {
+            let decoded = decode_commit_record_v1(encoded)?;
+            if decoded.value().events() != events {
+                return Err(DurableCodecError::corrupt());
+            }
+            Ok(decoded)
+        }
+        Err(error) => Err(error),
+    }
+}
+
+/// Decodes only the ordered event references needed to materialize a commit
+/// from the authoritative event table.
+pub fn decode_commit_event_references(
+    encoded: &[u8],
+) -> Result<EncodedPageItem<Vec<EventReferenceV2>>, DurableCodecError> {
+    match decode_message::<wire::StoredCommitRecordV2, _, _>(COMMIT, encoded, |value| {
+        value
+            .event_references
+            .into_iter()
+            .map(event_reference_from_proto)
+            .collect()
+    }) {
+        Ok(value) => Ok(value),
+        Err(error) if error.kind() == super::DurableCodecErrorKind::UnexpectedRecordType => {
+            let decoded = decode_commit_record_v1(encoded)?;
+            let (commit, charge) = decoded.into_parts();
+            Ok(EncodedPageItem::new(commit.event_references(), charge))
+        }
+        Err(error) => Err(error),
+    }
 }

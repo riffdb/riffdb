@@ -38,7 +38,7 @@ use crate::application::stage_admission;
 use crate::codec::{
     decode_active_catalog_pointer_v1, decode_administration_audit_record_v1,
     decode_administration_sequence_allocator_v1, decode_capability_bootstrap_marker_v1,
-    decode_capability_record_v1, decode_capability_token_lookup_v1, decode_commit_record_v1,
+    decode_capability_record_v1, decode_capability_token_lookup_v1, decode_commit_with_event_table,
     decode_contract_bundle_v1, decode_database_identity_v1, decode_provenance_record_v1,
     decode_query_module_administration_v1, decode_query_module_v1,
     encode_active_catalog_pointer_v1, encode_administration_audit_record_v1,
@@ -56,7 +56,7 @@ use crate::keys::{
 };
 use crate::layout::{
     AUDIT, CAPABILITIES, CAPABILITY_TOKENS, CATALOG_ACTIVE, CATALOG_ACTIVE_KEY, COMMITS,
-    CONTRACT_BUNDLES, META, META_ADMINISTRATION_SEQUENCE, META_CAPABILITY_BOOTSTRAP,
+    CONTRACT_BUNDLES, EVENTS, META, META_ADMINISTRATION_SEQUENCE, META_CAPABILITY_BOOTSTRAP,
     META_DATABASE_ID, PROVENANCE, QUERY_MODULE_ACTIVE, QUERY_MODULES,
 };
 use crate::store::{RedbOperationalPorts, RedbWriteAccess};
@@ -1065,7 +1065,11 @@ fn service_link_is_valid(
             else {
                 return Ok(false);
             };
-            let commit = decoded_value(decode_commit_record_v1(commit_guard.value())?);
+            let events = transaction.open_table(EVENTS).map_err(table_error)?;
+            let commit = decoded_value(decode_commit_with_event_table(
+                commit_guard.value(),
+                &events,
+            )?);
             drop(commit_guard);
             if commit.commit_sequence() != commit_sequence
                 || commit.provenance_id() != provenance_id
