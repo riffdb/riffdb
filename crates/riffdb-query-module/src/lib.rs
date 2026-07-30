@@ -2,6 +2,8 @@
 
 //! Immutable, exact-contract query modules with a strict canonical codec.
 
+use std::sync::Arc;
+
 mod application_lock;
 mod application_manifest;
 mod application_role;
@@ -138,9 +140,9 @@ impl QueryModuleCandidate {
 pub struct CompiledNamedQuery {
     name: String,
     canonical_source: String,
-    document: Document,
+    document: Arc<Document>,
     source_hash: QuerySourceHash,
-    program: QueryAccessProgramV1,
+    program: Arc<QueryAccessProgramV1>,
 }
 
 impl CompiledNamedQuery {
@@ -161,8 +163,17 @@ impl CompiledNamedQuery {
     /// Named execution uses this immutable document instead of reparsing the
     /// same canonical source for every request.
     #[must_use]
-    pub const fn document(&self) -> &Document {
+    pub fn document(&self) -> &Document {
         &self.document
+    }
+
+    /// Shared canonical parsed syntax retained by the checked module.
+    ///
+    /// Exact module identity makes the document immutable, so application
+    /// execution can retain it without cloning the syntax tree.
+    #[must_use]
+    pub fn shared_document(&self) -> Arc<Document> {
+        Arc::clone(&self.document)
     }
 
     /// Domain-separated canonical-source hash.
@@ -173,8 +184,16 @@ impl CompiledNamedQuery {
 
     /// Complete checked executable access program.
     #[must_use]
-    pub const fn program(&self) -> &QueryAccessProgramV1 {
+    pub fn program(&self) -> &QueryAccessProgramV1 {
         &self.program
+    }
+
+    /// Shared checked executable access program.
+    ///
+    /// The program remains pinned to the module's exact contract identity.
+    #[must_use]
+    pub fn shared_program(&self) -> Arc<QueryAccessProgramV1> {
+        Arc::clone(&self.program)
     }
 }
 
@@ -251,8 +270,8 @@ impl QueryModule {
                 name: submitted.name,
                 source_hash: hash_query_source(canonical_source.as_bytes()),
                 canonical_source,
-                document: canonical_document,
-                program,
+                document: Arc::new(canonical_document),
+                program: Arc::new(program),
             });
         }
         let canonical_bytes =
