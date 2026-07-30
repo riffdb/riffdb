@@ -2,11 +2,12 @@
 
 #![forbid(unsafe_code)]
 
+use std::collections::HashMap;
 use std::error::Error;
 use std::fmt;
 use std::time::Duration;
 
-use postgres::{Client, Config, NoTls, Row};
+use postgres::{Client, Config, NoTls, Row, Statement};
 use riffdb_app_baseline_core::{
     AppBackend, CloseTicketWithCommentSeed, CommentRow, CommentSeed, LabelRow, OpenTicketWithLabelsSeed,
     OrganizationRow, ProjectMemberRow, ProjectRow, SeedDataset, SwapMemberRolesSeed,
@@ -105,9 +106,130 @@ CREATE TABLE ticket_label (
 );
 "#;
 
+// Every statement executed against the live server is a named constant so it
+// can be prepared exactly once and reused from the statement cache. Statement
+// preparation (Parse/Describe/Sync plus the server-side parse and plan) must
+// never be paid inside a timed scenario sample.
+
+const INSERT_ORGANIZATION_SQL: &str =
+    "INSERT INTO organization(organization_id, name) VALUES ($1::text::uuid, $2)";
+
+const INSERT_USER_SQL: &str = "INSERT INTO app_user(organization_id, user_id, email, display_name)
+     VALUES ($1::text::uuid, $2::text::uuid, $3, $4)";
+
+const INSERT_PROJECT_SQL: &str = "INSERT INTO project(organization_id, project_id, name)
+     VALUES ($1::text::uuid, $2::text::uuid, $3)";
+
+const INSERT_MEMBER_SQL: &str =
+    "INSERT INTO project_member(organization_id, project_id, user_id, role)
+     VALUES ($1::text::uuid, $2::text::uuid, $3::text::uuid, $4)";
+
+const INSERT_LABEL_SQL: &str = "INSERT INTO label(organization_id, label_id, name)
+     VALUES ($1::text::uuid, $2::text::uuid, $3)";
+
+const INSERT_TICKET_SQL: &str = "INSERT INTO ticket(
+         organization_id, ticket_id, project_id, reporter_id, assignee_id, status, title
+     ) VALUES ($1::text::uuid, $2::text::uuid, $3::text::uuid, $4::text::uuid, $5::text::uuid, $6, $7)";
+
+const INSERT_COMMENT_SQL: &str =
+    "INSERT INTO comment(organization_id, comment_id, ticket_id, author_id, body)
+     VALUES ($1::text::uuid, $2::text::uuid, $3::text::uuid, $4::text::uuid, $5)";
+
+const INSERT_TICKET_LABEL_SQL: &str =
+    "INSERT INTO ticket_label(organization_id, ticket_id, label_id)
+     VALUES ($1::text::uuid, $2::text::uuid, $3::text::uuid)";
+
+const SELECT_TICKET_SQL: &str = "SELECT organization_id::text, ticket_id::text, project_id::text,
+            reporter_id::text, assignee_id::text, status, title
+     FROM ticket
+     WHERE organization_id = $1::text::uuid AND ticket_id = $2::text::uuid";
+
+const SELECT_USER_SQL: &str = "SELECT organization_id::text, user_id::text, email, display_name
+     FROM app_user
+     WHERE organization_id = $1::text::uuid AND user_id = $2::text::uuid";
+
+const LIST_TICKETS_BY_PROJECT_STATUS_SQL: &str =
+    "SELECT organization_id::text, ticket_id::text, project_id::text,
+            reporter_id::text, assignee_id::text, status, title
+     FROM ticket
+     WHERE organization_id = $1::text::uuid
+       AND project_id = $2::text::uuid
+       AND status = $3
+     ORDER BY ticket_id
+     LIMIT $4";
+
+const LIST_OPEN_TICKETS_FOR_ASSIGNEE_SQL: &str =
+    "SELECT organization_id::text, ticket_id::text, project_id::text,
+            reporter_id::text, assignee_id::text, status, title
+     FROM ticket
+     WHERE organization_id = $1::text::uuid
+       AND assignee_id = $2::text::uuid
+       AND status = 'open'
+     ORDER BY ticket_id
+     LIMIT $3";
+
+const LIST_COMMENTS_SQL: &str = "SELECT organization_id::text, comment_id::text, ticket_id::text,
+            author_id::text, body
+     FROM comment
+     WHERE organization_id = $1::text::uuid AND ticket_id = $2::text::uuid
+     ORDER BY comment_id
+     LIMIT $3";
+
+const LIST_PROJECT_MEMBERS_SQL: &str =
+    "SELECT organization_id::text, project_id::text, user_id::text, role
+     FROM project_member
+     WHERE organization_id = $1::text::uuid AND project_id = $2::text::uuid
+     ORDER BY user_id
+     LIMIT $3";
+
+const TICKET_DETAIL_SQL: &str = "SELECT t.organization_id::text, t.ticket_id::text, t.project_id::text,
+            t.reporter_id::text, t.assignee_id::text, t.status, t.title,
+            p.name AS project_name,
+            o.name AS organization_name,
+            u.email AS assignee_email,
+            u.display_name AS assignee_display_name
+     FROM ticket t
+     JOIN project p
+       ON p.organization_id = t.organization_id AND p.project_id = t.project_id
+     JOIN organization o
+       ON o.organization_id = t.organization_id
+     LEFT JOIN app_user u
+       ON u.organization_id = t.organization_id AND u.user_id = t.assignee_id
+     WHERE t.organization_id = $1::text::uuid AND t.ticket_id = $2::text::uuid";
+
+const TICKET_DETAIL_LABELS_SQL: &str = "SELECT l.organization_id::text, l.label_id::text, l.name
+     FROM ticket_label tl
+     JOIN label l
+       ON l.organization_id = tl.organization_id AND l.label_id = tl.label_id
+     WHERE tl.organization_id = $1::text::uuid AND tl.ticket_id = $2::text::uuid
+     ORDER BY l.label_id";
+
+const COUNT_TICKET_SQL: &str = "SELECT COUNT(*)::bigint FROM ticket
+     WHERE organization_id = $1::text::uuid AND ticket_id = $2::text::uuid";
+
+const COUNT_USER_SQL: &str = "SELECT COUNT(*)::bigint FROM app_user
+     WHERE organization_id = $1::text::uuid AND user_id = $2::text::uuid";
+
+const CLOSE_TICKET_SQL: &str = "UPDATE ticket SET status = 'closed'
+     WHERE organization_id = $1::text::uuid AND ticket_id = $2::text::uuid";
+
+const UPDATE_MEMBER_ROLE_SQL: &str = "UPDATE project_member SET role = $4
+     WHERE organization_id = $1::text::uuid
+       AND project_id = $2::text::uuid
+       AND user_id = $3::text::uuid";
+
+const OPEN_TICKET_SQL: &str = "INSERT INTO ticket(
+         organization_id, ticket_id, project_id, reporter_id, assignee_id, status, title
+     ) VALUES (
+         $1::text::uuid, $2::text::uuid, $3::text::uuid, $4::text::uuid, $5::text::uuid,
+         'open', $6
+     )";
+
 /// PostgreSQL comparison adapter.
 pub struct PostgresAppBackend {
     config: Config,
+    client: Option<Client>,
+    statements: HashMap<&'static str, Statement>,
 }
 
 impl PostgresAppBackend {
@@ -121,11 +243,40 @@ impl PostgresAppBackend {
             .parse::<Config>()
             .map_err(|_| PostgresError::InvalidConfiguration)?;
         config.connect_timeout(Duration::from_secs(5));
-        Ok(Self { config })
+        Ok(Self {
+            config,
+            client: None,
+            statements: HashMap::new(),
+        })
     }
 
-    fn connect(&self) -> Result<Client, PostgresError> {
-        self.config.connect(NoTls).map_err(db_err)
+    /// Returns the persistent connection, opening it on first use.
+    ///
+    /// One warm connection for the whole benchmark run mirrors how the
+    /// RiffDB side reuses one HTTP/2 channel; connection setup must not be
+    /// paid inside timed scenario samples.
+    fn client(&mut self) -> Result<&mut Client, PostgresError> {
+        if self.client.is_none() {
+            let client = self.config.connect(NoTls).map_err(db_err)?;
+            self.client = Some(client);
+        }
+        self.client
+            .as_mut()
+            .ok_or(PostgresError::InvalidConfiguration)
+    }
+
+    /// Returns the cached prepared statement for `sql`, preparing it once.
+    ///
+    /// Statement preparation must not be paid inside timed scenario samples;
+    /// `Statement` is a cheap connection-tied handle, so cloning it out of
+    /// the cache is free.
+    fn statement(&mut self, sql: &'static str) -> Result<Statement, PostgresError> {
+        if let Some(statement) = self.statements.get(sql) {
+            return Ok(statement.clone());
+        }
+        let statement = self.client()?.prepare(sql).map_err(db_err)?;
+        self.statements.insert(sql, statement.clone());
+        Ok(statement)
     }
 }
 
@@ -133,28 +284,41 @@ impl AppBackend for PostgresAppBackend {
     type Error = PostgresError;
 
     fn reset(&mut self) -> Result<(), Self::Error> {
-        let mut client = self.connect()?;
+        // Reset drops and recreates every table, so every cached plan is
+        // invalidated; drop the handles before the schema they reference.
+        self.statements.clear();
+        let client = self.client()?;
         client
             .batch_execute(SCHEMA_SQL)
             .map_err(db_err)
     }
 
     fn seed(&mut self, dataset: &SeedDataset) -> Result<(), Self::Error> {
-        let mut client = self.connect()?;
+        // Prepare every seed statement once, before the client/transaction
+        // borrow: `statement` and `client` both borrow `self` mutably.
+        let insert_organization = self.statement(INSERT_ORGANIZATION_SQL)?;
+        let insert_user = self.statement(INSERT_USER_SQL)?;
+        let insert_project = self.statement(INSERT_PROJECT_SQL)?;
+        let insert_member = self.statement(INSERT_MEMBER_SQL)?;
+        let insert_label = self.statement(INSERT_LABEL_SQL)?;
+        let insert_ticket = self.statement(INSERT_TICKET_SQL)?;
+        let insert_comment = self.statement(INSERT_COMMENT_SQL)?;
+        let insert_ticket_label = self.statement(INSERT_TICKET_LABEL_SQL)?;
+
+        let client = self.client()?;
         let mut tx = client
             .transaction()
             .map_err(db_err)?;
         for org in &dataset.organizations {
             tx.execute(
-                "INSERT INTO organization(organization_id, name) VALUES ($1::text::uuid, $2)",
+                &insert_organization,
                 &[&format_uuid(org.organization_id), &org.name],
             )
             .map_err(db_err)?;
         }
         for user in &dataset.users {
             tx.execute(
-                "INSERT INTO app_user(organization_id, user_id, email, display_name)
-                 VALUES ($1::text::uuid, $2::text::uuid, $3, $4)",
+                &insert_user,
                 &[
                     &format_uuid(user.organization_id),
                     &format_uuid(user.user_id),
@@ -166,8 +330,7 @@ impl AppBackend for PostgresAppBackend {
         }
         for project in &dataset.projects {
             tx.execute(
-                "INSERT INTO project(organization_id, project_id, name)
-                 VALUES ($1::text::uuid, $2::text::uuid, $3)",
+                &insert_project,
                 &[
                     &format_uuid(project.organization_id),
                     &format_uuid(project.project_id),
@@ -178,8 +341,7 @@ impl AppBackend for PostgresAppBackend {
         }
         for member in &dataset.members {
             tx.execute(
-                "INSERT INTO project_member(organization_id, project_id, user_id, role)
-                 VALUES ($1::text::uuid, $2::text::uuid, $3::text::uuid, $4)",
+                &insert_member,
                 &[
                     &format_uuid(member.organization_id),
                     &format_uuid(member.project_id),
@@ -191,8 +353,7 @@ impl AppBackend for PostgresAppBackend {
         }
         for label in &dataset.labels {
             tx.execute(
-                "INSERT INTO label(organization_id, label_id, name)
-                 VALUES ($1::text::uuid, $2::text::uuid, $3)",
+                &insert_label,
                 &[
                     &format_uuid(label.organization_id),
                     &format_uuid(label.label_id),
@@ -203,9 +364,7 @@ impl AppBackend for PostgresAppBackend {
         }
         for ticket in &dataset.tickets {
             tx.execute(
-                "INSERT INTO ticket(
-                    organization_id, ticket_id, project_id, reporter_id, assignee_id, status, title
-                 ) VALUES ($1::text::uuid, $2::text::uuid, $3::text::uuid, $4::text::uuid, $5::text::uuid, $6, $7)",
+                &insert_ticket,
                 &[
                     &format_uuid(ticket.organization_id),
                     &format_uuid(ticket.ticket_id),
@@ -220,8 +379,7 @@ impl AppBackend for PostgresAppBackend {
         }
         for comment in &dataset.comments {
             tx.execute(
-                "INSERT INTO comment(organization_id, comment_id, ticket_id, author_id, body)
-                 VALUES ($1::text::uuid, $2::text::uuid, $3::text::uuid, $4::text::uuid, $5)",
+                &insert_comment,
                 &[
                     &format_uuid(comment.organization_id),
                     &format_uuid(comment.comment_id),
@@ -234,8 +392,7 @@ impl AppBackend for PostgresAppBackend {
         }
         for link in &dataset.ticket_labels {
             tx.execute(
-                "INSERT INTO ticket_label(organization_id, ticket_id, label_id)
-                 VALUES ($1::text::uuid, $2::text::uuid, $3::text::uuid)",
+                &insert_ticket_label,
                 &[
                     &format_uuid(link.organization_id),
                     &format_uuid(link.ticket_id),
@@ -252,13 +409,11 @@ impl AppBackend for PostgresAppBackend {
         organization_id: UuidBytes,
         ticket_id: UuidBytes,
     ) -> Result<Option<TicketRow>, Self::Error> {
-        let mut client = self.connect()?;
+        let statement = self.statement(SELECT_TICKET_SQL)?;
+        let client = self.client()?;
         let row = client
             .query_opt(
-                "SELECT organization_id::text, ticket_id::text, project_id::text,
-                        reporter_id::text, assignee_id::text, status, title
-                 FROM ticket
-                 WHERE organization_id = $1::text::uuid AND ticket_id = $2::text::uuid",
+                &statement,
                 &[&format_uuid(organization_id), &format_uuid(ticket_id)],
             )
             .map_err(db_err)?;
@@ -270,12 +425,11 @@ impl AppBackend for PostgresAppBackend {
         organization_id: UuidBytes,
         user_id: UuidBytes,
     ) -> Result<Option<UserRow>, Self::Error> {
-        let mut client = self.connect()?;
+        let statement = self.statement(SELECT_USER_SQL)?;
+        let client = self.client()?;
         let row = client
             .query_opt(
-                "SELECT organization_id::text, user_id::text, email, display_name
-                 FROM app_user
-                 WHERE organization_id = $1::text::uuid AND user_id = $2::text::uuid",
+                &statement,
                 &[&format_uuid(organization_id), &format_uuid(user_id)],
             )
             .map_err(db_err)?;
@@ -289,17 +443,11 @@ impl AppBackend for PostgresAppBackend {
         status: TicketStatus,
         limit: u32,
     ) -> Result<Vec<TicketRow>, Self::Error> {
-        let mut client = self.connect()?;
+        let statement = self.statement(LIST_TICKETS_BY_PROJECT_STATUS_SQL)?;
+        let client = self.client()?;
         let rows = client
             .query(
-                "SELECT organization_id::text, ticket_id::text, project_id::text,
-                        reporter_id::text, assignee_id::text, status, title
-                 FROM ticket
-                 WHERE organization_id = $1::text::uuid
-                   AND project_id = $2::text::uuid
-                   AND status = $3
-                 ORDER BY ticket_id
-                 LIMIT $4",
+                &statement,
                 &[
                     &format_uuid(organization_id),
                     &format_uuid(project_id),
@@ -317,17 +465,11 @@ impl AppBackend for PostgresAppBackend {
         assignee_id: UuidBytes,
         limit: u32,
     ) -> Result<Vec<TicketRow>, Self::Error> {
-        let mut client = self.connect()?;
+        let statement = self.statement(LIST_OPEN_TICKETS_FOR_ASSIGNEE_SQL)?;
+        let client = self.client()?;
         let rows = client
             .query(
-                "SELECT organization_id::text, ticket_id::text, project_id::text,
-                        reporter_id::text, assignee_id::text, status, title
-                 FROM ticket
-                 WHERE organization_id = $1::text::uuid
-                   AND assignee_id = $2::text::uuid
-                   AND status = 'open'
-                 ORDER BY ticket_id
-                 LIMIT $3",
+                &statement,
                 &[
                     &format_uuid(organization_id),
                     &format_uuid(assignee_id),
@@ -344,15 +486,11 @@ impl AppBackend for PostgresAppBackend {
         ticket_id: UuidBytes,
         limit: u32,
     ) -> Result<Vec<CommentRow>, Self::Error> {
-        let mut client = self.connect()?;
+        let statement = self.statement(LIST_COMMENTS_SQL)?;
+        let client = self.client()?;
         let rows = client
             .query(
-                "SELECT organization_id::text, comment_id::text, ticket_id::text,
-                        author_id::text, body
-                 FROM comment
-                 WHERE organization_id = $1::text::uuid AND ticket_id = $2::text::uuid
-                 ORDER BY comment_id
-                 LIMIT $3",
+                &statement,
                 &[
                     &format_uuid(organization_id),
                     &format_uuid(ticket_id),
@@ -369,14 +507,11 @@ impl AppBackend for PostgresAppBackend {
         project_id: UuidBytes,
         limit: u32,
     ) -> Result<Vec<ProjectMemberRow>, Self::Error> {
-        let mut client = self.connect()?;
+        let statement = self.statement(LIST_PROJECT_MEMBERS_SQL)?;
+        let client = self.client()?;
         let rows = client
             .query(
-                "SELECT organization_id::text, project_id::text, user_id::text, role
-                 FROM project_member
-                 WHERE organization_id = $1::text::uuid AND project_id = $2::text::uuid
-                 ORDER BY user_id
-                 LIMIT $3",
+                &statement,
                 &[
                     &format_uuid(organization_id),
                     &format_uuid(project_id),
@@ -393,23 +528,13 @@ impl AppBackend for PostgresAppBackend {
         ticket_id: UuidBytes,
         comment_limit: u32,
     ) -> Result<Option<TicketDetailPage>, Self::Error> {
-        let mut client = self.connect()?;
+        let detail_statement = self.statement(TICKET_DETAIL_SQL)?;
+        let comments_statement = self.statement(LIST_COMMENTS_SQL)?;
+        let labels_statement = self.statement(TICKET_DETAIL_LABELS_SQL)?;
+        let client = self.client()?;
         let Some(ticket_row) = client
             .query_opt(
-                "SELECT t.organization_id::text, t.ticket_id::text, t.project_id::text,
-                        t.reporter_id::text, t.assignee_id::text, t.status, t.title,
-                        p.name AS project_name,
-                        o.name AS organization_name,
-                        u.email AS assignee_email,
-                        u.display_name AS assignee_display_name
-                 FROM ticket t
-                 JOIN project p
-                   ON p.organization_id = t.organization_id AND p.project_id = t.project_id
-                 JOIN organization o
-                   ON o.organization_id = t.organization_id
-                 LEFT JOIN app_user u
-                   ON u.organization_id = t.organization_id AND u.user_id = t.assignee_id
-                 WHERE t.organization_id = $1::text::uuid AND t.ticket_id = $2::text::uuid",
+                &detail_statement,
                 &[&format_uuid(organization_id), &format_uuid(ticket_id)],
             )
             .map_err(db_err)?
@@ -451,12 +576,7 @@ impl AppBackend for PostgresAppBackend {
 
         let comment_rows = client
             .query(
-                "SELECT organization_id::text, comment_id::text, ticket_id::text,
-                        author_id::text, body
-                 FROM comment
-                 WHERE organization_id = $1::text::uuid AND ticket_id = $2::text::uuid
-                 ORDER BY comment_id
-                 LIMIT $3",
+                &comments_statement,
                 &[
                     &format_uuid(organization_id),
                     &format_uuid(ticket_id),
@@ -468,12 +588,7 @@ impl AppBackend for PostgresAppBackend {
 
         let label_rows = client
             .query(
-                "SELECT l.organization_id::text, l.label_id::text, l.name
-                 FROM ticket_label tl
-                 JOIN label l
-                   ON l.organization_id = tl.organization_id AND l.label_id = tl.label_id
-                 WHERE tl.organization_id = $1::text::uuid AND tl.ticket_id = $2::text::uuid
-                 ORDER BY l.label_id",
+                &labels_statement,
                 &[&format_uuid(organization_id), &format_uuid(ticket_id)],
             )
             .map_err(db_err)?;
@@ -499,13 +614,12 @@ impl AppBackend for PostgresAppBackend {
     }
 
     fn create_comment(&mut self, comment: &CommentSeed) -> Result<(), Self::Error> {
-        let mut client = self.connect()?;
-        // Idempotent insert for repeated samples of the write scenario.
+        let statement = self.statement(INSERT_COMMENT_SQL)?;
+        let client = self.client()?;
+        // Each sample inserts a distinct comment; a conflict is a harness bug.
         client
             .execute(
-                "INSERT INTO comment(organization_id, comment_id, ticket_id, author_id, body)
-                 VALUES ($1::text::uuid, $2::text::uuid, $3::text::uuid, $4::text::uuid, $5)
-                 ON CONFLICT (organization_id, comment_id) DO NOTHING",
+                &statement,
                 &[
                     &format_uuid(comment.row.organization_id),
                     &format_uuid(comment.row.comment_id),
@@ -522,13 +636,16 @@ impl AppBackend for PostgresAppBackend {
         &mut self,
         input: &CloseTicketWithCommentSeed,
     ) -> Result<(), Self::Error> {
-        let mut client = self.connect()?;
+        let count_ticket = self.statement(COUNT_TICKET_SQL)?;
+        let count_user = self.statement(COUNT_USER_SQL)?;
+        let close_ticket = self.statement(CLOSE_TICKET_SQL)?;
+        let insert_comment = self.statement(INSERT_COMMENT_SQL)?;
+        let client = self.client()?;
         let mut tx = client.transaction().map_err(db_err)?;
         // Existence checks mirror RiffDB relationship validation before mutate/create.
         let ticket_ok: i64 = tx
             .query_one(
-                "SELECT COUNT(*)::bigint FROM ticket
-                 WHERE organization_id = $1::text::uuid AND ticket_id = $2::text::uuid",
+                &count_ticket,
                 &[
                     &format_uuid(input.organization_id),
                     &format_uuid(input.ticket_id),
@@ -541,8 +658,7 @@ impl AppBackend for PostgresAppBackend {
         }
         let author_ok: i64 = tx
             .query_one(
-                "SELECT COUNT(*)::bigint FROM app_user
-                 WHERE organization_id = $1::text::uuid AND user_id = $2::text::uuid",
+                &count_user,
                 &[
                     &format_uuid(input.organization_id),
                     &format_uuid(input.author_id),
@@ -554,8 +670,7 @@ impl AppBackend for PostgresAppBackend {
             return Err(PostgresError::Decode);
         }
         tx.execute(
-            "UPDATE ticket SET status = 'closed'
-             WHERE organization_id = $1::text::uuid AND ticket_id = $2::text::uuid",
+            &close_ticket,
             &[
                 &format_uuid(input.organization_id),
                 &format_uuid(input.ticket_id),
@@ -563,9 +678,7 @@ impl AppBackend for PostgresAppBackend {
         )
         .map_err(db_err)?;
         tx.execute(
-            "INSERT INTO comment(organization_id, comment_id, ticket_id, author_id, body)
-             VALUES ($1::text::uuid, $2::text::uuid, $3::text::uuid, $4::text::uuid, $5)
-             ON CONFLICT (organization_id, comment_id) DO NOTHING",
+            &insert_comment,
             &[
                 &format_uuid(input.organization_id),
                 &format_uuid(input.comment_id),
@@ -580,14 +693,12 @@ impl AppBackend for PostgresAppBackend {
     }
 
     fn swap_member_roles(&mut self, input: &SwapMemberRolesSeed) -> Result<(), Self::Error> {
-        let mut client = self.connect()?;
+        let update_member_role = self.statement(UPDATE_MEMBER_ROLE_SQL)?;
+        let client = self.client()?;
         let mut tx = client.transaction().map_err(db_err)?;
         let updated_a = tx
             .execute(
-                "UPDATE project_member SET role = $4
-                 WHERE organization_id = $1::text::uuid
-                   AND project_id = $2::text::uuid
-                   AND user_id = $3::text::uuid",
+                &update_member_role,
                 &[
                     &format_uuid(input.organization_id),
                     &format_uuid(input.project_id),
@@ -598,10 +709,7 @@ impl AppBackend for PostgresAppBackend {
             .map_err(db_err)?;
         let updated_b = tx
             .execute(
-                "UPDATE project_member SET role = $4
-                 WHERE organization_id = $1::text::uuid
-                   AND project_id = $2::text::uuid
-                   AND user_id = $3::text::uuid",
+                &update_member_role,
                 &[
                     &format_uuid(input.organization_id),
                     &format_uuid(input.project_id),
@@ -621,16 +729,12 @@ impl AppBackend for PostgresAppBackend {
         &mut self,
         input: &OpenTicketWithLabelsSeed,
     ) -> Result<(), Self::Error> {
-        let mut client = self.connect()?;
+        let open_ticket = self.statement(OPEN_TICKET_SQL)?;
+        let insert_ticket_label = self.statement(INSERT_TICKET_LABEL_SQL)?;
+        let client = self.client()?;
         let mut tx = client.transaction().map_err(db_err)?;
         tx.execute(
-            "INSERT INTO ticket(
-                 organization_id, ticket_id, project_id, reporter_id, assignee_id, status, title
-             ) VALUES (
-                 $1::text::uuid, $2::text::uuid, $3::text::uuid, $4::text::uuid, $5::text::uuid,
-                 'open', $6
-             )
-             ON CONFLICT (organization_id, ticket_id) DO NOTHING",
+            &open_ticket,
             &[
                 &format_uuid(input.organization_id),
                 &format_uuid(input.ticket_id),
@@ -642,9 +746,7 @@ impl AppBackend for PostgresAppBackend {
         )
         .map_err(db_err)?;
         tx.execute(
-            "INSERT INTO ticket_label(organization_id, ticket_id, label_id)
-             VALUES ($1::text::uuid, $2::text::uuid, $3::text::uuid)
-             ON CONFLICT (organization_id, ticket_id, label_id) DO NOTHING",
+            &insert_ticket_label,
             &[
                 &format_uuid(input.organization_id),
                 &format_uuid(input.ticket_id),
@@ -653,9 +755,7 @@ impl AppBackend for PostgresAppBackend {
         )
         .map_err(db_err)?;
         tx.execute(
-            "INSERT INTO ticket_label(organization_id, ticket_id, label_id)
-             VALUES ($1::text::uuid, $2::text::uuid, $3::text::uuid)
-             ON CONFLICT (organization_id, ticket_id, label_id) DO NOTHING",
+            &insert_ticket_label,
             &[
                 &format_uuid(input.organization_id),
                 &format_uuid(input.ticket_id),
