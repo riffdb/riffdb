@@ -108,6 +108,7 @@ CREATE TABLE ticket_label (
 /// PostgreSQL comparison adapter.
 pub struct PostgresAppBackend {
     config: Config,
+    client: Option<Client>,
 }
 
 impl PostgresAppBackend {
@@ -121,11 +122,25 @@ impl PostgresAppBackend {
             .parse::<Config>()
             .map_err(|_| PostgresError::InvalidConfiguration)?;
         config.connect_timeout(Duration::from_secs(5));
-        Ok(Self { config })
+        Ok(Self {
+            config,
+            client: None,
+        })
     }
 
-    fn connect(&self) -> Result<Client, PostgresError> {
-        self.config.connect(NoTls).map_err(db_err)
+    /// Returns the persistent connection, opening it on first use.
+    ///
+    /// One warm connection for the whole benchmark run mirrors how the
+    /// RiffDB side reuses one HTTP/2 channel; connection setup must not be
+    /// paid inside timed scenario samples.
+    fn client(&mut self) -> Result<&mut Client, PostgresError> {
+        if self.client.is_none() {
+            let client = self.config.connect(NoTls).map_err(db_err)?;
+            self.client = Some(client);
+        }
+        self.client
+            .as_mut()
+            .ok_or(PostgresError::InvalidConfiguration)
     }
 }
 
@@ -133,14 +148,14 @@ impl AppBackend for PostgresAppBackend {
     type Error = PostgresError;
 
     fn reset(&mut self) -> Result<(), Self::Error> {
-        let mut client = self.connect()?;
+        let client = self.client()?;
         client
             .batch_execute(SCHEMA_SQL)
             .map_err(db_err)
     }
 
     fn seed(&mut self, dataset: &SeedDataset) -> Result<(), Self::Error> {
-        let mut client = self.connect()?;
+        let client = self.client()?;
         let mut tx = client
             .transaction()
             .map_err(db_err)?;
@@ -252,7 +267,7 @@ impl AppBackend for PostgresAppBackend {
         organization_id: UuidBytes,
         ticket_id: UuidBytes,
     ) -> Result<Option<TicketRow>, Self::Error> {
-        let mut client = self.connect()?;
+        let client = self.client()?;
         let row = client
             .query_opt(
                 "SELECT organization_id::text, ticket_id::text, project_id::text,
@@ -270,7 +285,7 @@ impl AppBackend for PostgresAppBackend {
         organization_id: UuidBytes,
         user_id: UuidBytes,
     ) -> Result<Option<UserRow>, Self::Error> {
-        let mut client = self.connect()?;
+        let client = self.client()?;
         let row = client
             .query_opt(
                 "SELECT organization_id::text, user_id::text, email, display_name
@@ -289,7 +304,7 @@ impl AppBackend for PostgresAppBackend {
         status: TicketStatus,
         limit: u32,
     ) -> Result<Vec<TicketRow>, Self::Error> {
-        let mut client = self.connect()?;
+        let client = self.client()?;
         let rows = client
             .query(
                 "SELECT organization_id::text, ticket_id::text, project_id::text,
@@ -317,7 +332,7 @@ impl AppBackend for PostgresAppBackend {
         assignee_id: UuidBytes,
         limit: u32,
     ) -> Result<Vec<TicketRow>, Self::Error> {
-        let mut client = self.connect()?;
+        let client = self.client()?;
         let rows = client
             .query(
                 "SELECT organization_id::text, ticket_id::text, project_id::text,
@@ -344,7 +359,7 @@ impl AppBackend for PostgresAppBackend {
         ticket_id: UuidBytes,
         limit: u32,
     ) -> Result<Vec<CommentRow>, Self::Error> {
-        let mut client = self.connect()?;
+        let client = self.client()?;
         let rows = client
             .query(
                 "SELECT organization_id::text, comment_id::text, ticket_id::text,
@@ -369,7 +384,7 @@ impl AppBackend for PostgresAppBackend {
         project_id: UuidBytes,
         limit: u32,
     ) -> Result<Vec<ProjectMemberRow>, Self::Error> {
-        let mut client = self.connect()?;
+        let client = self.client()?;
         let rows = client
             .query(
                 "SELECT organization_id::text, project_id::text, user_id::text, role
@@ -393,7 +408,7 @@ impl AppBackend for PostgresAppBackend {
         ticket_id: UuidBytes,
         comment_limit: u32,
     ) -> Result<Option<TicketDetailPage>, Self::Error> {
-        let mut client = self.connect()?;
+        let client = self.client()?;
         let Some(ticket_row) = client
             .query_opt(
                 "SELECT t.organization_id::text, t.ticket_id::text, t.project_id::text,
@@ -499,7 +514,7 @@ impl AppBackend for PostgresAppBackend {
     }
 
     fn create_comment(&mut self, comment: &CommentSeed) -> Result<(), Self::Error> {
-        let mut client = self.connect()?;
+        let client = self.client()?;
         // Idempotent insert for repeated samples of the write scenario.
         client
             .execute(
@@ -522,7 +537,7 @@ impl AppBackend for PostgresAppBackend {
         &mut self,
         input: &CloseTicketWithCommentSeed,
     ) -> Result<(), Self::Error> {
-        let mut client = self.connect()?;
+        let client = self.client()?;
         let mut tx = client.transaction().map_err(db_err)?;
         // Existence checks mirror RiffDB relationship validation before mutate/create.
         let ticket_ok: i64 = tx
@@ -580,7 +595,7 @@ impl AppBackend for PostgresAppBackend {
     }
 
     fn swap_member_roles(&mut self, input: &SwapMemberRolesSeed) -> Result<(), Self::Error> {
-        let mut client = self.connect()?;
+        let client = self.client()?;
         let mut tx = client.transaction().map_err(db_err)?;
         let updated_a = tx
             .execute(
@@ -621,7 +636,7 @@ impl AppBackend for PostgresAppBackend {
         &mut self,
         input: &OpenTicketWithLabelsSeed,
     ) -> Result<(), Self::Error> {
-        let mut client = self.connect()?;
+        let client = self.client()?;
         let mut tx = client.transaction().map_err(db_err)?;
         tx.execute(
             "INSERT INTO ticket(
