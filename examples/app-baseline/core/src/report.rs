@@ -73,6 +73,8 @@ pub fn build_report(
             "PostgreSQL uses SQL joins/filters; RiffDB uses symbolic commands and named RiffQL queries over public gRPC.",
             "Not the frozen WP-200 budget-comparison publication suite.",
             "Results are architectural feedback for optimization prioritization, not marketing claims.",
+            "Write scenarios execute one new durable write per measured sample on both backends (no idempotent replays).",
+            "PostgreSQL runs behind a Docker userland port proxy; RiffDB listens directly on loopback.",
         ],
     })
 }
