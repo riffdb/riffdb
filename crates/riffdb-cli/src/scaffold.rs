@@ -30,6 +30,7 @@ const PACKAGE_TEMPLATE: &str = include_str!("../../../templates/application/pack
 const TSCONFIG_TEMPLATE: &str = include_str!("../../../templates/application/tsconfig.json");
 const GITIGNORE_TEMPLATE: &str = include_str!("../../../templates/application/gitignore");
 const MAX_APPLICATION_NAME_BYTES: usize = 64;
+const MAX_SCAFFOLD_TOP_LEVEL_ENTRIES: usize = 16;
 const EXACT_MANIFEST_PATH: &str = "generated/riffdb.application.exact.json";
 const DEFAULT_LOCK_PATH: &str = "riffdb.application.lock.json";
 
@@ -42,7 +43,6 @@ pub(crate) enum ScaffoldLanguage {
 #[derive(Debug)]
 pub(crate) enum ScaffoldError {
     InvalidApplicationName,
-    DestinationExists,
     CompileContract,
     CompileQuery,
     CompileRole,
@@ -65,7 +65,6 @@ impl fmt::Display for ScaffoldError {
             Self::InvalidApplicationName => {
                 "application name must be lower-case ASCII with letters, digits, and hyphens"
             }
-            Self::DestinationExists => "destination already exists; no files were changed",
             Self::CompileContract => "the built-in application contract did not compile",
             Self::CompileQuery => "the built-in application query did not compile",
             Self::CompileRole => "the built-in application role did not compile",
@@ -121,7 +120,7 @@ fn generate_legacy_application(manifest_path: &Path) -> Result<(), ScaffoldError
     let manifest_bytes = read_bounded(manifest_path, 1_048_576)?;
     let manifest = ApplicationManifest::decode_canonical(&manifest_bytes)
         .map_err(|_| ScaffoldError::Manifest)?;
-    let root = manifest_path.parent().unwrap_or_else(|| Path::new("."));
+    let root = source_parent(manifest_path);
     let contract_source = read_bounded_text(&root.join(manifest.contract().source()), 1_048_576)?;
     let contract =
         compile_contract_source(&contract_source).map_err(|_| ScaffoldError::CompileContract)?;
@@ -185,6 +184,12 @@ struct CompiledSymbolicApplication {
     outputs: Vec<(String, Vec<u8>)>,
 }
 
+fn source_parent(path: &Path) -> &Path {
+    path.parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+        .unwrap_or_else(|| Path::new("."))
+}
+
 pub(crate) fn check_application(source_path: &Path) -> Result<(), ScaffoldError> {
     let _ = compile_symbolic_application(source_path)?;
     Ok(())
@@ -195,7 +200,7 @@ pub(crate) fn write_application_lock(
     lock_path: Option<&Path>,
 ) -> Result<(), ScaffoldError> {
     let compiled = compile_symbolic_application(source_path)?;
-    let root = source_path.parent().unwrap_or_else(|| Path::new("."));
+    let root = source_parent(source_path);
     for (path, bytes) in &compiled.outputs {
         atomic_write_workspace(root, path, bytes)?;
     }
@@ -209,7 +214,7 @@ pub(crate) fn check_application_lock(
     lock_path: Option<&Path>,
 ) -> Result<(), ScaffoldError> {
     let compiled = compile_symbolic_application(source_path)?;
-    let root = source_path.parent().unwrap_or_else(|| Path::new("."));
+    let root = source_parent(source_path);
     let lock_path = workspace_lock_path(root, lock_path)?;
     let existing = read_bounded(&lock_path, 4 * 1_024 * 1_024)?;
     let decoded = ApplicationLock::decode_canonical(&existing)
@@ -228,7 +233,7 @@ pub(crate) fn check_application_lock(
 
 fn generate_application_locked(source_path: &Path, lock_path: &Path) -> Result<(), ScaffoldError> {
     let compiled = compile_symbolic_application(source_path)?;
-    let root = source_path.parent().unwrap_or_else(|| Path::new("."));
+    let root = source_parent(source_path);
     let lock_path = workspace_lock_path(root, Some(lock_path))?;
     let existing = read_bounded(&lock_path, 4 * 1_024 * 1_024)?;
     let decoded = ApplicationLock::decode_canonical(&existing)
@@ -250,7 +255,7 @@ fn compile_symbolic_application(
         std::str::from_utf8(&source_bytes).map_err(|_| ScaffoldError::ApplicationSource)?;
     let source = ApplicationSourceManifest::parse(source_text)
         .map_err(|error| application_source_diagnostic(source_path, error.kind()))?;
-    let root = source_path.parent().unwrap_or_else(|| Path::new("."));
+    let root = source_parent(source_path);
     let contract_source = read_workspace_text(root, source.contract().source(), 1_048_576)?;
     let contract = compile_contract_source(&contract_source)
         .map_err(|error| contract_diagnostic(source.contract().source(), &error))?;
@@ -416,9 +421,12 @@ pub(crate) fn create_application(
     if !valid_application_name(application) {
         return Err(ScaffoldError::InvalidApplicationName);
     }
-    if destination.exists() {
-        return Err(ScaffoldError::DestinationExists);
-    }
+    let destination_was_empty = inspect_scaffold_destination(destination)?;
+    let publish_destination = if destination_was_empty {
+        fs::canonicalize(destination)?
+    } else {
+        destination.to_path_buf()
+    };
 
     let contract_name = pascal(application);
     let module_name = application.replace('-', "_");
@@ -536,14 +544,15 @@ pub(crate) fn create_application(
     )
     .map_err(|_| ScaffoldError::ApplicationLock)?;
 
-    let parent = destination.parent().unwrap_or_else(|| Path::new("."));
+    let parent = destination_parent(&publish_destination);
     if !parent.is_dir() {
-        return Err(ScaffoldError::Io(io::Error::new(
-            io::ErrorKind::NotFound,
-            "destination parent does not exist",
-        )));
+        return Err(filesystem_diagnostic(
+            destination,
+            FilesystemDiagnosticClass::ParentMissing,
+            FileChangeDisposition::NoFilesChanged,
+        ));
     }
-    let temporary = create_temporary_directory(parent, application)?;
+    let temporary = create_temporary_directory(&parent, application)?;
     let result = write_repository(
         &temporary,
         language,
@@ -560,11 +569,172 @@ pub(crate) fn create_application(
         &generated_typescript,
         &generated_mcp,
     )
-    .and_then(|()| fs::rename(&temporary, destination).map_err(ScaffoldError::Io));
-    if result.is_err() {
+    .and_then(|()| {
+        publish_scaffold(
+            &temporary,
+            &publish_destination,
+            destination_was_empty,
+            &parent,
+        )
+    });
+    if result.is_err() && !destination_was_empty {
         let _ = fs::remove_dir_all(&temporary);
     }
     result
+}
+
+fn destination_parent(destination: &Path) -> PathBuf {
+    destination
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+        .unwrap_or_else(|| Path::new("."))
+        .to_path_buf()
+}
+
+fn inspect_scaffold_destination(destination: &Path) -> Result<bool, ScaffoldError> {
+    let metadata = match fs::symlink_metadata(destination) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(false),
+        Err(error) if error.kind() == io::ErrorKind::PermissionDenied => {
+            return Err(filesystem_diagnostic(
+                destination,
+                FilesystemDiagnosticClass::PermissionDenied,
+                FileChangeDisposition::NoFilesChanged,
+            ));
+        }
+        Err(error) => return Err(ScaffoldError::Io(error)),
+    };
+    if metadata.file_type().is_symlink() {
+        return Err(filesystem_diagnostic(
+            destination,
+            FilesystemDiagnosticClass::Symlink,
+            FileChangeDisposition::NoFilesChanged,
+        ));
+    }
+    if !metadata.is_dir() {
+        return Err(filesystem_diagnostic(
+            destination,
+            FilesystemDiagnosticClass::NotRegular,
+            FileChangeDisposition::NoFilesChanged,
+        ));
+    }
+    let mut entries = fs::read_dir(destination).map_err(|error| {
+        if error.kind() == io::ErrorKind::PermissionDenied {
+            filesystem_diagnostic(
+                destination,
+                FilesystemDiagnosticClass::PermissionDenied,
+                FileChangeDisposition::NoFilesChanged,
+            )
+        } else {
+            ScaffoldError::Io(error)
+        }
+    })?;
+    if entries.next().transpose()?.is_some() {
+        return Err(filesystem_diagnostic(
+            destination,
+            FilesystemDiagnosticClass::DestinationExists,
+            FileChangeDisposition::NoFilesChanged,
+        ));
+    }
+    Ok(true)
+}
+
+fn publish_scaffold(
+    temporary: &Path,
+    destination: &Path,
+    destination_was_empty: bool,
+    parent: &Path,
+) -> Result<(), ScaffoldError> {
+    if !destination_was_empty {
+        return fs::rename(temporary, destination).map_err(ScaffoldError::Io);
+    }
+
+    // Revalidate immediately before publication. Existing directories retain
+    // their inode, and the exact lock is withheld until every other known entry
+    // has moved and the destination directory has been synchronized.
+    if !inspect_scaffold_destination(destination)? {
+        return Err(filesystem_diagnostic(
+            destination,
+            FilesystemDiagnosticClass::InterruptedStaging,
+            FileChangeDisposition::StagedFilesDiscarded,
+        ));
+    }
+
+    let mut entries = fs::read_dir(temporary)?
+        .map(|entry| entry.map(|entry| entry.file_name()))
+        .collect::<Result<Vec<_>, _>>()?;
+    if entries.len() > MAX_SCAFFOLD_TOP_LEVEL_ENTRIES {
+        return Err(filesystem_diagnostic(
+            destination,
+            FilesystemDiagnosticClass::InterruptedStaging,
+            FileChangeDisposition::LockNotPublished,
+        ));
+    }
+    sort_scaffold_entries(&mut entries);
+    let lock = entries
+        .pop()
+        .filter(|entry| entry == DEFAULT_LOCK_PATH)
+        .ok_or_else(|| {
+            filesystem_diagnostic(
+                destination,
+                FilesystemDiagnosticClass::InterruptedStaging,
+                FileChangeDisposition::LockNotPublished,
+            )
+        })?;
+    for entry in entries {
+        publish_scaffold_entry(temporary, destination, &entry)?;
+    }
+    fs::File::open(destination)?.sync_all()?;
+    publish_scaffold_entry(temporary, destination, &lock)?;
+    let publication = fs::File::open(destination)
+        .and_then(|directory| directory.sync_all())
+        .and_then(|()| fs::File::open(parent))
+        .and_then(|directory| directory.sync_all());
+    if let Err(error) = publication {
+        if fs::remove_file(destination.join(DEFAULT_LOCK_PATH)).is_err() {
+            return Err(ScaffoldError::Io(error));
+        }
+        let _ = fs::File::open(destination).and_then(|directory| directory.sync_all());
+        return Err(filesystem_diagnostic(
+            destination,
+            FilesystemDiagnosticClass::InterruptedStaging,
+            FileChangeDisposition::LockNotPublished,
+        ));
+    }
+    let _ = fs::remove_dir(temporary);
+    Ok(())
+}
+
+fn publish_scaffold_entry(
+    temporary: &Path,
+    destination: &Path,
+    entry: &std::ffi::OsStr,
+) -> Result<(), ScaffoldError> {
+    let target = destination.join(entry);
+    if fs::symlink_metadata(&target).is_ok() {
+        return Err(filesystem_diagnostic(
+            destination,
+            FilesystemDiagnosticClass::InterruptedStaging,
+            FileChangeDisposition::LockNotPublished,
+        ));
+    }
+    fs::rename(temporary.join(entry), target).map_err(|_| {
+        filesystem_diagnostic(
+            destination,
+            FilesystemDiagnosticClass::InterruptedStaging,
+            FileChangeDisposition::LockNotPublished,
+        )
+    })
+}
+
+fn sort_scaffold_entries(entries: &mut [std::ffi::OsString]) {
+    entries.sort_by(|left, right| {
+        let left_is_lock = left == DEFAULT_LOCK_PATH;
+        let right_is_lock = right == DEFAULT_LOCK_PATH;
+        left_is_lock
+            .cmp(&right_is_lock)
+            .then_with(|| left.cmp(right))
+    });
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -1074,6 +1244,98 @@ mod tests {
         ));
         assert!(create_application("order-desk", ScaffoldLanguage::Rust, &first).is_err());
         fs::remove_dir_all(base).expect("cleanup");
+    }
+
+    #[test]
+    fn scaffold_accepts_an_existing_empty_directory() {
+        let base = std::env::temp_dir().join(format!(
+            "riffdb-new-test-{}-{}",
+            std::process::id(),
+            "existing-empty"
+        ));
+        if base.exists() {
+            fs::remove_dir_all(&base).expect("remove prior test directory");
+        }
+        fs::create_dir(&base).expect("existing empty directory");
+
+        create_application("order-desk", ScaffoldLanguage::Rust, &base)
+            .expect("scaffold existing empty directory");
+
+        check_application_lock(&base.join("riffdb.application.json"), None)
+            .expect("complete exact application");
+        fs::remove_dir_all(base).expect("cleanup");
+    }
+
+    #[test]
+    fn existing_directory_publication_orders_the_exact_lock_last() {
+        let mut entries = vec![
+            DEFAULT_LOCK_PATH.into(),
+            "riffdb.application.json".into(),
+            "generated".into(),
+            "riffdb".into(),
+        ];
+        sort_scaffold_entries(&mut entries);
+        assert_eq!(
+            entries.last().and_then(|entry| entry.to_str()),
+            Some(DEFAULT_LOCK_PATH)
+        );
+    }
+
+    #[test]
+    fn scaffold_rejects_files_and_nonempty_directories_without_changes() {
+        let parent = std::env::temp_dir().join(format!(
+            "riffdb-new-test-{}-{}",
+            std::process::id(),
+            "occupied"
+        ));
+        if parent.exists() {
+            fs::remove_dir_all(&parent).expect("remove prior test directory");
+        }
+        fs::create_dir(&parent).expect("test parent");
+        let file = parent.join("file");
+        let nonempty = parent.join("nonempty");
+        fs::write(&file, b"retain file\n").expect("fixture file");
+        fs::create_dir(&nonempty).expect("fixture directory");
+        fs::write(nonempty.join("retain.txt"), b"retain directory\n").expect("fixture entry");
+
+        assert!(create_application("order-desk", ScaffoldLanguage::Rust, &file).is_err());
+        assert!(create_application("order-desk", ScaffoldLanguage::Rust, &nonempty).is_err());
+        assert_eq!(fs::read(&file).expect("retained file"), b"retain file\n");
+        assert_eq!(
+            fs::read(nonempty.join("retain.txt")).expect("retained entry"),
+            b"retain directory\n"
+        );
+        fs::remove_dir_all(parent).expect("cleanup");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn scaffold_rejects_a_destination_symlink_without_touching_its_target() {
+        use std::os::unix::fs::symlink;
+
+        let parent = std::env::temp_dir().join(format!(
+            "riffdb-new-test-{}-{}",
+            std::process::id(),
+            "destination-symlink"
+        ));
+        if parent.exists() {
+            fs::remove_dir_all(&parent).expect("remove prior test directory");
+        }
+        fs::create_dir(&parent).expect("test parent");
+        let target = parent.join("target");
+        let destination = parent.join("destination");
+        fs::create_dir(&target).expect("target");
+        symlink(&target, &destination).expect("destination symlink");
+
+        assert!(create_application("order-desk", ScaffoldLanguage::Rust, &destination).is_err());
+        assert!(
+            fs::read_dir(&target)
+                .expect("target remains")
+                .next()
+                .is_none()
+        );
+        fs::remove_file(destination).expect("remove symlink");
+        fs::remove_dir_all(parent).expect("cleanup");
     }
 
     #[test]

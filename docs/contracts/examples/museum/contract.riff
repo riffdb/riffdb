@@ -1,0 +1,49 @@
+contract Museum version 1 {
+  entity Collection {
+    key (collection_id: uuid)
+    field name: string<96>
+    field created_at: timestamp
+  }
+
+  entity Artifact {
+    key (collection_id: uuid, artifact_id: uuid)
+    field title: string<128>
+    field created_at: timestamp
+    index by_collection (collection_id, artifact_id)
+    reference collection (collection_id) -> Collection(collection_id)
+  }
+
+  aggregate CollectionRoot {
+    root Collection
+    child Artifact
+    partition_by collection_id
+    conflict_key (collection_id)
+  }
+
+  command CreateCollection {
+    input idempotency_key: string<128>
+    input collection_id: uuid
+    input name: string<96>
+    idempotency_key idempotency_key
+    create Collection(collection_id) as collection
+      else CollectionExists { collection_id: collection_id }
+    set collection.name = name
+    set collection.created_at = tx.time
+    return Created { collection: collection }
+  }
+
+  command AddArtifact {
+    input idempotency_key: string<128>
+    input collection_id: uuid
+    input artifact_id: uuid
+    input title: string<128>
+    idempotency_key idempotency_key
+    read Collection(collection_id) as collection
+      else CollectionMissing { collection_id: collection_id }
+    create Artifact(collection_id, artifact_id) as artifact
+      else ArtifactExists { artifact_id: artifact_id }
+    set artifact.title = title
+    set artifact.created_at = tx.time
+    return Created { artifact: artifact }
+  }
+}

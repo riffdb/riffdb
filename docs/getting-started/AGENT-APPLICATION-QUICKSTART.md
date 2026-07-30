@@ -17,7 +17,25 @@ riffdb-dev-ready-v1 http://127.0.0.1:... ... OrderDeskApplication
 ```
 
 `riffdb new` compiles before it writes and refuses to overwrite an existing
-path. It creates:
+file or non-empty directory. It accepts either a new child directory or an
+already-created empty directory:
+
+```text
+mkdir my-empty-repository
+cd my-empty-repository
+riffdb new order-desk --directory .
+```
+
+The destination must be a regular, writable, empty directory. A destination
+symlink, file, populated directory, or missing parent fails before publication.
+The repository is compiled in a bounded sibling staging directory. A new child
+is published as one directory generation. An existing directory retains its
+inode; known top-level entries are moved in and the compiler lock is published
+last. Interrupted staging is therefore never treated as a valid application
+lock, and the retained sibling staging directory is recoverable evidence rather
+than silently discarded.
+
+The scaffold creates:
 
 ```text
 riffdb.application.json
@@ -57,6 +75,15 @@ new derived identities. It stages generated files and publishes the lock last.
 compile to the exact reviewed lock. A stale, substituted, interrupted, or
 partially generated application therefore fails before role binding,
 authorization, deployment, or application execution.
+
+Complete public references:
+
+- [contract language and bounds](../contracts/README.md)
+- [command and invariant cookbook](../contracts/COMMAND-INVARIANT-COOKBOOK.md)
+- [application source schema](application-source-v1.schema.json)
+- [symbolic inspection](INSPECTION.md)
+- [RiffQL v1](../riffql/LANGUAGE.md)
+- [authoring diagnostics](AUTHORING-DIAGNOSTICS.md)
 
 `riffdb dev` starts one local server, waits for explicit readiness, deploys the
 exact contract and module, compiles and binds the symbolic application role,

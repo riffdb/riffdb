@@ -1,0 +1,53 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+work_root="$(mktemp -d "${TMPDIR:-/tmp}/riffdb-agent-alpha-package.XXXXXX")"
+cleanup() {
+    rm -rf "$work_root"
+}
+trap cleanup EXIT INT TERM
+
+bundle="$work_root/bundle"
+"$repo_root/scripts/agent-application-alpha-package" "$bundle" >/dev/null
+
+for required in \
+    docs/contracts/LANGUAGE.md \
+    docs/contracts/COMMAND-INVARIANT-COOKBOOK.md \
+    docs/contracts/examples/museum/contract.riff \
+    docs/contracts/examples/museum/collection_page.riffq \
+    docs/contracts/examples/museum/riffdb.application.json \
+    docs/contracts/examples/NEGATIVE-EXAMPLES.md \
+    docs/getting-started/application-source-v1.schema.json \
+    docs/getting-started/AUTHORING-DIAGNOSTICS.md \
+    docs/getting-started/INSPECTION.md \
+    docs/riffql/LANGUAGE.md; do
+    [[ -s "$bundle/$required" ]] || {
+        echo "sealed bundle is missing authoring resource: $required" >&2
+        exit 1
+    }
+done
+
+cmp "$repo_root/crates/riffdb-contract-syntax/LANGUAGE.md" \
+    "$bundle/docs/contracts/LANGUAGE.md"
+
+mkdir "$work_root/existing-empty"
+(
+    cd "$work_root/existing-empty"
+    "$bundle/bin/riffdb" new museum --directory .
+)
+cp "$bundle/docs/contracts/examples/museum/contract.riff" \
+    "$work_root/existing-empty/riffdb/contract.riff"
+cp "$bundle/docs/contracts/examples/museum/collection_page.riffq" \
+    "$work_root/existing-empty/riffdb/queries/collection_page.riffq"
+cp "$bundle/docs/contracts/examples/museum/riffdb.application.json" \
+    "$work_root/existing-empty/riffdb.application.json"
+(
+    cd "$work_root/existing-empty"
+    "$bundle/bin/riffdb" application check
+    "$bundle/bin/riffdb" application lock --write
+    "$bundle/bin/riffdb" application lock --check
+)
+
+"$repo_root/scripts/check-application-boundary" "$work_root/existing-empty"
+echo "agent application alpha package acceptance passed"

@@ -1,0 +1,123 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "riffdb.application-source/v1",
+  "title": "RiffDB symbolic application source v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "application",
+    "contract",
+    "generation",
+    "query_modules",
+    "roles",
+    "schema",
+    "seed_inputs"
+  ],
+  "properties": {
+    "application": { "$ref": "#/$defs/name" },
+    "contract": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["lineage", "source", "version"],
+      "properties": {
+        "lineage": { "$ref": "#/$defs/name" },
+        "source": { "$ref": "#/$defs/path" },
+        "version": { "$ref": "#/$defs/positiveU64" }
+      }
+    },
+    "generation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["mcp", "rust", "typescript"],
+      "properties": {
+        "mcp": { "$ref": "#/$defs/path" },
+        "rust": { "$ref": "#/$defs/path" },
+        "typescript": { "$ref": "#/$defs/path" }
+      }
+    },
+    "query_modules": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 32,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["name", "queries", "version"],
+        "properties": {
+          "name": { "$ref": "#/$defs/name" },
+          "queries": {
+            "type": "array",
+            "minItems": 1,
+            "maxItems": 4096,
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["name", "source"],
+              "properties": {
+                "name": { "$ref": "#/$defs/name" },
+                "source": { "$ref": "#/$defs/path" }
+              }
+            }
+          },
+          "version": { "$ref": "#/$defs/positiveU64" }
+        }
+      }
+    },
+    "roles": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 128,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "commands",
+          "environment",
+          "name",
+          "queries",
+          "tenant_scope"
+        ],
+        "properties": {
+          "commands": {
+            "type": "array",
+            "maxItems": 4096,
+            "items": { "$ref": "#/$defs/name" }
+          },
+          "environment": { "$ref": "#/$defs/name" },
+          "name": { "$ref": "#/$defs/name" },
+          "queries": {
+            "type": "array",
+            "maxItems": 4096,
+            "items": { "$ref": "#/$defs/name" }
+          },
+          "tenant_scope": { "enum": ["global", "tenant"] }
+        }
+      }
+    },
+    "schema": { "const": "riffdb.application-source/v1" },
+    "seed_inputs": {
+      "type": "array",
+      "maxItems": 256,
+      "items": { "$ref": "#/$defs/path" }
+    }
+  },
+  "$defs": {
+    "name": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 256,
+      "pattern": "^[A-Za-z][A-Za-z0-9_-]*$"
+    },
+    "path": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 512,
+      "pattern": "^(?!/)(?!.*\\\\)(?!.*(?:^|/)\\.\\.?(/|$))(?!.*//)[^\\u0000-\\u001F\\u007F]+$"
+    },
+    "positiveU64": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 18446744073709551615
+    }
+  }
+}

@@ -51,13 +51,17 @@ cp "$repo_root/release/config/bootstrap-ticketdesk-dev.json" \
 cp "$repo_root/README.md" "$temporary/docs/README.md"
 cp "$repo_root/docs/safety-by-construction.md" "$temporary/docs/"
 cp "$repo_root/docs/agent-application-alpha.md" "$temporary/docs/"
+cp -R "$repo_root/docs/contracts" "$temporary/docs/"
 mkdir -p "$temporary/docs/getting-started"
 for document in \
     AGENT-APPLICATION-QUICKSTART.md APPLICATION-ERRORS.md APPLICATION-MANIFEST.md \
-    COMMAND-BATCHES.md SAFE-APPLICATION-PROFILES.md SYMBOLIC-APPLICATIONS.md \
+    AUTHORING-DIAGNOSTICS.md COMMAND-BATCHES.md INSPECTION.md \
+    SAFE-APPLICATION-PROFILES.md SYMBOLIC-APPLICATIONS.md \
     TYPESCRIPT-APPLICATIONS.md; do
     cp "$repo_root/docs/getting-started/$document" "$temporary/docs/getting-started/"
 done
+cp "$repo_root/docs/getting-started/application-source-v1.schema.json" \
+    "$temporary/docs/getting-started/"
 cp -R "$repo_root/docs/riffql" "$temporary/docs/"
 cp "$repo_root/clients/typescript/runtime/package.json" "$temporary/public/typescript/"
 cp "$repo_root/clients/typescript/runtime/package-lock.json" "$temporary/public/typescript/"
@@ -81,6 +85,7 @@ cp "$repo_root/evaluations/agent-application-alpha/event-schema.json" "$temporar
 cp "$repo_root/evaluations/agent-application-alpha/report-schema.json" "$temporary/evaluation/"
 
 "$temporary/bin/riffdb" --help >/dev/null
+mkdir "$temporary/.application-smoke"
 "$temporary/bin/riffdb" new agent-alpha-smoke \
     --directory "$temporary/.application-smoke" >/dev/null
 CARGO_TARGET_DIR="$temporary/.sdk-check-target" cargo check --quiet \

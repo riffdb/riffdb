@@ -1,0 +1,28 @@
+query CollectionPage(
+    $collection_id: Collection.collection_id,
+    $artifact_limit: Limit = 25,
+) {
+    one collection from Collection
+        where collection_id == $collection_id
+        else NotFound
+
+    many artifacts from Artifact
+        where collection_id == $collection_id
+        order by artifact_id asc
+        take $artifact_limit
+
+    return Found {
+        collection: collection {
+            collection_id
+            name
+            created_at
+        }
+        artifacts: artifacts {
+            artifact_id
+            title
+            created_at
+        }
+    }
+
+    outcomes Found | NotFound
+}
