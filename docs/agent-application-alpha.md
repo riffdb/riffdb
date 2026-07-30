@@ -487,6 +487,15 @@ sample into a new multi-entity domain using only bundled public material, and
 reaches a typed command plus page-shaped read without reading RiffDB source or
 manually editing a compiler identity.
 
+Implementation evidence: the public Museum corpus replaces the scaffold with
+two related entities, two compiled commands, one bounded page query, and one
+symbolic application role. `scripts/riffdb-new-acceptance` exercises new-child,
+existing-empty, file, populated-directory, and destination-symlink cases;
+`scripts/agent-application-alpha-package-acceptance` repeats the replacement
+from the sealed bundle. Existing-directory publication retains the directory
+inode, synchronizes non-lock entries first, and publishes the exact compiler
+lock last.
+
 ### WP-360 — TypeScript and builder-MCP parity
 
 The TypeScript scaffold must be a complete offline server-side web

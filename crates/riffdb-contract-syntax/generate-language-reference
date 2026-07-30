@@ -4,6 +4,7 @@ set -euo pipefail
 crate_root="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 grammar="$crate_root/src/grammar.lalrpop"
 reference="$crate_root/LANGUAGE.md"
+public_reference="$crate_root/../../docs/contracts/LANGUAGE.md"
 temporary="$(mktemp)"
 trap 'rm -f "$temporary"' EXIT
 
@@ -29,12 +30,18 @@ EOF
 
 case "${1:-}" in
     "")
-        mv "$temporary" "$reference"
+        cp "$temporary" "$reference"
+        mv "$temporary" "$public_reference"
         ;;
     --check)
         if ! cmp -s "$temporary" "$reference"; then
             diff -u "$reference" "$temporary" || true
             echo "contract language reference is stale" >&2
+            exit 1
+        fi
+        if ! cmp -s "$temporary" "$public_reference"; then
+            diff -u "$public_reference" "$temporary" || true
+            echo "public contract language reference is stale" >&2
             exit 1
         fi
         ;;

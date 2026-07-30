@@ -13,7 +13,9 @@ riffdb dev --seed
 This produces and verifies typed Rust, TypeScript, and MCP operations without
 exposing numeric schema IDs, field masks, encoded keys, protobuf records, or
 kernel RPCs to handwritten application code. See the
-[agent application quickstart](docs/getting-started/AGENT-APPLICATION-QUICKSTART.md).
+[agent application quickstart](docs/getting-started/AGENT-APPLICATION-QUICKSTART.md),
+[contract reference](docs/contracts/README.md), and
+[symbolic inspection guide](docs/getting-started/INSPECTION.md).
 
 RiffDB is a standalone database written in Rust for contract-first operational
 state. Applications mutate state through compiled, typed commands. The database

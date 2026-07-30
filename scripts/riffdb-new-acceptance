@@ -22,9 +22,11 @@ trap cleanup EXIT INT TERM
 "$riffdb" new order-desk --directory "$work_root/rust-one"
 "$riffdb" new order-desk --directory "$work_root/rust-two"
 "$riffdb" new order-desk --language typescript --directory "$work_root/typescript"
+mkdir "$work_root/existing-empty"
+"$riffdb" new museum --directory "$work_root/existing-empty"
 
 diff -ru "$work_root/rust-one" "$work_root/rust-two"
-"$riffdb" application generate "$work_root/rust-one/riffdb.application.json"
+"$riffdb" application generate "$work_root/rust-one/riffdb.application.json" --locked
 "$repo_root/scripts/check-application-boundary" \
     "$work_root/rust-one" \
     "$work_root/typescript" \
@@ -34,6 +36,56 @@ if "$riffdb" new order-desk --directory "$work_root/rust-one"; then
     echo "riffdb new unexpectedly overwrote an existing application" >&2
     exit 1
 fi
+mkdir "$work_root/nonempty"
+printf '%s\n' retain >"$work_root/nonempty/retain.txt"
+if "$riffdb" new museum --directory "$work_root/nonempty"; then
+    echo "riffdb new unexpectedly populated a non-empty directory" >&2
+    exit 1
+fi
+rg -qx 'retain' "$work_root/nonempty/retain.txt" || {
+    echo "riffdb new changed a pre-existing file" >&2
+    exit 1
+}
+printf '%s\n' retain >"$work_root/not-a-directory"
+if "$riffdb" new museum --directory "$work_root/not-a-directory"; then
+    echo "riffdb new unexpectedly replaced a file" >&2
+    exit 1
+fi
+if [[ "$(uname -s)" == Linux ]]; then
+    mkdir "$work_root/symlink-target"
+    ln -s "$work_root/symlink-target" "$work_root/symlink-destination"
+    if "$riffdb" new museum --directory "$work_root/symlink-destination"; then
+        echo "riffdb new unexpectedly followed a destination symlink" >&2
+        exit 1
+    fi
+    [[ -z "$(find "$work_root/symlink-target" -mindepth 1 -maxdepth 1 -print -quit)" ]] || {
+        echo "riffdb new changed a destination symlink target" >&2
+        exit 1
+    }
+fi
+
+# Replace the scaffolded sample with a previously unseen multi-entity domain
+# using only the public authoring kit.
+cp "$repo_root/docs/contracts/examples/museum/contract.riff" \
+    "$work_root/existing-empty/riffdb/contract.riff"
+cp "$repo_root/docs/contracts/examples/museum/collection_page.riffq" \
+    "$work_root/existing-empty/riffdb/queries/collection_page.riffq"
+cp "$repo_root/docs/contracts/examples/museum/riffdb.application.json" \
+    "$work_root/existing-empty/riffdb.application.json"
+(
+    cd "$work_root/existing-empty"
+    "$riffdb" application check
+    "$riffdb" application lock --write
+    "$riffdb" application lock --check
+)
+rg -q 'pub struct AddArtifactInput' \
+    "$work_root/existing-empty/generated/rust/client.rs"
+rg -q 'pub struct CollectionPageParams' \
+    "$work_root/existing-empty/generated/rust/client.rs"
+rg -q 'pub async fn add_artifact' \
+    "$work_root/existing-empty/generated/rust/client.rs"
+rg -q 'pub async fn collection_page' \
+    "$work_root/existing-empty/generated/rust/client.rs"
 for unsafe_fixture in \
     negative-kernel-dependency \
     negative-handwritten-transport \

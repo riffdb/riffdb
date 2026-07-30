@@ -1,0 +1,41 @@
+{
+  "application": "museum",
+  "contract": {
+    "lineage": "Museum",
+    "source": "riffdb/contract.riff",
+    "version": 1
+  },
+  "generation": {
+    "mcp": "generated/mcp/tools.json",
+    "rust": "generated/rust/client.rs",
+    "typescript": "generated/typescript/client.ts"
+  },
+  "query_modules": [
+    {
+      "name": "museum",
+      "queries": [
+        {
+          "name": "CollectionPage",
+          "source": "riffdb/queries/collection_page.riffq"
+        }
+      ],
+      "version": 1
+    }
+  ],
+  "roles": [
+    {
+      "commands": [
+        "AddArtifact",
+        "CreateCollection"
+      ],
+      "environment": "development",
+      "name": "MuseumApplication",
+      "queries": [
+        "CollectionPage"
+      ],
+      "tenant_scope": "global"
+    }
+  ],
+  "schema": "riffdb.application-source/v1",
+  "seed_inputs": []
+}
