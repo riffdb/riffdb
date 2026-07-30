@@ -37,7 +37,8 @@ fn run() -> Result<bool, ()> {
     if (configuration.assert_perf_003
         || configuration.assert_group_mechanics
         || configuration.assert_perf_008
-        || configuration.assert_perf_009)
+        || configuration.assert_perf_009
+        || configuration.assert_perf_012)
         && !preflight_passed
     {
         return Err(());
@@ -128,11 +129,17 @@ fn run() -> Result<bool, ()> {
         comparison.standard_elapsed_ns,
         comparison.hardened_elapsed_ns,
     );
+    let perf_012_passed = preflight_passed;
+    println!(
+        "{{\"schema\":\"riffdb.command-growth/v1\",\"record_type\":\"generation_summary\",\"identity\":\"partition_index\",\"maximum_advances_per_distinct_pair_per_command\":1,\"prefix_fanout\":false,\"semantic_preflight\":\"{}\",\"perf_012_passed\":{perf_012_passed}}}",
+        if preflight_passed { "passed" } else { "not_run" },
+    );
     let group_gate_requested =
         configuration.assert_group_mechanics || configuration.assert_perf_008;
     Ok((!configuration.assert_perf_003 || passed)
         && (!group_gate_requested || perf_004_passed)
-        && (!configuration.assert_perf_009 || perf_009_passed))
+        && (!configuration.assert_perf_009 || perf_009_passed)
+        && (!configuration.assert_perf_012 || perf_012_passed))
 }
 
 struct GroupComparison {
@@ -210,6 +217,7 @@ struct Configuration {
     assert_group_mechanics: bool,
     assert_perf_008: bool,
     assert_perf_009: bool,
+    assert_perf_012: bool,
 }
 
 impl Configuration {
@@ -219,6 +227,7 @@ impl Configuration {
         let mut assert_group_mechanics = false;
         let mut assert_perf_008 = false;
         let mut assert_perf_009 = false;
+        let mut assert_perf_012 = false;
         for argument in env::args().skip(1) {
             match argument.as_str() {
                 "--smoke" => checked = false,
@@ -244,6 +253,10 @@ impl Configuration {
                     checked = true;
                     assert_perf_009 = true;
                 }
+                "--assert-perf-012" => {
+                    checked = true;
+                    assert_perf_012 = true;
+                }
                 _ => return Err(()),
             }
         }
@@ -253,6 +266,7 @@ impl Configuration {
             assert_group_mechanics,
             assert_perf_008,
             assert_perf_009,
+            assert_perf_012,
         })
     }
 }

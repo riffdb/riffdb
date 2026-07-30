@@ -5,11 +5,13 @@
 
 //! Exact physical-key mappings for the frozen redb table layout.
 
-use riffdb_storage_api::{IdempotencyIdentityKey, StructurallyDecodedIndexRangePrefixV1};
+use riffdb_storage_api::{
+    IdempotencyIdentityKey, PartitionIndexTarget, StructurallyDecodedIndexRangePrefixV1,
+};
 use riffdb_types::{
     AdministrationSequence, CapabilityId, CapabilityTokenDigest, CommitSequence,
     ContractBundleHash, ContractLineage, ContractVersion, DIGEST_SCHEME_V1, DigestKeyId, EntityKey,
-    EventId, IndexEntryKey, IndexId, MAX_CONTRACT_LINEAGE_BYTES, ProjectionApplyKey,
+    EventId, IndexEntryKey, IndexId, MAX_CONTRACT_LINEAGE_BYTES, PartitionKey, ProjectionApplyKey,
     ProjectionFrontierKey, ProjectionGroupKey, ProvenanceId, QueryModuleHash,
 };
 
@@ -300,6 +302,48 @@ pub(crate) fn decode_index_range_prefix_key(
         .map_err(|_| PhysicalKeyError::InvalidComponent)?;
     require_canonical(bytes, key.as_bytes())?;
     Ok(key)
+}
+
+pub(crate) fn encode_partition_index_key(key: &PartitionIndexTarget) -> Vec<u8> {
+    key.to_key_bytes()
+}
+
+pub(crate) fn decode_partition_index_key(
+    bytes: &[u8],
+) -> Result<PartitionIndexTarget, PhysicalKeyError> {
+    let length = bytes
+        .get(..4)
+        .ok_or(PhysicalKeyError::InvalidLength)?
+        .try_into()
+        .map(u32::from_be_bytes)
+        .map_err(|_| PhysicalKeyError::InvalidLength)?;
+    let length = usize::try_from(length).map_err(|_| PhysicalKeyError::SizeOverflow)?;
+    let partition_end = 4usize
+        .checked_add(length)
+        .ok_or(PhysicalKeyError::SizeOverflow)?;
+    let expected = partition_end
+        .checked_add(4)
+        .ok_or(PhysicalKeyError::SizeOverflow)?;
+    if bytes.len() != expected {
+        return Err(PhysicalKeyError::InvalidLength);
+    }
+    let partition = PartitionKey::from_bytes(
+        bytes
+            .get(4..partition_end)
+            .ok_or(PhysicalKeyError::InvalidLength)?
+            .to_vec(),
+    )
+    .map_err(|_| PhysicalKeyError::InvalidComponent)?;
+    let index = bytes
+        .get(partition_end..expected)
+        .ok_or(PhysicalKeyError::InvalidLength)?
+        .try_into()
+        .map(u32::from_be_bytes)
+        .map_err(|_| PhysicalKeyError::InvalidLength)?;
+    let index_id = IndexId::new(index).ok_or(PhysicalKeyError::InvalidComponent)?;
+    let target = PartitionIndexTarget::new(partition, index_id);
+    require_canonical(bytes, &target.to_key_bytes())?;
+    Ok(target)
 }
 
 pub(crate) fn encode_idempotency_key(key: &IdempotencyIdentityKey) -> &[u8] {

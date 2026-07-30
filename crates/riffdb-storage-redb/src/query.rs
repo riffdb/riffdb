@@ -11,12 +11,12 @@ use riffdb_query_executor::{
 use riffdb_query_ir::{
     AccessDirection, QueryAccessKind, QueryAccessProgramV1, QueryAccessStep, QueryPredicateOperator,
 };
-use riffdb_storage_api::{EntityTarget, StorageError, StorageErrorKind};
+use riffdb_storage_api::{EntityTarget, PartitionIndexTarget, StorageError, StorageErrorKind};
 use riffdb_types::{CanonicalValue, IndexEntryKey};
 
 use crate::codec::{decode_index_entry_v2, decode_index_epoch_v1};
 use crate::error::{precommit_storage_error, storage_error};
-use crate::keys::decode_index_entry_key;
+use crate::keys::{decode_index_entry_key, encode_partition_index_key};
 use crate::layout::{COMMITS, ENTITIES, INDEX_EPOCHS, SECONDARY_INDEXES};
 use crate::reads::{read_commit_head, read_entity_record};
 use crate::store::RedbOperationalPorts;
@@ -54,6 +54,7 @@ impl QueryExecutionPort for RedbOperationalPorts {
             epochs,
             head,
             program,
+            parameters,
         };
         execute_page_in_snapshot(program, parameters, prior, &mut view)
     }
@@ -65,6 +66,7 @@ struct RedbQueryView<'a> {
     epochs: BytesTable,
     head: u64,
     program: &'a QueryAccessProgramV1,
+    parameters: &'a QueryParameters,
 }
 
 impl QueryReadView for RedbQueryView<'_> {
@@ -132,11 +134,17 @@ impl QueryReadView for RedbQueryView<'_> {
             return Err(invariant());
         };
         let schema = step.internal_index_key_schema().ok_or_else(invariant)?;
-        let epoch_values = equality_prefix(fields, predicates);
-        let epoch_prefix = schema
-            .encode_index_prefix(&epoch_values)
+        let partition_value = self
+            .parameters
+            .get(self.program.partition_parameter())
+            .ok_or_else(invariant)?;
+        let partition = step
+            .internal_partition_key_schema()
+            .encode_partition(std::slice::from_ref(partition_value))
             .map_err(|_| invariant())?;
-        let epoch = read_epoch(&self.epochs, epoch_prefix.as_bytes())?;
+        let generation_target =
+            PartitionIndexTarget::new(partition, step.internal_index_id().ok_or_else(invariant)?);
+        let epoch = read_epoch(&self.epochs, &generation_target)?;
         let mut entries = Vec::<(IndexEntryKey, riffdb_storage_api::StoredIndexEntryV2)>::new();
         let mut prefixes = index_prefixes(fields, predicates)?
             .into_iter()
@@ -179,9 +187,12 @@ impl QueryReadView for RedbQueryView<'_> {
             match direction {
                 AccessDirection::Forward => {
                     for entry in &mut range {
-                        entries.push(decode_current_index_entry(
-                            entry.map_err(precommit_storage_error)?,
-                        )?);
+                        let decoded =
+                            decode_current_index_entry(entry.map_err(precommit_storage_error)?)?;
+                        if decoded.1.partition_key() != generation_target.partition_key() {
+                            continue;
+                        }
+                        entries.push(decoded);
                         if entries.len() == limit as usize {
                             break 'prefixes;
                         }
@@ -189,9 +200,12 @@ impl QueryReadView for RedbQueryView<'_> {
                 }
                 AccessDirection::Reverse => {
                     while let Some(entry) = range.next_back() {
-                        entries.push(decode_current_index_entry(
-                            entry.map_err(precommit_storage_error)?,
-                        )?);
+                        let decoded =
+                            decode_current_index_entry(entry.map_err(precommit_storage_error)?)?;
+                        if decoded.1.partition_key() != generation_target.partition_key() {
+                            continue;
+                        }
+                        entries.push(decoded);
                         if entries.len() == limit as usize {
                             break 'prefixes;
                         }
@@ -248,12 +262,13 @@ fn exclusive_prefix_end(prefix: &[u8]) -> Option<Vec<u8>> {
     Some(upper)
 }
 
-fn read_epoch(table: &BytesTable, prefix: &[u8]) -> Result<u64, StorageError> {
-    let Some(encoded) = table.get(prefix).map_err(precommit_storage_error)? else {
+fn read_epoch(table: &BytesTable, target: &PartitionIndexTarget) -> Result<u64, StorageError> {
+    let key = encode_partition_index_key(target);
+    let Some(encoded) = table.get(key.as_slice()).map_err(precommit_storage_error)? else {
         return Ok(0);
     };
     let epoch = decode_index_epoch_v1(encoded.value())?.into_parts().0;
-    if epoch.target().as_bytes() != prefix {
+    if epoch.target() != target {
         return Err(corrupt());
     }
     Ok(epoch.epoch().get())
@@ -267,21 +282,6 @@ fn exact_value(predicates: &[BoundPredicate], field: &str) -> Result<CanonicalVa
         })
         .map(|predicate| predicate.value().clone())
         .ok_or_else(invariant)
-}
-
-fn equality_prefix(fields: &[String], predicates: &[BoundPredicate]) -> Vec<CanonicalValue> {
-    fields
-        .iter()
-        .map_while(|field| {
-            predicates
-                .iter()
-                .find(|predicate| {
-                    predicate.field() == field
-                        && predicate.operator() == QueryPredicateOperator::Equal
-                })
-                .map(|predicate| predicate.value().clone())
-        })
-        .collect()
 }
 
 fn index_prefixes(
@@ -534,7 +534,7 @@ query ProjectMembers(
             .expect("access");
         let mut records = Vec::new();
         let mut indexes = Vec::new();
-        for ordinal in [3_u8, 4_u8] {
+        for (ordinal, partition_ordinal) in [(2_u8, 9_u8), (3_u8, 1_u8), (4_u8, 1_u8)] {
             let user = CanonicalValue::Uuid([ordinal; 16]);
             let key = step
                 .internal_entity_key_schema()
@@ -579,7 +579,9 @@ query ProjectMembers(
                 .expect("index key");
             let mut partition =
                 PartitionKeyBuilder::new(AggregateTypeId::new(4).expect("aggregate"));
-            partition.push_uuid(&[1; 16]).expect("partition component");
+            partition
+                .push_uuid(&[partition_ordinal; 16])
+                .expect("partition component");
             indexes.push(
                 StoredIndexEntryV2::new(
                     index_key,
@@ -643,6 +645,11 @@ query ProjectMembers(
             Some(QueryResultValue::Many(rows)) => rows[0].field("user_id").cloned(),
             _ => None,
         };
+        assert_ne!(
+            first_user,
+            Some(CanonicalValue::Uuid([2; 16])),
+            "a foreign-partition index row must not consume the page limit"
+        );
         let cursor = QueryContinuation::checked(
             snapshot
                 .continuation_binding()

@@ -9,7 +9,7 @@ use riffdb_query_executor::{
 use riffdb_query_ir::{
     AccessDirection, QueryAccessKind, QueryAccessProgramV1, QueryAccessStep, QueryPredicateOperator,
 };
-use riffdb_storage_api::{EntityTarget, StorageError, StorageErrorKind};
+use riffdb_storage_api::{EntityTarget, PartitionIndexTarget, StorageError, StorageErrorKind};
 use riffdb_types::{CanonicalValue, IndexEntryKey};
 
 use crate::state::{MemoryIndexEntry, MemoryState, unique_binary_search_by};
@@ -23,7 +23,11 @@ impl QueryExecutionPort for MemoryOperationalPorts {
         prior: Option<&QueryContinuation>,
     ) -> Result<QueryOwnedSnapshot, QueryExecutionError> {
         self.read(|state| {
-            let mut view = MemoryQueryView { state, program };
+            let mut view = MemoryQueryView {
+                state,
+                program,
+                parameters,
+            };
             execute_page_in_snapshot(program, parameters, prior, &mut view)
                 .map_err(|_| storage_error(StorageErrorKind::InvariantViolation))
         })
@@ -34,6 +38,7 @@ impl QueryExecutionPort for MemoryOperationalPorts {
 struct MemoryQueryView<'a> {
     state: &'a MemoryState,
     program: &'a QueryAccessProgramV1,
+    parameters: &'a QueryParameters,
 }
 
 impl QueryReadView for MemoryQueryView<'_> {
@@ -128,15 +133,24 @@ impl QueryReadView for MemoryQueryView<'_> {
         if *direction == AccessDirection::Reverse {
             prefixes.reverse();
         }
-        let epoch_prefix_values = equality_prefix(fields, predicates);
-        let epoch_prefix = schema
-            .encode_index_prefix(&epoch_prefix_values)
+        let partition_value = self
+            .parameters
+            .get(self.program.partition_parameter())
+            .ok_or_else(|| storage_error(StorageErrorKind::InvariantViolation))?;
+        let partition = step
+            .internal_partition_key_schema()
+            .encode_partition(std::slice::from_ref(partition_value))
             .map_err(|_| storage_error(StorageErrorKind::InvariantViolation))?;
+        let target = PartitionIndexTarget::new(
+            partition,
+            step.internal_index_id()
+                .ok_or_else(|| storage_error(StorageErrorKind::InvariantViolation))?,
+        );
         let epoch = self
             .state
             .index_epochs
             .iter()
-            .find(|row| row.target().as_bytes() == epoch_prefix.as_bytes())
+            .find(|row| row.target() == &target)
             .map_or(0, |row| row.epoch().get());
 
         let mut entries = Vec::<(&MemoryIndexEntry, IndexEntryKey)>::new();
@@ -180,6 +194,12 @@ impl QueryReadView for MemoryQueryView<'_> {
                 AccessDirection::Forward => {
                     for entry in matching {
                         checked_current(entry)?;
+                        if entry
+                            .current_record()
+                            .is_none_or(|current| current.partition_key() != target.partition_key())
+                        {
+                            continue;
+                        }
                         entries.push((entry, entry.key().clone()));
                         if entries.len() == limit as usize {
                             break 'prefixes;
@@ -189,6 +209,12 @@ impl QueryReadView for MemoryQueryView<'_> {
                 AccessDirection::Reverse => {
                     for entry in matching.iter().rev() {
                         checked_current(entry)?;
+                        if entry
+                            .current_record()
+                            .is_none_or(|current| current.partition_key() != target.partition_key())
+                        {
+                            continue;
+                        }
                         entries.push((entry, entry.key().clone()));
                         if entries.len() == limit as usize {
                             break 'prefixes;
@@ -253,21 +279,6 @@ fn exact_value(predicates: &[BoundPredicate], field: &str) -> Result<CanonicalVa
         })
         .map(|predicate| predicate.value().clone())
         .ok_or_else(|| storage_error(StorageErrorKind::InvariantViolation))
-}
-
-fn equality_prefix(fields: &[String], predicates: &[BoundPredicate]) -> Vec<CanonicalValue> {
-    fields
-        .iter()
-        .map_while(|field| {
-            predicates
-                .iter()
-                .find(|predicate| {
-                    predicate.field() == field
-                        && predicate.operator() == QueryPredicateOperator::Equal
-                })
-                .map(|predicate| predicate.value().clone())
-        })
-        .collect()
 }
 
 fn index_prefixes(
@@ -446,6 +457,7 @@ query ProjectMembers(
         let mut view = MemoryQueryView {
             state: &state,
             program: &program,
+            parameters: &parameters,
         };
         let snapshot = execute_in_snapshot(&program, &parameters, &mut view).expect("execute");
         assert_eq!(snapshot.outcome(), "Found");
@@ -473,7 +485,7 @@ query ProjectMembers(
             .internal_entity_access("ProjectMember")
             .expect("access");
         let mut state = MemoryState::default();
-        for ordinal in [3_u8, 4_u8] {
+        for (ordinal, partition_ordinal) in [(2_u8, 9_u8), (3_u8, 1_u8), (4_u8, 1_u8)] {
             let user = CanonicalValue::Uuid([ordinal; 16]);
             let key = step
                 .internal_entity_key_schema()
@@ -518,7 +530,9 @@ query ProjectMembers(
                 .expect("index key");
             let mut partition =
                 PartitionKeyBuilder::new(AggregateTypeId::new(4).expect("aggregate"));
-            partition.push_uuid(&[1; 16]).expect("partition component");
+            partition
+                .push_uuid(&[partition_ordinal; 16])
+                .expect("partition component");
             let index = StoredIndexEntryV2::new(
                 index_key,
                 binding.clone(),
@@ -550,6 +564,7 @@ query ProjectMembers(
         let mut view = MemoryQueryView {
             state: &state,
             program: &program,
+            parameters: &parameters,
         };
         let snapshot = execute_in_snapshot(&program, &parameters, &mut view).expect("execute");
         assert!(matches!(
@@ -560,6 +575,11 @@ query ProjectMembers(
             Some(QueryResultValue::Many(rows)) => rows[0].field("user_id").cloned(),
             _ => None,
         };
+        assert_ne!(
+            first_user,
+            Some(CanonicalValue::Uuid([2; 16])),
+            "a foreign-partition index row must not consume the page limit"
+        );
         let cursor = QueryContinuation::checked(
             snapshot
                 .continuation_binding()
@@ -572,6 +592,7 @@ query ProjectMembers(
         let mut second_view = MemoryQueryView {
             state: &state,
             program: &program,
+            parameters: &parameters,
         };
         let second =
             execute_page_in_snapshot(&program, &parameters, Some(&cursor), &mut second_view)

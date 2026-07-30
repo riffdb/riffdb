@@ -6,10 +6,10 @@ use std::fmt;
 
 use riffdb_storage_api::{
     ApplicationSequenceAllocator, AtomicCommandRecordSet, ExpectedEntityState, IdempotencyIdentity,
-    IdempotencyIdentityKey, IndexEntryMutationV1, IndexEpochPosition, StoredAdmissionStateV1,
-    StoredCommitRecordV1, StoredDurableEventV1, StoredEntityRecordV1, StoredExecutionFailedV1,
-    StoredIndexEntryV2, StoredIndexEpochV1, StoredOutboxIntentV1, StoredOutcomeV1,
-    StoredPendingAdmissionV1, StoredProvenanceRecordV1, StructurallyDecodedIndexRangePrefixV1,
+    IdempotencyIdentityKey, IndexEntryMutationV1, IndexEpochPosition, PartitionIndexTarget,
+    StoredAdmissionStateV1, StoredCommitRecordV1, StoredDurableEventV1, StoredEntityRecordV1,
+    StoredExecutionFailedV1, StoredIndexEntryV2, StoredIndexEpochV1, StoredOutboxIntentV1,
+    StoredOutcomeV1, StoredPendingAdmissionV1, StoredProvenanceRecordV1,
 };
 use riffdb_types::{CommitSequence, EventId, IndexEntryKey, ProvenanceId};
 
@@ -71,7 +71,7 @@ pub struct AuthoritativeCommandModel {
     admissions: BTreeMap<IdempotencyIdentityKey, StoredAdmissionStateV1>,
     entities: BTreeMap<riffdb_storage_api::EntityTarget, StoredEntityRecordV1>,
     index_entries: BTreeMap<IndexEntryKey, StoredIndexEntryV2>,
-    index_epochs: BTreeMap<StructurallyDecodedIndexRangePrefixV1, StoredIndexEpochV1>,
+    index_epochs: BTreeMap<PartitionIndexTarget, StoredIndexEpochV1>,
     outcomes: BTreeMap<CommitSequence, StoredOutcomeV1>,
     commits: BTreeMap<CommitSequence, StoredCommitRecordV1>,
     provenance: BTreeMap<ProvenanceId, StoredProvenanceRecordV1>,
@@ -279,12 +279,9 @@ impl AuthoritativeCommandModel {
         self.index_entries.get(key)
     }
 
-    /// Looks up one modeled exact-prefix epoch post-image.
+    /// Looks up one modeled partition/index generation post-image.
     #[must_use]
-    pub fn index_epoch(
-        &self,
-        target: &StructurallyDecodedIndexRangePrefixV1,
-    ) -> Option<&StoredIndexEpochV1> {
+    pub fn index_epoch(&self, target: &PartitionIndexTarget) -> Option<&StoredIndexEpochV1> {
         self.index_epochs.get(target)
     }
 

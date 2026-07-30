@@ -44,6 +44,7 @@ const STORAGE_SOURCES: &[&str] = &[
     "riffdb/storage/v1/common.proto",
     "riffdb/storage/v1/envelope.proto",
     "riffdb/storage/v1/event_references_v2.proto",
+    "riffdb/storage/v1/index_generation_v2.proto",
     "riffdb/storage/v1/index_v2.proto",
     "riffdb/storage/v1/metadata.proto",
     "riffdb/storage/v1/outbox.proto",
@@ -59,6 +60,7 @@ const PRODUCTION_SOURCES: &[&str] = &[
     "riffdb/storage/v1/common.proto",
     "riffdb/storage/v1/envelope.proto",
     "riffdb/storage/v1/event_references_v2.proto",
+    "riffdb/storage/v1/index_generation_v2.proto",
     "riffdb/storage/v1/index_v2.proto",
     "riffdb/storage/v1/metadata.proto",
     "riffdb/storage/v1/outbox.proto",
@@ -261,6 +263,11 @@ const DURABLE_RECORDS: &[DurableRecord] = &[
         "event_references_v2.proto",
         "StoredOutboxIntentV2",
         PayloadBound::Document,
+    ),
+    durable(
+        "index_generation_v2.proto",
+        "StoredIndexGenerationV2",
+        PayloadBound::Tiny,
     ),
 ];
 
@@ -542,6 +549,9 @@ fn main() -> Result<(), Box<dyn Error>> {
     let event_reference_v2_records = durable_registry
         .get(current_v1_record_count + 2..current_v1_record_count + 4)
         .ok_or_else(|| io::Error::other("durable event-reference registry is incomplete"))?;
+    let index_generation_v2_record = durable_registry
+        .get(current_v1_record_count + 4)
+        .ok_or_else(|| io::Error::other("durable index-generation registry is incomplete"))?;
     write_artifact(
         &output_root,
         "fixtures/proto/durable-registry.txt",
@@ -596,6 +606,16 @@ fn main() -> Result<(), Box<dyn Error>> {
         &output_root,
         "fixtures/proto/durable-event-reference-v2-record-bounds.bin",
         &durable_record_bounds(event_reference_v2_records),
+    )?;
+    write_artifact(
+        &output_root,
+        "fixtures/proto/durable-index-generation-v2-schema-hash.bin",
+        &index_generation_v2_record.schema_hash,
+    )?;
+    write_artifact(
+        &output_root,
+        "fixtures/proto/durable-index-generation-v2-record-bound.bin",
+        &durable_record_bounds(std::slice::from_ref(index_generation_v2_record)),
     )?;
     write_artifact(
         &output_root,
@@ -864,9 +884,9 @@ struct BuiltDurableRecord {
 fn build_durable_registry(
     storage: &FileDescriptorSet,
 ) -> Result<Vec<BuiltDurableRecord>, Box<dyn Error>> {
-    if DURABLE_RECORDS.len() != 33 {
+    if DURABLE_RECORDS.len() != 34 {
         return Err(
-            io::Error::other("readable durable registry must contain exactly 33 records").into(),
+            io::Error::other("readable durable registry must contain exactly 34 records").into(),
         );
     }
     if storage.file.len() != STORAGE_SOURCES.len()
@@ -876,7 +896,7 @@ fn build_durable_registry(
             .any(|file| file.package() != "riffdb.storage.v1")
     {
         return Err(io::Error::other(
-            "storage descriptor must contain exactly the twelve riffdb.storage.v1 sources",
+            "storage descriptor must contain exactly the thirteen riffdb.storage.v1 sources",
         )
         .into());
     }
@@ -890,9 +910,9 @@ fn build_durable_registry(
         .iter()
         .map(|file| file.enum_type.len())
         .sum::<usize>();
-    if message_count != 83 || enum_count != 12 {
+    if message_count != 84 || enum_count != 12 {
         return Err(io::Error::other(format!(
-            "storage schema must contain 82 semantic messages plus StoredEnvelope and 12 enums; found {message_count} messages and {enum_count} enums"
+            "storage schema must contain 83 semantic messages plus StoredEnvelope and 12 enums; found {message_count} messages and {enum_count} enums"
         ))
         .into());
     }
@@ -1077,10 +1097,14 @@ fn durable_writable_registry_fixture(
     let outbox_v2 = records
         .get(current_v1_record_count + 3)
         .ok_or_else(|| io::Error::other("durable registry is missing StoredOutboxIntentV2"))?;
+    let generation_v2 = records
+        .get(current_v1_record_count + 4)
+        .ok_or_else(|| io::Error::other("durable registry is missing StoredIndexGenerationV2"))?;
     let writable = legacy[..8]
         .iter()
         .chain(std::iter::once(v2))
-        .chain(legacy[9..14].iter())
+        .chain(std::iter::once(generation_v2))
+        .chain(legacy[10..14].iter())
         .chain(std::iter::once(outbox_v2))
         .chain(legacy[15..16].iter())
         .chain(std::iter::once(commit_v2))

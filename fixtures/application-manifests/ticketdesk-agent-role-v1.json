@@ -1,6 +1,6 @@
 {
   "application": "ticketdesk",
-  "application_manifest_hash": "4bd2fd882276366f8dae10e3a32fa6d7973564debd84d05101323f58b1f1c887",
+  "application_manifest_hash": "af6653aa267da4e43122a534c8105712cbca0f4b542a61a06b981c661cd6e754",
   "contract": {
     "bundle_hash": "7d6659df2fd59e3a37ddb8cc59b36cf7e887f388576c48f4251134f5d6588f83",
     "lineage": "TicketDesk",
@@ -86,9 +86,9 @@
     }
   ],
   "query_module_hashes": [
-    "142a519b77d6e833d4bd86c6f38bd65c3ebc014fa5601bf6089b51b21337815c"
+    "1551bd8488f1c9a4bc7a7db0b163bbd08a7f12aa272ad045314348a185af2d69"
   ],
   "role": "TicketDeskAgent",
-  "role_hash": "2c5659b12d4d69492de911e75a307f972aa14e96cbe9909d456d73d149e3c347",
+  "role_hash": "11ccc5644fba302911a24b43b0c5c9a7808779e995fc42d9abfcf708bec39ef7",
   "tenant_scope": "global"
 }

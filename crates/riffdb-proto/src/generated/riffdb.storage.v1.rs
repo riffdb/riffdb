@@ -1458,6 +1458,17 @@ pub struct StoredOutboxIntentV2 {
     pub event_reference: ::core::option::Option<EventReferenceV2>,
 }
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct StoredIndexGenerationV2 {
+    #[prost(bytes = "vec", tag = "1")]
+    pub partition_key: ::prost::alloc::vec::Vec<u8>,
+    #[prost(uint32, tag = "2")]
+    pub index_id: u32,
+    #[prost(message, optional, tag = "3")]
+    pub schema_binding: ::core::option::Option<DurableKeySchemaBindingV1>,
+    #[prost(uint64, tag = "4")]
+    pub generation: u64,
+}
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct StoredIndexEntryV2 {
     #[prost(bytes = "vec", tag = "1")]
     pub index_entry_key: ::prost::alloc::vec::Vec<u8>,

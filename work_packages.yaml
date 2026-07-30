@@ -5292,9 +5292,16 @@ work_packages:
   - SPEC.md
   - work_packages.yaml
   - adr/**
+  - proto/**
+  - fixtures/proto/**
+  - fixtures/application-manifests/**
+  - fixtures/query-modules/**
+  - clients/typescript/**
+  - crates/riffdb-proto/**
   - crates/riffdb-types/**
   - crates/riffdb-contract-ir/**
   - crates/riffdb-contract-compiler/**
+  - crates/riffdb-catalog/**
   - crates/riffdb-query-ir/**
   - crates/riffdb-query-compiler/**
   - crates/riffdb-query-executor/**

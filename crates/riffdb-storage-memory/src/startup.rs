@@ -1124,9 +1124,10 @@ fn persisted_evidence_has_source(
             .is_some_and(|index| {
                 HistoricalPersistedKeyEvidenceV1::from_entity(&state.entities[index]) == *evidence
             }),
-        riffdb_storage_api::IrOpaquePersistedKeyV1::IndexRangePrefix(prefix) => state
+        riffdb_storage_api::IrOpaquePersistedKeyV1::IndexRangePrefix(_) => false,
+        riffdb_storage_api::IrOpaquePersistedKeyV1::PartitionIndex(target) => state
             .index_epochs
-            .binary_search_by(|record| record.target().cmp(prefix))
+            .binary_search_by(|record| record.target().cmp(target))
             .ok()
             .is_some_and(|index| {
                 HistoricalPersistedKeyEvidenceV1::from_index_epoch(&state.index_epochs[index])
@@ -1916,9 +1917,14 @@ pub(crate) fn persisted_evidence_order_key(evidence: &HistoricalPersistedKeyEvid
             push_bytes(&mut output, key.as_bytes());
         }
         riffdb_storage_api::IrOpaquePersistedKeyV1::IndexRangePrefix(prefix) => {
-            push_persisted_binding_key(&mut output, evidence.schema(), 0x03);
+            push_persisted_binding_key(&mut output, evidence.schema(), 0x02);
             output.extend_from_slice(&prefix.index_id().to_be_bytes());
             push_bytes(&mut output, prefix.as_bytes());
+        }
+        riffdb_storage_api::IrOpaquePersistedKeyV1::PartitionIndex(target) => {
+            push_persisted_binding_key(&mut output, evidence.schema(), 0x03);
+            output.extend_from_slice(&target.index_id().to_be_bytes());
+            push_bytes(&mut output, target.partition_key().as_bytes());
         }
     }
     output
@@ -1949,6 +1955,9 @@ fn persisted_evidence_semantic_bytes(evidence: &HistoricalPersistedKeyEvidenceV1
         riffdb_storage_api::IrOpaquePersistedKeyV1::Entity { key, .. } => key.as_bytes().len(),
         riffdb_storage_api::IrOpaquePersistedKeyV1::IndexRangePrefix(prefix) => {
             prefix.as_bytes().len()
+        }
+        riffdb_storage_api::IrOpaquePersistedKeyV1::PartitionIndex(target) => {
+            target.partition_key().as_bytes().len()
         }
     };
     let binding = evidence.schema();
@@ -1999,8 +2008,8 @@ mod tests {
         CapabilityRequestedRecordV1, CatalogActivationIntentV1, CatalogAdministrationRepository,
         DatabaseIdentityProbe, DatabaseIdentityProbePort, DatabaseInitializationPort,
         DurableKeySchemaBindingV1, ExecutablePlanRef, HistoricalEvidencePage, IndexEpochAdvanceV1,
-        IndexEpochPosition, IndexRangePrefixBuilder, IndexRangeTarget, IrOpaquePersistedKeyV1,
-        PartitionScopeV1, ReadableCapabilityDigestInventory, ReadableIdempotencyDigestInventory,
+        IndexEpochPosition, IrOpaquePersistedKeyV1, PartitionScopeV1,
+        ReadableCapabilityDigestInventory, ReadableIdempotencyDigestInventory,
         RevocationReasonCodeV1, ScopedPartitionV1, StoredCapabilityRecordV1,
         StoredContractBundleV1, StoredEntityRecordV1, StoredIndexEntryV1, StoredIndexEntryV2,
         StoredProjectionApplyV1, StoredProjectionControlV1, StructuralEvidenceOpen,
@@ -3199,10 +3208,13 @@ contract MemoryMigration version 1 {
         )
         .expect("index entry");
 
-        let mut prefix_builder = IndexRangePrefixBuilder::new(index_id);
-        prefix_builder.push_u64(9).expect("prefix component");
+        let mut partition_builder = PartitionKeyBuilder::new(AggregateTypeId::first());
+        partition_builder.push_u64(42).expect("partition component");
         let epoch = IndexEpochAdvanceV1::new(
-            IndexRangeTarget::new(prefix_builder.finish()),
+            riffdb_storage_api::PartitionIndexTarget::new(
+                partition_builder.finish().expect("partition key"),
+                index_id,
+            ),
             binding.clone(),
             IndexEpochPosition::BeforeFirst,
         )
@@ -3269,6 +3281,7 @@ contract MemoryMigration version 1 {
                     match persisted.key() {
                         IrOpaquePersistedKeyV1::Entity { .. } => entity_keys += 1,
                         IrOpaquePersistedKeyV1::IndexRangePrefix(_) => epoch_keys += 1,
+                        IrOpaquePersistedKeyV1::PartitionIndex(_) => epoch_keys += 1,
                     }
                 }
                 HistoricalSemanticEvidence::IndexMigrationRow(row) => {

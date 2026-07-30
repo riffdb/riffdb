@@ -46,10 +46,15 @@ use crate::layout::{
     PROJECTION_APPLIED, PROJECTION_FRONTIER, PROJECTION_STATE, PROVENANCE, QUERY_MODULE_ACTIVE,
     QUERY_MODULES, SECONDARY_INDEXES, TABLE_NAMES,
 };
-use crate::store::{RedbDormantPorts, RedbStore, SharedRedb};
+use crate::store::{PRE_INDEX_GENERATION_REGISTRY_DIGEST, RedbDormantPorts, RedbStore, SharedRedb};
 
 static NEXT_OPEN_SESSION: AtomicU64 = AtomicU64::new(1);
 const STRUCTURAL_TABLE_COUNT: usize = 21;
+
+fn startup_registry_is_supported(digest: riffdb_types::SchemaHash) -> bool {
+    digest == riffdb_storage_api::proto_codec::current_record_registry_digest()
+        || digest == riffdb_types::SchemaHash::from_bytes(PRE_INDEX_GENERATION_REGISTRY_DIGEST)
+}
 
 fn exclusive_prefix_end(prefix: &[u8]) -> Option<Vec<u8>> {
     let mut end = prefix.to_vec();
@@ -317,7 +322,9 @@ impl CatalogIndexMigrationBackend for RedbStartupIndexMigrationPort {
                 substitute_before_apply: _,
         } = self;
         drop(lease);
-        Ok(RedbStore { shared })
+        let store = RedbStore { shared };
+        store.complete_partition_index_generation_migration()?;
+        Ok(store)
     }
 }
 
@@ -771,7 +778,7 @@ fn read_retained_metadata(
         META_RECORD_REGISTRY,
         codec::decode_record_registry_v2,
     )?;
-    if registry != riffdb_storage_api::proto_codec::current_record_registry_digest() {
+    if !startup_registry_is_supported(registry) {
         return Err(storage_error(StorageErrorKind::IncompatibleFormat));
     }
     let bootstrap = meta
@@ -1085,11 +1092,8 @@ fn inspect_meta_row(key: &str, value: &[u8], database_id: DatabaseId) -> Option<
     let valid = match key {
         META_FORMAT_VERSION => decoded(codec::decode_storage_format_version_v1(value))
             .is_ok_and(|version| version == riffdb_storage_api::StorageFormatVersion::V2),
-        META_RECORD_REGISTRY => {
-            decoded(codec::decode_record_registry_v2(value)).is_ok_and(|digest| {
-                digest == riffdb_storage_api::proto_codec::current_record_registry_digest()
-            })
-        }
+        META_RECORD_REGISTRY => decoded(codec::decode_record_registry_v2(value))
+            .is_ok_and(startup_registry_is_supported),
         META_DATABASE_ID => decoded(codec::decode_database_identity_v1(value))
             .is_ok_and(|identity| identity == database_id),
         META_APPLICATION_SEQUENCE => {
@@ -1258,7 +1262,15 @@ fn inspect_epoch_row(
     key: &[u8],
     value: &[u8],
 ) -> Result<Option<StructuralFinding>, StorageError> {
-    let Ok(key) = keys::decode_index_range_prefix_key(key) else {
+    if let Ok(record) = decoded(codec::decode_legacy_index_epoch_v1(value)) {
+        let Ok(key) = keys::decode_index_range_prefix_key(key) else {
+            return Ok(Some(authoritative(StructuralFindingCode::MalformedRecord)));
+        };
+        return Ok((record.target() != &key
+            || !binding_bundle_exists(transaction, record.schema_binding())?)
+        .then(|| authoritative(StructuralFindingCode::MissingCrossLink)));
+    }
+    let Ok(key) = keys::decode_partition_index_key(key) else {
         return Ok(Some(authoritative(StructuralFindingCode::MalformedRecord)));
     };
     let record = match decoded(codec::decode_index_epoch_v1(value)) {
@@ -1965,18 +1977,34 @@ fn scan_persisted_key_candidates(
     let epochs = transaction.open_table(INDEX_EPOCHS).map_err(table_error)?;
     for entry in epochs.iter().map_err(precommit_storage_error)? {
         let (key, value) = entry.map_err(precommit_storage_error)?;
-        let physical = keys::decode_index_range_prefix_key(key.value()).map_err(|_| corrupt())?;
-        let record = decoded(codec::decode_index_epoch_v1(value.value())).map_err(|_| corrupt())?;
-        if record.target() != &physical {
-            return Err(corrupt());
+        if let Ok(record) = decoded(codec::decode_legacy_index_epoch_v1(value.value())) {
+            let physical =
+                keys::decode_index_range_prefix_key(key.value()).map_err(|_| corrupt())?;
+            if record.target() != &physical {
+                return Err(corrupt());
+            }
+            consider_evidence(
+                selected,
+                after,
+                HistoricalSemanticEvidence::PersistedKey(
+                    HistoricalPersistedKeyEvidenceV1::from_legacy_index_epoch(&record),
+                ),
+            );
+        } else {
+            let physical = keys::decode_partition_index_key(key.value()).map_err(|_| corrupt())?;
+            let record =
+                decoded(codec::decode_index_epoch_v1(value.value())).map_err(|_| corrupt())?;
+            if record.target() != &physical {
+                return Err(corrupt());
+            }
+            consider_evidence(
+                selected,
+                after,
+                HistoricalSemanticEvidence::PersistedKey(
+                    HistoricalPersistedKeyEvidenceV1::from_index_epoch(&record),
+                ),
+            );
         }
-        consider_evidence(
-            selected,
-            after,
-            HistoricalSemanticEvidence::PersistedKey(
-                HistoricalPersistedKeyEvidenceV1::from_index_epoch(&record),
-            ),
-        );
     }
     Ok(())
 }
@@ -2086,9 +2114,14 @@ fn historical_order_key(evidence: &HistoricalSemanticEvidence) -> Vec<u8> {
                     push_bytes(&mut key, entity_key.as_bytes());
                 }
                 riffdb_storage_api::IrOpaquePersistedKeyV1::IndexRangePrefix(prefix) => {
-                    key.push(0x03);
+                    key.push(0x02);
                     key.extend_from_slice(&prefix.index_id().to_be_bytes());
                     push_bytes(&mut key, prefix.as_bytes());
+                }
+                riffdb_storage_api::IrOpaquePersistedKeyV1::PartitionIndex(target) => {
+                    key.push(0x03);
+                    key.extend_from_slice(&target.index_id().to_be_bytes());
+                    push_bytes(&mut key, target.partition_key().as_bytes());
                 }
             }
         }
@@ -2131,7 +2164,12 @@ fn historical_semantic_bytes(evidence: &HistoricalSemanticEvidence) -> Result<us
         HistoricalSemanticEvidence::PersistedKey(persisted) => {
             let key_bytes = match persisted.key() {
                 riffdb_storage_api::IrOpaquePersistedKeyV1::Entity { key, .. } => key.as_bytes(),
-                riffdb_storage_api::IrOpaquePersistedKeyV1::IndexRangePrefix(key) => key.as_bytes(),
+                riffdb_storage_api::IrOpaquePersistedKeyV1::IndexRangePrefix(prefix) => {
+                    prefix.as_bytes()
+                }
+                riffdb_storage_api::IrOpaquePersistedKeyV1::PartitionIndex(target) => {
+                    target.partition_key().as_bytes()
+                }
             };
             (1 + 4 + persisted.schema().lineage().as_bytes().len())
                 .checked_add(8 + 32 + 1 + 4 + 4)

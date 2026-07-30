@@ -10,6 +10,7 @@ use crate::{
 };
 
 const PROGRAM_MAGIC: &[u8] = b"RIFFDB-QUERY-ACCESS-PROGRAM\0";
+const INDEX_GENERATION_MODEL_V2: &[u8] = b"PARTITION-INDEX-GENERATION-V2\0";
 
 /// Direction of one complete ordered index walk.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -223,6 +224,7 @@ pub struct QueryAccessStep {
     dependencies: Vec<String>,
     entity_id: EntityTypeId,
     index_id: Option<IndexId>,
+    partition_key_schema: KeySchema,
     entity_key_schema: KeySchema,
     index_key_schema: Option<KeySchema>,
 }
@@ -342,6 +344,13 @@ impl QueryAccessStep {
         &self.entity_key_schema
     }
 
+    /// Compiler-proven aggregate partition-key schema for this access.
+    #[doc(hidden)]
+    #[must_use]
+    pub const fn internal_partition_key_schema(&self) -> &KeySchema {
+        &self.partition_key_schema
+    }
+
     /// Compiler-internal complete selected-index key schema.
     #[doc(hidden)]
     #[must_use]
@@ -373,6 +382,7 @@ impl QueryAccessStep {
         dependencies: Vec<String>,
         entity_id: EntityTypeId,
         index_id: Option<IndexId>,
+        partition_key_schema: KeySchema,
         entity_key_schema: KeySchema,
         index_key_schema: Option<KeySchema>,
     ) -> Option<Self> {
@@ -449,6 +459,7 @@ impl QueryAccessStep {
             dependencies,
             entity_id,
             index_id,
+            partition_key_schema,
             entity_key_schema,
             index_key_schema,
         })
@@ -729,6 +740,9 @@ fn encode_program(
     let mut out = Vec::new();
     out.extend_from_slice(PROGRAM_MAGIC);
     out.extend_from_slice(&QUERY_IR_VERSION_V1.to_be_bytes());
+    // Public cursor envelopes bind the plan hash. This reviewed marker makes
+    // pre-WP-375 prefix-epoch cursors fail closed across the format cut.
+    out.extend_from_slice(INDEX_GENERATION_MODEL_V2);
     write_text(&mut out, contract.lineage().as_str())?;
     out.extend_from_slice(&contract.version().get().to_be_bytes());
     out.extend_from_slice(contract.bundle_hash().as_bytes());

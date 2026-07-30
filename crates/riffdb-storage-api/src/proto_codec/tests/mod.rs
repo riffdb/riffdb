@@ -91,7 +91,6 @@ fn semantic_wire_vectors() -> Vec<(&'static str, CanonicalStoredEnvelopeV1)> {
     ));
 
     let atomic = sample::atomic_record_set();
-    let (_, index_epoch) = sample::index_records();
     vectors.push((
         "riffdb.storage.v1.StoredEntityRecordV1",
         assert_round_trip(
@@ -110,7 +109,11 @@ fn semantic_wire_vectors() -> Vec<(&'static str, CanonicalStoredEnvelopeV1)> {
     ));
     vectors.push((
         "riffdb.storage.v1.StoredIndexEpochV1",
-        assert_round_trip(index_epoch, encode_index_epoch_v1, decode_index_epoch_v1),
+        assert_round_trip(
+            sample::legacy_index_epoch(),
+            encode_legacy_index_epoch_v1_fixture,
+            decode_legacy_index_epoch_v1,
+        ),
     ));
     vectors.push((
         "riffdb.storage.v1.StoredPendingAdmissionV1",

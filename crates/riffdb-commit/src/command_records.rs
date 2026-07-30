@@ -778,13 +778,13 @@ mod tests {
 
     use riffdb_storage_api::{
         AffectedEpochCurrentState, AffectedIndexEpochTargets, CommandWriteSetPlanV1,
-        CurrentRangeObservation, DeclaredOutcome, EncodedWriteSetUpperBoundResultV1,
+        CurrentIndexGenerationObservation, DeclaredOutcome, EncodedWriteSetUpperBoundResultV1,
         EntityObservation, EntityPostImage, EvaluatedCommand, EvaluationBudget, EventIntent,
         ExecutablePlanRef, IdempotencyIdentity, IdempotencyKeyDigest, IndexEntryMutationV1,
-        IndexEpochAdvanceV1, IndexEpochPosition, IndexRangePrefixBuilder, IndexRangeTarget,
-        PreEvaluationCommitContext, ReadSnapshot, SnapshotRequest,
-        StoredAdmittedProvenanceClaimsV1, StoredIndexEntryV2, StoredPendingAdmissionV1,
-        command_write_set_upper_bound_v1, encode_atomic_command_record_set_v1,
+        IndexEpochAdvanceV1, IndexEpochPosition, PartitionIndexTarget, PreEvaluationCommitContext,
+        ReadSnapshot, SnapshotRequest, StoredAdmittedProvenanceClaimsV1, StoredIndexEntryV2,
+        StoredPendingAdmissionV1, command_write_set_upper_bound_v1,
+        encode_atomic_command_record_set_v1,
     };
     use riffdb_types::{
         ActorId, ActorKind, AdmittedActorContext, AggregateTypeId, CanonicalInputHash,
@@ -955,13 +955,13 @@ mod tests {
                 .expect("index entry");
                 let index_entries = vec![IndexEntryMutationV1::Put(entry)];
                 let affected_target =
-                    IndexRangeTarget::new(IndexRangePrefixBuilder::new(index_id).finish());
+                    PartitionIndexTarget::new(intent.pending().partition_key().clone(), index_id);
                 let affected_targets =
                     AffectedIndexEpochTargets::new(vec![affected_target.clone()])
                         .expect("affected targets");
                 let affected_current = AffectedEpochCurrentState::new(
                     &affected_targets,
-                    vec![CurrentRangeObservation::new(
+                    vec![CurrentIndexGenerationObservation::new(
                         affected_target.clone(),
                         IndexEpochPosition::BeforeFirst,
                     )],

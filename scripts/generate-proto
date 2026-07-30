@@ -62,6 +62,8 @@ artifacts=(
     fixtures/proto/durable-record-bounds.bin
     fixtures/proto/durable-index-v2-record-bound.bin
     fixtures/proto/durable-index-v2-schema-hash.bin
+    fixtures/proto/durable-index-generation-v2-record-bound.bin
+    fixtures/proto/durable-index-generation-v2-schema-hash.bin
     fixtures/proto/durable-event-reference-v2-record-bounds.bin
     fixtures/proto/durable-event-reference-v2-schema-hashes.bin
     fixtures/proto/durable-event-reference-v2-wire-vectors.txt

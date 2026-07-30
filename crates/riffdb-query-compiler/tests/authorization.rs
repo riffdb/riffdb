@@ -91,6 +91,30 @@ query Bad($organization_id: Organization.organization_id, $project_id: Project.p
 }
 
 #[test]
+fn index_plan_fails_closed_when_its_bounded_prefix_does_not_bind_the_partition() {
+    let contract = CONTRACT.replace(
+        "index by_project_status (organization_id, project_id, status, ticket_id)",
+        "index by_project_status (project_id, status, ticket_id)",
+    );
+    let bundle = compile_contract_source(&contract).expect("contract");
+    let catalog = SymbolicCatalog::from_bundle(&bundle).expect("catalog");
+    let source = include_str!("../../../queries/ticketdesk/list_tickets.riffq");
+    let diagnostics =
+        compile_query(&parse_query(source).expect("parse"), &catalog).expect_err("reject");
+    let diagnostic = &diagnostics.as_slice()[0];
+    assert_eq!(diagnostic.code(), PlannerDiagnosticCode::Unindexed);
+    assert!(
+        diagnostic.primary().end > diagnostic.primary().start,
+        "unsafe index selection must retain the predicate source span"
+    );
+    assert_eq!(diagnostic.symbol_path(), &["Ticket"]);
+    assert_eq!(
+        diagnostic.summary(),
+        "no declared index proves the requested bounded order"
+    );
+}
+
+#[test]
 fn encoded_result_cost_overflow_is_source_spanned_and_releases_no_plan() {
     let bundle = compile_contract_source(CONTRACT).expect("contract");
     let catalog = SymbolicCatalog::from_bundle(&bundle).expect("catalog");

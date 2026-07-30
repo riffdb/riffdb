@@ -15,8 +15,8 @@ use crate::{
     AffectedEpochCurrentState, AffectedIndexEpochTargets, ApplicationSequenceAllocator,
     AssignedCommandSequence, CommitIntent, DeclaredOutcome, DurableKeySchemaBindingV1,
     EntityMutation, EntityTarget, ExecutablePlanRef, ExpectedEntityState, IdempotencyIdentity,
-    IndexEpochPosition, IndexRangeTarget, MAX_COMMIT_CONFLICT_HASHES, MAX_ENTITY_MUTATIONS,
-    MAX_EVENT_INTENTS, MAX_INDEX_DELTAS, MAX_STAGED_WRITE_BYTES, MAX_VALIDATION_TARGETS,
+    IndexEpochPosition, MAX_COMMIT_CONFLICT_HASHES, MAX_ENTITY_MUTATIONS, MAX_EVENT_INTENTS,
+    MAX_INDEX_DELTAS, MAX_STAGED_WRITE_BYTES, MAX_VALIDATION_TARGETS, PartitionIndexTarget,
     StorageValueError, StoredAdmittedProvenanceClaimsV1, StoredReadDependenciesV1,
     StructurallyDecodedIndexRangePrefixV1, actor_semantic_bytes, canonical_codec_storage_error,
     canonical_record_bytes, framed_bytes,
@@ -250,13 +250,21 @@ impl IndexEntryMutationV1 {
 /// One persisted range-epoch post-image with durable schema ownership.
 #[derive(Clone, Eq, PartialEq)]
 pub struct StoredIndexEpochV1 {
+    target: PartitionIndexTarget,
+    schema_binding: DurableKeySchemaBindingV1,
+    epoch: IndexEpoch,
+}
+
+/// Decoded historical prefix-epoch row retained only for bounded V1 migration.
+#[derive(Clone, Eq, PartialEq)]
+pub struct LegacyStoredIndexEpochV1 {
     target: StructurallyDecodedIndexRangePrefixV1,
     schema_binding: DurableKeySchemaBindingV1,
     epoch: IndexEpoch,
 }
 
-impl StoredIndexEpochV1 {
-    /// Constructs a structurally decoded persisted epoch post-image.
+impl LegacyStoredIndexEpochV1 {
+    /// Constructs one already structurally checked historical row.
     #[must_use]
     pub const fn new(
         target: StructurallyDecodedIndexRangePrefixV1,
@@ -270,9 +278,49 @@ impl StoredIndexEpochV1 {
         }
     }
 
-    /// Borrows the exact persisted prefix bytes.
+    /// Borrows the historical prefix identity.
     #[must_use]
     pub const fn target(&self) -> &StructurallyDecodedIndexRangePrefixV1 {
+        &self.target
+    }
+
+    /// Borrows the exact historical schema binding.
+    #[must_use]
+    pub const fn schema_binding(&self) -> &DurableKeySchemaBindingV1 {
+        &self.schema_binding
+    }
+
+    /// Returns the historical epoch value.
+    #[must_use]
+    pub const fn epoch(&self) -> IndexEpoch {
+        self.epoch
+    }
+}
+
+impl fmt::Debug for LegacyStoredIndexEpochV1 {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("LegacyStoredIndexEpochV1([REDACTED])")
+    }
+}
+
+impl StoredIndexEpochV1 {
+    /// Constructs a structurally decoded persisted epoch post-image.
+    #[must_use]
+    pub const fn new(
+        target: PartitionIndexTarget,
+        schema_binding: DurableKeySchemaBindingV1,
+        epoch: IndexEpoch,
+    ) -> Self {
+        Self {
+            target,
+            schema_binding,
+            epoch,
+        }
+    }
+
+    /// Borrows the exact persisted prefix bytes.
+    #[must_use]
+    pub const fn target(&self) -> &PartitionIndexTarget {
         &self.target
     }
 
@@ -307,7 +355,7 @@ pub struct IndexEpochAdvanceV1 {
 impl IndexEpochAdvanceV1 {
     /// Advances `BeforeFirst` to one or a nonzero epoch without wrapping.
     pub fn new(
-        target: IndexRangeTarget,
+        target: PartitionIndexTarget,
         schema_binding: DurableKeySchemaBindingV1,
         prior: IndexEpochPosition,
     ) -> Result<Self, IndexEpochAdvanceError> {
@@ -319,17 +367,13 @@ impl IndexEpochAdvanceV1 {
         };
         Ok(Self {
             prior,
-            post_image: StoredIndexEpochV1::new(
-                StructurallyDecodedIndexRangePrefixV1::from_live(target.prefix()),
-                schema_binding,
-                next,
-            ),
+            post_image: StoredIndexEpochV1::new(target, schema_binding, next),
         })
     }
 
     /// Borrows the exact affected prefix bucket.
     #[must_use]
-    pub const fn target(&self) -> &StructurallyDecodedIndexRangePrefixV1 {
+    pub const fn target(&self) -> &PartitionIndexTarget {
         self.post_image.target()
     }
 
@@ -1983,9 +2027,7 @@ fn validate_affected_target_coverage(
             .as_slice()
             .iter()
             .zip(epochs)
-            .any(|(target, epoch)| {
-                StructurallyDecodedIndexRangePrefixV1::from_live(target.prefix()) != *epoch.target()
-            })
+            .any(|(target, epoch)| target != epoch.target())
     {
         return Err(StorageValueError::IdentityMismatch);
     }
@@ -2005,9 +2047,7 @@ fn validate_affected_epoch_coverage(
             .iter()
             .zip(epochs)
             .any(|(observation, epoch)| {
-                StructurallyDecodedIndexRangePrefixV1::from_live(observation.target().prefix())
-                    != *epoch.target()
-                    || observation.epoch() != epoch.prior()
+                observation.target() != epoch.target() || observation.epoch() != epoch.prior()
             })
     {
         return Err(StorageValueError::IdentityMismatch);

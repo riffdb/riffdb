@@ -22,8 +22,8 @@ use crate::{
     CommandWriteSetPlanV1, CommitIntent, CommittedEntityMutationV1, DeclaredOutcome,
     DurabilityMode, DurableKeySchemaBindingV1, EntityFieldVisibilityV1, EntityMutation,
     EntityObservation, EntityPostImage, EntityTarget, EvaluatedCommand, EvaluationBudget,
-    ExecutablePlanRef, ExpectedEntityState, IdempotencyKeyDigest, IndexRangePrefixBuilder,
-    OutboxDestinationIdV1, OutboxRetryMetadataV1, OutboxSafeErrorV1, PartitionScopeV1,
+    ExecutablePlanRef, ExpectedEntityState, IdempotencyKeyDigest, OutboxDestinationIdV1,
+    OutboxRetryMetadataV1, OutboxSafeErrorV1, PartitionIndexTarget, PartitionScopeV1,
     PreEvaluationCommitContext, ReadSnapshot, ScopedPartitionV1, SnapshotRequest,
     StoredAdmittedProvenanceClaimsV1, StoredCapabilityAdministrationV1, StoredCapabilityRecordV1,
     StoredCatalogAdministrationV1, StoredCommitRecordV1, StoredContractBundleV1,
@@ -341,11 +341,8 @@ pub(super) fn index_records() -> (StoredIndexEntryV2, StoredIndexEpochV1) {
         partition_key(),
     )
     .expect("index entry");
-    let mut prefix = IndexRangePrefixBuilder::new(index_id);
-    prefix.push_str("group-a").expect("prefix component");
-    let prefix = prefix.finish();
     let epoch = StoredIndexEpochV1::new(
-        crate::StructurallyDecodedIndexRangePrefixV1::from_live(&prefix),
+        PartitionIndexTarget::new(partition_key(), index_id),
         DurableKeySchemaBindingV1::from_plan(&plan),
         IndexEpoch::first(),
     );
@@ -360,6 +357,18 @@ pub(super) fn legacy_index_record() -> StoredIndexEntryV1 {
         current.covered_values().clone(),
     )
     .expect("legacy index entry")
+}
+
+pub(super) fn legacy_index_epoch() -> crate::LegacyStoredIndexEpochV1 {
+    let plan = plan();
+    let index_id = IndexId::first();
+    let mut prefix = crate::IndexRangePrefixBuilder::new(index_id);
+    prefix.push_str("group-a").expect("prefix component");
+    crate::LegacyStoredIndexEpochV1::new(
+        crate::StructurallyDecodedIndexRangePrefixV1::from_live(&prefix.finish()),
+        DurableKeySchemaBindingV1::from_plan(&plan),
+        IndexEpoch::first(),
+    )
 }
 
 pub(super) fn catalog_records() -> (
