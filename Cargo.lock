@@ -1643,6 +1643,7 @@ dependencies = [
  "riffdb-auth",
  "riffdb-client-rust",
  "riffdb-contract-compiler",
+ "riffdb-diagnostics",
  "riffdb-query-module",
  "riffdb-types",
  "serde",
@@ -1728,8 +1729,13 @@ version = "0.1.0"
 dependencies = [
  "riffdb-contract-compiler",
  "riffdb-contract-ir",
+ "riffdb-contract-syntax",
  "riffdb-errors",
+ "riffdb-query-compiler",
+ "riffdb-query-module",
+ "riffdb-riffql-syntax",
  "riffdb-types",
+ "serde_json",
 ]
 
 [[package]]

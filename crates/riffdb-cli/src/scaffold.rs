@@ -6,6 +6,9 @@ use std::io::{self, Write as _};
 use std::path::{Path, PathBuf};
 
 use riffdb_contract_compiler::compile_contract_source;
+use riffdb_diagnostics::{
+    AuthoringDiagnostics, AuthoringSourcePath, FileChangeDisposition, FilesystemDiagnosticClass,
+};
 use riffdb_query_module::{
     ApplicationLock, ApplicationManifest, ApplicationSourceManifest, GeneratedApplicationArtifact,
     GeneratedApplicationArtifactKind, GeneratedMcpCommand, GeneratedMcpTool, NamedQuerySource,
@@ -52,6 +55,7 @@ pub(crate) enum ScaffoldError {
     SourceLimit,
     GenerateMcp,
     UnsafePath,
+    Authoring(AuthoringDiagnostics),
     Io(io::Error),
 }
 
@@ -80,6 +84,13 @@ impl fmt::Display for ScaffoldError {
             Self::SourceLimit => "an application source exceeds the bounded compiler input limit",
             Self::GenerateMcp => "the generated MCP application surface is invalid",
             Self::UnsafePath => "an application path escapes the workspace or traverses a symlink",
+            Self::Authoring(diagnostics) => {
+                return formatter.write_str(
+                    &diagnostics
+                        .render_human()
+                        .unwrap_or_else(|_| "authoring diagnostic rendering failed\n".to_owned()),
+                );
+            }
             Self::Io(_) => "the application repository could not be written",
         })
     }
@@ -201,8 +212,8 @@ pub(crate) fn check_application_lock(
     let root = source_path.parent().unwrap_or_else(|| Path::new("."));
     let lock_path = workspace_lock_path(root, lock_path)?;
     let existing = read_bounded(&lock_path, 4 * 1_024 * 1_024)?;
-    let decoded =
-        ApplicationLock::decode_canonical(&existing).map_err(|_| ScaffoldError::ApplicationLock)?;
+    let decoded = ApplicationLock::decode_canonical(&existing)
+        .map_err(|error| lock_diagnostic(&lock_path, error.kind()))?;
     if decoded.canonical_bytes() != compiled.lock.canonical_bytes() {
         return Err(ScaffoldError::LockMismatch);
     }
@@ -220,8 +231,8 @@ fn generate_application_locked(source_path: &Path, lock_path: &Path) -> Result<(
     let root = source_path.parent().unwrap_or_else(|| Path::new("."));
     let lock_path = workspace_lock_path(root, Some(lock_path))?;
     let existing = read_bounded(&lock_path, 4 * 1_024 * 1_024)?;
-    let decoded =
-        ApplicationLock::decode_canonical(&existing).map_err(|_| ScaffoldError::ApplicationLock)?;
+    let decoded = ApplicationLock::decode_canonical(&existing)
+        .map_err(|error| lock_diagnostic(&lock_path, error.kind()))?;
     if decoded.canonical_bytes() != compiled.lock.canonical_bytes() {
         return Err(ScaffoldError::LockMismatch);
     }
@@ -238,11 +249,11 @@ fn compile_symbolic_application(
     let source_text =
         std::str::from_utf8(&source_bytes).map_err(|_| ScaffoldError::ApplicationSource)?;
     let source = ApplicationSourceManifest::parse(source_text)
-        .map_err(|_| ScaffoldError::ApplicationSource)?;
+        .map_err(|error| application_source_diagnostic(source_path, error.kind()))?;
     let root = source_path.parent().unwrap_or_else(|| Path::new("."));
     let contract_source = read_workspace_text(root, source.contract().source(), 1_048_576)?;
-    let contract =
-        compile_contract_source(&contract_source).map_err(|_| ScaffoldError::CompileContract)?;
+    let contract = compile_contract_source(&contract_source)
+        .map_err(|error| contract_diagnostic(source.contract().source(), &error))?;
     let mut modules = Vec::with_capacity(source.query_modules().len());
     for declared in source.query_modules() {
         let mut queries = Vec::with_capacity(declared.queries().len());
@@ -259,13 +270,20 @@ fn compile_symbolic_application(
             queries,
         )
         .map_err(|_| ScaffoldError::CompileQuery)?;
-        modules.push(
-            QueryModule::compile(candidate, &contract).map_err(|_| ScaffoldError::CompileQuery)?,
-        );
+        modules.push(QueryModule::compile(candidate, &contract).map_err(|error| {
+            let path = error.query_name().and_then(|name| {
+                declared
+                    .queries()
+                    .iter()
+                    .find(|query| query.name() == name)
+                    .map(|query| query.source())
+            });
+            query_diagnostic(path.unwrap_or("riffdb/queries"), &error)
+        })?);
     }
     let exact = source
         .exact_manifest(&contract, &modules)
-        .map_err(|_| ScaffoldError::IdentityMismatch)?;
+        .map_err(|error| application_source_diagnostic(source_path, error.kind()))?;
     let [module] = modules.as_slice() else {
         return Err(ScaffoldError::Manifest);
     };
@@ -304,11 +322,11 @@ fn compile_symbolic_application(
                 GeneratedApplicationArtifactKind::Mcp
             };
             GeneratedApplicationArtifact::new(kind, path.clone(), bytes)
-                .map_err(|_| ScaffoldError::ApplicationLock)
+                .map_err(|error| lock_diagnostic(Path::new(DEFAULT_LOCK_PATH), error.kind()))
         })
         .collect::<Result<Vec<_>, _>>()?;
     let lock = ApplicationLock::compile(&source, &exact, &contract, &modules, &artifacts)
-        .map_err(|_| ScaffoldError::ApplicationLock)?;
+        .map_err(|error| lock_diagnostic(Path::new(DEFAULT_LOCK_PATH), error.kind()))?;
     Ok(CompiledSymbolicApplication { lock, outputs })
 }
 
@@ -321,10 +339,73 @@ impl std::error::Error for ScaffoldError {
     }
 }
 
+impl ScaffoldError {
+    pub(crate) fn diagnostics(&self) -> Option<&AuthoringDiagnostics> {
+        match self {
+            Self::Authoring(diagnostics) => Some(diagnostics),
+            _ => None,
+        }
+    }
+}
+
 impl From<io::Error> for ScaffoldError {
     fn from(error: io::Error) -> Self {
         Self::Io(error)
     }
+}
+
+fn application_source_diagnostic(
+    path: &Path,
+    kind: riffdb_query_module::ApplicationSourceErrorKind,
+) -> ScaffoldError {
+    diagnostic_path(path)
+        .and_then(|path| AuthoringDiagnostics::from_application_source(path, kind).ok())
+        .map_or(ScaffoldError::ApplicationSource, ScaffoldError::Authoring)
+}
+
+fn lock_diagnostic(
+    path: &Path,
+    kind: riffdb_query_module::ApplicationLockErrorKind,
+) -> ScaffoldError {
+    diagnostic_path(path)
+        .and_then(|path| AuthoringDiagnostics::from_lock(path, kind).ok())
+        .map_or(ScaffoldError::ApplicationLock, ScaffoldError::Authoring)
+}
+
+fn contract_diagnostic(
+    path: &str,
+    error: &riffdb_contract_compiler::CompilationError,
+) -> ScaffoldError {
+    AuthoringSourcePath::new(path)
+        .ok()
+        .and_then(|path| AuthoringDiagnostics::from_contract(path, error).ok())
+        .map_or(ScaffoldError::CompileContract, ScaffoldError::Authoring)
+}
+
+fn query_diagnostic(path: &str, error: &riffdb_query_module::QueryModuleError) -> ScaffoldError {
+    AuthoringSourcePath::new(path)
+        .ok()
+        .and_then(|path| AuthoringDiagnostics::from_query_module(path, error).ok())
+        .map_or(ScaffoldError::CompileQuery, ScaffoldError::Authoring)
+}
+
+fn filesystem_diagnostic(
+    path: &Path,
+    class: FilesystemDiagnosticClass,
+    disposition: FileChangeDisposition,
+) -> ScaffoldError {
+    diagnostic_path(path)
+        .and_then(|path| AuthoringDiagnostics::filesystem(path, class, disposition).ok())
+        .map_or(ScaffoldError::UnsafePath, ScaffoldError::Authoring)
+}
+
+fn diagnostic_path(path: &Path) -> Option<AuthoringSourcePath> {
+    let relative = if path.is_absolute() {
+        path.file_name()?.to_str()?
+    } else {
+        path.to_str()?
+    };
+    AuthoringSourcePath::new(relative).ok()
 }
 
 pub(crate) fn create_application(
@@ -696,7 +777,11 @@ fn write_file(root: &Path, relative: &str, bytes: &[u8]) -> Result<(), ScaffoldE
 
 fn atomic_write_workspace(root: &Path, relative: &str, bytes: &[u8]) -> Result<(), ScaffoldError> {
     if !valid_relative_path(relative) {
-        return Err(ScaffoldError::UnsafePath);
+        return Err(filesystem_diagnostic(
+            Path::new(relative),
+            FilesystemDiagnosticClass::EscapesWorkspace,
+            FileChangeDisposition::LockNotPublished,
+        ));
     }
     let root = fs::canonicalize(root)?;
     let path = root.join(relative);
@@ -708,7 +793,11 @@ fn atomic_write_absolute(path: &Path, bytes: &[u8]) -> Result<(), ScaffoldError>
     let parent = path.parent().ok_or(ScaffoldError::UnsafePath)?;
     fs::create_dir_all(parent)?;
     if fs::symlink_metadata(path).is_ok_and(|metadata| metadata.file_type().is_symlink()) {
-        return Err(ScaffoldError::UnsafePath);
+        return Err(filesystem_diagnostic(
+            path,
+            FilesystemDiagnosticClass::Symlink,
+            FileChangeDisposition::LockNotPublished,
+        ));
     }
     let name = path
         .file_name()
@@ -756,11 +845,19 @@ fn atomic_write_absolute(path: &Path, bytes: &[u8]) -> Result<(), ScaffoldError>
 fn workspace_lock_path(root: &Path, lock_path: Option<&Path>) -> Result<PathBuf, ScaffoldError> {
     let lock_path = lock_path.unwrap_or_else(|| Path::new(DEFAULT_LOCK_PATH));
     if lock_path.is_absolute() {
-        return Err(ScaffoldError::UnsafePath);
+        return Err(filesystem_diagnostic(
+            lock_path,
+            FilesystemDiagnosticClass::EscapesWorkspace,
+            FileChangeDisposition::NoFilesChanged,
+        ));
     }
     let relative = lock_path.to_str().ok_or(ScaffoldError::UnsafePath)?;
     if !valid_relative_path(relative) {
-        return Err(ScaffoldError::UnsafePath);
+        return Err(filesystem_diagnostic(
+            lock_path,
+            FilesystemDiagnosticClass::EscapesWorkspace,
+            FileChangeDisposition::NoFilesChanged,
+        ));
     }
     let canonical_root = fs::canonicalize(root)?;
     let path = canonical_root.join(lock_path);
@@ -774,12 +871,20 @@ fn read_workspace_file(
     maximum: usize,
 ) -> Result<Vec<u8>, ScaffoldError> {
     if !valid_relative_path(relative) {
-        return Err(ScaffoldError::UnsafePath);
+        return Err(filesystem_diagnostic(
+            Path::new(relative),
+            FilesystemDiagnosticClass::EscapesWorkspace,
+            FileChangeDisposition::NoFilesChanged,
+        ));
     }
     let root = fs::canonicalize(root)?;
     let path = fs::canonicalize(root.join(relative))?;
     if !path.starts_with(&root) {
-        return Err(ScaffoldError::UnsafePath);
+        return Err(filesystem_diagnostic(
+            Path::new(relative),
+            FilesystemDiagnosticClass::EscapesWorkspace,
+            FileChangeDisposition::NoFilesChanged,
+        ));
     }
     read_bounded(&path, maximum)
 }
@@ -803,9 +908,19 @@ fn ensure_safe_parent(root: &Path, path: &Path) -> Result<(), ScaffoldError> {
         current.push(component);
         match fs::symlink_metadata(&current) {
             Ok(metadata) if metadata.file_type().is_symlink() => {
-                return Err(ScaffoldError::UnsafePath);
+                return Err(filesystem_diagnostic(
+                    path,
+                    FilesystemDiagnosticClass::Symlink,
+                    FileChangeDisposition::LockNotPublished,
+                ));
             }
-            Ok(metadata) if !metadata.is_dir() => return Err(ScaffoldError::UnsafePath),
+            Ok(metadata) if !metadata.is_dir() => {
+                return Err(filesystem_diagnostic(
+                    path,
+                    FilesystemDiagnosticClass::NotRegular,
+                    FileChangeDisposition::LockNotPublished,
+                ));
+            }
             Ok(_) => {}
             Err(error) if error.kind() == io::ErrorKind::NotFound => {}
             Err(error) => return Err(ScaffoldError::Io(error)),
@@ -954,7 +1069,8 @@ mod tests {
             generate_application(&first.join("riffdb.application.json"), true, None),
             Err(ScaffoldError::CompileQuery
                 | ScaffoldError::IdentityMismatch
-                | ScaffoldError::LockMismatch)
+                | ScaffoldError::LockMismatch
+                | ScaffoldError::Authoring(_))
         ));
         assert!(create_application("order-desk", ScaffoldLanguage::Rust, &first).is_err());
         fs::remove_dir_all(base).expect("cleanup");
@@ -990,6 +1106,48 @@ mod tests {
         fs::remove_dir_all(base).expect("cleanup");
     }
 
+    #[test]
+    fn application_check_preserves_contract_diagnostic_code_path_and_span() {
+        let base = std::env::temp_dir().join(format!(
+            "riffdb-diagnostic-test-{}-{}",
+            std::process::id(),
+            "contract"
+        ));
+        if base.exists() {
+            fs::remove_dir_all(&base).expect("remove prior test directory");
+        }
+        create_application("safe-app", ScaffoldLanguage::Rust, &base).expect("scaffold");
+        fs::write(
+            base.join("riffdb/contract.riff"),
+            b"contract SafeApp version 1 { SECRET_VALUE }\n",
+        )
+        .expect("invalid contract");
+        let error = check_application(&base.join("riffdb.application.json"))
+            .expect_err("compile must reject");
+        let diagnostics = error.diagnostics().expect("structured diagnostics");
+        let first = &diagnostics.as_slice()[0];
+
+        assert_eq!(first.stage().as_str(), "contract_syntax");
+        assert_eq!(first.path().as_str(), "riffdb/contract.riff");
+        assert!(first.span().is_some());
+        let json = diagnostics.render_json().expect("JSON");
+        assert_eq!(
+            json,
+            include_str!(
+                "../../../fixtures/application-diagnostics/contract-unexpected-token-v1.json"
+            )
+        );
+        assert_eq!(
+            diagnostics.render_human().expect("human"),
+            include_str!(
+                "../../../fixtures/application-diagnostics/contract-unexpected-token-v1.txt"
+            )
+        );
+        assert!(!json.contains("SECRET_VALUE"));
+        assert!(!json.contains("contract SafeApp"));
+        fs::remove_dir_all(base).expect("cleanup");
+    }
+
     #[cfg(unix)]
     #[test]
     fn locked_generation_rejects_symlink_output_parents() {
@@ -1017,7 +1175,7 @@ mod tests {
 
         assert!(matches!(
             write_application_lock(&base.join("riffdb.application.json"), None),
-            Err(ScaffoldError::UnsafePath)
+            Err(ScaffoldError::Authoring(_))
         ));
         assert!(
             fs::read_dir(&outside)

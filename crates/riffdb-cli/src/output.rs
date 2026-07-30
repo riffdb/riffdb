@@ -5,6 +5,7 @@ use riffdb_client_rust::{
     ApplicationError, ClientError, DetailsFreeStatus, OfflineMaintenanceOperationId, PublicError,
     PublicErrorDetails, RecoveryAction, ValidationPathSegment, v1,
 };
+use riffdb_diagnostics::AuthoringDiagnostics;
 use serde::de::{MapAccess, SeqAccess, Visitor};
 use serde::ser::{Error as _, SerializeMap, SerializeSeq};
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
@@ -124,6 +125,26 @@ pub(crate) fn local_error(
     message: &'static str,
 ) -> Terminal {
     error_with_exit(command, &LocalError { code, message }, code, message, 2)
+}
+
+pub(crate) fn authoring_error(
+    command: CommandIdentity,
+    diagnostics: &AuthoringDiagnostics,
+) -> Terminal {
+    let json = diagnostics
+        .render_json()
+        .map(String::into_bytes)
+        .map_err(|_| RenderFailure::Failed);
+    let human = diagnostics
+        .render_human()
+        .map_err(|_| RenderFailure::Failed);
+    Terminal {
+        command,
+        json,
+        human,
+        failed: true,
+        exit: 2,
+    }
 }
 
 pub(crate) fn local_error_with<T: Serialize>(
