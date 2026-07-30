@@ -58,6 +58,7 @@ pub enum GetTicketResult {
     NotFound(Box<GetTicketNotFound>),
 }
 
+pub const GET_TICKET_QUERY_PLAN_HASH: [u8; 32] = [0x0d, 0x34, 0xef, 0xc4, 0x7f, 0x23, 0xf6, 0xc2, 0x92, 0x58, 0xd1, 0x97, 0x9d, 0xb4, 0xb1, 0x88, 0xa9, 0x07, 0x8f, 0xdf, 0xee, 0xe4, 0x4a, 0x85, 0x2b, 0x1e, 0x34, 0x3f, 0x0f, 0x3b, 0x3a, 0x17];
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct GetTicketQuery(pub GetTicketParams);
 impl GeneratedQuery for GetTicketQuery {
@@ -77,7 +78,7 @@ impl GeneratedQuery for GetTicketQuery {
             Some(QUERY_MODULE_HASH),
             parameters,
             None,
-        )?.with_options(options)
+        )?.expect_plan_hash(GET_TICKET_QUERY_PLAN_HASH).with_options(options)
     }
 
     fn decode_result(mut response: NamedQueryResult) -> Result<Self::Output, ApplicationClientError> {
@@ -142,6 +143,7 @@ pub enum GetUserResult {
     NotFound(Box<GetUserNotFound>),
 }
 
+pub const GET_USER_QUERY_PLAN_HASH: [u8; 32] = [0x11, 0xb1, 0xfb, 0xab, 0x34, 0x6d, 0x17, 0xa6, 0xbe, 0x1d, 0x48, 0xfa, 0xe6, 0x12, 0x76, 0xf5, 0x63, 0xaf, 0x4f, 0xbe, 0xbf, 0x04, 0x6c, 0xd0, 0x8f, 0xc6, 0xe1, 0xe2, 0xad, 0xdc, 0x99, 0x3a];
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct GetUserQuery(pub GetUserParams);
 impl GeneratedQuery for GetUserQuery {
@@ -161,7 +163,7 @@ impl GeneratedQuery for GetUserQuery {
             Some(QUERY_MODULE_HASH),
             parameters,
             None,
-        )?.with_options(options)
+        )?.expect_plan_hash(GET_USER_QUERY_PLAN_HASH).with_options(options)
     }
 
     fn decode_result(mut response: NamedQueryResult) -> Result<Self::Output, ApplicationClientError> {
@@ -221,6 +223,7 @@ pub enum ListCommentsResult {
     Found(Box<ListCommentsFound>),
 }
 
+pub const LIST_COMMENTS_QUERY_PLAN_HASH: [u8; 32] = [0xef, 0x95, 0x10, 0xc3, 0x1c, 0x5f, 0x6d, 0xd8, 0x4a, 0x79, 0xb5, 0x2e, 0x75, 0xf6, 0x97, 0x45, 0x04, 0x1e, 0xcb, 0x24, 0x01, 0x12, 0x30, 0xe8, 0x60, 0xd3, 0xba, 0xc3, 0xad, 0xa1, 0x10, 0xff];
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ListCommentsQuery(pub ListCommentsParams);
 impl GeneratedQuery for ListCommentsQuery {
@@ -242,7 +245,7 @@ impl GeneratedQuery for ListCommentsQuery {
             Some(QUERY_MODULE_HASH),
             parameters,
             None,
-        )?.with_options(options)
+        )?.expect_plan_hash(LIST_COMMENTS_QUERY_PLAN_HASH).with_options(options)
     }
 
     fn decode_result(mut response: NamedQueryResult) -> Result<Self::Output, ApplicationClientError> {
@@ -301,6 +304,7 @@ pub enum ListTicketsResult {
     Found(Box<ListTicketsFound>),
 }
 
+pub const LIST_TICKETS_QUERY_PLAN_HASH: [u8; 32] = [0xdf, 0xde, 0x75, 0x70, 0x07, 0x3b, 0x1e, 0xa5, 0x08, 0x19, 0x46, 0x3a, 0xa3, 0xe7, 0x13, 0x27, 0xa6, 0x69, 0x4a, 0x61, 0x1f, 0x1a, 0x19, 0x4a, 0x90, 0x0e, 0x42, 0x61, 0x26, 0xeb, 0x25, 0xb1];
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ListTicketsQuery(pub ListTicketsParams);
 impl GeneratedQuery for ListTicketsQuery {
@@ -323,7 +327,7 @@ impl GeneratedQuery for ListTicketsQuery {
             Some(QUERY_MODULE_HASH),
             parameters,
             None,
-        )?.with_options(options)
+        )?.expect_plan_hash(LIST_TICKETS_QUERY_PLAN_HASH).with_options(options)
     }
 
     fn decode_result(mut response: NamedQueryResult) -> Result<Self::Output, ApplicationClientError> {
@@ -385,6 +389,7 @@ pub enum ListTicketsByAssigneeResult {
     Found(Box<ListTicketsByAssigneeFound>),
 }
 
+pub const LIST_TICKETS_BY_ASSIGNEE_QUERY_PLAN_HASH: [u8; 32] = [0x16, 0x0c, 0x1f, 0xd2, 0xa4, 0xed, 0xc8, 0xd3, 0xeb, 0xab, 0x17, 0xd4, 0x61, 0xb9, 0xd8, 0x60, 0x6e, 0xa3, 0x82, 0xf4, 0x98, 0x8b, 0xd1, 0xb1, 0xc9, 0x25, 0x68, 0x6c, 0x48, 0x1b, 0x70, 0x57];
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ListTicketsByAssigneeQuery(pub ListTicketsByAssigneeParams);
 impl GeneratedQuery for ListTicketsByAssigneeQuery {
@@ -407,7 +412,7 @@ impl GeneratedQuery for ListTicketsByAssigneeQuery {
             Some(QUERY_MODULE_HASH),
             parameters,
             None,
-        )?.with_options(options)
+        )?.expect_plan_hash(LIST_TICKETS_BY_ASSIGNEE_QUERY_PLAN_HASH).with_options(options)
     }
 
     fn decode_result(mut response: NamedQueryResult) -> Result<Self::Output, ApplicationClientError> {
@@ -462,6 +467,7 @@ pub enum ProjectMembersResult {
     Found(Box<ProjectMembersFound>),
 }
 
+pub const PROJECT_MEMBERS_QUERY_PLAN_HASH: [u8; 32] = [0x3c, 0x80, 0x68, 0x33, 0x3a, 0xd5, 0x41, 0xa9, 0xa3, 0xba, 0x60, 0xe6, 0x93, 0x2b, 0xad, 0x77, 0xb3, 0x2c, 0xf5, 0x8a, 0x8d, 0xa1, 0x43, 0x35, 0x0f, 0x08, 0x6a, 0x86, 0x5b, 0x85, 0x96, 0x58];
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ProjectMembersQuery(pub ProjectMembersParams);
 impl GeneratedQuery for ProjectMembersQuery {
@@ -482,7 +488,7 @@ impl GeneratedQuery for ProjectMembersQuery {
             Some(QUERY_MODULE_HASH),
             parameters,
             None,
-        )?.with_options(options)
+        )?.expect_plan_hash(PROJECT_MEMBERS_QUERY_PLAN_HASH).with_options(options)
     }
 
     fn decode_result(mut response: NamedQueryResult) -> Result<Self::Output, ApplicationClientError> {
@@ -546,6 +552,7 @@ pub enum ProjectSummaryResult {
     NotFound(Box<ProjectSummaryNotFound>),
 }
 
+pub const PROJECT_SUMMARY_QUERY_PLAN_HASH: [u8; 32] = [0x2d, 0x36, 0x66, 0xfa, 0x63, 0x4b, 0xad, 0xb2, 0xad, 0x71, 0x35, 0x09, 0x0d, 0x68, 0xaf, 0xa8, 0x64, 0x12, 0x8b, 0x7d, 0xf4, 0x0f, 0x4c, 0xef, 0xc7, 0x06, 0x72, 0xfe, 0x50, 0xdf, 0x44, 0xb3];
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ProjectSummaryQuery(pub ProjectSummaryParams);
 impl GeneratedQuery for ProjectSummaryQuery {
@@ -566,7 +573,7 @@ impl GeneratedQuery for ProjectSummaryQuery {
             Some(QUERY_MODULE_HASH),
             parameters,
             None,
-        )?.with_options(options)
+        )?.expect_plan_hash(PROJECT_SUMMARY_QUERY_PLAN_HASH).with_options(options)
     }
 
     fn decode_result(mut response: NamedQueryResult) -> Result<Self::Output, ApplicationClientError> {
@@ -692,6 +699,7 @@ pub enum TicketPageResult {
     IntegrityFailure(Box<TicketPageIntegrityFailure>),
 }
 
+pub const TICKET_PAGE_QUERY_PLAN_HASH: [u8; 32] = [0x98, 0x62, 0x79, 0xeb, 0x3c, 0x0f, 0xb9, 0x67, 0x94, 0x4b, 0x77, 0xce, 0x17, 0x8b, 0x92, 0x91, 0x01, 0x8d, 0xd4, 0xf0, 0x54, 0xb5, 0x7a, 0x64, 0xcc, 0xb2, 0x25, 0x7b, 0x18, 0x1a, 0x65, 0x10];
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct TicketPageQuery(pub TicketPageParams);
 impl GeneratedQuery for TicketPageQuery {
@@ -712,7 +720,7 @@ impl GeneratedQuery for TicketPageQuery {
             Some(QUERY_MODULE_HASH),
             parameters,
             None,
-        )?.with_options(options)
+        )?.expect_plan_hash(TICKET_PAGE_QUERY_PLAN_HASH).with_options(options)
     }
 
     fn decode_result(mut response: NamedQueryResult) -> Result<Self::Output, ApplicationClientError> {

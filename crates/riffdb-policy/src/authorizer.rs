@@ -433,17 +433,22 @@ fn evaluate(
     }
     if let Some(target) = request.application_query_target() {
         let rows = u64::from(current.grant.max_scan_rows().get());
+        let row_work = rows.saturating_mul(riffdb_types::MAX_APPLICATION_QUERY_STEPS);
+        let projected_values =
+            row_work.saturating_mul(riffdb_types::MAX_CAPABILITY_FIELD_VISIBILITY as u64);
         let budget = riffdb_types::QueryCostVectorV1::new(
             riffdb_types::MAX_APPLICATION_QUERY_STEPS,
             rows,
-            rows,
-            rows,
-            rows,
-            rows.saturating_mul(riffdb_types::MAX_CAPABILITY_FIELD_VISIBILITY as u64),
+            row_work,
+            row_work,
+            row_work,
+            projected_values,
             riffdb_types::MAX_APPLICATION_QUERY_RESULT_BYTES,
         )
         .expect("application-query budget constants are valid");
-        if !budget.covers(target.cost()) {
+        if !budget.covers(target.cost())
+            || !application_query_accesses_visible(&current.grant, target)
+        {
             return Err(PolicyCode::MissingPermission);
         }
     }
@@ -493,6 +498,28 @@ fn evaluate(
         request.audit_obligation(),
         request.output_classification(),
     ))
+}
+
+fn application_query_accesses_visible(
+    grant: &CapabilityGrantV1,
+    target: &crate::ApplicationQueryTarget,
+) -> bool {
+    target.accesses().iter().all(|access| {
+        if access.maximum_rows() > grant.max_scan_rows() {
+            return false;
+        }
+        if access.non_key_fields().is_empty() {
+            return true;
+        }
+        grant.field_visibility().iter().any(|visibility| {
+            visibility.lineage() == target.lineage()
+                && visibility.entity_type() == access.entity_type_id()
+                && access
+                    .non_key_fields()
+                    .iter()
+                    .all(|field| visibility.fields().binary_search(field).is_ok())
+        })
+    })
 }
 
 fn validate_current(
@@ -689,7 +716,14 @@ mod tests {
             TenantScope::Global,
             PartitionScopeV1::All,
             vec![permission],
-            Vec::new(),
+            vec![
+                EntityFieldVisibilityV1::new(
+                    lineage(),
+                    EntityTypeId::first(),
+                    vec![FieldId::first()],
+                )
+                .expect("field visibility"),
+            ],
             100,
             Vec::new(),
         ));
@@ -812,7 +846,14 @@ mod tests {
                 module_hash,
                 query_name.clone(),
             )],
-            Vec::new(),
+            vec![
+                EntityFieldVisibilityV1::new(
+                    lineage(),
+                    EntityTypeId::first(),
+                    vec![FieldId::first()],
+                )
+                .expect("field visibility"),
+            ],
             10,
             Vec::new(),
         ));
@@ -874,6 +915,102 @@ mod tests {
                 &environment,
                 timestamp(15),
                 &amplified,
+            ),
+            Err(PolicyCode::MissingPermission)
+        );
+    }
+
+    #[test]
+    fn application_query_budget_distinguishes_scans_from_bounded_hydration() {
+        let module_hash = QueryModuleHash::from_bytes([8; 32]);
+        let query_name = QueryOperationName::new("InventoryDashboard").expect("valid name");
+        let visibility =
+            EntityFieldVisibilityV1::new(lineage(), EntityTypeId::first(), vec![FieldId::first()])
+                .expect("field visibility");
+        let (principal, current, environment) = facts(grant(
+            TenantScope::Global,
+            PartitionScopeV1::All,
+            vec![CapabilityPermissionV1::ExecuteNamedQuery(
+                lineage(),
+                module_hash,
+                query_name.clone(),
+            )],
+            vec![visibility],
+            500,
+            Vec::new(),
+        ));
+        let access = || {
+            ApplicationQueryAccessRequirement::new(
+                EntityTypeId::first(),
+                Some(IndexId::first()),
+                vec![FieldId::first()],
+                NonZeroU16::new(500).expect("nonzero"),
+            )
+            .expect("valid access")
+        };
+        let target = ApplicationQueryTarget::new(
+            lineage(),
+            ContractVersion::new(1).expect("nonzero version"),
+            ContractBundleHash::from_bytes([6; 32]),
+            QueryPlanHash::from_bytes([7; 32]),
+            ServiceIngressKindV1::InProcessTestComparison,
+            OperationTenantScope::global_only(),
+            partition(),
+            vec![access(), access()],
+            riffdb_types::QueryCostVectorV1::new(2, 500, 1_000, 500, 1_000, 2_000, 1_024)
+                .expect("valid cost"),
+        )
+        .expect("valid target");
+        let request =
+            OperationRequest::execute_named_query(lineage(), module_hash, query_name, target)
+                .expect("matching exact target");
+
+        assert!(
+            evaluate(
+                &principal,
+                &current,
+                current.database_id,
+                &environment,
+                timestamp(15),
+                &request,
+            )
+            .is_ok(),
+            "a scan cap is not a total bounded hydration cap"
+        );
+    }
+
+    #[test]
+    fn application_query_requires_every_compiler_derived_visible_field() {
+        let module_hash = QueryModuleHash::from_bytes([8; 32]);
+        let query_name = QueryOperationName::new("TicketPage").expect("valid name");
+        let (principal, current, environment) = facts(grant(
+            TenantScope::Global,
+            PartitionScopeV1::All,
+            vec![CapabilityPermissionV1::ExecuteNamedQuery(
+                lineage(),
+                module_hash,
+                query_name.clone(),
+            )],
+            Vec::new(),
+            10,
+            Vec::new(),
+        ));
+        let request = OperationRequest::execute_named_query(
+            lineage(),
+            module_hash,
+            query_name,
+            application_query_target(),
+        )
+        .expect("matching exact target");
+
+        assert_eq!(
+            evaluate(
+                &principal,
+                &current,
+                current.database_id,
+                &environment,
+                timestamp(15),
+                &request,
             ),
             Err(PolicyCode::MissingPermission)
         );

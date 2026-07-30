@@ -76,6 +76,12 @@ compile to the exact reviewed lock. A stale, substituted, interrupted, or
 partially generated application therefore fails before role binding,
 authorization, deployment, or application execution.
 
+Generated query calls pin the compiler-owned plan hash as well as the contract
+and module. Successful Rust and TypeScript results expose the exact
+server-returned contract, module, query, and plan identity after verifying the
+whole tuple. A missing or different identity rejects the response; application
+code never infers an identity from its request or lock.
+
 Complete public references:
 
 - [contract language and bounds](../contracts/README.md)

@@ -29,3 +29,10 @@ references. It has no credential and no runtime operation. These are
 product-owned public packages and tools; using them is not handwritten
 transport glue. Agents must not inspect or receive any other RiffDB source
 tree.
+
+An evaluator records ordinary value-free chronology with
+`evaluation/event-schema.json`. A `first_write` or `first_page_read` event is
+not a successful milestone by itself: it must have a matching record under
+`evaluation/qualified-event-schema.json` backed by the generated application
+lock and the exact identity returned by the runtime. Do not record credentials,
+entity values, command inputs, query results, or fixture contents.

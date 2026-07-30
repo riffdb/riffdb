@@ -1,8 +1,8 @@
 {
   "application": "agent-blog",
-  "application_manifest_hash": "6bc257937a0bb51c09c5147d6ff22b1c36852dd0edc2f690a788a7e44de85e97",
+  "application_manifest_hash": "e81bd4f6302040fb3d916f62430a616598e97fa9f19e3f9780023bf5eba4b964",
   "contract": {
-    "bundle_hash": "93f0dd8c7cd8423db28dca15ac8c6eb57e5a0447268586a7bb17cbbb5aa8029a",
+    "bundle_hash": "d7e7a05088cad945357e38f37af00d7a92d4d0d7cd54e9ac8615d44d965801c2",
     "lineage": "AgentBlog",
     "version": 1
   },
@@ -54,9 +54,9 @@
     }
   ],
   "query_module_hashes": [
-    "37c745a028f59389b6d7e440ccec47932792509c5840c25410f7ed72daa1c7ec"
+    "633ec7748d84bce389480ae5e1b2437880d36d4e00a3bbf24de250472570f019"
   ],
   "role": "BlogApplication",
-  "role_hash": "4d859c20d25ec04c02e8cd6359e9fb46f1814dbad344fe1a3fb5af72673656de",
+  "role_hash": "55d622bb77fac5dac8cc33d3a2a839cc12e07074ad870c6b56058c4578d6cf17",
   "tenant_scope": "global"
 }

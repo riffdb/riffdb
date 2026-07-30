@@ -50,6 +50,13 @@ reports whether staging was discarded, the previous generation remains
 accepted, or generated files may be partial while the exact lock was not
 published. No diagnostic turns partial output into an accepted application.
 
+Source, lock, or generated-artifact drift is always the structured
+`RDB-AL008` diagnostic with `identity_drift` and `write_lock`. This includes an
+interrupted or substituted generated file; the CLI, JSON output, and builder
+MCP never replace it with unstructured process text. Review the symbolic diff
+before writing a new lock. If source was not intentionally changed, restore it
+and regenerate from the existing exact lock instead.
+
 Use JSON when an agent or editor needs deterministic fields:
 
 ```bash

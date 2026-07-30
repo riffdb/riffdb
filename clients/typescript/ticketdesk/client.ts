@@ -109,14 +109,15 @@ export type ApplicationValueSchema =
   | { readonly kind: "optional"; readonly value: ApplicationValueSchema }
   | { readonly kind: "list"; readonly value: ApplicationValueSchema; readonly maximum?: number }
   | { readonly kind: "record"; readonly fields: ReadonlyArray<{ readonly name: string; readonly schema: ApplicationValueSchema; readonly wireId?: number }> };
-export interface NamedQueryRequest<P, R> { readonly contractLineage: typeof CONTRACT_LINEAGE; readonly contractVersion: typeof CONTRACT_VERSION; readonly contractBundleHash: typeof CONTRACT_BUNDLE_HASH; readonly moduleHash: typeof QUERY_MODULE_HASH; readonly queryName: string; readonly parameters: P; readonly parameterSchema: ApplicationValueSchema; readonly resultSchemas: Readonly<Record<string, ApplicationValueSchema>>; readonly decodeError: typeof decodeApplicationError; readonly resultType?: R; }
-export interface QueryResponseIdentity { readonly contractLineage: string; readonly contractVersion: number; readonly contractBundleHash: string; readonly moduleHash: string; readonly queryName: string; }
+export interface NamedQueryRequest<P, R> { readonly contractLineage: typeof CONTRACT_LINEAGE; readonly contractVersion: typeof CONTRACT_VERSION; readonly contractBundleHash: typeof CONTRACT_BUNDLE_HASH; readonly moduleHash: typeof QUERY_MODULE_HASH; readonly queryName: string; readonly planHash: string; readonly parameters: P; readonly parameterSchema: ApplicationValueSchema; readonly resultSchemas: Readonly<Record<string, ApplicationValueSchema>>; readonly decodeError: typeof decodeApplicationError; readonly resultType?: R; }
+export interface QueryResponseIdentity { readonly contractLineage: string; readonly contractVersion: number; readonly contractBundleHash: string; readonly moduleHash: string; readonly queryName: string; readonly planHash: string; }
 export function acceptsIdentity<P, R>(request: NamedQueryRequest<P, R>, identity: QueryResponseIdentity): boolean {
   return identity.contractLineage === request.contractLineage
     && identity.contractVersion === request.contractVersion
     && identity.contractBundleHash === request.contractBundleHash
     && identity.moduleHash === request.moduleHash
-    && identity.queryName === request.queryName;
+    && identity.queryName === request.queryName
+    && identity.planHash === request.planHash;
 }
 export interface CommandRequest<I, R> { readonly contractLineage: typeof CONTRACT_LINEAGE; readonly contractVersion: typeof CONTRACT_VERSION; readonly commandName: string; readonly planHash: string; readonly input: I; readonly idempotencyKey: string; readonly inputSchema: ApplicationValueSchema; readonly outcomeSchemas: Readonly<Record<string, ApplicationValueSchema>>; readonly decodeError: typeof decodeApplicationError; readonly outcomeType?: R; }
 export interface TypedQueryResult<T> { readonly identity: QueryResponseIdentity; readonly value: T; readonly applicationHead: bigint; readonly nextCursor?: string; }
@@ -131,6 +132,7 @@ export interface ApplicationTransport {
   executeCommand<I, R>(request: CommandRequest<I, R>, attemptBudget: number): Promise<TypedCommandResult<R>>;
 }
 
+export const GET_TICKET_QUERY_PLAN_HASH = "0d34efc47f23f6c29258d1979db4b188a9078fdfeee44a852b1e343f0f3b3a17" as const;
 export interface GetTicketParams {
   readonly organization_id: string;
   readonly ticket_id: string;
@@ -148,9 +150,10 @@ export interface GetTicketNotFound {
 export type GetTicketResult = GetTicketFound | GetTicketNotFound;
 
 export function getTicket(parameters: GetTicketParams): NamedQueryRequest<GetTicketParams, GetTicketResult> {
-  return { contractLineage: CONTRACT_LINEAGE, contractVersion: CONTRACT_VERSION, contractBundleHash: CONTRACT_BUNDLE_HASH, moduleHash: QUERY_MODULE_HASH, queryName: "GetTicket", parameters, parameterSchema: {"fields":[{"name":"organization_id","schema":{"kind":"uuid"}},{"name":"ticket_id","schema":{"kind":"uuid"}}],"kind":"record"}, resultSchemas: {"Found":{"fields":[{"name":"ticket","schema":{"fields":[{"name":"ticket_id","schema":{"kind":"uuid"}},{"name":"project_id","schema":{"kind":"uuid"}},{"name":"title","schema":{"kind":"string"}},{"name":"status","schema":{"kind":"enum"}},{"name":"reporter_id","schema":{"kind":"uuid"}},{"name":"assignee_id","schema":{"kind":"uuid"}}],"kind":"record"}}],"kind":"record"},"NotFound":{"fields":[],"kind":"record"}}, decodeError: decodeApplicationError };
+  return { contractLineage: CONTRACT_LINEAGE, contractVersion: CONTRACT_VERSION, contractBundleHash: CONTRACT_BUNDLE_HASH, moduleHash: QUERY_MODULE_HASH, queryName: "GetTicket", planHash: GET_TICKET_QUERY_PLAN_HASH, parameters, parameterSchema: {"fields":[{"name":"organization_id","schema":{"kind":"uuid"}},{"name":"ticket_id","schema":{"kind":"uuid"}}],"kind":"record"}, resultSchemas: {"Found":{"fields":[{"name":"ticket","schema":{"fields":[{"name":"ticket_id","schema":{"kind":"uuid"}},{"name":"project_id","schema":{"kind":"uuid"}},{"name":"title","schema":{"kind":"string"}},{"name":"status","schema":{"kind":"enum"}},{"name":"reporter_id","schema":{"kind":"uuid"}},{"name":"assignee_id","schema":{"kind":"uuid"}}],"kind":"record"}}],"kind":"record"},"NotFound":{"fields":[],"kind":"record"}}, decodeError: decodeApplicationError };
 }
 
+export const GET_USER_QUERY_PLAN_HASH = "11b1fbab346d17a6be1d48fae61276f563af4fbebf046cd08fc6e1e2addc993a" as const;
 export interface GetUserParams {
   readonly organization_id: string;
   readonly user_id: string;
@@ -168,9 +171,10 @@ export interface GetUserNotFound {
 export type GetUserResult = GetUserFound | GetUserNotFound;
 
 export function getUser(parameters: GetUserParams): NamedQueryRequest<GetUserParams, GetUserResult> {
-  return { contractLineage: CONTRACT_LINEAGE, contractVersion: CONTRACT_VERSION, contractBundleHash: CONTRACT_BUNDLE_HASH, moduleHash: QUERY_MODULE_HASH, queryName: "GetUser", parameters, parameterSchema: {"fields":[{"name":"organization_id","schema":{"kind":"uuid"}},{"name":"user_id","schema":{"kind":"uuid"}}],"kind":"record"}, resultSchemas: {"Found":{"fields":[{"name":"user","schema":{"fields":[{"name":"user_id","schema":{"kind":"uuid"}},{"name":"email","schema":{"kind":"string"}},{"name":"display_name","schema":{"kind":"string"}}],"kind":"record"}}],"kind":"record"},"NotFound":{"fields":[],"kind":"record"}}, decodeError: decodeApplicationError };
+  return { contractLineage: CONTRACT_LINEAGE, contractVersion: CONTRACT_VERSION, contractBundleHash: CONTRACT_BUNDLE_HASH, moduleHash: QUERY_MODULE_HASH, queryName: "GetUser", planHash: GET_USER_QUERY_PLAN_HASH, parameters, parameterSchema: {"fields":[{"name":"organization_id","schema":{"kind":"uuid"}},{"name":"user_id","schema":{"kind":"uuid"}}],"kind":"record"}, resultSchemas: {"Found":{"fields":[{"name":"user","schema":{"fields":[{"name":"user_id","schema":{"kind":"uuid"}},{"name":"email","schema":{"kind":"string"}},{"name":"display_name","schema":{"kind":"string"}}],"kind":"record"}}],"kind":"record"},"NotFound":{"fields":[],"kind":"record"}}, decodeError: decodeApplicationError };
 }
 
+export const LIST_COMMENTS_QUERY_PLAN_HASH = "ef9510c31c5f6dd84a79b52e75f69745041ecb24011230e860d3bac3ada110ff" as const;
 export interface ListCommentsParams {
   readonly organization_id: string;
   readonly ticket_id: string;
@@ -186,9 +190,10 @@ export interface ListCommentsFound {
 export type ListCommentsResult = ListCommentsFound;
 
 export function listComments(parameters: ListCommentsParams): NamedQueryRequest<ListCommentsParams, ListCommentsResult> {
-  return { contractLineage: CONTRACT_LINEAGE, contractVersion: CONTRACT_VERSION, contractBundleHash: CONTRACT_BUNDLE_HASH, moduleHash: QUERY_MODULE_HASH, queryName: "ListComments", parameters, parameterSchema: {"fields":[{"name":"organization_id","schema":{"kind":"uuid"}},{"name":"ticket_id","schema":{"kind":"uuid"}},{"name":"after","schema":{"kind":"optional","value":{"kind":"cursor"}}},{"name":"limit","schema":{"kind":"limit"}}],"kind":"record"}, resultSchemas: {"Found":{"fields":[{"name":"comments","schema":{"kind":"list","value":{"fields":[{"name":"comment_id","schema":{"kind":"uuid"}},{"name":"body","schema":{"kind":"string"}},{"name":"author_id","schema":{"kind":"uuid"}},{"name":"created_at","schema":{"kind":"timestamp"}}],"kind":"record"}}}],"kind":"record"}}, decodeError: decodeApplicationError };
+  return { contractLineage: CONTRACT_LINEAGE, contractVersion: CONTRACT_VERSION, contractBundleHash: CONTRACT_BUNDLE_HASH, moduleHash: QUERY_MODULE_HASH, queryName: "ListComments", planHash: LIST_COMMENTS_QUERY_PLAN_HASH, parameters, parameterSchema: {"fields":[{"name":"organization_id","schema":{"kind":"uuid"}},{"name":"ticket_id","schema":{"kind":"uuid"}},{"name":"after","schema":{"kind":"optional","value":{"kind":"cursor"}}},{"name":"limit","schema":{"kind":"limit"}}],"kind":"record"}, resultSchemas: {"Found":{"fields":[{"name":"comments","schema":{"kind":"list","value":{"fields":[{"name":"comment_id","schema":{"kind":"uuid"}},{"name":"body","schema":{"kind":"string"}},{"name":"author_id","schema":{"kind":"uuid"}},{"name":"created_at","schema":{"kind":"timestamp"}}],"kind":"record"}}}],"kind":"record"}}, decodeError: decodeApplicationError };
 }
 
+export const LIST_TICKETS_QUERY_PLAN_HASH = "dfde7570073b1ea50819463aa3e71327a6694a611f1a194a900e426126eb25b1" as const;
 export interface ListTicketsParams {
   readonly organization_id: string;
   readonly project_id: string;
@@ -205,9 +210,10 @@ export interface ListTicketsFound {
 export type ListTicketsResult = ListTicketsFound;
 
 export function listTickets(parameters: ListTicketsParams): NamedQueryRequest<ListTicketsParams, ListTicketsResult> {
-  return { contractLineage: CONTRACT_LINEAGE, contractVersion: CONTRACT_VERSION, contractBundleHash: CONTRACT_BUNDLE_HASH, moduleHash: QUERY_MODULE_HASH, queryName: "ListTickets", parameters, parameterSchema: {"fields":[{"name":"organization_id","schema":{"kind":"uuid"}},{"name":"project_id","schema":{"kind":"uuid"}},{"name":"statuses","schema":{"kind":"list","value":{"kind":"enum"}}},{"name":"after","schema":{"kind":"optional","value":{"kind":"cursor"}}},{"name":"limit","schema":{"kind":"limit"}}],"kind":"record"}, resultSchemas: {"Found":{"fields":[{"name":"tickets","schema":{"kind":"list","value":{"fields":[{"name":"ticket_id","schema":{"kind":"uuid"}},{"name":"project_id","schema":{"kind":"uuid"}},{"name":"title","schema":{"kind":"string"}},{"name":"status","schema":{"kind":"enum"}},{"name":"updated_at","schema":{"kind":"timestamp"}},{"name":"reporter_id","schema":{"kind":"uuid"}},{"name":"assignee_id","schema":{"kind":"uuid"}}],"kind":"record"}}}],"kind":"record"}}, decodeError: decodeApplicationError };
+  return { contractLineage: CONTRACT_LINEAGE, contractVersion: CONTRACT_VERSION, contractBundleHash: CONTRACT_BUNDLE_HASH, moduleHash: QUERY_MODULE_HASH, queryName: "ListTickets", planHash: LIST_TICKETS_QUERY_PLAN_HASH, parameters, parameterSchema: {"fields":[{"name":"organization_id","schema":{"kind":"uuid"}},{"name":"project_id","schema":{"kind":"uuid"}},{"name":"statuses","schema":{"kind":"list","value":{"kind":"enum"}}},{"name":"after","schema":{"kind":"optional","value":{"kind":"cursor"}}},{"name":"limit","schema":{"kind":"limit"}}],"kind":"record"}, resultSchemas: {"Found":{"fields":[{"name":"tickets","schema":{"kind":"list","value":{"fields":[{"name":"ticket_id","schema":{"kind":"uuid"}},{"name":"project_id","schema":{"kind":"uuid"}},{"name":"title","schema":{"kind":"string"}},{"name":"status","schema":{"kind":"enum"}},{"name":"updated_at","schema":{"kind":"timestamp"}},{"name":"reporter_id","schema":{"kind":"uuid"}},{"name":"assignee_id","schema":{"kind":"uuid"}}],"kind":"record"}}}],"kind":"record"}}, decodeError: decodeApplicationError };
 }
 
+export const LIST_TICKETS_BY_ASSIGNEE_QUERY_PLAN_HASH = "160c1fd2a4edc8d3ebab17d461b9d8606ea382f4988bd1b1c925686c481b7057" as const;
 export interface ListTicketsByAssigneeParams {
   readonly organization_id: string;
   readonly assignee_id: string;
@@ -224,9 +230,10 @@ export interface ListTicketsByAssigneeFound {
 export type ListTicketsByAssigneeResult = ListTicketsByAssigneeFound;
 
 export function listTicketsByAssignee(parameters: ListTicketsByAssigneeParams): NamedQueryRequest<ListTicketsByAssigneeParams, ListTicketsByAssigneeResult> {
-  return { contractLineage: CONTRACT_LINEAGE, contractVersion: CONTRACT_VERSION, contractBundleHash: CONTRACT_BUNDLE_HASH, moduleHash: QUERY_MODULE_HASH, queryName: "ListTicketsByAssignee", parameters, parameterSchema: {"fields":[{"name":"organization_id","schema":{"kind":"uuid"}},{"name":"assignee_id","schema":{"kind":"uuid"}},{"name":"statuses","schema":{"kind":"list","value":{"kind":"enum"}}},{"name":"after","schema":{"kind":"optional","value":{"kind":"cursor"}}},{"name":"limit","schema":{"kind":"limit"}}],"kind":"record"}, resultSchemas: {"Found":{"fields":[{"name":"tickets","schema":{"kind":"list","value":{"fields":[{"name":"ticket_id","schema":{"kind":"uuid"}},{"name":"project_id","schema":{"kind":"uuid"}},{"name":"title","schema":{"kind":"string"}},{"name":"status","schema":{"kind":"enum"}},{"name":"updated_at","schema":{"kind":"timestamp"}},{"name":"reporter_id","schema":{"kind":"uuid"}},{"name":"assignee_id","schema":{"kind":"uuid"}}],"kind":"record"}}}],"kind":"record"}}, decodeError: decodeApplicationError };
+  return { contractLineage: CONTRACT_LINEAGE, contractVersion: CONTRACT_VERSION, contractBundleHash: CONTRACT_BUNDLE_HASH, moduleHash: QUERY_MODULE_HASH, queryName: "ListTicketsByAssignee", planHash: LIST_TICKETS_BY_ASSIGNEE_QUERY_PLAN_HASH, parameters, parameterSchema: {"fields":[{"name":"organization_id","schema":{"kind":"uuid"}},{"name":"assignee_id","schema":{"kind":"uuid"}},{"name":"statuses","schema":{"kind":"list","value":{"kind":"enum"}}},{"name":"after","schema":{"kind":"optional","value":{"kind":"cursor"}}},{"name":"limit","schema":{"kind":"limit"}}],"kind":"record"}, resultSchemas: {"Found":{"fields":[{"name":"tickets","schema":{"kind":"list","value":{"fields":[{"name":"ticket_id","schema":{"kind":"uuid"}},{"name":"project_id","schema":{"kind":"uuid"}},{"name":"title","schema":{"kind":"string"}},{"name":"status","schema":{"kind":"enum"}},{"name":"updated_at","schema":{"kind":"timestamp"}},{"name":"reporter_id","schema":{"kind":"uuid"}},{"name":"assignee_id","schema":{"kind":"uuid"}}],"kind":"record"}}}],"kind":"record"}}, decodeError: decodeApplicationError };
 }
 
+export const PROJECT_MEMBERS_QUERY_PLAN_HASH = "3c8068333ad541a9a3ba60e6932bad77b32cf58a8da143350f086a865b859658" as const;
 export interface ProjectMembersParams {
   readonly organization_id: string;
   readonly project_id: string;
@@ -241,9 +248,10 @@ export interface ProjectMembersFound {
 export type ProjectMembersResult = ProjectMembersFound;
 
 export function projectMembers(parameters: ProjectMembersParams): NamedQueryRequest<ProjectMembersParams, ProjectMembersResult> {
-  return { contractLineage: CONTRACT_LINEAGE, contractVersion: CONTRACT_VERSION, contractBundleHash: CONTRACT_BUNDLE_HASH, moduleHash: QUERY_MODULE_HASH, queryName: "ProjectMembers", parameters, parameterSchema: {"fields":[{"name":"organization_id","schema":{"kind":"uuid"}},{"name":"project_id","schema":{"kind":"uuid"}},{"name":"after","schema":{"kind":"optional","value":{"kind":"cursor"}}}],"kind":"record"}, resultSchemas: {"Found":{"fields":[{"name":"members","schema":{"kind":"list","maximum":100,"value":{"fields":[{"name":"user_id","schema":{"kind":"uuid"}},{"name":"role","schema":{"kind":"string"}}],"kind":"record"}}}],"kind":"record"}}, decodeError: decodeApplicationError };
+  return { contractLineage: CONTRACT_LINEAGE, contractVersion: CONTRACT_VERSION, contractBundleHash: CONTRACT_BUNDLE_HASH, moduleHash: QUERY_MODULE_HASH, queryName: "ProjectMembers", planHash: PROJECT_MEMBERS_QUERY_PLAN_HASH, parameters, parameterSchema: {"fields":[{"name":"organization_id","schema":{"kind":"uuid"}},{"name":"project_id","schema":{"kind":"uuid"}},{"name":"after","schema":{"kind":"optional","value":{"kind":"cursor"}}}],"kind":"record"}, resultSchemas: {"Found":{"fields":[{"name":"members","schema":{"kind":"list","maximum":100,"value":{"fields":[{"name":"user_id","schema":{"kind":"uuid"}},{"name":"role","schema":{"kind":"string"}}],"kind":"record"}}}],"kind":"record"}}, decodeError: decodeApplicationError };
 }
 
+export const PROJECT_SUMMARY_QUERY_PLAN_HASH = "2d3666fa634badb2ad7135090d68afa864128b7df40f4cefc70672fe50df44b3" as const;
 export interface ProjectSummaryParams {
   readonly organization_id: string;
   readonly project_id: string;
@@ -263,9 +271,10 @@ export interface ProjectSummaryNotFound {
 export type ProjectSummaryResult = ProjectSummaryFound | ProjectSummaryNotFound;
 
 export function projectSummary(parameters: ProjectSummaryParams): NamedQueryRequest<ProjectSummaryParams, ProjectSummaryResult> {
-  return { contractLineage: CONTRACT_LINEAGE, contractVersion: CONTRACT_VERSION, contractBundleHash: CONTRACT_BUNDLE_HASH, moduleHash: QUERY_MODULE_HASH, queryName: "ProjectSummary", parameters, parameterSchema: {"fields":[{"name":"organization_id","schema":{"kind":"uuid"}},{"name":"project_id","schema":{"kind":"uuid"}},{"name":"status","schema":{"kind":"enum"}}],"kind":"record"}, resultSchemas: {"Found":{"fields":[{"name":"project","schema":{"fields":[{"name":"project_id","schema":{"kind":"uuid"}},{"name":"name","schema":{"kind":"string"}}],"kind":"record"}},{"name":"recent_tickets","schema":{"kind":"list","maximum":10,"value":{"fields":[{"name":"ticket_id","schema":{"kind":"uuid"}},{"name":"title","schema":{"kind":"string"}},{"name":"status","schema":{"kind":"enum"}},{"name":"updated_at","schema":{"kind":"timestamp"}}],"kind":"record"}}}],"kind":"record"},"NotFound":{"fields":[],"kind":"record"}}, decodeError: decodeApplicationError };
+  return { contractLineage: CONTRACT_LINEAGE, contractVersion: CONTRACT_VERSION, contractBundleHash: CONTRACT_BUNDLE_HASH, moduleHash: QUERY_MODULE_HASH, queryName: "ProjectSummary", planHash: PROJECT_SUMMARY_QUERY_PLAN_HASH, parameters, parameterSchema: {"fields":[{"name":"organization_id","schema":{"kind":"uuid"}},{"name":"project_id","schema":{"kind":"uuid"}},{"name":"status","schema":{"kind":"enum"}}],"kind":"record"}, resultSchemas: {"Found":{"fields":[{"name":"project","schema":{"fields":[{"name":"project_id","schema":{"kind":"uuid"}},{"name":"name","schema":{"kind":"string"}}],"kind":"record"}},{"name":"recent_tickets","schema":{"kind":"list","maximum":10,"value":{"fields":[{"name":"ticket_id","schema":{"kind":"uuid"}},{"name":"title","schema":{"kind":"string"}},{"name":"status","schema":{"kind":"enum"}},{"name":"updated_at","schema":{"kind":"timestamp"}}],"kind":"record"}}}],"kind":"record"},"NotFound":{"fields":[],"kind":"record"}}, decodeError: decodeApplicationError };
 }
 
+export const TICKET_PAGE_QUERY_PLAN_HASH = "986279eb3c0fb967944b77ce178b9291018dd4f054b57a64ccb2257b181a6510" as const;
 export interface TicketPageParams {
   readonly organization_id: string;
   readonly ticket_id: string;
@@ -294,7 +303,7 @@ export interface TicketPageIntegrityFailure {
 export type TicketPageResult = TicketPageFound | TicketPageNotFound | TicketPageIntegrityFailure;
 
 export function ticketPage(parameters: TicketPageParams): NamedQueryRequest<TicketPageParams, TicketPageResult> {
-  return { contractLineage: CONTRACT_LINEAGE, contractVersion: CONTRACT_VERSION, contractBundleHash: CONTRACT_BUNDLE_HASH, moduleHash: QUERY_MODULE_HASH, queryName: "TicketPage", parameters, parameterSchema: {"fields":[{"name":"organization_id","schema":{"kind":"uuid"}},{"name":"ticket_id","schema":{"kind":"uuid"}},{"name":"comments_after","schema":{"kind":"optional","value":{"kind":"cursor"}}}],"kind":"record"}, resultSchemas: {"Found":{"fields":[{"name":"ticket","schema":{"fields":[{"name":"ticket_id","schema":{"kind":"uuid"}},{"name":"project_id","schema":{"kind":"uuid"}},{"name":"title","schema":{"kind":"string"}},{"name":"status","schema":{"kind":"enum"}},{"name":"created_at","schema":{"kind":"timestamp"}},{"name":"updated_at","schema":{"kind":"timestamp"}}],"kind":"record"}},{"name":"project","schema":{"fields":[{"name":"project_id","schema":{"kind":"uuid"}},{"name":"name","schema":{"kind":"string"}}],"kind":"record"}},{"name":"organization","schema":{"fields":[{"name":"organization_id","schema":{"kind":"uuid"}},{"name":"name","schema":{"kind":"string"}}],"kind":"record"}},{"name":"reporter","schema":{"fields":[{"name":"user_id","schema":{"kind":"uuid"}},{"name":"display_name","schema":{"kind":"string"}}],"kind":"record"}},{"name":"assignee","schema":{"kind":"optional","value":{"fields":[{"name":"user_id","schema":{"kind":"uuid"}},{"name":"display_name","schema":{"kind":"string"}}],"kind":"record"}}},{"name":"comments","schema":{"kind":"list","maximum":50,"value":{"fields":[{"name":"comment_id","schema":{"kind":"uuid"}},{"name":"body","schema":{"kind":"string"}},{"name":"author_id","schema":{"kind":"uuid"}},{"name":"created_at","schema":{"kind":"timestamp"}}],"kind":"record"}}},{"name":"labels","schema":{"kind":"list","maximum":50,"value":{"fields":[{"name":"label_id","schema":{"kind":"uuid"}},{"name":"name","schema":{"kind":"string"}}],"kind":"record"}}}],"kind":"record"},"IntegrityFailure":{"fields":[],"kind":"record"},"NotFound":{"fields":[],"kind":"record"}}, decodeError: decodeApplicationError };
+  return { contractLineage: CONTRACT_LINEAGE, contractVersion: CONTRACT_VERSION, contractBundleHash: CONTRACT_BUNDLE_HASH, moduleHash: QUERY_MODULE_HASH, queryName: "TicketPage", planHash: TICKET_PAGE_QUERY_PLAN_HASH, parameters, parameterSchema: {"fields":[{"name":"organization_id","schema":{"kind":"uuid"}},{"name":"ticket_id","schema":{"kind":"uuid"}},{"name":"comments_after","schema":{"kind":"optional","value":{"kind":"cursor"}}}],"kind":"record"}, resultSchemas: {"Found":{"fields":[{"name":"ticket","schema":{"fields":[{"name":"ticket_id","schema":{"kind":"uuid"}},{"name":"project_id","schema":{"kind":"uuid"}},{"name":"title","schema":{"kind":"string"}},{"name":"status","schema":{"kind":"enum"}},{"name":"created_at","schema":{"kind":"timestamp"}},{"name":"updated_at","schema":{"kind":"timestamp"}}],"kind":"record"}},{"name":"project","schema":{"fields":[{"name":"project_id","schema":{"kind":"uuid"}},{"name":"name","schema":{"kind":"string"}}],"kind":"record"}},{"name":"organization","schema":{"fields":[{"name":"organization_id","schema":{"kind":"uuid"}},{"name":"name","schema":{"kind":"string"}}],"kind":"record"}},{"name":"reporter","schema":{"fields":[{"name":"user_id","schema":{"kind":"uuid"}},{"name":"display_name","schema":{"kind":"string"}}],"kind":"record"}},{"name":"assignee","schema":{"kind":"optional","value":{"fields":[{"name":"user_id","schema":{"kind":"uuid"}},{"name":"display_name","schema":{"kind":"string"}}],"kind":"record"}}},{"name":"comments","schema":{"kind":"list","maximum":50,"value":{"fields":[{"name":"comment_id","schema":{"kind":"uuid"}},{"name":"body","schema":{"kind":"string"}},{"name":"author_id","schema":{"kind":"uuid"}},{"name":"created_at","schema":{"kind":"timestamp"}}],"kind":"record"}}},{"name":"labels","schema":{"kind":"list","maximum":50,"value":{"fields":[{"name":"label_id","schema":{"kind":"uuid"}},{"name":"name","schema":{"kind":"string"}}],"kind":"record"}}}],"kind":"record"},"IntegrityFailure":{"fields":[],"kind":"record"},"NotFound":{"fields":[],"kind":"record"}}, decodeError: decodeApplicationError };
 }
 
 export interface AddProjectMemberInput {

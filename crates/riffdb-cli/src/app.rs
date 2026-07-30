@@ -3229,6 +3229,7 @@ fn checked_query_json(
             "contract_lineage": identity.contract_lineage,
             "contract_version": identity.contract_version.to_string(),
             "contract_bundle_hash": hex(&identity.contract_bundle_hash),
+            "module_hash": identity.module_hash.as_deref().map(hex),
             "query_name": identity.query_name,
             "plan_hash": hex(&identity.plan_hash),
         },
@@ -3303,6 +3304,7 @@ fn query_execution_json(response: &app_v1::ExecuteQueryResponse) -> Option<serde
             "contract_lineage": identity.contract_lineage,
             "contract_version": identity.contract_version.to_string(),
             "contract_bundle_hash": hex(&identity.contract_bundle_hash),
+            "module_hash": identity.module_hash.as_deref().map(hex),
             "query_name": identity.query_name,
             "plan_hash": hex(&identity.plan_hash),
         },
@@ -3448,6 +3450,29 @@ mod tests {
             max_attempts: 3,
             credential_file: None,
         }
+    }
+
+    #[test]
+    fn named_query_json_preserves_the_exact_returned_module_identity() {
+        let response = app_v1::ExecuteQueryResponse {
+            identity: Some(app_v1::QueryIdentity {
+                contract_lineage: "SafeApplication".to_owned(),
+                contract_version: 1,
+                contract_bundle_hash: vec![0xbb; 32],
+                query_name: Some("ItemPage".to_owned()),
+                plan_hash: vec![0xdd; 32],
+                module_hash: Some(vec![0xcc; 32]),
+            }),
+            outcome: "Found".to_owned(),
+            application_head: 1,
+            fields: Vec::new(),
+            next_cursor: None,
+        };
+        let result = query_execution_json(&response).expect("query JSON");
+        assert_eq!(
+            result["identity"]["module_hash"],
+            serde_json::Value::String("cc".repeat(32))
+        );
     }
 
     #[test]

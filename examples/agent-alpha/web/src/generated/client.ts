@@ -109,24 +109,30 @@ export type ApplicationValueSchema =
   | { readonly kind: "optional"; readonly value: ApplicationValueSchema }
   | { readonly kind: "list"; readonly value: ApplicationValueSchema; readonly maximum?: number }
   | { readonly kind: "record"; readonly fields: ReadonlyArray<{ readonly name: string; readonly schema: ApplicationValueSchema; readonly wireId?: number }> };
-export interface NamedQueryRequest<P, R> { readonly contractLineage: typeof CONTRACT_LINEAGE; readonly contractVersion: typeof CONTRACT_VERSION; readonly contractBundleHash: typeof CONTRACT_BUNDLE_HASH; readonly moduleHash: typeof QUERY_MODULE_HASH; readonly queryName: string; readonly parameters: P; readonly parameterSchema: ApplicationValueSchema; readonly resultSchemas: Readonly<Record<string, ApplicationValueSchema>>; readonly decodeError: typeof decodeApplicationError; readonly resultType?: R; }
-export interface QueryResponseIdentity { readonly contractLineage: string; readonly contractVersion: number; readonly contractBundleHash: string; readonly moduleHash: string; readonly queryName: string; }
+export interface NamedQueryRequest<P, R> { readonly contractLineage: typeof CONTRACT_LINEAGE; readonly contractVersion: typeof CONTRACT_VERSION; readonly contractBundleHash: typeof CONTRACT_BUNDLE_HASH; readonly moduleHash: typeof QUERY_MODULE_HASH; readonly queryName: string; readonly planHash: string; readonly parameters: P; readonly parameterSchema: ApplicationValueSchema; readonly resultSchemas: Readonly<Record<string, ApplicationValueSchema>>; readonly decodeError: typeof decodeApplicationError; readonly resultType?: R; }
+export interface QueryResponseIdentity { readonly contractLineage: string; readonly contractVersion: number; readonly contractBundleHash: string; readonly moduleHash: string; readonly queryName: string; readonly planHash: string; }
 export function acceptsIdentity<P, R>(request: NamedQueryRequest<P, R>, identity: QueryResponseIdentity): boolean {
   return identity.contractLineage === request.contractLineage
     && identity.contractVersion === request.contractVersion
     && identity.contractBundleHash === request.contractBundleHash
     && identity.moduleHash === request.moduleHash
-    && identity.queryName === request.queryName;
+    && identity.queryName === request.queryName
+    && identity.planHash === request.planHash;
 }
 export interface CommandRequest<I, R> { readonly contractLineage: typeof CONTRACT_LINEAGE; readonly contractVersion: typeof CONTRACT_VERSION; readonly commandName: string; readonly planHash: string; readonly input: I; readonly idempotencyKey: string; readonly inputSchema: ApplicationValueSchema; readonly outcomeSchemas: Readonly<Record<string, ApplicationValueSchema>>; readonly decodeError: typeof decodeApplicationError; readonly outcomeType?: R; }
 export interface TypedQueryResult<T> { readonly identity: QueryResponseIdentity; readonly value: T; readonly applicationHead: bigint; readonly nextCursor?: string; }
 export interface TypedCommandResult<T> { readonly outcome: T; readonly commitSequence?: bigint; readonly contractVersion: number; readonly planHash: string; readonly replayed: boolean; readonly outcomeUri?: string; }
 export interface QueryOptions { readonly cursor?: string; readonly readAfterCommit?: bigint; }
+export interface CommandBatchProgress { readonly completed: number; readonly total: number; readonly checkpoint: number; }
+export interface CommandBatchOptions { readonly concurrency: number; readonly checkpoint?: number; readonly onProgress?: (progress: CommandBatchProgress) => void; }
+export interface CommandBatchItem<T> { readonly index: number; readonly result?: TypedCommandResult<T>; readonly error?: unknown; }
+export interface CommandBatchResult<T> { readonly items: ReadonlyArray<CommandBatchItem<T>>; readonly checkpoint: number; }
 export interface ApplicationTransport {
   executeNamedQuery<P, R>(request: NamedQueryRequest<P, R>, options?: QueryOptions): Promise<TypedQueryResult<R>>;
   executeCommand<I, R>(request: CommandRequest<I, R>, attemptBudget: number): Promise<TypedCommandResult<R>>;
 }
 
+export const ITEM_PAGE_QUERY_PLAN_HASH = "b213bc289448debb069be3d3c52835867eb9a3d75bb18e04e5da4e420f1d41c5" as const;
 export interface ItemPageParams {
   readonly item_id: string;
 }
@@ -143,7 +149,7 @@ export interface ItemPageNotFound {
 export type ItemPageResult = ItemPageFound | ItemPageNotFound;
 
 export function itemPage(parameters: ItemPageParams): NamedQueryRequest<ItemPageParams, ItemPageResult> {
-  return { contractLineage: CONTRACT_LINEAGE, contractVersion: CONTRACT_VERSION, contractBundleHash: CONTRACT_BUNDLE_HASH, moduleHash: QUERY_MODULE_HASH, queryName: "ItemPage", parameters, parameterSchema: {"fields":[{"name":"item_id","schema":{"kind":"uuid"}}],"kind":"record"}, resultSchemas: {"Found":{"fields":[{"name":"item","schema":{"fields":[{"name":"item_id","schema":{"kind":"uuid"}},{"name":"title","schema":{"kind":"string"}},{"name":"created_at","schema":{"kind":"timestamp"}}],"kind":"record"}}],"kind":"record"},"NotFound":{"fields":[],"kind":"record"}}, decodeError: decodeApplicationError };
+  return { contractLineage: CONTRACT_LINEAGE, contractVersion: CONTRACT_VERSION, contractBundleHash: CONTRACT_BUNDLE_HASH, moduleHash: QUERY_MODULE_HASH, queryName: "ItemPage", planHash: ITEM_PAGE_QUERY_PLAN_HASH, parameters, parameterSchema: {"fields":[{"name":"item_id","schema":{"kind":"uuid"}}],"kind":"record"}, resultSchemas: {"Found":{"fields":[{"name":"item","schema":{"fields":[{"name":"item_id","schema":{"kind":"uuid"}},{"name":"title","schema":{"kind":"string"}},{"name":"created_at","schema":{"kind":"timestamp"}}],"kind":"record"}}],"kind":"record"},"NotFound":{"fields":[],"kind":"record"}}, decodeError: decodeApplicationError };
 }
 
 export interface CreateItemInput {
@@ -180,5 +186,19 @@ export class AgentAlphaClient {
     return result;
   }
 
-}
+  public async createItemBatch(inputs: ReadonlyArray<CreateItemInput>, options: CommandBatchOptions): Promise<CommandBatchResult<CreateItemOutcome>> {
+    if (!Number.isInteger(options.concurrency) || options.concurrency < 1 || options.concurrency > 32 || inputs.length < 1 || inputs.length > 4096) throw new Error("invalid command batch bounds");
+    const start = options.checkpoint ?? 0;
+    if (!Number.isInteger(start) || start < 0 || start > inputs.length) throw new Error("invalid command batch checkpoint");
+    const items: CommandBatchItem<CreateItemOutcome>[] = [];
+    let next = start;
+    let completed = start;
+    let checkpoint = start;
+    const completedAfterCheckpoint = new Set<number>();
+    const worker = async (): Promise<void> => { while (true) { const index = next++; if (index >= inputs.length) return; try { items.push({ index, result: await this.createItem(inputs[index]!) }); } catch (error) { items.push({ index, error }); } completed += 1; completedAfterCheckpoint.add(index); while (completedAfterCheckpoint.delete(checkpoint)) checkpoint += 1; options.onProgress?.({ completed, total: inputs.length, checkpoint }); } };
+    await Promise.all(Array.from({ length: Math.min(options.concurrency, inputs.length - start) }, worker));
+    items.sort((left, right) => left.index - right.index);
+    return { items, checkpoint };
+  }
 
+}

@@ -1,0 +1,138 @@
+{
+  "schema": "riffdb-agent-application-alpha-rehearsal/v1",
+  "work_package": "WP-365",
+  "bundle_hash": "0e19842becd95abb090b939034f0f2a651fcbdc306be79890e63937c19985a40",
+  "public_only": true,
+  "campaign_01_immutable": true,
+  "recoveries": {
+    "invalid_source": "RDB-S004",
+    "stale_lock": "RDB-AL008",
+    "missing_index": "RDB-QP003",
+    "unsafe_role": "RDB-AR002",
+    "interrupted_generation": "RDB-AL008"
+  },
+  "growing_database_performance": {
+    "fixture": "fixtures/performance/wp-362-command-growth.jsonl",
+    "fixture_sha256": "fb56ce2799a5e6d10d68d5625f2b4380008d03733b8b7d767ebffe9e67d56e96",
+    "result": {
+      "first_commands_per_second": 19397,
+      "final_commands_per_second": 17020,
+      "retained_basis_points": 8774,
+      "perf_003_passed": true
+    }
+  },
+  "runs": [
+    {
+      "schema": "riffdb-agent-application-alpha-rehearsal-run/v1",
+      "bundle_hash": "0e19842becd95abb090b939034f0f2a651fcbdc306be79890e63937c19985a40",
+      "domain": "blog",
+      "language": "rust",
+      "public_only": true,
+      "existing_empty_directory": true,
+      "generated_operations": true,
+      "boundary_passed": true,
+      "first_write": {
+        "contract_lineage": "AgentBlog",
+        "contract_version": 1,
+        "contract_bundle_hash": "d7e7a05088cad945357e38f37af00d7a92d4d0d7cd54e9ac8615d44d965801c2",
+        "operation": "CreateSite",
+        "plan_hash": "e3fc9b2292fc7e918151fc2f0d36d64eb10e6de7b6e9e8114f62905391a56685",
+        "commit_sequence": "1"
+      },
+      "first_page_read": {
+        "contract_lineage": "AgentBlog",
+        "contract_version": 1,
+        "contract_bundle_hash": "d7e7a05088cad945357e38f37af00d7a92d4d0d7cd54e9ac8615d44d965801c2",
+        "module_hash": "633ec7748d84bce389480ae5e1b2437880d36d4e00a3bbf24de250472570f019",
+        "query_name": "PostPage",
+        "plan_hash": "1aaab6435b8d05561603cfdef55713e2a8bd9cf558bfaa8b2b1b232a8f487c62",
+        "application_head": "7",
+        "read_after_commit": "1"
+      }
+    },
+    {
+      "schema": "riffdb-agent-application-alpha-rehearsal-run/v1",
+      "bundle_hash": "0e19842becd95abb090b939034f0f2a651fcbdc306be79890e63937c19985a40",
+      "domain": "blog",
+      "language": "typescript",
+      "public_only": true,
+      "existing_empty_directory": true,
+      "generated_operations": true,
+      "boundary_passed": true,
+      "first_write": {
+        "contract_lineage": "AgentBlog",
+        "contract_version": 1,
+        "contract_bundle_hash": "d7e7a05088cad945357e38f37af00d7a92d4d0d7cd54e9ac8615d44d965801c2",
+        "operation": "CreateSite",
+        "plan_hash": "e3fc9b2292fc7e918151fc2f0d36d64eb10e6de7b6e9e8114f62905391a56685",
+        "commit_sequence": "1"
+      },
+      "first_page_read": {
+        "contract_lineage": "AgentBlog",
+        "contract_version": 1,
+        "contract_bundle_hash": "d7e7a05088cad945357e38f37af00d7a92d4d0d7cd54e9ac8615d44d965801c2",
+        "module_hash": "633ec7748d84bce389480ae5e1b2437880d36d4e00a3bbf24de250472570f019",
+        "query_name": "PostPage",
+        "plan_hash": "1aaab6435b8d05561603cfdef55713e2a8bd9cf558bfaa8b2b1b232a8f487c62",
+        "application_head": "7",
+        "read_after_commit": "1"
+      }
+    },
+    {
+      "schema": "riffdb-agent-application-alpha-rehearsal-run/v1",
+      "bundle_hash": "0e19842becd95abb090b939034f0f2a651fcbdc306be79890e63937c19985a40",
+      "domain": "orders",
+      "language": "rust",
+      "public_only": true,
+      "existing_empty_directory": true,
+      "generated_operations": true,
+      "boundary_passed": true,
+      "first_write": {
+        "contract_lineage": "AgentOrders",
+        "contract_version": 1,
+        "contract_bundle_hash": "10e146d528c9fe4aa56328f14697b4190200d92af594c044f892f5a2cb97108d",
+        "operation": "CreateStore",
+        "plan_hash": "e452367a1f05628af56a24078629c52476ee1347afb151a1096b57dd4191ec1c",
+        "commit_sequence": "1"
+      },
+      "first_page_read": {
+        "contract_lineage": "AgentOrders",
+        "contract_version": 1,
+        "contract_bundle_hash": "10e146d528c9fe4aa56328f14697b4190200d92af594c044f892f5a2cb97108d",
+        "module_hash": "4efa919991df225b1235aeb95ed76b98b3eab6002b04d7afdb4c6894d13addea",
+        "query_name": "OrderPage",
+        "plan_hash": "3f9922499a2a5741eabba167d76b5366b3948954401b51c979853c49008521c3",
+        "application_head": "7",
+        "read_after_commit": "1"
+      }
+    },
+    {
+      "schema": "riffdb-agent-application-alpha-rehearsal-run/v1",
+      "bundle_hash": "0e19842becd95abb090b939034f0f2a651fcbdc306be79890e63937c19985a40",
+      "domain": "orders",
+      "language": "typescript",
+      "public_only": true,
+      "existing_empty_directory": true,
+      "generated_operations": true,
+      "boundary_passed": true,
+      "first_write": {
+        "contract_lineage": "AgentOrders",
+        "contract_version": 1,
+        "contract_bundle_hash": "10e146d528c9fe4aa56328f14697b4190200d92af594c044f892f5a2cb97108d",
+        "operation": "CreateStore",
+        "plan_hash": "e452367a1f05628af56a24078629c52476ee1347afb151a1096b57dd4191ec1c",
+        "commit_sequence": "1"
+      },
+      "first_page_read": {
+        "contract_lineage": "AgentOrders",
+        "contract_version": 1,
+        "contract_bundle_hash": "10e146d528c9fe4aa56328f14697b4190200d92af594c044f892f5a2cb97108d",
+        "module_hash": "4efa919991df225b1235aeb95ed76b98b3eab6002b04d7afdb4c6894d13addea",
+        "query_name": "OrderPage",
+        "plan_hash": "3f9922499a2a5741eabba167d76b5366b3948954401b51c979853c49008521c3",
+        "application_head": "7",
+        "read_after_commit": "1"
+      }
+    }
+  ]
+}

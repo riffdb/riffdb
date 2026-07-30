@@ -17,7 +17,7 @@ jq -e '
   and (.query_modules | length) == 1
   and (.roles | length) == 2
   and (.query_modules[0].queries | length) == 8
-  and all(.roles[]; (.queries | length) == 8 and (.commands | length) == 8)
+  and all(.roles[]; (.queries | length) == 8 and (.commands | length) == 11)
   and (.generation.rust | endswith(".rs"))
   and (.generation.typescript | endswith(".ts"))
   and (.generation.mcp | endswith(".json"))
@@ -34,7 +34,7 @@ jq -e \
   --arg bundle_hash "$ticket_bundle_hash" '
     .application_manifest_hash == $identity
     and (.tools | length) == 8
-    and (.commands | length) == 8
+    and (.commands | length) == 11
     and all(.tools[]; .module_hash == $module_hash)
     and all(.commands[]; .contract_bundle_hash == $bundle_hash)
     and all(.commands[]; .annotations.idempotentHint == true)

@@ -1,0 +1,616 @@
+#!/usr/bin/env bash
+set -euo pipefail
+umask 077
+
+repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+assert_complete=false
+evidence_output=
+while (($#)); do
+    case "$1" in
+        --assert-complete) assert_complete=true; shift ;;
+        --evidence-output) evidence_output="${2:-}"; shift 2 ;;
+        *)
+            echo "usage: scripts/agent-application-alpha-rehearsal [--assert-complete] [--evidence-output ABSOLUTE_PATH]" >&2
+            exit 2
+            ;;
+    esac
+done
+if [[ -n "$evidence_output" && "$evidence_output" != /* ]]; then
+    echo "rehearsal evidence output must be an absolute path" >&2
+    exit 2
+fi
+
+for tool in cargo cmp curl jq mkfifo mktemp node npm rg sha256sum sort; do
+    command -v "$tool" >/dev/null 2>&1 || {
+        echo "required rehearsal tool is missing: $tool" >&2
+        exit 1
+    }
+done
+
+work_root="$(mktemp -d "${TMPDIR:-/tmp}/riffdb-agent-alpha-rehearsal.XXXXXX")"
+dev_pid=
+web_pid=
+cleanup() {
+    if [[ -n "$web_pid" ]] && kill -0 "$web_pid" 2>/dev/null; then
+        kill -TERM "$web_pid" 2>/dev/null || true
+        wait "$web_pid" 2>/dev/null || true
+    fi
+    if [[ -n "$dev_pid" ]] && kill -0 "$dev_pid" 2>/dev/null; then
+        kill -TERM "$dev_pid" 2>/dev/null || true
+        wait "$dev_pid" 2>/dev/null || true
+    fi
+    if [[ "${RIFFDB_REHEARSAL_KEEP_WORKSPACE:-false}" == true ]]; then
+        echo "retained rehearsal workspace: $work_root" >&2
+    else
+        rm -rf "$work_root"
+    fi
+}
+trap cleanup EXIT INT TERM
+
+campaign_one="$repo_root/evaluations/agent-application-alpha/runs"
+campaign_one_manifest="$repo_root/evaluations/agent-application-alpha/campaigns/campaign-01.json"
+while IFS=$'\t' read -r relative expected; do
+    actual="$(sha256sum "$repo_root/$relative" | cut -d' ' -f1)"
+    [[ "$actual" == "$expected" ]] || {
+        echo "campaign 01 immutable evidence does not match its selection manifest: $relative" >&2
+        exit 1
+    }
+done < <(jq -r '.runs[] | .report, .events | [.path, .sha256] | @tsv' \
+    "$campaign_one_manifest")
+find "$campaign_one" -mindepth 2 -maxdepth 2 -type f \
+    \( -name report.json -o -name events.jsonl \) -print0 \
+    | sort -z | xargs -0 sha256sum >"$work_root/campaign-01.before"
+[[ "$(wc -l <"$work_root/campaign-01.before")" == "8" ]] || {
+    echo "campaign 01 immutable evidence inventory is incomplete" >&2
+    exit 1
+}
+
+bundle="$work_root/bundle"
+bundle_hash="$("$repo_root/scripts/agent-application-alpha-package" "$bundle")"
+[[ "$(jq -er '.bundle_hash' "$bundle/bundle.json")" == "$bundle_hash" ]] || {
+    echo "sealed rehearsal bundle identity mismatch" >&2
+    exit 1
+}
+
+export PATH="$bundle/bin:$PATH"
+export CARGO_HOME="$bundle/.cargo"
+export CARGO_NET_OFFLINE=true
+export RIFFDB_RUST_SDK="$bundle/public/rust-sdk/crates/riffdb-client-rust"
+export RIFFDB_TYPESCRIPT_RUNTIME="$bundle/public/typescript"
+
+performance_fixture="$repo_root/fixtures/performance/wp-362-command-growth.jsonl"
+performance_hash="$(sha256sum "$performance_fixture" | cut -d' ' -f1)"
+jq -s '
+  map(select(.record_type == "summary"))[0]
+  | select(.perf_003_passed == true)
+  | {
+      first_commands_per_second,
+      final_commands_per_second,
+      retained_basis_points,
+      perf_003_passed
+    }
+' "$performance_fixture" >"$work_root/performance-evidence.json"
+
+prepare_application() {
+    local domain="$1"
+    local language="$2"
+    local workspace="$3"
+    local source="$repo_root/examples/agent-alpha/domains/agent-$domain"
+    local scaffold_name="$domain-$language-rehearsal"
+    mkdir "$workspace"
+    if [[ "$language" == typescript ]]; then
+        "$bundle/bin/riffdb" new "$scaffold_name" \
+            --language typescript --directory "$workspace" >/dev/null
+    else
+        "$bundle/bin/riffdb" new "$scaffold_name" \
+            --directory "$workspace" >/dev/null
+    fi
+
+    rm -f \
+        "$workspace/riffdb/queries/item_page.riffq" \
+        "$workspace/riffdb/seed/01-CreateItem.jsonl"
+    cp "$source/domain/contract.riff" "$workspace/riffdb/contract.riff"
+    cp -R "$source/domain/queries/." "$workspace/riffdb/queries/"
+    cp -R "$source/domain/seed/." "$workspace/riffdb/seed/"
+    jq '
+      del(.contract.bundle_hash)
+      | (.query_modules[] |= del(.module_hash))
+      | .schema = "riffdb.application-source/v1"
+      | .contract.source |= sub("^domain/"; "riffdb/")
+      | (.query_modules[].queries[].source |= sub("^domain/"; "riffdb/"))
+      | .seed_inputs |= map(sub("^domain/"; "riffdb/"))
+    ' "$source/riffdb.application.json" >"$workspace/riffdb.application.json.next"
+    mv "$workspace/riffdb.application.json.next" "$workspace/riffdb.application.json"
+
+    if [[ "$language" == typescript ]]; then
+        cp "$repo_root/examples/agent-alpha/rehearsal/typescript/$domain.ts" \
+            "$workspace/src/main.ts"
+    else
+        cp "$repo_root/examples/agent-alpha/rehearsal/rust/$domain.rs" \
+            "$workspace/src/main.rs"
+    fi
+
+    (
+        cd "$workspace"
+        "$bundle/bin/riffdb" application check
+        "$bundle/bin/riffdb" application lock --write
+        "$bundle/bin/riffdb" application lock --check
+        "$bundle/bin/riffdb" application generate --locked
+    ) >/dev/null
+    "$bundle/libexec/check-application-boundary" "$workspace" >/dev/null
+}
+
+expect_failure() {
+    local output="$1"
+    local normalized="$output.normalized"
+    shift
+    if "$@" >"$output.stdout" 2>"$output.stderr"; then
+        echo "injected rehearsal failure unexpectedly succeeded" >&2
+        exit 1
+    fi
+    if jq -e . "$output.stderr" >/dev/null 2>&1; then
+        mv "$output.stderr" "$output"
+    elif jq -e . "$output.stdout" >/dev/null 2>&1; then
+        mv "$output.stdout" "$output"
+    else
+        cp "$output.stderr" "$output"
+    fi
+    rm -f "$output.stdout" "$output.stderr"
+    jq '
+      (if (.diagnostics | type) == "array" then .diagnostics[0] else . end)
+      | .fix = (.fix // .fixes[0])
+    ' "$output" >"$normalized" && mv "$normalized" "$output"
+    jq -e '
+      (.stage | type) == "string"
+      and (.code | type) == "string"
+      and (.summary | type) == "string"
+      and (.cause | type) == "string"
+      and (.fix | type) == "string"
+      and (.retry | type) == "string"
+    ' "$output" >/dev/null || {
+        echo "injected rehearsal failure did not return a structured authoring diagnostic" >&2
+        cat "$output" >&2
+        exit 1
+    }
+}
+
+exercise_failure_recovery() {
+    local workspace="$1"
+    local contract="$workspace/riffdb/contract.riff"
+    local manifest="$workspace/riffdb.application.json"
+    local lock="$workspace/riffdb.application.lock.json"
+    local query="$workspace/riffdb/queries/public_feed.riffq"
+    local generated="$workspace/generated/rust/client.rs"
+    local failure_root="$work_root/failures"
+    mkdir "$failure_root"
+
+    cp "$contract" "$failure_root/contract.valid"
+    cp "$manifest" "$failure_root/manifest.valid"
+    cp "$query" "$failure_root/query.valid"
+
+    printf '\nINVALID_SOURCE_TOKEN\n' >>"$contract"
+    expect_failure "$failure_root/invalid-source.json" \
+        "$bundle/bin/riffdb" --output json application check "$manifest"
+    jq -e '.stage == "contract_syntax" and .cause == "invalid_syntax"' \
+        "$failure_root/invalid-source.json" >/dev/null
+    cp "$failure_root/contract.valid" "$contract"
+    (
+        cd "$workspace"
+        "$bundle/bin/riffdb" application lock --check
+    ) >/dev/null
+
+    sed -i 's/take \$limit after \$after/take 19 after $after/' "$query"
+    expect_failure "$failure_root/stale-lock.json" \
+        "$bundle/bin/riffdb" --output json application lock "$manifest" --check
+    jq -e '.code == "RDB-AL008" and .cause == "identity_drift" and .fix == "write_lock"' \
+        "$failure_root/stale-lock.json" >/dev/null
+    cp "$failure_root/query.valid" "$query"
+    (
+        cd "$workspace"
+        "$bundle/bin/riffdb" application lock --check
+    ) >/dev/null
+
+    cp "$repo_root/fixtures/agent-alpha/negative/blog-unindexed-title.riffq" \
+        "$workspace/riffdb/queries/unindexed_title.riffq"
+    jq '
+      .query_modules[0].queries += [{
+        "name": "UnindexedTitle",
+        "source": "riffdb/queries/unindexed_title.riffq"
+      }]
+      | .roles[0].queries += ["UnindexedTitle"]
+    ' "$manifest" >"$workspace/riffdb.application.json.next"
+    mv "$workspace/riffdb.application.json.next" "$manifest"
+    expect_failure "$failure_root/missing-index.json" \
+        "$bundle/bin/riffdb" --output json application check "$manifest"
+    jq -e '.code == "RDB-QP003" and .cause == "missing_index" and .fix == "add_index"' \
+        "$failure_root/missing-index.json" >/dev/null
+    cp "$failure_root/manifest.valid" "$manifest"
+    rm -f "$workspace/riffdb/queries/unindexed_title.riffq"
+
+    expect_failure "$failure_root/unsafe-role.json" \
+        "$bundle/bin/riffdb" --output json role check "$manifest" \
+            --role BlogApplication --tenant forbidden
+    jq -e '.code == "RDB-AR002" and .cause == "unsafe_role" and .fix == "narrow_role"' \
+        "$failure_root/unsafe-role.json" >/dev/null
+
+    printf '%s\n' '// interrupted generated artifact' >"$generated"
+    expect_failure "$failure_root/interrupted-generation.json" \
+        "$bundle/bin/riffdb" --output json application lock "$manifest" --check
+    jq -e '.code == "RDB-AL008" and .cause == "identity_drift" and .fix == "write_lock"' \
+        "$failure_root/interrupted-generation.json" >/dev/null
+    (
+        cd "$workspace"
+        "$bundle/bin/riffdb" application generate --locked
+        "$bundle/bin/riffdb" application lock --check
+    ) >/dev/null
+    "$bundle/libexec/check-application-boundary" "$workspace" >/dev/null
+
+    jq -n \
+        --arg invalid "$(jq -r '.code' "$failure_root/invalid-source.json")" \
+        --arg stale "$(jq -r '.code' "$failure_root/stale-lock.json")" \
+        --arg index "$(jq -r '.code' "$failure_root/missing-index.json")" \
+        --arg role "$(jq -r '.code' "$failure_root/unsafe-role.json")" \
+        --arg interrupted "$(jq -r '.code' "$failure_root/interrupted-generation.json")" \
+        '{
+          invalid_source: $invalid,
+          stale_lock: $stale,
+          missing_index: $index,
+          unsafe_role: $role,
+          interrupted_generation: $interrupted
+        }' >"$work_root/failure-evidence.json"
+}
+
+start_dev() {
+    local workspace="$1"
+    local fifo="$2"
+    local stderr="$3"
+    mkfifo "$fifo"
+    exec {ready_fd}<>"$fifo"
+    (
+        cd "$workspace"
+        "$bundle/bin/riffdb" dev --seed
+    ) >"$fifo" 2>"$stderr" &
+    dev_pid=$!
+    local ready=
+    while IFS= read -r -t 90 line <&"$ready_fd"; do
+        case "$line" in
+            riffdb-dev-ready-v1$'\t'*) ready="$line"; break ;;
+        esac
+    done
+    exec {ready_fd}>&-
+    [[ -n "$ready" ]] || {
+        cat "$stderr" >&2
+        echo "sealed rehearsal development server did not become ready" >&2
+        exit 1
+    }
+    IFS=$'\t' read -r _ dev_endpoint dev_credential dev_role <<<"$ready"
+    [[ -f "$dev_credential" && -n "$dev_role" ]] || {
+        echo "sealed rehearsal returned an invalid application profile" >&2
+        exit 1
+    }
+}
+
+stop_dev() {
+    if [[ -n "$dev_pid" ]]; then
+        kill -TERM "$dev_pid" 2>/dev/null || true
+        wait "$dev_pid" 2>/dev/null || true
+        dev_pid=
+    fi
+}
+
+record_evidence() {
+    local domain="$1"
+    local language="$2"
+    local workspace="$3"
+    local runtime="$4"
+    local lock="$workspace/riffdb.application.lock.json"
+    local command query
+    if [[ "$domain" == blog ]]; then
+        command=CreateSite
+        query=PostPage
+    else
+        command=CreateStore
+        query=OrderPage
+    fi
+    local commit_sequence application_head command_plan query_lineage query_version
+    local query_contract_hash query_module_hash query_name query_plan
+    commit_sequence="$(jq -er '.commit_sequence' "$runtime")"
+    application_head="$(jq -er '.application_head' "$runtime")"
+    command_plan="$(jq -er '.command_plan_hash' "$runtime")"
+    query_lineage="$(jq -er '.query_identity.contract_lineage' "$runtime")"
+    query_version="$(jq -er '.query_identity.contract_version' "$runtime")"
+    query_contract_hash="$(jq -er '.query_identity.contract_bundle_hash' "$runtime")"
+    query_module_hash="$(jq -er '.query_identity.module_hash' "$runtime")"
+    query_name="$(jq -er '.query_identity.query_name' "$runtime")"
+    query_plan="$(jq -er '.query_identity.plan_hash' "$runtime")"
+    jq -e --argjson commit "$commit_sequence" --argjson head "$application_head" '
+      $commit >= 1 and $head >= $commit
+    ' <<<"null" >/dev/null
+    jq -e \
+        --arg command "$command" \
+        --arg command_plan "$command_plan" \
+        --arg query "$query" \
+        --arg query_lineage "$query_lineage" \
+        --argjson query_version "$query_version" \
+        --arg query_contract_hash "$query_contract_hash" \
+        --arg query_module_hash "$query_module_hash" \
+        --arg query_name "$query_name" \
+        --arg query_plan "$query_plan" '
+      .contract.lineage == $query_lineage
+      and .contract.version == $query_version
+      and .contract.bundle_hash == $query_contract_hash
+      and (.roles[0].definition.commands[]
+          | select(.name == $command)
+          | .plan_hash) == $command_plan
+      and .modules[0].module_hash == $query_module_hash
+      and $query_name == $query
+      and (.modules[0].queries[]
+          | select(.name == $query)
+          | .plan_hash) == $query_plan
+    ' "$lock" >/dev/null || {
+        echo "runtime identity does not match the exact application lock" >&2
+        exit 1
+    }
+    jq -n \
+        --arg bundle "$bundle_hash" \
+        --arg domain "$domain" \
+        --arg language "$language" \
+        --arg lineage "$query_lineage" \
+        --argjson version "$query_version" \
+        --arg contract_hash "$query_contract_hash" \
+        --arg command "$command" \
+        --arg command_plan "$command_plan" \
+        --arg query "$query_name" \
+        --arg module_hash "$query_module_hash" \
+        --arg query_plan "$query_plan" \
+        --arg commit "$commit_sequence" \
+        --arg head "$application_head" \
+        '{
+          schema: "riffdb-agent-application-alpha-rehearsal-run/v1",
+          bundle_hash: $bundle,
+          domain: $domain,
+          language: $language,
+          public_only: true,
+          existing_empty_directory: true,
+          generated_operations: true,
+          boundary_passed: true,
+          first_write: {
+            contract_lineage: $lineage,
+            contract_version: $version,
+            contract_bundle_hash: $contract_hash,
+            operation: $command,
+            plan_hash: $command_plan,
+            commit_sequence: $commit
+          },
+          first_page_read: {
+            contract_lineage: $lineage,
+            contract_version: $version,
+            contract_bundle_hash: $contract_hash,
+            module_hash: $module_hash,
+            query_name: $query,
+            plan_hash: $query_plan,
+            application_head: $head,
+            read_after_commit: $commit
+          }
+        }' >"$work_root/evidence-$domain-$language.json"
+}
+
+run_rust() {
+    local domain="$1"
+    local workspace="$2"
+    local output="$work_root/$domain-rust.out"
+    local app_patch="patch.crates-io.riffdb-client-rust.path=\"$bundle/public/rust-sdk/crates/riffdb-client-rust\""
+    CARGO_TARGET_DIR="$work_root/target-$domain-rust" \
+        cargo run --quiet --offline \
+        --manifest-path "$workspace/Cargo.toml" \
+        --config "$app_patch" \
+        -- "$dev_endpoint" "$dev_credential" >"$output"
+    local marker observed_domain commit_sequence application_head command_plan
+    local query_lineage query_version query_contract_hash query_module_hash query_name query_plan
+    IFS=$'\t' read -r marker observed_domain commit_sequence application_head command_plan \
+        query_lineage query_version query_contract_hash query_module_hash query_name query_plan <"$output"
+    [[ "$marker" == riffdb-rehearsal-v2 && "$observed_domain" == "$domain" ]] || {
+        echo "Rust rehearsal returned invalid evidence" >&2
+        exit 1
+    }
+    jq -n \
+        --arg commit_sequence "$commit_sequence" \
+        --arg application_head "$application_head" \
+        --arg command_plan "$command_plan" \
+        --arg query_lineage "$query_lineage" \
+        --argjson query_version "$query_version" \
+        --arg query_contract_hash "$query_contract_hash" \
+        --arg query_module_hash "$query_module_hash" \
+        --arg query_name "$query_name" \
+        --arg query_plan "$query_plan" \
+        '{
+          commit_sequence: $commit_sequence,
+          application_head: $application_head,
+          command_plan_hash: $command_plan,
+          query_identity: {
+            contract_lineage: $query_lineage,
+            contract_version: $query_version,
+            contract_bundle_hash: $query_contract_hash,
+            module_hash: $query_module_hash,
+            query_name: $query_name,
+            plan_hash: $query_plan
+          }
+        }' \
+        >"$work_root/runtime-$domain-rust.json"
+    record_evidence "$domain" rust "$workspace" "$work_root/runtime-$domain-rust.json"
+}
+
+run_typescript() {
+    local domain="$1"
+    local workspace="$2"
+    local fifo="$work_root/$domain-typescript.fifo"
+    local stderr="$work_root/$domain-typescript.stderr"
+    (
+        cd "$workspace"
+        npm run --silent build
+    )
+    mkfifo "$fifo"
+    exec {web_fd}<>"$fifo"
+    node "$workspace/dist/src/main.js" \
+        "$dev_endpoint" "$dev_credential" "$bundle/bin/riffdb" \
+        >"$fifo" 2>"$stderr" &
+    web_pid=$!
+    local ready=
+    while IFS= read -r -t 30 line <&"$web_fd"; do
+        case "$line" in
+            riffdb-rehearsal-ready-v1$'\t'*) ready="$line"; break ;;
+        esac
+    done
+    exec {web_fd}>&-
+    [[ -n "$ready" ]] || {
+        cat "$stderr" >&2
+        echo "TypeScript rehearsal web application did not become ready" >&2
+        exit 1
+    }
+    local port="${ready#*$'\t'}"
+    curl --fail --silent --show-error \
+        "http://127.0.0.1:$port/rehearsal" >"$work_root/runtime-$domain-typescript.json"
+    kill -TERM "$web_pid" 2>/dev/null || true
+    wait "$web_pid" 2>/dev/null || true
+    web_pid=
+    local lock="$workspace/riffdb.application.lock.json"
+    local command query
+    if [[ "$domain" == blog ]]; then
+        command=CreateSite
+        query=PostPage
+    else
+        command=CreateStore
+        query=OrderPage
+    fi
+    jq -e \
+        --arg domain "$domain" \
+        --arg lineage "$(jq -er '.contract.lineage' "$lock")" \
+        --argjson version "$(jq -er '.contract.version' "$lock")" \
+        --arg contract_hash "$(jq -er '.contract.bundle_hash' "$lock")" \
+        --arg module_hash "$(jq -er '.modules[0].module_hash' "$lock")" \
+        --arg command_plan "$(jq -er --arg name "$command" \
+            '.roles[0].definition.commands[] | select(.name == $name) | .plan_hash' "$lock")" \
+        --arg query_name "$query" \
+        --arg query_plan "$(jq -er --arg name "$query" \
+            '.modules[0].queries[] | select(.name == $name) | .plan_hash' "$lock")" '
+      .schema == "riffdb-rehearsal-runtime/v1"
+      and .domain == $domain
+      and .contractLineage == $lineage
+      and .contractVersion == $version
+      and .contractBundleHash == $contract_hash
+      and .moduleHash == $module_hash
+      and .commandPlanHash == $command_plan
+      and .queryIdentity.contractLineage == $lineage
+      and .queryIdentity.contractVersion == $version
+      and .queryIdentity.contractBundleHash == $contract_hash
+      and .queryIdentity.moduleHash == $module_hash
+      and .queryIdentity.queryName == $query_name
+      and .queryIdentity.planHash == $query_plan
+      and (.commitSequence | test("^[1-9][0-9]*$"))
+      and (.applicationHead | test("^[1-9][0-9]*$"))
+    ' "$work_root/runtime-$domain-typescript.json" >/dev/null
+    jq '{
+      commit_sequence: .commitSequence,
+      application_head: .applicationHead,
+      command_plan_hash: .commandPlanHash,
+      query_identity: {
+        contract_lineage: .queryIdentity.contractLineage,
+        contract_version: .queryIdentity.contractVersion,
+        contract_bundle_hash: .queryIdentity.contractBundleHash,
+        module_hash: .queryIdentity.moduleHash,
+        query_name: .queryIdentity.queryName,
+        plan_hash: .queryIdentity.planHash
+      }
+    }' "$work_root/runtime-$domain-typescript.json" \
+        >"$work_root/runtime-$domain-typescript.normalized.json"
+    record_evidence "$domain" typescript "$workspace" \
+        "$work_root/runtime-$domain-typescript.normalized.json"
+}
+
+first=true
+for domain in blog orders; do
+    for language in rust typescript; do
+        workspace="$work_root/$domain-$language"
+        prepare_application "$domain" "$language" "$workspace"
+        if [[ "$first" == true ]]; then
+            exercise_failure_recovery "$workspace"
+            first=false
+        fi
+        start_dev "$workspace" "$work_root/$domain-$language.dev.fifo" \
+            "$work_root/$domain-$language.dev.stderr"
+        if [[ "$language" == rust ]]; then
+            run_rust "$domain" "$workspace"
+        else
+            run_typescript "$domain" "$workspace"
+        fi
+        stop_dev
+    done
+done
+
+find "$campaign_one" -mindepth 2 -maxdepth 2 -type f \
+    \( -name report.json -o -name events.jsonl \) -print0 \
+    | sort -z | xargs -0 sha256sum >"$work_root/campaign-01.after"
+cmp "$work_root/campaign-01.before" "$work_root/campaign-01.after" >/dev/null || {
+    echo "campaign 01 evidence changed during rehearsal" >&2
+    exit 1
+}
+
+jq -s \
+    --arg bundle "$bundle_hash" \
+    --arg performance_fixture "fixtures/performance/wp-362-command-growth.jsonl" \
+    --arg performance_hash "$performance_hash" \
+    --slurpfile recoveries "$work_root/failure-evidence.json" \
+    --slurpfile performance "$work_root/performance-evidence.json" '
+  {
+    schema: "riffdb-agent-application-alpha-rehearsal/v1",
+    work_package: "WP-365",
+    bundle_hash: $bundle,
+    public_only: true,
+    campaign_01_immutable: true,
+    recoveries: $recoveries[0],
+    growing_database_performance: {
+      fixture: $performance_fixture,
+      fixture_sha256: $performance_hash,
+      result: $performance[0]
+    },
+    runs: sort_by(.domain, .language)
+  }
+' \
+    "$work_root"/evidence-*.json >"$work_root/rehearsal.json"
+
+jq -e '
+  .schema == "riffdb-agent-application-alpha-rehearsal/v1"
+  and .public_only == true
+  and .campaign_01_immutable == true
+  and (.runs | length) == 4
+  and ([.runs[] | [.domain, .language] | join("-")] | sort)
+      == ["blog-rust", "blog-typescript", "orders-rust", "orders-typescript"]
+  and all(.runs[];
+      .existing_empty_directory == true
+      and .generated_operations == true
+      and .boundary_passed == true
+      and (.first_write.commit_sequence | test("^[1-9][0-9]*$"))
+      and (.first_page_read.application_head | test("^[1-9][0-9]*$"))
+      and ((.first_page_read.application_head | tonumber)
+          >= (.first_write.commit_sequence | tonumber)))
+  and .recoveries.invalid_source != null
+  and .recoveries.stale_lock != null
+  and .recoveries.missing_index == "RDB-QP003"
+  and .recoveries.unsafe_role == "RDB-AR002"
+  and .recoveries.interrupted_generation != null
+  and .growing_database_performance.result.perf_003_passed == true
+  and .growing_database_performance.result.retained_basis_points >= 5000
+' "$work_root/rehearsal.json" >/dev/null
+
+if [[ -n "$evidence_output" ]]; then
+    cp "$work_root/rehearsal.json" "$evidence_output"
+fi
+if [[ "$assert_complete" == true ]]; then
+    cmp "$repo_root/release/evidence/agent-application-alpha-rehearsal-v1.json" \
+        "$work_root/rehearsal.json" >/dev/null || {
+        echo "published WP-365 rehearsal evidence is missing or stale" >&2
+        exit 1
+    }
+fi
+
+echo "Agent Application Alpha public-only rehearsal passed"

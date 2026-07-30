@@ -31,8 +31,8 @@ pub use application::{
     ApplicationCardinality, ApplicationClientError, ApplicationCommand, ApplicationCommandResult,
     ApplicationContract, ApplicationRecord, ApplicationResultField, ApplicationValue,
     GeneratedBatchError, GeneratedBatchItem, GeneratedBatchOptions, GeneratedBatchProgress,
-    GeneratedBatchResult, NamedQuery, NamedQueryResult, QueryOptions, StableApplicationClient,
-    TypedCommandResult, TypedQueryResult,
+    GeneratedBatchResult, NamedQuery, NamedQueryResult, QueryOptions, QueryResponseIdentity,
+    StableApplicationClient, TypedCommandResult, TypedQueryResult,
 };
 pub use capability::{
     BootstrapCapabilityCreateTemplate, CapabilityCreateTemplateError,

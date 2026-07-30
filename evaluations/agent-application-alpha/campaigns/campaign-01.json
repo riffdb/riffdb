@@ -1,0 +1,65 @@
+{
+  "schema": "riffdb-agent-application-alpha-campaign/v1",
+  "campaign_id": "campaign-01",
+  "bundle_hash": "1afb8faf08f43dd5f38a4b2c90a1bfad450eb1ce21663457ebbe4a1c9865827a",
+  "status": "failed",
+  "immutable": true,
+  "runs": [
+    {
+      "run_id": "blog-rust-terra-01",
+      "domain": "blog",
+      "language": "rust",
+      "agent_identity": "terra-blog-rust-01",
+      "report": {
+        "path": "evaluations/agent-application-alpha/runs/blog-rust-terra-01/report.json",
+        "sha256": "d8fb92949941df491d9d1c4384b139500126ce4c81b67788ce615756beb70e0a"
+      },
+      "events": {
+        "path": "evaluations/agent-application-alpha/runs/blog-rust-terra-01/events.jsonl",
+        "sha256": "27363d29f97313c51462308e96d69b96b752a91859284a1d23e5d563e9da1e7d"
+      }
+    },
+    {
+      "run_id": "blog-typescript-terra-01",
+      "domain": "blog",
+      "language": "typescript",
+      "agent_identity": "terra-blog-typescript-01",
+      "report": {
+        "path": "evaluations/agent-application-alpha/runs/blog-typescript-terra-01/report.json",
+        "sha256": "4fb1883764683070f95fc2fc9a21bf657b136c10307fb25ae605061f84fe065d"
+      },
+      "events": {
+        "path": "evaluations/agent-application-alpha/runs/blog-typescript-terra-01/events.jsonl",
+        "sha256": "536afe1c62a326ce025a125649e6169411f9b0d633b102a3121194433d3c061d"
+      }
+    },
+    {
+      "run_id": "orders-rust-terra-01",
+      "domain": "orders",
+      "language": "rust",
+      "agent_identity": "terra-orders-rust-01",
+      "report": {
+        "path": "evaluations/agent-application-alpha/runs/orders-rust-terra-01/report.json",
+        "sha256": "4aa9c3b63ec7bb5955bd0a05d772bc05012c5772296c7f8b96f0e628ab30cc25"
+      },
+      "events": {
+        "path": "evaluations/agent-application-alpha/runs/orders-rust-terra-01/events.jsonl",
+        "sha256": "aa29ce7819b84cb80e3c1452ae141e285e543397b65af1d752352c91a3a479d9"
+      }
+    },
+    {
+      "run_id": "orders-typescript-terra-01",
+      "domain": "orders",
+      "language": "typescript",
+      "agent_identity": "terra-orders-typescript-01",
+      "report": {
+        "path": "evaluations/agent-application-alpha/runs/orders-typescript-terra-01/report.json",
+        "sha256": "da3916079ef6fd316fb8a3462b5b4f34501ab015ef073989e285c896fa0bbd7b"
+      },
+      "events": {
+        "path": "evaluations/agent-application-alpha/runs/orders-typescript-terra-01/events.jsonl",
+        "sha256": "58fc5b13815c7e16e4c7c0cafee719bc7dcdd8dfa17d13722e01cb070040fc51"
+      }
+    }
+  ]
+}
