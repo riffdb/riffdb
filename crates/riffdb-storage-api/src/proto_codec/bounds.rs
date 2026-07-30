@@ -20,7 +20,7 @@ use super::{
     index_epoch_to_proto, plan_to_proto, storage_result, timestamp_to_proto,
 };
 
-const OUTBOX_INTENT: &str = "riffdb.storage.v1.StoredOutboxIntentV1";
+const OUTBOX_INTENT: &str = "riffdb.storage.v1.StoredOutboxIntentV2";
 const MAXIMUM_WIDTH_U64: u64 = u64::MAX;
 const SIZING_EVENT_HASH: [u8; 32] = [0xff; 32];
 
@@ -282,7 +282,14 @@ pub fn command_write_set_upper_bound_v1(
         event_ids: event_ids.clone(),
         admitted_claims: Some(admitted_claims),
     };
-    let commit = wire::StoredCommitRecordV1 {
+    let event_references = event_messages
+        .iter()
+        .map(|event| wire::EventReferenceV2 {
+            event_id: event.event_id,
+            event_hash: event.event_hash.clone(),
+        })
+        .collect::<Vec<_>>();
+    let commit = wire::StoredCommitRecordV2 {
         commit_sequence: MAXIMUM_WIDTH_U64,
         admission_request_id,
         plan: Some(plan),
@@ -301,7 +308,7 @@ pub fn command_write_set_upper_bound_v1(
                 post_image: Some(post_image),
             })
             .collect(),
-        events: event_messages.clone(),
+        event_references: event_references.clone(),
         declared_outcome: Some(declared_outcome_to_proto(evaluated.outcome())),
         provenance_id,
         outbox_event_ids: event_ids,
@@ -341,10 +348,12 @@ pub fn command_write_set_upper_bound_v1(
                     .iter()
                     .map(|value| sizing_charge(EVENT, value)),
             )?,
-            outbox_intents: sum_sizes(event_messages.iter().cloned().map(|event| {
+            outbox_intents: sum_sizes(event_references.into_iter().map(|event_reference| {
                 sizing_charge(
                     OUTBOX_INTENT,
-                    &wire::StoredOutboxIntentV1 { event: Some(event) },
+                    &wire::StoredOutboxIntentV2 {
+                        event_reference: Some(event_reference),
+                    },
                 )
             }))?,
             provenance: sizing_charge(PROVENANCE, &provenance)?,

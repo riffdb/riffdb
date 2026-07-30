@@ -23,8 +23,12 @@ use riffdb_storage_api::{
         transcode_durable_record_to_v2,
     },
 };
-use riffdb_types::DatabaseId;
+use riffdb_types::{DatabaseId, SchemaHash};
 
+use crate::codec::{
+    decode_commit_with_event_table, decode_outbox_with_event_table, encode_commit_record_v1,
+    encode_outbox_intent_v1,
+};
 use crate::error::{
     commit_error, database_error, precommit_storage_error, storage_error, table_error,
     transaction_error,
@@ -32,9 +36,9 @@ use crate::error::{
 use crate::gate::{ExclusiveGate, ExclusiveLease};
 use crate::hooks::{RedbTestController, RedbTestOperation};
 use crate::layout::{
-    BYTE_TABLES, META, META_ADMINISTRATION_SEQUENCE, META_APPLICATION_SEQUENCE,
+    BYTE_TABLES, COMMITS, EVENTS, META, META_ADMINISTRATION_SEQUENCE, META_APPLICATION_SEQUENCE,
     META_CAPABILITY_BOOTSTRAP, META_DATABASE_ID, META_FORMAT_VERSION, META_KEYS,
-    META_RECORD_REGISTRY, TABLE_NAMES, create_all_tables,
+    META_RECORD_REGISTRY, OUTBOX, TABLE_NAMES, create_all_tables,
 };
 use crate::transient::{TransientIndexDelta, TransientIndexState, TransientIndexes};
 
@@ -176,6 +180,10 @@ enum LayoutState {
 
 const FORMAT_MIGRATION_MAX_ROWS: usize = 500;
 const FORMAT_MIGRATION_MAX_BYTES: usize = 4 * 1024 * 1024;
+const PRE_EVENT_REFERENCE_REGISTRY_DIGEST: [u8; 32] = [
+    0x79, 0xc2, 0xc8, 0x65, 0x27, 0xe0, 0xb8, 0x3f, 0x67, 0xed, 0xe5, 0xa7, 0x4a, 0xaf, 0x75, 0x0a,
+    0xc1, 0x94, 0x38, 0xd9, 0xc9, 0x0e, 0x45, 0xe0, 0xcb, 0x7b, 0x4f, 0x18, 0xe2, 0xdd, 0xc9, 0x9e,
+];
 
 impl RedbStore {
     /// Opens an existing redb file or creates an empty redb container.
@@ -257,7 +265,7 @@ impl RedbStore {
         let registry = metadata
             .get(META_RECORD_REGISTRY)
             .map_err(precommit_storage_error)?;
-        match format {
+        let event_reference_migration_required = match format {
             StorageFormatVersion::V1 if registry.is_some() => {
                 return Err(storage_error(StorageErrorKind::CorruptData));
             }
@@ -268,18 +276,29 @@ impl RedbStore {
                 let observed = decode_record_registry_v2(registry.value())
                     .map_err(crate::error::codec_error)?;
                 if observed.value()
-                    != &riffdb_storage_api::proto_codec::current_record_registry_digest()
+                    == &riffdb_storage_api::proto_codec::current_record_registry_digest()
                 {
+                    false
+                } else if observed.value()
+                    == &SchemaHash::from_bytes(PRE_EVENT_REFERENCE_REGISTRY_DIGEST)
+                {
+                    true
+                } else {
                     return Err(storage_error(StorageErrorKind::IncompatibleFormat));
                 }
             }
-            StorageFormatVersion::V1 => {}
+            StorageFormatVersion::V1 => false,
             _ => return Err(storage_error(StorageErrorKind::IncompatibleFormat)),
-        }
+        };
         drop(registry);
         drop(encoded_format);
         drop(metadata);
         drop(transaction);
+
+        if event_reference_migration_required {
+            migrate_event_reference_records(&self.shared)?;
+            publish_current_record_registry(&self.shared)?;
+        }
 
         let require_compact = format == StorageFormatVersion::V2;
         migrate_string_table(&self.shared, META, require_compact)?;
@@ -289,6 +308,7 @@ impl RedbStore {
         if require_compact {
             return Ok(());
         }
+        migrate_event_reference_records(&self.shared)?;
 
         let mut transaction = self
             .shared
@@ -366,6 +386,185 @@ impl RedbStore {
             shared: Arc::clone(&self.shared),
         }
     }
+}
+
+fn migrate_event_reference_records(shared: &SharedRedb) -> Result<(), StorageError> {
+    migrate_commit_event_references(shared)?;
+    migrate_outbox_event_references(shared)
+}
+
+fn migrate_commit_event_references(shared: &SharedRedb) -> Result<(), StorageError> {
+    let mut after: Option<Vec<u8>> = None;
+    loop {
+        let mut transaction = shared.database.begin_write().map_err(transaction_error)?;
+        transaction.set_two_phase_commit(true);
+        transaction
+            .set_durability(Durability::Immediate)
+            .map_err(|_| storage_error(StorageErrorKind::InvariantViolation))?;
+        let events = transaction.open_table(EVENTS).map_err(table_error)?;
+        let mut commits = transaction.open_table(COMMITS).map_err(table_error)?;
+        let mut replacements = Vec::new();
+        let mut last = None;
+        let mut scanned_rows = 0usize;
+        let mut scanned_bytes = 0usize;
+        let mut reached_end = true;
+        {
+            let mut rows = match after.as_deref() {
+                Some(after) => commits
+                    .range::<&[u8]>((Excluded(after), Unbounded))
+                    .map_err(precommit_storage_error)?,
+                None => commits.iter().map_err(precommit_storage_error)?,
+            };
+            for row in &mut rows {
+                let (key, value) = row.map_err(precommit_storage_error)?;
+                let key = key.value().to_vec();
+                let original = value.value();
+                let commit = decode_commit_with_event_table(original, &events)?
+                    .into_parts()
+                    .0;
+                let current = encode_commit_record_v1(&commit)?;
+                scanned_rows = scanned_rows.saturating_add(1);
+                scanned_bytes = scanned_bytes
+                    .checked_add(original.len())
+                    .and_then(|total| total.checked_add(current.as_bytes().len()))
+                    .ok_or_else(|| storage_error(StorageErrorKind::LimitExceeded))?;
+                if current.as_bytes() != original {
+                    replacements.push((key.clone(), current.into_bytes()));
+                }
+                last = Some(key);
+                if scanned_rows >= FORMAT_MIGRATION_MAX_ROWS
+                    || scanned_bytes >= FORMAT_MIGRATION_MAX_BYTES
+                {
+                    reached_end = false;
+                    break;
+                }
+            }
+        }
+        let changed = !replacements.is_empty();
+        for (key, value) in replacements {
+            commits
+                .insert(key.as_slice(), value.as_slice())
+                .map_err(precommit_storage_error)?;
+        }
+        drop(commits);
+        drop(events);
+        if changed {
+            shared.before_test_commit(RedbTestOperation::StorageFormatMigrationBatch)?;
+            shared.commit_durable(transaction)?;
+            shared.after_test_commit(RedbTestOperation::StorageFormatMigrationBatch)?;
+        } else {
+            transaction.abort().map_err(precommit_storage_error)?;
+        }
+        if reached_end {
+            return Ok(());
+        }
+        after = last;
+    }
+}
+
+fn migrate_outbox_event_references(shared: &SharedRedb) -> Result<(), StorageError> {
+    let mut after: Option<Vec<u8>> = None;
+    loop {
+        let mut transaction = shared.database.begin_write().map_err(transaction_error)?;
+        transaction.set_two_phase_commit(true);
+        transaction
+            .set_durability(Durability::Immediate)
+            .map_err(|_| storage_error(StorageErrorKind::InvariantViolation))?;
+        let events = transaction.open_table(EVENTS).map_err(table_error)?;
+        let mut outbox = transaction.open_table(OUTBOX).map_err(table_error)?;
+        let mut replacements = Vec::new();
+        let mut last = None;
+        let mut scanned_rows = 0usize;
+        let mut scanned_bytes = 0usize;
+        let mut reached_end = true;
+        {
+            let mut rows = match after.as_deref() {
+                Some(after) => outbox
+                    .range::<&[u8]>((Excluded(after), Unbounded))
+                    .map_err(precommit_storage_error)?,
+                None => outbox.iter().map_err(precommit_storage_error)?,
+            };
+            for row in &mut rows {
+                let (key, value) = row.map_err(precommit_storage_error)?;
+                let key = key.value().to_vec();
+                let original = value.value();
+                let intent = decode_outbox_with_event_table(original, &events)?
+                    .into_parts()
+                    .0;
+                let current = encode_outbox_intent_v1(&intent)?;
+                scanned_rows = scanned_rows.saturating_add(1);
+                scanned_bytes = scanned_bytes
+                    .checked_add(original.len())
+                    .and_then(|total| total.checked_add(current.as_bytes().len()))
+                    .ok_or_else(|| storage_error(StorageErrorKind::LimitExceeded))?;
+                if current.as_bytes() != original {
+                    replacements.push((key.clone(), current.into_bytes()));
+                }
+                last = Some(key);
+                if scanned_rows >= FORMAT_MIGRATION_MAX_ROWS
+                    || scanned_bytes >= FORMAT_MIGRATION_MAX_BYTES
+                {
+                    reached_end = false;
+                    break;
+                }
+            }
+        }
+        let changed = !replacements.is_empty();
+        for (key, value) in replacements {
+            outbox
+                .insert(key.as_slice(), value.as_slice())
+                .map_err(precommit_storage_error)?;
+        }
+        drop(outbox);
+        drop(events);
+        if changed {
+            shared.before_test_commit(RedbTestOperation::StorageFormatMigrationBatch)?;
+            shared.commit_durable(transaction)?;
+            shared.after_test_commit(RedbTestOperation::StorageFormatMigrationBatch)?;
+        } else {
+            transaction.abort().map_err(precommit_storage_error)?;
+        }
+        if reached_end {
+            return Ok(());
+        }
+        after = last;
+    }
+}
+
+fn publish_current_record_registry(shared: &SharedRedb) -> Result<(), StorageError> {
+    let mut transaction = shared.database.begin_write().map_err(transaction_error)?;
+    transaction.set_two_phase_commit(true);
+    transaction
+        .set_durability(Durability::Immediate)
+        .map_err(|_| storage_error(StorageErrorKind::InvariantViolation))?;
+    let mut metadata = transaction.open_table(META).map_err(table_error)?;
+    let observed = {
+        let encoded = metadata
+            .get(META_RECORD_REGISTRY)
+            .map_err(precommit_storage_error)?
+            .ok_or_else(|| storage_error(StorageErrorKind::CorruptData))?;
+        *decode_record_registry_v2(encoded.value())
+            .map_err(crate::error::codec_error)?
+            .value()
+    };
+    if observed == riffdb_storage_api::proto_codec::current_record_registry_digest() {
+        drop(metadata);
+        return transaction.abort().map_err(precommit_storage_error);
+    }
+    if observed != SchemaHash::from_bytes(PRE_EVENT_REFERENCE_REGISTRY_DIGEST) {
+        return Err(storage_error(StorageErrorKind::IncompatibleFormat));
+    }
+    let current = encode_record_registry_v2(
+        riffdb_storage_api::proto_codec::current_record_registry_digest(),
+    )
+    .map_err(crate::error::codec_error)?;
+    metadata
+        .insert(META_RECORD_REGISTRY, current.as_bytes())
+        .map_err(precommit_storage_error)?;
+    drop(metadata);
+    shared.before_test_commit(RedbTestOperation::StorageFormatMigrationBatch)?;
+    shared.commit_durable(transaction)?;
+    shared.after_test_commit(RedbTestOperation::StorageFormatMigrationBatch)
 }
 
 fn migrate_string_table(
@@ -1015,6 +1214,8 @@ mod tests {
 
     use riffdb_types::{CommitSequence, EventId};
 
+    use crate::keys::{encode_application_sequence_key, encode_event_key};
+
     use super::*;
 
     static NEXT_TEST_PATH: AtomicU64 = AtomicU64::new(1);
@@ -1040,6 +1241,26 @@ mod tests {
     fn database_id(seed: u8) -> DatabaseId {
         DatabaseId::from_unix_milliseconds_and_random(1_700_000_000_000, [seed; 10])
             .expect("valid deterministic UUIDv7")
+    }
+
+    fn wp373_fixture_envelope(record_type: &str) -> Vec<u8> {
+        let line = include_str!("../../../fixtures/proto/durable-wire-vectors-v2.txt")
+            .lines()
+            .find(|line| line.starts_with(record_type))
+            .expect("WP-373 fixture record exists");
+        let encoded = line
+            .split('\t')
+            .nth(2)
+            .expect("fixture includes envelope hex");
+        assert_eq!(encoded.len() % 2, 0);
+        encoded
+            .as_bytes()
+            .chunks_exact(2)
+            .map(|pair| {
+                let text = std::str::from_utf8(pair).expect("fixture hex is UTF-8");
+                u8::from_str_radix(text, 16).expect("fixture hex is valid")
+            })
+            .collect()
     }
 
     #[test]
@@ -1162,6 +1383,96 @@ mod tests {
             .get(META_RECORD_REGISTRY)
             .expect("read registry")
             .expect("registry published");
+        assert_eq!(
+            *decode_record_registry_v2(registry.value())
+                .expect("decode registry")
+                .value(),
+            riffdb_storage_api::proto_codec::current_record_registry_digest()
+        );
+    }
+
+    #[test]
+    fn wp373_event_copies_migrate_to_exact_references_before_registry_publication() {
+        let path = TestDatabasePath::new("event-reference-migration");
+        let mut store = RedbStore::open(&path.0).expect("open empty store");
+        store
+            .initialize_database(database_id(0x1b))
+            .expect("initialize current database");
+
+        let transaction = store
+            .shared
+            .database
+            .begin_write()
+            .expect("begin WP-373 fixture");
+        let event_id = EventId::new(CommitSequence::first(), 0);
+        let commit_key = encode_application_sequence_key(CommitSequence::first());
+        let event_key = encode_event_key(event_id);
+        let event = wp373_fixture_envelope("riffdb.storage.v1.StoredDurableEventV1");
+        let commit = wp373_fixture_envelope("riffdb.storage.v1.StoredCommitRecordV1");
+        let outbox = wp373_fixture_envelope("riffdb.storage.v1.StoredOutboxIntentV1");
+        transaction
+            .open_table(EVENTS)
+            .expect("open events")
+            .insert(event_key.as_slice(), event.as_slice())
+            .expect("insert authoritative event");
+        transaction
+            .open_table(COMMITS)
+            .expect("open commits")
+            .insert(commit_key.as_slice(), commit.as_slice())
+            .expect("insert historical commit");
+        transaction
+            .open_table(OUTBOX)
+            .expect("open outbox")
+            .insert(event_key.as_slice(), outbox.as_slice())
+            .expect("insert historical outbox intent");
+        let predecessor =
+            encode_record_registry_v2(SchemaHash::from_bytes(PRE_EVENT_REFERENCE_REGISTRY_DIGEST))
+                .expect("encode predecessor registry");
+        transaction
+            .open_table(META)
+            .expect("open metadata")
+            .insert(META_RECORD_REGISTRY, predecessor.as_bytes())
+            .expect("install predecessor registry");
+        transaction.commit().expect("commit WP-373 fixture");
+        drop(store);
+
+        let interrupted = RedbTestController::return_unknown_after_commit(
+            RedbTestOperation::StorageFormatMigrationBatch,
+        );
+        assert_eq!(
+            RedbStore::open_with_test_controller(&path.0, interrupted)
+                .expect_err("injected postcommit uncertainty interrupts migration")
+                .kind(),
+            StorageErrorKind::CommitStatusUnknown
+        );
+        let migrated = RedbStore::open(&path.0).expect("migrate predecessor database");
+        let read = migrated
+            .shared
+            .database
+            .begin_read()
+            .expect("read migrated database");
+        let events = read.open_table(EVENTS).expect("open events");
+        let commits = read.open_table(COMMITS).expect("open commits");
+        let commit = commits
+            .get(commit_key.as_slice())
+            .expect("read commit")
+            .expect("commit remains");
+        assert_eq!(&commit.value()[..8], b"RDB2\x02\x11\0\x02");
+        decode_commit_with_event_table(commit.value(), &events)
+            .expect("migrated commit proves authoritative event");
+        let outbox_table = read.open_table(OUTBOX).expect("open outbox");
+        let outbox = outbox_table
+            .get(event_key.as_slice())
+            .expect("read outbox")
+            .expect("outbox remains");
+        assert_eq!(&outbox.value()[..8], b"RDB2\x02\x0f\0\x02");
+        decode_outbox_with_event_table(outbox.value(), &events)
+            .expect("migrated outbox proves authoritative event");
+        let metadata = read.open_table(META).expect("open metadata");
+        let registry = metadata
+            .get(META_RECORD_REGISTRY)
+            .expect("read registry")
+            .expect("registry remains");
         assert_eq!(
             *decode_record_registry_v2(registry.value())
                 .expect("decode registry")

@@ -29,7 +29,7 @@ use riffdb_types::{
 };
 
 use crate::codec::{
-    decode_commit_record_v1, decode_durable_event_v1, decode_outbox_intent_v1,
+    decode_commit_with_event_table, decode_durable_event_v1, decode_outbox_intent_with_event,
     decode_outbox_status_v1, decode_projection_apply_v1, decode_projection_control_v1,
     decode_projection_state_v1, encode_outbox_status_v1, encode_projection_apply_v1,
     encode_projection_control_v1, encode_projection_state_v1,
@@ -368,11 +368,18 @@ where
         .map_err(precommit_storage_error)?
         .map(|encoded| decode_durable_event_v1(encoded.value()))
         .transpose()?;
-    let intent = intents
+    let encoded_intent = intents
         .get(key.as_slice())
         .map_err(precommit_storage_error)?
-        .map(|encoded| decode_outbox_intent_v1(encoded.value()))
-        .transpose()?;
+        .map(|encoded| encoded.value().to_vec());
+    let intent = match (encoded_intent, event.as_ref()) {
+        (Some(encoded), Some(event)) => Some(decode_outbox_intent_with_event(
+            &encoded,
+            event.value().clone(),
+        )?),
+        (Some(_), None) => return Err(corrupt()),
+        (None, _) => None,
+    };
     let status = statuses
         .get(key.as_slice())
         .map_err(precommit_storage_error)?
@@ -385,7 +392,7 @@ where
         return Err(corrupt());
     }
 
-    let commit = read_commit(commits, event_id.commit_sequence())?;
+    let commit = read_commit(commits, events, event_id.commit_sequence())?;
     let ordinal = usize::try_from(event_id.event_ordinal()).map_err(|_| corrupt())?;
     match (event, intent) {
         (None, None) => {
@@ -490,7 +497,8 @@ impl ProjectionMutationRepository for RedbOperationalPorts {
         let transaction = access.transaction()?;
         {
             let commits = transaction.open_table(COMMITS).map_err(table_error)?;
-            if read_commit(&commits, request.sequence())?.is_none() {
+            let events = transaction.open_table(EVENTS).map_err(table_error)?;
+            if read_commit(&commits, &events, request.sequence())?.is_none() {
                 return Err(corrupt());
             }
         }
@@ -679,7 +687,8 @@ impl ProjectionMutationRepository for RedbOperationalPorts {
         };
         let head = {
             let commits = transaction.open_table(COMMITS).map_err(table_error)?;
-            authoritative_head(&commits)?
+            let events = transaction.open_table(EVENTS).map_err(table_error)?;
+            authoritative_head(&commits, &events)?
         };
         let result = evaluate_projection_control_operation(current.as_ref(), &operation, head)
             .map_err(request_value_error)?;
@@ -807,7 +816,8 @@ impl ProjectionQueryReader for RedbOperationalPorts {
             .open_table(PROJECTION_FRONTIER)
             .map_err(table_error)?;
         let commits = transaction.open_table(COMMITS).map_err(table_error)?;
-        let head = authoritative_head(&commits)?;
+        let events = transaction.open_table(EVENTS).map_err(table_error)?;
+        let head = authoritative_head(&commits, &events)?;
         Ok(read_projection_control(&controls, identity)?.map_or_else(
             || ProjectionStatus::uninitialized(identity.clone(), head),
             |control| ProjectionStatus::from_control(&control, head),
@@ -877,6 +887,7 @@ impl ProjectionRecoveryRepository for RedbOperationalPorts {
             .open_table(PROJECTION_FRONTIER)
             .map_err(table_error)?;
         let commits = transaction.open_table(COMMITS).map_err(table_error)?;
+        let events = transaction.open_table(EVENTS).map_err(table_error)?;
         let markers = transaction
             .open_table(PROJECTION_APPLIED)
             .map_err(table_error)?;
@@ -894,7 +905,7 @@ impl ProjectionRecoveryRepository for RedbOperationalPorts {
             Err(error) => return Err(error),
         };
         if control.as_ref() != Some(request.expected_control())
-            || authoritative_head(&commits)? != request.expected_authoritative_head()
+            || authoritative_head(&commits, &events)? != request.expected_authoritative_head()
         {
             return Ok(ProjectionRecoveryValidationResultV1::FenceChanged);
         }
@@ -925,24 +936,28 @@ impl ProjectionRecoveryRepository for RedbOperationalPorts {
 
         match request.expected_page() {
             ProjectionRecoveryExpectedPageV1::Markers(expected) => {
-                validate_redb_projection_marker_page(&markers, &commits, request, expected)
+                validate_redb_projection_marker_page(&markers, &commits, &events, request, expected)
             }
             ProjectionRecoveryExpectedPageV1::Rows(expected) => {
-                validate_redb_projection_state_page(&rows, &markers, &commits, request, expected)
+                validate_redb_projection_state_page(
+                    &rows, &markers, &commits, &events, request, expected,
+                )
             }
         }
     }
 }
 
-fn validate_redb_projection_marker_page<M, C>(
+fn validate_redb_projection_marker_page<M, C, E>(
     markers: &M,
     commits: &C,
+    events: &E,
     request: &ProjectionRecoveryValidationRequestV1,
     expected: &[StoredProjectionApplyV1],
 ) -> Result<ProjectionRecoveryValidationResultV1, StorageError>
 where
     M: ReadableTable<&'static [u8], &'static [u8]>,
     C: ReadableTable<&'static [u8], &'static [u8]>,
+    E: ReadableTable<&'static [u8], &'static [u8]>,
 {
     let after = match request.continuation() {
         None => None,
@@ -1049,7 +1064,7 @@ where
                 ProjectionRecoveryFindingCodeV1::MarkerAboveFrontier,
             ));
         }
-        if read_commit(commits, sequence)?.is_none() {
+        if read_commit(commits, events, sequence)?.is_none() {
             return Err(corrupt());
         }
         if actual != expected {
@@ -1095,10 +1110,11 @@ where
     })
 }
 
-fn validate_redb_projection_state_page<S, M, C>(
+fn validate_redb_projection_state_page<S, M, C, E>(
     rows: &S,
     markers: &M,
     commits: &C,
+    events: &E,
     request: &ProjectionRecoveryValidationRequestV1,
     expected: &[StoredProjectionStateV1],
 ) -> Result<ProjectionRecoveryValidationResultV1, StorageError>
@@ -1106,6 +1122,7 @@ where
     S: ReadableTable<&'static [u8], &'static [u8]>,
     M: ReadableTable<&'static [u8], &'static [u8]>,
     C: ReadableTable<&'static [u8], &'static [u8]>,
+    E: ReadableTable<&'static [u8], &'static [u8]>,
 {
     let (after, validated_rows) = match request.continuation() {
         Some(ProjectionRecoveryContinuationV1::Rows {
@@ -1216,7 +1233,7 @@ where
             }
             Err(error) => return Err(error),
         }
-        if read_commit(commits, actual.last_changed_sequence())?.is_none() {
+        if read_commit(commits, events, actual.last_changed_sequence())?.is_none() {
             return Err(corrupt());
         }
         if actual != expected {
@@ -1480,6 +1497,7 @@ where
 
 fn read_commit<T>(
     table: &T,
+    events: &impl ReadableTable<&'static [u8], &'static [u8]>,
     sequence: CommitSequence,
 ) -> Result<Option<StoredCommitRecordV1>, StorageError>
 where
@@ -1489,14 +1507,19 @@ where
     let Some(encoded) = table.get(key.as_slice()).map_err(precommit_storage_error)? else {
         return Ok(None);
     };
-    let commit = decode_commit_record_v1(encoded.value())?.into_parts().0;
+    let commit = decode_commit_with_event_table(encoded.value(), events)?
+        .into_parts()
+        .0;
     if commit.commit_sequence() != sequence {
         return Err(corrupt());
     }
     Ok(Some(commit))
 }
 
-fn authoritative_head<T>(table: &T) -> Result<FrontierPosition, StorageError>
+fn authoritative_head<T>(
+    table: &T,
+    events: &impl ReadableTable<&'static [u8], &'static [u8]>,
+) -> Result<FrontierPosition, StorageError>
 where
     T: ReadableTable<&'static [u8], &'static [u8]>,
 {
@@ -1504,7 +1527,9 @@ where
         return Ok(FrontierPosition::BeforeFirst);
     };
     let sequence = decode_application_sequence_key(physical_key.value()).map_err(|_| corrupt())?;
-    let commit = decode_commit_record_v1(encoded.value())?.into_parts().0;
+    let commit = decode_commit_with_event_table(encoded.value(), events)?
+        .into_parts()
+        .0;
     if commit.commit_sequence() != sequence {
         return Err(corrupt());
     }

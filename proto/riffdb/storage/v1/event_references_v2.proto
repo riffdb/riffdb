@@ -1,0 +1,33 @@
+syntax = "proto3";
+
+package riffdb.storage.v1;
+
+import "riffdb/storage/v1/application.proto";
+import "riffdb/storage/v1/common.proto";
+
+message EventReferenceV2 {
+  EventIdV1 event_id = 1;
+  bytes event_hash = 2;
+}
+
+message StoredCommitRecordV2 {
+  uint64 commit_sequence = 1;
+  bytes admission_request_id = 2;
+  ExecutablePlanRefV1 plan = 3;
+  bytes canonical_input_hash = 4;
+  AdmittedActorContextV1 actor = 5;
+  TimestampV1 logical_time = 6;
+  bytes partition_hash = 7;
+  repeated bytes conflict_hashes = 8;
+  StoredReadDependenciesV1 read_dependencies = 9;
+  repeated CommittedEntityMutationV1 mutations = 10;
+  repeated EventReferenceV2 event_references = 11;
+  DeclaredOutcomeV1 declared_outcome = 12;
+  bytes provenance_id = 13;
+  repeated EventIdV1 outbox_event_ids = 14;
+  DurabilityModeV1 durability_mode = 15;
+}
+
+message StoredOutboxIntentV2 {
+  EventReferenceV2 event_reference = 1;
+}

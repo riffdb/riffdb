@@ -5,7 +5,7 @@
 use std::collections::BTreeMap;
 
 use prost::Message;
-use riffdb_proto::{durable::current_record_registry, storage::v1 as wire};
+use riffdb_proto::{durable::readable_record_registry, storage::v1 as wire};
 use riffdb_types::hash_event;
 
 const FIXTURE: &str = include_str!(concat!(
@@ -109,7 +109,7 @@ fn validate_bootstrap_cases(lines: &[&str]) {
 fn allocator_label(envelope: &[u8]) -> String {
     use wire::stored_administration_sequence_allocator_v1::State;
 
-    let decoded = current_record_registry()
+    let decoded = readable_record_registry()
         .decode(envelope)
         .expect("allocator envelope is registered and canonical");
     assert_eq!(
@@ -155,7 +155,7 @@ fn validate_compound_bootstrap(lines: &[&str]) {
         assert_eq!(fields[1], expected_role);
         assert_eq!(fields[2], expected_type);
         let envelope = decode_hex(fields[3]);
-        let decoded = current_record_registry()
+        let decoded = readable_record_registry()
             .decode(&envelope)
             .expect("compound-bootstrap member is registered and canonical");
         assert_eq!(decoded.record_type(), expected_type);
@@ -303,7 +303,7 @@ fn validate_reciprocity_cases(lines: &[&str]) {
         );
 
         let envelope = decode_hex(fields[5]);
-        let decoded = current_record_registry()
+        let decoded = readable_record_registry()
             .decode(&envelope)
             .expect("relationship member is individually canonical");
         assert_eq!(decoded.record_type(), fields[4]);

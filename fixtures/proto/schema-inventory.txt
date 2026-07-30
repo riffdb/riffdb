@@ -13,6 +13,9 @@ files
     import riffdb/storage/v1/common.proto
   riffdb/storage/v1/common.proto
   riffdb/storage/v1/envelope.proto
+  riffdb/storage/v1/event_references_v2.proto
+    import riffdb/storage/v1/application.proto
+    import riffdb/storage/v1/common.proto
   riffdb/storage/v1/index_v2.proto
     import riffdb/storage/v1/application.proto
   riffdb/storage/v1/metadata.proto
@@ -294,6 +297,9 @@ messages
   riffdb.storage.v1.EventIdV1 fields=2
     1 commit_sequence optional uint64
     2 event_ordinal optional uint32
+  riffdb.storage.v1.EventReferenceV2 fields=2
+    1 event_id optional .riffdb.storage.v1.EventIdV1
+    2 event_hash optional bytes
   riffdb.storage.v1.ExecutablePlanRefV1 fields=5
     1 contract_lineage optional string
     2 contract_version optional uint64
@@ -433,6 +439,22 @@ messages
     13 provenance_id optional bytes
     14 outbox_event_ids repeated .riffdb.storage.v1.EventIdV1
     15 durability_mode optional .riffdb.storage.v1.DurabilityModeV1
+  riffdb.storage.v1.StoredCommitRecordV2 fields=15
+    1 commit_sequence optional uint64
+    2 admission_request_id optional bytes
+    3 plan optional .riffdb.storage.v1.ExecutablePlanRefV1
+    4 canonical_input_hash optional bytes
+    5 actor optional .riffdb.storage.v1.AdmittedActorContextV1
+    6 logical_time optional .riffdb.storage.v1.TimestampV1
+    7 partition_hash optional bytes
+    8 conflict_hashes repeated bytes
+    9 read_dependencies optional .riffdb.storage.v1.StoredReadDependenciesV1
+    10 mutations repeated .riffdb.storage.v1.CommittedEntityMutationV1
+    11 event_references repeated .riffdb.storage.v1.EventReferenceV2
+    12 declared_outcome optional .riffdb.storage.v1.DeclaredOutcomeV1
+    13 provenance_id optional bytes
+    14 outbox_event_ids repeated .riffdb.storage.v1.EventIdV1
+    15 durability_mode optional .riffdb.storage.v1.DurabilityModeV1
   riffdb.storage.v1.StoredContractBundleV1 fields=4
     1 contract_lineage optional string
     2 contract_version optional uint64
@@ -475,6 +497,8 @@ messages
     3 epoch optional uint64
   riffdb.storage.v1.StoredOutboxIntentV1 fields=1
     1 event optional .riffdb.storage.v1.StoredDurableEventV1
+  riffdb.storage.v1.StoredOutboxIntentV2 fields=1
+    1 event_reference optional .riffdb.storage.v1.EventReferenceV2
   riffdb.storage.v1.StoredOutboxStatusV1 fields=5
     1 event_id optional .riffdb.storage.v1.EventIdV1
     2 pending optional .riffdb.storage.v1.OutboxRetryMetadataV1 oneof=state

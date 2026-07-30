@@ -2,7 +2,7 @@
 
 use std::ops::Bound::{Excluded, Included, Unbounded};
 
-use redb::{ReadOnlyTable, ReadableTable};
+use redb::{ReadOnlyTable, ReadTransaction, ReadableTable};
 use riffdb_storage_api::{
     AuthoritativeIndexScanPage, AuthoritativeIndexScanRequest, AuthoritativePointReader,
     AuthoritativeScanReader, CommitScanPageV1, CommitScanRequest, EncodedPageItem,
@@ -17,9 +17,9 @@ use riffdb_storage_api::{
 use riffdb_types::{CommitSequence, EventId, FrontierPosition, ProvenanceId};
 
 use crate::codec::{
-    IdempotencyRecordV1, decode_commit_record_v1, decode_durable_event_v1, decode_entity_record_v1,
-    decode_idempotency_record_v1, decode_index_entry_v2, decode_index_epoch_v1,
-    decode_provenance_record_v1,
+    IdempotencyRecordV1, decode_commit_with_event_table, decode_durable_event_v1,
+    decode_entity_record_v1, decode_idempotency_record_v1, decode_index_entry_v2,
+    decode_index_epoch_v1, decode_provenance_record_v1,
 };
 use crate::error::{precommit_storage_error, storage_error, table_error};
 use crate::keys::{
@@ -43,7 +43,7 @@ impl SnapshotReader for RedbOperationalPorts {
         let index_epochs = transaction.open_table(INDEX_EPOCHS).map_err(table_error)?;
         let commits = transaction.open_table(COMMITS).map_err(table_error)?;
 
-        let observed_through = read_commit_head(&commits)?;
+        let observed_through = read_commit_head(&transaction, &commits)?;
         let mut snapshot =
             ReadSnapshotBuilder::new(&request, observed_through).map_err(materialization_value)?;
 
@@ -145,7 +145,9 @@ impl AuthoritativePointReader for RedbOperationalPorts {
         else {
             return Ok(None);
         };
-        let record = decode_commit_record_v1(encoded.value())?.into_parts().0;
+        let record = decode_commit_in_snapshot(&transaction, encoded.value())?
+            .into_parts()
+            .0;
         if record.commit_sequence() != sequence {
             return Err(corrupt());
         }
@@ -191,6 +193,14 @@ impl AuthoritativePointReader for RedbOperationalPorts {
         }
         Ok(Some(event))
     }
+}
+
+pub(crate) fn decode_commit_in_snapshot(
+    transaction: &ReadTransaction,
+    encoded: &[u8],
+) -> Result<EncodedPageItem<StoredCommitRecordV1>, StorageError> {
+    let table = transaction.open_table(EVENTS).map_err(table_error)?;
+    decode_commit_with_event_table(encoded, &table)
 }
 
 impl AuthoritativeScanReader for RedbOperationalPorts {
@@ -261,9 +271,10 @@ impl AuthoritativeScanReader for RedbOperationalPorts {
         let table = transaction.open_table(COMMITS).map_err(table_error)?;
         let inclusive_upper = match request.inclusive_upper() {
             Some(sequence) => FrontierPosition::AppliedThrough(sequence),
-            None => read_commit_head(&table)?.map_or(FrontierPosition::BeforeFirst, |sequence| {
-                FrontierPosition::AppliedThrough(sequence)
-            }),
+            None => read_commit_head(&transaction, &table)?.map_or(
+                FrontierPosition::BeforeFirst,
+                FrontierPosition::AppliedThrough,
+            ),
         };
         let Some(first_expected) = request
             .after()
@@ -302,7 +313,7 @@ impl AuthoritativeScanReader for RedbOperationalPorts {
                 has_more = true;
                 break;
             }
-            let decoded = decode_commit_record_v1(encoded.value())?;
+            let decoded = decode_commit_in_snapshot(&transaction, encoded.value())?;
             if decoded.value().commit_sequence() != sequence {
                 return Err(corrupt());
             }
@@ -476,12 +487,15 @@ fn read_epoch_position(
     Ok(IndexEpochPosition::Value(epoch.epoch()))
 }
 
-pub(crate) fn read_commit_head(table: &BytesTable) -> Result<Option<CommitSequence>, StorageError> {
+pub(crate) fn read_commit_head(
+    transaction: &ReadTransaction,
+    table: &BytesTable,
+) -> Result<Option<CommitSequence>, StorageError> {
     let Some((physical_key, encoded)) = table.last().map_err(precommit_storage_error)? else {
         return Ok(None);
     };
     let sequence = decode_application_sequence_key(physical_key.value()).map_err(|_| corrupt())?;
-    let commit = decode_commit_record_v1(encoded.value())?;
+    let commit = decode_commit_in_snapshot(transaction, encoded.value())?;
     if commit.value().commit_sequence() != sequence {
         return Err(corrupt());
     }

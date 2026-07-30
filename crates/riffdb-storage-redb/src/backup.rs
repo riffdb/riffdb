@@ -29,8 +29,8 @@ use crate::error::{
 use crate::hooks::{RedbTestController, RedbTestOperation};
 use crate::keys::{decode_application_sequence_key, decode_contract_bundle_key};
 use crate::layout::{
-    CATALOG_ACTIVE, CATALOG_ACTIVE_KEY, COMMITS, CONTRACT_BUNDLES, META, META_APPLICATION_SEQUENCE,
-    META_DATABASE_ID, META_FORMAT_VERSION,
+    CATALOG_ACTIVE, CATALOG_ACTIVE_KEY, COMMITS, CONTRACT_BUNDLES, EVENTS, META,
+    META_APPLICATION_SEQUENCE, META_DATABASE_ID, META_FORMAT_VERSION,
 };
 
 pub(crate) const MANIFEST_FILE_NAME: &str = "manifest.riffdb";
@@ -295,6 +295,7 @@ fn open_database_with_facts(path: &Path) -> Result<(Database, DatabaseFacts), St
     drop(active_table);
 
     let commits = transaction.open_table(COMMITS).map_err(table_error)?;
+    let events = transaction.open_table(EVENTS).map_err(table_error)?;
     let last_commit_sequence = match commits.last().map_err(precommit_storage_error)? {
         None => {
             if allocator != ApplicationSequenceAllocator::initial() {
@@ -304,7 +305,7 @@ fn open_database_with_facts(path: &Path) -> Result<(Database, DatabaseFacts), St
         }
         Some((key, value)) => {
             let sequence = decode_application_sequence_key(key.value()).map_err(|_| corrupt())?;
-            let commit = codec::decode_commit_record_v1(value.value())?
+            let commit = codec::decode_commit_with_event_table(value.value(), &events)?
                 .into_parts()
                 .0;
             if commit.commit_sequence() != sequence {

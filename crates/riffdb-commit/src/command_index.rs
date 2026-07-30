@@ -1336,7 +1336,7 @@ contract ScalarPrefixes version 1 {
     }
 
     #[test]
-    fn only_semantic_fit_with_codec_proved_encoded_excess_is_capacity_unavailable() {
+    fn event_reference_trims_keep_the_largest_semantic_fit_within_encoded_capacity() {
         const ENTRY_COUNT: u64 = 17;
         const CANONICAL_RECORD_OVERHEAD: usize = 16;
 
@@ -1368,14 +1368,14 @@ contract ScalarPrefixes version 1 {
                 shape.index_entries(),
                 shape.index_epochs(),
             ),
-            Ok(EncodedWriteSetUpperBoundResultV1::ExceedsAcceptedAggregateCap(_))
+            Ok(EncodedWriteSetUpperBoundResultV1::Fits(_))
         ));
         drop(shape);
 
         let pending_before = fixture.intent.pending().clone();
         assert!(matches!(
             prepare_synthetic_write_set(&fixture, entries),
-            SequenceFreeWriteSetPreparation::CapacityUnavailable
+            SequenceFreeWriteSetPreparation::Ready(_)
         ));
         assert_eq!(fixture.intent.pending(), &pending_before);
     }

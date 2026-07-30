@@ -1357,7 +1357,8 @@ fn inspect_commit_row(
     let Ok(sequence) = keys::decode_application_sequence_key(key) else {
         return Ok(Some(authoritative(StructuralFindingCode::MalformedRecord)));
     };
-    let record = match decoded(codec::decode_commit_record_v1(value)) {
+    let events = transaction.open_table(EVENTS).map_err(table_error)?;
+    let record = match decoded(codec::decode_commit_with_event_table(value, &events)) {
         Ok(value) => value,
         Err(code) => return Ok(Some(authoritative(code))),
     };
@@ -1417,7 +1418,8 @@ fn inspect_outbox_row(
     let Ok(id) = keys::decode_event_key(key) else {
         return Ok(Some(authoritative(StructuralFindingCode::MalformedRecord)));
     };
-    let intent = match decoded(codec::decode_outbox_intent_v1(value)) {
+    let events = transaction.open_table(EVENTS).map_err(table_error)?;
+    let intent = match decoded(codec::decode_outbox_with_event_table(value, &events)) {
         Ok(value) => value,
         Err(code) => return Ok(Some(authoritative(code))),
     };
@@ -1880,11 +1882,15 @@ fn scan_plan_candidates(
         consider_plan(selected, after, record.plan().clone());
     }
     let commits = transaction.open_table(COMMITS).map_err(table_error)?;
+    let events = transaction.open_table(EVENTS).map_err(table_error)?;
     for entry in commits.iter().map_err(precommit_storage_error)? {
         let (key, value) = entry.map_err(precommit_storage_error)?;
         let sequence = keys::decode_application_sequence_key(key.value()).map_err(|_| corrupt())?;
-        let record =
-            decoded(codec::decode_commit_record_v1(value.value())).map_err(|_| corrupt())?;
+        let record = decoded(codec::decode_commit_with_event_table(
+            value.value(),
+            &events,
+        ))
+        .map_err(|_| corrupt())?;
         if record.commit_sequence() != sequence {
             return Err(corrupt());
         }
@@ -2534,9 +2540,20 @@ fn get_commit(
     sequence: CommitSequence,
 ) -> Result<Option<riffdb_storage_api::StoredCommitRecordV1>, StorageError> {
     let key = keys::encode_application_sequence_key(sequence);
-    match get_decoded(transaction, COMMITS, &key, codec::decode_commit_record_v1)? {
-        Ok(value) => Ok(value.filter(|record| record.commit_sequence() == sequence)),
-        Err(_) => Ok(None),
+    let commits = transaction.open_table(COMMITS).map_err(table_error)?;
+    let events = transaction.open_table(EVENTS).map_err(table_error)?;
+    let Some(value) = commits
+        .get(key.as_slice())
+        .map_err(precommit_storage_error)?
+    else {
+        return Ok(None);
+    };
+    match decoded(codec::decode_commit_with_event_table(
+        value.value(),
+        &events,
+    )) {
+        Ok(record) if record.commit_sequence() == sequence => Ok(Some(record)),
+        Ok(_) | Err(_) => Ok(None),
     }
 }
 
@@ -2588,9 +2605,20 @@ fn get_outbox(
     id: riffdb_types::EventId,
 ) -> Result<Option<riffdb_storage_api::StoredOutboxIntentV1>, StorageError> {
     let key = keys::encode_event_key(id);
-    match get_decoded(transaction, OUTBOX, &key, codec::decode_outbox_intent_v1)? {
-        Ok(value) => Ok(value.filter(|intent| intent.event_id() == id)),
-        Err(_) => Ok(None),
+    let outbox = transaction.open_table(OUTBOX).map_err(table_error)?;
+    let events = transaction.open_table(EVENTS).map_err(table_error)?;
+    let Some(value) = outbox
+        .get(key.as_slice())
+        .map_err(precommit_storage_error)?
+    else {
+        return Ok(None);
+    };
+    match decoded(codec::decode_outbox_with_event_table(
+        value.value(),
+        &events,
+    )) {
+        Ok(intent) if intent.event_id() == id => Ok(Some(intent)),
+        Ok(_) | Err(_) => Ok(None),
     }
 }
 
@@ -2664,6 +2692,7 @@ fn entity_history_matches(
     current: &riffdb_storage_api::StoredEntityRecordV1,
 ) -> Result<bool, StorageError> {
     let table = transaction.open_table(COMMITS).map_err(table_error)?;
+    let events = transaction.open_table(EVENTS).map_err(table_error)?;
     let mut prior: Option<riffdb_storage_api::StoredEntityRecordV1> = None;
     let mut saw_mutation = false;
     for entry in table.iter().map_err(precommit_storage_error)? {
@@ -2671,7 +2700,10 @@ fn entity_history_matches(
         let Ok(sequence) = keys::decode_application_sequence_key(physical_key.value()) else {
             return Ok(false);
         };
-        let Ok(commit) = decoded(codec::decode_commit_record_v1(value.value())) else {
+        let Ok(commit) = decoded(codec::decode_commit_with_event_table(
+            value.value(),
+            &events,
+        )) else {
             return Ok(false);
         };
         if commit.commit_sequence() != sequence {
@@ -3319,13 +3351,17 @@ fn application_allocator_matches(
     allocator: ApplicationSequenceAllocator,
 ) -> Result<bool, StorageError> {
     let table = transaction.open_table(COMMITS).map_err(table_error)?;
+    let events = transaction.open_table(EVENTS).map_err(table_error)?;
     let expected = match table.last().map_err(precommit_storage_error)? {
         None => ApplicationSequenceAllocator::initial(),
         Some((key, value)) => {
             let Ok(sequence) = keys::decode_application_sequence_key(key.value()) else {
                 return Ok(false);
             };
-            let Ok(record) = decoded(codec::decode_commit_record_v1(value.value())) else {
+            let Ok(record) = decoded(codec::decode_commit_with_event_table(
+                value.value(),
+                &events,
+            )) else {
                 return Ok(false);
             };
             if record.commit_sequence() != sequence {

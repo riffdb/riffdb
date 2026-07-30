@@ -1259,7 +1259,7 @@ mod tests {
     }
 
     #[test]
-    fn pending_item_counts_both_complete_authoritative_event_copies() {
+    fn pending_item_counts_both_bounded_materialized_event_views() {
         let payload = CanonicalRecord::new(Vec::new()).expect("record");
         let payload_bytes = canonical_record_bytes(&payload).expect("payload size");
         let event_type_id = EventTypeId::try_from(1).expect("event type");

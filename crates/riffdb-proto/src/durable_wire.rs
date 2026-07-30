@@ -256,6 +256,10 @@ shape!(COMMITTED_MUTATION [
     message(1, &EXPECTED_ENTITY_STATE),
     message(2, &ENTITY_RECORD),
 ]);
+shape!(EVENT_REFERENCE_V2 [
+    message(1, &EVENT_ID),
+    fixed_bytes(2, 32),
+]);
 shape!(COMMIT [
     fixed_bytes(2, 16),
     message(3, &PLAN),
@@ -267,6 +271,21 @@ shape!(COMMIT [
     message(9, &READ_DEPENDENCIES),
     repeated_message(10, MAX_COMMAND_ITEMS, &COMMITTED_MUTATION),
     repeated_message(11, MAX_COMMAND_ITEMS, &DURABLE_EVENT),
+    message(12, &DECLARED_OUTCOME),
+    fixed_bytes(13, 16),
+    repeated_message(14, MAX_COMMAND_ITEMS, &EVENT_ID),
+]);
+shape!(COMMIT_V2 [
+    fixed_bytes(2, 16),
+    message(3, &PLAN),
+    fixed_bytes(4, 32),
+    message(5, &ADMITTED_ACTOR),
+    message(6, &TIMESTAMP),
+    fixed_bytes(7, 32),
+    repeated_fixed_bytes(8, MAX_CONFLICT_HASHES, 32),
+    message(9, &READ_DEPENDENCIES),
+    repeated_message(10, MAX_COMMAND_ITEMS, &COMMITTED_MUTATION),
+    repeated_message(11, MAX_COMMAND_ITEMS, &EVENT_REFERENCE_V2),
     message(12, &DECLARED_OUTCOME),
     fixed_bytes(13, 16),
     repeated_message(14, MAX_COMMAND_ITEMS, &EVENT_ID),
@@ -397,6 +416,7 @@ shape!(SERVICE_AUDIT [
 ]);
 
 shape!(OUTBOX_INTENT[message(1, &DURABLE_EVENT)]);
+shape!(OUTBOX_INTENT_V2[message(1, &EVENT_REFERENCE_V2)]);
 shape!(OUTBOX_RETRY [
     message(2, &TIMESTAMP),
     message(3, &TIMESTAMP),
@@ -445,7 +465,7 @@ shape!(PROJECTION_CONTROL [
     message(7, &PROJECTION_FAILURE),
 ]);
 
-const ROOTS: [&Shape; 31] = [
+const ROOTS: [&Shape; 33] = [
     &Shape { rules: &[] },
     &Shape {
         rules: &[fixed_bytes(1, 16)],
@@ -483,6 +503,8 @@ const ROOTS: [&Shape; 31] = [
     &QUERY_MODULE_ADMINISTRATION,
     &INDEX_ENTRY_V2,
     &RECORD_REGISTRY_V2,
+    &COMMIT_V2,
+    &OUTBOX_INTENT_V2,
 ];
 
 pub(crate) fn payload(record_index: usize, input: &[u8]) -> Result<(), DurablePreflightError> {

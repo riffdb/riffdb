@@ -1413,6 +1413,51 @@ pub struct StoredEnvelope {
     pub schema_hash: ::prost::alloc::vec::Vec<u8>,
 }
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct EventReferenceV2 {
+    #[prost(message, optional, tag = "1")]
+    pub event_id: ::core::option::Option<EventIdV1>,
+    #[prost(bytes = "vec", tag = "2")]
+    pub event_hash: ::prost::alloc::vec::Vec<u8>,
+}
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct StoredCommitRecordV2 {
+    #[prost(uint64, tag = "1")]
+    pub commit_sequence: u64,
+    #[prost(bytes = "vec", tag = "2")]
+    pub admission_request_id: ::prost::alloc::vec::Vec<u8>,
+    #[prost(message, optional, tag = "3")]
+    pub plan: ::core::option::Option<ExecutablePlanRefV1>,
+    #[prost(bytes = "vec", tag = "4")]
+    pub canonical_input_hash: ::prost::alloc::vec::Vec<u8>,
+    #[prost(message, optional, tag = "5")]
+    pub actor: ::core::option::Option<AdmittedActorContextV1>,
+    #[prost(message, optional, tag = "6")]
+    pub logical_time: ::core::option::Option<TimestampV1>,
+    #[prost(bytes = "vec", tag = "7")]
+    pub partition_hash: ::prost::alloc::vec::Vec<u8>,
+    #[prost(bytes = "vec", repeated, tag = "8")]
+    pub conflict_hashes: ::prost::alloc::vec::Vec<::prost::alloc::vec::Vec<u8>>,
+    #[prost(message, optional, tag = "9")]
+    pub read_dependencies: ::core::option::Option<StoredReadDependenciesV1>,
+    #[prost(message, repeated, tag = "10")]
+    pub mutations: ::prost::alloc::vec::Vec<CommittedEntityMutationV1>,
+    #[prost(message, repeated, tag = "11")]
+    pub event_references: ::prost::alloc::vec::Vec<EventReferenceV2>,
+    #[prost(message, optional, tag = "12")]
+    pub declared_outcome: ::core::option::Option<DeclaredOutcomeV1>,
+    #[prost(bytes = "vec", tag = "13")]
+    pub provenance_id: ::prost::alloc::vec::Vec<u8>,
+    #[prost(message, repeated, tag = "14")]
+    pub outbox_event_ids: ::prost::alloc::vec::Vec<EventIdV1>,
+    #[prost(enumeration = "DurabilityModeV1", tag = "15")]
+    pub durability_mode: i32,
+}
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct StoredOutboxIntentV2 {
+    #[prost(message, optional, tag = "1")]
+    pub event_reference: ::core::option::Option<EventReferenceV2>,
+}
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct StoredIndexEntryV2 {
     #[prost(bytes = "vec", tag = "1")]
     pub index_entry_key: ::prost::alloc::vec::Vec<u8>,
