@@ -245,7 +245,11 @@ fn real_coordinator_command_and_outcome_resolution_share_the_api_neutral_service
         };
         assert_eq!(lower_request.lineage(), committed.lineage());
         assert_eq!(lower_request.command_id(), committed.command_id());
-        assert_eq!(harness.policy.calls(), 8);
+        assert_eq!(
+            harness.policy.calls(),
+            9,
+            "the mutation adds one post-evaluation current-policy safe point"
+        );
         assert_eq!(harness.ports.outcome_reservations(), 2);
         assert_eq!(harness.ports.outcome_submissions(), 2);
 
@@ -271,6 +275,33 @@ fn real_coordinator_command_and_outcome_resolution_share_the_api_neutral_service
                 .expect("command terminal audit")
                 .link(),
             expected_link
+        );
+    });
+}
+
+#[test]
+fn command_revocation_at_the_post_evaluation_safe_point_writes_no_terminal_state() {
+    run_async(async move {
+        const COMMAND_REQUEST: u8 = 0x35;
+        let mut harness = ServiceHarness::command();
+        harness.deny_after_next_policy_allows(2);
+        let (context, _cancellation) = harness.context(COMMAND_REQUEST);
+
+        let failure = harness
+            .service
+            .execute_command(context, harness.execute_command_request())
+            .await
+            .expect_err("post-evaluation revocation must deny before terminal commit");
+        assert_eq!(
+            failure.public_error().map(|error| error.kind()),
+            Some(PublicErrorKind::AuthorizationDenied)
+        );
+
+        harness.stop_coordinator();
+        assert_eq!(
+            harness.audit_phases(COMMAND_REQUEST),
+            [ServiceAuditPhaseV1::Started, ServiceAuditPhaseV1::Failed],
+            "the denied attempt retains one complete non-command audit lifecycle"
         );
     });
 }

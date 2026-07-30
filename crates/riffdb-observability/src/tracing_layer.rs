@@ -961,6 +961,7 @@ const fn command_execution_error_tag(kind: CommandExecutionErrorKind) -> u8 {
         CommandExecutionErrorKind::InternalDefect => 6,
         CommandExecutionErrorKind::CoordinatorStopped => 7,
         CommandExecutionErrorKind::CoordinatorFenced => 8,
+        CommandExecutionErrorKind::AuthorizationDenied => 9,
     }
 }
 

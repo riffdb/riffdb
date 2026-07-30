@@ -19,8 +19,8 @@ use riffdb_types::ExecutionFailureCode;
 use crate::{
     AdmissionClock, AdmissionClockError, CommandExecutionPreparation, CommitCallTerminal,
     CommitIdempotencyObservation, CommitTelemetry, CommitTelemetryEvent,
-    CommitUncertaintyResolution, CommitUncertaintyStage, CommittedOutcome, ProvenanceIdSource,
-    ProvenanceIdSourceError,
+    CommitUncertaintyResolution, CommitUncertaintyStage, CommittedOutcome,
+    CommittedOutcomeDisposition, ProvenanceIdSource, ProvenanceIdSourceError,
     command_admission::{
         CommandAdmissionError, CommandAdmissionResult, UncertainCommandAdmissionResolution,
         reduce_audited_command_admission_group, reduce_command_admission,
@@ -41,6 +41,7 @@ use crate::{
         CheckedAffectedEpochDecision, CheckedAssignDecision, CheckedCommitCandidate,
         CheckedReserveDecision, derive_checked_command_indexes,
     },
+    command_preparation::PostEvaluationAuthorizationError,
     command_records::{
         CheckedCommandCommitResult, CheckedCommandGroupCommitResult, CheckedCommandStageError,
         CheckedStagedCommand, CheckedStagedCommandEntry, UncertainCommandCommitResolution,
@@ -305,11 +306,46 @@ pub enum CommandExecutionResult {
     /// A first commit or exact equal-input replay returned a declared outcome.
     Committed(CommittedOutcome),
     /// A dependency-validated deterministic failure consumed the admission.
-    ExecutionFailed(ExecutionFailureCode),
+    ExecutionFailed(ExecutionFailedOutcome),
     /// Durable idempotency state selected another immutable historical plan.
     PreparationChanged,
     /// The same idempotency identity retained different canonical input.
     InputMismatch,
+}
+
+/// Current-invocation view of one immutable deterministic failure.
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+pub struct ExecutionFailedOutcome {
+    code: ExecutionFailureCode,
+    disposition: CommittedOutcomeDisposition,
+}
+
+impl ExecutionFailedOutcome {
+    const fn first_terminal(code: ExecutionFailureCode) -> Self {
+        Self {
+            code,
+            disposition: CommittedOutcomeDisposition::FirstCommit,
+        }
+    }
+
+    const fn replay(code: ExecutionFailureCode) -> Self {
+        Self {
+            code,
+            disposition: CommittedOutcomeDisposition::Replay,
+        }
+    }
+
+    /// Returns the durable deterministic failure code.
+    #[must_use]
+    pub const fn code(self) -> ExecutionFailureCode {
+        self.code
+    }
+
+    /// Returns whether this invocation persisted or replayed the failure.
+    #[must_use]
+    pub const fn disposition(self) -> CommittedOutcomeDisposition {
+        self.disposition
+    }
 }
 
 impl fmt::Debug for CommandExecutionResult {
@@ -326,6 +362,8 @@ impl fmt::Debug for CommandExecutionResult {
 /// Redacted closed failure kind for one accepted command submission.
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub enum CommandExecutionErrorKind {
+    /// Current policy explicitly denied the command after evaluation.
+    AuthorizationDenied,
     /// Cancellation was observed at an accepted pre-transaction safe point.
     Cancelled,
     /// The request's absolute monotonic deadline elapsed at a safe point.
@@ -347,6 +385,7 @@ pub enum CommandExecutionErrorKind {
 impl CommandExecutionErrorKind {
     const fn safe_message(self) -> &'static str {
         match self {
+            Self::AuthorizationDenied => "command authorization changed before commit",
             Self::Cancelled => "command execution was cancelled",
             Self::DeadlineExceeded => "command execution deadline elapsed",
             Self::RetryBudgetExhausted => "command reevaluation budget was exhausted",
@@ -499,7 +538,7 @@ where
             telemetry.record(CommitTelemetryEvent::IdempotencyObserved {
                 observation: CommitIdempotencyObservation::Hit,
             });
-            return terminal_continuation(execution_failure(failure.code()), lifecycle);
+            return terminal_continuation(execution_failure_replay(failure.code()), lifecycle);
         }
         Ok(CommandAdmissionResult::PreparationChanged) => {
             telemetry.record(CommitTelemetryEvent::IdempotencyObserved {
@@ -533,7 +572,7 @@ where
                     terminal_continuation(committed_replay(outcome), lifecycle)
                 }
                 UncertainCommandAdmissionResolution::ExecutionFailed(failure) => {
-                    terminal_continuation(execution_failure(failure.code()), lifecycle)
+                    terminal_continuation(execution_failure_replay(failure.code()), lifecycle)
                 }
                 UncertainCommandAdmissionResolution::OutcomeUnknown(failure) => {
                     Err(CommandExecutionError::uncertain(
@@ -682,7 +721,7 @@ where
                 observation: CommitIdempotencyObservation::Hit,
             });
             return Err(terminal_continuation(
-                execution_failure(failure.code()),
+                execution_failure_replay(failure.code()),
                 lifecycle,
             ));
         }
@@ -718,7 +757,7 @@ where
                     terminal_continuation(committed_replay(outcome), lifecycle)
                 }
                 UncertainCommandAdmissionResolution::ExecutionFailed(failure) => {
-                    terminal_continuation(execution_failure(failure.code()), lifecycle)
+                    terminal_continuation(execution_failure_replay(failure.code()), lifecycle)
                 }
                 UncertainCommandAdmissionResolution::OutcomeUnknown(failure) => {
                     Err(CommandExecutionError::uncertain(
@@ -921,8 +960,13 @@ where
                 fallback.push((index, attempt.into_pending_without_commit()));
             }
             Ok(resolution) => {
-                let continuation =
-                    continuation_from_attempt_resolution(port, lifecycle, telemetry, resolution);
+                let continuation = continuation_from_attempt_resolution(
+                    port,
+                    Some(administration_clock),
+                    lifecycle,
+                    telemetry,
+                    resolution,
+                );
                 terminal_state = terminal_state.or_else(|| group_peer_terminal(&continuation));
                 completed.push((index, terminal_continuation(continuation, lifecycle)));
             }
@@ -1016,8 +1060,13 @@ where
         match evaluate_next_command_attempt(state, port, port, conflicts).await {
             Ok(CommandAttemptResolution::Evaluated(attempt)) => evaluated.push((index, attempt)),
             Ok(resolution) => {
-                let continuation =
-                    continuation_from_attempt_resolution(port, lifecycle, telemetry, resolution);
+                let continuation = continuation_from_attempt_resolution(
+                    port,
+                    Some(administration_clock),
+                    lifecycle,
+                    telemetry,
+                    resolution,
+                );
                 let terminal_state = group_peer_terminal(&continuation);
                 completed.push((index, terminal_continuation(continuation, lifecycle)));
                 if let Some(terminal_state) = terminal_state {
@@ -1094,7 +1143,13 @@ where
         .pop_front()
         .expect("compatible command group is nonempty");
     let mut staged = match stage_first_evaluated_command(
-        port, provenance, durability, lifecycle, telemetry, first,
+        port,
+        provenance,
+        Some(administration_clock),
+        durability,
+        lifecycle,
+        telemetry,
+        first,
     ) {
         Ok(staged) => staged,
         Err(continuation) => {
@@ -1132,7 +1187,14 @@ where
     while let Some((index, attempt)) = evaluated.pop_front() {
         let (prior, entries, durability_mode) = staged.into_storage_and_entries();
         match append_evaluated_command(
-            port, prior, provenance, durability, lifecycle, telemetry, attempt,
+            port,
+            prior,
+            provenance,
+            Some(administration_clock),
+            durability,
+            lifecycle,
+            telemetry,
+            attempt,
         ) {
             Ok((storage, entry)) => {
                 staged =
@@ -1190,33 +1252,53 @@ where
         }
     }
 
-    let terminals = {
+    let audits = {
         let audited_count = staged.audited_starts().filter(Option::is_some).count();
         if audited_count == 0 {
             Ok(None)
         } else if audited_count != staged.len() {
             Err(())
         } else {
-            let mut terminals = Vec::with_capacity(staged.len());
+            let mut audits = Vec::with_capacity(staged.len());
             let prepared = staged
                 .audited_starts()
                 .zip(staged.terminal_links())
-                .try_for_each(|(started, link)| {
+                .zip(staged.requires_fused_starts())
+                .try_for_each(|((started, link), fused)| {
                     let started = started.ok_or(())?;
+                    let fused_start = if fused {
+                        Some(
+                            crate::audit_executor::prepare_administration_audit(
+                                administration_clock,
+                                started,
+                            )
+                            .map_err(|_| ())?,
+                        )
+                    } else {
+                        None
+                    };
                     let terminal = crate::audit_executor::prepare_command_terminal_audit(
                         administration_clock,
                         started,
                         link,
                     )
                     .map_err(|_| ())?;
-                    terminals.push(terminal);
+                    let transition = if let Some(started) = fused_start {
+                        riffdb_storage_api::CommandServiceAuditTransitionV1::started_and_terminal(
+                            started, terminal,
+                        )
+                    } else {
+                        riffdb_storage_api::CommandServiceAuditTransitionV1::terminal_only(terminal)
+                    }
+                    .map_err(|_| ())?;
+                    audits.push(transition);
                     Ok::<(), ()>(())
                 });
-            prepared.map(|()| Some(terminals))
+            prepared.map(|()| Some(audits))
         }
     };
-    let terminals = match terminals {
-        Ok(terminals) => terminals,
+    let audits = match audits {
+        Ok(audits) => audits,
         Err(()) => {
             drop(staged.rollback_into_retries());
             lifecycle.stop();
@@ -1234,7 +1316,7 @@ where
 
     let batch_size = staged.len();
     let commit_started_at = Instant::now();
-    let commit_result = staged.commit_group(terminals);
+    let commit_result = staged.commit_group(audits);
     telemetry.record(CommitTelemetryEvent::CommitCallCompleted {
         terminal: group_commit_call_terminal(&commit_result),
         elapsed: commit_started_at.elapsed(),
@@ -1278,7 +1360,9 @@ where
                         Ok(CommandExecutionResult::Committed(outcome))
                     }
                     UncertainCommandCommitResolution::ExecutionFailureReplay(failure) => {
-                        Ok(CommandExecutionResult::ExecutionFailed(failure.code()))
+                        Ok(CommandExecutionResult::ExecutionFailed(
+                            ExecutionFailedOutcome::replay(failure.code()),
+                        ))
                     }
                     UncertainCommandCommitResolution::ProvenNotCommitted(proven) => {
                         drop(proven.into_retry_state());
@@ -1338,7 +1422,8 @@ fn group_peer_terminal_error(error: &CommandExecutionError) -> Option<CommandExe
         | CommandExecutionErrorKind::CoordinatorStopped => {
             Some(CommandExecutionErrorKind::CoordinatorStopped)
         }
-        CommandExecutionErrorKind::Cancelled
+        CommandExecutionErrorKind::AuthorizationDenied
+        | CommandExecutionErrorKind::Cancelled
         | CommandExecutionErrorKind::DeadlineExceeded
         | CommandExecutionErrorKind::RetryBudgetExhausted
         | CommandExecutionErrorKind::StorageUnavailable => None,
@@ -1355,6 +1440,7 @@ fn group_peer_error(kind: CommandExecutionErrorKind) -> CommandExecutionError {
 
 fn continuation_from_attempt_resolution<P>(
     port: &P,
+    administration_clock: Option<&dyn crate::AdministrationClock>,
     lifecycle: &dyn CommandExecutionLifecycle,
     telemetry: &dyn CommitTelemetry,
     resolution: CommandAttemptResolution,
@@ -1368,7 +1454,7 @@ where
             internal_defect(lifecycle)
         }
         CommandAttemptResolution::ExecutionFault(attempt) => {
-            continue_execution_fault(port, lifecycle, telemetry, attempt)
+            continue_execution_fault(port, administration_clock, lifecycle, telemetry, attempt)
         }
         CommandAttemptResolution::OutcomeReplay(outcome) => {
             telemetry.record(CommitTelemetryEvent::IdempotencyObserved {
@@ -1380,7 +1466,7 @@ where
             telemetry.record(CommitTelemetryEvent::IdempotencyObserved {
                 observation: CommitIdempotencyObservation::Hit,
             });
-            execution_failure(failure.code())
+            execution_failure_replay(failure.code())
         }
     }
 }
@@ -1454,7 +1540,7 @@ where
                 attempt,
             ),
             CommandAttemptResolution::ExecutionFault(attempt) => {
-                continue_execution_fault(port, lifecycle, telemetry, attempt)
+                continue_execution_fault(port, administration_clock, lifecycle, telemetry, attempt)
             }
             CommandAttemptResolution::OutcomeReplay(outcome) => {
                 telemetry.record(CommitTelemetryEvent::IdempotencyObserved {
@@ -1466,7 +1552,7 @@ where
                 telemetry.record(CommitTelemetryEvent::IdempotencyObserved {
                     observation: CommitIdempotencyObservation::Hit,
                 });
-                execution_failure(failure.code())
+                execution_failure_replay(failure.code())
             }
         };
         match continuation {
@@ -1583,6 +1669,10 @@ where
         + ExecutionFailureTransitionPort
         + riffdb_storage_api::AdmissionRepository,
 {
+    let attempt = match attempt.authorize_after_evaluation() {
+        Ok(attempt) => attempt,
+        Err(error) => return post_evaluation_authorization_failure(error, lifecycle),
+    };
     if let Err(error) = attempt.recheck_request_control() {
         return CommandDriverContinuation::Failed(command_attempt_failure(error, lifecycle));
     }
@@ -1602,7 +1692,7 @@ where
             return committed_replay(outcome);
         }
         CommandCandidateChainStart::ExecutionFailureReplay(failure) => {
-            return execution_failure(failure.code());
+            return execution_failure_replay(failure.code());
         }
         CommandCandidateChainStart::InputMismatch => {
             return CommandDriverContinuation::Complete(CommandExecutionResult::InputMismatch);
@@ -1617,6 +1707,7 @@ where
         TransactionCurrentAttemptDecision::DependencyChanged(changed) => {
             return after_rollback(
                 port,
+                administration_clock,
                 lifecycle,
                 telemetry,
                 changed.reject_storage_and_rollback(),
@@ -1632,6 +1723,7 @@ where
         Ok(CheckedCandidateDecision::Rejected(rejected)) => {
             return after_rollback(
                 port,
+                administration_clock,
                 lifecycle,
                 telemetry,
                 rejected.reject_storage_and_rollback(),
@@ -1646,7 +1738,7 @@ where
     let indexed = match indexed.read_affected_epoch_current() {
         CheckedAffectedEpochDecision::Ready(indexed) => indexed,
         CheckedAffectedEpochDecision::Rejected(rejected) => {
-            return after_rollback(port, lifecycle, telemetry, rejected);
+            return after_rollback(port, administration_clock, lifecycle, telemetry, rejected);
         }
         CheckedAffectedEpochDecision::StorageFailure(error) => {
             return proven_storage_failure(error, lifecycle);
@@ -1670,14 +1762,33 @@ where
         }
         Err(CheckedCommandStageError::InternalDefect(_)) => return internal_defect(lifecycle),
     };
-    let terminal = match (staged.audited_start(), administration_clock) {
+    let audit = match (staged.audited_start(), administration_clock) {
         (Some(started), Some(clock)) => {
-            match crate::audit_executor::prepare_command_terminal_audit(
+            let fused_start = if staged.requires_fused_start() {
+                match crate::audit_executor::prepare_administration_audit(clock, started) {
+                    Ok(started) => Some(started),
+                    Err(_) => return internal_defect(lifecycle),
+                }
+            } else {
+                None
+            };
+            let terminal = match crate::audit_executor::prepare_command_terminal_audit(
                 clock,
                 started,
                 staged.terminal_link(),
             ) {
-                Ok(terminal) => Some(terminal),
+                Ok(terminal) => terminal,
+                Err(_) => return internal_defect(lifecycle),
+            };
+            let transition = if let Some(started) = fused_start {
+                riffdb_storage_api::CommandServiceAuditTransitionV1::started_and_terminal(
+                    started, terminal,
+                )
+            } else {
+                riffdb_storage_api::CommandServiceAuditTransitionV1::terminal_only(terminal)
+            };
+            match transition {
+                Ok(transition) => Some(transition),
                 Err(_) => return internal_defect(lifecycle),
             }
         }
@@ -1685,7 +1796,7 @@ where
         (Some(_), None) => return internal_defect(lifecycle),
     };
     let commit_started_at = Instant::now();
-    let commit_result = staged.commit(terminal);
+    let commit_result = staged.commit(audit);
     telemetry.record(CommitTelemetryEvent::CommitCallCompleted {
         terminal: commit_call_terminal(&commit_result),
         elapsed: commit_started_at.elapsed(),
@@ -1710,7 +1821,7 @@ where
                     CommandDriverContinuation::Complete(CommandExecutionResult::Committed(outcome))
                 }
                 UncertainCommandCommitResolution::ExecutionFailureReplay(failure) => {
-                    execution_failure(failure.code())
+                    execution_failure_replay(failure.code())
                 }
                 UncertainCommandCommitResolution::ProvenNotCommitted(proven) => {
                     let retry = proven.into_retry_state();
@@ -1740,6 +1851,7 @@ where
 fn stage_first_evaluated_command<P>(
     port: &P,
     provenance: &dyn ProvenanceIdSource,
+    administration_clock: Option<&dyn crate::AdministrationClock>,
     durability: CoordinatorDurability,
     lifecycle: &dyn CommandExecutionLifecycle,
     telemetry: &dyn CommitTelemetry,
@@ -1750,6 +1862,9 @@ where
         + ExecutionFailureTransitionPort
         + riffdb_storage_api::AdmissionRepository,
 {
+    let attempt = attempt
+        .authorize_after_evaluation()
+        .map_err(|error| post_evaluation_authorization_failure(error, lifecycle))?;
     if let Err(error) = attempt.recheck_request_control() {
         return Err(CommandDriverContinuation::Failed(command_attempt_failure(
             error, lifecycle,
@@ -1767,7 +1882,7 @@ where
             return Err(committed_replay(outcome));
         }
         CommandCandidateChainStart::ExecutionFailureReplay(failure) => {
-            return Err(execution_failure(failure.code()));
+            return Err(execution_failure_replay(failure.code()));
         }
         CommandCandidateChainStart::InputMismatch => {
             return Err(CommandDriverContinuation::Complete(
@@ -1784,6 +1899,7 @@ where
         TransactionCurrentAttemptDecision::DependencyChanged(changed) => {
             return Err(after_rollback(
                 port,
+                administration_clock,
                 lifecycle,
                 telemetry,
                 changed.reject_storage_and_rollback(),
@@ -1799,6 +1915,7 @@ where
         Ok(CheckedCandidateDecision::Rejected(rejected)) => {
             return Err(after_rollback(
                 port,
+                administration_clock,
                 lifecycle,
                 telemetry,
                 rejected.reject_storage_and_rollback(),
@@ -1811,7 +1928,13 @@ where
     let indexed = match indexed.read_affected_epoch_current() {
         CheckedAffectedEpochDecision::Ready(indexed) => indexed,
         CheckedAffectedEpochDecision::Rejected(rejected) => {
-            return Err(after_rollback(port, lifecycle, telemetry, rejected));
+            return Err(after_rollback(
+                port,
+                administration_clock,
+                lifecycle,
+                telemetry,
+                rejected,
+            ));
         }
         CheckedAffectedEpochDecision::StorageFailure(error) => {
             return Err(proven_storage_failure(error, lifecycle));
@@ -1833,10 +1956,12 @@ where
     })
 }
 
+#[allow(clippy::too_many_arguments)]
 fn append_evaluated_command<P, B>(
     port: &P,
     prior: B,
     provenance: &dyn ProvenanceIdSource,
+    administration_clock: Option<&dyn crate::AdministrationClock>,
     durability: CoordinatorDurability,
     lifecycle: &dyn CommandExecutionLifecycle,
     telemetry: &dyn CommitTelemetry,
@@ -1853,6 +1978,13 @@ where
     BatchCapacityReserved<B>: CommandCandidateCapacityReserved<Prior = B>,
     BatchSequenceAssigned<B>: CommandCandidateSequenceAssigned<Prior = B, Staged = B>,
 {
+    let attempt = match attempt.authorize_after_evaluation() {
+        Ok(attempt) => attempt,
+        Err(error) => {
+            drop(prior);
+            return Err(post_evaluation_authorization_failure(error, lifecycle));
+        }
+    };
     if let Err(error) = attempt.recheck_request_control() {
         drop(prior);
         return Err(CommandDriverContinuation::Failed(command_attempt_failure(
@@ -1881,7 +2013,7 @@ where
             return Err(committed_replay(outcome));
         }
         CommandCandidateChainStart::ExecutionFailureReplay(failure) => {
-            return Err(execution_failure(failure.code()));
+            return Err(execution_failure_replay(failure.code()));
         }
         CommandCandidateChainStart::InputMismatch => {
             return Err(CommandDriverContinuation::Complete(
@@ -1898,6 +2030,7 @@ where
         TransactionCurrentAttemptDecision::DependencyChanged(changed) => {
             return Err(after_rollback(
                 port,
+                administration_clock,
                 lifecycle,
                 telemetry,
                 changed.reject_storage_and_rollback(),
@@ -1913,6 +2046,7 @@ where
         Ok(CheckedCandidateDecision::Rejected(rejected)) => {
             return Err(after_rollback(
                 port,
+                administration_clock,
                 lifecycle,
                 telemetry,
                 rejected.reject_storage_and_rollback(),
@@ -1925,7 +2059,13 @@ where
     let indexed = match indexed.read_affected_epoch_current() {
         CheckedAffectedEpochDecision::Ready(indexed) => indexed,
         CheckedAffectedEpochDecision::Rejected(rejected) => {
-            return Err(after_rollback(port, lifecycle, telemetry, rejected));
+            return Err(after_rollback(
+                port,
+                administration_clock,
+                lifecycle,
+                telemetry,
+                rejected,
+            ));
         }
         CheckedAffectedEpochDecision::StorageFailure(error) => {
             return Err(proven_storage_failure(error, lifecycle));
@@ -1964,9 +2104,38 @@ fn resolve_checked_reserve_decision<C>(
     }
 }
 
+fn prepare_execution_failure_audit(
+    attempt: &ExecutionFaultAttempt,
+    administration_clock: Option<&dyn crate::AdministrationClock>,
+) -> Result<Option<riffdb_storage_api::CommandServiceAuditTransitionV1>, ()> {
+    let Some(audited) = attempt.audited_lifecycle() else {
+        return Ok(None);
+    };
+    let clock = administration_clock.ok_or(())?;
+    let started_input = audited.started.as_ref();
+    if attempt.requires_fused_start() {
+        let started = crate::audit_executor::prepare_administration_audit(clock, started_input)
+            .map_err(|_| ())?;
+        let terminal =
+            crate::audit_executor::prepare_command_failure_terminal_audit(clock, started_input)
+                .map_err(|_| ())?;
+        riffdb_storage_api::CommandServiceAuditTransitionV1::started_and_failure(started, terminal)
+            .map(Some)
+            .map_err(|_| ())
+    } else {
+        let terminal =
+            crate::audit_executor::prepare_command_failure_terminal_audit(clock, started_input)
+                .map_err(|_| ())?;
+        riffdb_storage_api::CommandServiceAuditTransitionV1::failure_terminal_only(terminal)
+            .map(Some)
+            .map_err(|_| ())
+    }
+}
+
 /// Revalidates and terminalizes one deterministic execution fault.
 pub(super) fn continue_execution_fault<P>(
     port: &P,
+    administration_clock: Option<&dyn crate::AdministrationClock>,
     lifecycle: &dyn CommandExecutionLifecycle,
     telemetry: &dyn CommitTelemetry,
     attempt: ExecutionFaultAttempt,
@@ -1974,16 +2143,24 @@ pub(super) fn continue_execution_fault<P>(
 where
     P: ExecutionFailureTransitionPort + riffdb_storage_api::AdmissionRepository,
 {
+    let attempt = match attempt.authorize_after_evaluation() {
+        Ok(attempt) => attempt,
+        Err(error) => return post_evaluation_authorization_failure(error, lifecycle),
+    };
     if let Err(error) = attempt.recheck_request_control() {
         return CommandDriverContinuation::Failed(command_attempt_failure(error, lifecycle));
     }
+    let audit = match prepare_execution_failure_audit(&attempt, administration_clock) {
+        Ok(audit) => audit,
+        Err(()) => return internal_defect(lifecycle),
+    };
     let current = match begin_execution_failure_transition(port, attempt) {
         ExecutionFailureTransitionStart::Ready(current) => current,
         ExecutionFailureTransitionStart::OutcomeReplay(outcome) => {
             return committed_replay(outcome);
         }
         ExecutionFailureTransitionStart::ExecutionFailureReplay(failure) => {
-            return execution_failure(failure.code());
+            return execution_failure_replay(failure.code());
         }
         ExecutionFailureTransitionStart::StorageFailure(error) => {
             return proven_storage_failure(error, lifecycle);
@@ -2000,9 +2177,9 @@ where
         }
         ExecutionFailureCurrentDecision::Integrity => return internal_defect(lifecycle),
     };
-    match terminal.terminalize() {
+    match terminal.terminalize_with_audit(audit) {
         ExecutionFailureTerminalizeResult::Terminalized(failure) => {
-            execution_failure(failure.code())
+            execution_failure_first(failure.code())
         }
         ExecutionFailureTerminalizeResult::ProvenAbort(error) => {
             proven_storage_failure(error, lifecycle)
@@ -2017,7 +2194,7 @@ where
             });
             match resolution {
                 UncertainExecutionFailureResolution::ExecutionFailureReplay(failure) => {
-                    execution_failure(failure.code())
+                    execution_failure_first(failure.code())
                 }
                 UncertainExecutionFailureResolution::OutcomeReplay(outcome) => {
                     committed_replay(outcome)
@@ -2048,6 +2225,7 @@ where
 
 fn after_rollback<P>(
     port: &P,
+    administration_clock: Option<&dyn crate::AdministrationClock>,
     lifecycle: &dyn CommandExecutionLifecycle,
     telemetry: &dyn CommitTelemetry,
     disposition: RolledBackCandidateDisposition,
@@ -2060,7 +2238,7 @@ where
             CommandDriverContinuation::Retry(state)
         }
         RolledBackCandidateDisposition::ExecutionFault(fault) => {
-            continue_execution_fault(port, lifecycle, telemetry, *fault)
+            continue_execution_fault(port, administration_clock, lifecycle, telemetry, *fault)
         }
         RolledBackCandidateDisposition::Integrity => internal_defect(lifecycle),
     }
@@ -2072,8 +2250,16 @@ fn committed_replay(outcome: riffdb_storage_api::StoredOutcomeV1) -> CommandDriv
     ))
 }
 
-fn execution_failure(code: ExecutionFailureCode) -> CommandDriverContinuation {
-    CommandDriverContinuation::Complete(CommandExecutionResult::ExecutionFailed(code))
+fn execution_failure_first(code: ExecutionFailureCode) -> CommandDriverContinuation {
+    CommandDriverContinuation::Complete(CommandExecutionResult::ExecutionFailed(
+        ExecutionFailedOutcome::first_terminal(code),
+    ))
+}
+
+fn execution_failure_replay(code: ExecutionFailureCode) -> CommandDriverContinuation {
+    CommandDriverContinuation::Complete(CommandExecutionResult::ExecutionFailed(
+        ExecutionFailedOutcome::replay(code),
+    ))
 }
 
 fn admission_clock_failure(error: AdmissionClockError) -> CommandExecutionError {
@@ -2095,6 +2281,21 @@ fn internal_defect(lifecycle: &dyn CommandExecutionLifecycle) -> CommandDriverCo
     CommandDriverContinuation::Failed(CommandExecutionError::without_detail(
         CommandExecutionErrorKind::InternalDefect,
     ))
+}
+
+fn post_evaluation_authorization_failure(
+    error: PostEvaluationAuthorizationError,
+    lifecycle: &dyn CommandExecutionLifecycle,
+) -> CommandDriverContinuation {
+    match error {
+        PostEvaluationAuthorizationError::Denied => CommandDriverContinuation::Failed(
+            CommandExecutionError::without_detail(CommandExecutionErrorKind::AuthorizationDenied),
+        ),
+        PostEvaluationAuthorizationError::Unavailable => CommandDriverContinuation::Failed(
+            CommandExecutionError::without_detail(CommandExecutionErrorKind::StorageUnavailable),
+        ),
+        PostEvaluationAuthorizationError::Integrity => internal_defect(lifecycle),
+    }
 }
 
 fn capacity_unavailable() -> CommandDriverContinuation {

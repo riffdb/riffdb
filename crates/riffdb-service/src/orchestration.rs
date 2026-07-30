@@ -1,6 +1,7 @@
 //! Shared authorization and durable service-audit orchestration.
 
 use std::cell::RefCell;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
@@ -52,6 +53,7 @@ pub(crate) struct BegunInvocation {
     audit_class: Option<AuditClass>,
     approval_id: Option<ApprovalId>,
     started: bool,
+    deferred_start: AtomicBool,
     initial_authorization: Box<AuthorizedOperation>,
     lifecycle: Arc<OperationAuditLifecycle>,
 }
@@ -650,8 +652,18 @@ impl BegunInvocation {
         &self,
         link: ServiceAuditLinkV1,
     ) -> Result<(), AuditAppendFailure> {
+        self.deferred_start.store(false, Ordering::Release);
         self.lifecycle
             .begin_terminal(ServiceAuditPhaseV1::Succeeded, link)
+            .map_err(|_| AuditAppendFailure)?;
+        self.lifecycle.finish_terminal(true);
+        Ok(())
+    }
+
+    pub(crate) fn confirm_compound_failure(&self) -> Result<(), AuditAppendFailure> {
+        self.deferred_start.store(false, Ordering::Release);
+        self.lifecycle
+            .begin_terminal(ServiceAuditPhaseV1::Failed, ServiceAuditLinkV1::None)
             .map_err(|_| AuditAppendFailure)?;
         self.lifecycle.finish_terminal(true);
         Ok(())
@@ -796,6 +808,7 @@ impl BegunInvocation {
         phase: ServiceAuditPhaseV1,
         link: ServiceAuditLinkV1,
     ) -> Result<(), AuditAppendFailure> {
+        self.ensure_deferred_start(service, context).await?;
         if !self.started {
             return Ok(());
         }
@@ -815,6 +828,29 @@ impl BegunInvocation {
         let result = service.append_prepared_audit(&control, input).await;
         self.lifecycle.finish_terminal(result.is_ok());
         result
+    }
+
+    async fn ensure_deferred_start(
+        &self,
+        service: &RiffDbServiceInner,
+        context: &RequestContext,
+    ) -> Result<(), AuditAppendFailure> {
+        if !self.started || !self.deferred_start.load(Ordering::Acquire) {
+            return Ok(());
+        }
+        service
+            .append_audit(
+                context,
+                self.operation,
+                ServiceAuditPhaseV1::Started,
+                self.targets.clone(),
+                self.approval_id.clone(),
+                ServiceAuditLinkV1::None,
+                AuditAppendControl::Terminal,
+            )
+            .await?;
+        self.deferred_start.store(false, Ordering::Release);
+        Ok(())
     }
 
     async fn finish_reauthorization_phase(
@@ -1210,6 +1246,7 @@ impl RiffDbServiceInner {
             audit_class,
             approval_id,
             started,
+            deferred_start: AtomicBool::new(defer_command_start && started),
             initial_authorization: authorization,
             lifecycle,
         })

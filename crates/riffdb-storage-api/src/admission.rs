@@ -1,10 +1,11 @@
 //! Typed idempotency admission and deterministic-failure transitions.
 
 use crate::{
-    IdempotencyIdentity, MAX_READABLE_DIGEST_KEYS, PreEvaluationCommitContext, ReadDependencies,
-    ReadSnapshot, ServiceAuditAppendIntentV1, StorageError, StorageValueError,
-    StoredExecutionFailedV1, StoredOutcomeV1, StoredPendingAdmissionV1, StoredServiceAuditRecordV1,
-    TransactionCurrentState, ValidationReadRequest,
+    CommandAdmissionExpectationV1, IdempotencyIdentity, MAX_READABLE_DIGEST_KEYS,
+    PreEvaluationCommitContext, ReadDependencies, ReadSnapshot, ServiceAuditAppendIntentV1,
+    StorageError, StorageValueError, StoredExecutionFailedV1, StoredOutcomeV1,
+    StoredPendingAdmissionV1, StoredServiceAuditRecordV1, TransactionCurrentState,
+    ValidationReadRequest,
 };
 use riffdb_types::ExecutionFailureCode;
 
@@ -330,6 +331,7 @@ pub enum AdmissionLookupResultV1 {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ExecutionFailureTransitionRequestV1 {
     expected_pending: StoredPendingAdmissionV1,
+    admission_expectation: CommandAdmissionExpectationV1,
     validation_request: ValidationReadRequest,
     read_dependencies: ReadDependencies,
     code: ExecutionFailureCode,
@@ -347,16 +349,39 @@ impl ExecutionFailureTransitionRequestV1 {
         }
         Ok(Self {
             expected_pending,
+            admission_expectation: CommandAdmissionExpectationV1::ExistingPending,
             validation_request: snapshot.validation_request(),
             read_dependencies: snapshot.read_dependencies().clone(),
             code,
         })
     }
 
+    /// Builds a fused terminal transition whose compatible identities were
+    /// observed vacant before deterministic evaluation.
+    pub fn new_for_vacant_terminal_admission(
+        expected_pending: StoredPendingAdmissionV1,
+        lookup_candidates: IdempotencyLookupCandidatesV1,
+        snapshot: &ReadSnapshot,
+        code: ExecutionFailureCode,
+    ) -> Result<Self, StorageValueError> {
+        if !lookup_candidates.contains(expected_pending.identity()) {
+            return Err(StorageValueError::IdentityMismatch);
+        }
+        let mut request = Self::new(expected_pending, snapshot, code)?;
+        request.admission_expectation = CommandAdmissionExpectationV1::Vacant(lookup_candidates);
+        Ok(request)
+    }
+
     /// Borrows the exact pending state that must still exist.
     #[must_use]
     pub const fn expected_pending(&self) -> &StoredPendingAdmissionV1 {
         &self.expected_pending
+    }
+
+    /// Borrows the durable admission condition that must still hold.
+    #[must_use]
+    pub const fn admission_expectation(&self) -> &CommandAdmissionExpectationV1 {
+        &self.admission_expectation
     }
 
     /// Borrows the complete transaction-current read request.
@@ -425,6 +450,17 @@ pub trait ExecutionFailureAdmissionRechecked: Sized {
 pub trait ExecutionFailureAwaitingDecision: Sized {
     /// Atomically stores the exact request-derived failure after equal validation.
     fn terminalize(self) -> Result<StoredExecutionFailedV1, StorageError>;
+
+    /// Atomically stores the failure and its exact service-audit terminal.
+    fn terminalize_with_service_audit(
+        self,
+        _transition: crate::CommandServiceAuditTransitionV1,
+    ) -> Result<crate::AuditedExecutionFailureV1, StorageError> {
+        Err(StorageError::new(
+            crate::StorageErrorKind::InvariantViolation,
+            None,
+        ))
+    }
 
     /// Proves no terminal write was requested and rolls back the short transaction.
     fn abandon(self);

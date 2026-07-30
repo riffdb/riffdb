@@ -167,6 +167,41 @@ pub(crate) fn prepare_command_terminal_audit(
     .map_err(AdministrationAuditExecutionError::InvalidInput)
 }
 
+pub(crate) fn prepare_command_failure_terminal_audit(
+    clock: &dyn AdministrationClock,
+    started: &dyn AdministrationAuditInputView,
+) -> Result<ServiceAuditAppendIntentV1, AdministrationAuditExecutionError> {
+    if started.operation() != &riffdb_types::ServiceOperationV1::ExecuteCommand
+        || started.phase() != &riffdb_types::ServiceAuditPhaseV1::Started
+        || started.link() != &riffdb_types::ServiceAuditLinkV1::None
+    {
+        return Err(AdministrationAuditExecutionError::InvalidInput(
+            riffdb_storage_api::StorageValueError::IdentityMismatch,
+        ));
+    }
+    let timestamp = clock
+        .now()
+        .map_err(AdministrationAuditExecutionError::Clock)?;
+    let principal = AuditPrincipalV1::new(
+        started.principal_id().clone(),
+        *started.actor_kind(),
+        *started.capability_id(),
+        *started.capability_revision(),
+    );
+    ServiceAuditAppendIntentV1::new(
+        *started.request_id(),
+        timestamp,
+        *started.operation(),
+        riffdb_types::ServiceAuditPhaseV1::Failed,
+        principal,
+        *started.ingress(),
+        started.targets().clone(),
+        started.approval_id().cloned(),
+        riffdb_types::ServiceAuditLinkV1::None,
+    )
+    .map_err(AdministrationAuditExecutionError::InvalidInput)
+}
+
 fn append_prepared_administration_audit(
     repository: &mut dyn ServiceAuditAppendRepository,
     intent: &ServiceAuditAppendIntentV1,

@@ -12,7 +12,7 @@ pub enum SequenceAllocationError {
     ZeroCount,
     /// The complete requested range cannot be represented.
     Exhausted,
-    /// A command batch requested more than the accepted 64 slots.
+    /// A bounded operation requested more sequence slots than its accepted limit.
     TooMany,
 }
 
@@ -21,7 +21,7 @@ impl fmt::Display for SequenceAllocationError {
         formatter.write_str(match self {
             Self::ZeroCount => "sequence allocation count must be nonzero",
             Self::Exhausted => "sequence allocation is exhausted",
-            Self::TooMany => "sequence allocation count exceeds 64",
+            Self::TooMany => "sequence allocation count exceeds its bounded operation limit",
         })
     }
 }
@@ -64,7 +64,7 @@ impl ApplicationSequenceAllocator {
         &self,
         count: u8,
     ) -> Result<ApplicationSequenceRange, SequenceAllocationError> {
-        validate_count(count)?;
+        validate_application_count(count)?;
         let Self::Next(mut current) = *self else {
             return Err(SequenceAllocationError::Exhausted);
         };
@@ -162,7 +162,7 @@ impl AdministrationSequenceAllocator {
         &self,
         count: u8,
     ) -> Result<AdministrationSequenceRange, SequenceAllocationError> {
-        validate_count(count)?;
+        validate_administration_count(count)?;
         let Self::Next(mut current) = *self else {
             return Err(SequenceAllocationError::Exhausted);
         };
@@ -222,10 +222,48 @@ impl AdministrationSequenceRange {
     }
 }
 
-fn validate_count(count: u8) -> Result<(), SequenceAllocationError> {
+fn validate_application_count(count: u8) -> Result<(), SequenceAllocationError> {
     match count {
         0 => Err(SequenceAllocationError::ZeroCount),
         1..=64 => Ok(()),
         _ => Err(SequenceAllocationError::TooMany),
+    }
+}
+
+fn validate_administration_count(count: u8) -> Result<(), SequenceAllocationError> {
+    match count {
+        0 => Err(SequenceAllocationError::ZeroCount),
+        // One fused command transition contains Started plus one terminal row.
+        // A maximum 64-command group therefore allocates at most 128 audit
+        // sequences in the same authoritative transaction.
+        1..=128 => Ok(()),
+        _ => Err(SequenceAllocationError::TooMany),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{
+        AdministrationSequenceAllocator, ApplicationSequenceAllocator, SequenceAllocationError,
+    };
+
+    #[test]
+    fn application_allocation_remains_bounded_to_sixty_four() {
+        assert_eq!(
+            ApplicationSequenceAllocator::initial().allocate_consecutive(65),
+            Err(SequenceAllocationError::TooMany)
+        );
+    }
+
+    #[test]
+    fn administration_allocation_covers_two_rows_per_maximum_command_group() {
+        let allocation = AdministrationSequenceAllocator::initial()
+            .allocate_consecutive(128)
+            .expect("128 fused service-audit rows are bounded");
+        assert_eq!(allocation.assigned().len(), 128);
+        assert_eq!(
+            AdministrationSequenceAllocator::initial().allocate_consecutive(129),
+            Err(SequenceAllocationError::TooMany)
+        );
     }
 }

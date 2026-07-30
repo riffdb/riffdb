@@ -540,7 +540,7 @@ fn durable_graph_construction_requires_checked_input_and_retains_attempt_through
         "lookup_candidates: IdempotencyLookupCandidatesV1",
         "pub(super) fn commit(\n        self,",
         "pub(super) fn commit_group(",
-        ".commit_with_service_audits(durability_mode, terminals)",
+        ".commit_with_service_audit_transitions(durability_mode, audits)",
         "None => staged.commit(durability_mode)",
         "finish_checked_commit(",
         "batch.outcomes() == std::slice::from_ref(&expected_outcome)",
@@ -785,9 +785,8 @@ fn command_admission_is_private_move_only_and_orders_external_calls_exactly() {
         ".recheck(idempotency)",
         "lower_provenance_claims(&parts.authorization)",
         "StoredPendingAdmissionV1::new(",
-        "AdmissionRequestV1::new(lookup_candidates, &context)",
-        ".admit_or_resolve(prepared.request.clone())",
-        ".admit_or_resolve_group(requests)",
+        "AdmissionRequestV1::new(lookup_candidates.clone(), &context)",
+        "candidate(lowered, context, true, lookup_candidates)",
         "AdmissionResultV1::Resumed(existing)",
         ".rebind_durable_pending(existing)",
         "raw.sort_unstable()",
@@ -808,12 +807,12 @@ fn command_admission_is_private_move_only_and_orders_external_calls_exactly() {
     assert!(!LIB_SOURCE.contains("pub mod command_admission"));
     assert!(!LIB_SOURCE.contains("pub use command_admission"));
     assert_eq!(production_source.matches(".recheck(").count(), 1);
-    assert_eq!(production_source.matches(".admit_or_resolve(").count(), 1);
+    assert_eq!(production_source.matches(".admit_or_resolve(").count(), 0);
     assert_eq!(
         production_source
             .matches(".admit_or_resolve_group(")
             .count(),
-        1
+        0
     );
 
     let candidate_body = production_source
@@ -871,7 +870,10 @@ fn command_admission_is_private_move_only_and_orders_external_calls_exactly() {
         clock < request,
         "clock sampling must precede admission request construction"
     );
-    assert!(production_source.contains("repository.admit_or_resolve_group(requests)"));
+    assert!(
+        !production_source.contains("repository.admit_or_resolve_group(requests)"),
+        "fresh terminal admission must not persist Pending state"
+    );
 }
 
 #[test]
@@ -918,9 +920,9 @@ fn command_attempt_owns_one_lease_around_synchronous_recheck_snapshot_and_runtim
         "pending.actor().clone()",
         "pending.logical_time()",
         "pending.partition_key().clone()",
-        "if pending == *state.commit_context.pending()",
-        "outcome_matches_context(&outcome, &state.commit_context)",
-        "if failure.pending() == state.commit_context.pending()",
+        "if !state.terminal_admission && pending == *state.commit_context.pending()",
+        "outcome_matches_state(&outcome, &state)",
+        "failure_matches_state(&failure, &state)",
         "Ok(ExecutionResult::ReadOnly(_)) | Err(ExecutionFault::Integrity)",
     ] {
         assert!(
@@ -1038,6 +1040,7 @@ fn command_driver_public_surface_is_closed_and_has_no_storage_or_transport_autho
     assert_eq!(
         top_level_enum_variant_names(production, "pub enum CommandExecutionErrorKind {"),
         [
+            "AuthorizationDenied",
             "Cancelled",
             "DeadlineExceeded",
             "RetryBudgetExhausted",
@@ -1051,7 +1054,7 @@ fn command_driver_public_surface_is_closed_and_has_no_storage_or_transport_autho
 
     let result = braced_item_body(production, "pub enum CommandExecutionResult {");
     assert!(result.contains("Committed(CommittedOutcome)"));
-    assert!(result.contains("ExecutionFailed(ExecutionFailureCode)"));
+    assert!(result.contains("ExecutionFailed(ExecutionFailedOutcome)"));
     let error_kind = braced_item_body(production, "pub enum CommandExecutionErrorKind {");
     let error = braced_item_body(production, "pub struct CommandExecutionError {");
     assert!(

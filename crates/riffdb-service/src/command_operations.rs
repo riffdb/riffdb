@@ -3,13 +3,15 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
+use riffdb_auth::AuthenticatedPrincipal;
 use riffdb_catalog::{CatalogError, CatalogErrorKind, ResolvedExecutablePlan};
 use riffdb_commit::{
     CommandExecutionAdmissionError, CommandExecutionErrorKind, CommandExecutionPreparation,
     CommandExecutionResult as CoordinatorCommandResult, CommandIdempotencyConfirmationError,
     CommandIdempotencyInspectionErrorKind, CommandIdempotencyInspectionRequest,
     CommandIdempotencyPlanSelection, CommittedOutcome, CommittedOutcomeDisposition,
-    CoordinatorDurability, ReadOnlyExecutionPreparation, ReadOnlyExecutionResult,
+    CoordinatorDurability, PostEvaluationAuthorizationError, PostEvaluationCommandAuthorizer,
+    ReadOnlyExecutionPreparation, ReadOnlyExecutionResult,
 };
 use riffdb_contract_ir::{
     CommandPlan, ExecutionClass, McpCommandToolNameV1, OutcomeSchema, RecordSchema, RecordTypeRef,
@@ -21,8 +23,9 @@ use riffdb_errors::{
 };
 use riffdb_invariant::{EvaluationError, derive_input_command_facts};
 use riffdb_policy::{
-    AuthorizedOperation, CommandExecutionClass, OperationRequest, OperationTenantScope,
-    OutputClassification, PartitionConstraint,
+    AgentSessionAdmissionPolicy, AuthorizedCommandExecution, AuthorizedOperation,
+    CommandExecutionClass, Decision, OperationRequest, OperationTenantScope, OutputClassification,
+    PartitionConstraint, UntrustedInvocationClaims,
 };
 use riffdb_types::{
     CanonicalCodecError, CanonicalList, CanonicalRecord, CanonicalValue, Decimal, DecimalSpec,
@@ -36,13 +39,14 @@ use crate::wait::{ControlledWaitError, wait_with_control};
 use crate::{
     AuthoritativeOutcomeRequest, AuthoritativeOutcomeSnapshot, AuthoritativeReadError,
     AuthoritativeReadinessFailure, CatalogExecutablePlanRequest, CommandApplication,
-    CommandDurability, DeclaredOutcomeView, ExecuteCommandRequest, ExecuteCommandResult,
-    InternalDefect, JournaledCommandResult, JournaledCompletion, OutcomeLocatorDigestEvidence,
-    OutcomePlanBinding, OutcomeResourceLocator, PendingTerminalResponse, PortAdmissionError,
-    PortDriverStopped, ReadOnlyCommandResult, RecoveredJournaledCommandResult, RequestContext,
-    ResolveCommandOutcomeRequest, ResolveCommandOutcomeResult, ResolveCommandOutcomeSelectorRef,
-    RiffDbService, RiffDbServiceInner, ServiceAuditTargetMap, ServiceFailure, ServiceFuture,
-    ServiceResult, SubmittedFieldIdentity, SubmittedRecord, SubmittedValue, ensure_response_budget,
+    CommandDurability, CurrentPolicyPort, DeclaredOutcomeView, ExecuteCommandRequest,
+    ExecuteCommandResult, InternalDefect, JournaledCommandResult, JournaledCompletion,
+    OutcomeLocatorDigestEvidence, OutcomePlanBinding, OutcomeResourceLocator,
+    PendingTerminalResponse, PortAdmissionError, PortDriverStopped, ReadOnlyCommandResult,
+    RecoveredJournaledCommandResult, RequestContext, ResolveCommandOutcomeRequest,
+    ResolveCommandOutcomeResult, ResolveCommandOutcomeSelectorRef, RiffDbService,
+    RiffDbServiceInner, ServiceAuditTargetMap, ServiceFailure, ServiceFuture, ServiceResult,
+    SubmittedFieldIdentity, SubmittedRecord, SubmittedValue, ensure_response_budget,
 };
 
 impl CommandApplication for RiffDbService {
@@ -76,6 +80,29 @@ impl CommandApplication for RiffDbService {
 struct ActiveCommand {
     resolved: ResolvedExecutablePlan,
     catalog_request: CatalogExecutablePlanRequest,
+}
+
+struct ServicePostEvaluationCommandAuthorizer {
+    policy: Arc<dyn CurrentPolicyPort>,
+    principal: AuthenticatedPrincipal,
+    request: OperationRequest,
+    claims: UntrustedInvocationClaims,
+    agent_session_policy: AgentSessionAdmissionPolicy,
+}
+
+impl PostEvaluationCommandAuthorizer for ServicePostEvaluationCommandAuthorizer {
+    fn authorize(&self) -> Result<AuthorizedCommandExecution, PostEvaluationAuthorizationError> {
+        match self.policy.authorize(&self.principal, self.request.clone()) {
+            Ok(Decision::Allow(authorization)) => authorization
+                .into_command_execution(self.claims.clone(), self.agent_session_policy)
+                .map_err(|_| PostEvaluationAuthorizationError::Integrity),
+            Ok(Decision::Deny(_)) => Err(PostEvaluationAuthorizationError::Denied),
+            Ok(Decision::PrepareCapabilityMutation(_)) => {
+                Err(PostEvaluationAuthorizationError::Integrity)
+            }
+            Err(_) => Err(PostEvaluationAuthorizationError::Unavailable),
+        }
+    }
 }
 
 struct CheckedOutcomeCatalog {
@@ -668,6 +695,13 @@ async fn execute_mutation(
                 .await);
             }
         };
+        let post_evaluation_authorizer = ServicePostEvaluationCommandAuthorizer {
+            policy: Arc::clone(&service.providers.policy),
+            principal: context.principal().clone(),
+            request: operation.clone(),
+            claims: context.claims().clone(),
+            agent_session_policy: service.identity.agent_session_policy(),
+        };
         let authorization = invocation
             .reauthorize_request(service, context, operation)
             .await?;
@@ -721,7 +755,9 @@ async fn execute_mutation(
             control,
         )
         .and_then(|preparation| preparation.with_audited_lifecycle(Box::new(started)))
-        {
+        .and_then(|preparation| {
+            preparation.with_post_evaluation_authorizer(Box::new(post_evaluation_authorizer))
+        }) {
             Ok(preparation) => preparation,
             Err(_) => {
                 let failure = service.internal_failure(
@@ -798,8 +834,17 @@ async fn execute_mutation(
                 }
                 return pending.into_response();
             }
-            Ok(CoordinatorCommandResult::ExecutionFailed(code)) => {
-                let failure = PublicError::command_execution_failed(code).into();
+            Ok(CoordinatorCommandResult::ExecutionFailed(outcome)) => {
+                let failure = PublicError::command_execution_failed(outcome.code()).into();
+                if outcome.disposition() == CommittedOutcomeDisposition::FirstCommit {
+                    invocation.confirm_compound_failure().map_err(|_| {
+                        service.internal_failure(
+                            ServiceOperationV1::ExecuteCommand,
+                            InternalDefect::ProofMismatch,
+                        )
+                    })?;
+                    return Err(failure);
+                }
                 return Err(finish_failure(
                     service,
                     context,
@@ -2183,6 +2228,10 @@ fn map_command_execution(
     kind: CommandExecutionErrorKind,
 ) -> (ServiceFailure, TerminalKind) {
     match kind {
+        CommandExecutionErrorKind::AuthorizationDenied => (
+            PublicError::authorization_denied().into(),
+            TerminalKind::Ordinary,
+        ),
         CommandExecutionErrorKind::Cancelled => (ServiceFailure::Cancelled, TerminalKind::Ordinary),
         CommandExecutionErrorKind::DeadlineExceeded => {
             (ServiceFailure::DeadlineExceeded, TerminalKind::Ordinary)

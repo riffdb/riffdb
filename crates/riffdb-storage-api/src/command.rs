@@ -12,11 +12,11 @@ use riffdb_types::{
 };
 
 use crate::{
-    EntityTarget, ExecutablePlanRef, IdempotencyIdentity, IndexRangeTarget,
-    MAX_AFFECTED_INDEX_EPOCH_TARGETS, MAX_COMMAND_READ_TARGETS, MAX_ENTITY_MUTATIONS,
-    MAX_EVENT_INTENTS, MAX_READ_DEPENDENCIES, MAX_READ_SNAPSHOT_BYTES, MAX_VALIDATION_TARGETS,
-    ReadDependencies, ReadSnapshot, StorageValueError, ValidationReadRequest,
-    canonical_codec_storage_error,
+    EntityTarget, ExecutablePlanRef, IdempotencyIdentity, IdempotencyLookupCandidatesV1,
+    IndexRangeTarget, MAX_AFFECTED_INDEX_EPOCH_TARGETS, MAX_COMMAND_READ_TARGETS,
+    MAX_ENTITY_MUTATIONS, MAX_EVENT_INTENTS, MAX_READ_DEPENDENCIES, MAX_READ_SNAPSHOT_BYTES,
+    MAX_VALIDATION_TARGETS, ReadDependencies, ReadSnapshot, StorageValueError,
+    ValidationReadRequest, canonical_codec_storage_error,
 };
 
 /// Fixed provenance ID, partition hash, conflict-count framing, and empty conflict set.
@@ -777,10 +777,34 @@ impl EvaluatedCommand {
     }
 }
 
+/// Transaction-current idempotency state required before a command may stage.
+///
+/// New synchronous commands retain every identity inspected as vacant and let
+/// the authoritative writer prove that vacancy again in the terminal
+/// transaction. Recovery of pre-WP-372 work retains the exact durable
+/// `Pending` admission instead.
+#[derive(Clone, Eq, PartialEq)]
+pub enum CommandAdmissionExpectationV1 {
+    /// A legacy durable admission must still equal the retained record.
+    ExistingPending,
+    /// Every inspected compatible identity must still be vacant.
+    Vacant(IdempotencyLookupCandidatesV1),
+}
+
+impl fmt::Debug for CommandAdmissionExpectationV1 {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(match self {
+            Self::ExistingPending => "CommandAdmissionExpectationV1::ExistingPending",
+            Self::Vacant(_) => "CommandAdmissionExpectationV1::Vacant([REDACTED])",
+        })
+    }
+}
+
 /// A complete pre-sequence command candidate assembled only after evaluation.
 #[derive(Clone, Eq, PartialEq)]
 pub struct CommitIntent {
     pending: StoredPendingAdmissionV1,
+    admission_expectation: CommandAdmissionExpectationV1,
     evaluated: EvaluatedCommand,
     provenance_id: ProvenanceId,
     partition_hash: PartitionKeyHash,
@@ -807,6 +831,7 @@ impl CommitIntent {
         }
         Ok(Self {
             pending: context.pending,
+            admission_expectation: CommandAdmissionExpectationV1::ExistingPending,
             evaluated,
             provenance_id,
             partition_hash: context.partition_hash,
@@ -815,10 +840,32 @@ impl CommitIntent {
         })
     }
 
+    /// Combines a speculative synchronous evaluation with the complete set of
+    /// identities that the writer must prove vacant before staging anything.
+    pub fn new_for_vacant_terminal_admission(
+        context: PreEvaluationCommitContext,
+        lookup_candidates: IdempotencyLookupCandidatesV1,
+        evaluated: EvaluatedCommand,
+        provenance_id: ProvenanceId,
+    ) -> Result<Self, StorageValueError> {
+        if lookup_candidates.as_slice().first() != Some(context.pending.identity()) {
+            return Err(StorageValueError::IdentityMismatch);
+        }
+        let mut intent = Self::new(context, evaluated, provenance_id)?;
+        intent.admission_expectation = CommandAdmissionExpectationV1::Vacant(lookup_candidates);
+        Ok(intent)
+    }
+
     /// Borrows the exact stored pending admission.
     #[must_use]
     pub const fn pending(&self) -> &StoredPendingAdmissionV1 {
         &self.pending
+    }
+
+    /// Borrows the exact transaction-current idempotency expectation.
+    #[must_use]
+    pub const fn admission_expectation(&self) -> &CommandAdmissionExpectationV1 {
+        &self.admission_expectation
     }
 
     /// Borrows the unchanged deterministic runtime result.

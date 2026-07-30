@@ -231,6 +231,19 @@ where
             })
     }
 
+    pub(super) fn requires_fused_starts(&self) -> impl Iterator<Item = bool> + '_ {
+        self.entries.iter().map(|entry| {
+            matches!(
+                entry.candidate.exact_intent().admission_expectation(),
+                riffdb_storage_api::CommandAdmissionExpectationV1::Vacant(_)
+            )
+        })
+    }
+
+    pub(super) fn requires_fused_start(&self) -> bool {
+        self.requires_fused_starts().next().unwrap_or(false)
+    }
+
     pub(super) fn into_storage_and_entries(
         self,
     ) -> (S, Vec<CheckedStagedCommandEntry>, DurabilityMode) {
@@ -291,7 +304,7 @@ where
     /// retaining the attempt capability until the storage call returns.
     pub(super) fn commit(
         self,
-        terminal: Option<riffdb_storage_api::ServiceAuditAppendIntentV1>,
+        audit: Option<riffdb_storage_api::CommandServiceAuditTransitionV1>,
     ) -> CheckedCommandCommitResult {
         let Self {
             staged,
@@ -307,9 +320,9 @@ where
             .into_iter()
             .next()
             .expect("checked staged command is nonempty");
-        let result = match terminal {
-            Some(terminal) => staged
-                .commit_with_service_audit(durability_mode, terminal)
+        let result = match audit {
+            Some(audit) => staged
+                .commit_with_service_audit_transitions(durability_mode, vec![audit])
                 .map(|audited| audited.into_parts().0),
             None => staged.commit(durability_mode),
         };
@@ -323,7 +336,7 @@ where
 
     pub(super) fn commit_group(
         self,
-        terminals: Option<Vec<riffdb_storage_api::ServiceAuditAppendIntentV1>>,
+        audits: Option<Vec<riffdb_storage_api::CommandServiceAuditTransitionV1>>,
     ) -> CheckedCommandGroupCommitResult {
         let Self {
             staged,
@@ -331,9 +344,9 @@ where
             durability_mode,
         } = self;
         if entries.len() < 2
-            || terminals
+            || audits
                 .as_ref()
-                .is_some_and(|terminals| entries.len() != terminals.len())
+                .is_some_and(|audits| entries.len() != audits.len())
         {
             drop(staged);
             drop(entries);
@@ -343,9 +356,9 @@ where
             .iter()
             .map(|entry| entry.expected_outcome.clone())
             .collect::<Vec<_>>();
-        let committed = match terminals {
-            Some(terminals) => staged
-                .commit_with_service_audits(durability_mode, terminals)
+        let committed = match audits {
+            Some(audits) => staged
+                .commit_with_service_audit_transitions(durability_mode, audits)
                 .map(|audited| audited.into_parts().0),
             None => staged.commit(durability_mode),
         };
@@ -454,6 +467,17 @@ pub(super) fn resolve_uncertain_command_commit(
         }
     };
     match durable {
+        AdmissionLookupResultV1::NotFound
+            if matches!(
+                uncertain.candidate.exact_intent().admission_expectation(),
+                riffdb_storage_api::CommandAdmissionExpectationV1::Vacant(_)
+            ) =>
+        {
+            let UncertainCommandCommit { candidate, .. } = *uncertain;
+            UncertainCommandCommitResolution::ProvenNotCommitted(ProvenNonCommitCommand {
+                candidate,
+            })
+        }
         AdmissionLookupResultV1::NotFound => UncertainCommandCommitResolution::Integrity,
         AdmissionLookupResultV1::MultipleMatches => UncertainCommandCommitResolution::Integrity,
         AdmissionLookupResultV1::Found(state) => match *state {

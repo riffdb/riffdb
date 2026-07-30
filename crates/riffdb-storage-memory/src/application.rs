@@ -7,15 +7,16 @@ use riffdb_storage_api::{
     AdmissionResultV1, AffectedEpochCurrentState, AffectedEpochCurrentStateBuilder,
     AffectedIndexEpochTargets, ApplicationCommandTransactionPort, AssignedCommandSequence,
     AtomicCommandRecordSet, AuditedAdmissionRepository, AuditedAdmissionRequestV1,
-    AuditedAdmissionResultV1, AuditedCommittedBatchV1, AuthoritativeIndexScanPage,
-    AuthoritativeIndexScanRequest, AuthoritativePointReader, AuthoritativeScanReader,
-    CandidateAdmissionResult, CandidateCapacityResult, CandidateStartResult,
-    CandidateValidationRejection, CommandCandidateAdmission, CommandCandidateAffectedEpochRead,
-    CommandCandidateAwaitingCapacity, CommandCandidateAwaitingValidation,
-    CommandCandidateCapacityReserved, CommandCandidateSequenceAssigned, CommandCandidateStateRead,
-    CommandWriteSetPlanV1, CommitIntent, CommitScanPageV1, CommitScanRequest, CommittedBatchV1,
-    CurrentRangeObservation, DurabilityMode, EmptyCommandBatch, EncodedPageItem, EntityObservation,
-    EntityTarget, ExecutionFailureAdmissionRechecked, ExecutionFailureAdmissionResult,
+    AuditedAdmissionResultV1, AuditedCommittedBatchV1, AuditedExecutionFailureV1,
+    AuthoritativeIndexScanPage, AuthoritativeIndexScanRequest, AuthoritativePointReader,
+    AuthoritativeScanReader, CandidateAdmissionResult, CandidateCapacityResult,
+    CandidateStartResult, CandidateValidationRejection, CommandAdmissionExpectationV1,
+    CommandCandidateAdmission, CommandCandidateAffectedEpochRead, CommandCandidateAwaitingCapacity,
+    CommandCandidateAwaitingValidation, CommandCandidateCapacityReserved,
+    CommandCandidateSequenceAssigned, CommandCandidateStateRead, CommandWriteSetPlanV1,
+    CommitIntent, CommitScanPageV1, CommitScanRequest, CommittedBatchV1, CurrentRangeObservation,
+    DurabilityMode, EmptyCommandBatch, EncodedPageItem, EntityObservation, EntityTarget,
+    ExecutionFailureAdmissionRechecked, ExecutionFailureAdmissionResult,
     ExecutionFailureAwaitingDecision, ExecutionFailureTransitionPort,
     ExecutionFailureTransitionRequestV1, ExpectedEntityState, FilteredAuthoritativeIndexScanPage,
     FilteredAuthoritativeIndexScanRequest, FilteredAuthoritativeScanReader,
@@ -26,9 +27,9 @@ use riffdb_storage_api::{
     ReadDependency, ReadSnapshot, ReadSnapshotBuilder, RetainedMetadataV1, SnapshotReader,
     SnapshotRequest, StagedBatchMetrics, StorageError, StorageErrorKind, StorageValueError,
     StoredAdmissionStateV1, StoredCommitRecordV1, StoredDurableEventV1, StoredEntityRecordV1,
-    StoredIndexEpochV1, StoredOutcomeV1, StoredPendingAdmissionV1, StoredProvenanceRecordV1,
-    TransactionCurrentState, TransactionCurrentStateBuilder, UniqueIndexOccupancy,
-    UniqueOccupancyKind, ValidationReadRequest, derive_event_hash_v1,
+    StoredExecutionFailedV1, StoredIndexEpochV1, StoredOutcomeV1, StoredPendingAdmissionV1,
+    StoredProvenanceRecordV1, TransactionCurrentState, TransactionCurrentStateBuilder,
+    UniqueIndexOccupancy, UniqueOccupancyKind, ValidationReadRequest, derive_event_hash_v1,
 };
 use riffdb_types::{CommitSequence, EventId, FrontierPosition, ProvenanceId};
 
@@ -279,13 +280,13 @@ impl NonEmptyCommandBatch for MemoryNonEmptyBatch {
         Ok(committed)
     }
 
-    fn commit_with_service_audits(
+    fn commit_with_service_audit_transitions(
         self,
         durability: DurabilityMode,
-        terminals: Vec<riffdb_storage_api::ServiceAuditAppendIntentV1>,
+        transitions: Vec<riffdb_storage_api::CommandServiceAuditTransitionV1>,
     ) -> Result<AuditedCommittedBatchV1, StorageError> {
-        if self.core.staged.len() != terminals.len()
-            || terminals.is_empty()
+        if self.core.staged.len() != transitions.len()
+            || transitions.is_empty()
             || self
                 .core
                 .staged
@@ -307,9 +308,16 @@ impl NonEmptyCommandBatch for MemoryNonEmptyBatch {
         access.write(move |state| {
             let mut candidate = state.clone();
             overlay.publish(&mut candidate);
-            let mut terminal_records = Vec::with_capacity(terminals.len());
-            for terminal in &terminals {
-                terminal_records.push(append_service_audit_in_state(&mut candidate, terminal)?);
+            let mut terminal_records = Vec::with_capacity(transitions.len());
+            for transition in transitions {
+                let intents = transition.into_intents();
+                let mut terminal = None;
+                for intent in &intents {
+                    terminal = Some(append_service_audit_in_state(&mut candidate, intent)?);
+                }
+                terminal_records.push(
+                    terminal.ok_or_else(|| storage_error(StorageErrorKind::InvariantViolation))?,
+                );
             }
             let audited = AuditedCommittedBatchV1::new(committed, terminal_records)
                 .map_err(invariant_value)?;
@@ -701,9 +709,37 @@ impl ExecutionFailureTransitionPort for MemoryOperationalPorts {
     ) -> Result<ExecutionFailureAdmissionResult<Self::Rechecked>, StorageError> {
         let access = self.acquire()?;
         let result = access.read(|state| {
-            let position =
-                admission_position(&state.admissions, request.expected_pending().identity())?;
+            let position = match request.admission_expectation() {
+                CommandAdmissionExpectationV1::ExistingPending => {
+                    admission_position(&state.admissions, request.expected_pending().identity())?
+                }
+                CommandAdmissionExpectationV1::Vacant(candidates) => {
+                    let mut matches = Vec::new();
+                    for identity in candidates.as_slice() {
+                        if let Ok(index) = admission_position(&state.admissions, identity)? {
+                            matches.push(index);
+                        }
+                    }
+                    match matches.as_slice() {
+                        [] => Err(admission_position(
+                            &state.admissions,
+                            request.expected_pending().identity(),
+                        )?
+                        .unwrap_err()),
+                        [index] => Ok(*index),
+                        _ => return Ok(ExecutionFailureAdmissionResult::PendingMismatch),
+                    }
+                }
+            };
             Ok(match position {
+                Err(_)
+                    if matches!(
+                        request.admission_expectation(),
+                        CommandAdmissionExpectationV1::Vacant(_)
+                    ) =>
+                {
+                    ExecutionFailureAdmissionResult::Rechecked(())
+                }
                 Err(_) => ExecutionFailureAdmissionResult::Missing,
                 Ok(index) => match &state.admissions[index] {
                     StoredAdmissionStateV1::Pending(value)
@@ -792,29 +828,120 @@ fn dependencies_from_current(
 
 impl ExecutionFailureAwaitingDecision for MemoryExecutionFailureAwaitingDecision {
     fn terminalize(self) -> Result<riffdb_storage_api::StoredExecutionFailedV1, StorageError> {
+        self.terminalize_inner(None).map(|(failure, _)| failure)
+    }
+
+    fn terminalize_with_service_audit(
+        self,
+        transition: riffdb_storage_api::CommandServiceAuditTransitionV1,
+    ) -> Result<AuditedExecutionFailureV1, StorageError> {
+        let (failure, terminal) = self.terminalize_inner(Some(transition))?;
+        AuditedExecutionFailureV1::new(
+            failure,
+            terminal.ok_or_else(|| storage_error(StorageErrorKind::InvariantViolation))?,
+        )
+        .map_err(invariant_value)
+    }
+
+    fn abandon(self) {}
+}
+
+impl MemoryExecutionFailureAwaitingDecision {
+    fn terminalize_inner(
+        self,
+        audit: Option<riffdb_storage_api::CommandServiceAuditTransitionV1>,
+    ) -> Result<
+        (
+            StoredExecutionFailedV1,
+            Option<riffdb_storage_api::StoredServiceAuditRecordV1>,
+        ),
+        StorageError,
+    > {
         if dependencies_from_current(&self.current)? != *self.request.read_dependencies() {
             return Err(storage_error(StorageErrorKind::InvariantViolation));
         }
         let terminal = self.request.terminal_record();
         self.access.write(|state| {
-            let Ok(index) = admission_position(
-                &state.admissions,
-                self.request.expected_pending().identity(),
-            )?
-            else {
-                return Err(storage_error(StorageErrorKind::InvariantViolation));
-            };
-            if state.admissions[index]
-                != StoredAdmissionStateV1::Pending(self.request.expected_pending().clone())
-            {
+            let mut candidate = state.clone();
+            if !plan_bundle_exists(&candidate, self.request.expected_pending().plan()) {
                 return Err(storage_error(StorageErrorKind::InvariantViolation));
             }
-            state.admissions[index] = StoredAdmissionStateV1::ExecutionFailed(terminal.clone());
-            Ok(terminal)
+            match self.request.admission_expectation() {
+                CommandAdmissionExpectationV1::ExistingPending => {
+                    let Ok(index) = admission_position(
+                        &candidate.admissions,
+                        self.request.expected_pending().identity(),
+                    )?
+                    else {
+                        return Err(storage_error(StorageErrorKind::InvariantViolation));
+                    };
+                    if candidate.admissions[index]
+                        != StoredAdmissionStateV1::Pending(self.request.expected_pending().clone())
+                    {
+                        return Err(storage_error(StorageErrorKind::InvariantViolation));
+                    }
+                    candidate.admissions[index] =
+                        StoredAdmissionStateV1::ExecutionFailed(terminal.clone());
+                }
+                CommandAdmissionExpectationV1::Vacant(candidates) => {
+                    for identity in candidates.as_slice() {
+                        if admission_position(&candidate.admissions, identity)?.is_ok() {
+                            return Err(storage_error(StorageErrorKind::InvariantViolation));
+                        }
+                    }
+                    let Err(position) = admission_position(
+                        &candidate.admissions,
+                        self.request.expected_pending().identity(),
+                    )?
+                    else {
+                        return Err(storage_error(StorageErrorKind::InvariantViolation));
+                    };
+                    candidate.admissions.insert(
+                        position,
+                        StoredAdmissionStateV1::ExecutionFailed(terminal.clone()),
+                    );
+                    let plan_key = crate::state::plan_evidence_order_key(
+                        self.request.expected_pending().plan(),
+                    );
+                    let plan_insert = match unique_binary_search_by(
+                        &candidate.historical_plan_references,
+                        |row| row.order_key.cmp(&plan_key),
+                    )? {
+                        Ok(index)
+                            if candidate.historical_plan_references[index].plan
+                                == *self.request.expected_pending().plan() =>
+                        {
+                            None
+                        }
+                        Ok(_) => return Err(storage_error(StorageErrorKind::CorruptData)),
+                        Err(index) => Some(index),
+                    };
+                    if let Some(index) = plan_insert {
+                        candidate.historical_plan_references.insert(
+                            index,
+                            HistoricalPlanReferenceRow::new(
+                                self.request.expected_pending().plan().clone(),
+                                HistoricalPlanReferenceSource::Admission(identity_key(
+                                    self.request.expected_pending().identity(),
+                                )?),
+                            ),
+                        );
+                    }
+                }
+            }
+            let terminal_audit = if let Some(transition) = audit {
+                let mut record = None;
+                for intent in transition.into_intents() {
+                    record = Some(append_service_audit_in_state(&mut candidate, &intent)?);
+                }
+                record
+            } else {
+                None
+            };
+            *state = candidate;
+            Ok((terminal, terminal_audit))
         })
     }
-
-    fn abandon(self) {}
 }
 
 fn reserved_class_charges(
@@ -911,8 +1038,35 @@ macro_rules! impl_candidate_chain {
             fn recheck_admission(
                 self,
             ) -> Result<CandidateAdmissionResult<Self::Prior, Self::StateRead>, StorageError> {
-                let identity = self.intent.pending().identity();
-                let position = admission_position(&self.prior.core.overlay.admissions, identity)?;
+                let position = match self.intent.admission_expectation() {
+                    CommandAdmissionExpectationV1::ExistingPending => admission_position(
+                        &self.prior.core.overlay.admissions,
+                        self.intent.pending().identity(),
+                    )?,
+                    CommandAdmissionExpectationV1::Vacant(candidates) => {
+                        let mut found = None;
+                        for identity in candidates.as_slice() {
+                            if let Ok(index) =
+                                admission_position(&self.prior.core.overlay.admissions, identity)?
+                            {
+                                if found.replace(index).is_some() {
+                                    return Ok(CandidateAdmissionResult::PendingMismatch(
+                                        AbandonedCandidate::new(self.prior, self.intent),
+                                    ));
+                                }
+                            }
+                        }
+                        let Some(index) = found else {
+                            return Ok(CandidateAdmissionResult::Proceed(
+                                MemoryCandidateStateRead {
+                                    prior: self.prior,
+                                    intent: self.intent,
+                                },
+                            ));
+                        };
+                        Ok(index)
+                    }
+                };
                 Ok(match position {
                     Err(_) => CandidateAdmissionResult::MissingPending(AbandonedCandidate::new(
                         self.prior,
@@ -1417,15 +1571,29 @@ fn apply_record_set(
     charges: SyntheticCommandClassCharges,
 ) -> Result<(), StorageError> {
     let expected_pending = records.expected_pending();
-    let Ok(admission_index) = admission_position(&overlay.admissions, expected_pending.identity())?
-    else {
-        return Err(storage_error(StorageErrorKind::InvariantViolation));
+    let admission_index = match records.intent().admission_expectation() {
+        CommandAdmissionExpectationV1::ExistingPending => {
+            let Ok(index) = admission_position(&overlay.admissions, expected_pending.identity())?
+            else {
+                return Err(storage_error(StorageErrorKind::InvariantViolation));
+            };
+            if overlay.admissions[index]
+                != StoredAdmissionStateV1::Pending(expected_pending.clone())
+            {
+                return Err(storage_error(StorageErrorKind::InvariantViolation));
+            }
+            index
+        }
+        CommandAdmissionExpectationV1::Vacant(candidates) => {
+            for identity in candidates.as_slice() {
+                if admission_position(&overlay.admissions, identity)?.is_ok() {
+                    return Err(storage_error(StorageErrorKind::InvariantViolation));
+                }
+            }
+            admission_position(&overlay.admissions, expected_pending.identity())?
+                .expect_err("the complete candidate set was proven vacant")
+        }
     };
-    if overlay.admissions[admission_index]
-        != StoredAdmissionStateV1::Pending(expected_pending.clone())
-    {
-        return Err(storage_error(StorageErrorKind::InvariantViolation));
-    }
     let plan_key = crate::state::plan_evidence_order_key(records.intent().evaluated().plan());
     let Ok(plan_index) = unique_binary_search_by(&overlay.historical_plan_references, |row| {
         row.order_key.cmp(&plan_key)
@@ -1453,8 +1621,16 @@ fn apply_record_set(
         .insert(provenance_index, records.provenance().clone());
     apply_events(overlay, records)?;
     append_sequence_graph(overlay, records, charges)?;
-    overlay.admissions[admission_index] =
-        StoredAdmissionStateV1::StoredOutcome(records.stored_outcome().clone());
+    match records.intent().admission_expectation() {
+        CommandAdmissionExpectationV1::ExistingPending => {
+            overlay.admissions[admission_index] =
+                StoredAdmissionStateV1::StoredOutcome(records.stored_outcome().clone());
+        }
+        CommandAdmissionExpectationV1::Vacant(_) => overlay.admissions.insert(
+            admission_index,
+            StoredAdmissionStateV1::StoredOutcome(records.stored_outcome().clone()),
+        ),
+    }
     Ok(())
 }
 
@@ -2209,6 +2385,46 @@ mod tests {
         }
     }
 
+    fn terminal_admission_fixture(mut fixture: CommandFixture) -> CommandFixture {
+        let context = PreEvaluationCommitContext::new(
+            fixture.pending.clone(),
+            riffdb_types::hash_partition_key(fixture.pending.partition_key().as_bytes()),
+            fixture.intent.conflict_hashes().to_vec(),
+        )
+        .expect("terminal admission context");
+        let intent = CommitIntent::new_for_vacant_terminal_admission(
+            context,
+            fixture.admission.lookup_candidates().clone(),
+            fixture.intent.evaluated().clone(),
+            fixture.intent.provenance_id(),
+        )
+        .expect("terminal admission intent");
+        let write_plan = CommandWriteSetPlanV1::new(
+            &intent,
+            fixture.write_plan.affected_targets().clone(),
+            fixture.write_plan.affected_current().clone(),
+            fixture.write_plan.index_entries().to_vec(),
+            fixture.write_plan.index_epochs().to_vec(),
+            fixture.write_plan.charge().encoded_upper_bound(),
+        )
+        .expect("terminal admission write plan");
+        let records = AtomicCommandRecordSet::new(
+            fixture.records.assignment(),
+            fixture.records.entities().to_vec(),
+            write_plan.clone(),
+            fixture.records.stored_outcome().clone(),
+            fixture.records.events().to_vec(),
+            fixture.records.outbox_intents().to_vec(),
+            fixture.records.provenance().clone(),
+            fixture.records.commit().clone(),
+        )
+        .expect("terminal admission records");
+        fixture.intent = intent;
+        fixture.write_plan = write_plan;
+        fixture.records = records;
+        fixture
+    }
+
     fn admit(
         ports: &MemoryOperationalPorts,
         model: &mut AuthoritativeCommandModel,
@@ -2288,6 +2504,52 @@ mod tests {
             .expect("assign sequence")
             .stage(fixture.records.clone())
             .expect("stage fixture")
+    }
+
+    #[test]
+    fn vacant_terminal_admission_commits_without_persisting_pending() {
+        let ports = operational_ports(bundle());
+        let fixture = terminal_admission_fixture(command_fixture(
+            1,
+            1,
+            None,
+            IndexEpochPosition::BeforeFirst,
+            0x31,
+        ));
+        ports
+            .admit_or_resolve(fixture.admission.clone())
+            .expect("seed historical plan evidence");
+        ports
+            .acquire()
+            .expect("test state access")
+            .write(|state| {
+                state.admissions.clear();
+                Ok(())
+            })
+            .expect("restore vacancy");
+
+        assert!(matches!(
+            ports
+                .lookup_admission(fixture.admission.lookup_candidates().clone())
+                .expect("initial vacancy"),
+            AdmissionLookupResultV1::NotFound
+        ));
+        let committed = stage_empty(&ports, &fixture)
+            .commit(DurabilityMode::Memory)
+            .expect("fused terminal commit");
+        assert_eq!(
+            committed.outcomes(),
+            std::slice::from_ref(fixture.records.stored_outcome())
+        );
+        assert!(matches!(
+            ports
+                .lookup_admission(fixture.admission.lookup_candidates().clone())
+                .expect("terminal lookup"),
+            AdmissionLookupResultV1::Found(state)
+                if *state == StoredAdmissionStateV1::StoredOutcome(
+                    fixture.records.stored_outcome().clone()
+                )
+        ));
     }
 
     #[test]
@@ -2961,6 +3223,113 @@ mod tests {
                 Ok(())
             })
             .expect("failure model parity");
+    }
+
+    #[test]
+    fn vacant_execution_failure_and_audit_lifecycle_are_one_atomic_transition() {
+        let ports = operational_ports(bundle());
+        let fixture = command_fixture(1, 1, None, IndexEpochPosition::BeforeFirst, 0x73);
+        let snapshot = ports
+            .read_snapshot(
+                SnapshotRequest::new(
+                    plan(),
+                    vec![fixture.target.clone()],
+                    Vec::new(),
+                    vec![fixture.range.clone()],
+                )
+                .expect("snapshot request"),
+            )
+            .expect("snapshot");
+        let candidates = fixture.admission.lookup_candidates().clone();
+        let request = ExecutionFailureTransitionRequestV1::new_for_vacant_terminal_admission(
+            fixture.pending.clone(),
+            candidates.clone(),
+            &snapshot,
+            riffdb_types::ExecutionFailureCode::ArithmeticFault,
+        )
+        .expect("vacant failure request");
+        let ExecutionFailureAdmissionResult::Rechecked(rechecked) = ports
+            .begin_execution_failure(request)
+            .expect("begin vacant failure")
+        else {
+            panic!("vacant identity must recheck");
+        };
+        let (decision, _) = rechecked
+            .read_transaction_current()
+            .expect("failure current state");
+        let principal = riffdb_storage_api::AuditPrincipalV1::new(
+            fixture.pending.actor().principal_id().clone(),
+            fixture.pending.actor().actor_kind(),
+            riffdb_types::CapabilityId::from_bytes(uuid_bytes(0x74)).expect("capability"),
+            std::num::NonZeroU64::MIN,
+        );
+        let started = riffdb_storage_api::ServiceAuditAppendIntentV1::new(
+            fixture.pending.admission_request_id(),
+            Timestamp::new(100, 0).expect("started timestamp"),
+            riffdb_types::ServiceOperationV1::ExecuteCommand,
+            riffdb_types::ServiceAuditPhaseV1::Started,
+            principal.clone(),
+            riffdb_types::ServiceIngressKindV1::Grpc,
+            riffdb_types::ServiceAuditTargetsV1::empty(),
+            None,
+            riffdb_types::ServiceAuditLinkV1::None,
+        )
+        .expect("started audit");
+        let failed = riffdb_storage_api::ServiceAuditAppendIntentV1::new(
+            fixture.pending.admission_request_id(),
+            Timestamp::new(101, 0).expect("failed timestamp"),
+            riffdb_types::ServiceOperationV1::ExecuteCommand,
+            riffdb_types::ServiceAuditPhaseV1::Failed,
+            principal,
+            riffdb_types::ServiceIngressKindV1::Grpc,
+            riffdb_types::ServiceAuditTargetsV1::empty(),
+            None,
+            riffdb_types::ServiceAuditLinkV1::None,
+        )
+        .expect("failed audit");
+        let transition = riffdb_storage_api::CommandServiceAuditTransitionV1::started_and_failure(
+            started, failed,
+        )
+        .expect("failed lifecycle");
+        let (failure, terminal) = decision
+            .terminalize_with_service_audit(transition)
+            .expect("terminalize failure and audit")
+            .into_parts();
+
+        assert_eq!(terminal.phase(), riffdb_types::ServiceAuditPhaseV1::Failed);
+        assert!(matches!(
+            ports
+                .lookup_admission(candidates)
+                .expect("failure lookup"),
+            AdmissionLookupResultV1::Found(value)
+                if *value == StoredAdmissionStateV1::ExecutionFailed(failure)
+        ));
+        ports
+            .read(|state| {
+                let phases = state
+                    .administration_audit
+                    .iter()
+                    .filter_map(|record| match record {
+                        riffdb_storage_api::StoredAdministrationAuditRecordV1::Service(record) => {
+                            Some(record.phase())
+                        }
+                        riffdb_storage_api::StoredAdministrationAuditRecordV1::Catalog(_)
+                        | riffdb_storage_api::StoredAdministrationAuditRecordV1::Capability(_)
+                        | riffdb_storage_api::StoredAdministrationAuditRecordV1::QueryModule(_) => {
+                            None
+                        }
+                    })
+                    .collect::<Vec<_>>();
+                assert_eq!(
+                    phases,
+                    [
+                        riffdb_types::ServiceAuditPhaseV1::Started,
+                        riffdb_types::ServiceAuditPhaseV1::Failed
+                    ]
+                );
+                Ok(())
+            })
+            .expect("inspect atomic failure state");
     }
 
     #[test]
