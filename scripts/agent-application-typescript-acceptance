@@ -3,8 +3,6 @@ set -euo pipefail
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 runtime="$repo_root/clients/typescript/runtime"
-application="$repo_root/examples/agent-alpha"
-web="$application/web"
 cache="${RIFFDB_NPM_CACHE:-/home/kevin/tmp/npm-cache}"
 
 for tool in cargo jq mkfifo mktemp node npm; do
@@ -17,8 +15,6 @@ done
 npm --cache "$cache" --prefix "$runtime" ci --ignore-scripts
 npm --prefix "$runtime" run build
 npm --prefix "$runtime" test
-npm --cache "$cache" --prefix "$web" ci --ignore-scripts
-npm --prefix "$web" run build
 
 cargo build --quiet -p riffdb-cli --bin riffdb
 riffdb="$repo_root/target/debug/riffdb"
@@ -38,45 +34,61 @@ cleanup() {
 }
 trap cleanup EXIT INT TERM
 
-mkfifo "$work_root/dev.fifo"
-exec {dev_fd}<>"$work_root/dev.fifo"
+# Prove the actual TypeScript scaffold. This layout matches the sealed bundle
+# and requires no registry or network access after publication.
+install_root="$work_root/install"
+generated_app="$work_root/generated-app"
+mkdir -p "$install_root/bin" "$install_root/public/typescript" "$generated_app"
+cp "$riffdb" "$install_root/bin/riffdb"
+cp -R "$runtime/node_modules" "$install_root/public/typescript/"
+"$install_root/bin/riffdb" new ts-alpha \
+    --language typescript \
+    --directory "$generated_app"
 (
-    cd "$application"
-    "$riffdb" dev --seed
-) >"$work_root/dev.fifo" 2>"$work_root/dev.stderr" &
-dev_pid=$!
+    cd "$generated_app"
+    npm_config_offline=true npm run check
+    npm_config_offline=true npm run build
+)
 
-ready=
-while IFS= read -r -t 60 line <&"$dev_fd"; do
+mkfifo "$work_root/generated-dev.fifo"
+exec {generated_dev_fd}<>"$work_root/generated-dev.fifo"
+(
+    cd "$generated_app"
+    "$install_root/bin/riffdb" dev --seed
+) >"$work_root/generated-dev.fifo" 2>"$work_root/generated-dev.stderr" &
+dev_pid=$!
+generated_ready=
+while IFS= read -r -t 60 line <&"$generated_dev_fd"; do
     case "$line" in
-        riffdb-dev-ready-v1$'\t'*) ready="$line"; break ;;
+        riffdb-dev-ready-v1$'\t'*) generated_ready="$line"; break ;;
     esac
 done
-[[ -n "$ready" ]] || {
-    cat "$work_root/dev.stderr" >&2
-    echo "TypeScript acceptance development server did not become ready" >&2
+[[ -n "$generated_ready" ]] || {
+    sed -n '1,200p' "$work_root/generated-dev.stderr" >&2
+    echo "generated TypeScript development server did not become ready" >&2
     exit 1
 }
-IFS=$'\t' read -r _ endpoint credential role <<<"$ready"
-[[ "$role" == "AgentAlphaApplication" && -f "$credential" ]] || {
-    echo "TypeScript acceptance received an invalid application profile" >&2
+IFS=$'\t' read -r _ endpoint credential role <<<"$generated_ready"
+[[ "$role" == "TsAlphaApplication" && -f "$credential" ]] || {
+    echo "generated TypeScript scaffold received an invalid application profile" >&2
     exit 1
 }
 
-mkfifo "$work_root/web.fifo"
-exec {web_fd}<>"$work_root/web.fifo"
-node "$web/dist/server.js" "$endpoint" "$credential" "$riffdb" \
-    >"$work_root/web.fifo" 2>"$work_root/web.stderr" &
+mkfifo "$work_root/generated-web.fifo"
+exec {generated_web_fd}<>"$work_root/generated-web.fifo"
+node "$generated_app/dist/src/main.js" \
+    "$endpoint" "$credential" "$install_root/bin/riffdb" \
+    >"$work_root/generated-web.fifo" 2>"$work_root/generated-web.stderr" &
 web_pid=$!
-IFS= read -r -t 30 web_ready <&"$web_fd" || {
-    cat "$work_root/web.stderr" >&2
-    echo "TypeScript web application did not become ready" >&2
+IFS= read -r -t 30 generated_web_ready <&"$generated_web_fd" || {
+    sed -n '1,200p' "$work_root/generated-web.stderr" >&2
+    echo "generated TypeScript web scaffold did not become ready" >&2
     exit 1
 }
-case "$web_ready" in
-    agent-alpha-web-ready-v1$'\t'*) web_port="${web_ready#*$'\t'}" ;;
+case "$generated_web_ready" in
+    riffdb-app-ready-v1$'\t'*) generated_web_port="${generated_web_ready#*$'\t'}" ;;
     *)
-        echo "TypeScript web application returned invalid readiness" >&2
+        echo "generated TypeScript web scaffold returned invalid readiness" >&2
         exit 1
         ;;
 esac
@@ -86,7 +98,7 @@ const port = process.argv[1];
 const response = await fetch(`http://127.0.0.1:${port}/item`);
 if (!response.ok) process.exit(1);
 process.stdout.write(`${await response.text()}\n`);
-' "$web_port" >"$work_root/observation.json"
+' "$generated_web_port" >"$work_root/generated-observation.json"
 
 jq -e --slurpfile expected \
     "$repo_root/fixtures/application-parity/agent-alpha-observation-v1.json" '
@@ -95,6 +107,6 @@ jq -e --slurpfile expected \
   and (.readAfterCommit | type) == "string"
   and (.applicationHead | type) == "string"
   and ((.applicationHead | tonumber) >= (.readAfterCommit | tonumber))
-' "$work_root/observation.json" >/dev/null
+' "$work_root/generated-observation.json" >/dev/null
 
-echo "TypeScript generated web application acceptance passed"
+echo "TypeScript generated web application and offline scaffold acceptance passed"

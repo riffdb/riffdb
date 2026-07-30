@@ -8,6 +8,8 @@
 
 mod admission;
 mod bounded_json;
+#[cfg(feature = "stdio")]
+mod builder;
 mod conversion;
 mod cursor;
 mod handler;
@@ -36,6 +38,8 @@ mod stdio_transport;
 mod telemetry;
 
 pub use admission::*;
+#[cfg(feature = "stdio")]
+pub use builder::{BuilderMcpConfiguration, BuilderMcpServer};
 pub use conversion::*;
 pub use cursor::{
     MCP_CURSOR_BYTES, MCP_CURSOR_TEXT_BYTES, McpCursorError, decode_mcp_cursor, encode_mcp_cursor,
@@ -87,7 +91,8 @@ pub use schema_bound::*;
 pub use service_backend::{HostedServiceInvocation, HostedServiceMcpBackend};
 #[cfg(feature = "stdio")]
 pub use stdio_transport::{
-    McpStdioClientActivity, McpStdioServeError, McpStdioTransportError, serve_mcp_stdio,
+    McpStdioClientActivity, McpStdioServeError, McpStdioTransportError, serve_builder_mcp_stdio,
+    serve_mcp_stdio,
 };
 pub use telemetry::{
     MCP_SAFE_TRANSPORT_TRACE_TARGET, McpListChangeKind, McpRiskClass, McpSafeTransportEvent,

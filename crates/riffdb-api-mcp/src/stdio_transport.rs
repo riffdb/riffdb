@@ -538,6 +538,30 @@ where
     Ok(())
 }
 
+/// Serves one credential-less local builder handler over the same bounded
+/// first-party stdio transport without constructing an observer or backend.
+pub async fn serve_builder_mcp_stdio<Server>(server: Server) -> Result<(), McpStdioServeError>
+where
+    Server: rmcp::handler::server::ServerHandler,
+{
+    let status = TransportStatus::default();
+    let activity = McpStdioClientActivity::new();
+    let transport = BoundedStdioTransport::with_status_and_activity(
+        tokio::io::stdin(),
+        tokio::io::stdout(),
+        status.clone(),
+        activity,
+    );
+    let running = serve_server(server, transport)
+        .await
+        .map_err(|_| McpStdioServeError)?;
+    let quit = running.waiting().await.map_err(|_| McpStdioServeError)?;
+    if status.failed() || matches!(quit, rmcp::service::QuitReason::JoinError(_)) {
+        return Err(McpStdioServeError);
+    }
+    Ok(())
+}
+
 async fn run_stdio_observer<Backend>(
     backend: Arc<Backend>,
     state: Arc<McpObserverState>,

@@ -19,7 +19,13 @@ application client is patched to the bundled public SDK, and network access is
 disabled. The bundle self-test creates a fresh application and completes
 `riffdb dev --seed --acceptance` through this offline path.
 
-For TypeScript, install `@riffdb/application` from
-`$RIFFDB_TYPESCRIPT_RUNTIME`. These are product-owned public packages; using
-them is not handwritten transport glue. Agents must not inspect or receive any
-other RiffDB source tree.
+For TypeScript, `riffdb new --language typescript` materializes the exact
+compiler, Node types, product runtime, lockfile, build scripts, and HTTP starter
+from `$RIFFDB_TYPESCRIPT_RUNTIME`; no registry operation is required.
+
+`bin/riffdb-builder-mcp --workspace <path>` exposes the same local check,
+diagnostic, lock, and generation semantics as the CLI plus the bundled public
+references. It has no credential and no runtime operation. These are
+product-owned public packages and tools; using them is not handwritten
+transport glue. Agents must not inspect or receive any other RiffDB source
+tree.

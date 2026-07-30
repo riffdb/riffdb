@@ -112,6 +112,14 @@ pub(crate) enum ApplicationCommand {
         )]
         source: OsString,
     },
+    /// Compiles and prints the exact proposed lock without writing.
+    Preview {
+        #[arg(
+            default_value = "riffdb.application.json",
+            value_name = "APPLICATION_SOURCE"
+        )]
+        source: OsString,
+    },
     /// Writes or verifies the compiler-owned exact lock and generated artifacts.
     Lock {
         #[arg(

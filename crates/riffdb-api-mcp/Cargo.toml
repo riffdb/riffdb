@@ -53,6 +53,14 @@ test = false
 bench = false
 doc = false
 
+[[bin]]
+name = "riffdb-builder-mcp"
+path = "src/bin/riffdb-builder-mcp.rs"
+required-features = ["stdio"]
+test = false
+bench = false
+doc = false
+
 [[example]]
 name = "riffdb-mcp-conformance-http"
 path = "examples/mcp_conformance_http.rs"

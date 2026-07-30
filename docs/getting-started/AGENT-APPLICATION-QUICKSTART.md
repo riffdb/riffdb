@@ -85,6 +85,13 @@ Complete public references:
 - [RiffQL v1](../riffql/LANGUAGE.md)
 - [authoring diagnostics](AUTHORING-DIAGNOSTICS.md)
 
+The sealed kit also provides `riffdb-builder-mcp --workspace <path>`. It is a
+credential-less local MCP server with reference resources and only six
+authoring tools: describe, check, diagnostic explanation, lock preview,
+explicit lock write, and exact generation. It cannot deploy, bind a role,
+execute a query or command, read storage, or obtain a credential. The mutating
+lock/generation tools remain explicit and are marked accordingly in MCP.
+
 `riffdb dev` starts one local server, waits for explicit readiness, deploys the
 exact contract and module, compiles and binds the symbolic application role,
 refreshes the lock only for its product-owned ephemeral database, regenerates
