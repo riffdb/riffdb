@@ -13,7 +13,7 @@ use riffdb_catalog::{
     CatalogTelemetryEvent,
 };
 use riffdb_commit::{
-    CommitIdempotencyObservation, CommitTelemetry, CommitTelemetryEvent,
+    CommitGroupDispatchReason, CommitIdempotencyObservation, CommitTelemetry, CommitTelemetryEvent,
     CommitUncertaintyResolution, CommitUncertaintyStage,
 };
 use riffdb_conflict::{ConflictEvent, ConflictObserver};
@@ -36,6 +36,8 @@ pub const MAX_RETAINED_INCIDENTS: usize = 256;
 pub const MAX_HOT_CONFLICT_KEYS: usize = 1_024;
 /// Closed production completion-group sizes.
 pub const MAX_WRITE_GROUP_SIZE: usize = 64;
+/// Closed scheduler dispatch-reason cardinality.
+pub const COMMAND_GROUP_DISPATCH_REASON_COUNT: usize = 4;
 
 /// Closed internal incident classifications.
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
@@ -124,6 +126,9 @@ pub struct Observability {
     incidents: Mutex<IncidentState>,
     hot_conflict_keys: Mutex<BTreeSet<ConflictKeyHash>>,
     write_completion_groups: [AtomicU64; MAX_WRITE_GROUP_SIZE],
+    command_group_dispatch_reasons: [AtomicU64; COMMAND_GROUP_DISPATCH_REASON_COUNT],
+    command_group_selected_total: AtomicU64,
+    command_group_deferred_total: AtomicU64,
     metrics: MetricRegistry,
     traces: TraceCollector,
     health: HealthRegistry,
@@ -144,6 +149,9 @@ impl Observability {
             }),
             hot_conflict_keys: Mutex::new(BTreeSet::new()),
             write_completion_groups: std::array::from_fn(|_| AtomicU64::new(0)),
+            command_group_dispatch_reasons: std::array::from_fn(|_| AtomicU64::new(0)),
+            command_group_selected_total: AtomicU64::new(0),
+            command_group_deferred_total: AtomicU64::new(0),
             metrics: MetricRegistry::new(),
             traces,
             health: HealthRegistry::new(),
@@ -166,6 +174,20 @@ impl Observability {
     #[must_use]
     pub fn write_completion_group_snapshot(&self) -> [u64; MAX_WRITE_GROUP_SIZE] {
         std::array::from_fn(|index| self.write_completion_groups[index].load(Ordering::Relaxed))
+    }
+
+    /// Returns dispatch counts in full, barrier, window, receiver-closed order.
+    #[must_use]
+    pub fn command_group_dispatch_snapshot(
+        &self,
+    ) -> ([u64; COMMAND_GROUP_DISPATCH_REASON_COUNT], u64, u64) {
+        (
+            std::array::from_fn(|index| {
+                self.command_group_dispatch_reasons[index].load(Ordering::Relaxed)
+            }),
+            self.command_group_selected_total.load(Ordering::Relaxed),
+            self.command_group_deferred_total.load(Ordering::Relaxed),
+        )
     }
 
     /// Returns a cloneable bounded trace collector.
@@ -391,6 +413,19 @@ impl ConflictObserver for Observability {
 impl CommitTelemetry for Observability {
     fn record(&self, event: CommitTelemetryEvent) {
         match event {
+            CommitTelemetryEvent::CommandGroupDispatched {
+                reason,
+                selected,
+                deferred,
+                ..
+            } => {
+                saturating_increment(
+                    &self.command_group_dispatch_reasons
+                        [command_group_dispatch_reason_index(reason)],
+                );
+                saturating_add(&self.command_group_selected_total, u64::from(selected));
+                saturating_add(&self.command_group_deferred_total, u64::from(deferred));
+            }
             CommitTelemetryEvent::StorageQueueCompleted { elapsed, .. } => {
                 self.metrics.observe_required_histogram(
                     RequiredHistogram::StorageQueueLatencyMicroseconds,
@@ -474,9 +509,22 @@ impl CommitTelemetry for Observability {
     }
 }
 
+const fn command_group_dispatch_reason_index(reason: CommitGroupDispatchReason) -> usize {
+    match reason {
+        CommitGroupDispatchReason::Full => 0,
+        CommitGroupDispatchReason::Barrier => 1,
+        CommitGroupDispatchReason::WindowElapsed => 2,
+        CommitGroupDispatchReason::ReceiverClosed => 3,
+    }
+}
+
 fn saturating_increment(counter: &AtomicU64) {
+    saturating_add(counter, 1);
+}
+
+fn saturating_add(counter: &AtomicU64, addend: u64) {
     let _ = counter.fetch_update(Ordering::Relaxed, Ordering::Relaxed, |value| {
-        Some(value.saturating_add(1))
+        Some(value.saturating_add(addend))
     });
 }
 

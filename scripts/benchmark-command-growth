@@ -9,10 +9,14 @@ if [ "${1-}" = "--assert-perf-003" ]; then
     mode=--assert-perf-003
 elif [ "${1-}" = "--assert-perf-004" ]; then
     mode=--assert-perf-004
+elif [ "${1-}" = "--assert-perf-006" ]; then
+    mode=--assert-perf-006
+elif [ "${1-}" = "--assert-perf-008" ]; then
+    mode=--assert-perf-008
 elif [ "${1-}" = "--smoke" ]; then
     mode=--smoke
 elif [ "$#" -ne 0 ]; then
-    echo "usage: $0 [--smoke|--assert-perf-003|--assert-perf-004]" >&2
+    echo "usage: $0 [--smoke|--assert-perf-003|--assert-perf-004|--assert-perf-006|--assert-perf-008]" >&2
     exit 2
 fi
 

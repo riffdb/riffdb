@@ -37,10 +37,11 @@ use tonic::transport::Endpoint;
 pub use server::RiffDbServerSession;
 
 /// Default in-flight seed commands (bounded client concurrency, not a bulk RPC).
-const DEFAULT_SEED_CONCURRENCY: usize = 64;
-const MAX_SEED_CONCURRENCY: usize = 64;
+const DEFAULT_SEED_CONCURRENCY: usize = 128;
+const MAX_SEED_CONCURRENCY: usize = 128;
 
 /// Public symbolic application backend.
+#[derive(Clone)]
 pub struct RiffDbPublicBackend {
     transport: StableApplicationClient,
     metadata: CallMetadata,

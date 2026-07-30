@@ -65,7 +65,9 @@ use crate::restore_retry_host::{
 use crate::runtime_support::{RuntimeRoutingState, RuntimeStopReason};
 use crate::startup::{RedbStartupError, open_redb_startup};
 
-const RUNTIME_WORKER_THREADS: usize = 2;
+/// Bounded public-service scheduler width. Blocking storage ports retain their
+/// separate eight-thread admission bound.
+const RUNTIME_WORKER_THREADS: usize = 8;
 const REQUEST_DURATION_LIMIT: Duration = Duration::from_secs(30);
 const TRANSPORT_DRAIN_LIMIT: Duration = Duration::from_secs(35);
 const RUNTIME_DRAIN_LIMIT: Duration = Duration::from_secs(5);

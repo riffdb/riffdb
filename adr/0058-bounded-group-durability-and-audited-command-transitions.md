@@ -7,6 +7,7 @@
   `REC-002`, `TXN-004`, `TXN-005`
 - **Related work packages:** `WP-362`, `WP-364`
 - **Amends:** ADR-0005, ADR-0007, ADR-0023, ADR-0057
+- **Amended by:** ADR-0059, ADR-0060
 
 ## Context
 
@@ -57,6 +58,13 @@ The scheduler:
 The 200 microsecond delay is an upper bound, not a mandatory sleep. The
 scheduler MUST dispatch immediately when a bound is reached, when no compatible
 work is already available, or when shutdown/fencing requires resolution.
+
+ADR-0060 supersedes the ambiguous “when no compatible work is already
+available” clause above. Queue emptiness at an intermediate poll does not
+require dispatch: after receiving the oldest groupable transition, the
+scheduler may wait until that transition's bounded window deadline for
+compatible work. ADR-0060 also defines the ordering barriers that may not be
+bypassed while a group is formed.
 
 `DurabilityMode::Group` means that a command shared one physical durable commit
 with zero or more independently identified commands. It does not weaken the

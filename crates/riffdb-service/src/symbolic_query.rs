@@ -1528,14 +1528,12 @@ async fn execute_named_query(
             ApplicationErrorCode::QueryUnavailable,
         )
     })?;
-    let document = parse_query(query.canonical_source())
-        .map_err(|_| service.internal_failure(OPERATION, InternalDefect::ProofMismatch))?;
     execute_compiled_query(
         service,
         context,
         bundle,
         query.program().clone(),
-        document,
+        query.document().clone(),
         Some(module.identity()),
         QueryAuthority::Named {
             module_hash,

@@ -49,6 +49,12 @@ use crate::store::RedbOperationalPorts;
 use crate::transient::TransientIndexDelta;
 
 impl OutboxRepository for RedbOperationalPorts {
+    fn has_undelivered_outbox(&self) -> Result<bool, StorageError> {
+        let _lease = self.acquire_indexed_read_lease()?;
+        self.undelivered_outbox_page(None, 1)
+            .map(|(event_ids, _)| !event_ids.is_empty())
+    }
+
     fn read_outbox_status(
         &self,
         event_id: EventId,

@@ -259,6 +259,60 @@ pub trait AdmissionRepository {
         &self,
         candidates: IdempotencyLookupCandidatesV1,
     ) -> Result<AdmissionLookupResultV1, StorageError>;
+
+    /// Performs a bounded FIFO group of read-only lookups.
+    ///
+    /// Production stores may override this to share one MVCC read transaction.
+    /// The default preserves semantics for small conformance repositories.
+    fn lookup_admission_group(
+        &self,
+        candidates: Vec<IdempotencyLookupCandidatesV1>,
+    ) -> Result<Vec<AdmissionLookupResultV1>, StorageError> {
+        if candidates.is_empty() || candidates.len() > crate::MAX_GROUPED_WRITE_TRANSITIONS {
+            return Err(StorageError::new(
+                crate::StorageErrorKind::LimitExceeded,
+                None,
+            ));
+        }
+        candidates
+            .into_iter()
+            .map(|candidate| self.lookup_admission(candidate))
+            .collect()
+    }
+}
+
+/// Least-authority read-only view of durable command admission identities.
+pub trait AdmissionLookupRepository {
+    /// Performs a bounded read without creating or changing admission state.
+    fn lookup_admission(
+        &self,
+        candidates: IdempotencyLookupCandidatesV1,
+    ) -> Result<AdmissionLookupResultV1, StorageError>;
+
+    /// Performs a bounded FIFO group of read-only lookups.
+    fn lookup_admission_group(
+        &self,
+        candidates: Vec<IdempotencyLookupCandidatesV1>,
+    ) -> Result<Vec<AdmissionLookupResultV1>, StorageError>;
+}
+
+impl<T> AdmissionLookupRepository for T
+where
+    T: AdmissionRepository + ?Sized,
+{
+    fn lookup_admission(
+        &self,
+        candidates: IdempotencyLookupCandidatesV1,
+    ) -> Result<AdmissionLookupResultV1, StorageError> {
+        AdmissionRepository::lookup_admission(self, candidates)
+    }
+
+    fn lookup_admission_group(
+        &self,
+        candidates: Vec<IdempotencyLookupCandidatesV1>,
+    ) -> Result<Vec<AdmissionLookupResultV1>, StorageError> {
+        AdmissionRepository::lookup_admission_group(self, candidates)
+    }
 }
 
 /// Closed read-only lookup result.

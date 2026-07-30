@@ -1,4 +1,4 @@
-spec_version: '0.44'
+spec_version: '0.45'
 product: RiffDB
 repository: riffdb
 status: application-platform-implementation
@@ -90,6 +90,9 @@ gates:
   - WP-362
   - WP-364
   - WP-365
+  - WP-367
+  - WP-368
+  - WP-369
   - WP-370
 work_packages:
 - id: WP-000
@@ -4760,10 +4763,239 @@ work_packages:
     same-run public seed plus unary mutation p50 are each no more than twice PostgreSQL with unchanged durability,
     authorization, idempotency, provenance, audit, and uncertainty semantics.
   human_review_triggers: *id001
+- id: WP-367
+  name: Bounded scheduler utilization and admission selection
+  depends_on:
+  - WP-366
+  objective: Make the accepted group window effective, prevent safe observational traffic from truncating compatible
+    command groups, and amortize historical idempotency selection and replay audit writes without allowing commands to
+    overtake policy, catalog, administrative-write, shutdown, fencing, or readiness barriers.
+  requirements:
+  - PERF-006
+  required_adrs:
+  - ADR-0003
+  - ADR-0005
+  - ADR-0007
+  - ADR-0023
+  - ADR-0058
+  - ADR-0059
+  - ADR-0060
+  allowed_paths:
+  - Cargo.toml
+  - Cargo.lock
+  - SPEC.md
+  - work_packages.yaml
+  - adr/**
+  - crates/riffdb-storage-api/**
+  - crates/riffdb-storage-memory/**
+  - crates/riffdb-storage-redb/**
+  - crates/riffdb-idempotency/**
+  - crates/riffdb-commit/**
+  - crates/riffdb-service/**
+  - crates/riffdb-server/**
+  - crates/riffdb-observability/**
+  - crates/riffdb-api-grpc/**
+  - crates/riffdb-proto/**
+  - crates/riffdb-client-rust/**
+  - clients/typescript/**
+  - tests/observability/**
+  - tests/command_semantics/**
+  - tests/grpc/**
+  - benchmarks/command-growth/**
+  - benchmarks/run-app-baseline
+  - fixtures/performance/**
+  - scripts/benchmark-command-growth
+  - scripts/check-generated
+  - docs/performance/**
+  deliverables:
+  - Deterministic 200-microsecond oldest-item group window with explicit full, byte-bound, expired, barrier,
+    incompatible, shutdown, and fencing dispatch reasons
+  - Complete bounded receiver drain into an ordered actor-local deque, stable deferral, 64-command selection, hard
+    control-plane barriers, and deterministic fairness/cancellation/shutdown schedules
+  - Bounded read-only historical idempotency selection for one public batch with transaction-current admission recheck
+    unchanged, plus grouped replay Started transitions
+  - Count-and-byte-bounded coordinator capacity above one maximum group and measured client/server concurrency sweep
+    retaining the public 16-command transport ceiling
+  - Redaction-safe group-fill, queue-depth, selection-batch, replay, wait, and dispatch-reason evidence
+  acceptance_commands:
+  - cargo test -p riffdb-idempotency --all-features
+  - cargo test -p riffdb-commit --all-features
+  - cargo test -p riffdb-service --all-features
+  - cargo test -p riffdb-server --all-features
+  - cargo test -p riffdb-api-grpc --all-features
+  - ./scripts/benchmark-command-growth --assert-perf-006
+  - ./benchmarks/run-app-baseline --full --assert-write-parity
+  - ./scripts/check-generated
+  - cargo fmt --all -- --check
+  - cargo clippy --workspace --all-targets --all-features -- -D warnings
+  exit_gate: The saturated conflict-free profile fills bounded groups without an intermediate empty poll forcing
+    dispatch, replay and fresh admission amortize physical transactions, every hard barrier remains ordered, p99
+    scheduler wait stays below two milliseconds, and all crash/idempotency/audit semantics remain unchanged.
+  human_review_triggers: *id001
+- id: WP-368
+  name: Activated redb storage lanes and concurrent application reads
+  depends_on:
+  - WP-367
+  objective: Release one private authoritative writer and cloneable least-authority MVCC readers from one completed
+    activation so admission fsync, no-destination publication, and unrelated reads no longer serialize on a
+    process-wide storage mutex.
+  requirements:
+  - PERF-007
+  required_adrs:
+  - ADR-0004
+  - ADR-0007
+  - ADR-0033
+  - ADR-0034
+  - ADR-0053
+  - ADR-0060
+  allowed_paths:
+  - Cargo.toml
+  - Cargo.lock
+  - SPEC.md
+  - work_packages.yaml
+  - adr/**
+  - crates/riffdb-storage-api/**
+  - crates/riffdb-storage-memory/**
+  - crates/riffdb-storage-redb/**
+  - crates/riffdb-commit/**
+  - crates/riffdb-query-executor/**
+  - crates/riffdb-query-module/**
+  - crates/riffdb-service/**
+  - crates/riffdb-server/**
+  - crates/riffdb-observability/**
+  - crates/riffdb-testkit/**
+  - tests/command_semantics/**
+  - tests/grpc/**
+  - benchmarks/application-path/**
+  - benchmarks/run-app-baseline
+  - benchmarks/run-concurrent-application
+  - fixtures/performance/**
+  - scripts/benchmark-concurrent-application
+  - scripts/check-generated
+  - docs/performance/**
+  deliverables:
+  - Activation-owned split yielding exactly one non-cloneable writer and narrow cloneable readers without exposing redb
+    or arbitrary transaction callbacks
+  - Admission and completion transaction ownership with no outer process-wide mutex held across redb work or flush
+  - Independent redb MVCC read transactions for authoritative, catalog, capability, projection, idempotency, and
+    RiffQL consumers with bounded port admission
+  - Recovery-seeded exact no-destination outbox latch updated from commit metadata without a per-command storage scan
+  - Exact-identity named-query parse cache and measured bounded runtime/port-worker configuration
+  - Concurrent reader/writer, snapshot, activation, poison, fencing, shutdown, crash, reopen, and outbox-readiness tests
+  acceptance_commands:
+  - cargo test -p riffdb-storage-redb --all-features
+  - cargo test -p riffdb-commit --all-features
+  - cargo test -p riffdb-query-executor --all-features
+  - cargo test -p riffdb-service --all-features
+  - cargo test -p riffdb-server --all-features
+  - ./scripts/benchmark-concurrent-application --assert-perf-007
+  - ./benchmarks/run-app-baseline --full --assert-write-parity
+  - ./scripts/check-generated
+  - cargo fmt --all -- --check
+  - cargo clippy --workspace --all-targets --all-features -- -D warnings
+  exit_gate: Public reads open independent MVCC transactions and scale under concurrent command fsync without
+    process-wide mutex wait, no-destination readiness remains exact across crash/reopen, named queries do not reparse
+    deployed source per request, and all activation and fail-closed boundaries pass.
+  human_review_triggers: *id001
+- id: WP-369
+  name: Immutable command artifacts, bounded parallel preparation, and application parity
+  depends_on:
+  - WP-368
+  objective: Remove the remaining serialized clone, normalization, lookup, sizing, encoding, verification, and
+    deterministic-evaluation amplification while retaining immutable exact identities, fresh authorization, one
+    admission-ordered writer, and transaction-current validation.
+  requirements:
+  - PERF-008
+  required_adrs:
+  - ADR-0002
+  - ADR-0003
+  - ADR-0004
+  - ADR-0006
+  - ADR-0007
+  - ADR-0012
+  - ADR-0022
+  - ADR-0023
+  - ADR-0058
+  - ADR-0059
+  - ADR-0060
+  allowed_paths:
+  - Cargo.toml
+  - Cargo.lock
+  - SPEC.md
+  - work_packages.yaml
+  - adr/**
+  - crates/riffdb-conflict/**
+  - crates/riffdb-contract-ir/**
+  - crates/riffdb-catalog/**
+  - crates/riffdb-storage-api/**
+  - crates/riffdb-storage-memory/**
+  - crates/riffdb-storage-redb/**
+  - crates/riffdb-commit/**
+  - crates/riffdb-runtime/**
+  - crates/riffdb-invariant/**
+  - crates/riffdb-query-ir/**
+  - crates/riffdb-query-module/**
+  - crates/riffdb-query-executor/**
+  - crates/riffdb-service/**
+  - crates/riffdb-server/**
+  - crates/riffdb-observability/**
+  - crates/riffdb-testkit/**
+  - crates/riffdb-client-rust/**
+  - clients/typescript/**
+  - examples/app-baseline/**
+  - tests/command_semantics/**
+  - tests/grpc/**
+  - tests/observability/**
+  - tests/service/**
+  - benchmarks/command-growth/**
+  - benchmarks/application-path/**
+  - benchmarks/run-app-baseline
+  - benchmarks/run-concurrent-application
+  - fixtures/performance/**
+  - fixtures/proto/**
+  - scripts/benchmark-command-growth
+  - scripts/benchmark-concurrent-application
+  - scripts/check-generated
+  - docs/performance/**
+  deliverables:
+  - Immutable Arc-owned exact contract, schema, command-plan, and query-program artifacts with complete hash-keyed
+    invalidation and no pointer-only authority
+  - Single command-input materialization plus exact post-wait identity revalidation and every required fresh
+    authorization/response-release safe point
+  - Non-materializing durable structural reservation, encode-once exact charge reuse, and byte-identical compatibility
+    fixtures with full external/recovery validation retained
+  - Bounded preparation workers for compiler-declared snapshot reads, deterministic evaluation, validation, and typed
+    record preparation with canonical conflict acquisition and an admission-ordinal reorder buffer
+  - One sole writer committing only the earliest contiguous compatible prepared commands with exact current-state
+    revalidation, retry, cancellation, sequence, crash, and uncertainty behavior
+  - Same-run 1/8/32/64-client read, write, and mixed PostgreSQL comparison satisfying PERF-008
+  acceptance_commands:
+  - cargo test -p riffdb-contract-ir --all-features
+  - cargo test -p riffdb-storage-api --all-features
+  - cargo test -p riffdb-storage-redb --all-features
+  - cargo test -p riffdb-commit --all-features
+  - cargo test -p riffdb-runtime --all-features
+  - cargo test -p riffdb-query-module --all-features
+  - cargo test -p riffdb-service --all-features
+  - cargo test -p riffdb-server --all-features
+  - ./scripts/benchmark-command-growth --assert-perf-008
+  - ./scripts/benchmark-concurrent-application --assert-perf-008
+  - ./benchmarks/run-app-baseline --full --assert-all-parity
+  - ./scripts/check-generated
+  - ./scripts/check-requirement-coverage
+  - cargo fmt --all -- --check
+  - cargo clippy --workspace --all-targets --all-features -- -D warnings
+  exit_gate: Every command and read remains on the safe symbolic path; one ordered writer retains all durable
+    semantics; the full seed and every unary scenario are within 1.10 times same-run PostgreSQL; the 32-client mixed
+    workload meets throughput and p95 parity; and no compatibility, safety, crash, or recovery fixture changes.
+  human_review_triggers: *id001
 - id: WP-370
   name: Agent Application Alpha sealed evaluation campaign 02
   depends_on:
   - WP-365
+  - WP-367
+  - WP-368
+  - WP-369
   objective: Repeat the official Blog and Orders Rust/TypeScript evaluation against one new sealed bundle and publish
     an eligible gate only when all unchanged Agent Application Alpha thresholds pass.
   requirements:

@@ -74,8 +74,7 @@ impl CommandApplication for RiffDbService {
 }
 
 struct ActiveCommand {
-    plan: CommandPlan,
-    schema: SchemaIr,
+    resolved: ResolvedExecutablePlan,
     catalog_request: CatalogExecutablePlanRequest,
 }
 
@@ -118,7 +117,7 @@ async fn execute_command(
     let targets = ServiceAuditTargetMap::execute_command(
         active.catalog_request.lineage().clone(),
         active.catalog_request.version(),
-        active.plan.command_id(),
+        active.resolved.plan().command_id(),
     )
     .map_err(|_| {
         service.internal_failure(
@@ -127,7 +126,7 @@ async fn execute_command(
         )
     })?;
 
-    match active.plan.execution_class() {
+    match active.resolved.plan().execution_class() {
         ExecutionClass::ReadOnly => {
             execute_read_only(service, &context, &request, active, targets).await
         }
@@ -178,10 +177,11 @@ async fn prepare_active_command(
         plan.command_id(),
         plan.plan_hash(),
     );
-    let schema = snapshot.bundle().bundle().schema().clone();
+    let resolved = snapshot
+        .resolve_active_command(plan.command_id(), plan.plan_hash())
+        .map_err(|error| map_catalog_error(service, ServiceOperationV1::ExecuteCommand, error))?;
     Ok(ActiveCommand {
-        plan,
-        schema,
+        resolved,
         catalog_request,
     })
 }
@@ -193,17 +193,11 @@ async fn execute_read_only(
     active: ActiveCommand,
     targets: ServiceAuditTargetsV1,
 ) -> ServiceResult<ExecuteCommandResult> {
-    let initial = load_plan(
-        service,
-        context,
-        ServiceOperationV1::ExecuteCommand,
-        active.catalog_request.clone(),
-    )
-    .await?;
+    let initial = active.resolved;
     let normalized = normalize_command_input(
         initial.plan(),
         initial.bundle().bundle().schema(),
-        &active.plan,
+        initial.plan(),
         request.input(),
     )
     .map_err(|error| input_error(service, ServiceOperationV1::ExecuteCommand, error))?;
@@ -237,44 +231,7 @@ async fn execute_read_only(
     };
 
     let expected_plan = active.catalog_request.clone();
-    let resolved = match load_plan(
-        service,
-        context,
-        ServiceOperationV1::ExecuteCommand,
-        active.catalog_request.clone(),
-    )
-    .await
-    {
-        Ok(resolved) => resolved,
-        Err(failure) => {
-            return Err(
-                finish_failure(service, context, &begun, failure, TerminalKind::Ordinary).await,
-            );
-        }
-    };
-    let normalized = match normalize_command_input(
-        resolved.plan(),
-        resolved.bundle().bundle().schema(),
-        &active.plan,
-        request.input(),
-    ) {
-        Ok(normalized) => normalized,
-        Err(error) => {
-            let failure = input_error(service, ServiceOperationV1::ExecuteCommand, error);
-            return Err(
-                finish_failure(service, context, &begun, failure, TerminalKind::Ordinary).await,
-            );
-        }
-    };
-    let facts = match derive_input_command_facts(resolved.plan(), normalized.clone()) {
-        Ok(facts) => facts,
-        Err(error) => {
-            let failure = evaluation_error(service, ServiceOperationV1::ExecuteCommand, error);
-            return Err(
-                finish_failure(service, context, &begun, failure, TerminalKind::Ordinary).await,
-            );
-        }
-    };
+    let resolved = initial;
     let operation = command_operation(&resolved, CommandExecutionClass::ReadOnly, &facts);
     let return_operation = operation.clone();
     let outcome_catalog = CheckedOutcomeCatalog::from_resolved(&resolved);
@@ -458,33 +415,14 @@ async fn execute_mutation(
         ServiceOperationV1::ExecuteCommand,
         targets.clone(),
     )?;
-    let active_normalized = match normalize_command_input(
-        &active.plan,
-        &active.schema,
-        &active.plan,
+    let caller_key = match extract_submitted_idempotency_key(
+        active.resolved.plan(),
+        active.resolved.bundle().bundle().schema(),
         request.input(),
     ) {
-        Ok(normalized) => normalized,
+        Ok(caller_key) => caller_key,
         Err(error) => {
             let failure = input_error(service, ServiceOperationV1::ExecuteCommand, error);
-            return Err(terminate_mutation(
-                service,
-                context,
-                None,
-                &targets,
-                failure,
-                TerminalKind::Ordinary,
-            )
-            .await);
-        }
-    };
-    let caller_key = match extract_idempotency_key(&active.plan, &active_normalized) {
-        Ok(caller_key) => caller_key,
-        Err(()) => {
-            let failure = service.internal_failure(
-                ServiceOperationV1::ExecuteCommand,
-                InternalDefect::ProofMismatch,
-            );
             return Err(terminate_mutation(
                 service,
                 context,
@@ -556,31 +494,34 @@ async fn execute_mutation(
                 )
             }
         };
-        let selected = match load_plan(
-            service,
-            context,
-            ServiceOperationV1::ExecuteCommand,
-            selected_request.clone(),
-        )
-        .await
-        {
-            Ok(selected) => selected,
-            Err(failure) => {
-                return Err(terminate_mutation(
-                    service,
-                    context,
-                    begun.as_ref(),
-                    &targets,
-                    failure,
-                    TerminalKind::Ordinary,
-                )
-                .await);
-            }
+        let selected = match inspection.plan_selection() {
+            CommandIdempotencyPlanSelection::Absent => active.resolved.clone(),
+            CommandIdempotencyPlanSelection::Historical(_) => match load_plan(
+                service,
+                context,
+                ServiceOperationV1::ExecuteCommand,
+                selected_request.clone(),
+            )
+            .await
+            {
+                Ok(selected) => selected,
+                Err(failure) => {
+                    return Err(terminate_mutation(
+                        service,
+                        context,
+                        begun.as_ref(),
+                        &targets,
+                        failure,
+                        TerminalKind::Ordinary,
+                    )
+                    .await);
+                }
+            },
         };
         let normalized = match normalize_command_input(
             selected.plan(),
             selected.bundle().bundle().schema(),
-            &active.plan,
+            active.resolved.plan(),
             request.input(),
         ) {
             Ok(normalized) => normalized,
@@ -616,11 +557,10 @@ async fn execute_mutation(
         if begun.is_none() {
             begun = Some(
                 service
-                    .begin_compound_command_invocation(context, operation, targets.clone())
+                    .begin_compound_command_invocation(context, operation.clone(), targets.clone())
                     .await?,
             );
         }
-        drop(selected);
 
         let invocation = begun.as_ref().expect("mutation begins before admission");
         let permit = match wait_with_control(
@@ -655,60 +595,12 @@ async fn execute_mutation(
             }
         };
 
-        let resolved = match load_plan(
-            service,
-            context,
-            ServiceOperationV1::ExecuteCommand,
-            selected_request.clone(),
-        )
-        .await
-        {
-            Ok(resolved) => resolved,
-            Err(failure) => {
-                return Err(finish_failure(
-                    service,
-                    context,
-                    invocation,
-                    failure,
-                    TerminalKind::Ordinary,
-                )
-                .await);
-            }
-        };
-        let normalized = match normalize_command_input(
-            resolved.plan(),
-            resolved.bundle().bundle().schema(),
-            &active.plan,
-            request.input(),
-        ) {
-            Ok(normalized) => normalized,
-            Err(error) => {
-                let failure = input_error(service, ServiceOperationV1::ExecuteCommand, error);
-                return Err(finish_failure(
-                    service,
-                    context,
-                    invocation,
-                    failure,
-                    TerminalKind::Ordinary,
-                )
-                .await);
-            }
-        };
-        let facts = match derive_input_command_facts(resolved.plan(), normalized.clone()) {
-            Ok(facts) => facts,
-            Err(error) => {
-                let failure = evaluation_error(service, ServiceOperationV1::ExecuteCommand, error);
-                return Err(finish_failure(
-                    service,
-                    context,
-                    invocation,
-                    failure,
-                    TerminalKind::Ordinary,
-                )
-                .await);
-            }
-        };
-        let operation = command_operation(&resolved, CommandExecutionClass::Mutation, &facts);
+        // The selected plan, canonical input, and input-derived facts are
+        // immutable exact artifacts. The capacity wait does not grant catalog
+        // or policy authority, so retain them and perform the required fresh
+        // authorization below instead of loading, cloning, normalizing, and
+        // evaluating the same material again.
+        let resolved = selected;
         let outcome_catalog = CheckedOutcomeCatalog::from_resolved(&resolved);
         let idempotency_field = match resolved.plan().idempotency_input() {
             Some(field) => field,
@@ -1903,6 +1795,39 @@ fn extract_idempotency_key(
     IdempotencyKey::new(value.as_str().to_owned()).map_err(|_| ())
 }
 
+fn extract_submitted_idempotency_key(
+    plan: &CommandPlan,
+    schema: &SchemaIr,
+    submitted: &SubmittedRecord,
+) -> Result<IdempotencyKey, InputPreparationError> {
+    let target = plan
+        .idempotency_input()
+        .ok_or(InputPreparationError::Integrity)?;
+    let record = plan.input().record();
+    let resolver = SubmittedFieldResolver::new(record, record);
+    let mut candidate = None;
+    for field in submitted.fields() {
+        match resolver.resolve(field.identity()) {
+            Ok(field_id) if field_id == target && candidate.is_none() => {
+                candidate = Some(field.value());
+            }
+            Ok(field_id) if field_id == target => {
+                candidate = None;
+                break;
+            }
+            Ok(_) | Err(_) => {}
+        }
+    }
+    if let Some(SubmittedValue::String(value)) = candidate
+        && let Ok(key) = IdempotencyKey::new(value.as_str().to_owned())
+    {
+        return Ok(key);
+    }
+
+    let normalized = normalize_command_input(plan, schema, plan, submitted)?;
+    extract_idempotency_key(plan, &normalized).map_err(|()| InputPreparationError::Integrity)
+}
+
 fn map_committed_outcome(
     outcome: CommittedOutcome,
     expected_plan: &CatalogExecutablePlanRequest,
@@ -2218,9 +2143,9 @@ fn map_command_admission(
     error: CommandExecutionAdmissionError,
 ) -> ServiceFailure {
     match error {
-        CommandExecutionAdmissionError::Draining | CommandExecutionAdmissionError::Stopped => {
-            PublicError::storage_unavailable().into()
-        }
+        CommandExecutionAdmissionError::RetainedByteCapacityExceeded
+        | CommandExecutionAdmissionError::Draining
+        | CommandExecutionAdmissionError::Stopped => PublicError::storage_unavailable().into(),
         CommandExecutionAdmissionError::Fenced => {
             service.providers.health.fail_authoritative_readiness(
                 crate::AuthoritativeReadinessFailure::CoordinatorFenced,

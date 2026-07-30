@@ -3,11 +3,12 @@
 // The driver is private composition infrastructure assembled during WP-130.
 #![allow(dead_code)]
 
+use std::collections::VecDeque;
 use std::fmt;
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::mpsc::{self, Receiver, SyncSender, TrySendError};
-use std::sync::{Arc, Mutex, MutexGuard};
+use std::sync::mpsc;
+use std::sync::{Arc, Condvar, Mutex, MutexGuard};
 use std::thread::{self, JoinHandle};
 
 use riffdb_service::{
@@ -22,28 +23,85 @@ use crate::runtime_support::RuntimeRoutingState;
 /// This is deliberately independent of the 256-item commit-notification bound:
 /// notifications and admitted blocking operations have different ownership and
 /// backpressure semantics.
-pub(crate) const P1_BLOCKING_PORT_WORKER_THREADS: usize = 8;
+pub(crate) const P1_BLOCKING_PORT_WORKER_THREADS: usize = 32;
 
 /// Maximum permits, queued jobs, and executing P1 blocking port operations.
 ///
 /// The conservative bound limits synchronous storage/catalog pressure while
 /// retaining enough capacity for the P1 public RPC surface. It is not a commit
 /// subscription or notification capacity.
-pub(crate) const P1_MAX_BLOCKING_PORT_OPERATIONS: usize = 64;
+pub(crate) const P1_MAX_BLOCKING_PORT_OPERATIONS: usize = 256;
 
 type BlockingJob = Box<dyn FnOnce() + Send + 'static>;
 
 struct DriverState {
     accepting: bool,
     in_flight: usize,
-    sender: Option<SyncSender<BlockingJob>>,
 }
 
 struct BlockingPortDriverInner {
     routing: RuntimeRoutingState,
     state: Mutex<DriverState>,
+    queue: JobQueue,
     max_in_flight: usize,
     installed_workers: AtomicUsize,
+}
+
+struct JobQueue {
+    state: Mutex<JobQueueState>,
+    available: Condvar,
+    capacity: usize,
+}
+
+struct JobQueueState {
+    jobs: VecDeque<BlockingJob>,
+    closed: bool,
+}
+
+impl JobQueue {
+    fn new(capacity: usize) -> Self {
+        Self {
+            state: Mutex::new(JobQueueState {
+                jobs: VecDeque::with_capacity(capacity),
+                closed: false,
+            }),
+            available: Condvar::new(),
+            capacity,
+        }
+    }
+
+    fn push(&self, job: BlockingJob) -> Result<(), BlockingJob> {
+        let Ok(mut state) = self.state.lock() else {
+            return Err(job);
+        };
+        if state.closed || state.jobs.len() == self.capacity {
+            return Err(job);
+        }
+        state.jobs.push_back(job);
+        self.available.notify_one();
+        Ok(())
+    }
+
+    fn pop(&self) -> Result<Option<BlockingJob>, ()> {
+        let mut state = self.state.lock().map_err(|_| ())?;
+        loop {
+            if let Some(job) = state.jobs.pop_front() {
+                return Ok(Some(job));
+            }
+            if state.closed {
+                return Ok(None);
+            }
+            state = self.available.wait(state).map_err(|_| ())?;
+        }
+    }
+
+    fn close(&self) -> Result<(), ()> {
+        let mut state = self.state.lock().map_err(|_| ())?;
+        state.closed = true;
+        drop(state);
+        self.available.notify_all();
+        Ok(())
+    }
 }
 
 impl BlockingPortDriverInner {
@@ -68,7 +126,7 @@ impl BlockingPortDriverInner {
                 return Err(PortAdmissionError::Stopped);
             }
         };
-        if !state.accepting || state.sender.is_none() {
+        if !state.accepting {
             return Err(PortAdmissionError::Stopped);
         }
         if state.in_flight == self.max_in_flight {
@@ -83,7 +141,7 @@ impl BlockingPortDriverInner {
         })
     }
 
-    fn sender_for_submission(&self) -> Result<SyncSender<BlockingJob>, PortAdmissionError> {
+    fn ensure_submission_open(&self) -> Result<(), PortAdmissionError> {
         if !self.routing.is_routing_allowed() {
             return Err(PortAdmissionError::Stopped);
         }
@@ -97,11 +155,7 @@ impl BlockingPortDriverInner {
         if !state.accepting {
             return Err(PortAdmissionError::Stopped);
         }
-        state
-            .sender
-            .as_ref()
-            .cloned()
-            .ok_or(PortAdmissionError::Stopped)
+        Ok(())
     }
 
     fn release_reservation(&self) {
@@ -120,7 +174,6 @@ impl BlockingPortDriverInner {
         }
         if poisoned {
             state.accepting = false;
-            state.sender.take();
         }
         drop(state);
         if poisoned {
@@ -138,8 +191,10 @@ impl BlockingPortDriverInner {
             }
         };
         state.accepting = false;
-        state.sender.take();
         drop(state);
+        if self.queue.close().is_err() {
+            poisoned = true;
+        }
         if poisoned {
             self.fail_integrity();
         }
@@ -149,8 +204,8 @@ impl BlockingPortDriverInner {
     fn close_poisoned(&self, error: std::sync::PoisonError<MutexGuard<'_, DriverState>>) {
         let mut state = error.into_inner();
         state.accepting = false;
-        state.sender.take();
         drop(state);
+        let _ = self.queue.close();
         self.fail_integrity();
     }
 
@@ -207,15 +262,13 @@ impl BlockingPortDriver {
             return Err(BlockingPortDriverStartError::InvalidLimits);
         }
 
-        let (sender, receiver) = mpsc::sync_channel(max_in_flight);
-        let receiver = Arc::new(Mutex::new(receiver));
         let inner = Arc::new(BlockingPortDriverInner {
             routing,
             state: Mutex::new(DriverState {
                 accepting: true,
                 in_flight: 0,
-                sender: Some(sender),
             }),
+            queue: JobQueue::new(max_in_flight),
             max_in_flight,
             installed_workers: AtomicUsize::new(0),
         });
@@ -225,12 +278,11 @@ impl BlockingPortDriver {
         for worker_index in 0..worker_count {
             let (start, started) = mpsc::channel();
             let worker_inner = Arc::clone(&inner);
-            let worker_receiver = Arc::clone(&receiver);
             let handle = thread::Builder::new()
                 .name(format!("riffdb-port-{worker_index}"))
                 .spawn(move || {
                     if started.recv().is_ok() {
-                        run_worker(&worker_inner, &worker_receiver);
+                        run_worker(&worker_inner);
                     }
                 });
             match handle {
@@ -325,20 +377,15 @@ impl fmt::Debug for BlockingPortDriver {
     }
 }
 
-fn run_worker(inner: &Arc<BlockingPortDriverInner>, receiver: &Arc<Mutex<Receiver<BlockingJob>>>) {
+fn run_worker(inner: &Arc<BlockingPortDriverInner>) {
     loop {
-        let job = {
-            let receiver = match receiver.lock() {
-                Ok(receiver) => receiver,
-                Err(poisoned) => {
-                    inner.stop_after_worker_failure();
-                    poisoned.into_inner()
-                }
-            };
-            receiver.recv()
-        };
-        let Ok(job) = job else {
-            return;
+        let job = match inner.queue.pop() {
+            Ok(Some(job)) => job,
+            Ok(None) => return,
+            Err(()) => {
+                inner.stop_after_worker_failure();
+                return;
+            }
         };
         if catch_unwind(AssertUnwindSafe(job)).is_err() {
             // The unwinding job drops its completion sender. The service-owned
@@ -432,7 +479,7 @@ where
             operation,
             reservation,
         } = *self;
-        let queue = inner.sender_for_submission()?;
+        inner.ensure_submission_open()?;
         let (completion, receipt) = port_completion_channel();
         let job: BlockingJob = Box::new(move || {
             let result = operation(request);
@@ -440,13 +487,11 @@ where
             completion.complete(result);
         });
 
-        match queue.try_send(job) {
-            Ok(()) => Ok(receipt),
-            Err(TrySendError::Full(job)) | Err(TrySendError::Disconnected(job)) => {
-                drop(job);
-                inner.stop_after_worker_failure();
-                Err(PortAdmissionError::Stopped)
-            }
+        if inner.queue.push(job).is_ok() {
+            Ok(receipt)
+        } else {
+            inner.stop_after_worker_failure();
+            Err(PortAdmissionError::Stopped)
         }
     }
 }
@@ -771,6 +816,50 @@ mod tests {
 
         assert_eq!(observed.recv().expect("worker must run"), 11);
         assert_eq!(block_on(receipt), Ok(Ok(11)));
+        driver.shutdown_and_drain().expect("clean shutdown");
+    }
+
+    #[test]
+    fn distinct_workers_receive_jobs_before_either_job_completes() {
+        let (_routing, driver) = test_driver(2, 4);
+        let (entered, observations) = mpsc::sync_channel(2);
+        let release = Arc::new(Barrier::new(3));
+        let operation_release = Arc::clone(&release);
+        let executor = driver.executor(move |value: usize| {
+            entered.send(value).expect("entry observation");
+            operation_release.wait();
+            Ok::<_, ()>(value)
+        });
+        let control = RequestControl::new(
+            Instant::now()
+                .checked_add(Duration::from_secs(1))
+                .expect("deadline"),
+        )
+        .0;
+        let first = executor
+            .reserve(&control)
+            .expect("first permit")
+            .submit(1)
+            .expect("first submission");
+        let second = executor
+            .reserve(&control)
+            .expect("second permit")
+            .submit(2)
+            .expect("second submission");
+
+        let mut started = [
+            observations
+                .recv_timeout(Duration::from_secs(1))
+                .expect("first worker entered"),
+            observations
+                .recv_timeout(Duration::from_secs(1))
+                .expect("second worker entered before the first completed"),
+        ];
+        started.sort_unstable();
+        assert_eq!(started, [1, 2]);
+        release.wait();
+        assert_eq!(block_on(first), Ok(Ok(1)));
+        assert_eq!(block_on(second), Ok(Ok(2)));
         driver.shutdown_and_drain().expect("clean shutdown");
     }
 }

@@ -80,6 +80,8 @@ direction, merged draft, or implementation choice.
 | [0056](0056-agent-application-alpha.md) | Agent Application Alpha Before Operational and Distributed Alpha | Accepted |
 | [0057](0057-compiler-owned-application-lock-and-alpha-recovery.md) | Compiler-Owned Application Lock and Agent-Alpha Recovery | Accepted |
 | [0058](0058-bounded-group-durability-and-audited-command-transitions.md) | Bounded Group Durability and Audited Command Transitions | Accepted |
+| [0059](0059-same-partition-read-dependencies-and-write-parity.md) | Same-Partition Read Dependencies and Application Write Parity | Accepted |
+| [0060](0060-bounded-scheduler-storage-lanes-and-parallel-preparation.md) | Bounded Scheduler Windows, Activated Storage Lanes, and Parallel Preparation | Accepted |
 
 The human architecture review on 2026-07-12 approved the direction represented
 by ADR-0001 through ADR-0012. The human maintainer accepted ADR-0001 through
@@ -240,6 +242,16 @@ ADR-0058 has a separate acceptance reference: the maintainer's explicit
 2026-07-29 acceptance of the exact bounded group-durability, two-transition
 audited command lifecycle, independent uncertainty, and redb `Immediate`
 durability amendment.
+ADR-0059 has a separate acceptance reference: the maintainer's explicit
+2026-07-29 acceptance of same-partition external reads, one compiler-proven
+mutation aggregate, transaction-current dependency validation, and the
+PostgreSQL write-parity gate, plus the 2026-07-30 approval of 64-command
+internal grouping.
+ADR-0060 has a separate acceptance reference: the maintainer's explicit
+2026-07-30 approval of the bounded scheduler-window, admission-selection,
+activated storage-lane, immutable-artifact, parallel-preparation, and
+concurrent application-parity plan while retaining one ordered authoritative
+writer and every fail-closed command guarantee.
 
 ## Workflow
 

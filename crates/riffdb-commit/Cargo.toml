@@ -19,7 +19,7 @@ riffdb-policy = { version = "0.1.0", path = "../riffdb-policy", default-features
 riffdb-runtime = { version = "0.1.0", path = "../riffdb-runtime", default-features = false }
 riffdb-storage-api = { version = "0.1.0", path = "../riffdb-storage-api", default-features = false }
 riffdb-types = { version = "0.1.0", path = "../riffdb-types", default-features = false }
-tokio = { version = "=1.52.0", default-features = false, features = ["rt", "sync"] }
+tokio = { version = "=1.52.0", default-features = false, features = ["rt", "sync", "time"] }
 
 [dev-dependencies]
 riffdb-contract-compiler = { version = "0.1.0", path = "../riffdb-contract-compiler", default-features = false }

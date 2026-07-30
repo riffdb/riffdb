@@ -15,6 +15,7 @@ server = [
     "dep:riffdb-errors",
     "dep:riffdb-service",
     "dep:riffdb-types",
+    "dep:tokio",
     "tonic/router",
     "tonic/server",
 ]
@@ -29,6 +30,7 @@ riffdb-service = { version = "0.1.0", path = "../riffdb-service", default-featur
 riffdb-types = { version = "0.1.0", path = "../riffdb-types", default-features = false, optional = true }
 tonic = { version = "=0.14.6", default-features = false, features = ["codegen"] }
 tonic-prost = { version = "=0.14.6", default-features = false }
+tokio = { version = "=1.52.0", default-features = false, features = ["rt"], optional = true }
 
 [build-dependencies]
 prost = { version = "=0.14.4", default-features = false, features = ["std"] }

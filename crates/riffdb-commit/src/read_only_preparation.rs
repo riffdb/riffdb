@@ -11,7 +11,7 @@ use riffdb_types::{
     CanonicalRecord, CommandId, DatabaseId, Environment, RequestId, ServiceIngressKindV1,
 };
 
-use crate::command_preparation::CommandRequestControl;
+use crate::command_preparation::{CommandRequestControl, queued_preparation_units};
 
 /// Opaque safe failure when independently produced read-only proofs do not join.
 ///
@@ -118,6 +118,10 @@ impl ReadOnlyExecutionPreparation {
 
     pub(crate) fn telemetry_identity(&self) -> (CommandId, ServiceIngressKindV1) {
         (self.resolved_plan.reference().command_id(), self.ingress)
+    }
+
+    pub(crate) fn queued_byte_units(&self) -> u32 {
+        queued_preparation_units(&self.normalized_input)
     }
 
     pub(crate) fn into_parts(self) -> ReadOnlyExecutionPreparationParts {

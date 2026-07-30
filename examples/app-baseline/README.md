@@ -90,7 +90,7 @@ human summary with p50 latencies and RiffDB/Postgres ratios.
 - RiffDB seed uses the public **bounded command-batch transport** over one
   HTTP/2 channel. Each exchange contains at most 16 ordinary commands and
   total in-flight work is bounded by `RIFFDB_SEED_CONCURRENCY` (default/max
-  64). Every item retains independent authorization, idempotency, outcome,
+  128). Every item retains independent authorization, idempotency, outcome,
   provenance, audit, and recovery semantics.
 - PostgreSQL stays in the nested comparison workspace only.
 

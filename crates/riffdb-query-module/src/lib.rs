@@ -35,7 +35,7 @@ use riffdb_query_ir::{
     QUERY_IR_VERSION_V1, QueryAccessProgramV1, SourceSymbolKind, SymbolicCatalog,
 };
 use riffdb_riffql_syntax::{
-    MAX_IDENTIFIER_BYTES, MAX_SOURCE_BYTES, ParseDiagnostics, RIFFQL_LANGUAGE_VERSION,
+    Document, MAX_IDENTIFIER_BYTES, MAX_SOURCE_BYTES, ParseDiagnostics, RIFFQL_LANGUAGE_VERSION,
     format_query, parse_query,
 };
 use riffdb_types::{
@@ -138,6 +138,7 @@ impl QueryModuleCandidate {
 pub struct CompiledNamedQuery {
     name: String,
     canonical_source: String,
+    document: Document,
     source_hash: QuerySourceHash,
     program: QueryAccessProgramV1,
 }
@@ -153,6 +154,15 @@ impl CompiledNamedQuery {
     #[must_use]
     pub fn canonical_source(&self) -> &str {
         &self.canonical_source
+    }
+
+    /// Canonical parsed syntax retained from module validation.
+    ///
+    /// Named execution uses this immutable document instead of reparsing the
+    /// same canonical source for every request.
+    #[must_use]
+    pub const fn document(&self) -> &Document {
+        &self.document
     }
 
     /// Domain-separated canonical-source hash.
@@ -241,6 +251,7 @@ impl QueryModule {
                 name: submitted.name,
                 source_hash: hash_query_source(canonical_source.as_bytes()),
                 canonical_source,
+                document: canonical_document,
                 program,
             });
         }

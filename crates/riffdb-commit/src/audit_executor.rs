@@ -1,23 +1,24 @@
 //! Sole-writer coordinator actor and synchronous service-audit lowering.
 
+use std::collections::VecDeque;
 use std::future::Future;
 use std::num::NonZeroU16;
 use std::pin::Pin;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU8, AtomicUsize, Ordering};
-use std::time::Instant;
+use std::time::{Duration, Instant};
 use std::{error::Error, fmt, panic, thread};
 
 use riffdb_storage_api::{
-    AdmissionRepository, ApplicationCommandTransactionPort, AuditPrincipalV1,
-    AuditedAdmissionRepository, CapabilityAdministrationTransactionPort,
+    AdmissionLookupRepository, AdmissionRepository, ApplicationCommandTransactionPort,
+    AuditPrincipalV1, AuditedAdmissionRepository, CapabilityAdministrationTransactionPort,
     CapabilityBootstrapAdministrationRepository, CatalogAdministrationRepository,
     ExecutionFailureTransitionPort, QueryModuleAdministrationRepository,
     ServiceAuditAppendIntentV1, ServiceAuditAppendRepository, ServiceAuditAppendResult,
     SnapshotReader, StorageError, StorageValueError,
 };
 use tokio::runtime;
-use tokio::sync::{mpsc, oneshot};
+use tokio::sync::{OwnedSemaphorePermit, Semaphore, mpsc, oneshot};
 
 use riffdb_conflict::ConflictManager;
 use riffdb_idempotency::IdempotencyDigestProvider;
@@ -26,11 +27,12 @@ use riffdb_policy::AuthorizationClock;
 use crate::{
     AdministrationAuditInputView, AdministrationClock, AdministrationClockError, AdmissionClock,
     ApplicationCommitNotificationSink, CommandExecutionPreparation, CommitCommandTerminal,
-    CommitTelemetry, CommitTelemetryEvent, CommittedOutcomeDisposition, NoopCommitTelemetry,
-    ProvenanceIdSource,
+    CommitGroupDispatchReason, CommitTelemetry, CommitTelemetryEvent, CommittedOutcomeDisposition,
+    NoopCommitTelemetry, ProvenanceIdSource,
     command_execution::{
-        CommandExecutionError, CommandExecutionLifecycle, CommandExecutionResult,
-        CoordinatorDurability, RepeatableCommandBatchPort, drive_command_execution,
+        CommandEvaluationPool, CommandExecutionError, CommandExecutionLifecycle,
+        CommandExecutionResult, CoordinatorDurability, RepeatableCommandBatchPort,
+        drive_command_execution,
     },
     control_plane::{
         CapabilityBootstrapExecutionResult, CapabilityBootstrapPreparation,
@@ -44,7 +46,8 @@ use crate::{
     idempotency_inspection::{
         CommandIdempotencyInspectionError, CommandIdempotencyInspectionRequest,
         InspectedCommandIdempotency, PreparedCommandIdempotencyInspection,
-        inspect_command_idempotency, prepare_command_idempotency_inspection,
+        inspect_command_idempotency, inspect_command_idempotency_group,
+        prepare_command_idempotency_inspection,
     },
     read_only_execution::{ReadOnlyExecutionResult, drive_read_only_execution},
     read_only_preparation::ReadOnlyExecutionPreparation,
@@ -252,6 +255,9 @@ const LIFECYCLE_FENCED: u8 = 2;
 const LIFECYCLE_STOPPED: u8 = 3;
 const SUBMISSION_GATE_CLOSED: usize = 1 << (usize::BITS - 1);
 const SUBMISSION_COUNT_MASK: usize = !SUBMISSION_GATE_CLOSED;
+const COMMAND_GROUP_WINDOW: Duration = Duration::from_micros(200);
+const MAX_QUEUED_COMMAND_BYTES: usize = 32 * 1_024 * 1_024;
+const QUEUED_COMMAND_BYTE_UNIT: usize = 1_024;
 
 /// Exact number of coordinator workload messages admitted independently of shutdown.
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
@@ -281,6 +287,8 @@ pub enum CoordinatorStartError {
     RuntimeUnavailable,
     /// The dedicated operating-system thread could not be created.
     ThreadUnavailable,
+    /// A bounded command-preparation worker could not be created.
+    PreparationWorkerUnavailable,
     /// The permanently reserved shutdown slot could not be established.
     ShutdownCapacityUnavailable,
 }
@@ -290,6 +298,7 @@ impl fmt::Display for CoordinatorStartError {
         formatter.write_str(match self {
             Self::RuntimeUnavailable => "coordinator runtime is unavailable",
             Self::ThreadUnavailable => "coordinator thread is unavailable",
+            Self::PreparationWorkerUnavailable => "command preparation worker is unavailable",
             Self::ShutdownCapacityUnavailable => "coordinator shutdown capacity is unavailable",
         })
     }
@@ -737,6 +746,8 @@ control_plane_receipt!(CapabilityBootstrapTerminalReceipt, ());
 /// Safe rejection before a command preparation is accepted by the coordinator.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum CommandExecutionAdmissionError {
+    /// The independent retained-byte queue bound is full.
+    RetainedByteCapacityExceeded,
     /// Shutdown has begun and new work is no longer accepted.
     Draining,
     /// An unknown authoritative write fenced all later work.
@@ -748,6 +759,7 @@ pub enum CommandExecutionAdmissionError {
 impl fmt::Display for CommandExecutionAdmissionError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter.write_str(match self {
+            Self::RetainedByteCapacityExceeded => "command retained-byte capacity is full",
             Self::Draining => "command coordinator is draining",
             Self::Fenced => "command coordinator fenced authoritative writes",
             Self::Stopped => "command coordinator has stopped",
@@ -763,6 +775,7 @@ pub struct CommandExecutor {
     sender: mpsc::Sender<CoordinatorMessage>,
     lifecycle: Arc<AtomicU8>,
     submission_gate: Arc<SubmissionGate>,
+    retained_byte_capacity: Arc<Semaphore>,
 }
 
 impl CommandExecutor {
@@ -790,6 +803,7 @@ impl CommandExecutor {
             permit: Some(permit),
             lifecycle: Arc::clone(&self.lifecycle),
             submission_gate: Arc::clone(&self.submission_gate),
+            retained_byte_capacity: Arc::clone(&self.retained_byte_capacity),
         })
     }
 
@@ -821,6 +835,7 @@ pub struct CommandExecutionCapacityPermit {
     permit: Option<mpsc::OwnedPermit<CoordinatorMessage>>,
     lifecycle: Arc<AtomicU8>,
     submission_gate: Arc<SubmissionGate>,
+    retained_byte_capacity: Arc<Semaphore>,
 }
 
 impl CommandExecutionCapacityPermit {
@@ -837,6 +852,11 @@ impl CommandExecutionCapacityPermit {
             .begin()
             .ok_or_else(|| command_lifecycle_error(&self.lifecycle))?;
         ensure_command_accepting(&self.lifecycle)?;
+        let retained_byte_permit = self
+            .retained_byte_capacity
+            .clone()
+            .try_acquire_many_owned(preparation.queued_byte_units())
+            .map_err(|_| CommandExecutionAdmissionError::RetainedByteCapacityExceeded)?;
         let (completion, receiver) = oneshot::channel();
         let permit = self
             .permit
@@ -849,6 +869,7 @@ impl CommandExecutionCapacityPermit {
             ingress,
             enqueued_at: Instant::now(),
             completion,
+            _retained_byte_permit: retained_byte_permit,
         });
         drop(submission);
         Ok(CommandExecutionReceipt { receiver })
@@ -868,6 +889,11 @@ impl CommandExecutionCapacityPermit {
             .begin()
             .ok_or_else(|| command_lifecycle_error(&self.lifecycle))?;
         ensure_command_accepting(&self.lifecycle)?;
+        let retained_byte_permit = self
+            .retained_byte_capacity
+            .clone()
+            .try_acquire_many_owned(preparation.queued_byte_units())
+            .map_err(|_| CommandExecutionAdmissionError::RetainedByteCapacityExceeded)?;
         let (completion, receiver) = oneshot::channel();
         let permit = self
             .permit
@@ -880,6 +906,7 @@ impl CommandExecutionCapacityPermit {
             ingress,
             enqueued_at: Instant::now(),
             completion,
+            _retained_byte_permit: retained_byte_permit,
         });
         drop(submission);
         Ok(ReadOnlyExecutionReceipt { receiver })
@@ -934,20 +961,108 @@ impl fmt::Debug for ReadOnlyExecutionReceipt {
     }
 }
 
+const IDEMPOTENCY_INSPECTION_GROUP_WINDOW: Duration = Duration::from_micros(200);
+
+struct DirectIdempotencyInspectionMessage {
+    preparation: PreparedCommandIdempotencyInspection,
+    completion:
+        oneshot::Sender<Result<InspectedCommandIdempotency, CommandIdempotencyInspectionError>>,
+}
+
+#[derive(Clone)]
+struct DirectIdempotencyInspectionBatcher {
+    sender: mpsc::Sender<DirectIdempotencyInspectionMessage>,
+}
+
+impl DirectIdempotencyInspectionBatcher {
+    fn start(
+        repository: Arc<dyn AdmissionLookupRepository + Send + Sync>,
+        lifecycle: ActorLifecyclePublisher,
+    ) -> Option<Self> {
+        let runtime = runtime::Builder::new_current_thread()
+            .enable_time()
+            .build()
+            .ok()?;
+        let (sender, mut receiver) = mpsc::channel::<DirectIdempotencyInspectionMessage>(
+            riffdb_storage_api::MAX_GROUPED_WRITE_TRANSITIONS * 2,
+        );
+        thread::Builder::new()
+            .name("riffdb-idempotency-reader".to_owned())
+            .spawn(move || {
+                runtime.block_on(async move {
+                    while let Some(first) = receiver.recv().await {
+                        let mut group = vec![first];
+                        let deadline =
+                            tokio::time::Instant::now() + IDEMPOTENCY_INSPECTION_GROUP_WINDOW;
+                        loop {
+                            while group.len() < riffdb_storage_api::MAX_GROUPED_WRITE_TRANSITIONS {
+                                match receiver.try_recv() {
+                                    Ok(message) => group.push(message),
+                                    Err(_) => break,
+                                }
+                            }
+                            if group.len() == riffdb_storage_api::MAX_GROUPED_WRITE_TRANSITIONS
+                                || tokio::time::Instant::now() >= deadline
+                            {
+                                break;
+                            }
+                            match tokio::time::timeout_at(deadline, receiver.recv()).await {
+                                Ok(Some(message)) => group.push(message),
+                                Ok(None) | Err(_) => break,
+                            }
+                        }
+
+                        let (preparations, completions): (Vec<_>, Vec<_>) = group
+                            .into_iter()
+                            .map(|message| (message.preparation, message.completion))
+                            .unzip();
+                        let results = inspect_command_idempotency_group(
+                            repository.as_ref(),
+                            &lifecycle,
+                            preparations,
+                        );
+                        for (completion, result) in completions.into_iter().zip(results) {
+                            let _receiver_may_be_dropped = completion.send(result);
+                        }
+                    }
+                });
+            })
+            .ok()?;
+        Some(Self { sender })
+    }
+}
+
 /// Cloneable least-authority handle for bounded pre-admission inspection.
 ///
-/// The handle owns no storage reference. Each call enters the same bounded
-/// actor queue as audit, read, control-plane, and command work so the
-/// application service cannot bypass repository ownership.
+/// Production uses a bounded read-only microbatch lane. The actor-backed path
+/// remains for conformance repositories and never grants mutation authority.
 #[derive(Clone)]
 pub struct CommandIdempotencyInspector {
     sender: mpsc::Sender<CoordinatorMessage>,
     lifecycle: Arc<AtomicU8>,
     submission_gate: Arc<SubmissionGate>,
     digest_provider: Arc<dyn IdempotencyDigestProvider>,
+    direct_batcher: Option<DirectIdempotencyInspectionBatcher>,
 }
 
 impl CommandIdempotencyInspector {
+    /// Routes inspection through one activated least-authority MVCC reader
+    /// instead of the authoritative writer queue.
+    #[must_use]
+    pub fn with_direct_repository(
+        mut self,
+        repository: Arc<dyn AdmissionLookupRepository + Send + Sync>,
+    ) -> Self {
+        self.direct_batcher = DirectIdempotencyInspectionBatcher::start(
+            repository,
+            ActorLifecyclePublisher {
+                lifecycle: Arc::clone(&self.lifecycle),
+                submission_gate: Arc::clone(&self.submission_gate),
+            },
+        );
+        self
+    }
+
     /// Performs one cancellation-safe bounded observation through the actor.
     ///
     /// Cancelling before the queue reservation resolves submits no work.
@@ -967,6 +1082,23 @@ impl CommandIdempotencyInspector {
             request,
         )?;
         ensure_idempotency_inspection_accepting(&self.lifecycle)?;
+        if let Some(batcher) = &self.direct_batcher {
+            let permit = batcher
+                .sender
+                .clone()
+                .reserve_owned()
+                .await
+                .map_err(|_| idempotency_inspection_lifecycle_error(&self.lifecycle))?;
+            ensure_idempotency_inspection_accepting(&self.lifecycle)?;
+            let (completion, receiver) = oneshot::channel();
+            let _sender = permit.send(DirectIdempotencyInspectionMessage {
+                preparation,
+                completion,
+            });
+            return receiver
+                .await
+                .unwrap_or_else(|_| Err(CommandIdempotencyInspectionError::coordinator_stopped()));
+        }
         let permit = self
             .sender
             .clone()
@@ -1050,7 +1182,7 @@ impl RunningCommandCoordinator {
             + Send
             + 'static,
     {
-        Self::start_with_telemetry(
+        Self::start_with_evaluation_pool(
             workload_capacity,
             durability,
             repository,
@@ -1061,6 +1193,7 @@ impl RunningCommandCoordinator {
             provenance_source,
             notifications,
             Arc::new(NoopCommitTelemetry),
+            None,
         )
     }
 
@@ -1078,6 +1211,54 @@ impl RunningCommandCoordinator {
         provenance_source: Arc<dyn ProvenanceIdSource>,
         notifications: Arc<dyn ApplicationCommitNotificationSink>,
         telemetry: Arc<dyn CommitTelemetry>,
+    ) -> Result<Self, CoordinatorStartError>
+    where
+        Repository: AdmissionRepository
+            + AuditedAdmissionRepository
+            + SnapshotReader
+            + ApplicationCommandTransactionPort
+            + RepeatableCommandBatchPort
+            + ExecutionFailureTransitionPort
+            + ServiceAuditAppendRepository
+            + CatalogAdministrationRepository
+            + QueryModuleAdministrationRepository
+            + CapabilityAdministrationTransactionPort
+            + CapabilityBootstrapAdministrationRepository
+            + Clone
+            + Send
+            + Sync
+            + 'static,
+    {
+        let evaluation_pool = CommandEvaluationPool::new(repository.clone())
+            .map_err(|()| CoordinatorStartError::PreparationWorkerUnavailable)?;
+        Self::start_with_evaluation_pool(
+            workload_capacity,
+            durability,
+            repository,
+            conflicts,
+            admission_clock,
+            administration_clock,
+            authorization_clock,
+            provenance_source,
+            notifications,
+            telemetry,
+            Some(evaluation_pool),
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn start_with_evaluation_pool<Repository>(
+        workload_capacity: CoordinatorWorkloadCapacity,
+        durability: CoordinatorDurability,
+        repository: Repository,
+        conflicts: Arc<dyn ConflictManager>,
+        admission_clock: Arc<dyn AdmissionClock>,
+        administration_clock: Arc<dyn AdministrationClock>,
+        authorization_clock: Arc<dyn AuthorizationClock>,
+        provenance_source: Arc<dyn ProvenanceIdSource>,
+        notifications: Arc<dyn ApplicationCommitNotificationSink>,
+        telemetry: Arc<dyn CommitTelemetry>,
+        evaluation_pool: Option<CommandEvaluationPool>,
     ) -> Result<Self, CoordinatorStartError>
     where
         Repository: AdmissionRepository
@@ -1110,6 +1291,7 @@ impl RunningCommandCoordinator {
                     durability,
                     lifecycle,
                     telemetry: operations_telemetry,
+                    evaluation_pool,
                 })
             },
         )
@@ -1128,10 +1310,14 @@ impl RunningCommandCoordinator {
             .try_reserve_owned()
             .map_err(|_| CoordinatorStartError::ShutdownCapacityUnavailable)?;
         let runtime = runtime::Builder::new_current_thread()
+            .enable_time()
             .build()
             .map_err(|_| CoordinatorStartError::RuntimeUnavailable)?;
         let lifecycle = Arc::new(AtomicU8::new(LIFECYCLE_ACCEPTING));
         let submission_gate = Arc::new(SubmissionGate::new());
+        let retained_byte_capacity = Arc::new(Semaphore::new(
+            MAX_QUEUED_COMMAND_BYTES / QUEUED_COMMAND_BYTE_UNIT,
+        ));
         let actor_lifecycle = Arc::clone(&lifecycle);
         let actor_submission_gate = Arc::clone(&submission_gate);
         let lifecycle_publisher = ActorLifecyclePublisher {
@@ -1166,6 +1352,7 @@ impl RunningCommandCoordinator {
                 sender: sender.clone(),
                 lifecycle: Arc::clone(&lifecycle),
                 submission_gate: Arc::clone(&submission_gate),
+                retained_byte_capacity,
             },
             control_plane_executor: ControlPlaneExecutor {
                 sender: sender.clone(),
@@ -1225,6 +1412,7 @@ impl RunningCommandCoordinator {
             lifecycle: Arc::clone(&self.command_executor.lifecycle),
             submission_gate: Arc::clone(&self.command_executor.submission_gate),
             digest_provider,
+            direct_batcher: None,
         }
     }
 
@@ -1290,6 +1478,7 @@ enum CoordinatorMessage {
         ingress: riffdb_types::ServiceIngressKindV1,
         enqueued_at: Instant,
         completion: oneshot::Sender<Result<CommandExecutionResult, CommandExecutionError>>,
+        _retained_byte_permit: OwnedSemaphorePermit,
     },
     ReadOnlyCommand {
         preparation: Box<ReadOnlyExecutionPreparation>,
@@ -1297,6 +1486,7 @@ enum CoordinatorMessage {
         ingress: riffdb_types::ServiceIngressKindV1,
         enqueued_at: Instant,
         completion: oneshot::Sender<Result<ReadOnlyExecutionResult, CommandExecutionError>>,
+        _retained_byte_permit: OwnedSemaphorePermit,
     },
     IdempotencyInspection {
         preparation: Box<PreparedCommandIdempotencyInspection>,
@@ -1433,6 +1623,7 @@ struct ProductionCoordinatorOperations<Repository> {
     durability: CoordinatorDurability,
     lifecycle: ActorLifecyclePublisher,
     telemetry: Arc<dyn CommitTelemetry>,
+    evaluation_pool: Option<CommandEvaluationPool>,
 }
 
 impl<Repository> CoordinatorActorOperations for ProductionCoordinatorOperations<Repository>
@@ -1512,6 +1703,7 @@ where
             self.durability,
             &self.lifecycle,
             self.telemetry.as_ref(),
+            self.evaluation_pool.as_ref(),
             preparations,
         )
     }
@@ -1743,9 +1935,9 @@ struct CommandCoordinatorActor {
 
 impl CommandCoordinatorActor {
     async fn run(mut self) {
-        let mut deferred = None;
+        let mut pending = VecDeque::new();
         loop {
-            let message = match deferred.take() {
+            let message = match pending.pop_front() {
                 Some(message) => message,
                 None => match self.receiver.recv().await {
                     Some(message) => message,
@@ -1765,7 +1957,7 @@ impl CommandCoordinatorActor {
                                     .iter()
                                     .any(|(grouped, _)| grouped.request_id() == input.request_id())
                                 {
-                                    deferred = Some(CoordinatorMessage::AdministrationAudit {
+                                    pending.push_front(CoordinatorMessage::AdministrationAudit {
                                         input,
                                         completion,
                                     });
@@ -1774,7 +1966,7 @@ impl CommandCoordinatorActor {
                                 group.push((input, completion));
                             }
                             Ok(message) => {
-                                deferred = Some(message);
+                                pending.push_front(message);
                                 break;
                             }
                             Err(_) => break,
@@ -1791,31 +1983,19 @@ impl CommandCoordinatorActor {
                     ingress,
                     enqueued_at,
                     completion,
+                    ..
                 } => {
                     let mut group =
                         vec![(*preparation, command_id, ingress, enqueued_at, completion)];
-                    while group.len() < riffdb_storage_api::MAX_GROUPED_WRITE_TRANSITIONS {
-                        match self.receiver.try_recv() {
-                            Ok(CoordinatorMessage::Command {
-                                preparation,
-                                command_id,
-                                ingress,
-                                enqueued_at,
-                                completion,
-                            }) => group.push((
-                                *preparation,
-                                command_id,
-                                ingress,
-                                enqueued_at,
-                                completion,
-                            )),
-                            Ok(message) => {
-                                deferred = Some(message);
-                                break;
-                            }
-                            Err(_) => break,
-                        }
-                    }
+                    let collection_started = Instant::now();
+                    let reason = self.collect_command_group(&mut group, &mut pending).await;
+                    self.telemetry
+                        .record(CommitTelemetryEvent::CommandGroupDispatched {
+                            reason,
+                            selected: u16::try_from(group.len()).unwrap_or(u16::MAX),
+                            deferred: u16::try_from(pending.len()).unwrap_or(u16::MAX),
+                            elapsed: collection_started.elapsed(),
+                        });
                     self.execute_command_group(group).await;
                     if self.reject_after_published_terminal_state().await {
                         break;
@@ -1827,6 +2007,7 @@ impl CommandCoordinatorActor {
                     ingress,
                     enqueued_at,
                     completion,
+                    ..
                 } => {
                     self.execute_read_only(
                         *preparation,
@@ -1920,6 +2101,7 @@ impl CommandCoordinatorActor {
                                 ingress,
                                 enqueued_at,
                                 completion,
+                                ..
                             } => {
                                 self.execute_command(
                                     *preparation,
@@ -1939,6 +2121,7 @@ impl CommandCoordinatorActor {
                                 ingress,
                                 enqueued_at,
                                 completion,
+                                ..
                             } => {
                                 self.execute_read_only(
                                     *preparation,
@@ -2022,6 +2205,34 @@ impl CommandCoordinatorActor {
                     }
                     break;
                 }
+            }
+        }
+    }
+
+    async fn collect_command_group(
+        &mut self,
+        group: &mut Vec<CommandGroupItem>,
+        pending: &mut VecDeque<CoordinatorMessage>,
+    ) -> CommitGroupDispatchReason {
+        let deadline = tokio::time::Instant::now() + COMMAND_GROUP_WINDOW;
+        loop {
+            while let Ok(message) = self.receiver.try_recv() {
+                pending.push_back(message);
+            }
+            let barrier = select_pending_commands(group, pending);
+            if barrier {
+                return CommitGroupDispatchReason::Barrier;
+            }
+            if group.len() == riffdb_storage_api::MAX_GROUPED_WRITE_TRANSITIONS {
+                return CommitGroupDispatchReason::Full;
+            }
+            if tokio::time::Instant::now() >= deadline {
+                return CommitGroupDispatchReason::WindowElapsed;
+            }
+            match tokio::time::timeout_at(deadline, self.receiver.recv()).await {
+                Ok(Some(message)) => pending.push_back(message),
+                Ok(None) => return CommitGroupDispatchReason::ReceiverClosed,
+                Err(_) => return CommitGroupDispatchReason::WindowElapsed,
             }
         }
     }
@@ -2132,20 +2343,33 @@ impl CommandCoordinatorActor {
             }
             return;
         }
+        let first_commit_sequences = results
+            .iter()
+            .filter_map(|result| match result {
+                Ok(CommandExecutionResult::Committed(outcome))
+                    if outcome.disposition() == CommittedOutcomeDisposition::FirstCommit =>
+                {
+                    Some(outcome.stored_outcome().commit_sequence())
+                }
+                Ok(CommandExecutionResult::Committed(_))
+                | Ok(CommandExecutionResult::ExecutionFailed(_))
+                | Ok(CommandExecutionResult::PreparationChanged)
+                | Ok(CommandExecutionResult::InputMismatch)
+                | Err(_) => None,
+            })
+            .collect::<Vec<_>>();
+        if !first_commit_sequences.is_empty() {
+            let publication = panic::catch_unwind(panic::AssertUnwindSafe(|| {
+                self.notifications
+                    .publish_first_commit_group(&first_commit_sequences)
+            }));
+            if !matches!(publication, Ok(Ok(()))) {
+                self.lifecycle.stop();
+            }
+        }
         for ((command_id, ingress, enqueued_at, completion), result) in
             metadata.into_iter().zip(results)
         {
-            if let Ok(CommandExecutionResult::Committed(outcome)) = &result
-                && outcome.disposition() == CommittedOutcomeDisposition::FirstCommit
-            {
-                let sequence = outcome.stored_outcome().commit_sequence();
-                let publication = panic::catch_unwind(panic::AssertUnwindSafe(|| {
-                    self.notifications.publish_first_commit(sequence)
-                }));
-                if !matches!(publication, Ok(Ok(()))) {
-                    self.lifecycle.stop();
-                }
-            }
             self.telemetry
                 .record(CommitTelemetryEvent::CommandTerminal {
                     command_id,
@@ -2368,6 +2592,97 @@ impl CommandCoordinatorActor {
                 CoordinatorMessage::Shutdown => {}
             }
         }
+    }
+}
+
+fn select_pending_commands(
+    group: &mut Vec<CommandGroupItem>,
+    pending: &mut VecDeque<CoordinatorMessage>,
+) -> bool {
+    let available = riffdb_storage_api::MAX_GROUPED_WRITE_TRANSITIONS.saturating_sub(group.len());
+    let classes = pending
+        .iter()
+        .map(command_grouping_class)
+        .collect::<Vec<_>>();
+    let selection = select_command_positions(&classes, available);
+    let mut deferred = VecDeque::with_capacity(pending.len());
+    let mut position = 0usize;
+    while let Some(message) = pending.pop_front() {
+        if selection.selected[position] {
+            let CoordinatorMessage::Command {
+                preparation,
+                command_id,
+                ingress,
+                enqueued_at,
+                completion,
+                ..
+            } = message
+            else {
+                unreachable!("only command positions are selected");
+            };
+            group.push((*preparation, command_id, ingress, enqueued_at, completion));
+        } else {
+            deferred.push_back(message);
+        }
+        position += 1;
+    }
+    *pending = deferred;
+    selection.encountered_barrier
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum CommandGroupingClass {
+    Command,
+    DeferrableObservation,
+    Barrier,
+}
+
+fn command_grouping_class(message: &CoordinatorMessage) -> CommandGroupingClass {
+    match message {
+        CoordinatorMessage::Command { .. } => CommandGroupingClass::Command,
+        CoordinatorMessage::IdempotencyInspection { .. } => {
+            CommandGroupingClass::DeferrableObservation
+        }
+        CoordinatorMessage::AdministrationAudit { .. }
+        | CoordinatorMessage::ReadOnlyCommand { .. }
+        | CoordinatorMessage::CatalogDeployment { .. }
+        | CoordinatorMessage::QueryModuleDeployment { .. }
+        | CoordinatorMessage::CapabilityCreate { .. }
+        | CoordinatorMessage::CapabilityRevoke { .. }
+        | CoordinatorMessage::CapabilityBootstrap { .. }
+        | CoordinatorMessage::CapabilityBootstrapTerminal { .. }
+        | CoordinatorMessage::Shutdown => CommandGroupingClass::Barrier,
+    }
+}
+
+#[derive(Debug, Eq, PartialEq)]
+struct CommandPositionSelection {
+    selected: Vec<bool>,
+    encountered_barrier: bool,
+}
+
+fn select_command_positions(
+    classes: &[CommandGroupingClass],
+    available: usize,
+) -> CommandPositionSelection {
+    let mut selected = Vec::with_capacity(classes.len());
+    let mut selected_count = 0usize;
+    let mut encountered_barrier = false;
+    for class in classes {
+        let take = !encountered_barrier
+            && selected_count < available
+            && *class == CommandGroupingClass::Command;
+        selected.push(take);
+        if take {
+            selected_count += 1;
+        }
+        if *class == CommandGroupingClass::Barrier {
+            encountered_barrier = true;
+        }
+    }
+    CommandPositionSelection {
+        selected,
+        encountered_barrier,
     }
 }
 
@@ -2854,6 +3169,49 @@ mod tests {
         );
         assert_eq!(clock.calls.load(Ordering::Relaxed), 1);
         assert_eq!(repository.calls, 1);
+    }
+
+    #[test]
+    fn command_selection_defers_observations_without_crossing_a_hard_barrier() {
+        use CommandGroupingClass::{Barrier, Command, DeferrableObservation};
+
+        let selected = select_command_positions(
+            &[
+                DeferrableObservation,
+                Command,
+                DeferrableObservation,
+                Command,
+                Barrier,
+                Command,
+            ],
+            64,
+        );
+
+        assert_eq!(
+            selected,
+            CommandPositionSelection {
+                selected: vec![false, true, false, true, false, false],
+                encountered_barrier: true,
+            }
+        );
+    }
+
+    #[test]
+    fn command_selection_honors_remaining_group_capacity_without_reordering_tail() {
+        use CommandGroupingClass::{Command, DeferrableObservation};
+
+        let selected = select_command_positions(
+            &[Command, DeferrableObservation, Command, Command, Command],
+            2,
+        );
+
+        assert_eq!(
+            selected,
+            CommandPositionSelection {
+                selected: vec![true, false, true, false, false],
+                encountered_barrier: false,
+            }
+        );
     }
 }
 

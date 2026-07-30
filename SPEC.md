@@ -6,7 +6,7 @@
 **Tagline:** *Vibe fast. Commit safely.*  
 **Category:** Contract-first operational database for agent-built applications  
 
-**Version:** 0.44
+**Version:** 0.45
 **Status:** Application-platform implementation handoff
 **Date:** 30 July 2026
 **Audience:** Coding agents, database engineers, compiler engineers, security reviewers, and technical product leads  
@@ -80,6 +80,7 @@
 | 0.42 | 2026-07-29 | Applied accepted ADR-0058 and planned WP-364: redb retains `Immediate` two-phase durability behind one typed FIFO writer scheduler; production uses bounded group durability; command `Started` plus `Pending` admission and successful command graph plus terminal audit become two atomic transitions; every grouped command retains independent identity, outcome, provenance, audit, acknowledgement, and uncertainty recovery. |
 | 0.43 | 2026-07-29 | Applied accepted ADR-0059 and planned WP-366: commands may carry compiler-proven same-partition observations across aggregates while every create/mutate binding remains in exactly one mutation aggregate; conflict keys derive only from that aggregate; external reads remain exact transaction-current dependencies; and the public TicketDesk seed plus unary mutation must demonstrate same-run PostgreSQL write parity within 2x. |
 | 0.44 | 2026-07-30 | Applied the maintainer-approved ADR-0059 amendment: the internal FIFO writer may form compatible physical groups up to the existing 64-command transaction ceiling while the public transport batch remains capped at 16. Exact conflict/dependency checks, independent command semantics, two durable transitions, redb `Immediate` durability, and the 16 MiB transaction ceiling remain unchanged. |
+| 0.45 | 2026-07-30 | Applied accepted ADR-0060 and planned WP-367 through WP-370: bounded oldest-item group collection, grouped historical idempotency selection, count-and-byte queue bounds, concurrent redb MVCC reads, exact transient outbox readiness, immutable cached command/query artifacts, bounded parallel deterministic preparation, and strict same-run application parity evidence while retaining one admission-ordered writer, fresh authorization, transaction-current validation, two Immediate durable transitions, and every fail-closed recovery guarantee. |
 
 ### Normative language
 
@@ -5823,6 +5824,44 @@ ADR-0055.
   result under unchanged redb `Immediate` durability and audit semantics. A
   miss blocks Agent Application Alpha and MUST NOT be waived through direct
   storage/import writes or weaker safety.
+- `PERF-006`: After receiving the oldest groupable transition, the production
+  scheduler MAY wait for compatible work until that transition's existing
+  200-microsecond deadline even when an intermediate queue poll is empty. It
+  MUST drain into a bounded ordered buffer, select at most 64 compatible
+  commands, preserve every deferred message's relative order, and treat
+  capability, catalog, administrative-write, shutdown, fencing, and readiness
+  transitions as non-bypassable barriers. Historical idempotency selection MAY
+  use one bounded read transaction for up to 16 public-batch items, but
+  authoritative admission MUST recheck every identity and canonical input
+  inside the write transaction. Replay audit transitions MUST participate in
+  bounded groups. Coordinator admission MUST have independent count and byte
+  ceilings above one maximum command group, while the public batch remains
+  capped at 16.
+- `PERF-007`: One completed production activation MUST release exactly one
+  authoritative writer and MAY release cloneable least-authority MVCC reader
+  handles. Admission and completion commits MUST NOT hold a process-wide
+  storage mutex across redb transaction work or durable flush, and operational
+  reads MUST NOT share such a mutex. The no-destination outbox composition MAY
+  derive post-start readiness from an exact commit-owned monotonic latch seeded
+  by recovery, but MUST NOT report ready after any undelivered intent. Named
+  RiffQL parsing MAY be cached only under complete contract, module, and query
+  identities. Concurrent read/write evidence MUST prove snapshot consistency,
+  bounded admission, shutdown, poisoning, and fail-closed activation.
+- `PERF-008`: Checked command plans, schemas, bundles, and query programs MAY
+  use immutable shared ownership under complete content identities. Repeated
+  lookup or normalization MAY be replaced by exact identity revalidation, but
+  fresh authorization and response-release safe points remain mandatory.
+  Durable sizing MAY avoid materializing sizing-only Protobuf graphs only when
+  its structural upper bound dominates every final encoding and compatibility
+  fixtures remain byte-identical. Already-admitted commands MAY perform
+  compiler-declared snapshot reads and deterministic preparation in a bounded
+  worker pool, but conflict ownership and final commit sequencing MUST remain
+  admission ordered, transaction-current revalidation MUST remain inside the
+  sole writer transaction, and no worker may perform an untracked effect. On
+  the checked profile, the full public TicketDesk seed and every representative
+  unary scenario MUST be within 1.10 times same-run PostgreSQL; at 32 clients,
+  public mixed-workload throughput MUST be at least 0.90 times PostgreSQL and
+  p95 latency MUST be at most 1.25 times PostgreSQL. A miss blocks WP-370.
 
 The milestone is complete only when WP-205 through WP-300 pass their package
 acceptance commands and an independent fresh-agent TicketDesk run satisfies

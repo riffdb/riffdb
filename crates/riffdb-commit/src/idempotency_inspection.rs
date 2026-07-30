@@ -8,7 +8,11 @@ use riffdb_idempotency::{
     IdempotencyRecheckIntegrityV1, InspectedIdempotencyV1, PreparedIdempotencyRecheckV1,
     prepare_idempotency_lookup,
 };
-use riffdb_storage_api::{AdmissionRepository, ExecutablePlanRef, StorageError, StorageErrorKind};
+#[cfg(test)]
+use riffdb_storage_api::AdmissionRepository;
+use riffdb_storage_api::{
+    AdmissionLookupRepository, ExecutablePlanRef, StorageError, StorageErrorKind,
+};
 use riffdb_types::{
     ActorId, CanonicalRecord, CommandId, ContractLineage, DatabaseId, Environment, FieldId,
     IdempotencyKey, TenantScope,
@@ -381,11 +385,45 @@ pub(super) fn prepare_command_idempotency_inspection(
 
 /// Performs the actor-owned sole repository observation without admission.
 pub(super) fn inspect_command_idempotency(
-    repository: &dyn AdmissionRepository,
+    repository: &dyn AdmissionLookupRepository,
     lifecycle: &dyn CommandExecutionLifecycle,
     preparation: PreparedCommandIdempotencyInspection,
 ) -> Result<InspectedCommandIdempotency, CommandIdempotencyInspectionError> {
-    match IdempotencyInspectionExecutor::new(repository).inspect(preparation.prepared_lookup) {
+    let inspected =
+        IdempotencyInspectionExecutor::new(repository).inspect(preparation.prepared_lookup);
+    finish_command_idempotency_inspection(lifecycle, preparation.caller_key, inspected)
+}
+
+/// Performs one bounded FIFO lookup group and preserves item-local results.
+pub(super) fn inspect_command_idempotency_group(
+    repository: &dyn AdmissionLookupRepository,
+    lifecycle: &dyn CommandExecutionLifecycle,
+    preparations: Vec<PreparedCommandIdempotencyInspection>,
+) -> Vec<Result<InspectedCommandIdempotency, CommandIdempotencyInspectionError>> {
+    let mut caller_keys = Vec::with_capacity(preparations.len());
+    let prepared = preparations
+        .into_iter()
+        .map(|preparation| {
+            caller_keys.push(preparation.caller_key);
+            preparation.prepared_lookup
+        })
+        .collect();
+    IdempotencyInspectionExecutor::new(repository)
+        .inspect_group(prepared)
+        .into_iter()
+        .zip(caller_keys)
+        .map(|(inspected, caller_key)| {
+            finish_command_idempotency_inspection(lifecycle, caller_key, inspected)
+        })
+        .collect()
+}
+
+fn finish_command_idempotency_inspection(
+    lifecycle: &dyn CommandExecutionLifecycle,
+    caller_key: IdempotencyKey,
+    inspected: Result<InspectedIdempotencyV1, IdempotencyInspectionError>,
+) -> Result<InspectedCommandIdempotency, CommandIdempotencyInspectionError> {
+    match inspected {
         Ok(inspected) => {
             let plan_selection = match inspected.plan_selection() {
                 IdempotencyPlanSelectionV1::Absent => CommandIdempotencyPlanSelection::Absent,
@@ -396,7 +434,7 @@ pub(super) fn inspect_command_idempotency(
             Ok(InspectedCommandIdempotency {
                 plan_selection,
                 inspected,
-                caller_key: preparation.caller_key,
+                caller_key,
             })
         }
         Err(IdempotencyInspectionError::Storage(error)) => {
@@ -597,7 +635,7 @@ mod tests {
     }
 
     fn prepare_and_inspect(
-        repository: &dyn AdmissionRepository,
+        repository: &dyn AdmissionLookupRepository,
         provider: &dyn IdempotencyDigestProvider,
         lifecycle: &dyn CommandExecutionLifecycle,
         request: CommandIdempotencyInspectionRequest,

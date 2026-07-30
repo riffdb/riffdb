@@ -1,0 +1,62 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+repo_root="$(git rev-parse --show-toplevel)"
+cd "$repo_root"
+
+mode="${1:---checked}"
+case "$mode" in
+    --checked|--assert-perf-007|--assert-perf-008) ;;
+    *)
+        printf 'usage: %s [--checked|--assert-perf-007|--assert-perf-008]\n' "$0" >&2
+        exit 2
+        ;;
+esac
+
+out_dir=target/concurrent-application
+mkdir -p "$out_dir"
+for clients in 1 8 32 64; do
+    report="$out_dir/clients-${clients}.json"
+    ./benchmarks/run-app-baseline \
+        --smoke \
+        --samples 1 \
+        --warmup 0 \
+        --concurrent-clients "$clients" \
+        --concurrent-operations 200 \
+        --output "$report"
+    jq -e --argjson clients "$clients" '
+        [.concurrent_point_reads[] | select(.clients == $clients)] as $rows
+        | ($rows | length) == 2
+        and all($rows[]; .operation_count == ($clients * 200))
+        and all($rows[]; .throughput_ops_s > 0 and .p95_ns > 0)
+    ' "$report" >/dev/null
+done
+
+jq -s '
+    {
+      schema: "riffdb.concurrent-application/v1",
+      records: [
+        .[] | .concurrent_point_reads[]
+      ]
+    }
+' "$out_dir"/clients-*.json >"$out_dir/report-v1.json"
+
+if [[ "$mode" == --assert-perf-007 ]]; then
+    jq -e '
+      [.records[] | select(.backend_id == "riffdb_public_grpc")] as $riff
+      | ($riff | length) == 4
+      and (($riff[] | select(.clients == 8) | .throughput_ops_s)
+          >= (($riff[] | select(.clients == 1) | .throughput_ops_s) * 1.5))
+    ' "$out_dir/report-v1.json" >/dev/null
+fi
+
+if [[ "$mode" == --assert-perf-008 ]]; then
+    jq -e '
+      (.records[] | select(.backend_id == "postgres_sql" and .clients == 32)) as $pg
+      | (.records[] | select(.backend_id == "riffdb_public_grpc" and .clients == 32)) as $riff
+      | ($riff.throughput_ops_s >= ($pg.throughput_ops_s * 0.8))
+      and ($riff.p95_ns <= ($pg.p95_ns * 1.25))
+    ' "$out_dir/report-v1.json" >/dev/null
+fi
+
+printf 'concurrent application report: %s/%s\n' "$repo_root" "$out_dir/report-v1.json"

@@ -50,6 +50,37 @@ use crate::generated_app::application_query_service_server::{
 
 const GRPC_TIMEOUT_METADATA_KEY: &str = "grpc-timeout";
 
+struct BatchTaskAbortGuard {
+    handles: Vec<tokio::task::AbortHandle>,
+    armed: bool,
+}
+
+impl BatchTaskAbortGuard {
+    fn new<T>(tasks: &[tokio::task::JoinHandle<T>]) -> Self {
+        Self {
+            handles: tasks
+                .iter()
+                .map(tokio::task::JoinHandle::abort_handle)
+                .collect(),
+            armed: true,
+        }
+    }
+
+    fn disarm(&mut self) {
+        self.armed = false;
+    }
+}
+
+impl Drop for BatchTaskAbortGuard {
+    fn drop(&mut self) {
+        if self.armed {
+            for handle in &self.handles {
+                handle.abort();
+            }
+        }
+    }
+}
+
 /// Server-owned atomic route across initializing and activated service stages.
 pub trait GrpcLifecycleRoute: Send + Sync {
     /// Atomically admits one authenticated operation in the current lifecycle.
@@ -834,19 +865,22 @@ impl CommandService for GrpcApplication {
             let (request_id, request) = execute_command_request_from_proto(command)?;
             let (service, context, cancellation) =
                 self.normal_invocation(ServiceOperationV1::ExecuteCommand, &metadata, request_id)?;
-            invocations.push(async move {
+            invocations.push(tokio::spawn(async move {
                 let _cancellation = cancellation;
                 let result = map_service(service.execute_command(context, request).await)?;
                 execute_command_result_to_proto(&result)
-            });
+            }));
         }
+        let mut abort_on_drop = BatchTaskAbortGuard::new(&invocations);
         // Await every independently admitted command even when a sibling
         // fails, so the transport never cancels an already-started item merely
         // to provide fail-fast batch behavior.
         let results = join_all(invocations).await;
+        abort_on_drop.disarm();
         let mut responses = Vec::with_capacity(results.len());
         for result in results {
-            responses.push(result?);
+            responses
+                .push(result.map_err(|_| Status::internal("application batch worker stopped"))??);
         }
         Ok(Response::new(v1::ExecuteCommandBatchResponse { responses }))
     }

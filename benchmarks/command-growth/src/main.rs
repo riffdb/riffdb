@@ -34,7 +34,11 @@ fn main() -> ExitCode {
 fn run() -> Result<bool, ()> {
     let configuration = Configuration::parse()?;
     let preflight_passed = env::var(PREFLIGHT_ENVIRONMENT).as_deref() == Ok(PREFLIGHT_EVIDENCE);
-    if (configuration.assert_perf_003 || configuration.assert_perf_004) && !preflight_passed {
+    if (configuration.assert_perf_003
+        || configuration.assert_group_mechanics
+        || configuration.assert_perf_008)
+        && !preflight_passed
+    {
         return Err(());
     }
     let root = TempRoot::new()?;
@@ -104,14 +108,16 @@ fn run() -> Result<bool, ()> {
         && comparison.commands >= 32
         && group_basis_points <= PERF_MAX_GROUP_VS_SYNC_BASIS_POINTS;
     println!(
-        "{{\"schema\":\"riffdb.command-growth/v1\",\"record_type\":\"group_summary\",\"sync_elapsed_ns\":{},\"group_elapsed_ns\":{},\"commands\":{},\"group_commands\":{},\"group_vs_sync_basis_points\":{group_basis_points},\"maximum_group_vs_sync_basis_points\":{PERF_MAX_GROUP_VS_SYNC_BASIS_POINTS},\"engine_durability\":\"immediate_two_phase\",\"perf_004_passed\":{perf_004_passed}}}",
+        "{{\"schema\":\"riffdb.command-growth/v1\",\"record_type\":\"group_summary\",\"sync_elapsed_ns\":{},\"group_elapsed_ns\":{},\"commands\":{},\"group_commands\":{},\"group_vs_sync_basis_points\":{group_basis_points},\"maximum_group_vs_sync_basis_points\":{PERF_MAX_GROUP_VS_SYNC_BASIS_POINTS},\"engine_durability\":\"immediate_two_phase\",\"perf_004_passed\":{perf_004_passed},\"perf_006_mechanics_passed\":{perf_004_passed},\"perf_008_mechanics_passed\":{perf_004_passed}}}",
         comparison.sync_elapsed_ns,
         comparison.group_elapsed_ns,
         comparison.commands,
         comparison.group_commands,
     );
+    let group_gate_requested =
+        configuration.assert_group_mechanics || configuration.assert_perf_008;
     Ok((!configuration.assert_perf_003 || passed)
-        && (!configuration.assert_perf_004 || perf_004_passed))
+        && (!group_gate_requested || perf_004_passed))
 }
 
 struct GroupComparison {
@@ -177,14 +183,16 @@ fn commands_per_second(commands: usize, elapsed_ns: u64) -> Result<u64, ()> {
 struct Configuration {
     checked: bool,
     assert_perf_003: bool,
-    assert_perf_004: bool,
+    assert_group_mechanics: bool,
+    assert_perf_008: bool,
 }
 
 impl Configuration {
     fn parse() -> Result<Self, ()> {
         let mut checked = false;
         let mut assert_perf_003 = false;
-        let mut assert_perf_004 = false;
+        let mut assert_group_mechanics = false;
+        let mut assert_perf_008 = false;
         for argument in env::args().skip(1) {
             match argument.as_str() {
                 "--smoke" => checked = false,
@@ -195,7 +203,16 @@ impl Configuration {
                 }
                 "--assert-perf-004" => {
                     checked = true;
-                    assert_perf_004 = true;
+                    assert_group_mechanics = true;
+                }
+                "--assert-perf-006" => {
+                    checked = true;
+                    assert_group_mechanics = true;
+                }
+                "--assert-perf-008" => {
+                    checked = true;
+                    assert_group_mechanics = true;
+                    assert_perf_008 = true;
                 }
                 _ => return Err(()),
             }
@@ -203,7 +220,8 @@ impl Configuration {
         Ok(Self {
             checked,
             assert_perf_003,
-            assert_perf_004,
+            assert_group_mechanics,
+            assert_perf_008,
         })
     }
 }

@@ -3,7 +3,7 @@
 use std::{error::Error, fmt};
 
 use riffdb_storage_api::{
-    AdmissionLookupResultV1, AdmissionRepository, ExecutablePlanRef, StorageError,
+    AdmissionLookupRepository, AdmissionLookupResultV1, ExecutablePlanRef, StorageError,
     StoredAdmissionStateV1,
 };
 use riffdb_types::{CanonicalRecord, FieldId, IdempotencyKey};
@@ -221,13 +221,13 @@ impl From<StorageError> for IdempotencyInspectionError {
 
 /// Synchronous read-only executor for the first inspect/select observation.
 pub struct IdempotencyInspectionExecutor<'repository> {
-    repository: &'repository dyn AdmissionRepository,
+    repository: &'repository dyn AdmissionLookupRepository,
 }
 
 impl<'repository> IdempotencyInspectionExecutor<'repository> {
     /// Binds one executor to the semantic admission repository.
     #[must_use]
-    pub const fn new(repository: &'repository dyn AdmissionRepository) -> Self {
+    pub const fn new(repository: &'repository dyn AdmissionLookupRepository) -> Self {
         Self { repository }
     }
 
@@ -242,28 +242,66 @@ impl<'repository> IdempotencyInspectionExecutor<'repository> {
     ) -> Result<InspectedIdempotencyV1, IdempotencyInspectionError> {
         let candidates = prepared_lookup.lookup_candidates().clone();
         let observation = self.repository.lookup_admission(candidates)?;
-        let plan_selection = match &observation {
-            AdmissionLookupResultV1::NotFound => IdempotencyPlanSelectionV1::Absent,
-            AdmissionLookupResultV1::MultipleMatches => {
-                return Err(IdempotencyInspectionError::MultipleMatches);
-            }
-            AdmissionLookupResultV1::Found(state) => {
-                if !prepared_lookup
-                    .lookup_candidates()
-                    .contains(state.identity())
-                {
-                    return Err(IdempotencyInspectionError::InvalidObservation);
-                }
-                IdempotencyPlanSelectionV1::Historical(plan_for_state(state).clone())
-            }
-        };
-
-        Ok(InspectedIdempotencyV1 {
-            plan_selection,
-            prepared_lookup,
-            observation,
-        })
+        inspect_observation(prepared_lookup, observation)
     }
+
+    /// Performs a bounded FIFO group in one repository observation.
+    ///
+    /// A repository failure is copied to every item because no member obtained
+    /// an observation. Semantic validation remains item-local, so one corrupt
+    /// result cannot be mistaken for another member's selection.
+    pub fn inspect_group(
+        &self,
+        prepared_lookups: Vec<PreparedIdempotencyLookupV1>,
+    ) -> Vec<Result<InspectedIdempotencyV1, IdempotencyInspectionError>> {
+        let count = prepared_lookups.len();
+        let candidates = prepared_lookups
+            .iter()
+            .map(|prepared| prepared.lookup_candidates().clone())
+            .collect();
+        match self.repository.lookup_admission_group(candidates) {
+            Ok(observations) if observations.len() == count => prepared_lookups
+                .into_iter()
+                .zip(observations)
+                .map(|(prepared, observation)| inspect_observation(prepared, observation))
+                .collect(),
+            Ok(_) => {
+                let error = IdempotencyInspectionError::InvalidObservation;
+                (0..count).map(|_| Err(error.clone())).collect()
+            }
+            Err(error) => {
+                let error = IdempotencyInspectionError::Storage(error);
+                (0..count).map(|_| Err(error.clone())).collect()
+            }
+        }
+    }
+}
+
+fn inspect_observation(
+    prepared_lookup: PreparedIdempotencyLookupV1,
+    observation: AdmissionLookupResultV1,
+) -> Result<InspectedIdempotencyV1, IdempotencyInspectionError> {
+    let plan_selection = match &observation {
+        AdmissionLookupResultV1::NotFound => IdempotencyPlanSelectionV1::Absent,
+        AdmissionLookupResultV1::MultipleMatches => {
+            return Err(IdempotencyInspectionError::MultipleMatches);
+        }
+        AdmissionLookupResultV1::Found(state) => {
+            if !prepared_lookup
+                .lookup_candidates()
+                .contains(state.identity())
+            {
+                return Err(IdempotencyInspectionError::InvalidObservation);
+            }
+            IdempotencyPlanSelectionV1::Historical(plan_for_state(state).clone())
+        }
+    };
+
+    Ok(InspectedIdempotencyV1 {
+        plan_selection,
+        prepared_lookup,
+        observation,
+    })
 }
 
 impl fmt::Debug for IdempotencyInspectionExecutor<'_> {

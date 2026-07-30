@@ -26,4 +26,16 @@ pub trait ApplicationCommitNotificationSink: Send + Sync {
         &self,
         sequence: CommitSequence,
     ) -> Result<(), ApplicationCommitNotificationError>;
+
+    /// Publishes one bounded physical group's independently committed
+    /// sequences. The default preserves the exact unary behavior.
+    fn publish_first_commit_group(
+        &self,
+        sequences: &[CommitSequence],
+    ) -> Result<(), ApplicationCommitNotificationError> {
+        for sequence in sequences {
+            self.publish_first_commit(*sequence)?;
+        }
+        Ok(())
+    }
 }
