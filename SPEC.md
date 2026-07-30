@@ -81,6 +81,7 @@
 | 0.43 | 2026-07-29 | Applied accepted ADR-0059 and planned WP-366: commands may carry compiler-proven same-partition observations across aggregates while every create/mutate binding remains in exactly one mutation aggregate; conflict keys derive only from that aggregate; external reads remain exact transaction-current dependencies; and the public TicketDesk seed plus unary mutation must demonstrate same-run PostgreSQL write parity within 2x. |
 | 0.44 | 2026-07-30 | Applied the maintainer-approved ADR-0059 amendment: the internal FIFO writer may form compatible physical groups up to the existing 64-command transaction ceiling while the public transport batch remains capped at 16. Exact conflict/dependency checks, independent command semantics, two durable transitions, redb `Immediate` durability, and the 16 MiB transaction ceiling remain unchanged. |
 | 0.45 | 2026-07-30 | Applied accepted ADR-0060 and planned WP-367 through WP-370: bounded oldest-item group collection, grouped historical idempotency selection, count-and-byte queue bounds, concurrent redb MVCC reads, exact transient outbox readiness, immutable cached command/query artifacts, bounded parallel deterministic preparation, and strict same-run application parity evidence while retaining one admission-ordered writer, fresh authorization, transaction-current validation, two Immediate durable transitions, and every fail-closed recovery guarantee. |
+| 0.46 | 2026-07-30 | Applied accepted ADR-0061 and planned WP-371 through WP-375: application durability is a semantic acknowledgement and visibility guarantee; normal synchronous commands may transition atomically from vacant identity to terminal graph after bounded side-effect-free preparation; the standard application profile uses redb Immediate one-phase checksum commits while a hardened two-phase oracle remains; storage format V2 compacts per-row framing and references one authoritative event payload; conservative partition/index generations replace prefix fan-out; and visible non-durable chaining remains prohibited. |
 
 ### Normative language
 
@@ -5797,20 +5798,22 @@ ADR-0055.
   Alpha. It MUST NOT be repaired by silently reducing durability, disabling a
   reviewed crash defense, weakening atomic records, or acknowledging before
   the configured durable boundary.
-- `PERF-004`: Production online writes MUST pass through one typed FIFO
-  scheduler using redb `Immediate` durability. It MAY group at most 64
-  compatible transitions for at most 200 microseconds and MUST retain the
-  existing 64-command and 16 MiB transaction ceilings. The public command
-  transport batch MUST remain capped at 16 ordinary commands. A newly executed,
-  successfully returned application command MUST require no more than two
-  durable transitions: atomic `Started` plus `Pending`, then atomic command
-  graph plus terminal `Succeeded` audit. Every item MUST retain independent
-  identity, sequence, outcome, provenance, audit, acknowledgement, and
-  uncertainty recovery. On the checked profile, a saturated grouped workload
-  MUST deliver at least twice the synchronous durability oracle's throughput
-  without a p99 scheduler wait above 2 ms or starvation. A miss blocks Agent
+- `PERF-004`: Production online writes MUST pass through one bounded typed FIFO
+  scheduler. It MAY group at most 64 compatible transitions for at most 200
+  microseconds and MUST retain the existing 64-command and 16 MiB transaction
+  ceilings. The public command transport batch MUST remain capped at 16
+  ordinary commands. A newly executed, successfully returned application
+  command MUST reach one atomic durable terminal boundary containing its
+  mutation graph, outcome, provenance, event intent, commit identity, and
+  linked terminal audit. Every item MUST retain independent identity, sequence,
+  outcome, provenance, audit, acknowledgement, and uncertainty recovery. The
+  storage mechanism MAY use one or more private physical phases but MUST NOT
+  release a response or observable application state before the complete
+  durable boundary. On the checked profile, a saturated grouped workload MUST
+  deliver at least twice the hardened synchronous oracle's throughput without
+  a p99 scheduler wait above 2 ms or starvation. A miss blocks Agent
   Application Alpha and MUST NOT be repaired by weaker durability, audit,
-  authorization, atomicity, or response-release semantics.
+  authorization, atomicity, visibility, or response-release semantics.
 - `PERF-005`: A command MAY observe entities owned by multiple aggregates only
   when the compiler proves that every binding is in one identical partition.
   Every `create` and `mutate` binding MUST remain in exactly one mutation
@@ -5821,7 +5824,8 @@ ADR-0055.
   completion-group-size distribution without high-cardinality labels. On the
   checked profile, the full public-command TicketDesk seed and representative
   unary mutation p50 MUST each complete within twice the same-run PostgreSQL
-  result under unchanged redb `Immediate` durability and audit semantics. A
+  result under the same semantic acknowledgement durability and audit
+  semantics. A
   miss blocks Agent Application Alpha and MUST NOT be waived through direct
   storage/import writes or weaker safety.
 - `PERF-006`: After receiving the oldest groupable transition, the production
@@ -5862,6 +5866,37 @@ ADR-0055.
   unary scenario MUST be within 1.10 times same-run PostgreSQL; at 32 clients,
   public mixed-workload throughput MUST be at least 0.90 times PostgreSQL and
   p95 latency MUST be at most 1.25 times PostgreSQL. A miss blocks WP-370.
+- `PERF-009`: The standard application durability profile MUST acknowledge only
+  after a redb Immediate one-phase checksummed commit is known successful. A
+  hardened two-phase profile and recovery oracle MUST remain available. Both
+  profiles expose identical atomic command, idempotency, audit, provenance,
+  event, outbox, and uncertainty semantics. Configuration MUST state the
+  non-Byzantine host/storage assumption, and crash/reopen evidence MUST prove
+  complete-terminal-or-absent recovery for the standard profile.
+- `PERF-010`: A synchronous mutation MAY perform bounded side-effect-free
+  preparation before durable admission, but after preparation it MUST freshly
+  authorize and atomically transition a vacant equal identity directly to its
+  complete terminal command graph and linked `Started`/terminal audit. It MUST
+  expose no output or effect before that commit. Concurrent same-identity
+  attempts MUST produce exactly one terminal winner; unknown status MUST fence
+  and resolve by identity. Existing durable Pending rows remain exactly
+  resumable, while new synchronous commands MUST NOT create Pending merely to
+  cross deterministic evaluation.
+- `PERF-011`: Storage format V2 MUST use a compact versioned record header with
+  a closed record tag, nonzero schema revision, payload checksum, and a
+  database-level registry digest. It MUST support mixed revisions during one
+  bounded restartable V1-to-V2 migration. The event table MUST own the sole
+  complete event payload; commits and outbox state reference exact event IDs and
+  hashes created in the same transaction. Unknown framing, registry, revision,
+  checksum, key/value, or reciprocal-reference state fails startup closed.
+- `PERF-012`: Mutation-affected index invalidation MUST advance at most one
+  durable generation for each distinct compiler-proven `(partition, index)`
+  pair in a command. Every range dependency and stable cursor MUST bind that
+  pair and generation, so any same-partition index mutation conservatively
+  invalidates it. The compiler MUST reject a write-influencing range whose
+  bounded generation cannot be proved. No application path may select a weaker
+  invalidation granularity, and no non-durable command state may become visible
+  to reads or derived workers.
 
 The milestone is complete only when WP-205 through WP-300 pass their package
 acceptance commands and an independent fresh-agent TicketDesk run satisfies
