@@ -45,6 +45,7 @@ pub struct RiffDbPublicBackend {
     transport: StableApplicationClient,
     metadata: CallMetadata,
     command_attempts: AttemptBudget,
+    runtime: tokio::runtime::Handle,
 }
 
 impl RiffDbPublicBackend {
@@ -64,6 +65,7 @@ impl RiffDbPublicBackend {
             transport,
             metadata,
             command_attempts: AttemptBudget::new(3).expect("positive command attempt budget"),
+            runtime: tokio::runtime::Handle::current(),
         })
     }
 
@@ -74,22 +76,17 @@ impl RiffDbPublicBackend {
             self.command_attempts,
         )
     }
-}
 
-fn block_on_runtime<T>(
-    future: impl std::future::Future<Output = Result<T, RiffDbError>>,
-) -> Result<T, RiffDbError> {
-    match tokio::runtime::Handle::try_current() {
-        Ok(handle) => tokio::task::block_in_place(|| handle.block_on(future)),
-        Err(_) => {
-            // Multi-thread so concurrent seed tasks make progress under load.
-            let runtime = tokio::runtime::Builder::new_multi_thread()
-                .worker_threads(4)
-                .enable_all()
-                .build()
-                .map_err(|_| RiffDbError::Runtime)?;
-            runtime.block_on(future)
-        }
+    /// Drives a backend future on the persistent harness runtime.
+    ///
+    /// Every `AppBackend` method is called from the synchronous benchmark
+    /// thread, never from async context, so `Handle::block_on` is safe here
+    /// and no per-call runtime is ever constructed.
+    fn block_on<T>(
+        &self,
+        future: impl std::future::Future<Output = Result<T, RiffDbError>>,
+    ) -> Result<T, RiffDbError> {
+        self.runtime.clone().block_on(future)
     }
 }
 
@@ -109,7 +106,7 @@ impl AppBackend for RiffDbPublicBackend {
     }
 
     fn seed(&mut self, dataset: &SeedDataset) -> Result<(), Self::Error> {
-        block_on_runtime(async {
+        self.block_on(async {
             let concurrency = seed_concurrency();
             let total = dataset.organizations.len()
                 + dataset.users.len()
@@ -280,7 +277,7 @@ impl AppBackend for RiffDbPublicBackend {
         organization_id: UuidBytes,
         ticket_id: UuidBytes,
     ) -> Result<Option<TicketRow>, Self::Error> {
-        block_on_runtime(async {
+        self.block_on(async {
             match self
                 .ticketdesk()
                 .get_ticket(GetTicketParams {
@@ -309,7 +306,7 @@ impl AppBackend for RiffDbPublicBackend {
         organization_id: UuidBytes,
         user_id: UuidBytes,
     ) -> Result<Option<UserRow>, Self::Error> {
-        block_on_runtime(async {
+        self.block_on(async {
             match self
                 .ticketdesk()
                 .get_user(GetUserParams {
@@ -337,7 +334,7 @@ impl AppBackend for RiffDbPublicBackend {
         status: TicketStatus,
         limit: u32,
     ) -> Result<Vec<TicketRow>, Self::Error> {
-        block_on_runtime(async {
+        self.block_on(async {
             let ListTicketsResult::Found(found) = self
                 .ticketdesk()
                 .list_tickets(ListTicketsParams {
@@ -373,7 +370,7 @@ impl AppBackend for RiffDbPublicBackend {
         assignee_id: UuidBytes,
         limit: u32,
     ) -> Result<Vec<TicketRow>, Self::Error> {
-        block_on_runtime(async {
+        self.block_on(async {
             let ListTicketsByAssigneeResult::Found(found) = self
                 .ticketdesk()
                 .list_tickets_by_assignee(ListTicketsByAssigneeParams {
@@ -409,7 +406,7 @@ impl AppBackend for RiffDbPublicBackend {
         ticket_id: UuidBytes,
         limit: u32,
     ) -> Result<Vec<CommentRow>, Self::Error> {
-        block_on_runtime(async {
+        self.block_on(async {
             let ListCommentsResult::Found(found) = self
                 .ticketdesk()
                 .list_comments(ListCommentsParams {
@@ -442,7 +439,7 @@ impl AppBackend for RiffDbPublicBackend {
         project_id: UuidBytes,
         limit: u32,
     ) -> Result<Vec<ProjectMemberRow>, Self::Error> {
-        block_on_runtime(async {
+        self.block_on(async {
             let ProjectMembersResult::Found(found) = self
                 .ticketdesk()
                 .project_members(ProjectMembersParams {
@@ -474,7 +471,7 @@ impl AppBackend for RiffDbPublicBackend {
         ticket_id: UuidBytes,
         comment_limit: u32,
     ) -> Result<Option<TicketDetailPage>, Self::Error> {
-        block_on_runtime(async {
+        self.block_on(async {
             match self
                 .ticketdesk()
                 .ticket_page(TicketPageParams {
@@ -562,7 +559,7 @@ impl AppBackend for RiffDbPublicBackend {
     }
 
     fn create_comment(&mut self, comment: &CommentSeed) -> Result<(), Self::Error> {
-        block_on_runtime(async {
+        self.block_on(async {
             self.ticketdesk()
                 .create_comment(CreateCommentInput {
                     body: comment.row.body.clone(),
@@ -582,7 +579,7 @@ impl AppBackend for RiffDbPublicBackend {
         &mut self,
         input: &CloseTicketWithCommentSeed,
     ) -> Result<(), Self::Error> {
-        block_on_runtime(async {
+        self.block_on(async {
             self.ticketdesk()
                 .close_ticket_with_comment(CloseTicketWithCommentInput {
                     body: input.body.clone(),
@@ -599,7 +596,7 @@ impl AppBackend for RiffDbPublicBackend {
     }
 
     fn swap_member_roles(&mut self, input: &SwapMemberRolesSeed) -> Result<(), Self::Error> {
-        block_on_runtime(async {
+        self.block_on(async {
             self.ticketdesk()
                 .swap_member_roles(SwapMemberRolesInput {
                     role_a: input.role_a.clone(),
@@ -620,7 +617,7 @@ impl AppBackend for RiffDbPublicBackend {
         &mut self,
         input: &OpenTicketWithLabelsSeed,
     ) -> Result<(), Self::Error> {
-        block_on_runtime(async {
+        self.block_on(async {
             self.ticketdesk()
                 .open_ticket_with_labels(OpenTicketWithLabelsInput {
                     title: input.title.clone(),
@@ -701,23 +698,22 @@ impl SeedProgress {
         let completed = self.completed.fetch_add(1, Ordering::Relaxed) + 1;
         let overall_ms = self.started.elapsed().as_millis() as usize;
         let last = self.last_report_ms.load(Ordering::Relaxed);
-        if completed == self.total || overall_ms.saturating_sub(last) >= 2_000 {
-            if self
+        if (completed == self.total || overall_ms.saturating_sub(last) >= 2_000)
+            && (self
                 .last_report_ms
                 .compare_exchange(last, overall_ms, Ordering::Relaxed, Ordering::Relaxed)
                 .is_ok()
-                || completed == self.total
-            {
-                let overall_ops = if overall_ms == 0 {
-                    0.0
-                } else {
-                    (completed as f64) * 1000.0 / (overall_ms as f64)
-                };
-                eprintln!(
-                    "riffdb-seed-progress\tphase={phase}\tcompleted={completed}/{}\toverall_ms={overall_ms}\trate_ops_s={overall_ops:.1}",
-                    self.total
-                );
-            }
+                || completed == self.total)
+        {
+            let overall_ops = if overall_ms == 0 {
+                0.0
+            } else {
+                (completed as f64) * 1000.0 / (overall_ms as f64)
+            };
+            eprintln!(
+                "riffdb-seed-progress\tphase={phase}\tcompleted={completed}/{}\toverall_ms={overall_ms}\trate_ops_s={overall_ops:.1}",
+                self.total
+            );
         }
     }
 
