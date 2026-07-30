@@ -30,6 +30,11 @@ const MAX_COMMAND_ITEMS: usize = 4_096;
 const MAX_CONFLICT_HASHES: usize = 2_046;
 const MAX_PACKED_ITEMS: usize = 65_535 + 19;
 
+const RECORD_REGISTRY_V2_RULES: [Rule; 1] = [fixed_bytes(1, 32)];
+const RECORD_REGISTRY_V2: Shape = Shape {
+    rules: &RECORD_REGISTRY_V2_RULES,
+};
+
 #[derive(Clone, Copy)]
 struct Shape {
     rules: &'static [Rule],
@@ -440,7 +445,7 @@ shape!(PROJECTION_CONTROL [
     message(7, &PROJECTION_FAILURE),
 ]);
 
-const ROOTS: [&Shape; 30] = [
+const ROOTS: [&Shape; 31] = [
     &Shape { rules: &[] },
     &Shape {
         rules: &[fixed_bytes(1, 16)],
@@ -477,6 +482,7 @@ const ROOTS: [&Shape; 30] = [
     &ACTIVE_QUERY_MODULE,
     &QUERY_MODULE_ADMINISTRATION,
     &INDEX_ENTRY_V2,
+    &RECORD_REGISTRY_V2,
 ];
 
 pub(crate) fn payload(record_index: usize, input: &[u8]) -> Result<(), DurablePreflightError> {

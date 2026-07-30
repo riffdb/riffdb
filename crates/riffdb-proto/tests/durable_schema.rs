@@ -12,7 +12,7 @@ use riffdb_proto::durable::{
     readable_record_schema, writable_record_schema,
 };
 use riffdb_proto::envelope::{
-    EnvelopeError, MAX_STORED_ENVELOPE_BYTES, PayloadValidationError, encode,
+    EnvelopeError, MAX_STORED_ENVELOPE_BYTES, PayloadValidationError, encode, encode_v1,
 };
 use riffdb_proto::storage::v1::{
     StoredContractBundleV1, StoredEnvelope, StoredStorageFormatVersionV1,
@@ -185,6 +185,7 @@ fn storage_source_import_and_type_inventory_is_exact() {
                 "riffdb/storage/v1/projection.proto".to_owned(),
                 vec!["riffdb/storage/v1/common.proto"],
             ),
+            ("riffdb/storage/v1/registry_v2.proto".to_owned(), vec![]),
         ])
     );
     assert!(descriptors.file.iter().all(|file| {
@@ -200,8 +201,8 @@ fn storage_source_import_and_type_inventory_is_exact() {
             .iter()
             .map(|file| file.message_type.len())
             .sum::<usize>(),
-        79,
-        "78 semantic messages plus the unchanged StoredEnvelope"
+        80,
+        "79 semantic messages plus the unchanged StoredEnvelope"
     );
     assert_eq!(
         descriptors
@@ -230,9 +231,9 @@ fn storage_source_import_and_type_inventory_is_exact() {
 
 #[test]
 fn closed_registry_order_and_schema_hashes_are_exactly_derived() {
-    assert_eq!(CURRENT_RECORD_SCHEMA_COUNT, 29);
-    assert_eq!(READABLE_RECORD_SCHEMA_COUNT, 31);
-    assert_eq!(WRITABLE_RECORD_SCHEMA_COUNT, 29);
+    assert_eq!(CURRENT_RECORD_SCHEMA_COUNT, 30);
+    assert_eq!(READABLE_RECORD_SCHEMA_COUNT, 32);
+    assert_eq!(WRITABLE_RECORD_SCHEMA_COUNT, 30);
     assert_eq!(
         CURRENT_RECORD_SCHEMAS
             .iter()
@@ -255,6 +256,7 @@ fn closed_registry_order_and_schema_hashes_are_exactly_derived() {
             .map(|(name, _)| format!("riffdb.storage.v1.{name}")),
     );
     readable_names.push(format!("riffdb.storage.v1.{}", INDEX_V2_RECORD.0));
+    readable_names.push("riffdb.storage.v1.StoredRecordRegistryV2".to_owned());
     readable_names.push("riffdb.storage.v1.CapabilityRecordV1".to_owned());
     let mut writable_names = legacy_names.clone();
     writable_names[8] = format!("riffdb.storage.v1.{}", INDEX_V2_RECORD.0);
@@ -263,6 +265,7 @@ fn closed_registry_order_and_schema_hashes_are_exactly_derived() {
             .iter()
             .map(|(name, _)| format!("riffdb.storage.v1.{name}")),
     );
+    writable_names.push("riffdb.storage.v1.StoredRecordRegistryV2".to_owned());
     assert_eq!(
         READABLE_RECORD_SCHEMAS
             .iter()
@@ -370,8 +373,8 @@ fn closed_registry_order_and_schema_hashes_are_exactly_derived() {
 #[test]
 fn generated_registry_fixtures_freeze_exact_membership_and_hashes() {
     let legacy = registry_fixture_entries(LEGACY_REGISTRY_FIXTURE, 26);
-    let readable = registry_fixture_entries(READABLE_REGISTRY_FIXTURE, 31);
-    let writable = registry_fixture_entries(WRITABLE_REGISTRY_FIXTURE, 29);
+    let readable = registry_fixture_entries(READABLE_REGISTRY_FIXTURE, 32);
+    let writable = registry_fixture_entries(WRITABLE_REGISTRY_FIXTURE, 30);
 
     assert_eq!(legacy, readable[..legacy.len()]);
     assert_eq!(
@@ -442,7 +445,7 @@ fn every_semantic_golden_payload_and_envelope_is_canonical() {
         let payload = decode_lower_hex(columns[1]);
         let envelope = decode_lower_hex(columns[2]);
         assert_eq!(
-            encode(schema, &payload).expect("semantic golden payload is canonical"),
+            encode_v1(schema, &payload).expect("semantic golden payload is canonical"),
             envelope,
             "{}",
             schema.record_type()

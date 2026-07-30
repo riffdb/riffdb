@@ -22,12 +22,15 @@ pub struct StorageFormatVersion(NonZeroU32);
 impl StorageFormatVersion {
     /// The initial POC storage format.
     pub const V1: Self = Self(NonZeroU32::MIN);
+    /// Compact tagged durable records with a database-bound registry digest.
+    pub const V2: Self = Self(NonZeroU32::new(2).expect("two is nonzero"));
 
     /// Reconstructs only a storage format supported by this semantic API.
     #[must_use]
     pub const fn from_supported(value: u32) -> Option<Self> {
         match value {
             1 => Some(Self::V1),
+            2 => Some(Self::V2),
             _ => None,
         }
     }
@@ -84,7 +87,7 @@ impl RetainedMetadataV1 {
     #[must_use]
     pub const fn initial(database_id: DatabaseId) -> Self {
         Self {
-            storage_format_version: StorageFormatVersion::V1,
+            storage_format_version: StorageFormatVersion::V2,
             database_id,
             application_sequence: ApplicationSequenceAllocator::initial(),
             administration_sequence: AdministrationSequenceAllocator::initial(),

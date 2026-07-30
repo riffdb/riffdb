@@ -67,6 +67,7 @@ impl DurableCodecError {
         match error {
             EnvelopeError::UnsupportedStorageFormatVersion
             | EnvelopeError::UnknownRecordType
+            | EnvelopeError::UnknownCompactIdentity
             | EnvelopeError::UnsupportedSchemaHash => {
                 Self::new(DurableCodecErrorKind::IncompatibleFormat)
             }
@@ -76,6 +77,7 @@ impl DurableCodecError {
                 Self::new(DurableCodecErrorKind::LimitExceeded)
             }
             EnvelopeError::Malformed
+            | EnvelopeError::InvalidCompactIdentity
             | EnvelopeError::InvalidRecordType
             | EnvelopeError::InvalidSchemaHashLength
             | EnvelopeError::ChecksumMismatch
@@ -97,6 +99,8 @@ impl DurableCodecError {
             EnvelopeError::Malformed
             | EnvelopeError::UnsupportedStorageFormatVersion
             | EnvelopeError::UnknownRecordType
+            | EnvelopeError::UnknownCompactIdentity
+            | EnvelopeError::InvalidCompactIdentity
             | EnvelopeError::InvalidRecordType
             | EnvelopeError::InvalidSchemaHashLength
             | EnvelopeError::UnsupportedSchemaHash

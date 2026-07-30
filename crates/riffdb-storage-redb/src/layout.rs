@@ -59,18 +59,43 @@ pub(crate) const TABLE_NAMES: [&str; 21] = [
     "audit",
 ];
 
+pub(crate) const BYTE_TABLES: [TableDefinition<&[u8], &[u8]>; 20] = [
+    CONTRACT_BUNDLES,
+    CATALOG_ACTIVE,
+    QUERY_MODULES,
+    QUERY_MODULE_ACTIVE,
+    ENTITIES,
+    SECONDARY_INDEXES,
+    INDEX_EPOCHS,
+    IDEMPOTENCY,
+    IDEMPOTENCY_PENDING,
+    COMMITS,
+    PROVENANCE,
+    EVENTS,
+    OUTBOX,
+    OUTBOX_STATUS,
+    PROJECTION_STATE,
+    PROJECTION_FRONTIER,
+    PROJECTION_APPLIED,
+    CAPABILITIES,
+    CAPABILITY_TOKENS,
+    AUDIT,
+];
+
 pub(crate) const META_FORMAT_VERSION: &str = "format_version";
 pub(crate) const META_DATABASE_ID: &str = "database_id";
 pub(crate) const META_APPLICATION_SEQUENCE: &str = "next_application_sequence";
 pub(crate) const META_ADMINISTRATION_SEQUENCE: &str = "next_administration_sequence";
 pub(crate) const META_CAPABILITY_BOOTSTRAP: &str = "capability_bootstrap/v1";
+pub(crate) const META_RECORD_REGISTRY: &str = "record_registry/v2";
 
-pub(crate) const META_KEYS: [&str; 5] = [
+pub(crate) const META_KEYS: [&str; 6] = [
     META_FORMAT_VERSION,
     META_DATABASE_ID,
     META_APPLICATION_SEQUENCE,
     META_ADMINISTRATION_SEQUENCE,
     META_CAPABILITY_BOOTSTRAP,
+    META_RECORD_REGISTRY,
 ];
 
 #[allow(dead_code, reason = "WP-070 catalog ports consume this frozen key")]
@@ -153,9 +178,10 @@ mod tests {
                 "next_application_sequence",
                 "next_administration_sequence",
                 "capability_bootstrap/v1",
+                "record_registry/v2",
             ]
         );
-        assert_eq!(META_KEYS.len(), 5);
+        assert_eq!(META_KEYS.len(), 6);
         assert_eq!(
             META_KEYS.into_iter().collect::<BTreeSet<_>>().len(),
             META_KEYS.len()

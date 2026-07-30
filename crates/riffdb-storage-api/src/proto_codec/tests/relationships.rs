@@ -332,14 +332,22 @@ fn append_bootstrap_success(
         encode_administration_sequence_allocator_v1(before).expect("before allocator encodes");
     let after_envelope = encode_administration_sequence_allocator_v1(allocated.next())
         .expect("after allocator encodes");
+    let before_bytes = legacy_fixture_envelope(
+        "riffdb.storage.v1.StoredAdministrationSequenceAllocatorV1",
+        &before_envelope,
+    );
+    let after_bytes = legacy_fixture_envelope(
+        "riffdb.storage.v1.StoredAdministrationSequenceAllocatorV1",
+        &after_envelope,
+    );
     fixture.push_str(&format!(
         "bootstrap\t{name}\tok\t{}\t{count}\t{assigned}\t{}\t{}\t{}\t{}\t{}\n",
         allocator_label(before),
         allocator_label(allocated.next()),
-        before_envelope.as_bytes().len(),
-        hex(before_envelope.as_bytes()),
-        after_envelope.as_bytes().len(),
-        hex(after_envelope.as_bytes()),
+        before_bytes.len(),
+        hex(&before_bytes),
+        after_bytes.len(),
+        hex(&after_bytes),
     ));
 }
 
@@ -355,11 +363,15 @@ fn append_bootstrap_failure(
     );
     let before_envelope = encode_administration_sequence_allocator_v1(before)
         .expect("failed preflight input encodes");
+    let before_bytes = legacy_fixture_envelope(
+        "riffdb.storage.v1.StoredAdministrationSequenceAllocatorV1",
+        &before_envelope,
+    );
     fixture.push_str(&format!(
         "bootstrap\t{name}\terror-exhausted\t{}\t{count}\t-\tno-write\t{}\t{}\t0\t-\n",
         allocator_label(before),
-        before_envelope.as_bytes().len(),
-        hex(before_envelope.as_bytes()),
+        before_bytes.len(),
+        hex(&before_bytes),
     ));
 }
 
@@ -544,9 +556,10 @@ fn append_compound_bootstrap_relationship(fixture: &mut String) {
             encode_capability_bootstrap_marker_v1(graph.marker).expect("bootstrap marker encodes"),
         ),
     ] {
+        let bytes = legacy_fixture_envelope(record_type, &envelope);
         fixture.push_str(&format!(
             "compound-bootstrap\t{role}\t{record_type}\t{}\n",
-            hex(envelope.as_bytes())
+            hex(&bytes)
         ));
     }
     fixture.push_str(&format!(
@@ -734,10 +747,22 @@ fn append_relationship_record(
     record_type: &str,
     envelope: CanonicalStoredEnvelopeV1,
 ) {
+    let bytes = legacy_fixture_envelope(record_type, &envelope);
     fixture.push_str(&format!(
         "reciprocity\t{case}\t{expectation}\t{role}\t{record_type}\t{}\n",
-        hex(envelope.as_bytes())
+        hex(&bytes)
     ));
+}
+
+fn legacy_fixture_envelope(record_type: &str, envelope: &CanonicalStoredEnvelopeV1) -> Vec<u8> {
+    let registry = riffdb_proto::durable::readable_record_registry();
+    let decoded = registry
+        .decode(envelope.as_bytes())
+        .expect("current fixture envelope decodes");
+    let schema = riffdb_proto::durable::readable_record_schema(record_type)
+        .expect("fixture record type is readable");
+    riffdb_proto::envelope::encode_v1(schema, decoded.payload())
+        .expect("fixture payload remains legacy encodable")
 }
 
 fn event_relationship_parts() -> EventRelationshipParts {

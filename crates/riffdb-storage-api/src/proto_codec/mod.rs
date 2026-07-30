@@ -67,6 +67,31 @@ impl fmt::Debug for CanonicalStoredEnvelopeV1 {
     }
 }
 
+/// Validates a readable V1 or V2 durable record and returns its exact canonical
+/// compact V2 representation. Equal input/output bytes mean no rewrite is
+/// required.
+pub fn transcode_durable_record_to_v2(
+    encoded: &[u8],
+) -> Result<CanonicalStoredEnvelopeV1, DurableCodecError> {
+    let bytes = readable_record_registry()
+        .transcode_to_v2(encoded)
+        .map_err(DurableCodecError::from_decode_envelope)?;
+    let charge = EncodedContentCharge::new(bytes.len()).ok_or_else(DurableCodecError::corrupt)?;
+    Ok(CanonicalStoredEnvelopeV1 { bytes, charge })
+}
+
+/// Produces immutable legacy V1 compatibility framing after fully validating
+/// one readable durable record.
+pub fn transcode_durable_record_to_v1(
+    encoded: &[u8],
+) -> Result<CanonicalStoredEnvelopeV1, DurableCodecError> {
+    let bytes = readable_record_registry()
+        .transcode_to_v1(encoded)
+        .map_err(DurableCodecError::from_decode_envelope)?;
+    let charge = EncodedContentCharge::new(bytes.len()).ok_or_else(DurableCodecError::corrupt)?;
+    Ok(CanonicalStoredEnvelopeV1 { bytes, charge })
+}
+
 pub(super) fn encode_message<M: Message + riffdb_proto::durable::WritableRecordMessage>(
     record_type: &'static str,
     message: &M,

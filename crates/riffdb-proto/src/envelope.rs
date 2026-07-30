@@ -11,6 +11,13 @@ use crate::wire::{self, EnvelopePreflightError};
 
 /// The only storage-envelope format version supported by the POC baseline.
 pub const STORAGE_FORMAT_VERSION_V1: u32 = 1;
+/// Compact durable-record format written after the pre-alpha V2 migration.
+pub const STORAGE_FORMAT_VERSION_V2: u32 = 2;
+
+/// Exact fixed byte length of the compact V2 record header.
+pub const COMPACT_RECORD_HEADER_V2_BYTES: usize = 16;
+
+const COMPACT_RECORD_MAGIC_V2: [u8; 4] = *b"RDB2";
 
 /// Absolute upper bound for an encoded envelope or its payload.
 pub const MAX_STORED_ENVELOPE_BYTES: usize = 16 * 1024 * 1024;
@@ -59,6 +66,8 @@ impl Error for PayloadValidationError {}
 pub struct RecordSchema<'a> {
     record_type: &'a str,
     schema_hash: SchemaHash,
+    compact_tag: u8,
+    schema_revision: u16,
     max_payload_bytes: usize,
     max_envelope_bytes: usize,
     preflight_payload: fn(&[u8]) -> Result<(), PayloadValidationError>,
@@ -77,11 +86,24 @@ impl RecordSchema<'_> {
         RecordSchema {
             record_type,
             schema_hash,
+            compact_tag: 0,
+            schema_revision: 0,
             max_payload_bytes,
             max_envelope_bytes,
             preflight_payload,
             validate_payload,
         }
+    }
+
+    /// Binds this descriptor to one closed compact-record role and revision.
+    pub(crate) const fn with_compact_identity(
+        mut self,
+        compact_tag: u8,
+        schema_revision: u16,
+    ) -> Self {
+        self.compact_tag = compact_tag;
+        self.schema_revision = schema_revision;
+        self
     }
 
     /// Returns the fully qualified Protobuf record name.
@@ -94,6 +116,18 @@ impl RecordSchema<'_> {
     #[must_use]
     pub const fn schema_hash(&self) -> SchemaHash {
         self.schema_hash
+    }
+
+    /// Returns the closed nonzero V2 record tag.
+    #[must_use]
+    pub const fn compact_tag(&self) -> u8 {
+        self.compact_tag
+    }
+
+    /// Returns the nonzero schema revision stored in every V2 row.
+    #[must_use]
+    pub const fn schema_revision(&self) -> u16 {
+        self.schema_revision
     }
 
     /// Returns the record-specific payload ceiling.
@@ -115,6 +149,8 @@ impl fmt::Debug for RecordSchema<'_> {
             .debug_struct("RecordSchema")
             .field("record_type", &self.record_type)
             .field("schema_hash", &self.schema_hash)
+            .field("compact_tag", &self.compact_tag)
+            .field("schema_revision", &self.schema_revision)
             .field("max_payload_bytes", &self.max_payload_bytes)
             .field("max_envelope_bytes", &self.max_envelope_bytes)
             .finish_non_exhaustive()
@@ -128,6 +164,10 @@ pub enum RecordRegistryError {
     TooManySchemas,
     /// The registry contains the same v1 record type and schema hash twice.
     DuplicateSchema,
+    /// A schema omitted its compact tag or revision.
+    InvalidCompactIdentity,
+    /// Two schemas claim the same compact tag and revision.
+    DuplicateCompactIdentity,
 }
 
 impl fmt::Display for RecordRegistryError {
@@ -135,6 +175,12 @@ impl fmt::Display for RecordRegistryError {
         formatter.write_str(match self {
             Self::TooManySchemas => "durable record registry is too large",
             Self::DuplicateSchema => "durable record registry contains a duplicate schema",
+            Self::InvalidCompactIdentity => {
+                "durable record registry contains an invalid compact identity"
+            }
+            Self::DuplicateCompactIdentity => {
+                "durable record registry contains a duplicate compact identity"
+            }
         })
     }
 }
@@ -159,11 +205,20 @@ impl<'a> RecordRegistry<'a> {
         }
 
         for (index, schema) in schemas.iter().enumerate() {
+            if schema.compact_tag == 0 || schema.schema_revision == 0 {
+                return Err(RecordRegistryError::InvalidCompactIdentity);
+            }
             if schemas[..index].iter().any(|existing| {
                 existing.record_type == schema.record_type
                     && existing.schema_hash == schema.schema_hash
             }) {
                 return Err(RecordRegistryError::DuplicateSchema);
+            }
+            if schemas[..index].iter().any(|existing| {
+                existing.compact_tag == schema.compact_tag
+                    && existing.schema_revision == schema.schema_revision
+            }) {
+                return Err(RecordRegistryError::DuplicateCompactIdentity);
             }
         }
 
@@ -175,6 +230,45 @@ impl<'a> RecordRegistry<'a> {
         if encoded.len() > MAX_STORED_ENVELOPE_BYTES {
             return Err(EnvelopeError::EnvelopeTooLarge);
         }
+        if encoded.starts_with(&COMPACT_RECORD_MAGIC_V2) {
+            return self.decode_compact_v2(encoded);
+        }
+        self.decode_v1(encoded)
+    }
+
+    /// Validates either readable framing and returns the canonical compact V2
+    /// representation of the same exact semantic payload.
+    pub fn transcode_to_v2(&self, encoded: &[u8]) -> Result<Vec<u8>, EnvelopeError> {
+        let decoded = self.decode(encoded)?;
+        let schema = self
+            .schemas
+            .iter()
+            .find(|schema| {
+                schema.compact_tag == decoded.compact_tag
+                    && schema.schema_revision == decoded.schema_revision
+                    && schema.schema_hash == decoded.schema_hash
+            })
+            .ok_or(EnvelopeError::UnknownCompactIdentity)?;
+        encode_compact_checked_payload(schema, &decoded.payload)
+    }
+
+    /// Validates either readable framing and returns the immutable canonical V1
+    /// compatibility representation of the same exact semantic payload.
+    pub fn transcode_to_v1(&self, encoded: &[u8]) -> Result<Vec<u8>, EnvelopeError> {
+        let decoded = self.decode(encoded)?;
+        let schema = self
+            .schemas
+            .iter()
+            .find(|schema| {
+                schema.compact_tag == decoded.compact_tag
+                    && schema.schema_revision == decoded.schema_revision
+                    && schema.schema_hash == decoded.schema_hash
+            })
+            .ok_or(EnvelopeError::UnknownCompactIdentity)?;
+        encode_v1_checked_payload(schema, &decoded.payload)
+    }
+
+    fn decode_v1(&self, encoded: &[u8]) -> Result<DecodedEnvelope, EnvelopeError> {
         let preflight = match wire::stored_envelope(encoded) {
             Ok(preflight) => preflight,
             Err(EnvelopePreflightError::Malformed) => return Err(EnvelopeError::Malformed),
@@ -244,9 +338,72 @@ impl<'a> RecordRegistry<'a> {
         Ok(DecodedEnvelope {
             record_type: envelope.record_type,
             schema_hash: schema.schema_hash,
+            compact_tag: schema.compact_tag,
+            schema_revision: schema.schema_revision,
+            format: DurableRecordFormat::V1,
             payload: envelope.payload,
         })
     }
+
+    fn decode_compact_v2(&self, encoded: &[u8]) -> Result<DecodedEnvelope, EnvelopeError> {
+        if encoded.len() < COMPACT_RECORD_HEADER_V2_BYTES {
+            return Err(EnvelopeError::Malformed);
+        }
+        if encoded[4] != u8::try_from(STORAGE_FORMAT_VERSION_V2).expect("V2 fits u8") {
+            return Err(EnvelopeError::UnsupportedStorageFormatVersion);
+        }
+        let compact_tag = encoded[5];
+        let schema_revision = u16::from_be_bytes([encoded[6], encoded[7]]);
+        if compact_tag == 0 || schema_revision == 0 {
+            return Err(EnvelopeError::InvalidCompactIdentity);
+        }
+        let payload_length =
+            u32::from_be_bytes([encoded[8], encoded[9], encoded[10], encoded[11]]) as usize;
+        let expected_length = COMPACT_RECORD_HEADER_V2_BYTES
+            .checked_add(payload_length)
+            .ok_or(EnvelopeError::EnvelopeTooLarge)?;
+        if expected_length != encoded.len() {
+            return Err(EnvelopeError::Malformed);
+        }
+        let checksum = u32::from_be_bytes([encoded[12], encoded[13], encoded[14], encoded[15]]);
+        let payload = &encoded[COMPACT_RECORD_HEADER_V2_BYTES..];
+        let schema = self
+            .schemas
+            .iter()
+            .find(|schema| {
+                schema.compact_tag == compact_tag && schema.schema_revision == schema_revision
+            })
+            .ok_or(EnvelopeError::UnknownCompactIdentity)?;
+        if payload.len() > schema.max_payload_bytes {
+            return Err(EnvelopeError::PayloadTooLarge);
+        }
+        if payload_crc32c(payload) != checksum {
+            return Err(EnvelopeError::ChecksumMismatch);
+        }
+        (schema.preflight_payload)(payload).map_err(EnvelopeError::InvalidPayload)?;
+        (schema.validate_payload)(payload).map_err(EnvelopeError::InvalidPayload)?;
+        let canonical = encode_compact_checked_payload(schema, payload)?;
+        if canonical != encoded {
+            return Err(EnvelopeError::NonCanonicalEnvelope);
+        }
+        Ok(DecodedEnvelope {
+            record_type: schema.record_type.to_owned(),
+            schema_hash: schema.schema_hash,
+            compact_tag,
+            schema_revision,
+            format: DurableRecordFormat::V2,
+            payload: payload.to_vec(),
+        })
+    }
+}
+
+/// Closed physical framing observed for one checked durable record.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum DurableRecordFormat {
+    /// Legacy Protobuf `StoredEnvelope` framing.
+    V1,
+    /// Compact fixed-header framing.
+    V2,
 }
 
 /// A supported, integrity-checked, wire-canonical durable payload.
@@ -256,6 +413,9 @@ impl<'a> RecordRegistry<'a> {
 pub struct DecodedEnvelope {
     record_type: String,
     schema_hash: SchemaHash,
+    compact_tag: u8,
+    schema_revision: u16,
+    format: DurableRecordFormat,
     payload: Vec<u8>,
 }
 
@@ -270,6 +430,24 @@ impl DecodedEnvelope {
     #[must_use]
     pub const fn schema_hash(&self) -> SchemaHash {
         self.schema_hash
+    }
+
+    /// Returns the closed compact record tag assigned to this semantic role.
+    #[must_use]
+    pub const fn compact_tag(&self) -> u8 {
+        self.compact_tag
+    }
+
+    /// Returns the exact registered schema revision.
+    #[must_use]
+    pub const fn schema_revision(&self) -> u16 {
+        self.schema_revision
+    }
+
+    /// Returns the checked physical framing.
+    #[must_use]
+    pub const fn format(&self) -> DurableRecordFormat {
+        self.format
     }
 
     /// Borrows the exact canonical payload bytes.
@@ -291,6 +469,9 @@ impl fmt::Debug for DecodedEnvelope {
             .debug_struct("DecodedEnvelope")
             .field("record_type", &self.record_type)
             .field("schema_hash", &self.schema_hash)
+            .field("compact_tag", &self.compact_tag)
+            .field("schema_revision", &self.schema_revision)
+            .field("format", &self.format)
             .field("payload_bytes", &self.payload.len())
             .finish()
     }
@@ -313,6 +494,10 @@ pub enum EnvelopeError {
     InvalidSchemaHashLength,
     /// The record type is known but this schema hash is not registered.
     UnsupportedSchemaHash,
+    /// A compact row used zero for its closed tag or schema revision.
+    InvalidCompactIdentity,
+    /// No registered schema has the encoded compact tag and revision.
+    UnknownCompactIdentity,
     /// The payload exceeds its absolute or record-specific ceiling.
     PayloadTooLarge,
     /// The CRC-32C does not cover the exact payload bytes.
@@ -335,6 +520,8 @@ impl fmt::Display for EnvelopeError {
             Self::InvalidRecordType => "durable record type is invalid",
             Self::InvalidSchemaHashLength => "durable schema hash has an invalid length",
             Self::UnsupportedSchemaHash => "durable record schema is unsupported",
+            Self::InvalidCompactIdentity => "durable compact record identity is invalid",
+            Self::UnknownCompactIdentity => "durable compact record identity is unsupported",
             Self::PayloadTooLarge => "durable payload is too large",
             Self::ChecksumMismatch => "durable payload checksum does not match",
             Self::NonCanonicalEnvelope => "durable envelope encoding is not canonical",
@@ -345,23 +532,30 @@ impl fmt::Display for EnvelopeError {
 
 impl Error for EnvelopeError {}
 
-/// Encodes one semantically canonical payload in its registered v1 envelope.
+/// Encodes one semantically canonical payload in compact V2 framing.
 pub fn encode(schema: &RecordSchema<'_>, payload: &[u8]) -> Result<Vec<u8>, EnvelopeError> {
-    maximum_encoded_envelope_bytes(schema, payload.len())?;
+    maximum_encoded_compact_record_bytes(schema, payload.len())?;
     (schema.validate_payload)(payload).map_err(EnvelopeError::InvalidPayload)?;
-    encode_checked_payload(schema, payload)
+    encode_compact_checked_payload(schema, payload)
 }
 
 pub(crate) fn encode_preflighted(
     schema: &RecordSchema<'_>,
     payload: &[u8],
 ) -> Result<Vec<u8>, EnvelopeError> {
-    maximum_encoded_envelope_bytes(schema, payload.len())?;
+    maximum_encoded_compact_record_bytes(schema, payload.len())?;
     (schema.preflight_payload)(payload).map_err(EnvelopeError::InvalidPayload)?;
-    encode_checked_payload(schema, payload)
+    encode_compact_checked_payload(schema, payload)
 }
 
-fn encode_checked_payload(
+/// Encodes immutable compatibility bytes in legacy V1 envelope framing.
+pub fn encode_v1(schema: &RecordSchema<'_>, payload: &[u8]) -> Result<Vec<u8>, EnvelopeError> {
+    maximum_encoded_envelope_bytes(schema, payload.len())?;
+    (schema.validate_payload)(payload).map_err(EnvelopeError::InvalidPayload)?;
+    encode_v1_checked_payload(schema, payload)
+}
+
+fn encode_v1_checked_payload(
     schema: &RecordSchema<'_>,
     payload: &[u8],
 ) -> Result<Vec<u8>, EnvelopeError> {
@@ -377,6 +571,44 @@ fn encode_checked_payload(
         return Err(EnvelopeError::EnvelopeTooLarge);
     }
     Ok(encoded)
+}
+
+fn encode_compact_checked_payload(
+    schema: &RecordSchema<'_>,
+    payload: &[u8],
+) -> Result<Vec<u8>, EnvelopeError> {
+    let total = maximum_encoded_compact_record_bytes(schema, payload.len())?;
+    let payload_length =
+        u32::try_from(payload.len()).map_err(|_| EnvelopeError::PayloadTooLarge)?;
+    let mut encoded = Vec::with_capacity(total);
+    encoded.extend_from_slice(&COMPACT_RECORD_MAGIC_V2);
+    encoded.push(u8::try_from(STORAGE_FORMAT_VERSION_V2).expect("V2 fits u8"));
+    encoded.push(schema.compact_tag);
+    encoded.extend_from_slice(&schema.schema_revision.to_be_bytes());
+    encoded.extend_from_slice(&payload_length.to_be_bytes());
+    encoded.extend_from_slice(&payload_crc32c(payload).to_be_bytes());
+    encoded.extend_from_slice(payload);
+    Ok(encoded)
+}
+
+/// Returns the exact compact V2 framing charge for a registered payload length.
+pub fn maximum_encoded_compact_record_bytes(
+    schema: &RecordSchema<'_>,
+    payload_bytes: usize,
+) -> Result<usize, EnvelopeError> {
+    if schema.compact_tag == 0 || schema.schema_revision == 0 {
+        return Err(EnvelopeError::InvalidCompactIdentity);
+    }
+    if payload_bytes > MAX_STORED_ENVELOPE_BYTES || payload_bytes > schema.max_payload_bytes {
+        return Err(EnvelopeError::PayloadTooLarge);
+    }
+    let total = COMPACT_RECORD_HEADER_V2_BYTES
+        .checked_add(payload_bytes)
+        .ok_or(EnvelopeError::EnvelopeTooLarge)?;
+    if total > MAX_STORED_ENVELOPE_BYTES {
+        return Err(EnvelopeError::EnvelopeTooLarge);
+    }
+    Ok(total)
 }
 
 /// Returns a conservative complete-envelope size for a registered payload.
@@ -541,6 +773,8 @@ mod tests {
         Ok(RecordSchema {
             record_type,
             schema_hash: hash_schema(&frame),
+            compact_tag: 1,
+            schema_revision: 1,
             max_payload_bytes,
             max_envelope_bytes: MAX_STORED_ENVELOPE_BYTES,
             preflight_payload: preflight_probe,
@@ -576,7 +810,7 @@ mod tests {
     fn generated_schema_round_trips_the_golden_envelope() {
         let schema = schema();
         assert_eq!(schema.schema_hash().as_bytes(), &EXPECTED_SCHEMA_HASH);
-        let encoded = encode(&schema, PROBE_PAYLOAD).expect("canonical payload encodes");
+        let encoded = encode_v1(&schema, PROBE_PAYLOAD).expect("canonical payload encodes");
         assert_eq!(encoded, PROBE_ENVELOPE);
 
         let schemas = [schema];
@@ -586,7 +820,39 @@ mod tests {
             .expect("canonical envelope decodes");
         assert_eq!(decoded.record_type(), RECORD_TYPE);
         assert_eq!(decoded.schema_hash(), schema.schema_hash());
+        assert_eq!(decoded.format(), DurableRecordFormat::V1);
         assert_eq!(decoded.payload(), PROBE_PAYLOAD);
+    }
+
+    #[test]
+    fn compact_v2_round_trips_and_rejects_header_substitution() {
+        let schema = schema();
+        let schemas = [schema];
+        let registry = RecordRegistry::new(&schemas).expect("test registry is valid");
+        let encoded = encode(&schema, PROBE_PAYLOAD).expect("compact payload encodes");
+        assert_eq!(encoded.len(), COMPACT_RECORD_HEADER_V2_BYTES + 2);
+        let decoded = registry.decode(&encoded).expect("compact record decodes");
+        assert_eq!(decoded.format(), DurableRecordFormat::V2);
+        assert_eq!(decoded.compact_tag(), 1);
+        assert_eq!(decoded.schema_revision(), 1);
+        assert_eq!(decoded.payload(), PROBE_PAYLOAD);
+
+        let mut unknown_tag = encoded.clone();
+        unknown_tag[5] = 2;
+        assert_eq!(
+            registry
+                .decode(&unknown_tag)
+                .expect_err("unknown tag fails"),
+            EnvelopeError::UnknownCompactIdentity
+        );
+        let mut zero_revision = encoded;
+        zero_revision[6..8].copy_from_slice(&0_u16.to_be_bytes());
+        assert_eq!(
+            registry
+                .decode(&zero_revision)
+                .expect_err("zero revision fails"),
+            EnvelopeError::InvalidCompactIdentity
+        );
     }
 
     #[test]
@@ -663,7 +929,7 @@ mod tests {
     #[test]
     fn duplicate_and_truncating_outer_scalars_fail_in_preflight() {
         let schema = schema();
-        let canonical = encode(&schema, PROBE_PAYLOAD).expect("canonical payload encodes");
+        let canonical = encode_v1(&schema, PROBE_PAYLOAD).expect("canonical payload encodes");
 
         let mut duplicate_version = canonical.clone();
         duplicate_version.extend_from_slice(&[0x08, 0x01]);
@@ -681,7 +947,7 @@ mod tests {
     #[test]
     fn alternate_outer_and_payload_encodings_are_rejected() {
         let schema = schema();
-        let mut encoded = encode(&schema, PROBE_PAYLOAD).expect("canonical payload encodes");
+        let mut encoded = encode_v1(&schema, PROBE_PAYLOAD).expect("canonical payload encodes");
         encoded.extend_from_slice(&[0x98, 0x06, 0x00]);
         decode_error(&encoded, EnvelopeError::NonCanonicalEnvelope);
 

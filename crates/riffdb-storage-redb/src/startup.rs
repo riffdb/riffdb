@@ -42,9 +42,9 @@ use crate::layout::{
     AUDIT, CAPABILITIES, CAPABILITY_TOKENS, CATALOG_ACTIVE, CATALOG_ACTIVE_KEY, COMMITS,
     CONTRACT_BUNDLES, ENTITIES, EVENTS, IDEMPOTENCY, IDEMPOTENCY_PENDING, INDEX_EPOCHS, META,
     META_ADMINISTRATION_SEQUENCE, META_APPLICATION_SEQUENCE, META_CAPABILITY_BOOTSTRAP,
-    META_DATABASE_ID, META_FORMAT_VERSION, META_KEYS, OUTBOX, OUTBOX_STATUS, PROJECTION_APPLIED,
-    PROJECTION_FRONTIER, PROJECTION_STATE, PROVENANCE, QUERY_MODULE_ACTIVE, QUERY_MODULES,
-    SECONDARY_INDEXES, TABLE_NAMES,
+    META_DATABASE_ID, META_FORMAT_VERSION, META_KEYS, META_RECORD_REGISTRY, OUTBOX, OUTBOX_STATUS,
+    PROJECTION_APPLIED, PROJECTION_FRONTIER, PROJECTION_STATE, PROVENANCE, QUERY_MODULE_ACTIVE,
+    QUERY_MODULES, SECONDARY_INDEXES, TABLE_NAMES,
 };
 use crate::store::{RedbDormantPorts, RedbStore, SharedRedb};
 
@@ -766,6 +766,14 @@ fn read_retained_metadata(
         META_ADMINISTRATION_SEQUENCE,
         codec::decode_administration_sequence_allocator_v1,
     )?;
+    let registry = required_meta_value(
+        &meta,
+        META_RECORD_REGISTRY,
+        codec::decode_record_registry_v2,
+    )?;
+    if registry != riffdb_storage_api::proto_codec::current_record_registry_digest() {
+        return Err(storage_error(StorageErrorKind::IncompatibleFormat));
+    }
     let bootstrap = meta
         .get(META_CAPABILITY_BOOTSTRAP)
         .map_err(precommit_storage_error)?
@@ -999,6 +1007,7 @@ fn inspect_header(
         META_DATABASE_ID,
         META_APPLICATION_SEQUENCE,
         META_ADMINISTRATION_SEQUENCE,
+        META_RECORD_REGISTRY,
     ]
     .iter()
     .any(|key| !seen.contains(*key))
@@ -1075,7 +1084,12 @@ fn inspect_header(
 fn inspect_meta_row(key: &str, value: &[u8], database_id: DatabaseId) -> Option<StructuralFinding> {
     let valid = match key {
         META_FORMAT_VERSION => decoded(codec::decode_storage_format_version_v1(value))
-            .is_ok_and(|version| version == riffdb_storage_api::StorageFormatVersion::V1),
+            .is_ok_and(|version| version == riffdb_storage_api::StorageFormatVersion::V2),
+        META_RECORD_REGISTRY => {
+            decoded(codec::decode_record_registry_v2(value)).is_ok_and(|digest| {
+                digest == riffdb_storage_api::proto_codec::current_record_registry_digest()
+            })
+        }
         META_DATABASE_ID => decoded(codec::decode_database_identity_v1(value))
             .is_ok_and(|identity| identity == database_id),
         META_APPLICATION_SEQUENCE => {
@@ -4044,7 +4058,7 @@ contract RedbMigration version 1 {
             .begin_read()
             .expect("read transaction");
         let observed = read_retained_metadata(&read).expect("decode retained metadata");
-        assert_eq!(observed.storage_format_version().get(), 1);
+        assert_eq!(observed.storage_format_version().get(), 2);
         assert_eq!(observed.database_id(), id);
         assert_eq!(
             observed.application_sequence(),

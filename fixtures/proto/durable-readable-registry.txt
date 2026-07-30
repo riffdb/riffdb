@@ -1,5 +1,5 @@
 riffdb-durable-registry-v1
-records 31
+records 32
 riffdb.storage.v1.StoredStorageFormatVersionV1 source=metadata.proto message=StoredStorageFormatVersionV1 descriptor-bytes=1498 max-payload-bytes=8192 max-envelope-bytes=8284 schema-hash=07371c0b9eba9bfcad3118b345064b3d33a20a13641c6bde017e5c99dc6020ab
 riffdb.storage.v1.StoredDatabaseIdentityV1 source=metadata.proto message=StoredDatabaseIdentityV1 descriptor-bytes=1498 max-payload-bytes=8192 max-envelope-bytes=8280 schema-hash=de6f4f35fa52ca7664a85d9ffaa0041c506f3c5eb22632ba0ecd757dc6df1dea
 riffdb.storage.v1.StoredApplicationSequenceAllocatorV1 source=metadata.proto message=StoredApplicationSequenceAllocatorV1 descriptor-bytes=1498 max-payload-bytes=8192 max-envelope-bytes=8292 schema-hash=ff01f9e77e1d0ae47de12badcd541131a58fc6926b27543c681f0151f49aa24a
@@ -30,4 +30,5 @@ riffdb.storage.v1.StoredQueryModuleV1 source=catalog.proto message=StoredQueryMo
 riffdb.storage.v1.ActiveQueryModulePointerV1 source=catalog.proto message=ActiveQueryModulePointerV1 descriptor-bytes=2894 max-payload-bytes=8192 max-envelope-bytes=8282 schema-hash=18391395db2fb6d83127c78129a4f152c8a94a7f84c0673926827db3b2e6a934
 riffdb.storage.v1.StoredQueryModuleAdministrationV1 source=catalog.proto message=StoredQueryModuleAdministrationV1 descriptor-bytes=2894 max-payload-bytes=8192 max-envelope-bytes=8289 schema-hash=29138b6c43f55b4904bca27c2abdfab1bedc6491eeaae63bcc7c451ee8c711e4
 riffdb.storage.v1.StoredIndexEntryV2 source=index_v2.proto message=StoredIndexEntryV2 descriptor-bytes=8392 max-payload-bytes=2097152 max-envelope-bytes=2097236 schema-hash=1be795682748d69f9da74f2d9697dd9a041b7c5e642f757fe4daf902e78368f8
+riffdb.storage.v1.StoredRecordRegistryV2 source=registry_v2.proto message=StoredRecordRegistryV2 descriptor-bytes=134 max-payload-bytes=8192 max-envelope-bytes=8278 schema-hash=0e1a29c18da0131e8231eb5426a120345397de4a93afb4079601f51f82a70d7e
 riffdb.storage.v1.CapabilityRecordV1 source=capability.proto message=CapabilityRecordV1 descriptor-bytes=6290 max-payload-bytes=2097152 max-envelope-bytes=2097236 schema-hash=cb42c4ebbce8280123f8b34d4dcde74ca9483406847531f34d5fb3f18d40b342

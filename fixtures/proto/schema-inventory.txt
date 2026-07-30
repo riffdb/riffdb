@@ -22,6 +22,7 @@ files
     import riffdb/storage/v1/common.proto
   riffdb/storage/v1/projection.proto
     import riffdb/storage/v1/common.proto
+  riffdb/storage/v1/registry_v2.proto
   riffdb/v1/admin.proto
     import riffdb/v1/common.proto
     import riffdb/v1/value.proto
@@ -559,6 +560,8 @@ messages
   riffdb.storage.v1.StoredReadDependencyV1 fields=2
     1 entity_observation optional .riffdb.storage.v1.EntityReadDependencyV1 oneof=dependency
     2 index_range_epoch optional .riffdb.storage.v1.IndexRangeReadDependencyV1 oneof=dependency
+  riffdb.storage.v1.StoredRecordRegistryV2 fields=1
+    1 registry_digest optional bytes
   riffdb.storage.v1.StoredStorageFormatVersionV1 fields=1
     1 storage_format_version optional uint32
   riffdb.storage.v1.TenantScopeV1 fields=2
