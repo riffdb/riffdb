@@ -5,6 +5,9 @@
 mod administration;
 mod application;
 mod backup;
+#[cfg(feature = "benchmark-support")]
+#[doc(hidden)]
+pub mod benchmark_support;
 mod codec;
 mod derived;
 mod error;

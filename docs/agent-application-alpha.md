@@ -535,10 +535,25 @@ evaluation, transaction-current reads, table/page work, commit call, durable
 flush, file growth, and recovery. Every result runs the semantic and
 crash/reopen preflight and names the exact configured durability.
 
-The likely safe optimization is bounded multi-command staging so several
-independently admitted, validated, idempotent commands share one durable flush.
-The existing semantic storage boundary anticipates such staging, but production
-group scheduling is not currently enabled. Before implementation, an exact
+The investigation found a smaller cause before any scheduling change was
+needed. Every typed administration mutation, including both service-audit
+records surrounding an application request, exhaustively decoded the entire
+retained audit stream before appending its next record. That made request cost
+linear in retained requests and a seed workload quadratic overall.
+
+Startup and public audit reads still exhaustively validate the stream. A typed
+write now validates the transaction-current allocator, row count, and exact
+decoded tail. This is an inductive preservation check: after startup proves the
+complete stream, the only production audit mutation appends the allocator-owned
+next sequence and advances allocator plus record atomically. Missing,
+duplicated, reordered, malformed-tail, and allocator-skewed transitions
+therefore fail closed without rereading all history. No durability,
+acknowledgement, atomic record graph, coordinator ownership, or public API
+semantics changed.
+
+Bounded multi-command staging remains benchmark evidence only. The storage
+mechanics comparison records its possible benefit, but production group
+scheduling is not enabled. Before implementation, an exact
 durability/performance ADR must freeze the batch window, fairness, cancellation,
 failure, acknowledgement, and crash semantics.
 
@@ -547,6 +562,14 @@ the atomic record graph, or enabling group scheduling without that decision is
 not an acceptable benchmark fix. The final checked profile must retain at least
 half of initial steady-state throughput as data grows and remain above 50
 committed commands per second.
+
+Run `./scripts/benchmark-command-growth --assert-perf-003` for the qualified
+gate. The wrapper first runs the memory, redb recovery, commit coordinator, and
+public server semantic suites. The benchmark refuses to assert PERF-003 without
+that preflight evidence. Its primary workload uses the real redb
+`ServiceAuditAppendRepository` and two immediate two-phase durable commits per
+simulated command; separate records decompose one-phase, two-phase, no-flush,
+and experimental bounded-group engine mechanics.
 
 ### WP-365 — public-only rehearsal and canary gate
 
