@@ -6,6 +6,7 @@ use riffdb_query_module::{
     QueryModuleErrorKind, QueryModuleName, QueryModuleVersion, generate_mcp_commands,
     generate_mcp_tools, generate_rust_client, generate_typescript_client,
 };
+use std::sync::Arc;
 
 const CONTRACT: &str = include_str!("../../../examples/app-baseline/contracts/ticketdesk.riff");
 
@@ -93,6 +94,23 @@ fn identity_and_bytes_are_independent_of_input_order() {
     assert_eq!(first.canonical_bytes(), second.canonical_bytes());
     assert_eq!(first.queries()[0].name(), "ListTickets");
     assert_eq!(first.queries()[1].name(), "TicketPage");
+}
+
+#[test]
+fn cloned_named_query_handles_share_immutable_checked_artifacts() {
+    let bundle = compile_contract_source(CONTRACT).expect("contract");
+    let module = QueryModule::compile(candidate(false), &bundle).expect("module");
+    let query = module.query("TicketPage").expect("named query");
+
+    let first_document = query.shared_document();
+    let second_document = query.shared_document();
+    let first_program = query.shared_program();
+    let second_program = query.shared_program();
+
+    assert!(Arc::ptr_eq(&first_document, &second_document));
+    assert!(Arc::ptr_eq(&first_program, &second_program));
+    assert_eq!(query.document(), first_document.as_ref());
+    assert_eq!(query.program(), first_program.as_ref());
 }
 
 #[test]

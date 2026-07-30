@@ -1,6 +1,7 @@
 //! Catalog-owned query-module validation and activation preparation.
 
 use std::fmt;
+use std::sync::Arc;
 
 use riffdb_query_module::{QueryModule, QueryModuleCandidate, QueryModuleErrorKind};
 use riffdb_storage_api::{
@@ -44,7 +45,7 @@ impl std::error::Error for QueryModuleCatalogError {}
 
 /// An immutable module recompiled at the catalog trust boundary.
 #[derive(Clone)]
-pub struct ValidatedQueryModule(QueryModule);
+pub struct ValidatedQueryModule(Arc<QueryModule>);
 
 impl ValidatedQueryModule {
     /// Compiles a source candidate against one exact validated contract.
@@ -53,6 +54,7 @@ impl ValidatedQueryModule {
         contract: &ValidatedContractBundle,
     ) -> Result<Self, QueryModuleCatalogError> {
         QueryModule::compile(candidate, contract.bundle())
+            .map(Arc::new)
             .map(Self)
             .map_err(map_module_error)
     }
@@ -73,18 +75,18 @@ impl ValidatedQueryModule {
         {
             return Err(QueryModuleCatalogError::IdentityMismatch);
         }
-        Ok(Self(module))
+        Ok(Self(Arc::new(module)))
     }
 
     /// Complete executable checked module.
     #[must_use]
-    pub const fn module(&self) -> &QueryModule {
+    pub fn module(&self) -> &QueryModule {
         &self.0
     }
 
     /// Immutable content identity.
     #[must_use]
-    pub const fn identity(&self) -> QueryModuleHash {
+    pub fn identity(&self) -> QueryModuleHash {
         self.0.identity()
     }
 

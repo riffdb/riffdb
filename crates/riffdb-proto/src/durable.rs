@@ -322,23 +322,38 @@ const INDEX_GENERATION_V2_RECORD_SCHEMA: RecordSchema<'static> = RecordSchema::n
 .with_compact_identity(10, 2);
 
 mod sealed {
-    pub trait WritableRecordMessage {}
+    pub trait ReadableRecordMessage {}
+    pub trait WritableRecordMessage: ReadableRecordMessage {}
+}
+
+/// A generated Protobuf message bound to exactly one readable durable schema.
+pub trait ReadableRecordMessage: Message + sealed::ReadableRecordMessage {
+    /// Returns the exact readable schema for this generated message.
+    fn record_schema() -> &'static RecordSchema<'static>;
 }
 
 /// A generated Protobuf message bound to exactly one current writable durable schema.
 ///
 /// This trait is sealed so only this crate can assert that a Prost-produced
 /// payload is canonical for the selected record type.
-pub trait WritableRecordMessage: Message + sealed::WritableRecordMessage {
-    /// Returns the exact current writable schema for this generated message.
-    fn record_schema() -> &'static RecordSchema<'static>;
+pub trait WritableRecordMessage: ReadableRecordMessage + sealed::WritableRecordMessage {}
+
+/// Decodes a generated durable message through its exact sealed readable schema.
+///
+/// Compact V2 records are preflighted and decoded once. Legacy V1 records keep
+/// the complete compatibility validation path.
+pub fn decode_readable_message<M>(encoded: &[u8]) -> Result<M, crate::envelope::EnvelopeError>
+where
+    M: ReadableRecordMessage + Default,
+{
+    readable_record_registry().decode_current_message(encoded, M::record_schema())
 }
 
-macro_rules! writable_message {
+macro_rules! readable_v1_message {
     ($index:literal, $message:ty) => {
-        impl sealed::WritableRecordMessage for $message {}
+        impl sealed::ReadableRecordMessage for $message {}
 
-        impl WritableRecordMessage for $message {
+        impl ReadableRecordMessage for $message {
             fn record_schema() -> &'static RecordSchema<'static> {
                 &CURRENT_V1_RECORD_SCHEMAS[$index]
             }
@@ -346,71 +361,93 @@ macro_rules! writable_message {
     };
 }
 
-writable_message!(0, v1::StoredStorageFormatVersionV1);
-writable_message!(1, v1::StoredDatabaseIdentityV1);
-writable_message!(2, v1::StoredApplicationSequenceAllocatorV1);
-writable_message!(3, v1::StoredAdministrationSequenceAllocatorV1);
-writable_message!(4, v1::StoredContractBundleV1);
-writable_message!(5, v1::ActiveCatalogPointerV1);
-writable_message!(6, v1::StoredCatalogAdministrationV1);
-writable_message!(7, v1::StoredEntityRecordV1);
-writable_message!(10, v1::StoredPendingAdmissionV1);
-writable_message!(11, v1::StoredExecutionFailedV1);
-writable_message!(12, v1::StoredOutcomeV1);
-writable_message!(13, v1::StoredDurableEventV1);
-writable_message!(15, v1::StoredProvenanceRecordV1);
-writable_message!(17, v1::CapabilityRecordV1);
-writable_message!(18, v1::CapabilityTokenLookupV1);
-writable_message!(19, v1::CapabilityBootstrapMarkerV1);
-writable_message!(20, v1::CapabilityAdministrationAuditV1);
-writable_message!(21, v1::ServiceAuditRecordV1);
-writable_message!(22, v1::StoredOutboxStatusV1);
-writable_message!(23, v1::StoredProjectionStateV1);
-writable_message!(24, v1::StoredProjectionApplyV1);
-writable_message!(25, v1::StoredProjectionControlV1);
-writable_message!(26, v1::StoredQueryModuleV1);
-writable_message!(27, v1::ActiveQueryModulePointerV1);
-writable_message!(28, v1::StoredQueryModuleAdministrationV1);
+macro_rules! readable_message {
+    ($message:ty, $schema:ident) => {
+        impl sealed::ReadableRecordMessage for $message {}
 
-impl sealed::WritableRecordMessage for v1::StoredIndexEntryV2 {}
-
-impl WritableRecordMessage for v1::StoredIndexEntryV2 {
-    fn record_schema() -> &'static RecordSchema<'static> {
-        &INDEX_V2_RECORD_SCHEMA
-    }
+        impl ReadableRecordMessage for $message {
+            fn record_schema() -> &'static RecordSchema<'static> {
+                &$schema
+            }
+        }
+    };
 }
 
-impl sealed::WritableRecordMessage for v1::StoredRecordRegistryV2 {}
-
-impl WritableRecordMessage for v1::StoredRecordRegistryV2 {
-    fn record_schema() -> &'static RecordSchema<'static> {
-        &REGISTRY_V2_RECORD_SCHEMA
-    }
+macro_rules! writable_message {
+    ($message:ty) => {
+        impl sealed::WritableRecordMessage for $message {}
+        impl WritableRecordMessage for $message {}
+    };
 }
 
-impl sealed::WritableRecordMessage for v1::StoredCommitRecordV2 {}
+readable_v1_message!(0, v1::StoredStorageFormatVersionV1);
+readable_v1_message!(1, v1::StoredDatabaseIdentityV1);
+readable_v1_message!(2, v1::StoredApplicationSequenceAllocatorV1);
+readable_v1_message!(3, v1::StoredAdministrationSequenceAllocatorV1);
+readable_v1_message!(4, v1::StoredContractBundleV1);
+readable_v1_message!(5, v1::ActiveCatalogPointerV1);
+readable_v1_message!(6, v1::StoredCatalogAdministrationV1);
+readable_v1_message!(7, v1::StoredEntityRecordV1);
+readable_v1_message!(8, v1::StoredIndexEntryV1);
+readable_v1_message!(9, v1::StoredIndexEpochV1);
+readable_v1_message!(10, v1::StoredPendingAdmissionV1);
+readable_v1_message!(11, v1::StoredExecutionFailedV1);
+readable_v1_message!(12, v1::StoredOutcomeV1);
+readable_v1_message!(13, v1::StoredDurableEventV1);
+readable_v1_message!(14, v1::StoredOutboxIntentV1);
+readable_v1_message!(15, v1::StoredProvenanceRecordV1);
+readable_v1_message!(16, v1::StoredCommitRecordV1);
+readable_v1_message!(17, v1::CapabilityRecordV1);
+readable_v1_message!(18, v1::CapabilityTokenLookupV1);
+readable_v1_message!(19, v1::CapabilityBootstrapMarkerV1);
+readable_v1_message!(20, v1::CapabilityAdministrationAuditV1);
+readable_v1_message!(21, v1::ServiceAuditRecordV1);
+readable_v1_message!(22, v1::StoredOutboxStatusV1);
+readable_v1_message!(23, v1::StoredProjectionStateV1);
+readable_v1_message!(24, v1::StoredProjectionApplyV1);
+readable_v1_message!(25, v1::StoredProjectionControlV1);
+readable_v1_message!(26, v1::StoredQueryModuleV1);
+readable_v1_message!(27, v1::ActiveQueryModulePointerV1);
+readable_v1_message!(28, v1::StoredQueryModuleAdministrationV1);
+readable_message!(v1::StoredIndexEntryV2, INDEX_V2_RECORD_SCHEMA);
+readable_message!(v1::StoredRecordRegistryV2, REGISTRY_V2_RECORD_SCHEMA);
+readable_message!(v1::StoredCommitRecordV2, COMMIT_V2_RECORD_SCHEMA);
+readable_message!(v1::StoredOutboxIntentV2, OUTBOX_INTENT_V2_RECORD_SCHEMA);
+readable_message!(
+    v1::StoredIndexGenerationV2,
+    INDEX_GENERATION_V2_RECORD_SCHEMA
+);
 
-impl WritableRecordMessage for v1::StoredCommitRecordV2 {
-    fn record_schema() -> &'static RecordSchema<'static> {
-        &COMMIT_V2_RECORD_SCHEMA
-    }
-}
-
-impl sealed::WritableRecordMessage for v1::StoredOutboxIntentV2 {}
-
-impl WritableRecordMessage for v1::StoredOutboxIntentV2 {
-    fn record_schema() -> &'static RecordSchema<'static> {
-        &OUTBOX_INTENT_V2_RECORD_SCHEMA
-    }
-}
-
-impl sealed::WritableRecordMessage for v1::StoredIndexGenerationV2 {}
-
-impl WritableRecordMessage for v1::StoredIndexGenerationV2 {
-    fn record_schema() -> &'static RecordSchema<'static> {
-        &INDEX_GENERATION_V2_RECORD_SCHEMA
-    }
-}
+writable_message!(v1::StoredStorageFormatVersionV1);
+writable_message!(v1::StoredDatabaseIdentityV1);
+writable_message!(v1::StoredApplicationSequenceAllocatorV1);
+writable_message!(v1::StoredAdministrationSequenceAllocatorV1);
+writable_message!(v1::StoredContractBundleV1);
+writable_message!(v1::ActiveCatalogPointerV1);
+writable_message!(v1::StoredCatalogAdministrationV1);
+writable_message!(v1::StoredEntityRecordV1);
+writable_message!(v1::StoredPendingAdmissionV1);
+writable_message!(v1::StoredExecutionFailedV1);
+writable_message!(v1::StoredOutcomeV1);
+writable_message!(v1::StoredDurableEventV1);
+writable_message!(v1::StoredProvenanceRecordV1);
+writable_message!(v1::CapabilityRecordV1);
+writable_message!(v1::CapabilityTokenLookupV1);
+writable_message!(v1::CapabilityBootstrapMarkerV1);
+writable_message!(v1::CapabilityAdministrationAuditV1);
+writable_message!(v1::ServiceAuditRecordV1);
+writable_message!(v1::StoredOutboxStatusV1);
+writable_message!(v1::StoredProjectionStateV1);
+writable_message!(v1::StoredProjectionApplyV1);
+writable_message!(v1::StoredProjectionControlV1);
+writable_message!(v1::StoredQueryModuleV1);
+writable_message!(v1::ActiveQueryModulePointerV1);
+writable_message!(v1::StoredQueryModuleAdministrationV1);
+writable_message!(v1::StoredIndexEntryV2);
+writable_message!(v1::StoredRecordRegistryV2);
+writable_message!(v1::StoredCommitRecordV2);
+writable_message!(v1::StoredOutboxIntentV2);
+writable_message!(v1::StoredIndexGenerationV2);
 
 /// Encodes one sealed generated message after the same allocation-free shape preflight.
 pub fn encode_current_message<M: WritableRecordMessage>(
@@ -593,6 +630,9 @@ mod tests {
             registry_digest: record_registry_digest().as_bytes().to_vec(),
         };
         let encoded = encode_current_message(&message).expect("registry record encodes");
+        let typed = decode_readable_message::<v1::StoredRecordRegistryV2>(&encoded)
+            .expect("sealed current message decodes through the typed path");
+        assert_eq!(typed, message);
         let decoded = readable_record_registry()
             .decode(&encoded)
             .expect("registry record decodes");

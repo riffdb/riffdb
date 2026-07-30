@@ -236,6 +236,80 @@ impl<'a> RecordRegistry<'a> {
         self.decode_v1(encoded)
     }
 
+    /// Decodes one current generated message without reconstructing the same
+    /// Protobuf payload in both the registry validator and its semantic caller.
+    ///
+    /// The caller must supply the schema bound to the generated message by the
+    /// crate-sealed durable-message trait. Legacy V1 framing retains the full
+    /// compatibility decoder; compact V2 performs the same identity, checksum,
+    /// bound, wire-canonicality, and Prost-canonicality checks exactly once.
+    pub(crate) fn decode_current_message<M>(
+        &self,
+        encoded: &[u8],
+        expected_schema: &RecordSchema<'_>,
+    ) -> Result<M, EnvelopeError>
+    where
+        M: Message + Default,
+    {
+        if encoded.len() > MAX_STORED_ENVELOPE_BYTES {
+            return Err(EnvelopeError::EnvelopeTooLarge);
+        }
+        if !encoded.starts_with(&COMPACT_RECORD_MAGIC_V2) {
+            let decoded = self.decode_v1(encoded)?;
+            if decoded.record_type() != expected_schema.record_type {
+                return Err(EnvelopeError::UnknownRecordType);
+            }
+            return M::decode(decoded.payload())
+                .map_err(|_| EnvelopeError::InvalidPayload(PayloadValidationError::Malformed));
+        }
+        if encoded.len() < COMPACT_RECORD_HEADER_V2_BYTES {
+            return Err(EnvelopeError::Malformed);
+        }
+        if encoded[4] != u8::try_from(STORAGE_FORMAT_VERSION_V2).expect("V2 fits u8") {
+            return Err(EnvelopeError::UnsupportedStorageFormatVersion);
+        }
+        let compact_tag = encoded[5];
+        let schema_revision = u16::from_be_bytes([encoded[6], encoded[7]]);
+        if compact_tag == 0 || schema_revision == 0 {
+            return Err(EnvelopeError::InvalidCompactIdentity);
+        }
+        let schema = self
+            .schemas
+            .iter()
+            .find(|schema| {
+                schema.compact_tag == compact_tag && schema.schema_revision == schema_revision
+            })
+            .ok_or(EnvelopeError::UnknownCompactIdentity)?;
+        if schema.record_type != expected_schema.record_type {
+            return Err(EnvelopeError::UnknownRecordType);
+        }
+        let payload_length =
+            u32::from_be_bytes([encoded[8], encoded[9], encoded[10], encoded[11]]) as usize;
+        let expected_length = COMPACT_RECORD_HEADER_V2_BYTES
+            .checked_add(payload_length)
+            .ok_or(EnvelopeError::EnvelopeTooLarge)?;
+        if expected_length != encoded.len() {
+            return Err(EnvelopeError::Malformed);
+        }
+        let payload = &encoded[COMPACT_RECORD_HEADER_V2_BYTES..];
+        if payload.len() > schema.max_payload_bytes {
+            return Err(EnvelopeError::PayloadTooLarge);
+        }
+        let checksum = u32::from_be_bytes([encoded[12], encoded[13], encoded[14], encoded[15]]);
+        if payload_crc32c(payload) != checksum {
+            return Err(EnvelopeError::ChecksumMismatch);
+        }
+        (schema.preflight_payload)(payload).map_err(EnvelopeError::InvalidPayload)?;
+        let message = M::decode(payload)
+            .map_err(|_| EnvelopeError::InvalidPayload(PayloadValidationError::Malformed))?;
+        if message.encode_to_vec() != payload {
+            return Err(EnvelopeError::InvalidPayload(
+                PayloadValidationError::NonCanonical,
+            ));
+        }
+        Ok(message)
+    }
+
     /// Validates either readable framing and returns the canonical compact V2
     /// representation of the same exact semantic payload.
     pub fn transcode_to_v2(&self, encoded: &[u8]) -> Result<Vec<u8>, EnvelopeError> {

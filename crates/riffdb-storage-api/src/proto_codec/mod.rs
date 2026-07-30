@@ -125,18 +125,33 @@ pub(super) fn decode_message<M, T, F>(
     reconstruct: F,
 ) -> Result<EncodedPageItem<T>, DurableCodecError>
 where
-    M: Message + Default,
+    M: Message + Default + riffdb_proto::durable::ReadableRecordMessage,
     F: FnOnce(M) -> Result<T, DurableCodecError>,
 {
-    let decoded = readable_record_registry()
-        .decode(encoded)
-        .map_err(DurableCodecError::from_decode_envelope)?;
-    if decoded.record_type() != record_type {
+    if M::record_schema().record_type() != record_type {
         return Err(DurableCodecError::new(
             DurableCodecErrorKind::UnexpectedRecordType,
         ));
     }
-    let message = M::decode(decoded.payload()).map_err(|_| DurableCodecError::corrupt())?;
+    let message = match riffdb_proto::durable::decode_readable_message::<M>(encoded) {
+        Ok(message) => message,
+        Err(_) => {
+            // A readable record type can retain more than one historical
+            // schema identity (notably capability records). The sealed typed
+            // fast path is exact-current; compatibility identities retain the
+            // complete registry validator and fail closed if either the
+            // envelope or generated message is not canonical.
+            let decoded = readable_record_registry()
+                .decode(encoded)
+                .map_err(DurableCodecError::from_decode_envelope)?;
+            if decoded.record_type() != record_type {
+                return Err(DurableCodecError::new(
+                    DurableCodecErrorKind::UnexpectedRecordType,
+                ));
+            }
+            M::decode(decoded.payload()).map_err(|_| DurableCodecError::corrupt())?
+        }
+    };
     let value = reconstruct(message)?;
     let charge = EncodedContentCharge::new(encoded.len()).ok_or_else(DurableCodecError::corrupt)?;
     Ok(EncodedPageItem::new(value, charge))
