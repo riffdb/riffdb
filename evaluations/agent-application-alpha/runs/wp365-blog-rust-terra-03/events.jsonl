@@ -1,0 +1,14 @@
+{"schema":"riffdb-agent-application-alpha-event/v1","elapsed_ms":0,"kind":"start","operation":"wp365-blog-rust-terra-03"}
+{"schema":"riffdb-agent-application-alpha-event/v1","elapsed_ms":9000,"kind":"tool","operation":"riffdb.new"}
+{"schema":"riffdb-agent-application-alpha-event/v1","elapsed_ms":148000,"kind":"compiler_failure","operation":"riffdb.application.check","code":"RDB-S004"}
+{"schema":"riffdb-agent-application-alpha-event/v1","elapsed_ms":158000,"kind":"compiler_failure","operation":"riffdb.application.check","code":"RDB-C024"}
+{"schema":"riffdb-agent-application-alpha-event/v1","elapsed_ms":171000,"kind":"compiler_failure","operation":"riffdb.application.check","code":"RDB-QP003"}
+{"schema":"riffdb-agent-application-alpha-event/v1","elapsed_ms":179000,"kind":"tool","operation":"riffdb.application.lock"}
+{"schema":"riffdb-agent-application-alpha-event/v1","elapsed_ms":220000,"kind":"compiler_failure","operation":"cargo.check","code":"cargo_locked"}
+{"schema":"riffdb-agent-application-alpha-event/v1","elapsed_ms":231000,"kind":"tool","operation":"cargo.check"}
+{"schema":"riffdb-agent-application-alpha-event/v1","elapsed_ms":289000,"kind":"tool","operation":"riffdb.dev.run"}
+{"schema":"riffdb-agent-application-alpha-event/v1","elapsed_ms":290000,"kind":"first_write","operation":"AddComment"}
+{"schema":"riffdb-agent-application-alpha-event/v1","elapsed_ms":290001,"kind":"first_page_read","operation":"PostDetail"}
+{"schema":"riffdb-agent-application-alpha-event/v1","elapsed_ms":391000,"kind":"tool","operation":"check_application_boundary"}
+{"schema":"riffdb-agent-application-alpha-event/v1","elapsed_ms":419979,"kind":"complete","operation":"blog_cms_workload"}
+{"schema":"riffdb-agent-application-alpha-event/v1","elapsed_ms":419980,"kind":"rating","operation":"8.8"}

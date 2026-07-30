@@ -1,0 +1,53 @@
+{
+  "schema": "riffdb-agent-application-alpha-campaign/v1",
+  "campaign_id": "wp365-canary-01",
+  "bundle_hash": "b72679d6d7ea66dc08e59ff547a9e5af7789f7638c862619365713618437ce11",
+  "status": "passed",
+  "immutable": true,
+  "runs": [
+    {
+      "run_id": "wp365-blog-rust-terra-03",
+      "domain": "blog",
+      "language": "rust",
+      "agent_identity": "terra-wp365-blog-rust-03",
+      "report": {
+        "path": "evaluations/agent-application-alpha/runs/wp365-blog-rust-terra-03/report.json",
+        "sha256": "4d33a57f3b9562c8f3ac48e3a06bf0f2ffd68a06e198200f785ee7a770d767c3"
+      },
+      "events": {
+        "path": "evaluations/agent-application-alpha/runs/wp365-blog-rust-terra-03/events.jsonl",
+        "sha256": "d1846ab16ab08dd28a88ad00f807c4ba8c99d6c4ea97dc13760a64e7b5fc7c8a"
+      },
+      "qualified_events": {
+        "path": "evaluations/agent-application-alpha/runs/wp365-blog-rust-terra-03/qualified-events.jsonl",
+        "sha256": "8c59f0dcc7b7368de6a9af2bc715d0385c9cc243651a46efccba0046a916432a"
+      },
+      "application_lock": {
+        "path": "evaluations/agent-application-alpha/runs/wp365-blog-rust-terra-03/riffdb.application.lock.json",
+        "sha256": "96fce5912581f370fafcf179de31e9fe5ae5465733ef51b44c12ebb5deffb782"
+      }
+    },
+    {
+      "run_id": "wp365-orders-typescript-terra-03",
+      "domain": "orders",
+      "language": "typescript",
+      "agent_identity": "terra-wp365-orders-typescript-03",
+      "report": {
+        "path": "evaluations/agent-application-alpha/runs/wp365-orders-typescript-terra-03/report.json",
+        "sha256": "e537fbb405f83d51a425ea8e49f9ad78e04bcaa5d3d4758b834cad4870dd8c5c"
+      },
+      "events": {
+        "path": "evaluations/agent-application-alpha/runs/wp365-orders-typescript-terra-03/events.jsonl",
+        "sha256": "8b6d7e40ca6e52faf9522a04e616be0b50063c8e9639a1b1aa8af79f639bbe4b"
+      },
+      "qualified_events": {
+        "path": "evaluations/agent-application-alpha/runs/wp365-orders-typescript-terra-03/qualified-events.jsonl",
+        "sha256": "b4ebc4f2178caacf8dfa777e44f65717e6063b596152c3771b5decf31e0e9ce2"
+      },
+      "application_lock": {
+        "path": "evaluations/agent-application-alpha/runs/wp365-orders-typescript-terra-03/riffdb.application.lock.json",
+        "sha256": "eb0c48f1f6747cf12e4263472feef095feb626d1838d151bacd3ca5fc7b077a2"
+      }
+    }
+  ]
+}
